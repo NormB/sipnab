@@ -4501,6 +4501,26 @@ pub struct VconForwardArgs {
     )]
     pub vcon_forward: Option<std::path::PathBuf>,
 
+    /// Print the state of this `--export-vcon-dir` spool as JSON and exit 0:
+    /// containers pending, delivered and failed, and the record the
+    /// forwarder wrote beside each failed container. A snapshot of the files,
+    /// read from the forwarder's default `delivered/` and `failed/`
+    /// directories; it sends, moves and deletes nothing. The same answer the
+    /// MCP tool `vcon_spool_status` and `GET /v1/vcon/spool` give. Exits 1
+    /// when a directory exists and cannot be read. Needs the `vcon` feature.
+    #[arg(
+        help_heading = "vCon forwarder",
+        long = "vcon-spool-status",
+        value_name = "SPOOL_DIR",
+        conflicts_with_all = [
+            "device", "input", "hep_listen", "hep_send", "bpf_filter",
+            "bpf_file", "api", "mcp", "metrics", "export_vcon",
+            "export_vcon_when", "export_vcon_dir", "mint_token", "replay",
+            "vcon_forward", "vcon_fetch",
+        ]
+    )]
+    pub vcon_spool_status: Option<std::path::PathBuf>,
+
     /// Where the forwarder POSTs each container, `http://` or `https://`,
     /// path and query included, for example
     /// `http://127.0.0.1:8000/vcon/external-ingress?ingress_list=sipnab`.

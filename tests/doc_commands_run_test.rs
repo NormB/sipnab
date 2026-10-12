@@ -541,11 +541,11 @@ fn prepare(cmd: &str, sandbox: &Path, n: usize) -> Result<Option<Prepared>, Test
         }
     }
     let names_device = argv.iter().any(|a| a == "-d" || a == "--device");
-    // The forwarder reads a spool and the fetcher a store, never a capture,
-    // and both refuse `-I`.
+    // The forwarder and the spool status read a spool and the fetcher a
+    // store, never a capture, and all three refuse `-I`.
     let forwards = argv
         .iter()
-        .any(|a| a == "--vcon-forward" || a == "--vcon-fetch");
+        .any(|a| a == "--vcon-forward" || a == "--vcon-fetch" || a == "--vcon-spool-status");
     if !names_device && !forwards && !argv.iter().any(|a| a == "-I" || a == "--input") {
         argv.push("-I".to_owned());
         argv.push(fixture);

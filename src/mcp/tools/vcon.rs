@@ -278,87 +278,6 @@ pub struct VconSpoolStatusParams {
     pub cursor: Option<String>,
 }
 
-/// One directory the snapshot read.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
-#[schemars(crate = "rmcp::schemars")]
-pub struct SpoolDirectory {
-    /// The path, as this server resolved it.
-    pub path: String,
-    /// Whether the directory existed when it was read. A directory that does
-    /// not exist holds nothing, and is counted as zero.
-    pub exists: bool,
-}
-
-/// One refused container, and the record the forwarder wrote beside it.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
-#[schemars(crate = "rmcp::schemars")]
-pub struct SpoolFailure {
-    /// The container's file name in the failed directory.
-    pub file: String,
-    /// The `<file>.error.json` record: the status, the method and URL, and
-    /// the start of the store's answer, or the forwarder's own reason. Null
-    /// when the record is missing or unreadable, and `record_problem` says
-    /// which. `body` is fenced and cut to `--mcp-max-body-bytes`: it is text
-    /// the store wrote.
-    pub record: Option<crate::app::vcon_forward::FailureRecord>,
-    /// Why `record` is null.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub record_problem: Option<String>,
-}
-
-/// The answer `vcon_spool_status` gives.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
-#[schemars(crate = "rmcp::schemars")]
-pub struct VconSpoolStatusResponse {
-    /// Version of this envelope.
-    pub schema_version: u32,
-    /// When the directories were read, RFC 3339 UTC. The forwarder is another
-    /// process and may have moved files since.
-    pub as_of: String,
-    /// What this answer is, in one sentence.
-    pub note: String,
-    /// The `--export-vcon-dir` spool: containers waiting to be delivered.
-    pub spool: SpoolDirectory,
-    /// Where the forwarder moves a delivered container by default.
-    pub delivered_dir: SpoolDirectory,
-    /// Where the forwarder moves a refused container by default, beside its
-    /// `<file>.error.json` record.
-    pub failed_dir: SpoolDirectory,
-    /// Containers in the spool, by the forwarder's own rule: regular files
-    /// ending in `.json` whose names do not start with a dot.
-    pub pending: usize,
-    /// Containers in the delivered directory.
-    pub delivered: usize,
-    /// Containers in the failed directory, records not counted.
-    pub failed: usize,
-    /// This page of failed containers, by file name.
-    pub failures: Vec<SpoolFailure>,
-    /// Rows in `failures`.
-    pub returned: usize,
-    /// Whether failed containers remain after this page. Pass `next_cursor`
-    /// back to continue.
-    pub truncated: bool,
-    /// Opaque cursor (the last file name returned) to pass to the next call.
-    /// Null on the final page.
-    pub next_cursor: Option<String>,
-}
-
-/// The one sentence every `vcon_spool_status` answer carries.
-const SPOOL_NOTE: &str = "A snapshot of files on disk at as_of, read by this \
-     process. The vCon forwarder (sipnab --vcon-forward) is a separate process \
-     that moves files out of the spool; this server sends, fetches, moves and \
-     deletes nothing. The delivered and failed directories are the forwarder's \
-     defaults beside the spool; a forwarder started with --vcon-forward-done or \
-     --vcon-forward-failed moves files elsewhere, and those are not counted.";
-
-/// The most bytes of one `<file>.error.json` record this tool reads.
-///
-/// Not a setting: the record's body is cut to `--mcp-max-body-bytes` before it
-/// is returned, and a record larger than this is reported as too large rather
-/// than read into memory. The forwarder's own default keeps 8 KiB of an
-/// answer, so a default record is far below it.
-const MAX_RECORD_READ: u64 = 1024 * 1024;
-
 /// Which dialogs an export was asked for.
 ///
 /// A caller that sent both `call_id` and `filter` has a malformed request, and
@@ -424,7 +343,7 @@ impl SipnabMcp {
                        The failed list is bounded by limit and paged with \
                        cursor. Returns an error when this run was started \
                        without --export-vcon-dir.",
-        output_schema = schema_for_output::<VconSpoolStatusResponse>(),
+        output_schema = schema_for_output::<crate::app::vcon_spool::SpoolStatus>(),
         annotations(read_only_hint = true, open_world_hint = false)
     )]
     pub async fn vcon_spool_status(
@@ -439,8 +358,23 @@ impl SipnabMcp {
                 None,
             )
         })?;
-        let limit = resolve_limit_with_cap(params.limit, self.row_cap);
-        let response = spool_snapshot(spool, params.cursor.as_deref(), limit, self.body_cap)?;
+        let page = crate::app::vcon_spool::SpoolPage {
+            after: params.cursor.as_deref(),
+            limit: resolve_limit_with_cap(params.limit, self.row_cap),
+        };
+        let mut response = crate::app::vcon_spool::snapshot(spool, page, chrono::Utc::now())
+            .map_err(|e| rmcp::ErrorData::internal_error(e, None))?;
+        // The MCP door's envelope, and its only difference from the other
+        // doors: a store's answer is text another system wrote, so it is cut
+        // to `--mcp-max-body-bytes` and fenced as every such text on this
+        // surface is.
+        for failure in &mut response.failures {
+            if let Some(record) = failure.record.as_mut() {
+                record.body = record.body.take().map(|b| {
+                    crate::mcp::shape::fence(&crate::mcp::shape::truncate_string(&b, self.body_cap))
+                });
+            }
+        }
         let value = serde_json::to_value(&response).map_err(|e| {
             rmcp::ErrorData::internal_error(format!("spool status serialization failed: {e}"), None)
         })?;
@@ -893,146 +827,6 @@ impl SipnabMcp {
             call_id: None,
         })
     }
-}
-
-/// Read the spool, its delivered and failed directories, and one page of
-/// failure records.
-///
-/// A pure function of the directory and its arguments, so a test can drive it
-/// over a temporary spool. It opens files for reading and nothing else.
-///
-/// # Errors
-///
-/// `internal_error` (-32603) naming the directory when one exists and cannot
-/// be read.
-fn spool_snapshot(
-    spool: &std::path::Path,
-    after: Option<&str>,
-    limit: usize,
-    body_cap: usize,
-) -> Result<VconSpoolStatusResponse, rmcp::ErrorData> {
-    use crate::app::vcon_forward::{
-        ERROR_RECORD_SUFFIX, default_done_dir, default_failed_dir, failed_containers, pending,
-    };
-
-    let as_of = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
-    let done = default_done_dir(spool);
-    let failed = default_failed_dir(spool);
-    let (spool_dir, pending_names) = read_names(spool, pending)?;
-    let (done_dir, delivered_names) = read_names(&done, pending)?;
-    let (failed_dir, failed_names) = read_names(&failed, failed_containers)?;
-
-    let remaining: Vec<&String> = failed_names
-        .iter()
-        .filter(|name| after.is_none_or(|c| name.as_str() > c))
-        .collect();
-    let truncated = remaining.len() > limit;
-    let page = &remaining[..remaining.len().min(limit)];
-    let next_cursor = truncated
-        .then(|| page.last())
-        .flatten()
-        .map(|n| (*n).clone());
-    let failures: Vec<SpoolFailure> = page
-        .iter()
-        .map(|name| {
-            let record_path = failed.join(format!("{name}{ERROR_RECORD_SUFFIX}"));
-            match read_record(&record_path, body_cap) {
-                Ok(record) => SpoolFailure {
-                    file: (*name).clone(),
-                    record: Some(record),
-                    record_problem: None,
-                },
-                Err(problem) => SpoolFailure {
-                    file: (*name).clone(),
-                    record: None,
-                    record_problem: Some(problem),
-                },
-            }
-        })
-        .collect();
-
-    Ok(VconSpoolStatusResponse {
-        schema_version: 1,
-        as_of,
-        note: SPOOL_NOTE.to_owned(),
-        spool: spool_dir,
-        delivered_dir: done_dir,
-        failed_dir,
-        pending: pending_names.len(),
-        delivered: delivered_names.len(),
-        failed: failed_names.len(),
-        returned: failures.len(),
-        failures,
-        truncated,
-        next_cursor,
-    })
-}
-
-/// List one directory by `rule`, treating a missing directory as empty.
-///
-/// # Errors
-///
-/// `internal_error` (-32603) naming the directory for any other read failure.
-fn read_names(
-    dir: &std::path::Path,
-    rule: fn(&std::path::Path) -> std::io::Result<Vec<String>>,
-) -> Result<(SpoolDirectory, Vec<String>), rmcp::ErrorData> {
-    let path = dir.display().to_string();
-    match rule(dir) {
-        Ok(names) => Ok((SpoolDirectory { path, exists: true }, names)),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok((
-            SpoolDirectory {
-                path,
-                exists: false,
-            },
-            Vec::new(),
-        )),
-        Err(e) => Err(rmcp::ErrorData::internal_error(
-            format!("cannot read '{path}': {e}"),
-            None,
-        )),
-    }
-}
-
-/// Read one failure record, its body fenced and cut to `body_cap`.
-///
-/// # Errors
-///
-/// A sentence naming the record when it is missing, too large, unreadable, or
-/// not in the shape the forwarder writes.
-fn read_record(
-    path: &std::path::Path,
-    body_cap: usize,
-) -> Result<crate::app::vcon_forward::FailureRecord, String> {
-    use std::io::Read as _;
-
-    let shown = path.file_name().map_or_else(
-        || path.display().to_string(),
-        |n| n.to_string_lossy().into_owned(),
-    );
-    let size = match std::fs::metadata(path) {
-        Ok(meta) => meta.len(),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-            return Err(format!("{shown} is missing beside the container"));
-        }
-        Err(e) => return Err(format!("{shown} cannot be read: {e}")),
-    };
-    if size > MAX_RECORD_READ {
-        return Err(format!(
-            "{shown} is {size} bytes, past the {MAX_RECORD_READ}-byte bound this \
-             tool reads; read the file on the host"
-        ));
-    }
-    let mut text = String::new();
-    std::fs::File::open(path)
-        .and_then(|f| f.take(MAX_RECORD_READ).read_to_string(&mut text))
-        .map_err(|e| format!("{shown} cannot be read: {e}"))?;
-    let mut record: crate::app::vcon_forward::FailureRecord = serde_json::from_str(&text)
-        .map_err(|e| format!("{shown} is not a forwarder failure record: {e}"))?;
-    record.body = record
-        .body
-        .map(|b| crate::mcp::shape::fence(&crate::mcp::shape::truncate_string(&b, body_cap)));
-    Ok(record)
 }
 
 /// The completeness carrier, in the shape this response publishes it.

@@ -3195,6 +3195,7 @@ fn default_log_level(cli: &Cli) -> &'static str {
     // log lines are its whole report.
     let tui_active = !cli.mode_args.no_tui
         && cli.vcon_forward_args.vcon_forward.is_none()
+        && cli.vcon_forward_args.vcon_spool_status.is_none()
         && cli.vcon_fetch_args.vcon_fetch.is_empty();
     if cli.mode_args.quiet {
         "warn"
@@ -4027,6 +4028,61 @@ pub fn run_vcon_forward(cli: &Cli) -> Option<i32> {
     #[cfg(not(feature = "vcon"))]
     {
         tracing::error!("--vcon-forward requires the 'vcon' feature (not compiled in)");
+        Some(2)
+    }
+}
+
+/// Handle `--vcon-spool-status`: print the spool's state as JSON and return
+/// the exit code, or `None` when the flag is absent. The body is
+/// feature-swapped so the caller contains no `cfg`.
+///
+/// Answers from [`crate::app::vcon_spool::snapshot`], the function behind the
+/// MCP tool `vcon_spool_status` and `GET /v1/vcon/spool`, with every failed
+/// record on one page. Reads no config: the spool is named on the command
+/// line, and nothing else is read.
+///
+/// # Returns
+///
+/// `Some(0)` after printing the answer; `Some(1)` when a directory exists and
+/// cannot be read, or the answer cannot be written to standard output;
+/// `Some(2)` when the `vcon` feature is not compiled in; `None` when
+/// `--vcon-spool-status` was not given.
+///
+/// # Side effects
+///
+/// Reads the spool's directories and failure records, and writes standard
+/// output. Moves, creates and deletes nothing.
+pub fn run_vcon_spool_status(cli: &Cli) -> Option<i32> {
+    let spool = cli.vcon_forward_args.vcon_spool_status.as_ref()?;
+    #[cfg(feature = "vcon")]
+    {
+        use crate::app::vcon_spool::{SpoolPage, snapshot};
+        let status = match snapshot(spool, SpoolPage::all(), chrono::Utc::now()) {
+            Ok(status) => status,
+            Err(e) => {
+                tracing::error!("--vcon-spool-status: {e}");
+                return Some(1);
+            }
+        };
+        match serde_json::to_string_pretty(&status) {
+            Ok(text) => {
+                use std::io::Write as _;
+                let mut out = std::io::stdout().lock();
+                if writeln!(out, "{text}").and_then(|()| out.flush()).is_err() {
+                    return Some(1);
+                }
+                Some(0)
+            }
+            Err(e) => {
+                tracing::error!("--vcon-spool-status: {e}");
+                Some(1)
+            }
+        }
+    }
+    #[cfg(not(feature = "vcon"))]
+    {
+        let _ = spool;
+        tracing::error!("--vcon-spool-status requires the 'vcon' feature (not compiled in)");
         Some(2)
     }
 }

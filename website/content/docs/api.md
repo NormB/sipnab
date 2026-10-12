@@ -3461,6 +3461,77 @@ is a `400`. The MCP tool `validate_vcon` runs the same `vcon_schema::validate`.
 
 ---
 
+### GET /v1/vcon/spool
+
+The state of the vCon export spool this run writes into: containers pending,
+delivered and failed, and for each failed container the `<name>.error.json`
+record the forwarder wrote beside it, with the store's status and the start of
+its answer. It reads the directory `--export-vcon-dir` names and the
+forwarder's default `delivered/` and `failed/` directories beside it. A run
+started without `--export-vcon-dir` answers `503` naming the flag.
+
+The answer is a snapshot of files on disk, taken when `as_of` says. The
+forwarder (`sipnab --vcon-forward`) is a separate process and may move a file a
+moment later. This route sends, fetches, moves and deletes nothing. The MCP
+tool `vcon_spool_status` and `sipnab --vcon-spool-status` give the same
+answer, from the same function. The MCP tool also fences the store's answer as
+untrusted text and cuts it to `--mcp-max-body-bytes`. This route returns it as
+the forwarder kept it.
+
+`?limit=` bounds the list of failed records (default 50, ceiling
+`--api-max-rows`), and `?cursor=` takes the previous answer's `next_cursor`.
+The three counts always describe the whole spool.
+
+**curl:**
+
+```bash
+curl -s -H "Authorization: Bearer $SIPNAB_API_KEY" \
+  "http://127.0.0.1:8080/v1/vcon/spool?limit=50" | jq .
+```
+
+**Response**, from a run started with `--export-vcon-dir vcons` over a spool
+holding one container of each kind:
+
+```json
+{
+  "schema_version": 1,
+  "as_of": "2026-10-12T06:49:34.783Z",
+  "note": "A snapshot of files on disk at as_of. ...",
+  "spool": { "path": "vcons", "exists": true },
+  "delivered_dir": { "path": "vcons/delivered", "exists": true },
+  "failed_dir": { "path": "vcons/failed", "exists": true },
+  "pending": 1,
+  "delivered": 1,
+  "failed": 1,
+  "failures": [
+    {
+      "file": "refused.vcon.json",
+      "record": {
+        "at": "2026-10-11T11:58:02Z",
+        "body": "{\"error\":\"vCon already exists\"}",
+        "body_truncated": false,
+        "file": "refused.vcon.json",
+        "method": "POST",
+        "reason": null,
+        "status": 409,
+        "url": "https://vcon.example.com/v1/vcons"
+      }
+    }
+  ],
+  "returned": 1,
+  "truncated": false,
+  "next_cursor": null
+}
+```
+
+A spool directory that does not exist yet counts as empty, with `exists:
+false`: the capture creates it when it writes its first container. `record` is
+null when a failed container has no readable record beside it, and
+`record_problem` then says why. Registered only by a build with the `vcon`
+feature.
+
+---
+
 ### GET /v1/relay/stats
 
 The relay's own global counters, tiered `relay_reported`. Transmits once to the

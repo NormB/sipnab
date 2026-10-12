@@ -10481,6 +10481,16 @@ mod tests {
     /// keys configured and `file_root` as `--api-file-root`.
     #[cfg(feature = "api")]
     fn rest_router_over(srv: &SipnabMcp, file_root: Option<std::path::PathBuf>) -> axum::Router {
+        rest_router_with(srv, file_root, None)
+    }
+
+    /// [`rest_router_over`], with `vcon_spool` as `--export-vcon-dir`.
+    #[cfg(feature = "api")]
+    fn rest_router_with(
+        srv: &SipnabMcp,
+        file_root: Option<std::path::PathBuf>,
+        vcon_spool: Option<std::path::PathBuf>,
+    ) -> axum::Router {
         use crate::output::api::{ApiState, ArchivePasswordPolicy, RateLimiter};
         crate::output::api::build_router(ApiState {
             relay_query: Default::default(),
@@ -10504,9 +10514,91 @@ mod tests {
             alert_engine: None,
             armed_detections: Vec::new(),
             file_root,
+            vcon_spool,
             pipeline_options: Default::default(),
             archive: ArchivePasswordPolicy::default(),
         })
+    }
+
+    /// `vcon_spool_status` and `GET /v1/vcon/spool` answer from one function:
+    /// over one spool the two answers are byte-identical once the parts each
+    /// door adds are set aside. Those are `as_of` (the moment each door read
+    /// the files) and the MCP door's fencing of the store's answer, which is
+    /// how every MCP answer carries text another system wrote.
+    #[cfg(all(feature = "api", feature = "vcon"))]
+    #[tokio::test]
+    async fn vcon_spool_status_and_the_rest_route_give_one_answer() -> Result<(), TestError> {
+        use tower::ServiceExt as _;
+        let dir = tempfile::tempdir().map_err(|e| format!("tempdir: {e:?}"))?;
+        let failed = dir.path().join("failed");
+        std::fs::create_dir_all(dir.path().join("delivered")).map_err(|e| format!("{e:?}"))?;
+        std::fs::create_dir_all(&failed).map_err(|e| format!("{e:?}"))?;
+        std::fs::write(dir.path().join("p.vcon.json"), "{}").map_err(|e| format!("{e:?}"))?;
+        std::fs::write(dir.path().join("delivered/d.vcon.json"), "{}")
+            .map_err(|e| format!("{e:?}"))?;
+        std::fs::write(failed.join("f.vcon.json"), "{}").map_err(|e| format!("{e:?}"))?;
+        std::fs::write(failed.join("g.vcon.json"), "{}").map_err(|e| format!("{e:?}"))?;
+        std::fs::write(
+            failed.join("f.vcon.json.error.json"),
+            serde_json::json!({
+                "at": "2026-10-07T12:00:00Z", "body": "{\"error\":\"vCon already exists\"}",
+                "body_truncated": false, "file": "f.vcon.json", "method": "POST",
+                "reason": null, "status": 409, "url": "https://vcon.example.com/v1/vcons",
+            })
+            .to_string(),
+        )
+        .map_err(|e| format!("{e:?}"))?;
+
+        let srv = empty_server().with_vcon_spool(dir.path());
+        let mcp = srv
+            .vcon_spool_status(Parameters(
+                super::super::tools::vcon::VconSpoolStatusParams::default(),
+            ))
+            .await
+            .map_err(|e| format!("the tool answers: {e:?}"))?;
+        let mut mcp: serde_json::Value =
+            serde_json::from_str(&text_of(&mcp)?).map_err(|e| format!("payload is JSON: {e:?}"))?;
+
+        let resp = rest_router_over_spool(&srv, dir.path())
+            .oneshot(local_get("/v1/vcon/spool")?)
+            .await
+            .map_err(|e| format!("oneshot: {e:?}"))?;
+        assert_eq!(resp.status(), axum::http::StatusCode::OK);
+        let bytes = http_body_util::BodyExt::collect(resp.into_body())
+            .await
+            .map_err(|e| format!("body: {e:?}"))?
+            .to_bytes();
+        let mut rest: serde_json::Value =
+            serde_json::from_slice(&bytes).map_err(|e| format!("REST is JSON: {e:?}"))?;
+
+        // Set aside what each door adds, and nothing else.
+        for v in [&mut mcp, &mut rest] {
+            v.as_object_mut().ok_or("an object")?.remove("as_of");
+        }
+        let fenced = mcp["failures"][0]["record"]["body"]
+            .as_str()
+            .ok_or("a fenced body")?
+            .to_owned();
+        mcp["failures"][0]["record"]["body"] = serde_json::Value::String(
+            fenced
+                .strip_prefix(super::super::shape::UNTRUSTED_OPEN)
+                .and_then(|b| b.strip_suffix(super::super::shape::UNTRUSTED_CLOSE))
+                .ok_or("the MCP body is fenced")?
+                .to_owned(),
+        );
+        assert_eq!(
+            serde_json::to_string(&mcp).map_err(|e| format!("{e:?}"))?,
+            serde_json::to_string(&rest).map_err(|e| format!("{e:?}"))?,
+            "the two doors must give one answer"
+        );
+        assert_eq!(rest["failed"], 2, "premise: the spool was read: {rest}");
+        Ok(())
+    }
+
+    /// [`rest_router_over`], with `--export-vcon-dir` set to `spool`.
+    #[cfg(all(feature = "api", feature = "vcon"))]
+    fn rest_router_over_spool(srv: &SipnabMcp, spool: &std::path::Path) -> axum::Router {
+        rest_router_with(srv, None, Some(spool.to_path_buf()))
     }
 
     /// A REST `GET` of `uri` from this host.

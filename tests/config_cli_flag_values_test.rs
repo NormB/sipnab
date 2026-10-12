@@ -2320,6 +2320,14 @@ static SPECS: &[Spec] = &[
         ],
     ),
     (
+        "vcon-spool-status",
+        Kind::Text {
+            accept: &["x", " ", "0", "-1"],
+            reject: &[("", 2)],
+        },
+        &[],
+    ),
+    (
         "vcon-fetch",
         Kind::Text {
             accept: &["x", "0", "-1", "-", "018bcfe5-6800-8a6b-a667-78f1c5213800"],

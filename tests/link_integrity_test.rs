@@ -1207,7 +1207,11 @@ fn wiki_intra_docs_links_resolve() -> Result<(), TestError> {
     // list_dialogs, the paging note to open_capture, the spool section to
     // vcon.md), docs/mcp-protocol.md 1 (the vCon template to export_vcon),
     // docs/vcon.md 1 and docs/vcon-store.md 1 (each to vcon_spool_status).
-    const EXPECTED_WIKI_LINKS: usize = 1353;
+    // 1353 -> 1357: the spool status's REST and CLI doors. docs/mcp-tools.md
+    // 2 (to rest-api.md#get-v1vconspool and cli-reference.md#vcon-forwarder),
+    // docs/vcon.md 1 and docs/vcon-store.md 1 (each to
+    // rest-api.md#get-v1vconspool).
+    const EXPECTED_WIKI_LINKS: usize = 1357;
     // Raised 459 -> 460 when SRC1 stage 1 shipped: docs/cli-reference.md's
     // `--hep-listen` row now points at cookbook recipe 6d in docs/examples.md
     // rather than restating how to pair `-L` with `-d`. Attributed per file

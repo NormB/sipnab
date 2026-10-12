@@ -805,6 +805,7 @@ pub const FLAGS: &[(&str, Link)] = &[
     ),
     ("vcon-max-inline-media", Link::Pending),
     ("vcon-out", Link::Input),
+    ("vcon-spool-status", Link::Action),
     ("wireshark", Link::PerRun),
     ("word", Link::PerRun),
     ("write-annotated", Link::Action),

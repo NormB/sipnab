@@ -6034,6 +6034,14 @@ forwarder wrote beside it. Backed by
 [`app::vcon_forward`](https://github.com/NormB/sipnab/blob/main/src/app/vcon_forward.rs),
 whose file rules it reuses.
 
+The same answer comes from
+[`GET /v1/vcon/spool`](rest-api.md#get-v1vconspool) and from
+`sipnab --vcon-spool-status <SPOOL_DIR>`
+([CLI reference](cli-reference.md#vcon-forwarder)), built by one function,
+`app::vcon_spool::snapshot`. This tool adds one thing the other two do not: it
+fences each store answer as untrusted text and cuts it to
+`--mcp-max-body-bytes`.
+
 The answer is a **snapshot of files on disk**, taken when `as_of` says. The
 forwarder is a separate process and may move a file a moment later. This tool
 reads files and does nothing else: it sends nothing, fetches nothing, and
@@ -6079,7 +6087,7 @@ has a null `record` and a `record_problem` saying which.
 {
   "schema_version": 1,
   "as_of": "2026-10-12T00:59:14.262Z",
-  "note": "A snapshot of files on disk at as_of, read by this process. The vCon forwarder (sipnab --vcon-forward) is a separate process that moves files out of the spool; this server sends, fetches, moves and deletes nothing. ...",
+  "note": "A snapshot of files on disk at as_of. The vCon forwarder (sipnab --vcon-forward) is a separate process that moves files out of the spool; whatever produced this answer sends, fetches, moves and deletes nothing. ...",
   "spool": { "path": "vcons", "exists": true },
   "delivered_dir": { "path": "vcons/delivered", "exists": true },
   "failed_dir": { "path": "vcons/failed", "exists": true },

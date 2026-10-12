@@ -326,6 +326,11 @@ pub struct ApiState {
     /// the flag) makes that route answer `not_configured` — a file-reading
     /// capability is opt-in, like [`Self::relay_query`].
     pub file_root: Option<std::path::PathBuf>,
+    /// The `--export-vcon-dir` spool `GET /v1/vcon/spool` reads, the same
+    /// directory the MCP server's `vcon_spool_status` reads. `None` (every
+    /// test here, and any run started without the flag) makes that route
+    /// answer 503 naming the flag.
+    pub vcon_spool: Option<std::path::PathBuf>,
     /// The run's pipeline options, which `GET /v1/captures/compare` reads both
     /// files with, so a file reads as it does given to `-I` on the same command
     /// line (`--hep-parse`, `--portrange`, `--no-rtp`, `--no-dialog`,
@@ -1015,6 +1020,10 @@ pub fn build_router(state: ApiState) -> Router {
     // vcon feature, so this route is gated with it too.
     #[cfg(feature = "vcon")]
     let router = router.route("/v1/vcon/validate", axum::routing::post(post_vcon_validate));
+    // The spool's state, read by the function the MCP tool and the CLI use,
+    // which is part of the vcon feature.
+    #[cfg(feature = "vcon")]
+    let router = router.route("/v1/vcon/spool", get(get_vcon_spool));
     // Only where a HEP listener can exist, for the reason the vCon routes
     // above are gated: "this sipnab cannot" must not read as "nobody sends".
     #[cfg(feature = "hep")]
@@ -3386,6 +3395,77 @@ async fn post_vcon_validate(
         schema_path: report.schema_path.to_string(),
         errors: report.errors.iter().map(finding).collect(),
     }))
+}
+
+/// Query parameters for `GET /v1/vcon/spool`.
+#[cfg(feature = "vcon")]
+#[derive(Debug, Deserialize, utoipa::IntoParams)]
+#[into_params(parameter_in = Query)]
+pub struct VconSpoolParams {
+    /// Most failed records to return (default 50, ceiling `--api-max-rows`).
+    /// The three counts are never bounded.
+    pub limit: Option<usize>,
+    /// The previous answer's `next_cursor`, verbatim. Omit on the first call.
+    pub cursor: Option<String>,
+}
+
+#[cfg(feature = "vcon")]
+/// `GET /v1/vcon/spool` — the vCon export spool's state.
+///
+/// # Arguments
+///
+/// * `state` — Shared application state (carries `--export-vcon-dir`).
+/// * `addr` — Client socket address used for rate limiting.
+/// * `headers` — Request headers (auth).
+/// * `params` — `limit` and `cursor` for the failed records.
+///
+/// # Returns
+///
+/// 200 with the counts and one page of failed records; 503 when the server
+/// was started without `--export-vcon-dir`; 500 naming a directory that
+/// exists and cannot be read; 401/503 from the guard.
+///
+/// # Side effects
+///
+/// Reads the spool's files; mutates the rate limiter. Sends, moves and
+/// deletes nothing.
+#[utoipa::path(
+    get,
+    path = "/v1/vcon/spool",
+    tag = "operations",
+    summary = "The vCon export spool's state",
+    description = "Counts the `--export-vcon-dir` spool: containers pending, delivered and failed, and for each failed container the `<name>.error.json` record the forwarder wrote beside it, with the store's status and the start of its answer.\n\nA snapshot of files on disk at `as_of`. The forwarder (`sipnab --vcon-forward`) is a separate process, and this route sends, fetches, moves and deletes nothing. It reads the forwarder's default `delivered/` and `failed/` directories beside the spool. The same `vcon_spool::snapshot` answers the MCP `vcon_spool_status` tool and `sipnab --vcon-spool-status`.",
+    params(VconSpoolParams),
+    security(("bearer" = [])),
+    responses(
+        (status = 200, description = "The counts and one page of failed records.", body = crate::app::vcon_spool::SpoolStatus),
+        (status = 401, description = "No bearer credential, or one this server does not accept.", body = schema::ProblemJson, content_type = "application/problem+json"),
+        (status = 500, description = "A spool directory exists and cannot be read.", body = schema::ProblemJson, content_type = "application/problem+json"),
+        (status = 503, description = "Over the per-source-IP rate limit, or the server was started without `--export-vcon-dir`.", body = schema::ProblemJson, content_type = "application/problem+json"),
+    )
+)]
+async fn get_vcon_spool(
+    State(state): State<ApiState>,
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+    Query(params): Query<VconSpoolParams>,
+) -> Result<impl IntoResponse, Problem> {
+    guard(&state, &headers, addr.ip())?;
+    let spool = state.vcon_spool.as_deref().ok_or_else(|| {
+        Problem::detailed(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "this server has no vCon export spool: start sipnab with \
+             --export-vcon-when <EXPR> --export-vcon-dir <DIR>, and this route \
+             reads that directory",
+        )
+    })?;
+    let page = crate::app::vcon_spool::SpoolPage {
+        after: params.cursor.as_deref(),
+        limit: resolve_page_limit(params.limit, state.max_rows),
+    };
+    let status = crate::app::vcon_spool::snapshot(spool, page, chrono::Utc::now())
+        .map_err(|e| Problem::detailed(StatusCode::INTERNAL_SERVER_ERROR, e))?;
+    Ok(Json(status))
 }
 
 /// `GET /v1/dialogs` — list dialogs with optional filtering and pagination.
@@ -7350,8 +7430,16 @@ pub fn openapi_json() -> String {
 #[cfg(feature = "vcon")]
 #[derive(utoipa::OpenApi)]
 #[openapi(
-    paths(get_dialog_vcon, post_vcon_validate),
-    components(schemas(schema::Vcon, schema::VconValidation, schema::VconFinding))
+    paths(get_dialog_vcon, post_vcon_validate, get_vcon_spool),
+    components(schemas(
+        schema::Vcon,
+        schema::VconValidation,
+        schema::VconFinding,
+        crate::app::vcon_spool::SpoolStatus,
+        crate::app::vcon_spool::SpoolDirectory,
+        crate::app::vcon_spool::SpoolFailure,
+        crate::app::vcon_forward::FailureRecord
+    ))
 )]
 struct VconDoc;
 
@@ -8657,6 +8745,7 @@ mod tests {
     fn state_with_file_root() -> ApiState {
         ApiState {
             file_root: Some(pcap_samples_root()),
+            vcon_spool: None,
             ..make_state()
         }
     }
@@ -8727,6 +8816,7 @@ mod tests {
 
         let state = ApiState {
             file_root: Some(root.path().to_path_buf()),
+            vcon_spool: None,
             ..make_state()
         };
         let app = build_router(state);
@@ -8795,6 +8885,7 @@ mod tests {
         for (hep_parse, dialogs) in [(true, 1), (false, 0)] {
             let state = ApiState {
                 file_root: Some(root.path().to_path_buf()),
+                vcon_spool: None,
                 pipeline_options: crate::pipeline::PipelineOptions {
                     hep_parse,
                     ..Default::default()
@@ -8872,6 +8963,92 @@ mod tests {
     }
 
     // ── vcon validate (PAR3: validate_vcon) ───────────────────────────
+
+    /// A spool for the `/v1/vcon/spool` tests: two pending, one delivered,
+    /// three failed with their records.
+    #[cfg(feature = "vcon")]
+    fn spool_fixture() -> Result<tempfile::TempDir, TestError> {
+        let dir = tempfile::tempdir().map_err(|e| format!("tempdir: {e:?}"))?;
+        let put = |sub: &str, name: &str, text: &str| -> Result<(), TestError> {
+            let d = dir.path().join(sub);
+            std::fs::create_dir_all(&d).map_err(|e| format!("mkdir: {e:?}"))?;
+            std::fs::write(d.join(name), text).map_err(|e| format!("write: {e:?}"))?;
+            Ok(())
+        };
+        put("", "p1.vcon.json", "{}")?;
+        put("", "p2.vcon.json", "{}")?;
+        put("delivered", "d1.vcon.json", "{}")?;
+        for (name, status) in [
+            ("f1.vcon.json", 400),
+            ("f2.vcon.json", 409),
+            ("f3.vcon.json", 422),
+        ] {
+            put("failed", name, "{}")?;
+            let record = serde_json::json!({
+                "at": "2026-10-07T12:00:00Z", "body": format!("answer {status}"),
+                "body_truncated": false, "file": name, "method": "POST",
+                "reason": null, "status": status, "url": "https://vcon.example.com/v1/vcons",
+            });
+            put("failed", &format!("{name}.error.json"), &record.to_string())?;
+        }
+        Ok(dir)
+    }
+
+    /// `GET /v1/vcon/spool` reports the spool's counts and pages its failed
+    /// records by `limit` and `cursor`, the store's answer unfenced.
+    #[cfg(feature = "vcon")]
+    #[tokio::test]
+    async fn vcon_spool_reports_counts_and_pages_failures() -> Result<(), TestError> {
+        let dir = spool_fixture()?;
+        let mut state = make_state();
+        state.vcon_spool = Some(dir.path().to_path_buf());
+
+        let get = |uri: String| {
+            let app = build_router(state.clone());
+            async move {
+                let resp = app
+                    .oneshot(test_request(&uri)?)
+                    .await
+                    .map_err(|e| format!("oneshot: {e:?}"))?;
+                let status = resp.status();
+                let body = body_to_string(resp.into_body()).await?;
+                let v: Value = serde_json::from_str(&body).map_err(|e| format!("JSON: {e:?}"))?;
+                Ok::<_, TestError>((status, v))
+            }
+        };
+        let (status, first) = get("/v1/vcon/spool?limit=2".to_string()).await?;
+        assert_eq!(status, StatusCode::OK, "{first}");
+        assert_eq!(first["pending"], 2, "{first}");
+        assert_eq!(first["delivered"], 1, "{first}");
+        assert_eq!(first["failed"], 3, "{first}");
+        assert_eq!(first["returned"], 2, "{first}");
+        assert_eq!(first["truncated"], true, "{first}");
+        assert_eq!(
+            first["failures"][0]["record"]["body"], "answer 400",
+            "{first}"
+        );
+        let cursor = first["next_cursor"].as_str().ok_or("a cursor")?;
+
+        let (_, second) = get(format!("/v1/vcon/spool?limit=2&cursor={cursor}")).await?;
+        assert_eq!(second["returned"], 1, "{second}");
+        assert_eq!(second["failures"][0]["file"], "f3.vcon.json", "{second}");
+        assert!(second["next_cursor"].is_null(), "{second}");
+        Ok(())
+    }
+
+    /// A server started without `--export-vcon-dir` answers 503 naming it.
+    #[cfg(feature = "vcon")]
+    #[tokio::test]
+    async fn vcon_spool_without_a_spool_is_503() -> Result<(), TestError> {
+        let resp = build_router(make_state())
+            .oneshot(test_request("/v1/vcon/spool")?)
+            .await
+            .map_err(|e| format!("oneshot: {e:?}"))?;
+        assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
+        let body = body_to_string(resp.into_body()).await?;
+        assert!(body.contains("--export-vcon-dir"), "{body}");
+        Ok(())
+    }
 
     /// `POST /v1/vcon/validate` checks a container against the vendored schema.
     /// An empty object is not a valid vCon, so the verdict is `invalid` with
@@ -9009,6 +9186,7 @@ mod tests {
             alert_engine: None,
             armed_detections: Vec::new(),
             file_root: None,
+            vcon_spool: None,
             pipeline_options: Default::default(),
             archive: ArchivePasswordPolicy::default(),
         }
@@ -9885,6 +10063,7 @@ mod tests {
             alert_engine: None,
             armed_detections: Vec::new(),
             file_root: None,
+            vcon_spool: None,
             pipeline_options: Default::default(),
             archive: ArchivePasswordPolicy::default(),
         }
@@ -11285,6 +11464,7 @@ mod tests {
             alert_engine: None,
             armed_detections: Vec::new(),
             file_root: None,
+            vcon_spool: None,
             pipeline_options: Default::default(),
             archive: ArchivePasswordPolicy::default(),
         }
@@ -12220,6 +12400,7 @@ mod tests {
             alert_engine: None,
             armed_detections: Vec::new(),
             file_root: None,
+            vcon_spool: None,
             pipeline_options: Default::default(),
             archive: ArchivePasswordPolicy::default(),
         };
@@ -14587,6 +14768,7 @@ mod archive_password_tests {
     fn state(root: &std::path::Path, keys: &[&str]) -> ApiState {
         ApiState {
             file_root: Some(root.to_path_buf()),
+            vcon_spool: None,
             verifier: Arc::new(crate::auth::TokenVerifier::new(
                 crate::auth::VerifierConfig {
                     static_keys: keys.iter().map(|k| (*k).to_string()).collect(),
@@ -14620,6 +14802,7 @@ mod archive_password_tests {
             alert_engine: None,
             armed_detections: Vec::new(),
             file_root: None,
+            vcon_spool: None,
             pipeline_options: Default::default(),
             archive: ArchivePasswordPolicy::default(),
         }

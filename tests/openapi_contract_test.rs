@@ -751,7 +751,35 @@ fn every_documented_response_matches_what_the_server_sends() -> Result<(), TestE
         .and_then(Value::as_object)
         .ok_or("components.schemas")?;
 
-    let srv = server::ApiServer::spawn_with_pcap(G711, &[])?;
+    // A vCon export spool holding one refused container and its record, so
+    // `GET /v1/vcon/spool` answers 200 with a record to validate rather than
+    // the 503 a run without `--export-vcon-dir` earns. The filter matches no
+    // dialog, so the run adds nothing to it.
+    let spool = tempfile::tempdir()?;
+    let failed = spool.path().join("failed");
+    std::fs::create_dir_all(&failed)?;
+    std::fs::write(failed.join("refused.vcon.json"), "{}")?;
+    std::fs::write(
+        failed.join("refused.vcon.json.error.json"),
+        serde_json::json!({
+            "at": "2026-10-11T11:58:02Z", "body": "{\"error\":\"vCon already exists\"}",
+            "body_truncated": false, "file": "refused.vcon.json", "method": "POST",
+            "reason": null, "status": 409, "url": "https://vcon.example.com/v1/vcons",
+        })
+        .to_string(),
+    )?;
+    let spool_path = spool.path().to_str().ok_or("utf-8 spool path")?;
+    let spool_args: &[&str] = if cfg!(feature = "vcon") {
+        &[
+            "--export-vcon-when",
+            "response_code >= 700",
+            "--export-vcon-dir",
+            spool_path,
+        ]
+    } else {
+        &[]
+    };
+    let srv = server::ApiServer::spawn_with_pcap(G711, spool_args)?;
 
     // Identifiers that exist in THIS capture, taken from the collections the
     // same way a client would.

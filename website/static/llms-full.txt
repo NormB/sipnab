@@ -8295,6 +8295,77 @@ is a `400`. The MCP tool `validate_vcon` runs the same `vcon_schema::validate`.
 
 ---
 
+### GET /v1/vcon/spool
+
+The state of the vCon export spool this run writes into: containers pending,
+delivered and failed, and for each failed container the `<name>.error.json`
+record the forwarder wrote beside it, with the store's status and the start of
+its answer. It reads the directory `--export-vcon-dir` names and the
+forwarder's default `delivered/` and `failed/` directories beside it. A run
+started without `--export-vcon-dir` answers `503` naming the flag.
+
+The answer is a snapshot of files on disk, taken when `as_of` says. The
+forwarder (`sipnab --vcon-forward`) is a separate process and may move a file a
+moment later. This route sends, fetches, moves and deletes nothing. The MCP
+tool `vcon_spool_status` and `sipnab --vcon-spool-status` give the same
+answer, from the same function. The MCP tool also fences the store's answer as
+untrusted text and cuts it to `--mcp-max-body-bytes`. This route returns it as
+the forwarder kept it.
+
+`?limit=` bounds the list of failed records (default 50, ceiling
+`--api-max-rows`), and `?cursor=` takes the previous answer's `next_cursor`.
+The three counts always describe the whole spool.
+
+**curl:**
+
+```bash
+curl -s -H "Authorization: Bearer $SIPNAB_API_KEY" \
+  "http://127.0.0.1:8080/v1/vcon/spool?limit=50" | jq .
+```
+
+**Response**, from a run started with `--export-vcon-dir vcons` over a spool
+holding one container of each kind:
+
+```json
+{
+  "schema_version": 1,
+  "as_of": "2026-10-12T06:49:34.783Z",
+  "note": "A snapshot of files on disk at as_of. ...",
+  "spool": { "path": "vcons", "exists": true },
+  "delivered_dir": { "path": "vcons/delivered", "exists": true },
+  "failed_dir": { "path": "vcons/failed", "exists": true },
+  "pending": 1,
+  "delivered": 1,
+  "failed": 1,
+  "failures": [
+    {
+      "file": "refused.vcon.json",
+      "record": {
+        "at": "2026-10-11T11:58:02Z",
+        "body": "{\"error\":\"vCon already exists\"}",
+        "body_truncated": false,
+        "file": "refused.vcon.json",
+        "method": "POST",
+        "reason": null,
+        "status": 409,
+        "url": "https://vcon.example.com/v1/vcons"
+      }
+    }
+  ],
+  "returned": 1,
+  "truncated": false,
+  "next_cursor": null
+}
+```
+
+A spool directory that does not exist yet counts as empty, with `exists:
+false`: the capture creates it when it writes its first container. `record` is
+null when a failed container has no readable record beside it, and
+`record_problem` then says why. Registered only by a build with the `vcon`
+feature.
+
+---
+
 ### GET /v1/relay/stats
 
 The relay's own global counters, tiered `relay_reported`. Transmits once to the
@@ -15067,9 +15138,10 @@ CoreAudio the moment anything touches it.
 `--vcon-forward` runs sipnab as the process that delivers an
 `--export-vcon-dir` spool to a vCon store. It captures nothing, and sipnab
 refuses it beside any capture source, listener or export flag. The other flags
-in this section need it. Each flag but `--vcon-forward`, `--vcon-forward-once`
-and `--vcon-forward-auth` has a `[vcon_forward]` key in the config file, which
-the flag overrides. Needs the `vcon` Cargo feature. More:
+in this section need it, except `--vcon-spool-status`, which reads a spool's
+state and runs on its own. Each flag but `--vcon-forward`, `--vcon-forward-once`,
+`--vcon-forward-auth` and `--vcon-spool-status` has a `[vcon_forward]` key in
+the config file, which the flag overrides. Needs the `vcon` Cargo feature. More:
 [Deliver the spool to a store](vcon.md#deliver-the-spool-to-a-store).
 
 | Flag | Value | Default | Description |
@@ -15090,6 +15162,7 @@ the flag overrides. Needs the `vcon` Cargo feature. More:
 | `--vcon-forward-backoff-cap` | `<SECS>` | `300` | The longest a container waits between tries, 1 to 4294967295, and no shorter than `--vcon-forward-backoff-first`. Config: `[vcon_forward] backoff_cap` |
 | `--vcon-forward-max-response-head` | `<BYTES>` | `65536` | The most bytes of a store's status line and headers read, 1 to 4294967295. The forwarder treats an answer with more as no answer, and the container waits for a retry. Config: `[vcon_forward] max_response_head` |
 | `--vcon-forward-max-error-body` | `<BYTES>` | `8192` | The most bytes of a store's answer to a refused container that its `<name>.error.json` record keeps, 1 to 4294967295. Config: `[vcon_forward] max_error_body` |
+| `--vcon-spool-status` | `<SPOOL_DIR>` | -- | Print the state of an `--export-vcon-dir` spool as JSON and exit: containers pending, delivered and failed, and the `<name>.error.json` record beside each failed container. Reads the forwarder's default `delivered/` and `failed/` directories beside the spool. A snapshot of the files: it sends, moves, creates and deletes nothing. The MCP tool `vcon_spool_status` and `GET /v1/vcon/spool` give the same answer. Exit `0` after printing, also for a spool directory that does not exist yet, `1` when sipnab cannot read a directory that exists. Refused beside any capture flag, `--vcon-forward` and `--vcon-fetch` |
 
 **Examples**
 
@@ -15109,6 +15182,8 @@ the flag overrides. Needs the `vcon` Cargo feature. More:
 - `sipnab --vcon-forward /var/spool/sipnab-vcon --vcon-forward-url https://vcon.example.com/v1/vcons --vcon-forward-auth-file vcon.auth --vcon-forward-done /var/spool/sipnab-vcon-sent --vcon-forward-failed /var/spool/sipnab-vcon-held --vcon-forward-interval 2` — keep delivered and refused containers beside the spool rather than inside it, on the same file system, and pass every two seconds
 - `sipnab --vcon-forward spool --vcon-forward-url https://vcon.example.com/v1/vcons --vcon-forward-auth-file vcon.auth --vcon-forward-replace-url 'https://vcon.example.com/v1/vcons/{uuid}' --vcon-forward-once` — a store that answers `409` for a uuid it holds: PUT the rewritten container to the uuid's own URL instead of filing it as refused
 - `sipnab --vcon-forward spool --vcon-forward-url https://vcon.example.com/v1/vcons --vcon-forward-auth-file vcon.auth --vcon-forward-replace-url 'https://vcon.example.com/v1/vcons/{uuid}' --vcon-forward-done sent --vcon-forward-failed held` — the same, polling, with the delivered and refused containers in `sent` and `held`
+- `sipnab --vcon-spool-status spool` — print how many containers wait in `spool`, how many the forwarder delivered and refused, and the store's answer for each refusal
+- `sipnab --vcon-spool-status /var/spool/sipnab-vcon` — the same for a spool given by absolute path; a spool the capture has not written yet prints zeros and `"exists": false`
 
 ## vCon fetcher
 
@@ -27975,6 +28050,14 @@ forwarder wrote beside it. Backed by
 [`app::vcon_forward`](https://github.com/NormB/sipnab/blob/main/src/app/vcon_forward.rs),
 whose file rules it reuses.
 
+The same answer comes from
+[`GET /v1/vcon/spool`](rest-api.md#get-v1vconspool) and from
+`sipnab --vcon-spool-status <SPOOL_DIR>`
+([CLI reference](cli-reference.md#vcon-forwarder)), built by one function,
+`app::vcon_spool::snapshot`. This tool adds one thing the other two do not: it
+fences each store answer as untrusted text and cuts it to
+`--mcp-max-body-bytes`.
+
 The answer is a **snapshot of files on disk**, taken when `as_of` says. The
 forwarder is a separate process and may move a file a moment later. This tool
 reads files and does nothing else: it sends nothing, fetches nothing, and
@@ -28020,7 +28103,7 @@ has a null `record` and a `record_problem` saying which.
 {
   "schema_version": 1,
   "as_of": "2026-10-12T00:59:14.262Z",
-  "note": "A snapshot of files on disk at as_of, read by this process. The vCon forwarder (sipnab --vcon-forward) is a separate process that moves files out of the spool; this server sends, fetches, moves and deletes nothing. ...",
+  "note": "A snapshot of files on disk at as_of. The vCon forwarder (sipnab --vcon-forward) is a separate process that moves files out of the spool; whatever produced this answer sends, fetches, moves and deletes nothing. ...",
   "spool": { "path": "vcons", "exists": true },
   "delivered_dir": { "path": "vcons/delivered", "exists": true },
   "failed_dir": { "path": "vcons/failed", "exists": true },
@@ -31849,9 +31932,10 @@ bytes (default 65536) counts as no answer, and the container waits for a
 retry. The delivered and failed directories must be on the
 spool's file system, so that every move is a rename.
 
-To see the spool's state from an MCP client, call
+To see the spool's state, run `sipnab --vcon-spool-status <SPOOL_DIR>`, call
 [`vcon_spool_status`](mcp-tools.md#vcon_spool_status) on the capture's MCP
-server. It counts the containers pending in the spool and in the default
+server, or read [`GET /v1/vcon/spool`](rest-api.md#get-v1vconspool) from its
+REST server. All three give one answer. It counts the containers pending in the spool and in the default
 `delivered/` and `failed/` directories, and returns each failed container's
 `<name>.error.json` record. It reads files and nothing else: the answer is a
 snapshot dated by its `as_of` field, and the forwarder may move a file a moment
@@ -36118,11 +36202,13 @@ auth_file = "/etc/sipnab/vcon-store.key"
 For each container the forwarder logs a `delivered` line with the store's
 status, and moves the file to `spool/delivered`. The exit status is `0` when
 the store accepted every container. A container the store refused is in
-`spool/failed`, beside a `.error.json` record that says why. A capture run
-with `--mcp` answers the same question through the MCP tool
-[`vcon_spool_status`](mcp-tools.md#vcon_spool_status): the pending, delivered
-and failed counts, and the store's answer from each `.error.json` record, read
-from the files without sending anything. A `401` or `403`
+`spool/failed`, beside a `.error.json` record that says why.
+`sipnab --vcon-spool-status spool` prints the pending, delivered and failed
+counts and the store's answer from each `.error.json` record, read from the
+files without sending anything. A capture run with `--mcp` or `--api` answers
+the same through the MCP tool
+[`vcon_spool_status`](mcp-tools.md#vcon_spool_status) and
+[`GET /v1/vcon/spool`](rest-api.md#get-v1vconspool). A `401` or `403`
 is different: it refuses the token or the client for every container, so the
 forwarder stops, moves nothing, logs the status and the start of the answer,
 and exits `3`.

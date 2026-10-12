@@ -210,6 +210,12 @@ fn run_validation_steps(cli: &Cli) {
     if let Some(code) = bootstrap::run_vcon_fetch(cli) {
         sipnab::capture::archive::release_run_and_exit(code);
     }
+
+    // 4d. --vcon-spool-status: print the export spool's state and exit. Reads
+    //     files only; opens no capture and no connection.
+    if let Some(code) = bootstrap::run_vcon_spool_status(cli) {
+        sipnab::capture::archive::release_run_and_exit(code);
+    }
 }
 
 /// Steps 5b to 6b of [`main`]: the crash policy, then the commands that need
