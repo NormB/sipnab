@@ -8,10 +8,18 @@ sipnab is pre-1.0: the public API and the CLI surface are not stable, and a
 breaking change may land in any release. Breaking changes are called out in the
 entry that carries them.
 
-## [Unreleased]
+## [0.5.212] - 2026-10-12
 
 ### Added
 
+- **MCP prompt `vcon-handoff`.** It orders `capture_status`,
+  `validate_filter`, `export_vcon` with the filter, and `validate_vcon` on each
+  exported container, then has the model record each container's `digest`.
+  It is served only when the `core`, `signaling` and `vcon` tools are loaded.
+  The [MCP tool reference](docs/mcp-tools.md#prompts) lists every prompt, its
+  steps and the bundles it needs, and a new table,
+  [Which tool finds calls](docs/mcp-tools.md#which-tool-finds-calls), says
+  which of seven tools answers which question.
 - **A byte budget for one whole MCP page.** `--mcp-max-rows` bounded how many
   rows a page carried and `--mcp-max-body-bytes` how wide one body in a row
   could be; nothing bounded the response as a whole. The paged tools —
@@ -64,6 +72,31 @@ entry that carries them.
 
 ### Changed
 
+- **Reading a capture file on one core is about 20% faster.** A run with no
+  `--cores` maps an unfiltered classic pcap and reads it in place, as
+  `--cores 2` and above already did, instead of reading it through libpcap,
+  whose `fread` took a lock and whose frame was copied into a fresh allocation
+  per packet. pcapng, compressed files, pipes and a run with a BPF filter
+  still read through libpcap. The receive loop also no longer reads the clock
+  per packet for the keylog poll unless `--keylog-watch` or `--keylog-fd` is
+  set. On a 535k-packet corpus built with `bench/carrier.py --calls 5000`, a
+  single-core run of a release build went from 0.96M (0.5.211) to 1.18M
+  packets per second, the lowest of three interleaved replicates each; peak
+  memory rose from 160.9 to 168.4 MiB. Two, four and eight cores stayed
+  within the spread of the replicates. [Check how fast sipnab
+  is](docs/benchmarks.md) has the tables.
+  A nanosecond-resolution pcap now keeps all nine digits of each timestamp
+  on one core, as it did with `--cores`; libpcap dropped the last three.
+- **`--cores` names a record with a corrupt capture timestamp in the
+  capture-quality summary.** The mapped reader clamped a fraction of a second
+  past its range into the same second and counted nothing, so a `--cores` run
+  reported no corrupt timestamp where the default reader reported one. Both
+  readers now stamp such a record with the wall clock, count it, and keep it.
+- **The vCon guides describe only what the forwarder does now.**
+  `docs/vcon-store.md` and `docs/vcon.md` no longer describe how earlier
+  releases changed the copy sent to vcon.store, and the 0.5.208 and 0.5.209
+  entries below no longer list that behavior: vcon.store accepts every
+  container as sipnab writes it.
 - **Breaking: `get_dialog` pages with the opaque string cursor the other paged
   tools use.** `cursor` and `next_cursor` were the integer index of a message;
   they are now `<RFC 3339>|<Call-ID>#<message index>`, the shape
@@ -75,21 +108,17 @@ entry that carries them.
   The response now carries `schema_version: 2`; earlier responses carried no
   `schema_version` field.
 
-## [0.5.212] - 2026-10-12
-
-### Added
-
-- **MCP prompt `vcon-handoff`.** It orders `capture_status`,
-  `validate_filter`, `export_vcon` with the filter, and `validate_vcon` on each
-  exported container, then has the model record each container's `digest`.
-  It is served only when the `core`, `signaling` and `vcon` tools are loaded.
-  The [MCP tool reference](docs/mcp-tools.md#prompts) lists every prompt, its
-  steps and the bundles it needs, and a new table,
-  [Which tool finds calls](docs/mcp-tools.md#which-tool-finds-calls), says
-  which of seven tools answers which question.
-
 ### Fixed
 
+- **The RTP Streams table header is readable on the default theme.** Its
+  column labels had no text color of their own, so they took the terminal's
+  default, gray on most terminals, on the bright cyan band. Both table headers
+  now take their text color from one rule, `header_band_style`, which picks
+  whichever of black and white has the higher WCAG 2 contrast ratio against
+  the band: black on cyan, about 7.2:1. The call list header, which had white
+  on cyan at about 2.9:1, uses the same rule. Reported by liwangob
+  ([@WangKLi](https://github.com/WangKLi)) in
+  [#470](https://github.com/NormB/sipnab/issues/470).
 - **`--run-provenance-file` no longer replaces the node name with the host
   name.** The record was the first thing to read the node name, before
   `--node-name` or `[capture] node_name` was applied, so the record and every
@@ -216,37 +245,9 @@ entry that carries them.
   -32602, naming the missing tools and the bundles that hold them.
 - **The MCP tool reference listed `actions_revert` among the tools that omit
   `source_exhausted`.** The code's list does not hold it; the paragraph now
-  names the seventeen tools the code lists, and a test derives it from that
+  names the eighteen tools the code lists, and a test derives it from that
   list. The table of tools without a cursor named two tools; it now lists the
-  eleven that lack a cursor, a total, or both.
-
-### Changed
-
-- **Reading a capture file on one core is about 20% faster.** A run with no
-  `--cores` maps an unfiltered classic pcap and reads it in place, as
-  `--cores 2` and above already did, instead of reading it through libpcap,
-  whose `fread` took a lock and whose frame was copied into a fresh allocation
-  per packet. pcapng, compressed files, pipes and a run with a BPF filter
-  still read through libpcap. The receive loop also no longer reads the clock
-  per packet for the keylog poll unless `--keylog-watch` or `--keylog-fd` is
-  set. On a 535k-packet corpus built with `bench/carrier.py --calls 5000`, a
-  single-core run of a release build went from 0.96M (0.5.211) to 1.18M
-  packets per second, the lowest of three interleaved replicates each; peak
-  memory rose from 160.9 to 168.4 MiB. Two, four and eight cores stayed
-  within the spread of the replicates. [Check how fast sipnab
-  is](docs/benchmarks.md) has the tables.
-  A nanosecond-resolution pcap now keeps all nine digits of each timestamp
-  on one core, as it did with `--cores`; libpcap dropped the last three.
-- **`--cores` names a record with a corrupt capture timestamp in the
-  capture-quality summary.** The mapped reader clamped a fraction of a second
-  past its range into the same second and counted nothing, so a `--cores` run
-  reported no corrupt timestamp where the default reader reported one. Both
-  readers now stamp such a record with the wall clock, count it, and keep it.
-- **The vCon guides describe only what the forwarder does now.**
-  `docs/vcon-store.md` and `docs/vcon.md` no longer describe how earlier
-  releases changed the copy sent to vcon.store, and the 0.5.208 and 0.5.209
-  entries below no longer list that behavior: vcon.store accepts every
-  container as sipnab writes it.
+  eight that lack a cursor or a total.
 
 ## [0.5.211] - 2026-10-11
 
