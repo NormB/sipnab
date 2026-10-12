@@ -184,7 +184,7 @@ client (`--mcp-transport http` serves remote agents instead):
 sipnab --mcp -N -I sip-problem-call.pcap --mcp-tools core
 ```
 
-The server offers 73 tools, and every tool costs the agent context before it
+The server offers 74 tools, and every tool costs the agent context before it
 asks anything. `--mcp-tools core` loads a small set that still answers a whole
 call. Named bundles such as `signaling` and `media`, and bundles of your own in
 the config file, load other sets
@@ -280,7 +280,7 @@ Next: [REST API and metrics](docs/rest-api.md),
 - **pcap in and out.** Reads and writes pcap and pcapng, with rotation and
   splitting; reads directories, tar archives and password-protected ZIP and 7z
   archives, and stored vCon containers as the SIP messages they hold.
-- **MCP server.** 73 tools over stdio or HTTP: 60 only read, and the 13 that
+- **MCP server.** 74 tools over stdio or HTTP: 61 only read, and the 13 that
   write each say what they change. File writes stay inside `--mcp-file-root`;
   swapping the capture, shutting the server down, recording findings and
   asking TFPS to ban a source stay off until you enable them
@@ -305,7 +305,7 @@ Next: [REST API and metrics](docs/rest-api.md),
 
 ## Build from source
 
-sipnab is Rust everywhere except the OS boundary: 110 `unsafe` blocks, all of
+sipnab is Rust everywhere except the OS boundary: 111 `unsafe` blocks, all of
 them FFI, and the build rejects any block that does not state its own soundness
 argument.
 
@@ -367,15 +367,23 @@ cargo build --release --no-default-features --features native,hep,api,mcp,mcp-ht
 
 ## Add it to your voice stack
 
-Step-by-step guides that install your SIP server, OpenSIPS or Kamailio, and
-each piece beside it, then connect sipnab to it. Every command in each guide
-ran on fresh virtual machines, and each page names them.
+Step-by-step guides that install your SIP server, OpenSIPS, Kamailio,
+Asterisk or FreeSWITCH, and each piece beside it, then connect sipnab to it.
+Every command in each guide ran on fresh virtual machines, and each page names
+them.
 
 - **SIP proxy.** OpenSIPS and Kamailio carry your calls, and every other guide
   builds on them: [Use OpenSIPS](docs/opensips.md) and
   [run sipnab beside it](docs/opensips-sipnab.md);
   [Use Kamailio](docs/kamailio.md) and
   [run sipnab beside it](docs/kamailio-sipnab.md).
+- **PBX.** Asterisk answers calls and places them on to the callee, as two
+  legs: [Use Asterisk](docs/asterisk.md) and
+  [run sipnab beside it](docs/asterisk-sipnab.md).
+- **Softswitch.** FreeSWITCH answers each call and bridges it to the callee
+  as a second call, with the audio of both passing through it:
+  [Use FreeSWITCH](docs/freeswitch.md) and
+  [run sipnab beside it](docs/freeswitch-sipnab.md).
 - **Call records.** A vCon server keeps every call as a vCon. OpenSIPS records
   calls into it over SIPREC, and sipnab can send its own vCons, built from what
   it saw on the wire. `sipnab --vcon-forward` delivers them, to the server or

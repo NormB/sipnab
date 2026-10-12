@@ -366,6 +366,9 @@ pub struct TuiOptions {
     /// sessions only). `Some` for `-I one.pcap`; `None` for a live capture, a
     /// multi-file input, or no input.
     pub rescan_path: Option<std::path::PathBuf>,
+    /// True when the session reads capture files (`-I`) and runs no live
+    /// capture. The default, false, is a live session.
+    pub offline: bool,
     /// The operator's notes this session starts with: loaded from `--notes`
     /// when that file exists, empty otherwise.
     pub notes: crate::annotate::Notes,
@@ -467,6 +470,7 @@ impl TuiOptions {
         app.relay_stats_interval = self.relay_stats_interval;
         app.set_reconfigure(self.reconfigure_control, self.reconfigure_outcomes);
         app.rescan_path = self.rescan_path;
+        app.set_live_capture(!self.offline);
         app.set_capture_options(self.capture_options);
         app.set_notes(self.notes, self.notes_path);
         app.capture_meter = self.capture_meter;
@@ -1829,6 +1833,59 @@ pub struct PcapLoadOutcome {
     /// What a password-protected archive in the load came to, for the action
     /// trail: `(archive, members decrypted, members locked)`. Never a password.
     pub archive_passwords: Option<(String, usize, usize)>,
+    /// Whether the load read the file under a BPF filter: a re-scan from the
+    /// `B` editor. An `O` open reads the file unfiltered.
+    pub rescanned: bool,
+}
+
+/// Which source the filter in status line 2's BPF slot was applied to.
+///
+/// Line 1 names what is on screen. When that is not the source the filter was
+/// applied to, or when a filter was applied to a file rather than compiled
+/// into the session's capture, the slot names the source after the filter so
+/// the two rows do not read as one statement about one source (#190).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub(crate) enum BpfSource {
+    /// The session's own capture, as it was started: no marker.
+    #[default]
+    Session,
+    /// The live capture that keeps running behind a file opened in-session.
+    LiveCapture,
+    /// A re-scan of a capture file under the `B` editor's filter.
+    FileRescan,
+}
+
+impl BpfSource {
+    /// The source after a capture-file load finishes.
+    ///
+    /// # Arguments
+    /// * `live_capture` - whether a live capture runs behind this session.
+    /// * `rescanned` - whether the load read the file under a filter (`B`).
+    ///
+    /// # Returns
+    /// [`BpfSource::FileRescan`] for a re-scan: the filter was applied to the
+    /// file. Otherwise [`BpfSource::LiveCapture`] when a live capture runs
+    /// behind the file, whose filter the slot still shows, and
+    /// [`BpfSource::Session`] when none does.
+    pub(crate) fn after_load(live_capture: bool, rescanned: bool) -> Self {
+        if rescanned {
+            Self::FileRescan
+        } else if live_capture {
+            Self::LiveCapture
+        } else {
+            Self::Session
+        }
+    }
+
+    /// The words status line 2 appends to the filter, or `None` for the
+    /// session's own capture.
+    pub(crate) fn marker(self) -> Option<&'static str> {
+        match self {
+            Self::Session => None,
+            Self::LiveCapture => Some("[live capture]"),
+            Self::FileRescan => Some("[file re-scan]"),
+        }
+    }
 }
 
 /// A save accepted by the save dialog but deferred one event-loop tick, so

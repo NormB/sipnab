@@ -388,8 +388,11 @@ fn the_resolver_reads_configured_thresholds() -> Result<(), TestError> {
          configured `[diagnosis]` threshold changes what `--filter` matches \
          and not what `--export-vcon-when` matches:\n{body}"
     );
+    // `parse_filter` is the shared resolver every surface calls: it expands
+    // through `expand_alias` and then parses, so naming it is naming the
+    // expansion.
     assert!(
-        body.contains("expand_alias"),
+        body.contains("expand_alias") || body.contains("parse_filter("),
         "the vcon resolver does not expand aliases at all"
     );
     Ok(())

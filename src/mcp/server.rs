@@ -20,6 +20,7 @@
 //! `clippy::await_holding_lock = "deny"` (Cargo.toml [workspace.lints])
 //! catches violations mechanically.
 
+use crate::mcp::errors::{self, Reason};
 use std::sync::Arc;
 
 use parking_lot::RwLock;
@@ -112,6 +113,13 @@ pub struct SipnabMcp {
     /// same call exported through two doors otherwise comes back carrying
     /// audio in one container and a refusal in the other.
     pub(crate) max_inline_media_bytes: Option<usize>,
+    /// The `--export-vcon-dir` spool the capture writes containers into, read
+    /// by `vcon_spool_status`. `None` when the run was not given one.
+    ///
+    /// Only read: the forwarder that drains the spool is another process, and
+    /// this one makes no outbound vCon connection and moves no file.
+    #[cfg(feature = "vcon")]
+    pub(crate) vcon_spool: Option<std::path::PathBuf>,
     /// The numbers the diagnostic filter aliases compare against.
     ///
     /// Carried here for the same reason `row_cap` is: `find_problems` used to
@@ -126,6 +134,14 @@ pub struct SipnabMcp {
     /// read from a constant at each call site is not something an operator can
     /// move.
     pub(crate) body_cap: usize,
+    /// Ceiling on the bytes of ONE whole paged response, from
+    /// `--mcp-max-response-bytes` or `[limits] mcp_max_response_bytes`.
+    /// Defaults to [`crate::cli::Cli::DEFAULT_MCP_MAX_RESPONSE_BYTES`].
+    ///
+    /// Carried beside `row_cap` and `body_cap` for the reason spelled out on
+    /// the first of them. A caller's `max_response_bytes` narrows it per call
+    /// and cannot exceed it; see [`super::budget`].
+    pub(crate) response_cap: usize,
     /// Ceiling on how long ONE `await_condition` call may wait, in seconds,
     /// from `--mcp-max-wait-seconds` or `[limits] mcp_max_wait_seconds`.
     /// Defaults to
@@ -262,6 +278,16 @@ pub struct SipnabMcp {
     rate_limiter: Option<Arc<parking_lot::Mutex<crate::rate_limit::FixedWindowLimiter<PeerKey>>>>,
     /// rmcp router mapping tool names to the handler methods below.
     tool_router: ToolRouter<Self>,
+    /// Every tool this build registers, sorted, read before `--mcp-tools`
+    /// removed any. `server_capabilities` compares the loaded tools against it
+    /// to say which bundles are loaded whole.
+    carried_tools: Arc<Vec<String>>,
+    /// Every tool's output schema, read when the router is assembled and
+    /// therefore before [`Self::with_output_schemas`] strips them from
+    /// `tools/list`. `sipnab://schema/{tool}` serves them from here, which is
+    /// what lets `tools/list` stay small without the shapes becoming
+    /// unreachable.
+    output_schemas: Arc<std::collections::BTreeMap<String, Arc<rmcp::model::JsonObject>>>,
     /// Governs whether sipnab may ask the client's model to narrate an
     /// observation. Disabled unless the operator sets a budget.
     ///
@@ -352,6 +378,14 @@ impl SipnabMcp {
         // tool is one the agent simply does not have. See `super::schema` for
         // what the rewrite costs and why a REQUIRED nullable is left alone.
         let router = super::schema::portable_router(router);
+        let listed = router.list_all();
+        let carried_tools = Arc::new(listed.iter().map(|t| t.name.to_string()).collect());
+        let output_schemas = Arc::new(
+            listed
+                .into_iter()
+                .filter_map(|t| t.output_schema.map(|s| (t.name.to_string(), s)))
+                .collect(),
+        );
 
         Self {
             dialog_store,
@@ -365,8 +399,11 @@ impl SipnabMcp {
             source_exhausted: None,
             row_cap: HARD_LIMIT,
             max_inline_media_bytes: None,
+            #[cfg(feature = "vcon")]
+            vcon_spool: None,
             alias_thresholds: crate::sip::dsl::AliasThresholds::default(),
             body_cap: super::shape::DEFAULT_MAX_BODY_BYTES,
+            response_cap: crate::cli::Cli::DEFAULT_MCP_MAX_RESPONSE_BYTES as usize,
             max_wait_seconds: super::tools::await_condition::DEFAULT_MAX_WAIT_SECONDS,
             sweep_limits: crate::cli::McpSweepLimits::default(),
             sweeps: Arc::new(super::sweep::SweepJobs::default()),
@@ -400,6 +437,8 @@ impl SipnabMcp {
             hep_auth_mode: None,
             subscriptions: super::subscribe::Subscriptions::new(),
             tool_router: router,
+            carried_tools,
+            output_schemas,
         }
     }
 
@@ -456,6 +495,58 @@ impl SipnabMcp {
             .list_all()
             .into_iter()
             .map(|t| t.name.to_string())
+            .collect()
+    }
+
+    /// The built-in bundles every one of whose carried tools is loaded.
+    ///
+    /// "Carried" is what this build registers, so a bundle whose tools are
+    /// partly absent from the BUILD (a feature left out) still counts as
+    /// loaded when everything it can have is there. A bundle the build carries
+    /// none of is not listed.
+    #[must_use]
+    pub fn loaded_bundles(&self) -> Vec<String> {
+        let loaded = self.registered_tool_names();
+        super::profile::BUNDLES
+            .iter()
+            .filter(|(_, tools)| {
+                let carried: Vec<&&str> = tools
+                    .iter()
+                    .filter(|t| self.carried_tools.iter().any(|c| c == **t))
+                    .collect();
+                !carried.is_empty() && carried.iter().all(|t| loaded.iter().any(|l| l == **t))
+            })
+            .map(|(name, _)| (*name).to_string())
+            .collect()
+    }
+
+    /// The inline media budget a vCon this server builds is held to, or `None`
+    /// in a build that builds no vCon.
+    #[must_use]
+    pub fn inline_media_budget(&self) -> Option<usize> {
+        #[cfg(feature = "vcon")]
+        {
+            Some(
+                self.max_inline_media_bytes
+                    .unwrap_or(crate::output::vcon::MAX_INLINE_MEDIA_BYTES),
+            )
+        }
+        #[cfg(not(feature = "vcon"))]
+        {
+            None
+        }
+    }
+
+    /// The resource templates this server advertises, in the order
+    /// `resources/templates/list` returns them.
+    ///
+    /// One filter for both readers, `resources/templates/list` and
+    /// `server_capabilities`, so the two cannot name different sets.
+    #[must_use]
+    pub fn advertised_templates(&self) -> Vec<super::completion::Template> {
+        super::completion::all()
+            .into_iter()
+            .filter(|t| !t.needs_file_root || self.file_root.is_some())
             .collect()
     }
 
@@ -528,6 +619,19 @@ impl SipnabMcp {
         self
     }
 
+    /// Name the `--export-vcon-dir` spool `vcon_spool_status` reads.
+    ///
+    /// The directory the capture's `--export-vcon-when` writes into, and the
+    /// one a `sipnab --vcon-forward` process drains. Nothing is created here:
+    /// a spool the capture has not written yet reads as one that does not
+    /// exist.
+    #[cfg(feature = "vcon")]
+    #[must_use]
+    pub fn with_vcon_spool(mut self, dir: impl Into<std::path::PathBuf>) -> Self {
+        self.vcon_spool = Some(dir.into());
+        self
+    }
+
     /// Cap the findings `save_findings` will accept before refusing.
     ///
     /// `0` is treated as the default rather than as "accept nothing", for the
@@ -562,6 +666,20 @@ impl SipnabMcp {
     pub fn with_body_cap(mut self, bytes: usize) -> Self {
         self.body_cap = if bytes == 0 {
             super::shape::DEFAULT_MAX_BODY_BYTES
+        } else {
+            bytes
+        };
+        self
+    }
+
+    /// Cap the bytes of one whole paged response.
+    ///
+    /// `0` is treated as the default rather than as "unlimited", the same
+    /// reading [`Self::with_row_cap`] gives it and for the same reason.
+    #[must_use]
+    pub fn with_response_cap(mut self, bytes: usize) -> Self {
+        self.response_cap = if bytes == 0 {
+            crate::cli::Cli::DEFAULT_MCP_MAX_RESPONSE_BYTES as usize
         } else {
             bytes
         };
@@ -1037,18 +1155,18 @@ impl SipnabMcp {
         name: &str,
     ) -> Result<std::path::PathBuf, rmcp::ErrorData> {
         let root = self.file_root.as_ref().ok_or_else(|| {
-            rmcp::ErrorData::invalid_params(
+            errors::refuse(
+                Reason::NotEnabled,
                 "file tools are disabled: start sipnab with --mcp-file-root <DIR> \
                  to enable them"
                     .to_string(),
-                None,
             )
         })?;
 
         if name.is_empty() {
-            return Err(rmcp::ErrorData::invalid_params(
+            return Err(errors::refuse(
+                Reason::InvalidValue,
                 "filename must not be empty".to_string(),
-                None,
             ));
         }
         // One path component, and it must be a plain name.
@@ -1057,12 +1175,12 @@ impl SipnabMcp {
         let extra = parts.next();
         let ok = matches!(only, Some(std::path::Component::Normal(_))) && extra.is_none();
         if !ok || name.contains('/') || name.contains('\\') || name.contains("..") {
-            return Err(rmcp::ErrorData::invalid_params(
+            return Err(errors::refuse(
+                Reason::PathRefused,
                 format!(
                     "'{name}' is not a bare filename. These tools take a name, not \
                      a path, and write only inside the configured --mcp-file-root."
                 ),
-                None,
             ));
         }
         let target = root.join(name);
@@ -1084,14 +1202,14 @@ impl SipnabMcp {
         let resolved = crate::capture::output_guard::canonical_target(&target);
         let canonical_root = root.canonicalize().unwrap_or_else(|_| root.clone());
         if !resolved.starts_with(&canonical_root) {
-            return Err(rmcp::ErrorData::invalid_params(
+            return Err(errors::refuse(
+                Reason::PathRefused,
                 format!(
                     "'{name}' resolves outside the configured --mcp-file-root. \
                      The name is a link to '{}', and these tools write only \
                      inside the root.",
                     resolved.display()
                 ),
-                None,
             ));
         }
         Ok(resolved)
@@ -1124,7 +1242,7 @@ impl SipnabMcp {
         let target = self.resolve_in_root(name)?;
         self.protected_inputs
             .check(&target, "the requested filename", false)
-            .map_err(|msg| rmcp::ErrorData::invalid_params(msg, None))?;
+            .map_err(|msg| errors::refuse(Reason::PathRefused, msg))?;
 
         // Refuse ANY name already taken, not merely the capture being read.
         //
@@ -1144,14 +1262,14 @@ impl SipnabMcp {
         // accident. The asymmetry is the point — the cost of refusing is a
         // second call, and the cost of allowing is somebody's only copy.
         if std::fs::symlink_metadata(&target).is_ok() {
-            return Err(rmcp::ErrorData::invalid_params(
+            return Err(errors::refuse(
+                Reason::AlreadyExists,
                 format!(
                     "the requested filename '{}' already exists. sipnab will \
                      not write over it, because that file may be the only copy \
                      of a capture — choose a name that is not taken.",
                     target.display(),
                 ),
-                None,
             ));
         }
         Ok(target)
@@ -1179,9 +1297,10 @@ impl SipnabMcp {
             // tool uses, rather than a second path check that could differ.
             let path = self.resolve_in_root(name)?;
             let file = crate::sip::lint::SuppressionFile::load(&path).map_err(|e| {
-                rmcp::ErrorData::invalid_params(
+                errors::refuse_param(
+                    Reason::InvalidValue,
+                    "suppression_file",
                     format!("cannot read suppression file '{name}': {e}"),
-                    None,
                 )
             })?;
             return Ok(Some(file));
@@ -1288,6 +1407,10 @@ pub struct ListDialogsParams {
     /// rather than ignored -- a silently dropped typo reads as "no such data".
     #[serde(default)]
     pub fields: Option<Vec<String>>,
+    /// Byte ceiling for the whole response, at most `--mcp-max-response-bytes`.
+    /// Past it whole rows are dropped and `truncated_by` is `bytes`.
+    #[serde(default)]
+    pub max_response_bytes: Option<u64>,
 }
 
 /// Parameters for `get_dialog_report`.
@@ -1450,6 +1573,10 @@ pub struct FindProblemsParams {
     /// this row does not carry.
     #[serde(default)]
     pub fields: Option<Vec<String>>,
+    /// Byte ceiling for the whole response, at most `--mcp-max-response-bytes`.
+    /// Past it whole rows are dropped and `truncated_by` is `bytes`.
+    #[serde(default)]
+    pub max_response_bytes: Option<u64>,
 }
 
 // ── Dialog-inspection parameter structs ─────────────────────────────
@@ -1465,8 +1592,15 @@ pub struct GetDialogParams {
     /// Must be at least 1 when given. `0` is refused rather than treated as
     /// "unset": it is the value a computed budget most often collapses to.
     pub max_messages: Option<u32>,
-    /// Cursor — index of the first message to return. Default 0.
-    pub cursor: Option<u32>,
+    /// Cursor: pass back the previous response's `next_cursor` verbatim
+    /// (`<RFC 3339 created_at>|<Call-ID>#<zero-padded message index>`, the
+    /// shape `search_messages` hands out) to continue after that page. Omit
+    /// on the first call. A cursor issued for a different dialog is refused.
+    pub cursor: Option<String>,
+    /// Byte ceiling for the whole response, at most `--mcp-max-response-bytes`.
+    /// Past it whole rows are dropped and `truncated_by` is `bytes`.
+    #[serde(default)]
+    pub max_response_bytes: Option<u64>,
 }
 
 /// Parameters for `get_message`.
@@ -1479,8 +1613,8 @@ pub struct GetMessageParams {
     /// dialog holds them.
     ///
     /// How to obtain one, because the number is meaningless on its own:
-    /// `get_dialog` returns a page of messages beginning at its `cursor`, so
-    /// the Nth message of that page is at index `cursor + N`. The upper bound
+    /// `get_dialog` reports `first_index` for each page of messages, so the
+    /// Nth message of that page is at index `first_index + N`. The upper bound
     /// is `msg_count` from `list_dialogs` — the last valid index is
     /// `msg_count - 1`.
     ///
@@ -1536,6 +1670,10 @@ pub struct RtpStatsParams {
     /// Capture-wide sweep only: pass back the previous response's
     /// `next_cursor` verbatim. Omit on the first call.
     pub cursor: Option<String>,
+    /// Capture-wide sweep only: byte ceiling for the whole response, at most
+    /// `--mcp-max-response-bytes`.
+    #[serde(default)]
+    pub max_response_bytes: Option<u64>,
 }
 
 /// Parameters for `search_messages`.
@@ -1551,6 +1689,10 @@ pub struct SearchMessagesParams {
     /// (`<RFC 3339 created_at>|<Call-ID>#<zero-padded message index>`) to
     /// continue after that page. Omit on the first call.
     pub cursor: Option<String>,
+    /// Byte ceiling for the whole response, at most `--mcp-max-response-bytes`.
+    /// Past it whole rows are dropped and `truncated_by` is `bytes`.
+    #[serde(default)]
+    pub max_response_bytes: Option<u64>,
 }
 
 /// The tie-break half of a `search_messages` cursor: `<Call-ID>#<index>`.
@@ -1567,6 +1709,38 @@ pub struct SearchMessagesParams {
 /// by and what the cursor compares against.
 fn hit_identity(call_id: &str, index: usize) -> String {
     format!("{call_id}#{index:010}")
+}
+
+/// The first message index a `get_dialog` page resumes at, read from the
+/// cursor the previous page handed out.
+///
+/// The cursor is the one [`hit_identity`] builds into: `<RFC 3339>|<Call-ID>#
+/// <index>`, naming the LAST message already returned. The Call-ID half must
+/// be the dialog being paged. A cursor from another dialog would otherwise
+/// resume this one at an unrelated position and look like an ordinary page.
+///
+/// # Errors
+///
+/// A message naming what was wrong, for `invalid_params`: a timestamp that is
+/// not RFC 3339, no `|<Call-ID>#<index>` half, a different Call-ID, or an
+/// index that is not a number.
+fn message_cursor_start(raw: &str, call_id: &str) -> Result<usize, String> {
+    let cursor = super::shape::parse_cursor(raw)?;
+    let id = cursor.id.ok_or(
+        "a get_dialog cursor is `<RFC 3339>|<Call-ID>#<index>`; pass next_cursor back verbatim",
+    )?;
+    let (owner, index) = id
+        .rsplit_once('#')
+        .ok_or("a get_dialog cursor ends in `#<message index>`; pass next_cursor back verbatim")?;
+    if owner != call_id {
+        return Err(format!(
+            "this cursor belongs to dialog '{owner}', not '{call_id}'"
+        ));
+    }
+    let index: usize = index
+        .parse()
+        .map_err(|e| format!("cursor message index '{index}' is not a number: {e}"))?;
+    Ok(index.saturating_add(1))
 }
 
 /// Zero-allocation ASCII-case-insensitive substring test used by
@@ -1622,6 +1796,10 @@ pub struct TailDialogsParams {
     /// this row does not carry.
     #[serde(default)]
     pub fields: Option<Vec<String>>,
+    /// Byte ceiling for the whole response, at most `--mcp-max-response-bytes`.
+    /// Past it whole rows are dropped and `truncated_by` is `bytes`.
+    #[serde(default)]
+    pub max_response_bytes: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize, JsonSchema)]
@@ -1634,6 +1812,58 @@ pub struct SearchHit {
     pub message_index: usize,
     /// Short excerpt of the matched text, for context.
     pub snippet: String,
+}
+
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+#[schemars(crate = "rmcp::schemars")]
+/// What `triage_call` answers: which half of the stack a call's trouble is in.
+pub struct TriageResponse {
+    /// Version of this response schema.
+    pub schema_version: u32,
+    /// The Call-ID triaged.
+    pub call_id: String,
+    /// `signaling`, `media`, `both` or `none`: which half has a problem.
+    pub verdict: String,
+    /// The dialog state, in its debug spelling (`Confirmed`, `Terminated`, ...).
+    pub state: String,
+    /// The final response code, or null when none was seen.
+    pub final_status_code: Option<u16>,
+    /// The signaling half.
+    pub signaling: TriageSignaling,
+    /// The media half.
+    pub media: TriageMedia,
+    /// Why the call ended, when a message named a cause (a `Reason` header or
+    /// a vendor equivalent). Omitted, never null, when none did.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub termination: Option<crate::sip::termination::Termination>,
+}
+
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+#[schemars(crate = "rmcp::schemars")]
+/// The signaling half of a `triage_call` verdict.
+pub struct TriageSignaling {
+    /// True when any signaling detection fired.
+    pub problem: bool,
+    /// One plain-language line per detection.
+    pub hints: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+#[schemars(crate = "rmcp::schemars")]
+/// The media half of a `triage_call` verdict.
+pub struct TriageMedia {
+    /// True when one-way audio, a NAT mismatch, or no media was detected.
+    pub problem: bool,
+    /// Media flowed in one direction only.
+    pub one_way_audio: bool,
+    /// The SDP-negotiated address differs from the observed RTP source.
+    pub nat_mismatch: bool,
+    /// SDP was negotiated and no RTP packet was observed.
+    pub no_media: bool,
+    /// RTP streams attributed to this call.
+    pub stream_count: usize,
+    /// One plain-language line per media detection.
+    pub hints: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, JsonSchema)]
@@ -2209,12 +2439,13 @@ fn parse_rule_selectors(names: Option<&Vec<String>>) -> Result<Vec<RuleSelector>
     let mut out = Vec::new();
     for name in names {
         let selector = RuleSelector::parse(name).ok_or_else(|| {
-            rmcp::ErrorData::invalid_params(
+            errors::refuse_choice(
+                "rulesets",
+                rule_selector_names(),
                 format!(
                     "unknown ruleset '{name}'. Valid selectors: {}",
                     rule_selector_names().join(", ")
                 ),
-                None,
             )
         })?;
         out.push(selector);
@@ -2229,9 +2460,10 @@ fn parse_min_severity(
     match name {
         None => Ok(crate::sip::lint::Severity::Info),
         Some(n) => crate::sip::lint::Severity::from_name(n).ok_or_else(|| {
-            rmcp::ErrorData::invalid_params(
+            errors::refuse_choice(
+                "severity_min",
+                ["info", "notice", "warning", "error"],
                 format!("unknown severity '{n}'. Valid values: info, notice, warning, error"),
-                None,
             )
         }),
     }
@@ -2350,6 +2582,10 @@ pub struct SearchByTimeParams {
     /// this row does not carry.
     #[serde(default)]
     pub fields: Option<Vec<String>>,
+    /// Byte ceiling for the whole response, at most `--mcp-max-response-bytes`.
+    /// Past it whole rows are dropped and `truncated_by` is `bytes`.
+    #[serde(default)]
+    pub max_response_bytes: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize, JsonSchema)]
@@ -2535,6 +2771,37 @@ pub struct CapabilitiesResponse {
     /// The libpcap this process runs and the alternate capture backends its
     /// banner names — the report `--version` prints.
     pub libpcap: LibpcapJson,
+    /// The ceilings every response from this server is held to.
+    pub limits: McpLimits,
+    /// The tools this server loaded, sorted: what `tools/list` returns, after
+    /// `--mcp-tools` selected them.
+    pub tools: Vec<String>,
+    /// The built-in bundles loaded whole: every tool of the bundle that this
+    /// build carries is loaded. A bundle with only some of its tools loaded
+    /// (because `--mcp-tools` named single tools) is not listed.
+    pub bundles: Vec<String>,
+    /// The prompt names `prompts/list` returns.
+    pub prompts: Vec<String>,
+    /// The URI templates `resources/templates/list` returns.
+    pub resource_templates: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+#[schemars(crate = "rmcp::schemars")]
+/// The response ceilings this server enforces, as the operator set them.
+pub struct McpLimits {
+    /// Most rows one list-style response carries (`--mcp-max-rows`).
+    pub max_rows: usize,
+    /// Most body or snippet bytes one response carries
+    /// (`--mcp-max-body-bytes`).
+    pub max_body_bytes: usize,
+    /// Largest inline media body a vCon this server builds may carry, in
+    /// bytes of base64url (`--vcon-max-inline-media`). Null in a build without
+    /// the `vcon` feature, which builds no vCon.
+    pub max_inline_media_bytes: Option<usize>,
+    /// Longest one `await_condition` call may wait, in seconds
+    /// (`--mcp-max-wait-seconds`).
+    pub max_wait_seconds: u64,
 }
 
 #[derive(Debug, Clone, Serialize, JsonSchema)]
@@ -2727,8 +2994,21 @@ pub struct RuntimeFlags {
     /// True when `start_tls_capture` may install kernel uprobes.
     pub mcp_allow_tls_capture: bool,
     /// Whether `save_findings` may record an annotation
-    /// (`--mcp-allow-save-findings`). The only write verb on this surface.
+    /// (`--mcp-allow-save-findings`).
     pub mcp_allow_save_findings: bool,
+    /// Whether `query_relay`, `relay_stats` and `relay_compare` can ask the
+    /// relay anything. True only when `--mcp-allow-relay-query` was given on a
+    /// live capture with `--rtpengine-control` set: a file replay can never
+    /// transmit, whatever the flag says.
+    pub mcp_allow_relay_query: bool,
+    /// What an endpoint a relay asserted over HEP is worth on this run,
+    /// decided at startup by the HEP listener's authentication:
+    /// `hmac-verified`, `plain-secret`, or `port-gated-only` when sipnab
+    /// checks no secret.
+    pub hep_delivery_trust: super::tools::relay::DeliveryTrust,
+    /// The action targets `--allow-action` enabled on the MCP surface, by
+    /// name: `["tfps"]` for `--allow-action tfps:mcp`, empty by default.
+    pub mcp_allow_actions: Vec<String>,
 }
 
 /// The three ways this run's analysis can be incomplete or mistimed, plus the
@@ -2999,6 +3279,10 @@ pub struct DialogPage {
     /// True when matches remain after this page. Pass `next_cursor` back to
     /// continue.
     pub truncated: bool,
+    /// Which bound cut this page short: `rows` (the row limit) or `bytes`
+    /// (the response byte budget). Absent when nothing was cut.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub truncated_by: Option<String>,
     /// Opaque cursor (`<RFC 3339 created_at>|<Call-ID>` of the last row) to
     /// pass to the next call. Null on the final page.
     pub next_cursor: Option<String>,
@@ -3008,6 +3292,12 @@ pub struct DialogPage {
     /// replace the whole dialog set between two pages, and without this the
     /// second page would look like an ordinary continuation of the first.
     pub capture_identity: crate::provenance::CaptureEtag,
+    /// The cursor that resumes after each row, in row order. Not sent: the
+    /// byte budget reads it to hand on the cursor of the last row it keeps,
+    /// after `fields` may already have projected `created_at` off the rows.
+    #[serde(skip)]
+    #[schemars(skip)]
+    pub row_cursors: Vec<String>,
 }
 
 /// One method and how many matched dialogs it opened.
@@ -3053,6 +3343,10 @@ pub struct MessagePage {
     /// True when matches remain after this page. Pass `next_cursor` back to
     /// continue.
     pub truncated: bool,
+    /// Which bound cut this page short: `rows` (the row limit) or `bytes`
+    /// (the response byte budget). Absent when nothing was cut.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub truncated_by: Option<String>,
     /// Opaque cursor (`<RFC 3339 created_at>|<Call-ID>#<index>` of the last
     /// row) to pass to the next call. Null on the final page.
     pub next_cursor: Option<String>,
@@ -3085,6 +3379,10 @@ pub struct StreamPage {
     pub ungrounded_excluded: usize,
     /// True when matches remain after this page.
     pub truncated: bool,
+    /// Which bound cut this page short: `rows` (the row limit) or `bytes`
+    /// (the response byte budget). Absent when nothing was cut.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub truncated_by: Option<String>,
     /// Opaque cursor to pass to the next call. Null on the final page.
     pub next_cursor: Option<String>,
     /// Which capture this page came from, and which revision of its stores.
@@ -3489,8 +3787,9 @@ fn attachment_of(context: Option<&CaptureContext>) -> CaptureAttachment {
 /// deltas is exactly what a healthy quiet capture looks like, and the caller
 /// would have no way to tell the two apart.
 fn resolve_sample_seconds(requested: u32) -> Result<u32, rmcp::ErrorData> {
-    crate::output::runtime::resolve_sample_seconds(requested)
-        .map_err(|why| rmcp::ErrorData::invalid_params(why.to_string(), None))
+    crate::output::runtime::resolve_sample_seconds(requested).map_err(|why| {
+        errors::refuse_param(Reason::InvalidValue, "sample_seconds", why.to_string())
+    })
 }
 
 /// `undecodable / packets`, or `0.0` when nothing was captured.
@@ -3842,12 +4141,58 @@ fn endpoint_reported_json(
     }
     Some(v)
 }
-/// The tie-break half of a stream cursor: `0xSSRC@src>dst`.
+/// Bytes a single resource read may return.
 ///
-/// Unique per stream (the store keys on exactly these three values) and free
-/// of the cursor separator, so `<first_seen>|<identity>` splits unambiguously.
-fn stream_identity(s: &crate::rtp::stream::RtpStream) -> String {
-    format!("0x{:08x}@{}>{}", s.key.ssrc, s.key.src, s.key.dst)
+/// JSON-RPC with base64 is not a bulk transfer channel -- a 128 MB capture
+/// becomes ~170 MB of one JSON string, which no client wants and no model can
+/// read. Refusing past a bound, and SAYING the bound, beats returning
+/// something unusable or truncating in silence.
+pub(crate) const MAX_RESOURCE_BYTES: u64 = 8 * 1024 * 1024;
+
+/// Refuse a resource of `size` bytes when it is past `max`.
+///
+/// The one rule every resource read applies, capture file or vCon container,
+/// so the bound and the wording of its refusal cannot differ between them.
+/// `what` names the resource as the refusal should quote it; `instead` is the
+/// way to get the content that the caller can act on.
+///
+/// # Errors
+///
+/// `invalid_params` (-32602) stating the size, the bound, and `instead`.
+pub(crate) fn refuse_past_resource_limit(
+    what: &str,
+    size: u64,
+    max: u64,
+    instead: &str,
+) -> Result<(), rmcp::ErrorData> {
+    if size > max {
+        return Err(errors::refuse_param(
+            Reason::LimitExceeded,
+            "uri",
+            format!(
+                "{what} is {size} bytes, past the {max}-byte resource limit. \
+                 JSON-RPC is not a bulk transfer channel; {instead}."
+            ),
+        ));
+    }
+    Ok(())
+}
+
+/// The tie-break half of a stream cursor: `0xSSRC@src>dst`, with `#N`
+/// appended for session N above 0.
+///
+/// Unique per stream (the store keys on exactly these values: a later call
+/// that reuses the SSRC and sockets is a later session) and free of the
+/// cursor separator, so `<first_seen>|<identity>` splits unambiguously. The
+/// first session carries no suffix, so every cursor issued before sessions
+/// existed still resolves.
+pub(crate) fn stream_identity(s: &crate::rtp::stream::RtpStream) -> String {
+    let base = format!("0x{:08x}@{}>{}", s.key.ssrc, s.key.src, s.key.dst);
+    if s.key.session == 0 {
+        base
+    } else {
+        format!("{base}#{}", s.key.session)
+    }
 }
 
 // ── Tool implementations ────────────────────────────────────────────
@@ -3867,11 +4212,15 @@ impl SipnabMcp {
         filter: Option<&str>,
     ) -> Result<Option<FilterExpr>, rmcp::ErrorData> {
         let Some(f) = filter else { return Ok(None) };
-        let expanded = expand_alias(f, &self.alias_thresholds);
-        let expr_str = expanded.as_deref().unwrap_or(f);
-        FilterExpr::parse(expr_str).map(Some).map_err(|e| {
-            rmcp::ErrorData::invalid_params(format!("invalid filter '{f}': {e}"), None)
-        })
+        crate::sip::dsl::parse_filter(f, &self.alias_thresholds)
+            .map(Some)
+            .map_err(|e| {
+                errors::refuse_param(
+                    Reason::InvalidFilter,
+                    "filter",
+                    format!("invalid filter '{f}': {e}"),
+                )
+            })
     }
 
     /// Files under `--mcp-file-root`, as MCP resources.
@@ -3967,14 +4316,6 @@ impl SipnabMcp {
         &self,
         uri: &str,
     ) -> Result<Vec<rmcp::model::ResourceContents>, rmcp::ErrorData> {
-        /// Bytes a single resource read may return.
-        ///
-        /// JSON-RPC with base64 is not a bulk transfer channel -- a 128 MB
-        /// capture becomes ~170 MB of one JSON string, which no client wants
-        /// and no model can read. Refusing past a bound, and SAYING the bound,
-        /// beats returning something unusable or truncating in silence.
-        const MAX_RESOURCE_BYTES: u64 = 8 * 1024 * 1024;
-
         // Reference material is answered from the binary, before any file
         // handling. It is not on disk, so it has no path to resolve, no size to
         // stat and no root to be confined to -- routing it through the capture
@@ -4003,14 +4344,15 @@ impl SipnabMcp {
         // cannot come to describe a rule differently.
         if let Some(rule_id) = uri.strip_prefix(super::completion::LINT_RULE_URI_PREFIX) {
             let rule = crate::sip::lint::rule_by_id(rule_id).ok_or_else(|| {
-                rmcp::ErrorData::invalid_params(
+                errors::refuse_param(
+                    Reason::NotFound,
+                    "rule_id",
                     format!(
                         "'{rule_id}' is not a rule in the catalog; complete the \
                          '{}' template's rule_id, or call explain_rule for the \
                          whole list",
                         "sipnab://lint/{rule_id}"
                     ),
-                    None,
                 )
             })?;
             let text = serde_json::to_string_pretty(&rule_entry_json(rule)).map_err(|e| {
@@ -4026,7 +4368,9 @@ impl SipnabMcp {
         // of one.
         if let Some(alias) = uri.strip_prefix(super::completion::FILTER_ALIAS_URI_PREFIX) {
             let expanded = expand_alias(alias, &self.alias_thresholds).ok_or_else(|| {
-                rmcp::ErrorData::invalid_params(
+                errors::refuse_choice(
+                    "alias",
+                    crate::sip::dsl::DIAGNOSTIC_ALIASES.iter(),
                     format!(
                         "'{alias}' is not a diagnostic alias; complete the \
                          'sipnab://filter/{{alias}}' template, or read \
@@ -4034,7 +4378,6 @@ impl SipnabMcp {
                          Served: {}",
                         crate::sip::dsl::DIAGNOSTIC_ALIASES.join(", ")
                     ),
-                    None,
                 )
             })?;
             let text = serde_json::to_string_pretty(&serde_json::json!({
@@ -4055,8 +4398,45 @@ impl SipnabMcp {
             return Ok(vec![rmcp::model::ResourceContents::text(text, uri)]);
         }
 
+        // One loaded tool's response shape. Only a LOADED tool resolves: a
+        // tool `--mcp-tools` left out is one this server will not run, and
+        // describing its response would advertise it.
+        if let Some(tool) = uri.strip_prefix(super::tool_schema::SCHEMA_URI_PREFIX) {
+            if self.tool_router.get(tool).is_none() {
+                return Err(errors::refuse_choice(
+                    "tool",
+                    self.registered_tool_names(),
+                    format!(
+                        "'{tool}' is not a tool this server loaded; complete the \
+                         'sipnab://schema/{{tool}}' template for the loaded names"
+                    ),
+                ));
+            }
+            let body = super::tool_schema::describe(
+                tool,
+                self.output_schemas
+                    .get(tool)
+                    .map(std::convert::AsRef::as_ref),
+            );
+            let text = serde_json::to_string_pretty(&body).map_err(|e| {
+                rmcp::ErrorData::internal_error(format!("cannot render '{uri}': {e}"), None)
+            })?;
+            return Ok(vec![rmcp::model::ResourceContents::text(text, uri)]);
+        }
+
+        // One dialog as a vCon container, built by the function `export_vcon`
+        // uses. Only on a build carrying the exporter; elsewhere the URI is
+        // not a sipnab resource and is refused below like any other.
+        #[cfg(feature = "vcon")]
+        if let Some(call_id) = uri.strip_prefix(super::completion::VCON_URI_PREFIX) {
+            let text = self.vcon_resource(call_id, MAX_RESOURCE_BYTES)?;
+            return Ok(vec![rmcp::model::ResourceContents::text(text, uri)]);
+        }
+
         let name = uri.strip_prefix("sipnab:///").ok_or_else(|| {
-            rmcp::ErrorData::invalid_params(
+            errors::refuse_param(
+                Reason::InvalidValue,
+                "uri",
                 format!(
                     "'{uri}' is not a sipnab resource URI; expected \
                      sipnab:///<filename> for a capture, one of the \
@@ -4064,25 +4444,19 @@ impl SipnabMcp {
                      or a URI built from a template that \
                      resources/templates/list names"
                 ),
-                None,
             )
         })?;
         let path = self.resolve_in_root(name)?;
 
         let size = std::fs::metadata(&path)
-            .map_err(|e| rmcp::ErrorData::invalid_params(format!("'{name}': {e}"), None))?
+            .map_err(|e| errors::refuse_param(Reason::NotFound, "uri", format!("'{name}': {e}")))?
             .len();
-        if size > MAX_RESOURCE_BYTES {
-            return Err(rmcp::ErrorData::invalid_params(
-                format!(
-                    "'{name}' is {size} bytes, past the \
-                     {MAX_RESOURCE_BYTES}-byte resource limit. JSON-RPC \
-                     carrying base64 is not a bulk transfer channel; copy the \
-                     file from --mcp-file-root instead."
-                ),
-                None,
-            ));
-        }
+        refuse_past_resource_limit(
+            &format!("'{name}'"),
+            size,
+            MAX_RESOURCE_BYTES,
+            "copy the file from --mcp-file-root instead",
+        )?;
 
         let bytes = std::fs::read(&path)
             .map_err(|e| rmcp::ErrorData::internal_error(format!("'{name}': {e}"), None))?;
@@ -4221,6 +4595,7 @@ impl SipnabMcp {
                         .map(std::string::ToString::to_string)
                 })
                 .collect(),
+            super::completion::Source::ToolNames => self.registered_tool_names(),
             super::completion::Source::CaptureFiles => {
                 let Some(root) = self.file_root.as_ref() else {
                     return Vec::new();
@@ -4333,6 +4708,50 @@ impl SipnabMcp {
         });
     }
 
+    /// Cut a serialized page to this call's byte budget, at a row boundary.
+    ///
+    /// The one place a paged tool applies [`super::budget`], so the budget a
+    /// caller asked for, the operator's ceiling and the bytes reserved for
+    /// what is added after the page cannot be combined differently by two
+    /// tools. Runs after field projection, because the projected rows are
+    /// what is sent, and inside the tool, which is before the dispatcher's
+    /// completeness stamp: the stamp's bytes are reserved here.
+    ///
+    /// # Arguments
+    ///
+    /// * `page` — the serialized page, rewritten in place when cut.
+    /// * `rows_key` — the key of its row array.
+    /// * `row_cursors` — the cursor resuming after each row, in row order.
+    /// * `requested` — the caller's `max_response_bytes`.
+    /// * `with_note` — whether the tool appends the provenance note block.
+    ///
+    /// # Returns
+    ///
+    /// Whether rows were cut.
+    ///
+    /// # Errors
+    ///
+    /// `internal_error` when the page and its cursors disagree, a defect in
+    /// the calling tool rather than in the request.
+    pub(crate) fn fit_to_budget(
+        &self,
+        page: &mut serde_json::Value,
+        rows_key: &str,
+        row_cursors: &[String],
+        requested: Option<u64>,
+        with_note: bool,
+    ) -> Result<bool, rmcp::ErrorData> {
+        let budget = super::budget::resolve(requested, self.response_cap);
+        let note = if with_note {
+            super::shape::untrusted_note().len()
+        } else {
+            0
+        };
+        let outside = super::completeness::stamp_growth_bound() + note;
+        super::budget::fit(page, rows_key, row_cursors, budget, outside)
+            .map_err(|e| rmcp::ErrorData::internal_error(e, None))
+    }
+
     /// Narrow every row of a rendered page to `fields`, plus `call_id`.
     ///
     /// Applied to the SERIALIZED page rather than to `DialogSummary`, because
@@ -4366,12 +4785,13 @@ impl SipnabMcp {
 
         for f in fields {
             if !legal.iter().any(|k| k == f) {
-                return Err(rmcp::ErrorData::invalid_params(
+                return Err(errors::refuse_choice(
+                    "fields",
+                    legal.iter(),
                     format!(
                         "unknown field '{f}'; this row carries: {}",
                         legal.join(", ")
                     ),
-                    None,
                 ));
             }
         }
@@ -4445,7 +4865,7 @@ impl SipnabMcp {
         let cursor = match cursor {
             Some(raw) => Some(
                 super::shape::parse_cursor(raw)
-                    .map_err(|e| rmcp::ErrorData::invalid_params(e, None))?,
+                    .map_err(|e| errors::refuse_param(Reason::InvalidValue, "cursor", e))?,
             ),
             None => None,
         };
@@ -4518,10 +4938,11 @@ impl SipnabMcp {
 
         let truncated = remaining.len() > limit;
         let page = &remaining[..remaining.len().min(limit)];
-        let next_cursor = truncated
-            .then(|| page.last())
-            .flatten()
-            .map(|d| super::shape::format_cursor(d.created_at, &d.call_id));
+        let row_cursors: Vec<String> = page
+            .iter()
+            .map(|d| super::shape::format_cursor(d.created_at, &d.call_id))
+            .collect();
+        let next_cursor = truncated.then(|| row_cursors.last().cloned()).flatten();
         let dialogs: Vec<DialogSummary> = page
             .iter()
             .map(|d| super::shape::fenced_dialog_summary(d))
@@ -4538,8 +4959,10 @@ impl SipnabMcp {
             total_matched,
             by_method,
             truncated,
+            truncated_by: truncated.then(|| super::budget::TRUNCATED_BY_ROWS.to_string()),
             next_cursor,
             capture_identity,
+            row_cursors,
         })
     }
 
@@ -4577,7 +5000,7 @@ impl SipnabMcp {
         let cursor = match params.cursor.as_deref() {
             Some(raw) => Some(
                 super::shape::parse_cursor(raw)
-                    .map_err(|e| rmcp::ErrorData::invalid_params(e, None))?,
+                    .map_err(|e| errors::refuse_param(Reason::InvalidValue, "cursor", e))?,
             ),
             None => None,
         };
@@ -4638,10 +5061,11 @@ impl SipnabMcp {
 
             let truncated = remaining.len() > limit;
             let rows = &remaining[..remaining.len().min(limit)];
-            let next_cursor = truncated
-                .then(|| rows.last())
-                .flatten()
-                .map(|s| super::shape::format_cursor(s.first_seen, &stream_identity(s)));
+            let row_cursors: Vec<String> = rows
+                .iter()
+                .map(|s| super::shape::format_cursor(s.first_seen, &stream_identity(s)))
+                .collect();
+            let next_cursor = truncated.then(|| row_cursors.last().cloned()).flatten();
             let streams: Vec<serde_json::Value> =
                 rows.iter().map(|s| stream_json(s, &ss)).collect();
             let capture_identity = state.identity.etag(ds.generation(), ss.generation());
@@ -4649,17 +5073,29 @@ impl SipnabMcp {
             drop(ds);
             drop(state);
 
-            StreamPage {
+            let page = StreamPage {
                 schema_version: 1,
                 returned: streams.len(),
                 streams,
                 total_matched,
                 ungrounded_excluded,
                 truncated,
+                truncated_by: truncated.then(|| super::budget::TRUNCATED_BY_ROWS.to_string()),
                 next_cursor,
                 capture_identity,
-            }
+            };
+            (page, row_cursors)
         };
+        let (page, row_cursors) = page;
+        let mut page = serde_json::to_value(page)
+            .map_err(|e| rmcp::ErrorData::internal_error(e.to_string(), None))?;
+        self.fit_to_budget(
+            &mut page,
+            "streams",
+            &row_cursors,
+            params.max_response_bytes,
+            false,
+        )?;
 
         Ok(CallToolResult::success(vec![ContentBlock::json(page)?]))
     }
@@ -4689,6 +5125,11 @@ impl SipnabMcp {
                        store. Filter accepts a diagnostic alias name or a raw DSL \
                        expression. The response carries total_matched, a truncated \
                        flag, and next_cursor for the remaining dialogs.",
+        output_schema = crate::mcp::schema::projectable_rows(
+            schema_for_output::<DialogPage>(),
+            "dialogs",
+            &["call_id"]
+        ),
         annotations(read_only_hint = true, open_world_hint = false)
     )]
     pub async fn list_dialogs(
@@ -4697,7 +5138,7 @@ impl SipnabMcp {
     ) -> Result<CallToolResult, rmcp::ErrorData> {
         let limit = resolve_limit_with_cap(params.limit, self.row_cap);
         let filter = self.compile_filter(params.filter.as_deref())?;
-        let page = self.dialog_page(
+        let mut page = self.dialog_page(
             params.cursor.as_deref(),
             limit,
             |d, streams, capture, delay| {
@@ -4706,9 +5147,17 @@ impl SipnabMcp {
                     .is_none_or(|expr| expr.matches_dialog(d, streams, capture, delay))
             },
         )?;
+        let row_cursors = std::mem::take(&mut page.row_cursors);
         let mut page = serde_json::to_value(page)
             .map_err(|e| rmcp::ErrorData::internal_error(e.to_string(), None))?;
         Self::project_page_fields(&mut page, params.fields.as_deref())?;
+        self.fit_to_budget(
+            &mut page,
+            "dialogs",
+            &row_cursors,
+            params.max_response_bytes,
+            true,
+        )?;
         Ok(CallToolResult::success(vec![
             ContentBlock::json(page)?,
             ContentBlock::text(super::shape::untrusted_note()),
@@ -4751,13 +5200,14 @@ impl SipnabMcp {
     ) -> Result<CallToolResult, rmcp::ErrorData> {
         let key = params.group_by.trim();
         if !GROUPABLE.contains(&key) {
-            return Err(rmcp::ErrorData::invalid_params(
+            return Err(errors::refuse_choice(
+                "group_by",
+                GROUPABLE.iter(),
                 format!(
                     "cannot group by '{key}'; one of: {}. One dimension only -- \
                      narrow with `filter` rather than adding a second.",
                     GROUPABLE.join(", ")
                 ),
-                None,
             ));
         }
 
@@ -4863,9 +5313,10 @@ impl SipnabMcp {
             None | Some("json") => (ReportFormat::Json, false),
             Some("yang-json") => (ReportFormat::Json, true),
             Some(other) => {
-                return Err(rmcp::ErrorData::invalid_params(
+                return Err(errors::refuse_choice(
+                    "format",
+                    ["json", "yang-json", "markdown", "text"],
                     format!("unknown format '{other}', expected json|yang-json|markdown|text"),
-                    None,
                 ));
             }
         };
@@ -4963,9 +5414,10 @@ impl SipnabMcp {
             Some("text") | Some("txt") => ReportFormat::Text,
             None | Some("json") => ReportFormat::Json,
             Some(other) => {
-                return Err(rmcp::ErrorData::invalid_params(
+                return Err(errors::refuse_choice(
+                    "format",
+                    ["json", "markdown", "text"],
                     format!("unknown format '{other}', expected json|markdown|text"),
-                    None,
                 ));
             }
         };
@@ -4979,9 +5431,10 @@ impl SipnabMcp {
                 Some(d) => d,
                 None => {
                     drop(ds);
-                    return Err(rmcp::ErrorData::invalid_params(
+                    return Err(errors::refuse_param(
+                        Reason::NotFound,
+                        "call_id",
                         format!("call_id '{}' not found", params.call_id),
-                        None,
                     ));
                 }
             };
@@ -5051,6 +5504,11 @@ impl SipnabMcp {
                        payload-asym, duration-asym, late-media), optionally \
                        narrowed by a DSL filter. Defaults to ['problems']. The \
                        response carries total_matched, truncated and next_cursor.",
+        output_schema = crate::mcp::schema::projectable_rows(
+            schema_for_output::<DialogPage>(),
+            "dialogs",
+            &["call_id"]
+        ),
         annotations(read_only_hint = true, open_world_hint = false)
     )]
     pub async fn find_problems(
@@ -5064,14 +5522,19 @@ impl SipnabMcp {
         let mut compiled: Vec<FilterExpr> = Vec::with_capacity(kinds.len());
         for k in &kinds {
             let expr_str = expand_alias(k, &self.alias_thresholds).ok_or_else(|| {
-                rmcp::ErrorData::invalid_params(format!("unknown alias '{k}'"), None)
+                errors::refuse_choice(
+                    "kinds",
+                    crate::sip::dsl::DIAGNOSTIC_ALIASES.iter(),
+                    format!("unknown alias '{k}'"),
+                )
             })?;
             match FilterExpr::parse(&expr_str) {
                 Ok(expr) => compiled.push(expr),
                 Err(e) => {
-                    return Err(rmcp::ErrorData::invalid_params(
+                    return Err(errors::refuse_param(
+                        Reason::InvalidFilter,
+                        "kinds",
                         format!("alias '{k}' expanded to a non-parseable expression: {e}"),
-                        None,
                     ));
                 }
             }
@@ -5081,7 +5544,7 @@ impl SipnabMcp {
         // ANY alias AND the filter. The aliases answer "is this call
         // interesting", the filter answers "is it the one I am looking at" —
         // ORing them instead would widen the triage sweep rather than narrow it.
-        let page = self.dialog_page(
+        let mut page = self.dialog_page(
             params.cursor.as_deref(),
             limit,
             |d, streams, capture, delay| {
@@ -5093,9 +5556,17 @@ impl SipnabMcp {
                         .is_none_or(|expr| expr.matches_dialog(d, streams, capture, delay))
             },
         )?;
+        let row_cursors = std::mem::take(&mut page.row_cursors);
         let mut page = serde_json::to_value(page)
             .map_err(|e| rmcp::ErrorData::internal_error(e.to_string(), None))?;
         Self::project_page_fields(&mut page, params.fields.as_deref())?;
+        self.fit_to_budget(
+            &mut page,
+            "dialogs",
+            &row_cursors,
+            params.max_response_bytes,
+            true,
+        )?;
         Ok(CallToolResult::success(vec![
             ContentBlock::json(page)?,
             ContentBlock::text(super::shape::untrusted_note()),
@@ -5109,17 +5580,20 @@ impl SipnabMcp {
     /// # Returns
     ///
     /// A JSON object with the dialog summary, the requested message page,
-    /// `total_messages`, a `next_cursor` (null on the last page), and a
-    /// `complete` flag. A cursor past the end yields an empty page.
+    /// `returned`, `total_messages`, `truncated` (with `truncated_by` when
+    /// set), a `next_cursor` (null on the last page), and a `complete` flag.
+    /// A cursor past the end yields an empty page.
     ///
     /// # Errors
     ///
-    /// `invalid_params` (-32602) when `call_id` is not found.
+    /// `invalid_params` (-32602) when `call_id` is not found, when
+    /// `max_messages` is 0, or when `cursor` is malformed or was issued for a
+    /// different dialog.
     #[tool(
         name = "get_dialog",
         description = "Returns a paginated dialog including SIP messages. \
-                       Supports cursor-based pagination via max_messages \
-                       (default 100, max 1000) and cursor (default 0).",
+                       Pages by max_messages (default 100) and cursor: pass \
+                       next_cursor back verbatim.",
         annotations(read_only_hint = true, open_world_hint = false)
     )]
     pub async fn get_dialog(
@@ -5135,62 +5609,103 @@ impl SipnabMcp {
         // dialog has no messages", so the refusal says which it is.
         let max = match params.max_messages {
             Some(0) => {
-                return Err(rmcp::ErrorData::invalid_params(
+                return Err(errors::refuse_param(Reason::InvalidValue, "max_messages", 
                     "max_messages must be at least 1; it bounds the page and 0                      bounds nothing. Omit it for the default of 100."
                         .to_string(),
-                    None,
                 ));
             }
             None => 100usize.min(self.row_cap),
             Some(n) => (n as usize).min(self.row_cap),
         };
-        let cursor = params.cursor.unwrap_or(0) as usize;
+        // The cursor names the LAST message already returned, in the shape
+        // `search_messages` hands out for a message: `<created_at>|<Call-ID>#
+        // <index>`. Paging resumes at the message after it.
+        let start = match params.cursor.as_deref() {
+            None => 0usize,
+            Some(raw) => message_cursor_start(raw, &params.call_id)
+                .map_err(|e| errors::refuse_param(Reason::InvalidValue, "cursor", e))?,
+        };
 
-        let payload: serde_json::Value = {
+        let (mut payload, row_cursors) = {
             let ds = self.dialog_store.read();
             let dialog = match ds.get(&params.call_id) {
                 Some(d) => d,
                 None => {
                     drop(ds);
-                    return Err(rmcp::ErrorData::invalid_params(
+                    return Err(errors::refuse_param(
+                        Reason::NotFound,
+                        "call_id",
                         format!("call_id '{}' not found", params.call_id),
-                        None,
                     ));
                 }
             };
             let total = dialog.messages.len();
-            let end = (cursor + max).min(total);
-            let slice: Vec<serde_json::Value> = if cursor >= total {
-                Vec::new()
-            } else {
-                dialog.messages[cursor..end]
-                    .iter()
-                    .map(|m| {
-                        let mut v = crate::output::json::message_to_json_value(m);
-                        // The hole this closes was documented rather than
-                        // fixed: this array is the LARGEST run of
-                        // sender-written text the MCP surface returns, and it
-                        // used to arrive with no markers at all beside a
-                        // `dialog` summary that was fenced. One response
-                        // saying two different things about the same
-                        // provenance teaches an agent the markers are
-                        // decorative.
-                        super::shape::fence_message_json(&mut v, self.body_cap);
-                        v
-                    })
-                    .collect()
-            };
+            let first = start.min(total);
+            let end = start.saturating_add(max).min(total);
+            let slice: Vec<serde_json::Value> = dialog.messages[first..end]
+                .iter()
+                .map(|m| {
+                    let mut v = crate::output::json::message_to_json_value(m);
+                    // The hole this closes was documented rather than
+                    // fixed: this array is the LARGEST run of
+                    // sender-written text the MCP surface returns, and it
+                    // used to arrive with no markers at all beside a
+                    // `dialog` summary that was fenced. One response
+                    // saying two different things about the same
+                    // provenance teaches an agent the markers are
+                    // decorative.
+                    super::shape::fence_message_json(&mut v, self.body_cap);
+                    v
+                })
+                .collect();
+            let row_cursors: Vec<String> = (first..end)
+                .map(|i| {
+                    super::shape::format_cursor(
+                        dialog.created_at,
+                        &hit_identity(&dialog.call_id, i),
+                    )
+                })
+                .collect();
             let summary = super::shape::fenced_dialog_summary(dialog);
-            let next_cursor = if end < total { Some(end) } else { None };
             drop(ds);
-            serde_json::json!({
+            let truncated = end < total;
+            let mut payload = serde_json::json!({
+                // 2: `cursor` and `next_cursor` became the opaque string the
+                // other paged tools use, and `returned`, `truncated` and
+                // `truncated_by` joined the page.
+                "schema_version": 2,
                 "dialog": summary,
+                "returned": slice.len(),
+                // The index of `messages[0]` in the dialog, so row N of this
+                // page is `get_message { index: first_index + N }`. The cursor
+                // used to be that index; now that it is opaque, this says it.
+                "first_index": first,
                 "messages": slice,
                 "total_messages": total,
-                "next_cursor": next_cursor,
-                "complete": end >= total,
-            })
+                "truncated": truncated,
+                "next_cursor": truncated.then(|| row_cursors.last().cloned()).flatten(),
+                "complete": !truncated,
+            });
+            if truncated && let Some(obj) = payload.as_object_mut() {
+                obj.insert(
+                    super::budget::TRUNCATED_BY_KEY.to_string(),
+                    serde_json::Value::from(super::budget::TRUNCATED_BY_ROWS),
+                );
+            }
+            (payload, row_cursors)
         };
+        let cut = self.fit_to_budget(
+            &mut payload,
+            "messages",
+            &row_cursors,
+            params.max_response_bytes,
+            true,
+        )?;
+        if cut && let Some(obj) = payload.as_object_mut() {
+            // Messages remain past the cut, so this page does not reach the
+            // end of the dialog.
+            obj.insert("complete".to_string(), serde_json::Value::Bool(false));
+        }
 
         Ok(CallToolResult::success(vec![
             ContentBlock::json(payload)?,
@@ -5210,9 +5725,9 @@ impl SipnabMcp {
         description = "Returns one SIP message from a dialog, by its position \
                        in that dialog's message list. Use it to re-read a \
                        single message in full after `get_dialog` showed you a \
-                       page of them. To find an index: `get_dialog` returns \
-                       messages in order starting at its `cursor`, so the Nth \
-                       message of that page is at index cursor+N, and \
+                       page of them. To find an index: `get_dialog` reports \
+                       `first_index` for its page, so the Nth message of that \
+                       page is at index first_index+N, and \
                        `list_dialogs` reports `msg_count`, which is one past \
                        the last valid index. Returns invalid_params when the \
                        Call-ID is unknown, or when the index is out of range \
@@ -5226,19 +5741,21 @@ impl SipnabMcp {
         let parsed: serde_json::Value = {
             let ds = self.dialog_store.read();
             let dialog = ds.get(&params.call_id).ok_or_else(|| {
-                rmcp::ErrorData::invalid_params(
+                errors::refuse_param(
+                    Reason::NotFound,
+                    "call_id",
                     format!("call_id '{}' not found", params.call_id),
-                    None,
                 )
             })?;
             let idx = params.index as usize;
             let msg = dialog.messages.get(idx).ok_or_else(|| {
-                rmcp::ErrorData::invalid_params(
+                errors::refuse_param(
+                    Reason::InvalidValue,
+                    "index",
                     format!(
                         "index {idx} out of range for dialog with {} messages",
                         dialog.messages.len()
                     ),
-                    None,
                 )
             })?;
             let mut v = crate::output::json::message_to_json_value(msg);
@@ -5278,9 +5795,10 @@ impl SipnabMcp {
         if matches!(params.format.as_deref(), Some("mermaid")) {
             let ds = self.dialog_store.read();
             let dialog = ds.get(&params.call_id).ok_or_else(|| {
-                rmcp::ErrorData::invalid_params(
+                errors::refuse_param(
+                    Reason::NotFound,
+                    "call_id",
                     format!("call_id '{}' not found", params.call_id),
-                    None,
                 )
             })?;
             // Annotated: the offset, the post-dial delay, SDP changes and
@@ -5304,18 +5822,20 @@ impl SipnabMcp {
             Some("text") | Some("txt") => ReportFormat::Text,
             None | Some("markdown") | Some("md") => ReportFormat::Markdown,
             Some(other) => {
-                return Err(rmcp::ErrorData::invalid_params(
+                return Err(errors::refuse_choice(
+                    "format",
+                    ["markdown", "text", "mermaid"],
                     format!("unknown format '{other}', expected markdown|text|mermaid"),
-                    None,
                 ));
             }
         };
         let report: String = {
             let ds = self.dialog_store.read();
             let dialog = ds.get(&params.call_id).ok_or_else(|| {
-                rmcp::ErrorData::invalid_params(
+                errors::refuse_param(
+                    Reason::NotFound,
+                    "call_id",
                     format!("call_id '{}' not found", params.call_id),
-                    None,
                 )
             })?;
             let ss = self.stream_store.read();
@@ -5386,11 +5906,11 @@ impl SipnabMcp {
         // A MOS bound alongside a Call-ID is a misunderstanding of the tool,
         // and silently dropping it would answer a question nobody asked.
         if params.min_mos.is_some() || params.max_mos.is_some() {
-            return Err(rmcp::ErrorData::invalid_params(
+            return Err(errors::refuse(
+                Reason::ConflictingParams,
                 "min_mos and max_mos sweep the whole capture; omit call_id to \
                  use them, or drop them to report on one call"
                     .to_string(),
-                None,
             ));
         }
 
@@ -5405,9 +5925,10 @@ impl SipnabMcp {
             let dialog_streams: Vec<&crate::rtp::stream::RtpStream> =
                 ss.streams_for(call_id).collect();
             if dialog.is_none() && dialog_streams.is_empty() {
-                return Err(rmcp::ErrorData::invalid_params(
+                return Err(errors::refuse_param(
+                    Reason::NotFound,
+                    "call_id",
                     crate::rtp::stream_store::call_not_carried(call_id),
-                    None,
                 ));
             }
             let stream_jsons: Vec<serde_json::Value> =
@@ -5479,9 +6000,10 @@ impl SipnabMcp {
             let state = self.capture.read();
             let ds = self.dialog_store.read();
             let Some(dialog) = ds.get(call_id) else {
-                return Err(rmcp::ErrorData::invalid_params(
+                return Err(errors::refuse_param(
+                    Reason::NotFound,
+                    "call_id",
                     format!("call_id '{call_id}' not found"),
-                    None,
                 ));
             };
             let metadata = dialog.siprec_metadata.clone();
@@ -5561,9 +6083,10 @@ impl SipnabMcp {
             // them, and refuse only when neither store knows the Call-ID.
             let dialog_seen = ds.get(call_id).is_some();
             if !dialog_seen && streams.is_empty() {
-                return Err(rmcp::ErrorData::invalid_params(
+                return Err(errors::refuse_param(
+                    Reason::NotFound,
+                    "call_id",
                     crate::rtp::stream_store::call_not_carried(call_id),
-                    None,
                 ));
             }
             let absence =
@@ -5652,6 +6175,7 @@ impl SipnabMcp {
                        (call_id, message_index, snippet) hits carrying \
                        total_matched, a truncated flag, and next_cursor for \
                        the remaining matches.",
+        output_schema = schema_for_output::<MessagePage>(),
         annotations(read_only_hint = true, open_world_hint = false)
     )]
     pub async fn search_messages(
@@ -5659,15 +6183,16 @@ impl SipnabMcp {
         Parameters(params): Parameters<SearchMessagesParams>,
     ) -> Result<CallToolResult, rmcp::ErrorData> {
         if params.query.is_empty() {
-            return Err(rmcp::ErrorData::invalid_params(
+            return Err(errors::refuse_param(
+                Reason::InvalidValue,
+                "query",
                 "query must be non-empty".to_string(),
-                None,
             ));
         }
         let cursor = match params.cursor.as_deref() {
             Some(raw) => Some(
                 super::shape::parse_cursor(raw)
-                    .map_err(|e| rmcp::ErrorData::invalid_params(e, None))?,
+                    .map_err(|e| errors::refuse_param(Reason::InvalidValue, "cursor", e))?,
             ),
             None => None,
         };
@@ -5681,7 +6206,7 @@ impl SipnabMcp {
         // message of every call.
         let needle = params.query.to_ascii_lowercase();
         let needle_bytes = needle.as_bytes();
-        let page: MessagePage = {
+        let page: (MessagePage, Vec<String>) = {
             // Capture lock first, then the stores — see `CaptureState`. The
             // identity stamped on this page must describe the capture the rows
             // came out of, or the cursor it carries points into another one.
@@ -5744,10 +6269,11 @@ impl SipnabMcp {
 
             let truncated = remaining.len() > limit;
             let rows = &remaining[..remaining.len().min(limit)];
-            let next_cursor = truncated
-                .then(|| rows.last())
-                .flatten()
-                .map(|(d, _, id)| super::shape::format_cursor(d.created_at, id));
+            let row_cursors: Vec<String> = rows
+                .iter()
+                .map(|(d, _, id)| super::shape::format_cursor(d.created_at, id))
+                .collect();
+            let next_cursor = truncated.then(|| row_cursors.last().cloned()).flatten();
             let hits: Vec<SearchHit> = rows
                 .iter()
                 .map(|(d, idx, _)| SearchHit {
@@ -5767,16 +6293,28 @@ impl SipnabMcp {
             drop(ds);
             drop(state);
 
-            MessagePage {
+            let page = MessagePage {
                 schema_version: 1,
                 returned: hits.len(),
                 hits,
                 total_matched,
                 truncated,
+                truncated_by: truncated.then(|| super::budget::TRUNCATED_BY_ROWS.to_string()),
                 next_cursor,
                 capture_identity,
-            }
+            };
+            (page, row_cursors)
         };
+        let (page, row_cursors) = page;
+        let mut page = serde_json::to_value(page)
+            .map_err(|e| rmcp::ErrorData::internal_error(e.to_string(), None))?;
+        self.fit_to_budget(
+            &mut page,
+            "hits",
+            &row_cursors,
+            params.max_response_bytes,
+            true,
+        )?;
         Ok(CallToolResult::success(vec![
             ContentBlock::json(page)?,
             ContentBlock::text(super::shape::untrusted_note()),
@@ -5805,6 +6343,11 @@ impl SipnabMcp {
                        accepted). Used for polling-based change tracking. \
                        The response carries source_exhausted=true after a \
                        pcap source has been fully consumed.",
+        output_schema = crate::mcp::schema::projectable_rows(
+            schema_for_output::<TailDialogsResponse>(),
+            "dialogs",
+            &["call_id"]
+        ),
         annotations(read_only_hint = true, open_world_hint = false)
     )]
     pub async fn tail_dialogs(
@@ -5819,12 +6362,12 @@ impl SipnabMcp {
         let cursor = match params.cursor.as_deref() {
             Some(raw) => Some(
                 super::shape::parse_cursor(raw)
-                    .map_err(|e| rmcp::ErrorData::invalid_params(e, None))?,
+                    .map_err(|e| errors::refuse_param(Reason::InvalidValue, "cursor", e))?,
             ),
             None => None,
         };
 
-        let response: TailDialogsResponse = {
+        let response: (TailDialogsResponse, Vec<String>) = {
             // Capture lock first, then the stores — see `CaptureState`.
             let state = self.capture.read();
             let ds = self.dialog_store.read();
@@ -5836,6 +6379,12 @@ impl SipnabMcp {
             // its own fencing, source_exhausted, capture identity and field
             // projection on top.
             let (changed, next_cursor) = ds.tail_page(cursor.as_ref(), limit);
+            // The cursor `tail_page` would hand on after each row: the same
+            // `(updated_at, Call-ID)` key it pages on.
+            let row_cursors: Vec<String> = changed
+                .iter()
+                .map(|d| super::shape::format_cursor(d.updated_at, &d.call_id))
+                .collect();
             let summaries: Vec<DialogSummary> = changed
                 .into_iter()
                 .map(super::shape::fenced_dialog_summary)
@@ -5845,7 +6394,7 @@ impl SipnabMcp {
             drop(ss);
             drop(ds);
             drop(state);
-            TailDialogsResponse {
+            let response = TailDialogsResponse {
                 dialogs: summaries,
                 next_cursor,
                 source_exhausted: self
@@ -5853,12 +6402,21 @@ impl SipnabMcp {
                     .as_ref()
                     .is_some_and(|f| f.load(std::sync::atomic::Ordering::Relaxed)),
                 capture_identity,
-            }
+            };
+            (response, row_cursors)
         };
+        let (response, row_cursors) = response;
 
         let mut response = serde_json::to_value(response)
             .map_err(|e| rmcp::ErrorData::internal_error(e.to_string(), None))?;
         Self::project_page_fields(&mut response, params.fields.as_deref())?;
+        self.fit_to_budget(
+            &mut response,
+            "dialogs",
+            &row_cursors,
+            params.max_response_bytes,
+            false,
+        )?;
         Ok(CallToolResult::success(vec![ContentBlock::json(response)?]))
     }
 
@@ -5902,7 +6460,7 @@ impl SipnabMcp {
         let kinds_owned: Vec<String> = params.kinds.unwrap_or_default();
         let (kinds, since) =
             crate::security::findings::parse_query(&kinds_owned, params.since.as_deref())
-                .map_err(|e| rmcp::ErrorData::invalid_params(e, None))?;
+                .map_err(|e| errors::refuse(Reason::InvalidValue, e))?;
 
         let report = {
             let guard = self.alert_engine.as_ref().map(|e| e.read());
@@ -6094,8 +6652,10 @@ impl SipnabMcp {
         description = "Returns the sipnab version, which optional features this \
                        binary was compiled with (tls, hep, plugins, ...), \
                        which server-side opt-ins are on (--mcp-file-root, \
-                       --mcp-allow-shutdown, --mcp-allow-open-capture), and the \
-                       libpcap this process runs with the alternate capture \
+                       --mcp-allow-shutdown, --mcp-allow-open-capture, relay \
+                       queries, actions), the response limits, the loaded tools \
+                       and bundles, the prompt and resource-template names, and \
+                       the libpcap this process runs with the alternate capture \
                        backends (netmap, dpdk, ...) its banner names. Call \
                        this before asking for decryption, HEP, a file export or \
                        a capture swap: a build or a server without them fails \
@@ -6132,8 +6692,33 @@ impl SipnabMcp {
                 mcp_allow_open_capture: self.allow_open_capture,
                 mcp_allow_tls_capture: self.allow_tls_capture,
                 mcp_allow_save_findings: self.allow_save_findings,
+                mcp_allow_relay_query: self.relay_query.is_some(),
+                hep_delivery_trust: self.relay_delivery_trust(),
+                mcp_allow_actions: self
+                    .actions
+                    .targets_on(crate::security::actions::ActionSurface::Mcp)
+                    .into_iter()
+                    .map(str::to_string)
+                    .collect(),
             },
             libpcap: LibpcapJson::from(&crate::capture::libpcap::running()),
+            limits: McpLimits {
+                max_rows: self.row_cap,
+                max_body_bytes: self.body_cap,
+                max_inline_media_bytes: self.inline_media_budget(),
+                max_wait_seconds: self.max_wait_seconds,
+            },
+            tools: self.registered_tool_names(),
+            bundles: self.loaded_bundles(),
+            prompts: super::prompts::served(&|t| self.tool_router.has_route(t))
+                .iter()
+                .map(|w| w.name.to_string())
+                .collect(),
+            resource_templates: self
+                .advertised_templates()
+                .iter()
+                .map(|t| t.uri_template.to_string())
+                .collect(),
         };
         Ok(CallToolResult::success(vec![ContentBlock::json(payload)?]))
     }
@@ -6158,13 +6743,13 @@ impl SipnabMcp {
         // SAFETY: `geteuid` takes no arguments, cannot fail, and touches no
         // memory this process owns.
         if unsafe { libc::geteuid() } != 0 {
-            return Err(rmcp::ErrorData::invalid_params(
+            return Err(errors::refuse(
+                Reason::Unsupported,
                 "installing a uprobe needs root, and this server is not running \
                  as root. sipnab drops privileges after opening its capture \
                  devices, so a server started with --user cannot attach probes \
                  later — start it without dropping, or use --uprobe-tls on the \
                  command line",
-                None,
             ));
         }
 
@@ -6172,12 +6757,12 @@ impl SipnabMcp {
         for name in &params.flavors {
             flavors.push(
                 discover::parse_flavor(name)
-                    .map_err(|e| rmcp::ErrorData::invalid_params(e, None))?,
+                    .map_err(|e| errors::refuse_param(Reason::InvalidValue, "flavors", e))?,
             );
         }
         let planned =
             discover::plan_targets(&params.libraries, None, &flavors, discover::discover())
-                .map_err(|e| rmcp::ErrorData::invalid_params(e, None))?;
+                .map_err(|e| errors::refuse(Reason::InvalidValue, e))?;
 
         Ok(planned
             .into_iter()
@@ -6194,10 +6779,10 @@ impl SipnabMcp {
         &self,
         _params: &StartTlsCaptureParams,
     ) -> Result<Vec<crate::capture::UprobeTarget>, rmcp::ErrorData> {
-        Err(rmcp::ErrorData::invalid_params(
+        Err(errors::refuse(
+            Reason::Unsupported,
             "uprobe TLS capture needs Linux kernel uprobes and a sipnab built \
              with the `native` feature",
-            None,
         ))
     }
 
@@ -6224,12 +6809,12 @@ impl SipnabMcp {
         Parameters(params): Parameters<StartTlsCaptureParams>,
     ) -> Result<CallToolResult, rmcp::ErrorData> {
         if !self.allow_tls_capture {
-            return Err(rmcp::ErrorData::invalid_params(
+            return Err(errors::refuse(
+                Reason::NotEnabled,
                 "starting a TLS capture is disabled: start sipnab with \
                  --mcp-allow-tls-capture to permit it. This is off by default \
                  because it attaches kernel probes to a running process's TLS \
                  library and reads its plaintext",
-                None,
             ));
         }
 
@@ -6241,29 +6826,29 @@ impl SipnabMcp {
         if let Some(existing) = state.tls.as_ref()
             && !existing.finished()
         {
-            return Err(rmcp::ErrorData::invalid_params(
+            return Err(errors::refuse(
+                Reason::NotReady,
                 "a TLS capture is already running on this server. Stop it with \
                  stop_tls_capture before starting another",
-                None,
             ));
         }
         if let Some(ctx) = state.context.as_ref()
             && ctx.live
         {
-            return Err(rmcp::ErrorData::invalid_params(
+            return Err(errors::refuse(
+                Reason::NotReady,
                 "this server is already reading a live interface. sipnab's \
                  stores have one writer, so a uprobe capture cannot run beside \
                  one",
-                None,
             ));
         }
         if let Some(load) = state.load.as_ref()
             && !load.finished()
         {
-            return Err(rmcp::ErrorData::invalid_params(
+            return Err(errors::refuse(
+                Reason::NotReady,
                 "a capture is still loading. Poll capture_status until \
                  load.done is true, then start the TLS capture",
-                None,
             ));
         }
 
@@ -6401,9 +6986,10 @@ impl SipnabMcp {
         use crate::sip::response_codes::{ResponseClass, explain_response_code, response_class};
         let code = params.code;
         if !(100..700).contains(&code) {
-            return Err(rmcp::ErrorData::invalid_params(
+            return Err(errors::refuse_param(
+                Reason::InvalidValue,
+                "code",
                 format!("{code} is not a SIP response code (100-699)"),
-                None,
             ));
         }
         let class = match response_class(code) {
@@ -6445,15 +7031,17 @@ impl SipnabMcp {
         let payload = {
             let ds = self.dialog_store.read();
             let a = ds.get(&params.call_id_a).ok_or_else(|| {
-                rmcp::ErrorData::invalid_params(
+                errors::refuse_param(
+                    Reason::NotFound,
+                    "call_id_a",
                     format!("call_id_a '{}' not found", params.call_id_a),
-                    None,
                 )
             })?;
             let b = ds.get(&params.call_id_b).ok_or_else(|| {
-                rmcp::ErrorData::invalid_params(
+                errors::refuse_param(
+                    Reason::NotFound,
+                    "call_id_b",
                     format!("call_id_b '{}' not found", params.call_id_b),
-                    None,
                 )
             })?;
 
@@ -6499,9 +7087,10 @@ impl SipnabMcp {
         let payload = {
             let ds = self.dialog_store.read();
             let dialog = ds.get(&params.call_id).ok_or_else(|| {
-                rmcp::ErrorData::invalid_params(
+                errors::refuse_param(
+                    Reason::NotFound,
+                    "call_id",
                     format!("call_id '{}' not found", params.call_id),
-                    None,
                 )
             })?;
             // Built here rather than reaching into dialog_to_json, whose
@@ -6577,9 +7166,10 @@ impl SipnabMcp {
             DateTime::parse_from_rfc3339(s)
                 .map(|d| d.with_timezone(&Utc))
                 .map_err(|e| {
-                    rmcp::ErrorData::invalid_params(
+                    errors::refuse_param(
+                        Reason::InvalidValue,
+                        which,
                         format!("{which} '{s}' is not RFC 3339: {e}"),
-                        None,
                     )
                 })
         };
@@ -6591,9 +7181,10 @@ impl SipnabMcp {
         if let Some(e) = end
             && e <= start
         {
-            return Err(rmcp::ErrorData::invalid_params(
+            return Err(errors::refuse_param(
+                Reason::InvalidValue,
+                "end",
                 format!("end {e} is not after start {start}"),
-                None,
             ));
         }
         let limit = crate::mcp::shape::resolve_limit_with_cap(params.limit, self.row_cap);
@@ -6601,7 +7192,7 @@ impl SipnabMcp {
         let cursor = match params.cursor.as_deref() {
             Some(raw) => Some(
                 super::shape::parse_cursor(raw)
-                    .map_err(|e| rmcp::ErrorData::invalid_params(e, None))?,
+                    .map_err(|e| errors::refuse_param(Reason::InvalidValue, "cursor", e))?,
             ),
             None => None,
         };
@@ -6651,10 +7242,11 @@ impl SipnabMcp {
             };
             let truncated = remaining.len() > limit;
             let rows = &remaining[..remaining.len().min(limit)];
-            let next_cursor = truncated
-                .then(|| rows.last())
-                .flatten()
-                .map(|d| super::shape::format_cursor(d.created_at, &d.call_id));
+            let row_cursors: Vec<String> = rows
+                .iter()
+                .map(|d| super::shape::format_cursor(d.created_at, &d.call_id))
+                .collect();
+            let next_cursor = truncated.then(|| row_cursors.last().cloned()).flatten();
             let hits: Vec<serde_json::Value> = rows
                 .iter()
                 .map(|d| {
@@ -6670,7 +7262,7 @@ impl SipnabMcp {
             drop(ss);
             drop(ds);
             drop(state);
-            serde_json::json!({
+            let mut page = serde_json::json!({
                 "schema_version": 1,
                 "returned": hits.len(),
                 "dialogs": hits,
@@ -6678,10 +7270,24 @@ impl SipnabMcp {
                 "truncated": truncated,
                 "next_cursor": next_cursor,
                 "capture_identity": capture_identity,
-            })
+            });
+            if truncated && let Some(obj) = page.as_object_mut() {
+                obj.insert(
+                    super::budget::TRUNCATED_BY_KEY.to_string(),
+                    serde_json::Value::from(super::budget::TRUNCATED_BY_ROWS),
+                );
+            }
+            (page, row_cursors)
         };
-        let mut payload = payload;
+        let (mut payload, row_cursors) = payload;
         Self::project_page_fields(&mut payload, params.fields.as_deref())?;
+        self.fit_to_budget(
+            &mut payload,
+            "dialogs",
+            &row_cursors,
+            params.max_response_bytes,
+            true,
+        )?;
         Ok(CallToolResult::success(vec![
             ContentBlock::json(payload)?,
             ContentBlock::text(super::shape::untrusted_note()),
@@ -6696,6 +7302,7 @@ impl SipnabMcp {
                        each. Start here — the signaling/media split decides \
                        which half of the stack to investigate, and they have \
                        different causes and different fixes.",
+        output_schema = schema_for_output::<TriageResponse>(),
         annotations(read_only_hint = true, open_world_hint = false)
     )]
     pub async fn triage_call(
@@ -6705,9 +7312,10 @@ impl SipnabMcp {
         let payload = {
             let ds = self.dialog_store.read();
             let dialog = ds.get(&params.call_id).ok_or_else(|| {
-                rmcp::ErrorData::invalid_params(
+                errors::refuse_param(
+                    Reason::NotFound,
+                    "call_id",
                     format!("call_id '{}' not found", params.call_id),
-                    None,
                 )
             })?;
             let sig = crate::sip::diagnosis::diagnose_signaling(&dialog.messages);
@@ -6748,32 +7356,31 @@ impl SipnabMcp {
             // call ended does not make its ending a fault.
             let termination = crate::sip::termination::detect_termination(&dialog.messages);
 
-            let mut payload = serde_json::json!({
-                "schema_version": 1,
-                "call_id": dialog.call_id,
-                "verdict": verdict,
-                "state": format!("{:?}", dialog.state()),
-                "final_status_code": dialog.final_status_code(),
-                "signaling": {
-                    "problem": sig_bad,
-                    "hints": sig.hints,
+            TriageResponse {
+                schema_version: 1,
+                call_id: dialog.call_id.clone(),
+                verdict: verdict.to_string(),
+                state: format!("{:?}", dialog.state()),
+                final_status_code: dialog.final_status_code(),
+                signaling: TriageSignaling {
+                    problem: sig_bad,
+                    hints: sig.hints,
                 },
-                "media": {
-                    "problem": media_bad,
-                    "one_way_audio": media.one_way_audio,
-                    "nat_mismatch": media.nat_mismatch,
-                    "no_media": media.no_media,
-                    "stream_count": streams.len(),
-                    "hints": media.hints,
+                media: TriageMedia {
+                    problem: media_bad,
+                    one_way_audio: media.one_way_audio,
+                    nat_mismatch: media.nat_mismatch,
+                    no_media: media.no_media,
+                    stream_count: streams.len(),
+                    hints: media.hints,
                 },
-            });
-            // Omitted, never null, on a call that named no cause — the rule
-            // every optional block on this surface follows.
-            if let Some(t) = termination {
-                payload["termination"] = serde_json::to_value(t).unwrap_or(serde_json::Value::Null);
+                termination,
             }
-            payload
         };
+        // Through a `Value`, so the keys are written in the same (sorted)
+        // order the `json!` map this replaced wrote them in.
+        let payload = serde_json::to_value(&payload)
+            .map_err(|e| rmcp::ErrorData::internal_error(e.to_string(), None))?;
         Ok(CallToolResult::success(vec![ContentBlock::json(payload)?]))
     }
 
@@ -6793,9 +7400,10 @@ impl SipnabMcp {
         let payload = {
             let ds = self.dialog_store.read();
             let dialog = ds.get(&params.call_id).ok_or_else(|| {
-                rmcp::ErrorData::invalid_params(
+                errors::refuse_param(
+                    Reason::NotFound,
+                    "call_id",
                     format!("call_id '{}' not found", params.call_id),
-                    None,
                 )
             })?;
 
@@ -6893,9 +7501,10 @@ impl SipnabMcp {
         let payload = {
             let ds = self.dialog_store.read();
             let dialog = ds.get(&params.call_id).ok_or_else(|| {
-                rmcp::ErrorData::invalid_params(
+                errors::refuse_param(
+                    Reason::NotFound,
+                    "call_id",
                     format!("call_id '{}' not found", params.call_id),
-                    None,
                 )
             })?;
 
@@ -7008,9 +7617,10 @@ impl SipnabMcp {
         let payload = {
             let ds = self.dialog_store.read();
             let dialog = ds.get(&params.call_id).ok_or_else(|| {
-                rmcp::ErrorData::invalid_params(
+                errors::refuse_param(
+                    Reason::NotFound,
+                    "call_id",
                     format!("call_id '{}' not found", params.call_id),
-                    None,
                 )
             })?;
 
@@ -7103,19 +7713,21 @@ impl SipnabMcp {
         let payload = {
             let ds = self.dialog_store.read();
             let dialog = ds.get(&params.call_id).ok_or_else(|| {
-                rmcp::ErrorData::invalid_params(
+                errors::refuse_param(
+                    Reason::NotFound,
+                    "call_id",
                     format!("call_id '{}' not found", params.call_id),
-                    None,
                 )
             })?;
             let index = params.index as usize;
             let msg = dialog.messages.get(index).ok_or_else(|| {
-                rmcp::ErrorData::invalid_params(
+                errors::refuse_param(
+                    Reason::InvalidValue,
+                    "index",
                     format!(
                         "index {index} out of range for dialog with {} messages",
                         dialog.messages.len()
                     ),
-                    None,
                 )
             })?;
 
@@ -7176,14 +7788,15 @@ impl SipnabMcp {
     ) -> Result<CallToolResult, rmcp::ErrorData> {
         let rule = crate::sip::lint::rule_by_id(&params.rule_id).ok_or_else(|| {
             let known: Vec<&str> = crate::sip::lint::RULES.iter().map(|r| r.id).collect();
-            rmcp::ErrorData::invalid_params(
+            errors::refuse_choice(
+                "rule_id",
+                &known,
                 format!(
                     "'{}' is not a rule in the catalog. The {} rules are: {}",
                     params.rule_id,
                     known.len(),
                     known.join(", ")
                 ),
-                None,
             )
         })?;
 
@@ -7319,22 +7932,24 @@ impl SipnabMcp {
         const DEFAULT_HEX_BYTES: usize = 256;
 
         if params.refs.is_empty() {
-            return Err(rmcp::ErrorData::invalid_params(
+            return Err(errors::refuse_param(
+                Reason::InvalidValue,
+                "refs",
                 "refs must name at least one frame pointer; an empty batch \
                  would return an empty result that reads like 'nothing \
                  resolved'"
                     .to_string(),
-                None,
             ));
         }
         if params.refs.len() > MAX_REFS {
-            return Err(rmcp::ErrorData::invalid_params(
+            return Err(errors::refuse_param(
+                Reason::LimitExceeded,
+                "refs",
                 format!(
                     "{} pointers exceeds the {MAX_REFS} per call; split the \
                      batch rather than receiving a silently truncated answer",
                     params.refs.len()
                 ),
-                None,
             ));
         }
         let hex_bytes = params
@@ -7486,9 +8101,9 @@ impl SipnabMcp {
     )]
     pub async fn list_captures(&self) -> Result<CallToolResult, rmcp::ErrorData> {
         let root = self.file_root.as_ref().ok_or_else(|| {
-            rmcp::ErrorData::invalid_params(
+            errors::refuse(
+                Reason::NotEnabled,
                 "file tools are disabled: start sipnab with --mcp-file-root <DIR>".to_string(),
-                None,
             )
         })?;
         let mut files: Vec<serde_json::Value> = Vec::new();
@@ -7575,13 +8190,14 @@ impl SipnabMcp {
         Parameters(params): Parameters<FindInCapturesParams>,
     ) -> Result<CallToolResult, rmcp::ErrorData> {
         let root = self.file_root.as_ref().ok_or_else(|| {
-            rmcp::ErrorData::invalid_params(
+            errors::refuse(
+                Reason::NotEnabled,
                 "file tools are disabled: start sipnab with --mcp-file-root <DIR>".to_string(),
-                None,
             )
         })?;
-        let expr = crate::sip::dsl::FilterExpr::parse(&params.filter)
-            .map_err(|e| rmcp::ErrorData::invalid_params(format!("filter: {e}"), None))?;
+        let expr = crate::sip::dsl::FilterExpr::parse(&params.filter).map_err(|e| {
+            errors::refuse_param(Reason::InvalidFilter, "filter", format!("filter: {e}"))
+        })?;
 
         // The operator's ceilings, not constants: see `McpSweepLimits::clamp`.
         let limits = self
@@ -7649,7 +8265,7 @@ impl SipnabMcp {
         let report = self
             .sweeps
             .collect(job_id, std::time::Instant::now())
-            .map_err(|e| rmcp::ErrorData::invalid_params(e, None))?;
+            .map_err(|e| errors::refuse_param(Reason::NotFound, "job_id", e))?;
         Ok(CallToolResult::success(vec![ContentBlock::json(report)?]))
     }
 
@@ -7693,7 +8309,7 @@ impl SipnabMcp {
     ) -> Result<CallToolResult, rmcp::ErrorData> {
         self.sweeps
             .cancel(&params.job_id, std::time::Instant::now())
-            .map_err(|e| rmcp::ErrorData::invalid_params(e, None))?;
+            .map_err(|e| errors::refuse_param(Reason::NotFound, "job_id", e))?;
         self.sweep_answer(&params.job_id, Some(0)).await
     }
 
@@ -7728,9 +8344,9 @@ impl SipnabMcp {
             ds.iter().flat_map(|d| d.messages.iter().cloned()).collect()
         };
         if messages.is_empty() {
-            return Err(rmcp::ErrorData::invalid_params(
+            return Err(errors::refuse(
+                Reason::NoData,
                 "nothing to export: no messages are held".to_string(),
-                None,
             ));
         }
         let count = messages.len();
@@ -7789,15 +8405,17 @@ impl SipnabMcp {
             // was seen.
             let dialog_seen = ds.get(&params.call_id).is_some();
             if !dialog_seen && streams.is_empty() {
-                return Err(rmcp::ErrorData::invalid_params(
+                return Err(errors::refuse_param(
+                    Reason::NotFound,
+                    "call_id",
                     crate::rtp::stream_store::call_not_carried(&params.call_id),
-                    None,
                 ));
             }
             if streams.is_empty() {
-                return Err(rmcp::ErrorData::invalid_params(
+                return Err(errors::refuse_param(
+                    Reason::NoData,
+                    "call_id",
                     format!("call '{}' has no RTP streams to export", params.call_id),
-                    None,
                 ));
             }
             let absence =
@@ -7865,12 +8483,12 @@ impl SipnabMcp {
         Extension(confirm): Extension<super::elicit::Confirm>,
     ) -> Result<CallToolResult, rmcp::ErrorData> {
         if !self.allow_open_capture {
-            return Err(rmcp::ErrorData::invalid_params(
+            return Err(errors::refuse(
+                Reason::NotEnabled,
                 "opening a capture is disabled: start sipnab with \
                  --mcp-allow-open-capture to permit it. A stock server holds \
                  the capture it was started on."
                     .to_string(),
-                None,
             ));
         }
         // The same resolver every file tool uses, unchanged: one bare
@@ -7931,13 +8549,13 @@ impl SipnabMcp {
                 tracing::warn!(
                     "MCP open_capture: NOT replacing the capture ({holding} dialogs kept) — {why}"
                 );
-                return Err(rmcp::ErrorData::invalid_params(
+                return Err(errors::refuse(
+                    Reason::Declined,
                     format!(
                         "refusing to open '{}': {why}. The loaded capture is untouched \
                          and its {holding} dialog(s) are still addressable.",
                         params.filename
                     ),
-                    None,
                 ));
             }
         }
@@ -8116,7 +8734,7 @@ impl SipnabMcp {
 
     /// Record what the agent concluded, as a log line and nothing else.
     ///
-    /// The only write verb on sipnab's network surface. It is safe not because
+    /// It writes one log line. It is safe not because
     /// the text is trustworthy — it is quoted from a wire an attacker may be
     /// on — but because the write reaches nothing: no store, no detector, no
     /// other tool, and no later answer. The types that hold it are private to
@@ -8143,23 +8761,24 @@ impl SipnabMcp {
         Parameters(params): Parameters<SaveFindingsParams>,
     ) -> Result<CallToolResult, rmcp::ErrorData> {
         if !self.allow_save_findings {
-            return Err(rmcp::ErrorData::invalid_params(
+            return Err(errors::refuse(
+                Reason::NotEnabled,
                 "saving findings is disabled: start sipnab with \
                  --mcp-allow-save-findings to permit it. A stock server accepts \
                  no writes at all."
                     .to_string(),
-                None,
             ));
         }
         // An empty summary is the one input worth refusing. Everything else is
         // the agent's to phrase, but a blank annotation is a log line that says
         // nothing while claiming a sequence number.
         if params.summary.trim().is_empty() {
-            return Err(rmcp::ErrorData::invalid_params(
+            return Err(errors::refuse_param(
+                Reason::InvalidValue,
+                "summary",
                 "summary must not be empty: a finding with no text records \
                  nothing but occupies a sequence number."
                     .to_string(),
-                None,
             ));
         }
 
@@ -8190,7 +8809,8 @@ impl SipnabMcp {
         // finding this process threw away is worse off than one told plainly
         // that it was not.
         let Some(recorded) = recorded else {
-            return Err(rmcp::ErrorData::invalid_params(
+            return Err(errors::refuse(
+                Reason::LimitExceeded,
                 format!(
                     "this process has already recorded its limit of {} findings \
                      and will accept no more. Nothing was written. Restart \
@@ -8198,7 +8818,6 @@ impl SipnabMcp {
                      are in the log.",
                     self.findings.read().cap()
                 ),
-                None,
             ));
         };
 
@@ -8270,11 +8889,11 @@ impl SipnabMcp {
         rmcp::handler::server::common::RequestId(request_id): rmcp::handler::server::common::RequestId,
     ) -> Result<CallToolResult, rmcp::ErrorData> {
         if !self.allow_shutdown {
-            return Err(rmcp::ErrorData::invalid_params(
+            return Err(errors::refuse(
+                Reason::NotEnabled,
                 "shutdown is disabled: start sipnab with --mcp-allow-shutdown to \
                  permit it. A stock server cannot be stopped by an agent."
                     .to_string(),
-                None,
             ));
         }
         // Dry run unless the caller explicitly says otherwise. The default has
@@ -8311,13 +8930,13 @@ impl SipnabMcp {
         // matters, so the destructive path must be named rather than defaulted
         // into.
         if !dry_run && unsaved && saved_to.is_none() && !params.discard_unsaved.unwrap_or(false) {
-            return Err(rmcp::ErrorData::invalid_params(
+            return Err(errors::refuse(
+                Reason::MissingParam,
                 format!(
                     "refusing to stop: this is a LIVE capture holding {dialogs} dialogs \
                      that are not written anywhere. Pass save_to=\"<filename>\" to keep \
                      them, or discard_unsaved=true to accept losing them."
                 ),
-                None,
             ));
         }
 
@@ -8850,15 +9469,6 @@ fn scope_of(_extensions: &rmcp::model::Extensions) -> String {
     crate::auth::SCOPE_ACTIONS.to_string()
 }
 
-/// JSON-RPC error code for a refused-because-busy tool call.
-///
-/// The server-error range (-32000..=-32099) is where JSON-RPC 2.0 puts
-/// application-defined conditions, and this is one: not a malformed request
-/// (that is `INVALID_PARAMS`) and not an unexpected fault (`INTERNAL_ERROR`,
-/// which reads as a bug and is not a retry signal), but a transient capacity
-/// limit the caller should back off from and retry. A distinct code lets a
-/// well-behaved client tell "try again in a moment" from "this will never
-/// work", which is the whole point of returning a cap rather than hanging.
 /// Arguments for `runtime_stats`.
 #[derive(Debug, serde::Deserialize, rmcp::schemars::JsonSchema)]
 #[schemars(crate = "rmcp::schemars")]
@@ -8879,9 +9489,6 @@ pub struct RuntimeStatsParams {
 /// diagram saying so.
 const MERMAID_MAX_MESSAGES: usize = crate::mermaid::MAX_MESSAGES;
 
-/// JSON-RPC error code for a refused-because-busy tool call.
-const AT_CAPACITY_CODE: i32 = -32000;
-
 /// Take a concurrency permit for a tool call, or return the refusal to send
 /// when the server is already at its cap.
 ///
@@ -8899,9 +9506,12 @@ fn acquire_call_permit(
         None => Ok(None),
         Some(sem) => match Arc::clone(sem).try_acquire_owned() {
             Ok(permit) => Ok(Some(permit)),
-            Err(_) => Err(rmcp::ErrorData::new(
-                rmcp::model::ErrorCode(AT_CAPACITY_CODE),
-                "sipnab MCP server is at its concurrent tool-call cap; retry shortly".to_string(),
+            // No `retry_after_ms`: a slot frees when some running call
+            // finishes, and nothing here knows when that will be. A number
+            // invented for the field would be read as a promise.
+            Err(_) => Err(errors::at_capacity(
+                Reason::AtCapacity,
+                "sipnab MCP server is at its concurrent tool-call cap; retry shortly",
                 None,
             )),
         },
@@ -8913,7 +9523,8 @@ fn acquire_call_permit(
 ///
 /// Split out from `call_tool` so the limit is a plain function a test can
 /// drive directly, the same reason [`acquire_call_permit`] and
-/// [`scope_refusal`] are. The refusal carries [`AT_CAPACITY_CODE`], not a
+/// [`scope_refusal`] are. The refusal carries
+/// [`AT_CAPACITY_CODE`](super::errors::AT_CAPACITY_CODE), not a
 /// second code of its own: to the caller both mean the identical thing — the
 /// call did not run, nothing is wrong with it, retry shortly — and a client
 /// that has to learn a second "try again" code will eventually treat one of
@@ -8932,6 +9543,9 @@ fn rate_limit_refusal(
     let refusal = limiter.check(peer, now).err()?;
     let per_second = limiter.per_peer_max();
     let refused = limiter.refused_total();
+    // The window this peer was refused in ends at a known instant, so the
+    // caller is told exactly how long to wait rather than "shortly".
+    let retry_after = limiter.retry_after(now);
     drop(limiter);
     // A caller refused because the tracking table is full is told THAT, not
     // that it exceeded an allowance it never touched. Its very first call can
@@ -8949,10 +9563,10 @@ fn rate_limit_refusal(
          (total refused: {refused})",
         peer.map_or_else(|| "stdio".to_string(), |ip| ip.to_string())
     );
-    Some(rmcp::ErrorData::new(
-        rmcp::model::ErrorCode(AT_CAPACITY_CODE),
+    Some(errors::at_capacity(
+        Reason::RateLimited,
         format!("sipnab MCP server is at its per-peer rate limit{cause}; retry shortly"),
-        None,
+        Some(retry_after),
     ))
 }
 
@@ -8981,37 +9595,37 @@ fn open_capture_refusal(
     if let Some(c) = &state.context
         && c.live
     {
-        return Some(rmcp::ErrorData::invalid_params(
+        return Some(errors::refuse(
+            Reason::NotReady,
             format!(
                 "refusing to open '{filename}': this server is capturing live from '{}'. \
                  The capture thread never finishes, so loading a file would leave \
                  two writers on one store. Restart sipnab with -I to analyze files.",
                 c.name
             ),
-            None,
         ));
     }
     if let Some(load) = &state.load
         && !load.finished()
     {
-        return Some(rmcp::ErrorData::invalid_params(
+        return Some(errors::refuse(
+            Reason::NotReady,
             format!(
                 "refusing to open '{filename}': '{}' is still loading ({} packets so far). \
                  Poll capture_status until load.done is true.",
                 load.filename,
                 load.packets.load(std::sync::atomic::Ordering::Relaxed)
             ),
-            None,
         ));
     }
     if !exhausted {
-        return Some(rmcp::ErrorData::invalid_params(
+        return Some(errors::refuse(
+            Reason::NotReady,
             format!(
                 "refusing to open '{filename}': the current source has not finished \
                  reading. Poll capture_status until source_exhausted is true, \
                  then call again."
             ),
-            None,
         ));
     }
     None
@@ -9053,24 +9667,24 @@ fn scope_refusal(
     if !read_only && open_world {
         // An action: it changes a system outside sipnab. Only an `actions`
         // token reaches it, whatever else the token may do.
-        return Some(rmcp::ErrorData::invalid_params(
+        return Some(errors::refuse(
+            Reason::ScopeRefused,
             format!(
                 "tool {tool_name} changes a system outside sipnab and this \
                  token's scope is \"{scope}\" — calling it requires an \
                  \"actions\"-scope token, and the server must enable the action"
             ),
-            None,
         ));
     }
     if scope == crate::auth::SCOPE_FULL || read_only {
         return None;
     }
-    Some(rmcp::ErrorData::invalid_params(
+    Some(errors::refuse(
+        Reason::ScopeRefused,
         format!(
             "tool {tool_name} is not read-only and this token's scope is \
              \"{scope}\" — calling it requires a full-scope token"
         ),
-        None,
     ))
 }
 
@@ -9089,15 +9703,20 @@ fn is_password_like(name: &str) -> bool {
 /// the provider's logs: OWASP LLM02:2025 says to keep such data out of model
 /// inputs, and the MCP specification says credentials never pass through the
 /// client. The message never repeats the value.
-fn password_argument_refusal(arguments: Option<&rmcp::model::JsonObject>) -> Option<String> {
+fn password_argument_refusal(
+    arguments: Option<&rmcp::model::JsonObject>,
+) -> Option<(String, String)> {
     let name = arguments?.keys().find(|k| is_password_like(k))?;
-    Some(format!(
-        "argument `{name}` refused: sipnab never takes an archive password in an MCP tool \
+    Some((
+        name.clone(),
+        format!(
+            "argument `{name}` refused: sipnab never takes an archive password in an MCP tool \
          call, because an argument passes through the model's context, the client's \
          transcript and the provider's logs. Treat the password you sent as exposed. The \
          operator configures one when starting sipnab: --archive-password-file, \
          --archive-password-command, --archive-password-stdin, the systemd credential \
          archive-password, or SIPNAB_ARCHIVE_PASSWORD."
+        ),
     ))
 }
 
@@ -9188,7 +9807,7 @@ impl ServerHandler for SipnabMcp {
         _request: Option<rmcp::model::PaginatedRequestParams>,
         _context: rmcp::service::RequestContext<rmcp::RoleServer>,
     ) -> Result<rmcp::model::ListPromptsResult, rmcp::ErrorData> {
-        let prompts = super::prompts::all()
+        let prompts = super::prompts::served(&|t| self.tool_router.has_route(t))
             .into_iter()
             .map(|w| {
                 // No `arguments`: every workflow is a fixed ordering, and an
@@ -9212,17 +9831,39 @@ impl ServerHandler for SipnabMcp {
         request: rmcp::model::GetPromptRequestParams,
         _context: rmcp::service::RequestContext<rmcp::RoleServer>,
     ) -> Result<rmcp::model::GetPromptResponse, rmcp::ErrorData> {
+        let loaded = |t: &str| self.tool_router.has_route(t);
+        let served: Vec<&str> = super::prompts::served(&loaded)
+            .iter()
+            .map(|w| w.name)
+            .collect();
         let Some(workflow) = super::prompts::find(&request.name) else {
-            let known: Vec<&str> = super::prompts::all().iter().map(|w| w.name).collect();
-            return Err(rmcp::ErrorData::invalid_params(
+            return Err(errors::refuse_choice(
+                "name",
+                &served,
                 format!(
                     "no prompt named '{}'. Served: {}",
                     request.name,
-                    known.join(", ")
+                    served.join(", ")
                 ),
-                None,
             ));
         };
+        // A workflow whose tools this server does not load is refused rather
+        // than handed over: its steps would fail with "tool not found".
+        let missing = workflow.missing(&loaded);
+        if !missing.is_empty() {
+            return Err(errors::refuse_param(
+                Reason::NotEnabled,
+                "name",
+                format!(
+                    "prompt '{}' is not served: it calls {}, which this server does not \
+                     load. Add the bundle(s) {} with --mcp-tools or [mcp] tools. Served: {}",
+                    workflow.name,
+                    missing.join(", "),
+                    super::prompts::bundles_holding(&missing).join(", "),
+                    served.join(", ")
+                ),
+            ));
+        }
         Ok(
             rmcp::model::GetPromptResult::new(vec![rmcp::model::PromptMessage::new(
                 rmcp::model::Role::User,
@@ -9260,9 +9901,9 @@ impl ServerHandler for SipnabMcp {
         _request: Option<rmcp::model::PaginatedRequestParams>,
         _context: rmcp::service::RequestContext<rmcp::RoleServer>,
     ) -> Result<rmcp::model::ListResourceTemplatesResult, rmcp::ErrorData> {
-        let templates = super::completion::all()
+        let templates = self
+            .advertised_templates()
             .into_iter()
-            .filter(|t| !t.needs_file_root || self.file_root.is_some())
             .map(|t| {
                 rmcp::model::ResourceTemplate::new(t.uri_template, t.name)
                     .with_description(t.description)
@@ -9345,7 +9986,9 @@ impl ServerHandler for SipnabMcp {
         context: rmcp::service::RequestContext<rmcp::RoleServer>,
     ) -> Result<(), rmcp::ErrorData> {
         let Some(view) = super::live::Live::parse(&request.uri) else {
-            return Err(rmcp::ErrorData::invalid_params(
+            return Err(errors::refuse_param(
+                Reason::InvalidValue,
+                "uri",
                 format!(
                     "'{}' cannot be subscribed to. Only the live views change \
                      while this run is answering: {}, and \
@@ -9356,7 +9999,6 @@ impl ServerHandler for SipnabMcp {
                     super::live::DIALOG_LIST_URI,
                     super::live::DIALOG_URI_PREFIX
                 ),
-                None,
             ));
         };
         // Read the state BEFORE recording it, in this order: a generation
@@ -9368,7 +10010,7 @@ impl ServerHandler for SipnabMcp {
         let started = self
             .subscriptions
             .add(&request.uri, generation, digest, std::time::Instant::now())
-            .map_err(|refusal| rmcp::ErrorData::invalid_params(refusal.explain(), None))?;
+            .map_err(|refusal| errors::refuse(Reason::LimitExceeded, refusal.explain()))?;
         if started {
             self.spawn_watcher(view, context.peer.clone());
         }
@@ -9393,9 +10035,10 @@ impl ServerHandler for SipnabMcp {
         _context: rmcp::service::RequestContext<rmcp::RoleServer>,
     ) -> Result<(), rmcp::ErrorData> {
         if !self.subscriptions.remove(&request.uri) {
-            return Err(rmcp::ErrorData::invalid_params(
+            return Err(errors::refuse_param(
+                Reason::NotFound,
+                "uri",
                 format!("this connection is not subscribed to '{}'", request.uri),
-                None,
             ));
         }
         Ok(())
@@ -9546,9 +10189,9 @@ impl ServerHandler for SipnabMcp {
         // one is configured, held for the whole call so it bounds tool calls
         // in flight. A call that cannot take one immediately is refused and
         // audited, never queued -- see `call_limiter` and `acquire_call_permit`.
-        if let Some(why) = password_argument_refusal(request.arguments.as_ref()) {
+        if let Some((name, why)) = password_argument_refusal(request.arguments.as_ref()) {
             audit("refused", " error=password argument refused")?;
-            return Err(rmcp::ErrorData::invalid_params(why, None));
+            return Err(errors::refuse_param(Reason::InvalidArguments, &name, why));
         }
 
         let _permit = match acquire_call_permit(&self.call_limiter) {
@@ -9618,6 +10261,13 @@ impl ServerHandler for SipnabMcp {
         if let Ok(rmcp::model::CallToolResponse::Complete(complete)) = &mut result {
             super::structured::attach(complete);
         }
+
+        // Two refusals are built inside the SDK rather than by a tool: an
+        // unknown tool name and arguments that do not deserialize. They get
+        // the same `data` shape every other refusal carries (see
+        // `super::errors`), with their messages unchanged.
+        let result =
+            result.map_err(|e| errors::describe_sdk_refusal(e, || self.registered_tool_names()));
 
         let outcome = match &result {
             Ok(rmcp::model::CallToolResponse::Complete(r)) if r.is_error == Some(true) => {
@@ -10416,9 +11066,20 @@ mod tests {
     /// keys configured and `file_root` as `--api-file-root`.
     #[cfg(feature = "api")]
     fn rest_router_over(srv: &SipnabMcp, file_root: Option<std::path::PathBuf>) -> axum::Router {
+        rest_router_with(srv, file_root, None)
+    }
+
+    /// [`rest_router_over`], with `vcon_spool` as `--export-vcon-dir`.
+    #[cfg(feature = "api")]
+    fn rest_router_with(
+        srv: &SipnabMcp,
+        file_root: Option<std::path::PathBuf>,
+        vcon_spool: Option<std::path::PathBuf>,
+    ) -> axum::Router {
         use crate::output::api::{ApiState, ArchivePasswordPolicy, RateLimiter};
         crate::output::api::build_router(ApiState {
             relay_query: Default::default(),
+            alias_thresholds: Default::default(),
             dialog_store: Arc::clone(&srv.dialog_store),
             stream_store: Arc::clone(&srv.stream_store),
             verifier: Arc::new(crate::auth::TokenVerifier::new(
@@ -10438,9 +11099,91 @@ mod tests {
             alert_engine: None,
             armed_detections: Vec::new(),
             file_root,
+            vcon_spool,
             pipeline_options: Default::default(),
             archive: ArchivePasswordPolicy::default(),
         })
+    }
+
+    /// `vcon_spool_status` and `GET /v1/vcon/spool` answer from one function:
+    /// over one spool the two answers are byte-identical once the parts each
+    /// door adds are set aside. Those are `as_of` (the moment each door read
+    /// the files) and the MCP door's fencing of the store's answer, which is
+    /// how every MCP answer carries text another system wrote.
+    #[cfg(all(feature = "api", feature = "vcon"))]
+    #[tokio::test]
+    async fn vcon_spool_status_and_the_rest_route_give_one_answer() -> Result<(), TestError> {
+        use tower::ServiceExt as _;
+        let dir = tempfile::tempdir().map_err(|e| format!("tempdir: {e:?}"))?;
+        let failed = dir.path().join("failed");
+        std::fs::create_dir_all(dir.path().join("delivered")).map_err(|e| format!("{e:?}"))?;
+        std::fs::create_dir_all(&failed).map_err(|e| format!("{e:?}"))?;
+        std::fs::write(dir.path().join("p.vcon.json"), "{}").map_err(|e| format!("{e:?}"))?;
+        std::fs::write(dir.path().join("delivered/d.vcon.json"), "{}")
+            .map_err(|e| format!("{e:?}"))?;
+        std::fs::write(failed.join("f.vcon.json"), "{}").map_err(|e| format!("{e:?}"))?;
+        std::fs::write(failed.join("g.vcon.json"), "{}").map_err(|e| format!("{e:?}"))?;
+        std::fs::write(
+            failed.join("f.vcon.json.error.json"),
+            serde_json::json!({
+                "at": "2026-10-07T12:00:00Z", "body": "{\"error\":\"vCon already exists\"}",
+                "body_truncated": false, "file": "f.vcon.json", "method": "POST",
+                "reason": null, "status": 409, "url": "https://vcon.example.com/v1/vcons",
+            })
+            .to_string(),
+        )
+        .map_err(|e| format!("{e:?}"))?;
+
+        let srv = empty_server().with_vcon_spool(dir.path());
+        let mcp = srv
+            .vcon_spool_status(Parameters(
+                super::super::tools::vcon::VconSpoolStatusParams::default(),
+            ))
+            .await
+            .map_err(|e| format!("the tool answers: {e:?}"))?;
+        let mut mcp: serde_json::Value =
+            serde_json::from_str(&text_of(&mcp)?).map_err(|e| format!("payload is JSON: {e:?}"))?;
+
+        let resp = rest_router_over_spool(&srv, dir.path())
+            .oneshot(local_get("/v1/vcon/spool")?)
+            .await
+            .map_err(|e| format!("oneshot: {e:?}"))?;
+        assert_eq!(resp.status(), axum::http::StatusCode::OK);
+        let bytes = http_body_util::BodyExt::collect(resp.into_body())
+            .await
+            .map_err(|e| format!("body: {e:?}"))?
+            .to_bytes();
+        let mut rest: serde_json::Value =
+            serde_json::from_slice(&bytes).map_err(|e| format!("REST is JSON: {e:?}"))?;
+
+        // Set aside what each door adds, and nothing else.
+        for v in [&mut mcp, &mut rest] {
+            v.as_object_mut().ok_or("an object")?.remove("as_of");
+        }
+        let fenced = mcp["failures"][0]["record"]["body"]
+            .as_str()
+            .ok_or("a fenced body")?
+            .to_owned();
+        mcp["failures"][0]["record"]["body"] = serde_json::Value::String(
+            fenced
+                .strip_prefix(super::super::shape::UNTRUSTED_OPEN)
+                .and_then(|b| b.strip_suffix(super::super::shape::UNTRUSTED_CLOSE))
+                .ok_or("the MCP body is fenced")?
+                .to_owned(),
+        );
+        assert_eq!(
+            serde_json::to_string(&mcp).map_err(|e| format!("{e:?}"))?,
+            serde_json::to_string(&rest).map_err(|e| format!("{e:?}"))?,
+            "the two doors must give one answer"
+        );
+        assert_eq!(rest["failed"], 2, "premise: the spool was read: {rest}");
+        Ok(())
+    }
+
+    /// [`rest_router_over`], with `--export-vcon-dir` set to `spool`.
+    #[cfg(all(feature = "api", feature = "vcon"))]
+    fn rest_router_over_spool(srv: &SipnabMcp, spool: &std::path::Path) -> axum::Router {
+        rest_router_with(srv, None, Some(spool.to_path_buf()))
     }
 
     /// A REST `GET` of `uri` from this host.
@@ -11428,6 +12171,7 @@ mod tests {
             dst: "192.0.2.2:20000"
                 .parse()
                 .map_err(|e| format!("dst: {e:?}"))?,
+            session: 0,
         };
         let header = RtpHeader {
             version: 2,
@@ -11880,8 +12624,15 @@ mod tests {
     #[test]
     fn each_bundle_stays_within_its_byte_budget() -> Result<(), TestError> {
         const CEILINGS: &[(&str, usize)] = &[
-            ("core", 11_000),
-            ("signaling", 22_000),
+            // core 11_000 -> 12_500, signaling 22_000 -> 22_500 and full
+            // 81_000 -> 83_000 by `max_response_bytes` on the seven paged tools
+            // and the string `get_dialog` cursor (measured on the parent
+            // commit: core 10,981, signaling 21,922, full 80,612; after: core
+            // 12,223, signaling 22,349, full 82,649). media held under its
+            // 3_500 at 3,480, up from 3,112, by `reconcile_orphans`' cursor
+            // and byte budget.
+            ("core", 12_500),
+            ("signaling", 22_500),
             // 11_000 -> 13_000 and full 79_000 -> 81_000 by
             // `find_in_captures_status` and `cancel_find_in_captures`, the
             // poll and cancel of the background sweep job (captures measured
@@ -11892,12 +12643,22 @@ mod tests {
             ("relay", 4_500),
             ("tfps", 6_000),
             ("server", 5_500),
-            // 5_000 -> 6_000 and full 81_000 -> 82_500 by `analyze_vcon`,
-            // the analysis of a stored container (vcon measured 5,709, full
-            // 82,134).
-            ("vcon", 6_000),
+            // 5_000 -> 7_000 and full 81_000 -> 83_500 by `vcon_spool_status`
+            // and `export_vcon`'s `cursor`, `media` and `next_cursor` (vcon
+            // measured 6,627, full 83,052).
+            // 7_000 -> 8_500 and full 85_500 -> 87_000 when feat/vcon-input's
+            // `analyze_vcon` met the 0.5.213 batch: vcon measured 8,369 (the
+            // five tools `analyze_vcon`, `export_vcon`, `siprec_metadata`,
+            // `validate_vcon` and `vcon_spool_status`), full 86,969 over 74
+            // tools, on the merged tree.
+            ("vcon", 8_500),
             ("tls", 3_000),
-            ("full", 82_500),
+            // full 83_500 -> 85_500: the three changes above together, the
+            // paged-tool byte budget, the response schemas and the vCon
+            // paging and spool tool, measured 85,447 on the merged tree.
+            // full 85_500 -> 87_000: `analyze_vcon`, as the vcon row above
+            // says, measured 86,969 on the merged tree.
+            ("full", 87_000),
         ];
         let sizes: std::collections::BTreeMap<String, usize> = empty_server()
             .with_output_schemas(false)
@@ -12081,6 +12842,7 @@ mod tests {
     ) -> Result<serde_json::Value, TestError> {
         let result = server
             .list_dialogs(Parameters(ListDialogsParams {
+                max_response_bytes: None,
                 filter: None,
                 limit: Some(limit),
                 cursor: cursor.map(str::to_string),
@@ -12414,6 +13176,7 @@ mod tests {
         let server = empty_server();
         let err = server
             .get_dialog(Parameters(GetDialogParams {
+                max_response_bytes: None,
                 call_id: "missing@x".to_string(),
                 max_messages: None,
                 cursor: None,
@@ -12432,6 +13195,7 @@ mod tests {
         let server = server_with_dialog("dlg@x")?;
         let result = server
             .get_dialog(Parameters(GetDialogParams {
+                max_response_bytes: None,
                 call_id: "dlg@x".to_string(),
                 max_messages: None,
                 cursor: None,
@@ -12462,6 +13226,7 @@ mod tests {
         let server = server_with_dialog("cap@x")?.with_row_cap(1);
         let result = server
             .get_dialog(Parameters(GetDialogParams {
+                max_response_bytes: None,
                 call_id: "cap@x".to_string(),
                 max_messages: None,
                 cursor: None,
@@ -12491,6 +13256,7 @@ mod tests {
         let server = server_with_dialog("note@x")?;
         let result = server
             .search_by_time(Parameters(SearchByTimeParams {
+                max_response_bytes: None,
                 start: (base_ts() - chrono::Duration::seconds(1)).to_rfc3339(),
                 end: Some((base_ts() + chrono::Duration::seconds(1)).to_rfc3339()),
                 filter: None,
@@ -12519,16 +13285,20 @@ mod tests {
         let server = server_with_dialog("page@x")?;
         let result = server
             .get_dialog(Parameters(GetDialogParams {
+                max_response_bytes: None,
                 call_id: "page@x".to_string(),
                 max_messages: Some(1),
-                cursor: Some(0),
+                cursor: None,
             }))
             .await
             .map_err(|e| format!("get_dialog should succeed: {e:?}"))?;
         let v: serde_json::Value = serde_json::from_str(&text_of(&result)?)?;
         assert_eq!(v["total_messages"], 2);
         assert_eq!(v["complete"], false);
-        assert_eq!(v["next_cursor"], 1);
+        // The cursor names the last message returned, in the shape every
+        // other paged tool hands out.
+        let expected = crate::mcp::shape::format_cursor(base_ts(), &hit_identity("page@x", 0));
+        assert_eq!(v["next_cursor"], expected.as_str());
         assert_eq!(
             v["messages"]
                 .as_array()
@@ -12545,9 +13315,13 @@ mod tests {
         let server = server_with_dialog("end@x")?;
         let result = server
             .get_dialog(Parameters(GetDialogParams {
+                max_response_bytes: None,
                 call_id: "end@x".to_string(),
                 max_messages: Some(100),
-                cursor: Some(99),
+                cursor: Some(crate::mcp::shape::format_cursor(
+                    base_ts(),
+                    &hit_identity("end@x", 99),
+                )),
             }))
             .await
             .map_err(|e| format!("get_dialog should succeed: {e:?}"))?;
@@ -13323,6 +14097,7 @@ mod tests {
     /// Parameters for a plain `search_messages` call: query and limit only.
     fn search_params(query: &str, limit: Option<u32>) -> SearchMessagesParams {
         SearchMessagesParams {
+            max_response_bytes: None,
             query: query.to_string(),
             limit,
             cursor: None,
@@ -13446,6 +14221,7 @@ mod tests {
         for _ in 0..12 {
             let result = server
                 .search_messages(Parameters(SearchMessagesParams {
+                    max_response_bytes: None,
                     query: "INVITE".to_string(),
                     limit: Some(1),
                     cursor: cursor.clone(),
@@ -13490,6 +14266,7 @@ mod tests {
         let server = server_with_dialog("srch4@x")?;
         let err = server
             .search_messages(Parameters(SearchMessagesParams {
+                max_response_bytes: None,
                 query: "INVITE".to_string(),
                 limit: None,
                 cursor: Some("yesterday|srch4@x#0000000000".to_string()),
@@ -13608,6 +14385,7 @@ mod tests {
         let server = empty_server();
         let err = server
             .tail_dialogs(Parameters(TailDialogsParams {
+                max_response_bytes: None,
                 cursor: Some("not-a-timestamp".to_string()),
                 limit: None,
                 fields: None,
@@ -13652,6 +14430,7 @@ mod tests {
         let future = "2099-01-01T00:00:00Z".to_string();
         let result = server
             .tail_dialogs(Parameters(TailDialogsParams {
+                max_response_bytes: None,
                 cursor: Some(future),
                 limit: None,
                 fields: None,
@@ -13678,6 +14457,7 @@ mod tests {
         for _ in 0..20 {
             let result = server
                 .tail_dialogs(Parameters(TailDialogsParams {
+                    max_response_bytes: None,
                     cursor: cursor.clone(),
                     limit: Some(limit),
                     fields: None,
@@ -13769,6 +14549,7 @@ mod tests {
         // Equal to the dialog's updated_at → strictly-after excludes it.
         let result = server
             .tail_dialogs(Parameters(TailDialogsParams {
+                max_response_bytes: None,
                 cursor: Some(base_ts().to_rfc3339()),
                 limit: None,
                 fields: None,
@@ -14287,6 +15068,7 @@ mod tests {
         assert!(
             empty_server()
                 .search_by_time(Parameters(SearchByTimeParams {
+                    max_response_bytes: None,
                     start: "yesterday".into(),
                     end: None,
                     filter: None,
@@ -14306,6 +15088,7 @@ mod tests {
         assert!(
             empty_server()
                 .search_by_time(Parameters(SearchByTimeParams {
+                    max_response_bytes: None,
                     start: "2026-01-02T00:00:00Z".into(),
                     end: Some("2026-01-01T00:00:00Z".into()),
                     filter: None,
@@ -14331,6 +15114,7 @@ mod tests {
     async fn search_by_time_cursor_reaches_every_dialog_in_the_window() -> Result<(), TestError> {
         let server = server_with_simultaneous_dialogs(&["t-c@x", "t-a@x", "t-b@x"])?;
         let window = |cursor: Option<String>| SearchByTimeParams {
+            max_response_bytes: None,
             start: (base_ts() - chrono::Duration::seconds(1)).to_rfc3339(),
             end: Some((base_ts() + chrono::Duration::seconds(1)).to_rfc3339()),
             filter: None,
@@ -14380,6 +15164,7 @@ mod tests {
     async fn search_by_time_rejects_a_malformed_cursor() -> Result<(), TestError> {
         let err = empty_server()
             .search_by_time(Parameters(SearchByTimeParams {
+                max_response_bytes: None,
                 start: "2026-01-01T00:00:00Z".into(),
                 end: None,
                 filter: None,
@@ -14494,6 +15279,101 @@ mod tests {
         assert!(feats.contains(&"mcp".to_string()), "got {feats:?}");
         assert_eq!(v["can_decrypt"], cfg!(feature = "tls"));
         assert_eq!(v["can_plugins"], cfg!(feature = "plugins"));
+        Ok(())
+    }
+
+    /// The limits, loaded tools and bundles, action targets, prompt names and
+    /// resource-template names are reported as the server holds them.
+    #[tokio::test]
+    async fn server_capabilities_reports_what_this_server_loaded() -> Result<(), TestError> {
+        let mut policy = crate::security::actions::ActionPolicy::default();
+        policy.enable(
+            crate::security::actions::ActionTarget::Tfps,
+            &[crate::security::actions::ActionSurface::Mcp],
+        );
+        let server = empty_server()
+            .with_row_cap(7)
+            .with_actions(policy)
+            .with_tool_selection(&crate::mcp_profile::resolve(
+                &["core".to_string()],
+                &Default::default(),
+            )?);
+        let v: serde_json::Value = serde_json::from_str(&text_of(
+            &server
+                .server_capabilities()
+                .await
+                .map_err(|e| format!("succeeds: {e:?}"))?,
+        )?)?;
+        assert_eq!(v["limits"]["max_rows"], 7, "{v}");
+        assert_eq!(
+            v["limits"]["max_body_bytes"],
+            super::super::shape::DEFAULT_MAX_BODY_BYTES,
+            "{v}"
+        );
+        #[cfg(feature = "vcon")]
+        assert_eq!(
+            v["limits"]["max_inline_media_bytes"],
+            crate::output::vcon::MAX_INLINE_MEDIA_BYTES,
+            "{v}"
+        );
+        #[cfg(not(feature = "vcon"))]
+        assert!(v["limits"]["max_inline_media_bytes"].is_null(), "{v}");
+        assert_eq!(
+            v["runtime"]["mcp_allow_actions"],
+            serde_json::json!(["tfps"]),
+            "{v}"
+        );
+        assert_eq!(
+            v["tools"],
+            serde_json::json!(server.registered_tool_names()),
+            "{v}"
+        );
+        assert_eq!(v["bundles"], serde_json::json!(["core"]), "{v}");
+        // The prompts `prompts/list` serves: only those whose every tool is
+        // loaded, which under `core` alone is none of them.
+        let prompts: Vec<&'static str> =
+            super::super::prompts::served(&|t| server.tool_router.has_route(t))
+                .iter()
+                .map(|w| w.name)
+                .collect();
+        assert_eq!(v["prompts"], serde_json::json!(prompts), "{v}");
+        // A bundle only partly loaded is not listed: `get_message` alone does
+        // not make `signaling` loaded.
+        let partial = empty_server().with_tool_selection(&crate::mcp_profile::resolve(
+            &["core".to_string(), "get_message".to_string()],
+            &Default::default(),
+        )?);
+        assert_eq!(partial.loaded_bundles(), vec!["core".to_string()]);
+        let templates = v["resource_templates"].as_array().ok_or("templates")?;
+        assert!(
+            templates.contains(&serde_json::json!("sipnab://schema/{tool}")),
+            "{v}"
+        );
+        assert!(
+            !templates.contains(&serde_json::json!("sipnab:///{filename}")),
+            "no file root, so no file template: {v}"
+        );
+        Ok(())
+    }
+
+    /// A full server lists every bundle the build carries any tool of.
+    #[tokio::test]
+    async fn a_full_server_lists_every_bundle() -> Result<(), TestError> {
+        let server = empty_server();
+        let v: serde_json::Value = serde_json::from_str(&text_of(
+            &server
+                .server_capabilities()
+                .await
+                .map_err(|e| format!("succeeds: {e:?}"))?,
+        )?)?;
+        let registered = server.registered_tool_names();
+        let names: Vec<&str> = crate::mcp_profile::BUNDLES
+            .iter()
+            .filter(|(_, tools)| tools.iter().any(|t| registered.iter().any(|r| r == t)))
+            .map(|(n, _)| *n)
+            .collect();
+        assert!(names.len() >= 8, "only {} bundles carried", names.len());
+        assert_eq!(v["bundles"], serde_json::json!(names), "{v}");
         Ok(())
     }
 
@@ -15139,6 +16019,7 @@ mod tests {
                 serde_json::from_str(&text_of(
                     &server
                         .tail_dialogs(Parameters(TailDialogsParams {
+                            max_response_bytes: None,
                             cursor: None,
                             limit: None,
                             fields: None,
@@ -16919,7 +17800,8 @@ mod tests {
             .err()
             .ok_or("a third call over a cap of two must be refused")?;
         assert_eq!(
-            refusal.code.0, AT_CAPACITY_CODE,
+            refusal.code.0,
+            crate::mcp::errors::AT_CAPACITY_CODE,
             "an at-capacity refusal must carry the retryable server-error code, \
              not invalid-params (a client error) or internal-error (reads as a bug)"
         );
@@ -16988,6 +17870,40 @@ mod tests {
     ///
     /// This drives the same function `call_tool` calls, so it tests the effect
     /// — a real refusal at the boundary — not a restatement of the predicate.
+    /// Both -32000 refusals carry `data.reason`, and the rate-limit one says
+    /// how long until its window ends. The concurrency one carries no
+    /// `retry_after_ms`: nothing knows when a running call will finish.
+    #[test]
+    fn capacity_refusals_carry_a_reason_and_the_rate_limit_a_retry_time() -> Result<(), TestError> {
+        let server = empty_server()
+            .with_rate_limit_per_peer(1, crate::rate_limit::DEFAULT_MAX_TRACKED_PEERS)
+            .with_max_concurrent(1);
+        let peer: PeerKey = Some(IpAddr::V4(Ipv4Addr::new(198, 51, 100, 9)));
+        let now = std::time::Instant::now();
+        assert!(rate_limit_refusal(&server.rate_limiter, peer, now).is_none());
+        let refused = rate_limit_refusal(&server.rate_limiter, peer, now)
+            .ok_or("the second call in a 1/s window is refused")?;
+        let data = refused.data.ok_or("rate-limit data")?;
+        assert_eq!(data["reason"], "rate_limited", "{data}");
+        let ms = data["retry_after_ms"]
+            .as_u64()
+            .ok_or_else(|| format!("no retry_after_ms: {data}"))?;
+        let window_ms = u64::try_from(crate::rate_limit::WINDOW.as_millis())?;
+        assert!((1..=window_ms).contains(&ms), "inside one window: {ms}");
+
+        let _held = acquire_call_permit(&server.call_limiter)
+            .map_err(|e| format!("first call admitted: {e:?}"))?;
+        let busy = acquire_call_permit(&server.call_limiter)
+            .err()
+            .ok_or("a second call over a cap of one is refused")?;
+        assert_eq!(
+            busy.data,
+            Some(serde_json::json!({"reason": "at_capacity"})),
+            "{busy:?}"
+        );
+        Ok(())
+    }
+
     /// The window is stepped by passing `now`, never by sleeping: a limiter
     /// whose test sleeps for a second is a limiter nobody runs.
     #[test]
@@ -17012,7 +17928,8 @@ mod tests {
         let refusal = rate_limit_refusal(&server.rate_limiter, peer, now)
             .ok_or("a fourth call inside a 3/s window must be refused")?;
         assert_eq!(
-            refusal.code.0, AT_CAPACITY_CODE,
+            refusal.code.0,
+            crate::mcp::errors::AT_CAPACITY_CODE,
             "a rate-limit refusal must carry the same retryable server-error \
              code the concurrency cap uses, not invalid-params (a client error) \
              or internal-error (reads as a bug)"
@@ -17408,6 +18325,7 @@ mod tests {
                 text_of(
                     &server
                         .list_dialogs(Parameters(ListDialogsParams {
+                            max_response_bytes: None,
                             cursor: None,
                             limit: None,
                             filter: None,
@@ -17422,6 +18340,7 @@ mod tests {
                 text_of(
                     &server
                         .tail_dialogs(Parameters(TailDialogsParams {
+                            max_response_bytes: None,
                             cursor: None,
                             limit: None,
                             fields: None,
@@ -17435,6 +18354,7 @@ mod tests {
                 text_of(
                     &server
                         .get_dialog(Parameters(GetDialogParams {
+                            max_response_bytes: None,
                             call_id: "w4@x".into(),
                             cursor: None,
                             max_messages: None,
@@ -17830,6 +18750,582 @@ mod tests {
             v["timing_clock"].is_null(),
             "null means no time-based match was returned, not that the clock is fine"
         );
+        Ok(())
+    }
+
+    // ── whole-response byte budget and uniform paging ───────────────
+
+    /// Bytes of every text block in a result: the figure
+    /// `metrics::response_bytes` reports, before the dispatcher's stamp.
+    fn response_len(result: &CallToolResult) -> usize {
+        result
+            .content
+            .iter()
+            .filter_map(|c| c.as_text())
+            .map(|t| t.text.len())
+            .sum()
+    }
+
+    /// The JSON page of a result, parsed.
+    fn json_page(result: &CallToolResult) -> Result<serde_json::Value, TestError> {
+        Ok(serde_json::from_str(&text_of(result)?)?)
+    }
+
+    /// One page that a byte budget may have cut, checked against the rules
+    /// every budgeted page must keep: within budget once the stamp's bytes are
+    /// added (unless it is a single row), `returned` equal to the rows held,
+    /// and a `truncated_by` that names the bound that cut it.
+    fn checked_page(
+        result: &CallToolResult,
+        rows_key: &str,
+        budget: usize,
+    ) -> Result<serde_json::Value, TestError> {
+        let v = json_page(result)?;
+        let rows = v[rows_key].as_array().ok_or("row array")?.len();
+        if rows > 1 {
+            assert!(
+                response_len(result) + crate::mcp::completeness::stamp_growth_bound() <= budget,
+                "a {}-byte response (+{} stamped) exceeds a {budget}-byte budget: {v}",
+                response_len(result),
+                crate::mcp::completeness::stamp_growth_bound(),
+            );
+        }
+        if let Some(returned) = v.get("returned") {
+            assert_eq!(returned, rows, "returned must count the rows held: {v}");
+        }
+        if v["truncated_by"] == "bytes" {
+            assert_eq!(v["truncated"], true, "{v}");
+            assert!(
+                v["next_cursor"].is_string(),
+                "a byte cut hands on a cursor: {v}"
+            );
+        }
+        Ok(v)
+    }
+
+    /// Six dialogs, created one second apart, so their order is unambiguous.
+    fn server_with_six_dialogs() -> Result<SipnabMcp, TestError> {
+        let mut ds = DialogStore::new(100, false);
+        for i in 0..6i64 {
+            let id = format!("budget-{i}@h");
+            let at = base_ts() + chrono::Duration::seconds(i);
+            ds.process_message(invite(&id, at)?);
+            ds.process_message(ok200(&id, at)?);
+        }
+        Ok(SipnabMcp::new(
+            Arc::new(RwLock::new(ds)),
+            Arc::new(RwLock::new(StreamStore::new(100))),
+        ))
+    }
+
+    /// `list_dialogs` with a budget and a cursor, as a result.
+    async fn list_with_budget(
+        server: &SipnabMcp,
+        cursor: Option<String>,
+        budget: Option<u64>,
+    ) -> Result<CallToolResult, TestError> {
+        Ok(server
+            .list_dialogs(Parameters(ListDialogsParams {
+                limit: Some(6),
+                cursor,
+                max_response_bytes: budget,
+                ..Default::default()
+            }))
+            .await
+            .map_err(|e| format!("list_dialogs: {e:?}"))?)
+    }
+
+    /// A budget smaller than the page cuts whole rows, says `truncated_by:
+    /// "bytes"`, and following `next_cursor` under the same budget reaches
+    /// every dialog exactly once, in order.
+    #[tokio::test]
+    async fn a_byte_budget_cuts_list_dialogs_at_rows_and_the_cursor_reaches_the_rest()
+    -> Result<(), TestError> {
+        let server = server_with_six_dialogs()?;
+        let whole = list_with_budget(&server, None, None).await?;
+        let all: Vec<String> = json_page(&whole)?["dialogs"]
+            .as_array()
+            .ok_or("dialogs")?
+            .iter()
+            .filter_map(|d| d["call_id"].as_str().map(str::to_string))
+            .collect();
+        assert_eq!(all.len(), 6);
+        assert!(
+            json_page(&whole)?.get("truncated_by").is_none(),
+            "nothing cut"
+        );
+
+        let budget = response_len(&whole) / 2;
+        let mut seen = Vec::new();
+        let mut cursor = None;
+        let mut pages = 0;
+        loop {
+            let r = list_with_budget(&server, cursor.clone(), Some(budget as u64)).await?;
+            let v = checked_page(&r, "dialogs", budget)?;
+            pages += 1;
+            for d in v["dialogs"].as_array().ok_or("dialogs")? {
+                seen.push(d["call_id"].as_str().ok_or("call_id")?.to_string());
+            }
+            if pages == 1 {
+                assert_eq!(v["truncated_by"], "bytes", "first page: {v}");
+                assert!(
+                    v["total_matched"] == 6,
+                    "the total still counts every match"
+                );
+            }
+            match v["next_cursor"].as_str() {
+                Some(c) => cursor = Some(c.to_string()),
+                None => break,
+            }
+            assert!(pages < 20, "the cursor must make progress");
+        }
+        assert!(pages > 1, "a half-size budget must take more than one page");
+        assert_eq!(seen, all, "every dialog exactly once, in order");
+        Ok(())
+    }
+
+    /// A row-limit cut says `truncated_by: "rows"`, so a caller can tell the
+    /// two bounds apart.
+    #[tokio::test]
+    async fn a_row_limit_cut_says_truncated_by_rows() -> Result<(), TestError> {
+        let server = server_with_six_dialogs()?;
+        let v = page(&server, 2, None).await?;
+        assert_eq!(v["truncated"], true);
+        assert_eq!(v["truncated_by"], "rows", "{v}");
+        Ok(())
+    }
+
+    /// The operator's ceiling clamps a caller's larger request, the way
+    /// `--mcp-max-rows` clamps `limit`.
+    #[tokio::test]
+    async fn the_server_byte_ceiling_clamps_a_larger_request() -> Result<(), TestError> {
+        let whole = list_with_budget(&server_with_six_dialogs()?, None, None).await?;
+        let ceiling = response_len(&whole) / 2;
+        let server = server_with_six_dialogs()?.with_response_cap(ceiling);
+        for asked in [None, Some(0), Some(10_000_000)] {
+            let r = list_with_budget(&server, None, asked).await?;
+            let v = checked_page(&r, "dialogs", ceiling)?;
+            assert_eq!(v["truncated_by"], "bytes", "asked {asked:?}: {v}");
+        }
+        Ok(())
+    }
+
+    /// Six dialogs whose INVITE was answered 500, so the `problems` alias
+    /// selects every one of them.
+    fn server_with_six_failed_dialogs() -> Result<SipnabMcp, TestError> {
+        let mut ds = DialogStore::new(100, false);
+        for i in 0..6i64 {
+            let id = format!("failed-{i}@h");
+            let at = base_ts() + chrono::Duration::seconds(i);
+            ds.process_message(invite(&id, at)?);
+            let raw = build_sip(
+                "SIP/2.0 500 Server Internal Error",
+                &[
+                    "Via: SIP/2.0/UDP 127.0.0.1:5060;branch=z9hG4bKabc",
+                    "From: Alice <sip:alice@example.com>;tag=t1",
+                    "To: <sip:bob@example.com>;tag=t2",
+                    &format!("Call-ID: {id}"),
+                    "CSeq: 1 INVITE",
+                    "Content-Length: 0",
+                ],
+                b"",
+            );
+            ds.process_message(parse_at(&raw, at)?);
+        }
+        Ok(SipnabMcp::new(
+            Arc::new(RwLock::new(ds)),
+            Arc::new(RwLock::new(StreamStore::new(100))),
+        ))
+    }
+
+    /// `find_problems` and `search_by_time` page through the same budget.
+    #[tokio::test]
+    async fn find_problems_and_search_by_time_honor_the_byte_budget() -> Result<(), TestError> {
+        let failed = server_with_six_failed_dialogs()?;
+        let fp = |cursor: Option<String>, budget: Option<u64>| {
+            failed.find_problems(Parameters(FindProblemsParams {
+                kinds: None,
+                filter: None,
+                limit: Some(6),
+                cursor,
+                fields: None,
+                max_response_bytes: budget,
+            }))
+        };
+        let whole = fp(None, None).await.map_err(|e| format!("{e:?}"))?;
+        let all = json_page(&whole)?["dialogs"]
+            .as_array()
+            .ok_or("dialogs")?
+            .clone();
+        assert_eq!(all.len(), 6, "every failed call is a problem");
+        let budget = response_len(&whole) / 2;
+        let mut seen = Vec::new();
+        let mut cursor = None;
+        let mut first = true;
+        for _ in 0..20 {
+            let r = fp(cursor.clone(), Some(budget as u64))
+                .await
+                .map_err(|e| format!("{e:?}"))?;
+            let v = checked_page(&r, "dialogs", budget)?;
+            if first {
+                assert_eq!(v["truncated_by"], "bytes", "{v}");
+                first = false;
+            }
+            seen.extend(v["dialogs"].as_array().ok_or("dialogs")?.iter().cloned());
+            match v["next_cursor"].as_str() {
+                Some(c) => cursor = Some(c.to_string()),
+                None => break,
+            }
+        }
+        assert_eq!(seen, all, "find_problems: every row once, in order");
+
+        let server = server_with_six_dialogs()?;
+        let sbt = |cursor: Option<String>, budget: Option<u64>| {
+            server.search_by_time(Parameters(SearchByTimeParams {
+                start: (base_ts() - chrono::Duration::seconds(1)).to_rfc3339(),
+                end: None,
+                filter: None,
+                limit: Some(6),
+                cursor,
+                fields: None,
+                max_response_bytes: budget,
+            }))
+        };
+        let whole = sbt(None, None).await.map_err(|e| format!("{e:?}"))?;
+        let all = json_page(&whole)?["dialogs"]
+            .as_array()
+            .ok_or("dialogs")?
+            .clone();
+        assert_eq!(all.len(), 6);
+        let budget = response_len(&whole) * 2 / 3;
+        let mut seen = Vec::new();
+        let mut cursor = None;
+        for _ in 0..20 {
+            let r = sbt(cursor.clone(), Some(budget as u64))
+                .await
+                .map_err(|e| format!("{e:?}"))?;
+            let v = checked_page(&r, "dialogs", budget)?;
+            seen.extend(v["dialogs"].as_array().ok_or("dialogs")?.iter().cloned());
+            match v["next_cursor"].as_str() {
+                Some(c) => cursor = Some(c.to_string()),
+                None => break,
+            }
+        }
+        assert_eq!(seen, all, "search_by_time: every row once, in order");
+        Ok(())
+    }
+
+    /// `tail_dialogs` cuts at rows and its cursor resumes after the last row
+    /// kept.
+    #[tokio::test]
+    async fn tail_dialogs_honors_the_byte_budget() -> Result<(), TestError> {
+        let server = server_with_six_dialogs()?;
+        let tail = |cursor: Option<String>, budget: Option<u64>| {
+            server.tail_dialogs(Parameters(TailDialogsParams {
+                cursor,
+                limit: Some(6),
+                fields: None,
+                max_response_bytes: budget,
+            }))
+        };
+        let whole = tail(None, None).await.map_err(|e| format!("{e:?}"))?;
+        let all = json_page(&whole)?["dialogs"]
+            .as_array()
+            .ok_or("dialogs")?
+            .clone();
+        assert_eq!(all.len(), 6);
+        let budget = response_len(&whole) / 2;
+        let mut seen = Vec::new();
+        let mut cursor = None;
+        for _ in 0..20 {
+            let r = tail(cursor.clone(), Some(budget as u64))
+                .await
+                .map_err(|e| format!("{e:?}"))?;
+            let v = checked_page(&r, "dialogs", budget)?;
+            let rows = v["dialogs"].as_array().ok_or("dialogs")?;
+            if rows.is_empty() {
+                break;
+            }
+            seen.extend(rows.iter().cloned());
+            cursor = v["next_cursor"].as_str().map(str::to_string);
+        }
+        assert_eq!(seen, all, "tail_dialogs: every row once, in order");
+        Ok(())
+    }
+
+    /// `search_messages` cuts hits at whole rows and the cursor reaches every
+    /// hit once.
+    #[tokio::test]
+    async fn search_messages_honors_the_byte_budget() -> Result<(), TestError> {
+        let server = server_with_six_dialogs()?;
+        let search = |cursor: Option<String>, budget: Option<u64>| {
+            server.search_messages(Parameters(SearchMessagesParams {
+                query: "CSeq".to_string(),
+                limit: Some(100),
+                cursor,
+                max_response_bytes: budget,
+            }))
+        };
+        let whole = search(None, None).await.map_err(|e| format!("{e:?}"))?;
+        let all = json_page(&whole)?["hits"].as_array().ok_or("hits")?.clone();
+        assert_eq!(all.len(), 12, "two messages in each of six dialogs");
+        let budget = response_len(&whole) / 3;
+        let mut seen = Vec::new();
+        let mut cursor = None;
+        let mut first = true;
+        for _ in 0..40 {
+            let r = search(cursor.clone(), Some(budget as u64))
+                .await
+                .map_err(|e| format!("{e:?}"))?;
+            let v = checked_page(&r, "hits", budget)?;
+            if first {
+                assert_eq!(v["truncated_by"], "bytes", "{v}");
+                first = false;
+            }
+            seen.extend(v["hits"].as_array().ok_or("hits")?.iter().cloned());
+            match v["next_cursor"].as_str() {
+                Some(c) => cursor = Some(c.to_string()),
+                None => break,
+            }
+        }
+        assert_eq!(seen, all, "search_messages: every hit once, in order");
+        Ok(())
+    }
+
+    /// A server holding `n` orphaned RTP streams, one SSRC each.
+    fn server_with_streams(n: u32) -> SipnabMcp {
+        use crate::rtp::parser::RtpHeader;
+        let ss = Arc::new(RwLock::new(StreamStore::new(100)));
+        {
+            let mut s = ss.write();
+            for i in 0..n {
+                let hdr = RtpHeader {
+                    version: 2,
+                    padding: false,
+                    extension: false,
+                    csrc_count: 0,
+                    marker: false,
+                    payload_type: 0,
+                    sequence: 1,
+                    timestamp: 160,
+                    ssrc: 0x1000 + i,
+                    payload_offset: 12,
+                };
+                let at = base_ts() + chrono::Duration::milliseconds(i64::from(i));
+                let parsed = crate::capture::parse::ParsedPacket {
+                    frame_bytes: None,
+                    frame: None,
+                    timestamp: at,
+                    src_addr: IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)),
+                    dst_addr: IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2)),
+                    src_port: 40000,
+                    dst_port: 30000 + 2 * u16::try_from(i).unwrap_or(0),
+                    transport: TransportProto::Udp,
+                    payload: vec![0u8; 12 + 160].into(),
+                    ip_id: None,
+                    tcp_seq: None,
+                    tcp_flags: None,
+                    fragment_offset: None,
+                    more_fragments: false,
+                    ip_protocol: 17,
+                    dscp: None,
+                    input_origin: crate::capture::parse::InputOrigin::Wire,
+                    hep: None,
+                };
+                s.process_rtp(&parsed, &hdr, at);
+            }
+        }
+        SipnabMcp::new(Arc::new(RwLock::new(DialogStore::new(100, false))), ss)
+    }
+
+    /// The capture-wide `rtp_stats` sweep cuts streams at whole rows and the
+    /// cursor reaches every stream once.
+    #[tokio::test]
+    async fn the_rtp_stats_sweep_honors_the_byte_budget() -> Result<(), TestError> {
+        let server = server_with_streams(5);
+        let sweep = |cursor: Option<String>, budget: Option<u64>| {
+            server.rtp_stats(Parameters(RtpStatsParams {
+                limit: Some(5),
+                cursor,
+                max_response_bytes: budget,
+                ..Default::default()
+            }))
+        };
+        let whole = sweep(None, None).await.map_err(|e| format!("{e:?}"))?;
+        let all = json_page(&whole)?["streams"]
+            .as_array()
+            .ok_or("streams")?
+            .clone();
+        assert_eq!(all.len(), 5);
+        let budget = response_len(&whole) / 2;
+        let mut seen = Vec::new();
+        let mut cursor = None;
+        let mut first = true;
+        for _ in 0..20 {
+            let r = sweep(cursor.clone(), Some(budget as u64))
+                .await
+                .map_err(|e| format!("{e:?}"))?;
+            let v = checked_page(&r, "streams", budget)?;
+            if first {
+                assert_eq!(v["truncated_by"], "bytes", "{v}");
+                first = false;
+            }
+            seen.extend(v["streams"].as_array().ok_or("streams")?.iter().cloned());
+            match v["next_cursor"].as_str() {
+                Some(c) => cursor = Some(c.to_string()),
+                None => break,
+            }
+        }
+        assert_eq!(seen, all, "rtp_stats: every stream once, in order");
+        Ok(())
+    }
+
+    /// A dialog of one INVITE and `responses` 200 OK retransmissions.
+    fn server_with_long_dialog(call_id: &str, responses: usize) -> Result<SipnabMcp, TestError> {
+        let mut ds = DialogStore::new(100, false);
+        ds.process_message(invite(call_id, base_ts())?);
+        for i in 0..responses {
+            let at = base_ts() + chrono::Duration::milliseconds(i as i64 + 1);
+            ds.process_message(ok200(call_id, at)?);
+        }
+        Ok(SipnabMcp::new(
+            Arc::new(RwLock::new(ds)),
+            Arc::new(RwLock::new(StreamStore::new(100))),
+        ))
+    }
+
+    /// `get_dialog` with a string cursor and an optional budget.
+    async fn dialog_page_of(
+        server: &SipnabMcp,
+        call_id: &str,
+        max_messages: Option<u32>,
+        cursor: Option<String>,
+        budget: Option<u64>,
+    ) -> Result<CallToolResult, rmcp::ErrorData> {
+        server
+            .get_dialog(Parameters(GetDialogParams {
+                call_id: call_id.to_string(),
+                max_messages,
+                cursor,
+                max_response_bytes: budget,
+            }))
+            .await
+    }
+
+    /// `get_dialog` pages with the opaque string cursor every other paged tool
+    /// uses, and carries the shared page fields.
+    #[tokio::test]
+    async fn get_dialog_pages_with_an_opaque_cursor_and_the_shared_fields() -> Result<(), TestError>
+    {
+        let server = server_with_long_dialog("long@x", 4)?;
+        let whole = json_page(
+            &dialog_page_of(&server, "long@x", None, None, None)
+                .await
+                .map_err(|e| format!("{e:?}"))?,
+        )?;
+        let total = whole["total_messages"].as_u64().ok_or("total_messages")? as usize;
+        assert!(total >= 3, "fixture holds several messages: {whole}");
+        assert_eq!(whole["schema_version"], 2, "{whole}");
+        assert_eq!(whole["returned"], total);
+        assert_eq!(whole["truncated"], false);
+        assert!(whole["next_cursor"].is_null());
+        assert_eq!(whole["complete"], true);
+
+        let mut seen = Vec::new();
+        let mut cursor = None;
+        for _ in 0..(total + 2) {
+            let v = json_page(
+                &dialog_page_of(&server, "long@x", Some(1), cursor.clone(), None)
+                    .await
+                    .map_err(|e| format!("{e:?}"))?,
+            )?;
+            assert_eq!(v["returned"], 1, "{v}");
+            assert_eq!(
+                v["first_index"],
+                seen.len(),
+                "the page names the index of its first message, for get_message: {v}"
+            );
+            seen.extend(v["messages"].as_array().ok_or("messages")?.iter().cloned());
+            match v["next_cursor"].as_str() {
+                Some(c) => {
+                    assert_eq!(v["truncated"], true);
+                    assert_eq!(v["truncated_by"], "rows");
+                    assert_eq!(v["complete"], false);
+                    cursor = Some(c.to_string());
+                }
+                None => {
+                    assert_eq!(v["complete"], true);
+                    break;
+                }
+            }
+        }
+        assert_eq!(&seen, whole["messages"].as_array().ok_or("messages")?);
+        Ok(())
+    }
+
+    /// A byte budget cuts `get_dialog` at whole messages.
+    #[tokio::test]
+    async fn get_dialog_honors_the_byte_budget() -> Result<(), TestError> {
+        let server = server_with_long_dialog("big@x", 5)?;
+        let whole_result = dialog_page_of(&server, "big@x", None, None, None)
+            .await
+            .map_err(|e| format!("{e:?}"))?;
+        let whole = json_page(&whole_result)?;
+        let budget = response_len(&whole_result) / 2;
+        let mut seen = Vec::new();
+        let mut cursor = None;
+        let mut first = true;
+        for _ in 0..20 {
+            let r = dialog_page_of(&server, "big@x", None, cursor.clone(), Some(budget as u64))
+                .await
+                .map_err(|e| format!("{e:?}"))?;
+            let v = checked_page(&r, "messages", budget)?;
+            if first {
+                assert_eq!(v["truncated_by"], "bytes", "{v}");
+                assert_eq!(v["complete"], false, "{v}");
+                first = false;
+            }
+            seen.extend(v["messages"].as_array().ok_or("messages")?.iter().cloned());
+            match v["next_cursor"].as_str() {
+                Some(c) => cursor = Some(c.to_string()),
+                None => break,
+            }
+        }
+        assert_eq!(&seen, whole["messages"].as_array().ok_or("messages")?);
+        Ok(())
+    }
+
+    /// A malformed cursor, and a cursor issued for a different dialog, are
+    /// refused rather than read as "from the start".
+    #[tokio::test]
+    async fn get_dialog_refuses_a_foreign_or_malformed_cursor() -> Result<(), TestError> {
+        let server = server_with_long_dialog("one@x", 3)?;
+        {
+            let mut ds = server.dialog_store.write();
+            ds.process_message(invite("two@x", base_ts())?);
+            ds.process_message(ok200("two@x", base_ts())?);
+        }
+        let first = json_page(
+            &dialog_page_of(&server, "one@x", Some(1), None, None)
+                .await
+                .map_err(|e| format!("{e:?}"))?,
+        )?;
+        let foreign = first["next_cursor"].as_str().ok_or("cursor")?.to_string();
+        for bad in [
+            foreign,
+            "not-a-cursor".to_string(),
+            "2024-06-15T12:00:00Z".to_string(),
+        ] {
+            let err = dialog_page_of(&server, "two@x", Some(1), Some(bad.clone()), None)
+                .await
+                .err()
+                .ok_or_else(|| format!("cursor {bad:?} must be refused"))?;
+            assert_eq!(
+                err.code,
+                rmcp::model::ErrorCode::INVALID_PARAMS,
+                "{bad:?}: {err:?}"
+            );
+        }
         Ok(())
     }
 }
@@ -18373,7 +19869,8 @@ mod in_process_handler_tests {
     async fn prompts_are_listed_fetched_by_name_and_refused_when_unknown() -> Result<(), TestError>
     {
         let (running, mut client) = connect(empty(), json!({})).await?;
-        let served = super::super::prompts::all();
+        let server = empty();
+        let served = super::super::prompts::served(&|t| server.tool_router.has_route(t));
 
         let listed = ask(&mut client, 2, "prompts/list", json!({})).await?;
         let names: Vec<&str> = listed["result"]["prompts"]
@@ -18401,6 +19898,55 @@ mod in_process_handler_tests {
         assert!(
             message.contains("no-such-workflow") && message.contains(first.name),
             "the refusal names what was asked and what is served: {message}"
+        );
+        drop(running);
+        Ok(())
+    }
+
+    /// Under `--mcp-tools core`, a prompt naming a tool `core` does not load is
+    /// neither listed nor fetchable, and the refusal names the tool and the
+    /// bundle that holds it.
+    #[tokio::test]
+    async fn a_prompt_needing_an_unloaded_tool_is_hidden_and_its_refusal_names_the_bundle()
+    -> Result<(), TestError> {
+        let core = crate::mcp_profile::resolve(
+            &["core".to_string(), "captures".to_string()],
+            &std::collections::BTreeMap::new(),
+        )
+        .map_err(|e| format!("core,captures resolves: {e}"))?;
+        let (running, mut client) = connect(empty().with_tool_selection(&core), json!({})).await?;
+
+        let listed = ask(&mut client, 2, "prompts/list", json!({})).await?;
+        let names: Vec<&str> = listed["result"]["prompts"]
+            .as_array()
+            .map(|p| p.iter().filter_map(|p| p["name"].as_str()).collect())
+            .unwrap_or_default();
+        assert_eq!(names, vec!["triage-outage"], "{listed}");
+
+        let hidden = ask(
+            &mut client,
+            3,
+            "prompts/get",
+            json!({"name": "vcon-handoff"}),
+        )
+        .await?;
+        assert_eq!(hidden["error"]["code"], -32602, "{hidden}");
+        let message = hidden["error"]["message"].as_str().unwrap_or_default();
+        for want in [
+            "vcon-handoff",
+            "validate_filter",
+            "export_vcon",
+            "signaling",
+            "vcon",
+        ] {
+            assert!(
+                message.contains(want),
+                "the refusal names {want}: {message}"
+            );
+        }
+        assert!(
+            !message.contains("capture_status"),
+            "a loaded tool is not reported missing: {message}"
         );
         drop(running);
         Ok(())
@@ -18441,6 +19987,96 @@ mod in_process_handler_tests {
             "{rooted:?}"
         );
         assert_eq!(rooted.len(), bare.len() + 1, "{rooted:?}");
+        Ok(())
+    }
+
+    /// The vCon template is listed, completes Call-IDs from the store, and
+    /// reads as a schema-valid container over the protocol. An unknown
+    /// Call-ID is refused.
+    #[cfg(feature = "vcon")]
+    #[tokio::test]
+    async fn the_vcon_template_lists_completes_and_reads() -> Result<(), TestError> {
+        let server = server_over(
+            dialogs(vec![
+                invite("vc-alpha@example.invalid", None)?,
+                invite("vc-beta@example.invalid", None)?,
+            ]),
+            StreamStore::new(16),
+        );
+        let (running, mut client) = connect(server, json!({})).await?;
+        let template = "sipnab://vcon/{call_id}";
+
+        let listed = ask(&mut client, 2, "resources/templates/list", json!({})).await?;
+        assert!(
+            listed["result"]["resourceTemplates"]
+                .as_array()
+                .is_some_and(|t| t.iter().any(|t| t["uriTemplate"] == template)),
+            "{listed}"
+        );
+
+        let completed = ask(
+            &mut client,
+            3,
+            "completion/complete",
+            json!({
+                "ref": {"type": "ref/resource", "uri": template},
+                "argument": {"name": "call_id", "value": "vc-"}
+            }),
+        )
+        .await?;
+        assert_eq!(
+            completed["result"]["completion"]["values"],
+            json!(["vc-alpha@example.invalid", "vc-beta@example.invalid"]),
+            "{completed}"
+        );
+
+        let read = ask(
+            &mut client,
+            4,
+            "resources/read",
+            json!({"uri": "sipnab://vcon/vc-alpha@example.invalid"}),
+        )
+        .await?;
+        let text = read["result"]["contents"][0]["text"]
+            .as_str()
+            .ok_or("the container arrives as text")?;
+        let container: Value =
+            serde_json::from_str(text).map_err(|e| format!("the container is JSON: {e:?}"))?;
+        assert_eq!(
+            container["dialog"][0]["sip_call_id"], "vc-alpha@example.invalid",
+            "{container}"
+        );
+        let report = crate::output::vcon_schema::validate(&container);
+        assert_eq!(report.verdict.as_str(), "valid", "{:?}", report.errors);
+
+        let unknown = ask(
+            &mut client,
+            5,
+            "resources/read",
+            json!({"uri": "sipnab://vcon/no-such@example.invalid"}),
+        )
+        .await?;
+        drop(running);
+        assert_eq!(unknown["error"]["code"], -32602, "{unknown}");
+        Ok(())
+    }
+
+    /// A build without the exporter does not offer the vCon template: a
+    /// template is a promise that its URIs resolve.
+    #[cfg(not(feature = "vcon"))]
+    #[tokio::test]
+    async fn the_vcon_template_is_absent_without_the_vcon_feature() -> Result<(), TestError> {
+        let (running, mut client) = connect(empty(), json!({})).await?;
+        let listed = ask(&mut client, 2, "resources/templates/list", json!({})).await?;
+        drop(running);
+        assert!(
+            listed["result"]["resourceTemplates"]
+                .as_array()
+                .is_some_and(|t| !t
+                    .iter()
+                    .any(|t| t["uriTemplate"] == "sipnab://vcon/{call_id}")),
+            "{listed}"
+        );
         Ok(())
     }
 
@@ -18654,7 +20290,7 @@ mod archive_password_tests {
             "ArchivePassword",
             "zip_passphrase",
         ] {
-            let why = password_argument_refusal(Some(&args(key)))
+            let (_, why) = password_argument_refusal(Some(&args(key)))
                 .ok_or_else(|| format!("{key} must be refused"))?;
             // Plain messages: `why` is derived from arguments that carry the
             // test secret, and CodeQL (rust/cleartext-logging, alerts 424 and
@@ -18690,6 +20326,45 @@ mod archive_password_tests {
             line.contains("[REDACTED]") && line.contains("a.zip"),
             "{line}"
         );
+        Ok(())
+    }
+
+    /// `query_relay`, `relay_stats` and `relay_compare` each send to the
+    /// relay, and each description says so. None of them, and no other tool,
+    /// claims to be the only one that transmits: `query_relay` did, while
+    /// the other two transmitted as well.
+    #[test]
+    fn each_transmitting_tool_says_so_and_none_claims_to_be_the_only_one() -> Result<(), TestError>
+    {
+        let server = empty_server();
+        let tools = server.tool_router.list_all();
+        for name in ["query_relay", "relay_stats", "relay_compare"] {
+            let tool = tools
+                .iter()
+                .find(|t| t.name == name)
+                .ok_or_else(|| format!("{name} is not registered"))?;
+            let text = tool
+                .description
+                .as_deref()
+                .unwrap_or_default()
+                .to_lowercase();
+            assert!(
+                text.contains("transmit"),
+                "{name} does not say it transmits: {text}"
+            );
+        }
+        for tool in &tools {
+            let text = tool
+                .description
+                .as_deref()
+                .unwrap_or_default()
+                .to_lowercase();
+            assert!(
+                !text.contains("only mcp tool that transmits"),
+                "{} claims to be the only tool that transmits",
+                tool.name
+            );
+        }
         Ok(())
     }
 

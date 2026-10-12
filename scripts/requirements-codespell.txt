@@ -1,0 +1,17 @@
+# codespell for the prose gates, pinned by hash so pip refuses any file whose
+# bytes differ: `pip install --require-hashes -r` this file. quality.yml
+# installs it, and scripts/prose-gates.sh reads the version below and refuses
+# to report a local codespell of another version as a pass, because its
+# dictionary is not the one CI checks against.
+#
+# 2.4.3 is the version codespell-project/actions-codespell installed in CI
+# before this file replaced it (its requirements.txt reads
+# `codespell[toml]>=2.2.4`, which resolved to 2.4.3 on 2026-10-09). The
+# `toml` extra adds tomli only below Python 3.11, and the config is
+# .codespellrc, so it is not installed. codespell 2.4.3 has no other
+# dependencies. OSV-Scanner reads this file in CI; osv.dev listed no advisory
+# against codespell 2.4.3 when it was pinned (2026-10-09).
+
+codespell==2.4.3 \
+    --hash=sha256:af2505b335e8573dbd2d384d1c4ef498f4006f4ba2d6fceca01e55b91f52628a \
+    --hash=sha256:cbe085e331227b37bb86ef8bddd08dc768c704ee9a07ca869852c093fa2793e2

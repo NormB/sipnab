@@ -1287,3 +1287,75 @@ fn every_excused_tool_is_registered_and_reasoned() -> Result<(), TestError> {
     }
     Ok(())
 }
+
+/// The docs/mcp-tools.md paragraph that lists the tools exempt from the
+/// completeness stamp names exactly [`SOURCE_INDEPENDENT_TOOLS`], and its
+/// spelled-out count is that list's length.
+///
+/// The page said "Seventeen" and named eighteen tools, one of them
+/// `actions_revert`, which the code stamps like any capture tool.
+#[test]
+fn the_mcp_tools_page_names_exactly_the_source_independent_tools() -> Result<(), TestError> {
+    const NUMBER_WORDS: &[&str] = &[
+        "Zero",
+        "One",
+        "Two",
+        "Three",
+        "Four",
+        "Five",
+        "Six",
+        "Seven",
+        "Eight",
+        "Nine",
+        "Ten",
+        "Eleven",
+        "Twelve",
+        "Thirteen",
+        "Fourteen",
+        "Fifteen",
+        "Sixteen",
+        "Seventeen",
+        "Eighteen",
+        "Nineteen",
+        "Twenty",
+        "Twenty-one",
+        "Twenty-two",
+        "Twenty-three",
+        "Twenty-four",
+        "Twenty-five",
+    ];
+    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("docs/mcp-tools.md");
+    let page = std::fs::read_to_string(&path).map_err(|e| format!("{}: {e}", path.display()))?;
+    let marker = " tools are the exception, because their answer cannot move with";
+    let start = page
+        .find(marker)
+        .ok_or("docs/mcp-tools.md no longer carries the exempt-tools paragraph")?;
+    let line_start = page[..start].rfind('\n').map_or(0, |i| i + 1);
+    let count_word = &page[line_start..start];
+    let rest = &page[line_start..];
+    let paragraph = &rest[..rest.find("\n\n").unwrap_or(rest.len())];
+
+    let named: std::collections::BTreeSet<&str> = paragraph
+        .split('`')
+        .skip(1)
+        .step_by(2)
+        .filter(|t| t.chars().all(|c| c.is_ascii_lowercase() || c == '_'))
+        .collect();
+    let code: std::collections::BTreeSet<&str> =
+        sipnab::mcp::completeness::SOURCE_INDEPENDENT_TOOLS
+            .iter()
+            .copied()
+            .collect();
+    assert_eq!(
+        named, code,
+        "the docs/mcp-tools.md exempt-tools paragraph must name exactly \
+         SOURCE_INDEPENDENT_TOOLS"
+    );
+    assert_eq!(
+        NUMBER_WORDS.get(code.len()).copied(),
+        Some(count_word),
+        "the paragraph says {count_word:?} tools; the code lists {}",
+        code.len()
+    );
+    Ok(())
+}

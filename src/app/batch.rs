@@ -3073,6 +3073,7 @@ fn server_selection(
         metrics_tls: cli.metrics_tls_files(config),
         mcp_row_cap: cli.mcp_row_cap(config),
         mcp_body_cap: cli.mcp_body_cap(config),
+        mcp_response_cap: cli.mcp_response_cap(config),
         mcp_wait_seconds: cli.mcp_wait_cap(config),
         mcp_sweep: cli.mcp_sweep_limits(config),
         mcp_sweep_jobs: cli.mcp_sweep_job_limits(config),
@@ -3094,6 +3095,7 @@ fn server_selection(
         // traffic was clean".
         armed_detections: engines.armed_kinds(),
         pipeline_options: crate::app::server_pipeline_options(cli, config),
+        alias_thresholds: cli.alias_thresholds(config),
     }
 }
 
@@ -3292,7 +3294,7 @@ fn load_tls_rsa_key(
     let k = crate::capture::rsa_key::RsaKey::from_pem_file(std::path::Path::new(keyfile)).map_err(
         |e| crate::app::bootstrap::PlanError {
             exit_code: 1,
-            message: format!("Failed to load --tls-key {keyfile}: {e}"),
+            message: format!("Failed to load --tls-key {keyfile}: {e:#}"),
         },
     )?;
     d.set_rsa_key(k);
@@ -3374,7 +3376,7 @@ fn load_srtp_context(
     )
     .map_err(|e| crate::app::bootstrap::PlanError {
         exit_code: 1,
-        message: format!("Failed to load --srtp-keys {keyfile}: {e}"),
+        message: format!("Failed to load --srtp-keys {keyfile}: {e:#}"),
     })?;
     tracing::info!(
         "SRTP decryption active: {} key(s) from {keyfile}",
@@ -3408,7 +3410,7 @@ fn load_dtls_extractor(
     )
     .map_err(|e| crate::app::bootstrap::PlanError {
         exit_code: 1,
-        message: format!("Failed to load --dtls-keylog {keylog}: {e}"),
+        message: format!("Failed to load --dtls-keylog {keylog}: {e:#}"),
     })?;
     tracing::info!(
         "DTLS-SRTP active: {} keylog entr(ies) from {keylog}",
@@ -3928,8 +3930,8 @@ impl BatchRunner {
     /// nothing — the failure this area has already been bitten by.
     #[cfg(feature = "tls")]
     fn poll_keylog_if_due(&mut self, lp: &mut ReceiveLoop) {
-        if lp.keylog_poll_clock.elapsed() >= KEYLOG_POLL_INTERVAL
-            && (self.cli.tls_args.keylog_watch || self.cli.tls_args.keylog_fd.is_some())
+        let watching = self.cli.tls_args.keylog_watch || self.cli.tls_args.keylog_fd.is_some();
+        if keylog_poll_due(watching, || lp.keylog_poll_clock.elapsed())
             && let Some(ref mut decryptor) = self.tls_decryptor
         {
             lp.keylog_poll_clock = std::time::Instant::now();
@@ -4671,6 +4673,16 @@ impl BatchRunner {
 /// packet rate, not one per packet against a stated >=100K pps target).
 #[cfg(feature = "tls")]
 const KEYLOG_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_millis(100);
+
+/// Whether the keylog poll is due: a watch is set and
+/// [`KEYLOG_POLL_INTERVAL`] has passed since the last poll. `since_last` reads
+/// the clock, and is called only when a watch is set: the receive loop asks
+/// once per packet, and a clock read per packet cost 7.6% of the cycles of a
+/// single-core file run.
+#[cfg(feature = "tls")]
+fn keylog_poll_due(watching: bool, since_last: impl FnOnce() -> std::time::Duration) -> bool {
+    watching && since_last() >= KEYLOG_POLL_INTERVAL
+}
 
 /// What the receive loop carries from one packet to the next, and what the
 /// steps after it read.
@@ -5581,7 +5593,7 @@ impl PacketPass<'_, '_, '_> {
         // constant-factor cut; fire_quality_event no-ops otherwise).
         if self.state.event_exec.quality_events_enabled() {
             let key = stream_key_of(pp, rtp_hdr);
-            if let Some(stream) = self.state.stream_store.get(&key) {
+            if let Some(stream) = self.state.stream_store.get_live(&key) {
                 // Queued, not fired — same reason as the dialog event: the
                 // MOS estimate reads the stream, the `fork`/`exec` does not.
                 self.state.event_exec.queue_quality_event(
@@ -5614,7 +5626,7 @@ impl PacketPass<'_, '_, '_> {
         let (expected_pt, clock_rate) = self
             .state
             .stream_store
-            .get(&key)
+            .get_live(&key)
             .filter(|s| {
                 s.codec
                     .as_deref()
@@ -5640,6 +5652,10 @@ impl PacketPass<'_, '_, '_> {
 }
 
 /// The stream an RTP packet belongs to: its SSRC and its socket pair.
+///
+/// Session 0 always, because a packet carries no session: look it up with
+/// [`crate::rtp::stream_store::StreamStore::get_live`], which resolves it to
+/// the stream of the call the packet belongs to.
 #[inline]
 fn stream_key_of(
     pp: &ParsedPacket,
@@ -5649,6 +5665,7 @@ fn stream_key_of(
         ssrc: rtp_hdr.ssrc,
         src: std::net::SocketAddr::new(pp.src_addr, pp.src_port),
         dst: std::net::SocketAddr::new(pp.dst_addr, pp.dst_port),
+        session: 0,
     }
 }
 
@@ -6855,6 +6872,10 @@ pub struct LiveVconTracker {
     /// Set when a sweep could not write a container it owed, so the run can
     /// end non-zero instead of reporting an export that did not happen.
     failed: bool,
+    /// Containers the live sweeps wrote over the whole run, rewrites included.
+    /// Never pruned, unlike `written`, so the end-of-run line can report what
+    /// the run wrote.
+    containers_written: usize,
 }
 
 impl LiveVconTracker {
@@ -6884,6 +6905,12 @@ impl LiveVconTracker {
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.written.is_empty()
+    }
+
+    /// How many containers the live sweeps wrote over the whole run.
+    #[must_use]
+    pub fn containers_written(&self) -> usize {
+        self.containers_written
     }
 
     /// Whether a sweep failed to write a container it owed.
@@ -7103,6 +7130,7 @@ fn settle_live_writes(
     for dialog in due.iter().take(written) {
         tracker.record(&dialog.call_id, dialog.updated_at);
     }
+    tracker.containers_written = tracker.containers_written.saturating_add(written);
     if written > 0 {
         tracing::info!(
             "Wrote {written} vCon container(s) to '{}' for calls that ended.",
@@ -7457,8 +7485,38 @@ fn export_vcon_selection_after(
             }
         }
     }
-    stderr_line!("Wrote {written} vCon container(s) to '{}'.", dir.display());
+    stderr_line!(
+        "{}",
+        end_of_run_vcon_summary(
+            written,
+            live.map_or(0, LiveVconTracker::containers_written),
+            dir
+        )
+    );
     true
+}
+
+/// The line the end of a `--export-vcon-when` run prints about the spool.
+///
+/// `at_end` is what the end-of-run export wrote and `live` what the live
+/// sweeps wrote while the capture ran. A live run usually writes every
+/// container as its call ends, so the end of the run writes none, and a bare
+/// count of zero would read as a run that exported nothing.
+#[cfg(feature = "vcon")]
+fn end_of_run_vcon_summary(at_end: usize, live: usize, dir: &std::path::Path) -> String {
+    let dir = dir.display();
+    match (at_end, live) {
+        (n, 0) => format!("Wrote {n} vCon container(s) to '{dir}'."),
+        (0, live) => format!(
+            "Wrote no further vCon containers to '{dir}' at the end of the run; \
+             {live} container(s) were written there as their calls ended."
+        ),
+        (n, live) => format!(
+            "Wrote {n} more vCon container(s) to '{dir}' at the end of the run, \
+             {} in total with the {live} written as their calls ended.",
+            n.saturating_add(live)
+        ),
+    }
 }
 
 /// A container's SHA-256, in the format `sha256sum` reads and writes.
@@ -8052,6 +8110,32 @@ mod tests {
     use super::*;
     use std::net::{IpAddr, Ipv4Addr};
 
+    /// Without `--keylog-watch` or `--keylog-fd` the keylog poll reads no
+    /// clock: the receive loop asks once per packet, and the clock read cost
+    /// 7.6% of the cycles of a single-core file run (perf, 2026-10-11).
+    #[cfg(feature = "tls")]
+    #[test]
+    fn keylog_poll_reads_no_clock_when_not_watching() {
+        let read = std::cell::Cell::new(0);
+        let since = || {
+            read.set(read.get() + 1);
+            KEYLOG_POLL_INTERVAL
+        };
+        assert!(!keylog_poll_due(false, since));
+        assert_eq!(read.get(), 0, "the clock was read with no watch set");
+        assert!(keylog_poll_due(true, since));
+        assert_eq!(read.get(), 1);
+    }
+
+    /// With a watch set, the poll is due once the interval has passed.
+    #[cfg(feature = "tls")]
+    #[test]
+    fn keylog_poll_is_due_after_the_interval() {
+        let short = KEYLOG_POLL_INTERVAL - std::time::Duration::from_millis(1);
+        assert!(!keylog_poll_due(true, || short));
+        assert!(keylog_poll_due(true, || KEYLOG_POLL_INTERVAL));
+    }
+
     /// Any error a test can return; `?` converts into it.
     type TestError = Box<dyn std::error::Error>;
 
@@ -8521,6 +8605,71 @@ mod tests {
         cli.output_args.export_vcon = Some(call_id.to_owned());
         cli.output_args.vcon_out = Some(out.to_path_buf());
         cli
+    }
+
+    /// The end-of-run line never reports a misleading zero.
+    ///
+    /// A replay call logged `Wrote 1 vCon container(s) ... for calls that
+    /// ended` from the live sweep and then `Wrote 0 vCon container(s)` to the
+    /// same directory at the end of the run, which reads as an export that
+    /// wrote nothing.
+    #[cfg(feature = "vcon")]
+    #[test]
+    fn the_end_of_run_vcon_line_reports_what_the_run_wrote() {
+        let dir = std::path::Path::new("spool");
+        assert_eq!(
+            end_of_run_vcon_summary(3, 0, dir),
+            "Wrote 3 vCon container(s) to 'spool'.",
+            "a run with no live sweeps keeps the line scripts already read"
+        );
+        assert_eq!(
+            end_of_run_vcon_summary(0, 0, dir),
+            "Wrote 0 vCon container(s) to 'spool'.",
+            "a run that wrote nothing at all still says so"
+        );
+        assert_eq!(
+            end_of_run_vcon_summary(0, 1, dir),
+            "Wrote no further vCon containers to 'spool' at the end of the run; \
+             1 container(s) were written there as their calls ended."
+        );
+        assert_eq!(
+            end_of_run_vcon_summary(2, 1, dir),
+            "Wrote 2 more vCon container(s) to 'spool' at the end of the run, \
+             3 in total with the 1 written as their calls ended."
+        );
+    }
+
+    /// The tracker counts every container a live sweep wrote, and pruning a
+    /// dialog the store dropped does not lower the count.
+    #[cfg(feature = "vcon")]
+    #[test]
+    fn a_live_sweep_counts_the_containers_it_wrote() -> Result<(), TestError> {
+        let dialogs = two_dialogs_one_failed()?;
+        let failed = dialogs.get("failed-call@example.com").ok_or("fixture")?;
+        let ok = dialogs.get("ok-call@example.com").ok_or("fixture")?;
+        let mut tracker = LiveVconTracker::default();
+        let dir = std::path::Path::new("spool");
+        assert_eq!(
+            settle_live_writes(&mut tracker, &[failed, ok], dir, Ok(2)),
+            2
+        );
+        assert_eq!(tracker.containers_written(), 2);
+        assert_eq!(
+            settle_live_writes(&mut tracker, &[ok], dir, Err((0, "disk full".into()))),
+            0
+        );
+        assert_eq!(
+            tracker.containers_written(),
+            2,
+            "a failed write adds nothing"
+        );
+        tracker.prune(|_| false);
+        assert_eq!(
+            tracker.containers_written(),
+            2,
+            "what the run wrote stays written after the store drops the dialog"
+        );
+        Ok(())
     }
 
     /// A dialog the tracker holds at its current `updated_at` was written
@@ -11797,6 +11946,7 @@ mod tests {
             src: std::net::SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)), port),
             dst: std::net::SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2)), port + 1),
             ssrc: u32::from(port),
+            session: 0,
         };
         let hdr = crate::rtp::parser::RtpHeader {
             version: 2,
@@ -12464,6 +12614,42 @@ mod tests {
             !joined.contains("before a key"),
             "nothing was evicted, so no eviction line: {joined:?}"
         );
+    }
+
+    /// docs/tls-capture.md and its hand-kept site page quote both late-hold
+    /// lines in full, as this function renders them, so a reader can match
+    /// the text a run prints.
+    ///
+    /// The pages once quoted the eviction line cut off after its bounds,
+    /// which dropped the advice the line ends with. Whitespace is collapsed
+    /// on both sides because the pages wrap the quote across lines.
+    #[test]
+    fn tls_capture_doc_quotes_both_late_hold_lines_in_full() -> Result<(), TestError> {
+        fn collapse(s: &str) -> String {
+            s.split_whitespace().collect::<Vec<_>>().join(" ")
+        }
+        let mut report = tls_report(1, 12, 12);
+        report.late_evicted = 3;
+        report.late_still_held = 5;
+        let lines = late_hold_guidance(&report);
+        assert_eq!(
+            lines.len(),
+            2,
+            "both late-hold lines must render: {lines:?}"
+        );
+        for rel in ["docs/tls-capture.md", "website/content/docs/tls-capture.md"] {
+            let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(rel);
+            let page = collapse(
+                &std::fs::read_to_string(&path).map_err(|e| format!("{}: {e}", path.display()))?,
+            );
+            for line in &lines {
+                assert!(
+                    page.contains(&collapse(line)),
+                    "{rel} must quote this line in full:\n{line}"
+                );
+            }
+        }
+        Ok(())
     }
 
     /// A run with no TLS at all, or one that decrypted everything it saw, has
@@ -15871,6 +16057,38 @@ mod run_state_builder_tests {
                 .starts_with("Failed to load --tls-key /nonexistent/key.pem: "),
             "{}",
             err.message
+        );
+        // The OS reason, which sits under the anyhow context. Formatting the
+        // error with `{e}` printed the context alone, so the operator was
+        // told the file could not be read and never why.
+        assert!(
+            err.message.contains("No such file or directory"),
+            "{}",
+            err.message
+        );
+        Ok(())
+    }
+
+    /// An unreadable `--srtp-keys` or `--dtls-keylog` names the OS reason,
+    /// which sits under the loader's anyhow context and `{e}` dropped.
+    #[cfg(feature = "tls")]
+    #[test]
+    fn unreadable_srtp_and_dtls_key_files_name_the_os_reason() -> Result<(), TestError> {
+        let srtp = load_srtp_context(&cli(&["--srtp-keys", "/nonexistent/s.keys"]))
+            .err()
+            .ok_or("an unreadable --srtp-keys is refused")?;
+        assert!(
+            srtp.message.contains("No such file or directory"),
+            "{}",
+            srtp.message
+        );
+        let dtls = load_dtls_extractor(&cli(&["--dtls-keylog", "/nonexistent/d.log"]))
+            .err()
+            .ok_or("an unreadable --dtls-keylog is refused")?;
+        assert!(
+            dtls.message.contains("No such file or directory"),
+            "{}",
+            dtls.message
         );
         Ok(())
     }

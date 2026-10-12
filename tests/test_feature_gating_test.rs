@@ -200,6 +200,39 @@ fn the_module_scan_finds_the_gate_that_caused_this() -> Result<(), TestError> {
     Ok(())
 }
 
+/// Whether `src` imports the crate module `module`.
+///
+/// The name must end where the module path segment ends, so `mcp` does not
+/// match `mcp_profile`, and it may stand inside a `sipnab::{...}` group.
+fn imports_module(src: &str, module: &str) -> Result<bool, regex::Error> {
+    let name = regex::escape(module);
+    let re = regex::Regex::new(&format!(r"sipnab::(?:\{{[^}}]*\b)?{name}\b"))?;
+    Ok(re.is_match(src))
+}
+
+/// `sipnab::mcp` must not match `sipnab::mcp_profile`, which is not behind the
+/// `mcp` feature, and a braced import names the module as much as a path does.
+#[test]
+fn the_import_match_is_a_whole_module_path() -> Result<(), TestError> {
+    assert!(imports_module(
+        "use sipnab::mcp::server::McpServer;",
+        "mcp"
+    )?);
+    assert!(imports_module("use sipnab::mcp;", "mcp")?);
+    assert!(imports_module("use sipnab::{capture, mcp};", "mcp")?);
+    assert!(imports_module(
+        "use sipnab::{\n    mcp::server,\n};",
+        "mcp"
+    )?);
+    assert!(!imports_module("use sipnab::mcp_profile::BUNDLES;", "mcp")?);
+    assert!(!imports_module(
+        "use sipnab::{mcp_profile, capture};",
+        "mcp"
+    )?);
+    assert!(!imports_module("use sipnab::capture::mcp_like;", "mcp")?);
+    Ok(())
+}
+
 /// Every test file importing a gated module names that feature in a `cfg`.
 #[test]
 fn a_test_importing_a_gated_module_names_that_feature() -> Result<(), TestError> {
@@ -229,7 +262,7 @@ fn a_test_importing_a_gated_module_names_that_feature() -> Result<(), TestError>
         let enabled = closure(&named, &graph);
         for (module, feature) in &modules {
             let import = format!("sipnab::{module}");
-            if !src.contains(&import) {
+            if !imports_module(&src, module)? {
                 continue;
             }
             if !enabled.contains(feature) {

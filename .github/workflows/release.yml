@@ -82,6 +82,12 @@ jobs:
     # .debs this release ships — so an unpinned one means the artifacts users
     # install came from an image nothing in the repo names. Dependabot's
     # github-actions ecosystem updates `container:` digests, so this stays fresh.
+    # It is Docker Hub's `rust:1-bookworm`, named through mirror.gcr.io,
+    # Google's cache of Docker Hub, with Docker Hub's digest: the runner's
+    # pull of it is anonymous, and on 2026-10-09 Docker Hub answered this
+    # repository's anonymous pulls with 429 and 504. The digest fixes the
+    # bytes whichever registry serves them. tests/ci_docker_hub_test.rs keeps
+    # every job image off Docker Hub.
     container: ${{ matrix.container }}
     strategy:
       fail-fast: false
@@ -89,7 +95,7 @@ jobs:
         include:
           - target: x86_64-unknown-linux-gnu
             os: ubuntu-latest
-            container: rust:1-bookworm@sha256:fbc3a359627c6b5d9c8b20aae5c413a87392954f020006d7a9f7d95938964b23
+            container: mirror.gcr.io/library/rust:1-bookworm@sha256:fbc3a359627c6b5d9c8b20aae5c413a87392954f020006d7a9f7d95938964b23
             cross: false
           # noaudio variants: binary built without the `audio` feature. Both
           # the .deb and the .rpm ship no plugin and no ALSA weak dependency
@@ -99,7 +105,7 @@ jobs:
           # tarball case.
           - target: x86_64-unknown-linux-gnu
             os: ubuntu-latest
-            container: rust:1-bookworm@sha256:fbc3a359627c6b5d9c8b20aae5c413a87392954f020006d7a9f7d95938964b23
+            container: mirror.gcr.io/library/rust:1-bookworm@sha256:fbc3a359627c6b5d9c8b20aae5c413a87392954f020006d7a9f7d95938964b23
             cross: false
             variant: noaudio
           - target: x86_64-unknown-linux-musl
@@ -110,11 +116,11 @@ jobs:
           # for the same glibc-2.36 floor as x86_64.
           - target: aarch64-unknown-linux-gnu
             os: ubuntu-latest
-            container: rust:1-bookworm@sha256:fbc3a359627c6b5d9c8b20aae5c413a87392954f020006d7a9f7d95938964b23
+            container: mirror.gcr.io/library/rust:1-bookworm@sha256:fbc3a359627c6b5d9c8b20aae5c413a87392954f020006d7a9f7d95938964b23
             cross: false
           - target: aarch64-unknown-linux-gnu
             os: ubuntu-latest
-            container: rust:1-bookworm@sha256:fbc3a359627c6b5d9c8b20aae5c413a87392954f020006d7a9f7d95938964b23
+            container: mirror.gcr.io/library/rust:1-bookworm@sha256:fbc3a359627c6b5d9c8b20aae5c413a87392954f020006d7a9f7d95938964b23
             cross: false
             variant: noaudio
           - target: aarch64-unknown-linux-musl
@@ -836,7 +842,7 @@ jobs:
           mv "sipnab-${rpm_version}-1.${rpm_arch}${suffix}.rpm" dist/
 
       - name: Upload artifact
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: sipnab-${{ matrix.target }}${{ steps.features.outputs.suffix }}
           path: dist/
@@ -864,7 +870,7 @@ jobs:
           # wiki-sync and release pass the token explicitly via GH_TOKEN.
           persist-credentials: false
       - name: Download all artifacts
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           path: artifacts/
           merge-multiple: true
@@ -897,7 +903,7 @@ jobs:
       # flag stops covering the union.
       # ---------------------------------------------------------------------
       - name: Install cargo-cyclonedx
-        uses: taiki-e/install-action@83ac0ad63c0167e6f06796fab0fce28db1bf3db0 # v2
+        uses: taiki-e/install-action@f7e5d7c961414b23f5b25b2da9294395d08513ad # v2
         with:
           tool: cargo-cyclonedx
 

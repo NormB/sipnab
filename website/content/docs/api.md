@@ -483,8 +483,15 @@ List all tracked SIP dialogs with optional filtering and pagination.
 |-----------|--------|---------|-------------|
 | `state`   | string | --      | Filter by dialog state (`Trying`, `Ringing`, `InCall`, `Completed`, `Failed`, `Canceled`, `Redirected`, `Registered`, `Expired`, `Pending`, `Active`, `Terminated`, `Transferring`) |
 | `from`    | string | --      | Filter by From user (regex pattern) |
+| `filter`  | string | --      | A [filter expression](@/docs/filter-dsl.md) or a [named alias](@/docs/filter-dsl.md#named-aliases) such as `problems` or `slow-setup`. A value that is neither is a `400`. ANDed with `state` and `from` |
 | `limit`   | int    | 50      | Maximum results. Ceiling is `--api-max-rows` (1000 by default), not a fixed limit |
 | `offset`  | int    | 0       | Pagination offset |
+| `filter`  | string | --      | A [filter DSL](@/docs/filter-dsl.md) expression, the language `--filter` and the TUI filter dialog use, for example `method == 'INVITE'` or `rtp.loss > 2.0`. URL-encode it. An expression that does not parse is a `400` naming the position, never an unfiltered page |
+| `after`   | string | --      | Only dialogs whose first message is at or after this [RFC 3339](https://www.rfc-editor.org/rfc/rfc3339) instant, for example `2026-09-15T12:00:00Z`. An instant that does not parse is a `400` |
+| `before`  | string | --      | Only dialogs whose first message is strictly before this RFC 3339 instant. With `after` it forms the half-open window `[after, before)`, the window the MCP `search_by_time` tool uses, so consecutive windows never count a dialog twice. An instant that does not parse is a `400` |
+
+`state`, `from`, `filter`, `after` and `before` combine with AND, and `total`
+counts the dialogs that pass all of them before `offset` and `limit` page them.
 
 **curl:**
 
@@ -492,6 +499,84 @@ List all tracked SIP dialogs with optional filtering and pagination.
 curl -s -H "Authorization: Bearer $SIPNAB_API_KEY" \
   "http://127.0.0.1:8080/v1/dialogs?state=Failed&limit=10" | jq .
 ```
+
+**Filter aliases:** `filter` accepts the named aliases that `--filter` and the
+MCP `filter` argument accept, and expands each one to the same expression with
+the same thresholds: the ones the server's flags, such as `--pdd-threshold`, and
+its config file set. `filter=problems` and
+`filter=<the problems expansion>` return the same dialogs. The same rule applies
+to `filter` on `/v1/aggregate`, `/v1/dialogs/rates` and `/v1/talkers`.
+
+Against [`tests/pcap-samples/sip-problem-call.pcap`](https://github.com/NormB/sipnab/raw/main/tests/pcap-samples/sip-problem-call.pcap), served with
+`sipnab -N -I tests/pcap-samples/sip-problem-call.pcap --api 127.0.0.1:8080`,
+the alias selects the four failed calls out of five dialogs:
+
+```bash
+curl -s -H "Authorization: Bearer $SIPNAB_API_KEY" \
+  "http://127.0.0.1:8080/v1/dialogs?filter=problems" |
+  jq '{total, dialogs: [.dialogs[] | {call_id, state, final_status_code}]}'
+```
+
+```json
+{
+  "total": 4,
+  "dialogs": [
+    {
+      "call_id": "busy-3a2b1c@192.0.2.30",
+      "state": "Failed",
+      "final_status_code": 486
+    },
+    {
+      "call_id": "decline-7c6d5e@198.51.100.30",
+      "state": "Failed",
+      "final_status_code": 603
+    },
+    {
+      "call_id": "notfound-1b2c3d@203.0.113.30",
+      "state": "Failed",
+      "final_status_code": 404
+    },
+    {
+      "call_id": "unavail-4e5f60@192.0.2.50",
+      "state": "Failed",
+      "final_status_code": 503
+    }
+  ]
+}
+```
+
+sipnab parses a name that is not an alias as an expression, and it fails as
+one, so a misspelled alias is a `400` that names the text. `filter=slow_setup` (underscore
+instead of hyphen) answers:
+
+```text
+filter: unexpected input at position 0: 'slow_setup'
+  slow_setup
+  ^
+valid operators: ==, !=, <, <=, >, >=, =~ (regex)
+see docs/filter-dsl.md for fields, values, and diagnostic aliases
+```
+
+Count the INVITE dialogs. `-G` with `--data-urlencode` encodes the expression
+into the query string:
+
+```bash
+curl -s -G -H "Authorization: Bearer $SIPNAB_API_KEY" \
+  "http://127.0.0.1:8080/v1/dialogs" \
+  --data-urlencode "filter=method == 'INVITE'" | jq '.total'
+```
+
+List when each dialog in one ten-second window opened:
+
+```bash
+curl -s -H "Authorization: Bearer $SIPNAB_API_KEY" \
+  "http://127.0.0.1:8080/v1/dialogs?after=2016-05-18T18:23:10Z&before=2016-05-18T18:23:20Z" \
+  | jq '[.dialogs[].created_at]'
+```
+
+Run against a server reading [`tests/pcap-samples/b2bua-asterisk.pcapng`](https://github.com/NormB/sipnab/raw/main/tests/pcap-samples/b2bua-asterisk.pcapng), the
+first prints `2` and the second the seven instants between 18:23:11 and
+18:23:17.
 
 **Python:**
 
@@ -637,8 +722,8 @@ it has no value for, so the same idea reads as `null` here and as an absent key
 there.
 
 Three list-row keys drop out rather than reading null: `frame` (above),
-`final_status_code` (absent, never a zero, while the call has no final INVITE
-response), and `input_origin` — `wire`, `hep` or `uprobe`, naming the capture
+`final_status_code` (absent, never a zero, while the dialog's INVITE, or the
+request that opened a dialog without one, has no final response), and `input_origin` — `wire`, `hep` or `uprobe`, naming the capture
 source that delivered the message that OPENED the dialog. First and never
 latest, matching `frame`: one process can capture from an interface and a HEP
 mirror at once, so a field reassigned per message would report whichever spoke
@@ -824,8 +909,8 @@ on delay alone.
 answered call, so it shows the fields such a call has. Anything sipnab did not
 find is **absent from the object**, not present with a null value: `tags` when
 empty, `from_display` / `to_display` when the headers carried no display name,
-`final_status_code` / `final_status_reason` when there was no final INVITE
-response, and `signaling_diagnosis` when the signaling detections found
+`final_status_code` / `final_status_reason` when the dialog's INVITE, or the
+request that opened a dialog without one, had no final response, and `signaling_diagnosis` when the signaling detections found
 nothing.
 
 Decode into a type with optional fields: a strict decoder that requires every
@@ -884,7 +969,7 @@ and the detection threshold behind each.
 
 **Additional dialog fields:**
 
-- **`final_status_code` / `final_status_reason`** -- read INVITE transactions only. A `REGISTER`, `OPTIONS` or `SUBSCRIBE` dialog omits both however it ended. `signaling_diagnosis.final_failure.code` carries the status for any dialog.
+- **`final_status_code` / `final_status_reason`** -- the final response to the dialog's INVITE, or, in a dialog without one, to the `REGISTER`, `PUBLISH`, `SUBSCRIBE`, `MESSAGE` or `OPTIONS` that opened it. Responses to other methods in the dialog (BYE, CANCEL, NOTIFY) do not count. `signaling_diagnosis.final_failure.code` also carries the status for any dialog.
 - **`diagnosis`** -- Four booleans and a `hints` array, all five always present. `one_way_audio`, `nat_mismatch` and `no_media` each name a media fault.
 
   `private_media_address` is a warning rather than a fault: the SDP `c=` line offered an [RFC 1918](https://www.rfc-editor.org/rfc/rfc1918) or link-local address to a peer that is not itself private, which stays correct inside one LAN and correct behind an SBC or media proxy that rewrites the SDP downstream.
@@ -2812,9 +2897,9 @@ answered over the store rather than the model.
 - `by` (required) — the dimension: one of `state`, `response_code`, `method`,
   `from.user`, `to.user`, `ua`, `src.ip`, `dst.ip`, `rtp.codec`. A key outside
   that set is a `400`.
-- `filter` (optional) — a DSL expression narrowing which dialogs the count
-  includes, the same language `/v1/dialogs?filter=` compiles. A malformed
-  expression is a `400`.
+- `filter` (optional) — a DSL expression or named alias narrowing which
+  dialogs the count includes, what `/v1/dialogs?filter=` accepts. A value that
+  is neither is a `400`.
 - `top_n` (optional) — keep the largest N buckets. The rest fold into
   `other_count`.
 
@@ -2999,9 +3084,9 @@ the MCP `group_dialogs` tool computes.
 - `metrics` (optional) — a comma-separated subset of `count`, `asr`, `ner`,
   `acd`, `pdd_p50`, `pdd_p95`, `mos_p10`, `retransmit_rate`. Defaults to all. An
   unknown name is a `400`.
-- `filter` (optional) — a DSL expression narrowing which dialogs the route
-  groups, the language `/v1/dialogs?filter=` compiles. A malformed expression is
-  a `400`.
+- `filter` (optional) — a DSL expression or named alias narrowing which
+  dialogs the route groups, what `/v1/dialogs?filter=` accepts. A value that is
+  neither is a `400`.
 - `top_n` (optional) — keep the largest N groups by dialog count. The rest fold
   into `other_count`. Clamped to the server's row cap.
 
@@ -3058,8 +3143,9 @@ answers.
 **Query parameters:**
 
 - `by` (required) — `ip`, `ua`, or `prefix`. A key outside that set is a `400`.
-- `filter` (optional) — a DSL expression narrowing which dialogs count, the
-  language `/v1/dialogs?filter=` compiles. A malformed expression is a `400`.
+- `filter` (optional) — a DSL expression or named alias narrowing which
+  dialogs count, what `/v1/dialogs?filter=` accepts. A value that is neither is
+  a `400`.
 - `limit` (optional) — the most rows to return, clamped to the server's row cap.
 - `prefix_digits` (optional) — leading digits that make one `prefix` bucket
   (default 4). Zero is a `400`. Ignored for every other `by`.
@@ -3487,6 +3573,77 @@ The body must be the JSON object itself, not a string holding it. A non-object
 is a `400`. The MCP tool [`analyze_vcon`](@/docs/mcp-tools.md#analyze-vcon) runs the
 same `vcon_analysis::analyze_container` and answers with the same body. Its
 section describes every field.
+
+---
+
+### GET /v1/vcon/spool
+
+The state of the vCon export spool this run writes into: containers pending,
+delivered and failed, and for each failed container the `<name>.error.json`
+record the forwarder wrote beside it, with the store's status and the start of
+its answer. It reads the directory `--export-vcon-dir` names and the
+forwarder's default `delivered/` and `failed/` directories beside it. A run
+started without `--export-vcon-dir` answers `503` naming the flag.
+
+The answer is a snapshot of files on disk, taken when `as_of` says. The
+forwarder (`sipnab --vcon-forward`) is a separate process and may move a file a
+moment later. This route sends, fetches, moves and deletes nothing. The MCP
+tool `vcon_spool_status` and `sipnab --vcon-spool-status` give the same
+answer, from the same function. The MCP tool also fences the store's answer as
+untrusted text and cuts it to `--mcp-max-body-bytes`. This route returns it as
+the forwarder kept it.
+
+`?limit=` bounds the list of failed records (default 50, ceiling
+`--api-max-rows`), and `?cursor=` takes the previous answer's `next_cursor`.
+The three counts always describe the whole spool.
+
+**curl:**
+
+```bash
+curl -s -H "Authorization: Bearer $SIPNAB_API_KEY" \
+  "http://127.0.0.1:8080/v1/vcon/spool?limit=50" | jq .
+```
+
+**Response**, from a run started with `--export-vcon-dir vcons` over a spool
+holding one container of each kind:
+
+```json
+{
+  "schema_version": 1,
+  "as_of": "2026-10-12T06:49:34.783Z",
+  "note": "A snapshot of files on disk at as_of. ...",
+  "spool": { "path": "vcons", "exists": true },
+  "delivered_dir": { "path": "vcons/delivered", "exists": true },
+  "failed_dir": { "path": "vcons/failed", "exists": true },
+  "pending": 1,
+  "delivered": 1,
+  "failed": 1,
+  "failures": [
+    {
+      "file": "refused.vcon.json",
+      "record": {
+        "at": "2026-10-11T11:58:02Z",
+        "body": "{\"error\":\"vCon already exists\"}",
+        "body_truncated": false,
+        "file": "refused.vcon.json",
+        "method": "POST",
+        "reason": null,
+        "status": 409,
+        "url": "https://vcon.example.com/v1/vcons"
+      }
+    }
+  ],
+  "returned": 1,
+  "truncated": false,
+  "next_cursor": null
+}
+```
+
+A spool directory that does not exist yet counts as empty, with `exists:
+false`: the capture creates it when it writes its first container. `record` is
+null when a failed container has no readable record beside it, and
+`record_problem` then says why. Registered only by a build with the `vcon`
+feature.
 
 ---
 

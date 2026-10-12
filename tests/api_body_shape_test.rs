@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-3.0-or-later
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! A request body the server cannot read is never permission to act.
 //!
 //! These live in `tests/` rather than beside the handlers on purpose.
@@ -30,6 +30,7 @@ const KEY: &str = "body-shape-test-key";
 fn state_with(gate: &Arc<PersistenceGate>) -> ApiState {
     ApiState {
         relay_query: Default::default(),
+        alias_thresholds: Default::default(),
         dialog_store: Arc::new(RwLock::new(sipnab::sip::dialog_store::DialogStore::new(
             1000, false,
         ))),
@@ -56,6 +57,7 @@ fn state_with(gate: &Arc<PersistenceGate>) -> ApiState {
         alert_engine: None,
         armed_detections: Vec::new(),
         file_root: None,
+        vcon_spool: None,
         pipeline_options: Default::default(),
         archive: sipnab::output::api::ArchivePasswordPolicy::default(),
     }

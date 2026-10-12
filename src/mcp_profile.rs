@@ -177,6 +177,7 @@ pub const BUNDLES: &[(&str, &[&str])] = &[
             "export_vcon",
             "siprec_metadata",
             "validate_vcon",
+            "vcon_spool_status",
         ],
     ),
     (

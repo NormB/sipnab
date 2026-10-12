@@ -163,8 +163,16 @@ pub struct SipDialog {
     pub to_host: Option<String>,
     /// Tag parameter from the From header.
     pub from_tag: Option<String>,
-    /// Tag parameter from the To header.
+    /// The remote end's tag: the `To` tag of the response that established
+    /// the dialog, or the best candidate seen so far when none has.
+    ///
+    /// Not simply the first `To` tag seen. A `401` or `407` challenge carries a
+    /// tag of its own and creates no dialog, and the re-sent request is
+    /// answered under a different one. [`update_state`] keeps the tag from the
+    /// strongest evidence, by `RemoteTagBasis`.
     pub to_tag: Option<String>,
+    /// What [`Self::to_tag`] was taken from.
+    pub(crate) to_tag_basis: RemoteTagBasis,
     /// Display name from the From header.
     pub from_display: Option<String>,
     /// Display name from the To header.
@@ -280,60 +288,102 @@ pub(crate) fn seen_cseq_key(msg: &SipMessage) -> Option<String> {
     })
 }
 
+/// The final responses of one transaction, folded into its outcome by
+/// [`SipDialog::final_status_code`]'s rule.
+#[derive(Default)]
+struct FinalCodeFold {
+    /// The highest 2xx seen.
+    max_2xx: Option<u16>,
+    /// The highest final code that is not a 401/407 challenge.
+    max_non_auth: Option<u16>,
+    /// The highest final code, challenges included.
+    max_any: Option<u16>,
+}
+
+impl FinalCodeFold {
+    /// Fold in one response code; provisional (`< 200`) codes are ignored.
+    fn observe(&mut self, code: u16) {
+        if code < 200 {
+            return;
+        }
+        self.max_any = self.max_any.max(Some(code));
+        if code != 401 && code != 407 {
+            self.max_non_auth = self.max_non_auth.max(Some(code));
+        }
+        if (200..300).contains(&code) {
+            self.max_2xx = self.max_2xx.max(Some(code));
+        }
+    }
+
+    /// The outcome. A 2xx means the request was accepted — that is its
+    /// outcome, even when a later re-INVITE or a forked leg carries a higher
+    /// code; taking the plain max counted an answered, in-call dialog as
+    /// Failed. Only when no 2xx exists does the highest failure code stand,
+    /// and a request only ever challenged reports the challenge.
+    fn outcome(&self) -> Option<u16> {
+        self.max_2xx.or(self.max_non_auth).or(self.max_any)
+    }
+}
+
 impl SipDialog {
     /// Returns a reference to the current dialog state.
     pub fn state(&self) -> &DialogState {
         &self.state
     }
 
-    /// The final SIP response code of the call's INVITE transaction — the code
-    /// that determined the outcome behind the [`DialogState`] word: 200 for an
-    /// answered call (`InCall`/`Completed`), the 4xx/5xx/6xx for a `Failed` one
-    /// (486 busy vs 503 unavailable vs 404 …), 487 for `Canceled`. Returns
-    /// `None` while the call is still in progress (no final response yet), so a
-    /// `Ringing`/`Trying` dialog shows no code.
+    /// The final SIP response code of the transaction that decides the
+    /// dialog's outcome — the code behind the [`DialogState`] word: 200 for
+    /// an answered call (`InCall`/`Completed`), the 4xx/5xx/6xx for a
+    /// `Failed` one (486 busy vs 503 unavailable vs 404 …), 487 for
+    /// `Canceled`. Returns `None` while that transaction has no final
+    /// response yet, so a `Ringing`/`Trying` dialog shows no code.
     ///
-    /// Considers final (`>= 200`) responses carrying a CSeq method of `INVITE`
-    /// (responses to CANCEL/BYE — their own CSeq — are excluded, so a canceled
-    /// call reports 487, not the 200 that acknowledged its CANCEL). Auth
-    /// challenges (401/407) are *intermediate* — a call challenged then answered
-    /// reports its real outcome (200), not the 407 — so they are ignored unless
-    /// the call was *only* ever challenged (never authenticated), in which case
-    /// the challenge is the outcome.
+    /// The deciding transaction is the INVITE whenever the dialog holds one —
+    /// including a Call-ID that registered first and then called, which is
+    /// one dialog opened by the REGISTER — and otherwise the dialog's own
+    /// [`method`](Self::method): the `PUBLISH`, `SUBSCRIBE`, `MESSAGE`,
+    /// `OPTIONS` or `REGISTER` that opened it. Only final (`>= 200`)
+    /// responses whose CSeq method is that one count, so a canceled call
+    /// reports 487, not the 200 that acknowledged its CANCEL, and a
+    /// subscription reports the answer to its SUBSCRIBE, not to a NOTIFY.
+    /// Reading INVITE responses alone left every non-INVITE dialog with no
+    /// final status on every surface, a PUBLISH refused with 489 included.
+    ///
+    /// Auth challenges (401/407) are *intermediate* — a request challenged
+    /// then accepted reports its real outcome (200), not the 407 — so they
+    /// are ignored unless the request was *only* ever challenged (never
+    /// authenticated), in which case the challenge is the outcome.
     pub fn final_status_code(&self) -> Option<u16> {
-        // Single scan, no intermediate Vec: track the max final INVITE code
-        // both excluding and including the 401/407 auth challenges. The
-        // non-auth max is the answer when any non-challenge final exists;
-        // otherwise (challenged but never authenticated) the challenge itself
-        // is the outcome.
-        let mut max_2xx: Option<u16> = None;
-        let mut max_non_auth: Option<u16> = None;
-        let mut max_any: Option<u16> = None;
+        // Single scan, no intermediate Vec: fold the INVITE responses and the
+        // own-method responses side by side, and pick the INVITE fold when
+        // the dialog holds any INVITE at all (a call still ringing behind a
+        // REGISTER must report no final status, not the REGISTER's 200).
+        let own_method = self.method.as_str();
+        let mut invite = FinalCodeFold::default();
+        let mut own = FinalCodeFold::default();
+        let mut holds_invite = false;
         for m in &self.messages {
+            let Some((_, method)) = m.cseq() else {
+                continue;
+            };
+            let is_invite = method == "INVITE";
+            holds_invite |= is_invite;
             if m.is_request {
                 continue;
             }
-            if m.cseq().map(|(_, method)| method) != Some("INVITE") {
-                continue;
-            }
             let Some(code) = m.status_code else { continue };
-            if code < 200 {
-                continue;
+            if is_invite {
+                invite.observe(code);
             }
-            max_any = max_any.max(Some(code));
-            if code != 401 && code != 407 {
-                max_non_auth = max_non_auth.max(Some(code));
-            }
-            if (200..300).contains(&code) {
-                max_2xx = max_2xx.max(Some(code));
+            if method == own_method {
+                own.observe(code);
             }
         }
-        // A 2xx means the call was answered — that is its outcome, even when a
-        // later re-INVITE or a forked leg carries a higher code. Taking the
-        // plain max reported that higher failure code and counted an answered,
-        // in-call dialog as Failed. Only when no 2xx exists does the highest
-        // failure code stand; a call only ever challenged reports the challenge.
-        max_2xx.or(max_non_auth).or(max_any)
+        if holds_invite {
+            invite.outcome()
+        } else {
+            own.outcome()
+        }
     }
 
     /// Create a new dialog from the first message in a conversation.
@@ -396,6 +446,7 @@ impl SipDialog {
             to_host: msg.to_host(),
             from_tag: msg.from_tag().map(str::to_string),
             to_tag: msg.to_tag().map(str::to_string),
+            to_tag_basis: remote_tag_basis(&method, msg),
             from_display: msg.from_display(),
             to_display: msg.to_display(),
             state: initial_state,
@@ -447,9 +498,9 @@ impl SipDialog {
 ///
 /// # Side effects
 ///
-/// May rewrite `dialog.state`, and captures the remote tag into
-/// `dialog.to_tag` the first time a To tag appears (typically in the
-/// first response from the far end). No other fields are touched.
+/// May rewrite `dialog.state`, and records the remote tag in `dialog.to_tag`
+/// when this message's `To` tag is stronger evidence of the remote end than
+/// the one held (see `RemoteTagBasis`). No other fields are touched.
 pub fn update_state(dialog: &mut SipDialog, msg: &SipMessage) {
     let family = family_of_seed(&dialog.method);
     let cseq_method = msg.cseq().map(|(_, m)| SipMethod::parse(m));
@@ -487,11 +538,52 @@ pub fn update_state(dialog: &mut SipDialog, msg: &SipMessage) {
         dialog.state = next;
     }
 
-    // Always capture the to_tag if we haven't yet (remote tag arrives in responses)
-    if dialog.to_tag.is_none()
-        && let Some(tag) = msg.to_tag()
+    // The remote tag, from the strongest evidence seen. A tag equal to the
+    // local one is the far end answering a request the REMOTE party sent (a
+    // re-INVITE from the callee), which names the caller, never the remote end.
+    if let Some(tag) = msg.to_tag()
+        && dialog.from_tag.as_deref() != Some(tag)
     {
-        dialog.to_tag = Some(tag.to_string());
+        let basis = remote_tag_basis(&dialog.method, msg);
+        if dialog.to_tag.is_none() || basis > dialog.to_tag_basis {
+            dialog.to_tag = Some(tag.to_string());
+            dialog.to_tag_basis = basis;
+        }
+    }
+}
+
+/// What a `To` tag was taken from, weakest first.
+///
+/// [RFC 3261 section 12.1](https://datatracker.ietf.org/doc/html/rfc3261#section-12.1)
+/// creates a dialog only from a 101-199 or 2xx response to the request that
+/// opens it. Any other tag is a candidate at best, so a stronger one replaces
+/// it, and the first tag of a given strength is kept against later ones of the
+/// same strength.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) enum RemoteTagBasis {
+    /// A message that creates no dialog: a request, a response to another
+    /// method, or a final response outside 2xx such as a `401` challenge.
+    #[default]
+    NoDialog,
+    /// A 101-199 response to the opening request: an early dialog.
+    Early,
+    /// A 2xx response to the opening request: the dialog itself.
+    Confirmed,
+}
+
+/// The `RemoteTagBasis` a message's `To` tag would have in a dialog opened
+/// by `opening`.
+fn remote_tag_basis(opening: &SipMethod, msg: &SipMessage) -> RemoteTagBasis {
+    if msg.is_request {
+        return RemoteTagBasis::NoDialog;
+    }
+    let answers_opening = msg
+        .cseq()
+        .is_some_and(|(_, method)| SipMethod::parse(method) == *opening);
+    match msg.status_code {
+        Some(101..=199) if answers_opening => RemoteTagBasis::Early,
+        Some(200..=299) if answers_opening => RemoteTagBasis::Confirmed,
+        _ => RemoteTagBasis::NoDialog,
     }
 }
 
@@ -620,7 +712,8 @@ pub struct DialogSide {
     pub call_id: String,
     /// The dialog state, as the [`DialogState`] variant name.
     pub state: String,
-    /// The final INVITE response code, `None` while the call is in progress.
+    /// The final response code of the dialog's INVITE, or of the request that
+    /// opened a dialog without one, `None` while it has none.
     pub final_status_code: Option<u16>,
     /// How many SIP messages the dialog holds.
     pub msg_count: usize,
@@ -796,6 +889,146 @@ mod tests {
             5060,
             TransportProto::Udp,
         )?)
+    }
+
+    /// Build and parse a response carrying the given `From` and `To` tags and
+    /// CSeq, so a test can name which side of the dialog answered.
+    fn make_tagged_response(
+        status: u16,
+        cseq: &str,
+        from_tag: &str,
+        to_tag: &str,
+    ) -> Result<SipMessage, TestError> {
+        let raw = build_sip(
+            &format!("SIP/2.0 {status} Status"),
+            &[
+                &format!("From: \"Alice\" <sip:alice@example.com>;tag={from_tag}"),
+                &format!("To: \"Bob\" <sip:bob@example.com>;tag={to_tag}"),
+                "Call-ID: dialog-test@example.com",
+                &format!("CSeq: {cseq}"),
+                "Content-Length: 0",
+            ],
+            b"",
+        );
+        Ok(parse_sip(
+            &raw,
+            ts()?,
+            localhost(),
+            localhost(),
+            5060,
+            5060,
+            TransportProto::Udp,
+        )?)
+    }
+
+    /// Feed `responses` to a fresh INVITE dialog from Alice (tag `t1`) and
+    /// return the remote tag it settled on.
+    fn remote_tag_after(
+        responses: &[(u16, &str, &str, &str)],
+    ) -> Result<Option<String>, TestError> {
+        let mut dialog = SipDialog::new(&make_invite()?).ok_or("an INVITE opens a dialog")?;
+        for &(status, cseq, from_tag, to_tag) in responses {
+            update_state(
+                &mut dialog,
+                &make_tagged_response(status, cseq, from_tag, to_tag)?,
+            );
+        }
+        Ok(dialog.to_tag)
+    }
+
+    /// An authentication challenge's tag is not the dialog's remote tag.
+    ///
+    /// [RFC 3261 section 12.1](https://www.rfc-editor.org/rfc/rfc3261#section-12.1) creates a dialog only from a 101-199 or 2xx
+    /// response; a `401` ends its transaction and creates none, and the
+    /// re-sent INVITE is answered under a fresh tag. Keeping the challenge's
+    /// tag made every consumer of `to_tag` name a dialog that never existed:
+    /// on `Asterisk_ZFONE_XLITE.pcap` the vCon exporter could not match the
+    /// callee's SDP to the callee and exported the call audio with no
+    /// `parties`.
+    #[test]
+    fn the_answer_tag_replaces_an_auth_challenge_tag() -> Result<(), TestError> {
+        assert_eq!(
+            remote_tag_after(&[
+                (401, "1 INVITE", "t1", "challenge"),
+                (180, "2 INVITE", "t1", "callee"),
+                (200, "2 INVITE", "t1", "callee"),
+            ])?
+            .as_deref(),
+            Some("callee"),
+        );
+        // No provisional: the 2xx alone establishes the dialog.
+        assert_eq!(
+            remote_tag_after(&[
+                (401, "1 INVITE", "t1", "challenge"),
+                (200, "2 INVITE", "t1", "callee"),
+            ])?
+            .as_deref(),
+            Some("callee"),
+        );
+        Ok(())
+    }
+
+    /// A call that fails after a challenge names the tag of the leg that
+    /// reached the callee, carried by its provisional response.
+    #[test]
+    fn a_provisional_tag_replaces_an_auth_challenge_tag() -> Result<(), TestError> {
+        assert_eq!(
+            remote_tag_after(&[
+                (407, "1 INVITE", "t1", "challenge"),
+                (180, "2 INVITE", "t1", "early"),
+                (486, "2 INVITE", "t1", "early"),
+            ])?
+            .as_deref(),
+            Some("early"),
+        );
+        Ok(())
+    }
+
+    /// When forked legs ring under different tags, the leg that answers is
+    /// the dialog, and nothing after the answer moves the tag.
+    #[test]
+    fn the_answering_fork_wins_and_the_tag_then_stays() -> Result<(), TestError> {
+        assert_eq!(
+            remote_tag_after(&[
+                (180, "1 INVITE", "t1", "fork-a"),
+                (180, "1 INVITE", "t1", "fork-b"),
+                (200, "1 INVITE", "t1", "fork-b"),
+                (200, "1 INVITE", "t1", "fork-a"),
+            ])?
+            .as_deref(),
+            Some("fork-b"),
+            "the first 2xx establishes the dialog; a later 2xx from another fork \
+             is a second dialog sipnab does not track"
+        );
+        Ok(())
+    }
+
+    /// A 2xx answering a request the CALLEE sent carries the caller's tag in
+    /// `To`, and must not become the remote tag.
+    ///
+    /// The Asterisk capture has this shape: the PBX re-INVITEs the caller,
+    /// and the caller's `200 OK` has `To` tag equal to the dialog's `From` tag.
+    #[test]
+    fn a_reverse_reinvite_answer_keeps_the_callee_tag() -> Result<(), TestError> {
+        assert_eq!(
+            remote_tag_after(&[
+                (401, "1 INVITE", "t1", "challenge"),
+                (200, "2 INVITE", "t1", "callee"),
+                (200, "102 INVITE", "callee", "t1"),
+            ])?
+            .as_deref(),
+            Some("callee"),
+        );
+        // Before any answer, too: the caller's own tag is never the remote one.
+        assert_eq!(
+            remote_tag_after(&[
+                (401, "1 INVITE", "t1", "challenge"),
+                (200, "102 INVITE", "callee", "t1"),
+            ])?
+            .as_deref(),
+            Some("challenge"),
+        );
+        Ok(())
     }
 
     /// Build `n` dialogs whose opening method is `method`.
@@ -1108,6 +1341,121 @@ mod tests {
             dialog.final_status_code(),
             Some(200),
             "an answered call reports its 2xx, not a later re-INVITE/forked failure"
+        );
+        Ok(())
+    }
+
+    /// A dialog opened by `method`, followed by the given `(code, reason,
+    /// CSeq method)` responses, in order.
+    fn dialog_with_responses(
+        method: &str,
+        responses: &[(u16, &str, &str)],
+    ) -> Result<SipDialog, TestError> {
+        let mut dialog = SipDialog::new(&make_request(method)?).ok_or("dialog")?;
+        for (code, reason, cseq_method) in responses {
+            dialog
+                .messages
+                .push(make_response(*code, reason, cseq_method)?);
+        }
+        Ok(dialog)
+    }
+
+    /// A non-INVITE dialog's final status is the final response to its own
+    /// opening method. `final_status_code` read only responses whose CSeq
+    /// method was `INVITE`, so a PUBLISH refused with 489 reported no final
+    /// status on every surface (compare view, JSON, REST, MCP) while the
+    /// state said `Failed` and the hint named the 489.
+    #[test]
+    fn final_status_code_reports_a_failed_non_invite_request() -> Result<(), TestError> {
+        for (method, code, reason) in [
+            ("PUBLISH", 489, "Bad Event"),
+            ("SUBSCRIBE", 489, "Bad Event"),
+            ("MESSAGE", 403, "Forbidden"),
+            ("OPTIONS", 404, "Not Found"),
+            ("REGISTER", 403, "Forbidden"),
+        ] {
+            let dialog = dialog_with_responses(method, &[(code, reason, method)])?;
+            assert_eq!(
+                dialog.final_status_code(),
+                Some(code),
+                "a {method} answered {code} reports {code}"
+            );
+        }
+        Ok(())
+    }
+
+    /// A non-INVITE request that succeeded reports its 2xx, and a challenge it
+    /// then answered is intermediate, as it is for INVITE.
+    #[test]
+    fn final_status_code_reports_a_non_invite_success_past_its_challenge() -> Result<(), TestError>
+    {
+        for method in ["REGISTER", "SUBSCRIBE", "PUBLISH", "MESSAGE", "OPTIONS"] {
+            let dialog = dialog_with_responses(
+                method,
+                &[(401, "Unauthorized", method), (200, "OK", method)],
+            )?;
+            assert_eq!(
+                dialog.final_status_code(),
+                Some(200),
+                "a challenged then accepted {method} reports 200"
+            );
+            let challenged = dialog_with_responses(method, &[(407, "Proxy Auth", method)])?;
+            assert_eq!(
+                challenged.final_status_code(),
+                Some(407),
+                "a {method} only ever challenged reports the challenge"
+            );
+        }
+        Ok(())
+    }
+
+    /// A Call-ID that registers and then calls is one dialog opened by the
+    /// REGISTER, and its outcome is the call's. The INVITE transaction decides
+    /// whenever the dialog holds one: a call refused 403 reports 403, not the
+    /// registrar's 200, and a call still ringing reports no final status.
+    #[test]
+    fn final_status_code_is_the_invites_when_a_register_opened_the_dialog() -> Result<(), TestError>
+    {
+        let refused = dialog_with_responses(
+            "REGISTER",
+            &[(200, "OK", "REGISTER"), (403, "Forbidden", "INVITE")],
+        )?;
+        assert_eq!(refused.final_status_code(), Some(403));
+
+        let mut ringing = dialog_with_responses("REGISTER", &[(200, "OK", "REGISTER")])?;
+        ringing.messages.push(make_invite()?);
+        ringing
+            .messages
+            .push(make_response(180, "Ringing", "INVITE")?);
+        assert_eq!(
+            ringing.final_status_code(),
+            None,
+            "a call still ringing has no final status, whatever the REGISTER got"
+        );
+        Ok(())
+    }
+
+    /// Only responses to the dialog's own method count: a SUBSCRIBE accepted
+    /// with 200 whose NOTIFY was then refused still reports the SUBSCRIBE's
+    /// 200, and an INVITE dialog ignores the response to a mid-call OPTIONS.
+    #[test]
+    fn final_status_code_ignores_responses_to_other_methods() -> Result<(), TestError> {
+        let subscribe = dialog_with_responses(
+            "SUBSCRIBE",
+            &[(200, "OK", "SUBSCRIBE"), (481, "No Transaction", "NOTIFY")],
+        )?;
+        assert_eq!(subscribe.final_status_code(), Some(200));
+
+        let mut invite = SipDialog::new(&make_invite()?).ok_or("dialog")?;
+        invite.messages.push(make_response(486, "Busy", "INVITE")?);
+        invite.messages.push(make_response(200, "OK", "OPTIONS")?);
+        assert_eq!(invite.final_status_code(), Some(486));
+
+        let publish = dialog_with_responses("PUBLISH", &[(200, "OK", "OPTIONS")])?;
+        assert_eq!(
+            publish.final_status_code(),
+            None,
+            "a PUBLISH dialog with no response to the PUBLISH has no final status"
         );
         Ok(())
     }

@@ -37,9 +37,13 @@ a capture tool: at capture time the To-tag does not exist yet (it arrives in
 the first response), so keying on the full triple would mean re-keying every
 dialog mid-flight.
 
-sipnab still captures the tags — `to_tag` fills in the first
-time a response carries one — and it tells forked calls that share a Call-ID
-apart downstream rather than by the map key.
+sipnab still captures the tags, and it tells forked calls that share a Call-ID
+apart downstream rather than by the map key. `to_tag` takes the first `To` tag
+seen, and a stronger one replaces it: a 101-199 response to the opening
+request, then a 2xx to it. A `401` or `407` challenge carries a tag of its own
+and creates no dialog, so the answer to the re-sent request replaces that tag.
+A tag equal to `from_tag` never becomes `to_tag`: it is the answer to a request
+the remote party sent.
 
 Two things must be knowable before a message gets a dialog at all: its Call-ID,
 and its method. The method requirement is the less obvious one, and it exists

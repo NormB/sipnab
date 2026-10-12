@@ -1185,13 +1185,54 @@ fn wiki_intra_docs_links_resolve() -> Result<(), TestError> {
     // count.
     // 1329 -> 1330: docs/internals/vcon.md links section 7.1 of
     // docs/design/vcon.md for where core-03's Dialog Object text went.
-    // 1330 -> 1341: `analyze_vcon` and reading a vCon with `-I`.
-    // docs/mcp-tools.md 4 (its index row, its REST twin, the vcon.md section
-    // and `validate_vcon`), docs/rest-api.md 2 (the MCP twin and the section
-    // that writes the vcon.store-shaped container), docs/vcon.md 2 (the MCP
-    // tool and the REST route), docs/cli-reference.md 1 (the `-I` row) and
-    // docs/examples.md 2 (recipe 66's index row and its vcon.md link).
-    const EXPECTED_WIKI_LINKS: usize = 1341;
+    // 1330 -> 1336: MCP over HTTP beside the TUI. docs/mcp.md 4 (its new
+    // section's anchor, #see-it-work, and mcp-deploy.md twice), mcp-deploy.md
+    // 1 and cli-reference.md 1, each to the new section or from it.
+    // 1336 -> 1342: the vCon fetcher's sections link each other. Attributed
+    // by counting added `](page.md#anchor)` links per file:
+    // docs/cli-reference.md 2, docs/config-reference.md 1, docs/vcon.md 2,
+    // docs/vcon-store.md 1.
+    // 1342 -> 1345: REST `filter` accepts aliases. docs/rest-api.md 2 (the
+    // `filter` row to filter-dsl.md and its #named-aliases section) and
+    // docs/filter-dsl.md 1 (Named aliases to rest-api.md#get-v1dialogs).
+    // 1345 -> 1347: the public vCon datasets. docs/internals/testing.md 1
+    // (to tests/fixtures/vcon-datasets/README.md) and docs/internals/vcon.md 1
+    // (to testing.md#the-public-vcon-datasets).
+    // 1347 -> 1348: docs/examples.md 1, the Grafana recipe's metrics pitfall
+    // linking prometheus-metrics.md.
+    // 1348 -> 1346: a bullet in docs/vcon.md and a row in
+    // docs/cli-reference.md, each linking vcon-store.md, were removed.
+    // 1346 -> 1380: docs/mcp-tools.md 7, the "Which tool finds calls" table
+    // linking the section of each of its seven tools.
+    // +14: the byte budget and uniform paging in docs/mcp-tools.md.
+    // +2: the output-schemas paragraph linking
+    // mcp-protocol.md#tool-response-schemas and the server_capabilities
+    // section linking #response-bounding.
+    // +7: `export_vcon` paging and `vcon_spool_status`: docs/mcp-tools.md 4,
+    // docs/mcp-protocol.md 1, docs/vcon.md 1 and docs/vcon-store.md 1.
+    // +4: the spool status's REST and CLI doors: docs/mcp-tools.md 2,
+    // docs/vcon.md 1 and docs/vcon-store.md 1.
+    // 1380 -> 1392: docs/keybindings.md 11 (ten Call List rows linking the
+    // view sections they open, and the TFPS observe section linking tfps.md)
+    // and docs/rest-api.md 1 (the `filter` parameter row linking
+    // filter-dsl.md). Measured on the merged tree.
+    // 1392 -> 1396: the Tested on sections that leave a section out link it,
+    // docs/tfps-sipnab.md section 3 and docs/vcon-sipnab.md's forwarder
+    // section (+2), section 3 links back to #tested-on (+1), and
+    // docs/library.md links client-examples.md for tls_plaintext_records (+1).
+    // 1396 -> 1426: the Asterisk and FreeSWITCH guides. docs/asterisk.md 5,
+    // docs/asterisk-sipnab.md 11, docs/freeswitch.md 4,
+    // docs/freeswitch-sipnab.md 6, docs/README.md 4 (one index entry per
+    // page).
+    // 1426 -> 1438: `analyze_vcon` and reading a vCon with `-I`, from
+    // feat/vcon-input, measured on the tree merged with the 0.5.213 batch.
+    // docs/mcp-tools.md 5 (its index row, its REST twin, the vcon.md section,
+    // `validate_vcon` and the #error-data link naming its refusal reasons),
+    // docs/rest-api.md 2 (the MCP twin and the section that writes the
+    // vcon.store-shaped container), docs/vcon.md 2 (the MCP tool and the REST
+    // route), docs/cli-reference.md 1 (the `-I` row) and docs/examples.md 2
+    // (recipe 66's index row and its vcon.md link).
+    const EXPECTED_WIKI_LINKS: usize = 1438;
     // Raised 459 -> 460 when SRC1 stage 1 shipped: docs/cli-reference.md's
     // `--hep-listen` row now points at cookbook recipe 6d in docs/examples.md
     // rather than restating how to pair `-L` with `-d`. Attributed per file
@@ -1325,7 +1366,10 @@ fn root_community_file_links_resolve() -> Result<(), TestError> {
     // the 19 guides the home page's voice-stack tiles link (4 + 3 + 4 + 4 + 2 + 2).
     // 135 -> 136: CONTRIBUTING.md's commit-msg hook paragraph links its own
     // "Never publish a machine, an account, or a network" section.
-    const EXPECTED_COMMUNITY_LINKS: usize = 136;
+    // 136 -> 140: README.md's voice-stack section links docs/asterisk.md,
+    // docs/asterisk-sipnab.md, docs/freeswitch.md and
+    // docs/freeswitch-sipnab.md.
+    const EXPECTED_COMMUNITY_LINKS: usize = 140;
     const ROOT_FILES: &[&str] = &[
         "README.md",
         "SUPPORT.md",
@@ -2424,7 +2468,9 @@ fn every_docs_page_is_linked_from_the_index() -> Result<(), TestError> {
     // 71 -> 73: docs/rtpproxy-relay.md and docs/rtpproxy-sipnab.md.
     // 73 -> 75: docs/fail2ban.md and docs/fail2ban-sipnab.md.
     // 75 -> 76: docs/vcon-store.md.
-    const EXPECTED_DOCS_PAGES: usize = 76;
+    // 76 -> 80: docs/asterisk.md, docs/asterisk-sipnab.md, docs/freeswitch.md
+    // and docs/freeswitch-sipnab.md.
+    const EXPECTED_DOCS_PAGES: usize = 80;
     // Links are extracted from PROSE, not from the file's bytes. A raw
     // `contains("](backers.md")` counted a link that had been wrapped in an
     // HTML comment: the substring was still there, the page was reachable from

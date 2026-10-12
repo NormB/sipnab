@@ -19,6 +19,11 @@
 //! cargo test --features tui --test tui_e2e_test -- --ignored
 //! ```
 
+/// The HTTP MCP client the MCP-beside-the-TUI test drives.
+#[cfg(all(feature = "tui", feature = "mcp-http", unix))]
+#[path = "support/mcp.rs"]
+mod mcp;
+
 #[cfg(all(feature = "tui", unix))]
 mod tui_e2e {
     /// The error a test returns: any error, boxed, so `?` works on I/O,
@@ -459,6 +464,112 @@ mod tui_e2e {
             !off.contains("edge-proxy"),
             "name should be hidden when Off:\n{off}"
         );
+        Ok(())
+    }
+
+    /// MCP over HTTP answers about the capture the TUI is showing, while the
+    /// TUI is on screen, and stops when the TUI quits.
+    ///
+    /// The address comes from the TUI's own status line: with
+    /// `--mcp-bind 127.0.0.1:0` the kernel picks the port, and a TUI run
+    /// prints no log line to read it from. The screen is checked after the
+    /// queries for anything the server could have written over it -- a
+    /// JSON-RPC message or a log line on the terminal would corrupt the
+    /// session the operator is reading.
+    #[cfg(feature = "mcp-http")]
+    #[test]
+    #[ignore = "needs tmux on PATH; run by CI with --ignored"]
+    fn mcp_over_http_answers_while_the_tui_is_open() -> Result<(), TestError> {
+        use super::mcp::{establish_session, session_request};
+        const NOTICE: &str = "MCP over HTTP at http://";
+
+        let s = TuiSession::launch(
+            150,
+            40,
+            fixtures_dir(),
+            &[
+                "-I",
+                "sip_call.pcap",
+                "--mcp",
+                "--mcp-transport",
+                "http",
+                "--mcp-bind",
+                "127.0.0.1:0",
+            ],
+        )?;
+        let screen = s.wait_for(NOTICE)?;
+        let addr = screen
+            .split(NOTICE)
+            .nth(1)
+            .and_then(|rest| rest.split("/mcp").next())
+            .ok_or_else(|| format!("no address after {NOTICE:?}:\n{screen}"))?
+            .to_string();
+        s.wait_for("INVITE")?;
+
+        let session = establish_session(&addr)?;
+        let tools = session_request(&addr, &session, 2, "tools/list", serde_json::json!({}))?;
+        let names: Vec<&str> = tools["result"]["tools"]
+            .as_array()
+            .ok_or_else(|| format!("tools/list carried no tools: {tools}"))?
+            .iter()
+            .filter_map(|t| t["name"].as_str())
+            .collect();
+        assert!(names.contains(&"list_dialogs"), "{names:?}");
+
+        // Polled until the file has been read to the end, which the TUI's
+        // packet thread reports as it does in a headless run.
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let mut id = 3;
+        let listed = loop {
+            let msg = session_request(
+                &addr,
+                &session,
+                id,
+                "tools/call",
+                serde_json::json!({"name": "list_dialogs", "arguments": {}}),
+            )?;
+            id += 1;
+            let text = msg["result"]["content"][0]["text"]
+                .as_str()
+                .ok_or_else(|| format!("list_dialogs failed: {msg}"))?;
+            let payload: serde_json::Value = serde_json::from_str(text)?;
+            if payload["source_exhausted"] == serde_json::json!(true) {
+                break payload;
+            }
+            if Instant::now() >= deadline {
+                return Err(format!("the capture never read as exhausted: {payload}").into());
+            }
+            std::thread::sleep(Duration::from_millis(100));
+        };
+        assert_eq!(listed["returned"], 1, "{listed}");
+        assert_eq!(
+            listed["dialogs"][0]["call_id"], "test-call-1@192.0.2.1",
+            "MCP must answer from the capture the TUI loaded: {listed}"
+        );
+
+        let after = s.stable_screen()?;
+        assert!(
+            after.contains("Dialogs:") && after.contains("INVITE"),
+            "the call list must still be on screen:\n{after}"
+        );
+        for written in ["jsonrpc", "\"result\"", "listening on", " INFO ", " WARN "] {
+            assert!(
+                !after.contains(written),
+                "{written:?} reached the terminal under the TUI:\n{after}"
+            );
+        }
+
+        s.literal("q")?;
+        s.wait_for("Quit sipnab?")?;
+        s.literal("y")?;
+        s.wait_until_ended()?;
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while std::net::TcpStream::connect(&addr).is_ok() {
+            if Instant::now() >= deadline {
+                return Err(format!("{addr} still accepts connections after the TUI quit").into());
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
         Ok(())
     }
 

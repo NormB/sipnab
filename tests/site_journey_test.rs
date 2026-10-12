@@ -501,15 +501,15 @@ fn anchors(haystack: &str) -> Result<Vec<(String, String)>, TestError> {
 /// The homepage hero offers the zero-install browser analyzer, above the fold.
 ///
 /// "Above the fold" is read structurally: everything before `<section
-/// class="demos"`, the first thing after the hero. A CTA that slides below
+/// class="sysmap-section">`, the first thing after the hero. A CTA that slides below
 /// that is a CTA the visitor scrolls past, and the capability-table row that
 /// used to be the page's only mention of /analyze/ lives far below it — so a
 /// move back to that row must fail this, not pass it.
 #[test]
 fn homepage_offers_a_zero_install_path() -> Result<(), TestError> {
     let page = read("website/templates/index.html")?;
-    let fold = page.find("<section class=\"demos\"").ok_or(
-        "index.html no longer has a `<section class=\"demos\"` — this test locates the fold by it",
+    let fold = page.find("<section class=\"sysmap-section\"").ok_or(
+        "index.html no longer has a `<section class=\"sysmap-section\"` — this test locates the fold by it",
     )?;
 
     // The hero ELEMENT, not merely "the bytes before the demos section". Those
@@ -521,7 +521,7 @@ fn homepage_offers_a_zero_install_path() -> Result<(), TestError> {
     let hero_span = element_span(&page, "<section class=\"hero\">", "section")?;
     assert!(
         hero_span.end <= fold,
-        "the hero section no longer closes before `<section class=\"demos\"` — \
+        "the hero section no longer closes before `<section class=\"sysmap-section\"` — \
          the page order this test reads has changed"
     );
     let hero = &page[hero_span.start..hero_span.end];
@@ -1218,8 +1218,9 @@ fn an_unimplemented_design_doc_does_not_name_a_shipped_flag() -> Result<(), Test
 /// That was live. `download.html` used `config.extra.version`, which the Pages
 /// step overwrites from `Cargo.toml` on every build, so the moment a release
 /// COMMIT landed on main the site advertised assets for a tag nobody had pushed
-/// yet. The window is the whole commit → CI → tag → release-build cycle, and on
-/// 0.5.61 it ran far longer: that release commit went red and was never tagged.
+/// yet. The window is the whole commit → CI → tag → release-build cycle. On
+/// 0.5.61 the release commit went red in CI, and the v0.5.61 tag went on the
+/// commit that fixed it, 31 minutes after the release commit.
 ///
 /// A local tag is the check because it is the same thing `release.yml` triggers
 /// on — no network, and it cannot pass by being unable to look.
@@ -3576,9 +3577,14 @@ fn ci_derives_the_test_count_and_hands_the_suite_output_to_the_site() -> Result<
     })?;
 
     let yaml = read(wf)?;
+    // The binaries run side by side through scripts/parallel-tests.py, the
+    // runner the pre-commit hook uses; its output is cargo's, one block per
+    // binary, so the count rule reads it unchanged. Plain `cargo test` ran
+    // the 406 binaries one at a time: 460 s of the Linux job's 12.8-minute
+    // Test step on 2026-10-12.
     let test = line_of(
         &yaml,
-        "cargo test --all-features 2>&1 | tee test-output.txt",
+        "python3 scripts/parallel-tests.py -- --all-features 2>&1 | tee test-output.txt",
         wf,
     )?;
     let derive = line_of(&yaml, "- name: Derive the published test count", wf)?;
@@ -5046,7 +5052,7 @@ fn inline_script_edits_require_csp_hash_refresh() -> Result<(), TestError> {
             // animation plays, and the button puts the
             // still frame and its alt text back.
             "index.html",
-            "sha256-0v4G6tae2tjaEo7PTkg590b1RvJLQSjgRyGf13h3DrA=",
+            "sha256-C3t70aWIcgs61geUxcir+3slG/ENjPVHrSnh7nY2C48=",
         ),
         (
             "page.html",
@@ -5103,20 +5109,27 @@ fn inline_script_edits_require_csp_hash_refresh() -> Result<(), TestError> {
     Ok(())
 }
 
-/// The hero swaps a static screenshot for an animated demo after `load`. Four
-/// properties make that safe, and each is one careless edit from being lost.
+/// The hero swaps a static screenshot for an animated demo after `load`. Each
+/// property below is one careless edit from being lost.
 ///
-/// The animated file is 350 KiB against the static frame's 206 KiB. If the
-/// swap ever moves off `load`, or the `fetchpriority` moves onto the animated
-/// URL, the hero stops being a cheap LCP element and starts being the reason
-/// the page scores badly — a regression that looks like nothing in review and
-/// shows up only in field data.
+/// The animated file is 360 KiB against the static frame's 193 KiB. The
+/// screenshot sits below the install steps and the AI-agent demos, so it is
+/// below the first viewport at desktop and phone widths, and the measured
+/// Largest Contentful Paint element is the hero heading (`h1.hero-title`), not
+/// this image (Lighthouse desktop and mobile, 2026-10-09). A
+/// `fetchpriority="high"` hint asks the browser to fetch an image ahead of
+/// other resources; on an image below the fold it competes with the resources
+/// the first viewport needs, so nothing after the hero section may carry it.
+/// Removing it from this image moved the measured LCP from 826-839 ms to
+/// 591-657 ms (Lighthouse desktop preset) and from 4285-4489 ms to
+/// 3003-3210 ms (Lighthouse mobile preset), three runs each, before and
+/// after the change.
 ///
 /// Video was measured and rejected: 18 frames of terminal text over 14.2s is a
 /// slideshow, and every encode smaller than the lossless WebP blurs the text
 /// the demo exists to show.
 #[test]
-fn hero_swap_keeps_the_static_frame_as_the_lcp_element() -> Result<(), TestError> {
+fn hero_swap_keeps_the_static_frame_off_the_critical_path() -> Result<(), TestError> {
     let html = std::fs::read_to_string(repo().join("website/templates/index.html"))
         .map_err(|e| format!("read index.html: {e}"))?;
 
@@ -5126,10 +5139,30 @@ fn hero_swap_keeps_the_static_frame_as_the_lcp_element() -> Result<(), TestError
         .ok_or("hero <img> must carry id=\"hero-shot\" — the swap looks it up by id")?;
 
     assert!(
-        hero_line.contains("demos/hero-static.webp")
-            && hero_line.contains("fetchpriority=\"high\""),
-        "the STATIC frame must be the src with fetchpriority=\"high\"; putting \
-         either on the animated file makes a 350 KiB asset the LCP element:\n{hero_line}"
+        hero_line.contains("demos/hero-static.webp") && !hero_line.contains("demos/01-intro.webp"),
+        "the STATIC frame must be the src; the 360 KiB animated file is \
+         fetched only by the script, after `load`:\n{hero_line}"
+    );
+
+    // Above the fold is the hero section and nothing after it. A
+    // high-priority hint is allowed only inside it.
+    let hero_start = html
+        .find("<section class=\"hero\">")
+        .ok_or("index.html has no <section class=\"hero\">")?;
+    let hero_end = html[hero_start..]
+        .find("</section>")
+        .map(|i| hero_start + i)
+        .ok_or("the hero section is not closed")?;
+    let below_fold: Vec<&str> = html[hero_end..]
+        .lines()
+        .filter(|l| l.trim_start().starts_with('<') && l.contains("fetchpriority=\"high\""))
+        .collect();
+    assert!(
+        below_fold.is_empty(),
+        "fetchpriority=\"high\" below the hero section: the hint makes a \
+         below-the-fold fetch compete with the content the first viewport \
+         paints:\n{}",
+        below_fold.join("\n")
     );
     // The animated URL must NOT ride on the element. Storing it in a
     // data-attribute and assigning it to `hero.src` is js/xss-through-dom
@@ -5159,8 +5192,8 @@ fn hero_swap_keeps_the_static_frame_as_the_lcp_element() -> Result<(), TestError
     );
     assert!(
         html.contains("window.addEventListener('load'"),
-        "the swap must wait for `load`; running it earlier puts the animated \
-         fetch in contention with the LCP image"
+        "the swap must wait for `load`; running it earlier puts the 360 KiB \
+         animated fetch in contention with the first viewport's resources"
     );
     assert!(
         html.contains("pre.onload"),
@@ -6026,7 +6059,7 @@ fn packaging_scripts_reference_existing_paths() -> Result<(), TestError> {
             //
             // `sipnab.js` is NOT here and must keep existing: it is text, the
             // export guard reads it, and its absence is a real failure.
-            const GENERATED: [&str; 6] = [
+            const GENERATED: [&str; 7] = [
                 "website/public",
                 "build/",
                 "target/",
@@ -6037,6 +6070,9 @@ fn packaging_scripts_reference_existing_paths() -> Result<(), TestError> {
                 // pages.yml writes the homepage test count here at deploy
                 // (scripts/published-test-count.py); it is never committed.
                 "website/data/test-count.toml",
+                // pages.yml writes the GitHub star count here at deploy
+                // (scripts/github-stars.py); it is never committed.
+                "website/data/github.toml",
             ];
             if GENERATED.iter().any(|g| cand.starts_with(g)) {
                 continue;
@@ -6256,7 +6292,26 @@ fn packaging_scripts_reference_existing_paths() -> Result<(), TestError> {
     // build job plus its `paths:` entry and that entry's comment (4).
     // Attributed by measurement: with HEAD's ci.yml swapped back in the scan
     // reads 172, with HEAD's quality.yml 173, with HEAD's pages.yml 174.
-    const EXPECTED_REFERENCES: usize = 178;
+    // 178 -> 184: six, for pulling no image from Docker Hub. The comments
+    // beside the buildx setup in `.github/workflows/docker.yml` and the
+    // `rust:1-bookworm` containers in `.github/workflows/release.yml` name
+    // `tests/ci_docker_hub_test.rs` (+1 each); `.github/workflows/quality.yml`'s
+    // codespell steps name `scripts/requirements-codespell.txt`,
+    // `scripts/prose-gates.sh` and the test, where the steps they replace
+    // named `.config/codespell-paths.txt` twice, `scripts/preflight.sh` and
+    // `.githooks/pre-push` (+4 net). Attributed by
+    // measurement: with HEAD's docker.yml swapped back in the scan reads 183,
+    // with HEAD's quality.yml 180, with HEAD's release.yml 183.
+    // 184 -> 186: pages.yml's star-count steps name scripts/github-stars.py
+    // twice (the paths filter and the run). The file they write,
+    // website/data/github.toml, is on the GENERATED list and not counted.
+    // 186 -> 188: ci.yml's Test step names scripts/parallel-tests.py twice
+    // (its comment and its run line). Attributed by measurement: with
+    // origin/main's ci.yml swapped back in, the scan reads 186.
+    // 188 -> 197: .github/workflows/memcheck.yml, the weekly Valgrind
+    // memcheck job, names its scripts and fixtures nine times. Attributed by
+    // measurement: with the file set aside the scan reads 188.
+    const EXPECTED_REFERENCES: usize = 197;
     assert_eq!(
         checked, EXPECTED_REFERENCES,
         "packaging path scan saw {checked} references, expected \
@@ -6941,6 +6996,13 @@ fn every_escaping_bypass_in_the_site_templates_is_on_the_reviewed_allowlist()
              into the script rather than read back out of the DOM (which is the \
              js/xss-through-dom form CodeQL rejected); json_encode supplies the \
              JS string quotes",
+        ),
+        (
+            "overview.html",
+            "{{ page.content | safe }}",
+            "HTML Zola rendered from a committed .md file (the /features/, \
+             /deployments/ pages); escaping it would show the \
+             page as its own source",
         ),
         (
             "page.html",
@@ -10830,22 +10892,50 @@ fn homepage_section_order(page: &str) -> Result<Vec<String>, TestError> {
 /// Quick Start sat below a demo wall whose first command
 /// (`demos/mcp-stdio.sh tests/pcap-samples/...`) runs only from a source
 /// checkout, so a visitor who had just installed the binary met something they
-/// could not run before anything they could. The order is: what it is, how to
-/// run it, what it does, what an agent can ask it, what it supports, the
-/// numbers, then the guides.
+/// could not run before anything they could. The order (Norm, 2026-10-09) was:
+/// what it is, how to run it, what an agent can ask it, the animation, how
+/// sipnab fits together, what it does, what it supports, the numbers, then the
+/// guides.
+///
+/// Norm, 2026-10-10, moved "How sipnab fits together" to the top and asked
+/// for the rest in a sensible order. It reads as a visitor's path: what it is
+/// (the hero), how it works (the system map), what it looks like (the
+/// animation), what it does for you, how to install it, what an agent can ask
+/// it, then the voice stack, what it supports, the numbers and the guides.
+/// Quick Start still comes before the agent demos, which need a source
+/// checkout, so the rule above still holds.
+///
+/// Norm, 2026-10-11, adopted this order: how sipnab fits together, what you
+/// can do with it, the animation that shows it, what it supports, how to
+/// install it, what an agent can ask it, the voice stack, the numbers, and the
+/// guides last, where a reader who has decided looks for the next step.
 #[test]
-fn the_homepage_puts_quick_start_directly_under_the_hero() -> Result<(), TestError> {
+fn the_homepage_sections_follow_a_visitors_path() -> Result<(), TestError> {
     let page = read("website/templates/index.html")?;
     let order = homepage_section_order(&page)?;
     let want = [
         "hero",
-        "quickstart",
+        "sysmap-section",
         "features",
-        "demos",
+        "hero-shot-section",
         "comparison",
+        "quickstart",
+        "demos",
         "arch-callout",
         "notes-callout",
     ];
+    // The voice-stack section's class is "features stack", which the class
+    // scan above does not match, so its place is pinned by its id: after the
+    // agent demos and before the numbers.
+    let at = |needle: &str| {
+        page.find(needle)
+            .ok_or_else(|| format!("the homepage has no {needle}"))
+    };
+    let stack = at("id=\"voice-stack\"")?;
+    assert!(
+        at("<section class=\"demos\"")? < stack && stack < at("<section class=\"arch-callout\"")?,
+        "the voice-stack section is not between the agent demos and the numbers"
+    );
     let seen: Vec<&str> = order
         .iter()
         .map(String::as_str)
@@ -10859,6 +10949,30 @@ fn the_homepage_puts_quick_start_directly_under_the_hero() -> Result<(), TestErr
         page.contains("Install and open your first capture"),
         "the Quick Start heading no longer says what the reader will do"
     );
+    Ok(())
+}
+
+/// The homepage's notes teaser shows the newest how-tos and feature notes
+/// together, by date. It took the newest three of the how-tos and only then
+/// the features, so with three or more how-tos no feature note could appear,
+/// while its heading promised "what each new feature is for".
+#[test]
+fn the_homepage_notes_teaser_sorts_how_tos_and_features_by_date() -> Result<(), TestError> {
+    let page = read("website/templates/index.html")?;
+    let set = page
+        .lines()
+        .find(|l| l.contains("{% set guides ="))
+        .ok_or("the teaser no longer builds `guides`")?;
+    assert!(
+        set.contains("value=\"howto\"") && set.contains("value=\"feature\""),
+        "the teaser must take both kinds: {set}"
+    );
+    let sort = set
+        .find("sort(attribute=\"date\")")
+        .ok_or_else(|| format!("the teaser does not sort the merged list by date: {set}"))?;
+    let concat = set.find("concat(").ok_or("no concat")?;
+    assert!(concat < sort, "sort after merging the two kinds: {set}");
+    assert!(set.contains("reverse"), "newest first: {set}");
     Ok(())
 }
 
@@ -11430,8 +11544,9 @@ fn homepage_voice_stack_section_links_every_stack_guide() -> Result<(), TestErro
         .filter(|e| GROUPS.contains(&e.group.as_str()))
         .map(|e| e.path)
         .collect();
+    let expected = guides;
     assert_eq!(
-        linked, guides,
+        linked, expected,
         "the homepage voice-stack section (left) and the nav's voice-stack group (right) \
          list different guides"
     );
@@ -11490,6 +11605,50 @@ fn the_opensips_and_kamailio_tile_is_headed_sip_proxy() -> Result<(), TestError>
         tile.contains("<h3>SIP proxy</h3>"),
         "the tile's heading is not \"SIP proxy\":\n{tile}"
     );
+    Ok(())
+}
+
+/// The Asterisk and FreeSWITCH guides share a tile headed "PBX" (Norm,
+/// 2026-10-11): both are PBXs that answer and bridge calls, a different role
+/// from the SIP proxies on the "SIP proxy" tile, which links neither. Each
+/// gets the pair of links every voice-stack tile gives: use it, then run
+/// sipnab beside it.
+#[test]
+fn the_pbx_tile_pairs_asterisk_and_freeswitch_with_their_sipnab_guides() -> Result<(), TestError> {
+    let page = read("website/templates/index.html")?;
+    let tiles: Vec<&str> = page
+        .split("class=\"feature-card")
+        .filter(|card| card.contains("@/docs/asterisk.md") || card.contains("@/docs/freeswitch.md"))
+        .collect();
+    assert_eq!(
+        tiles.len(),
+        1,
+        "Asterisk and FreeSWITCH share one tile: {tiles:?}"
+    );
+    let tile = tiles[0];
+    assert!(
+        tile.contains("<h3>PBX</h3>"),
+        "the tile's heading is not \"PBX\":\n{tile}"
+    );
+    for (href, text) in [
+        ("@/docs/asterisk.md", "Use Asterisk"),
+        ("@/docs/asterisk-sipnab.md", "Run sipnab beside it"),
+        ("@/docs/freeswitch.md", "Use FreeSWITCH"),
+        ("@/docs/freeswitch-sipnab.md", "Run sipnab beside it"),
+    ] {
+        let link = format!("<a href=\"{{{{ get_url(path='{href}') }}}}\">{text}</a>");
+        assert!(tile.contains(&link), "missing {link}:\n{tile}");
+    }
+    let proxy = page
+        .split("class=\"feature-card")
+        .find(|card| card.contains("<h3>SIP proxy</h3>"))
+        .ok_or("the home page has no SIP proxy tile")?;
+    for pbx in ["asterisk", "freeswitch"] {
+        assert!(
+            !proxy.contains(pbx),
+            "the SIP proxy tile links {pbx}:\n{proxy}"
+        );
+    }
     Ok(())
 }
 
@@ -11615,5 +11774,180 @@ fn the_voice_stack_tiles_name_roles_and_pair_their_guides() -> Result<(), TestEr
             assert!(tile.contains(&link), "missing {link}:\n{tile}");
         }
     }
+    Ok(())
+}
+
+// ---- The overview pages: /features/, /deployments/ ----
+
+/// The overview pages, as content files.
+const OVERVIEW_PAGES: &[&str] = &[
+    "website/content/features.md",
+    "website/content/deployments.md",
+];
+
+/// Each overview page renders through overview.html and is linked from the
+/// footer every page carries, so none of them is reachable only by URL.
+#[test]
+fn the_overview_pages_render_through_their_template_and_the_footer_links_each()
+-> Result<(), TestError> {
+    let base = read("website/templates/base.html")?;
+    for page in OVERVIEW_PAGES {
+        let text = read(page)?;
+        assert!(
+            text.contains("template = \"overview.html\""),
+            "{page}: not rendered through overview.html"
+        );
+        let name = page.trim_start_matches("website/content/");
+        assert!(
+            base.contains(&format!("get_url(path='@/{name}')")),
+            "base.html's footer does not link {name}"
+        );
+    }
+    Ok(())
+}
+
+/// The features and deployments pages describe sipnab and name no other SIP
+/// capture tool, as the homepage does not (Norm, 2026-10-05). The protocol's
+/// own name, "Homer Encapsulation Protocol", and the URL of the guide for
+/// running sipnab beside a HEP collector are the two exceptions.
+#[test]
+fn the_features_and_deployments_pages_name_no_peer_capture_tool() -> Result<(), TestError> {
+    for page in [
+        "website/content/features.md",
+        "website/content/deployments.md",
+    ] {
+        let text = read(page)?
+            .to_lowercase()
+            .replace("homer encapsulation protocol", "")
+            .replace("/docs/homer-sipnab/", "");
+        for tool in [
+            "sngrep",
+            "sipgrep",
+            "wireshark",
+            "tshark",
+            "homer",
+            "pcaptix",
+        ] {
+            assert!(!text.contains(tool), "{page} names {tool}");
+        }
+    }
+    Ok(())
+}
+
+/// An overview page that carries a diagram declares `has_diagrams`, which is
+/// what makes overview.html load the mermaid bundle; without it the diagram
+/// renders as its source text.
+#[test]
+fn an_overview_page_with_a_diagram_loads_the_diagram_bundle() -> Result<(), TestError> {
+    let template = read("website/templates/overview.html")?;
+    assert!(template.contains("{% if page.extra.has_diagrams %}"));
+    assert!(template.contains("js/mermaid.min.js"));
+    let mut diagrams = 0;
+    for page in OVERVIEW_PAGES {
+        let text = read(page)?;
+        if text.contains("<pre class=\"mermaid\">") {
+            diagrams += 1;
+            assert!(
+                text.contains("has_diagrams = true"),
+                "{page}: a diagram but no has_diagrams"
+            );
+        }
+    }
+    assert!(
+        diagrams > 0,
+        "no overview page carries a diagram; the check ran on nothing"
+    );
+    Ok(())
+}
+
+// ---- The homepage's GitHub star count ----
+
+/// The star count beside "View on GitHub" comes from the file the deploy
+/// generates, `website/data/github.toml`, and nothing commits it.
+///
+/// `scripts/github-stars.py` writes the file at deploy time from the GitHub
+/// API's answer. A local `zola build`, or a deploy whose API call failed, has
+/// no such file, and the button renders without a count rather than with a
+/// stale one.
+#[test]
+fn homepage_star_count_comes_from_the_generated_data_file() -> Result<(), TestError> {
+    let idx = read("website/templates/index.html")?;
+    let load = r#"load_data(path="data/github.toml", required=false)"#;
+    assert!(
+        idx.contains(load),
+        "index.html does not load the star count with `{load}`"
+    );
+    assert!(
+        idx.contains("gh.stars is number"),
+        "index.html renders `gh.stars` without checking it is a number"
+    );
+    let button = idx
+        .lines()
+        .find(|l| l.contains("<a ") && l.contains(">View on GitHub"))
+        .ok_or("no \"View on GitHub\" button on the homepage")?;
+    assert!(
+        button.contains(r#"data-stars="{{ gh.stars }}""#),
+        "the \"View on GitHub\" button does not carry the generated count:\n{button}"
+    );
+    let rel = "website/data/github.toml";
+    let tracked = Command::new("git")
+        .args(["ls-files", "--error-unmatch", rel])
+        .current_dir(repo())
+        .output()
+        .map_err(|e| format!("git ls-files: {e}"))?;
+    assert!(
+        !tracked.status.success(),
+        "{rel} is tracked; it is generated at deploy time"
+    );
+    let ignored = Command::new("git")
+        .args(["check-ignore", "-q", "--no-index", rel])
+        .current_dir(repo())
+        .status()
+        .map_err(|e| format!("git check-ignore: {e}"))?;
+    assert!(ignored.success(), "{rel} is not in .gitignore");
+    Ok(())
+}
+
+/// The deploy writes the star count before it builds the site, and when it
+/// wrote one, checks the built homepage states it. A failed API call is a
+/// warning, not a failed deploy: the homepage then states no count.
+#[test]
+fn pages_writes_the_star_count_before_it_builds_the_site() -> Result<(), TestError> {
+    let wf = ".github/workflows/pages.yml";
+    let yaml = read(wf)?;
+    let derive = line_of(&yaml, "python3 scripts/github-stars.py", wf)?;
+    let build = line_of(&yaml, "run: zola build", wf)?;
+    let check = line_of(
+        &yaml,
+        "- name: Check the built homepage states the star count it was given",
+        wf,
+    )?;
+    let upload = line_of(&yaml, "- name: Upload Pages artifact", wf)?;
+    assert!(
+        derive < build && build < check && check < upload,
+        "{wf} must write the star count (line {}), build (line {}), check (line {}) \
+         and upload (line {}), in that order",
+        derive + 1,
+        build + 1,
+        check + 1,
+        upload + 1
+    );
+    let fetch = workflow_step_body(wf, "Fetch the GitHub star count")?;
+    assert!(
+        fetch.contains("--repo \"$GITHUB_REPOSITORY\""),
+        "the fetch does not hold the answer to this repository:\n{fetch}"
+    );
+    assert!(
+        fetch.contains("::warning::") && !fetch.contains("exit 1"),
+        "a failed star-count fetch must warn and publish without a count:\n{fetch}"
+    );
+    let check_body = workflow_step_body(
+        wf,
+        "Check the built homepage states the star count it was given",
+    )?;
+    assert!(
+        check_body.contains("data-stars=") && check_body.contains("website/data/github.toml"),
+        "the check does not compare the built homepage with the generated file:\n{check_body}"
+    );
     Ok(())
 }

@@ -264,15 +264,17 @@ challenges excluded: a call challenged and then answered reports 200, not the
 leaves as free text — `500 Service Unavailable` is legal and common, so match on
 the code.
 
-**Both fields read INVITE transactions only, and are absent from every other
-dialog.** A `REGISTER` rejected `403`, an `OPTIONS` that timed out `408`, a
-failed `SUBSCRIBE` — each carries `state: "Failed"` and no
-`final_status_code` at all, because no INVITE CSeq exists to take a code from.
+**Both fields read the transaction that decides the dialog**: its INVITE
+when it holds one, otherwise the request that opened it. An INVITE dialog
+reports its INVITE's outcome, not the 200 to its BYE, and so does a Call-ID
+that registered first and then called. A `REGISTER` rejected `403`
+reports 403, a `PUBLISH` refused `489` reports 489, and a `SUBSCRIBE` reports
+the answer to the SUBSCRIBE, not to a later NOTIFY. Both are absent while that
+request has no final response.
 
-The recipe above is therefore a *call* recipe: point it at registration or
-keepalive traffic and every row comes back empty. For those, read
-`signaling_diagnosis` instead — `final_failure.code` carries the status for any
-dialog, and `registration_failure` answers the registration question directly:
+For registrations, `signaling_diagnosis` says more than the code:
+`final_failure.code` carries the status for any dialog, and
+`registration_failure` answers the registration question directly:
 
 ```bash
 sipnab -N -I capture.pcap --json-dialogs --no-cli-print --quiet \

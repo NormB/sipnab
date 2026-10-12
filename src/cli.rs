@@ -332,6 +332,114 @@ pub fn compiled_features() -> Vec<&'static str> {
     out
 }
 
+/// The examples `-h` and `--help` print after the options.
+const EXAMPLES: &str = "EXAMPLES:\n  \
+    sipnab -d eth0                    Capture on eth0\n  \
+    sipnab -I capture.pcap           Read from pcap file\n  \
+    sipnab -N --json                 Non-interactive JSON output\n  \
+    sipnab --problems                Show problematic calls\n  \
+    sipnab --kill-scanner            Detect SIP scanners\n  \
+    sipnab --from alice --to bob     Filter by From/To headers\n  \
+    sipnab -e 'INVITE sip:'          Grep SIP payload, follow the dialog\n  \
+    sipnab 'host 10.0.0.1 and port 5060'   BPF capture filter";
+
+/// Every environment variable sipnab reads for an operator, with what it does.
+///
+/// The one list: `--help` prints it after the examples, and the ENVIRONMENT
+/// section of `man/sipnab.1` is generated from it. `tests/man_page_test.rs`
+/// fails when `src/` reads a `SIPNAB_*` variable, or a flag reads one through
+/// clap's `env`, that this table does not name. Names only: no value is ever
+/// printed (`tests/help_env_values_test.rs`).
+pub const ENVIRONMENT: &[(&str, &str)] = &[
+    (
+        "SIPNAB_CONFIG",
+        "Path to the configuration file, read when `-f` is not given",
+    ),
+    (
+        "XDG_CONFIG_HOME",
+        "Directory holding the per-user configuration file \
+         `$XDG_CONFIG_HOME/sipnab/sipnab.toml`. Unset, empty or relative means `~/.config`",
+    ),
+    (
+        "SIPNAB_LOG",
+        "Log filter, in the `tracing` `EnvFilter` syntax: a level such as `debug`, or \
+         per-target directives",
+    ),
+    ("NO_COLOR", "A non-empty value turns color off in the TUI"),
+    (
+        "SIPNAB_API_KEY",
+        "Read as `--api-key` when the flag is not given",
+    ),
+    (
+        "SIPNAB_API_SIGNING_KEY",
+        "Read as `--api-signing-key` when the flag is not given",
+    ),
+    (
+        "SIPNAB_MCP_TOKEN",
+        "The bearer token for the HTTP MCP transport, read when neither `--mcp-token` \
+         nor `--mcp-token-file` is given",
+    ),
+    (
+        "SIPNAB_MCP_SIGNING_KEY",
+        "Read as `--mcp-signing-key` when the flag is not given",
+    ),
+    (
+        "SIPNAB_HEP_AUTH",
+        "Read as `--hep-auth` when the flag is not given",
+    ),
+    (
+        "SIPNAB_VCON_FORWARD_AUTH",
+        "Read as `--vcon-forward-auth` when the flag is not given. A capture run ignores it",
+    ),
+    (
+        "SSL_CERT_FILE",
+        "The CA bundle the HEP TLS and vCon forwarder connections trust, in place of the \
+         system bundle locations, when it names a file",
+    ),
+    (
+        "SIPNAB_ARCHIVE_PASSWORD",
+        "A password for encrypted ZIP members `-I` finds. Tried after \
+         `--archive-password-file`, `--archive-password-command`, `--archive-password-stdin` \
+         and the systemd credential, and before `--archive-password`",
+    ),
+    (
+        "CREDENTIALS_DIRECTORY",
+        "Set by systemd. sipnab reads the credential `archive-password` in it as an \
+         archive password",
+    ),
+    (
+        "SIPNAB_SECCOMP_ALLOWLIST",
+        "Path to the syscall allowlist `--seccomp enforce` installs. That mode refuses to \
+         run without it",
+    ),
+    (
+        "SIPNAB_NO_MMAP",
+        "Set to any value to read capture files without memory-mapping them, for a \
+         filesystem where mapping misbehaves, such as a network mount",
+    ),
+    (
+        "SIPNAB_AUDIO_PLUGIN",
+        "Path to an audio playback plugin, tried after every trusted location. Honored \
+         only for an unprivileged process and a file no other user can rewrite, and \
+         announced when used",
+    ),
+    (
+        "SIPNAB_PERF_STATS",
+        "Set to any value to print per-run work counters to stderr at the end of a \
+         headless run",
+    ),
+];
+
+/// What `--help` prints after the options: the examples, then
+/// [`ENVIRONMENT`].
+fn after_long_help() -> String {
+    let rows: Vec<String> = ENVIRONMENT
+        .iter()
+        .map(|(name, what)| format!("  {name}\n          {what}."))
+        .collect();
+    format!("{EXAMPLES}\n\nENVIRONMENT:\n{}", rows.join("\n"))
+}
+
 /// SIP & RTP capture, analysis, and security tool.
 ///
 /// sipnab unifies the capabilities of the established terminal SIP tools into a single binary
@@ -346,15 +454,8 @@ pub fn compiled_features() -> Vec<&'static str> {
     long_about = "sipnab — SIP & RTP capture, analysis, and security tool.\n\n\
         Live capture, call-flow TUI and text search, with security analysis, RTP quality \
         monitoring, and machine-readable output.",
-    after_help = "EXAMPLES:\n  \
-        sipnab -d eth0                    Capture on eth0\n  \
-        sipnab -I capture.pcap           Read from pcap file\n  \
-        sipnab -N --json                 Non-interactive JSON output\n  \
-        sipnab --problems                Show problematic calls\n  \
-        sipnab --kill-scanner            Detect SIP scanners\n  \
-        sipnab --from alice --to bob     Filter by From/To headers\n  \
-        sipnab -e 'INVITE sip:'          Grep SIP payload, follow the dialog\n  \
-        sipnab 'host 10.0.0.1 and port 5060'   BPF capture filter"
+    after_help = EXAMPLES,
+    after_long_help = after_long_help()
 )]
 pub struct Cli {
     // ── Capture ──
@@ -433,6 +534,10 @@ pub struct Cli {
     #[command(flatten)]
     pub vcon_forward_args: VconForwardArgs,
 
+    // ── vCon fetcher ──
+    #[command(flatten)]
+    pub vcon_fetch_args: VconFetchArgs,
+
     // ── Config ──
     #[command(flatten)]
     pub config_args: ConfigArgs,
@@ -460,6 +565,10 @@ pub struct ArchiveArgs {
     /// other users can read, the way ssh refuses a private key. A file another
     /// user owns, such as a Kubernetes secret mount, is accepted. Descriptor
     /// forms work: `/dev/fd/3`, or `<(pass show pcaps)`.
+    ///
+    /// Two sources are not flags: the environment variable
+    /// `SIPNAB_ARCHIVE_PASSWORD` and the systemd credential `archive-password`
+    /// (see ENVIRONMENT at the end of this help).
     #[arg(
         help_heading = "Archives",
         long = "archive-password-file",
@@ -573,7 +682,8 @@ pub struct CaptureArgs {
     pub device: Option<String>,
 
     /// Read packets from a capture file, directory, archive, or glob instead
-    /// of live capture. Repeatable.
+    /// of live capture, and stored vCon containers as the SIP messages they
+    /// hold. Repeatable.
     ///
     /// Files are read in the order their packets were captured, never by
     /// filename — `tcpdump -C -W` writes a ring buffer that wraps, so
@@ -696,7 +806,8 @@ pub struct CaptureArgs {
     /// Quiet bad-parse packets: suppress the per-packet
     /// diagnostic emitted when a SIP-looking packet fails to parse. The packet
     /// is dropped either way; this only silences the "SIP parse error" notice
-    /// on a noisy link (visible under -v / debug logging).
+    /// on a noisy link. sipnab logs the notice at debug level, so it shows
+    /// only with SIPNAB_LOG=debug.
     #[arg(help_heading = "Capture", short = 'x', long = "quiet-bad-parse")]
     pub quiet_bad_parse: bool,
 
@@ -708,9 +819,9 @@ pub struct CaptureArgs {
     /// The default is narrow, and SIP on other ports is ordinary: carriers and
     /// SBCs use 5070, 5080 and others routinely. Reading a file, SIP whose
     /// source and destination are both outside the range is skipped, and it
-    /// then appears in no message count, no dialog, and no output format. That
-    /// used to be silent; sipnab now counts what it skipped and says so,
-    /// naming the busiest ports so there is something to widen to. Pass
+    /// then appears in no message count, no dialog, and no output format.
+    /// sipnab counts what it skipped and says so, naming the busiest ports so
+    /// there is something to widen to. Pass
     /// `--portrange 1-65535` to analyze everything the capture holds.
     ///
     /// Live capture also turns this into the BPF filter when no explicit
@@ -729,9 +840,8 @@ pub struct CaptureArgs {
     /// web, not a deployment's. Kamailio, OpenSIPS and Janus each default to
     /// WSS on ports outside it, and behind a reverse proxy sipnab sees
     /// whichever port the proxy forwards to; on such a capture the entire
-    /// WebRTC signaling leg is invisible. Unlike `--portrange` this used to
-    /// report nothing at all, so sipnab now tallies the SIP-over-WebSocket it
-    /// declined to unwrap and names the ports it was on.
+    /// WebRTC signaling leg is invisible. sipnab tallies the SIP-over-WebSocket
+    /// it declined to unwrap and names the ports it was on.
     ///
     /// A range REPLACES the shipped set, exactly as `--portrange` replaces the
     /// default signaling ports; pass `--ws-portrange 1-65535` to unwrap
@@ -1257,10 +1367,12 @@ pub struct OutputArgs {
     /// What sipnab writes is an OBSERVER vCon, and the container says so in its
     /// own parties. sipnab watched packets go past a tap: it did not place the
     /// call, record it, or obtain anyone's permission to keep it. So nothing
-    /// here carries a signature, no party carries a `name` — a `From` header is
-    /// what the sender chose to write, not an identity anyone established — and
-    /// no URL ever points at media held elsewhere, because sipnab hosts nothing
-    /// to point at.
+    /// here carries a signature, and no URL ever points at media held
+    /// elsewhere, because sipnab hosts nothing to point at. A party's `name`
+    /// is the `From` or `To` display name when the wire carried one, never
+    /// the URI's user part, and every party carries `validation: "none"`: a
+    /// `From` header is what the sender chose to write, not an identity anyone
+    /// established.
     ///
     /// Audio this run RETAINED travels INSIDE the container, as a `recording`
     /// Dialog Object holding the WAV inline with a `sha512` `content_hash`. It
@@ -1268,8 +1380,8 @@ pub struct OutputArgs {
     /// note the exported file carries travels with it saying so. Above a
     /// measured budget the media is REFUSED out loud rather than dropped —
     /// `capture_completeness.media` says which of carried, refused-over-budget,
-    /// none-decodable or not-considered applies, so an absent `recording` never
-    /// has to be read as a call with no audio.
+    /// none-decodable, not-considered or withheld-by-redaction applies, so an
+    /// absent `recording` never has to be read as a call with no audio.
     ///
     /// It also carries what THIS capture missed: frames no decoder could read,
     /// SIP a port gate discarded, messages a retention cap evicted. vCon has no
@@ -1420,7 +1532,8 @@ pub struct OutputArgs {
     /// one we sent?" without trusting either side's metadata.
     ///
     /// The format is `sha256sum`'s, so `sipnab ... --vcon-digest > SHA256SUMS`
-    /// and a later `sha256sum -c SHA256SUMS` both work with no glue.
+    /// and a later `sha256sum -c SHA256SUMS` both work with no glue. It implies
+    /// `--no-cli-print`, so no message line shares stdout with the digests.
     #[arg(help_heading = "Output", long = "vcon-digest")]
     pub vcon_digest: bool,
 
@@ -1731,22 +1844,19 @@ pub struct DialogArgs {
     /// 100000). NOT a concurrency limit: nothing removes a completed dialog,
     /// so this bound scales with UPTIME, not with load.
     ///
-    /// This help used to say "track simultaneously", which is the reading an
-    /// operator wants and not the behavior that exists. A box carrying five
+    /// It is not the number of dialogs tracked at once. A box carrying five
     /// concurrent calls still evicts once 100,000 calls have COMPLETED, and
     /// eviction drops the OLDEST dialogs — the worst ones to lose for a
     /// post-mortem. A multi-file set feeds one store, so a 27-file directory
-    /// reaches the cap 27x sooner than one file (#64).
+    /// reaches the cap 27x sooner than one file.
     ///
     /// Completed dialogs are retained on purpose: `--report` and
     /// `--call-report` answer about calls that already ended, and evicting
     /// them on completion would break exactly the after-the-fact analysis
-    /// sipnab exists for. Whether the right fix is a separate retention window
-    /// for completed dialogs, a time-based bound, or something else is the
-    /// retention umbrella's decision (#160), not this flag's.
+    /// sipnab exists for.
     ///
-    /// The eviction count IS reported wherever a dialog count appears (#68),
-    /// so a run that hits this says so rather than quietly answering from a
+    /// The eviction count IS reported wherever a dialog count appears, so a
+    /// run that hits this says so rather than quietly answering from a
     /// truncated store.
     #[arg(
         help_heading = "Dialog",
@@ -2040,7 +2150,8 @@ pub struct SecurityArgs {
     #[arg(help_heading = "Security", long, value_name = "MODE", value_enum)]
     pub sandbox: Option<SandboxModeArg>,
 
-    /// Record every system call this process makes, and allow every one.
+    /// Record every system call (`log`), or refuse the ones outside a
+    /// host-derived allowlist (`enforce`).
     ///
     /// `off` (the default) changes nothing. `log` installs a seccomp filter
     /// whose only action is `SECCOMP_RET_LOG`: the kernel writes one audit
@@ -2070,8 +2181,12 @@ pub struct SecurityArgs {
     /// Point it at a bounded offline run and turn it off afterwards: a live
     /// capture emits one record per received packet and will flood the log.
     ///
-    /// It cannot end a run. `SECCOMP_RET_LOG` allows; the killing action a
-    /// derived allowlist would use is deliberately not implemented yet.
+    /// `log` cannot end a run: `SECCOMP_RET_LOG` allows every call. `enforce`
+    /// can. It kills the process on a call outside the allowlist that
+    /// `SIPNAB_SECCOMP_ALLOWLIST` names, which you derive on the host that runs
+    /// the capture with `scripts/derive-seccomp-allowlist.sh`. When sipnab
+    /// cannot install an enforcing filter (no list named, a list it cannot
+    /// read, a kernel that refuses), `enforce` refuses to start, exit status 1.
     #[arg(help_heading = "Security", long, value_name = "MODE", value_enum)]
     pub seccomp: Option<SeccompModeArg>,
 
@@ -2634,8 +2749,10 @@ pub struct SecurityArgs {
     /// instance every MCP and REST answer is stamped with, so an artefact can
     /// be joined back to the command that made it.
     ///
-    /// Written once, at startup, before the config is loaded and before any
-    /// capture device is opened. The file is opened for APPEND and never
+    /// Written once, at startup, before the config takes effect and before
+    /// any capture device is opened. sipnab reads the config file first, so
+    /// the record names the node --node-name or `[capture] node_name` sets.
+    /// The file is opened for APPEND and never
     /// truncated, so successive runs accumulate; created mode 0600 if absent,
     /// because argv holds capture paths and a path holds a customer name.
     /// The record replaces the value of a flag that takes a secret inline,
@@ -2994,25 +3111,25 @@ pub struct ListenerArgs {
 /// 2 MiB libtest thread stack.
 #[derive(clap::Args, Debug, Clone)]
 pub struct McpArgs {
-    /// Run sipnab as an MCP server (Model Context Protocol) instead of TUI/CLI.
-    /// Implies --no-tui. Default transport is stdio; --mcp-transport selects
-    /// http (requires the mcp-http feature).
+    /// Run sipnab as an MCP server (Model Context Protocol). Default
+    /// transport is stdio, which owns stdout: Implies --no-tui. With
+    /// --mcp-transport http (requires the mcp-http feature) the TUI stays up
+    /// beside the server unless -N is given.
     #[arg(help_heading = "MCP (Model Context Protocol)", long)]
     pub mcp: bool,
 
     /// MCP transport: "stdio" (default) or "http".
     ///
     /// Accepts only `stdio` or `http`; any other value is rejected at parse
-    /// time (previously an unrecognized transport passed parse silently and was
-    /// only caught later, and only when `--mcp` was also set).
+    /// time, whether or not `--mcp` is set.
     #[arg(
         help_heading = "MCP (Model Context Protocol)",
         long = "mcp-transport",
         value_name = "TRANSPORT",
-        default_value = "stdio",
-        value_parser = clap::builder::PossibleValuesParser::new(["stdio", "http"])
+        value_enum,
+        default_value_t = McpTransport::Stdio
     )]
-    pub mcp_transport: String,
+    pub mcp_transport: McpTransport,
 
     /// Bind address for the HTTP MCP transport (default 127.0.0.1:8731).
     #[arg(
@@ -3409,6 +3526,26 @@ pub struct McpArgs {
         value_parser = clap::value_parser!(u64).range(1..)
     )]
     pub mcp_max_body_bytes: Option<u64>,
+    /// Maximum bytes of ONE whole paged MCP response.
+    ///
+    /// `--mcp-max-rows` bounds how many rows a page carries and
+    /// `--mcp-max-body-bytes` how wide one body in a row can be; neither
+    /// bounds the page as a whole, and a page of rows that are each within
+    /// both can still exceed what a small model can read. Past this ceiling
+    /// a paged tool drops whole rows from the end of the page and answers
+    /// `truncated_by: "bytes"` with a `next_cursor` to the rest. A caller
+    /// narrows it per call with `max_response_bytes`, and cannot exceed it.
+    ///
+    /// No clap `default_value`, for the reason given on
+    /// [`Self::mcp_max_rows`]. The default lives in
+    /// [`Cli::DEFAULT_MCP_MAX_RESPONSE_BYTES`].
+    #[arg(
+        help_heading = "MCP (Model Context Protocol)",
+        long = "mcp-max-response-bytes",
+        value_name = "N",
+        value_parser = clap::value_parser!(u64).range(1..)
+    )]
+    pub mcp_max_response_bytes: Option<u64>,
     /// Longest wait ONE `await_condition` MCP call may take, in seconds.
     ///
     /// `--mcp-max-rows` bounds how much an answer carries; this bounds how
@@ -3725,13 +3862,9 @@ pub struct McpArgs {
     /// max_audio_frames` frames (default 1500) per stream across at most
     /// `--max-streams` streams.
     ///
-    /// It used to require `--mcp`, because the MCP server was the only
-    /// batch-mode consumer and retaining without it would have spent the
-    /// memory on audio nothing in the run could reach. That stopped being true
-    /// when the amplitude measurement landed: `--call-report` and
-    /// `--json-dialogs` read it now, and the constraint would have kept the
-    /// one finding that needs samples behind a server nobody analyzing a pcap
-    /// wants to start.
+    /// It does not need `--mcp`: `--call-report` and `--json-dialogs` read the
+    /// retained audio for the amplitude measurement, so a pcap analysis gets
+    /// that finding without starting a server.
     #[arg(help_heading = "MCP (Model Context Protocol)", long = "retain-audio")]
     pub retain_audio: bool,
 
@@ -3811,11 +3944,10 @@ pub struct McpArgs {
 
     /// Permit the `save_findings` MCP tool to record an agent's conclusion.
     ///
-    /// The ONLY write verb on sipnab's whole network surface, and off by
-    /// default because its caller is a language model reading text an attacker
-    /// may have put on the wire. What makes it safe is not that the text is
-    /// trustworthy: it is that the write reaches nothing. A finding goes to the
-    /// log and is readable by no tool, appears in no query result, and feeds no
+    /// Off by default, because its caller is a language model reading text an
+    /// attacker may have put on the wire. What makes it safe is not that the
+    /// text is trustworthy: it is that the write reaches nothing. A finding goes
+    /// to the log and is readable by no tool, appears in no query result, and feeds no
     /// analysis, so it cannot come back as evidence in a later answer.
     ///
     /// Bounded at 1000 findings per process, after which writes are REFUSED
@@ -4495,6 +4627,26 @@ pub struct VconForwardArgs {
     )]
     pub vcon_forward: Option<std::path::PathBuf>,
 
+    /// Print the state of this `--export-vcon-dir` spool as JSON and exit 0:
+    /// containers pending, delivered and failed, and the record the
+    /// forwarder wrote beside each failed container. A snapshot of the files,
+    /// read from the forwarder's default `delivered/` and `failed/`
+    /// directories; it sends, moves and deletes nothing. The same answer the
+    /// MCP tool `vcon_spool_status` and `GET /v1/vcon/spool` give. Exits 1
+    /// when a directory exists and cannot be read. Needs the `vcon` feature.
+    #[arg(
+        help_heading = "vCon forwarder",
+        long = "vcon-spool-status",
+        value_name = "SPOOL_DIR",
+        conflicts_with_all = [
+            "device", "input", "hep_listen", "hep_send", "bpf_filter",
+            "bpf_file", "api", "mcp", "metrics", "export_vcon",
+            "export_vcon_when", "export_vcon_dir", "mint_token", "replay",
+            "vcon_forward", "vcon_fetch",
+        ]
+    )]
+    pub vcon_spool_status: Option<std::path::PathBuf>,
+
     /// Where the forwarder POSTs each container, `http://` or `https://`,
     /// path and query included, for example
     /// `http://127.0.0.1:8000/vcon/external-ingress?ingress_list=sipnab`.
@@ -4545,9 +4697,9 @@ pub struct VconForwardArgs {
 
     /// What kind of store receives the containers: `generic` (the default:
     /// every setting given explicitly), `vcon-store` or `conserver`. A kind
-    /// supplies the ingest path for a base URL, the header for a bare key,
-    /// and the payload adaptation; an explicit setting overrides each.
-    /// Overrides `[vcon_forward] kind`.
+    /// supplies the ingest path for a base URL and the header for a bare
+    /// key; an explicit setting overrides each. No kind changes the
+    /// container sent. Overrides `[vcon_forward] kind`.
     #[arg(
         help_heading = "vCon forwarder",
         long = "vcon-forward-kind",
@@ -4689,24 +4841,175 @@ pub struct VconForwardArgs {
         requires = "vcon_forward"
     )]
     pub vcon_forward_ca: Option<std::path::PathBuf>,
+}
 
-    /// Adjust the copy that is SENT for one store's known deviation from the
-    /// vCon drafts. `vcon-store`: send `extensions` as an object, and refuse
-    /// a Dialog Object without `type` and `parties`, the adaptation the
-    /// `vcon-store` kind applies. `none`: send every container byte for
-    /// byte. The container on disk is never changed. Default: the
-    /// --vcon-forward-kind's adaptation, none for `generic`. Overrides
-    /// `[vcon_forward] compat`.
+/// `vCon fetcher` flags: the mode that reads stored vCons from a store by
+/// uuid and writes each to a file.
+///
+/// A separate process from any capture, like the forwarder: `--vcon-fetch`
+/// conflicts with every capture source, listener and export flag, so the
+/// capture process keeps making no outbound connection.
+#[derive(clap::Args, Debug, Clone)]
+pub struct VconFetchArgs {
+    /// Run as the vCon fetcher: read the container with each of these uuids
+    /// from the store at --vcon-fetch-url and write it to
+    /// `<uuid>.vcon.json` in --vcon-fetch-out. `-` reads the uuids from
+    /// standard input, one per line. Captures nothing. Needs a URL and a
+    /// credential, from a flag or from `[vcon_fetch]` in the config file.
+    /// Needs the `vcon` feature.
     #[arg(
-        help_heading = "vCon forwarder",
-        long = "vcon-forward-compat",
-        value_name = "STORE",
-        value_parser = clap::builder::PossibleValuesParser::new(
-            crate::config::FORWARD_COMPAT.iter().copied()
-        ),
-        requires = "vcon_forward"
+        help_heading = "vCon fetcher",
+        long = "vcon-fetch",
+        value_name = "UUID",
+        num_args = 1..,
+        conflicts_with_all = [
+            "device", "input", "hep_listen", "hep_send", "bpf_filter",
+            "bpf_file", "api", "mcp", "metrics", "export_vcon",
+            "export_vcon_when", "export_vcon_dir", "mint_token", "replay",
+            "vcon_forward",
+        ]
     )]
-    pub vcon_forward_compat: Option<String>,
+    pub vcon_fetch: Vec<String>,
+
+    /// The store to read from, `http://` or `https://`. With a
+    /// --vcon-fetch-kind other than `generic`, the store's base URL: the
+    /// kind adds its read path after the URL's own path. A URL holding
+    /// `{uuid}` is used as written, the uuid filled in, for any kind, and the
+    /// `generic` kind needs one. Overrides `[vcon_fetch] url`.
+    #[arg(
+        help_heading = "vCon fetcher",
+        long = "vcon-fetch-url",
+        value_name = "URL",
+        requires = "vcon_fetch"
+    )]
+    pub vcon_fetch_url: Option<String>,
+
+    /// File holding the credential, as the forwarder's auth file does: one
+    /// `Header-Name: value` line, or, with a --vcon-fetch-kind other than
+    /// `generic`, the bare key, which the kind sends in its header. Refused
+    /// when other users can read it: chmod 600. The value never appears in a
+    /// log line or an error. Overrides `[vcon_fetch] auth_file`.
+    #[arg(
+        help_heading = "vCon fetcher",
+        long = "vcon-fetch-auth-file",
+        value_name = "FILE",
+        requires = "vcon_fetch"
+    )]
+    pub vcon_fetch_auth_file: Option<std::path::PathBuf>,
+
+    /// What kind of store holds the containers: `generic` (the default:
+    /// --vcon-fetch-url is a template holding `{uuid}`, and the auth file a
+    /// full header line), `vcon-store`, `conserver` or `vcon-mcp`. A kind
+    /// supplies the read path, the header for a bare key, and the removal of
+    /// what the store wraps around the container. Overrides
+    /// `[vcon_fetch] kind`.
+    #[arg(
+        help_heading = "vCon fetcher",
+        long = "vcon-fetch-kind",
+        value_name = "KIND",
+        value_parser = clap::builder::PossibleValuesParser::new(
+            crate::config::FETCH_KINDS.iter().copied()
+        ),
+        requires = "vcon_fetch"
+    )]
+    pub vcon_fetch_kind: Option<String>,
+
+    /// The directory each container is written to, as `<uuid>.vcon.json`,
+    /// mode 0600. Created, mode 0700, when it does not exist. Default: the
+    /// current directory.
+    #[arg(
+        help_heading = "vCon fetcher",
+        long = "vcon-fetch-out",
+        value_name = "DIR",
+        requires = "vcon_fetch"
+    )]
+    pub vcon_fetch_out: Option<std::path::PathBuf>,
+
+    /// Replace a `<uuid>.vcon.json` that already exists in --vcon-fetch-out.
+    /// Without it, a uuid whose file exists is not fetched, and the run exits
+    /// 1.
+    #[arg(
+        help_heading = "vCon fetcher",
+        long = "vcon-fetch-overwrite",
+        requires = "vcon_fetch"
+    )]
+    pub vcon_fetch_overwrite: bool,
+
+    /// Seconds the fetcher waits to connect, and for each read and write,
+    /// before it gives up on a container, 1 to 600. Default: 30. Overrides
+    /// `[vcon_fetch] timeout`.
+    #[arg(
+        help_heading = "vCon fetcher",
+        long = "vcon-fetch-timeout",
+        value_name = "SECS",
+        value_parser = parse_fetch_timeout,
+        requires = "vcon_fetch"
+    )]
+    pub vcon_fetch_timeout: Option<u64>,
+
+    /// The largest container the fetcher reads, in bytes, 1 to 4294967295.
+    /// A larger answer is refused and nothing is written. Default: 67108864
+    /// (64 MiB). Overrides `[vcon_fetch] max_size`.
+    #[arg(
+        help_heading = "vCon fetcher",
+        long = "vcon-fetch-max-size",
+        value_name = "BYTES",
+        value_parser = parse_fetch_max_size,
+        requires = "vcon_fetch"
+    )]
+    pub vcon_fetch_max_size: Option<u64>,
+
+    /// The most bytes of a store's status line and headers the fetcher
+    /// reads, 1 to 4294967295; an answer with more is refused. Default:
+    /// 65536. Overrides `[vcon_fetch] max_response_head`.
+    #[arg(
+        help_heading = "vCon fetcher",
+        long = "vcon-fetch-max-response-head",
+        value_name = "BYTES",
+        value_parser = parse_fetch_max_response_head,
+        requires = "vcon_fetch"
+    )]
+    pub vcon_fetch_max_response_head: Option<u64>,
+
+    /// Trust only the CA certificates in this PEM file for an `https://`
+    /// store. Without it the fetcher trusts the host's CA bundle. Overrides
+    /// `[vcon_fetch] ca`.
+    #[arg(
+        help_heading = "vCon fetcher",
+        long = "vcon-fetch-ca",
+        value_name = "FILE",
+        requires = "vcon_fetch"
+    )]
+    pub vcon_fetch_ca: Option<std::path::PathBuf>,
+}
+
+impl VconFetchArgs {
+    /// The first fetcher option given without `--vcon-fetch`, or `None`.
+    #[must_use]
+    pub fn option_without_the_mode(&self) -> Option<&'static str> {
+        if !self.vcon_fetch.is_empty() {
+            return None;
+        }
+        [
+            ("--vcon-fetch-url", self.vcon_fetch_url.is_some()),
+            (
+                "--vcon-fetch-auth-file",
+                self.vcon_fetch_auth_file.is_some(),
+            ),
+            ("--vcon-fetch-kind", self.vcon_fetch_kind.is_some()),
+            ("--vcon-fetch-out", self.vcon_fetch_out.is_some()),
+            ("--vcon-fetch-overwrite", self.vcon_fetch_overwrite),
+            ("--vcon-fetch-timeout", self.vcon_fetch_timeout.is_some()),
+            ("--vcon-fetch-max-size", self.vcon_fetch_max_size.is_some()),
+            (
+                "--vcon-fetch-max-response-head",
+                self.vcon_fetch_max_response_head.is_some(),
+            ),
+            ("--vcon-fetch-ca", self.vcon_fetch_ca.is_some()),
+        ]
+        .into_iter()
+        .find_map(|(flag, given)| given.then_some(flag))
+    }
 }
 
 impl VconForwardArgs {
@@ -4757,7 +5060,6 @@ impl VconForwardArgs {
                 self.vcon_forward_max_error_body.is_some(),
             ),
             ("--vcon-forward-ca", self.vcon_forward_ca.is_some()),
-            ("--vcon-forward-compat", self.vcon_forward_compat.is_some()),
         ]
         .into_iter()
         .find_map(|(flag, given)| given.then_some(flag))
@@ -4828,6 +5130,16 @@ impl CaptureProfile {
             CaptureProfile::Full => 65535,
         }
     }
+}
+
+/// The MCP server's transport (`--mcp-transport`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, clap::ValueEnum)]
+pub enum McpTransport {
+    /// JSON-RPC over stdin and stdout.
+    #[default]
+    Stdio,
+    /// JSON-RPC over HTTP (needs the mcp-http feature).
+    Http,
 }
 
 /// Source-address strategy for the scanner-kill response packet.
@@ -5136,6 +5448,22 @@ impl Cli {
     /// definition can serve both — `mcp::shape::DEFAULT_MAX_BODY_BYTES` reads
     /// it from here.
     pub const DEFAULT_MCP_MAX_BODY_BYTES: u64 = 4_096;
+    /// Default ceiling on one whole paged MCP response, in bytes — see
+    /// [`Self::DEFAULT_DIALOG_LIMIT`].
+    ///
+    /// 1 MiB, chosen so that no response sipnab gave before the budget
+    /// existed changes. Measured over every capture in `tests/pcap-samples`
+    /// that loads, at the default `limit` and at `limit: 1000`, on the paged
+    /// tools: the largest response was 561,420 bytes (`list_dialogs` with
+    /// `limit: 1000` over `sipp-branch-scenario.pcapng`), and the largest at
+    /// the default `limit` was 52,809 bytes (`get_dialog` over
+    /// `DTMFsipinfo.pcap`). 1 MiB is under twice the first and twenty times
+    /// the second, so the budget only binds on a page far larger than any
+    /// of those, or when a caller or operator asks for less.
+    ///
+    /// Lives here for the reason [`Self::DEFAULT_MCP_MAX_BODY_BYTES`]
+    /// records.
+    pub const DEFAULT_MCP_MAX_RESPONSE_BYTES: u64 = 1_048_576;
     /// Default ceiling on one `await_condition` wait, in seconds — see
     /// [`Self::DEFAULT_DIALOG_LIMIT`].
     ///
@@ -5388,6 +5716,22 @@ impl Cli {
             .mcp_max_body_bytes
             .or(config.limits.mcp_max_body_bytes)
             .unwrap_or(Self::DEFAULT_MCP_MAX_BODY_BYTES) as usize
+    }
+
+    /// MCP whole-response ceiling: `--mcp-max-response-bytes`, else
+    /// `[limits] mcp_max_response_bytes`, else the default. See
+    /// [`Self::dialog_limit`] for the precedence rule.
+    ///
+    /// Bounds the whole page where [`Self::mcp_row_cap`] bounds its rows and
+    /// [`Self::mcp_body_cap`] the width of one body in a row.
+    #[must_use]
+    pub fn mcp_response_cap(&self, config: &crate::config::Config) -> usize {
+        let bytes = self
+            .mcp_args
+            .mcp_max_response_bytes
+            .or(config.limits.mcp_max_response_bytes)
+            .unwrap_or(Self::DEFAULT_MCP_MAX_RESPONSE_BYTES);
+        usize::try_from(bytes).unwrap_or(usize::MAX)
     }
 
     /// MCP wait ceiling: `--mcp-max-wait-seconds`, else
@@ -5660,23 +6004,25 @@ impl Cli {
     ///
     /// # Errors
     ///
-    /// `crate::Error::ConfigInvalid`, naming the source, when the spec is not
-    /// two ports separated by `-` with start <= end.
+    /// When the spec is not two ports separated by `-` with start <= end:
+    /// `crate::Error::CliValidation` ("Invalid --ws-portrange: ...") for the
+    /// flag, `crate::Error::ConfigInvalid` naming `[capture] ws_ports` for the
+    /// key. The kind is the origin: the caller derives the exit code from it.
     pub fn ws_port_range(
         &self,
         config: &crate::config::Config,
     ) -> Result<Option<(u16, u16)>, crate::Error> {
-        let (spec, source) = match (
-            self.capture_args.ws_portrange.as_deref(),
-            config.capture.ws_ports.as_deref(),
-        ) {
-            (Some(s), _) => (s, "--ws-portrange"),
-            (None, Some(s)) => (s, "[capture] ws_ports"),
-            (None, None) => return Ok(None),
+        if let Some(spec) = self.capture_args.ws_portrange.as_deref() {
+            return crate::config::parse_portrange(spec)
+                .map(Some)
+                .map_err(|e| crate::Error::CliValidation(format!("Invalid --ws-portrange: {e}")));
+        }
+        let Some(spec) = config.capture.ws_ports.as_deref() else {
+            return Ok(None);
         };
         crate::config::parse_portrange(spec)
             .map(Some)
-            .map_err(|e| crate::Error::ConfigInvalid(format!("{source}: {e}")))
+            .map_err(|e| crate::Error::ConfigInvalid(format!("[capture] ws_ports: {e}")))
     }
 
     /// Gzip inflation ceiling: `--max-gunzip-bytes`, else
@@ -6926,16 +7272,98 @@ impl Cli {
         // says "Implies --no-tui", and it used to refuse the operator for not
         // typing what it had promised to set. An agent host reading that help
         // wrote an invocation that failed on first run.
+        //
+        // Only the stdio transport, though. Its JSON-RPC wire is stdout, which
+        // the TUI draws on; over HTTP the wire is a socket, and the operator
+        // can watch the capture in the TUI while an agent queries it.
         if self.output_args.call_report.is_some()
             || self.output_args.export_vcon.is_some()
             || self.output_args.export_vcon_when.is_some()
-            || self.mcp_args.mcp
+            || self.mcp_owns_stdout()
         {
             self.mode_args.no_tui = true;
         }
         if self.output_args.export_vcon.is_some() && self.output_args.vcon_out.is_none() {
             self.output_args.no_cli_print = true;
         }
+        // `--vcon-digest` writes `sha256sum` lines to stdout, which its help
+        // promises can be redirected straight into a file `sha256sum -c`
+        // reads, so no message line may share the stream.
+        if self.output_args.vcon_digest {
+            self.output_args.no_cli_print = true;
+        }
+    }
+
+    /// Why an MCP opt-in cannot be used with the TUI up, if one is set.
+    ///
+    /// MCP over HTTP serves beside the TUI, reading the stores the TUI shows.
+    /// Five opt-ins act on the process or on another system rather than read
+    /// the capture, and each is wrong with an operator at the terminal:
+    ///
+    /// - `--mcp-allow-shutdown`: `shutdown_server` stops the capture and the
+    ///   servers, and the TUI, which does not watch that flag, stays on screen
+    ///   showing a run that has stopped.
+    /// - `--mcp-allow-open-capture`: `open_capture` clears the stores the TUI
+    ///   is showing and loads another file into them.
+    /// - `--mcp-allow-tls-capture`: `start_tls_capture` adds a second writer
+    ///   to those stores.
+    /// - `--mcp-allow-save-findings`: `save_findings` writes the annotation to
+    ///   the log, and a TUI run logs only errors, so the annotation would be
+    ///   accepted and lost.
+    /// - `--mcp-allow-relay-query`: `query_relay` transmits to the relay on
+    ///   the run's one transmit permit, and in a TUI run the relay-statistics
+    ///   view holds it; the tool would answer that it needs a live source on
+    ///   a run that has one.
+    ///
+    /// Each is accepted with `-N`, as before.
+    fn mcp_beside_tui_refusal(&self) -> Option<String> {
+        if !self.mcp_args.mcp || self.mode_args.no_tui {
+            return None;
+        }
+        let refused: Vec<&str> = [
+            (self.mcp_args.mcp_allow_shutdown, "--mcp-allow-shutdown"),
+            (
+                self.mcp_args.mcp_allow_open_capture,
+                "--mcp-allow-open-capture",
+            ),
+            (
+                self.mcp_args.mcp_allow_tls_capture,
+                "--mcp-allow-tls-capture",
+            ),
+            (
+                self.mcp_args.mcp_allow_save_findings,
+                "--mcp-allow-save-findings",
+            ),
+            (
+                self.mcp_args.mcp_allow_relay_query,
+                "--mcp-allow-relay-query",
+            ),
+        ]
+        .iter()
+        .filter(|(set, _)| *set)
+        .map(|(_, flag)| *flag)
+        .collect();
+        (!refused.is_empty()).then(|| {
+            format!(
+                "{}: these opt-ins act on the sipnab process or the relay, and \
+                 with the TUI up the operator at the terminal owns both. Add -N \
+                 to serve MCP headless with them, or remove them to query this \
+                 capture beside the TUI",
+                refused.join(", ")
+            )
+        })
+    }
+
+    /// Whether this run serves MCP on stdout: `--mcp` with any transport but
+    /// `http`. Such a run cannot draw the TUI, because stdout is the JSON-RPC
+    /// wire.
+    ///
+    /// The one rule for both readers: `normalize` sets `-N` from it, and
+    /// `bootstrap::select_run_mode` reads it for a `Cli` built without
+    /// passing through `normalize`.
+    #[must_use]
+    pub fn mcp_owns_stdout(&self) -> bool {
+        self.mcp_args.mcp && self.mcp_args.mcp_transport != McpTransport::Http
     }
 
     /// Whether the dialog store evicts the oldest dialog at `--limit` capacity.
@@ -6992,8 +7420,8 @@ impl Cli {
     /// `--fail2ban`) require non-interactive mode (`-N`) unless `--call-report`
     /// is specified (which implies non-interactive output). Also rejects
     /// `--mcp` without `-N`, `--mcp` combined with stdout-writing flags
-    /// (MCP owns stdout for the JSON-RPC wire), an unknown
-    /// `--mcp-transport` value, and any malformed `--kill-target` spec.
+    /// (MCP owns stdout for the JSON-RPC wire), and any malformed
+    /// `--kill-target` spec.
     ///
     /// # Errors
     /// `crate::Error::CliValidation` with a user-facing message for each
@@ -7088,6 +7516,11 @@ impl Cli {
         if let Some(flag) = self.vcon_forward_args.option_without_the_mode() {
             return Err(crate::Error::CliValidation(format!(
                 "{flag} is a vCon forwarder setting and needs --vcon-forward"
+            )));
+        }
+        if let Some(flag) = self.vcon_fetch_args.option_without_the_mode() {
+            return Err(crate::Error::CliValidation(format!(
+                "{flag} is a vCon fetcher setting and needs --vcon-fetch"
             )));
         }
 
@@ -7242,6 +7675,12 @@ impl Cli {
             crate::output::group::GroupField::parse(field).map_err(crate::Error::CliValidation)?;
         }
 
+        // MCP beside the TUI: the operator at the terminal owns the run, so
+        // the tools that act on the process itself are refused with the TUI up.
+        if let Some(refusal) = self.mcp_beside_tui_refusal() {
+            return Err(crate::Error::CliValidation(refusal));
+        }
+
         // MCP mode owns stdout (JSON-RPC wire); reject any flag
         // combination that would also try to write to stdout.
         if self.mcp_args.mcp {
@@ -7285,19 +7724,13 @@ impl Cli {
             // Token + bind validation for non-loopback HTTP transport happens
             // in the http transport module; for stdio there is no
             // network surface to validate.
-            if self.mcp_args.mcp_transport != "stdio" && self.mcp_args.mcp_transport != "http" {
-                return Err(crate::Error::CliValidation(format!(
-                    "--mcp-transport must be 'stdio' or 'http', got '{}'",
-                    self.mcp_args.mcp_transport
-                )));
-            }
         }
 
         // The MCP certificate pair configures the HTTP transport's listener.
         // On stdio there is no listener, so the flags would do nothing while
         // the operator believes the server is on HTTPS.
         if (self.mcp_args.mcp_tls_cert.is_some() || self.mcp_args.mcp_tls_key.is_some())
-            && !(self.mcp_args.mcp && self.mcp_args.mcp_transport == "http")
+            && !(self.mcp_args.mcp && self.mcp_args.mcp_transport == McpTransport::Http)
         {
             return Err(crate::Error::CliValidation(
                 "--mcp-tls-cert/--mcp-tls-key serve MCP over HTTPS and do nothing \
@@ -7541,6 +7974,22 @@ fn parse_forward_max_error_body(s: &str) -> Result<u64, String> {
     crate::config::FORWARD_MAX_ERROR_BODY.parse(s)
 }
 
+/// `--vcon-fetch-timeout`: [`crate::config::FETCH_TIMEOUT`]'s rule.
+fn parse_fetch_timeout(s: &str) -> Result<u64, String> {
+    crate::config::FETCH_TIMEOUT.parse(s)
+}
+
+/// `--vcon-fetch-max-size`: [`crate::config::FETCH_MAX_SIZE`]'s rule.
+fn parse_fetch_max_size(s: &str) -> Result<u64, String> {
+    crate::config::FETCH_MAX_SIZE.parse(s)
+}
+
+/// `--vcon-fetch-max-response-head`:
+/// [`crate::config::FETCH_MAX_RESPONSE_HEAD`]'s rule.
+fn parse_fetch_max_response_head(s: &str) -> Result<u64, String> {
+    crate::config::FETCH_MAX_RESPONSE_HEAD.parse(s)
+}
+
 /// Parse `--dialog-track`, rejecting anything that is not a known method.
 ///
 /// The flag this replaces accepted every value — `--dialog-track telepathy`
@@ -7700,8 +8149,6 @@ mod tests {
         argv.extend(FORWARD);
         argv.extend([
             "--vcon-forward-once",
-            "--vcon-forward-compat",
-            "vcon-store",
             "--vcon-forward-replace-url",
             "https://store.example.com/v1/vcons/{uuid}",
             "--vcon-forward-done",
@@ -7742,7 +8189,6 @@ mod tests {
             Some("https://store.example.com/v1/vcons")
         );
         assert!(f.vcon_forward_once);
-        assert_eq!(f.vcon_forward_compat.as_deref(), Some("vcon-store"));
         assert_eq!(f.vcon_forward_interval, Some(7));
         assert_eq!(f.vcon_forward_timeout, Some(9));
         Ok(())
@@ -7849,7 +8295,6 @@ mod tests {
             &["--vcon-forward-url", "http://127.0.0.1:8000/x"][..],
             &["--vcon-forward-auth-file", "/etc/x"],
             &["--vcon-forward-once"],
-            &["--vcon-forward-compat", "vcon-store"],
             &["--vcon-forward-done", "/srv/done"],
             &["--vcon-forward-kind", "conserver"],
             &["--vcon-forward-backoff-first", "3"],
@@ -7871,10 +8316,6 @@ mod tests {
         // startup check that does is
         // `the_forwarder_needs_a_url_and_a_credential_from_some_source`.
         assert!(Cli::try_parse_from(["sipnab", "--vcon-forward", "/srv/spool"]).is_ok());
-        let mut bad = vec!["sipnab"];
-        bad.extend(FORWARD);
-        bad.extend(["--vcon-forward-compat", "something-else"]);
-        assert!(Cli::try_parse_from(&bad).is_err(), "unknown compat mode");
         Ok(())
     }
 
@@ -7945,6 +8386,33 @@ mod tests {
             build_line,
             "-V is the short form and stays the single build line"
         );
+        Ok(())
+    }
+
+    /// `--export-vcon`'s help names every value `capture_completeness.media`
+    /// can take. It named four of the five, leaving out
+    /// `withheld-by-redaction`, which a `--redact` export reports.
+    #[cfg(feature = "vcon")]
+    #[test]
+    fn export_vcon_help_names_every_media_outcome() -> Result<(), TestError> {
+        use clap::CommandFactory;
+        let cmd = Cli::command();
+        let arg = cmd
+            .get_arguments()
+            .find(|a| a.get_id() == "export_vcon")
+            .ok_or("no --export-vcon argument")?;
+        let help = arg
+            .get_long_help()
+            .or_else(|| arg.get_help())
+            .map(ToString::to_string)
+            .unwrap_or_default();
+        for outcome in crate::output::vcon::MediaOutcome::ALL {
+            assert!(
+                help.contains(outcome.as_str()),
+                "--export-vcon help does not name `{}`:\n{help}",
+                outcome.as_str()
+            );
+        }
         Ok(())
     }
 
@@ -8501,14 +8969,23 @@ mod tests {
         Ok(())
     }
 
-    /// Both documented transports still parse and round-trip.
+    /// Both documented transports still parse, each into its own variant,
+    /// and no flag at all is stdio.
+    ///
+    /// The transport used to be a `String` that clap restricted to the two
+    /// values, with a second check in `validate` and a third arm in
+    /// `start_servers` for any other value. clap refused every other value
+    /// first, so neither later message could print. As an enum there is one
+    /// rule, and no other value can be built.
     #[test]
     fn mcp_transport_accepts_documented_values() -> Result<(), TestError> {
-        for v in ["stdio", "http"] {
+        for (v, want) in [("stdio", McpTransport::Stdio), ("http", McpTransport::Http)] {
             let cli = Cli::try_parse_from(["sipnab", "--mcp-transport", v])
                 .map_err(|e| format!("--mcp-transport {v} must parse: {e}"))?;
-            assert_eq!(cli.mcp_args.mcp_transport, v);
+            assert_eq!(cli.mcp_args.mcp_transport, want);
         }
+        let bare = Cli::try_parse_from(["sipnab"]).map_err(|e| format!("bare: {e}"))?;
+        assert_eq!(bare.mcp_args.mcp_transport, McpTransport::Stdio);
         Ok(())
     }
 
@@ -9808,6 +10285,96 @@ mod tests {
         Ok(())
     }
 
+    /// MCP over HTTP leaves the TUI up.
+    ///
+    /// Only the stdio transport needs the terminal's stdout, because stdout is
+    /// its JSON-RPC wire. Over HTTP the wire is a socket, so an operator can
+    /// watch the capture in the TUI while an agent queries the same stores.
+    #[test]
+    fn mcp_over_http_leaves_the_tui_up() -> Result<(), TestError> {
+        let cli =
+            Cli::parse_from_args(["sipnab", "-I", "x.pcap", "--mcp", "--mcp-transport", "http"]);
+        assert!(
+            !cli.mode_args.no_tui,
+            "--mcp --mcp-transport http must not imply -N: stdout is not its wire"
+        );
+        assert!(
+            cli.validate().is_ok(),
+            "--mcp --mcp-transport http without -N must be accepted: {:?}",
+            cli.validate().err()
+        );
+        Ok(())
+    }
+
+    /// MCP over stdio still runs headless, whether the transport is spelled
+    /// out or left at its default.
+    #[test]
+    fn mcp_over_stdio_still_implies_no_tui() -> Result<(), TestError> {
+        for argv in [
+            &["sipnab", "-I", "x.pcap", "--mcp"][..],
+            &[
+                "sipnab",
+                "-I",
+                "x.pcap",
+                "--mcp",
+                "--mcp-transport",
+                "stdio",
+            ][..],
+        ] {
+            let cli = Cli::parse_from_args(argv.iter().copied());
+            assert!(
+                cli.mode_args.no_tui,
+                "{argv:?}: stdio MCP owns stdout, so it must run without the TUI"
+            );
+            assert!(
+                cli.validate().is_ok(),
+                "{argv:?}: {:?}",
+                cli.validate().err()
+            );
+        }
+        Ok(())
+    }
+
+    /// The MCP tools that act on the process itself are refused beside the TUI.
+    ///
+    /// The operator at the terminal owns the run. `shutdown_server` would stop
+    /// the capture and the servers while the TUI stayed on screen;
+    /// `open_capture` and `start_tls_capture` would replace or add to the
+    /// stores the TUI is showing; `save_findings` writes to a log the TUI run
+    /// does not print; `query_relay` transmits on the run's one relay permit,
+    /// which the TUI's relay-statistics view holds. Each is refused at startup
+    /// naming the flag and `-N`, and accepted with `-N`.
+    #[test]
+    fn process_level_mcp_tools_are_refused_beside_the_tui() -> Result<(), TestError> {
+        for flag in [
+            "--mcp-allow-shutdown",
+            "--mcp-allow-open-capture",
+            "--mcp-allow-tls-capture",
+            "--mcp-allow-save-findings",
+            "--mcp-allow-relay-query",
+        ] {
+            let base = ["sipnab", "-I", "x.pcap", "--mcp", "--mcp-transport", "http"];
+            let beside_tui = Cli::parse_from_args(base.iter().copied().chain([flag]));
+            let err = beside_tui
+                .validate()
+                .err()
+                .ok_or_else(|| format!("{flag} beside the TUI must be refused"))?
+                .to_string();
+            assert!(
+                err.contains(flag) && err.contains("-N"),
+                "the refusal must name {flag} and -N: {err}"
+            );
+
+            let headless = Cli::parse_from_args(base.iter().copied().chain([flag, "-N"]));
+            assert!(
+                headless.validate().is_ok(),
+                "{flag} with -N must still be accepted: {:?}",
+                headless.validate().err()
+            );
+        }
+        Ok(())
+    }
+
     /// The test module's description documents the test module, and every
     /// function's doc comment is its own. On 2026-10-07 the two lines that
     /// describe this module sat above `parse_forward_auth`, and rustdoc
@@ -10753,6 +11320,29 @@ mod tests {
         Ok(())
     }
 
+    /// `-x` help says how to see the notice it silences: `SIPNAB_LOG=debug`.
+    ///
+    /// It said "visible under -v", and `-v` is `--invert`, which inverts the
+    /// match and changes no log level. The notice is a `debug` event, so
+    /// only the log filter shows it (`pipeline` tests pin that level).
+    #[test]
+    fn quiet_bad_parse_help_names_the_log_level_that_shows_the_notice() -> Result<(), TestError> {
+        use clap::CommandFactory;
+        let cmd = Cli::command();
+        let arg = cmd
+            .get_arguments()
+            .find(|a| a.get_id() == "quiet_bad_parse")
+            .ok_or("no --quiet-bad-parse argument")?;
+        let help = arg
+            .get_long_help()
+            .or_else(|| arg.get_help())
+            .map(ToString::to_string)
+            .unwrap_or_default();
+        assert!(help.contains("SIPNAB_LOG=debug"), "{help}");
+        assert!(!help.contains("-v"), "-v is --invert: {help}");
+        Ok(())
+    }
+
     /// The `-e` payload expression and the trailing BPF positional stay
     /// independent — neither steals the other's tokens.
     #[test]
@@ -11149,6 +11739,17 @@ mod tests {
                 requires: &[],
             },
             Case {
+                key: "mcp_max_response_bytes",
+                flag: "--mcp-max-response-bytes",
+                set_key: |l| l.mcp_max_response_bytes = Some(65_536),
+                key_value: 65_536,
+                flag_value: "2048",
+                flag_number: 2048,
+                shipped: Cli::DEFAULT_MCP_MAX_RESPONSE_BYTES,
+                resolve: |c, cfg| c.mcp_response_cap(cfg) as u64,
+                requires: &[],
+            },
+            Case {
                 key: "mcp_max_wait_seconds",
                 flag: "--mcp-max-wait-seconds",
                 set_key: |l| l.mcp_max_wait_seconds = Some(600),
@@ -11452,6 +12053,7 @@ mod tests {
             "--max-metadata-file-bytes",
             "--max-gunzip-bytes",
             "--mcp-max-body-bytes",
+            "--mcp-max-response-bytes",
             "--mcp-max-wait-seconds",
             "--mcp-sweep-max-files",
             "--mcp-sweep-deadline-ms",
@@ -12201,6 +12803,34 @@ mod tests {
             err.to_string().contains("--ws-portrange"),
             "the refusal must name the flag that carried it: {err}"
         );
+        Ok(())
+    }
+
+    /// A bad `--ws-portrange` is a flag error, not a config error: no config
+    /// file is involved, so "invalid config value" would send the operator
+    /// looking for one. A bad `[capture] ws_ports` stays a config error.
+    #[test]
+    fn a_bad_ws_portrange_flag_is_a_flag_error() -> Result<(), TestError> {
+        let flagged =
+            Cli::parse_from_args(["sipnab", "-N", "-I", "x.pcap", "--ws-portrange", "80"]);
+        let err = flagged
+            .ws_port_range(&crate::config::Config::default())
+            .err()
+            .ok_or("a single port is not a range")?;
+        assert!(matches!(err, crate::Error::CliValidation(_)), "{err:?}");
+        assert!(
+            err.to_string().starts_with("Invalid --ws-portrange: "),
+            "{err}"
+        );
+
+        let bare = Cli::parse_from_args(["sipnab", "-N", "-I", "x.pcap"]);
+        let mut broken = crate::config::Config::default();
+        broken.capture.ws_ports = Some("80".into());
+        let err = bare
+            .ws_port_range(&broken)
+            .err()
+            .ok_or("a single port is not a range")?;
+        assert!(matches!(err, crate::Error::ConfigInvalid(_)), "{err:?}");
         Ok(())
     }
 

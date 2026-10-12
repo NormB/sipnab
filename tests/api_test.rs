@@ -523,6 +523,42 @@ fn vcon_analyze_answers_over_the_socket() -> Result<(), TestError> {
     Ok(())
 }
 
+/// `GET /v1/vcon/spool` answers over the shipped binary from the directory
+/// `--export-vcon-dir` names, and moves nothing in it.
+///
+/// Gated like `vcon_validate_answers_over_the_socket`: the route exists only
+/// where the `vcon` feature does.
+#[cfg(feature = "vcon")]
+#[test]
+fn vcon_spool_answers_over_the_socket() -> Result<(), TestError> {
+    let spool = tempfile::tempdir()?;
+    std::fs::write(spool.path().join("waiting.vcon.json"), "{}")?;
+    std::fs::create_dir_all(spool.path().join("failed"))?;
+    std::fs::write(spool.path().join("failed/refused.vcon.json"), "{}")?;
+    let dir = spool.path().to_str().ok_or("utf-8 spool path")?;
+    let srv = ApiServer::spawn(&[
+        "--export-vcon-when",
+        "response_code >= 700",
+        "--export-vcon-dir",
+        dir,
+    ])?;
+    let resp = srv.get("/v1/vcon/spool")?;
+    assert_eq!(resp.status, 200, "/v1/vcon/spool status: {}", resp.body);
+    let body = resp.json()?;
+    assert_eq!(body["pending"], 1, "{body}");
+    assert_eq!(body["failed"], 1, "{body}");
+    assert_eq!(
+        body["failures"][0]["record_problem"],
+        "refused.vcon.json.error.json is missing beside the container",
+        "{body}"
+    );
+    assert!(
+        spool.path().join("waiting.vcon.json").exists(),
+        "the route must not move the pending container"
+    );
+    Ok(())
+}
+
 /// The server accepts `--api-max-conn` (the in-flight-request cap) and still
 /// serves — keeps the flag under test coverage.
 #[test]

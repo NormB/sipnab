@@ -252,7 +252,7 @@ Target `wasm32-unknown-unknown`. `std` works there — a `no_std` plugin is
 smaller but needs its own global allocator and panic handler, which is a lot of
 ceremony for a detection.
 
-### 2. The four exports
+### 2. The three exports
 
 ```rust
 #[unsafe(no_mangle)]
@@ -260,8 +260,6 @@ pub extern "C" fn sipnab_plugin_abi_version() -> i32 { 1 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn sipnab_alloc(len: i32) -> i32 { /* host writes input here */ }
-
-#[unsafe(no_mangle)]
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn sipnab_analyze(ptr: i32, len: i32) -> i64 {

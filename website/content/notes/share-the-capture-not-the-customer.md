@@ -1,157 +1,263 @@
 +++
-title = "Share the capture, not the customer"
+title = "Share a SIP capture with a vendor without sending subscriber data"
 date = 2026-09-01
-description = "A vendor wants the packets and the file holds everybody's traffic. What sipnab redacts, what it deliberately does not, and the one narrowing that actually reaches the pcap writer."
+updated = 2026-10-11
+description = "Export redacted vCon records for the calls in question, or a packet file narrowed by a capture filter with its TLS secrets removed, and know which sipnab options narrow what sipnab writes."
 
 [extra]
 kind = "howto"
 +++
 
-A vendor needs the evidence, the file is four gigabytes of everyone's calls,
-and sending it is both slow and a disclosure. "Redact the capture" is what
-somebody asks for next, and the phrase covers three different jobs that sipnab
-answers in three different ways. Two of them work well. The third does not
-work the way most people assume, and assuming wrong hands over the whole file.
+## In short
 
-## Substitute, do not mask
+A capture file from a production link holds every call on that link, with
+phone numbers, names, addresses and sometimes encryption keys. sipnab can
+write one record per selected call in which consistent substitutes replace
+those values, so a vendor can still see that two failures came from
+the same caller without seeing who the caller was. When the vendor needs the
+packets themselves, sipnab can narrow the packet file with a capture filter and
+remove embedded encryption keys. The call filter (`--filter`) does not narrow a
+packet file that sipnab writes.
+
+## Who this is for
+
+Operators who have to hand evidence about specific calls to a vendor, carrier
+or support team, and must not send other subscribers' data with it.
+
+## Steps
+
+The commands below run from the root of a sipnab checkout against captures
+that ship in `tests/pcap-samples/`. `--quiet` hides informational log lines.
+Warnings, errors and the run's results still print.
+
+### 1. Export a redacted record for each failed call
+
+A vCon is a standard JSON container for one conversation: the parties, the
+SIP message trace, and what sipnab concluded about the call. SIP is the
+signaling protocol that sets up and ends calls.
 
 ```bash
-sipnab -N -I capture.pcap --export-vcon-when "state == 'Failed'" --export-vcon-dir ./out/ --redact --no-cli-print
+sipnab -N -I tests/pcap-samples/sip-488-codec-reject.pcapng --export-vcon-when "state == 'Failed'" --export-vcon-dir ./out/ --redact --no-cli-print --quiet
 ```
-
-`--redact` is not masking. Every identity becomes a keyed token that is equal
-exactly when the original was equal, and every address goes through a
-prefix-preserving map. So "these forty failures came from one subscriber" and
-"the media went to a subnet the SDP never advertised" both stay answerable on
-the output. Masking answers neither, which is why a capture tool that masks has
-thrown away the reason it captured.
-
-Two things it removes rather than turning into tokens, because no pseudonym of
-them carries diagnostic value: digest credentials, where a `nonce` and `response`
-pair is an offline attack against the subscriber's password rather than a
-privacy nit, and inline audio.
-
-The run says what it did:
 
 ```text
 Redaction: 6 classes, key ephemeral, 0 leading digit(s) retained.
+Wrote 1 vCon container(s) to './out/'.
 ```
 
-**It affects the serialized container and nothing else.** The TUI, the reports
-and every in-process analysis keep the real values, so a redacted export and a
-live triage session read the same capture. You do not lose your own
-investigation by exporting a safe copy of it.
+`--export-vcon-when` takes a filter expression and writes one container per
+matching call into `--export-vcon-dir`. `--redact` changes what goes into the
+container:
 
-## The addresses look real, and that is the cost
+- Each identity (user name, number, Call-ID, host name) becomes a token. Two
+  tokens are equal exactly when the original values were equal, so "these
+  failures all came from one caller" is still readable from the output.
+- Each IP address goes through a prefix-preserving map: two addresses that
+  shared their first 24 bits still share them afterwards. In one run, the
+  originals `192.168.10.13` and `192.168.10.183` became `125.50.85.51` and
+  `125.50.85.171`. Without a key file (step 2), each run produces different
+  substitutes.
+- sipnab deletes the digest authentication headers (`Authorization`,
+  `Proxy-Authorization`, `WWW-Authenticate`, `Proxy-Authenticate`) and inline
+  audio rather than replacing them. sipnab leaves those four headers out of every
+  vCon, with or without `--redact`: an export of
+  `tests/pcap-samples/sip-auth-failure.pcapng` without `--redact` contains none
+  of them.
 
-Prefix preservation is the property that keeps subnet questions answerable, and
-it has a consequence worth stating out loud when you hand the file over. Two
-addresses that shared a `/24` in the original still share one afterwards, and
-the substitutes are ordinary-looking IPv4 addresses rather than reserved
-documentation ranges. A reader cannot tell a pseudonym from a real allocation
-by looking at it.
+The six classes in the first output line are `identity`, `network`,
+`credential`, `correlation-id`, `charging` and `media`. `key ephemeral` means
+the run drew a fresh secret key from the operating system for this run only.
 
-That matters twice. Nobody should chase one of these addresses as if it were a
-host, and nobody should read a container as untouched because the addresses
-look plausible. Say which it is in the covering note.
+Redaction applies only to the written container. The TUI (the interactive
+terminal view), the reports and the analysis in the same run keep the real
+values. A live capture (`-d` or `--hep-listen`) refuses `--redact`. Use it when
+reading a file with `-I`.
 
-## Stable tokens, and what stability costs
+sipnab draws the substitute addresses from the whole IPv4 range. sipnab keeps
+only `0.0.0.0` as it is, because in SDP it marks a call on hold. A substitute can
+therefore look like a real public address, or fall in a reserved range such as
+multicast. Tell the recipient that the addresses are substitutes.
 
-By default every run draws its own key, which is the safe default: the tokens
-join against nothing and nothing anywhere reverses them.
+### 2. Keep tokens stable across runs, when you need to
+
+By default each run uses a new key, so the tokens of two runs are not
+comparable. To make the same subscriber produce the same token in today's export
+and next week's, create a key file once:
 
 ```bash
-sipnab -N -I capture.pcap --export-vcon-when "state == 'Failed'" --export-vcon-dir ./out/ --redact --redact-key-file /etc/sipnab/redact.key --no-cli-print
+head -c 32 /dev/urandom > redact.key
 ```
 
-Supply a key file when tokens have to stay stable — the same subscriber reading
-the same across yesterday's containers and today's, or across two capture
-hosts. Two runs over the same capture with the same key produce byte-identical
-parties, right down to the container UUID.
-
-Understand what that buys the holder of the file. The whole file is the secret,
-trailing newline included, so a key from `head -c 32 /dev/urandom` and one
-written by hand both work and neither gets silently truncated. Anyone holding
-it can rebuild the mapping for any capture you redacted with it.
-
-## The reversal table
+This command prints nothing. Then pass the file to every export:
 
 ```bash
-sipnab -N -I capture.pcap --export-vcon-when "state == 'Failed'" --export-vcon-dir ./out/ --redact --redact-map ./map.tsv --no-cli-print
+sipnab -N -I tests/pcap-samples/sip-488-codec-reject.pcapng --export-vcon-when "state == 'Failed'" --export-vcon-dir ./out-keyed/ --redact --redact-key-file ./redact.key --no-cli-print --quiet
 ```
 
 ```text
-Wrote 9 token mapping(s) to './map.tsv' (mode 0600). It reverses every
-pseudonym in these containers, so it is as sensitive as the capture.
+Redaction: 6 classes, key supplied, 0 leading digit(s) retained.
+Wrote 1 vCon container(s) to './out-keyed/'.
 ```
 
-Tab-separated, token first, original second, created mode 0600 explicitly
-rather than at whatever mode the environment would otherwise pick. It is
-exactly as sensitive as the capture it came from, and it never travels with the
-containers.
+Two runs of this command produced containers that differed only in
+`created_at`. The whole file is the key, trailing newline included. Keep it as
+private as the capture: anyone holding it can compare tokens across every
+export made with it.
 
-sipnab refuses to write over one that exists:
+### 3. Write the table that reverses the tokens, and keep it
+
+```bash
+sipnab -N -I tests/pcap-samples/sip-488-codec-reject.pcapng --export-vcon-when "state == 'Failed'" --export-vcon-dir ./out-mapped/ --redact --redact-map ./map.tsv --no-cli-print --quiet
+```
 
 ```text
---redact-map './map.tsv' already exists and sipnab will not write over it. That
-file may be the only way back from tokens already sent somewhere
+Redaction: 6 classes, key ephemeral, 0 leading digit(s) retained.
+Wrote 7 token mapping(s) to './map.tsv' (mode 0600). It reverses every pseudonym in these containers, so it is as sensitive as the capture.
+Wrote 1 vCon container(s) to './out-mapped/'.
 ```
 
-## Keep no digits unless you decided to
+The map has one tab-separated line per token: the token first, then the
+original value. sipnab creates it with mode `0600` (readable and writable by
+its owner only). One of the originals is the name of the host that ran sipnab,
+because the container names its observer, so the number of mappings depends on
+the capture and the host. Keep the map, and do not send it with the containers.
 
-`--redact-keep-prefix` keeps that many leading digits of a number verbatim, and
-it defaults to zero. The default is an argument rather than an oversight: every
-retained digit is a digit of a real subscriber number published in the clear,
-and sipnab has no basis for choosing how many. A country code runs one to three
-digits, a NANP area code is three, and a national destination code is anything.
-So nothing survives until you decide that route or number-range analysis is
-worth those digits.
-
-## The pcap, and the thing that surprises people
-
-Now the third job: the vendor wants packets, not containers. The obvious move
-is to narrow the read and let `-O` write what survived.
-
-**The dialog filter does not reach the pcap writer.** `-O` writes every packet
-the capture loop handled, and the loop feeds the writer before any dialog
-filtering happens. Measured on a shipped capture: the file written under
-`--filter "from.user == 'nobody'"` and the file written with no filter at all
-have the same SHA-256. Not similar sizes — the same digest.
-
-What DOES narrow it is the BPF expression, because libpcap applies that before
-sipnab ever sees a packet:
+sipnab does not write over an existing map:
 
 ```bash
-sipnab -N -I capture.pcap -O signaling-only.pcap --no-cli-print 'udp port 5060'
+sipnab -N -I tests/pcap-samples/sip-488-codec-reject.pcapng --export-vcon-when "state == 'Failed'" --export-vcon-dir ./out-again/ --redact --redact-map ./map.tsv --no-cli-print --quiet
 ```
 
-On that same capture, the BPF form wrote 10 packets and 5,673 bytes against the
-original's 852 packets and 198,831. Read the output back before sending it, and
-check that the calls you meant to include reconstruct from it.
+```text
+Redaction: 6 classes, key ephemeral, 0 leading digit(s) retained.
+--redact-map './map.tsv' already exists and sipnab will not write over it. That file may be the only way back from tokens already sent somewhere
+```
 
-So for a pcap the narrowing tool is the BPF expression, not the DSL. If
-what you actually need is per-call selection with identities removed, the
-container export above is the surface that does that — a redacted container per
-failed call carries the message trace a vendor needs without carrying anybody's
-number.
+The command exits with status 1 and writes no container.
 
-## Secrets already inside the file
+`--redact-keep-prefix <N>` keeps the first N digits of each number unchanged,
+for analysis by country code or number range. The default is `0`: every kept
+digit is a digit of a real subscriber number.
 
-A pcapng can carry TLS decryption secrets in Decryption Secrets Blocks, which
-travel with the file and open every session in it. Strip them before the file
-leaves:
+### 4. Narrow a packet file with a capture filter, not with `--filter`
+
+`-O` writes the packets sipnab read to a pcap file (the standard packet
+capture format). `--filter` selects calls for display and reports. It does not
+change what `-O` writes. The two files below are byte for byte the same:
 
 ```bash
-sipnab -I capture.pcapng --strip-secrets ./shareable.pcapng
+sipnab -N -I tests/pcap-samples/sip-rtp-g711.pcap -O all.pcap --no-cli-print --quiet
 ```
 
-The input stays untouched. `-I` has to resolve to exactly one capture, and
-sipnab refuses a set: stripping only the first would hand over the rest with
-their keys intact while reporting success.
+```bash
+sipnab -N -I tests/pcap-samples/sip-rtp-g711.pcap -O filtered.pcap --filter "from.user == 'nobody'" --no-cli-print --quiet
+```
 
-## What to send
+Both commands print nothing.
 
-Send redacted containers plus their digests when the question is about specific
-calls, which it usually is. Send a BPF-narrowed pcap when the far end genuinely
-needs bytes on the wire, and strip the secrets first. Keep the map and the key
-file, and never let either travel with what they reverse.
+```bash
+sha256sum all.pcap filtered.pcap
+```
+
+```text
+fa4471dda092bb0359aaec22f7b9a9ac7f0eb26b4025176b0f7b953f3490705b  all.pcap
+fa4471dda092bb0359aaec22f7b9a9ac7f0eb26b4025176b0f7b953f3490705b  filtered.pcap
+```
+
+A BPF expression does narrow the file. BPF (Berkeley Packet Filter) is the
+packet filter language of libpcap and tcpdump. libpcap applies it before
+sipnab sees a packet. It goes last on the command line:
+
+```bash
+sipnab -N -I tests/pcap-samples/sip-rtp-g711.pcap -O signaling-only.pcap --no-cli-print --quiet 'udp port 5060'
+```
+
+This command prints nothing. Compare the result with the original:
+
+```bash
+capinfos -c -s signaling-only.pcap tests/pcap-samples/sip-rtp-g711.pcap
+```
+
+```text
+File name:           signaling-only.pcap
+Number of packets:   10
+File size:           5,673 bytes
+
+File name:           tests/pcap-samples/sip-rtp-g711.pcap
+Number of packets:   852
+File size:           198 kB
+```
+
+The narrowed file holds the SIP messages and none of the audio packets. It is
+not redacted: the numbers and addresses in it are the real ones. Open it with
+sipnab before you send it, and check that the calls you meant to include are
+there and nothing else is.
+
+### 5. Remove embedded TLS keys from a pcapng file
+
+A pcapng file (the newer capture format) can carry TLS decryption keys in
+Decryption Secrets Blocks. Anyone holding such a file can decrypt every TLS
+session in it. Write a copy without them:
+
+```bash
+sipnab -N -I tests/pcap-samples/sip-auth-failure.pcapng --strip-secrets ./shareable.pcapng
+```
+
+```text
+2026-10-12T00:48:36.443562Z  INFO sipnab::app::bootstrap: Stripped 0 decryption secret(s): tests/pcap-samples/sip-auth-failure.pcapng -> ./shareable.pcapng
+```
+
+sipnab leaves the input unchanged and writes the copy with mode `0600`. This
+sample holds no secrets block, so the run reports 0 secrets stripped.
+
+`-I` must name exactly one file. Given a pattern that matches several, sipnab
+refuses and writes nothing:
+
+```bash
+sipnab -N -I "tests/pcap-samples/sip-*.pcapng" --strip-secrets ./set.pcapng
+```
+
+```text
+2026-10-12T00:48:36.460816Z ERROR sipnab::app::bootstrap: --strip-secrets writes one sanitized copy, but -I resolved to 3 files: 'tests/pcap-samples/sip-auth-failure.pcapng', 'tests/pcap-samples/sip-routing-error.pcapng', 'tests/pcap-samples/sip-488-codec-reject.pcapng'. Run it once per file — stripping only one of them would ship the rest with their decryption secrets intact.
+```
+
+The command exits with status 1.
+
+### 6. Decide what to send
+
+- For questions about specific calls: the redacted containers from step 1 or 2.
+- When the recipient needs the packets: the narrowed file from step 4, with
+  secrets removed as in step 5. It contains real numbers and addresses.
+- Keep the key file and the map. Do not send either with the data they
+  reverse.
+
+## Terms used here
+
+- **SIP**: the signaling protocol that sets up, changes and ends calls.
+- **SDP**: the part of a SIP message that says where and how to send audio.
+- **vCon**: a JSON container format for one conversation, defined by an IETF
+  working group draft.
+- **Redaction token**: a substitute value computed from the original with a
+  secret key; equal originals give equal tokens.
+- **Prefix-preserving map**: an address substitution in which two addresses
+  that share leading bits still share them afterwards.
+- **Digest authentication**: the SIP password challenge and response. Its
+  headers carry values from which someone can guess a password offline.
+- **pcap, pcapng**: the two standard packet capture file formats.
+- **BPF**: the packet filter language used by libpcap and tcpdump.
+- **TLS**: the encryption used for SIP over port 5061, among others.
+- **Decryption Secrets Block**: a pcapng block that stores TLS keys inside the
+  capture file.
+- **SHA-256**: a hash; two files with the same SHA-256 have the same bytes.
+- **TUI**: sipnab's interactive terminal interface.
+
+## Related guides
+
+- [CLI reference: Capture](@/docs/cli.md#capture), the row for `-O`.
+- [CLI reference: Output](@/docs/cli.md#output), the rows for `--redact`,
+  `--redact-key-file`, `--redact-keep-prefix` and `--redact-map`.
+- [CLI reference: pcapng metadata](@/docs/cli.md#pcapng-metadata), the row for
+  `--strip-secrets`.
+- [vCon: The message trace carries the headers, and strips the credentials](@/docs/vcon.md#the-message-trace-carries-the-headers-and-strips-the-credentials)
+- [vCon: What sipnab refuses to put in a container](@/docs/vcon.md#what-sipnab-refuses-to-put-in-a-container)
+- [Filter DSL: What a filter narrows](@/docs/filter-dsl.md#what-a-filter-narrows)

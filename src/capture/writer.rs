@@ -1237,6 +1237,115 @@ pub fn describe_output_error(err: &anyhow::Error, dropped_to: Option<&str>) -> S
     }
 }
 
+/// How a run creates one of its output paths, which decides what the
+/// permission check before capture has to look at.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OutputKind {
+    /// A file opened in place: an existing file must be writable, and a new
+    /// one needs its parent directory, which must already exist.
+    File,
+    /// A file replaced by writing a temporary beside it and renaming it into
+    /// place, so the parent directory must be writable whether or not the
+    /// file exists.
+    ReplacedFile,
+    /// A directory created with its missing parents and then filled, so the
+    /// nearest existing ancestor (or the directory itself) must be a writable
+    /// directory.
+    Dir,
+}
+
+/// Whether THIS process, as the user it runs as now, could create `path` the
+/// way `kind` says it will be created.
+///
+/// Called after the privilege drop and before the first packet, so an output
+/// the drop user cannot create fails the run at startup rather than when the
+/// first packet or the first finished call arrives. It creates, truncates and
+/// removes nothing: the check is `faccessat(2)` with `AT_EACCESS`, which asks
+/// the kernel about the effective user, so a read-only filesystem, an ACL or
+/// a missing parent are all answered by the same rules the later `open` meets.
+///
+/// # Errors
+///
+/// The `io::Error` the later creation would have met: `PermissionDenied`,
+/// `NotFound` for a missing parent, `NotADirectory` or `IsADirectory` for a
+/// path of the wrong type, or `ReadOnlyFilesystem`.
+pub fn check_output_creatable(path: &Path, kind: OutputKind) -> std::io::Result<()> {
+    use std::io::{Error, ErrorKind};
+    let parent_of = |p: &Path| -> PathBuf {
+        match p.parent() {
+            Some(parent) if !parent.as_os_str().is_empty() => parent.to_path_buf(),
+            _ => PathBuf::from("."),
+        }
+    };
+    let writable_dir = |dir: &Path| -> std::io::Result<()> {
+        if !std::fs::metadata(dir)?.is_dir() {
+            return Err(Error::new(
+                ErrorKind::NotADirectory,
+                format!("'{}' is not a directory", dir.display()),
+            ));
+        }
+        effective_access(dir, AccessWanted::WriteAndSearch)
+    };
+    match (std::fs::metadata(path), kind) {
+        (Ok(meta), OutputKind::File | OutputKind::ReplacedFile) if meta.is_dir() => Err(
+            Error::new(ErrorKind::IsADirectory, "the output path is a directory"),
+        ),
+        (Ok(_), OutputKind::File) => effective_access(path, AccessWanted::Write),
+        (Ok(_) | Err(_), OutputKind::ReplacedFile) => writable_dir(&parent_of(path)),
+        (Ok(_), OutputKind::Dir) => writable_dir(path),
+        (Err(e), _) if e.kind() != ErrorKind::NotFound => Err(e),
+        (Err(_), OutputKind::File) => writable_dir(&parent_of(path)),
+        (Err(_), OutputKind::Dir) => {
+            // `create_dir_all` makes every missing level, so the nearest
+            // ancestor that exists is the directory that has to admit it.
+            let mut ancestor = parent_of(path);
+            while std::fs::symlink_metadata(&ancestor).is_err() {
+                ancestor = parent_of(&ancestor);
+                if ancestor == Path::new(".") || ancestor == Path::new("/") {
+                    break;
+                }
+            }
+            writable_dir(&ancestor)
+        }
+    }
+}
+
+/// The access [`effective_access`] asks the kernel about.
+#[derive(Debug, Clone, Copy)]
+enum AccessWanted {
+    /// Write to an existing file.
+    Write,
+    /// Create or remove entries in a directory.
+    WriteAndSearch,
+}
+
+/// `faccessat(2)` with `AT_EACCESS`: whether the EFFECTIVE user may access
+/// `path`, which after a privilege drop is the drop user.
+#[cfg(unix)]
+fn effective_access(path: &Path, wanted: AccessWanted) -> std::io::Result<()> {
+    use std::os::unix::ffi::OsStrExt as _;
+    let c_path = std::ffi::CString::new(path.as_os_str().as_bytes())
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidInput, e))?;
+    let mode = match wanted {
+        AccessWanted::Write => libc::W_OK,
+        AccessWanted::WriteAndSearch => libc::W_OK | libc::X_OK,
+    };
+    // SAFETY: `c_path` is a valid NUL-terminated string that outlives the
+    // call, and faccessat only reads it.
+    let rc = unsafe { libc::faccessat(libc::AT_FDCWD, c_path.as_ptr(), mode, libc::AT_EACCESS) };
+    if rc == 0 {
+        Ok(())
+    } else {
+        Err(std::io::Error::last_os_error())
+    }
+}
+
+/// No `faccessat` here: the later `open` reports any refusal instead.
+#[cfg(not(unix))]
+fn effective_access(_path: &Path, _wanted: AccessWanted) -> std::io::Result<()> {
+    Ok(())
+}
+
 /// Generate a rotated filename from a base path and sequence number.
 ///
 /// `output.pcap` with sequence 1 becomes `output_00001.pcap`.
@@ -1308,6 +1417,116 @@ pub fn parse_split(split: &str) -> Result<(Option<u64>, Option<std::time::Durati
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Whether this test process runs as root, for which mode bits grant
+    /// everything and a permission refusal cannot be staged.
+    fn running_as_root() -> bool {
+        // SAFETY: geteuid() takes no arguments, never fails, and only reads
+        // the calling process's credentials.
+        unsafe { libc::geteuid() == 0 }
+    }
+
+    /// A writable directory accepts every kind of output and is left exactly
+    /// as it was: the check creates nothing.
+    #[test]
+    fn a_writable_directory_passes_the_output_check_and_is_left_untouched() -> Result<(), TestError>
+    {
+        let dir = tempfile::tempdir()?;
+        for kind in [OutputKind::File, OutputKind::ReplacedFile, OutputKind::Dir] {
+            check_output_creatable(&dir.path().join("out"), kind)?;
+            check_output_creatable(&dir.path().join("a/b/c"), OutputKind::Dir)?;
+        }
+        check_output_creatable(dir.path(), OutputKind::Dir)?;
+        assert_eq!(
+            std::fs::read_dir(dir.path())?.count(),
+            0,
+            "the check must not create anything"
+        );
+        Ok(())
+    }
+
+    /// A file whose parent directory does not exist cannot be created, as
+    /// root or not, so the check refuses it with the error `open` would meet.
+    #[test]
+    fn a_file_under_a_missing_directory_is_refused() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("missing").join("out.pcap");
+        for kind in [OutputKind::File, OutputKind::ReplacedFile] {
+            let err = check_output_creatable(&path, kind)
+                .err()
+                .ok_or("a missing parent must be refused")?;
+            assert_eq!(err.kind(), std::io::ErrorKind::NotFound, "{kind:?}: {err}");
+        }
+        Ok(())
+    }
+
+    /// A path of the wrong type is refused: a directory where a file goes,
+    /// and a regular file where a directory has to be created.
+    #[test]
+    fn a_path_of_the_wrong_type_is_refused() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
+        assert!(
+            check_output_creatable(dir.path(), OutputKind::File).is_err(),
+            "a directory cannot be opened as the output file"
+        );
+        let file = dir.path().join("plain");
+        std::fs::write(&file, b"x")?;
+        assert!(
+            check_output_creatable(&file.join("spool"), OutputKind::Dir).is_err(),
+            "a directory cannot be created under a regular file"
+        );
+        assert!(
+            check_output_creatable(&file, OutputKind::Dir).is_err(),
+            "a regular file is not a directory to fill"
+        );
+        Ok(())
+    }
+
+    /// A directory the effective user may not write refuses every kind of
+    /// output with `PermissionDenied`, the refusal a run dropped to `nobody`
+    /// meets in a `root:root 0755` directory. Mode bits do not bind root, so
+    /// as root the refusal cannot be staged and the test says so and returns.
+    #[test]
+    fn a_directory_the_effective_user_cannot_write_is_refused() -> Result<(), TestError> {
+        use std::os::unix::fs::PermissionsExt as _;
+        if running_as_root() {
+            stderr_line!("skipped: root ignores mode bits, so no refusal can be staged");
+            return Ok(());
+        }
+        let dir = tempfile::tempdir()?;
+        let locked = dir.path().join("locked");
+        std::fs::create_dir(&locked)?;
+        std::fs::write(locked.join("existing.pcap"), b"")?;
+        std::fs::set_permissions(
+            locked.join("existing.pcap"),
+            std::fs::Permissions::from_mode(0o444),
+        )?;
+        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o555))?;
+        let cases = [
+            (locked.join("new.pcap"), OutputKind::File),
+            (locked.join("existing.pcap"), OutputKind::File),
+            (locked.join("new.vcon.json"), OutputKind::ReplacedFile),
+            (locked.join("spool"), OutputKind::Dir),
+            (locked.clone(), OutputKind::Dir),
+        ];
+        let mut outcomes = Vec::new();
+        for (path, kind) in &cases {
+            outcomes.push((path.clone(), *kind, check_output_creatable(path, *kind)));
+        }
+        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o755))?;
+        for (path, kind, outcome) in outcomes {
+            let err = outcome
+                .err()
+                .ok_or_else(|| format!("{} ({kind:?}) must be refused", path.display()))?;
+            assert_eq!(
+                err.kind(),
+                std::io::ErrorKind::PermissionDenied,
+                "{} ({kind:?}): {err}",
+                path.display()
+            );
+        }
+        Ok(())
+    }
 
     type TestError = Box<dyn std::error::Error>;
 

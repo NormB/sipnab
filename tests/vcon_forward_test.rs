@@ -25,7 +25,7 @@ use std::time::{Duration, Instant};
 
 use parking_lot::Mutex;
 use sipnab::app::vcon_forward::{
-    AuthHeader, BackoffPolicy, Compat, Endpoint, ForwardSettings, Forwarder, ReadLimits, StoreKind,
+    AuthHeader, BackoffPolicy, Endpoint, ForwardSettings, Forwarder, ReadLimits, StoreKind,
     backoff_delay,
 };
 use sipnab::config::{FORWARD_BACKOFF_CAP, FORWARD_BACKOFF_FIRST, FORWARD_MAX_ERROR_BODY};
@@ -257,7 +257,6 @@ impl Rig {
             replace_url: None,
             auth: AuthHeader::read_file(&auth_file)?,
             timeout: Duration::from_secs(5),
-            compat: Compat::Off,
             ca: None,
             kind: StoreKind::Generic,
             backoff: BackoffPolicy::default(),
@@ -711,81 +710,11 @@ fn a_409_without_a_replace_url_is_a_refusal() -> Result<(), TestError> {
     Ok(())
 }
 
-// ── vcon.store compatibility ────────────────────────────────────────────
-
-/// In `vcon-store` mode the copy sent carries `extensions` as an object, each
-/// name mapped to `true` in the original order, and nothing else changes. The
-/// file in the spool, and the delivered copy, keep the String[] form.
+/// A container is sent unchanged, a Dialog Object without `type` and
+/// `parties` included: the forwarder never adjusts or refuses a container
+/// for its content.
 #[test]
-fn vcon_store_mode_sends_extensions_as_an_object_and_keeps_the_file() -> Result<(), TestError> {
-    let store = FakeStore::start(|_, _| Reply::Status(201, "{}".into()))?;
-    let mut rig = Rig::new(&store.url("/v1/vcons"), "Authorization")?;
-    rig.settings.compat = Compat::VconStore;
-    let bytes = container("018bcfe5-6800-8a6b-a667-78f1c5213810", RECORDING);
-    rig.drop_in("l.vcon.json", &bytes)?;
-
-    let report = rig.forwarder()?.pass(Instant::now(), &never);
-
-    let seen = store.requests();
-    assert_eq!(seen.len(), 1);
-    let expected = bytes.replace(
-        r#""extensions":["sip-signaling","CC"]"#,
-        r#""extensions":{"sip-signaling":true,"CC":true}"#,
-    );
-    assert_ne!(expected, bytes, "the fixture carries no extensions");
-    assert_eq!(String::from_utf8_lossy(&seen[0].body), expected);
-    assert_eq!(report.delivered, ["l.vcon.json"]);
-    assert_eq!(
-        std::fs::read_to_string(rig.settings.done_dir.join("l.vcon.json"))?,
-        bytes,
-        "the container on disk was changed"
-    );
-    Ok(())
-}
-
-/// In `vcon-store` mode a Dialog Object with no `type` and no `parties` is
-/// not rewritten and not sent: the container goes to the failed directory
-/// with a reason that names what the store requires and how to get a dialog
-/// it accepts.
-#[test]
-fn vcon_store_mode_refuses_a_dialog_without_type_and_parties() -> Result<(), TestError> {
-    let store = FakeStore::start(|_, _| Reply::Status(201, String::new()))?;
-    let mut rig = Rig::new(&store.url("/v1/vcons"), "Authorization")?;
-    rig.settings.compat = Compat::VconStore;
-    let bytes = container("018bcfe5-9", NO_CONTENT);
-    rig.drop_in("m.vcon.json", &bytes)?;
-
-    let report = rig.forwarder()?.pass(Instant::now(), &never);
-
-    assert!(store.requests().is_empty(), "the container was sent");
-    assert_eq!(report.refused, ["m.vcon.json"]);
-    assert_eq!(
-        std::fs::read_to_string(rig.settings.failed_dir.join("m.vcon.json"))?,
-        bytes
-    );
-    let record: serde_json::Value = serde_json::from_slice(&std::fs::read(
-        rig.settings.failed_dir.join("m.vcon.json.error.json"),
-    )?)?;
-    let reason = record["reason"].as_str().ok_or("no reason")?;
-    // `--redact` too: a redacted export withholds the audio, so it is the
-    // other way a container reaches the store with no typed dialog.
-    for needle in [
-        "`type`",
-        "`parties`",
-        "--retain-audio",
-        "--redact",
-        "recording",
-    ] {
-        assert!(reason.contains(needle), "{needle} missing from: {reason}");
-    }
-    assert!(record["status"].is_null());
-    Ok(())
-}
-
-/// The same container is sent unchanged, empty dialog and all, when no compat
-/// mode is set: the adjustment is opt-in.
-#[test]
-fn without_a_compat_mode_nothing_is_adjusted_or_refused() -> Result<(), TestError> {
+fn a_dialog_without_type_or_parties_is_sent_unchanged() -> Result<(), TestError> {
     let store = FakeStore::start(|_, _| Reply::Status(201, String::new()))?;
     let rig = Rig::new(&store.url("/v1/vcons"), "Authorization")?;
     let bytes = container("018bcfe5-10", NO_CONTENT);
@@ -1082,32 +1011,6 @@ fn once_exits_1_while_a_container_waits() -> Result<(), TestError> {
     let (_, err, code) = sipnab(&argv)?;
     assert_eq!(code, Some(1), "{err}");
     assert!(rig.spool().join("w.vcon.json").exists());
-    Ok(())
-}
-
-/// Every compat change is logged, one line per container naming the
-/// transform, and a refused container's line says why.
-#[test]
-fn vcon_store_mode_logs_every_change() -> Result<(), TestError> {
-    let store = FakeStore::start(|_, _| Reply::Status(201, String::new()))?;
-    let rig = Rig::new(&store.url("/v1/vcons"), "Authorization")?;
-    rig.drop_in("r.vcon.json", &container("018bcfe5-22", RECORDING))?;
-    rig.drop_in("s.vcon.json", &container("018bcfe5-23", NO_CONTENT))?;
-    let mut args = forward_args(&rig, &store.url("/v1/vcons"));
-    args.extend(["--vcon-forward-compat".into(), "vcon-store".into()]);
-    let argv: Vec<&str> = args.iter().map(String::as_str).collect();
-    let (_, err, code) = sipnab(&argv)?;
-    assert_eq!(code, Some(1), "{err}");
-    let changed: Vec<&str> = err
-        .lines()
-        .filter(|l| l.contains("r.vcon.json") && l.contains("extensions"))
-        .collect();
-    assert_eq!(changed.len(), 1, "{err}");
-    assert!(
-        err.lines()
-            .any(|l| l.contains("s.vcon.json") && l.contains("parties")),
-        "{err}"
-    );
     Ok(())
 }
 
@@ -1513,7 +1416,7 @@ fn the_forwarder_reads_its_settings_from_sipnab_toml() -> Result<(), TestError> 
         &rig,
         &format!(
             "url = {:?}\nauth_file = {}\ndone = {}\nfailed = {}\ninterval = 2\ntimeout = 5\n\
-             compat = \"none\"\nbackoff_first = 3\nbackoff_cap = 60\n\
+             backoff_first = 3\nbackoff_cap = 60\n\
              max_response_head = 32768\nmax_error_body = 4096",
             store.url("/v1/vcons"),
             toml_path(&rig.auth_file()),
@@ -1672,10 +1575,11 @@ fn a_configured_backoff_spaces_the_retries() -> Result<(), TestError> {
 
 // ── Store kinds ─────────────────────────────────────────────────────────
 
-/// A stand-in for vcon.store, answering as vcon.store was measured to answer
-/// on 2026-10-07: `POST /v1/vcons` with `Authorization: Bearer <key>`; `400`
-/// for `extensions` as an array and for a Dialog Object without `type` and
-/// `parties`; `409` for a uuid it holds; `201` otherwise.
+/// A stand-in for vcon.store as the maintainer measured it on 2026-10-07,
+/// before the store accepted the forms the drafts define: `POST /v1/vcons`
+/// with `Authorization: Bearer <key>`; `400` for `extensions` as an array and
+/// for a Dialog Object without `type` and `parties`; `409` for a uuid it
+/// holds; `201` otherwise. The store answers this way no longer.
 fn vcon_store_stand_in(key: String) -> Result<FakeStore, TestError> {
     let held = Arc::new(Mutex::new(Vec::<String>::new()));
     FakeStore::start(move |req, _| {
@@ -1708,18 +1612,72 @@ fn vcon_store_stand_in(key: String) -> Result<FakeStore, TestError> {
     })
 }
 
-/// `--vcon-forward-kind vcon-store` with the store's base URL and the bare
-/// key in the environment: the forwarder posts to `/v1/vcons` with
-/// `Authorization: Bearer <key>`, sends `extensions` as an object, and files a
-/// second container with the same uuid, which the store answers `409`, as
-/// refused. The key appears in no output and no record.
+/// The bodies a stand-in stored, in the order it accepted them.
+type Held = Arc<Mutex<Vec<Vec<u8>>>>;
+
+/// The `recording` Dialog Object sipnab writes for a call without audio:
+/// typed, with no `parties` and no content.
+const PLACEHOLDER: &str = r#"{"type":"recording","start":"2026-10-07T12:00:00+00:00"}"#;
+
+/// `--vcon-forward-kind vcon-store` with the store's base URL and the bare key
+/// in the environment posts to `/v1/vcons` with `Authorization: Bearer <key>`
+/// and sends each container byte for byte, the array `extensions` and a
+/// parties-less `recording` placeholder included; the 2026-10-11 stand-in
+/// stores both as sent. The key appears in no output.
 #[test]
-fn the_vcon_store_kind_delivers_to_a_vcon_store_stand_in() -> Result<(), TestError> {
+fn the_vcon_store_kind_sends_the_container_unchanged_by_default() -> Result<(), TestError> {
+    let key = secret();
+    let (store, held) = vcon_store_2026_10_11_stand_in(key.clone())?;
+    let rig = Rig::new(&store.url("/"), "Authorization")?;
+    let with_audio = container("018bcfe5-6800-8a6b-a667-78f1c5213871", RECORDING);
+    let without = container("018bcfe5-6800-8a6b-a667-78f1c5213872", PLACEHOLDER);
+    rig.drop_in("a.vcon.json", &with_audio)?;
+    rig.drop_in("b.vcon.json", &without)?;
+    let spool = rig.spool().display().to_string();
+    let base = format!("http://{}", store.addr);
+    let (out, err, code) = sipnab_env(
+        &[
+            "--vcon-forward",
+            &spool,
+            "--no-config",
+            "--vcon-forward-kind",
+            "vcon-store",
+            "--vcon-forward-url",
+            &base,
+            "--vcon-forward-once",
+        ],
+        &[(CREDENTIAL_ENV, &key)],
+    )?;
+    assert_eq!(code, Some(0), "stdout: {out}\nstderr: {err}");
+    let seen = store.requests();
+    assert_eq!(seen.len(), 2, "{err}");
+    let mut sent: Vec<Vec<u8>> = seen.iter().map(|r| r.body.clone()).collect();
+    sent.sort();
+    let mut expected = vec![with_audio.into_bytes(), without.into_bytes()];
+    expected.sort();
+    assert_eq!(sent, expected, "the copy sent was changed");
+    let mut stored = held.lock().clone();
+    stored.sort();
+    assert_eq!(stored, expected);
+    for text in [&out, &err] {
+        assert!(!text.contains(&key), "the key leaked: {text}");
+    }
+    for name in ["a.vcon.json", "b.vcon.json"] {
+        assert!(rig.settings.done_dir.join(name).exists(), "{name}: {err}");
+    }
+    Ok(())
+}
+
+/// Against the 2026-10-07 stand-in, the `vcon-store` kind sends the array
+/// form and draws `400`, and the container goes to the failed directory with
+/// the store's answer in its record: sipnab no longer rewrites the copy it
+/// sends for a store that refuses the drafts' forms.
+#[test]
+fn the_2026_10_07_stand_in_refuses_the_default_copy() -> Result<(), TestError> {
     let key = secret();
     let store = vcon_store_stand_in(key.clone())?;
     let rig = Rig::new(&store.url("/"), "Authorization")?;
-    rig.drop_in("a.vcon.json", &container("018bcfe5-70", RECORDING))?;
-    rig.drop_in("b.vcon.json", &container("018bcfe5-70", RECORDING))?;
+    rig.drop_in("a.vcon.json", &container("018bcfe5-74", RECORDING))?;
     let spool = rig.spool().display().to_string();
     let base = format!("http://{}", store.addr);
     let (out, err, code) = sipnab_env(
@@ -1736,17 +1694,135 @@ fn the_vcon_store_kind_delivers_to_a_vcon_store_stand_in() -> Result<(), TestErr
         &[(CREDENTIAL_ENV, &key)],
     )?;
     assert_eq!(code, Some(1), "stdout: {out}\nstderr: {err}");
-    let seen = store.requests();
-    assert_eq!(seen.len(), 2, "{err}");
-    assert_eq!(seen[0].target, "/v1/vcons");
-    let sent: serde_json::Value = serde_json::from_slice(&seen[0].body)?;
-    assert!(sent["extensions"].is_object(), "{sent}");
-    assert!(rig.settings.done_dir.join("a.vcon.json").exists(), "{err}");
-    let record = std::fs::read_to_string(rig.settings.failed_dir.join("b.vcon.json.error.json"))?;
-    assert!(record.contains("409"), "{record}");
-    for text in [&out, &err, &record] {
-        assert!(!text.contains(&key), "the key leaked: {text}");
-    }
+    let record = std::fs::read_to_string(rig.settings.failed_dir.join("a.vcon.json.error.json"))?;
+    assert!(
+        record.contains("400") && record.contains("Expected object"),
+        "{record}"
+    );
+    Ok(())
+}
+
+/// A stand-in for vcon.store as measured against `https://api.vcon.store` on
+/// 2026-10-11, after its maintainer fixed the duplicate case: `POST /v1/vcons`
+/// answers `201` for a new uuid and `409` with this body for one it holds;
+/// `PUT /v1/vcons/{uuid}` with a body of the same uuid answers `200` and
+/// replaces the held container. Every container it holds is kept, by uuid, as the bytes sent.
+fn vcon_store_2026_10_11_stand_in(key: String) -> Result<(FakeStore, Held), TestError> {
+    let held: Held = Arc::new(Mutex::new(Vec::new()));
+    let kept = held.clone();
+    let store = FakeStore::start(move |req, _| {
+        if req.header("authorization") != [format!("Bearer {key}").as_str()] {
+            return Reply::Status(401, "unauthorized".into());
+        }
+        let Ok(doc) = serde_json::from_slice::<serde_json::Value>(&req.body) else {
+            return Reply::Status(400, "invalid JSON".into());
+        };
+        let uuid = doc["uuid"].as_str().unwrap_or_default().to_owned();
+        let mut stored = kept.lock();
+        let position = stored.iter().position(|b| {
+            serde_json::from_slice::<serde_json::Value>(b).is_ok_and(|d| d["uuid"] == uuid.as_str())
+        });
+        match (req.method.as_str(), req.target.as_str()) {
+            ("POST", "/v1/vcons") => {
+                if position.is_some() {
+                    return Reply::Status(
+                        409,
+                        format!(
+                            r#"{{"error":"vCon already exists","details":[{{"path":["uuid"],"message":"a vCon with uuid {uuid} already exists; use PUT to replace it"}}]}}"#
+                        ),
+                    );
+                }
+                stored.push(req.body.clone());
+                Reply::Status(201, "{}".into())
+            }
+            ("PUT", target) if target == format!("/v1/vcons/{uuid}") => {
+                match position {
+                    Some(i) => stored[i] = req.body.clone(),
+                    None => stored.push(req.body.clone()),
+                }
+                Reply::Status(200, "{}".into())
+            }
+            _ => Reply::Status(404, "not found".into()),
+        }
+    })?;
+    Ok((store, held))
+}
+
+/// A second POST of a uuid the 2026-10-11 stand-in holds draws `409`. With no
+/// replace URL that is a refusal a retry will not change: the container moves
+/// to the failed directory with the store's answer in its record, it is not
+/// sent again, and `--vcon-forward-once` exits `1`.
+#[test]
+fn a_vcon_store_409_for_a_held_uuid_is_refused_not_retried() -> Result<(), TestError> {
+    let key = secret();
+    let (store, _held) = vcon_store_2026_10_11_stand_in(key.clone())?;
+    let rig = Rig::new(&store.url("/"), "Authorization")?;
+    let bytes = container("018bcfe5-6800-8a6b-a667-78f1c5213881", RECORDING);
+    let spool = rig.spool().display().to_string();
+    let base = format!("http://{}", store.addr);
+    let args = [
+        "--vcon-forward",
+        &spool,
+        "--no-config",
+        "--vcon-forward-kind",
+        "vcon-store",
+        "--vcon-forward-url",
+        &base,
+        "--vcon-forward-once",
+    ];
+    rig.drop_in("a.vcon.json", &bytes)?;
+    let (_, err, code) = sipnab_env(&args, &[(CREDENTIAL_ENV, &key)])?;
+    assert_eq!(code, Some(0), "{err}");
+    rig.drop_in("again.vcon.json", &bytes)?;
+    let (out, err, code) = sipnab_env(&args, &[(CREDENTIAL_ENV, &key)])?;
+    assert_eq!(code, Some(1), "stdout: {out}\nstderr: {err}");
+    assert!(!rig.spool().join("again.vcon.json").exists(), "{err}");
+    let record =
+        std::fs::read_to_string(rig.settings.failed_dir.join("again.vcon.json.error.json"))?;
+    assert!(
+        record.contains("409") && record.contains("already exists"),
+        "{record}"
+    );
+    assert_eq!(store.requests().len(), 2, "the refusal was retried: {err}");
+    Ok(())
+}
+
+/// With `--vcon-forward-replace-url` naming `PUT /v1/vcons/{uuid}`, a `409`
+/// from the 2026-10-11 stand-in is PUT there, and the store then holds the
+/// copy sent second.
+#[test]
+fn a_vcon_store_409_with_the_replace_url_replaces_the_held_copy() -> Result<(), TestError> {
+    let key = secret();
+    let (store, held) = vcon_store_2026_10_11_stand_in(key.clone())?;
+    let rig = Rig::new(&store.url("/"), "Authorization")?;
+    let uuid = "018bcfe5-6800-8a6b-a667-78f1c5213882";
+    let first = container(uuid, RECORDING);
+    let second = container(uuid, PLACEHOLDER);
+    let spool = rig.spool().display().to_string();
+    let base = format!("http://{}", store.addr);
+    let replace = format!("{base}/v1/vcons/{{uuid}}");
+    let args = [
+        "--vcon-forward",
+        &spool,
+        "--no-config",
+        "--vcon-forward-kind",
+        "vcon-store",
+        "--vcon-forward-url",
+        &base,
+        "--vcon-forward-replace-url",
+        &replace,
+        "--vcon-forward-once",
+    ];
+    rig.drop_in("a.vcon.json", &first)?;
+    let (_, err, code) = sipnab_env(&args, &[(CREDENTIAL_ENV, &key)])?;
+    assert_eq!(code, Some(0), "{err}");
+    rig.drop_in("b.vcon.json", &second)?;
+    let (out, err, code) = sipnab_env(&args, &[(CREDENTIAL_ENV, &key)])?;
+    assert_eq!(code, Some(0), "stdout: {out}\nstderr: {err}");
+    assert!(rig.settings.done_dir.join("b.vcon.json").exists(), "{err}");
+    let methods: Vec<String> = store.requests().iter().map(|r| r.method.clone()).collect();
+    assert_eq!(methods, ["POST", "POST", "PUT"], "{err}");
+    assert_eq!(held.lock().clone(), vec![second.into_bytes()]);
     Ok(())
 }
 

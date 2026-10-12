@@ -22,7 +22,8 @@ sequenceDiagram
     Main->>Boot: init_logging, run_startup_commands
     Main->>Boot: block_privilege_escalation (PR_SET_NO_NEW_PRIVS)
     Main->>Cli: validate
-    Main->>Boot: load_config
+    Main->>Boot: read_config, declare_node_name
+    Main->>Boot: apply_config
     Main->>Boot: install_panic_hook
     Main->>Boot: plan(cli, config)
     Boot-->>Plan: source, capture_config, policy, filter, mode

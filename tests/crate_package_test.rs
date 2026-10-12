@@ -261,3 +261,110 @@ fn every_published_crate_ships_its_readme_and_both_licenses() -> Result<(), Test
     }
     Ok(())
 }
+
+/// The license expression the root manifest declares, read from `Cargo.toml`.
+fn manifest_license() -> Result<String, TestError> {
+    let manifest = std::fs::read_to_string(repo().join("Cargo.toml"))?;
+    Ok(manifest
+        .lines()
+        .find_map(|l| {
+            let v = l.strip_prefix("license = \"")?;
+            Some(v.trim_end_matches('"').to_string())
+        })
+        .ok_or("Cargo.toml declares a license")?)
+}
+
+/// Every `// SPDX-License-Identifier:` comment line in `body` whose expression
+/// is not `expected`, as `path:line: expression`. Only a line that is the
+/// comment counts, so a string literal quoting one is not a header.
+///
+/// A source file that names a license names the terms a reader may take it
+/// under. When that disagrees with the manifest, the file and the crate offer
+/// two different licenses for one piece of code.
+fn spdx_mismatches(path: &str, body: &str, expected: &str) -> Vec<String> {
+    body.lines()
+        .enumerate()
+        .filter_map(|(i, line)| {
+            let rest = line
+                .trim_start()
+                .strip_prefix("// SPDX-License-Identifier:")?;
+            let expression = rest.trim();
+            (expression != expected).then(|| format!("{path}:{}: {expression}", i + 1))
+        })
+        .collect()
+}
+
+/// Every tracked Rust file that carries an SPDX header carries the license
+/// the manifest declares. Two files said `GPL-3.0-or-later` while the crate
+/// is published as `MIT OR Apache-2.0`.
+#[test]
+fn every_spdx_header_in_rust_source_names_the_manifest_license() -> Result<(), TestError> {
+    let expected = manifest_license()?;
+    let out = Command::new("git")
+        .args(["ls-files", "-z", "--", "*.rs"])
+        .current_dir(repo())
+        .output()?;
+    assert!(
+        out.status.success(),
+        "git ls-files failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let listing = String::from_utf8(out.stdout)?;
+    let mut checked = 0usize;
+    let mut wrong = Vec::new();
+    for path in listing.split('\0').filter(|p| !p.is_empty()) {
+        let Ok(body) = std::fs::read_to_string(repo().join(path)) else {
+            continue;
+        };
+        checked += 1;
+        wrong.extend(spdx_mismatches(path, &body, &expected));
+    }
+    assert!(checked > 0, "git ls-files listed no Rust files to check");
+    assert!(
+        wrong.is_empty(),
+        "these SPDX headers do not name the manifest license {expected:?}:\n{}",
+        wrong.join("\n")
+    );
+    Ok(())
+}
+
+/// The predicate reports a header that differs, and passes one that matches
+/// and a file with no header at all.
+#[test]
+fn the_spdx_predicate_reports_only_a_differing_expression() -> Result<(), TestError> {
+    let expected = "MIT OR Apache-2.0";
+    assert_eq!(
+        spdx_mismatches(
+            "a.rs",
+            "// SPDX-License-Identifier: GPL-3.0-or-later\n",
+            expected
+        ),
+        ["a.rs:1: GPL-3.0-or-later"]
+    );
+    assert!(
+        spdx_mismatches(
+            "b.rs",
+            "// SPDX-License-Identifier: MIT OR Apache-2.0\n",
+            expected
+        )
+        .is_empty()
+    );
+    assert!(spdx_mismatches("c.rs", "//! no header\nfn f() {}\n", expected).is_empty());
+    assert!(
+        spdx_mismatches(
+            "e.rs",
+            "let s = \"// SPDX-License-Identifier: GPL-3.0-or-later\";\n",
+            expected
+        )
+        .is_empty()
+    );
+    assert_eq!(
+        spdx_mismatches(
+            "d.rs",
+            "//! doc\n// SPDX-License-Identifier: MIT\n",
+            expected
+        ),
+        ["d.rs:2: MIT"]
+    );
+    Ok(())
+}

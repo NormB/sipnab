@@ -225,3 +225,39 @@ fn the_clippy_scan_found_real_invocations() -> Result<(), TestError> {
     }
     Ok(())
 }
+
+/// The contributor docs state the commit gate's clippy scope as the hook runs it.
+///
+/// CONTRIBUTING.md and docs/internals/build-ci-release.md went on describing
+/// the pre-commit clippy as `--features full` after the hook moved to CI's
+/// scope, and CONTRIBUTING.md called pre-push's clippy "broader than
+/// pre-commit's", when both run the same command. The scope is read from the
+/// hook, so the docs follow the gate rather than a copy of it.
+#[test]
+fn the_contributor_docs_state_the_commit_gate_clippy_scope() -> Result<(), TestError> {
+    let hook = clippy_scopes(&read(".githooks/pre-commit")?);
+    let scope = hook
+        .first()
+        .ok_or(".githooks/pre-commit runs no clippy this scan can find")?;
+    let want = format!("clippy (`{scope}`, `-D warnings`)");
+    for rel in ["CONTRIBUTING.md", "docs/internals/build-ci-release.md"] {
+        let doc = read(rel)?;
+        let collapsed = doc.split_whitespace().collect::<Vec<_>>().join(" ");
+        assert!(
+            collapsed.contains(&want),
+            "{rel} must describe the pre-commit clippy as {want}, the scope \
+             .githooks/pre-commit runs"
+        );
+        for stale in [
+            "clippy (`--features full`",
+            "pre-commit's `--features full`",
+        ] {
+            assert!(
+                !collapsed.contains(stale),
+                "{rel} still describes the pre-commit clippy as `--features full` \
+                 ({stale:?}); the hook runs `cargo clippy {scope}`"
+            );
+        }
+    }
+    Ok(())
+}

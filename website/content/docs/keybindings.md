@@ -105,6 +105,17 @@ without toggling anything.
 | r / F6 | Show raw SIP message for selected dialog |
 | s | Switch to Statistics view |
 | h | Open the [Capture health](#capture-health) panel: drops, undecodable frames, and on a `-L` run the HEP listener's senders |
+| g | Open [Top talkers](#top-talkers): every source IP ranked by the dialogs it took part in |
+| m | Open [Carrier metrics](#carrier-metrics): ASR, NER and ACD per destination IP |
+| c | Open [Compare two calls](#compare-two-calls) for the two starred dialogs (star exactly two with `Space` first; any other count leaves a hint on the status line) |
+| e | Open the [Endpoint rollup](#endpoint-rollup) for the selected dialog's source address |
+| b | Open the [Call volume histogram](#call-volume-histogram): calls per 60-second bucket |
+| o | Open the [SDP offer/answer timeline](#sdp-offer-answer-timeline) of the selected dialog |
+| f | Open the [RFC conformance](#rfc-conformance) findings of the selected dialog |
+| x | Open [TFPS observe](#tfps-observe): the sources an enforcing TFPS peer bans, and its drop counters |
+| a | Open [Security findings](#security-findings): the alerts of the armed detectors |
+| B | Open the [Capture filter editor](#capture-filter-editor) to append an expression to the BPF capture filter |
+| N | Name the selected dialog's addresses (map IP → host/FQDN; Tab switches between source and destination) |
 | S | Open the **Relay statistics** view — asks the live relay for its own counters (`s` asks what this capture saw, `S` asks what the relay says). See [Relay statistics](#relay-statistics) |
 | D | Open the Quality Dashboard (live MOS/jitter/loss) |
 | T | Open the call timeline for the selected dialog (Esc / q closes it) |
@@ -115,7 +126,7 @@ without toggling anything.
 | F2 | Save capture **(configurable: `save`)** |
 | F3 | Search (same as `/`) — matches Call-ID, method, From/To user, addresses, dialog state, and the full raw message text (headers and bodies, including SDP and multipart payloads) |
 | F4 | Open extended multi-leg flow for the selected dialog **(configurable: `extended_flow`)** |
-| F5 | Clear calls **(configurable: `clear_calls`)** — the starred dialogs when any carry a star, otherwise all of them |
+| F5 / Ctrl+L | Clear calls **(configurable: `clear_calls`)** — the starred dialogs when any carry a star, otherwise all of them. `Ctrl+L` is a fixed alias |
 | F7 | Open filter dialog **(configurable: `filter`)** |
 | F9 | Clear filter: drops the view filter **and** the persisted search |
 | F10 | Column selector **(configurable: `column_selector`)** — a popup to show/hide any of the eleven Call List columns (#, Method, From, To, Source, Destination, State, Msgs, Date, PDD, Duration) |
@@ -304,6 +315,65 @@ the Call List or RTP Streams view.
 | Home / End | Jump to top/bottom |
 | Esc / q / s | Back to Call List |
 
+## Top talkers
+
+Every source IP in the capture, ranked by the number of dialogs it took part
+in, then by messages. Each row counts the participant's dialogs, messages,
+INVITEs, and how many of those INVITEs got an answer or failed. The view
+credits a participant for every dialog it took part in, so the shares
+overlap. Open with `g` from the Call List.
+
+| Key | Action |
+|-----|--------|
+| Up / k, Down / j | Scroll |
+| PgUp / PgDn | Page scroll |
+| Home / End | Jump to top/bottom |
+| Esc / q / g | Back to Call List |
+
+## Carrier metrics
+
+Answer-seizure ratio (ASR), network effectiveness ratio (NER) and average call
+duration (ACD) for each destination IP, the address each call went to.
+A call attempt is an INVITE that got a final response; a group with no call
+attempt shows `—` rather than a zero. The figures come from the same
+calculation as `GET /v1/dialogs/rates`. Open with `m` from the Call List.
+
+| Key | Action |
+|-----|--------|
+| Up / k, Down / j | Scroll |
+| PgUp / PgDn | Page scroll |
+| Home / End | Jump to top/bottom |
+| Esc / q / m | Back to Call List |
+
+## Compare two calls
+
+Two dialogs side by side: Call-ID, state, final status, message count and the
+methods each carried. The view marks each field that differs `(differs)`,
+lists the differences by name, and shows a failed call's diagnosis hints.
+Star exactly two dialogs with `Space` in the Call List, then press `c`.
+
+| Key | Action |
+|-----|--------|
+| Up / k, Down / j | Scroll |
+| PgUp / PgDn | Page scroll |
+| Home / End | Jump to top/bottom |
+| Esc / q / c | Back to Call List |
+
+## Endpoint rollup
+
+Everything the selected dialog's source address did in the capture: its
+dialogs, messages sent and received, counts by method and by state, INVITE
+outcomes, registrations, the User-Agent and Server values it sent, its RTP
+streams with codecs, loss and jitter, and its most recent Call-IDs. The same
+report as `GET /v1/endpoints`. Open with `e` from the Call List.
+
+| Key | Action |
+|-----|--------|
+| Up / k, Down / j | Scroll |
+| PgUp / PgDn | Page scroll |
+| Home / End | Jump to top/bottom |
+| Esc / q / e | Back to Call List |
+
 ## Capture health
 
 The capture's own health: the loss, decode and media-path counters, and on a
@@ -333,6 +403,101 @@ A session with no listener says so. Open with `s` from Capture health.
 | Home / End | Jump to top/bottom |
 | Esc / q / s | Back to Capture health |
 
+## Call volume histogram
+
+Calls per 60-second bucket across the capture, one bar per bucket, scaled
+against the busiest bucket. Open with `b` from the Call List.
+
+| Key | Action |
+|-----|--------|
+| Up / k, Down / j | Scroll |
+| PgUp / PgDn | Page scroll |
+| Home / End | Jump to top/bottom |
+| Esc / q / b | Back to Call List |
+
+## SDP offer/answer timeline
+
+Each SDP offer and answer of the selected dialog in order: its time, the
+codecs, the media address and port, and the direction attribute
+(`sendrecv`, `sendonly` and so on). The row of a mid-call change names it:
+on hold, resumed, codec change, switched to T.38 fax, media anchor moved, or
+a transfer. Open with `o` from the Call List.
+
+| Key | Action |
+|-----|--------|
+| Up / k, Down / j | Scroll |
+| PgUp / PgDn | Page scroll |
+| Home / End | Jump to top/bottom |
+| Esc / q / o | Back to Call List |
+
+## RFC conformance
+
+The selected dialog's RFC conformance findings, the same ones
+`GET /v1/dialogs/:call_id/lint` returns. Each names its severity, the RFC
+section, the message it came from, the rule ID, what sipnab observed,
+what the RFC expects, and why it matters. Open with `f` from the Call List.
+
+| Key | Action |
+|-----|--------|
+| Up / k, Down / j | Scroll |
+| PgUp / PgDn | Page scroll |
+| Home / End | Jump to top/bottom |
+| Esc / q / f | Back to Call List |
+
+## TFPS observe
+
+What an enforcing [TFPS](@/docs/tfps.md) peer reports, read by running its
+`tfps_ctl` command: the sources it bans now, or its per-source drop counters.
+The view only reads; it bans and unbans nothing. Without `tfps_ctl` on the
+`PATH` (or named by `--tfps-ctl` or `[tfps] ctl`) the view says so. Open with
+`x` from the Call List.
+
+| Key | Action |
+|-----|--------|
+| b | Show the banned sources (the view opens on these) |
+| d | Show the drop counters |
+| Up / k, Down / j | Scroll |
+| PgUp / PgDn | Page scroll |
+| Home / End | Jump to top/bottom |
+| Esc / q / x | Back to Call List |
+
+## Security findings
+
+The detectors armed on this run and the alerts they raised: each finding's
+rule, source address, detail and time. It shows 200 findings and gives the
+total when more matched. With no detector
+armed the view says that nothing was watching, so an empty list is not a clean
+bill. The same report as `GET /v1/security/findings`. Arm a detector with
+`--kill-scanner`, `--fraud-detect`, `--digest-leak` or `--reg-flood`. Open
+with `a` from the Call List.
+
+| Key | Action |
+|-----|--------|
+| Up / k, Down / j | Scroll |
+| PgUp / PgDn | Page scroll |
+| Home / End | Jump to top/bottom |
+| Esc / q / a | Back to Call List |
+
+## Capture filter editor
+
+Appends an expression to the BPF capture filter. The upper pane previews the
+filter in force; the lower pane takes the expression. `Enter` compiles the
+combined filter first and refuses one libpcap rejects, with the reason on the
+status line. A live capture then applies it to the running capture, and
+sipnab reads a single capture file again under it. With several input files, or
+none, it reports that the filter compiles and applies nothing. Open with `B`
+from the Call List.
+
+| Key | Action |
+|-----|--------|
+| Tab | Switch between AND (narrow the current filter) and OR (widen it) |
+| Enter | Check the combined filter and apply it |
+| Backspace | Delete the last character |
+| Up / Down | Scroll the preview |
+| PgUp / PgDn | Page the preview |
+| Home / End | Jump to top/bottom of the preview |
+| Esc | Discard the edit and return to the Call List |
+
 ## Relay statistics
 
 The live relay's own view of media, asked over its control socket — distinct
@@ -348,6 +513,7 @@ in the background, so the view never freezes waiting on a slow relay.
 |-----|--------|
 | ? | Show the names the relay knows (what you can ask for) |
 | K | Compare the relay's per-call count against this capture's (per-call view only) |
+| H | Show what the relay holds now: the Call-IDs of up to 32 calls (press again to return to the counters) |
 | Up / k, Down / j | Scroll |
 | PgUp / PgDn | Page scroll |
 | Home / End | Jump to top/bottom |
@@ -532,8 +698,11 @@ Name Resolution Block in the capture you opened, then reverse DNS.
 Substitution touches only the IP. The `:port` stays (`sbc-edge:5060`).
 
 To name an address **in context**, select a call-list row, stream row, or
-call-flow message and press **`N`**. A popup opens pre-filled with that IP.
-Type a host/FQDN and press Enter (an empty name clears the mapping). Naming an
+call-flow message and press **`N`**. A popup opens with the endpoints of that
+row or message (a call-list row offers its source and its destination), each
+pre-filled with the name it has now. **`Tab`** and **`Shift+Tab`** move between
+the endpoints. Type a host/FQDN and press Enter to apply every endpoint (an
+empty name clears that mapping); **`Esc`** closes the popup without applying. Naming an
 address turns resolution on automatically, and sipnab saves the mapping to
 `$XDG_CONFIG_HOME/sipnab/hosts` (`~/.config/sipnab/hosts`) so it persists
 across runs.
@@ -590,7 +759,10 @@ The three lines above the list say what you are looking at. Line 1 names
 the source (`Live capture: eth0` or `File: call.pcap`), how many dialogs the
 list shows out of how many sipnab holds, and whether autoscroll is on. Line 2
 is the capture (BPF) filter the kernel applies, `none` when sipnab compiled
-no filter. Line 3 is the view filter from `F7` and any search you kept with
+no filter. When the filter belongs to a different source from the one line 1
+names, line 2 says which after the filter: `[live capture]` when a file opened
+with `O` replaced the screen while the live capture keeps running behind it,
+`[file re-scan]` when `B` re-read a capture file under the filter. Line 3 is the view filter from `F7` and any search you kept with
 Enter, and it also carries status messages, with errors in red.
 
 The key bar

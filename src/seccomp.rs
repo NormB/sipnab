@@ -598,6 +598,34 @@ pub enum SeccompStatus {
     Failed(String),
 }
 
+/// Whether a run may continue, given what `--seccomp` asked for.
+///
+/// Pure, so every arm is drivable without a kernel. `Enforce` is the only
+/// mode that can refuse, and it refuses on anything short of an enforcing
+/// filter: no allowlist named, a list that could not be read or parsed, an
+/// architecture or OS with no filter, or a kernel that refused it. An operator
+/// who asked for a control and is not given one must not get a capture that
+/// looks protected. `Off` and `Log` never refuse; `Log` is an instrument.
+///
+/// # Errors
+///
+/// The sentence to print when the run must not continue.
+pub fn requirement_verdict(mode: SeccompMode, status: &SeccompStatus) -> Result<(), String> {
+    if mode != SeccompMode::Enforce {
+        return Ok(());
+    }
+    let because = match status {
+        SeccompStatus::Enforcing { .. } => return Ok(()),
+        SeccompStatus::Disabled => "no install was attempted".to_string(),
+        SeccompStatus::Logging => "a logging filter is loaded, and it denies nothing".to_string(),
+        SeccompStatus::Unsupported(why) | SeccompStatus::Failed(why) => why.clone(),
+    };
+    Err(format!(
+        "`--seccomp enforce` was given and no syscall filter is in force: {because}. \
+         Refusing to capture. Use `--seccomp off` to capture without one."
+    ))
+}
+
 /// The startup line for `status`, which always says what is NOT protected.
 ///
 /// The line an operator reads has to carry the same warning the module doc
@@ -2165,5 +2193,59 @@ mod tests {
             "the parser cannot see a unit variant: {variants:?}"
         );
         Ok(())
+    }
+
+    // ── `--seccomp enforce` refuses to run without a filter in force ──
+
+    /// Every status other than an enforcing filter, with the reason each carries.
+    fn not_enforcing() -> Vec<SeccompStatus> {
+        vec![
+            SeccompStatus::Disabled,
+            SeccompStatus::Logging,
+            SeccompStatus::Unsupported("no allowlist named".to_string()),
+            SeccompStatus::Failed("the kernel refused".to_string()),
+        ]
+    }
+
+    #[test]
+    fn enforce_with_an_enforcing_filter_may_run() {
+        assert_eq!(
+            requirement_verdict(
+                SeccompMode::Enforce,
+                &SeccompStatus::Enforcing { count: 42 }
+            ),
+            Ok(())
+        );
+    }
+
+    #[test]
+    fn enforce_without_an_enforcing_filter_refuses_and_says_why() {
+        for status in not_enforcing() {
+            let refusal = requirement_verdict(SeccompMode::Enforce, &status)
+                .expect_err(&format!("{status:?} under enforce must refuse"));
+            assert!(refusal.contains("--seccomp enforce"), "{refusal}");
+            assert!(refusal.contains("Refusing"), "{refusal}");
+            if let SeccompStatus::Unsupported(why) | SeccompStatus::Failed(why) = &status {
+                assert!(
+                    refusal.contains(why.as_str()),
+                    "the reason is lost: {refusal}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn off_and_log_never_refuse() {
+        let mut every = not_enforcing();
+        every.push(SeccompStatus::Enforcing { count: 1 });
+        for mode in [SeccompMode::Off, SeccompMode::Log] {
+            for status in &every {
+                assert_eq!(
+                    requirement_verdict(mode, status),
+                    Ok(()),
+                    "{mode:?} {status:?}"
+                );
+            }
+        }
     }
 }

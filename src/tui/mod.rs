@@ -240,15 +240,21 @@ pub struct App {
     /// operator-supplied expression. When set, status line 2 shows a compact
     /// summary instead of the default's thousand-column expression.
     bpf_filter_generated: bool,
-    /// True once an in-session `O` open loaded a file, so `bpf_filter`
-    /// describes the LIVE capture and not what is on screen (#190).
+    /// Which source `bpf_filter` was applied to, when that is no longer
+    /// simply this session's own capture: the live capture still running
+    /// behind a file opened in-session (#190), or a re-scan of a capture file
+    /// under the `B` editor's filter. Status line 2 names it after the filter.
     ///
     /// The slot is marked rather than cleared. The live capture keeps running
     /// and keeps writing to the same stores, so the filter is still in force
     /// for that half — blanking it would replace an incomplete truth with a
     /// false one, and "no filter compiled" is a specific claim this session
     /// cannot make.
-    bpf_is_live_only: bool,
+    bpf_source: BpfSource,
+    /// Whether a live capture (device or HEP listener) runs behind this
+    /// session. False for a session started on capture files (`-I`), where
+    /// no in-session open or re-scan can leave a live capture running.
+    live_capture: bool,
     /// Scroll offset for the full-BPF-filter popup (`B`). The generated
     /// default filter runs to well over a thousand columns; wrapped, it can be
     /// taller than the popup, so the operator scrolls to read all of it rather
@@ -495,7 +501,10 @@ impl App {
             status_alert: None,
             flow: CallFlowViewState::default(),
             flow_detail_max_hscroll: None,
-            bpf_is_live_only: false,
+            bpf_source: BpfSource::Session,
+            // `App::new` describes the built-in `Online (any)` session; a run
+            // on capture files says otherwise through `TuiOptions::offline`.
+            live_capture: true,
             bpf_scroll: 0,
             bpf_editor: bpf_editor::BpfEditor::new(),
             reconfigure_control: None,
@@ -1655,21 +1664,22 @@ impl App {
     /// h-scroll headroom, and the call-flow row caches
     /// (`cached_msg_count`, `cached_rtp_bar_indices`,
     /// `cached_raw_indices`) for each `Some` field.
-    /// Whether `bpf_filter` describes the live capture rather than what is
-    /// currently displayed (#190).
-    pub(in crate::tui) fn bpf_is_live_only(&self) -> bool {
-        self.bpf_is_live_only
+    /// Which source `bpf_filter` was applied to (#190).
+    pub(in crate::tui) fn bpf_source(&self) -> BpfSource {
+        self.bpf_source
     }
 
-    /// Record that an in-session file open replaced what is on screen, so the
-    /// BPF slot must say which source its filter belongs to.
-    ///
-    /// One-way on purpose: the live capture is still running and its filter
-    /// still applies to it, so there is no state in which the mark becomes
-    /// wrong again. Clearing it on some later event would be inventing a
-    /// transition that does not exist.
-    pub(in crate::tui) fn mark_bpf_live_only(&mut self) {
-        self.bpf_is_live_only = true;
+    /// Record what a finished capture-file load means for the BPF slot:
+    /// `rescanned` is whether the load ran under a filter (a `B` re-scan).
+    /// The source is derived by [`BpfSource::after_load`] from that and from
+    /// whether a live capture runs behind this session.
+    pub(in crate::tui) fn note_bpf_source_after_load(&mut self, rescanned: bool) {
+        self.bpf_source = BpfSource::after_load(self.live_capture, rescanned);
+    }
+
+    /// Set whether a live capture runs behind this session.
+    pub(in crate::tui) fn set_live_capture(&mut self, live: bool) {
+        self.live_capture = live;
     }
 
     fn apply_render_feedback(&mut self, fb: RenderFeedback) {

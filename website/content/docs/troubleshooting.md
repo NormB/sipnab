@@ -789,10 +789,10 @@ sipnab -N -I capture.pcap --json-dialogs --no-cli-print --quiet \
 `kind` is `rejected` or `shortened_expiry`. On the second, compare
 `requested_expiry_sec` against `granted_expiry_sec`.
 
-> Do **not** reach for `final_status_code` here: it reads INVITE transactions
-> only, so on a `REGISTER` dialog it is always `null`, however the registration
-> ended. `signaling_diagnosis.final_failure.code` carries the status for any
-> dialog.
+> `final_status_code` on a `REGISTER` dialog is the registrar's final answer to
+> the REGISTER (a challenge that was then answered does not count), so it
+> shows that the registrar refused a registration but not why it granted a
+> short expiry. `registration_failure` names both.
 
 **What to look for:**
 
@@ -1147,7 +1147,8 @@ silent truncation, and the caveat names the size it turned down.
 
 ## An output file sipnab cannot create
 
-**Problem:** a root run with `-O` stops at once, or a long run stops when
+**Problem:** a root run with `-O`, `--export-vcon-dir`, `--vcon-out` or
+`--redact-map` stops at startup with exit code `1`, or a long run stops when
 `--split` rotates, with a line such as:
 
 ```text
@@ -1157,7 +1158,10 @@ Failed to create output file '/var/tmp/e2e/rtp03.pcap': Permission denied (os er
 **Why:** run as root, sipnab opens the capture device and then drops
 privileges, to `nobody` unless `--user` or `[privilege] user` names another
 account. It creates the `-O` file after the drop, and each `--split` file
-later still, so the drop user creates the file, not root. A
+later still, so the drop user creates the file, not root. sipnab checks right
+after the drop that the drop user can create each of those outputs, so the
+refusal comes before the first packet rather than when the file is first
+needed. A
 directory made with a plain `sudo mkdir` is `root:root` mode `0755`, which
 `nobody` may read but not write.
 

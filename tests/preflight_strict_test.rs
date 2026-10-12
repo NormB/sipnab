@@ -531,7 +531,17 @@ fn a_hidden_codespell_only_warns_for_a_contributor() -> Result<(), TestError> {
 fn codespell_bin_counts_as_installed() -> Result<(), TestError> {
     let tmp = tempfile::tempdir()?;
     let bin = tmp.path().join("codespell");
-    stub(&bin, "", 0)?;
+    // It reports the version scripts/requirements-codespell.txt pins, since
+    // the gate refuses any other as NOT CHECKED.
+    let req = std::fs::read_to_string(
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("scripts/requirements-codespell.txt"),
+    )?;
+    let pin = req
+        .lines()
+        .find_map(|l| l.strip_prefix("codespell=="))
+        .and_then(|v| v.split_whitespace().next())
+        .ok_or("no codespell== pin in scripts/requirements-codespell.txt")?;
+    stub(&bin, pin, 0)?;
 
     let run = Case::new(&[STATUS, "codespell-gate"])
         .env("PREFLIGHT_STRICT", "1")

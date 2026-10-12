@@ -71,6 +71,109 @@ drifted.
 | [`tests/install-sh/`](../../tests/install-sh) — installer cases | Hand-maintained; exercised by the `install-sh` CI job. |
 | [`fuzz/corpus/`](../../fuzz/corpus) — fuzz seeds | Grown by `cargo fuzz run` (nightly). Note nothing on the stable toolchain reads this directory: `fuzz_corpus_replay` drives its own in-file seed set. To make a reproducer run in every `cargo test`, add it to `smoke_fuzz_test` as well. |
 
+### The public vCon datasets
+
+The vcon-dev community publishes five vCon datasets as git repositories:
+17,443 containers in all, none of which carries SIP signaling.
+[`tests/fixtures/vcon-datasets/PINS.tsv`](../../tests/fixtures/vcon-datasets/PINS.tsv)
+pins each one to a commit and records the license of its LICENSE file at that
+commit. Two tests read them.
+
+- [`vcon_dataset_subset_test`](../../tests/vcon_dataset_subset_test.rs) runs on
+  every build with the `vcon` feature. It reads the four containers committed
+  under [`tests/fixtures/vcon-datasets/`](../../tests/fixtures/vcon-datasets/README.md)
+  and pins the findings `vcon_schema::validate` reports for each. It also
+  checks that the `jsonschema` reference engine agrees, that each container is
+  valid once the test repairs its recorded dataset issues, and that the fetcher
+  (`--vcon-fetch-kind generic`, against a server on `127.0.0.1`) saves each
+  one unchanged. Each dataset directory there carries the LICENSE file of its
+  dataset and a README with the source path and SHA-256 of every file.
+- [`vcon_dataset_corpus_test`](../../tests/vcon_dataset_corpus_test.rs) reads
+  every container in the five datasets. It runs only when
+  `SIPNAB_VCON_DATASETS` names a directory that
+  [`scripts/fetch-vcon-datasets.py`](../../scripts/fetch-vcon-datasets.py)
+  filled. Without it, the binary prints one `NOTICE` line saying its gates did
+  not run, as the capture corpus does. The pre-push corpus gate does not run
+  it: that gate selects tests by the name `SIPNAB_CORPUS`.
+
+Fetch the datasets and run the corpus test:
+
+```sh
+# Run all of these, in order.
+python3 scripts/fetch-vcon-datasets.py "$HOME/vcon-datasets"
+SIPNAB_VCON_DATASETS="$HOME/vcon-datasets" \
+  cargo test --features full --profile corpus --test vcon_dataset_corpus_test
+```
+
+The script runs only `git`: it fetches each pinned commit, checks it out
+detached with hooks and symbolic links turned off, and refuses a checkout
+whose HEAD is not the pinned commit or whose files have changed. A second run
+verifies the cache and moves a dataset whose pin changed. The five datasets
+take about 2.3 GB of disk, and the corrected copy described below about
+2.2 GB more.
+
+The corpus test prints, for each dataset, the number of containers, the number
+the schema accepts, and each finding with the number of containers that carry
+it. It asserts that each dataset is at its pinned commit and that sipnab and
+the reference agree on every container, both on the verdict and on the
+instance paths of the findings. It also asserts the per-dataset counts
+measured on 2026-10-09, which hold for as long as the pins do. Moving a pin in
+`PINS.tsv` means measuring again and rewriting `EXPECTED` in the test.
+
+What the five datasets get, at their pins:
+
+| Dataset | Containers | Valid | Findings, with the number of containers that carry each |
+|---|---|---|---|
+| `vcon-supreme-court-arguments` | 8,503 | 0 | Attachment Object without `mediatype`: 8,503 |
+| `ietf-meeting-vcons` | 8,181 | 0 | Attachment Object without `mediatype`: 8,181. Dialog Object with `url` and no `content_hash`: 4,079 |
+| `vcon-dataset-city-of-newport-ri` | 115 | 0 | Attachment Object without `mediatype`: 115. Dialog Object with `url` and no `content_hash`: 115 |
+| `fake-vcons` | 601 | 0 | Attachment Object without `mediatype`: 601. Attachment Object without `start`: 601. Dialog Object with a `body` and no `encoding`: 264 |
+| `tadhack-2025` | 43 | 0 | Attachment Object without `mediatype`: 43. Attachment Object without `start`: 43 |
+
+Each finding is a rule that draft-ietf-vcon-vcon-core-04 states in its prose
+and in its schema:
+[section 4.4.5](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-04#section-4.4.5)
+for an inline attachment's `mediatype`,
+[section 4.4.2](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-04#section-4.4.2)
+for `start`,
+[section 2.4](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-04#section-2.4)
+for `content_hash` beside `url`, and
+[section 2.3.2](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-04#section-2.3.2)
+for `encoding`. The reference engine reports the same findings at the same
+paths. With those four repaired, every one of the 17,443 containers is valid
+to sipnab and to the reference engine.
+
+#### The corrected copy
+
+[`tests/fixtures/vcon-datasets/CORRECTED.tsv`](../../tests/fixtures/vcon-datasets/CORRECTED.tsv)
+pins [NormB/vcon-datasets-core04](https://github.com/NormB/vcon-datasets-core04),
+a copy of the first three datasets with two kinds of key added and nothing
+else changed: `mediatype` on every inline attachment, and `content_hash` on
+the 425 IETF audio recordings whose files it downloaded, with an IETF login,
+and hashed. Its CHANGES.md lists what it leaves open and why. fake-vcons and tadhack-2025 are not in it, for the contact data
+described in the subset README. The fetch script fetches both pins files
+unless `--pins` names others, and accepts `--pins` more than once.
+
+The corpus test holds the corrected copy to three things, beside the tests
+above that pin the upstream findings. It is at its pinned commit. Each
+corrected dataset gets the answer measured on 2026-10-11, with sipnab and the
+reference agreeing on every container. Each corrected container is its
+upstream container with keys added: the test counts the added `content_hash`
+values (425) and requires each to be a SHA-512 token, and with them set aside,
+repairing both containers with the test's own repair gives the same document
+and the corrected one needs no `mediatype` repair. That last check compares this repository's repair rule with the
+corrected repository's own, on all 16,799 containers.
+
+| Dataset | Containers | Valid | Findings, with the number of containers that carry each |
+|---|---|---|---|
+| `vcon-supreme-court-arguments` | 8,503 | 8,503 | None |
+| `ietf-meeting-vcons` | 8,181 | 4,527 | Dialog Object with `url` and no `content_hash`: 3,654 |
+| `vcon-dataset-city-of-newport-ri` | 115 | 0 | Dialog Object with `url` and no `content_hash`: 115 |
+
+The remaining finding needs a hash of each recording, and no fetch returns
+these recordings to hash: the IETF ones are YouTube pages, and the Newport
+video host refused the download.
+
 Accepting a snapshot or overwriting a golden is a **decision**, not a fix. Read
 the diff first: these files are the record of what the tool promised its users.
 
@@ -94,7 +197,9 @@ the thing it guards silently rotted at least once.
 | [`wasm_exports_test`](../../tests/wasm_exports_test.rs) | The WASM binding loses an export the browser analyzer calls. |
 | [`site_journey_test`](../../tests/site_journey_test.rs) / [`mockup_alignment_test`](../../tests/mockup_alignment_test.rs) | A website journey breaks, or a terminal mockup on the site drifts from real output. Also the homepage's advertised numbers: the binary-size ceiling, the glibc floor, the throughput tiles (which must quote a figure that appears on the benchmarks page they link to), and the automated-test count, which the template must read from the file `pages.yml` generates rather than state as a number. It holds the standards cards to a canonical table naming the code symbol behind every item, the field the program emits for every quality metric, and a citation in `docs/` and the built site mirror, one card per standard. It also holds the homepage's four MCP examples to the files [`gen-mcp-examples.sh`](../../demos/gen-mcp-examples.sh) generated, and holds each of those to the claim the surrounding copy makes about it. That covers the second half of `live binary -> website/data/mcp-examples/*.json -> index.html`; `demos/gen-mcp-examples.sh --check` covers the first and needs a built binary, so CI cannot run it. The homepage's voice-stack section must link exactly the guides in the "Your SIP server" and "Add to your voice stack" groups of the docs navigation, so a guide added to one reaches the other. |
 | [`config_examples_test`](../../tests/config_examples_test.rs) | A config sample in the docs no longer parses. |
-| [`doc_commands_run_test`](../../tests/doc_commands_run_test.rs) | A command shown in `docs/` is one sipnab refuses. It extracts every `sipnab …` line from every shell block and RUNS 352 of the 383 against a capture that ships with the repository, several at a time, each in a directory and a home of its own, failing on a usage error rather than on a non-zero exit -- plenty of documented commands exit non-zero for honest reasons. A device or root example runs with a device name that cannot exist substituted for the one the page names, so its flags still parse in full; a server example runs under a shared wall-clock bound, because clap refuses in milliseconds and a process still alive after it necessarily parsed its arguments. Only two kinds never run, and it names both: a shell program rather than one invocation, and a command that would exec something of its own or attach to the kernel. A command matching neither fails the test. It prints its own coverage, because the difference between "352 ran" and "3 ran, 380 skipped" is the difference between a gate and a decoration. |
+| [`doc_commands_run_test`](../../tests/doc_commands_run_test.rs) | A command shown in `docs/`, the README or a hand-written page under `website/content/` is one sipnab refuses. It extracts every `sipnab …` line from every shell block, including a fence indented under a list item, through the same CommonMark fence rule as [`scripts/lib_markdown.py`](../../scripts/lib_markdown.py) (it checks the two parsers agree on every page), and RUNS 447 of the 496 against a capture that ships with the repository, several at a time, each in a directory and a home of its own, failing on a usage error rather than on a non-zero exit -- plenty of documented commands exit non-zero for honest reasons. A device or root example runs with a device name that cannot exist substituted for the one the page names, so its flags still parse in full; a server example runs under a shared wall-clock bound, because clap refuses in milliseconds and a process still alive after it necessarily parsed its arguments. Only two kinds never run, and it names both: a shell program rather than one invocation, and a command that would exec something of its own or attach to the kernel. A command matching neither fails the test. It prints its own coverage, because the difference between "352 ran" and "3 ran, 380 skipped" is the difference between a gate and a decoration. |
+| [`examples_run_test`](../../tests/examples_run_test.rs) | A program in `examples/` no longer runs the way its own comment says, or prints something other than the output the comment shows. It runs every `cargo run` command the comments document (12, across all seven programs), except one under `sudo`, and holds `docs/library.md`'s count of the programs to the directory. |
+| [`release_surface_test`](../../tests/release_surface_test.rs) | A release adds a flag, MCP tool or REST route that no release note names, or a guide's Tested on names a sipnab release older than a flag its commands use. It reads the three lists at every release tag, with extractors it first holds to clap and the MCP router. |
 | [`homepage_claim_truth_test`](../../tests/homepage_claim_truth_test.rs) | A claim the homepage states in PROSE stops being true: the MCP tool counts and their read-only split, which released builds carry the `bpf` feature, what the installer actually puts on a host, a capability the static musl build does not have, the filter language's field and operator counts, a TUI key the page names that nothing binds, and a CLI flag the page names that does not exist, plus the `unsafe` count and the safety claim resting on it — the page said "memory-safe by construction" beside 88 `unsafe` blocks and no `forbid(unsafe_code)`. `site_journey_test` gates the tiles; this gates the sentences, because the two disagreed on one page for months. |
 | [`cookbook_recipes_test`](../../tests/cookbook_recipes_test.rs) | A command in [`docs/examples.md`](../../docs/examples.md) no longer runs or names a flag `--help` lacks; or a command it executes has no output golden in [`tests/cli/cookbook/`](../../tests/cli/cookbook) and no reason in the checker's `OUTPUT_UNPINNED` table; or a golden there is one no cookbook command produces. |
 | [`support_selftest`](../../tests/support_selftest.rs) | The shared normalization helper changes behavior under the tests that depend on it. |

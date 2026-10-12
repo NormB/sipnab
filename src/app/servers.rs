@@ -62,6 +62,11 @@ pub struct Selection {
     /// Resolved by the caller with `cli.mcp_body_cap(config)`, and carried here
     /// for the same reason `mcp_row_cap` is.
     pub mcp_body_cap: usize,
+    /// Ceiling on the bytes of one whole paged MCP response.
+    ///
+    /// Resolved by the caller with `cli.mcp_response_cap(config)`, and
+    /// carried here for the same reason `mcp_row_cap` is.
+    pub mcp_response_cap: usize,
     /// Ceiling on how long one `await_condition` MCP call may wait, seconds.
     ///
     /// Resolved by the caller with `cli.mcp_wait_cap(config)`, and carried
@@ -143,6 +148,15 @@ pub struct Selection {
     /// `--no-dialog`, `--rtpproxy-control` and `--quiet-bad-parse` applied to
     /// `-I` and not to the same file opened through a server.
     pub pipeline_options: crate::pipeline::PipelineOptions,
+    /// The numbers the diagnostic filter aliases compare against, resolved by
+    /// the caller with `cli.alias_thresholds(config)`.
+    ///
+    /// Both doors expand `filter: "slow-setup"` and the rest of the alias
+    /// family with them, so an alias over REST or MCP selects the dialogs
+    /// `--filter slow-setup` selects on the same command line and config.
+    /// Without them the doors compared against the shipped figures, and a
+    /// `--pdd-threshold` reached the command line and stopped there.
+    pub alias_thresholds: crate::sip::dsl::AliasThresholds,
 }
 
 /// Handles to the running servers thread.
@@ -164,6 +178,10 @@ pub struct ServerHandles {
     /// appeared only alongside a listener would mean the exporter consulted
     /// nothing on the runs that have no listener, and those are most of them.
     pub persistence_gate: Arc<crate::output::persistence::PersistenceGate>,
+    /// The address the MCP HTTP server is listening on, when one runs: the
+    /// kernel's port when `--mcp-bind` asked for port 0. The TUI shows it,
+    /// because a TUI run prints no log line to read it from.
+    pub mcp_http_addr: Option<std::net::SocketAddr>,
 }
 
 /// A server prepared on the caller's thread (address parsing and auth
@@ -197,8 +215,11 @@ enum Prepared {
     McpHttp {
         /// The tool server to expose (boxed to keep the variant small).
         server: Box<crate::mcp::SipnabMcp>,
-        /// Parsed `--mcp-bind` address (default `127.0.0.1:8731`).
-        bind: std::net::SocketAddr,
+        /// The `--mcp-bind` listener (default `127.0.0.1:8731`), bound on the
+        /// caller's thread by `bind_http`, for the reason the API listener
+        /// is: a refused or busy bind logged from the servers thread is
+        /// invisible once the TUI owns the terminal.
+        listener: std::net::TcpListener,
         /// Bearer-token verifier configuration for the HTTP guard.
         auth: crate::auth::VerifierConfig,
         /// `--mcp-allowed-host` additions to the Host-header allowlist.
@@ -234,6 +255,19 @@ impl Prepared {
         }
     }
 
+    /// The address an MCP HTTP server is listening on, or `None` for any
+    /// other server. Every variant is named, as in `stdio_done`.
+    fn http_addr(&self) -> Option<std::net::SocketAddr> {
+        match self {
+            #[cfg(feature = "api")]
+            Prepared::Api { .. } => None,
+            #[cfg(feature = "mcp")]
+            Prepared::McpStdio { .. } => None,
+            #[cfg(feature = "mcp-http")]
+            Prepared::McpHttp { listener, .. } => listener.local_addr().ok(),
+        }
+    }
+
     /// Run this server to completion, logging (not propagating) runtime
     /// errors — one failed server must not tear down the others.
     ///
@@ -264,7 +298,7 @@ impl Prepared {
             #[cfg(feature = "mcp-http")]
             Prepared::McpHttp {
                 server,
-                bind,
+                listener,
                 auth,
                 extra_allowed_hosts,
                 resource,
@@ -273,7 +307,7 @@ impl Prepared {
                 "MCP HTTP",
                 crate::mcp::transport::serve_http(
                     *server,
-                    bind,
+                    listener,
                     auth,
                     extra_allowed_hosts,
                     resource,
@@ -382,14 +416,30 @@ pub fn start_actions(
     Ok(policy.into())
 }
 
+/// The HEP authentication posture an MCP server reports for relay assertions,
+/// or `None` when sipnab checks no HEP secret on this run.
+///
+/// `--hep-auth-mode` defaults to `plain` whether or not a secret is set, so
+/// the mode alone does not say that anything is checked: only a run that
+/// listens for HEP (`listening`) with a secret configured (`secret`) has an
+/// authenticated path, and only then does the mode name it.
+#[cfg(feature = "mcp")]
+fn hep_delivery_posture(
+    listening: bool,
+    secret: bool,
+    mode: crate::cli::HepAuthMode,
+) -> Option<crate::cli::HepAuthMode> {
+    (listening && secret).then_some(mode)
+}
+
 /// Start every server that is both selected and configured, on one shared
 /// runtime thread. Returns `Ok(None)` when nothing is enabled (the common
 /// plain-capture path), `Ok(Some(handle))` for the detached servers thread,
 /// and `Err` for configuration errors the caller should treat as fatal:
 /// an invalid `--api`/`--mcp-bind` address, an unknown or uncompiled
-/// `--mcp-transport`, and any API listener failure (port in use,
-/// unauthenticated non-loopback bind, unsupported TLS flags) — the API
-/// listener is bound HERE, synchronously, so these surface before the TUI
+/// `--mcp-transport`, and any API or MCP HTTP listener failure (port in
+/// use, unauthenticated non-loopback bind, unsupported TLS flags) — both
+/// listeners are bound HERE, synchronously, so these surface before the TUI
 /// takes the terminal instead of dying silently on the servers thread.
 ///
 /// `alerts` feeds the MCP `security_findings` tool; a caller without a
@@ -405,7 +455,8 @@ pub fn start_actions(
 ///
 /// # Side effects
 ///
-/// Binds the API TCP listener synchronously on the caller's thread, then
+/// Binds the API and MCP HTTP TCP listeners synchronously on the caller's
+/// thread, then
 /// spawns one detached OS thread named "servers" that builds a
 /// current-thread tokio runtime and drives every prepared server as a task
 /// until each finishes. Auth resolution may read signing-key/token files
@@ -617,6 +668,10 @@ pub fn start_servers(
             // address reads as not_configured, a missing permit as not_permitted
             // -- the same two distinctions the CLI draws. `relay_query_permit`
             // is Copy, so the MCP arm below still gets its own.
+            // The run's alias thresholds, so `?filter=slow-setup` compares
+            // against the number `--filter slow-setup` does. The MCP arm
+            // below gets the same value.
+            alias_thresholds: selection.alias_thresholds,
             relay_query: crate::output::api::RelayRestConfig {
                 // The composition root chooses the implementation; the API layer
                 // only holds the trait object. `Copy` permit, so the MCP arm
@@ -659,6 +714,9 @@ pub fn start_servers(
                 .api_file_root
                 .as_ref()
                 .map(std::path::PathBuf::from),
+            // The spool this run's `--export-vcon-when` writes into: the same
+            // directory the MCP server's `vcon_spool_status` reads.
+            vcon_spool: cli.output_args.export_vcon_dir.clone(),
             pipeline_options: selection.pipeline_options,
             archive: crate::output::api::ArchivePasswordPolicy {
                 accept_remote: cli.listener_args.api_accept_archive_passwords,
@@ -750,10 +808,13 @@ pub fn start_servers(
                         .map(|mib| mib.saturating_mul(1024 * 1024)),
                 )
                 .with_body_cap(selection.mcp_body_cap)
+                .with_response_cap(selection.mcp_response_cap)
                 .with_max_wait_seconds(selection.mcp_wait_seconds)
                 .with_sweep_limits(selection.mcp_sweep)
                 .with_sweep_job_limits(selection.mcp_sweep_jobs)
                 .with_findings_cap(selection.mcp_max_findings)
+                // The thresholds REST and `--filter` expand aliases with.
+                .with_alias_thresholds(selection.alias_thresholds)
                 .with_pipeline_options(selection.pipeline_options);
             let s = match audit_sink.as_ref() {
                 Some(sink) => s.with_audit_sink(Arc::clone(sink)),
@@ -763,8 +824,26 @@ pub fn start_servers(
                 Some(dir) => s.with_file_root(dir),
                 None => s,
             };
+            // The spool this run's `--export-vcon-when` writes into, so
+            // `vcon_spool_status` reads the directory the capture fills.
+            #[cfg(feature = "vcon")]
+            let s = match cli.output_args.export_vcon_dir.as_ref() {
+                Some(dir) => s.with_vcon_spool(dir),
+                None => s,
+            };
             let s = match cli.mcp_args.mcp_sampling_budget {
                 Some(per_hour) => s.with_sampling_budget(per_hour),
+                None => s,
+            };
+            // What a relay's HEP assertion is worth on this run. Without it
+            // every run reported `port-gated-only`, `--hep-auth-mode hmac`
+            // included.
+            let s = match hep_delivery_posture(
+                cli.hep_args.hep_listen.is_some(),
+                cli.resolve_hep_auth().ok().flatten().is_some(),
+                cli.hep_args.hep_auth_mode,
+            ) {
+                Some(mode) => s.with_hep_auth_mode(mode),
                 None => s,
             };
             let s = if cli.mcp_args.mcp_allow_shutdown {
@@ -822,13 +901,13 @@ pub fn start_servers(
                 None => s,
             }
         };
-        match cli.mcp_args.mcp_transport.as_str() {
-            "stdio" => Some(Prepared::McpStdio {
+        match cli.mcp_args.mcp_transport {
+            crate::cli::McpTransport::Stdio => Some(Prepared::McpStdio {
                 server: Box::new(new_server()),
                 done: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             }),
             #[cfg(feature = "mcp-http")]
-            "http" => {
+            crate::cli::McpTransport::Http => {
                 let bind_str = cli.mcp_args.mcp_bind.as_deref().unwrap_or("127.0.0.1:8731");
                 let bind = crate::output::api::parse_bind_addr(bind_str)
                     .map_err(|e| anyhow::anyhow!("Invalid --mcp-bind address: {e}"))?;
@@ -851,25 +930,22 @@ pub fn start_servers(
                     selection.mcp_tls.0.as_deref(),
                     selection.mcp_tls.1.as_deref(),
                 )?;
+                let auth = resolve_mcp_verifier_config(cli);
+                let listener = crate::mcp::transport::bind_http(bind, &auth, tls.is_some())?;
                 Some(Prepared::McpHttp {
                     server: Box::new(new_server()),
-                    bind,
-                    auth: resolve_mcp_verifier_config(cli),
+                    listener,
+                    auth,
                     extra_allowed_hosts: cli.mcp_args.mcp_allowed_host.clone(),
                     resource,
                     tls,
                 })
             }
             #[cfg(not(feature = "mcp-http"))]
-            "http" => {
+            crate::cli::McpTransport::Http => {
                 return Err(anyhow::anyhow!(
                     "--mcp-transport http requires the mcp-http feature; rebuild with \
                      --features mcp-http (or full)."
-                ));
-            }
-            other => {
-                return Err(anyhow::anyhow!(
-                    "unknown --mcp-transport '{other}', expected stdio or http"
                 ));
             }
         }
@@ -896,6 +972,7 @@ pub fn start_servers(
     {
         // Read before the servers move onto their thread.
         let mcp_stdio_done = prepared.iter().find_map(Prepared::stdio_done);
+        let mcp_http_addr = prepared.iter().find_map(Prepared::http_addr);
         let handle = std::thread::Builder::new()
             .name("servers".to_string())
             .spawn(move || {
@@ -923,6 +1000,7 @@ pub fn start_servers(
             mcp_stdio_done,
             source_exhausted,
             persistence_gate,
+            mcp_http_addr,
         }))
     }
     // gate: unreachable because `Prepared` has no variants without those
@@ -1052,6 +1130,20 @@ pub fn resolve_mcp_verifier_config(cli: &Cli) -> crate::auth::VerifierConfig {
 
 #[cfg(all(test, feature = "api"))]
 mod tests {
+    /// Only a HEP listener with a secret has an authenticated path; the mode
+    /// names it, and every other combination reports none.
+    #[cfg(feature = "mcp")]
+    #[test]
+    fn only_a_listener_with_a_secret_reports_its_mode() {
+        use crate::cli::HepAuthMode;
+        for mode in [HepAuthMode::Plain, HepAuthMode::Hmac] {
+            assert_eq!(super::hep_delivery_posture(true, true, mode), Some(mode));
+            assert_eq!(super::hep_delivery_posture(true, false, mode), None);
+            assert_eq!(super::hep_delivery_posture(false, true, mode), None);
+            assert_eq!(super::hep_delivery_posture(false, false, mode), None);
+        }
+    }
+
     use super::*;
 
     /// A `Selection` with values nothing else in the tree uses, so a limiter
@@ -1067,6 +1159,7 @@ mod tests {
             metrics_tls: (None, None),
             mcp_row_cap: 1,
             mcp_body_cap: 1,
+            mcp_response_cap: 1,
             mcp_wait_seconds: 1,
             mcp_sweep: crate::cli::McpSweepLimits::default(),
             mcp_sweep_jobs: crate::cli::McpSweepJobLimits::default(),
@@ -1082,6 +1175,7 @@ mod tests {
             metrics: false,
             armed_detections: Vec::new(),
             pipeline_options: Default::default(),
+            alias_thresholds: Default::default(),
         }
     }
 

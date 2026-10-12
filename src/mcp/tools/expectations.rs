@@ -19,6 +19,7 @@
 //! this project's name on it.
 
 use crate::expect::{ExpectRule, Inputs, RuleError, Suite, evaluate};
+use crate::mcp::errors::{self, Reason};
 use crate::mcp::server::SipnabMcp;
 use rmcp::handler::server::wrapper::Parameters;
 use rmcp::model::{CallToolResult, ContentBlock};
@@ -186,30 +187,31 @@ impl SipnabMcp {
     ) -> Result<CallToolResult, rmcp::ErrorData> {
         let rules: Vec<ExpectRule> = match (params.rules, params.rules_toml.as_deref()) {
             (Some(_), Some(_)) => {
-                return Err(rmcp::ErrorData::invalid_params(
+                return Err(errors::refuse(
+                    Reason::ConflictingParams,
                     "give either 'rules' or 'rules_toml', not both: two suites \
                      in one call have no defined order and the answer would not \
                      say which one was judged"
                         .to_string(),
-                    None,
                 ));
             }
             (None, None) => {
-                return Err(rmcp::ErrorData::invalid_params(
+                return Err(errors::refuse(
+                    Reason::MissingParam,
                     "no expectations were given. Pass 'rules' as a JSON array, \
                      or 'rules_toml' as the text of a sipnab.expect.toml. A \
                      call with neither would report a verdict on nothing."
                         .to_string(),
-                    None,
                 ));
             }
             (Some(rules), None) => rules,
             (None, Some(text)) => {
                 Suite::from_toml_str(text)
                     .map_err(|e| {
-                        rmcp::ErrorData::invalid_params(
+                        errors::refuse_param(
+                            Reason::InvalidValue,
+                            "rules_toml",
                             format!("rules_toml does not parse: {e}"),
-                            None,
                         )
                     })?
                     .rules
@@ -256,7 +258,7 @@ impl SipnabMcp {
             | RuleError::SeverityScopeOnNonLintMetric { .. }
             | RuleError::GroundedOnlyOnNonMosMetric { .. }
             | RuleError::PercentileOutOfRange { .. } => {
-                rmcp::ErrorData::invalid_params(e.to_string(), None)
+                errors::refuse(Reason::InvalidValue, e.to_string())
             }
         })?;
 
@@ -312,9 +314,10 @@ impl SipnabMcp {
         if let Some(f) = params.format.as_deref()
             && !f.eq_ignore_ascii_case("sipp")
         {
-            return Err(rmcp::ErrorData::invalid_params(
+            return Err(errors::refuse_choice(
+                "format",
+                ["sipp"],
                 format!("unknown format '{f}'; 'sipp' is the only one"),
-                None,
             ));
         }
 
@@ -322,27 +325,28 @@ impl SipnabMcp {
         let vary = normalize_aspects(params.vary.as_deref(), DEFAULT_VARY, "vary")?;
         for a in &vary {
             if !VARIABLE_ASPECTS.contains(&a.as_str()) {
-                return Err(rmcp::ErrorData::invalid_params(
+                return Err(errors::refuse_param(
+                    Reason::InvalidValue,
+                    "vary",
                     format!(
                         "'{a}' cannot be varied: SIPp has no generator for it. \
                          Variable aspects are {}. Pin it instead if it is part \
                          of your hypothesis.",
                         VARIABLE_ASPECTS.join(", ")
                     ),
-                    None,
                 ));
             }
         }
         for a in &pin {
             if vary.contains(a) {
-                return Err(rmcp::ErrorData::invalid_params(
+                return Err(errors::refuse(
+                    Reason::ConflictingParams,
                     format!(
                         "'{a}' is in both pin and vary. Held fixed and \
                          regenerated are opposite instructions, and a scenario \
                          that silently picked one would encode a theory nobody \
                          stated."
                     ),
-                    None,
                 ));
             }
         }
@@ -357,9 +361,10 @@ impl SipnabMcp {
         let built = {
             let ds = self.dialog_store.read();
             let dialog = ds.get(&params.call_id).ok_or_else(|| {
-                rmcp::ErrorData::invalid_params(
+                errors::refuse_param(
+                    Reason::NotFound,
+                    "call_id",
                     format!("call_id '{}' not found", params.call_id),
-                    None,
                 )
             })?;
             let built = build_sipp_scenario(dialog, &pin, &vary)?;
@@ -442,9 +447,10 @@ impl SipnabMcp {
             let state = self.capture.read();
             let ds = self.dialog_store.read();
             ds.get(&params.call_id).ok_or_else(|| {
-                rmcp::ErrorData::invalid_params(
+                errors::refuse_param(
+                    Reason::NotFound,
+                    "call_id",
                     format!("call_id '{}' not found", params.call_id),
-                    None,
                 )
             })?;
             let ss = self.stream_store.read();
@@ -538,13 +544,13 @@ impl SipnabMcp {
         Parameters(params): Parameters<GenerateFail2banRuleParams>,
     ) -> Result<CallToolResult, rmcp::ErrorData> {
         let Some(engine) = self.alert_engine.as_ref() else {
-            return Err(rmcp::ErrorData::invalid_params(
+            return Err(errors::refuse(
+                Reason::NotEnabled,
                 "this server holds no findings: no detection rule was armed, so \
                  nothing could have been recorded. Arm one with --kill-scanner, \
                  --fraud-detect, --digest-leak or --reg-flood and re-run the \
                  capture."
                     .to_string(),
-                None,
             ));
         };
 
@@ -568,7 +574,9 @@ impl SipnabMcp {
         };
 
         let Some((rule_name, src_ip, detail, timestamp)) = found else {
-            return Err(rmcp::ErrorData::invalid_params(
+            return Err(errors::refuse_param(
+                Reason::NotFound,
+                "finding_id",
                 format!(
                     "no finding with id '{}'. An id is \
                      <rule_name>@<src_ip>@<timestamp>, built from the three \
@@ -580,7 +588,6 @@ impl SipnabMcp {
                         available.join(", ")
                     }
                 ),
-                None,
             ));
         };
 
@@ -700,12 +707,13 @@ fn normalize_aspects(
     };
     for a in &out {
         if !REPRO_ASPECTS.contains(&a.as_str()) {
-            return Err(rmcp::ErrorData::invalid_params(
+            return Err(errors::refuse_choice(
+                field,
+                REPRO_ASPECTS.iter(),
                 format!(
                     "unknown {field} aspect '{a}'; one of: {}",
                     REPRO_ASPECTS.join(", ")
                 ),
-                None,
             ));
         }
     }
@@ -916,14 +924,15 @@ fn replayed_request(
         .iter()
         .find(|m| m.is_request)
         .ok_or_else(|| {
-            rmcp::ErrorData::invalid_params(
+            errors::refuse_param(
+                Reason::NoData,
+                "call_id",
                 format!(
                     "call '{}' holds no request in this capture, so there is \
                  nothing to replay. A capture that begins mid-dialog has only \
                  responses.",
                     dialog.call_id
                 ),
-                None,
             )
         })
 }
@@ -1078,14 +1087,14 @@ fn scenario_body(
         return Ok(generic());
     }
     let text = std::str::from_utf8(&request.body).map_err(|e| {
-        rmcp::ErrorData::invalid_params(
+        errors::refuse(
+            Reason::Unsupported,
             format!(
                 "the captured body of call '{}' is not valid UTF-8 ({e}) \
                  and cannot be embedded in a scenario as text. Drop \
                  'sdp' from pin to send a generic offer instead.",
                 dialog.call_id
             ),
-            None,
         )
     })?;
     notes.caveats.push(
@@ -1336,14 +1345,15 @@ fn xml_attr_safe(s: &str) -> String {
 /// wrong packets is worse than no filter.
 fn escape_display_filter_string(s: &str) -> Result<String, rmcp::ErrorData> {
     if let Some(c) = s.chars().find(|c| c.is_control()) {
-        return Err(rmcp::ErrorData::invalid_params(
+        return Err(errors::refuse_param(
+            Reason::InvalidValue,
+            "call_id",
             format!(
                 "this Call-ID carries the control character U+{:04X}, which a \
                  Wireshark display-filter string literal cannot represent. A \
                  filter written around it would not mean what the Call-ID says.",
                 c as u32
             ),
-            None,
         ));
     }
     Ok(s.replace('\\', "\\\\").replace('"', "\\\""))

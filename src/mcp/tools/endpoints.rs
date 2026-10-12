@@ -10,6 +10,7 @@
 //! dialog, filtering client-side, and re-deriving per-entity facts the stores
 //! already hold.
 
+use crate::mcp::errors::{self, Reason};
 use std::collections::BTreeMap;
 
 use crate::mcp::server::SipnabMcp;
@@ -362,7 +363,7 @@ impl SipnabMcp {
         let limit = resolve_limit_with_cap(params.limit, self.row_cap);
         let selector =
             crate::sip::endpoint::Selector::parse(params.ip.as_deref(), params.user.as_deref())
-                .map_err(|e| rmcp::ErrorData::invalid_params(e, None))?;
+                .map_err(|e| errors::refuse(Reason::InvalidValue, e))?;
 
         // The scan is shared with the REST `/v1/endpoints` route in
         // `crate::sip::endpoint`. This surface fences the sender-authored
@@ -499,7 +500,7 @@ impl SipnabMcp {
         Parameters(params): Parameters<TopTalkersParams>,
     ) -> Result<CallToolResult, rmcp::ErrorData> {
         let dimension = TalkerDimension::parse(&params.by, params.prefix_digits)
-            .map_err(|e| rmcp::ErrorData::invalid_params(e, None))?;
+            .map_err(|e| errors::refuse_param(Reason::InvalidValue, "by", e))?;
         let limit = resolve_limit_with_cap(params.limit, self.row_cap);
         let filter = self.compile_filter(params.filter.as_deref())?;
 

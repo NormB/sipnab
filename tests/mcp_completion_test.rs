@@ -56,6 +56,11 @@ struct Wire {
 impl Wire {
     /// Spawn the server on [`PCAP`], handshake, and wait for the replay to drain.
     fn start() -> Result<Self, TestError> {
+        Self::start_with(&[])
+    }
+
+    /// [`Self::start`] with `extra` arguments after the fixed set.
+    fn start_with(extra: &[&str]) -> Result<Self, TestError> {
         let mut child = Command::new(env!("CARGO_BIN_EXE_sipnab"))
             .current_dir(env!("CARGO_MANIFEST_DIR"))
             .args([
@@ -68,6 +73,7 @@ impl Wire {
                 FILE_ROOT,
                 "--mcp-allow-open-capture",
             ])
+            .args(extra)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
@@ -626,5 +632,223 @@ fn the_capture_file_template_is_withheld_without_a_file_root() -> Result<(), Tes
              refuse every URI built from it"
         );
     }
+    Ok(())
+}
+
+/// The tool names `tools/list` advertises, sorted.
+fn listed_tool_names(wire: &mut Wire) -> Result<Vec<String>, TestError> {
+    let reply = wire.request("tools/list", json!({}))?;
+    let mut names: Vec<String> = reply["result"]["tools"]
+        .as_array()
+        .ok_or_else(|| format!("no tools in {reply}"))?
+        .iter()
+        .filter_map(|t| t["name"].as_str().map(str::to_string))
+        .collect();
+    names.sort();
+    Ok(names)
+}
+
+/// Read `sipnab://schema/<tool>` and parse its JSON body.
+fn read_schema(wire: &mut Wire, tool: &str) -> Result<Value, TestError> {
+    let uri = format!("sipnab://schema/{tool}");
+    let read = wire.request("resources/read", json!({"uri": uri}))?;
+    let text = read["result"]["contents"][0]["text"]
+        .as_str()
+        .ok_or_else(|| format!("reading {uri} returned no text: {read}"))?;
+    Ok(serde_json::from_str(text)?)
+}
+
+/// Every loaded tool resolves under `sipnab://schema/{tool}`, and the template
+/// completes to exactly the loaded set.
+///
+/// Output schemas are OFF on this server (the default), which is the case the
+/// resource exists for: `tools/list` stays small and a client fetches one
+/// tool's response shape when it needs it. A tool that declares a schema
+/// returns it with an example that validates against it; a tool that declares
+/// none says so rather than returning an empty object a client could read as
+/// "accepts anything".
+#[test]
+fn every_loaded_tool_resolves_under_the_schema_template() -> Result<(), TestError> {
+    let mut wire = Wire::start()?;
+    let listed = listed_tool_names(&mut wire)?;
+    assert!(listed.len() > 40, "only {} tools listed", listed.len());
+
+    let mut offered = values(&wire.complete("sipnab://schema/{tool}", "tool", "")?)?;
+    offered.sort();
+    assert_eq!(
+        offered, listed,
+        "the schema template must complete to the tools this server loaded"
+    );
+
+    let mut with_schema = 0;
+    for tool in &listed {
+        let body = read_schema(&mut wire, tool)?;
+        assert_eq!(body["tool"], json!(tool), "{body}");
+        match body["has_output_schema"].as_bool() {
+            Some(true) => {
+                with_schema += 1;
+                let schema = &body["output_schema"];
+                assert_eq!(schema["type"], json!("object"), "{tool}: {body}");
+                let validator = jsonschema::validator_for(schema)
+                    .map_err(|e| format!("{tool}'s schema does not compile: {e}"))?;
+                if let Err(e) = validator.validate(&body["example"]) {
+                    return Err(format!(
+                        "{tool}'s example does not match its own schema: {e}\n{:#}",
+                        body["example"]
+                    )
+                    .into());
+                }
+            }
+            Some(false) => {
+                assert!(body["output_schema"].is_null(), "{tool}: {body}");
+                assert!(body["example"].is_null(), "{tool}: {body}");
+                assert!(
+                    body["note"]
+                        .as_str()
+                        .is_some_and(|n| n.contains("no output schema")),
+                    "{tool} has no schema and must say so: {body}"
+                );
+            }
+            None => return Err(format!("{tool}: no has_output_schema in {body}").into()),
+        }
+    }
+    let capture_status = read_schema(&mut wire, "capture_status")?;
+    assert_eq!(
+        capture_status["has_output_schema"],
+        json!(true),
+        "capture_status declares a schema, and the resource must serve it even \
+         though tools/list omits output schemas by default"
+    );
+    assert!(
+        with_schema >= 27,
+        "only {with_schema} tools served a schema"
+    );
+    Ok(())
+}
+
+/// A tool this server did not load is refused with the loaded set named.
+#[test]
+fn the_schema_template_refuses_a_tool_that_is_not_loaded() -> Result<(), TestError> {
+    let mut wire = Wire::start_with(&["--mcp-tools", "core"])?;
+    let listed = listed_tool_names(&mut wire)?;
+    let mut offered = values(&wire.complete("sipnab://schema/{tool}", "tool", "")?)?;
+    offered.sort();
+    assert_eq!(offered, listed, "completion lists the LOADED tools only");
+
+    let read = wire.request(
+        "resources/read",
+        json!({"uri": "sipnab://schema/render_ladder"}),
+    )?;
+    let error = &read["error"];
+    assert_eq!(error["code"], json!(-32602), "{read}");
+    assert_eq!(error["data"]["reason"], json!("invalid_choice"), "{read}");
+    assert_eq!(error["data"]["param"], json!("tool"), "{read}");
+    let mut valid: Vec<String> = serde_json::from_value(error["data"]["valid_values"].clone())?;
+    valid.sort();
+    assert_eq!(valid, listed, "{read}");
+    Ok(())
+}
+
+/// A value outside an allowed set comes back with `data` a client can act on:
+/// the reason code, the argument, and the allowed values. The message is the
+/// one clients already match on.
+#[test]
+fn a_bad_enum_value_returns_reason_param_and_valid_values() -> Result<(), TestError> {
+    let mut wire = Wire::start()?;
+    let reply = wire.request(
+        "tools/call",
+        json!({"name": "aggregate_dialogs", "arguments": {"group_by": "bogus"}}),
+    )?;
+    let error = &reply["error"];
+    assert_eq!(error["code"], json!(-32602), "{reply}");
+    assert!(
+        error["message"]
+            .as_str()
+            .is_some_and(|m| m.starts_with("cannot group by 'bogus'; one of: state")),
+        "the message is unchanged: {reply}"
+    );
+    assert_eq!(error["data"]["reason"], json!("invalid_choice"), "{reply}");
+    assert_eq!(error["data"]["param"], json!("group_by"), "{reply}");
+    let valid = error["data"]["valid_values"]
+        .as_array()
+        .ok_or_else(|| format!("no valid_values: {reply}"))?;
+    assert!(valid.contains(&json!("state")), "{reply}");
+
+    // A refusal the SDK builds gets the same shape.
+    let unknown = wire.request(
+        "tools/call",
+        json!({"name": "no_such_tool", "arguments": {}}),
+    )?;
+    assert_eq!(
+        unknown["error"]["data"]["reason"],
+        json!("unknown_tool"),
+        "{unknown}"
+    );
+    assert!(
+        unknown["error"]["data"]["valid_values"]
+            .as_array()
+            .is_some_and(|v| v.contains(&json!("aggregate_dialogs"))),
+        "{unknown}"
+    );
+    Ok(())
+}
+
+/// `server_capabilities` names the limits, the loaded tools and bundles, the
+/// relay and action opt-ins, and the prompt and resource-template names, each
+/// as data and each equal to what the matching list method returns.
+#[test]
+fn server_capabilities_describes_what_this_server_loaded() -> Result<(), TestError> {
+    let mut wire = Wire::start_with(&["--mcp-tools", "core,server", "--mcp-max-rows", "250"])?;
+    let reply = wire.request(
+        "tools/call",
+        json!({"name": "server_capabilities", "arguments": {}}),
+    )?;
+    let caps = text_payload(&reply)?;
+
+    assert_eq!(caps["limits"]["max_rows"], json!(250), "{caps}");
+    assert!(
+        caps["limits"]["max_body_bytes"]
+            .as_u64()
+            .is_some_and(|n| n > 0),
+        "{caps}"
+    );
+    // A build without `vcon` builds no vCon and reports no budget.
+    assert_eq!(
+        caps["limits"]["max_inline_media_bytes"]
+            .as_u64()
+            .is_some_and(|n| n > 0),
+        cfg!(feature = "vcon"),
+        "{caps}"
+    );
+
+    let mut tools: Vec<String> = serde_json::from_value(caps["tools"].clone())?;
+    tools.sort();
+    assert_eq!(tools, listed_tool_names(&mut wire)?, "{caps}");
+    assert_eq!(caps["bundles"], json!(["core", "server"]), "{caps}");
+
+    assert_eq!(
+        caps["runtime"]["mcp_allow_relay_query"],
+        json!(false),
+        "{caps}"
+    );
+    assert_eq!(caps["runtime"]["mcp_allow_actions"], json!([]), "{caps}");
+
+    let prompts = wire.request("prompts/list", json!({}))?;
+    let prompt_names: Vec<Value> = prompts["result"]["prompts"]
+        .as_array()
+        .ok_or("prompts")?
+        .iter()
+        .map(|p| p["name"].clone())
+        .collect();
+    assert_eq!(caps["prompts"], json!(prompt_names), "{caps}");
+
+    let templates = wire.request("resources/templates/list", json!({}))?;
+    let template_uris: Vec<Value> = templates["result"]["resourceTemplates"]
+        .as_array()
+        .ok_or("templates")?
+        .iter()
+        .map(|t| t["uriTemplate"].clone())
+        .collect();
+    assert_eq!(caps["resource_templates"], json!(template_uris), "{caps}");
     Ok(())
 }

@@ -249,7 +249,12 @@ const NOT_A_CAPABILITY: &[(&str, &str)] = &[
 ];
 
 /// The tools that exist only in a build carrying the vCon exporter.
-const VCON_TOOLS: &[&str] = &["analyze_vcon", "export_vcon", "validate_vcon"];
+const VCON_TOOLS: &[&str] = &[
+    "analyze_vcon",
+    "export_vcon",
+    "validate_vcon",
+    "vcon_spool_status",
+];
 
 /// A tool is advertised exactly when this build can run it.
 ///

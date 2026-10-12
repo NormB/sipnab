@@ -314,7 +314,7 @@ All 32 addressable fields, organized by type. They answer to 33 names: `response
 | `dst.port` | Destination port (first message) | port number |
 | `duration` | Dialog duration | seconds (float) |
 | `msg_count` | Number of SIP messages in dialog | count |
-| `response_code` | Final INVITE response code. Also spelled `final_status_code`, which is the name the JSON, the schema and the MCP answers return. Unknown while the call is in progress, so a ringing dialog matches no comparison at all | 100-699 |
+| `response_code` | Final response code of the dialog's INVITE, or of the request that opened a dialog without one (`REGISTER`, `PUBLISH`, `SUBSCRIBE` …). Also spelled `final_status_code`, which is the name the JSON, the schema and the MCP answers return. Unknown while the call is in progress, so a ringing dialog matches no comparison at all | 100-699 |
 | `pdd` | Post-dial delay (time to first ringing/response) | seconds (float) |
 | `setup_time` | Call setup time (INVITE to 200 OK) | seconds (float) |
 | `retransmits` | Total retransmit count in dialog | count |
@@ -525,8 +525,12 @@ Parentheses `( )` group sub-expressions to override default precedence.
 
 These preset expressions are available as dedicated CLI flags where they exist
 (`--problems`, etc.), as shorthand to `--filter` (e.g. `--filter codec-asym`),
-and as `kinds` entries for the MCP [`find_problems`](@/docs/mcp-tools.md#find-problems)
-tool. They expand to DSL expressions internally.
+as the value of any MCP tool's `filter` argument, as the value of the REST API's
+[`filter` query parameter](@/docs/api.md#get-v1-dialogs) (e.g.
+`/v1/dialogs?filter=codec-asym`), and as `kinds` entries for the MCP
+[`find_problems`](@/docs/mcp-tools.md#find-problems) tool. They expand to DSL
+expressions internally, through one function, with the thresholds the run's
+flags and config set.
 
 | Alias | Dedicated CLI Flag | Expansion |
 |-------|--------------------|-----------|

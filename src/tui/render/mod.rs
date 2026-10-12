@@ -2819,6 +2819,95 @@ mod tests {
         Ok(())
     }
 
+    /// A request of `method` on `call_id` and its final `code` response, parsed.
+    fn request_and_final(
+        method: &str,
+        call_id: &str,
+        code: u16,
+    ) -> Result<Vec<crate::sip::SipMessage>, TestError> {
+        use crate::net::TransportProto;
+        use crate::sip::parser::parse_sip;
+        use crate::test_utils::build_sip_message as build_sip;
+        use std::net::{IpAddr, Ipv4Addr};
+
+        let ts = base_ts()?;
+        let src = IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1));
+        let dst = IpAddr::V4(Ipv4Addr::new(10, 0, 0, 9));
+        let cseq = format!("CSeq: 1 {method}");
+        let cid = format!("Call-ID: {call_id}");
+        let request = build_sip(
+            &format!("{method} sip:bob@example.com SIP/2.0"),
+            &[
+                "From: <sip:alice@example.com>;tag=t1",
+                "To: <sip:bob@example.com>",
+                &cid,
+                &cseq,
+                "Content-Length: 0",
+            ],
+            b"",
+        );
+        let response = build_sip(
+            &format!("SIP/2.0 {code} Final"),
+            &[
+                "From: <sip:alice@example.com>;tag=t1",
+                "To: <sip:bob@example.com>;tag=s1",
+                &cid,
+                &cseq,
+                "Content-Length: 0",
+            ],
+            b"",
+        );
+        Ok(vec![
+            parse_sip(&request, ts, src, dst, 5060, 5060, TransportProto::Udp)
+                .map_err(|e| format!("parse: {e:?}"))?,
+            parse_sip(
+                &response,
+                ts + chrono::TimeDelta::milliseconds(20),
+                dst,
+                src,
+                5060,
+                5060,
+                TransportProto::Udp,
+            )
+            .map_err(|e| format!("parse: {e:?}"))?,
+        ])
+    }
+
+    /// The compare view's final-status cell shows a non-INVITE request's final
+    /// response. A PUBLISH refused with 489 showed `—` there while its own
+    /// hints line named the 489, because the final status was read from
+    /// INVITE responses only. Each non-INVITE method is drawn through the
+    /// real render path, failed on side A and accepted on side B.
+    #[test]
+    fn compare_view_shows_the_final_status_of_non_invite_requests() -> Result<(), TestError> {
+        for (method, code) in [
+            ("PUBLISH", 489_u16),
+            ("SUBSCRIBE", 489),
+            ("MESSAGE", 403),
+            ("OPTIONS", 404),
+            ("REGISTER", 403),
+        ] {
+            let mut messages = request_and_final(method, "cmp-fail@h", code)?;
+            messages.extend(request_and_final(method, "cmp-ok@h", 200)?);
+            let mut app = App::with_processed_messages(messages);
+            app.current_view = View::CompareDialogs {
+                a: "cmp-fail@h".to_string(),
+                b: "cmp-ok@h".to_string(),
+            };
+            let text = render_to_string(&mut app, 120, 30)?;
+            let row = text
+                .lines()
+                .find(|l| l.contains("Final status"))
+                .ok_or_else(|| format!("{method}: a final-status row in\n{text}"))?;
+            assert!(
+                row.contains(&format!("A: {code} ")) && row.contains("B: 200"),
+                "{method}: the final-status cells show {code} and 200: {row}"
+            );
+            assert!(!row.contains('—'), "{method}: no empty cell: {row}");
+        }
+        Ok(())
+    }
+
     /// The SDP timeline renders each offer and answer with its codecs and media
     /// anchor, and flags a mid-call event. A three-exchange fixture — an offer,
     /// its answer, then a re-offer that puts the call on hold — exercises the

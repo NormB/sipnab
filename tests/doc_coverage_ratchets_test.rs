@@ -553,7 +553,14 @@ fn permissive_rest_schema_components_do_not_increase() -> Result<(), TestError> 
 /// A client cannot validate what it gets back, so an undocumented response key
 /// is indistinguishable from a typo. 17 live response keys are documented
 /// nowhere for the same reason.
-const TOOLS_WITHOUT_OUTPUT_SCHEMA: usize = 45;
+///
+/// 45 -> 36 when `find_problems`, `list_dialogs`, `search_messages`,
+/// `triage_call`, `get_call_tree`, `group_dialogs`, `tail_dialogs`, `timeline`
+/// and `validate_filter` declared schemas (36 of 72 tools declare one). The
+/// same change made the count read `output_schema = ` attribute lines rather
+/// than every mention of the word: at that change the word appeared 63 times
+/// under `src/mcp` and 36 of those were declarations.
+const TOOLS_WITHOUT_OUTPUT_SCHEMA: usize = 36;
 
 #[test]
 fn mcp_tools_without_an_output_schema_do_not_increase() -> Result<(), TestError> {
@@ -578,7 +585,10 @@ fn mcp_tools_without_an_output_schema_do_not_increase() -> Result<(), TestError>
         "found only {} MCP tool(s); the walk or the pattern is wrong",
         tools.len()
     );
-    let declared = src.matches("output_schema").count();
+    let declared = regex::Regex::new(r"(?m)^\s+output_schema = ")
+        .map_err(|e| format!("pattern: {e}"))?
+        .find_iter(&src)
+        .count();
     let without = tools.len().saturating_sub(declared);
     assert!(
         without <= TOOLS_WITHOUT_OUTPUT_SCHEMA,

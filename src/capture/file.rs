@@ -13,6 +13,7 @@ use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
 
 use super::CaptureConfig;
+use super::frames::Frames;
 use super::live::ReadStep;
 use super::packet::Packet;
 use crate::signals;
@@ -1016,6 +1017,17 @@ struct FileRead {
     /// carrying it out of the read is what makes that check free: the resolver
     /// would have to read every file a second time to learn it.
     span: Option<(DateTime<Utc>, DateTime<Utc>)>,
+    /// Which reader the file was read through.
+    arm: ReadArm,
+}
+
+/// Which reader a file was read through.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ReadArm {
+    /// The file was mapped and read in place: an unfiltered classic pcap.
+    Mapped,
+    /// libpcap read it: pcapng, a compressed file, a pipe, or a BPF filter.
+    Libpcap,
 }
 
 /// Accumulates a regular file's packets into channel batches.
@@ -1100,13 +1112,20 @@ fn read_opened_inner(
 
     announce_read(path, replay);
 
+    // Map the file when it maps, and read it through libpcap when it does
+    // not, as the `--cores` reader does. libpcap's `fread` takes a lock per
+    // packet, 9% of the cycles of a single-core run (perf, 2026-10-11), and
+    // its frame is copied into a fresh allocation per packet. A BPF filter is
+    // libpcap's to apply, so a filtered read never maps.
+    let mut frames = Frames::open(cap, path, config.bpf_filter.is_none());
+
     let reader = FileReader {
         tx,
         config,
         start,
         count,
         prev_ts,
-        link_type: cap.get_datalink().0,
+        link_type: frames.link_type(),
         // The source stamped on every packet this file yields. Interned ONCE per
         // file: the value is the same string for all of them, so each packet
         // clones an `Arc` (a refcount increment) instead of allocating the path
@@ -1130,7 +1149,7 @@ fn read_opened_inner(
         batcher: batches_sends(path, replay).then(|| SendBatcher::new(tx)),
     };
 
-    reader.run(cap, path)
+    reader.run(&mut frames, path)
 }
 
 /// Whether the read of `path` batches its sends: only the plain read of a
@@ -1183,19 +1202,23 @@ struct FileReader<'a> {
 impl FileReader<'_> {
     /// Read packets until the file ends, a limit or shutdown stops the read,
     /// the receiver is gone, or libpcap reports an error.
-    fn run(mut self, cap: &mut pcap::Capture<pcap::Offline>, path: &Path) -> Result<FileRead> {
+    fn run(mut self, frames: &mut Frames<'_>, path: &Path) -> Result<FileRead> {
+        let arm = match frames {
+            Frames::Mapped(_) => ReadArm::Mapped,
+            Frames::Libpcap { .. } => ReadArm::Libpcap,
+        };
         loop {
             if self.limit_reached() {
-                return Ok(self.stopped());
+                return Ok(self.stopped(arm));
             }
 
-            match cap.next_packet() {
-                Ok(pkt) => {
-                    if self.take(&pkt) == ReadStep::Stop {
-                        return Ok(self.stopped());
+            match frames.next() {
+                Ok(Some(frame)) => {
+                    if self.take(frame) == ReadStep::Stop {
+                        return Ok(self.stopped(arm));
                     }
                 }
-                Err(pcap::Error::NoMorePackets) => {
+                Ok(None) => {
                     tracing::debug!("End of file reached");
                     break;
                 }
@@ -1207,7 +1230,7 @@ impl FileReader<'_> {
                         "Error reading pcap file '{}': {e}",
                         crate::capture::archive::source_name(path)
                     );
-                    return Err(e).context("Error reading pcap file");
+                    return Err(e.context("Error reading pcap file"));
                 }
             }
         }
@@ -1223,6 +1246,7 @@ impl FileReader<'_> {
         Ok(FileRead {
             reached_eof: true,
             span: self.span,
+            arm,
         })
     }
 
@@ -1253,11 +1277,12 @@ impl FileReader<'_> {
     /// Buffered packets go out first — they were read, so they are owed to the
     /// consumer — and a flush the dead channel refuses is subtracted from the
     /// delivered count it was optimistically added to.
-    fn stopped(&mut self) -> FileRead {
+    fn stopped(&mut self, arm: ReadArm) -> FileRead {
         self.flush();
         FileRead {
             reached_eof: false,
             span: self.span,
+            arm,
         }
     }
 
@@ -1273,8 +1298,8 @@ impl FileReader<'_> {
 
     /// Stamp one packet read from the file, pace it in replay, and send it.
     #[inline]
-    fn take(&mut self, pkt: &pcap::Packet<'_>) -> ReadStep {
-        let ts = pcap_ts_to_chrono(pkt.header.ts);
+    fn take(&mut self, frame: crate::capture::mapped::MappedFrame) -> ReadStep {
+        let ts = frame.timestamp;
         self.span = Some(match self.span {
             Some((first, _)) => (first, ts),
             None => (ts, ts),
@@ -1285,11 +1310,11 @@ impl FileReader<'_> {
             return ReadStep::Stop;
         }
 
-        let mut packet = Packet::with_source(
+        let mut packet = Packet::from_bytes(
             ts,
-            pkt.data.to_vec(),
-            pkt.header.caplen as usize,
-            pkt.header.len as usize,
+            frame.data,
+            frame.caplen,
+            frame.origlen,
             // The file IS this packet's source. Without it a
             // multi-file set is indistinguishable downstream and the
             // pcapng export attributes every frame to the first
@@ -1672,6 +1697,140 @@ mod tests {
         assert_eq!(tally.not_reached(), 0, "{tally:?}");
         assert!(tally.lossy(), "a file that never opened is a loss");
         assert!(count > 0, "the readable files still contributed packets");
+        Ok(())
+    }
+
+    /// Read `path` once through [`read_opened_inner`] with `config` (its BPF
+    /// filter applied first, as the callers apply it), returning the read and
+    /// every packet it sent.
+    fn read_through(
+        path: &Path,
+        config: &CaptureConfig,
+    ) -> Result<(FileRead, Vec<Packet>), TestError> {
+        let (mut cap, _guard) = open_offline(path).map_err(|e| format!("open: {e:?}"))?;
+        if let Some(ref bpf) = config.bpf_filter {
+            cap.filter(bpf, true)?;
+        }
+        let (tx, rx) = packet_channel(TEST_CAP);
+        let mut count = 0u64;
+        let mut prev_ts = None;
+        let read = read_opened_inner(
+            &mut cap,
+            path,
+            config,
+            &tx,
+            ReadTimeline {
+                start: std::time::Instant::now(),
+                count: &mut count,
+                prev_ts: &mut prev_ts,
+            },
+        )
+        .map_err(|e| format!("read: {e:?}"))?;
+        drop(tx);
+        Ok((read, rx.try_iter().collect()))
+    }
+
+    /// The single-threaded read of an unfiltered classic pcap maps the file,
+    /// as the `--cores` reader does: libpcap's `fread` takes a lock per packet,
+    /// and that lock alone was 9% of the cycles of a single-core run (perf,
+    /// 2026-10-11).
+    #[test]
+    fn an_unfiltered_classic_pcap_is_read_through_the_mapping() -> Result<(), TestError> {
+        let (read, packets) = read_through(&sample_pcap(), &CaptureConfig::default())?;
+        assert_eq!(read.arm, ReadArm::Mapped);
+        assert!(!packets.is_empty());
+        Ok(())
+    }
+
+    /// A BPF filter is libpcap's to apply, so a filtered read never maps:
+    /// bypassing the filter would widen the capture.
+    #[test]
+    fn a_filtered_read_goes_through_libpcap() -> Result<(), TestError> {
+        let config = CaptureConfig {
+            bpf_filter: Some("udp".into()),
+            ..CaptureConfig::default()
+        };
+        let (read, _) = read_through(&sample_pcap(), &config)?;
+        assert_eq!(read.arm, ReadArm::Libpcap);
+        Ok(())
+    }
+
+    /// pcapng does not map; it is read through libpcap and still yields its
+    /// packets.
+    #[test]
+    fn a_pcapng_is_read_through_libpcap() -> Result<(), TestError> {
+        let (read, packets) = read_through(
+            &sample("sipp-branch-scenario.pcapng"),
+            &CaptureConfig::default(),
+        )?;
+        assert_eq!(read.arm, ReadArm::Libpcap);
+        assert!(!packets.is_empty());
+        Ok(())
+    }
+
+    /// A nanosecond-resolution pcap keeps every digit of its fraction on the
+    /// single-threaded read, as on `--cores`: both map it. libpcap, opened at
+    /// its default microsecond precision, dropped the last three digits.
+    #[test]
+    fn a_nanosecond_pcap_keeps_its_nanoseconds() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("nano.pcap");
+        let frame = [0u8; 60];
+        let mut b = Vec::new();
+        b.extend_from_slice(&0xa1b2_3c4d_u32.to_le_bytes());
+        b.extend_from_slice(&2u16.to_le_bytes());
+        b.extend_from_slice(&4u16.to_le_bytes());
+        b.extend_from_slice(&[0u8; 8]);
+        b.extend_from_slice(&65535u32.to_le_bytes());
+        b.extend_from_slice(&1u32.to_le_bytes());
+        b.extend_from_slice(&1_700_000_000u32.to_le_bytes());
+        b.extend_from_slice(&123_456_789u32.to_le_bytes());
+        b.extend_from_slice(&(frame.len() as u32).to_le_bytes());
+        b.extend_from_slice(&(frame.len() as u32).to_le_bytes());
+        b.extend_from_slice(&frame);
+        std::fs::write(&path, b)?;
+        let (read, packets) = read_through(&path, &CaptureConfig::default())?;
+        assert_eq!(read.arm, ReadArm::Mapped);
+        let ts = packets.first().ok_or("one packet")?.timestamp;
+        assert_eq!(ts.timestamp(), 1_700_000_000);
+        assert_eq!(ts.timestamp_subsec_nanos(), 123_456_789);
+        Ok(())
+    }
+
+    /// The mapped read yields, packet for packet, what libpcap reads from the
+    /// same file: bytes, timestamp, captured and original length, link type,
+    /// source, and the ordinal within the file.
+    #[test]
+    fn the_mapped_read_yields_what_libpcap_reads() -> Result<(), TestError> {
+        let path = sample_pcap();
+        let (read, packets) = read_through(&path, &CaptureConfig::default())?;
+        assert_eq!(read.arm, ReadArm::Mapped);
+        let (mut cap, _guard) = open_offline(&path).map_err(|e| format!("open: {e:?}"))?;
+        let link_type = cap.get_datalink().0;
+        let mut expected = Vec::new();
+        loop {
+            match cap.next_packet() {
+                Ok(pkt) => expected.push((
+                    pcap_ts_to_chrono(pkt.header.ts),
+                    pkt.data.to_vec(),
+                    pkt.header.caplen as usize,
+                    pkt.header.len as usize,
+                )),
+                Err(pcap::Error::NoMorePackets) => break,
+                Err(e) => return Err(e.into()),
+            }
+        }
+        assert_eq!(packets.len(), expected.len());
+        let source = crate::capture::archive::source_arc(&path);
+        for (i, (got, (ts, data, caplen, origlen))) in packets.iter().zip(&expected).enumerate() {
+            assert_eq!(got.timestamp, *ts, "packet {i}");
+            assert_eq!(got.data.as_ref(), data.as_slice(), "packet {i}");
+            assert_eq!(got.caplen, *caplen, "packet {i}");
+            assert_eq!(got.origlen, *origlen, "packet {i}");
+            assert_eq!(got.link_type, link_type, "packet {i}");
+            assert_eq!(got.interface.as_deref(), Some(&*source), "packet {i}");
+            assert_eq!(got.origin.map(|o| o.ordinal), Some(i as u64), "packet {i}");
+        }
         Ok(())
     }
 

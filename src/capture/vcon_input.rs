@@ -909,6 +909,34 @@ mod tests {
 
     type TestError = Box<dyn std::error::Error>;
 
+    /// A file over `MAX_CONTAINER_BYTES` is refused by its size, before any
+    /// of it is read, and the reason names the size and the limit. The file
+    /// is sparse, so the test writes almost nothing to disk.
+    #[cfg(feature = "vcon")]
+    #[test]
+    fn a_container_over_the_size_limit_is_refused_unread() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("huge.vcon.json");
+        let file = std::fs::File::create(&path)?;
+        file.set_len(MAX_CONTAINER_BYTES + 1)?;
+        drop(file);
+        let err = match read_file(&path) {
+            Ok(_) => return Err("a file over the limit must be refused".into()),
+            Err(e) => e,
+        };
+        assert!(
+            matches!(err, ContainerError::Unreadable(_)),
+            "refused by size, not by parsing: {err:?}"
+        );
+        let text = err.to_string();
+        assert!(
+            text.contains(&(MAX_CONTAINER_BYTES + 1).to_string())
+                && text.contains(&MAX_CONTAINER_BYTES.to_string()),
+            "the reason names the size and the limit: {text}"
+        );
+        Ok(())
+    }
+
     #[test]
     fn the_detection_rule_reads_json_objects_and_nothing_else() {
         assert!(sniffs_as_container(b"{\"vcon\":\"0.4.0\"}"));

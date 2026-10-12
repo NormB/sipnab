@@ -97,7 +97,7 @@ For the tools themselves — and for the error codes and response bounds — see
 - **No prompt-injection cooperation.** Tool descriptions never
   instruct the LLM to "trust" or "act on" returned content. They
   describe what the tool returns and stop there.
-- **Every tool declares what it does.** All 73 carry MCP annotations, so a host
+- **Every tool declares what it does.** All 74 carry MCP annotations, so a host
   can decide what to call without asking. Sixty are `readOnlyHint: true`.
   [What the write verbs do](#what-the-write-verbs-do) names the thirteen that
   are not.
@@ -230,7 +230,7 @@ next reader to rediscover.
 
 sipnab exposes the files under `--mcp-file-root` as MCP **resources**.
 `resources/list` enumerates them and `resources/read` fetches one at
-`sipnab:///<filename>`. Four further URI spaces answer from the binary and
+`sipnab:///<filename>`. Five further URI spaces answer from the binary and
 from the loaded capture rather than from disk — see
 [Live views](#live-views-of-the-loaded-capture) below.
 
@@ -261,9 +261,9 @@ something the file does not contain.
 
 ### Live views of the loaded capture
 
-Four URI spaces exist alongside the capture files — `sipnab://reference/`,
-`sipnab://live/`, `sipnab://lint/` and `sipnab://filter/` — and all four answer
-with no `--mcp-file-root` at all. That flag gates access to OTHER captures on
+Five URI spaces exist alongside the capture files — `sipnab://reference/`,
+`sipnab://live/`, `sipnab://lint/`, `sipnab://filter/` and `sipnab://schema/` —
+and all five answer with no `--mcp-file-root` at all. That flag gates access to OTHER captures on
 disk, not to the one this run is already answering questions about:
 
 | URI | What it returns |
@@ -273,6 +273,7 @@ disk, not to the one this run is already answering questions about:
 | `sipnab://live/dialogs/<Call-ID>` | one dialog, by Call-ID |
 | `sipnab://lint/<rule-id>` | one conformance rule's catalog entry |
 | `sipnab://filter/<alias>` | one diagnostic alias, expanded against this run's thresholds |
+| `sipnab://schema/<tool>` | one loaded tool's output JSON Schema and an example payload |
 
 The two live ones render through the same code path as `list_dialogs`, under
 the same `--mcp-max-rows` ceiling and the same fencing of untrusted text. The
@@ -306,6 +307,40 @@ expression this server would actually evaluate, and a note not to cache it —
 the same `expand_alias` that `find_problems` compiles, so the expression an
 agent reads is the expression the tool runs.
 
+### Tool response schemas
+
+`sipnab://schema/<tool>` returns one tool's response shape. sipnab leaves output
+schemas out of `tools/list` by default because they are most of its size, so
+this is how a client learns the shape of the one tool it is about to call without
+turning them on for all of them.
+
+The body is JSON:
+
+```jsonc
+{
+  "schema_version": 1,
+  "tool": "aggregate_dialogs",
+  "has_output_schema": true,
+  "output_schema": { "type": "object", "properties": { "...": {} } },
+  "example": { "schema_version": 0, "group_by": "string", "...": "..." },
+  "note": "the example is generated from output_schema: ..."
+}
+```
+
+- `output_schema` is the same schema `tools/list` carries with
+  `--mcp-output-schemas`.
+- sipnab generates `example` from `output_schema`, and it validates against
+  that schema. Every
+  value is a placeholder of the declared type (`"string"`, `0`, `false`, the
+  first allowed value of an enumeration), not data from the loaded capture.
+- A tool that declares no output schema answers `has_output_schema: false`,
+  with `output_schema` and `example` both `null` and a `note` that says so.
+
+Only a tool this server loaded resolves. sipnab refuses a name `--mcp-tools`
+left out, or one that does not exist, with -32602, `data.reason` `invalid_choice`,
+and the loaded names in `data.valid_values`. Completing the `tool` variable of
+`sipnab://schema/{tool}` returns the same loaded names.
+
 ### Templates and completions
 
 `resources/templates/list` names the URI shapes a client may construct, each
@@ -318,7 +353,9 @@ state:
 | `sipnab://lint/{rule_id}` | `rule_id` | the conformance rule catalog |
 | `sipnab://filter/{alias}` | `alias` | the diagnostic aliases `find_problems` takes as `kinds` |
 | `sipnab://reference/{topic}` | `topic` | the reference pages `resources/list` names |
+| `sipnab://schema/{tool}` | `tool` | the tools this server loaded |
 | `sipnab:///{filename}` | `filename` | the directory `--mcp-file-root` names |
+| `sipnab://vcon/{call_id}` | `call_id` | the Call-IDs the capture holds right now |
 
 sipnab caches nothing. A completion that offered a Call-ID the capture has since
 evicted would cost an agent a call to discover, and it would conclude the
@@ -326,10 +363,16 @@ capture was wrong rather than the completion.
 
 Three bounds worth knowing:
 
-- **The last template stays hidden until an operator sets a file root.** A
+- **The file template stays hidden until an operator sets a file root.** A
   template promises that the URI resolves, and advertising a shape whose every
   URI would draw a refusal tells an agent the captures are reachable and lets
-  it find out otherwise one call at a time.
+  it find out otherwise one call at a time. For the same reason only a build
+  with the `vcon` feature lists the vCon template.
+- **Reading `sipnab://vcon/{call_id}` returns the container
+  [`export_vcon`](@/docs/mcp-tools.md#export-vcon) builds for that dialog**, by the
+  same function, with retained audio inline. sipnab refuses an unknown Call-ID
+  with `invalid_params`, and a container over the 8 MiB resource limit that
+  applies to capture files too.
 - **An argument sipnab does not complete gets an EMPTY completion, never an
   error.** That is the spec's rule and the useful one. What must never happen is
   the third option: answering an unknown argument name with a vocabulary that
@@ -399,7 +442,7 @@ sipnab negotiates the 2025-06-18 and 2025-11-25 revisions, where
 
 ## What the write verbs do
 
-Sixty of the 73 tools are `readOnlyHint: true`. These thirteen are not, and
+Sixty-one of the 74 tools are `readOnlyHint: true`. These thirteen are not, and
 each declares what kind of change it makes so a host can decide which need
 confirmation:
 

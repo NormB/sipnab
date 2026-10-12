@@ -292,8 +292,9 @@ enum Field {
     /// rather than the numeric one. Both are useful and they are not the same
     /// question, so neither is named for the other.
     ResponseClass,
-    /// `response_code` (or `final_status_code`) — the dialog's final INVITE
-    /// response code, absent while the call is still in progress.
+    /// `response_code` (or `final_status_code`) — the final response code of
+    /// the dialog's INVITE, or of the request that opened a dialog without
+    /// one, absent while it has none.
     ///
     /// Two spellings, one field, on purpose: `response_code` is what an
     /// operator types and what every CDR calls it, and `final_status_code` is
@@ -601,6 +602,40 @@ pub fn expand_alias(alias: &str, t: &AliasThresholds) -> Option<String> {
         _ => return None,
     };
     Some(expr)
+}
+
+/// The expression text a user-supplied filter stands for: the expansion when
+/// `input` names a diagnostic alias, otherwise `input` unchanged.
+///
+/// The one rule every surface applies before parsing — `--filter`,
+/// `--export-vcon-when`, an expectation's `filter:` scope, every MCP tool's
+/// `filter`, and every REST `filter` query parameter. Callers that need the
+/// compiled expression use [`parse_filter`], which is this followed by
+/// [`FilterExpr::parse`]; this half exists for the CLI, which splices the text
+/// into a larger expression before compiling it.
+#[must_use]
+pub fn resolve_filter_text<'a>(input: &'a str, t: &AliasThresholds) -> std::borrow::Cow<'a, str> {
+    match expand_alias(input, t) {
+        Some(expansion) => std::borrow::Cow::Owned(expansion),
+        None => std::borrow::Cow::Borrowed(input),
+    }
+}
+
+/// Compile a user-supplied filter: a diagnostic alias name or a DSL
+/// expression, the way every surface accepts one.
+///
+/// A REST client, an MCP agent and the command line therefore get the same
+/// dialogs for the same text. Before this existed the REST handlers called
+/// [`FilterExpr::parse`] directly, so `?filter=problems` answered `400` while
+/// `--filter problems` and the MCP `filter: "problems"` both worked.
+///
+/// # Errors
+///
+/// The [`FilterExpr::parse`] error for the resolved text: an input that is
+/// neither an alias nor a valid expression is reported as a syntax error at
+/// the position where parsing stopped, which names the input.
+pub fn parse_filter(input: &str, t: &AliasThresholds) -> Result<FilterExpr> {
+    FilterExpr::parse(&resolve_filter_text(input, t))
 }
 
 /// Whether any leaf comparison in the tree references a diagnosis-derived
@@ -2393,6 +2428,7 @@ mod tests {
             ssrc: 0xDEADBEEF,
             src: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)), 20000),
             dst: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2)), 30000),
+            session: 0,
         };
         let hdr = RtpHeader {
             version: 2,

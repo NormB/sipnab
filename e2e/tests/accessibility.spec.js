@@ -5,8 +5,8 @@
 // WHY A BROWSER AND NOT A TEMPLATE TEST
 //
 // tests/site_journey_test.rs already reads website/templates/*.html by regular
-// expression and asserts on individual attributes -- the hero's
-// `fetchpriority`, the demo disclosure's `aria-expanded`. Those are the checks
+// expression and asserts on individual attributes -- the hero image's
+// `src`, the demo disclosure's `aria-expanded`. Those are the checks
 // static analysis can make. What it structurally cannot do is compute a
 // contrast ratio, resolve which element is actually focusable after CSS, or
 // notice that a heading level was skipped once four templates and a Markdown
@@ -86,6 +86,10 @@ const INCOMPLETE_NOT_GATED = ['color-contrast'];
 //                                 sidebar, in-page table of contents)
 //   /download/    download.html -- platform tables, checksums, copy buttons
 //   /standards/   standards.html -- the standards cards behind the numbers
+//   /features/, /deployments/
+//                 overview.html  -- long-form pages in the docs typography,
+//                                 with no sidebar; /deployments/ carries
+//                                 diagrams
 //
 // Adding a template to the site without adding it here leaves it ungated, so
 // the list is asserted against the rendered site by
@@ -96,6 +100,8 @@ const PAGES = [
   { url: '/docs/tui/', template: 'page.html' },
   { url: '/download/', template: 'download.html' },
   { url: '/standards/', template: 'standards.html' },
+  { url: '/features/', template: 'overview.html' },
+  { url: '/deployments/', template: 'overview.html' },
 ];
 
 /** Render one axe finding as something a reader can act on without opening a report. */

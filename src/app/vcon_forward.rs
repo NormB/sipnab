@@ -84,6 +84,10 @@ const REMOVED: &str = "[auth value removed]";
 /// setting would let the request name other software.
 const USER_AGENT: &str = concat!("sipnab/", env!("CARGO_PKG_VERSION"));
 
+/// The flag that bounds an answer's status line and headers, quoted when an
+/// answer passes it.
+const MAX_HEAD_FLAG: &str = "--vcon-forward-max-response-head";
+
 /// The flag that names the auth file, quoted in its errors.
 const AUTH_FLAG: &str = "--vcon-forward-auth-file";
 
@@ -413,31 +417,9 @@ fn is_field_name_byte(b: u8) -> bool {
     b.is_ascii_alphanumeric() || b"!#$%&'*+-.^_`|~".contains(&b)
 }
 
-/// A store's known deviation from the vCon drafts that the forwarder corrects
-/// for in the copy it SENDS. The container on disk never changes.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Compat {
-    /// Send every container byte for byte (`none`). The default.
-    Off,
-    /// vcon.store (`vcon-store`): `extensions` as an object, and no Dialog
-    /// Object without `type` and `parties`. See [`vcon_store_copy`].
-    VconStore,
-}
-
-impl Compat {
-    /// The mode one of [`crate::config::FORWARD_COMPAT`] names.
-    #[must_use]
-    pub fn from_name(name: &str) -> Option<Self> {
-        match name {
-            "none" => Some(Self::Off),
-            "vcon-store" => Some(Self::VconStore),
-            _ => None,
-        }
-    }
-}
-
-/// The kind of store a forwarder delivers to: what it supplies for a setting
-/// that is not given. One store per forwarder process.
+/// The kind of store a forwarder delivers to, or the fetcher
+/// (`--vcon-fetch`) reads from: what it supplies for a setting that is not
+/// given. One store per process.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StoreKind {
     /// Nothing supplied: every setting is explicit. The default.
@@ -446,15 +428,24 @@ pub enum StoreKind {
     VconStore,
     /// A self-hosted vCon server (conserver), through its external ingress.
     Conserver,
+    /// The vcon-mcp server's REST API. Read only: the forwarder does not
+    /// deliver to it ([`crate::config::FORWARD_KINDS`] does not name it).
+    VconMcp,
 }
 
 impl StoreKind {
-    /// The kind one of [`crate::config::FORWARD_KINDS`] names.
+    /// The kind one of [`crate::config::FETCH_KINDS`] names. The forwarder
+    /// accepts only the ones [`crate::config::FORWARD_KINDS`] names.
     #[must_use]
     pub fn from_name(name: &str) -> Option<Self> {
-        [Self::Generic, Self::VconStore, Self::Conserver]
-            .into_iter()
-            .find(|k| k.facts().name == name)
+        [
+            Self::Generic,
+            Self::VconStore,
+            Self::Conserver,
+            Self::VconMcp,
+        ]
+        .into_iter()
+        .find(|k| k.facts().name == name)
     }
 
     /// This kind's row of [`STORE_KINDS`].
@@ -464,8 +455,21 @@ impl StoreKind {
             Self::Generic => &STORE_KINDS[0],
             Self::VconStore => &STORE_KINDS[1],
             Self::Conserver => &STORE_KINDS[2],
+            Self::VconMcp => &STORE_KINDS[3],
         }
     }
+}
+
+/// What a store wraps around the container its read endpoint returns.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Envelope {
+    /// The answer is the container.
+    Bare,
+    /// The answer is the container with this top-level member added; the
+    /// fetcher removes it.
+    AddedMember(&'static str),
+    /// The answer is an object holding the container in this member.
+    Wrapped(&'static str),
 }
 
 /// What a store of one kind needs, as measured. An explicit setting
@@ -482,24 +486,36 @@ pub struct KindFacts {
     pub auth_header: Option<(&'static str, &'static str)>,
     /// What the store answers for a uuid it already holds: `Some(status)`
     /// when it refuses the duplicate with that status (a replace URL then
-    /// applies), `None` when the duplicate replaces the held container or
-    /// nothing was measured.
+    /// applies), `None` when the duplicate replaces the held container, the
+    /// store answers it with a status that is not a refusal, or nothing was
+    /// measured.
     pub duplicate_status: Option<u16>,
-    /// The adaptation of the copy sent.
-    pub compat: Compat,
     /// The statuses, inclusive, that count as delivered.
     pub delivered: (u16, u16),
+    /// The path the fetcher appends to a base URL to read one container,
+    /// `{uuid}` standing for its uuid. `None`: the URL is a template that
+    /// holds `{uuid}` itself.
+    pub read_path: Option<&'static str>,
+    /// What the read endpoint wraps around the container.
+    pub envelope: Envelope,
 }
 
-/// One row per store kind, in the order of
-/// [`crate::config::FORWARD_KINDS`]. The one place each kind's facts live.
+/// One row per store kind, in the order of [`crate::config::FETCH_KINDS`].
+/// The one place each kind's facts live.
 ///
-/// vcon.store, measured by the maintainer against `https://api.vcon.store`
-/// on 2026-10-07: `POST /v1/vcons` with `Authorization: Bearer <key>`
-/// answered `201` on create, `400` for `extensions` as an array of strings
-/// and for a Dialog Object without `type` and `parties`, and `409` for a uuid
-/// it held. A `PUT` to `/v1/vcons/{uuid}` was not measured, so the kind sets
-/// no replace URL.
+/// vcon.store, measured against `https://api.vcon.store` on 2026-10-11:
+/// `POST /v1/vcons` with `Authorization: Bearer <key>` answered `201` for a
+/// new uuid, including a `recording` Dialog Object with no `parties` and no
+/// content, and `409` with `{"error":"vCon already exists",...}` naming
+/// `use PUT to replace it` for a uuid it already held. `PUT /v1/vcons/{uuid}`
+/// with a body of that uuid answered `200` and replaced the held container,
+/// as a read-back showed. So the kind names `409` as its duplicate status, and
+/// `--vcon-forward-replace-url <base>/v1/vcons/{uuid}` turns that refusal
+/// into a replace; without it the container goes to the failed directory.
+/// The replace stays opt-in: overwriting a held container is the operator's
+/// decision. On 2026-10-09 the same store answered `500` for a held uuid, and
+/// on 2026-10-07 `400` for the `extensions` array and for a Dialog Object
+/// without `type` and `parties`.
 ///
 /// conserver, measured against the self-hosted vCon server in the development lab on
 /// 2026-10-07: `POST /vcon/external-ingress?ingress_list=sipnab` with
@@ -509,143 +525,66 @@ pub struct KindFacts {
 /// `422` for a body that is not JSON and for one without `uuid`; `403` with
 /// no key or a wrong one. `ingress_list=sipnab` names the ingress list the
 /// sipnab setup in `docs/vcon-sipnab.md` creates.
-pub const STORE_KINDS: [KindFacts; 3] = [
+///
+/// The read paths, from each store's own description of its API:
+///
+/// - vcon.store: `GET /v1/vcons/{uuid}` in its OpenAPI document (vendored at
+///   `tests/schemas/vcon-store-openapi.json`), `200` with the vCon, `404`
+///   when no vCon has that uuid. The answer also carries a top-level `_meta`
+///   member the document does not list (measured 2026-10-09), which is the
+///   store's and not the container's, so the fetcher removes it.
+/// - conserver: `GET /vcon/{vcon_uuid}` in `api/api.py` of
+///   `vcon-dev/vcon-server`, behind the same `x-conserver-api-token` check as
+///   every other route of its API router: `200` with the vCon itself, `404`
+///   when it holds none, `403` for a key it does not hold.
+/// - vcon-mcp: `GET /vcons/:uuid` under the REST base path `/api/v1` in
+///   `src/api/routes/vcons.ts` and `src/api/rest-router.ts` of
+///   `vcon-dev/vcon-mcp`, with `Authorization: Bearer <token>` by default
+///   (`src/api/auth.ts`): `200` with `{"success": true, "vcon": {...}}`,
+///   `404` when it holds none, `401` for a missing or unknown token. The
+///   fetcher keeps the `vcon` member.
+pub const STORE_KINDS: [KindFacts; 4] = [
     KindFacts {
         name: "generic",
         ingest_path: None,
         auth_header: None,
         duplicate_status: None,
-        compat: Compat::Off,
         delivered: (200, 299),
+        read_path: None,
+        envelope: Envelope::Bare,
     },
     KindFacts {
         name: "vcon-store",
         ingest_path: Some("/v1/vcons"),
         auth_header: Some(("Authorization", "Bearer ")),
         duplicate_status: Some(409),
-        compat: Compat::VconStore,
         delivered: (200, 299),
+        read_path: Some("/v1/vcons/{uuid}"),
+        envelope: Envelope::AddedMember("_meta"),
     },
     KindFacts {
         name: "conserver",
         ingest_path: Some("/vcon/external-ingress?ingress_list=sipnab"),
         auth_header: Some(("x-conserver-api-token", "")),
         duplicate_status: None,
-        compat: Compat::Off,
         delivered: (200, 299),
+        read_path: Some("/vcon/{uuid}"),
+        envelope: Envelope::Bare,
+    },
+    KindFacts {
+        name: "vcon-mcp",
+        ingest_path: None,
+        auth_header: Some(("Authorization", "Bearer ")),
+        duplicate_status: None,
+        delivered: (200, 299),
+        read_path: Some("/api/v1/vcons/{uuid}"),
+        envelope: Envelope::Wrapped("vcon"),
     },
 ];
 
-/// The copy of a container the forwarder sends in a compat mode.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct CompatCopy {
-    /// The bytes to send.
-    pub bytes: Vec<u8>,
-    /// One phrase per change made, for the log. Empty when nothing changed.
-    pub transforms: Vec<String>,
-}
-
-/// The copy of `container` to send to vcon.store.
-///
-/// vcon.store's validator rejects `extensions` in the form both
-/// draft-ietf-vcon-vcon-core-02, -03 and -04 define in section 4.1.3, an array of
-/// strings, with `400 extensions: Expected object, received array`, and
-/// accepts an object. So the copy carries `extensions` as an object mapping
-/// each name, in its original order, to `true`. Every other member keeps its
-/// bytes.
-///
-/// The store also requires `type` and `parties` on every Dialog Object.
-/// sipnab writes a Dialog Object without `parties` when the run kept no audio:
-/// the `recording` placeholder of section 4.3 of core-04, which section 4.3.4
-/// makes `parties` a SHOULD on. Containers sipnab wrote under core-03 lack
-/// `type` there as well. The forwarder does not invent what sipnab did not
-/// observe, or drop the object and leave dangling indexes. Such a container is
-/// refused here instead, with the reason.
-///
-/// # Errors
-///
-/// The reason the container cannot be sent there: it is not a JSON object,
-/// or a Dialog Object lacks `type` or `parties`.
-pub fn vcon_store_copy(container: &[u8]) -> Result<CompatCopy, String> {
-    let doc: serde_json::Value =
-        serde_json::from_slice(container).map_err(|e| format!("the container is not JSON: {e}"))?;
-    let object = doc
-        .as_object()
-        .ok_or("the container is not a JSON object")?;
-    if let Some(serde_json::Value::Array(dialogs)) = object.get("dialog") {
-        for (i, d) in dialogs.iter().enumerate() {
-            dialog_refusal(i, d)?;
-        }
-    }
-    let names: Vec<&str> = match object.get("extensions") {
-        Some(serde_json::Value::Array(items)) => {
-            match items.iter().map(serde_json::Value::as_str).collect() {
-                Some(names) => names,
-                None => return Ok(unchanged(container)),
-            }
-        }
-        _ => return Ok(unchanged(container)),
-    };
-    let bytes = with_member_replaced(container, "extensions", &names_as_object(&names)?)?;
-    Ok(CompatCopy {
-        bytes,
-        transforms: vec![format!(
-            "sent `extensions` as an object of {} name(s) mapped to true, because vcon.store \
-             refuses the String[] form that draft-ietf-vcon-vcon-core-02, -03 and -04 define in \
-             section 4.1.3",
-            names.len()
-        )],
-    })
-}
-
-/// A copy that changes nothing.
-fn unchanged(container: &[u8]) -> CompatCopy {
-    CompatCopy {
-        bytes: container.to_vec(),
-        transforms: Vec::new(),
-    }
-}
-
-/// Why vcon.store would refuse Dialog Object `index`, or `Ok` when it would
-/// not.
-fn dialog_refusal(index: usize, dialog: &serde_json::Value) -> Result<(), String> {
-    let has = |key: &str| dialog.get(key).is_some();
-    let missing = match (has("type"), has("parties")) {
-        (true, true) => return Ok(()),
-        (false, false) => "`type` or `parties`",
-        (false, true) => "`type`",
-        (true, false) => "`parties`",
-    };
-    Err(format!(
-        "vcon.store requires `type` and `parties` on every Dialog Object \
-         (draft-ietf-vcon-vcon-core-02), and dialog[{index}] has no {missing}. sipnab writes \
-         a Dialog Object without `parties` when the container carries no audio, the \
-         `recording` placeholder of section 4.3 of draft-ietf-vcon-vcon-core-04 (a container \
-         written under -03 lacks `type` there too), and the forwarder does not invent what \
-         sipnab did not observe. A container carries audio only when the export ran with \
-         --retain-audio and without --redact, which withholds it; such a container has a \
-         `recording` Dialog Object, which the store accepts. The container was not sent and was \
-         not changed."
-    ))
-}
-
-/// `{"a":true,"b":true}` for `["a","b"]`, in order.
-fn names_as_object(names: &[&str]) -> Result<String, String> {
-    let mut out = String::from("{");
-    for (i, name) in names.iter().enumerate() {
-        if i > 0 {
-            out.push(',');
-        }
-        out.push_str(&serde_json::to_string(name).map_err(|e| e.to_string())?);
-        out.push_str(":true");
-    }
-    out.push('}');
-    Ok(out)
-}
-
 /// The top-level members of a JSON object, in their order, each value's
 /// bytes as written.
-struct Members(Vec<(String, Box<serde_json::value::RawValue>)>);
+pub(crate) struct Members(pub(crate) Vec<(String, Box<serde_json::value::RawValue>)>);
 
 impl<'de> serde::Deserialize<'de> for Members {
     fn deserialize<D: serde::Deserializer<'de>>(de: D) -> Result<Self, D::Error> {
@@ -671,24 +610,6 @@ impl<'de> serde::Deserialize<'de> for Members {
     }
 }
 
-/// `container` with member `key`'s value replaced by `json`, every other
-/// member's bytes and the members' order kept.
-fn with_member_replaced(container: &[u8], key: &str, json: &str) -> Result<Vec<u8>, String> {
-    let Members(members) =
-        serde_json::from_slice(container).map_err(|e| format!("the container is not JSON: {e}"))?;
-    let mut out = String::from("{");
-    for (i, (name, value)) in members.iter().enumerate() {
-        if i > 0 {
-            out.push(',');
-        }
-        out.push_str(&serde_json::to_string(name).map_err(|e| e.to_string())?);
-        out.push(':');
-        out.push_str(if name == key { json } else { value.get() });
-    }
-    out.push('}');
-    Ok(out.into_bytes())
-}
-
 /// The `uuid` a container carries, checked for use in a URL path.
 ///
 /// # Errors
@@ -702,13 +623,20 @@ pub fn container_uuid(container: &[u8]) -> Result<String, String> {
         .get("uuid")
         .and_then(serde_json::Value::as_str)
         .ok_or("the container carries no `uuid` to replace by")?;
-    if uuid.is_empty()
-        || uuid.len() > MAX_UUID_LEN
-        || !uuid.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')
-    {
+    if !is_path_uuid(uuid) {
         return Err("the container's `uuid` is not one a URL path may carry".into());
     }
     Ok(uuid.to_string())
+}
+
+/// Whether `uuid` is one a URL path may carry: 1 to 64 characters, each in
+/// `[0-9A-Za-z-]`. The one rule for a uuid the forwarder puts into a replace
+/// URL and the fetcher into a read URL and a file name.
+#[must_use]
+pub fn is_path_uuid(uuid: &str) -> bool {
+    !uuid.is_empty()
+        && uuid.len() <= MAX_UUID_LEN
+        && uuid.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')
 }
 
 /// The containers waiting in `spool`, by name, sorted.
@@ -738,6 +666,71 @@ pub fn pending(spool: &Path) -> std::io::Result<Vec<String>> {
     }
     names.sort();
     Ok(names)
+}
+
+/// The suffix of the record the forwarder writes beside a refused container:
+/// `<name>.error.json`.
+pub const ERROR_RECORD_SUFFIX: &str = ".error.json";
+
+/// Where delivered containers go when no setting says otherwise.
+#[must_use]
+pub fn default_done_dir(spool: &Path) -> PathBuf {
+    spool.join("delivered")
+}
+
+/// Where refused containers go when no setting says otherwise.
+#[must_use]
+pub fn default_failed_dir(spool: &Path) -> PathBuf {
+    spool.join("failed")
+}
+
+/// The refused containers in a failed directory, by name, sorted.
+///
+/// [`pending`]'s rule, less the `<name>.error.json` records that sit beside
+/// the containers: a record also ends in `.json`, and is not a container.
+///
+/// # Errors
+///
+/// The directory cannot be read.
+pub fn failed_containers(dir: &Path) -> std::io::Result<Vec<String>> {
+    Ok(pending(dir)?
+        .into_iter()
+        .filter(|name| !name.ends_with(ERROR_RECORD_SUFFIX))
+        .collect())
+}
+
+/// The `<name>.error.json` record the forwarder writes beside a refused
+/// container.
+///
+/// One type for the writer and for every reader, so the file and what a
+/// reader expects of it cannot drift. Fields are declared in alphabetical
+/// order, which is the order the record has always been written in.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "mcp", derive(rmcp::schemars::JsonSchema))]
+#[cfg_attr(feature = "mcp", schemars(crate = "rmcp::schemars"))]
+#[cfg_attr(feature = "api", derive(utoipa::ToSchema))]
+pub struct FailureRecord {
+    /// When the forwarder wrote the record, RFC 3339 UTC.
+    pub at: String,
+    /// The start of the store's answer, with the auth value removed. Null when
+    /// the container was refused before it was sent.
+    pub body: Option<String>,
+    /// Whether the forwarder cut `body` to `--vcon-forward-max-error-body`, or
+    /// the answer was longer than it read.
+    pub body_truncated: bool,
+    /// The container's file name.
+    pub file: String,
+    /// `POST` or `PUT`. Null when the container was refused before it was sent.
+    pub method: Option<String>,
+    /// The forwarder's own reason, when the container was refused before it
+    /// was sent. Null when the store answered.
+    pub reason: Option<String>,
+    /// The status the store answered with. Null when the container was refused
+    /// before it was sent.
+    pub status: Option<u16>,
+    /// The URL the request went to. Null when the container was refused before
+    /// it was sent.
+    pub url: Option<String>,
 }
 
 /// How long a container waits after its `attempts`-th failed try:
@@ -870,8 +863,6 @@ pub struct ForwardSettings {
     pub failed_dir: PathBuf,
     /// The connect, read and write timeout.
     pub timeout: Duration,
-    /// The store deviation to correct for in the copy sent.
-    pub compat: Compat,
     /// The only CA file trusted for HTTPS; the host's bundle when `None`.
     pub ca: Option<PathBuf>,
     /// The kind of store: which statuses count as delivered.
@@ -935,8 +926,6 @@ pub struct ForwardPlan {
     pub timeout: Duration,
     /// The wait between passes.
     pub interval: Duration,
-    /// The adaptation of the copy sent.
-    pub compat: Compat,
     /// The only CA file trusted for HTTPS.
     pub ca: Option<PathBuf>,
     /// How retries are spaced.
@@ -988,7 +977,7 @@ impl ForwardPlan {
     ///
     /// No URL or no credential from any source; the credential from more
     /// than one; a URL, replace URL or number its flag's rule refuses; a
-    /// first back-off longer than the cap; an unknown kind or compat name.
+    /// first back-off longer than the cap; an unknown kind name.
     /// Each message names the flag or key the value came from, and none
     /// quotes the credential.
     pub fn resolve(
@@ -1001,8 +990,8 @@ impl ForwardPlan {
     /// [`Self::resolve`], with where a refused value came from.
     ///
     /// Only the URL and the replace URL can be refused here from the config
-    /// file alone: a `[vcon_forward]` number, kind or compat name was refused
-    /// when the file loaded, and every other refusal involves a flag or is a
+    /// file alone: a `[vcon_forward]` number or kind name was refused when
+    /// the file loaded, and every other refusal involves a flag or is a
     /// setting `--vcon-forward` needs and nothing gave.
     ///
     /// # Errors
@@ -1046,6 +1035,7 @@ impl ForwardPlan {
             "[vcon_forward] kind",
         ) {
             Some((name, from)) => StoreKind::from_name(name)
+                .filter(|_| crate::config::FORWARD_KINDS.contains(&name))
                 .ok_or_else(|| other(format!("{from}: {name:?} is not a store kind")))?,
             None => StoreKind::Generic,
         };
@@ -1081,16 +1071,6 @@ impl ForwardPlan {
                 .map_err(|e| (ResolveStep::ReplaceUrl, format!("{from} {e}")))?;
         }
         let credential = credential(args, keys, kind).map_err(other)?;
-        let compat = match pick_text(
-            args.vcon_forward_compat.as_deref(),
-            "--vcon-forward-compat",
-            keys.compat.as_deref(),
-            "[vcon_forward] compat",
-        ) {
-            Some((name, from)) => Compat::from_name(name)
-                .ok_or_else(|| other(format!("{from}: {name:?} is not a compat mode")))?,
-            None => facts.compat,
-        };
         let interval = pick_number(FORWARD_INTERVAL, args.vcon_forward_interval, keys.interval)
             .map_err(other)?;
         let timeout =
@@ -1129,12 +1109,12 @@ impl ForwardPlan {
                 .vcon_forward_done
                 .clone()
                 .or_else(|| keys.done.clone())
-                .unwrap_or_else(|| spool.join("delivered")),
+                .unwrap_or_else(|| default_done_dir(&spool)),
             failed_dir: args
                 .vcon_forward_failed
                 .clone()
                 .or_else(|| keys.failed.clone())
-                .unwrap_or_else(|| spool.join("failed")),
+                .unwrap_or_else(|| default_failed_dir(&spool)),
             ca: args.vcon_forward_ca.clone().or_else(|| keys.ca.clone()),
             replace_url: replace.map(|(t, _)| t.to_string()),
             spool,
@@ -1143,7 +1123,6 @@ impl ForwardPlan {
             credential,
             timeout: Duration::from_secs(timeout.0),
             interval: Duration::from_secs(interval.0),
-            compat,
             backoff: BackoffPolicy {
                 first_secs: first.0,
                 cap_secs: cap.0,
@@ -1178,7 +1157,6 @@ impl ForwardPlan {
                 done_dir: self.done_dir,
                 failed_dir: self.failed_dir,
                 timeout: self.timeout,
-                compat: self.compat,
                 ca: self.ca,
                 kind: self.kind,
                 backoff: self.backoff,
@@ -1383,7 +1361,7 @@ impl Forwarder {
                 .tls;
         }
         let tls = if needs_tls {
-            Some(client_config(settings.ca.as_deref())?)
+            Some(client_config(settings.ca.as_deref(), "--vcon-forward-ca")?)
         } else {
             None
         };
@@ -1477,12 +1455,8 @@ impl Forwarder {
                 return Outcome::Retry;
             }
         };
-        let body = match self.copy_to_send(name, &bytes) {
-            Ok(body) => body,
-            Err(reason) => return self.refuse(name, &before, &Refusal::Before(&reason)),
-        };
         let url = &self.settings.url;
-        let answer = match self.send(url, "POST", &body) {
+        let answer = match self.send(url, "POST", &bytes) {
             Ok(answer) => answer,
             Err(e) => {
                 tracing::warn!("{name}: {url} not reached: {e}; will retry");
@@ -1495,25 +1469,8 @@ impl Forwarder {
             self.settings.replace_url.is_some(),
             delivered,
         ) {
-            Verdict::Replace => self.replace(name, &before, &body),
+            Verdict::Replace => self.replace(name, &before, &bytes),
             verdict => self.act_on(name, &before, verdict, &answer, "POST", url),
-        }
-    }
-
-    /// The bytes to send for `bytes`: the container itself, or its compat
-    /// copy with each change logged.
-    fn copy_to_send(&self, name: &str, bytes: &[u8]) -> Result<Vec<u8>, String> {
-        match self.settings.compat {
-            Compat::Off => Ok(bytes.to_vec()),
-            Compat::VconStore => {
-                let copy = vcon_store_copy(bytes)?;
-                for change in &copy.transforms {
-                    tracing::info!(
-                        "{name}: --vcon-forward-compat vcon-store {change}; the file on disk is unchanged"
-                    );
-                }
-                Ok(copy.bytes)
-            }
         }
     }
 
@@ -1583,7 +1540,7 @@ impl Forwarder {
             return Outcome::Changed;
         }
         let record = self.failure_record(name, why);
-        let record_name = format!("{name}.error.json");
+        let record_name = format!("{name}{ERROR_RECORD_SUFFIX}");
         if let Err(e) = write_atomically(&failed.join(&record_name), record.as_bytes()) {
             tracing::error!("{name}: could not write {record_name}: {e}");
         }
@@ -1635,29 +1592,31 @@ impl Forwarder {
                     .auth
                     .scrub(&String::from_utf8_lossy(&answer.body));
                 let (body, cut) = cut_to(&text, self.settings.limits.error_body);
-                serde_json::json!({
-                    "file": name,
-                    "method": method,
-                    "url": url.to_string(),
-                    "status": answer.status,
-                    "body": body,
-                    "body_truncated": cut || answer.truncated,
-                    "reason": serde_json::Value::Null,
-                    "at": at,
-                })
+                FailureRecord {
+                    at,
+                    body: Some(body.to_owned()),
+                    body_truncated: cut || answer.truncated,
+                    file: name.to_owned(),
+                    method: Some((*method).to_owned()),
+                    reason: None,
+                    status: Some(answer.status),
+                    url: Some(url.to_string()),
+                }
             }
-            Refusal::Before(reason) => serde_json::json!({
-                "file": name,
-                "method": serde_json::Value::Null,
-                "url": serde_json::Value::Null,
-                "status": serde_json::Value::Null,
-                "body": serde_json::Value::Null,
-                "body_truncated": false,
-                "reason": reason,
-                "at": at,
-            }),
+            Refusal::Before(reason) => FailureRecord {
+                at,
+                body: None,
+                body_truncated: false,
+                file: name.to_owned(),
+                method: None,
+                reason: Some((*reason).to_owned()),
+                status: None,
+                url: None,
+            },
         };
-        serde_json::to_string_pretty(&record).unwrap_or_else(|_| record.to_string())
+        serde_json::to_string_pretty(&record)
+            .or_else(|_| serde_json::to_string(&record))
+            .unwrap_or_default()
     }
 
     /// Move `name` from the spool into `dir`, if it is still the file that
@@ -1692,18 +1651,8 @@ impl Forwarder {
 
     /// One request to `endpoint`, over TLS when it is `https://`.
     fn send(&self, endpoint: &Endpoint, method: &str, body: &[u8]) -> Result<Answer, String> {
-        let mut head = format!(
-            "{method} {} HTTP/1.1\r\nHost: {}\r\nUser-Agent: {USER_AGENT}\r\n\
-             Content-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n",
-            endpoint.target,
-            endpoint.host_header(),
-            body.len()
-        );
-        head.push_str(&self.settings.auth.name);
-        head.push_str(": ");
-        head.push_str(&self.settings.auth.value);
-        head.push_str("\r\n\r\n");
-        let sock = connect(endpoint, self.settings.timeout)?;
+        let mut request = request_head(endpoint, method, &self.settings.auth, Some(body.len()));
+        request.extend_from_slice(body);
         // Read past the kept part by the most a credential can be, so the
         // credential is removed from the answer before the cut.
         let limits = self.settings.limits;
@@ -1711,20 +1660,81 @@ impl Forwarder {
             error_body: limits.error_body.saturating_add(MAX_AUTH_FILE),
             ..limits
         };
-        if !endpoint.tls {
-            return talk(sock, head.as_bytes(), body, read);
-        }
-        let config = self.tls.clone().ok_or("no TLS configuration")?;
-        let name = rustls::pki_types::ServerName::try_from(endpoint.host.clone())
-            .map_err(|e| format!("'{}' is not a certificate name: {e}", endpoint.host))?;
-        let conn = rustls::ClientConnection::new(config, name).map_err(|e| e.to_string())?;
-        talk(
-            rustls::StreamOwned::new(conn, sock),
-            head.as_bytes(),
-            body,
-            read,
+        exchange(
+            endpoint,
+            self.settings.timeout,
+            self.tls.as_ref(),
+            &request,
+            |reader| answer(reader, read),
         )
     }
+}
+
+/// The status line and headers of one request to `endpoint`, the one auth
+/// header among them, ending in the blank line. `body_len`: the length of
+/// the JSON body that follows, `None` for a request with no body.
+pub(crate) fn request_head(
+    endpoint: &Endpoint,
+    method: &str,
+    auth: &AuthHeader,
+    body_len: Option<usize>,
+) -> Vec<u8> {
+    let mut head = format!(
+        "{method} {} HTTP/1.1\r\nHost: {}\r\nUser-Agent: {USER_AGENT}\r\n",
+        endpoint.target,
+        endpoint.host_header(),
+    );
+    match body_len {
+        Some(len) => head.push_str(&format!(
+            "Content-Type: application/json\r\nContent-Length: {len}\r\n"
+        )),
+        None => head.push_str("Accept: application/json\r\n"),
+    }
+    head.push_str("Connection: close\r\n");
+    head.push_str(&auth.name);
+    head.push_str(": ");
+    head.push_str(&auth.value);
+    head.push_str("\r\n\r\n");
+    head.into_bytes()
+}
+
+/// Connect to `endpoint`, over TLS with `tls` when it is `https://`, write
+/// `request`, and hand the answer to `read`.
+///
+/// # Errors
+///
+/// No connection, an `https://` endpoint without `tls`, a host that is not a
+/// certificate name, a failed write, or what `read` returns.
+pub(crate) fn exchange<T>(
+    endpoint: &Endpoint,
+    timeout: Duration,
+    tls: Option<&Arc<rustls::ClientConfig>>,
+    request: &[u8],
+    read: impl FnOnce(&mut dyn BufRead) -> Result<T, String>,
+) -> Result<T, String> {
+    let sock = connect(endpoint, timeout)?;
+    if !endpoint.tls {
+        return over(sock, request, read);
+    }
+    let config = tls.cloned().ok_or("no TLS configuration")?;
+    let name = rustls::pki_types::ServerName::try_from(endpoint.host.clone())
+        .map_err(|e| format!("'{}' is not a certificate name: {e}", endpoint.host))?;
+    let conn = rustls::ClientConnection::new(config, name).map_err(|e| e.to_string())?;
+    over(rustls::StreamOwned::new(conn, sock), request, read)
+}
+
+/// [`exchange`] over one stream.
+fn over<T>(
+    stream: impl Read + Write,
+    request: &[u8],
+    read: impl FnOnce(&mut dyn BufRead) -> Result<T, String>,
+) -> Result<T, String> {
+    let mut reader = std::io::BufReader::new(stream);
+    let out = reader.get_mut();
+    out.write_all(request)
+        .and_then(|()| out.flush())
+        .map_err(|e| format!("sending: {e}"))?;
+    read(&mut reader)
 }
 
 /// The endpoint `template` names for `uuid`.
@@ -1745,14 +1755,20 @@ fn replace_endpoint(template: &str, uuid: &str) -> Result<Endpoint, String> {
 
 /// The rustls client configuration: trusting only `ca` when named, else the
 /// host's CA bundle.
-fn client_config(ca: Option<&Path>) -> Result<Arc<rustls::ClientConfig>, String> {
+///
+/// `ca_flag` names the setting that names a CA file, for the refusal when
+/// the host has no bundle.
+pub(crate) fn client_config(
+    ca: Option<&Path>,
+    ca_flag: &str,
+) -> Result<Arc<rustls::ClientConfig>, String> {
     let mut roots = rustls::RootCertStore::empty();
     let (path, strict) = match ca {
         Some(path) => (path.to_path_buf(), true),
         None => (
-            crate::tls_files::host_ca_bundle().ok_or(
-                "no CA bundle found on this host; name the store's CA with --vcon-forward-ca",
-            )?,
+            crate::tls_files::host_ca_bundle().ok_or_else(|| {
+                format!("no CA bundle found on this host; name the store's CA with {ca_flag}")
+            })?,
             false,
         ),
     };
@@ -1813,23 +1829,12 @@ fn connect(endpoint: &Endpoint, timeout: Duration) -> Result<std::net::TcpStream
     Err(last)
 }
 
-/// Write the request and read the answer: at most `limits.response_head`
-/// bytes of status line and headers, and, for an answer other than a `2xx`
-/// (whose body is not read), at most `limits.error_body` bytes of its body.
-fn talk(
-    stream: impl Read + Write,
-    head: &[u8],
-    body: &[u8],
-    limits: ReadLimits,
-) -> Result<Answer, String> {
-    let mut reader = std::io::BufReader::new(stream);
-    let out = reader.get_mut();
-    out.write_all(head)
-        .and_then(|()| out.write_all(body))
-        .and_then(|()| out.flush())
-        .map_err(|e| format!("sending: {e}"))?;
+/// Read the answer: at most `limits.response_head` bytes of status line and
+/// headers, and, for an answer other than a `2xx` (whose body is not read),
+/// at most `limits.error_body` bytes of its body.
+fn answer(reader: &mut dyn BufRead, limits: ReadLimits) -> Result<Answer, String> {
     loop {
-        let headers = read_head(&mut reader, limits.response_head)?;
+        let headers = read_head(reader, limits.response_head, MAX_HEAD_FLAG)?;
         let status = status_of(&headers)?;
         if (100..200).contains(&status) {
             continue;
@@ -1841,7 +1846,7 @@ fn talk(
                 truncated: false,
             });
         }
-        let (body, truncated) = read_body(&mut reader, &headers, limits.error_body);
+        let (body, truncated) = read_body(reader, &headers, limits.error_body);
         return Ok(Answer {
             status,
             body,
@@ -1851,7 +1856,13 @@ fn talk(
 }
 
 /// The status line and headers, as lines, refused past `max` bytes.
-fn read_head(reader: &mut impl BufRead, max: usize) -> Result<Vec<String>, String> {
+///
+/// `flag` names the setting that sets `max`, for the refusal.
+pub(crate) fn read_head(
+    reader: &mut (impl BufRead + ?Sized),
+    max: usize,
+    flag: &str,
+) -> Result<Vec<String>, String> {
     let mut lines = Vec::new();
     let mut total = 0usize;
     loop {
@@ -1865,8 +1876,7 @@ fn read_head(reader: &mut impl BufRead, max: usize) -> Result<Vec<String>, Strin
         total += n;
         if total > max {
             return Err(format!(
-                "the answer's status line and headers are larger than {max} bytes \
-                 (--vcon-forward-max-response-head)"
+                "the answer's status line and headers are larger than {max} bytes ({flag})"
             ));
         }
         let text = String::from_utf8_lossy(&line).trim_end().to_string();
@@ -1878,7 +1888,7 @@ fn read_head(reader: &mut impl BufRead, max: usize) -> Result<Vec<String>, Strin
 }
 
 /// The status code in a status line.
-fn status_of(head: &[String]) -> Result<u16, String> {
+pub(crate) fn status_of(head: &[String]) -> Result<u16, String> {
     let line = head.first().map(String::as_str).unwrap_or_default();
     let mut words = line.split_whitespace();
     match (
@@ -1891,7 +1901,7 @@ fn status_of(head: &[String]) -> Result<u16, String> {
 }
 
 /// The value of header `name` in `head`, case-insensitively.
-fn header_value<'a>(head: &'a [String], name: &str) -> Option<&'a str> {
+pub(crate) fn header_value<'a>(head: &'a [String], name: &str) -> Option<&'a str> {
     head.iter().skip(1).find_map(|line| {
         let (n, v) = line.split_once(':')?;
         n.trim().eq_ignore_ascii_case(name).then_some(v.trim())
@@ -1901,7 +1911,11 @@ fn header_value<'a>(head: &'a [String], name: &str) -> Option<&'a str> {
 /// At most `keep` bytes of the body, and whether there was more. A body
 /// that ends early or fails to read ends where it ended: it is evidence for
 /// a person, not data the forwarder acts on.
-fn read_body(reader: &mut impl BufRead, head: &[String], keep: usize) -> (Vec<u8>, bool) {
+pub(crate) fn read_body(
+    reader: &mut (impl BufRead + ?Sized),
+    head: &[String],
+    keep: usize,
+) -> (Vec<u8>, bool) {
     let chunked = header_value(head, "transfer-encoding")
         .is_some_and(|v| v.to_ascii_lowercase().contains("chunked"));
     if chunked {
@@ -1917,7 +1931,7 @@ fn read_body(reader: &mut impl BufRead, head: &[String], keep: usize) -> (Vec<u8
 }
 
 /// [`read_body`] for `Transfer-Encoding: chunked`.
-fn read_chunked(reader: &mut impl BufRead, keep: usize) -> (Vec<u8>, bool) {
+fn read_chunked(reader: &mut (impl BufRead + ?Sized), keep: usize) -> (Vec<u8>, bool) {
     let mut body = Vec::new();
     loop {
         let mut size_line = String::new();
@@ -2238,6 +2252,26 @@ mod tests {
         }
     }
 
+    /// vcon.store answers a POST of a uuid it already holds with `409`
+    /// (measured 2026-10-11). Without a replace URL that is a refusal; with
+    /// one, the container is PUT there.
+    #[test]
+    fn the_vcon_store_kind_names_409_for_a_held_uuid() {
+        let facts = StoreKind::VconStore.facts();
+        assert_eq!(facts.duplicate_status, Some(409));
+        assert_eq!(classify(409, false, facts.delivered), Verdict::Refused);
+        assert_eq!(classify(409, true, facts.delivered), Verdict::Replace);
+    }
+
+    /// A `500` from vcon.store is retried, replace URL or not: it is what a
+    /// store in trouble answers.
+    #[test]
+    fn a_vcon_store_500_is_retried() {
+        let facts = StoreKind::VconStore.facts();
+        assert_eq!(classify(500, false, facts.delivered), Verdict::Retry);
+        assert_eq!(classify(500, true, facts.delivered), Verdict::Retry);
+    }
+
     /// With the defaults the delay doubles from 2 s and stops at 5 minutes,
     /// and a huge attempt count does not overflow.
     #[test]
@@ -2292,7 +2326,7 @@ mod tests {
         replace_url = \"https://keys.example.com/v1/vcons/{uuid}\"\n\
         auth_file = \"/etc/keys/auth\"\nca = \"/etc/keys/ca.pem\"\n\
         done = \"/srv/keys-done\"\nfailed = \"/srv/keys-failed\"\n\
-        interval = 11\ntimeout = 12\ncompat = \"vcon-store\"\n\
+        interval = 11\ntimeout = 12\n\
         backoff_first = 13\nbackoff_cap = 140\n\
         max_response_head = 15000\nmax_error_body = 1600";
 
@@ -2316,7 +2350,6 @@ mod tests {
         assert_eq!(plan.failed_dir, Path::new("/srv/keys-failed"));
         assert_eq!(plan.interval, Duration::from_secs(11));
         assert_eq!(plan.timeout, Duration::from_secs(12));
-        assert_eq!(plan.compat, Compat::VconStore);
         assert_eq!(
             plan.backoff,
             BackoffPolicy {
@@ -2347,7 +2380,6 @@ mod tests {
             "--vcon-forward-failed=/srv/flags-failed",
             "--vcon-forward-interval=21",
             "--vcon-forward-timeout=22",
-            "--vcon-forward-compat=none",
             "--vcon-forward-backoff-first=23",
             "--vcon-forward-backoff-cap=240",
             "--vcon-forward-max-response-head=25000",
@@ -2369,7 +2401,6 @@ mod tests {
         assert_eq!(plan.failed_dir, Path::new("/srv/flags-failed"));
         assert_eq!(plan.interval, Duration::from_secs(21));
         assert_eq!(plan.timeout, Duration::from_secs(22));
-        assert_eq!(plan.compat, Compat::Off);
         assert_eq!(
             plan.backoff,
             BackoffPolicy {
@@ -2407,7 +2438,6 @@ mod tests {
         assert_eq!(plan.failed_dir, Path::new("/srv/spool/failed"));
         assert_eq!(plan.interval, Duration::from_secs(FORWARD_INTERVAL.default));
         assert_eq!(plan.timeout, Duration::from_secs(FORWARD_TIMEOUT.default));
-        assert_eq!(plan.compat, Compat::Off);
         assert_eq!(
             (plan.backoff.first_secs, plan.backoff.cap_secs),
             (FORWARD_BACKOFF_FIRST.default, FORWARD_BACKOFF_CAP.default)
@@ -2514,29 +2544,29 @@ mod tests {
 
     // ── Store kinds ─────────────────────────────────────────────────────
 
-    /// Every kind and compat name the flag and key accept is one the
-    /// forwarder knows, and the kind table holds one row per kind name.
+    /// Every kind name the flag and key accept is one the forwarder knows, and the kind table holds one row per kind name the
+    /// fetcher accepts, the forwarder's first.
     #[test]
-    fn every_kind_and_compat_name_maps() {
+    fn every_kind_name_maps() {
         for name in crate::config::FORWARD_KINDS {
             let kind = StoreKind::from_name(name);
             assert!(kind.is_some(), "{name}");
             assert_eq!(kind.map(|k| k.facts().name), Some(*name));
         }
         let names: Vec<&str> = STORE_KINDS.iter().map(|f| f.name).collect();
-        assert_eq!(names, crate::config::FORWARD_KINDS);
-        for name in crate::config::FORWARD_COMPAT {
-            assert!(Compat::from_name(name).is_some(), "{name}");
-        }
+        assert_eq!(names, crate::config::FETCH_KINDS);
+        // vcon-mcp is read from, never delivered to: no ingest path, and the
+        // forwarder's names leave it out.
+        assert!(!crate::config::FORWARD_KINDS.contains(&"vcon-mcp"));
+        assert_eq!(StoreKind::VconMcp.facts().ingest_path, None);
         assert_eq!(StoreKind::from_name("other"), None);
-        assert_eq!(Compat::from_name("other"), None);
     }
 
     /// The vcon-store kind, given the store's base URL and the bare key,
-    /// posts to `/v1/vcons` with `Authorization: Bearer <key>` and adapts the
-    /// payload as `--vcon-forward-compat vcon-store` does.
+    /// posts to `/v1/vcons` with `Authorization: Bearer <key>`, the endpoint
+    /// and header the generic kind takes when both are written out.
     #[test]
-    fn the_vcon_store_kind_supplies_its_path_header_and_adaptation() -> TestResult {
+    fn the_vcon_store_kind_supplies_its_path_and_header() -> TestResult {
         let plan = ForwardPlan::resolve(
             &flags(&[
                 "--vcon-forward-kind=vcon-store",
@@ -2546,19 +2576,13 @@ mod tests {
             &keys("")?,
         )?;
         assert_eq!(plan.url.to_string(), "https://api.vcon.store/v1/vcons");
-        assert_eq!(plan.compat, Compat::VconStore);
         let generic = ForwardPlan::resolve(
             &flags(&[
                 "--vcon-forward-url=https://api.vcon.store/v1/vcons",
                 "--vcon-forward-auth=Authorization: Bearer vcs_live_0123456789",
-                "--vcon-forward-compat=vcon-store",
             ])?,
             &keys("")?,
         )?;
-        assert_eq!(
-            plan.compat, generic.compat,
-            "the compat flag means the kind's adaptation"
-        );
         assert_eq!(plan.url, generic.url);
         let (Credential::Header(by_kind), Credential::Header(by_line)) =
             (&plan.credential, &generic.credential)
@@ -2573,7 +2597,7 @@ mod tests {
 
     /// The conserver kind, given the server's base URL and the bare key,
     /// posts to the `sipnab` external ingress list with
-    /// `x-conserver-api-token: <key>` and leaves the payload alone.
+    /// `x-conserver-api-token: <key>`.
     #[test]
     fn the_conserver_kind_supplies_its_path_and_header() -> TestResult {
         let plan = ForwardPlan::resolve(
@@ -2584,7 +2608,6 @@ mod tests {
             plan.url.to_string(),
             "http://127.0.0.1:8000/vcon/external-ingress?ingress_list=sipnab"
         );
-        assert_eq!(plan.compat, Compat::Off);
         let Credential::Header(h) = &plan.credential else {
             return Err("inline credential expected".into());
         };
@@ -2596,8 +2619,8 @@ mod tests {
     }
 
     /// Every value a kind supplies gives way to an explicit one: a URL with a
-    /// path is the endpoint as written, a full header line is sent as
-    /// written, and the compat flag or key replaces the kind's adaptation.
+    /// path is the endpoint as written, and a full header line is sent as
+    /// written.
     #[test]
     fn an_explicit_setting_overrides_the_kind_default() -> TestResult {
         let plan = ForwardPlan::resolve(
@@ -2605,13 +2628,11 @@ mod tests {
                 "--vcon-forward-kind=vcon-store",
                 "--vcon-forward-url=https://proxy.example.com/other/path",
                 "--vcon-forward-auth=X-Api-Key: k3y-0123456789",
-                "--vcon-forward-compat=none",
                 "--vcon-forward-replace-url=https://proxy.example.com/other/path/{uuid}",
             ])?,
             &keys("")?,
         )?;
         assert_eq!(plan.url.to_string(), "https://proxy.example.com/other/path");
-        assert_eq!(plan.compat, Compat::Off);
         assert_eq!(
             plan.replace_url.as_deref(),
             Some("https://proxy.example.com/other/path/{uuid}")
@@ -2622,15 +2643,6 @@ mod tests {
         assert_eq!(
             (h.name(), h.value.as_str()),
             ("X-Api-Key", "k3y-0123456789")
-        );
-        let keyed = ForwardPlan::resolve(
-            &flags(&["--vcon-forward-kind=vcon-store", "--vcon-forward-auth=k"])?,
-            &keys("url = \"https://api.vcon.store\"\ncompat = \"none\"")?,
-        )?;
-        assert_eq!(
-            keyed.compat,
-            Compat::Off,
-            "the compat key replaces the kind's"
         );
         Ok(())
     }
@@ -2704,60 +2716,6 @@ mod tests {
         assert!(plaintext_warning(&Endpoint::parse("http://localhost:8000/x")?).is_none());
         assert!(plaintext_warning(&Endpoint::parse("http://[::1]:8000/x")?).is_none());
         assert!(plaintext_warning(&Endpoint::parse("https://192.0.2.10/x")?).is_none());
-        Ok(())
-    }
-
-    /// `extensions` becomes an object, names in their order mapped to `true`,
-    /// and every other byte of the container is kept.
-    #[test]
-    fn the_vcon_store_copy_maps_extensions_in_order() -> TestResult {
-        let src = br#"{"vcon":"0.4.0","uuid":"u","extensions":["sip-signaling","CC","a"],"parties":[{"tel":"+15550100001","b":1,"a":2}],"dialog":[{"type":"recording","parties":[0]}]}"#;
-        let copy = vcon_store_copy(src)?;
-        assert_eq!(
-            String::from_utf8_lossy(&copy.bytes),
-            r#"{"vcon":"0.4.0","uuid":"u","extensions":{"sip-signaling":true,"CC":true,"a":true},"parties":[{"tel":"+15550100001","b":1,"a":2}],"dialog":[{"type":"recording","parties":[0]}]}"#
-        );
-        assert_eq!(copy.transforms.len(), 1);
-        assert!(
-            copy.transforms[0].contains("extensions"),
-            "{:?}",
-            copy.transforms
-        );
-        Ok(())
-    }
-
-    /// A container with no `extensions`, or one already an object, is sent
-    /// as it is, with no transform reported.
-    #[test]
-    fn the_vcon_store_copy_leaves_other_containers_alone() -> TestResult {
-        for src in [
-            &br#"{"uuid":"u","dialog":[{"type":"recording","parties":[0]}]}"#[..],
-            br#"{"uuid":"u","extensions":{"CC":true},"dialog":[]}"#,
-        ] {
-            let copy = vcon_store_copy(src)?;
-            assert_eq!(copy.bytes, src);
-            assert!(copy.transforms.is_empty());
-        }
-        Ok(())
-    }
-
-    /// A Dialog Object missing `type` or `parties` is refused, naming the
-    /// index and what is missing; a container that is not a JSON object is
-    /// refused too.
-    #[test]
-    fn the_vcon_store_copy_refuses_dialogs_the_store_rejects() -> TestResult {
-        let cases = [
-            (&br#"{"dialog":[{"sip_call_id":"c"}]}"#[..], "dialog[0]"),
-            (br#"{"dialog":[{"type":"recording","parties":[0]},{"type":"incomplete","disposition":"failed"}]}"#, "dialog[1]"),
-            (br#"{"dialog":[{"parties":[0]}]}"#, "`type`"),
-            (br#"["not","an","object"]"#, "JSON object"),
-        ];
-        for (src, needle) in cases {
-            match vcon_store_copy(src) {
-                Ok(c) => return Err(format!("accepted: {:?}", c.transforms).into()),
-                Err(e) => assert!(e.contains(needle), "{needle} not in: {e}"),
-            }
-        }
         Ok(())
     }
 

@@ -389,6 +389,9 @@ impl SipnabSession {
     }
 
     /// Get detailed JSON for a single RTP stream identified by SSRC + src + dst.
+    ///
+    /// When two calls reused the SSRC and sockets, this is the later call's
+    /// stream, the one a packet on them belongs to now.
     pub fn get_stream_detail(&self, ssrc: u32, src: &str, dst: &str) -> String {
         use crate::rtp::stream::StreamKey;
         use std::net::SocketAddr;
@@ -406,9 +409,10 @@ impl SipnabSession {
             ssrc,
             src: src_addr,
             dst: dst_addr,
+            session: 0,
         };
 
-        let Some(s) = self.stream_store.get(&key) else {
+        let Some(s) = self.stream_store.get_live(&key) else {
             return "{}".to_string();
         };
 

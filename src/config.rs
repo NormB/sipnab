@@ -48,6 +48,7 @@ static KNOWN_KEYS: LazyLock<HashMap<&'static str, &'static [&'static str]>> = La
             "metrics",
             "hep",
             "vcon_forward",
+            "vcon_fetch",
         ]
         .as_slice(),
     );
@@ -210,6 +211,7 @@ static KNOWN_KEYS: LazyLock<HashMap<&'static str, &'static [&'static str]>> = La
             "max_audio_frames",
             "mcp_max_rows",
             "mcp_max_body_bytes",
+            "mcp_max_response_bytes",
             "mcp_max_wait_seconds",
             "mcp_max_findings",
             "mcp_sweep_max_files",
@@ -261,11 +263,25 @@ static KNOWN_KEYS: LazyLock<HashMap<&'static str, &'static [&'static str]>> = La
             "failed",
             "interval",
             "timeout",
-            "compat",
             "backoff_first",
             "backoff_cap",
             "max_response_head",
             "max_error_body",
+        ]
+        .as_slice(),
+    );
+    // [vcon_fetch] holds the vCon fetcher's standing settings, one key per
+    // fetcher flag that does not name this run's input, output or intent.
+    m.insert(
+        "vcon_fetch",
+        [
+            "kind",
+            "url",
+            "auth_file",
+            "ca",
+            "timeout",
+            "max_response_head",
+            "max_size",
         ]
         .as_slice(),
     );
@@ -452,6 +468,9 @@ pub struct Config {
     /// The vCon forwarder's settings -- see [`VconForwardConfig`].
     #[serde(default)]
     pub vcon_forward: VconForwardConfig,
+    /// The vCon fetcher's settings -- see [`VconFetchConfig`].
+    #[serde(default)]
+    pub vcon_fetch: VconFetchConfig,
 }
 
 /// `[api]`: settings for the REST API that belong in a file rather than on
@@ -544,9 +563,6 @@ pub struct VconForwardConfig {
     /// Seconds to wait to connect and for each read and write. See
     /// [`FORWARD_TIMEOUT`].
     pub timeout: Option<u64>,
-    /// The store deviation to correct for in the copy sent, one of
-    /// [`FORWARD_COMPAT`]. `--vcon-forward-compat` overrides it.
-    pub compat: Option<String>,
     /// Seconds before the first retry. See [`FORWARD_BACKOFF_FIRST`].
     pub backoff_first: Option<u64>,
     /// The longest wait between retries, in seconds. See
@@ -566,7 +582,9 @@ pub struct VconForwardConfig {
 /// ([`VconForwardConfig::validate`]) are the same rule, [`ForwardNumber::check`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ForwardNumber {
-    /// The `[vcon_forward]` key.
+    /// The section that holds the key: `vcon_forward` or `vcon_fetch`.
+    pub section: &'static str,
+    /// The key in [`Self::section`].
     pub key: &'static str,
     /// The flag, with its dashes.
     pub flag: &'static str,
@@ -611,12 +629,12 @@ impl ForwardNumber {
 
     /// The value in force, and where it came from: the flag, else the key,
     /// else [`Self::default`]. The second half names the source for a
-    /// message: the flag, `[vcon_forward] <key>`, or `the default`.
+    /// message: the flag, `[<section>] <key>`, or `the default`.
     #[must_use]
     pub fn pick(&self, flag: Option<u64>, key: Option<u64>) -> (u64, String) {
         match (flag, key) {
             (Some(v), _) => (v, self.flag.to_string()),
-            (None, Some(v)) => (v, format!("[vcon_forward] {}", self.key)),
+            (None, Some(v)) => (v, format!("[{}] {}", self.section, self.key)),
             (None, None) => (self.default, "the default".to_string()),
         }
     }
@@ -624,6 +642,7 @@ impl ForwardNumber {
 
 /// Seconds between passes over the spool.
 pub const FORWARD_INTERVAL: ForwardNumber = ForwardNumber {
+    section: "vcon_forward",
     key: "interval",
     flag: "--vcon-forward-interval",
     min: 1,
@@ -634,6 +653,7 @@ pub const FORWARD_INTERVAL: ForwardNumber = ForwardNumber {
 /// Seconds the forwarder waits to connect, and for each read and write,
 /// before the store counts as unreachable.
 pub const FORWARD_TIMEOUT: ForwardNumber = ForwardNumber {
+    section: "vcon_forward",
     key: "timeout",
     flag: "--vcon-forward-timeout",
     min: 1,
@@ -649,6 +669,7 @@ const FORWARD_U32_MAX: u64 = u32::MAX as u64;
 /// Seconds a container waits after its first failed try. Each failed try
 /// after it doubles the wait, up to [`FORWARD_BACKOFF_CAP`].
 pub const FORWARD_BACKOFF_FIRST: ForwardNumber = ForwardNumber {
+    section: "vcon_forward",
     key: "backoff_first",
     flag: "--vcon-forward-backoff-first",
     min: 1,
@@ -658,6 +679,7 @@ pub const FORWARD_BACKOFF_FIRST: ForwardNumber = ForwardNumber {
 
 /// The longest a container waits between tries, in seconds.
 pub const FORWARD_BACKOFF_CAP: ForwardNumber = ForwardNumber {
+    section: "vcon_forward",
     key: "backoff_cap",
     flag: "--vcon-forward-backoff-cap",
     min: 1,
@@ -668,6 +690,7 @@ pub const FORWARD_BACKOFF_CAP: ForwardNumber = ForwardNumber {
 /// The most bytes of a store's status line and headers the forwarder reads.
 /// An answer with more is treated as no answer, and the container is retried.
 pub const FORWARD_MAX_RESPONSE_HEAD: ForwardNumber = ForwardNumber {
+    section: "vcon_forward",
     key: "max_response_head",
     flag: "--vcon-forward-max-response-head",
     min: 1,
@@ -678,6 +701,7 @@ pub const FORWARD_MAX_RESPONSE_HEAD: ForwardNumber = ForwardNumber {
 /// The most bytes of a store's answer to a refused container that its
 /// `<name>.error.json` record keeps.
 pub const FORWARD_MAX_ERROR_BODY: ForwardNumber = ForwardNumber {
+    section: "vcon_forward",
     key: "max_error_body",
     flag: "--vcon-forward-max-error-body",
     min: 1,
@@ -695,15 +719,53 @@ pub const FORWARD_NUMBERS: [ForwardNumber; 6] = [
     FORWARD_MAX_ERROR_BODY,
 ];
 
-/// The names `--vcon-forward-compat` and `[vcon_forward] compat` accept.
-/// `none` sends every container byte for byte, the default; `vcon-store`
-/// corrects for vcon.store's deviations from the vCon drafts.
-pub const FORWARD_COMPAT: &[&str] = &["none", "vcon-store"];
-
 /// The names `--vcon-forward-kind` and `[vcon_forward] kind` accept, in the
 /// order of the forwarder's kind table. `generic` supplies nothing: every
 /// setting is given explicitly, as before kinds existed.
 pub const FORWARD_KINDS: &[&str] = &["generic", "vcon-store", "conserver"];
+
+/// The names `--vcon-fetch-kind` and `[vcon_fetch] kind` accept, in the
+/// order of the store kind table: the forwarder's kinds, and `vcon-mcp`,
+/// which the fetcher reads from and the forwarder does not deliver to.
+pub const FETCH_KINDS: &[&str] = &["generic", "vcon-store", "conserver", "vcon-mcp"];
+
+/// Seconds the fetcher waits to connect, and for each read and write, before
+/// it gives up on a container.
+pub const FETCH_TIMEOUT: ForwardNumber = ForwardNumber {
+    section: "vcon_fetch",
+    key: "timeout",
+    flag: "--vcon-fetch-timeout",
+    min: 1,
+    max: 600,
+    default: 30,
+};
+
+/// The most bytes of a store's status line and headers the fetcher reads.
+pub const FETCH_MAX_RESPONSE_HEAD: ForwardNumber = ForwardNumber {
+    section: "vcon_fetch",
+    key: "max_response_head",
+    flag: "--vcon-fetch-max-response-head",
+    min: 1,
+    max: FORWARD_U32_MAX,
+    default: 64 * 1024,
+};
+
+/// The largest answer body the fetcher reads for one container, in bytes;
+/// a larger one is refused and nothing is written. 64 MiB holds a container
+/// with an hour of inline G.711 audio (about 29 MB of samples, 39 MB in
+/// base64url) with room to spare.
+pub const FETCH_MAX_SIZE: ForwardNumber = ForwardNumber {
+    section: "vcon_fetch",
+    key: "max_size",
+    flag: "--vcon-fetch-max-size",
+    min: 1,
+    max: FORWARD_U32_MAX,
+    default: 64 * 1024 * 1024,
+};
+
+/// Every whole-number fetcher setting.
+pub const FETCH_NUMBERS: [ForwardNumber; 3] =
+    [FETCH_TIMEOUT, FETCH_MAX_RESPONSE_HEAD, FETCH_MAX_SIZE];
 
 /// Why a first retry delay and a cap cannot both hold, or `None` when they
 /// can: the first delay may not be longer than the longest. Each value comes
@@ -722,8 +784,8 @@ pub fn forward_backoff_problem(first: (u64, &str), cap: (u64, &str)) -> Option<S
 impl VconForwardConfig {
     /// Refuse a value its flag would refuse.
     ///
-    /// Each whole-number key is held to its [`ForwardNumber`] range, `compat`
-    /// to [`FORWARD_COMPAT`], `kind` to [`FORWARD_KINDS`], and the back-off pair to
+    /// Each whole-number key is held to its [`ForwardNumber`] range, `kind`
+    /// to [`FORWARD_KINDS`], and the back-off pair to
     /// [`forward_backoff_problem`] with the default standing in for a key
     /// that is not set. The URLs and the credential are checked when the
     /// forwarder starts, where the flags are.
@@ -738,18 +800,13 @@ impl VconForwardConfig {
                 })?;
             }
         }
-        for (key, value, names) in [
-            ("compat", &self.compat, FORWARD_COMPAT),
-            ("kind", &self.kind, FORWARD_KINDS),
-        ] {
-            if let Some(name) = value
-                && !names.contains(&name.as_str())
-            {
-                return Err(crate::Error::ConfigInvalid(format!(
-                    "[vcon_forward] {key}: {name:?} is not one of {}",
-                    names.join(", ")
-                )));
-            }
+        if let Some(name) = &self.kind
+            && !FORWARD_KINDS.contains(&name.as_str())
+        {
+            return Err(crate::Error::ConfigInvalid(format!(
+                "[vcon_forward] kind: {name:?} is not one of {}",
+                FORWARD_KINDS.join(", ")
+            )));
         }
         let first = FORWARD_BACKOFF_FIRST.pick(None, self.backoff_first);
         let cap = FORWARD_BACKOFF_CAP.pick(None, self.backoff_cap);
@@ -769,6 +826,80 @@ impl VconForwardConfig {
             (FORWARD_BACKOFF_CAP, self.backoff_cap),
             (FORWARD_MAX_RESPONSE_HEAD, self.max_response_head),
             (FORWARD_MAX_ERROR_BODY, self.max_error_body),
+        ]
+    }
+}
+
+/// `[vcon_fetch]`: the settings of the vCon fetcher
+/// (`sipnab --vcon-fetch <UUID>...`), each the value of the flag of the same
+/// name, which overrides it.
+///
+/// The uuids, the output directory and `--vcon-fetch-overwrite` stay on the
+/// command line: they name this run's input and output, and its intent. The
+/// credential has no key of its own: `auth_file` names the file that holds it.
+///
+/// The URL and the credential are checked when the fetcher starts, by the
+/// rules the flags follow; every other key is checked whenever the file is
+/// loaded.
+#[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(default)]
+pub struct VconFetchConfig {
+    /// The kind of store, one of [`FETCH_KINDS`]. `--vcon-fetch-kind`
+    /// overrides it.
+    pub kind: Option<String>,
+    /// The store's base URL, or a URL template holding `{uuid}`.
+    /// `--vcon-fetch-url` overrides it.
+    pub url: Option<String>,
+    /// The file holding the credential. `--vcon-fetch-auth-file` overrides
+    /// it.
+    pub auth_file: Option<PathBuf>,
+    /// The only CA file trusted for an `https://` store. `--vcon-fetch-ca`
+    /// overrides it.
+    pub ca: Option<PathBuf>,
+    /// Seconds to wait to connect and for each read and write. See
+    /// [`FETCH_TIMEOUT`].
+    pub timeout: Option<u64>,
+    /// The most bytes of a store's status line and headers read. See
+    /// [`FETCH_MAX_RESPONSE_HEAD`].
+    pub max_response_head: Option<u64>,
+    /// The largest container read, in bytes. See [`FETCH_MAX_SIZE`].
+    pub max_size: Option<u64>,
+}
+
+impl VconFetchConfig {
+    /// Refuse a value its flag would refuse: each whole-number key held to
+    /// its [`ForwardNumber`] range, and `kind` to [`FETCH_KINDS`]. The URL
+    /// and the credential are checked when the fetcher starts, where the
+    /// flags are.
+    ///
+    /// # Errors
+    /// `crate::Error::ConfigInvalid`, naming the key.
+    pub fn validate(&self) -> Result<(), crate::Error> {
+        for (number, value) in self.numbers() {
+            if let Some(v) = value {
+                number.check(v).map_err(|e| {
+                    crate::Error::ConfigInvalid(format!("[vcon_fetch] {}: {e}", number.key))
+                })?;
+            }
+        }
+        if let Some(name) = &self.kind
+            && !FETCH_KINDS.contains(&name.as_str())
+        {
+            return Err(crate::Error::ConfigInvalid(format!(
+                "[vcon_fetch] kind: {name:?} is not one of {}",
+                FETCH_KINDS.join(", ")
+            )));
+        }
+        Ok(())
+    }
+
+    /// Each whole-number key beside the setting it is.
+    #[must_use]
+    pub fn numbers(&self) -> [(ForwardNumber, Option<u64>); 3] {
+        [
+            (FETCH_TIMEOUT, self.timeout),
+            (FETCH_MAX_RESPONSE_HEAD, self.max_response_head),
+            (FETCH_MAX_SIZE, self.max_size),
         ]
     }
 }
@@ -2126,6 +2257,13 @@ pub struct LimitsConfig {
     /// their number, and the tighter of the two on a body question: a caller
     /// may ask for one dialog and still be answered with a clipped `INVITE`.
     pub mcp_max_body_bytes: Option<u64>,
+    /// Bytes ONE whole paged MCP response may carry (default: 1048576).
+    ///
+    /// `mcp_max_rows` bounds how many rows a page carries and
+    /// `mcp_max_body_bytes` how wide one body in a row can be; this bounds
+    /// the page as a whole. Past it a paged tool drops whole rows from the
+    /// end and answers `truncated_by: "bytes"` with a cursor to the rest.
+    pub mcp_max_response_bytes: Option<u64>,
     /// Longest ONE `await_condition` MCP call may wait, in seconds
     /// (default: 60).
     ///
@@ -2292,6 +2430,12 @@ impl LimitsConfig {
         // Rejected rather than read as "unlimited" or "default": both would
         // turn a typo into silent behavior the operator did not ask for.
         refuse_zero("[limits] mcp_max_rows", self.mcp_max_rows)?;
+        // Same judgement as `mcp_max_rows`: 0 would answer every page with
+        // one row and a cursor, a setting no operator means.
+        refuse_zero(
+            "[limits] mcp_max_response_bytes",
+            self.mcp_max_response_bytes,
+        )?;
         refuse_zero("[limits] max_streams", self.max_streams)?;
         refuse_zero("[limits] max_reassembly", self.max_reassembly)?;
         // Zero is refused rather than read as "never hold anything": a zero
@@ -2887,7 +3031,7 @@ impl Config {
     /// # Errors
     /// `crate::Error::ConfigInvalid`, naming the first such key.
     pub fn validate_paths(&self) -> Result<(), crate::Error> {
-        let keys: [(&str, Option<&Path>); 18] = [
+        let keys: [(&str, Option<&Path>); 20] = [
             ("[hep] tls_ca", self.hep.tls_ca.as_deref()),
             ("[hep] tls_extra_ca", self.hep.tls_extra_ca.as_deref()),
             ("[hep] tls_cert", self.hep.tls_cert.as_deref()),
@@ -2921,6 +3065,11 @@ impl Config {
             ("[vcon_forward] ca", self.vcon_forward.ca.as_deref()),
             ("[vcon_forward] done", self.vcon_forward.done.as_deref()),
             ("[vcon_forward] failed", self.vcon_forward.failed.as_deref()),
+            (
+                "[vcon_fetch] auth_file",
+                self.vcon_fetch.auth_file.as_deref(),
+            ),
+            ("[vcon_fetch] ca", self.vcon_fetch.ca.as_deref()),
         ];
         for (key, value) in keys {
             if value.is_some_and(|p| p.as_os_str().is_empty()) {
@@ -4386,7 +4535,7 @@ column_selector = "F10"
                     replace_url = \"https://store.example.com/v1/vcons/{uuid}\"\n\
                     auth_file = \"/etc/sipnab/vcon.auth\"\nca = \"/etc/sipnab/store-ca.pem\"\n\
                     done = \"/srv/sent\"\nfailed = \"/srv/held\"\ninterval = 7\ntimeout = 9\n\
-                    compat = \"vcon-store\"\nbackoff_first = 4\nbackoff_cap = 120\n\
+                    backoff_first = 4\nbackoff_cap = 120\n\
                     max_response_head = 16384\nmax_error_body = 2048";
         let text = format!("[vcon_forward]\n{body}\n");
         assert_eq!(Config::unknown_keys(&text)?, Vec::<String>::new());
@@ -4490,26 +4639,24 @@ column_selector = "F10"
         Ok(())
     }
 
-    /// `compat` and `kind` accept exactly the names their flags accept.
+    /// `kind` accepts exactly the names its flag accepts.
     #[test]
     fn the_vcon_forward_names_are_the_flags_names() -> Outcome {
-        for (key, names) in [("compat", FORWARD_COMPAT), ("kind", FORWARD_KINDS)] {
-            for name in names {
-                assert!(
-                    forward_keys(&format!("{key} = {name:?}"))?
-                        .validate()
-                        .is_ok(),
-                    "{key} {name}"
-                );
-            }
-            for bad in ["x", "", "VCON-STORE", "off"] {
-                let e = forward_keys(&format!("{key} = {bad:?}"))?
+        for name in FORWARD_KINDS {
+            assert!(
+                forward_keys(&format!("kind = {name:?}"))?
                     .validate()
-                    .err()
-                    .ok_or("unknown name accepted")?
-                    .to_string();
-                assert!(e.contains(&format!("[vcon_forward] {key}")), "{e}");
-            }
+                    .is_ok(),
+                "kind {name}"
+            );
+        }
+        for bad in ["x", "", "VCON-STORE", "off"] {
+            let e = forward_keys(&format!("kind = {bad:?}"))?
+                .validate()
+                .err()
+                .ok_or("unknown name accepted")?
+                .to_string();
+            assert!(e.contains("[vcon_forward] kind"), "{e}");
         }
         Ok(())
     }
@@ -4673,6 +4820,7 @@ column_selector = "F10"
             lint_max_per_rule: Some(25),
             exec_queue_depth: Some(100),
             mcp_max_body_bytes: Some(4096),
+            mcp_max_response_bytes: Some(1_048_576),
             mcp_max_wait_seconds: Some(120),
             mcp_max_findings: Some(1000),
             mcp_sweep_max_files: Some(40),
@@ -4707,6 +4855,7 @@ column_selector = "F10"
     fn truncation_caps_parse_are_registered_and_reject_zero() -> Result<(), TestError> {
         for key in [
             "mcp_max_body_bytes",
+            "mcp_max_response_bytes",
             "mcp_max_wait_seconds",
             "mcp_sweep_max_files",
             "mcp_sweep_deadline_ms",

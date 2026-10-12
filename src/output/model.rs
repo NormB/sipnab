@@ -56,7 +56,8 @@ pub struct DialogSummary {
     pub to_user: Option<String>,
     /// Number of SIP messages in the dialog.
     pub msg_count: usize,
-    /// Final INVITE response code, when the call reached one.
+    /// Final response code of the dialog's INVITE, or of the request that
+    /// opened a dialog without one, when it reached one.
     ///
     /// Carried beside `state` because `state` collapses every release cause
     /// into one word: 403, 404, 408, 486, 503 and 603 are all `Failed`, and an
@@ -878,6 +879,7 @@ mod wideband_tests {
             ssrc: 0x1234,
             src: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)), 20000),
             dst: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2)), 30000),
+            session: 0,
         };
         let hdr = RtpHeader {
             version: 2,

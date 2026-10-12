@@ -444,3 +444,98 @@ fn the_site_never_advertises_a_version_that_was_never_tagged() -> Result<(), Tes
     );
     Ok(())
 }
+
+/// Problems with dated `CHANGELOG.md` entries that have no tag.
+///
+/// Gate 6 reads the five newest entries. Older entries need the same answer:
+/// a dated entry with no tag and no word about it reads as a release a user
+/// can install. An untagged entry other than the in-flight `crate_v` must say
+/// `Not released.` and name the tagged, later version its changes first
+/// shipped in, as `first shipped in X.Y.Z`.
+fn untagged_entry_problems(
+    changelog: &str,
+    tags: &[(u32, u32, u32)],
+    crate_v: (u32, u32, u32),
+) -> Result<Vec<String>, TestError> {
+    let heading = regex::Regex::new(r"(?m)^## \[(\d+\.\d+\.\d+)\] - \d{4}-\d{2}-\d{2}")?;
+    let note = regex::Regex::new(r"Not released\. .*?first shipped in (\d+\.\d+\.\d+)")?;
+    let starts: Vec<(usize, &str)> = heading
+        .captures_iter(changelog)
+        .filter_map(|c| Some((c.get(0)?.start(), c.get(1)?.as_str())))
+        .collect();
+    let mut problems = Vec::new();
+    for (i, (start, version)) in starts.iter().enumerate() {
+        let v = release_tag(&format!("v{version}")).ok_or("x.y.z")?;
+        if tags.contains(&v) || v == crate_v {
+            continue;
+        }
+        let end = starts.get(i + 1).map_or(changelog.len(), |(s, _)| *s);
+        let body = changelog
+            .get(*start..end)
+            .ok_or("entry bounds")?
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ");
+        let Some(shipped) = note.captures(&body).and_then(|c| c.get(1)) else {
+            problems.push(format!(
+                "{version} is dated, has no v{version} tag, and does not say \
+                 `Not released.` with the version it first shipped in"
+            ));
+            continue;
+        };
+        let shipped_v = release_tag(&format!("v{}", shipped.as_str())).ok_or("x.y.z")?;
+        if !tags.contains(&shipped_v) || shipped_v <= v {
+            problems.push(format!(
+                "{version} says it first shipped in {}, which is not a later \
+                 tagged version",
+                shipped.as_str()
+            ));
+        }
+    }
+    Ok(problems)
+}
+
+/// 11. Every dated changelog entry either has a tag or says it was not
+///     released and where its changes shipped instead.
+#[test]
+fn every_untagged_dated_entry_says_it_was_not_released() -> Result<(), TestError> {
+    let tags = release_tags()?;
+    assert!(tags.len() >= 5, "shallow clone: {} tags", tags.len());
+    let crate_v = release_tag(&format!("v{}", env!("CARGO_PKG_VERSION")))
+        .ok_or("Cargo.toml version is x.y.z")?;
+    let problems = untagged_entry_problems(&read("CHANGELOG.md")?, &tags, crate_v)?;
+    assert!(
+        problems.is_empty(),
+        "CHANGELOG.md:\n{}",
+        problems.join("\n")
+    );
+    Ok(())
+}
+
+/// The predicate passes a tagged entry, the in-flight entry and an annotated
+/// one, and reports a bare untagged entry and a note naming an untagged or
+/// earlier version.
+#[test]
+fn the_untagged_entry_predicate_needs_a_note_naming_a_later_tag() -> Result<(), TestError> {
+    let tags = [(1, 0, 0), (1, 0, 2)];
+    let inflight = (1, 0, 3);
+    let page = |body: &str| {
+        format!(
+            "## [1.0.3] - 2026-01-04\n\n## [1.0.2] - 2026-01-03\n\n{body}## [1.0.0] - 2026-01-01\n"
+        )
+    };
+    let ok = page(
+        "## [1.0.1] - 2026-01-02\n\nNot released. There is no `v1.0.1` tag;\nthese changes first shipped in 1.0.2.\n\n",
+    );
+    assert!(untagged_entry_problems(&ok, &tags, inflight)?.is_empty());
+    let bare = page("## [1.0.1] - 2026-01-02\n\n- a change\n\n");
+    assert_eq!(untagged_entry_problems(&bare, &tags, inflight)?.len(), 1);
+    let earlier = page("## [1.0.1] - 2026-01-02\n\nNot released. first shipped in 1.0.0.\n\n");
+    assert_eq!(untagged_entry_problems(&earlier, &tags, inflight)?.len(), 1);
+    let untagged = page("## [1.0.1] - 2026-01-02\n\nNot released. first shipped in 1.0.3.\n\n");
+    assert_eq!(
+        untagged_entry_problems(&untagged, &tags, inflight)?.len(),
+        1
+    );
+    Ok(())
+}

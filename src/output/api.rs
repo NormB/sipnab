@@ -298,6 +298,15 @@ pub struct ApiState {
     /// (both halves `None`) is a server with no relay access, which answers
     /// those routes `not_configured` -- the state every test here builds.
     pub relay_query: RelayRestConfig,
+    /// The numbers the diagnostic filter aliases compare against, resolved
+    /// from the command line and config by the caller that starts the server,
+    /// as [`Self::max_rows`] is.
+    ///
+    /// Every `filter` query parameter is compiled with
+    /// [`crate::sip::dsl::parse_filter`] and these thresholds, so
+    /// `?filter=slow-setup` selects the dialogs `--filter slow-setup` selects.
+    /// `default()` is the shipped figures, the state every test here builds.
+    pub alias_thresholds: crate::sip::dsl::AliasThresholds,
     /// The SAME alert engine the MCP server holds, for `GET /v1/security/findings`.
     ///
     /// `None` on a build or run with no engine — every test in this module, and
@@ -317,6 +326,11 @@ pub struct ApiState {
     /// the flag) makes that route answer `not_configured` — a file-reading
     /// capability is opt-in, like [`Self::relay_query`].
     pub file_root: Option<std::path::PathBuf>,
+    /// The `--export-vcon-dir` spool `GET /v1/vcon/spool` reads, the same
+    /// directory the MCP server's `vcon_spool_status` reads. `None` (every
+    /// test here, and any run started without the flag) makes that route
+    /// answer 503 naming the flag.
+    pub vcon_spool: Option<std::path::PathBuf>,
     /// The run's pipeline options, which `GET /v1/captures/compare` reads both
     /// files with, so a file reads as it does given to `-I` on the same command
     /// line (`--hep-parse`, `--portrange`, `--no-rtp`, `--no-dialog`,
@@ -658,11 +672,14 @@ pub struct DialogListParams {
     pub state: Option<String>,
     /// Filter by From user (regex pattern).
     pub from: Option<String>,
-    /// Filter by a DSL expression — the same language the CLI `--filter` and
-    /// the TUI filter dialog compile (e.g. `problems`, `from.user == '1001'`,
-    /// `payload =~ 'scanner'`, `method == 'INVITE' AND rtp.loss > 2.0`). An
-    /// expression that does not parse is a 400, so a client learns its query
-    /// was rejected rather than receiving every row. ANDed with `state`/`from`.
+    /// Filter by a DSL expression or a diagnostic alias name — what the CLI
+    /// `--filter` and the MCP `filter` argument accept (e.g. `problems`,
+    /// `slow-setup`, `from.user == '1001'`, `payload =~ 'scanner'`,
+    /// `method == 'INVITE' AND rtp.loss > 2.0`). An alias expands with the
+    /// thresholds the server was started with. A value that is neither an
+    /// alias nor an expression that parses is a 400, so a client learns its
+    /// query was rejected rather than receiving every row. ANDed with
+    /// `state`/`from`.
     pub filter: Option<String>,
     /// Only dialogs whose first message is at or after this RFC 3339 instant
     /// (e.g. `2026-09-15T12:00:00Z`). A timestamp that does not parse is a 400.
@@ -696,8 +713,9 @@ pub struct AggregateParams {
     /// `response_code`, `method`, `from.user`, `to.user`, `ua`, `src.ip`,
     /// `dst.ip`, `rtp.codec`). A key outside that set is a 400. Required.
     pub by: Option<String>,
-    /// A DSL expression narrowing which dialogs are counted, the same language
-    /// `/v1/dialogs?filter=` compiles. An expression that does not parse is a 400.
+    /// A DSL expression or diagnostic alias name narrowing which dialogs are
+    /// counted, what `/v1/dialogs?filter=` accepts. A value that is neither an
+    /// alias nor an expression that parses is a 400.
     pub filter: Option<String>,
     /// Keep the largest N buckets; the rest fold into `other_count`. Clamped to
     /// the server's row cap.
@@ -762,8 +780,9 @@ pub struct RatesParams {
     /// `pdd_p50`, `pdd_p95`, `mos_p10`, `retransmit_rate`. Defaults to all of
     /// them. An unknown name is a 400.
     pub metrics: Option<String>,
-    /// A DSL expression narrowing which dialogs are grouped, the same language
-    /// `/v1/dialogs?filter=` compiles. An expression that does not parse is a 400.
+    /// A DSL expression or diagnostic alias name narrowing which dialogs are
+    /// grouped, what `/v1/dialogs?filter=` accepts. A value that is neither an
+    /// alias nor an expression that parses is a 400.
     pub filter: Option<String>,
     /// Keep the largest N groups by dialog count; the rest fold into
     /// `other_count`. Clamped to the server's row cap.
@@ -777,8 +796,9 @@ pub struct TalkersParams {
     /// Which kind of talker to rank: `ip`, `ua` or `prefix` (the dialed
     /// number's leading digits). A key outside that set is a 400. Required.
     pub by: Option<String>,
-    /// A DSL expression narrowing which dialogs count, the same language
-    /// `/v1/dialogs?filter=` compiles. An expression that does not parse is a 400.
+    /// A DSL expression or diagnostic alias name narrowing which dialogs count,
+    /// what `/v1/dialogs?filter=` accepts. A value that is neither an alias nor
+    /// an expression that parses is a 400.
     pub filter: Option<String>,
     /// Maximum rows to return, clamped to the server's row cap. `distinct_talkers`
     /// still counts every talker, so a page is never mistaken for the whole rank.
@@ -1012,6 +1032,10 @@ pub fn build_router(state: ApiState) -> Router {
     let router = router.route("/v1/vcon/validate", axum::routing::post(post_vcon_validate));
     #[cfg(feature = "vcon")]
     let router = router.route("/v1/vcon/analyze", axum::routing::post(post_vcon_analyze));
+    // The spool's state, read by the function the MCP tool and the CLI use,
+    // which is part of the vcon feature.
+    #[cfg(feature = "vcon")]
+    let router = router.route("/v1/vcon/spool", get(get_vcon_spool));
     // Only where a HEP listener can exist, for the reason the vCon routes
     // above are gated: "this sipnab cannot" must not read as "nobody sends".
     #[cfg(feature = "hep")]
@@ -1979,13 +2003,7 @@ async fn get_aggregate(
     }
 
     // Same DSL and 400-on-parse-failure as `/v1/dialogs?filter=`.
-    let dsl = match params.filter.as_deref() {
-        Some(expr) => Some(
-            crate::sip::dsl::FilterExpr::parse(expr)
-                .map_err(|e| Problem::detailed(StatusCode::BAD_REQUEST, format!("filter: {e}")))?,
-        ),
-        None => None,
-    };
+    let dsl = compile_query_filter(&state.alias_thresholds, params.filter.as_deref())?;
     let top_n = resolve_page_limit(params.top_n, state.max_rows);
 
     let ds = state.dialog_store.read();
@@ -2359,13 +2377,7 @@ async fn get_rates(
         None => all_metrics.clone(),
     };
 
-    let dsl = match params.filter.as_deref() {
-        Some(expr) => Some(
-            crate::sip::dsl::FilterExpr::parse(expr)
-                .map_err(|e| Problem::detailed(StatusCode::BAD_REQUEST, format!("filter: {e}")))?,
-        ),
-        None => None,
-    };
+    let dsl = compile_query_filter(&state.alias_thresholds, params.filter.as_deref())?;
     let top_n = resolve_page_limit(params.top_n, state.max_rows);
 
     let ds = state.dialog_store.read();
@@ -2525,13 +2537,7 @@ async fn get_talkers(
     )
     .map_err(|e| Problem::detailed(StatusCode::BAD_REQUEST, e))?;
 
-    let dsl = match params.filter.as_deref() {
-        Some(expr) => Some(
-            crate::sip::dsl::FilterExpr::parse(expr)
-                .map_err(|e| Problem::detailed(StatusCode::BAD_REQUEST, format!("filter: {e}")))?,
-        ),
-        None => None,
-    };
+    let dsl = compile_query_filter(&state.alias_thresholds, params.filter.as_deref())?;
     let limit = resolve_page_limit(params.limit, state.max_rows);
 
     let ds = state.dialog_store.read();
@@ -3458,6 +3464,77 @@ async fn post_vcon_analyze(
     Ok(Json(analysis))
 }
 
+/// Query parameters for `GET /v1/vcon/spool`.
+#[cfg(feature = "vcon")]
+#[derive(Debug, Deserialize, utoipa::IntoParams)]
+#[into_params(parameter_in = Query)]
+pub struct VconSpoolParams {
+    /// Most failed records to return (default 50, ceiling `--api-max-rows`).
+    /// The three counts are never bounded.
+    pub limit: Option<usize>,
+    /// The previous answer's `next_cursor`, verbatim. Omit on the first call.
+    pub cursor: Option<String>,
+}
+
+#[cfg(feature = "vcon")]
+/// `GET /v1/vcon/spool` — the vCon export spool's state.
+///
+/// # Arguments
+///
+/// * `state` — Shared application state (carries `--export-vcon-dir`).
+/// * `addr` — Client socket address used for rate limiting.
+/// * `headers` — Request headers (auth).
+/// * `params` — `limit` and `cursor` for the failed records.
+///
+/// # Returns
+///
+/// 200 with the counts and one page of failed records; 503 when the server
+/// was started without `--export-vcon-dir`; 500 naming a directory that
+/// exists and cannot be read; 401/503 from the guard.
+///
+/// # Side effects
+///
+/// Reads the spool's files; mutates the rate limiter. Sends, moves and
+/// deletes nothing.
+#[utoipa::path(
+    get,
+    path = "/v1/vcon/spool",
+    tag = "operations",
+    summary = "The vCon export spool's state",
+    description = "Counts the `--export-vcon-dir` spool: containers pending, delivered and failed, and for each failed container the `<name>.error.json` record the forwarder wrote beside it, with the store's status and the start of its answer.\n\nA snapshot of files on disk at `as_of`. The forwarder (`sipnab --vcon-forward`) is a separate process, and this route sends, fetches, moves and deletes nothing. It reads the forwarder's default `delivered/` and `failed/` directories beside the spool. The same `vcon_spool::snapshot` answers the MCP `vcon_spool_status` tool and `sipnab --vcon-spool-status`.",
+    params(VconSpoolParams),
+    security(("bearer" = [])),
+    responses(
+        (status = 200, description = "The counts and one page of failed records.", body = crate::app::vcon_spool::SpoolStatus),
+        (status = 401, description = "No bearer credential, or one this server does not accept.", body = schema::ProblemJson, content_type = "application/problem+json"),
+        (status = 500, description = "A spool directory exists and cannot be read.", body = schema::ProblemJson, content_type = "application/problem+json"),
+        (status = 503, description = "Over the per-source-IP rate limit, or the server was started without `--export-vcon-dir`.", body = schema::ProblemJson, content_type = "application/problem+json"),
+    )
+)]
+async fn get_vcon_spool(
+    State(state): State<ApiState>,
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+    Query(params): Query<VconSpoolParams>,
+) -> Result<impl IntoResponse, Problem> {
+    guard(&state, &headers, addr.ip())?;
+    let spool = state.vcon_spool.as_deref().ok_or_else(|| {
+        Problem::detailed(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "this server has no vCon export spool: start sipnab with \
+             --export-vcon-when <EXPR> --export-vcon-dir <DIR>, and this route \
+             reads that directory",
+        )
+    })?;
+    let page = crate::app::vcon_spool::SpoolPage {
+        after: params.cursor.as_deref(),
+        limit: resolve_page_limit(params.limit, state.max_rows),
+    };
+    let status = crate::app::vcon_spool::snapshot(spool, page, chrono::Utc::now())
+        .map_err(|e| Problem::detailed(StatusCode::INTERNAL_SERVER_ERROR, e))?;
+    Ok(Json(status))
+}
+
 /// `GET /v1/dialogs` — list dialogs with optional filtering and pagination.
 ///
 /// # Arguments
@@ -3521,13 +3598,7 @@ async fn list_dialogs(
     // expression is a 400 with a reason rather than a silent unfiltered page.
     // Deliberately stricter than the `from` regex above, which is best-effort:
     // a structured query a client got wrong is a client error it must see.
-    let dsl = match params.filter.as_deref() {
-        Some(expr) => Some(
-            crate::sip::dsl::FilterExpr::parse(expr)
-                .map_err(|e| Problem::detailed(StatusCode::BAD_REQUEST, format!("filter: {e}")))?,
-        ),
-        None => None,
-    };
+    let dsl = compile_query_filter(&state.alias_thresholds, params.filter.as_deref())?;
 
     // Parse the time window up front, so a malformed timestamp is a 400 rather
     // than a silently ignored window a client would read as the answer to its
@@ -4122,6 +4193,29 @@ fn object_body<T: serde::de::DeserializeOwned>(
         return Err(Problem::new(StatusCode::BAD_REQUEST));
     }
     serde_json::from_value(raw).map_err(|_| Problem::new(StatusCode::BAD_REQUEST))
+}
+
+/// Compile a `filter` query parameter: a diagnostic alias name or a DSL
+/// expression, the way `--filter` and every MCP tool's `filter` accept one.
+///
+/// The one place a REST handler turns that parameter into a [`FilterExpr`].
+/// `/v1/dialogs`, `/v1/aggregate`, `/v1/dialogs/rates` and `/v1/talkers` all
+/// call it, so no route can accept a spelling another refuses.
+///
+/// # Errors
+///
+/// A `400` whose detail is `filter: ` followed by the parse error, which names
+/// the text and the position where it stopped parsing.
+pub(crate) fn compile_query_filter(
+    thresholds: &crate::sip::dsl::AliasThresholds,
+    filter: Option<&str>,
+) -> Result<Option<crate::sip::dsl::FilterExpr>, Problem> {
+    filter
+        .map(|expr| {
+            crate::sip::dsl::parse_filter(expr, thresholds)
+                .map_err(|e| Problem::detailed(StatusCode::BAD_REQUEST, format!("filter: {e}")))
+        })
+        .transpose()
 }
 
 /// A JSON request body, or the problem that refuses it.
@@ -6099,7 +6193,8 @@ pub mod schema {
         pub call_id: String,
         /// The dialog state (`InCall`, `Failed`, `Completed`, …).
         pub state: String,
-        /// The final INVITE response code, null while the call is in progress.
+        /// The final response code of the dialog's INVITE, or of the request
+        /// that opened a dialog without one; null while it has none.
         pub final_status_code: Option<u16>,
         /// How many SIP messages the dialog holds.
         pub msg_count: usize,
@@ -6515,8 +6610,8 @@ pub mod schema {
         /// SIP messages in the dialog.
         #[schema(minimum = 0)]
         pub msg_count: usize,
-        /// Final INVITE response code, once the call reached one. Absent —
-        /// never zero — while the call is still in progress.
+        /// Final response code of the dialog's INVITE, or of the request that
+        /// opened a dialog without one. Absent — never zero — while it has none.
         pub final_status_code: Option<u16>,
         /// First to last message, seconds. `0` for a single-message dialog.
         pub duration_sec: f64,
@@ -7048,7 +7143,8 @@ pub mod schema {
         pub to_display: Option<String>,
         /// Current dialog state.
         pub state: String,
-        /// Final INVITE response code, once the call reached one.
+        /// Final response code of the dialog's INVITE, or of the request that
+        /// opened a dialog without one, once it reached one.
         pub final_status_code: Option<u16>,
         /// Reason phrase that came with `final_status_code`.
         pub final_status_reason: Option<String>,
@@ -7401,7 +7497,7 @@ pub fn openapi_json() -> String {
 #[cfg(feature = "vcon")]
 #[derive(utoipa::OpenApi)]
 #[openapi(
-    paths(get_dialog_vcon, post_vcon_validate, post_vcon_analyze),
+    paths(get_dialog_vcon, post_vcon_validate, post_vcon_analyze, get_vcon_spool),
     components(schemas(
         schema::Vcon,
         schema::VconValidation,
@@ -7409,7 +7505,11 @@ pub fn openapi_json() -> String {
         crate::output::vcon_analysis::VconAnalysis,
         crate::output::vcon_analysis::AnalyzedDialog,
         crate::output::vcon_analysis::LadderRow,
-        crate::output::vcon_analysis::ContainerFinding
+        crate::output::vcon_analysis::ContainerFinding,
+        crate::app::vcon_spool::SpoolStatus,
+        crate::app::vcon_spool::SpoolDirectory,
+        crate::app::vcon_spool::SpoolFailure,
+        crate::app::vcon_forward::FailureRecord
     ))
 )]
 struct VconDoc;
@@ -8716,6 +8816,7 @@ mod tests {
     fn state_with_file_root() -> ApiState {
         ApiState {
             file_root: Some(pcap_samples_root()),
+            vcon_spool: None,
             ..make_state()
         }
     }
@@ -8786,6 +8887,7 @@ mod tests {
 
         let state = ApiState {
             file_root: Some(root.path().to_path_buf()),
+            vcon_spool: None,
             ..make_state()
         };
         let app = build_router(state);
@@ -8854,6 +8956,7 @@ mod tests {
         for (hep_parse, dialogs) in [(true, 1), (false, 0)] {
             let state = ApiState {
                 file_root: Some(root.path().to_path_buf()),
+                vcon_spool: None,
                 pipeline_options: crate::pipeline::PipelineOptions {
                     hep_parse,
                     ..Default::default()
@@ -8931,6 +9034,92 @@ mod tests {
     }
 
     // ── vcon validate (PAR3: validate_vcon) ───────────────────────────
+
+    /// A spool for the `/v1/vcon/spool` tests: two pending, one delivered,
+    /// three failed with their records.
+    #[cfg(feature = "vcon")]
+    fn spool_fixture() -> Result<tempfile::TempDir, TestError> {
+        let dir = tempfile::tempdir().map_err(|e| format!("tempdir: {e:?}"))?;
+        let put = |sub: &str, name: &str, text: &str| -> Result<(), TestError> {
+            let d = dir.path().join(sub);
+            std::fs::create_dir_all(&d).map_err(|e| format!("mkdir: {e:?}"))?;
+            std::fs::write(d.join(name), text).map_err(|e| format!("write: {e:?}"))?;
+            Ok(())
+        };
+        put("", "p1.vcon.json", "{}")?;
+        put("", "p2.vcon.json", "{}")?;
+        put("delivered", "d1.vcon.json", "{}")?;
+        for (name, status) in [
+            ("f1.vcon.json", 400),
+            ("f2.vcon.json", 409),
+            ("f3.vcon.json", 422),
+        ] {
+            put("failed", name, "{}")?;
+            let record = serde_json::json!({
+                "at": "2026-10-07T12:00:00Z", "body": format!("answer {status}"),
+                "body_truncated": false, "file": name, "method": "POST",
+                "reason": null, "status": status, "url": "https://vcon.example.com/v1/vcons",
+            });
+            put("failed", &format!("{name}.error.json"), &record.to_string())?;
+        }
+        Ok(dir)
+    }
+
+    /// `GET /v1/vcon/spool` reports the spool's counts and pages its failed
+    /// records by `limit` and `cursor`, the store's answer unfenced.
+    #[cfg(feature = "vcon")]
+    #[tokio::test]
+    async fn vcon_spool_reports_counts_and_pages_failures() -> Result<(), TestError> {
+        let dir = spool_fixture()?;
+        let mut state = make_state();
+        state.vcon_spool = Some(dir.path().to_path_buf());
+
+        let get = |uri: String| {
+            let app = build_router(state.clone());
+            async move {
+                let resp = app
+                    .oneshot(test_request(&uri)?)
+                    .await
+                    .map_err(|e| format!("oneshot: {e:?}"))?;
+                let status = resp.status();
+                let body = body_to_string(resp.into_body()).await?;
+                let v: Value = serde_json::from_str(&body).map_err(|e| format!("JSON: {e:?}"))?;
+                Ok::<_, TestError>((status, v))
+            }
+        };
+        let (status, first) = get("/v1/vcon/spool?limit=2".to_string()).await?;
+        assert_eq!(status, StatusCode::OK, "{first}");
+        assert_eq!(first["pending"], 2, "{first}");
+        assert_eq!(first["delivered"], 1, "{first}");
+        assert_eq!(first["failed"], 3, "{first}");
+        assert_eq!(first["returned"], 2, "{first}");
+        assert_eq!(first["truncated"], true, "{first}");
+        assert_eq!(
+            first["failures"][0]["record"]["body"], "answer 400",
+            "{first}"
+        );
+        let cursor = first["next_cursor"].as_str().ok_or("a cursor")?;
+
+        let (_, second) = get(format!("/v1/vcon/spool?limit=2&cursor={cursor}")).await?;
+        assert_eq!(second["returned"], 1, "{second}");
+        assert_eq!(second["failures"][0]["file"], "f3.vcon.json", "{second}");
+        assert!(second["next_cursor"].is_null(), "{second}");
+        Ok(())
+    }
+
+    /// A server started without `--export-vcon-dir` answers 503 naming it.
+    #[cfg(feature = "vcon")]
+    #[tokio::test]
+    async fn vcon_spool_without_a_spool_is_503() -> Result<(), TestError> {
+        let resp = build_router(make_state())
+            .oneshot(test_request("/v1/vcon/spool")?)
+            .await
+            .map_err(|e| format!("oneshot: {e:?}"))?;
+        assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
+        let body = body_to_string(resp.into_body()).await?;
+        assert!(body.contains("--export-vcon-dir"), "{body}");
+        Ok(())
+    }
 
     /// `POST /v1/vcon/validate` checks a container against the vendored schema.
     /// An empty object is not a valid vCon, so the verdict is `invalid` with
@@ -9103,6 +9292,7 @@ mod tests {
     fn make_state() -> ApiState {
         ApiState {
             relay_query: Default::default(),
+            alias_thresholds: Default::default(),
             dialog_store: Arc::new(RwLock::new(DialogStore::new(1000, false))),
             stream_store: Arc::new(RwLock::new(StreamStore::new(1000))),
             verifier: Arc::new(crate::auth::TokenVerifier::new(
@@ -9130,6 +9320,7 @@ mod tests {
             alert_engine: None,
             armed_detections: Vec::new(),
             file_root: None,
+            vcon_spool: None,
             pipeline_options: Default::default(),
             archive: ArchivePasswordPolicy::default(),
         }
@@ -9975,6 +10166,7 @@ mod tests {
     fn make_state_with_key(key: &str) -> ApiState {
         ApiState {
             relay_query: Default::default(),
+            alias_thresholds: Default::default(),
             dialog_store: Arc::new(RwLock::new(DialogStore::new(1000, false))),
             stream_store: Arc::new(RwLock::new(StreamStore::new(1000))),
             verifier: Arc::new(crate::auth::TokenVerifier::new(
@@ -10005,6 +10197,7 @@ mod tests {
             alert_engine: None,
             armed_detections: Vec::new(),
             file_root: None,
+            vcon_spool: None,
             pipeline_options: Default::default(),
             archive: ArchivePasswordPolicy::default(),
         }
@@ -11373,6 +11566,7 @@ mod tests {
     fn make_state_with_signing_key(key: &[u8]) -> ApiState {
         ApiState {
             relay_query: Default::default(),
+            alias_thresholds: Default::default(),
             dialog_store: Arc::new(RwLock::new(DialogStore::new(1000, false))),
             stream_store: Arc::new(RwLock::new(StreamStore::new(1000))),
             verifier: Arc::new(crate::auth::TokenVerifier::new(
@@ -11404,6 +11598,7 @@ mod tests {
             alert_engine: None,
             armed_detections: Vec::new(),
             file_root: None,
+            vcon_spool: None,
             pipeline_options: Default::default(),
             archive: ArchivePasswordPolicy::default(),
         }
@@ -12311,6 +12506,7 @@ mod tests {
         // Create state with rate_limiter max_rps = 1
         let state = ApiState {
             relay_query: Default::default(),
+            alias_thresholds: Default::default(),
             dialog_store: Arc::new(RwLock::new(DialogStore::new(1000, false))),
             stream_store: Arc::new(RwLock::new(StreamStore::new(1000))),
             verifier: Arc::new(crate::auth::TokenVerifier::new(
@@ -12338,6 +12534,7 @@ mod tests {
             alert_engine: None,
             armed_detections: Vec::new(),
             file_root: None,
+            vcon_spool: None,
             pipeline_options: Default::default(),
             archive: ArchivePasswordPolicy::default(),
         };
@@ -13018,6 +13215,237 @@ mod tests {
         Ok(())
     }
 
+    // ── `filter` accepts a diagnostic alias on every route ────────────
+
+    /// `populate_dialogs` plus answers that separate the aliases: `call-1`
+    /// rings 5 s after its INVITE (post-dial delay 5 s) and `call-2` is
+    /// refused with a 486, so it is `Failed`. `call-0` stays unanswered.
+    ///
+    /// `problems` therefore selects `call-2` alone on the shipped thresholds,
+    /// and `slow-setup` selects `call-1` only when the post-dial-delay
+    /// threshold is under 5 s — each alias picks a strict subset, so a route
+    /// that ignored the filter could not pass by returning everything.
+    fn populate_alias_fixture(state: &ApiState) -> Result<(), TestError> {
+        populate_dialogs(state)?;
+        let mut ds = state.dialog_store.write();
+        let ts = chrono::TimeZone::with_ymd_and_hms(&chrono::Utc, 2024, 6, 15, 12, 0, 0)
+            .single()
+            .ok_or("valid fixture timestamp")?;
+        let localhost = std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST);
+        for (i, status, after_secs) in [(1, "180 Ringing", 5), (2, "486 Busy Here", 1)] {
+            let raw = build_sip(
+                &format!("SIP/2.0 {status}"),
+                &[
+                    &format!("From: <sip:user{i}@example.com>;tag=t{i}"),
+                    "To: <sip:bob@example.com>;tag=callee",
+                    &format!("Call-ID: call-{i}@test"),
+                    "CSeq: 1 INVITE",
+                    "Content-Length: 0",
+                ],
+                b"",
+            );
+            let msg = crate::sip::parser::parse_sip(
+                &raw,
+                ts + chrono::Duration::seconds(after_secs),
+                localhost,
+                localhost,
+                5060,
+                5060,
+                TransportProto::Udp,
+            )
+            .map_err(|e| format!("parse: {e:?}"))?;
+            ds.process_message(msg);
+        }
+        Ok(())
+    }
+
+    /// Percent-encode a query value, so an expansion's spaces, quotes and
+    /// comparison operators reach the handler as written.
+    fn query_encode(value: &str) -> String {
+        value
+            .bytes()
+            .map(|b| {
+                if b.is_ascii_alphanumeric() || b"-_.~".contains(&b) {
+                    (b as char).to_string()
+                } else {
+                    format!("%{b:02X}")
+                }
+            })
+            .collect()
+    }
+
+    /// GET `uri` through the full router and return the status and JSON body.
+    async fn get_json(state: &ApiState, uri: &str) -> Result<(StatusCode, Value), TestError> {
+        let resp = build_router(state.clone())
+            .oneshot(test_request(uri)?)
+            .await
+            .map_err(|e| format!("oneshot: {e:?}"))?;
+        let status = resp.status();
+        let body = body_to_string(resp.into_body()).await?;
+        let parsed: Value =
+            serde_json::from_str(&body).map_err(|e| format!("valid JSON from {uri}: {e:?}"))?;
+        Ok((status, parsed))
+    }
+
+    /// For every diagnostic alias, `{route}filter=<alias>` answers `200` with
+    /// exactly the body `{route}filter=<its expansion>` answers.
+    ///
+    /// The expansion is taken from `expand_alias` with the state's own
+    /// thresholds, so this is a statement about the route, not a second copy
+    /// of the alias table. Returns the `problems` body for the caller's
+    /// route-specific check that the alias narrowed the selection.
+    async fn assert_every_alias_is_its_expansion(
+        state: &ApiState,
+        route: &str,
+    ) -> Result<Value, TestError> {
+        let mut problems = Value::Null;
+        for alias in crate::sip::dsl::DIAGNOSTIC_ALIASES {
+            let expansion = crate::sip::dsl::expand_alias(alias, &state.alias_thresholds)
+                .ok_or_else(|| format!("{alias} is a listed alias"))?;
+            let (alias_status, by_alias) =
+                get_json(state, &format!("{route}filter={alias}")).await?;
+            assert_eq!(
+                alias_status,
+                StatusCode::OK,
+                "{route}filter={alias} must be accepted: {by_alias}"
+            );
+            let (expansion_status, by_expansion) = get_json(
+                state,
+                &format!("{route}filter={}", query_encode(&expansion)),
+            )
+            .await?;
+            assert_eq!(
+                expansion_status,
+                StatusCode::OK,
+                "{expansion}: {by_expansion}"
+            );
+            assert_eq!(
+                by_alias, by_expansion,
+                "{route}filter={alias} must answer what its expansion `{expansion}` answers"
+            );
+            if alias == "problems" {
+                problems = by_alias;
+            }
+        }
+        Ok(problems)
+    }
+
+    /// `GET /v1/dialogs?filter=<alias>` selects the dialogs its expansion
+    /// selects. It answered `400 unexpected input at position 0` for every
+    /// alias, while `--filter problems` and the MCP `filter` accepted them.
+    #[tokio::test]
+    async fn list_dialogs_filter_accepts_every_alias() -> Result<(), TestError> {
+        let state = make_state();
+        populate_alias_fixture(&state)?;
+        let problems = assert_every_alias_is_its_expansion(&state, "/v1/dialogs?").await?;
+        assert_eq!(
+            problems["total"], 1,
+            "problems narrows to the 486: {problems}"
+        );
+        assert_eq!(problems["dialogs"][0]["call_id"], "call-2@test");
+        Ok(())
+    }
+
+    /// `GET /v1/aggregate?filter=<alias>` counts the dialogs its expansion
+    /// counts.
+    #[tokio::test]
+    async fn aggregate_filter_accepts_every_alias() -> Result<(), TestError> {
+        let state = make_state();
+        populate_alias_fixture(&state)?;
+        let problems =
+            assert_every_alias_is_its_expansion(&state, "/v1/aggregate?by=state&").await?;
+        assert_eq!(
+            problems["total_matched"], 1,
+            "problems narrows to the 486: {problems}"
+        );
+        Ok(())
+    }
+
+    /// `GET /v1/dialogs/rates?filter=<alias>` groups the dialogs its
+    /// expansion groups.
+    #[tokio::test]
+    async fn dialog_rates_filter_accepts_every_alias() -> Result<(), TestError> {
+        let state = make_state();
+        populate_alias_fixture(&state)?;
+        let problems =
+            assert_every_alias_is_its_expansion(&state, "/v1/dialogs/rates?by=method&").await?;
+        assert_eq!(
+            problems["total_matched"], 1,
+            "problems narrows to the 486: {problems}"
+        );
+        Ok(())
+    }
+
+    /// `GET /v1/talkers?filter=<alias>` ranks the dialogs its expansion
+    /// ranks.
+    #[tokio::test]
+    async fn talkers_filter_accepts_every_alias() -> Result<(), TestError> {
+        let state = make_state();
+        populate_alias_fixture(&state)?;
+        let problems = assert_every_alias_is_its_expansion(&state, "/v1/talkers?by=ip&").await?;
+        assert_eq!(
+            problems["total_matched"], 1,
+            "problems narrows to the 486: {problems}"
+        );
+        Ok(())
+    }
+
+    /// The thresholds an alias compares against are the state's, not the
+    /// shipped figures: `slow-setup` at a 3 s post-dial-delay threshold
+    /// selects the call that rang after 5 s, which the shipped threshold
+    /// does not.
+    #[tokio::test]
+    async fn a_rest_alias_compares_against_the_states_thresholds() -> Result<(), TestError> {
+        let mut state = make_state();
+        populate_alias_fixture(&state)?;
+        let (status, shipped) = get_json(&state, "/v1/dialogs?filter=slow-setup").await?;
+        assert_eq!(status, StatusCode::OK, "{shipped}");
+        assert_eq!(
+            shipped["total"], 0,
+            "5 s is under the shipped threshold: {shipped}"
+        );
+
+        state.alias_thresholds = crate::sip::dsl::AliasThresholds {
+            pdd_secs: 3.0,
+            ..crate::sip::dsl::AliasThresholds::default()
+        };
+        let (status, tuned) = get_json(&state, "/v1/dialogs?filter=slow-setup").await?;
+        assert_eq!(status, StatusCode::OK, "{tuned}");
+        assert_eq!(tuned["total"], 1, "5 s is over a 3 s threshold: {tuned}");
+        assert_eq!(tuned["dialogs"][0]["call_id"], "call-1@test");
+        Ok(())
+    }
+
+    /// A name that is no alias is still a `400` on every route that takes a
+    /// `filter`, and the detail names the text and points at the alias list,
+    /// so a client with a typo learns both what was refused and where the
+    /// accepted names are. Accepting aliases must not turn an unknown word
+    /// into an unfiltered page.
+    #[tokio::test]
+    async fn an_unknown_filter_name_is_still_a_400_naming_it() -> Result<(), TestError> {
+        let state = make_state();
+        populate_alias_fixture(&state)?;
+        for route in [
+            "/v1/dialogs?",
+            "/v1/aggregate?by=state&",
+            "/v1/dialogs/rates?by=method&",
+            "/v1/talkers?by=ip&",
+        ] {
+            let (status, body) = get_json(&state, &format!("{route}filter=slow_setup")).await?;
+            assert_eq!(status, StatusCode::BAD_REQUEST, "{route}: {body}");
+            let detail = body["detail"].as_str().ok_or("a 400 carries detail")?;
+            assert!(
+                detail.starts_with("filter: ") && detail.contains("'slow_setup'"),
+                "{route}: the detail names the refused text: {detail}"
+            );
+            assert!(
+                detail.contains("diagnostic aliases"),
+                "{route}: the detail points at the alias list: {detail}"
+            );
+        }
+        Ok(())
+    }
+
     // ── list_dialogs time window (PAR3: search_by_time) ───────────────
 
     /// `after` excludes dialogs that opened before it. The fixture's three
@@ -13550,6 +13978,7 @@ mod tests {
     fn make_state_with_gate(gate: &Arc<crate::output::persistence::PersistenceGate>) -> ApiState {
         ApiState {
             relay_query: Default::default(),
+            alias_thresholds: Default::default(),
             persistence_gate: Arc::clone(gate),
             ..make_state_with_key(GATE_KEY)
         }
@@ -13683,6 +14112,7 @@ mod tests {
         let tfps = crate::security::tfps::TfpsLocator::new(Some(dir.path().join("tfps_ctl")), None);
         Ok(ApiState {
             relay_query: Default::default(),
+            alias_thresholds: Default::default(),
             actions: tfps_rest_service(dir, &tfps)?,
             tfps,
             verifier: tfps_verifier(),
@@ -13696,6 +14126,7 @@ mod tests {
             .with_search_path(dir.path().as_os_str());
         Ok(ApiState {
             relay_query: Default::default(),
+            alias_thresholds: Default::default(),
             actions: tfps_rest_service(dir, &tfps)?,
             tfps,
             verifier: tfps_verifier(),
@@ -14471,6 +14902,7 @@ mod archive_password_tests {
     fn state(root: &std::path::Path, keys: &[&str]) -> ApiState {
         ApiState {
             file_root: Some(root.to_path_buf()),
+            vcon_spool: None,
             verifier: Arc::new(crate::auth::TokenVerifier::new(
                 crate::auth::VerifierConfig {
                     static_keys: keys.iter().map(|k| (*k).to_string()).collect(),
@@ -14484,6 +14916,7 @@ mod archive_password_tests {
     fn tests_make_state() -> ApiState {
         ApiState {
             relay_query: Default::default(),
+            alias_thresholds: Default::default(),
             dialog_store: Arc::new(RwLock::new(DialogStore::new(1000, false))),
             stream_store: Arc::new(RwLock::new(StreamStore::new(1000))),
             verifier: Arc::new(crate::auth::TokenVerifier::new(
@@ -14503,6 +14936,7 @@ mod archive_password_tests {
             alert_engine: None,
             armed_detections: Vec::new(),
             file_root: None,
+            vcon_spool: None,
             pipeline_options: Default::default(),
             archive: ArchivePasswordPolicy::default(),
         }
