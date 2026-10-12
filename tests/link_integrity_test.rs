@@ -1221,7 +1221,12 @@ fn wiki_intra_docs_links_resolve() -> Result<(), TestError> {
     // Attributed per file against HEAD: with HEAD's build-ci-release.md the
     // count is 1534, and docs/cli-reference.md, the other changed page, held
     // its count.
-    const EXPECTED_WIKI_LINKS: usize = 1535;
+    // 1535 -> 1542: the error-message reference. docs/errors.md +4 (Exit
+    // codes in the CLI reference, the REST API page, the MCP protocol page,
+    // the capture tuning page), and one link to it from each of
+    // docs/README.md, docs/troubleshooting.md and docs/cli-reference.md (+3).
+    // Attributed per file against HEAD: no link was removed.
+    const EXPECTED_WIKI_LINKS: usize = 1542;
     // Raised 459 -> 460 when SRC1 stage 1 shipped: docs/cli-reference.md's
     // `--hep-listen` row now points at cookbook recipe 6d in docs/examples.md
     // rather than restating how to pair `-L` with `-d`. Attributed per file
@@ -2456,7 +2461,8 @@ fn every_docs_page_is_linked_from_the_index() -> Result<(), TestError> {
     // 75 -> 76: docs/vcon-store.md.
     // 76 -> 86: the ten MCP tool bundle pages, docs/mcp-tools-{core,
     // signaling,captures,security,media,relay,tfps,server,vcon,tls}.md.
-    const EXPECTED_DOCS_PAGES: usize = 86;
+    // 86 -> 87: docs/errors.md, the error-message reference.
+    const EXPECTED_DOCS_PAGES: usize = 87;
     // Links are extracted from PROSE, not from the file's bytes. A raw
     // `contains("](backers.md")` counted a link that had been wrapped in an
     // HTML comment: the substring was still there, the page was reachable from

@@ -1,0 +1,583 @@
+{
+  "informational": [
+    "ICMP: {} error(s) quoted too little to name a Call-ID and {} more reached no dialog because the tracking cap was full — real evidence that appears against no call.",
+    "ICMP: {} error(s) quoting a SIP request, naming {} unreachable endpoint(s). Busiest: {}.",
+    "ICMP: {} error(s) quoting non-SIP traffic, {} of them media, across {} flow(s). Attributed to a stream or SDP endpoint: {}; matched nothing this capture holds: {}.",
+    "ICMP: {} media error(s) quoted too little to name a flow and {} more reached no flow because the tracking cap was full.",
+    "LLMNR:   ... and {} more host(s).",
+    "LLMNR:   {} looked up {}",
+    "LLMNR: hostname(s) claimed on this segment: {}.",
+    "LLMNR: name(s) queried that nothing answered for: {}.",
+    "LLMNR: {} host(s) and {} name(s) were not retained (tracking caps); the packet count above stays exact.",
+    "LLMNR: {} packet(s) from {} host(s) — Windows name resolution is active on this segment. It is the protocol Responder abuses to harvest NTLM credentials, and is normally disabled by policy.",
+    "Lint: suppressions from {} ({} pattern(s)), {} finding(s) silenced",
+    "Lint: {total} finding(s) across {dialogs} dialog(s)",
+    "Lint: {} finding(s) dropped by the per-rule cap of {}",
+    "Redaction: {} classes, key {}, {} leading digit(s) retained.",
+    "Wrote {n} token mapping(s) to '{}' (mode 0600).",
+    "Wrote {n} token mapping(s) to '{}' (mode 0600). It reverses every pseudonym in these containers, so it is as sensitive as the capture.",
+    "Wrote {written} vCon container(s) to '{}'.",
+    "[perf-stats] dialogs={} streams={} endpoint_link_scan_visits={} evict_shift_work={}",
+    "sipnab: {}"
+  ],
+  "resolved": [
+    {
+      "file": "src/app/batch.rs",
+      "call": "error!(\"{message}\")",
+      "count": 1,
+      "carries": [
+        "--export-vcon-when needs --export-vcon-dir. Nothing was exported.",
+        "Could not create the vCon directory '{}': {e}. Nothing was exported.",
+        "The {what} for Call-ID '{}' would not serialize: {e}",
+        "Could not write '{}': {e}. {written} container(s) were written before this."
+      ],
+      "why": "LiveVconTracker::fail callers in batch.rs: vcon_selection (anyhow! site), prepare_export_dir and write_vcon_containers (format! literals carried)."
+    },
+    {
+      "file": "src/app/batch.rs",
+      "call": "stderr_line!(\"{e:#}\")",
+      "count": 1,
+      "carries": [],
+      "why": "vcon_selection in batch.rs; its only error is the anyhow!(\"--export-vcon-when is not a valid filter expression: {e}\") site."
+    },
+    {
+      "file": "src/app/batch.rs",
+      "call": "stderr_line!(\"{line}\")",
+      "count": 2,
+      "carries": [
+        "sipnab discarded {} TLS record(s) held from before a key arrived: the late-decrypt hold is bounded ({} MiB total, {} record(s) per direction, {}s), and it filled before any key matched them. Start the key source before the capture, or expect the first message of a call to be missing.",
+        "{} TLS record(s) were still waiting when the run ended: no key ever arrived for them. Nothing was discarded and starting the capture earlier would not have helped -- the key source never produced those secrets.",
+        "sipnab loaded {} keylog line(s) and built no session from any of them, so the {} TLS application-data record(s) in this capture went unread.",
+        "The handshake is missing. A TLS 1.2 key log gives the master secret; the server random and cipher suite that expand it into record keys are in the ServerHello, and a capture that started after the connection did never saw one. Nothing later in the capture can supply them.",
+        "Capture the handshake: restart the connection while the capture is running, or capture continuously from before the connections you want to read.",
+        "sipnab could not decrypt {unread} TLS application-data record(s): it holds no key material for any session in this capture, so this run says nothing about what that traffic contained.",
+        "A keylog producer only records keys for what it attached to. Check both halves of that: the TLS library — eCapture picks one by looking at curl, which need not be the one the SIP daemon maps, so pass --libssl with the path the daemon shows in /proc/<daemon-pid>/maps — and the process, since --pid pins it to a single worker while a forking daemon spreads connections across all of them. Give sipnab --keylog-watch so keys minted after it starts are read too.",
+        "This host maps {}. Pass the one the SIP daemon uses, e.g. `ecapture tls -m keylog -k keys.log --libssl={}`.",
+        "Or skip the external extractor: `sudo sipnab --uprobe-list` reports what each process maps, and `sudo sipnab -N --uprobe-tls` probes every mapped TLS library itself, with no --libssl to choose and no keylog.",
+        "sipnab holds keys for {} TLS session(s) and could not decrypt any of the {} application-data record(s) it saw.",
+        "The usual cause is a capture that began against connections which were already running. A TLS record is numbered by a counter both endpoints keep privately, nothing on the wire carries it, and sipnab searches only the first {} records of a stream for it — a trunk that has been up for hours is far past that. Capturing the handshake does not help; the counter depends on how many records have gone by since.",
+        "Restart the connection while the capture is running — bounce the far end, or the daemon — so the stream is captured from its first record.",
+        "No SIP signaling found, but {rtp_packets} RTP packets across {streams} stream(s) were parsed.",
+        "{finding} Use --report to see stream details.",
+        "No SIP traffic was decoded — but {} of {frames_read} frame(s){share} could not be decoded at all, so this is not a finding that the capture contains no SIP. Undecodable: {}.",
+        "Fix the decode before reading anything into the zero above: convert the capture (editcap -T ether) or open an issue naming the number(s) reported.",
+        "No SIP traffic was decoded, but TLS application data in this capture could not be decrypted (see above), so this is not a finding that the capture contains no SIP.",
+        "No SIP traffic found, but this capture is not empty: {} of {} STUN/TURN transaction(s) went unanswered — {} sent {} to {} {} time(s) and got nothing back.",
+        "That is a NAT-discovery failure, not a missing capture. An endpoint that cannot learn its reflexive address advertises its PRIVATE address in SDP, and the far end then sends media to somewhere it cannot reach — a call that signals cleanly and carries audio one way.",
+        "The requests drew no reply at all rather than a refusal, which points at something in the path discarding them rather than at the server. On school, campus and corporate networks that is most often a security appliance — web filter, secure web gateway, firewall or IPS — dropping UDP it does not recognize. Confirm whether one sits in this path and whether it permits UDP to the STUN/TURN port.",
+        "No SIP traffic found. Check that the capture contains SIP packets (typically UDP port 5060-5061).",
+        "Tip: Use 'sipnab -N -I file.pcap --hexdump' to inspect raw packet content."
+      ],
+      "why": "tls_decrypt_guidance (late_hold_guidance, unread_guidance) and no_sip_guidance in batch.rs build every line from literals."
+    },
+    {
+      "file": "src/app/batch.rs",
+      "call": "stderr_line!(\"{message}\")",
+      "count": 2,
+      "carries": [
+        "--export-vcon-when needs --export-vcon-dir. Nothing was exported.",
+        "Could not create the vCon directory '{}': {e}. Nothing was exported.",
+        "The {what} for Call-ID '{}' would not serialize: {e}",
+        "Could not write '{}': {e}. {written} container(s) were written before this."
+      ],
+      "why": "prepare_export_dir and write_vcon_containers in batch.rs."
+    },
+    {
+      "file": "src/app/batch.rs",
+      "call": "stderr_line!(\"{msg}\")",
+      "count": 2,
+      "carries": [
+        "NOT DECODED: {} of {frames_read} frame(s)",
+        " produced nothing and are in none of the counts above. Reasons: {}",
+        "; plus {} further frame(s) whose reason was not retained (the capture carried more distinct reasons than the tally holds)",
+        " NOTHING IN THIS CAPTURE WAS READ — every frame failed to decode, so the totals above describe no traffic whatsoever and a zero among them is not evidence of absence.",
+        " THIS ANALYSIS IS MOSTLY BLIND — the totals above describe the minority of the capture sipnab could read, so a zero among them is not evidence of absence."
+      ],
+      "why": "Both occurrences print undecodable_summary (batch.rs), built from literals with push_str."
+    },
+    {
+      "file": "src/app/batch.rs",
+      "call": "stderr_line!(\"{reason}\")",
+      "count": 5,
+      "carries": [
+        "cannot read suppression file '{name}': {e}",
+        "cannot read the discovered .sipnablint: {e}",
+        "cannot read --redact-key-file '{}': {e}",
+        "--redact needs a key and none was supplied, so sipnab drew one from the operating system and could not: {e}. There is no weaker fallback: a guessable key makes every token in the export reversible by anyone holding a phone book. Pass --redact-key-file, or fix the entropy source",
+        "--redact-map '{}' already exists and sipnab will not write over it. That file may be the only way back from tokens already sent somewhere",
+        "cannot create --redact-map '{}': {e}",
+        "writing --redact-map '{}': {e}"
+      ],
+      "why": "lint_suppressions, redaction_policy (x2 callers) and write_redaction_map (x2 callers) in batch.rs."
+    },
+    {
+      "file": "src/app/batch.rs",
+      "call": "warn!(\"{msg}\")",
+      "count": 2,
+      "carries": [
+        "{msgs} message(s) evicted from retained dialogs by idle compaction",
+        "{dropped} new dialog(s) refused at capacity (--no-rotate keeps the earliest)",
+        "{rotated} oldest dialog(s) discarded at capacity by rotation",
+        "retention: {}. The message and packet counts above are what sipnab READ, not what it kept — raise --limit, or --max-streams, to keep more.",
+        "{dropped} packet(s) dropped by the kernel capture buffer (raise -B/--buffer, narrow the BPF filter, or lower --snaplen)",
+        "{if_dropped} packet(s) dropped by the interface or its driver (a bigger buffer cannot recover these — check the NIC and its offloads)",
+        "{bad_ts} packet(s) had a corrupt capture timestamp and were stamped with the wall clock (timing analysis is unreliable for this run)",
+        "{intact_undecodable} frame(s) reached sipnab intact and could not be decoded at all, so nothing in them was analyzed (see the NOT DECODED line above for which link types, EtherTypes and IP protocols)",
+        "{snapped} frame(s) arrived truncated by the capture's snaplen (headers kept, payload cut short — raise --snaplen if you need RTP payload, audio export or a faithful -O re-emit)",
+        "{snapped} frame(s) arrived truncated by the capture's snaplen and {snapped_undecodable} of them were cut too short to decode at all, so nothing in those was analyzed (raise --snaplen)",
+        "{holes} hole(s) in TCP streams, {hole_bytes} byte(s) of sequence space the capture never held, were skipped: reading resumed at the next SIP message behind each, and a message the hole cut is lost (packets the capture point missed)",
+        "capture quality: {}. THIS ANALYSIS IS INCOMPLETE — the counts above are what sipnab RECEIVED AND UNDERSTOOD, not what crossed the wire. See docs/tuning-capture.md."
+      ],
+      "why": "retention_summary and capture_quality_summary in batch.rs (literal parts joined with '; ')."
+    },
+    {
+      "file": "src/app/batch.rs",
+      "call": "warn!(\"{panicked}\")",
+      "count": 1,
+      "carries": [
+        "the rtpengine reconciler thread panicked",
+        "the relay statistics poll thread panicked"
+      ],
+      "why": "join_reporting_panic receives two literals from its callers in batch.rs."
+    },
+    {
+      "file": "src/app/batch.rs",
+      "call": "warn!(\"{warning}\")",
+      "count": 1,
+      "carries": [
+        "Skipping invalid alert rule '{value}': {e}",
+        "--alert exec given without --alert-exec <CMD>; no command to run",
+        "Unknown alert channel '{}'. Valid channels: syslog, json, exec. (A value containing ':' is treated as an alert rule.)"
+      ],
+      "why": "parse_alert_sources in batch.rs pushes three literal warnings."
+    },
+    {
+      "file": "src/app/bootstrap.rs",
+      "call": "PlanError { exit_code: 2, message: msg, }",
+      "count": 2,
+      "carries": [
+        "{flags} refused: security detection is built only by the headless single-capture path, and this run is {path}. Nothing would be detected and no finding reported, so an empty result would not be an all-clear — which is why this is refused rather than warned about. To detect, {remedy}.",
+        "--kill-ua {pattern} names a User-Agent for the scanner detector, and nothing in this run builds that detector — so the pattern is read by nobody and the run would report no scanners whether or not one is there. Add --kill-scanner (or set [security] kill_scanner = true) to arm the detection this pattern feeds. On a live capture --kill-scanner also arms the response path, which is why sipnab will not turn it on for you."
+      ],
+      "why": "Both occurrences in src/app/bootstrap.rs::refuse_unread_detection: msg from security_detection_unarmed_refusal (format! literal, line 5417) and scanner_pattern_unread_refusal (format! literal, line 5333), same file."
+    },
+    {
+      "file": "src/app/bootstrap.rs",
+      "call": "PlanError::new(1, message)",
+      "count": 1,
+      "carries": [
+        "Capture source failed to open: {e}",
+        "Permission denied on '{}'. Grant capture capabilities once (Linux), then re-run without sudo:\\n  sipnab --setup-caps\\n  # or run this invocation under sudo:\\n  sudo sipnab\\n  # equivalent manual step:\\n  sudo setcap cap_net_raw,cap_net_admin+ep $(which sipnab)"
+      ],
+      "why": "capture_open_failure in bootstrap.rs (two format! literals)."
+    },
+    {
+      "file": "src/app/bootstrap.rs",
+      "call": "PlanError::refused(origin, message)",
+      "count": 1,
+      "carries": [
+        "{from}: Unknown alert channel '{source}': expected one of {}, or a rule written name:threshold/window",
+        "{from}: {e}",
+        "{from}: Unknown alert rule '{}': expected one of {} (reg-flood is accepted for reg_flood)"
+      ],
+      "why": "check_alert_rule in bootstrap.rs (three format! literals)."
+    },
+    {
+      "file": "src/app/bootstrap.rs",
+      "call": "error!( \"{}\", relay_compare_fetch_failure(&comparison, sipnab_side.unwrap_or(0), &e) )",
+      "count": 1,
+      "carries": [
+        "relay at {addr}: {e}; the reply for call {call_id} was discarded and not read (suspect). sipnab measured {measured} RTP packet(s).",
+        "relay at {addr} did not answer the per-call statistics request for call {call_id} ({e}); sipnab measured {measured} RTP packet(s), but the relay's side did not arrive."
+      ],
+      "why": "relay_compare_fetch_failure in bootstrap.rs (two format! literals)."
+    },
+    {
+      "file": "src/app/bootstrap.rs",
+      "call": "error!(\"{refusal}\")",
+      "count": 1,
+      "carries": [],
+      "why": "relay_side_of_comparison in bootstrap.rs returns only Err(format!(...)) sites."
+    },
+    {
+      "file": "src/app/bootstrap.rs",
+      "call": "error!(\"{}\", refusal.message)",
+      "count": 1,
+      "carries": [],
+      "why": "frame_refusal in bootstrap.rs builds every message with PlanError::new/arg(format!(...)) sites."
+    },
+    {
+      "file": "src/app/bootstrap.rs",
+      "call": "error!(\"{}\", relay_stats_fetch_failure(addr, &e))",
+      "count": 1,
+      "carries": [
+        "relay at {addr}: {e}; the reply was discarded and not read (suspect).",
+        "relay at {addr} did not answer the statistics request ({e}); asked, nothing came back."
+      ],
+      "why": "relay_stats_fetch_failure in bootstrap.rs (two format! literals)."
+    },
+    {
+      "file": "src/app/servers.rs",
+      "call": "error!(\"{flag} '{path}': {e}\")",
+      "count": 1,
+      "carries": [
+        "{flag} '{path}': {e}"
+      ],
+      "why": "read_signing_key_file in servers.rs; the format string itself is the message and {flag} is the literal --api-signing-key-file or --mcp-signing-key-file from its two callers. Carried because this site was reported non-literal."
+    },
+    {
+      "file": "src/app/vcon_fetch.rs",
+      "call": "error!(\"{line}\")",
+      "count": 1,
+      "carries": [
+        "{uuid}: {} exists; not fetched. --vcon-fetch-overwrite replaces it",
+        "{uuid}: the store holds no such vCon (404)",
+        "{uuid}: {why}",
+        "{uuid:?} is not a uuid",
+        "{url}: {e}",
+        "{url} answered {}: the store refused the credential or this client ({}); nothing more is fetched",
+        "{url} answered {status} ({})",
+        "the answer is larger than {} bytes (--vcon-fetch-max-size); nothing was written",
+        "{url}: {problem}; nothing was written",
+        "{url}: {e}; nothing was written",
+        "{url}: the container is not JSON: {e}",
+        "{url}: the container's uuid is {}, not the one asked for; nothing was written",
+        "{}: {e}"
+      ],
+      "why": "describe() ERROR arms in vcon_fetch.rs; {why} comes from Fetched::Failed/Halt format! literals in Fetcher::fetch_one (same file)."
+    },
+    {
+      "file": "src/app/vcon_fetch.rs",
+      "call": "warn!(\"{line}\")",
+      "count": 1,
+      "carries": [
+        "{uuid}: written to {}, but the schema refuses it ({} finding(s)): {}"
+      ],
+      "why": "describe() WARN arm in vcon_fetch.rs."
+    },
+    {
+      "file": "src/app/vcon_forward.rs",
+      "call": "warn!(\"{warning}\")",
+      "count": 1,
+      "carries": [
+        "{endpoint} is plain http to another machine: the auth header and every container cross the network unencrypted. Use https:// for anything but loopback"
+      ],
+      "why": "plaintext_warning in vcon_forward.rs."
+    },
+    {
+      "file": "src/cli.rs",
+      "call": "Error::CliValidation(refusal)",
+      "count": 3,
+      "carries": [
+        "{} {} the 'vcon' Cargo feature, which this build does not carry. Rebuild with --features vcon (or --features full); `sipnab --version` lists the features a binary was built with",
+        "{} cannot be used with {export} on a live capture. A live run writes each call's container shortly after the call ends, and a run stopped by a signal writes nothing more, so the redaction map and tombstones this run would write at its end are never written. Use {} with -I on a saved capture, which always runs to its end",
+        "{}: these opt-ins act on the sipnab process or the relay, and with the TUI up the operator at the terminal owns both. Add -N to serve MCP headless with them, or remove them to query this capture beside the TUI"
+      ],
+      "why": "All 3 occurrences in src/cli.rs::Cli::validate: refusal from Cli::vcon_refusal (line 7269), Cli::live_vcon_refusal (line 7310) and Cli::mcp_beside_tui_refusal (line 7157), each a format! literal in the same file."
+    },
+    {
+      "file": "src/cli.rs",
+      "call": "Error::ConfigInvalid(format!(\"{source}: {e}\"))",
+      "count": 1,
+      "carries": [
+        "{source}: {e}"
+      ],
+      "why": "Cli::ws_port_range in cli.rs: {source} is the literal \"--ws-portrange\" or \"[capture] ws_ports\", and {e} comes from config::parse_portrange, whose messages are Err(format!(..)) sites in src/config.rs. Carried because this site was reported non-literal."
+    },
+    {
+      "file": "src/config.rs",
+      "call": "Error::ConfigInvalid(format!(\"{display}: {e}\"))",
+      "count": 1,
+      "carries": [
+        "{display}: {e}"
+      ],
+      "why": "Config::parse_toml_with_env in config.rs: {display} is the file path, and {e} is expand_env_in_value's walk prefix \"{path}: {e}\" (a format! in config.rs, explained in this entry) around expand_env_vars messages, which are Err(format!(..)) sites in src/config.rs. Carried because this site was reported non-literal."
+    },
+    {
+      "file": "src/config.rs",
+      "call": "Error::ConfigInvalid(problem)",
+      "count": 1,
+      "carries": [
+        "the first retry delay, {} s from {}, is longer than the longest, {} s from {}; give a first delay no longer than the cap"
+      ],
+      "why": "VconForwardConfig::validate in config.rs; problem is the format! literal in config.rs::forward_backoff_problem."
+    },
+    {
+      "file": "src/config.rs",
+      "call": "warn!(\"{}\", shadowing_note(&p, &shadowed))",
+      "count": 1,
+      "carries": [
+        "Reading {}. Also present and NOT read: {}. sipnab reads only the first config file it finds; merge them or remove the ones you do not want."
+      ],
+      "why": "shadowing_note in config.rs."
+    }
+  ],
+  "unresolved": [
+    {
+      "file": "src/app/batch.rs",
+      "call": "PlanError { exit_code: 2, message, }",
+      "count": 1,
+      "carries": [],
+      "why": "Message comes from src/app/servers.rs::start_actions, which builds it with format!/map_err in servers.rs (no extracted site) and passes through errors from src/security/actions.rs::ActionPolicy::from_settings and ActionLimits::new (out of scope)."
+    },
+    {
+      "file": "src/app/batch.rs",
+      "call": "PlanError { exit_code: 2, message: e.to_string(), }",
+      "count": 1,
+      "carries": [],
+      "why": "anyhow error from src/app/servers.rs::start_servers, which propagates errors from out-of-scope modules (e.g. src/output/prometheus_server.rs::parse_metrics_addr, metrics_tls_config, start_metrics_server, and the API/MCP listener setup)."
+    },
+    {
+      "file": "src/app/batch.rs",
+      "call": "error!( \"{}\", crate::capture::writer::describe_output_error( &e, crate::privilege::dropped_to() ) )",
+      "count": 1,
+      "carries": [],
+      "why": "Text comes from src/capture/writer.rs::describe_output_error (out of scope), which wraps the writer's anyhow error."
+    },
+    {
+      "file": "src/app/batch.rs",
+      "call": "stderr_line!(\" {}\", f.hint)",
+      "count": 1,
+      "carries": [],
+      "why": "f.hint is built in src/pipeline.rs (icmp_media_report / IcmpMediaFlow.hint), out of scope."
+    },
+    {
+      "file": "src/app/batch.rs",
+      "call": "stderr_line!(\"{refusal}.\")",
+      "count": 1,
+      "carries": [],
+      "why": "Text built by src/cli.rs::Cli::vcon_refusal with a format! that is not a site kind (different in-scope file, no site)."
+    },
+    {
+      "file": "src/app/batch.rs",
+      "call": "warn!(\"{line}\")",
+      "count": 5,
+      "carries": [],
+      "why": "4 occurrences are in-file (relay_retry_lines, stun_failure_lines/unanswered_request_line, lapsed_allocation_lines, ice_role_conflict_lines, all literals in batch.rs), but report_hep_exports prints src/capture/hep_export.rs HepExportSnapshot::summary_line (out of scope)."
+    },
+    {
+      "file": "src/app/batch.rs",
+      "call": "warn!(\"{}\", buf.truncation_note())",
+      "count": 1,
+      "carries": [],
+      "why": "src/output/group.rs::GroupBuffer::truncation_note, out of scope."
+    },
+    {
+      "file": "src/app/batch.rs",
+      "call": "warn!(\"{}\", gap.detail)",
+      "count": 1,
+      "carries": [],
+      "why": "src/security/reg_flood.rs::RegFloodDetector::observation_gap builds detail, out of scope."
+    },
+    {
+      "file": "src/app/bootstrap.rs",
+      "call": "PlanError { exit_code, message }",
+      "count": 1,
+      "carries": [],
+      "why": "Message is src/rtp/bands.rs::QualityBands::validate output (out of scope), rewritten by src/cli.rs::Cli::quality_band_refusal."
+    },
+    {
+      "file": "src/app/bootstrap.rs",
+      "call": "PlanError { exit_code: 1, message: e.to_string(), }",
+      "count": 10,
+      "carries": [],
+      "why": "All 10 occurrences in src/app/bootstrap.rs::load_config carry crate::Error from Config::load and the [section] validate() methods in src/config.rs; those build text as Error::ConfigInvalid(format!(..)) (not an extracted kind) and Config::load also carries io and toml library Display (ConfigRead/ConfigParse)."
+    },
+    {
+      "file": "src/app/bootstrap.rs",
+      "call": "PlanError { exit_code: if cli.capture_args.ws_portrange.is_some() { 2 } else { 1 }, message: e.to_string(), }",
+      "count": 1,
+      "carries": [],
+      "why": "Text from src/cli.rs::Cli::ws_port_range (Error::ConfigInvalid(format!(\"{source}: {e}\")), not a site) wrapping src/config.rs::parse_portrange, whose .map_err(|_| format!(..)) port-number messages are not sites."
+    },
+    {
+      "file": "src/app/bootstrap.rs",
+      "call": "PlanError::arg(e.to_string())",
+      "count": 1,
+      "carries": [],
+      "why": "Display of the error from src/capture/writer.rs::parse_split, out of scope."
+    },
+    {
+      "file": "src/app/bootstrap.rs",
+      "call": "PlanError::arg(msg)",
+      "count": 3,
+      "carries": [],
+      "why": "One occurrence is src/capture/bpf_filter.rs::forgot_input_flag (out of scope); the others are capture_source_capacity_refusal and post_drop_flag_refusal in bootstrap.rs."
+    },
+    {
+      "file": "src/app/bootstrap.rs",
+      "call": "PlanError::new(1, format!(\"{flag}: {e:#}\"))",
+      "count": 1,
+      "carries": [],
+      "why": "{flag} is --strip-secrets or --write-annotated, but the text is the src/capture/input_set.rs::resolve error chain, out of scope."
+    },
+    {
+      "file": "src/app/bootstrap.rs",
+      "call": "PlanError::new(1, refusal)",
+      "count": 2,
+      "carries": [],
+      "why": "src/sandbox requirement_verdict and src/seccomp requirement_verdict, out of scope."
+    },
+    {
+      "file": "src/app/bootstrap.rs",
+      "call": "PlanError::refused( crate::settings::Origin::of(cli.mcp_args.mcp_tools.is_some()), e, )",
+      "count": 1,
+      "carries": [],
+      "why": "src/cli.rs::Cli::mcp_tool_selection wraps src/mcp_profile.rs::resolve's error (format! with no site; out-of-scope source)."
+    },
+    {
+      "file": "src/app/bootstrap.rs",
+      "call": "PlanError::refused(crate::settings::Origin::ConfigFile, e)",
+      "count": 1,
+      "carries": [],
+      "why": "src/security/actions ActionPolicy::from_settings error via Cli::action_policy, out of scope."
+    },
+    {
+      "file": "src/app/bootstrap.rs",
+      "call": "PlanError::refused(origin, problem)",
+      "count": 3,
+      "carries": [],
+      "why": "src/cli.rs::Cli::tls_settings_refusal (no site) and the vcon_forward/vcon_fetch resolvers behind forwarder_settings_problem/fetcher_settings_problem, which pass out-of-scope error text through."
+    },
+    {
+      "file": "src/app/bootstrap.rs",
+      "call": "error!(\"{e}\")",
+      "count": 1,
+      "carries": [],
+      "why": "Error from src/privilege setup_capabilities (--setup-caps), out of scope."
+    },
+    {
+      "file": "src/app/bootstrap.rs",
+      "call": "error!(\"{msg}\")",
+      "count": 5,
+      "carries": [],
+      "why": "uncompiled_source_flag and mint_token are in-file literals, but the vcon_forward ForwardPlan::resolve_refusal/into_settings and vcon_fetch::prepare occurrences carry format! text from another in-scope file without sites, plus out-of-scope error text (Endpoint parse, credential file reads)."
+    },
+    {
+      "file": "src/app/bootstrap.rs",
+      "call": "error!(\"{}\", e.message)",
+      "count": 3,
+      "carries": [],
+      "why": "PlanError values from load_config (struct literals carrying config/limits/security validate() e.to_string()) and from strip_secrets_copy/annotated_copy (.map_err(PlanError::arg) of src/capture/output_guard.rs check), out of scope."
+    },
+    {
+      "file": "src/app/bootstrap.rs",
+      "call": "error!(\"{}\", self.message)",
+      "count": 2,
+      "carries": [],
+      "why": "PlanError::exit/exit_after print any PlanError, including struct-literal ones (PlanError { message: e.to_string() } in bootstrap.rs load_config and batch.rs start-up) whose text comes from out-of-scope errors."
+    },
+    {
+      "file": "src/app/bootstrap.rs",
+      "call": "stderr_line!(\"{e}\")",
+      "count": 1,
+      "carries": [],
+      "why": "src/capture/uprobe/discover parse_flavor error, out of scope."
+    },
+    {
+      "file": "src/app/bootstrap.rs",
+      "call": "warn!( \"{}\", crate::security::transmit_guard::offline_refusal(kill_flags_named(cli)) )",
+      "count": 1,
+      "carries": [],
+      "why": "src/security/transmit_guard.rs::offline_refusal, out of scope."
+    },
+    {
+      "file": "src/app/bootstrap.rs",
+      "call": "warn!(\"{line}\")",
+      "count": 2,
+      "carries": [],
+      "why": "src/seccomp startup_line and src/sandbox startup_line, out of scope."
+    },
+    {
+      "file": "src/app/bootstrap.rs",
+      "call": "warn!(\"{msg}\")",
+      "count": 8,
+      "carries": [],
+      "why": "7 occurrences are in-file helpers (hep_listen_ignored_warning, config_filter_file_notice, two_clocks_warning, composite_filter_warning, tunnel_omission_notice, explicit_filter_encap_notice, tunnel_ports_ignored_notice, degraded_run_warnings, comparison_gap), but one prints src/cli.rs::Cli::inert_key_warnings (format! with no site in another in-scope file)."
+    },
+    {
+      "file": "src/app/bootstrap.rs",
+      "call": "warn!(\"{notice}\")",
+      "count": 1,
+      "carries": [],
+      "why": "src/capture/hep.rs::file_export_notice, out of scope."
+    },
+    {
+      "file": "src/app/journal_cli.rs",
+      "call": "stderr_line!(\"{text}\")",
+      "count": 1,
+      "carries": [],
+      "why": "revert() text includes ActionError and JournalError Display from src/security/actions and src/journal, out of scope."
+    },
+    {
+      "file": "src/app/tui_mode.rs",
+      "call": "bail!( \"{}\", crate::capture::writer::describe_output_error( &e, crate::privilege::dropped_to() ) )",
+      "count": 1,
+      "carries": [],
+      "why": "src/capture/writer.rs::describe_output_error, out of scope."
+    },
+    {
+      "file": "src/app/tui_mode.rs",
+      "call": "error!(\"{e}\")",
+      "count": 3,
+      "carries": [],
+      "why": "servers::start_actions returns format!(\"actions journal {}: {e}\") (servers.rs, not a site) around src/journal / src/security/actions errors, out of scope; the server-start error is likewise passed through. The processing-loop occurrence prints bail! sites."
+    },
+    {
+      "file": "src/app/tui_mode.rs",
+      "call": "error!(\"{problem}\")",
+      "count": 1,
+      "carries": [],
+      "why": "src/tui/action_trail.rs ActionTrail::close_session / exit_notice, out of scope."
+    },
+    {
+      "file": "src/app/tui_mode.rs",
+      "call": "stderr_line!(\"{problem}\")",
+      "count": 1,
+      "carries": [],
+      "why": "src/tui/action_trail.rs ActionTrail::close_session / exit_notice, out of scope."
+    },
+    {
+      "file": "src/app/vcon_fetch.rs",
+      "call": "error!(\"{e}\")",
+      "count": 1,
+      "carries": [],
+      "why": "Fetcher::new error includes vcon_forward.rs::client_config, which passes through src/tls_files pem_certificates and rustls error text verbatim."
+    },
+    {
+      "file": "src/app/vcon_fetch.rs",
+      "call": "warn!(\"{warning}\")",
+      "count": 1,
+      "carries": [],
+      "why": "src/app/vcon_forward.rs::plaintext_warning (different in-scope file, format! not a site); the same text is carried under the vcon_forward.rs site."
+    },
+    {
+      "file": "src/app/vcon_forward.rs",
+      "call": "error!(\"{e}\")",
+      "count": 1,
+      "carries": [],
+      "why": "Forwarder::new errors include client_config, which passes src/tls_files pem_certificates and rustls error text verbatim."
+    },
+    {
+      "file": "src/error.rs",
+      "call": "error(\"{0}\")",
+      "count": 1,
+      "carries": [],
+      "why": "Error::CliValidation(String) is built in src/cli.rs (Cli::validate, not a site kind) and from src/output/group.rs::GroupField::parse."
+    },
+    {
+      "file": "src/main.rs",
+      "call": "error!(\"{msg}\")",
+      "count": 2,
+      "carries": [],
+      "why": "install_archive_passwords passes src/capture/archive/password errors through; run_provenance::write_record also returns a String."
+    },
+    {
+      "file": "src/main.rs",
+      "call": "error!(\"{}\", msg)",
+      "count": 1,
+      "carries": [],
+      "why": "Cli::validate's crate::Error Display; CliValidation strings are built in src/cli.rs without sites."
+    }
+  ]
+}

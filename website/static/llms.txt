@@ -19,6 +19,7 @@ This file indexes the documentation as plain text. `llms-full.txt` beside it car
 - [Look up a key binding](https://sipnab.com/docs/keybindings/): Complete TUI keyboard shortcut reference for all views.
 - [Change the terminal UI colors](https://sipnab.com/docs/theme/): Customize sipnab's TUI colors with 11 semantic color slots and preset themes.
 - [Look up a command-line flag](https://sipnab.com/docs/cli/): Every flag sipnab takes, grouped by job: capture, matching, output, analysis, security, the listeners and MCP.
+- [Look up an error message](https://sipnab.com/docs/errors/): Every message sipnab prints when it refuses a run or stops at startup, with what it means and what to do.
 - [Filter calls and streams](https://sipnab.com/docs/filter-dsl/): Declarative filter language for matching SIP dialogs and RTP streams.
 - [Look up a SIP header field](https://sipnab.com/docs/sip-header-fields/): Every SIP header field in the IANA registry, its compact form, and the RFC that defines it.
 - [Look up a SIP method](https://sipnab.com/docs/sip-methods/): Every SIP method in the IANA registry, the RFC section defining it, and which dialog state machine sipnab runs it through.

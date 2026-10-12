@@ -40,6 +40,19 @@ type TestError = Box<dyn std::error::Error>;
 /// would still fail this guard instead of being silently whitelisted. The
 /// label is the first element of each `docs` tuple in `readme_long_flags_exist_in_cli`.
 const FOREIGN_FLAGS: &[(&str, &[&str])] = &[
+    // The error-message reference quotes sipnab's messages exactly, and some
+    // of them name another program's flags: cargo's `--features` ("rebuild
+    // with --features mcp-http"), and eCapture's `--libssl` and `--pid` in
+    // the keylog guidance that `--uprobe-list` and the TLS checks print.
+    (
+        "features",
+        &["docs/errors.md", "website/content/docs/errors.md"],
+    ),
+    (
+        "libssl",
+        &["docs/errors.md", "website/content/docs/errors.md"],
+    ),
+    ("pid", &["docs/errors.md", "website/content/docs/errors.md"]),
     // The release section's note on the CLI reference's Since column:
     // `scripts/flag-since.py --write` rewrites the column after a release is
     // tagged, and `git fetch --tags` brings the tags the script reads. The
@@ -4311,7 +4324,9 @@ fn no_documentation_table_repeats_a_row() -> Result<(), TestError> {
     // bundle. Ten new pages, docs/mcp-tools-{core,signaling,captures,
     // security,media,relay,tfps,server,vcon,tls}.md, and their ten
     // generated mirrors under website/content/docs/. No file was removed.
-    const EXPECTED_MARKDOWN_FILES: usize = 295;
+    // 295 -> 297: the error-message reference, docs/errors.md, and its
+    // generated mirror website/content/docs/errors.md. No file was removed.
+    const EXPECTED_MARKDOWN_FILES: usize = 297;
     /// How many tables this gate expects to walk.
     ///
     /// Named rather than written twice. The count and the failure message

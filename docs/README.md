@@ -139,6 +139,8 @@ Complete and dry. Consult them rather than reading them through.
 - [Glossary](glossary.md): the terms these pages use, one definition each.
 - [CLI reference](cli-reference.md): every flag, grouped, with examples.
 - [Config reference](config-reference.md): every `[section]` and key.
+- [Error messages](errors.md): every message sipnab prints when it refuses a
+  run or stops at startup, what it means, and what to do.
 - [Keybindings](keybindings.md): every TUI key, per view.
 - [Output formats](output-formats.md): JSON and NDJSON schemas, pcapng, jq.
 - [MOS and codecs](mos-and-codecs.md): where the quality score comes from, and

@@ -329,6 +329,7 @@ pages = [
   { path = "docs/filter-dsl.md", menu = true },
   { path = "docs/output-formats.md", menu = true },
   { path = "docs/config.md", menu = true },
+  { path = "docs/errors.md", menu = false },
   { path = "docs/sip-lint-rules.md", menu = false },
   { path = "docs/mos-and-codecs.md", menu = false },
   { path = "docs/sip-response-codes.md", menu = false },

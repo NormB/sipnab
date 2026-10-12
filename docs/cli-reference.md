@@ -1746,6 +1746,9 @@ Scripts can rely on these:
 | `2` | Invalid usage — bad flag value or combination given on the command line, or a flag whose feature is not compiled into this binary. A refusal that a flag takes part in (a flag value, or a pair with one half from a flag and the other from the config file) is this code |
 | `3` | Lint gate tripped — `--lint --lint-fail-on <severity>` found a conformance finding at or above that severity. Distinct from `1` on purpose: the tool worked, the CAPTURE is non-conformant. Also the vCon forwarder stopping because the store answered `401` or `403` (`--vcon-forward`) |
 
+[Error messages](errors.md) lists the message sipnab prints with a non-zero
+exit code, what it means, and what to do.
+
 A run that read its input in full and stopped where you asked it to stop —
 `-l/--limit`, `--duration` — still exits `0`. The distinction is whether
 sipnab failed to do what you asked, not whether it read everything there was.

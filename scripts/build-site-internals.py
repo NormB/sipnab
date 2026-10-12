@@ -200,6 +200,7 @@ DOCS_TO_SITE = {
     "keybindings.md": "keybindings.md",
     "theme-guide.md": "theme.md",
     "cli-reference.md": "cli.md",
+    "errors.md": "errors.md",
     "sip-response-codes.md": "sip-response-codes.md",
     "sip-parameters.md": "sip-parameters.md",
     "mos-and-codecs.md": "mos-and-codecs.md",

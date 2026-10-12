@@ -185,6 +185,16 @@ PAGES: list[tuple[str, str, str, str, int, str]] = [
         "analysis, security, the listeners and MCP.",
     ),
     (
+        "docs/errors.md",
+        "errors.md",
+        "Error messages",
+        "Look up an error message",
+        # 82 was the next free weight on the SITE side.
+        82,
+        "Every message sipnab prints when it refuses a run or stops at "
+        "startup, with what it means and what to do.",
+    ),
+    (
         "docs/filter-dsl.md",
         "filter-dsl.md",
         # Source H1 is "Filter DSL reference"; the sidebar label is the
