@@ -98,6 +98,116 @@ fn documented_config_samples_parse_and_validate() -> Result<(), TestError> {
     Ok(())
 }
 
+/// TOML tables in `docs/*.md` that configure something other than sipnab, by
+/// page and top-level key, with what they configure. A fence whose every
+/// top-level key is listed for its page is that other tool's file and is not
+/// loaded; anything else is a sipnab sample and must load.
+const FOREIGN_TOML: &[(&str, &str, &str)] = &[
+    ("docs/install.md", "profile", "Cargo: the release profile"),
+    (
+        "docs/library.md",
+        "dependencies",
+        "Cargo: depending on the crate",
+    ),
+    ("docs/plugins.md", "lib", "Cargo: the plugin's crate type"),
+    (
+        "docs/mcp-deploy.md",
+        "mcp_servers",
+        "Codex CLI: its MCP server table",
+    ),
+];
+
+/// Every ```` ```toml ```` fence in `docs/*.md` that is a sipnab config loads
+/// through the real loader with no unknown keys.
+///
+/// The gate above reads `docs/config-reference.md` alone. Twelve samples on
+/// other pages — the theme guide's seven themes, the `[vcon_forward]` blocks
+/// of three vCon pages, `[media.codec_ie]` on the MOS page and
+/// `[names.manual]` on the keybindings page — were copied by readers and
+/// checked by nothing.
+#[test]
+fn every_sipnab_toml_sample_in_the_docs_loads() -> Result<(), TestError> {
+    let docs = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("docs");
+    let mut pages: Vec<std::path::PathBuf> = std::fs::read_dir(&docs)?
+        .filter_map(Result::ok)
+        .map(|e| e.path())
+        .filter(|p| p.extension().is_some_and(|x| x == "md"))
+        .collect();
+    pages.sort();
+
+    let mut loaded = 0usize;
+    let mut failures: Vec<String> = Vec::new();
+    for page in &pages {
+        let rel = format!(
+            "docs/{}",
+            page.file_name()
+                .and_then(|n| n.to_str())
+                .ok_or("utf-8 name")?
+        );
+        let text = std::fs::read_to_string(page)?;
+        for (line, body) in toml_blocks(&text) {
+            let where_ = format!("{rel}:{line}");
+            let parsed: toml::Table = match body.parse() {
+                Ok(t) => t,
+                Err(e) => {
+                    failures.push(format!("{where_}: a ```toml fence that is not TOML: {e}"));
+                    continue;
+                }
+            };
+            let foreign = !parsed.is_empty()
+                && parsed
+                    .keys()
+                    .all(|k| FOREIGN_TOML.iter().any(|(p, key, _)| *p == rel && key == k));
+            if foreign {
+                continue;
+            }
+            match load_sample(&body) {
+                Ok(()) => loaded += 1,
+                Err(e) => failures.push(format!("{where_}: {e}\n{body}")),
+            }
+        }
+    }
+    assert!(
+        // 40 when written. A floor: adding a sample never trips it.
+        loaded >= 35,
+        "only {loaded} sipnab samples loaded across docs/*.md: the page scan \
+         stopped matching"
+    );
+    assert!(
+        failures.is_empty(),
+        "documented TOML samples a reader cannot use as written:\n{}",
+        failures.join("\n")
+    );
+    Ok(())
+}
+
+/// Load one sample as sipnab would at startup and refuse unknown keys.
+fn load_sample(body: &str) -> Result<(), TestError> {
+    let dir = tempfile::tempdir()?;
+    let path = dir.path().join("sample.toml");
+    std::fs::write(&path, body.as_bytes())?;
+    let loaded = sipnab::config::Config::load_file_with_env(&path, &sample_env)
+        .map_err(|e| format!("does not load: {e}"))?;
+    loaded
+        .limits
+        .validate()
+        .map_err(|e| format!("limits do not validate: {e}"))?;
+    let unknown = sipnab::config::Config::unknown_keys(body)?;
+    if !unknown.is_empty() {
+        return Err(format!("names keys sipnab does not recognize: {unknown:?}").into());
+    }
+    Ok(())
+}
+
+/// The per-sample check fails a sample the loader rejects and one with an
+/// unknown key, and passes a good one, so a green gate means something.
+#[test]
+fn the_sample_loader_discriminates() {
+    assert!(load_sample("[capture]\ndevice = \"eth0\"\n").is_ok());
+    assert!(load_sample("[capture]\ndevise = \"eth0\"\n").is_err());
+    assert!(load_sample("[theme]\nbackground = 7\n").is_err());
+}
+
 /// The environment a documented sample is written for.
 ///
 /// A sample that names `${SUDO_USER}` is correct for the `sudo` invocation it

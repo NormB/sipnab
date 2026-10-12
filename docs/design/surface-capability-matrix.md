@@ -512,6 +512,17 @@ Does this vCon container pass sipnab's vendored schema?
 | REST | `/v1/vcon/validate` (POST) |
 | MCP | `validate_vcon` |
 
+### vCon spool status
+
+How many containers are waiting, delivered and refused in the export spool, and what did the store answer for each refusal?
+
+| Surface | Detail |
+|---|---|
+| CLI | `--vcon-spool-status` |
+| TUI | decision: the spool is the queue a separate forwarder process drains, and the TUI shows the capture it is reading, not another process's files; a person at a terminal runs `--vcon-spool-status` |
+| REST | `/v1/vcon/spool` |
+| MCP | `vcon_spool_status` |
+
 ### SIPREC metadata
 
 Who was recorded on this call, in what mode, and which stream carries whom?

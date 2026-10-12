@@ -371,6 +371,11 @@ agree with a synthetic dialog and disagree with the parser.
 
 Both halves gate on the feature, so a build without `vcon` compiles neither.
 
+The schema validator in `vcon_schema.rs` is also run over containers sipnab
+did not build: the public vCon datasets, a committed subset on every build and
+all 17,443 containers on request. [Testing](testing.md#the-public-vcon-datasets)
+says how to fetch them and what they get.
+
 ## See also
 
 - [Export one observed call as a vCon](../vcon.md) — the operator page

@@ -111,29 +111,45 @@ fn count_cells(row: &str) -> usize {
 /// of the file, silently disabling the gate from that point on.
 fn prose_lines(text: &str) -> Vec<(usize, &str)> {
     let mut out = Vec::new();
-    let mut fence: Option<&str> = None;
+    // The open fence's character and length. CommonMark: a fence closes only
+    // on a run of the same character at least as long as the opener, with
+    // nothing after it but spaces.
+    let mut fence: Option<(char, usize)> = None;
     for (i, line) in text.lines().enumerate() {
-        let t = line.trim_start();
-        let marker = if t.starts_with("```") {
-            Some("```")
-        } else if t.starts_with("~~~") {
-            Some("~~~")
-        } else {
-            None
-        };
-        if let Some(m) = marker {
-            fence = match fence {
-                None => Some(m),
-                Some(f) if f == m => None,
-                other => other,
-            };
-            continue;
-        }
-        if fence.is_none() {
-            out.push((i + 1, line));
+        let trimmed = line.trim_start();
+        let run = |ch: char| trimmed.chars().take_while(|&x| x == ch).count();
+        let marker = ['`', '~']
+            .into_iter()
+            .map(|ch| (ch, run(ch)))
+            .find(|&(_, len)| len >= 3);
+        match (fence, marker) {
+            (None, Some(open)) => {
+                fence = Some(open);
+                continue;
+            }
+            (Some((open_ch, open_len)), Some((ch, len)))
+                if open_ch == ch && len >= open_len && trimmed[len..].trim().is_empty() =>
+            {
+                fence = None;
+                continue;
+            }
+            (Some(_), _) => continue,
+            (None, None) => out.push((i + 1, line)),
         }
     }
     out
+}
+
+/// A fence closes only on a run of the same character at least as long as the
+/// one that opened it, so a page that shows how to write a code block (a
+/// four-backtick block holding a three-backtick one) keeps the inner lines out
+/// of prose. Before this, the inner fence closed the outer block, and a
+/// citation inside the example was demanded a link.
+#[test]
+fn prose_lines_respect_fence_length() {
+    let text = "intro\n````markdown\n```\nsee RFC 7989 section 5\n```\nstill code\n````\noutro\n";
+    let prose: Vec<&str> = prose_lines(text).into_iter().map(|(_, l)| l).collect();
+    assert_eq!(prose, ["intro", "outro"]);
 }
 
 /// Every tracked repo path mentioned in prose is a link, not a bare code span.

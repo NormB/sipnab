@@ -61,6 +61,7 @@ fn nothing_enabled_spawns_nothing() -> Result<(), TestError> {
             metrics_tls: (None, None),
             mcp_row_cap: sipnab::cli::Cli::DEFAULT_MCP_MAX_ROWS as usize,
             mcp_body_cap: sipnab::cli::Cli::DEFAULT_MCP_MAX_BODY_BYTES as usize,
+            mcp_response_cap: sipnab::cli::Cli::DEFAULT_MCP_MAX_RESPONSE_BYTES as usize,
             mcp_wait_seconds: sipnab::cli::Cli::DEFAULT_MCP_MAX_WAIT_SECONDS,
             mcp_sweep: sipnab::cli::McpSweepLimits::default(),
             mcp_sweep_jobs: sipnab::cli::McpSweepJobLimits::default(),
@@ -112,6 +113,7 @@ fn selection_gates_configured_servers() -> Result<(), TestError> {
             metrics_tls: (None, None),
             mcp_row_cap: sipnab::cli::Cli::DEFAULT_MCP_MAX_ROWS as usize,
             mcp_body_cap: sipnab::cli::Cli::DEFAULT_MCP_MAX_BODY_BYTES as usize,
+            mcp_response_cap: sipnab::cli::Cli::DEFAULT_MCP_MAX_RESPONSE_BYTES as usize,
             mcp_wait_seconds: sipnab::cli::Cli::DEFAULT_MCP_MAX_WAIT_SECONDS,
             mcp_sweep: sipnab::cli::McpSweepLimits::default(),
             mcp_sweep_jobs: sipnab::cli::McpSweepJobLimits::default(),
@@ -164,6 +166,7 @@ fn invalid_api_addr_is_an_error() -> Result<(), TestError> {
             metrics_tls: (None, None),
             mcp_row_cap: sipnab::cli::Cli::DEFAULT_MCP_MAX_ROWS as usize,
             mcp_body_cap: sipnab::cli::Cli::DEFAULT_MCP_MAX_BODY_BYTES as usize,
+            mcp_response_cap: sipnab::cli::Cli::DEFAULT_MCP_MAX_RESPONSE_BYTES as usize,
             mcp_wait_seconds: sipnab::cli::Cli::DEFAULT_MCP_MAX_WAIT_SECONDS,
             mcp_sweep: sipnab::cli::McpSweepLimits::default(),
             mcp_sweep_jobs: sipnab::cli::McpSweepJobLimits::default(),
@@ -214,6 +217,7 @@ fn api_on_ephemeral_port_starts_servers_thread() -> Result<(), TestError> {
             metrics_tls: (None, None),
             mcp_row_cap: sipnab::cli::Cli::DEFAULT_MCP_MAX_ROWS as usize,
             mcp_body_cap: sipnab::cli::Cli::DEFAULT_MCP_MAX_BODY_BYTES as usize,
+            mcp_response_cap: sipnab::cli::Cli::DEFAULT_MCP_MAX_RESPONSE_BYTES as usize,
             mcp_wait_seconds: sipnab::cli::Cli::DEFAULT_MCP_MAX_WAIT_SECONDS,
             mcp_sweep: sipnab::cli::McpSweepLimits::default(),
             mcp_sweep_jobs: sipnab::cli::McpSweepJobLimits::default(),
@@ -273,6 +277,7 @@ fn api_port_in_use_is_a_startup_error() -> Result<(), TestError> {
             metrics_tls: (None, None),
             mcp_row_cap: sipnab::cli::Cli::DEFAULT_MCP_MAX_ROWS as usize,
             mcp_body_cap: sipnab::cli::Cli::DEFAULT_MCP_MAX_BODY_BYTES as usize,
+            mcp_response_cap: sipnab::cli::Cli::DEFAULT_MCP_MAX_RESPONSE_BYTES as usize,
             mcp_wait_seconds: sipnab::cli::Cli::DEFAULT_MCP_MAX_WAIT_SECONDS,
             mcp_sweep: sipnab::cli::McpSweepLimits::default(),
             mcp_sweep_jobs: sipnab::cli::McpSweepJobLimits::default(),
@@ -331,6 +336,7 @@ fn api_non_loopback_without_auth_is_a_startup_error() -> Result<(), TestError> {
             metrics_tls: (None, None),
             mcp_row_cap: sipnab::cli::Cli::DEFAULT_MCP_MAX_ROWS as usize,
             mcp_body_cap: sipnab::cli::Cli::DEFAULT_MCP_MAX_BODY_BYTES as usize,
+            mcp_response_cap: sipnab::cli::Cli::DEFAULT_MCP_MAX_RESPONSE_BYTES as usize,
             mcp_wait_seconds: sipnab::cli::Cli::DEFAULT_MCP_MAX_WAIT_SECONDS,
             mcp_sweep: sipnab::cli::McpSweepLimits::default(),
             mcp_sweep_jobs: sipnab::cli::McpSweepJobLimits::default(),
@@ -395,6 +401,7 @@ fn an_unreadable_api_tls_file_is_a_startup_error_naming_it() -> Result<(), TestE
             metrics_tls: (None, None),
             mcp_row_cap: sipnab::cli::Cli::DEFAULT_MCP_MAX_ROWS as usize,
             mcp_body_cap: sipnab::cli::Cli::DEFAULT_MCP_MAX_BODY_BYTES as usize,
+            mcp_response_cap: sipnab::cli::Cli::DEFAULT_MCP_MAX_RESPONSE_BYTES as usize,
             mcp_wait_seconds: sipnab::cli::Cli::DEFAULT_MCP_MAX_WAIT_SECONDS,
             mcp_sweep: sipnab::cli::McpSweepLimits::default(),
             mcp_sweep_jobs: sipnab::cli::McpSweepJobLimits::default(),
@@ -437,7 +444,7 @@ fn an_unreadable_api_tls_file_is_a_startup_error_naming_it() -> Result<(), TestE
 fn mcp_http_transport_without_feature_is_a_startup_error() -> Result<(), TestError> {
     let mut cli = Cli::parse_from_args(["sipnab"]);
     cli.mcp_args.mcp = true;
-    cli.mcp_args.mcp_transport = "http".into();
+    cli.mcp_args.mcp_transport = sipnab::cli::McpTransport::Http;
     let (ds, ss, alerts) = stores();
     let err = servers::start_servers(
         &cli,
@@ -454,6 +461,7 @@ fn mcp_http_transport_without_feature_is_a_startup_error() -> Result<(), TestErr
             metrics_tls: (None, None),
             mcp_row_cap: sipnab::cli::Cli::DEFAULT_MCP_MAX_ROWS as usize,
             mcp_body_cap: sipnab::cli::Cli::DEFAULT_MCP_MAX_BODY_BYTES as usize,
+            mcp_response_cap: sipnab::cli::Cli::DEFAULT_MCP_MAX_RESPONSE_BYTES as usize,
             mcp_wait_seconds: sipnab::cli::Cli::DEFAULT_MCP_MAX_WAIT_SECONDS,
             mcp_sweep: sipnab::cli::McpSweepLimits::default(),
             mcp_sweep_jobs: sipnab::cli::McpSweepJobLimits::default(),
@@ -488,70 +496,13 @@ fn mcp_http_transport_without_feature_is_a_startup_error() -> Result<(), TestErr
     Ok(())
 }
 
-/// An unknown --mcp-transport is a configuration error, not a log-and-skip.
-#[cfg(feature = "mcp")]
-#[test]
-fn unknown_mcp_transport_is_a_startup_error() -> Result<(), TestError> {
-    let mut cli = Cli::parse_from_args(["sipnab"]);
-    cli.mcp_args.mcp = true;
-    cli.mcp_args.mcp_transport = "carrier-pigeon".into();
-    let (ds, ss, alerts) = stores();
-    let err = servers::start_servers(
-        &cli,
-        &ds,
-        &ss,
-        Some(&alerts),
-        Selection {
-            evidence_ring: None,
-            mcp_tools: sipnab::mcp_profile::ToolSelection::Full,
-            mcp_output_schemas: false,
-            api_allowed_hosts: Vec::new(),
-            api_tls: (None, None),
-            mcp_tls: (None, None),
-            metrics_tls: (None, None),
-            mcp_row_cap: sipnab::cli::Cli::DEFAULT_MCP_MAX_ROWS as usize,
-            mcp_body_cap: sipnab::cli::Cli::DEFAULT_MCP_MAX_BODY_BYTES as usize,
-            mcp_wait_seconds: sipnab::cli::Cli::DEFAULT_MCP_MAX_WAIT_SECONDS,
-            mcp_sweep: sipnab::cli::McpSweepLimits::default(),
-            mcp_sweep_jobs: sipnab::cli::McpSweepJobLimits::default(),
-            api_row_cap: sipnab::cli::Cli::DEFAULT_API_MAX_ROWS as usize,
-            api_rate_limit_per_peer: sipnab::cli::Cli::DEFAULT_API_RATE_LIMIT_PER_PEER,
-            max_tracked_peers: sipnab::cli::Cli::DEFAULT_MAX_TRACKED_PEERS,
-            metrics_max_conn: sipnab::cli::Cli::DEFAULT_METRICS_MAX_CONN,
-            tfps: Default::default(),
-            actions: Default::default(),
-            mcp_max_findings: sipnab::cli::Cli::DEFAULT_MCP_MAX_FINDINGS,
-            api: false,
-            mcp: true,
-            // These cases exercise the API/MCP selection; the metrics server has
-            // its own end-to-end gate in tests/metrics_headless_test.rs.
-            metrics: false,
-            armed_detections: Vec::new(),
-            pipeline_options: Default::default(),
-            alias_thresholds: Default::default(),
-        },
-        // No transmit permit: none of these cases opens a live source.
-        #[cfg(any(feature = "api", feature = "mcp"))]
-        None,
-        None,
-    )
-    .err()
-    .ok_or("unknown --mcp-transport must be a startup error")?;
-    let msg = format!("{err:#}");
-    assert!(
-        msg.contains("carrier-pigeon"),
-        "error must echo the bad transport: {msg}"
-    );
-    Ok(())
-}
-
 /// A malformed --mcp-bind is a configuration error, not a log-and-skip.
 #[cfg(feature = "mcp-http")]
 #[test]
 fn invalid_mcp_bind_is_a_startup_error() -> Result<(), TestError> {
     let mut cli = Cli::parse_from_args(["sipnab"]);
     cli.mcp_args.mcp = true;
-    cli.mcp_args.mcp_transport = "http".into();
+    cli.mcp_args.mcp_transport = sipnab::cli::McpTransport::Http;
     cli.mcp_args.mcp_bind = Some("not-a-bind-addr".into());
     let (ds, ss, alerts) = stores();
     let err = servers::start_servers(
@@ -569,6 +520,7 @@ fn invalid_mcp_bind_is_a_startup_error() -> Result<(), TestError> {
             metrics_tls: (None, None),
             mcp_row_cap: sipnab::cli::Cli::DEFAULT_MCP_MAX_ROWS as usize,
             mcp_body_cap: sipnab::cli::Cli::DEFAULT_MCP_MAX_BODY_BYTES as usize,
+            mcp_response_cap: sipnab::cli::Cli::DEFAULT_MCP_MAX_RESPONSE_BYTES as usize,
             mcp_wait_seconds: sipnab::cli::Cli::DEFAULT_MCP_MAX_WAIT_SECONDS,
             mcp_sweep: sipnab::cli::McpSweepLimits::default(),
             mcp_sweep_jobs: sipnab::cli::McpSweepJobLimits::default(),
@@ -689,6 +641,7 @@ fn metrics_non_loopback_without_auth_is_a_startup_error() -> Result<(), TestErro
             metrics_tls: (None, None),
             mcp_row_cap: sipnab::cli::Cli::DEFAULT_MCP_MAX_ROWS as usize,
             mcp_body_cap: sipnab::cli::Cli::DEFAULT_MCP_MAX_BODY_BYTES as usize,
+            mcp_response_cap: sipnab::cli::Cli::DEFAULT_MCP_MAX_RESPONSE_BYTES as usize,
             mcp_wait_seconds: sipnab::cli::Cli::DEFAULT_MCP_MAX_WAIT_SECONDS,
             mcp_sweep: sipnab::cli::McpSweepLimits::default(),
             mcp_sweep_jobs: sipnab::cli::McpSweepJobLimits::default(),
@@ -746,6 +699,7 @@ fn metrics_on_loopback_ephemeral_port_starts() -> Result<(), TestError> {
             metrics_tls: (None, None),
             mcp_row_cap: sipnab::cli::Cli::DEFAULT_MCP_MAX_ROWS as usize,
             mcp_body_cap: sipnab::cli::Cli::DEFAULT_MCP_MAX_BODY_BYTES as usize,
+            mcp_response_cap: sipnab::cli::Cli::DEFAULT_MCP_MAX_RESPONSE_BYTES as usize,
             mcp_wait_seconds: sipnab::cli::Cli::DEFAULT_MCP_MAX_WAIT_SECONDS,
             mcp_sweep: sipnab::cli::McpSweepLimits::default(),
             mcp_sweep_jobs: sipnab::cli::McpSweepJobLimits::default(),
@@ -782,7 +736,7 @@ fn metrics_on_loopback_ephemeral_port_starts() -> Result<(), TestError> {
 fn start_mcp_http(bind: &str) -> anyhow::Result<Option<servers::ServerHandles>> {
     let mut cli = Cli::parse_from_args(["sipnab"]);
     cli.mcp_args.mcp = true;
-    cli.mcp_args.mcp_transport = "http".into();
+    cli.mcp_args.mcp_transport = sipnab::cli::McpTransport::Http;
     cli.mcp_args.mcp_bind = Some(bind.into());
     let (ds, ss, alerts) = stores();
     servers::start_servers(
@@ -800,6 +754,7 @@ fn start_mcp_http(bind: &str) -> anyhow::Result<Option<servers::ServerHandles>> 
             metrics_tls: (None, None),
             mcp_row_cap: sipnab::cli::Cli::DEFAULT_MCP_MAX_ROWS as usize,
             mcp_body_cap: sipnab::cli::Cli::DEFAULT_MCP_MAX_BODY_BYTES as usize,
+            mcp_response_cap: sipnab::cli::Cli::DEFAULT_MCP_MAX_RESPONSE_BYTES as usize,
             mcp_wait_seconds: sipnab::cli::Cli::DEFAULT_MCP_MAX_WAIT_SECONDS,
             mcp_sweep: sipnab::cli::McpSweepLimits::default(),
             mcp_sweep_jobs: sipnab::cli::McpSweepJobLimits::default(),

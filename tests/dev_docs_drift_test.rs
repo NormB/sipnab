@@ -837,7 +837,31 @@ fn linked_code_targets_exist() -> Result<(), TestError> {
     // 496 -> 498: docs/internals/build-ci-release.md's hosted cargo cache
     // paragraph links scripts/ci-cache-prune.sh and
     // tests/ci_cache_policy_test.rs.
-    const EXPECTED_CODE_LINKS: usize = 498;
+    // 498 -> 501: docs/internals/build-ci-release.md's Docker Hub paragraph
+    // links scripts/requirements-codespell.txt, scripts/prose-gates.sh and
+    // tests/ci_docker_hub_test.rs.
+    // 501 -> 505: docs/internals/testing.md's public vCon datasets section
+    // links tests/fixtures/vcon-datasets/PINS.tsv,
+    // tests/vcon_dataset_subset_test.rs, tests/vcon_dataset_corpus_test.rs and
+    // scripts/fetch-vcon-datasets.py (its link to the subset README.md is a
+    // page, not code).
+    // 505 -> 506: the same section's corrected-copy paragraph links
+    // tests/fixtures/vcon-datasets/CORRECTED.tsv.
+    // 506 -> 507: docs/internals/zero-copy-payloads.md links bench/carrier.py
+    // in the single-threaded mapped-read measurement.
+    // 507 -> 512: docs/internals/build-ci-release.md's commit-signature gate
+    // paragraph links scripts/commit-signature-check.sh,
+    // scripts/tag-signature-check.sh, .github/allowed_signers and
+    // tests/commit_signature_gate_test.rs.
+    // +1: docs/internals/walkthroughs.md links src/mcp/budget.rs in the
+    // new-tool recipe's step on bounding a paged response.
+    // 512 -> 516: docs/internals/testing.md links tests/examples_run_test.rs,
+    // tests/release_surface_test.rs and scripts/lib_markdown.py, and
+    // docs/internals/build-ci-release.md's changelog paragraph links
+    // tests/release_surface_test.rs.
+    // 516 -> 517: docs/internals/build-ci-release.md's memcheck.yml row links
+    // scripts/memcheck-verdict.py.
+    const EXPECTED_CODE_LINKS: usize = 517;
     assert_eq!(
         seen, EXPECTED_CODE_LINKS,
         "code-link extraction found {seen} links, expected {EXPECTED_CODE_LINKS}. \
@@ -1695,7 +1719,7 @@ fn every_site_operator_page_is_in_the_docs_nav_list() -> Result<(), TestError> {
 /// half until `scorecard.yml` became the ninth.
 #[test]
 fn workflow_inventory_heading_counts_the_workflows() -> Result<(), TestError> {
-    const WORDS: [&str; 18] = [
+    const WORDS: [&str; 19] = [
         "zero",
         "one",
         "two",
@@ -1714,6 +1738,7 @@ fn workflow_inventory_heading_counts_the_workflows() -> Result<(), TestError> {
         "fifteen",
         "sixteen",
         "seventeen",
+        "eighteen",
     ];
     let dir = repo().join(".github/workflows");
     let mut names: Vec<String> = std::fs::read_dir(&dir)?

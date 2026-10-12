@@ -1273,6 +1273,7 @@ mod tests {
             ssrc,
             src: std::net::SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)), 20000),
             dst: std::net::SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2)), 30000),
+            session: 0,
         };
         Ok((store, key))
     }
@@ -1327,6 +1328,7 @@ mod tests {
             ssrc: 0xDEAD_BEEF,
             src: std::net::SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 1000),
             dst: std::net::SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 2000),
+            session: 0,
         };
         let backend = TestBackend::new(60, 5);
         let mut terminal = Terminal::new(backend)?;
@@ -1435,6 +1437,7 @@ mod tests {
             ssrc,
             src: std::net::SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)), 20000),
             dst: std::net::SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2)), 30000),
+            session: 0,
         };
         let out = render_to_string(&store, &key)?;
         assert!(out.contains("RTP stream detail"));
@@ -1472,6 +1475,7 @@ mod tests {
             ssrc,
             src: std::net::SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)), 20000),
             dst: std::net::SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2)), 30000),
+            session: 0,
         };
         let t0 = DateTime::from_timestamp(1_700_000_000, 0).ok_or("a valid timestamp")?;
         let mut stream = RtpStream::new(key.clone(), &rtp_header(ssrc, 1, 0), t0);
@@ -1677,6 +1681,7 @@ mod tests {
             ssrc,
             src: std::net::SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)), 20000),
             dst: std::net::SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2)), 30000),
+            session: 0,
         };
         let t0 = DateTime::from_timestamp(1_700_000_000, 0).ok_or("a valid timestamp")?;
         // Payload type 99 is a dynamic type this capture never saw an rtpmap
@@ -1817,6 +1822,7 @@ mod tests {
             ssrc,
             src: std::net::SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)), 20000),
             dst: std::net::SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2)), 30000),
+            session: 0,
         };
         let t0 = DateTime::from_timestamp(1_700_000_000, 0).ok_or("a valid timestamp")?;
         let mut stream = RtpStream::new(key.clone(), &rtp_header(ssrc, 1, pt), t0);
@@ -1901,6 +1907,7 @@ mod tests {
             ssrc,
             src: std::net::SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)), 20000),
             dst: std::net::SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2)), 30000),
+            session: 0,
         };
         let t0 = DateTime::from_timestamp(1_700_000_000, 0).ok_or("a valid timestamp")?;
         let mut stream = RtpStream::new(key.clone(), &rtp_header(ssrc, 1, 0), t0);
@@ -1998,6 +2005,7 @@ mod tests {
             ssrc,
             src: std::net::SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)), 20000),
             dst: std::net::SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2)), 30000),
+            session: 0,
         };
         let t0 = DateTime::from_timestamp(1_700_000_000, 0).ok_or("a valid timestamp")?;
         let mut stream = RtpStream::new(key.clone(), &rtp_header(ssrc, 1, 0), t0);

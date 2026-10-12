@@ -1125,3 +1125,99 @@ fn credential_file_refusal_exit_code_follows_where_it_was_named() -> Result<(), 
     }
     verdict(failures)
 }
+
+// ── Error messages that could not print, or printed the wrong thing ────────
+
+/// The shipped single-call capture.
+const SIP_CALL: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/sip_call.pcap");
+
+/// `--capture-tunnels=` names the list as empty, with exit 2.
+///
+/// The empty-list message was checked after the per-port loop, which refused
+/// the blank field first as "Invalid --capture-tunnels port ''".
+#[test]
+fn an_empty_capture_tunnels_list_is_named_as_empty() -> Result<(), TestError> {
+    let o = run(&argv(&["-I", SIP_CALL, "--capture-tunnels="]), None);
+    assert_eq!((o.stage, o.code), (Stage::Plan, 2), "{}", o.message);
+    assert!(
+        o.message
+            .contains("--capture-tunnels was given an empty port list"),
+        "{}",
+        o.message
+    );
+    Ok(())
+}
+
+/// An unknown `--mcp-transport` is refused by clap, naming both values, with
+/// exit 2. That is the one place the rule lives: `validate` and the server
+/// start-up each carried a second copy that clap made unreachable.
+#[test]
+fn an_unknown_mcp_transport_is_refused_at_parse_time() -> Result<(), TestError> {
+    let o = run(&argv(&["--mcp", "--mcp-transport", "carrier-pigeon"]), None);
+    assert_eq!((o.stage, o.code), (Stage::Parse, 2), "{}", o.message);
+    assert!(
+        o.message.contains("[possible values: stdio, http]"),
+        "{}",
+        o.message
+    );
+    Ok(())
+}
+
+/// A bad `--ws-portrange` is refused as a flag value, exit 2, without the
+/// "invalid config value" prefix: no config file is involved. The same value
+/// in `[capture] ws_ports` is a config error, exit 1, naming the key.
+#[test]
+fn a_bad_ws_portrange_is_a_flag_error_and_a_bad_key_a_config_error() -> Result<(), TestError> {
+    let o = run(&argv(&["-I", SIP_CALL, "--ws-portrange", "80"]), None);
+    assert_eq!(o.code, 2, "{:?}: {}", o.stage, o.message);
+    assert!(
+        o.message.starts_with("Invalid --ws-portrange: "),
+        "{}",
+        o.message
+    );
+    assert!(!o.message.contains("config"), "{}", o.message);
+
+    let o = run_with_file(&["-I", SIP_CALL], "[capture]\nws_ports = \"80\"\n")?;
+    assert_eq!(o.code, 1, "{:?}: {}", o.stage, o.message);
+    assert!(
+        o.message
+            .contains("invalid config value: [capture] ws_ports"),
+        "{}",
+        o.message
+    );
+    Ok(())
+}
+
+/// Run the binary on `args` with no config file and `SIPNAB_LOG` unset,
+/// returning its exit code and stderr.
+fn run_binary(args: &[&str]) -> Result<(i32, String), TestError> {
+    let out = std::process::Command::new(env!("CARGO_BIN_EXE_sipnab"))
+        .args(["-N", "--no-config"])
+        .args(args)
+        .env("NO_COLOR", "1")
+        .env_remove("SIPNAB_LOG")
+        .output()?;
+    Ok((
+        out.status.code().unwrap_or(-1),
+        String::from_utf8_lossy(&out.stderr).into_owned(),
+    ))
+}
+
+/// An unreadable `--tls-key`, `--srtp-keys` or `--dtls-keylog` names the OS
+/// reason, not only the file, with exit 1.
+#[test]
+fn an_unreadable_key_file_names_the_os_reason() -> Result<(), TestError> {
+    for flag in ["--tls-key", "--srtp-keys", "--dtls-keylog"] {
+        let (code, stderr) = run_binary(&["-I", SIP_CALL, flag, "/nonexistent/key"])?;
+        assert_eq!(code, 1, "{flag}: {stderr}");
+        let line = stderr
+            .lines()
+            .find(|l| l.contains(&format!("Failed to load {flag} /nonexistent/key: ")))
+            .ok_or_else(|| format!("{flag}: no refusal line: {stderr}"))?;
+        assert!(
+            line.ends_with("No such file or directory (os error 2)"),
+            "{line}"
+        );
+    }
+    Ok(())
+}

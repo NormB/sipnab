@@ -27,6 +27,8 @@ const EXPECTED: &[(&str, usize, usize, usize)] = &[
     ("crates", 9, 3, 0),
     ("examples", 0, 3, 0),
     ("fuzz", 0, 0, 0),
+    // ops/memcheck/leak_probe.rs, the memcheck workflow's leak probe: none.
+    ("ops", 0, 0, 0),
     ("src", 5, 3, 7),
     ("tests", 0, 0, 2),
 ];

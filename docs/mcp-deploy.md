@@ -132,7 +132,7 @@ that's the laptop itself):
 
    ```bash
    sipnab --version
-   # sipnab 0.5.209 (...) features: native,tui,audio,tls,hep,api,mcp,mcp-http,metrics,plugins,vcon,bpf
+   # sipnab 0.5.213 (...) features: native,tui,audio,tls,hep,api,mcp,mcp-http,metrics,plugins,vcon,bpf
    # libpcap version 1.10.5 (with TPACKET_V3); alternate capture backends named: none
    ```
 
@@ -1348,7 +1348,7 @@ Then confirm the build can do what you are about to ask of it:
 ```json
 {
   "schema_version": 1,
-  "version": "0.5.209",
+  "version": "0.5.213",
   "features": ["api", "audio", "hep", "mcp", "mcp-http", "metrics",
                "native", "plugins", "tls", "tui"],
   "can_decrypt": true,
@@ -1359,7 +1359,9 @@ Then confirm the build can do what you are about to ask of it:
     "mcp_allow_shutdown": false,
     "mcp_allow_open_capture": false,
     "mcp_allow_tls_capture": false,
-    "mcp_allow_save_findings": false
+    "mcp_allow_save_findings": false,
+    "mcp_allow_relay_query": false,
+    "hep_delivery_trust": "port-gated-only"
   }
 }
 ```
@@ -1449,10 +1451,11 @@ HEP mirroring and sipnab lives elsewhere.
 What the design already gives you (details in
 [the MCP protocol page, "Security model"](mcp-protocol.md#security-model)):
 
-- **No control plane, and no tool sends SIP.** No MCP tool puts a packet on
-  the wire, so a compromised or confused agent can disclose data rather than
-  take over the server. The tools that reach past the query surface stay off
-  until you enable them, each behind its own flag. `export_capture` and
+- **No control plane, and no tool sends SIP.** Only `query_relay`,
+  `relay_stats` and `relay_compare` put a packet on the wire, and only to the
+  relay named by `--rtpengine-control`, on a live run with
+  `--mcp-allow-relay-query`. The tools that reach past the query surface stay
+  off until you enable them, each behind its own flag. `export_capture` and
   `export_audio` write files, and only under the directory `--mcp-file-root`
   names — name no root and they refuse. `shutdown_server` ends the run only
   under `--mcp-allow-shutdown`. `open_capture` replaces the loaded capture only
@@ -1877,7 +1880,7 @@ Type=simple
 ExecStart=/usr/local/bin/sipnab --mcp -N --mcp-transport http \
     --mcp-bind 127.0.0.1:8731 \
     --mcp-token-file /etc/sipnab/mcp.token \
-    -L 0.0.0.0:9060 --hep-parse
+    -L 0.0.0.0:9060 --hep-allow 192.0.2.0/24
 User=sipnab
 Group=sipnab
 NoNewPrivileges=true
@@ -1889,6 +1892,10 @@ RestartSec=5
 [Install]
 WantedBy=multi-user.target
 ```
+
+Replace `192.0.2.0/24` with the addresses your SIP proxies send HEP from.
+sipnab refuses to start a HEP listener on a routable address unless it has a
+source allowlist (`--hep-allow`) or a shared secret (`--hep-auth-file`).
 
 Then start it, in this order:
 
@@ -1915,11 +1922,11 @@ sudo setcap cap_net_raw+ep /usr/local/bin/sipnab
 
 ## Build a binary with MCP support
 
-```toml
+```text
 mcp       # stdio transport (rmcp dep, ~3 MB binary cost)
 mcp-http  # HTTP transport (mcp + api; rmcp/transport-streamable-http-server)
 full      # native + tui + tls + hep + api + audio + mcp + mcp-http
-          #   + metrics + plugins + vcon
+          #   + metrics + plugins + vcon + archive
 ```
 
 The default build does not include `mcp` — operators who'll never
@@ -2016,7 +2023,7 @@ stdin and the `sleep`s pace the handshake — so paste it as a unit:
 Expected first line of response:
 
 ```json
-{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2025-06-18","capabilities":{"tools":{}},"serverInfo":{"name":"sipnab","version": "0.5.209"},"instructions":"sipnab MCP server — queries captured SIP dialogs ..."}}
+{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2025-06-18","capabilities":{"tools":{}},"serverInfo":{"name":"sipnab","version": "0.5.213"},"instructions":"sipnab MCP server — queries captured SIP dialogs ..."}}
 ```
 
 ### Test the HTTP wire by hand

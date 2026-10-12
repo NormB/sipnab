@@ -11,9 +11,9 @@ reachable three ways and not four is visible only once these four are set
 beside one another. [`tests/capability_matrix_test.rs`](https://github.com/NormB/sipnab/blob/main/tests/capability_matrix_test.rs) keeps
 this current and requires the matrix to account for every row here.
 
-Totals: CLI 342, TUI 25, REST 41, MCP 72.
+Totals: CLI 343, TUI 25, REST 42, MCP 73.
 
-## CLI flags (342)
+## CLI flags (343)
 
 - `--ack-timeout`
 - `--active-idle-window`
@@ -176,6 +176,7 @@ Totals: CLI 342, TUI 25, REST 41, MCP 72.
 - `--mcp-max-body-bytes`
 - `--mcp-max-concurrent`
 - `--mcp-max-findings`
+- `--mcp-max-response-bytes`
 - `--mcp-max-rows`
 - `--mcp-max-wait-seconds`
 - `--mcp-output-schemas`
@@ -338,7 +339,6 @@ Totals: CLI 342, TUI 25, REST 41, MCP 72.
 - `--vcon-forward-backoff-cap`
 - `--vcon-forward-backoff-first`
 - `--vcon-forward-ca`
-- `--vcon-forward-compat`
 - `--vcon-forward-done`
 - `--vcon-forward-failed`
 - `--vcon-forward-interval`
@@ -351,6 +351,7 @@ Totals: CLI 342, TUI 25, REST 41, MCP 72.
 - `--vcon-forward-url`
 - `--vcon-max-inline-media`
 - `--vcon-out`
+- `--vcon-spool-status`
 - `--version`
 - `--wireshark`
 - `--word`
@@ -386,7 +387,7 @@ Totals: CLI 342, TUI 25, REST 41, MCP 72.
 - `Talkers`
 - `TfpsObserve`
 
-## REST routes (41)
+## REST routes (42)
 
 - `/health`
 - `/metrics`
@@ -428,9 +429,10 @@ Totals: CLI 342, TUI 25, REST 41, MCP 72.
 - `/v1/tfps/status`
 - `/v1/tfps/unban`
 - `/v1/timeline`
+- `/v1/vcon/spool`
 - `/v1/vcon/validate`
 
-## MCP tools (72)
+## MCP tools (73)
 
 - `actions_revert`
 - `aggregate_dialogs`
@@ -504,3 +506,4 @@ Totals: CLI 342, TUI 25, REST 41, MCP 72.
 - `validate_filter`
 - `validate_message`
 - `validate_vcon`
+- `vcon_spool_status`

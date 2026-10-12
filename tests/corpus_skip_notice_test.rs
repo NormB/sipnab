@@ -89,13 +89,33 @@ fn corpus_skip_notice_probe() -> Result<(), TestError> {
     Ok(())
 }
 
+/// The same probe for the vCon dataset corpus, whose gate is a second
+/// variable and a second notice.
+#[test]
+#[ignore = "spawned as a child by the notice tests in this file"]
+fn vcon_dataset_skip_notice_probe() -> Result<(), TestError> {
+    assert!(
+        corpus_support::vcon_datasets_root().is_none(),
+        "the probe must run with {} unset",
+        corpus_support::VCON_DATASETS_VAR
+    );
+    assert!(corpus_support::vcon_datasets_root().is_none());
+    Ok(())
+}
+
 /// Run the probe in a child process with the corpus unset and no
 /// `--nocapture`, and return its `(stderr, exit code)`.
 fn run_probe() -> Result<(String, Option<i32>), TestError> {
+    run_named_probe("corpus_skip_notice_probe", corpus_support::ENV_VAR)
+}
+
+/// Run the ignored test `probe` in a child process with `var` unset and no
+/// `--nocapture`, and return its `(stderr, exit code)`.
+fn run_named_probe(probe: &str, var: &str) -> Result<(String, Option<i32>), TestError> {
     let exe = std::env::current_exe()?;
     let out = Command::new(exe)
-        .args(["corpus_skip_notice_probe", "--exact", "--ignored"])
-        .env_remove(corpus_support::ENV_VAR)
+        .args([probe, "--exact", "--ignored"])
+        .env_remove(var)
         .output()?;
     Ok((
         String::from_utf8_lossy(&out.stderr).into_owned(),
@@ -173,18 +193,62 @@ fn no_test_source_reads_the_corpus_variable_directly() -> Result<(), TestError> 
     let mut offenders = Vec::new();
     for name in test_sources()? {
         let src = read(&name)?;
-        if src.contains(&format!("var(\"{}\")", corpus_support::ENV_VAR))
-            || src.contains(&format!("var_os(\"{}\")", corpus_support::ENV_VAR))
-        {
-            offenders.push(name);
+        for var in [corpus_support::ENV_VAR, corpus_support::VCON_DATASETS_VAR] {
+            if src.contains(&format!("var(\"{var}\")"))
+                || src.contains(&format!("var_os(\"{var}\")"))
+            {
+                offenders.push(format!("{name} reads {var}"));
+            }
         }
     }
     assert!(
         offenders.is_empty(),
-        "these read {} directly instead of going through tests/support/corpus.rs, so \
-         their skip is not announced: {offenders:?}",
-        corpus_support::ENV_VAR
+        "these read a corpus variable directly instead of going through \
+         tests/support/corpus.rs, so their skip is not announced: {offenders:?}"
     );
+    Ok(())
+}
+
+/// The vCon dataset corpus is gated the same way: its skip reaches stderr
+/// under libtest's capture, once, and stays a skip.
+#[test]
+fn the_vcon_dataset_skip_notice_survives_capture_once() -> Result<(), TestError> {
+    let (stderr, code) = run_named_probe(
+        "vcon_dataset_skip_notice_probe",
+        corpus_support::VCON_DATASETS_VAR,
+    )?;
+    assert_eq!(
+        stderr.matches(corpus_support::NOTICE_MARKER).count(),
+        1,
+        "the vCon dataset notice must reach stderr exactly once: {stderr:?}"
+    );
+    assert!(
+        stderr.contains(corpus_support::VCON_DATASETS_VAR),
+        "the notice must name the variable that turns the gate on: {stderr:?}"
+    );
+    assert!(
+        !stderr.contains(corpus_support::ENV_VAR),
+        "the vCon dataset notice must not name the capture corpus: {stderr:?}"
+    );
+    assert_eq!(code, Some(0), "an absent dataset cache must remain a skip");
+    Ok(())
+}
+
+/// The vCon dataset notice says how to get the data, not only that it is
+/// missing.
+#[test]
+fn the_vcon_dataset_notice_names_the_fetch_script() -> Result<(), TestError> {
+    let line = corpus_support::vcon_datasets_notice_line("example_corpus_test");
+    assert_eq!(line.lines().count(), 1, "one line: {line}");
+    for needle in [
+        corpus_support::VCON_DATASETS_VAR,
+        "example_corpus_test",
+        corpus_support::NOTICE_MARKER,
+        "not full validation",
+        "scripts/fetch-vcon-datasets.py",
+    ] {
+        assert!(line.contains(needle), "notice omits {needle:?}: {line}");
+    }
     Ok(())
 }
 

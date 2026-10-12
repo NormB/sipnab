@@ -211,6 +211,7 @@ static KNOWN_KEYS: LazyLock<HashMap<&'static str, &'static [&'static str]>> = La
             "max_audio_frames",
             "mcp_max_rows",
             "mcp_max_body_bytes",
+            "mcp_max_response_bytes",
             "mcp_max_wait_seconds",
             "mcp_max_findings",
             "mcp_sweep_max_files",
@@ -262,7 +263,6 @@ static KNOWN_KEYS: LazyLock<HashMap<&'static str, &'static [&'static str]>> = La
             "failed",
             "interval",
             "timeout",
-            "compat",
             "backoff_first",
             "backoff_cap",
             "max_response_head",
@@ -563,9 +563,6 @@ pub struct VconForwardConfig {
     /// Seconds to wait to connect and for each read and write. See
     /// [`FORWARD_TIMEOUT`].
     pub timeout: Option<u64>,
-    /// The store deviation to correct for in the copy sent, one of
-    /// [`FORWARD_COMPAT`]. `--vcon-forward-compat` overrides it.
-    pub compat: Option<String>,
     /// Seconds before the first retry. See [`FORWARD_BACKOFF_FIRST`].
     pub backoff_first: Option<u64>,
     /// The longest wait between retries, in seconds. See
@@ -722,11 +719,6 @@ pub const FORWARD_NUMBERS: [ForwardNumber; 6] = [
     FORWARD_MAX_ERROR_BODY,
 ];
 
-/// The names `--vcon-forward-compat` and `[vcon_forward] compat` accept.
-/// `none` sends every container byte for byte, the default; `vcon-store`
-/// corrects for vcon.store's deviations from the vCon drafts.
-pub const FORWARD_COMPAT: &[&str] = &["none", "vcon-store"];
-
 /// The names `--vcon-forward-kind` and `[vcon_forward] kind` accept, in the
 /// order of the forwarder's kind table. `generic` supplies nothing: every
 /// setting is given explicitly, as before kinds existed.
@@ -792,8 +784,8 @@ pub fn forward_backoff_problem(first: (u64, &str), cap: (u64, &str)) -> Option<S
 impl VconForwardConfig {
     /// Refuse a value its flag would refuse.
     ///
-    /// Each whole-number key is held to its [`ForwardNumber`] range, `compat`
-    /// to [`FORWARD_COMPAT`], `kind` to [`FORWARD_KINDS`], and the back-off pair to
+    /// Each whole-number key is held to its [`ForwardNumber`] range, `kind`
+    /// to [`FORWARD_KINDS`], and the back-off pair to
     /// [`forward_backoff_problem`] with the default standing in for a key
     /// that is not set. The URLs and the credential are checked when the
     /// forwarder starts, where the flags are.
@@ -808,18 +800,13 @@ impl VconForwardConfig {
                 })?;
             }
         }
-        for (key, value, names) in [
-            ("compat", &self.compat, FORWARD_COMPAT),
-            ("kind", &self.kind, FORWARD_KINDS),
-        ] {
-            if let Some(name) = value
-                && !names.contains(&name.as_str())
-            {
-                return Err(crate::Error::ConfigInvalid(format!(
-                    "[vcon_forward] {key}: {name:?} is not one of {}",
-                    names.join(", ")
-                )));
-            }
+        if let Some(name) = &self.kind
+            && !FORWARD_KINDS.contains(&name.as_str())
+        {
+            return Err(crate::Error::ConfigInvalid(format!(
+                "[vcon_forward] kind: {name:?} is not one of {}",
+                FORWARD_KINDS.join(", ")
+            )));
         }
         let first = FORWARD_BACKOFF_FIRST.pick(None, self.backoff_first);
         let cap = FORWARD_BACKOFF_CAP.pick(None, self.backoff_cap);
@@ -2270,6 +2257,13 @@ pub struct LimitsConfig {
     /// their number, and the tighter of the two on a body question: a caller
     /// may ask for one dialog and still be answered with a clipped `INVITE`.
     pub mcp_max_body_bytes: Option<u64>,
+    /// Bytes ONE whole paged MCP response may carry (default: 1048576).
+    ///
+    /// `mcp_max_rows` bounds how many rows a page carries and
+    /// `mcp_max_body_bytes` how wide one body in a row can be; this bounds
+    /// the page as a whole. Past it a paged tool drops whole rows from the
+    /// end and answers `truncated_by: "bytes"` with a cursor to the rest.
+    pub mcp_max_response_bytes: Option<u64>,
     /// Longest ONE `await_condition` MCP call may wait, in seconds
     /// (default: 60).
     ///
@@ -2436,6 +2430,12 @@ impl LimitsConfig {
         // Rejected rather than read as "unlimited" or "default": both would
         // turn a typo into silent behavior the operator did not ask for.
         refuse_zero("[limits] mcp_max_rows", self.mcp_max_rows)?;
+        // Same judgement as `mcp_max_rows`: 0 would answer every page with
+        // one row and a cursor, a setting no operator means.
+        refuse_zero(
+            "[limits] mcp_max_response_bytes",
+            self.mcp_max_response_bytes,
+        )?;
         refuse_zero("[limits] max_streams", self.max_streams)?;
         refuse_zero("[limits] max_reassembly", self.max_reassembly)?;
         // Zero is refused rather than read as "never hold anything": a zero
@@ -4535,7 +4535,7 @@ column_selector = "F10"
                     replace_url = \"https://store.example.com/v1/vcons/{uuid}\"\n\
                     auth_file = \"/etc/sipnab/vcon.auth\"\nca = \"/etc/sipnab/store-ca.pem\"\n\
                     done = \"/srv/sent\"\nfailed = \"/srv/held\"\ninterval = 7\ntimeout = 9\n\
-                    compat = \"vcon-store\"\nbackoff_first = 4\nbackoff_cap = 120\n\
+                    backoff_first = 4\nbackoff_cap = 120\n\
                     max_response_head = 16384\nmax_error_body = 2048";
         let text = format!("[vcon_forward]\n{body}\n");
         assert_eq!(Config::unknown_keys(&text)?, Vec::<String>::new());
@@ -4639,26 +4639,24 @@ column_selector = "F10"
         Ok(())
     }
 
-    /// `compat` and `kind` accept exactly the names their flags accept.
+    /// `kind` accepts exactly the names its flag accepts.
     #[test]
     fn the_vcon_forward_names_are_the_flags_names() -> Outcome {
-        for (key, names) in [("compat", FORWARD_COMPAT), ("kind", FORWARD_KINDS)] {
-            for name in names {
-                assert!(
-                    forward_keys(&format!("{key} = {name:?}"))?
-                        .validate()
-                        .is_ok(),
-                    "{key} {name}"
-                );
-            }
-            for bad in ["x", "", "VCON-STORE", "off"] {
-                let e = forward_keys(&format!("{key} = {bad:?}"))?
+        for name in FORWARD_KINDS {
+            assert!(
+                forward_keys(&format!("kind = {name:?}"))?
                     .validate()
-                    .err()
-                    .ok_or("unknown name accepted")?
-                    .to_string();
-                assert!(e.contains(&format!("[vcon_forward] {key}")), "{e}");
-            }
+                    .is_ok(),
+                "kind {name}"
+            );
+        }
+        for bad in ["x", "", "VCON-STORE", "off"] {
+            let e = forward_keys(&format!("kind = {bad:?}"))?
+                .validate()
+                .err()
+                .ok_or("unknown name accepted")?
+                .to_string();
+            assert!(e.contains("[vcon_forward] kind"), "{e}");
         }
         Ok(())
     }
@@ -4822,6 +4820,7 @@ column_selector = "F10"
             lint_max_per_rule: Some(25),
             exec_queue_depth: Some(100),
             mcp_max_body_bytes: Some(4096),
+            mcp_max_response_bytes: Some(1_048_576),
             mcp_max_wait_seconds: Some(120),
             mcp_max_findings: Some(1000),
             mcp_sweep_max_files: Some(40),
@@ -4856,6 +4855,7 @@ column_selector = "F10"
     fn truncation_caps_parse_are_registered_and_reject_zero() -> Result<(), TestError> {
         for key in [
             "mcp_max_body_bytes",
+            "mcp_max_response_bytes",
             "mcp_max_wait_seconds",
             "mcp_sweep_max_files",
             "mcp_sweep_deadline_ms",

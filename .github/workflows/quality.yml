@@ -202,7 +202,7 @@ jobs:
       # tests/ci_cache_policy_test.rs keeps it out.
 
       - name: Install cargo-llvm-cov
-        uses: taiki-e/install-action@83ac0ad63c0167e6f06796fab0fce28db1bf3db0 # v2
+        uses: taiki-e/install-action@f7e5d7c961414b23f5b25b2da9294395d08513ad # v2
         with:
           tool: cargo-llvm-cov
 
@@ -249,7 +249,7 @@ jobs:
           cargo llvm-cov report --html --ignore-filename-regex "$COVERAGE_IGNORE_REGEX"
 
       - name: Upload HTML coverage artifact
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: coverage-html
           path: target/llvm-cov/html
@@ -320,7 +320,7 @@ jobs:
       # directory nothing to reuse.
 
       - name: Install cargo-llvm-cov
-        uses: taiki-e/install-action@83ac0ad63c0167e6f06796fab0fce28db1bf3db0 # v2
+        uses: taiki-e/install-action@f7e5d7c961414b23f5b25b2da9294395d08513ad # v2
         with:
           tool: cargo-llvm-cov
 
@@ -411,7 +411,7 @@ jobs:
             cargo-clippy-sarif-${{ runner.os }}-${{ runner.arch }}-${{ steps.toolchain.outputs.cachekey }}-
 
       - name: Install clippy-sarif tooling
-        uses: taiki-e/install-action@83ac0ad63c0167e6f06796fab0fce28db1bf3db0 # v2
+        uses: taiki-e/install-action@f7e5d7c961414b23f5b25b2da9294395d08513ad # v2
         with:
           tool: clippy-sarif,sarif-fmt
 
@@ -489,7 +489,7 @@ jobs:
           VALE_SHA256: '1049f4a585ccd1af96dcf4bdc16800cb3ce426b432da2b27893def42dcfe0ccb'
         run: |
           set -euo pipefail
-          curl -fsSL -o vale.tar.gz \
+          curl -fsSL --retry 5 --retry-delay 5 --retry-all-errors --max-time 300 -o vale.tar.gz \
             "https://github.com/errata-ai/vale/releases/download/v${VALE_VERSION}/vale_${VALE_VERSION}_Linux_64-bit.tar.gz"
           echo "${VALE_SHA256}  vale.tar.gz" | sha256sum -c -
           tar xzf vale.tar.gz vale
@@ -512,7 +512,7 @@ jobs:
           VALE_GOOGLE_SHA256: 'dddb3dca035a067fe9ab13a1d8d8f89cb63e8b83ab4cf1934a935d60cd91d697'
         run: |
           set -euo pipefail
-          curl -fsSL -o Google.zip "${VALE_GOOGLE_URL}"
+          curl -fsSL --retry 5 --retry-delay 5 --retry-all-errors --max-time 300 -o Google.zip "${VALE_GOOGLE_URL}"
           echo "${VALE_GOOGLE_SHA256}  Google.zip" | sha256sum -c -
           # No post-condition check on the extracted directory, deliberately. The
           # checksum already fixes the archive, so its layout is not in question,
@@ -529,21 +529,42 @@ jobs:
         # Paths from the shared list -- see .config/vale-paths.txt.
         run: vale $(sed 's/#.*//' .config/vale-paths.txt | tr '\n' ' ')
 
-      # The path list lives in .config/codespell-paths.txt, which this hook,
-      # scripts/preflight.sh and .githooks/pre-push all read. It was three
-      # copies before, and they had already drifted -- the hook omitted
-      # `bench`, so a misspelling in the operator harness passed locally and
-      # failed here. The action needs the paths as an input rather than from
-      # config, so the file is read into one here instead of pasted.
-      - name: Codespell paths
-        id: codespell_paths
-        run: echo "paths=$(sed 's/#.*//' .config/codespell-paths.txt | tr '\n' ' ')" >> "$GITHUB_OUTPUT"
+      # codespell runs as a step rather than through
+      # codespell-project/actions-codespell. That action is a Docker container
+      # action built FROM python:3.13-alpine, an anonymous Docker Hub pull, and
+      # on 2026-10-09 Docker Hub answered it with 429 Too Many Requests and,
+      # earlier the same day, a 504 from auth.docker.io on three attempts. The
+      # version is pinned by hash in scripts/requirements-codespell.txt, and
+      # the run goes through scripts/prose-gates.sh, the function the hooks and
+      # scripts/preflight.sh call: one binary check, one path list
+      # (.config/codespell-paths.txt), one set of arguments. The function also
+      # refuses a codespell whose version is not the pin, so a wrong install
+      # here fails the step instead of checking against another dictionary.
+      # tests/ci_docker_hub_test.rs holds both.
+      - name: Install codespell
+        env:
+          # The values ci.yml sets for every pip install; see the comment there.
+          PIP_TIMEOUT: '60'
+          PIP_RETRIES: '8'
+        # A venv, as every pip install in ci.yml uses, and outside the
+        # checkout so it does not sit beside the trees codespell reads.
+        run: |
+          python3 -m venv "$RUNNER_TEMP/codespell"
+          "$RUNNER_TEMP/codespell/bin/python" -m pip install --require-hashes -r scripts/requirements-codespell.txt
 
       - name: Spelling (codespell)
-        uses: codespell-project/actions-codespell@8f01853be192eb0f849a5c7d721450e7a467c579 # v2.2
-        with:
-          # Reads .codespellrc for skips and the ignore list.
-          path: ${{ steps.codespell_paths.outputs.paths }}
+        env:
+          CODESPELL_BIN: ${{ runner.temp }}/codespell/bin/codespell
+        run: |
+          . scripts/prose-gates.sh
+          rc=0
+          # The empty argument selects the shared list, .config/codespell-paths.txt.
+          prose_codespell_run '' || rc=$?
+          case $rc in
+          0) cat "$PROSE_OUTPUT" ;;
+          1) cat "$PROSE_OUTPUT"; exit 1 ;;
+          *) echo "::error::codespell did not run: $PROSE_REASON"; exit 1 ;;
+          esac
 
       # Pass one: Markdown that resolves on the filesystem. 257 unique links.
       #
@@ -596,7 +617,7 @@ jobs:
           ZOLA_SHA256: '0798e69b86c628ddcb264ebd86c8cc8dce7670b9049060bf94faa73f6857cd9c'
         run: |
           set -euo pipefail
-          curl -fsSL -o zola.tar.gz \
+          curl -fsSL --retry 5 --retry-delay 5 --retry-all-errors --max-time 300 -o zola.tar.gz \
             "https://github.com/getzola/zola/releases/download/v${ZOLA_VERSION}/zola-v${ZOLA_VERSION}-x86_64-unknown-linux-gnu.tar.gz"
           echo "${ZOLA_SHA256}  zola.tar.gz" | sha256sum -c -
           tar xzf zola.tar.gz
@@ -625,7 +646,7 @@ jobs:
           PAGEFIND_SHA256: 'afb824a9e7f64905a934900481cea5be679c03975e527329e0e5e6cc70f5feda'
         run: |
           set -euo pipefail
-          curl -fsSL -o pagefind.tar.gz \
+          curl -fsSL --retry 5 --retry-delay 5 --retry-all-errors --max-time 300 -o pagefind.tar.gz \
             "https://github.com/CloudCannon/pagefind/releases/download/v${PAGEFIND_VERSION}/pagefind-v${PAGEFIND_VERSION}-x86_64-unknown-linux-musl.tar.gz"
           echo "${PAGEFIND_SHA256}  pagefind.tar.gz" | sha256sum -c -
           tar xzf pagefind.tar.gz
@@ -724,7 +745,7 @@ jobs:
           ZOLA_SHA256: '0798e69b86c628ddcb264ebd86c8cc8dce7670b9049060bf94faa73f6857cd9c'
         run: |
           set -euo pipefail
-          curl -fsSL -o zola.tar.gz \
+          curl -fsSL --retry 5 --retry-delay 5 --retry-all-errors --max-time 300 -o zola.tar.gz \
             "https://github.com/getzola/zola/releases/download/v${ZOLA_VERSION}/zola-v${ZOLA_VERSION}-x86_64-unknown-linux-gnu.tar.gz"
           echo "${ZOLA_SHA256}  zola.tar.gz" | sha256sum -c -
           tar xzf zola.tar.gz
@@ -828,7 +849,7 @@ jobs:
       # the trace is how that is read without reproducing the run locally.
       - name: Upload Playwright traces
         if: failure()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: axe-playwright-traces
           path: e2e/test-results
@@ -837,9 +858,9 @@ jobs:
   # ---------------------------------------------------------------------------
   # Lighthouse CI: performance budgets over the built site.
   #
-  # Scoped to what the Rust suite does NOT already cover. Hero LCP and the
-  # hero-swap layout shift are gated by
-  # site_journey_test::hero_swap_keeps_the_static_frame_as_the_lcp_element,
+  # Scoped to what the Rust suite does NOT already cover. The hero swap's
+  # fetch order and layout shift are gated by
+  # site_journey_test::hero_swap_keeps_the_static_frame_off_the_critical_path,
   # which reads the template and is a stronger check than a timing measurement:
   # it fails on the attribute that would cause the shift rather than on the
   # shift showing up in one sampled run. What no existing gate covers is total
@@ -872,7 +893,7 @@ jobs:
           ZOLA_SHA256: '0798e69b86c628ddcb264ebd86c8cc8dce7670b9049060bf94faa73f6857cd9c'
         run: |
           set -euo pipefail
-          curl -fsSL -o zola.tar.gz \
+          curl -fsSL --retry 5 --retry-delay 5 --retry-all-errors --max-time 300 -o zola.tar.gz \
             "https://github.com/getzola/zola/releases/download/v${ZOLA_VERSION}/zola-v${ZOLA_VERSION}-x86_64-unknown-linux-gnu.tar.gz"
           echo "${ZOLA_SHA256}  zola.tar.gz" | sha256sum -c -
           tar xzf zola.tar.gz
@@ -950,7 +971,7 @@ jobs:
 
       - name: Upload Lighthouse reports
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: lighthouse-reports
           path: e2e/.lighthouseci

@@ -1,88 +1,200 @@
 +++
-title = "Keep the audio your store refuses"
+title = "Set the largest audio a vCon container may carry inline"
 date = 2026-08-27
-description = "A vCon container carries its audio inline, and sipnab caps that at 5 MiB by default. Here is where the number came from, when to raise it, and how to say never inline media at all."
+updated = 2026-10-11
+description = "How to raise, keep or turn off the 5 MiB limit on audio sipnab writes inside a vCon container, and how to read the record sipnab leaves when it refuses the audio."
 
 [extra]
 kind = "howto"
 +++
 
-sipnab writes a call's audio into the vCon container itself, base64url-encoded.
-That has a ceiling, and by default it is 5 MiB — about four minutes of
-one-channel G.711. sipnab refuses a longer call, and the refusal appears in the
-container's completeness caveat rather than passing as a call that had no
-audio.
+## In short
 
-New in 0.5.128: you can change it.
+A vCon is a file format for keeping a record of a phone call, and sipnab can
+write one per call, with the call's audio stored inside the file. Audio makes
+these files large, and a measurement showed one storage system that receives
+vCon files accepting a large file while silently discarding its audio. sipnab
+therefore refuses to put more than 5 MiB of encoded audio into one file by
+default, and says so inside the file. The `--vcon-max-inline-media` option
+changes that limit, or turns inline audio off.
 
-```bash
-sipnab -N -I ./captures \
-  --export-vcon-when 'duration > 30' \
-  --export-vcon-dir ./long/ \
-  --vcon-max-inline-media 64
-```
+## Who this is for
 
-## Where 5 MiB came from
+Operators who export vCon containers with sipnab and need to fit them to the
+store or program that reads them.
 
-Not a guess, and not a round number somebody liked. A probe of a running vCon
-store sent a container carrying roughly 12 MB of inline base64. The HTTP layer
-answered **204**, PostgreSQL stored the row, and the file spool refused the
-payload:
+## Before you start
 
-```text
-16777749 > 10485760
-```
+- **Inline** means the vCon file itself holds the audio, as text
+  in the base64url encoding (a way to write binary data as letters and
+  digits), not as a link to a file stored elsewhere.
+- The limit is in MiB (mebibytes; 1 MiB is 1,048,576 bytes) and applies to
+  the encoded text. The default, 5 MiB, is 5,242,880 bytes. Base64url makes
+  data four thirds as large, so 5 MiB holds about 3.9 MB of WAV audio: about
+  four minutes of one-channel G.711 (the standard telephone codec) at 8 kHz.
+- sipnab puts audio into a container only when the run keeps the audio of the
+  RTP streams (the packets that carry the voice) with `--retain-audio`.
+  Without it, there is no audio to carry, and the limit has no effect.
+- `--retain-audio` keeps at most `[limits] max_audio_frames` RTP frames per
+  stream (default 1500, about 30 seconds of G.711 at 50 packets per second).
+  To carry calls longer than that, raise that setting as well as this limit.
+- The option has existed since sipnab 0.5.128. The commands below ran
+  with sipnab 0.5.211 from the root of a sipnab checkout, against
+  `tests/pcap-samples/sip-rtp-g711.pcap`. That capture holds two calls. The
+  condition `duration > 1` selects the one that lasts 8.5 seconds, which has
+  one G.711 audio stream.
 
-Neither transport reported the partial write. The store told the producer "accepted"
-while a storage backend dropped the audio.
 
-The default sits at the 5 MiB the probe watched *land*, not at the
-10485760-byte boundary observed to *fail*. The rest of the container — parties,
-the full message trace, the completeness caveat — has to fit behind the ceiling
-too, and a budget set at the failure boundary leaves it nothing.
+## Steps
 
-## When to raise it
+1. Export the call with the default 5 MiB limit, keeping the audio.
+   `--no-cli-print` stops sipnab printing every SIP message, and `-q` hides
+   the progress log.
 
-Raise it when you know what reads your containers. The number is a property of
-a *consumer*, not of the format, and the consumer behind that measurement
-publishes no per-container cap at all. If you write to a spool you control and
-a bridge you wrote, 5 MiB is another operator's limit.
+   ```bash
+   sipnab -N -q -I tests/pcap-samples/sip-rtp-g711.pcap --export-vcon-when 'duration > 1' --export-vcon-dir ./calls/ --retain-audio --no-cli-print
+   ```
 
-The flag is in MiB because that is how operators think about it. Every door
-that builds a container reads the same value — batch export, the REST server
-and the MCP server — so one call exported two ways cannot come back carrying
-audio in one container and a refusal in the other.
+   ```text
+   Wrote 1 vCon container(s) to './calls/'.
+   ```
 
-## When to set it to zero
+2. Confirm the audio is in the container. sipnab records what happened to the
+   audio in `capture_completeness.media`, inside the container's
+   `sipnab-dialog-diagnosis/1` analysis entry.
 
-```bash
-sipnab -N -I ./captures --export-vcon-when 'response_code >= 200' \
-  --export-vcon-dir ./calls/ --vcon-max-inline-media 0 --retain-audio
-```
+   ```bash
+   jq -r '.analysis[] | select(.schema == "sipnab-dialog-diagnosis/1") | .body | fromjson | .capture_completeness.media' calls/*.vcon.json
+   ```
 
-`0` refuses every inline body. That is how you say "never inline media" without
-turning the exporter off: the containers still carry parties, timing, the
-message trace and the caveat, and the caveat still states that audio existed
-and that sipnab refused it. It does not read as a call that had no audio, which is the
-distinction that matters when somebody reviews the container six months later.
+   ```text
+   carried
+   ```
 
-## Reading the refusal
+   The same run without `--retain-audio` prints `none-decodable`: sipnab saw
+   audio packets but kept none of their content.
 
-Whatever budget is in force, a refusal names the size it refused and the budget
-it enforced:
+3. To allow more audio, raise the limit. Raise it only when you know the store
+   or program that reads your containers accepts larger files. This example
+   sets 64 MiB.
 
-```text
-INCOMPLETE: sipnab decoded 312.4 second(s) of audio for this dialog and
-REFUSED to carry it: base64url of the 4998720 byte WAV is 6664960 bytes, over
-the 5242880 byte budget this emitter enforces ...
-```
+   ```bash
+   sipnab -N -q -I tests/pcap-samples/sip-rtp-g711.pcap --export-vcon-when 'duration > 1' --export-vcon-dir ./calls-64/ --retain-audio --vcon-max-inline-media 64 --no-cli-print
+   ```
 
-It quotes the budget that was *actually applied*, not the compiled-in default —
-otherwise an operator who raised the ceiling would go looking for a limit
-nothing was enforcing.
+   ```text
+   Wrote 1 vCon container(s) to './calls-64/'.
+   ```
 
-The audio is not truncated and not silently dropped. It stayed in memory for
-the run. What the container refuses is *carrying* it. To get the file itself,
-ask the `export_audio` MCP tool for the dialog — it is an MCP tool rather than
-a CLI flag, and it needs `--retain-audio` for the same reason the container
-does.
+   The value is a whole number of MiB. sipnab rejects a fraction:
+   `--vcon-max-inline-media 0.5` exits with code 2 and prints
+   `error: invalid value '0.5' for '--vcon-max-inline-media <MIB>': invalid digit found in string`.
+
+4. To write containers with no audio at all, set the limit to `0`. The
+   container still holds the parties, timing, the SIP message trace and the
+   statement of what is missing.
+
+   ```bash
+   sipnab -N -q -I tests/pcap-samples/sip-rtp-g711.pcap --export-vcon-when 'duration > 1' --export-vcon-dir ./calls-no-audio/ --retain-audio --vcon-max-inline-media 0 --no-cli-print
+   ```
+
+   ```text
+   Wrote 1 vCon container(s) to './calls-no-audio/'.
+   ```
+
+5. Check the media outcome of that container.
+
+   ```bash
+   jq -r '.analysis[] | select(.schema == "sipnab-dialog-diagnosis/1") | .body | fromjson | .capture_completeness.media' calls-no-audio/*.vcon.json
+   ```
+
+   ```text
+   refused-over-budget
+   ```
+
+6. Read the refusal. It names the audio length, the WAV size, the encoded
+   size and the limit that applied in this run (here 0 bytes, not the
+   5 MiB default). This command prints the part of the container's note that
+   follows the dash before `INCOMPLETE`.
+
+   ```bash
+   jq -r '.analysis[] | select(.schema == "sipnab-dialog-diagnosis/1") | .body | fromjson | .capture_completeness.note | split(" — ")[1]' calls-no-audio/*.vcon.json
+   ```
+
+   ```text
+   INCOMPLETE: sipnab decoded 8.5 second(s) of audio for this dialog and REFUSED to carry it: base64url of the 136516 byte WAV is 182022 bytes, over the 0 byte budget this emitter enforces because one probed vCon store answers 204 and drops the payload without telling the producer. The audio was NOT truncated and is not in this container; export it beside this file with the export_audio MCP tool. A capture-level analysis ran and ranked no blind spots.
+   ```
+
+   The same note, earlier, states: "No media is in this container because
+   sipnab REFUSED to inline it: it decoded audio and the encoded body was over
+   the budget below. The audio exists and was not truncated."
+
+7. To get the audio as a separate WAV file, use the `export_audio` tool of
+   sipnab's MCP server (the interface an AI agent uses to query sipnab), with
+   the server started with `--retain-audio`. There is no command-line option
+   that writes the WAV file.
+
+## Where the 5 MiB default comes from
+
+On 2026-08-24 a test sent synthetic containers to a running vCon store,
+reachable over HTTP and NATS. A container with about 12 MB of inline base64
+received HTTP status 204 (success, no content). The store wrote it to its
+PostgreSQL database, and the store's file spool (its on-disk storage) refused
+it with the message `16777749 > 10485760`. Neither interface reported
+that the file spool had refused it. Both backends stored containers of about
+1 MB and about 5 MB.
+
+The default sits at 5 MiB, the size that both backends stored, rather than
+at the 10,485,760-byte limit where the spool refused. The rest of the
+container (parties, the message trace and the completeness statement) has to
+fit under the store's limit as well. The figure describes that one store, not
+the vCon format. That store publishes no per-container limit.
+
+## Limits
+
+- One value applies everywhere sipnab builds a container: batch export
+  (`--export-vcon-when`), the REST server and the MCP server. The same call
+  exported two ways gets the same decision.
+- The limit counts the encoded audio only, not the whole container.
+- sipnab does not cut audio to fit. sipnab leaves audio over the limit out
+  whole, and the container says so. Audio that `--retain-audio` did not keep (over
+  `[limits] max_audio_frames`) is a separate limit: when it applied, the
+  container adds a `recording-set` dialog entry that carries the call's start
+  and length, while the `recording` entry carries the shorter file's.
+
+## Terms used here
+
+- **vCon**: a JSON file format for a record of a conversation: its parties,
+  messages, audio and analysis.
+- **Container**: one vCon file.
+- **Inline**: stored inside the file rather than linked.
+- **base64url**: an encoding that writes binary data as letters, digits, `-`
+  and `_`; it makes data four thirds as large.
+- **MiB**: mebibyte, 1,048,576 bytes.
+- **SIP**: the signaling protocol that sets up and ends calls.
+- **RTP**: the protocol that carries the audio of a call.
+- **G.711**: the standard uncompressed telephone audio codec, 8,000 samples
+  per second.
+- **WAV**: a common uncompressed audio file format.
+- **pcap**: a file of captured network packets; `-I` reads one.
+- **MCP**: Model Context Protocol, the interface an AI agent uses to call
+  sipnab's tools.
+- **REST server**: sipnab's HTTP interface for programs.
+- **HTTP 204**: a web server's reply meaning "success, no content returned".
+- **File spool**: a directory where a store writes incoming files.
+- **Backend**: one of the places a store writes data, such as a database or a
+  file spool.
+
+## Related guides
+
+- [Produce one](@/docs/vcon.md#produce-one): the export options, including
+  `--retain-audio`.
+- [The container cannot say "this is an incomplete record", so sipnab says it twice](@/docs/vcon.md#the-container-cannot-say-this-is-an-incomplete-record-so-sipnab-says-it-twice):
+  how to read `capture_completeness`.
+- [What this does not do](@/docs/vcon.md#what-this-does-not-do): the inline
+  budget among the exporter's other limits.
+- [`[limits]`](@/docs/config.md#limits): `max_audio_frames`.
+- [`export_audio`](@/docs/mcp-tools.md#export-audio): the MCP tool that writes
+  a call's audio to a WAV file.
+- [Measured against a real consumer, section 4a.1](https://github.com/NormB/sipnab/blob/main/docs/design/vcon.md#4a1-a-204-does-not-mean-the-container-was-stored):
+  the design record of the store measurement.

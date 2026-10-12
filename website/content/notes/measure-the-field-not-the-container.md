@@ -1,51 +1,68 @@
 +++
-title = "The test measured the container, not the field it named"
+title = "A size test for the MCP field cap measured the whole message instead of the field"
 date = 2026-08-28
-description = "A macOS job ran red for four commits over a 1024-byte limit. The cap held at 327 bytes on both platforms, and the string the assertion measured was the JSON around the field."
+updated = 2026-10-11
+description = "Why a test of sipnab's 256-byte cap on header values failed on macOS and passed on Linux while the cap worked on both, and the eight tests added to catch the same mistake."
 
 [extra]
 kind = "postmortem"
 +++
 
-`Check (macos-latest)` had run red for four commits. Each red run got read as
-the feature-matrix failures already known about, rather than as a question
-about which job had failed.
+## In short
 
-Bisecting settled it: green through v0.5.129, red from one particular batch
-onward. Then reading the failure properly settled the rest, and the answer was
-that the test was wrong and the code was right.
+sipnab shortens any single header value it hands to an AI assistant to 256
+bytes, so one oversized header cannot fill the assistant's working space. A
+test of that limit measured the wrong piece of text: the whole message record
+around the header, not the header value itself. That record is longer on macOS
+than on Linux, so the test failed on macOS and passed on Linux while the limit
+worked correctly on both. The test now picks out the header value itself, and
+eight further tests check for the same mistake.
 
-## What the assertion actually measured
+## What happened
 
-`an_oversized_header_is_bounded_in_the_response` sends a 4 KiB `User-Agent`
-through the MCP surface and checks the size of the value reaching an agent.
-sipnab caps a field at `MAX_FIELD_BYTES`, currently 256, so a header cannot
-spend an agent's context.
+The CI (the automated build-and-test service) job `Check (macos-latest)`
+failed on the test `an_oversized_header_is_bounded_in_the_response` in
+`tests/mcp_output_injection_test.rs`. The comment added with the fix records
+that four commits ran red on it. The same test passed on Linux.
 
-The test collected every string in the response, found the first one containing
-the payload, and asserted its length.
+The test builds a capture holding one SIP INVITE (the message that starts a
+call) whose `User-Agent` header (the header naming the caller's software) is
+4096 bytes long. It asks sipnab's MCP server (the interface an AI assistant
+uses to query sipnab) for that message with the `get_message` tool, and checks
+that the header value in the answer is short.
 
-That string was the **enclosing message JSON**. What drives its size is the
-capture path and the other headers, not the field under test.
+The fix is commit 1ccf1f8a, dated 2026-08-28, first released in 0.5.130.
 
-| platform | the string it measured | verdict |
+## Why it happened
+
+sipnab caps each header value at `MAX_FIELD_BYTES`, which is 256
+(`src/mcp/shape.rs`). A capped value ends with the marker `…[truncated]`, and
+sipnab wraps the whole value in the fence markers `⟦untrusted-capture-data⟧` and
+`⟦/untrusted-capture-data⟧`, which tell the assistant that the text came from
+the network and not from sipnab. With the markers, the capped `User-Agent`
+value is 327 bytes.
+
+The answer to `get_message` contains the long `User-Agent` text in two
+strings: the fenced header value, and an unfenced record of the whole message.
+The test took the first string containing the payload, which was the whole
+message record, and required it to be at most 1024 bytes. That record's size
+depends on the other headers and on the capture file's path, which includes
+the temporary directory. The comment in the test file records the sizes:
+
+| Platform | String the test measured | Result against 1024 bytes |
 |---|---:|---|
-| Linux | 992 bytes | passed a 1024-byte limit |
+| Linux | 992 bytes | passed |
 | macOS | 1036 bytes | failed |
 
-The field itself measured 327 bytes on both.
+The header value itself was 327 bytes on both. The temporary directory path
+on macOS is longer, which made the message record longer. The cap was never
+what the test measured.
 
-The temp directory on macOS is longer, so the capture path inside the JSON is
-longer, so the container crossed a round number. Nothing about the cap changed.
-Nothing about the cap was ever under test.
+## What changed
 
-The green Linux run was as accidental as the red macOS one. Four commits ran
-red on a test that had never been about the thing it named.
-
-## Selecting the value instead of its container
-
-Fencing applies per value, so a fenced string is a value and not a container.
-That gives a way to select the right string:
+The test now selects the string that starts with the fence marker. sipnab
+fences each value on its own, so a string that starts with the marker is a
+single value and not a record that contains one:
 
 ```rust
 let ua = strings
@@ -54,73 +71,99 @@ let ua = strings
     .find(|s| s.starts_with(sipnab::mcp::shape::UNTRUSTED_OPEN))
 ```
 
-And the ceiling derives from the constant rather than from a round number:
+The test computes its size limit from the constant, so a change to the
+cap changes the test with it:
 
 ```rust
 let ceiling = sipnab::mcp::shape::MAX_FIELD_BYTES + 128;
 ```
 
-so raising the cap cannot silently widen what the test accepts. A literal
-`1024` is a number that agrees with the code today and drifts from it the first
-time anybody tunes the cap.
+The 4096-byte input is below the parser's 8 KiB header-line limit
+(`DEFAULT_MAX_HEADER_LINE_LEN` in `src/sip/parser.rs`). Above that limit
+sipnab rejects the whole message, and the test would then check a message the
+cap never processed.
 
-## Eight tests for the defect class
+The change added eight tests to the same file, each checking one condition:
 
-The interesting part is not the fix. It is what a single corrected assertion
-leaves uncovered, because the same mistake has several shapes.
+| Test | What it checks |
+|---|---|
+| `the_response_carries_an_oversized_field_in_more_than_one_string` | The payload appears in at least two strings, the condition that made the original test ambiguous. |
+| `the_container_is_larger_than_the_field_it_encloses` | The message record is larger than the header value. |
+| `the_field_cap_is_independent_of_the_capture_path_length` | A longer capture path changes the record's size and leaves the header value's size unchanged. |
+| `the_capped_field_is_a_fraction_of_the_header_that_produced_it` | The capped value is under a quarter of the 4096-byte input and more than half the cap. |
+| `a_capped_field_declares_that_it_was_cut` | A shortened value carries the truncation marker. |
+| `capping_a_field_does_not_strip_its_closing_fence` | The closing fence marker survives the cap. |
+| `no_string_in_the_response_carries_the_header_whole` | No string in the answer carries more than 256 bytes of the payload in one run. |
+| `the_oversized_header_fixture_actually_reaches_the_response` | The test input reaches the answer, so the other checks are not empty. |
 
-**The payload appears in more than one string, and exactly one of them carries
-a fence.** That ambiguity is what made the original assertion meaningless. If
-a future response ever carries the value in exactly one place, this test fails
-rather than quietly passing, and somebody revisits the suite.
+On 2026-10-11, with the cap disabled in a copy of the source at commit
+6e2cbab2 (the size check in `sanitize_field` replaced by `true`), four tests
+failed: `an_oversized_header_is_bounded_in_the_response` and three of the
+eight (`a_capped_field_declares_that_it_was_cut`,
+`no_string_in_the_response_carries_the_header_whole`,
+`the_capped_field_is_a_fraction_of_the_header_that_produced_it`). The other
+five check how sipnab selects values, not the cap's size.
 
-**The container is larger than the field.** Otherwise the two verdicts do not
-differ and the distinction this suite rests on does not exist.
+In the same run on Linux, the message record that the original test measured
+was 1444 bytes, so a fixed 1024-byte limit would now fail on Linux too.
 
-**The field's size does not move when only the capture path grows** — with a
-non-vacuity probe asserting the container **does** move. Without that probe the
-equality is trivially true and exercises nothing. This one states the actual
-platform split directly: nothing about a capture's filesystem path should be
-able to move a field's size.
+## What you can check yourself
 
-**The capped field is a fraction of the 4 KiB input, and not far under the cap
-either.** If something other than the cap were truncating it, the suite would
-be back to measuring the wrong thing.
+From a checkout of the sipnab repository, run the test file with the `full`
+feature set (the file compiles only with the `mcp` feature):
 
-**A cut value says so.** A silently shortened field is indistinguishable from
-a short one, and an agent cannot tell "this is the value" from "this is the
-first 256 bytes of the value".
+```sh
+cargo test --features full --test mcp_output_injection_test -- --test-threads=1
+```
 
-**Capping does not strip the closing fence**, which would leave attacker text
-outside it — the exact failure the fence exists to prevent.
+The test lines of that run at commit 6e2cbab2 (0.5.211):
 
-**No string carries an unbounded run of the payload**, whatever any enclosing
-object's total size happens to be. The original test asked whether one string
-was small enough. This asks the question that one was trying to ask.
+```text
+running 13 tests
+test a_capped_field_declares_that_it_was_cut ... ok
+test an_oversized_header_is_bounded_in_the_response ... ok
+test an_rtpmap_encoding_name_carrying_a_sentence_is_fenced ... ok
+test capping_a_field_does_not_strip_its_closing_fence ... ok
+test get_dialog_explains_the_markers_it_uses ... ok
+test get_dialog_fences_the_messages_it_returns ... ok
+test no_string_in_the_response_carries_the_header_whole ... ok
+test no_tool_result_carries_a_control_character_out_of_a_header ... ok
+test the_capped_field_is_a_fraction_of_the_header_that_produced_it ... ok
+test the_container_is_larger_than_the_field_it_encloses ... ok
+test the_field_cap_is_independent_of_the_capture_path_length ... ok
+test the_oversized_header_fixture_actually_reaches_the_response ... ok
+test the_response_carries_an_oversized_field_in_more_than_one_string ... ok
 
-**The fixture reaches the response at all.**
+test result: ok. 13 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 6.36s
+```
 
-Removing the field cap fires four of them.
+## Terms used here
 
-## Somebody chose the input, and said why
+- **MCP** (Model Context Protocol): the protocol an AI assistant uses to call
+  sipnab's tools.
+- **SIP** (Session Initiation Protocol): the signaling protocol that sets up
+  and ends phone calls.
+- **INVITE**: the SIP message that starts a call.
+- **Capture**: a file of recorded network packets (a pcap file).
+- **CI** (continuous integration): the service that builds and tests every
+  commit on Linux and macOS.
+- **Job**: one CI run on one platform; it "runs red" when a test fails.
+- **Commit**: one recorded change to the source code.
+- **Assertion**: the line in a test that states what must be true.
+- **Fence**: the pair of markers sipnab puts around text that came from the
+  network.
+- **Field cap**: the 256-byte limit on one header value in an MCP answer.
+- **Payload**: the test input, here 4096 copies of the letter `U`.
+- **KiB**: 1024 bytes.
+- **JSON**: the text format of MCP answers.
 
-The 4 KiB payload has a comment beside it, and the reasoning is worth copying:
+## Related guides
 
-> Deliberately under `parser::DEFAULT_MAX_HEADER_LINE_LEN` (8 KiB): past that
-> the parser rejects the whole message, and a test that measured a REJECTED
-> message would report the field cap working while it was never reached.
-
-A test input large enough to trip a different limit tests that limit instead,
-and reports success for the one it names. 4 KiB is sixteen times the field cap
-and still parses, which is the case that matters.
-
-## Worth stealing
-
-When an assertion measures a size, check that it measures the thing it names.
-Searching a response for "the string containing X" finds a container about as
-often as it finds a value, and the two have different sizes for reasons
-unrelated to the code under test.
-
-And read the red. Four commits went by with a failing job read as a failure
-already known about. Bisecting took minutes once somebody asked which job had
-failed, rather than assuming.
+- [Untrusted capture text](@/docs/mcp-protocol.md#untrusted-capture-text):
+  which values sipnab fences.
+- [What else a fenced value cannot carry](@/docs/mcp-protocol.md#what-else-a-fenced-value-cannot-carry):
+  the 256-byte field cap and the truncation marker.
+- [Response bounding](@/docs/mcp-tools.md#response-bounding): the other size
+  limits on MCP answers.
+- [Fixtures and corpora](@/docs/internals/testing.md#fixtures-and-corpora):
+  how the test suite builds its inputs.

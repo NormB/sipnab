@@ -3693,6 +3693,23 @@ mod quiet_bad_parse_tests {
         Ok(())
     }
 
+    /// The "SIP parse error" notice is a `debug` event: an `info` log does
+    /// not show it. `--quiet-bad-parse`'s help names `SIPNAB_LOG=debug` as
+    /// the way to see it, which holds only while this level holds.
+    #[test]
+    fn bad_parse_notice_is_logged_at_debug_not_info() {
+        let pp = malformed_sip();
+        let opts = PipelineOptions::default();
+        let info = crate::test_utils::capture_logs(tracing::Level::INFO, || {
+            let _ = classify(&pp, &opts);
+        });
+        assert!(!info.contains("SIP parse error"), "{info:?}");
+        let debug = crate::test_utils::capture_logs(tracing::Level::DEBUG, || {
+            let _ = classify(&pp, &opts);
+        });
+        assert!(debug.contains("SIP parse error"), "{debug:?}");
+    }
+
     /// By default a malformed SIP packet drops to `None` and emits the
     /// "SIP parse error" diagnostic.
     #[test]

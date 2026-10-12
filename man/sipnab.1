@@ -1,7 +1,7 @@
 .\" sipnab.1 -- man page for sipnab
 .\" Copyright 2024-2026 Norm Brandinger
 .\" License: MIT OR Apache-2.0
-.TH SIPNAB 1 "2026-10-09" "sipnab 0.5.209" "User Commands"
+.TH SIPNAB 1 "2026-10-12" "sipnab 0.5.213" "User Commands"
 .SH NAME
 sipnab \- SIP & RTP capture, analysis, and security tool
 .SH SYNOPSIS
@@ -21,12 +21,8 @@ sipnab \- SIP & RTP capture, analysis, and security tool
 .SH DESCRIPTION
 .B sipnab
 captures and analyzes SIP signaling and RTP media traffic. It unifies the
-capabilities of
-.BR the terminal viewer (1)
-and
-.BR the CLI matcher (1)
-into a single binary with added security analysis, RTP quality monitoring,
-and machine-readable output.
+capabilities of the established terminal SIP tools into a single binary with
+added security analysis, RTP quality monitoring, and machine-readable output.
 .PP
 Three operating modes are available:
 .TP
@@ -46,250 +42,1110 @@ Supports grep-style matching flags
 .RB ( "\-N \-\-json" )
 One JSON object per SIP message, suitable for ingestion by log
 aggregators and analysis pipelines.
+.TP
+.B MCP mode
+.RB ( \-\-mcp )
+Runs sipnab as a Model Context Protocol server instead of the TUI or CLI,
+over stdio, or over HTTP with
+.BR "\-\-mcp\-transport http" .
+The options are under
+.B MCP (Model Context Protocol)
+in OPTIONS.
 .SH OPTIONS
-Only the most common flags are listed here. Run
+.\" BEGIN GENERATED OPTIONS: SIPNAB_MAN_APPLY=1 cargo test --features full --test man_page_test
+Every option, grouped as \fBsipnab \-\-help\fR groups them. Each entry is the
+first paragraph of the option's help;
 .B sipnab \-\-help
-for the complete set.
+prints the full text, and
+.I docs/cli\-reference.md
+describes every option with its configuration key.
+.SS Capture
 .TP
-.BI \-d " iface"
-Capture on network interface
-.IR iface .
+\fB\-d\fR, \fB\-\-device\fR \fIIFACE\fR
+Network interface to capture on.
 .TP
-.BI \-I " file"
-Read packets from a pcap file instead of live capture.
+\fB\-I\fR, \fB\-\-input\fR \fIFILE|DIR|GLOB\fR
+Read packets from a capture file, directory, archive, or glob instead of live capture. Repeatable.
 .TP
-.BI \-O " file"
+\fB\-\-recursive\fR
+Descend into subdirectories when \fB\-I\fR names a directory.
+.TP
+\fB\-\-input\-name\fR \fIGLOB\fR
+Read only files whose name matches this pattern when \fB\-I\fR names a directory or an archive, e.g. \fB\-\-input\-name 'tg.pcap[0\-4]'\fR.
+.TP
+\fB\-O\fR, \fB\-\-output\fR \fIFILE\fR
 Write captured packets to a pcap file.
 .TP
-.B \-N, \-\-no\-tui
-Non-interactive mode. Required for output flags like
-.BR \-\-json ,
-.BR \-\-report ,
-and
-.BR \-\-fail2ban .
+\fB\-B\fR, \fB\-\-buffer\fR \fIMIB\fR
+Kernel capture buffer size in MiB (default 64). The ring libpcap fills and sipnab drains: raise it on busy links, lower it on small hosts or when capturing many interfaces at once (the cost is per device). See \fBdocs/tuning\-capture.md\fR. Accepts 1 and up.
 .TP
-.BI \-\-from " pattern"
-Filter by SIP From header (regex).
+\fB\-\-buffer\-budget\fR \fIMIB\fR
+Memory budget in MiB for the in\-flight packet queue between capture and processing (default 64). The queue grows under load up to this budget and shrinks when idle; overrides \fB[capture] buffer_budget_mb\fR.
 .TP
-.BI \-\-to " pattern"
-Filter by SIP To header (regex).
+\fB\-\-snaplen\fR \fIBYTES\fR
+Snapshot length for packet capture (bytes). Accepts 1 and up.
 .TP
-.B \-\-problems
-Show calls with detected problems (retransmits, timeouts, error responses).
+\fB\-\-capture\-profile\fR \fIPROFILE\fR
+Named capture profile, which picks a \fB\-\-snaplen\fR for you.
+Values: \fBsignaling\fR, \fBfull\fR.
 .TP
-.B \-\-json
-Output as JSON, one object per line.
+\fB\-S\fR, \fB\-\-limitlen\fR \fIBYTES\fR
+Parse only the first N bytes of each packet. Caps what the SIP parser and matchers inspect, independent of the capture snaplen (\fB\-\-snaplen\fR) and the display truncation (\fB\-\-payload\-limit\fR).
 .TP
-.BI \-\-call\-report " call-id"
-Generate a detailed diagnostic report for a specific Call-ID.
+\fB\-\-no\-reassembly\fR
+Disable IP\-fragment and TCP\-segment reassembly; every packet is parsed standalone. Useful for pure single\-packet UDP scanning where reassembly is only overhead.
 .TP
-.B \-\-kill\-scanner
-Detect SIP scanning (UA signatures and behavioral heuristics) and send the
-kill response back to the scanner.
+\fB\-x\fR, \fB\-\-quiet\-bad\-parse\fR
+Quiet bad\-parse packets: suppress the per\-packet diagnostic emitted when a SIP\-looking packet fails to parse. The packet is dropped either way; this only silences the "SIP parse error" notice on a noisy link. sipnab logs the notice at debug level, so it shows only with SIPNAB_LOG=debug.
 .TP
-.B \-\-no\-kill\-scanner
-Do not answer scanners, even when the configuration file sets
-.BR "kill_scanner = true" .
-The last of
-.B \-\-kill\-scanner
-and
-.B \-\-no\-kill\-scanner
-given wins.
+\fB\-\-portrange\fR \fIRANGE\fR
+SIP port range to capture [default: 5060\-5061].
 .TP
-.BI \-K " addr[:port-range]"
-Targeted scanner kill: send the kill response to any request whose source
-matches
-.I addr
-and an optional port range (e.g.
-.IR 192.0.2.1:5060\-5090 ).
-Repeatable.
+\fB\-\-ws\-portrange\fR \fIRANGE\fR
+Ports carrying SIP\-over\-WebSocket (RFC 7118), as one inclusive \fBSTART\-END\fR range. Config: \fB[capture] ws_ports\fR.
 .TP
-.BI \-l " N"
-Maximum number of dialogs to track (default: 100000).
+\fB\-\-multi\-device\fR
+Capture on the selected interfaces given as a comma\-separated list to \fB\-d\fR (e.g. \fB\-d eth0,docker0 \-\-multi\-device\fR), opening one capture per interface. Without this flag, the zero\-argument default already sniffs ALL interfaces via the "any" pseudo\-device.
 .TP
-.BI \-\-quality\-threshold " mos"
-MOS quality threshold for RTP alerts (default: 3.0).
+\fB\-\-no\-rtp\fR
+Disable RTP capture and analysis.
 .TP
-.BI \-f " file"
+\fB\-\-rtp\fR
+Capture and analyze RTP even when \fB[capture] no_rtp = true\fR says not to. The last of \fB\-\-no\-rtp\fR / \fB\-\-rtp\fR typed wins.
+.TP
+\fB\-p\fR, \fB\-\-no\-promisc\fR
+Do not put the interface into promiscuous mode. By default promiscuous mode is enabled for a named device (never for the "any" pseudo\-device, which does not support it).
+.TP
+\fB\-\-bpf\-file\fR \fIFILE\fR
+Read the BPF capture filter from a file. Takes precedence over the positional filter and replaces \fB[capture] bpf_filter\fR; applies to \fB\-I\fR files as well as live capture.
+.TP
+\fB\-\-capture\-tunnels\fR [\fIPORTS\fR]
+Also capture ALL traffic on the UDP tunnel ports, so SIP inside GTP\-U, VXLAN or GENEVE reaches sipnab. Defaults to 2152,4789,6081 when given with no value; pass a comma\-separated list for non\-standard ports (e.g. \fB\-\-capture\-tunnels=8472\fR for Linux's pre\-IANA VXLAN port).
+.TP
+\fB\-n\fR, \fB\-\-count\fR \fIN\fR
+Stop after receiving N packets. Counts every packet received from the capture source; for a HEP listener that includes packets later dropped by the source allowlist, rate limiter, or authentication.
+.TP
+\fB\-\-duration\fR \fIDURATION\fR
+Stop after capturing for this duration (e.g., "30s", "5m", "1h").
+.TP
+\fB\-\-autostop\fR \fICONDITION\fR
+Autostop condition: "filesize:N" (N MiB of output) or "duration:N" (N seconds).
+.TP
+\fB\-\-split\fR \fICONDITION\fR
+Split output files (e.g., "filesize:50" for 50 MiB chunks).
+.TP
+\fB\-\-split\-keep\fR \fIN\fR
+Keep only the newest N split files: sipnab DELETES the older ones as rotation creates new ones. Turns \fB\-O\fR into a ring buffer.
+.TP
+\fB\-\-replay\fR
+Replay packets from a pcap file at original timing.
+.TP
+\fB\-\-pcapng\fR
+Use pcapng format for output files.
+.SS Archives
+.TP
+\fB\-\-archive\-password\-file\fR \fIFILE\fR
+Read archive passwords from FILE, one per line, for encrypted ZIP members \fB\-I\fR finds. Only the line ending is stripped: spaces are part of a password.
+.TP
+\fB\-\-archive\-password\-command\fR \fICMD\fR
+Run CMD and use the first line it prints as an archive password, like restic's \fB\-\-password\-command\fR. Run without a shell; its stderr passes through so a secret manager can prompt. A non\-zero exit is an error, and its output is never shown.
+.TP
+\fB\-\-archive\-password\-stdin\fR
+Read an archive password from the first line of stdin, like \fBdocker login \-\-password\-stdin\fR.
+.TP
+\fB\-\-archive\-password\fR \fIPASSWORD\fR
+An archive password on the command line. INSECURE: other local users can read it in \fBps\fR, and it is saved in shell history, so sipnab warns on every use. Prefer \-\-archive\-password\-stdin, \-\-archive\-password\-file or \-\-archive\-password\-command.
+.TP
+\fB\-\-archive\-password\-encoding\fR \fIENC\fR
+Try archive passwords in this one encoding only: utf\-8, cp437, cp850 or cp1252. By default a non\-ASCII password is also tried in NFC, NFD and those code pages, since ZIP never records which one its creator used.
+.TP
+\fB\-\-no\-password\-prompt\fR
+Never ask for an archive password on the terminal. Without it, a locked member no configured password opens is asked about on \fB/dev/tty\fR whenever there is one, whatever stdin is.
+.SS Mode
+.TP
+\fB\-N\fR, \fB\-\-no\-tui\fR
+Non\-interactive mode (no TUI). Required for batch/output flags.
+.TP
+\fB\-c\fR, \fB\-\-calls\-only\fR
+Show only SIP dialogs (calls), not standalone messages.
+.TP
+\fB\-t\fR, \fB\-\-telephone\-event\fR
+Decode telephone\-event (DTMF) RTP payloads and log each event, with the digit VALUE masked as \fBx\fR.
+.TP
+\fB\-\-dtmf\-cleartext\fR
+Log decoded DTMF digit VALUES in cleartext, not masked. Off by default.
+.TP
+\fB\-q\fR, \fB\-\-quiet\fR
+Suppress informational output; only show results.
+.SS Name resolution
+.TP
+\fB\-\-resolve\fR
+Resolve IP addresses to names for display (manual mappings + hosts). Sets the TUI's initial name\-resolution mode; press \fBn\fR to cycle it (Off / Static / DNS).
+.TP
+\fB\-\-no\-resolve\fR
+Show addresses, not names, whatever else would turn name resolution on (\fB[names] enabled\fR, \fB\-\-names\fR, \fB\-\-reverse\-dns\fR, a hosts file). The last of \fB\-\-resolve\fR / \fB\-\-no\-resolve\fR typed wins.
+.TP
+\fB\-\-reverse\-dns\fR
+Also use reverse DNS (PTR) lookups for name resolution. Implies \fB\-\-resolve\fR. Off by default (it emits DNS queries for captured IPs).
+.TP
+\fB\-\-no\-reverse\-dns\fR
+Do not make reverse\-DNS lookups even when \fB[names] reverse_dns = true\fR. The last of \fB\-\-reverse\-dns\fR / \fB\-\-no\-reverse\-dns\fR typed wins.
+.TP
+\fB\-\-dns\-cache\-entries\fR \fIN\fR
+Reverse\-DNS results held at once (default 4096). Config: \fB[names] dns_cache_entries\fR.
+.TP
+\fB\-\-names\fR \fIFILE\fR
+Load IP \-> name mappings from an \fB/etc/hosts\fR\-format file. Repeatable.
+.TP
+\fB\-\-from\-to\-mode\fR \fIMODE\fR
+Default From/To column display mode in the TUI. Cycled at runtime with the \fBu\fR key. Overrides the \fB[display] from_to\fR config value.
+Values: \fBdefault\fR, \fBhost\-port\fR, \fBuser\fR, \fBuser\-host\-port\fR.
+.TP
+\fB\-\-strip\-secrets\fR \fIOUTPUT\fR
+Write a copy of the input pcapng (\fB\-I\fR) to this path with all decryption secrets (DSBs) removed, then exit. The input is never modified.
+.TP
+\fB\-\-show\-frame\fR \fIPOINTER\fR
+Resolve a frame pointer emitted by a previous run and print that frame, then exit. Takes \fB<source>#<ordinal>\fR or \fB<source>#<ordinal>@<digest>\fR, the form carried by the \fBframe\fR field of \fB\-\-json\-dialogs\fR, \fB\-\-report\fR, the REST API and MCP.
+.SS Operator notes
+.TP
+\fB\-\-notes\fR \fIFILE\fR
+Operator notes: a JSON Lines file, one \fB{"frame": "<pointer>", "note": "<text>"}\fR per line, the pointer taken from the \fBframe\fR field of \fB\-\-json\fR. With \fB\-\-write\-annotated\fR, the notes to write into the copy. In the TUI, the session's notes file: loaded at start when it exists, and where the save dialog's NOTES format writes.
+.TP
+\fB\-\-write\-annotated\fR \fIOUTPUT\fR
+Write a pcapng copy of the one capture \fB\-I\fR names to this path, with each note from \fB\-\-notes\fR as a packet comment on the frame it names, then exit. The input is never modified.
+.SS Matching
+.TP
+\fB\-e\fR, \fB\-\-match\fR \fIPATTERN\fR
+SIP payload match\-expression (the positional match expression). A regex tested against the whole raw SIP message; once any message in a dialog matches, every later message of that dialog is shown too (dialog\-following). Honors \-i/\-v/\-w/\-\-single\-line. Separate from the trailing BPF filter positional.
+.TP
+\fB\-i\fR, \fB\-\-ignore\-case\fR
+Case\-insensitive matching for header filters and patterns.
+.TP
+\fB\-v\fR, \fB\-\-invert\fR
+Invert the match: show messages that do NOT match.
+.TP
+\fB\-w\fR, \fB\-\-word\fR
+Match whole words only.
+.TP
+\fB\-\-single\-line\fR
+Prevent '.' from matching newlines in payload regexes.
+.TP
+\fB\-\-from\fR \fIPATTERN\fR
+Filter by SIP From header (regex pattern).
+.TP
+\fB\-\-to\fR \fIPATTERN\fR
+Filter by SIP To header (regex pattern).
+.TP
+\fB\-\-contact\fR \fIPATTERN\fR
+Filter by SIP Contact header (regex pattern).
+.TP
+\fB\-\-ua\fR \fIPATTERN\fR
+Filter by User\-Agent header (regex pattern).
+.TP
+\fB\-\-filter\fR \fIEXPR\fR
+Filter DSL expression OR a diagnostic alias. Accepts full expressions (e.g. "method == 'INVITE' and rtp.mos < 3.5") and alias names like "problems" or "codec\-asym" \(em see docs/filter\-dsl.md.
+.TP
+\fB\-\-since\fR \fIRFC3339\fR
+Keep only dialogs whose first message is at or after this RFC 3339 instant (e.g. 2026\-10\-09T10:00:00Z). The window is half\-open [\-\-since, \-\-until), the one REST /v1/dialogs spells after/before and the MCP search_by_time tool spells start/end. ANDed with \-\-filter; needs \-N.
+.TP
+\fB\-\-until\fR \fIRFC3339\fR
+Keep only dialogs whose first message is BEFORE this RFC 3339 instant; a dialog at exactly \-\-until belongs to the next window. Must be after \-\-since. ANDed with \-\-filter; needs \-N.
+.SS Diagnostic aliases
+.TP
+\fB\-\-problems\fR
+Show calls with detected problems (retransmits, timeouts, errors).
+.TP
+\fB\-\-slow\-setup\fR
+Show calls with slow setup time (>3s by default).
+.TP
+\fB\-\-short\-calls\fR
+Show calls shorter than 5 seconds.
+.TP
+\fB\-\-one\-way\fR
+Show calls with potential one\-way audio issues.
+.TP
+\fB\-\-nat\-issues\fR
+Show calls whose RTP arrived from an address no SDP in the dialog advertised \(em the signature of a NAT rewriting the media source.
+.SS Output
+.TP
+\fB\-\-json\fR
+Output NDJSON: one JSON object per SIP message, pipeable to jq. Schema in docs/output\-formats.md.
+.TP
+\fB\-\-json\-pretty\fR
+Output results as pretty\-printed JSON.
+.TP
+\fB\-\-json\-dialogs\fR
+Output NDJSON: one JSON object per DIALOG, emitted after capture.
+.TP
+\fB\-\-plugin\fR \fIPATH\fR
+Load a WASM plugin that adds its own dialog detections. Repeatable.
+.TP
+\fB\-\-report\fR
+Generate a summary report after capture completes.
+.TP
+\fB\-\-stun\fR
+Report the STUN and TURN activity in the capture, with what it achieved.
+.TP
+\fB\-\-json\-stun\fR
+Output NDJSON: one JSON object per STUN/TURN transaction and per TURN allocation, emitted after capture. Each carries a \fBrecord\fR field naming which of the two it is. The machine\-readable form of \fB\-\-stun\fR.
+.TP
+\fB\-\-analyze\fR
+Analyze the capture and print every problem in it, worst first.
+.TP
+\fB\-\-json\-analyze\fR
+Output the \fB\-\-analyze\fR result as one JSON object, emitted after capture.
+.TP
+\fB\-\-yang\-analyze\fR
+Output the \fB\-\-analyze\fR result RFC 7951\-encoded, emitted after capture.
+.TP
+\fB\-\-print\-yang\-module\fR
+Print the \fBsipnab\-diagnosis\fR YANG module and exit.
+.TP
+\fB\-\-call\-report\fR \fICALL\-ID\fR
+Generate a detailed report for a specific Call\-ID.
+.TP
+\fB\-\-export\-vcon\fR \fICALL\-ID\fR
+Export one dialog, named by Call\-ID, as a vCon container (\fBdraft\-ietf\-vcon\-vcon\-core\fR).
+.TP
+\fB\-\-export\-vcon\-when\fR \fIEXPR\fR
+Emit a vCon for every dialog matching this filter expression.
+.TP
+\fB\-\-export\-vcon\-dir\fR \fIDIR\fR
+Directory for the containers \fB\-\-export\-vcon\-when\fR produces.
+.TP
+\fB\-\-vcon\-max\-inline\-media\fR \fIMIB\fR
+Largest inline media body a vCon may carry, in MiB.
+.TP
+\fB\-\-content\-deny\-header\fR \fINAME\fR
+Suppress content for any dialog carrying this header.
+.TP
+\fB\-\-content\-deny\-tombstone\fR
+Write an identity\-only container for each dialog the deny header suppressed.
+.TP
+\fB\-\-vcon\-digest\fR
+Print a SHA\-256 of every container written, in \fBsha256sum\fR format.
+.TP
+\fB\-\-vcon\-out\fR \fIPATH\fR
+Write the \fB\-\-export\-vcon\fR container to this path instead of stdout.
+.TP
+\fB\-\-redact\fR
+Pseudonymize identities, addresses and hostnames in exported containers.
+.TP
+\fB\-\-redact\-key\-file\fR \fIFILE\fR
+Read the redaction secret from this file instead of drawing a fresh one.
+.TP
+\fB\-\-redact\-keep\-prefix\fR \fIN\fR
+Keep this many leading digits of a number verbatim.
+.TP
+\fB\-\-redact\-map\fR \fIFILE\fR
+Write the token\-to\-original table to this file, mode 0600.
+.TP
+\fB\-\-markdown\fR
+Format report output as Markdown.
+.TP
+\fB\-\-hexdump\fR
+Include hex dump of SIP payloads.
+.TP
+\fB\-\-delta\-time\fR
+Show delta time between consecutive messages.
+.TP
+\fB\-\-no\-delta\-time\fR
+Show absolute times even when \fB[display] delta_time = true\fR. The last of \fB\-\-delta\-time\fR / \fB\-\-no\-delta\-time\fR typed wins.
+.TP
+\fB\-A\fR, \fB\-\-after\fR \fIN\fR
+Show N messages after each match (like grep \-A).
+.TP
+\fB\-\-show\-empty\fR
+Show the full header block of messages that have no body (responses, OPTIONS, REGISTER, ACK, BYE, ...). Without this, bodyless messages show only their one\-line summary; messages that carry a body always show their full detail.
+.TP
+\fB\-\-proto\-number\fR
+Annotate the transport tag with the IANA IP protocol number, e.g. \fBUDP(17)\fR / \fBTCP(6)\fR. \fB\-N\fR itself is \fB\-\-no\-tui\fR here, so this flag is long\-only. TLS/WS report their TCP carrier's number (6).
+.TP
+\fB\-\-line\-buffer\fR
+Flush output after each line (useful for piping).
+.TP
+\fB\-\-color\fR \fIWHEN\fR
+Color output mode.
+Values: \fBauto\fR, \fBalways\fR, \fBnever\fR.
+.TP
+\fB\-\-payload\-limit\fR \fIBYTES\fR
+Maximum payload bytes to display.
+.TP
+\fB\-T\fR, \fB\-\-text\-dump\fR
+Dump raw SIP message text.
+.TP
+\fB\-\-no\-cli\-print\fR
+Suppress the per\-message stream (reports still print). Combine with \-\-report or \-\-call\-report for summary\-only output: \fBsipnab \-N \-I file.pcap \-\-report \-\-no\-cli\-print\fR.
+.TP
+\fB\-\-wireshark\fR
+Print a Wireshark display filter for the current capture.
+.TP
+\fB\-\-lint\fR
+Run the RFC conformance linter over every dialog and print the findings.
+.TP
+\fB\-\-lint\-fail\-on\fR \fISEVERITY\fR
+Exit 3 when the linter reports a finding at or above this severity.
+.TP
+\fB\-\-lint\-max\-per\-rule\fR \fIN\fR
+Findings one lint rule may report for one dialog.
+.TP
+\fB\-\-lint\-suppress\-file\fR \fIFILE\fR
+Read lint suppressions from this file instead of discovering one.
+.TP
+\fB\-\-lint\-no\-suppress\fR
+Ignore any \fB.sipnablint\fR, including one named by \fB\-\-lint\-suppress\-file\fR.
+.TP
+\fB\-\-tshark\-filter\fR \fIEXPR\fR
+Generate a tshark\-compatible display filter string.
+.TP
+\fB\-\-fail2ban\fR
+Output in fail2ban\-compatible format for SIP security events.
+.TP
+\fB\-\-group\-by\fR \fIFIELD\fR
+Group batch output so messages sharing a field value are emitted together: one of \fBcall\-id\fR, \fBfrom\fR, \fBto\fR, \fBmethod\fR, \fBsrc\fR, \fBdst\fR. Messages are reordered, not reformatted, so \fB\-\-json\fR output stays one valid object per line. Requires \fB\-N\fR/\fB\-\-no\-tui\fR, and buffers until the capture ends (bounded \(em see \fBoutput::group\fR).
+.TP
+\fB\-\-max\-groups\fR \fIN\fR
+Distinct \fB\-\-group\-by\fR keys one run may retain (default 100000, the same figure \fB\-l\fR/\fB\-\-limit\fR ships). Config: \fB[limits] max_groups\fR.
+.TP
+\fB\-\-max\-grouped\-messages\fR \fIN\fR
+Messages \fB\-\-group\-by\fR may buffer across every group (default 200000). Config: \fB[limits] max_grouped_messages\fR.
+.TP
+\fB\-\-node\-name\fR \fINAME\fR
+Name this box reports as, on every answer it gives.
+.SS Dialog
+.TP
+\fB\-l\fR, \fB\-\-limit\fR \fIN\fR
+Maximum dialogs the store may hold in TOTAL over the run (default 100000). NOT a concurrency limit: nothing removes a completed dialog, so this bound scales with UPTIME, not with load.
+.TP
+\fB\-R\fR, \fB\-\-rotate\fR
+Evict the oldest dialog when the \fB\-\-limit\fR capacity is reached (LRU). This is the \fBdefault\fR; the flag is kept for back\-compat / explicitness.
+.TP
+\fB\-\-no\-rotate\fR
+Disable dialog rotation: at \fB\-\-limit\fR capacity, drop *new* dialogs instead of evicting the oldest. Inverts the safe default (which rotates) \(em only use when you must preserve the earliest dialogs and accept losing newer ones.
+.TP
+\fB\-\-dialog\-track\fR \fIMETHOD\fR
+How to group messages into tracked units: \fBcall\-id\fR (default, one unit per dialog) or \fBbranch\fR (one unit per SIP transaction).
+.TP
+\fB\-\-no\-dialog\fR
+Disable dialog tracking entirely (message\-only mode).
+.TP
+\fB\-\-tag\fR \fITAG\fR
+Filter dialogs by tag value.
+.TP
+\fB\-\-leg\-correlation\-window\fR \fIMS\fR
+How far apart, in milliseconds, two legs of one call may be created and still correlate on timing alone.
+.TP
+\fB\-\-active\-idle\-window\fR \fISECS\fR
+Seconds a dialog may go untouched and still count as active.
+.SS RTP
+.TP
+\fB\-\-rtpengine\-control\fR \fIADDR\fR
+Ask an rtpengine relay about calls that were already up.
+.TP
+\fB\-\-rtpproxy\-control\fR \fIADDR:PORT\fR
+Read rtpproxy's control traffic on this UDP socket and name the calls its media belongs to.
+.TP
+\fB\-\-relay\-stats\fR
+Ask the relay named by \fB\-\-rtpengine\-control\fR for its own statistics and print them (ST1/C1).
+.TP
+\fB\-\-relay\-stats\-call\fR \fICALL\-ID\fR
+Ask the relay named by \fB\-\-rtpengine\-control\fR for its own counters about ONE call, by Call\-ID (ST7/C2).
+.TP
+\fB\-\-relay\-stats\-list\fR
+List which statistics the relay named by \fB\-\-rtpengine\-control\fR knows, rather than their values (ST7/C3).
+.TP
+\fB\-\-relay\-compare\fR \fICALL\-ID\fR
+Compare the relay's own RTP packet count for ONE call against what sipnab measured on the wire (ST7/C4).
+.TP
+\fB\-\-relay\-stats\-interval\fR \fISECONDS\fR
+Poll the relay named by \fB\-\-rtpengine\-control\fR for its statistics every SECONDS, for as long as the capture runs (ST4/C5).
+.TP
+\fB\-\-max\-streams\fR \fIN\fR
+Maximum number of RTP streams to track simultaneously.
+.TP
+\fB\-\-max\-lost\-sequences\fR \fIN\fR
+Lost RTP sequence numbers retained per stream, for the Packet Loss Map and the burst/gap analysis. Config: \fB[limits] max_lost_sequences\fR.
+.TP
+\fB\-\-quality\-interval\fR \fISECONDS\fR
+Seconds between RTP quality snapshots, the resolution of the per\-stream quality trend. Config: \fB[limits] quality_interval_secs\fR.
+.TP
+\fB\-\-quality\-threshold\fR \fIMOS\fR
+MOS quality threshold for alerts (1.0\-5.0 scale).
+Default: \fB3.0\fR.
+.SS Security
+.TP
+\fB\-\-kill\-scanner\fR
+Detect and report SIP scanning activity.
+.TP
+\fB\-\-no\-kill\-scanner\fR
+Do not answer scanners even when \fB[security] kill_scanner = true\fR. The last of \fB\-\-kill\-scanner\fR / \fB\-\-no\-kill\-scanner\fR typed wins.
+.TP
+\fB\-\-sandbox\fR \fIMODE\fR
+Bound which files this process can reach, using Landlock.
+Values: \fBoff\fR, \fBbest\-effort\fR, \fBrequired\fR.
+.TP
+\fB\-\-seccomp\fR \fIMODE\fR
+Record every system call (\fBlog\fR), or refuse the ones outside a host\-derived allowlist (\fBenforce\fR).
+Values: \fBoff\fR, \fBlog\fR, \fBenforce\fR.
+.TP
+\fB\-\-kill\-ua\fR \fIPATTERN\fR
+Add a User\-Agent pattern to the scanner detector.
+.TP
+\fB\-\-kill\-response\fR \fICODE\fR
+SIP response code to use in scanner kill reports.
+.TP
+\fB\-K\fR, \fB\-\-kill\-target\fR \fIADDR[:PORT\-RANGE]\fR
+Targeted scanner kill: send the kill response to any SIP request whose source matches ADDR and an optional port range, e.g. \fB10.0.0.1:5060\-5090\fR or \fB[::1]:5060\fR, regardless of UA/behavioral detection. Repeatable. Spawns the kill worker on its own; \fB\-\-kill\-scanner\fR is not required.
+.TP
+\fB\-\-kill\-spoof\fR \fIMODE\fR
+How to source the scanner\-kill response packet (Linux only; other platforms always use \fBephemeral\fR). \fBauto\fR forges the victim's ip:port via a raw socket when \fBCAP_NET_RAW\fR is available (already granted for live capture), so the reply appears to come from the port the scanner targeted \(em falling back to an ephemeral UDP source otherwise. \fBraw\fR requires the spoof and errors if the raw socket cannot be opened; \fBephemeral\fR never spoofs.
+Values: \fBauto\fR, \fBraw\fR, \fBephemeral\fR.
+Default: \fBauto\fR.
+.TP
+\fB\-\-hep\-allow\-kill\fR
+Allow scanner\-kill to send active responses for packets received via the HEP listener, and admit HEP\-carried detections to the \fB\-\-fail2ban\fR jail log. OFF by default: a HEP sender asserts the inner src/dst addresses, so absent \fB\-\-hep\-auth\fR an attacker could aim the kill response at a victim of their choosing (SN\-01), or have the jail ban an address of their choosing. Only enable when HEP input is authenticated and trusted.
+.TP
+\fB\-\-tfps\-ctl\fR \fIPATH\fR
+Where the toll\-fraud prevention system's \fBtfps_ctl\fR program is, for the \fBtfps_*\fR MCP tools and the \fB/v1/tfps/\fR REST routes.
+.TP
+\fB\-\-journal\-dir\fR \fIDIR\fR
+Where sipnab records the actions it takes on other systems, so a restart knows what it did: which bans are its own, what was in flight when it stopped, and how much of each rate limit is already spent.
+.TP
+\fB\-\-journal\-show\fR
+Print what the actions journal says, then exit: the bans sipnab placed that are still in force, newest first, with their action ids; actions left in doubt by a crash; bans TFPS shows that sipnab cannot prove it placed; and the last hour's refusals.
+.TP
+\fB\-\-revert\-actions\fR \fIall|ACTION_ID\fR
+Back out what sipnab did to another system, then exit: \fBall\fR lifts every ban sipnab placed that is still in force, newest first; an action id (from \fB\-\-journal\-show\fR) lifts that one.
+.TP
+\fB\-\-allow\-action\fR \fITARGET:SURFACE[,SURFACE]\fR
+Enable an action that changes another system, from the named surfaces.
+.TP
+\fB\-\-fraud\-detect\fR
+Enable fraud detection heuristics.
+.TP
+\fB\-\-no\-fraud\-detect\fR
+Do not run fraud detection even when \fB[security] fraud_detect = true\fR. The last of \fB\-\-fraud\-detect\fR / \fB\-\-no\-fraud\-detect\fR typed wins.
+.TP
+\fB\-\-evidence\-out\fR \fIPATH|\-\fR
+Publish every finding that names a source as JSON Lines, for a system that decides what to do with it. \fB\-\fR is standard output, for a pipe; a path is appended to. sipnab takes no action on these lines: the system reading them decides. No TFPS build reads these lines yet: its \fBingest\fR subcommand is on an unmerged branch of the NormB/tfps fork.
+.TP
+\fB\-\-fraud\-destination\fR \fIISO,...\fR
+Destination countries \fB\-\-fraud\-detect\fR reports an INVITE to, as ISO 3166\-1 alpha\-2 codes (\fBDO,VG,MA\fR). Numbers are read through the common international prefixes (\fB+\fR, \fB00\fR, \fB011\fR); a number with none is domestic and never matches. Absent: no destination alerts, and nothing changes.
+.TP
+\fB\-\-reg\-flood\fR
+Detect registration floods: credentialed REGISTERs the registrar keeps refusing. sipnab reports a source when the REGISTERs it sent with \fBAuthorization\fR that drew a \fB401\fR/\fB407\fR on the same transaction exceed \fB\-\-reg\-flood\-threshold\fR inside one \fB\-\-reg\-flood\-window\fR of capture time (one second unless set). A REGISTER on its own is never evidence, so a re\-REGISTER storm the registrar accepts after a restart is the customer's SBC and not a flood, and any \fB2xx\fR to a REGISTER clears the source's count.
+.TP
+\fB\-\-reg\-flood\-threshold\fR \fIN\fR
+Challenged failures from one source inside one \fB\-\-reg\-flood\-window\fR (one second unless set) before \fB\-\-reg\-flood\fR reports a flood: REGISTERs that carried credentials and drew a \fB401\fR or \fB407\fR.
+.TP
+\fB\-\-reg\-flood\-window\fR \fISECS\fR
+How much capture time one \fB\-\-reg\-flood\fR counting window spans, in seconds (1\-3600).
+.TP
+\fB\-\-reg\-flood\-transaction\-timeout\fR \fIMS\fR
+How long a credentialed REGISTER stays open to the challenge that answers it, in milliseconds (1000\-600000).
+.TP
+\fB\-\-kill\-rate\-limit\fR \fIN\fR
+Scanner\-kill responses per second sipnab may put on the wire.
+.TP
+\fB\-\-business\-hours\fR \fISTART\-END\fR
+Business hours as \fBSTART\-END\fR in whole UTC hours, e.g. \fB8\-18\fR.
+.TP
+\fB\-\-fraud\-short\-call\fR \fISECS\fR
+Measured call duration, in seconds, below which \fB\-\-fraud\-detect\fR counts a completed call as "short" for wangiri detection.
+.TP
+\fB\-\-fraud\-wangiri\-calls\fR \fIN\fR
+Short calls to one destination prefix before \fB\-\-fraud\-detect\fR reports wangiri.
+.TP
+\fB\-\-fraud\-sequential\-calls\fR \fIN\fR
+Consecutive refused numbers before \fB\-\-fraud\-detect\fR reports sequential scanning.
+.TP
+\fB\-\-fraud\-volume\-multiplier\fR \fIN\fR
+Multiple of a source's own baseline call rate that \fB\-\-fraud\-detect\fR reports as a volume spike.
+.TP
+\fB\-\-fraud\-volume\-min\-calls\fR \fIN\fR
+Calls a source must place inside the volume window before \fB\-\-fraud\-detect\fR will report a spike at all.
+.TP
+\fB\-\-fraud\-volume\-window\fR \fISECS\fR
+How much capture time one volume\-spike window spans, in seconds.
+.TP
+\fB\-\-fraud\-wangiri\-window\fR \fISECS\fR
+How much capture time one wangiri window spans, in seconds.
+.TP
+\fB\-\-scanner\-behavioral\-probes\fR \fIN\fR
+Probes from one source inside the scanner window, above which \fB\-\-kill\-scanner\fR reports a rate detection.
+.TP
+\fB\-\-scanner\-enumeration\-targets\fR \fIN\fR
+Distinct target extensions from one source inside the scanner window, above which \fB\-\-kill\-scanner\fR reports extension enumeration.
+.TP
+\fB\-\-scanner\-rejected\-probes\fR \fIN\fR
+Rejected probes inside the scanner window at which a source reads as probing rather than operating.
+.TP
+\fB\-\-scanner\-unanswered\-probes\fR \fIN\fR
+Unanswered probes inside the scanner window at which a source reads as sweeping, provided they are also the majority of what it sent.
+.TP
+\fB\-\-scanner\-window\fR \fISECS\fR
+How much capture time one scanner window spans, in seconds.
+.TP
+\fB\-\-scanner\-established\-factor\fR \fIN\fR
+How much more evidence \fB\-\-kill\-scanner\fR needs from a source that has completed a registration or a call with us.
+.TP
+\fB\-\-scanner\-answer\-grace\fR \fIMS\fR
+How long a probe may go without a response before \fB\-\-kill\-scanner\fR counts it as unanswered, in milliseconds.
+.TP
+\fB\-\-findings\-history\fR \fIN\fR
+Security findings kept in memory for later retrieval.
+.TP
+\fB\-\-digest\-leak\fR
+Detect digest credential leaks in SIP messages.
+.TP
+\fB\-\-alert\fR \fICHANNEL\fR
+Alert channels (repeatable: "syslog", "json", "exec"). Also accepts \fBname:threshold/window[:cooldown]\fR rules for scanner, fraud, digest and reg\-flood (or reg_flood); unknown rule names fail startup.
+.TP
+\fB\-\-alert\-exec\fR \fICMD\fR
+Execute this command when an alert fires.
+.TP
+\fB\-\-stir\-shaken\fR
+Report STIR/SHAKEN Identity claims (no signature verification).
+.TP
+\fB\-\-syslog\fR
+Send alerts to syslog.
+.TP
+\fB\-\-alert\-json\fR
+Emit each security alert as a structured JSON line on stderr (in addition to the human \fB[ALERT]\fR line) \(em a stable machine channel that survives log format changes. stdout stays reserved for \fB\-\-json\fR / MCP.
+.TP
+\fB\-\-run\-provenance\-file\fR \fIFILE\fR
+Record how this run was invoked, as one JSON line appended to FILE.
+.TP
+\fB\-\-tui\-audit\-file\fR \fIFILE\fR
+Record what the operator DID in the TUI, one JSON line per action appended to FILE.
+.TP
+\fB\-\-recommend\-block\fR \fIDIALECT\fR
+Print a firewall rule for every source the detectors accused, in DIALECT: \fBfail2ban\fR, \fBnftables\fR, \fBiptables\fR or \fBall\fR.
+Values: \fBfail2ban\fR, \fBnftables\fR, \fBiptables\fR, \fBall\fR.
+.SS Event execution
+.TP
+\fB\-\-on\-dialog\-exec\fR \fICMD\fR
+Execute command when a dialog state changes.
+.TP
+\fB\-\-on\-quality\-exec\fR \fICMD\fR
+Execute command when RTP quality drops below threshold.
+.TP
+\fB\-\-exec\-rate\-limit\fR \fIN\fR
+Maximum exec invocations per second (rate limit). \fB0\fR means no limit.
+Default: \fB10\fR.
+.TP
+\fB\-\-exec\-queue\-depth\fR \fIN\fR
+Hook commands allowed to be running at once before events are dropped.
+.SS Network listeners
+.TP
+\fB\-\-metrics\fR \fIADDR\fR
+Enable Prometheus metrics endpoint (e.g., "127.0.0.1:9090"). A non\-loopback bind (e.g. "0.0.0.0:9090") is refused unless \-\-metrics\-auth / \-\-metrics\-auth\-file is also set.
+.TP
+\fB\-\-metrics\-auth\fR \fIUSER:PASS\fR
+HTTP Basic auth credentials (\fBuser:pass\fR) required by the metrics endpoint. When set, requests must send \fBAuthorization: Basic <base64>\fR. Prefer \-\-metrics\-auth\-file so the secret is not visible in the process list. Basic credentials are base64\-encoded, not encrypted: serve the endpoint over HTTPS (\-\-metrics\-tls\-cert) for non\-loopback exposure.
+.TP
+\fB\-\-metrics\-auth\-file\fR \fIFILE\fR
+Read the metrics Basic\-auth \fBuser:pass\fR from a file (contents trimmed), keeping the secret out of the process list. Takes precedence over \-\-metrics\-auth when both are set.
+.TP
+\fB\-\-metrics\-tls\-cert\fR \fIFILE\fR
+Serve the metrics endpoint over HTTPS with this certificate chain (PEM, leaf first). Needs \-\-metrics\-tls\-key. TLS 1.2 and 1.3.
+.TP
+\fB\-\-metrics\-tls\-key\fR \fIFILE\fR
+Private key (PEM) for \-\-metrics\-tls\-cert. Refused when any other user can read it: chmod 600.
+.TP
+\fB\-\-api\fR \fIADDR\fR
+Enable REST API endpoint (e.g., "0.0.0.0:8080").
+.TP
+\fB\-\-api\-key\fR \fIKEY\fR
+API key for REST API authentication (static shared secret, no expiry).
+Also read from \fBSIPNAB_API_KEY\fR.
+.TP
+\fB\-\-api\-signing\-key\fR \fIKEY\fR
+HMAC signing key for REST API self\-describing bearer tokens (repeatable). The FIRST key mints; ALL keys are accepted on verify, enabling signing\-key rotation with overlap. Also read from SIPNAB_API_SIGNING_KEY.
+Also read from \fBSIPNAB_API_SIGNING_KEY\fR.
+.TP
+\fB\-\-api\-signing\-key\-file\fR \fIFILE\fR
+Read one REST API HMAC signing key from a file (contents trimmed). Prepended to any \-\-api\-signing\-key values so it is the minting key.
+.TP
+\fB\-\-api\-revoked\-file\fR \fIFILE\fR
+Revocation denylist file for REST API tokens: one revoked token id per line (blanks and \fB#\fR comments ignored). Reloaded when the file changes.
+.TP
+\fB\-\-api\-token\-ttl\fR \fISECS\fR
+TTL in seconds for a minted REST API token (used with \-\-mint\-token).
+Default: \fB3600\fR.
+.TP
+\fB\-\-api\-tls\-cert\fR \fIFILE\fR
+Serve the REST API over HTTPS with this certificate chain (PEM, leaf first). Needs \-\-api\-tls\-key. TLS 1.2 and 1.3; ALPN http/1.1.
+.TP
+\fB\-\-api\-tls\-key\fR \fIFILE\fR
+Private key (PEM) for \-\-api\-tls\-cert. Refused when any other user can read it: chmod 600.
+.TP
+\fB\-\-api\-max\-conn\fR \fIN\fR
+Maximum API requests handled at once; sipnab answers 503 to a request past it. \fB0\fR means no limit.
+Default: \fB100\fR.
+.TP
+\fB\-\-api\-allowed\-host\fR \fIHOST\fR
+Additional \fBHost\fR header values the REST API accepts (repeatable), against DNS rebinding. Accepted by default: \fBlocalhost\fR, \fB127.0.0.1\fR, \fB::1\fR and the bound address, on any port (any IP address on a \fB0.0.0.0\fR / \fB::\fR bind). Add the name clients use, such as a reverse proxy's public name; \fBname:port\fR pins the port. \fB*\fR disables the check (not recommended). Replaces \fB[api] allowed_hosts\fR.
+.TP
+\fB\-\-metrics\-max\-conn\fR \fIN\fR
+Metrics scrapes served at once before further ones get \fB503\fR (default 16). Config: \fB[limits] metrics_max_conn\fR.
+.TP
+\fB\-\-api\-max\-rows\fR \fIN\fR
+Rows one list\-style REST response may return (default 1000). Config: \fB[limits] api_max_rows\fR.
+.TP
+\fB\-\-api\-allow\-relay\-query\fR
+Let REST clients query the relay named by \fB\-\-rtpengine\-control\fR (\fBGET /v1/relay/...\fR), which transmits (ST5).
+.TP
+\fB\-\-api\-file\-root\fR \fIDIR\fR
+Directory of capture files \fBGET /v1/captures/compare\fR may diff.
+.TP
+\fB\-\-api\-accept\-archive\-passwords\fR
+Accept the \fBSipnab\-Archive\-Password\fR request header from a client that is not on this host. sipnab serves plain HTTP, so a password from a remote client crosses the network in the clear unless a TLS proxy in front terminates the connection: that is your job when you pass this. Without it, only a loopback client (a local tool, or a proxy on this host) may send one, and a remote one is answered 403.
+.TP
+\fB\-\-api\-rate\-limit\-per\-peer\fR \fIN\fR
+REST requests one client IP may make per second (\fB0\fR = unlimited, default 100). Config: \fB[limits] api_rate_limit_per_peer\fR.
+.SS MCP (Model Context Protocol)
+.TP
+\fB\-\-mcp\fR
+Run sipnab as an MCP server (Model Context Protocol). Default transport is stdio, which owns stdout: Implies \-\-no\-tui. With \-\-mcp\-transport http (requires the mcp\-http feature) the TUI stays up beside the server unless \-N is given.
+.TP
+\fB\-\-mcp\-transport\fR \fITRANSPORT\fR
+MCP transport: "stdio" (default) or "http".
+Values: \fBstdio\fR, \fBhttp\fR.
+Default: \fBstdio\fR.
+.TP
+\fB\-\-mcp\-bind\fR \fIADDR\fR
+Bind address for the HTTP MCP transport (default 127.0.0.1:8731).
+.TP
+\fB\-\-mcp\-token\fR \fITOKEN\fR
+Bearer token for HTTP MCP transport. Reads from env SIPNAB_MCP_TOKEN when not given via the flag; required for non\-loopback binds.
+.TP
+\fB\-\-mcp\-token\-file\fR \fIFILE\fR
+Read the MCP bearer token from a file (preferred over env in systemd units).
+.TP
+\fB\-\-mcp\-tls\-cert\fR \fIFILE\fR
+Serve MCP over HTTP with HTTPS, using this certificate chain (PEM, leaf first). Needs \-\-mcp\-tls\-key and \-\-mcp\-transport http. TLS 1.2 and 1.3; ALPN http/1.1.
+.TP
+\fB\-\-mcp\-tls\-key\fR \fIFILE\fR
+Private key (PEM) for \-\-mcp\-tls\-cert. Refused when any other user can read it: chmod 600.
+.TP
+\fB\-\-mcp\-signing\-key\fR \fIKEY\fR
+HMAC signing key for HTTP MCP self\-describing bearer tokens (repeatable). The FIRST key mints; ALL keys are accepted on verify, enabling signing\-key rotation with overlap. Also read from SIPNAB_MCP_SIGNING_KEY.
+Also read from \fBSIPNAB_MCP_SIGNING_KEY\fR.
+.TP
+\fB\-\-mcp\-signing\-key\-file\fR \fIFILE\fR
+Read one HTTP MCP HMAC signing key from a file (contents trimmed). Prepended to any \-\-mcp\-signing\-key values so it is the minting key.
+.TP
+\fB\-\-mcp\-revoked\-file\fR \fIFILE\fR
+Revocation denylist file for HTTP MCP tokens: one revoked token id per line (blanks and \fB#\fR comments ignored). Reloaded when the file changes.
+.TP
+\fB\-\-mcp\-token\-ttl\fR \fISECS\fR
+TTL in seconds for a minted HTTP MCP token (used with \-\-mint\-token).
+Default: \fB3600\fR.
+.TP
+\fB\-\-mcp\-audit\-file\fR \fIFILE\fR
+Append every MCP tool call to this file, one JSON record per line.
+.TP
+\fB\-\-mcp\-max\-concurrent\fR \fIN\fR
+Maximum tool calls the MCP server runs at once (\fB0\fR = unlimited).
+Default: \fB100\fR.
+.TP
+\fB\-\-mcp\-tools\fR \fILIST\fR
+Which tools the MCP server registers: a comma\-separated list of bundles (\fBcore\fR, \fBsignaling\fR, \fBcaptures\fR, \fBsecurity\fR, \fBmedia\fR, \fBrelay\fR, \fBtfps\fR, \fBserver\fR, \fBvcon\fR, \fBtls\fR), tool names, \fB[mcp.bundles]\fR names, or \fBfull\fR (every tool, the default). Replaces \fB[mcp] tools\fR.
+.TP
+\fB\-\-mcp\-output\-schemas\fR [\fIBOOL\fR]
+Send each tool's output schema on \fBtools/list\fR (\fB[mcp] output_schemas\fR, default off). Output schemas are optional in MCP and are most of the bytes a tool costs; responses carry the same JSON either way. \fB\-\-mcp\-output\-schemas=false\fR turns them off over a config that turns them on.
+Values: \fBtrue\fR, \fBfalse\fR.
+.TP
+\fB\-\-mcp\-max\-rows\fR \fIN\fR
+Maximum rows in one list\-style MCP response.
+.TP
+\fB\-\-mcp\-max\-body\-bytes\fR \fIN\fR
+Maximum bytes of SIP body or matched snippet in one MCP response.
+.TP
+\fB\-\-mcp\-max\-response\-bytes\fR \fIN\fR
+Maximum bytes of ONE whole paged MCP response.
+.TP
+\fB\-\-mcp\-max\-wait\-seconds\fR \fIN\fR
+Longest wait ONE \fBawait_condition\fR MCP call may take, in seconds.
+.TP
+\fB\-\-mcp\-max\-findings\fR \fIN\fR
+Findings \fBsave_findings\fR accepts before refusing further writes (default 1000). Config: \fB[limits] mcp_max_findings\fR.
+.TP
+\fB\-\-mcp\-sweep\-max\-files\fR \fIN\fR
+Files one \fBfind_in_captures\fR sweep may open (default 20, maximum 4294967295). Config: \fB[limits] mcp_sweep_max_files\fR.
+.TP
+\fB\-\-mcp\-sweep\-deadline\-ms\fR \fIMS\fR
+Milliseconds one \fBfind_in_captures\fR sweep may spend (default 30000, maximum 43200000). Config: \fB[limits] mcp_sweep_deadline_ms\fR.
+.TP
+\fB\-\-mcp\-sweep\-max\-running\fR \fIN\fR
+\fBfind_in_captures\fR sweeps one server runs at once (default 4, maximum 64). Config: \fB[limits] mcp_sweep_max_running\fR.
+.TP
+\fB\-\-mcp\-sweep\-max\-held\-results\fR \fIN\fR
+Finished \fBfind_in_captures\fR results one server holds for collection (default 16, maximum 256). Config: \fB[limits] mcp_sweep_max_held_results\fR.
+.TP
+\fB\-\-mcp\-sweep\-result\-retention\-secs\fR \fISECS\fR
+Seconds a finished \fBfind_in_captures\fR result waits for its poll (default 600, maximum 43200). Config: \fB[limits] mcp_sweep_result_retention_secs\fR.
+.TP
+\fB\-\-mcp\-rate\-limit\-per\-peer\fR \fIN\fR
+Maximum MCP tool calls one peer may make per second (\fB0\fR = unlimited).
+Default: \fB100\fR.
+.TP
+\fB\-\-mcp\-allowed\-host\fR \fIHOST\fR
+Additional \fBHost\fR header values the HTTP MCP server will accept (repeatable). rmcp's DNS\-rebind protection defaults to allowing only \fBlocalhost\fR, \fB127.0.0.1\fR, and \fB::1\fR. Add the public hostname or bind IP here when clients connect via that name. Use \fB*\fR to disable host checking entirely (not recommended; pair the resulting open binding with a network\-level allowlist).
+.TP
+\fB\-\-mcp\-resource\-url\fR \fIURL\fR
+Public URL clients reach this MCP server at, published as the OAuth 2.0 protected\-resource identifier (RFC 9728).
+.TP
+\fB\-\-mcp\-file\-root\fR \fIDIR\fR
+Directory the MCP file tools may read from and write to.
+.TP
+\fB\-\-mcp\-evidence\-ring\fR \fIMIB\fR
+Mebibytes of raw frames to retain so a LIVE pointer can be followed.
+.TP
+\fB\-\-mcp\-sampling\-budget\fR \fIPER_HOUR\fR
+Requests per hour sipnab may ask the CLIENT's model to narrate.
+.TP
+\fB\-\-mcp\-allow\-shutdown\fR
+Allow the \fBshutdown_server\fR MCP tool to stop this process.
+.TP
+\fB\-\-retain\-audio\fR
+Retain RTP audio payload in memory, so the audio itself can be looked at.
+.TP
+\fB\-\-mcp\-allow\-open\-capture\fR
+Allow the \fBopen_capture\fR MCP tool to load a different capture.
+.TP
+\fB\-\-mcp\-allow\-relay\-query\fR
+Let an agent ask the live relay what it is holding (\fBquery_relay\fR).
+.TP
+\fB\-\-mcp\-allow\-tls\-capture\fR
+Let an agent install kernel uprobes and read TLS plaintext (\fBstart_tls_capture\fR, \fBstop_tls_capture\fR).
+.TP
+\fB\-\-mcp\-allow\-save\-findings\fR
+Permit the \fBsave_findings\fR MCP tool to record an agent's conclusion.
+.SS Analysis
+.TP
+\fB\-\-one\-way\-delay\fR \fIMS\fR
+One\-way network delay of the observed path, in milliseconds.
+.TP
+\fB\-\-pdd\-threshold\fR \fISECS\fR
+Post\-dial delay, in seconds, over which a call is reported as slow.
+.TP
+\fB\-\-ack\-timeout\fR \fISECS\fR
+Seconds a \fB2xx\fR may go unacknowledged before the missing \fBACK\fR is reported as a fault rather than as a capture that stopped early. Default: RFC 3261 Timer H (32 s). Config: \fB[diagnosis] ack_timeout_secs\fR.
+.TP
+\fB\-\-no\-final\-response\-timeout\fR \fISECS\fR
+Seconds an \fBINVITE\fR may sit without a final response before the silence is reported. Default: RFC 3261 Timer C (180 s). Below it, every call still ringing when the capture stopped is reported. Config: \fB[diagnosis] no_final_response_secs\fR.
+.TP
+\fB\-\-duration\-asymmetry\-pct\fR \fIPCT\fR
+Percentage difference between the two legs' durations that counts as asymmetric. Config: \fB[diagnosis] duration_asymmetry_pct\fR.
+.TP
+\fB\-\-duration\-asymmetry\-secs\fR \fISECS\fR
+Absolute difference, in seconds, between the two legs' durations that counts as asymmetric. Both this and the percentage must be exceeded, so raising either one alone quiets the detection. Config: \fB[diagnosis] duration_asymmetry_secs\fR.
+.TP
+\fB\-\-late\-media\-ms\fR \fIMS\fR
+Milliseconds after the \fB200 OK\fR that media may start before it is reported as late. Config: \fB[diagnosis] late_media_ms\fR.
+.TP
+\fB\-\-cn\-suppression\-ratio\fR \fIRATIO\fR
+Share of a call's packets, as a fraction of 1, that must be comfort noise before comfort noise is accepted as the explanation for one\-directional media. Default 0.3. Config: \fB[diagnosis] cn_suppression_ratio\fR.
+.TP
+\fB\-\-jitter\-warn\-ms\fR \fIMS\fR
+Jitter, in milliseconds, at or above which the color column turns yellow. Config: \fB[quality] jitter_warn_ms\fR.
+.TP
+\fB\-\-jitter\-bad\-ms\fR \fIMS\fR
+Jitter, in milliseconds, at or above which the color column turns red. Config: \fB[quality] jitter_bad_ms\fR.
+.TP
+\fB\-\-loss\-warn\-pct\fR \fIPCT\fR
+Packet loss, in percent, at or above which the color column turns yellow. Config: \fB[quality] loss_warn_pct\fR.
+.TP
+\fB\-\-loss\-bad\-pct\fR \fIPCT\fR
+Packet loss, in percent, at or above which the color column turns red. Config: \fB[quality] loss_bad_pct\fR.
+.TP
+\fB\-\-mos\-warn\fR \fIMOS\fR
+MOS below which the color column turns yellow. MOS bands run downward, so this must sit at or above \fB\-\-mos\-bad\fR. Config: \fB[quality] mos_warn\fR.
+.TP
+\fB\-\-mos\-bad\fR \fIMOS\fR
+MOS below which the color column turns red. Config: \fB[quality] mos_bad\fR.
+.TP
+\fB\-\-rtt\-warn\-ms\fR \fIMS\fR
+Round trip, in milliseconds, at or above which the color column turns yellow. Config: \fB[quality] rtt_warn_ms\fR.
+.TP
+\fB\-\-rtt\-bad\-ms\fR \fIMS\fR
+Round trip, in milliseconds, at or above which the color column turns red. Config: \fB[quality] rtt_bad_ms\fR.
+.SS HEP
+.TP
+\fB\-L\fR, \fB\-\-hep\-listen\fR \fIADDR\fR
+Listen for HEP (Homer Encapsulation Protocol) packets.
+.TP
+\fB\-H\fR, \fB\-\-hep\-send\fR \fIADDR\fR
+Send captured packets via HEP to a remote collector.
+.TP
+\fB\-\-hep\-send\-transport\fR \fIudp|tcp|tls\fR
+Transport \fB\-\-hep\-send\fR uses to reach the collector: \fBudp\fR (default), \fBtcp\fR or \fBtls\fR. Homer's collectors accept all three. HEP v3 carries its own total length, so a TCP or TLS feed is packets laid end to end with no extra framing. Each TCP connect, the first and every reconnect, gives up after 3 seconds and counts as a \fBconnect\fR failure. Refused without \fB\-\-hep\-send\fR, which is the side it governs.
+.TP
+\fB\-\-hep\-listen\-transport\fR \fIudp|tcp|tls\fR
+Transport \fB\-\-hep\-listen\fR accepts: \fBudp\fR (default), \fBtcp\fR or \fBtls\fR. A \fBtcp\fR or \fBtls\fR listener serves several agents at once and reads each connection as a stream of length\-prefixed HEP v3 packets; HEP v2, which carries no total length, is datagram\-only. Refused without \fB\-\-hep\-listen\fR, which is the side it governs.
+.TP
+\fB\-\-hep\-tls\-ca\fR \fIFILE\fR
+Certificate authority (PEM) the collector's certificate is verified against under \fB\-\-hep\-send\-transport tls\fR. A named CA REPLACES the trust store rather than joining it, so a private collector's issuer is the whole of what this sender accepts. Omit it to use the host's CA bundle.
+.TP
+\fB\-\-hep\-tls\-extra\-ca\fR \fIFILE\fR
+Certificate authority (PEM) trusted IN ADDITION to the host's CA bundle under \fB\-\-hep\-send\-transport tls\fR: the collector's certificate is accepted when the host's bundle or this file issued it. For a private collector issuer on a host whose public roots should still count. Use \-\-hep\-tls\-ca instead to trust only the named file.
+.TP
+\fB\-\-hep\-tls\-cert\fR \fIFILE\fR
+Server certificate chain (PEM) a \fB\-\-hep\-listen\-transport tls\fR listener presents to connecting agents. Leaf first, then any intermediates.
+.TP
+\fB\-\-hep\-tls\-key\fR \fIFILE\fR
+Private key (PEM) for \fB\-\-hep\-tls\-cert\fR. sipnab refuses a key any other user on the host can read.
+.TP
+\fB\-\-hep\-id\fR \fIID\fR
+Capture\-agent id (HEP 0x000c chunk) stamped on every packet sent via \fB\-\-hep\-send\fR. Distinguishes this agent to the Homer collector. Default 1. Refused without \fB\-\-hep\-send\fR, which is the side it governs.
+.TP
+\fB\-\-hep\-auth\fR \fIKEY\fR
+Homer authenticate key (HEP 0x000e chunk) added to every packet sent via \fB\-\-hep\-send\fR. Prefer the env var over the flag so the secret is not visible in the process list.
+Also read from \fBSIPNAB_HEP_AUTH\fR.
+.TP
+\fB\-\-hep\-auth\-file\fR \fIFILE\fR
+Read the HEP shared secret from a file (contents trimmed), keeping it out of the process list. Takes precedence over \-\-hep\-auth. When set on a \fB\-\-hep\-listen\fR receiver it ENABLES receiver\-side authentication: incoming HEP packets must carry a matching 0x000e auth\-key chunk or they are dropped. Refused without \fB\-\-hep\-listen\fR or \fB\-\-hep\-send\fR, the two sides it governs.
+.TP
+\fB\-\-hep\-auth\-mode\fR \fIplain|hmac\fR
+HEP authentication mode: \fBplain\fR (default) sends/expects the shared secret verbatim in the 0x000e chunk (Homer\-compatible, but replayable by an on\-path sniffer); \fBhmac\fR sends/expects a per\-message HMAC token (timestamp + nonce + HMAC\-SHA256 over the payload) that resists replay. \fBhmac\fR is sipnab\-to\-sipnab only \(em a stock Homer/Kamailio peer will not understand it. Refused without \fB\-\-hep\-listen\fR or \fB\-\-hep\-send\fR, the two sides it governs.
+Default: \fBplain\fR.
+.TP
+\fB\-\-hep\-hmac\-window\fR \fISECS\fR
+Seconds either side of now a \fB\-\-hep\-auth\-mode hmac\fR token's timestamp may fall and still be accepted (default 30, maximum 300). Config: \fB[security] hep_hmac_window_secs\fR. Refused without \fB\-\-hep\-listen\fR, the side that checks the window.
+.TP
+\fB\-\-hep\-silence\-warn\fR \fISECS\fR
+Seconds a \fB\-\-hep\-listen\fR listener may go without ADMITTING a packet before it logs a warning (default 30; \fB0\fR turns the warning off).
+.TP
+\fB\-\-hep\-senders\fR
+At the end of a headless run, print who fed the \fB\-\-hep\-listen\fR listener: each sender (the capture id it claims and the address it sent from), its packet count, when it was last heard and whether it went silent, and every address the listener refused with the reasons. With \fB\-\-json\fR, the same as one JSON object on the last line of stdout \(em the shape \fBGET /v1/hep/senders\fR and the MCP \fBhep_senders\fR tool return. Refused without \fB\-\-hep\-listen\fR, which is the side it describes.
+.TP
+\fB\-E\fR, \fB\-\-hep\-parse\fR
+Parse incoming HEP packets (enable HEP decoding). Config: \fB[capture] hep_parse\fR; \fB\-\-no\-hep\-parse\fR turns it off again.
+.TP
+\fB\-\-no\-hep\-parse\fR
+Do not unwrap HEP found in the capture, even when \fB[capture] hep_parse = true\fR says to. The last of \fB\-E\fR / \fB\-\-no\-hep\-parse\fR typed wins.
+.TP
+\fB\-\-hep\-allow\fR \fIADDR\fR
+Allowed source addresses for HEP input (repeatable). Refused without \fB\-\-hep\-listen\fR, which is the side it governs.
+.TP
+\fB\-\-hep\-rate\-limit\fR \fIN\fR
+Maximum HEP packets per second (global ceiling across all senders). \fB0\fR disables the global ceiling (consistent with \fBoff\fR on the per\-peer knob); the per\-peer cap, if set, still applies. Refused without \fB\-\-hep\-listen\fR, which is the side it governs.
+.TP
+\fB\-\-hep\-rate\-limit\-per\-peer\fR \fIN|auto|off\fR
+Maximum HEP packets per second from any single source IP: a number, \fBoff\fR (0, the default), or \fBauto\fR. Adds fairness in multi\-sender deployments so one flooding peer cannot consume the whole \-\-hep\-rate\-limit allowance and starve others. \fBauto\fR divides the global ceiling evenly across the \-\-hep\-allow sources (disabled when no allowlist is set). Leave at \fBoff\fR for the common single\-collector topology. Refused without \fB\-\-hep\-listen\fR, which is the side it governs.
+Default: \fBoff\fR.
+.SS TLS / Decryption
+.TP
+\fB\-k\fR, \fB\-\-tls\-key\fR \fIFILE\fR
+TLS private key (PEM) for TLS 1.2 RSA\-key\-exchange decryption. Only non\-PFS RSA handshakes; ECDHE/DHE (forward secrecy) need \-\-keylog.
+.TP
+\fB\-\-keylog\fR \fIFILE\fR
+TLS key log file (NSS SSLKEYLOGFILE format).
+.TP
+\fB\-\-keylog\-fd\fR \fIN\fR
+Read NSS keylog lines from an already\-open file descriptor, so a privileged producer can hand over TLS secrets without writing them to disk. Implies \-\-keylog\-watch.
+.TP
+\fB\-\-keylog\-watch\fR
+Watch key log file for new entries (live decryption).
+.TP
+\fB\-\-tls\-lockon\-window\fR \fIRECORDS\fR
+How far into an established TLS connection a capture may start and still be readable, in records.
+.TP
+\fB\-\-dtls\-keylog\fR \fIFILE\fR
+DTLS key log (NSS SSLKEYLOGFILE): extracts SRTP keys from DTLS\-SRTP handshakes via the RFC 5764 exporter (AES\-CM profiles).
+.TP
+\fB\-\-srtp\-keys\fR \fIFILE\fR
+SRTP master\-keys file for media decryption (AES\-CM, RFC 3711). Also honors SDES \fBa=crypto\fR keys learned from SDP.
+.TP
+\fB\-\-pcap\-export\-mode\fR \fIMODE\fR
+Pcap export mode for encrypted traffic.
+Values: \fBdecrypted\fR, \fBencrypted+dsb\fR, \fBraw\fR.
+Default: \fBraw\fR.
+.TP
+\fB\-\-allow\-coredump\fR
+Allow core dumps (do not call prctl to disable).
+.TP
+\fB\-\-uprobe\-tls\fR
+Read SIP plaintext from the TLS libraries this host is running, using kernel uprobes. No certificate, no key, and no restart of the process being observed.
+.TP
+\fB\-\-uprobe\-library\fR \fIPATH\fR
+Probe this library instead of discovering them. Repeatable.
+.TP
+\fB\-\-uprobe\-symbol\fR \fINAME\fR
+Write symbol to probe. Defaults to the one the library's flavor exports: SSL_write for OpenSSL, wolfSSL_write for wolfSSL.
+.TP
+\fB\-\-uprobe\-flavor\fR \fINAME\fR
+Probe only these flavors. Repeatable. Default is every one found.
+Values: \fBopenssl\fR, \fBwolfssl\fR.
+.TP
+\fB\-\-uprobe\-backend\fR \fINAME\fR
+Which uprobe machinery reads the plaintext: \fBtracefs\fR or \fBbpf\fR.
+Values: \fBtracefs\fR, \fBbpf\fR.
+Default: \fBtracefs\fR.
+.TP
+\fB\-\-uprobe\-list\fR
+List the TLS libraries sipnab would probe, then exit.
+.SS Privilege
+.TP
+\fB\-\-user\fR \fIUSER\fR
+Drop privileges to this user after opening capture devices.
+.TP
+\fB\-\-no\-priv\-drop\fR
+Do not drop privileges after opening capture devices.
+.TP
+\fB\-\-priv\-drop\fR
+Drop privileges even when \fB[privilege] no_priv_drop = true\fR. The last of \fB\-\-no\-priv\-drop\fR / \fB\-\-priv\-drop\fR typed wins.
+.TP
+\fB\-\-chroot\fR \fIDIR\fR
+Chroot to this directory after initialization.
+.TP
+\fB\-\-setup\-caps\fR
+Grant this binary the Linux capabilities needed for live capture (\fBcap_net_raw,cap_net_admin+ep\fR via setcap) so it can run without sudo, then exit. Re\-invokes itself through sudo when not already root.
+.SS Resource limits
+.TP
+\fB\-\-max\-capture\-sources\fR \fIN\fR
+Distinct capture sources remembered by name (\fB[limits] max_capture_sources\fR, default 65536): input files, devices, HEP senders, traced processes. Must cover every source the run can have.
+.TP
+\fB\-\-max\-reassembly\fR \fIN\fR
+Maximum concurrent TCP/TLS reassembly sessions.
+.TP
+\fB\-\-reassembly\-ttl\fR \fISECS\fR
+Seconds an incomplete datagram or half\-read TCP stream is held before a sweep evicts it (default 30). Config: \fB[limits] reassembly_ttl_secs\fR.
+.TP
+\fB\-\-max\-tcp\-buffer\fR \fIBYTES\fR
+Bytes one SIP/TCP direction may buffer before sipnab flushes it (default 65536). Config: \fB[limits] max_tcp_buffer\fR.
+.TP
+\fB\-\-max\-metadata\-file\-bytes\fR \fIBYTES\fR
+Bytes of pcapng sipnab reads into memory for embedded names and TLS secrets (default 2 GiB). Config: \fB[limits] max_metadata_file_bytes\fR.
+.TP
+\fB\-\-max\-gunzip\-bytes\fR \fIBYTES\fR
+Bytes a gzip\-compressed capture may inflate to (default 1 GiB). Config: \fB[limits] max_gunzip_bytes\fR.
+.TP
+\fB\-\-cores\fR \fIN\fR
+CPU cores. The number means a different resource on each source, and both are stated because they are not interchangeable.
+Default: \fB1\fR.
+.SS Token minting
+.TP
+\fB\-\-mint\-token\fR
+Mint a signed bearer token from the first configured signing key, print it to stdout, and exit. TTL comes from \-\-api\-token\-ttl (or \-\-mcp\-token\-ttl); id from \-\-token\-id (or auto\-derived). Does NOT start capture or any server.
+.TP
+\fB\-\-token\-id\fR \fIID\fR
+Token id (jti) for \-\-mint\-token. Defaults to a derived unique id.
+.TP
+\fB\-\-token\-scope\fR \fISCOPE\fR
+Scope for \-\-mint\-token: \fBfull\fR (default), \fBmetrics\fR, \fBread\fR, or \fBactions\fR.
+Values: \fBfull\fR, \fBmetrics\fR, \fBread\fR, \fBactions\fR.
+Default: \fBfull\fR.
+.SS vCon forwarder
+.TP
+\fB\-\-vcon\-forward\fR \fISPOOL_DIR\fR
+Run as the vCon forwarder: deliver each container in this \fB\-\-export\-vcon\-dir\fR spool to \-\-vcon\-forward\-url, byte for byte, and move it out of the spool once the store answers. Captures nothing. Needs a URL and a credential, from a flag or from \fB[vcon_forward]\fR in the config file. Needs the \fBvcon\fR feature.
+.TP
+\fB\-\-vcon\-spool\-status\fR \fISPOOL_DIR\fR
+Print the state of this \fB\-\-export\-vcon\-dir\fR spool as JSON and exit 0: containers pending, delivered and failed, and the record the forwarder wrote beside each failed container. A snapshot of the files, read from the forwarder's default \fBdelivered/\fR and \fBfailed/\fR directories; it sends, moves and deletes nothing. The same answer the MCP tool \fBvcon_spool_status\fR and \fBGET /v1/vcon/spool\fR give. Exits 1 when a directory exists and cannot be read. Needs the \fBvcon\fR feature.
+.TP
+\fB\-\-vcon\-forward\-url\fR \fIURL\fR
+Where the forwarder POSTs each container, \fBhttp://\fR or \fBhttps://\fR, path and query included, for example \fBhttp://127.0.0.1:8000/vcon/external\-ingress?ingress_list=sipnab\fR. With a \-\-vcon\-forward\-kind other than \fBgeneric\fR, a URL with no path is the store's base URL and the kind adds its ingest path. Overrides \fB[vcon_forward] url\fR.
+.TP
+\fB\-\-vcon\-forward\-auth\-file\fR \fIFILE\fR
+File holding the one header that authenticates the forwarder, as \fBHeader\-Name: value\fR on one line, for example \fBAuthorization: Bearer <token>\fR or \fBx\-conserver\-api\-token: <key>\fR. With a \-\-vcon\-forward\-kind other than \fBgeneric\fR it may hold the bare key, and the kind supplies the header. Refused when other users can read it: chmod 600. The value never appears in a log line, an error or a failure record. Overrides \fB[vcon_forward] auth_file\fR.
+.TP
+\fB\-\-vcon\-forward\-auth\fR \fIHEADER\fR
+The credential itself, as the auth file would hold it: one line, \fBHeader\-Name: value\fR, or the bare key with a \-\-vcon\-forward\-kind other than \fBgeneric\fR. A flag's value is visible in the process list to other users of the host: prefer the SIPNAB_VCON_FORWARD_AUTH environment variable or \-\-vcon\-forward\-auth\-file. Refused beside \-\-vcon\-forward\-auth\-file or \fB[vcon_forward] auth_file\fR, and when empty. The value never appears in a log line, an error or a failure record.
+Also read from \fBSIPNAB_VCON_FORWARD_AUTH\fR.
+.TP
+\fB\-\-vcon\-forward\-kind\fR \fIKIND\fR
+What kind of store receives the containers: \fBgeneric\fR (the default: every setting given explicitly), \fBvcon\-store\fR or \fBconserver\fR. A kind supplies the ingest path for a base URL and the header for a bare key; an explicit setting overrides each. No kind changes the container sent. Overrides \fB[vcon_forward] kind\fR.
+Values: \fBgeneric\fR, \fBvcon\-store\fR, \fBconserver\fR.
+.TP
+\fB\-\-vcon\-forward\-done\fR \fIDIR\fR
+Where a container goes, under its own name, once the store answers 2xx. Default: \fBdelivered/\fR inside the spool. Must be on the spool's filesystem. Overrides \fB[vcon_forward] done\fR.
+.TP
+\fB\-\-vcon\-forward\-failed\fR \fIDIR\fR
+Where a container goes when the store refuses it with a 4xx, beside a \fB<name>.error.json\fR record of the status and the store's answer. Default: \fBfailed/\fR inside the spool. Must be on the spool's filesystem. Overrides \fB[vcon_forward] failed\fR.
+.TP
+\fB\-\-vcon\-forward\-replace\-url\fR \fITEMPLATE\fR
+URL template the forwarder PUTs a container to when the POST answers 409 (the store already holds that uuid). \fB{uuid}\fR is replaced with the container's \fBuuid\fR, for example \fBhttps://store.example.com/v1/vcons/{uuid}\fR. Without it a 409 is a refusal like any other 4xx. Overrides \fB[vcon_forward] replace_url\fR.
+.TP
+\fB\-\-vcon\-forward\-once\fR
+Make one pass over the spool and exit: 0 when every container was delivered (or there was none), 1 when any was refused or is still waiting, 3 when the store answered 401 or 403. Without it the forwarder polls until SIGTERM.
+.TP
+\fB\-\-vcon\-forward\-interval\fR \fISECS\fR
+Seconds between passes over the spool, 1 to 3600. Default: 5. Overrides \fB[vcon_forward] interval\fR.
+.TP
+\fB\-\-vcon\-forward\-timeout\fR \fISECS\fR
+Seconds the forwarder waits to connect, and for each read and write, before it treats the store as unreachable and retries later, 1 to 600. Default: 30. Overrides \fB[vcon_forward] timeout\fR.
+.TP
+\fB\-\-vcon\-forward\-backoff\-first\fR \fISECS\fR
+Seconds a container waits after its first failed try (a 5xx, a timeout or no connection); each failed try after it doubles the wait, up to \-\-vcon\-forward\-backoff\-cap. 1 to 4294967295, and no longer than the cap. Default: 2. Overrides \fB[vcon_forward] backoff_first\fR.
+.TP
+\fB\-\-vcon\-forward\-backoff\-cap\fR \fISECS\fR
+The longest a container waits between tries, in seconds, 1 to 4294967295, and no shorter than \-\-vcon\-forward\-backoff\-first. Default: 300. Overrides \fB[vcon_forward] backoff_cap\fR.
+.TP
+\fB\-\-vcon\-forward\-max\-response\-head\fR \fIBYTES\fR
+The most bytes of a store's status line and headers the forwarder reads; an answer with more is treated as no answer and the container is retried. 1 to 4294967295. Default: 65536. Overrides \fB[vcon_forward] max_response_head\fR.
+.TP
+\fB\-\-vcon\-forward\-max\-error\-body\fR \fIBYTES\fR
+The most bytes of a store's answer to a refused container that its \fB<name>.error.json\fR record keeps, 1 to 4294967295. Default: 8192. Overrides \fB[vcon_forward] max_error_body\fR.
+.TP
+\fB\-\-vcon\-forward\-ca\fR \fIFILE\fR
+Trust only the CA certificates in this PEM file for an \fBhttps://\fR store. Without it the forwarder trusts the host's CA bundle. Overrides \fB[vcon_forward] ca\fR.
+.SS vCon fetcher
+.TP
+\fB\-\-vcon\-fetch\fR \fIUUID\fR\&...
+Run as the vCon fetcher: read the container with each of these uuids from the store at \-\-vcon\-fetch\-url and write it to \fB<uuid>.vcon.json\fR in \-\-vcon\-fetch\-out. \fB\-\fR reads the uuids from standard input, one per line. Captures nothing. Needs a URL and a credential, from a flag or from \fB[vcon_fetch]\fR in the config file. Needs the \fBvcon\fR feature.
+.TP
+\fB\-\-vcon\-fetch\-url\fR \fIURL\fR
+The store to read from, \fBhttp://\fR or \fBhttps://\fR. With a \-\-vcon\-fetch\-kind other than \fBgeneric\fR, the store's base URL: the kind adds its read path after the URL's own path. A URL holding \fB{uuid}\fR is used as written, the uuid filled in, for any kind, and the \fBgeneric\fR kind needs one. Overrides \fB[vcon_fetch] url\fR.
+.TP
+\fB\-\-vcon\-fetch\-auth\-file\fR \fIFILE\fR
+File holding the credential, as the forwarder's auth file does: one \fBHeader\-Name: value\fR line, or, with a \-\-vcon\-fetch\-kind other than \fBgeneric\fR, the bare key, which the kind sends in its header. Refused when other users can read it: chmod 600. The value never appears in a log line or an error. Overrides \fB[vcon_fetch] auth_file\fR.
+.TP
+\fB\-\-vcon\-fetch\-kind\fR \fIKIND\fR
+What kind of store holds the containers: \fBgeneric\fR (the default: \-\-vcon\-fetch\-url is a template holding \fB{uuid}\fR, and the auth file a full header line), \fBvcon\-store\fR, \fBconserver\fR or \fBvcon\-mcp\fR. A kind supplies the read path, the header for a bare key, and the removal of what the store wraps around the container. Overrides \fB[vcon_fetch] kind\fR.
+Values: \fBgeneric\fR, \fBvcon\-store\fR, \fBconserver\fR, \fBvcon\-mcp\fR.
+.TP
+\fB\-\-vcon\-fetch\-out\fR \fIDIR\fR
+The directory each container is written to, as \fB<uuid>.vcon.json\fR, mode 0600. Created, mode 0700, when it does not exist. Default: the current directory.
+.TP
+\fB\-\-vcon\-fetch\-overwrite\fR
+Replace a \fB<uuid>.vcon.json\fR that already exists in \-\-vcon\-fetch\-out. Without it, a uuid whose file exists is not fetched, and the run exits 1.
+.TP
+\fB\-\-vcon\-fetch\-timeout\fR \fISECS\fR
+Seconds the fetcher waits to connect, and for each read and write, before it gives up on a container, 1 to 600. Default: 30. Overrides \fB[vcon_fetch] timeout\fR.
+.TP
+\fB\-\-vcon\-fetch\-max\-size\fR \fIBYTES\fR
+The largest container the fetcher reads, in bytes, 1 to 4294967295. A larger answer is refused and nothing is written. Default: 67108864 (64 MiB). Overrides \fB[vcon_fetch] max_size\fR.
+.TP
+\fB\-\-vcon\-fetch\-max\-response\-head\fR \fIBYTES\fR
+The most bytes of a store's status line and headers the fetcher reads, 1 to 4294967295; an answer with more is refused. Default: 65536. Overrides \fB[vcon_fetch] max_response_head\fR.
+.TP
+\fB\-\-vcon\-fetch\-ca\fR \fIFILE\fR
+Trust only the CA certificates in this PEM file for an \fBhttps://\fR store. Without it the fetcher trusts the host's CA bundle. Overrides \fB[vcon_fetch] ca\fR.
+.SS Config
+.TP
+\fB\-f\fR, \fB\-\-config\fR \fIFILE\fR
 Path to configuration file.
 .TP
-.B \-F, \-\-no\-config
+\fB\-F\fR, \fB\-\-no\-config\fR
 Skip loading any configuration file.
 .TP
-.B \-D, \-\-dump\-config
-Print the effective configuration and exit.
+\fB\-D\fR, \fB\-\-dump\-config\fR
+Dump the effective configuration and exit.
 .TP
-.BI \-\-rtpengine\-control " addr"
-Ask an rtpengine at
-.I addr
-which calls it is carrying, so media captured on a relay host can be attributed
-to a call the relay set up before this capture opened. Read-only commands only.
-Refused when the run is offline.
+\fB\-\-completions\fR \fISHELL\fR
+Generate a shell completion script on stdout and exit. Example: \fBsipnab \-\-completions bash > /etc/bash_completion.d/sipnab\fR.
+Values: \fBbash\fR, \fBelvish\fR, \fBfish\fR, \fBpowershell\fR, \fBzsh\fR.
+.SS Options
 .TP
-.BI \-\-hep\-listen " addr"
-Receive HEP on
-.IR addr .
-Carries SIP, and carries rtpengine's mirrored
-.B ng
-control plane when a relay is pointed here. Note that rtpengine has exactly one
-Homer destination, so aiming it at sipnab takes it away from the collector it
-already feeds; reading the same datagrams off the wire costs nothing and is the
-default sipnab is built for.
+\fB\-h\fR, \fB\-\-help\fR
+Print help (see more with '\-\-help').
 .TP
-.BI \-\-hep\-silence\-warn " secs"
-Warn when the
-.B \-\-hep\-listen
-listener has admitted no packet for
-.I secs
-seconds (default 30;
-.B 0
-turns the warning off). Only admitted packets count: when packets arrive and
-every one is refused, the warning names the refusal and a peer that sent them.
-.TP
-.B \-\-hep\-senders
-At the end of a headless run, print who fed the
-.B \-\-hep\-listen
-listener: each sender (the capture id it claims and its address), its packet
-count, when it was last heard and whether it went silent, then every address
-the listener refused with the reasons. With
-.BR \-\-json ,
-one JSON object on the last line of stdout.
-.TP
-.BI \-\-export\-vcon " call-id"
-Export one observed dialog as a vCon container, the IETF conversation
-interchange format, on stdout. Requires a build with the
-.B vcon
-feature. Pair with
-.B \-\-vcon\-out
-to write it to a file instead.
-.TP
-.BI \-\-vcon\-forward " spool-dir"
-Run as the vCon forwarder: a separate process that POSTs each container in an
-.B \-\-export\-vcon\-dir
-spool to
-.BR \-\-vcon\-forward\-url ,
-byte for byte, with the one header the credential names, and moves it by the
-answer: a 2xx to the delivered directory, another 4xx to the failed directory
-beside a
-.I name.error.json
-record, a 5xx, timeout or refused connection retried later. A 401 or 403
-stops it: nothing more is sent, no file moves, and it exits 3. Captures nothing,
-and is refused beside any capture flag. Requires a build with the
-.B vcon
-feature. Every forwarder flag except
-.BR \-\-vcon\-forward ,
-.B \-\-vcon\-forward\-once
-and
-.B \-\-vcon\-forward\-auth
-has a key in the
-.B [vcon_forward]
-section of
-.IR sipnab.toml ,
-named after the flag without its
-.B \-\-vcon\-forward\-
-prefix, with underscores for dashes; the flag overrides its key. A URL and a
-credential are required, from a flag or from a key.
-.IP
-Exit status: 0 with
-.B \-\-vcon\-forward\-once
-when every container was delivered or the spool held none, and without it
-after SIGTERM or SIGINT; 1 with
-.B \-\-vcon\-forward\-once
-when a container was refused or is still waiting, and when the config file
-cannot be read or holds a
-.B [vcon_forward]
-number,
-.B kind
-or
-.B compat
-outside its range or list, or an empty path; 2 when sipnab refuses the
-settings (a refused flag value, no URL or no credential, a refused URL, an
-unreadable credential, or a build without the
-.B vcon
-feature); 3 after a 401 or 403.
-.TP
-.BI \-\-vcon\-forward\-url " url"
-Where each container is POSTed,
-.I http://
-or
-.IR https:// .
-With a
-.B \-\-vcon\-forward\-kind
-other than
-.BR generic ,
-a URL with no path is the store's base URL and the kind adds its ingest path.
-A URL with a user name or password in it is refused; the message shows that
-part as
-.BR [redacted] .
-.TP
-.BI \-\-vcon\-forward\-kind " kind"
-The kind of store:
-.B generic
-(the default, which supplies nothing),
-.B vcon\-store
-or
-.BR conserver .
-A kind supplies the ingest path for a base URL, the header for a bare key, and
-the payload adaptation; an explicit setting overrides each.
-.TP
-.BI \-\-vcon\-forward\-auth\-file " file"
-File holding one line,
-.IR "Header-Name: value" ,
-sent with every request, or the bare key with a kind other than
-.BR generic .
-Refused when other users can read it.
-.TP
-.BI \-\-vcon\-forward\-auth " header"
-The credential itself, as the auth file holds it. Also read from
-.BR SIPNAB_VCON_FORWARD_AUTH .
-A flag's value is visible to other users in the process list; prefer the
-environment variable or the file. Refused when empty and beside
-.B \-\-vcon\-forward\-auth\-file
-or the
-.B auth_file
-key. The value never appears in a log line, an error or a failure record.
-.TP
-.BI \-\-vcon\-forward\-backoff\-first " secs"
-Seconds a container waits after its first failed try; each further failure
-doubles the wait. 1 to 4294967295, no longer than the cap. Default: 2.
-.TP
-.BI \-\-vcon\-forward\-backoff\-cap " secs"
-The longest wait between tries, 1 to 4294967295, no shorter than
-.BR \-\-vcon\-forward\-backoff\-first .
-Default: 300.
-.TP
-.BI \-\-vcon\-forward\-max\-response\-head " bytes"
-The most bytes of a store's status line and headers read; an answer with more
-counts as no answer and the container is retried. 1 to 4294967295. Default:
-65536.
-.TP
-.BI \-\-vcon\-forward\-max\-error\-body " bytes"
-The most bytes of a refused container's answer its
-.I name.error.json
-record keeps. 1 to 4294967295. Default: 8192.
-.TP
-.BI \-\-notes " file"
-Operator notes for
-.BR \-\-write\-annotated :
-JSON Lines, one
-.I {"frame": "<pointer>", "note": "<text>"}
-per line, each pointer taken from the
-.B frame
-field of
-.BR \-\-json .
-In the TUI, the session's notes file: loaded when it exists, and where the save
-dialog's NOTES format writes. A note is a person's text and never analysis;
-sipnab writes it into a packet comment and never reads one back.
-.TP
-.BI \-\-write\-annotated " output"
-With
-.B \-I
-and
-.BR \-\-notes ,
-write a pcapng copy of the one input capture with each note as a packet
-comment on the frame it names, then exit. Every note must carry its frame's
-digest, and a capture that changed since the note was written is refused with
-nothing written.
+\fB\-V\fR, \fB\-\-version\fR
+Print version.
+.\" END GENERATED OPTIONS
 .SH TUI KEYBINDINGS
 The interactive TUI supports the terminal viewer-compatible navigation:
 .SS Call List
@@ -348,33 +1204,59 @@ PCAP-NG save, and saved with the NOTES save format for
 .B \-\-notes
 to resume.
 .SH ENVIRONMENT
-.TP
-.B SIPNAB_LOG
-Log level filter. Accepts
-.BR error ,
-.BR warn ,
-.BR info ,
-.BR debug ,
-.BR trace .
-Uses the
-.BR env_logger (3)
-syntax, e.g.,
-.BR SIPNAB_LOG=debug .
+.\" BEGIN GENERATED ENVIRONMENT: SIPNAB_MAN_APPLY=1 cargo test --features full --test man_page_test
 .TP
 .B SIPNAB_CONFIG
-Path to configuration file. Overridden by
-.BR \-f .
-.TP
-.B SIPNAB_VCON_FORWARD_AUTH
-The vCon forwarder's credential, as
-.B \-\-vcon\-forward\-auth
-takes it. A capture run ignores it.
+Path to the configuration file, read when \fB\-f\fR is not given.
 .TP
 .B XDG_CONFIG_HOME
-Directory holding the per-user configuration file
-.IR $XDG_CONFIG_HOME/sipnab/sipnab.toml .
-Unset, empty or relative means
-.IR ~/.config .
+Directory holding the per\-user configuration file \fB$XDG_CONFIG_HOME/sipnab/sipnab.toml\fR. Unset, empty or relative means \fB~/.config\fR.
+.TP
+.B SIPNAB_LOG
+Log filter, in the \fBtracing\fR \fBEnvFilter\fR syntax: a level such as \fBdebug\fR, or per\-target directives.
+.TP
+.B NO_COLOR
+A non\-empty value turns color off in the TUI.
+.TP
+.B SIPNAB_API_KEY
+Read as \fB\-\-api\-key\fR when the flag is not given.
+.TP
+.B SIPNAB_API_SIGNING_KEY
+Read as \fB\-\-api\-signing\-key\fR when the flag is not given.
+.TP
+.B SIPNAB_MCP_TOKEN
+The bearer token for the HTTP MCP transport, read when neither \fB\-\-mcp\-token\fR nor \fB\-\-mcp\-token\-file\fR is given.
+.TP
+.B SIPNAB_MCP_SIGNING_KEY
+Read as \fB\-\-mcp\-signing\-key\fR when the flag is not given.
+.TP
+.B SIPNAB_HEP_AUTH
+Read as \fB\-\-hep\-auth\fR when the flag is not given.
+.TP
+.B SIPNAB_VCON_FORWARD_AUTH
+Read as \fB\-\-vcon\-forward\-auth\fR when the flag is not given. A capture run ignores it.
+.TP
+.B SSL_CERT_FILE
+The CA bundle the HEP TLS and vCon forwarder connections trust, in place of the system bundle locations, when it names a file.
+.TP
+.B SIPNAB_ARCHIVE_PASSWORD
+A password for encrypted ZIP members \fB\-I\fR finds. Tried after \fB\-\-archive\-password\-file\fR, \fB\-\-archive\-password\-command\fR, \fB\-\-archive\-password\-stdin\fR and the systemd credential, and before \fB\-\-archive\-password\fR.
+.TP
+.B CREDENTIALS_DIRECTORY
+Set by systemd. sipnab reads the credential \fBarchive\-password\fR in it as an archive password.
+.TP
+.B SIPNAB_SECCOMP_ALLOWLIST
+Path to the syscall allowlist \fB\-\-seccomp enforce\fR installs. That mode refuses to run without it.
+.TP
+.B SIPNAB_NO_MMAP
+Set to any value to read capture files without memory\-mapping them, for a filesystem where mapping misbehaves, such as a network mount.
+.TP
+.B SIPNAB_AUDIO_PLUGIN
+Path to an audio playback plugin, tried after every trusted location. Honored only for an unprivileged process and a file no other user can rewrite, and announced when used.
+.TP
+.B SIPNAB_PERF_STATS
+Set to any value to print per\-run work counters to stderr at the end of a headless run.
+.\" END GENERATED ENVIRONMENT
 .SH FILES
 sipnab reads the first of these that exists, after
 .B \-\-config
@@ -392,27 +1274,23 @@ Alternate per-user configuration file.
 .I /etc/sipnab/sipnab.toml
 System-wide configuration file.
 .SH EXIT STATUS
+.\" BEGIN GENERATED EXIT STATUS: SIPNAB_MAN_APPLY=1 cargo test --features full --test man_page_test
 .TP
 .B 0
 Success.
 .TP
 .B 1
-Runtime failure (capture error, I/O error, or a requested report could not
-be produced), or a refused configuration: a config file sipnab cannot read,
-or a value in it sipnab refuses.
+Runtime failure \(em capture error, I/O error, a capture file that was not read in full (a truncated pcap, a member that would not open, a BPF filter that would not compile against one), a \fB\-\-plugin\fR that would not load, or sipnab could not produce a requested report (e.g. \fB\-\-call\-report\fR Call\-ID not found). Also a refused configuration: a config file sipnab cannot read, or a value in it sipnab refuses, whichever startup step refuses it.
 .TP
 .B 2
-Invalid usage (bad flag value or combination given on the command line, or a
-flag whose feature is not compiled in).
+Invalid usage \(em bad flag value or combination given on the command line, or a flag whose feature is not compiled into this binary. A refusal that a flag takes part in (a flag value, or a pair with one half from a flag and the other from the config file) is this code.
 .TP
 .B 3
-The lint gate tripped
-.RB ( \-\-lint\-fail\-on ),
-or the vCon forwarder stopped because the store answered 401 or 403.
+Lint gate tripped \(em \fB\-\-lint \-\-lint\-fail\-on <severity>\fR found a conformance finding at or above that severity. Distinct from \fB1\fR on purpose: the tool worked, the CAPTURE is non\-conformant. Also the vCon forwarder stopping because the store answered \fB401\fR or \fB403\fR (\fB\-\-vcon\-forward\fR).
+.\" END GENERATED EXIT STATUS
 .SH LICENSE
 MIT OR Apache-2.0. Copyright 2024-2026 Norm Brandinger.
 .SH SEE ALSO
-.BR the terminal viewer (1),
 .BR tshark (1),
 .BR tcpdump (1),
 .BR pcap (3)

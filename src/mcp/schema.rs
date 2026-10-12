@@ -258,10 +258,92 @@ fn walk(node: &mut Value, optional: bool, changed: &mut usize, _root: bool) {
     }
 }
 
+/// An output schema whose rows under `rows_key` may carry only some of their
+/// keys.
+///
+/// `list_dialogs` and `find_problems` take `fields`, which keeps `call_id` and
+/// the named keys in every row and drops the rest. A row schema that required
+/// every key would be violated by every projected page, so the row type's
+/// `required` list is cut down to `kept`. The page envelope is untouched: it
+/// is never projected.
+///
+/// # Arguments
+///
+/// * `schema` — the page's output schema, as `schema_for_output` built it.
+/// * `rows_key` — the page property holding the array of rows.
+/// * `kept` — the row keys a projection never removes.
+///
+/// # Returns
+///
+/// The schema with the row type's `required` narrowed; unchanged when the
+/// rows are not an array of a `$ref`'d or inline object type.
+#[must_use]
+pub fn projectable_rows(
+    schema: std::sync::Arc<rmcp::model::JsonObject>,
+    rows_key: &str,
+    kept: &[&str],
+) -> std::sync::Arc<rmcp::model::JsonObject> {
+    let mut root = Value::Object((*schema).clone());
+    let items = root
+        .pointer(&format!("/properties/{rows_key}/items"))
+        .cloned()
+        .unwrap_or(Value::Null);
+    let row_pointer = match items.get("$ref").and_then(Value::as_str) {
+        Some(target) => target.strip_prefix('#').unwrap_or_default().to_string(),
+        None => format!("/properties/{rows_key}/items"),
+    };
+    if let Some(Value::Object(row)) = root.pointer_mut(&row_pointer)
+        && let Some(Value::Array(required)) = row.get_mut("required")
+    {
+        required.retain(|k| k.as_str().is_some_and(|k| kept.contains(&k)));
+    }
+    match root {
+        Value::Object(obj) => std::sync::Arc::new(obj),
+        _ => schema,
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{make_portable, portable_count, strip_foreign_formats};
+    use super::{make_portable, portable_count, projectable_rows, strip_foreign_formats};
     use serde_json::json;
+
+    /// A projected row may drop every key but the kept ones, through a `$ref`
+    /// and inline; the envelope's `required` is left alone.
+    #[test]
+    fn projectable_rows_requires_only_the_kept_keys() -> Result<(), Box<dyn std::error::Error>> {
+        for (rows, defs) in [
+            (
+                json!({"$ref": "#/$defs/Row"}),
+                json!({"Row": {"type": "object",
+                "required": ["call_id", "state", "method"]}}),
+            ),
+            (
+                json!({"type": "object", "required": ["call_id", "state"]}),
+                json!({}),
+            ),
+        ] {
+            let schema = json!({
+                "type": "object",
+                "required": ["rows", "returned"],
+                "properties": {"rows": {"type": "array", "items": rows}},
+                "$defs": defs
+            });
+            let serde_json::Value::Object(obj) = schema else {
+                return Err("an object".into());
+            };
+            let out = serde_json::Value::Object(
+                (*projectable_rows(std::sync::Arc::new(obj), "rows", &["call_id"])).clone(),
+            );
+            let row_required = out
+                .pointer("/$defs/Row/required")
+                .or_else(|| out.pointer("/properties/rows/items/required"))
+                .ok_or("a row required list")?;
+            assert_eq!(*row_required, json!(["call_id"]), "{out}");
+            assert_eq!(out["required"], json!(["rows", "returned"]), "{out}");
+        }
+        Ok(())
+    }
 
     /// The common case, and 169 of the 172 findings: `Option<T>` becomes
     /// `["T","null"]`, and the property is already optional because it is not

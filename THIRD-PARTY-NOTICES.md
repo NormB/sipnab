@@ -218,7 +218,7 @@ Files copied into the repository unmodified from another project's release. None
 | lab | 0.11.0 | MIT |
 | lazy_static | 1.5.0 | MIT OR Apache-2.0 |
 | leb128fmt | 0.1.0 | MIT OR Apache-2.0 |
-| libc | 0.2.189 | MIT OR Apache-2.0 |
+| libc | 0.2.190 | MIT OR Apache-2.0 |
 | libloading | 0.8.9 | ISC |
 | libloading | 0.9.0 | ISC |
 | libm | 0.2.16 | MIT |
@@ -308,8 +308,8 @@ Files copied into the repository unmodified from another project's release. None
 | regex-automata | 0.4.16 | MIT OR Apache-2.0 |
 | regex-syntax | 0.8.11 | MIT OR Apache-2.0 |
 | ring | 0.17.14 | Apache-2.0 AND ISC |
-| rmcp | 3.5.0 | Apache-2.0 |
-| rmcp-macros | 3.5.0 | Apache-2.0 |
+| rmcp | 3.5.1 | Apache-2.0 |
+| rmcp-macros | 3.5.1 | Apache-2.0 |
 | rsa | 0.9.10 | MIT OR Apache-2.0 |
 | rustc_version | 0.4.1 | MIT OR Apache-2.0 |
 | rustix | 1.1.4 | Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT |
@@ -373,7 +373,7 @@ Files copied into the repository unmodified from another project's release. None
 | time-core | 0.1.8 | MIT OR Apache-2.0 |
 | time-macros | 0.2.27 | MIT OR Apache-2.0 |
 | tinyvec | 1.13.3 | Zlib OR Apache-2.0 OR MIT |
-| tokio | 1.53.1 | MIT |
+| tokio | 1.53.2 | MIT |
 | tokio-macros | 2.7.0 | MIT |
 | tokio-rustls | 0.26.6 | MIT OR Apache-2.0 |
 | tokio-stream | 0.1.18 | MIT |
@@ -416,15 +416,15 @@ Files copied into the repository unmodified from another project's release. None
 | wasm-bindgen-macro | 0.2.117 | MIT OR Apache-2.0 |
 | wasm-bindgen-macro-support | 0.2.117 | MIT OR Apache-2.0 |
 | wasm-bindgen-shared | 0.2.117 | MIT OR Apache-2.0 |
-| wasm-encoder | 0.260.0 | Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT |
+| wasm-encoder | 0.261.0 | Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT |
 | wasmi | 2.0.0 | MIT/Apache-2.0 |
 | wasmi_collections | 2.0.0 | MIT/Apache-2.0 |
 | wasmi_core | 2.0.0 | MIT/Apache-2.0 |
 | wasmi_ir | 2.0.0 | MIT/Apache-2.0 |
 | wasmparser | 0.228.0 | Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT |
-| wasmparser | 0.260.0 | Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT |
-| wast | 260.0.0 | Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT |
-| wat | 1.260.0 | Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT |
+| wasmparser | 0.261.0 | Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT |
+| wast | 261.0.0 | Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT |
+| wat | 1.261.0 | Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT |
 | wezterm-bidi | 0.2.3 | MIT AND Unicode-DFS-2016 |
 | wezterm-blob-leases | 0.1.1 | MIT |
 | wezterm-color-types | 0.3.0 | MIT |
@@ -462,7 +462,7 @@ Files copied into the repository unmodified from another project's release. None
 | wit-bindgen | 0.51.0 | Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT |
 | zerocopy | 0.8.48 | BSD-2-Clause OR Apache-2.0 OR MIT |
 | zerocopy-derive | 0.8.48 | BSD-2-Clause OR Apache-2.0 OR MIT |
-| zeroize | 1.9.0 | Apache-2.0 OR MIT |
+| zeroize | 1.9.1 | Apache-2.0 OR MIT |
 | zeroize_derive | 1.5.0 | Apache-2.0 OR MIT |
 | zip | 8.6.0 | MIT |
 | zlib-rs | 0.6.7 | Zlib |

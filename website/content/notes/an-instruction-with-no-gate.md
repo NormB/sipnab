@@ -1,119 +1,162 @@
 +++
-title = "An instruction with no gate is a suggestion"
+title = "Stray files filled the development checkout until a test and a scheduled cleaner enforced cleanup"
 date = 2026-09-01
-description = "A written rule said to delete every temp file in the same turn. The checkout held 21 stray logs, three abandoned worktrees and a 1.6 TB target directory. What the enforcement had to prove before it could delete anything."
+updated = 2026-10-11
+description = "How leftover logs, unused worktrees and build caches built up in the sipnab development checkout, and the test and cleanup script that now detect and remove them."
 
 [extra]
 kind = "postmortem"
 +++
 
-The development instructions for this repository have said the same thing for
-months: delete every temp file, log, redirect target and scratch script in the
-**same** working session, not later.
+## In short
 
-The instruction is correct. On 2026-09-01 the checkout held:
+Work on sipnab leaves files behind: saved command output, copies of the
+repository made for parallel work, and build caches. A written instruction said
+to delete them, but nothing checked that anyone did, and they came to occupy
+44% of the development machine's disk. The project now has a test that fails
+when leftover files are present and a script that removes them safely on a
+daily schedule. This note describes the tooling that keeps the sipnab source
+tree clean, not sipnab itself.
 
-* 21 stray `.git/*.log` files written across sessions
-* three abandoned worktrees, 136 GB between them
-* a `target/` directory of 1.6 TB
+## What happened
 
-That is 44% of a disk that genuinely fills up, on the same box whose CI runner
-[died writing its own log](@/notes/the-process-that-died-writing-its-own-log.md)
-the same day. Cleaning it by hand took the disk from 76% to 56% used.
+The comment at the top of `scripts/clean-stale.py` records that the project's
+development instructions, which are not part of the public repository, had
+said "delete every temp file in the SAME turn" for months. It also records the
+state of the development checkout on 2026-09-01:
 
-Nothing had gone wrong with the instruction. Nothing enforced it, so people
-followed it exactly as well as anybody follows an unenforced instruction.
+- 21 stray `.git/*.log` files written across sessions
+- three abandoned worktrees totalling 136 GB
+- a `target/` build directory of 1.6 TB, of which 551 GB was incremental build
+  cache and 961 GB was the `deps/` dependency cache
 
-## Why the mess is invisible
+Together these took up 44% of the disk, by the same comment's count.
 
-`.git/*.log` is the interesting case. Those files are redirect targets — the
-output of a command somebody piped somewhere while debugging. They sit inside
-`.git/`, so `git status` never mentions them. Nothing anybody looks at in the
-course of ordinary work says they exist.
+The script's `--disk-floor-gb` help records that the disk was a 3.6 TB disk and
+76% full.
 
-An abandoned worktree is the same shape at a different scale. Three of them
-accounted for 136 GB here, they appear in `git worktree list` and nowhere else,
-and that is a command nobody runs unless they already suspect something.
+## Why it happened
 
-Mess that shows up in the tool you use every hour gets cleaned. Mess that
-requires a specific command to see does not, and the second kind is where the
-disk goes.
+The instruction existed only as text, and no tool checked it.
 
-## Two halves that run at different times
+The leftover files were also hard to see in ordinary work. A file saved inside
+`.git/` is never listed by `git status`. An abandoned worktree (a second
+working copy of the repository linked to the same history) appears only in
+`git worktree list`. Neither shows up in the commands used during normal
+development.
 
-The enforcement splits in two, deliberately.
+## What changed
 
-`tests/repo_hygiene_test.rs` runs with the suite and fails while the mess is
-still one `rm`: no stray log in `.git/` but the hooks' own, no `.orig`, `.rej`
-or `.snap.new` left behind, no worktree abandoned with nothing in it worth
-keeping.
+The project added two parts. They run at different times and do different
+jobs.
 
-`scripts/clean-stale.py` reclaims what has already accumulated, on a daily
-systemd timer, so it runs whether or not anybody remembers.
+### A test that fails while the mess is small
 
-The gate cannot do the second job — it would have to delete things during a
-test run — and the timer cannot do the first, because a daily sweep says
-nothing about the commit that introduced the mess.
+`tests/repo_hygiene_test.rs` runs with the test suite and fails when:
 
-## Four properties, because being wrong deletes files
+- `.git/` holds a file ending in `.log`, `.out` or `.err` that the project's
+  own git hooks did not write (`the_git_directory_holds_no_stray_logs`)
+- the working tree holds a file ending in `.orig`, `.rej`, `.snap.new`, `.bak`
+  or `~`, as left by a merge, a patch, a snapshot test or an editor
+  (`the_working_tree_holds_no_conflict_or_snapshot_detritus`)
+- a worktree has no uncommitted changes, no commits ahead of its upstream
+  branch, and nobody has touched it for 24 hours
+  (`no_worktree_is_abandoned_with_nothing_worth_keeping`).
 
-A cleaner is unrecoverable in one direction. Every property that makes this one
-safe carries a mutation test, because a safety property nobody has watched fail
-is a safety property nobody has tested.
+The stray-file rule covered only `.log` until 2026-09-12, when it gained `.out`
+and `.err`.
 
-**Dry run by default.** Somebody eventually runs it without its flag.
+### A script that removes what has accumulated
 
-**An age floor.** It can run while a build is writing, and a file touched
-seconds ago may be in use. Without a floor this is a race rather than a
-cleanup.
+`scripts/clean-stale.py` deletes stray logs and leftover merge and snapshot
+files. On the development machine it runs once a day from a systemd user
+timer. That timer is part of the machine's own configuration, not of the
+repository. The test reports leftover files and deletes nothing. The script
+deletes files and does not run for each change, so it cannot point to the
+change that left them.
 
-**A root check.** Pointed at the wrong directory, a recursive remover does the
-worst possible thing competently. It declines instead.
+The script has four safety properties, each covered by a test in
+`tests/repo_hygiene_test.rs`:
 
-**A closed list of suffixes** — `.orig`, `.rej`, `.snap.new`, `.bak`, `~` —
-never a pattern that could reach a source file.
+- **Dry run by default.** Without `--apply` it only lists what it would remove
+  (`the_cleaner_removes_nothing_without_apply`).
+- **A minimum age.** It leaves alone any file younger than `--min-age-days`,
+  default 1 day, because a build may still be writing it
+  (`a_recent_file_is_never_removed`).
+- **A root check.** It refuses to run on a directory that is not a git
+  checkout (`the_cleaner_refuses_a_root_that_is_not_a_checkout`).
+- **A closed list of file endings.** It removes only files ending in `.orig`,
+  `.rej`, `.snap.new`, `.bak` or `~`, never a pattern that could match a source
+  file (`apply_removes_detritus_and_never_source`).
 
-Two more decisions are worth spelling out. Build caches only go under a disk
-floor — 250 GB free by default — so an ordinary night costs nobody a rebuild.
-And the cleaner never touches `deps/`, only `incremental/`, which cargo
-regenerates on demand. Of the 1.6 TB `target/`, 551 GB was incremental cache
-and 961 GB was `deps/`. Partial removal from `deps/` leaves cargo rebuilding in
-confusing ways, so clearing it stays a `cargo clean`: a decision a person
-makes, not a cron job.
+The script removes build caches only when you pass `--reclaim-build-cache`, and
+only when free disk space is below `--disk-floor-gb` (default 250 GB). Even
+then the script removes only `target/*/incremental/`, which the Rust build tool
+regenerates on demand. It never removes `deps/`
+(`the_cleaner_never_touches_the_dependency_cache`). Clearing that directory
+takes a person running `cargo clean`.
 
-The cleaner also shells out to nothing at all:
+The script uses only the Python standard library and starts no other program.
+`the_cleaner_shells_out_to_nothing` fails if the script contains
+`subprocess`, `os.system`, `Popen` or `shell=True`.
 
-```rust
-for forbidden in ["subprocess", "os.system", "Popen", "shell=True"] {
+The test and the script agree on which logs belong to the hooks through one
+value. Both define the prefix `sipnab-pre-`, and
+`the_gate_and_the_cleaner_share_one_definition_of_a_hook_log` fails if the
+script no longer contains the prefix the test uses.
+
+## What you can check yourself
+
+These commands run from the root of a sipnab checkout.
+
+A dry run, which lists what the script would remove and removes nothing:
+
+```bash
+python3 scripts/clean-stale.py
 ```
 
-It is pure standard-library Python, which makes it portable by construction
-rather than by inspection. A tool that deletes files must not additionally
-depend on which platform supplies `rm` — a lesson that arrived
-[the same day, from its own test fixtures](@/notes/the-fixture-was-what-broke.md).
-
-## The gate and the cleaner share one definition
-
-Both need to know which logs are mess and which are not. The hooks write
-durable logs on purpose — `.git/sipnab-pre-commit-*.log` — and those are a
-record to read rather than mess to delete.
-
-That prefix lives in the script, and the test asserts the script contains it:
-
-```rust
-const HOOK_LOG_PREFIX: &str = "sipnab-pre-";
+```text
+nothing stale; removed 0 files, reclaimed 0 bytes
 ```
 
-One rule, checked from both sides. Two copies of it would agree until the day
-somebody renamed a hook log, and then the gate would start reporting the hooks'
-own output as somebody's litter.
+The output depends on the checkout. This one held no stray files. The root
+check, pointed at a directory that is not a checkout:
 
-## Worth stealing
+```bash
+python3 scripts/clean-stale.py --root /
+```
 
-If a written rule keeps getting broken, the useful question is not who is
-breaking it. It is what would have to fail for somebody to notice, and how long
-that takes. Here the answer was "the disk fills", and the delay was months.
+```text
+/ is not a git checkout. Refusing: pointed at the wrong directory, a recursive remover is a disaster, and doing its best is the wrong behavior here.
+```
 
-An instruction with no gate is a suggestion. That is not a criticism of anybody
-who wrote one. It is a statement about what an instruction can do, and the
-remedy is to make the machine hold the rule instead.
+The script exits with status 2 in that case. The shared hook-log prefix:
+
+```bash
+grep -n 'HOOK_LOG_PREFIX.*=' scripts/clean-stale.py tests/repo_hygiene_test.rs
+```
+
+```text
+scripts/clean-stale.py:41:HOOK_LOG_PREFIX = "sipnab-pre-"
+tests/repo_hygiene_test.rs:41:const HOOK_LOG_PREFIX: &str = "sipnab-pre-";
+```
+
+## Terms used here
+
+- **Checkout**: a copy of the repository's files on disk, with its git history.
+- **Worktree**: an additional checkout linked to the same history, used to work
+  on two branches at once.
+- **`.git/`**: the directory where git keeps its own data for a checkout.
+- **Git hook**: a script git runs at a set point, for example before a commit.
+- **Test suite**: the project's automated tests, run before a change is
+  accepted.
+- **Build cache**: files the Rust build tool (`cargo`) keeps to make the next
+  build faster. `incremental/` and `deps/` are two of them.
+- **Dry run**: a mode that reports what a command would do without doing it.
+- **systemd user timer**: a Linux feature that runs a command on a schedule
+  for one user.
+
+## Related guides
+
+- [Running tests](@/docs/contributing.md#running-tests)
+- [Git hooks](@/docs/contributing.md#git-hooks)

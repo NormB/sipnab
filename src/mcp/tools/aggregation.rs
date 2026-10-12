@@ -1,5 +1,6 @@
 //! Aggregation tools: questions about a SET of dialogs rather than one.
 
+use crate::mcp::errors::{self, Reason};
 use crate::mcp::server::SipnabMcp;
 use crate::mcp::shape::resolve_limit_with_cap;
 // The per-group metric rule lives outside the `mcp` feature so the REST
@@ -221,6 +222,7 @@ impl SipnabMcp {
                        row per bucket with the count of dialogs that started in \
                        it, so a spike or a gap is visible without reading every \
                        dialog.",
+        output_schema = rmcp::handler::server::tool::schema_for_output::<TimelinePage>(),
         annotations(read_only_hint = true, open_world_hint = false)
     )]
     pub async fn timeline(
@@ -229,11 +231,12 @@ impl SipnabMcp {
     ) -> Result<CallToolResult, rmcp::ErrorData> {
         let width = params.bucket_seconds.unwrap_or(60);
         if width == 0 {
-            return Err(rmcp::ErrorData::invalid_params(
+            return Err(errors::refuse_param(
+                Reason::InvalidValue,
+                "bucket_seconds",
                 "bucket_seconds must be greater than zero: a zero-width bucket \
                  describes no interval, and every dialog would fall into all of \
                  them at once",
-                None,
             ));
         }
         let buckets = self.timeline_buckets(width);
@@ -297,6 +300,7 @@ impl SipnabMcp {
                        plus other_count, so the groups and the remainder \
                        account for total_matched. aggregate_dialogs answers \
                        the same question when a bare count is enough.",
+        output_schema = rmcp::handler::server::tool::schema_for_output::<GroupDialogsResponse>(),
         annotations(read_only_hint = true, open_world_hint = false)
     )]
     pub async fn group_dialogs(
@@ -310,13 +314,14 @@ impl SipnabMcp {
             .copied()
             .collect();
         if !dimensions.contains(&key) {
-            return Err(rmcp::ErrorData::invalid_params(
+            return Err(errors::refuse_choice(
+                "by",
+                dimensions.iter(),
                 format!(
                     "cannot group by '{key}'; one of: {}. One dimension only -- \
                      narrow with `filter` rather than adding a second.",
                     dimensions.join(", ")
                 ),
-                None,
             ));
         }
 
@@ -329,7 +334,9 @@ impl SipnabMcp {
                 for m in asked {
                     let m = m.trim();
                     if !METRICS.iter().any(|(name, _)| *name == m) {
-                        return Err(rmcp::ErrorData::invalid_params(
+                        return Err(errors::refuse_choice(
+                            "metrics",
+                            METRICS.iter().map(|(name, _)| *name),
                             format!(
                                 "unknown metric '{m}'; one of: {}",
                                 METRICS
@@ -338,7 +345,6 @@ impl SipnabMcp {
                                     .collect::<Vec<_>>()
                                     .join(", ")
                             ),
-                            None,
                         ));
                     }
                     set.insert(m.to_string());

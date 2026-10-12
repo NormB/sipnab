@@ -1645,6 +1645,14 @@ static SPECS: &[Spec] = &[
         &[],
     ),
     (
+        "mcp-max-response-bytes",
+        Kind::Int {
+            lo: 1,
+            hi: 18446744073709551615,
+        },
+        &[],
+    ),
+    (
         "mcp-max-wait-seconds",
         Kind::Int {
             lo: 1,
@@ -2350,16 +2358,12 @@ static SPECS: &[Spec] = &[
         ],
     ),
     (
-        "vcon-forward-compat",
-        Kind::Choice,
-        &[
-            "--vcon-forward-url",
-            "http://127.0.0.1:9/x",
-            "--vcon-forward-auth-file",
-            "/nonexistent/auth",
-            "--vcon-forward",
-            "/var/tmp",
-        ],
+        "vcon-spool-status",
+        Kind::Text {
+            accept: &["x", " ", "0", "-1"],
+            reject: &[("", 2)],
+        },
+        &[],
     ),
     (
         "vcon-fetch",
@@ -3184,6 +3188,7 @@ fn fingerprint(cli: &sipnab::cli::Cli, config: &sipnab::config::Config) -> Strin
         format!("{:?}", cli.mcp_output_schemas(config)),
         format!("{:?}", cli.mcp_row_cap(config)),
         format!("{:?}", cli.mcp_body_cap(config)),
+        format!("{:?}", cli.mcp_response_cap(config)),
         format!("{:?}", cli.mcp_wait_cap(config)),
         format!("{:?}", cli.mcp_sweep_limits(config)),
         format!("{:?}", cli.mcp_sweep_job_limits(config)),

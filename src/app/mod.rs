@@ -20,6 +20,8 @@ pub mod tui_mode;
 pub mod vcon_fetch;
 #[cfg(feature = "vcon")]
 pub mod vcon_forward;
+#[cfg(feature = "vcon")]
+pub mod vcon_spool;
 
 /// The one append-only audit sink, reachable from every build that can write
 /// a record — including the ones that carry no MCP server.

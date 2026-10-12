@@ -309,3 +309,75 @@ fn an_argument_containing_a_space_stays_one_argv_element() -> Result<(), TestErr
     );
     Ok(())
 }
+
+/// The `capture.node` of the record a run with `extra` writes, and the vCon
+/// it exports for the fixture's call when this build carries `vcon`.
+fn node_in_record_and_vcon(extra: &[&str]) -> Result<(String, Option<String>), TestError> {
+    let dir = tempfile::tempdir()?;
+    let path = dir.path().join("run.jsonl");
+    let vcon = dir.path().join("call.vcon.json");
+    let mut args: Vec<String> = extra.iter().map(|s| (*s).to_string()).collect();
+    args.extend([
+        "--run-provenance-file".to_string(),
+        path.to_string_lossy().into_owned(),
+    ]);
+    if cfg!(feature = "vcon") {
+        args.extend([
+            "--export-vcon".to_string(),
+            "test-call-1@192.0.2.1".to_string(),
+            "--vcon-out".to_string(),
+            vcon.to_string_lossy().into_owned(),
+        ]);
+    }
+    let args: Vec<&str> = args.iter().map(String::as_str).collect();
+    let out = run(&args)?;
+    assert!(out.status.success(), "the run must succeed: {out:?}");
+    let node = record(&path)?["capture"]["node"]
+        .as_str()
+        .ok_or("the record names no node")?
+        .to_string();
+    let exported = if cfg!(feature = "vcon") {
+        Some(std::fs::read_to_string(&vcon)?)
+    } else {
+        None
+    };
+    Ok((node, exported))
+}
+
+/// `--node-name` names the node in the provenance record AND in the vCon the
+/// same run exports.
+///
+/// The record is written before the capture starts, and it used to be the
+/// first thing to ask for the node name. That fixed the process-wide value to
+/// the system host name before `--node-name` was applied, so both the record
+/// and every vCon of the run carried the host name.
+#[test]
+fn the_node_name_flag_names_the_node_in_the_record_and_the_vcon() -> Result<(), TestError> {
+    let (node, vcon) = node_in_record_and_vcon(&["--node-name", "edge-node-7"])?;
+    assert_eq!(node, "edge-node-7", "the record carries the host name");
+    if let Some(text) = vcon {
+        assert!(
+            text.contains("on node edge-node-7"),
+            "the vCon does not name the node --node-name gave:\n{text}"
+        );
+    }
+    Ok(())
+}
+
+/// `[capture] node_name` in the config file does the same when no flag
+/// overrides it.
+#[test]
+fn the_config_node_name_names_the_node_in_the_record_and_the_vcon() -> Result<(), TestError> {
+    let dir = tempfile::tempdir()?;
+    let config = dir.path().join("sipnab.toml");
+    std::fs::write(&config, "[capture]\nnode_name = \"cfg-node-9\"\n")?;
+    let (node, vcon) = node_in_record_and_vcon(&["--config", &config.to_string_lossy()])?;
+    assert_eq!(node, "cfg-node-9", "the record carries the host name");
+    if let Some(text) = vcon {
+        assert!(
+            text.contains("on node cfg-node-9"),
+            "the vCon does not name the node the config gave:\n{text}"
+        );
+    }
+    Ok(())
+}

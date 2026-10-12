@@ -6,6 +6,7 @@
 [Ff]ullband
 [Mm]onotic
 [Nn]arrowband
+[Rr]ollup
 [Uu]ndecodable
 [Ww]ideband
 _code_b
@@ -258,6 +259,7 @@ headlessly
 heaptrack
 HEP
 hep_bind_is_loopback
+heplify
 hexdump
 hmac
 homebrew
@@ -595,6 +597,7 @@ sipsak
 siptrace
 sipvicious
 snaplen
+sngrep
 socat
 softclient
 Solarized
@@ -611,6 +614,7 @@ src
 src_ip
 SSG
 SSH
+sshdump
 ssrc
 SSRCs
 status_code
@@ -774,3 +778,9 @@ zeroizing
 zsh
 nftables
 iptables
+[Mm]ebibytes?
+softswitch
+spandsp
+FFmpeg
+[Dd]ialplan
+[Dd]ialplan's

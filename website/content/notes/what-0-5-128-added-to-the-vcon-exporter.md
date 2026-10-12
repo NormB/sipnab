@@ -1,95 +1,225 @@
 +++
-title = "What 0.5.128 added to the vCon exporter"
+title = "vCon exporter additions in sipnab 0.5.128"
 date = 2026-08-27
-description = "Seven fields the format defines and sipnab was not emitting, transfer objects for observed REFERs, a configurable media ceiling, tombstones for withheld dialogs, and RFC 9457 problem-detail errors. What each one is for."
+updated = 2026-10-11
+description = "The fields, transfer records, flags and error format that sipnab 0.5.128 added to its vCon export and REST API, what each one is for, and the two that 0.5.208 changed."
 
 [extra]
 kind = "feature"
 +++
 
-0.5.128 closed every open item on the vCon backlog. Most of them add something
-a consumer can read. Two change what an existing field means. Here is what each
-one does and why you might care.
+## In short
 
-## Fields the format defines that sipnab was not sending
+A vCon is a standard file format for describing one conversation: who took
+part, what they said or what a recorder captured, and what analysis found. sipnab can
+write one vCon file per call it captured. Release 0.5.128 added more caller and
+call details to those files, a record of call transfers, three new options, a
+structured error format for sipnab's REST API, and a safer way of writing files
+for another program to pick up. Release 0.5.208 revised two of those changes
+to follow a newer version of the vCon draft standard, and this page describes
+the current behavior.
 
-**`subject`** now names the dialog: `SIP call <call-id>`. A store whose search
-matches subject or UUID substring could previously find a sipnab container only
-by a UUIDv8 nobody has memorized. It stays purely descriptive — an observer is
-in no position to say what a conversation was *about*, and a subject that tried
-would be the one field in the container asserting something nothing measured.
+## Who this is for
 
-**`party.name`** carries the display name from the `From`/`To` header under the
-key consumers actually read. It travels beside `validation: "none"`, and that
-pairing is what keeps it honest. One of our own test captures makes the point
-better than any argument: SIPp puts the codec in the display name, so the
-caller's `name` reads `PCMU/8000`. sipnab reports it faithfully because that is
-what the wire said, and the `validation` field beside it is the signal against
-reading it as an identity.
+Anyone who feeds sipnab's vCon files into a vCon store or another program and
+needs to know what each field means.
 
-**`party.stir`** carries an observed [RFC 8224](https://www.rfc-editor.org/rfc/rfc8224) PASSporT — the JWS alone, without
-the `info`, `alg` and `ppt` parameters, because a consumer handed the whole
-header value cannot parse it as a token. It rides on the caller, since that is
-who the `Identity` header authenticates. sipnab fetches no certificate and
-checks no signature, so it is evidence a consumer may verify, never a verdict.
+## What it does
 
-**`session_id`** carries the [RFC 7989](https://www.rfc-editor.org/rfc/rfc7989) pair. This is the identifier that
-survives a B2BUA where `Call-ID` does not, and it is the draft's own
-leg-correlation mechanism. sipnab drops a `nil` or malformed half rather than
-transcribing it: a correlation key that matches nothing is worse than an absent
-field, because absence is readable and a dead key is not.
+### New fields in each container
 
-## Transfers
+A container is one vCon file. 0.5.128 added these fields:
 
-An observed REFER now produces a `transfer` Dialog Object naming the
-transferor, the transferee and the target, all as party indices — so the
-`Refer-To` party joins the array to have an index to point at.
+- **`subject`** names the call as `SIP call <Call-ID>`, where the Call-ID is
+  the identifier SIP gives the call. It holds nothing else.
+- **`parties[].name`** carries the display name from the `From` or `To`
+  header. Every party also carries `validation: "none"`, because sipnab copies
+  what the message said and checks no identity. In
+  `tests/pcap-samples/sip-rtp-g711.pcap` the caller's `From` header reads
+  `"PCMU/8000" <sip:sipp@10.0.2.20:5060>`, so the caller's `name` is
+  `PCMU/8000`: a codec name, not a person.
+- **`parties[].stir`**, on the caller only, carries the PASSporT from an
+  observed `Identity` header ([RFC 8224](https://www.rfc-editor.org/rfc/rfc8224)),
+  the signed token that STIR/SHAKEN caller authentication uses. sipnab keeps
+  the token and drops the header's `info`, `alg` and `ppt` parameters. It
+  checks only that the token has three non-empty dot-separated parts; it
+  fetches no certificate and verifies no signature.
+- **`dialog[].session_id`** carries the `Session-ID` header pair
+  ([RFC 7989](https://www.rfc-editor.org/rfc/rfc7989)), an identifier that
+  stays the same on both sides of a B2BUA (a server that splits a call into
+  two legs with different Call-IDs). A half that is `nil` or not a UUID is
+  left out.
 
-An *attended* transfer, which a `Replaces` parameter in the `Refer-To` URI
-identifies, points its `consultation` at an empty Dialog Object. That is not an
-invention: issue #9 on the draft asks what to do for a transfer whose
-consultative call was never captured, and issue #20 answers it with `{}` after
-discussion at IETF 124. A blind transfer names no `consultation` at all, and
-the presence of the member is what tells the two apart.
+### Transfer records
 
-## Two changes to existing behavior
+When the capture holds a REFER (the SIP request that transfers a call), the
+container gains a Dialog Object of type `transfer`. It names the `transferor`
+(who sent the REFER), the `transferee` (the party the transfer moves) and the
+`transfer_target` (the party the `Refer-To` header names) as positions in the
+`parties` list, and `original` as the position of the call the transfer
+happened in. sipnab adds the `Refer-To` party to the list so it has a position.
 
-**A Dialog Object carrying nothing now names no `type`.** It used to say
-`incomplete`, a value the draft reserves for a call that never began — so
-every signaling-only container for a call that answered reported a failure that
-never happened. [The full story is its own
-note](@/notes/the-container-that-said-every-call-failed.md).
+An attended transfer, which a `Replaces` parameter in the `Refer-To` address
+identifies, also names a `consultation`: the position of a placeholder Dialog
+Object for the consultation call, which this capture did not see. A blind
+transfer has no `consultation`.
 
-**REST errors carry [RFC 9457](https://www.rfc-editor.org/rfc/rfc9457) `application/problem+json`.** They used to be a
-bare status code with no body, so a client got a number and had to guess which
-of a handler's several 400s it had hit. The `type` URI is the member to branch
-on, and its slug derives from the status rather than from free text at each
-call site, so one kind of failure has one identity across every endpoint.
+In 0.5.128 that placeholder was an empty object, `{}`. Since 0.5.208 it is
+`{"type": "recording"}`, because draft-ietf-vcon-vcon-core-04 requires a
+`type` on every Dialog Object.
 
-## Three new flags
+### The `type` of a call with no audio
 
-`--vcon-max-inline-media MIB` raises or lowers the inline audio ceiling.
-[A how-to covers it](@/notes/keep-the-audio-your-store-will-not-take.md).
+Before 0.5.128, sipnab gave a Dialog Object with no audio the type
+`incomplete`, a value the draft reserves for a call whose setup failed. Every container for an
+answered call captured without audio therefore reported a setup failure. In
+0.5.128 such an object named no `type` at all. Since 0.5.208 it is
+`"type": "recording"` with no `body` or `url`. `incomplete` appears only when
+sipnab saw a final failure response, and then `disposition` gives the reason.
 
-`--content-deny-tombstone` writes an identity-only container for a dialog your
-deny header suppressed, declaring `redacted` with `type` alone. It is off by
-default, and deliberately: a tombstone reveals that the call *existed*. If your
-header means "this call must leave no trace", leave it off.
+### New flags
 
-`--vcon-digest` prints `<sha256>  <filename>` per container in `sha256sum`
-format, on stdout while progress stays on stderr — so `--vcon-digest >
-SHA256SUMS` produces a file `sha256sum -c` reads. It is a digest and not a
-signature, because a signature over sipnab's bytes could never verify against
-the object a store holds after a conserver adds fields on ingest.
+- **`--vcon-max-inline-media <MIB>`** sets the largest audio file a container
+  may carry inline, in MiB (default 5). `0` refuses every inline body without
+  turning the export off.
+- **`--content-deny-tombstone`** works with `--content-deny-header <NAME>`. A
+  call carrying the named header produces no container by default. With this
+  option it produces an identity-only container whose `redacted` object reads
+  `{"type": "content-withheld"}`, with no message trace, no audio and no
+  bodies. It is off by default because such a container shows that the call
+  took place.
+- **`--vcon-digest`** prints a SHA-256 checksum and file name for each
+  container written, in the format `sha256sum -c` reads, so a later reader can
+  confirm a file is the one sipnab wrote.
 
-## And one thing that was quietly broken
+### REST error format
 
-`--export-vcon-dir` is a queue an external bridge polls, and it wrote with
-`std::fs::write` — which truncates the destination and then fills it. Every
-byte of the write was a window in which the file existed and was invalid, and a
-failure inside that window destroyed the previous container too. Both write
-paths now stage under a dot-prefixed sibling, flush, rename, and sync the
-directory so the rename itself survives a crash.
+sipnab's REST API answers an error with an
+[RFC 9457](https://www.rfc-editor.org/rfc/rfc9457) problem document, content
+type `application/problem+json`, holding `type`, `title`, `status` and
+sometimes `detail`. Before 0.5.128 an error was a status code with no body.
+sipnab builds the `type` URI from the status code alone, for example
+`https://sipnab.com/problems/not-found` for 404, so the same kind of error has
+the same `type` on every route. `detail`, when present, says what happened.
 
-If you consume that spool, the contract is now written down under [The spool
-contract](@/docs/vcon.md).
+### Safer spool writes
+
+`--export-vcon-dir` writes containers to a directory (the spool) that another
+program reads. Each file is now written under a temporary name beginning with
+a dot, flushed to disk, renamed to its final name, and the directory is then
+flushed too. A reader never sees a partly written file, and a failed write
+does not destroy an earlier container. The
+[spool contract](@/docs/vcon.md#the-spool-contract-for-a-bridge-that-consumes-it)
+describes the rules a reading program can rely on.
+
+## Example run
+
+Run these from the root of a sipnab checkout. `jq` prints the fields
+discussed above.
+
+Export one call to a file:
+
+```bash
+sipnab -N --quiet --no-cli-print -I tests/pcap-samples/sip-rtp-g711.pcap --export-vcon 1-1966@10.0.2.20 --vcon-out call.vcon.json
+```
+
+Read the new fields:
+
+```bash
+jq '{subject, caller: .parties[0].name, callee: .parties[1].name, validation: ([.parties[].validation] | unique), dialog_types: [.dialog[].type]}' call.vcon.json
+```
+
+```text
+{
+  "subject": "SIP call 1-1966@10.0.2.20",
+  "caller": "PCMU/8000",
+  "callee": "test",
+  "validation": [
+    "none"
+  ],
+  "dialog_types": [
+    "recording"
+  ]
+}
+```
+
+The capture holds the call's audio packets, but this run kept no audio
+(`--retain-audio` was not given), so the Dialog Object is the `recording`
+placeholder with no content.
+
+Write every call that has an INVITE to a spool directory, and record a
+checksum for each file.
+`--no-cli-print` keeps sipnab's per-message output off standard output, so the
+checksum file holds only checksum lines:
+
+```bash
+sipnab -N --quiet --no-cli-print -I tests/pcap-samples/sip-rtp-g711.pcap --export-vcon-when "method == 'INVITE'" --export-vcon-dir spool --vcon-digest > SHA256SUMS
+```
+
+```text
+Wrote 2 vCon container(s) to 'spool'.
+```
+
+The checksum file names each container without its directory, so check it
+from inside the spool:
+
+```bash
+cd spool
+```
+
+```bash
+sha256sum -c ../SHA256SUMS
+```
+
+```text
+1-1966_10.0.2.20-1cc03f180ff8a774.vcon.json: OK
+1-1968_10.0.2.20-cdd887baa4507e9a.vcon.json: OK
+```
+
+## Limits
+
+- The capture in the example carries no `Identity` header, no `Session-ID`
+  header and no REFER, so the example does not show `stir`, `session_id` or a
+  transfer record.
+- sipnab copies `stir` and does not verify it. The consumer must check
+  whether the caller's identity is genuine.
+- A transfer record describes the REFER sipnab saw. A placeholder stands for
+  the consultation call of an attended transfer; sipnab holds none of its
+  content.
+- A checksum describes the bytes sipnab wrote. A store that adds fields when
+  it receives a container holds different bytes, so the checksum confirms
+  what sipnab sent, not what the store kept.
+
+## Terms used here
+
+- **vCon**: a standard format, in draft at the IETF, for recording one
+  conversation and what a system learned about it.
+- **Container**: one vCon file.
+- **Dialog Object**: the part of a vCon that describes one call or recording.
+- **Party**: one participant listed in a vCon.
+- **SIP**: the protocol phones and servers use to set up and end calls.
+- **Call-ID**: the identifier SIP gives each call.
+- **REFER**: the SIP request that asks a phone to transfer a call.
+- **B2BUA**: back-to-back user agent, a server that splits one call into two
+  legs.
+- **PASSporT / STIR/SHAKEN**: a signed token that states who placed a call,
+  and the framework carriers use to sign and check it.
+- **REST API**: sipnab's HTTP interface, started with `--api`.
+- **Spool**: a directory where one program leaves files for another to pick
+  up.
+- **SHA-256 checksum**: a fixed-length fingerprint of a file's bytes; any
+  change to the file changes it.
+
+## Related guides
+
+- [Produce one](@/docs/vcon.md#produce-one) and
+  [The spool contract, for a bridge that consumes it](@/docs/vcon.md#the-spool-contract-for-a-bridge-that-consumes-it)
+  in the vCon guide.
+- [The container cannot say "this is an incomplete record", so sipnab says it twice](@/docs/vcon.md#the-container-cannot-say-this-is-an-incomplete-record-so-sipnab-says-it-twice),
+  for how sipnab chooses a Dialog Object's `type`.
+- [When a container is missing on purpose](@/docs/vcon.md#when-a-container-is-missing-on-purpose),
+  for `--content-deny-header` and `--content-deny-tombstone`.
+- [What this does not do](@/docs/vcon.md#what-this-does-not-do), for
+  `--vcon-max-inline-media`.
+- [Deliver the spool to a store](@/docs/vcon.md#deliver-the-spool-to-a-store),
+  for sipnab's own forwarder.

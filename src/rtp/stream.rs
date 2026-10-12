@@ -264,10 +264,15 @@ pub fn dscp_name(v: u8) -> &'static str {
 
 // ── Public types ─────────────────────────────────────────────────────
 
-/// Unique key for an RTP stream: SSRC combined with the 5-tuple direction.
+/// Unique key for an RTP stream: SSRC combined with the 5-tuple direction,
+/// and which call on that SSRC and 5-tuple the stream belongs to.
 ///
 /// Two streams with the same SSRC but different source/destination addresses
 /// are treated as distinct (this is common in conferencing topologies).
+///
+/// Two calls can also carry the same SSRC between the same two sockets: a
+/// test tool that replays one recorded media file per call does exactly that.
+/// Those are two streams, one per call, told apart by [`Self::session`].
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct StreamKey {
     /// Synchronization source identifier from the RTP header.
@@ -276,6 +281,37 @@ pub struct StreamKey {
     pub src: SocketAddr,
     /// Destination socket address (IP + port) of the RTP receiver.
     pub dst: SocketAddr,
+    /// Which stream on this SSRC and socket pair, counting from 0.
+    ///
+    /// 0 for the first. [`crate::rtp::stream_store::StreamStore`] starts the
+    /// next one when SDP from a different Call-ID renegotiated one of the
+    /// sockets after the current stream began, so each call's media is
+    /// measured on its own: packet counts, duration and jitter that do not
+    /// span the gap between two calls.
+    pub session: u32,
+}
+
+impl StreamKey {
+    /// The key of the first stream on `ssrc` from `src` to `dst`.
+    #[must_use]
+    pub fn new(ssrc: u32, src: SocketAddr, dst: SocketAddr) -> Self {
+        Self {
+            ssrc,
+            src,
+            dst,
+            session: 0,
+        }
+    }
+
+    /// This key with [`Self::session`] set to 0: the SSRC and socket pair
+    /// alone, which is all an RTP or RTCP packet carries.
+    #[must_use]
+    pub fn flow(&self) -> Self {
+        Self {
+            session: 0,
+            ..self.clone()
+        }
+    }
 }
 
 /// A periodic quality snapshot for trend analysis.
@@ -561,6 +597,13 @@ pub struct RtpStream {
     /// typically — reads as clean from either endpoint alone, and this pair is
     /// the only place a capture can say so.
     pub dscp_last: Option<u8>,
+
+    /// The stream store's SDP binding counter when this stream began.
+    ///
+    /// Read by the store alone, to tell an SDP endpoint that a later call
+    /// renegotiated from one that was already there: see
+    /// [`StreamKey::session`].
+    pub(crate) binding_seq_at_start: u64,
 
     // ── Private state for jitter/interval tracking ───────────────────
     /// Losses this stream retains, read from the process-wide declaration
@@ -991,6 +1034,7 @@ impl RtpStream {
             silence_periods: Vec::new(),
             payload_buffer: std::collections::VecDeque::new(),
             payload_frames_dropped: 0,
+            binding_seq_at_start: 0,
             sdp_ptime_ms: None,
             amr_packing: None,
             amr_frame_types_seen: 0,
@@ -1445,6 +1489,7 @@ mod tests {
             ssrc: 0x12345678,
             src: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)), 20000),
             dst: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2)), 30000),
+            session: 0,
         }
     }
 
@@ -2158,6 +2203,7 @@ mod quality_interval_period_tests {
                 ssrc: 1,
                 src: addr(20000),
                 dst: addr(30000),
+                session: 0,
             },
             &header,
             chrono::Utc::now(),

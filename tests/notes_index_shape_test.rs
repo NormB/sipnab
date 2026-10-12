@@ -3,10 +3,9 @@
 //! The notes index leads with what a reader came for.
 //!
 //! `website/content/notes/` holds three kinds. How-tos say how to do a job and
-//! feature notes say what a capability does; both are why somebody opens the
-//! page. Post-mortems are a record worth keeping and a poor front page —
-//! sixteen accounts of what broke bury the pages a reader wants, and a visitor
-//! who lands on a wall of failures learns the wrong thing about the project.
+//! feature notes say what a capability does. Post-mortems record what went
+//! wrong, why, and what changed. How-tos and features render open; the
+//! post-mortems render inside a closed disclosure.
 //!
 //! So the post-mortems collapse behind a `<details>` the reader opens
 //! deliberately, and the other two stay expanded. This file holds that
@@ -92,8 +91,8 @@ fn the_postmortems_sit_behind_a_closed_disclosure() -> Result<(), TestError> {
 
     assert!(
         !tag.contains("open"),
-        "the post-mortem disclosure is marked `open`, so the page still opens \
-         onto sixteen accounts of what broke: {tag}"
+        "the post-mortem disclosure is marked `open`, so the page opens onto \
+         every post-mortem: {tag}"
     );
     let after = &tpl[at..];
     assert!(

@@ -1,0 +1,61 @@
+{
+  "vcon": "0.4.0",
+  "uuid": "019ff380-48ab-8116-9dd8-dd37220d739c",
+  "parties": [
+    {
+      "name": "IETF Attendees",
+      "role": "attendee"
+    }
+  ],
+  "dialog": [],
+  "attachments": [
+    {
+      "purpose": "meeting_metadata",
+      "body": "{\"ietf_meeting_number\": 108, \"location\": \"Online, ES\", \"working_group\": \"sec\", \"session_id\": \"28277\", \"room\": null, \"start_time\": \"2020-07-27T13:00:00+00:00\", \"duration_seconds\": 3000}",
+      "encoding": "json",
+      "party": 0,
+      "dialog": 0,
+      "start": "2026-08-12T01:04:58.539095+00:00"
+    },
+    {
+      "purpose": "ingress_info",
+      "body": "{\"source\": \"ietf2vcon\", \"converter_version\": \"0.1.0\", \"converted_at\": \"2026-08-12T01:04:58.539196+00:00\", \"meeting_number\": 108, \"group_acronym\": \"sec\", \"session_index\": 0}",
+      "encoding": "json",
+      "party": 0,
+      "dialog": 0,
+      "start": "2026-08-12T01:04:58.539095+00:00"
+    },
+    {
+      "purpose": "lawful_basis",
+      "encoding": "json",
+      "body": "{\"lawful_basis\": \"legitimate_interests\", \"expiration\": \"2099-12-31T23:59:59+00:00\", \"purpose_grants\": [{\"purpose\": \"recording\", \"granted\": true, \"granted_at\": \"2026-08-12T01:04:58.539213+00:00\"}, {\"purpose\": \"transcription\", \"granted\": true, \"granted_at\": \"2026-08-12T01:04:58.539214+00:00\"}, {\"purpose\": \"publication\", \"granted\": true, \"granted_at\": \"2026-08-12T01:04:58.539217+00:00\"}, {\"purpose\": \"archival\", \"granted\": true, \"granted_at\": \"2026-08-12T01:04:58.539218+00:00\"}, {\"purpose\": \"analysis\", \"granted\": true, \"granted_at\": \"2026-08-12T01:04:58.539219+00:00\"}], \"terms_of_service\": \"https://www.ietf.org/about/note-well/\", \"metadata\": {\"terms_of_service_name\": \"IETF Note Well\", \"jurisdiction\": \"IETF\", \"controller\": \"Internet Engineering Task Force (IETF)\", \"notes\": \"Participation in IETF meetings constitutes agreement to the Note Well, which permits recording, transcription, and public archival of proceedings. See also BCP 78 (RFC 5378) and BCP 79 (RFC 8179) for IPR policies.\"}}",
+      "party": 0,
+      "dialog": 0,
+      "start": "2026-08-12T01:04:58.539095+00:00"
+    },
+    {
+      "purpose": "agenda",
+      "body": "{\"url\": \"https://datatracker.ietf.org/meeting/108/session/sec/\", \"mimetype\": \"text/html\", \"filename\": null, \"title\": \"SEC Agenda\"}",
+      "encoding": "json",
+      "party": 0,
+      "dialog": 0,
+      "start": "2026-08-12T01:04:58.539095+00:00"
+    },
+    {
+      "purpose": "minutes",
+      "body": "{\"url\": \"https://notes.ietf.org/notes-ietf-108-sec\", \"mimetype\": \"text/markdown\", \"filename\": null, \"title\": \"SEC Notes\"}",
+      "encoding": "json",
+      "party": 0,
+      "dialog": 0,
+      "start": "2026-08-12T01:04:58.539095+00:00"
+    }
+  ],
+  "analysis": [],
+  "created_at": "2026-08-12T01:04:58.539095+00:00",
+  "subject": "IETF 108 - SEC Working Group Session",
+  "extensions": [
+    "lawful_basis",
+    "role"
+  ],
+  "updated_at": "2026-08-12T01:04:59.632360+00:00"
+}

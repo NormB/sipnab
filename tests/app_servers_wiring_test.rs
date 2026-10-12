@@ -49,6 +49,7 @@ fn metrics_only() -> Selection {
         metrics_tls: (None, None),
         mcp_row_cap: Cli::DEFAULT_MCP_MAX_ROWS as usize,
         mcp_body_cap: Cli::DEFAULT_MCP_MAX_BODY_BYTES as usize,
+        mcp_response_cap: Cli::DEFAULT_MCP_MAX_RESPONSE_BYTES as usize,
         mcp_wait_seconds: Cli::DEFAULT_MCP_MAX_WAIT_SECONDS,
         mcp_sweep: sipnab::cli::McpSweepLimits::default(),
         mcp_sweep_jobs: sipnab::cli::McpSweepJobLimits::default(),
@@ -670,19 +671,35 @@ fn an_mcp_alias_uses_the_runs_thresholds() -> Result<(), TestError> {
         &mut stdin,
         &serde_json::json!({"jsonrpc": "2.0", "method": "notifications/initialized"}),
     )?;
-    send(
-        &mut stdin,
-        &serde_json::json!({
-            "jsonrpc": "2.0", "id": 2, "method": "tools/call",
-            "params": {"name": "list_dialogs",
-                       "arguments": {"filter": "slow-setup"}}
-        }),
-    )?;
-    let answer = reply(&mut reader, 2);
-    let text = answer["result"]["content"][0]["text"]
-        .as_str()
-        .ok_or_else(|| format!("list_dialogs must answer: {answer}"))?;
-    let v: serde_json::Value = serde_json::from_str(text)?;
+    // Ask until the replay has been read to its end. A page asked for before
+    // that legitimately counts only what has loaded so far, and `--quiet`
+    // leaves no log line to wait on: a local pre-commit run on an aarch64
+    // host (2026-10-11) got `source_exhausted: false, total_matched: 0` from a
+    // first call.
+    let deadline = Instant::now() + Duration::from_secs(30);
+    let v = loop {
+        send(
+            &mut stdin,
+            &serde_json::json!({
+                "jsonrpc": "2.0", "id": 2, "method": "tools/call",
+                "params": {"name": "list_dialogs",
+                           "arguments": {"filter": "slow-setup"}}
+            }),
+        )?;
+        let answer = reply(&mut reader, 2);
+        let text = answer["result"]["content"][0]["text"]
+            .as_str()
+            .ok_or_else(|| format!("list_dialogs must answer: {answer}"))?;
+        let v: serde_json::Value = serde_json::from_str(text)?;
+        if v["source_exhausted"] == serde_json::json!(true) {
+            break v;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the replay was not read to its end within 30 s: {v}"
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    };
     assert_eq!(
         v["total_matched"], 1,
         "slow-setup at --pdd-threshold {PDD_THRESHOLD} selects the call: {v}"

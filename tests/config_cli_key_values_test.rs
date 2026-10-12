@@ -797,6 +797,14 @@ static KEY_SPECS: &[KeySpec] = &[
     ),
     (
         "limits",
+        "mcp_max_response_bytes",
+        KeyKind::Int {
+            lo: 1,
+            hi: i64::MAX as i128,
+        },
+    ),
+    (
+        "limits",
         "mcp_max_rows",
         KeyKind::Int {
             lo: 1,
@@ -1637,15 +1645,6 @@ static KEY_SPECS: &[KeySpec] = &[
         KeyKind::Literal {
             accept: &["\"x\"", "\" \"", "\"0\"", "\"/var/spool/sipnab-vcon\""],
             reject: &["\"\""],
-            ctx: "",
-        },
-    ),
-    (
-        "vcon_forward",
-        "compat",
-        KeyKind::Literal {
-            accept: &["\"none\"", "\"vcon-store\""],
-            reject: &["\"x\"", "\"\"", "\" \"", "\"VCON-STORE\"", "\"off\""],
             ctx: "",
         },
     ),
