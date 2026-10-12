@@ -487,6 +487,42 @@ fn vcon_validate_answers_over_the_socket() -> Result<(), TestError> {
     Ok(())
 }
 
+/// `POST /v1/vcon/analyze` answers over the shipped binary: a container
+/// handed over inline comes back analyzed, apart from the capture the server
+/// holds, with the dialog it stores and the finding that says where it came
+/// from. Gated like the validate route above, for the same reason.
+#[cfg(feature = "vcon")]
+#[test]
+fn vcon_analyze_answers_over_the_socket() -> Result<(), TestError> {
+    let srv = ApiServer::spawn(&[])?;
+    let invite = "INVITE sip:b@example.com SIP/2.0\r\nVia: SIP/2.0/UDP h;branch=z9hG4bK1\r\n\
+                  From: <sip:a@example.com>;tag=1\r\nTo: <sip:b@example.com>\r\n\
+                  Call-ID: socket-vcon\r\nCSeq: 1 INVITE\r\nContent-Length: 0\r\n\r\n";
+    let container = serde_json::json!({
+        "vcon": "0.4.0",
+        "uuid": "01928e10-193e-8231-b9a2-279e0d16bc46",
+        "created_at": "2026-10-09T12:00:00Z",
+        "parties": [{"name": "observer"}],
+        "attachments": [{"purpose": "sip-invite", "start": "2026-10-09T12:00:00Z",
+                         "party": 0, "dialog": 0, "mediatype": "message/sip",
+                         "encoding": "none", "body": invite}]
+    });
+    let resp = srv.post_json("/v1/vcon/analyze", &container.to_string())?;
+    assert_eq!(resp.status, 200, "/v1/vcon/analyze status");
+    let body = resp.json()?;
+    assert_eq!(body["verdict"], "analyzed", "{body}");
+    assert_eq!(body["dialogs"][0]["call_id"], "socket-vcon", "{body}");
+    assert_eq!(body["analysis"]["findings"][0]["kind"], "rebuilt_from_vcon");
+    // The server's own capture is untouched: the container's dialog is not
+    // among the dialogs it serves.
+    let listed = srv.get("/v1/dialogs")?.json()?;
+    assert!(
+        !listed.to_string().contains("socket-vcon"),
+        "an inline container reached the server's store: {listed}"
+    );
+    Ok(())
+}
+
 /// `GET /v1/vcon/spool` answers over the shipped binary from the directory
 /// `--export-vcon-dir` names, and moves nothing in it.
 ///

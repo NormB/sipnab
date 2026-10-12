@@ -13,7 +13,7 @@ Complete flag reference for sipnab. This page groups flags by function.
 
 A first run needs only a handful of these flags:
 
-- [`-I`, `--input`](#capture) reads packets from a capture file, a directory of them, an archive of them, or a glob, instead of live capture.
+- [`-I`, `--input`](#capture) reads packets from a capture file, a directory of them, an archive of them, or a glob, instead of live capture. It reads stored vCon containers too.
 - [`-d`, `--device`](#capture) names the network interface to capture on.
 - [`-N`, `--no-tui`](#mode) turns on non-interactive mode, with no TUI. The batch and output flags require it.
 - [`--report`](#output) generates a summary report after capture completes. Requires `-N`.
@@ -253,7 +253,7 @@ sipnab -d eth0,eth1 --multi-device --delta-time
 | Flag | Value | Default | Description |
 |------|-------|---------|-------------|
 | `-d`, `--device` | `<IFACE>` | platform default | Network interface to capture on. With no `-d`, no `-I` file and no `-L` HEP listener, sipnab picks a default that differs by platform — see the note below. Config: `[capture] device` |
-| `-I`, `--input` | `<FILE\|DIR\|GLOB>` | -- | Read packets from a capture file, a directory of them, an archive of them, or a glob, instead of live capture. **Repeatable.** sipnab reads the files in capture order, never in filename order — see the note below. A `.tar`, `.tgz` or `.tar.gz` reads like a directory: see [Archives read like directories](#archives-read-like-directories) |
+| `-I`, `--input` | `<FILE\|DIR\|GLOB>` | -- | Read packets from a capture file, a directory of them, an archive of them, or a glob, instead of live capture. **Repeatable.** sipnab reads the files in capture order, never in filename order — see the note below. A `.tar`, `.tgz` or `.tar.gz` reads like a directory: see [Archives read like directories](#archives-read-like-directories). A stored vCon container (`*.vcon.json`, or any file whose first character other than whitespace is `{`) reads as the SIP messages it stores, marked `origin=vcon`, with no media. sipnab reports a schema finding and reads the container anyway, and skips one with no SIP it can read, naming the reason: see [Analyze a stored vCon](@/docs/vcon.md#analyze-a-stored-vcon) |
 | `--recursive` | -- | off | Descend into subdirectories when `-I` names a directory |
 | `--input-name` | `<GLOB>` | -- | Read only files whose *name* matches this pattern when `-I` names a directory or an archive. Applies at every depth under `--recursive`, and to an archive's members at every depth |
 | `-O`, `--output` | `<FILE>` | -- | Write captured packets to a pcap file. `--filter` chooses what sipnab shows and analyzes, not what this file holds: a BPF filter (the positional argument, such as `"udp port 5060"`) narrows the file. Run as root, sipnab creates this file, and every `--split` file, after it drops privileges, so the drop user (`nobody` unless `--user` names another) must be able to write the directory. sipnab checks this before it reads the first packet and exits `1` when the drop user cannot. See [the note above](#bound-split-and-multi-interface-captures) |
@@ -839,9 +839,9 @@ selects only problem calls from user 1001.
 - `sipnab -N -I capture.pcap --analyze --filter "state == 'Failed'" --no-cli-print` — narrow the DIALOG findings to failed calls. The capture-level evidence (undecodable frames, discarded ports, dropped records) is deliberately not narrowed, because it bounds every count in the report
 - `sipnab -N -I capture.pcap --json-analyze --no-cli-print | jq '.findings[] | select(.severity == "critical")'` — the critical findings only, for a pipeline
 - `sipnab -N -I capture.pcap --json-analyze --no-cli-print | jq '.complete'` — whether the capture decoded fully. `false` means every count in the analysis is a floor, so do not trust a clean-looking verdict
-- `sipnab -N -I capture.pcap --yang-analyze --no-cli-print > analysis.json` — the capture analysis as a YANG instance document. `yanglint -t data sipnab-diagnosis@2026-09-22.yang analysis.json` validates it
+- `sipnab -N -I capture.pcap --yang-analyze --no-cli-print > analysis.json` — the capture analysis as a YANG instance document. `yanglint -t data sipnab-diagnosis@2026-10-09.yang analysis.json` validates it
 - `sipnab -N -I capture.pcap --json-analyze --yang-analyze --no-cli-print` — both encodings of ONE analysis, one line each: the same findings, the same counts, the same `rank` order
-- `sipnab --print-yang-module > sipnab-diagnosis@2026-09-22.yang` — save the YANG module this build's RFC 7951 export validates against, under the file name [RFC 7950](https://www.rfc-editor.org/rfc/rfc7950) gives it, for `yanglint` or `pyang`
+- `sipnab --print-yang-module > sipnab-diagnosis@2026-10-09.yang` — save the YANG module this build's RFC 7951 export validates against, under the file name [RFC 7950](https://www.rfc-editor.org/rfc/rfc7950) gives it, for `yanglint` or `pyang`
 - `sipnab --print-yang-module | pyang -f tree` — the shape of the capture analysis as a YANG tree: every node, its type, and which are lists
 - `sipnab -N -I capture.pcap --json-dialogs --no-cli-print --quiet | jq -c 'select(.state == "Failed")'` — one line per failed call, each carrying the code that failed it, instead of every message of every failed dialog
 - `sudo sipnab -d eth0 -N --json-dialogs --no-cli-print --line-buffer > calls.ndjson` — record one summary object per call from live traffic, flushed per line for a downstream collector

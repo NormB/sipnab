@@ -32,6 +32,20 @@ pub struct HepOrigin {
     pub correlation_id: Option<String>,
 }
 
+/// What a stored vCon container said about one message rebuilt from it.
+///
+/// A vCon names each message's transport in words (`UDP`, `TLS`, `WSS`), not
+/// as an IP protocol number, and TLS, WS and WSS have no IP protocol number
+/// of their own. The name is carried as the transport it names, so the
+/// rebuilt message reports what the container stored rather than what a
+/// number could be made to mean. Its presence is also what marks the packet
+/// as rebuilt from a vCon rather than captured.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct VconOrigin {
+    /// The transport the container stored for this message.
+    pub transport: crate::net::TransportProto,
+}
+
 /// Pre-parsed addressing metadata for packets that arrive from a source
 /// which already knows the inner addresses (e.g. a HEP listener that
 /// reads `src_addr` / `dst_addr` from HEP chunks). When present, the
@@ -58,6 +72,10 @@ pub struct PreParsed {
     /// `None` for every other pre-parsed source (uprobe reads, synthetic test
     /// packets), which is the honest value: nothing wrapped them.
     pub hep: Option<HepOrigin>,
+    /// What the vCon said, when this packet was rebuilt from a stored vCon
+    /// container (`-I` reading a `*.vcon.json`). `None` for every other
+    /// source.
+    pub vcon: Option<VconOrigin>,
 }
 
 /// Where in its source a packet was read from.
@@ -1090,6 +1108,7 @@ mod tests {
                 dst_port: 5060,
                 ip_protocol: 17,
                 hep: None,
+                vcon: None,
             },
         );
         p.origin = Some(FrameOrigin {

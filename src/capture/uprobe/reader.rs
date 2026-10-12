@@ -260,6 +260,7 @@ fn to_packet(bytes: &[u8], pid: u32, ordinal: u64) -> Packet {
             ip_protocol: IP_PROTO_TCP,
             // A uprobe read has no wrapper to assert anything.
             hep: None,
+            vcon: None,
         },
     );
     // Both halves or no pointer: `frame_locator` needs a source AND an origin.

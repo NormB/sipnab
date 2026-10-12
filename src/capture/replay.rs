@@ -43,6 +43,11 @@ pub struct ReadOutcome {
     /// failure, a shutdown request, or a truncated dump. Every count is then a
     /// floor, not a total.
     pub stopped_early: bool,
+    /// Stored vCon containers the read rebuilt messages from, one record
+    /// each. Returned rather than recorded: a caller filling the process's
+    /// own stores records them, and one reading a capture beside them for a
+    /// comparison does not.
+    pub vcon_inputs: Vec<super::vcon_input::VconProvenance>,
 }
 
 /// Read every packet of `path` into the two stores, classified with `opts`.
@@ -116,6 +121,7 @@ pub fn read_into_stores_until(
                 packets: 0,
                 error: Some(format!("{e:#}")),
                 stopped_early: true,
+                vcon_inputs: Vec::new(),
             };
         }
     };
@@ -123,6 +129,7 @@ pub fn read_into_stores_until(
         packets: 0,
         error: None,
         stopped_early: set.incomplete(),
+        vcon_inputs: Vec::new(),
     };
     for input in set.iter() {
         let before = total.packets;
@@ -138,6 +145,7 @@ pub fn read_into_stores_until(
         total.packets = before + one.packets;
         progress.store(total.packets, Ordering::Relaxed);
         total.stopped_early |= one.stopped_early;
+        total.vcon_inputs.extend(one.vcon_inputs);
         if one.error.is_some() {
             total.error = one.error;
             break;
@@ -155,6 +163,11 @@ fn read_one(
     progress: &AtomicU64,
     stop: &dyn Fn() -> Option<String>,
 ) -> ReadOutcome {
+    // A stored vCon container: its messages are rebuilt and routed through
+    // the same applier. See `crate::capture::vcon_input`.
+    if super::vcon_input::is_container_file(path) {
+        return read_container(path, opts, dialog_store, stream_store, progress);
+    }
     // The guard owns any decompressed temp file (libpcap cannot read gzip) and
     // must outlive the read loop, so keep it bound for the whole function.
     let (mut cap, _gz_guard) = match crate::capture::file::open_offline(path) {
@@ -165,6 +178,7 @@ fn read_one(
                 packets: 0,
                 error: Some(format!("{e:#}")),
                 stopped_early: true,
+                vcon_inputs: Vec::new(),
             };
         }
     };
@@ -180,6 +194,7 @@ fn read_one(
                 packets,
                 error: Some("shutdown requested during the load".to_string()),
                 stopped_early: true,
+                vcon_inputs: Vec::new(),
             };
         }
         if let Some(reason) = stop() {
@@ -187,6 +202,7 @@ fn read_one(
                 packets,
                 error: Some(reason),
                 stopped_early: true,
+                vcon_inputs: Vec::new(),
             };
         }
         let pkt = match cap.next_packet() {
@@ -207,6 +223,7 @@ fn read_one(
                     packets,
                     error: None,
                     stopped_early: true,
+                    vcon_inputs: Vec::new(),
                 };
             }
         };
@@ -258,6 +275,51 @@ fn read_one(
         packets,
         error: None,
         stopped_early: false,
+        vcon_inputs: Vec::new(),
+    }
+}
+
+/// Read one stored vCon container into the stores. See [`read_into_stores`].
+///
+/// One read, no loop to stop: a container is a handful of messages already in
+/// memory, so the per-packet shutdown and `stop` checks have nothing to bound.
+fn read_container(
+    path: &Path,
+    opts: &crate::pipeline::PipelineOptions,
+    dialog_store: &Arc<RwLock<DialogStore>>,
+    stream_store: &Arc<RwLock<StreamStore>>,
+    progress: &AtomicU64,
+) -> ReadOutcome {
+    let name = super::archive::source_name(path);
+    match super::vcon_input::read_file(path) {
+        #[cfg(feature = "vcon")]
+        Ok(rebuilt) => {
+            let packets =
+                super::vcon_input::into_stores(&rebuilt, opts, dialog_store, stream_store);
+            progress.store(packets, Ordering::Relaxed);
+            ReadOutcome {
+                packets,
+                error: None,
+                stopped_early: false,
+                vcon_inputs: vec![rebuilt.provenance],
+            }
+        }
+        #[cfg(not(feature = "vcon"))]
+        Ok(_) => {
+            let _ = (opts, dialog_store, stream_store, progress);
+            ReadOutcome {
+                packets: 0,
+                error: None,
+                stopped_early: false,
+                vcon_inputs: Vec::new(),
+            }
+        }
+        Err(e) => ReadOutcome {
+            packets: 0,
+            error: Some(format!("'{name}': {e}")),
+            stopped_early: true,
+            vcon_inputs: Vec::new(),
+        },
     }
 }
 

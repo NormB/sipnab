@@ -417,6 +417,7 @@ mod tests {
                 dst_port: 0,
                 ip_protocol,
                 hep: None,
+                vcon: None,
             },
         )
     }

@@ -304,6 +304,7 @@ fn hep_packet(payload: Vec<u8>, capture_id: u32) -> Packet {
             dst_port: 5060,
             ip_protocol: UDP,
             hep: None,
+            vcon: None,
         },
     )
 }

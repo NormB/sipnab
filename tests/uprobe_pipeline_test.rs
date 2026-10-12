@@ -48,6 +48,7 @@ fn uprobe_packet(interface: &str, src_port: u16, dst_port: u16) -> Packet {
             dst_port,
             ip_protocol: TCP,
             hep: None,
+            vcon: None,
         },
     )
 }

@@ -1224,7 +1224,15 @@ fn wiki_intra_docs_links_resolve() -> Result<(), TestError> {
     // docs/asterisk-sipnab.md 11, docs/freeswitch.md 4,
     // docs/freeswitch-sipnab.md 6, docs/README.md 4 (one index entry per
     // page).
-    const EXPECTED_WIKI_LINKS: usize = 1426;
+    // 1426 -> 1438: `analyze_vcon` and reading a vCon with `-I`, from
+    // feat/vcon-input, measured on the tree merged with the 0.5.213 batch.
+    // docs/mcp-tools.md 5 (its index row, its REST twin, the vcon.md section,
+    // `validate_vcon` and the #error-data link naming its refusal reasons),
+    // docs/rest-api.md 2 (the MCP twin and the section that writes the
+    // vcon.store-shaped container), docs/vcon.md 2 (the MCP tool and the REST
+    // route), docs/cli-reference.md 1 (the `-I` row) and docs/examples.md 2
+    // (recipe 66's index row and its vcon.md link).
+    const EXPECTED_WIKI_LINKS: usize = 1438;
     // Raised 459 -> 460 when SRC1 stage 1 shipped: docs/cli-reference.md's
     // `--hep-listen` row now points at cookbook recipe 6d in docs/examples.md
     // rather than restating how to pair `-L` with `-d`. Attributed per file

@@ -437,10 +437,10 @@ fn all_schemas_compile() -> Result<(), TestError> {
 fn every_capture_origin_is_a_value_both_schemas_accept() -> Result<(), TestError> {
     use sipnab::capture::parse::InputOrigin;
 
-    let all = [InputOrigin::Wire, InputOrigin::Hep, InputOrigin::Uprobe];
+    let all = InputOrigin::ALL;
     for origin in all {
         match origin {
-            InputOrigin::Wire | InputOrigin::Hep | InputOrigin::Uprobe => {}
+            InputOrigin::Wire | InputOrigin::Hep | InputOrigin::Uprobe | InputOrigin::Vcon => {}
         }
     }
 

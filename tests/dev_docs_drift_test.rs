@@ -861,7 +861,11 @@ fn linked_code_targets_exist() -> Result<(), TestError> {
     // tests/release_surface_test.rs.
     // 516 -> 517: docs/internals/build-ci-release.md's memcheck.yml row links
     // scripts/memcheck-verdict.py.
-    const EXPECTED_CODE_LINKS: usize = 517;
+    // 517 -> 521: the vCon reader, from feat/vcon-input, measured on the tree
+    // merged with the 0.5.213 batch. docs/internals/subsystem-guide.md links
+    // src/capture/vcon_input.rs (+1), and docs/internals/vcon.md links it,
+    // src/output/vcon_analysis.rs and tests/vcon_input_test.rs (+3).
+    const EXPECTED_CODE_LINKS: usize = 521;
     assert_eq!(
         seen, EXPECTED_CODE_LINKS,
         "code-link extraction found {seen} links, expected {EXPECTED_CODE_LINKS}. \

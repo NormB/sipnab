@@ -139,6 +139,14 @@ GOLDENS = REPO / "tests" / "cli" / "cookbook"
 # command reads the way a reader's would and carries no absolute path.
 GOLDEN_FIXTURE = "tests/pcap-samples/sip-rtp-g711.pcap"
 
+# The stored vCon container a recipe's `*.vcon.json` input placeholder reads:
+# the container `--export-vcon 1-1966@10.0.2.20 --node-name tap-a` writes from
+# GOLDEN_FIXTURE, committed so a recipe that reads a vCon runs against a real
+# one. A `.vcon.json` is not a capture suffix, so it gets a placeholder of its
+# own rather than becoming the pcap.
+GOLDEN_VCON_FIXTURE = "tests/fixtures/vcon/sip-rtp-g711-1966.vcon.json"
+VCON_SUFFIX = ".vcon.json"
+
 # Flags whose value is a path sipnab WRITES. Each is redirected into a
 # directory of its own: in RUN mode a fresh temp directory, in a golden a
 # directory named after the case. Two recipes that both write `./vcons` would
@@ -215,7 +223,12 @@ def reached_the_tui(inv: str, returncode: int, stderr: str) -> bool:
 
 
 def substitute(
-    argv: list[str], *, fixture: str, outdir: Path, call_ids: list[str]
+    argv: list[str],
+    *,
+    fixture: str,
+    outdir: Path,
+    call_ids: list[str],
+    vcon_fixture: str = GOLDEN_VCON_FIXTURE,
 ) -> tuple[list[str], bool]:
     """Replace a recipe's placeholders. Returns (argv, input_was_replaced).
 
@@ -230,8 +243,12 @@ def substitute(
     prev = ""
     for a in argv:
         is_capture = a.endswith(CAPTURE_SUFFIXES) and not Path(a).exists()
+        is_container = a.endswith(VCON_SUFFIX) and not Path(a).exists()
         if prev in OUTPUT_FLAGS and a != "-":
             subbed.append(str(outdir / Path(a).name))
+        elif is_container and prev in ("-I", "--input"):
+            subbed.append(vcon_fixture)
+            replaced = True
         elif is_capture:
             subbed.append(fixture)
             replaced = True
@@ -658,7 +675,7 @@ def main() -> int:
         with tempfile.TemporaryDirectory() as tmp:
             subbed, replaced = substitute(
                 argv, fixture=str(DEFAULT_FIXTURE), outdir=Path(tmp),
-                call_ids=call_ids,
+                call_ids=call_ids, vcon_fixture=str(REPO / GOLDEN_VCON_FIXTURE),
             )
 
             if not replaced and "-I" not in names and "--input" not in names:

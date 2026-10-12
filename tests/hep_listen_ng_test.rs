@@ -60,6 +60,7 @@ fn delivered_by_the_listener(body: Vec<u8>, correlation_id: Option<&str>) -> Pac
                 protocol: NG_PROTO,
                 correlation_id: correlation_id.map(str::to_owned),
             }),
+            vcon: None,
         },
     )
 }
@@ -165,6 +166,7 @@ fn sip_delivered_over_hep_is_not_claimed_as_relay_control() -> Result<(), TestEr
                 protocol: 1,
                 correlation_id: Some("x@y".to_string()),
             }),
+            vcon: None,
         },
     );
     assert!(

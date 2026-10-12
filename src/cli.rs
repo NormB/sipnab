@@ -682,7 +682,8 @@ pub struct CaptureArgs {
     pub device: Option<String>,
 
     /// Read packets from a capture file, directory, archive, or glob instead
-    /// of live capture. Repeatable.
+    /// of live capture, and stored vCon containers as the SIP messages they
+    /// hold. Repeatable.
     ///
     /// Files are read in the order their packets were captured, never by
     /// filename — `tcpdump -C -W` writes a ring buffer that wraps, so
@@ -692,6 +693,12 @@ pub struct CaptureArgs {
     /// inside joins the set, gzip-compressed members and archives nested in
     /// archives included, and every member that is not a capture is named
     /// with the reason. Layers are recognized by their bytes, not their names.
+    ///
+    /// A stored vCon container (a JSON file, such as one `--export-vcon`
+    /// wrote) is read too: its SIP messages are rebuilt and analyzed, marked
+    /// `origin=vcon`. A vCon stores no RTP, so no media is analyzed from it.
+    /// A schema finding is reported and the container read anyway; one with
+    /// no SIP sipnab can read is skipped with the reason.
     #[arg(
         help_heading = "Capture",
         short = 'I',

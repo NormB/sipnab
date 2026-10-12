@@ -839,6 +839,22 @@ fn plan_file_source(cli: &Cli) -> Result<CaptureSource, PlanError> {
     }
     let paths: Vec<std::path::PathBuf> = resolved.into_iter().map(|r| r.path).collect();
 
+    // `--cores` shards captured frames across workers by host pair, and its
+    // readers open captures with libpcap. A stored vCon container holds no
+    // frames, so a set holding one would lose it. Refused before anything is
+    // read, rather than half-read.
+    if cli.limits_args.cores > 1
+        && let Some(container) = paths
+            .iter()
+            .find(|p| crate::capture::vcon_input::is_container_file(p))
+    {
+        return Err(PlanError::arg(format!(
+            "--cores reads capture files in parallel and cannot read the stored vCon \
+             container '{}'. Drop --cores: a vCon is read on one core.",
+            crate::capture::archive::source_name(container)
+        )));
+    }
+
     // Precondition, not a post-hoc error: an output that names an input is
     // refused here, before any writer exists. `-O` opens with truncation,
     // so a check made after the open has already destroyed the capture —

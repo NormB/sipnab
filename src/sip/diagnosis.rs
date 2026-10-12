@@ -3286,7 +3286,7 @@ mod tests {
     #[test]
     fn a_single_source_run_reports_no_source_disagreement() -> Result<(), TestError> {
         use crate::capture::parse::InputOrigin;
-        for origin in [InputOrigin::Wire, InputOrigin::Hep, InputOrigin::Uprobe] {
+        for origin in InputOrigin::ALL {
             let d = diagnose_signaling(&[
                 from_source(&invite("z9hG4bK1", 1), origin)?,
                 from_source(&response(486, "Busy Here", ""), origin)?,

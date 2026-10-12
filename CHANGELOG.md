@@ -8,6 +8,46 @@ sipnab is pre-1.0: the public API and the CLI surface are not stable, and a
 breaking change may land in any release. Breaking changes are called out in the
 entry that carries them.
 
+## [Unreleased]
+
+### Added
+
+- **`-I` reads stored vCon containers, and every surface analyzes them.** A
+  container `--export-vcon` wrote, or one another producer wrote, is read like
+  a capture: a file, a directory of them or a glob, beside pcap files or
+  alone. Its SIP messages are rebuilt from the `sip-message-trace` attachment
+  (sipnab's, and the trace form of draft-howe-vcon-sip-signaling-00) or from
+  `message/sip` attachments, keeping each message's time, addresses and
+  transport, and the dialog list, ladder, `--report`, `--analyze`, `--json`,
+  `--json-dialogs`, the TUI (file browser included) and MCP `open_capture`
+  analyze them unchanged. Each rebuilt message carries the new `input_origin`
+  value `vcon` (`origin=vcon` on the `-N` line and in the TUI). The capture
+  analysis opens with a new blind finding, `rebuilt_from_vcon`, one occurrence
+  per container, naming what a container cannot reproduce and quoting the
+  producer's own caveat: no RTP is stored, so no media statistic is computed;
+  the request-URI is not stored, so a rebuilt request carries
+  `sip:request-uri-not-stored.invalid`; header order across names, bodies
+  other than SDP, and headers the producer did not store do not come back. A
+  container that fails the draft-ietf-vcon-vcon-core-04 schema is still read
+  when its SIP is readable, with the finding logged and carried in the
+  analysis: vcon.store hands containers back with `extensions` as an object,
+  and `extensions` is read in either form. A container with no SIP sipnab can
+  read, or a file that is not a vCon, is skipped with the reason, or stops the
+  run when named directly. `--cores` and a BPF filter are refused for a set
+  holding one. The TUI file browser lists `*.vcon.json`, and its status line
+  says when dialogs came from stored containers. Cookbook recipe 66 shows it. The YANG module `sipnab-diagnosis` has a
+  new revision, 2026-10-09, carrying the finding kind.
+- **MCP `analyze_vcon` and `POST /v1/vcon/analyze`.** Both take a container
+  inline and answer with one shared analysis: per dialog the `--json-dialogs`
+  object, the signaling diagnosis and the message ladder, the capture
+  analysis, `not_recomputed`, and the producer's `media_quality` rows
+  verbatim as `stored_media_quality`. The container is analyzed in stores of
+  its own: the loaded capture is untouched and nothing connects anywhere.
+  `schema_findings` lists every schema finding beside the analysis, and a
+  container with no readable SIP is answered with `verdict: unreadable` and
+  the reason. The tool is read-only, in the `vcon` bundle, and bounded by
+  `limit`.
+
 ## [0.5.213] - 2026-10-12
 
 ### Added

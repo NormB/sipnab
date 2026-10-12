@@ -169,6 +169,26 @@ pub fn capture_file(
     tx: PacketTx,
     ready_tx: Option<crossbeam_channel::Sender<Result<(), String>>>,
 ) -> Result<()> {
+    // A stored vCon container is not a capture: its messages are rebuilt and
+    // sent as pre-parsed packets. See `crate::capture::vcon_input`.
+    if crate::capture::vcon_input::is_container_file(path) {
+        let rebuilt = match open_vcon(path, config) {
+            Ok(rebuilt) => rebuilt,
+            Err(e) => {
+                if let Some(ready) = ready_tx {
+                    let _ = ready.send(Err(format!("{e:#}")));
+                }
+                return Err(e);
+            }
+        };
+        if let Some(ready) = ready_tx {
+            let _ = ready.send(Ok(()));
+        }
+        let mut count: u64 = 0;
+        send_vcon(rebuilt, config, &tx, &mut count);
+        return Ok(());
+    }
+
     // `_gz_guard` owns any decompressed temp file; it must outlive all reads
     // below, so keep it bound for the whole function.
     // A pcapng whose interfaces disagree on snaplen or link type. libpcap
@@ -343,6 +363,69 @@ fn merged_packet(
         verifiable: true,
     });
     packet
+}
+
+/// Open a stored vCon container for reading: validate it and rebuild its
+/// messages.
+///
+/// # Errors
+///
+/// A BPF filter is set (it selects frames, and a container holds none), this
+/// build has no vCon reader, or the container is unreadable or invalid. The
+/// error names the file and the schema's reasons.
+fn open_vcon(path: &Path, config: &CaptureConfig) -> Result<crate::capture::vcon_input::Rebuilt> {
+    let name = crate::capture::archive::source_name(path);
+    if let Some(bpf) = &config.bpf_filter {
+        anyhow::bail!(
+            "'{name}' is a stored vCon container, and the BPF filter '{bpf}' cannot apply \
+             to it: a BPF filter selects captured frames, and a container holds rebuilt \
+             SIP messages. Drop the BPF filter, and select dialogs with --filter instead"
+        );
+    }
+    let rebuilt = crate::capture::vcon_input::read_file(path)
+        .map_err(|e| anyhow::anyhow!("'{name}': {e}"))?;
+    // Reported per container, and not a reason to skip one: the SIP is what
+    // is analyzed, and a container a store reshaped is still a record of the
+    // call. The analysis carries the same findings.
+    if !rebuilt.provenance.schema_findings.is_empty() {
+        tracing::warn!(
+            "'{name}' fails the draft-ietf-vcon-vcon-core-04 schema ({}); its SIP is \
+             read regardless, and the analysis carries the finding(s)",
+            rebuilt.provenance.schema_findings.join("; ")
+        );
+    }
+    tracing::info!(
+        "Reading '{name}' as a stored vCon container: {} SIP message(s) rebuilt. A vCon \
+         stores no RTP, so no media is analyzed from it",
+        rebuilt.provenance.messages
+    );
+    Ok(rebuilt)
+}
+
+/// Send a rebuilt container's messages, until they run out, shutdown is
+/// requested, `--count` is reached, or the receiver is gone, and record the
+/// container in the run's vCon provenance.
+fn send_vcon(
+    mut rebuilt: crate::capture::vcon_input::Rebuilt,
+    config: &CaptureConfig,
+    tx: &PacketTx,
+    count: &mut u64,
+) {
+    let mut sent: u64 = 0;
+    for packet in crate::capture::vcon_input::packets(&rebuilt) {
+        if signals::shutdown_requested() || super::live::count_limit_reached(config.count, *count) {
+            break;
+        }
+        *count += 1;
+        if tx.send(packet).is_err() {
+            break;
+        }
+        sent += 1;
+    }
+    // What reached the stores, which a `--count` limit can make fewer than
+    // the container holds.
+    rebuilt.provenance.messages = sent;
+    crate::capture::vcon_input::record_read(rebuilt.provenance);
 }
 
 /// Read a set of capture files, in order, into one packet stream.
@@ -624,6 +707,21 @@ fn read_member(
     state: &mut SetState,
     ready_tx: &mut Option<crossbeam_channel::Sender<Result<(), String>>>,
 ) -> Result<bool> {
+    // A set may hold stored vCon containers beside captures: `-I` at a
+    // directory of exported containers, or an archive of them.
+    if crate::capture::vcon_input::is_container_file(path) {
+        let rebuilt = match open_vcon(path, config) {
+            Ok(rebuilt) => rebuilt,
+            Err(e) => return skip_unopened_member(path, e, state, ready_tx),
+        };
+        if let Some(ready) = ready_tx.take() {
+            let _ = ready.send(Ok(()));
+        }
+        send_vcon(rebuilt, config, tx, state.count);
+        state.tally.complete += 1;
+        return Ok(true);
+    }
+
     // A set may hold a merged pcapng; same up-front check as the single-file
     // path, for the same reason. Skipping it would drop a whole member while
     // the run reported success on the rest.

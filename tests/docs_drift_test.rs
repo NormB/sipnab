@@ -3933,9 +3933,14 @@ fn mcp_tool_table_lists_every_registered_tool() -> Result<(), TestError> {
     // the vCon export spool and reads each failed container's record. It
     // reads files and changes nothing, so the split moves to 60 read-only of
     // 73 and the thirteen write-capable tools are unchanged.
+    // 72 -> 73 by `analyze_vcon` (src/mcp/tools/vcon.rs), on feat/vcon-input
+    // before the 0.5.213 merge. 73 -> 74 when the two met: `analyze_vcon`
+    // analyzes a stored vCon container handed over inline and is read-only,
+    // so the split moves to 61 read-only of 74 and the thirteen write-capable
+    // tools are unchanged.
     assert_eq!(
         registered.len(),
-        73,
+        74,
         "found only {} #[tool(name = ...)] entries under src/mcp/ — the \
          attribute shape changed and this test is no longer reading the \
          registry: {registered:?}",
@@ -5221,7 +5226,13 @@ fn no_documentation_table_repeats_a_row() -> Result<(), TestError> {
     // the same ten in its site mirror.
     // 1156 -> 1162: the Asterisk and FreeSWITCH guides: docs/asterisk.md 1,
     // docs/freeswitch.md 2, and the same in their site copies.
-    const EXPECTED_TABLES: usize = 1162;
+    // 1162 -> 1167: `analyze_vcon` and its capability row, from
+    // feat/vcon-input, measured on the tree merged with the 0.5.213 batch.
+    // Attributed by counting added separator rows per file: docs/mcp-tools.md
+    // 2 (its parameters and its verdicts), the same 2 in
+    // website/content/docs/mcp-tools.md, and
+    // docs/design/surface-capability-matrix.md 1 (Analyze a stored vCon).
+    const EXPECTED_TABLES: usize = 1167;
 
     let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     let out = std::process::Command::new("git")

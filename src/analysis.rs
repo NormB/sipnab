@@ -162,6 +162,10 @@ pub struct KindMeta {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum FindingKind {
     // ── Blind: what sipnab did not read ──────────────────────────────
+    /// Dialogs rebuilt from a stored vCon container rather than read from
+    /// packets: no media was recomputed, and what the producer did not store
+    /// is absent.
+    RebuiltFromVcon,
     /// Frames that reached the parser and produced nothing.
     UndecodableFrames,
     /// Real SIP discarded because both its ports were outside `--portrange`.
@@ -239,7 +243,8 @@ impl FindingKind {
     /// [`Self::ordinal`] is an exhaustive `match`, a new variant does not
     /// compile until it has an arm there, and the assertion below this `impl`
     /// fails the build unless every entry here sits at its own ordinal.
-    pub const ALL: [Self; 27] = [
+    pub const ALL: [Self; 28] = [
+        Self::RebuiltFromVcon,
         Self::UndecodableFrames,
         Self::SipDiscardedByPortRange,
         Self::SipDiscardedByWebSocketPorts,
@@ -278,33 +283,34 @@ impl FindingKind {
     #[must_use]
     pub const fn ordinal(self) -> usize {
         match self {
-            Self::UndecodableFrames => 0,
-            Self::SipDiscardedByPortRange => 1,
-            Self::SipDiscardedByWebSocketPorts => 2,
-            Self::RetentionLoss => 3,
-            Self::NoMedia => 4,
-            Self::OneWayAudio => 5,
-            Self::StunSdpMismatch => 6,
-            Self::IcmpUnreachableSignaling => 7,
-            Self::IcmpUnreachableMedia => 8,
-            Self::NatMismatch => 9,
-            Self::ServerFailure => 10,
-            Self::AuthLoop => 11,
-            Self::Retransmissions => 12,
-            Self::AckMissing => 13,
-            Self::RegistrationFailure => 14,
-            Self::UnansweredStunProbe => 15,
-            Self::TurnAllocationLapsed => 16,
-            Self::IceRoleConflict => 17,
-            Self::IcmpUnreachableEndpoint => 18,
-            Self::RequestFailure => 19,
-            Self::Abandoned => 20,
-            Self::PostDialDelay => 21,
-            Self::LateMedia => 22,
-            Self::CodecAsymmetry => 23,
-            Self::PtimeAsymmetry => 24,
-            Self::PayloadTypeAsymmetry => 25,
-            Self::DurationAsymmetry => 26,
+            Self::RebuiltFromVcon => 0,
+            Self::UndecodableFrames => 1,
+            Self::SipDiscardedByPortRange => 2,
+            Self::SipDiscardedByWebSocketPorts => 3,
+            Self::RetentionLoss => 4,
+            Self::NoMedia => 5,
+            Self::OneWayAudio => 6,
+            Self::StunSdpMismatch => 7,
+            Self::IcmpUnreachableSignaling => 8,
+            Self::IcmpUnreachableMedia => 9,
+            Self::NatMismatch => 10,
+            Self::ServerFailure => 11,
+            Self::AuthLoop => 12,
+            Self::Retransmissions => 13,
+            Self::AckMissing => 14,
+            Self::RegistrationFailure => 15,
+            Self::UnansweredStunProbe => 16,
+            Self::TurnAllocationLapsed => 17,
+            Self::IceRoleConflict => 18,
+            Self::IcmpUnreachableEndpoint => 19,
+            Self::RequestFailure => 20,
+            Self::Abandoned => 21,
+            Self::PostDialDelay => 22,
+            Self::LateMedia => 23,
+            Self::CodecAsymmetry => 24,
+            Self::PtimeAsymmetry => 25,
+            Self::PayloadTypeAsymmetry => 26,
+            Self::DurationAsymmetry => 27,
         }
     }
 
@@ -328,6 +334,16 @@ impl FindingKind {
             }
         }
         match self {
+            Self::RebuiltFromVcon => m(
+                "rebuilt_from_vcon",
+                Severity::Blind,
+                "Rebuilt from a stored vCon",
+                "container",
+                "These dialogs were rebuilt from stored vCon containers, not read from packets. \
+                 A vCon holds no RTP, so no media statistic here was computed, and whatever its \
+                 producer did not store is absent. The evidence names each container, what it \
+                 lacks, and the producer's own caveat.",
+            ),
             Self::UndecodableFrames => m(
                 "undecodable_frames",
                 Severity::Blind,
@@ -656,7 +672,7 @@ pub enum CountLabel {
     IcmpErrors,
     /// `lifetime_secs`: The allocation lifetime the TURN server last granted, in seconds.
     LifetimeSecs,
-    /// `messages`: SIP messages: those a port gate discarded, or those evicted from retained dialogs by idle compaction.
+    /// `messages`: SIP messages: those a port gate discarded, those evicted from retained dialogs by idle compaction, or those rebuilt from a stored vCon container.
     Messages,
     /// `reasons_not_retained`: Distinct reasons frames failed to decode that were counted but not kept, because the reason table was full.
     ReasonsNotRetained,
@@ -786,7 +802,7 @@ impl CountLabel {
                 "The allocation lifetime the TURN server last granted, in seconds."
             }
             Self::Messages => {
-                "SIP messages: those a port gate discarded, or those evicted from retained dialogs by idle compaction."
+                "SIP messages: those a port gate discarded, those evicted from retained dialogs by idle compaction, or those rebuilt from a stored vCon container."
             }
             Self::ReasonsNotRetained => {
                 "Distinct reasons frames failed to decode that were counted but not kept, because the reason table was full."
@@ -1205,6 +1221,13 @@ pub struct CaptureFacts {
     /// something false about its own completeness, which is the one thing this
     /// struct exists to prevent.
     pub headers_dropped_oversize: u64,
+    /// Stored vCon containers this run rebuilt dialogs from, one record each.
+    ///
+    /// Empty for a run that read only packets. A dialog rebuilt from a vCon
+    /// carries no media and lacks what its producer did not store, and an
+    /// analysis that did not say so would present a summary of somebody
+    /// else's capture as an observation of this one.
+    pub vcon_inputs: Vec<crate::capture::vcon_input::VconProvenance>,
 }
 
 impl CaptureFacts {
@@ -1233,6 +1256,7 @@ impl CaptureFacts {
             gate_closed_during_run: false,
             dialogs_suppressed_by_deny: 0,
             headers_dropped_oversize: crate::sip::parser::oversize_headers_dropped(),
+            vcon_inputs: crate::capture::vcon_input::read_report(),
         }
     }
 }
@@ -1742,6 +1766,26 @@ fn collect_capture_level(acc: &mut Accumulator, facts: &CaptureFacts) {
 /// presence makes a "clean" verdict impossible, and keeping them in one
 /// function makes that set readable in one screen.
 fn collect_incompleteness(acc: &mut Accumulator, facts: &CaptureFacts) {
+    // ── Dialogs rebuilt from stored vCons ────────────────────────────
+    //
+    // First, because it qualifies everything else: every count below it that
+    // touches these dialogs describes what a container STORED, not what this
+    // run observed. One occurrence per container, so a directory of them is
+    // counted by what the operator pointed at.
+    for input in &facts.vcon_inputs {
+        acc.add(
+            FindingKind::RebuiltFromVcon,
+            Evidence::default()
+                .endpoint(input.source.clone())
+                .endpoint(format!(
+                    "vcon {}",
+                    input.uuid.as_deref().unwrap_or("(no uuid)")
+                ))
+                .count(CountLabel::Messages, input.messages)
+                .note(input.note()),
+        );
+    }
+
     // ── Frames that produced nothing ─────────────────────────────────
     let undecodable = &facts.undecodable;
     if undecodable.frames > 0 {

@@ -103,6 +103,7 @@ are new, [1. Triage a pcap fast](#1-triage-a-pcap-fast) is the broadest starting
 | Export one call to a conversation archive | [13b. Export one call to a conversation archive as a vCon](#13b-export-one-call-to-a-conversation-archive-as-a-vcon) |
 | Ship failed calls to an archive without the numbers | [51. Export every failed call as a redacted vCon in one pass](#51-export-every-failed-call-as-a-redacted-vcon-in-one-pass) |
 | Validate a vCon before a store refuses it | [52. Check a vCon against the schema before a store rejects it](#52-check-a-vcon-against-the-schema-before-a-store-rejects-it) |
+| Analyze calls somebody stored as vCons | [66. Analyze a call from a stored vCon](#66-analyze-a-call-from-a-stored-vcon) |
 
 **Let an AI agent do it**
 
@@ -3471,6 +3472,52 @@ In the TUI, `C` on a message types the note there, and a PCAP-NG save writes it.
 - The copy carries no decryption secrets, no name resolution blocks and none of the input's own comments. If the carrier needs to decrypt TLS, send the key log on purpose, separately.
 - A note is text you typed, and sipnab never reads it back: `--json`, the REST API and MCP never show it. That is the design (Invariant 13), not a gap.
 - sipnab refuses a note holding an SDES key, a TLS key-log line or a digest `response=` value. Describe the message that carried the key, and leave the key out.
+
+---
+
+## 66. Analyze a call from a stored vCon
+
+**Problem:** The call is no longer in any capture you hold. What you have is
+the vCon a store kept, one sipnab exported or one another producer wrote.
+
+`-I` reads it the way it reads a pcap:
+
+```bash
+sipnab -N -I call.vcon.json --analyze --no-cli-print --quiet
+```
+
+Against [`tests/fixtures/vcon/sip-rtp-g711-1966.vcon.json`](https://github.com/NormB/sipnab/blob/main/tests/fixtures/vcon/sip-rtp-g711-1966.vcon.json),
+the container `--export-vcon 1-1966@10.0.2.20 --node-name tap-a` writes from
+the sample capture:
+
+```text
+Capture analysis: 1 finding(s) across 1 dialog(s), 0 stream(s), 6 frame(s) read.
+
+THIS ANALYSIS IS INCOMPLETE — sipnab did not read all of this capture. The findings below describe what it UNDERSTOOD, so their counts are floors and the ABSENCE of a finding is not evidence that the problem is absent. The blind finding(s) are listed first.
+
+1. [BLIND] Rebuilt from a stored vCon — 1 container(s)
+   These dialogs were rebuilt from stored vCon containers, not read from packets. A vCon holds no RTP, so no media statistic here was computed, and whatever its producer did not store is absent. The evidence names each container, what it lacks, and the producer's own caveat.
+   Evidence:
+     - tests/fixtures/vcon/sip-rtp-g711-1966.vcon.json, vcon 0158a120-0392-8751-9a04-9decf1485b22 | messages=6 | 6 SIP message(s) rebuilt from this container. Not recomputed or not stored: media: a vCon carries no RTP, so no stream, MOS, jitter or loss was computed from it; the producer's analysis holds 1 media_quality row(s), its own numbers, not recomputed; request-URI: not stored for 3 request(s), which carry sip:request-uri-not-stored.invalid; header order: the trace keys headers by name, so their order across names is the container's, not the wire's, and headers the producer did not store (credential headers, when sipnab produced it) are absent. The producer's caveat: Produced by sipnab 0.5.208 on node tap-a. sipnab OBSERVED this dialog and took no part in it: the parties below are what the From and To headers said, not identities anyone established, and nothing here is signed. No media is in this container because this run decoded none for the dialog; the capture_completeness media_note says what was measured. That is a statement about what this run kept, not a finding that the call was silent. sipnab read 852 frame(s) for this capture. No omissions recorded: every message sipnab held for this dialog is in this container. A capture-level analysis ran and ranked no blind spots.
+```
+
+The other report flags read it the same way: `--json-dialogs`, `--report`,
+`--call-report` and the TUI. `-I` also takes a directory of containers, and
+skips one it cannot read with the reason. The MCP tool `analyze_vcon` and
+`POST /v1/vcon/analyze` analyze a container handed over inline.
+
+**Pitfalls:**
+
+- A vCon stores no RTP, so no media statistic comes back. The first finding
+  says so, and quotes the producer's own caveat.
+- A container that fails the vCon schema, such as one vcon.store handed back
+  with `extensions` as an object, still reads. sipnab logs the schema finding
+  and carries it in the analysis.
+- sipnab refuses `--cores` and a BPF filter for a container: both work on
+  captured frames. Select dialogs with `--filter`.
+
+[Analyze a stored vCon](vcon.md#analyze-a-stored-vcon) walks through it in
+full.
 
 ---
 
