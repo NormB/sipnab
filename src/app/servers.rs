@@ -62,6 +62,11 @@ pub struct Selection {
     /// Resolved by the caller with `cli.mcp_body_cap(config)`, and carried here
     /// for the same reason `mcp_row_cap` is.
     pub mcp_body_cap: usize,
+    /// Ceiling on the bytes of one whole paged MCP response.
+    ///
+    /// Resolved by the caller with `cli.mcp_response_cap(config)`, and
+    /// carried here for the same reason `mcp_row_cap` is.
+    pub mcp_response_cap: usize,
     /// Ceiling on how long one `await_condition` MCP call may wait, seconds.
     ///
     /// Resolved by the caller with `cli.mcp_wait_cap(config)`, and carried
@@ -800,6 +805,7 @@ pub fn start_servers(
                         .map(|mib| mib.saturating_mul(1024 * 1024)),
                 )
                 .with_body_cap(selection.mcp_body_cap)
+                .with_response_cap(selection.mcp_response_cap)
                 .with_max_wait_seconds(selection.mcp_wait_seconds)
                 .with_sweep_limits(selection.mcp_sweep)
                 .with_sweep_job_limits(selection.mcp_sweep_jobs)
@@ -1148,6 +1154,7 @@ mod tests {
             metrics_tls: (None, None),
             mcp_row_cap: 1,
             mcp_body_cap: 1,
+            mcp_response_cap: 1,
             mcp_wait_seconds: 1,
             mcp_sweep: crate::cli::McpSweepLimits::default(),
             mcp_sweep_jobs: crate::cli::McpSweepJobLimits::default(),

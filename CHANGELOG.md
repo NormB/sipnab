@@ -8,6 +8,51 @@ sipnab is pre-1.0: the public API and the CLI surface are not stable, and a
 breaking change may land in any release. Breaking changes are called out in the
 entry that carries them.
 
+## [Unreleased]
+
+### Added
+
+- **A byte budget for one whole MCP page.** `--mcp-max-rows` bounded how many
+  rows a page carried and `--mcp-max-body-bytes` how wide one body in a row
+  could be; nothing bounded the response as a whole. The paged tools —
+  `list_dialogs`, `find_problems`, `search_by_time`, `search_messages`,
+  `tail_dialogs`, `get_dialog`, `reconcile_orphans` and the `rtp_stats` sweep —
+  now take `max_response_bytes`, clamped to the new `--mcp-max-response-bytes`
+  (`[limits] mcp_max_response_bytes`, default 1048576). Past it a page drops
+  whole rows from its end, never part of one, keeps at least one row, and
+  answers `truncated: true`, `truncated_by: "bytes"` and a `next_cursor` to the
+  rest. The count matches `sipnab_mcp_tool_response_bytes_total`: the JSON
+  page, the provenance note and the completeness fields. The default is under
+  twice the largest response measured over `tests/pcap-samples` (561,420
+  bytes, `list_dialogs` with `limit: 1000`), so it changes no answer there.
+- **`truncated_by` on every paged response.** `rows` when the row limit cut
+  the page, `bytes` when the byte budget did, absent when nothing was cut.
+- **`reconcile_orphans` pages with a cursor.** Rows run oldest first by first
+  packet, the order the `rtp_stats` sweep uses, and the response carries
+  `returned`, `truncated_by` and `next_cursor`. Its `limit` is now clamped to
+  `--mcp-max-rows`, as every other list tool's is; it was not bounded by it.
+  The tool documentation said rows ran most recent first; they ran in store
+  order.
+- **[Response bounding](docs/mcp-tools.md#response-bounding) names every tool
+  that takes `limit` without a cursor, and why:** `find_correlated` and
+  `top_talkers` are rankings, `get_call_tree` is a walk from one call,
+  `describe_endpoint` orders on a key that moves, `hep_senders` answers two
+  lists with the bytes `GET /v1/hep/senders` returns, and TFPS's `log` command
+  has no offset for `tfps_labels` to resume from.
+
+### Changed
+
+- **Breaking: `get_dialog` pages with the opaque string cursor the other paged
+  tools use.** `cursor` and `next_cursor` were the integer index of a message;
+  they are now `<RFC 3339>|<Call-ID>#<message index>`, the shape
+  `search_messages` hands out, to be passed back unchanged. An integer
+  `cursor`, a malformed one, or one issued for a different dialog fails with
+  `invalid_params`. The response gains `returned`, `truncated`,
+  `truncated_by` and `first_index` — the index of the page's first message,
+  for `get_message` — and keeps `complete` and `total_messages`.
+  The response now carries `schema_version: 2`; earlier responses carried no
+  `schema_version` field.
+
 ## [0.5.212] - 2026-10-12
 
 ### Added

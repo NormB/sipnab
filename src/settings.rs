@@ -439,6 +439,10 @@ pub const FLAGS: &[(&str, Link)] = &[
         Link::Key("limits", "mcp_max_findings", Merge::Override),
     ),
     (
+        "mcp-max-response-bytes",
+        Link::Key("limits", "mcp_max_response_bytes", Merge::Override),
+    ),
+    (
         "mcp-max-rows",
         Link::Key("limits", "mcp_max_rows", Merge::Override),
     ),
