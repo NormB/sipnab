@@ -37,6 +37,11 @@ entry that carries them.
   is `--invert` and changes no log level.
 - **A panic in the TUI's processing thread is logged with its message.** The
   log line read "Processing thread panicked: Any { .. }".
+- **A bad `--ws-portrange` is reported as a flag value, not a config value.**
+  `--ws-portrange 80` printed "invalid config value: --ws-portrange: …" with
+  no config file involved. It now prints "Invalid --ws-portrange: …", as
+  `--portrange` does. The exit code is unchanged: 2 for the flag, 1 for
+  `[capture] ws_ports`.
 
 ## [0.5.212] - 2026-10-12
 

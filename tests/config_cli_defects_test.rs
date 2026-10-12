@@ -1162,3 +1162,28 @@ fn an_unknown_mcp_transport_is_refused_at_parse_time() -> Result<(), TestError> 
     );
     Ok(())
 }
+
+/// A bad `--ws-portrange` is refused as a flag value, exit 2, without the
+/// "invalid config value" prefix: no config file is involved. The same value
+/// in `[capture] ws_ports` is a config error, exit 1, naming the key.
+#[test]
+fn a_bad_ws_portrange_is_a_flag_error_and_a_bad_key_a_config_error() -> Result<(), TestError> {
+    let o = run(&argv(&["-I", SIP_CALL, "--ws-portrange", "80"]), None);
+    assert_eq!(o.code, 2, "{:?}: {}", o.stage, o.message);
+    assert!(
+        o.message.starts_with("Invalid --ws-portrange: "),
+        "{}",
+        o.message
+    );
+    assert!(!o.message.contains("config"), "{}", o.message);
+
+    let o = run_with_file(&["-I", SIP_CALL], "[capture]\nws_ports = \"80\"\n")?;
+    assert_eq!(o.code, 1, "{:?}: {}", o.stage, o.message);
+    assert!(
+        o.message
+            .contains("invalid config value: [capture] ws_ports"),
+        "{}",
+        o.message
+    );
+    Ok(())
+}

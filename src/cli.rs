@@ -5900,23 +5900,25 @@ impl Cli {
     ///
     /// # Errors
     ///
-    /// `crate::Error::ConfigInvalid`, naming the source, when the spec is not
-    /// two ports separated by `-` with start <= end.
+    /// When the spec is not two ports separated by `-` with start <= end:
+    /// `crate::Error::CliValidation` ("Invalid --ws-portrange: ...") for the
+    /// flag, `crate::Error::ConfigInvalid` naming `[capture] ws_ports` for the
+    /// key. The kind is the origin: the caller derives the exit code from it.
     pub fn ws_port_range(
         &self,
         config: &crate::config::Config,
     ) -> Result<Option<(u16, u16)>, crate::Error> {
-        let (spec, source) = match (
-            self.capture_args.ws_portrange.as_deref(),
-            config.capture.ws_ports.as_deref(),
-        ) {
-            (Some(s), _) => (s, "--ws-portrange"),
-            (None, Some(s)) => (s, "[capture] ws_ports"),
-            (None, None) => return Ok(None),
+        if let Some(spec) = self.capture_args.ws_portrange.as_deref() {
+            return crate::config::parse_portrange(spec)
+                .map(Some)
+                .map_err(|e| crate::Error::CliValidation(format!("Invalid --ws-portrange: {e}")));
+        }
+        let Some(spec) = config.capture.ws_ports.as_deref() else {
+            return Ok(None);
         };
         crate::config::parse_portrange(spec)
             .map(Some)
-            .map_err(|e| crate::Error::ConfigInvalid(format!("{source}: {e}")))
+            .map_err(|e| crate::Error::ConfigInvalid(format!("[capture] ws_ports: {e}")))
     }
 
     /// Gzip inflation ceiling: `--max-gunzip-bytes`, else
@@ -12697,6 +12699,34 @@ mod tests {
             err.to_string().contains("--ws-portrange"),
             "the refusal must name the flag that carried it: {err}"
         );
+        Ok(())
+    }
+
+    /// A bad `--ws-portrange` is a flag error, not a config error: no config
+    /// file is involved, so "invalid config value" would send the operator
+    /// looking for one. A bad `[capture] ws_ports` stays a config error.
+    #[test]
+    fn a_bad_ws_portrange_flag_is_a_flag_error() -> Result<(), TestError> {
+        let flagged =
+            Cli::parse_from_args(["sipnab", "-N", "-I", "x.pcap", "--ws-portrange", "80"]);
+        let err = flagged
+            .ws_port_range(&crate::config::Config::default())
+            .err()
+            .ok_or("a single port is not a range")?;
+        assert!(matches!(err, crate::Error::CliValidation(_)), "{err:?}");
+        assert!(
+            err.to_string().starts_with("Invalid --ws-portrange: "),
+            "{err}"
+        );
+
+        let bare = Cli::parse_from_args(["sipnab", "-N", "-I", "x.pcap"]);
+        let mut broken = crate::config::Config::default();
+        broken.capture.ws_ports = Some("80".into());
+        let err = bare
+            .ws_port_range(&broken)
+            .err()
+            .ok_or("a single port is not a range")?;
+        assert!(matches!(err, crate::Error::ConfigInvalid(_)), "{err:?}");
         Ok(())
     }
 

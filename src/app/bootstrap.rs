@@ -4508,14 +4508,9 @@ pub fn apply_config(cli: &Cli, loaded: LoadedConfig) -> Result<LoadedConfig, Pla
         Err(e) => {
             // A malformed flag is an argument error, exit 2, as a malformed
             // `--portrange` is; a malformed key is a config error, exit 1.
-            return Err(PlanError {
-                exit_code: if cli.capture_args.ws_portrange.is_some() {
-                    2
-                } else {
-                    1
-                },
-                message: e.to_string(),
-            });
+            // `ws_port_range` says which by the error's kind.
+            let origin = crate::settings::Origin::of(matches!(e, crate::Error::CliValidation(_)));
+            return Err(PlanError::refused(origin, e.to_string()));
         }
     }
 
