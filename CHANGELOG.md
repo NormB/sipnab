@@ -9121,6 +9121,9 @@ carried in the source tarball and the docs, not in the code.
 
 ## [0.5.111] - 2026-08-18
 
+Not released. There is no `v0.5.111` tag and no GitHub release for this
+version; these changes first shipped in 0.5.112.
+
 ### Added
 
 - **STUN evidence now settles the private-SDP-address question instead of only
@@ -12279,6 +12282,9 @@ test asserted the decision rather than its effect.
   numbers, all of which had rotted.
 
 ## [0.5.76] - 2026-08-03
+
+Not released. There is no `v0.5.76` tag and no GitHub release for this
+version; these changes first shipped in 0.5.77.
 
 ### Fixed
 
@@ -17299,6 +17305,9 @@ tests-first (red → green) with adversarial-input coverage.
 
 ## [0.4.1] - 2026-06-12
 
+Not released. There is no `v0.4.1` tag and no GitHub release for this
+version; these changes first shipped in 0.4.2.
+
 (Version 0.4.0 was skipped: its tag name was consumed and then
 invalidated by an immutable-release deletion during the release
 process; no 0.4.0 artifacts were ever published.)
@@ -17510,6 +17519,9 @@ performance, usability); roadmap and per-item status in `TODO.md`.
   signal handlers; resolved all warnings in tests.
 
 ## [0.3.1] - 2026-04-14
+
+Not released. There is no `v0.3.1` tag and no GitHub release for this
+version; these changes first shipped in 0.3.2.
 
 ### Changed
 - Timestamp column redesigned with three diagnostic modes: absolute
