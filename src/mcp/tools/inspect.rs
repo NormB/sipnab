@@ -10,6 +10,7 @@
 //! which is the difference between one cheap call and a page fetch that comes
 //! back empty for a reason the agent cannot see.
 
+use crate::mcp::errors::{self, Reason};
 use crate::mcp::server::SipnabMcp;
 use crate::mcp::shape::resolve_limit_with_cap;
 use crate::output::model::DialogSummary;
@@ -168,6 +169,7 @@ impl SipnabMcp {
                        than from a value both legs carry. Multi-leg is the \
                        normal case behind a B2BUA, SBC or PBX, where \
                        get_dialog returns one quarter of the call.",
+        output_schema = rmcp::handler::server::tool::schema_for_output::<CallTreeResponse>(),
         annotations(read_only_hint = true, open_world_hint = false)
     )]
     pub async fn get_call_tree(
@@ -182,9 +184,10 @@ impl SipnabMcp {
             // disagree about the shape of a call. This tool attaches the fenced
             // dialog projection to each leg the walk found.
             let tree = ds.correlation_tree(&params.call_id, limit).ok_or_else(|| {
-                rmcp::ErrorData::invalid_params(
+                errors::refuse_param(
+                    Reason::NotFound,
+                    "call_id",
                     format!("call_id '{}' not found", params.call_id),
-                    None,
                 )
             })?;
 
@@ -259,6 +262,7 @@ impl SipnabMcp {
                        than as a tool error. total_dialogs is the denominator, \
                        so zero matches on an empty capture is distinguishable \
                        from zero matches on a full one.",
+        output_schema = rmcp::handler::server::tool::schema_for_output::<ValidateFilterResponse>(),
         annotations(read_only_hint = true, open_world_hint = false)
     )]
     pub async fn validate_filter(

@@ -31,6 +31,7 @@
 //! precisely so a second control decoder needs no second tool, and
 //! `relay_seam_test::no_mcp_tool_is_named_after_a_relay_vendor` refuses one.
 
+use crate::mcp::errors::{self, Reason};
 use crate::mcp::server::SipnabMcp;
 use rmcp::handler::server::tool::schema_for_output;
 use rmcp::handler::server::wrapper::Parameters;
@@ -416,9 +417,10 @@ impl SipnabMcp {
             // the dialog, and is where attribution matters most.
             let dialog_seen = ds.get(&params.call_id).is_some();
             if !dialog_seen && streams.is_empty() {
-                return Err(rmcp::ErrorData::invalid_params(
+                return Err(errors::refuse_param(
+                    Reason::NotFound,
+                    "call_id",
                     crate::rtp::stream_store::call_not_carried(&params.call_id),
-                    None,
                 ));
             }
             let absence = (!dialog_seen).then(|| dialog_absence(&ss, &streams));
@@ -597,13 +599,14 @@ impl SipnabMcp {
     ) -> Result<CallToolResult, rmcp::ErrorData> {
         let pointer = params.frame_ref.trim();
         if pointer.is_empty() {
-            return Err(rmcp::ErrorData::invalid_params(
+            return Err(errors::refuse_param(
+                Reason::InvalidValue,
+                "frame_ref",
                 "frame_ref must name one frame pointer, in the \
                  <source>#<ordinal>@<digest> form the query tools emit. A blank \
                  string names no frame, and an empty decode would read as 'this \
                  frame holds no control message'"
                     .to_string(),
-                None,
             ));
         }
         let payload = decode_ng_one(self, pointer);
@@ -645,7 +648,8 @@ impl SipnabMcp {
         Parameters(params): Parameters<QueryRelayParams>,
     ) -> Result<CallToolResult, rmcp::ErrorData> {
         let Some(access) = self.relay_query_access() else {
-            return Err(rmcp::ErrorData::invalid_params(
+            return Err(errors::refuse(
+                Reason::NotEnabled,
                 format!(
                     "query_relay is not available on this server. It transmits, \
                      so it needs three things: --mcp-allow-relay-query to enable \
@@ -655,7 +659,6 @@ impl SipnabMcp {
                      make sipnab talk to the addresses inside it.",
                     crate::cli::RELAY_CONTROL_FLAG
                 ),
-                None,
             ));
         };
 
@@ -733,7 +736,8 @@ impl SipnabMcp {
         Parameters(params): Parameters<RelayStatsParams>,
     ) -> Result<CallToolResult, rmcp::ErrorData> {
         let Some(access) = self.relay_query_access() else {
-            return Err(rmcp::ErrorData::invalid_params(
+            return Err(errors::refuse(
+                Reason::NotEnabled,
                 format!(
                     "relay_stats is not available on this server. It transmits, \
                      so it needs three things: --mcp-allow-relay-query to enable \
@@ -742,7 +746,6 @@ impl SipnabMcp {
                      permit.",
                     crate::cli::RELAY_CONTROL_FLAG
                 ),
-                None,
             ));
         };
 
@@ -810,7 +813,8 @@ impl SipnabMcp {
         Parameters(params): Parameters<RelayCompareParams>,
     ) -> Result<CallToolResult, rmcp::ErrorData> {
         let Some(access) = self.relay_query_access() else {
-            return Err(rmcp::ErrorData::invalid_params(
+            return Err(errors::refuse(
+                Reason::NotEnabled,
                 format!(
                     "relay_compare is not available on this server. It transmits, \
                      so it needs three things: --mcp-allow-relay-query to enable \
@@ -819,17 +823,17 @@ impl SipnabMcp {
                      permit.",
                     crate::cli::RELAY_CONTROL_FLAG
                 ),
-                None,
             ));
         };
 
         let call_id = params.call_id.trim();
         if call_id.is_empty() {
-            return Err(rmcp::ErrorData::invalid_params(
+            return Err(errors::refuse_param(
+                Reason::InvalidValue,
+                "call_id",
                 "relay_compare needs a call_id to compare; a blank string names \
                  no call, and comparing nothing has no answer."
                     .to_string(),
-                None,
             ));
         }
 
@@ -3098,6 +3102,22 @@ mod relay_handler_tests {
     }
 
     /// Without a Call-ID, `query_relay` enumerates, at the relay's default cap.
+    /// `server_capabilities` reports the relay opt-in as on exactly when the
+    /// relay tools can transmit.
+    #[tokio::test]
+    async fn capabilities_report_the_relay_opt_in() -> Result<(), TestError> {
+        let relay = Arc::new(RelayDouble::default());
+        for (server, want) in [(empty(), false), (asking(empty(), &relay)?, true)] {
+            let result = server
+                .server_capabilities()
+                .await
+                .map_err(|e| format!("capabilities answered: {e:?}"))?;
+            let v = payload(&result)?;
+            assert_eq!(v["runtime"]["mcp_allow_relay_query"], want, "{v}");
+        }
+        Ok(())
+    }
+
     #[tokio::test]
     async fn querying_without_a_call_id_lists_at_the_default_cap() -> Result<(), TestError> {
         let relay = Arc::new(RelayDouble {

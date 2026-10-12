@@ -4846,7 +4846,10 @@ fn no_documentation_table_repeats_a_row() -> Result<(), TestError> {
     // 1 and its site page 1.
     // 1111 -> 1113: the 2026-10-11 three-version table, in docs/benchmarks.md
     // and in website/content/docs/benchmarks.md.
-    const EXPECTED_TABLES: usize = 1113;
+    // 1113 -> 1117: the error-data member table and the reason-code table
+    // in docs/mcp-tools.md's "Error data" section, and the same two in the
+    // site mirror website/content/docs/mcp-tools.md.
+    const EXPECTED_TABLES: usize = 1117;
 
     let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     let out = std::process::Command::new("git")

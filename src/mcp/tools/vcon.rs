@@ -35,6 +35,7 @@
 //! a caller, so the response carries the caveat, the inline-media bound this
 //! run enforced, and one row per omission.
 
+use crate::mcp::errors::{self, Reason};
 use crate::mcp::server::SipnabMcp;
 use crate::mcp::shape::resolve_limit_with_cap;
 use rmcp::handler::server::tool::schema_for_output;
@@ -328,18 +329,18 @@ impl SipnabMcp {
     ) -> Result<CallToolResult, rmcp::ErrorData> {
         let response = match (params.call_id, params.container) {
             (Some(_), Some(_)) => {
-                return Err(rmcp::ErrorData::invalid_params(
+                return Err(errors::refuse(
+                    Reason::ConflictingParams,
                     "`call_id` and `container` are alternatives: the first \
                      exports a dialog and checks what it produced, the second \
                      checks a document you already hold. Give one",
-                    None,
                 ));
             }
             (None, None) => {
-                return Err(rmcp::ErrorData::invalid_params(
+                return Err(errors::refuse(
+                    Reason::MissingParam,
                     "give `call_id` to export a dialog and validate it, or \
                      `container` to validate a document you already hold",
-                    None,
                 ));
             }
             (Some(call_id), None) => {
@@ -360,11 +361,12 @@ impl SipnabMcp {
             }
             (None, Some(container)) => {
                 if !container.is_object() {
-                    return Err(rmcp::ErrorData::invalid_params(
+                    return Err(errors::refuse_param(
+                        Reason::InvalidValue,
+                        "container",
                         "a vCon container is a JSON object; this is not one, so \
                          there is nothing to validate. Pass the container \
                          itself, not a string holding it",
-                        None,
                     ));
                 }
                 self.validate_container(&container)?
@@ -398,23 +400,24 @@ impl SipnabMcp {
         filter: Option<String>,
     ) -> Result<Selection, rmcp::ErrorData> {
         match (call_id, filter) {
-            (Some(_), Some(_)) => Err(rmcp::ErrorData::invalid_params(
+            (Some(_), Some(_)) => Err(errors::refuse(
+                Reason::ConflictingParams,
                 "`call_id` and `filter` are alternatives, not a pair: one names \
                  a dialog, the other names a rule for choosing them. Give one",
-                None,
             )),
-            (None, None) => Err(rmcp::ErrorData::invalid_params(
+            (None, None) => Err(errors::refuse(
+                Reason::MissingParam,
                 "give `call_id` for one dialog, or `filter` for every dialog it \
                  selects -- for example \"response_code >= 400\"",
-                None,
             )),
             (Some(id), None) => Ok(Selection::One(id)),
             (None, Some(expression)) => {
                 let compiled = self.compile_filter(Some(&expression))?.ok_or_else(|| {
-                    rmcp::ErrorData::invalid_params(
+                    errors::refuse_param(
+                        Reason::InvalidValue,
+                        "filter",
                         "an empty filter selects nothing and names nothing; omit \
                          it, or give an expression",
-                        None,
                     )
                 })?;
                 Ok(Selection::Matching(Box::new(compiled)))
@@ -540,9 +543,10 @@ impl SipnabMcp {
         if let Selection::One(id) = selection
             && total_matched == 0
         {
-            return Err(rmcp::ErrorData::invalid_params(
+            return Err(errors::refuse_param(
+                Reason::NotFound,
+                "call_id",
                 format!("call_id '{id}' not found"),
-                None,
             ));
         }
 

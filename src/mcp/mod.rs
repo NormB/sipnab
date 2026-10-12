@@ -49,6 +49,7 @@ pub mod audit;
 pub mod completeness;
 pub mod completion;
 pub mod elicit;
+pub mod errors;
 pub mod live;
 pub mod load;
 // No outer doc comment on a module whose file already carries a `//!` one. The
@@ -70,6 +71,7 @@ pub mod structured;
 pub mod subscribe;
 pub mod sweep;
 pub mod tls_capture;
+pub mod tool_schema;
 pub mod tools;
 pub mod transport;
 
