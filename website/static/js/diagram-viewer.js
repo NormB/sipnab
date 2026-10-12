@@ -333,6 +333,11 @@
         tertiaryColor: "#1f2430",
         lineColor: "#8a93a3",
         textColor: "#cbccc6",
+        // Flowchart edge labels. Left unset, mermaid derives #585858, and the
+        // #cbccc6 label text on it measures 4.4:1, under WCAG AA's 4.5:1 (axe
+        // color-contrast on /deployments/). On the note background it
+        // measures 7.58:1.
+        edgeLabelBackground: "#2d3640",
         actorBkg: "#242936",
         actorBorder: "#3d4754",
         actorTextColor: "#cbccc6",

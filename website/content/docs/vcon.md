@@ -133,7 +133,10 @@ rely on.
   written are not written on the way out, because stopping sipnab must leave
   no call data behind. A live run that ends on its own (`--duration`,
   `--autostop`) writes the matching calls the checks had not reached yet, and
-  does not write a second copy of any container already written.
+  does not write a second copy of any container already written. Its last
+  line counts both, for example `Wrote no further vCon containers to 'spool'
+  at the end of the run; 1 container(s) were written there as their calls
+  ended.`
 - With `-I`, sipnab reads the whole capture and writes every container at the
   end, as before.
 
@@ -258,22 +261,22 @@ had not reached stays in the spool for the next run.
 
 ### Choose the store kind
 
-Stores differ in where they take a container, how they authenticate, what they
-answer for a uuid they hold, and which parts of the drafts they accept.
+Stores differ in where they take a container, how they authenticate, and what
+they answer for a uuid they hold.
 `--vcon-forward-kind` (or `[vcon_forward] kind`) names the kind of store, and
 the kind supplies those values, so you give the store's base URL and the bare
 key:
 
-| Kind | Ingest path added to a base URL | The header a bare key goes in | A uuid it holds | Copy sent |
-|---|---|---|---|---|
-| `generic` (default) | none: the URL is the endpoint | not accepted: give `Header-Name: value` | not measured | unchanged |
-| `vcon-store` | `/v1/vcons` | `Authorization: Bearer <key>` | `409`; set `--vcon-forward-replace-url` to PUT it instead | `extensions` as an object, as `--vcon-forward-compat vcon-store` does |
-| `conserver` | `/vcon/external-ingress?ingress_list=sipnab` | `x-conserver-api-token: <key>` | `204`, and the store replaces its copy | unchanged |
+| Kind | Ingest path added to a base URL | The header a bare key goes in | A uuid it holds |
+|---|---|---|---|
+| `generic` (default) | none: the URL is the endpoint | not accepted: give `Header-Name: value` | not measured |
+| `vcon-store` | `/v1/vcons` | `Authorization: Bearer <key>` | `500`, which the forwarder retries like any `5xx` |
+| `conserver` | `/vcon/external-ingress?ingress_list=sipnab` | `x-conserver-api-token: <key>` | `204`, and the store replaces its copy |
 
-Each value is what the store did when measured on 2026-10-07. vcon.store:
-the measurements in
-[Send sipnab's vCons to vcon.store](@/docs/vcon-store.md#the-measurements). conserver:
-a self-hosted vCon server, sent a synthetic container from sipnab's test
+No kind changes the container sent. Each value is what the store did when
+measured: vcon.store on 2026-10-09, in
+[Send sipnab's vCons to vcon.store](@/docs/vcon-store.md#the-measurements). conserver
+on 2026-10-07: a self-hosted vCon server, sent a synthetic container from sipnab's test
 fixtures. It answered `204` for a new container, and `GET /vcon/{uuid}` then
 returned the container with an `amended` member added. It answered `204` for
 the same uuid sent again, and the read-back then showed the second copy. It
@@ -290,10 +293,6 @@ An explicit setting overrides each value the kind supplies:
 - The forwarder sends a credential that is a full `Header-Name: value` line as
   written. The kind forms the header only from a bare key, so give a key that
   itself holds a colon as the full line.
-- `--vcon-forward-compat` (or `[vcon_forward] compat`) replaces the kind's
-  adaptation: `none` sends the container unchanged to a `vcon-store` kind, and
-  `vcon-store` adapts it for a `generic` one. `--vcon-forward-compat vcon-store`
-  means what it meant before kinds existed.
 - `--vcon-forward-replace-url` applies to any kind. No kind sets one: nobody has
   measured a `PUT` to vcon.store.
 
@@ -329,8 +328,8 @@ sipnab --vcon-forward /var/spool/sipnab-vcon --config /etc/sipnab/vcon-forward.t
 ```
 
 sipnab checks each key by the rule its flag follows. A number out of range, an
-unknown kind or compat name, or a first back-off longer than the cap stops any
-run that loads the file. A URL or a credential the forwarder cannot use stops the
+unknown kind, or a first back-off longer than the cap stops any run that loads
+the file. A URL or a credential the forwarder cannot use stops the
 forwarder at startup, naming the key.
 
 ### Deliver to two stores
@@ -382,6 +381,15 @@ bytes (default 65536) counts as no answer, and the container waits for a
 retry. The delivered and failed directories must be on the
 spool's file system, so that every move is a rename.
 
+To see the spool's state, run `sipnab --vcon-spool-status <SPOOL_DIR>`, call
+[`vcon_spool_status`](@/docs/mcp-tools.md#vcon-spool-status) on the capture's MCP
+server, or read [`GET /v1/vcon/spool`](@/docs/api.md#get-v1-vcon-spool) from its
+REST server. All three give one answer. It counts the containers pending in the spool and in the default
+`delivered/` and `failed/` directories, and returns each failed container's
+`<name>.error.json` record. It reads files and nothing else: the answer is a
+snapshot dated by its `as_of` field, and the forwarder may move a file a moment
+later.
+
 The forwarder reads the spool by the contract above. It skips dot-prefixed
 names and names that do not end in `.json`, so it never reads a staging file.
 When sipnab rewrites a container under the same name because the call changed,
@@ -396,11 +404,8 @@ sent, and leaves a newer one in the spool for the next pass.
   forwarder logs `delivered`, never `stored`. A self-hosted conserver once
   answered `204` for a container it then failed to write, and nothing in the
   answer said so. To know the store kept a container, look in the store.
-- **The bytes are sipnab's.** Without `--vcon-forward-compat` the forwarder
-  never changes a container. With it, only the copy it sends changes, and the
-  file on disk keeps the form the drafts define.
-  [Send sipnab's vCons to vcon.store](@/docs/vcon-store.md) explains the one compat
-  mode there is.
+- **The bytes are sipnab's.** The forwarder never changes a container: it
+  sends the file's bytes, whatever the kind.
 - **It does not retry a refusal.** A `4xx` other than a `401`, a `403` or a
   `409` it can replace stays in the failed directory until a person reads the
   record and decides.
@@ -489,9 +494,7 @@ written, for any kind.
 The fetcher checks each container it writes against the vendored vCon schema.
 A container the schema refuses is still written, as the store holds it: it is
 the store's record, and you need it to see what is wrong. The log line lists
-each finding, and the run exits `1`. A container sent through vcon.store's
-compat mode comes back in the store's form, with `extensions` as an object, so
-the schema refuses it (measured on 2026-10-09).
+each finding, and the run exits `1`.
 
 A file that already exists is not replaced: the fetcher does not ask the store
 for that uuid, and the run exits `1`. `--vcon-fetch-overwrite` replaces it.
@@ -891,6 +894,7 @@ participant.
 |---|---|---|
 | `parties[].sip` | the `From` or `To` header carried this URI | that anyone with that URI took part |
 | `parties[].sip_display_name` | the sender wrote this string in its header | that this names a person |
+| `parties[].sip_user_agent` and `parties[].sip_contact` | a message this party sent carried the `User-Agent` or `Server` and `Contact` header: for the caller, the opening request; for the callee, a response from 101 to 699 carrying the dialog's remote `To` tag, or a request carrying it as the `From` tag. A proxy's `100 Trying` and any response without that tag are never read for the callee | that the software named is what the party runs |
 | `validation: "none"` on every party | nobody checked anything about this party | that a check failed — the field never carries another value |
 | a `role: "observer"` party | this container came from a tap | that the tap was in the media path |
 | `attachments[].party` | the observer contributed this document | that a participant did |

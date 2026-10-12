@@ -35,6 +35,7 @@
 //! failed. Citing a neighboring header would be worse than citing none, because
 //! it resolves.
 
+use crate::mcp::errors::{self, Reason};
 use crate::mcp::server::SipnabMcp;
 use rmcp::handler::server::wrapper::Parameters;
 use rmcp::model::{CallToolResult, ContentBlock};
@@ -144,13 +145,14 @@ impl SipnabMcp {
     ) -> Result<CallToolResult, rmcp::ErrorData> {
         let pointer = params.frame_ref.trim();
         if pointer.is_empty() {
-            return Err(rmcp::ErrorData::invalid_params(
+            return Err(errors::refuse_param(
+                Reason::InvalidValue,
+                "frame_ref",
                 "frame_ref must name one frame pointer, in the \
                  <source>#<ordinal>@<digest> form the query tools emit. A blank \
                  string names no frame, and an empty decode would read as 'this \
                  frame holds nothing'"
                     .to_string(),
-                None,
             ));
         }
         let body = decode_one(self, pointer, params.field.as_deref());

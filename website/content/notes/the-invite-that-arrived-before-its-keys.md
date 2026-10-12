@@ -1,124 +1,190 @@
 +++
-title = "The INVITE that arrived before its keys"
-date = 2026-08-20
-description = "A TLS capture that decrypted everything except the one message that mattered, and reported a NAT problem instead. Three bugs, none of them the race everyone assumed."
+title = "Decrypt SIP over TLS when the keys arrive after the call starts"
+date = 2026-08-21
+updated = 2026-10-11
+description = "Run sipnab so that it holds encrypted SIP records captured before their keys and decrypts them when the keys arrive, read what it reports about them, and recover the rest from a saved capture."
 
 [extra]
-kind = "postmortem"
+kind = "howto"
 +++
 
-Dan Jenkins ([@danjenkins](https://github.com/danjenkins)) reported that sipnab
-decrypted his OpenSIPS TLS traffic almost perfectly. Every message came through
-except the INVITE. Because the INVITE carries the SDP offer, sipnab then
-concluded the media endpoints did not match and reported a NAT problem.
+## In short
 
-That is the worst possible failure shape. Not "decryption failed", which sends
-you to the keys, but a confident and specific diagnosis about something else
-entirely.
+To read SIP that TLS encrypts, sipnab needs the session keys, often
+from a key log that another program writes while the capture runs. That
+program writes a session's keys only after the session setup completes, so the
+first encrypted records of a call, starting with the INVITE that opens it,
+can reach sipnab before their key. Without the INVITE, sipnab does not see the
+call's original audio offer and can report a media or NAT problem that is not
+there. sipnab holds such records for a few seconds and decrypts them when the
+key arrives, and it reports how many it recovered and how many it could not.
 
-## The obvious cause, real but not sufficient
+## Who this is for
 
-Keys arrive late. A keylog producer attaches to a daemon that already runs, a
-call arrives, and the first records reach sipnab before the first key does. On
-a SIP dialog the first record is the INVITE.
+Operators who decrypt SIP over TLS with a key log that its writer is still
+adding to during the capture: eCapture attached to a running SIP server, or an endpoint
+started with `SSLKEYLOGFILE`.
 
-So hold records you cannot open, and retry them once a key turns up. Dan
-suggested exactly this, and he was right.
+## Before you start
 
-The first implementation worked on a synthetic test and failed on his capture,
-reporting:
+No TLS capture with late keys ships in the sipnab repository, so this page
+shows the commands without output. The messages quoted in step 3 come
+from the sipnab source. The number in each is a count that depends on the
+run.
+[Capture SIP over TLS](@/docs/tls-capture.md#which-method-can-you-use)
+covers choosing a key source.
 
-```text
-recovered 0 of 3 buffered record(s)
+## Steps
+
+### 1. Start the key source before the capture
+
+Start eCapture, or the endpoint that writes `SSLKEYLOGFILE`, first, and start
+sipnab after it. A key-log writer emits a session's keys only after the TLS
+handshake completes, so the first application record is on the network before
+any key for it exists. sipnab's 0.5.120 release notes record a gap of 56 ms
+measured in the field. Holding records (step 2) covers a gap of that size. It
+does not cover traffic that passed before the capture started, or keys the
+writer never produced.
+
+For a long-lived connection set up before the capture started,
+restart that connection while capturing, so that the capture holds its
+handshake and its first records.
+
+### 2. Run sipnab so that it can hold records until their keys arrive
+
+```bash
+sudo sipnab -N -d eth0 --keylog /tmp/keys.log --keylog-watch -O encrypted.pcap
 ```
 
-Three records held, keys present, none opened.
+- `--keylog-watch` re-reads the key log as it grows. sipnab holds records it
+  cannot open only when more keys can still arrive: with `--keylog-watch`, or
+  with `--keylog-fd`, which reads keys from an open file descriptor and implies
+  `--keylog-watch`. A plain `--keylog` reads the file once, and then a record
+  that does not open is not held.
+- `-O encrypted.pcap` saves the original encrypted packets (the default
+  `--pcap-export-mode` is `raw`), so that step 4 can read them again.
+- `-N` runs without the interactive interface and prints the end-of-run
+  report that step 3 describes.
+- If the SIP server uses a TLS port outside 5060 to 5061, add a
+  `--portrange` that covers it.
 
-## Bug one, a rewind that walked through its own lock-on
+The hold has fixed limits: 4 MiB in total across every session, 16 records
+per direction, 4096 directions, and 5 seconds per record. A direction is one
+side of one TCP connection.
+[Capture SIP over TLS](@/docs/tls-capture.md#when-the-keys-arrive-after-the-call-starts)
+lists the limits.
 
-Both endpoints keep a sequence counter, and TLS 1.3 numbers every record from
-it. A capture that joins mid-stream does not know where in that sequence it
-sits, so sipnab searches a window of candidate numbers and *locks on* once one
-opens. The lock-on keeps a floor that advances on every failed attempt, and the
-window widens as attempts fail.
+### 3. Read what the run reports about held records
 
-Replaying held records ran straight through that machinery. Each failed retry
-advanced the floor. By the time a real key arrived, the floor had walked past
-sequence 0, and sequence 0 is where the INVITE lives. The recovery pass
-methodically buried the exact record it existed to find.
+When held records open after their key arrives, sipnab logs this line (`N` is
+the count):
 
-The fix treats a replay as something other than a discovery. It retries with a
-window of one and leaves the floor alone. That went in as a test reproducing
-Dan's failure first, which reported `left: None`, and then passing.
+```text
+TLS late decrypt: recovered N record(s) that arrived before their keys
+```
 
-## Bug two, a flag that could never fire
+It is an informational log line, so `--quiet` hides it. At the end of a run
+with `-N`, sipnab prints these lines when they apply. The last one is a
+warning log line and carries a timestamp:
 
-A guard on the floor advance depended on `handshake_seen`. Session setup
-computed that value, and sessions come into being at startup, before packet
-one, so it always held false. The guard could not fire, by construction.
+```text
+sipnab discarded N TLS record(s) held from before a key arrived: the late-decrypt hold is bounded (4 MiB total, 16 record(s) per direction, 5s), and it filled before any key matched them. Start the key source before the capture, or expect the first message of a call to be missing.
+```
 
-It now takes its value when the handshake actually *arrives*, and clears the
-floor at the same moment, because by then the floor may already sit at 16.
+```text
+N TLS record(s) were still waiting when the run ended: no key ever arrived for them. Nothing was discarded and starting the capture earlier would not have helped -- the key source never produced those secrets.
+```
 
-This defect class deserves a name. A flag computed at the wrong point in the
-lifecycle stays invisible in review, reads correctly, and does nothing. The
-tell was a debug counter reporting `observed=0` on a capture that plainly
-contained a handshake.
+```text
+TLS late decrypt: N record(s) opened only after the capture ended -- their keys arrived too late to place the messages in this run. Re-read the saved capture with the same keylog to see them.
+```
 
-## Bug three, NewSessionTickets in the plaintext
+What each one means:
 
-With records recovering, the `100 Trying` went missing.
+| Line | Meaning | What to do |
+|---|---|---|
+| `recovered N record(s)` | sipnab decrypted records held before their key and placed them in the run. | Nothing. |
+| `discarded N TLS record(s)` | The hold reached one of its limits (size, count, or the 5-second age) before a key matched these records. | Start the key source earlier, then capture again; or read the saved capture as in step 4. |
+| `still waiting when the run ended` | No key for these records ever arrived. | Check the key source. eCapture attached to a TLS library the server does not use writes no keys; see [Capture SIP over TLS, method 5](@/docs/tls-capture.md#5-lift-keys-from-a-daemon-you-cannot-restart). |
+| `opened only after the capture ended` | The keys arrived after the last packet. | Read the saved capture as in step 4. |
 
-In TLS 1.3 the outer content type of a protected record always reads 23,
-ApplicationData. The *inner* type, which is the last non-zero byte of the
-plaintext, is what separates a handshake message from application data. sipnab
-never looked, so post-handshake NewSessionTicket messages joined the SIP byte
-stream as though they were SIP. The parser then lost framing alignment and
-dropped the next message.
+If a call's INVITE is missing and sipnab reports a media or NAT problem for
+that call, look for these lines first.
 
-Filtering on the inner content type fixed it.
-[RFC 8446 section 5.2](https://www.rfc-editor.org/rfc/rfc8446#section-5.2) says this
-plainly. The code simply had not asked.
+### 4. Read the saved capture again with the complete key log
 
-## The framing fix that mattered more than any of them
+```bash
+sipnab -N -I encrypted.pcap --keylog /tmp/keys.log --portrange 1-65535 --report
+```
 
-Underneath all three sat a wrong assumption. TLS delivers a **byte stream**,
-not messages. sipnab ran its SIP detector once per decrypted record, so a
-message split across two records never registered, and two messages inside one
-record produced one.
+In this read sipnab loads every key before the first packet, so no record has
+to wait for its key and sipnab holds nothing. `--portrange 1-65535` makes sure
+that sipnab reads SIP on any port.
 
-Decrypted bytes now pass through the same TCP SIP framing the cleartext path
-uses. This is the kind of defect that only shows up on real traffic, because
-synthetic fixtures tend to put one tidy message in one tidy record.
+## What changed in sipnab 0.5.120 and 0.5.121
 
-## The rethink that mattered most
+Dan Jenkins ([@danjenkins](https://github.com/danjenkins)) reported that
+sipnab decrypted his SIP over TLS traffic except for the INVITE, and then
+reported a NAT problem on a trunk that did not have one. The 0.5.120 release
+(2026-08-21) fixed three causes:
 
-There is a second and better outcome here. The original framing for running a
-HEP mirror alongside a live interface was *redundancy*, a fallback for when key
-extraction turns fragile. Dan put it differently after using it:
+- **Records that arrived before their keys**: sipnab dropped them. It now
+  holds and retries them as described above. A retry tries the record sequence number
+  sipnab already has and never advances its search for the number; that rule
+  is Dan Jenkins's. Without it, failed retries moved the search past sequence
+  0, where the INVITE is. sipnab computed a related flag, which marks a
+  session's handshake as seen, when it created the session. With a complete
+  key log, sipnab creates sessions before it reads the first packet, so the
+  flag was always false. sipnab now sets it when the handshake arrives.
+- **A SIP message split across two TLS records** lost everything after the
+  first record. Decrypted bytes now go through the same stream framing as
+  SIP over plain TCP.
+- **TLS 1.3 session tickets** (`NewSessionTicket` messages): sipnab passed them
+  to the SIP parser, which cost the next message. sipnab now checks each record's
+  inner content type ([RFC 8446 section 5.2](https://www.rfc-editor.org/rfc/rfc8446#section-5.2)).
 
-> the whole point is being able to see when [OpenSIPS] is doing something wrong
+The release notes record the result on the reproduction capture Dan Jenkins
+supplied:
 
-That inverts the feature. A mirror the proxy produces reports what the proxy
-*believes* it did. The wire reports what actually left the box. When the
-question is "does the proxy misbehave, or did I configure it to", those are not
-two sources of one truth, and asking the suspect twice cannot answer it.
+- Before: 0 of 17 application-data records decrypted in 32.9 seconds.
+- After: all 8 messages of the call, the INVITE with its SDP offer, in 0.55
+  seconds.
 
-So the **disagreement** became the finding. Per call: messages both saw,
-mirror-only, wire-only, and present on both with differing SDP. The trap is
-that the mirror usually arrives first, because the proxy mirrors as it
-processes while the wire copy takes a network hop. Any "first one wins" rule
-therefore makes the proxy authoritative, which is the one thing the wire
-capture exists to check. sipnab pairs copies by transaction identity
-([RFC 3261 section 17.1.3](https://www.rfc-editor.org/rfc/rfc3261#section-17.1.3)),
-never by arrival order.
+The 0.5.121 release (2026-08-21) added a report for a run that takes SIP from
+a HEP mirror and from the network at the same time: per call, messages both
+sources saw, messages only one of them saw, and messages present in both with
+different SDP. Dan Jenkins proposed, after using the two sources together,
+that the two sources count as complementary rather than as copies of each other. See
+[cookbook recipe 6d](@/docs/cookbook.md#6d-take-signaling-from-hep-and-media-off-the-wire-in-one-process).
 
-## Bounds
+## Terms used here
 
-Recovery has limits, because a peer whose keys never arrive would grow the hold
-forever. 4 MiB total, 16 records per direction, 4096 directions, and five
-seconds of age. It closes a gap measured in packets, not one measured in
-minutes. Start the key source before the capture wherever you can.
+- **SIP**: the signaling protocol that sets up and ends calls.
+- **INVITE**: the SIP request that starts a call; it carries the caller's SDP
+  offer.
+- **SDP offer**: the part of the INVITE that says where to send the caller's
+  audio.
+- **NAT**: address translation between a private network and the internet; a
+  mismatch between signaled and actual media addresses can indicate it.
+- **TLS**: the encryption protocol that protects SIP on port 5061.
+- **Record**: one encrypted unit of TLS data on a connection.
+- **Key log**: a text file of TLS session secrets in the `SSLKEYLOGFILE`
+  format, written by a TLS library or by eCapture.
+- **eCapture**: a third-party tool that reads TLS keys out of a running
+  process.
+- **Handshake**: the start of a TLS connection, where the two sides agree on
+  keys.
+- **HEP**: a protocol that SIP servers use to send copies of their messages to
+  a collector.
+- **pcap**: the standard packet capture file format.
+- **MiB**: mebibyte, 1,048,576 bytes.
 
-Shipped in 0.5.120. Reported, diagnosed alongside, and materially improved by
-Dan Jenkins ([@danjenkins](https://github.com/danjenkins)).
+## Related guides
+
+- [Capture SIP over TLS: When the keys arrive after the call starts](@/docs/tls-capture.md#when-the-keys-arrive-after-the-call-starts)
+- [Capture SIP over TLS: 1. The endpoint writes a key log](@/docs/tls-capture.md#1-the-endpoint-writes-a-key-log)
+- [Capture SIP over TLS: 5. Lift keys from a daemon you cannot restart](@/docs/tls-capture.md#5-lift-keys-from-a-daemon-you-cannot-restart)
+- [Cookbook: 7e. Decrypt traffic from a daemon you cannot restart](@/docs/cookbook.md#7e-decrypt-traffic-from-a-daemon-you-cannot-restart)
+- [Cookbook: 7f. Decrypt without writing the keys to disk](@/docs/cookbook.md#7f-decrypt-without-writing-the-keys-to-disk)
+- [Troubleshooting: Encrypted SIP that does not decrypt](@/docs/troubleshooting.md#encrypted-sip-that-does-not-decrypt)
+- [CLI reference: TLS / decryption](@/docs/cli.md#tls-decryption)

@@ -54,6 +54,7 @@ fn key() -> StreamKey {
         ssrc: 0x0BAD_CAFE,
         src: addr(20000),
         dst: addr(30000),
+        session: 0,
     }
 }
 

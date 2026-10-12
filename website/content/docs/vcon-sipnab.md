@@ -32,7 +32,9 @@ table, `vcons_observed`. The recorder's vCons stay in `vcons_recorded`.
 
 ## Tested on
 
-Every block on this page ran as written, in order, on 2026-09-28, with
+Every block on this page except those under
+[Or deliver them with sipnab's own forwarder](#or-deliver-them-with-sipnab-s-own-forwarder)
+ran as written, in order, on 2026-09-28, with
 sipnab 0.5.194 from its release package, on clean x86_64 virtual machines with 2 cores and 3 GB of memory, Debian 13
 (kernel 6.12.63) and Ubuntu 24.04.5 (kernel 6.8.0): OpenSIPS, from source and from the packages, Kamailio, and both on one
 machine.

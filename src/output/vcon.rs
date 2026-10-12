@@ -931,6 +931,16 @@ pub enum MediaOutcome {
 }
 
 impl MediaOutcome {
+    /// Every outcome, in declaration order, so a list of them in help text or
+    /// docs can be checked against the enum rather than against a copy.
+    pub const ALL: [Self; 5] = [
+        Self::NotConsidered,
+        Self::NoneDecodable,
+        Self::RefusedOverBudget,
+        Self::Carried,
+        Self::WithheldByRedaction,
+    ];
+
     /// The token this outcome serializes as.
     ///
     /// Spelled once here so a test, a doc page and the wire cannot disagree
@@ -2102,18 +2112,46 @@ fn observed_parties(dialog: &SipDialog) -> Vec<Party> {
             name: dialog.to_display.clone(),
             stir: None,
             sip_display_name: dialog.to_display.clone(),
-            // The callee's own headers arrive on its responses, so this reads
-            // the first message coming back rather than the first message.
-            sip_contact: first_response(dialog).and_then(|m| m.contact().map(str::to_string)),
-            sip_user_agent: first_response(dialog).and_then(|m| m.user_agent().map(str::to_string)),
+            // Only from messages the callee itself sent. A proxy's `100`, or
+            // any response without the dialog's remote tag, describes some
+            // other element, so its `Server` is not the callee's software.
+            sip_contact: callee_messages(dialog).find_map(|m| m.contact().map(str::to_string)),
+            sip_user_agent: callee_messages(dialog)
+                .find_map(|m| m.user_agent().map(str::to_string)),
         },
     ]
 }
 
-/// The first response in the ladder, whose headers belong to the answering
-/// side rather than to the caller.
-fn first_response(dialog: &SipDialog) -> Option<&crate::sip::SipMessage> {
-    dialog.messages.iter().find(|m| !m.is_request)
+/// The messages in the ladder that the callee itself sent, in order.
+///
+/// See [`sent_by_callee`] for the rule.
+fn callee_messages(dialog: &SipDialog) -> impl Iterator<Item = &crate::sip::SipMessage> {
+    let remote_tag = dialog.to_tag.as_deref();
+    dialog
+        .messages
+        .iter()
+        .filter(move |m| sent_by_callee(m, remote_tag))
+}
+
+/// Whether `m` was sent by the callee whose `To` tag is `remote_tag`.
+///
+/// A response counts when its status is 101 or higher and its `To` tag is the
+/// dialog's remote tag. A `100 Trying` is excluded because a proxy generates
+/// it hop by hop and never forwards one
+/// ([RFC 3261 section 16.7](https://www.rfc-editor.org/rfc/rfc3261#section-16.7)),
+/// so its `Server` header names the proxy. A response with another tag, or
+/// none, came from another element or another fork. A request counts when its
+/// `From` tag is the remote tag, such as the callee's `BYE`. With no remote
+/// tag observed, nothing is attributed to the callee.
+fn sent_by_callee(m: &crate::sip::SipMessage, remote_tag: Option<&str>) -> bool {
+    let Some(remote) = remote_tag else {
+        return false;
+    };
+    if m.is_request {
+        m.from_tag() == Some(remote)
+    } else {
+        m.status_code.is_some_and(|c| c > 100) && m.to_tag() == Some(remote)
+    }
 }
 
 /// The party representing sipnab itself.
@@ -3160,6 +3198,7 @@ mod tests {
             ssrc: 0x1234_5678,
             src: "10.0.0.1:20000".parse()?,
             dst: "10.0.0.2:30000".parse()?,
+            session: 0,
         };
         let hdr = crate::rtp::parser::RtpHeader {
             version: 2,
@@ -3822,6 +3861,160 @@ mod tests {
         Ok(())
     }
 
+    /// A response to the [`invite`] transaction with an explicit `To` tag and
+    /// extra headers, so a proxy's hop-by-hop `100` and the callee's own
+    /// responses can be told apart.
+    fn tagged_response(
+        code: u16,
+        reason: &str,
+        to_tag: Option<&str>,
+        extra: &[&str],
+    ) -> Result<crate::sip::SipMessage, TestError> {
+        let to = match to_tag {
+            Some(t) => format!("To: \"Bob\" <sip:bob@example.net>;tag={t}"),
+            None => "To: \"Bob\" <sip:bob@example.net>".to_string(),
+        };
+        let mut headers = vec![
+            "From: \"Alice\" <sip:alice@example.com>;tag=t1",
+            to.as_str(),
+            "Call-ID: vcon-fixture@example.com",
+            "CSeq: 1 INVITE",
+        ];
+        headers.extend_from_slice(extra);
+        headers.push("Content-Length: 0");
+        message(&format!("SIP/2.0 {code} {reason}"), &headers)
+    }
+
+    /// The callee party of a dialog, as exported.
+    fn callee_of(dialog: &SipDialog) -> Result<serde_json::Value, TestError> {
+        let v = serde_json::to_value(export_with(dialog, &clean_facts())?)?;
+        Ok(v["parties"][1].clone())
+    }
+
+    const PROXY_SERVER: &str = "Server: OpenSIPS (4.0.1 (aarch64/linux))";
+
+    /// A proxy's `100 Trying` says nothing about the callee.
+    ///
+    /// [RFC 3261 section 16.7](https://www.rfc-editor.org/rfc/rfc3261#section-16.7)
+    /// keeps a `100` hop-by-hop: the proxy generates it and never forwards
+    /// one. A replay call exported the proxy's `Server` banner as the callee's
+    /// `sip_user_agent` because the exporter read the first response in the
+    /// ladder, which was the proxy's `100`.
+    #[test]
+    fn a_proxy_100_trying_does_not_name_the_callee_software() -> Result<(), TestError> {
+        let dialog = dialog_with(&[
+            tagged_response(100, "Giving it a try", None, &[PROXY_SERVER])?,
+            tagged_response(
+                180,
+                "Ringing",
+                Some("t2"),
+                &["Contact: <sip:bob@192.0.2.20:5070>", "Server: BobUA/2.0"],
+            )?,
+            tagged_response(
+                200,
+                "OK",
+                Some("t2"),
+                &["Contact: <sip:bob@192.0.2.20:5070>"],
+            )?,
+        ])?;
+        let callee = callee_of(&dialog)?;
+        assert_eq!(
+            callee["sip_user_agent"], "BobUA/2.0",
+            "the callee's software is on its own 180, not the proxy's 100: {callee}"
+        );
+        assert_eq!(
+            callee["sip_contact"], "<sip:bob@192.0.2.20:5070>",
+            "the callee's Contact is on its own responses: {callee}"
+        );
+        Ok(())
+    }
+
+    /// A callee that names no software anywhere gets no `sip_user_agent`,
+    /// never the proxy's.
+    #[test]
+    fn a_callee_with_no_banner_borrows_none_from_the_proxy() -> Result<(), TestError> {
+        let dialog = dialog_with(&[
+            tagged_response(100, "Giving it a try", None, &[PROXY_SERVER])?,
+            tagged_response(180, "Ringing", Some("t2"), &[])?,
+            tagged_response(200, "OK", Some("t2"), &[])?,
+        ])?;
+        let callee = callee_of(&dialog)?;
+        assert!(
+            callee.get("sip_user_agent").is_none(),
+            "no message the callee sent carried a banner: {callee}"
+        );
+        Ok(())
+    }
+
+    /// A proxy's `100` to an in-dialog request echoes the callee's tag.
+    ///
+    /// A re-INVITE already carries the remote `To` tag, so the `100` a proxy
+    /// generates for it carries that tag too while still describing the proxy.
+    /// The tag alone cannot clear a `100`.
+    #[test]
+    fn a_proxy_100_carrying_the_remote_tag_still_does_not_name_the_callee() -> Result<(), TestError>
+    {
+        let dialog = dialog_with(&[
+            tagged_response(200, "OK", Some("t2"), &[])?,
+            tagged_response(100, "Giving it a try", Some("t2"), &[PROXY_SERVER])?,
+        ])?;
+        let callee = callee_of(&dialog)?;
+        assert!(
+            callee.get("sip_user_agent").is_none(),
+            "a 100 is hop-by-hop whatever tag it echoes: {callee}"
+        );
+        Ok(())
+    }
+
+    /// A response carrying a tag other than the dialog's remote tag came from
+    /// some other element (another fork, or a proxy), not the callee the
+    /// dialog was established with.
+    #[test]
+    fn a_response_without_the_remote_tag_does_not_name_the_callee() -> Result<(), TestError> {
+        let dialog = dialog_with(&[
+            tagged_response(
+                183,
+                "Session Progress",
+                Some("fork-a"),
+                &["Server: OtherFork/1.0"],
+            )?,
+            tagged_response(200, "OK", Some("t2"), &["Server: BobUA/2.0"])?,
+        ])?;
+        let callee = callee_of(&dialog)?;
+        assert_eq!(
+            callee["sip_user_agent"], "BobUA/2.0",
+            "only the tag that confirmed the dialog is the callee's: {callee}"
+        );
+        Ok(())
+    }
+
+    /// The callee's own requests (its BYE) carry its `User-Agent` too.
+    #[test]
+    fn the_callees_own_request_names_its_software() -> Result<(), TestError> {
+        let bye = message(
+            "BYE sip:alice@example.com SIP/2.0",
+            &[
+                "From: \"Bob\" <sip:bob@example.net>;tag=t2",
+                "To: \"Alice\" <sip:alice@example.com>;tag=t1",
+                "Call-ID: vcon-fixture@example.com",
+                "CSeq: 1 BYE",
+                "User-Agent: BobPhone/3.0",
+                "Content-Length: 0",
+            ],
+        )?;
+        let dialog = dialog_with(&[
+            tagged_response(100, "Giving it a try", None, &[PROXY_SERVER])?,
+            tagged_response(200, "OK", Some("t2"), &[])?,
+            bye,
+        ])?;
+        let callee = callee_of(&dialog)?;
+        assert_eq!(
+            callee["sip_user_agent"], "BobPhone/3.0",
+            "a request the callee sent names the callee's software: {callee}"
+        );
+        Ok(())
+    }
+
     /// The final party is sipnab, and it is unmistakably an observer.
     #[test]
     fn the_last_party_is_the_sipnab_observer() -> Result<(), TestError> {
@@ -4210,6 +4403,139 @@ mod tests {
             "the observer is not a named participant: {}",
             parties[2]
         );
+        Ok(())
+    }
+
+    /// Every surface describing `--export-vcon` states the party-name rule the
+    /// exporter actually applies.
+    ///
+    /// The exporter writes a party `name` exactly when the `From` or `To`
+    /// carried a display name, quoted or bare, and never derives one from the
+    /// URI's user part. The `--export-vcon` help kept saying no party carries
+    /// a `name` after the exporter started writing one, and a replay call
+    /// exported `"name": "alice"` under that help. This test measures the
+    /// rule from the exporter first, then holds the help and every document
+    /// row describing the export to it: a denial while the exporter emits a
+    /// name, or a missing statement of the display-name rule, fails here.
+    #[test]
+    fn help_and_docs_state_the_party_name_rule_the_exporter_applies() -> Result<(), TestError> {
+        use clap::CommandFactory;
+
+        let names_for =
+            |from: &str, to: &str| -> Result<(serde_json::Value, serde_json::Value), TestError> {
+                let invite = message(
+                    "INVITE sip:bob@example.net SIP/2.0",
+                    &[
+                        from,
+                        to,
+                        "Call-ID: vcon-name-rule@example.invalid",
+                        "CSeq: 1 INVITE",
+                        "Content-Length: 0",
+                    ],
+                )?;
+                let dialog = SipDialog::new(&invite).ok_or("INVITE opens a dialog")?;
+                let v = serde_json::to_value(export_with(&dialog, &clean_facts())?)?;
+                Ok((
+                    v["parties"][0]["name"].clone(),
+                    v["parties"][1]["name"].clone(),
+                ))
+            };
+        let quoted = names_for(
+            "From: \"alice\" <sip:alice@example.invalid>;tag=t1",
+            "To: \"bob\" <sip:bob@example.invalid>",
+        )?;
+        let bare = names_for(
+            "From: alice <sip:alice@example.invalid>;tag=t1",
+            "To: bob <sip:bob@example.invalid>",
+        )?;
+        let none = names_for(
+            "From: <sip:alice@example.invalid>;tag=t1",
+            "To: <sip:bob@example.invalid>",
+        )?;
+        assert_eq!(
+            quoted,
+            (
+                serde_json::Value::from("alice"),
+                serde_json::Value::from("bob")
+            ),
+            "quoted"
+        );
+        assert_eq!(
+            bare,
+            (
+                serde_json::Value::from("alice"),
+                serde_json::Value::from("bob")
+            ),
+            "bare token"
+        );
+        assert_eq!(
+            none,
+            (serde_json::Value::Null, serde_json::Value::Null),
+            "a header with no display name must not lend its user part as a name"
+        );
+        let exporter_emits_display_name = quoted.0.is_string();
+
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        let read = |rel: &str| std::fs::read_to_string(root.join(rel));
+        let row = |text: &str, prefix: &str| -> Result<String, TestError> {
+            Ok(text
+                .lines()
+                .find(|l| l.starts_with(prefix))
+                .ok_or_else(|| format!("no row starting {prefix:?}"))?
+                .to_string())
+        };
+        let mcp_doc = read("docs/mcp-tools.md")?;
+        let mcp_section = mcp_doc
+            .split("### `export_vcon`")
+            .nth(1)
+            .and_then(|s| s.split("\n### ").next())
+            .ok_or("docs/mcp-tools.md has no export_vcon section")?
+            .to_string();
+        let help = crate::cli::Cli::command()
+            .get_arguments()
+            .find(|a| a.get_id() == "export_vcon")
+            .and_then(|a| a.get_long_help())
+            .ok_or("--export-vcon has long help")?
+            .to_string();
+        let surfaces = [
+            ("--export-vcon --help", help),
+            (
+                "docs/cli-reference.md --export-vcon row",
+                row(&read("docs/cli-reference.md")?, "| `--export-vcon` |")?,
+            ),
+            (
+                "docs/internals/build-ci-release.md vcon feature row",
+                row(&read("docs/internals/build-ci-release.md")?, "| `vcon` |")?,
+            ),
+            ("docs/mcp-tools.md export_vcon section", mcp_section),
+            ("docs/vcon.md", read("docs/vcon.md")?),
+        ];
+        let denials = [
+            "no party names",
+            "no party name,",
+            "no party name and",
+            "no party name.",
+            "no party carries a `name`",
+            "no party carries a name",
+        ];
+        for (label, text) in &surfaces {
+            let flat = text.split_whitespace().collect::<Vec<_>>().join(" ");
+            let lower = flat.to_lowercase();
+            if exporter_emits_display_name {
+                for denial in denials {
+                    assert!(
+                        !lower.contains(denial),
+                        "{label} says {denial:?}, but the exporter writes the \
+                         display name as a party name: {flat}"
+                    );
+                }
+                assert!(
+                    lower.contains("display name"),
+                    "{label} does not say a party name is the wire's display \
+                     name: {flat}"
+                );
+            }
+        }
         Ok(())
     }
 

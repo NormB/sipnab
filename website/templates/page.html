@@ -24,9 +24,13 @@
    static/openapi.json. Both are `defer`, so they execute in order (the bundle
    first, then the loader that reads `window.Scalar`) before DOMContentLoaded.
    The configuration lives in js/openapi-reference.js rather than in an inline
-   block because `script-src 'self'` carries no `unsafe-inline`: an inline
-   block would need a sha256 refresh in the Cloudflare rule, and in
-   tests/site_journey_test.rs's PINNED list, on every wording change. #}
+   block because the production CSP, injected by the Cloudflare rule
+   (ops/cloudflare/refresh_csp_hashes.py), carries no `unsafe-inline` in
+   script-src and admits an inline block only by its sha256 hash: an inline
+   block would need a hash refresh in that rule, and in
+   tests/site_journey_test.rs's PINNED list, on every wording change. The
+   meta CSP in base.html does grant `unsafe-inline`, but a browser enforces
+   both policies, so the stricter edge policy decides. #}
 {% if page.extra.openapi_reference %}
 <script src="{{ get_url(path='js/scalar.min.js', cachebust=true) }}" defer></script>
 <script src="{{ get_url(path='js/openapi-reference.js', cachebust=true) }}" defer></script>

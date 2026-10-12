@@ -34,7 +34,7 @@ theme = "ayu-dark"
 # download links came from here. They did once — `download.html` was moved to
 # `published_version` and the claim was never revisited, which is also how the
 # same sentence ended up in site_journey_test.rs and pages.yml.
-version = "0.5.209"
+version = "0.5.213"
 # The last version that actually EXISTS as a published GitHub release, which is
 # what every download link must point at.
 #
@@ -43,12 +43,13 @@ version = "0.5.209"
 # release COMMIT lands on main, the site advertised assets for a tag that had
 # not been pushed yet and every link on /download returned 404. The window is
 # the whole commit -> CI -> tag -> release-build cycle, and it lasted far longer
-# on 0.5.61, whose release commit went red and was never tagged.
+# on 0.5.61, whose release commit went red in CI: the v0.5.61 tag went on the
+# commit that fixed it, 31 minutes after the release commit.
 #
 # Bumped after a release finishes publishing, not while cutting it.
 # `site_advertises_only_a_released_version` requires a matching `v<x.y.z>` tag,
 # so advertising something unreleased fails the suite rather than the visitor.
-published_version = "0.5.209"
+published_version = "0.5.212"
 # Release date of `published_version` above -- NOT of `version`, further up.
 # `download.html` renders this beside `published_version` in a single sentence,
 # so the date belongs to the release a reader can actually download.
@@ -57,7 +58,7 @@ published_version = "0.5.209"
 # untagged version is the conflation the published_version split exists to
 # prevent. `site_release_date_matches_changelog` reads `published_version` and
 # enforces this.
-release_date = "2026-10-09"
+release_date = "2026-10-12"
 # Minimum glibc of the released -gnu binaries and .debs. This is NOT a free
 # choice: it is whatever the "Enforce glibc floor" step in release.yml admits,
 # and it must equal SIPNAB_GLIBC_FLOOR in static/install.sh, which decides
@@ -160,6 +161,9 @@ macos_floor_intel = "10.12"
 #   0.5.207  18,531,264 bytes   (+61,440, leaving 343,104 bytes of headroom under 18 MB)
 #   0.5.208  18,547,648 bytes   (+16,384, leaving 326,720 bytes of headroom under 18 MB)
 #   0.5.209  18,592,704 bytes   (+45,056, leaving 281,664 bytes of headroom under 18 MB)
+#   0.5.210  18,641,856 bytes   (+49,152, leaving 232,512 bytes of headroom under 18 MB)
+#   0.5.211  18,641,856 bytes   (unchanged, leaving 1,281,088 bytes of headroom under 19 MB)
+#   0.5.212  18,875,328 bytes   (+233,472, leaving 1,047,616 bytes of headroom under 19 MB)
 #
 # So 0.5.159 shipped one ordinary release away from tipping and nothing said
 # so. The 118,784 bytes are `find_in_captures` -- a 66th MCP tool with derived
@@ -252,7 +256,13 @@ macos_floor_intel = "10.12"
 # x86_64-musl binary grew 623,160 bytes, leaving 1,067,520 under 18 MB and
 # 18,944 under the old 17.
 #
-binary_size_ceiling_mb = "18"
+# 18 -> 19 after 0.5.210. Its published x86_64-musl binary measured
+# 18,641,856 bytes, leaving 232,512 under 18 MB, which is under the 262,144
+# bytes two ordinary releases have taken (THIN_MARGIN). No feature drives it:
+# from 0.5.196 to 0.5.210 the binary grew 502,976 bytes over fourteen releases.
+# 19 MB leaves 1,281,088 bytes over 0.5.210.
+#
+binary_size_ceiling_mb = "19"
 github_url = "https://github.com/NormB/sipnab"
 # `owner/repo`, for the places a bare slug is what the command wants rather than
 # a URL: `gh attestation verify --repo`, the releases API path. These were
@@ -360,6 +370,10 @@ pages = [
   { path = "docs/opensips-sipnab.md", menu = true },
   { path = "docs/kamailio.md", menu = true },
   { path = "docs/kamailio-sipnab.md", menu = true },
+  { path = "docs/asterisk.md", menu = true },
+  { path = "docs/asterisk-sipnab.md", menu = true },
+  { path = "docs/freeswitch.md", menu = true },
+  { path = "docs/freeswitch-sipnab.md", menu = true },
 ]
 
 [[extra.docs_nav]]

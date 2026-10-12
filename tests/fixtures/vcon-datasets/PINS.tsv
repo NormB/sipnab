@@ -1,0 +1,12 @@
+# The public vCon datasets the opt-in corpus test reads, each pinned to one
+# commit. scripts/fetch-vcon-datasets.py fetches exactly these; the corpus
+# test and the committed subset under this directory are held to them.
+# Commits recorded 2026-10-09. License: the SPDX identifier of each
+# repository's LICENSE file at that commit.
+#
+# name	url	commit	license
+vcon-supreme-court-arguments	https://github.com/vcon-dev/vcon-supreme-court-arguments	061d5a87976fc4246d360e27f67326995d5f0128	MIT
+ietf-meeting-vcons	https://github.com/vcon-dev/ietf-meeting-vcons	b919f24dd29c0419f356c4b1133220c18de3a9ef	BSD-3-Clause
+vcon-dataset-city-of-newport-ri	https://github.com/vcon-dev/vcon-dataset-city-of-newport-ri	1a999e1de306f9b565e4832a5de356395beb8aed	BSD-3-Clause
+fake-vcons	https://github.com/vcon-dev/fake-vcons	7e91cbe507bf0344352427da4fce8f0ae9230ee4	MIT
+tadhack-2025	https://github.com/vcon-dev/tadhack-2025	9044a77cb8a631055c787effd2f140005cc2555b	MIT

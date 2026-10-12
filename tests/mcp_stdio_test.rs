@@ -786,13 +786,14 @@ fn stdio_mcp_full_tool_set_and_remaining_tools() -> Result<(), TestError> {
         "validate_filter",
         "validate_message",
     ];
-    // The vCon pair is registered only where the exporter exists, so this
+    // The vCon tools are registered only where the exporter exists, so this
     // build's expectation has to say so too. A list that names them
     // unconditionally asserts a tool set no `mcp`-without-`vcon` build has --
-    // and the two are advertised exactly when they can run, which
-    // `mcp_capability_agreement_test` is what gates.
+    // and they are advertised exactly when they can run, which
+    // `mcp_capability_agreement_test` is what gates. `vcon_spool_status`
+    // joined the pair as the third.
     if cfg!(feature = "vcon") {
-        expected.extend_from_slice(&["export_vcon", "validate_vcon"]);
+        expected.extend_from_slice(&["export_vcon", "validate_vcon", "vcon_spool_status"]);
     }
     // `hep_senders` likewise exists only where a HEP listener can.
     if cfg!(feature = "hep") {
@@ -800,8 +801,15 @@ fn stdio_mcp_full_tool_set_and_remaining_tools() -> Result<(), TestError> {
     }
     expected.sort();
     assert_eq!(names, expected, "MCP tool set drifted");
-    let want = 69 + if cfg!(feature = "vcon") { 2 } else { 0 } + usize::from(cfg!(feature = "hep"));
+    let want = 69 + if cfg!(feature = "vcon") { 3 } else { 0 } + usize::from(cfg!(feature = "hep"));
     assert_eq!(names.len(), want, "expected exactly {want} MCP tools");
+
+    // Wait for the replay to be read to its end. Until then the store-reading
+    // tools withhold `truncated: false` (src/mcp/completeness.rs), so a page
+    // asked for mid-load legitimately has no `truncated`; macOS CI run
+    // 38172136789 called find_problems before the read finished and got
+    // `source_exhausted: false` without it.
+    list_dialogs_until_nonempty(&mut child, &mut reader, 90, test_timeout(10))?;
 
     // find_problems with default kinds (['problems']) → JSON array, no error.
     send(
@@ -1133,6 +1141,17 @@ fn a_looping_caller_is_rate_limited_on_the_wire_and_in_the_audit_line() -> Resul
                 message.contains("rate limit") && message.contains("retry"),
                 "the refusal must tell the caller to retry shortly: {message}"
             );
+            assert_eq!(
+                error["data"]["reason"],
+                serde_json::json!("rate_limited"),
+                "the refusal carries a reason code: {resp}"
+            );
+            assert!(
+                error["data"]["retry_after_ms"]
+                    .as_u64()
+                    .is_some_and(|ms| (1..=1000).contains(&ms)),
+                "the refusal says when the one-second window ends: {resp}"
+            );
         } else {
             admitted += 1;
             assert!(
@@ -1187,5 +1206,138 @@ fn a_looping_caller_is_rate_limited_on_the_wire_and_in_the_audit_line() -> Resul
          confused client read identically:\n{}",
         limited.join("\n")
     );
+    Ok(())
+}
+
+/// The byte budget holds on the wire, after the dispatcher has stamped the
+/// completeness fields onto the page, and the shipped default changes nothing
+/// on the largest page measured over `tests/pcap-samples`.
+///
+/// The cut runs inside each tool, before `completeness::stamp` adds
+/// `source_exhausted` and `source_stopped_early`, so the tool reserves those
+/// bytes rather than measuring them. A unit test calling the tool directly
+/// never sees the stamp; this one reads the response the way a client does.
+///
+/// Both halves wait for `source_exhausted: true` first: a page read while the
+/// replay is still loading holds fewer rows for a reason unrelated to the
+/// budget.
+#[test]
+fn the_byte_budget_bounds_the_stamped_response_and_the_default_cuts_nothing()
+-> Result<(), TestError> {
+    let binary = env!("CARGO_BIN_EXE_sipnab");
+    let pcap = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/pcap-samples/sipp-branch-scenario.pcapng");
+    let pcap_str = pcap.to_string_lossy().to_string();
+    let mut child = Command::new(binary)
+        .args([
+            "-N",
+            "-I",
+            &pcap_str,
+            "--mcp",
+            "--mcp-transport",
+            "stdio",
+            "--quiet",
+            "--no-config",
+        ])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()?;
+    let mut stdout = child.stdout.take().ok_or("stdout")?;
+    let mut reader = BufReader::new(&mut stdout);
+    send(
+        &mut child,
+        &serde_json::json!({
+            "jsonrpc": "2.0", "id": 1, "method": "initialize",
+            "params": {"protocolVersion": "2024-11-05", "capabilities": {},
+                       "clientInfo": {"name": "sipnab-test", "version": "0"}}
+        }),
+    )?;
+    read_response_with_id(&mut reader, 1, test_timeout(5))?.ok_or("initialize")?;
+    send(
+        &mut child,
+        &serde_json::json!({"jsonrpc": "2.0", "method": "notifications/initialized"}),
+    )?;
+    list_dialogs_until_nonempty(&mut child, &mut reader, 2, test_timeout(60))?;
+
+    let mut id = 10;
+    let mut call =
+        |name: &str, args: serde_json::Value| -> Result<(usize, serde_json::Value), TestError> {
+            id += 1;
+            send(
+                &mut child,
+                &serde_json::json!({
+                    "jsonrpc": "2.0", "id": id, "method": "tools/call",
+                    "params": {"name": name, "arguments": args}
+                }),
+            )?;
+            let resp = read_response_with_id(&mut reader, id, test_timeout(20))?
+                .ok_or_else(|| format!("{name} response"))?;
+            // The figure `sipnab_mcp_tool_response_bytes_total` counts: the text
+            // of every content block, after the stamp.
+            let bytes = resp["result"]["content"]
+                .as_array()
+                .ok_or_else(|| format!("{name} content: {resp}"))?
+                .iter()
+                .filter_map(|c| c["text"].as_str())
+                .map(str::len)
+                .sum();
+            Ok((bytes, serde_json::from_str(&payload_text(&resp)?)?))
+        };
+
+    // The largest response measured when the default was chosen: it must
+    // still arrive whole under the default budget.
+    let (bytes, page) = call("list_dialogs", serde_json::json!({"limit": 1000}))?;
+    assert_eq!(page["source_exhausted"], true, "{bytes}");
+    assert_eq!(
+        page["returned"], 1000,
+        "the default budget cut a measured page"
+    );
+    assert_eq!(page["truncated_by"], "rows", "only the row limit cut it");
+    assert!(
+        bytes < sipnab::cli::Cli::DEFAULT_MCP_MAX_RESPONSE_BYTES as usize,
+        "{bytes} bytes"
+    );
+
+    // A small budget, read on the wire with the stamp included.
+    for (name, args, rows_key) in [
+        (
+            "search_messages",
+            serde_json::json!({"query": "REGISTER", "limit": 50}),
+            "hits",
+        ),
+        ("list_dialogs", serde_json::json!({"limit": 50}), "dialogs"),
+        ("tail_dialogs", serde_json::json!({"limit": 50}), "dialogs"),
+    ] {
+        let budget = 4000usize;
+        let mut asked = args.clone();
+        asked["max_response_bytes"] = serde_json::json!(budget);
+        let (bytes, page) = call(name, asked)?;
+        let rows = page[rows_key].as_array().map_or(0, Vec::len);
+        assert!(
+            rows > 1 && rows < 50,
+            "{name}: {rows} rows under {budget} bytes"
+        );
+        assert!(
+            bytes <= budget,
+            "{name}: {bytes} bytes on the wire against {budget}"
+        );
+        assert_eq!(page["truncated_by"], "bytes", "{name}: {page}");
+        assert_eq!(
+            page["source_exhausted"], true,
+            "{name}: the stamp is present"
+        );
+    }
+
+    drop(reader);
+    drop(stdout);
+    if let Some(stdin) = child.stdin.take() {
+        drop(stdin);
+    }
+    // SAFETY: kill(2) with the PID of a child we spawned; touches no memory.
+    unsafe {
+        libc::kill(child.id() as i32, libc::SIGTERM);
+    }
+    let _ = child.wait();
     Ok(())
 }

@@ -36,6 +36,87 @@ type TestError = Box<dyn std::error::Error>;
 /// would still fail this guard instead of being silently whitelisted. The
 /// label is the first element of each `docs` tuple in `readme_long_flags_exist_in_cli`.
 const FOREIGN_FLAGS: &[(&str, &[&str])] = &[
+    // `git commit --amend -S --no-edit` and
+    // `git rebase --exec 'git commit --amend --no-edit -S' <base>`: how the
+    // contributing guide and the build page say to re-sign a commit the
+    // pre-push commit-signature gate refused. git's flags, not sipnab's.
+    (
+        "amend",
+        &[
+            "CONTRIBUTING.md",
+            "website/content/docs/contributing.md",
+            "docs/internals/build-ci-release.md",
+            "website/content/docs/internals/build-ci-release.md",
+        ],
+    ),
+    (
+        "exec",
+        &[
+            "CONTRIBUTING.md",
+            "website/content/docs/contributing.md",
+            "docs/internals/build-ci-release.md",
+            "website/content/docs/internals/build-ci-release.md",
+        ],
+    ),
+    (
+        "no-edit",
+        &[
+            "CONTRIBUTING.md",
+            "website/content/docs/contributing.md",
+            "docs/internals/build-ci-release.md",
+            "website/content/docs/internals/build-ci-release.md",
+        ],
+    ),
+    // `scripts/clean-stale.py --apply --root <DIR> --min-age-days <N>
+    // --reclaim-build-cache --disk-floor-gb <N>`, named by the stray-files
+    // note: the cleaner's flags, not sipnab's.
+    (
+        "apply",
+        &["website/content/notes/an-instruction-with-no-gate.md"],
+    ),
+    (
+        "root",
+        &["website/content/notes/an-instruction-with-no-gate.md"],
+    ),
+    (
+        "min-age-days",
+        &["website/content/notes/an-instruction-with-no-gate.md"],
+    ),
+    (
+        "reclaim-build-cache",
+        &["website/content/notes/an-instruction-with-no-gate.md"],
+    ),
+    (
+        "disk-floor-gb",
+        &["website/content/notes/an-instruction-with-no-gate.md"],
+    ),
+    // `cargo test --features full --test <NAME> -- --test-threads=1`, named
+    // by the MCP field-cap note. cargo's and the test harness's flags.
+    (
+        "features",
+        &["website/content/notes/measure-the-field-not-the-container.md"],
+    ),
+    (
+        "test",
+        &["website/content/notes/measure-the-field-not-the-container.md"],
+    ),
+    (
+        "test-threads",
+        &["website/content/notes/measure-the-field-not-the-container.md"],
+    ),
+    // `cargo install sipnab --features full`, the features page's
+    // packaging list. cargo's flag.
+    ("features", &["website/content/features.md"]),
+    // `scripts/fetch-vcon-datasets.py --pins <FILE>`, named by the testing
+    // page's "The corrected copy": which pins files the dataset fetch script
+    // reads. The script's flag, not sipnab's.
+    (
+        "pins",
+        &[
+            "docs/internals/testing.md",
+            "website/content/docs/internals/testing.md",
+        ],
+    ),
     // `curl --cacert <FILE>`, named by the REST API page's "API TLS" section,
     // the MCP page's "MCP TLS" and the metrics page's "Metrics TLS": how a
     // client trusts the CA behind `--api-tls-cert`, `--mcp-tls-cert` and
@@ -608,6 +689,15 @@ const FOREIGN_FLAGS: &[(&str, &[&str])] = &[
         "now",
         &["docs/examples.md", "website/content/docs/cookbook.md"],
     ),
+    // `--data-urlencode` (with `-G`) is curl's. The REST page's `filter`
+    // example uses it because a filter expression carries spaces and quotes
+    // that must be URL-encoded, and a hand-encoded query string is not
+    // something a reader can check by eye. Scoped to that page and its
+    // generated mirror.
+    (
+        "data-urlencode",
+        &["docs/rest-api.md", "website/content/docs/api.md"],
+    ),
     // `--example` is cargo's, on `cargo run --example <name>`. It appears
     // only on the library page, which is the one page whose runnable
     // commands target `examples/*.rs` rather than the `sipnab` binary.
@@ -1151,6 +1241,10 @@ const FOREIGN_FLAGS: &[(&str, &[&str])] = &[
             // taking the page's word for it.
             "docs/vcon.md",
             "website/content/docs/vcon.md",
+            // CONTRIBUTING names the test binary that regenerates the man
+            // page's generated regions.
+            "CONTRIBUTING.md",
+            "website/content/docs/contributing.md",
         ],
     ),
     (
@@ -1292,7 +1386,17 @@ const FOREIGN_FLAGS: &[(&str, &[&str])] = &[
     // command to spawn.
     ("cli", &["docs/mcp.md", "website/content/docs/mcp.md"]),
     ("method", &["docs/mcp.md", "website/content/docs/mcp.md"]),
-    ("format", &["docs/mcp.md", "website/content/docs/mcp.md"]),
+    // Also `git log --format=%G?`, the letter the pre-push commit-signature
+    // gate decides by, in the build page. git's flag, not sipnab's.
+    (
+        "format",
+        &[
+            "docs/mcp.md",
+            "website/content/docs/mcp.md",
+            "docs/internals/build-ci-release.md",
+            "website/content/docs/internals/build-ci-release.md",
+        ],
+    ),
     ("tool-name", &["docs/mcp.md", "website/content/docs/mcp.md"]),
     ("tool-arg", &["docs/mcp.md", "website/content/docs/mcp.md"]),
     (
@@ -1317,6 +1421,10 @@ const FOREIGN_FLAGS: &[(&str, &[&str])] = &[
             "website/content/docs/prometheus.md",
             "docs/opensips.md",
             "website/content/docs/opensips.md",
+            "docs/asterisk.md",
+            "website/content/docs/asterisk.md",
+            "docs/freeswitch.md",
+            "website/content/docs/freeswitch.md",
         ],
     ),
     // useradd's, creating the system accounts the voice-stack guides run services as.
@@ -1337,6 +1445,10 @@ const FOREIGN_FLAGS: &[(&str, &[&str])] = &[
             "website/content/docs/prometheus.md",
             "docs/opensips.md",
             "website/content/docs/opensips.md",
+            "docs/asterisk.md",
+            "website/content/docs/asterisk.md",
+            "docs/freeswitch.md",
+            "website/content/docs/freeswitch.md",
         ],
     ),
     // useradd's, creating the system accounts the voice-stack guides run services as.
@@ -1357,6 +1469,10 @@ const FOREIGN_FLAGS: &[(&str, &[&str])] = &[
             "website/content/docs/prometheus.md",
             "docs/opensips.md",
             "website/content/docs/opensips.md",
+            "docs/asterisk.md",
+            "website/content/docs/asterisk.md",
+            "docs/freeswitch.md",
+            "website/content/docs/freeswitch.md",
         ],
     ),
     // useradd's, creating the system accounts the voice-stack guides run services as.
@@ -1393,6 +1509,12 @@ const FOREIGN_FLAGS: &[(&str, &[&str])] = &[
             "website/content/docs/fail2ban.md",
             "docs/fail2ban-sipnab.md",
             "website/content/docs/fail2ban-sipnab.md",
+            "docs/asterisk.md",
+            "website/content/docs/asterisk.md",
+            "docs/freeswitch.md",
+            "website/content/docs/freeswitch.md",
+            "docs/asterisk-sipnab.md",
+            "website/content/docs/asterisk-sipnab.md",
         ],
     ),
     // fail2ban-client's, on `fail2ban-client get <jail> banip --with-time`,
@@ -1440,6 +1562,10 @@ const FOREIGN_FLAGS: &[(&str, &[&str])] = &[
             "website/content/docs/prometheus.md",
             "docs/opensips.md",
             "website/content/docs/opensips.md",
+            "docs/asterisk.md",
+            "website/content/docs/asterisk.md",
+            "docs/freeswitch.md",
+            "website/content/docs/freeswitch.md",
         ],
     ),
     // apt-get's and dpkg's, installing the voice stack's build tools.
@@ -1560,6 +1686,17 @@ const FOREIGN_FLAGS: &[(&str, &[&str])] = &[
     (
         "data-binary",
         &["docs/vcon-sipnab.md", "website/content/docs/vcon-sipnab.md"],
+    ),
+    // docs/freeswitch.md builds FreeSWITCH from source: git's `--depth`,
+    // cloning one tag of sofia-sip and of spandsp, and pkg-config's
+    // `--modversion`, printing the versions the build installed.
+    (
+        "depth",
+        &["docs/freeswitch.md", "website/content/docs/freeswitch.md"],
+    ),
+    (
+        "modversion",
+        &["docs/freeswitch.md", "website/content/docs/freeswitch.md"],
     ),
 ];
 
@@ -3000,6 +3137,222 @@ fn feature_tables_cover_every_cargo_feature() -> Result<(), TestError> {
     Ok(())
 }
 
+/// `Cargo.toml`'s `[features]` as name -> direct members, `dep:` prefixes
+/// stripped. `default` is left out: it is a selection, not a feature.
+fn cargo_features() -> Result<std::collections::BTreeMap<String, Vec<String>>, TestError> {
+    let manifest: toml::Table = include_str!("../Cargo.toml").parse()?;
+    let table = manifest
+        .get("features")
+        .and_then(toml::Value::as_table)
+        .ok_or("Cargo.toml has a [features] table")?;
+    let mut out = std::collections::BTreeMap::new();
+    for (name, members) in table {
+        if name == "default" {
+            continue;
+        }
+        let members = members
+            .as_array()
+            .ok_or("a feature is a list")?
+            .iter()
+            .filter_map(toml::Value::as_str)
+            .map(|m| m.strip_prefix("dep:").unwrap_or(m).to_string())
+            .collect();
+        out.insert(name.clone(), members);
+    }
+    Ok(out)
+}
+
+/// The rows of the feature table on `page`, as `(feature, second cell, third
+/// cell)`, in page order.
+fn feature_table_rows(page: &str) -> Vec<(String, String, String)> {
+    let mut out = Vec::new();
+    let mut in_table = false;
+    for line in page.lines() {
+        let trimmed = line.trim();
+        // The install and build pages head it `Feature | Description`, the
+        // README `Flag | What it adds`; the first cell is the feature either way.
+        if trimmed.starts_with("| Feature | Description |")
+            || trimmed.starts_with("| Flag | What it adds |")
+        {
+            in_table = true;
+            continue;
+        }
+        if !in_table {
+            continue;
+        }
+        if !trimmed.starts_with('|') {
+            if !out.is_empty() {
+                break;
+            }
+            continue;
+        }
+        let cells: Vec<&str> = trimmed.trim_matches('|').split(" | ").collect();
+        let Some(name) = cells
+            .first()
+            .and_then(|c| c.trim().strip_prefix('`'))
+            .and_then(|c| c.strip_suffix('`'))
+        else {
+            continue;
+        };
+        out.push((
+            name.to_string(),
+            cells
+                .get(1)
+                .map_or_else(String::new, |c| c.trim().to_string()),
+            cells
+                .get(2)
+                .map_or_else(String::new, |c| c.trim().to_string()),
+        ));
+    }
+    out
+}
+
+/// The backticked names in a table cell, outside any parenthesis.
+///
+/// `(plugin: \`rodio\`)` on the `audio` row names what the separate audio
+/// plugin links, not a member of the feature.
+fn backticked_outside_parens(cell: &str) -> std::collections::BTreeSet<String> {
+    let mut depth = 0usize;
+    let mut kept = String::new();
+    for c in cell.chars() {
+        match c {
+            '(' => depth += 1,
+            ')' => depth = depth.saturating_sub(1),
+            _ if depth == 0 => kept.push(c),
+            _ => {}
+        }
+    }
+    kept.split('`')
+        .skip(1)
+        .step_by(2)
+        .map(str::to_string)
+        .collect()
+}
+
+/// The install page's feature table states each feature's direct members, and
+/// its `full` row lists exactly what `full` turns on.
+///
+/// The row check above proves a feature is NAMED. It cannot see a row that
+/// names the feature and misstates it: the dependency cells of `api`,
+/// `metrics` and `vcon` all omitted the `rustls` each one pulls in, and a
+/// `full` row can drop a member while every feature keeps its own row.
+#[test]
+fn the_install_feature_table_states_what_cargo_toml_declares() -> Result<(), TestError> {
+    let features = cargo_features()?;
+    let mut wrong = Vec::new();
+    for (page, text) in [
+        ("README.md", include_str!("../README.md")),
+        ("docs/install.md", include_str!("../docs/install.md")),
+    ] {
+        let rows = feature_table_rows(text);
+        let full = rows
+            .iter()
+            .find(|(n, _, _)| n == "full")
+            .ok_or_else(|| format!("{page} has a `full` row"))?;
+        let listed = backticked_outside_parens(&full.1);
+        let want: std::collections::BTreeSet<String> = features
+            .get("full")
+            .ok_or("Cargo.toml declares full")?
+            .iter()
+            .cloned()
+            .collect();
+        if listed != want {
+            wrong.push(format!(
+                "{page} `full` row lists {listed:?}; Cargo.toml's full is {want:?}"
+            ));
+        }
+    }
+    let rows = feature_table_rows(include_str!("../docs/install.md"));
+    assert!(
+        rows.len() >= 15,
+        "read {} rows from docs/install.md's feature table: the reader stopped matching",
+        rows.len()
+    );
+    for (name, _, deps) in &rows {
+        if name == "full" {
+            continue;
+        }
+        let Some(members) = features.get(name) else {
+            wrong.push(format!(
+                "docs/install.md has a row for `{name}`, which Cargo.toml does not declare"
+            ));
+            continue;
+        };
+        let want: std::collections::BTreeSet<String> = members.iter().cloned().collect();
+        let listed = backticked_outside_parens(deps);
+        if listed != want {
+            wrong.push(format!(
+                "docs/install.md `{name}` dependencies list {listed:?}; Cargo.toml declares {want:?}"
+            ));
+        }
+    }
+    assert!(
+        wrong.is_empty(),
+        "a feature table misstates Cargo.toml:\n  {}",
+        wrong.join("\n  ")
+    );
+    Ok(())
+}
+
+/// The website's build page carries the install page's feature table, row for
+/// row.
+///
+/// `website/content/docs/build.md` is a hand-kept page with no `docs/` source,
+/// and its copy of the table fell behind: no `vcon` row, no `archive` row, and
+/// a `full` row two members short. Held equal to the gated table above, it
+/// cannot fall behind again without this failing.
+#[test]
+fn the_build_page_feature_table_is_the_install_page_table() -> Result<(), TestError> {
+    let install = feature_table_rows(include_str!("../docs/install.md"));
+    let build = feature_table_rows(include_str!("../website/content/docs/build.md"));
+    assert!(!install.is_empty(), "docs/install.md has a feature table");
+    let mut diffs = Vec::new();
+    for (i, (want, got)) in install.iter().zip(build.iter()).enumerate() {
+        if want != got {
+            diffs.push(format!(
+                "row {}: install {want:?}\n         build   {got:?}",
+                i + 1
+            ));
+        }
+    }
+    if install.len() != build.len() {
+        diffs.push(format!(
+            "install has {} rows, build has {}: {:?} vs {:?}",
+            install.len(),
+            build.len(),
+            install.iter().map(|r| r.0.as_str()).collect::<Vec<_>>(),
+            build.iter().map(|r| r.0.as_str()).collect::<Vec<_>>()
+        ));
+    }
+    assert!(
+        diffs.is_empty(),
+        "website/content/docs/build.md's feature table differs from docs/install.md's:\n{}",
+        diffs.join("\n")
+    );
+    Ok(())
+}
+
+/// The table reader splits cells, and the member reader skips parentheses.
+#[test]
+fn the_feature_table_readers_discriminate() {
+    let page = "x\n\n| Feature | Description | Dependencies |\n|---|---|---|\n| `audio` | Plays | `libc` (plugin: `rodio`) |\n| `full` | All: `a` + `b` | all |\n\nprose\n| `stray` | not a row | of the table |\n";
+    let rows = feature_table_rows(page);
+    assert_eq!(rows.len(), 2, "{rows:?}");
+    assert_eq!(rows[0].0, "audio");
+    assert_eq!(
+        backticked_outside_parens(&rows[0].2)
+            .into_iter()
+            .collect::<Vec<_>>(),
+        ["libc"]
+    );
+    assert_eq!(
+        backticked_outside_parens(&rows[1].1)
+            .into_iter()
+            .collect::<Vec<_>>(),
+        ["a", "b"]
+    );
+}
+
 /// Every `[theme]` color slot must be documented in both theme guides, and the
 /// slot count quoted in both config references must match `ThemeConfig`.
 ///
@@ -3576,9 +3929,13 @@ fn mcp_tool_table_lists_every_registered_tool() -> Result<(), TestError> {
     // is. Both change no capture, store, file or other system, so the split
     // moves to 59 read-only of 72 and the thirteen write-capable tools are
     // unchanged.
+    // 72 -> 73 by `vcon_spool_status` (src/mcp/tools/vcon.rs), which counts
+    // the vCon export spool and reads each failed container's record. It
+    // reads files and changes nothing, so the split moves to 60 read-only of
+    // 73 and the thirteen write-capable tools are unchanged.
     assert_eq!(
         registered.len(),
-        72,
+        73,
         "found only {} #[tool(name = ...)] entries under src/mcp/ — the \
          attribute shape changed and this test is no longer reading the \
          registry: {registered:?}",
@@ -4275,7 +4632,17 @@ fn no_documentation_table_repeats_a_row() -> Result<(), TestError> {
     // for contrib/README.md.
     // 268 -> 269: website/content/docs/contributing.md, the generated site
     // page for CONTRIBUTING.md.
-    const EXPECTED_MARKDOWN_FILES: usize = 269;
+    // 269 -> 273: the README.md of tests/fixtures/vcon-datasets/ and of its
+    // three dataset directories.
+    // 273 -> 276: the overview pages, website/content/features.md,
+    // deployments.md and compare.md.
+    // 276 -> 275: compare.md removed (Norm, 2026-10-10).
+    // 275 -> 276: tests/fixtures/markdown-fences.md, the fence shapes
+    // the_rust_and_python_fence_parsers_agree holds both parsers to.
+    // 276 -> 284: the Asterisk and FreeSWITCH guides. docs/asterisk.md,
+    // docs/asterisk-sipnab.md, docs/freeswitch.md and
+    // docs/freeswitch-sipnab.md, and their four generated site pages.
+    const EXPECTED_MARKDOWN_FILES: usize = 284;
     /// How many tables this gate expects to walk.
     ///
     /// Named rather than written twice. The count and the failure message
@@ -4815,10 +5182,49 @@ fn no_documentation_table_repeats_a_row() -> Result<(), TestError> {
     // separator rows per file: docs/cli-reference.md 1,
     // docs/config-reference.md 1, docs/vcon.md 2, and the same 4 in their
     // site copies.
-    // 1096 -> 1098: whole-call audio retention. Attributed by counting added
-    // separator rows per file: docs/config-reference.md 1 (the call-seconds
-    // table under Audio retention budget), and the same 1 in its site copy.
-    const EXPECTED_TABLES: usize = 1098;
+    // 1096 -> 1102: the public vCon datasets. docs/internals/testing.md 1 and
+    // its site page 1, tests/fixtures/vcon-datasets/README.md 1, and the
+    // README.md of each of its three dataset directories 1.
+    // 1102 -> 1104: the corrected copy of the public vCon datasets.
+    // docs/internals/testing.md 1 and its site page 1.
+    // 1104 -> 1110: the overview pages. website/content/deployments.md 5 (the
+    // topology summary and one "What runs where" per topology) and
+    // website/content/compare.md 1 (the feature matrix).
+    // 1110 -> 1109: compare.md's matrix, with the page (Norm, 2026-10-10).
+    // 1109 -> 1111: the 2026-10-11 vcon.store measurements. docs/vcon-store.md
+    // 1 and its site page 1.
+    // 1111 -> 1113: the 2026-10-11 three-version table, in docs/benchmarks.md
+    // and in website/content/docs/benchmarks.md.
+    // 1113 -> 1136: the `%G?` verdict table for the pre-push commit-signature
+    // gate, in docs/internals/build-ci-release.md and its site mirror, +2; and
+    // the 2026-10-11 notes rewrite, +6, per file under
+    // website/content/notes/: fifty-seven-tools-and-the-two-that-stay-off +2,
+    // measure-the-field-not-the-container +1, one-filter-language-every-door
+    // +1, reading-tls-without-a-certificate +1,
+    // read-tls-without-a-key-or-a-restart +1,
+    // the-invite-that-arrived-before-its-keys +1,
+    // what-to-allow-when-an-agent-drives-sipnab +1,
+    // an-observer-vcon-and-its-third-verdict -1,
+    // three-surfaces-and-three-different-calls -1; and docs/mcp-tools.md +2
+    // (the "Which tool finds calls" table and the Prompts table) and their
+    // site page +2. The cursor-exceptions table was rewritten in place.
+    // +2: the `reconcile_orphans` parameter table, in docs/mcp-tools.md and
+    // its site page.
+    // +4: the error-data member table and the reason-code table in
+    // docs/mcp-tools.md's "Error data" section, and the same two in its
+    // site mirror.
+    // +5: `vcon_spool_status`'s parameter and Returns tables, in
+    // docs/mcp-tools.md 2 and website/content/docs/mcp-tools.md 2, and the
+    // vCon spool status row in docs/design/surface-capability-matrix.md.
+    // 1136 -> 1156: ten key tables in docs/keybindings.md (the nine views the F1 help
+    // documented and the page did not, and the capture filter editor) and
+    // the same ten in its site mirror.
+    // 1156 -> 1162: the Asterisk and FreeSWITCH guides: docs/asterisk.md 1,
+    // docs/freeswitch.md 2, and the same in their site copies.
+    // 1162 -> 1164: whole-call audio retention. docs/config-reference.md 1
+    // (the call-seconds table under Audio retention budget) and its site copy
+    // website/content/docs/config.md 1.
+    const EXPECTED_TABLES: usize = 1164;
 
     let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     let out = std::process::Command::new("git")
@@ -6433,6 +6839,7 @@ fn documented_pre_push_gate_count_matches_the_hook() -> Result<(), TestError> {
         12 => "twelve",
         13 => "thirteen",
         14 => "fourteen",
+        15 => "fifteen",
         n => {
             return Err(format!(
                 "no spelling for {n} gates; add one rather than dropping the check"
@@ -6455,7 +6862,8 @@ fn documented_pre_push_gate_count_matches_the_hook() -> Result<(), TestError> {
         // Each of these names a count of pre-push gates somewhere. Any OTHER
         // spelled number next to "hard gate" is the drift this catches.
         for wrong in [
-            "four", "five", "six", "seven", "eight", "nine", "ten", "eleven", "twelve",
+            "four", "five", "six", "seven", "eight", "nine", "ten", "eleven", "twelve", "thirteen",
+            "fourteen",
         ] {
             if wrong == spelled {
                 continue;
@@ -7376,6 +7784,7 @@ fn the_gate_count_spelling_table_covers_one_more_than_today() -> Result<(), Test
         (12, "twelve"),
         (13, "thirteen"),
         (14, "fourteen"),
+        (15, "fifteen"),
     ];
     let want = spellings
         .iter()
@@ -7561,6 +7970,149 @@ fn guides_explain_the_dpkg_lock_error_in_apts_own_words() -> Result<(), TestErro
         assert!(
             flat.contains("Wait for it to finish, then run the block again."),
             "{guide} no longer says what to do about it"
+        );
+    }
+    Ok(())
+}
+
+/// The English word for a small count, as the MCP reference spells counts.
+#[cfg(feature = "mcp")]
+fn count_word(n: usize) -> Option<&'static str> {
+    [
+        "Zero",
+        "One",
+        "Two",
+        "Three",
+        "Four",
+        "Five",
+        "Six",
+        "Seven",
+        "Eight",
+        "Nine",
+        "Ten",
+        "Eleven",
+        "Twelve",
+        "Thirteen",
+        "Fourteen",
+        "Fifteen",
+        "Sixteen",
+        "Seventeen",
+        "Eighteen",
+        "Nineteen",
+        "Twenty",
+    ]
+    .get(n)
+    .copied()
+}
+
+/// Backticked spans in `text`.
+#[cfg(feature = "mcp")]
+fn backticked(text: &str) -> Vec<&str> {
+    text.split('`')
+        .enumerate()
+        .filter(|(i, _)| i % 2 == 1)
+        .map(|(_, s)| s)
+        .collect()
+}
+
+/// The MCP reference's paragraph on source-independent tools names exactly
+/// `SOURCE_INDEPENDENT_TOOLS`, and its counts are that list's counts.
+///
+/// The paragraph said "Seventeen" and named eighteen: it carried
+/// `actions_revert`, which the code's list does not hold, so a reader was told
+/// a tool omits `source_exhausted` when the code makes no such exception.
+#[cfg(feature = "mcp")]
+#[test]
+fn the_source_independent_paragraph_names_the_codes_list() -> Result<(), TestError> {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let text = std::fs::read_to_string(root.join("docs/mcp-tools.md"))?;
+    let lead = " tools are the exception, because their answer cannot move with";
+    let at = text
+        .find(lead)
+        .ok_or("the source-independent paragraph is on the page")?;
+    let start = text[..at].rfind("\n\n").map_or(0, |p| p + 2);
+    let end = text[at..].find("\n\n").map_or(text.len(), |p| at + p);
+    let para = &text[start..end];
+    let code = sipnab::mcp::completeness::SOURCE_INDEPENDENT_TOOLS;
+
+    let named: BTreeSet<&str> = backticked(para).into_iter().collect();
+    let want: BTreeSet<&str> = code.iter().copied().collect();
+    assert_eq!(
+        named, want,
+        "docs/mcp-tools.md names a different set of source-independent tools \
+         than src/mcp/completeness.rs SOURCE_INDEPENDENT_TOOLS"
+    );
+    let total = count_word(code.len()).ok_or("a count the table spells")?;
+    assert!(
+        para.starts_with(&format!("{total}{lead}")),
+        "the paragraph should open with {total:?}: {para}"
+    );
+
+    // The two halves: tools that read something else, and tools that ask
+    // another process. Each half's count word matches the names in it.
+    let split = para
+        .find("The other ")
+        .ok_or("the paragraph has its second half")?;
+    let (first, second) = para.split_at(split);
+    let first_names = backticked(first).len();
+    let second_names = backticked(second).len();
+    let first_word = count_word(first_names).ok_or("first count")?;
+    let second_word = count_word(second_names)
+        .ok_or("second count")?
+        .to_lowercase();
+    assert!(
+        first.contains(&format!(
+            "{first_word} read something other than the capture store"
+        )),
+        "the first half names {first_names}: {first}"
+    );
+    assert!(
+        second.starts_with(&format!("The other {second_word} ask another process")),
+        "the second half names {second_names}: {second}"
+    );
+    Ok(())
+}
+
+/// The MCP reference documents every prompt, with the tools it calls and the
+/// bundles those tools need, derived from `sipnab::mcp::prompts`.
+#[cfg(feature = "mcp")]
+#[test]
+fn every_prompt_is_documented_with_its_tools_and_bundles() -> Result<(), TestError> {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let text = std::fs::read_to_string(root.join("docs/mcp-tools.md"))?;
+    let at = text
+        .find("\n### Prompts\n")
+        .ok_or("docs/mcp-tools.md has a `### Prompts` section")?;
+    let body = &text[at + 1..];
+    let end = body[4..].find("\n#").map_or(body.len(), |p| p + 4);
+    let section = &body[..end];
+    let rows: Vec<&str> = section.lines().filter(|l| l.starts_with("| `")).collect();
+    let workflows = sipnab::mcp::prompts::all();
+    assert_eq!(
+        rows.len(),
+        workflows.len(),
+        "one table row per prompt: {rows:#?}"
+    );
+    for w in workflows {
+        let row = rows
+            .iter()
+            .find(|r| r.starts_with(&format!("| `{}` |", w.name)))
+            .ok_or(format!("no row for prompt {}", w.name))?;
+        let cells: Vec<&str> = row.split(" | ").collect();
+        let tools_cell = cells.get(2).ok_or(format!("{}: a tools cell", w.name))?;
+        let bundles_cell = cells.get(3).ok_or(format!("{}: a bundles cell", w.name))?;
+        let needs = w.needs();
+        assert_eq!(
+            backticked(tools_cell),
+            needs,
+            "{}: the tools column lists the tools the prompt calls, in order",
+            w.name
+        );
+        assert_eq!(
+            backticked(bundles_cell),
+            sipnab::mcp::prompts::bundles_holding(&needs),
+            "{}: the bundles column lists the bundles those tools are in",
+            w.name
         );
     }
     Ok(())

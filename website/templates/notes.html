@@ -23,12 +23,9 @@
 
     {{ section.content | safe }}
 
-    {# How-tos and features are what a reader came for, so they are open. The
-       post-mortems below are a record worth keeping and a poor front page:
-       sixteen accounts of what broke bury the pages that tell somebody how to
-       do their job. They sit behind a disclosure the reader opens
-       deliberately -- native <details>, so it works with JavaScript off and
-       announces its own state to a screen reader. #}
+    {# How-tos and features render open. The post-mortems render inside a
+       closed disclosure, a native <details>, so the list works with
+       JavaScript off and a screen reader announces its state. #}
     {% set howtos = section.pages | filter(attribute="extra.kind", value="howto") %}
     {% if howtos | length > 0 %}
     <section class="note-group">
@@ -59,7 +56,7 @@
       <summary>
         <span class="note-archive-title">Post-mortems</span>
         <span class="note-archive-count">{{ postmortems | length }}</span>
-        <span class="note-archive-hint">what broke, and what the gate did not catch</span>
+        <span class="note-archive-hint">what went wrong, why, and what changed</span>
       </summary>
       <ul class="note-list">
         {% for p in postmortems %}

@@ -1,158 +1,229 @@
 +++
-title = "One call, two nodes, and neither saw the whole thing"
+title = "Join the two legs of a call that crossed a B2BUA"
 date = 2026-09-01
-description = "The SBC says it sent the call, the PBX says it never arrived, and a B2BUA changed the Call-ID in between. How to join the two legs, and how to tell an identifier match from a guess that scored well."
+updated = 2026-10-11
+description = "How to find the second Call-ID of a call that a back-to-back user agent re-originated, and how to tell an identifier match from a timing guess."
 
 [extra]
 kind = "howto"
 +++
 
-The SBC log says it forwarded the call. The PBX log has no such call. Both are
-right, because a back-to-back user agent gave the outbound leg a new Call-ID
-and neither box ever held both identifiers at once.
+## In short
 
-You hold two captures. The work is joining them, and the trap is that the
-joining tool answers with a number that looks the same whether it matched an
-identifier or guessed from a clock.
+Some kinds of telephone switch split a phone call that passes through them in
+two: the switch ends the incoming call and places a new outgoing one, with a
+new call identifier. The box on each side then logs only one of the two
+identifiers, so the call looks lost between them. sipnab can look at a
+recording from the switch, name the other half of the call, and say whether it
+found that half by a shared identifier or only guessed from timing.
 
-## Ask the box that saw both sides first
+## Who this is for
 
-Whichever node re-originated the call is the only one that held both legs, so
-its answer names the Call-ID to carry inward. Ask it, then follow the pointer:
+Operators who hold captures from an SBC, proxy or PBX and need to follow one
+call from one box to the next, either by hand or through an AI agent.
 
-```bash
-sipnab --mcp -N --quiet --node-name sbc-edge-1 -I sbc.pcap
-```
+## Before you start
 
-Then call `find_correlated` with the leg you already know. On a capture holding
-a B2BUA, the answer looks like this:
+- A B2BUA (back-to-back user agent) is a SIP server that ends the incoming
+  call and starts a new outgoing call, usually with a new Call-ID. Many SBCs
+  and PBXes act as one on some calls and as a plain proxy on others.
+- The commands below talk to sipnab's MCP server (the interface an AI agent
+  uses) over standard input, so they run without an agent. They need `sipnab`
+  on your `PATH` and `jq` (a JSON command-line tool).
+- The repository has one capture that holds both legs of a B2BUA call:
+  `tests/pcap-samples/b2bua-asterisk.pcapng`. The incoming leg has Call-ID
+  `b2bua-caller-synth@203.0.113.1` and the outgoing leg has Call-ID
+  `b2bua-leg-synth@203.0.113.101:5060`.
 
-```jsonc
-// find_correlated { "call_id": "b2bua-caller-synth@203.0.113.1" }
-{
-  "source_call_id": "b2bua-caller-synth@203.0.113.1",
-  "legs": [
-    { "call_id": "b2bua-leg-synth@203.0.113.101:5060", "score": 50,
-      "strategy": "timing_heuristic", "identifier_match": false,
-      "observed_gap_ms": 3 }
-  ],
-  "total_matched": 1,
-  "heuristic_only": true,
-  "capture_identity": { "node": "sbc-edge-1" }
-}
-```
+## Steps
 
-Ask the PBXes first instead and you are guessing which one took the call, which
-usually means asking all of them. Server-side query time runs under a
-millisecond while an agent round trip costs seconds, so following one pointer
-beats fanning out by a wide margin.
+1. Ask the box that re-originated the call first. Only that box saw both
+   legs, so only its capture can name the Call-ID the next box knows the call
+   by. Start sipnab on its capture with a node name, and call
+   `find_correlated` with the Call-ID you already have:
 
-Ask the re-originating box even when you expect it to stay a proxy on this
-call. If it did, `find_correlated` returns nothing and you carry the same
-Call-ID inward for the price of one query. If it did not, you now hold the
-identifier the next hop knows the call by.
+   ```bash
+   printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"cli","version":"1"}}}' '{"jsonrpc":"2.0","method":"notifications/initialized"}' '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"find_correlated","arguments":{"call_id":"b2bua-caller-synth@203.0.113.1"}}}' | sipnab --mcp -N --quiet --node-name sbc-edge-1 -I tests/pcap-samples/b2bua-asterisk.pcapng | jq 'select(.id==2) | .result.structuredContent'
+   ```
 
-## Read the strategy, not the score
+   Output on sipnab 0.5.211:
 
-Here is the same tool on a different capture:
+   ```text
+   {
+     "capture_identity": {
+       "dialog_generation": 64,
+       "instance": "6388918dda16675c34b4e-2",
+       "node": "sbc-edge-1",
+       "stream_generation": 2
+     },
+     "heuristic_only": true,
+     "legs": [
+       {
+         "call_id": "b2bua-leg-synth@203.0.113.101:5060",
+         "identifier_match": false,
+         "observed_gap_ms": 3,
+         "score": 50,
+         "strategy": "timing_heuristic"
+       }
+     ],
+     "schema_version": 1,
+     "source_call_id": "b2bua-caller-synth@203.0.113.1",
+     "source_exhausted": true,
+     "source_stopped_early": false,
+     "timing_clock": {
+       "available": true,
+       "est_error_us": 0,
+       "max_error_us": 36000,
+       "synchronized": true
+     },
+     "total_matched": 1
+   }
+   ```
 
-```jsonc
-{ "score": 90, "strategy": "sdp_origin",
-  "identifier_match": true, "observed_gap_ms": null }
-```
+   `instance` and `max_error_us` differ on every run. If the box acted as a
+   proxy on this call, `legs` is empty and `total_matched` is 0: the Call-ID
+   did not change, so ask the next box for the same Call-ID.
 
-Score 90 against score 50, and the gap between them is much wider than 40
-points. The first answer matched an [RFC 8866](https://www.rfc-editor.org/rfc/rfc8866)
-SDP origin tuple, which two legs share only when something forwarded the SDP
-untouched. The second matched nothing at all — it found a dialog on the same
-endpoint three milliseconds later and said so.
+2. Read `strategy` and `identifier_match` before `score`. In step 1 the
+   strategy is `timing_heuristic` and `identifier_match` is `false`: no
+   identifier crossed the switch, and sipnab paired the two legs because they
+   share an endpoint and started 3 ms apart (`observed_gap_ms`). That is a
+   guess. `heuristic_only: true` means every returned leg is a guess, so say so
+   in anything you write about the call.
 
-`identifier_match` carries that difference as a boolean, so a client can filter
-on it without learning which strategy names mean what. `heuristic_only` says
-whether EVERY returned leg came from a guess, which is the flag an agent needs
-before it writes a conclusion — a call tree built only from timing is a
-hypothesis, and one presented as a finding is worse than no answer.
+   For contrast, `tests/pcap-samples/sip-rtp-g711.pcap` holds two calls that
+   share an SDP origin line (the line in the media description that names the
+   session and its creator):
 
-`observed_gap_ms` appears only for `timing_heuristic`, and there it IS the
-evidence. A 15 ms gap on a quiet box and a 1,900 ms gap on a busy SBC score
-identically and mean completely different things.
+   ```bash
+   printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"cli","version":"1"}}}' '{"jsonrpc":"2.0","method":"notifications/initialized"}' '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"find_correlated","arguments":{"call_id":"1-1966@10.0.2.20"}}}' | sipnab --mcp -N --quiet --node-name sbc-edge-1 -I tests/pcap-samples/sip-rtp-g711.pcap | jq 'select(.id==2) | .result.structuredContent'
+   ```
 
-The strategies that survive a B2BUA by design are few. `session_id` matches an
-[RFC 7989](https://www.rfc-editor.org/rfc/rfc7989) `Session-ID`, which exists
-for exactly this. `charging_vector_related_icid` matches when one leg's
-[RFC 7315 section 4.6.4.1](https://www.rfc-editor.org/rfc/rfc7315#section-4.6.4.1)
-`related-icid` names the other's `icid-value`, and a B2BUA emits that only when
-it chose to. Everything else survives a proxy and not a re-origination.
+   ```text
+   {
+     "capture_identity": {
+       "dialog_generation": 13,
+       "instance": "63aff18dda16824bb76ea-2",
+       "node": "sbc-edge-1",
+       "stream_generation": 2
+     },
+     "heuristic_only": false,
+     "legs": [
+       {
+         "call_id": "1-1968@10.0.2.20",
+         "identifier_match": true,
+         "observed_gap_ms": null,
+         "score": 90,
+         "strategy": "sdp_origin"
+       }
+     ],
+     "schema_version": 1,
+     "source_call_id": "1-1966@10.0.2.20",
+     "source_exhausted": true,
+     "source_stopped_early": false,
+     "timing_clock": null,
+     "total_matched": 1
+   }
+   ```
 
-Most deployments emit no correlation header at all. Where none appears, the
-timing guess is the only strategy left, and on a busy SBC unrelated calls
-routinely share an endpoint inside its window. The full strategy table, with
-which of them survives a B2BUA and why, is on the
-[MCP tools page](@/docs/mcp-tools.md).
+   Here an identifier matched (`identifier_match: true`), `observed_gap_ms` is
+   `null` because sipnab used no timing, and `timing_clock` is `null` because no
+   leg needed it.
 
-## The clock is part of the evidence
+   sipnab has seven strategies. Two exist by design to cross a B2BUA:
+   `session_id` (the [RFC 7989](https://www.rfc-editor.org/rfc/rfc7989) `Session-ID` header) and
+   `charging_vector_related_icid` (only when the B2BUA chose to send it).
+   `x_call_id` and `sdp_origin` cross only when the box copies the header or
+   the SDP. `charging_vector_icid` and `via_branch` do not cross by design, and
+   `timing_heuristic` is not an identifier. The full table is in the
+   [`find_correlated` reference](@/docs/mcp-tools.md#find-correlated).
 
-When the strategy is timing, the answer carries what sipnab knows about the
-clock underneath it:
+3. Check the clock only when different hosts timestamped the two legs.
+   Inside one capture, one clock stamped every packet, so a 3 ms gap between
+   two legs in that capture is a measured interval even if the clock's absolute
+   time is wrong. When legs come from captures written on two hosts, clock
+   offset between the hosts adds to the gap, and the timing match is only as
+   good as both clocks.
 
-```jsonc
-"timing_clock": { "available": true, "synchronized": true,
-                  "est_error_us": 0, "max_error_us": 349000 }
-```
+   `timing_clock` describes the clock of the host answering the query, read
+   from the kernel at the moment of the query. It does not describe the clock
+   that stamped a capture file that sipnab reads. `max_error_us` is the kernel's
+   upper bound on that clock's error, in microseconds, and it changes from
+   reading to reading: three runs on one host on 2026-10-11 reported 1017000,
+   36000 and 16500. The time window for a timing match is 2000 ms unless
+   `--leg-correlation-window <MS>` sets another value. A `max_error_us` near
+   that window means a timing match across hosts proves nothing.
 
-Read `max_error_us` against `observed_gap_ms` before believing a timing match.
-A 3 ms observed gap sitting under a 349 ms error bound is not a measurement of
-3 ms — it is a measurement somewhere inside a window two orders of magnitude
-wider. That does not make the match wrong. It makes the gap useless as a
-discriminator between this leg and any other leg on the same endpoint inside
-that window.
+4. Carry the Call-ID from step 1 to the next box and ask that box for it with
+   `get_dialog`. The repository has no second capture of this call, so this
+   example reads the same file under the node name `pbx-1`:
 
-`--leg-correlation-window` is the only knob the timing heuristic has, and the
-shipped two seconds describes a PBX that places the outbound leg immediately.
-A PBX doing a number-portability lookup, an ENUM dip, or walking a
-least-cost-routing cascade before it dials takes longer than that, and no
-setting of anything else reaches a leg paced wider than this window.
+   ```bash
+   printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"cli","version":"1"}}}' '{"jsonrpc":"2.0","method":"notifications/initialized"}' '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"get_dialog","arguments":{"call_id":"b2bua-leg-synth@203.0.113.101:5060"}}}' | sipnab --mcp -N --quiet --node-name pbx-1 -I tests/pcap-samples/b2bua-asterisk.pcapng | jq -c 'select(.id==2) | .result.structuredContent.dialog | {call_id, state, final_status_code, msg_count}'
+   ```
 
-Between two captures on two machines the same caution applies twice over. A few
-hundred milliseconds of skew makes an ordinary exchange look like a
-retransmission, so check NTP on both hosts before reading a timing difference
-as evidence about the call.
+   ```text
+   {"call_id":"b2bua-leg-synth@203.0.113.101:5060","state":"Completed","final_status_code":200,"msg_count":15}
+   ```
 
-## Name your nodes before you need to
+5. Record which box gave each answer. `capture_identity.node` names the box,
+   and `--node-name` sets it. Without that flag, sipnab uses the system
+   hostname. Not every answer carries `capture_identity`: `find_correlated`,
+   `capture_status` and `list_dialogs` do, and `get_dialog` does not. Call
+   `capture_status` once per node and keep the name. `capture_identity.instance`
+   changes whenever a different capture loads; the node name does not.
 
-Every MCP and REST answer carries `capture_identity.node`, and that string is
-the only thing attributing a fact to a box. "Answered with 407" is an
-incomplete finding until you know which machine said it.
+   On a live box that an agent reaches over HTTP, the server command takes the
+   same flag:
 
-```ini
-ExecStart=/usr/local/bin/sipnab --mcp -N --mcp-transport http \
-    --mcp-bind 127.0.0.1:8731 --node-name sbc-edge-1 -d eth0
-```
+   ```bash
+   sipnab --mcp -N --mcp-transport http --mcp-bind 127.0.0.1:8731 --node-name sbc-edge-1 -d eth0
+   ```
 
-`--node-name` defaults to the system hostname, which is usually what you want
-and occasionally not — the default puts your hostname on the wire. Set it to
-something you recognize in a transcript six weeks later. It stays put across a
-capture restart, while `capture_identity.instance` rotates whenever a different
-capture loads, so the pair tells a topology change apart from a reload.
+   This form needs capture privileges on `eth0`, so it was not run for this
+   note. The same arguments with `-I tests/pcap-samples/b2bua-asterisk.pcapng`
+   in place of `-d eth0`, and port 28731, started and logged
+   `MCP HTTP server listening on 127.0.0.1:28731`.
 
-## What the join cannot prove
+## Limits
 
-Two legs correlated across two captures still leave one thing unestablished:
-that the messages you are comparing are the same messages. Both captures may
-hold a leg, agree on timing, and differ in a header that a middlebox rewrote.
-`compare_dialogs` is what surfaces that, and it is worth running even when the
-correlation looks certain.
+- If the box sends no `Session-ID`, no correlation header that sipnab's
+  configuration tells it to read, and rewrites the SDP, only the timing guess
+  remains, and nothing in the signaling proves the two legs are one call. Configuring the box to
+  insert a correlation header is the fix; see
+  [Choose a correlation identifier](@/docs/mcp-estate.md#choose-a-correlation-identifier).
+- `find_correlated` answers one hop inside one capture. `get_call_tree` walks
+  every leg in one capture, and stops at a timing guess. Across boxes, repeat
+  steps 1 and 4 at each box.
+- The REST route `GET /v1/dialogs/:call_id/correlated` returns the same legs
+  but no `capture_identity` and no `timing_clock`.
 
-An SBC that changes SDP addresses is doing its job. One that drops a header is
-not. That distinction is the reason to compare rather than to stop at a
-matching Call-ID.
+## Terms used here
 
-## The order
+- **SIP**: the signaling protocol that sets up and ends phone calls over IP.
+- **Call-ID**: the SIP header that identifies one call between two endpoints.
+- **Leg**: one SIP call between two boxes; a call through a B2BUA has two.
+- **B2BUA**: back-to-back user agent, a SIP server that ends a call and places
+  a new one in its place.
+- **Proxy**: a SIP server that forwards a call without replacing its Call-ID.
+- **SBC**: session border controller, a SIP server at a network edge.
+- **PBX**: private branch exchange, a business phone switch.
+- **SDP**: Session Description Protocol, the part of a SIP message that
+  describes the audio or video session.
+- **MCP**: Model Context Protocol, the interface an AI agent uses to call
+  sipnab's tools.
+- **Capture**: a recording of network packets, such as a pcap or pcapng file.
+- **Node**: one machine running sipnab.
+- **Endpoint**: an IP address and port that sends or receives SIP.
+- **NTP**: Network Time Protocol, which keeps a host's clock in step with
+  reference clocks.
 
-1. Query the box that re-originated, not the ones downstream.
-2. Read `strategy` and `identifier_match` before `score`.
-3. If `heuristic_only` is true, say so in whatever you write next.
-4. Check `max_error_us` against `observed_gap_ms` before trusting a timing
-   match, and check NTP before trusting a cross-capture one.
-5. Compare the dialogs, because a correlated leg is not necessarily an
-   unmodified one.
+## Related guides
+
+- [Follow one call across an SBC and its PBXes](@/docs/mcp-estate.md#follow-one-call-across-an-sbc-and-its-pbxes)
+- [Read what matched, because the topology is not fixed](@/docs/mcp-estate.md#read-what-matched-because-the-topology-is-not-fixed)
+- [Check what federation cannot prove](@/docs/mcp-estate.md#check-what-federation-cannot-prove)
+- [`find_correlated` reference](@/docs/mcp-tools.md#find-correlated) and [`get_call_tree`](@/docs/mcp-tools.md#get-call-tree)
+- [`capture_health`, which reports the clock without a correlation](@/docs/mcp-tools.md#capture-health)
+- [REST: GET /v1/dialogs/:call_id/correlated](@/docs/api.md#get-v1-dialogs-call-id-correlated)
+- [Keep a capture running between agent sessions](@/docs/mcp-deploy.md#keep-a-capture-running-between-agent-sessions)

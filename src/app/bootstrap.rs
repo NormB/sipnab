@@ -628,26 +628,41 @@ fn check_alert_rule(source: &str, from: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// Declare the process-wide settings every surface reads: the node name, the
-/// diagnosis thresholds, and the Prometheus histogram boundaries.
+/// Declare the node name this process reports: `--node-name`, else
+/// `[capture] node_name` from `config`, else the system host name.
+///
+/// Called by `main` before the run provenance record is written. The record
+/// carries the node, and `set_node_name` writes a process-global `OnceLock`
+/// whose first READ fixes the host name when nothing was set: declared any
+/// later, the record and every vCon of the run carried the host name while
+/// the command line or the config named the node.
+///
+/// `config` is `None` when the config file could not be read; the run stops
+/// at the config step after the record is written, and the flag alone
+/// decides the node until then.
+///
+/// # Side effects
+///
+/// Writes a process-global `OnceLock`; the first writer wins.
+pub fn declare_node_name(cli: &Cli, config: Option<&Config>) {
+    let fallback = Config::default();
+    if let Some(name) = cli.node_name(config.unwrap_or(&fallback)) {
+        crate::provenance::set_node_name(&name);
+    }
+}
+
+/// Declare the process-wide settings every surface reads: the diagnosis
+/// thresholds and the Prometheus histogram boundaries. The node name is
+/// declared earlier, by [`declare_node_name`].
 ///
 /// # Side effects
 ///
 /// Writes process-global `OnceLock`s; the first writer wins, so this runs
 /// before anything can read them.
 fn declare_process_globals(cli: &Cli, config: &Config) {
-    // FIRST, before anything can mint an identity. `set_node_name` writes a
-    // process-global `OnceLock` and the first writer wins, so a later call
-    // would be silently ignored and answers would carry the hostname while the
-    // command line said otherwise.
-    //
-    // CLI first, config second, hostname last — and the ORDER of these two
-    // calls is the precedence, because the first writer wins. Written as a
-    // chain rather than an if/else so adding a third source cannot
-    // accidentally invert it.
-    if let Some(name) = cli.node_name(config) {
-        crate::provenance::set_node_name(&name);
-    }
+    // The node name is not declared here: `main` declares it with
+    // `declare_node_name` before the run provenance record, which reads it
+    // first.
 
     // Same shape, same reason: both diagnosers are reached from the TUI, the
     // reports, `--json-dialogs`, the REST layer and the MCP tools, and every
@@ -2435,6 +2450,11 @@ fn confine_after_capture_start(
     privilege::drop_privileges(effective_user, effective_no_priv_drop)
         .map_err(|e| PlanError::new(1, format!("Failed to drop privileges: {e}")))?;
 
+    // 16a'. Every output created later must be creatable by the user this
+    // process now runs as, or the run ends here rather than at the first
+    // packet or the first finished call.
+    unwritable_output_refusal(cli)?;
+
     // 16b. Initialize syslog if --syslog is set
     if cli.security_args.syslog {
         crate::security::alerting::init_syslog();
@@ -2478,9 +2498,9 @@ fn confine_after_capture_start(
 
     // 19. Record what this run asks the kernel for, if asked to.
     //
-    // After the path sandbox, and last of all, because it is an instrument
-    // rather than a control: it denies nothing, so its position cannot affect
-    // what any other step is allowed to do. Placing it here also means the
+    // After the path sandbox, and last of all: `log` denies nothing, and
+    // `enforce` must not deny a call a later startup step needs, so neither
+    // can affect what any other step is allowed to do. Placing it here also means the
     // records describe a CAPTURE — the syscalls a steady-state run makes —
     // rather than the wider set a startup needs, which is the set an allowlist
     // has to cover.
@@ -2493,9 +2513,12 @@ fn confine_after_capture_start(
     // libpcap, which is the thread it exists to characterize. Measured, not
     // assumed: `seccomp_child_test` fails if the flag is dropped.
     //
-    // Nothing here can end a run: the only action installed is
-    // `SECCOMP_RET_LOG`, which allows.
-    install_syscall_logging(cli);
+    // `--seccomp enforce` ends the run here when no enforcing filter is in
+    // force, exactly as `--sandbox required` does above: a run that asked for
+    // a control and did not get one must not capture as if it had.
+    let seccomp_status = install_syscall_logging(cli);
+    crate::seccomp::requirement_verdict(seccomp_mode(cli), &seccomp_status)
+        .map_err(|refusal| PlanError::new(1, refusal))?;
 
     Ok(Confined {
         kill_worker,
@@ -2544,6 +2567,63 @@ fn uncompiled_source_flag(cli: &Cli) -> Option<&'static str> {
         return Some("--hep-listen requires the 'hep' feature (not compiled in)");
     }
     None
+}
+
+/// Refuse, before the first packet, an output the run would create later and
+/// the user it now runs as cannot create.
+///
+/// Called right after the privilege drop. `-O` is opened on the first packet,
+/// `--export-vcon-dir` and `--vcon-out` when a call ends or at the end of the
+/// run, and `--redact-map` at the end. Without this check a run dropped to
+/// `nobody` read packets until the first of those moments and then exited 1;
+/// with it the same refusal, worded the same way, ends the run at startup.
+/// Each output keeps being created after the drop, by the drop user, as
+/// documented: this only asks the kernel whether that user could.
+///
+/// # Errors
+///
+/// The first output that cannot be created, with exit code 1 (an I/O error
+/// in the exit-code table), described by
+/// [`crate::capture::writer::describe_output_error`].
+fn unwritable_output_refusal(cli: &Cli) -> Result<(), PlanError> {
+    use crate::capture::writer::{OutputKind, check_output_creatable, describe_output_error};
+    let o = &cli.output_args;
+    let outputs: [(Option<std::path::PathBuf>, OutputKind, &str); 4] = [
+        (
+            cli.capture_args
+                .output
+                .as_deref()
+                .map(std::path::PathBuf::from),
+            OutputKind::File,
+            "Failed to create output file",
+        ),
+        (
+            o.export_vcon_dir.clone(),
+            OutputKind::Dir,
+            "Could not create the vCon directory",
+        ),
+        (
+            o.vcon_out.clone(),
+            OutputKind::ReplacedFile,
+            "Could not write --vcon-out",
+        ),
+        (
+            o.redact_map.clone(),
+            OutputKind::File,
+            "Could not create --redact-map",
+        ),
+    ];
+    for (path, kind, what) in outputs {
+        let Some(path) = path else { continue };
+        if let Err(e) = check_output_creatable(&path, kind) {
+            let err = anyhow::Error::from(e).context(format!("{what} '{}'", path.display()));
+            return Err(PlanError::new(
+                1,
+                describe_output_error(&err, privilege::dropped_to()),
+            ));
+        }
+    }
+    Ok(())
 }
 
 /// The refusal for a flag checked after the privilege drop: one whose feature
@@ -3130,6 +3210,7 @@ fn default_log_level(cli: &Cli) -> &'static str {
     // log lines are its whole report.
     let tui_active = !cli.mode_args.no_tui
         && cli.vcon_forward_args.vcon_forward.is_none()
+        && cli.vcon_forward_args.vcon_spool_status.is_none()
         && cli.vcon_fetch_args.vcon_fetch.is_empty();
     if cli.mode_args.quiet {
         "warn"
@@ -3906,15 +3987,16 @@ pub fn run_mint_token(cli: &Cli) -> Option<i32> {
 /// exit code, or `None` when the flag is absent. The body is feature-swapped
 /// so the caller contains no `cfg`.
 ///
-/// Loads the configuration for `[vcon_forward]` ([`load_config`], which also
-/// refuses forwarder settings that cannot be used), and opens no capture: the
+/// Applies the configuration `main` read (`read`, from [`read_config`]) for
+/// `[vcon_forward]` ([`apply_config`], which also refuses forwarder settings
+/// that cannot be used), and opens no capture: the
 /// forwarder is a separate process that reads no packet, and clap has already
 /// refused every capture flag beside it.
 ///
 /// # Returns
 ///
 /// `Some` exit code from [`crate::app::vcon_forward::run`]; the exit code of
-/// [`load_config`]'s refusal (1 for the file, 2 for a setting); when the
+/// the config's refusal (1 for the file, 2 for a setting); when the
 /// credential's file cannot be read or holds no credential, 1 if
 /// `[vcon_forward] auth_file` named it and 2 if `--vcon-forward-auth-file`
 /// did ([`crate::settings::Origin`]); `Some(2)` when the `vcon` feature is
@@ -3922,21 +4004,18 @@ pub fn run_mint_token(cli: &Cli) -> Option<i32> {
 ///
 /// # Side effects
 ///
-/// Reads the config file and the credential's file, creates the delivered
+/// Reads the credential's file, creates the delivered
 /// and failed directories, connects to the store, and moves files out of the
 /// spool, until SIGTERM or SIGINT (or after one pass with
 /// `--vcon-forward-once`).
-pub fn run_vcon_forward(cli: &Cli) -> Option<i32> {
+pub fn run_vcon_forward(cli: &Cli, read: &Result<LoadedConfig, PlanError>) -> Option<i32> {
     cli.vcon_forward_args.vcon_forward.as_ref()?;
     #[cfg(feature = "vcon")]
     {
         use crate::app::vcon_forward::{ForwardPlan, run};
-        let loaded = match load_config(cli) {
+        let loaded = match apply_read_config(cli, read) {
             Ok(loaded) => loaded,
-            Err(e) => {
-                tracing::error!("{}", e.message);
-                return Some(e.exit_code);
-            }
+            Err(code) => return Some(code),
         };
         let args = &cli.vcon_forward_args;
         let plan = match ForwardPlan::resolve_refusal(args, &loaded.config.vcon_forward) {
@@ -3961,7 +4040,63 @@ pub fn run_vcon_forward(cli: &Cli) -> Option<i32> {
     }
     #[cfg(not(feature = "vcon"))]
     {
+        let _ = read;
         tracing::error!("--vcon-forward requires the 'vcon' feature (not compiled in)");
+        Some(2)
+    }
+}
+
+/// Handle `--vcon-spool-status`: print the spool's state as JSON and return
+/// the exit code, or `None` when the flag is absent. The body is
+/// feature-swapped so the caller contains no `cfg`.
+///
+/// Answers from [`crate::app::vcon_spool::snapshot`], the function behind the
+/// MCP tool `vcon_spool_status` and `GET /v1/vcon/spool`, with every failed
+/// record on one page. Reads no config: the spool is named on the command
+/// line, and nothing else is read.
+///
+/// # Returns
+///
+/// `Some(0)` after printing the answer; `Some(1)` when a directory exists and
+/// cannot be read, or the answer cannot be written to standard output;
+/// `Some(2)` when the `vcon` feature is not compiled in; `None` when
+/// `--vcon-spool-status` was not given.
+///
+/// # Side effects
+///
+/// Reads the spool's directories and failure records, and writes standard
+/// output. Moves, creates and deletes nothing.
+pub fn run_vcon_spool_status(cli: &Cli) -> Option<i32> {
+    let spool = cli.vcon_forward_args.vcon_spool_status.as_ref()?;
+    #[cfg(feature = "vcon")]
+    {
+        use crate::app::vcon_spool::{SpoolPage, snapshot};
+        let status = match snapshot(spool, SpoolPage::all(), chrono::Utc::now()) {
+            Ok(status) => status,
+            Err(e) => {
+                tracing::error!("--vcon-spool-status: {e}");
+                return Some(1);
+            }
+        };
+        match serde_json::to_string_pretty(&status) {
+            Ok(text) => {
+                use std::io::Write as _;
+                let mut out = std::io::stdout().lock();
+                if writeln!(out, "{text}").and_then(|()| out.flush()).is_err() {
+                    return Some(1);
+                }
+                Some(0)
+            }
+            Err(e) => {
+                tracing::error!("--vcon-spool-status: {e}");
+                Some(1)
+            }
+        }
+    }
+    #[cfg(not(feature = "vcon"))]
+    {
+        let _ = spool;
+        tracing::error!("--vcon-spool-status requires the 'vcon' feature (not compiled in)");
         Some(2)
     }
 }
@@ -3970,14 +4105,14 @@ pub fn run_vcon_forward(cli: &Cli) -> Option<i32> {
 /// file, and return the exit code, or `None` when the flag is absent. The
 /// body is feature-swapped so the caller contains no `cfg`.
 ///
-/// Loads the configuration for `[vcon_fetch]` ([`load_config`]) and opens no
-/// capture: the fetcher is a separate process that reads no packet, and clap
+/// Applies the configuration `main` read (`read`, from [`read_config`]) for
+/// `[vcon_fetch]` ([`apply_config`]) and opens no capture: the fetcher is a separate process that reads no packet, and clap
 /// has already refused every capture flag beside it.
 ///
 /// # Returns
 ///
 /// `Some` exit code from [`crate::app::vcon_fetch::run`]; the exit code of
-/// [`load_config`]'s refusal (1 for the file, 2 for a setting); when the
+/// the config's refusal (1 for the file, 2 for a setting); when the
 /// credential's file cannot be read or holds no credential, 1 if
 /// `[vcon_fetch] auth_file` named it and 2 if `--vcon-fetch-auth-file` did;
 /// 2 when `-` was given and standard input holds no usable uuid list;
@@ -3986,22 +4121,19 @@ pub fn run_vcon_forward(cli: &Cli) -> Option<i32> {
 ///
 /// # Side effects
 ///
-/// Reads the config file, the credential's file and, for `-`, standard
+/// Reads the credential's file and, for `-`, standard
 /// input; connects to the store; creates the output directory and writes a
 /// file per container.
-pub fn run_vcon_fetch(cli: &Cli) -> Option<i32> {
+pub fn run_vcon_fetch(cli: &Cli, read: &Result<LoadedConfig, PlanError>) -> Option<i32> {
     if cli.vcon_fetch_args.vcon_fetch.is_empty() {
         return None;
     }
     #[cfg(feature = "vcon")]
     {
         use crate::app::vcon_fetch::{prepare, run};
-        let loaded = match load_config(cli) {
+        let loaded = match apply_read_config(cli, read) {
             Ok(loaded) => loaded,
-            Err(e) => {
-                tracing::error!("{}", e.message);
-                return Some(e.exit_code);
-            }
+            Err(code) => return Some(code),
         };
         let read_stdin = || {
             let mut text = String::new();
@@ -4017,14 +4149,41 @@ pub fn run_vcon_fetch(cli: &Cli) -> Option<i32> {
     }
     #[cfg(not(feature = "vcon"))]
     {
+        let _ = read;
         tracing::error!("--vcon-fetch requires the 'vcon' feature (not compiled in)");
         Some(2)
     }
 }
 
+/// [`apply_config`] over the configuration `main` already read, logging the
+/// refusal: the vCon forwarder and fetcher read no config of their own, so
+/// the file is read once per process.
+///
+/// # Errors
+///
+/// The exit code of the read's refusal or of [`apply_config`]'s, after
+/// logging its message.
+#[cfg(feature = "vcon")]
+fn apply_read_config(
+    cli: &Cli,
+    read: &Result<LoadedConfig, PlanError>,
+) -> Result<LoadedConfig, i32> {
+    let applied = match read {
+        Ok(loaded) => apply_config(cli, loaded.clone()),
+        Err(e) => Err(PlanError {
+            exit_code: e.exit_code,
+            message: e.message.clone(),
+        }),
+    };
+    applied.map_err(|e| {
+        tracing::error!("{}", e.message);
+        e.exit_code
+    })
+}
+
 /// Why a `--vcon-fetch` run's settings cannot be used, or `None` (also when
 /// this is not a fetcher run). Feature-swapped: without the `vcon` feature
-/// [`run_vcon_fetch`] refuses the run before the config is read.
+/// [`run_vcon_fetch`] refuses the run before the config is applied.
 fn fetcher_settings_problem(
     cli: &Cli,
     config: &Config,
@@ -4047,7 +4206,7 @@ fn fetcher_settings_problem(
 
 /// Why a `--vcon-forward` run's settings cannot be used, or `None` (also
 /// when this is not a forwarder run). Feature-swapped: without the `vcon`
-/// feature [`run_vcon_forward`] refuses the run before the config is read.
+/// feature [`run_vcon_forward`] refuses the run before the config is applied.
 fn forwarder_settings_problem(
     cli: &Cli,
     config: &Config,
@@ -4070,34 +4229,63 @@ fn forwarder_settings_problem(
 }
 
 /// Load the configuration file and apply the `[limits]` section's parser /
-/// dialog caps.
+/// dialog caps: [`read_config`], then [`apply_config`].
+///
+/// # Errors
+///
+/// As for [`read_config`] and [`apply_config`].
+///
+/// # Side effects
+///
+/// As for [`read_config`] and [`apply_config`].
+pub fn load_config(cli: &Cli) -> Result<LoadedConfig, PlanError> {
+    apply_config(cli, read_config(cli)?)
+}
+
+/// Read the configuration file, applying nothing in it.
+///
+/// Split from [`apply_config`] so `main` can read the file once, early, and
+/// apply it later: the node name (`[capture] node_name`) has to be declared
+/// before the run provenance record is written, and that record is written
+/// before the config's settings take effect.
 ///
 /// # Errors
 ///
 /// Returns a `PlanError` (exit code 1) when the config file cannot be
-/// loaded/parsed or its `[limits]` section fails validation.
+/// loaded or parsed.
 ///
 /// # Side effects
 ///
-/// Reads the config file from disk (logging its path when found) and
-/// mutates process-global parser and dialog-store limits via
-/// `set_parser_limits` / `set_max_messages_per_dialog`.
-pub fn load_config(cli: &Cli) -> Result<LoadedConfig, PlanError> {
-    let loaded = match Config::load(cli.config_args.config.as_deref(), cli.config_args.no_config) {
+/// Reads the config file from disk, logging its path when found; unknown
+/// keys are warned about.
+pub fn read_config(cli: &Cli) -> Result<LoadedConfig, PlanError> {
+    match Config::load(cli.config_args.config.as_deref(), cli.config_args.no_config) {
         Ok(loaded) => {
             if let Some(ref source) = loaded.source {
                 tracing::info!("Loaded config from {}", source.display());
             }
-            loaded
+            Ok(loaded)
         }
-        Err(e) => {
-            return Err(PlanError {
-                exit_code: 1,
-                message: e.to_string(),
-            });
-        }
-    };
+        Err(e) => Err(PlanError {
+            exit_code: 1,
+            message: e.to_string(),
+        }),
+    }
+}
 
+/// Validate a configuration [`read_config`] read and apply the `[limits]`
+/// section's parser / dialog caps.
+///
+/// # Errors
+///
+/// Returns a `PlanError` (exit code 1) when a section fails validation, or
+/// exit code 2 when a refusal names a flag.
+///
+/// # Side effects
+///
+/// Mutates process-global parser and dialog-store limits via
+/// `set_parser_limits` / `set_max_messages_per_dialog`.
+pub fn apply_config(cli: &Cli, loaded: LoadedConfig) -> Result<LoadedConfig, PlanError> {
     if let Err(e) = loaded.config.limits.validate() {
         return Err(PlanError {
             exit_code: 1,
@@ -4146,7 +4334,7 @@ pub fn load_config(cli: &Cli) -> Result<LoadedConfig, PlanError> {
     }
 
     // [vcon_forward] keys are held to the rules their flags follow: the
-    // ranges, the kind and compat names, and the back-off pair.
+    // ranges, the kind names, and the back-off pair.
     if let Err(e) = loaded.config.vcon_forward.validate() {
         return Err(PlanError {
             exit_code: 1,
@@ -4320,14 +4508,9 @@ pub fn load_config(cli: &Cli) -> Result<LoadedConfig, PlanError> {
         Err(e) => {
             // A malformed flag is an argument error, exit 2, as a malformed
             // `--portrange` is; a malformed key is a config error, exit 1.
-            return Err(PlanError {
-                exit_code: if cli.capture_args.ws_portrange.is_some() {
-                    2
-                } else {
-                    1
-                },
-                message: e.to_string(),
-            });
+            // `ws_port_range` says which by the error's kind.
+            let origin = crate::settings::Origin::of(matches!(e, crate::Error::CliValidation(_)));
+            return Err(PlanError::refused(origin, e.to_string()));
         }
     }
 
@@ -4478,9 +4661,12 @@ fn build_filter_expr(cli: &Cli, config: &Config) -> Result<Option<FilterExpr>, P
             .map_err(|e| PlanError::arg(format!("Invalid --filter expression: {e}")));
     }
 
-    // Fall back to config file expression
+    // Fall back to the config file's expression, through the same alias rule
+    // `--filter` uses, so `[filter] expression = "short-calls"` means what
+    // `--filter short-calls` means.
     if let Some(ref expr) = config.filter.expression {
-        return match FilterExpr::parse(expr) {
+        let expr = crate::sip::dsl::resolve_filter_text(expr, &thresholds);
+        return match FilterExpr::parse(&expr) {
             Ok(f) => Ok(Some(f)),
             Err(e) => Err(PlanError::refused(
                 crate::settings::Origin::ConfigFile,
@@ -4917,10 +5103,17 @@ fn resolve_tunnel_ports(cli: &Cli) -> Result<Vec<u16>, PlanError> {
     let Some(ref list) = cli.capture_args.capture_tunnels else {
         return Ok(Vec::new());
     };
+    // Checked before the per-port loop, which would otherwise refuse the
+    // first blank field as an invalid port '' and this message would never
+    // be reached.
+    if list.split(',').all(|field| field.trim().is_empty()) {
+        return Err(PlanError::arg(format!(
+            "--capture-tunnels was given an empty port list; drop the flag, or \
+             pass ports, e.g. --capture-tunnels={TUNNEL_PORTS_DEFAULT_LIST}"
+        )));
+    }
     let mut ports: Vec<u16> = Vec::new();
-    let mut any = false;
     for field in list.split(',') {
-        any = true;
         let text = field.trim();
         let port: u16 = text.parse().unwrap_or(0);
         if port == 0 {
@@ -4933,12 +5126,6 @@ fn resolve_tunnel_ports(cli: &Cli) -> Result<Vec<u16>, PlanError> {
         if !ports.contains(&port) {
             ports.push(port);
         }
-    }
-    if !any || ports.is_empty() {
-        return Err(PlanError::arg(format!(
-            "--capture-tunnels was given an empty port list; drop the flag, or \
-             pass ports, e.g. --capture-tunnels={TUNNEL_PORTS_DEFAULT_LIST}"
-        )));
     }
     Ok(ports)
 }
@@ -5757,6 +5944,83 @@ mod tests {
         cli
     }
 
+    // ── unwritable_output_refusal ─────────────────────────────────────
+
+    /// A run whose `-O` file cannot be created is refused at startup with
+    /// exit code 1 and the message the writer gives on the first packet.
+    ///
+    /// The replay run that found this dropped to `nobody`, read packets for
+    /// seven seconds, and only then exited on `Permission denied`. A missing
+    /// parent directory stages the same late refusal as any user.
+    #[test]
+    fn an_output_file_that_cannot_be_created_is_refused_before_capture() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
+        let out = dir.path().join("missing").join("out.pcap");
+        let mut cli = base_cli();
+        cli.capture_args.output = Some(out.display().to_string());
+        let err = unwritable_output_refusal(&cli)
+            .err()
+            .ok_or("an -O path under a missing directory must be refused")?;
+        assert_eq!(
+            err.exit_code, 1,
+            "an I/O error is exit code 1: {}",
+            err.message
+        );
+        assert!(
+            err.message.starts_with(&format!(
+                "Failed to create output file '{}': ",
+                out.display()
+            )),
+            "{}",
+            err.message
+        );
+        Ok(())
+    }
+
+    /// Every lazily written output is checked, not only `-O`.
+    #[test]
+    fn every_lazily_written_output_is_checked_before_capture() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
+        let plain = dir.path().join("plain");
+        std::fs::write(&plain, b"x")?;
+        let missing = dir.path().join("missing").join("x");
+
+        let mut spool = base_cli();
+        spool.output_args.export_vcon_dir = Some(plain.join("spool"));
+        let mut vcon_out = base_cli();
+        vcon_out.output_args.vcon_out = Some(missing.clone());
+        let mut redact_map = base_cli();
+        redact_map.output_args.redact_map = Some(missing.clone());
+        for (label, cli, names) in [
+            ("--export-vcon-dir", spool, "vCon directory"),
+            ("--vcon-out", vcon_out, "--vcon-out"),
+            ("--redact-map", redact_map, "--redact-map"),
+        ] {
+            let err = unwritable_output_refusal(&cli)
+                .err()
+                .ok_or_else(|| format!("{label} must be refused before capture"))?;
+            assert_eq!(err.exit_code, 1, "{label}: {}", err.message);
+            assert!(err.message.contains(names), "{label}: {}", err.message);
+        }
+        Ok(())
+    }
+
+    /// Outputs that can be created, and no outputs at all, pass, and the
+    /// check leaves nothing behind.
+    #[test]
+    fn creatable_outputs_pass_the_startup_check_and_nothing_is_created() -> Result<(), TestError> {
+        unwritable_output_refusal(&base_cli()).map_err(|e| e.message)?;
+        let dir = tempfile::tempdir()?;
+        let mut cli = base_cli();
+        cli.capture_args.output = Some(dir.path().join("out.pcap").display().to_string());
+        cli.output_args.export_vcon_dir = Some(dir.path().join("spool"));
+        cli.output_args.vcon_out = Some(dir.path().join("call.vcon.json"));
+        cli.output_args.redact_map = Some(dir.path().join("map.tsv"));
+        unwritable_output_refusal(&cli).map_err(|e| e.message)?;
+        assert_eq!(std::fs::read_dir(dir.path())?.count(), 0);
+        Ok(())
+    }
+
     // ── parse_autostop ─────────────────────────────────────────────────
 
     /// `duration:N` yields a Duration; `filesize:N` yields a byte threshold.
@@ -5950,6 +6214,31 @@ mod tests {
                 .map_err(|e| format!("{e:?}"))?
                 .is_some()
         );
+        Ok(())
+    }
+
+    /// A diagnostic alias in the config file's `[filter] expression` means
+    /// what it means on `--filter`: `short-calls` was refused with
+    /// "unexpected input at position 0" while `--filter short-calls` ran.
+    #[test]
+    fn a_config_filter_alias_compiles_as_the_flag_does() -> Result<(), TestError> {
+        for alias in ["short-calls", "problems", "one-way"] {
+            let mut config = Config::default();
+            config.filter.expression = Some(alias.to_string());
+            let from_config = build_filter_expr(&base_cli(), &config)
+                .map_err(|e| format!("{alias} in [filter] expression: {e:?}"))?
+                .ok_or("a config expression builds a filter")?;
+            let mut cli = base_cli();
+            cli.matching_args.filter = Some(alias.to_string());
+            let from_flag = build_filter_expr(&cli, &Config::default())
+                .map_err(|e| format!("--filter {alias}: {e:?}"))?
+                .ok_or("--filter builds a filter")?;
+            assert_eq!(
+                format!("{from_config:?}"),
+                format!("{from_flag:?}"),
+                "{alias}"
+            );
+        }
         Ok(())
     }
 
@@ -8085,6 +8374,30 @@ mod tests {
             assert!(
                 err.message.contains("--capture-tunnels"),
                 "'{bad}': the error must name the flag, got: {}",
+                err.message
+            );
+        }
+        Ok(())
+    }
+
+    /// A list with no port in it gets the message that says so, not the
+    /// per-port one quoting an empty port.
+    ///
+    /// The empty-list message used to be checked after the per-port loop, and
+    /// the loop refused the first blank field as "Invalid --capture-tunnels
+    /// port ''" before the check was reached, so it could never print.
+    #[test]
+    fn capture_tunnels_names_an_empty_list_as_empty() -> Result<(), TestError> {
+        let mut cli = base_cli();
+        for empty in ["", " ", ",", " , "] {
+            cli.capture_args.capture_tunnels = Some(empty.to_string());
+            let err = resolve_tunnel_ports(&cli)
+                .err()
+                .ok_or_else(|| format!("'{empty}' must be refused"))?;
+            assert_eq!(err.exit_code, 2, "'{empty}'");
+            assert!(
+                err.message.contains("was given an empty port list"),
+                "'{empty}': got: {}",
                 err.message
             );
         }

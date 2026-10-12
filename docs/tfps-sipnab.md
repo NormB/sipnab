@@ -30,7 +30,9 @@ The [REST API reference](rest-api.md) gives every request and response.
 
 ## Tested on
 
-Every block on this page ran as written, in order, on 2026-09-28, with
+Every block on this page except those in
+[3. sipnab on the same machine as TFPS](#3-sipnab-on-the-same-machine-as-tfps)
+ran as written, in order, on 2026-09-28, with
 sipnab 0.5.194 from its release package, on clean x86_64 virtual machines with 2 cores and 3 GB of memory, Debian 13
 (kernel 6.12.63) and Ubuntu 24.04.5 (kernel 6.8.0): sipnab beside TFPS and on a second machine reaching it over SSH, with TFPS
 built from master.
@@ -72,6 +74,12 @@ sudo apt-get install -y ./sipnab_${V}_amd64.deb
 The package runs sipnab as the `sipnab` user, capturing on every interface.
 
 ## 3. sipnab on the same machine as TFPS
+
+This section ran as written on 2026-09-29, not with the release in
+[Tested on](#tested-on): on the same Debian 13 and Ubuntu 24.04 machines, with
+a package built from source that day, before the 0.5.196 release, installed
+over the release package that step 2 installs. `--allow-action`,
+`--journal-show` and `--revert-actions` first shipped in 0.5.196.
 
 **Turn on the REST API, and let it ban.** The API key reads everything and
 changes nothing. To ban and unban, sipnab also needs a signing key, from which

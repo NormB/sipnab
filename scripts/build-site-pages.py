@@ -65,10 +65,10 @@ PAGES: list[tuple[str, str, str, str, int, str]] = [
         "metrics.md",
         "Prometheus metrics",
         "Scrape Prometheus metrics",
-        # 34, not 12: weight only has to be UNIQUE
-        # (`docs_page_weights_are_unique_and_descriptions_present`), and 12 is
-        # api-clients.md. Sidebar order comes from the explicit path lists in
-        # the nav_group macros, where this sits between the REST API and
+        # Any weight no other page uses: weight only has to be UNIQUE
+        # (`docs_page_weights_are_unique_and_descriptions_present`). Sidebar
+        # order comes from the explicit path lists in the nav_group macros,
+        # where this sits between the REST API and
         # Integrations -- next to HEP, because both are how sipnab plugs into a
         # monitoring estate, while staying separate pages because one carries
         # SIP and the other carries numbers.
@@ -330,10 +330,10 @@ PAGES: list[tuple[str, str, str, str, int, str]] = [
         "tuning-capture.md",
         "Tuning capture on a busy server",
         "Stop a capture dropping packets",
-        # 24, not 12: weight 12 was already taken by api-clients.md, and
-        # `docs_page_weights_are_unique_and_descriptions_present` requires it to
-        # be unique. Ordering in the sidebar comes from the explicit path lists
-        # in the nav_group macros, not from this number.
+        # A weight no other page uses:
+        # `docs_page_weights_are_unique_and_descriptions_present` requires
+        # every weight to be unique. Ordering in the sidebar comes from the
+        # explicit path lists in the nav_group macros, not from this number.
         26,
         "Size the kernel capture ring, read the kernel and interface drop "
         "counters, tell the two apart, and decide between the any device "
@@ -353,7 +353,7 @@ PAGES: list[tuple[str, str, str, str, int, str]] = [
         "vcon-harness.md",
         "The vCon capture stack",
         "Build a vCon capture stack",
-        # 38, the next free weight on the SITE side, which is where
+        # A weight free on the SITE side, which is where
         # `docs_page_weights_are_unique_and_descriptions_present` reads.
         38,
         "Build a two-point vCon capture stack (OpenSIPS, rtpengine, sipnab "
@@ -473,7 +473,7 @@ PAGES: list[tuple[str, str, str, str, int, str]] = [
         58,
         "Forward sipnab's vCons to the hosted vcon.store with "
         "sipnab --vcon-forward: the choice of whether to --redact them first, "
-        "which the store refuses today, the compat mode its validator needs, "
+        "the measurements of what the store accepts, "
         "and what the store's signature and consent fields do and do not mean.",
     ),
     (
@@ -615,6 +615,50 @@ PAGES: list[tuple[str, str, str, str, int, str]] = [
         "Install sipnab on the Kamailio machine and watch a call through the proxy "
         "as one call, from both its legs, with or without OpenSIPS beside it.",
     ),
+    # The Asterisk guides (2026-10-09). 61-62 were the next free
+    # weights; the contributor documents took 59-60.
+    (
+        "docs/asterisk.md",
+        "asterisk.md",
+        "Use Asterisk as your voice stack's PBX",
+        "Use Asterisk as your voice stack's PBX",
+        61,
+        "Build Asterisk 22 from source, connect a caller to a callee through it as "
+        "a back-to-back user agent, place a test call with audio both ways, and "
+        "operate it. No sipnab involved.",
+    ),
+    (
+        "docs/asterisk-sipnab.md",
+        "asterisk-sipnab.md",
+        "Run sipnab beside Asterisk",
+        "Run sipnab beside Asterisk",
+        62,
+        "Install sipnab on the Asterisk machine and watch a call through it as its "
+        "two legs: the report, the terminal interface, a call report, MCP, the "
+        "REST API, and Asterisk's own HEP.",
+    ),
+    # The FreeSWITCH guides (GUIDE-FS, 2026-10-09). 63-64 were the next free
+    # weights once the Asterisk guides took 61-62.
+    (
+        "docs/freeswitch.md",
+        "freeswitch.md",
+        "Use FreeSWITCH in your voice stack",
+        "Use FreeSWITCH in your voice stack",
+        63,
+        "Build FreeSWITCH 1.11.3 from source on Debian 13 or Ubuntu 24.04, bridge "
+        "a test call to a callee, place it with audio, operate it, and uninstall "
+        "it. No sipnab involved.",
+    ),
+    (
+        "docs/freeswitch-sipnab.md",
+        "freeswitch-sipnab.md",
+        "Run sipnab beside FreeSWITCH",
+        "Run sipnab beside FreeSWITCH",
+        64,
+        "Install sipnab on the FreeSWITCH machine, watch a call's two legs and "
+        "four audio streams, tie the legs together in the TUI, REST and MCP, and "
+        "receive FreeSWITCH's own HEP.",
+    ),
     # The fail2ban guides (GUIDE-F2B, 2026-10-01). 56-57 were the next free
     # weights; the rtpproxy guides took 54-55.
     (
@@ -636,6 +680,32 @@ PAGES: list[tuple[str, str, str, str, int, str]] = [
         "Run sipnab's scanner and registration-flood detectors as a service and "
         "have fail2ban ban what they find, with the filter and jail that ship "
         "with sipnab.",
+    ),
+    # Two pages that were hand-kept copies until the copies drifted: the site's
+    # plugins page went on requiring `sipnab_dealloc` after docs/plugins.md
+    # dropped it, and the site's TLS chooser kept older `bpf` build
+    # requirements. Generated, there is one text to keep right. Titles,
+    # weights and descriptions are the ones the hand-kept pages carried.
+    (
+        "docs/plugins.md",
+        "plugins.md",
+        "WASM plugins",
+        "Add a detection with a WASM plugin",
+        33,
+        "Add your own detection to sipnab's diagnosis without forking it: what "
+        "a sandboxed WebAssembly plugin can and cannot do, what trusting one "
+        "costs you, and a worked example from crate to finding.",
+    ),
+    (
+        "docs/tls-capture.md",
+        "tls-capture.md",
+        "Capture SIP over TLS",
+        "Capture SIP over TLS",
+        29,
+        "Pick the right method for reading SIP over TLS: a key log from the "
+        "endpoint, plaintext read out of the process with no keys at all, eBPF "
+        "with peer addresses, or eCapture — chosen by what access you have, "
+        "plus what does not work and why.",
     ),
     # The two contributor documents that live outside docs/ (SITE-CONTRIB).
     # Their sources sit at the repo root and in contrib/, where GitHub shows
@@ -783,6 +853,46 @@ def rewrite_other_link(src_dir: str, m: re.Match) -> str:
     return f"]({BLOB}/{repo_path(src_dir, m.group(1))}{m.group(2) or ''})"
 
 
+ROOT = Path(__file__).resolve().parent.parent
+
+# A relative image link. The site's CSP is `img-src 'self' data:`, so an image
+# must be served from the site itself: OTHER_LINK_RE would send it to a GitHub
+# blob URL, which is an HTML page on another origin and is blocked. Matched
+# before OTHER_LINK_RE and CODE_LINK_RE, and rewritten to a site-absolute path
+# those two leave alone.
+IMAGE_RE = re.compile(
+    r"(!\[[^\]]*\])\(\s*(?![a-zA-Z][a-zA-Z0-9+.-]*:|@/|/|#)"
+    r"([^)\s#]+\.(?:png|jpe?g|gif|svg|webp|avif))\s*\)",
+    re.IGNORECASE,
+)
+
+# Where a docs image outside `website/static/` is published, keyed by its repo
+# path so two images with one file name cannot collide.
+IMAGES_DIR = "doc-images"
+STATIC_PREFIX = "website/static/"
+
+# Repo paths of the images the pages rendered so far link to, for
+# `copy_images` to publish under `IMAGES_DIR`.
+IMAGES: set[str] = set()
+
+
+def rewrite_image(src_dir: str, m: re.Match) -> str:
+    path = repo_path(src_dir, m.group(2))
+    if path.startswith(STATIC_PREFIX):
+        # Zola already serves `website/static/` at the site root.
+        return f"{m.group(1)}(/{path[len(STATIC_PREFIX):]})"
+    IMAGES.add(path)
+    return f"{m.group(1)}(/{IMAGES_DIR}/{path})"
+
+
+def copy_images(root: Path, static_dir: Path) -> None:
+    """Copy every image in `IMAGES` to the path `rewrite_image` linked it at."""
+    for path in sorted(IMAGES):
+        dest = static_dir / IMAGES_DIR / path
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        dest.write_bytes((root / path).read_bytes())
+
+
 def render(src: str, text: str, want_h1: str, title: str, weight: int,
            description: str) -> str:
     h1, body = _INT.strip_leading_h1(text)
@@ -797,6 +907,7 @@ def render(src: str, text: str, want_h1: str, title: str, weight: int,
     body = SELF_ANCHOR_RE.sub(
         lambda m: f"]({_xlate(rel, m.group(1))})", body
     )
+    body = sub_outside_code(IMAGE_RE, lambda m: rewrite_image(src_dir, m), body)
     body = sub_outside_code(CODE_LINK_RE, lambda m: rewrite_code_link(src_dir, m), body)
     body = sub_outside_code(OTHER_LINK_RE, lambda m: rewrite_other_link(src_dir, m), body)
 
@@ -987,6 +1098,7 @@ def main() -> int:
     # Written into static/ so Zola copies them to the site root verbatim,
     # where the llms.txt convention expects them.
     write_llms_txt(root, static_dir)
+    copy_images(root, static_dir)
     return 0
 
 

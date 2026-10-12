@@ -418,12 +418,40 @@ impl McpSession {
     /// `capture_status` until the file source drains is exactly what that tool is
     /// for.
     pub fn start(pcap: &str, extra: &[&str]) -> Result<Self, TestError> {
-        let manifest = env!("CARGO_MANIFEST_DIR");
         let mut argv: Vec<&str> = vec!["--mcp", "-N", "-I", pcap, "--quiet"];
         argv.extend_from_slice(extra);
+        let mut session = Self::spawn(&argv)?;
+
+        // Bounded, so a genuine hang fails the test rather than running forever.
+        const MAX_POLLS: usize = 200;
+        let mut loaded = false;
+        for _ in 0..MAX_POLLS {
+            let msg = session.call("capture_status", serde_json::json!({}))?;
+            let text = msg["result"]["content"][0]["text"].as_str().unwrap_or("{}");
+            let v: serde_json::Value = serde_json::from_str(text).unwrap_or_default();
+            if v["source_exhausted"] == true {
+                loaded = true;
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(25));
+        }
+        assert!(loaded, "capture never finished loading for {pcap}");
+        Ok(session)
+    }
+
+    /// Spawn `sipnab` with exactly `argv` and handshake, without waiting for
+    /// any capture to drain: for a live source, such as a HEP listener, that
+    /// never drains.
+    pub fn start_live(argv: &[&str]) -> Result<Self, TestError> {
+        Self::spawn(argv)
+    }
+
+    /// Spawn `sipnab` with `argv` and send the MCP handshake.
+    fn spawn(argv: &[&str]) -> Result<Self, TestError> {
+        let manifest = env!("CARGO_MANIFEST_DIR");
         let mut child = Command::new(env!("CARGO_BIN_EXE_sipnab"))
             .current_dir(manifest)
-            .args(&argv)
+            .args(argv)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
@@ -451,27 +479,11 @@ impl McpSession {
         }
 
         let stdout = child.stdout.take().ok_or("the child has no stdout pipe")?;
-        let mut session = Self {
+        Ok(Self {
             child,
             reader: BufReader::new(stdout),
             next_id: 2,
-        };
-
-        // Bounded, so a genuine hang fails the test rather than running forever.
-        const MAX_POLLS: usize = 200;
-        let mut loaded = false;
-        for _ in 0..MAX_POLLS {
-            let msg = session.call("capture_status", serde_json::json!({}))?;
-            let text = msg["result"]["content"][0]["text"].as_str().unwrap_or("{}");
-            let v: serde_json::Value = serde_json::from_str(text).unwrap_or_default();
-            if v["source_exhausted"] == true {
-                loaded = true;
-                break;
-            }
-            std::thread::sleep(std::time::Duration::from_millis(25));
-        }
-        assert!(loaded, "capture never finished loading for {pcap}");
-        Ok(session)
+        })
     }
 
     /// Issue one `tools/call` and return the raw JSON-RPC reply.

@@ -251,7 +251,7 @@ Two cleanups land before any MCP work because every subsequent sub-phase builds 
 
 **8.0a — Parse-path consolidation** (~1.5 days)
 
-- [ ] **Audit the double-parse in batch+API mode.** Verified call chain today: `processor.process()` ([`src/app/batch.rs:2196`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs#L2196)) does Ethernet/IP/TCP/UDP reassembly only — no SIP parsing. `process_parsed_packet()` ([`src/app/batch.rs:5249`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs#L5249)) does the first SIP parse + `dialog_store.process_message` against the local store. `mirror_to_shared_stores()` (`:1326` invocation, `:2142` definition) does a second full SIP parse + a second `dialog_store.process_message` against the `Arc<RwLock<...>>` shared store. Result: every matching packet is parsed twice when `--api` is on in batch mode.
+- [ ] **Audit the double-parse in batch+API mode.** Verified call chain today: `processor.process()` ([`src/app/batch.rs:2196`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs#L2196)) does Ethernet/IP/TCP/UDP reassembly only — no SIP parsing. `process_parsed_packet()` ([`src/app/batch.rs:5260`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs#L5260)) does the first SIP parse + `dialog_store.process_message` against the local store. `mirror_to_shared_stores()` (`:1326` invocation, `:2142` definition) does a second full SIP parse + a second `dialog_store.process_message` against the `Arc<RwLock<...>>` shared store. Result: every matching packet is parsed twice when `--api` is on in batch mode.
 - [ ] **Refactor batch mode to share stores from the start**, mirroring the TUI mode pattern (which already passes `Arc<RwLock<...>>` between the processing thread and `start_api_server`). After the refactor: one parse per packet, regardless of how many output sinks are attached. The EventBus from 8.4a will subscribe off this single parse path.
 - [ ] **Gate:** `cargo bench parser_bench` shows no regression in batch-without-API throughput, and shows the previous batch-with-API throughput approximately double (because the second parse is gone). An end-to-end test confirms `cargo run -- -I <pcap> --api :0 --json` produces JSON output identical to the pre-refactor output.
 
@@ -1676,23 +1676,23 @@ For implementers picking this up, the bridge from each MCP tool to existing func
 | `get_dialog_report` | `output::generate_call_report` ([`src/output/call_report.rs:53`](https://github.com/NormB/sipnab/blob/main/src/output/call_report.rs#L53)) with `ReportFormat::Json/Markdown/Text` |
 | `get_message` | `output::json::message_to_json` ([`src/output/json.rs:725`](https://github.com/NormB/sipnab/blob/main/src/output/json.rs#L725)) |
 | `render_ladder` | `output::generate_call_report` with `ReportFormat::Markdown` (v0.4); rich SVG ladder deferred |
-| `rtp_stats` | `StreamStore::iter` ([`src/rtp/stream_store.rs:1795`](https://github.com/NormB/sipnab/blob/main/src/rtp/stream_store.rs#L1795)) + `rtp::diagnosis::diagnose_media` + `output::json::stream_to_json` |
+| `rtp_stats` | `StreamStore::iter` ([`src/rtp/stream_store.rs:1918`](https://github.com/NormB/sipnab/blob/main/src/rtp/stream_store.rs#L1918)) + `rtp::diagnosis::diagnose_media` + `output::json::stream_to_json` |
 | `search_messages` | Same iteration the `--filter` CLI path uses; `FilterExpr` covers most of it |
 | `find_problems` | `list_dialogs` with each `expand_alias` result OR'd |
 | `tail_dialogs` | `DialogStore::iter` filtered by `updated_at > cursor` |
 | `security_findings` | `security::AlertEngine` history (extend with ring buffer) |
 | `snapshot_pcap` | `capture::PcapWriter` + filter on captured packets |
-| `stats` | Mirrors `GET /v1/stats` from `output::api::get_stats` ([`src/output/api.rs:4814`](https://github.com/NormB/sipnab/blob/main/src/output/api.rs#L4814)) |
+| `stats` | Mirrors `GET /v1/stats` from `output::api::get_stats` ([`src/output/api.rs:4909`](https://github.com/NormB/sipnab/blob/main/src/output/api.rs#L4909)) |
 
 | Phase 8 infra | Reuses |
 |---|---|
-| Bind address parsing | `output::api::parse_bind_addr` ([`src/output/api.rs:1067`](https://github.com/NormB/sipnab/blob/main/src/output/api.rs#L1067)) |
+| Bind address parsing | `output::api::parse_bind_addr` ([`src/output/api.rs:1091`](https://github.com/NormB/sipnab/blob/main/src/output/api.rs#L1091)) |
 | Bearer auth | `output::api::check_auth` + `constant_time_eq` ([`src/output/api.rs:279`](https://github.com/NormB/sipnab/blob/main/src/output/api.rs#L279), `:309`) |
 | Rate limiting | `output::api::RateLimiter` ([`src/output/api.rs:544`](https://github.com/NormB/sipnab/blob/main/src/output/api.rs#L544)) |
 | Shared store mirroring | `mirror_to_shared_stores` — **gone**; no such function exists today |
 | Server thread + tokio runtime | `start_api_server` — **gone**; see [`src/app/servers.rs`](https://github.com/NormB/sipnab/blob/main/src/app/servers.rs) |
 | Privilege drop ordering | Existing capture-ready rendezvous + `privilege::drop_privileges` (`src/main.rs:387–442`) |
-| WebSocket / SSE Router mounting | Extend `output::api::build_router` ([`src/output/api.rs:976`](https://github.com/NormB/sipnab/blob/main/src/output/api.rs#L976)) with new routes; reuse the existing `guard()` middleware |
+| WebSocket / SSE Router mounting | Extend `output::api::build_router` ([`src/output/api.rs:996`](https://github.com/NormB/sipnab/blob/main/src/output/api.rs#L996)) with new routes; reuse the existing `guard()` middleware |
 
 | Phase 8.4 sink | Wraps |
 |---|---|
@@ -1722,7 +1722,7 @@ For implementers picking this up, the bridge from each MCP tool to existing func
 
 | Phase 8.6 expansion (★) | Wraps |
 |---|---|
-| Quality timeline 680ms intervals | Existing `QualityInterval` in [`src/rtp/stream.rs:283`](https://github.com/NormB/sipnab/blob/main/src/rtp/stream.rs#L283) — bump interval, add `status` field |
+| Quality timeline 680ms intervals | Existing `QualityInterval` in [`src/rtp/stream.rs:319`](https://github.com/NormB/sipnab/blob/main/src/rtp/stream.rs#L319) — bump interval, add `status` field |
 | OK/poor/uncertain trichotomy | New classification function alongside existing `estimate_mos` ([`src/rtp/quality.rs:83`](https://github.com/NormB/sipnab/blob/main/src/rtp/quality.rs#L83)) |
 | `.sipnab` project file | New module `src/project.rs`; reuses existing `output::json::dialog_to_json` for report content and `audio_export` for WAV files |
 | `--open <foo.sipnab>` | New CLI dispatch path that bypasses the capture pipeline and rehydrates `DialogStore`/`StreamStore` from `report.json` |
@@ -1731,7 +1731,7 @@ For implementers picking this up, the bridge from each MCP tool to existing func
 | Phase 8.7 surface (★) | Wraps |
 |---|---|
 | `codec_asymmetry` | Compares `RtpStream::codec` (`src/rtp/stream.rs:309 codec_from_pt`) across the two streams of a dialog |
-| `ptime_asymmetry` | Inferred from RTP inter-arrival in `RtpStream::update` ([`src/rtp/stream.rs:1057`](https://github.com/NormB/sipnab/blob/main/src/rtp/stream.rs#L1057)) or SDP `a=ptime:` parsed in [`src/sip/sdp.rs`](https://github.com/NormB/sipnab/blob/main/src/sip/sdp.rs) |
+| `ptime_asymmetry` | Inferred from RTP inter-arrival in `RtpStream::update` ([`src/rtp/stream.rs:1101`](https://github.com/NormB/sipnab/blob/main/src/rtp/stream.rs#L1101)) or SDP `a=ptime:` parsed in [`src/sip/sdp.rs`](https://github.com/NormB/sipnab/blob/main/src/sip/sdp.rs) |
 | `payload_asymmetry` | Compares payload types across streams; data already in `RtpStream` |
 | `duration_asymmetry` | Compares stream start/end timestamps already tracked in `RtpStream` |
 | `late_media` | Compares first RTP packet timestamp against dialog's 200 OK timestamp (already tracked in `dialog.timing`) |

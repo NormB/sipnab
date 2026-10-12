@@ -151,8 +151,9 @@ ordinary update.
 |---|---|---|
 | [`export_capture`](#export-capture) | `filename` | Writes held SIP signaling to a pcap in `--mcp-file-root` (re-synthesized frames, no RTP) |
 | [`export_audio`](#export-audio) | `call_id`, `filename` | Writes a call's RTP audio to a WAV in `--mcp-file-root`; needs the server started with `--retain-audio` |
-| [`export_vcon`](#export-vcon) | `call_id?`, `filter?`, `limit?` | Dialogs as vCon conversation containers, structured JSON, each with its SHA-256. One `call_id` or a whole filtered set. Unsigned, retained audio inline, and every omission stated in the response |
+| [`export_vcon`](#export-vcon) | `call_id?`, `filter?`, `limit?`, `cursor?`, `media?` | Dialogs as vCon conversation containers, structured JSON, each with its SHA-256. One `call_id` or a whole filtered set, paged with `cursor`. Unsigned, retained audio inline unless `media` is `omit`, and every omission stated in the response |
 | [`validate_vcon`](#validate-vcon) | `call_id?`, `container?` | Checks a container against the working group's draft-ietf-vcon-vcon-core-04 schema and names every finding |
+| [`vcon_spool_status`](#vcon-spool-status) | `limit?`, `cursor?` | Counts the `--export-vcon-dir` spool: containers pending, delivered and failed, with the store's answer from each failed container's record. A snapshot of files; sends, moves and deletes nothing |
 | [`generate_repro`](#generate-repro) | `call_id`, `format?`, `pin?`, `vary?`, `filename?` | A SIPp scenario replaying one call, with the hypothesis as an input: `pin` holds the suspected cause fixed, `vary` regenerates identity |
 | [`generate_wireshark_filter`](#generate-wireshark-filter) | `call_id`, `include_media?` | A Wireshark display filter selecting one call's signaling and its RTP by SSRC, plus the tshark line that applies it |
 
@@ -202,34 +203,109 @@ them, as a text block and as `structuredContent`. Only a client that validates
 responses against a declared shape needs them. Turn them on with
 `--mcp-output-schemas` or `[mcp] output_schemas = true`.
 
+To read one tool's response shape without turning output schemas on for every
+tool, read the resource `sipnab://schema/<tool>`. It returns the tool's output
+JSON Schema and an example payload generated from that schema, or says that
+the tool declares no output schema.
+[Tool response schemas](@/docs/mcp-protocol.md#tool-response-schemas) describes the
+resource.
+
 | Bundle | Tools | Bytes (default) | Bytes with output schemas | What it holds |
 |---|---|---|---|---|
-| core | 9 | 10,985 | 30,964 | `capture_status`, `list_dialogs`, `get_dialog`, `triage_call`, `rtp_stats`, `find_problems`, `aggregate_dialogs`, `search_messages`, `get_capture_report` |
-| signaling | 20 | 21,955 | 36,466 | `await_condition`, `check_codec_negotiation`, `compare_dialogs`, `explain_response_code`, `explain_rule`, `find_correlated`, `generate_repro`, `generate_wireshark_filter`, `get_call_tree`, `get_dialog_report`, `get_message`, `get_sdp_timeline`, `group_dialogs`, `lint_dialog`, `render_ladder`, `search_by_time`, `tail_dialogs`, `timeline`, `validate_filter`, `validate_message` |
-| captures | 11 | 12,542 | 30,030 | `build_evidence_package`, `cancel_find_in_captures`, `compare_captures`, `decode_evidence`, `export_capture`, `find_in_captures`, `find_in_captures_status`, `list_captures`, `open_capture`, `save_findings`, `show_evidence` |
-| security | 6 | 9,938 | 9,938 | `describe_endpoint`, `diagnose_registration`, `evaluate_expectations`, `generate_fail2ban_rule`, `security_findings`, `top_talkers` |
-| media | 4 | 3,113 | 11,400 | `explain_attribution`, `export_audio`, `media_diagnostics`, `reconcile_orphans` |
-| relay | 4 | 4,217 | 20,006 | `decode_ng`, `query_relay`, `relay_compare`, `relay_stats` |
+| core | 9 | 12,223 | 54,526 | `capture_status`, `list_dialogs`, `get_dialog`, `triage_call`, `rtp_stats`, `find_problems`, `aggregate_dialogs`, `search_messages`, `get_capture_report` |
+| signaling | 20 | 22,349 | 58,494 | `await_condition`, `check_codec_negotiation`, `compare_dialogs`, `explain_response_code`, `explain_rule`, `find_correlated`, `generate_repro`, `generate_wireshark_filter`, `get_call_tree`, `get_dialog_report`, `get_message`, `get_sdp_timeline`, `group_dialogs`, `lint_dialog`, `render_ladder`, `search_by_time`, `tail_dialogs`, `timeline`, `validate_filter`, `validate_message` |
+| captures | 11 | 12,578 | 30,066 | `build_evidence_package`, `cancel_find_in_captures`, `compare_captures`, `decode_evidence`, `export_capture`, `find_in_captures`, `find_in_captures_status`, `list_captures`, `open_capture`, `save_findings`, `show_evidence` |
+| security | 6 | 9,923 | 9,923 | `describe_endpoint`, `diagnose_registration`, `evaluate_expectations`, `generate_fail2ban_rule`, `security_findings`, `top_talkers` |
+| media | 4 | 3,480 | 16,048 | `explain_attribution`, `export_audio`, `media_diagnostics`, `reconcile_orphans` |
+| relay | 4 | 4,240 | 20,029 | `decode_ng`, `query_relay`, `relay_compare`, `relay_stats` |
 | tfps | 7 | 5,563 | 15,947 | `actions_revert`, `tfps_ban`, `tfps_banned`, `tfps_dropped`, `tfps_labels`, `tfps_status`, `tfps_unban` |
-| server | 5 | 5,285 | 23,377 | `capture_health`, `hep_senders`, `runtime_stats`, `server_capabilities`, `shutdown_server` |
-| vcon | 3 | 4,481 | 12,642 | `export_vcon`, `siprec_metadata`, `validate_vcon` |
-| tls | 3 | 2,859 | 4,955 | `list_tls_libraries`, `start_tls_capture`, `stop_tls_capture` |
-| full | 72 | 80,864 | 199,240 | Every tool the build carries (the default) |
+| server | 5 | 5,394 | 27,170 | `capture_health`, `hep_senders`, `runtime_stats`, `server_capabilities`, `shutdown_server` |
+| vcon | 4 | 6,847 | 18,781 | `export_vcon`, `siprec_metadata`, `validate_vcon`, `vcon_spool_status` |
+| tls | 3 | 2,850 | 4,943 | `list_tls_libraries`, `start_tls_capture`, `stop_tls_capture` |
+| full | 73 | 85,447 | 255,927 | Every tool the build carries (the default) |
 
 Bytes are the compact JSON of each tool's `tools/list` entry, summed over the
 bundle.
 
-> **Measured on sipnab 0.5.196**, a build with every feature, except the
-> `captures` and `full` rows, measured after 0.5.206 on the change that added
-> `find_in_captures_status` and `cancel_find_in_captures`. Sizes, tool
+> **Measured after sipnab 0.5.212** on a build with every feature, with
+> `max_response_bytes` and the `get_dialog` and `reconcile_orphans` cursors,
+> output schemas on nine `core` and `signaling` tools, the response limits and
+> loaded-surface fields of `server_capabilities`, and `vcon_spool_status` and
+> the `cursor` and `media` parameters of `export_vcon` in place. Sizes, tool
 > counts and bundle membership may change in later releases. A build without a
 > feature does not register that feature's tools, so its bundles are smaller.
 > The test `each_bundle_stays_within_its_byte_budget` fails when a bundle grows
 > past its recorded ceiling; update this table in the same change.
 
+### Which tool finds calls
+
+Seven tools select calls, and each answers a different question. A filter is
+an expression in sipnab's filter language (the DSL), such as
+`state == failed`, or the name of a built-in alias such as `problems`.
+
+| The question | The tool | Why this one |
+|---|---|---|
+| Which calls match this condition? | [`list_dialogs`](#list-dialogs) with `filter` | Takes an alias or any DSL expression and pages through every match, with `total_matched` and a cursor |
+| Which calls show a known kind of problem? | [`find_problems`](#find-problems) | Takes diagnostic alias names (`problems`, `slow-setup`, `one-way` and the rest) instead of an expression, and can narrow them with a DSL filter |
+| Which calls contain this text: a number, a User-Agent, a header value? | [`search_messages`](#search-messages) | Searches the whole SIP message, every header, the request line and the body, case-insensitively, and returns the message that matched |
+| Which calls started in this time window? | [`search_by_time`](#search-by-time) | Selects by the time of the first message, in an [RFC 3339](https://www.rfc-editor.org/rfc/rfc3339) window, optionally narrowed by a filter |
+| What did this one IP address or user do? | [`describe_endpoint`](#describe-endpoint) | Selects by `ip` or `user` and returns counts over every match plus a page of that participant's dialogs |
+| Which capture file holds these calls? | [`find_in_captures`](#find-in-captures) | Sweeps the files in `--mcp-file-root` with a filter and names the files that match, without replacing the loaded capture |
+| Does my filter parse, and how many calls does it select? | [`validate_filter`](#validate-filter) | Compiles the expression and returns the count with no rows, so a wrong filter costs one small answer |
+
+### Prompts
+
+A prompt is a named list of steps that tells a model which tools to call and
+in what order. A client lists them with `prompts/list` and fetches one with
+`prompts/get`. No prompt takes arguments, and every tool stays callable
+without one.
+
+| Prompt | When to use it | Tools it calls, in order | Bundles it needs |
+|---|---|---|---|
+| `triage-outage` | Something is failing now | `capture_status`, `find_problems`, `triage_call`, `show_evidence` | `core`, `captures` |
+| `carrier-escalation` | Building a case to send to a carrier | `capture_status`, `group_dialogs`, `get_call_tree`, `build_evidence_package` | `core`, `signaling`, `captures` |
+| `codec-interop-audit` | Two endpoints disagree about media | `capture_status`, `check_codec_negotiation`, `group_dialogs`, `media_diagnostics` | `core`, `signaling`, `media` |
+| `post-change-verification` | A change went in and needs checking against a baseline | `capture_status`, `compare_captures`, `evaluate_expectations`, `timeline` | `core`, `signaling`, `captures`, `security` |
+| `vcon-handoff` | You are exporting calls to a vCon store | `capture_status`, `validate_filter`, `export_vcon`, `validate_vcon` | `core`, `signaling`, `vcon` |
+
+Each prompt's steps:
+
+- **`triage-outage`**: read `unanalysed_sip_messages` from `capture_status`
+  first; get the shape of the failure from `find_problems`; run `triage_call`
+  on one Call-ID from that result; follow its `frame` pointer with
+  `show_evidence` before stating that a message caused the failure.
+- **`carrier-escalation`**: `capture_status`; `group_dialogs` by `next_hop`
+  with the `asr` and `ner` metrics, reading the `population` block;
+  `get_call_tree` on an affected Call-ID, because carrier faults usually span
+  several legs; `build_evidence_package` for the calls the escalation cites.
+- **`codec-interop-audit`**: `capture_status`; `check_codec_negotiation` for
+  offers with no common codec; `group_dialogs` by `rtp.codec` with `mos_p10`;
+  `media_diagnostics` on a call that negotiated a codec and still sounded
+  wrong.
+- **`post-change-verification`**: `capture_status`; `compare_captures`
+  against the baseline from before the change; `evaluate_expectations` when the
+  repository has a rules file; `timeline` to check the failures did not move
+  to a different hour.
+- **`vcon-handoff`**: `capture_status`; `validate_filter` on the filter that
+  selects the calls; `export_vcon` with that `filter`; `validate_vcon` on each
+  exported container, passed as `container`; then record each container's
+  `digest` (its SHA-256) and Call-ID. Passing `call_id` to `validate_vcon`
+  instead exports a second container with a different creation time, so its
+  digest differs from the one sent.
+
+**sipnab serves a prompt only when the server registers every tool it
+calls.** Under `--mcp-tools core`, `prompts/list` returns no prompt, because
+each one calls at least one tool outside `core`. `prompts/get` refuses a prompt
+it does not serve with error -32602, and the message names the tools the
+server does not register and the bundles that hold them. sipnab hides the prompt rather than
+serving it with a note, because a step that names a tool the client cannot call
+fails with "tool not found" in the middle of the workflow. A tool counts as
+loaded when the server registers it, so a tool the build does not carry also
+hides the prompts that call it.
+
 ### Rules every tool follows
 
-Six rules hold across the whole surface. Each tool section below states only
+Seven rules hold across the whole surface. Each tool section below states only
 what it does differently, so read these once and skip them afterwards.
 
 **A required parameter has no default.** Leave one out, or send the wrong JSON
@@ -246,10 +322,28 @@ that asks for 5000 to "get everything" receives 1000 and no complaint. Read
 `returned` rather than the length you asked for.
 
 **Pass a cursor back exactly as it arrived.** `next_cursor` pairs a timestamp
-with an identity — `<RFC 3339>|<Call-ID>` for dialogs, and
-`<RFC 3339>|0xSSRC@src>dst` for the `rtp_stats` sweep. A hand-rebuilt bare
-timestamp still parses, so rebuilding one costs rows instead of raising an
-error. `next_cursor: null` marks the final page.
+with an identity — `<RFC 3339>|<Call-ID>` for dialogs,
+`<RFC 3339>|<Call-ID>#<message index>` for `search_messages` hits and
+`get_dialog` messages, and `<RFC 3339>|0xSSRC@src>dst` for the `rtp_stats`
+sweep and `reconcile_orphans`. A hand-rebuilt bare timestamp still parses on
+the dialog tools, so rebuilding one costs rows instead of raising an error.
+`next_cursor: null` marks the final page.
+
+**A page ends at the first bound it reaches, and says which.** Two bounds
+apply to every paged tool: the row limit (`limit`, clamped to
+`--mcp-max-rows`) and the byte budget (`max_response_bytes`, clamped to
+`--mcp-max-response-bytes`, 1048576 bytes unless the operator changed it).
+Either one sets `truncated: true`, names itself in `truncated_by` — `rows` or
+`bytes` — and leaves a `next_cursor` that resumes at the first row the page
+left out. `truncated_by` is absent when neither bound cut the page. The byte budget drops
+whole rows from the end of the page and never part of one, and a page always
+keeps at least one row, so following the cursor always moves forward even when
+one row alone is larger than the budget. It counts the bytes the
+`sipnab_mcp_tool_response_bytes_total` metric counts: the JSON page, the
+provenance note and the two completeness booleans below. The JSON-RPC framing
+and the `structuredContent` copy of the page are not counted. Every paged tool
+takes it: `list_dialogs`, `find_problems`, `search_by_time`, `search_messages`,
+`tail_dialogs`, `get_dialog`, `reconcile_orphans` and the `rtp_stats` sweep.
 
 **Every list-style tool answers with a page object, never a bare array.** The
 rows sit under a named key — `dialogs`, `hits`, `streams`, `findings` — beside
@@ -281,15 +375,17 @@ answered with 6 of 18,241 dialogs. `tail_dialogs` and `capture_status` have
 always carried `source_exhausted`. Now every tool that answers from the capture
 does.
 
-Seventeen tools are the exception, because their answer cannot move with
-the load. Nine read something other than the capture store —
+Eighteen tools are the exception, because their answer cannot move with
+the load. Ten read something other than the capture store —
 `explain_response_code`, `explain_rule`, `decode_evidence`, `decode_ng`,
-`show_evidence`, `list_captures`, `list_tls_libraries`, `server_capabilities`
-and `compare_captures`, which reads two files and never the loaded capture.
-The other nine ask another process: `query_relay` and `relay_stats` put the
+`show_evidence`, `list_captures`, `list_tls_libraries`, `server_capabilities`,
+`vcon_spool_status`, which counts the vCon export spool that the forwarder
+drains, and `compare_captures`, which reads two files and never the
+loaded capture.
+The other eight ask another process: `query_relay` and `relay_stats` put the
 question to the media relay, and `tfps_status`, `tfps_banned`, `tfps_dropped`,
-`tfps_labels`, `tfps_ban`, `tfps_unban` and `actions_revert` put it to the
-toll-fraud prevention peer. How much
+`tfps_labels`, `tfps_ban` and `tfps_unban` put it to the toll-fraud prevention
+peer. How much
 of the capture sipnab has read says nothing about what those hold.
 
 The
@@ -1370,6 +1466,7 @@ Returns one page of dialog summaries from the live capture store.
 | `limit` | u32? | Ceiling is `--mcp-max-rows` (1000 unless the operator changed it). Higher clamps to it, `0` means the default. | 50 rows. |
 | `cursor` | string? | The previous response's `next_cursor`, verbatim (`<RFC 3339 created_at>\|<Call-ID>`). A malformed timestamp half fails with `invalid_params`. | Starts at the oldest dialog. |
 | `fields` | string[]? | Field names to keep on each row, plus `call_id`, which survives whether or not you list it. An unknown name fails with `invalid_params` naming both the typo and the fields a row carries. See [Narrowing a row with `fields`](#narrowing-a-row-with-fields). | The whole row. |
+| `max_response_bytes` | u64? | Bytes for the whole response. Ceiling is `--mcp-max-response-bytes` (1048576 unless the operator changed it). Higher clamps to it, `0` means the ceiling. Past it the page ends early at a whole row with `truncated_by: "bytes"` — see [Rules every tool follows](#rules-every-tool-follows). | The ceiling. |
 
 **Returns** — a page object, not a bare array:
 
@@ -1379,7 +1476,8 @@ Returns one page of dialog summaries from the live capture store.
 | `returned` | usize | Rows in `dialogs`, so counting the array is never necessary. |
 | `total_matched` | usize | Dialogs matching the filter across the **whole store**, whatever `limit` and `cursor` say. This is the number that answers "how many". |
 | `by_method` | `{method, count}[]` | `total_matched` split by the method that opened each dialog, dominant class first. Covers the whole match set, not this page. |
-| `truncated` | bool | `true` when matches remain after this page. Absent while the answer is not whole — see the sixth rule above. |
+| `truncated` | bool | `true` when matches remain after this page. Absent while the answer is not whole — see [Rules every tool follows](#rules-every-tool-follows). |
+| `truncated_by` | string? | `rows` when the row limit cut the page, `bytes` when the byte budget did. Absent when neither bound cut the page. |
 | `source_exhausted` | bool | `true` once sipnab has read the capture source to its end. |
 | `source_stopped_early` | bool | `true` when a source's read ended before the source did. |
 | `next_cursor` | string? | Pass back to continue. `null` on the final page. |
@@ -1460,7 +1558,8 @@ which holds 1334 dialogs. `limit: 2` therefore reports 2 of 1334 — and says so
     { "method": "REGISTER", "count": 1334 }
   ],
   "truncated": true,
-  "next_cursor": "2016-11-17T21:52:35.403349+00:00|call-2-synth@192.0.2.10",
+  "truncated_by": "rows",
+  "next_cursor": "2016-11-17T21:52:35.403349Z|call-2-synth@192.0.2.10",
   "capture_identity": {
     "node": "capture-01",
     "instance": "1ae7318cb5c11b1a306dd-1",
@@ -1890,8 +1989,8 @@ it does the same walk without computing seven metrics.
 
 ### `server_capabilities`
 
-What this binary can do, what this server permits, and which libpcap it
-captures through. Ask before requesting decryption, HEP, a file export or a
+What this binary can do, what this server permits and loaded, the limits it
+answers under, and which libpcap it captures through. Ask before requesting decryption, HEP, a file export or a
 capture swap: a build without the feature, or a server without the flag, fails
 confusingly otherwise.
 
@@ -1900,7 +1999,7 @@ No parameters. Returns:
 ```jsonc
 {
   "schema_version": 1,
-  "version": "0.5.209",
+  "version": "0.5.213",
   "features": ["api", "hep", "mcp", "native", "tls", "tui"],
   "can_decrypt": true,           // tls
   "can_hep": true,               // hep
@@ -1910,15 +2009,44 @@ No parameters. Returns:
     "mcp_allow_shutdown": false,
     "mcp_allow_open_capture": true,
     "mcp_allow_tls_capture": false,
-    "mcp_allow_save_findings": false
+    "mcp_allow_save_findings": false,
+    "mcp_allow_relay_query": false,  // true only on a live capture with --rtpengine-control
+    "hep_delivery_trust": "port-gated-only",  // hmac-verified, plain-secret or port-gated-only
+    "mcp_allow_actions": []          // ["tfps"] with --allow-action tfps:mcp
   },
   "libpcap": {
     "banner": "libpcap version 1.10.6 (64-bit time_t, with TPACKET_V3 and netmap)",
     "version": "1.10.6",             // null when the banner carries none
     "named_backends": ["netmap"]     // [] on a distribution libpcap
-  }
+  },
+  "limits": {
+    "max_rows": 1000,                // --mcp-max-rows
+    "max_body_bytes": 4096,          // --mcp-max-body-bytes
+    "max_inline_media_bytes": 5242880, // --vcon-max-inline-media; null without vcon
+    "max_wait_seconds": 60           // --mcp-max-wait-seconds
+  },
+  "tools": ["actions_revert", "aggregate_dialogs", "..."],  // what tools/list returns
+  "bundles": ["core", "signaling", "..."],                  // bundles loaded whole
+  "prompts": ["triage-outage", "carrier-escalation", "..."], // what prompts/list returns
+  "resource_templates": ["sipnab://live/dialogs/{call_id}", "..."]
 }
 ```
+
+`runtime.mcp_allow_relay_query` is true only when `query_relay`,
+`relay_stats` and `relay_compare` can actually transmit: the run reads a live
+interface, `--rtpengine-control` names the relay, and the operator passed
+`--mcp-allow-relay-query`. A file replay never transmits, so the flag alone
+does not set it.
+`runtime.mcp_allow_actions` lists the action targets `--allow-action` enabled
+for MCP callers, by name.
+
+`limits` are the ceilings this server holds every response to, as the operator
+set them. [Response bounding](#response-bounding) says what each one bounds.
+`tools` is the loaded tool set after `--mcp-tools` selected it. `bundles` lists
+each built-in bundle whose tools all appear in `tools`, counting only the tools
+this build carries, so a selection of single tool names lists no bundle those
+tools only partly fill. `prompts` and `resource_templates` are the names `prompts/list` and
+`resources/templates/list` return, in the same order.
 
 `features` comes from `cfg!` at compile time, so it cannot claim a feature the
 binary does not have. `runtime` is a different question — what the **operator**
@@ -1926,6 +2054,14 @@ turned on — and no compile-time check can answer it. Without it an agent
 discovers the setup by calling a tool and collecting a refusal, and a refusal
 mid-investigation reads as a dead end rather than as a server it was never
 allowed to use that way.
+
+`hep_delivery_trust` says what an endpoint a relay asserted over HEP is worth on
+this run, decided once at startup by the HEP listener's authentication:
+`hmac-verified` with `--hep-auth-mode hmac` and a secret, `plain-secret` with a
+secret and the default `plain` mode, and `port-gated-only` when sipnab checks no
+secret, which includes every run that does not listen for HEP. An endpoint the
+relay tools report as delivered over HEP carries the same value in its
+`delivery_trust`.
 
 `libpcap` is a third question, answered at runtime: `pcap_lib_version()` as
 this process sees it. A gnu build or a package loads the host's libpcap, a
@@ -1951,14 +2087,22 @@ An orphaned stream is media with no dialog. `rtp_stats` names which streams
 have none. This tool says why each one has none, which is the part an incident
 needs.
 
-**Parameters:** `limit` (`u32?`) — maximum rows to return, bounded by
-`--mcp-max-rows` and defaulting to 50. There is no cursor: read `total_orphans`
-against the rows you received, and raise `limit` to reach the rest.
+| Name | Type | Legal values | If omitted |
+|---|---|---|---|
+| `limit` | u32? | Ceiling is `--mcp-max-rows` (1000 by default), and higher clamps to it. `0` returns one row. | 50 rows. |
+| `cursor` | string? | The previous response's `next_cursor`, verbatim (`<RFC 3339>\|0xSSRC@src>dst`, the shape the [`rtp_stats`](#rtp-stats) sweep uses). A malformed timestamp half fails with `invalid_params`. | Starts at the earliest orphan. |
+| `max_response_bytes` | u64? | Bytes for the whole response. Ceiling is `--mcp-max-response-bytes` (1048576 unless the operator changed it). Higher clamps to it, `0` means the ceiling. Past it the page ends early at a whole row with `truncated_by: "bytes"`. | The ceiling. |
 
-**Returns** `orphans`, `total_orphans` (the count before `limit` bit),
-`truncated`, `relay_was_consulted`, `relay_control`, `capture_identity` and
-`schema_version`. Each `orphans` row carries `ssrc`, `src`, `dst`,
+**Returns** `orphans`, `returned`, `total_orphans` (every orphan in the store,
+whatever `limit` and `cursor` say), `truncated`, `truncated_by` (present only
+when a bound cut the page), `next_cursor` (`null` on the final page),
+`relay_was_consulted`, `relay_control`, `capture_identity` and
+`schema_version`. Rows run oldest first, by first packet, ties broken by
+`0xSSRC@src>dst`. Each `orphans` row carries `ssrc`, `src`, `dst`,
 `named_endpoint`, `asserted_by`, `reason` and `note`.
+
+`relay_was_consulted` reads every orphan in the store, not only the page, so a
+relay assertion on a later page still counts.
 
 `relay_control` has one row per relay control socket this capture read
 (`--rtpproxy-control`), and is empty when the capture read none. It counts retried
@@ -2019,9 +2163,13 @@ which carries four streams and no dialogs at all:
       "note": "nothing in this capture named this endpoint. A relay could answer it and none was asked: that is an absence of evidence, not evidence of absence"
     }
   ],
+  "returned": 2,
   "total_orphans": 4,
   "truncated": true,
+  "truncated_by": "rows",
+  "next_cursor": "2026-07-08T18:35:27.408614Z|0x0e330af3@127.0.0.1:5084>127.0.0.1:5094",
   "relay_was_consulted": false,
+  "relay_control": [],
   "capture_identity": {
     "node": "capture-01",
     "instance": "ece9518d2bf67680750b4-2",
@@ -2047,6 +2195,7 @@ the optional `filter`.
 | `limit` | u32? | Ceiling is `--mcp-max-rows` (1000 by default). Higher clamps to it, `0` means the default. | 50 rows. |
 | `cursor` | string? | The previous response's `next_cursor`, verbatim. | Starts at the oldest match. |
 | `fields` | string[]? | Field names to keep on each row, plus `call_id`. Same rules as [`list_dialogs`](#list-dialogs) — see [Narrowing a row with `fields`](#narrowing-a-row-with-fields). | The whole row. |
+| `max_response_bytes` | u64? | Bytes for the whole response. Ceiling is `--mcp-max-response-bytes` (1048576 unless the operator changed it). Higher clamps to it, `0` means the ceiling. Past it the page ends early at a whole row with `truncated_by: "bytes"` — see [Rules every tool follows](#rules-every-tool-follows). | The ceiling. |
 
 Returns the same page object as [`list_dialogs`](#list-dialogs) — `dialogs`,
 `returned`, `total_matched`, `by_method`, `truncated`, `next_cursor`,
@@ -2100,7 +2249,8 @@ invalid_params (-32602) naming the offending value.
     { "method": "REGISTER", "count": 6 }
   ],
   "truncated": true,
-  "next_cursor": "2016-11-17T21:54:34.903349+00:00|call-1197-synth@192.0.2.10",
+  "truncated_by": "rows",
+  "next_cursor": "2016-11-17T21:54:34.903349Z|call-1197-synth@192.0.2.10",
   "capture_identity": {
     "node": "capture-01",
     "instance": "1ae7318cb5c11b1a306dd-1",
@@ -2123,6 +2273,7 @@ User-Agent, and body across all dialogs.
 | `query` | string | Any substring. Matching ignores case. | Required — the call fails. |
 | `limit` | u32? | Ceiling is `--mcp-max-rows` (1000 by default). Higher clamps to it, `0` means the default. | 50 hits. |
 | `cursor` | string? | The previous response's `next_cursor`, verbatim (`<RFC 3339 created_at>\|<Call-ID>#<zero-padded message index>`). A malformed timestamp half fails with `invalid_params`. | Starts at the oldest match. |
+| `max_response_bytes` | u64? | Bytes for the whole response. Ceiling is `--mcp-max-response-bytes` (1048576 unless the operator changed it). Higher clamps to it, `0` means the ceiling. Past it the page ends early at a whole row with `truncated_by: "bytes"` — see [Rules every tool follows](#rules-every-tool-follows). | The ceiling. |
 
 **Returns** — the same page shape [`list_dialogs`](#list-dialogs) returns, not
 a bare array, plus the provenance note as a second content block:
@@ -2132,7 +2283,8 @@ a bare array, plus the provenance note as a second content block:
 | `hits` | object[] | This page of `{ call_id, message_index, snippet }`, ordered by the dialog's `created_at`, then Call-ID, then message index. |
 | `returned` | usize | Rows in `hits`. |
 | `total_matched` | usize | Messages matching the query across the **whole store**, whatever `limit` and `cursor` say. This is the number that answers "how many". |
-| `truncated` | bool | `true` when matches remain after this page. Absent while the answer is not whole — see the sixth rule above. |
+| `truncated` | bool | `true` when matches remain after this page. Absent while the answer is not whole — see [Rules every tool follows](#rules-every-tool-follows). |
+| `truncated_by` | string? | `rows` when the row limit cut the page, `bytes` when the byte budget did. Absent when neither bound cut the page. |
 | `source_exhausted` | bool | `true` once sipnab has read the capture source to its end. |
 | `source_stopped_early` | bool | `true` when a source's read ended before the source did. |
 | `next_cursor` | string? | Pass back to continue. `null` on the final page. |
@@ -2146,7 +2298,7 @@ form.
 > **Count from the fields, never from the rows.** A capped result and a
 > complete one hold the same shape, so the row count cannot tell them apart:
 > on the sample capture below, `{ "query": "REGISTER" }` returns 50 rows and
-> `limit: 1000` returns 1000, while 1334 messages match. `total_matched` is
+> `limit: 1000` returns 1000, while 2668 messages match. `total_matched` is
 > the number that answers "how many are there", `truncated` says whether you
 > are seeing all of them, and `next_cursor` reaches the rest.
 
@@ -2164,9 +2316,10 @@ The example runs against [`tests/pcap-samples/sipp-branch-scenario.pcapng`](http
     }
   ],
   "returned": 1,
-  "total_matched": 1334,
+  "total_matched": 2668,
   "truncated": true,
-  "next_cursor": "2016-11-17T21:52:35.303349+00:00|call-1-synth@192.0.2.10#0000000000",
+  "truncated_by": "rows",
+  "next_cursor": "2016-11-17T21:52:35.303349Z|call-1-synth@192.0.2.10#0000000000",
   "capture_identity": {
     "node": "capture-01",
     "instance": "12100b18cb6971cf461cff-1",
@@ -2176,8 +2329,9 @@ The example runs against [`tests/pcap-samples/sipp-branch-scenario.pcapng`](http
 }
 ```
 
-Passing that `next_cursor` back returns `call-2-synth@192.0.2.10` and reports
-the same `total_matched: 1334`: the total describes the store, not the page.
+Passing that `next_cursor` back returns message 1 of `call-1-synth@192.0.2.10`
+and reports the same `total_matched: 2668`: the total describes the store, not
+the page.
 The index half of the cursor carries leading zeros because the server compares
 the cursor as text — rebuild one by hand and `#10` sorts before `#2`, which
 silently skips eight messages of a dialog. Pass it back exactly as it arrived.
@@ -2194,9 +2348,11 @@ Returns dialogs whose first message falls in the window, oldest first.
 | `limit` | u32? | Ceiling is `--mcp-max-rows` (1000 by default). Higher clamps to it, `0` means the default. | 50 rows. |
 | `cursor` | string? | The previous response's `next_cursor`, verbatim (`<RFC 3339 created_at>\|<Call-ID>`). A malformed timestamp half fails with `invalid_params`. | Starts at the oldest dialog in the window. |
 | `fields` | string[]? | Field names to keep on each row, plus `call_id`. The row here is already narrow, so name one of the four below — see [Narrowing a row with `fields`](#narrowing-a-row-with-fields). | The whole row. |
+| `max_response_bytes` | u64? | Bytes for the whole response. Ceiling is `--mcp-max-response-bytes` (1048576 unless the operator changed it). Higher clamps to it, `0` means the ceiling. Past it the page ends early at a whole row with `truncated_by: "bytes"` — see [Rules every tool follows](#rules-every-tool-follows). | The ceiling. |
 
-**Returns** `{ dialogs, returned, total_matched, truncated, next_cursor,
-capture_identity, schema_version }`.
+**Returns** `{ dialogs, returned, total_matched, truncated, truncated_by,
+next_cursor, capture_identity, schema_version }`, with `truncated_by` present
+only when a bound cut the page.
 Each row carries `call_id`, `created_at`, `state` and `final_status_code` —
 **a narrower row than [`list_dialogs`](#list-dialogs) returns**, with no
 `msg_count`, no `from_user`, no `timing` and no `frame`. No markers appear
@@ -2234,7 +2390,8 @@ same window without a filter answers `total_matched: 247`:
   "returned": 2,
   "total_matched": 16,
   "truncated": true,
-  "next_cursor": "2016-11-17T21:52:37.703349+00:00|call-25-synth@192.0.2.10",
+  "truncated_by": "rows",
+  "next_cursor": "2016-11-17T21:52:37.703349Z|call-25-synth@192.0.2.10",
   "capture_identity": {
     "node": "capture-01",
     "instance": "12100b18cb6971cf461cff-1",
@@ -2539,14 +2696,20 @@ Incremental fetch of the dialogs updated after a cursor position.
 | `cursor` | string? | The previous response's `next_cursor`, verbatim (`<RFC 3339>\|<Call-ID>`). A bare RFC 3339 timestamp also parses, and filters strictly after it. | Starts from the beginning of the store. |
 | `limit` | u32? | Ceiling is `--mcp-max-rows` (1000 by default). Higher clamps to it, `0` means the default. | 50 rows. |
 | `fields` | string[]? | Field names to keep on each row, plus `call_id`. Same rules as [`list_dialogs`](#list-dialogs) — see [Narrowing a row with `fields`](#narrowing-a-row-with-fields). | The whole row. |
+| `max_response_bytes` | u64? | Bytes for the whole response. Ceiling is `--mcp-max-response-bytes` (1048576 unless the operator changed it). Higher clamps to it, `0` means the ceiling. Past it the page ends early at a whole row with `truncated_by: "bytes"` — see [Rules every tool follows](#rules-every-tool-follows). | The ceiling. |
 
 Returns `{ dialogs, next_cursor, source_exhausted, source_stopped_early,
 capture_identity }`, where
 `dialogs` holds the same summary rows [`list_dialogs`](#list-dialogs) returns,
-fencing included. This page object carries no `returned`, `total_matched` or
-`truncated` — "how many are there" is not a question a tail can answer, because
-the store keeps changing underneath it. Poll until `dialogs` comes back empty
-and `source_exhausted` is `true`.
+fencing included. This page object carries no `returned` or `total_matched` —
+"how many are there" is not a question a tail can answer, because the store
+keeps changing underneath it. Poll until `dialogs` comes back empty and
+`source_exhausted` is `true`.
+
+`truncated` and `truncated_by` appear only when the byte budget cut the page:
+`truncated: true` and `truncated_by: "bytes"`. A tail page cut by `limit` says
+nothing extra, because its `next_cursor` already names the last row returned
+and the next poll continues from there either way.
 
 `next_cursor` is compound — `<RFC 3339>|<Call-ID>` — not a bare
 timestamp. Dialogs can share an `updated_at`, so resuming from the
@@ -2593,7 +2756,7 @@ has finished: stop when it turns `true` instead of polling forever.
       "input_origin": "wire"
     }
   ],
-  "next_cursor": "2016-11-26T14:53:08.170676+00:00|1-1966@10.0.2.20",
+  "next_cursor": "2016-11-26T14:53:08.170676Z|1-1966@10.0.2.20",
   "source_exhausted": true,
   "source_stopped_early": false,
   "capture_identity": {
@@ -3123,8 +3286,9 @@ Paginated dialog with full SIP messages.
 | Name | Type | Legal values | If omitted |
 |---|---|---|---|
 | `call_id` | string | A Call-ID the store holds. An unknown one fails with `call_id 'x' not found`. | Required — the call fails. |
-| `max_messages` | u32? | Ceiling is `--mcp-max-rows` (1000 by default). Higher clamps to it, `0` means the default. | 100 messages. |
-| `cursor` | u32? | A message index, counting from 0. Unlike the dialog cursors elsewhere, this one is a plain integer, and past-the-end returns an empty page rather than an error. | Starts at message 0. |
+| `max_messages` | u32? | At least 1; `0` fails with `invalid_params`. Ceiling is `--mcp-max-rows` (1000 by default), and higher clamps to it. | 100 messages. |
+| `cursor` | string? | The previous response's `next_cursor`, verbatim (`<RFC 3339 created_at>\|<Call-ID>#<zero-padded message index>`, the shape [`search_messages`](#search-messages) uses). A malformed cursor, or one issued for a different dialog, fails with `invalid_params`. A cursor past the last message returns an empty page. | Starts at message 0. |
+| `max_response_bytes` | u64? | Bytes for the whole response. Ceiling is `--mcp-max-response-bytes` (1048576 unless the operator changed it). Higher clamps to it, `0` means the ceiling. Past it the page ends early at a whole message with `truncated_by: "bytes"` — see [Rules every tool follows](#rules-every-tool-follows). | The ceiling. |
 
 **Returns:**
 
@@ -3132,9 +3296,14 @@ Paginated dialog with full SIP messages.
 |---|---|---|
 | `dialog` | object | The same summary [`list_dialogs`](#list-dialogs) returns, with `from_user` and `to_user` fenced. |
 | `messages` | object[] | This page of full messages, in dialog order. |
-| `total_messages` | usize | Messages in the whole dialog, so `truncated` is unnecessary here. |
-| `next_cursor` | u32? | Index to resume at. `null` on the final page. |
-| `complete` | bool | `true` when this page reaches the end of the dialog. |
+| `returned` | usize | Messages in `messages`. |
+| `first_index` | usize | The index of `messages[0]` in the dialog, so row N of the page is [`get_message`](#get-message) `index: first_index + N`. |
+| `total_messages` | usize | Messages in the whole dialog. |
+| `truncated` | bool | `true` when messages remain after this page. Absent while the answer is not whole — see [Rules every tool follows](#rules-every-tool-follows). |
+| `truncated_by` | string? | `rows` when `max_messages` cut the page, `bytes` when the byte budget did. Absent when neither bound cut the page. |
+| `next_cursor` | string? | Pass back to continue. `null` on the final page. |
+| `complete` | bool | `true` when this page reaches the end of the dialog. Never `true` over a partial read of the capture. |
+| `schema_version` | u32 | `2` for this shape. Responses through 0.5.211 carried no `schema_version`, an integer `next_cursor`, and no `returned`, `first_index`, `truncated` or `truncated_by`. |
 
 Every `messages` row carries `call_id`, `is_request`, `cseq` (`method` and
 `number`), `from`, `to`, `src`, `src_port`, `dst`, `dst_port`, `transport`,
@@ -3176,9 +3345,14 @@ The example runs against [`tests/pcap-samples/sip-rtp-g711.pcap`](https://github
 ```jsonc
 // get_dialog { "call_id": "1-1966@10.0.2.20", "max_messages": 1 }
 {
+  "schema_version": 2,
   "complete": false,
+  "returned": 1,
+  "first_index": 0,
   "total_messages": 6,
-  "next_cursor": 1,
+  "truncated": true,
+  "truncated_by": "rows",
+  "next_cursor": "2016-11-26T14:52:59.666393Z|1-1966@10.0.2.20#0000000000",
   "dialog": {
     "call_id": "1-1966@10.0.2.20",
     "state": "Completed",
@@ -3226,8 +3400,15 @@ for byte against the packet finds a difference that is sipnab's, not the
 endpoint's. Read it as text, not as the original octets — reach for
 [`show_evidence`](#show-evidence) when you need those.
 
-`total_messages` is 6 and `next_cursor` is 1, so five messages remain. Call
-again with `cursor: 1` to continue, and stop when `complete` turns `true`.
+`total_messages` is 6 and `returned` is 1, so five messages remain. Call again
+with `cursor` set to that `next_cursor` to continue, and stop when `complete`
+turns `true`.
+
+Through 0.5.211 `cursor` was the integer index of the first message to return,
+and `next_cursor` the index to resume at. Both are now the opaque string every
+other paged tool uses, which a client must pass back unchanged. sipnab refuses
+a client that sends an integer with `invalid_params`. To address one message by
+position, use `first_index` with [`get_message`](#get-message).
 
 ### `get_dialog_report`
 
@@ -3314,8 +3495,8 @@ Single SIP message at a given zero-based index.
 
 **Where an index comes from,** because the number means nothing on its own:
 `msg_count` on any [`list_dialogs`](#list-dialogs) row is the count, so the last
-valid index is `msg_count - 1`. [`get_dialog`](#get-dialog) pages messages from
-its `cursor`, so the Nth row of that page sits at `cursor + N`, and every
+valid index is `msg_count - 1`. [`get_dialog`](#get-dialog) reports each page's
+`first_index`, so the Nth row of that page sits at `first_index + N`, and every
 [`lint_dialog`](#lint-dialog) finding reports the `message_index` it fired on.
 
 An index at or past the end fails with `index 999 out of range for dialog with
@@ -3812,7 +3993,7 @@ dynamic one an SDP named), and `assumed` (neither, and the reason `grounded` is
 Per-stream RTP quality for one call, or across the whole capture.
 
 This tool has **two modes**, and `call_id` is the switch. Pass it for one
-dialog's streams. Omit it to sweep the whole capture. Five parameters belong to
+dialog's streams. Omit it to sweep the whole capture. Six parameters belong to
 the sweep alone:
 
 | Name | Type | Legal values | If omitted |
@@ -3823,6 +4004,7 @@ the sweep alone:
 | `orphaned` | bool? | Sweep only. `true` keeps only streams no dialog claims, `false` keeps only streams a dialog claimed. Independent of the MOS bounds — an orphan usually has no dialog to ground its clock, so requiring a bound alongside would filter out most of what this exists to find. | Both kinds sweep. |
 | `limit` | u32? | Sweep only. Ceiling is `--mcp-max-rows` (1000 by default), higher clamps to it, `0` means the default. | 50 streams. |
 | `cursor` | string? | Sweep only. The previous response's `next_cursor`, verbatim (`<RFC 3339>\|0xSSRC@src>dst`). | Starts at the earliest stream. |
+| `max_response_bytes` | u64? | Sweep only. Bytes for the whole response. Ceiling is `--mcp-max-response-bytes` (1048576 unless the operator changed it). Higher clamps to it, `0` means the ceiling. Past it the page ends early at a whole row with `truncated_by: "bytes"`. | The ceiling. |
 
 **Only the two MOS bounds fail alongside a `call_id`.** They ask a question
 about the whole capture, so sending one with a Call-ID is a misunderstanding of
@@ -4033,6 +4215,7 @@ it is what a NAT or one-way-audio fault looks like from the media side.
 | `total_matched` | usize | Streams matching across the whole store. |
 | `ungrounded_excluded` | usize | Streams a MOS bound could not judge. |
 | `truncated` | bool | `true` when matches remain after this page. |
+| `truncated_by` | string? | `rows` when the row limit cut the page, `bytes` when the byte budget did. Absent when neither bound cut the page. |
 | `next_cursor` | string? | Pass back to continue. `null` on the final page. |
 | `capture_identity` | object | Which capture answered — see [`capture_status`](#capture-status). A changed `instance` voids every cursor you hold. |
 | `schema_version` | u32 | `1` for this shape. |
@@ -4088,7 +4271,8 @@ carries four streams — two PCMU, two G722 — and no dialogs at all:
   "total_matched": 2,
   "ungrounded_excluded": 2,
   "truncated": true,
-  "next_cursor": "2026-07-08T18:35:27.407583+00:00|0x0e330af3@127.0.0.1:5094>127.0.0.1:5084",
+  "truncated_by": "rows",
+  "next_cursor": "2026-07-08T18:35:27.407583Z|0x0e330af3@127.0.0.1:5094>127.0.0.1:5084",
   "capture_identity": {
     "node": "capture-01",
     "instance": "22fa418cb5c799c57abef-1",
@@ -5367,7 +5551,7 @@ disclaimers`.
 
 ### `save_findings`
 
-**The only write verb on sipnab's network surface.** Requires
+**Writes one line to sipnab's log and nothing else.** Requires
 `--mcp-allow-save-findings`, which is off by default.
 
 | Name | Type | Legal values | If omitted |
@@ -5450,6 +5634,12 @@ that fails authentication, so everything still in the store arrived under
 whatever posture the run configured. With no posture configured it
 reports the **weakest** reading — a tool whose job is telling you what a claim
 is worth must not round up in the absence of information.
+
+The configured posture is the HEP listener's, so it covers only what the
+listener delivered (`input_origin: hep`). A relay datagram sipnab read off a
+capture interface (`input_origin: wire`) never reached the listener: it is
+`port-gated-only` on every run, `--hep-auth-mode hmac` included. A run with
+`-d` and `-L` holds both kinds side by side.
 
 The endpoints are the call's streams, so the tool answers on a media-relay host
 that never saw the SIP dialog. `dialog_seen` is then `false` and
@@ -5662,6 +5852,8 @@ Unlike its file-writing neighbors this tool writes nothing and needs no
 | `call_id` | string | A Call-ID the store holds. An unknown one fails with `invalid_params` (-32602) naming the value. | Give `filter` instead. |
 | `filter` | string | A filter alias or a raw DSL expression, the vocabulary [`list_dialogs`](#list-dialogs) takes. The `--export-vcon-when` flag answers the same question but accepts the DSL expression ONLY -- it rejects an alias, which is [FLT1](https://github.com/NormB/sipnab/blob/main/docs/design/backlog.md). Every matching dialog comes back. | Give `call_id` instead. |
 | `limit` | integer | 1 to `--mcp-max-rows` (1000 by default). | 50. |
+| `cursor` | string | The previous response's `next_cursor`, passed back verbatim. It is the `<RFC 3339 created_at>\|<Call-ID>` cursor [`list_dialogs`](#list-dialogs) uses. A cursor whose time half is not RFC 3339 fails with `invalid_params` (-32602). | The first page. |
+| `media` | string | `inline`: audio the run retained travels inline in a `recording` Dialog Object. `omit`: the exporter considers no audio, and each container records `media: "not-considered"`. sipnab refuses any other value before the tool runs, with an error result naming `inline` and `omit`. | `inline`. |
 
 Give `call_id` or `filter`, never both. The CLI refuses the same pair, because
 a request naming a dialog AND a rule for choosing dialogs has two answers and
@@ -5672,6 +5864,29 @@ dialogs and then issue one `export_vcon` per row — on a real capture, hundreds
 of round trips to do what `--export-vcon-when` does in one invocation. Pass the
 filter here instead. A container is a large answer, so `limit` bounds the set.
 `total_matched` counts the whole store, so it is the number to page against.
+
+**Page through a large set.** Containers come back ordered by the dialog's
+`created_at`, then Call-ID. When more match than `limit` allows, `truncated`
+is `true` and `next_cursor` names the last container returned. Pass it back as
+`cursor` for the next page. The last page has `truncated: false` and a null
+`next_cursor`. The cursor is a position within one capture: compare
+`capture_identity.instance` between pages, as with every paged tool, because
+[`open_capture`](#open-capture) replaces the dialogs a cursor points into.
+
+**Leave the audio out.** A container that carries audio is up to the
+inline-media budget (5 MiB by default) larger than one that does not. With
+`media: "omit"` the exporter considers no audio, and each container says so in
+its own completeness carrier with `media: "not-considered"` and a caveat that
+names the omission as a fact about the export, not about the call. The
+containers stay valid against the core-04 schema.
+
+**Read one container as a resource.** `resources/read` on
+`sipnab://vcon/{call_id}` returns the container this tool builds for that
+dialog, with audio inline, and `completion/complete` fills in `call_id` from
+the Call-IDs the capture holds. sipnab refuses a container over the 8 MiB
+resource limit with `invalid_params`. Call this tool for it instead, with
+`media: "omit"` if the audio is what makes it large. Only a build with the
+`vcon` feature lists the template.
 
 A filter matching nothing answers with an empty set. "No call failed" is a
 finding, and a refusal there would make a clean capture look like a broken
@@ -5730,7 +5945,7 @@ to read a missing `recording` object as an answer:
 | `carried` | The audio is inline in a `recording` Dialog Object |
 | `refused-over-budget` | sipnab decoded audio and REFUSED to inline it. One probed store answers 204 and drops a payload over 10485760 bytes without telling the producer, so the emitter enforces a 5 MiB budget itself. The audio exists and was not truncated |
 | `none-decodable` | The run decoded no audio. `media_note` reports the measurement -- never that the call was silent |
-| `not-considered` | Nobody asked this export for media. A fact about the export, not about the call |
+| `not-considered` | Nobody asked this export for media: the call to `export_vcon` gave `media: "omit"`. A fact about the export, not about the call |
 | `withheld-by-redaction` | The export ran with `--redact`, and redaction deletes audio rather than replacing it with a token, so the exporter considered none. The Dialog Object is the signaling one. A fact about the export, not about the call. The MCP tools do not redact, so they never write it |
 
 **What the capture MISSED travels with the container, in two places.** vCon has
@@ -5771,6 +5986,7 @@ shape:
   "returned": 2,
   "total_matched": 7,
   "truncated": true,
+  "next_cursor": "2016-11-26T14:52:59.666393Z|1-1966@10.0.2.20",
   "capture_identity": { /* which capture, and which revision of its stores */ },
   "containers": [
     {
@@ -5912,8 +6128,8 @@ can deduplicate on it. Two dialogs that opened in the same millisecond on the
 same node have only 12 bits separating them — that is inherent in the draft's
 layout, which spends a v7's entropy on a host-derived `rand_b`.
 
-A binary built without the `vcon` Cargo feature refuses this tool with
-`invalid_params` and names the feature, rather than the tool being absent.
+A binary built without the `vcon` Cargo feature does not offer this tool:
+it is absent from `tools/list`.
 [`server_capabilities`](#server-capabilities) lists what a given binary carries.
 
 ### `validate_vcon`
@@ -5996,9 +6212,102 @@ a keyword outside that subset makes every validation report `invalid` naming
 the keyword. Re-vendoring a richer schema therefore fails loudly instead of
 quietly certifying less than it claims.
 
-A binary built without the `vcon` Cargo feature refuses this tool with
-`invalid_params` and names the feature.
+A binary built without the `vcon` Cargo feature does not offer this tool:
+it is absent from `tools/list`.
 [`server_capabilities`](#server-capabilities) lists what a given binary carries.
+
+### `vcon_spool_status`
+
+Counts the vCon export spool: the directory `--export-vcon-dir` names, which
+the capture's `--export-vcon-when` writes containers into and which
+[`sipnab --vcon-forward`](@/docs/vcon.md#deliver-the-spool-to-a-store) delivers to a
+store. For each container the store refused, it returns the record the
+forwarder wrote beside it. Backed by
+[`app::vcon_forward`](https://github.com/NormB/sipnab/blob/main/src/app/vcon_forward.rs),
+whose file rules it reuses.
+
+The same answer comes from
+[`GET /v1/vcon/spool`](@/docs/api.md#get-v1-vcon-spool) and from
+`sipnab --vcon-spool-status <SPOOL_DIR>`
+([CLI reference](@/docs/cli.md#vcon-forwarder)), built by one function,
+`app::vcon_spool::snapshot`. This tool adds one thing the other two do not: it
+fences each store answer as untrusted text and cuts it to
+`--mcp-max-body-bytes`.
+
+The answer is a **snapshot of files on disk**, taken when `as_of` says. The
+forwarder is a separate process and may move a file a moment later. This tool
+reads files and does nothing else: it sends nothing, fetches nothing, and
+moves, deletes or creates no file, so the capture process keeps making no
+outbound vCon connection. `read_only_hint` is `true`.
+
+It needs a run started with `--export-vcon-when` and `--export-vcon-dir`.
+Without them it fails with `invalid_params` (-32602) naming the flags. It
+reads the forwarder's DEFAULT directories beside the spool, `delivered/` and
+`failed/`. A forwarder started with `--vcon-forward-done` or
+`--vcon-forward-failed` moves files to directories this tool does not read,
+and does not count.
+
+| Name | Type | Legal values | If omitted |
+|---|---|---|---|
+| `limit` | integer | 1 to `--mcp-max-rows` (1000 by default). Bounds the list of failed records; the three counts are never bounded. | 50. |
+| `cursor` | string | The previous response's `next_cursor`, passed back verbatim. | The first page. |
+
+Returns:
+
+| Field | Type | Description |
+|---|---|---|
+| `as_of` | string | When this tool read the directories, RFC 3339 UTC |
+| `note` | string | One sentence saying the answer is a snapshot and that this tool moves nothing |
+| `spool`, `delivered_dir`, `failed_dir` | object | Each directory's `path` and whether it `exists`. A directory that does not exist counts as empty |
+| `pending` | integer | Containers in the spool, by the forwarder's rule: regular files ending in `.json` whose names do not start with a dot |
+| `delivered` | integer | Containers in `delivered/` |
+| `failed` | integer | Containers in `failed/`, the `.error.json` records not counted |
+| `failures` | array | One page of failed containers by file name: `file`, and `record`, the `<file>.error.json` record (`at`, `status`, `method`, `url`, `body`, `body_truncated`, `reason`) |
+| `returned` | integer | Rows in `failures` |
+| `truncated` | boolean | Whether failed containers remain after this page |
+| `next_cursor` | string or null | Pass back as `cursor` for the next page; null on the last page |
+
+`record.body` is the start of the store's answer as the forwarder kept it,
+fenced as untrusted text and cut to `--mcp-max-body-bytes` (4096 by default).
+`record.status`, `method`, `url` and `body` are null when the forwarder refused
+the container before sending it, and `record.reason` then says why. A failed
+container whose record is missing, unreadable or not in the forwarder's shape
+has a null `record` and a `record_problem` saying which.
+
+```jsonc
+// vcon_spool_status {}, on a run started with --export-vcon-dir vcons
+{
+  "schema_version": 1,
+  "as_of": "2026-10-12T00:59:14.262Z",
+  "note": "A snapshot of files on disk at as_of. The vCon forwarder (sipnab --vcon-forward) is a separate process that moves files out of the spool; whatever produced this answer sends, fetches, moves and deletes nothing. ...",
+  "spool": { "path": "vcons", "exists": true },
+  "delivered_dir": { "path": "vcons/delivered", "exists": true },
+  "failed_dir": { "path": "vcons/failed", "exists": true },
+  "pending": 1,
+  "delivered": 1,
+  "failed": 1,
+  "failures": [
+    {
+      "file": "refused.vcon.json",
+      "record": {
+        "at": "2026-10-11T11:58:02Z",
+        "body": "⟦untrusted-capture-data⟧{\"error\":\"vCon already exists\"}⟦/untrusted-capture-data⟧",
+        "body_truncated": false,
+        "file": "refused.vcon.json",
+        "method": "POST",
+        "reason": null,
+        "status": 409,
+        "url": "https://vcon.example.com/v1/vcons"
+      }
+    }
+  ],
+  "returned": 1,
+  "truncated": false,
+  "next_cursor": null
+}
+```
+
+A build without the `vcon` Cargo feature does not register this tool.
 
 ### `generate_repro`
 
@@ -6161,8 +6470,9 @@ The tools that change server state rather than read it. Every one stays off unti
 
 ### `query_relay`
 
-**This is the only tool that transmits.** Every other one answers from bytes
-sipnab already holds. This one puts a packet on the network.
+**This tool transmits, as `relay_stats` and `relay_compare` do.** Every other
+tool answers from bytes sipnab already holds. These three put a packet on the
+network.
 
 It closes a gap a passive decoder cannot. A call already in progress when
 sipnab started has no control exchange left to read, so the relay's own view is
@@ -6638,6 +6948,61 @@ sipnab uses:
 Tools never panic. An unknown Call-ID always produces a structured error
 rather than an empty result.
 
+#### Error data
+
+Every -32602 and -32000 error also carries a `data` object, so a client can act
+on the error without parsing `message`. The `message` text stays as it was.
+People read `message`, and its wording may improve between releases. The
+`data` codes below stay stable.
+
+```jsonc
+{
+  "code": -32602,
+  "message": "cannot group by 'bogus'; one of: state, response_code, ...",
+  "data": {
+    "reason": "invalid_choice",       // always present
+    "param": "group_by",              // the argument that was refused, when one was
+    "valid_values": ["state", "response_code", "method", "..."]  // the allowed set, when there is one
+  }
+}
+```
+
+| Member | Present | Meaning |
+|---|---|---|
+| `reason` | always | A stable lowercase code from the table below. |
+| `param` | when one argument caused the refusal | The argument's name, as the tool's input schema spells it. For a resource read, the URI template variable (`tool`, `alias`, `rule_id`) or `uri`. |
+| `valid_values` | when the refusal is "not one of these" | The values the server accepts for that argument. |
+| `retry_after_ms` | on a rate-limit refusal | Milliseconds until the current one-second window ends and the same call can succeed. |
+
+sipnab omits a member that does not apply, rather than sending it as `null`.
+
+| `reason` | Code | Meaning |
+|---|---|---|
+| `not_found` | -32602 | A named thing (a Call-ID, a rule, a finding, a sweep job, a subscription) is not held by this server. |
+| `invalid_choice` | -32602 | The value is not in the allowed set; `valid_values` lists the set. |
+| `invalid_value` | -32602 | The value is empty, out of range, or not in the expected format. |
+| `invalid_filter` | -32602 | A filter expression did not compile. |
+| `missing_param` | -32602 | A required argument, or one of a set of alternatives, was not given. |
+| `conflicting_params` | -32602 | The call named two arguments that cannot appear together. |
+| `not_enabled` | -32602 | The operator did not enable this on the server: an opt-in flag such as `--mcp-allow-shutdown`, `--mcp-file-root`, or `--allow-action`. |
+| `path_refused` | -32602 | sipnab refused a filename: not a bare name, outside `--mcp-file-root`, or one of the capture's own inputs. |
+| `already_exists` | -32602 | The filename asked for already exists, and sipnab does not overwrite. |
+| `not_ready` | -32602 | The server's current state refuses the request (a capture is still loading, a live capture is running, the source has not finished). The same call can succeed later. |
+| `limit_exceeded` | -32602 | The request asks for more than a ceiling this server enforces. |
+| `unsupported` | -32602 | This build, platform, or process privilege cannot do this. |
+| `scope_refused` | -32602 | The caller's token scope does not cover this tool. |
+| `declined` | -32602 | The person asked to confirm the request (MCP elicitation) declined it. |
+| `no_data` | -32602 | The named call holds nothing of the kind asked for: no messages, no RTP streams, no request to replay. |
+| `unknown_tool` | -32602 | The tool name is not loaded on this server; `valid_values` lists the loaded names. |
+| `invalid_arguments` | -32602 | An argument this server refuses whatever its value (a password-like argument name), or a refusal the MCP SDK built without naming the argument. |
+| `at_capacity` | -32000 | `--mcp-max-concurrent` calls are already running. There is no `retry_after_ms`, because a slot frees when some running call ends and the server cannot know when that happens. |
+| `rate_limited` | -32000 | This peer used its `--mcp-rate-limit-per-peer` allowance for the current one-second window. `retry_after_ms` says when the window ends. |
+
+The MCP SDK answers arguments that do not match a tool's input schema at all
+(a wrong JSON type, a missing required key) with a tool result that has
+`isError: true` and the parse error as its text, not with a JSON-RPC error, so
+that answer carries no `data`.
+
 ### Response bounding
 
 | Limit | Default | Set by |
@@ -6646,14 +7011,25 @@ rather than an empty result.
 | Ceiling on `limit` (clamps higher requests) | 1000 | `--mcp-max-rows` |
 | SIP body / snippet bytes | 4096 | `--mcp-max-body-bytes` |
 | Messages per `get_dialog` page | 1000 | `--mcp-max-rows` |
+| Bytes of one whole paged response | 1048576 | the per-call `max_response_bytes`, up to `--mcp-max-response-bytes` |
 
 **These are defaults, not laws.** The right ceiling belongs to the CONSUMER
 rather than to sipnab: an agent with a small context window wants far fewer
 than a thousand rows and a batch consumer piping to a file wants far more, so
-no single number serves both. Raise or lower them with `--mcp-max-rows` and
-`--mcp-max-body-bytes`, or the matching `[limits]` keys in the config file.
-The per-call `limit` narrows an answer below the ceiling, and cannot exceed
-it.
+no single number serves both. Raise or lower them with `--mcp-max-rows`,
+`--mcp-max-body-bytes` and `--mcp-max-response-bytes`, or the matching
+`[limits]` keys in the config file. The per-call `limit` and
+`max_response_bytes` narrow an answer below the ceiling, and cannot exceed it.
+
+The row and body ceilings bound a row's count and a body's width, and neither
+bounds the response as a whole: fifty `get_dialog` messages that each carry a
+long SDP body are within both and can still exceed what a small model can read.
+The byte budget covers that case. Its default of 1048576 bytes (1 MiB) is under
+twice the largest response measured over the sample captures in
+`tests/pcap-samples` — 561,420 bytes, `list_dialogs` with `limit: 1000` on
+`sipp-branch-scenario.pcapng` — so with the default no answer on those captures
+changes. The largest at the default `limit` was 52,809 bytes, a `get_dialog`
+page on `DTMFsipinfo.pcap`.
 
 A bound is not a loss. `list_dialogs`, `find_problems`, `search_by_time`,
 `search_messages`, `security_findings` and the capture-wide `rtp_stats` sweep
@@ -6665,22 +7041,29 @@ source is still loading it counts what had arrived by then, which is why every
 one of them also carries `source_exhausted` and why the response omits
 `truncated: false` until the answer is whole.
 
-All of those except `security_findings` carry a cursor to the
-rest, as do `tail_dialogs` and `get_dialog`. Asking for a `limit` above the
-ceiling does nothing — the ceiling clamps it — so either raise the ceiling with
+All of those except `security_findings` carry a cursor to the rest, as do
+`tail_dialogs`, `get_dialog` and `reconcile_orphans`, and every one of the eight
+cursor tools takes `max_response_bytes`. Asking for a `limit` above the ceiling
+does nothing — the ceiling clamps it — so either raise the ceiling with
 `--mcp-max-rows` or page.
 
-**Two tools remain exceptions, and a caller has to know which:**
+**Some tools take `limit` and carry no cursor, and a caller has to know
+which:**
 
-| Tool | Reports a total | Carries a cursor | How to reach the rest |
+| Tool | Reports a total | Why no cursor | How to reach the rest |
 |---|---|---|---|
-| `security_findings` | Yes | No | Raise `limit`, and narrow with `since` |
-| `tail_dialogs` | No | Yes | Follow `next_cursor` until the page comes back empty |
+| `security_findings` | Yes, `total_matched` | Its source is a ring buffer whose default depth is 1000, the same as the maximum `limit`, so one call reaches all of it | Raise `limit`, and narrow with `since` |
+| `find_correlated` | Yes, `total_matched` | A ranking by score: a later page would hold weaker matches, not the rest of a list | Raise `limit` |
+| `get_call_tree` | No, `truncated` only | A breadth-first walk outward from one call, stopped at `limit` legs | Raise `limit` |
+| `top_talkers` | Yes, `distinct_talkers` | A ranking by dialog count | Raise `limit` |
+| `describe_endpoint` | Yes, `dialogs` | `recent_dialogs` is newest first by `updated_at`, which moves each time a call gains a message, so a cursor on it would skip rows | [`list_dialogs`](#list-dialogs) with a filter such as `src.ip == '192.0.2.10'` or `from.user == 'alice'` pages that endpoint's dialogs |
+| `hep_senders` | Yes, `senders_tracked` and `refused_sources_tracked` | Two lists in one answer, the refused sources ranked by count, and the same bytes `GET /v1/hep/senders` returns | Raise `limit`, and raise `--mcp-max-rows` as well when the listener tracks more than 1000 senders |
+| `tfps_labels` | No: `total` counts the rows TFPS returned, and `truncated` says it held more | TFPS's `log` command takes a row count and no offset, so there is no position to resume from | Raise `limit`, or run `tfps_ctl log --json --limit N` on the TFPS host |
+| `tail_dialogs` | No | It has a cursor. The table names it because it has no total | Follow `next_cursor` until the page comes back empty |
 
-`security_findings` has no cursor because its source is a ring buffer whose
-default depth is 1000 — the same as the maximum `limit`, so one call reaches
-all of it. Raise `--findings-history` above 1000 and `total_matched` is what
-tells you a page is short, and `since` is the way through. `tail_dialogs` reports
-no total because a tail cannot have one: the store keeps changing underneath
-it, so any number it gave would describe a moment that has passed.
+`aggregate_dialogs`, `group_dialogs` and `compare_captures` take `top_n` rather
+than `limit` and sum everything past it into `other_count` or `other`, so they
+withhold nothing silently and have no cursor either. `tail_dialogs` reports no
+total because a tail cannot have one: the store keeps changing underneath it,
+so any number it gave would describe a moment that has passed.
 

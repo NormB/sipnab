@@ -62,6 +62,11 @@ pub struct Selection {
     /// Resolved by the caller with `cli.mcp_body_cap(config)`, and carried here
     /// for the same reason `mcp_row_cap` is.
     pub mcp_body_cap: usize,
+    /// Ceiling on the bytes of one whole paged MCP response.
+    ///
+    /// Resolved by the caller with `cli.mcp_response_cap(config)`, and
+    /// carried here for the same reason `mcp_row_cap` is.
+    pub mcp_response_cap: usize,
     /// Ceiling on how long one `await_condition` MCP call may wait, seconds.
     ///
     /// Resolved by the caller with `cli.mcp_wait_cap(config)`, and carried
@@ -411,6 +416,22 @@ pub fn start_actions(
     Ok(policy.into())
 }
 
+/// The HEP authentication posture an MCP server reports for relay assertions,
+/// or `None` when sipnab checks no HEP secret on this run.
+///
+/// `--hep-auth-mode` defaults to `plain` whether or not a secret is set, so
+/// the mode alone does not say that anything is checked: only a run that
+/// listens for HEP (`listening`) with a secret configured (`secret`) has an
+/// authenticated path, and only then does the mode name it.
+#[cfg(feature = "mcp")]
+fn hep_delivery_posture(
+    listening: bool,
+    secret: bool,
+    mode: crate::cli::HepAuthMode,
+) -> Option<crate::cli::HepAuthMode> {
+    (listening && secret).then_some(mode)
+}
+
 /// Start every server that is both selected and configured, on one shared
 /// runtime thread. Returns `Ok(None)` when nothing is enabled (the common
 /// plain-capture path), `Ok(Some(handle))` for the detached servers thread,
@@ -693,6 +714,9 @@ pub fn start_servers(
                 .api_file_root
                 .as_ref()
                 .map(std::path::PathBuf::from),
+            // The spool this run's `--export-vcon-when` writes into: the same
+            // directory the MCP server's `vcon_spool_status` reads.
+            vcon_spool: cli.output_args.export_vcon_dir.clone(),
             pipeline_options: selection.pipeline_options,
             archive: crate::output::api::ArchivePasswordPolicy {
                 accept_remote: cli.listener_args.api_accept_archive_passwords,
@@ -784,6 +808,7 @@ pub fn start_servers(
                         .map(|mib| mib.saturating_mul(1024 * 1024)),
                 )
                 .with_body_cap(selection.mcp_body_cap)
+                .with_response_cap(selection.mcp_response_cap)
                 .with_max_wait_seconds(selection.mcp_wait_seconds)
                 .with_sweep_limits(selection.mcp_sweep)
                 .with_sweep_job_limits(selection.mcp_sweep_jobs)
@@ -799,8 +824,26 @@ pub fn start_servers(
                 Some(dir) => s.with_file_root(dir),
                 None => s,
             };
+            // The spool this run's `--export-vcon-when` writes into, so
+            // `vcon_spool_status` reads the directory the capture fills.
+            #[cfg(feature = "vcon")]
+            let s = match cli.output_args.export_vcon_dir.as_ref() {
+                Some(dir) => s.with_vcon_spool(dir),
+                None => s,
+            };
             let s = match cli.mcp_args.mcp_sampling_budget {
                 Some(per_hour) => s.with_sampling_budget(per_hour),
+                None => s,
+            };
+            // What a relay's HEP assertion is worth on this run. Without it
+            // every run reported `port-gated-only`, `--hep-auth-mode hmac`
+            // included.
+            let s = match hep_delivery_posture(
+                cli.hep_args.hep_listen.is_some(),
+                cli.resolve_hep_auth().ok().flatten().is_some(),
+                cli.hep_args.hep_auth_mode,
+            ) {
+                Some(mode) => s.with_hep_auth_mode(mode),
                 None => s,
             };
             let s = if cli.mcp_args.mcp_allow_shutdown {
@@ -858,13 +901,13 @@ pub fn start_servers(
                 None => s,
             }
         };
-        match cli.mcp_args.mcp_transport.as_str() {
-            "stdio" => Some(Prepared::McpStdio {
+        match cli.mcp_args.mcp_transport {
+            crate::cli::McpTransport::Stdio => Some(Prepared::McpStdio {
                 server: Box::new(new_server()),
                 done: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             }),
             #[cfg(feature = "mcp-http")]
-            "http" => {
+            crate::cli::McpTransport::Http => {
                 let bind_str = cli.mcp_args.mcp_bind.as_deref().unwrap_or("127.0.0.1:8731");
                 let bind = crate::output::api::parse_bind_addr(bind_str)
                     .map_err(|e| anyhow::anyhow!("Invalid --mcp-bind address: {e}"))?;
@@ -899,15 +942,10 @@ pub fn start_servers(
                 })
             }
             #[cfg(not(feature = "mcp-http"))]
-            "http" => {
+            crate::cli::McpTransport::Http => {
                 return Err(anyhow::anyhow!(
                     "--mcp-transport http requires the mcp-http feature; rebuild with \
                      --features mcp-http (or full)."
-                ));
-            }
-            other => {
-                return Err(anyhow::anyhow!(
-                    "unknown --mcp-transport '{other}', expected stdio or http"
                 ));
             }
         }
@@ -1092,6 +1130,20 @@ pub fn resolve_mcp_verifier_config(cli: &Cli) -> crate::auth::VerifierConfig {
 
 #[cfg(all(test, feature = "api"))]
 mod tests {
+    /// Only a HEP listener with a secret has an authenticated path; the mode
+    /// names it, and every other combination reports none.
+    #[cfg(feature = "mcp")]
+    #[test]
+    fn only_a_listener_with_a_secret_reports_its_mode() {
+        use crate::cli::HepAuthMode;
+        for mode in [HepAuthMode::Plain, HepAuthMode::Hmac] {
+            assert_eq!(super::hep_delivery_posture(true, true, mode), Some(mode));
+            assert_eq!(super::hep_delivery_posture(true, false, mode), None);
+            assert_eq!(super::hep_delivery_posture(false, true, mode), None);
+            assert_eq!(super::hep_delivery_posture(false, false, mode), None);
+        }
+    }
+
     use super::*;
 
     /// A `Selection` with values nothing else in the tree uses, so a limiter
@@ -1107,6 +1159,7 @@ mod tests {
             metrics_tls: (None, None),
             mcp_row_cap: 1,
             mcp_body_cap: 1,
+            mcp_response_cap: 1,
             mcp_wait_seconds: 1,
             mcp_sweep: crate::cli::McpSweepLimits::default(),
             mcp_sweep_jobs: crate::cli::McpSweepJobLimits::default(),

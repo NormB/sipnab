@@ -222,7 +222,7 @@ case $prose_rc in
     ;;
 *)
     degraded
-    note "$PROSE_REASON; CI runs it and it blocks. pipx install codespell"
+    note "$PROSE_REASON; CI runs it and it blocks. pipx install codespell==$PROSE_PIN"
     note "(or point CODESPELL_BIN at one in a venv, as the hook accepts)"
     ;;
 esac

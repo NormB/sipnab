@@ -432,6 +432,7 @@ mod tests {
             ssrc,
             src: addr(10000)?,
             dst: addr(20000)?,
+            session: 0,
         };
         let mut s = RtpStream::new(key, &header(0, 0), start);
         for i in 1..n {
@@ -886,6 +887,7 @@ mod tests {
                     ssrc: i as u32,
                     src,
                     dst,
+                    session: 0,
                 },
                 call_id: Some(format!("row-{i}")),
                 codec: Some("PCMU".to_string()),

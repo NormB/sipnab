@@ -39,12 +39,14 @@ Then run sipnab locally with metrics exposed:
 # Run all of these, in order.
 printf 'prometheus:%s\n' "$(openssl rand -hex 16)" > /etc/sipnab/metrics-auth
 chmod 0600 /etc/sipnab/metrics-auth
-sipnab -N -L 0.0.0.0:9060 --metrics 0.0.0.0:9100 \
+sipnab -N -L 0.0.0.0:9060 --hep-allow 192.0.2.0/24 --metrics 0.0.0.0:9100 \
     --metrics-auth-file /etc/sipnab/metrics-auth
 ```
 
 A non-loopback `--metrics` bind without credentials is refused at startup, so
-the command above will not run without `--metrics-auth-file`. Put the same
+the command above will not run without `--metrics-auth-file`. The HEP listener
+is held to the same rule: replace `192.0.2.0/24` with the addresses your SIP
+proxies send from, or give it a shared secret with `--hep-auth-file`. Put the same
 `user:pass` in Prometheus's `basic_auth` block. Basic credentials are
 base64-encoded rather than encrypted — if the scrape crosses an untrusted
 network, serve it over HTTPS with `--metrics-tls-cert` and `--metrics-tls-key`

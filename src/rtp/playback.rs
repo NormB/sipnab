@@ -555,6 +555,7 @@ mod tests {
             ssrc: 0x1111_2222,
             src: SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 4000),
             dst: SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 4002),
+            session: 0,
         };
         let hdr = RtpHeader {
             version: 2,

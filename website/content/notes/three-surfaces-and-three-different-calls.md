@@ -1,112 +1,133 @@
 +++
-title = "Three surfaces, three different calls"
+title = "The sipnab.com homepage demos and the /analyze sample showed different calls"
 date = 2026-09-01
-description = "The homepage still, the animation it swaps to, and the sample /analyze offers were three separate captures. Every asset was valid, every gate was green, and no diff put the three facts side by side."
+updated = 2026-10-11
+description = "Why the homepage picture, the homepage animation and the sample call on the /analyze page did not all come from one capture until 0.5.142, and the test that now keeps them on one capture."
 
 [extra]
 kind = "postmortem"
 +++
 
-A visitor lands on sipnab.com, watches the terminal animation on the homepage,
-clicks through to `/analyze`, and presses "Load a sample call".
+## In short
 
-Until 2026-09-01 those were three different captures:
+The sipnab.com homepage shows a still picture of sipnab, which changes to an
+animation once the animation has loaded. The site's `/analyze` page offers a
+sample call to try. Until 2026-08-31 these three came from three different
+captured calls, so a visitor saw the picture change to a different call and
+was then offered a third. All three now use one capture, and a test fails if
+they ever differ again.
 
-| surface | capture |
-|---|---|
-| the hero still | `register-invite-reinvite-bye.pcap` |
-| the animation it swaps to | `sip-rtp-g711.pcap` |
-| the sample `/analyze` fetches | `demos/sample-call.pcap` |
+## What happened
 
-The still and the animation come from two recordings of two different calls, so
-the page appears to cut between them as the animation loads. Then the tool the
-page is demonstrating hands the visitor a third call.
+A visitor's path through the site is: open the homepage, watch the animation,
+go to `/analyze`, and press "No capture handy? Load a sample call". Each of
+these comes from a capture file (a recording of network traffic):
 
-## Everything was valid
+- `demos/hero.tape` records the homepage still picture;
+- `demos/01-intro.tape` records the animation that replaces it;
+- the `/analyze` sample is the file `website/static/demos/sample-call.pcap`,
+  which `website/static/js/analyze.js` downloads.
 
-This is the part worth being precise about, because it decides what kind of fix
-is possible.
+The `.tape` files are scripts for VHS, a program that runs terminal commands
+and records the screen. Each script runs `sipnab -I <capture>`.
 
-Every asset existed. Every `.tape` rendered. Every capture parsed. Every link
-resolved. Every gate in the repository was green, and correctly so — nothing
-violated a rule.
+Before 2026-08-31, `hero.tape` ran sipnab on
+`tests/pcap-samples/register-invite-reinvite-bye.pcap`, `01-intro.tape` ran it
+on `tests/pcap-samples/sip-rtp-g711.pcap`, and `/analyze` offered
+`sample-call.pcap`. The picture and the animation showed two different calls,
+and the sample was a third.
 
-What was wrong was an **agreement** between three files, and nothing expressed
-it. The three facts live in a `.tape`, an `.html` template and a `.js` fetch.
-No diff puts them side by side, and no reviewer reading any one of the three
-sees anything out of place.
+On 2026-08-31 commit 70ec075d (first included in v0.5.140) moved the still
+picture to `sample-call.pcap`. It did not change the animation, which a
+different file sets, so from then until 2026-09-01 the picture and the sample
+agreed and the animation did not.
 
-A half-fix had already shipped for exactly that reason. On 2026-08-31 somebody
-pointed the hero still at a new capture and left the animation pointing at the
-old one, because the two values live in different files and only one of them
-was on screen.
+On 2026-09-01 commit a9aaf57a (first included in v0.5.142) moved the animation
+to `sample-call.pcap` as well.
 
-## Expressing the agreement
+## Why it happened
 
-`tests/demo_capture_agreement_test.rs` is seven tests and reads three files.
-The two that matter state the agreement directly:
+No test compared the three capture names. The requirement that all three
+show the same call was not written down anywhere a test could read. The facts
+live in separate files: the two `.tape` scripts name the captures they record,
+the `index.html` template chooses which recordings the homepage shows, and
+`analyze.js` names the sample. A change to one of these files does not show
+the others.
 
-```rust
-assert!(
-    shown.ends_with(&offered) || offered.ends_with(&shown),
-    "the homepage animation shows {shown} ({tape_name}) and /analyze offers \
-     {offered}. A visitor who watches the video and clicks through is handed \
-     a different call than the one they just saw."
-);
+## What changed
+
+All three now use `website/static/demos/sample-call.pcap`. Both `.tape` files
+contain this line:
+
+```text
+Type "sipnab -I website/static/demos/sample-call.pcap"
 ```
 
-and
+`tests/demo_capture_agreement_test.rs` (added in a9aaf57a) reads the
+homepage template, every `.tape` file under `demos/` and `analyze.js`, and
+fails when:
 
-```rust
-assert_eq!(
-    still, anim,
-    "the hero still comes from {still} and the animation it swaps to comes \
-     from {anim} ({anim_tape}). The page would cut between two different \
-     calls as the animation loads."
-);
+- the animation's capture differs from the `/analyze` sample
+  (`the_homepage_animation_and_the_analyze_sample_use_one_capture`);
+- the still picture's capture differs from the animation's
+  (`the_hero_still_and_the_hero_animation_use_one_capture`);
+- a `.tape` file names a capture that does not exist, or one that is not
+  committed to the repository
+  (`every_demo_tape_drives_a_capture_that_exists`,
+  `no_demo_tape_drives_an_uncommitted_capture`). Given a capture that does
+  not exist, sipnab prints an error such as
+  `-I/--input: 'tests/pcap-samples/does-not-exist.pcap' does not exist` and
+  exits, so a script that names a missing capture records that error instead
+  of a call.
+
+The test reads the capture name only from the argument after `-I`, so a path
+mentioned in a comment in a `.tape` file is not mistaken for the capture.
+
+## What you can check yourself
+
+The sample call the site offers is in the repository. This lists what it
+contains (seven SIP dialogs, one of them a call with two RTP streams):
+
+```bash
+sipnab -N -I website/static/demos/sample-call.pcap --report --no-cli-print
 ```
 
-Both messages describe what a **visitor** experiences rather than which
-constant disagrees with which. That matters when somebody hits this in six
-months and has to decide whether it is a real problem.
+```text
+Call-ID                          From           To             State        Code   Duration   Msgs   PDD      Tags            
+-------------------------------------------------------------------------------------------------------------------------
+reg-alice-4f2a19@192.0.2.10      alice          alice          Registered   200    0s         4      -        -               
+reg-bob-7c3d02@192.0.2.30        bob            bob            Expired      200    14s        8      -        -               
+sub-alice-mwi-2b81@192.0.2.10    alice          alice          Active       200    0s         3      -        -               
+sub-bob-blf-9e42@192.0.2.30      bob            bob            Pending      202    0s         3      -        -               
+sub-alice-pres-5c07@192.0.2.10   alice          alice          Terminated   200    14s        6      -        -               
+opt-8b7c02@192.0.2.20            pbx            alice          Completed    200    0s         2      -        -               
+call-2c9d47@192.0.2.10           alice          bob            Completed    200    8s         7      0.2s     -               
 
-## Reading a tape honestly
+RTP Streams:
+SSRC         PT   Codec    Clock  Source                Destination           Pkts    Lost   Loss%   Jitter   Dur    Kbps   
+--------------------------------------------------------------------------------------------------------------------------
+0x1a2b3c4d   0    PCMU     8000   192.0.2.10:10000      192.0.2.20:10002      300     0      0.0%    0ms      6s     64     
+0x5e6f7a8b   0    PCMU     8000   192.0.2.20:10002      192.0.2.10:10000      300     0      0.0%    0ms      6s     64     
+```
 
-Getting the capture out of a `.tape` needs care, and the helper says why:
+The site serves the same file at `https://sipnab.com/demos/sample-call.pcap`, and
+the first-steps guide uses it.
 
-> The `-I` argument and nothing else: a tape may mention other paths in its
-> comments, and a scan that matched those would report a capture the recording
-> never opened.
+## Terms used here
 
-A scanner that reports the wrong file confidently is worse than no scanner. It
-would have made the three surfaces look like they agreed.
+- **Capture (pcap)**: a file holding recorded network packets.
+- **SIP**: the signaling protocol that sets up and ends phone calls.
+- **Dialog**: sipnab's record of one SIP conversation, such as a call or a
+  registration.
+- **RTP**: the protocol that carries the audio of a call.
+- **VHS**: a program that runs a script of terminal commands and records the
+  screen as an image or animation.
+- **`.tape` file**: a VHS script.
+- **Template**: the file the site generator turns into a web page.
+- **Test**: an automated check that runs on every build and fails when the
+  rule it describes stops holding.
 
-Two more of the seven cover the failure that reports nothing at all. A tape
-naming a moved or deleted capture still renders: sipnab prints an error, and
-VHS faithfully records the error. The result is a plausible-looking demo of
-nothing, and only a person looking at the output would notice.
+## Related guides
 
-## The part that is about people
-
-That gap is also why somebody reported the video as updated while the shipped
-asset was still the old one.
-
-There was nothing to check against except memory. The assets were all valid,
-the tapes had all rendered, and the only thing that could have said "these
-three do not agree" was somebody remembering to compare three files by hand
-after the fact.
-
-A claim with nothing to verify it against is a claim about what somebody
-intended, and it reaches the person listening as a claim about what shipped.
-The tests are what makes that difference visible before the sentence gets
-written.
-
-## Worth stealing
-
-Look for facts that appear in more than one file and describe one thing. They
-do not show up in review, they do not show up in a diff, and they do not break
-anything until a user notices the mismatch.
-
-The gate for that class is cheap — three file reads and an equality — and its
-value is entirely in existing, because the alternative is a human comparing
-three files every time any one of them changes.
+- [Download a capture (uses the same sample call)](@/docs/first-cli-triage.md#1-download-a-capture)
+- [List the calls](@/docs/first-cli-triage.md#2-list-the-calls)

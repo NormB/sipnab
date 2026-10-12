@@ -1144,6 +1144,12 @@ fn limit_probes() -> Vec<LimitProbe> {
             waits_out_a_window: false,
         },
         LimitProbe {
+            key: "mcp_max_response_bytes",
+            enabled: cfg!(feature = "mcp"),
+            observe: probe_mcp_max_response_bytes,
+            waits_out_a_window: false,
+        },
+        LimitProbe {
             key: "mcp_max_wait_seconds",
             enabled: cfg!(feature = "mcp"),
             observe: probe_mcp_max_wait_seconds,
@@ -2059,6 +2065,115 @@ fn probe_mcp_max_body_bytes() -> Result<(String, String), TestError> {
 /// probe disabled, so it is never called.
 #[cfg(not(feature = "mcp"))]
 fn probe_mcp_max_body_bytes() -> Result<(String, String), TestError> {
+    Ok((String::new(), String::new()))
+}
+
+/// `mcp_max_response_bytes`: a page of eight dialogs against a 2048-byte
+/// response ceiling.
+///
+/// Driven over the MCP stdio server for the reason `mcp_max_body_bytes` is.
+/// The observation is `returned` on a `list_dialogs` page asked for with
+/// `limit: 8`, read only once the response says `source_exhausted: true`:
+/// a page read while the file is still loading holds fewer dialogs for a
+/// reason that has nothing to do with this key, and would make it look wired
+/// when it is not, or unwired when it is.
+#[cfg(feature = "mcp")]
+fn probe_mcp_max_response_bytes() -> Result<(String, String), TestError> {
+    fn rows_returned(
+        cfg: Option<&std::path::Path>,
+        pcap: &std::path::Path,
+    ) -> Result<String, TestError> {
+        use std::io::{BufRead, BufReader, Write};
+        let mut args: Vec<String> = vec![
+            "--mcp".into(),
+            "-N".into(),
+            "-I".into(),
+            pcap.to_str().ok_or("non-UTF-8 path")?.into(),
+            "--quiet".into(),
+        ];
+        match cfg {
+            Some(c) => {
+                args.push("--config".into());
+                args.push(c.to_str().ok_or("non-UTF-8 path")?.into());
+            }
+            None => args.push("--no-config".into()),
+        }
+        let mut child = std::process::Command::new(env!("CARGO_BIN_EXE_sipnab"))
+            .args(&args)
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::null())
+            .spawn()?;
+        let mut stdin = child.stdin.take().ok_or("stdin")?;
+        let mut out = BufReader::new(child.stdout.take().ok_or("stdout")?);
+        let send =
+            |w: &mut std::process::ChildStdin, v: serde_json::Value| -> std::io::Result<()> {
+                writeln!(w, "{v}")?;
+                w.flush()
+            };
+        send(
+            &mut stdin,
+            serde_json::json!({
+            "jsonrpc":"2.0","id":1,"method":"initialize",
+            "params":{"protocolVersion":"2024-11-05","capabilities":{},
+                      "clientInfo":{"name":"probe","version":"0"}}}),
+        )?;
+        let mut line = String::new();
+        out.read_line(&mut line)?;
+        send(
+            &mut stdin,
+            serde_json::json!({"jsonrpc":"2.0","method":"notifications/initialized"}),
+        )?;
+
+        let mut answer = String::from("never exhausted");
+        'poll: for id in 2..202u64 {
+            send(
+                &mut stdin,
+                serde_json::json!({
+                "jsonrpc":"2.0","id":id,"method":"tools/call",
+                "params":{"name":"list_dialogs","arguments":{"limit":8}}}),
+            )?;
+            loop {
+                line.clear();
+                if out.read_line(&mut line).unwrap_or(0) == 0 {
+                    break 'poll;
+                }
+                let Ok(v) = serde_json::from_str::<serde_json::Value>(&line) else {
+                    continue;
+                };
+                if v["id"] != serde_json::json!(id) {
+                    continue;
+                }
+                let text = v["result"]["content"][0]["text"].as_str().unwrap_or("");
+                let page: serde_json::Value = serde_json::from_str(text).unwrap_or_default();
+                if page["source_exhausted"] == serde_json::json!(true) {
+                    answer = format!(
+                        "returned={} truncated_by={}",
+                        page["returned"], page["truncated_by"]
+                    );
+                    break 'poll;
+                }
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+        let _ = terminate(&mut child);
+        Ok(answer)
+    }
+
+    let dir = tempfile::tempdir()?;
+    let pcap = write_multi_call_pcap(&dir, 8)?;
+    let cfg = write_config(&dir, "[limits]\nmcp_max_response_bytes = 2048\n")?;
+    Ok((
+        rows_returned(None, &pcap)?,
+        rows_returned(Some(&cfg), &pcap)?,
+    ))
+}
+
+/// Placeholder for a build without the `mcp` feature; the registry marks the
+/// probe disabled, so it is never called.
+#[cfg(not(feature = "mcp"))]
+fn probe_mcp_max_response_bytes() -> Result<(String, String), TestError> {
     Ok((String::new(), String::new()))
 }
 

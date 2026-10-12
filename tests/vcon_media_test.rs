@@ -161,7 +161,12 @@ fn stream(
     dropped: u64,
     span: TimeDelta,
 ) -> Result<RtpStream, TestError> {
-    let key = StreamKey { ssrc, src, dst };
+    let key = StreamKey {
+        ssrc,
+        src,
+        dst,
+        session: 0,
+    };
     let hdr = RtpHeader {
         version: 2,
         padding: false,

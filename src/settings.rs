@@ -439,6 +439,10 @@ pub const FLAGS: &[(&str, Link)] = &[
         Link::Key("limits", "mcp_max_findings", Merge::Override),
     ),
     (
+        "mcp-max-response-bytes",
+        Link::Key("limits", "mcp_max_response_bytes", Merge::Override),
+    ),
+    (
         "mcp-max-rows",
         Link::Key("limits", "mcp_max_rows", Merge::Override),
     ),
@@ -767,10 +771,6 @@ pub const FLAGS: &[(&str, Link)] = &[
         Link::Key("vcon_forward", "ca", Merge::Override),
     ),
     (
-        "vcon-forward-compat",
-        Link::Key("vcon_forward", "compat", Merge::Override),
-    ),
-    (
         "vcon-forward-done",
         Link::Key("vcon_forward", "done", Merge::Override),
     ),
@@ -809,6 +809,7 @@ pub const FLAGS: &[(&str, Link)] = &[
     ),
     ("vcon-max-inline-media", Link::Pending),
     ("vcon-out", Link::Input),
+    ("vcon-spool-status", Link::Action),
     ("wireshark", Link::PerRun),
     ("word", Link::PerRun),
     ("write-annotated", Link::Action),

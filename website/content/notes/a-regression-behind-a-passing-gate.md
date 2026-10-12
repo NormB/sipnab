@@ -1,90 +1,51 @@
 +++
-title = "A 27% regression hid behind a gate built to catch it"
+title = "Offline throughput regression in 0.5.118 to 0.5.121, missed by a stale benchmark baseline"
 date = 2026-08-21
-description = "sipnab shipped a quarter of its offline throughput away for ten releases. The benchmark gate ran on every one of them and passed. Here is why, and what the fix says about ratchets."
+updated = 2026-10-11
+description = "Why sipnab 0.5.118 to 0.5.121 read capture files more slowly than 0.5.117, why the benchmark check passed on all four releases, and what changed in 0.5.122."
 
 [extra]
 kind = "postmortem"
 +++
 
-sipnab's benchmarks page said 3.25M packets per second at four cores. On
-2026-08-21 the same machine, at full clock and 100% idle, measured **2.40M**
-from the released binary. The page had been wrong since 0.5.118, which is ten
-releases and about a month.
+## In short
 
-The interesting part is not the bug. A gate exists specifically to catch this,
-it ran on every one of those releases, and it passed every time.
+From 0.5.118 to 0.5.121, sipnab read capture files more slowly than 0.5.117
+did: a check that runs before reading loaded the whole file into memory first.
+A benchmark check exists to catch slowdowns like this, but it compared each
+release against a reference figure that nobody had updated for several
+releases, so it passed. 0.5.122 fixed the code and updated the reference
+figure, and 0.5.161 added a test that keeps the published figure and the
+reference figure equal.
 
-## Blaming the host, and getting it wrong
+## What happened
 
-The obvious suspect was the machine. The devboard that produced the August
-figure now also hosts a CI runner, five harness containers and a resident MCP
-server. So stop all of it, drop the page cache, measure again.
+sipnab 0.5.118 shipped on 2026-08-20. 0.5.119, 0.5.120 and 0.5.121 followed on
+2026-08-21, and 0.5.122 fixed the slowdown the same day. The 0.5.122 entry in
+`CHANGELOG.md` records the measurements, on a 128 MB benchmark capture read
+with four parallel workers (`--cores 4`):
 
-```text
-cores    pkts/s
-1        1.02M
-4        2.40M
-```
+| Version | Packets per second | Memory in use |
+|---|---:|---:|
+| 0.5.117 | 3.29M | 97 MiB |
+| 0.5.118 to 0.5.121 | 2.40M | 143 MiB |
+| 0.5.122 | 3.26M | 97 MiB |
 
-Identical. Stopping everything changed nothing, which kills the theory
-outright. That deserves saying plainly, because "the box was busy" is the
-comfortable answer and it stays available until somebody tests it.
+2.40M is 27% below 3.29M. The same entry records that every release from
+0.5.108 to 0.5.117 measured about 3.26M.
 
-Power mode came next, since the board sits at 120W with a MAXN mode available.
-Also wrong. `scaling_governor` read `performance`, `scaling_max_freq` equalled
-`cpuinfo_max_freq` at 2601 MHz, and uptime showed 33 days, so the mode had not
-moved since before the August run. The corpus held exactly 535,000 packets,
-which matches the divisor the harness takes.
+`bench/regression-gate.sh`, the benchmark check, ran on each of those four
+releases and passed each time.
 
-## The control was the bug
+## Why it happened
 
-The comparison had been 0.5.118 against 0.5.121. They agreed within 0.4%, and
-that agreement looked like "no regression".
+### Reading the whole file
 
-It was not. **0.5.118 was already the broken build.** Choosing it as the
-control put the baseline underneath the cliff, where everything looks flat.
-
-Downloading every released artifact in the window and measuring each one takes
-about two minutes and settles it:
-
-| release | pkts/s @ 4 cores |
-|---|---:|
-| 0.5.108 | 3.26M |
-| 0.5.109 to 0.5.117 | 3.23M to 3.28M |
-| **0.5.118** | **2.34M** |
-| 0.5.121 | 2.40M |
-
-One release, 28%. The August number was never wrong. The tool had stopped
-meeting it.
-
-## Two theories that died on contact
-
-The source delta between the tags covers five files.
-
-**The build environment.** 0.5.118's release workflow gained 124 lines, and the
-binary's feature list gained `plugins` and `bpf`. But `readelf -p .comment` on
-both artifacts shows the same Debian 12 GCC 12.2.0 and clang 22.1.0-rc2, and
-the same `GLIBC_2.34` floor. Same container, same toolchain.
-
-**The `plugins` feature.** `plugins` pulls in `wasmi`, and the release profile
-sets `lto = true, codegen-units = 1`. A bigger LTO graph genuinely can change
-how the optimizer inlines unrelated hot code. That is testable: build the same
-commit twice, once with `plugins` and once without.
-
-```text
-noplug   4 cores   2.35M
-plug     4 cores   2.39M
-```
-
-Neither is fast. Feature set exonerated.
-
-Building the v0.5.117 and v0.5.118 *sources* on the same machine reproduced the
-cliff, 3.29M against 2.39M, which put the cause back inside those five files.
-Resident memory moved with it, 99 MiB to 143 MiB, and that turned out to be the
-useful clue. Something allocated tens of megabytes that had not before.
-
-## What it was
+Before sipnab reads a capture file, it checks whether the file is a merged
+pcapng: a pcapng file whose recorded interfaces disagree, which the standard
+capture library cannot read. The function is `is_merged` in
+`src/capture/merged.rs`, and three call sites run it before sipnab reads the
+first packet. In 0.5.118 it began with:
 
 ```rust
 pub fn is_merged(path: &Path) -> bool {
@@ -97,88 +58,124 @@ pub fn is_merged(path: &Path) -> bool {
     }
 ```
 
-`is_merged` decides whether a capture is a pcapng whose interfaces disagree,
-which is a file libpcap declines to read. It pulls the **entire file into
-memory** and then rejects it on the first four bytes.
-
-Three call sites run it before anything reads a packet. So every offline run
-over an ordinary pcap loaded the whole capture into a heap `Vec`, compared four
-bytes, dropped it, and only then started work. On a 128 MB corpus that adds
-about 0.06 s to a 0.16 s run, which is the entire measured difference.
-
-The comment directly above the function reads:
+`std::fs::read` loads the whole file into memory. For an ordinary pcap file the
+first four bytes decide the answer, so every run over a pcap file loaded
+the entire capture, compared four bytes, discarded the copy, and then started
+reading packets. The comment above the function described the intended
+behavior:
 
 > Cheap: reads interface description blocks only, and stops at the first
-> disagreement. A single-interface file, the overwhelming majority, costs one
-> short read and takes the ordinary path untouched.
+> disagreement. A single-interface file — the overwhelming majority — costs
+> one short read and takes the ordinary path untouched.
 
-The comment describes the intended design correctly. `std::fs::read` is simply
-not that design. Review does not catch this, because the sentence and the code
-look like they agree.
+The code did not match the comment, and no test measured how much the function
+read.
 
-## Why the gate passed
+### Comparing against an old figure
 
-`bench/regression-gate.sh` exists because a 40% regression once shipped in
-0.5.84 and survived four releases. It compares four-core throughput against
-`bench/baseline.json` with an 80% floor.
+`bench/regression-gate.sh` compares four-worker throughput against the figure
+in `bench/baseline.json` and fails below 80% of it (`floor_pct`). At 0.5.121
+that file still held 2,280,000 packets per second, measured on 0.5.104. Release
+0.5.108 had raised real throughput to about 3.30M. The benchmarks page changed
+to the new figure at that time, and the baseline file did not.
 
-The baseline recorded **2,280,000**, measured on 0.5.104.
+So the check compared 2.40M against 2.28M, a result of 105%, and passed. With a
+baseline 31% below the real figure, the check would have passed any result
+above 1.82M (80% of 2.28M), a drop of up to about 45% from 3.30M.
 
-0.5.108 then raised the real figure to 3.30M by mapping the capture file
-instead of reading it. The benchmarks page moved that day. The baseline did
-not.
+## What changed
 
-So when the tool fell to 2.40M, the gate compared it against a four-release-old
-number and got **105% of baseline**. Green. A 20% band had quietly become a 31%
-band, and the regression fitted through the gap.
+- **The code.** `is_merged` now opens the file and reads four bytes first. When
+  the first four bytes are not the pcapng marker, it returns without reading
+  anything else. sipnab still reads a real pcapng file in full,
+  because its interface blocks may appear anywhere in it.
+- **A test of the effect.**
+  `a_classic_pcap_is_rejected_without_reading_the_capture` in
+  `src/capture/merged.rs` passes an input made of the four-byte ordinary pcap
+  marker and 1 MiB of filler through a reader that counts bytes, and fails if
+  the check reads more than 16 of them.
+- **The baseline.** 0.5.122 set the baseline to 3.25M, the lowest of three
+  measurement runs, so the 80% floor (2.60M) cannot
+  sit above a figure the benchmark host produces. 2.40M is below that floor.
+  The current baseline is 3.52M, measured on 2026-10-11, with a floor of 2.82M.
+- **One figure, enforced by a test.** The benchmarks page and the baseline file
+  are now updated together, and
+  `benchmarks_pages_headline_matches_the_committed_baseline` in
+  `tests/site_journey_test.rs` fails if the page's headline figure and the
+  baseline differ.
 
-That file's own comment had already predicted this, in writing:
+## What you can check yourself
 
-> A stale baseline does not merely under-report. It silently widens the band it
-> advertises.
+These commands run in a clone of the sipnab repository with its tags.
 
-The paragraph was right, nobody acted on it, and the same file went stale one
-release after somebody wrote it down.
+Release dates of the affected versions, from the changelog:
 
-## The two fixes
-
-The code fix is small. Check the magic against four bytes before reading
-anything else. A real pcapng still reads in full, because interface blocks may
-legally appear anywhere in a section and a bounded guess that fell short would
-mis-detect one. Four cores returns to 3.26M and RSS to 97 MiB.
-
-The test asserts the **effect** rather than the shape. A counting reader takes
-a 1 MiB buffer whose first four bytes say "classic pcap":
-
-```rust
-assert!(!is_merged_in(&mut r), "a classic pcap is not a merged pcapng");
-assert!(r.read <= 16, "is_merged read {} bytes of a {}-byte capture it \
-    rejects on the first four", r.read, file.len());
+```bash
+grep -n -E '^## \[0\.5\.(11[789]|12[0-2])\]' CHANGELOG.md
 ```
 
-Before the fix that reports `read 1048580 bytes of a 1048580-byte capture`. A
-test asserting "returns false" would have passed the whole time.
+```text
+8347:## [0.5.122] - 2026-08-21
+8395:## [0.5.121] - 2026-08-21
+8466:## [0.5.120] - 2026-08-21
+8536:## [0.5.119] - 2026-08-21
+8650:## [0.5.118] - 2026-08-20
+8736:## [0.5.117] - 2026-08-20
+```
 
-Writing it also surfaced that **nothing tested `is_merged` in the positive
-direction at all**. Every existing test drove the reader struct directly, so a
-version that always answered "no" passed the suite while quietly routing every
-merged capture back to the libpcap reader that cannot open one. A mutation
-confirms it: stubbing the function to `false` leaves three tests green and
-fails only the new one.
+The baseline and floor percentage the check used at 0.5.121:
 
-The second fix matters more. The baseline now records 3.25M, the *lowest* of
-three replicates rather than the median, so the floor it derives cannot sit
-above a figure the host actually produces. That gives a 2.60M floor, which
-2.40M trips.
+```bash
+git show v0.5.121:bench/baseline.json | jq '.cores_4_pkts_per_s, .floor_pct'
+```
 
-## What to take from it
+```text
+2280000
+80
+```
 
-A ratchet is only as good as the day somebody last moved it. This one carried a
-correct, well-argued warning about staleness and went stale anyway, because
-raising the published number and raising the gate looked like two separate
-chores instead of one event. They are one event, and the baseline file now says
-so.
+The baseline after the fix:
 
-When a benchmark disagrees with a page, check that the **control** sits on the
-right side of the cliff before concluding anything. Two builds agreeing tells
-you nothing when the cliff sits under both of them.
+```bash
+git show v0.5.122:bench/baseline.json | jq '.cores_4_pkts_per_s'
+```
+
+```text
+3250000
+```
+
+The baseline and floor percentage today:
+
+```bash
+jq '.cores_4_pkts_per_s, .floor_pct' bench/baseline.json
+```
+
+```text
+3520000
+80
+```
+
+## Terms used here
+
+- **Throughput**: how many packets per second sipnab processes when it reads a
+  capture file.
+- **Capture file, pcap, pcapng**: files of recorded network packets. pcap is
+  the older format and pcapng the newer one, which can record several network
+  interfaces in one file.
+- **Benchmark**: a repeatable speed measurement on a fixed input.
+- **Baseline**: the committed reference figure that the check compares a new
+  measurement against.
+- **Gate** or **check**: an automated test that must pass before a change is
+  accepted.
+- **Regression**: a change that makes a later version slower, or makes
+  something stop working that worked in an earlier version.
+- **Memory in use** (resident memory, RSS): the memory the process actually
+  occupies.
+- **Tag**: the name git gives a specific released version of the source.
+- **jq**: a command-line program that selects fields from JSON.
+
+## Related guides
+
+- [Multi-core offline reconstruction](@/docs/benchmarks.md#multi-core-offline-reconstruction)
+- [Test host and method](@/docs/benchmarks.md#test-host-method)
+- [Reproduce the benchmarks](@/docs/benchmarks.md#reproduce)

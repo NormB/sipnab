@@ -2231,6 +2231,7 @@ mod interval_quality_tests {
             ssrc: 0x1234_5678,
             src: addr(20000),
             dst: addr(30000),
+            session: 0,
         };
         let mut stream = RtpStream::new(key, &header, chrono::Utc::now());
         // A stream whose LIFETIME figures are excellent.
@@ -2382,6 +2383,7 @@ mod interval_quality_tests {
                 ssrc: 0x1234_5678,
                 src: addr(20000),
                 dst: addr(30000),
+                session: 0,
             },
             &header,
             chrono::Utc::now(),
