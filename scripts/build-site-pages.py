@@ -65,10 +65,10 @@ PAGES: list[tuple[str, str, str, str, int, str]] = [
         "metrics.md",
         "Prometheus metrics",
         "Scrape Prometheus metrics",
-        # 34, not 12: weight only has to be UNIQUE
-        # (`docs_page_weights_are_unique_and_descriptions_present`), and 12 is
-        # api-clients.md. Sidebar order comes from the explicit path lists in
-        # the nav_group macros, where this sits between the REST API and
+        # Any weight no other page uses: weight only has to be UNIQUE
+        # (`docs_page_weights_are_unique_and_descriptions_present`). Sidebar
+        # order comes from the explicit path lists in the nav_group macros,
+        # where this sits between the REST API and
         # Integrations -- next to HEP, because both are how sipnab plugs into a
         # monitoring estate, while staying separate pages because one carries
         # SIP and the other carries numbers.
@@ -330,10 +330,10 @@ PAGES: list[tuple[str, str, str, str, int, str]] = [
         "tuning-capture.md",
         "Tuning capture on a busy server",
         "Stop a capture dropping packets",
-        # 24, not 12: weight 12 was already taken by api-clients.md, and
-        # `docs_page_weights_are_unique_and_descriptions_present` requires it to
-        # be unique. Ordering in the sidebar comes from the explicit path lists
-        # in the nav_group macros, not from this number.
+        # A weight no other page uses:
+        # `docs_page_weights_are_unique_and_descriptions_present` requires
+        # every weight to be unique. Ordering in the sidebar comes from the
+        # explicit path lists in the nav_group macros, not from this number.
         26,
         "Size the kernel capture ring, read the kernel and interface drop "
         "counters, tell the two apart, and decide between the any device "
@@ -353,7 +353,7 @@ PAGES: list[tuple[str, str, str, str, int, str]] = [
         "vcon-harness.md",
         "The vCon capture stack",
         "Build a vCon capture stack",
-        # 38, the next free weight on the SITE side, which is where
+        # A weight free on the SITE side, which is where
         # `docs_page_weights_are_unique_and_descriptions_present` reads.
         38,
         "Build a two-point vCon capture stack (OpenSIPS, rtpengine, sipnab "
