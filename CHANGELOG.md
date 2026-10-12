@@ -8,6 +8,19 @@ sipnab is pre-1.0: the public API and the CLI surface are not stable, and a
 breaking change may land in any release. Breaking changes are called out in the
 entry that carries them.
 
+## [Unreleased]
+
+### Fixed
+
+- **CI and the site deploy survive one failed request to github.com.** The
+  checks of #471 failed when curl got HTTP 504 fetching the Pagefind release,
+  and the 0.5.212 site deploy failed twice when one read of GitHub's API
+  returned an error. Every download in `pages.yml` and `quality.yml` now
+  retries five times with a bound on each attempt, as the bpf-linker download
+  in `release.yml` already did, and a test requires it of every `curl` in CI.
+  The deploy's wait for CI's test output treats a failed API read as a reason
+  to poll again within its deadline, and logs the error text `gh` printed.
+
 ## [0.5.212] - 2026-10-12
 
 ### Added

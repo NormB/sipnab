@@ -143,3 +143,48 @@ def test_gives_up_at_the_deadline_while_the_run_is_still_going(tmp_path):
     res = _run(tmp_path, bindir, "--deadline-secs", "0")
     assert res.returncode != 0
     assert "deadline" in res.stderr
+
+
+def _flaky(bindir, tmp_path, failures):
+    """Wrap the stub so its first `failures` API reads fail as GitHub's
+    transient errors do: exit 1 with gh's message on stderr."""
+    real = bindir / "gh"
+    real.rename(bindir / "gh-real")
+    (tmp_path / "left").write_text(str(failures))
+    real.write_text(
+        f"""#!{sys.executable}
+import os, pathlib, sys
+d = pathlib.Path({str(tmp_path)!r})
+left = int((d / "left").read_text())
+if sys.argv[1] == "api" and left > 0:
+    (d / "left").write_text(str(left - 1))
+    sys.stderr.write("gh: Server Error (HTTP 502)\\n")
+    sys.exit(1)
+os.execv({str(bindir / "gh-real")!r}, [{str(bindir / "gh-real")!r}, *sys.argv[1:]])
+"""
+    )
+    real.chmod(real.stat().st_mode | stat.S_IEXEC)
+
+
+def test_a_failed_api_read_is_retried_not_fatal(tmp_path):
+    # The deploy of 0c55cd1f on 2026-10-12 failed on ONE `gh api` error while
+    # it had most of an hour left to poll, and printed only a traceback.
+    bindir = _stub_gh(
+        tmp_path,
+        [{"id": 42, "status": "completed", "conclusion": "success", "head_sha": "abc123"}],
+        [{"name": "suite-output", "id": 9, "expired": False}],
+    )
+    _flaky(bindir, tmp_path, 3)
+    res = _run(tmp_path, bindir)
+    assert res.returncode == 0, res.stderr
+    assert (tmp_path / "out" / "test-output.txt").exists()
+    assert "HTTP 502" in res.stderr, "gh's own error text must reach the log"
+
+
+def test_api_reads_that_keep_failing_stop_at_the_deadline(tmp_path):
+    bindir = _stub_gh(tmp_path, [], [])
+    _flaky(bindir, tmp_path, 10**6)
+    res = _run(tmp_path, bindir, "--deadline-secs", "0")
+    assert res.returncode != 0
+    assert "deadline" in res.stderr and "HTTP 502" in res.stderr
+    assert "Traceback" not in res.stderr

@@ -49,8 +49,17 @@ def next_action(run, artifact_names):
     return "wait", f"CI run {run['id']} is {run.get('status')}"
 
 
+class GhError(Exception):
+    """A `gh` call that exited non-zero; the message is gh's own stderr."""
+
+
 def gh_json(*args):
-    out = subprocess.run(["gh", *args], check=True, capture_output=True, text=True)
+    out = subprocess.run(["gh", *args], capture_output=True, text=True)
+    if out.returncode != 0:
+        raise GhError(
+            f"`gh {' '.join(args)}` exited {out.returncode}: "
+            f"{out.stderr.strip() or '(no message)'}"
+        )
     return json.loads(out.stdout)
 
 
@@ -79,9 +88,16 @@ def main(argv=None) -> int:
 
     deadline = time.monotonic() + args.deadline_secs
     while True:
-        run = ci_run(args.repo, args.sha)
-        names = live_artifacts(args.repo, run["id"]) if run else []
-        action, reason = next_action(run, names)
+        # A failed read of GitHub's API (a 5xx, a dropped connection) is a
+        # reason to poll again, not to fail the deploy: the deadline below
+        # already bounds how long this waits. It failed the deploy of
+        # 0c55cd1f on 2026-10-12 on one such error.
+        try:
+            run = ci_run(args.repo, args.sha)
+            names = live_artifacts(args.repo, run["id"]) if run else []
+            action, reason = next_action(run, names)
+        except GhError as e:
+            action, reason = "wait", f"reading GitHub's API failed, polling again: {e}"
         print(f"fetch-ci-suite-output: {reason}", file=sys.stderr)
         if action == "download":
             subprocess.run(
