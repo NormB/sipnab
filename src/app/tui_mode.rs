@@ -1496,7 +1496,7 @@ impl TuiMedia {
                         std::path::Path::new(keyfile),
                         backend,
                     )
-                    .map_err(|e| tracing::error!("Failed to load --srtp-keys {keyfile}: {e}"))
+                    .map_err(|e| tracing::error!("Failed to load --srtp-keys {keyfile}: {e:#}"))
                     .ok(),
                     // No key file, but SDES keys may still arrive via SDP.
                     None => Some(crate::rtp::srtp::SrtpContext::new(Vec::new(), backend)),
@@ -1507,7 +1507,7 @@ impl TuiMedia {
                     std::path::Path::new(keylog),
                     crate::crypto::default_backend(),
                 )
-                .map_err(|e| tracing::error!("Failed to load --dtls-keylog {keylog}: {e}"))
+                .map_err(|e| tracing::error!("Failed to load --dtls-keylog {keylog}: {e:#}"))
                 .ok()
             });
             Self { srtp, dtls }
@@ -1627,6 +1627,30 @@ pub fn tui_pipeline_options(
 
 #[cfg(test)]
 mod tests {
+    /// The TUI logs the OS reason for an unreadable `--srtp-keys` or
+    /// `--dtls-keylog`, not only the loader's context line.
+    #[cfg(all(feature = "native", feature = "tls"))]
+    #[test]
+    fn unreadable_media_key_files_are_logged_with_the_os_reason() {
+        let cli = crate::cli::Cli::parse_from_args([
+            "sipnab",
+            "--srtp-keys",
+            "/nonexistent/s.keys",
+            "--dtls-keylog",
+            "/nonexistent/d.log",
+        ]);
+        let logs = crate::test_utils::capture_logs(tracing::Level::ERROR, || {
+            let _ = super::TuiMedia::from_cli(&cli);
+        });
+        for flag in ["--srtp-keys", "--dtls-keylog"] {
+            let line = logs.lines().find(|l| l.contains(flag)).unwrap_or_default();
+            assert!(
+                line.contains("No such file or directory"),
+                "{flag}: {logs:?}"
+            );
+        }
+    }
+
     /// A processing-thread panic is logged with the panic's own message.
     ///
     /// The payload of a `join` error is a `Box<dyn Any + Send>`, and it was

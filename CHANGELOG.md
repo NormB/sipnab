@@ -42,6 +42,11 @@ entry that carries them.
   no config file involved. It now prints "Invalid --ws-portrange: …", as
   `--portrange` does. The exit code is unchanged: 2 for the flag, 1 for
   `[capture] ws_ports`.
+- **An unreadable `--tls-key`, `--srtp-keys` or `--dtls-keylog` names the OS
+  reason.** The refusal named the file and stopped, for example "Failed to
+  load --tls-key key.pem: reading TLS private key from key.pem", without
+  "No such file or directory" or "Permission denied". `--keylog` already gave
+  the reason.
 
 ## [0.5.212] - 2026-10-12
 

@@ -3294,7 +3294,7 @@ fn load_tls_rsa_key(
     let k = crate::capture::rsa_key::RsaKey::from_pem_file(std::path::Path::new(keyfile)).map_err(
         |e| crate::app::bootstrap::PlanError {
             exit_code: 1,
-            message: format!("Failed to load --tls-key {keyfile}: {e}"),
+            message: format!("Failed to load --tls-key {keyfile}: {e:#}"),
         },
     )?;
     d.set_rsa_key(k);
@@ -3376,7 +3376,7 @@ fn load_srtp_context(
     )
     .map_err(|e| crate::app::bootstrap::PlanError {
         exit_code: 1,
-        message: format!("Failed to load --srtp-keys {keyfile}: {e}"),
+        message: format!("Failed to load --srtp-keys {keyfile}: {e:#}"),
     })?;
     tracing::info!(
         "SRTP decryption active: {} key(s) from {keyfile}",
@@ -3410,7 +3410,7 @@ fn load_dtls_extractor(
     )
     .map_err(|e| crate::app::bootstrap::PlanError {
         exit_code: 1,
-        message: format!("Failed to load --dtls-keylog {keylog}: {e}"),
+        message: format!("Failed to load --dtls-keylog {keylog}: {e:#}"),
     })?;
     tracing::info!(
         "DTLS-SRTP active: {} keylog entr(ies) from {keylog}",
@@ -16051,6 +16051,38 @@ mod run_state_builder_tests {
                 .starts_with("Failed to load --tls-key /nonexistent/key.pem: "),
             "{}",
             err.message
+        );
+        // The OS reason, which sits under the anyhow context. Formatting the
+        // error with `{e}` printed the context alone, so the operator was
+        // told the file could not be read and never why.
+        assert!(
+            err.message.contains("No such file or directory"),
+            "{}",
+            err.message
+        );
+        Ok(())
+    }
+
+    /// An unreadable `--srtp-keys` or `--dtls-keylog` names the OS reason,
+    /// which sits under the loader's anyhow context and `{e}` dropped.
+    #[cfg(feature = "tls")]
+    #[test]
+    fn unreadable_srtp_and_dtls_key_files_name_the_os_reason() -> Result<(), TestError> {
+        let srtp = load_srtp_context(&cli(&["--srtp-keys", "/nonexistent/s.keys"]))
+            .err()
+            .ok_or("an unreadable --srtp-keys is refused")?;
+        assert!(
+            srtp.message.contains("No such file or directory"),
+            "{}",
+            srtp.message
+        );
+        let dtls = load_dtls_extractor(&cli(&["--dtls-keylog", "/nonexistent/d.log"]))
+            .err()
+            .ok_or("an unreadable --dtls-keylog is refused")?;
+        assert!(
+            dtls.message.contains("No such file or directory"),
+            "{}",
+            dtls.message
         );
         Ok(())
     }

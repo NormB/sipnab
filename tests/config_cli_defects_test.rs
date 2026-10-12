@@ -1187,3 +1187,37 @@ fn a_bad_ws_portrange_is_a_flag_error_and_a_bad_key_a_config_error() -> Result<(
     );
     Ok(())
 }
+
+/// Run the binary on `args` with no config file and `SIPNAB_LOG` unset,
+/// returning its exit code and stderr.
+fn run_binary(args: &[&str]) -> Result<(i32, String), TestError> {
+    let out = std::process::Command::new(env!("CARGO_BIN_EXE_sipnab"))
+        .args(["-N", "--no-config"])
+        .args(args)
+        .env("NO_COLOR", "1")
+        .env_remove("SIPNAB_LOG")
+        .output()?;
+    Ok((
+        out.status.code().unwrap_or(-1),
+        String::from_utf8_lossy(&out.stderr).into_owned(),
+    ))
+}
+
+/// An unreadable `--tls-key`, `--srtp-keys` or `--dtls-keylog` names the OS
+/// reason, not only the file, with exit 1.
+#[test]
+fn an_unreadable_key_file_names_the_os_reason() -> Result<(), TestError> {
+    for flag in ["--tls-key", "--srtp-keys", "--dtls-keylog"] {
+        let (code, stderr) = run_binary(&["-I", SIP_CALL, flag, "/nonexistent/key"])?;
+        assert_eq!(code, 1, "{flag}: {stderr}");
+        let line = stderr
+            .lines()
+            .find(|l| l.contains(&format!("Failed to load {flag} /nonexistent/key: ")))
+            .ok_or_else(|| format!("{flag}: no refusal line: {stderr}"))?;
+        assert!(
+            line.ends_with("No such file or directory (os error 2)"),
+            "{line}"
+        );
+    }
+    Ok(())
+}
