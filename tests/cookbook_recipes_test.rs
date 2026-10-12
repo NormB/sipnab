@@ -239,3 +239,102 @@ fn an_exemption_without_a_stated_reason_is_refused() -> Result<(), TestError> {
     );
     Ok(())
 }
+
+/// Problems with the numbered recipes in `page`: a `## N.` heading out of
+/// sequence, a lettered `## Nb.` recipe not directly after recipe N, or an
+/// unnumbered `## ` section between two numbered recipes.
+///
+/// Readers and the "What do you want to do?" index find a recipe by its
+/// number, so the numbers run 1, 2, 3 in page order, and every unnumbered
+/// section sits before the first recipe or after the last.
+fn recipe_order_problems(page: &str) -> Vec<String> {
+    let mut problems = Vec::new();
+    let mut expected = 1u32;
+    let mut unnumbered_since_last: Option<String> = None;
+    let mut in_fence = false;
+    for line in page.lines() {
+        if line.trim_start().starts_with("```") {
+            in_fence = !in_fence;
+            continue;
+        }
+        if in_fence {
+            continue;
+        }
+        let Some(heading) = line.strip_prefix("## ") else {
+            continue;
+        };
+        let label = heading.split_once(". ").map(|(n, _)| n);
+        // A lettered recipe (`13b.`) belongs to the numbered one it follows.
+        if let Some((base, letter)) =
+            label.and_then(|l| l.split_at_checked(l.len().checked_sub(1)?))
+            && letter.chars().all(|c| c.is_ascii_lowercase())
+            && let Ok(n) = base.parse::<u32>()
+        {
+            if n + 1 != expected || unnumbered_since_last.is_some() {
+                problems.push(format!("recipe {base}{letter} does not follow recipe {n}"));
+            }
+            continue;
+        }
+        let number = label.and_then(|n| n.parse::<u32>().ok());
+        match number {
+            Some(n) => {
+                if let Some(between) = unnumbered_since_last.take() {
+                    problems.push(format!(
+                        "`## {between}` sits between recipe {} and recipe {n}",
+                        expected - 1
+                    ));
+                }
+                if n != expected {
+                    problems.push(format!("recipe {n} appears where {expected} belongs"));
+                }
+                expected = n + 1;
+            }
+            None if expected > 1 => {
+                unnumbered_since_last.get_or_insert_with(|| heading.to_string());
+            }
+            None => {}
+        }
+    }
+    problems
+}
+
+/// The cookbook's recipes are numbered 1 to N in page order, with no other
+/// section between two of them.
+#[test]
+fn cookbook_recipes_are_numbered_in_page_order() -> Result<(), TestError> {
+    let page =
+        std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("docs/examples.md"))?;
+    let problems = recipe_order_problems(&page);
+    assert!(
+        problems.is_empty(),
+        "docs/examples.md recipe order:\n{}",
+        problems.join("\n")
+    );
+    Ok(())
+}
+
+/// The order predicate accepts a contiguous run with sections before and
+/// after it, and reports a gap, a repeat and a section inside the run.
+#[test]
+fn the_recipe_order_predicate_reports_gaps_and_interlopers() -> Result<(), TestError> {
+    let ok = "## Intro\n## 1. A\n## 2. B\n```\n## 9. in a fence\n```\n## Next steps\n";
+    assert!(recipe_order_problems(ok).is_empty());
+    assert_eq!(
+        recipe_order_problems("## 1. A\n## 3. C\n"),
+        ["recipe 3 appears where 2 belongs"]
+    );
+    assert_eq!(
+        recipe_order_problems("## 1. A\n## 1. A again\n"),
+        ["recipe 1 appears where 2 belongs"]
+    );
+    assert!(recipe_order_problems("## 1. A\n## 1b. A again\n## 2. B\n").is_empty());
+    assert_eq!(
+        recipe_order_problems("## 1. A\n## 2. B\n## 1b. late\n"),
+        ["recipe 1b does not follow recipe 1"]
+    );
+    assert_eq!(
+        recipe_order_problems("## 1. A\n## Lookup\n## 2. B\n"),
+        ["`## Lookup` sits between recipe 1 and recipe 2"]
+    );
+    Ok(())
+}

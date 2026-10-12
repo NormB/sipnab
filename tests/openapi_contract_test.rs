@@ -5,9 +5,9 @@
 //!
 //! # The gap this exists to close
 //!
-//! `docs/rest-api.md` is 1,539 hand-written lines describing twelve
-//! operations: their parameters, their response shapes, and their status
-//! codes. Nothing compared it to the router. A route added without a heading
+//! `docs/rest-api.md` is a hand-written reference describing every
+//! operation: its parameters, its response shapes, and its status codes.
+//! Nothing compared it to the router. A route added without a heading
 //! was invisible to a reader; a heading left behind after a route moved sent
 //! one at a 404. Both are the ordinary way an API reference rots, and both
 //! were reachable with the whole suite green.
