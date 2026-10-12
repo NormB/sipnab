@@ -371,7 +371,7 @@ The first command should print a diagnosis object like:
 
 ## 5. Filter for the five things you look for most
 
-The filter DSL has 33 fields and 7 operators. These five cover most operational triage:
+The filter DSL has 32 fields and 8 operators. These five cover most operational triage:
 
 Slow setup — every dialog that took more than 3 seconds from INVITE to 200 OK:
 

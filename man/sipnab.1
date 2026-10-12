@@ -167,7 +167,7 @@ Never ask for an archive password on the terminal. Without it, a locked member n
 Non\-interactive mode (no TUI). Required for batch/output flags.
 .TP
 \fB\-c\fR, \fB\-\-calls\-only\fR
-Show only SIP dialogs (calls), not standalone messages.
+Show only calls: dialogs an INVITE started. The dialog outputs apply it, and the TUI opens with only INVITE checked in its filter dialog. Like \-\-filter, it does not narrow what \-O writes.
 .TP
 \fB\-t\fR, \fB\-\-telephone\-event\fR
 Decode telephone\-event (DTMF) RTP payloads and log each event, with the digit VALUE masked as \fBx\fR.

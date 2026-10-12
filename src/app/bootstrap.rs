@@ -4588,6 +4588,38 @@ pub(crate) fn parse_autostop(
 
 // ── Filter expression building ──────────────────────────────────────
 
+/// The DSL form of `-c` / `--calls-only`: dialogs an INVITE started, the
+/// rule [`crate::sip::matcher::calls_only_admits`] applies per message.
+const CALLS_ONLY_EXPR: &str = "method == 'INVITE'";
+
+/// Build the dialog filter every post-capture output selects with.
+///
+/// The expression from [`filter_expr_from_sources`], narrowed to calls when
+/// `-c` / `--calls-only` is set. `-c` was applied only to the per-message
+/// printout, so `--json-dialogs`, `--report` and the exports still listed
+/// OPTIONS, REGISTER and SUBSCRIBE dialogs (#474); folding it in here gives
+/// every output that selects through [`crate::sip::dsl::select_dialogs`] the
+/// same answer.
+///
+/// # Errors
+///
+/// As [`filter_expr_from_sources`].
+fn build_filter_expr(cli: &Cli, config: &Config) -> Result<Option<FilterExpr>, PlanError> {
+    let base = filter_expr_from_sources(cli, config)?;
+    if !cli.mode_args.calls_only {
+        return Ok(base);
+    }
+    let text = match &base {
+        Some(f) => format!("({CALLS_ONLY_EXPR}) AND ({})", f.source()),
+        None => CALLS_ONLY_EXPR.to_owned(),
+    };
+    FilterExpr::parse(&text).map(Some).map_err(|e| {
+        PlanError::arg(format!(
+            "Internal error building the --calls-only filter: {e}"
+        ))
+    })
+}
+
 /// Build a `FilterExpr` from CLI `--filter` flag, diagnostic aliases, or
 /// config fallback.
 ///
@@ -4600,7 +4632,7 @@ pub(crate) fn parse_autostop(
 /// Returns a `PlanError` (exit code 2) when the `--filter` expression, an
 /// expanded diagnostic alias, or the config-file expression fails to parse.
 /// Returning (rather than exiting) keeps planning testable and composable.
-fn build_filter_expr(cli: &Cli, config: &Config) -> Result<Option<FilterExpr>, PlanError> {
+fn filter_expr_from_sources(cli: &Cli, config: &Config) -> Result<Option<FilterExpr>, PlanError> {
     // An explicit expression narrows the diagnostic flags. Parse it even
     // when aliases are enabled, so an invalid expression is never hidden.
     let thresholds = cli.alias_thresholds(config);

@@ -2217,6 +2217,31 @@ mod tests {
         (Arc::clone(&app.dialog_store), Arc::clone(&app.stream_store))
     }
 
+    /// `-c` / `--calls-only` reaches the session: it opens with only INVITE
+    /// checked in the filter dialog and that filter applied (#474).
+    #[test]
+    fn calls_only_reaches_the_session_as_an_invite_filter() -> Result<(), TestError> {
+        let (d, s) = stores();
+        let app = TuiOptions {
+            calls_only: true,
+            ..TuiOptions::default()
+        }
+        .into_app(d, s);
+        let checked: Vec<&str> = state::FILTER_METHODS
+            .iter()
+            .zip(app.filter_dialog.methods.iter())
+            .filter(|(_, on)| **on)
+            .map(|(m, _)| *m)
+            .collect();
+        assert_eq!(checked, vec!["INVITE"]);
+        assert!(app.active_filter.is_some(), "the filter is applied");
+
+        let (d, s) = stores();
+        let plain = TuiOptions::default().into_app(d, s);
+        assert!(plain.active_filter.is_none(), "no -c, no filter");
+        Ok(())
+    }
+
     /// The save target a run resolved reaches the session's F10 save.
     #[test]
     fn the_resolved_save_target_reaches_the_session() -> Result<(), TestError> {

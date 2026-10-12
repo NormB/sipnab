@@ -954,7 +954,9 @@ pub struct ModeArgs {
     #[arg(help_heading = "Mode", short = 'N', long = "no-tui")]
     pub no_tui: bool,
 
-    /// Show only SIP dialogs (calls), not standalone messages.
+    /// Show only calls: dialogs an INVITE started. The dialog outputs apply
+    /// it, and the TUI opens with only INVITE checked in its filter dialog.
+    /// Like --filter, it does not narrow what -O writes.
     #[arg(help_heading = "Mode", short = 'c', long = "calls-only")]
     pub calls_only: bool,
 

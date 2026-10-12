@@ -55,6 +55,15 @@ entry that carries them.
 
 ### Fixed
 
+- **`-c` / `--calls-only` keeps only calls on every dialog output.** It
+  applied only to the per-message printout, so `--json-dialogs` and
+  `--report` still listed OPTIONS, REGISTER and SUBSCRIBE dialogs, and the
+  TUI ignored it. Those outputs now keep only dialogs an INVITE started, `-c`
+  combines with `--filter` as an AND, and the TUI opens with only INVITE
+  checked in its filter dialog, as sngrep's `-c` does. Like `--filter`, it
+  does not narrow what `-O` writes. Reported by Ihor
+  Olkhovskyi ([@igorolhovskiy](https://github.com/igorolhovskiy)) in
+  [#474](https://github.com/NormB/sipnab/issues/474).
 - **`man sipnab` describes every option, environment variable and exit
   status of this build.** The page listed 27 of 329 options, named none of
   the environment variables that carry secrets, printed "theterminalviewer(1)"

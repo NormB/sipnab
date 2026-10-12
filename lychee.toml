@@ -76,6 +76,13 @@ retry_wait_time = 3
 accept = [200, 206, 429, 502, 503, 504]
 
 exclude = [
+  # www.asterisk.org sits behind a Cloudflare challenge that answers 403
+  # Forbidden to non-browser clients. Measured 2026-10-12: 403 from the
+  # GitHub Actions runner (lychee, run 38275545074) and 403 from a
+  # residential connection with both lychee's user agent and a browser
+  # user agent, while downloads.asterisk.org, which the guide downloads
+  # from, answered 200. Excluded by host, not by adding 403 to `accept`.
+  '^https://www\.asterisk\.org/',
   # Zola internal links -- see above. Matched on the resolved path because
   # lychee turns them into file:// URIs before exclusions apply, so a pattern
   # anchored with ^@/ never matches.

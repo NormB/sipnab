@@ -602,16 +602,16 @@ once that they write that data unencrypted. The section comment of a
 | Flag | Value | Default | Description |
 |------|-------|---------|-------------|
 | `-N`, `--no-tui` | -- | off | Non-interactive mode (no TUI). Required for batch/output flags |
-| `-c`, `--calls-only` | -- | off | Show only SIP dialogs (calls), not standalone messages |
+| `-c`, `--calls-only` | -- | off | Show only calls: dialogs an INVITE started. The dialog outputs apply it (`--json-dialogs`, `--report`, the per-message printout), and the TUI opens with only INVITE checked in its filter dialog. It leaves out OPTIONS, REGISTER, SUBSCRIBE and other dialogs. Like `--filter`, it does not narrow what `-O` writes |
 | `-t`, `--telephone-event` | -- | off | Decode telephone-event (DTMF) RTP payloads and log each event at `info`, digit value masked as `x` |
 | `--dtmf-cleartext` | -- | off | Log the DTMF digit VALUES instead of the mask, at `debug`. Publishes PINs and card numbers |
 | `-q`, `--quiet` | -- | off | Suppress informational output; only show results |
 
 **Examples**
 
-- `sipnab --no-tui -I capture.pcap --calls-only` — analyze a pcap headlessly, showing only complete SIP dialogs (calls), not standalone messages
+- `sipnab --no-tui -I capture.pcap --calls-only` — analyze a pcap headlessly, showing only calls (dialogs an INVITE started), without OPTIONS pings, registrations or subscriptions
 - `sudo sipnab --no-tui -d eth0 --telephone-event` — headless live capture that decodes DTMF and logs each event with its duration and SSRC, digit value masked
-- `sipnab --no-tui -I capture.pcap --calls-only --telephone-event` — read a capture headlessly, report only complete dialogs, and log how many DTMF events each one carried
+- `sipnab --no-tui -I capture.pcap --calls-only --telephone-event` — read a capture headlessly, report only calls, and log how many DTMF events each one carried
 - `sipnab --no-tui -I lab.pcap --telephone-event --dtmf-cleartext` — read a capture you own and disclose the digit values. Also set `SIPNAB_LOG=debug`, or the run prints nothing but the mask
 - `sudo sipnab --no-tui -d eth0 --telephone-event --dtmf-cleartext 2>dtmf.log` — capture live and steer the cleartext digits into a file whose permissions you control instead of a shared terminal or journald. Again needs `SIPNAB_LOG=debug`
 

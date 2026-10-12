@@ -34,6 +34,18 @@ pub(in crate::tui) fn apply_filter_dialog(app: &mut App) {
     apply_filter_expression(app, expr_text, window);
 }
 
+/// Start the session the way `-c` / `--calls-only` asks: only INVITE checked
+/// in the filter dialog, and that filter applied, so the call list shows
+/// calls and the operator can open the dialog (`F7`/`f`) to change it.
+///
+/// The same path as the dialog's Apply, so the status bar, the displayed
+/// list and the action trail read exactly as if the boxes had been ticked by
+/// hand (#474).
+pub(crate) fn start_calls_only(app: &mut App) {
+    app.filter_dialog.methods = crate::tui::state::FILTER_METHODS.map(|m| m == "INVITE");
+    apply_filter_dialog(app);
+}
+
 /// Human-readable text of a filter: the DSL expression, the time window, or
 /// both. Feeds the status bar AND the displayed-list cache key, so it must
 /// change whenever the DSL or either bound changes.
@@ -281,6 +293,39 @@ mod tests {
     use crate::tui::Popup;
 
     type TestError = Box<dyn std::error::Error>;
+
+    /// `-c` / `--calls-only` opens the TUI with only INVITE checked in the
+    /// filter dialog and that filter applied, so the call list shows calls
+    /// and the operator can see and change the choice (#474).
+    #[test]
+    fn calls_only_start_checks_only_invite_and_lists_only_calls() -> Result<(), TestError> {
+        use crate::tui::controllers::test_support::{base_ts, make_invite, make_request};
+        let mut app = App::with_processed_messages(vec![
+            make_invite("call-1@test", "1001", "1002", base_ts())?,
+            make_request("OPTIONS", "ping-1@test", "probe", "proxy", base_ts())?,
+            make_request("REGISTER", "reg-1@test", "1003", "1003", base_ts())?,
+        ]);
+        app.sync_caches();
+        assert_eq!(app.cached_displayed_count, 3, "every dialog before -c");
+
+        start_calls_only(&mut app);
+        app.sync_caches();
+        let checked: Vec<&str> = crate::tui::state::FILTER_METHODS
+            .iter()
+            .zip(app.filter_dialog.methods.iter())
+            .filter(|(_, on)| **on)
+            .map(|(m, _)| *m)
+            .collect();
+        assert_eq!(checked, vec!["INVITE"]);
+        assert_eq!(app.cached_displayed_count, 1, "only the call is listed");
+        assert!(app.active_popup.is_none(), "no dialog is left open");
+        assert!(
+            app.active_filter_text.contains("method == 'INVITE'"),
+            "the status bar names the filter: {}",
+            app.active_filter_text
+        );
+        Ok(())
+    }
 
     /// A filter expression that fails to parse must keep the dialog open
     /// with an inline error (mirroring the file-open dialog) instead of

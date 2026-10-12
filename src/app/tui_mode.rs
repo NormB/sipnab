@@ -734,6 +734,8 @@ pub fn run_tui_mode(
             offline: !cli.capture_args.input.is_empty(),
             notes,
             notes_path,
+            // -c / --calls-only: the session opens filtered to calls (#474).
+            calls_only: cli.mode_args.calls_only,
         },
     )
     .err();
