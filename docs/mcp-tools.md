@@ -211,19 +211,19 @@ resource.
 | media | 4 | 3,480 | 16,048 | `explain_attribution`, `export_audio`, `media_diagnostics`, `reconcile_orphans` |
 | relay | 4 | 4,240 | 20,029 | `decode_ng`, `query_relay`, `relay_compare`, `relay_stats` |
 | tfps | 7 | 5,563 | 15,947 | `actions_revert`, `tfps_ban`, `tfps_banned`, `tfps_dropped`, `tfps_labels`, `tfps_status`, `tfps_unban` |
-| server | 5 | 5,285 | 23,377 | `capture_health`, `hep_senders`, `runtime_stats`, `server_capabilities`, `shutdown_server` |
-| vcon | 4 | 6,627 | 18,641 | `export_vcon`, `siprec_metadata`, `validate_vcon`, `vcon_spool_status` |
-| tls | 3 | 2,859 | 4,955 | `list_tls_libraries`, `start_tls_capture`, `stop_tls_capture` |
-| full | 73 | 83,052 | 205,362 | Every tool the build carries (the default) |
+| server | 5 | 5,394 | 27,170 | `capture_health`, `hep_senders`, `runtime_stats`, `server_capabilities`, `shutdown_server` |
+| vcon | 4 | 6,847 | 18,781 | `export_vcon`, `siprec_metadata`, `validate_vcon`, `vcon_spool_status` |
+| tls | 3 | 2,850 | 4,943 | `list_tls_libraries`, `start_tls_capture`, `stop_tls_capture` |
+| full | 73 | 85,447 | 255,927 | Every tool the build carries (the default) |
 
 Bytes are the compact JSON of each tool's `tools/list` entry, summed over the
 bundle.
 
-> **Measured on sipnab 0.5.196**, a build with every feature, except the
-> `captures` row, measured after 0.5.206 on the change that added
-> `find_in_captures_status` and `cancel_find_in_captures`, and the `vcon` and
-> `full` rows, measured after 0.5.211 on the change that added
-> `vcon_spool_status` and the `cursor` and `media` parameters of `export_vcon`. Sizes, tool
+> **Measured after sipnab 0.5.212** on a build with every feature, with
+> `max_response_bytes` and the `get_dialog` and `reconcile_orphans` cursors,
+> output schemas on nine `core` and `signaling` tools, the response limits and
+> loaded-surface fields of `server_capabilities`, and `vcon_spool_status` and
+> the `cursor` and `media` parameters of `export_vcon` in place. Sizes, tool
 > counts and bundle membership may change in later releases. A build without a
 > feature does not register that feature's tools, so its bundles are smaller.
 > The test `each_bundle_stays_within_its_byte_budget` fails when a bundle grows

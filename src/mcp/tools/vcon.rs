@@ -1775,11 +1775,11 @@ mod tests {
 
         let mut ss = StreamStore::new(100);
         for (ssrc, port) in [(0x1111_1111_u32, 20000_u16), (0x2222_2222, 30000)] {
-            let key = StreamKey {
+            let key = StreamKey::new(
                 ssrc,
-                src: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)), port),
-                dst: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2)), port + 1),
-            };
+                SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)), port),
+                SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2)), port + 1),
+            );
             let hdr = RtpHeader {
                 version: 2,
                 padding: false,

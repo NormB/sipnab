@@ -12647,7 +12647,10 @@ mod tests {
             // measured 6,627, full 83,052).
             ("vcon", 7_000),
             ("tls", 3_000),
-            ("full", 83_500),
+            // full 83_500 -> 85_500: the three changes above together, the
+            // paged-tool byte budget, the response schemas and the vCon
+            // paging and spool tool, measured 85,447 on the merged tree.
+            ("full", 85_500),
         ];
         let sizes: std::collections::BTreeMap<String, usize> = empty_server()
             .with_output_schemas(false)
