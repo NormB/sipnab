@@ -35,6 +35,20 @@ entry that carries them.
 - **The homepage's notes list takes the newest how-tos and feature notes
   together, by date.** It took the how-tos first, so no feature note could
   appear.
+- **MCP reports a relay's HEP-delivered endpoints with the trust the HEP
+  listener's authentication gives them.** The MCP server was built without the
+  run's `--hep-auth-mode`, so every endpoint a relay asserted over HEP was
+  reported as `port-gated-only`, with `--hep-auth-mode hmac` and a secret
+  included. It is now `hmac-verified` with `hmac` and a secret, `plain-secret`
+  with a secret and the default mode, and `port-gated-only` when sipnab checks
+  no secret.
+- **`server_capabilities` reports `mcp_allow_relay_query` and
+  `hep_delivery_trust` in its `runtime` block,** beside the other opt-ins.
+- **The `query_relay` description, the `--mcp-allow-save-findings` help and
+  the MCP guides no longer say a tool is the only one that transmits or writes,
+  or that no tool transmits.** `query_relay`, `relay_stats` and
+  `relay_compare` all transmit to the relay, and several tools besides
+  `save_findings` change state or write files.
 
 ### Changed
 

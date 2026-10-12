@@ -411,6 +411,22 @@ pub fn start_actions(
     Ok(policy.into())
 }
 
+/// The HEP authentication posture an MCP server reports for relay assertions,
+/// or `None` when sipnab checks no HEP secret on this run.
+///
+/// `--hep-auth-mode` defaults to `plain` whether or not a secret is set, so
+/// the mode alone does not say that anything is checked: only a run that
+/// listens for HEP (`listening`) with a secret configured (`secret`) has an
+/// authenticated path, and only then does the mode name it.
+#[cfg(feature = "mcp")]
+fn hep_delivery_posture(
+    listening: bool,
+    secret: bool,
+    mode: crate::cli::HepAuthMode,
+) -> Option<crate::cli::HepAuthMode> {
+    (listening && secret).then_some(mode)
+}
+
 /// Start every server that is both selected and configured, on one shared
 /// runtime thread. Returns `Ok(None)` when nothing is enabled (the common
 /// plain-capture path), `Ok(Some(handle))` for the detached servers thread,
@@ -803,6 +819,17 @@ pub fn start_servers(
                 Some(per_hour) => s.with_sampling_budget(per_hour),
                 None => s,
             };
+            // What a relay's HEP assertion is worth on this run. Without it
+            // every run reported `port-gated-only`, `--hep-auth-mode hmac`
+            // included.
+            let s = match hep_delivery_posture(
+                cli.hep_args.hep_listen.is_some(),
+                cli.resolve_hep_auth().ok().flatten().is_some(),
+                cli.hep_args.hep_auth_mode,
+            ) {
+                Some(mode) => s.with_hep_auth_mode(mode),
+                None => s,
+            };
             let s = if cli.mcp_args.mcp_allow_shutdown {
                 s.with_shutdown()
             } else {
@@ -1092,6 +1119,20 @@ pub fn resolve_mcp_verifier_config(cli: &Cli) -> crate::auth::VerifierConfig {
 
 #[cfg(all(test, feature = "api"))]
 mod tests {
+    /// Only a HEP listener with a secret has an authenticated path; the mode
+    /// names it, and every other combination reports none.
+    #[cfg(feature = "mcp")]
+    #[test]
+    fn only_a_listener_with_a_secret_reports_its_mode() {
+        use crate::cli::HepAuthMode;
+        for mode in [HepAuthMode::Plain, HepAuthMode::Hmac] {
+            assert_eq!(super::hep_delivery_posture(true, true, mode), Some(mode));
+            assert_eq!(super::hep_delivery_posture(true, false, mode), None);
+            assert_eq!(super::hep_delivery_posture(false, true, mode), None);
+            assert_eq!(super::hep_delivery_posture(false, false, mode), None);
+        }
+    }
+
     use super::*;
 
     /// A `Selection` with values nothing else in the tree uses, so a limiter
