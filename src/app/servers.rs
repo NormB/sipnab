@@ -714,6 +714,9 @@ pub fn start_servers(
                 .api_file_root
                 .as_ref()
                 .map(std::path::PathBuf::from),
+            // The spool this run's `--export-vcon-when` writes into: the same
+            // directory the MCP server's `vcon_spool_status` reads.
+            vcon_spool: cli.output_args.export_vcon_dir.clone(),
             pipeline_options: selection.pipeline_options,
             archive: crate::output::api::ArchivePasswordPolicy {
                 accept_remote: cli.listener_args.api_accept_archive_passwords,

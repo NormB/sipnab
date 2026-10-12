@@ -55,6 +55,12 @@ entry that carries them.
   `sipnab --vcon-forward` wrote beside each failed container. It reads files
   and nothing else: it sends, fetches, moves and deletes nothing, and its
   answer is a snapshot dated by `as_of`. It is in the `vcon` bundle.
+- **`GET /v1/vcon/spool` and `sipnab --vcon-spool-status <SPOOL_DIR>`** give
+  the answer `vcon_spool_status` gives, from the same function: the REST route
+  for a run started with `--api` and `--export-vcon-dir`, paged by `limit` and
+  `cursor`, and the command-line one-shot, which prints every failed record and
+  exits. Neither moves a file. The MCP tool additionally fences each store
+  answer and cuts it to `--mcp-max-body-bytes`.
 
 ### Changed
 

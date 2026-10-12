@@ -1202,7 +1202,7 @@ fn wiki_intra_docs_links_resolve() -> Result<(), TestError> {
     // linking prometheus-metrics.md.
     // 1348 -> 1346: a bullet in docs/vcon.md and a row in
     // docs/cli-reference.md, each linking vcon-store.md, were removed.
-    // 1346 -> 1376: docs/mcp-tools.md 7, the "Which tool finds calls" table
+    // 1346 -> 1380: docs/mcp-tools.md 7, the "Which tool finds calls" table
     // linking the section of each of its seven tools.
     // +14: the byte budget and uniform paging in docs/mcp-tools.md.
     // +2: the output-schemas paragraph linking
@@ -1210,7 +1210,9 @@ fn wiki_intra_docs_links_resolve() -> Result<(), TestError> {
     // section linking #response-bounding.
     // +7: `export_vcon` paging and `vcon_spool_status`: docs/mcp-tools.md 4,
     // docs/mcp-protocol.md 1, docs/vcon.md 1 and docs/vcon-store.md 1.
-    const EXPECTED_WIKI_LINKS: usize = 1376;
+    // +4: the spool status's REST and CLI doors: docs/mcp-tools.md 2,
+    // docs/vcon.md 1 and docs/vcon-store.md 1.
+    const EXPECTED_WIKI_LINKS: usize = 1380;
     // Raised 459 -> 460 when SRC1 stage 1 shipped: docs/cli-reference.md's
     // `--hep-listen` row now points at cookbook recipe 6d in docs/examples.md
     // rather than restating how to pair `-L` with `-d`. Attributed per file

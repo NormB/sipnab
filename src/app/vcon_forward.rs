@@ -708,6 +708,7 @@ pub fn failed_containers(dir: &Path) -> std::io::Result<Vec<String>> {
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[cfg_attr(feature = "mcp", derive(rmcp::schemars::JsonSchema))]
 #[cfg_attr(feature = "mcp", schemars(crate = "rmcp::schemars"))]
+#[cfg_attr(feature = "api", derive(utoipa::ToSchema))]
 pub struct FailureRecord {
     /// When the forwarder wrote the record, RFC 3339 UTC.
     pub at: String,

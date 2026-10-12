@@ -228,6 +228,12 @@ fn run_validation_steps(cli: &Cli) -> Result<sipnab::config::LoadedConfig, boots
     if let Some(code) = bootstrap::run_vcon_fetch(cli, &read) {
         sipnab::capture::archive::release_run_and_exit(code);
     }
+
+    // 4d. --vcon-spool-status: print the export spool's state and exit. Reads
+    //     files only; opens no capture and no connection.
+    if let Some(code) = bootstrap::run_vcon_spool_status(cli) {
+        sipnab::capture::archive::release_run_and_exit(code);
+    }
     read
 }
 

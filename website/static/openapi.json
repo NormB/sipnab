@@ -2746,6 +2746,66 @@
         ],
         "type": "object"
       },
+      "FailureRecord": {
+        "description": "The `<name>.error.json` record the forwarder writes beside a refused\ncontainer.\n\nOne type for the writer and for every reader, so the file and what a\nreader expects of it cannot drift. Fields are declared in alphabetical\norder, which is the order the record has always been written in.",
+        "properties": {
+          "at": {
+            "description": "When the forwarder wrote the record, RFC 3339 UTC.",
+            "type": "string"
+          },
+          "body": {
+            "description": "The start of the store's answer, with the auth value removed. Null when\nthe container was refused before it was sent.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "body_truncated": {
+            "description": "Whether the forwarder cut `body` to `--vcon-forward-max-error-body`, or\nthe answer was longer than it read.",
+            "type": "boolean"
+          },
+          "file": {
+            "description": "The container's file name.",
+            "type": "string"
+          },
+          "method": {
+            "description": "`POST` or `PUT`. Null when the container was refused before it was sent.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "reason": {
+            "description": "The forwarder's own reason, when the container was refused before it\nwas sent. Null when the store answered.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "status": {
+            "description": "The status the store answered with. Null when the container was refused\nbefore it was sent.",
+            "format": "int32",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "url": {
+            "description": "The URL the request went to. Null when the container was refused before\nit was sent.",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "at",
+          "body_truncated",
+          "file"
+        ],
+        "type": "object"
+      },
       "HepRefusedSourceRow": {
         "description": "One address the listener has been turning away.\n\nKeyed by address alone, never by the capture id a refused packet claimed:\na packet that failed authentication has proven nothing, including its id.",
         "properties": {
@@ -4384,6 +4444,139 @@
         "required": [
           "port",
           "messages"
+        ],
+        "type": "object"
+      },
+      "SpoolDirectory": {
+        "description": "One directory the snapshot read.",
+        "properties": {
+          "exists": {
+            "description": "Whether the directory existed when it was read. A directory that does\nnot exist holds nothing, and is counted as zero.",
+            "type": "boolean"
+          },
+          "path": {
+            "description": "The path, as this process resolved it.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "path",
+          "exists"
+        ],
+        "type": "object"
+      },
+      "SpoolFailure": {
+        "description": "One refused container, and the record the forwarder wrote beside it.",
+        "properties": {
+          "file": {
+            "description": "The container's file name in the failed directory.",
+            "type": "string"
+          },
+          "record": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/FailureRecord",
+                "description": "The `<file>.error.json` record: the status, the method and URL, and\nthe start of the store's answer, or the forwarder's own reason. Null\nwhen the record is missing or unreadable, and `record_problem` says\nwhich."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "record_problem": {
+            "description": "Why `record` is null.",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "file"
+        ],
+        "type": "object"
+      },
+      "SpoolStatus": {
+        "description": "The spool's state: three counts and one page of failed records.",
+        "properties": {
+          "as_of": {
+            "description": "When the directories were read, RFC 3339 UTC. The forwarder is another\nprocess and may have moved files since.",
+            "type": "string"
+          },
+          "delivered": {
+            "description": "Containers in the delivered directory.",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "delivered_dir": {
+            "$ref": "#/components/schemas/SpoolDirectory",
+            "description": "Where the forwarder moves a delivered container by default."
+          },
+          "failed": {
+            "description": "Containers in the failed directory, records not counted.",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "failed_dir": {
+            "$ref": "#/components/schemas/SpoolDirectory",
+            "description": "Where the forwarder moves a refused container by default, beside its\n`<file>.error.json` record."
+          },
+          "failures": {
+            "description": "This page of failed containers, by file name.",
+            "items": {
+              "$ref": "#/components/schemas/SpoolFailure"
+            },
+            "type": "array"
+          },
+          "next_cursor": {
+            "description": "Opaque cursor (the last file name returned) to pass to the next call.\nNull on the final page.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "note": {
+            "description": "What this answer is, in one sentence.",
+            "type": "string"
+          },
+          "pending": {
+            "description": "Containers in the spool, by the forwarder's own rule: regular files\nending in `.json` whose names do not start with a dot.",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "returned": {
+            "description": "Rows in `failures`.",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "schema_version": {
+            "description": "Version of this envelope.",
+            "format": "int32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "spool": {
+            "$ref": "#/components/schemas/SpoolDirectory",
+            "description": "The `--export-vcon-dir` spool: containers waiting to be delivered."
+          },
+          "truncated": {
+            "description": "Whether failed containers remain after this page. Pass `next_cursor`\nback to continue.",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "schema_version",
+          "as_of",
+          "note",
+          "spool",
+          "delivered_dir",
+          "failed_dir",
+          "pending",
+          "delivered",
+          "failed",
+          "failures",
+          "returned",
+          "truncated"
         ],
         "type": "object"
       },
@@ -8976,6 +9169,84 @@
         "summary": "Call volume over time",
         "tags": [
           "dialogs"
+        ]
+      }
+    },
+    "/v1/vcon/spool": {
+      "get": {
+        "description": "Counts the `--export-vcon-dir` spool: containers pending, delivered and failed, and for each failed container the `<name>.error.json` record the forwarder wrote beside it, with the store's status and the start of its answer.\n\nA snapshot of files on disk at `as_of`. The forwarder (`sipnab --vcon-forward`) is a separate process, and this route sends, fetches, moves and deletes nothing. It reads the forwarder's default `delivered/` and `failed/` directories beside the spool. The same `vcon_spool::snapshot` answers the MCP `vcon_spool_status` tool and `sipnab --vcon-spool-status`.",
+        "operationId": "get_vcon_spool",
+        "parameters": [
+          {
+            "description": "Most failed records to return (default 50, ceiling `--api-max-rows`).\nThe three counts are never bounded.",
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          {
+            "description": "The previous answer's `next_cursor`, verbatim. Omit on the first call.",
+            "in": "query",
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SpoolStatus"
+                }
+              }
+            },
+            "description": "The counts and one page of failed records."
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "No bearer credential, or one this server does not accept."
+          },
+          "500": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "A spool directory exists and cannot be read."
+          },
+          "503": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Over the per-source-IP rate limit, or the server was started without `--export-vcon-dir`."
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "The vCon export spool's state",
+        "tags": [
+          "operations"
         ]
       }
     },

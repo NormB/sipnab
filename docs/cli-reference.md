@@ -1617,9 +1617,10 @@ CoreAudio the moment anything touches it.
 `--vcon-forward` runs sipnab as the process that delivers an
 `--export-vcon-dir` spool to a vCon store. It captures nothing, and sipnab
 refuses it beside any capture source, listener or export flag. The other flags
-in this section need it. Each flag but `--vcon-forward`, `--vcon-forward-once`
-and `--vcon-forward-auth` has a `[vcon_forward]` key in the config file, which
-the flag overrides. Needs the `vcon` Cargo feature. More:
+in this section need it, except `--vcon-spool-status`, which reads a spool's
+state and runs on its own. Each flag but `--vcon-forward`, `--vcon-forward-once`,
+`--vcon-forward-auth` and `--vcon-spool-status` has a `[vcon_forward]` key in
+the config file, which the flag overrides. Needs the `vcon` Cargo feature. More:
 [Deliver the spool to a store](vcon.md#deliver-the-spool-to-a-store).
 
 | Flag | Value | Default | Description |
@@ -1640,6 +1641,7 @@ the flag overrides. Needs the `vcon` Cargo feature. More:
 | `--vcon-forward-backoff-cap` | `<SECS>` | `300` | The longest a container waits between tries, 1 to 4294967295, and no shorter than `--vcon-forward-backoff-first`. Config: `[vcon_forward] backoff_cap` |
 | `--vcon-forward-max-response-head` | `<BYTES>` | `65536` | The most bytes of a store's status line and headers read, 1 to 4294967295. The forwarder treats an answer with more as no answer, and the container waits for a retry. Config: `[vcon_forward] max_response_head` |
 | `--vcon-forward-max-error-body` | `<BYTES>` | `8192` | The most bytes of a store's answer to a refused container that its `<name>.error.json` record keeps, 1 to 4294967295. Config: `[vcon_forward] max_error_body` |
+| `--vcon-spool-status` | `<SPOOL_DIR>` | -- | Print the state of an `--export-vcon-dir` spool as JSON and exit: containers pending, delivered and failed, and the `<name>.error.json` record beside each failed container. Reads the forwarder's default `delivered/` and `failed/` directories beside the spool. A snapshot of the files: it sends, moves, creates and deletes nothing. The MCP tool `vcon_spool_status` and `GET /v1/vcon/spool` give the same answer. Exit `0` after printing, also for a spool directory that does not exist yet, `1` when sipnab cannot read a directory that exists. Refused beside any capture flag, `--vcon-forward` and `--vcon-fetch` |
 
 **Examples**
 
@@ -1659,6 +1661,8 @@ the flag overrides. Needs the `vcon` Cargo feature. More:
 - `sipnab --vcon-forward /var/spool/sipnab-vcon --vcon-forward-url https://vcon.example.com/v1/vcons --vcon-forward-auth-file vcon.auth --vcon-forward-done /var/spool/sipnab-vcon-sent --vcon-forward-failed /var/spool/sipnab-vcon-held --vcon-forward-interval 2` — keep delivered and refused containers beside the spool rather than inside it, on the same file system, and pass every two seconds
 - `sipnab --vcon-forward spool --vcon-forward-url https://vcon.example.com/v1/vcons --vcon-forward-auth-file vcon.auth --vcon-forward-replace-url 'https://vcon.example.com/v1/vcons/{uuid}' --vcon-forward-once` — a store that answers `409` for a uuid it holds: PUT the rewritten container to the uuid's own URL instead of filing it as refused
 - `sipnab --vcon-forward spool --vcon-forward-url https://vcon.example.com/v1/vcons --vcon-forward-auth-file vcon.auth --vcon-forward-replace-url 'https://vcon.example.com/v1/vcons/{uuid}' --vcon-forward-done sent --vcon-forward-failed held` — the same, polling, with the delivered and refused containers in `sent` and `held`
+- `sipnab --vcon-spool-status spool` — print how many containers wait in `spool`, how many the forwarder delivered and refused, and the store's answer for each refusal
+- `sipnab --vcon-spool-status /var/spool/sipnab-vcon` — the same for a spool given by absolute path; a spool the capture has not written yet prints zeros and `"exists": false`
 
 ## vCon fetcher
 

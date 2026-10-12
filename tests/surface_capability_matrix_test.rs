@@ -45,11 +45,7 @@ const MATRIX: &str = "docs/design/surface-capability-matrix.md";
 /// TUI cell named `Statistics`, a view that shows totals, dialog states and
 /// methods and not one finding. The TUI has no view of the capture analysis,
 /// so that cell is a gap, not a present spelling.
-///
-/// 18 since `vcon_spool_status`: the vCon spool status row has no CLI flag
-/// (PAR5) and no REST route (PAR3) that reports the spool, so both cells are
-/// gaps. Its TUI cell is a decision.
-const EXPECTED_GAPS: usize = 18;
+const EXPECTED_GAPS: usize = 16;
 
 fn root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).to_path_buf()

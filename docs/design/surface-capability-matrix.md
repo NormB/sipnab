@@ -518,9 +518,9 @@ How many containers are waiting, delivered and refused in the export spool, and 
 
 | Surface | Detail |
 |---|---|
-| CLI | gap: a one-shot count of the spool and its refusal records is CLI-shaped, but no flag reports it; the forwarder logs each move only as it makes it (PAR5) |
-| TUI | decision: the spool is the queue a separate forwarder process drains, and the TUI shows the capture it is reading, not another process's files |
-| REST | gap: a program polling delivery state would read it here, but no route reports the spool (PAR3) |
+| CLI | `--vcon-spool-status` |
+| TUI | decision: the spool is the queue a separate forwarder process drains, and the TUI shows the capture it is reading, not another process's files; a person at a terminal runs `--vcon-spool-status` |
+| REST | `/v1/vcon/spool` |
 | MCP | `vcon_spool_status` |
 
 ### SIPREC metadata

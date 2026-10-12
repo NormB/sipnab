@@ -266,6 +266,31 @@ The most bytes of a refused container's answer its
 .I name.error.json
 record keeps. 1 to 4294967295. Default: 8192.
 .TP
+.BI \-\-vcon\-spool\-status " spool-dir"
+Print the state of an
+.B \-\-export\-vcon\-dir
+spool as JSON on stdout and exit: containers pending, delivered and failed, and
+for each failed container the
+.I name.error.json
+record the forwarder wrote beside it. Reads the forwarder's default
+.I delivered/
+and
+.I failed/
+directories beside the spool. A snapshot of the files: it sends, moves, creates
+and deletes nothing. The MCP tool
+.B vcon_spool_status
+and
+.B GET /v1/vcon/spool
+give the same answer. Refused beside any capture flag. Requires a build with the
+.B vcon
+feature.
+.IP
+Exit status: 0 after printing the answer, including for a spool directory that
+does not exist yet; 1 when a directory exists and cannot be read; 2 for a build
+without the
+.B vcon
+feature.
+.TP
 .BI \-\-notes " file"
 Operator notes for
 .BR \-\-write\-annotated :
