@@ -4481,9 +4481,12 @@ fn build_filter_expr(cli: &Cli, config: &Config) -> Result<Option<FilterExpr>, P
             .map_err(|e| PlanError::arg(format!("Invalid --filter expression: {e}")));
     }
 
-    // Fall back to config file expression
+    // Fall back to the config file's expression, through the same alias rule
+    // `--filter` uses, so `[filter] expression = "short-calls"` means what
+    // `--filter short-calls` means.
     if let Some(ref expr) = config.filter.expression {
-        return match FilterExpr::parse(expr) {
+        let expr = crate::sip::dsl::resolve_filter_text(expr, &thresholds);
+        return match FilterExpr::parse(&expr) {
             Ok(f) => Ok(Some(f)),
             Err(e) => Err(PlanError::refused(
                 crate::settings::Origin::ConfigFile,
@@ -5953,6 +5956,31 @@ mod tests {
                 .map_err(|e| format!("{e:?}"))?
                 .is_some()
         );
+        Ok(())
+    }
+
+    /// A diagnostic alias in the config file's `[filter] expression` means
+    /// what it means on `--filter`: `short-calls` was refused with
+    /// "unexpected input at position 0" while `--filter short-calls` ran.
+    #[test]
+    fn a_config_filter_alias_compiles_as_the_flag_does() -> Result<(), TestError> {
+        for alias in ["short-calls", "problems", "one-way"] {
+            let mut config = Config::default();
+            config.filter.expression = Some(alias.to_string());
+            let from_config = build_filter_expr(&base_cli(), &config)
+                .map_err(|e| format!("{alias} in [filter] expression: {e:?}"))?
+                .ok_or("a config expression builds a filter")?;
+            let mut cli = base_cli();
+            cli.matching_args.filter = Some(alias.to_string());
+            let from_flag = build_filter_expr(&cli, &Config::default())
+                .map_err(|e| format!("--filter {alias}: {e:?}"))?
+                .ok_or("--filter builds a filter")?;
+            assert_eq!(
+                format!("{from_config:?}"),
+                format!("{from_flag:?}"),
+                "{alias}"
+            );
+        }
         Ok(())
     }
 

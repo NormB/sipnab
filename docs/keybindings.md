@@ -524,8 +524,11 @@ Name Resolution Block in the capture you opened, then reverse DNS.
 Substitution touches only the IP. The `:port` stays (`sbc-edge:5060`).
 
 To name an address **in context**, select a call-list row, stream row, or
-call-flow message and press **`N`**. A popup opens pre-filled with that IP.
-Type a host/FQDN and press Enter (an empty name clears the mapping). Naming an
+call-flow message and press **`N`**. A popup opens with the endpoints of that
+row or message (a call-list row offers its source and its destination), each
+pre-filled with the name it has now. **`Tab`** and **`Shift+Tab`** move between
+the endpoints. Type a host/FQDN and press Enter to apply every endpoint (an
+empty name clears that mapping); **`Esc`** closes the popup without applying. Naming an
 address turns resolution on automatically, and sipnab saves the mapping to
 `$XDG_CONFIG_HOME/sipnab/hosts` (`~/.config/sipnab/hosts`) so it persists
 across runs.

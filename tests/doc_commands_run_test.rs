@@ -117,11 +117,22 @@ struct Invocation {
     text: String,
 }
 
-/// Every `sipnab …` line inside a shell block in `docs/*.md` and `README.md`.
+/// Every `sipnab …` line inside a shell block in `docs/*.md` and `README.md`,
+/// and every inline code span outside a block that is a whole `sipnab …`
+/// command.
 ///
 /// Backslash continuations are joined first, so a command split over five lines
 /// is one invocation rather than five fragments that parse as nothing.
+///
+/// A list item that opens with a `sipnab …` code span counts too, because
+/// pages list examples that way: two bullets in `docs/cli-reference.md`
+/// omitted `--export-vcon-when`, which sipnab refuses, and stayed there because
+/// only fenced blocks were walked. A span in running prose names a feature
+/// rather than showing a command, and is not collected. A span that elides
+/// arguments with `...` or `…` stands for a family of commands, not one, and
+/// is left out.
 fn documented_invocations() -> Result<Vec<Invocation>, TestError> {
+    let inline = regex::Regex::new(r"^\s*[-*]\s+`((?:sudo\s+)?sipnab\s[^`]+)`")?;
     let fence = regex::Regex::new(r"^```(bash|sh|shell|console)\s*$")?;
     let starts = regex::Regex::new(r"^(sudo\s+)?([A-Z_][A-Z0-9_]*=\S+\s+)*(\./)?sipnab(\s|$)")?;
     let mut out = Vec::new();
@@ -155,6 +166,19 @@ fn documented_invocations() -> Result<Vec<Invocation>, TestError> {
                 i += 1;
                 continue;
             }
+            if !inside {
+                for c in inline.captures_iter(l) {
+                    let text = c[1].trim().to_owned();
+                    if text.contains("...") || text.contains('…') {
+                        continue;
+                    }
+                    out.push(Invocation {
+                        page: name.clone(),
+                        line: i + 1,
+                        text,
+                    });
+                }
+            }
             if inside {
                 // Join the continuation before deciding what this line is.
                 let mut joined = l.trim().to_owned();
@@ -186,14 +210,21 @@ fn documented_invocations() -> Result<Vec<Invocation>, TestError> {
 fn classify(cmd: &str) -> Result<Plan, TestError> {
     // Never run, whatever else it says.
     let side_effects = regex::Regex::new(
-        r"(^|\s)(--on-[a-z-]+-exec|--uprobe-tls|--uprobe-backend|--setup-caps)(\s|=|$)",
+        r"(^|\s)(--[a-z-]+-exec|--uprobe-tls|--uprobe-backend|--setup-caps)(\s|=|$)",
     )?;
     if side_effects.is_match(cmd) {
         return Ok(Plan::SideEffects);
     }
     // `$(…)`, `$VAR`, or a line that opens a loop: the shell is doing the work.
     let shell_var = regex::Regex::new(r"\$[A-Za-z_(]")?;
-    if shell_var.is_match(cmd) || cmd.contains("; do") || cmd.contains("; then") {
+    // Process substitution, `<(…)`, and a numbered redirection, `3< file`, are
+    // the shell supplying an input sipnab cannot be handed as a word.
+    let shell_input = regex::Regex::new(r"<\(|(^|\s)\d+<\s")?;
+    if shell_var.is_match(cmd)
+        || shell_input.is_match(cmd)
+        || cmd.contains("; do")
+        || cmd.contains("; then")
+    {
         return Ok(Plan::ShellProgram);
     }
     // The vCon forwarder polls until stopped, like a server; with
