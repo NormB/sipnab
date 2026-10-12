@@ -21,6 +21,9 @@
 //! after it rejected a correct release commit). One implementation, run by
 //! `cargo test` like every other gate here.
 
+#[path = "support/mcp_reference.rs"]
+mod mcp_reference;
+
 /// The error a test returns: any error, boxed, so `?` works on I/O,
 /// parse and JSON errors alike.
 type TestError = Box<dyn std::error::Error>;
@@ -274,7 +277,7 @@ fn every_cited_script_exists() -> Result<(), TestError> {
 }
 
 /// Every tool the server registers has BOTH a call example and a response
-/// example in `docs/mcp-tools.md`.
+/// example in the MCP tool reference, on the page for its bundle.
 ///
 /// A response example alone is half a specification. `capture_health` showed
 /// what comes back and never showed a call — and it takes a REQUIRED
@@ -290,9 +293,10 @@ fn every_mcp_tool_documents_a_call_and_a_response() -> Result<(), TestError> {
     let src = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/mcp/server.rs"),
     )?;
-    let doc = std::fs::read_to_string(
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("docs/mcp-tools.md"),
-    )?;
+    // The reference is an index plus one page per bundle. A section ends at
+    // the next `### ` heading or at the end of ITS page, so each page is
+    // searched on its own rather than as one joined string.
+    let pages = mcp_reference::read_pages(std::path::Path::new(env!("CARGO_MANIFEST_DIR")))?;
 
     const FENCE: &str = "```";
     let tools = tool_descriptions(&src);
@@ -306,9 +310,12 @@ fn every_mcp_tool_documents_a_call_and_a_response() -> Result<(), TestError> {
     let mut problems = Vec::new();
     for (name, _) in &tools {
         let heading = format!("### `{name}`");
-        let Some(start) = doc.find(&heading) else {
+        let Some((doc, start)) = pages
+            .iter()
+            .find_map(|(_, doc)| doc.find(&heading).map(|start| (doc, start)))
+        else {
             problems.push(format!(
-                "{name}: no `{heading}` section in docs/mcp-tools.md"
+                "{name}: no `{heading}` section in the MCP tool reference pages"
             ));
             continue;
         };

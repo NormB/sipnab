@@ -185,7 +185,11 @@ fn prose_metric_counts_match_the_exposition() -> Result<(), TestError> {
     let surfaces: [(&str, &str); 6] = [
         ("CHANGELOG.md [Unreleased]", &unreleased),
         ("docs/rest-api.md", include_str!("../docs/rest-api.md")),
-        ("docs/mcp-tools.md", include_str!("../docs/mcp-tools.md")),
+        // `runtime_stats` states the count; it is in the `server` bundle.
+        (
+            "docs/mcp-tools-server.md",
+            include_str!("../docs/mcp-tools-server.md"),
+        ),
         (
             "docs/design/backlog.md",
             include_str!("../docs/design/backlog.md"),

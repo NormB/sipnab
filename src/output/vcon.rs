@@ -4484,12 +4484,12 @@ mod tests {
                 .ok_or_else(|| format!("no row starting {prefix:?}"))?
                 .to_string())
         };
-        let mcp_doc = read("docs/mcp-tools.md")?;
+        let mcp_doc = read("docs/mcp-tools-vcon.md")?;
         let mcp_section = mcp_doc
             .split("### `export_vcon`")
             .nth(1)
             .and_then(|s| s.split("\n### ").next())
-            .ok_or("docs/mcp-tools.md has no export_vcon section")?
+            .ok_or("docs/mcp-tools-vcon.md has no export_vcon section")?
             .to_string();
         let help = crate::cli::Cli::command()
             .get_arguments()
@@ -4507,7 +4507,7 @@ mod tests {
                 "docs/internals/build-ci-release.md vcon feature row",
                 row(&read("docs/internals/build-ci-release.md")?, "| `vcon` |")?,
             ),
-            ("docs/mcp-tools.md export_vcon section", mcp_section),
+            ("docs/mcp-tools-vcon.md export_vcon section", mcp_section),
             ("docs/vcon.md", read("docs/vcon.md")?),
         ];
         let denials = [

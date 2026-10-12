@@ -282,7 +282,7 @@ fn the_rest_reference_shows_the_tfps_answers_sipnab_sends() -> Result<(), TestEr
 
 #[test]
 fn the_mcp_reference_shows_the_tfps_answers_sipnab_sends() -> Result<(), TestError> {
-    assert_page("docs/mcp-tools.md", 5)?;
+    assert_page("docs/mcp-tools-tfps.md", 5)?;
     Ok(())
 }
 
@@ -369,6 +369,6 @@ fn the_rest_reference_shows_the_action_answers_sipnab_sends() -> Result<(), Test
 #[cfg(all(unix, any(feature = "api", feature = "mcp")))]
 #[test]
 fn the_mcp_reference_shows_the_action_answers_sipnab_sends() -> Result<(), TestError> {
-    assert_action_page("docs/mcp-tools.md")?;
+    assert_action_page("docs/mcp-tools-tfps.md")?;
     Ok(())
 }

@@ -377,7 +377,7 @@ retry. The delivered and failed directories must be on the
 spool's file system, so that every move is a rename.
 
 To see the spool's state, run `sipnab --vcon-spool-status <SPOOL_DIR>`, call
-[`vcon_spool_status`](mcp-tools.md#vcon_spool_status) on the capture's MCP
+[`vcon_spool_status`](mcp-tools-vcon.md#vcon_spool_status) on the capture's MCP
 server, or read [`GET /v1/vcon/spool`](rest-api.md#get-v1vconspool) from its
 REST server. All three give one answer. It counts the containers pending in the spool and in the default
 `delivered/` and `failed/` directories, and returns each failed container's
@@ -1003,7 +1003,7 @@ of them, or a glob, alone or beside pcap files. Each SIP message the
 container stores is rebuilt and analyzed by the same code that analyzes
 packets, so the dialog list, the ladder, `--report`, `--analyze`, `--json`,
 `--json-dialogs` and the TUI all work on it. The MCP tool
-[`analyze_vcon`](mcp-tools.md#analyze_vcon) and
+[`analyze_vcon`](mcp-tools-vcon.md#analyze_vcon) and
 [`POST /v1/vcon/analyze`](rest-api.md#post-v1vconanalyze) do the same for a
 container handed over inline.
 

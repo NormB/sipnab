@@ -62,6 +62,21 @@ entry that carries them.
 - **The filter DSL has a `time` field**: the dialog's first-message instant,
   compared with a quoted RFC 3339 literal by `<`, `<=`, `>`, `>=` or `==`.
   `time >= 'A' AND time < 'B'` selects what `--since A --until B` selects.
+- **An error-message reference.** [Error messages](docs/errors.md) lists each
+  message sipnab prints when it refuses a run or stops at startup, keyed by
+  the template in the source, with what it means, what to do, and the exit
+  code. `tests/error_reference_test.rs` reads the startup and exit path of the
+  source and fails when a message has no entry or an entry names a message no
+  code prints.
+- **A Since column in the CLI reference.** Every flag row of
+  [docs/cli-reference.md](docs/cli-reference.md) names the first release
+  whose command line accepted the flag, derived from `src/cli.rs` at each
+  release tag by `scripts/flag-since.py`. On the release commit, a flag in no
+  tag reads the version being cut. `tests/cli_flag_since_test.rs` fails when
+  the column differs from what the tags say.
+- **A source footer on every docs page of sipnab.com.** Each page links to its
+  source file on GitHub and states the release that holds the last change to
+  that file, read from git at deploy time by `scripts/doc-history.py`.
 
 ### Changed
 
@@ -92,6 +107,15 @@ entry that carries them.
   call fits the 5 MiB `--vcon-max-inline-media` default for up to 122
   seconds; a longer one carries the existing out-loud refusal instead of the
   audio. Raise `--vcon-max-inline-media` to what your store accepts.
+- **The MCP tool reference is one page per tool bundle.**
+  [docs/mcp-tools.md](docs/mcp-tools.md) is now the index: what a bundle is,
+  the ten bundles with a link to each page, the bundle byte costs, which tool
+  finds calls, the prompts, an alphabetical tool lookup naming each tool's
+  page, and the rules every tool follows. `docs/mcp-tools-<bundle>.md` holds
+  each bundle's tools, for example
+  [`rtp_stats`](docs/mcp-tools-core.md#rtp_stats) in the `core` bundle.
+  `tests/mcp_tool_bundle_pages_test.rs` reads `src/mcp_profile.rs` and fails
+  when a tool's section is not on its bundle's page.
 
 ## [0.5.213] - 2026-10-12
 

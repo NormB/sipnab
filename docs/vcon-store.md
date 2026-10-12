@@ -100,7 +100,7 @@ the store accepted every container. A container the store refused is in
 counts and the store's answer from each `.error.json` record, read from the
 files without sending anything. A capture run with `--mcp` or `--api` answers
 the same through the MCP tool
-[`vcon_spool_status`](mcp-tools.md#vcon_spool_status) and
+[`vcon_spool_status`](mcp-tools-vcon.md#vcon_spool_status) and
 [`GET /v1/vcon/spool`](rest-api.md#get-v1vconspool). A `401` or `403`
 is different: it refuses the token or the client for every container, so the
 forwarder stops, moves nothing, logs the status and the start of the answer,

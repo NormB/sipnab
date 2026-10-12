@@ -209,7 +209,7 @@ libpcap version 1.10.5 (with TPACKET_V3); alternate capture backends named: none
 A backend the banner does not name remains unconfirmed rather than absent. libpcap
 puts netmap in its banner only from 1.10.6, and names DPDK only in a build
 that captures from DPDK alone. The same report is the `libpcap` block of the
-MCP [`server_capabilities`](mcp-tools.md#server_capabilities) tool and of the
+MCP [`server_capabilities`](mcp-tools-server.md#server_capabilities) tool and of the
 REST [`GET /v1/capabilities`](rest-api.md#get-v1capabilities) route, and it
 sits under the version in the TUI help view (F1).
 

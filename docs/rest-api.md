@@ -991,7 +991,7 @@ On a call that said why it ended, the report also carries a `termination`
 object — `cause_code`, `cause_text`, `protocol`, `source_header` and
 `frame_ref`. It comes from the same assembler as the MCP answer, so this route
 and `get_dialog_report` cannot report different causes for one call. The field
-reference is in [mcp-tools.md](mcp-tools.md#why-the-call-ended). sipnab omits
+reference is in [Why the call ended](mcp-tools-core.md#why-the-call-ended). sipnab omits
 the block, and never sends `null`, when nothing on the wire named a cause.
 
 **curl:**
@@ -3565,7 +3565,7 @@ vCon stores no RTP, so sipnab computes no media statistic, and
 `rebuilt_from_vcon` finding.
 
 The body must be the JSON object itself, not a string holding it. A non-object
-is a `400`. The MCP tool [`analyze_vcon`](mcp-tools.md#analyze_vcon) runs the
+is a `400`. The MCP tool [`analyze_vcon`](mcp-tools-vcon.md#analyze_vcon) runs the
 same `vcon_analysis::analyze_container` and answers with the same body. Its
 section describes every field.
 

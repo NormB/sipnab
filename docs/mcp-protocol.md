@@ -361,7 +361,7 @@ Three bounds worth knowing:
   it find out otherwise one call at a time. For the same reason only a build
   with the `vcon` feature lists the vCon template.
 - **Reading `sipnab://vcon/{call_id}` returns the container
-  [`export_vcon`](mcp-tools.md#export_vcon) builds for that dialog**, by the
+  [`export_vcon`](mcp-tools-vcon.md#export_vcon) builds for that dialog**, by the
   same function, with retained audio inline. sipnab refuses an unknown Call-ID
   with `invalid_params`, and a container over the 8 MiB resource limit that
   applies to capture files too.

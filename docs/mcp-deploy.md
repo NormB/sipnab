@@ -1291,7 +1291,7 @@ When `triage_call` returns `verdict: media`, go to the streams:
 The stream row above keeps the fields this recipe reads. A real row carries
 about a dozen more — `octets`, `first_seen`, `last_seen`, `orphaned`, `dscp`,
 `input_origin`, `quality_intervals` and the rest — and
-[the tool reference](mcp-tools.md#rtp_stats) lists every one.
+[the tool reference](mcp-tools-core.md#rtp_stats) lists every one.
 
 **Check `mos_grounded` before you act on `mos`.** `true` means ITU-T G.113
 publishes an impairment factor for this codec and the score is a real estimate.
@@ -1331,7 +1331,7 @@ only way to tell a live capture from a replayed file:
 That is the subset this recipe reads. A real answer also carries
 `active_dialog_count`, `active_call_count`, `orphaned_stream_count`,
 `capture_quality`, `caveats`, `capture_identity`, `load` and the
-`unanalysed_*` counters — [`capture_status`](mcp-tools.md#capture_status)
+`unanalysed_*` counters — [`capture_status`](mcp-tools-core.md#capture_status)
 walks through each of them.
 
 `source_exhausted: true` says sipnab read the file to the end, so counts are
@@ -1368,7 +1368,7 @@ Then confirm the build can do what you are about to ask of it:
 
 A real answer also carries a `libpcap` block: the libpcap this server
 captures through and the alternate capture backends its banner names.
-[`server_capabilities`](mcp-tools.md#server_capabilities) walks through it.
+[`server_capabilities`](mcp-tools-server.md#server_capabilities) walks through it.
 
 Asking for TLS decryption on a build without `tls` otherwise fails in a way
 that reads like a key problem. `features` describes the binary you are talking

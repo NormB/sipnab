@@ -121,6 +121,29 @@ test.describe('documentation', () => {
     const text = await page.locator('body').innerText();
     expect(text.length).toBeGreaterThan(500);
   });
+
+  // The footer under every docs page. The link goes to the file a reader
+  // would change: the source under docs/ for a generated page, the page's own
+  // file for a hand-written one. The history line exists only when the
+  // deploy wrote website/data/doc-history.toml (scripts/doc-history.py); a
+  // build without it shows the link alone, so the line is checked when present.
+  const HISTORY = /^Last changed (in v\d+\.\d+\.\d+ \(\d{4}-\d{2}-\d{2}\)|on \d{4}-\d{2}-\d{2}, after v\d+\.\d+\.\d+; not yet in a release)\.$/;
+  for (const [url, source] of [
+    ['/docs/filter-dsl/', 'docs/filter-dsl.md'],
+    ['/docs/cli/', 'docs/cli-reference.md'],
+    ['/docs/internals/threading/', 'docs/internals/threading.md'],
+    ['/docs/benchmarks/', 'website/content/docs/benchmarks.md'],
+  ]) {
+    test(`${url} links to ${source} on GitHub`, async ({ page }) => {
+      const res = await page.goto(url);
+      expect(res.status()).toBe(200);
+      const footer = page.locator('footer.doc-source');
+      await expect(footer.getByRole('link', { name: 'Edit this page on GitHub' }))
+        .toHaveAttribute('href', `https://github.com/NormB/sipnab/blob/main/${source}`);
+      const history = footer.locator('.doc-history');
+      if (await history.count()) await expect(history).toHaveText(HISTORY);
+    });
+  }
 });
 
 test.describe('search', () => {

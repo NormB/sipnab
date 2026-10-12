@@ -19,8 +19,12 @@
 use clap::CommandFactory;
 use std::collections::BTreeSet;
 
+#[path = "support/cli_flags.rs"]
+mod cli_flags;
 #[path = "support/markdown.rs"]
 mod markdown;
+#[path = "support/mcp_reference.rs"]
+mod mcp_reference;
 
 /// Any error a test can return; `?` converts into it.
 type TestError = Box<dyn std::error::Error>;
@@ -36,6 +40,37 @@ type TestError = Box<dyn std::error::Error>;
 /// would still fail this guard instead of being silently whitelisted. The
 /// label is the first element of each `docs` tuple in `readme_long_flags_exist_in_cli`.
 const FOREIGN_FLAGS: &[(&str, &[&str])] = &[
+    // The error-message reference quotes sipnab's messages exactly, and some
+    // of them name another program's flags: cargo's `--features` ("rebuild
+    // with --features mcp-http"), and eCapture's `--libssl` and `--pid` in
+    // the keylog guidance that `--uprobe-list` and the TLS checks print.
+    (
+        "features",
+        &["docs/errors.md", "website/content/docs/errors.md"],
+    ),
+    (
+        "libssl",
+        &["docs/errors.md", "website/content/docs/errors.md"],
+    ),
+    ("pid", &["docs/errors.md", "website/content/docs/errors.md"]),
+    // The release section's note on the CLI reference's Since column:
+    // `scripts/flag-since.py --write` rewrites the column after a release is
+    // tagged, and `git fetch --tags` brings the tags the script reads. The
+    // script's flag and git's, not sipnab's.
+    (
+        "write",
+        &[
+            "docs/internals/build-ci-release.md",
+            "website/content/docs/internals/build-ci-release.md",
+        ],
+    ),
+    (
+        "tags",
+        &[
+            "docs/internals/build-ci-release.md",
+            "website/content/docs/internals/build-ci-release.md",
+        ],
+    ),
     // `git commit --amend -S --no-edit` and
     // `git rebase --exec 'git commit --amend --no-edit -S' <base>`: how the
     // contributing guide and the build page say to re-sign a commit the
@@ -1717,20 +1752,10 @@ fn cli_long_flags() -> BTreeSet<String> {
     let cmd = sipnab::cli::Cli::command();
     let mut flags = BTreeSet::new();
 
-    // Flags that exist only under a non-default Cargo feature.
-    //
-    // This enumerates the CLI clap actually built, so a `#[cfg(feature = ...)]`
-    // flag is absent whenever the suite runs without that feature — and the
-    // docs, which describe the whole program, still name it. The reduced-feature
-    // CI matrix hits exactly that: `--plugin` is real under `plugins` and
-    // invisible under `native,hep,api,mcp,mcp-http`, so the gate reported the
-    // documentation as advertising a flag that does not exist.
-    //
-    // Listed rather than inferred, so adding a feature-gated flag is a
-    // deliberate entry here and not something a reader has to discover from a
-    // red matrix job. Each name must still be documented like any other flag.
-    const FEATURE_GATED: &[&str] = &["plugin"];
-    for f in FEATURE_GATED {
+    // Flags that exist only under a non-default Cargo feature: without the
+    // feature clap does not build them, and the docs still name them. Each
+    // name must still be documented like any other flag.
+    for f in cli_flags::FEATURE_GATED {
         flags.insert((*f).to_string());
     }
 
@@ -2489,24 +2514,25 @@ fn docs_current_version_markers_match_cargo() -> Result<(), TestError> {
             include_str!("../website/content/docs/mcp-deploy.md"),
             r#""version":\s*"(\d+\.\d+\.\d+)""#,
         ),
-        // The same server_capabilities sample appears in the MCP reference.
+        // The same server_capabilities sample appears in the MCP reference,
+        // on the page for the `server` bundle that holds the tool.
         // Gating only the walkthrough left this one drifting: it still named
         // 0.5.69 after the crate moved to 0.5.70, in the same release that
         // added the gate. Two copies of one sample, one of them watched.
         //
-        // Anchored on the `features` key that follows it, because this page
-        // also carries the `tfps_status` sample, whose `version` is the
-        // toll-fraud prevention peer's own (0.1.0) and must never track this
-        // crate. The bare pattern read that one as sipnab's and demanded
+        // Anchored on the `features` key that follows it, because the
+        // reference also carries the `tfps_status` sample, whose `version` is
+        // the toll-fraud prevention peer's own (0.1.0) and must never track
+        // this crate. The bare pattern read that one as sipnab's and demanded
         // 0.5.147 of a program that is not sipnab.
         (
-            "docs/mcp-tools.md",
-            include_str!("../docs/mcp-tools.md"),
+            "docs/mcp-tools-server.md",
+            include_str!("../docs/mcp-tools-server.md"),
             r#""version":\s*"(\d+\.\d+\.\d+)",\s*"features""#,
         ),
         (
-            "website/content/docs/mcp-tools.md",
-            include_str!("../website/content/docs/mcp-tools.md"),
+            "website/content/docs/mcp-tools-server.md",
+            include_str!("../website/content/docs/mcp-tools-server.md"),
             r#""version":\s*"(\d+\.\d+\.\d+)",\s*"features""#,
         ),
     ];
@@ -3948,13 +3974,14 @@ fn mcp_tool_table_lists_every_registered_tool() -> Result<(), TestError> {
     );
 
     let doc = std::fs::read_to_string("docs/mcp-tools.md")?;
-    // The index is EIGHT tables now, one per group, so the old slice -- from
+    // The index was EIGHT tables, one per group, so the old slice -- from
     // the first header to the first blank line -- read the first group and
-    // reported the other 41 tools missing. The index runs from the first table
-    // header to the first `## ` section heading; take all of it.
+    // reported the other 41 tools missing. The tools now sit on one page per
+    // bundle, and the index keeps one alphabetical lookup table naming every
+    // tool. Read from its header to the next `## ` section heading.
     let table_start = doc
-        .find("| Tool | Parameters | Returns |")
-        .ok_or("docs/mcp-tools.md has no tool table")?;
+        .find("| Tool | Bundle | Returns |")
+        .ok_or("docs/mcp-tools.md has no tool lookup table")?;
     let table_end = doc[table_start..]
         .find("\n## ")
         .map_or(doc.len(), |i| table_start + i);
@@ -4647,9 +4674,23 @@ fn no_documentation_table_repeats_a_row() -> Result<(), TestError> {
     // 276 -> 284: the Asterisk and FreeSWITCH guides. docs/asterisk.md,
     // docs/asterisk-sipnab.md, docs/freeswitch.md and
     // docs/freeswitch-sipnab.md, and their four generated site pages.
+    // 275 -> 295: the MCP tool reference split into one page per tool
+    // bundle. Ten new pages, docs/mcp-tools-{core,signaling,captures,
+    // security,media,relay,tfps,server,vcon,tls}.md, and their ten
+    // generated mirrors under website/content/docs/. No file was removed.
+    // 295 -> 297: the error-message reference, docs/errors.md, and its
+    // generated mirror website/content/docs/errors.md. No file was removed.
+    // 284 -> 306: the merge of docs/doc-improvements with the 0.5.213 batch.
+    // The two histories above each start from 275. Measured on the merged
+    // index: the ten docs/mcp-tools-<bundle>.md pages and their ten site
+    // mirrors (+20), and docs/errors.md and its mirror (+2). No file removed.
     // 284 -> 285: docs/design/par5-cli-queries.md, the CLI query flag design.
     // A design doc has no site mirror, so one file.
-    const EXPECTED_MARKDOWN_FILES: usize = 285;
+    // 285 -> 307: merging docs/doc-improvements into land/2026-10-12c.
+    // Measured on the merged index: the ten docs/mcp-tools-<bundle>.md pages
+    // and their ten site mirrors (+20), and docs/errors.md and its mirror
+    // (+2). No file removed.
+    const EXPECTED_MARKDOWN_FILES: usize = 307;
     /// How many tables this gate expects to walk.
     ///
     /// Named rather than written twice. The count and the failure message
@@ -5228,6 +5269,20 @@ fn no_documentation_table_repeats_a_row() -> Result<(), TestError> {
     // the same ten in its site mirror.
     // 1156 -> 1162: the Asterisk and FreeSWITCH guides: docs/asterisk.md 1,
     // docs/freeswitch.md 2, and the same in their site copies.
+    // 1113 -> 1121: the MCP tool reference split into an index and one page
+    // per tool bundle. Attributed per file against HEAD by counting table
+    // separator lines outside fences: docs/mcp-tools.md 105 -> 6 (-99) and
+    // the ten docs/mcp-tools-*.md pages +103 -- the 93 tables inside the
+    // moved tool sections, plus one tool table at the top of each page.
+    // The index lost its eight per-group tool tables and gained the bundle
+    // table and the alphabetical lookup. Net +4, doubled by the generated
+    // mirrors under website/content/docs/ to +8.
+    // 1162 -> 1170: the merge of docs/doc-improvements with the 0.5.213
+    // batch. Attributed per file against the batch's tree (cde39109) by
+    // counting table separator lines outside fences: docs/mcp-tools.md
+    // 112 -> 10 (-102), and the ten docs/mcp-tools-*.md pages +106 (signaling
+    // 22, core 21, captures 14, security 14, vcon 9, media 8, server 6, relay
+    // 5, tfps 5, tls 2). Net +4, doubled by the site mirrors to +8.
     // 1162 -> 1167: `analyze_vcon` and its capability row, from
     // feat/vcon-input, measured on the tree merged with the 0.5.213 batch.
     // Attributed by counting added separator rows per file: docs/mcp-tools.md
@@ -5239,7 +5294,13 @@ fn no_documentation_table_repeats_a_row() -> Result<(), TestError> {
     // 1169 -> 1175: the --since/--until time window and docs/design/par5-cli-queries.md:
     // par5-cli-queries.md 2, cli-reference.md 1, filter-dsl.md 1, and their
     // two site copies.
-    const EXPECTED_TABLES: usize = 1175;
+    // 1175 -> 1183: merging docs/doc-improvements into land/2026-10-12c.
+    // Attributed per file against HEAD by counting table separator lines
+    // outside fences: docs/mcp-tools.md 114 -> 10 (-104), and the ten
+    // docs/mcp-tools-*.md pages +108 (signaling 22, core 21, captures 14,
+    // security 14, vcon 11, media 8, server 6, relay 5, tfps 5, tls 2). Net
+    // +4, doubled by the site mirrors to +8.
+    const EXPECTED_TABLES: usize = 1183;
 
     let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     let out = std::process::Command::new("git")
@@ -5965,8 +6026,9 @@ fn every_mcp_tool_has_a_documented_section_with_an_example() -> Result<(), TestE
         "the walk over src/mcp read nothing; this gate would then certify a \
          page against an empty tool set"
     );
-    let page = std::fs::read_to_string(repo.join("docs/mcp-tools.md"))?;
-
+    // The reference is an index plus one page per tool bundle. Each page is
+    // split on its own, so a section ends where its page does.
+    let pages = mcp_reference::read_pages(repo)?;
     let name_re = regex::Regex::new(r#"name\s*=\s*"([a-z0-9_]+)""#)?;
     let tools: std::collections::BTreeSet<String> = name_re
         .captures_iter(&server)
@@ -5979,15 +6041,20 @@ fn every_mcp_tool_has_a_documented_section_with_an_example() -> Result<(), TestE
         tools.len()
     );
 
-    // Split the page into h3 sections so an example can be attributed to the
+    // Split each page into h3 sections so an example can be attributed to the
     // tool whose heading it sits under, rather than merely existing somewhere.
-    let heads: Vec<(usize, String)> = page
-        .match_indices("\n### ")
-        .map(|(i, _)| {
-            let start = i + 1;
-            let end = page[start..].find('\n').map_or(page.len(), |n| start + n);
-            (start, page[start..end].to_string())
-        })
+    let heads_of = |page: &str| -> Vec<(usize, String)> {
+        page.match_indices("\n### ")
+            .map(|(i, _)| {
+                let start = i + 1;
+                let end = page[start..].find('\n').map_or(page.len(), |n| start + n);
+                (start, page[start..end].to_string())
+            })
+            .collect()
+    };
+    let split: Vec<(&str, Vec<(usize, String)>)> = pages
+        .iter()
+        .map(|(_, page)| (page.as_str(), heads_of(page)))
         .collect();
 
     let mut missing_section = Vec::new();
@@ -5995,7 +6062,12 @@ fn every_mcp_tool_has_a_documented_section_with_an_example() -> Result<(), TestE
 
     for tool in &tools {
         let needle = format!("`{tool}`");
-        let Some(idx) = heads.iter().position(|(_, h)| h.contains(&needle)) else {
+        let Some((page, heads, idx)) = split.iter().find_map(|(page, heads)| {
+            heads
+                .iter()
+                .position(|(_, h)| h.contains(&needle))
+                .map(|idx| (*page, heads, idx))
+        }) else {
             missing_section.push(tool.clone());
             continue;
         };
@@ -6010,7 +6082,8 @@ fn every_mcp_tool_has_a_documented_section_with_an_example() -> Result<(), TestE
 
     assert!(
         missing_section.is_empty(),
-        "these MCP tools have no `### ` section in docs/mcp-tools.md: {missing_section:?}. \
+        "these MCP tools have no `### ` section in the MCP tool reference pages: \
+         {missing_section:?}. \
          A table row says a tool exists; it does not say how to call it or how to \
          read the answer. Give each one a heading naming it."
     );
@@ -8094,10 +8167,12 @@ fn the_source_independent_paragraph_names_the_codes_list() -> Result<(), TestErr
 #[test]
 fn every_prompt_is_documented_with_its_tools_and_bundles() -> Result<(), TestError> {
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
-    let text = std::fs::read_to_string(root.join("docs/mcp-tools.md"))?;
+    // The prompts are documented on the reference's index page, not on a
+    // bundle page: a prompt calls tools from several bundles.
+    let text = std::fs::read_to_string(root.join(mcp_reference::INDEX))?;
     let at = text
-        .find("\n### Prompts\n")
-        .ok_or("docs/mcp-tools.md has a `### Prompts` section")?;
+        .find("\n## Prompts\n")
+        .ok_or("docs/mcp-tools.md has a `## Prompts` section")?;
     let body = &text[at + 1..];
     let end = body[4..].find("\n#").map_or(body.len(), |p| p + 4);
     let section = &body[..end];

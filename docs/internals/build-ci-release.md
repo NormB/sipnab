@@ -1039,6 +1039,22 @@ show what a build *of this tree* prints, so they follow `Cargo.toml`.
 `site_advertises_only_a_released_version` requires a matching `v<x.y.z>` tag, so
 getting this wrong fails the suite instead of the visitor.
 
+The **Since** column of [`docs/cli-reference.md`](../cli-reference.md) moves
+in the release commit itself. A flag that is in no release
+tag reads `Unreleased` while `CHANGELOG.md`'s first `## [` heading is
+`[Unreleased]`. The release commit renames that heading to `[x.y.z]` and sets
+`Cargo.toml` to the same version, and from then on the flag reads `x.y.z`.
+Tagging the commit changes nothing, because the tag's history gives the same
+`x.y.z`. So run `python3 scripts/flag-since.py --write` in the release commit,
+after the rename and the version bump. If you forget,
+`the_since_column_is_what_tagged_history_says` in
+[`tests/cli_flag_since_test.rs`](../../tests/cli_flag_since_test.rs) fails that
+commit in the pre-commit hook, not a later pull request. The script refuses a
+first heading that names a version other than `Cargo.toml`'s. The script reads
+[`src/cli.rs`](../../src/cli.rs) at every `vX.Y.Z` tag, so it needs the tags in
+the clone (`git fetch --tags`). Without them it refuses rather than calling every
+flag `Unreleased`.
+
 **Tag a commit whose CI is green.** A tag is not a request to build — it
 publishes immediately and irreversibly, whatever that commit contains: fourteen
 installable artifacts (six `.tar.gz`, four `.deb`, four `.rpm`), a `.sha256`
