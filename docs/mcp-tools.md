@@ -5453,6 +5453,12 @@ whatever posture the run configured. With no posture configured it
 reports the **weakest** reading — a tool whose job is telling you what a claim
 is worth must not round up in the absence of information.
 
+The configured posture is the HEP listener's, so it covers only what the
+listener delivered (`input_origin: hep`). A relay datagram sipnab read off a
+capture interface (`input_origin: wire`) never reached the listener: it is
+`port-gated-only` on every run, `--hep-auth-mode hmac` included. A run with
+`-d` and `-L` holds both kinds side by side.
+
 The endpoints are the call's streams, so the tool answers on a media-relay host
 that never saw the SIP dialog. `dialog_seen` is then `false` and
 `dialog_absent` says why, as described under [`rtp_stats`](#rtp_stats).

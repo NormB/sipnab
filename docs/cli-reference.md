@@ -361,7 +361,8 @@ sipnab -d eth0,eth1 --multi-device --delta-time
 > no dialog, and no output format — so every total you read, and every ratio you
 > compute from one, describes the range and not the capture. sipnab counts what
 > it skipped and says so on stderr and at the end of the run, naming the busiest
-> ports so there is something to widen to:
+> ports so there is something to widen to, and `--report` names the count in
+> its `INCOMPLETE RUN` block:
 >
 > ```text
 > NOT ANALYZED: 1 further SIP message(s) were seen on ports outside --portrange
@@ -1076,7 +1077,7 @@ report a healthy network in the middle of an outage.
 | `--alert-exec` | `<CMD>` | -- | Execute this command when an alert fires. Config: `[security] alert_exec` |
 | `--alert-json` | -- | off | Emit each security alert as a structured JSON line on stderr (in addition to the human `[ALERT]` line). Config: `[security] alert` |
 | `--stir-shaken` | -- | off | Report STIR/SHAKEN Identity claims — decodes the PASSporT, does NOT verify the signature |
-| `--run-provenance-file` | `<FILE>` | -- | Record the command that started this run, as one JSON line appended to FILE (`seq`, `ts`, `record`, `argv`, `cwd`, `uid`, `user`, `pid`, `started`, `version`, `features`, `capture`). A report, a vCon container or an exported pcap says what sipnab concluded and nothing in it says which invocation produced it — which capture, which filter, which port range, which retention caps. `--portrange` alone changes what a run can see, so a report produced under a narrow range is afterwards indistinguishable from one that examined everything. `capture` is the same instance token the MCP and REST surfaces stamp on their answers, which is what joins a record to an artefact. sipnab writes it once, at startup, before it loads the config and before it opens any capture device. Opened `O_APPEND` and never truncated, so successive runs accumulate; created mode `0600` when absent, because argv holds capture paths and a path holds a customer name. The record replaces the value of a flag that takes a secret inline, such as `--hep-auth` or `--api-key`, with `[redacted]`. **A record sipnab cannot write stops the run**, because a best-effort line would leave its own absence ambiguous between "not enabled" and "the disk was full". Leave it off and nothing changes |
+| `--run-provenance-file` | `<FILE>` | -- | Record the command that started this run, as one JSON line appended to FILE (`seq`, `ts`, `record`, `argv`, `cwd`, `uid`, `user`, `pid`, `started`, `version`, `features`, `capture`). A report, a vCon container or an exported pcap says what sipnab concluded and nothing in it says which invocation produced it — which capture, which filter, which port range, which retention caps. `--portrange` alone changes what a run can see, so a report produced under a narrow range is afterwards indistinguishable from one that examined everything. `capture` is the same instance token the MCP and REST surfaces stamp on their answers, which is what joins a record to an artefact. sipnab writes it once, at startup, before the config takes effect and before it opens any capture device; it reads the config file first, so `capture.node` is the node `--node-name` or `[capture] node_name` sets. Opened `O_APPEND` and never truncated, so successive runs accumulate; created mode `0600` when absent, because argv holds capture paths and a path holds a customer name. The record replaces the value of a flag that takes a secret inline, such as `--hep-auth` or `--api-key`, with `[redacted]`. **A record sipnab cannot write stops the run**, because a best-effort line would leave its own absence ambiguous between "not enabled" and "the disk was full". Leave it off and nothing changes |
 | `--tui-audit-file` | `<FILE>` | -- | Record what the operator did in the TUI, one JSON line per action appended to FILE (`seq`, `ts`, `record`, `action`, `target`, `format`, `caller`, `outcome`, `error`). Actions, not keystrokes: the capture opened, the capture swapped, a filter applied or cleared, an export and its destination — including one sipnab refused. A keystroke log of the TUI bindings would be mostly navigation, unreadable at review time, and a privacy hazard of its own, so **the search field is never recorded**, neither the query nor the fact that the operator typed one. Same writer and same file shape as `--mcp-audit-file`: append-only, never truncated, one sequence number per record so a gap is a lost record, created mode `0600`. A path sipnab cannot open stops the run before sipnab takes the terminal, and sipnab refuses `-N` rather than accepting it with nothing to record. **A write that fails mid-session does NOT stop the TUI** — an operator holding a live capture that exists nowhere else must not lose it because a log partition filled; the lost record leaves a permanent hole in the numbering, the status line says the trail is incomplete, and the closing `session_end` record and the exit message on standard error name the count. Leave it off and nothing changes. Feature: `tui` |
 
 > **`--alert` accepts a channel or a threshold rule.** Channels are `syslog`, `json` or `exec`.
@@ -1764,7 +1765,7 @@ deliver the whole answer also says so in its output:
 - **`--report`** ends with an `INCOMPLETE RUN` block naming each reason.
 
 ```json
-{"sipnab_run":{"input_complete":false,"reasons":["1 of 1 capture file(s) was not read to the end; every report from this run rests on a partial read"],"files":{"given":1,"read_in_full":0,"stopped_early":1,"skipped":0,"not_reached":0},"plugins":{"requested":0,"loaded":0,"failed":0},"retention":{"messages_dropped":0},"archives":{"cut_short":false}}}
+{"sipnab_run":{"input_complete":false,"reasons":["1 of 1 capture file(s) was not read to the end; every report from this run rests on a partial read"],"files":{"given":1,"read_in_full":0,"stopped_early":1,"skipped":0,"not_reached":0},"plugins":{"requested":0,"loaded":0,"failed":0},"retention":{"messages_dropped":0},"archives":{"cut_short":false},"port_gate":{"sip_outside_portrange":0,"sip_outside_ws_ports":0}}}
 ```
 
 `input_complete` is the same predicate as the exit status, so a script reading
@@ -1779,3 +1780,15 @@ from the input, and it fails the run like a truncated file does.
 discarded (`[limits] idle_compact_after_secs`) — it appears because those
 ladders are short, and it is deliberately NOT a failure, because a retention
 policy doing what you configured it to do is not a run that went wrong.
+
+`port_gate` counts SIP that sipnab did not analyze because of the port it used:
+`sip_outside_portrange` for messages with both ports outside `--portrange`,
+and `sip_outside_ws_ports` for SIP over WebSocket on a port outside the
+WebSocket port set (`--ws-portrange`). Like retention, it is not a failure,
+because the range is what you asked for. `--report` names either count in its
+`INCOMPLETE RUN` block, in the words the run summary uses on stderr:
+
+```text
+INCOMPLETE RUN — this report does not describe the whole capture:
+  - 12 SIP message(s) were seen on ports outside --portrange and were not analyzed; re-run with --portrange 1-65535 to include them
+```

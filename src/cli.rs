@@ -2640,8 +2640,10 @@ pub struct SecurityArgs {
     /// instance every MCP and REST answer is stamped with, so an artefact can
     /// be joined back to the command that made it.
     ///
-    /// Written once, at startup, before the config is loaded and before any
-    /// capture device is opened. The file is opened for APPEND and never
+    /// Written once, at startup, before the config takes effect and before
+    /// any capture device is opened. sipnab reads the config file first, so
+    /// the record names the node --node-name or `[capture] node_name` sets.
+    /// The file is opened for APPEND and never
     /// truncated, so successive runs accumulate; created mode 0600 if absent,
     /// because argv holds capture paths and a path holds a customer name.
     /// The record replaces the value of a flag that takes a secret inline,

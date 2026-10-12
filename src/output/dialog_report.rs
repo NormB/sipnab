@@ -10,6 +10,56 @@ use std::fmt::Write;
 use crate::rtp::stream::RtpStream;
 use crate::sip::dialog::{DialogState, SipDialog};
 
+/// The SIPREC block for one recorded dialog, or `None` for a dialog no
+/// recorder described.
+///
+/// One renderer for `--report` and `--call-report`. The CLI reports are the
+/// surface an operator reads without an agent or an HTTP client; both print the
+/// recording session and mode, the participants, and each stream's label
+/// resolved to the AOR of the party that sends it, since a participant id is a
+/// UUID nobody reads off a screen.
+#[must_use]
+pub(crate) fn siprec_block(d: &SipDialog) -> Option<String> {
+    let md = d.siprec_metadata.as_ref()?;
+    let mut out = String::new();
+    let _ = writeln!(
+        out,
+        "SIPREC recording ({}): session {}, {}",
+        d.call_id,
+        md.session_id.as_deref().unwrap_or("id not stated"),
+        md.mode.as_deref().unwrap_or("mode not stated")
+    );
+    for p in &md.participants {
+        let aor = p.aor.as_deref().unwrap_or("aor not stated");
+        match p.name.as_deref() {
+            Some(n) => {
+                let _ = writeln!(out, "  participant {aor} ({n})");
+            }
+            None => {
+                let _ = writeln!(out, "  participant {aor}");
+            }
+        }
+    }
+    for st in &md.streams {
+        let owner = st.participant_id.as_deref().map_or_else(
+            || "no participant claims it".to_string(),
+            |o| {
+                md.participants
+                    .iter()
+                    .find(|p| p.participant_id.as_deref() == Some(o))
+                    .and_then(|p| p.aor.clone())
+                    .unwrap_or_else(|| o.to_string())
+            },
+        );
+        let _ = writeln!(
+            out,
+            "  stream label {} -> {owner}",
+            st.label.as_deref().unwrap_or("?")
+        );
+    }
+    Some(out)
+}
+
 /// Print a dialog summary report to a string.
 ///
 /// Generates a tabular overview of all dialogs with their timing metrics,
@@ -209,52 +259,13 @@ pub fn print_dialog_report_as(
 
     // ── SIPREC recording metadata ───────────────────────────────────
     //
-    // The CLI report is the surface an operator reads without an agent or an
-    // HTTP client, and it was the one place the recording metadata did not
-    // reach. It is printed before the stream tables because it says what the
-    // streams below are: on a recorded call, which of them a recorder was told
-    // about and whose they are.
+    // Printed before the stream tables because it says what the streams below
+    // are: on a recorded call, which of them a recorder was told about and
+    // whose they are.
     for d in dialogs {
-        let Some(md) = d.siprec_metadata.as_ref() else {
-            continue;
-        };
-        let _ = writeln!(out);
-        let _ = writeln!(
-            out,
-            "SIPREC recording ({}): session {}, {}",
-            d.call_id,
-            md.session_id.as_deref().unwrap_or("id not stated"),
-            md.mode.as_deref().unwrap_or("mode not stated")
-        );
-        for p in &md.participants {
-            let aor = p.aor.as_deref().unwrap_or("aor not stated");
-            match p.name.as_deref() {
-                Some(n) => {
-                    let _ = writeln!(out, "  participant {aor} ({n})");
-                }
-                None => {
-                    let _ = writeln!(out, "  participant {aor}");
-                }
-            }
-        }
-        for st in &md.streams {
-            // Resolve to the AOR when the metadata names one: a participant id
-            // is a UUID, and an operator reading a report wants the party.
-            let owner = st.participant_id.as_deref().map_or_else(
-                || "no participant claims it".to_string(),
-                |o| {
-                    md.participants
-                        .iter()
-                        .find(|p| p.participant_id.as_deref() == Some(o))
-                        .and_then(|p| p.aor.clone())
-                        .unwrap_or_else(|| o.to_string())
-                },
-            );
-            let _ = writeln!(
-                out,
-                "  stream label {} -> {owner}",
-                st.label.as_deref().unwrap_or("?")
-            );
+        if let Some(block) = siprec_block(d) {
+            let _ = writeln!(out);
+            out.push_str(&block);
         }
     }
 
