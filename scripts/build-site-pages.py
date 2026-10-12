@@ -960,7 +960,7 @@ def render(src: str, text: str, want_h1: str, title: str, weight: int,
     # the lead_in_body mark (see `_INT.lead_repeats`) cannot differ between
     # an operator page and a developer page.
     head = _INT.frontmatter(
-        title, weight, description, has_diagrams, _INT.lead_repeats(description, body)
+        title, weight, description, has_diagrams, _INT.lead_repeats(description, body), src
     )
     return head + BANNER.format(src=src) + body
 

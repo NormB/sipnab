@@ -97,6 +97,37 @@
       {{ page.content | safe }}
     </div>
 
+    {# Source footer. `src` is the file a reader would change: a generated
+         page names its source in `[extra] source` (written by the shared
+         front-matter writer in scripts/build-site-internals.py), and a
+         hand-written page is its own file under website/content/. The link
+         uses /blob/ like every other GitHub link on the site, so it opens for
+         a reader who is not signed in; GitHub offers the edit button from
+         there.
+
+         The history line comes from data/doc-history.toml, which pages.yml
+         writes at deploy time with scripts/doc-history.py and nothing
+         commits. A local build has no such file and shows the link alone.
+         data-pagefind-ignore keeps the footer's fixed wording out of every
+         page's search text. #}
+    {% if page.extra.source %}
+    {% set src = page.extra.source %}
+    {% else %}
+    {% set src = "website/content/" ~ page.relative_path %}
+    {% endif %}
+    {% set hist = load_data(path="data/doc-history.toml", required=false) %}
+    <footer class="doc-source" data-pagefind-ignore>
+      <a href="{{ config.extra.github_url }}/blob/main/{{ src }}">Edit this page on GitHub</a>
+      {% if hist and src in hist.pages %}
+      {% set h = hist.pages[src] %}
+      {% if h.release %}
+      <span class="doc-history">Last changed in {{ h.release }} ({{ h.date }}).</span>
+      {% else %}
+      <span class="doc-history">Last changed on {{ h.date }}, after {{ h.after }}; not yet in a release.</span>
+      {% endif %}
+      {% endif %}
+    </footer>
+
     {# Prev/Next nav. data-pagefind-ignore: these two links carry the
          titles of the NEIGHBORING pages, so without it every page would
          match searches for the pages either side of it. #}

@@ -100,3 +100,5 @@ docs/design/backlog.local.md
 website/data/test-count.toml
 # Generated at deploy time by scripts/github-stars.py; never committed.
 website/data/github.toml
+# Generated at deploy time by scripts/doc-history.py; never committed.
+website/data/doc-history.toml

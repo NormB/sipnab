@@ -44,6 +44,9 @@ on:
       - 'tests/**'
       - 'scripts/published-test-count.py'
       - 'scripts/github-stars.py'
+      # scripts/doc-history.py: writes the "Last changed" line under every docs
+      # page (see the step before "Build site").
+      - 'scripts/doc-history.py'
       - 'scripts/fetch-ci-suite-output.py'
   workflow_dispatch:
 
@@ -97,6 +100,10 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
+          # The full history and every tag: scripts/doc-history.py reads the
+          # last commit to each docs page's source and the release tags that
+          # contain it. A shallow clone holds one commit and no tags.
+          fetch-depth: 0
           # Do not leave GITHUB_TOKEN in .git/config for later steps or
           # third-party actions to read. Nothing here pushes with it:
           # wiki-sync and release pass the token explicitly via GH_TOKEN.
@@ -233,6 +240,18 @@ jobs:
             echo "::warning::no GitHub star count; the homepage is published without one"
             rm -f website/data/github.toml
           fi
+
+      # The "Last changed" line under every docs page, derived from git at
+      # deploy time and never committed. It names the earliest release tag
+      # that holds the last change to the page's source file, or says the
+      # change is in no release yet. Before `zola build`, which reads the file
+      # once. A failure stops the deploy: a page footer that cannot be derived
+      # means the checkout lacks the history or a source path is wrong.
+      - name: Write the docs pages' change history
+        run: |
+          set -euo pipefail
+          python3 scripts/doc-history.py --write website/data/doc-history.toml > /dev/null
+          grep -c '^\[pages\.' website/data/doc-history.toml
 
       - name: Build site
         working-directory: website

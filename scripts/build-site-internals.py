@@ -506,6 +506,7 @@ def frontmatter(
     description: str,
     has_diagrams: bool,
     lead_in_body: bool = False,
+    source: str | None = None,
 ) -> str:
     lines = [
         "+++",
@@ -522,6 +523,12 @@ def frontmatter(
         # Read by page.html: the body's first paragraph already says what the
         # description says, so the grey lead is skipped (see lead_repeats).
         extra.append("lead_in_body = true")
+    if source:
+        # Read by page.html: the footer links to this file on GitHub and states
+        # the release its last change shipped in (scripts/doc-history.py).
+        # Without it the footer would name this generated mirror, which says
+        # "do not edit" in its first line.
+        extra.append(f"source = {toml_str(source)}")
     if extra:
         lines += ["", "[extra]", *extra]
     lines += ["+++", ""]
@@ -544,9 +551,12 @@ def render(src_rel: str, src_text: str, title: str, weight: int, description: st
     body = LINK_RE.sub(rewrite_link, body)
     body = sub_outside_code(CODE_LINK_RE, rewrite_code_link, body)
     body, has_diagrams = convert_mermaid(body)
+    src = f"docs/internals/{src_rel}"
     return (
-        frontmatter(title, weight, description, has_diagrams, lead_repeats(description, body))
-        + BANNER.format(src=f"docs/internals/{src_rel}")
+        frontmatter(
+            title, weight, description, has_diagrams, lead_repeats(description, body), src
+        )
+        + BANNER.format(src=src)
         + body
     )
 

@@ -2947,6 +2947,19 @@ input:focus-visible,
   }
 }
 
+// -- Source footer: edit link and the release of the last change --
+.doc-source {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0.4rem 1.25rem;
+  margin-top: 3rem;
+  font-size: 0.875rem;
+  color: $text-dim;
+
+  a { color: $accent; }
+}
+
 // -- Prev/Next --
 .doc-prevnext {
   display: grid;
