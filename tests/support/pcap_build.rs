@@ -898,3 +898,133 @@ pub fn hep_frame_with_ip_proto(ip_proto: u8) -> Result<Vec<u8>, Box<dyn std::err
         &datagram,
     ))
 }
+
+/// Audio packets each direction carries per call in [`calls_reusing_media`].
+pub const REUSED_MEDIA_AUDIO_PACKETS: u16 = 50;
+/// Telephone-event packets the caller sends per call in [`calls_reusing_media`].
+pub const REUSED_MEDIA_DTMF_PACKETS: u16 = 10;
+/// The caller's audio SSRC, identical in every call of [`calls_reusing_media`].
+pub const REUSED_MEDIA_SSRC_A: u32 = 0x1122_3344;
+/// The callee's audio SSRC, identical in every call of [`calls_reusing_media`].
+pub const REUSED_MEDIA_SSRC_B: u32 = 0x99aa_bbcc;
+/// The caller's telephone-event SSRC, identical in every call.
+pub const REUSED_MEDIA_SSRC_DTMF: u32 = 0x5566_7788;
+
+/// Timed frames for `call_ids.len()` complete calls, one after the other,
+/// that reuse the same media sockets and the same SSRCs.
+///
+/// Each call is INVITE with an SDP offer (caller `10.0.0.1:20000`, PCMU and
+/// `telephone-event/8000`), 200 OK with the answer (callee `10.0.0.2:30000`),
+/// ACK, then one second of media, then BYE and its 200 OK. The media is three
+/// streams: PCMU each way and a telephone-event stream from the caller, at a
+/// 20 ms cadence. Every call restarts the sequence numbers and the RTP
+/// timestamps from zero, which is what a test tool replaying one recorded
+/// media file per call puts on the wire. Call `n` starts `n * spacing_ms`
+/// after the first, so the space between calls is `spacing_ms` less about
+/// 1.2 s of call.
+pub fn calls_reusing_media(call_ids: &[&str], spacing_ms: u64) -> Vec<(Vec<u8>, u64)> {
+    const A: [u8; 4] = [10, 0, 0, 1];
+    const B: [u8; 4] = [10, 0, 0, 2];
+    const A_PORT: u16 = 20000;
+    const B_PORT: u16 = 30000;
+    let sdp = |ip: &str, port: u16| {
+        format!(
+            "v=0\r\no=- 1 1 IN IP4 {ip}\r\ns=-\r\nc=IN IP4 {ip}\r\nt=0 0\r\n\
+             m=audio {port} RTP/AVP 0 101\r\na=rtpmap:0 PCMU/8000\r\n\
+             a=rtpmap:101 telephone-event/8000\r\na=fmtp:101 0-15\r\n"
+        )
+    };
+    let offer = sdp("10.0.0.1", A_PORT);
+    let answer = sdp("10.0.0.2", B_PORT);
+    let rtp = |pt: u8, seq: u16, ssrc: u32, payload: &[u8]| {
+        let mut p = vec![0x80, pt];
+        p.extend_from_slice(&seq.to_be_bytes());
+        p.extend_from_slice(&(u32::from(seq) * 160).to_be_bytes());
+        p.extend_from_slice(&ssrc.to_be_bytes());
+        p.extend_from_slice(payload);
+        p
+    };
+    let mut frames = Vec::new();
+    for (n, call_id) in call_ids.iter().enumerate() {
+        let t0 = n as u64 * spacing_ms * 1_000;
+        let via = format!("Via: SIP/2.0/UDP 10.0.0.1:5060;branch=z9hG4bKreuse{n}\r\n");
+        let from = format!("From: <sip:a@10.0.0.1>;tag=f{n}\r\n");
+        let to = "To: <sip:b@10.0.0.2>";
+        let to_tagged = format!("To: <sip:b@10.0.0.2>;tag=t{n}\r\n");
+        let cid = format!("Call-ID: {call_id}\r\n");
+        let invite = format!(
+            "INVITE sip:b@10.0.0.2 SIP/2.0\r\n{via}Max-Forwards: 70\r\n{from}{to}\r\n{cid}\
+             CSeq: 1 INVITE\r\nContact: <sip:a@10.0.0.1:5060>\r\n\
+             Content-Type: application/sdp\r\nContent-Length: {}\r\n\r\n{offer}",
+            offer.len()
+        );
+        let ok = format!(
+            "SIP/2.0 200 OK\r\n{via}{from}{to_tagged}{cid}CSeq: 1 INVITE\r\n\
+             Contact: <sip:b@10.0.0.2:5060>\r\nContent-Type: application/sdp\r\n\
+             Content-Length: {}\r\n\r\n{answer}",
+            answer.len()
+        );
+        let ack = format!(
+            "ACK sip:b@10.0.0.2 SIP/2.0\r\n{via}Max-Forwards: 70\r\n{from}{to_tagged}{cid}\
+             CSeq: 1 ACK\r\nContent-Length: 0\r\n\r\n"
+        );
+        frames.push((udp_frame(A, B, 5060, 5060, invite.as_bytes()), t0));
+        frames.push((udp_frame(B, A, 5060, 5060, ok.as_bytes()), t0 + 10_000));
+        frames.push((udp_frame(A, B, 5060, 5060, ack.as_bytes()), t0 + 20_000));
+        let media_t0 = t0 + 100_000;
+        for seq in 0..REUSED_MEDIA_AUDIO_PACKETS {
+            let at = media_t0 + u64::from(seq) * 20_000;
+            frames.push((
+                udp_frame(
+                    A,
+                    B,
+                    A_PORT,
+                    B_PORT,
+                    &rtp(0, seq, REUSED_MEDIA_SSRC_A, &[0xff; 160]),
+                ),
+                at,
+            ));
+            frames.push((
+                udp_frame(
+                    B,
+                    A,
+                    B_PORT,
+                    A_PORT,
+                    &rtp(0, seq, REUSED_MEDIA_SSRC_B, &[0xff; 160]),
+                ),
+                at + 1_000,
+            ));
+            if seq < REUSED_MEDIA_DTMF_PACKETS {
+                // RFC 4733 event "5", volume 10, duration growing by 160. The
+                // RTP timestamp advances 160 per packet like the audio's,
+                // where RFC 4733 holds it for the length of an event, so the
+                // stream's own jitter is zero and any jitter a report shows
+                // for it comes from packets outside its call.
+                let duration = (seq + 1) * 160;
+                let mut event = vec![5, 10];
+                event.extend_from_slice(&duration.to_be_bytes());
+                frames.push((
+                    udp_frame(
+                        A,
+                        B,
+                        A_PORT,
+                        B_PORT,
+                        &rtp(101, seq, REUSED_MEDIA_SSRC_DTMF, &event),
+                    ),
+                    at + 2_000,
+                ));
+            }
+        }
+        let end = media_t0 + u64::from(REUSED_MEDIA_AUDIO_PACKETS) * 20_000 + 100_000;
+        let bye = format!(
+            "BYE sip:b@10.0.0.2 SIP/2.0\r\n{via}Max-Forwards: 70\r\n{from}{to_tagged}{cid}\
+             CSeq: 2 BYE\r\nContent-Length: 0\r\n\r\n"
+        );
+        let bye_ok = format!(
+            "SIP/2.0 200 OK\r\n{via}{from}{to_tagged}{cid}CSeq: 2 BYE\r\nContent-Length: 0\r\n\r\n"
+        );
+        frames.push((udp_frame(A, B, 5060, 5060, bye.as_bytes()), end));
+        frames.push((udp_frame(B, A, 5060, 5060, bye_ok.as_bytes()), end + 10_000));
+    }
+    frames
+}

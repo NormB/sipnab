@@ -90,6 +90,24 @@ entry that carries them.
   creates nothing.
   Affected: root runs with any of those flags pointing at a directory the
   drop user cannot write.
+- **Two calls that reuse the same media ports and SSRC are two sets of
+  streams.** sipnab keyed a stream on its SSRC and socket pair alone, so a
+  second call that reused both, as a test tool replaying one recorded media
+  file per call does, was counted into the first call's streams: `--report`
+  showed one stream per direction across both calls, with a telephone-event
+  stream's jitter measured across the gap between them, and the second call
+  had no media at all. A stream now ends when SDP from a different Call-ID
+  renegotiates one of its ports after it began, and the next packet starts
+  the later call's stream. `--report`, `--json-dialogs`, `GET /v1/streams`
+  and MCP `rtp_stats` list each call's streams with that call's packets.
+  `StreamKey` gains a `session` field that numbers the streams on one SSRC
+  and socket pair, and `StreamStore::get_live` returns the one a packet on
+  them belongs to now.
+- **The `--report` stream tables stay aligned with long values.** The Codec
+  column was eight characters wide, so a `telephone-event` row pushed every
+  later column of that row to the right, and an IPv6 socket did the same to
+  the Source and Destination columns of both stream tables. Each column now
+  widens to its longest value; a table of short values prints as before.
 
 ### Changed
 

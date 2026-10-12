@@ -1676,7 +1676,7 @@ For implementers picking this up, the bridge from each MCP tool to existing func
 | `get_dialog_report` | `output::generate_call_report` ([`src/output/call_report.rs:53`](https://github.com/NormB/sipnab/blob/main/src/output/call_report.rs#L53)) with `ReportFormat::Json/Markdown/Text` |
 | `get_message` | `output::json::message_to_json` ([`src/output/json.rs:725`](https://github.com/NormB/sipnab/blob/main/src/output/json.rs#L725)) |
 | `render_ladder` | `output::generate_call_report` with `ReportFormat::Markdown` (v0.4); rich SVG ladder deferred |
-| `rtp_stats` | `StreamStore::iter` ([`src/rtp/stream_store.rs:1795`](https://github.com/NormB/sipnab/blob/main/src/rtp/stream_store.rs#L1795)) + `rtp::diagnosis::diagnose_media` + `output::json::stream_to_json` |
+| `rtp_stats` | `StreamStore::iter` ([`src/rtp/stream_store.rs:1918`](https://github.com/NormB/sipnab/blob/main/src/rtp/stream_store.rs#L1918)) + `rtp::diagnosis::diagnose_media` + `output::json::stream_to_json` |
 | `search_messages` | Same iteration the `--filter` CLI path uses; `FilterExpr` covers most of it |
 | `find_problems` | `list_dialogs` with each `expand_alias` result OR'd |
 | `tail_dialogs` | `DialogStore::iter` filtered by `updated_at > cursor` |
@@ -1722,7 +1722,7 @@ For implementers picking this up, the bridge from each MCP tool to existing func
 
 | Phase 8.6 expansion (★) | Wraps |
 |---|---|
-| Quality timeline 680ms intervals | Existing `QualityInterval` in [`src/rtp/stream.rs:283`](https://github.com/NormB/sipnab/blob/main/src/rtp/stream.rs#L283) — bump interval, add `status` field |
+| Quality timeline 680ms intervals | Existing `QualityInterval` in [`src/rtp/stream.rs:319`](https://github.com/NormB/sipnab/blob/main/src/rtp/stream.rs#L319) — bump interval, add `status` field |
 | OK/poor/uncertain trichotomy | New classification function alongside existing `estimate_mos` ([`src/rtp/quality.rs:83`](https://github.com/NormB/sipnab/blob/main/src/rtp/quality.rs#L83)) |
 | `.sipnab` project file | New module `src/project.rs`; reuses existing `output::json::dialog_to_json` for report content and `audio_export` for WAV files |
 | `--open <foo.sipnab>` | New CLI dispatch path that bypasses the capture pipeline and rehydrates `DialogStore`/`StreamStore` from `report.json` |
@@ -1731,7 +1731,7 @@ For implementers picking this up, the bridge from each MCP tool to existing func
 | Phase 8.7 surface (★) | Wraps |
 |---|---|
 | `codec_asymmetry` | Compares `RtpStream::codec` (`src/rtp/stream.rs:309 codec_from_pt`) across the two streams of a dialog |
-| `ptime_asymmetry` | Inferred from RTP inter-arrival in `RtpStream::update` ([`src/rtp/stream.rs:1041`](https://github.com/NormB/sipnab/blob/main/src/rtp/stream.rs#L1041)) or SDP `a=ptime:` parsed in [`src/sip/sdp.rs`](https://github.com/NormB/sipnab/blob/main/src/sip/sdp.rs) |
+| `ptime_asymmetry` | Inferred from RTP inter-arrival in `RtpStream::update` ([`src/rtp/stream.rs:1085`](https://github.com/NormB/sipnab/blob/main/src/rtp/stream.rs#L1085)) or SDP `a=ptime:` parsed in [`src/sip/sdp.rs`](https://github.com/NormB/sipnab/blob/main/src/sip/sdp.rs) |
 | `payload_asymmetry` | Compares payload types across streams; data already in `RtpStream` |
 | `duration_asymmetry` | Compares stream start/end timestamps already tracked in `RtpStream` |
 | `late_media` | Compares first RTP packet timestamp against dialog's 200 OK timestamp (already tracked in `dialog.timing`) |

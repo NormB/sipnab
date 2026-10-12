@@ -3198,6 +3198,7 @@ mod tests {
             ssrc: 0x1234_5678,
             src: "10.0.0.1:20000".parse()?,
             dst: "10.0.0.2:30000".parse()?,
+            session: 0,
         };
         let hdr = crate::rtp::parser::RtpHeader {
             version: 2,

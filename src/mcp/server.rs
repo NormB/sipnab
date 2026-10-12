@@ -3851,12 +3851,21 @@ fn endpoint_reported_json(
     }
     Some(v)
 }
-/// The tie-break half of a stream cursor: `0xSSRC@src>dst`.
+/// The tie-break half of a stream cursor: `0xSSRC@src>dst`, with `#N`
+/// appended for session N above 0.
 ///
-/// Unique per stream (the store keys on exactly these three values) and free
-/// of the cursor separator, so `<first_seen>|<identity>` splits unambiguously.
+/// Unique per stream (the store keys on exactly these values: a later call
+/// that reuses the SSRC and sockets is a later session) and free of the
+/// cursor separator, so `<first_seen>|<identity>` splits unambiguously. The
+/// first session carries no suffix, so every cursor issued before sessions
+/// existed still resolves.
 fn stream_identity(s: &crate::rtp::stream::RtpStream) -> String {
-    format!("0x{:08x}@{}>{}", s.key.ssrc, s.key.src, s.key.dst)
+    let base = format!("0x{:08x}@{}>{}", s.key.ssrc, s.key.src, s.key.dst);
+    if s.key.session == 0 {
+        base
+    } else {
+        format!("{base}#{}", s.key.session)
+    }
 }
 
 // ── Tool implementations ────────────────────────────────────────────
@@ -11440,6 +11449,7 @@ mod tests {
             dst: "192.0.2.2:20000"
                 .parse()
                 .map_err(|e| format!("dst: {e:?}"))?,
+            session: 0,
         };
         let header = RtpHeader {
             version: 2,

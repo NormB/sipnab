@@ -1377,6 +1377,7 @@ mod tests {
             ssrc: 1,
             src: addr("192.0.2.1:5004")?,
             dst: addr("192.0.2.2:5004")?,
+            session: 0,
         };
         let id = || String::from("call-id");
         Ok(vec![

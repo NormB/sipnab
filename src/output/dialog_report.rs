@@ -90,6 +90,42 @@ fn media_creating_note(count: u64) -> Option<String> {
     })
 }
 
+/// Column widths for a fixed-width table: each column as wide as its
+/// widest cell, header included, and never narrower than its `minimums`
+/// entry.
+///
+/// A fixed width is a guess about the longest value, and a value longer than
+/// the guess does not truncate: `{:<8}` prints all fifteen characters of
+/// `telephone-event` and shifts every later column of that row to the right,
+/// so the row no longer lines up with its header or its neighbors. An IPv6
+/// socket overflows a column sized for IPv4 the same way. Sizing from the
+/// cells keeps every value whole and every column straight; the minimums keep
+/// a table of short values exactly as it printed before.
+fn fitted_widths(minimums: &[usize], header: &[&str], rows: &[Vec<String>]) -> Vec<usize> {
+    minimums
+        .iter()
+        .enumerate()
+        .map(|(i, &min)| {
+            let header_w = header.get(i).map_or(0, |h| h.chars().count());
+            rows.iter()
+                .filter_map(|r| r.get(i))
+                .map(|c| c.chars().count())
+                .fold(min.max(header_w), usize::max)
+        })
+        .collect()
+}
+
+/// The dashed rule under a fixed-width table: `base` long, plus however many
+/// characters [`fitted_widths`] added to the columns.
+fn rule_for(base: usize, minimums: &[usize], widths: &[usize]) -> String {
+    let grown: usize = widths
+        .iter()
+        .zip(minimums)
+        .map(|(w, m)| w.saturating_sub(*m))
+        .sum();
+    "-".repeat(base + grown)
+}
+
 /// The `---|---` separator markdown needs under a header row.
 fn md_rule(n: usize) -> String {
     format!("|{}\n", "---|".repeat(n))
@@ -230,9 +266,8 @@ pub fn print_dialog_report_as(
         // PT (payload type) and Clock disambiguate the codec (e.g. dynamic PTs,
         // a clock-rate mismatch); Lost/Loss%/Jitter are the quality signals;
         // Dur + Kbps catch one-way/short streams and bitrate anomalies.
-        let _ = writeln!(
-            out,
-            "{:<12} {:<4} {:<8} {:<6} {:<21} {:<21} {:<7} {:<6} {:<7} {:<8} {:<6} {:<7}",
+        const RTP_MIN_W: [usize; 12] = [12, 4, 8, 6, 21, 21, 7, 6, 7, 8, 6, 7];
+        let header = [
             "SSRC",
             "PT",
             "Codec",
@@ -244,10 +279,9 @@ pub fn print_dialog_report_as(
             "Loss%",
             "Jitter",
             "Dur",
-            "Kbps"
-        );
-        let _ = writeln!(out, "{}", "-".repeat(122));
-
+            "Kbps",
+        ];
+        let mut rows: Vec<Vec<String>> = Vec::with_capacity(associated.len());
         for stream in &associated {
             let ssrc = format!("0x{:08x}", stream.key.ssrc);
             let codec = stream.codec.as_deref().unwrap_or("?");
@@ -271,22 +305,30 @@ pub fn print_dialog_report_as(
                 0.0
             };
 
-            let _ = writeln!(
-                out,
-                "{:<12} {:<4} {:<8} {:<6} {:<21} {:<21} {:<7} {:<6} {:<7} {:<8} {:<6} {:<7}",
+            rows.push(vec![
                 ssrc,
-                stream.payload_type,
-                codec,
-                stream.clock_rate,
+                stream.payload_type.to_string(),
+                codec.to_string(),
+                stream.clock_rate.to_string(),
                 src,
                 dst,
-                stream.packet_count,
-                stream.lost_packets,
+                stream.packet_count.to_string(),
+                stream.lost_packets.to_string(),
                 format!("{loss_pct:.1}%"),
                 format!("{:.0}ms", stream.jitter),
                 format!("{dur_s:.0}s"),
                 format!("{kbps:.0}"),
-            );
+            ]);
+        }
+        let widths = fitted_widths(&RTP_MIN_W, &header, &rows);
+        out.push_str(&row(
+            false,
+            &widths,
+            &header.iter().map(|h| (*h).to_string()).collect::<Vec<_>>(),
+        ));
+        let _ = writeln!(out, "{}", rule_for(122, &RTP_MIN_W, &widths));
+        for cells in &rows {
+            out.push_str(&row(false, &widths, cells));
         }
     }
 
@@ -377,13 +419,9 @@ pub fn print_dialog_report_as(
     if !orphaned.is_empty() {
         let _ = writeln!(out);
         let _ = writeln!(out, "Orphaned Streams:");
-        let _ = writeln!(
-            out,
-            "{:<12} {:<24} {:<24} {:<8} {:<10}",
-            "SSRC", "Source", "Destination", "Pkts", "Duration"
-        );
-        let _ = writeln!(out, "{}", "-".repeat(80));
-
+        const ORPHAN_MIN_W: [usize; 5] = [12, 24, 24, 8, 10];
+        let header = ["SSRC", "Source", "Destination", "Pkts", "Duration"];
+        let mut rows: Vec<Vec<String>> = Vec::with_capacity(orphaned.len());
         for stream in &orphaned {
             let ssrc = format!("0x{:08x}", stream.key.ssrc);
             let src = stream.key.src.to_string();
@@ -394,11 +432,23 @@ pub fn print_dialog_report_as(
                 .num_seconds();
             let dur_str = format_seconds(dur);
 
-            let _ = writeln!(
-                out,
-                "{:<12} {:<24} {:<24} {:<8} {:<10}",
-                ssrc, src, dst, stream.packet_count, dur_str,
-            );
+            rows.push(vec![
+                ssrc,
+                src,
+                dst,
+                stream.packet_count.to_string(),
+                dur_str,
+            ]);
+        }
+        let widths = fitted_widths(&ORPHAN_MIN_W, &header, &rows);
+        out.push_str(&row(
+            false,
+            &widths,
+            &header.iter().map(|h| (*h).to_string()).collect::<Vec<_>>(),
+        ));
+        let _ = writeln!(out, "{}", rule_for(80, &ORPHAN_MIN_W, &widths));
+        for cells in &rows {
+            out.push_str(&row(false, &widths, cells));
         }
     }
 
@@ -975,6 +1025,7 @@ mod tests {
             ssrc: 0x0a0b0c0d,
             src: "10.0.0.1:20000".parse::<SocketAddr>()?,
             dst: "10.0.0.2:30000".parse::<SocketAddr>()?,
+            session: 0,
         };
         let hdr = RtpHeader {
             version: 2,
@@ -1026,6 +1077,119 @@ mod tests {
         assert!(report.contains("5s"), "duration 5s: {report}");
         assert!(report.contains("2.0%"), "loss 5/(250+5)=2.0%: {report}");
         Ok(())
+    }
+
+    /// The lines of the table under `heading`, header first, dashed rule
+    /// dropped, up to the first blank line.
+    fn table_under<'a>(report: &'a str, heading: &str) -> Vec<&'a str> {
+        let mut lines = report.lines().skip_while(|l| *l != heading).skip(1);
+        let mut out: Vec<&str> = lines.next().into_iter().collect();
+        out.extend(lines.skip(1).take_while(|l| !l.trim().is_empty()));
+        out
+    }
+
+    /// Every named column of `table` starts at the same byte in each data
+    /// row as in the header, and is preceded by a space.
+    fn assert_columns_aligned(table: &[&str], columns: &[&str]) -> Result<(), TestError> {
+        let header = table.first().ok_or("the table has no header")?;
+        assert!(table.len() > 1, "the table has no rows: {table:?}");
+        for column in columns {
+            let at = header
+                .find(column)
+                .ok_or_else(|| format!("no {column} column in {header:?}"))?;
+            for row in &table[1..] {
+                let before = row.get(..at).ok_or("a row shorter than the header")?;
+                assert!(
+                    before.ends_with(' ') && !row[at..].starts_with(' '),
+                    "{column} starts at byte {at} in the header and elsewhere \
+                     in this row:\n{header}\n{row}"
+                );
+            }
+        }
+        Ok(())
+    }
+
+    /// A codec name longer than the Codec column's eight characters widens
+    /// the column for every row instead of pushing its own row out of line.
+    #[test]
+    fn a_telephone_event_row_keeps_the_rtp_table_aligned() -> Result<(), TestError> {
+        let mut audio = make_rtp_stream()?;
+        audio.associated_dialog = Some("report-test@example.com".to_string());
+        let mut dtmf = make_rtp_stream()?;
+        dtmf.key.ssrc = 0x0d7f0d7f;
+        dtmf.payload_type = 101;
+        dtmf.codec = Some("telephone-event".to_string());
+        dtmf.associated_dialog = audio.associated_dialog.clone();
+        let report = print_dialog_report(&[], &[&audio, &dtmf]);
+        let table = table_under(&report, "RTP Streams:");
+        assert!(
+            table.iter().any(|r| r.contains("telephone-event")),
+            "the long name is printed whole: {report}"
+        );
+        assert_columns_aligned(
+            &table,
+            &[
+                "PT",
+                "Codec",
+                "Clock",
+                "Source",
+                "Destination",
+                "Pkts",
+                "Lost",
+                "Loss%",
+                "Jitter",
+                "Dur",
+                "Kbps",
+            ],
+        )
+    }
+
+    /// The same holds for an IPv6 socket, which overflows a column sized for
+    /// IPv4, in both stream tables.
+    #[test]
+    fn an_ipv6_socket_keeps_both_stream_tables_aligned() -> Result<(), TestError> {
+        let mut linked = make_rtp_stream()?;
+        linked.key.src = "[2001:db8:1234:5678::100]:20000".parse()?;
+        linked.associated_dialog = Some("report-test@example.com".to_string());
+        let short = {
+            let mut s = make_rtp_stream()?;
+            s.key.ssrc = 0x00000001;
+            s.associated_dialog = linked.associated_dialog.clone();
+            s
+        };
+        let mut orphan = make_orphaned_stream()?;
+        orphan.key.dst = "[2001:db8:1234:5678::200]:30000".parse()?;
+        let other_orphan = {
+            let mut s = make_orphaned_stream()?;
+            s.key.ssrc = 0x00000002;
+            s
+        };
+        let report = print_dialog_report(&[], &[&linked, &short, &orphan, &other_orphan]);
+        assert_columns_aligned(
+            &table_under(&report, "RTP Streams:"),
+            &["Source", "Destination", "Pkts", "Kbps"],
+        )?;
+        assert_columns_aligned(
+            &table_under(&report, "Orphaned Streams:"),
+            &["Source", "Destination", "Pkts", "Duration"],
+        )
+    }
+
+    /// Columns grow to their widest cell and never shrink below the minimum,
+    /// and the rule grows by what the columns grew.
+    #[test]
+    fn fitted_widths_grow_to_the_widest_cell_only() {
+        let rows = vec![
+            vec!["a".to_string(), "telephone-event".to_string()],
+            vec!["b".to_string(), "PCMU".to_string()],
+        ];
+        let widths = fitted_widths(&[4, 8], &["SSRC", "Codec"], &rows);
+        assert_eq!(widths, [4, 15]);
+        assert_eq!(rule_for(10, &[4, 8], &widths).len(), 17);
+        let short = vec![vec!["a".to_string(), "PCMU".to_string()]];
+        let widths = fitted_widths(&[4, 8], &["SSRC", "Codec"], &short);
+        assert_eq!(widths, [4, 8], "short values keep the old widths");
+        assert_eq!(rule_for(10, &[4, 8], &widths).len(), 10);
     }
 
     // ── Orphaned-stream section ────────────────────────────────────────
