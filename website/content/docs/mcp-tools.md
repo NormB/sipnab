@@ -1910,7 +1910,9 @@ No parameters. Returns:
     "mcp_allow_shutdown": false,
     "mcp_allow_open_capture": true,
     "mcp_allow_tls_capture": false,
-    "mcp_allow_save_findings": false
+    "mcp_allow_save_findings": false,
+    "mcp_allow_relay_query": false,
+    "hep_delivery_trust": "port-gated-only"  // hmac-verified, plain-secret or port-gated-only
   },
   "libpcap": {
     "banner": "libpcap version 1.10.6 (64-bit time_t, with TPACKET_V3 and netmap)",
@@ -1926,6 +1928,14 @@ turned on — and no compile-time check can answer it. Without it an agent
 discovers the setup by calling a tool and collecting a refusal, and a refusal
 mid-investigation reads as a dead end rather than as a server it was never
 allowed to use that way.
+
+`hep_delivery_trust` says what an endpoint a relay asserted over HEP is worth on
+this run, decided once at startup by the HEP listener's authentication:
+`hmac-verified` with `--hep-auth-mode hmac` and a secret, `plain-secret` with a
+secret and the default `plain` mode, and `port-gated-only` when sipnab checks no
+secret, which includes every run that does not listen for HEP. An endpoint the
+relay tools report as delivered over HEP carries the same value in its
+`delivery_trust`.
 
 `libpcap` is a third question, answered at runtime: `pcap_lib_version()` as
 this process sees it. A gnu build or a package loads the host's libpcap, a
@@ -5367,7 +5377,7 @@ disclaimers`.
 
 ### `save_findings`
 
-**The only write verb on sipnab's network surface.** Requires
+**Writes one line to sipnab's log and nothing else.** Requires
 `--mcp-allow-save-findings`, which is off by default.
 
 | Name | Type | Legal values | If omitted |
@@ -6154,8 +6164,9 @@ The tools that change server state rather than read it. Every one stays off unti
 
 ### `query_relay`
 
-**This is the only tool that transmits.** Every other one answers from bytes
-sipnab already holds. This one puts a packet on the network.
+**This tool transmits, as `relay_stats` and `relay_compare` do.** Every other
+tool answers from bytes sipnab already holds. These three put a packet on the
+network.
 
 It closes a gap a passive decoder cannot. A call already in progress when
 sipnab started has no control exchange left to read, so the relay's own view is

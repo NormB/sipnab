@@ -3816,11 +3816,10 @@ pub struct McpArgs {
 
     /// Permit the `save_findings` MCP tool to record an agent's conclusion.
     ///
-    /// The ONLY write verb on sipnab's whole network surface, and off by
-    /// default because its caller is a language model reading text an attacker
-    /// may have put on the wire. What makes it safe is not that the text is
-    /// trustworthy: it is that the write reaches nothing. A finding goes to the
-    /// log and is readable by no tool, appears in no query result, and feeds no
+    /// Off by default, because its caller is a language model reading text an
+    /// attacker may have put on the wire. What makes it safe is not that the
+    /// text is trustworthy: it is that the write reaches nothing. A finding goes
+    /// to the log and is readable by no tool, appears in no query result, and feeds no
     /// analysis, so it cannot come back as evidence in a later answer.
     ///
     /// Bounded at 1000 findings per process, after which writes are REFUSED

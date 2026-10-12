@@ -2727,8 +2727,17 @@ pub struct RuntimeFlags {
     /// True when `start_tls_capture` may install kernel uprobes.
     pub mcp_allow_tls_capture: bool,
     /// Whether `save_findings` may record an annotation
-    /// (`--mcp-allow-save-findings`). The only write verb on this surface.
+    /// (`--mcp-allow-save-findings`).
     pub mcp_allow_save_findings: bool,
+    /// Whether `query_relay`, `relay_stats` and `relay_compare` may ask the
+    /// relay named by `--rtpengine-control` (`--mcp-allow-relay-query`, on a
+    /// live run). These three tools transmit to the relay.
+    pub mcp_allow_relay_query: bool,
+    /// What an endpoint a relay asserted over HEP is worth on this run,
+    /// decided at startup by the HEP listener's authentication:
+    /// `hmac-verified`, `plain-secret`, or `port-gated-only` when sipnab
+    /// checks no secret.
+    pub hep_delivery_trust: super::tools::relay::DeliveryTrust,
 }
 
 /// The three ways this run's analysis can be incomplete or mistimed, plus the
@@ -6132,6 +6141,8 @@ impl SipnabMcp {
                 mcp_allow_open_capture: self.allow_open_capture,
                 mcp_allow_tls_capture: self.allow_tls_capture,
                 mcp_allow_save_findings: self.allow_save_findings,
+                mcp_allow_relay_query: self.relay_query.is_some(),
+                hep_delivery_trust: self.relay_delivery_trust(),
             },
             libpcap: LibpcapJson::from(&crate::capture::libpcap::running()),
         };
@@ -8116,7 +8127,7 @@ impl SipnabMcp {
 
     /// Record what the agent concluded, as a log line and nothing else.
     ///
-    /// The only write verb on sipnab's network surface. It is safe not because
+    /// It writes one log line. It is safe not because
     /// the text is trustworthy — it is quoted from a wire an attacker may be
     /// on — but because the write reaches nothing: no store, no detector, no
     /// other tool, and no later answer. The types that hold it are private to
@@ -18688,6 +18699,45 @@ mod archive_password_tests {
             line.contains("[REDACTED]") && line.contains("a.zip"),
             "{line}"
         );
+        Ok(())
+    }
+
+    /// `query_relay`, `relay_stats` and `relay_compare` each send to the
+    /// relay, and each description says so. None of them, and no other tool,
+    /// claims to be the only one that transmits: `query_relay` did, while
+    /// the other two transmitted as well.
+    #[test]
+    fn each_transmitting_tool_says_so_and_none_claims_to_be_the_only_one() -> Result<(), TestError>
+    {
+        let server = empty_server();
+        let tools = server.tool_router.list_all();
+        for name in ["query_relay", "relay_stats", "relay_compare"] {
+            let tool = tools
+                .iter()
+                .find(|t| t.name == name)
+                .ok_or_else(|| format!("{name} is not registered"))?;
+            let text = tool
+                .description
+                .as_deref()
+                .unwrap_or_default()
+                .to_lowercase();
+            assert!(
+                text.contains("transmit"),
+                "{name} does not say it transmits: {text}"
+            );
+        }
+        for tool in &tools {
+            let text = tool
+                .description
+                .as_deref()
+                .unwrap_or_default()
+                .to_lowercase();
+            assert!(
+                !text.contains("only mcp tool that transmits"),
+                "{} claims to be the only tool that transmits",
+                tool.name
+            );
+        }
         Ok(())
     }
 

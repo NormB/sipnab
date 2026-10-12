@@ -628,9 +628,9 @@ impl SipnabMcp {
         name = "query_relay",
         description = "Asks the configured relay what it is \
                        holding right now: every Call-ID it knows, or the ports \
-                       and tags for one call. This is the only MCP tool that \
-                       TRANSMITS -- every other one answers from bytes sipnab \
-                       already has. It closes the gap a passive decoder cannot: \
+                       and tags for one call. This TRANSMITS to the relay, as \
+                       relay_stats and relay_compare do; every other tool \
+                       answers from bytes sipnab already has. It closes the gap a passive decoder cannot: \
                        a call already in progress when sipnab started has no \
                        control exchange left to read, which is exactly the case \
                        during incident response. Off unless \
