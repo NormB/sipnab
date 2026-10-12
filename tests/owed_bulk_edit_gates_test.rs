@@ -179,6 +179,7 @@ fn the_full_workflow_set_is_accounted_for() -> Result<(), TestError> {
         "codeql.yml",
         "docker.yml",
         "fuzz.yml",
+        "memcheck.yml",
         "osv-scanner.yml",
         "pages.yml",
         "pr-text.yml",

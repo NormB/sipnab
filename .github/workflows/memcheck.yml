@@ -1,0 +1,87 @@
+name: Memcheck
+
+# Weekly, like the sanitizers: sipnab under Valgrind memcheck across its
+# offline, archive, HEP, MCP and REST paths. A definitely or indirectly lost
+# block, or an invalid read, write or free, fails the job
+# (scripts/memcheck-verdict.py). The 2026-10-10 review found none; this keeps
+# it that way.
+
+on:
+  schedule:
+    # Wednesdays 07:23 UTC, offset from bench.yml (daily 03:29), fuzz.yml
+    # (Mondays 05:17) and sanitizers.yml (Tuesdays 06:11), so the long jobs
+    # do not contend on the local runners.
+    - cron: '23 7 * * 3'
+  workflow_dispatch:
+  push:
+    paths:
+      - '.github/workflows/memcheck.yml'
+      - 'ops/memcheck/**'
+      - 'scripts/memcheck-workloads.sh'
+      - 'scripts/memcheck-verdict.py'
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  memcheck:
+    name: Valgrind memcheck
+    # A heavy, repeatable check: on the local runners, where valgrind, zip
+    # and libpcap are installed, rather than in GitHub's hosted queue.
+    runs-on: [self-hosted, jetson]
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@70dec6087f2cb6bab9fbac4da23160afbe848e91 # 1.99.0
+
+      # A runner without the tools fails here, by name, rather than as a
+      # workload that "ran" under nothing.
+      - name: Check the host has the tools
+        run: |
+          set -u
+          for tool in valgrind zip rustc python3; do
+            command -v "$tool" >/dev/null || { echo "::error::$tool is not installed on this runner"; exit 1; }
+          done
+          valgrind --version
+
+      # Per-runner target directory outside the workspace; see the action.
+      - uses: ./.github/actions/runner-target
+
+      # Memcheck only sees the C library's heap. Without this cfg sipnab
+      # allocates through mimalloc and memcheck would see none of it.
+      - name: Build sipnab on the system allocator
+        env:
+          RUSTFLAGS: --cfg sipnab_tsan
+        run: cargo build --profile profiling --features full --bin sipnab
+
+      # The detector must fire on a known leak, or a clean result below
+      # proves nothing.
+      - name: Valgrind reports a known leak
+        run: |
+          set -uo pipefail
+          rustc -O -g ops/memcheck/leak_probe.rs -o leak_probe
+          valgrind --leak-check=full --log-file=probe.log ./leak_probe >/dev/null
+          rc=0; python3 scripts/memcheck-verdict.py probe.log || rc=$?
+          if [ "$rc" != 1 ]; then
+            echo "::error::memcheck did not report the probe's 4,096-byte leak (verdict exit $rc)"
+            exit 1
+          fi
+
+      - name: Run sipnab's workloads under memcheck
+        run: bash scripts/memcheck-workloads.sh "${CARGO_TARGET_DIR:-target}/profiling/sipnab" memcheck-logs "$GITHUB_WORKSPACE"
+
+      - name: Judge the logs
+        run: python3 scripts/memcheck-verdict.py memcheck-logs/*.log
+
+      - name: Upload the logs
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: memcheck-logs
+          path: memcheck-logs/
+          retention-days: 30

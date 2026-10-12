@@ -859,7 +859,9 @@ fn linked_code_targets_exist() -> Result<(), TestError> {
     // tests/release_surface_test.rs and scripts/lib_markdown.py, and
     // docs/internals/build-ci-release.md's changelog paragraph links
     // tests/release_surface_test.rs.
-    const EXPECTED_CODE_LINKS: usize = 516;
+    // 516 -> 517: docs/internals/build-ci-release.md's memcheck.yml row links
+    // scripts/memcheck-verdict.py.
+    const EXPECTED_CODE_LINKS: usize = 517;
     assert_eq!(
         seen, EXPECTED_CODE_LINKS,
         "code-link extraction found {seen} links, expected {EXPECTED_CODE_LINKS}. \
@@ -1717,7 +1719,7 @@ fn every_site_operator_page_is_in_the_docs_nav_list() -> Result<(), TestError> {
 /// half until `scorecard.yml` became the ninth.
 #[test]
 fn workflow_inventory_heading_counts_the_workflows() -> Result<(), TestError> {
-    const WORDS: [&str; 18] = [
+    const WORDS: [&str; 19] = [
         "zero",
         "one",
         "two",
@@ -1736,6 +1738,7 @@ fn workflow_inventory_heading_counts_the_workflows() -> Result<(), TestError> {
         "fifteen",
         "sixteen",
         "seventeen",
+        "eighteen",
     ];
     let dir = repo().join(".github/workflows");
     let mut names: Vec<String> = std::fs::read_dir(&dir)?
