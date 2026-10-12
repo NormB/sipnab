@@ -660,8 +660,8 @@ stop log lines corrupting the alternate screen, so redirect stderr if you do.
 | `--contact` | `<PATTERN>` | -- | 0.3.0 | Filter by SIP Contact header (regex pattern) |
 | `--ua` | `<PATTERN>` | -- | 0.3.0 | Filter by User-Agent header (regex pattern) |
 | `--filter` | `<EXPR>` | -- | 0.3.0 | Filter DSL expression OR a diagnostic alias name (`codec-asym`, `late-media`, etc.) — see [filter-dsl.md](filter-dsl.md). Config: `[filter] expression` |
-| `--since` | `<RFC3339>` | -- | Unreleased | Keep only dialogs whose first message is at or after this instant (`2026-10-09T10:00:00Z`). The window is half-open, `[--since, --until)`: see [Scope a run to a time window](#scope-a-run-to-a-time-window). ANDed with `--filter`. Needs `-N` |
-| `--until` | `<RFC3339>` | -- | Unreleased | Keep only dialogs whose first message is before this instant; a dialog at exactly `--until` belongs to the next window. Must be after `--since`. ANDed with `--filter`. Needs `-N` |
+| `--since` | `<RFC3339>` | -- | 0.5.214 | Keep only dialogs whose first message is at or after this instant (`2026-10-09T10:00:00Z`). The window is half-open, `[--since, --until)`: see [Scope a run to a time window](#scope-a-run-to-a-time-window). ANDed with `--filter`. Needs `-N` |
+| `--until` | `<RFC3339>` | -- | 0.5.214 | Keep only dialogs whose first message is before this instant; a dialog at exactly `--until` belongs to the next window. Must be after `--since`. ANDed with `--filter`. Needs `-N` |
 
 **Examples**
 
