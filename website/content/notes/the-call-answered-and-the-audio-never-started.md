@@ -312,8 +312,8 @@ those two addresses had no agreed path.
 - [Troubleshooting: One-way audio](@/docs/troubleshooting.md#one-way-audio)
 - [Troubleshooting: Dropped calls](@/docs/troubleshooting.md#dropped-calls-call-answers-then-disconnects-mid-conversation)
 - [Troubleshooting: Both ICE agents think they are in charge](@/docs/troubleshooting.md#both-ice-agents-think-they-are-in-charge)
-- [MCP tools: `capture_status`](@/docs/mcp-tools.md#capture-status) and
-  [`reconcile_orphans`](@/docs/mcp-tools.md#reconcile-orphans)
+- [MCP tools: `capture_status`](@/docs/mcp-tools-core.md#capture-status) and
+  [`reconcile_orphans`](@/docs/mcp-tools-media.md#reconcile-orphans)
 - [CLI reference: Diagnosis thresholds](@/docs/cli.md#diagnosis-thresholds),
   the rows for `--late-media-ms` and `--ack-timeout`
 - [Filter DSL: Named aliases](@/docs/filter-dsl.md#named-aliases)

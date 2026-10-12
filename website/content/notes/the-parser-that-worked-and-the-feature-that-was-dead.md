@@ -160,6 +160,6 @@ added the report, REST, MCP and ladder output listed above.
 ## Related guides
 
 - [See who is on a recorded call](@/docs/cookbook.md#60-see-who-is-on-a-recorded-call)
-- [The `siprec_metadata` MCP tool](@/docs/mcp-tools.md#siprec-metadata)
+- [The `siprec_metadata` MCP tool](@/docs/mcp-tools-vcon.md#siprec-metadata)
 - [Glossary: SIPREC, SRC and SRS](@/docs/glossary.md#siprec-src-and-srs)
 - [REST API: `GET /v1/dialogs/:call_id`](@/docs/api.md#get-v1-dialogs-call-id)

@@ -207,7 +207,7 @@ printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocol
 - [Name a call that was already up when you started](@/docs/rtpengine.md#name-a-call-that-was-already-up-when-you-started)
   and [Read a run that attributed nothing](@/docs/rtpengine.md#read-a-run-that-attributed-nothing).
 - [Let an agent ask the relay](@/docs/rtpengine.md#let-an-agent-ask-the-relay).
-- The tool reference entries for [`explain_attribution`](@/docs/mcp-tools.md#explain-attribution),
-  [`decode_ng`](@/docs/mcp-tools.md#decode-ng),
-  [`reconcile_orphans`](@/docs/mcp-tools.md#reconcile-orphans) and
-  [`server_capabilities`](@/docs/mcp-tools.md#server-capabilities).
+- The tool reference entries for [`explain_attribution`](@/docs/mcp-tools-media.md#explain-attribution),
+  [`decode_ng`](@/docs/mcp-tools-relay.md#decode-ng),
+  [`reconcile_orphans`](@/docs/mcp-tools-media.md#reconcile-orphans) and
+  [`server_capabilities`](@/docs/mcp-tools-server.md#server-capabilities).

@@ -136,7 +136,7 @@ call from one box to the next, either by hand or through an AI agent.
    `x_call_id` and `sdp_origin` cross only when the box copies the header or
    the SDP. `charging_vector_icid` and `via_branch` do not cross by design, and
    `timing_heuristic` is not an identifier. The full table is in the
-   [`find_correlated` reference](@/docs/mcp-tools.md#find-correlated).
+   [`find_correlated` reference](@/docs/mcp-tools-signaling.md#find-correlated).
 
 3. Check the clock only when different hosts timestamped the two legs.
    Inside one capture, one clock stamped every packet, so a 3 ms gap between
@@ -223,7 +223,7 @@ call from one box to the next, either by hand or through an AI agent.
 - [Follow one call across an SBC and its PBXes](@/docs/mcp-estate.md#follow-one-call-across-an-sbc-and-its-pbxes)
 - [Read what matched, because the topology is not fixed](@/docs/mcp-estate.md#read-what-matched-because-the-topology-is-not-fixed)
 - [Check what federation cannot prove](@/docs/mcp-estate.md#check-what-federation-cannot-prove)
-- [`find_correlated` reference](@/docs/mcp-tools.md#find-correlated) and [`get_call_tree`](@/docs/mcp-tools.md#get-call-tree)
-- [`capture_health`, which reports the clock without a correlation](@/docs/mcp-tools.md#capture-health)
+- [`find_correlated` reference](@/docs/mcp-tools-signaling.md#find-correlated) and [`get_call_tree`](@/docs/mcp-tools-signaling.md#get-call-tree)
+- [`capture_health`, which reports the clock without a correlation](@/docs/mcp-tools-server.md#capture-health)
 - [REST: GET /v1/dialogs/:call_id/correlated](@/docs/api.md#get-v1-dialogs-call-id-correlated)
 - [Keep a capture running between agent sessions](@/docs/mcp-deploy.md#keep-a-capture-running-between-agent-sessions)
