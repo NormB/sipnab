@@ -15934,45 +15934,70 @@ mod tests {
 
     /// Two loads at once would have two writers filling one store. The second
     /// call is refused while the first is running.
+    ///
+    /// The running load is HELD rather than raced. The first version checked
+    /// whether the real load was still running and then called again; on a
+    /// fast runner the load finished between the two, the second call was
+    /// rightly accepted, and the test failed on main. On a faster box it
+    /// skipped the assertion and passed without testing anything. So the real
+    /// load is let finish, and a load whose worker never reports done is put
+    /// in its place for the second call to meet.
     #[tokio::test]
     async fn a_second_load_is_refused_while_one_is_running() -> Result<(), TestError> {
         let root = root_with_capture("concurrent", "second.pcap")?;
         let server = exhausted_server().with_open_capture().with_file_root(&root);
-        server
-            .open_capture(
+        let open = || {
+            server.open_capture(
                 Parameters(OpenCaptureParams {
                     filename: "second.pcap".into(),
                 }),
                 Extension(crate::mcp::elicit::Confirm::unavailable()),
             )
+        };
+        open()
             .await
             .map_err(|e| format!("the first swap should be accepted: {e:?}"))?;
 
-        // Racy by nature: the load may already have finished on a fast box,
-        // in which case a second call is legitimately allowed. Assert the
-        // refusal only when it is actually still running.
-        let running = {
-            let state = server.capture.read();
-            let running = state.load.as_ref().is_some_and(|l| !l.finished());
-            drop(state);
-            running
-        };
-        if running {
-            let err = server
-                .open_capture(
-                    Parameters(OpenCaptureParams {
-                        filename: "second.pcap".into(),
-                    }),
-                    Extension(crate::mcp::elicit::Confirm::unavailable()),
-                )
-                .await
-                .err()
-                .ok_or("a concurrent load must be refused")?;
-            assert!(
-                err.message.contains("still loading"),
-                "the refusal must name the running load; got {err:?}"
-            );
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+        while server
+            .capture
+            .read()
+            .load
+            .as_ref()
+            .is_some_and(|l| !l.finished())
+        {
+            if std::time::Instant::now() > deadline {
+                return Err("the first load never finished".into());
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
         }
+
+        let held = Arc::new(crate::mcp::load::CaptureLoad {
+            instance: "held".into(),
+            filename: "first.pcap".into(),
+            packets: std::sync::atomic::AtomicU64::new(7),
+            done: std::sync::atomic::AtomicBool::new(false),
+            outcome: parking_lot::Mutex::new(None),
+            started: std::time::Instant::now(),
+        });
+        server.capture.write().load = Some(Arc::clone(&held));
+        let err = open()
+            .await
+            .err()
+            .ok_or("a concurrent load must be refused")?;
+        assert!(
+            err.message.contains("still loading"),
+            "the refusal must name the running load; got {err:?}"
+        );
+        assert!(
+            err.message.contains("first.pcap"),
+            "and name the file still loading; got {err:?}"
+        );
+
+        held.done.store(true, std::sync::atomic::Ordering::Release);
+        open()
+            .await
+            .map_err(|e| format!("once the load finishes a new one is accepted: {e:?}"))?;
         Ok(())
     }
 
