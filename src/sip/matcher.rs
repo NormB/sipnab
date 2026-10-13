@@ -35,6 +35,7 @@ const REGEX_SIZE_LIMIT: usize = 1_000_000;
 /// let matcher = SipMatcher::new(&cli, None).unwrap();
 /// assert!(matcher.is_active());
 /// ```
+#[derive(Debug)]
 pub struct SipMatcher {
     /// Regex applied to the full raw message bytes copy-free (`regex::bytes`).
     payload_regex: Option<regex::bytes::Regex>,

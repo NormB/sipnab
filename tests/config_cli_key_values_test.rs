@@ -317,6 +317,7 @@ static KEY_SPECS: &[KeySpec] = &[
         },
     ),
     ("display", "delta_time", KeyKind::Bool),
+    ("display", "mouse_capture", KeyKind::Bool),
     (
         "display",
         "from_to",

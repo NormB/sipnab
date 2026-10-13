@@ -250,9 +250,7 @@ fn execute_call_list_action(app: &mut App, action: CallListAction) {
                 app.current_view = View::CallFlow(call_id);
             }
         }
-        CallListAction::SwitchToStreamList => {
-            app.current_view = View::StreamList;
-        }
+        CallListAction::SwitchToStreamList => app.open_stream_list_unscoped(),
         CallListAction::ToggleSelection => {
             if let Some(cid) = get_selected_call_id(app) {
                 app.call_list.toggle_selection(&cid);

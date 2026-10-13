@@ -381,6 +381,8 @@ pub struct TuiOptions {
     /// `-c` / `--calls-only`: open with only INVITE checked in the filter
     /// dialog and that filter applied, so the call list shows calls (#474).
     pub calls_only: bool,
+    /// `[display] mouse_capture = false`: open with mouse capture off (#484).
+    pub mouse_capture_off: bool,
     /// The capture-mode label the status bar opens with (`Online (eth0)`,
     /// `Offline (call.pcap)`). `None` keeps the built-in `Online (any)`.
     pub capture_mode: Option<String>,
@@ -481,6 +483,7 @@ impl TuiOptions {
         app.set_capture_options(self.capture_options);
         app.set_notes(self.notes, self.notes_path);
         app.capture_meter = self.capture_meter;
+        app.mouse_capture_enabled = !self.mouse_capture_off;
         // Last, once the action trail is attached, so the applied filter is
         // recorded the way one applied from the dialog is.
         if self.calls_only {
@@ -1736,6 +1739,9 @@ pub(in crate::tui) struct StreamDisplayedCache {
     pub(in crate::tui) key: Option<StreamDisplayedKey>,
     /// Stream keys in display order.
     pub(in crate::tui) keys: Vec<crate::rtp::stream::StreamKey>,
+    /// In a narrowed list, how many streams sipnab linked to no call: the
+    /// narrowing cannot judge them, so the status line counts them.
+    pub(in crate::tui) unattributed: usize,
     /// Floors generation-driven rebuilds (user inputs bypass it).
     pub(in crate::tui) floor: ChurnFloor,
 }

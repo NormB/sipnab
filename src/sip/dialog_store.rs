@@ -359,6 +359,11 @@ pub struct DialogStore {
     /// Empty by default: an operator names their estate's header in
     /// `[sip] xcid_headers`, and RFC 7989 `Session-ID` needs no configuration.
     xcid_headers: Vec<String>,
+    /// What a message must match to open a dialog; see
+    /// [`Self::set_admission`]. The matcher needs the command line, so
+    /// builds without `native` have no admission.
+    #[cfg(feature = "native")]
+    admission: Option<crate::sip::matcher::SipMatcher>,
     /// How far apart, in milliseconds, two `INVITE`s from overlapping
     /// endpoints may be created and still be reported as legs of one call by
     /// the timing heuristic.
@@ -678,6 +683,8 @@ impl DialogStore {
             capacity_dialogs_evicted: 0,
             generation: 0,
             xcid_headers: Vec::new(),
+            #[cfg(feature = "native")]
+            admission: None,
             leg_correlation_window_ms: DEFAULT_LEG_CORRELATION_WINDOW_MS,
         }
     }
@@ -932,6 +939,10 @@ impl DialogStore {
             (None, None) => return,
         };
         let dialog_idx = self.dialogs.get_index_of(lookup);
+        #[cfg(feature = "native")]
+        if dialog_idx.is_none() && self.admission.as_ref().is_some_and(|m| !m.matches(&msg)) {
+            return;
+        }
 
         if let Some(idx) = dialog_idx {
             let Some((_, dialog)) = self.dialogs.get_index_mut(idx) else {
@@ -1040,6 +1051,16 @@ impl DialogStore {
                 self.dialogs.insert(key, dialog);
             }
         }
+    }
+
+    /// Keep only dialogs one of whose messages `matcher` admits: a message
+    /// for a dialog the store does not hold opens one only when it matches,
+    /// and every later message of a held dialog is kept. The TUI sets it from
+    /// `-e` and the header patterns, so its call list follows dialogs the way
+    /// the headless printout does. `None`, the default, keeps every dialog.
+    #[cfg(feature = "native")]
+    pub fn set_admission(&mut self, matcher: Option<crate::sip::matcher::SipMatcher>) {
+        self.admission = matcher.filter(crate::sip::matcher::SipMatcher::is_active);
     }
 
     /// Select how messages are grouped. Must be set before any message is
@@ -3306,6 +3327,43 @@ mod tests {
             TransportProto::Udp,
         )
         .map_err(|e| format!("should parse SUBSCRIBE 200 OK: {e:?}"))?)
+    }
+
+    /// An admission matcher (the TUI's `-e` and header patterns) keeps a
+    /// dialog only once one of its messages matches, and then keeps every
+    /// later message of it, as the headless run's dialog-following does.
+    #[cfg(feature = "native")]
+    #[test]
+    fn an_admission_matcher_keeps_only_dialogs_one_of_whose_messages_matched()
+    -> Result<(), TestError> {
+        let cli = crate::cli::Cli::parse_from_args(["sipnab", "-e", "^INV"]);
+        let matcher =
+            crate::sip::matcher::SipMatcher::new(&cli, cli.matching_args.match_expr.as_deref())
+                .map_err(|e| format!("matcher: {e:?}"))?;
+        let mut store = DialogStore::new(100, false);
+        store.set_admission(Some(matcher));
+        let t0 = base_ts()?;
+        let t1 = t0 + TimeDelta::seconds(1);
+        store.process_message(make_options_with_branch("opt-1@test", 1, "z9hG4bK-o1", t0)?);
+        store.process_message(make_options_200_with_branch(
+            "opt-1@test",
+            1,
+            "z9hG4bK-o1",
+            t1,
+        )?);
+        store.process_message(make_invite_msg("call-1@test", t0)?);
+        store.process_message(make_200_ok("call-1@test", t1)?);
+
+        assert!(
+            store.get("opt-1@test").is_none(),
+            "OPTIONS never matched ^INV"
+        );
+        let call = store
+            .get("call-1@test")
+            .ok_or("the INVITE dialog is kept")?;
+        assert_eq!(call.messages.len(), 2, "its 200 OK is kept too");
+        assert_eq!(store.len(), 1);
+        Ok(())
     }
 
     /// INVITE followed by 200 OK yields one dialog in the InCall state

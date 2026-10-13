@@ -39,8 +39,12 @@ pub enum StreamListAction {
     /// `N` — open the Name Address popup for the selected stream's
     /// source and destination endpoints.
     NameEndpoints,
-    /// Esc — return to the call list view.
+    /// Esc — return to the view the list was opened from: the call flow
+    /// `r` opened it from, or the call list.
     BackToCallList,
+    /// `a` — in a list `r` narrowed to a call, switch between that call's
+    /// streams and every stream.
+    ToggleScope,
     /// `D` — open the quality dashboard, remembering the stream list as
     /// the return view.
     OpenDashboard,
@@ -75,6 +79,7 @@ pub fn stream_list_action(km: &Keymap, key: KeyEvent) -> Option<StreamListAction
         KeyCode::Enter => OpenDetail,
         KeyCode::Char('N') => NameEndpoints,
         KeyCode::Char('D') => OpenDashboard,
+        KeyCode::Char('a') => ToggleScope,
         KeyCode::Esc => BackToCallList,
         _ => return None,
     })
@@ -118,6 +123,7 @@ fn execute_stream_list_action(app: &mut App, action: StreamListAction) {
         StreamListAction::MoveTop => app.stream_list.move_to_top(),
         StreamListAction::MoveBottom => app.stream_list.move_to_bottom(stream_count),
         StreamListAction::SwitchToCallList => {
+            app.forget_stream_list_scope();
             app.current_view = View::CallList;
         }
         StreamListAction::Search => {
@@ -145,7 +151,14 @@ fn execute_stream_list_action(app: &mut App, action: StreamListAction) {
                 open_name_dialog_for(app, vec![key.src.ip(), key.dst.ip()], 0);
             }
         }
-        StreamListAction::BackToCallList => app.current_view = View::CallList,
+        StreamListAction::BackToCallList => app.close_stream_list(),
+        StreamListAction::ToggleScope => {
+            if !app.toggle_stream_list_scope() {
+                app.set_status_error(
+                    "Every stream is shown. r in a call flow lists that call's streams",
+                );
+            }
+        }
         StreamListAction::OpenDashboard => {
             app.dashboard_selected = 0;
             app.dashboard_return_view = Some(View::StreamList);
@@ -377,6 +390,182 @@ mod tests {
         app.current_view = View::StreamList;
         handle_stream_list_key(&mut app, key(KeyCode::Tab));
         assert_eq!(app.current_view, View::CallList);
+        Ok(())
+    }
+
+    /// The SSRCs the stream list displays, sorted.
+    fn displayed_ssrcs(app: &mut App) -> Vec<u32> {
+        app.sync_caches();
+        let mut ssrcs: Vec<u32> = app.stream_displayed.keys.iter().map(|k| k.ssrc).collect();
+        ssrcs.sort_unstable();
+        ssrcs
+    }
+
+    /// #482: `r` from a call's flow lists that call's streams, `a` switches
+    /// between them and every stream, and Esc goes back to the flow with its
+    /// selection kept.
+    #[test]
+    fn r_from_a_call_flow_lists_its_streams_and_esc_returns_to_the_flow() -> Result<(), TestError> {
+        let mut app = app_with_dialogs()?;
+        open_call_flow(&mut app);
+        let View::CallFlow(cid) = app.current_view.clone() else {
+            return Err("the flow is open".into());
+        };
+        let other = if cid == "call-1@test" {
+            "call-2@test"
+        } else {
+            "call-1@test"
+        };
+        {
+            let mut ss = app.stream_store.write();
+            ss.insert_for_test(test_stream(1, Some(&cid)));
+            ss.insert_for_test(test_stream(2, Some(other)));
+            ss.insert_for_test(test_stream(3, None));
+        }
+        app.flow.selected = 1;
+        crate::tui::controllers::handle_call_flow_key(&mut app, key(KeyCode::Char('r')));
+        assert_eq!(app.current_view, View::StreamList);
+        assert_eq!(displayed_ssrcs(&mut app), vec![1], "this call's streams");
+
+        handle_stream_list_key(&mut app, key(KeyCode::Char('a')));
+        assert_eq!(displayed_ssrcs(&mut app), vec![1, 2, 3], "every stream");
+        handle_stream_list_key(&mut app, key(KeyCode::Char('a')));
+        assert_eq!(displayed_ssrcs(&mut app), vec![1], "this call's again");
+
+        handle_stream_list_key(&mut app, key(KeyCode::Esc));
+        assert_eq!(app.current_view, View::CallFlow(cid));
+        assert_eq!(app.flow.selected, 1, "the flow keeps its selection");
+        Ok(())
+    }
+
+    /// Tab from the call list lists every stream, and Esc goes back there.
+    #[test]
+    fn tab_from_the_call_list_lists_every_stream_and_esc_returns_there() -> Result<(), TestError> {
+        let mut app = app_with_dialogs()?;
+        {
+            let mut ss = app.stream_store.write();
+            ss.insert_for_test(test_stream(1, Some("call-1@test")));
+            ss.insert_for_test(test_stream(2, None));
+        }
+        crate::tui::controllers::call_list::handle_call_list_key(&mut app, key(KeyCode::Tab));
+        assert_eq!(app.current_view, View::StreamList);
+        assert_eq!(displayed_ssrcs(&mut app), vec![1, 2]);
+        handle_stream_list_key(&mut app, key(KeyCode::Esc));
+        assert_eq!(app.current_view, View::CallList);
+        Ok(())
+    }
+
+    /// A narrowed list left through Help (which returns to the call list)
+    /// does not narrow the next `Tab` visit.
+    #[test]
+    fn a_narrowing_left_through_help_does_not_stick() -> Result<(), TestError> {
+        let mut app = app_with_dialogs()?;
+        open_call_flow(&mut app);
+        {
+            let mut ss = app.stream_store.write();
+            ss.insert_for_test(test_stream(1, Some("call-1@test")));
+            ss.insert_for_test(test_stream(2, Some("call-2@test")));
+        }
+        crate::tui::controllers::handle_call_flow_key(&mut app, key(KeyCode::Char('r')));
+        assert_eq!(displayed_ssrcs(&mut app).len(), 1);
+        let help = key(app.keymap.help);
+        handle_stream_list_key(&mut app, help);
+        crate::tui::controllers::handle_key_event(&mut app, key(KeyCode::Esc));
+        assert_eq!(app.current_view, View::CallList);
+        crate::tui::controllers::call_list::handle_call_list_key(&mut app, key(KeyCode::Tab));
+        assert_eq!(displayed_ssrcs(&mut app), vec![1, 2]);
+        handle_stream_list_key(&mut app, key(KeyCode::Esc));
+        assert_eq!(app.current_view, View::CallList);
+        Ok(())
+    }
+
+    /// `r` from the extended flow lists the streams of every leg it shows: a
+    /// B2BUA that anchors media puts each leg's streams under that leg's
+    /// Call-ID (#482).
+    #[test]
+    fn r_from_the_extended_flow_lists_every_legs_streams() -> Result<(), TestError> {
+        use crate::net::TransportProto;
+        use crate::sip::parser::parse_sip;
+        let leg = |call_id: &str| -> Result<crate::sip::SipMessage, TestError> {
+            let raw = raw_sip(
+                "INVITE sip:1002@example.com SIP/2.0",
+                &[
+                    "From: <sip:1001@example.com>;tag=t1",
+                    "To: <sip:1002@example.com>",
+                    &format!("Call-ID: {call_id}"),
+                    "CSeq: 1 INVITE",
+                    "Session-ID: ab30317f1a784dc48ff824d0d3715d86;remote=00000000000000000000000000000000",
+                    "Content-Length: 0",
+                ],
+            );
+            Ok(parse_sip(
+                &raw,
+                base_ts(),
+                addr_a(),
+                addr_b(),
+                5060,
+                5060,
+                TransportProto::Udp,
+            )
+            .map_err(|e| format!("parse: {e:?}"))?)
+        };
+        let mut app = App::with_processed_messages(vec![leg("leg-a@test")?, leg("leg-b@test")?]);
+        {
+            let mut ss = app.stream_store.write();
+            ss.insert_for_test(test_stream(1, Some("leg-a@test")));
+            ss.insert_for_test(test_stream(2, Some("leg-b@test")));
+            ss.insert_for_test(test_stream(3, Some("unrelated@test")));
+        }
+        app.current_view = View::CallFlow("leg-a@test".to_string());
+        app.flow.extended = true;
+        app.sync_caches();
+        crate::tui::controllers::handle_call_flow_key(&mut app, key(KeyCode::Char('r')));
+        assert_eq!(
+            displayed_ssrcs(&mut app),
+            vec![1, 2],
+            "both legs, nothing else"
+        );
+        Ok(())
+    }
+
+    /// A call with no streams says so, and how to see every stream.
+    #[test]
+    fn a_call_with_no_streams_says_so() -> Result<(), TestError> {
+        let mut app = app_with_dialogs()?;
+        open_call_flow(&mut app);
+        app.stream_store
+            .write()
+            .insert_for_test(test_stream(9, Some("another@test")));
+        crate::tui::controllers::handle_call_flow_key(&mut app, key(KeyCode::Char('r')));
+        assert!(displayed_ssrcs(&mut app).is_empty());
+        let hint = crate::tui::stream_list::empty_hint(app.stream_list_scope_label().as_deref());
+        assert!(hint.contains("No RTP streams for this call"), "{hint}");
+        assert!(hint.contains("a shows every stream"), "{hint}");
+        Ok(())
+    }
+
+    /// Enter on an RTP bar of a call with no linked stream must not open
+    /// another call's stream: it lists this call's streams, which says why
+    /// there are none (#482).
+    #[test]
+    fn an_rtp_bar_never_opens_another_calls_stream() -> Result<(), TestError> {
+        let mut app = app_with_dialogs()?;
+        open_call_flow(&mut app);
+        let View::CallFlow(cid) = app.current_view.clone() else {
+            return Err("the flow is open".into());
+        };
+        app.stream_store
+            .write()
+            .insert_for_test(test_stream(4, Some("someone-else@test")));
+        app.flow.selected = 0;
+        app.flow.cached_rtp_bar_indices.insert(0);
+        crate::tui::controllers::handle_call_flow_key(&mut app, key(KeyCode::Enter));
+        assert_eq!(
+            app.current_view,
+            View::StreamList,
+            "not another call's stream"
+        );
+        assert_eq!(app.stream_list_scope_label().as_deref(), Some(cid.as_str()));
         Ok(())
     }
 

@@ -1349,7 +1349,10 @@ fn wiki_intra_docs_links_resolve() -> Result<(), TestError> {
     // +2 (its rule-table row links the "Follow a call while it is in
     // progress" section, which links "What it does with each container") and
     // docs/config-reference.md +1 (its `live` row links the same section).
-    const EXPECTED_WIKI_LINKS: usize = 1709;
+    // 1709 -> 1711 for #484, attributed per file: docs/keybindings.md +2
+    // (the call flow's `y` row links "Copying text", and that section links
+    // the `[display]` table for `mouse_capture`).
+    const EXPECTED_WIKI_LINKS: usize = 1711;
     // Raised 459 -> 460 when SRC1 stage 1 shipped: docs/cli-reference.md's
     // `--hep-listen` row now points at cookbook recipe 6d in docs/examples.md
     // rather than restating how to pair `-L` with `-d`. Attributed per file

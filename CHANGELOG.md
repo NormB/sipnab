@@ -8,6 +8,50 @@ sipnab is pre-1.0: the public API and the CLI surface are not stable, and a
 breaking change may land in any release. Breaking changes are called out in the
 entry that carries them.
 
+## [Unreleased]
+
+### Added
+
+- **Copying from the call flow, and starting with the mouse released**
+  ([#484](https://github.com/NormB/sipnab/issues/484)). The TUI captures the
+  mouse for wheel scrolling, so the terminal's own text selection did not
+  work, and the two ways around it (`F12`, or `Shift` while dragging) were
+  not shown on screen. `y` in the call flow now copies the selected message,
+  as `y` already did in the raw message view. The raw message view's key bar
+  shows `F12 Select`. `[display] mouse_capture = false` starts the TUI with
+  capture off. Reported by Ihor Olkhovskyi
+  ([@igorolhovskiy](https://github.com/igorolhovskiy)) in
+  [#484](https://github.com/NormB/sipnab/issues/484), which this closes.
+
+### Changed
+
+- **RTP Streams opened from a call flow lists that call's streams, and `Esc`
+  goes back to the flow** ([#482](https://github.com/NormB/sipnab/issues/482)).
+  `r` in a call flow listed every captured stream, and `Esc` from there went
+  to the Call List, past the flow. `r` now lists the streams sipnab linked to
+  the dialogs the flow shows, `a` switches between those and every stream,
+  status line 3 says which the list shows and counts the streams linked to no
+  call, and `Esc` returns to the flow with its selected message and scroll
+  kept. A call with no linked stream says why a stream can stay unlinked. RTP
+  Streams opened with `Tab` from the Call List is unchanged. Reported by
+  liwangob ([@WangKLi](https://github.com/WangKLi)) in
+  [#482](https://github.com/NormB/sipnab/issues/482), which this closes.
+
+### Fixed
+
+- **Enter on a call flow's RTP bar no longer opens another call's stream.**
+  With no stream linked to the call, it opened the first stream in the
+  store, whichever call it belonged to. It now opens the call's streams in
+  RTP Streams, which says why there are none.
+- **`-e` narrows the TUI** ([#483](https://github.com/NormB/sipnab/issues/483)).
+  The match expression, and the header patterns `--from`, `--to`,
+  `--contact` and `--ua`, narrowed only the `-N` printout, so the TUI showed
+  every dialog. The TUI now keeps a dialog once one of its messages matches,
+  and every later message of that dialog, as `-N` already did. The REST API
+  and MCP server a TUI run starts read the same dialogs. Reported by Ihor
+  Olkhovskyi ([@igorolhovskiy](https://github.com/igorolhovskiy)) in
+  [#483](https://github.com/NormB/sipnab/issues/483), which this closes.
+
 ## [0.5.216] - 2026-10-13
 
 ### Added

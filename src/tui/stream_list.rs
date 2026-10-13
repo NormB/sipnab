@@ -171,6 +171,9 @@ pub struct StreamListDisplay<'a> {
     /// list is the one surface that cannot show diagnosis evidence, which is
     /// what `DH1` in the backlog is about.
     pub dialogs: &'a DialogStore,
+    /// The call `r` narrowed the list to, for the empty-list text; `None`
+    /// when it lists every stream.
+    pub scope: Option<String>,
 }
 
 // Same "derived once per tick" property as the call list (thread-local so
@@ -379,6 +382,7 @@ pub fn render_stream_list(
         displayed,
         quality_bands,
         dialogs,
+        ref scope,
     } = *display;
     // The entire area is used for the table (no title line)
     let table_area = area;
@@ -513,7 +517,7 @@ pub fn render_stream_list(
             height: table_area.height - 1,
         };
         frame.render_widget(
-            ratatui::widgets::Paragraph::new(STREAM_LIST_EMPTY_HINT)
+            ratatui::widgets::Paragraph::new(empty_hint(scope.as_deref()))
                 .style(Style::default().fg(theme.muted)),
             msg_area,
         );
@@ -523,6 +527,21 @@ pub fn render_stream_list(
 /// What the stream list says while it has no rows.
 const STREAM_LIST_EMPTY_HINT: &str = "\n  No RTP streams yet.\n\n  A stream appears here once RTP \
      packets are seen.\n  Tab returns to the call list.";
+
+/// What the stream list says while it has no rows: narrowed to `scope` (a
+/// Call-ID, or "N calls") by `r` from a call flow, or listing every stream.
+pub(in crate::tui) fn empty_hint(scope: Option<&str>) -> String {
+    match scope {
+        None => STREAM_LIST_EMPTY_HINT.to_string(),
+        Some(scope) => format!(
+            "\n  No RTP streams for this call ({scope}).\n\n  sipnab links a stream to a \
+             call when an SDP it captured names the stream's address and port. A\n  stream \
+             can stay unlinked behind NAT on both ends, over ICE or TURN, or\n  on a \
+             B2BUA's other leg (x in the call flow shows the other legs).\n\n  a shows \
+             every stream. Esc returns to the call flow."
+        ),
+    }
+}
 
 // ── Helpers ─────────────────────────────────────────────────────────
 
@@ -605,6 +624,7 @@ mod tests {
             displayed: &[],
             quality_bands: &bands,
             dialogs: &dialogs,
+            scope: None,
         };
         let mut state = StreamListState::new();
         let mut terminal = Terminal::new(TestBackend::new(120, 6))

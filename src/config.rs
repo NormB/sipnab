@@ -141,6 +141,7 @@ static KNOWN_KEYS: LazyLock<HashMap<&'static str, &'static [&'static str]>> = La
             "delta_time",
             "visible_columns",
             "from_to",
+            "mouse_capture",
         ]
         .as_slice(),
     );
@@ -1213,6 +1214,10 @@ pub struct DisplayConfig {
     /// Default From/To column display mode. One of `"default"`, `"host-port"`,
     /// `"user"`, `"user-host-port"`. Cycled at runtime with the `u` key.
     pub from_to: Option<String>,
+    /// Whether the TUI captures the mouse when it starts. `false` opens it
+    /// with capture off, so the terminal's own text selection works; F12
+    /// toggles it at runtime. Unset or `true` captures it, for wheel scrolling.
+    pub mouse_capture: Option<bool>,
 }
 
 impl DisplayConfig {

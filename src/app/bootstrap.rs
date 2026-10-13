@@ -1208,7 +1208,7 @@ fn tunnel_ports_ignored_notice(tunnel_ports: &[u16]) -> Option<String> {
 /// # Errors
 ///
 /// A `PlanError` (exit code 2) for a pattern that does not compile.
-fn build_matcher(cli: &Cli, config: &Config) -> Result<SipMatcher, PlanError> {
+pub(crate) fn build_matcher(cli: &Cli, config: &Config) -> Result<SipMatcher, PlanError> {
     let m = &cli.matching_args;
     // The matcher is one setting composed from several patterns: a refusal
     // is the command line's when it gave any of them.

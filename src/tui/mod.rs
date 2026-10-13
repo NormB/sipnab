@@ -129,6 +129,15 @@ pub struct App {
     stream_detail_scroll: usize,
     /// View to return to when pressing Esc from StreamDetail.
     stream_detail_return_view: Option<View>,
+    /// Where Esc in the stream list goes: the call flow `r` opened it from.
+    /// `None` returns to the call list (#482).
+    stream_list_return_view: Option<View>,
+    /// The Call-IDs the stream list is narrowed to, when `r` opened it from a
+    /// call flow: the dialogs that flow shows. `None` lists every stream.
+    stream_list_scope: Option<Vec<String>>,
+    /// `a` in a narrowed stream list: show every stream, keeping the
+    /// narrowing for the next `a`.
+    stream_list_show_all: bool,
     /// View to return to when pressing Esc from RawMessage (the raw view can
     /// be opened from the call list OR the call flow).
     raw_msg_return_view: Option<View>,
@@ -497,6 +506,9 @@ impl App {
             last_known_dialog_count: 0,
             stream_detail_scroll: 0,
             stream_detail_return_view: None,
+            stream_list_return_view: None,
+            stream_list_scope: None,
+            stream_list_show_all: false,
             raw_msg_return_view: None,
             filter_dialog: FilterDialogState::default(),
             named_filters: crate::sip::named_filters::installed().clone(),
@@ -1268,6 +1280,79 @@ impl App {
         self.last_rendered_dialog_rows = displayed_len;
     }
 
+    /// The Call-IDs the stream list shows streams of, when it is narrowed
+    /// and `a` has not widened it.
+    pub(in crate::tui) fn stream_list_effective_scope(&self) -> Option<&[String]> {
+        if self.stream_list_show_all {
+            None
+        } else {
+            self.stream_list_scope.as_deref()
+        }
+    }
+
+    /// The call the stream list is narrowed to, for the status line and the
+    /// empty-list text: its Call-ID, or how many calls a merged flow showed.
+    pub(in crate::tui) fn stream_list_scope_label(&self) -> Option<String> {
+        match self.stream_list_effective_scope()? {
+            [one] => Some(one.clone()),
+            many => Some(format!("{} calls", many.len())),
+        }
+    }
+
+    /// Open the stream list narrowed to `scope`; Esc comes back to the view
+    /// it was opened from (#482).
+    pub(in crate::tui) fn open_stream_list_for(&mut self, scope: Vec<String>) {
+        self.stream_list_return_view = Some(self.current_view.clone());
+        self.stream_list_scope = Some(scope);
+        self.stream_list_show_all = false;
+        self.current_view = View::StreamList;
+        self.restart_stream_list_rows();
+    }
+
+    /// Open the stream list over every stream; Esc goes to the call list.
+    pub(in crate::tui) fn open_stream_list_unscoped(&mut self) {
+        self.forget_stream_list_scope();
+        self.current_view = View::StreamList;
+        self.restart_stream_list_rows();
+    }
+
+    /// Leave the stream list for the view it was opened from.
+    pub(in crate::tui) fn close_stream_list(&mut self) {
+        self.current_view = self
+            .stream_list_return_view
+            .take()
+            .unwrap_or(View::CallList);
+        self.forget_stream_list_scope();
+    }
+
+    /// `a`: switch a narrowed list between its call's streams and every
+    /// stream. `false` when the list is not narrowed.
+    pub(in crate::tui) fn toggle_stream_list_scope(&mut self) -> bool {
+        if self.stream_list_scope.is_none() {
+            return false;
+        }
+        self.stream_list_show_all = !self.stream_list_show_all;
+        self.restart_stream_list_rows();
+        true
+    }
+
+    /// Drop the narrowing and the return view, so a later visit starts
+    /// unscoped.
+    pub(in crate::tui) fn forget_stream_list_scope(&mut self) {
+        self.stream_list_return_view = None;
+        self.stream_list_scope = None;
+        self.stream_list_show_all = false;
+    }
+
+    /// Select the first row and drop the derived rows, so the next sync
+    /// rebuilds them and no key acts on the previous list's rows meanwhile.
+    fn restart_stream_list_rows(&mut self) {
+        self.stream_list.move_to_top();
+        self.stream_displayed.key = None;
+        self.stream_displayed.keys.clear();
+        self.stream_displayed.unattributed = 0;
+    }
+
     /// Stream-list rows (search + filter): derived here at most once
     /// per churn floor. The render and every navigation clamp
     /// previously re-filtered the whole stream store — under a
@@ -1282,6 +1367,11 @@ impl App {
         // The display filter matches through the associated dialog,
         // so dialog churn reshapes the list only when a filter is on.
         let dialog_generation = self.active_filter.as_ref().map(|_| store.generation());
+        // The narrowing `r` sets is not part of the key: every change to it
+        // goes through `restart_stream_list_rows`, which drops the key, so
+        // the next sync rebuilds whatever the churn floor says.
+        let scope: Option<Vec<String>> = self.stream_list_effective_scope().map(<[String]>::to_vec);
+        let scope = scope.as_deref();
         let inputs_fresh = self.stream_displayed.key.as_ref().is_some_and(|k| {
             k.filter_text == self.active_filter_text && k.query == self.search_query
         });
@@ -1293,8 +1383,23 @@ impl App {
         if fresh || churn_floored {
             return;
         }
+        // Narrowed by `r` from a call flow: the streams sipnab linked to the
+        // flow's calls, the rule the ladder's codec labels use
+        // (`StreamStore::streams_for`).
+        let in_scope = |s: &&crate::rtp::stream::RtpStream| {
+            scope.is_none_or(|calls| {
+                s.associated_dialog
+                    .as_deref()
+                    .is_some_and(|d| calls.iter().any(|c| c == d))
+            })
+        };
+        self.stream_displayed.unattributed = if scope.is_some() {
+            ss.iter().filter(|s| s.associated_dialog.is_none()).count()
+        } else {
+            0
+        };
         self.stream_displayed.keys = stream_list::displayed_streams(
-            ss.iter(),
+            ss.iter().filter(in_scope),
             Some(store),
             self.active_filter.as_ref(),
             &self.search_query,
@@ -2248,6 +2353,22 @@ mod tests {
         let (d, s) = stores();
         let plain = TuiOptions::default().into_app(d, s);
         assert!(plain.active_filter.is_none(), "no -c, no filter");
+        Ok(())
+    }
+
+    /// `[display] mouse_capture = false` opens the session with mouse capture
+    /// off, so the terminal's own selection works from the start (#484).
+    #[test]
+    fn mouse_capture_off_reaches_the_session() -> Result<(), TestError> {
+        let (d, s) = stores();
+        let off = TuiOptions {
+            mouse_capture_off: true,
+            ..TuiOptions::default()
+        }
+        .into_app(d, s);
+        assert!(!off.mouse_capture_enabled);
+        let (d, s) = stores();
+        assert!(TuiOptions::default().into_app(d, s).mouse_capture_enabled);
         Ok(())
     }
 

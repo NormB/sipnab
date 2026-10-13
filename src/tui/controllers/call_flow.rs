@@ -164,6 +164,9 @@ pub enum CallFlowAction {
     ClearFilter,
     /// `C` — write, amend or remove the operator note on the selected message.
     EditNote,
+    /// `y` — copy the selected message, as the raw view displays it, to
+    /// the clipboard.
+    CopyMessage,
 }
 
 /// Pure key→action mapping for the call flow view (keymap-aware); arm
@@ -219,6 +222,7 @@ pub fn call_flow_action(km: &Keymap, key: KeyEvent) -> Option<CallFlowAction> {
         KeyCode::Char('M') => ClearMark,
         KeyCode::Char('e') => ToggleFold,
         KeyCode::Char('E') => ExportMermaid,
+        KeyCode::Char('y') => CopyMessage,
         KeyCode::Esc => Close,
         k if k == km.help => Help,
         k if k == km.save => OpenSaveDialog,
@@ -501,6 +505,10 @@ fn execute_call_flow_action(app: &mut App, action: CallFlowAction) {
         }
         CallFlowAction::Activate => activate_selected(app, msg_count),
         CallFlowAction::EditNote => note_selected(app, msg_count),
+        CallFlowAction::CopyMessage => match call_flow_copy_text(app) {
+            Ok(text) => copy_message_text(app, text),
+            Err(why) => app.set_status_error(why),
+        },
         CallFlowAction::DiffSelect => diff_select(app, msg_count),
         CallFlowAction::ToggleRtpInFlow => {
             app.flow.show_rtp = !app.flow.show_rtp;
@@ -511,7 +519,8 @@ fn execute_call_flow_action(app: &mut App, action: CallFlowAction) {
             });
         }
         CallFlowAction::JumpToStreams => {
-            app.current_view = View::StreamList;
+            let scope = flow_call_ids(app);
+            app.open_stream_list_for(scope);
         }
         CallFlowAction::NameParticipants => name_participants(app),
         CallFlowAction::CombinedDetailTransaction => open_combined_detail(app, false),
@@ -733,20 +742,19 @@ fn activate_selected(app: &mut App, msg_count: usize) {
         if is_rtp {
             let cid = call_id.clone();
             // Find a stream linked to this dialog, or any stream
+            // A stream linked to this call, never another call's: with none
+            // linked, the narrowed stream list says why (#482).
             let stream_key = {
                 let store = app.stream_store.read();
-                store
-                    .streams_for(&cid)
-                    .next()
-                    .or_else(|| store.iter().next())
-                    .map(|s| s.key.clone())
+                store.streams_for(&cid).next().map(|s| s.key.clone())
             };
             if let Some(key) = stream_key {
                 app.stream_detail_scroll = 0;
                 app.stream_detail_return_view = Some(app.current_view.clone());
                 app.current_view = View::StreamDetail(key);
             } else {
-                app.set_status_error("No RTP streams found for this call");
+                let scope = flow_call_ids(app);
+                app.open_stream_list_for(scope);
             }
         } else {
             // Open full-screen raw message view for the selected message —
@@ -1248,6 +1256,51 @@ fn execute_raw_message_action(app: &mut App, action: RawMessageAction) {
 /// (the same header-form rewrite the viewer displays), spawns the
 /// detached clipboard worker, and paints a "Copying…" status — the
 /// worker's outcome lands later through the async-messages drain.
+/// The Call-IDs of the dialogs the open call flow shows: the anchor, and in
+/// a merged or extended flow every dialog its rows come from (#482).
+fn flow_call_ids(app: &App) -> Vec<String> {
+    let View::CallFlow(ref anchor) = app.current_view else {
+        return Vec::new();
+    };
+    let mut ids = vec![anchor.clone()];
+    let rows = app.flow.ladder.index_map.iter().map(|(cid, _)| cid);
+    for cid in app.flow.merged_calls.iter().chain(rows) {
+        if !ids.contains(cid) {
+            ids.push(cid.clone());
+        }
+    }
+    ids
+}
+
+/// The text `y` copies in the call flow: the selected message as the raw
+/// view displays it, from the row's own dialog in a merged or extended flow.
+fn call_flow_copy_text(app: &App) -> Result<String, &'static str> {
+    let View::CallFlow(ref call_id) = app.current_view else {
+        return Err("Message not available");
+    };
+    if app.flow.cached_rtp_bar_indices.contains(&app.flow.selected) {
+        return Err("An RTP bar is not a message; select a message to copy");
+    }
+    let (cid, index) = flow_selected_message(app, call_id);
+    message_display_text(app, &cid, index).ok_or("Message not available")
+}
+
+/// Message `index` of dialog `call_id`, as the raw view displays it.
+fn message_display_text(app: &App, call_id: &str, index: usize) -> Option<String> {
+    app.dialog_store.try_read().and_then(|store| {
+        store
+            .get(call_id)
+            .and_then(|d| d.messages.get(index))
+            .map(|msg| crate::tui::msg_raw::raw_display_text(msg, app.header_form).1)
+    })
+}
+
+/// Copy `text`, a message, to the clipboard on the clipboard worker.
+fn copy_message_text(app: &mut App, text: String) {
+    crate::tui::clipboard::spawn_clipboard_copy(text, Arc::clone(&app.async_messages));
+    app.status_error = Some("Copying message to clipboard…".to_string());
+}
+
 fn copy_raw_message(app: &mut App) {
     let View::RawMessage {
         ref call_id,
@@ -1256,17 +1309,8 @@ fn copy_raw_message(app: &mut App) {
     else {
         return;
     };
-    let text = app.dialog_store.try_read().and_then(|store| {
-        store
-            .get(call_id)
-            .and_then(|d| d.messages.get(message_index))
-            .map(|msg| crate::tui::msg_raw::raw_display_text(msg, app.header_form).1)
-    });
-    match text {
-        Some(text) => {
-            crate::tui::clipboard::spawn_clipboard_copy(text, Arc::clone(&app.async_messages));
-            app.status_error = Some("Copying message to clipboard…".to_string());
-        }
+    match message_display_text(app, call_id, message_index) {
+        Some(text) => copy_message_text(app, text),
         None => app.set_status_error("Message not available"),
     }
 }
@@ -2346,6 +2390,40 @@ mod tests {
             msg.text.starts_with("Copied "),
             "unexpected worker report: {msg:?}"
         );
+        Ok(())
+    }
+
+    /// `y` in the call flow copies the selected message (#484).
+    #[test]
+    fn call_flow_y_maps_to_copy() {
+        assert_eq!(
+            call_flow_action(&Keymap::default(), key(KeyCode::Char('y'))),
+            Some(CallFlowAction::CopyMessage)
+        );
+    }
+
+    /// What `y` copies in the call flow is the selected message as the raw
+    /// view displays it, following the selection.
+    #[test]
+    fn the_call_flow_copies_the_selected_message_as_displayed() -> Result<(), TestError> {
+        let mut app = app_with_dialogs()?;
+        open_call_flow(&mut app);
+        let View::CallFlow(cid) = app.current_view.clone() else {
+            return Err("the flow is open".into());
+        };
+        app.sync_caches();
+        let expected = |app: &App, index: usize| -> Result<String, TestError> {
+            let store = app.dialog_store.read();
+            let msg = store
+                .get(&cid)
+                .and_then(|d| d.messages.get(index))
+                .ok_or("message")?;
+            Ok(crate::tui::msg_raw::raw_display_text(msg, app.header_form).1)
+        };
+        assert_eq!(call_flow_copy_text(&app)?, expected(&app, 0)?);
+        handle_call_flow_key(&mut app, key(KeyCode::Down));
+        app.sync_caches();
+        assert_eq!(call_flow_copy_text(&app)?, expected(&app, 1)?);
         Ok(())
     }
 
