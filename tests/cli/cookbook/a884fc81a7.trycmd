@@ -104,8 +104,8 @@ a=fmtp:101 0-16
 a=sendonly
 a=ptime:20
 14:53:08.290 10.0.2.20:5060 -> 10.0.2.15:5060 ACK UDP
+Wrote 0 vCon container(s) to 'a884fc81a7/vcons'.
 Redaction: 6 classes, key ephemeral, 3 leading digit(s) retained.
 Wrote 0 token mapping(s) to 'a884fc81a7/redact-map.json' (mode 0600). It reverses every pseudonym in these containers, so it is as sensitive as the capture.
-Wrote 0 vCon container(s) to 'a884fc81a7/vcons'.
 
 ```

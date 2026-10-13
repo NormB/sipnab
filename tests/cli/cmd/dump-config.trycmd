@@ -9,6 +9,15 @@ sipnab v[..]
 
 [filter]
 
+[filters]
+
+[pbx]
+addresses = []
+
+[vcon]
+rule = []
+enrich = []
+
 [sip]
 
 [security]

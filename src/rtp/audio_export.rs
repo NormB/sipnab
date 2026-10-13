@@ -29,7 +29,7 @@ use super::wav::write_wav_with_provenance;
 /// # Errors
 ///
 /// Returns an error if:
-/// - The stream codec is not PCMU, PCMA, or Opus
+/// - The stream codec is not PCMU, PCMA, G.722 or Opus
 /// - No audio payloads have been captured
 /// - The WAV file cannot be written
 pub fn export_stream_to_wav(stream: &RtpStream, path: &Path) -> Result<String> {
@@ -665,7 +665,7 @@ fn omitted_clause(total: usize, written: usize, skipped_codecs: &[&str]) -> Stri
 ///
 /// - **Nothing decodable.** Every stream carries a codec sipnab cannot turn
 ///   into PCM (G.729, video). Naming the codecs found is the whole answer.
-/// - **Nothing retained.** The streams carry PCMU/PCMA/Opus and sipnab counted
+/// - **Nothing retained.** The streams carry PCMU/PCMA/G.722/Opus and sipnab counted
 ///   their packets, but the payload was never copied into the ring buffer that
 ///   export decodes from. Retention is a per-run setting; when it is off, the
 ///   buffers are empty for every call in the capture regardless of what the
@@ -690,7 +690,7 @@ pub(crate) fn nothing_to_decode(streams: &[&RtpStream]) -> String {
         found.dedup();
         return format!(
             "No stream on this call carries a codec that decodes to WAV (found: {}). \
-             Supported: PCMU, PCMA, Opus.",
+             Supported: PCMU, PCMA, G.722, Opus.",
             found.join(", "),
         );
     }
@@ -797,7 +797,13 @@ fn is_exportable_codec(codec: Option<&str>) -> bool {
 /// wrong subject.
 #[must_use]
 pub(crate) fn is_capturable_audio_codec(codec: Option<&str>) -> bool {
-    matches!(codec, Some("PCMU") | Some("PCMA")) || codec.is_some_and(is_opus_codec)
+    matches!(codec, Some("PCMU") | Some("PCMA"))
+        || codec.is_some_and(|c| is_opus_codec(c) || is_g722_codec(c))
+}
+
+/// Check if a codec name is G.722 (case-insensitive per SDP convention).
+fn is_g722_codec(codec: &str) -> bool {
+    codec.eq_ignore_ascii_case("G722")
 }
 
 /// Check if a codec name is Opus (case-insensitive per SDP convention).
@@ -838,49 +844,113 @@ pub fn stream_pcm(stream: &RtpStream) -> Option<(Vec<i16>, u32)> {
 ///
 /// Returns `(samples, sample_rate, codec_label)`.
 fn decode_stream_pcm(stream: &RtpStream) -> Result<(Vec<i16>, u32, &'static str, u64)> {
-    let codec_name = stream.codec.as_deref();
+    let mut decoder = FrameDecoder::new(stream.codec.as_deref())?;
+    let mut pcm: Vec<i16> = Vec::new();
+    // Counted, not just logged. A skipped frame shortens the audio while the
+    // summary went on reporting `payload_buffer.len()` as the frame count, so
+    // the file was quietly missing whatever failed and the number said
+    // otherwise. `debug!` is off by default, which made the only record of it
+    // invisible on the runs that mattered.
+    let mut decode_failures: u64 = 0;
+    for (_ts, payload) in &stream.payload_buffer {
+        match decoder.decode(payload) {
+            Ok(samples) => pcm.extend_from_slice(&samples),
+            Err(e) => {
+                decode_failures = decode_failures.saturating_add(1);
+                tracing::debug!("{} decode error (skipping frame): {e}", decoder.label());
+            }
+        }
+    }
+    Ok((
+        pcm,
+        decoder.rate(stream.clock_rate),
+        decoder.label(),
+        decode_failures,
+    ))
+}
 
-    match codec_name {
-        Some("PCMU") => {
-            let mut pcm: Vec<i16> = Vec::new();
-            for (_ts, payload) in &stream.payload_buffer {
-                pcm.extend_from_slice(&decode_frame(G711Codec::Ulaw, payload));
-            }
-            Ok((pcm, stream.clock_rate, "mu-law", 0))
-        }
-        Some("PCMA") => {
-            let mut pcm: Vec<i16> = Vec::new();
-            for (_ts, payload) in &stream.payload_buffer {
-                pcm.extend_from_slice(&decode_frame(G711Codec::Alaw, payload));
-            }
-            Ok((pcm, stream.clock_rate, "A-law", 0))
-        }
-        Some(name) if is_opus_codec(name) => {
+/// One stream's decoder, frame by frame, carrying whatever state the codec
+/// keeps from one frame to the next.
+///
+/// The one place a codec name becomes a decoder: the whole-call export and
+/// the live audio route both decode through it, so they cannot come to
+/// disagree about which codecs decode or at what rate.
+pub enum FrameDecoder {
+    /// G.711 mu-law (PCMU).
+    Ulaw,
+    /// G.711 A-law (PCMA).
+    Alaw,
+    /// G.722, which is adaptive: each frame continues the last one's state.
+    G722(Box<crate::rtp::g722::Decoder>),
+    /// Opus, decoded at 48 kHz mono.
+    Opus(Box<OpusStreamDecoder>),
+}
+
+impl FrameDecoder {
+    /// The decoder for a stream whose codec is `codec`.
+    ///
+    /// # Errors
+    ///
+    /// A codec with no decoder here, or none named, or an Opus decoder that
+    /// would not start.
+    pub fn new(codec: Option<&str>) -> Result<Self> {
+        match codec {
+            Some("PCMU") => Ok(Self::Ulaw),
+            Some("PCMA") => Ok(Self::Alaw),
+            Some(name) if is_g722_codec(name) => Ok(Self::G722(Box::default())),
             // Opus decodes at 48 kHz mono by default. SDP declares
             // opus/48000/2 but RTP frames are typically mono.
-            let mut decoder = OpusStreamDecoder::new(48000, 1)?;
-            let mut pcm: Vec<i16> = Vec::new();
-            // Counted, not just logged. A skipped frame shortens the audio
-            // while the summary went on reporting `payload_buffer.len()` as
-            // the frame count, so the file was quietly missing whatever failed
-            // and the number said otherwise. `debug!` is off by default, which
-            // made the only record of it invisible on the runs that mattered.
-            let mut decode_failures: u64 = 0;
-            for (_ts, payload) in &stream.payload_buffer {
-                match decoder.decode_frame(payload) {
-                    Ok(samples) => pcm.extend_from_slice(&samples),
-                    Err(e) => {
-                        decode_failures = decode_failures.saturating_add(1);
-                        tracing::debug!("Opus decode error (skipping frame): {e}");
-                    }
-                }
+            Some(name) if is_opus_codec(name) => {
+                Ok(Self::Opus(Box::new(OpusStreamDecoder::new(48000, 1)?)))
             }
-            Ok((pcm, 48000, "Opus", decode_failures))
+            Some(other) => {
+                bail!(
+                    "Unsupported codec for WAV export: {other}. Supported: PCMU, PCMA, G.722, Opus."
+                )
+            }
+            None => bail!("Unknown codec — cannot decode to WAV"),
         }
-        Some(other) => {
-            bail!("Unsupported codec for WAV export: {other}. Supported: PCMU, PCMA, Opus.")
+    }
+
+    /// The rate of the samples it decodes to, for a stream whose RTP clock
+    /// runs at `clock_rate`.
+    ///
+    /// G.711's is the clock rate. G.722's is 16 kHz whatever the clock rate
+    /// says: [RFC 3551 section 4.5.2](https://www.rfc-editor.org/rfc/rfc3551#section-4.5.2) gives payload type 9 an 8 kHz RTP clock
+    /// for historical reasons, and the samples are 16 kHz. Opus decodes at
+    /// 48 kHz.
+    #[must_use]
+    pub fn rate(&self, clock_rate: u32) -> u32 {
+        match self {
+            Self::Ulaw | Self::Alaw => clock_rate,
+            Self::G722(_) => 16000,
+            Self::Opus(_) => 48000,
         }
-        None => bail!("Unknown codec — cannot decode to WAV"),
+    }
+
+    /// The codec's name in an export's summary.
+    #[must_use]
+    pub fn label(&self) -> &'static str {
+        match self {
+            Self::Ulaw => "mu-law",
+            Self::Alaw => "A-law",
+            Self::G722(_) => "G.722",
+            Self::Opus(_) => "Opus",
+        }
+    }
+
+    /// One frame's payload, decoded.
+    ///
+    /// # Errors
+    ///
+    /// A frame the Opus decoder refused; G.711 and G.722 decode any bytes.
+    pub fn decode(&mut self, payload: &[u8]) -> Result<Vec<i16>> {
+        match self {
+            Self::Ulaw => Ok(decode_frame(G711Codec::Ulaw, payload)),
+            Self::Alaw => Ok(decode_frame(G711Codec::Alaw, payload)),
+            Self::G722(decoder) => Ok(decoder.decode(payload)),
+            Self::Opus(decoder) => decoder.decode_frame(payload),
+        }
     }
 }
 
@@ -1921,6 +1991,44 @@ mod tests {
 
         // Should fall back to mono since only one decodable stream
         assert!(result.contains("mu-law"));
+        Ok(())
+    }
+
+    /// A G.722 stream (static payload type 9) is retained and decodes to
+    /// 16 kHz: the samples of the Recommendation, not of the 8 kHz RTP clock
+    /// RFC 3551 gives the payload type. Its decode equals FFmpeg's sample for
+    /// sample (see `tests/fixtures/g722/README.md`).
+    #[test]
+    fn a_g722_stream_decodes_to_16_khz() -> Result<(), TestError> {
+        for name in ["G722", "g722"] {
+            assert!(is_capturable_audio_codec(Some(name)), "{name}");
+        }
+        let encoded = std::fs::read("tests/fixtures/g722/tone440.g722")?;
+        let expected: Vec<i16> = std::fs::read("tests/fixtures/g722/tone440.s16le")?
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .map(|b| i16::from_le_bytes(*b))
+            .collect();
+        // 20 ms frames: 160 bytes of G.722, 160 ticks of its 8 kHz RTP clock.
+        let frames: Vec<(u32, Vec<u8>)> = encoded
+            .chunks(160)
+            .enumerate()
+            .map(|(i, f)| (u32::try_from(i).unwrap_or(0) * 160, f.to_vec()))
+            .collect();
+        let mut stream = make_stream(Some("G722"), frames)?;
+        stream.clock_rate = 8000;
+        let (pcm, rate, label, failures) = decode_stream_pcm(&stream)?;
+        assert_eq!(rate, 16000);
+        assert_eq!(failures, 0);
+        assert!(label.contains("G.722"), "{label}");
+        assert_eq!(pcm, expected);
+        let audio = decode_dialog_audio(&[&stream])?;
+        assert!(
+            (audio.duration_secs - 1.0).abs() < 0.001,
+            "{}",
+            audio.duration_secs
+        );
         Ok(())
     }
 

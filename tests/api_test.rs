@@ -1986,3 +1986,35 @@ fn a_refused_request_does_not_flip_persistence() -> Result<(), TestError> {
     );
     Ok(())
 }
+
+/// `GET /v1/dialogs/{call_id}/vcon` names the call's other leg, as the batch
+/// export does: the related-legs attachment carries the other leg's container
+/// uuid, which is the uuid its own route returns.
+#[cfg(feature = "vcon")]
+#[test]
+fn the_vcon_route_names_the_other_leg() -> Result<(), TestError> {
+    let dir = tempfile::tempdir()?;
+    let pcap = dir.path().join("legs.pcap");
+    pcap_build::write_two_linked_legs(&pcap)?;
+    let cfg = dir.path().join("sipnab.toml");
+    std::fs::write(&cfg, "[sip]\nxcid_headers = [\"X-Call-ID\"]\n")?;
+    let srv = ApiServer::spawn_with_pcap(
+        pcap.to_str().ok_or("utf-8 path")?,
+        &["--config", cfg.to_str().ok_or("utf-8 path")?],
+    )?;
+    let a = srv.get("/v1/dialogs/a-leg/vcon")?.json()?;
+    let b = srv.get("/v1/dialogs/b-leg/vcon")?.json()?;
+    for (this, other) in [(&a, &b), (&b, &a)] {
+        let attachment = this["attachments"]
+            .as_array()
+            .ok_or("attachments")?
+            .iter()
+            .find(|x| x["purpose"] == "sipnab-related-legs")
+            .ok_or("a related-legs attachment")?;
+        let body: serde_json::Value =
+            serde_json::from_str(attachment["body"].as_str().ok_or("string body")?)?;
+        assert_eq!(body["legs"][0]["uuid"], other["uuid"], "{body}");
+        assert_eq!(body["legs"][0]["strategy"], "x_call_id", "{body}");
+    }
+    Ok(())
+}

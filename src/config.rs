@@ -14,6 +14,11 @@ use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
 use std::sync::LazyLock;
 
+/// Sections whose keys are the operator's own names rather than a fixed set:
+/// `[filters]`, a table of named filter expressions. They have no
+/// `KNOWN_KEYS` entry, so no name in them is warned about as unknown.
+const FREE_FORM_SECTIONS: &[&str] = &["filters"];
+
 /// Known valid keys per config section.
 ///
 /// Maps a section name (`""` for the root level, listing the section names
@@ -28,6 +33,11 @@ static KNOWN_KEYS: LazyLock<HashMap<&'static str, &'static [&'static str]>> = La
             "capture",
             "display",
             "filter",
+            // [filters] holds operator-chosen names, so it has no key list of
+            // its own; the names are checked by NamedFilters::resolve.
+            "filters",
+            "pbx",
+            "vcon",
             "sip",
             "security",
             "diagnosis",
@@ -135,6 +145,8 @@ static KNOWN_KEYS: LazyLock<HashMap<&'static str, &'static [&'static str]>> = La
         .as_slice(),
     );
     m.insert("filter", ["from", "to", "expression"].as_slice());
+    m.insert("pbx", ["addresses"].as_slice());
+    m.insert("vcon", ["rule", "enrich"].as_slice());
     m.insert(
         "sip",
         [
@@ -367,6 +379,9 @@ fn collect_unknown_keys(value: &toml::Value) -> Vec<String> {
     }
 
     for (section, val) in table {
+        if FREE_FORM_SECTIONS.contains(&section.as_str()) {
+            continue;
+        }
         if let Some(section_table) = val.as_table()
             && let Some(valid_keys) = known.get(section.as_str())
         {
@@ -402,6 +417,17 @@ pub struct Config {
     /// Filter presets.
     #[serde(default)]
     pub filter: FilterConfig,
+    /// Named filters: `name = "expression"`, referenced as `@name` wherever
+    /// a filter expression is accepted. Resolved once at startup by
+    /// [`crate::sip::named_filters::NamedFilters::resolve`].
+    #[serde(default)]
+    pub filters: std::collections::BTreeMap<String, String>,
+    /// The PBX this host captures beside -- see [`PbxConfig`].
+    #[serde(default)]
+    pub pbx: PbxConfig,
+    /// vCon export rules -- see [`VconConfig`].
+    #[serde(default)]
+    pub vcon: VconConfig,
     /// SIP protocol handling (dialog correlation, ...).
     #[serde(default)]
     pub sip: SipConfig,
@@ -1239,6 +1265,96 @@ impl DisplayConfig {
         }
         Ok(())
     }
+}
+
+/// vCon export: the `[[vcon.rule]]` array.
+#[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq)]
+#[serde(default)]
+pub struct VconConfig {
+    /// The export rules, in the order they are written.
+    pub rule: Vec<VconRuleConfig>,
+    /// The enrichment services, in the order they run.
+    pub enrich: Vec<VconEnrichConfig>,
+}
+
+/// One `[[vcon.enrich]]`: a service a call's audio and container are sent to
+/// before the container is written, whose Analysis Objects are appended.
+/// Validated when the run is planned; unknown keys are refused.
+#[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct VconEnrichConfig {
+    /// The service's name, recorded in each container it enriched.
+    pub name: String,
+    /// The `[[vcon.rule]]` names whose calls it enriches.
+    #[serde(default)]
+    pub rules: Vec<String>,
+    /// An `http://` (loopback only) or `https://` URL the request is POSTed to.
+    #[serde(default)]
+    pub url: Option<String>,
+    /// A program run per call, reading the request on stdin and answering on
+    /// stdout. Exactly one of `url` and `command`.
+    #[serde(default)]
+    pub command: Option<std::path::PathBuf>,
+    /// A file holding the `Authorization` header value, or `Name: value`.
+    #[serde(default)]
+    pub auth_file: Option<std::path::PathBuf>,
+    /// How long to wait for the answer. Default 120.
+    #[serde(default)]
+    pub timeout_secs: Option<u64>,
+    /// What is sent: `audio`, `signaling`, or both (the default).
+    #[serde(default)]
+    pub send: Option<Vec<String>>,
+}
+
+/// One `[[vcon.rule]]`: a filter, the directory its containers go to, and
+/// what each container carries. Validated when the run is planned.
+///
+/// Unknown keys are refused rather than ignored: a misspelled `dir` would
+/// otherwise leave a rule that matches calls and writes them nowhere.
+#[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct VconRuleConfig {
+    /// The rule's name, used in the run's report and spool status.
+    pub name: String,
+    /// The filter expression a call must match; `@name` references resolve.
+    pub when: String,
+    /// The directory the rule writes its containers to.
+    #[serde(default)]
+    pub dir: Option<std::path::PathBuf>,
+    /// `inline` or `omit` (the default).
+    #[serde(default)]
+    pub audio: Option<String>,
+    /// The largest audio this rule inlines, in MiB; above it the container
+    /// says the audio was refused. Unset: `--vcon-max-inline-media`.
+    #[serde(default)]
+    pub max_inline_media_mib: Option<usize>,
+    /// For `audio = "url"`: the HTTPS base URL the operator's storage serves
+    /// the rule's WAV files from. sipnab writes each WAV beside its container
+    /// and names `<base>/<file>` in it; it serves nothing.
+    #[serde(default)]
+    pub audio_url_base: Option<String>,
+    /// `leg` (unset): one container per dialog, each naming the call's other
+    /// legs. `call`: one container holding every leg of the call.
+    #[serde(default)]
+    pub grouping: Option<String>,
+    /// Serve each matching call's audio, while it is in progress, on the REST
+    /// API's `/v1/calls/{call_id}/audio` WebSocket. Default `false`.
+    #[serde(default)]
+    pub live_audio: Option<bool>,
+    /// On a live capture, write each matching call's container as it starts
+    /// and rewrite it in place, with `updated_at`, as the call changes.
+    /// Default `false`: one write, once the call has ended or gone idle.
+    #[serde(default)]
+    pub live: Option<bool>,
+}
+
+/// The PBX sipnab runs beside.
+#[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq)]
+#[serde(default)]
+pub struct PbxConfig {
+    /// The PBX's own addresses, each an IP address or a CIDR range. The
+    /// filter field `side` places a call relative to them.
+    pub addresses: Vec<String>,
 }
 
 /// Filter presets.
@@ -5131,6 +5247,13 @@ column_selector = "F10"
             let fields = body
                 .as_object()
                 .ok_or_else(|| format!("[{section}] must be a table"))?;
+            if FREE_FORM_SECTIONS.contains(&section.as_str()) {
+                assert!(
+                    !KNOWN_KEYS.contains_key(section.as_str()),
+                    "[{section}] is free-form and must have no KNOWN_KEYS entry"
+                );
+                continue;
+            }
             let registered = KNOWN_KEYS
                 .get(section.as_str())
                 .ok_or_else(|| format!("[{section}] is a section with no KNOWN_KEYS entry"))?;

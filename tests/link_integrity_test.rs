@@ -313,6 +313,43 @@ fn is_counted_wiki_link(raw: &str) -> bool {
 /// produced it. This drives that rule in both directions, so a change to the
 /// filter that quietly widened or narrowed what is counted fails here instead
 /// of turning up as an unexplained jump in the expected total.
+/// The link targets in `text`, in order: see
+/// `a_link_whose_text_is_a_bracketed_code_span_is_found`. Link text is any
+/// run of characters other than `]` and backticks, or whole code spans, so a
+/// `]` inside a span does not end the text.
+fn link_targets(text: &str) -> Result<Vec<String>, TestError> {
+    let link_re = regex::Regex::new(r"\[(?:[^\]`]|`[^`]*`)*\]\(([^)\s]+)\)")?;
+    Ok(link_re
+        .captures_iter(text)
+        .map(|c| c[1].to_string())
+        .collect())
+}
+
+/// The link targets in `text`, in order. One rule for every gate in this
+/// file that reads links.
+///
+/// The link text may hold a code span with brackets in it, as
+/// `` [`[filters]`](config-reference.md#filters) `` does: the first version of
+/// this pattern stopped at the `]` inside the span, so such a link was neither
+/// counted nor checked.
+#[test]
+fn a_link_whose_text_is_a_bracketed_code_span_is_found() -> Result<(), TestError> {
+    assert_eq!(
+        link_targets("see [`[filters]`](config-reference.md#filters) and [x](a.md)")?,
+        vec![
+            "config-reference.md#filters".to_string(),
+            "a.md".to_string()
+        ]
+    );
+    assert_eq!(
+        link_targets("[plain](#anchor), `not [a](link.md)` stays a match")?,
+        vec!["#anchor".to_string(), "link.md".to_string()],
+        "a code span outside link text is not this function's business"
+    );
+    assert!(link_targets("[no target] (x.md)")?.is_empty());
+    Ok(())
+}
+
 #[test]
 fn the_wiki_link_extractor_counts_only_markdown_journeys() -> Result<(), TestError> {
     for counted in [
@@ -490,14 +527,12 @@ fn website_intra_docs_links_resolve() -> Result<(), TestError> {
 /// Every relative .md link and anchor across the wiki-source pages resolves to a real file and heading.
 #[test]
 fn wiki_intra_docs_links_resolve() -> Result<(), TestError> {
-    let link_re = regex::Regex::new(r"\[[^\]]*\]\(([^)\s]+)\)")?;
     let mut problems = Vec::new();
     let mut seen = 0;
     for file in wiki_source_files()? {
         let from = file.display().to_string();
         let dir = file.parent().ok_or("file has no parent")?;
-        for cap in link_re.captures_iter(&prose(&file)?) {
-            let raw = cap[1].to_string();
+        for raw in link_targets(&prose(&file)?)? {
             // One rule, stated once: `is_counted_wiki_link` decides what this
             // ratchet's number is a count OF, and is driven directly by
             // `the_wiki_link_extractor_counts_only_markdown_journeys`.
@@ -1282,7 +1317,39 @@ fn wiki_intra_docs_links_resolve() -> Result<(), TestError> {
     // by name, and that section's link to Parser constraints) and docs/vcon.md
     // +3 (two links to When the call had not ended, one to Analyze a stored
     // vCon from Read what came back).
-    const EXPECTED_WIKI_LINKS: usize = 1652;
+    // 1652 -> 1658: no doc change. The link pattern stopped at a `]` inside
+    // a code span in the link text, so `` [`[actions]`](#actions) `` and five
+    // more like it were neither counted nor checked; `link_targets` reads them
+    // now (see a_link_whose_text_is_a_bracketed_code_span_is_found).
+    // 1658 -> 1666: named filters. docs/cli-reference.md +2 (the --filter row
+    // and the summary list), docs/filter-dsl.md +2 (the Named filters section's
+    // two [filters] links), and +1 each in docs/config-reference.md,
+    // docs/keybindings.md, docs/mcp-tools-core.md and docs/rest-api.md.
+    // 1666 -> 1667: docs/filter-dsl.md's `side` row links [pbx] addresses.
+    // 1667 -> 1673: export rules. docs/vcon.md +2 (Write calls by rule links
+    // Named filters and the spool contract), docs/config-reference.md +2 (the
+    // [[vcon.rule]] section links Write calls by rule and Named filters), and
+    // +1 each in docs/rest-api.md and docs/mcp-tools-vcon.md (the `rule`
+    // parameter links Write calls by rule).
+    // 1673 -> 1676: leg grouping. docs/vcon.md +2 (the `grouping` row links
+    // Calls through a PBX or a B2BUA, and that section links [sip]) and
+    // docs/config-reference.md +1 (its `grouping` row links the same section).
+    // 1676 -> 1678: enrichment. docs/config-reference.md +1 (the
+    // [[vcon.enrich]] section links Enrich a call before it is written) and
+    // docs/errors.md +1 (the inert --redact entry links Write calls by rule).
+    // 1678 -> 1683: live audio. docs/vcon.md +3 (the `live_audio` row links
+    // Hear a call while it is in progress, which links the REST API reference
+    // and Enrich a call before it is written), docs/config-reference.md +1
+    // and docs/rest-api.md +1 (each links Hear a call while it is in progress).
+    // 1683 -> 1706: docs/errors.md +21 (the new [[vcon.rule]],
+    // [[vcon.enrich]], live-audio and `grouping` entries link the vcon.md
+    // sections they explain) and docs/config-reference.md +2 (the [vcon]
+    // section's `rule` and `enrich` rows link their key tables).
+    // 1706 -> 1709 with the `live` rule key, attributed per file: docs/vcon.md
+    // +2 (its rule-table row links the "Follow a call while it is in
+    // progress" section, which links "What it does with each container") and
+    // docs/config-reference.md +1 (its `live` row links the same section).
+    const EXPECTED_WIKI_LINKS: usize = 1709;
     // Raised 459 -> 460 when SRC1 stage 1 shipped: docs/cli-reference.md's
     // `--hep-listen` row now points at cookbook recipe 6d in docs/examples.md
     // rather than restating how to pair `-L` with `-d`. Attributed per file
@@ -1429,7 +1496,6 @@ fn root_community_file_links_resolve() -> Result<(), TestError> {
         "CODE_OF_CONDUCT.md",
         "ROADMAP.md",
     ];
-    let link_re = regex::Regex::new(r"\[[^\]]*\]\(([^)\s]+)\)")?;
     let mut problems = Vec::new();
     let mut seen = 0;
     for name in ROOT_FILES {
@@ -1438,8 +1504,7 @@ fn root_community_file_links_resolve() -> Result<(), TestError> {
             "{name} is listed here but missing from the repo root — GitHub \
              renders these in the sidebar, so losing one is user-visible."
         );
-        for cap in link_re.captures_iter(&prose(name)?) {
-            let raw = cap[1].to_string();
+        for raw in link_targets(&prose(name)?)? {
             if raw.starts_with("http://")
                 || raw.starts_with("https://")
                 || raw.starts_with("mailto:")

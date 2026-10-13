@@ -134,6 +134,13 @@ pub struct App {
     raw_msg_return_view: Option<View>,
     /// Structured filter dialog state (preserved between opens).
     pub filter_dialog: FilterDialogState,
+    /// The run's resolved `[filters]`, which the dialog's Named field and
+    /// `@name` references read. The table installed at startup, held here so
+    /// a test can give the app any table.
+    pub(crate) named_filters: crate::sip::named_filters::NamedFilters,
+    /// The thresholds a built-in alias referenced as `@name` compares against:
+    /// the run's, set by the TUI launcher.
+    pub(crate) alias_thresholds: crate::sip::dsl::AliasThresholds,
     /// Settings popup state.
     settings_dialog: SettingsDialogState,
     /// Active filter expression (applied to the call list).
@@ -492,6 +499,8 @@ impl App {
             stream_detail_return_view: None,
             raw_msg_return_view: None,
             filter_dialog: FilterDialogState::default(),
+            named_filters: crate::sip::named_filters::installed().clone(),
+            alias_thresholds: crate::sip::dsl::AliasThresholds::default(),
             settings_dialog: SettingsDialogState::default(),
             active_filter: None,
             active_filter_text: String::new(),
@@ -2239,6 +2248,24 @@ mod tests {
         let (d, s) = stores();
         let plain = TuiOptions::default().into_app(d, s);
         assert!(plain.active_filter.is_none(), "no -c, no filter");
+        Ok(())
+    }
+
+    /// The run's alias thresholds reach the session, so `@slow-setup` in the
+    /// filter dialog compares against the run's figure, as `--filter` does.
+    #[test]
+    fn the_runs_alias_thresholds_reach_the_session() -> Result<(), TestError> {
+        let (d, s) = stores();
+        let tuned = crate::sip::dsl::AliasThresholds {
+            pdd_secs: 0.25,
+            ..crate::sip::dsl::AliasThresholds::default()
+        };
+        let app = TuiOptions {
+            alias_thresholds: tuned,
+            ..TuiOptions::default()
+        }
+        .into_app(d, s);
+        assert_eq!(app.alias_thresholds, tuned);
         Ok(())
     }
 
@@ -4159,6 +4186,37 @@ mod tests {
         Ok(())
     }
 
+    /// The Named field references `[filters]` entries: each word becomes
+    /// `@name` (a leading `@` is accepted), the words AND together, and the
+    /// result ANDs with the other fields like any of them.
+    #[test]
+    fn filter_dialog_named_field_references_named_filters() -> Result<(), TestError> {
+        let st = FilterDialogState {
+            named: "sales @west".to_string(),
+            ..Default::default()
+        };
+        assert_eq!(st.text_field(8), "sales @west");
+        assert_eq!(
+            st.build_filter_expression().as_deref(),
+            Some("@sales AND @west")
+        );
+        let st = FilterDialogState {
+            named: "sales".to_string(),
+            sip_from: "1001".to_string(),
+            ..Default::default()
+        };
+        let expr = st
+            .build_filter_expression()
+            .ok_or("a named filter is a filter")?;
+        assert!(
+            expr.contains("@sales")
+                && expr.contains("from.user =~ '1001'")
+                && expr.contains(" AND "),
+            "{expr}"
+        );
+        Ok(())
+    }
+
     /// All methods checked plus empty text fields builds no expression.
     #[test]
     fn filter_dialog_all_methods_checked_yields_no_method_filter() -> Result<(), TestError> {
@@ -4349,7 +4407,7 @@ mod tests {
         assert_eq!(st.text_field(5), "h");
         assert_eq!(st.text_field(6), "a");
         assert_eq!(st.text_field(7), "b");
-        assert_eq!(FILTER_TEXT_FIELD_COUNT, 8);
+        assert_eq!(FILTER_TEXT_FIELD_COUNT, 9);
         if let Some(s) = st.text_field_mut(5) {
             s.push('x');
         }

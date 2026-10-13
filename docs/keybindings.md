@@ -863,7 +863,6 @@ The filter popup lets you build filter expressions with text fields and checkbox
 <span class="terminal-title">sipnab -- Filter Dialog</span>
 </div>
 <pre class="terminal-body"><span class="t-muted"> ┌ Filter ──────────────────────────────────────────────┐</span>
-<span class="t-muted"> │</span>                                                      <span class="t-muted">│</span>
 <span class="t-muted"> │</span>  <span class="t-header">From user:</span>       <span class="t-selected">[alice                          ]</span>  <span class="t-muted">│</span>
 <span class="t-muted"> │</span>  <span class="t-header">To user:</span>         [                               ]  <span class="t-muted">│</span>
 <span class="t-muted"> │</span>  <span class="t-header">Source IP:</span>       [                               ]  <span class="t-muted">│</span>
@@ -872,6 +871,7 @@ The filter popup lets you build filter expressions with text fields and checkbox
 <span class="t-muted"> │</span>  <span class="t-header">Header:</span>          [<span class="t-muted">Name: text</span>                     ]  <span class="t-muted">│</span>
 <span class="t-muted"> │</span>  <span class="t-header">After:</span>           [<span class="t-muted">2026-07-07T08:00:00Z</span>           ]  <span class="t-muted">│</span>
 <span class="t-muted"> │</span>  <span class="t-header">Before:</span>          [<span class="t-muted">2026-07-07T09:00:00Z</span>           ]  <span class="t-muted">│</span>
+<span class="t-muted"> │</span>  <span class="t-header">Named filter:</span>    [<span class="t-muted">sales, support      </span>           ]  <span class="t-muted">│</span>
 <span class="t-muted"> │</span>  ──────────────────────────────────────────────────  <span class="t-muted">│</span>
 <span class="t-muted"> │</span>  All       <span class="t-good">[*]</span>                                       <span class="t-muted">│</span>
 <span class="t-muted"> │</span>  REGISTER  <span class="t-good">[*]</span>             OPTIONS   <span class="t-good">[*]</span>             <span class="t-muted">│</span>
@@ -886,6 +886,9 @@ user part of the URI, Source IP and Destination IP the addresses, and Text in
 message searches every SIP message of the call. Header takes `Name: text`, or
 a bare header name to find the calls that carry it. After and Before take an
 [RFC 3339](https://www.rfc-editor.org/rfc/rfc3339) timestamp, and the empty fields show an example in gray.
+Named filter takes the names of [`[filters]`](config-reference.md#filters)
+entries, separated by spaces, with or without the leading `@`; while it is
+empty it lists the names the config defines.
 
 > **Tip:** Press `F9` to clear every field and the method boxes at once. For
 anything the fields cannot say, the [Filter DSL](filter-dsl.md) takes the full

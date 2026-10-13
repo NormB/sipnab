@@ -621,10 +621,12 @@ fn assert_valid_openapi_31(what: &str, doc: &Value) -> Result<(), TestError> {
             let responses = op["responses"]
                 .as_object()
                 .ok_or_else(|| format!("{method} {path} declares no responses"))?;
+            // A WebSocket route's success is `101 Switching Protocols`
+            // (RFC 9110 section 15.2.2): what follows is no longer HTTP.
             assert!(
-                responses.keys().any(|c| c.starts_with('2')),
-                "{method} {path} declares no 2xx response, so the document \
-                 never says what a successful call returns"
+                responses.keys().any(|c| c.starts_with('2') || c == "101"),
+                "{method} {path} declares no 2xx (or 101) response, so the \
+                 document never says what a successful call returns"
             );
             two_hundreds += 1;
         }
@@ -970,6 +972,12 @@ fn every_documented_response_matches_what_the_server_sends() -> Result<(), TestE
         // spawns a server WITH a file root; skip it in the generic walk rather
         // than teach the walk to stage capture files.
         if path == "/v1/captures/compare" {
+            continue;
+        }
+        // `/v1/calls/live` answers only on a server with a `live_audio` rule,
+        // which this walk's server has not; `tests/live_audio_test.rs` spawns
+        // one and checks the response's fields against `LiveCall`.
+        if path == "/v1/calls/live" {
             continue;
         }
         let url = path

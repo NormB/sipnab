@@ -63,6 +63,20 @@ fn describe_filter(expr_text: Option<&str>, window: crate::tui::state::TimeWindo
     parts.join(" | ")
 }
 
+/// `text` with each `@name` expanded through the app's `[filters]` table, or
+/// the message for a name nothing defines.
+fn resolve_dialog_text(app: &App, text: &str) -> Result<String, String> {
+    let resolved =
+        crate::sip::dsl::resolve_references(text, &app.named_filters, &app.alias_thresholds);
+    if let Some(name) = crate::sip::named_filters::first_reference(&resolved) {
+        return Err(crate::sip::named_filters::unknown_reference_message(
+            name,
+            &app.named_filters,
+        ));
+    }
+    Ok(resolved.into_owned())
+}
+
 /// Parse and apply `expr_text`. On a parse error the dialog STAYS OPEN with
 /// the error shown inline (mirroring the file-open dialog), so the typed
 /// values can be corrected instead of being discarded with the popup.
@@ -102,8 +116,12 @@ pub(in crate::tui) fn apply_filter_expression(
     // Parse the DSL first. Regex-escaped dialog text cannot fail it, but a
     // Header field whose name is not a header name does, and so does a
     // hand-built expression; either keeps the dialog open with the error.
+    // `@name` resolves through the app's `[filters]` table and the run's
+    // alias thresholds, the rule every other surface applies.
     let filter = match &expr_text {
-        Some(text) => match FilterExpr::parse(text) {
+        Some(text) => match resolve_dialog_text(app, text)
+            .and_then(|t| FilterExpr::parse(&t).map_err(|e| e.to_string()))
+        {
             Ok(expr) => Some(expr),
             Err(e) => {
                 app.filter_dialog.error = Some(format!("Filter error: {e}"));
@@ -448,6 +466,41 @@ mod all_checkbox_order_tests {
     }
 
     /// Reset the filter dialog to defaults and open it as the active popup.
+    /// A named filter in the dialog applies its expansion through the app's
+    /// `[filters]` table, a built-in alias works as `@name` too, and an
+    /// undefined name keeps the dialog open naming what is defined.
+    #[test]
+    fn a_named_filter_applies_its_expansion_and_an_undefined_one_is_refused()
+    -> Result<(), TestError> {
+        let mut app = App::new_test();
+        let mut defs = std::collections::BTreeMap::new();
+        defs.insert("sales".to_string(), "to.user == '7000'".to_string());
+        app.named_filters = crate::sip::named_filters::NamedFilters::resolve(
+            &defs,
+            &crate::sip::dsl::AliasThresholds::default(),
+        )?;
+        for (text, source) in [
+            ("@sales", "(to.user == '7000')"),
+            ("@one-way", "(one_way == true)"),
+        ] {
+            app.active_popup = Some(Popup::FilterDialog);
+            apply_filter_expression(&mut app, Some(text.to_string()), (None, None));
+            assert_eq!(
+                app.active_filter.as_ref().map(FilterExpr::source),
+                Some(source),
+                "{text}: {:?}",
+                app.filter_dialog.error
+            );
+        }
+        app.active_popup = Some(Popup::FilterDialog);
+        apply_filter_expression(&mut app, Some("@nope".to_string()), (None, None));
+        let error = app.filter_dialog.error.clone().unwrap_or_default();
+        assert!(error.contains("'@nope' is not a defined filter"), "{error}");
+        assert!(error.contains("sales"), "names what is defined: {error}");
+        assert_eq!(app.active_popup, Some(Popup::FilterDialog), "stays open");
+        Ok(())
+    }
+
     fn open_filter(app: &mut App) {
         app.filter_dialog = FilterDialogState::default();
         app.active_popup = Some(Popup::FilterDialog);

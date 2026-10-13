@@ -1462,7 +1462,8 @@ fn constant_time_eq_different_lengths_still_compares() -> Result<(), TestError> 
         alert_engine: None,
         armed_detections: Vec::new(),
         file_root: None,
-        vcon_spool: None,
+        vcon_spools: Vec::new(),
+        live_audio: std::sync::Arc::default(),
         pipeline_options: Default::default(),
         archive: sipnab::output::api::ArchivePasswordPolicy::default(),
     };
@@ -1529,7 +1530,8 @@ fn constant_time_eq_matching_strings() -> Result<(), TestError> {
         alert_engine: None,
         armed_detections: Vec::new(),
         file_root: None,
-        vcon_spool: None,
+        vcon_spools: Vec::new(),
+        live_audio: std::sync::Arc::default(),
         pipeline_options: Default::default(),
         archive: sipnab::output::api::ArchivePasswordPolicy::default(),
     };
@@ -1606,7 +1608,8 @@ fn constant_time_eq_different_strings_same_length() -> Result<(), TestError> {
         alert_engine: None,
         armed_detections: Vec::new(),
         file_root: None,
-        vcon_spool: None,
+        vcon_spools: Vec::new(),
+        live_audio: std::sync::Arc::default(),
         pipeline_options: Default::default(),
         archive: sipnab::output::api::ArchivePasswordPolicy::default(),
     };

@@ -1094,9 +1094,10 @@ pub(in crate::tui) fn render_filter_popup(
 ) {
     let popup_width: u16 = 56;
     // Three rows taller than the five-field original: `Header` is text field
-    // six and the `After`/`Before` time bounds are seven and eight, and the
-    // separator, method grid and buttons below them shift down with the field
-    // loop.
+    // six, the `After`/`Before` time bounds are seven and eight and `Named
+    // filter` is nine. The fourth field row took the blank row that used to
+    // sit above the first field rather than a row of height, so the popup
+    // still leaves the key-hint line visible on an 80x24 terminal.
     let popup_height: u16 = 23;
     let popup_area = centered_popup(area, popup_width, popup_height);
 
@@ -1132,7 +1133,14 @@ pub(in crate::tui) fn render_filter_popup(
         "  Header:          ",
         "  After:           ",
         "  Before:          ",
+        "  Named filter:    ",
     ];
+    // While empty, the Named field lists what the run's [filters] defines.
+    let named_hint = if state.known_names.is_empty() {
+        "none in [filters]".to_owned()
+    } else {
+        state.known_names.join(", ")
+    };
     let placeholders = [
         "",
         "",
@@ -1142,6 +1150,7 @@ pub(in crate::tui) fn render_filter_popup(
         "Name: text",
         "2026-07-07T08:00:00Z",
         "2026-07-07T09:00:00Z",
+        named_hint.as_str(),
     ];
     let field_width = iw.saturating_sub(labels[0].len() as u16 + 2); // +2 for margin
 
@@ -1151,7 +1160,7 @@ pub(in crate::tui) fn render_filter_popup(
         render_filter_text_field(
             buf,
             ix,
-            iy + 1 + i as u16,
+            iy + i as u16,
             &FilterTextField {
                 label,
                 value: state.text_field(i),
@@ -1165,7 +1174,7 @@ pub(in crate::tui) fn render_filter_popup(
     }
 
     // ── Separator line ─────────────────────────────────────────────
-    let sep_y = iy + 1 + labels.len() as u16;
+    let sep_y = iy + labels.len() as u16;
     // Saturating: on a sub-6-column popup the 4-column margin exceeds `iw`
     // and a plain `iw - 4` would underflow (debug panic / release wrap).
     let sep = "\u{2500}".repeat(iw.saturating_sub(4) as usize);
@@ -2623,6 +2632,32 @@ mod tests {
                 render_filter_text_field(&mut buf, 0, 0, &field, &theme);
             }
         }
+        Ok(())
+    }
+
+    /// The popup has a Named field and, while it is empty, lists the names
+    /// `[filters]` defines, so an operator does not have to remember them.
+    #[test]
+    fn the_filter_popup_offers_the_defined_names() -> Result<(), TestError> {
+        let theme = Theme::default();
+        let state = FilterDialogState {
+            known_names: vec!["sales".to_string(), "west".to_string()],
+            ..FilterDialogState::default()
+        };
+        let mut terminal = Terminal::new(TestBackend::new(80, 30))?;
+        terminal.draw(|frame| {
+            let area = frame.area();
+            render_filter_popup(frame, area, &state, &theme);
+        })?;
+        let text: String = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(ratatui::buffer::Cell::symbol)
+            .collect();
+        assert!(text.contains("Named filter:"), "{text}");
+        assert!(text.contains("sales, west"), "{text}");
         Ok(())
     }
 

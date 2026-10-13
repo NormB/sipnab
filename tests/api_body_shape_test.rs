@@ -58,7 +58,8 @@ fn state_with(gate: &Arc<PersistenceGate>) -> ApiState {
         alert_engine: None,
         armed_detections: Vec::new(),
         file_root: None,
-        vcon_spool: None,
+        vcon_spools: Vec::new(),
+        live_audio: std::sync::Arc::default(),
         pipeline_options: Default::default(),
         archive: sipnab::output::api::ArchivePasswordPolicy::default(),
     }

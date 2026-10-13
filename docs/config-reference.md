@@ -196,6 +196,102 @@ to = "^1002@"
 expression = "method == 'INVITE'"
 ```
 
+### [filters]
+
+Named filters. Each key is a name and each value a filter expression. Use a
+name as `@name` wherever sipnab takes a filter expression: `--filter`,
+`--export-vcon-when`, `[filter] expression`, the REST `filter` parameter, an
+MCP tool's `filter` argument, and the TUI filter dialog's Named filter field.
+See [Named filters](filter-dsl.md#named-filters).
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| any name | string | -- | A filter expression, which may reference other names and the built-in aliases as `@name`. A name is 1 to 64 ASCII letters, digits, `-` or `_`, and starts with a letter or digit |
+
+```toml
+[filters]
+carrier-a = "src.ip in_subnet '203.0.113.0/24'"
+support   = "to.user == '7000' OR header.X-Queue == 'support'"
+sales     = "@carrier-a AND to.user =~ '^8[0-9]{3}$'"
+```
+
+sipnab resolves every name when it starts and refuses to start, exit code 1,
+naming the entry, when a name does not parse or is a built-in alias, when an
+entry references a name nothing defines, when entries reference each other in
+a loop, or when an expansion is not a valid expression.
+
+### [vcon]
+
+vCon export settings, each an array of tables that you write once per entry.
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `rule` | array of tables | `[]` | Export rules, each `[[vcon.rule]]`. See [the export rule keys](#vconrule) |
+| `enrich` | array of tables | `[]` | Enrichment services, each `[[vcon.enrich]]`. See [the enrichment keys](#vconenrich) |
+
+### [[vcon.rule]]
+
+Export rules: each pairs a filter with the directory its vCon containers go to
+and what they carry. A run can hold several, and sipnab writes a call matching
+several once per rule. See [Write calls by rule](vcon.md#write-calls-by-rule).
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `name` | string | -- | The rule's name, 1 to 64 ASCII letters, digits, `-` or `_`. Required and unique |
+| `when` | string | -- | The filter a call must match; `@name` [named filters](filter-dsl.md#named-filters) resolve. Required |
+| `dir` | string | -- | The directory the rule writes to. Required |
+| `audio` | string | `omit` | `inline` carries the retained audio inside each container; `url` writes it to a WAV beside the container and names it by URL (see `audio_url_base`); both turn audio retention on for the run. `omit` carries none |
+| `audio_url_base` | string | -- | For `audio = "url"`: the HTTPS base URL your storage serves the rule's WAV files from. sipnab writes each WAV beside its container and names `<base>/<file>` in it |
+| `max_inline_media_mib` | integer | `--vcon-max-inline-media` | The largest audio this rule's containers inline, in MiB; sipnab writes a call above it without its audio, saying so |
+| `live_audio` | boolean | `false` | Serve each matching call's audio while it is in progress on the REST API's `/v1/calls/{call_id}/audio` WebSocket, and list the calls at `/v1/calls/live`. Turns audio retention on. See [Hear a call while it is in progress](vcon.md#hear-a-call-while-it-is-in-progress) |
+| `live` | boolean | `false` | On a live capture, write each matching call's container as the call starts and rewrite it in place, with `updated_at`, each time the call changes. No effect with `-I`. See [Follow a call while it is in progress](vcon.md#follow-a-call-while-it-is-in-progress) |
+| `grouping` | string | `leg` | `leg`: one container per dialog, each naming the call's other legs. `call`: one container per call, holding every leg the rule selects and the ties between them. See [Calls through a PBX or a B2BUA](vcon.md#calls-through-a-pbx-or-a-b2bua) |
+
+```toml
+[[vcon.rule]]
+name  = "support-with-audio"
+when  = "to.user == '7000'"
+dir   = "/var/spool/sipnab-vcon/support"
+audio = "inline"
+```
+
+### [[vcon.enrich]]
+
+Enrichment services: sipnab sends each one the calls of the rules it names
+before it writes their containers, and appends the Analysis Objects of its
+answer.
+
+<!-- The link text repeats the heading it links to, whose wording the anchor
+fixes. See the comment above that heading in vcon.md. -->
+<!-- vale Google.Passive = NO -->
+
+See [Enrich a call before it is written](vcon.md#enrich-a-call-before-it-is-written).
+
+<!-- vale Google.Passive = YES -->
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `name` | string | -- | The service's name, recorded in every container sipnab sent it. 1 to 64 ASCII letters, digits, `-` or `_`. Required and unique |
+| `rules` | array of strings | -- | The `[[vcon.rule]]` names whose calls go to this service. Required |
+| `url` | string | -- | Where sipnab POSTs the request: `https://`, or `http://` to a loopback address only. One of `url` and `command` |
+| `command` | string | -- | A program run per call, reading the request on stdin and answering on stdout. One of `url` and `command` |
+| `auth_file` | string | -- | A file holding one `Header-Name: value` line sent with each request, such as `Authorization: Bearer ...`. Never written to a container |
+| `timeout_secs` | integer | `120` | How long sipnab waits for the answer, 1 to 3600: the default is `DEFAULT_TIMEOUT_SECS` (120) and the largest `MAX_TIMEOUT_SECS` (3600) in [`src/app/vcon_enrich.rs`](https://github.com/NormB/sipnab/blob/main/src/app/vcon_enrich.rs) |
+| `send` | array of strings | `["audio", "signaling"]` | What sipnab sends the service: `audio` (each leg's WAV), `signaling` (the container), or both. Sending audio turns audio retention on for the run |
+
+### [pbx]
+
+The PBX sipnab runs beside, for the filter field `side`.
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `addresses` | array of strings | `[]` | The PBX's own addresses, each an IP address or a CIDR range. `side` is `inbound` for a call whose opening request went to one of them and `outbound` for one sent from one of them. sipnab refuses to start, exit code 1, naming the entry, when an entry is neither |
+
+```toml
+[pbx]
+addresses = ["192.0.2.10", "198.51.100.0/24"]
+```
+
 ### [sip]
 
 SIP protocol handling.
@@ -578,7 +674,7 @@ keep_messages_per_idle_dialog = 500
 #### Audio retention budget
 
 The terminal UI, and any run with `--retain-audio`, keeps each RTP stream's
-G.711 and Opus payload so that sipnab can write it to a WAV file or a vCon. By
+G.711, G.722 and Opus payload so that sipnab can write it to a WAV file or a vCon. By
 default sipnab keeps the whole call, from the first frame. `max_audio_bytes`
 bounds the memory this uses, across every stream at once.
 

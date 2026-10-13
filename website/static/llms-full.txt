@@ -5458,6 +5458,10 @@ curl -s -H "Authorization: Bearer $SIPNAB_API_KEY" \
 }
 ```
 
+A [named filter](filter-dsl.md#named-filters) from the run's `[filters]`
+table is `filter=@name` (`%40name` when encoded). A name the run does not
+define is a `400` that lists the names it does.
+
 sipnab parses a name that is not an alias as an expression, and it fails as
 one, so a misspelled alias is a `400` that names the text. `filter=slow_setup` (underscore
 instead of hyphen) answers:
@@ -6363,6 +6367,93 @@ stream carries is a `404` whose body names both searches (`no SIP dialog and no
 RTP stream associated with call_id '…' in this capture`). A call this capture holds
 but carries only undecodable codecs, or whose payload this run did not keep, is
 a `422` whose body names which — never a silent empty file.
+
+---
+
+### GET /v1/calls/live
+
+The calls in progress whose audio this server serves: those a `[[vcon.rule]]`
+with `live_audio = true` matches that have not ended, and that
+`--content-deny-header` does not withhold. See
+[Hear a call while it is in progress](vcon.md#hear-a-call-while-it-is-in-progress).
+
+```bash
+curl -s http://127.0.0.1:8080/v1/calls/live
+```
+
+**Response:**
+
+```json
+{"calls": [{"audio": "/v1/calls/1-4412@192.0.2.10/audio",
+            "call_id": "1-4412@192.0.2.10",
+            "started": "2026-10-13T09:14:02.120194+00:00",
+            "state": "InCall", "streams": 2}]}
+```
+
+A server with no `live_audio` rule answers `404`. When the server
+authenticates, these routes need a token minted with `--token-scope audio`.
+No other scope reaches them, `full` and the static `--api-key` included.
+
+---
+
+### GET /v1/calls/live/events
+
+The same calls as server-sent events: on connecting, one `call` event for each
+call `GET /v1/calls/live` lists, then one for each call that appears. Each
+event's data is the call as `GET /v1/calls/live` gives it. A transcriber
+watches this and opens each call's audio socket, without polling.
+
+```bash
+curl -s -N http://127.0.0.1:8080/v1/calls/live/events
+```
+
+```text
+event: call
+data: {"audio":"/v1/calls/1-4412@192.0.2.10/audio","call_id":"1-4412@192.0.2.10","started":"2026-10-13T09:14:02.120194+00:00","state":"InCall","streams":2}
+```
+
+---
+
+### GET /v1/calls/:call_id/audio
+
+The call's audio as sipnab captures it, over a WebSocket ([RFC 6455](https://www.rfc-editor.org/rfc/rfc6455)).
+`call_id` is the call's Call-ID, as `GET /v1/calls/live` lists it. The request
+must be a WebSocket upgrade. Any other request is a `400`.
+
+The server sends:
+
+| Message | Content |
+|---------|---------|
+| Text `{"type": "stream", ...}` | A stream, before its first packet: `stream` (its index), `ssrc`, `src`, `dst`, `codec`, `rate` (samples per second) and `format` (`s16le`) |
+| Binary | One RTP packet's audio. The first byte is the stream's index; the rest is 16-bit little-endian PCM at the stream's `rate` |
+| Text `{"type": "skipped", ...}` | A stream whose codec sipnab does not decode: `ssrc`, `codec`, `reason`. The server sends none of its packets |
+| Text `{"type": "gap", ...}` | `packets` of stream `stream` left retention before the server sent them, so the audio has a gap there |
+| Text `{"type": "end", ...}` | The call ended (`reason`); a close with code 1000 follows |
+
+The server sends a call that has already ended from its first retained packet,
+and then ends and closes the socket. sipnab decodes the audio from what it
+retained, so sipnab must retain it: a `live_audio` rule turns retention on.
+Audio a key could not decrypt is never sent. The server answers a ping with a
+pong, a close with a close, and a frame that breaks RFC 6455 with a close
+carrying code 1002, as it does a client frame longer than `MAX_CLIENT_FRAME` (4096) bytes: a client sends only control
+frames, which RFC 6455 caps at 125 bytes. A Call-ID no
+`live_audio` rule matches, or that `--content-deny-header` withholds, is a
+`404`.
+
+The handshake, with `curl`:
+
+```bash
+curl -s -i -N -H "Connection: Upgrade" -H "Upgrade: websocket" \
+  -H "Sec-WebSocket-Version: 13" -H "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==" \
+  "http://127.0.0.1:8080/v1/calls/1-4412@192.0.2.10/audio" --output - | head -4
+```
+
+```text
+HTTP/1.1 101 Switching Protocols
+upgrade: websocket
+connection: Upgrade
+sec-websocket-accept: s3pPLMBiTxaQ9kYGzzhZRbK+xOo=
+```
 
 ---
 
@@ -8516,6 +8607,13 @@ the forwarder kept it.
 `--api-max-rows`), and `?cursor=` takes the previous answer's `next_cursor`.
 The three counts always describe the whole spool.
 
+A run with several [export rules](vcon.md#write-calls-by-rule) writes one
+spool per rule. `?rule=` names the rule whose spool to read (the flags' rule is
+`--export-vcon-when`). With a single spool, a request can leave it out. Several spools
+and no `rule`, or a `rule` the run does not have, answer `400` listing the
+run's rule names. The answer's `rule` field says which rule's spool it
+describes.
+
 **curl:**
 
 ```bash
@@ -9886,7 +9984,7 @@ sipnab uses Cargo feature flags to control optional capability. The default buil
 | `audio` | RTP audio playback in the TUI + WAV export. Included by default. Builds the separate `sipnab-audio` plugin (`libsipnab_audio.so`) that the binary `dlopen`s lazily; the binary itself does **not** link `libasound.so.2`. | `libloading`, `libc` (plugin: `rodio`) |
 | `tls` | TLS/DTLS decryption and SRTP key extraction (pure Rust) | `ring`, `rustls`, `rsa`, `aes`, `cbc`, `zeroize`, `base64`, `libc` |
 | `hep` | HEP v3 send + v1/v2/v3 receive (Homer Encapsulation Protocol) | `native`, `hmac`, `sha2`, `rustls`, `base64` |
-| `api` | REST API + Prometheus metrics endpoint, over HTTP or HTTPS. Runs on a background thread in the sipnab process, sharing its address space — not a separate OS process, so treat the bind address and API key accordingly. | `native`, `axum`, `tokio`, `base64`, `hmac`, `sha2`, `utoipa`, `rustls`, `tokio-rustls` |
+| `api` | REST API + Prometheus metrics endpoint, over HTTP or HTTPS. Runs on a background thread in the sipnab process, sharing its address space — not a separate OS process, so treat the bind address and API key accordingly. | `native`, `axum`, `tokio`, `base64`, `hmac`, `sha2`, `utoipa`, `rustls`, `tokio-rustls`, `ring`, `hyper`, `hyper-util`, `futures-core` |
 | `mcp` | Model Context Protocol server, stdio transport. Lets an AI agent (Claude Code, Claude Desktop, …) drive sipnab. | `native`, `tokio`, `rmcp`, `base64`, `hmac`, `sha2` |
 | `mcp-http` | MCP server over HTTP (Streamable-HTTP). Adds the `--mcp-transport http` option. | `mcp`, `api`, `rmcp/transport-streamable-http-server` |
 | `metrics` | Standalone Prometheus `/metrics` server: a raw TCP listener and plain threads, no axum/tokio, so scraping does not drag in the `api` feature or its async runtime. Included by default. | `native`, `base64`, `rustls` |
@@ -12460,7 +12558,7 @@ as the `sipnab` binary. The binary's `.gnu_debuglink` names that file, and
 
 ## Still stuck?
 
-Build custom queries with the [Filter DSL](filter-dsl.md) -- 33 fields plus any header by name, regex support, boolean logic. See the [CLI Reference](cli-reference.md) for every flag and more recipes.
+Build custom queries with the [Filter DSL](filter-dsl.md) -- 42 fields plus any header by name, named filters, regex support, boolean logic. See the [CLI Reference](cli-reference.md) for every flag and more recipes.
 
 If the capture itself is the problem -- drops on a busy link, a full kernel ring buffer, or loss that appears on every call at once -- see [Tuning capture on a busy server](tuning-capture.md).
 
@@ -13520,7 +13618,6 @@ The filter popup lets you build filter expressions with text fields and checkbox
 <span class="terminal-title">sipnab -- Filter Dialog</span>
 </div>
 <pre class="terminal-body"><span class="t-muted"> ┌ Filter ──────────────────────────────────────────────┐</span>
-<span class="t-muted"> │</span>                                                      <span class="t-muted">│</span>
 <span class="t-muted"> │</span>  <span class="t-header">From user:</span>       <span class="t-selected">[alice                          ]</span>  <span class="t-muted">│</span>
 <span class="t-muted"> │</span>  <span class="t-header">To user:</span>         [                               ]  <span class="t-muted">│</span>
 <span class="t-muted"> │</span>  <span class="t-header">Source IP:</span>       [                               ]  <span class="t-muted">│</span>
@@ -13529,6 +13626,7 @@ The filter popup lets you build filter expressions with text fields and checkbox
 <span class="t-muted"> │</span>  <span class="t-header">Header:</span>          [<span class="t-muted">Name: text</span>                     ]  <span class="t-muted">│</span>
 <span class="t-muted"> │</span>  <span class="t-header">After:</span>           [<span class="t-muted">2026-07-07T08:00:00Z</span>           ]  <span class="t-muted">│</span>
 <span class="t-muted"> │</span>  <span class="t-header">Before:</span>          [<span class="t-muted">2026-07-07T09:00:00Z</span>           ]  <span class="t-muted">│</span>
+<span class="t-muted"> │</span>  <span class="t-header">Named filter:</span>    [<span class="t-muted">sales, support      </span>           ]  <span class="t-muted">│</span>
 <span class="t-muted"> │</span>  ──────────────────────────────────────────────────  <span class="t-muted">│</span>
 <span class="t-muted"> │</span>  All       <span class="t-good">[*]</span>                                       <span class="t-muted">│</span>
 <span class="t-muted"> │</span>  REGISTER  <span class="t-good">[*]</span>             OPTIONS   <span class="t-good">[*]</span>             <span class="t-muted">│</span>
@@ -13543,6 +13641,9 @@ user part of the URI, Source IP and Destination IP the addresses, and Text in
 message searches every SIP message of the call. Header takes `Name: text`, or
 a bare header name to find the calls that carry it. After and Before take an
 [RFC 3339](https://www.rfc-editor.org/rfc/rfc3339) timestamp, and the empty fields show an example in gray.
+Named filter takes the names of [`[filters]`](config-reference.md#filters)
+entries, separated by spaces, with or without the leading `@`; while it is
+empty it lists the names the config defines.
 
 > **Tip:** Press `F9` to clear every field and the method boxes at once. For
 anything the fields cannot say, the [Filter DSL](filter-dsl.md) takes the full
@@ -13908,7 +14009,7 @@ A first run needs only a handful of these flags:
 - [`-N`, `--no-tui`](#mode) turns on non-interactive mode, with no TUI. The batch and output flags require it.
 - [`--report`](#output) generates a summary report after capture completes. Requires `-N`.
 - [`--json`](#output) prints output as NDJSON, one JSON object per line. Requires `-N`.
-- [`--filter`](#matching) takes a Filter DSL expression or a diagnostic alias name, such as `codec-asym` or `late-media`.
+- [`--filter`](#matching) takes a Filter DSL expression or a diagnostic alias name, such as `codec-asym` or `late-media`, and a [named filter](filter-dsl.md#named-filters) as `@name`.
 
 The **Since** column names the first sipnab release whose command line accepted the flag, under its current name or one of its aliases. It comes from [`src/cli.rs`](https://github.com/NormB/sipnab/blob/main/src/cli.rs) at each release tag, `v0.3.0` onward. The pre-release tags `v0.1.0-alpha` and `v0.2.0-beta` do not count as releases. A flag that a release removed and a later release restored keeps the release it first appeared in. The changelog lists four version numbers that were never tagged or released: 0.3.1, 0.4.1, 0.5.76 and 0.5.111. A flag first added in one of them shows the next release. `Unreleased` means no release has the flag yet: it is in the source but not in a published version.
 
@@ -14554,7 +14655,7 @@ stop log lines corrupting the alternate screen, so redirect stderr if you do.
 | `--to` | `<PATTERN>` | -- | 0.3.0 | Filter by SIP To header (regex pattern). Config: `[filter] to` |
 | `--contact` | `<PATTERN>` | -- | 0.3.0 | Filter by SIP Contact header (regex pattern) |
 | `--ua` | `<PATTERN>` | -- | 0.3.0 | Filter by User-Agent header (regex pattern) |
-| `--filter` | `<EXPR>` | -- | 0.3.0 | Filter DSL expression OR a diagnostic alias name (`codec-asym`, `late-media`, etc.) — see [filter-dsl.md](filter-dsl.md). Config: `[filter] expression` |
+| `--filter` | `<EXPR>` | -- | 0.3.0 | Filter DSL expression OR a diagnostic alias name (`codec-asym`, `late-media`, etc.) — see [filter-dsl.md](filter-dsl.md). The expression may use a [named filter](filter-dsl.md#named-filters) from `[filters]` as `@name`. Config: `[filter] expression` |
 | `--since` | `<RFC3339>` | -- | 0.5.214 | Keep only dialogs whose first message is at or after this instant (`2026-10-09T10:00:00Z`). The window is half-open, `[--since, --until)`: see [Scope a run to a time window](#scope-a-run-to-a-time-window). ANDed with `--filter`. Needs `-N` |
 | `--until` | `<RFC3339>` | -- | 0.5.214 | Keep only dialogs whose first message is before this instant; a dialog at exactly `--until` belongs to the next window. Must be after `--since`. ANDed with `--filter`. Needs `-N` |
 
@@ -15186,7 +15287,7 @@ Unprivileged runs (`sipnab --setup-caps`) now do too.
 | `--syslog` | -- | off | 0.3.0 | Send alerts to syslog. Config: `[security] alert` |
 | `--mint-token` | -- | off | 0.4.3 | Mint a signed bearer token from the first configured signing key (API or MCP), print it to stdout, and exit (no capture/servers). See [`auth.md`](./auth.md). |
 | `--token-id` | `<ID>` | -- | 0.4.3 | Token id (`jti`) for `--mint-token`, used for revocation. Defaults to a generated id. |
-| `--token-scope` | `<full\|metrics\|read\|actions>` | `full` | 0.5.59 | Scope for `--mint-token`. `metrics` reaches `GET /metrics` and returns `401` everywhere else — mint one for a scrape job rather than a credential that also reads `/v1/dialogs` and the message bodies underneath. `read` is the MCP counterpart: it reaches the tools annotated read-only and refuses every tool that writes or replaces state (`export_capture`, `open_capture`, `shutdown_server`, `tfps_ban` and the rest; `tools/list` marks each one with `readOnlyHint: false`). `actions` reaches everything `full` does plus the actions that change another system, such as TFPS ban and unban, where the server enabled them with [`--allow-action`](#security); a `full` token never reaches an action. A cross-surface mint fails at mint time, so `metrics` with MCP and `read` with the REST API are both refused rather than issued and then rejected. |
+| `--token-scope` | `<full\|metrics\|read\|actions\|audio>` | `full` | 0.5.59 | Scope for `--mint-token`. `metrics` reaches `GET /metrics` and returns `401` everywhere else — mint one for a scrape job rather than a credential that also reads `/v1/dialogs` and the message bodies underneath. `read` is the MCP counterpart: it reaches the tools annotated read-only and refuses every tool that writes or replaces state (`export_capture`, `open_capture`, `shutdown_server`, `tfps_ban` and the rest; `tools/list` marks each one with `readOnlyHint: false`). `actions` reaches everything `full` does plus the actions that change another system, such as TFPS ban and unban, where the server enabled them with [`--allow-action`](#security); a `full` token never reaches an action. `audio` reaches the REST API's live call audio routes (`/v1/calls/...`) and nothing else, and no other scope reaches them. A cross-surface mint fails at mint time, so sipnab refuses `metrics` and `audio` with MCP and `read` with the REST API rather than issuing them and then rejecting them. |
 
 **Examples**
 - `sipnab -N -I capture.pcap --no-hep-parse --report` — read HEP datagrams as plain UDP when your config file sets `[capture] hep_parse = true`
@@ -16958,6 +17059,142 @@ The SIP over WebSocket port range that `[capture] ws_ports` in the configuration
 
 **Exit code:** 1.
 
+### `[pbx] addresses: '{entry}' is not an IP address or a CIDR range: {e}`
+
+An entry in `[pbx] addresses` is neither an IP address nor a CIDR range. `{entry}` is the entry and `{e}` is the parser's reason. `[pbx] addresses` lists the PBX's own addresses, which the filter field `side` compares against.
+
+**What to do:** Write each entry as an address (`192.0.2.10`) or a range (`198.51.100.0/24`).
+
+**Exit code:** 1.
+
+### `[[vcon.rule]] name '{name}' is not usable: a name is 1 to {} ASCII letters, digits, '-' or '_', starting with a letter or digit`
+
+A [`[[vcon.rule]]`](vcon.md#write-calls-by-rule) has a `name` sipnab cannot use. `{name}` is the name, and `{}` is the longest a name may be.
+
+**What to do:** Use 1 to 64 ASCII letters, digits, `-` or `_`, starting with a letter or digit.
+
+**Exit code:** 1.
+
+### `[[vcon.rule]] name '{name}' is used by two rules; each rule needs its own`
+
+Two [`[[vcon.rule]]`](vcon.md#write-calls-by-rule) entries have the same `name`. A rule's name picks its spool on REST and MCP, so each must be unique.
+
+**What to do:** Rename one of the rules.
+
+**Exit code:** 1.
+
+### `[[vcon.rule]] '{name}' has no dir: say where its containers go`
+
+The [`[[vcon.rule]]`](vcon.md#write-calls-by-rule) named `{name}` has no `dir`, so its containers would go nowhere.
+
+**What to do:** Add `dir = "/path/to/spool"` to the rule.
+
+**Exit code:** 1.
+
+### `[[vcon.rule]] '{name}' has {why}`
+
+A key of the [`[[vcon.rule]]`](vcon.md#write-calls-by-rule) named `{name}` has a value sipnab does not take. `{why}` names the key, the value and the values it takes: `audio` takes `inline`, `url` or `omit`, and `grouping` takes `leg` or `call`.
+
+**What to do:** Set the key to one of the values `{why}` lists.
+
+**Exit code:** 1.
+
+### `audio = '{other}'; use 'inline', 'url' or 'omit'`
+
+The reason inside `[[vcon.rule]] '{name}' has {why}` for an `audio` value other than `inline`, `url` and `omit`. `{other}` is the value given. See [`[[vcon.rule]]`](vcon.md#write-calls-by-rule).
+
+**What to do:** Set `audio` to `inline`, `url` or `omit`.
+
+**Exit code:** 1.
+
+### `grouping = '{other}'; use 'leg' or 'call'`
+
+The reason inside `[[vcon.rule]] '{name}' has {why}` for a `grouping` value other than `leg` and `call`. `{other}` is the value given. See [Calls through a PBX or a B2BUA](vcon.md#calls-through-a-pbx-or-a-b2bua).
+
+**What to do:** Set `grouping` to `leg` (one container per dialog) or `call` (one per call).
+
+**Exit code:** 1.
+
+### `[[vcon.rule]] '{name}' has audio = 'url' and no audio_url_base: say where your storage serves the WAV files sipnab writes beside the containers`
+
+The [`[[vcon.rule]]`](vcon.md#write-calls-by-rule) named `{name}` has `audio = "url"` and no `audio_url_base`. A `url` rule writes each call's WAV beside its container and names it by URL, which needs the base your storage serves the files from.
+
+**What to do:** Add `audio_url_base = "https://..."`, or use `audio = "inline"` or `"omit"`.
+
+**Exit code:** 1.
+
+### `[[vcon.rule]] '{name}' has audio_url_base '{base}': a vCon names external media over https (draft-ietf-vcon-vcon-core-04 section 2.4.1)`
+
+The `audio_url_base` of the [`[[vcon.rule]]`](vcon.md#write-calls-by-rule) named `{name}` is not `https://`. `{base}` is the value. A vCon names external media over HTTPS.
+
+**What to do:** Give an `https://` base URL.
+
+**Exit code:** 1.
+
+### `[[vcon.rule]] '{name}': 'when' is not a valid filter expression: {e}`
+
+The `when` of the [`[[vcon.rule]]`](vcon.md#write-calls-by-rule) named `{name}` does not parse as a filter expression. `{e}` is the parser's reason. See [Filter DSL](filter-dsl.md).
+
+**What to do:** Correct the expression. Test it first with `sipnab -N -I capture.pcap --filter "..."`.
+
+**Exit code:** 1.
+
+### `[[vcon.rule]] '{name}': no filter`
+
+The [`[[vcon.rule]]`](vcon.md#write-calls-by-rule) named `{name}` resolved to no filter at all. This is an internal check: a rule's `when` always gives one.
+
+**What to do:** Report it, with the rule as written.
+
+**Exit code:** 1.
+
+### `[[vcon.rule]] '{name}': {}`
+
+The `when` of the [`[[vcon.rule]]`](vcon.md#write-calls-by-rule) named `{name}` names a filter that does not resolve. `{}` is why: usually an `@name` that `[filters]` does not define, or a `[filters]` entry that does not resolve.
+
+**What to do:** Define the name under `[filters]`, or correct the reference.
+
+**Exit code:** 1.
+
+### `[[vcon.rule]] with live_audio = true serves call audio on the REST API, and --api {addr} is not a loopback address. Off loopback, live audio needs TLS (--api-tls-cert and --api-tls-key) and a signing key (--api-signing-key or --api-signing-key-file) to mint tokens with the audio scope; or bind --api to 127.0.0.1`
+
+A rule with `live_audio = true` serves call audio on the REST API, and `--api` binds to an address other than loopback without TLS and a signing key. `{addr}` is the address. See [Hear a call while it is in progress](vcon.md#hear-a-call-while-it-is-in-progress).
+
+**What to do:** Bind `--api` to `127.0.0.1`, or give `--api-tls-cert`, `--api-tls-key` and `--api-signing-key-file`, and mint the transcriber a token with `--token-scope audio`.
+
+**Exit code:** 1.
+
+### `[[vcon.enrich]] name '{name}' is not usable: a name is 1 to {} ASCII letters, digits, '-' or '_', starting with a letter or digit`
+
+An [`[[vcon.enrich]]`](vcon.md#enrich-a-call-before-it-is-written) has a `name` sipnab cannot use. `{name}` is the name, and `{}` is the longest a name may be.
+
+**What to do:** Use 1 to 64 ASCII letters, digits, `-` or `_`, starting with a letter or digit.
+
+**Exit code:** 1.
+
+### `[[vcon.enrich]] name '{name}' is used by two enrichments; each needs its own`
+
+Two [`[[vcon.enrich]]`](vcon.md#enrich-a-call-before-it-is-written) entries have the same `name`. The name is how a container records which service sipnab sent it to, so each must be unique.
+
+**What to do:** Rename one of them.
+
+**Exit code:** 1.
+
+### `[[vcon.enrich]] cannot run with --redact: a service is sent the call as it was captured, and nothing it answers can be pseudonymized`
+
+The run has `--redact` and an [`[[vcon.enrich]]`](vcon.md#enrich-a-call-before-it-is-written). sipnab sends a service the call as it captured it, and cannot replace what the service answers, such as a transcript, with pseudonyms.
+
+**What to do:** Remove `--redact`, or remove the enrichment from this run.
+
+**Exit code:** 2.
+
+### `[limits] idle_compact_after_secs is {secs}, shorter than the {} s a live vCon export waits before it writes a call that has not ended, so idle compaction can drop that call's middle messages before its container is written. Set it to {} or more to keep them.`
+
+A live capture exports vCons, and `[limits] idle_compact_after_secs` is shorter than the time a live export waits before writing a call that has not ended. `{secs}` is the setting, the first `{}` is that wait in seconds, and the second the value to set. Idle compaction could drop the middle of such a call's messages before sipnab writes its container.
+
+**What to do:** Set `[limits] idle_compact_after_secs` to the value named, or more.
+
+**Exit code:** None. This is a warning, and the run continues.
+
 ## Capture and input files
 
 ### `Capture did not complete: {e:#}`
@@ -18394,11 +18631,11 @@ You gave `--redact` without `--redact-key-file`, so sipnab asked the operating s
 
 **Exit code:** 1.
 
-### `--redact rewrites an EXPORTED container and this run exports none. Pair it with --export-vcon or --export-vcon-when, or drop it — a run that accepted --redact and wrote nothing redacted would read as a redacted capture`
+### `--redact rewrites an EXPORTED container and this run exports none. Pair it with --export-vcon, --export-vcon-when or a [[vcon.rule]], or drop it — a run that accepted --redact and wrote nothing redacted would read as a redacted capture`
 
-`--redact` acts on the vCon containers that a run exports, and you gave this run neither `--export-vcon` nor `--export-vcon-when`, so `--redact` has nothing to act on. vCon is a JSON format for a recorded conversation.
+`--redact` acts on the vCon containers that a run exports, and this run has no `--export-vcon`, no `--export-vcon-when` and no `[[vcon.rule]]` in its config file, so `--redact` has nothing to act on. vCon is a JSON format for a recorded conversation.
 
-**What to do:** Add `--export-vcon CALL-ID` or `--export-vcon-when` (with `--export-vcon-dir`), or remove `--redact`.
+**What to do:** Add `--export-vcon CALL-ID`, `--export-vcon-when` (with `--export-vcon-dir`) or a [`[[vcon.rule]]`](vcon.md#write-calls-by-rule), or remove `--redact`.
 
 **Exit code:** 2.
 
@@ -18657,6 +18894,54 @@ sipnab could not write the fetched vCon to the file named before the colon. `{e}
 **What to do:** Check space and permissions in the `--vcon-fetch-out` directory.
 
 **Exit code:** 1.
+
+### `Calls were still waiting for [[vcon.enrich]] after an hour; their containers are not written.`
+
+A live capture ended on its own (`--duration`) while calls still waited for an [`[[vcon.enrich]]`](vcon.md#enrich-a-call-before-it-is-written) service, and an hour passed without them finishing. Its `timeout_secs` bounds each service call, so this means a service kept every call waiting its full timeout.
+
+**What to do:** Check the service the earlier `[[vcon.enrich]] '...'` lines name, lower its `timeout_secs`, and re-export the calls from a saved capture with `-I`.
+
+**Exit code:** None. This is a warning, and the run ends.
+
+### `{label}[[vcon.enrich]] '{}' for Call-ID '{call_id}': {}: {}. The container is written without its analysis and records this.`
+
+An [`[[vcon.enrich]]`](vcon.md#enrich-a-call-before-it-is-written) service did not succeed for one call. `{label}` names the rule, the first `{}` the service, `{call_id}` the call, then the outcome (`failed`, `timeout`, `malformed` or `queue-full`) and what happened. sipnab writes the call's container without that service's analysis, and its `sipnab-enrichment` attachment records the same outcome.
+
+**What to do:** Read the detail: `failed` is the service's HTTP status or exit status, `timeout` its `timeout_secs`, `malformed` an answer that is not an `analysis` list. `queue-full` means 64 calls were waiting. The service is slower than the calls arrive.
+
+**Exit code:** None. This is a warning, and the run continues.
+
+### `{label}Could not write '{}' after enrichment: {e}`
+
+On a live capture, sipnab enriched a call's container and then could not write it to its spool. `{label}` names the rule, `{}` the path and `{e}` the operating-system error.
+
+**What to do:** Check the spool directory's free space and permissions.
+
+**Exit code:** None. This is a warning, and the run continues.
+
+### `answered HTTP {status}: {excerpt}`
+
+The `detail` an [`[[vcon.enrich]]`](vcon.md#enrich-a-call-before-it-is-written) records when its URL answered with a status other than 2xx. `{status}` is the status and `{excerpt}` the start of the answer. It appears in the `[[vcon.enrich]] '...' for Call-ID` line and in the container's `sipnab-enrichment` attachment.
+
+**What to do:** Fix the service. The excerpt is its own reason.
+
+**Exit code:** None. sipnab writes the call without the service's analysis.
+
+### `answered with more than {MAX_ANSWER_BYTES} bytes`
+
+The `detail` an [`[[vcon.enrich]]`](vcon.md#enrich-a-call-before-it-is-written) records when the service's answer was larger than 16 MiB, which sipnab does not read.
+
+**What to do:** Make the service answer with less: an analysis, not the audio.
+
+**Exit code:** None. sipnab writes the call without the service's analysis.
+
+### `analysis {i} has encoding '{encoding}'; core-04 allows none, json and base64url`
+
+The `detail` of a `malformed` outcome: entry `{i}` of an [`[[vcon.enrich]]`](vcon.md#enrich-a-call-before-it-is-written) service's `analysis` has an `encoding` core-04 does not define. `{encoding}` is the value. sipnab keeps none of that answer.
+
+**What to do:** Answer with `encoding` `none`, `json` or `base64url`.
+
+**Exit code:** None. sipnab writes the call without the service's analysis.
 
 ## Startup, privileges and the process
 
@@ -19536,7 +19821,7 @@ Operator precedence (highest to lowest): `NOT`, `AND`, `OR`. Use parentheses to 
 
 ## Fields
 
-All 33 addressable fields, organized by type. They answer to 34 names: `response_code` is also spelled `final_status_code`, and an alias is not a second field. Beyond these, `header.<name>` reads any SIP header by a name you choose. See [Any header by name](#any-header-by-name).
+All 42 addressable fields, organized by type. They answer to 43 names: `response_code` is also spelled `final_status_code`, and an alias is not a second field. Beyond these, `header.<name>` reads any SIP header by a name you choose. See [Any header by name](#any-header-by-name).
 
 ### String fields
 
@@ -19544,6 +19829,14 @@ All 33 addressable fields, organized by type. They answer to 34 names: `response
 |-------|-------------|----------------|
 | `from.user` | User part of the SIP From header | `"1001"`, `"alice"` |
 | `to.user` | User part of the SIP To header | `"1002"`, `"bob"` |
+| `from.host` | Host of the From URI, without the port | `"carrier-a.example"`, `"203.0.113.5"` |
+| `to.host` | Host of the To URI, without the port | `"pbx.example"` |
+| `from.uri` | The From URI as written, URI parameters included, without the display name or `tag` | `"sip:+15551230000@carrier-a.example;user=phone"` |
+| `to.uri` | The To URI as written | `"sip:7000@pbx.example"` |
+| `ruri` | Request-URI of the request that opened the dialog; empty when the capture began on a response | `"sip:7000@192.0.2.10"` |
+| `pai.user` | User part of the opening request's P-Asserted-Identity; empty when it has none | `"+15559876543"` |
+| `side` | Where the opening request went relative to the PBX addresses in [`[pbx] addresses`](config-reference.md#pbx): `inbound` (sent to the PBX), `outbound` (sent by it), `internal` (between two of its addresses), or empty | `"inbound"`, `"outbound"` |
+| `endpoint` | The name the run gives the source or destination address, from the hosts file, `--names` files and `[names.manual]`; matches when either end's name matches. Reverse DNS is never used here | `"pbx-1"`, `"carrier-a-gw"` |
 | `method` | SIP request method | `"INVITE"`, `"REGISTER"`, `"BYE"` |
 | `ua` | User-Agent header (first non-empty across dialog messages) | `"Olle"`, `"friendly-scanner"` |
 | `call_id` | SIP Call-ID header | `"abc123@host"` |
@@ -19553,6 +19846,7 @@ All 33 addressable fields, organized by type. They answer to 34 names: `response
 | `state` | Dialog state machine value | `"Trying"`, `"InCall"`, `"Failed"` |
 | `response_class` | IANA class of the final response | `"2xx"`, `"4xx"`, `"5xx"`, `"6xx"` |
 | `rtp.codec` | RTP codec name (matches if ANY linked stream matches) | `"PCMU"`, `"opus"` |
+| `rtp.codecs` | Every codec the dialog's streams used, distinct, sorted and comma-joined; empty with no streams | `"PCMU,telephone-event"` |
 | `rtp.ssrc` | RTP SSRC in hex format (matches if ANY linked stream matches) | `"0x12345678"` |
 
 **Valid `state` values:** `Trying`, `Ringing`, `InCall`, `Completed`, `Canceled`, `Failed`, `Redirected`, `Registered`, `Expired`, `Pending`, `Active`, `Terminated`, `Transferring`
@@ -19748,6 +20042,31 @@ half-open, `>=` at the start and `<` at the end, to select what those select:
 ```text
 time >= '2026-10-09T10:00:00Z' AND time < '2026-10-09T11:00:00Z'
 ```
+
+### Named filters
+
+Define a filter once in the config file's [`[filters]`](config-reference.md#filters)
+table and use it by name, as `@name`, wherever sipnab takes a filter
+expression. A name can appear inside a larger expression and inside another
+named filter, and an expression can reference the built-in aliases the same way:
+
+```toml
+[filters]
+carrier-a = "src.ip in_subnet '203.0.113.0/24'"
+sales     = "@carrier-a AND to.user =~ '^8[0-9]{3}$'"
+bad-sales = "@sales AND @problems"
+```
+
+```bash
+sipnab -N -I capture.pcap --config sipnab.toml --filter "@sales AND method == 'INVITE'"
+```
+
+sipnab replaces `@name` with the named filter's expression in parentheses, so
+each definition keeps the precedence it has as written. An `@` inside a
+quoted string is text, not a reference. sipnab resolves every name when it
+starts. See [`[filters]`](config-reference.md#filters) for what it refuses.
+sipnab refuses a filter given at run time that names something undefined, on
+the command line or through REST or MCP, and lists the defined names.
 
 ### Any header by name
 
@@ -21880,6 +22199,102 @@ to = "^1002@"
 expression = "method == 'INVITE'"
 ```
 
+### [filters]
+
+Named filters. Each key is a name and each value a filter expression. Use a
+name as `@name` wherever sipnab takes a filter expression: `--filter`,
+`--export-vcon-when`, `[filter] expression`, the REST `filter` parameter, an
+MCP tool's `filter` argument, and the TUI filter dialog's Named filter field.
+See [Named filters](filter-dsl.md#named-filters).
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| any name | string | -- | A filter expression, which may reference other names and the built-in aliases as `@name`. A name is 1 to 64 ASCII letters, digits, `-` or `_`, and starts with a letter or digit |
+
+```toml
+[filters]
+carrier-a = "src.ip in_subnet '203.0.113.0/24'"
+support   = "to.user == '7000' OR header.X-Queue == 'support'"
+sales     = "@carrier-a AND to.user =~ '^8[0-9]{3}$'"
+```
+
+sipnab resolves every name when it starts and refuses to start, exit code 1,
+naming the entry, when a name does not parse or is a built-in alias, when an
+entry references a name nothing defines, when entries reference each other in
+a loop, or when an expansion is not a valid expression.
+
+### [vcon]
+
+vCon export settings, each an array of tables that you write once per entry.
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `rule` | array of tables | `[]` | Export rules, each `[[vcon.rule]]`. See [the export rule keys](#vconrule) |
+| `enrich` | array of tables | `[]` | Enrichment services, each `[[vcon.enrich]]`. See [the enrichment keys](#vconenrich) |
+
+### [[vcon.rule]]
+
+Export rules: each pairs a filter with the directory its vCon containers go to
+and what they carry. A run can hold several, and sipnab writes a call matching
+several once per rule. See [Write calls by rule](vcon.md#write-calls-by-rule).
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `name` | string | -- | The rule's name, 1 to 64 ASCII letters, digits, `-` or `_`. Required and unique |
+| `when` | string | -- | The filter a call must match; `@name` [named filters](filter-dsl.md#named-filters) resolve. Required |
+| `dir` | string | -- | The directory the rule writes to. Required |
+| `audio` | string | `omit` | `inline` carries the retained audio inside each container; `url` writes it to a WAV beside the container and names it by URL (see `audio_url_base`); both turn audio retention on for the run. `omit` carries none |
+| `audio_url_base` | string | -- | For `audio = "url"`: the HTTPS base URL your storage serves the rule's WAV files from. sipnab writes each WAV beside its container and names `<base>/<file>` in it |
+| `max_inline_media_mib` | integer | `--vcon-max-inline-media` | The largest audio this rule's containers inline, in MiB; sipnab writes a call above it without its audio, saying so |
+| `live_audio` | boolean | `false` | Serve each matching call's audio while it is in progress on the REST API's `/v1/calls/{call_id}/audio` WebSocket, and list the calls at `/v1/calls/live`. Turns audio retention on. See [Hear a call while it is in progress](vcon.md#hear-a-call-while-it-is-in-progress) |
+| `live` | boolean | `false` | On a live capture, write each matching call's container as the call starts and rewrite it in place, with `updated_at`, each time the call changes. No effect with `-I`. See [Follow a call while it is in progress](vcon.md#follow-a-call-while-it-is-in-progress) |
+| `grouping` | string | `leg` | `leg`: one container per dialog, each naming the call's other legs. `call`: one container per call, holding every leg the rule selects and the ties between them. See [Calls through a PBX or a B2BUA](vcon.md#calls-through-a-pbx-or-a-b2bua) |
+
+```toml
+[[vcon.rule]]
+name  = "support-with-audio"
+when  = "to.user == '7000'"
+dir   = "/var/spool/sipnab-vcon/support"
+audio = "inline"
+```
+
+### [[vcon.enrich]]
+
+Enrichment services: sipnab sends each one the calls of the rules it names
+before it writes their containers, and appends the Analysis Objects of its
+answer.
+
+<!-- The link text repeats the heading it links to, whose wording the anchor
+fixes. See the comment above that heading in vcon.md. -->
+<!-- vale Google.Passive = NO -->
+
+See [Enrich a call before it is written](vcon.md#enrich-a-call-before-it-is-written).
+
+<!-- vale Google.Passive = YES -->
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `name` | string | -- | The service's name, recorded in every container sipnab sent it. 1 to 64 ASCII letters, digits, `-` or `_`. Required and unique |
+| `rules` | array of strings | -- | The `[[vcon.rule]]` names whose calls go to this service. Required |
+| `url` | string | -- | Where sipnab POSTs the request: `https://`, or `http://` to a loopback address only. One of `url` and `command` |
+| `command` | string | -- | A program run per call, reading the request on stdin and answering on stdout. One of `url` and `command` |
+| `auth_file` | string | -- | A file holding one `Header-Name: value` line sent with each request, such as `Authorization: Bearer ...`. Never written to a container |
+| `timeout_secs` | integer | `120` | How long sipnab waits for the answer, 1 to 3600: the default is `DEFAULT_TIMEOUT_SECS` (120) and the largest `MAX_TIMEOUT_SECS` (3600) in [`src/app/vcon_enrich.rs`](https://github.com/NormB/sipnab/blob/main/src/app/vcon_enrich.rs) |
+| `send` | array of strings | `["audio", "signaling"]` | What sipnab sends the service: `audio` (each leg's WAV), `signaling` (the container), or both. Sending audio turns audio retention on for the run |
+
+### [pbx]
+
+The PBX sipnab runs beside, for the filter field `side`.
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `addresses` | array of strings | `[]` | The PBX's own addresses, each an IP address or a CIDR range. `side` is `inbound` for a call whose opening request went to one of them and `outbound` for one sent from one of them. sipnab refuses to start, exit code 1, naming the entry, when an entry is neither |
+
+```toml
+[pbx]
+addresses = ["192.0.2.10", "198.51.100.0/24"]
+```
+
 ### [sip]
 
 SIP protocol handling.
@@ -22262,7 +22677,7 @@ keep_messages_per_idle_dialog = 500
 #### Audio retention budget
 
 The terminal UI, and any run with `--retain-audio`, keeps each RTP stream's
-G.711 and Opus payload so that sipnab can write it to a WAV file or a vCon. By
+G.711, G.722 and Opus payload so that sipnab can write it to a WAV file or a vCon. By
 default sipnab keeps the whole call, from the first frame. `max_audio_bytes`
 bounds the memory this uses, across every stream at once.
 
@@ -27040,7 +27455,7 @@ Returns one page of dialog summaries from the live capture store.
 
 | Name | Type | Legal values | If omitted |
 |---|---|---|---|
-| `filter` | string? | A diagnostic alias name — `problems`, `slow-setup`, `short-calls`, `one-way`, `nat-issues`, `codec-asym`, `ptime-asym`, `payload-asym`, `duration-asym`, `late-media` — **or** a raw [filter DSL](filter-dsl.md) expression. Anything else fails with `invalid_params` naming the position it stopped parsing at. | Every dialog in the store matches. |
+| `filter` | string? | A diagnostic alias name — `problems`, `slow-setup`, `short-calls`, `one-way`, `nat-issues`, `codec-asym`, `ptime-asym`, `payload-asym`, `duration-asym`, `late-media` — **or** a raw [filter DSL](filter-dsl.md) expression, which may use a [named filter](filter-dsl.md#named-filters) as `@name`. Anything else fails with `invalid_params` naming the position it stopped parsing at, or, for an undefined `@name`, listing the names the run defines. | Every dialog in the store matches. |
 | `limit` | u32? | Ceiling is `--mcp-max-rows` (1000 unless the operator changed it). Higher clamps to it, `0` means the default. | 50 rows. |
 | `cursor` | string? | The previous response's `next_cursor`, verbatim (`<RFC 3339 created_at>\|<Call-ID>`). A malformed timestamp half fails with `invalid_params`. | Starts at the oldest dialog. |
 | `fields` | string[]? | Field names to keep on each row, plus `call_id`, which survives whether or not you list it. An unknown name fails with `invalid_params` naming both the typo and the fields a row carries. See [Narrowing a row with `fields`](mcp-tools.md#narrowing-a-row-with-fields). | The whole row. |
@@ -32771,7 +33186,7 @@ the other bundles and finds any tool by name.
 | [`export_vcon`](#export_vcon) | `call_id?`, `filter?`, `limit?`, `cursor?`, `media?` | Dialogs as vCon conversation containers, structured JSON, each with its SHA-256. One `call_id` or a whole filtered set, paged with `cursor`. Unsigned, retained audio inline unless `media` is `omit`, and every omission stated in the response |
 | [`validate_vcon`](#validate_vcon) | `call_id?`, `container?` | Checks a container against the working group's draft-ietf-vcon-vcon-core-04 schema and names every finding |
 | [`analyze_vcon`](#analyze_vcon) | `container`, `limit?` | Rebuilds the SIP messages a stored container holds and analyzes them apart from the loaded capture: per dialog the `--json-dialogs` object, the signaling diagnosis and the ladder, plus the capture analysis and what a container cannot reproduce |
-| [`vcon_spool_status`](#vcon_spool_status) | `limit?`, `cursor?` | Counts the `--export-vcon-dir` spool: containers pending, delivered and failed, with the store's answer from each failed container's record. A snapshot of files; sends, moves and deletes nothing |
+| [`vcon_spool_status`](#vcon_spool_status) | `limit?`, `cursor?`, `rule?` | Counts the `--export-vcon-dir` spool: containers pending, delivered and failed, with the store's answer from each failed container's record. A snapshot of files; sends, moves and deletes nothing |
 
 
 ## Diagnose one call
@@ -33508,6 +33923,7 @@ and does not count.
 |---|---|---|---|
 | `limit` | integer | 1 to `--mcp-max-rows` (1000 by default). Bounds the list of failed records; the three counts are never bounded. | 50. |
 | `cursor` | string | The previous response's `next_cursor`, passed back verbatim. | The first page. |
+| `rule` | string | The [export rule](vcon.md#write-calls-by-rule) whose spool to read: a `[[vcon.rule]]` name, or `--export-vcon-when` for the flags' rule. Several spools and no `rule`, or a `rule` the run does not have, fail with `invalid_params` (-32602) listing the run's rule names. | The run's only spool. |
 
 Returns:
 
@@ -33523,6 +33939,7 @@ Returns:
 | `returned` | integer | Rows in `failures` |
 | `truncated` | boolean | Whether failed containers remain after this page |
 | `next_cursor` | string or null | Pass back as `cursor` for the next page; null on the last page |
+| `rule` | string | The export rule whose spool this is |
 
 `record.body` is the start of the store's answer as the forwarder kept it,
 fenced as untrusted text and cut to `--mcp-max-body-bytes` (4096 by default).
@@ -36597,6 +37014,308 @@ without the feature.
 
 Read on for what the container means once you hold one.
 
+## Write calls by rule
+
+A `[[vcon.rule]]` in the config file pairs a filter with the directory its
+containers go to and what they carry. A run can hold several, and sipnab writes a call that
+matches several rules once per rule, into each rule's directory.
+
+```toml
+[filters]
+support = "to.user == '7000' OR header.X-Queue == 'support'"
+
+[[vcon.rule]]
+name  = "support-with-audio"
+when  = "@support"
+dir   = "/var/spool/sipnab-vcon/support"
+audio = "inline"
+
+[[vcon.rule]]
+name  = "all-calls"
+when  = "method == 'INVITE'"
+dir   = "/var/spool/sipnab-vcon/all"
+```
+
+| Key | Meaning |
+|-----|---------|
+| `name` | The rule's name, used in the run's report and to pick its spool over REST and MCP. 1 to 64 ASCII letters, digits, `-` or `_` |
+| `when` | The filter a call must match. [Named filters](filter-dsl.md#named-filters) work here as `@name` |
+| `dir` | The directory the rule writes to. sipnab creates it if it is missing |
+| `audio` | `inline`: the audio the run retained travels inside the container, within `--vcon-max-inline-media`. `omit` (the default): no audio, and the container records `media: "not-considered"`. A rule with `inline` turns audio retention on for the run, as `--retain-audio` does |
+| `audio` = `url` | sipnab writes the audio to a WAV file beside the container, `<container name>.wav`, and the container's recording names `audio_url_base` followed by that file name, with the `content_hash` of the WAV file and no body; the completeness block records `media: "referenced"`. sipnab writes the file and serves nothing: the operator's storage serves the URL. Turns audio retention on, as `inline` does |
+| `audio_url_base` | For `audio = "url"`: the HTTPS base URL that serves the WAV files. Required with `url`; core-04 section 2.4.1 requires HTTPS for a reference |
+| `max_inline_media_mib` | The largest audio this rule's containers inline, in MiB. sipnab writes a call above it without its audio and the container records `media: "refused-over-budget"`. Unset: `--vcon-max-inline-media` |
+| `live_audio` | `true`: serve each matching call's audio while it is in progress, over the REST API. See [Hear a call while it is in progress](#hear-a-call-while-it-is-in-progress) |
+| `live` | `true`: on a live capture, write each matching call's container as the call starts and rewrite it in place each time the call changes. See [Follow a call while it is in progress](#follow-a-call-while-it-is-in-progress) |
+| `grouping` | `leg` (the default): one container per dialog. `call`: one container per call, holding every leg the rule selects. See [Calls through a PBX or a B2BUA](#calls-through-a-pbx-or-a-b2bua) |
+
+`--export-vcon-when` with `--export-vcon-dir` still works and is one more
+rule beside the configured ones. `--since` and `--until` narrow every rule,
+and `--content-deny-header` applies before every rule. Each rule's directory
+is a spool the forwarder can deliver: run one `--vcon-forward` per directory.
+
+A rule runs the same way as `--export-vcon-when`. With `-I`, sipnab writes
+every matching call at the end of the run. On a live capture, sipnab writes each
+call on the timing described under
+[When a container appears](#the-spool-contract-for-a-bridge-that-consumes-it),
+on each rule's own record of what it has written. On a live capture, sipnab
+gives back a call's retained audio only once every `inline` rule that matches
+the call has written it.
+
+sipnab checks every rule when it starts and refuses to start, exit code 1,
+naming the rule, when a name is unusable or used twice, a rule has no `dir`,
+`audio` is not `inline`, `url` or `omit`, `grouping` is not `leg` or `call`,
+or `when` does not resolve. sipnab also refuses a rule with
+any other key, so a misspelled key cannot leave a rule that
+writes nowhere. A live capture with a rule refuses `--redact`, `--redact-map`
+and `--content-deny-tombstone`, as it does with `--export-vcon-when`.
+
+The end of a run reports each rule on its own line, for example
+`[[vcon.rule]] 'all-calls': Wrote 2 vCon container(s) to '/var/spool/sipnab-vcon/all'.`
+
+### Calls through a PBX or a B2BUA
+
+A call through a PBX or a B2BUA is two dialogs or more, one per leg, each with
+its own Call-ID. sipnab ties the legs with the same correlation strategies
+`get_call_tree` and `GET /v1/dialogs/{call_id}/tree` report: an identifier
+both legs carry ([RFC 7989](https://www.rfc-editor.org/rfc/rfc7989) `Session-ID`, a header listed in
+[`[sip] xcid_headers`](config-reference.md#sip), the SDP origin, a charging
+vector or a Via branch), or, when the legs share none, a timing guess from shared
+addresses and close start times.
+
+With `grouping = "leg"`, the default, each leg is its own container, and every
+export (a rule, `--export-vcon-when`, `--export-vcon`, REST
+`/v1/dialogs/{call_id}/vcon` and MCP `export_vcon`) adds a
+`sipnab-related-legs` attachment to a leg that has others. Its body lists each
+other leg, strongest tie first:
+
+```json
+{"legs": [{"uuid": "018bcfe5-6800-88c0-b9c0-24e4c93555ff",
+           "strategy": "x_call_id", "identifier_match": true, "score": 100}]}
+```
+
+`uuid` is the other leg's container uuid, which stays the same under
+`--redact`. `identifier_match` is `false` for a timing guess, which a busy
+server can get wrong.
+
+With `grouping = "call"`, the rule writes one container per call, holding
+every leg the rule selects:
+
+- the parties of each leg in leg order, then the sipnab observer, last;
+- each leg's Dialog Objects in leg order, and each leg's message trace,
+  completeness attachment and analysis, pointing at that leg's objects;
+- with `audio = "inline"` or `"url"`, each leg's own two-channel recording,
+  whose `parties` maps each channel to a party of that leg, so every party of
+  the call has a channel. sipnab does not mix the legs into one file: they
+  start at different times and can use different sample rates, and each
+  recording keeps the timing sipnab captured it with;
+- a `sipnab-call-legs` attachment naming each leg's signaling object and every
+  tie with its strategy, `identifier_match` and score, and `truncated: true`
+  when the call had more than 16 legs and the rest went into further
+  containers.
+
+The container has its own uuid, derived from every leg's Call-ID, so it is the
+same each time sipnab exports the capture and differs from every leg container's
+uuid. sipnab names it after the earliest leg. A PBX that is the callee on one leg
+and the caller on the next appears once in each leg's parties: nothing in the
+signaling proves the two are one party. A leg the rule's `when` does not match,
+or that a `--content-deny-header` withheld, is not in the container, so write
+`when` to match every leg of the calls you want. On a live capture, sipnab writes a
+call once every leg the rule selects has ended or gone idle, and writes it
+again when a leg changes.
+
+`leg` is the default because the only tie a PBX that copies no identifier
+gives is the timing guess, and grouping on a wrong guess puts two unrelated
+calls in one container. A container written with `call` states every tie sipnab
+built it on, so a reader can see when that happened.
+
+<!-- The heading keeps its wording because its anchor,
+#enrich-a-call-before-it-is-written, is linked from vcon.md, config-reference.md
+and errors.md. Rewording it would change the anchor. -->
+<!-- vale Google.Passive = NO -->
+
+### Enrich a call before it is written
+
+<!-- vale Google.Passive = YES -->
+
+A `[[vcon.enrich]]` names a service of yours, a transcriber or a summarizer,
+to which sipnab sends each call of the rules it lists before it writes the
+call's container. sipnab appends the service's answer, one or more Analysis
+Objects, to the container's `analysis`. sipnab chooses no model and runs none: the service is
+whatever you run at the URL or program you name.
+
+```toml
+[[vcon.rule]]
+name  = "support"
+when  = "@support"
+dir   = "/var/spool/sipnab-vcon/support"
+audio = "inline"
+
+[[vcon.enrich]]
+name  = "transcribe"
+rules = ["support"]
+url   = "http://127.0.0.1:9000/transcribe"
+timeout_secs = 120
+
+[[vcon.enrich]]
+name    = "summarize"
+rules   = ["support"]
+command = "/usr/local/bin/summarize-call"
+send    = ["signaling"]
+```
+
+The services a rule names run in the order the config file lists them, one call
+at a time, so sipnab sends a later service what an earlier one added: in the example,
+`summarize` reads the transcript `transcribe` returned.
+
+**The request** is one JSON document, POSTed to `url` or written to the
+`command`'s standard input:
+
+```json
+{"schema": "sipnab-enrichment-request/1", "service": "transcribe",
+ "vcon": {"uuid": "...", "parties": [], "dialog": [], "analysis": []},
+ "audio": [{"dialog": 0, "sip_call_id": "...", "mediatype": "audio/wav",
+            "encoding": "base64url", "body": "UklGR..."}]}
+```
+
+`vcon` is the container as sipnab writes it, except that its `analysis`
+holds only what earlier services added, not sipnab's own report. It is present
+when `send` includes `signaling`. `audio` is present when `send` includes
+`audio` and the run retained the call's audio: one WAV per leg, `dialog`
+naming the leg's signaling Dialog Object. Audio a key could not decrypt is
+never sent, because it is never decoded.
+
+**The answer** is a JSON document with an `analysis` list, each entry a
+core-04 Analysis Object:
+
+```json
+{"analysis": [{"type": "transcript", "vendor": "example-stt",
+               "product": "stt-2", "encoding": "none",
+               "mediatype": "text/plain", "body": "Hello, this is support..."}]}
+```
+
+Each Analysis Object must carry `type`, `vendor`, `encoding` (`none`, `json` or
+`base64url`) and `body` (a string). `product`, `schema`, `mediatype` and
+`dialog` are optional. A missing `dialog` is the first leg's signaling object.
+
+**What the container says.** Every enriched container carries a
+`sipnab-enrichment` attachment listing each service sipnab sent it to: the
+service's name, its `target` (the URL or program), what was `sent`, the
+`outcome`, a `detail` in words when it did not succeed, and the indices in
+`analysis` of what it added. So a reader of the container knows the call's
+audio left the host, and to which service.
+
+| `outcome` | Meaning |
+|-----------|---------|
+| `ok` | The service answered and sipnab appended its analysis |
+| `failed` | sipnab could not reach the service, the service answered with an HTTP status other than 2xx, or the program exited non-zero |
+| `timeout` | No answer within `timeout_secs` |
+| `malformed` | The answer was not an `analysis` list of Analysis Objects; sipnab kept none of it |
+| `queue-full` | On a live capture, 64 calls were already waiting for enrichment; sipnab sent nothing |
+
+A service that does not succeed never loses the call: sipnab writes the container
+without that service's analysis, the attachment records why, and the run says
+so on stderr, naming the service and the Call-ID, and the rule when it is a
+`[[vcon.rule]]`.
+
+**When it runs.** With `-I`, sipnab enriches each matching call as it writes the
+call's container at the end of the run. On a live capture, a call that is due goes to a
+queue of at most 64 calls, and one worker enriches and writes them in turn, so
+a slow service delays containers and never the capture. sipnab writes a call
+that finds the queue full at once, unenriched, saying so. A live run that ends
+on its own (`--duration`) waits for the queue before it exits. A run that you
+stop does not, and sipnab does not write the calls still waiting.
+
+**What sipnab refuses at startup**, naming the enrichment:
+
+- an unusable or repeated name
+- no `rules`, or a rule name no `[[vcon.rule]]` defines
+- both or neither of `url` and `command`
+- an `http://` URL to anything but a loopback address (sipnab does not send
+  call audio in the clear across a network)
+- a `send` value other than `audio` and `signaling`
+- a `timeout_secs` outside 1 to 3600
+- an `auth_file` that does not load
+
+sipnab also refuses a run with `--redact` and any `[[vcon.enrich]]`: sipnab
+sends a service the call as it captured it, and cannot replace anything the
+service answers with pseudonyms.
+
+A dialog that `--content-deny-header` withheld is never sent to a service: it
+is not exported at all.
+
+### Hear a call while it is in progress
+
+A rule with `live_audio = true` serves the audio of the calls it matches as
+sipnab captures them, for a transcriber or any other program of yours, on the
+REST API (`--api`):
+
+```toml
+[[vcon.rule]]
+name       = "support"
+when       = "@support"
+dir        = "/var/spool/sipnab-vcon/support"
+audio      = "inline"
+live_audio = true
+```
+
+- `GET /v1/calls/live` lists the calls in progress the rule matches, and
+  `GET /v1/calls/live/events` announces each one as a server-sent event.
+- `GET /v1/calls/{call_id}/audio` is a WebSocket that sends the call's audio as
+  16-bit PCM, one message per RTP packet, each direction a stream of its own,
+  and closes when the call ends.
+
+The `GET /v1/calls/:call_id/audio` section of the
+[REST API reference](rest-api.md) gives every message. The audio is what sipnab retained, decoded: a `live_audio` rule turns
+retention on. Audio a key could not decrypt is never sent, and a call
+`--content-deny-header` withholds is neither listed nor served.
+
+**Who may listen.** These routes need a token with the `audio` scope when the
+server authenticates (`sipnab --mint-token --token-scope audio`). No other
+scope reaches them: a `full` token, and the static `--api-key`, read dialogs
+and not call audio. On a loopback address a server without keys serves them to
+any local process. Off loopback, sipnab refuses to start a `live_audio` rule
+unless the API has TLS (`--api-tls-cert` and `--api-tls-key`) and a signing
+key (`--api-signing-key` or `--api-signing-key-file`), so the audio never
+crosses the network in the clear or to a client that has not proved it may
+hear it.
+
+A [`[[vcon.enrich]]`](#enrich-a-call-before-it-is-written) service on the same
+rule can return, at the call's end, what a transcriber produces during the call,
+so the transcript is in the call's container.
+
+### Follow a call while it is in progress
+
+By default a rule writes a call once, after it has ended (or gone quiet for
+120 seconds). A rule with `live = true` writes the call's container as soon as
+sipnab sees the call start, and writes it again, under the same file name and
+the same `uuid`, each time the call changes, so a program watching the spool
+sees the call as it goes:
+
+```toml
+[[vcon.rule]]
+name = "follow"
+when = "@support"
+dir  = "/var/spool/sipnab-vcon/follow"
+live = true
+```
+
+- Each write carries `updated_at`, the time of that write. `created_at` stays
+  the time of the first write.
+- Until the call ends, the completeness block records `call_ended: false`. The
+  last write, after the call ends, records `true`.
+- A container written while the call is in progress carries no audio, whatever
+  `audio` says; the write after the call ends carries it. Enrichment
+  (`[[vcon.enrich]]`) runs only on that last write.
+- sipnab checks for changes every five seconds, so a write follows a change
+  within about five seconds. A sweep in which nothing changed writes nothing.
+- `live` has an effect only on a live capture (`-d` or `--hep-listen`). With
+  `-I`, the rule writes each call once, as any rule does, with no `updated_at`.
+
+A forwarder delivers each rewrite as a new copy of the same container. A store
+that refuses a `uuid` it already holds needs the forwarder to replace it. See
+[What it does with each container](#what-it-does-with-each-container).
+
 ## The spool contract, for a bridge that consumes it
 
 `--export-vcon-dir` is a queue, and it never runs alone. It pairs with
@@ -36637,7 +37356,12 @@ rely on.
   the same name. A forwarder that already delivered the first copy may be
   refused the second by its store: vcon.store, for example, answers `409` for
   a uuid it already holds. A call on hold with no media for 120 seconds is
-  written early in the same way.
+  written early in the same way. Idle compaction, which keeps a quiet call's
+  opening request and outcome and drops the messages between them, runs after
+  `[limits] idle_compact_after_secs` (600 seconds by default), so it does not
+  reach a call before the live export writes it. A live export run with that
+  setting below 120 seconds warns at startup, because compaction could then
+  drop a call's middle messages before sipnab writes its container.
 - A live capture that you stop (`systemctl stop`, SIGTERM, Ctrl-C, or an MCP
   client that goes away) writes nothing more. Calls that had not yet been
   written are not written on the way out, because stopping sipnab must leave

@@ -322,3 +322,16 @@ def test_front_matter_is_left_alone():
     head, body = out.split("+++\n\n", 1)[0], out.split("+++\n\n", 1)[1]
     assert "](" not in head, out
     assert "[RFC 9457](https://www.rfc-editor.org/rfc/rfc9457)" in body, out
+
+
+def test_a_link_whose_text_holds_a_bracketed_code_span_is_left_alone():
+    """Link text can hold a code span with brackets in it.
+
+    `` [`[sip]` per RFC 3261](config-reference.md#sip) `` is one link. The
+    span pattern used to stop at the `]` inside the code span, so it did not
+    see the link, and the RFC mention inside the link text was linked again,
+    nesting a link inside a link.
+    """
+    text = "See [`[sip]` per RFC 3261](config-reference.md#sip) for the keys.\n"
+    out, sections, bare = convert()(text)
+    assert (out, sections, bare) == (text, 0, 0), out

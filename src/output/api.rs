@@ -334,7 +334,10 @@ pub struct ApiState {
     /// directory the MCP server's `vcon_spool_status` reads. `None` (every
     /// test here, and any run started without the flag) makes that route
     /// answer 503 naming the flag.
-    pub vcon_spool: Option<std::path::PathBuf>,
+    pub vcon_spools: Vec<crate::app::vcon_spool::Spool>,
+    /// The filters of the `[[vcon.rule]]`s with `live_audio = true`: the
+    /// calls the `/v1/calls` routes serve. Empty, those routes answer 404.
+    pub live_audio: std::sync::Arc<Vec<crate::sip::dsl::FilterExpr>>,
     /// The run's pipeline options, which `GET /v1/captures/compare` reads both
     /// files with, so a file reads as it does given to `-I` on the same command
     /// line (`--hep-parse`, `--portrange`, `--no-rtp`, `--no-dialog`,
@@ -1024,6 +1027,13 @@ pub fn build_router(state: ApiState) -> Router {
         .route("/v1/dialogs/{call_id}/tree", get(get_tree))
         .route("/v1/dialogs/{call_id}/lint", get(get_lint))
         .route("/v1/dialogs/{call_id}/audio", get(get_dialog_audio));
+    // Live call audio, served for the calls a `live_audio` rule matches; the
+    // rules are part of the vcon feature.
+    #[cfg(feature = "vcon")]
+    let router = router
+        .route("/v1/calls/live", get(get_live_calls))
+        .route("/v1/calls/live/events", get(get_live_call_events))
+        .route("/v1/calls/{call_id}/audio", get(get_call_audio));
     // Registered only where the exporter exists. A route that answered 501
     // in a build without the feature would leave a client unable to tell
     // "this sipnab cannot" from "this call has no data", and the second
@@ -3257,6 +3267,460 @@ async fn get_dialog_audio(
     ))
 }
 
+#[cfg(feature = "vcon")]
+/// The calls the live audio routes serve: those a `live_audio` rule's filter
+/// selects that `--content-deny-header` does not withhold, in store order.
+fn live_audio_calls<'a>(
+    state: &ApiState,
+    ds: &'a DialogStore,
+    ss: &'a crate::rtp::stream_store::StreamStore,
+) -> Vec<&'a crate::sip::dialog::SipDialog> {
+    let mut out: Vec<&crate::sip::dialog::SipDialog> = Vec::new();
+    for filter in state.live_audio.iter() {
+        for (dialog, _) in crate::sip::dsl::select_dialogs(Some(filter), ds, ss).dialogs {
+            if !out.iter().any(|d| d.call_id == dialog.call_id)
+                && !crate::output::vcon::denied_by_header(
+                    dialog,
+                    state.content_deny_header.as_deref(),
+                )
+            {
+                out.push(dialog);
+            }
+        }
+    }
+    out
+}
+
+/// One call in progress, as `GET /v1/calls/live` and its events give it.
+#[cfg(feature = "vcon")]
+#[derive(Debug, Clone, serde::Serialize, utoipa::ToSchema)]
+pub struct LiveCall {
+    /// The path of the call's audio WebSocket.
+    pub audio: String,
+    /// The call's Call-ID.
+    pub call_id: String,
+    /// When the call's dialog opened, RFC 3339.
+    pub started: String,
+    /// The dialog's state.
+    pub state: String,
+    /// How many RTP streams the call has.
+    pub streams: usize,
+}
+
+/// The calls `GET /v1/calls/live` lists.
+#[cfg(feature = "vcon")]
+#[derive(Debug, Clone, serde::Serialize, utoipa::ToSchema)]
+pub struct LiveCalls {
+    /// The calls in progress, in store order.
+    pub calls: Vec<LiveCall>,
+}
+
+#[cfg(feature = "vcon")]
+impl LiveCall {
+    /// `dialog`, with its stream count from `ss`.
+    fn of(
+        dialog: &crate::sip::dialog::SipDialog,
+        ss: &crate::rtp::stream_store::StreamStore,
+    ) -> Self {
+        Self {
+            audio: format!("/v1/calls/{}/audio", dialog.call_id),
+            call_id: dialog.call_id.clone(),
+            started: dialog.created_at.to_rfc3339(),
+            state: dialog.state().to_string(),
+            streams: ss.streams_for(&dialog.call_id).count(),
+        }
+    }
+}
+
+#[cfg(feature = "vcon")]
+/// The 404 every live audio route gives when no rule asked for live audio.
+fn no_live_audio_rule() -> Problem {
+    Problem::detailed(
+        StatusCode::NOT_FOUND,
+        "No [[vcon.rule]] has live_audio = true, so this server serves no live call audio."
+            .to_owned(),
+    )
+}
+
+#[cfg(feature = "vcon")]
+/// `GET /v1/calls/live` — the calls in progress that a `live_audio` rule
+/// matches, each with the path of its audio.
+#[utoipa::path(
+    get,
+    path = "/v1/calls/live",
+    tag = "calls",
+    summary = "Calls in progress whose audio this server serves",
+    description = "The calls a `[[vcon.rule]]` with `live_audio = true` matches that have not ended, each with its state, when it started, how many RTP streams it has, and the path of its audio WebSocket. A call the run's `--content-deny-header` withholds is not listed. Needs a token with the `audio` scope when the server authenticates.",
+    security(("bearer" = [])),
+    responses(
+        (status = 200, description = "The calls in progress.", body = LiveCalls),
+        (status = 401, description = "No bearer credential, or one without the `audio` scope.", body = schema::ProblemJson, content_type = "application/problem+json"),
+        (status = 404, description = "No rule has `live_audio = true`.", body = schema::ProblemJson, content_type = "application/problem+json"),
+        (status = 503, description = "Over the per-source-IP rate limit of 100 requests per second.", body = schema::ProblemJson, content_type = "application/problem+json"),
+    )
+)]
+async fn get_live_calls(
+    State(state): State<ApiState>,
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+) -> Result<Json<LiveCalls>, Problem> {
+    guard_scoped(&state, &headers, addr.ip(), crate::auth::SCOPE_AUDIO)?;
+    if state.live_audio.is_empty() {
+        return Err(no_live_audio_rule());
+    }
+    let ds = state.dialog_store.read();
+    let ss = state.stream_store.read();
+    let calls = live_audio_calls(&state, &ds, &ss)
+        .into_iter()
+        .filter(|d| !d.state().is_final())
+        .map(|d| LiveCall::of(d, &ss))
+        .collect();
+    Ok(Json(LiveCalls { calls }))
+}
+
+#[cfg(feature = "vcon")]
+/// How often the events route and the audio route look at the stores.
+const LIVE_POLL: std::time::Duration = std::time::Duration::from_millis(100);
+
+#[cfg(feature = "vcon")]
+/// The server-sent events of `GET /v1/calls/live/events`, fed by the task
+/// that watches the stores.
+struct LiveEvents {
+    /// Events from the watching task.
+    rx: tokio::sync::mpsc::Receiver<axum::response::sse::Event>,
+}
+
+#[cfg(feature = "vcon")]
+impl futures_core::Stream for LiveEvents {
+    type Item = Result<axum::response::sse::Event, std::convert::Infallible>;
+
+    fn poll_next(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Option<Self::Item>> {
+        self.rx.poll_recv(cx).map(|event| event.map(Ok))
+    }
+}
+
+#[cfg(feature = "vcon")]
+/// `GET /v1/calls/live/events` — a server-sent event for each call in
+/// progress that a `live_audio` rule matches.
+#[utoipa::path(
+    get,
+    path = "/v1/calls/live/events",
+    tag = "calls",
+    summary = "An event for each call whose audio this server serves",
+    description = "A `text/event-stream`. On connecting, one `call` event for each call `GET /v1/calls/live` lists; then a `call` event for each call that appears. Each event's data is the call as `GET /v1/calls/live` gives it; a call's audio WebSocket closes when the call ends. Needs a token with the `audio` scope when the server authenticates.",
+    security(("bearer" = [])),
+    responses(
+        (status = 200, description = "The event stream.", content_type = "text/event-stream", body = String),
+        (status = 401, description = "No bearer credential, or one without the `audio` scope.", body = schema::ProblemJson, content_type = "application/problem+json"),
+        (status = 404, description = "No rule has `live_audio = true`.", body = schema::ProblemJson, content_type = "application/problem+json"),
+        (status = 503, description = "Over the per-source-IP rate limit of 100 requests per second.", body = schema::ProblemJson, content_type = "application/problem+json"),
+    )
+)]
+async fn get_live_call_events(
+    State(state): State<ApiState>,
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+) -> Result<axum::response::sse::Sse<axum::response::sse::KeepAliveStream<LiveEvents>>, Problem> {
+    guard_scoped(&state, &headers, addr.ip(), crate::auth::SCOPE_AUDIO)?;
+    if state.live_audio.is_empty() {
+        return Err(no_live_audio_rule());
+    }
+    let (tx, rx) = tokio::sync::mpsc::channel(64);
+    tokio::spawn(async move {
+        let mut announced: Vec<String> = Vec::new();
+        loop {
+            let now: Vec<LiveCall> = {
+                let ds = state.dialog_store.read();
+                let ss = state.stream_store.read();
+                live_audio_calls(&state, &ds, &ss)
+                    .into_iter()
+                    .filter(|d| !d.state().is_final())
+                    .map(|d| LiveCall::of(d, &ss))
+                    .collect()
+            };
+            for call in &now {
+                if announced.contains(&call.call_id) {
+                    continue;
+                }
+                let data = serde_json::to_string(call).unwrap_or_default();
+                let event = axum::response::sse::Event::default()
+                    .event("call")
+                    .data(data);
+                if tx.send(event).await.is_err() {
+                    return;
+                }
+                announced.push(call.call_id.clone());
+            }
+            if tx.is_closed() {
+                return;
+            }
+            tokio::time::sleep(LIVE_POLL * 5).await;
+        }
+    });
+    Ok(axum::response::sse::Sse::new(LiveEvents { rx })
+        .keep_alive(axum::response::sse::KeepAlive::default()))
+}
+
+#[cfg(feature = "vcon")]
+/// `GET /v1/calls/{call_id}/audio` — the call's decoded audio, as it arrives,
+/// over a WebSocket.
+#[utoipa::path(
+    get,
+    path = "/v1/calls/{call_id}/audio",
+    tag = "calls",
+    summary = "A call's audio as it arrives, over a WebSocket",
+    description = "Upgrades to a WebSocket (RFC 6455) and sends the call's audio, decoded to 16-bit little-endian PCM, as it is captured, one binary message per RTP packet. A binary message's first byte is the stream it belongs to; the rest is that packet's samples. Text messages describe the stream: `{\"type\": \"stream\"}` announces a stream before its first packet (its index, SSRC, source and destination, codec and sample rate), `{\"type\": \"skipped\"}` names a stream whose codec sipnab does not decode, `{\"type\": \"gap\"}` says how many packets of a stream were released from retention before they were sent, and `{\"type\": \"end\"}` comes when the call has ended, before a normal close. A call that has already ended is sent from its first retained packet and then closed. Audio a key could not decrypt is never sent. Only calls a `[[vcon.rule]]` with `live_audio = true` matches, and that `--content-deny-header` does not withhold, are served. Needs a token with the `audio` scope when the server authenticates.",
+    params(
+        ("call_id" = String, Path, description = "The call's Call-ID."),
+    ),
+    security(("bearer" = [])),
+    responses(
+        (status = 101, description = "Switching to the WebSocket protocol."),
+        (status = 400, description = "Not a WebSocket upgrade request.", body = schema::ProblemJson, content_type = "application/problem+json"),
+        (status = 401, description = "No bearer credential, or one without the `audio` scope.", body = schema::ProblemJson, content_type = "application/problem+json"),
+        (status = 404, description = "No rule has `live_audio = true`, or none matches a call with that Call-ID.", body = schema::ProblemJson, content_type = "application/problem+json"),
+        (status = 503, description = "Over the per-source-IP rate limit of 100 requests per second.", body = schema::ProblemJson, content_type = "application/problem+json"),
+    )
+)]
+async fn get_call_audio(
+    State(state): State<ApiState>,
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
+    Path(call_id): Path<String>,
+    mut request: axum::extract::Request,
+) -> Result<axum::response::Response, Problem> {
+    guard_scoped(
+        &state,
+        request.headers(),
+        addr.ip(),
+        crate::auth::SCOPE_AUDIO,
+    )?;
+    if state.live_audio.is_empty() {
+        return Err(no_live_audio_rule());
+    }
+    let served = {
+        let ds = state.dialog_store.read();
+        let ss = state.stream_store.read();
+        live_audio_calls(&state, &ds, &ss)
+            .iter()
+            .any(|d| d.call_id == call_id)
+    };
+    if !served {
+        return Err(Problem::detailed(
+            StatusCode::NOT_FOUND,
+            format!("No call a live_audio rule matches has Call-ID '{call_id}'."),
+        ));
+    }
+    let header = |name: &str| {
+        request
+            .headers()
+            .get(name)
+            .and_then(|v| v.to_str().ok())
+            .map(str::to_owned)
+    };
+    let upgrade = header("upgrade").is_some_and(|v| v.eq_ignore_ascii_case("websocket"));
+    let version = header("sec-websocket-version").is_some_and(|v| v.trim() == "13");
+    let Some(key) = header("sec-websocket-key").filter(|_| upgrade && version) else {
+        return Err(Problem::detailed(
+            StatusCode::BAD_REQUEST,
+            "This route is a WebSocket: send Upgrade: websocket, Sec-WebSocket-Version: 13 \
+             and a Sec-WebSocket-Key."
+                .to_owned(),
+        ));
+    };
+    let on_upgrade = hyper::upgrade::on(&mut request);
+    tokio::spawn(async move {
+        if let Ok(upgraded) = on_upgrade.await {
+            serve_call_audio(hyper_util::rt::TokioIo::new(upgraded), &state, &call_id).await;
+        }
+    });
+    axum::response::Response::builder()
+        .status(StatusCode::SWITCHING_PROTOCOLS)
+        .header("upgrade", "websocket")
+        .header("connection", "Upgrade")
+        .header(
+            "sec-websocket-accept",
+            crate::output::websocket::accept_key(&key),
+        )
+        .body(axum::body::Body::empty())
+        .map_err(|e| Problem::detailed(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))
+}
+
+#[cfg(feature = "vcon")]
+/// One stream the audio route follows.
+struct Followed {
+    /// The stream's index in this connection's messages.
+    index: u8,
+    /// Its decoder and place in its retained frames.
+    live: crate::rtp::live_audio::LiveStream,
+}
+
+#[cfg(feature = "vcon")]
+/// What one look at the call found to send.
+struct AudioPass {
+    /// The WebSocket frames to send, in order.
+    frames: Vec<Vec<u8>>,
+    /// Why the stream ends, when the call has ended or left the store.
+    end: Option<&'static str>,
+}
+
+#[cfg(feature = "vcon")]
+/// Look at `call_id`'s streams once: announce new ones, and decode what each
+/// retained since the last look.
+fn audio_pass(
+    state: &ApiState,
+    call_id: &str,
+    followed: &mut Vec<(crate::rtp::stream::StreamKey, Option<Followed>)>,
+) -> AudioPass {
+    use crate::output::websocket::{Opcode, frame};
+    let ds = state.dialog_store.read();
+    let ss = state.stream_store.read();
+    let mut pass = AudioPass {
+        frames: Vec::new(),
+        end: None,
+    };
+    let ended = match ds.get(call_id) {
+        None => Some("the call is no longer held"),
+        Some(d) if d.state().is_final() => Some("the call ended"),
+        Some(_) => None,
+    };
+    let mut streams: Vec<&crate::rtp::stream::RtpStream> = ss.streams_for(call_id).collect();
+    streams.sort_by(|a, b| {
+        a.first_seen
+            .cmp(&b.first_seen)
+            .then(a.key.ssrc.cmp(&b.key.ssrc))
+    });
+    for stream in streams {
+        if !followed.iter().any(|(k, _)| *k == stream.key) {
+            let index = u8::try_from(followed.len()).unwrap_or(u8::MAX);
+            let entry = match crate::rtp::live_audio::LiveStream::new(stream) {
+                Ok(live) => {
+                    let text = serde_json::json!({
+                        "type": "stream", "stream": index,
+                        "ssrc": format!("0x{:08X}", stream.key.ssrc),
+                        "src": stream.key.src.to_string(), "dst": stream.key.dst.to_string(),
+                        "codec": stream.codec, "rate": live.rate(stream), "format": "s16le",
+                    });
+                    pass.frames
+                        .push(frame(Opcode::Text, text.to_string().as_bytes()));
+                    Some(Followed { index, live })
+                }
+                Err(e) => {
+                    let text = serde_json::json!({
+                        "type": "skipped", "ssrc": format!("0x{:08X}", stream.key.ssrc),
+                        "codec": stream.codec, "reason": e.to_string(),
+                    });
+                    pass.frames
+                        .push(frame(Opcode::Text, text.to_string().as_bytes()));
+                    None
+                }
+            };
+            followed.push((stream.key.clone(), entry));
+        }
+        let Some((_, Some(follow))) = followed.iter_mut().find(|(k, _)| *k == stream.key) else {
+            continue;
+        };
+        let found = follow.live.next(stream);
+        if found.missed > 0 {
+            let text = serde_json::json!({
+                "type": "gap", "stream": follow.index, "packets": found.missed,
+            });
+            pass.frames
+                .push(frame(Opcode::Text, text.to_string().as_bytes()));
+        }
+        for pcm in found.pcm {
+            let mut bytes = Vec::with_capacity(1 + pcm.len() * 2);
+            bytes.push(follow.index);
+            for sample in pcm {
+                bytes.extend_from_slice(&sample.to_le_bytes());
+            }
+            pass.frames.push(frame(Opcode::Binary, &bytes));
+        }
+    }
+    pass.end = ended;
+    pass
+}
+
+#[cfg(feature = "vcon")]
+/// Send `call_id`'s audio on `socket` until the call ends or the client
+/// closes.
+async fn serve_call_audio<S>(mut socket: S, state: &ApiState, call_id: &str)
+where
+    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
+{
+    use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+    let mut followed = Vec::new();
+    let mut inbound: Vec<u8> = Vec::new();
+    let mut buf = [0u8; 1024];
+    loop {
+        let pass = audio_pass(state, call_id, &mut followed);
+        for bytes in &pass.frames {
+            if socket.write_all(bytes).await.is_err() {
+                return;
+            }
+        }
+        if let Some(reason) = pass.end {
+            let text = serde_json::json!({ "type": "end", "reason": reason });
+            let _ = socket
+                .write_all(&crate::output::websocket::frame(
+                    crate::output::websocket::Opcode::Text,
+                    text.to_string().as_bytes(),
+                ))
+                .await;
+            let _ = socket
+                .write_all(&crate::output::websocket::close(1000, reason))
+                .await;
+            let _ = socket.flush().await;
+            return;
+        }
+        if socket.flush().await.is_err() {
+            return;
+        }
+        // Wait for the next look, answering what the client sends meanwhile.
+        match tokio::time::timeout(LIVE_POLL, socket.read(&mut buf)).await {
+            Err(_) => {}
+            Ok(Ok(0) | Err(_)) => return,
+            Ok(Ok(n)) => {
+                inbound.extend_from_slice(&buf[..n]);
+                loop {
+                    match crate::output::websocket::parse_client_frame(&inbound) {
+                        Ok(None) => break,
+                        Err(why) => {
+                            let _ = socket
+                                .write_all(&crate::output::websocket::close(1002, why))
+                                .await;
+                            return;
+                        }
+                        Ok(Some((client, used))) => {
+                            inbound.drain(..used);
+                            match client.opcode {
+                                crate::output::websocket::Opcode::Close => {
+                                    let _ = socket
+                                        .write_all(&crate::output::websocket::close(1000, ""))
+                                        .await;
+                                    return;
+                                }
+                                crate::output::websocket::Opcode::Ping => {
+                                    let pong = crate::output::websocket::frame(
+                                        crate::output::websocket::Opcode::Pong,
+                                        &client.payload,
+                                    );
+                                    if socket.write_all(&pong).await.is_err() {
+                                        return;
+                                    }
+                                }
+                                _ => {}
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
 /// `GET /v1/dialogs/{call_id}/lint` — the RFC-conformance findings for one
 /// dialog (PAR3: lint_dialog on REST).
 ///
@@ -3478,6 +3942,9 @@ pub struct VconSpoolParams {
     pub limit: Option<usize>,
     /// The previous answer's `next_cursor`, verbatim. Omit on the first call.
     pub cursor: Option<String>,
+    /// The export rule whose spool to read. Needed when the run has several
+    /// (`[[vcon.rule]]`); the only spool otherwise.
+    pub rule: Option<String>,
 }
 
 #[cfg(feature = "vcon")]
@@ -3522,20 +3989,21 @@ async fn get_vcon_spool(
     Query(params): Query<VconSpoolParams>,
 ) -> Result<impl IntoResponse, Problem> {
     guard(&state, &headers, addr.ip())?;
-    let spool = state.vcon_spool.as_deref().ok_or_else(|| {
-        Problem::detailed(
-            StatusCode::SERVICE_UNAVAILABLE,
-            "this server has no vCon export spool: start sipnab with \
-             --export-vcon-when <EXPR> --export-vcon-dir <DIR>, and this route \
-             reads that directory",
-        )
-    })?;
+    let spool =
+        crate::app::vcon_spool::pick(&state.vcon_spools, params.rule.as_deref()).map_err(|e| {
+            let status = match e {
+                crate::app::vcon_spool::PickError::NoSpool => StatusCode::SERVICE_UNAVAILABLE,
+                _ => StatusCode::BAD_REQUEST,
+            };
+            Problem::detailed(status, e.to_string())
+        })?;
     let page = crate::app::vcon_spool::SpoolPage {
         after: params.cursor.as_deref(),
         limit: resolve_page_limit(params.limit, state.max_rows),
     };
-    let status = crate::app::vcon_spool::snapshot(spool, page, chrono::Utc::now())
+    let mut status = crate::app::vcon_spool::snapshot(&spool.dir, page, chrono::Utc::now())
         .map_err(|e| Problem::detailed(StatusCode::INTERNAL_SERVER_ERROR, e))?;
+    status.rule = Some(spool.rule.clone());
     Ok(Json(status))
 }
 
@@ -3974,6 +4442,7 @@ async fn get_dialog_vcon(
             analysis: Some(&analysis),
             max_inline_media_bytes: state.max_inline_media_bytes,
             media: &media,
+            related_legs: &output::vcon::related_legs(&ds, dialog),
         },
         audio,
     );
@@ -7512,7 +7981,18 @@ pub fn openapi_json() -> String {
 #[cfg(feature = "vcon")]
 #[derive(utoipa::OpenApi)]
 #[openapi(
-    paths(get_dialog_vcon, post_vcon_validate, post_vcon_analyze, get_vcon_spool),
+    paths(
+        get_dialog_vcon,
+        post_vcon_validate,
+        post_vcon_analyze,
+        get_vcon_spool,
+        get_live_calls,
+        get_live_call_events,
+        get_call_audio
+    ),
+    tags(
+        (name = "calls", description = "Calls in progress that a `[[vcon.rule]]` with `live_audio = true` matches, and their audio as it arrives")
+    ),
     components(schemas(
         schema::Vcon,
         schema::VconValidation,
@@ -7524,7 +8004,9 @@ pub fn openapi_json() -> String {
         crate::app::vcon_spool::SpoolStatus,
         crate::app::vcon_spool::SpoolDirectory,
         crate::app::vcon_spool::SpoolFailure,
-        crate::app::vcon_forward::FailureRecord
+        crate::app::vcon_forward::FailureRecord,
+        LiveCalls,
+        LiveCall
     ))
 )]
 struct VconDoc;
@@ -8831,7 +9313,8 @@ mod tests {
     fn state_with_file_root() -> ApiState {
         ApiState {
             file_root: Some(pcap_samples_root()),
-            vcon_spool: None,
+            vcon_spools: Vec::new(),
+            live_audio: std::sync::Arc::default(),
             ..make_state()
         }
     }
@@ -8902,7 +9385,8 @@ mod tests {
 
         let state = ApiState {
             file_root: Some(root.path().to_path_buf()),
-            vcon_spool: None,
+            vcon_spools: Vec::new(),
+            live_audio: std::sync::Arc::default(),
             ..make_state()
         };
         let app = build_router(state);
@@ -8971,7 +9455,8 @@ mod tests {
         for (hep_parse, dialogs) in [(true, 1), (false, 0)] {
             let state = ApiState {
                 file_root: Some(root.path().to_path_buf()),
-                vcon_spool: None,
+                vcon_spools: Vec::new(),
+                live_audio: std::sync::Arc::default(),
                 pipeline_options: crate::pipeline::PipelineOptions {
                     hep_parse,
                     ..Default::default()
@@ -9087,7 +9572,10 @@ mod tests {
     async fn vcon_spool_reports_counts_and_pages_failures() -> Result<(), TestError> {
         let dir = spool_fixture()?;
         let mut state = make_state();
-        state.vcon_spool = Some(dir.path().to_path_buf());
+        state.vcon_spools = vec![crate::app::vcon_spool::Spool {
+            rule: "--export-vcon-when".to_owned(),
+            dir: dir.path().to_path_buf(),
+        }];
 
         let get = |uri: String| {
             let app = build_router(state.clone());
@@ -9336,7 +9824,8 @@ mod tests {
             alert_engine: None,
             armed_detections: Vec::new(),
             file_root: None,
-            vcon_spool: None,
+            vcon_spools: Vec::new(),
+            live_audio: std::sync::Arc::default(),
             pipeline_options: Default::default(),
             archive: ArchivePasswordPolicy::default(),
         }
@@ -10214,7 +10703,8 @@ mod tests {
             alert_engine: None,
             armed_detections: Vec::new(),
             file_root: None,
-            vcon_spool: None,
+            vcon_spools: Vec::new(),
+            live_audio: std::sync::Arc::default(),
             pipeline_options: Default::default(),
             archive: ArchivePasswordPolicy::default(),
         }
@@ -11616,7 +12106,8 @@ mod tests {
             alert_engine: None,
             armed_detections: Vec::new(),
             file_root: None,
-            vcon_spool: None,
+            vcon_spools: Vec::new(),
+            live_audio: std::sync::Arc::default(),
             pipeline_options: Default::default(),
             archive: ArchivePasswordPolicy::default(),
         }
@@ -12589,7 +13080,8 @@ mod tests {
             alert_engine: None,
             armed_detections: Vec::new(),
             file_root: None,
-            vcon_spool: None,
+            vcon_spools: Vec::new(),
+            live_audio: std::sync::Arc::default(),
             pipeline_options: Default::default(),
             archive: ArchivePasswordPolicy::default(),
         };
@@ -14957,7 +15449,8 @@ mod archive_password_tests {
     fn state(root: &std::path::Path, keys: &[&str]) -> ApiState {
         ApiState {
             file_root: Some(root.to_path_buf()),
-            vcon_spool: None,
+            vcon_spools: Vec::new(),
+            live_audio: std::sync::Arc::default(),
             verifier: Arc::new(crate::auth::TokenVerifier::new(
                 crate::auth::VerifierConfig {
                     static_keys: keys.iter().map(|k| (*k).to_string()).collect(),
@@ -14992,7 +15485,8 @@ mod archive_password_tests {
             alert_engine: None,
             armed_detections: Vec::new(),
             file_root: None,
-            vcon_spool: None,
+            vcon_spools: Vec::new(),
+            live_audio: std::sync::Arc::default(),
             pipeline_options: Default::default(),
             archive: ArchivePasswordPolicy::default(),
         }

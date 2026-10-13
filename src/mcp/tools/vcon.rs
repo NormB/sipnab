@@ -300,6 +300,9 @@ pub struct VconSpoolStatusParams {
     /// Cursor: pass back the previous response's `next_cursor` verbatim.
     /// Omit on the first call.
     pub cursor: Option<String>,
+    /// The export rule whose spool to read. Needed when the run has several
+    /// (`[[vcon.rule]]`); the only spool otherwise.
+    pub rule: Option<String>,
 }
 
 /// Which dialogs an export was asked for.
@@ -432,20 +435,30 @@ impl SipnabMcp {
         &self,
         Parameters(params): Parameters<VconSpoolStatusParams>,
     ) -> Result<CallToolResult, rmcp::ErrorData> {
-        let spool = self.vcon_spool.as_deref().ok_or_else(|| {
-            crate::mcp::errors::refuse(
-                crate::mcp::errors::Reason::NotEnabled,
-                "this run has no vCon export spool: start sipnab with \
-                 --export-vcon-when <EXPR> --export-vcon-dir <DIR>, and this \
-                 tool reads that directory",
-            )
-        })?;
+        let spool = crate::app::vcon_spool::pick(&self.vcon_spools, params.rule.as_deref())
+            .map_err(|e| match e {
+                crate::app::vcon_spool::PickError::NoSpool => crate::mcp::errors::refuse(
+                    crate::mcp::errors::Reason::NotEnabled,
+                    e.to_string(),
+                ),
+                crate::app::vcon_spool::PickError::Ambiguous(_) => {
+                    crate::mcp::errors::refuse_param(
+                        crate::mcp::errors::Reason::MissingParam,
+                        "rule",
+                        e.to_string(),
+                    )
+                }
+                crate::app::vcon_spool::PickError::Unknown(_, ref names) => {
+                    crate::mcp::errors::refuse_choice("rule", names.clone(), e.to_string())
+                }
+            })?;
         let page = crate::app::vcon_spool::SpoolPage {
             after: params.cursor.as_deref(),
             limit: resolve_limit_with_cap(params.limit, self.row_cap),
         };
-        let mut response = crate::app::vcon_spool::snapshot(spool, page, chrono::Utc::now())
+        let mut response = crate::app::vcon_spool::snapshot(&spool.dir, page, chrono::Utc::now())
             .map_err(|e| rmcp::ErrorData::internal_error(e, None))?;
+        response.rule = Some(spool.rule.clone());
         // The MCP door's envelope, and its only difference from the other
         // doors: a store's answer is text another system wrote, so it is cut
         // to `--mcp-max-body-bytes` and fenced as every such text on this
@@ -804,12 +817,14 @@ impl SipnabMcp {
             };
 
             let media = crate::output::vcon::media_quality_for(&ss, &dialog.call_id);
+            let related = crate::output::vcon::related_legs(&ds, dialog);
             let context = ExportContext {
                 capture_id: crate::output::vcon::dialog_capture_id(dialog),
                 facts: &facts,
                 analysis: Some(&analysis),
                 max_inline_media_bytes: budget,
                 media: &media,
+                related_legs: &related,
             };
             let exported =
                 export_dialog_and_completeness(dialog, &context, audio, chrono::Utc::now());
@@ -2364,6 +2379,7 @@ mod tests {
             VconSpoolStatusParams {
                 limit: Some(2),
                 cursor: Some(next.to_owned()),
+                rule: None,
             },
         )
         .await?;

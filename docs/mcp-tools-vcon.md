@@ -17,7 +17,7 @@ the other bundles and finds any tool by name.
 | [`export_vcon`](#export_vcon) | `call_id?`, `filter?`, `limit?`, `cursor?`, `media?` | Dialogs as vCon conversation containers, structured JSON, each with its SHA-256. One `call_id` or a whole filtered set, paged with `cursor`. Unsigned, retained audio inline unless `media` is `omit`, and every omission stated in the response |
 | [`validate_vcon`](#validate_vcon) | `call_id?`, `container?` | Checks a container against the working group's draft-ietf-vcon-vcon-core-04 schema and names every finding |
 | [`analyze_vcon`](#analyze_vcon) | `container`, `limit?` | Rebuilds the SIP messages a stored container holds and analyzes them apart from the loaded capture: per dialog the `--json-dialogs` object, the signaling diagnosis and the ladder, plus the capture analysis and what a container cannot reproduce |
-| [`vcon_spool_status`](#vcon_spool_status) | `limit?`, `cursor?` | Counts the `--export-vcon-dir` spool: containers pending, delivered and failed, with the store's answer from each failed container's record. A snapshot of files; sends, moves and deletes nothing |
+| [`vcon_spool_status`](#vcon_spool_status) | `limit?`, `cursor?`, `rule?` | Counts the `--export-vcon-dir` spool: containers pending, delivered and failed, with the store's answer from each failed container's record. A snapshot of files; sends, moves and deletes nothing |
 
 
 ## Diagnose one call
@@ -754,6 +754,7 @@ and does not count.
 |---|---|---|---|
 | `limit` | integer | 1 to `--mcp-max-rows` (1000 by default). Bounds the list of failed records; the three counts are never bounded. | 50. |
 | `cursor` | string | The previous response's `next_cursor`, passed back verbatim. | The first page. |
+| `rule` | string | The [export rule](vcon.md#write-calls-by-rule) whose spool to read: a `[[vcon.rule]]` name, or `--export-vcon-when` for the flags' rule. Several spools and no `rule`, or a `rule` the run does not have, fail with `invalid_params` (-32602) listing the run's rule names. | The run's only spool. |
 
 Returns:
 
@@ -769,6 +770,7 @@ Returns:
 | `returned` | integer | Rows in `failures` |
 | `truncated` | boolean | Whether failed containers remain after this page |
 | `next_cursor` | string or null | Pass back as `cursor` for the next page; null on the last page |
+| `rule` | string | The export rule whose spool this is |
 
 `record.body` is the start of the store's answer as the forwarder kept it,
 fenced as untrusted text and cut to `--mcp-max-body-bytes` (4096 by default).

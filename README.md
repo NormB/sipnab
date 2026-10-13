@@ -231,7 +231,7 @@ Next: [REST API and metrics](docs/rest-api.md),
   the REST API, and the MCP server
 - **Call analysis.** Dialog state, PDD (post-dial delay, the wait before
   ringing), SIP header matching (`--from`, `--to` and the rest), and a
-  [filter language](docs/filter-dsl.md) of 33 fields, 8 operators and boolean
+  [filter language](docs/filter-dsl.md) of 42 fields, 8 operators and boolean
   logic
 - **Diagnostic aliases.** `--problems`, `--slow-setup`, `--short-calls`,
   `--one-way` and `--nat-issues` as flags; `codec-asym`, `ptime-asym`,

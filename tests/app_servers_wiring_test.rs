@@ -65,6 +65,8 @@ fn metrics_only() -> Selection {
         metrics: true,
         armed_detections: Vec::new(),
         pipeline_options: Default::default(),
+        vcon_spools: Vec::new(),
+        live_audio: Vec::new(),
         alias_thresholds: Default::default(),
     }
 }
@@ -824,6 +826,149 @@ fn the_mcp_vcon_export_honors_the_runs_deny_header() -> Result<(), TestError> {
         answer.get("error").is_some(),
         "the deny is an error, not a container: {answer}"
     );
+
+    drop(stdin);
+    let (code, log) = run.terminate();
+    assert_eq!(code, Some(0), "closing stdin ends the run cleanly:\n{log}");
+    Ok(())
+}
+
+// ── The run's [filters] reach both doors ─────────────────────────────────
+
+/// A config whose `[filters]` defines one name that selects `CAPTURE`'s call
+/// and one that selects nothing, written into `home`.
+fn named_filters_config(home: &std::path::Path) -> Result<std::path::PathBuf, TestError> {
+    let path = home.join("filters.toml");
+    std::fs::write(
+        &path,
+        "[filters]\n\
+         the-call = \"call_id == 'test-call-1@192.0.2.1'\"\n\
+         nobody = \"to.user == 'no-such-user'\"\n\
+         wrapped = \"@the-call AND method == 'INVITE'\"\n",
+    )?;
+    Ok(path)
+}
+
+/// `GET /v1/dialogs?filter=@name` resolves through the run's `[filters]`,
+/// including a name built from another name, and an undefined name is a 400
+/// that says so.
+#[test]
+fn a_rest_filter_takes_the_runs_named_filters() -> Result<(), TestError> {
+    let home = tempfile::tempdir()?;
+    let config = named_filters_config(home.path())?;
+    let config = config.to_str().ok_or("utf-8 path")?;
+    let mut run = Spawned::start(
+        &[
+            "-N",
+            "-I",
+            CAPTURE,
+            "--config",
+            config,
+            "--api",
+            "127.0.0.1:0",
+            "--api-key",
+            "k",
+        ],
+        home.path(),
+        Stdio::null(),
+        Stdio::null(),
+    )?;
+    let addr = run
+        .after("REST API listening on ", Duration::from_secs(30))
+        .ok_or_else(|| format!("no listening line:\n{}", run.seen.join("\n")))?;
+    assert!(
+        run.after("API server active", Duration::from_secs(30))
+            .is_some(),
+        "the run must reach its keep-alive loop:\n{}",
+        run.seen.join("\n")
+    );
+    for (name, total) in [("the-call", 1), ("wrapped", 1), ("nobody", 0)] {
+        let (status, body) = http_get(&addr, &format!("/v1/dialogs?filter=%40{name}"), "k")?;
+        assert_eq!(status, 200, "@{name}: {body}");
+        let v: serde_json::Value = serde_json::from_str(&body)?;
+        assert_eq!(v["total"], total, "@{name}: {body}");
+    }
+    let (status, body) = http_get(&addr, "/v1/dialogs?filter=%40undefined", "k")?;
+    assert_eq!(status, 400, "{body}");
+    assert!(
+        body.contains("'@undefined' is not a defined filter"),
+        "{body}"
+    );
+    assert!(
+        body.contains("nobody, the-call, wrapped"),
+        "names what is defined: {body}"
+    );
+
+    let (code, log) = run.terminate();
+    assert_eq!(code, Some(0), "SIGTERM ends a served run cleanly:\n{log}");
+    Ok(())
+}
+
+/// The MCP `list_dialogs` tool's `filter: "@name"` resolves through the
+/// run's `[filters]`, the same table REST and the CLI use.
+#[test]
+fn an_mcp_filter_takes_the_runs_named_filters() -> Result<(), TestError> {
+    let home = tempfile::tempdir()?;
+    let config = named_filters_config(home.path())?;
+    let config = config.to_str().ok_or("utf-8 path")?;
+    let mut run = Spawned::start(
+        &["--mcp", "-N", "-I", CAPTURE, "--quiet", "--config", config],
+        home.path(),
+        Stdio::piped(),
+        Stdio::piped(),
+    )?;
+    let mut stdin = run.child.stdin.take().ok_or("stdin")?;
+    let mut reader = BufReader::new(run.child.stdout.take().ok_or("stdout")?);
+    send(
+        &mut stdin,
+        &serde_json::json!({
+            "jsonrpc": "2.0", "id": 1, "method": "initialize",
+            "params": {"protocolVersion": "2024-11-05", "capabilities": {},
+                       "clientInfo": {"name": "t", "version": "1"}}
+        }),
+    )?;
+    let _ = reply(&mut reader, 1);
+    send(
+        &mut stdin,
+        &serde_json::json!({"jsonrpc": "2.0", "method": "notifications/initialized"}),
+    )?;
+    let mut id = 1;
+    let mut ask = |filter: &str| -> Result<serde_json::Value, TestError> {
+        let deadline = Instant::now() + Duration::from_secs(30);
+        loop {
+            id += 1;
+            send(
+                &mut stdin,
+                &serde_json::json!({
+                    "jsonrpc": "2.0", "id": id, "method": "tools/call",
+                    "params": {"name": "list_dialogs", "arguments": {"filter": filter}}
+                }),
+            )?;
+            let answer = reply(&mut reader, id);
+            if answer["result"]["isError"] == serde_json::json!(true)
+                || answer.get("error").is_some()
+            {
+                return Ok(answer);
+            }
+            let text = answer["result"]["content"][0]["text"]
+                .as_str()
+                .ok_or_else(|| format!("list_dialogs must answer: {answer}"))?;
+            let v: serde_json::Value = serde_json::from_str(text)?;
+            if v["source_exhausted"] == serde_json::json!(true) {
+                return Ok(v);
+            }
+            assert!(
+                Instant::now() < deadline,
+                "the replay was not read within 30 s: {v}"
+            );
+            std::thread::sleep(Duration::from_millis(50));
+        }
+    };
+    assert_eq!(ask("@the-call")?["total_matched"], 1);
+    assert_eq!(ask("@wrapped")?["total_matched"], 1);
+    assert_eq!(ask("@nobody")?["total_matched"], 0);
+    let refused = ask("@undefined")?.to_string();
+    assert!(refused.contains("is not a defined filter"), "{refused}");
 
     drop(stdin);
     let (code, log) = run.terminate();

@@ -4690,7 +4690,9 @@ fn no_documentation_table_repeats_a_row() -> Result<(), TestError> {
     // Measured on the merged index: the ten docs/mcp-tools-<bundle>.md pages
     // and their ten site mirrors (+20), and docs/errors.md and its mirror
     // (+2). No file removed.
-    const EXPECTED_MARKDOWN_FILES: usize = 307;
+    // 307 -> 308: tests/fixtures/g722/README.md, how the G.722 decoder's
+    // fixtures were generated. A fixture README has no site mirror.
+    const EXPECTED_MARKDOWN_FILES: usize = 308;
     /// How many tables this gate expects to walk.
     ///
     /// Named rather than written twice. The count and the failure message
@@ -5300,7 +5302,22 @@ fn no_documentation_table_repeats_a_row() -> Result<(), TestError> {
     // docs/mcp-tools-*.md pages +108 (signaling 22, core 21, captures 14,
     // security 14, vcon 11, media 8, server 6, relay 5, tfps 5, tls 2). Net
     // +4, doubled by the site mirrors to +8.
-    const EXPECTED_TABLES: usize = 1183;
+    // 1183 -> 1185: the [filters] table in docs/config-reference.md and its
+    // site mirror website/content/docs/config.md.
+    // 1185 -> 1187: the [pbx] table in docs/config-reference.md and its site
+    // mirror.
+    // 1187 -> 1191: the [[vcon.rule]] key tables in docs/vcon.md (Write calls
+    // by rule) and docs/config-reference.md, and their site mirrors.
+    // 1191 -> 1195: enrichment. The [[vcon.enrich]] key table in
+    // docs/config-reference.md and the outcome table in docs/vcon.md (Enrich
+    // a call before it is written), and their site mirrors.
+    // 1195 -> 1197: live audio. The WebSocket message table in
+    // docs/rest-api.md (GET /v1/calls/:call_id/audio) and its site mirror.
+    // 1197 -> 1199: the [vcon] section's key table in
+    // docs/config-reference.md and its site mirror.
+    // 1199 -> 1200: the "Hear a call in progress" capability table in
+    // docs/design/surface-capability-matrix.md (no site mirror).
+    const EXPECTED_TABLES: usize = 1200;
 
     let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     let out = std::process::Command::new("git")

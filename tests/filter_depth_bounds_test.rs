@@ -403,6 +403,38 @@ fn every_documented_filter_expression_still_parses() -> Result<(), TestError> {
     });
     files.sort();
 
+    // A documented `@name` stands for a `[filters]` entry the docs define
+    // beside it. Install every table they define, resolved as sipnab resolves
+    // one at startup, so such an expression parses as it would for a reader
+    // who copied the table, and a name no page defines still fails.
+    let mut defs = std::collections::BTreeMap::new();
+    for path in &files {
+        let Ok(text) = std::fs::read_to_string(path) else {
+            continue;
+        };
+        for block in text.split("```toml\n").skip(1) {
+            let toml_text = block.split("```").next().unwrap_or_default();
+            let Ok(doc) = toml_text.parse::<toml::Table>() else {
+                continue;
+            };
+            if let Some(table) = doc.get("filters").and_then(toml::Value::as_table) {
+                for (name, value) in table {
+                    if let Some(expr) = value.as_str() {
+                        defs.insert(name.clone(), expr.to_owned());
+                    }
+                }
+            }
+        }
+    }
+    assert!(
+        !defs.is_empty(),
+        "the docs define named filters; the harvest broke"
+    );
+    let named =
+        sipnab::sip::named_filters::NamedFilters::resolve(&defs, &AliasThresholds::default())
+            .map_err(|e| format!("the documented [filters] tables do not resolve: {e}"))?;
+    sipnab::sip::named_filters::install(named);
+
     let mut checked = 0usize;
     let mut widest = (0usize, String::new());
     for path in &files {
@@ -410,12 +442,15 @@ fn every_documented_filter_expression_still_parses() -> Result<(), TestError> {
             continue;
         };
         for expr in harvest_filters(&text) {
-            let filter = FilterExpr::parse(&expr).map_err(|e| {
-                format!(
-                    "documented filter in {} fails to parse: {expr:?}: {e}",
-                    path.display()
-                )
-            })?;
+            // Through the resolver every surface uses, which expands a
+            // diagnostic alias and `@name` references before parsing.
+            let filter = sipnab::sip::dsl::parse_filter(&expr, &AliasThresholds::default())
+                .map_err(|e| {
+                    format!(
+                        "documented filter in {} fails to parse: {expr:?}: {e}",
+                        path.display()
+                    )
+                })?;
             // It must also *evaluate* — the size cap must not have made a
             // documented filter parse-only.
             let _ = matches_sample(&filter)?;

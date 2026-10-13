@@ -2451,14 +2451,56 @@ fn token_scope_flag_mints_a_scope_the_verifier_honors() -> Result<(), TestError>
         verifier.verify(&actions, now, sipnab::auth::SCOPE_FULL),
         "and one that reads everything a full token can"
     );
+
+    let audio = mint("audio")?;
+    assert!(
+        verifier.verify(&audio, now, sipnab::auth::SCOPE_AUDIO),
+        "--token-scope audio must mint a token accepted for call audio"
+    );
+    assert!(
+        !verifier.verify(&audio, now, sipnab::auth::SCOPE_FULL),
+        "and one that reads nothing else"
+    );
+    for other in [&full, &actions] {
+        assert!(
+            !verifier.verify(other, now, sipnab::auth::SCOPE_AUDIO),
+            "no other scope reaches call audio"
+        );
+    }
     Ok(())
 }
 
-/// `--token-scope metrics` is refused for the MCP surface at mint time.
+/// `--token-scope audio` is refused for the MCP surface at mint time.
 ///
-/// MCP has no `/metrics`, so a scrape-only MCP token could never authenticate
-/// anything. Failing at mint beats handing the operator a token that silently
-/// works nowhere.
+/// MCP has no call audio routes, so the token could never authenticate
+/// anything there. Failing at mint beats handing the operator a token that
+/// silently works nowhere.
+#[test]
+fn token_scope_audio_is_refused_for_the_mcp_surface() -> Result<(), TestError> {
+    let dir = tempfile::tempdir()?;
+    let key_path = dir.path().join("mcp.key");
+    std::fs::File::create(&key_path)?.write_all(b"mcp-scope-signing-key-0123456789")?;
+    let scope = "audio";
+    let out = std::process::Command::new(env!("CARGO_BIN_EXE_sipnab"))
+        .args([
+            "--mint-token",
+            "--token-scope",
+            scope,
+            "--mcp-signing-key-file",
+        ])
+        .arg(&key_path)
+        .output()?;
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(!out.status.success(), "{scope}: {stderr}");
+    assert!(
+        stderr.contains(&format!(
+            "--token-scope {scope} applies to the REST API only"
+        )),
+        "{scope}: {stderr}"
+    );
+    Ok(())
+}
+
 /// `--json-dialogs` emits one JSON object per dialog, not per message.
 ///
 /// The distinction is the point of the flag. `--json` is a per-message stream,

@@ -70,6 +70,8 @@ pub mod vcon;
 pub mod vcon_analysis;
 #[cfg(feature = "vcon")]
 pub mod vcon_schema;
+#[cfg(feature = "api")]
+pub mod websocket;
 pub mod wireshark;
 
 pub use analysis_report::{print_analysis_report, print_analysis_report_as};

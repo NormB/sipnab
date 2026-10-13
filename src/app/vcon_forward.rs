@@ -390,6 +390,13 @@ impl AuthHeader {
         &self.name
     }
 
+    /// The header line, `Name: value`, without its line ending, for a
+    /// request and nowhere else.
+    #[must_use]
+    pub(crate) fn line(&self) -> String {
+        format!("{}: {}", self.name, self.value)
+    }
+
     /// `text` with every occurrence of the value replaced, and of its last
     /// word too: an `Authorization: Bearer <token>` value's token may be
     /// echoed without the scheme in front of it.

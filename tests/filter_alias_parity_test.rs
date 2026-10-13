@@ -381,9 +381,20 @@ fn the_resolver_reads_configured_thresholds() -> Result<(), TestError> {
         .find("fn build_vcon_filter_expr")
         .ok_or("the vcon resolver is gone")?;
     let body = &plan[at..at + 900.min(plan.len() - at)];
+    // The resolver reads the thresholds itself, or through
+    // `resolved_filter_text`, the one expansion every CLI filter goes through
+    // since named filters; then that function must read them.
+    // The whole function: from its signature to the brace that closes it.
+    let via = plan.find("fn resolved_filter_text").map(|at| {
+        let rest = &plan[at..];
+        &rest[..rest.find("\n}\n").unwrap_or(rest.len())]
+    });
+    let reads = body.contains("alias_thresholds(config)")
+        || (body.contains("resolved_filter_text(")
+            && via.is_some_and(|v| v.contains("alias_thresholds(config)")));
 
     assert!(
-        body.contains("alias_thresholds(config)"),
+        reads,
         "the vcon resolver does not read `alias_thresholds(config)`, so a \
          configured `[diagnosis]` threshold changes what `--filter` matches \
          and not what `--export-vcon-when` matches:\n{body}"
@@ -391,10 +402,11 @@ fn the_resolver_reads_configured_thresholds() -> Result<(), TestError> {
     // `parse_filter` is the shared resolver every surface calls: it expands
     // through `expand_alias` and then parses, so naming it is naming the
     // expansion.
-    assert!(
-        body.contains("expand_alias") || body.contains("parse_filter("),
-        "the vcon resolver does not expand aliases at all"
-    );
+    let expands = body.contains("expand_alias")
+        || body.contains("parse_filter(")
+        || (body.contains("resolved_filter_text(")
+            && via.is_some_and(|v| v.contains("resolve_filter_text(")));
+    assert!(expands, "the vcon resolver does not expand aliases at all");
     Ok(())
 }
 

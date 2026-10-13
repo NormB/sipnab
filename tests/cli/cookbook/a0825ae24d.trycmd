@@ -104,7 +104,7 @@ a=fmtp:101 0-16
 a=sendonly
 a=ptime:20
 14:53:08.290 10.0.2.20:5060 -> 10.0.2.15:5060 ACK UDP
-Redaction: 6 classes, key ephemeral, 0 leading digit(s) retained.
 Wrote 0 vCon container(s) to 'a0825ae24d/out'.
+Redaction: 6 classes, key ephemeral, 0 leading digit(s) retained.
 
 ```

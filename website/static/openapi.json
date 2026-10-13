@@ -3268,6 +3268,56 @@
         ],
         "type": "object"
       },
+      "LiveCall": {
+        "description": "One call in progress, as `GET /v1/calls/live` and its events give it.",
+        "properties": {
+          "audio": {
+            "description": "The path of the call's audio WebSocket.",
+            "type": "string"
+          },
+          "call_id": {
+            "description": "The call's Call-ID.",
+            "type": "string"
+          },
+          "started": {
+            "description": "When the call's dialog opened, RFC 3339.",
+            "type": "string"
+          },
+          "state": {
+            "description": "The dialog's state.",
+            "type": "string"
+          },
+          "streams": {
+            "description": "How many RTP streams the call has.",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "audio",
+          "call_id",
+          "started",
+          "state",
+          "streams"
+        ],
+        "type": "object"
+      },
+      "LiveCalls": {
+        "description": "The calls `GET /v1/calls/live` lists.",
+        "properties": {
+          "calls": {
+            "description": "The calls in progress, in store order.",
+            "items": {
+              "$ref": "#/components/schemas/LiveCall"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "calls"
+        ],
+        "type": "object"
+      },
       "MethodCount": {
         "description": "One opening method and how many dialogs in the filtered set it opened.\n\nA list of pairs rather than an object: JSON object key order is not\nguaranteed, and the useful reading of this field is \"what dominates\",\nwhich only an ordered sequence can carry.",
         "properties": {
@@ -4642,6 +4692,13 @@
             "description": "Rows in `failures`.",
             "minimum": 0,
             "type": "integer"
+          },
+          "rule": {
+            "description": "The export rule whose spool this is, when the answer came from a run\n(`--export-vcon-when`, or a `[[vcon.rule]]` name). Absent from\n`sipnab --vcon-spool-status <DIR>`, which reads a directory, not a run.",
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "schema_version": {
             "description": "Version of this envelope.",
@@ -6593,6 +6650,191 @@
         "summary": "Count dialogs by a dimension",
         "tags": [
           "dialogs"
+        ]
+      }
+    },
+    "/v1/calls/live": {
+      "get": {
+        "description": "The calls a `[[vcon.rule]]` with `live_audio = true` matches that have not ended, each with its state, when it started, how many RTP streams it has, and the path of its audio WebSocket. A call the run's `--content-deny-header` withholds is not listed. Needs a token with the `audio` scope when the server authenticates.",
+        "operationId": "get_live_calls",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LiveCalls"
+                }
+              }
+            },
+            "description": "The calls in progress."
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "No bearer credential, or one without the `audio` scope."
+          },
+          "404": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "No rule has `live_audio = true`."
+          },
+          "503": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Over the per-source-IP rate limit of 100 requests per second."
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Calls in progress whose audio this server serves",
+        "tags": [
+          "calls"
+        ]
+      }
+    },
+    "/v1/calls/live/events": {
+      "get": {
+        "description": "A `text/event-stream`. On connecting, one `call` event for each call `GET /v1/calls/live` lists; then a `call` event for each call that appears. Each event's data is the call as `GET /v1/calls/live` gives it; a call's audio WebSocket closes when the call ends. Needs a token with the `audio` scope when the server authenticates.",
+        "operationId": "get_live_call_events",
+        "responses": {
+          "200": {
+            "content": {
+              "text/event-stream": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "description": "The event stream."
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "No bearer credential, or one without the `audio` scope."
+          },
+          "404": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "No rule has `live_audio = true`."
+          },
+          "503": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Over the per-source-IP rate limit of 100 requests per second."
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "An event for each call whose audio this server serves",
+        "tags": [
+          "calls"
+        ]
+      }
+    },
+    "/v1/calls/{call_id}/audio": {
+      "get": {
+        "description": "Upgrades to a WebSocket (RFC 6455) and sends the call's audio, decoded to 16-bit little-endian PCM, as it is captured, one binary message per RTP packet. A binary message's first byte is the stream it belongs to; the rest is that packet's samples. Text messages describe the stream: `{\"type\": \"stream\"}` announces a stream before its first packet (its index, SSRC, source and destination, codec and sample rate), `{\"type\": \"skipped\"}` names a stream whose codec sipnab does not decode, `{\"type\": \"gap\"}` says how many packets of a stream were released from retention before they were sent, and `{\"type\": \"end\"}` comes when the call has ended, before a normal close. A call that has already ended is sent from its first retained packet and then closed. Audio a key could not decrypt is never sent. Only calls a `[[vcon.rule]]` with `live_audio = true` matches, and that `--content-deny-header` does not withhold, are served. Needs a token with the `audio` scope when the server authenticates.",
+        "operationId": "get_call_audio",
+        "parameters": [
+          {
+            "description": "The call's Call-ID.",
+            "in": "path",
+            "name": "call_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "101": {
+            "description": "Switching to the WebSocket protocol."
+          },
+          "400": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Not a WebSocket upgrade request."
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "No bearer credential, or one without the `audio` scope."
+          },
+          "404": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "No rule has `live_audio = true`, or none matches a call with that Call-ID."
+          },
+          "503": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Over the per-source-IP rate limit of 100 requests per second."
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "A call's audio as it arrives, over a WebSocket",
+        "tags": [
+          "calls"
         ]
       }
     },
@@ -9475,6 +9717,15 @@
             "schema": {
               "type": "string"
             }
+          },
+          {
+            "description": "The export rule whose spool to read. Needed when the run has several\n(`[[vcon.rule]]`); the only spool otherwise.",
+            "in": "query",
+            "name": "rule",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
           }
         ],
         "responses": {
@@ -9637,6 +9888,10 @@
     {
       "description": "sipnab's own armed detectors: the findings the scanner, fraud, digest and reg-flood rules recorded",
       "name": "security"
+    },
+    {
+      "description": "Calls in progress that a `[[vcon.rule]]` with `live_audio = true` matches, and their audio as it arrives",
+      "name": "calls"
     }
   ]
 }

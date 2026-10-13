@@ -151,11 +151,21 @@ cap and an explicit refusal above it rather than a silent truncation. The
 refusal is the important half — a container that quietly dropped the media over
 the cap is a container claiming the call had none.
 
-Taking an operator-supplied base URL is the tempting middle path and it is
-worse than either end. It would have sipnab assert where an artefact **will**
-live, on infrastructure sipnab does not control, cannot check, and never sees
-again. A dead link inside a signed-looking record is indistinguishable from
-evidence that was removed.
+Taking an operator-supplied base URL is the tempting middle path, and on its
+own it is worse than either end: it would have sipnab assert where an artefact
+**will** live, on infrastructure sipnab does not control, cannot check, and
+never sees again. A dead link inside a signed-looking record is
+indistinguishable from evidence that was removed.
+
+Revised 2026-10-13 for the PBX export rules (`[[vcon.rule]]`, `audio =
+"url"`), because a whole call is usually over the inline cap and inline-or-
+nothing then leaves an operator with no audio at all. The rule that remains:
+sipnab still hosts nothing. It names a URL only when an operator configures
+one on a rule (`audio_url_base`, HTTPS only), it writes the WAV beside the
+container so whatever publishes the container publishes the file, every
+reference carries the WAV's `content_hash` so any copy can be verified
+against it, and the container's completeness note says that sipnab wrote the
+file, hosts nothing, and has not checked the URL. Inline stays the default.
 
 ### 2.6 Parties come from the observed dialog, never from inference
 

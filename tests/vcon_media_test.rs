@@ -221,6 +221,7 @@ fn export_within(
             max_inline_media_bytes: budget,
             analysis: None,
             media: &[],
+            related_legs: &[],
         },
         ObservedAudio::Decoded(&audio),
     );
@@ -252,6 +253,7 @@ fn export_reporting_within(
             max_inline_media_bytes: budget,
             analysis: None,
             media: &[],
+            related_legs: &[],
         },
         ObservedAudio::Decoded(&audio),
         Utc::now(),
@@ -591,6 +593,7 @@ fn a_dialog_with_no_exportable_audio_carries_no_recording_and_explains_itself()
             max_inline_media_bytes: None,
             analysis: None,
             media: &[],
+            related_legs: &[],
         },
         ObservedAudio::NothingToDecode(&reason),
     );
@@ -629,6 +632,7 @@ fn a_dialog_with_no_exportable_audio_carries_no_recording_and_explains_itself()
             max_inline_media_bytes: None,
             analysis: None,
             media: &[],
+            related_legs: &[],
         },
     );
     assert_eq!(
@@ -1265,6 +1269,7 @@ fn audio_withheld_by_redaction_leaves_the_signaling_object_typed_by_the_rule()
                 max_inline_media_bytes: None,
                 analysis: None,
                 media: &[],
+                related_legs: &[],
             },
             ObservedAudio::WithheldByRedaction,
         );
@@ -1300,6 +1305,79 @@ fn audio_withheld_by_redaction_leaves_the_signaling_object_typed_by_the_rule()
             "withheld-by-redaction",
             "{label}: {json}"
         );
+    }
+    Ok(())
+}
+
+/// Audio carried by reference: the recording names a URL and the hash of the
+/// WAV it serves, and holds no body. sipnab writes the WAV beside the
+/// container and hosts nothing; the operator's storage serves the URL.
+#[test]
+fn referenced_audio_is_a_url_and_the_hash_of_its_wav() -> Result<(), TestError> {
+    use base64::Engine as _;
+    use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+    use sha2::{Digest, Sha512};
+
+    let call_id = "referenced@example.com";
+    let store = dialog_store(call_id, sock(10, 0, 0, 1, 20000), sock(10, 0, 0, 2, 30000))?;
+    let s = stream(
+        sock(10, 0, 0, 1, 20000),
+        sock(10, 0, 0, 2, 30000),
+        1,
+        50,
+        0xFF,
+        0,
+        TimeDelta::seconds(1),
+    )?;
+    let audio = decode_dialog_audio(&[&s])?;
+    let dialog = store.get(call_id).ok_or("the fixture dialog")?;
+    let facts = CaptureFacts::default();
+    let url = "https://media.example.com/calls/referenced.wav";
+    let vcon = export_dialog_with_audio(
+        dialog,
+        &ExportContext {
+            capture_id: "vcon-media-fixture.pcap",
+            facts: &facts,
+            max_inline_media_bytes: Some(1),
+            analysis: None,
+            media: &[],
+            related_legs: &[],
+        },
+        ObservedAudio::Referenced(&audio, url),
+    );
+    let json = json_of(&vcon)?;
+    let recording = dialog_of(&json, RECORDING_TYPE)?.ok_or("a recording object")?;
+    assert_eq!(recording["url"], url);
+    assert!(recording.get("body").is_none(), "no body: {recording}");
+    assert!(
+        recording.get("encoding").is_none(),
+        "no encoding without a body: {recording}"
+    );
+    assert_eq!(recording["mediatype"], RECORDING_MEDIATYPE);
+    let expected = format!(
+        "sha512-{}",
+        URL_SAFE_NO_PAD.encode(Sha512::digest(&audio.wav))
+    );
+    assert_eq!(
+        recording["content_hash"], expected,
+        "the hash of the WAV the URL serves"
+    );
+    assert_eq!(
+        completeness(&json)?["media"],
+        "referenced",
+        "and the inline budget, here one byte, does not apply"
+    );
+    let note = completeness(&json)?["note"]
+        .as_str()
+        .unwrap_or_default()
+        .to_owned();
+    assert!(
+        note.contains("hosts nothing") && note.contains("has not checked"),
+        "the note says sipnab serves nothing and checked nothing: {note}"
+    );
+    let validator = support::schema::load_validator("vcon.schema.json")?;
+    if let Err(e) = validator.validate(&json) {
+        return Err(format!("does not validate: {e}\n{json:#}").into());
     }
     Ok(())
 }

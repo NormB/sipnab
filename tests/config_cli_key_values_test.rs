@@ -383,6 +383,52 @@ static KEY_SPECS: &[KeySpec] = &[
         },
     ),
     (
+        "pbx",
+        "addresses",
+        KeyKind::Literal {
+            accept: &[
+                "[]",
+                "[\"192.0.2.10\"]",
+                "[\"198.51.100.0/24\", \"2001:db8::1\"]",
+            ],
+            reject: &["[\"not-an-address\"]", "[\"192.0.2.10/33\"]", "[1]"],
+            ctx: "",
+        },
+    ),
+    (
+        "vcon",
+        "rule",
+        KeyKind::Literal {
+            accept: &[
+                "[]",
+                "[{ name = \"r\", when = \"method == 'INVITE'\", dir = \"vcon-out\" }]",
+            ],
+            reject: &[
+                "[{ name = \"bad name\", when = \"method == 'INVITE'\", dir = \"d\" }]",
+                "[{ name = \"r\", when = \"method == 'INVITE'\" }]",
+                "[{ name = \"r\", when = \"method == 'INVITE'\", dir = \"d\", audio = \"loud\" }]",
+                "[{ name = \"r\", when = \"method == 'INVITE'\", dir = \"d\", grouping = \"dialog\" }]",
+                "[{ name = \"r\", when = \"x\", dir = \"d\" }]",
+                "[{ name = \"r\", when = \"method == 'INVITE'\", dir = \"d\", volume = 1 }]",
+                "[1]",
+            ],
+            ctx: "",
+        },
+    ),
+    (
+        "vcon",
+        "enrich",
+        KeyKind::Literal {
+            accept: &["[]"],
+            reject: &[
+                "[{ name = \"e\", rules = [\"nope\"], url = \"http://127.0.0.1:9/\" }]",
+                "[{ name = \"e\", rules = [], url = \"http://127.0.0.1:9/\" }]",
+                "[1]",
+            ],
+            ctx: "",
+        },
+    ),
+    (
         "hep",
         "tls_ca",
         KeyKind::Literal {

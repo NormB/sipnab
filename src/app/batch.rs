@@ -305,7 +305,7 @@ pub struct BatchProcessing {
     /// Compiled `--filter` DSL expression, when given.
     pub filter_expr: Option<FilterExpr>,
     /// Compiled `--export-vcon-when` expression, resolved by the plan.
-    pub vcon_filter_expr: Option<FilterExpr>,
+    pub vcon_rules: Vec<VconRule>,
     /// Per-message output formatting options.
     pub output_opts: OutputOptions,
     /// `--on-*` event execution engine.
@@ -696,7 +696,7 @@ fn parallel_config(
         rtpproxy_control: cli.rtp_args.rtpproxy_control,
         xcid_headers: config.sip.xcid_headers.clone().unwrap_or_default(),
         leg_correlation_window_ms: cli.leg_correlation_window_ms(config),
-        retain_audio: audio_retention_wanted(cli),
+        retain_audio: audio_retention_wanted(cli, config),
         audio_limits: config.limits.audio_limits(),
         reassembly: !cli.capture_args.no_reassembly,
         parse_limit: cli.capture_args.limitlen,
@@ -1189,7 +1189,7 @@ pub fn run_cores_file(
     portrange: (u16, u16),
     paths: &[PathBuf],
     filter: Option<&FilterExpr>,
-    vcon_filter: Option<&FilterExpr>,
+    vcon_rules: &[VconRule],
 ) {
     if paths.is_empty() {
         // Unreachable through `main`: `RunMode::CoresFile` requires `-I`, and
@@ -1208,7 +1208,7 @@ pub fn run_cores_file(
             // stdout exited 0 on the --cores path while exiting 1 elsewhere.
             // No companion server runs on the --cores path, so there is no
             // gate anyone could have moved and the command line governs.
-            let reports_ok = report_parallel_run(cli, config, &r, filter, vcon_filter);
+            let reports_ok = report_parallel_run(cli, config, &r, filter, vcon_rules);
             // Same linter, same catalog, same exit code as the batch path.
             // Wired here because a gate that silently passes under `--cores` is
             // worse than no gate: a pipeline adding `--cores 8` for speed would
@@ -1267,7 +1267,7 @@ fn report_parallel_run(
     config: &Config,
     r: &crate::parallel::ReconResult,
     filter: Option<&FilterExpr>,
-    vcon_filter: Option<&FilterExpr>,
+    vcon_rules: &[VconRule],
 ) -> bool {
     let reports_ok = generate_reports(
         cli,
@@ -1278,7 +1278,7 @@ fn report_parallel_run(
             frames_read: r.packets_read,
         },
         filter,
-        vcon_filter,
+        vcon_rules,
         None,
         // `--cores` reads files only, so there was no live export to follow.
         VconRunEnd::Whole,
@@ -1323,14 +1323,32 @@ fn report_parallel_run(
 ///
 /// The TUI keeps its own retention decision in `tui_mode.rs`, which is why its
 /// F2 WAV export always worked against the same decoder.
-pub(crate) fn audio_retention_wanted(cli: &Cli) -> bool {
+pub(crate) fn audio_retention_wanted(cli: &Cli, config: &Config) -> bool {
     // `--retain-audio` alone, not `--mcp && --retain-audio`. The conjunction
     // was right while the MCP server was the only thing that could read the
     // buffers back; the amplitude measurement in the media diagnosis reads
     // them now, on `--call-report` and `--json-dialogs`, and an operator who
     // asked for audio retention on a plain batch run would otherwise have got
     // silence with no explanation.
+    //
+    // A `[[vcon.rule]]` with `audio = "inline"` is the same consent, written in
+    // the config: that rule's containers carry the audio, which has to be
+    // retained to be carried.
     cli.mcp_args.retain_audio
+        || config.vcon.rule.iter().any(|r| {
+            matches!(
+                RuleAudio::parse(r.audio.as_deref()),
+                Ok(RuleAudio::Inline | RuleAudio::Url)
+            )
+        })
+        // A live-audio rule serves the retained audio as it arrives.
+        || config.vcon.rule.iter().any(|r| r.live_audio == Some(true))
+        // An enrichment that sends audio needs the audio retained to send it.
+        || config.vcon.enrich.iter().any(|e| {
+            e.send
+                .as_ref()
+                .is_none_or(|send| send.iter().any(|w| w == "audio"))
+        })
 }
 
 /// Arm the store's retention from that decision, and report what was decided.
@@ -1352,8 +1370,8 @@ pub(crate) fn audio_retention_wanted(cli: &Cli) -> bool {
 /// A one-armed `if` cannot express "exactly when"; an assignment can. Taking
 /// `&mut StreamStore` keeps the decision and its effect inseparable, so a test
 /// can hold the store afterwards and read back what a run would actually do.
-fn apply_audio_retention(ss: &mut StreamStore, cli: &Cli) -> bool {
-    let wanted = audio_retention_wanted(cli);
+fn apply_audio_retention(ss: &mut StreamStore, cli: &Cli, config: &Config) -> bool {
+    let wanted = audio_retention_wanted(cli, config);
     ss.set_audio_capture(wanted);
     wanted
 }
@@ -2418,7 +2436,7 @@ fn build_live_stream_store(
     // already in progress is named by its first packet rather than arriving as
     // an orphan.
     crate::pipeline::apply_relay_snapshot(&mut ss, relay_snapshot);
-    if apply_audio_retention(&mut ss, cli) {
+    if apply_audio_retention(&mut ss, cli, config) {
         // Retention changes this run's memory profile, so state the bound
         // rather than letting an operator discover it under load.
         tracing::info!("{}", retention_bound_message(ss.audio_limits()));
@@ -2571,7 +2589,7 @@ pub fn run(
             config,
             &result,
             batch.filter_expr.as_ref(),
-            batch.vcon_filter_expr.as_ref(),
+            &batch.vcon_rules,
         );
         if !reports_ok {
             crate::capture::archive::release_run_and_exit(1);
@@ -2630,8 +2648,8 @@ pub struct BatchRunner {
     matcher: SipMatcher,
     /// Compiled `--filter` DSL expression, when given.
     filter_expr: Option<FilterExpr>,
-    /// Compiled `--export-vcon-when` expression, resolved by the plan.
-    vcon_filter_expr: Option<FilterExpr>,
+    /// The run's export rules, resolved by the plan.
+    vcon_rules: Vec<VconRule>,
     /// Per-message output formatting options.
     output_opts: OutputOptions,
     /// `--on-*` event execution engine.
@@ -3111,6 +3129,8 @@ fn server_selection(
         armed_detections: engines.armed_kinds(),
         pipeline_options: crate::app::server_pipeline_options(cli, config),
         alias_thresholds: cli.alias_thresholds(config),
+        vcon_spools: crate::app::vcon_spool::spools(cli, config),
+        live_audio: crate::app::bootstrap::live_audio_filters(cli, config),
     }
 }
 
@@ -3491,7 +3511,7 @@ impl BatchRunner {
         let preopened_keylog = batch.keylog_source;
         let input_files = batch.input_files;
         let filter_expr = batch.filter_expr;
-        let vcon_filter_expr = batch.vcon_filter_expr;
+        let vcon_rules = batch.vcon_rules;
         let output_opts = batch.output_opts;
         let event_exec = batch.event_exec;
         // 16. Output writer placeholder for -O — opened lazily on the first
@@ -3622,7 +3642,7 @@ impl BatchRunner {
             config: config.clone(),
             matcher,
             filter_expr,
-            vcon_filter_expr,
+            vcon_rules,
             output_opts,
             event_exec,
             writer,
@@ -3708,7 +3728,7 @@ impl BatchRunner {
         #[cfg(feature = "vcon")]
         let live_vcon = lp.live_vcon.take();
         #[cfg(feature = "vcon")]
-        let vcon_end = vcon_run_end(live_vcon.as_ref(), signals::shutdown_requested());
+        let vcon_end = vcon_run_end(live_vcon.as_deref(), signals::shutdown_requested());
         #[cfg(not(feature = "vcon"))]
         let vcon_end = VconRunEnd::Whole;
 
@@ -3744,7 +3764,10 @@ impl BatchRunner {
         // A sweep that could not write a container it owed said so when
         // it happened; the exit status says it again for a script.
         #[cfg(feature = "vcon")]
-        if live_vcon.as_ref().is_some_and(LiveVconTracker::failed) {
+        if live_vcon
+            .as_ref()
+            .is_some_and(|trackers| trackers.iter().any(LiveVconTracker::failed))
+        {
             crate::capture::archive::release_run_and_exit(1);
         }
 
@@ -3901,21 +3924,21 @@ impl BatchRunner {
         let live_vcon = &mut lp.live_vcon;
         let compacted = sweep_dialog_store(&self.dialog_store, now.get(), |ds| {
             #[cfg(feature = "vcon")]
-            if let Some(tracker) = live_vcon.as_mut() {
+            if let Some(trackers) = live_vcon.as_mut() {
                 let ss = self.stream_store.read();
                 let gate = self.servers.as_ref().map(|s| s.persistence_gate.as_ref());
-                live_vcon_sweep(
-                    &self.cli,
-                    self.vcon_filter_expr.as_ref(),
-                    CaptureRead {
-                        dialogs: ds,
-                        streams: &ss,
-                        frames_read: lp.total_count,
-                    },
-                    gate,
-                    tracker,
-                    now.get(),
-                );
+                let read = CaptureRead {
+                    dialogs: ds,
+                    streams: &ss,
+                    frames_read: lp.total_count,
+                };
+                if self.vcon_rules.is_empty() {
+                    if let Some(tracker) = trackers.first_mut() {
+                        live_vcon_sweep(&self.cli, None, read, gate, tracker, now.get());
+                    }
+                } else {
+                    live_rules_sweep(&self.cli, &self.vcon_rules, read, gate, trackers, now.get());
+                }
             }
             #[cfg(not(feature = "vcon"))]
             let _ = ds;
@@ -3923,8 +3946,13 @@ impl BatchRunner {
         // After the sweep, which held the stream store for reading: the calls
         // it wrote give their retained audio back.
         #[cfg(feature = "vcon")]
-        if let Some(tracker) = lp.live_vcon.as_mut() {
-            let released = release_exported_audio(tracker, &mut self.stream_store.write());
+        if let Some(trackers) = lp.live_vcon.as_mut() {
+            let mut streams = self.stream_store.write();
+            let released = trackers
+                .iter_mut()
+                .map(|t| release_exported_audio(t, &mut streams))
+                .fold(0u64, u64::saturating_add);
+            drop(streams);
             if released > 0 {
                 tracing::debug!(
                     "released {released} retained audio frame(s) of calls whose vCon was written"
@@ -4485,7 +4513,7 @@ impl BatchRunner {
                 frames_read,
             },
             self.filter_expr.as_ref(),
-            self.vcon_filter_expr.as_ref(),
+            &self.vcon_rules,
             gate,
             vcon_end,
         ) {
@@ -4742,7 +4770,7 @@ struct ReceiveLoop {
     /// a live run with `--export-vcon-when` or `--export-vcon`; see
     /// `Cli::exports_vcon_live`.
     #[cfg(feature = "vcon")]
-    live_vcon: Option<LiveVconTracker>,
+    live_vcon: Option<Vec<LiveVconTracker>>,
     /// When `--keylog-watch` last read the keylog source; see
     /// [`KEYLOG_POLL_INTERVAL`].
     #[cfg(feature = "tls")]
@@ -4803,7 +4831,7 @@ impl ReceiveLoop {
                 .map(|f| output::group::GroupBuffer::new(f, cli.group_caps(&runner.config))),
             sweep_clock: SweepClock::new(cli.has_input()),
             #[cfg(feature = "vcon")]
-            live_vcon: cli.exports_vcon_live().then(LiveVconTracker::default),
+            live_vcon: start_live_vcon(cli, &runner.config, &runner.vcon_rules),
             #[cfg(feature = "tls")]
             keylog_poll_clock: std::time::Instant::now(),
             security_max_age: cli.security_sweep_max_age(&runner.config),
@@ -6394,7 +6422,7 @@ pub fn generate_reports(
     config: &Config,
     read: CaptureRead<'_>,
     filter: Option<&FilterExpr>,
-    vcon_filter: Option<&FilterExpr>,
+    vcon_rules: &[VconRule],
     gate: Option<&crate::output::persistence::PersistenceGate>,
     vcon_end: VconRunEnd<'_>,
 ) -> bool {
@@ -6449,7 +6477,7 @@ pub fn generate_reports(
         // --export-vcon <call-id>: one observed dialog as a vCon container.
         && export_vcon(
             cli,
-            vcon_filter,
+            vcon_rules,
             dialog_store,
             stream_store,
             frames_read,
@@ -6830,17 +6858,27 @@ fn write_yang_analysis(analysis: &crate::analysis::CaptureAnalysis) -> bool {
 ///
 /// When `--export-vcon-dir` is absent, or the path cannot be made a directory.
 #[cfg(feature = "vcon")]
+#[cfg(test)]
 fn prepare_export_dir(cli: &Cli) -> Result<&std::path::Path, String> {
-    let Some(dir) = cli.output_args.export_vcon_dir.as_deref() else {
-        return Err("--export-vcon-when needs --export-vcon-dir. Nothing was exported.".to_owned());
-    };
-    std::fs::create_dir_all(dir).map_err(|e| {
-        format!(
+    prepare_target_dir(&VconTarget::from_flags(cli, None)?)
+}
+
+/// A rule's export directory, created if absent: the one place every export
+/// path makes the directory it writes to.
+///
+/// # Errors
+///
+/// When the path cannot be made a directory; the message names the path and
+/// the rule.
+#[cfg(feature = "vcon")]
+fn prepare_target_dir<'a>(target: &VconTarget<'a>) -> Result<&'a std::path::Path, String> {
+    std::fs::create_dir_all(target.dir).map_err(|e| {
+        target.say(&format!(
             "Could not create the vCon directory '{}': {e}. Nothing was exported.",
-            dir.display()
-        )
+            target.dir.display()
+        ))
     })?;
-    Ok(dir)
+    Ok(target.dir)
 }
 
 /// The inline-media budget this run enforces, from `--vcon-max-inline-media`.
@@ -6962,12 +7000,19 @@ const SWEEP_INTERVAL: std::time::Duration = std::time::Duration::from_secs(5);
 pub struct LiveVconTracker {
     /// Call-ID to the `updated_at` its container was written at.
     written: std::collections::HashMap<String, chrono::DateTime<chrono::Utc>>,
+    /// Call-ID to when its container was first written: the `created_at` a
+    /// `live = true` rule keeps on every rewrite.
+    first_written: std::collections::HashMap<String, chrono::DateTime<chrono::Utc>>,
     /// Set when a sweep could not write a container it owed, so the run can
     /// end non-zero instead of reporting an export that did not happen.
     failed: bool,
     /// Call-IDs written since their retained audio was last released, for
     /// [`release_exported_audio`].
     unreleased: Vec<String>,
+    /// Calls written by one rule whose audio an inline-audio rule still owes,
+    /// re-examined every sweep by [`live_rules_sweep`].
+    #[cfg(feature = "vcon")]
+    held: Vec<String>,
     /// Containers the live sweeps wrote over the whole run, rewrites included.
     /// Never pruned, unlike `written`, so the end-of-run line can report what
     /// the run wrote.
@@ -6990,6 +7035,7 @@ impl LiveVconTracker {
     /// Forget every dialog `still_held` says the store no longer holds.
     pub fn prune(&mut self, still_held: impl Fn(&str) -> bool) {
         self.written.retain(|call_id, _| still_held(call_id));
+        self.first_written.retain(|call_id, _| still_held(call_id));
     }
 
     /// How many dialogs are tracked.
@@ -7058,13 +7104,13 @@ pub enum VconRunEnd<'a> {
     /// A live run that ended on its own (`--duration`, autostop): write the
     /// selected dialogs the live sweeps have not already written at their
     /// current `updated_at`.
-    AfterLive(&'a LiveVconTracker),
+    AfterLive(&'a [LiveVconTracker]),
 }
 
 /// What the end-of-run export owes a run, from whether it exported live and
 /// whether a signal stopped it.
 #[cfg(feature = "vcon")]
-fn vcon_run_end(live: Option<&LiveVconTracker>, stopped_by_signal: bool) -> VconRunEnd<'_> {
+fn vcon_run_end(live: Option<&[LiveVconTracker]>, stopped_by_signal: bool) -> VconRunEnd<'_> {
     match live {
         None => VconRunEnd::Whole,
         Some(_) if stopped_by_signal => VconRunEnd::Stopped,
@@ -7102,6 +7148,98 @@ fn live_settle() -> chrono::TimeDelta {
     chrono::TimeDelta::from_std(SWEEP_INTERVAL).unwrap_or(chrono::TimeDelta::MAX)
 }
 
+/// The name the rule `--export-vcon-when` with `--export-vcon-dir` make goes by.
+pub const FLAG_RULE: &str = "--export-vcon-when";
+
+/// What a rule's containers carry of a call's audio.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RuleAudio {
+    /// The audio the run retained, inline in a `recording` Dialog Object,
+    /// within the inline budget.
+    Inline,
+    /// No audio: the container records that none was considered.
+    Omit,
+    /// The audio, written to a WAV beside the container and named by URL
+    /// (`audio_url_base` plus the file name) with its hash.
+    Url,
+}
+
+impl RuleAudio {
+    /// A `[[vcon.rule]]` `audio` value: `inline`, `omit`, or unset, which is
+    /// `omit` -- call audio is kept only on the operator's explicit word.
+    ///
+    /// # Errors
+    ///
+    /// Any other value, as the text to report.
+    pub fn parse(value: Option<&str>) -> Result<Self, String> {
+        match value {
+            None | Some("omit") => Ok(Self::Omit),
+            Some("inline") => Ok(Self::Inline),
+            Some("url") => Ok(Self::Url),
+            Some(other) => Err(format!("audio = '{other}'; use 'inline', 'url' or 'omit'")),
+        }
+    }
+}
+
+/// How a rule divides a call that crossed a B2BUA or a PBX, and so is several
+/// dialogs, into containers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RuleGrouping {
+    /// One container per dialog, each naming the containers of the call's
+    /// other legs and how strongly each is tied.
+    Leg,
+    /// One container per call, holding every leg, with the ties between the
+    /// legs stated in it.
+    Call,
+}
+
+impl RuleGrouping {
+    /// A `[[vcon.rule]]` `grouping` value: `leg`, `call`, or unset, which is
+    /// `leg` -- a timing tie can be wrong, and merging on one would put two
+    /// unrelated calls in one container.
+    ///
+    /// # Errors
+    ///
+    /// Any other value, as the text to report.
+    pub fn parse(value: Option<&str>) -> Result<Self, String> {
+        match value {
+            None | Some("leg") => Ok(Self::Leg),
+            Some("call") => Ok(Self::Call),
+            Some(other) => Err(format!("grouping = '{other}'; use 'leg' or 'call'")),
+        }
+    }
+}
+
+/// One export rule, resolved: a `[[vcon.rule]]`, or the rule
+/// `--export-vcon-when` with `--export-vcon-dir` make.
+#[derive(Debug, Clone)]
+pub struct VconRule {
+    /// The rule's name, used in the run's report.
+    pub name: String,
+    /// The compiled filter a call must match, `--since`/`--until` included.
+    pub filter: FilterExpr,
+    /// The directory the rule writes to.
+    pub dir: std::path::PathBuf,
+    /// What each container carries of the call's audio.
+    pub audio: RuleAudio,
+    /// The rule's inline-media budget in bytes; `None` uses the run's
+    /// (`--vcon-max-inline-media`).
+    pub max_inline: Option<usize>,
+    /// The base URL a `Url` rule names its WAV files under, without a
+    /// trailing `/`.
+    pub audio_url_base: Option<String>,
+    /// One container per leg, or one per call.
+    pub grouping: RuleGrouping,
+    /// The `[[vcon.enrich]]` services this rule's calls go to, in order.
+    pub enrich: Vec<std::sync::Arc<crate::app::vcon_enrich::Service>>,
+    /// Whether the REST API serves this rule's calls' audio while they are in
+    /// progress.
+    pub live_audio: bool,
+    /// Whether a live capture writes each call as it starts and rewrites it
+    /// as it changes.
+    pub live: bool,
+}
+
 /// How long a dialog that has not ended must have had no SIP and no RTP
 /// before a live sweep writes it anyway.
 ///
@@ -7112,6 +7250,52 @@ fn live_settle() -> chrono::TimeDelta {
 /// same name when the BYE arrives.
 #[cfg(feature = "vcon")]
 const LIVE_IDLE_WRITE: std::time::Duration = std::time::Duration::from_secs(120);
+
+/// The live vCon export's tracker, when this run exports live, after saying
+/// whatever [`live_compaction_warning`] has to say about the run's settings.
+#[cfg(feature = "vcon")]
+fn start_live_vcon(
+    cli: &Cli,
+    config: &crate::config::Config,
+    rules: &[VconRule],
+) -> Option<Vec<LiveVconTracker>> {
+    // A `[[vcon.rule]]` makes a live run export as `--export-vcon-when` does.
+    let live = cli.exports_vcon_live() || (!cli.has_input() && !rules.is_empty());
+    if let Some(warning) = live_compaction_warning(config.limits.idle_compact_after_secs, live) {
+        tracing::warn!("{warning}");
+    }
+    // One tracker per rule, and one for `--export-vcon <CALL-ID>`, which has
+    // no rule.
+    live.then(|| {
+        (0..rules.len().max(1))
+            .map(|_| LiveVconTracker::default())
+            .collect()
+    })
+}
+
+/// What a live vCon export says at startup when idle compaction can run
+/// before the export writes a call: `[limits] idle_compact_after_secs`
+/// shorter than [`LIVE_IDLE_WRITE`]. Compaction keeps the opening request and
+/// the outcome but can drop the messages between them, and the container is
+/// built from what is left. `None` when there is nothing to say.
+#[cfg(feature = "vcon")]
+fn live_compaction_warning(
+    idle_compact_after_secs: Option<u64>,
+    live_export: bool,
+) -> Option<String> {
+    let secs = idle_compact_after_secs?;
+    if !live_export || secs >= LIVE_IDLE_WRITE.as_secs() {
+        return None;
+    }
+    Some(format!(
+        "[limits] idle_compact_after_secs is {secs}, shorter than the {} s a live vCon \
+         export waits before it writes a call that has not ended, so idle compaction \
+         can drop that call's middle messages before its container is written. Set \
+         it to {} or more to keep them.",
+        LIVE_IDLE_WRITE.as_secs(),
+        LIVE_IDLE_WRITE.as_secs()
+    ))
+}
 
 /// The two waits a live sweep applies, as the predicate takes them.
 #[cfg(feature = "vcon")]
@@ -7216,15 +7400,65 @@ fn live_vcon_sweep(
             now,
         );
     }
+    let target = match VconTarget::from_flags(cli, vcon_filter) {
+        Ok(t) => t,
+        Err(message) => {
+            tracker.fail(&message);
+            return 0;
+        }
+    };
+    live_target_sweep(
+        cli,
+        &target,
+        CaptureRead {
+            dialogs: dialog_store,
+            streams: stream_store,
+            frames_read,
+        },
+        gate,
+        tracker,
+        now,
+    )
+    .0
+}
+
+/// One rule's share of a live sweep: write every dialog the rule selects that
+/// [`live_vcon_due`] says is due, into the rule's directory, with the rule's
+/// audio setting.
+///
+/// Returns how many containers it wrote, and the Call-IDs the rule selected
+/// (which the audio release reads: see [`live_rules_sweep`]).
+#[cfg(feature = "vcon")]
+fn live_target_sweep(
+    cli: &Cli,
+    target: &VconTarget<'_>,
+    read: CaptureRead<'_>,
+    gate: Option<&crate::output::persistence::PersistenceGate>,
+    tracker: &mut LiveVconTracker,
+    now: chrono::DateTime<chrono::Utc>,
+) -> (usize, Vec<String>) {
+    let CaptureRead {
+        dialogs: dialog_store,
+        streams: stream_store,
+        frames_read,
+    } = read;
     let (selection, suppressed_by_deny, _denied) =
-        match vcon_selection(cli, vcon_filter, dialog_store, stream_store) {
+        match vcon_selection(cli, target.filter, dialog_store, stream_store) {
             Ok(s) => s,
             Err(e) => {
-                tracker.fail(&format!("{e:#}"));
-                return 0;
+                tracker.fail(&target.say(&format!("{e:#}")));
+                return (0, Vec::new());
             }
         };
-    let due = live_due_dialogs(
+    let selected: Vec<String> = selection
+        .dialogs
+        .iter()
+        .map(|(dialog, _)| dialog.call_id.clone())
+        .collect();
+    let units = live_units(
+        target.grouping,
+        target.live,
+        dialog_store,
         selection
             .dialogs
             .iter()
@@ -7232,31 +7466,113 @@ fn live_vcon_sweep(
         tracker,
         now,
     );
-    if due.is_empty() {
-        return 0;
+    if units.is_empty() {
+        return (0, selected);
     }
-    let dir = match prepare_export_dir(cli) {
+    let dir = match prepare_target_dir(target) {
         Ok(dir) => dir,
         Err(message) => {
             tracker.fail(&message);
-            return 0;
+            return (0, selected);
         }
     };
     let outcome = write_vcon_containers(
         cli,
-        dir,
+        target,
         &VconBatch {
             dialog_store,
             stream_store,
             frames_read,
             gate,
             suppressed_by_deny,
+            defer_enrichment: true,
+            first_written: Some(&tracker.first_written),
+            now,
         },
-        &due,
-        &[],
+        &units,
         None,
     );
-    settle_live_writes(tracker, &due, dir, outcome)
+    if target.live {
+        for dialog in units
+            .iter()
+            .take(*outcome.as_ref().unwrap_or_else(|(n, _)| n))
+            .flat_map(ContainerUnit::legs)
+        {
+            tracker
+                .first_written
+                .entry(dialog.call_id.clone())
+                .or_insert(now);
+        }
+    }
+    (settle_live_writes(tracker, &units, dir, outcome), selected)
+}
+
+/// Every rule's share of a live sweep, then which written calls may give
+/// their retained audio back.
+///
+/// A call's audio is released only when every inline-audio rule that selects
+/// it has written it at its current `updated_at`. A rule that omits audio, or
+/// an inline rule whose filter only matches the call later, would otherwise
+/// leave the next inline container with the audio already gone. A call held
+/// back is looked at again on the next sweep.
+///
+/// Returns how many containers the sweep wrote across every rule.
+#[cfg(feature = "vcon")]
+fn live_rules_sweep(
+    cli: &Cli,
+    rules: &[VconRule],
+    read: CaptureRead<'_>,
+    gate: Option<&crate::output::persistence::PersistenceGate>,
+    trackers: &mut [LiveVconTracker],
+    now: chrono::DateTime<chrono::Utc>,
+) -> usize {
+    let dialog_store = read.dialogs;
+    for tracker in trackers.iter_mut() {
+        tracker.prune(|call_id| dialog_store.get(call_id).is_some());
+    }
+    if gate.is_some_and(|g| !g.writes_permitted()) {
+        return 0;
+    }
+    let mut written = 0usize;
+    let mut inline_selected: Vec<(usize, Vec<String>)> = Vec::new();
+    for (i, rule) in rules.iter().enumerate() {
+        let Some(tracker) = trackers.get_mut(i) else {
+            continue;
+        };
+        let (n, selected) = live_target_sweep(cli, &VconTarget::of(rule), read, gate, tracker, now);
+        written = written.saturating_add(n);
+        if rule.audio == RuleAudio::Inline {
+            inline_selected.push((i, selected));
+        }
+    }
+    let Some((first, rest)) = trackers.split_first_mut() else {
+        return written;
+    };
+    let mut candidates = std::mem::take(&mut first.held);
+    candidates.append(&mut first.unreleased);
+    for t in rest.iter_mut() {
+        candidates.append(&mut t.unreleased);
+    }
+    candidates.sort();
+    candidates.dedup();
+    for call_id in candidates {
+        let owed = dialog_store.get(&call_id).is_some_and(|dialog| {
+            inline_selected.iter().any(|(i, selected)| {
+                let at = if *i == 0 {
+                    first.written_at(&call_id)
+                } else {
+                    rest.get(i - 1).and_then(|t| t.written_at(&call_id))
+                };
+                selected.contains(&call_id) && at != Some(dialog.updated_at)
+            })
+        });
+        if owed {
+            first.held.push(call_id);
+        } else {
+            first.unreleased.push(call_id);
+        }
+    }
+    written
 }
 
 /// The dialogs among `selected` that a live sweep at `now` writes, by
@@ -7288,15 +7604,69 @@ fn live_due_dialogs<'a>(
         .collect()
 }
 
+/// The containers one live sweep writes for a rule: each dialog that
+/// [`live_vcon_due`] says is due, or, for `grouping = "call"`, each call one
+/// of whose legs is due and all of whose legs have settled -- due now, or
+/// already written as they stand. A call with a leg still in progress waits,
+/// so its container is never written with a leg missing that is still
+/// arriving.
+#[cfg(feature = "vcon")]
+fn live_units<'a>(
+    grouping: RuleGrouping,
+    live: bool,
+    store: &'a DialogStore,
+    selected: impl Iterator<
+        Item = (
+            &'a crate::sip::dialog::SipDialog,
+            &'a [&'a crate::rtp::stream::RtpStream],
+        ),
+    >,
+    tracker: &LiveVconTracker,
+    now: chrono::DateTime<chrono::Utc>,
+) -> Vec<ContainerUnit<'a>> {
+    let selected: Vec<_> = selected.collect();
+    // A `live = true` rule writes a call whenever it changed since its last
+    // write, from the first message on; any other waits for the call to end
+    // or go idle.
+    let due: Vec<&crate::sip::dialog::SipDialog> = if live {
+        selected
+            .iter()
+            .map(|(d, _)| *d)
+            .filter(|d| tracker.written_at(&d.call_id) != Some(d.updated_at))
+            .collect()
+    } else {
+        live_due_dialogs(selected.iter().copied(), tracker, now)
+    };
+    match grouping {
+        RuleGrouping::Leg => due
+            .into_iter()
+            .map(|d| ContainerUnit::Leg(d, false))
+            .collect(),
+        RuleGrouping::Call => {
+            let is_due =
+                |d: &crate::sip::dialog::SipDialog| due.iter().any(|x| x.call_id == d.call_id);
+            let settled = |d: &crate::sip::dialog::SipDialog| {
+                is_due(d) || tracker.written_at(&d.call_id) == Some(d.updated_at)
+            };
+            let dialogs: Vec<_> = selected.iter().map(|(d, _)| *d).collect();
+            call_groups(store, &dialogs)
+                .into_iter()
+                .filter(|g| g.legs.iter().any(|d| is_due(d)) && g.legs.iter().all(|d| settled(d)))
+                .map(ContainerUnit::Call)
+                .collect()
+        }
+    }
+}
+
 /// Record what one live sweep wrote and say what happened.
 ///
-/// The first `written` of `due` are recorded on the tracker, the count is
+/// Every leg of the first `written` of `units` is recorded on the tracker, the count is
 /// logged, and a failure is logged and remembered so the run exits non-zero.
 /// Returns how many containers the sweep wrote.
 #[cfg(feature = "vcon")]
 fn settle_live_writes(
     tracker: &mut LiveVconTracker,
-    due: &[&crate::sip::dialog::SipDialog],
+    units: &[ContainerUnit<'_>],
     dir: &std::path::Path,
     outcome: Result<usize, (usize, String)>,
 ) -> usize {
@@ -7304,7 +7674,7 @@ fn settle_live_writes(
         Ok(n) => (n, None),
         Err((n, message)) => (n, Some(message)),
     };
-    for dialog in due.iter().take(written) {
+    for dialog in units.iter().take(written).flat_map(ContainerUnit::legs) {
         tracker.record(&dialog.call_id, dialog.updated_at);
     }
     tracker.containers_written = tracker.containers_written.saturating_add(written);
@@ -7365,6 +7735,7 @@ fn live_single_vcon_sweep(
 
 /// The capture a batch of containers is drawn from, and what the run
 /// withheld from it.
+#[derive(Clone, Copy)]
 #[cfg(feature = "vcon")]
 struct VconBatch<'a> {
     /// Every dialog the run holds; the analysis is drawn from all of them.
@@ -7377,6 +7748,15 @@ struct VconBatch<'a> {
     gate: Option<&'a crate::output::persistence::PersistenceGate>,
     /// How many dialogs the deny header removed from the selection.
     suppressed_by_deny: u64,
+    /// A live sweep: enrichment runs on the queue's worker rather than
+    /// holding the sweep. Never set for the end-of-run export, which waits.
+    defer_enrichment: bool,
+    /// When each call's container was first written, which a `live = true`
+    /// rule's rewrites keep as `created_at`.
+    first_written: Option<&'a std::collections::HashMap<String, chrono::DateTime<chrono::Utc>>>,
+    /// The moment this write happens: a live sweep's clock, so a container's
+    /// `updated_at` and the tracker's record of it are one value.
+    now: chrono::DateTime<chrono::Utc>,
 }
 
 /// Decode the audio sipnab retained for one dialog's streams.
@@ -7419,7 +7799,8 @@ fn observed_audio<'a>(
 }
 
 /// Write one container per dialog in `dialogs`, and a withheld-dialog
-/// container per dialog in `tombstones`, into `dir`.
+/// container per dialog in `tombstones`, into `target`'s directory with its
+/// audio setting.
 ///
 /// THE writer: the end-of-run export and every live sweep call it, so a
 /// container means the same thing whichever of them wrote it. `--vcon-digest`
@@ -7436,15 +7817,15 @@ fn observed_audio<'a>(
 #[cfg(feature = "vcon")]
 fn write_vcon_containers(
     cli: &Cli,
-    dir: &std::path::Path,
+    target: &VconTarget<'_>,
     batch: &VconBatch<'_>,
-    dialogs: &[&crate::sip::dialog::SipDialog],
-    tombstones: &[&crate::sip::dialog::SipDialog],
+    units: &[ContainerUnit<'_>],
     redactor: Option<&crate::output::redact::Redactor<'_>>,
 ) -> Result<usize, (usize, String)> {
-    if dialogs.is_empty() && tombstones.is_empty() {
+    if units.is_empty() {
         return Ok(0);
     }
+    let dir = target.dir;
     let mut facts = crate::analysis::CaptureFacts::observed(
         batch.dialog_store,
         batch.stream_store,
@@ -7465,52 +7846,90 @@ fn write_vcon_containers(
         .content_deny_header
         .as_deref()
         .unwrap_or("(unnamed)");
-    // Tombstones last: every full container is on disk before the first one.
-    let work = dialogs
-        .iter()
-        .map(|d| (*d, false))
-        .chain(tombstones.iter().map(|d| (*d, true)));
+    let writer = LegWriter {
+        cli,
+        target,
+        batch,
+        facts: &facts,
+        analysis: &analysis,
+        header,
+        redactor,
+    };
     let mut written = 0_usize;
-    for (dialog, withheld) in work {
-        let media = crate::output::vcon::media_quality_for(batch.stream_store, &dialog.call_id);
-        let context = crate::output::vcon::ExportContext {
-            capture_id: crate::output::vcon::dialog_capture_id(dialog),
-            facts: &facts,
-            analysis: Some(&analysis),
-            max_inline_media_bytes: media_budget(cli),
-            media: &media,
+    for unit in units {
+        let (container, root, what) = match unit {
+            ContainerUnit::Leg(dialog, withheld) => (
+                writer.leg(dialog, *withheld, true, written)?,
+                *dialog,
+                if *withheld {
+                    "withheld-dialog vCon"
+                } else {
+                    "vCon"
+                },
+            ),
+            ContainerUnit::Call(group) => {
+                let mut legs = Vec::with_capacity(group.legs.len());
+                for dialog in &group.legs {
+                    legs.push(writer.leg(dialog, false, false, written)?);
+                }
+                let uuid = crate::output::vcon::call_uuid(
+                    &group.legs,
+                    crate::output::vcon::dialog_capture_id(group.legs[0]),
+                );
+                let Some(container) =
+                    crate::output::vcon::merge_call_legs(legs, &group.ties, uuid, group.truncated)
+                else {
+                    continue;
+                };
+                (container, group.legs[0], "call vCon")
+            }
         };
-        let container = if withheld {
-            crate::output::vcon::export_withheld_dialog(dialog, &context, header)
-        } else {
-            let decoded = decode_observed_audio(batch.stream_store, &dialog.call_id);
-            let reason = decoded
-                .as_ref()
-                .err()
-                .map_or_else(String::new, |e| e.to_string());
-            crate::output::vcon::export_dialog_with_audio(
-                dialog,
-                &context,
-                observed_audio(&decoded, &reason, redactor.is_some()),
-            )
-        };
+        let mut container = container;
+        let ended = unit.legs().iter().all(|d| d.state().is_final());
+        // Only a live capture has first-write times; on an `-I` run a live
+        // rule writes what any rule writes.
+        if let (true, Some(first_written)) = (target.live, batch.first_written) {
+            let now = batch.now;
+            let first = first_written.get(&root.call_id).copied().unwrap_or(now);
+            container.created_at = first.to_rfc3339();
+            container.updated_at = Some(now.to_rfc3339());
+        }
+        let path = dir.join(vcon_spool_name(&root.call_id, redactor));
+        if !target.enrich.is_empty()
+            && !matches!(unit, ContainerUnit::Leg(_, true))
+            && (ended || !target.live)
+        {
+            if batch.defer_enrichment {
+                match queue_enrichment(
+                    cli,
+                    container,
+                    unit.legs(),
+                    batch.stream_store,
+                    target,
+                    &path,
+                    crate::app::vcon_enrich::queue(),
+                ) {
+                    None => {
+                        written += 1;
+                        continue;
+                    }
+                    Some(handed_back) => container = handed_back,
+                }
+            } else {
+                enrich_container(&mut container, unit.legs(), batch.stream_store, target);
+            }
+        }
         let json =
             crate::output::vcon::sealed_json(&crate::output::vcon::seal(container, redactor))
                 .map_err(|e| {
-                    let what = if withheld {
-                        "withheld-dialog vCon"
-                    } else {
-                        "vCon"
-                    };
                     (
                         written,
                         format!(
                             "The {what} for Call-ID '{}' would not serialize: {e}",
-                            spool_call_id(&dialog.call_id, redactor)
+                            spool_call_id(&root.call_id, redactor)
                         ),
                     )
                 })?;
-        let path = dir.join(vcon_spool_name(&dialog.call_id, redactor));
         write_container_atomically(&path, json.as_bytes()).map_err(|e| {
             (
                 written,
@@ -7530,6 +7949,370 @@ fn write_vcon_containers(
         written += 1;
     }
     Ok(written)
+}
+
+/// Each leg's audio, owned, with the leg's signaling object in `container`:
+/// what an enrichment service is sent.
+#[cfg(feature = "vcon")]
+fn leg_audio(
+    container: &crate::output::vcon::Vcon,
+    legs: &[&crate::sip::dialog::SipDialog],
+    streams: &StreamStore,
+) -> Vec<crate::app::vcon_enrich::OwnedLegAudio> {
+    legs.iter()
+        .filter_map(|leg| {
+            let dialog = container
+                .dialog
+                .iter()
+                .position(|d| d.sip_call_id == leg.call_id)?;
+            let audio = decode_observed_audio(streams, &leg.call_id).ok()?;
+            Some(crate::app::vcon_enrich::OwnedLegAudio {
+                dialog,
+                sip_call_id: leg.call_id.clone(),
+                wav: audio.wav,
+            })
+        })
+        .collect()
+}
+
+/// Say on stderr which of `records` did not succeed, for the call `call_id`.
+#[cfg(feature = "vcon")]
+fn report_enrichment(label: &str, call_id: &str, records: &[crate::app::vcon_enrich::Record]) {
+    for record in records {
+        if record.outcome != crate::app::vcon_enrich::Outcome::Ok {
+            stderr_line!(
+                "{label}[[vcon.enrich]] '{}' for Call-ID '{call_id}': {}: {}. The container \
+                 is written without its analysis and records this.",
+                record.service,
+                record.outcome.as_str(),
+                record.detail
+            );
+        }
+    }
+}
+
+/// Send `container` to `target`'s enrichment services, with each leg's audio,
+/// and say on stderr what did not succeed.
+#[cfg(feature = "vcon")]
+fn enrich_container(
+    container: &mut crate::output::vcon::Vcon,
+    legs: &[&crate::sip::dialog::SipDialog],
+    streams: &StreamStore,
+    target: &VconTarget<'_>,
+) {
+    let owned = leg_audio(container, legs, streams);
+    let audio: Vec<crate::app::vcon_enrich::LegAudio<'_>> = owned
+        .iter()
+        .map(|a| crate::app::vcon_enrich::LegAudio {
+            dialog: a.dialog,
+            sip_call_id: &a.sip_call_id,
+            wav: &a.wav,
+        })
+        .collect();
+    let records = crate::app::vcon_enrich::enrich(container, &audio, target.enrich);
+    let call_id = legs.first().map_or("", |d| d.call_id.as_str());
+    report_enrichment(&target.say(""), call_id, &records);
+}
+
+/// Hand a live call's container to the enrichment queue, whose worker
+/// enriches it and writes it to `path`. `None` when queued; the container
+/// back, with every service recorded `queue-full`, when the queue had no
+/// room, for the caller to write at once.
+#[cfg(feature = "vcon")]
+fn queue_enrichment(
+    cli: &Cli,
+    container: crate::output::vcon::Vcon,
+    legs: &[&crate::sip::dialog::SipDialog],
+    streams: &StreamStore,
+    target: &VconTarget<'_>,
+    path: &std::path::Path,
+    queue: &crate::app::vcon_enrich::Queue,
+) -> Option<crate::output::vcon::Vcon> {
+    let audio = leg_audio(&container, legs, streams);
+    let label = target.say("");
+    let call_id = legs.first().map_or_else(String::new, |d| d.call_id.clone());
+    let digest = cli.output_args.vcon_digest;
+    let path = path.to_path_buf();
+    let finish: crate::app::vcon_enrich::Finish = Box::new(move |container, records| {
+        report_enrichment(&label, &call_id, &records);
+        let written = crate::output::vcon::sealed_json(&crate::output::vcon::seal(container, None))
+            .map_err(|e| e.to_string())
+            .and_then(|json| {
+                write_container_atomically(&path, json.as_bytes())
+                    .map(|()| json)
+                    .map_err(|e| e.to_string())
+            });
+        match written {
+            Ok(json) if digest => println!("{}", digest_line(&path, json.as_bytes())),
+            Ok(_) => {}
+            Err(e) => stderr_line!(
+                "{label}Could not write '{}' after enrichment: {e}",
+                path.display()
+            ),
+        }
+    });
+    let job = crate::app::vcon_enrich::Job {
+        container,
+        audio,
+        services: target.enrich.to_vec(),
+        finish,
+    };
+    match queue.submit(job) {
+        Ok(()) => None,
+        Err(job) => {
+            let mut container = job.container;
+            let records = crate::app::vcon_enrich::queue_full_records(target.enrich);
+            crate::app::vcon_enrich::attach(&mut container, &records);
+            let call_id = legs.first().map_or("", |d| d.call_id.as_str());
+            report_enrichment(&target.say(""), call_id, &records);
+            Some(container)
+        }
+    }
+}
+
+/// One container's worth of a rule's export: a dialog on its own, withheld or
+/// not, or every selected leg of one call.
+#[cfg(feature = "vcon")]
+enum ContainerUnit<'d> {
+    /// One dialog, and whether its content is withheld.
+    Leg(&'d crate::sip::dialog::SipDialog, bool),
+    /// The legs of one call, for a `grouping = "call"` rule.
+    Call(CallGroup<'d>),
+}
+
+#[cfg(feature = "vcon")]
+impl<'d> ContainerUnit<'d> {
+    /// The dialogs this unit's container holds.
+    fn legs(&self) -> &[&'d crate::sip::dialog::SipDialog] {
+        match self {
+            Self::Leg(dialog, _) => std::slice::from_ref(dialog),
+            Self::Call(group) => &group.legs,
+        }
+    }
+}
+
+/// The containers one rule writes for `dialogs` and `tombstones`, as its
+/// grouping divides them. Tombstones last, one per dialog, whatever the
+/// grouping: every full container is on disk before the first of them.
+#[cfg(feature = "vcon")]
+fn container_units<'d>(
+    grouping: RuleGrouping,
+    store: &'d DialogStore,
+    dialogs: &[&'d crate::sip::dialog::SipDialog],
+    tombstones: &[&'d crate::sip::dialog::SipDialog],
+) -> Vec<ContainerUnit<'d>> {
+    let full: Vec<ContainerUnit<'d>> = match grouping {
+        RuleGrouping::Leg => dialogs
+            .iter()
+            .map(|d| ContainerUnit::Leg(d, false))
+            .collect(),
+        RuleGrouping::Call => call_groups(store, dialogs)
+            .into_iter()
+            .map(ContainerUnit::Call)
+            .collect(),
+    };
+    full.into_iter()
+        .chain(tombstones.iter().map(|d| ContainerUnit::Leg(d, true)))
+        .collect()
+}
+
+/// The legs of one call a `grouping = "call"` rule writes as one container.
+#[cfg(feature = "vcon")]
+#[derive(Debug)]
+pub(crate) struct CallGroup<'d> {
+    /// The legs, earliest first.
+    pub(crate) legs: Vec<&'d crate::sip::dialog::SipDialog>,
+    /// The ties the correlation walk followed between them, by position in
+    /// `legs`.
+    pub(crate) ties: Vec<crate::output::vcon::LegTie>,
+    /// Whether the walk stopped at [`CALL_LEG_CAP`] with legs left.
+    pub(crate) truncated: bool,
+}
+
+/// The most legs one call container holds. A walk that reaches it stops, and
+/// the container says the call may have more.
+#[cfg(feature = "vcon")]
+pub(crate) const CALL_LEG_CAP: usize = 16;
+
+/// `dialogs` divided into calls: each dialog with every other dialog in
+/// `dialogs` that the correlation walk ([`DialogStore::correlation_tree`])
+/// reaches from it.
+///
+/// Only dialogs in `dialogs` are grouped. A leg the rule did not select, or
+/// whose content a deny header withheld, is in no call container, as it would
+/// be in no leg container. Each dialog is in exactly one group: the walk
+/// starts from the earliest dialog not yet placed.
+#[cfg(feature = "vcon")]
+pub(crate) fn call_groups<'d>(
+    store: &'d DialogStore,
+    dialogs: &[&'d crate::sip::dialog::SipDialog],
+) -> Vec<CallGroup<'d>> {
+    let mut order: Vec<&crate::sip::dialog::SipDialog> = dialogs.to_vec();
+    order.sort_by(|a, b| {
+        a.created_at
+            .cmp(&b.created_at)
+            .then_with(|| a.call_id.cmp(&b.call_id))
+    });
+    let selected: std::collections::HashSet<&str> =
+        order.iter().map(|d| d.call_id.as_str()).collect();
+    let mut placed: std::collections::HashSet<&str> = std::collections::HashSet::new();
+    let mut groups = Vec::new();
+    for start in &order {
+        if placed.contains(start.call_id.as_str()) {
+            continue;
+        }
+        let tree = store.correlation_tree(&start.call_id, CALL_LEG_CAP);
+        let walked = tree.as_ref().map_or_else(Vec::new, |t| t.legs.clone());
+        let mut legs: Vec<&crate::sip::dialog::SipDialog> = walked
+            .iter()
+            .filter(|leg| {
+                selected.contains(leg.call_id.as_str()) && !placed.contains(leg.call_id.as_str())
+            })
+            .filter_map(|leg| store.get(&leg.call_id))
+            .collect();
+        if legs.is_empty() {
+            legs.push(start);
+        }
+        legs.sort_by(|a, b| {
+            a.created_at
+                .cmp(&b.created_at)
+                .then_with(|| a.call_id.cmp(&b.call_id))
+        });
+        let position = |call_id: &str| legs.iter().position(|d| d.call_id == call_id);
+        let ties = walked
+            .iter()
+            .filter_map(|leg| {
+                let from = position(leg.parent_call_id.as_deref()?)?;
+                let to = position(&leg.call_id)?;
+                Some(crate::output::vcon::LegTie {
+                    from,
+                    to,
+                    strategy: leg.strategy?,
+                    identifier_match: leg.identifier_match?,
+                    score: leg.score?,
+                })
+            })
+            .collect();
+        for leg in &legs {
+            placed.insert(leg.call_id.as_str());
+        }
+        groups.push(CallGroup {
+            truncated: tree.is_some_and(|t| t.truncated),
+            legs,
+            ties,
+        });
+    }
+    groups
+}
+
+/// What every container one writer call builds shares: the run, the rule,
+/// and the capture-wide facts.
+#[cfg(feature = "vcon")]
+struct LegWriter<'a> {
+    /// The run's flags.
+    cli: &'a Cli,
+    /// The rule being written.
+    target: &'a VconTarget<'a>,
+    /// The stores and counts the containers are built from.
+    batch: &'a VconBatch<'a>,
+    /// What the run observed outside any one dialog.
+    facts: &'a crate::analysis::CaptureFacts,
+    /// The capture analysis built from `facts`.
+    analysis: &'a crate::analysis::CaptureAnalysis,
+    /// The deny header a withheld container names.
+    header: &'a str,
+    /// The redaction the containers are sealed under, if any.
+    redactor: Option<&'a crate::output::redact::Redactor<'a>>,
+}
+
+#[cfg(feature = "vcon")]
+impl LegWriter<'_> {
+    /// One dialog's container, withheld or with the rule's audio, naming the
+    /// call's other legs when `link` is set.
+    ///
+    /// A `url` rule's WAV is written here, beside where the container will
+    /// go, so the file the container names exists before the container does.
+    ///
+    /// # Errors
+    ///
+    /// `(written, message)` when the WAV could not be written.
+    fn leg(
+        &self,
+        dialog: &crate::sip::dialog::SipDialog,
+        withheld: bool,
+        link: bool,
+        written: usize,
+    ) -> Result<crate::output::vcon::Vcon, (usize, String)> {
+        let Self {
+            cli,
+            target,
+            batch,
+            facts,
+            analysis,
+            header,
+            redactor,
+        } = *self;
+        let media = crate::output::vcon::media_quality_for(batch.stream_store, &dialog.call_id);
+        let related = if link {
+            crate::output::vcon::related_legs(batch.dialog_store, dialog)
+        } else {
+            Vec::new()
+        };
+        let context = crate::output::vcon::ExportContext {
+            capture_id: crate::output::vcon::dialog_capture_id(dialog),
+            facts,
+            analysis: Some(analysis),
+            max_inline_media_bytes: target.max_inline.or_else(|| media_budget(cli)),
+            media: &media,
+            related_legs: &related,
+        };
+        if withheld {
+            return Ok(crate::output::vcon::export_withheld_dialog(
+                dialog, &context, header,
+            ));
+        }
+        // A live rule's call in progress carries no audio: the audio is
+        // added once the call has ended, inline or by URL.
+        if target.audio == RuleAudio::Omit || (target.live && !dialog.state().is_final()) {
+            return Ok(crate::output::vcon::export_dialog_with_audio(
+                dialog,
+                &context,
+                crate::output::vcon::ObservedAudio::NotConsidered,
+            ));
+        }
+        let decoded = decode_observed_audio(batch.stream_store, &dialog.call_id);
+        let reason = decoded
+            .as_ref()
+            .err()
+            .map_or_else(String::new, |e| e.to_string());
+        let referenced = match (target.audio, target.url_base, decoded.as_ref(), redactor) {
+            (RuleAudio::Url, Some(base), Ok(decoded_audio), None) => {
+                let name = vcon_wav_name(&vcon_spool_name(&dialog.call_id, None));
+                let wav_path = target.dir.join(&name);
+                write_container_atomically(&wav_path, &decoded_audio.wav).map_err(|e| {
+                    (
+                        written,
+                        format!(
+                            "Could not write '{}': {e}. {written} container(s) were \
+                             written before this.",
+                            wav_path.display()
+                        ),
+                    )
+                })?;
+                Some((decoded_audio, format!("{base}/{name}")))
+            }
+            _ => None,
+        };
+        let observed = match &referenced {
+            Some((decoded_audio, url)) => {
+                crate::output::vcon::ObservedAudio::Referenced(decoded_audio, url)
+            }
+            None => observed_audio(&decoded, &reason, redactor.is_some()),
+        };
+        Ok(crate::output::vcon::export_dialog_with_audio(
+            dialog, &context, observed,
+        ))
+    }
 }
 
 /// Write one container per dialog the predicate selected.
@@ -7562,6 +8345,85 @@ fn export_vcon_selection(
     )
 }
 
+/// Where one export rule writes and what it writes: the resolved form every
+/// export path works from, so `--export-vcon-when` and a `[[vcon.rule]]` take
+/// one route.
+#[cfg(feature = "vcon")]
+#[derive(Debug, Clone, Copy)]
+struct VconTarget<'a> {
+    /// The rule's filter. `None` falls back to `--export-vcon-when`, for the
+    /// callers with no plan (tests); see [`vcon_selection`].
+    filter: Option<&'a crate::sip::dsl::FilterExpr>,
+    /// The directory the rule writes to.
+    dir: &'a std::path::Path,
+    /// What each container carries of the call's audio.
+    audio: RuleAudio,
+    /// The rule's inline-media budget in bytes; `None` uses the run's.
+    max_inline: Option<usize>,
+    /// The base URL a `Url` rule names its WAV files under.
+    url_base: Option<&'a str>,
+    /// Write each call as it starts and rewrite it as it changes.
+    live: bool,
+    /// One container per leg, or one per call.
+    grouping: RuleGrouping,
+    /// The enrichment services, in order.
+    enrich: &'a [std::sync::Arc<crate::app::vcon_enrich::Service>],
+    /// The `[[vcon.rule]]` name, for the run's report; `None` for the flag
+    /// rule, whose lines read as they always have.
+    label: Option<&'a str>,
+}
+
+#[cfg(feature = "vcon")]
+impl<'a> VconTarget<'a> {
+    /// The target a resolved rule describes.
+    fn of(rule: &'a VconRule) -> Self {
+        Self {
+            filter: Some(&rule.filter),
+            dir: &rule.dir,
+            audio: rule.audio,
+            max_inline: rule.max_inline,
+            url_base: rule.audio_url_base.as_deref(),
+            grouping: rule.grouping,
+            live: rule.live,
+            enrich: &rule.enrich,
+            label: (rule.name != FLAG_RULE).then_some(rule.name.as_str()),
+        }
+    }
+
+    /// The flag rule's target, from `--export-vcon-dir` and `filter`.
+    ///
+    /// # Errors
+    ///
+    /// When `--export-vcon-dir` is absent.
+    fn from_flags(
+        cli: &'a Cli,
+        filter: Option<&'a crate::sip::dsl::FilterExpr>,
+    ) -> Result<Self, String> {
+        let dir = cli.output_args.export_vcon_dir.as_deref().ok_or_else(|| {
+            "--export-vcon-when needs --export-vcon-dir. Nothing was exported.".to_owned()
+        })?;
+        Ok(Self {
+            filter,
+            dir,
+            audio: RuleAudio::Inline,
+            max_inline: None,
+            url_base: None,
+            grouping: RuleGrouping::Leg,
+            live: false,
+            enrich: &[],
+            label: None,
+        })
+    }
+
+    /// `line`, prefixed with the rule's name when it has one.
+    fn say(&self, line: &str) -> String {
+        match self.label {
+            Some(name) => format!("[[vcon.rule]] '{name}': {line}"),
+            None => line.to_owned(),
+        }
+    }
+}
+
 /// [`export_vcon_selection`], leaving out every dialog `live` already wrote
 /// at its current `updated_at`.
 #[cfg(feature = "vcon")]
@@ -7574,22 +8436,39 @@ fn export_vcon_selection_after(
     gate: Option<&crate::output::persistence::PersistenceGate>,
     live: Option<&LiveVconTracker>,
 ) -> bool {
-    let (selection, suppressed_by_deny, denied) =
-        match vcon_selection(cli, vcon_filter, dialog_store, stream_store) {
-            Ok(s) => s,
-            Err(e) => {
-                stderr_line!("{e:#}");
-                return false;
-            }
-        };
-    let dir = match prepare_export_dir(cli) {
-        Ok(dir) => dir,
+    let target = match VconTarget::from_flags(cli, vcon_filter) {
+        Ok(t) => t,
         Err(message) => {
             stderr_line!("{message}");
             return false;
         }
     };
+    export_targets_after(
+        cli,
+        &[(target, live)],
+        &VconBatch {
+            dialog_store,
+            stream_store,
+            frames_read,
+            gate,
+            suppressed_by_deny: 0,
+            defer_enrichment: false,
+            first_written: None,
+            now: chrono::Utc::now(),
+        },
+    )
+}
 
+/// The end-of-run export of every target, each leaving out what its live
+/// tracker already wrote. One redactor serves every target, so a pseudonym
+/// means the same in every rule's containers, and `--redact-map` is written
+/// once, after all of them.
+#[cfg(feature = "vcon")]
+fn export_targets_after(
+    cli: &Cli,
+    targets: &[(VconTarget<'_>, Option<&LiveVconTracker>)],
+    batch: &VconBatch<'_>,
+) -> bool {
     let policy = match redaction_policy(cli) {
         Ok(p) => p,
         Err(reason) => {
@@ -7604,40 +8483,11 @@ fn export_vcon_selection_after(
         .as_ref()
         .map(crate::output::redact::RedactionPolicy::redactor);
 
-    let dialogs: Vec<&crate::sip::dialog::SipDialog> = selection
-        .dialogs
-        .iter()
-        .map(|(dialog, _)| *dialog)
-        .filter(|dialog| !written_live(live, dialog))
-        .collect();
-    // Tombstones only on request. Writing them at all reveals that the calls
-    // EXISTED, which is a disclosure an operator has to choose -- see
-    // `--content-deny-tombstone`. The default discards `denied` here.
-    let tombstones: &[&crate::sip::dialog::SipDialog] = if cli.output_args.content_deny_tombstone {
-        &denied
-    } else {
-        &[]
-    };
-    let written = match write_vcon_containers(
-        cli,
-        dir,
-        &VconBatch {
-            dialog_store,
-            stream_store,
-            frames_read,
-            gate,
-            suppressed_by_deny,
-        },
-        &dialogs,
-        tombstones,
-        redactor.as_ref(),
-    ) {
-        Ok(n) => n,
-        Err((_, message)) => {
-            stderr_line!("{message}");
+    for (target, live) in targets {
+        if !export_target(cli, target, *live, batch, redactor.as_ref()) {
             return false;
         }
-    };
+    }
 
     if let Some(r) = redactor.as_ref() {
         let report = r.policy().report();
@@ -7664,13 +8514,70 @@ fn export_vcon_selection_after(
             }
         }
     }
+    true
+}
+
+/// One target's share of the end-of-run export: select, write, and say what
+/// was written. `false` when it could not.
+#[cfg(feature = "vcon")]
+fn export_target(
+    cli: &Cli,
+    target: &VconTarget<'_>,
+    live: Option<&LiveVconTracker>,
+    batch: &VconBatch<'_>,
+    redactor: Option<&crate::output::redact::Redactor<'_>>,
+) -> bool {
+    let (selection, suppressed_by_deny, denied) =
+        match vcon_selection(cli, target.filter, batch.dialog_store, batch.stream_store) {
+            Ok(s) => s,
+            Err(e) => {
+                stderr_line!("{}", target.say(&format!("{e:#}")));
+                return false;
+            }
+        };
+    if let Err(message) = prepare_target_dir(target) {
+        stderr_line!("{message}");
+        return false;
+    }
+    let dialogs: Vec<&crate::sip::dialog::SipDialog> = selection
+        .dialogs
+        .iter()
+        .map(|(dialog, _)| *dialog)
+        .filter(|dialog| !written_live(live, dialog))
+        .collect();
+    // Tombstones only on request. Writing them at all reveals that the calls
+    // EXISTED, which is a disclosure an operator has to choose -- see
+    // `--content-deny-tombstone`. The default discards `denied` here.
+    let tombstones: &[&crate::sip::dialog::SipDialog] = if cli.output_args.content_deny_tombstone {
+        &denied
+    } else {
+        &[]
+    };
+    let units = container_units(target.grouping, batch.dialog_store, &dialogs, tombstones);
+    let written = match write_vcon_containers(
+        cli,
+        target,
+        &VconBatch {
+            suppressed_by_deny,
+            first_written: live.map(|t| &t.first_written),
+            ..*batch
+        },
+        &units,
+        redactor,
+    ) {
+        Ok(n) => n,
+        Err((_, message)) => {
+            stderr_line!("{}", target.say(&message));
+            return false;
+        }
+    };
     stderr_line!(
         "{}",
-        end_of_run_vcon_summary(
+        target.say(&end_of_run_vcon_summary(
             written,
             live.map_or(0, LiveVconTracker::containers_written),
-            dir
-        )
+            target.dir
+        ))
     );
     true
 }
@@ -7826,6 +8733,14 @@ fn spool_call_id(call_id: &str, redactor: Option<&crate::output::redact::Redacto
     }
 }
 
+/// The WAV file name beside a container: the container's name with `.wav` in
+/// place of `.vcon.json`, so the two sort together and share the digest that
+/// keeps Call-IDs apart.
+#[cfg(feature = "vcon")]
+fn vcon_wav_name(container: &str) -> String {
+    format!("{}.wav", container.trim_end_matches(".vcon.json"))
+}
+
 /// The spool file name for `call_id`'s container: [`vcon_file_name`] of
 /// [`spool_call_id`].
 #[cfg(feature = "vcon")]
@@ -7908,12 +8823,19 @@ fn vcon_selection<'a>(
     u64,
     Vec<&'a crate::sip::dialog::SipDialog>,
 )> {
-    let Some(expr) = cli.output_args.export_vcon_when.as_deref() else {
-        return Ok((
-            crate::sip::dsl::select_dialogs(None, dialog_store, stream_store),
-            0,
-            Vec::new(),
-        ));
+    // A rule's own filter decides when there is one. Only a caller with no
+    // plan (tests) falls back to parsing `--export-vcon-when`, and with
+    // neither, everything is selected.
+    let expr = match (resolved, cli.output_args.export_vcon_when.as_deref()) {
+        (Some(_), _) => "",
+        (None, Some(expr)) => expr,
+        (None, None) => {
+            return Ok((
+                crate::sip::dsl::select_dialogs(None, dialog_store, stream_store),
+                0,
+                Vec::new(),
+            ));
+        }
     };
     let deny = cli.output_args.content_deny_header.as_deref();
     // The PLAN resolved this, through the same path `--filter` goes through --
@@ -8037,7 +8959,7 @@ fn dialog_carries_header(dialog: &crate::sip::dialog::SipDialog, header: &str) -
 #[cfg(feature = "vcon")]
 fn export_vcon(
     cli: &Cli,
-    vcon_filter: Option<&crate::sip::dsl::FilterExpr>,
+    rules: &[VconRule],
     dialog_store: &DialogStore,
     stream_store: &StreamStore,
     frames_read: u64,
@@ -8057,12 +8979,47 @@ fn export_vcon(
         // Answered `true`: a stop that writes nothing is what was asked for,
         // not a failed export. See `VconRunEnd::Stopped`.
         VconRunEnd::Stopped => return true,
-        VconRunEnd::AfterLive(tracker) => Some(tracker),
+        VconRunEnd::AfterLive(trackers) => Some(trackers),
     };
+    // A live run that ended on its own finishes the calls still waiting for
+    // enrichment before the end-of-run export; each is bounded by its
+    // services' timeouts. A stopped run returned above: stop means stop.
+    if live.is_some() && rules.iter().any(|r| !r.enrich.is_empty()) {
+        let deadline = std::time::Instant::now()
+            + std::time::Duration::from_secs(crate::app::vcon_enrich::MAX_TIMEOUT_SECS);
+        if !crate::app::vcon_enrich::queue().drain(deadline) {
+            stderr_line!(
+                "Calls were still waiting for [[vcon.enrich]] after an hour; their \
+                 containers are not written."
+            );
+        }
+    }
+    if !rules.is_empty() {
+        let targets: Vec<(VconTarget<'_>, Option<&LiveVconTracker>)> = rules
+            .iter()
+            .enumerate()
+            .map(|(i, rule)| (VconTarget::of(rule), live.and_then(|t| t.get(i))))
+            .collect();
+        return export_targets_after(
+            cli,
+            &targets,
+            &VconBatch {
+                dialog_store,
+                stream_store,
+                frames_read,
+                gate,
+                suppressed_by_deny: 0,
+                defer_enrichment: false,
+                first_written: None,
+                now: chrono::Utc::now(),
+            },
+        );
+    }
+    let live = live.and_then(<[LiveVconTracker]>::first);
     if cli.output_args.export_vcon_when.is_some() {
         return export_vcon_selection_after(
             cli,
-            vcon_filter,
+            None,
             dialog_store,
             stream_store,
             frames_read,
@@ -8142,6 +9099,7 @@ fn write_single_vcon(
             analysis: Some(&analysis),
             max_inline_media_bytes: media_budget(cli),
             media: &media,
+            related_legs: &crate::output::vcon::related_legs(dialog_store, dialog),
         },
         audio,
     );
@@ -8209,7 +9167,7 @@ fn write_single_vcon(
 #[cfg(not(feature = "vcon"))]
 fn export_vcon(
     cli: &Cli,
-    _vcon_filter: Option<&FilterExpr>,
+    _rules: &[VconRule],
     _dialog_store: &DialogStore,
     _stream_store: &StreamStore,
     _frames_read: u64,
@@ -8402,6 +9360,26 @@ mod tests {
         Ok(store)
     }
 
+    /// A dialog the store does not hold is still its own call: the walk
+    /// finds nothing from it, and it is grouped alone rather than dropped.
+    #[cfg(feature = "vcon")]
+    #[test]
+    fn a_dialog_the_store_lacks_is_a_call_of_its_own() -> Result<(), TestError> {
+        let store = two_dialogs_one_failed()?;
+        let outsider = crate::sip::dialog::SipDialog::new(&invite_msg("outside@example.com")?)
+            .ok_or("an INVITE opens a dialog")?;
+        let held = store.get("ok-call@example.com").ok_or("held dialog")?;
+        let groups = call_groups(&store, &[held, &outsider]);
+        let calls: Vec<Vec<&str>> = groups
+            .iter()
+            .map(|g| g.legs.iter().map(|d| d.call_id.as_str()).collect())
+            .collect();
+        assert_eq!(calls.len(), 2, "{calls:?}");
+        assert!(calls.contains(&vec!["outside@example.com"]), "{calls:?}");
+        assert!(calls.contains(&vec!["ok-call@example.com"]), "{calls:?}");
+        Ok(())
+    }
+
     // ── Live vCon export (LIVE-VCON-1) ─────────────────────────────
 
     /// The settle period the live export uses, as the predicate takes it.
@@ -8409,6 +9387,552 @@ mod tests {
     fn settle() -> Result<chrono::TimeDelta, TestError> {
         Ok(chrono::TimeDelta::from_std(SWEEP_INTERVAL)
             .map_err(|e| format!("five seconds fits: {e:?}"))?)
+    }
+
+    /// A resolved rule over `expr`, writing to `dir` with `audio`.
+    #[cfg(feature = "vcon")]
+    fn test_rule(
+        name: &str,
+        expr: &str,
+        dir: &std::path::Path,
+        audio: RuleAudio,
+    ) -> Result<VconRule, TestError> {
+        Ok(VconRule {
+            name: name.to_owned(),
+            filter: crate::sip::dsl::FilterExpr::parse(expr)?,
+            dir: dir.to_path_buf(),
+            audio,
+            max_inline: None,
+            audio_url_base: None,
+            grouping: RuleGrouping::Leg,
+            enrich: Vec::new(),
+            live_audio: false,
+            live: false,
+        })
+    }
+
+    /// A live sweep writes a due call once per rule that selects it, into each
+    /// rule's directory, on each rule's own tracker.
+    #[cfg(feature = "vcon")]
+    #[test]
+    fn a_live_sweep_writes_a_call_once_per_rule() -> Result<(), TestError> {
+        let tmp = tempfile::tempdir().map_err(|e| format!("temp dir: {e:?}"))?;
+        let rules = vec![
+            test_rule(
+                "a",
+                "response_code >= 400",
+                &tmp.path().join("a"),
+                RuleAudio::Inline,
+            )?,
+            test_rule(
+                "b",
+                "response_code >= 400",
+                &tmp.path().join("b"),
+                RuleAudio::Omit,
+            )?,
+            test_rule(
+                "c",
+                "response_code == 299",
+                &tmp.path().join("c"),
+                RuleAudio::Omit,
+            )?,
+        ];
+        let mut trackers: Vec<LiveVconTracker> =
+            (0..3).map(|_| LiveVconTracker::default()).collect();
+        let later = chrono::Utc::now() + settle()? + chrono::TimeDelta::seconds(1);
+        let n = live_rules_sweep(
+            &Cli::parse_from_args(["sipnab"]),
+            &rules,
+            CaptureRead {
+                dialogs: &two_dialogs_one_failed()?,
+                streams: &StreamStore::new(16),
+                frames_read: 4,
+            },
+            None,
+            &mut trackers,
+            later,
+        );
+        assert_eq!(n, 2, "one container for rule a and one for rule b");
+        for (dir, want) in [("a", 1), ("b", 1), ("c", 0)] {
+            let got = std::fs::read_dir(tmp.path().join(dir))
+                .map(|d| d.count())
+                .unwrap_or(0);
+            assert_eq!(got, want, "rule {dir}");
+        }
+        assert!(trackers[0].written_at("failed-call@example.com").is_some());
+        assert!(trackers[1].written_at("failed-call@example.com").is_some());
+        assert!(trackers[2].written_at("failed-call@example.com").is_none());
+        Ok(())
+    }
+
+    /// A live `grouping = "call"` rule writes a call once every leg it
+    /// selects has settled, as one container, and records every leg.
+    #[cfg(feature = "vcon")]
+    #[test]
+    fn a_live_call_rule_waits_for_every_leg() -> Result<(), TestError> {
+        let tmp = tempfile::tempdir().map_err(|e| format!("temp dir: {e:?}"))?;
+        let dir = tmp.path().join("calls");
+        let mut rule = test_rule("calls", "call_id =~ '.'", &dir, RuleAudio::Omit)?;
+        rule.grouping = RuleGrouping::Call;
+        let rules = vec![rule];
+        let mut store = DialogStore::new(16, true).with_xcid_headers(vec!["X-Call-ID".into()]);
+        store.process_message(invite_msg("a-leg@example.com")?);
+        store.process_message(response_msg("a-leg@example.com", 486, "Busy Here")?);
+        store.process_message(invite_with_header(
+            "b-leg@example.com",
+            "X-Call-ID",
+            "a-leg@example.com",
+        )?);
+        let streams = StreamStore::new(16);
+        let cli = Cli::parse_from_args(["sipnab"]);
+        let mut trackers = vec![LiveVconTracker::default()];
+        let files = || std::fs::read_dir(&dir).map(|d| d.count()).unwrap_or(0);
+
+        let later = chrono::Utc::now() + settle()? + chrono::TimeDelta::seconds(1);
+        let read = CaptureRead {
+            dialogs: &store,
+            streams: &streams,
+            frames_read: 3,
+        };
+        let n = live_rules_sweep(&cli, &rules, read, None, &mut trackers, later);
+        assert_eq!(n, 0, "b-leg is still ringing, so the call is not written");
+        assert_eq!(files(), 0);
+
+        store.process_message(response_msg("b-leg@example.com", 486, "Busy Here")?);
+        let later = chrono::Utc::now() + settle()? + chrono::TimeDelta::seconds(1);
+        let read = CaptureRead {
+            dialogs: &store,
+            streams: &streams,
+            frames_read: 4,
+        };
+        let n = live_rules_sweep(&cli, &rules, read, None, &mut trackers, later);
+        assert_eq!(n, 1, "one container for the call");
+        assert_eq!(files(), 1);
+        for leg in ["a-leg@example.com", "b-leg@example.com"] {
+            assert!(trackers[0].written_at(leg).is_some(), "{leg} recorded");
+        }
+        let n = live_rules_sweep(&cli, &rules, read, None, &mut trackers, later);
+        assert_eq!(n, 0, "nothing changed, nothing rewritten");
+        Ok(())
+    }
+
+    /// A live sweep hands an enriching rule's call to the enrichment queue and
+    /// goes on; the worker enriches the container and writes it.
+    #[cfg(feature = "vcon")]
+    #[test]
+    fn a_live_sweep_queues_enrichment_and_the_worker_writes() -> Result<(), TestError> {
+        let tmp = tempfile::tempdir().map_err(|e| format!("temp dir: {e:?}"))?;
+        let script = tmp.path().join("stt.sh");
+        // Written by a child process, so this one never holds a writable
+        // descriptor a sibling test's fork could inherit (ETXTBSY on exec).
+        let mut writer = std::process::Command::new("sh")
+            .args(["-c", "cat >\"$1\" && chmod 700 \"$1\"", "sh"])
+            .arg(&script)
+            .stdin(std::process::Stdio::piped())
+            .spawn()
+            .map_err(|e| format!("{e:?}"))?;
+        std::io::Write::write_all(
+            &mut writer.stdin.take().ok_or("the writer's stdin")?,
+            "#!/bin/sh\ncat > /dev/null\nsleep 1\nprintf '%s' '{\"analysis\":[{\"type\":\
+             \"transcript\",\"vendor\":\"t\",\"encoding\":\"none\",\"body\":\"x\"}]}'\n"
+                .as_bytes(),
+        )
+        .map_err(|e| format!("{e:?}"))?;
+        assert!(writer.wait().map_err(|e| format!("{e:?}"))?.success());
+        let dir = tmp.path().join("calls");
+        let mut rule = test_rule("calls", "response_code >= 400", &dir, RuleAudio::Omit)?;
+        rule.enrich = crate::app::vcon_enrich::services(
+            &[crate::config::VconEnrichConfig {
+                name: "stt".into(),
+                rules: vec!["calls".into()],
+                command: Some(script),
+                ..Default::default()
+            }],
+            &["calls"],
+        )?;
+        let rules = vec![rule];
+        let store = two_dialogs_one_failed()?;
+        let streams = StreamStore::new(16);
+        let mut trackers = vec![LiveVconTracker::default()];
+        let later = chrono::Utc::now() + settle()? + chrono::TimeDelta::seconds(1);
+        let read = CaptureRead {
+            dialogs: &store,
+            streams: &streams,
+            frames_read: 4,
+        };
+        let started = std::time::Instant::now();
+        let n = live_rules_sweep(
+            &Cli::parse_from_args(["sipnab"]),
+            &rules,
+            read,
+            None,
+            &mut trackers,
+            later,
+        );
+        assert_eq!(n, 1, "the call is counted when it is queued");
+        assert!(
+            started.elapsed() < std::time::Duration::from_millis(900),
+            "the sweep did not wait for the service"
+        );
+        assert!(
+            crate::app::vcon_enrich::queue()
+                .drain(std::time::Instant::now() + std::time::Duration::from_secs(10)),
+            "the worker finished"
+        );
+        let file = std::fs::read_dir(&dir)
+            .map_err(|e| format!("{e:?}"))?
+            .filter_map(Result::ok)
+            .find(|e| e.path().to_string_lossy().ends_with(".vcon.json"))
+            .ok_or("a container")?;
+        let v: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(file.path()).map_err(|e| format!("{e:?}"))?)?;
+        assert!(
+            v["analysis"]
+                .as_array()
+                .is_some_and(|a| a.iter().any(|x| x["type"] == "transcript")),
+            "{v}"
+        );
+        Ok(())
+    }
+
+    /// A call that finds the enrichment queue full comes back to be written at
+    /// once, recording every service as `queue-full`.
+    #[cfg(feature = "vcon")]
+    #[test]
+    fn a_full_enrichment_queue_hands_the_call_back_saying_so() -> Result<(), TestError> {
+        let queue = crate::app::vcon_enrich::Queue::start(0);
+        let (open, gate) = std::sync::mpsc::channel::<()>();
+        let blocker = crate::app::vcon_enrich::Job {
+            container: crate::output::vcon::Vcon {
+                vcon: "0.4.0",
+                uuid: String::new(),
+                created_at: String::new(),
+                updated_at: None,
+                subject: String::new(),
+                redacted: None,
+                extensions: Vec::new(),
+                parties: Vec::new(),
+                dialog: Vec::new(),
+                attachments: Vec::new(),
+                analysis: Vec::new(),
+            },
+            audio: Vec::new(),
+            services: Vec::new(),
+            finish: Box::new(move |_, _| {
+                let _ = gate.recv();
+            }),
+        };
+        // A rendezvous queue takes a job only while the worker waits for one.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        let mut held = queue.submit(blocker);
+        while let Err(job) = held {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the worker never took a job"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(5));
+            held = queue.submit(*job);
+        }
+        let tmp = tempfile::tempdir().map_err(|e| format!("temp dir: {e:?}"))?;
+        let mut rule = test_rule("calls", "method == 'INVITE'", tmp.path(), RuleAudio::Omit)?;
+        rule.enrich = crate::app::vcon_enrich::services(
+            &[crate::config::VconEnrichConfig {
+                name: "stt".into(),
+                rules: vec!["calls".into()],
+                command: Some("/bin/true".into()),
+                ..Default::default()
+            }],
+            &["calls"],
+        )?;
+        let store = two_dialogs_one_failed()?;
+        let dialog = store.get("ok-call@example.com").ok_or("fixture")?;
+        let container = crate::output::vcon::export_dialog(
+            dialog,
+            &crate::output::vcon::ExportContext {
+                capture_id: "x",
+                facts: &crate::analysis::CaptureFacts::default(),
+                analysis: None,
+                max_inline_media_bytes: None,
+                media: &[],
+                related_legs: &[],
+            },
+        );
+        let target = VconTarget::of(&rule);
+        let back = queue_enrichment(
+            &Cli::parse_from_args(["sipnab"]),
+            container,
+            &[dialog],
+            &StreamStore::new(16),
+            &target,
+            &tmp.path().join("x.vcon.json"),
+            &queue,
+        )
+        .ok_or("the call comes back")?;
+        let attachment = back
+            .attachments
+            .iter()
+            .find(|a| a.purpose == crate::app::vcon_enrich::ENRICHMENT_PURPOSE)
+            .ok_or("an enrichment attachment")?;
+        let body: serde_json::Value = serde_json::from_str(&attachment.body)?;
+        assert_eq!(body["services"][0]["outcome"], "queue-full", "{body}");
+        assert_eq!(body["services"][0]["sent"], serde_json::json!([]), "{body}");
+        let _ = open.send(());
+        Ok(())
+    }
+
+    /// A `live = true` rule writes a call's container as soon as the call
+    /// starts, rewrites it in place under the same uuid each time the call
+    /// changes, keeping `created_at` and moving `updated_at`, and writes
+    /// nothing when nothing changed.
+    #[cfg(feature = "vcon")]
+    #[test]
+    fn a_live_rule_writes_at_call_start_and_rewrites_in_place() -> Result<(), TestError> {
+        let tmp = tempfile::tempdir().map_err(|e| format!("temp dir: {e:?}"))?;
+        let dir = tmp.path().join("live");
+        let mut rule = test_rule("live", "method == 'INVITE'", &dir, RuleAudio::Omit)?;
+        rule.live = true;
+        let rules = vec![rule];
+        let cli = Cli::parse_from_args(["sipnab"]);
+        let streams = StreamStore::new(16);
+        let mut trackers = vec![LiveVconTracker::default()];
+        let mut store = DialogStore::new(16, true);
+        store.process_message(invite_msg("live-call@example.com")?);
+        let read_one = |store: &DialogStore| -> Result<serde_json::Value, TestError> {
+            let entries: Vec<_> = std::fs::read_dir(&dir)
+                .map_err(|e| format!("{e:?}"))?
+                .filter_map(Result::ok)
+                .filter(|e| e.path().to_string_lossy().ends_with(".vcon.json"))
+                .collect();
+            assert_eq!(entries.len(), 1, "one file, rewritten in place");
+            let _ = store;
+            Ok(serde_json::from_slice(
+                &std::fs::read(entries[0].path()).map_err(|e| format!("{e:?}"))?,
+            )?)
+        };
+        let sweep = |store: &DialogStore, trackers: &mut Vec<LiveVconTracker>| {
+            live_rules_sweep(
+                &cli,
+                &rules,
+                CaptureRead {
+                    dialogs: store,
+                    streams: &streams,
+                    frames_read: 1,
+                },
+                None,
+                trackers,
+                // No settle period: a live rule writes at once.
+                chrono::Utc::now(),
+            )
+        };
+
+        assert_eq!(
+            sweep(&store, &mut trackers),
+            1,
+            "written as the call starts"
+        );
+        let first = read_one(&store)?;
+        assert!(first["updated_at"].is_string(), "{first}");
+        let completeness = |v: &serde_json::Value| -> Result<serde_json::Value, TestError> {
+            let body = v["attachments"]
+                .as_array()
+                .ok_or("attachments")?
+                .iter()
+                .find(|a| a["purpose"] == "sipnab-capture-completeness")
+                .and_then(|a| a["body"].as_str())
+                .ok_or("completeness")?;
+            Ok(serde_json::from_str(body)?)
+        };
+        assert_eq!(completeness(&first)?["call_ended"], false);
+
+        assert_eq!(sweep(&store, &mut trackers), 0, "nothing changed");
+
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        store.process_message(response_msg("live-call@example.com", 486, "Busy Here")?);
+        assert_eq!(
+            sweep(&store, &mut trackers),
+            1,
+            "rewritten as the call ends"
+        );
+        let last = read_one(&store)?;
+        assert_eq!(last["uuid"], first["uuid"], "the same container");
+        assert_eq!(last["created_at"], first["created_at"], "created once");
+        assert!(
+            last["updated_at"].as_str() > first["updated_at"].as_str(),
+            "{} then {}",
+            first["updated_at"],
+            last["updated_at"]
+        );
+        assert_eq!(completeness(&last)?["call_ended"], true);
+        Ok(())
+    }
+
+    /// The vCon a rule writes for one call at the end of a run, read back.
+    #[cfg(feature = "vcon")]
+    fn only_container(dir: &std::path::Path) -> Result<serde_json::Value, TestError> {
+        let entries: Vec<_> = std::fs::read_dir(dir)
+            .map_err(|e| format!("{e:?}"))?
+            .filter_map(Result::ok)
+            .filter(|e| e.path().to_string_lossy().ends_with(".vcon.json"))
+            .collect();
+        assert_eq!(entries.len(), 1, "one container in {}", dir.display());
+        Ok(serde_json::from_slice(
+            &std::fs::read(entries[0].path()).map_err(|e| format!("{e:?}"))?,
+        )?)
+    }
+
+    /// `live = true` means something only on a live capture: an `-I` run
+    /// writes the container a rule without it writes, with no `updated_at`.
+    #[cfg(feature = "vcon")]
+    #[test]
+    fn a_live_rule_on_a_file_run_writes_what_any_rule_writes() -> Result<(), TestError> {
+        let tmp = tempfile::tempdir().map_err(|e| format!("temp dir: {e:?}"))?;
+        let mut live = test_rule(
+            "live",
+            "method == 'INVITE'",
+            &tmp.path().join("live"),
+            RuleAudio::Omit,
+        )?;
+        live.live = true;
+        let plain = test_rule(
+            "plain",
+            "method == 'INVITE'",
+            &tmp.path().join("plain"),
+            RuleAudio::Omit,
+        )?;
+        let mut store = DialogStore::new(16, true);
+        store.process_message(invite_msg("file-call@example.com")?);
+        store.process_message(response_msg("file-call@example.com", 486, "Busy Here")?);
+        assert!(export_vcon(
+            &Cli::parse_from_args(["sipnab"]),
+            &[live, plain],
+            &store,
+            &StreamStore::new(16),
+            1,
+            None,
+            VconRunEnd::Whole,
+        ));
+        let live = only_container(&tmp.path().join("live"))?;
+        let plain = only_container(&tmp.path().join("plain"))?;
+        assert!(plain.get("updated_at").is_none(), "{plain}");
+        assert!(live.get("updated_at").is_none(), "{live}");
+        Ok(())
+    }
+
+    /// The end of a live run that rewrites a call a `live = true` rule wrote
+    /// while it was in progress keeps the `created_at` of its first write.
+    #[cfg(feature = "vcon")]
+    #[test]
+    fn the_end_of_a_live_run_keeps_a_live_rule_s_first_write_time() -> Result<(), TestError> {
+        let tmp = tempfile::tempdir().map_err(|e| format!("temp dir: {e:?}"))?;
+        let dir = tmp.path().join("live");
+        let mut rule = test_rule("live", "method == 'INVITE'", &dir, RuleAudio::Omit)?;
+        rule.live = true;
+        let rules = vec![rule];
+        let cli = Cli::parse_from_args(["sipnab"]);
+        let streams = StreamStore::new(16);
+        let mut trackers = vec![LiveVconTracker::default()];
+        let mut store = DialogStore::new(16, true);
+        store.process_message(invite_msg("end-call@example.com")?);
+        assert_eq!(
+            live_rules_sweep(
+                &cli,
+                &rules,
+                CaptureRead {
+                    dialogs: &store,
+                    streams: &streams,
+                    frames_read: 1,
+                },
+                None,
+                &mut trackers,
+                chrono::Utc::now(),
+            ),
+            1
+        );
+        let first = only_container(&dir)?;
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        store.process_message(response_msg("end-call@example.com", 486, "Busy Here")?);
+        assert!(export_vcon(
+            &cli,
+            &rules,
+            &store,
+            &streams,
+            1,
+            None,
+            VconRunEnd::AfterLive(&trackers),
+        ));
+        let last = only_container(&dir)?;
+        assert_eq!(last["uuid"], first["uuid"], "the same container");
+        assert_eq!(last["created_at"], first["created_at"], "created once");
+        assert!(
+            last["updated_at"].as_str() > first["updated_at"].as_str(),
+            "{} then {}",
+            first["updated_at"],
+            last["updated_at"]
+        );
+        Ok(())
+    }
+
+    /// A call an omit rule wrote keeps its audio while an inline-audio rule
+    /// that selects it has not written it, and gives it back once it has.
+    #[cfg(feature = "vcon")]
+    #[test]
+    fn audio_is_held_until_every_inline_rule_has_written_the_call() -> Result<(), TestError> {
+        let tmp = tempfile::tempdir().map_err(|e| format!("temp dir: {e:?}"))?;
+        let blocked = tmp.path().join("blocked");
+        std::fs::write(
+            &blocked,
+            b"a file where the inline rule's directory belongs",
+        )
+        .map_err(|e| format!("{e:?}"))?;
+        let rules = vec![
+            test_rule(
+                "omit",
+                "response_code >= 400",
+                &tmp.path().join("omit"),
+                RuleAudio::Omit,
+            )?,
+            test_rule(
+                "inline",
+                "response_code >= 400",
+                &blocked,
+                RuleAudio::Inline,
+            )?,
+        ];
+        let mut trackers: Vec<LiveVconTracker> =
+            (0..2).map(|_| LiveVconTracker::default()).collect();
+        let later = chrono::Utc::now() + settle()? + chrono::TimeDelta::seconds(1);
+        let read_store = two_dialogs_one_failed()?;
+        let streams = StreamStore::new(16);
+        let read = CaptureRead {
+            dialogs: &read_store,
+            streams: &streams,
+            frames_read: 4,
+        };
+        let cli = Cli::parse_from_args(["sipnab"]);
+        live_rules_sweep(&cli, &rules, read, None, &mut trackers, later);
+        let call = "failed-call@example.com".to_string();
+        assert!(
+            trackers[0].written_at(&call).is_some(),
+            "the omit rule wrote it"
+        );
+        assert!(trackers[1].failed(), "the inline rule could not");
+        assert!(trackers[0].held.contains(&call), "so its audio is held");
+        assert!(!trackers[0].unreleased.contains(&call), "and not released");
+
+        // The inline rule's directory becomes writable: the next sweep writes
+        // the call there and releases its audio.
+        std::fs::remove_file(&blocked).map_err(|e| format!("{e:?}"))?;
+        live_rules_sweep(&cli, &rules, read, None, &mut trackers, later);
+        assert!(
+            trackers[1].written_at(&call).is_some(),
+            "the inline rule wrote it"
+        );
+        assert!(
+            !trackers[0].held.contains(&call),
+            "nothing is held any more"
+        );
+        assert!(trackers[0].unreleased.contains(&call), "so it is released");
+        Ok(())
     }
 
     /// A final dialog quiet for the settle period, never written, is due.
@@ -8453,6 +9977,25 @@ mod tests {
             idle: chrono::TimeDelta::from_std(LIVE_IDLE_WRITE)
                 .map_err(|e| format!("the idle period fits: {e:?}"))?,
         })
+    }
+
+    /// Idle compaction can drop a call's middle messages before a live export
+    /// writes it when `[limits] idle_compact_after_secs` is shorter than the
+    /// live idle period. A live export says so at startup; a long enough
+    /// setting, or a run with no live export, says nothing.
+    #[cfg(feature = "vcon")]
+    #[test]
+    fn a_compaction_period_shorter_than_the_live_idle_write_is_warned() {
+        let idle = LIVE_IDLE_WRITE.as_secs();
+        let warning = live_compaction_warning(Some(idle - 1), true).unwrap_or_default();
+        assert!(warning.contains("idle_compact_after_secs"), "{warning}");
+        assert!(warning.contains(&format!("{}", idle - 1)), "{warning}");
+        assert!(live_compaction_warning(Some(idle), true).is_none());
+        assert!(
+            live_compaction_warning(None, true).is_none(),
+            "the default is 600 s"
+        );
+        assert!(live_compaction_warning(Some(1), false).is_none());
     }
 
     /// A running dialog is written once it has had no SIP and no RTP for the
@@ -8881,11 +10424,11 @@ mod tests {
     fn how_a_run_ended_decides_what_its_end_writes() {
         let tracker = LiveVconTracker::default();
         assert!(matches!(
-            vcon_run_end(Some(&tracker), true),
+            vcon_run_end(Some(std::slice::from_ref(&tracker)), true),
             VconRunEnd::Stopped
         ));
         assert!(matches!(
-            vcon_run_end(Some(&tracker), false),
+            vcon_run_end(Some(std::slice::from_ref(&tracker)), false),
             VconRunEnd::AfterLive(_)
         ));
         assert!(matches!(vcon_run_end(None, true), VconRunEnd::Whole));
@@ -8901,7 +10444,7 @@ mod tests {
         let spool = tmp.path().join("spool");
         assert!(export_vcon(
             &cli_exporting_to(&spool, "response_code >= 200"),
-            None,
+            &[],
             &two_dialogs_one_failed()?,
             &StreamStore::new(16),
             4,
@@ -8926,12 +10469,12 @@ mod tests {
         tracker.record(&failed.call_id, failed.updated_at);
         assert!(export_vcon(
             &cli_exporting_to(tmp.path(), "response_code >= 200"),
-            None,
+            &[],
             &dialogs,
             &StreamStore::new(16),
             4,
             None,
-            VconRunEnd::AfterLive(&tracker),
+            VconRunEnd::AfterLive(std::slice::from_ref(&tracker)),
         ));
         let names: Vec<String> = containers_in(tmp.path())?
             .iter()
@@ -8949,12 +10492,12 @@ mod tests {
         stale.record(&ok.call_id, ok.updated_at);
         assert!(export_vcon(
             &cli_exporting_to(changed.path(), "response_code >= 200"),
-            None,
+            &[],
             &dialogs,
             &StreamStore::new(16),
             4,
             None,
-            VconRunEnd::AfterLive(&stale),
+            VconRunEnd::AfterLive(std::slice::from_ref(&stale)),
         ));
         let files = containers_in(changed.path())?;
         assert_eq!(files.len(), 1, "{files:?}");
@@ -9019,12 +10562,25 @@ mod tests {
         let mut tracker = LiveVconTracker::default();
         let dir = std::path::Path::new("spool");
         assert_eq!(
-            settle_live_writes(&mut tracker, &[failed, ok], dir, Ok(2)),
+            settle_live_writes(
+                &mut tracker,
+                &[
+                    ContainerUnit::Leg(failed, false),
+                    ContainerUnit::Leg(ok, false)
+                ],
+                dir,
+                Ok(2)
+            ),
             2
         );
         assert_eq!(tracker.containers_written(), 2);
         assert_eq!(
-            settle_live_writes(&mut tracker, &[ok], dir, Err((0, "disk full".into()))),
+            settle_live_writes(
+                &mut tracker,
+                &[ContainerUnit::Leg(ok, false)],
+                dir,
+                Err((0, "disk full".into()))
+            ),
             0
         );
         assert_eq!(
@@ -9199,7 +10755,7 @@ mod tests {
         let out = tmp.path().join("one.json");
         assert!(export_vcon(
             &cli_exporting_one(&out, "failed-call@example.com"),
-            None,
+            &[],
             &two_dialogs_one_failed()?,
             &StreamStore::new(16),
             4,
@@ -9223,12 +10779,12 @@ mod tests {
         let run = |tracker: &LiveVconTracker, call_id: &str, out: &std::path::Path| {
             export_vcon(
                 &cli_exporting_one(out, call_id),
-                None,
+                &[],
                 &dialogs,
                 &StreamStore::new(16),
                 4,
                 None,
-                VconRunEnd::AfterLive(tracker),
+                VconRunEnd::AfterLive(std::slice::from_ref(tracker)),
             )
         };
         let tmp = tempfile::tempdir().map_err(|e| format!("temp dir: {e:?}"))?;
@@ -10489,7 +12045,7 @@ mod tests {
 
         let ok = export_vcon(
             &cli,
-            None,
+            &[],
             &two_dialogs_one_failed()?,
             &StreamStore::new(16),
             7,
@@ -10532,7 +12088,7 @@ mod tests {
 
         assert!(export_vcon(
             &cli,
-            None,
+            &[],
             &two_dialogs_one_failed()?,
             &StreamStore::new(16),
             7,
@@ -10564,7 +12120,7 @@ mod tests {
 
         assert!(export_vcon(
             &cli,
-            None,
+            &[],
             &two_dialogs_one_failed()?,
             &StreamStore::new(16),
             7,
@@ -10604,7 +12160,7 @@ mod tests {
         let ungated = tempfile::tempdir().map_err(|e| format!("temp dir: {e:?}"))?;
         assert!(export_vcon(
             &cli_exporting_to(ungated.path(), "response_code >= 200"),
-            None,
+            &[],
             &two_dialogs_one_failed()?,
             &StreamStore::new(16),
             7,
@@ -10615,7 +12171,7 @@ mod tests {
         let gated = tempfile::tempdir().map_err(|e| format!("temp dir: {e:?}"))?;
         assert!(export_vcon(
             &cli_exporting_to(gated.path(), "response_code >= 200"),
-            None,
+            &[],
             &two_dialogs_one_failed()?,
             &StreamStore::new(16),
             7,
@@ -10651,7 +12207,7 @@ mod tests {
         gate.set(false);
         assert!(export_vcon(
             &cli,
-            None,
+            &[],
             &two_dialogs_one_failed()?,
             &StreamStore::new(16),
             7,
@@ -10670,7 +12226,7 @@ mod tests {
         gate.set(true);
         assert!(export_vcon(
             &cli,
-            None,
+            &[],
             &two_dialogs_one_failed()?,
             &StreamStore::new(16),
             7,
@@ -10701,7 +12257,7 @@ mod tests {
         let gate = crate::output::persistence::PersistenceGate::new(false);
         assert!(export_vcon(
             &cli,
-            None,
+            &[],
             &two_dialogs_one_failed()?,
             &StreamStore::new(16),
             7,
@@ -13341,6 +14897,31 @@ mod tests {
     /// the single conjunct: `--retain-audio`, whatever else the run is doing.
     /// The privacy half is unchanged and is the one that matters — enabling a
     /// server is still not consent to hold call audio.
+    /// A `[[vcon.rule]]` that asks for `audio = "inline"` is consent to keep
+    /// call audio, as `--retain-audio` is. A rule that omits audio, or says
+    /// nothing, keeps none.
+    #[cfg(feature = "vcon")]
+    #[test]
+    fn an_inline_audio_rule_retains_audio_and_no_other_rule_does() {
+        let rule = |audio: Option<&str>| crate::config::VconRuleConfig {
+            name: "r".into(),
+            when: "method == 'INVITE'".into(),
+            dir: Some("/d".into()),
+            audio: audio.map(str::to_owned),
+            max_inline_media_mib: None,
+            audio_url_base: None,
+            grouping: None,
+            live_audio: None,
+            live: None,
+        };
+        let mut config = crate::config::Config::default();
+        assert!(!audio_retention_wanted(&base_cli(), &config));
+        config.vcon.rule = vec![rule(None), rule(Some("omit"))];
+        assert!(!audio_retention_wanted(&base_cli(), &config));
+        config.vcon.rule.push(rule(Some("inline")));
+        assert!(audio_retention_wanted(&base_cli(), &config));
+    }
+
     #[test]
     fn audio_payload_is_retained_exactly_when_asked_and_readable() {
         let mut cli = base_cli();
@@ -13348,14 +14929,14 @@ mod tests {
         cli.mcp_args.mcp = false;
         cli.mcp_args.retain_audio = false;
         assert!(
-            !audio_retention_wanted(&cli),
+            !audio_retention_wanted(&cli, &Config::default()),
             "a run that did not ask for audio must not pay the clone"
         );
 
         cli.mcp_args.mcp = true;
         cli.mcp_args.retain_audio = false;
         assert!(
-            !audio_retention_wanted(&cli),
+            !audio_retention_wanted(&cli, &Config::default()),
             "enabling an MCP server is not consent to hold call audio in \
              memory — this is the arming-by-default the opt-in exists to end"
         );
@@ -13363,7 +14944,7 @@ mod tests {
         cli.mcp_args.mcp = false;
         cli.mcp_args.retain_audio = true;
         assert!(
-            audio_retention_wanted(&cli),
+            audio_retention_wanted(&cli, &Config::default()),
             "a plain batch run has a reader now: the amplitude measurement in \
              the media diagnosis, which is the one finding that needs the \
              samples and reaches every surface a diagnosis reaches"
@@ -13372,7 +14953,7 @@ mod tests {
         cli.mcp_args.mcp = true;
         cli.mcp_args.retain_audio = true;
         assert!(
-            audio_retention_wanted(&cli),
+            audio_retention_wanted(&cli, &Config::default()),
             "export_audio decodes these buffers; with retention off it cannot succeed"
         );
     }
@@ -13400,7 +14981,7 @@ mod tests {
         ])
         .map_err(|e| format!("--retain-audio must parse without --mcp: {e:?}"))?;
         assert!(
-            audio_retention_wanted(&cli),
+            audio_retention_wanted(&cli, &Config::default()),
             "it parsed and then retained nothing, which is a flag that does \
              nothing wearing a different hat"
         );
@@ -13429,7 +15010,7 @@ mod tests {
             "precondition: the default is ON, which is why the false case is \
              the one that needs applying"
         );
-        assert!(!apply_audio_retention(&mut ss, &cli));
+        assert!(!apply_audio_retention(&mut ss, &cli, &Config::default()));
         assert!(
             !ss.audio_capture(),
             "a non-MCP run must leave retention OFF; leaving the constructor's \
@@ -13440,7 +15021,7 @@ mod tests {
         cli.mcp_args.mcp = true;
         cli.mcp_args.retain_audio = true;
         let mut ss = StreamStore::new(16);
-        assert!(apply_audio_retention(&mut ss, &cli));
+        assert!(apply_audio_retention(&mut ss, &cli, &Config::default()));
         assert!(
             ss.audio_capture(),
             "export_audio decodes payload_buffer, so a consenting MCP run must retain"
@@ -13451,7 +15032,7 @@ mod tests {
         // the predicate.
         cli.mcp_args.retain_audio = false;
         let mut ss = StreamStore::new(16);
-        assert!(!apply_audio_retention(&mut ss, &cli));
+        assert!(!apply_audio_retention(&mut ss, &cli, &Config::default()));
         assert!(
             !ss.audio_capture(),
             "an MCP run without --retain-audio must not hold call audio"
@@ -14631,7 +16212,7 @@ mod tests {
                     frames_read: 0,
                 },
                 None,
-                None,
+                &[],
                 None,
                 VconRunEnd::Whole,
             )
@@ -14715,7 +16296,7 @@ mod tests {
                 frames_read: 0,
             },
             None,
-            None,
+            &[],
             None,
             VconRunEnd::Whole,
         );
@@ -14732,7 +16313,7 @@ mod tests {
                 frames_read: 0,
             },
             None,
-            None,
+            &[],
             None,
             VconRunEnd::Whole,
         );
@@ -14770,7 +16351,7 @@ mod tests {
                     frames_read: 0,
                 },
                 None,
-                None,
+                &[],
                 None,
                 VconRunEnd::Whole,
             );

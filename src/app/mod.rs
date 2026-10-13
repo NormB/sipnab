@@ -17,11 +17,38 @@ pub mod servers;
 #[cfg(feature = "tui")]
 pub mod tui_mode;
 #[cfg(feature = "vcon")]
+pub mod vcon_enrich;
+#[cfg(feature = "vcon")]
 pub mod vcon_fetch;
 #[cfg(feature = "vcon")]
 pub mod vcon_forward;
 #[cfg(feature = "vcon")]
 pub mod vcon_spool;
+
+/// A build without the vCon exporter has no spools. The type exists so the
+/// servers' state has one shape in every build: a `Vec` of a type with no
+/// values is empty by construction, so no route or tool can find a spool.
+#[cfg(not(feature = "vcon"))]
+pub mod vcon_spool {
+    /// A spool, which this build cannot have.
+    #[derive(Debug, Clone)]
+    pub enum Spool {}
+
+    /// The run's spools: none, without the vCon exporter.
+    #[must_use]
+    pub fn spools(_cli: &crate::cli::Cli, _config: &crate::config::Config) -> Vec<Spool> {
+        Vec::new()
+    }
+}
+
+/// A build without the vCon exporter has no enrichment services, for the
+/// reason it has no spools: a rule's list of them is empty by construction.
+#[cfg(not(feature = "vcon"))]
+pub mod vcon_enrich {
+    /// An enrichment service, which this build cannot have.
+    #[derive(Debug)]
+    pub enum Service {}
+}
 
 /// The one append-only audit sink, reachable from every build that can write
 /// a record — including the ones that carry no MCP server.
@@ -161,6 +188,22 @@ pub fn build_resolver(
         NameMode::Off
     };
     (resolver, mode)
+}
+
+/// The names the filter field `endpoint` compares against: the hosts file
+/// and the operator's mappings, the offline layers of [`build_resolver`].
+///
+/// Reverse DNS is never consulted for a filter, whatever the run's display
+/// setting: a filter has to answer the same way every time it is evaluated
+/// and must not wait on the network.
+pub fn build_filter_names(cli: &Cli, config: &Config) -> Arc<crate::names::NameResolver> {
+    let resolver = Arc::new(crate::names::NameResolver::with_limits(
+        false,
+        cli.dns_cache_entries(config),
+    ));
+    let _ = resolver.load_hosts_file(std::path::Path::new("/etc/hosts"));
+    load_manual_names(&resolver, &cli.names_files(config), &config.names);
+    resolver
 }
 
 /// Load the manual name layer: the files [`Cli::names_files`] resolves

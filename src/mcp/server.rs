@@ -123,7 +123,7 @@ pub struct SipnabMcp {
     /// Only read: the forwarder that drains the spool is another process, and
     /// this one makes no outbound vCon connection and moves no file.
     #[cfg(feature = "vcon")]
-    pub(crate) vcon_spool: Option<std::path::PathBuf>,
+    pub(crate) vcon_spools: Vec<crate::app::vcon_spool::Spool>,
     /// The numbers the diagnostic filter aliases compare against.
     ///
     /// Carried here for the same reason `row_cap` is: `find_problems` used to
@@ -405,7 +405,7 @@ impl SipnabMcp {
             max_inline_media_bytes: None,
             content_deny_header: None,
             #[cfg(feature = "vcon")]
-            vcon_spool: None,
+            vcon_spools: Vec::new(),
             alias_thresholds: crate::sip::dsl::AliasThresholds::default(),
             body_cap: super::shape::DEFAULT_MAX_BODY_BYTES,
             response_cap: crate::cli::Cli::DEFAULT_MCP_MAX_RESPONSE_BYTES as usize,
@@ -641,7 +641,18 @@ impl SipnabMcp {
     #[cfg(feature = "vcon")]
     #[must_use]
     pub fn with_vcon_spool(mut self, dir: impl Into<std::path::PathBuf>) -> Self {
-        self.vcon_spool = Some(dir.into());
+        self.vcon_spools = vec![crate::app::vcon_spool::Spool {
+            rule: "--export-vcon-when".to_owned(),
+            dir: dir.into(),
+        }];
+        self
+    }
+
+    /// Name every export rule's spool `vcon_spool_status` may read, by rule.
+    #[cfg(feature = "vcon")]
+    #[must_use]
+    pub fn with_vcon_spools(mut self, spools: Vec<crate::app::vcon_spool::Spool>) -> Self {
+        self.vcon_spools = spools;
         self
     }
 
@@ -11074,7 +11085,7 @@ mod tests {
     /// keys configured and `file_root` as `--api-file-root`.
     #[cfg(feature = "api")]
     fn rest_router_over(srv: &SipnabMcp, file_root: Option<std::path::PathBuf>) -> axum::Router {
-        rest_router_with(srv, file_root, None)
+        rest_router_with(srv, file_root, Vec::new())
     }
 
     /// [`rest_router_over`], with `vcon_spool` as `--export-vcon-dir`.
@@ -11082,7 +11093,7 @@ mod tests {
     fn rest_router_with(
         srv: &SipnabMcp,
         file_root: Option<std::path::PathBuf>,
-        vcon_spool: Option<std::path::PathBuf>,
+        vcon_spools: Vec<crate::app::vcon_spool::Spool>,
     ) -> axum::Router {
         use crate::output::api::{ApiState, ArchivePasswordPolicy, RateLimiter};
         crate::output::api::build_router(ApiState {
@@ -11108,10 +11119,89 @@ mod tests {
             alert_engine: None,
             armed_detections: Vec::new(),
             file_root,
-            vcon_spool,
+            vcon_spools,
+            live_audio: std::sync::Arc::default(),
             pipeline_options: Default::default(),
             archive: ArchivePasswordPolicy::default(),
         })
+    }
+
+    /// With several export rules, both doors take a `rule` naming the spool,
+    /// answer for it and say which rule it is, and refuse an unnamed or
+    /// unknown rule with the names the run has.
+    #[cfg(all(feature = "api", feature = "vcon"))]
+    #[tokio::test]
+    async fn a_spool_is_named_by_rule_on_both_doors() -> Result<(), TestError> {
+        use crate::app::vcon_spool::Spool;
+        use tower::ServiceExt as _;
+        let a = tempfile::tempdir().map_err(|e| format!("tempdir: {e:?}"))?;
+        let b = tempfile::tempdir().map_err(|e| format!("tempdir: {e:?}"))?;
+        std::fs::write(b.path().join("p.vcon.json"), "{}").map_err(|e| format!("{e:?}"))?;
+        let spools = vec![
+            Spool {
+                rule: "support".into(),
+                dir: a.path().to_path_buf(),
+            },
+            Spool {
+                rule: "all".into(),
+                dir: b.path().to_path_buf(),
+            },
+        ];
+        let srv = empty_server().with_vcon_spools(spools.clone());
+        let ask = |rule: Option<&str>| super::super::tools::vcon::VconSpoolStatusParams {
+            rule: rule.map(str::to_owned),
+            ..Default::default()
+        };
+        let named = srv
+            .vcon_spool_status(Parameters(ask(Some("all"))))
+            .await
+            .map_err(|e| format!("the tool answers: {e:?}"))?;
+        let named: serde_json::Value = serde_json::from_str(&text_of(&named)?)?;
+        assert_eq!(named["rule"], "all");
+        assert_eq!(named["pending"], 1);
+        let unnamed = srv
+            .vcon_spool_status(Parameters(ask(None)))
+            .await
+            .err()
+            .ok_or("several spools need a rule")?;
+        assert!(unnamed.message.contains("support, all"), "{unnamed:?}");
+        let data = unnamed.data.clone().ok_or("the refusal carries data")?;
+        assert_eq!(data["reason"], "missing_param", "{data}");
+        assert_eq!(data["param"], "rule", "{data}");
+        let unknown = srv
+            .vcon_spool_status(Parameters(ask(Some("nope"))))
+            .await
+            .err()
+            .ok_or("an unknown rule is refused")?;
+        let data = unknown.data.clone().ok_or("the refusal carries data")?;
+        assert_eq!(data["reason"], "invalid_choice", "{data}");
+        assert_eq!(data["param"], "rule", "{data}");
+        assert_eq!(
+            data["valid_values"],
+            serde_json::json!(["support", "all"]),
+            "{data}"
+        );
+
+        let router = rest_router_with(&srv, None, spools);
+        for (uri, status, needle) in [
+            ("/v1/vcon/spool?rule=all", 200, "\"rule\":\"all\""),
+            ("/v1/vcon/spool", 400, "support, all"),
+            ("/v1/vcon/spool?rule=nope", 400, "'nope'"),
+        ] {
+            let resp = router
+                .clone()
+                .oneshot(local_get(uri)?)
+                .await
+                .map_err(|e| format!("oneshot: {e:?}"))?;
+            assert_eq!(resp.status().as_u16(), status, "{uri}");
+            let bytes = http_body_util::BodyExt::collect(resp.into_body())
+                .await
+                .map_err(|e| format!("body: {e:?}"))?
+                .to_bytes();
+            let body = String::from_utf8_lossy(&bytes);
+            assert!(body.contains(needle), "{uri}: {body}");
+        }
+        Ok(())
     }
 
     /// `vcon_spool_status` and `GET /v1/vcon/spool` answer from one function:
@@ -11192,7 +11282,14 @@ mod tests {
     /// [`rest_router_over`], with `--export-vcon-dir` set to `spool`.
     #[cfg(all(feature = "api", feature = "vcon"))]
     fn rest_router_over_spool(srv: &SipnabMcp, spool: &std::path::Path) -> axum::Router {
-        rest_router_with(srv, None, Some(spool.to_path_buf()))
+        rest_router_with(
+            srv,
+            None,
+            vec![crate::app::vcon_spool::Spool {
+                rule: "--export-vcon-when".into(),
+                dir: spool.to_path_buf(),
+            }],
+        )
     }
 
     /// A REST `GET` of `uri` from this host.
@@ -12660,14 +12757,19 @@ mod tests {
             // five tools `analyze_vcon`, `export_vcon`, `siprec_metadata`,
             // `validate_vcon` and `vcon_spool_status`), full 86,969 over 74
             // tools, on the merged tree.
-            ("vcon", 8_500),
+            // 8_500 -> 8_700 and full 87_000 -> 87_300: `vcon_spool_status`
+            // took a `rule` parameter naming which export rule's spool to
+            // read; vcon measured 8,525 and full 87,125, both +156.
+            ("vcon", 8_700),
             ("tls", 3_000),
             // full 83_500 -> 85_500: the three changes above together, the
             // paged-tool byte budget, the response schemas and the vCon
             // paging and spool tool, measured 85,447 on the merged tree.
             // full 85_500 -> 87_000: `analyze_vcon`, as the vcon row above
             // says, measured 86,969 on the merged tree.
-            ("full", 87_000),
+            // full 87_000 -> 87_300: the `rule` parameter, as the vcon row
+            // above says.
+            ("full", 87_300),
         ];
         let sizes: std::collections::BTreeMap<String, usize> = empty_server()
             .with_output_schemas(false)
