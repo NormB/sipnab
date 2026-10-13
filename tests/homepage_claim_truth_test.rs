@@ -1288,3 +1288,97 @@ fn the_anchor_check_reports_a_missing_heading_and_a_missing_page() -> Result<(),
     );
     Ok(())
 }
+
+// ── The capabilities section ─────────────────────────────────────────
+
+/// The "Check what sipnab supports" section, from its id to its end.
+fn capabilities_section(page: &str) -> Result<String, TestError> {
+    let start = page
+        .find(r#"id="features-list""#)
+        .ok_or("the homepage has no id=\"features-list\" section")?;
+    let len = page[start..]
+        .find("</section>")
+        .ok_or("the capabilities section never closes")?;
+    Ok(page[start..start + len].to_string())
+}
+
+/// The capabilities section groups what sipnab does, and vCon is one of the
+/// groups: the table it replaced named no vCon capability at all while
+/// sipnab exported, enriched, encrypted and forwarded vCons.
+#[test]
+fn the_capabilities_section_has_every_group_vcon_included() -> Result<(), TestError> {
+    let section = capabilities_section(&strip_comments(&homepage()?)?)?;
+    for group in [
+        "Capture and inputs",
+        "Analysis and diagnosis",
+        "Call records (vCon)",
+        "Security",
+        "Terminal UI",
+        "Integrations and output",
+    ] {
+        assert!(
+            section.contains(&format!(">{group}</h3>")),
+            "the capabilities section has no {group:?} group heading"
+        );
+    }
+    for claim in ["export rules", "encrypt", "enrich"] {
+        assert!(
+            section.to_lowercase().contains(claim),
+            "the vCon group does not mention {claim:?}"
+        );
+    }
+    Ok(())
+}
+
+/// The Prometheus capability says what the metrics document lists: call,
+/// response, MOS and security series as well as sipnab's own counters.
+#[test]
+fn the_prometheus_capability_names_the_call_series() -> Result<(), TestError> {
+    let section = capabilities_section(&strip_comments(&homepage()?)?)?;
+    let row = enclosing_block(&section, "Prometheus")?;
+    assert!(
+        !row.contains("about sipnab itself"),
+        "the Prometheus row still says its counters are about sipnab itself:\n{row}"
+    );
+    let doc = read("docs/prometheus-metrics.md")?;
+    for series in [
+        "sipnab_calls_active",
+        "sipnab_mos",
+        "sipnab_security_alerts_total",
+    ] {
+        assert!(
+            doc.contains(series),
+            "docs/prometheus-metrics.md lost {series}"
+        );
+    }
+    for word in ["calls", "MOS", "security"] {
+        assert!(
+            row.contains(word),
+            "the Prometheus row does not name {word:?}:\n{row}"
+        );
+    }
+    Ok(())
+}
+
+/// The WASM plugins row names every released build that lacks the feature:
+/// the static musl tarballs and the gnu no-audio packages.
+#[test]
+fn the_plugins_capability_names_the_no_audio_packages() -> Result<(), TestError> {
+    let release = read(".github/workflows/release.yml")?;
+    let noaudio = release
+        .lines()
+        .find_map(|l| l.trim().strip_prefix("noaudio_set=\""))
+        .and_then(|s| s.strip_suffix('"'))
+        .ok_or("release.yml has no noaudio_set line")?;
+    assert!(
+        !noaudio.split(',').any(|f| f == "plugins"),
+        "the no-audio set now carries plugins ({noaudio}); this test's premise is gone"
+    );
+    let section = capabilities_section(&strip_comments(&homepage()?)?)?;
+    let row = enclosing_block(&section, "WASM plugins")?;
+    assert!(
+        row.contains("no-audio") && row.contains("musl"),
+        "the WASM plugins row does not say the musl and no-audio builds lack it:\n{row}"
+    );
+    Ok(())
+}

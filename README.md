@@ -274,12 +274,30 @@ Next: [REST API and metrics](docs/rest-api.md),
   static musl builds lack the `vcon` feature). `--vcon-forward-kind vcon-store`
   adds vcon.store's ingest path and header and changes only the copy it sends,
   because vcon.store's validator rejects the string-array `extensions` both
-  vCon drafts define ([Send sipnab's vCons to vcon.store](docs/vcon-store.md))
+  vCon drafts define ([Send sipnab's vCons to vcon.store](docs/vcon-store.md)).
+  Export rules (`[[vcon.rule]]`) pick calls by filter and write them per leg
+  or per call, a call can go to your own transcriber first (`[[vcon.enrich]]`),
+  you can follow and hear live calls while they are in progress, and a rule with
+  `encrypt_to` writes the signed and encrypted form
 - **Export formats.** pcap and pcapng, TXT, JSON, NDJSON, CSV, an HTML page of
   the call flow, Markdown, WAV audio, SIPp XML scenarios and RTP JSON
+- **Tunnels and transports.** Reads SIP inside VLAN and QinQ tags, MPLS,
+  GRE, GTP-U, VXLAN, GENEVE and other tunnels, SIP over WebSocket, and SIP
+  split across IP fragments or TCP segments. Some need an option on a live
+  capture: [Encapsulations](docs/encapsulations.md) lists which
+- **Ranked analysis and conformance.** `--analyze` lists every problem in a
+  capture, worst first, and `--yang-analyze` writes it as [RFC 7951](https://www.rfc-editor.org/rfc/rfc7951) JSON
+  against a published YANG module; `--lint` checks RFC conformance with a
+  rule ID and RFC section per finding
 - **pcap in and out.** Reads and writes pcap and pcapng, with rotation and
   splitting; reads directories, tar archives and password-protected ZIP and 7z
   archives, and stored vCon containers as the SIP messages they hold.
+- **vCons with pseudonyms, and a hardened process.** `--redact` replaces
+  identities, addresses and hostnames in exported vCons with keyed
+  pseudonyms, and `--redact-map` writes the reverse map to a file only you can
+  read. A capture started as root drops to `--user` after opening its
+  devices, and can confine itself with a Landlock sandbox (`--sandbox`) and a
+  seccomp allowlist (`--seccomp`)
 - **MCP server.** 74 tools over stdio or HTTP: 61 only read, and the 13 that
   write each say what they change. File writes stay inside `--mcp-file-root`;
   swapping the capture, shutting the server down, recording findings and
@@ -300,6 +318,10 @@ Next: [REST API and metrics](docs/rest-api.md),
   one ladder (`x` or `F4`)
 - **RTP streams** with jitter, loss and MOS (`Tab`), audio playback, and WAV
   export (`F2`)
+- **Quality views:** a live MOS dashboard, a loss map and a call timeline;
+  **carrier views:** ASR, NER and ACD, top talkers and a call-volume histogram
+- **Operator notes** on messages, saved as pcapng packet comments, and names
+  for hosts from hosts files and DNS
 
 [Keybindings](docs/keybindings.md) lists every key, per view.
 

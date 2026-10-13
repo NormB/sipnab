@@ -1493,7 +1493,8 @@ fn root_community_file_links_resolve() -> Result<(), TestError> {
     // 136 -> 140: README.md's voice-stack section links docs/asterisk.md,
     // docs/asterisk-sipnab.md, docs/freeswitch.md and
     // docs/freeswitch-sipnab.md.
-    const EXPECTED_COMMUNITY_LINKS: usize = 140;
+    // 140 -> 141: README.md's tunnels bullet links docs/encapsulations.md.
+    const EXPECTED_COMMUNITY_LINKS: usize = 141;
     const ROOT_FILES: &[&str] = &[
         "README.md",
         "SUPPORT.md",

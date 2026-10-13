@@ -22,27 +22,49 @@ const SITE_CONFIG: &str = include_str!("../website/config.toml");
 /// covers it. A new home page row fails here until it is added, which is the
 /// point: the README decides how to say it, but it cannot leave it out.
 const CAPABILITIES: &[(&str, &str)] = &[
-    ("Terminal UI and headless mode", "headless"),
+    ("Live capture", "Watch live traffic"),
+    ("Files and archives", "password-protected ZIP and 7z"),
+    ("HEP v1/v2/v3", "HEP v1/v2/v3"),
+    ("Tunnels and transports", "VXLAN"),
+    ("TLS/SRTP decryption", "SSLKEYLOGFILE"),
+    ("eBPF TLS capture", "--uprobe-tls"),
     ("RTP quality analysis", "RTCP XR"),
     ("VoIP diagnosis", "one-way audio"),
+    ("Calls across legs", "B2BUA"),
+    ("Ranked analysis", "--analyze"),
+    ("Conformance linter", "--lint"),
     ("Relay statistics", "--rtpengine-control"),
     ("Filter DSL", "operators"),
-    ("Security", "--fail2ban"),
-    ("TLS/SRTP decryption", "SSLKEYLOGFILE"),
-    ("WASM plugins", "--plugin"),
-    ("eBPF TLS capture", "--uprobe-tls"),
-    ("Export formats", "SIPp XML"),
-    ("HEP v1/v2/v3", "HEP v1/v2/v3"),
+    ("Export as vCon", "--export-vcon"),
+    ("Calls through a PBX", "per leg"),
+    ("Enrichment", "[[vcon.enrich]]"),
+    ("Live calls", "live calls"),
+    ("Signed and encrypted", "encrypt_to"),
+    ("Deliver to a store", "--vcon-forward"),
+    ("Read stored vCons", "stored vCon containers"),
+    ("Attack detection", "Scanner detection"),
+    ("Digest and STIR/SHAKEN", "STIR/SHAKEN"),
+    ("fail2ban and firewall rules", "--fail2ban"),
+    ("TFPS bans", "TFPS"),
+    ("Pseudonymized vCons", "--redact"),
+    ("Hardened process", "--seccomp"),
+    ("Terminal UI and headless mode", "headless"),
+    ("Quality views", "MOS dashboard"),
+    ("Carrier views", "ASR, NER and ACD"),
+    ("Audio, notes and names", "Operator notes"),
     ("REST API", "REST API"),
-    ("Prometheus metrics", "Prometheus"),
     ("MCP server", "MCP server"),
+    ("Prometheus metrics", "Prometheus"),
+    ("Export formats", "SIPp XML"),
+    ("WASM plugins", "--plugin"),
     ("Browser analysis", "WebAssembly"),
     ("Built in Rust", "`unsafe` blocks"),
 ];
 
-/// The capability rows' titles, read from the home page's table.
+/// The capability rows' titles, read from the home page's capability cards,
+/// and the "Built in Rust" line beneath them.
 fn homepage_capability_titles() -> Result<BTreeSet<String>, TestError> {
-    let row = regex::Regex::new(r"<tr><td>(.*?)</td>")?;
+    let row = regex::Regex::new(r#"class="(?:cap-name|cap-eng-name)"[^>]*>(.*?)</a>"#)?;
     let tag = regex::Regex::new(r"<[^>]+>")?;
     Ok(row
         .captures_iter(HOMEPAGE)
@@ -57,7 +79,7 @@ fn homepage_capability_titles() -> Result<BTreeSet<String>, TestError> {
 #[test]
 fn every_homepage_capability_row_is_in_the_readme() -> Result<(), TestError> {
     let on_page = homepage_capability_titles()?;
-    assert!(on_page.len() >= 15, "read only {} rows", on_page.len());
+    assert!(on_page.len() >= 30, "read only {} rows", on_page.len());
     let mapped: BTreeSet<String> = CAPABILITIES.iter().map(|(t, _)| t.to_string()).collect();
     assert_eq!(
         on_page, mapped,
