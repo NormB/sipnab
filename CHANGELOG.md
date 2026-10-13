@@ -22,6 +22,14 @@ entry that carries them.
   hardening, and corrects two rows: Prometheus metrics include call, MOS and
   security series, and the gnu no-audio packages carry no WASM plugins.
 
+### Internal
+
+- **The `mcp_max_body_bytes` wiring probe waits for the capture to load.** It
+  searched straight after the MCP handshake, so on a loaded macOS runner the
+  search could run before the capture's INVITE was read: both runs reported
+  no snippet and the key looked unwired. The probe now asks again, within 20
+  seconds, until the search finds the INVITE.
+
 ## [0.5.217] - 2026-10-13
 
 ### Added

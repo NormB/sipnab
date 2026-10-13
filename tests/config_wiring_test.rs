@@ -2020,33 +2020,44 @@ fn probe_mcp_max_body_bytes() -> Result<(String, String), TestError> {
             serde_json::json!({
             "jsonrpc":"2.0","method":"notifications/initialized"}),
         )?;
-        send(
-            &mut stdin,
-            serde_json::json!({
-            "jsonrpc":"2.0","id":2,"method":"tools/call",
-            "params":{"name":"search_messages","arguments":{"query":"INVITE","limit":1}}}),
-        )?;
-
+        // The server answers tools while it is still reading the capture, so
+        // a search sent straight after `initialize` can find nothing yet: on a
+        // loaded macOS runner both runs then reported `snippet=0` and the key
+        // looked unwired. Ask again until the INVITE is there, within a bound.
         let mut len = 0usize;
-        for _ in 0..40 {
-            line.clear();
-            if out.read_line(&mut line).unwrap_or(0) == 0 {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+        let mut id = 2u64;
+        while len == 0 && std::time::Instant::now() < deadline {
+            send(
+                &mut stdin,
+                serde_json::json!({
+                "jsonrpc":"2.0","id":id,"method":"tools/call",
+                "params":{"name":"search_messages","arguments":{"query":"INVITE","limit":1}}}),
+            )?;
+            for _ in 0..40 {
+                line.clear();
+                if out.read_line(&mut line).unwrap_or(0) == 0 {
+                    break;
+                }
+                let Ok(v) = serde_json::from_str::<serde_json::Value>(&line) else {
+                    continue;
+                };
+                if v["id"] != serde_json::json!(id) {
+                    continue;
+                }
+                let text = v["result"]["content"][0]["text"].as_str().unwrap_or("");
+                let parsed: serde_json::Value = serde_json::from_str(text).unwrap_or_default();
+                len = parsed[0]["snippet"]
+                    .as_str()
+                    .map(str::len)
+                    .or_else(|| parsed["hits"][0]["snippet"].as_str().map(str::len))
+                    .unwrap_or(0);
                 break;
             }
-            let Ok(v) = serde_json::from_str::<serde_json::Value>(&line) else {
-                continue;
-            };
-            if v["id"] != serde_json::json!(2) {
-                continue;
+            if len == 0 {
+                std::thread::sleep(std::time::Duration::from_millis(100));
             }
-            let text = v["result"]["content"][0]["text"].as_str().unwrap_or("");
-            let parsed: serde_json::Value = serde_json::from_str(text).unwrap_or_default();
-            len = parsed[0]["snippet"]
-                .as_str()
-                .map(str::len)
-                .or_else(|| parsed["hits"][0]["snippet"].as_str().map(str::len))
-                .unwrap_or(0);
-            break;
+            id += 1;
         }
         let _ = terminate(&mut child);
         Ok(len)
