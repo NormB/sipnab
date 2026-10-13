@@ -1351,6 +1351,20 @@ pub struct VconRuleConfig {
     /// Default `false`: one write, once the call has ended or gone idle.
     #[serde(default)]
     pub live: Option<bool>,
+    /// A PEM certificate holding the RSA key this rule's containers are
+    /// encrypted to. Set, the rule writes only the encrypted form of
+    /// draft-ietf-vcon-vcon-core-04 section 5.3: signed with `sign_key` and
+    /// `sign_cert`, then encrypted.
+    #[serde(default)]
+    pub encrypt_to: Option<std::path::PathBuf>,
+    /// The PEM RSA private key an encrypting rule signs with. Readable by its
+    /// owner only.
+    #[serde(default)]
+    pub sign_key: Option<std::path::PathBuf>,
+    /// The PEM certificate chain of `sign_key`, leaf first, carried in the
+    /// signature's `x5c`.
+    #[serde(default)]
+    pub sign_cert: Option<std::path::PathBuf>,
 }
 
 /// The PBX sipnab runs beside.

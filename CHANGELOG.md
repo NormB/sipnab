@@ -12,6 +12,17 @@ entry that carries them.
 
 ### Added
 
+- **Encrypted vCons.** A `[[vcon.rule]]` with `encrypt_to` (a PEM
+  certificate), `sign_key` and `sign_cert` writes each container in the
+  encrypted form of draft-ietf-vcon-vcon-core-04 section 5.3: signed with JWS
+  (`RS256`, the chain in `x5c`), then encrypted with JWE (`RSA-OAEP`,
+  `A256CBC-HS512`) to the certificate's key. The `uuid` travels in the
+  unprotected header, and each file is named `<uuid>.vcon.json` rather than
+  after the Call-ID. sipnab decrypts the draft's own encrypted example and
+  verifies its signature in its tests. The forwarder reads the uuid of a
+  signed or encrypted container from its header. sipnab refuses at startup a
+  rule with missing or mismatched keys, a signing key other users can read,
+  or `audio = "url"`.
 - **Copying from the call flow, and starting with the mouse released**
   ([#484](https://github.com/NormB/sipnab/issues/484)). The TUI captures the
   mouse for wheel scrolling, so the terminal's own text selection did not

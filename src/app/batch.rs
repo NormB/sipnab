@@ -7238,6 +7238,9 @@ pub struct VconRule {
     /// Whether a live capture writes each call as it starts and rewrites it
     /// as it changes.
     pub live: bool,
+    /// What the rule signs and encrypts its containers with; `None` writes
+    /// the unsigned form.
+    pub sealing: Option<std::sync::Arc<crate::output::vcon_jose::Sealing>>,
 }
 
 /// How long a dialog that has not ended must have had no SIP and no RTP
@@ -7894,7 +7897,13 @@ fn write_vcon_containers(
             container.created_at = first.to_rfc3339();
             container.updated_at = Some(now.to_rfc3339());
         }
-        let path = dir.join(vcon_spool_name(&root.call_id, redactor));
+        // An encrypted container is named by its uuid: a Call-ID can carry
+        // host names and addresses, and the name is not encrypted.
+        let path = if target.sealing.is_some() {
+            dir.join(encrypted_file_name(&container.uuid))
+        } else {
+            dir.join(vcon_spool_name(&root.call_id, redactor))
+        };
         if !target.enrich.is_empty()
             && !matches!(unit, ContainerUnit::Leg(_, true))
             && (ended || !target.live)
@@ -7930,7 +7939,17 @@ fn write_vcon_containers(
                         ),
                     )
                 })?;
-        write_container_atomically(&path, json.as_bytes()).map_err(|e| {
+        let bytes =
+            sealed_bytes(json, target.sealing.map(std::sync::Arc::as_ref)).map_err(|e| {
+                (
+                    written,
+                    format!(
+                        "The {what} for Call-ID '{}' could not be encrypted: {e}",
+                        spool_call_id(&root.call_id, redactor)
+                    ),
+                )
+            })?;
+        write_container_atomically(&path, &bytes).map_err(|e| {
             (
                 written,
                 format!(
@@ -7944,11 +7963,27 @@ fn write_vcon_containers(
             // an operator redirects to a file, and mixing them with progress
             // text would put a "Wrote N containers" line inside their
             // SHA256SUMS.
-            println!("{}", digest_line(&path, json.as_bytes()));
+            println!("{}", digest_line(&path, &bytes));
         }
         written += 1;
     }
     Ok(written)
+}
+
+/// The bytes a rule writes for the serialized container `json`: `json`
+/// itself, or with `sealing` its encrypted form under the container's uuid.
+#[cfg(feature = "vcon")]
+fn sealed_bytes(
+    json: String,
+    sealing: Option<&crate::output::vcon_jose::Sealing>,
+) -> Result<Vec<u8>, String> {
+    let Some(sealing) = sealing else {
+        return Ok(json.into_bytes());
+    };
+    let value: serde_json::Value =
+        serde_json::from_str(&json).map_err(|e| format!("the container is not JSON: {e}"))?;
+    let uuid = value["uuid"].as_str().unwrap_or_default();
+    sealing.seal(json.as_bytes(), uuid)
 }
 
 /// Each leg's audio, owned, with the leg's signaling object in `container`:
@@ -8033,17 +8068,19 @@ fn queue_enrichment(
     let call_id = legs.first().map_or_else(String::new, |d| d.call_id.clone());
     let digest = cli.output_args.vcon_digest;
     let path = path.to_path_buf();
+    let sealing = target.sealing.cloned();
     let finish: crate::app::vcon_enrich::Finish = Box::new(move |container, records| {
         report_enrichment(&label, &call_id, &records);
         let written = crate::output::vcon::sealed_json(&crate::output::vcon::seal(container, None))
             .map_err(|e| e.to_string())
-            .and_then(|json| {
-                write_container_atomically(&path, json.as_bytes())
-                    .map(|()| json)
+            .and_then(|json| sealed_bytes(json, sealing.as_deref()))
+            .and_then(|bytes| {
+                write_container_atomically(&path, &bytes)
+                    .map(|()| bytes)
                     .map_err(|e| e.to_string())
             });
         match written {
-            Ok(json) if digest => println!("{}", digest_line(&path, json.as_bytes())),
+            Ok(bytes) if digest => println!("{}", digest_line(&path, &bytes)),
             Ok(_) => {}
             Err(e) => stderr_line!(
                 "{label}Could not write '{}' after enrichment: {e}",
@@ -8364,6 +8401,8 @@ struct VconTarget<'a> {
     url_base: Option<&'a str>,
     /// Write each call as it starts and rewrite it as it changes.
     live: bool,
+    /// Sign and encrypt each container; `None` writes the unsigned form.
+    sealing: Option<&'a std::sync::Arc<crate::output::vcon_jose::Sealing>>,
     /// One container per leg, or one per call.
     grouping: RuleGrouping,
     /// The enrichment services, in order.
@@ -8385,6 +8424,7 @@ impl<'a> VconTarget<'a> {
             url_base: rule.audio_url_base.as_deref(),
             grouping: rule.grouping,
             live: rule.live,
+            sealing: rule.sealing.as_ref(),
             enrich: &rule.enrich,
             label: (rule.name != FLAG_RULE).then_some(rule.name.as_str()),
         }
@@ -8410,6 +8450,7 @@ impl<'a> VconTarget<'a> {
             url_base: None,
             grouping: RuleGrouping::Leg,
             live: false,
+            sealing: None,
             enrich: &[],
             label: None,
         })
@@ -8749,6 +8790,18 @@ fn vcon_spool_name(
     redactor: Option<&crate::output::redact::Redactor<'_>>,
 ) -> String {
     vcon_file_name(&spool_call_id(call_id, redactor))
+}
+
+/// The file an encrypting rule writes a container to: `<uuid>.vcon.json`.
+/// A uuid sipnab generates is already safe in a path; anything else goes
+/// through [`vcon_file_name`].
+#[cfg(feature = "vcon")]
+fn encrypted_file_name(uuid: &str) -> String {
+    if crate::app::vcon_forward::is_path_uuid(uuid) {
+        format!("{uuid}.vcon.json")
+    } else {
+        vcon_file_name(uuid)
+    }
 }
 
 /// A Call-ID rendered as one safe filename.
@@ -9408,6 +9461,7 @@ mod tests {
             enrich: Vec::new(),
             live_audio: false,
             live: false,
+            sealing: None,
         })
     }
 
@@ -9592,6 +9646,74 @@ mod tests {
                 .is_some_and(|a| a.iter().any(|x| x["type"] == "transcript")),
             "{v}"
         );
+        Ok(())
+    }
+
+    /// The enrichment worker writes a call of an encrypting rule in the
+    /// encrypted form, as the direct write does.
+    #[cfg(all(feature = "vcon", unix))]
+    #[test]
+    fn the_enrichment_worker_writes_an_encrypting_rules_call_encrypted() -> Result<(), TestError> {
+        use std::os::unix::fs::PermissionsExt as _;
+        let fixtures = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/vcon-jose");
+        let tmp = tempfile::tempdir().map_err(|e| format!("temp dir: {e:?}"))?;
+        let key = tmp.path().join("sign.key");
+        std::fs::copy(format!("{fixtures}/fake_grp.key"), &key).map_err(|e| format!("{e:?}"))?;
+        std::fs::set_permissions(&key, std::fs::Permissions::from_mode(0o600))
+            .map_err(|e| format!("{e:?}"))?;
+        let cert = std::path::PathBuf::from(format!("{fixtures}/fake_grp.crt"));
+        let mut rule = test_rule("calls", "method == 'INVITE'", tmp.path(), RuleAudio::Omit)?;
+        rule.sealing = Some(std::sync::Arc::new(crate::output::vcon_jose::load_sealing(
+            &cert, &key, &cert,
+        )?));
+        rule.enrich = crate::app::vcon_enrich::services(
+            &[crate::config::VconEnrichConfig {
+                name: "stt".into(),
+                rules: vec!["calls".into()],
+                command: Some("/bin/true".into()),
+                ..Default::default()
+            }],
+            &["calls"],
+        )?;
+        let store = two_dialogs_one_failed()?;
+        let dialog = store.get("ok-call@example.com").ok_or("fixture")?;
+        let container = crate::output::vcon::export_dialog(
+            dialog,
+            &crate::output::vcon::ExportContext {
+                capture_id: "x",
+                facts: &crate::analysis::CaptureFacts::default(),
+                analysis: None,
+                max_inline_media_bytes: None,
+                media: &[],
+                related_legs: &[],
+            },
+        );
+        let path = tmp.path().join("x.vcon.json");
+        let queue = crate::app::vcon_enrich::Queue::start(4);
+        let back = queue_enrichment(
+            &Cli::parse_from_args(["sipnab"]),
+            container,
+            &[dialog],
+            &StreamStore::new(16),
+            &VconTarget::of(&rule),
+            &path,
+            &queue,
+        );
+        assert!(back.is_none(), "queued");
+        assert!(queue.drain(std::time::Instant::now() + std::time::Duration::from_secs(30)));
+        let bytes = std::fs::read(&path).map_err(|e| format!("{e:?}"))?;
+        let value: serde_json::Value = serde_json::from_slice(&bytes)?;
+        assert_eq!(
+            crate::output::vcon_jose::form_of(&value),
+            crate::output::vcon_jose::Form::Encrypted,
+            "{value}"
+        );
+        let pem = std::fs::read_to_string(format!("{fixtures}/fake_grp.key"))
+            .map_err(|e| format!("{e:?}"))?;
+        let inner =
+            crate::output::vcon_jose::verify(&crate::output::vcon_jose::decrypt(&bytes, &pem)?)?;
+        let inner: serde_json::Value = serde_json::from_slice(&inner)?;
+        assert!(inner["analysis"].is_array(), "{inner}");
         Ok(())
     }
 
@@ -14913,6 +15035,9 @@ mod tests {
             grouping: None,
             live_audio: None,
             live: None,
+            encrypt_to: None,
+            sign_key: None,
+            sign_cert: None,
         };
         let mut config = crate::config::Config::default();
         assert!(!audio_retention_wanted(&base_cli(), &config));

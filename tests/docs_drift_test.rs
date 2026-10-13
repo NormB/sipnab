@@ -4692,7 +4692,9 @@ fn no_documentation_table_repeats_a_row() -> Result<(), TestError> {
     // (+2). No file removed.
     // 307 -> 308: tests/fixtures/g722/README.md, how the G.722 decoder's
     // fixtures were generated. A fixture README has no site mirror.
-    const EXPECTED_MARKDOWN_FILES: usize = 308;
+    // 308 -> 309: tests/fixtures/vcon-jose/README.md, where each encrypted
+    // vCon fixture came from. A fixture README has no site mirror.
+    const EXPECTED_MARKDOWN_FILES: usize = 309;
     /// How many tables this gate expects to walk.
     ///
     /// Named rather than written twice. The count and the failure message
@@ -5317,7 +5319,8 @@ fn no_documentation_table_repeats_a_row() -> Result<(), TestError> {
     // docs/config-reference.md and its site mirror.
     // 1199 -> 1200: the "Hear a call in progress" capability table in
     // docs/design/surface-capability-matrix.md (no site mirror).
-    const EXPECTED_TABLES: usize = 1200;
+    // 1200 -> 1201: the source table of tests/fixtures/vcon-jose/README.md.
+    const EXPECTED_TABLES: usize = 1201;
 
     let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     let out = std::process::Command::new("git")

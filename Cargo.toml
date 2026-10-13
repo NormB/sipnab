@@ -190,6 +190,9 @@ cbc = { version = "0.2", features = ["alloc"], optional = true }
 # RSA private-key (`--tls-key`) decryption of the TLS 1.2 RSA-kx pre-master
 # secret. PKCS#1 v1.5; PEM parsing for PKCS#1/#8 private keys.
 rsa = { version = "0.9", default-features = false, features = ["std", "pem"], optional = true }
+# The hash of JWE `RSA-OAEP` (RFC 7518 section 4.3), for the encrypted vCon
+# form. `rsa` 0.9 takes the 0.10 digest traits; `zip` brings `sha1` 0.11.
+sha1_oaep = { package = "sha1", version = "0.10", optional = true }
 
 # Audio playback (feature-gated). The rodio/ALSA dependency lives in the
 # `sipnab-audio` cdylib plugin (crates/sipnab-audio); the main binary only
@@ -379,7 +382,7 @@ bpf = ["native", "dep:aya", "sipnab-bpf-types/pod"]
 # `rustls` is HTTPS for the forwarder (`--vcon-forward`), the separate process
 # that delivers the spool to a vCon store; the capture process never connects
 # anywhere for a container.
-vcon = ["native", "dep:sha2", "dep:hmac", "dep:base64", "dep:rustls"]
+vcon = ["native", "dep:sha2", "dep:hmac", "dep:base64", "dep:rustls", "dep:rsa", "dep:ring", "dep:aes", "dep:cbc", "dep:sha1_oaep"]
 # Password-protected capture archives: ZIP (none, ZipCrypto, WinZip AES)
 # opened in memory with a password the operator supplies. NON-DEFAULT, and IN
 # `full`, so the pre-commit hook's `cargo test --features full` covers it.
