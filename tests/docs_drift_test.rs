@@ -5320,7 +5320,9 @@ fn no_documentation_table_repeats_a_row() -> Result<(), TestError> {
     // 1199 -> 1200: the "Hear a call in progress" capability table in
     // docs/design/surface-capability-matrix.md (no site mirror).
     // 1200 -> 1201: the source table of tests/fixtures/vcon-jose/README.md.
-    const EXPECTED_TABLES: usize = 1201;
+    // 1201 -> 1203: the "Tools that write or act" table in docs/mcp.md and
+    // its site mirror.
+    const EXPECTED_TABLES: usize = 1203;
 
     let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     let out = std::process::Command::new("git")

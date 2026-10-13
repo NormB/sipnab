@@ -1016,7 +1016,7 @@ pub fn decode_captured_frame(packet: &Packet) -> Result<ParsedPacket, CaptureErr
     })
 }
 
-/// IP protocol number of ESP ([RFC 4303](https://www.rfc-editor.org/rfc/rfc4303)).
+/// IP protocol number of ESP ([RFC 4303](https://www.rfc-editor.org/rfc/rfc4303.html)).
 const IP_PROTO_ESP: u8 = 50;
 
 /// Output of [`PacketProcessor::process`]: the parsed packets ready from one
@@ -1052,7 +1052,7 @@ pub struct PacketProcessor {
     /// Cap on tracked `tcp_sip_leftover` sessions; when full, the
     /// least-recently-updated entry is evicted to keep memory bounded.
     max_sessions: usize,
-    /// Cross-packet SCTP DATA fragment reassembler ([RFC 4960 section 3.3.1](https://www.rfc-editor.org/rfc/rfc4960#section-3.3.1)): buffers a
+    /// Cross-packet SCTP DATA fragment reassembler ([RFC 4960 section 3.3.1](https://www.rfc-editor.org/rfc/rfc4960.html#section-3.3.1)): buffers a
     /// SIP message split across B/middle/E DATA chunks until the E fragment
     /// arrives. Bounded, least-recently-updated eviction.
     sctp_reassembler: parse::SctpReassembler,

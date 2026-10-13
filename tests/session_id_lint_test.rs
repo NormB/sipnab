@@ -311,7 +311,7 @@ fn both_session_id_rules_are_cataloged_and_resolvable_by_identifier() -> Result<
         assert_eq!(found.section, "5");
         assert_eq!(
             found.url(),
-            "https://www.rfc-editor.org/rfc/rfc7989#section-5",
+            "https://www.rfc-editor.org/rfc/rfc7989.html#section-5",
             "{}",
             rule.id
         );

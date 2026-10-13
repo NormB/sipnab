@@ -5197,7 +5197,7 @@ async fn get_stream(
 ///
 /// 200 with the analysis object — `application/json`, or for `yang-json` the
 /// same analysis RFC 7951-encoded as `application/yang-data+json`, the media
-/// type [RFC 8040 section 11.3.2](https://www.rfc-editor.org/rfc/rfc8040#section-11.3.2) registers for YANG data outside a RESTCONF
+/// type [RFC 8040 section 11.3.2](https://www.rfc-editor.org/rfc/rfc8040.html#section-11.3.2) registers for YANG data outside a RESTCONF
 /// server too; 400 for any other `format`; 401/503 from the guard. Frames read
 /// comes from [`crate::capture::captured_packets`], the same process-global the
 /// Prometheus scrape reports, so the denominator here is the one every other
@@ -12048,7 +12048,7 @@ mod tests {
         Ok(())
     }
 
-    /// The auth-scheme is case-insensitive ([RFC 7235 section 2.1](https://www.rfc-editor.org/rfc/rfc7235#section-2.1)), so a
+    /// The auth-scheme is case-insensitive ([RFC 7235 section 2.1](https://www.rfc-editor.org/rfc/rfc7235.html#section-2.1)), so a
     /// lowercase `bearer` prefix on an otherwise-correct key authenticates.
     /// The scheme match compared `Bearer` case-sensitively, so a spec-legal
     /// `bearer <token>` client (the standalone metrics server's Basic check is

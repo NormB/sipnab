@@ -220,7 +220,7 @@ The example runs against
 Three things in that answer are worth reading together. The media is in the
 default queue, so it competes with bulk traffic — the most common cause of
 jitter that adding bandwidth does not fix. The jitter figure IS a measurement,
-because payload type 0 has a clock rate [RFC 3551](https://www.rfc-editor.org/rfc/rfc3551)
+because payload type 0 has a clock rate [RFC 3551](https://www.rfc-editor.org/rfc/rfc3551.html)
 Table 4 fixes. And the delay behind the MOS is a default, not anything this
 capture showed, so a MOS built on it is only as good as that assumption.
 

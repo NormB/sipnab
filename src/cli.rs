@@ -1544,7 +1544,7 @@ pub struct OutputArgs {
     /// only safe answer to "I do not understand this deny flag" is to deny.
     ///
     /// Matched case-insensitively, because SIP header names are
-    /// case-insensitive on the wire ([RFC 3261 section 7.3.1](https://www.rfc-editor.org/rfc/rfc3261#section-7.3.1)) and a filter
+    /// case-insensitive on the wire ([RFC 3261 section 7.3.1](https://www.rfc-editor.org/rfc/rfc3261.html#section-7.3.1)) and a filter
     /// keyed on exact case is one an ordinary peer walks through.
     ///
     /// DENY ONLY. A header asking sipnab to RECORD is an assertion by whoever
@@ -3800,7 +3800,7 @@ pub struct McpArgs {
     ///
     /// Setting it turns on discovery: the `401` challenge gains a
     /// `resource_metadata` parameter, and the metadata document is served
-    /// unauthenticated at the well-known path [RFC 9728 section 3.1](https://www.rfc-editor.org/rfc/rfc9728#section-3.1) derives from this
+    /// unauthenticated at the well-known path [RFC 9728 section 3.1](https://www.rfc-editor.org/rfc/rfc9728.html#section-3.1) derives from this
     /// value — `https://sipnab.example.com/mcp` publishes at
     /// `/.well-known/oauth-protected-resource/mcp`. Leave it unset and the
     /// challenge still appears; only the metadata half is off.
@@ -3809,7 +3809,7 @@ pub struct McpArgs {
     /// proxy this deployment expects, sipnab sees a cleartext request and no
     /// scheme, so anything it derived from the socket or the `Host` header
     /// would name `http://` for a resource the client reached over `https://`
-    /// — and [RFC 9728 section 3.3](https://www.rfc-editor.org/rfc/rfc9728#section-3.3) makes a client that finds that mismatch discard the
+    /// — and [RFC 9728 section 3.3](https://www.rfc-editor.org/rfc/rfc9728.html#section-3.3) makes a client that finds that mismatch discard the
     /// document. A forwarded header is not an answer either: sipnab does not
     /// trust `X-Forwarded-*` anywhere (see `--api` rate limiting).
     ///

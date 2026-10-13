@@ -692,3 +692,83 @@ fn the_link_extractor_actually_finds_links() -> Result<(), TestError> {
     );
     Ok(())
 }
+
+/// The RFC URLs in `text` that use the redirecting form: `rfc-editor.org/rfc/
+/// rfcN` with no `.html`, `.txt` or `.pdf` after the number.
+fn redirecting_rfc_urls(text: &str) -> Result<Vec<String>, TestError> {
+    static URL: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+    let url = match URL.get() {
+        Some(re) => re,
+        None => {
+            let re = regex::Regex::new(r"https://www\.rfc-editor\.org/rfc/rfc[0-9]+(\.)?")?;
+            URL.get_or_init(|| re)
+        }
+    };
+    if !text.contains("rfc-editor.org/rfc/rfc") {
+        return Ok(Vec::new());
+    }
+    Ok(url
+        .captures_iter(text)
+        .filter(|c| c.get(1).is_none())
+        .map(|c| c[0].to_string())
+        .collect())
+}
+
+/// No tracked file links an RFC in the form that redirects.
+///
+/// `https://www.rfc-editor.org/rfc/rfcN` answers 302 to a metadata page under
+/// `/info/`, and the redirect drops the `#section-` anchor: a reader who
+/// follows "RFC 3261 section 17.1.1.3" lands on a page without that section.
+/// `rfcN.html` answers 200 and holds the anchor (measured 2026-10-13).
+/// `python3 scripts/rfc-links.py --apply` rewrites the old form everywhere,
+/// by the same rule.
+#[test]
+fn no_rfc_link_uses_the_redirecting_form() -> Result<(), TestError> {
+    // The fixer's own tests feed it the old form on purpose, as input.
+    const INPUTS_ON_PURPOSE: &[&str] = &["scripts/tests/test_rfc_links.py"];
+    let mut offenders = Vec::new();
+    let mut scanned = 0usize;
+    for rel in tracked()? {
+        if INPUTS_ON_PURPOSE.contains(&rel.as_str()) {
+            continue;
+        }
+        let Ok(text) = std::fs::read_to_string(repo().join(&rel)) else {
+            continue;
+        };
+        scanned += 1;
+        for (i, line) in text.lines().enumerate() {
+            for url in redirecting_rfc_urls(line)? {
+                offenders.push(format!("{rel}:{}: {url}", i + 1));
+            }
+        }
+    }
+    assert!(scanned > 1000, "only {scanned} tracked text files read");
+    assert!(
+        offenders.is_empty(),
+        "{} RFC link(s) use the form that redirects to a metadata page and \
+         loses the section anchor. Run `python3 scripts/rfc-links.py --apply`.\n{}",
+        offenders.len(),
+        offenders
+            .iter()
+            .take(40)
+            .cloned()
+            .collect::<Vec<_>>()
+            .join("\n")
+    );
+    Ok(())
+}
+
+/// The scanner flags the bare form, with or without an anchor, and passes the
+/// `.html`, `.txt` and `.pdf` forms.
+#[test]
+fn the_redirecting_rfc_scan_tells_the_forms_apart() -> Result<(), TestError> {
+    let base = "https://www.rfc-editor.org/rfc/rfc";
+    let text = format!(
+        "{base}3261#section-8 {base}7118) {base}3261.html#section-8 {base}3550.txt {base}3550.pdf"
+    );
+    assert_eq!(
+        redirecting_rfc_urls(&text)?,
+        vec![format!("{base}3261"), format!("{base}7118")]
+    );
+    Ok(())
+}

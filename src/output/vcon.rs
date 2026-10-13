@@ -318,7 +318,7 @@ pub const CONTENT_HASH_PREFIX: &str = "sha512-";
 /// other.
 ///
 /// Matched case-insensitively: SIP header names are case-insensitive on the
-/// wire ([RFC 3261 section 7.3.1](https://www.rfc-editor.org/rfc/rfc3261#section-7.3.1)), so a filter keyed on exact case is a filter an
+/// wire ([RFC 3261 section 7.3.1](https://www.rfc-editor.org/rfc/rfc3261.html#section-7.3.1)), so a filter keyed on exact case is a filter an
 /// ordinary peer walks through.
 pub const CREDENTIAL_HEADERS: &[&str] = &[
     "authorization",
@@ -2528,7 +2528,7 @@ fn callee_messages(dialog: &SipDialog) -> impl Iterator<Item = &crate::sip::SipM
 /// A response counts when its status is 101 or higher and its `To` tag is the
 /// dialog's remote tag. A `100 Trying` is excluded because a proxy generates
 /// it hop by hop and never forwards one
-/// ([RFC 3261 section 16.7](https://www.rfc-editor.org/rfc/rfc3261#section-16.7)),
+/// ([RFC 3261 section 16.7](https://www.rfc-editor.org/rfc/rfc3261.html#section-16.7)),
 /// so its `Server` header names the proxy. A response with another tag, or
 /// none, came from another element or another fork. A request counts when its
 /// `From` tag is the remote tag, such as the callee's `BYE`. With no remote
@@ -2899,7 +2899,7 @@ fn strip_credentials(value: &mut serde_json::Value) {
 /// Whether a `"Name: value"` line names a credential-bearing header.
 ///
 /// The name is everything before the first colon, trimmed and compared
-/// case-insensitively — [RFC 3261 section 7.3.1](https://www.rfc-editor.org/rfc/rfc3261#section-7.3.1) makes header names case-insensitive.
+/// case-insensitively — [RFC 3261 section 7.3.1](https://www.rfc-editor.org/rfc/rfc3261.html#section-7.3.1) makes header names case-insensitive.
 /// A string with no colon is not a header line and is left alone.
 fn header_line_is_a_credential(line: &str) -> bool {
     let Some((name, _)) = line.split_once(':') else {
@@ -4448,7 +4448,7 @@ mod tests {
 
     /// A proxy's `100 Trying` says nothing about the callee.
     ///
-    /// [RFC 3261 section 16.7](https://www.rfc-editor.org/rfc/rfc3261#section-16.7)
+    /// [RFC 3261 section 16.7](https://www.rfc-editor.org/rfc/rfc3261.html#section-16.7)
     /// keeps a `100` hop-by-hop: the proxy generates it and never forwards
     /// one. A replay call exported the proxy's `Server` banner as the callee's
     /// `sip_user_agent` because the exporter read the first response in the
@@ -6414,7 +6414,7 @@ mod tests {
     /// The wire-line rule reads a header name the way RFC 3261 does.
     ///
     /// **First of two tests owed** for the CodeQL alert that turned CI red on
-    /// the cut. [RFC 3261 section 7.3.1](https://www.rfc-editor.org/rfc/rfc3261#section-7.3.1) makes header names case-insensitive and
+    /// the cut. [RFC 3261 section 7.3.1](https://www.rfc-editor.org/rfc/rfc3261.html#section-7.3.1) makes header names case-insensitive and
     /// allows linear whitespace before the colon, so a filter matching one
     /// spelling is a filter a sender can walk past by choosing another.
     #[test]

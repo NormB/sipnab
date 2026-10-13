@@ -423,9 +423,9 @@ degrees of one thing:
 
 | `strategy` | Crosses a B2BUA? | What a match is worth | `identifier_match` |
 |---|---|---|---|
-| `session_id` | **Yes, by design** ([RFC 7989](https://www.rfc-editor.org/rfc/rfc7989)) | An identifier both ends agreed on | `true` |
+| `session_id` | **Yes, by design** ([RFC 7989](https://www.rfc-editor.org/rfc/rfc7989.html)) | An identifier both ends agreed on | `true` |
 | `x_call_id` | Only if the box inserts it | An identifier, by vendor convention | `true` |
-| `charging_vector_related_icid` | **Yes** — but only when the B2BUA chose to emit it ([RFC 7315](https://www.rfc-editor.org/rfc/rfc7315) makes it a `MAY`) | The intermediary declared the link itself, in the parameter the RFC provides for it | `true` |
+| `charging_vector_related_icid` | **Yes** — but only when the B2BUA chose to emit it ([RFC 7315](https://www.rfc-editor.org/rfc/rfc7315.html) makes it a `MAY`) | The intermediary declared the link itself, in the parameter the RFC provides for it | `true` |
 | `sdp_origin` | Only if the box forwards SDP untouched | An identifier of the MEDIA session, not the dialog | `true` |
 | `charging_vector_icid` | Not by design — an ICID names ONE dialog and a B2BUA is two | An intermediary carried a per-dialog identifier onto a second dialog | `true` |
 | `via_branch` | **No** — a B2BUA opens a new transaction | Same transaction, so: same hop, not across one | `true` |
@@ -565,7 +565,7 @@ evidence.
 **2. Use an identifier the network already carries.** This is what `x_call_id`,
 `sdp_origin` and the two `P-Charging-Vector` strategies are: sipnab is already
 looking for them, so if your SBC emits `X-Call-ID` by vendor convention,
-forwards SDP untouched so the [RFC 8866](https://www.rfc-editor.org/rfc/rfc8866) origin tuple survives, or sits in a
+forwards SDP untouched so the [RFC 8866](https://www.rfc-editor.org/rfc/rfc8866.html) origin tuple survives, or sits in a
 carrier network where RFC 7315 charging headers are on the wire anyway, you get
 an identifier match today with no configuration at all.
 
@@ -601,7 +601,7 @@ output: `timing_heuristic` announces itself as a guess and sets
 correlate two unrelated calls with no field left to catch it.
 
 That is the same judgement this codebase makes elsewhere. sipnab records the
-[RFC 7329](https://www.rfc-editor.org/rfc/rfc7329) legacy `Session-ID` form as an interop **notice**, not a violation,
+[RFC 7329](https://www.rfc-editor.org/rfc/rfc7329.html) legacy `Session-ID` form as an interop **notice**, not a violation,
 because a single message cannot distinguish a legacy implementation from a
 broken one — so the finding states what arrived on the wire and declines to
 assert which. A computed cross-node id would be the opposite move: asserting an
@@ -609,13 +609,13 @@ identity the wire never established.
 
 > **For IMS and carrier readers: sipnab reads `P-Charging-Vector` in two
 > strategies, and the difference between them decides whether it helps you.**
-> [RFC 7315 section 4.6](https://www.rfc-editor.org/rfc/rfc7315#section-4.6) says the ICID identifies *a dialog*, and a B2BUA is two
+> [RFC 7315 section 4.6](https://www.rfc-editor.org/rfc/rfc7315.html#section-4.6) says the ICID identifies *a dialog*, and a B2BUA is two
 > dialogs — so a conformant B2BUA emits a **different** `icid-value` on each
 > side, and plain `icid-value` equality does **not** solve the re-origination
 > case.
 >
 > What crosses that hop is the separate `related-icid` parameter
-> ([RFC 7315 section 4.6.4.1](https://www.rfc-editor.org/rfc/rfc7315#section-4.6.4.1)), whose value is the icid of the original dialog, and which the
+> ([RFC 7315 section 4.6.4.1](https://www.rfc-editor.org/rfc/rfc7315.html#section-4.6.4.1)), whose value is the icid of the original dialog, and which the
 > B2BUA *MAY* emit rather than must. So:
 >
 > * `charging_vector_related_icid` (95) — the intermediary declared the link.
@@ -625,12 +625,12 @@ identity the wire never established.
 >   identifier onto a second dialog. No RFC grants that.
 >
 > Two further limits, both from the RFC rather than from the implementation.
-> The first proxy generates the icid ([RFC 7315 section 5.6](https://www.rfc-editor.org/rfc/rfc7315#section-5.6)), so the leg arriving from an
+> The first proxy generates the icid ([RFC 7315 section 5.6](https://www.rfc-editor.org/rfc/rfc7315.html#section-5.6)), so the leg arriving from an
 > endpoint carries none and this is useless at the access edge.
 >
 > Also,
-> [RFC 7315 section 4.6.2.2](https://www.rfc-editor.org/rfc/rfc7315#section-4.6.2.2) permits the next hop to *"modify the contents"*, which
-> [RFC 7315 section 6.6](https://www.rfc-editor.org/rfc/rfc7315#section-6.6) calls normal
+> [RFC 7315 section 4.6.2.2](https://www.rfc-editor.org/rfc/rfc7315.html#section-4.6.2.2) permits the next hop to *"modify the contents"*, which
+> [RFC 7315 section 6.6](https://www.rfc-editor.org/rfc/rfc7315.html#section-6.6) calls normal
 > behavior — there is no end-to-end constancy requirement of any kind, so this
 > is not a substitute for `Session-ID`.
 >

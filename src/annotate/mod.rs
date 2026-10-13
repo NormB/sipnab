@@ -107,11 +107,11 @@ pub enum NoteRefusal {
         /// Byte offset of the first one.
         offset: usize,
     },
-    /// An SDES `inline:` key ([RFC 4568 section 6.1](https://www.rfc-editor.org/rfc/rfc4568#section-6.1)).
+    /// An SDES `inline:` key ([RFC 4568 section 6.1](https://www.rfc-editor.org/rfc/rfc4568.html#section-6.1)).
     SdesKey,
     /// A TLS key-log line (the NSS `SSLKEYLOGFILE` format).
     KeylogLine,
-    /// A digest authentication `response=` value ([RFC 7616 section 3.4](https://www.rfc-editor.org/rfc/rfc7616#section-3.4)).
+    /// A digest authentication `response=` value ([RFC 7616 section 3.4](https://www.rfc-editor.org/rfc/rfc7616.html#section-3.4)).
     DigestResponse,
 }
 

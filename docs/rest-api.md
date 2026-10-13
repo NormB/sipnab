@@ -482,7 +482,7 @@ List all tracked SIP dialogs with optional filtering and pagination.
 | `limit`   | int    | 50      | Maximum results. Ceiling is `--api-max-rows` (1000 by default), not a fixed limit |
 | `offset`  | int    | 0       | Pagination offset |
 | `filter`  | string | --      | A [filter DSL](filter-dsl.md) expression, the language `--filter` and the TUI filter dialog use, for example `method == 'INVITE'` or `rtp.loss > 2.0`. URL-encode it. An expression that does not parse is a `400` naming the position, never an unfiltered page |
-| `after`   | string | --      | Only dialogs whose first message is at or after this [RFC 3339](https://www.rfc-editor.org/rfc/rfc3339) instant, for example `2026-09-15T12:00:00Z`. An instant that does not parse is a `400` |
+| `after`   | string | --      | Only dialogs whose first message is at or after this [RFC 3339](https://www.rfc-editor.org/rfc/rfc3339.html) instant, for example `2026-09-15T12:00:00Z`. An instant that does not parse is a `400` |
 | `before`  | string | --      | Only dialogs whose first message is strictly before this RFC 3339 instant. With `after` it forms the half-open window `[after, before)`, the window the MCP `search_by_time` tool uses, so consecutive windows never count a dialog twice. An instant that does not parse is a `400` |
 
 `state`, `from`, `filter`, `after` and `before` combine with AND, and `total`
@@ -896,8 +896,8 @@ an endpoint's, and `round_trip_source` says which kind:
 
 | `round_trip_source` | What it is |
 |---|---|
-| `xr_voip_metrics` | The reporting endpoint's own round trip between the two RTP interfaces, from an [RFC 3611](https://www.rfc-editor.org/rfc/rfc3611) XR block. This is the quantity [ITU-T G.114](https://www.itu.int/rec/T-REC-G.114) sets its guidance against. Accurate, and rare — most stacks never emit an XR |
-| `sender_report_echo` | Derived from a receiver report's `LSR`/`DLSR` pair per [RFC 3550 section 6.4.1](https://www.rfc-editor.org/rfc/rfc3550#section-6.4.1), anchored on when sipnab saw the report. The full round trip when the capture point sits with the sender of the SR, and a **lower bound** otherwise, because the leg beyond the tap is not in it. Available on almost every call |
+| `xr_voip_metrics` | The reporting endpoint's own round trip between the two RTP interfaces, from an [RFC 3611](https://www.rfc-editor.org/rfc/rfc3611.html) XR block. This is the quantity [ITU-T G.114](https://www.itu.int/rec/T-REC-G.114) sets its guidance against. Accurate, and rare — most stacks never emit an XR |
+| `sender_report_echo` | Derived from a receiver report's `LSR`/`DLSR` pair per [RFC 3550 section 6.4.1](https://www.rfc-editor.org/rfc/rfc3550.html#section-6.4.1), anchored on when sipnab saw the report. The full round trip when the capture point sits with the sender of the SR, and a **lower bound** otherwise, because the leg beyond the tap is not in it. Available on almost every call |
 
 **Both keys are absent when nobody reported a round trip**, and that is not the
 same as zero. A stream with clean jitter, no loss and no `round_trip_ms` is a
@@ -971,7 +971,7 @@ and the detection threshold behind each.
 - **`final_status_code` / `final_status_reason`** -- the final response to the dialog's INVITE, or, in a dialog without one, to the `REGISTER`, `PUBLISH`, `SUBSCRIBE`, `MESSAGE` or `OPTIONS` that opened it. Responses to other methods in the dialog (BYE, CANCEL, NOTIFY) do not count. `signaling_diagnosis.final_failure.code` also carries the status for any dialog.
 - **`diagnosis`** -- Four booleans and a `hints` array, all five always present. `one_way_audio`, `nat_mismatch` and `no_media` each name a media fault.
 
-  `private_media_address` is a warning rather than a fault: the SDP `c=` line offered an [RFC 1918](https://www.rfc-editor.org/rfc/rfc1918) or link-local address to a peer that is not itself private, which stays correct inside one LAN and correct behind an SBC or media proxy that rewrites the SDP downstream.
+  `private_media_address` is a warning rather than a fault: the SDP `c=` line offered an [RFC 1918](https://www.rfc-editor.org/rfc/rfc1918.html) or link-local address to a peer that is not itself private, which stays correct inside one LAN and correct behind an SBC or media proxy that rewrites the SDP downstream.
 
   Two further keys drop out rather than reading null -- `stun_sdp_mismatch`, the STUN evidence that settles `private_media_address`, absent on a capture holding no STUN, and `media_relay`, the TURN relay this call's media crossed, absent on a capture holding no relay. [Output Formats](output-formats.md#stun-evidence-inside-the-media-diagnosis) covers both field by field.
 - **`diagnosis.hints`** -- Free-text diagnostic strings from the media analyzer: one-way audio, NAT mismatch (SDP `c=` address vs. actual RTP source), comfort-noise asymmetry (shown in the example above), codec / payload-type / ptime / duration asymmetry, and late media. Empty array when the analyzer found nothing.
@@ -981,7 +981,7 @@ and the detection threshold behind each.
 
   They are **not** part of the REST dialog JSON: there is no `stir_shaken` field, and the results do not appear in `diagnosis.hints`.
 
-  sipnab marks a token `Expired` per [RFC 8224](https://www.rfc-editor.org/rfc/rfc8224) Section 4.4 when its `iat` (issued-at) claim sits more than 60 seconds from the **capture timestamp of the packet that carried it** -- not from the time you run the analysis. A capture you read a year later still reports which tokens were fresh on the wire.
+  sipnab marks a token `Expired` per [RFC 8224](https://www.rfc-editor.org/rfc/rfc8224.html) Section 4.4 when its `iat` (issued-at) claim sits more than 60 seconds from the **capture timestamp of the packet that carried it** -- not from the time you run the analysis. A capture you read a year later still reports which tokens were fresh on the wire.
 
 Returns `404` if the Call-ID is not found.
 
@@ -1146,7 +1146,7 @@ curl -s -H "Authorization: Bearer $SIPNAB_API_KEY" http://127.0.0.1:8080/v1/dial
 ```
 
 **`strategy` names how each leg matched, and `identifier_match` says whether to
-trust it.** `session_id` ([RFC 7989](https://www.rfc-editor.org/rfc/rfc7989)) and `x_call_id` compared identifiers built
+trust it.** `session_id` ([RFC 7989](https://www.rfc-editor.org/rfc/rfc7989.html)) and `x_call_id` compared identifiers built
 to cross a B2BUA. `timing_heuristic` is a guess from matching endpoints and a
 close creation time, and `observed_gap_ms` carries the gap it saw so a reader
 can judge it — a 15 ms gap on a quiet box and a 1,900 ms gap on a busy SBC score
@@ -1498,7 +1498,7 @@ data: {"audio":"/v1/calls/1-4412@192.0.2.10/audio","call_id":"1-4412@192.0.2.10"
 
 ### GET /v1/calls/:call_id/audio
 
-The call's audio as sipnab captures it, over a WebSocket ([RFC 6455](https://www.rfc-editor.org/rfc/rfc6455)).
+The call's audio as sipnab captures it, over a WebSocket ([RFC 6455](https://www.rfc-editor.org/rfc/rfc6455.html)).
 `call_id` is the call's Call-ID, as `GET /v1/calls/live` lists it. The request
 must be a WebSocket upgrade. Any other request is a `400`.
 
@@ -2165,7 +2165,7 @@ the sender moved.
 
 Three things stop sipnab reading a mode, and each is a real answer rather than
 a gap. The codec is not AMR or AMR-WB. No SDP for the stream reached this
-process, so the packing is unknown -- [RFC 4867](https://www.rfc-editor.org/rfc/rfc4867) defines two, and they put the
+process, so the packing is unknown -- [RFC 4867](https://www.rfc-editor.org/rfc/rfc4867.html) defines two, and they put the
 frame type in different bits, so guessing gives a plausible wrong mode rather
 than an error. Or the session negotiated `interleaving`, which moves every
 offset in the payload.
@@ -2319,10 +2319,10 @@ here: this route analyzes every dialog in the store.
 
 | Name | Legal values | If omitted |
 |---|---|---|
-| `format` | `json`, or `yang-json` for the same analysis [RFC 7951](https://www.rfc-editor.org/rfc/rfc7951)-encoded against the YANG module `sipnab-diagnosis`. Anything else is a `400`. | `json` |
+| `format` | `json`, or `yang-json` for the same analysis [RFC 7951](https://www.rfc-editor.org/rfc/rfc7951.html)-encoded against the YANG module `sipnab-diagnosis`. Anything else is a `400`. | `json` |
 
 `?format=yang-json` answers `Content-Type: application/yang-data+json`, the
-media type [RFC 8040](https://www.rfc-editor.org/rfc/rfc8040) registers for YANG data. The body validates against the
+media type [RFC 8040](https://www.rfc-editor.org/rfc/rfc8040.html) registers for YANG data. The body validates against the
 module `sipnab --print-yang-module` prints:
 
 ```bash
@@ -2890,7 +2890,7 @@ to one that only had two-thirds.
 |-----|---------|
 | `unanalysed_sip_messages` | plain SIP with both ports outside `--portrange` |
 | `unanalysed_busiest_ports` | the top five ports carrying it, busiest first |
-| `unanalysed_websocket_messages` | SIP-over-WebSocket ([RFC 7118](https://www.rfc-editor.org/rfc/rfc7118)) outside the WebSocket port set |
+| `unanalysed_websocket_messages` | SIP-over-WebSocket ([RFC 7118](https://www.rfc-editor.org/rfc/rfc7118.html)) outside the WebSocket port set |
 | `unanalysed_websocket_ports` | the top five ports carrying that |
 
 The ports travel with the counts because the answer has to name its own remedy —
@@ -2961,7 +2961,7 @@ describes went wrong on the wire:
 | `unanswered_nat_requests` | STUN and TURN transactions that went out and never came back — the signal behind a one-way-audio complaint. An endpoint that cannot learn its reflexive address (the public `address:port` a NAT gives it, which STUN exists to discover) advertises its private address in SDP, and the far end then sends media somewhere the internet cannot route, while the signaling looks healthy. Silence rather than a refusal points at something in the path discarding UDP it does not recognize, most often a firewall, IPS or secure web gateway. A refusal counts as answered: the server was reachable and said no, which is a different fault |
 | `lapsed_turn_allocations` | TURN allocations still carrying traffic past the lifetime the server last granted them, with no Refresh seen in between. The one fault here with no other symptom anywhere — the relay tears the allocation down the moment its lifetime lapses, the relayed media stops with it mid-call, and no SIP message says why. A deliberate release (a Refresh with `LIFETIME` 0) never counts, because the client asked for the teardown |
 | `lapsed_turn_allocation_streams` | Media streams crossing an allocation that had already lapsed. The scale beside the key above, and the reason that key is worth paging on: an allocation that lapsed with nothing on it cost nobody a call, and one carrying four streams cut off four conversations mid-sentence |
-| `ice_role_conflicts` | Candidate pairs where both ICE agents claimed the same role, or where one answered `487 Role Conflict` ([RFC 8445 section 7.3.1.1](https://www.rfc-editor.org/rfc/rfc8445#section-7.3.1.1)). ICE resolves this itself, so a single conflict is not always fatal — which is why it belongs on a dashboard rather than only in an alert. Where no pair between the two ever won nomination, the conflict is a candidate cause of media that never started |
+| `ice_role_conflicts` | Candidate pairs where both ICE agents claimed the same role, or where one answered `487 Role Conflict` ([RFC 8445 section 7.3.1.1](https://www.rfc-editor.org/rfc/rfc8445.html#section-7.3.1.1)). ICE resolves this itself, so a single conflict is not always fatal — which is why it belongs on a dashboard rather than only in an alert. Where no pair between the two ever won nomination, the conflict is a candidate cause of media that never started |
 
 All four fall as well as rise. A late answer, a Refresh that arrives afterwards
 or a later nomination each removes one, so read them as current readings rather
@@ -3128,7 +3128,7 @@ answers.
 
 - `since` (optional) — the previous response's `next_cursor`, passed back
   verbatim. The route returns only dialogs updated strictly after it. Omit it on the
-  first poll. A cursor whose timestamp half is not [RFC 3339](https://www.rfc-editor.org/rfc/rfc3339) is a `400`.
+  first poll. A cursor whose timestamp half is not [RFC 3339](https://www.rfc-editor.org/rfc/rfc3339.html) is a `400`.
 - `limit` (optional) — the most rows to return, clamped to the server's row cap.
 
 **curl:**
@@ -3291,7 +3291,7 @@ The same facets the MCP `describe_endpoint` tool reports.
 - `ip` (one of `ip`/`user`) — the endpoint's IP address. An address that does
   not parse is a `400`.
 - `user` (one of `ip`/`user`) — a SIP URI user part, e.g. `alice`. Matched
-  case-sensitively, per [RFC 3261 section 19.1.4](https://www.rfc-editor.org/rfc/rfc3261#section-19.1.4).
+  case-sensitively, per [RFC 3261 section 19.1.4](https://www.rfc-editor.org/rfc/rfc3261.html#section-19.1.4).
 - `limit` (optional) — the most recent-dialog summaries to return, clamped to the
   server's row cap. The counts always describe every match, not this page.
 
@@ -3477,7 +3477,7 @@ only and never remembers it:
   that fingerprint, the archive's name and the count. The log never holds the
   password.
 - **No surrounding spaces.** HTTP trims leading and trailing whitespace from
-  a header value ([RFC 9110](https://www.rfc-editor.org/rfc/rfc9110)), so a password that starts or ends with a space
+  a header value ([RFC 9110](https://www.rfc-editor.org/rfc/rfc9110.html)), so a password that starts or ends with a space
   cannot travel in this header. Configure it on the server instead.
 - **No cache keeps a copy.** Every response to a request carrying the header, or
   one that read a password-protected archive, carries `Cache-Control:

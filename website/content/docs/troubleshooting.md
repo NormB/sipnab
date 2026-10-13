@@ -232,7 +232,7 @@ sipnab -N -I capture.pcap --call-report 'abc123@host' --no-cli-print
 
 The call report shows the full SIP message timeline plus per-stream RTP stats (including first/last packet timestamps). Match the signature:
 
-- **BYE at a round interval after answer** (exactly 15 min, 30 min, 1 h -- e.g. 200 OK at `14:00:02`, BYE at `14:30:02`): [RFC 4028](https://www.rfc-editor.org/rfc/rfc4028) **session-timer expiry**. One side never sent (or never received) the session refresh re-INVITE/UPDATE and tore the call down when `Session-Expires` ran out.
+- **BYE at a round interval after answer** (exactly 15 min, 30 min, 1 h -- e.g. 200 OK at `14:00:02`, BYE at `14:30:02`): [RFC 4028](https://www.rfc-editor.org/rfc/rfc4028.html) **session-timer expiry**. One side never sent (or never received) the session refresh re-INVITE/UPDATE and tore the call down when `Session-Expires` ran out.
 - **RTP last packet well before the BYE** (stream `last_seen` minutes earlier than the BYE): a NAT/firewall **idle timeout silently dropped the media path**. The endpoint's RTP-timeout watchdog eventually hung up.
 - **BYE from the carrier side, accompanied by SIP retransmits**: trunk-side reset or an upstream element recycling the session.
 
@@ -244,7 +244,7 @@ The call report shows the full SIP message timeline plus per-stream RTP stats (i
 
 ---
 
-<!-- "488 Not Acceptable Here" is the SIP reason phrase verbatim ([RFC 3261](https://www.rfc-editor.org/rfc/rfc3261)).
+<!-- "488 Not Acceptable Here" is the SIP reason phrase verbatim ([RFC 3261](https://www.rfc-editor.org/rfc/rfc3261.html)).
 Sentence-casing it would name a response that does not exist. -->
 <!-- vale sipnab.Headings = NO -->
 
@@ -318,7 +318,7 @@ ICMP: 27 error(s) quoting non-SIP traffic, 27 of them media, across 6 flow(s). A
   ICMP port unreachable: RTP (payload type 0) from 192.0.2.5:42180 to 198.51.100.9:21750 could not be delivered (11 times), reported by 198.51.100.9. This is one of the media streams in this capture (1 call(s) affected). Audio sent that way is discarded before it arrives, which is heard as one-way or missing audio. The host answered, so it is reachable -- nothing was listening on that port. Check the service and the address it binds, not the network.
 ```
 
-A media ICMP error has no `Call-ID` to file itself under, so sipnab matches the quoted datagram's own 5-tuple against the streams it tracked, then the SSRC inside the quote, then either socket against a tracked stream endpoint, then against an SDP-advertised media address (or the RTCP port one above it, per [RFC 3550](https://www.rfc-editor.org/rfc/rfc3550) Section 11). Each line says which rule matched, because they are not equally strong.
+A media ICMP error has no `Call-ID` to file itself under, so sipnab matches the quoted datagram's own 5-tuple against the streams it tracked, then the SSRC inside the quote, then either socket against a tracked stream endpoint, then against an SDP-advertised media address (or the RTCP port one above it, per [RFC 3550](https://www.rfc-editor.org/rfc/rfc3550.html) Section 11). Each line says which rule matched, because they are not equally strong.
 
 A quote that matches nothing is still counted and still printed -- the endpoint it names is real whether or not this capture holds the stream, and "matched nothing this capture holds" is a prompt to widen the capture, not a reason to hide the evidence.
 
@@ -439,7 +439,7 @@ In the TUI, navigate to a call's flow view and press `Enter` on an RTP bar (or p
 
 - **MOS and jitter sparklines** -- visual trend graphs across the stream's lifetime, making it easy to spot the exact moment quality degraded.
 - **Quality intervals** -- per-interval breakdown of MOS, jitter, and loss so you can correlate degradation with specific time windows.
-- **Burst/gap analysis** ([RFC 3611](https://www.rfc-editor.org/rfc/rfc3611)) -- distinguishes between bursty loss (congestion events) and gap loss (steady-state impairment). Bursty loss points to queue overflow. Gap loss points to a consistently lossy link.
+- **Burst/gap analysis** ([RFC 3611](https://www.rfc-editor.org/rfc/rfc3611.html)) -- distinguishes between bursty loss (congestion events) and gap loss (steady-state impairment). Bursty loss points to queue overflow. Gap loss points to a consistently lossy link.
 - **Silence detection** -- identifies periods where no RTP was flowing, which can indicate hold events, codec DTX, or network black holes.
 
 This same data is available in the browser analyzer at [sipnab.com/analyze/](https://sipnab.com/analyze/) under the **Streams** tab.
@@ -507,8 +507,8 @@ sipnab -N -I capture.pcap --nat-issues
 
 ### The SDP offered a private address
 
-`private_media_address == true` means the dialog advertised an [RFC 1918](https://www.rfc-editor.org/rfc/rfc1918),
-[RFC 4193](https://www.rfc-editor.org/rfc/rfc4193) or link-local address in its `c=` line to a peer that is not itself
+`private_media_address == true` means the dialog advertised an [RFC 1918](https://www.rfc-editor.org/rfc/rfc1918.html),
+[RFC 4193](https://www.rfc-editor.org/rfc/rfc4193.html) or link-local address in its `c=` line to a peer that is not itself
 private. sipnab raises this as a **warning, not a fault**, because there are
 two situations and only one of them fails:
 
@@ -520,7 +520,7 @@ two situations and only one of them fails:
   is one-way.
 
 Without more to go on, sipnab cannot tell those apart from one capture, so it
-reports the evidence rather than a verdict. Carrier-grade NAT space ([RFC 6598](https://www.rfc-editor.org/rfc/rfc6598),
+reports the evidence rather than a verdict. Carrier-grade NAT space ([RFC 6598](https://www.rfc-editor.org/rfc/rfc6598.html),
 `100.64.0.0/10`) is deliberately NOT flagged: it is routable inside the carrier
 that assigned it, so flagging it would fire on a large share of working mobile
 calls.
@@ -629,7 +629,7 @@ count: a relay torn down with nothing on it cost nobody a call.
 ICE gives one agent the **controlling** role and the other **controlled**, and
 the controlling one picks the candidate pair. When both claim the same role, the
 agent that notices answers `487 Role Conflict`
-([RFC 8445 section 7.3.1.1](https://www.rfc-editor.org/rfc/rfc8445#section-7.3.1.1)),
+([RFC 8445 section 7.3.1.1](https://www.rfc-editor.org/rfc/rfc8445.html#section-7.3.1.1)),
 one side switches role and repeats every check it had already sent.
 
 Often ICE fixes this itself and the call costs a round trip. Where it does not,
@@ -724,9 +724,9 @@ to raise an alert and how long to stay quiet afterward. The settings above
 decide whether a finding exists at all.
 
 **Set the transaction timeout to your Timer F.** [RFC 3261 section
-17.1.2.2](https://www.rfc-editor.org/rfc/rfc3261#section-17.1.2.2) ends a
+17.1.2.2](https://www.rfc-editor.org/rfc/rfc3261.html#section-17.1.2.2) ends a
 non-INVITE transaction, REGISTER included, at Timer F, 64 times T1. [Section
-17.1.1.1](https://www.rfc-editor.org/rfc/rfc3261#section-17.1.1.1) sets T1 to
+17.1.1.1](https://www.rfc-editor.org/rfc/rfc3261.html#section-17.1.1.1) sets T1 to
 500 ms by default and recommends a larger value on links known to have a
 longer round trip, which is where the default 32 seconds comes from. Pick the
 value this way:

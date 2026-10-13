@@ -253,6 +253,19 @@ The release `-gnu` builds require **glibc >= 2.36** (the floor the release workf
 
 The same applies to your own builds: if you build on a newer Debian/Ubuntu (e.g. Debian 13 / glibc 2.41) and deploy to an older one (Debian 12 / glibc 2.36), build inside a container matching the target's glibc -- for example, `rust:1-bookworm` for Debian 12 deploys, or use musl (the static `--target x86_64-unknown-linux-musl` builds the release CI publishes).
 
+## Rust and `unsafe`
+
+sipnab is a Rust program. Its `unsafe` blocks are mostly calls into the
+kernel and C libraries such as libc and libpcap, and reads of memory the
+kernel shares with it. Every block carries a `// SAFETY:` comment that states
+its soundness argument: `Cargo.toml` turns on clippy's
+`undocumented_unsafe_blocks` lint, and CI runs clippy with `-D warnings`, so a
+block without one fails the build.
+
+The release workflow also enforces a size ceiling: it refuses a static musl
+binary larger than `binary_size_ceiling_mb` in
+[`website/config.toml`](https://github.com/NormB/sipnab/blob/main/website/config.toml).
+
 ## Release profile
 
 The release build uses LTO, single codegen unit, and symbol stripping for a small binary:

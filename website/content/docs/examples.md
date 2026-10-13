@@ -380,7 +380,7 @@ report = get("/v1/report")
 ```
 
 sipnab reports a missing `ACK` only once the answer has waited
-`--ack-timeout`, which defaults to [RFC 3261](https://www.rfc-editor.org/rfc/rfc3261) Timer H, 32 seconds. CI starts
+`--ack-timeout`, which defaults to [RFC 3261](https://www.rfc-editor.org/rfc/rfc3261.html) Timer H, 32 seconds. CI starts
 sipnab with `--ack-timeout 5` against
 [`tests/fixtures/sip-answered-never-acked.pcap`](https://github.com/NormB/sipnab/raw/main/tests/fixtures/sip-answered-never-acked.pcap),
 whose answer waited 31.5 seconds, beside the four failed calls:

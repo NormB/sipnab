@@ -83,7 +83,7 @@ misses the tunnel. A miss stays visible. A fabrication does not.
 | 12 | Raw IP (`DLT_RAW`) | decoded — the version nibble picks v4 or v6 |
 | 113 | Linux cooked v1 (`SLL`) | decoded |
 | 276 | Linux cooked v2 (`SLL2`) | decoded |
-| 9 | PPP (`DLT_PPP`) | decoded — with or without [RFC 1662](https://www.rfc-editor.org/rfc/rfc1662) HDLC-like framing |
+| 9 | PPP (`DLT_PPP`) | decoded — with or without [RFC 1662](https://www.rfc-editor.org/rfc/rfc1662.html) HDLC-like framing |
 | 50 | PPP in HDLC-like framing (`DLT_PPP_SERIAL`) | decoded |
 | 51 | PPPoE session (`DLT_PPP_ETHER`) | decoded |
 | 228 | bare IPv4 (`DLT_IPV4`) | decoded — sipnab checks the version nibble against the link type and rejects a mismatch |
@@ -102,16 +102,16 @@ know different sets.
 
 | EtherType | Protocol | Reference | Status |
 |---|---|---|---|
-| `0x0800` | IPv4 | [RFC 894](https://www.rfc-editor.org/rfc/rfc894) | decoded |
-| `0x86DD` | IPv6 | [RFC 2464](https://www.rfc-editor.org/rfc/rfc2464) | decoded |
+| `0x0800` | IPv4 | [RFC 894](https://www.rfc-editor.org/rfc/rfc894.html) | decoded |
+| `0x86DD` | IPv6 | [RFC 2464](https://www.rfc-editor.org/rfc/rfc2464.html) | decoded |
 | `0x8100` | C-VLAN tag | IEEE 802.1Q | skipped to reach IP |
 | `0x88A8` | S-VLAN tag | IEEE 802.1Q | skipped to reach IP |
 | `0x9100` | legacy QinQ | **unregistered** | skipped to reach IP |
-| `0x8864` | PPPoE Session | [RFC 2516](https://www.rfc-editor.org/rfc/rfc2516) | decapsulated |
+| `0x8864` | PPPoE Session | [RFC 2516](https://www.rfc-editor.org/rfc/rfc2516.html) | decapsulated |
 | `0x8863` | PPPoE Discovery | RFC 2516 | never decapsulated — counted and named like any EtherType sipnab does not walk |
-| `0x8847` | MPLS unicast | [RFC 5332](https://www.rfc-editor.org/rfc/rfc5332) | decapsulated |
+| `0x8847` | MPLS unicast | [RFC 5332](https://www.rfc-editor.org/rfc/rfc5332.html) | decapsulated |
 | `0x8848` | MPLS upstream-assigned | RFC 5332 | decapsulated |
-| `0x894F` | NSH | [RFC 8300](https://www.rfc-editor.org/rfc/rfc8300) | decapsulated |
+| `0x894F` | NSH | [RFC 8300](https://www.rfc-editor.org/rfc/rfc8300.html) | decapsulated |
 | `0x88E7` | PBB I-TAG | IEEE 802.1Q | decapsulated to the customer frame |
 | `0x88E5` | MACsec | IEEE 802.1AE | see below |
 | any other | — | — | **counted and named** with its hex value |
@@ -169,21 +169,21 @@ what the walk does not follow.
 
 | Encapsulation | Key | Reference | Status |
 |---|---|---|---|
-| IP-in-IP / 6-in-4 | IP proto 4 / 41 | [RFC 2003](https://www.rfc-editor.org/rfc/rfc2003) / [RFC 4213](https://www.rfc-editor.org/rfc/rfc4213) | decoded |
-| GRE | IP proto 47 | [RFC 2784](https://www.rfc-editor.org/rfc/rfc2784) | decoded |
-| GRE Transparent Ethernet Bridging | GRE proto `0x6558` | [RFC 7637 section 3.2](https://www.rfc-editor.org/rfc/rfc7637#section-3.2) | decoded |
-| MPLS-in-IP | IP proto 137 | [RFC 4023](https://www.rfc-editor.org/rfc/rfc4023) | decoded |
-| AH | IP proto 51 | [RFC 4302](https://www.rfc-editor.org/rfc/rfc4302) | **traversed** — AH authenticates without encrypting, so the payload is readable |
-| ESP | IP proto 50 | [RFC 4303](https://www.rfc-editor.org/rfc/rfc4303) | **decoded when NULL-encrypted** — see below; otherwise named, never guessed |
+| IP-in-IP / 6-in-4 | IP proto 4 / 41 | [RFC 2003](https://www.rfc-editor.org/rfc/rfc2003.html) / [RFC 4213](https://www.rfc-editor.org/rfc/rfc4213.html) | decoded |
+| GRE | IP proto 47 | [RFC 2784](https://www.rfc-editor.org/rfc/rfc2784.html) | decoded |
+| GRE Transparent Ethernet Bridging | GRE proto `0x6558` | [RFC 7637 section 3.2](https://www.rfc-editor.org/rfc/rfc7637.html#section-3.2) | decoded |
+| MPLS-in-IP | IP proto 137 | [RFC 4023](https://www.rfc-editor.org/rfc/rfc4023.html) | decoded |
+| AH | IP proto 51 | [RFC 4302](https://www.rfc-editor.org/rfc/rfc4302.html) | **traversed** — AH authenticates without encrypting, so the payload is readable |
+| ESP | IP proto 50 | [RFC 4303](https://www.rfc-editor.org/rfc/rfc4303.html) | **decoded when NULL-encrypted** — see below; otherwise named, never guessed |
 | GTP-U | UDP 2152 | 3GPP TS 29.281 | decoded |
-| VXLAN | UDP 4789 | [RFC 7348](https://www.rfc-editor.org/rfc/rfc7348) | decoded |
-| GENEVE | UDP 6081 | [RFC 8926](https://www.rfc-editor.org/rfc/rfc8926) | decoded |
-| Teredo | UDP 3544 | [RFC 4380](https://www.rfc-editor.org/rfc/rfc4380) | decoded |
-| UDP-encapsulated ESP | UDP 4500 | [RFC 3948](https://www.rfc-editor.org/rfc/rfc3948) | encrypted — sipnab names it, never guesses |
-| L2TPv2 | UDP 1701 | [RFC 2661](https://www.rfc-editor.org/rfc/rfc2661) | data messages only |
-| L2TPv3 over UDP | UDP 1701 | [RFC 3931](https://www.rfc-editor.org/rfc/rfc3931) | **refused** — see below |
+| VXLAN | UDP 4789 | [RFC 7348](https://www.rfc-editor.org/rfc/rfc7348.html) | decoded |
+| GENEVE | UDP 6081 | [RFC 8926](https://www.rfc-editor.org/rfc/rfc8926.html) | decoded |
+| Teredo | UDP 3544 | [RFC 4380](https://www.rfc-editor.org/rfc/rfc4380.html) | decoded |
+| UDP-encapsulated ESP | UDP 4500 | [RFC 3948](https://www.rfc-editor.org/rfc/rfc3948.html) | encrypted — sipnab names it, never guesses |
+| L2TPv2 | UDP 1701 | [RFC 2661](https://www.rfc-editor.org/rfc/rfc2661.html) | data messages only |
+| L2TPv3 over UDP | UDP 1701 | [RFC 3931](https://www.rfc-editor.org/rfc/rfc3931.html) | **refused** — see below |
 
-**L2TPv3 over UDP is deliberately not decoded.** [RFC 3931 section 4.1](https://www.rfc-editor.org/rfc/rfc3931#section-4.1) says:
+**L2TPv3 over UDP is deliberately not decoded.** [RFC 3931 section 4.1](https://www.rfc-editor.org/rfc/rfc3931.html#section-4.1) says:
 
 <!-- vale off -->
 > The Session ID alone provides the necessary context for all further packet
@@ -196,16 +196,16 @@ how a decapsulator invents a flow.
 
 **sipnab reads ESP only when the payload proves NULL encryption.** An IMS core commonly
 protects the Gm interface between a phone and its P-CSCF with IPsec ESP, and a
-lab or test network often runs it with NULL encryption ([RFC 2410](https://www.rfc-editor.org/rfc/rfc2410)): the
+lab or test network often runs it with NULL encryption ([RFC 2410](https://www.rfc-editor.org/rfc/rfc2410.html)): the
 SIP travels in the clear inside an ESP header and trailer.
 
 Nothing in the ESP
 header says which, so sipnab reads the payload as NULL-encrypted only when all
 of these hold: an integrity check value of 12, 16, 24 or 32 octets, the
-default padding of [RFC 4303 section 2.4](https://www.rfc-editor.org/rfc/rfc4303#section-2.4) and 4-octet alignment, a next
+default padding of [RFC 4303 section 2.4](https://www.rfc-editor.org/rfc/rfc4303.html#section-2.4) and 4-octet alignment, a next
 header of TCP or UDP, and a TCP or UDP header that fits the recovered segment
 and whose checksum verifies. A UDP checksum of zero means "none" and passes
-over IPv4 only, as [RFC 768](https://www.rfc-editor.org/rfc/rfc768) and [RFC 8200 section 8.1](https://www.rfc-editor.org/rfc/rfc8200#section-8.1) allow.
+over IPv4 only, as [RFC 768](https://www.rfc-editor.org/rfc/rfc768.html) and [RFC 8200 section 8.1](https://www.rfc-editor.org/rfc/rfc8200.html#section-8.1) allow.
 
 A frame that fails any of them joins the
 `NOT DECODED` line as `ESP not NULL-encrypted (IP protocol 50)`. sipnab
@@ -298,10 +298,21 @@ so the worst case is a stray tagged packet reaching userspace, where the
 parser rejects it. Ordinary traffic never reaches those probes, because the
 outer `ether proto` test is exact.
 
+## SIP over WebSocket, IP fragments and TCP segments
+
+sipnab unwraps SIP carried over WebSocket
+([RFC 7118](https://www.rfc-editor.org/rfc/rfc7118.html)) on the ports
+`--ws-portrange` names: 80, 443, 8080 and 8443 unless you give a range, and a
+range replaces that set. See [`--ws-portrange`](@/docs/cli.md#capture).
+
+sipnab reassembles IP fragments and TCP segments before it parses, so a SIP
+message split across packets reads as one message. `--no-reassembly` turns
+this off and parses every packet on its own.
+
 ## STUN and TURN
 
-sipnab reads STUN ([RFC 5389](https://www.rfc-editor.org/rfc/rfc5389)) and TURN
-([RFC 5766](https://www.rfc-editor.org/rfc/rfc5766)) because they are the first
+sipnab reads STUN ([RFC 5389](https://www.rfc-editor.org/rfc/rfc5389.html)) and TURN
+([RFC 5766](https://www.rfc-editor.org/rfc/rfc5766.html)) because they are the first
 link in a one-way-audio chain, not because it is an ICE agent. What it takes
 from them is what changes a diagnosis: whether an endpoint asked, whether
 anything answered, and which address the answer named.

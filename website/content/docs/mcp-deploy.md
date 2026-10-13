@@ -1135,7 +1135,7 @@ problem is one-way audio, and the hint names the direction that is missing.
 Here it is `no_answer`: the far end rejected the call without returning SDP, so
 there is no mismatch to fix. Note that `offered` lists PCMU even though the
 INVITE carries no `a=rtpmap` — payload type 0 is PCMU permanently under
-[RFC 3551](https://www.rfc-editor.org/rfc/rfc3551), and an rtpmap is only required for the dynamic range.
+[RFC 3551](https://www.rfc-editor.org/rfc/rfc3551.html), and an rtpmap is only required for the dynamic range.
 
 Pair it with the registry text rather than an agent's recollection:
 
@@ -1815,7 +1815,7 @@ sipnab --mcp -N --mcp-transport http \
        -I capture.pcap
 ```
 
-The challenge now carries the metadata URL, which is the value [RFC 9728 section 3.1](https://www.rfc-editor.org/rfc/rfc9728#section-3.1)
+The challenge now carries the metadata URL, which is the value [RFC 9728 section 3.1](https://www.rfc-editor.org/rfc/rfc9728.html#section-3.1)
 derives by inserting `/.well-known/oauth-protected-resource` between the host
 and the path:
 
@@ -1843,7 +1843,7 @@ curl -s https://capture.example.com/.well-known/oauth-protected-resource/mcp
 **Give the URL, do not expect sipnab to work it out.** Behind the nginx that
 terminates TLS, sipnab sees a cleartext request and no scheme. Anything it
 derived from its own socket would say `http://` for a resource the client
-reached over `https://`, and [RFC 9728 section 3.3](https://www.rfc-editor.org/rfc/rfc9728#section-3.3) tells a conformant client to
+reached over `https://`, and [RFC 9728 section 3.3](https://www.rfc-editor.org/rfc/rfc9728.html#section-3.3) tells a conformant client to
 discard a document whose `resource` does not match the URL it used.
 
 sipnab

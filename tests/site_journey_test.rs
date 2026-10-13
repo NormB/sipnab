@@ -2092,7 +2092,7 @@ const HOMEPAGE_STANDARDS: &[CanonicalStandard] = &[
     CanonicalStandard {
         section: "metrics",
         label: "RFC 3550",
-        href: "https://www.rfc-editor.org/rfc/rfc3550",
+        href: "https://www.rfc-editor.org/rfc/rfc3550.html",
         items: &[
             CanonicalItem {
                 title: "Jitter",
@@ -2126,7 +2126,7 @@ const HOMEPAGE_STANDARDS: &[CanonicalStandard] = &[
     CanonicalStandard {
         section: "metrics",
         label: "RFC 3611",
-        href: "https://www.rfc-editor.org/rfc/rfc3611",
+        href: "https://www.rfc-editor.org/rfc/rfc3611.html",
         items: &[
             CanonicalItem {
                 title: "VoIP Metrics",
@@ -2148,7 +2148,7 @@ const HOMEPAGE_STANDARDS: &[CanonicalStandard] = &[
     CanonicalStandard {
         section: "standards",
         label: "RFC 3261",
-        href: "https://www.rfc-editor.org/rfc/rfc3261",
+        href: "https://www.rfc-editor.org/rfc/rfc3261.html",
         items: &[
             CanonicalItem {
                 title: "Parsing",
@@ -2173,7 +2173,7 @@ const HOMEPAGE_STANDARDS: &[CanonicalStandard] = &[
     CanonicalStandard {
         section: "standards",
         label: "RFC 8866",
-        href: "https://www.rfc-editor.org/rfc/rfc8866",
+        href: "https://www.rfc-editor.org/rfc/rfc8866.html",
         items: &[
             CanonicalItem {
                 title: "Offer/answer parsing",
@@ -2192,7 +2192,7 @@ const HOMEPAGE_STANDARDS: &[CanonicalStandard] = &[
     CanonicalStandard {
         section: "standards",
         label: "RFC 3551",
-        href: "https://www.rfc-editor.org/rfc/rfc3551",
+        href: "https://www.rfc-editor.org/rfc/rfc3551.html",
         items: &[CanonicalItem {
             title: "Codec identification",
             code: ("src/rtp/stream_store.rs", "per RFC 3551 Tables 4 and 5"),
@@ -2203,7 +2203,7 @@ const HOMEPAGE_STANDARDS: &[CanonicalStandard] = &[
     CanonicalStandard {
         section: "standards",
         label: "RFC 4733",
-        href: "https://www.rfc-editor.org/rfc/rfc4733",
+        href: "https://www.rfc-editor.org/rfc/rfc4733.html",
         items: &[
             CanonicalItem {
                 title: "Digit extraction",
@@ -2222,7 +2222,7 @@ const HOMEPAGE_STANDARDS: &[CanonicalStandard] = &[
     CanonicalStandard {
         section: "standards",
         label: "RFC 3711",
-        href: "https://www.rfc-editor.org/rfc/rfc3711",
+        href: "https://www.rfc-editor.org/rfc/rfc3711.html",
         items: &[
             CanonicalItem {
                 title: "Decryption",
@@ -2241,7 +2241,7 @@ const HOMEPAGE_STANDARDS: &[CanonicalStandard] = &[
     CanonicalStandard {
         section: "standards",
         label: "RFC 8446",
-        href: "https://www.rfc-editor.org/rfc/rfc8446",
+        href: "https://www.rfc-editor.org/rfc/rfc8446.html",
         items: &[
             CanonicalItem {
                 title: "TLS 1.3",
@@ -2260,7 +2260,7 @@ const HOMEPAGE_STANDARDS: &[CanonicalStandard] = &[
     CanonicalStandard {
         section: "standards",
         label: "RFC 5389",
-        href: "https://www.rfc-editor.org/rfc/rfc5389",
+        href: "https://www.rfc-editor.org/rfc/rfc5389.html",
         items: &[CanonicalItem {
             title: "Binding diagnosis",
             code: ("src/stun.rs", "RFC 5389"),
@@ -2336,7 +2336,7 @@ fn standard_identifiers(text: &str) -> Result<Vec<String>, TestError> {
 /// gate does not know how to resolve.
 fn canonical_url(id: &str) -> Result<Option<String>, TestError> {
     Ok(if let Some(n) = id.strip_prefix("RFC ") {
-        Some(format!("https://www.rfc-editor.org/rfc/rfc{n}"))
+        Some(format!("https://www.rfc-editor.org/rfc/rfc{n}.html"))
     } else if id.starts_with("HEP v") {
         Some("https://github.com/sipcapture/HEP".to_string())
     } else if id.starts_with("draft-") {
@@ -2988,7 +2988,7 @@ fn homepage_standard_links_go_to_the_standards_own_host() -> Result<(), TestErro
 
     // Control: the same RFC on a host that is not the RFC Editor.
     let page = homepage_with(
-        r#"class="metric-std" href="https://www.rfc-editor.org/rfc/rfc3261""#,
+        r#"class="metric-std" href="https://www.rfc-editor.org/rfc/rfc3261.html""#,
         r#"class="metric-std" href="https://tools.ietf.org/html/rfc3261""#,
     )?;
     let hits = of_kind(&control_violations(&page)?, Kind::BadHost);
@@ -3008,8 +3008,8 @@ fn homepage_standard_title_matches_its_link_target() -> Result<(), TestError> {
 
     // Control: a title one RFC off its link.
     let page = homepage_with(
-        r#"class="metric-std" href="https://www.rfc-editor.org/rfc/rfc3611""#,
-        r#"class="metric-std" href="https://www.rfc-editor.org/rfc/rfc3612""#,
+        r#"class="metric-std" href="https://www.rfc-editor.org/rfc/rfc3611.html""#,
+        r#"class="metric-std" href="https://www.rfc-editor.org/rfc/rfc3612.html""#,
     )?;
     let hits = of_kind(&control_violations(&page)?, Kind::TitleUrlMismatch);
     assert!(
@@ -3256,13 +3256,13 @@ fn homepage_standards_gate_reports_every_kind_of_wrong_card() -> Result<(), Test
     edit(&xr, &format!("{xr}\n{xr}"));
     // Bad host: SIP linked off the RFC Editor.
     edit(
-        r#"class="metric-std" href="https://www.rfc-editor.org/rfc/rfc3261""#,
+        r#"class="metric-std" href="https://www.rfc-editor.org/rfc/rfc3261.html""#,
         r#"class="metric-std" href="https://tools.ietf.org/html/rfc3261""#,
     );
     // Mismatch: SDP linked to the next RFC.
     edit(
-        r#"class="metric-std" href="https://www.rfc-editor.org/rfc/rfc8866""#,
-        r#"class="metric-std" href="https://www.rfc-editor.org/rfc/rfc8867""#,
+        r#"class="metric-std" href="https://www.rfc-editor.org/rfc/rfc8866.html""#,
+        r#"class="metric-std" href="https://www.rfc-editor.org/rfc/rfc8867.html""#,
     );
     // Unmapped item, and an over-specific claim, on the RTP card.
     edit(

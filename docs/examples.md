@@ -351,7 +351,7 @@ The first command should print a diagnosis object like:
 **What to look for:**
 
 - `diagnosis.one_way_audio: true` confirms the engine saw RTP in only one direction for ≥6s after call establishment.
-- The ports in the hint are where the fix goes. Each side advertises a receive port in its SDP and, under symmetric RTP ([RFC 4961](https://www.rfc-editor.org/rfc/rfc4961)), should send from that same port. A hint reading `advertised 16384 but sends from 41002` means the far end is replying to a port nothing is sending from, so no NAT pinhole was ever opened there — that is the firewall rule, port-forward or RTP port range to go and check. When the ports agree, the hint stays quiet about them.
+- The ports in the hint are where the fix goes. Each side advertises a receive port in its SDP and, under symmetric RTP ([RFC 4961](https://www.rfc-editor.org/rfc/rfc4961.html)), should send from that same port. A hint reading `advertised 16384 but sends from 41002` means the far end is replying to a port nothing is sending from, so no NAT pinhole was ever opened there — that is the firewall rule, port-forward or RTP port range to go and check. When the ports agree, the hint stays quiet about them.
 - `diagnosis.nat_mismatch: true` is the usual root cause — the Contact header / Via address differs from the SDP `c=` line. Common when the upstream SBC isn't rewriting Contact.
 - In the TUI's RTP stream view, look for one stream with packets and one with `0 packets received` — that's the silenced direction.
 
@@ -548,7 +548,7 @@ A composite run therefore reports, per call:
 | Differing SDP | Both saw the message and disagree about the media endpoint, so the report carries both accounts side by side |
 
 Neither account carries the label expected or actual. sipnab pairs copies by
-transaction identity ([RFC 3261 section 17.1.3](https://www.rfc-editor.org/rfc/rfc3261#section-17.1.3) and [RFC 3261 section 17.2.3](https://www.rfc-editor.org/rfc/rfc3261#section-17.2.3)), never by arrival order,
+transaction identity ([RFC 3261 section 17.1.3](https://www.rfc-editor.org/rfc/rfc3261.html#section-17.1.3) and [RFC 3261 section 17.2.3](https://www.rfc-editor.org/rfc/rfc3261.html#section-17.2.3)), never by arrival order,
 because the mirror usually arrives FIRST — the proxy mirrors as it processes
 while the wire copy takes a network hop, so any "first one wins" rule would
 quietly make the suspect authoritative.
@@ -592,7 +592,7 @@ changes that: put sipnab's `-d` where the media actually is.
 - `--hep-allow` guards the **listener** and nothing else. HEP that sipnab merely sniffs off the wire — including rtpengine's mirrored control plane — reaches no socket, so no allowlist applies to it. See [rtpengine.md](rtpengine.md#how-much-a-media-relay-assertion-is-worth) for what a sniffed assertion is worth.
 - If your central host is reachable by hostname only, set `--mcp-allowed-host` for the MCP transport too (see [8. Let an AI agent ask sipnab about your calls](#8-let-an-ai-agent-ask-sipnab-about-your-calls)).
 - `-d` with `--hep-listen` takes exactly one interface and one listener. sipnab refuses `-I` with `--hep-listen` (a file's addresses are historical and belong to third parties, and sipnab keeps them off its active-response path by refusing to transmit for a file run at all). It also refuses `--multi-device` with `--hep-listen`, and `-O` with the pair — the two sources disagree about the link layer, so there is no honest pcap to write. Use `--hep-send` to forward the signaling instead.
-- One sipnab, one mirroring node. The SDP endpoint index keys on address and port with no node dimension, so two nodes advertising the same [RFC 1918](https://www.rfc-editor.org/rfc/rfc1918) socket would overwrite each other and a stream would bind to whichever offer arrived last.
+- One sipnab, one mirroring node. The SDP endpoint index keys on address and port with no node dimension, so two nodes advertising the same [RFC 1918](https://www.rfc-editor.org/rfc/rfc1918.html) socket would overwrite each other and a stream would bind to whichever offer arrived last.
 
 ### 6e. Find who feeds the collector and who it refuses
 
@@ -2382,7 +2382,7 @@ sipnab -N -I capture.pcap --export-vcon-when "from.user == '1001'" --export-vcon
 
 **Problem:** Somebody is spoofing a number, or a carrier says your calls arrive with a bad attestation, and the argument is about what the header actually held.
 
-`--stir-shaken` decodes the [RFC 8224](https://www.rfc-editor.org/rfc/rfc8224) `Identity` header's PASSporT and reports what it claims:
+`--stir-shaken` decodes the [RFC 8224](https://www.rfc-editor.org/rfc/rfc8224.html) `Identity` header's PASSporT and reports what it claims:
 
 ```bash
 sipnab -N -I capture.pcap --stir-shaken --no-cli-print
@@ -2397,7 +2397,7 @@ STIR/SHAKEN: attest=A orig=+15551234567 dest=["+15559876543"] verified=NotChecke
 **What to look for:**
 
 - `attest=A` means the originator **claimed** full attestation. Nothing here confirms the claim, and a forged Identity header decodes exactly like a genuine one — so this is evidence about what the originator claimed, never grounds for trusting a calling number.
-- `verified=Expired` is the one check sipnab applies locally: [RFC 8224 section 6.2](https://www.rfc-editor.org/rfc/rfc8224#section-6.2), Step 4, `iat` freshness, against the capture timestamp of the packet carrying the header. An old pcap therefore reports the tokens that were still fresh at the moment they crossed the tap.
+- `verified=Expired` is the one check sipnab applies locally: [RFC 8224 section 6.2](https://www.rfc-editor.org/rfc/rfc8224.html#section-6.2), Step 4, `iat` freshness, against the capture timestamp of the packet carrying the header. An old pcap therefore reports the tokens that were still fresh at the moment they crossed the tap.
 - No `STIR/SHAKEN:` line at all means no `Identity` header reached the capture point. On an inbound trunk that is itself the finding.
 
 **Pitfalls:**
@@ -2431,7 +2431,7 @@ sipnab -N -I capture.pcap --digest-leak --recommend-block fail2ban --quiet
 
 **What to look for:**
 
-- `WeakAlgorithm` with **no** `algorithm` parameter in the challenge is the same finding as `algorithm=MD5`: [RFC 2617](https://www.rfc-editor.org/rfc/rfc2617) makes MD5 the default when the parameter is absent, so silence is a choice.
+- `WeakAlgorithm` with **no** `algorithm` parameter in the challenge is the same finding as `algorithm=MD5`: [RFC 2617](https://www.rfc-editor.org/rfc/rfc2617.html) makes MD5 the default when the parameter is absent, so silence is a choice.
 - `NonceReuse` across challenges is the one to act on first. A nonce that repeats is a replay window, and it usually means a registrar cluster whose nodes do not share nonce state. A 401 the registrar retransmitted -- the same Call-ID, CSeq and Via branch -- is the same challenge arriving twice, and does not count.
 
 **Pitfalls:**
@@ -2477,7 +2477,7 @@ sipnab -N -I capture.pcap --no-reassembly --report --no-cli-print
 
 ## 36. Read SIP over WebSocket from a WebRTC gateway
 
-**Problem:** A WebRTC leg is invisible. The browser talks SIP over WebSocket ([RFC 7118](https://www.rfc-editor.org/rfc/rfc7118)) to Kamailio, OpenSIPS or Janus, and the capture shows TCP and no calls.
+**Problem:** A WebRTC leg is invisible. The browser talks SIP over WebSocket ([RFC 7118](https://www.rfc-editor.org/rfc/rfc7118.html)) to Kamailio, OpenSIPS or Janus, and the capture shows TCP and no calls.
 
 The shipped WebSocket port set — 80, 443, 8080, 8443 — is the browser's view of the web, not a deployment's. Behind a reverse proxy sipnab sees whichever port the proxy forwards to:
 
@@ -3276,7 +3276,7 @@ sipnab -N --mcp -I capture.pcap --quiet
 **What to look for:**
 
 - **Read `applicable` first.** It is `false` when no RTP stream belongs to the dialog, and the response then carries almost nothing. An empty `streams` array would read as "sipnab checked the media and it was fine", which is a different claim from "no media reached the capture point".
-- Three things in the answer above read together. The media is in the **default queue**, so it competes with bulk traffic — the most common cause of jitter that adding bandwidth does not fix. The jitter figure **is** a measurement, because payload type 0 has a clock rate [RFC 3551](https://www.rfc-editor.org/rfc/rfc3551) fixes. And the delay behind the MOS is a **default**, not anything this capture showed, so the score is only as good as that assumption ([31. Set the quality thresholds to your own network](#31-set-the-quality-thresholds-to-your-own-network)).
+- Three things in the answer above read together. The media is in the **default queue**, so it competes with bulk traffic — the most common cause of jitter that adding bandwidth does not fix. The jitter figure **is** a measurement, because payload type 0 has a clock rate [RFC 3551](https://www.rfc-editor.org/rfc/rfc3551.html) fixes. And the delay behind the MOS is a **default**, not anything this capture showed, so the score is only as good as that assumption ([31. Set the quality thresholds to your own network](#31-set-the-quality-thresholds-to-your-own-network)).
 - `jitter.grounded: false` means the stream supplied no clock rate and sipnab fell back to a default. Jitter is an RTP-timestamp difference divided by that rate, so a wrong divisor gives a **different quantity**, not a rough one — and an ungrounded stream reports no `measured_ms` at all.
 - `qos.remarked_to` appears only when the stream's last packet carries a different code point from its first: an SBC or a policy boundary rewriting the marking in flight. Its presence is the finding, and a steady stream omits it rather than repeating the same number.
 
@@ -3526,7 +3526,7 @@ full.
 
 **Problem:** The complaint says the calls failed "between ten and eleven this morning". The capture covers the whole day, and every report you run lists the calls from before and after the window too.
 
-Give the window with `--since` and `--until`, in [RFC 3339](https://www.rfc-editor.org/rfc/rfc3339):
+Give the window with `--since` and `--until`, in [RFC 3339](https://www.rfc-editor.org/rfc/rfc3339.html):
 
 ```bash
 sipnab -N -I capture.pcap --json-dialogs --no-cli-print --quiet --since 2026-10-09T10:00:00Z --until 2026-10-09T11:00:00Z

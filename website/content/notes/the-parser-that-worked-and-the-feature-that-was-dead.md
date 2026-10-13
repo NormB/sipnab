@@ -26,7 +26,7 @@ recorded stream is whose.
 
 ## What it does
 
-SIPREC (Session Recording Protocol, [RFC 7866](https://www.rfc-editor.org/rfc/rfc7866))
+SIPREC (Session Recording Protocol, [RFC 7866](https://www.rfc-editor.org/rfc/rfc7866.html))
 is the standard way for a session recording client (SRC, for example an SBC or
 OpenSIPS's `siprec` module) to send a call to a session recording server (SRS).
 The SRC opens the recording with a SIP INVITE, the message that starts a call.

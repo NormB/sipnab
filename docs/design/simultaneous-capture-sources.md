@@ -180,7 +180,7 @@ Ordered by how much each tie actually proves:
 | --- | --- | --- |
 | SDP `c=` / `m=` endpoint | Strong | The offer/answer names the exact socket; RTP either arrives there or does not |
 | SSRC named in an RTCP report | Strong, narrow | Ties a report to a stream sipnab measured; useless before any RTP exists |
-| RTCP companion port | Moderate | [RFC 3550 section 11](https://www.rfc-editor.org/rfc/rfc3550#section-11) pairing, one port above an even media port |
+| RTCP companion port | Moderate | [RFC 3550 section 11](https://www.rfc-editor.org/rfc/rfc3550.html#section-11) pairing, one port above an even media port |
 | Call-ID | Zero, across sources | Media carries none. It ties HEP dialogs to each other, never a dialog to a stream |
 | Timing | Weak | Argued against below |
 
@@ -237,7 +237,7 @@ several nodes — the multi-node fan-in `hep_source_label` exists to make
 distinguishable — can be told by two nodes that `192.0.2.1:20000` belongs to two
 different calls. `remember_sdp_endpoint` overwrites `existing.call_id`
 ([`src/rtp/stream_store.rs:995`](https://github.com/NormB/sipnab/blob/main/src/rtp/stream_store.rs#L995) onward), so the last offer wins, and
-`resolve_from_sdp` hands that winner to a stream. [RFC 1918](https://www.rfc-editor.org/rfc/rfc1918) space repeats across
+`resolve_from_sdp` hands that winner to a stream. [RFC 1918](https://www.rfc-editor.org/rfc/rfc1918.html) space repeats across
 sites, so this is ordinary rather than exotic. **This is the wrong-attribution
 mode**, and it is the reason stage one should accept HEP from exactly one node.
 
@@ -251,7 +251,7 @@ for — a stale entry can outlive its call and claim the next stream on that
 socket. A wall-clock TTL on `sdp_endpoints` is the fix, and it belongs to this
 feature rather than to some later one. **SHIPPED in stage two** — on the CAPTURE
 clock rather than wall time, so a replay reaches the same answer as the live run
-that produced it, and grounded on [RFC 3261 section 16.8](https://www.rfc-editor.org/rfc/rfc3261#section-16.8) Timer C, the longest a
+that produced it, and grounded on [RFC 3261 section 16.8](https://www.rfc-editor.org/rfc/rfc3261.html#section-16.8) Timer C, the longest a
 compliant proxy keeps an unanswered INVITE transaction alive.
 
 **F4 — Clock disagreement.** A HEP v3 packet's timestamp comes from the
@@ -895,8 +895,8 @@ convention a later edit can quietly drop:
 
 1. **The pairing key is content, never position.** Two copies pair on
    `(request?, status, method, CSeq, top-`Via` branch)` —
-   [RFC 3261 section 17.1.3](https://www.rfc-editor.org/rfc/rfc3261#section-17.1.3) and
-   [RFC 3261 section 17.2.3](https://www.rfc-editor.org/rfc/rfc3261#section-17.2.3) transaction identity. Which copy the pipeline saw first cannot change
+   [RFC 3261 section 17.1.3](https://www.rfc-editor.org/rfc/rfc3261.html#section-17.1.3) and
+   [RFC 3261 section 17.2.3](https://www.rfc-editor.org/rfc/rfc3261.html#section-17.2.3) transaction identity. Which copy the pipeline saw first cannot change
    which copies pair, or whether they pair at all.
 2. **Both accounts are reported by name.** `SdpDivergence` carries `mirror` AND
    `wire`. There is no `expected` field for a surface to render as the truth and

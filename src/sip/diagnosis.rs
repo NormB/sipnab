@@ -122,7 +122,7 @@ pub struct AckMissing {
     pub waited_sec: f64,
     /// How many times the answer was retransmitted, the `2xx` itself included.
     /// A UAS that never gets its `ACK` retransmits the `2xx` for `64*T1`
-    /// seconds, the span of Timer H ([RFC 3261 section 13.3.1.4](https://www.rfc-editor.org/rfc/rfc3261#section-13.3.1.4)), so a
+    /// seconds, the span of Timer H ([RFC 3261 section 13.3.1.4](https://www.rfc-editor.org/rfc/rfc3261.html#section-13.3.1.4)), so a
     /// count above one is the peer agreeing that it never arrived.
     pub answer_transmissions: usize,
     /// Indices of the `2xx` and any retransmissions of it.
@@ -252,13 +252,13 @@ impl Default for SignalingThresholds {
     ///
     /// # ACK timeout: 32.0 s
     ///
-    /// Timer H, [RFC 3261 section 17.2.1](https://www.rfc-editor.org/rfc/rfc3261#section-17.2.1) — 64×T1 with the default T1 of 500 ms
+    /// Timer H, [RFC 3261 section 17.2.1](https://www.rfc-editor.org/rfc/rfc3261.html#section-17.2.1) — 64×T1 with the default T1 of 500 ms
     /// (Appendix A). Timer H is exactly "wait time for `ACK` receipt": the
     /// point at which the specification itself stops expecting one.
     ///
     /// # No final response: 180.0 s
     ///
-    /// Timer C, [RFC 3261 section 16.6](https://www.rfc-editor.org/rfc/rfc3261#section-16.6) bullet 11, which opens by naming this exact
+    /// Timer C, [RFC 3261 section 16.6](https://www.rfc-editor.org/rfc/rfc3261.html#section-16.6) bullet 11, which opens by naming this exact
     /// situation: "In order to handle the case where an INVITE request never
     /// generates a final response, the TU uses a timer which is called timer
     /// C… The timer MUST be larger than 3 minutes." Appendix A lists it as
@@ -536,7 +536,7 @@ const AUTH_LOOP_MIN_CHALLENGES: usize = 3;
 const RETRANSMIT_MIN_COUNT: usize = 3;
 
 /// What makes two requests the same transaction: CSeq number, CSeq method, and
-/// top-`Via` branch ([RFC 3261 section 17](https://www.rfc-editor.org/rfc/rfc3261#section-17)). Named because the tuple appears in both the
+/// top-`Via` branch ([RFC 3261 section 17](https://www.rfc-editor.org/rfc/rfc3261.html#section-17)). Named because the tuple appears in both the
 /// grouping map and the search over it, and clippy is right that the bare form is
 /// unreadable in a signature.
 type TransactionKey = (u32, String, String);
@@ -778,7 +778,7 @@ fn detect_icmp_unreachable(
 /// What makes two captured copies the same message.
 ///
 /// `(request?, status, request method, CSeq, top-`Via` branch)` —
-/// [RFC 3261 section 17.1.3](https://www.rfc-editor.org/rfc/rfc3261#section-17.1.3) and [section 17.2.3](https://www.rfc-editor.org/rfc/rfc3261#section-17.2.3) match a response to a transaction on the branch and the
+/// [RFC 3261 section 17.1.3](https://www.rfc-editor.org/rfc/rfc3261.html#section-17.1.3) and [section 17.2.3](https://www.rfc-editor.org/rfc/rfc3261.html#section-17.2.3) match a response to a transaction on the branch and the
 /// CSeq method, and this adds only what tells one message of a transaction from
 /// another. Borrowed from the messages, so building the whole index allocates
 /// nothing but the map.
@@ -1081,8 +1081,8 @@ fn elapsed_sec(messages: &[SipMessage], from: usize, to: usize) -> f64 {
 
 /// Detection 4 — a `2xx` to an `INVITE` that was never acknowledged.
 ///
-/// [RFC 3261 section 17.1.1.3](https://www.rfc-editor.org/rfc/rfc3261#section-17.1.1.3) makes the `ACK` to a `2xx` the UAC's responsibility, and
-/// [section 13.3.1.4](https://www.rfc-editor.org/rfc/rfc3261#section-13.3.1.4) has the UAS retransmit the `2xx` for `64*T1` seconds,
+/// [RFC 3261 section 17.1.1.3](https://www.rfc-editor.org/rfc/rfc3261.html#section-17.1.1.3) makes the `ACK` to a `2xx` the UAC's responsibility, and
+/// [section 13.3.1.4](https://www.rfc-editor.org/rfc/rfc3261.html#section-13.3.1.4) has the UAS retransmit the `2xx` for `64*T1` seconds,
 /// the span of Timer H, waiting for it. A missing `ACK` is invisible
 /// from either end alone — the caller believes it answered, the callee believes
 /// it never connected — which is exactly the class of fault a correlating
@@ -1249,7 +1249,7 @@ fn detect_abandoned(
 /// score well on answer-seizure ratio while its users believe it is broken.
 ///
 /// `100 Trying` is excluded. It is hop-by-hop acknowledgment that a proxy took
-/// the request ([RFC 3261 section 8.2.6](https://www.rfc-editor.org/rfc/rfc3261#section-8.2.6)), inaudible to the caller, and counting it
+/// the request ([RFC 3261 section 8.2.6](https://www.rfc-editor.org/rfc/rfc3261.html#section-8.2.6)), inaudible to the caller, and counting it
 /// would measure the first proxy's responsiveness rather than the call's.
 fn detect_post_dial_delay(
     messages: &[SipMessage],
@@ -1299,13 +1299,13 @@ fn detect_post_dial_delay(
 /// looking reasonable — the thing the post-dial-delay grounding above exists to
 /// avoid. The protocol already supplies a non-arbitrary comparison: the
 /// endpoint states the interval it wants and the registrar states what it
-/// granted ([RFC 3261 section 10.2.1.1](https://www.rfc-editor.org/rfc/rfc3261#section-10.2.1.1)), so "shorter than requested" is a fact about
+/// granted ([RFC 3261 section 10.2.1.1](https://www.rfc-editor.org/rfc/rfc3261.html#section-10.2.1.1)), so "shorter than requested" is a fact about
 /// the exchange rather than a judgement imposed on it. The two numbers are
 /// reported and the reader decides whether 60 s against a requested 3600 s
 /// matters on their network.
 ///
 /// `Expires: 0` is excluded throughout. That is a de-registration — a phone
-/// deliberately going offline ([RFC 3261 section 10.2.2](https://www.rfc-editor.org/rfc/rfc3261#section-10.2.2)) — and flagging it would report
+/// deliberately going offline ([RFC 3261 section 10.2.2](https://www.rfc-editor.org/rfc/rfc3261.html#section-10.2.2)) — and flagging it would report
 /// every clean shutdown as a fault.
 fn detect_registration_failure(messages: &[SipMessage], diag: &mut SignalingDiagnosis) {
     let Some(register) = messages
@@ -1643,7 +1643,7 @@ fn detect_auth_loop(messages: &[SipMessage], diag: &mut SignalingDiagnosis) {
 /// Detection 3 — retransmission storm / no-response transaction.
 ///
 /// A retransmission is the same request sent again: identical CSeq *and*
-/// identical top-`Via` branch, per [RFC 3261 section 17](https://www.rfc-editor.org/rfc/rfc3261#section-17). CSeq alone is not enough —
+/// identical top-`Via` branch, per [RFC 3261 section 17](https://www.rfc-editor.org/rfc/rfc3261.html#section-17). CSeq alone is not enough —
 /// an INVITE and its ACK share a CSeq number, and a re-challenged request
 /// reuses the branch only when it is genuinely the same transaction.
 ///
@@ -2484,7 +2484,7 @@ mod tests {
         Ok(())
     }
 
-    /// [RFC 3261 section 21.4.5](https://www.rfc-editor.org/rfc/rfc3261#section-21.4.5): the server has definitive information that the user
+    /// [RFC 3261 section 21.4.5](https://www.rfc-editor.org/rfc/rfc3261.html#section-21.4.5): the server has definitive information that the user
     /// does not exist. The endpoint is online; the address-of-record is not
     /// provisioned.
     #[test]
@@ -2501,7 +2501,7 @@ mod tests {
         Ok(())
     }
 
-    /// [RFC 3261 section 21.5.4](https://www.rfc-editor.org/rfc/rfc3261#section-21.5.4): the SERVER is unable to process the request. Sending
+    /// [RFC 3261 section 21.5.4](https://www.rfc-editor.org/rfc/rfc3261.html#section-21.5.4): the SERVER is unable to process the request. Sending
     /// an operator to check the phone points them at the wrong end of the
     /// call.
     #[test]
@@ -2518,7 +2518,7 @@ mod tests {
         Ok(())
     }
 
-    /// [RFC 3261 section 10.3](https://www.rfc-editor.org/rfc/rfc3261#section-10.3) step 7 / [section 21.4.17](https://www.rfc-editor.org/rfc/rfc3261#section-21.4.17): the registrar rejects an expiry
+    /// [RFC 3261 section 10.3](https://www.rfc-editor.org/rfc/rfc3261.html#section-10.3) step 7 / [section 21.4.17](https://www.rfc-editor.org/rfc/rfc3261.html#section-21.4.17): the registrar rejects an expiry
     /// shorter than its minimum and MUST say what that minimum is. Nothing is
     /// offline; the two numbers are the whole diagnosis.
     #[test]
@@ -2538,7 +2538,7 @@ mod tests {
     }
 
     /// A `423` whose `Min-Expires` is missing is a registrar breaking
-    /// [RFC 3261 section 10.3](https://www.rfc-editor.org/rfc/rfc3261#section-10.3) step 7. Saying so beats inventing the minimum it did not send.
+    /// [RFC 3261 section 10.3](https://www.rfc-editor.org/rfc/rfc3261.html#section-10.3) step 7. Saying so beats inventing the minimum it did not send.
     #[test]
     fn interval_too_brief_without_min_expires_says_so() -> Result<(), TestError> {
         let hint = rejection_hint(&[
@@ -2571,7 +2571,7 @@ mod tests {
     }
 
     /// `483` turned up in the corpus and is a routing fault between the two
-    /// ends ([RFC 3261 section 21.4.16](https://www.rfc-editor.org/rfc/rfc3261#section-21.4.16)) — the request never reached a registrar that
+    /// ends ([RFC 3261 section 21.4.16](https://www.rfc-editor.org/rfc/rfc3261.html#section-21.4.16)) — the request never reached a registrar that
     /// would answer it. Neither end is offline.
     #[test]
     fn too_many_hops_is_a_routing_fault() -> Result<(), TestError> {
@@ -2661,7 +2661,7 @@ mod tests {
 
     /// A valueless Contact parameter must not hide the expiry.
     ///
-    /// [RFC 3261 section 10.2.1.1](https://www.rfc-editor.org/rfc/rfc3261#section-10.2.1.1) puts the interval in either an `Expires` header or an
+    /// [RFC 3261 section 10.2.1.1](https://www.rfc-editor.org/rfc/rfc3261.html#section-10.2.1.1) puts the interval in either an `Expires` header or an
     /// `expires` Contact parameter, and both have to work. A Contact may also
     /// carry parameters with no value at all — `;ob` from an outbound
     /// registration, `;lr`, `;isfocus` — and `;ob` in particular is what pjsip
@@ -2697,7 +2697,7 @@ mod tests {
 
     /// Both spellings of the interval work, and the parameter wins.
     ///
-    /// [RFC 3261 section 10.2.1.1](https://www.rfc-editor.org/rfc/rfc3261#section-10.2.1.1) allows either, and the per-binding parameter takes
+    /// [RFC 3261 section 10.2.1.1](https://www.rfc-editor.org/rfc/rfc3261.html#section-10.2.1.1) allows either, and the per-binding parameter takes
     /// precedence over the header default. Written out because "both must be
     /// supported" is the requirement, and one of the two was unreachable behind
     /// any valueless parameter.
@@ -2858,7 +2858,7 @@ mod tests {
     }
 
     /// The `Contact` parameter is the per-binding value and wins over the
-    /// header, per [RFC 3261 section 10.2.1.1](https://www.rfc-editor.org/rfc/rfc3261#section-10.2.1.1). Getting this backwards would compare a
+    /// header, per [RFC 3261 section 10.2.1.1](https://www.rfc-editor.org/rfc/rfc3261.html#section-10.2.1.1). Getting this backwards would compare a
     /// requested 3600 against a granted 3600 and miss the shortening.
     #[test]
     fn contact_expires_parameter_beats_the_expires_header() -> Result<(), TestError> {

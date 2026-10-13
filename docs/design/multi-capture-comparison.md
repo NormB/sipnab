@@ -53,7 +53,7 @@ worse.
 
 ### Through a proxy, the Call-ID is preserved — and therefore collides
 
-[RFC 3261](https://www.rfc-editor.org/rfc/rfc3261) requires a proxy to pass the Call-ID through unchanged. So a call
+[RFC 3261](https://www.rfc-editor.org/rfc/rfc3261.html) requires a proxy to pass the Call-ID through unchanged. So a call
 captured on the access side and again on the trunk side carries the identical
 Call-ID in both files. That sounds like the answer. It is the problem, because
 sipnab's store is Call-ID-keyed and will *merge* the two observations rather than

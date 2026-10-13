@@ -260,7 +260,7 @@ sipnab refuses to read a capture file (`-I`) and listen for HEP (Homer Encapsula
 
 ### `--until {} is not after --since {}: the window [--since, --until) would hold no instant`
 
-`--since` and `--until` keep the dialogs whose first message falls at or after `--since` and before `--until`. The `--until` time you gave, the first `{}`, is the same as or earlier than the `--since` time, the second `{}`, so no instant is in the window. sipnab prints both in [RFC 3339](https://www.rfc-editor.org/rfc/rfc3339) UTC.
+`--since` and `--until` keep the dialogs whose first message falls at or after `--since` and before `--until`. The `--until` time you gave, the first `{}`, is the same as or earlier than the `--since` time, the second `{}`, so no instant is in the window. sipnab prints both in [RFC 3339](https://www.rfc-editor.org/rfc/rfc3339.html) UTC.
 
 **What to do:** Give an `--until` time later than the `--since` time, or drop one of the two flags for a window open on that side.
 
@@ -1078,7 +1078,7 @@ A fraud-detection or scanner-detection count, window or factor in `[security]` i
 
 ### `[security] reg_flood_transaction_timeout_ms must be {MIN_TRANSACTION_TIMEOUT_MS}-{MAX_TRANSACTION_TIMEOUT_MS} (milliseconds; RFC 3261 Timer F is 64*T1, 32000 at the default T1 of 500 ms), got {v}`
 
-`[security] reg_flood_transaction_timeout_ms` is how long, in milliseconds, a REGISTER that carried credentials waits for the challenge that answers it. The accepted range is 1000 to 600000, which the two placeholders show, and `{v}` is the value in the file. [RFC 3261](https://www.rfc-editor.org/rfc/rfc3261) Timer F is 64 times T1, which is 32000 at the default T1 of 500 ms. The printed line starts with `invalid config value: `.
+`[security] reg_flood_transaction_timeout_ms` is how long, in milliseconds, a REGISTER that carried credentials waits for the challenge that answers it. The accepted range is 1000 to 600000, which the two placeholders show, and `{v}` is the value in the file. [RFC 3261](https://www.rfc-editor.org/rfc/rfc3261.html) Timer F is 64 times T1, which is 32000 at the default T1 of 500 ms. The printed line starts with `invalid config value: `.
 
 **What to do:** Set a whole number from 1000 to 600000, or remove the key for the default of 32000.
 
@@ -1642,7 +1642,7 @@ A `--plugin` (a WebAssembly analysis module) failed while it analyzed one dialog
 
 ### `--print-yang-module: {e}`
 
-`--print-yang-module` writes the YANG module text (the data model sipnab's [RFC 7951](https://www.rfc-editor.org/rfc/rfc7951) JSON export follows) to standard output, and the write failed. `{e}` is the error, for example a pipe whose reader has already closed.
+`--print-yang-module` writes the YANG module text (the data model sipnab's [RFC 7951](https://www.rfc-editor.org/rfc/rfc7951.html) JSON export follows) to standard output, and the write failed. `{e}` is the error, for example a pipe whose reader has already closed.
 
 **What to do:** Make sure standard output is writable, for example redirect it to a file: `sipnab --print-yang-module > sipnab.yang`.
 

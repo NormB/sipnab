@@ -10,7 +10,7 @@
 //! every other implementation within a few samples.
 //!
 //! Only the 64 kbit/s mode is decoded: it is the mode SIP endpoints use
-//! ([RFC 3551 section 4.5.2](https://www.rfc-editor.org/rfc/rfc3551#section-4.5.2) assigns static payload type 9 to it).
+//! ([RFC 3551 section 4.5.2](https://www.rfc-editor.org/rfc/rfc3551.html#section-4.5.2) assigns static payload type 9 to it).
 
 /// Low-band log-scale factor increments (WL), by 3-bit magnitude.
 const WL: [i32; 8] = [-60, -30, 58, 172, 334, 538, 1198, 3042];

@@ -131,7 +131,7 @@ call from one box to the next, either by hand or through an AI agent.
    leg needed it.
 
    sipnab has seven strategies. Two exist by design to cross a B2BUA:
-   `session_id` (the [RFC 7989](https://www.rfc-editor.org/rfc/rfc7989) `Session-ID` header) and
+   `session_id` (the [RFC 7989](https://www.rfc-editor.org/rfc/rfc7989.html) `Session-ID` header) and
    `charging_vector_related_icid` (only when the B2BUA chose to send it).
    `x_call_id` and `sdp_origin` cross only when the box copies the header or
    the SDP. `charging_vector_icid` and `via_branch` do not cross by design, and

@@ -28,10 +28,10 @@
 //!
 //! RFC 4867 defines two, and they put the frame type in different places:
 //!
-//! - **Bandwidth-efficient** ([RFC 4867 section 4.3](https://www.rfc-editor.org/rfc/rfc4867#section-4.3), the DEFAULT): `CMR` 4 bits, `F` 1 bit,
+//! - **Bandwidth-efficient** ([RFC 4867 section 4.3](https://www.rfc-editor.org/rfc/rfc4867.html#section-4.3), the DEFAULT): `CMR` 4 bits, `F` 1 bit,
 //!   `FT` 4 bits, `Q` 1 bit, then bit-packed speech. The frame type straddles
 //!   a byte boundary.
-//! - **Octet-aligned** ([RFC 4867 section 4.4](https://www.rfc-editor.org/rfc/rfc4867#section-4.4), signaled by `octet-align=1`): a `CMR` octet,
+//! - **Octet-aligned** ([RFC 4867 section 4.4](https://www.rfc-editor.org/rfc/rfc4867.html#section-4.4), signaled by `octet-align=1`): a `CMR` octet,
 //!   then one table-of-contents octet per frame carrying `F`, `FT`, `Q` and
 //!   two padding bits.
 //!
@@ -57,21 +57,21 @@ pub const AMR_NB_MODES_KBPS: [f64; 8] = [4.75, 5.15, 5.90, 6.70, 7.40, 7.95, 10.
 
 /// How the frames in an AMR payload are packed.
 ///
-/// No `Default`, deliberately. [RFC 4867 section 8.1](https://www.rfc-editor.org/rfc/rfc4867#section-8.1) makes bandwidth-efficient the
+/// No `Default`, deliberately. [RFC 4867 section 8.1](https://www.rfc-editor.org/rfc/rfc4867.html#section-8.1) makes bandwidth-efficient the
 /// default *packing*, but a default *here* would let a caller that never read
 /// the SDP get an answer anyway, and the wrong packing produces a wrong mode
 /// rather than an error.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Packing {
-    /// [RFC 4867 section 4.3](https://www.rfc-editor.org/rfc/rfc4867#section-4.3) — the frame type straddles the first two octets.
+    /// [RFC 4867 section 4.3](https://www.rfc-editor.org/rfc/rfc4867.html#section-4.3) — the frame type straddles the first two octets.
     BandwidthEfficient,
-    /// [RFC 4867 section 4.4](https://www.rfc-editor.org/rfc/rfc4867#section-4.4) — a CMR octet, then one octet per frame.
+    /// [RFC 4867 section 4.4](https://www.rfc-editor.org/rfc/rfc4867.html#section-4.4) — a CMR octet, then one octet per frame.
     OctetAligned,
 }
 
 /// Whether an SDP `a=fmtp` parameter string selects octet-aligned packing.
 ///
-/// [RFC 4867 section 8.1](https://www.rfc-editor.org/rfc/rfc4867#section-8.1): `octet-align=1` selects it and anything else, including an
+/// [RFC 4867 section 8.1](https://www.rfc-editor.org/rfc/rfc4867.html#section-8.1): `octet-align=1` selects it and anything else, including an
 /// absent parameter, leaves the bandwidth-efficient default in force.
 #[must_use]
 pub fn amr_octet_aligned(fmtp: &str) -> bool {
@@ -80,7 +80,7 @@ pub fn amr_octet_aligned(fmtp: &str) -> bool {
 
 /// Whether an SDP `a=fmtp` parameter string switches interleaving on.
 ///
-/// [RFC 4867 section 8.1](https://www.rfc-editor.org/rfc/rfc4867#section-8.1) spells this `interleaving=<n>`, where any value present means
+/// [RFC 4867 section 8.1](https://www.rfc-editor.org/rfc/rfc4867.html#section-8.1) spells this `interleaving=<n>`, where any value present means
 /// the ILL/ILP field is in the payload. A caller that sees this must not read
 /// a frame type: every offset moves.
 #[must_use]
@@ -131,7 +131,7 @@ pub fn amr_wb_kbps_from_payload(payload: &[u8], packing: Packing) -> Option<f64>
 /// The AMR narrowband mode in kbit/s that a payload's first frame was coded at.
 ///
 /// `None` for anything that is not one of the eight speech modes.
-/// [RFC 4867 section 4.3.2](https://www.rfc-editor.org/rfc/rfc4867#section-4.3.2) takes frame types from Table 1a
+/// [RFC 4867 section 4.3.2](https://www.rfc-editor.org/rfc/rfc4867.html#section-4.3.2) takes frame types from Table 1a
 /// of [3GPP TS 26.101](https://portal.3gpp.org/desktopmodules/Specifications/SpecificationDetails.aspx?specificationId=1397)
 /// (section 4.1.1), which assigns frame type 8 to the AMR comfort-noise
 /// descriptor, 9 to 11 to the GSM-EFR, TDMA-EFR and PDC-EFR descriptors, 12 to
@@ -205,7 +205,7 @@ impl AmrFlavor {
 /// not one this module reads.
 ///
 /// An absent `a=fmtp` for the payload type is NOT one of those causes.
-/// [RFC 4867 section 8.1](https://www.rfc-editor.org/rfc/rfc4867#section-8.1) makes bandwidth-efficient the default packing, so silence in the
+/// [RFC 4867 section 8.1](https://www.rfc-editor.org/rfc/rfc4867.html#section-8.1) makes bandwidth-efficient the default packing, so silence in the
 /// SDP is an answer — the caller has a media description in hand and the
 /// negotiation settled on the default.
 #[must_use]
@@ -241,7 +241,7 @@ mod tests {
 
     type TestError = Box<dyn std::error::Error>;
 
-    /// Build an octet-aligned payload from [RFC 4867 section 4.4.2](https://www.rfc-editor.org/rfc/rfc4867#section-4.4.2)'s layout rather
+    /// Build an octet-aligned payload from [RFC 4867 section 4.4.2](https://www.rfc-editor.org/rfc/rfc4867.html#section-4.4.2)'s layout rather
     /// than from this module's arithmetic: a CMR octet, then one
     /// `F(1) FT(4) Q(1) P(2)` octet per frame.
     ///
@@ -264,7 +264,7 @@ mod tests {
         octet_aligned_frames(cmr, &[(ft, q)])
     }
 
-    /// The same frames in [RFC 4867 section 4.4.1](https://www.rfc-editor.org/rfc/rfc4867#section-4.4.1)'s bit-packed layout: `CMR(4)` then
+    /// The same frames in [RFC 4867 section 4.4.1](https://www.rfc-editor.org/rfc/rfc4867.html#section-4.4.1)'s bit-packed layout: `CMR(4)` then
     /// `F(1) FT(4) Q(1)` per frame, so a frame type straddles octet
     /// boundaries and the second entry is not octet-aligned at all.
     fn bandwidth_efficient_frames(cmr: u8, frames: &[(u8, bool)]) -> Vec<u8> {

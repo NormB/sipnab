@@ -167,7 +167,7 @@ def test_a_section_citation_is_linked_and_a_repeated_bare_rfc_is_not():
 
     assert sections == 1, out
     assert (
-        "[RFC 3261 section 7.3.1](https://www.rfc-editor.org/rfc/rfc3261#section-7.3.1)"
+        "[RFC 3261 section 7.3.1](https://www.rfc-editor.org/rfc/rfc3261.html#section-7.3.1)"
         in out
     ), out
     assert "\u00a7" not in out, "a bare section sign survived:\n" + out
@@ -176,7 +176,7 @@ def test_a_section_citation_is_linked_and_a_repeated_bare_rfc_is_not():
         "a bare RFC is linked on first mention only; a page citing one RFC "
         "248 times must not gain 248 identical links:\n" + out
     )
-    assert out.count("(https://www.rfc-editor.org/rfc/rfc3261)") == 1, out
+    assert out.count("(https://www.rfc-editor.org/rfc/rfc3261.html)") == 1, out
     # The repeat stays as plain text, which is the half that makes the rule a
     # rule rather than "link everything".
     assert "and RFC 3261 says so again" in out, out
@@ -190,7 +190,7 @@ def test_an_already_linked_citation_is_left_alone():
     `[[RFC 3261](...)](...)` and fights its gate forever.
     """
     linked = (
-        "See [RFC 3261 section 7.3.1](https://www.rfc-editor.org/rfc/rfc3261"
+        "See [RFC 3261 section 7.3.1](https://www.rfc-editor.org/rfc/rfc3261.html"
         "#section-7.3.1) for the rule.\n"
     )
     out, sections, bare = convert()(linked)
@@ -209,16 +209,58 @@ def test_a_section_sign_link_is_relabeled_and_keeps_its_target():
     )
     out, sections, _ = convert()(old)
     assert out == (
-        "See [RFC 3261 section 7.3.1](https://www.rfc-editor.org/rfc/rfc3261"
+        "See [RFC 3261 section 7.3.1](https://www.rfc-editor.org/rfc/rfc3261.html"
         "#section-7.3.1) for the rule.\n"
     ), out
     assert sections == 1, out
 
 
+def test_a_redirecting_rfc_target_is_rewritten_to_the_html_page():
+    """`rfc-editor.org/rfc/rfcN` answers 302 to a metadata page and drops the
+    `#section-` anchor, so a reader following "RFC 3261 section 17.1.1.3"
+    lands on a page without that section. `rfcN.html` answers 200 and holds
+    the anchor (measured 2026-10-13). An existing link keeps its label and
+    its anchor; only the target changes.
+    """
+    old = (
+        "See [RFC 3261 section 7.3.1](https://www.rfc-editor.org/rfc/rfc3261"
+        "#section-7.3.1) and [RFC 3550](https://www.rfc-editor.org/rfc/rfc3550).\n"
+    )
+    out, _, _ = convert()(old)
+    assert out == (
+        "See [RFC 3261 section 7.3.1](https://www.rfc-editor.org/rfc/rfc3261.html"
+        "#section-7.3.1) and [RFC 3550](https://www.rfc-editor.org/rfc/rfc3550.html).\n"
+    ), out
+
+
+def test_the_url_rule_rewrites_any_text_and_leaves_other_forms_alone():
+    """The same rule applies outside markdown links: a Rust string, a plain
+    URL, a `.txt` or `.pdf` copy, and the `.html` form itself."""
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location("rfc_links", SCRIPTS / "rfc-links.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    text = (
+        '"see https://www.rfc-editor.org/rfc/rfc3261#section-8.1.1"\n'
+        "https://www.rfc-editor.org/rfc/rfc7118\n"
+        "https://www.rfc-editor.org/rfc/rfc3550.html#section-6.4.1\n"
+        "https://www.rfc-editor.org/rfc/rfc3550.txt\n"
+    )
+    out, changed = module.canonical_rfc_urls(text)
+    assert out == (
+        '"see https://www.rfc-editor.org/rfc/rfc3261.html#section-8.1.1"\n'
+        "https://www.rfc-editor.org/rfc/rfc7118.html\n"
+        "https://www.rfc-editor.org/rfc/rfc3550.html#section-6.4.1\n"
+        "https://www.rfc-editor.org/rfc/rfc3550.txt\n"
+    ), out
+    assert changed == 2, changed
+
+
 def test_an_unlinked_section_citation_in_words_is_linked_too():
     out, sections, _ = convert()("Per RFC 3550 section 6.4.1, the report says so.\n")
     assert (
-        "[RFC 3550 section 6.4.1](https://www.rfc-editor.org/rfc/rfc3550#section-6.4.1)"
+        "[RFC 3550 section 6.4.1](https://www.rfc-editor.org/rfc/rfc3550.html#section-6.4.1)"
         in out
     ), out
     assert sections == 1, out
@@ -231,8 +273,8 @@ def test_a_continued_list_keeps_its_rfc():
     out, sections, _ = convert()("A server failure (RFC 3261 \u00a721.5, \u00a721.6).\n")
     assert out == (
         "A server failure ([RFC 3261 section 21.5](https://www.rfc-editor.org/rfc/"
-        "rfc3261#section-21.5), [RFC 3261 section 21.6](https://www.rfc-editor.org/"
-        "rfc/rfc3261#section-21.6)).\n"
+        "rfc3261.html#section-21.5), [RFC 3261 section 21.6](https://www.rfc-editor.org/"
+        "rfc/rfc3261.html#section-21.6)).\n"
     ), out
     assert sections == 2, out
 
@@ -240,7 +282,7 @@ def test_a_continued_list_keeps_its_rfc():
 def test_an_appendix_links_to_the_appendix_anchor():
     out, _, _ = convert()("See RFC 3550 \u00a7A.1.\n")
     assert (
-        "[RFC 3550 appendix A.1](https://www.rfc-editor.org/rfc/rfc3550#appendix-A.1)"
+        "[RFC 3550 appendix A.1](https://www.rfc-editor.org/rfc/rfc3550.html#appendix-A.1)"
         in out
     ), out
 
@@ -268,7 +310,7 @@ def test_rust_doc_comments_get_the_same_rule_and_code_does_not():
     lines = out.split("\n")
     assert lines[0] == (
         "/// Retransmits per [RFC 3261 section 17.1.1.2](https://www.rfc-editor.org/"
-        "rfc/rfc3261#section-17.1.1.2)."
+        "rfc/rfc3261.html#section-17.1.1.2)."
     ), out
     assert lines[1:] == src.split("\n")[1:], out
     assert sections == 1, out
@@ -321,7 +363,7 @@ def test_front_matter_is_left_alone():
     out, _, _ = convert()(text)
     head, body = out.split("+++\n\n", 1)[0], out.split("+++\n\n", 1)[1]
     assert "](" not in head, out
-    assert "[RFC 9457](https://www.rfc-editor.org/rfc/rfc9457)" in body, out
+    assert "[RFC 9457](https://www.rfc-editor.org/rfc/rfc9457.html)" in body, out
 
 
 def test_a_link_whose_text_holds_a_bracketed_code_span_is_left_alone():

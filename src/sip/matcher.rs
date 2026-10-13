@@ -351,7 +351,7 @@ fn compile_pattern_bytes(
 /// With no dialog tracked (`--no-dialog`, or a Call-ID nothing recorded) the
 /// only message recognizable as a call on its own is an INVITE request; a
 /// response cannot say what it answers. Method tokens compare exactly, so a
-/// lowercase `invite` is not one ([RFC 3261 section 7.1](https://www.rfc-editor.org/rfc/rfc3261#section-7.1)).
+/// lowercase `invite` is not one ([RFC 3261 section 7.1](https://www.rfc-editor.org/rfc/rfc3261.html#section-7.1)).
 pub fn calls_only_admits(
     dialog_method: Option<&SipMethod>,
     message_method: Option<&SipMethod>,

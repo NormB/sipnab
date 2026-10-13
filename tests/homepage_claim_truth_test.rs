@@ -92,6 +92,25 @@ fn mcp_tool_counts() -> Result<(usize, usize, usize), TestError> {
     Ok((registered, read_only, write_capable))
 }
 
+/// The names of the tools whose `#[tool(...)]` attribute says
+/// `read_only_hint = false`, read from the attribute that holds each name.
+fn write_capable_tool_names() -> Result<BTreeSet<String>, TestError> {
+    let src = mcp_sources();
+    let code: String = src
+        .lines()
+        .filter(|l| !l.trim_start().starts_with("//"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let tool = regex::Regex::new(
+        r#"(?s)#\[tool\(\s*name = "([a-z0-9_]+)",(.*?)\)\]\s*(?:pub )?async fn"#,
+    )?;
+    Ok(tool
+        .captures_iter(&code)
+        .filter(|c| c[2].contains("read_only_hint = false"))
+        .map(|c| c[1].to_string())
+        .collect())
+}
+
 /// The homepage template.
 fn homepage() -> Result<String, TestError> {
     read("website/templates/index.html")
@@ -247,6 +266,69 @@ fn homepage_write_capable_count_matches_the_annotations() -> Result<(), TestErro
     Ok(())
 }
 
+/// The homepage links "the thirteen that write files or act on the host" to a
+/// table in `docs/mcp.md`. That table lists exactly the write-capable tools,
+/// and its lead sentence states their number.
+#[test]
+fn the_mcp_write_tools_table_lists_every_write_capable_tool() -> Result<(), TestError> {
+    let names = write_capable_tool_names()?;
+    let (_, _, write_capable) = mcp_tool_counts()?;
+    assert_eq!(
+        names.len(),
+        write_capable,
+        "the attribute scan found {} write-capable tools by name and {write_capable} \
+         by count; one of the two scans is reading the wrong text: {names:?}",
+        names.len()
+    );
+    let doc = read("docs/mcp.md")?;
+    let start = doc
+        .find("\n## Tools that write or act\n")
+        .ok_or("docs/mcp.md has no \"Tools that write or act\" section")?;
+    let section = &doc[start + 1..];
+    let section = &section[..section[3..].find("\n## ").map_or(section.len(), |i| i + 3)];
+    let listed: BTreeSet<String> = regex::Regex::new(r"(?m)^\| `([a-z0-9_]+)` \|")?
+        .captures_iter(section)
+        .map(|c| c[1].to_string())
+        .collect();
+    assert_eq!(
+        listed, names,
+        "docs/mcp.md's write-tools table differs from the tools annotated \
+         read_only_hint = false"
+    );
+    let words = [
+        "zero",
+        "one",
+        "two",
+        "three",
+        "four",
+        "five",
+        "six",
+        "seven",
+        "eight",
+        "nine",
+        "ten",
+        "eleven",
+        "twelve",
+        "thirteen",
+        "fourteen",
+        "fifteen",
+        "sixteen",
+        "seventeen",
+        "eighteen",
+        "nineteen",
+        "twenty",
+    ];
+    let stated = words
+        .get(write_capable)
+        .ok_or("more write-capable tools than this test can spell")?;
+    let lead = section.to_lowercase();
+    assert!(
+        lead.contains(&format!("{stated} write a file")),
+        "the section's lead sentence does not say \"{stated} write a file\""
+    );
+    Ok(())
+}
+
 // ── B. What the RELEASED binaries carry ──────────────────────────────
 
 /// The published targets the release workflow compiles `bpf` into.
@@ -303,8 +385,8 @@ fn homepage_names_which_released_builds_carry_bpf() -> Result<(), TestError> {
     let page = homepage()?;
     let bpf_row = page
         .lines()
-        .find(|l| l.contains("eBPF TLS capture"))
-        .ok_or("no eBPF row on the homepage to check")?;
+        .find(|l| l.contains("TLS capture with uprobes"))
+        .ok_or("no uprobe TLS capture row on the homepage to check")?;
     assert!(
         bpf_row.contains(family),
         "the homepage's eBPF row does not say which released builds carry the \
@@ -312,6 +394,56 @@ fn homepage_names_which_released_builds_carry_bpf() -> Result<(), TestError> {
          {family} family so a reader can tell whether their download has it.\n\
          Row: {bpf_row}"
     );
+    Ok(())
+}
+
+/// The uprobe TLS capture row says what every Linux build can do, not only
+/// what the `bpf` backend needs.
+///
+/// Until 2026-10-13 the row said the capability was "not the static musl
+/// builds, and needs a kernel with BTF". `--uprobe-tls` is in the `native`
+/// feature, which the musl builds carry, and its default backend, tracefs,
+/// needs no BTF. Only the `bpf` backend needs BTF and the gnu builds. Both
+/// facts are read from their sources here, so the row cannot drift back.
+#[test]
+fn homepage_uprobe_row_names_the_default_backend_that_needs_no_btf() -> Result<(), TestError> {
+    let cli = read("docs/cli-reference.md")?;
+    let backend = cli
+        .lines()
+        .find(|l| l.starts_with("| `--uprobe-backend` |"))
+        .ok_or("no `--uprobe-backend` row in docs/cli-reference.md")?;
+    let default = backend
+        .split('|')
+        .nth(3)
+        .ok_or("the `--uprobe-backend` row has no default column")?
+        .trim()
+        .trim_matches('`');
+    let tls = cli
+        .lines()
+        .find(|l| l.starts_with("| `--uprobe-tls` |"))
+        .ok_or("no `--uprobe-tls` row in docs/cli-reference.md")?;
+    let feature = regex::Regex::new(r"Feature: `([a-z-]+)`")?
+        .captures(tls)
+        .map(|c| c[1].to_string())
+        .ok_or("the `--uprobe-tls` row names no feature")?;
+    assert!(
+        musl_feature_set()?.contains(&feature),
+        "`--uprobe-tls` needs the `{feature}` feature, which the musl builds do          not carry; the homepage row's \"Every Linux build has it\" is false"
+    );
+    let page = homepage()?;
+    let row = page
+        .lines()
+        .find(|l| l.contains("TLS capture with uprobes"))
+        .ok_or("no uprobe TLS capture row on the homepage to check")?;
+    for needed in [
+        "Every Linux build has it".to_string(),
+        format!("default {default} backend needs no BTF"),
+    ] {
+        assert!(
+            row.contains(&needed),
+            "the homepage's uprobe TLS capture row does not say {needed:?}.\nRow: {row}"
+        );
+    }
     Ok(())
 }
 

@@ -2847,7 +2847,7 @@ mod tests {
         }
     }
 
-    /// [RFC 3261 section 21](https://www.rfc-editor.org/rfc/rfc3261#section-21) splits final failures at 500: a 4xx is a request failure
+    /// [RFC 3261 section 21](https://www.rfc-editor.org/rfc/rfc3261.html#section-21) splits final failures at 500: a 4xx is a request failure
     /// that is routinely an ordinary outcome, a 5xx or 6xx is a server or a
     /// global refusal. The boundary codes on either side prove the split sits
     /// exactly there.
@@ -3777,7 +3777,7 @@ mod tests {
     }
 
     /// An unanswered probe says whether it was retransmitted: a repeat is
-    /// itself proof the first request drew silence ([RFC 5389 section 7.2.1](https://www.rfc-editor.org/rfc/rfc5389#section-7.2.1)
+    /// itself proof the first request drew silence ([RFC 5389 section 7.2.1](https://www.rfc-editor.org/rfc/rfc5389.html#section-7.2.1)
     /// retransmits only on timeout), and a single request proves less.
     #[test]
     fn an_unanswered_probe_says_whether_it_was_retransmitted() -> Result<(), TestError> {

@@ -10,6 +10,11 @@ sipnab receives HEP v1, v2 and v3 and sends HEP v3 (Homer Encapsulation Protocol
 
 ### Receiving HEP
 
+OpenSIPS, Kamailio and Asterisk can each send copies of their SIP to sipnab
+over HEP. [Homer and sipnab](@/docs/homer-sipnab.md#2-sipnab-as-a-second-receiver) sets this up for OpenSIPS
+and Kamailio, and [Receive Asterisk's HEP](@/docs/asterisk-sipnab.md#7-receive-asterisk-s-hep)
+for Asterisk.
+
 A routable bind needs a guard — sipnab refuses `-L 0.0.0.0:9060` unless a source allowlist or a shared secret constrains it:
 
 ```bash

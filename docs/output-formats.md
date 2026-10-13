@@ -18,6 +18,9 @@ documents the machine-readable formats the command line writes.
 | The same verdict as YANG-modeled data | `--yang-analyze --no-cli-print` | [YANG export](#yang-export---yang-analyze) |
 | One call as a vCon container | `--export-vcon` | [vCon](#vcon---export-vcon) |
 | The packets, for Wireshark | `-O calls.pcapng --pcapng` | [pcap / pcapng](#pcap--pcapng) |
+| A Wireshark display filter for the capture | `-N --wireshark` | [CLI reference](cli-reference.md#output) |
+| Log lines fail2ban reads | `-N --fail2ban` with `--kill-scanner` | [CLI reference](cli-reference.md#output) |
+| A call's ladder as a Mermaid diagram, or its audio as WAV | the save dialog in the terminal UI (`F2`) | [Save popup](keybindings.md#save-popup) |
 
 > **Prerequisites:** `--json` requires non-interactive mode (`-N` /
 > `--no-tui`) — sipnab refuses to start otherwise (exception:
@@ -260,7 +263,7 @@ form does for you.
 
 `final_status_code` is the response that decided the outcome, with auth
 challenges excluded: a call challenged and then answered reports 200, not the
-401. `final_status_reason` is the phrase from the wire, which [RFC 3261 section 7.2](https://www.rfc-editor.org/rfc/rfc3261#section-7.2)
+401. `final_status_reason` is the phrase from the wire, which [RFC 3261 section 7.2](https://www.rfc-editor.org/rfc/rfc3261.html#section-7.2)
 leaves as free text — `500 Service Unavailable` is legal and common, so match on
 the code.
 
@@ -291,7 +294,7 @@ naming the messages it drew on as indices into the dialog's own message list:
 
 | Field | Meaning |
 |---|---|
-| `final_failure` | The dialog ended on a `4xx`/`5xx`/`6xx`. Carries `code`, `reason_phrase`, and the `Reason:` ([RFC 3326](https://www.rfc-editor.org/rfc/rfc3326)) and `Warning:` headers when present, which frequently hold the real cause behind a generic status code. |
+| `final_failure` | The dialog ended on a `4xx`/`5xx`/`6xx`. Carries `code`, `reason_phrase`, and the `Reason:` ([RFC 3326](https://www.rfc-editor.org/rfc/rfc3326.html)) and `Warning:` headers when present, which frequently hold the real cause behind a generic status code. |
 | `auth_loop` | Three or more `401`/`407` challenges with no `2xx`. `kind` is `credential_failure` when the client answers each challenge and is re-challenged, or `silent_drop` when it never sends `Authorization` at all — different faults with different fixes. |
 | `retransmissions` | A request retransmitted with no response, identified by CSeq plus top-`Via` branch. Reports `method`, `count` and `span_sec`, because "7 INVITEs over 32 seconds" is diagnostic and "retransmissions detected" is not. `icmp_cause` is present only when the capture also held an ICMP error for the dialog, and carries the network's own words for the silence — see below. |
 | `ack_missing` | A `2xx` answer to an `INVITE` that no `ACK` followed, once the observation window passed RFC 3261 Timer H (32 s). Carries `waited_sec` and `answer_transmissions` — a UAS retransmits its answer until Timer H, so a count above one is the peer agreeing the `ACK` never arrived. |
@@ -324,7 +327,7 @@ far end is not reachable. Two fields repay attention:
   device that noticed and said so, usually a working router in the path.
   Sending an engineer to the reporter wastes the finding.
 
-`truncated` is `true` in the ordinary case: [RFC 792](https://www.rfc-editor.org/rfc/rfc792) guarantees only 8 bytes past
+`truncated` is `true` in the ordinary case: [RFC 792](https://www.rfc-editor.org/rfc/rfc792.html) guarantees only 8 bytes past
 the quoted IP header, so most quotes are a prefix. The field exists so a reader
 knows the quote was partial rather than assuming the fields came from a whole
 datagram.
@@ -345,7 +348,7 @@ for most of them.
 ### STUN evidence inside the media diagnosis
 
 `diagnosis.private_media_address` is a warning: the SDP `c=` line names an
-[RFC 1918](https://www.rfc-editor.org/rfc/rfc1918) / [RFC 4193](https://www.rfc-editor.org/rfc/rfc4193) / link-local address, and the peer is not itself private, so
+[RFC 1918](https://www.rfc-editor.org/rfc/rfc1918.html) / [RFC 4193](https://www.rfc-editor.org/rfc/rfc4193.html) / link-local address, and the peer is not itself private, so
 the far end cannot route back to it. It is correct inside one LAN, and correct
 behind an SBC, ALG or media proxy that rewrites the SDP downstream — which is
 why the hint asks the reader to check which of those they are in.
@@ -363,7 +366,7 @@ than as a second finding.
 | `server` | The STUN or TURN server it went to. The box to check when the reason is `unanswered`. |
 | `mapped_address` / `relayed_address` | The reachable address the server returned and the client did not use. Absent on `unanswered`, where there is none — that is the point of it. |
 | `advertised` | The unroutable address the SDP named instead. |
-| `request_count` | Requests sent for that transaction. Above one is a retransmission, which [RFC 5389 section 7.2.1](https://www.rfc-editor.org/rfc/rfc5389#section-7.2.1) sends only on timeout — so it is itself proof the earlier attempts drew silence. |
+| `request_count` | Requests sent for that transaction. Above one is a retransmission, which [RFC 5389 section 7.2.1](https://www.rfc-editor.org/rfc/rfc5389.html#section-7.2.1) sends only on timeout — so it is itself proof the earlier attempts drew silence. |
 | `observed_offset_secs` | Seconds from the start of this dialog to the STUN evidence; negative when the probe came first, which is the ordinary case. Absent when either time is unknown. |
 
 `observed_offset_secs` exists because the correlation is by **client IP alone**.
@@ -494,7 +497,7 @@ does. `ssrcs_dropped` is the same statement one level down.
 
 An `ice` record appears once, and only on a capture holding ICE connectivity
 checks — Binding Requests carrying the `PRIORITY` and role attributes
-[RFC 8445 section 7.2.1](https://www.rfc-editor.org/rfc/rfc8445#section-7.2.1) requires,
+[RFC 8445 section 7.2.1](https://www.rfc-editor.org/rfc/rfc8445.html#section-7.2.1) requires,
 which is what tells them from a plain server-reflexive probe to a STUN server:
 
 | Field | Meaning |
@@ -553,7 +556,7 @@ ranks and counts them, and adds no judgement of its own.
 
 ## YANG export (`--yang-analyze`)
 
-The capture analysis again, encoded as [RFC 7951](https://www.rfc-editor.org/rfc/rfc7951)
+The capture analysis again, encoded as [RFC 7951](https://www.rfc-editor.org/rfc/rfc7951.html)
 JSON against sipnab's own YANG 1.1 module, `sipnab-diagnosis`. It is the same
 value `--json-analyze` prints. A tool that speaks YANG can validate it, draw
 its tree with `pyang -f tree`, or generate code for it, without learning
@@ -584,7 +587,7 @@ from the `--json-analyze` object only in how it writes the same facts:
 | `--json-analyze` | `--yang-analyze` | Why |
 |---|---|---|
 | `frames_read` | `frames-read` | YANG names use hyphens. Every field follows the same rule. |
-| `"frames_read": 1024` | `"frames-read": "1024"` | [RFC 7951 section 6.1](https://www.rfc-editor.org/rfc/rfc7951#section-6.1) writes every 64-bit integer as a string: `frames-read`, `dialogs-examined`, `streams-examined`, `occurrences`, `evidence-omitted`, and each count's `value`. `schema-version`, `rank` and `index` stay numbers. |
+| `"frames_read": 1024` | `"frames-read": "1024"` | [RFC 7951 section 6.1](https://www.rfc-editor.org/rfc/rfc7951.html#section-6.1) writes every 64-bit integer as a string: `frames-read`, `dialogs-examined`, `streams-examined`, `occurrences`, `evidence-omitted`, and each count's `value`. `schema-version`, `rank` and `index` stay numbers. |
 | `findings` in ranked order | `finding`, with a `rank` counting from 1 | YANG gives state data no order, so the position becomes a leaf. |
 | `evidence` in order | `evidence`, each with an `index` counting from 1 | The same reason. |
 | `endpoints` | `endpoint` | YANG names a leaf-list for one entry. |

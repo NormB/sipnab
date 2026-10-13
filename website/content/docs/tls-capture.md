@@ -181,7 +181,7 @@ startup line (`openssl_path=`) before trusting the run.
 single biggest trap on long-lived trunks, and it bites differently in each TLS
 version:
 
-- **TLS 1.3** ([RFC 8446](https://www.rfc-editor.org/rfc/rfc8446)) numbers each record with a counter both endpoints keep privately.
+- **TLS 1.3** ([RFC 8446](https://www.rfc-editor.org/rfc/rfc8446.html)) numbers each record with a counter both endpoints keep privately.
   Nothing on the wire carries it, so sipnab searches for it — about a million
   records, roughly a day of a trunk ticking over at ten records a second. The
   search costs one AEAD tag check per candidate and runs once per direction per
@@ -193,7 +193,7 @@ version:
   separate per-run trial budget — four full windows — stops one session whose
   keys belong to some other connection from spending a window on every record
   it gets offered.
-- **TLS 1.2** ([RFC 5246](https://www.rfc-editor.org/rfc/rfc5246)) is worse: a `CLIENT_RANDOM` line gives the master secret, and the
+- **TLS 1.2** ([RFC 5246](https://www.rfc-editor.org/rfc/rfc5246.html)) is worse: a `CLIENT_RANDOM` line gives the master secret, and the
   server random and cipher suite that expand it into record keys are in the
   ServerHello. Miss the handshake and there is no way to use the secret at all,
   now or later.
@@ -225,7 +225,7 @@ SRTP keys arrive two ways, and sipnab reads both:
 - **SDES** — keys travel in the SDP, so decrypting the signaling decrypts the
   media with it. Nothing extra to do.
 - **DTLS-SRTP** — a DTLS handshake carries the keys. Point `--dtls-keylog` at an
-  NSS-format key log and sipnab runs the [RFC 5764](https://www.rfc-editor.org/rfc/rfc5764) exporter over it to reach the
+  NSS-format key log and sipnab runs the [RFC 5764](https://www.rfc-editor.org/rfc/rfc5764.html) exporter over it to reach the
   SRTP keys, cookbook [recipe 7d, "Decrypt SRTP from a DTLS keylog"](@/docs/cookbook.md#7d-decrypt-srtp-from-a-dtls-keylog).
 
 `--dtls-keylog` is a separate flag from `--keylog` because the two name

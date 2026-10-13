@@ -613,7 +613,7 @@ Each row names the `-04` section that states the rule.
 | [4.3.8, "mediatype"](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-04#section-4.3.8) | Not required when the Dialog Content is absent, as in a placeholder or a redacted object. MUST NOT be present on `recording-set`, `transfer` or `incomplete`. `-03` prohibited it on `transfer` only |
 | [4.3.9, "filename"](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-04#section-4.3.9) | MUST NOT be present on `recording-set`, `transfer` or `incomplete`. `-03` prohibited it on `transfer` only |
 | [4.3.11, "disposition"](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-04#section-4.3.11) | When the reason a call failed is not known, as in a placeholder, the value `"failed"` SHOULD be used. The lowercase "must" of `-03` is now MUST |
-| [4.3.12, "session_id"](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-04#section-4.3.12) | MUST NOT be present on `transfer`. A `recording-set` object is named as "the appropriate place" for a session identifier of the whole call (no [RFC 2119](https://www.rfc-editor.org/rfc/rfc2119) keyword) |
+| [4.3.12, "session_id"](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-04#section-4.3.12) | MUST NOT be present on `transfer`. A `recording-set` object is named as "the appropriate place" for a session identifier of the whole call (no [RFC 2119](https://www.rfc-editor.org/rfc/rfc2119.html) keyword) |
 | [4.3.13, "party_history Objects Array"](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-04#section-4.3.13) and [4.3.13.1](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-04#section-4.3.13.1) | `party_history` MUST NOT be present on `transfer`. `button` is marked optional, and still required for `keydown` and `keyup` |
 | [4.3.14, "Dialog Transfer"](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-04#section-4.3.14) | `transfer_target`, `original`, `consultation` and `target_dialog` each take one `UnsignedInt`. The `UnsignedInt[]` form of `-03` is removed. `transfer_target` is optional, for a transfer abandoned before a target was identified. `original`, `consultation` and `target_dialog` may name a `recording-set` object |
 | [4.3.16, "message_id"](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-04#section-4.3.16) | Applies to `recording` and `text`. MUST NOT be present on `recording-set`, `transfer` or `incomplete` |
@@ -709,7 +709,7 @@ differ. Read against the prose and Appendix B:
 - [Section 3](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-04#section-3): the signed form is defined "using [JWS]" (it read "[JWE]"), and
   the encrypted form gains "using [JWE]".
 - [Section 5.2](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-04#section-5.2): the payload construction cites
-  [RFC 7515 section 7.2.1](https://www.rfc-editor.org/rfc/rfc7515#section-7.2.1)
+  [RFC 7515 section 7.2.1](https://www.rfc-editor.org/rfc/rfc7515.html#section-7.2.1)
   as [JWS] (it read [JWK]), and [JWK] leaves the normative references.
 - [Section 4.3.4](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-04#section-4.3.4): "UnisignedInt" corrected to "UnsignedInt"; [section 4.3.12](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-04#section-4.3.12):
   "[SESSION-ID}" corrected.

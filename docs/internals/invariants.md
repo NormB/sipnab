@@ -212,7 +212,7 @@ stream counts for the same file, and neither is obviously wrong.
 **One function is not enough on its own.** `classify_packet()` may hold the
 only decision about what a packet means, and someone can still write the wire
 rule it decides *with* twice. `pipeline::is_rtcp_packet` kept its own copy of
-RTCP's length framing. `rtp::rtcp::looks_like_rtcp` then gained [RFC 3550](https://www.rfc-editor.org/rfc/rfc3550)
+RTCP's length framing. `rtp::rtcp::looks_like_rtcp` then gained [RFC 3550](https://www.rfc-editor.org/rfc/rfc3550.html)
 section 6.1's padding rule in 0.5.164 and the copy did not, so the rule applied
 to a function nothing on the capture path calls while the release note told
 operators it applied to the classifier every media datagram reaches.
@@ -681,7 +681,7 @@ No test enforces them, which is precisely why this page writes them down.
 recommendation it implements. The
 [pull-request template](../../.github/PULL_REQUEST_TEMPLATE.md) asks for it
 directly: *"Any new analysis claim is honest and backed by the implementation
-(cite the RFC/ITU standard where relevant)."* Jitter is [RFC 3550 section 6.4.1](https://www.rfc-editor.org/rfc/rfc3550#section-6.4.1) signed
+(cite the RFC/ITU standard where relevant)."* Jitter is [RFC 3550 section 6.4.1](https://www.rfc-editor.org/rfc/rfc3550.html#section-6.4.1) signed
 transit deltas, not a variance. MOS is an E-model estimate, not a measurement.
 Saying which one you implemented is the difference between a tool an engineer
 can trust and one they have to re-derive.

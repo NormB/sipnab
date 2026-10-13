@@ -141,7 +141,7 @@ reported a NAT problem on a trunk that did not have one. The 0.5.120 release
   SIP over plain TCP.
 - **TLS 1.3 session tickets** (`NewSessionTicket` messages): sipnab passed them
   to the SIP parser, which cost the next message. sipnab now checks each record's
-  inner content type ([RFC 8446 section 5.2](https://www.rfc-editor.org/rfc/rfc8446#section-5.2)).
+  inner content type ([RFC 8446 section 5.2](https://www.rfc-editor.org/rfc/rfc8446.html#section-5.2)).
 
 The release notes record the result on the reproduction capture Dan Jenkins
 supplied:

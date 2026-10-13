@@ -425,7 +425,7 @@ What is sipnab costing the host — its memory, threads, CPU, load-bearing share
 ### Whole-capture report
 
 The whole-capture problem report — findings, orphaned media, what retention
-shed — in sipnab's own JSON and [RFC 7951](https://www.rfc-editor.org/rfc/rfc7951)-encoded against the YANG module
+shed — in sipnab's own JSON and [RFC 7951](https://www.rfc-editor.org/rfc/rfc7951.html)-encoded against the YANG module
 `sipnab-diagnosis`.
 
 | Surface | Detail |
