@@ -293,6 +293,7 @@ static KNOWN_KEYS: LazyLock<HashMap<&'static str, &'static [&'static str]>> = La
             "url",
             "auth_file",
             "ca",
+            "decrypt_key",
             "timeout",
             "max_response_head",
             "max_size",
@@ -884,6 +885,9 @@ pub struct VconFetchConfig {
     /// The only CA file trusted for an `https://` store. `--vcon-fetch-ca`
     /// overrides it.
     pub ca: Option<PathBuf>,
+    /// The RSA private key that decrypts an encrypted container; readable by
+    /// its owner only. `--vcon-fetch-decrypt-key` overrides it.
+    pub decrypt_key: Option<PathBuf>,
     /// Seconds to wait to connect and for each read and write. See
     /// [`FETCH_TIMEOUT`].
     pub timeout: Option<u64>,
@@ -3197,7 +3201,7 @@ impl Config {
     /// # Errors
     /// `crate::Error::ConfigInvalid`, naming the first such key.
     pub fn validate_paths(&self) -> Result<(), crate::Error> {
-        let keys: [(&str, Option<&Path>); 20] = [
+        let keys: [(&str, Option<&Path>); 21] = [
             ("[hep] tls_ca", self.hep.tls_ca.as_deref()),
             ("[hep] tls_extra_ca", self.hep.tls_extra_ca.as_deref()),
             ("[hep] tls_cert", self.hep.tls_cert.as_deref()),
@@ -3236,6 +3240,10 @@ impl Config {
                 self.vcon_fetch.auth_file.as_deref(),
             ),
             ("[vcon_fetch] ca", self.vcon_fetch.ca.as_deref()),
+            (
+                "[vcon_fetch] decrypt_key",
+                self.vcon_fetch.decrypt_key.as_deref(),
+            ),
         ];
         for (key, value) in keys {
             if value.is_some_and(|p| p.as_os_str().is_empty()) {

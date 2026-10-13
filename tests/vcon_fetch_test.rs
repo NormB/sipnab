@@ -212,7 +212,9 @@ fn container(uuid: &str) -> String {
 fn enveloped(kind: StoreKind, container: &str) -> String {
     match kind {
         StoreKind::VconStore => {
-            let body = container.trim_end_matches('}');
+            // Exactly one closing brace: a container whose last member is
+            // an object ends in `}}`.
+            let body = container.strip_suffix('}').unwrap_or(container);
             format!(r#"{body},"_meta":{{"owner":"synthetic","stored_at":"2026-10-09"}}}}"#)
         }
         StoreKind::VconMcp => format!(r#"{{"success":true,"vcon":{container}}}"#),
@@ -251,6 +253,7 @@ impl Rig {
             },
             out_dir: dir.path().join("out"),
             overwrite: false,
+            decrypt: None,
         };
         Ok(Self { dir, settings })
     }
@@ -607,6 +610,204 @@ fn an_https_store_is_read_with_the_named_ca() -> Result<(), TestError> {
     Ok(())
 }
 
+// ── Encrypted containers ────────────────────────────────────────────────
+
+const JOSE: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/vcon-jose");
+
+/// `name` from the encryption fixtures, copied to `dir` with mode 0600: the
+/// fetcher refuses a private key other users can read, and git checks the
+/// fixtures out 0644.
+fn private_key_copy(dir: &Path, name: &str) -> Result<PathBuf, TestError> {
+    use std::os::unix::fs::PermissionsExt;
+    let path = dir.join(name);
+    std::fs::copy(format!("{JOSE}/{name}"), &path)?;
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))?;
+    Ok(path)
+}
+
+/// `container(uuid)`, signed and encrypted to the fixture certificate, as
+/// an encrypting `[[vcon.rule]]` writes it.
+fn sealed(uuid: &str) -> Result<String, TestError> {
+    use sipnab::output::vcon_jose::{Recipient, Signer, seal};
+    let key = std::fs::read_to_string(format!("{JOSE}/fake_grp.key"))?;
+    let cert = std::fs::read_to_string(format!("{JOSE}/fake_grp.crt"))?;
+    let bytes = seal(
+        container(uuid).as_bytes(),
+        uuid,
+        &Signer::from_pem(&key, &cert)?,
+        &Recipient::from_cert_pem(&cert)?,
+    )?;
+    Ok(String::from_utf8(bytes)?)
+}
+
+/// The SHA-256 fingerprint of the fixture certificate, as openssl prints it.
+fn fixture_fingerprint() -> Result<String, TestError> {
+    use base64::Engine as _;
+    use sha2::Digest as _;
+    let pem = std::fs::read_to_string(format!("{JOSE}/fake_grp.crt"))?;
+    let b64: String = pem.lines().filter(|l| !l.starts_with("-----")).collect();
+    let der = base64::engine::general_purpose::STANDARD.decode(b64)?;
+    Ok(sha2::Sha256::digest(&der)
+        .iter()
+        .map(|b| format!("{b:02X}"))
+        .collect::<Vec<_>>()
+        .join(":"))
+}
+
+impl Rig {
+    /// This rig, opening encrypted containers with the fixture key `name`.
+    fn decrypting(mut self, name: &str) -> Result<Self, TestError> {
+        let key = private_key_copy(self.dir.path(), name)?;
+        self.settings.decrypt = Some(Arc::new(sipnab::output::vcon_jose::Opener::load(&key)?));
+        Ok(self)
+    }
+}
+
+/// With the recipient's key, an encrypted container is decrypted, its
+/// signature verified, and the unsigned container written: byte for byte
+/// what was sealed. The outcome names the signer's certificate.
+#[test]
+fn an_encrypted_container_is_decrypted_with_the_key() -> Result<(), TestError> {
+    let answer = sealed(UUID)?;
+    let store = FakeStore::start(move |_| Reply::Json(200, answer.clone()))?;
+    let rig = Rig::new(&store.url(""), StoreKind::Conserver)?.decrypting("fake_grp.key")?;
+    match rig.fetch(UUID)? {
+        Fetched::Decrypted {
+            path,
+            findings,
+            signer,
+        } => {
+            assert_eq!(path, rig.out(UUID));
+            assert!(findings.is_empty(), "{findings:?}");
+            assert_eq!(signer, fixture_fingerprint()?);
+        }
+        other => return Err(format!("{other:?}").into()),
+    }
+    assert_eq!(std::fs::read_to_string(rig.out(UUID))?, container(UUID));
+    Ok(())
+}
+
+/// Through vcon.store's `_meta` envelope as well: the envelope is stripped
+/// before the container is opened.
+#[test]
+fn an_encrypted_container_in_an_envelope_is_decrypted() -> Result<(), TestError> {
+    let answer = enveloped(StoreKind::VconStore, &sealed(UUID)?);
+    let store = FakeStore::start(move |_| Reply::Json(200, answer.clone()))?;
+    let rig = Rig::new(&store.url(""), StoreKind::VconStore)?.decrypting("fake_grp.key")?;
+    let outcome = rig.fetch(UUID)?;
+    assert!(
+        matches!(outcome, Fetched::Decrypted { .. }),
+        "decrypted through the envelope: {outcome:?}"
+    );
+    assert_eq!(std::fs::read_to_string(rig.out(UUID))?, container(UUID));
+    Ok(())
+}
+
+/// Without a key, an encrypted container is written as the store holds it,
+/// and the outcome says it is encrypted.
+#[test]
+fn an_encrypted_container_without_a_key_is_written_as_stored() -> Result<(), TestError> {
+    let bytes = sealed(UUID)?;
+    let answer = bytes.clone();
+    let store = FakeStore::start(move |_| Reply::Json(200, answer.clone()))?;
+    let rig = Rig::new(&store.url(""), StoreKind::Conserver)?;
+    assert_eq!(rig.fetch(UUID)?, Fetched::Encrypted(rig.out(UUID)));
+    assert_eq!(std::fs::read_to_string(rig.out(UUID))?, bytes);
+    Ok(())
+}
+
+/// A key the container was not encrypted to opens nothing, and nothing is
+/// written: a file under the uuid's name must be the vCon or nothing.
+#[test]
+fn a_key_the_container_was_not_encrypted_to_writes_nothing() -> Result<(), TestError> {
+    let answer = sealed(UUID)?;
+    let store = FakeStore::start(move |_| Reply::Json(200, answer.clone()))?;
+    let rig = Rig::new(&store.url(""), StoreKind::Conserver)?.decrypting("other.key")?;
+    match rig.fetch(UUID)? {
+        Fetched::Failed(why) => assert!(why.contains("decrypt"), "{why}"),
+        other => return Err(format!("{other:?}").into()),
+    }
+    assert!(!rig.out(UUID).exists());
+    Ok(())
+}
+
+/// A container whose signature does not verify is not written, though the
+/// key decrypts it: the signed form is what vouches for the vCon inside.
+#[test]
+fn an_encrypted_container_whose_signature_fails_writes_nothing() -> Result<(), TestError> {
+    use sipnab::output::vcon_jose::{Recipient, Signer, encrypt, sign};
+    let key = std::fs::read_to_string(format!("{JOSE}/fake_grp.key"))?;
+    let cert = std::fs::read_to_string(format!("{JOSE}/fake_grp.crt"))?;
+    let signed = sign(
+        container(UUID).as_bytes(),
+        UUID,
+        &Signer::from_pem(&key, &cert)?,
+    )?;
+    let mut jws: serde_json::Value = serde_json::from_slice(&signed)?;
+    let sig = jws["signatures"][0]["signature"]
+        .as_str()
+        .ok_or("signature")?
+        .to_string();
+    let flipped = if sig.starts_with('A') { "B" } else { "A" };
+    jws["signatures"][0]["signature"] = format!("{flipped}{}", &sig[1..]).into();
+    let sealed = encrypt(
+        jws.to_string().as_bytes(),
+        UUID,
+        &Recipient::from_cert_pem(&cert)?,
+    )?;
+    let answer = String::from_utf8(sealed)?;
+    let store = FakeStore::start(move |_| Reply::Json(200, answer.clone()))?;
+    let rig = Rig::new(&store.url(""), StoreKind::Conserver)?.decrypting("fake_grp.key")?;
+    match rig.fetch(UUID)? {
+        Fetched::Failed(why) => assert!(why.contains("signature"), "{why}"),
+        other => return Err(format!("{other:?}").into()),
+    }
+    assert!(!rig.out(UUID).exists());
+    Ok(())
+}
+
+/// An encrypted container filed under the uuid asked for, holding a vCon
+/// with another uuid, is not written.
+#[test]
+fn an_encrypted_container_holding_another_vcon_writes_nothing() -> Result<(), TestError> {
+    use sipnab::output::vcon_jose::{Recipient, Signer, encrypt, sign};
+    let key = std::fs::read_to_string(format!("{JOSE}/fake_grp.key"))?;
+    let cert = std::fs::read_to_string(format!("{JOSE}/fake_grp.crt"))?;
+    let other = "018bcfe5-6800-8a6b-a667-78f1c52138ff";
+    // The signature names the uuid asked for, so the outer checks agree;
+    // only the vCon inside holds another.
+    let signed = sign(
+        container(other).as_bytes(),
+        UUID,
+        &Signer::from_pem(&key, &cert)?,
+    )?;
+    let sealed = encrypt(&signed, UUID, &Recipient::from_cert_pem(&cert)?)?;
+    let answer = String::from_utf8(sealed)?;
+    let store = FakeStore::start(move |_| Reply::Json(200, answer.clone()))?;
+    let rig = Rig::new(&store.url(""), StoreKind::Conserver)?.decrypting("fake_grp.key")?;
+    match rig.fetch(UUID)? {
+        Fetched::Failed(why) => assert!(why.contains("not the one asked for"), "{why}"),
+        other => return Err(format!("{other:?}").into()),
+    }
+    assert!(!rig.out(UUID).exists());
+    Ok(())
+}
+
+/// A decryption key other users can read is refused before anything is
+/// fetched.
+#[test]
+fn a_decryption_key_others_can_read_is_refused() -> Result<(), TestError> {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = tempfile::tempdir()?;
+    let key = private_key_copy(dir.path(), "fake_grp.key")?;
+    std::fs::set_permissions(&key, std::fs::Permissions::from_mode(0o640))?;
+    let err = sipnab::output::vcon_jose::Opener::load(&key)
+        .err()
+        .ok_or("refused")?;
+    assert!(err.contains("chmod 600"), "{err}");
+    Ok(())
+}
+
 // ── The binary ──────────────────────────────────────────────────────────
 
 /// Run `sipnab` with `args` and `stdin`, returning (stderr, code).
@@ -870,5 +1071,29 @@ fn the_rig_writes_under_its_own_directory() -> Result<(), TestError> {
     let rig = Rig::new("http://127.0.0.1:9", StoreKind::Conserver)?;
     assert!(rig.settings.out_dir.starts_with(rig.dir.path()));
     assert!(Path::new(&rig.auth_file()).starts_with(rig.dir.path()));
+    Ok(())
+}
+
+/// `--vcon-fetch-decrypt-key` on the binary: the encrypted container is
+/// written decrypted, the run exits 0, and the log names the signer's
+/// certificate.
+#[test]
+fn the_binary_decrypts_with_the_decrypt_key_flag() -> Result<(), TestError> {
+    let answer = sealed(UUID)?;
+    let store = FakeStore::start(move |_| Reply::Json(200, answer.clone()))?;
+    let rig = Rig::new(&store.url(""), StoreKind::Conserver)?;
+    let key = private_key_copy(rig.dir.path(), "fake_grp.key")?;
+    let mut args = fetch_args(&rig, &store.url(""), &[UUID]);
+    args.splice(
+        0..0,
+        [
+            "--vcon-fetch-decrypt-key".to_string(),
+            key.display().to_string(),
+        ],
+    );
+    let (err, code) = sipnab(&args, "")?;
+    assert_eq!(code, Some(0), "{err}");
+    assert_eq!(std::fs::read_to_string(rig.out(UUID))?, container(UUID));
+    assert!(err.contains(&fixture_fingerprint()?), "{err}");
     Ok(())
 }

@@ -729,6 +729,10 @@ pub const FLAGS: &[(&str, Link)] = &[
         Link::Key("vcon_fetch", "ca", Merge::Override),
     ),
     (
+        "vcon-fetch-decrypt-key",
+        Link::Key("vcon_fetch", "decrypt_key", Merge::Override),
+    ),
+    (
         "vcon-fetch-kind",
         Link::Key("vcon_fetch", "kind", Merge::Override),
     ),

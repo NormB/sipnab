@@ -48,6 +48,8 @@ pub struct FetchSettings {
     pub out_dir: PathBuf,
     /// Replace a file that exists.
     pub overwrite: bool,
+    /// Opens an encrypted container; `None` writes it as the store holds it.
+    pub decrypt: Option<Arc<crate::output::vcon_jose::Opener>>,
 }
 
 /// What became of one uuid.
@@ -64,6 +66,22 @@ pub enum Fetched {
     /// The file exists and `--vcon-fetch-overwrite` was not given: not
     /// fetched.
     Exists(PathBuf),
+    /// An encrypted container, decrypted with `--vcon-fetch-decrypt-key`,
+    /// its signature verified, and the unsigned container inside written to
+    /// this file. `findings`: what the schema check found in it. `signer`:
+    /// the SHA-256 fingerprint of the certificate the signature verified
+    /// against.
+    Decrypted {
+        /// The file written.
+        path: PathBuf,
+        /// The schema findings, one line each.
+        findings: Vec<String>,
+        /// The signer certificate's SHA-256 fingerprint.
+        signer: String,
+    },
+    /// An encrypted container, written to this file as the store holds it:
+    /// no decryption key was given.
+    Encrypted(PathBuf),
     /// The store holds no container with this uuid (`404`).
     NotFound,
     /// Anything else that left no file, and why.
@@ -117,6 +135,8 @@ pub struct FetchPlan {
     pub out_dir: PathBuf,
     /// Replace a file that exists.
     pub overwrite: bool,
+    /// The file holding the key that decrypts an encrypted container.
+    pub decrypt_key: Option<AuthSource>,
 }
 
 /// The flag that names the uuids, quoted in their refusals.
@@ -127,6 +147,12 @@ const AUTH_FLAG: &str = "--vcon-fetch-auth-file";
 
 /// The key that names the auth file, quoted in its errors.
 const AUTH_KEY: &str = "[vcon_fetch] auth_file";
+
+/// The flag that names the decrypt key, quoted in its refusals.
+const DECRYPT_FLAG: &str = "--vcon-fetch-decrypt-key";
+
+/// The key that names the decrypt key, quoted in its refusals.
+const DECRYPT_KEY: &str = "[vcon_fetch] decrypt_key";
 
 /// The value of `--vcon-fetch` that asks for the uuids on standard input.
 const STDIN: &str = "-";
@@ -271,6 +297,19 @@ impl FetchPlan {
                 .clone()
                 .unwrap_or_else(|| PathBuf::from(".")),
             overwrite: args.vcon_fetch_overwrite,
+            decrypt_key: match (&args.vcon_fetch_decrypt_key, &keys.decrypt_key) {
+                (Some(path), _) => Some(AuthSource {
+                    path: path.clone(),
+                    from: DECRYPT_FLAG,
+                    origin: Origin::CommandLine,
+                }),
+                (None, Some(path)) => Some(AuthSource {
+                    path: path.clone(),
+                    from: DECRYPT_KEY,
+                    origin: Origin::ConfigFile,
+                }),
+                (None, None) => None,
+            },
         })
     }
 
@@ -313,6 +352,13 @@ impl FetchPlan {
             limits: self.limits,
             out_dir: self.out_dir,
             overwrite: self.overwrite,
+            decrypt: match self.decrypt_key {
+                Some(key) => Some(Arc::new(
+                    crate::output::vcon_jose::Opener::load(&key.path)
+                        .map_err(|e| (key.origin, format!("{}: {e}", key.from)))?,
+                )),
+                None => None,
+            },
         })
     }
 }
@@ -546,27 +592,89 @@ impl Fetcher {
             Ok(doc) => doc,
             Err(e) => return Fetched::Failed(format!("{url}: the container is not JSON: {e}")),
         };
-        let held = doc.get("uuid").and_then(serde_json::Value::as_str);
-        if !held.is_some_and(|h| h.eq_ignore_ascii_case(uuid)) {
+        // The uuid by the rule the forwarder files a container under: the
+        // top-level member, or the header a signed or encrypted container
+        // carries it in.
+        let held = crate::app::vcon_forward::container_uuid(&container).ok();
+        if !held
+            .as_deref()
+            .is_some_and(|h| h.eq_ignore_ascii_case(uuid))
+        {
             return Fetched::Failed(format!(
                 "{url}: the container's uuid is {}, not the one asked for; nothing was written",
                 held.map_or_else(|| "missing".to_string(), |h| format!("{h:?}"))
             ));
         }
-        let report = crate::output::vcon_schema::validate(&doc);
-        let findings: Vec<String> = report
-            .errors
-            .iter()
-            .map(|f| format!("{} ({}): {}", f.instance_path, f.keyword, f.detail))
-            .collect();
-        if let Err(e) = write_private(&path, &container, self.settings.overwrite) {
-            if e.kind() == std::io::ErrorKind::AlreadyExists {
-                return Fetched::Exists(path);
+        let encrypted =
+            crate::output::vcon_jose::form_of(&doc) == crate::output::vcon_jose::Form::Encrypted;
+        if encrypted {
+            let Some(opener) = &self.settings.decrypt else {
+                return match self.write(&path, &container) {
+                    Ok(()) => Fetched::Encrypted(path),
+                    Err(outcome) => outcome,
+                };
+            };
+            let opened = match opener.open(&container) {
+                Ok(o) => o,
+                Err(e) => {
+                    return Fetched::Failed(format!(
+                        "{url}: the container is encrypted and did not decrypt with \
+                         --vcon-fetch-decrypt-key ({e}); nothing was written"
+                    ));
+                }
+            };
+            let inner: serde_json::Value = match serde_json::from_slice(&opened.unsigned) {
+                Ok(v) => v,
+                Err(e) => {
+                    return Fetched::Failed(format!(
+                        "{url}: the decrypted container is not JSON: {e}; nothing was written"
+                    ));
+                }
+            };
+            let inner_uuid = inner.get("uuid").and_then(serde_json::Value::as_str);
+            if !inner_uuid.is_some_and(|h| h.eq_ignore_ascii_case(uuid)) {
+                return Fetched::Failed(format!(
+                    "{url}: the decrypted container's uuid is {}, not the one asked for; \
+                     nothing was written",
+                    inner_uuid.map_or_else(|| "missing".to_string(), |h| format!("{h:?}"))
+                ));
             }
-            return Fetched::Failed(format!("{}: {e}", path.display()));
+            let findings = schema_findings(&inner);
+            return match self.write(&path, &opened.unsigned) {
+                Ok(()) => Fetched::Decrypted {
+                    path,
+                    findings,
+                    signer: opened.signer_sha256,
+                },
+                Err(outcome) => outcome,
+            };
         }
-        Fetched::Saved { path, findings }
+        let findings = schema_findings(&doc);
+        match self.write(&path, &container) {
+            Ok(()) => Fetched::Saved { path, findings },
+            Err(outcome) => outcome,
+        }
     }
+
+    /// Write `bytes` to `path`, private, or the outcome that says why not.
+    fn write(&self, path: &Path, bytes: &[u8]) -> Result<(), Fetched> {
+        write_private(path, bytes, self.settings.overwrite).map_err(|e| {
+            if e.kind() == std::io::ErrorKind::AlreadyExists {
+                Fetched::Exists(path.to_path_buf())
+            } else {
+                Fetched::Failed(format!("{}: {e}", path.display()))
+            }
+        })
+    }
+}
+
+/// What the core-04 schema finds in `doc`, one line each.
+fn schema_findings(doc: &serde_json::Value) -> Vec<String> {
+    crate::output::vcon_schema::validate(doc)
+        .errors
+        .iter()
+        .map(|f| format!("{} ({}): {}", f.instance_path, f.keyword, f.detail))
+        .collect()
 }
 
 /// One answer to a GET: the status, and the body of a `2xx` or the start of
@@ -692,9 +800,13 @@ pub fn exit_code(outcomes: &[Fetched]) -> i32 {
     if outcomes.iter().any(|o| matches!(o, Fetched::Halt(_))) {
         return 3;
     }
-    let clean = outcomes
-        .iter()
-        .all(|o| matches!(o, Fetched::Saved { findings, .. } if findings.is_empty()));
+    let clean = outcomes.iter().all(|o| match o {
+        Fetched::Saved { findings, .. } | Fetched::Decrypted { findings, .. } => {
+            findings.is_empty()
+        }
+        Fetched::Encrypted(_) => true,
+        _ => false,
+    });
     i32::from(!clean)
 }
 
@@ -731,6 +843,40 @@ pub fn describe(uuid: &str, outcome: &Fetched) -> (tracing::Level, String) {
         Fetched::Failed(why) | Fetched::Halt(why) => {
             (tracing::Level::ERROR, format!("{uuid}: {why}"))
         }
+        Fetched::Decrypted {
+            path,
+            findings,
+            signer,
+        } if findings.is_empty() => (
+            tracing::Level::INFO,
+            format!(
+                "{uuid}: decrypted and written to {}; the signature verifies against the \
+                 certificate with SHA-256 fingerprint {signer}",
+                path.display()
+            ),
+        ),
+        Fetched::Decrypted {
+            path,
+            findings,
+            signer,
+        } => (
+            tracing::Level::WARN,
+            format!(
+                "{uuid}: decrypted and written to {} (signed by the certificate with SHA-256 \
+                 fingerprint {signer}), but the schema refuses it ({} finding(s)): {}",
+                path.display(),
+                findings.len(),
+                findings.join("; ")
+            ),
+        ),
+        Fetched::Encrypted(path) => (
+            tracing::Level::INFO,
+            format!(
+                "{uuid}: written to {} as the store holds it: the container is encrypted \
+                 (draft-ietf-vcon-vcon-core-04 section 5.3). --vcon-fetch-decrypt-key decrypts it",
+                path.display()
+            ),
+        ),
     }
 }
 
@@ -1147,6 +1293,58 @@ mod tests {
 
     /// A kind name the fetcher accepts maps to a kind, `vcon-mcp` among
     /// them, and the forwarder's names are the first of them.
+    /// The decrypt key prints by its path alone, so a flag and a key that
+    /// name the same file are the same setting; a key that is refused names
+    /// the setting that named it, with that setting's exit-code origin.
+    #[test]
+    fn the_decrypt_key_is_named_by_the_setting_that_gave_it() -> TestResult {
+        let dir = tempfile::tempdir()?;
+        let auth = dir.path().join("auth");
+        std::fs::write(&auth, "Authorization: Bearer token\n")?;
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            std::fs::set_permissions(&auth, std::fs::Permissions::from_mode(0o600))?;
+        }
+        let missing = dir.path().join("missing.key");
+        let auth_flag = format!("--vcon-fetch-auth-file={}", auth.display());
+        let url = "--vcon-fetch-url=http://127.0.0.1:9/v/{uuid}";
+        let by_flag = FetchPlan::resolve(
+            &flags(&[
+                url,
+                &auth_flag,
+                &format!("--vcon-fetch-decrypt-key={}", missing.display()),
+            ])?,
+            &keys("")?,
+        )?;
+        let by_key = FetchPlan::resolve(
+            &flags(&[url, &auth_flag])?,
+            &keys(&format!(
+                "decrypt_key = {:?}",
+                missing.display().to_string()
+            ))?,
+        )?;
+        assert_eq!(format!("{by_flag:?}"), format!("{by_key:?}"));
+        for (plan, origin, from) in [
+            (
+                by_flag,
+                crate::settings::Origin::CommandLine,
+                "--vcon-fetch-decrypt-key",
+            ),
+            (
+                by_key,
+                crate::settings::Origin::ConfigFile,
+                "[vcon_fetch] decrypt_key",
+            ),
+        ] {
+            let Err((got, message)) = plan.into_settings() else {
+                return Err("a missing decrypt key was accepted".into());
+            };
+            assert_eq!(got, origin);
+            assert!(message.starts_with(&format!("{from}: ")), "{message}");
+        }
+        Ok(())
+    }
+
     #[test]
     fn every_fetch_kind_name_maps() {
         for name in crate::config::FETCH_KINDS {

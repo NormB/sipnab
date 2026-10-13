@@ -375,6 +375,12 @@ fn check_uuid(outer: Option<&serde_json::Value>, signed: &[u8]) -> Result<(), St
 /// The unsigned container inside a signed one, once every signature verifies
 /// as `RS256` against the first certificate of its `x5c`.
 pub fn verify(jws: &[u8]) -> Result<Vec<u8>, String> {
+    verify_with_signer(jws).map(|(unsigned, _)| unsigned)
+}
+
+/// [`verify`], and the DER of the certificate the first signature verified
+/// against.
+fn verify_with_signer(jws: &[u8]) -> Result<(Vec<u8>, Vec<u8>), String> {
     let value: serde_json::Value =
         serde_json::from_slice(jws).map_err(|e| format!("not JSON: {e}"))?;
     if form_of(&value) != Form::Signed {
@@ -387,6 +393,7 @@ pub fn verify(jws: &[u8]) -> Result<Vec<u8>, String> {
         .as_array()
         .filter(|s| !s.is_empty())
         .ok_or("`signatures` is not a non-empty array")?;
+    let mut signer: Option<Vec<u8>> = None;
     for signature in signatures {
         let protected_b64 = signature
             .get("protected")
@@ -418,10 +425,12 @@ pub fn verify(jws: &[u8]) -> Result<Vec<u8>, String> {
             &b64u_field(signature, "signature")?,
         )
         .map_err(|_| "a signature does not verify against its certificate".to_owned())?;
+        signer.get_or_insert(leaf);
     }
-    URL_SAFE_NO_PAD
+    let unsigned = URL_SAFE_NO_PAD
         .decode(payload_b64)
-        .map_err(|e| format!("`payload` is not base64url: {e}"))
+        .map_err(|e| format!("`payload` is not base64url: {e}"))?;
+    Ok((unsigned, signer.unwrap_or_default()))
 }
 
 /// A JOSE header that travels base64url-encoded; an absent one is empty.
@@ -677,23 +686,84 @@ pub fn load_sealing(
     let read = |path: &std::path::Path| {
         std::fs::read_to_string(path).map_err(|e| format!("cannot read '{}': {e}", path.display()))
     };
+    Ok(Sealing {
+        signer: Signer::from_pem(
+            &read_private_key("signing key", sign_key)?,
+            &read(sign_cert)?,
+        )?,
+        recipient: Recipient::from_cert_pem(&read(encrypt_to)?)?,
+    })
+}
+
+/// What opens an encrypted container a store hands back: the recipient's
+/// private key, read from a file only its owner can read.
+pub struct Opener {
+    /// The PEM text of the RSA private key.
+    key_pem: String,
+}
+
+/// Names no key material.
+impl std::fmt::Debug for Opener {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Opener").finish_non_exhaustive()
+    }
+}
+
+/// An encrypted container, opened.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Opened {
+    /// The unsigned container inside.
+    pub unsigned: Vec<u8>,
+    /// The SHA-256 fingerprint of the certificate the signature verified
+    /// against, as `openssl x509 -noout -fingerprint -sha256` prints it.
+    pub signer_sha256: String,
+}
+
+impl Opener {
+    /// Read the PEM RSA private key at `path`, which must be readable by its
+    /// owner only.
+    pub fn load(path: &std::path::Path) -> Result<Self, String> {
+        let key_pem = read_private_key("decryption key", path)?;
+        private_key(&key_pem)?;
+        Ok(Self { key_pem })
+    }
+
+    /// Decrypt `jwe`, verify the signed form inside, and return the unsigned
+    /// container with the fingerprint of the certificate that signed it.
+    pub fn open(&self, jwe: &[u8]) -> Result<Opened, String> {
+        use sha2::Digest as _;
+        let signed = decrypt(jwe, &self.key_pem)?;
+        let (unsigned, signer) = verify_with_signer(&signed)?;
+        let signer_sha256 = sha2::Sha256::digest(&signer)
+            .iter()
+            .map(|b| format!("{b:02X}"))
+            .collect::<Vec<_>>()
+            .join(":");
+        Ok(Opened {
+            unsigned,
+            signer_sha256,
+        })
+    }
+}
+
+/// The PEM text of the private key at `path`, `what` naming it in errors. On
+/// Unix the file must be readable by its owner only, as ssh requires of its
+/// keys: a key other users can read has already leaked.
+fn read_private_key(what: &str, path: &std::path::Path) -> Result<String, String> {
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt as _;
-        let mode = std::fs::metadata(sign_key)
-            .map_err(|e| format!("cannot read '{}': {e}", sign_key.display()))?
+        let mode = std::fs::metadata(path)
+            .map_err(|e| format!("cannot read '{}': {e}", path.display()))?
             .permissions()
             .mode();
         if mode & 0o077 != 0 {
             return Err(format!(
-                "the signing key '{}' can be read by other users (mode {:o}): chmod 600 it",
-                sign_key.display(),
+                "the {what} '{}' can be read by other users (mode {:o}): chmod 600 it",
+                path.display(),
                 mode & 0o777
             ));
         }
     }
-    Ok(Sealing {
-        signer: Signer::from_pem(&read(sign_key)?, &read(sign_cert)?)?,
-        recipient: Recipient::from_cert_pem(&read(encrypt_to)?)?,
-    })
+    std::fs::read_to_string(path).map_err(|e| format!("cannot read '{}': {e}", path.display()))
 }

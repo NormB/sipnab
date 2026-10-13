@@ -10,6 +10,19 @@ entry that carries them.
 
 ## [Unreleased]
 
+### Added
+
+- **`--vcon-fetch` decrypts encrypted vCons.** With
+  `--vcon-fetch-decrypt-key` (or `[vcon_fetch] decrypt_key`), a container in
+  the encrypted form is decrypted, the signature of the signed form inside is
+  verified against its `x5c` certificate, and the unsigned vCon is written,
+  after the same uuid and schema checks as any other. The log names the
+  SHA-256 fingerprint of the signing certificate. A key the container was not
+  encrypted to, or a signature that does not verify, writes nothing. The key
+  file must be readable by its owner only. Without the key, the fetcher now
+  writes an encrypted container as the store holds it; it used to refuse it,
+  reading its uuid only from the top level.
+
 ### Changed
 
 - **The homepage groups what sipnab supports into six cards.** The

@@ -1124,6 +1124,9 @@ The most bytes of a store's status line and headers the fetcher reads, 1 to 4294
 .TP
 \fB\-\-vcon\-fetch\-ca\fR \fIFILE\fR
 Trust only the CA certificates in this PEM file for an \fBhttps://\fR store. Without it the fetcher trusts the host's CA bundle. Overrides \fB[vcon_fetch] ca\fR.
+.TP
+\fB\-\-vcon\-fetch\-decrypt\-key\fR \fIFILE\fR
+Decrypt each encrypted container (draft\-ietf\-vcon\-vcon\-core\-04 section 5.3) with the RSA private key in this PEM file, verify its signature, and write the unsigned vCon inside. The file must be readable by its owner only. Without it the fetcher writes an encrypted container as the store holds it. Overrides \fB[vcon_fetch] decrypt_key\fR.
 .SS Config
 .TP
 \fB\-f\fR, \fB\-\-config\fR \fIFILE\fR

@@ -1634,6 +1634,20 @@ static KEY_SPECS: &[KeySpec] = &[
     ),
     (
         "vcon_fetch",
+        "decrypt_key",
+        KeyKind::Literal {
+            accept: &[
+                "\"x\"",
+                "\" \"",
+                "\"0\"",
+                "\"/etc/sipnab/vcon-recipient.key\"",
+            ],
+            reject: &["\"\""],
+            ctx: "",
+        },
+    ),
+    (
+        "vcon_fetch",
         "kind",
         KeyKind::Literal {
             accept: &[

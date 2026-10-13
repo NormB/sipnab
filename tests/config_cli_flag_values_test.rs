@@ -2443,6 +2443,21 @@ static SPECS: &[Spec] = &[
         ],
     ),
     (
+        "vcon-fetch-decrypt-key",
+        Kind::Text {
+            accept: &["x", " ", "0", "-1"],
+            reject: &[("", 2)],
+        },
+        &[
+            "--vcon-fetch-url",
+            "http://127.0.0.1:9/v/{uuid}",
+            "--vcon-fetch-auth-file",
+            "/nonexistent/auth",
+            "--vcon-fetch",
+            "018bcfe5-6800-8a6b-a667-78f1c5213800",
+        ],
+    ),
+    (
         "vcon-fetch-overwrite",
         Kind::Switch,
         &[
