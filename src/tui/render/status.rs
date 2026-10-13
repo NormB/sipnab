@@ -349,11 +349,36 @@ pub(in crate::tui) fn render_status_line3(frame: &mut ratatui::Frame, area: Rect
             Span::raw(L3_PREFIX),
             Span::styled(filter_text.to_string(), yellow),
             Span::styled(search_text, yellow),
+            Span::styled(stream_scope_text(app), yellow),
         ]
     };
 
     let line3 = Paragraph::new(Line::from(spans)).style(status_bar_style(&app.theme));
     frame.render_widget(line3, area);
+}
+
+/// What a stream list `r` narrowed to a call adds to status line 3: which
+/// streams it shows and the key that switches (#482). Empty elsewhere.
+fn stream_scope_text(app: &App) -> String {
+    if app.current_view != View::StreamList {
+        return String::new();
+    }
+    let Some(scope) = app.stream_list_scope.as_deref() else {
+        return String::new();
+    };
+    let call = match scope {
+        [one] => format!("call {one}"),
+        many => format!("{} calls", many.len()),
+    };
+    if app.stream_list_show_all {
+        format!("    Streams: all (a: {call})")
+    } else {
+        let unlinked = match app.stream_displayed.unattributed {
+            0 => String::new(),
+            n => format!(", {n} unlinked not shown"),
+        };
+        format!("    Streams: {call}{unlinked} (a: all)")
+    }
 }
 
 /// Build the f-key bar item list for the current view/popup at the
@@ -586,6 +611,7 @@ pub(in crate::tui) fn fkey_bar_items(
                         ("/", "Search"),
                         ("y", "Copy"),
                         ("F2", "Save"),
+                        ("F12", "Select"),
                     ]
                 }
             }
@@ -601,6 +627,7 @@ pub(in crate::tui) fn fkey_bar_items(
                 ("Tab", "Calls"),
                 ("F2", "Save WAV"),
                 ("F7", "Filter"),
+                ("a", "All/Call"),
             ],
             View::StreamDetail(_) => {
                 #[cfg(feature = "audio")]
@@ -1193,6 +1220,51 @@ mod tests {
         Ok(())
     }
 
+    /// A stream list `r` narrowed to a call says so on status line 3, with
+    /// the key that widens it and how many unlinked streams it leaves out;
+    /// widened, it says that too (#482).
+    #[test]
+    fn render_status_line3_names_the_stream_list_scope() -> Result<(), TestError> {
+        let line = |app: &App| -> Result<String, TestError> {
+            let mut terminal = Terminal::new(TestBackend::new(140, 1))?;
+            terminal.draw(|frame| render_status_line3(frame, Rect::new(0, 0, 140, 1), app))?;
+            let buf = terminal.backend().buffer();
+            let mut row = String::new();
+            for x in 0..buf.area.width {
+                row.push_str(buf.cell((x, 0)).ok_or("cell")?.symbol());
+            }
+            Ok(row)
+        };
+        let mut app = app_with_dialog()?;
+        app.current_view = View::CallFlow("call-1@test".to_string());
+        app.stream_store
+            .write()
+            .insert_for_test(crate::tui::controllers::test_support::test_stream(7, None));
+        app.open_stream_list_for(vec!["call-1@test".to_string()]);
+        app.sync_caches();
+        let narrowed = line(&app)?;
+        assert!(narrowed.contains("View filter: none"), "{narrowed:?}");
+        assert!(
+            narrowed.contains("Streams: call call-1@test"),
+            "{narrowed:?}"
+        );
+        assert!(narrowed.contains("1 unlinked not shown"), "{narrowed:?}");
+        assert!(narrowed.contains("a: all"), "{narrowed:?}");
+        assert!(app.toggle_stream_list_scope());
+        app.sync_caches();
+        let widened = line(&app)?;
+        assert!(widened.contains("Streams: all"), "{widened:?}");
+        assert!(widened.contains("a: call call-1@test"), "{widened:?}");
+        app.close_stream_list();
+        app.open_stream_list_unscoped();
+        app.sync_caches();
+        assert!(
+            !line(&app)?.contains("Streams:"),
+            "Tab lists every stream silently"
+        );
+        Ok(())
+    }
+
     /// In the call-flow view, status line 3 shows the mode hints
     /// including the split percentage.
     #[test]
@@ -1529,7 +1601,11 @@ mod tests {
                         // view that does not bind it itself.
                         let global_help =
                             key.code == km.help && !crate::tui::controllers::view_binds_help(view);
-                        if !(is_bound(&km, key) || global_help) {
+                        // F12, the mouse-capture toggle, is answered in
+                        // every view unless the keymap binds it.
+                        let global_mouse = key.code == crossterm::event::KeyCode::F(12)
+                            && !crate::tui::controllers::keymap_binds(&km, key.code);
+                        if !(is_bound(&km, key) || global_help || global_mouse) {
                             unbound.push(format!(
                                 "{view:?} @ width {width}: bar advertises \
                                  {legend:?} {label:?} but {key:?} is not bound in that view"

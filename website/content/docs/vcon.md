@@ -25,7 +25,9 @@ When the run retained the RTP payload, the container also
 carries the audio, inline: the whole call, from its first frame, unless a
 retention limit cut it, and then the container says so (see
 [Audio retention budget](@/docs/config.md#audio-retention-budget)). None of
-them carries a signature or any claim that somebody consented to anything.
+them carries any claim that somebody consented to anything, and none carries a
+signature unless you configure a rule to encrypt its containers (see
+[Encrypt what a rule writes](#encrypt-what-a-rule-writes)).
 
 **A sipnab vCon records what an instrument
 saw, not what the parties said.** [What may you conclude](#someone-handed-you-a-sipnab-vcon-what-may-you-conclude),
@@ -138,6 +140,8 @@ dir   = "/var/spool/sipnab-vcon/all"
 | `max_inline_media_mib` | The largest audio this rule's containers inline, in MiB. sipnab writes a call above it without its audio and the container records `media: "refused-over-budget"`. Unset: `--vcon-max-inline-media` |
 | `live_audio` | `true`: serve each matching call's audio while it is in progress, over the REST API. See [Hear a call while it is in progress](#hear-a-call-while-it-is-in-progress) |
 | `live` | `true`: on a live capture, write each matching call's container as the call starts and rewrite it in place each time the call changes. See [Follow a call while it is in progress](#follow-a-call-while-it-is-in-progress) |
+| `encrypt_to` | A PEM certificate. Set, the rule writes only the encrypted form, to that certificate's key. Needs `sign_key` and `sign_cert`. See [Encrypt what a rule writes](#encrypt-what-a-rule-writes) |
+| `sign_key`, `sign_cert` | The PEM RSA private key an encrypting rule signs with, and its certificate chain, leaf first |
 | `grouping` | `leg` (the default): one container per dialog. `call`: one container per call, holding every leg the rule selects. See [Calls through a PBX or a B2BUA](#calls-through-a-pbx-or-a-b2bua) |
 
 `--export-vcon-when` with `--export-vcon-dir` still works and is one more
@@ -406,6 +410,74 @@ live = true
 A forwarder delivers each rewrite as a new copy of the same container. A store
 that refuses a `uuid` it already holds needs the forwarder to replace it. See
 [What it does with each container](#what-it-does-with-each-container).
+
+### Encrypt what a rule writes
+
+A rule with `encrypt_to` writes each container in the encrypted form of
+[draft-ietf-vcon-vcon-core-04 section 5.3](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-04#section-5.3),
+so the spool, the forwarder's directories and the store hold nothing a reader
+without the key can open:
+
+```toml
+[[vcon.rule]]
+name       = "support"
+when       = "@support"
+dir        = "/var/spool/sipnab-vcon/support"
+audio      = "inline"
+encrypt_to = "/etc/sipnab/vcon-recipient.crt"
+sign_key   = "/etc/sipnab/vcon-signing.key"
+sign_cert  = "/etc/sipnab/vcon-signing.crt"
+```
+
+The draft requires the producer to sign a container before it encrypts it, so the
+rule does both:
+
+1. sipnab signs the container with `sign_key` (JWS, `RS256`), and the
+   signature carries the `sign_cert` chain in `x5c`.
+2. sipnab encrypts that signed container to the RSA key in the `encrypt_to`
+   certificate (JWE, `RSA-OAEP` for the content key, `A256CBC-HS512` for the
+   content), with a fresh content key for every write.
+
+The file holds the JWE: `protected`, `unprotected`, `recipients`, `iv`,
+`ciphertext` and `tag`. Its `unprotected` header carries the container's
+`uuid` and `cty: "application/vcon+json"`, so a store and the forwarder's
+replace URL can use the uuid without the key. sipnab names each file
+`<uuid>.vcon.json` rather than after the Call-ID, because a Call-ID can carry
+host names and addresses and the file name is not encrypted.
+
+**Decrypt one.** The recipient opens the container with the private key of
+the `encrypt_to` certificate, then verifies the signature against the
+certificate in `x5c`. The working group's reference tool, the `vcon`
+command of [vcon-dev/vcon](https://github.com/vcon-dev/vcon), does it with
+`vcon decrypt <key> <cert>` and then `vcon verify <ca cert>`. sipnab's tests
+check its output against the draft's own encrypted example (Appendix A.7):
+sipnab decrypts that example and verifies its signature, and signs the same
+bytes with the same key to the same signature.
+
+**What the keys must be.**
+
+- `encrypt_to` and `sign_cert` hold PEM certificates. Each key is RSA, at
+  least 2048 bits.
+- `sign_key` is a PEM RSA private key (`PRIVATE KEY` or `RSA PRIVATE KEY`),
+  readable by its owner only. The first certificate in `sign_cert` must be
+  that key's certificate.
+- sipnab does not check who issued either certificate or when it expires.
+  Whoever decrypts a container decides whether to trust the signer's chain.
+
+**What it refuses at startup**, naming the rule:
+
+- `encrypt_to` without `sign_key` and `sign_cert`, or either of those without
+  `encrypt_to`
+- a key or certificate file that sipnab cannot read, that holds no key or certificate,
+  or that holds a key other than RSA of at least 2048 bits
+- a `sign_cert` whose first certificate is not the certificate of `sign_key`
+- a `sign_key` that other users can read (`chmod 600` it)
+- `audio = "url"`: sipnab would not encrypt the WAV file beside the container.
+  Use `inline` or `omit`.
+
+Every other rule key works with `encrypt_to`. A `live = true` rule writes a
+new encrypted container each time the call changes, and enrichment services
+receive the call before sipnab encrypts it, as without `encrypt_to`.
 
 ## The spool contract, for a bridge that consumes it
 
@@ -743,9 +815,9 @@ sent, and leaves a newer one in the spool for the next pass.
 - **It does not delete anything.** The delivered directory keeps a copy of
   every container, and every copy is call data. Delete them on a schedule
   that suits you.
-- **It adds no signature and no consent.** A store may sign what it receives.
-  That signature is the store's, over an observation, and sipnab records no
-  consent.
+- **It adds no signature and no consent.** It sends each container as the
+  rule wrote it. A store may sign what it receives. That signature is the
+  store's, over an observation, and sipnab records no consent.
 - **It sends one container at a time**, in name order, one connection each.
 
 ## Fetch a stored vCon
@@ -1259,8 +1331,11 @@ the whole reason the completeness caveat exists, and a consumer that collapses
 it turns a configuration choice on a capture host into a claim about somebody's
 call.
 
-**sipnab signs nothing, so cryptography attributes nothing here.** Trust the
-container exactly as much as you trust whoever handed it to you.
+**An unsigned container attributes nothing.** Trust it exactly as much as you
+trust whoever handed it to you. sipnab signs an encrypted container with the key
+and certificate its operator configured: the signature says which operator's
+sipnab wrote those bytes, and the container inside still says that sipnab
+observed the call and recorded nothing.
 
 **Two containers about one call do not merge themselves.** sipnab writes the
 parties of the dialog it observed and infers none. One tap on a proxied call
@@ -1275,8 +1350,7 @@ Each refusal has an argument behind it in
 
 | Refused | Why |
 |---|---|
-| a JWS signature | a signature over an observation verifies as a signature over a recording |
-| JWE encryption | it asserts a custody relationship sipnab does not have |
+| a JWS signature on an unsigned container | a signature over an observation verifies as a signature over a recording, so sipnab signs only as the inner layer of an encrypted container you configure, with your key ([Encrypt what a rule writes](#encrypt-what-a-rule-writes)) |
 | consent attachments | sipnab obtained no consent, and an empty consent field reads as "none recorded" |
 | lawful-basis attachments | the same, with a named regulatory reader on the other end |
 | a party `name` **that sipnab vouches for** | `From` and `To` are the caller's claim about the caller, trivially spoofed |

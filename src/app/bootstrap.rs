@@ -1208,7 +1208,7 @@ fn tunnel_ports_ignored_notice(tunnel_ports: &[u16]) -> Option<String> {
 /// # Errors
 ///
 /// A `PlanError` (exit code 2) for a pattern that does not compile.
-fn build_matcher(cli: &Cli, config: &Config) -> Result<SipMatcher, PlanError> {
+pub(crate) fn build_matcher(cli: &Cli, config: &Config) -> Result<SipMatcher, PlanError> {
     let m = &cli.matching_args;
     // The matcher is one setting composed from several patterns: a refusal
     // is the command line's when it gave any of them.
@@ -4716,6 +4716,7 @@ pub(crate) fn vcon_rules(
             enrich: Vec::new(),
             live_audio: false,
             live: false,
+            sealing: None,
         });
     }
     for rule in &config.vcon.rule {
@@ -4758,6 +4759,34 @@ pub(crate) fn vcon_rules(
             (RuleAudio::Url, Some(base)) => Some(base.trim_end_matches('/').to_owned()),
             _ => None,
         };
+        // core-04 section 5.3: the encrypted form is the signed form,
+        // encrypted, so an encrypting rule signs too.
+        let sealing = match (&rule.encrypt_to, &rule.sign_key, &rule.sign_cert) {
+            (None, None, None) => None,
+            (None, _, _) => {
+                return Err(refuse(format!(
+                    "[[vcon.rule]] '{name}' has sign_key or sign_cert without encrypt_to: \
+                     sipnab signs a container only as the inner layer of the encrypted form"
+                )));
+            }
+            (Some(_), None, _) | (Some(_), _, None) => {
+                return Err(refuse(format!(
+                    "[[vcon.rule]] '{name}' has encrypt_to and needs sign_key and sign_cert: \
+                     the encrypted form encrypts the signed form \
+                     (draft-ietf-vcon-vcon-core-04 section 5.3)"
+                )));
+            }
+            (Some(_), Some(_), Some(_)) if audio == RuleAudio::Url => {
+                return Err(refuse(format!(
+                    "[[vcon.rule]] '{name}' has encrypt_to and audio = 'url': the WAV file \
+                     beside the container would not be encrypted; use audio = 'inline' or 'omit'"
+                )));
+            }
+            (Some(to), Some(key), Some(cert)) => Some(std::sync::Arc::new(
+                crate::output::vcon_jose::load_sealing(to, key, cert)
+                    .map_err(|e| refuse(format!("[[vcon.rule]] '{name}': {e}")))?,
+            )),
+        };
         let text = resolved_filter_text(&rule.when, cli, config)
             .map_err(|e| refuse(format!("[[vcon.rule]] '{name}': {}", e.message)))?;
         let filter = FilterExpr::parse(&text).map_err(|e| {
@@ -4784,6 +4813,7 @@ pub(crate) fn vcon_rules(
             enrich: Vec::new(),
             live_audio: rule.live_audio.unwrap_or(false),
             live: rule.live.unwrap_or(false),
+            sealing,
         });
     }
     if rules.iter().any(|r| r.live_audio)
@@ -6617,6 +6647,9 @@ mod tests {
                 grouping: None,
                 live_audio: None,
                 live: None,
+                encrypt_to: None,
+                sign_key: None,
+                sign_cert: None,
             })
             .collect();
         config

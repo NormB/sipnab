@@ -113,6 +113,12 @@ packet spacing varies) and loss. Streams flagged `orphan` have no matching SIP
 dialog, which is often a sign that NAT or a SIP-aware router rewrote the media
 address.
 
+From a Call Flow, `r` opens the same view narrowed to that call's streams.
+`a` switches between that call's streams and every stream, and `Esc` returns
+to the Call Flow. A stream is a call's when an SDP sipnab captured names the
+stream's address and port. A stream with NAT on both ends, or one sent over
+ICE or TURN, can stay unlinked: status line 3 counts those, and `a` shows them.
+
 Press `Enter` on a stream -- or on an `██ RTP ██` bar back in the Call Flow --
 to open **Stream Detail**: [MOS](@/docs/glossary.md#mos) (mean opinion score, an
 estimate of how the call sounded), jitter statistics, quality intervals, burst/gap

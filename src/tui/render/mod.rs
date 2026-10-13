@@ -183,6 +183,7 @@ pub(in crate::tui) fn render_app(
         }
         View::StreamList => {
             let store = ss;
+            let scope = app.stream_list_scope_label();
             stream_list::render_stream_list(
                 frame,
                 main_area,
@@ -195,6 +196,7 @@ pub(in crate::tui) fn render_app(
                     displayed: &app.stream_displayed.keys,
                     quality_bands: &app.quality_bands,
                     dialogs: ds,
+                    scope,
                 },
             );
         }

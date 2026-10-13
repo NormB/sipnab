@@ -80,6 +80,7 @@ CALL FLOW:
   m / M            Mark message / clear marks
   e                Fold / expand retransmits
   E                Export Mermaid sequence diagram
+  y                Copy the selected message to clipboard
   C                Operator note on this message (yours, never analysis)
   9/0, +/-, ←/→    Resize the detail pane
   ←/→              Scroll detail horizontally (focused, wrap off)
@@ -87,7 +88,7 @@ CALL FLOW:
   F2               Save
   F4, x            Extended multi-leg flow
   F6, Ctrl+R       Toggle RTP display
-  r                Jump to RTP Streams
+  r                RTP Streams of this call (Esc comes back here)
   N                Name endpoints (Tab/Shift+Tab between participants)
 
 RAW MESSAGE:
@@ -204,7 +205,8 @@ RTP STREAMS (Tab):
   F1               Help
   F7               Filter
   N                Name selected address (IP -> host / FQDN)
-  Esc              Back to the call list
+  a                This call's streams / every stream (after r in a call flow)
+  Esc              Back to the call flow (after r) or the call list
 
 STREAM DETAIL:
   \u{2191}/\u{2193}             Scroll
@@ -231,7 +233,7 @@ ARCHIVE PASSWORD (a load waits on an encrypted archive member):
   Ctrl-U           Clear the entry
 
 COPY & PASTE:
-  y                Copy displayed message to clipboard (raw message view)
+  y                Copy displayed message to clipboard (raw message, call flow)
   E                Export Mermaid diagram to clipboard (call flow view)
   F12              Toggle mouse capture for native drag-to-select \u{2014} global
 

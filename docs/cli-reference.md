@@ -650,7 +650,7 @@ stop log lines corrupting the alternate screen, so redirect stderr if you do.
 
 | Flag | Value | Default | Since | Description |
 |------|-------|---------|-------|-------------|
-| `-e`, `--match` | `<PATTERN>` | -- | 0.5.6 | SIP payload match-expression (the positional match expression). Regex tested against the whole raw message; once any message in a dialog matches, sipnab shows the rest of that dialog too (dialog-following). Honors `-i`/`-v`/`-w`/`--single-line`. Independent of the trailing `<BPF_FILTER>` positional |
+| `-e`, `--match` | `<PATTERN>` | -- | 0.5.6 | SIP payload match-expression (the positional match expression). Regex tested against the whole raw message; once any message in a dialog matches, sipnab shows the rest of that dialog too (dialog-following). In the TUI, the call list holds only dialogs one of whose messages matched, and every later message of each; the REST API and MCP server a TUI run starts read the same dialogs. Honors `-i`/`-v`/`-w`/`--single-line`. Independent of the trailing `<BPF_FILTER>` positional |
 | `-i`, `--ignore-case` | -- | off | 0.3.0 | Case-insensitive matching for header filters and patterns |
 | `-v`, `--invert` | -- | off | 0.3.0 | Invert the match: show messages that do NOT match |
 | `-w`, `--word` | -- | off | 0.3.0 | Match whole words only |

@@ -58,7 +58,7 @@ names. sipnab occupies that shape and stops there.
 | # | Decision | The fact it turns on |
 |---|---|---|
 | [Section 2.1](#21-observer-never-producer-of-record) | Emit **observer** vCons, never a producer-of-record vCon | sipnab saw a tap, not a conversation |
-| [Section 2.2](#22-never-sign-jws-and-never-encrypt-jwe) | **Never** sign (JWS) and **never** encrypt (JWE) | A signature over an observation is indistinguishable from a signature over a recording |
+| [Section 2.2](#22-never-sign-jws-and-never-encrypt-jwe) | **Never** sign (JWS) and **never** encrypt (JWE) on sipnab's own account; revised 2026-10-13: a rule may encrypt, signed with the operator's own key | A signature over an observation is indistinguishable from a signature over a recording |
 | [Section 2.3](#23-never-emit-consent-or-lawful-basis-attachments) | **Never** emit consent or lawful-basis attachments | sipnab obtained no consent, and silence must not read as "none was recorded" |
 | [Section 2.4](#24-never-vouch-for-a-party-name-and-always-set-validation-none) | **Never** vouch for a Party `name`; always `validation: "none"` | `From` and `To` are a claim by the caller, trivially spoofed |
 | [Section 2.5](#25-never-host-artefacts) | **Never** host artefacts; inline base64url only, under a cap | sipnab hosts nothing, so it cannot assert where a file lives |
@@ -97,6 +97,16 @@ custody relationship with that recipient which sipnab does not have, and the
 key management it would need is infrastructure that
 [section 4 of `positioning.md`, "What the position forbids"](positioning.md#4-what-the-position-forbids)
 already refuses on independent grounds.
+
+Revised 2026-10-13: encryption is built, on request, as an operator's choice
+per rule (`encrypt_to`, with `sign_key` and `sign_cert`). The draft (section
+5.3) makes the encrypted form the signed form encrypted, so the rule signs
+too. What remains of this section: sipnab never signs or encrypts on its own
+account. The keys and certificates are the operator's, so the signature
+attests that the operator's sipnab wrote the bytes, and the container inside
+still says that sipnab observed the call and recorded nothing. An unsigned
+container stays the default, and sipnab never writes the signed form alone,
+where a reader would most easily take the signature for a recording's.
 
 ### 2.3 Never emit consent or lawful-basis attachments
 

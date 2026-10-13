@@ -96,22 +96,7 @@ pub(in crate::tui) fn handle_key_event(app: &mut App, key: KeyEvent) {
     // F12 mouse-capture toggle) apply in every view — but a key the user
     // explicitly rebound in the keymap wins, so a rebind can never be
     // shadowed by these built-ins.
-    let km = &app.keymap;
-    let keymap_bound = [
-        km.quit,
-        km.help,
-        km.save,
-        km.search,
-        km.filter,
-        km.settings,
-        km.pause,
-        km.autoscroll,
-        km.extended_flow,
-        km.clear_calls,
-        km.column_selector,
-    ]
-    .contains(&key.code);
-    if !keymap_bound {
+    if !keymap_binds(&app.keymap, key.code) {
         if matches!(key.code, KeyCode::Char('v') | KeyCode::Char('V')) {
             app.status_error = Some(format!("sipnab {}", crate::cli::build_version()));
             return;
@@ -148,6 +133,25 @@ pub(in crate::tui) fn handle_key_event(app: &mut App, key: KeyEvent) {
     }
 
     dispatch_help_or_view_key(app, key);
+}
+
+/// Whether the user's keymap binds `code`. The global fallback keys (`v`,
+/// `n`, `?`, `F12`) answer only a key it does not, so a rebind always wins.
+pub(in crate::tui) fn keymap_binds(km: &crate::tui::theme::Keymap, code: KeyCode) -> bool {
+    [
+        km.quit,
+        km.help,
+        km.save,
+        km.search,
+        km.filter,
+        km.settings,
+        km.pause,
+        km.autoscroll,
+        km.extended_flow,
+        km.clear_calls,
+        km.column_selector,
+    ]
+    .contains(&code)
 }
 
 /// Whether `view` answers the help key itself. The list, ladder and pager
@@ -1975,6 +1979,36 @@ pub(crate) mod test_support {
             make_invite("call-3@test", "1005", "1006", t0 + TimeDelta::seconds(10))?,
             make_ok("call-3@test", t0 + TimeDelta::seconds(11))?,
         ]))
+    }
+
+    /// A one-packet PCMU stream with SSRC `ssrc`, 10.0.0.1:`20000 + ssrc` to
+    /// 10.0.0.2:30000, tied to the dialog `dialog` when given.
+    pub(crate) fn test_stream(ssrc: u32, dialog: Option<&str>) -> crate::rtp::stream::RtpStream {
+        use crate::rtp::parser::RtpHeader;
+        use crate::rtp::stream::{RtpStream, StreamKey};
+        use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+        let port = u16::try_from(20_000 + ssrc).unwrap_or(20_000);
+        let key = StreamKey {
+            ssrc,
+            src: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)), port),
+            dst: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2)), 30000),
+            session: 0,
+        };
+        let header = RtpHeader {
+            version: 2,
+            padding: false,
+            extension: false,
+            csrc_count: 0,
+            marker: false,
+            payload_type: 0,
+            sequence: 1,
+            timestamp: 0,
+            ssrc,
+            payload_offset: 12,
+        };
+        let mut stream = RtpStream::new(key, &header, base_ts());
+        stream.associated_dialog = dialog.map(str::to_string);
+        stream
     }
 
     /// Build an unmodified `KeyEvent` for `code`.

@@ -837,6 +837,7 @@ pub const FILE_ONLY: &[(&str, &str, FileOnly)] = &[
     ("crash", "report_dir", FileOnly::Tuning),
     ("crash", "core", FileOnly::Tuning),
     ("display", "visible_columns", FileOnly::Tui),
+    ("display", "mouse_capture", FileOnly::Tui),
     ("sip", "xcid_headers", FileOnly::Tuning),
     ("pbx", "addresses", FileOnly::Table),
     ("vcon", "rule", FileOnly::Table),

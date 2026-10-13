@@ -176,6 +176,10 @@ fn build_stores(
             // The wiring whose absence made the old --dialog-track a dead
             // flag: declared, parsed, and never handed to anything.
             ds.set_tracking(cli.dialog_args.dialog_track.unwrap_or_default());
+            // `-e` and the header patterns (#483). The plan compiled the same
+            // matcher from the same flags and refused the run on an error, so
+            // `Err` cannot reach here.
+            ds.set_admission(crate::app::bootstrap::build_matcher(cli, config).ok());
             ds
         }
         .with_xcid_headers(config.sip.xcid_headers.clone().unwrap_or_default()),
@@ -190,6 +194,12 @@ fn build_stores(
         Arc::new(RwLock::new(ss))
     };
     (dialog_store, stream_store)
+}
+
+/// Whether the TUI opens with mouse capture off: `[display] mouse_capture =
+/// false` (#484). Unset keeps capture on, for wheel scrolling.
+fn tui_mouse_capture_off(config: &Config) -> bool {
+    config.display.mouse_capture == Some(false)
 }
 
 /// Run interactive TUI mode: wraps stores in `Arc<RwLock>`, spawns the
@@ -735,6 +745,7 @@ pub fn run_tui_mode(
             notes_path,
             // -c / --calls-only: the session opens filtered to calls (#474).
             calls_only: cli.mode_args.calls_only,
+            mouse_capture_off: tui_mouse_capture_off(&config),
         },
     )
     .err();
@@ -2002,6 +2013,41 @@ mod tests {
         config.sip.xcid_headers = Some(vec!["X-Call-ID".to_string()]);
         let (set, _) = build_stores(&cli, &config, &Default::default());
         assert_eq!(set.read().xcid_headers(), ["X-Call-ID".to_string()]);
+        Ok(())
+    }
+
+    /// `-e` reaches the store the TUI shows (#483): a dialog none of whose
+    /// messages matched is not shown, one that matched is.
+    #[test]
+    fn the_match_expression_reaches_the_tui_store() -> Result<(), TestError> {
+        let (dialogs, _) = build_stores(
+            &cli_from(&["-e", "branch=z9hG4bK-wanted"]),
+            &Config::default(),
+            &Default::default(),
+        );
+        {
+            let mut ds = dialogs.write();
+            ds.process_message(invite("noise@example.com", "z9hG4bK-other")?);
+            ds.process_message(invite("wanted@example.com", "z9hG4bK-wanted")?);
+        }
+        let ds = dialogs.read();
+        assert!(
+            ds.get("noise@example.com").is_none(),
+            "-e must narrow the TUI"
+        );
+        assert!(ds.get("wanted@example.com").is_some());
+        Ok(())
+    }
+
+    /// `[display] mouse_capture = false` opens the TUI with capture off
+    /// (#484); unset or `true` keeps it on.
+    #[test]
+    fn the_mouse_capture_key_is_read_from_the_config_file() -> Result<(), TestError> {
+        let off: Config = toml::from_str("[display]\nmouse_capture = false\n")?;
+        assert!(super::tui_mouse_capture_off(&off));
+        let on: Config = toml::from_str("[display]\nmouse_capture = true\n")?;
+        assert!(!super::tui_mouse_capture_off(&on));
+        assert!(!super::tui_mouse_capture_off(&Config::default()));
         Ok(())
     }
 

@@ -141,6 +141,7 @@ static KNOWN_KEYS: LazyLock<HashMap<&'static str, &'static [&'static str]>> = La
             "delta_time",
             "visible_columns",
             "from_to",
+            "mouse_capture",
         ]
         .as_slice(),
     );
@@ -1213,6 +1214,10 @@ pub struct DisplayConfig {
     /// Default From/To column display mode. One of `"default"`, `"host-port"`,
     /// `"user"`, `"user-host-port"`. Cycled at runtime with the `u` key.
     pub from_to: Option<String>,
+    /// Whether the TUI captures the mouse when it starts. `false` opens it
+    /// with capture off, so the terminal's own text selection works; F12
+    /// toggles it at runtime. Unset or `true` captures it, for wheel scrolling.
+    pub mouse_capture: Option<bool>,
 }
 
 impl DisplayConfig {
@@ -1346,6 +1351,20 @@ pub struct VconRuleConfig {
     /// Default `false`: one write, once the call has ended or gone idle.
     #[serde(default)]
     pub live: Option<bool>,
+    /// A PEM certificate holding the RSA key this rule's containers are
+    /// encrypted to. Set, the rule writes only the encrypted form of
+    /// draft-ietf-vcon-vcon-core-04 section 5.3: signed with `sign_key` and
+    /// `sign_cert`, then encrypted.
+    #[serde(default)]
+    pub encrypt_to: Option<std::path::PathBuf>,
+    /// The PEM RSA private key an encrypting rule signs with. Readable by its
+    /// owner only.
+    #[serde(default)]
+    pub sign_key: Option<std::path::PathBuf>,
+    /// The PEM certificate chain of `sign_key`, leaf first, carried in the
+    /// signature's `x5c`.
+    #[serde(default)]
+    pub sign_cert: Option<std::path::PathBuf>,
 }
 
 /// The PBX sipnab runs beside.

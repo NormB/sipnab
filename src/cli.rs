@@ -1194,8 +1194,9 @@ pub struct MatchingArgs {
     /// SIP payload match-expression (the positional match
     /// expression). A regex tested against the whole raw SIP message; once any
     /// message in a dialog matches, every later message of that dialog is shown
-    /// too (dialog-following). Honors -i/-v/-w/--single-line. Separate from the
-    /// trailing BPF filter positional.
+    /// too (dialog-following). In the TUI, the call list holds only dialogs one
+    /// of whose messages matched. Honors -i/-v/-w/--single-line. Separate from
+    /// the trailing BPF filter positional.
     #[arg(
         help_heading = "Matching",
         short = 'e',

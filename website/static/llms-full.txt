@@ -9990,7 +9990,7 @@ sipnab uses Cargo feature flags to control optional capability. The default buil
 | `metrics` | Standalone Prometheus `/metrics` server: a raw TCP listener and plain threads, no axum/tokio, so scraping does not drag in the `api` feature or its async runtime. Included by default. | `native`, `base64`, `rustls` |
 | `plugins` | WASM plugin host (`--plugin`): runs sandboxed third-party dialog detections, so a detection nobody here wrote cannot reach the process it inspects. | `native`, `wasmi` |
 | `bpf` | eBPF TLS capture (`--uprobe-backend bpf`): reads SIP plaintext **and the peer addresses** with no key material. Needs a nightly toolchain and `bpf-linker` to build, and a kernel with `CONFIG_DEBUG_INFO_BTF` to run — without the linker the binary still builds and the backend refuses at runtime rather than capturing nothing silently. | `native`, `aya`, `sipnab-bpf-types/pod` |
-| `vcon` | vCon export: one observed dialog as an unsigned IETF conversation container, with the audio inline when the run retained it. Non-default, because a container that leaves the machine is a publication surface and a capture tool should not grow one unless an operator asks. Adds `--export-vcon`/`--vcon-out`, the `export_vcon` MCP tool and `GET /v1/dialogs/{call_id}/vcon`. | `native`, `sha2`, `hmac`, `base64`, `rustls` |
+| `vcon` | vCon export: one observed dialog as an IETF conversation container, with the audio inline when the run retained it, or signed and encrypted when a `[[vcon.rule]]` sets `encrypt_to`. Non-default, because a container that leaves the machine is a publication surface and a capture tool should not grow one unless an operator asks. Adds `--export-vcon`/`--vcon-out`, the `export_vcon` MCP tool and `GET /v1/dialogs/{call_id}/vcon`. | `native`, `sha2`, `hmac`, `base64`, `rustls`, `rsa`, `ring`, `aes`, `cbc`, `sha1_oaep` |
 | `archive` | Password-protected ZIP and 7z input: `-I evidence.zip` reads the captures inside, stored, deflated, WinZip AES or ZipCrypto, and `-I evidence.7z` reads LZMA or LZMA2, AES-256 or not, without leaving a decrypted copy on disk. Adds `--archive-password-file`, `--archive-password-command`, `--archive-password-stdin`, `--archive-password` and `--archive-password-encoding`, and reads `SIPNAB_ARCHIVE_PASSWORD` and the systemd credential `archive-password`. | `native`, `zip`, `sevenz-rust2`, `zeroize`, `unicode-normalization` |
 | `full` | Everything: `native` + `tui` + `audio` + `tls` + `hep` + `api` + `mcp` + `mcp-http` + `metrics` + `plugins` + `vcon` + `archive` | all |
 | `wasm` | WebAssembly target for in-browser pcap analysis | `wasm-bindgen`, `js-sys`, `web-sys`, `console_error_panic_hook` |
@@ -10171,7 +10171,7 @@ sipnab -D
 second line the libpcap it is running, e.g.
 
 ```text
-sipnab 0.5.216 (<hash>) features: native,tui,audio,tls,hep,api,mcp,mcp-http,metrics,plugins,bpf,vcon,archive
+sipnab 0.5.217 (<hash>) features: native,tui,audio,tls,hep,api,mcp,mcp-http,metrics,plugins,bpf,vcon,archive
 libpcap version 1.10.5 (with TPACKET_V3); alternate capture backends named: none
 ```
 
@@ -12672,6 +12672,12 @@ packet spacing varies) and loss. Streams flagged `orphan` have no matching SIP
 dialog, which is often a sign that NAT or a SIP-aware router rewrote the media
 address.
 
+From a Call Flow, `r` opens the same view narrowed to that call's streams.
+`a` switches between that call's streams and every stream, and `Esc` returns
+to the Call Flow. A stream is a call's when an SDP sipnab captured names the
+stream's address and port. A stream with NAT on both ends, or one sent over
+ICE or TURN, can stay unlinked: status line 3 counts those, and `a` shows them.
+
 Press `Enter` on a stream -- or on an `██ RTP ██` bar back in the Call Flow --
 to open **Stream Detail**: [MOS](glossary.md#mos) (mean opinion score, an
 estimate of how the call sounded), jitter statistics, quality intervals, burst/gap
@@ -12825,6 +12831,8 @@ To select arbitrary screen text with the mouse, press `F12` to turn mouse
 capture off and drag as usual, then `F12` again to get wheel scrolling back.
 In many terminals holding **Shift** while dragging bypasses mouse capture
 without toggling anything.
+To start every session with capture off, set `mouse_capture = false` under
+[`[display]`](config-reference.md#display) in the config file.
 
 ## Call list
 
@@ -12917,9 +12925,10 @@ active filter.
 | m | Set mark at current message — navigate to another message and sipnab shows the **delta** between the mark and the cursor, for measuring the delay between two specific SIP messages |
 | M | Clear mark |
 | E | Export Mermaid sequence diagram to clipboard |
+| y | Copy the selected message's raw text to the clipboard, as the raw message view shows it (see [Copying text](#copying-text)) |
 | C | Write, amend or remove your note on the selected message. The note is yours, never sipnab's analysis: sipnab shows it in a pane titled so, marks the row with `✎`, writes it as a packet comment when you save PCAP-NG, and saves it to a notes file with the NOTES save format. See [Operator notes](#operator-notes) |
 | x / F4 | Toggle extended multi-leg flow **(configurable: `extended_flow`)** — shows related B2BUA/SBC call legs together, for tracing a call through proxies and back-to-back user agents |
-| r | Jump to RTP Streams view |
+| r | Open RTP Streams narrowed to this call's streams (in a merged or extended flow, every call the flow shows). `a` there switches to every stream and back, and `Esc` returns here with the selected message kept |
 | N | Name endpoints (map IP → host/FQDN, and Tab/Shift+Tab switch between the offered participants) |
 | F1 / ? | Help **(configurable: `help`)** |
 | F2 | Save **(configurable: `save`)** |
@@ -13014,7 +13023,8 @@ message of the selection rendered as one scrollable document.
 | Enter | Open the Stream Detail view for the selected stream |
 | D | Open the Quality Dashboard (live MOS/jitter/loss) |
 | Tab | Switch to Call List |
-| Esc | Back to Call List |
+| a | After `r` from a call flow: switch between that call's streams and every stream. Status line 3 says which the list shows, and how many streams sipnab linked to no call |
+| Esc | Back to the call flow when `r` opened the list from one, otherwise to the Call List |
 | q | Quit, after a confirmation **(configurable: `quit`)** |
 | N | Name the selected stream's source address (map IP → host/FQDN) |
 | F1 / ? | Help **(configurable: `help`)** |
@@ -13603,7 +13613,7 @@ Shows all tracked RTP streams with quality metrics. Switch here from the Call Li
   <span class="t-accent">5  0xe5f60718  192.0.2.9:14000      192.0.2.7:24000      opus    9612    </span><span class="t-good">3.2ms</span><span class="t-accent">   </span><span class="t-good">0.1%</span><span class="t-accent">    </span><span class="t-good">4.1</span>
   <span class="t-accent">6  0x29304150  192.0.2.7:24000      192.0.2.9:14000      opus    9608    </span><span class="t-good">2.9ms</span><span class="t-accent">   </span><span class="t-good">0.0%</span><span class="t-accent">    </span><span class="t-good">4.2</span>
   <span class="t-muted">7  0xdeadbeef  192.0.2.3:16000      --                   PCMU    340     </span><span class="t-bad">--</span><span class="t-muted">      </span><span class="t-bad">--</span><span class="t-muted">      </span><span class="t-bad">orphan</span>
-<span class="t-muted">  Esc Back  F1 Help  Enter Detail  Tab Calls  F2 Save WAV  F7 Filter</span></pre>
+<span class="t-muted">  Esc Back  F1 Help  Enter Detail  Tab Calls  F2 Save WAV  F7 Filter  a All/Call</span></pre>
 </div>
 
 > **Tip:** Streams marked `orphan` have no matching SIP dialog. This often indicates RTP arriving on unexpected ports (check your NAT/ALG config) or calls that started before capture began.
@@ -14646,7 +14656,7 @@ stop log lines corrupting the alternate screen, so redirect stderr if you do.
 
 | Flag | Value | Default | Since | Description |
 |------|-------|---------|-------|-------------|
-| `-e`, `--match` | `<PATTERN>` | -- | 0.5.6 | SIP payload match-expression (the positional match expression). Regex tested against the whole raw message; once any message in a dialog matches, sipnab shows the rest of that dialog too (dialog-following). Honors `-i`/`-v`/`-w`/`--single-line`. Independent of the trailing `<BPF_FILTER>` positional |
+| `-e`, `--match` | `<PATTERN>` | -- | 0.5.6 | SIP payload match-expression (the positional match expression). Regex tested against the whole raw message; once any message in a dialog matches, sipnab shows the rest of that dialog too (dialog-following). In the TUI, the call list holds only dialogs one of whose messages matched, and every later message of each; the REST API and MCP server a TUI run starts read the same dialogs. Honors `-i`/`-v`/`-w`/`--single-line`. Independent of the trailing `<BPF_FILTER>` positional |
 | `-i`, `--ignore-case` | -- | off | 0.3.0 | Case-insensitive matching for header filters and patterns |
 | `-v`, `--invert` | -- | off | 0.3.0 | Invert the match: show messages that do NOT match |
 | `-w`, `--word` | -- | off | 0.3.0 | Match whole words only |
@@ -22171,6 +22181,7 @@ Output and TUI display settings.
 | `payload_limit` | integer | -- | Maximum payload bytes to display. `--payload-limit` overrides it |
 | `delta_time` | boolean | `false` | Show delta time between messages by default. `--delta-time` turns it on. `--no-delta-time` forces it off |
 | `from_to` | string | `"default"` | From/To column display: `"default"` (user else host:port), `"host-port"`, `"user"`, `"user-host-port"`. Cycle at runtime with `u`; `--from-to-mode` overrides this |
+| `mouse_capture` | boolean | `true` | Whether the TUI captures the mouse when it starts. `false` opens it with capture off, so the terminal's own drag-to-select works; `F12` toggles capture at runtime. With capture on, the mouse wheel scrolls |
 | `visible_columns` | array of strings | all columns | Call-list columns to show, by name (case-insensitive): `"#"`, `"Method"`, `"From"`, `"To"`, `"Source"`, `"Destination"`, `"State"`, `"Msgs"`, `"Date"`, `"PDD"`, `"Duration"`. Adjust at runtime with F10; `s` in the column selector writes the layout into the config file this run loaded (or the user config file (`$XDG_CONFIG_HOME/sipnab/sipnab.toml`, by default `~/.config/sipnab/sipnab.toml`) when none was), so it persists across sessions. sipnab refuses that save when the settings came from `/etc/sipnab/sipnab.toml` |
 
 ```toml
@@ -22248,6 +22259,9 @@ several once per rule. See [Write calls by rule](vcon.md#write-calls-by-rule).
 | `max_inline_media_mib` | integer | `--vcon-max-inline-media` | The largest audio this rule's containers inline, in MiB; sipnab writes a call above it without its audio, saying so |
 | `live_audio` | boolean | `false` | Serve each matching call's audio while it is in progress on the REST API's `/v1/calls/{call_id}/audio` WebSocket, and list the calls at `/v1/calls/live`. Turns audio retention on. See [Hear a call while it is in progress](vcon.md#hear-a-call-while-it-is-in-progress) |
 | `live` | boolean | `false` | On a live capture, write each matching call's container as the call starts and rewrite it in place, with `updated_at`, each time the call changes. No effect with `-I`. See [Follow a call while it is in progress](vcon.md#follow-a-call-while-it-is-in-progress) |
+| `encrypt_to` | string | -- | A PEM certificate whose RSA key the rule encrypts its containers to. Set, the rule writes only the encrypted form of draft-ietf-vcon-vcon-core-04 section 5.3. Needs `sign_key` and `sign_cert`. See [Encrypt what a rule writes](vcon.md#encrypt-what-a-rule-writes) |
+| `sign_key` | string | -- | The PEM RSA private key an encrypting rule signs with, readable by its owner only |
+| `sign_cert` | string | -- | The PEM certificate chain of `sign_key`, leaf first, carried in each signature's `x5c` |
 | `grouping` | string | `leg` | `leg`: one container per dialog, each naming the call's other legs. `call`: one container per call, holding every leg the rule selects and the ties between them. See [Calls through a PBX or a B2BUA](vcon.md#calls-through-a-pbx-or-a-b2bua) |
 
 ```toml
@@ -23628,7 +23642,7 @@ that's the laptop itself):
 
    ```bash
    sipnab --version
-   # sipnab 0.5.216 (...) features: native,tui,audio,tls,hep,api,mcp,mcp-http,metrics,plugins,vcon,bpf
+   # sipnab 0.5.217 (...) features: native,tui,audio,tls,hep,api,mcp,mcp-http,metrics,plugins,vcon,bpf
    # libpcap version 1.10.5 (with TPACKET_V3); alternate capture backends named: none
    ```
 
@@ -24844,7 +24858,7 @@ Then confirm the build can do what you are about to ask of it:
 ```json
 {
   "schema_version": 1,
-  "version": "0.5.216",
+  "version": "0.5.217",
   "features": ["api", "audio", "hep", "mcp", "mcp-http", "metrics",
                "native", "plugins", "tls", "tui"],
   "can_decrypt": true,
@@ -25519,7 +25533,7 @@ stdin and the `sleep`s pace the handshake — so paste it as a unit:
 Expected first line of response:
 
 ```json
-{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2025-06-18","capabilities":{"tools":{}},"serverInfo":{"name":"sipnab","version": "0.5.216"},"instructions":"sipnab MCP server — queries captured SIP dialogs ..."}}
+{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2025-06-18","capabilities":{"tools":{}},"serverInfo":{"name":"sipnab","version": "0.5.217"},"instructions":"sipnab MCP server — queries captured SIP dialogs ..."}}
 ```
 
 ### Test the HTTP wire by hand
@@ -33011,7 +33025,7 @@ No parameters. Returns:
 ```jsonc
 {
   "schema_version": 1,
-  "version": "0.5.216",
+  "version": "0.5.217",
   "features": ["api", "hep", "mcp", "native", "tls", "tui"],
   "can_decrypt": true,           // tls
   "can_hep": true,               // hep
@@ -36934,7 +36948,9 @@ When the run retained the RTP payload, the container also
 carries the audio, inline: the whole call, from its first frame, unless a
 retention limit cut it, and then the container says so (see
 [Audio retention budget](config-reference.md#audio-retention-budget)). None of
-them carries a signature or any claim that somebody consented to anything.
+them carries any claim that somebody consented to anything, and none carries a
+signature unless you configure a rule to encrypt its containers (see
+[Encrypt what a rule writes](#encrypt-what-a-rule-writes)).
 
 **A sipnab vCon records what an instrument
 saw, not what the parties said.** [What may you conclude](#someone-handed-you-a-sipnab-vcon-what-may-you-conclude),
@@ -37047,6 +37063,8 @@ dir   = "/var/spool/sipnab-vcon/all"
 | `max_inline_media_mib` | The largest audio this rule's containers inline, in MiB. sipnab writes a call above it without its audio and the container records `media: "refused-over-budget"`. Unset: `--vcon-max-inline-media` |
 | `live_audio` | `true`: serve each matching call's audio while it is in progress, over the REST API. See [Hear a call while it is in progress](#hear-a-call-while-it-is-in-progress) |
 | `live` | `true`: on a live capture, write each matching call's container as the call starts and rewrite it in place each time the call changes. See [Follow a call while it is in progress](#follow-a-call-while-it-is-in-progress) |
+| `encrypt_to` | A PEM certificate. Set, the rule writes only the encrypted form, to that certificate's key. Needs `sign_key` and `sign_cert`. See [Encrypt what a rule writes](#encrypt-what-a-rule-writes) |
+| `sign_key`, `sign_cert` | The PEM RSA private key an encrypting rule signs with, and its certificate chain, leaf first |
 | `grouping` | `leg` (the default): one container per dialog. `call`: one container per call, holding every leg the rule selects. See [Calls through a PBX or a B2BUA](#calls-through-a-pbx-or-a-b2bua) |
 
 `--export-vcon-when` with `--export-vcon-dir` still works and is one more
@@ -37315,6 +37333,74 @@ live = true
 A forwarder delivers each rewrite as a new copy of the same container. A store
 that refuses a `uuid` it already holds needs the forwarder to replace it. See
 [What it does with each container](#what-it-does-with-each-container).
+
+### Encrypt what a rule writes
+
+A rule with `encrypt_to` writes each container in the encrypted form of
+[draft-ietf-vcon-vcon-core-04 section 5.3](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-04#section-5.3),
+so the spool, the forwarder's directories and the store hold nothing a reader
+without the key can open:
+
+```toml
+[[vcon.rule]]
+name       = "support"
+when       = "@support"
+dir        = "/var/spool/sipnab-vcon/support"
+audio      = "inline"
+encrypt_to = "/etc/sipnab/vcon-recipient.crt"
+sign_key   = "/etc/sipnab/vcon-signing.key"
+sign_cert  = "/etc/sipnab/vcon-signing.crt"
+```
+
+The draft requires the producer to sign a container before it encrypts it, so the
+rule does both:
+
+1. sipnab signs the container with `sign_key` (JWS, `RS256`), and the
+   signature carries the `sign_cert` chain in `x5c`.
+2. sipnab encrypts that signed container to the RSA key in the `encrypt_to`
+   certificate (JWE, `RSA-OAEP` for the content key, `A256CBC-HS512` for the
+   content), with a fresh content key for every write.
+
+The file holds the JWE: `protected`, `unprotected`, `recipients`, `iv`,
+`ciphertext` and `tag`. Its `unprotected` header carries the container's
+`uuid` and `cty: "application/vcon+json"`, so a store and the forwarder's
+replace URL can use the uuid without the key. sipnab names each file
+`<uuid>.vcon.json` rather than after the Call-ID, because a Call-ID can carry
+host names and addresses and the file name is not encrypted.
+
+**Decrypt one.** The recipient opens the container with the private key of
+the `encrypt_to` certificate, then verifies the signature against the
+certificate in `x5c`. The working group's reference tool, the `vcon`
+command of [vcon-dev/vcon](https://github.com/vcon-dev/vcon), does it with
+`vcon decrypt <key> <cert>` and then `vcon verify <ca cert>`. sipnab's tests
+check its output against the draft's own encrypted example (Appendix A.7):
+sipnab decrypts that example and verifies its signature, and signs the same
+bytes with the same key to the same signature.
+
+**What the keys must be.**
+
+- `encrypt_to` and `sign_cert` hold PEM certificates. Each key is RSA, at
+  least 2048 bits.
+- `sign_key` is a PEM RSA private key (`PRIVATE KEY` or `RSA PRIVATE KEY`),
+  readable by its owner only. The first certificate in `sign_cert` must be
+  that key's certificate.
+- sipnab does not check who issued either certificate or when it expires.
+  Whoever decrypts a container decides whether to trust the signer's chain.
+
+**What it refuses at startup**, naming the rule:
+
+- `encrypt_to` without `sign_key` and `sign_cert`, or either of those without
+  `encrypt_to`
+- a key or certificate file that sipnab cannot read, that holds no key or certificate,
+  or that holds a key other than RSA of at least 2048 bits
+- a `sign_cert` whose first certificate is not the certificate of `sign_key`
+- a `sign_key` that other users can read (`chmod 600` it)
+- `audio = "url"`: sipnab would not encrypt the WAV file beside the container.
+  Use `inline` or `omit`.
+
+Every other rule key works with `encrypt_to`. A `live = true` rule writes a
+new encrypted container each time the call changes, and enrichment services
+receive the call before sipnab encrypts it, as without `encrypt_to`.
 
 ## The spool contract, for a bridge that consumes it
 
@@ -37652,9 +37738,9 @@ sent, and leaves a newer one in the spool for the next pass.
 - **It does not delete anything.** The delivered directory keeps a copy of
   every container, and every copy is call data. Delete them on a schedule
   that suits you.
-- **It adds no signature and no consent.** A store may sign what it receives.
-  That signature is the store's, over an observation, and sipnab records no
-  consent.
+- **It adds no signature and no consent.** It sends each container as the
+  rule wrote it. A store may sign what it receives. That signature is the
+  store's, over an observation, and sipnab records no consent.
 - **It sends one container at a time**, in name order, one connection each.
 
 ## Fetch a stored vCon
@@ -38168,8 +38254,11 @@ the whole reason the completeness caveat exists, and a consumer that collapses
 it turns a configuration choice on a capture host into a claim about somebody's
 call.
 
-**sipnab signs nothing, so cryptography attributes nothing here.** Trust the
-container exactly as much as you trust whoever handed it to you.
+**An unsigned container attributes nothing.** Trust it exactly as much as you
+trust whoever handed it to you. sipnab signs an encrypted container with the key
+and certificate its operator configured: the signature says which operator's
+sipnab wrote those bytes, and the container inside still says that sipnab
+observed the call and recorded nothing.
 
 **Two containers about one call do not merge themselves.** sipnab writes the
 parties of the dialog it observed and infers none. One tap on a proxied call
@@ -38184,8 +38273,7 @@ Each refusal has an argument behind it in
 
 | Refused | Why |
 |---|---|
-| a JWS signature | a signature over an observation verifies as a signature over a recording |
-| JWE encryption | it asserts a custody relationship sipnab does not have |
+| a JWS signature on an unsigned container | a signature over an observation verifies as a signature over a recording, so sipnab signs only as the inner layer of an encrypted container you configure, with your key ([Encrypt what a rule writes](#encrypt-what-a-rule-writes)) |
 | consent attachments | sipnab obtained no consent, and an empty consent field reads as "none recorded" |
 | lawful-basis attachments | the same, with a named regulatory reader on the other end |
 | a party `name` **that sipnab vouches for** | `From` and `To` are the caller's claim about the caller, trivially spoofed |

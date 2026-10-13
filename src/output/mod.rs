@@ -31,6 +31,9 @@
 //! - `vcon_analysis` — one stored container handed over inline, rebuilt and
 //!   analyzed in stores of its own: what the MCP `analyze_vcon` tool and
 //!   `POST /v1/vcon/analyze` answer (feature-gated: `vcon`)
+//! - `vcon_jose` — the signed and encrypted forms of a container: JWS then
+//!   JWE, as draft-ietf-vcon-vcon-core-04 section 5.3 requires
+//!   (feature-gated: `vcon`)
 //! - `vcon_schema` — a container checked against the vendored working-group
 //!   schema, with the one deviation sipnab emits on purpose named rather than
 //!   waved through (feature-gated: `vcon`)
@@ -68,6 +71,17 @@ pub mod synthetic;
 pub mod vcon;
 #[cfg(feature = "vcon")]
 pub mod vcon_analysis;
+#[cfg(feature = "vcon")]
+pub mod vcon_jose;
+/// A build without the vCon exporter seals nothing. The type exists so an
+/// export rule has one shape in every build: an `Option` of a type with no
+/// values is `None` by construction.
+#[cfg(not(feature = "vcon"))]
+pub mod vcon_jose {
+    /// What an encrypting rule seals with, which this build cannot have.
+    #[derive(Debug)]
+    pub enum Sealing {}
+}
 #[cfg(feature = "vcon")]
 pub mod vcon_schema;
 #[cfg(feature = "api")]

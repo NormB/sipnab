@@ -349,6 +349,7 @@ fn reset_for_load(app: &mut App) {
     app.call_list = CallListState::new();
     app.call_list.visible_columns = saved_columns;
     app.stream_list = StreamListState::new();
+    app.forget_stream_list_scope();
     app.active_filter = None;
     app.active_filter_text.clear();
     // Drop the time-window half of the filter too. Leaving it set hid the new
@@ -835,7 +836,7 @@ fn apply_load_outcome(app: &mut App, outcome: PcapLoadOutcome) {
     // stream list so playback / WAV export are immediately reachable.
     let stream_count = app.stream_store.read().len();
     if outcome.sip_count == 0 && stream_count > 0 {
-        app.current_view = View::StreamList;
+        app.open_stream_list_unscoped();
     }
 }
 

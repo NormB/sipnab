@@ -626,8 +626,18 @@ impl<'de> serde::Deserialize<'de> for Members {
 pub fn container_uuid(container: &[u8]) -> Result<String, String> {
     let doc: serde_json::Value =
         serde_json::from_slice(container).map_err(|e| format!("the container is not JSON: {e}"))?;
+    // The signed and encrypted forms carry the uuid in a header, readable
+    // without the key (draft-ietf-vcon-vcon-core-04 sections 5.2.2 and
+    // 5.3.1).
     let uuid = doc
         .get("uuid")
+        .or_else(|| doc.get("unprotected").and_then(|h| h.get("uuid")))
+        .or_else(|| {
+            doc.get("signatures")
+                .and_then(|s| s.get(0))
+                .and_then(|s| s.get("header"))
+                .and_then(|h| h.get("uuid"))
+        })
         .and_then(serde_json::Value::as_str)
         .ok_or("the container carries no `uuid` to replace by")?;
     if !is_path_uuid(uuid) {
@@ -2738,5 +2748,29 @@ mod tests {
         assert!(container_uuid(br#"{"uuid":""}"#).is_err());
         assert!(container_uuid(br#"{"vcon":"0.4.0"}"#).is_err());
         assert!(container_uuid(b"not json").is_err());
+    }
+
+    /// A signed or encrypted container carries its uuid where core-04 puts
+    /// it for reading without the key: the JWE `unprotected` header and the
+    /// JWS signature `header`. The same path checks apply there.
+    #[test]
+    fn a_signed_or_encrypted_container_s_uuid_is_read_from_its_header() {
+        assert_eq!(
+            container_uuid(
+                br#"{"ciphertext":"x","recipients":[],"unprotected":{"uuid":"018bcfe5-6800-8a6b-a667-78f1c5213800"}}"#
+            )
+            .as_deref(),
+            Ok("018bcfe5-6800-8a6b-a667-78f1c5213800")
+        );
+        assert_eq!(
+            container_uuid(br#"{"payload":"x","signatures":[{"header":{"uuid":"abc-1"}}]}"#)
+                .as_deref(),
+            Ok("abc-1")
+        );
+        assert!(
+            container_uuid(br#"{"ciphertext":"x","recipients":[],"unprotected":{"uuid":"../x"}}"#)
+                .is_err()
+        );
+        assert!(container_uuid(br#"{"ciphertext":"x","recipients":[]}"#).is_err());
     }
 }

@@ -79,6 +79,8 @@ To select arbitrary screen text with the mouse, press `F12` to turn mouse
 capture off and drag as usual, then `F12` again to get wheel scrolling back.
 In many terminals holding **Shift** while dragging bypasses mouse capture
 without toggling anything.
+To start every session with capture off, set `mouse_capture = false` under
+[`[display]`](@/docs/config.md#display) in the config file.
 
 ## Call list
 
@@ -171,9 +173,10 @@ active filter.
 | m | Set mark at current message — navigate to another message and sipnab shows the **delta** between the mark and the cursor, for measuring the delay between two specific SIP messages |
 | M | Clear mark |
 | E | Export Mermaid sequence diagram to clipboard |
+| y | Copy the selected message's raw text to the clipboard, as the raw message view shows it (see [Copying text](#copying-text)) |
 | C | Write, amend or remove your note on the selected message. The note is yours, never sipnab's analysis: sipnab shows it in a pane titled so, marks the row with `✎`, writes it as a packet comment when you save PCAP-NG, and saves it to a notes file with the NOTES save format. See [Operator notes](#operator-notes) |
 | x / F4 | Toggle extended multi-leg flow **(configurable: `extended_flow`)** — shows related B2BUA/SBC call legs together, for tracing a call through proxies and back-to-back user agents |
-| r | Jump to RTP Streams view |
+| r | Open RTP Streams narrowed to this call's streams (in a merged or extended flow, every call the flow shows). `a` there switches to every stream and back, and `Esc` returns here with the selected message kept |
 | N | Name endpoints (map IP → host/FQDN, and Tab/Shift+Tab switch between the offered participants) |
 | F1 / ? | Help **(configurable: `help`)** |
 | F2 | Save **(configurable: `save`)** |
@@ -268,7 +271,8 @@ message of the selection rendered as one scrollable document.
 | Enter | Open the Stream Detail view for the selected stream |
 | D | Open the Quality Dashboard (live MOS/jitter/loss) |
 | Tab | Switch to Call List |
-| Esc | Back to Call List |
+| a | After `r` from a call flow: switch between that call's streams and every stream. Status line 3 says which the list shows, and how many streams sipnab linked to no call |
+| Esc | Back to the call flow when `r` opened the list from one, otherwise to the Call List |
 | q | Quit, after a confirmation **(configurable: `quit`)** |
 | N | Name the selected stream's source address (map IP → host/FQDN) |
 | F1 / ? | Help **(configurable: `help`)** |
@@ -857,7 +861,7 @@ Shows all tracked RTP streams with quality metrics. Switch here from the Call Li
   <span class="t-accent">5  0xe5f60718  192.0.2.9:14000      192.0.2.7:24000      opus    9612    </span><span class="t-good">3.2ms</span><span class="t-accent">   </span><span class="t-good">0.1%</span><span class="t-accent">    </span><span class="t-good">4.1</span>
   <span class="t-accent">6  0x29304150  192.0.2.7:24000      192.0.2.9:14000      opus    9608    </span><span class="t-good">2.9ms</span><span class="t-accent">   </span><span class="t-good">0.0%</span><span class="t-accent">    </span><span class="t-good">4.2</span>
   <span class="t-muted">7  0xdeadbeef  192.0.2.3:16000      --                   PCMU    340     </span><span class="t-bad">--</span><span class="t-muted">      </span><span class="t-bad">--</span><span class="t-muted">      </span><span class="t-bad">orphan</span>
-<span class="t-muted">  Esc Back  F1 Help  Enter Detail  Tab Calls  F2 Save WAV  F7 Filter</span></pre>
+<span class="t-muted">  Esc Back  F1 Help  Enter Detail  Tab Calls  F2 Save WAV  F7 Filter  a All/Call</span></pre>
 </div>
 
 > **Tip:** Streams marked `orphan` have no matching SIP dialog. This often indicates RTP arriving on unexpected ports (check your NAT/ALG config) or calls that started before capture began.
