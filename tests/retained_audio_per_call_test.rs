@@ -14,6 +14,7 @@
 //! 8000 samples per channel. 16000 would mean the second call's audio was
 //! appended to the first call's stream; 0 or a short count would mean the
 //! second session lost frames to the first one's retention.
+#![cfg(all(feature = "native", feature = "vcon"))]
 
 #[path = "support/pcap_build.rs"]
 mod pcap_build;
