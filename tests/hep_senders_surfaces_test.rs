@@ -98,6 +98,7 @@ fn rest_state(meter: sipnab::capture::channel::CaptureMeter) -> ApiState {
         )),
         rate_limiter: Arc::new(Mutex::new(RateLimiter::new(1000, 1024))),
         max_inline_media_bytes: None,
+        content_deny_header: None,
         max_rows: 1000,
         capture: None,
         source_exhausted: None,

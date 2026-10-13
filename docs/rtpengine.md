@@ -401,7 +401,9 @@ sipnab therefore believes a sniffed mirror **only on UDP port 9060**, the HEP
 port. That narrows the input without authenticating anybody, and this page says
 so plainly so nobody reads it as more. It stops every datagram on the segment
 being a candidate, and it stops nothing sent to 9060. sipnab logs one refusal,
-naming the port it saw.
+naming the port it saw. The rule is the same with `--hep-parse` on: the flag
+unwraps the datagram before sipnab reads it, and sipnab still believes the
+mirror inside only if the datagram went to port 9060.
 
 `--hep-allow` does **not** reach this path. It guards the `--hep-listen`
 socket, and there is no socket here.

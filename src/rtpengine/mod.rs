@@ -140,6 +140,30 @@ pub fn sniffed_ng_sdp_links(
     if !is_ng_over_hep(hep.protocol.to_byte(), &hep.payload) {
         return None;
     }
+    if !sniffed_mirror_port_believed(dst_port) {
+        return Some(Vec::new());
+    }
+    Some(sdp_links_from_ng(
+        &hep.payload,
+        hep.correlation_id.as_deref(),
+    ))
+}
+
+/// Whether sniffed `ng` addressed to `dst_port` is believed, counting and
+/// warning on a refusal.
+///
+/// The one gate for both ways sniffed `ng` arrives: a HEP datagram read with
+/// its wrapper intact ([`sniffed_ng_sdp_links`]) and one `--hep-parse`
+/// unwrapped first. Two copies of the check would let one of them drift
+/// open, which is how `--hep-parse` came to bypass it.
+///
+/// # Side effects
+///
+/// On a refusal, bumps the [`sniffed_ng_refused_off_port`] tally and warns
+/// once per process.
+#[cfg(feature = "hep")]
+#[must_use]
+pub fn sniffed_mirror_port_believed(dst_port: u16) -> bool {
     if !sniffed_mirror_port_allowed(dst_port) {
         SNIFFED_NG_OFF_PORT.fetch_add(1, Ordering::Relaxed);
         static OFF_PORT_WARNED: std::sync::atomic::AtomicBool =
@@ -161,12 +185,9 @@ pub fn sniffed_ng_sdp_links(
                     .join(", "),
             );
         }
-        return Some(Vec::new());
+        return false;
     }
-    Some(sdp_links_from_ng(
-        &hep.payload,
-        hep.correlation_id.as_deref(),
-    ))
+    true
 }
 
 /// The SDP media endpoints an `ng` message asserts, tied to their call.

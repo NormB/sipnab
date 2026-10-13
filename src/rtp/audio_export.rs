@@ -344,7 +344,7 @@ pub fn decode_dialog_audio(streams: &[&RtpStream]) -> Result<DialogAudio> {
         omitted_clause(distinct_sources, carried.len(), &skipped_codecs),
         decode_failure_clause(failures),
         direction_clause(streams)
-    );
+    ) + &undecrypted_clause(&carried);
     let note = provenance_note(AudioMechanism::SipnabCapture, &partial);
 
     let duration_secs = if output_rate == 0 {
@@ -589,6 +589,26 @@ fn decode_failure_clause(failures: u64) -> String {
     )
 }
 
+/// A clause counting SRTP packets on the carried streams that were not
+/// decrypted, or nothing when there were none.
+///
+/// Their payload was not kept, so the audio has a gap wherever they fell. A
+/// stream reaches the export with some packets decrypted and some not when a
+/// key authenticated only part of it.
+fn undecrypted_clause(carried: &[&RtpStream]) -> String {
+    let undecrypted: u64 = carried
+        .iter()
+        .map(|s| s.srtp_undecrypted_packets)
+        .fold(0u64, u64::saturating_add);
+    if undecrypted == 0 {
+        return String::new();
+    }
+    format!(
+        " — PARTIAL: {undecrypted} SRTP packet(s) were not decrypted and are missing from \
+         the audio."
+    )
+}
+
 /// A clause naming the streams this export left behind, or nothing when it
 /// carried them all.
 ///
@@ -698,6 +718,19 @@ pub(crate) fn nothing_to_decode(streams: &[&RtpStream]) -> String {
              This is a statement about what this run holds, not a finding that the call \
              was silent.",
             why.join(", and ")
+        );
+    }
+
+    // SRTP sipnab could not decrypt is a cause it measured, so it is stated
+    // rather than left to the retention candidate below.
+    let undecrypted: u64 = decodable.iter().map(|s| s.srtp_undecrypted_packets).sum();
+    if undecrypted > 0 {
+        return format!(
+            "No audio payload held: {undecrypted} packet(s) on this call's SRTP stream(s) \
+             were not decrypted, because sipnab held no key that authenticated them, so \
+             their payload was ciphertext and was not kept. sipnab decrypts SRTP with SDES \
+             keys from the SDP's a=crypto lines, with --srtp-keys, or, for DTLS-SRTP, with \
+             --dtls-keylog."
         );
     }
 
@@ -1093,6 +1126,51 @@ mod tests {
             message.contains("[limits] max_audio_bytes retention budget released 40 frame(s)"),
             "{message}"
         );
+        Ok(())
+    }
+
+    /// An SRTP stream sipnab could not decrypt is named as the reason there
+    /// is nothing to decode, with the packet count and the ways to supply a
+    /// key, rather than blamed on retention or read as a silent call.
+    #[test]
+    fn nothing_to_decode_names_srtp_it_could_not_decrypt() -> Result<(), TestError> {
+        let mut stream = make_stream(Some("PCMU"), Vec::new())?;
+        stream.srtp = true;
+        stream.srtp_undecrypted_packets = 250;
+        let message = nothing_to_decode(&[&stream]);
+        assert!(
+            message.contains("250 packet(s)") && message.contains("SRTP"),
+            "{message}"
+        );
+        for way in ["a=crypto", "--srtp-keys", "--dtls-keylog"] {
+            assert!(message.contains(way), "names {way}: {message}");
+        }
+        assert!(
+            !message.contains("retention"),
+            "retention is not the cause: {message}"
+        );
+        Ok(())
+    }
+
+    /// Audio from a stream where only some SRTP packets were decrypted says
+    /// the rest are missing; a stream with none undecrypted says nothing.
+    #[test]
+    fn a_partly_decrypted_stream_is_exported_as_partial() -> Result<(), TestError> {
+        let mut stream = make_stream(Some("PCMU"), vec![(0, vec![0xFF; 160])])?;
+        stream.srtp = true;
+        stream.srtp_decrypted_packets = 1;
+        stream.srtp_undecrypted_packets = 9;
+        let audio = decode_dialog_audio(&[&stream]).map_err(|e| format!("decodes: {e:?}"))?;
+        assert!(
+            audio
+                .partial
+                .contains("PARTIAL: 9 SRTP packet(s) were not decrypted"),
+            "{}",
+            audio.partial
+        );
+        stream.srtp_undecrypted_packets = 0;
+        let audio = decode_dialog_audio(&[&stream]).map_err(|e| format!("decodes: {e:?}"))?;
+        assert!(!audio.partial.contains("SRTP"), "{}", audio.partial);
         Ok(())
     }
 

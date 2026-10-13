@@ -223,6 +223,15 @@ SRTP keys arrive two ways, and sipnab reads both:
 different handshakes. If you already hold SRTP master keys rather than a
 handshake, `--srtp-keys` takes them directly.
 
+Without a key, SRTP media is still measured: packet counts, loss, jitter and
+timing come from the RTP header, which SRTP leaves in the clear. The payload is
+not kept as audio. When the SDP declares an SRTP profile (`RTP/SAVP`,
+`RTP/SAVPF`, `UDP/TLS/RTP/SAVP` or `UDP/TLS/RTP/SAVPF`), sipnab keeps only the
+payload it decrypted, because a payload it could not decrypt is ciphertext and
+decodes as noise. A WAV export or a vCon for such a call then carries no audio
+and says how many packets sipnab could not decrypt. If sipnab decrypted only
+some packets, it marks the audio PARTIAL and counts the others.
+
 ## When the keys arrive after the call starts
 
 Any run whose keys arrive while it runs has one race: method 1 or method 5

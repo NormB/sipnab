@@ -650,6 +650,9 @@ pub fn start_servers(
                 .output_args
                 .vcon_max_inline_media
                 .map(|mib| mib.saturating_mul(1024 * 1024)),
+            // The same deny the batch export applies: see
+            // `ApiState::content_deny_header`.
+            content_deny_header: cli.output_args.content_deny_header.clone(),
             // The same object the MCP arm below is handed, so both doors name
             // one capture and see one rotation.
             capture: Some(Arc::clone(&capture_state)),
@@ -807,6 +810,9 @@ pub fn start_servers(
                         .vcon_max_inline_media
                         .map(|mib| mib.saturating_mul(1024 * 1024)),
                 )
+                // The deny the batch export applies: see
+                // `SipnabMcp::content_deny_header`.
+                .with_content_deny_header(cli.output_args.content_deny_header.clone())
                 .with_body_cap(selection.mcp_body_cap)
                 .with_response_cap(selection.mcp_response_cap)
                 .with_max_wait_seconds(selection.mcp_wait_seconds)

@@ -176,9 +176,9 @@ sipnab -N -d eth0 --api 127.0.0.1:8080 \
 
 ## The three switches people miss
 
-> **Do not reach for `--hep-parse` to name relay media**
+> **`--hep-parse` does not name relay media**
 >
-> It is for HEP-encapsulated *SIP*: it unwraps the datagram and replaces the packet with the payload inside. sipnab recognizes sniffed rtpengine `ng` by its HEP wrapper, so unwrapping destroys the very thing that identifies it — the streams stay unnamed and nothing says why. What relay naming actually needs is the `hep` build feature and the control-plane ports in the capture filter.
+> It is for HEP-encapsulated *SIP*: it unwraps each HEP datagram and reads the payload inside. It neither helps nor stops relay naming. sipnab recognizes mirrored rtpengine `ng` with or without it, and believes a sniffed mirror only when it went to the HEP port, 9060, either way. What relay naming needs is the `hep` build feature and the control-plane ports in the capture filter.
 
 > **The default filter excludes the control plane**
 >
@@ -598,7 +598,7 @@ The build omitted the `hep` feature, so the relay could never decode the control
 
 **`media_creating_commands: 0`**
 
-Control traffic is on the wire and in the filter, yet nothing decodes. Usually `--hep-parse` is on: it strips the HEP wrapper the ng detector matches against.
+Control traffic is on the wire and in the filter, yet nothing decodes. Check the port the mirror goes to: sipnab believes a sniffed mirror only on UDP port 9060, and logs one refusal naming any other port it saw.
 
 **associated_dialog: null on every stream**
 
@@ -666,7 +666,7 @@ Everything the rest of the page refers to, in one place.
 
 | Flag | Default | Without it |
 |---|---|---|
-| `--hep-parse` | off | For HEP-encapsulated SIP. Leave OFF on a relay — it strips the wrapper that identifies mirrored ng |
+| `--hep-parse` | off | For HEP-encapsulated SIP. Not needed for relay naming. sipnab believes mirrored ng on port 9060 only, with or without it |
 | `--retain-audio` | off | Containers carry a `recording` placeholder with no bytes |
 | `--api <addr>` | off | No REST surface. A non-loopback bind requires an API key |
 | `--portrange` | 5060-5061 | Names which ports carry SIP, separate from the capture filter |

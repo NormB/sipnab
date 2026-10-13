@@ -710,3 +710,123 @@ fn an_mcp_alias_uses_the_runs_thresholds() -> Result<(), TestError> {
     assert_eq!(code, Some(0), "closing stdin ends the run cleanly:\n{log}");
     Ok(())
 }
+
+// ── The run's --content-deny-header reaches both doors ───────────────────
+
+/// The Call-ID of the one call in `CAPTURE`.
+const CAPTURE_CALL_ID: &str = "test-call-1@192.0.2.1";
+
+/// `GET /v1/dialogs/{id}/vcon` on a run started with `--content-deny-header`
+/// withholds a dialog that carries the header, over a real socket.
+///
+/// The REST door was never handed the flag, so it exported the container the
+/// batch export would have suppressed. Every message carries `CSeq`, so
+/// naming it denies the capture's one call.
+#[cfg(feature = "vcon")]
+#[test]
+fn the_rest_vcon_export_honors_the_runs_deny_header() -> Result<(), TestError> {
+    let home = tempfile::tempdir()?;
+    let mut run = Spawned::start(
+        &[
+            "-N",
+            "-I",
+            CAPTURE,
+            "--api",
+            "127.0.0.1:0",
+            "--api-key",
+            "k",
+            "--content-deny-header",
+            "CSeq",
+        ],
+        home.path(),
+        Stdio::null(),
+        Stdio::null(),
+    )?;
+    let addr = run
+        .after("REST API listening on ", Duration::from_secs(30))
+        .ok_or_else(|| format!("no listening line:\n{}", run.seen.join("\n")))?;
+    assert!(
+        run.after("API server active", Duration::from_secs(30))
+            .is_some(),
+        "the run must reach its keep-alive loop:\n{}",
+        run.seen.join("\n")
+    );
+    let (status, body) = http_get(&addr, &format!("/v1/dialogs/{CAPTURE_CALL_ID}/vcon"), "k")?;
+    assert_eq!(status, 403, "a denied dialog's vCon is withheld: {body}");
+    assert!(body.contains("content-deny-header"), "{body}");
+
+    let (code, log) = run.terminate();
+    assert_eq!(code, Some(0), "SIGTERM ends a served run cleanly:\n{log}");
+    Ok(())
+}
+
+/// MCP `export_vcon` on a run started with `--content-deny-header` refuses a
+/// dialog that carries the header.
+///
+/// The MCP server the run builds was never handed the flag, so an agent got
+/// the container the batch export would have suppressed.
+#[cfg(feature = "vcon")]
+#[test]
+fn the_mcp_vcon_export_honors_the_runs_deny_header() -> Result<(), TestError> {
+    let home = tempfile::tempdir()?;
+    let mut run = Spawned::start(
+        &[
+            "--mcp",
+            "-N",
+            "-I",
+            CAPTURE,
+            "--quiet",
+            "--content-deny-header",
+            "CSeq",
+        ],
+        home.path(),
+        Stdio::piped(),
+        Stdio::piped(),
+    )?;
+    let mut stdin = run.child.stdin.take().ok_or("stdin")?;
+    let mut reader = BufReader::new(run.child.stdout.take().ok_or("stdout")?);
+    send(
+        &mut stdin,
+        &serde_json::json!({
+            "jsonrpc": "2.0", "id": 1, "method": "initialize",
+            "params": {"protocolVersion": "2024-11-05", "capabilities": {},
+                       "clientInfo": {"name": "t", "version": "1"}}
+        }),
+    )?;
+    let _ = reply(&mut reader, 1);
+    send(
+        &mut stdin,
+        &serde_json::json!({"jsonrpc": "2.0", "method": "notifications/initialized"}),
+    )?;
+    // Ask until the replay has loaded the call: before that the Call-ID is
+    // unknown and the refusal would be the not-found one, not the deny.
+    let deadline = Instant::now() + Duration::from_secs(30);
+    let answer = loop {
+        send(
+            &mut stdin,
+            &serde_json::json!({
+                "jsonrpc": "2.0", "id": 2, "method": "tools/call",
+                "params": {"name": "export_vcon",
+                           "arguments": {"call_id": CAPTURE_CALL_ID}}
+            }),
+        )?;
+        let answer = reply(&mut reader, 2);
+        if answer.to_string().contains("content-deny-header") {
+            break answer;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "export_vcon never refused the denied dialog within 30 s: {answer}"
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    };
+    assert!(
+        answer.get("error").is_some(),
+        "the deny is an error, not a container: {answer}"
+    );
+
+    drop(stdin);
+    let (code, log) = run.terminate();
+    assert_eq!(code, Some(0), "closing stdin ends the run cleanly:\n{log}");
+    Ok(())
+}

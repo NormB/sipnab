@@ -92,6 +92,9 @@ struct SdpEndpoint {
     /// would let an endpoint learned from a relay's control plane assert a
     /// packing nobody negotiated.
     media_formats: Option<Vec<String>>,
+    /// Whether a media description for this endpoint declared an SRTP
+    /// profile. See [`RtpStream::srtp`].
+    srtp: bool,
     /// The store's [`StreamStore::binding_seq`] when this endpoint was first
     /// recorded or last moved to a different Call-ID.
     ///
@@ -1096,6 +1099,33 @@ impl StreamStore {
         rtp: &RtpHeader,
         timestamp: DateTime<Utc>,
     ) {
+        self.record_rtp(parsed, rtp, timestamp, false);
+    }
+
+    /// [`process_rtp`](Self::process_rtp) for a packet whose payload sipnab
+    /// decrypted from SRTP: `parsed.payload` holds the plaintext.
+    ///
+    /// A separate entry point so that "this payload is plaintext" is said by
+    /// the one caller that knows it, the capture pipeline's SRTP branch, and
+    /// every other caller keeps meaning "as captured".
+    pub fn process_decrypted_rtp(
+        &mut self,
+        parsed: &ParsedPacket,
+        rtp: &RtpHeader,
+        timestamp: DateTime<Utc>,
+    ) {
+        self.record_rtp(parsed, rtp, timestamp, true);
+    }
+
+    /// The body of [`process_rtp`](Self::process_rtp) and
+    /// [`process_decrypted_rtp`](Self::process_decrypted_rtp).
+    fn record_rtp(
+        &mut self,
+        parsed: &ParsedPacket,
+        rtp: &RtpHeader,
+        timestamp: DateTime<Utc>,
+        decrypted: bool,
+    ) {
         let mut key = self.live_key(&StreamKey::new(
             rtp.ssrc,
             SocketAddr::new(parsed.src_addr, parsed.src_port),
@@ -1129,9 +1159,11 @@ impl StreamStore {
             if parsed.dscp.is_some() {
                 stream.dscp_last = parsed.dscp;
             }
+            let keep = note_protection(stream, decrypted);
             // Capture G.711 payload for audio export, inside the per-stream
             // cap and the budget (see `retain_payload`).
-            let capturable = self.audio_capture && is_audio_capturable(stream.codec.as_deref());
+            let capturable =
+                keep && self.audio_capture && is_audio_capturable(stream.codec.as_deref());
             let audio_slice = rtp.payload(&parsed.payload);
             if capturable
                 && !audio_slice.is_empty()
@@ -1203,9 +1235,11 @@ impl StreamStore {
                     self.orphan_sockets_dropped += 1;
                 }
             }
+            let keep = note_protection(&mut stream, decrypted);
             // Capture G.711 payload for audio export (first packet), charged
             // like every later one once the stream is in the store.
-            let capturable = self.audio_capture && is_audio_capturable(stream.codec.as_deref());
+            let capturable =
+                keep && self.audio_capture && is_audio_capturable(stream.codec.as_deref());
             self.ssrc_index
                 .entry(key.ssrc)
                 .or_default()
@@ -1639,6 +1673,7 @@ impl StreamStore {
         // After the link, so the codec this depends on is already resolved on
         // every stream the endpoint index reached.
         self.remember_media_formats(media_addr, media_port, &media.fmtp);
+        self.remember_media_protection(media_addr, media_port, is_srtp_profile(&media.proto));
     }
 
     /// Associate every RTP stream on `media_addr:media_port` to `call_id` and,
@@ -1856,6 +1891,7 @@ impl StreamStore {
                         ptime,
                         provenance,
                         media_formats: None,
+                        srtp: false,
                         bound_seq: {
                             self.binding_seq += 1;
                             self.binding_seq
@@ -1900,6 +1936,9 @@ impl StreamStore {
             }
             if stream.sdp_ptime_ms.is_none() {
                 stream.sdp_ptime_ms = endpoint.ptime;
+            }
+            if endpoint.srtp {
+                stream.srtp = true;
             }
             if stream.codec.is_none()
                 && let Some((_, encoding, clock_rate)) = endpoint
@@ -1947,6 +1986,52 @@ impl StreamStore {
                 continue;
             }
             stream.amr_packing = crate::rtp::amr::packing_for(fmtp, stream.payload_type);
+        }
+    }
+
+    /// Record whether a media description for an endpoint declared an SRTP
+    /// profile, and mark every stream already on it.
+    ///
+    /// A separate entry point for the reason
+    /// [`remember_media_formats`](Self::remember_media_formats) is. Only ever
+    /// sets the mark: a later description without a profile (a relay's
+    /// control plane, a re-offer this capture parsed partially) does not make
+    /// SRTP plaintext.
+    ///
+    /// A stream marked here may already hold payload kept as plain RTP,
+    /// because its packets arrived before the SDP did. If none of its packets
+    /// was decrypted, that payload is ciphertext and is released, with the
+    /// budget refunded and the packets counted in
+    /// [`RtpStream::srtp_undecrypted_packets`].
+    pub fn remember_media_protection(&mut self, addr: IpAddr, port: u16, srtp: bool) {
+        if !srtp {
+            return;
+        }
+        if let Some(endpoint) = self.sdp_endpoints.get_mut(&(addr, port)) {
+            endpoint.srtp = true;
+        }
+        let Some(keys) = self.endpoint_index.get(&(addr, port)) else {
+            return;
+        };
+        let keys = keys.clone();
+        for key in &keys {
+            let Some(stream) = self.streams.get_mut(key) else {
+                continue;
+            };
+            if stream.srtp {
+                continue;
+            }
+            stream.srtp = true;
+            stream.srtp_undecrypted_packets = stream
+                .packet_count
+                .saturating_sub(stream.srtp_decrypted_packets);
+            if stream.srtp_decrypted_packets == 0 {
+                self.audio_bytes_retained = self
+                    .audio_bytes_retained
+                    .saturating_sub(buffer_charge(&stream.payload_buffer));
+                stream.payload_buffer = std::collections::VecDeque::new();
+            }
+            self.generation += 1;
         }
     }
 
@@ -2251,7 +2336,12 @@ impl StreamStore {
             }
         }
         for (ep, sdp) in other.sdp_endpoints {
-            self.sdp_endpoints.entry(ep).or_insert(sdp);
+            // An SRTP mark from either worker survives the union: one that
+            // saw only a plain description must not unmark what the other
+            // learned.
+            let srtp = sdp.srtp;
+            let kept = self.sdp_endpoints.entry(ep).or_insert(sdp);
+            kept.srtp |= srtp;
         }
         for (flow, session) in other.live_sessions {
             let live = self.live_sessions.entry(flow).or_insert(session);
@@ -2292,6 +2382,10 @@ impl StreamStore {
             // into one that looks same-source, and would clear the time that
             // makes an entry expirable.
             self.link_endpoint_from(addr, port, &ep.call_id, &ep.rtpmap, ep.ptime, ep.provenance);
+            // The SRTP mark is replayed too: a stream recorded on one worker
+            // while the SDP declaring it SRTP was parsed on another kept its
+            // ciphertext as audio, and this is the first point both meet.
+            self.remember_media_protection(addr, port, ep.srtp);
         }
     }
 
@@ -2379,6 +2473,35 @@ fn buffer_charge(buffer: &std::collections::VecDeque<(u32, Vec<u8>)>) -> usize {
 /// off, which was a true-sounding statement about the wrong thing.
 fn is_audio_capturable(codec: Option<&str>) -> bool {
     crate::rtp::audio_export::is_capturable_audio_codec(codec)
+}
+
+/// Whether an SDP `m=` transport protocol is an SRTP profile: `RTP/SAVP`
+/// ([RFC 3711](https://www.rfc-editor.org/rfc/rfc3711)), `RTP/SAVPF`
+/// ([RFC 5124](https://www.rfc-editor.org/rfc/rfc5124)), and their DTLS-SRTP
+/// forms `UDP/TLS/RTP/SAVP` and `UDP/TLS/RTP/SAVPF`
+/// ([RFC 5764](https://www.rfc-editor.org/rfc/rfc5764)). Compared without
+/// regard to case, as SDP tokens are.
+fn is_srtp_profile(proto: &str) -> bool {
+    let proto = proto.to_ascii_uppercase();
+    proto.ends_with("RTP/SAVP") || proto.ends_with("RTP/SAVPF")
+}
+
+/// Count one packet's protection on its stream and answer whether its
+/// payload may be kept as audio.
+///
+/// Decrypted payload is plaintext and may be kept. On a stream the SDP
+/// marked SRTP, undecrypted payload is ciphertext and may not. On any other
+/// stream the payload is kept as captured, as it always was.
+fn note_protection(stream: &mut crate::rtp::stream::RtpStream, decrypted: bool) -> bool {
+    if decrypted {
+        stream.srtp_decrypted_packets = stream.srtp_decrypted_packets.saturating_add(1);
+        return true;
+    }
+    if stream.srtp {
+        stream.srtp_undecrypted_packets = stream.srtp_undecrypted_packets.saturating_add(1);
+        return false;
+    }
+    true
 }
 
 /// Unit tests for the stream store: creation/update, SDP linking in both
@@ -4575,6 +4698,166 @@ a=rtpmap:96 H264/90000\r\n";
             "at the true 90 kHz clock this evenly paced stream is near-zero \
              jitter, got {j}"
         );
+        Ok(())
+    }
+
+    /// One PCMU media description on 10.0.0.2:30000 under `proto`.
+    fn pcmu_media(proto: &str) -> Result<crate::sip::sdp::SdpMedia, TestError> {
+        let sdp = format!(
+            "v=0\r\no=- 1 1 IN IP4 10.0.0.2\r\ns=-\r\nc=IN IP4 10.0.0.2\r\nt=0 0\r\n\
+             m=audio 30000 {proto} 0\r\na=rtpmap:0 PCMU/8000\r\n"
+        );
+        Ok(crate::sip::sdp::parse_sdp(sdp.as_bytes())
+            .map_err(|e| format!("test SDP parses: {e:?}"))?
+            .media
+            .remove(0))
+    }
+
+    /// The one stream 10.0.0.1:20000 -> 10.0.0.2:30000 with `ssrc`.
+    fn srtp_fixture_stream(
+        store: &StreamStore,
+        ssrc: u32,
+    ) -> Result<&crate::rtp::stream::RtpStream, TestError> {
+        Ok(store
+            .get(&StreamKey {
+                ssrc,
+                src: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)), 20000),
+                dst: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2)), 30000),
+                session: 0,
+            })
+            .ok_or("the stream exists")?)
+    }
+
+    /// SRTP that sipnab could not decrypt is ciphertext, and ciphertext
+    /// decoded as mu-law is noise in an exported WAV and a vCon recording.
+    /// A stream the SDP declared SRTP keeps no payload it did not decrypt,
+    /// and counts the packets it refused, so the export can say why.
+    #[test]
+    fn undecrypted_srtp_payload_is_never_kept() -> Result<(), TestError> {
+        for proto in [
+            "RTP/SAVP",
+            "RTP/SAVPF",
+            "UDP/TLS/RTP/SAVP",
+            "UDP/TLS/RTP/SAVPF",
+        ] {
+            let mut store = StreamStore::new(16);
+            store.link_to_dialog_with_sdp_from(
+                IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2)),
+                30000,
+                "srtp@test",
+                &pcmu_media(proto)?,
+                SdpProvenance::unknown(),
+            );
+            let parsed = make_parsed(20000, 30000, 160);
+            store.process_rtp(&parsed, &make_rtp_header(0x5A, 1), ts(0));
+            store.process_rtp(&parsed, &make_rtp_header(0x5A, 2), ts(1));
+            let stream = srtp_fixture_stream(&store, 0x5A)?;
+            assert!(
+                stream.payload_buffer.is_empty(),
+                "{proto}: undecrypted SRTP must not be kept as audio"
+            );
+            assert_eq!(stream.srtp_undecrypted_packets, 2, "{proto}");
+            assert_eq!(stream.packet_count, 2, "{proto}: statistics still count");
+            assert_eq!(store.audio_bytes_retained(), 0, "{proto}");
+        }
+        Ok(())
+    }
+
+    /// Media seen before its SDP was kept as plain RTP. Once the SDP says it
+    /// was SRTP, none of it can have been decrypted (the key arrives in that
+    /// SDP or after it), so it is released.
+    #[test]
+    fn payload_kept_before_the_srtp_offer_arrived_is_released() -> Result<(), TestError> {
+        let mut store = StreamStore::new(16);
+        let parsed = make_parsed(20000, 30000, 160);
+        store.process_rtp(&parsed, &make_rtp_header(0x5B, 1), ts(0));
+        store.process_rtp(&parsed, &make_rtp_header(0x5B, 2), ts(1));
+        assert_eq!(
+            srtp_fixture_stream(&store, 0x5B)?.payload_buffer.len(),
+            2,
+            "premise: before any SDP the packets look like plain PCMU"
+        );
+        store.link_to_dialog_with_sdp_from(
+            IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2)),
+            30000,
+            "srtp-late@test",
+            &pcmu_media("RTP/SAVP")?,
+            SdpProvenance::unknown(),
+        );
+        let stream = srtp_fixture_stream(&store, 0x5B)?;
+        assert!(stream.payload_buffer.is_empty());
+        assert_eq!(stream.srtp_undecrypted_packets, 2);
+        assert_eq!(
+            store.audio_bytes_retained(),
+            0,
+            "and the budget is refunded"
+        );
+        Ok(())
+    }
+
+    /// SRTP that sipnab DID decrypt is audio, and is kept.
+    #[test]
+    fn decrypted_srtp_payload_is_kept() -> Result<(), TestError> {
+        let mut store = StreamStore::new(16);
+        store.link_to_dialog_with_sdp_from(
+            IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2)),
+            30000,
+            "srtp-keyed@test",
+            &pcmu_media("RTP/SAVP")?,
+            SdpProvenance::unknown(),
+        );
+        let parsed = make_parsed(20000, 30000, 160);
+        store.process_decrypted_rtp(&parsed, &make_rtp_header(0x5C, 1), ts(0));
+        store.process_decrypted_rtp(&parsed, &make_rtp_header(0x5C, 2), ts(1));
+        let stream = srtp_fixture_stream(&store, 0x5C)?;
+        assert_eq!(stream.payload_buffer.len(), 2);
+        assert_eq!(stream.srtp_undecrypted_packets, 0);
+        Ok(())
+    }
+
+    /// A multi-core run can record a stream on one worker and parse the SDP
+    /// declaring it SRTP on another. The merge and re-link that join them
+    /// must apply the mark, or the ciphertext one worker kept is exported.
+    #[test]
+    fn a_merge_applies_an_srtp_mark_learned_on_another_worker() -> Result<(), TestError> {
+        let mut media_worker = StreamStore::new(16);
+        let parsed = make_parsed(20000, 30000, 160);
+        media_worker.process_rtp(&parsed, &make_rtp_header(0x5E, 1), ts(0));
+        let mut sdp_worker = StreamStore::new(16);
+        sdp_worker.link_to_dialog_with_sdp_from(
+            IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2)),
+            30000,
+            "srtp-split@test",
+            &pcmu_media("RTP/SAVP")?,
+            SdpProvenance::unknown(),
+        );
+        let mut merged = StreamStore::new(16);
+        merged.merge(media_worker);
+        merged.merge(sdp_worker);
+        merged.reassociate_all();
+        let stream = srtp_fixture_stream(&merged, 0x5E)?;
+        assert!(stream.srtp);
+        assert!(stream.payload_buffer.is_empty());
+        assert_eq!(merged.audio_bytes_retained(), 0);
+        Ok(())
+    }
+
+    /// Plain RTP under `RTP/AVP` is kept exactly as before.
+    #[test]
+    fn plain_rtp_under_an_avp_offer_is_kept() -> Result<(), TestError> {
+        let mut store = StreamStore::new(16);
+        store.link_to_dialog_with_sdp_from(
+            IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2)),
+            30000,
+            "plain@test",
+            &pcmu_media("RTP/AVP")?,
+            SdpProvenance::unknown(),
+        );
+        let parsed = make_parsed(20000, 30000, 160);
+        store.process_rtp(&parsed, &make_rtp_header(0x5D, 1), ts(0));
+        let stream = srtp_fixture_stream(&store, 0x5D)?;
+        assert_eq!(stream.payload_buffer.len(), 1);
+        assert_eq!(stream.srtp_undecrypted_packets, 0);
         Ok(())
     }
 

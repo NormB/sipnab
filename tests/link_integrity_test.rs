@@ -1276,7 +1276,13 @@ fn wiki_intra_docs_links_resolve() -> Result<(), TestError> {
     // docs/README.md +11 (ten bundle pages and the error-message reference);
     // docs/errors.md +4; docs/cli-reference.md, docs/troubleshooting.md and
     // docs/internals/build-ci-release.md +1 each. Net +200.
-    const EXPECTED_WIKI_LINKS: usize = 1646;
+    // 1646 -> 1647: docs/rest-api.md links vcon.md#when-a-container-is-missing-on-purpose
+    // from the vCon route's note on --content-deny-header.
+    // 1647 -> 1652: docs/filter-dsl.md +2 (the field list's link to Any header
+    // by name, and that section's link to Parser constraints) and docs/vcon.md
+    // +3 (two links to When the call had not ended, one to Analyze a stored
+    // vCon from Read what came back).
+    const EXPECTED_WIKI_LINKS: usize = 1652;
     // Raised 459 -> 460 when SRC1 stage 1 shipped: docs/cli-reference.md's
     // `--hep-listen` row now points at cookbook recipe 6d in docs/examples.md
     // rather than restating how to pair `-L` with `-d`. Attributed per file

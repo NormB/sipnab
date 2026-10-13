@@ -109,7 +109,7 @@ Unlike its file-writing neighbors this tool writes nothing and needs no
 | Name | Type | Legal values | If omitted |
 |---|---|---|---|
 | `call_id` | string | A Call-ID the store holds. An unknown one fails with `invalid_params` (-32602) naming the value. | Give `filter` instead. |
-| `filter` | string | A filter alias or a raw DSL expression, the vocabulary [`list_dialogs`](mcp-tools-core.md#list_dialogs) takes. The `--export-vcon-when` flag answers the same question but accepts the DSL expression ONLY -- it rejects an alias, which is [FLT1](https://github.com/NormB/sipnab/blob/main/docs/design/backlog.md). Every matching dialog comes back. | Give `call_id` instead. |
+| `filter` | string | A filter alias or a raw DSL expression, the vocabulary [`list_dialogs`](mcp-tools-core.md#list_dialogs) takes. The `--export-vcon-when` flag takes the same vocabulary, aliases included. Every matching dialog comes back. | Give `call_id` instead. |
 | `limit` | integer | 1 to `--mcp-max-rows` (1000 by default). | 50. |
 | `cursor` | string | The previous response's `next_cursor`, passed back verbatim. It is the `<RFC 3339 created_at>\|<Call-ID>` cursor [`list_dialogs`](mcp-tools-core.md#list_dialogs) uses. A cursor whose time half is not [RFC 3339](https://www.rfc-editor.org/rfc/rfc3339) fails with `invalid_params` (-32602). | The first page. |
 | `media` | string | `inline`: audio the run retained travels inline in a `recording` Dialog Object. `omit`: the exporter considers no audio, and each container records `media: "not-considered"`. sipnab refuses any other value before the tool runs, with an error result naming `inline` and `omit`. | `inline`. |
@@ -123,6 +123,13 @@ dialogs and then issue one `export_vcon` per row — on a real capture, hundreds
 of round trips to do what `--export-vcon-when` does in one invocation. Pass the
 filter here instead. A container is a large answer, so `limit` bounds the set.
 `total_matched` counts the whole store, so it is the number to page against.
+
+**The tool withholds a dialog the run denies.** On a run started with
+`--content-deny-header NAME`, the tool does not export a dialog whose messages
+carry that header, as the batch export does not write it. Asked for that
+dialog by `call_id`, the tool refuses with `not_enabled` and names the header.
+Under a filter, the tool leaves such dialogs out, and `withheld_by_deny` says
+how many it left out.
 
 **Page through a large set.** Containers come back ordered by the dialog's
 `created_at`, then Call-ID. When more match than `limit` allows, `truncated`

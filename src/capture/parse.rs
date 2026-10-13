@@ -5446,6 +5446,7 @@ mod tests {
                 hep: Some(super::super::packet::HepOrigin {
                     protocol: 1,
                     correlation_id: None,
+                    sniffed_on_port: None,
                 }),
                 vcon: None,
             },

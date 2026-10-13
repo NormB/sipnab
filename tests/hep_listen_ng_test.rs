@@ -59,6 +59,7 @@ fn delivered_by_the_listener(body: Vec<u8>, correlation_id: Option<&str>) -> Pac
             hep: Some(HepOrigin {
                 protocol: NG_PROTO,
                 correlation_id: correlation_id.map(str::to_owned),
+                sniffed_on_port: None,
             }),
             vcon: None,
         },
@@ -165,6 +166,7 @@ fn sip_delivered_over_hep_is_not_claimed_as_relay_control() -> Result<(), TestEr
             hep: Some(HepOrigin {
                 protocol: 1,
                 correlation_id: Some("x@y".to_string()),
+                sniffed_on_port: None,
             }),
             vcon: None,
         },

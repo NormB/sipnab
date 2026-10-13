@@ -274,7 +274,7 @@ Operator precedence (highest to lowest): `NOT`, `AND`, `OR`. Use parentheses to 
 
 ## Fields
 
-All 32 addressable fields, organized by type. They answer to 33 names: `response_code` is also spelled `final_status_code`, and an alias is not a second field.
+All 33 addressable fields, organized by type. They answer to 34 names: `response_code` is also spelled `final_status_code`, and an alias is not a second field. Beyond these, `header.<name>` reads any SIP header by a name you choose. See [Any header by name](#any-header-by-name).
 
 ### String fields
 
@@ -486,6 +486,23 @@ half-open, `>=` at the start and `<` at the end, to select what those select:
 ```text
 time >= '2026-10-09T10:00:00Z' AND time < '2026-10-09T11:00:00Z'
 ```
+
+### Any header by name
+
+`header.<name>` compares the value of a SIP header you name, as a string. It
+matches when any header of that name, on any message sipnab holds for the
+dialog, satisfies the comparison. sipnab compares a header that appears on
+several lines one line at a time, matches header names without regard to
+case, and expands a compact form first, so `header.f` reads `From`.
+
+```text
+header.X-Trunk == 'north-east'
+header."P-Asserted-Identity" =~ 'sip:alice@'
+```
+
+Write the name bare, or in quotes when it holds a character that would end a
+bare name. Either way it must be an [RFC 3261](https://www.rfc-editor.org/rfc/rfc3261)
+token of at most 256 bytes (see [Parser constraints](#parser-constraints)).
 
 ## Operators
 

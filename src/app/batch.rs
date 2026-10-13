@@ -1342,8 +1342,8 @@ pub(crate) fn audio_retention_wanted(cli: &Cli) -> bool {
 /// plays a stream straight out of `payload_buffer` (`app::tui_mode` builds its
 /// own store and keeps that default). So the one-armed `if` gated the operator
 /// *notice* and never the behavior, and every batch run buffered audio nothing
-/// in it could read: up to 1500 frames per stream across up to 50,000 streams
-/// at the defaults, bounded per frame only by snaplen.
+/// in it could read: the whole of every stream at the defaults, bounded only by
+/// the 1 GiB `[limits] max_audio_bytes` budget across all streams.
 ///
 /// It stayed latent because the auto-BPF filter is `portrange 5060-5061`, so no
 /// RTP reaches the store to retain. It arms the moment an operator widens the
@@ -5603,9 +5603,17 @@ impl PacketPass<'_, '_, '_> {
             x.srtp_decrypted(&plain.payload);
         }
 
-        self.state
-            .stream_store
-            .process_rtp(rtp_pp, rtp_hdr, rtp_pp.timestamp);
+        // Told apart, because the store keeps an SRTP stream's payload only
+        // when it is plaintext.
+        if srtp_decrypted.is_some() {
+            self.state
+                .stream_store
+                .process_decrypted_rtp(rtp_pp, rtp_hdr, rtp_pp.timestamp);
+        } else {
+            self.state
+                .stream_store
+                .process_rtp(rtp_pp, rtp_hdr, rtp_pp.timestamp);
+        }
         self.counters.rtp_count += 1;
 
         // DTMF extraction (I2): if --telephone-event is set and we have
@@ -7094,26 +7102,79 @@ fn live_settle() -> chrono::TimeDelta {
     chrono::TimeDelta::from_std(SWEEP_INTERVAL).unwrap_or(chrono::TimeDelta::MAX)
 }
 
+/// How long a dialog that has not ended must have had no SIP and no RTP
+/// before a live sweep writes it anyway.
+///
+/// A call whose BYE never reached sipnab (a phone that lost power, a capture
+/// point that missed one packet) otherwise stays running and is never
+/// written. A call on hold for longer than this is written early, with its
+/// completeness note saying it had not ended, and written again under the
+/// same name when the BYE arrives.
+#[cfg(feature = "vcon")]
+const LIVE_IDLE_WRITE: std::time::Duration = std::time::Duration::from_secs(120);
+
+/// The two waits a live sweep applies, as the predicate takes them.
+#[cfg(feature = "vcon")]
+#[derive(Debug, Clone, Copy)]
+struct LiveTiming {
+    /// How long an ended dialog stays quiet before it is written: a
+    /// retransmitted BYE or a late 200 may still arrive.
+    settle: chrono::TimeDelta,
+    /// How long a dialog that has not ended stays quiet, signaling and media
+    /// both, before it is written anyway.
+    idle: chrono::TimeDelta,
+}
+
+/// The waits the live export uses.
+#[cfg(feature = "vcon")]
+fn live_timing() -> LiveTiming {
+    LiveTiming {
+        settle: live_settle(),
+        idle: chrono::TimeDelta::from_std(LIVE_IDLE_WRITE).unwrap_or(chrono::TimeDelta::MAX),
+    }
+}
+
 /// Whether a live sweep writes this dialog's container now.
 ///
 /// Pure, and every input an argument, so each condition can be driven on its
-/// own: the dialog is in a final state, it has been quiet for `settle`
-/// measured from `updated_at` to the sweep's `now`, and it has not already
-/// been written at this same `updated_at`.
+/// own. An ended dialog is written once it has been quiet for
+/// `timing.settle`, measured from `updated_at`; a dialog that has not ended
+/// is written once it has been quiet for `timing.idle`, measured from
+/// `quiet_since`, the later of its last SIP message and its last RTP packet.
+/// Either way it is not written again at the same `updated_at`.
 #[cfg(feature = "vcon")]
 fn live_vcon_due(
     state: &crate::sip::dialog::DialogState,
+    quiet_since: chrono::DateTime<chrono::Utc>,
     updated_at: chrono::DateTime<chrono::Utc>,
     now: chrono::DateTime<chrono::Utc>,
-    settle: chrono::TimeDelta,
+    timing: LiveTiming,
     already_exported_at: Option<chrono::DateTime<chrono::Utc>>,
 ) -> bool {
-    state.is_final() && now - updated_at >= settle && already_exported_at != Some(updated_at)
+    let quiet_long_enough = if state.is_final() {
+        now - updated_at >= timing.settle
+    } else {
+        now - quiet_since >= timing.idle
+    };
+    quiet_long_enough && already_exported_at != Some(updated_at)
+}
+
+/// The later of a dialog's last SIP message and its streams' last packet.
+#[cfg(feature = "vcon")]
+fn quiet_since(
+    dialog: &crate::sip::dialog::SipDialog,
+    streams: &[&crate::rtp::stream::RtpStream],
+) -> chrono::DateTime<chrono::Utc> {
+    streams
+        .iter()
+        .map(|s| s.last_seen)
+        .fold(dialog.updated_at, std::cmp::max)
 }
 
 /// The live vCon export for one sweep: write every dialog that matches
-/// `--export-vcon-when`, has ended, and has been quiet for [`SWEEP_INTERVAL`],
-/// or, for `--export-vcon <CALL-ID>`, that one call under the same rule (see
+/// `--export-vcon-when` and [`live_vcon_due`] says is due (ended and quiet for
+/// the settle period, or not ended and idle for [`LIVE_IDLE_WRITE`]), or, for
+/// `--export-vcon <CALL-ID>`, that one call under the same rule (see
 /// [`live_single_vcon_sweep`]).
 ///
 /// Selection goes through [`vcon_selection`], the path the end-of-run export
@@ -7164,7 +7225,10 @@ fn live_vcon_sweep(
             }
         };
     let due = live_due_dialogs(
-        selection.dialogs.iter().map(|(dialog, _)| *dialog),
+        selection
+            .dialogs
+            .iter()
+            .map(|(dialog, streams)| (*dialog, streams.as_slice())),
         tracker,
         now,
     );
@@ -7199,21 +7263,28 @@ fn live_vcon_sweep(
 /// [`live_vcon_due`] against what `tracker` says was already written.
 #[cfg(feature = "vcon")]
 fn live_due_dialogs<'a>(
-    selected: impl Iterator<Item = &'a crate::sip::dialog::SipDialog>,
+    selected: impl Iterator<
+        Item = (
+            &'a crate::sip::dialog::SipDialog,
+            &'a [&'a crate::rtp::stream::RtpStream],
+        ),
+    >,
     tracker: &LiveVconTracker,
     now: chrono::DateTime<chrono::Utc>,
 ) -> Vec<&'a crate::sip::dialog::SipDialog> {
-    let settle = live_settle();
+    let timing = live_timing();
     selected
-        .filter(|dialog| {
+        .filter(|(dialog, streams)| {
             live_vcon_due(
                 dialog.state(),
+                quiet_since(dialog, streams),
                 dialog.updated_at,
                 now,
-                settle,
+                timing,
                 tracker.written_at(&dialog.call_id),
             )
         })
+        .map(|(dialog, _)| dialog)
         .collect()
 }
 
@@ -7272,11 +7343,13 @@ fn live_single_vcon_sweep(
     let Some(dialog) = dialog_store.get(call_id) else {
         return 0;
     };
+    let streams: Vec<&crate::rtp::stream::RtpStream> = stream_store.streams_for(call_id).collect();
     if !live_vcon_due(
         dialog.state(),
+        quiet_since(dialog, &streams),
         dialog.updated_at,
         now,
-        live_settle(),
+        live_timing(),
         tracker.written_at(call_id),
     ) {
         return 0;
@@ -7938,7 +8011,7 @@ fn split_denied<'a>(
 /// case rule in the tree, and the two would drift.
 #[cfg(feature = "vcon")]
 fn dialog_carries_header(dialog: &crate::sip::dialog::SipDialog, header: &str) -> bool {
-    dialog.messages.iter().any(|m| m.header(header).is_some())
+    crate::output::vcon::denied_by_header(dialog, Some(header))
 }
 
 /// Write the `--export-vcon` container, or say why it did not.
@@ -8346,8 +8419,9 @@ mod tests {
         assert!(live_vcon_due(
             &sip::dialog::DialogState::Completed,
             t,
+            t,
             t + settle()?,
-            settle()?,
+            timing()?,
             None
         ));
         Ok(())
@@ -8363,30 +8437,124 @@ mod tests {
         assert!(!live_vcon_due(
             &sip::dialog::DialogState::Completed,
             t,
+            t,
             just_short,
-            settle()?,
+            timing()?,
             None
         ));
         Ok(())
     }
 
-    /// No running dialog is ever due, however long it has been quiet: a call
-    /// on hold is quiet and not over. Walks every state `is_final` rejects.
+    /// The timing the live export uses, as the predicate takes it.
+    #[cfg(feature = "vcon")]
+    fn timing() -> Result<LiveTiming, TestError> {
+        Ok(LiveTiming {
+            settle: settle()?,
+            idle: chrono::TimeDelta::from_std(LIVE_IDLE_WRITE)
+                .map_err(|e| format!("the idle period fits: {e:?}"))?,
+        })
+    }
+
+    /// A running dialog is written once it has had no SIP and no RTP for the
+    /// idle period, and not before: a call whose BYE was lost was never
+    /// written live, and a call on hold a little while is not written early.
+    /// Walks every state `is_final` rejects.
     #[cfg(feature = "vcon")]
     #[test]
-    fn no_running_dialog_is_due_however_quiet() -> Result<(), TestError> {
+    fn a_running_dialog_is_due_only_after_the_idle_period() -> Result<(), TestError> {
         let t = chrono::Utc::now();
+        let idle = timing()?.idle;
         let running: Vec<_> = sip::dialog::DialogState::ALL
             .into_iter()
             .filter(|s| !s.is_final())
             .collect();
         assert!(!running.is_empty(), "the walk must cover something");
         for state in running {
+            let just_short = t + idle - chrono::TimeDelta::milliseconds(1);
             assert!(
-                !live_vcon_due(&state, t, t + chrono::TimeDelta::hours(1), settle()?, None),
-                "{state:?} is not an end state, so it must never be written live"
+                !live_vcon_due(&state, t, t, just_short, timing()?, None),
+                "{state:?} quiet for less than the idle period is not written yet"
+            );
+            assert!(
+                live_vcon_due(&state, t, t, t + idle, timing()?, None),
+                "{state:?} quiet for the idle period is written, so a lost BYE \
+                 still produces a container"
             );
         }
+        Ok(())
+    }
+
+    /// RTP keeps a running call open: quiet signaling with media still
+    /// flowing is a call in progress, not an abandoned one.
+    #[cfg(feature = "vcon")]
+    #[test]
+    fn media_keeps_a_running_dialog_from_being_written() -> Result<(), TestError> {
+        let t = chrono::Utc::now();
+        let idle = timing()?.idle;
+        let media_until = t + chrono::TimeDelta::seconds(100);
+        assert!(!live_vcon_due(
+            &sip::dialog::DialogState::InCall,
+            media_until,
+            t,
+            t + idle,
+            timing()?,
+            None
+        ));
+        assert!(live_vcon_due(
+            &sip::dialog::DialogState::InCall,
+            media_until,
+            t,
+            media_until + idle,
+            timing()?,
+            None
+        ));
+        Ok(())
+    }
+
+    /// A dialog is quiet from the later of its last SIP message and its
+    /// streams' last packet, so media alone keeps a held call from looking idle.
+    #[cfg(feature = "vcon")]
+    #[test]
+    fn quiet_since_is_the_later_of_signaling_and_media() -> Result<(), TestError> {
+        let mut store = DialogStore::new(16, true);
+        store.process_message(invite_msg("quiet@example.com")?);
+        let dialog = store
+            .get("quiet@example.com")
+            .ok_or("the INVITE made a dialog")?;
+        assert_eq!(quiet_since(dialog, &[]), dialog.updated_at);
+        let mut early = rtp_stream_fixture(4000);
+        early.last_seen = dialog.updated_at - chrono::TimeDelta::seconds(5);
+        let mut late = rtp_stream_fixture(4002);
+        late.last_seen = dialog.updated_at + chrono::TimeDelta::seconds(90);
+        assert_eq!(quiet_since(dialog, &[&early]), dialog.updated_at);
+        assert_eq!(quiet_since(dialog, &[&early, &late]), late.last_seen);
+        Ok(())
+    }
+
+    /// A running dialog written after the idle period is not written again
+    /// until it changes; the BYE that ends it later is a change, and rewrites.
+    #[cfg(feature = "vcon")]
+    #[test]
+    fn an_idle_written_dialog_is_rewritten_only_when_it_changes() -> Result<(), TestError> {
+        let t = chrono::Utc::now();
+        let later = t + timing()?.idle * 2;
+        assert!(!live_vcon_due(
+            &sip::dialog::DialogState::InCall,
+            t,
+            t,
+            later,
+            timing()?,
+            Some(t)
+        ));
+        let bye = later;
+        assert!(live_vcon_due(
+            &sip::dialog::DialogState::Completed,
+            bye,
+            bye,
+            bye + settle()?,
+            timing()?,
+            Some(t)
+        ));
         Ok(())
     }
 
@@ -8399,15 +8567,16 @@ mod tests {
         let now = t + settle()?;
         let state = sip::dialog::DialogState::Failed;
         assert!(
-            !live_vcon_due(&state, t, now, settle()?, Some(t)),
+            !live_vcon_due(&state, t, t, now, timing()?, Some(t)),
             "written at this updated_at already"
         );
         assert!(
             live_vcon_due(
                 &state,
                 t,
+                t,
                 now,
-                settle()?,
+                timing()?,
                 Some(t - chrono::TimeDelta::seconds(1))
             ),
             "the dialog changed after it was written, so it is owed again"
@@ -8970,34 +9139,54 @@ mod tests {
         Ok(())
     }
 
-    /// STOP-AUDIT-1: a live sweep never writes the `--export-vcon` call while
-    /// it is still running, however long it has been quiet: a call on hold is
-    /// quiet and not over.
+    /// A live sweep writes the `--export-vcon` call while it is still running
+    /// only once it has been idle for [`LIVE_IDLE_WRITE`], and the container
+    /// then says the call had not ended. This replaced the rule that a running
+    /// call is never written, which left a call whose BYE was lost with no
+    /// container at all.
     #[cfg(feature = "vcon")]
     #[test]
-    fn a_live_sweep_does_not_write_a_running_single_call() -> Result<(), TestError> {
+    fn a_live_sweep_writes_a_running_single_call_only_after_the_idle_period()
+    -> Result<(), TestError> {
         let tmp = tempfile::tempdir().map_err(|e| format!("temp dir: {e:?}"))?;
         let out = tmp.path().join("one.json");
         let cli = cli_exporting_one(&out, "ok-call@example.com");
+        let dialogs = two_dialogs_one_failed()?;
+        let streams = StreamStore::new(16);
+        let read = || CaptureRead {
+            dialogs: &dialogs,
+            streams: &streams,
+            frames_read: 4,
+        };
+        let updated = dialogs
+            .get("ok-call@example.com")
+            .ok_or("the fixture holds the call")?
+            .updated_at;
+        let idle = chrono::TimeDelta::from_std(LIVE_IDLE_WRITE)?;
         let mut tracker = LiveVconTracker::default();
-        let n = live_vcon_sweep(
+
+        let early = live_vcon_sweep(
             &cli,
             None,
-            CaptureRead {
-                dialogs: &two_dialogs_one_failed()?,
-                streams: &StreamStore::new(16),
-                frames_read: 4,
-            },
+            read(),
             None,
             &mut tracker,
-            chrono::Utc::now() + chrono::TimeDelta::hours(1),
+            updated + idle - chrono::TimeDelta::seconds(1),
         );
-        assert_eq!(n, 0);
+        assert_eq!(early, 0);
         assert!(
             !out.exists(),
-            "an answered call that has not ended is not written"
+            "a running call is not written before it idles"
         );
-        assert!(!tracker.failed(), "nothing owed is not a failure");
+
+        let late = live_vcon_sweep(&cli, None, read(), None, &mut tracker, updated + idle);
+        assert_eq!(late, 1);
+        let written = std::fs::read_to_string(&out)?;
+        assert!(
+            written.contains("had not ended"),
+            "the container says the call had not ended: {written}"
+        );
+        assert!(!tracker.failed());
         Ok(())
     }
 
@@ -13244,8 +13433,8 @@ mod tests {
         assert!(
             !ss.audio_capture(),
             "a non-MCP run must leave retention OFF; leaving the constructor's \
-             default in place buffers up to 1500 frames per stream that nothing \
-             in this run can read"
+             default in place buffers every stream's audio, up to the 1 GiB \
+             budget, that nothing in this run can read"
         );
 
         cli.mcp_args.mcp = true;
@@ -15232,6 +15421,18 @@ mod tests {
         portrange: (u16, u16),
         srtp: &mut crate::rtp::srtp::SrtpContext,
     ) -> Result<u64, TestError> {
+        Ok(drive_packets_with_srtp(cli, std::slice::from_ref(pp), portrange, srtp)?.0)
+    }
+
+    /// [`drive_packet_with_srtp`] over several packets in order, returning
+    /// the rtp_count and the stream store they filled.
+    #[cfg(feature = "tls")]
+    fn drive_packets_with_srtp(
+        cli: &Cli,
+        pps: &[ParsedPacket],
+        portrange: (u16, u16),
+        srtp: &mut crate::rtp::srtp::SrtpContext,
+    ) -> Result<(u64, StreamStore), TestError> {
         let matcher = SipMatcher::new(cli, None).map_err(|e| format!("matcher: {e:?}"))?;
         let filter_expr: Option<FilterExpr> = None;
         let output_opts = OutputOptions::default();
@@ -15288,18 +15489,20 @@ mod tests {
                 export: None,
                 group: None,
             };
-            process_parsed_packet(
-                pp,
-                &ctx,
-                &mut state,
-                &mut engines,
-                &mut counters,
-                &mut effects,
-            );
+            for pp in pps {
+                process_parsed_packet(
+                    pp,
+                    &ctx,
+                    &mut state,
+                    &mut engines,
+                    &mut counters,
+                    &mut effects,
+                );
+            }
         }
         let mut sink = output::BatchSink::new(Vec::new(), false);
         effects.drain(&mut sink, &engines.alerts, &mut event_exec);
-        Ok(counters.rtp_count)
+        Ok((counters.rtp_count, stream_store))
     }
 
     /// A plaintext (non-SRTP) RTP packet must pass through an active SRTP
@@ -15340,6 +15543,117 @@ mod tests {
             srtp.decrypted_count, 0,
             "ordinary RTP must never be falsely decrypted (auth-tag gate)"
         );
+        Ok(())
+    }
+
+    /// An INVITE offering PCMU at 10.0.0.2:40000 under `proto`, with the
+    /// given `a=crypto` line when there is one.
+    #[cfg(feature = "tls")]
+    fn invite_with_srtp_offer(call_id: &str, proto: &str, crypto: Option<&str>) -> Vec<u8> {
+        let mut sdp = format!(
+            "v=0\r\no=- 1 1 IN IP4 10.0.0.2\r\ns=-\r\nc=IN IP4 10.0.0.2\r\nt=0 0\r\n\
+             m=audio 40000 {proto} 0\r\na=rtpmap:0 PCMU/8000\r\n"
+        );
+        if let Some(c) = crypto {
+            sdp.push_str(&format!("a=crypto:{c}\r\n"));
+        }
+        let mut msg = String::from("INVITE sip:bob@example.com SIP/2.0\r\n");
+        for h in [
+            "Via: SIP/2.0/UDP 10.0.0.1:5060;branch=z9hG4bK-srtp".to_string(),
+            "From: Alice <sip:alice@example.com>;tag=a1".to_string(),
+            "To: Bob <sip:bob@example.com>".to_string(),
+            format!("Call-ID: {call_id}"),
+            "CSeq: 1 INVITE".to_string(),
+            "Contact: <sip:alice@10.0.0.1:5060>".to_string(),
+            "Content-Type: application/sdp".to_string(),
+            format!("Content-Length: {}", sdp.len()),
+        ] {
+            msg.push_str(&h);
+            msg.push_str("\r\n");
+        }
+        msg.push_str("\r\n");
+        msg.push_str(&sdp);
+        msg.into_bytes()
+    }
+
+    /// The batch path keeps SRTP audio it decrypted and keeps none it could
+    /// not.
+    ///
+    /// Real SRTP: the packets are encrypted and authenticated with an SDES
+    /// key. Offered with its `a=crypto` line, the key decrypts them and the
+    /// plaintext is kept. Offered as `UDP/TLS/RTP/SAVP` with no key (DTLS-SRTP
+    /// and no `--dtls-keylog`), the same packets are ciphertext and nothing
+    /// is kept. Before the fix the second case kept every payload as PCMU.
+    #[cfg(feature = "tls")]
+    #[test]
+    fn the_batch_path_keeps_decrypted_srtp_audio_and_no_ciphertext() -> Result<(), TestError> {
+        use base64::Engine as _;
+        let master_key = vec![0x11u8; 16];
+        let master_salt = vec![0x22u8; 14];
+        let mut inline = master_key.clone();
+        inline.extend_from_slice(&master_salt);
+        let crypto = format!(
+            "1 AES_CM_128_HMAC_SHA1_80 inline:{}",
+            base64::engine::general_purpose::STANDARD.encode(&inline)
+        );
+        let mut cli = base_cli();
+        cli.output_args.no_cli_print = true;
+
+        let media = |invite: Vec<u8>| -> Result<Vec<ParsedPacket>, TestError> {
+            let mut pps = vec![parsed_sip_packet(invite, 5060, 5060)];
+            for seq in 1..=5u16 {
+                let packet = crate::rtp::srtp::test_support::build_srtp_packet(
+                    &master_key,
+                    &master_salt,
+                    0x5157_0001,
+                    seq,
+                    0,
+                    &[0xFFu8; 160],
+                )?;
+                pps.push(ParsedPacket {
+                    payload: packet.into(),
+                    ..parsed_sip_packet(Vec::new(), 30000, 40000)
+                });
+            }
+            Ok(pps)
+        };
+
+        let mut srtp =
+            crate::rtp::srtp::SrtpContext::new(Vec::new(), crate::crypto::default_backend());
+        let keyed = media(invite_with_srtp_offer(
+            "srtp-keyed@test",
+            "RTP/SAVP",
+            Some(&crypto),
+        ))?;
+        let (rtp, store) = drive_packets_with_srtp(&cli, &keyed, (5060, 5061), &mut srtp)?;
+        assert_eq!(rtp, 5);
+        let stream = store.iter().next().ok_or("the media made a stream")?;
+        assert_eq!(stream.srtp_decrypted_packets, 5, "the SDES key decrypts");
+        assert_eq!(stream.payload_buffer.len(), 5, "and the plaintext is kept");
+        assert!(
+            stream
+                .payload_buffer
+                .iter()
+                .all(|(_, p)| p == &vec![0xFFu8; 160]),
+            "the kept payload is the plaintext, not the ciphertext"
+        );
+
+        let mut srtp =
+            crate::rtp::srtp::SrtpContext::new(Vec::new(), crate::crypto::default_backend());
+        let unkeyed = media(invite_with_srtp_offer(
+            "srtp-dtls@test",
+            "UDP/TLS/RTP/SAVP",
+            None,
+        ))?;
+        let (rtp, store) = drive_packets_with_srtp(&cli, &unkeyed, (5060, 5061), &mut srtp)?;
+        assert_eq!(rtp, 5, "the packets are still counted and measured");
+        let stream = store.iter().next().ok_or("the media made a stream")?;
+        assert!(
+            stream.payload_buffer.is_empty(),
+            "ciphertext must not be kept as audio: {} frame(s) kept",
+            stream.payload_buffer.len()
+        );
+        assert_eq!(stream.srtp_undecrypted_packets, 5);
         Ok(())
     }
 
