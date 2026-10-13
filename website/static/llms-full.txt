@@ -6197,7 +6197,8 @@ The batch export does not write that dialog either. See
 [When a container is missing on purpose](vcon.md#when-a-container-is-missing-on-purpose).
 
 **Response** (trimmed — the `sip-message-trace` attachment carries one entry
-per SIP message and grows with the call):
+per SIP message and grows with the call, and the Dialog Object also carries
+`start` and, when the capture saw them, `sip_from_tag` and `sip_to_tag`):
 
 ```json
 {
@@ -6219,7 +6220,7 @@ per SIP message and grows with the call):
       "sip_user_agent": "sipnab/0.5.124 (observer; node capture-01)"
     }
   ],
-  "dialog": [{ "sip_call_id": "test-call-1@192.0.2.1" }],
+  "dialog": [{ "type": "recording", "sip_call_id": "test-call-1@192.0.2.1" }],
   "attachments": [
     { "purpose": "sip-message-trace", "party": 2, "mediatype": "application/json", "encoding": "json", "body": { "schema_version": 1, "messages": ["..."] } },
     {
@@ -10791,7 +10792,9 @@ sipnab therefore believes a sniffed mirror **only on UDP port 9060**, the HEP
 port. That narrows the input without authenticating anybody, and this page says
 so plainly so nobody reads it as more. It stops every datagram on the segment
 being a candidate, and it stops nothing sent to 9060. sipnab logs one refusal,
-naming the port it saw.
+naming the port it saw. The rule is the same with `--hep-parse` on: the flag
+unwraps the datagram before sipnab reads it, and sipnab still believes the
+mirror inside only if the datagram went to port 9060.
 
 `--hep-allow` does **not** reach this path. It guards the `--hep-listen`
 socket, and there is no socket here.
@@ -19533,7 +19536,7 @@ Operator precedence (highest to lowest): `NOT`, `AND`, `OR`. Use parentheses to 
 
 ## Fields
 
-All 32 addressable fields, organized by type. They answer to 33 names: `response_code` is also spelled `final_status_code`, and an alias is not a second field.
+All 33 addressable fields, organized by type. They answer to 34 names: `response_code` is also spelled `final_status_code`, and an alias is not a second field. Beyond these, `header.<name>` reads any SIP header by a name you choose. See [Any header by name](#any-header-by-name).
 
 ### String fields
 
@@ -19745,6 +19748,23 @@ half-open, `>=` at the start and `<` at the end, to select what those select:
 ```text
 time >= '2026-10-09T10:00:00Z' AND time < '2026-10-09T11:00:00Z'
 ```
+
+### Any header by name
+
+`header.<name>` compares the value of a SIP header you name, as a string. It
+matches when any header of that name, on any message sipnab holds for the
+dialog, satisfies the comparison. sipnab compares a header that appears on
+several lines one line at a time, matches header names without regard to
+case, and expands a compact form first, so `header.f` reads `From`.
+
+```text
+header.X-Trunk == 'north-east'
+header."P-Asserted-Identity" =~ 'sip:alice@'
+```
+
+Write the name bare, or in quotes when it holds a character that would end a
+bare name. Either way it must be an [RFC 3261](https://www.rfc-editor.org/rfc/rfc3261)
+token of at most 256 bytes (see [Parser constraints](#parser-constraints)).
 
 ## Operators
 
@@ -32843,7 +32863,7 @@ Unlike its file-writing neighbors this tool writes nothing and needs no
 | Name | Type | Legal values | If omitted |
 |---|---|---|---|
 | `call_id` | string | A Call-ID the store holds. An unknown one fails with `invalid_params` (-32602) naming the value. | Give `filter` instead. |
-| `filter` | string | A filter alias or a raw DSL expression, the vocabulary [`list_dialogs`](mcp-tools-core.md#list_dialogs) takes. The `--export-vcon-when` flag answers the same question but accepts the DSL expression ONLY -- it rejects an alias, which is [FLT1](https://github.com/NormB/sipnab/blob/main/docs/design/backlog.md). Every matching dialog comes back. | Give `call_id` instead. |
+| `filter` | string | A filter alias or a raw DSL expression, the vocabulary [`list_dialogs`](mcp-tools-core.md#list_dialogs) takes. The `--export-vcon-when` flag takes the same vocabulary, aliases included. Every matching dialog comes back. | Give `call_id` instead. |
 | `limit` | integer | 1 to `--mcp-max-rows` (1000 by default). | 50. |
 | `cursor` | string | The previous response's `next_cursor`, passed back verbatim. It is the `<RFC 3339 created_at>\|<Call-ID>` cursor [`list_dialogs`](mcp-tools-core.md#list_dialogs) uses. A cursor whose time half is not [RFC 3339](https://www.rfc-editor.org/rfc/rfc3339) fails with `invalid_params` (-32602). | The first page. |
 | `media` | string | `inline`: audio the run retained travels inline in a `recording` Dialog Object. `omit`: the exporter considers no audio, and each container records `media: "not-considered"`. sipnab refuses any other value before the tool runs, with an error result naming `inline` and `omit`. | `inline`. |
@@ -35854,9 +35874,9 @@ sipnab -N -d eth0 --api 127.0.0.1:8080 \
 
 ## The three switches people miss
 
-> **Do not reach for `--hep-parse` to name relay media**
+> **`--hep-parse` does not name relay media**
 >
-> It is for HEP-encapsulated *SIP*: it unwraps the datagram and replaces the packet with the payload inside. sipnab recognizes sniffed rtpengine `ng` by its HEP wrapper, so unwrapping destroys the very thing that identifies it — the streams stay unnamed and nothing says why. What relay naming actually needs is the `hep` build feature and the control-plane ports in the capture filter.
+> It is for HEP-encapsulated *SIP*: it unwraps each HEP datagram and reads the payload inside. It neither helps nor stops relay naming. sipnab recognizes mirrored rtpengine `ng` with or without it, and believes a sniffed mirror only when it went to the HEP port, 9060, either way. What relay naming needs is the `hep` build feature and the control-plane ports in the capture filter.
 
 > **The default filter excludes the control plane**
 >
@@ -36276,7 +36296,7 @@ The build omitted the `hep` feature, so the relay could never decode the control
 
 **`media_creating_commands: 0`**
 
-Control traffic is on the wire and in the filter, yet nothing decodes. Usually `--hep-parse` is on: it strips the HEP wrapper the ng detector matches against.
+Control traffic is on the wire and in the filter, yet nothing decodes. Check the port the mirror goes to: sipnab believes a sniffed mirror only on UDP port 9060, and logs one refusal naming any other port it saw.
 
 **associated_dialog: null on every stream**
 
@@ -36344,7 +36364,7 @@ Everything the rest of the page refers to, in one place.
 
 | Flag | Default | Without it |
 |---|---|---|
-| `--hep-parse` | off | For HEP-encapsulated SIP. Leave OFF on a relay — it strips the wrapper that identifies mirrored ng |
+| `--hep-parse` | off | For HEP-encapsulated SIP. Not needed for relay naming. sipnab believes mirrored ng on port 9060 only, with or without it |
 | `--retain-audio` | off | Containers carry a `recording` placeholder with no bytes |
 | `--api <addr>` | off | No REST surface. A non-loopback bind requires an API key |
 | `--portrange` | 5060-5061 | Names which ports carry SIP, separate from the capture filter |
@@ -36561,8 +36581,11 @@ because an export that overwrites its own evidence is not an export.
 On a live capture (`-d` or `--hep-listen`), `--export-vcon` writes the call's
 container when that call ends, on the same timing the spool below follows:
 once the call has ended and has been quiet for five seconds, while sipnab keeps
-capturing. A live capture that you stop writes nothing, so a call that had not
-ended and settled leaves no `--vcon-out` file behind. A live run that ends on
+capturing. sipnab writes a call that has not ended once it has carried no SIP
+and no RTP for 120 seconds, and writes it again if it changes later (see
+[When the call had not ended](#when-the-call-had-not-ended)). A live capture
+that you stop writes nothing, so a call that had not ended and settled leaves no
+`--vcon-out` file behind. A live run that ends on
 its own (`--duration`, `--autostop`) writes the call then if it was not already
 written, and still fails if that Call-ID never appeared. With `-I`, sipnab
 writes the container at the end of the run, as before.
@@ -36603,6 +36626,18 @@ rely on.
   container about ten seconds after the call's last message at the latest. If
   the call changes after that, for example a late `200 OK` answers a canceled
   call, sipnab writes the container again under the same name.
+- sipnab writes a call that has not ended once it has carried no SIP message
+  and no RTP packet for 120 seconds. This covers a call whose BYE sipnab never
+  saw, for example because a phone lost power or the capture point missed the
+  packet. Without it, sipnab would never write that call. The container's
+  `call_ended` field is `false` and its completeness note says the call had not
+  ended when sipnab wrote it (see
+  [When the call had not ended](#when-the-call-had-not-ended)). If the BYE, or
+  any other message, arrives later, sipnab writes the container again under
+  the same name. A forwarder that already delivered the first copy may be
+  refused the second by its store: vcon.store, for example, answers `409` for
+  a uuid it already holds. A call on hold with no media for 120 seconds is
+  written early in the same way.
 - A live capture that you stop (`systemctl stop`, SIGTERM, Ctrl-C, or an MCP
   client that goes away) writes nothing more. Calls that had not yet been
   written are not written on the way out, because stopping sipnab must leave
@@ -36983,9 +37018,10 @@ run.
 
 ### Read what came back
 
-Each file is one vCon, as JSON. sipnab does not open a vCon file as an input
-in this release: `-I` reads captures. Read the file with a JSON tool, for
-example `jq '.parties, .dialog[].type' fetched/<uuid>.vcon.json`.
+Each file is one vCon, as JSON. `-I` reads it the way it reads a capture,
+for example `sipnab -N -I fetched/<uuid>.vcon.json --analyze` (see
+[Analyze a stored vCon](#analyze-a-stored-vcon)), and any JSON tool reads
+it too, for example `jq '.parties, .dialog[].type' fetched/<uuid>.vcon.json`.
 
 ## Walk through one, end to end
 
@@ -37320,6 +37356,23 @@ the note says so. "Nobody checked" and "checked and found nothing" are
 different answers, and the container keeps them apart — an analysis that ranked
 nothing emits `blind_spots: []`, while an export that skipped the analysis
 omits the field entirely.
+
+### When the call had not ended
+
+`call_ended` is `true` when sipnab had seen the BYE, CANCEL or final failure
+response that closes the call before it wrote the container. It is `false`
+for a call still running at the end of a `-I` capture, and for a call a live
+export wrote after 120 seconds with no SIP and no RTP. When it is `false` the
+note adds this sentence:
+
+```text
+The call had not ended when this container was written: sipnab had seen no BYE, CANCEL or final failure for it, so the trace and any media end where this container was written, not where the call ended.
+```
+
+This is a statement about the call, not about the capture, so it is not an
+`INCOMPLETE` clause and adds no entry to the omission rows: every message
+sipnab held can be in the container while the call continued after sipnab
+wrote it. The field is always present, including as `true`.
 
 ### When a container is missing on purpose
 
@@ -48946,6 +48999,15 @@ SRTP keys arrive two ways, and sipnab reads both:
 `--dtls-keylog` is a separate flag from `--keylog` because the two name
 different handshakes. If you already hold SRTP master keys rather than a
 handshake, `--srtp-keys` takes them directly.
+
+Without a key, SRTP media is still measured: packet counts, loss, jitter and
+timing come from the RTP header, which SRTP leaves in the clear. The payload is
+not kept as audio. When the SDP declares an SRTP profile (`RTP/SAVP`,
+`RTP/SAVPF`, `UDP/TLS/RTP/SAVP` or `UDP/TLS/RTP/SAVPF`), sipnab keeps only the
+payload it decrypted, because a payload it could not decrypt is ciphertext and
+decodes as noise. A WAV export or a vCon for such a call then carries no audio
+and says how many packets sipnab could not decrypt. If sipnab decrypted only
+some packets, it marks the audio PARTIAL and counts the others.
 
 ## When the keys arrive after the call starts
 

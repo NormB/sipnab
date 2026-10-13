@@ -2128,6 +2128,9 @@ pub fn unwrap_hep(pp: &ParsedPacket) -> Option<Result<ParsedPacket, crate::error
     unwrapped.hep = Some(crate::capture::packet::HepOrigin {
         protocol: hep.protocol.to_byte(),
         correlation_id: hep.correlation_id.clone(),
+        // The OUTER port, read before the inner addressing replaced it: the
+        // sniffed-`ng` gate is about where the wrapper was going.
+        sniffed_on_port: Some(pp.dst_port),
     });
     // The inner addressing was asserted by the HEP sender, not observed on the
     // wire, so it is Hep however the wrapper arrived. Under --hep-parse the
@@ -2604,9 +2607,18 @@ fn claim_rtpengine_ng(pp: &ParsedPacket) -> Option<PacketAction> {
     // than here: rtpengine takes exactly one `--homer` destination, so anybody
     // following the page gave up their Homer collector and received no relay
     // visibility in exchange.
+    //
+    // A wrapper `--hep-parse` unwrapped off the wire arrives here too, since
+    // the unwrap records what the wrapper said. It was sniffed, not
+    // delivered, so it passes the sniffed arm's port gate first.
     if let Some(hep) = &pp.hep
         && crate::rtpengine::is_ng_over_hep(hep.protocol, &pp.payload)
     {
+        if let Some(port) = hep.sniffed_on_port
+            && !crate::rtpengine::sniffed_mirror_port_believed(port)
+        {
+            return Some(rtpengine_ng_action(Vec::new()));
+        }
         let sdp_links =
             crate::rtpengine::sdp_links_from_ng(&pp.payload, hep.correlation_id.as_deref());
         return Some(rtpengine_ng_action(sdp_links));
@@ -2910,7 +2922,7 @@ pub fn process_packet(
                     }
                     let mut d = pp.clone();
                     d.payload = payload;
-                    ss.process_rtp(&d, &hdr, d.timestamp);
+                    ss.process_decrypted_rtp(&d, &hdr, d.timestamp);
                 }
                 None => {
                     ss.process_rtp(pp, &hdr, pp.timestamp);

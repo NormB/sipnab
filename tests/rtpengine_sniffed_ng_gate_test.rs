@@ -247,6 +247,68 @@ fn a_sniffed_ng_datagram_on_an_unexpected_port_names_no_call() -> Result<(), Tes
     Ok(())
 }
 
+/// `--hep-parse` keeps the gate.
+///
+/// `--hep-parse` unwraps every HEP datagram it reads and records what the
+/// wrapper said, which is how mirrored `ng` stays recognizable after the
+/// unwrap. The recognized message then took the DELIVERED arm, the one for
+/// `--hep-listen`'s operator-bound socket, which has no port gate, so the
+/// flag that is meant to read HEP-encapsulated SIP also made sniffed `ng` on
+/// any UDP port believed. The off-port datagram must name nothing with the
+/// flag as without it.
+#[test]
+fn hep_parse_does_not_open_the_port_gate() -> Result<(), TestError> {
+    let mut frames = vec![udp_frame(
+        RELAY_IP,
+        COLLECTOR_IP,
+        59652,
+        OFF_PORT,
+        &hep_ng(HONEST_CALL_ID, MEDIA_IP, MEDIA_PORT),
+    )];
+    frames.extend(media_frames());
+    let (_dir, path) = capture("mirror-off-port-hep-parse.pcap", &frames)?;
+    let (stdout, _) = run(&path, &["--hep-parse", "--report"])?;
+
+    assert!(
+        !stdout.contains(HONEST_CALL_ID),
+        "with --hep-parse, a mirror on UDP/{OFF_PORT} must still not name a \
+         call; report was:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("Orphaned Streams"),
+        "and its media must stay orphaned; report was:\n{stdout}"
+    );
+    Ok(())
+}
+
+/// With `--hep-parse`, a mirror on the HEP port is still believed: the
+/// positive control for the test above, so a refusal there is the gate and
+/// not a datagram the flag stopped recognizing.
+#[test]
+fn hep_parse_still_believes_a_mirror_on_the_hep_port() -> Result<(), TestError> {
+    let mut frames = vec![udp_frame(
+        RELAY_IP,
+        COLLECTOR_IP,
+        59652,
+        HEP_PORT,
+        &hep_ng(HONEST_CALL_ID, MEDIA_IP, MEDIA_PORT),
+    )];
+    frames.extend(media_frames());
+    let (_dir, path) = capture("mirror-on-hep-port-hep-parse.pcap", &frames)?;
+    let (stdout, _) = run(&path, &["--hep-parse", "--report"])?;
+
+    assert!(
+        stdout.contains(HONEST_CALL_ID),
+        "with --hep-parse, a mirror on the HEP port must still name its call; \
+         report was:\n{stdout}"
+    );
+    assert!(
+        !stdout.contains("Orphaned Streams"),
+        "and the media it named must stop being orphaned; report was:\n{stdout}"
+    );
+    Ok(())
+}
+
 /// A Call-ID the attacker chose, in the correlation-id chunk, from an
 /// unrelated source, to an unrelated address and port: exactly the reported
 /// attack, and it names nothing.

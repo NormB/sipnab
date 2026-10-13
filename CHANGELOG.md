@@ -10,6 +10,13 @@ entry that carries them.
 
 ## [Unreleased]
 
+### Changed
+
+- **`HepOrigin` has a `sniffed_on_port` field** (library). It is `Some` with
+  the outer UDP destination port when `--hep-parse` unwrapped the datagram off
+  the wire, and `None` when a `--hep-listen` socket delivered it. Code that
+  builds a `HepOrigin` must set it.
+
 ### Fixed
 
 - **REST and MCP no longer hand out a vCon the run's `--content-deny-header`
@@ -21,6 +28,41 @@ entry that carries them.
   `not_enabled` and leaves it out of a filtered export, counting it in the new
   `withheld_by_deny` field. All three doors decide through one rule,
   `output::vcon::denied_by_header`.
+- **A live vCon export now writes a call whose BYE it never saw.** The live
+  export wrote a call only once it had ended, so a call whose BYE was lost (a
+  phone that lost power, a capture point that missed one packet) was never
+  written. A call that has not ended is now written once it has carried no SIP
+  and no RTP for 120 seconds, and written again under the same name if the
+  BYE or any other message arrives later. The container's new
+  `capture_completeness.call_ended` field is `false` and its completeness
+  note says the call had not ended when it was written; a `-I` export of a
+  call still running at the end of the capture says the same.
+- **SRTP media sipnab could not decrypt is no longer exported as audio.** An
+  SRTP payload with no key that decrypts it is ciphertext, but a stream whose
+  payload type named G.711 kept it, and the WAV export and a vCon `recording`
+  decoded it as noise presented as the call's audio. A stream whose SDP
+  declares `RTP/SAVP`, `RTP/SAVPF`, `UDP/TLS/RTP/SAVP` or `UDP/TLS/RTP/SAVPF`
+  now keeps only payload sipnab decrypted, releases what it kept before the
+  SDP arrived when none of it was decrypted, and applies the same rule after
+  a `--cores` merge. With nothing decrypted, the export carries no audio and
+  says how many packets were not decrypted and how to supply a key; with
+  some decrypted, the audio is marked PARTIAL with the count of the others.
+- **`--hep-parse` no longer opens the sniffed rtpengine port gate.** A sniffed
+  `ng` mirror is believed only on the HEP port, 9060, because nothing
+  authenticates it and a believed one names a call and binds media. With
+  `--hep-parse` on, the unwrapped mirror took the path meant for a
+  `--hep-listen` socket, which has no port gate, so a datagram to any UDP port
+  could name a call. It now passes the same gate, counted and warned the same
+  way.
+- **Six documentation statements that disagreed with sipnab.**
+  `docs/mcp-tools-vcon.md` said `--export-vcon-when` rejects a filter alias;
+  it accepts one. `docs/vcon.md` said `-I` does not read a vCon file; it does.
+  `docs/vcon-harness.md` told operators not to use `--hep-parse` on a relay
+  because it hid mirrored `ng`, while its own relay command used it; the flag
+  hides nothing. `docs/filter-dsl.md` counted 32 fields where the parser has
+  33 and described `header.<name>` nowhere in its field list. The Dialog
+  Object in the `docs/rest-api.md` vCon sample had no `type`. And the 0.5.186
+  entry below showed a `~` operator the DSL does not have; it is `=~`.
 
 ### Internal
 
@@ -2848,7 +2890,7 @@ entry that carries them.
   through `payload`, a substring search over the whole message. A dialog is now
   selected by any header it carries, on any of its messages, with repeated
   headers each considered: `header.x-cid == 'abc'`,
-  `header.p-asserted-identity ~ 'sip:alice@'`. Header names are compared
+  `header.p-asserted-identity =~ 'sip:alice@'`. Header names are compared
   case-insensitively and a compact form names the same header as its long form
   ([RFC 3261 section 7.3.3](https://www.rfc-editor.org/rfc/rfc3261#section-7.3.3)),
   so `header.k` and `header.Supported` are one field. A name is bounded at 256

@@ -1287,7 +1287,8 @@ The batch export does not write that dialog either. See
 [When a container is missing on purpose](@/docs/vcon.md#when-a-container-is-missing-on-purpose).
 
 **Response** (trimmed — the `sip-message-trace` attachment carries one entry
-per SIP message and grows with the call):
+per SIP message and grows with the call, and the Dialog Object also carries
+`start` and, when the capture saw them, `sip_from_tag` and `sip_to_tag`):
 
 ```json
 {
@@ -1309,7 +1310,7 @@ per SIP message and grows with the call):
       "sip_user_agent": "sipnab/0.5.124 (observer; node capture-01)"
     }
   ],
-  "dialog": [{ "sip_call_id": "test-call-1@192.0.2.1" }],
+  "dialog": [{ "type": "recording", "sip_call_id": "test-call-1@192.0.2.1" }],
   "attachments": [
     { "purpose": "sip-message-trace", "party": 2, "mediatype": "application/json", "encoding": "json", "body": { "schema_version": 1, "messages": ["..."] } },
     {

@@ -159,6 +159,7 @@ fn hep_to_packet(hep: HepPacket, source: &str, received: DateTime<Utc>) -> Packe
             hep: Some(crate::capture::packet::HepOrigin {
                 protocol: hep.protocol.to_byte(),
                 correlation_id: hep.correlation_id.clone(),
+                sniffed_on_port: None,
             }),
             vcon: None,
         },

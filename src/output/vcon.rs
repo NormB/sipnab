@@ -750,6 +750,14 @@ pub struct CaptureCompleteness {
     /// `parse_error`, which a bad `Content-Length` also sets: a consumer could
     /// not tell a withheld header from any other parse complaint.
     pub headers_dropped_oversize: u64,
+    /// Whether the call had ended when this container was written: sipnab had
+    /// seen the BYE, CANCEL or final failure that closes it.
+    ///
+    /// `false` on a call still running at the end of a capture, and on one a
+    /// live export wrote after the idle period with no BYE seen. Such a
+    /// container ends where it was written, not where the call ended.
+    /// Serialized always, like `gate_closed_during_run`.
+    pub call_ended: bool,
     /// Blind spots the capture analysis ranked, or `None` when no analysis was
     /// supplied.
     ///
@@ -1804,7 +1812,7 @@ pub fn export_dialog_and_completeness(
         });
     }
 
-    let completeness = completeness_of(context, &media);
+    let completeness = completeness_of(context, &media, dialog.state().is_final());
 
     let attachments = vec![
         message_trace_attachment(dialog, observer, started.clone()),
@@ -2684,7 +2692,11 @@ fn json_text(value: &serde_json::Value) -> String {
 
 /// Read the completeness of a capture off its facts, its analysis, and what
 /// happened to its media.
-fn completeness_of(context: &ExportContext<'_>, media: &MediaVerdict) -> CaptureCompleteness {
+fn completeness_of(
+    context: &ExportContext<'_>,
+    media: &MediaVerdict,
+    call_ended: bool,
+) -> CaptureCompleteness {
     let facts = context.facts;
     let blind_spots = context.analysis.map(|analysis| {
         analysis
@@ -2702,7 +2714,7 @@ fn completeness_of(context: &ExportContext<'_>, media: &MediaVerdict) -> Capture
     });
 
     CaptureCompleteness {
-        note: completeness_note(facts, blind_spots.as_deref(), media),
+        note: completeness_note(facts, blind_spots.as_deref(), media, call_ended),
         media: media.outcome,
         media_note: media.note.clone(),
         node: node_name().to_string(),
@@ -2717,6 +2729,7 @@ fn completeness_of(context: &ExportContext<'_>, media: &MediaVerdict) -> Capture
         gate_closed_during_run: facts.gate_closed_during_run,
         dialogs_suppressed_by_deny: facts.dialogs_suppressed_by_deny,
         headers_dropped_oversize: facts.headers_dropped_oversize,
+        call_ended,
         blind_spots,
     }
 }
@@ -2735,6 +2748,7 @@ fn completeness_note(
     facts: &CaptureFacts,
     blind: Option<&[BlindSpot]>,
     media: &MediaVerdict,
+    call_ended: bool,
 ) -> String {
     let mut partial = String::new();
     if let Some(refusal) = media.refusal.as_deref() {
@@ -2845,11 +2859,22 @@ fn completeness_note(
         partial
     };
 
+    // A statement about the CALL, not about the capture, so it is neither an
+    // INCOMPLETE clause nor an omission row: every message sipnab held can be
+    // here and the call still have gone on after the container was written.
+    let running_clause = if call_ended {
+        ""
+    } else {
+        " The call had not ended when this container was written: sipnab had seen no BYE, \
+         CANCEL or final failure for it, so the trace and any media end where this container \
+         was written, not where the call ended."
+    };
+
     format!(
         "Produced by sipnab {} on node {}. sipnab OBSERVED this dialog and took no part in it: \
          the parties below are what the From and To headers said, not identities anyone \
          established, and nothing here is signed.{} sipnab read {} frame(s) for this \
-         capture.{verdict}{blind_clause}",
+         capture.{running_clause}{verdict}{blind_clause}",
         env!("CARGO_PKG_VERSION"),
         node_name(),
         media_clause(media.outcome),
@@ -3360,6 +3385,41 @@ mod tests {
             json.contains("No omissions recorded"),
             "and the run still earns the clean verdict: {json}"
         );
+        Ok(())
+    }
+
+    /// A container written before the call ended says so, in prose and as a
+    /// field.
+    ///
+    /// A live export writes a call that has been quiet for the idle period
+    /// even though no BYE was seen, and an export at the end of a capture
+    /// writes whatever was still running. Either container ends where it was
+    /// written, not where the call ended, and a reader cannot tell that from
+    /// the message trace alone.
+    #[test]
+    fn a_container_written_before_the_call_ended_says_so() -> Result<(), TestError> {
+        let running = dialog_with(&[response(200, "OK")?])?;
+        assert!(
+            !running.state().is_final(),
+            "premise: an answered call with no BYE is still running"
+        );
+        let exported = export_reporting(&running, &clean_facts())?;
+        assert!(
+            exported.completeness.note.contains("had not ended"),
+            "the note must say the call had not ended: {}",
+            exported.completeness.note
+        );
+        assert!(!exported.completeness.call_ended);
+
+        let ended = dialog_with(&[response(486, "Busy Here")?])?;
+        assert!(ended.state().is_final(), "premise: a 486 ends the call");
+        let exported = export_reporting(&ended, &clean_facts())?;
+        assert!(
+            !exported.completeness.note.contains("had not ended"),
+            "an ended call must not be described as running: {}",
+            exported.completeness.note
+        );
+        assert!(exported.completeness.call_ended);
         Ok(())
     }
 

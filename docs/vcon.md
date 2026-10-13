@@ -81,8 +81,11 @@ because an export that overwrites its own evidence is not an export.
 On a live capture (`-d` or `--hep-listen`), `--export-vcon` writes the call's
 container when that call ends, on the same timing the spool below follows:
 once the call has ended and has been quiet for five seconds, while sipnab keeps
-capturing. A live capture that you stop writes nothing, so a call that had not
-ended and settled leaves no `--vcon-out` file behind. A live run that ends on
+capturing. sipnab writes a call that has not ended once it has carried no SIP
+and no RTP for 120 seconds, and writes it again if it changes later (see
+[When the call had not ended](#when-the-call-had-not-ended)). A live capture
+that you stop writes nothing, so a call that had not ended and settled leaves no
+`--vcon-out` file behind. A live run that ends on
 its own (`--duration`, `--autostop`) writes the call then if it was not already
 written, and still fails if that Call-ID never appeared. With `-I`, sipnab
 writes the container at the end of the run, as before.
@@ -123,6 +126,18 @@ rely on.
   container about ten seconds after the call's last message at the latest. If
   the call changes after that, for example a late `200 OK` answers a canceled
   call, sipnab writes the container again under the same name.
+- sipnab writes a call that has not ended once it has carried no SIP message
+  and no RTP packet for 120 seconds. This covers a call whose BYE sipnab never
+  saw, for example because a phone lost power or the capture point missed the
+  packet. Without it, sipnab would never write that call. The container's
+  `call_ended` field is `false` and its completeness note says the call had not
+  ended when sipnab wrote it (see
+  [When the call had not ended](#when-the-call-had-not-ended)). If the BYE, or
+  any other message, arrives later, sipnab writes the container again under
+  the same name. A forwarder that already delivered the first copy may be
+  refused the second by its store: vcon.store, for example, answers `409` for
+  a uuid it already holds. A call on hold with no media for 120 seconds is
+  written early in the same way.
 - A live capture that you stop (`systemctl stop`, SIGTERM, Ctrl-C, or an MCP
   client that goes away) writes nothing more. Calls that had not yet been
   written are not written on the way out, because stopping sipnab must leave
@@ -503,9 +518,10 @@ run.
 
 ### Read what came back
 
-Each file is one vCon, as JSON. sipnab does not open a vCon file as an input
-in this release: `-I` reads captures. Read the file with a JSON tool, for
-example `jq '.parties, .dialog[].type' fetched/<uuid>.vcon.json`.
+Each file is one vCon, as JSON. `-I` reads it the way it reads a capture,
+for example `sipnab -N -I fetched/<uuid>.vcon.json --analyze` (see
+[Analyze a stored vCon](#analyze-a-stored-vcon)), and any JSON tool reads
+it too, for example `jq '.parties, .dialog[].type' fetched/<uuid>.vcon.json`.
 
 ## Walk through one, end to end
 
@@ -840,6 +856,23 @@ the note says so. "Nobody checked" and "checked and found nothing" are
 different answers, and the container keeps them apart — an analysis that ranked
 nothing emits `blind_spots: []`, while an export that skipped the analysis
 omits the field entirely.
+
+### When the call had not ended
+
+`call_ended` is `true` when sipnab had seen the BYE, CANCEL or final failure
+response that closes the call before it wrote the container. It is `false`
+for a call still running at the end of a `-I` capture, and for a call a live
+export wrote after 120 seconds with no SIP and no RTP. When it is `false` the
+note adds this sentence:
+
+```text
+The call had not ended when this container was written: sipnab had seen no BYE, CANCEL or final failure for it, so the trace and any media end where this container was written, not where the call ended.
+```
+
+This is a statement about the call, not about the capture, so it is not an
+`INCOMPLETE` clause and adds no entry to the omission rows: every message
+sipnab held can be in the container while the call continued after sipnab
+wrote it. The field is always present, including as `true`.
 
 ### When a container is missing on purpose
 

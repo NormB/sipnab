@@ -115,6 +115,7 @@ fn a_hep_tcp_message_is_not_held_by_the_tcp_reassembler() -> Result<(), TestErro
     packet.pre_parsed.as_mut().ok_or("pre-parsed")?.hep = Some(HepOrigin {
         protocol: 1,
         correlation_id: None,
+        sniffed_on_port: None,
     });
     let out = processor.process(&packet);
     assert_eq!(

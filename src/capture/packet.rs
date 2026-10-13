@@ -30,6 +30,15 @@ pub struct HepOrigin {
     pub protocol: u8,
     /// HEP correlation id, when the sender set one.
     pub correlation_id: Option<String>,
+    /// The UDP destination port the wrapper was SNIFFED on, when `--hep-parse`
+    /// unwrapped it off the wire; `None` when a `--hep-listen` socket the
+    /// operator bound delivered it.
+    ///
+    /// The two are believed differently. A delivered datagram reached a
+    /// socket `--hep-allow` and `--hep-auth` can guard; a sniffed one was on
+    /// its way to somebody else, and rtpengine `ng` inside it is believed only
+    /// on the HEP mirror port (`crate::rtpengine::HEP_MIRROR_PORTS`).
+    pub sniffed_on_port: Option<u16>,
 }
 
 /// What a stored vCon container said about one message rebuilt from it.

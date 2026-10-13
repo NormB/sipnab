@@ -558,6 +558,26 @@ pub struct RtpStream {
     /// accumulate for the length of the run. An export after that says how
     /// many frames were released and why.
     pub payload_frames_released_after_export: u64,
+    /// Whether an SDP media description for this stream's endpoint declared
+    /// an SRTP profile (`RTP/SAVP`, `RTP/SAVPF`, `UDP/TLS/RTP/SAVP`,
+    /// `UDP/TLS/RTP/SAVPF`).
+    ///
+    /// On such a stream only payload sipnab decrypted is kept as audio: an
+    /// undecrypted SRTP payload is ciphertext, and decoding it as the
+    /// negotiated codec produces noise presented as the call's audio.
+    pub srtp: bool,
+    /// Packets on an [`srtp`](Self::srtp) stream whose payload was not
+    /// decrypted, because no key was held or none authenticated them. Their
+    /// payload was not kept; the audio export names this count as the
+    /// reason it has nothing to decode.
+    pub srtp_undecrypted_packets: u64,
+    /// Packets whose payload sipnab decrypted from SRTP before recording it.
+    ///
+    /// Counted on every stream, not only on [`srtp`](Self::srtp) ones,
+    /// because `--srtp-keys` can decrypt a stream before any SDP marks it,
+    /// and payload kept before the mark is released only when none of it was
+    /// decrypted.
+    pub srtp_decrypted_packets: u64,
     /// Packetization interval the SDP declared with `a=ptime`, in
     /// milliseconds, when an offer or answer for this endpoint carried one.
     ///
@@ -1050,6 +1070,9 @@ impl RtpStream {
             payload_frames_dropped: 0,
             payload_frames_released: 0,
             payload_frames_released_after_export: 0,
+            srtp: false,
+            srtp_undecrypted_packets: 0,
+            srtp_decrypted_packets: 0,
             binding_seq_at_start: 0,
             sdp_ptime_ms: None,
             amr_packing: None,
