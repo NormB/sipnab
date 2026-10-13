@@ -1,6 +1,6 @@
 ```
 $ sipnab -N -I tests/pcap-samples/sip-rtp-g711.pcap --export-vcon-when "state == 'Failed'" --export-vcon-dir c494588393/vcons --redact --vcon-digest
-Redaction: 6 classes, key ephemeral, 0 leading digit(s) retained.
 Wrote 0 vCon container(s) to 'c494588393/vcons'.
+Redaction: 6 classes, key ephemeral, 0 leading digit(s) retained.
 
 ```

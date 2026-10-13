@@ -260,6 +260,26 @@ enum Field {
     FromUser,
     /// `to.user` — user part of the dialog's To URI.
     ToUser,
+    /// `from.host` — host of the dialog's From URI, without the port.
+    FromHost,
+    /// `to.host` — host of the dialog's To URI, without the port.
+    ToHost,
+    /// `from.uri` — the From URI as written, URI parameters kept.
+    FromUri,
+    /// `to.uri` — the To URI as written, URI parameters kept.
+    ToUri,
+    /// `ruri` — the request-URI of the request that opened the dialog.
+    Ruri,
+    /// `pai.user` — user part of the opening request's P-Asserted-Identity.
+    PaiUser,
+    /// `rtp.codecs` — every codec the dialog's streams used, distinct,
+    /// sorted and comma-joined.
+    RtpCodecs,
+    /// `side` — where the opening request went relative to the PBX's
+    /// declared addresses: `inbound`, `outbound`, `internal` or empty.
+    Side,
+    /// `endpoint` — the name the run gives either end's address.
+    Endpoint,
     /// `method` — the dialog's initial SIP method.
     Method,
     /// `ua` — first User-Agent header found in the dialog's messages.
@@ -403,6 +423,79 @@ impl Field {
                 | Field::DurationAsymmetry
                 | Field::LateMedia
         )
+    }
+}
+
+/// The PBX's own addresses, declared once at startup from `[pbx] addresses`.
+static PBX_ADDRESSES: std::sync::OnceLock<Vec<crate::net::CidrRange>> = std::sync::OnceLock::new();
+
+/// An address-to-name lookup for `endpoint`.
+type EndpointNamer = dyn Fn(std::net::IpAddr) -> Option<String> + Send + Sync;
+/// The run's [`EndpointNamer`], declared once at startup.
+static ENDPOINT_NAMER: std::sync::OnceLock<Box<EndpointNamer>> = std::sync::OnceLock::new();
+
+/// Declare the PBX's addresses that `side` compares against. The first call
+/// wins, so the field cannot change meaning partway through a run.
+pub fn declare_pbx_addresses(addresses: Vec<crate::net::CidrRange>) -> bool {
+    PBX_ADDRESSES.set(addresses).is_ok()
+}
+
+/// Declare the lookup `endpoint` names addresses with. The first call wins.
+pub fn declare_endpoint_names(namer: Box<EndpointNamer>) -> bool {
+    ENDPOINT_NAMER.set(namer).is_ok()
+}
+
+/// The declared PBX addresses; empty before [`declare_pbx_addresses`].
+fn pbx_addresses() -> &'static [crate::net::CidrRange] {
+    PBX_ADDRESSES.get().map_or(&[], Vec::as_slice)
+}
+
+/// The declared lookup's name for `ip`; `None` before
+/// [`declare_endpoint_names`] or when it has none.
+fn endpoint_name(ip: std::net::IpAddr) -> Option<String> {
+    ENDPOINT_NAMER.get().and_then(|namer| namer(ip))
+}
+
+/// Where a request from `src` to `dst` went relative to `pbx`: `inbound` when
+/// only `dst` is the PBX, `outbound` when only `src` is, `internal` when both
+/// are, and empty when neither is.
+fn side_of(
+    src: std::net::IpAddr,
+    dst: std::net::IpAddr,
+    pbx: &[crate::net::CidrRange],
+) -> &'static str {
+    let is_pbx = |ip| pbx.iter().any(|r| r.contains(ip));
+    match (is_pbx(src), is_pbx(dst)) {
+        (false, true) => "inbound",
+        (true, false) => "outbound",
+        (true, true) => "internal",
+        (false, false) => "",
+    }
+}
+
+/// Whether the name `names` gives the dialog's source or destination address
+/// satisfies the comparison. An address with no name compares as empty.
+fn endpoint_matches(
+    dialog: &SipDialog,
+    names: &dyn Fn(std::net::IpAddr) -> Option<String>,
+    op: Operator,
+    value: &Value,
+) -> bool {
+    [dialog.src_addr, dialog.dst_addr]
+        .into_iter()
+        .any(|ip| compare_str(names(ip).as_deref().unwrap_or(""), &op, value))
+}
+
+/// `host` with any `:port` removed. An IPv6 literal keeps its brackets:
+/// `[2001:db8::1]:5060` is `[2001:db8::1]`, and a bare `2001:db8::1`, which
+/// carries no port, is returned as it is.
+fn host_without_port(host: &str) -> &str {
+    if host.starts_with('[') {
+        return host.find(']').map_or(host, |end| &host[..=end]);
+    }
+    match host.split_once(':') {
+        Some((h, port)) if !port.contains(':') => h,
+        _ => host,
     }
 }
 
@@ -633,9 +726,25 @@ pub fn expand_alias(alias: &str, t: &AliasThresholds) -> Option<String> {
 /// into a larger expression before compiling it.
 #[must_use]
 pub fn resolve_filter_text<'a>(input: &'a str, t: &AliasThresholds) -> std::borrow::Cow<'a, str> {
-    match expand_alias(input, t) {
-        Some(expansion) => std::borrow::Cow::Owned(expansion),
-        None => std::borrow::Cow::Borrowed(input),
+    if let Some(expansion) = expand_alias(input, t) {
+        return std::borrow::Cow::Owned(expansion);
+    }
+    resolve_references(input, super::named_filters::installed(), t)
+}
+
+/// `input` with each `@name` replaced through `filters` (and the built-in
+/// aliases): the part of [`resolve_filter_text`] that takes the table as an
+/// argument, so it can be driven with any table.
+#[must_use]
+pub fn resolve_references<'a>(
+    input: &'a str,
+    filters: &super::named_filters::NamedFilters,
+    t: &AliasThresholds,
+) -> std::borrow::Cow<'a, str> {
+    if super::named_filters::first_reference(input).is_some() {
+        std::borrow::Cow::Owned(filters.substitute(input, t))
+    } else {
+        std::borrow::Cow::Borrowed(input)
     }
 }
 
@@ -818,6 +927,17 @@ impl FilterExpr {
         let trimmed = input.trim();
         if trimmed.is_empty() {
             bail!("filter expression is empty");
+        }
+        // A reference that survived resolution names nothing this run defines.
+        // Said in those words, rather than as a syntax error at the `@`.
+        if let Some(name) = super::named_filters::first_reference(trimmed) {
+            bail!(
+                "{}",
+                super::named_filters::unknown_reference_message(
+                    name,
+                    super::named_filters::installed()
+                )
+            );
         }
 
         // Count max nesting depth before parsing
@@ -1244,6 +1364,12 @@ fn parse_comparison(input: &str) -> IResult<&str, Expr, NomErr<'_>> {
 pub const FIELD_NAMES: &[&str] = &[
     "from.user",
     "to.user",
+    "from.host",
+    "to.host",
+    "from.uri",
+    "to.uri",
+    "ruri",
+    "pai.user",
     "method",
     "ua",
     "call_id",
@@ -1266,7 +1392,10 @@ pub const FIELD_NAMES: &[&str] = &[
     "rtp.loss",
     "rtp.packets",
     "rtp.codec",
+    "rtp.codecs",
     "rtp.ssrc",
+    "side",
+    "endpoint",
     "one_way",
     "nat_mismatch",
     "no_media",
@@ -1344,6 +1473,15 @@ fn parse_field(input: &str) -> IResult<&str, Field, NomErr<'_>> {
     let field = match ident {
         "from.user" => Field::FromUser,
         "to.user" => Field::ToUser,
+        "from.host" => Field::FromHost,
+        "to.host" => Field::ToHost,
+        "from.uri" => Field::FromUri,
+        "to.uri" => Field::ToUri,
+        "ruri" => Field::Ruri,
+        "pai.user" => Field::PaiUser,
+        "rtp.codecs" => Field::RtpCodecs,
+        "side" => Field::Side,
+        "endpoint" => Field::Endpoint,
         "method" => Field::Method,
         "ua" => Field::Ua,
         "call_id" => Field::CallId,
@@ -1920,6 +2058,32 @@ fn eval_compare(
         Field::ToUser => {
             let val = dialog.to_user.as_deref().unwrap_or("");
             compare_str(val, op, value)
+        }
+        Field::FromHost => compare_str(
+            host_without_port(dialog.from_host.as_deref().unwrap_or("")),
+            op,
+            value,
+        ),
+        Field::ToHost => compare_str(
+            host_without_port(dialog.to_host.as_deref().unwrap_or("")),
+            op,
+            value,
+        ),
+        Field::FromUri => compare_str(dialog.from_uri.as_deref().unwrap_or(""), op, value),
+        Field::ToUri => compare_str(dialog.to_uri.as_deref().unwrap_or(""), op, value),
+        Field::Ruri => compare_str(dialog.request_uri.as_deref().unwrap_or(""), op, value),
+        Field::PaiUser => compare_str(dialog.pai_user.as_deref().unwrap_or(""), op, value),
+        Field::Side => compare_str(
+            side_of(dialog.src_addr, dialog.dst_addr, pbx_addresses()),
+            op,
+            value,
+        ),
+        Field::Endpoint => endpoint_matches(dialog, &endpoint_name, *op, value),
+        Field::RtpCodecs => {
+            let mut codecs: Vec<&str> = streams.iter().filter_map(|s| s.codec.as_deref()).collect();
+            codecs.sort_unstable();
+            codecs.dedup();
+            compare_str(&codecs.join(","), op, value)
         }
         Field::Method => compare_str(dialog.method.as_str(), op, value),
         Field::Ua => {
@@ -5342,5 +5506,256 @@ mod time_window_tests {
             assert!(err.contains(says), "{expr}: {err}");
         }
         Ok(())
+    }
+}
+
+/// The fields a PBX operator selects calls by (PBX-F2): the From and To
+/// host and URI, the request-URI, the P-Asserted-Identity user, and every
+/// codec a call used.
+#[cfg(test)]
+mod pbx_field_tests {
+    use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+
+    type TestError = Box<dyn std::error::Error>;
+
+    use super::*;
+    use crate::net::TransportProto;
+    use crate::rtp::parser::RtpHeader;
+    use crate::rtp::stream::{RtpStream, StreamKey};
+    use crate::sip::parser::parse_sip;
+    use crate::test_utils::build_sip_message as build_sip;
+
+    fn at() -> Result<chrono::DateTime<chrono::Utc>, TestError> {
+        Ok(
+            chrono::TimeZone::with_ymd_and_hms(&chrono::Utc, 2026, 10, 13, 9, 0, 0)
+                .single()
+                .ok_or("invalid fixture timestamp")?,
+        )
+    }
+
+    /// A trunk call into a PBX: the INVITE's request-URI, From with a port and
+    /// parameters, To, and a P-Asserted-Identity.
+    fn trunk_call() -> Result<SipDialog, TestError> {
+        let raw = build_sip(
+            "INVITE sip:7000@192.0.2.10;user=phone SIP/2.0",
+            &[
+                "Via: SIP/2.0/UDP 203.0.113.5:5060;branch=z9hG4bKpbx",
+                "From: \"Carrier\" <sip:+15551230000@carrier-a.example:5060;user=phone>;tag=f1",
+                "To: <sip:7000@pbx.example>",
+                "Call-ID: pbx-fields@example.com",
+                "CSeq: 1 INVITE",
+                "P-Asserted-Identity: \"Alice\" <sip:+15559876543@carrier-a.example>",
+                "Content-Length: 0",
+            ],
+            b"",
+        );
+        let msg = parse_sip(
+            &raw,
+            at()?,
+            IpAddr::V4(Ipv4Addr::new(203, 0, 113, 5)),
+            IpAddr::V4(Ipv4Addr::new(192, 0, 2, 10)),
+            5060,
+            5060,
+            TransportProto::Udp,
+        )?;
+        Ok(SipDialog::new(&msg).ok_or("an INVITE opens a dialog")?)
+    }
+
+    fn stream(codec: &str, ssrc: u32) -> Result<RtpStream, TestError> {
+        let key = StreamKey {
+            ssrc,
+            src: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(203, 0, 113, 5)), 20000),
+            dst: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(192, 0, 2, 10)), 30000),
+            session: 0,
+        };
+        let hdr = RtpHeader {
+            version: 2,
+            padding: false,
+            extension: false,
+            csrc_count: 0,
+            marker: false,
+            payload_type: 0,
+            sequence: 1,
+            timestamp: 0,
+            ssrc,
+            payload_offset: 12,
+        };
+        let mut s = RtpStream::new(key, &hdr, at()?);
+        s.codec = Some(codec.to_owned());
+        Ok(s)
+    }
+
+    fn selects(expr: &str, dialog: &SipDialog, streams: &[&RtpStream]) -> Result<bool, TestError> {
+        Ok(FilterExpr::parse(expr)
+            .map_err(|e| format!("{expr:?} must parse: {e}"))?
+            .matches_dialog(dialog, streams, CaptureMedia::Absent, MosDelay::unknown()))
+    }
+
+    /// `from.host` and `to.host` are the URI's host without its port.
+    #[test]
+    fn host_fields_are_the_uri_host_without_the_port() -> Result<(), TestError> {
+        let d = trunk_call()?;
+        assert!(selects("from.host == 'carrier-a.example'", &d, &[])?);
+        assert!(selects("to.host == 'pbx.example'", &d, &[])?);
+        assert!(!selects("from.host == 'carrier-a.example:5060'", &d, &[])?);
+        assert!(selects("from.host =~ '^carrier-'", &d, &[])?);
+        Ok(())
+    }
+
+    /// `from.uri`, `to.uri` and `ruri` are the URIs as written, parameters
+    /// included, without the display name or the header's own parameters.
+    #[test]
+    fn uri_fields_are_the_uris_as_written() -> Result<(), TestError> {
+        let d = trunk_call()?;
+        assert!(selects(
+            "from.uri == 'sip:+15551230000@carrier-a.example:5060;user=phone'",
+            &d,
+            &[]
+        )?);
+        assert!(selects("to.uri == 'sip:7000@pbx.example'", &d, &[])?);
+        assert!(selects(
+            "ruri == 'sip:7000@192.0.2.10;user=phone'",
+            &d,
+            &[]
+        )?);
+        assert!(selects("ruri =~ '^sip:7000@'", &d, &[])?);
+        Ok(())
+    }
+
+    /// `pai.user` is the user part of P-Asserted-Identity; absent, it is the
+    /// empty string, so `!=` selects a call without one.
+    #[test]
+    fn pai_user_is_the_asserted_identitys_user() -> Result<(), TestError> {
+        let d = trunk_call()?;
+        assert!(selects("pai.user == '+15559876543'", &d, &[])?);
+        let mut no_pai = trunk_call()?;
+        no_pai.pai_user = None;
+        assert!(!selects("pai.user == '+15559876543'", &no_pai, &[])?);
+        Ok(())
+    }
+
+    /// Every one of these is captured when the dialog opens, so idle
+    /// compaction, which can drop messages, cannot change what they select.
+    #[test]
+    fn the_fields_survive_the_messages_being_dropped() -> Result<(), TestError> {
+        let mut d = trunk_call()?;
+        d.messages.clear();
+        assert!(selects("from.host == 'carrier-a.example'", &d, &[])?);
+        assert!(selects(
+            "ruri == 'sip:7000@192.0.2.10;user=phone'",
+            &d,
+            &[]
+        )?);
+        assert!(selects("pai.user == '+15559876543'", &d, &[])?);
+        assert!(selects("to.uri == 'sip:7000@pbx.example'", &d, &[])?);
+        Ok(())
+    }
+
+    /// `rtp.codecs` is every codec the call's streams used, distinct and
+    /// sorted, joined with commas.
+    #[test]
+    fn rtp_codecs_lists_every_codec_the_call_used() -> Result<(), TestError> {
+        let d = trunk_call()?;
+        let (a, b, c) = (
+            stream("PCMU", 1)?,
+            stream("telephone-event", 2)?,
+            stream("PCMU", 3)?,
+        );
+        assert!(selects(
+            "rtp.codecs == 'PCMU,telephone-event'",
+            &d,
+            &[&a, &b, &c]
+        )?);
+        assert!(selects("rtp.codecs =~ 'telephone-event'", &d, &[&a, &b])?);
+        assert!(selects("rtp.codecs == ''", &d, &[])?);
+        Ok(())
+    }
+
+    /// A port is removed from a name and an IPv4 address, and an IPv6 literal
+    /// keeps its brackets; a bare IPv6 address has no port to remove.
+    #[test]
+    fn a_port_is_removed_and_an_ipv6_literal_kept() {
+        assert_eq!(host_without_port("carrier.example:5060"), "carrier.example");
+        assert_eq!(host_without_port("192.0.2.1:5080"), "192.0.2.1");
+        assert_eq!(host_without_port("carrier.example"), "carrier.example");
+        assert_eq!(host_without_port("[2001:db8::1]:5060"), "[2001:db8::1]");
+        assert_eq!(host_without_port("[2001:db8::1]"), "[2001:db8::1]");
+        assert_eq!(host_without_port("2001:db8::1"), "2001:db8::1");
+        assert_eq!(host_without_port(""), "");
+    }
+
+    /// `side` places the opening request relative to the PBX's addresses:
+    /// sent to the PBX is `inbound`, sent by it `outbound`, between two of its
+    /// addresses `internal`, and neither end the PBX is the empty string.
+    #[test]
+    fn side_places_the_call_relative_to_the_pbx() -> Result<(), TestError> {
+        let pbx = vec![
+            crate::net::CidrRange::parse("192.0.2.10")?,
+            crate::net::CidrRange::parse("198.51.100.0/24")?,
+        ];
+        let ip = |s: &str| s.parse::<IpAddr>();
+        assert_eq!(
+            side_of(ip("203.0.113.5")?, ip("192.0.2.10")?, &pbx),
+            "inbound"
+        );
+        assert_eq!(
+            side_of(ip("192.0.2.10")?, ip("203.0.113.5")?, &pbx),
+            "outbound"
+        );
+        assert_eq!(
+            side_of(ip("198.51.100.7")?, ip("192.0.2.10")?, &pbx),
+            "internal"
+        );
+        assert_eq!(side_of(ip("203.0.113.5")?, ip("203.0.113.6")?, &pbx), "");
+        assert_eq!(side_of(ip("203.0.113.5")?, ip("192.0.2.10")?, &[]), "");
+        Ok(())
+    }
+
+    /// `endpoint` is the name the run gives the source or the destination
+    /// address; it matches when either name satisfies the comparison, and an
+    /// address with no name is the empty string.
+    #[test]
+    fn endpoint_matches_either_end_by_name() -> Result<(), TestError> {
+        let d = trunk_call()?;
+        let names = |ip: IpAddr| match ip.to_string().as_str() {
+            "203.0.113.5" => Some("carrier-a-gw".to_owned()),
+            "192.0.2.10" => Some("pbx-1".to_owned()),
+            _ => None,
+        };
+        let cmp = |op, value: &str| endpoint_matches(&d, &names, op, &Value::Str(value.to_owned()));
+        assert!(cmp(Operator::Eq, "carrier-a-gw"));
+        assert!(cmp(Operator::Eq, "pbx-1"));
+        assert!(!cmp(Operator::Eq, "elsewhere"));
+        let nameless = |_: IpAddr| None;
+        assert!(!endpoint_matches(
+            &d,
+            &nameless,
+            Operator::Eq,
+            &Value::Str("pbx-1".into())
+        ));
+        assert!(endpoint_matches(
+            &d,
+            &nameless,
+            Operator::Eq,
+            &Value::Str(String::new())
+        ));
+        Ok(())
+    }
+
+    /// The new names are listed with the rest, so an unknown-field hint and
+    /// the documentation count both see them.
+    #[test]
+    fn the_new_fields_are_listed() {
+        for f in [
+            "from.host",
+            "to.host",
+            "from.uri",
+            "to.uri",
+            "ruri",
+            "pai.user",
+            "rtp.codecs",
+        ] {
+            assert!(FIELD_NAMES.contains(&f), "{f}");
+        }
     }
 }

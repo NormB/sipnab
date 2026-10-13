@@ -1212,6 +1212,142 @@ The SIP over WebSocket port range that `[capture] ws_ports` in the configuration
 
 **Exit code:** 1.
 
+### `[pbx] addresses: '{entry}' is not an IP address or a CIDR range: {e}`
+
+An entry in `[pbx] addresses` is neither an IP address nor a CIDR range. `{entry}` is the entry and `{e}` is the parser's reason. `[pbx] addresses` lists the PBX's own addresses, which the filter field `side` compares against.
+
+**What to do:** Write each entry as an address (`192.0.2.10`) or a range (`198.51.100.0/24`).
+
+**Exit code:** 1.
+
+### `[[vcon.rule]] name '{name}' is not usable: a name is 1 to {} ASCII letters, digits, '-' or '_', starting with a letter or digit`
+
+A [`[[vcon.rule]]`](@/docs/vcon.md#write-calls-by-rule) has a `name` sipnab cannot use. `{name}` is the name, and `{}` is the longest a name may be.
+
+**What to do:** Use 1 to 64 ASCII letters, digits, `-` or `_`, starting with a letter or digit.
+
+**Exit code:** 1.
+
+### `[[vcon.rule]] name '{name}' is used by two rules; each rule needs its own`
+
+Two [`[[vcon.rule]]`](@/docs/vcon.md#write-calls-by-rule) entries have the same `name`. A rule's name picks its spool on REST and MCP, so each must be unique.
+
+**What to do:** Rename one of the rules.
+
+**Exit code:** 1.
+
+### `[[vcon.rule]] '{name}' has no dir: say where its containers go`
+
+The [`[[vcon.rule]]`](@/docs/vcon.md#write-calls-by-rule) named `{name}` has no `dir`, so its containers would go nowhere.
+
+**What to do:** Add `dir = "/path/to/spool"` to the rule.
+
+**Exit code:** 1.
+
+### `[[vcon.rule]] '{name}' has {why}`
+
+A key of the [`[[vcon.rule]]`](@/docs/vcon.md#write-calls-by-rule) named `{name}` has a value sipnab does not take. `{why}` names the key, the value and the values it takes: `audio` takes `inline`, `url` or `omit`, and `grouping` takes `leg` or `call`.
+
+**What to do:** Set the key to one of the values `{why}` lists.
+
+**Exit code:** 1.
+
+### `audio = '{other}'; use 'inline', 'url' or 'omit'`
+
+The reason inside `[[vcon.rule]] '{name}' has {why}` for an `audio` value other than `inline`, `url` and `omit`. `{other}` is the value given. See [`[[vcon.rule]]`](@/docs/vcon.md#write-calls-by-rule).
+
+**What to do:** Set `audio` to `inline`, `url` or `omit`.
+
+**Exit code:** 1.
+
+### `grouping = '{other}'; use 'leg' or 'call'`
+
+The reason inside `[[vcon.rule]] '{name}' has {why}` for a `grouping` value other than `leg` and `call`. `{other}` is the value given. See [Calls through a PBX or a B2BUA](@/docs/vcon.md#calls-through-a-pbx-or-a-b2bua).
+
+**What to do:** Set `grouping` to `leg` (one container per dialog) or `call` (one per call).
+
+**Exit code:** 1.
+
+### `[[vcon.rule]] '{name}' has audio = 'url' and no audio_url_base: say where your storage serves the WAV files sipnab writes beside the containers`
+
+The [`[[vcon.rule]]`](@/docs/vcon.md#write-calls-by-rule) named `{name}` has `audio = "url"` and no `audio_url_base`. A `url` rule writes each call's WAV beside its container and names it by URL, which needs the base your storage serves the files from.
+
+**What to do:** Add `audio_url_base = "https://..."`, or use `audio = "inline"` or `"omit"`.
+
+**Exit code:** 1.
+
+### `[[vcon.rule]] '{name}' has audio_url_base '{base}': a vCon names external media over https (draft-ietf-vcon-vcon-core-04 section 2.4.1)`
+
+The `audio_url_base` of the [`[[vcon.rule]]`](@/docs/vcon.md#write-calls-by-rule) named `{name}` is not `https://`. `{base}` is the value. A vCon names external media over HTTPS.
+
+**What to do:** Give an `https://` base URL.
+
+**Exit code:** 1.
+
+### `[[vcon.rule]] '{name}': 'when' is not a valid filter expression: {e}`
+
+The `when` of the [`[[vcon.rule]]`](@/docs/vcon.md#write-calls-by-rule) named `{name}` does not parse as a filter expression. `{e}` is the parser's reason. See [Filter DSL](@/docs/filter-dsl.md).
+
+**What to do:** Correct the expression. Test it first with `sipnab -N -I capture.pcap --filter "..."`.
+
+**Exit code:** 1.
+
+### `[[vcon.rule]] '{name}': no filter`
+
+The [`[[vcon.rule]]`](@/docs/vcon.md#write-calls-by-rule) named `{name}` resolved to no filter at all. This is an internal check: a rule's `when` always gives one.
+
+**What to do:** Report it, with the rule as written.
+
+**Exit code:** 1.
+
+### `[[vcon.rule]] '{name}': {}`
+
+The `when` of the [`[[vcon.rule]]`](@/docs/vcon.md#write-calls-by-rule) named `{name}` names a filter that does not resolve. `{}` is why: usually an `@name` that `[filters]` does not define, or a `[filters]` entry that does not resolve.
+
+**What to do:** Define the name under `[filters]`, or correct the reference.
+
+**Exit code:** 1.
+
+### `[[vcon.rule]] with live_audio = true serves call audio on the REST API, and --api {addr} is not a loopback address. Off loopback, live audio needs TLS (--api-tls-cert and --api-tls-key) and a signing key (--api-signing-key or --api-signing-key-file) to mint tokens with the audio scope; or bind --api to 127.0.0.1`
+
+A rule with `live_audio = true` serves call audio on the REST API, and `--api` binds to an address other than loopback without TLS and a signing key. `{addr}` is the address. See [Hear a call while it is in progress](@/docs/vcon.md#hear-a-call-while-it-is-in-progress).
+
+**What to do:** Bind `--api` to `127.0.0.1`, or give `--api-tls-cert`, `--api-tls-key` and `--api-signing-key-file`, and mint the transcriber a token with `--token-scope audio`.
+
+**Exit code:** 1.
+
+### `[[vcon.enrich]] name '{name}' is not usable: a name is 1 to {} ASCII letters, digits, '-' or '_', starting with a letter or digit`
+
+An [`[[vcon.enrich]]`](@/docs/vcon.md#enrich-a-call-before-it-is-written) has a `name` sipnab cannot use. `{name}` is the name, and `{}` is the longest a name may be.
+
+**What to do:** Use 1 to 64 ASCII letters, digits, `-` or `_`, starting with a letter or digit.
+
+**Exit code:** 1.
+
+### `[[vcon.enrich]] name '{name}' is used by two enrichments; each needs its own`
+
+Two [`[[vcon.enrich]]`](@/docs/vcon.md#enrich-a-call-before-it-is-written) entries have the same `name`. The name is how a container records which service sipnab sent it to, so each must be unique.
+
+**What to do:** Rename one of them.
+
+**Exit code:** 1.
+
+### `[[vcon.enrich]] cannot run with --redact: a service is sent the call as it was captured, and nothing it answers can be pseudonymized`
+
+The run has `--redact` and an [`[[vcon.enrich]]`](@/docs/vcon.md#enrich-a-call-before-it-is-written). sipnab sends a service the call as it captured it, and cannot replace what the service answers, such as a transcript, with pseudonyms.
+
+**What to do:** Remove `--redact`, or remove the enrichment from this run.
+
+**Exit code:** 2.
+
+### `[limits] idle_compact_after_secs is {secs}, shorter than the {} s a live vCon export waits before it writes a call that has not ended, so idle compaction can drop that call's middle messages before its container is written. Set it to {} or more to keep them.`
+
+A live capture exports vCons, and `[limits] idle_compact_after_secs` is shorter than the time a live export waits before writing a call that has not ended. `{secs}` is the setting, the first `{}` is that wait in seconds, and the second the value to set. Idle compaction could drop the middle of such a call's messages before sipnab writes its container.
+
+**What to do:** Set `[limits] idle_compact_after_secs` to the value named, or more.
+
+**Exit code:** None. This is a warning, and the run continues.
+
 ## Capture and input files
 
 ### `Capture did not complete: {e:#}`
@@ -2648,11 +2784,11 @@ You gave `--redact` without `--redact-key-file`, so sipnab asked the operating s
 
 **Exit code:** 1.
 
-### `--redact rewrites an EXPORTED container and this run exports none. Pair it with --export-vcon or --export-vcon-when, or drop it — a run that accepted --redact and wrote nothing redacted would read as a redacted capture`
+### `--redact rewrites an EXPORTED container and this run exports none. Pair it with --export-vcon, --export-vcon-when or a [[vcon.rule]], or drop it — a run that accepted --redact and wrote nothing redacted would read as a redacted capture`
 
-`--redact` acts on the vCon containers that a run exports, and you gave this run neither `--export-vcon` nor `--export-vcon-when`, so `--redact` has nothing to act on. vCon is a JSON format for a recorded conversation.
+`--redact` acts on the vCon containers that a run exports, and this run has no `--export-vcon`, no `--export-vcon-when` and no `[[vcon.rule]]` in its config file, so `--redact` has nothing to act on. vCon is a JSON format for a recorded conversation.
 
-**What to do:** Add `--export-vcon CALL-ID` or `--export-vcon-when` (with `--export-vcon-dir`), or remove `--redact`.
+**What to do:** Add `--export-vcon CALL-ID`, `--export-vcon-when` (with `--export-vcon-dir`) or a [`[[vcon.rule]]`](@/docs/vcon.md#write-calls-by-rule), or remove `--redact`.
 
 **Exit code:** 2.
 
@@ -2911,6 +3047,54 @@ sipnab could not write the fetched vCon to the file named before the colon. `{e}
 **What to do:** Check space and permissions in the `--vcon-fetch-out` directory.
 
 **Exit code:** 1.
+
+### `Calls were still waiting for [[vcon.enrich]] after an hour; their containers are not written.`
+
+A live capture ended on its own (`--duration`) while calls still waited for an [`[[vcon.enrich]]`](@/docs/vcon.md#enrich-a-call-before-it-is-written) service, and an hour passed without them finishing. Its `timeout_secs` bounds each service call, so this means a service kept every call waiting its full timeout.
+
+**What to do:** Check the service the earlier `[[vcon.enrich]] '...'` lines name, lower its `timeout_secs`, and re-export the calls from a saved capture with `-I`.
+
+**Exit code:** None. This is a warning, and the run ends.
+
+### `{label}[[vcon.enrich]] '{}' for Call-ID '{call_id}': {}: {}. The container is written without its analysis and records this.`
+
+An [`[[vcon.enrich]]`](@/docs/vcon.md#enrich-a-call-before-it-is-written) service did not succeed for one call. `{label}` names the rule, the first `{}` the service, `{call_id}` the call, then the outcome (`failed`, `timeout`, `malformed` or `queue-full`) and what happened. sipnab writes the call's container without that service's analysis, and its `sipnab-enrichment` attachment records the same outcome.
+
+**What to do:** Read the detail: `failed` is the service's HTTP status or exit status, `timeout` its `timeout_secs`, `malformed` an answer that is not an `analysis` list. `queue-full` means 64 calls were waiting. The service is slower than the calls arrive.
+
+**Exit code:** None. This is a warning, and the run continues.
+
+### `{label}Could not write '{}' after enrichment: {e}`
+
+On a live capture, sipnab enriched a call's container and then could not write it to its spool. `{label}` names the rule, `{}` the path and `{e}` the operating-system error.
+
+**What to do:** Check the spool directory's free space and permissions.
+
+**Exit code:** None. This is a warning, and the run continues.
+
+### `answered HTTP {status}: {excerpt}`
+
+The `detail` an [`[[vcon.enrich]]`](@/docs/vcon.md#enrich-a-call-before-it-is-written) records when its URL answered with a status other than 2xx. `{status}` is the status and `{excerpt}` the start of the answer. It appears in the `[[vcon.enrich]] '...' for Call-ID` line and in the container's `sipnab-enrichment` attachment.
+
+**What to do:** Fix the service. The excerpt is its own reason.
+
+**Exit code:** None. sipnab writes the call without the service's analysis.
+
+### `answered with more than {MAX_ANSWER_BYTES} bytes`
+
+The `detail` an [`[[vcon.enrich]]`](@/docs/vcon.md#enrich-a-call-before-it-is-written) records when the service's answer was larger than 16 MiB, which sipnab does not read.
+
+**What to do:** Make the service answer with less: an analysis, not the audio.
+
+**Exit code:** None. sipnab writes the call without the service's analysis.
+
+### `analysis {i} has encoding '{encoding}'; core-04 allows none, json and base64url`
+
+The `detail` of a `malformed` outcome: entry `{i}` of an [`[[vcon.enrich]]`](@/docs/vcon.md#enrich-a-call-before-it-is-written) service's `analysis` has an `encoding` core-04 does not define. `{encoding}` is the value. sipnab keeps none of that answer.
+
+**What to do:** Answer with `encoding` `none`, `json` or `base64url`.
+
+**Exit code:** None. sipnab writes the call without the service's analysis.
 
 ## Startup, privileges and the process
 

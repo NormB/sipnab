@@ -534,6 +534,17 @@ How many containers are waiting, delivered and refused in the export spool, and 
 | REST | `/v1/vcon/spool` |
 | MCP | `vcon_spool_status` |
 
+### Hear a call in progress
+
+Which calls are in progress that I may listen to, tell me when a new one starts, and send me its audio as it is captured.
+
+| Surface | Detail |
+|---|---|
+| CLI | decision: a stream to a program is a network consumer's need; the CLI writes a call's audio after the call, inside a vCon or with `audio = "url"` |
+| TUI | decision: the TUI shows the capture to the person at the terminal, who hears a call with its playback, not a stream for another program |
+| REST | `/v1/calls/live`, `/v1/calls/live/events` and `/v1/calls/{call_id}/audio` |
+| MCP | decision: MCP answers requests and has no stream to carry audio as it arrives; an agent reads it from the REST WebSocket with an `audio` token |
+
 ### SIPREC metadata
 
 Who was recorded on this call, in what mode, and which stream carries whom?

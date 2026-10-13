@@ -3,15 +3,15 @@ source: tests/tui_snapshot_test.rs
 expression: output
 ---
  Live captur┌ Filter ──────────────────────────────────────────────┐
- Capture fil│                                                      │
- View filter│  From user:       [                               ]  │
-  # ▲    Met│  To user:         [                               ]  │D    Duratio
-            │  Source IP:       [                               ]  │
-  No SIP dia│  Destination IP:  [                               ]  │
-            │  Text in message: [                               ]  │
-  Waiting fo│  Header:          [Name: text                     ]  │
-  Check the │  After:           [2026-07-07T08:00:00Z           ]  │
-  F1 shows h│  Before:          [2026-07-07T09:00:00Z           ]  │
+ Capture fil│  From user:       [                               ]  │
+ View filter│  To user:         [                               ]  │
+  # ▲    Met│  Source IP:       [                               ]  │D    Duratio
+            │  Destination IP:  [                               ]  │
+  No SIP dia│  Text in message: [                               ]  │
+            │  Header:          [Name: text                     ]  │
+  Waiting fo│  After:           [2026-07-07T08:00:00Z           ]  │
+  Check the │  Before:          [2026-07-07T09:00:00Z           ]  │
+  F1 shows h│  Named filter:    [none in [filters]              ]  │
             │  ──────────────────────────────────────────────────  │
             │  All       [*]                                       │
             │  REGISTER  [*]             OPTIONS   [*]             │

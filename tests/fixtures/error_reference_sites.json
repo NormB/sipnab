@@ -34,10 +34,10 @@
     },
     {
       "file": "src/app/batch.rs",
-      "call": "stderr_line!(\"{e:#}\")",
+      "call": "stderr_line!(\"{}\", target.say(&format!(\"{e:#}\")))",
       "count": 1,
       "carries": [],
-      "why": "vcon_selection in batch.rs; its only error is the anyhow!(\"--export-vcon-when is not a valid filter expression: {e}\") site."
+      "why": "export_target in batch.rs, prefixed with the rule's name by VconTarget::say; vcon_selection's only error is the anyhow!(\"--export-vcon-when is not a valid filter expression: {e}\") site."
     },
     {
       "file": "src/app/batch.rs",
@@ -75,11 +75,9 @@
       "count": 2,
       "carries": [
         "--export-vcon-when needs --export-vcon-dir. Nothing was exported.",
-        "Could not create the vCon directory '{}': {e}. Nothing was exported.",
-        "The {what} for Call-ID '{}' would not serialize: {e}",
-        "Could not write '{}': {e}. {written} container(s) were written before this."
+        "Could not create the vCon directory '{}': {e}. Nothing was exported."
       ],
-      "why": "prepare_export_dir and write_vcon_containers in batch.rs."
+      "why": "export_vcon_selection_after (VconTarget::from_flags) and export_target (prepare_target_dir) in batch.rs."
     },
     {
       "file": "src/app/batch.rs",
@@ -142,13 +140,14 @@
     {
       "file": "src/app/batch.rs",
       "call": "warn!(\"{warning}\")",
-      "count": 1,
+      "count": 2,
       "carries": [
         "Skipping invalid alert rule '{value}': {e}",
         "--alert exec given without --alert-exec <CMD>; no command to run",
-        "Unknown alert channel '{}'. Valid channels: syslog, json, exec. (A value containing ':' is treated as an alert rule.)"
+        "Unknown alert channel '{}'. Valid channels: syslog, json, exec. (A value containing ':' is treated as an alert rule.)",
+        "[limits] idle_compact_after_secs is {secs}, shorter than the {} s a live vCon export waits before it writes a call that has not ended, so idle compaction can drop that call's middle messages before its container is written. Set it to {} or more to keep them."
       ],
-      "why": "parse_alert_sources in batch.rs pushes three literal warnings."
+      "why": "parse_alert_sources in batch.rs pushes three literal warnings; start_live_vcon warns with live_compaction_warning's format! literal."
     },
     {
       "file": "src/app/bootstrap.rs",
@@ -326,6 +325,56 @@
         "--since/--until: no dialog in {window}; the capture holds no dialog"
       ],
       "why": "generate_reports in batch.rs prints the notice time_window_notice builds with two format! literals in the same file."
+    },
+    {
+      "file": "src/app/batch.rs",
+      "call": "stderr_line!(\"{}\", target.say(&message))",
+      "count": 1,
+      "carries": [
+        "The {what} for Call-ID '{}' would not serialize: {e}",
+        "Could not write '{}': {e}. {written} container(s) were written before this."
+      ],
+      "why": "export_target in batch.rs: the error write_vcon_containers returns, built from the two format! literals of its serialize and write steps, prefixed with the rule's name."
+    },
+    {
+      "file": "src/app/bootstrap.rs",
+      "call": "PlanError::arg(message)",
+      "count": 1,
+      "carries": [],
+      "why": "vcon_rules in bootstrap.rs: Cli::live_export_refusal in src/cli.rs, whose format! literal the src/cli.rs Error::CliValidation(refusal) entry carries."
+    },
+    {
+      "file": "src/app/bootstrap.rs",
+      "call": "PlanError::refused(crate::settings::Origin::ConfigFile, e.to_string())",
+      "count": 1,
+      "carries": [],
+      "why": "named_filters in bootstrap.rs: the Display of src/sip/named_filters.rs::ResolveError, whose write! messages are not extracted sites."
+    },
+    {
+      "file": "src/app/bootstrap.rs",
+      "call": "PlanError::refused(crate::settings::Origin::ConfigFile, message)",
+      "count": 1,
+      "carries": [
+        "[[vcon.rule]] '{name}' has audio = 'url' and no audio_url_base: say where your storage serves the WAV files sipnab writes beside the containers",
+        "[[vcon.rule]] '{name}' has audio_url_base '{base}': a vCon names external media over https (draft-ietf-vcon-vcon-core-04 section 2.4.1)",
+        "[[vcon.rule]] '{name}' has no dir: say where its containers go",
+        "[[vcon.rule]] '{name}' has {why}",
+        "[[vcon.rule]] '{name}': 'when' is not a valid filter expression: {e}",
+        "[[vcon.rule]] '{name}': no filter",
+        "[[vcon.rule]] '{name}': {}",
+        "[[vcon.rule]] name '{name}' is not usable: a name is 1 to {} ASCII letters, digits, '-' or '_', starting with a letter or digit",
+        "[[vcon.rule]] name '{name}' is used by two rules; each rule needs its own"
+      ],
+      "why": "The refuse closure of vcon_rules in bootstrap.rs: the format! literals it is called with, and the Err strings of src/app/vcon_enrich.rs::services, which are sites of their own."
+    },
+    {
+      "file": "src/app/bootstrap.rs",
+      "call": "PlanError::refused( crate::settings::Origin::ConfigFile, message, )",
+      "count": 1,
+      "carries": [
+        "[[vcon.rule]] with live_audio = true serves call audio on the REST API, and --api {addr} is not a loopback address. Off loopback, live audio needs TLS (--api-tls-cert and --api-tls-key) and a signing key (--api-signing-key or --api-signing-key-file) to mint tokens with the audio scope; or bind --api to 127.0.0.1"
+      ],
+      "why": "vcon_rules in bootstrap.rs: live_audio_listener_refusal's format! literal."
     }
   ],
   "unresolved": [
@@ -402,9 +451,9 @@
     {
       "file": "src/app/bootstrap.rs",
       "call": "PlanError::arg(e.to_string())",
-      "count": 1,
+      "count": 2,
       "carries": [],
-      "why": "Display of the error from src/capture/writer.rs::parse_split, out of scope."
+      "why": "Display of the error from src/capture/writer.rs::parse_split, out of scope; and vcon_rules' inert --redact refusal, an Error::CliValidation literal site in src/cli.rs::Cli::inert_redaction_refusal."
     },
     {
       "file": "src/app/bootstrap.rs",
@@ -611,10 +660,17 @@
     },
     {
       "file": "src/app/batch.rs",
-      "call": "stderr_line!( \"{}\", end_of_run_vcon_summary( written, live.map_or(0, LiveVconTracker::containers_written), dir ) )",
+      "call": "stderr_line!( \"{}\", target.say(&end_of_run_vcon_summary( written, live.map_or(0, LiveVconTracker::containers_written), target.dir )) )",
       "count": 1,
       "carries": [],
       "why": "Informational, not a failure: the end-of-run vCon count, built by end_of_run_vcon_summary in batch.rs with plain format! calls that are not extracted sites. It reports how many containers were written, so the page does not list it."
+    },
+    {
+      "file": "src/app/bootstrap.rs",
+      "call": "PlanError::arg( crate::sip::named_filters::unknown_reference_message(name, &filters), )",
+      "count": 1,
+      "carries": [],
+      "why": "resolved_filter_text in bootstrap.rs: src/sip/named_filters.rs::unknown_reference_message, a format! outside the extractor's scope; the same text reaches the request-time surfaces through src/sip/dsl.rs."
     }
   ]
 }

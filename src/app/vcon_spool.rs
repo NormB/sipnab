@@ -132,6 +132,11 @@ pub struct SpoolStatus {
     /// Opaque cursor (the last file name returned) to pass to the next call.
     /// Null on the final page.
     pub next_cursor: Option<String>,
+    /// The export rule whose spool this is, when the answer came from a run
+    /// (`--export-vcon-when`, or a `[[vcon.rule]]` name). Absent from
+    /// `sipnab --vcon-spool-status <DIR>`, which reads a directory, not a run.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub rule: Option<String>,
 }
 
 /// Read the spool, its delivered and failed directories, and one page of
@@ -204,6 +209,7 @@ pub fn snapshot(
         failures,
         truncated,
         next_cursor,
+        rule: None,
     })
 }
 
@@ -263,6 +269,89 @@ fn read_record(path: &Path) -> Result<FailureRecord, String> {
 }
 
 /// Unit tests for the parts no door can reach: the clock is a parameter.
+/// One export rule's spool: the rule's name and the directory it writes to.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Spool {
+    /// The rule's name; the flag rule is `--export-vcon-when`.
+    pub rule: String,
+    /// The directory the rule writes its containers to.
+    pub dir: std::path::PathBuf,
+}
+
+/// The run's spools: the flag rule's, when `--export-vcon-dir` is given, then
+/// one per `[[vcon.rule]]`, in the order the plan resolves them.
+#[must_use]
+pub fn spools(cli: &crate::cli::Cli, config: &crate::config::Config) -> Vec<Spool> {
+    let mut out: Vec<Spool> = Vec::new();
+    if cli.output_args.export_vcon_when.is_some()
+        && let Some(dir) = cli.output_args.export_vcon_dir.clone()
+    {
+        out.push(Spool {
+            rule: "--export-vcon-when".to_owned(),
+            dir,
+        });
+    }
+    out.extend(config.vcon.rule.iter().filter_map(|r| {
+        r.dir.clone().map(|dir| Spool {
+            rule: r.name.clone(),
+            dir,
+        })
+    }));
+    out
+}
+
+/// Why no spool was picked.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PickError {
+    /// The run has no export rule, so no spool.
+    NoSpool,
+    /// Several rules write spools and none was named; holds the names.
+    Ambiguous(Vec<String>),
+    /// The named rule is not one of the run's; holds it and the names.
+    Unknown(String, Vec<String>),
+}
+
+impl std::fmt::Display for PickError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::NoSpool => f.write_str(
+                "this run has no vCon export spool: start sipnab with --export-vcon-when \
+                 <EXPR> --export-vcon-dir <DIR>, or with a [[vcon.rule]] in the config",
+            ),
+            Self::Ambiguous(names) => write!(
+                f,
+                "this run writes {} spools; name one with rule: {}",
+                names.len(),
+                names.join(", ")
+            ),
+            Self::Unknown(rule, names) => write!(
+                f,
+                "this run has no export rule '{rule}'; its rules are: {}",
+                names.join(", ")
+            ),
+        }
+    }
+}
+
+/// The spool `rule` names, or the only one when the run has one and `rule` is
+/// unset. The one choice the REST route and the MCP tool both make.
+///
+/// # Errors
+///
+/// No spool, several and none named, or a name the run does not use.
+pub fn pick<'a>(spools: &'a [Spool], rule: Option<&str>) -> Result<&'a Spool, PickError> {
+    let names = || spools.iter().map(|s| s.rule.clone()).collect::<Vec<_>>();
+    match (spools, rule) {
+        ([], _) => Err(PickError::NoSpool),
+        ([only], None) => Ok(only),
+        (_, None) => Err(PickError::Ambiguous(names())),
+        (_, Some(name)) => spools
+            .iter()
+            .find(|s| s.rule == name)
+            .ok_or_else(|| PickError::Unknown(name.to_owned(), names())),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -281,5 +370,43 @@ mod tests {
         assert_eq!(status.as_of, "2026-10-11T12:00:00.000Z");
         assert!(status.spool.exists && !status.delivered_dir.exists);
         Ok(())
+    }
+
+    fn spool(rule: &str, dir: &str) -> Spool {
+        Spool {
+            rule: rule.to_owned(),
+            dir: std::path::PathBuf::from(dir),
+        }
+    }
+
+    /// One spool needs no name; several need one, and the refusal lists the
+    /// names; a name nothing uses is refused the same way; no spool at all is
+    /// its own answer.
+    #[test]
+    fn a_spool_is_picked_by_rule_name_when_there_are_several() {
+        let one = [spool("--export-vcon-when", "/s")];
+        assert_eq!(
+            pick(&one, None).map(|s| s.rule.as_str()),
+            Ok("--export-vcon-when")
+        );
+        let two = [spool("support", "/a"), spool("all", "/b")];
+        assert_eq!(
+            pick(&two, Some("all")).map(|s| s.dir.clone()),
+            Ok("/b".into())
+        );
+        let ambiguous = pick(&two, None)
+            .err()
+            .map(|e| e.to_string())
+            .unwrap_or_default();
+        assert!(ambiguous.contains("support, all"), "{ambiguous}");
+        let unknown = pick(&two, Some("nope"))
+            .err()
+            .map(|e| e.to_string())
+            .unwrap_or_default();
+        assert!(
+            unknown.contains("'nope'") && unknown.contains("support, all"),
+            "{unknown}"
+        );
+        assert_eq!(pick(&[], None).err(), Some(PickError::NoSpool));
     }
 }

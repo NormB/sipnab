@@ -1316,6 +1316,6 @@ as the `sipnab` binary. The binary's `.gnu_debuglink` names that file, and
 
 ## Still stuck?
 
-Build custom queries with the [Filter DSL](@/docs/filter-dsl.md) -- 33 fields plus any header by name, regex support, boolean logic. See the [CLI Reference](@/docs/cli.md) for every flag and more recipes.
+Build custom queries with the [Filter DSL](@/docs/filter-dsl.md) -- 42 fields plus any header by name, named filters, regex support, boolean logic. See the [CLI Reference](@/docs/cli.md) for every flag and more recipes.
 
 If the capture itself is the problem -- drops on a busy link, a full kernel ring buffer, or loss that appears on every call at once -- see [Tuning capture on a busy server](@/docs/tuning-capture.md).

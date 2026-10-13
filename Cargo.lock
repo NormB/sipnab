@@ -4138,7 +4138,7 @@ checksum = "b2aa850e253778c88a04c3d7323b043aeda9d3e30d5971937c1855769763678e"
 
 [[package]]
 name = "sipnab"
-version = "0.5.215"
+version = "0.5.216"
 dependencies = [
  "aes",
  "ahash",
@@ -4158,11 +4158,14 @@ dependencies = [
  "env_logger",
  "etherparse",
  "flate2",
+ "futures-core",
  "getrandom 0.3.4",
  "getrandom 0.4.3",
  "glob",
  "hmac",
  "http-body-util",
+ "hyper",
+ "hyper-util",
  "indexmap",
  "insta",
  "js-sys",

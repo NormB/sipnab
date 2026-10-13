@@ -692,6 +692,7 @@ pub fn run_tui_mode(
             // middle, so this value is known good by the time a pane paints
             // with it.
             quality_bands: cli.quality_bands(&config),
+            alias_thresholds: cli.alias_thresholds(&config),
             // The save dialog writes wherever the analyst types, and the
             // capture on screen is the obvious name to reach for.
             protected_inputs: crate::capture::output_guard::ProtectedInputs::new(
@@ -1058,6 +1059,8 @@ fn start_tui_servers(
             armed_detections: armed_kinds(detections.armed),
             pipeline_options: crate::app::server_pipeline_options(cli, config),
             alias_thresholds: cli.alias_thresholds(config),
+            vcon_spools: crate::app::vcon_spool::spools(cli, config),
+            live_audio: crate::app::bootstrap::live_audio_filters(cli, config),
         },
         // No transmit permit: the rtpengine reconciler took this run's, so
         // MCP `query_relay` and the REST relay routes (ST5) both answer

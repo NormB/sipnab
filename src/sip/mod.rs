@@ -25,6 +25,7 @@ pub mod lint;
 pub mod matcher;
 pub mod message;
 pub mod method;
+pub mod named_filters;
 pub mod parser;
 pub mod response_codes;
 pub mod sdp;

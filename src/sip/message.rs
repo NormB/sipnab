@@ -300,6 +300,24 @@ impl SipMessage {
         extract_uri_host_port(self.to_header()?)
     }
 
+    /// The `From` URI as written: the addr-spec without the display name or
+    /// the header's own parameters (`tag`), URI parameters kept.
+    pub fn from_uri(&self) -> Option<String> {
+        non_empty(addr_spec(self.from_header()?))
+    }
+
+    /// The `To` URI as written, as [`Self::from_uri`] reads `From`.
+    pub fn to_uri(&self) -> Option<String> {
+        non_empty(addr_spec(self.to_header()?))
+    }
+
+    /// The user part of the `P-Asserted-Identity` URI
+    /// ([RFC 3325](https://www.rfc-editor.org/rfc/rfc3325)), from its first
+    /// value when the header lists several.
+    pub fn pai_user(&self) -> Option<String> {
+        extract_uri_user(self.header("P-Asserted-Identity")?)
+    }
+
     /// Extract the `tag` parameter from the `From` header.
     pub fn from_tag(&self) -> Option<&str> {
         extract_tag(self.from_header()?)
@@ -362,6 +380,11 @@ pub(crate) fn skip_quoted_display_name(header_value: &str) -> &str {
         }
     }
     ""
+}
+
+/// `s` as an owned string, or `None` when it is empty.
+fn non_empty(s: &str) -> Option<String> {
+    (!s.is_empty()).then(|| s.to_string())
 }
 
 /// Isolate the addr-spec: the URI inside `<...>` for the name-addr form,

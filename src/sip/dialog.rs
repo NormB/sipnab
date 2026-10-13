@@ -161,6 +161,20 @@ pub struct SipDialog {
     pub from_host: Option<String>,
     /// Host (with optional `:port`) extracted from the To URI.
     pub to_host: Option<String>,
+    /// The From URI as written in the message that opened the dialog: the
+    /// addr-spec, URI parameters kept, without display name or `tag`.
+    ///
+    /// This and the three fields below are captured when the dialog opens
+    /// and never re-read from `messages`, so idle compaction, which can drop
+    /// messages, cannot change what a filter on them selects.
+    pub from_uri: Option<String>,
+    /// The To URI as written in the message that opened the dialog.
+    pub to_uri: Option<String>,
+    /// The request-URI of the request that opened the dialog; `None` when a
+    /// capture began on a response.
+    pub request_uri: Option<String>,
+    /// The user part of the opening request's `P-Asserted-Identity`.
+    pub pai_user: Option<String>,
     /// Tag parameter from the From header.
     pub from_tag: Option<String>,
     /// The remote end's tag: the `To` tag of the response that established
@@ -444,6 +458,10 @@ impl SipDialog {
             to_user: msg.to_user(),
             from_host: msg.from_host(),
             to_host: msg.to_host(),
+            from_uri: msg.from_uri(),
+            to_uri: msg.to_uri(),
+            request_uri: msg.request_uri.clone(),
+            pai_user: msg.pai_user(),
             from_tag: msg.from_tag().map(str::to_string),
             to_tag: msg.to_tag().map(str::to_string),
             to_tag_basis: remote_tag_basis(&method, msg),

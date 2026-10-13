@@ -1433,8 +1433,10 @@ pub struct OutputArgs {
     /// What sipnab writes is an OBSERVER vCon, and the container says so in its
     /// own parties. sipnab watched packets go past a tap: it did not place the
     /// call, record it, or obtain anyone's permission to keep it. So nothing
-    /// here carries a signature, and no URL ever points at media held
-    /// elsewhere, because sipnab hosts nothing to point at. A party's `name`
+    /// here carries a signature, and this container never points at media held
+    /// elsewhere. (A `[[vcon.rule]]` with `audio = "url"` does: it writes the
+    /// WAV beside the container for the operator's storage to serve, and names
+    /// it by URL.) A party's `name`
     /// is the `From` or `To` display name when the wire carried one, never
     /// the URI's user part, and every party carries `validation: "none"`: a
     /// `From` header is what the sender chose to write, not an identity anyone
@@ -1446,8 +1448,9 @@ pub struct OutputArgs {
     /// note the exported file carries travels with it saying so. Above a
     /// measured budget the media is REFUSED out loud rather than dropped —
     /// `capture_completeness.media` says which of carried, refused-over-budget,
-    /// none-decodable, not-considered or withheld-by-redaction applies, so an
-    /// absent `recording` never has to be read as a call with no audio.
+    /// none-decodable, not-considered, withheld-by-redaction or referenced (a
+    /// `url` rule's) applies, so an absent `recording` never has to be read as
+    /// a call with no audio.
     ///
     /// It also carries what THIS capture missed: frames no decoder could read,
     /// SIP a port gate discarded, messages a retention cap evicted. vCon has no
@@ -4645,8 +4648,8 @@ pub struct TokenArgs {
     #[arg(help_heading = "Token minting", long = "token-id", value_name = "ID")]
     pub token_id: Option<String>,
 
-    /// Scope for --mint-token: `full` (default), `metrics`, `read`, or
-    /// `actions`.
+    /// Scope for --mint-token: `full` (default), `metrics`, `read`, `actions`
+    /// or `audio`.
     ///
     /// A `metrics` token reaches `GET /metrics` and nothing else — mint one for
     /// a scrape job rather than handing it a credential that also reads
@@ -4661,12 +4664,15 @@ pub struct TokenArgs {
     /// actions that change another system, such as TFPS ban and unban, where
     /// the server has enabled them with `--allow-action`. A `full` token never
     /// reaches an action. REST and MCP tokens.
+    ///
+    /// An `audio` token reaches the live call audio routes, `/v1/calls/...`,
+    /// and nothing else; no other scope reaches them. REST API tokens only.
     #[arg(
         help_heading = "Token minting",
         long = "token-scope",
         value_name = "SCOPE",
         default_value = "full",
-        value_parser = ["full", "metrics", "read", "actions"]
+        value_parser = ["full", "metrics", "read", "actions", "audio"]
     )]
     pub token_scope: String,
 }
@@ -7595,7 +7601,41 @@ impl Cli {
     /// never reaches: accepting them would promise a file that is never
     /// written. They work with `-I`, which always reaches its end.
     pub(crate) fn live_vcon_refusal(&self) -> Option<String> {
-        if !self.exports_vcon_live() {
+        let export = if self.output_args.export_vcon.is_some() {
+            "--export-vcon"
+        } else {
+            "--export-vcon-when"
+        };
+        self.live_export_refusal(self.exports_vcon_live(), export)
+    }
+
+    /// The refusal for a redaction flag on a run that exports no container,
+    /// or `None`. `config_exports`: whether the config file defines a
+    /// `[[vcon.rule]]`, which is an export as the flags are.
+    ///
+    /// Refused rather than ignored, because the failure it prevents is the one
+    /// that gets somebody hurt: an operator who passed --redact and got output
+    /// back believes the output is redacted. Every other inert-flag bug in this
+    /// tree (#35, #55, #63, #83) cost a feature; this one would cost a
+    /// disclosure.
+    #[must_use]
+    pub fn inert_redaction_refusal(&self, config_exports: bool) -> Option<crate::Error> {
+        (self.redacting() && !self.persists_content() && !config_exports).then(|| {
+            crate::Error::CliValidation(
+                "--redact rewrites an EXPORTED container and this run exports \
+                 none. Pair it with --export-vcon, --export-vcon-when or a \
+                 [[vcon.rule]], or drop it — a run that accepted --redact and \
+                 wrote nothing redacted would read as a redacted capture"
+                    .to_string(),
+            )
+        })
+    }
+
+    /// The refusal [`Self::live_vcon_refusal`] gives, for any export that
+    /// writes while a live run captures: `export` names it in the message.
+    /// The one wording for the flags and for a `[[vcon.rule]]`.
+    pub(crate) fn live_export_refusal(&self, live: bool, export: &str) -> Option<String> {
+        if !live {
             return None;
         }
         let out = &self.output_args;
@@ -7610,11 +7650,6 @@ impl Cli {
         if given.is_empty() {
             return None;
         }
-        let export = if out.export_vcon.is_some() {
-            "--export-vcon"
-        } else {
-            "--export-vcon-when"
-        };
         Some(format!(
             "{} cannot be used with {export} on a live capture. A live run writes \
              each call's container shortly after the call ends, and a run stopped \
@@ -7765,21 +7800,10 @@ impl Cli {
             return Err(crate::Error::CliValidation(refusal));
         }
 
-        // A redaction flag on a run that exports no container. Refused rather
-        // than ignored, because the failure it prevents is the one that gets
-        // somebody hurt: an operator who passed --redact and got output back
-        // believes the output is redacted. Every other inert-flag bug in this
-        // tree (#35, #55, #63, #83) cost a feature; this one would cost a
-        // disclosure.
-        if self.redacting() && !self.persists_content() {
-            return Err(crate::Error::CliValidation(
-                "--redact rewrites an EXPORTED container and this run exports \
-                 none. Pair it with --export-vcon or --export-vcon-when, or \
-                 drop it — a run that accepted --redact and wrote nothing \
-                 redacted would read as a redacted capture"
-                    .to_string(),
-            ));
-        }
+        // A redaction flag on a run that exports no container is refused when
+        // the run is planned, by `inert_redaction_refusal`: whether the run
+        // exports depends on the config file's `[[vcon.rule]]` too, which is
+        // not read yet here.
 
         // The same argument as `--export-vcon` above, and refused in the same
         // place: a build with no exporter cannot redact one.
@@ -10058,12 +10082,15 @@ mod tests {
 
         let inert = Cli::try_parse_from(["sipnab", "-N", "-I", "x.pcap", "--redact"])?;
         let refusal = inert
-            .validate()
-            .err()
+            .inert_redaction_refusal(false)
             .ok_or("--redact with no export is a promise over nothing")?;
         assert!(
             refusal.to_string().contains("exports none"),
             "the refusal has to say WHY: {refusal}"
+        );
+        assert!(
+            inert.inert_redaction_refusal(true).is_none(),
+            "a [[vcon.rule]] is an export --redact applies to"
         );
         Ok(())
     }

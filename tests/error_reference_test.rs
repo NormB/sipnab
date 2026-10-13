@@ -701,7 +701,11 @@ fn lists() -> Result<Lists, TestError> {
 // src/app/bootstrap.rs's ws_portrange PlanError literal, now
 // `PlanError::refused` in the resolved list, and one of the three
 // `error!("{}", e.message)` sites.
-const EXPECTED_UNRESOLVED: usize = 76;
+// 76 -> 78: src/app/bootstrap.rs `PlanError::arg(e.to_string())` gained the
+// inert --redact refusal (an `Error::CliValidation` literal in src/cli.rs),
+// and `PlanError::arg(unknown_reference_message(...))`, whose text is built
+// in src/sip/named_filters.rs, out of scope.
+const EXPECTED_UNRESOLVED: usize = 78;
 
 /// How many distinct templates the scope prints (informational lines
 /// excluded). Pinned with `==` so a new or removed message is a decision.
@@ -727,7 +731,15 @@ const EXPECTED_UNRESOLVED: usize = 76;
 // refusals, carried by `Error::CliValidation(refusal)`), src/app/batch.rs 2
 // (the two empty-window notices, carried by `stderr_line!("{notice}")`).
 // Nothing removed.
-const EXPECTED_TEMPLATES: usize = 427;
+// 427 -> 450 (+23), the PBX vCon work: src/app/bootstrap.rs 12 (nine
+// `[[vcon.rule]]` refusals carried by vcon_rules' refuse closure, the
+// live-audio listener refusal, `[[vcon.enrich]]` with --redact, and `[pbx]
+// addresses`), src/app/batch.rs 6 (the live compaction warning, the
+// enrichment queue's drain warning, the per-service enrichment line, the
+// write-after-enrichment failure, and the `audio` and `grouping` reasons),
+// src/app/vcon_enrich.rs 5 (two name refusals and three outcome details).
+// Nothing removed.
+const EXPECTED_TEMPLATES: usize = 450;
 
 // ---------------------------------------------------------------------------
 // The page gates

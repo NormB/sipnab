@@ -113,6 +113,15 @@ pub const SCOPE_READ: &str = "read";
 /// `--api-key` (which is `full`), read everything and act on nothing.
 pub const SCOPE_ACTIONS: &str = "actions";
 
+/// Call audio as it is captured: the REST API's `/v1/calls` routes, and
+/// nothing else.
+///
+/// The one scope no other satisfies, `actions` included. A `full` token reads
+/// dialogs and findings; listening to the calls themselves is a different
+/// thing to be trusted with, so a transcriber is handed this and an operator's
+/// dashboard is not.
+pub const SCOPE_AUDIO: &str = "audio";
+
 /// Whether a token holding `held` may reach something that requires `required`.
 ///
 /// One rule for every surface. `actions` satisfies everything; `full`
@@ -121,6 +130,9 @@ pub const SCOPE_ACTIONS: &str = "actions";
 /// imply changing another system.
 #[must_use]
 pub fn scope_satisfies(held: &str, required: &str) -> bool {
+    if required == SCOPE_AUDIO {
+        return held == SCOPE_AUDIO;
+    }
     match held {
         SCOPE_ACTIONS => true,
         SCOPE_FULL => required != SCOPE_ACTIONS,
@@ -579,6 +591,27 @@ mod tests {
     //! static-secret backward-compat tests, plus the relocated
     //! `constant_time_eq` hardening cases.
     use super::*;
+
+    /// Only an `audio` token reaches call audio: `full` reads everything and
+    /// `actions` acts, and neither implies listening to calls. An `audio`
+    /// token reaches nothing else.
+    #[test]
+    fn only_an_audio_token_reaches_audio() {
+        assert!(scope_satisfies(SCOPE_AUDIO, SCOPE_AUDIO));
+        for held in [SCOPE_FULL, SCOPE_ACTIONS, SCOPE_READ, SCOPE_METRICS] {
+            assert!(!scope_satisfies(held, SCOPE_AUDIO), "{held} reaches audio");
+        }
+        for required in [SCOPE_FULL, SCOPE_ACTIONS, SCOPE_READ, SCOPE_METRICS] {
+            assert!(
+                !scope_satisfies(SCOPE_AUDIO, required),
+                "audio reaches {required}"
+            );
+        }
+        // The rest of the table is unchanged.
+        assert!(scope_satisfies(SCOPE_ACTIONS, SCOPE_FULL));
+        assert!(scope_satisfies(SCOPE_FULL, SCOPE_METRICS));
+        assert!(!scope_satisfies(SCOPE_FULL, SCOPE_ACTIONS));
+    }
 
     type TestError = Box<dyn std::error::Error>;
 

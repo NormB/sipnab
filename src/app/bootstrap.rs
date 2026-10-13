@@ -166,7 +166,7 @@ pub struct RunPlan {
     /// `--export-vcon-when problems` did not -- a divergence between two
     /// surfaces of one language, which `cli-reference.md` describes as the
     /// same language.
-    pub vcon_filter_expr: Option<FilterExpr>,
+    pub vcon_rules: Vec<crate::app::batch::VconRule>,
     /// Per-message output formatting options.
     pub output_opts: OutputOptions,
     /// `--on-*` event execution engine.
@@ -406,6 +406,17 @@ fn plan_hep_source(cli: &Cli, config: &Config) -> Result<CaptureSource, PlanErro
 /// address.
 pub fn plan(cli: &Cli, config: &Config) -> Result<RunPlan, PlanError> {
     refuse_unusable_requests(cli, config)?;
+    // Resolved here, whether or not anything on the command line names one:
+    // a [filters] table with a broken entry refuses the run at startup rather
+    // than when a REST or MCP caller first references it. Installed for the
+    // surfaces that take a filter per request; the CLI paths below resolve
+    // through `named_filters` directly.
+    crate::sip::named_filters::install(named_filters(cli, config)?);
+    crate::sip::dsl::declare_pbx_addresses(pbx_addresses(config)?);
+    let names = crate::app::build_filter_names(cli, config);
+    crate::sip::dsl::declare_endpoint_names(Box::new(move |ip| {
+        names.name(ip, crate::names::NameMode::Names)
+    }));
     declare_process_globals(cli, config);
     refuse_conflicting_sources(cli)?;
 
@@ -463,7 +474,10 @@ pub fn plan(cli: &Cli, config: &Config) -> Result<RunPlan, PlanError> {
     // Filter DSL expression (--filter or diagnostic aliases), falling back
     // to config.filter.expression.
     let filter_expr = build_filter_expr(cli, config)?;
-    let vcon_filter_expr = build_vcon_filter_expr(cli, config)?;
+    #[cfg(feature = "vcon")]
+    let vcon_rules = vcon_rules(cli, config)?;
+    #[cfg(not(feature = "vcon"))]
+    let vcon_rules = Vec::new();
 
     let output_opts = build_output_options(cli, config);
 
@@ -539,7 +553,7 @@ pub fn plan(cli: &Cli, config: &Config) -> Result<RunPlan, PlanError> {
         },
         matcher,
         filter_expr,
-        vcon_filter_expr,
+        vcon_rules,
         output_opts,
         event_exec,
         mode,
@@ -4659,6 +4673,265 @@ fn build_selection_expr(cli: &Cli, config: &Config) -> Result<Option<FilterExpr>
     })
 }
 
+/// The run's export rules: each `[[vcon.rule]]`, then the rule
+/// `--export-vcon-when` with `--export-vcon-dir` make.
+///
+/// # Errors
+///
+/// A `PlanError` naming the rule: exit code 1 for a `[[vcon.rule]]` (a
+/// config-file value) with an unusable name, a name used twice, no `dir`, an
+/// `audio` other than `inline` or `omit`, or a `when` that does not resolve;
+/// the flag rule's errors are [`build_vcon_filter_expr`]'s.
+#[cfg(feature = "vcon")]
+pub(crate) fn vcon_rules(
+    cli: &Cli,
+    config: &Config,
+) -> Result<Vec<crate::app::batch::VconRule>, PlanError> {
+    use crate::app::batch::{RuleAudio, RuleGrouping, VconRule};
+    let refuse = |message: String| PlanError::refused(crate::settings::Origin::ConfigFile, message);
+    if let Some(e) = cli.inert_redaction_refusal(!config.vcon.rule.is_empty()) {
+        return Err(PlanError::arg(e.to_string()));
+    }
+    if let Some(message) = cli.live_export_refusal(
+        !cli.has_input() && !config.vcon.rule.is_empty(),
+        "[[vcon.rule]]",
+    ) {
+        return Err(PlanError::arg(message));
+    }
+    // The flag rule first, so a run with only the flags keeps rule 0 as its
+    // one rule, as every run before [[vcon.rule]] had.
+    let mut rules: Vec<VconRule> = Vec::new();
+    if let (Some(filter), Some(dir)) = (
+        build_vcon_filter_expr(cli, config)?,
+        cli.output_args.export_vcon_dir.clone(),
+    ) {
+        rules.push(VconRule {
+            name: crate::app::batch::FLAG_RULE.to_owned(),
+            filter,
+            dir,
+            audio: RuleAudio::Inline,
+            max_inline: None,
+            audio_url_base: None,
+            grouping: RuleGrouping::Leg,
+            enrich: Vec::new(),
+            live_audio: false,
+            live: false,
+        });
+    }
+    for rule in &config.vcon.rule {
+        let name = &rule.name;
+        if !crate::sip::named_filters::valid_name(name) {
+            return Err(refuse(format!(
+                "[[vcon.rule]] name '{name}' is not usable: a name is 1 to {} ASCII \
+                 letters, digits, '-' or '_', starting with a letter or digit",
+                crate::sip::named_filters::MAX_FILTER_NAME_LEN
+            )));
+        }
+        if rules.iter().any(|r| &r.name == name) {
+            return Err(refuse(format!(
+                "[[vcon.rule]] name '{name}' is used by two rules; each rule needs its own"
+            )));
+        }
+        let Some(dir) = rule.dir.clone() else {
+            return Err(refuse(format!(
+                "[[vcon.rule]] '{name}' has no dir: say where its containers go"
+            )));
+        };
+        let audio = RuleAudio::parse(rule.audio.as_deref())
+            .map_err(|why| refuse(format!("[[vcon.rule]] '{name}' has {why}")))?;
+        let grouping = RuleGrouping::parse(rule.grouping.as_deref())
+            .map_err(|why| refuse(format!("[[vcon.rule]] '{name}' has {why}")))?;
+        // core-04 section 2.4.1: a by-reference url uses HTTPS.
+        let audio_url_base = match (audio, rule.audio_url_base.as_deref()) {
+            (RuleAudio::Url, None) => {
+                return Err(refuse(format!(
+                    "[[vcon.rule]] '{name}' has audio = 'url' and no audio_url_base: say \
+                     where your storage serves the WAV files sipnab writes beside the containers"
+                )));
+            }
+            (RuleAudio::Url, Some(base)) if !base.starts_with("https://") => {
+                return Err(refuse(format!(
+                    "[[vcon.rule]] '{name}' has audio_url_base '{base}': a vCon names \
+                     external media over https (draft-ietf-vcon-vcon-core-04 section 2.4.1)"
+                )));
+            }
+            (RuleAudio::Url, Some(base)) => Some(base.trim_end_matches('/').to_owned()),
+            _ => None,
+        };
+        let text = resolved_filter_text(&rule.when, cli, config)
+            .map_err(|e| refuse(format!("[[vcon.rule]] '{name}': {}", e.message)))?;
+        let filter = FilterExpr::parse(&text).map_err(|e| {
+            refuse(format!(
+                "[[vcon.rule]] '{name}': 'when' is not a valid filter expression: {e}"
+            ))
+        })?;
+        let filter = FilterExpr::with_time_window(
+            Some(filter),
+            cli.matching_args.since,
+            cli.matching_args.until,
+        )
+        .ok_or_else(|| refuse(format!("[[vcon.rule]] '{name}': no filter")))?;
+        rules.push(VconRule {
+            name: name.clone(),
+            filter,
+            dir,
+            audio,
+            max_inline: rule
+                .max_inline_media_mib
+                .map(|mib| mib.saturating_mul(1024 * 1024)),
+            audio_url_base,
+            grouping,
+            enrich: Vec::new(),
+            live_audio: rule.live_audio.unwrap_or(false),
+            live: rule.live.unwrap_or(false),
+        });
+    }
+    if rules.iter().any(|r| r.live_audio)
+        && let Some(message) = live_audio_listener_refusal(cli, config)
+    {
+        return Err(PlanError::refused(
+            crate::settings::Origin::ConfigFile,
+            message,
+        ));
+    }
+    if !config.vcon.enrich.is_empty() {
+        if cli.output_args.redact {
+            return Err(PlanError::arg(
+                "[[vcon.enrich]] cannot run with --redact: a service is sent the call as it \
+                 was captured, and nothing it answers can be pseudonymized"
+                    .to_owned(),
+            ));
+        }
+        let names: Vec<&str> = rules.iter().map(|r| r.name.as_str()).collect();
+        let services =
+            crate::app::vcon_enrich::services(&config.vcon.enrich, &names).map_err(refuse)?;
+        for rule in &mut rules {
+            rule.enrich = services
+                .iter()
+                .filter(|s| s.rules.contains(&rule.name))
+                .cloned()
+                .collect();
+        }
+    }
+    Ok(rules)
+}
+
+/// Why the REST API cannot serve live audio as it is set up, or `None`.
+///
+/// Call audio leaves the host only to a client that proved it may hear it,
+/// over a connection nobody between can read: off a loopback address that is
+/// TLS (`--api-tls-cert` and `--api-tls-key`) and a signing key to mint
+/// tokens with the `audio` scope. A static `--api-key` is `full`, which does
+/// not reach audio.
+#[cfg(feature = "vcon")]
+pub(crate) fn live_audio_listener_refusal(cli: &Cli, config: &Config) -> Option<String> {
+    let addr = cli.listener_args.api.as_deref()?;
+    let loopback = addr
+        .parse::<std::net::SocketAddr>()
+        .is_ok_and(|a| a.ip().is_loopback())
+        || addr.starts_with("localhost:");
+    if loopback {
+        return None;
+    }
+    let (cert, key) = cli.api_tls_files(config);
+    let tls = cert.is_some() && key.is_some();
+    let signing = !cli.listener_args.api_signing_key.is_empty()
+        || cli.listener_args.api_signing_key_file.is_some();
+    (!(tls && signing)).then(|| {
+        format!(
+            "[[vcon.rule]] with live_audio = true serves call audio on the REST API, and \
+             --api {addr} is not a loopback address. Off loopback, live audio needs TLS \
+             (--api-tls-cert and --api-tls-key) and a signing key (--api-signing-key or \
+             --api-signing-key-file) to mint tokens with the audio scope; or bind --api \
+             to 127.0.0.1"
+        )
+    })
+}
+
+/// The filters of the rules with `live_audio = true`, which the REST API's
+/// live audio routes serve. The rules were checked when the run was planned.
+#[cfg(feature = "vcon")]
+#[must_use]
+pub fn live_audio_filters(cli: &Cli, config: &Config) -> Vec<crate::sip::dsl::FilterExpr> {
+    vcon_rules(cli, config)
+        .map(|rules| {
+            rules
+                .into_iter()
+                .filter(|r| r.live_audio)
+                .map(|r| r.filter)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// No live audio without the rules that name it.
+#[cfg(not(feature = "vcon"))]
+#[must_use]
+pub fn live_audio_filters(_cli: &Cli, _config: &Config) -> Vec<crate::sip::dsl::FilterExpr> {
+    Vec::new()
+}
+
+/// The run's `[pbx] addresses`, parsed.
+///
+/// # Errors
+///
+/// A `PlanError` (exit code 1) naming the entry that is neither an IP address
+/// nor a CIDR range.
+fn pbx_addresses(config: &Config) -> Result<Vec<crate::net::CidrRange>, PlanError> {
+    config
+        .pbx
+        .addresses
+        .iter()
+        .map(|entry| {
+            crate::net::CidrRange::parse(entry.trim()).map_err(|e| {
+                PlanError::refused(
+                    crate::settings::Origin::ConfigFile,
+                    format!("[pbx] addresses: '{entry}' is not an IP address or a CIDR range: {e}"),
+                )
+            })
+        })
+        .collect()
+}
+
+/// The run's `[filters]` table, resolved.
+///
+/// # Errors
+///
+/// A `PlanError` (exit code 2) naming the filter, when a name is unusable or
+/// a built-in alias, a reference is unknown or circular, or an expansion does
+/// not parse. Checked before anything opens, so a run either starts with
+/// every name usable or does not start.
+pub(crate) fn named_filters(
+    cli: &Cli,
+    config: &Config,
+) -> Result<crate::sip::named_filters::NamedFilters, PlanError> {
+    crate::sip::named_filters::NamedFilters::resolve(&config.filters, &cli.alias_thresholds(config))
+        .map_err(|e| PlanError::refused(crate::settings::Origin::ConfigFile, e.to_string()))
+}
+
+/// The expression text a filter source stands for in this run: `@name`
+/// references expanded through the run's `[filters]`, then a whole-input
+/// diagnostic alias expanded. Every CLI filter goes through this, so a name
+/// means the same on `--filter`, `--export-vcon-when` and `[filter]
+/// expression`.
+///
+/// # Errors
+///
+/// As [`named_filters`].
+fn resolved_filter_text(expr: &str, cli: &Cli, config: &Config) -> Result<String, PlanError> {
+    let thresholds = cli.alias_thresholds(config);
+    let filters = named_filters(cli, config)?;
+    let referenced = crate::sip::dsl::resolve_references(expr, &filters, &thresholds);
+    // Said here, with this run's table, rather than left to the parser, which
+    // knows only the table installed for the request-time surfaces.
+    if let Some(name) = crate::sip::named_filters::first_reference(&referenced) {
+        return Err(PlanError::arg(
+            crate::sip::named_filters::unknown_reference_message(name, &filters),
+        ));
+    }
+    Ok(crate::sip::dsl::resolve_filter_text(&referenced, &thresholds).into_owned())
+}
+
 /// Build a `FilterExpr` from CLI `--filter` flag, diagnostic aliases, or
 /// config fallback.
 ///
@@ -4679,7 +4952,8 @@ fn filter_expr_from_sources(cli: &Cli, config: &Config) -> Result<Option<FilterE
         .matching_args
         .filter
         .as_deref()
-        .map(|expr| crate::sip::dsl::resolve_filter_text(expr, &thresholds).into_owned());
+        .map(|expr| resolved_filter_text(expr, cli, config))
+        .transpose()?;
     if let Some(expr) = &explicit {
         FilterExpr::parse(expr)
             .map_err(|e| PlanError::arg(format!("Invalid --filter expression: {e}")))?;
@@ -4736,7 +5010,7 @@ fn filter_expr_from_sources(cli: &Cli, config: &Config) -> Result<Option<FilterE
     // `--filter` uses, so `[filter] expression = "short-calls"` means what
     // `--filter short-calls` means.
     if let Some(ref expr) = config.filter.expression {
-        let expr = crate::sip::dsl::resolve_filter_text(expr, &thresholds);
+        let expr = resolved_filter_text(expr, cli, config)?;
         return match FilterExpr::parse(&expr) {
             Ok(f) => Ok(Some(f)),
             Err(e) => Err(PlanError::refused(
@@ -4761,12 +5035,13 @@ fn filter_expr_from_sources(cli: &Cli, config: &Config) -> Result<Option<FilterE
 /// expands to, fails to parse. Reported before the capture opens, so a typo
 /// fails the run rather than leaving an empty directory a reader takes for
 /// "nothing matched".
+#[cfg(feature = "vcon")]
 fn build_vcon_filter_expr(cli: &Cli, config: &Config) -> Result<Option<FilterExpr>, PlanError> {
     let Some(ref expr) = cli.output_args.export_vcon_when else {
         return Ok(None);
     };
-    let thresholds = cli.alias_thresholds(config);
-    match crate::sip::dsl::parse_filter(expr, &thresholds) {
+    let expr = resolved_filter_text(expr, cli, config)?;
+    match FilterExpr::parse(&expr) {
         // The `--since`/`--until` window narrows which dialogs are exported,
         // as it narrows every other listing.
         Ok(f) => Ok(FilterExpr::with_time_window(
@@ -5737,7 +6012,7 @@ fn snaplen_audio_retention_warning(cli: &Cli, config: &Config) -> Option<String>
         .snaplen
         .or(config.capture.snaplen)
         .unwrap_or(65535);
-    if snaplen >= 65535 || !audio_retention_wanted(cli) || cli.has_input() {
+    if snaplen >= 65535 || !audio_retention_wanted(cli, config) || cli.has_input() {
         return None;
     }
     Some(format!(
@@ -5871,6 +6146,16 @@ fn mint_token(cli: &Cli) -> Result<String, String> {
         return Err(
             "--token-scope metrics applies to the REST API only; the MCP surface has no \
              /metrics endpoint"
+                .to_string(),
+        );
+    }
+    // Nor any call audio: the live audio routes are the REST API's.
+    if cli.token_args.token_scope == crate::auth::SCOPE_AUDIO
+        && audience == crate::auth::AUDIENCE_MCP
+    {
+        return Err(
+            "--token-scope audio applies to the REST API only; the MCP surface has no \
+             call audio routes"
                 .to_string(),
         );
     }
@@ -6257,6 +6542,236 @@ mod tests {
         assert!(
             err.message.contains("Invalid config filter expression"),
             "got: {}",
+            err.message
+        );
+        Ok(())
+    }
+
+    /// A config with `sales` and `carrier` defined, `sales` referencing the
+    /// other, for the `[filters]` tests below.
+    fn config_with_named_filters() -> Config {
+        let mut config = Config::default();
+        config
+            .filters
+            .insert("carrier".into(), "src.ip in_subnet '203.0.113.0/24'".into());
+        config
+            .filters
+            .insert("sales".into(), "@carrier AND to.user =~ '^8'".into());
+        config
+    }
+
+    /// The text `@sales` stands for in [`config_with_named_filters`].
+    const SALES: &str = "((src.ip in_subnet '203.0.113.0/24') AND to.user =~ '^8')";
+
+    /// `--filter @name` compiles the named filter's expansion, inside a larger
+    /// expression too.
+    #[test]
+    fn a_named_filter_on_the_filter_flag_means_its_expansion() -> Result<(), TestError> {
+        let mut cli = base_cli();
+        cli.matching_args.filter = Some("@sales AND method == 'INVITE'".into());
+        let f = filter_expr_from_sources(&cli, &config_with_named_filters())
+            .map_err(|e| e.message)?
+            .ok_or("the flag gives a filter")?;
+        assert_eq!(f.source(), format!("{SALES} AND method == 'INVITE'"));
+        Ok(())
+    }
+
+    /// `--export-vcon-when @name` and `[filter] expression = "@name"` mean the
+    /// same expansion as `--filter`: one resolver for every CLI source.
+    #[test]
+    fn a_named_filter_means_the_same_on_every_cli_source() -> Result<(), TestError> {
+        let config = config_with_named_filters();
+        // `--export-vcon-when` exists only where the exporter does.
+        #[cfg(feature = "vcon")]
+        {
+            let mut cli = base_cli();
+            cli.output_args.export_vcon_when = Some("@sales".into());
+            let vcon = build_vcon_filter_expr(&cli, &config)
+                .map_err(|e| e.message)?
+                .ok_or("the flag gives a filter")?;
+            assert_eq!(vcon.source(), SALES);
+        }
+
+        let mut from_file = config.clone();
+        from_file.filter.expression = Some("@sales".into());
+        let f = filter_expr_from_sources(&base_cli(), &from_file)
+            .map_err(|e| e.message)?
+            .ok_or("the config gives a filter")?;
+        assert_eq!(f.source(), SALES);
+        Ok(())
+    }
+
+    /// A config holding `rules`, each `(name, when, dir, audio)`.
+    #[cfg(feature = "vcon")]
+    fn config_with_rules(rules: &[(&str, &str, Option<&str>, Option<&str>)]) -> Config {
+        let mut config = config_with_named_filters();
+        config.vcon.rule = rules
+            .iter()
+            .map(|(name, when, dir, audio)| crate::config::VconRuleConfig {
+                name: (*name).to_owned(),
+                when: (*when).to_owned(),
+                dir: dir.map(std::path::PathBuf::from),
+                audio: audio.map(str::to_owned),
+                max_inline_media_mib: None,
+                audio_url_base: None,
+                grouping: None,
+                live_audio: None,
+                live: None,
+            })
+            .collect();
+        config
+    }
+
+    /// Each `[[vcon.rule]]` resolves to a named rule with its filter compiled
+    /// through `[filters]`, its directory, and its audio setting (omit when
+    /// unset: audio is kept only on the operator's explicit `inline`); `--export-vcon-when` with `--export-vcon-dir` is one more rule,
+    /// first, so a flags-only run keeps it as rule 0.
+    #[cfg(feature = "vcon")]
+    #[test]
+    fn vcon_rules_resolve_from_the_config_and_the_flags() -> Result<(), TestError> {
+        let config = config_with_rules(&[
+            ("sales", "@sales", Some("/spool/sales"), Some("omit")),
+            ("all", "method == 'INVITE'", Some("/spool/all"), None),
+        ]);
+        let mut cli = base_cli();
+        cli.output_args.export_vcon_when = Some("method == 'BYE'".into());
+        cli.output_args.export_vcon_dir = Some("/spool/flags".into());
+        let rules = vcon_rules(&cli, &config).map_err(|e| e.message)?;
+        let seen: Vec<(&str, &str, &str, crate::app::batch::RuleAudio)> = rules
+            .iter()
+            .map(|r| {
+                (
+                    r.name.as_str(),
+                    r.filter.source(),
+                    r.dir.to_str().unwrap_or_default(),
+                    r.audio,
+                )
+            })
+            .collect();
+        assert_eq!(
+            seen,
+            vec![
+                (
+                    "--export-vcon-when",
+                    "method == 'BYE'",
+                    "/spool/flags",
+                    crate::app::batch::RuleAudio::Inline
+                ),
+                (
+                    "sales",
+                    SALES,
+                    "/spool/sales",
+                    crate::app::batch::RuleAudio::Omit
+                ),
+                (
+                    "all",
+                    "method == 'INVITE'",
+                    "/spool/all",
+                    crate::app::batch::RuleAudio::Omit
+                ),
+            ]
+        );
+        Ok(())
+    }
+
+    /// A live capture with a `[[vcon.rule]]` refuses `--redact`, as it does
+    /// beside `--export-vcon-when`: the redaction map is written at the end of
+    /// a run, which a live run stopped by a signal never reaches. With `-I`
+    /// the same combination is fine.
+    #[cfg(feature = "vcon")]
+    #[test]
+    fn a_live_rule_refuses_the_flags_that_only_write_at_the_end() -> Result<(), TestError> {
+        let config = config_with_rules(&[("r", "method == 'INVITE'", Some("/d"), None)]);
+        let mut live = base_cli();
+        live.output_args.redact = true;
+        let err = vcon_rules(&live, &config)
+            .err()
+            .ok_or("a live rule must refuse --redact")?;
+        assert_eq!(err.exit_code, 2, "{}", err.message);
+        assert!(err.message.contains("--redact"), "{}", err.message);
+        assert!(err.message.contains("[[vcon.rule]]"), "{}", err.message);
+
+        let mut file = live.clone();
+        file.capture_args.input = vec!["capture.pcap".into()];
+        assert!(
+            vcon_rules(&file, &config).is_ok(),
+            "-I always reaches its end"
+        );
+        Ok(())
+    }
+
+    /// A rule that cannot run refuses the start, exit 1, naming the rule.
+    #[cfg(feature = "vcon")]
+    #[test]
+    fn an_unusable_vcon_rule_is_refused_by_name() -> Result<(), TestError> {
+        for (rules, needle) in [
+            (
+                vec![("x", "method == 'INVITE'", None, None)],
+                "'x' has no dir",
+            ),
+            (vec![("y", "method === 'INVITE'", Some("/d"), None)], "'y'"),
+            (vec![("z", "@nobody", Some("/d"), None)], "'@nobody'"),
+            (
+                vec![("w", "method == 'INVITE'", Some("/d"), Some("loud"))],
+                "'w'",
+            ),
+            (
+                vec![
+                    ("twice", "method == 'INVITE'", Some("/a"), None),
+                    ("twice", "method == 'BYE'", Some("/b"), None),
+                ],
+                "'twice'",
+            ),
+            (
+                vec![("bad name", "method == 'INVITE'", Some("/d"), None)],
+                "bad name",
+            ),
+        ] {
+            let err = vcon_rules(&base_cli(), &config_with_rules(&rules))
+                .err()
+                .ok_or_else(|| format!("{rules:?} must be refused"))?;
+            assert_eq!(err.exit_code, 1, "{}", err.message);
+            assert!(err.message.contains(needle), "{needle}: {}", err.message);
+        }
+        Ok(())
+    }
+
+    /// A broken `[filters]` table refuses the run before anything opens, even
+    /// when nothing on the command line references it, and names the filter.
+    #[test]
+    fn a_broken_filters_table_refuses_the_run_naming_the_filter() -> Result<(), TestError> {
+        let mut config = Config::default();
+        config.filters.insert("loop-a".into(), "@loop-b".into());
+        config.filters.insert("loop-b".into(), "@loop-a".into());
+        let err = plan(&base_cli(), &config)
+            .err()
+            .ok_or("a cyclic [filters] table must refuse the run")?;
+        assert_eq!(err.exit_code, 1, "a config-file value exits 1");
+        assert!(
+            err.message.contains("@loop-a -> @loop-b -> @loop-a"),
+            "{}",
+            err.message
+        );
+        Ok(())
+    }
+
+    /// An unknown `@name` on the command line is refused in those words.
+    #[test]
+    fn an_unknown_named_filter_on_a_flag_is_refused_by_name() -> Result<(), TestError> {
+        let mut cli = base_cli();
+        cli.matching_args.filter = Some("@nobody".into());
+        let err = filter_expr_from_sources(&cli, &config_with_named_filters())
+            .err()
+            .ok_or("an unknown name must be refused")?;
+        assert_eq!(err.exit_code, 2);
+        assert!(
+            err.message.contains("'@nobody' is not a defined filter"),
+            "{}",
+            err.message
+        );
+        assert!(
+            err.message.contains("carrier, sales"),
+            "names what is defined: {}",
             err.message
         );
         Ok(())

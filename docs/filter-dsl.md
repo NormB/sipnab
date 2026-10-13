@@ -274,7 +274,7 @@ Operator precedence (highest to lowest): `NOT`, `AND`, `OR`. Use parentheses to 
 
 ## Fields
 
-All 33 addressable fields, organized by type. They answer to 34 names: `response_code` is also spelled `final_status_code`, and an alias is not a second field. Beyond these, `header.<name>` reads any SIP header by a name you choose. See [Any header by name](#any-header-by-name).
+All 42 addressable fields, organized by type. They answer to 43 names: `response_code` is also spelled `final_status_code`, and an alias is not a second field. Beyond these, `header.<name>` reads any SIP header by a name you choose. See [Any header by name](#any-header-by-name).
 
 ### String fields
 
@@ -282,6 +282,14 @@ All 33 addressable fields, organized by type. They answer to 34 names: `response
 |-------|-------------|----------------|
 | `from.user` | User part of the SIP From header | `"1001"`, `"alice"` |
 | `to.user` | User part of the SIP To header | `"1002"`, `"bob"` |
+| `from.host` | Host of the From URI, without the port | `"carrier-a.example"`, `"203.0.113.5"` |
+| `to.host` | Host of the To URI, without the port | `"pbx.example"` |
+| `from.uri` | The From URI as written, URI parameters included, without the display name or `tag` | `"sip:+15551230000@carrier-a.example;user=phone"` |
+| `to.uri` | The To URI as written | `"sip:7000@pbx.example"` |
+| `ruri` | Request-URI of the request that opened the dialog; empty when the capture began on a response | `"sip:7000@192.0.2.10"` |
+| `pai.user` | User part of the opening request's P-Asserted-Identity; empty when it has none | `"+15559876543"` |
+| `side` | Where the opening request went relative to the PBX addresses in [`[pbx] addresses`](config-reference.md#pbx): `inbound` (sent to the PBX), `outbound` (sent by it), `internal` (between two of its addresses), or empty | `"inbound"`, `"outbound"` |
+| `endpoint` | The name the run gives the source or destination address, from the hosts file, `--names` files and `[names.manual]`; matches when either end's name matches. Reverse DNS is never used here | `"pbx-1"`, `"carrier-a-gw"` |
 | `method` | SIP request method | `"INVITE"`, `"REGISTER"`, `"BYE"` |
 | `ua` | User-Agent header (first non-empty across dialog messages) | `"Olle"`, `"friendly-scanner"` |
 | `call_id` | SIP Call-ID header | `"abc123@host"` |
@@ -291,6 +299,7 @@ All 33 addressable fields, organized by type. They answer to 34 names: `response
 | `state` | Dialog state machine value | `"Trying"`, `"InCall"`, `"Failed"` |
 | `response_class` | IANA class of the final response | `"2xx"`, `"4xx"`, `"5xx"`, `"6xx"` |
 | `rtp.codec` | RTP codec name (matches if ANY linked stream matches) | `"PCMU"`, `"opus"` |
+| `rtp.codecs` | Every codec the dialog's streams used, distinct, sorted and comma-joined; empty with no streams | `"PCMU,telephone-event"` |
 | `rtp.ssrc` | RTP SSRC in hex format (matches if ANY linked stream matches) | `"0x12345678"` |
 
 **Valid `state` values:** `Trying`, `Ringing`, `InCall`, `Completed`, `Canceled`, `Failed`, `Redirected`, `Registered`, `Expired`, `Pending`, `Active`, `Terminated`, `Transferring`
@@ -486,6 +495,31 @@ half-open, `>=` at the start and `<` at the end, to select what those select:
 ```text
 time >= '2026-10-09T10:00:00Z' AND time < '2026-10-09T11:00:00Z'
 ```
+
+### Named filters
+
+Define a filter once in the config file's [`[filters]`](config-reference.md#filters)
+table and use it by name, as `@name`, wherever sipnab takes a filter
+expression. A name can appear inside a larger expression and inside another
+named filter, and an expression can reference the built-in aliases the same way:
+
+```toml
+[filters]
+carrier-a = "src.ip in_subnet '203.0.113.0/24'"
+sales     = "@carrier-a AND to.user =~ '^8[0-9]{3}$'"
+bad-sales = "@sales AND @problems"
+```
+
+```bash
+sipnab -N -I capture.pcap --config sipnab.toml --filter "@sales AND method == 'INVITE'"
+```
+
+sipnab replaces `@name` with the named filter's expression in parentheses, so
+each definition keeps the precedence it has as written. An `@` inside a
+quoted string is text, not a reference. sipnab resolves every name when it
+starts. See [`[filters]`](config-reference.md#filters) for what it refuses.
+sipnab refuses a filter given at run time that names something undefined, on
+the command line or through REST or MCP, and lists the defined names.
 
 ### Any header by name
 

@@ -42,7 +42,9 @@ CONTINUED = re.compile(
     r"((?:,|;|/|,? and|,? or)\s*)§ ?(" + _SEC + r")\b"
 )
 BARE = re.compile(r"\bRFC ?(\d{3,5})\b(?! ?§)(?! section )")
-LINK_SPAN = re.compile(r"\[[^\]]*\]\([^)]*\)")
+# Link text is any run of characters other than `]` and backticks, or whole
+# code spans, so a `]` inside a span such as `[sip]` does not end the text.
+LINK_SPAN = re.compile(r"\[(?:[^\]`]|`[^`]*`)*\]\([^)]*\)")
 
 
 def _label(num: str, sec: str) -> str:
@@ -109,8 +111,26 @@ def _prose(segment: str, seen: set, counts: list, link_bare: bool) -> str:
 
 
 def _line(line: str, seen: set, counts: list, link_bare: bool) -> str:
-    """A prose line, with its inline code spans left exactly as they are."""
-    parts = line.split("`")
+    """A prose line, with its inline code spans left exactly as they are.
+
+    A link whose text holds a code span is kept whole: splitting the line at
+    its backticks would cut the link in two, and the RFC mention inside its
+    text would then be linked again, nesting a link in a link.
+    """
+    out, pos = [], 0
+    for m in LINK_SPAN.finditer(line):
+        if "`" not in m.group(0):
+            continue
+        out.append(_outside_code(line[pos : m.start()], seen, counts, link_bare))
+        out.append(m.group(0))
+        pos = m.end()
+    out.append(_outside_code(line[pos:], seen, counts, link_bare))
+    return "".join(out)
+
+
+def _outside_code(text: str, seen: set, counts: list, link_bare: bool) -> str:
+    """`text` with its prose converted and its inline code spans left alone."""
+    parts = text.split("`")
     for i in range(0, len(parts), 2):  # even indexes are outside code spans
         parts[i] = _prose(parts[i], seen, counts, link_bare)
     return "`".join(parts)

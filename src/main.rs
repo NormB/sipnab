@@ -289,7 +289,7 @@ fn run_cores_file(cli: &Cli, loaded: &sipnab::config::LoadedConfig, plan: &boots
         plan.portrange,
         paths,
         plan.filter_expr.as_ref(),
-        plan.vcon_filter_expr.as_ref(),
+        &plan.vcon_rules,
     );
 }
 
@@ -337,7 +337,7 @@ fn launch_and_dispatch(cli: Cli, loaded: sipnab::config::LoadedConfig, plan: boo
                 BatchProcessing {
                     matcher: plan.matcher,
                     filter_expr: plan.filter_expr,
-                    vcon_filter_expr: plan.vcon_filter_expr,
+                    vcon_rules: plan.vcon_rules,
                     output_opts: plan.output_opts,
                     event_exec: plan.event_exec,
                     input_files: plan.input_files,

@@ -912,6 +912,46 @@ pub fn g711_call_both_ways(
     secs: usize,
     payload_byte: fn(usize, usize, usize) -> u8,
 ) -> Vec<(Vec<u8>, u64)> {
+    g711_leg(
+        &G711Leg {
+            call_id,
+            caller: ([10, 0, 0, 1], 20000, 0x1111_1111),
+            callee: ([10, 0, 0, 2], 30000, 0x2222_2222),
+            header: None,
+            start_us: 0,
+            ends: true,
+        },
+        secs,
+        payload_byte,
+    )
+}
+
+/// One leg of a call for [`g711_leg`]: who calls whom, from which media port
+/// and with which SSRC, and when.
+pub struct G711Leg<'a> {
+    /// The leg's Call-ID.
+    pub call_id: &'a str,
+    /// The caller's address, RTP port and SSRC.
+    pub caller: ([u8; 4], u16, u32),
+    /// The callee's address, RTP port and SSRC.
+    pub callee: ([u8; 4], u16, u32),
+    /// One extra header line for the INVITE, such as `X-Call-ID: a-leg`.
+    pub header: Option<&'a str>,
+    /// When the INVITE is sent, in microseconds from the capture's start.
+    pub start_us: u64,
+    /// Whether the call ends: a BYE and its 200 after the media. `false`
+    /// leaves the call in progress at the end of the capture.
+    pub ends: bool,
+}
+
+/// [`g711_call_both_ways`] for any two parties: INVITE, 200 and ACK with SDP
+/// for PCMU at 20 ms, media both ways for `secs` seconds (stream 0 from the
+/// caller, stream 1 from the callee), then BYE and its 200.
+pub fn g711_leg(
+    leg: &G711Leg<'_>,
+    secs: usize,
+    payload_byte: fn(usize, usize, usize) -> u8,
+) -> Vec<(Vec<u8>, u64)> {
     let rtp = |stream: usize, seq: usize, ssrc: u32| {
         let mut p = vec![0x80, 0x00];
         p.extend_from_slice(&((seq & 0xffff) as u16).to_be_bytes());
@@ -920,79 +960,85 @@ pub fn g711_call_both_ways(
         p.extend((0..160).map(|i| payload_byte(stream, seq, i)));
         p
     };
-    const A: [u8; 4] = [10, 0, 0, 1];
-    const B: [u8; 4] = [10, 0, 0, 2];
-    let sdp = |ip: &str, port: u16| {
+    let (a, a_port, a_ssrc) = leg.caller;
+    let (b, b_port, b_ssrc) = leg.callee;
+    let (a_ip, b_ip) = (std::net::Ipv4Addr::from(a), std::net::Ipv4Addr::from(b));
+    let sdp = |ip: &std::net::Ipv4Addr, port: u16| {
         format!(
             "v=0\r\no=- 1 1 IN IP4 {ip}\r\ns=-\r\nc=IN IP4 {ip}\r\nt=0 0\r\n\
              m=audio {port} RTP/AVP 0\r\na=rtpmap:0 PCMU/8000\r\na=ptime:20\r\n"
         )
     };
-    let offer = sdp("10.0.0.1", 20000);
-    let answer = sdp("10.0.0.2", 30000);
-    let via = "Via: SIP/2.0/UDP 10.0.0.1:5060;branch=z9hG4bKwhole\r\n";
-    let from = "From: <sip:a@10.0.0.1>;tag=t1\r\n";
-    let to = "To: <sip:b@10.0.0.2>\r\n";
-    let to_tagged = "To: <sip:b@10.0.0.2>;tag=t2\r\n";
-    let cid = format!("Call-ID: {call_id}\r\n");
+    let offer = sdp(&a_ip, a_port);
+    let answer = sdp(&b_ip, b_port);
+    let via = format!("Via: SIP/2.0/UDP {a_ip}:5060;branch=z9hG4bKwhole\r\n");
+    let from = format!("From: <sip:a@{a_ip}>;tag=t1\r\n");
+    let to = format!("To: <sip:b@{b_ip}>\r\n");
+    let to_tagged = format!("To: <sip:b@{b_ip}>;tag=t2\r\n");
+    let cid = format!("Call-ID: {}\r\n", leg.call_id);
+    let extra = leg.header.map_or_else(String::new, |h| format!("{h}\r\n"));
     let sip = |src, dst, text: String| udp_frame(src, dst, 5060, 5060, text.as_bytes());
+    let t0 = leg.start_us;
 
     let mut frames: Vec<(Vec<u8>, u64)> = vec![
         (
             sip(
-                A,
-                B,
+                a,
+                b,
                 format!(
-                    "INVITE sip:b@10.0.0.2 SIP/2.0\r\n{via}Max-Forwards: 70\r\n{from}{to}{cid}\
-                     CSeq: 1 INVITE\r\nContact: <sip:a@10.0.0.1:5060>\r\n\
+                    "INVITE sip:b@{b_ip} SIP/2.0\r\n{via}Max-Forwards: 70\r\n{from}{to}{cid}\
+                     {extra}CSeq: 1 INVITE\r\nContact: <sip:a@{a_ip}:5060>\r\n\
                      Content-Type: application/sdp\r\nContent-Length: {}\r\n\r\n{offer}",
                     offer.len()
                 ),
             ),
-            0,
+            t0,
         ),
         (
             sip(
-                B,
-                A,
+                b,
+                a,
                 format!(
                     "SIP/2.0 200 OK\r\n{via}{from}{to_tagged}{cid}CSeq: 1 INVITE\r\n\
-                     Contact: <sip:b@10.0.0.2:5060>\r\nContent-Type: application/sdp\r\n\
+                     Contact: <sip:b@{b_ip}:5060>\r\nContent-Type: application/sdp\r\n\
                      Content-Length: {}\r\n\r\n{answer}",
                     answer.len()
                 ),
             ),
-            1_000,
+            t0 + 1_000,
         ),
         (
             sip(
-                A,
-                B,
+                a,
+                b,
                 format!(
-                    "ACK sip:b@10.0.0.2 SIP/2.0\r\n{via}Max-Forwards: 70\r\n{from}{to_tagged}{cid}\
+                    "ACK sip:b@{b_ip} SIP/2.0\r\n{via}Max-Forwards: 70\r\n{from}{to_tagged}{cid}\
                      CSeq: 1 ACK\r\nContent-Length: 0\r\n\r\n"
                 ),
             ),
-            2_000,
+            t0 + 2_000,
         ),
     ];
-    let media_start = 10_000u64;
+    let media_start = t0 + 10_000u64;
     let total = secs * 50;
     for seq in 0..total {
         let at = media_start + seq as u64 * 20_000;
-        frames.push((udp_frame(A, B, 20000, 30000, &rtp(0, seq, 0x1111_1111)), at));
+        frames.push((udp_frame(a, b, a_port, b_port, &rtp(0, seq, a_ssrc)), at));
         frames.push((
-            udp_frame(B, A, 30000, 20000, &rtp(1, seq, 0x2222_2222)),
+            udp_frame(b, a, b_port, a_port, &rtp(1, seq, b_ssrc)),
             at + 500,
         ));
+    }
+    if !leg.ends {
+        return frames;
     }
     let end = media_start + total as u64 * 20_000;
     frames.push((
         sip(
-            A,
-            B,
+            a,
+            b,
             format!(
-                "BYE sip:b@10.0.0.2 SIP/2.0\r\n{via}Max-Forwards: 70\r\n{from}{to_tagged}{cid}\
+                "BYE sip:b@{b_ip} SIP/2.0\r\n{via}Max-Forwards: 70\r\n{from}{to_tagged}{cid}\
                  CSeq: 2 BYE\r\nContent-Length: 0\r\n\r\n"
             ),
         ),
@@ -1000,8 +1046,8 @@ pub fn g711_call_both_ways(
     ));
     frames.push((
         sip(
-            B,
-            A,
+            b,
+            a,
             format!(
                 "SIP/2.0 200 OK\r\n{via}{from}{to_tagged}{cid}CSeq: 2 BYE\r\n\
                  Content-Length: 0\r\n\r\n"
@@ -1140,4 +1186,42 @@ pub fn calls_reusing_media(call_ids: &[&str], spacing_ms: u64) -> Vec<(Vec<u8>, 
         frames.push((udp_frame(B, A, 5060, 5060, bye_ok.as_bytes()), end + 10_000));
     }
     frames
+}
+
+/// One leg of a call through a B2BUA or a PBX: an `INVITE` from `src` to
+/// `dst`, carrying an `X-Call-ID` naming another call when `x_call_id` is
+/// given.
+pub fn leg_invite(call_id: &str, src: [u8; 4], dst: [u8; 4], x_call_id: Option<&str>) -> Vec<u8> {
+    let xcid = x_call_id.map_or_else(String::new, |root| format!("X-Call-ID: {root}\r\n"));
+    let (from, to) = (std::net::Ipv4Addr::from(src), std::net::Ipv4Addr::from(dst));
+    let msg = format!(
+        "INVITE sip:bob@{to} SIP/2.0\r\n\
+         Via: SIP/2.0/UDP {from}:5060;branch=z9hG4bK-{call_id}\r\n\
+         Max-Forwards: 70\r\n\
+         From: <sip:alice@{from}>;tag=t-{call_id}\r\n\
+         To: <sip:bob@{to}>\r\n\
+         Call-ID: {call_id}\r\n\
+         {xcid}CSeq: 1 INVITE\r\n\
+         Contact: <sip:alice@{from}:5060>\r\n\
+         Content-Length: 0\r\n\r\n"
+    );
+    udp_frame(src, dst, 5060, 5060, msg.as_bytes())
+}
+
+/// Two legs of one call tied by `X-Call-ID`, 30 seconds apart so the timing
+/// heuristic cannot also tie them, written to `path`. The legs' Call-IDs are
+/// `a-leg` and `b-leg`; the tie is followed only when `[sip] xcid_headers`
+/// names `X-Call-ID`.
+pub fn write_two_linked_legs(path: &Path) -> std::io::Result<()> {
+    write_pcap_at(
+        path,
+        &[
+            (leg_invite("a-leg", [10, 1, 0, 1], [10, 2, 0, 1], None), 0),
+            (
+                leg_invite("b-leg", [10, 2, 0, 1], [10, 3, 0, 1], Some("a-leg")),
+                30_000_000,
+            ),
+        ],
+        1,
+    )
 }

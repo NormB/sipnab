@@ -145,6 +145,7 @@ fn main() {
             max_inline_media_bytes: None,
             analysis: None,
             media: &[],
+            related_legs: &[],
         },
     );
 

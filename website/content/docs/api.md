@@ -548,6 +548,10 @@ curl -s -H "Authorization: Bearer $SIPNAB_API_KEY" \
 }
 ```
 
+A [named filter](@/docs/filter-dsl.md#named-filters) from the run's `[filters]`
+table is `filter=@name` (`%40name` when encoded). A name the run does not
+define is a `400` that lists the names it does.
+
 sipnab parses a name that is not an alias as an expression, and it fails as
 one, so a misspelled alias is a `400` that names the text. `filter=slow_setup` (underscore
 instead of hyphen) answers:
@@ -1453,6 +1457,93 @@ stream carries is a `404` whose body names both searches (`no SIP dialog and no
 RTP stream associated with call_id '…' in this capture`). A call this capture holds
 but carries only undecodable codecs, or whose payload this run did not keep, is
 a `422` whose body names which — never a silent empty file.
+
+---
+
+### GET /v1/calls/live
+
+The calls in progress whose audio this server serves: those a `[[vcon.rule]]`
+with `live_audio = true` matches that have not ended, and that
+`--content-deny-header` does not withhold. See
+[Hear a call while it is in progress](@/docs/vcon.md#hear-a-call-while-it-is-in-progress).
+
+```bash
+curl -s http://127.0.0.1:8080/v1/calls/live
+```
+
+**Response:**
+
+```json
+{"calls": [{"audio": "/v1/calls/1-4412@192.0.2.10/audio",
+            "call_id": "1-4412@192.0.2.10",
+            "started": "2026-10-13T09:14:02.120194+00:00",
+            "state": "InCall", "streams": 2}]}
+```
+
+A server with no `live_audio` rule answers `404`. When the server
+authenticates, these routes need a token minted with `--token-scope audio`.
+No other scope reaches them, `full` and the static `--api-key` included.
+
+---
+
+### GET /v1/calls/live/events
+
+The same calls as server-sent events: on connecting, one `call` event for each
+call `GET /v1/calls/live` lists, then one for each call that appears. Each
+event's data is the call as `GET /v1/calls/live` gives it. A transcriber
+watches this and opens each call's audio socket, without polling.
+
+```bash
+curl -s -N http://127.0.0.1:8080/v1/calls/live/events
+```
+
+```text
+event: call
+data: {"audio":"/v1/calls/1-4412@192.0.2.10/audio","call_id":"1-4412@192.0.2.10","started":"2026-10-13T09:14:02.120194+00:00","state":"InCall","streams":2}
+```
+
+---
+
+### GET /v1/calls/:call_id/audio
+
+The call's audio as sipnab captures it, over a WebSocket ([RFC 6455](https://www.rfc-editor.org/rfc/rfc6455)).
+`call_id` is the call's Call-ID, as `GET /v1/calls/live` lists it. The request
+must be a WebSocket upgrade. Any other request is a `400`.
+
+The server sends:
+
+| Message | Content |
+|---------|---------|
+| Text `{"type": "stream", ...}` | A stream, before its first packet: `stream` (its index), `ssrc`, `src`, `dst`, `codec`, `rate` (samples per second) and `format` (`s16le`) |
+| Binary | One RTP packet's audio. The first byte is the stream's index; the rest is 16-bit little-endian PCM at the stream's `rate` |
+| Text `{"type": "skipped", ...}` | A stream whose codec sipnab does not decode: `ssrc`, `codec`, `reason`. The server sends none of its packets |
+| Text `{"type": "gap", ...}` | `packets` of stream `stream` left retention before the server sent them, so the audio has a gap there |
+| Text `{"type": "end", ...}` | The call ended (`reason`); a close with code 1000 follows |
+
+The server sends a call that has already ended from its first retained packet,
+and then ends and closes the socket. sipnab decodes the audio from what it
+retained, so sipnab must retain it: a `live_audio` rule turns retention on.
+Audio a key could not decrypt is never sent. The server answers a ping with a
+pong, a close with a close, and a frame that breaks RFC 6455 with a close
+carrying code 1002, as it does a client frame longer than `MAX_CLIENT_FRAME` (4096) bytes: a client sends only control
+frames, which RFC 6455 caps at 125 bytes. A Call-ID no
+`live_audio` rule matches, or that `--content-deny-header` withholds, is a
+`404`.
+
+The handshake, with `curl`:
+
+```bash
+curl -s -i -N -H "Connection: Upgrade" -H "Upgrade: websocket" \
+  -H "Sec-WebSocket-Version: 13" -H "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==" \
+  "http://127.0.0.1:8080/v1/calls/1-4412@192.0.2.10/audio" --output - | head -4
+```
+
+```text
+HTTP/1.1 101 Switching Protocols
+upgrade: websocket
+connection: Upgrade
+sec-websocket-accept: s3pPLMBiTxaQ9kYGzzhZRbK+xOo=
+```
 
 ---
 
@@ -3605,6 +3696,13 @@ the forwarder kept it.
 `?limit=` bounds the list of failed records (default 50, ceiling
 `--api-max-rows`), and `?cursor=` takes the previous answer's `next_cursor`.
 The three counts always describe the whole spool.
+
+A run with several [export rules](@/docs/vcon.md#write-calls-by-rule) writes one
+spool per rule. `?rule=` names the rule whose spool to read (the flags' rule is
+`--export-vcon-when`). With a single spool, a request can leave it out. Several spools
+and no `rule`, or a `rule` the run does not have, answer `400` listing the
+run's rule names. The answer's `rule` field says which rule's spool it
+describes.
 
 **curl:**
 

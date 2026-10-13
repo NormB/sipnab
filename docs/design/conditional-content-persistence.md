@@ -234,7 +234,7 @@ Every task's requirements implicitly include the design above, plus:
 
 - **Feature gate:** every item lives behind `#[cfg(feature = "vcon")]`.
   `export_vcon` already has a paired `#[cfg(not(feature = "vcon"))]` stub at
-  [`src/app/batch.rs:8037`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs#L8037), and a new entry point needs the same pairing or the
+  [`src/app/batch.rs:8960`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs#L8960), and a new entry point needs the same pairing or the
   crate stops building without the feature.
 - **Toolchain:** Rust 1.97.1 exactly. No new dependencies.
 - **Tests:** failing test first. Every gate mutation-proven against a named
@@ -275,11 +275,11 @@ Every task's requirements implicitly include the design above, plus:
 
 **Files:**
 - Modify: [`src/cli.rs`](../../src/cli.rs) (new fields beside `export_vcon` at line 944)
-- Modify: [`src/app/batch.rs:8037`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs#L8037) (`export_vcon`)
+- Modify: [`src/app/batch.rs:8960`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs#L8960) (`export_vcon`)
 - Test: [`src/app/batch.rs`](../../src/app/batch.rs) tests module
 
 **Interfaces:**
-- Consumes: `FilterExpr::parse(input: &str) -> anyhow::Result<FilterExpr>` ([`src/sip/dsl.rs:656`](https://github.com/NormB/sipnab/blob/main/src/sip/dsl.rs#L656)); `select_dialogs<'a>(filter: Option<&FilterExpr>, dialog_store: &'a DialogStore, stream_store: &'a StreamStore) -> DialogSelection<'a>` ([`src/sip/dsl.rs:612`](https://github.com/NormB/sipnab/blob/main/src/sip/dsl.rs#L612)), whose `dialogs` field is `Vec<(&SipDialog, Vec<&RtpStream>)>` in store order.
+- Consumes: `FilterExpr::parse(input: &str) -> anyhow::Result<FilterExpr>` ([`src/sip/dsl.rs:926`](https://github.com/NormB/sipnab/blob/main/src/sip/dsl.rs#L926)); `select_dialogs<'a>(filter: Option<&FilterExpr>, dialog_store: &'a DialogStore, stream_store: &'a StreamStore) -> DialogSelection<'a>` ([`src/sip/dsl.rs:612`](https://github.com/NormB/sipnab/blob/main/src/sip/dsl.rs#L612)), whose `dialogs` field is `Vec<(&SipDialog, Vec<&RtpStream>)>` in store order.
 - Produces: `fn vcon_selection<'a>(cli: &Cli, dialog_store: &'a DialogStore, stream_store: &'a StreamStore) -> anyhow::Result<DialogSelection<'a>>`.
 
 **Correction, made by reading the API rather than the surrounding shape.** An
@@ -429,7 +429,7 @@ Expected: 2 passed.
 
 - [ ] **Step 9: Write the containers**
 
-Extend `export_vcon` at [`src/app/batch.rs:8037`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs#L8037): when `export_vcon_when` is set, loop the selected Call-IDs, build each container with the existing single-call path, and write it to `<dir>/<sanitized-call-id>.vcon.json`. Sanitize by replacing every character outside `[A-Za-z0-9._-]` with `_`, because a Call-ID is attacker-influenced text and reaches a filesystem path here.
+Extend `export_vcon` at [`src/app/batch.rs:8960`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs#L8960): when `export_vcon_when` is set, loop the selected Call-IDs, build each container with the existing single-call path, and write it to `<dir>/<sanitized-call-id>.vcon.json`. Sanitize by replacing every character outside `[A-Za-z0-9._-]` with `_`, because a Call-ID is attacker-influenced text and reaches a filesystem path here.
 
 - [ ] **Step 10: Test the path sanitizer**
 

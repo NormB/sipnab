@@ -130,6 +130,65 @@ pub const MESSAGE_TRACE_PURPOSE: &str = "sip-message-trace";
 /// whose claim it is reading.
 pub const COMPLETENESS_PURPOSE: &str = "sipnab-capture-completeness";
 
+/// `purpose` of the attachment naming the containers of this call's other
+/// legs.
+///
+/// A call through a B2BUA or a PBX is two dialogs and so two containers.
+/// core-04 has no member that groups containers, so the link is an attachment,
+/// vendor-prefixed for the reason [`COMPLETENESS_PURPOSE`] is.
+pub const RELATED_LEGS_PURPOSE: &str = "sipnab-related-legs";
+
+/// Another leg of the same call, as the related-legs attachment names it.
+///
+/// The leg is named by its container's uuid and not by its Call-ID: the uuid
+/// is what a reader looks a container up by, and it stays the same under
+/// redaction, where the Call-ID does not.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct RelatedLeg {
+    /// The other leg's container uuid, as [`dialog_uuid`] derives it.
+    pub uuid: String,
+    /// Which correlation strategy tied the two legs, in the vocabulary
+    /// `find_correlated` and `get_call_tree` report.
+    pub strategy: &'static str,
+    /// Whether the tie compared an identifier both legs carry. `false` is a
+    /// timing guess, which a busy server can get wrong.
+    pub identifier_match: bool,
+    /// Confidence of the tie, 0 to 100.
+    pub score: u8,
+}
+
+/// The legs `store` ties to `dialog`, strongest first, each named by the uuid
+/// its own container carries.
+///
+/// One entry per other leg: `find_correlated_scored` reports each candidate
+/// once, under the first strategy that matched it, and never the dialog
+/// itself. Equal scores fall back to Call-ID order, so a container is the same
+/// bytes from one export to the next.
+#[must_use]
+pub fn related_legs(
+    store: &crate::sip::dialog_store::DialogStore,
+    dialog: &SipDialog,
+) -> Vec<RelatedLeg> {
+    let mut found = store.find_correlated_scored(&dialog.call_id);
+    found.sort_by(|a, b| {
+        b.score
+            .cmp(&a.score)
+            .then_with(|| a.dialog.call_id.cmp(&b.dialog.call_id))
+    });
+    found
+        .into_iter()
+        .map(|r| {
+            let (strategy, identifier_match) = r.reason.strategy();
+            RelatedLeg {
+                uuid: dialog_uuid(r.dialog, dialog_capture_id(r.dialog)),
+                strategy,
+                identifier_match,
+                score: r.score,
+            }
+        })
+        .collect()
+}
+
 /// Version of the sipnab JSON body carried inside the [`Analysis`] object.
 ///
 /// This is the same `schema_version` [`crate::output::json`] stamps on every
@@ -535,14 +594,18 @@ pub struct Dialog {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub encoding: Option<&'static str>,
     /// The media itself, base64url, unpadded.
-    ///
-    /// Inline is the ONLY form. There is no `url` field on this struct, so
-    /// the "never host artefacts" rule of
-    /// [section 2.5 of `docs/design/vcon.md`](https://github.com/NormB/sipnab/blob/main/docs/design/vcon.md#25-never-host-artefacts) is a property of the type
-    /// rather than a rule a later edit can forget — the same device that keeps
-    /// `name` off [`Party`].
     #[serde(skip_serializing_if = "Option::is_none")]
     pub body: Option<String>,
+    /// Where the media is served, when it is not inline.
+    ///
+    /// Set only for an export rule with `audio = "url"`, which names the base
+    /// URL; sipnab writes the WAV beside the container and hosts nothing
+    /// ([section 2.5 of `docs/design/vcon.md`](https://github.com/NormB/sipnab/blob/main/docs/design/vcon.md#25-never-host-artefacts)).
+    /// Always beside [`Self::content_hash`], as
+    /// [core-04 section 2.4](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-04#section-2.4)
+    /// requires, so any copy of the file can be checked against it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub url: Option<String>,
     /// [`CONTENT_HASH_PREFIX`] followed by the base64url SHA-512 of the
     /// DECODED body.
     ///
@@ -597,6 +660,7 @@ impl Dialog {
             mediatype: None,
             encoding: None,
             body: None,
+            url: None,
             content_hash: None,
         }
     }
@@ -656,21 +720,27 @@ pub struct Attachment {
 /// What sipnab determined about this dialog.
 #[derive(Debug, Clone, Serialize)]
 pub struct Analysis {
-    /// Always `"report"`.
+    /// `"report"` on sipnab's own; what the service said on an enrichment's
+    /// (`transcript`, `summary`, ...).
     #[serde(rename = "type")]
-    pub kind: &'static str,
+    pub kind: std::borrow::Cow<'static, str>,
     /// Index into [`Vcon::dialog`] of what was analyzed.
     pub dialog: usize,
-    /// Always [`ANALYSIS_VENDOR`].
-    pub vendor: &'static str,
-    /// Always [`ANALYSIS_PRODUCT`], which names sipnab as an observer.
-    pub product: &'static str,
-    /// Always [`ANALYSIS_SCHEMA`], naming the body's contract and version.
-    pub schema: &'static str,
-    /// Always `application/json`.
-    pub mediatype: &'static str,
-    /// Always `json`.
-    pub encoding: &'static str,
+    /// [`ANALYSIS_VENDOR`] on sipnab's own; the service's on an enrichment's.
+    pub vendor: std::borrow::Cow<'static, str>,
+    /// [`ANALYSIS_PRODUCT`] on sipnab's own, which names sipnab as an
+    /// observer.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub product: Option<std::borrow::Cow<'static, str>>,
+    /// [`ANALYSIS_SCHEMA`] on sipnab's own, naming the body's contract and
+    /// version.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub schema: Option<std::borrow::Cow<'static, str>>,
+    /// `application/json` on sipnab's own.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mediatype: Option<std::borrow::Cow<'static, str>>,
+    /// `json` on sipnab's own; `json`, `none` or `base64url`.
+    pub encoding: std::borrow::Cow<'static, str>,
     /// The report, as a JSON string a consumer parses.
     ///
     /// A string for the reason [`Attachment::body`] is one, and measured the
@@ -932,6 +1002,9 @@ pub enum MediaOutcome {
     RefusedOverBudget,
     /// Media was decoded and is inline in a `recording` Dialog Object.
     Carried,
+    /// Media was decoded and written to a WAV beside the container; the
+    /// `recording` Dialog Object names its URL and hash and holds no body.
+    Referenced,
     /// The export is redacted, so no audio was considered for it: redaction
     /// deletes audio rather than pseudonymizing it. Says nothing about whether
     /// the call carried audio.
@@ -941,11 +1014,12 @@ pub enum MediaOutcome {
 impl MediaOutcome {
     /// Every outcome, in declaration order, so a list of them in help text or
     /// docs can be checked against the enum rather than against a copy.
-    pub const ALL: [Self; 5] = [
+    pub const ALL: [Self; 6] = [
         Self::NotConsidered,
         Self::NoneDecodable,
         Self::RefusedOverBudget,
         Self::Carried,
+        Self::Referenced,
         Self::WithheldByRedaction,
     ];
 
@@ -960,6 +1034,7 @@ impl MediaOutcome {
             Self::NoneDecodable => "none-decodable",
             Self::RefusedOverBudget => "refused-over-budget",
             Self::Carried => "carried",
+            Self::Referenced => "referenced",
             Self::WithheldByRedaction => "withheld-by-redaction",
         }
     }
@@ -981,6 +1056,10 @@ pub enum ObservedAudio<'a> {
     NothingToDecode(&'a str),
     /// Audio sipnab decoded for this dialog.
     Decoded(&'a DialogAudio),
+    /// Audio sipnab decoded and wrote to a WAV beside the container, served at
+    /// the URL by the operator's storage. Yields [`MediaOutcome::Referenced`]:
+    /// the recording names the URL and the WAV's hash and holds no body.
+    Referenced(&'a DialogAudio, &'a str),
     /// The export is redacted, and redaction deletes audio rather than
     /// pseudonymizing it. Yields [`MediaOutcome::WithheldByRedaction`]: the
     /// Dialog Object stays the signaling one, typed by what it carries, which
@@ -1003,6 +1082,12 @@ pub struct Vcon {
     /// with the traffic. The dialog's own clock is reachable through the
     /// message trace, which carries a timestamp per message.
     pub created_at: String,
+    /// When the container was last rewritten, RFC 3339. Set by a `live =
+    /// true` rule, which writes a call's container as it starts and rewrites
+    /// it in place as the call changes ([core-04 section 4.1.6](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-04#section-4.1.6));
+    /// absent on a container written once.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub updated_at: Option<String>,
     /// `subject` ([core-04 section 4.1.7](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-04#section-4.1.7)) — descriptive, and descriptive
     /// only.
     ///
@@ -1132,6 +1217,8 @@ impl crate::output::redact::Redact for Vcon {
             uuid: _,
             // When the container was written. Not a fact about anybody.
             created_at: _,
+            // When it was last rewritten. Not a fact about anybody either.
+            updated_at: _,
             subject,
             redacted,
             // A fixed list of extension names.
@@ -1282,6 +1369,9 @@ impl crate::output::redact::Redact for Dialog {
             mediatype,
             encoding,
             body,
+            // A URL to the audio leads to the conversation as surely as the
+            // audio does, so it goes with the body below.
+            url,
             content_hash,
         } = self;
 
@@ -1310,6 +1400,7 @@ impl crate::output::redact::Redact for Dialog {
         // one over.
         if *kind == RECORDING_TYPE {
             *body = None;
+            *url = None;
             *content_hash = None;
             *mediatype = None;
             *encoding = None;
@@ -1408,6 +1499,9 @@ pub struct ExportContext<'a> {
     /// reports it, for the analysis report's `media_quality`. Empty when the
     /// caller has no streams for the dialog, which the report then omits.
     pub media: &'a [crate::output::model::StreamSummary],
+    /// This call's other legs, from [`related_legs`]. Empty writes no
+    /// related-legs attachment.
+    pub related_legs: &'a [RelatedLeg],
 }
 
 /// Whether `--content-deny-header` withholds this dialog's container.
@@ -1659,6 +1753,7 @@ pub fn export_withheld_dialog_at(
         vcon: VCON_SYNTAX_VERSION,
         uuid: dialog_uuid(dialog, context.capture_id),
         created_at: exported_at.to_rfc3339(),
+        updated_at: None,
         subject: subject_of(dialog),
         redacted: Some(Redacted {
             kind: CONTENT_WITHHELD,
@@ -1814,15 +1909,27 @@ pub fn export_dialog_and_completeness(
 
     let completeness = completeness_of(context, &media, dialog.state().is_final());
 
-    let attachments = vec![
+    let mut attachments = vec![
         message_trace_attachment(dialog, observer, started.clone()),
-        completeness_attachment(&completeness, observer, started),
+        completeness_attachment(&completeness, observer, started.clone()),
     ];
+    if !context.related_legs.is_empty() {
+        attachments.push(Attachment {
+            purpose: RELATED_LEGS_PURPOSE,
+            party: observer,
+            dialog: 0,
+            start: started,
+            mediatype: "application/json",
+            encoding: "json",
+            body: json_text(&serde_json::json!({ "legs": context.related_legs })),
+        });
+    }
 
     let container = Vcon {
         vcon: VCON_SYNTAX_VERSION,
         uuid: dialog_uuid(dialog, context.capture_id),
         created_at: exported_at.to_rfc3339(),
+        updated_at: None,
         subject: subject_of(dialog),
         redacted: None,
         extensions: vec![SIP_SIGNALING_EXTENSION, CC_EXTENSION],
@@ -1835,6 +1942,229 @@ pub fn export_dialog_and_completeness(
     ExportedDialog {
         container,
         completeness,
+    }
+}
+
+/// `purpose` of the attachment a `grouping = "call"` container carries: which
+/// Dialog Objects are the call's legs, and what tied each pair.
+pub const CALL_LEGS_PURPOSE: &str = "sipnab-call-legs";
+
+/// A tie between two legs of one call, by their positions in the legs handed
+/// to [`merge_call_legs`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LegTie {
+    /// The leg the correlation walk reached the other one from.
+    pub from: usize,
+    /// The leg it reached.
+    pub to: usize,
+    /// The correlation strategy, in the vocabulary `get_call_tree` reports.
+    pub strategy: &'static str,
+    /// Whether the tie compared an identifier both legs carry. `false` is a
+    /// timing guess.
+    pub identifier_match: bool,
+    /// Confidence of the tie, 0 to 100.
+    pub score: u8,
+}
+
+/// One container for a call, from one container per leg.
+///
+/// Each leg's container is built exactly as a `grouping = "leg"` rule builds
+/// it, and this only moves them into one: every leg's observed parties in leg
+/// order and then one observer, last, as in every sipnab container; every
+/// leg's Dialog Objects in leg order; every attachment and analysis, with its
+/// party and dialog indices moved to match. Nothing is merged across legs. A
+/// PBX that is the callee on one leg and the caller on the next appears as a
+/// party of each, because nothing in the signaling proves the two are one.
+///
+/// The [`CALL_LEGS_PURPOSE`] attachment names each leg's signaling object and
+/// every tie with its strength, so a reader can see when the legs were joined
+/// on a timing guess. `truncated` records that the walk stopped at its leg
+/// cap and the call may have more legs than the container holds.
+///
+/// The first leg supplies the subject and `created_at`. A leg whose content
+/// was withheld stays withheld here, and its marker becomes the container's.
+///
+/// `None` for no legs: there is no call to write.
+#[must_use]
+pub fn merge_call_legs(
+    legs: Vec<Vcon>,
+    ties: &[LegTie],
+    uuid: String,
+    truncated: bool,
+) -> Option<Vcon> {
+    let all = legs;
+    let (created_at, subject) = {
+        let first = all.first()?;
+        (first.created_at.clone(), first.subject.clone())
+    };
+
+    // Observed parties of every leg, then one observer. The observer's final
+    // index is known once every leg's parties are counted.
+    let observed: usize = all
+        .iter()
+        .map(|leg| leg.parties.len().saturating_sub(1))
+        .sum();
+    let observer = observed;
+    let mut parties = Vec::with_capacity(observed + 1);
+    let mut dialog = Vec::new();
+    let mut attachments = Vec::new();
+    let mut analysis = Vec::new();
+    let mut extensions: Vec<&'static str> = Vec::new();
+    let mut signaling = Vec::with_capacity(all.len());
+    let mut redacted = None;
+    let mut kept_observer = None;
+
+    for leg in all {
+        let Vcon {
+            vcon: _,
+            uuid: _,
+            created_at: _,
+            updated_at: _,
+            subject: _,
+            redacted: leg_redacted,
+            extensions: leg_extensions,
+            parties: leg_parties,
+            dialog: leg_dialog,
+            attachments: leg_attachments,
+            analysis: leg_analysis,
+        } = leg;
+        let leg_observer = leg_parties.len().saturating_sub(1);
+        let party_base = parties.len();
+        let dialog_base = dialog.len();
+        let party = |i: usize| {
+            if i == leg_observer {
+                observer
+            } else {
+                party_base + i
+            }
+        };
+        let object = |i: usize| dialog_base + i;
+
+        for (i, p) in leg_parties.into_iter().enumerate() {
+            if i == leg_observer {
+                kept_observer.get_or_insert(p);
+            } else {
+                parties.push(p);
+            }
+        }
+        signaling.push(dialog_base);
+        for d in leg_dialog {
+            dialog.push(d.moved(&party, &object));
+        }
+        for mut a in leg_attachments {
+            a.party = party(a.party);
+            a.dialog = object(a.dialog);
+            attachments.push(a);
+        }
+        for mut a in leg_analysis {
+            a.dialog = object(a.dialog);
+            analysis.push(a);
+        }
+        for e in leg_extensions {
+            if !extensions.contains(&e) {
+                extensions.push(e);
+            }
+        }
+        if redacted.is_none() {
+            redacted = leg_redacted;
+        }
+    }
+    parties.push(kept_observer.unwrap_or_else(observer_party));
+
+    let start = dialog
+        .first()
+        .and_then(|d| d.start.clone())
+        .unwrap_or_else(|| created_at.clone());
+    let body = serde_json::json!({
+        "legs": signaling.iter().map(|i| serde_json::json!({ "dialog": i })).collect::<Vec<_>>(),
+        "ties": ties.iter().filter_map(|t| {
+            Some(serde_json::json!({
+                "dialogs": [signaling.get(t.from)?, signaling.get(t.to)?],
+                "strategy": t.strategy,
+                "identifier_match": t.identifier_match,
+                "score": t.score,
+            }))
+        }).collect::<Vec<_>>(),
+        "truncated": truncated,
+    });
+    attachments.push(Attachment {
+        purpose: CALL_LEGS_PURPOSE,
+        party: observer,
+        dialog: 0,
+        start,
+        mediatype: "application/json",
+        encoding: "json",
+        body: json_text(&body),
+    });
+
+    Some(Vcon {
+        vcon: VCON_SYNTAX_VERSION,
+        uuid,
+        created_at,
+        updated_at: None,
+        subject,
+        redacted,
+        extensions,
+        parties,
+        dialog,
+        attachments,
+        analysis,
+    })
+}
+
+impl Dialog {
+    /// This object with every party index passed through `party` and every
+    /// Dialog Object index through `object`, for [`merge_call_legs`].
+    ///
+    /// Destructured, so a new index field is a compile error here rather than
+    /// an index left pointing into another leg.
+    fn moved(self, party: &impl Fn(usize) -> usize, object: &impl Fn(usize) -> usize) -> Self {
+        let Self {
+            kind,
+            session_id,
+            transferor,
+            transferee,
+            transfer_target,
+            original,
+            consultation,
+            disposition,
+            sip_call_id,
+            sip_from_tag,
+            sip_to_tag,
+            start,
+            duration,
+            parties,
+            dialogs,
+            recording_set,
+            mediatype,
+            encoding,
+            body,
+            url,
+            content_hash,
+        } = self;
+        Self {
+            kind,
+            session_id,
+            transferor: transferor.map(party),
+            transferee: transferee.map(party),
+            transfer_target: transfer_target.map(party),
+            original: original.map(object),
+            consultation: consultation.map(object),
+            disposition,
+            sip_call_id,
+            sip_from_tag,
+            sip_to_tag,
+            start,
+            duration,
+            parties: parties.map(|p| p.into_iter().map(party).collect()),
+            dialogs: dialogs.map(|d| d.into_iter().map(object).collect()),
+            recording_set: recording_set.map(object),
+            mediatype,
+            encoding,
+            body,
+            url,
+            content_hash,
+        }
     }
 }
 
@@ -1885,6 +2215,14 @@ fn media_objects(
             };
         }
         ObservedAudio::Decoded(decoded) => decoded,
+        ObservedAudio::Referenced(decoded, url) => {
+            place_recording(dialog, decoded, objects, MediaBody::Url(url));
+            return MediaVerdict {
+                outcome: MediaOutcome::Referenced,
+                note: Some(decoded.note.clone()),
+                refusal: None,
+            };
+        }
     };
 
     let body = URL_SAFE_NO_PAD.encode(&decoded.wav);
@@ -1906,6 +2244,44 @@ fn media_objects(
         };
     }
 
+    place_recording(dialog, decoded, objects, MediaBody::Inline(&body));
+
+    MediaVerdict {
+        outcome: MediaOutcome::Carried,
+        note: Some(decoded.note.clone()),
+        refusal: None,
+    }
+}
+
+/// Where a recording's bytes are: inline as base64url, or at a URL.
+#[derive(Debug, Clone, Copy)]
+enum MediaBody<'a> {
+    /// The WAV, base64url-encoded, in `body`.
+    Inline(&'a str),
+    /// The WAV is served at this URL; the object carries its hash only.
+    Url(&'a str),
+}
+
+impl MediaBody<'_> {
+    /// Fill `object`'s media fields: `body` and `encoding` inline, or `url`.
+    fn fill(self, object: &mut Dialog) {
+        match self {
+            Self::Inline(body) => {
+                object.encoding = Some("base64url");
+                object.body = Some(body.to_string());
+            }
+            Self::Url(url) => object.url = Some(url.to_string()),
+        }
+    }
+}
+
+/// Put the decoded audio into `objects` as a recording, inline or by URL.
+fn place_recording(
+    dialog: &SipDialog,
+    decoded: &DialogAudio,
+    objects: &mut Vec<Dialog>,
+    media: MediaBody<'_>,
+) {
     // The media REPLACES the signaling object rather than sitting beside it,
     // and that is forced by the schema rather than chosen for tidiness. Every
     // Dialog Object needs a `type` from a closed enum, so appending a second
@@ -1925,7 +2301,7 @@ fn media_objects(
         let member = objects.len();
         objects[0] = recording_set_object(dialog, decoded, member);
         // Index 0 is the set: §4.3.7's back-pointer, so the link is two-way.
-        objects.push(recording_object(dialog, decoded, &body, 0));
+        objects.push(recording_object(dialog, decoded, media, 0));
     } else {
         let signaling = &mut objects[0];
         // Enriched in place, and RETYPED: it carries audio now, so it is a
@@ -1941,15 +2317,8 @@ fn media_objects(
         signaling.duration = Some(decoded.duration_secs);
         signaling.parties = channel_parties(dialog, decoded);
         signaling.mediatype = Some(RECORDING_MEDIATYPE);
-        signaling.encoding = Some("base64url");
         signaling.content_hash = Some(content_hash(&decoded.wav));
-        signaling.body = Some(body);
-    }
-
-    MediaVerdict {
-        outcome: MediaOutcome::Carried,
-        note: Some(decoded.note.clone()),
-        refusal: None,
+        media.fill(signaling);
     }
 }
 
@@ -1957,10 +2326,10 @@ fn media_objects(
 fn recording_object(
     dialog: &SipDialog,
     audio: &DialogAudio,
-    body: &str,
+    media: MediaBody<'_>,
     recording_set: usize,
 ) -> Dialog {
-    Dialog {
+    let mut object = Dialog {
         start: Some(audio.first_retained.to_rfc3339()),
         duration: Some(audio.duration_secs),
         // §4.3.7's SHOULD: the member names the set it belongs to, so a
@@ -1968,11 +2337,11 @@ fn recording_object(
         recording_set: Some(recording_set),
         parties: channel_parties(dialog, audio),
         mediatype: Some(RECORDING_MEDIATYPE),
-        encoding: Some("base64url"),
         content_hash: Some(content_hash(&audio.wav)),
-        body: Some(body.to_string()),
         ..Dialog::bare(RECORDING_TYPE, dialog.call_id.clone())
-    }
+    };
+    media.fill(&mut object);
+    object
 }
 
 /// The `recording-set` wrapper — the CALL's clock, for the ring-wrapped case
@@ -2652,13 +3021,13 @@ fn report(
     strip_credentials(&mut body);
 
     Analysis {
-        kind: "report",
+        kind: "report".into(),
         dialog: 0,
-        vendor: ANALYSIS_VENDOR,
-        product: ANALYSIS_PRODUCT,
-        schema: ANALYSIS_SCHEMA,
-        mediatype: "application/json",
-        encoding: "json",
+        vendor: ANALYSIS_VENDOR.into(),
+        product: Some(ANALYSIS_PRODUCT.into()),
+        schema: Some(ANALYSIS_SCHEMA.into()),
+        mediatype: Some("application/json".into()),
+        encoding: "json".into(),
         body: json_text(&body),
     }
 }
@@ -2922,6 +3291,14 @@ fn media_clause(outcome: MediaOutcome) -> &'static str {
              recording made by the endpoints, and the media_note traveling with it says how it \
              is bounded."
         }
+        MediaOutcome::Referenced => {
+            " Media is REFERENCED by this container: a recording Dialog Object names the URL of \
+             a WAV sipnab wrote beside this file, with that WAV's hash, and holds no body. \
+             sipnab hosts nothing and has not checked that the URL serves the file; the hash \
+             verifies any copy of it. It was reconstructed from RTP this run retained at a \
+             capture point — it is NOT a recording made by the endpoints, and the media_note \
+             traveling with it says how it is bounded."
+        }
     }
 }
 
@@ -2962,13 +3339,36 @@ fn media_clause(outcome: MediaOutcome) -> &'static str {
 /// them.
 #[must_use]
 pub fn dialog_uuid(dialog: &SipDialog, capture_id: &str) -> String {
+    uuid_for(dialog.created_at, &dialog.call_id, capture_id)
+}
+
+/// The uuid of the one container a `grouping = "call"` rule writes for a call
+/// made of `legs`.
+///
+/// [`dialog_uuid`]'s derivation, keyed on every leg's Call-ID rather than on
+/// one, so it is the same for the same call from the same capture and differs
+/// from every leg's own container uuid. The legs are sorted, so the key does
+/// not depend on the order a walk found them in.
+#[must_use]
+pub fn call_uuid(legs: &[&SipDialog], capture_id: &str) -> String {
+    let started = legs.iter().map(|d| d.created_at).min().unwrap_or_default();
+    let mut ids: Vec<&str> = legs.iter().map(|d| d.call_id.as_str()).collect();
+    ids.sort_unstable();
+    // `call` and the unit separator cannot open a Call-ID's own key the same
+    // way: a Call-ID is a `word`, and 0x1f is not a word character.
+    let key = format!("call\u{1f}{}", ids.join("\u{1f}"));
+    uuid_for(started, &key, capture_id)
+}
+
+/// [`dialog_uuid`]'s layout, for an identity `key` that opened at `started`.
+fn uuid_for(started: DateTime<Utc>, key: &str, capture_id: &str) -> String {
     let mut bytes = [0u8; 16];
     let capture_id: &str = &capture_identity_key(capture_id);
 
     // 48-bit big-endian millisecond timestamp. `max(0)` rather than a wrap:
     // a pre-epoch capture timestamp is nonsense, and wrapping it would spread
     // one absurd input across the whole 48-bit space.
-    let millis = u64::try_from(dialog.created_at.timestamp_millis().max(0)).unwrap_or(0);
+    let millis = u64::try_from(started.timestamp_millis().max(0)).unwrap_or(0);
     let ts = millis & 0x0000_FFFF_FFFF_FFFF;
     bytes[..6].copy_from_slice(&ts.to_be_bytes()[2..]);
 
@@ -2976,7 +3376,7 @@ pub fn dialog_uuid(dialog: &SipDialog, capture_id: &str) -> String {
     // separator keeps `("ab", "c")` and `("a", "bc")` apart, which a bare
     // concatenation would collide.
     let mut seed = Sha256::new();
-    seed.update(dialog.call_id.as_bytes());
+    seed.update(key.as_bytes());
     seed.update([0x1e]);
     seed.update(capture_id.as_bytes());
     let seed = seed.finalize();
@@ -3006,7 +3406,7 @@ pub fn dialog_uuid(dialog: &SipDialog, capture_id: &str) -> String {
     let mut host = Sha256::new();
     host.update(node_name().as_bytes());
     host.update([0x1e]);
-    host.update(dialog.call_id.as_bytes());
+    host.update(key.as_bytes());
     host.update([0x1e]);
     host.update(capture_id.as_bytes());
     let host = host.finalize();
@@ -3207,6 +3607,82 @@ mod tests {
         }
     }
 
+    /// A leg container with a recording that maps its two channels to the
+    /// leg's parties, and a transfer object naming parties and objects.
+    fn leg_with_indices() -> Result<Vcon, TestError> {
+        let mut v = export_with(&dialog_with(&[response(200, "OK")?])?, &clean_facts())?;
+        let signaling = v.dialog.len();
+        v.dialog.push(Dialog {
+            parties: Some(vec![0, 1]),
+            ..Dialog::bare("recording", "fixture".into())
+        });
+        v.dialog.push(Dialog {
+            transferor: Some(0),
+            transferee: Some(1),
+            transfer_target: Some(1),
+            original: Some(0),
+            consultation: Some(signaling),
+            dialogs: Some(vec![0, signaling]),
+            recording_set: Some(signaling),
+            ..Dialog::bare(TRANSFER_TYPE, "fixture".into())
+        });
+        Ok(v)
+    }
+
+    /// The second leg's party and object indices move past the first leg's,
+    /// and the observer is one party, last, that every attachment names.
+    #[test]
+    fn merging_moves_every_index_of_the_second_leg() -> Result<(), TestError> {
+        let first = leg_with_indices()?;
+        let (parties, objects) = (first.parties.len() - 1, first.dialog.len());
+        let merged = merge_call_legs(
+            vec![first, leg_with_indices()?],
+            &[LegTie {
+                from: 0,
+                to: 1,
+                strategy: "x_call_id",
+                identifier_match: true,
+                score: 100,
+            }],
+            "uuid".into(),
+            false,
+        )
+        .ok_or("two legs merge")?;
+        assert_eq!(merged.parties.len(), 2 * parties + 1);
+        let observer = merged.parties.len() - 1;
+        assert_eq!(merged.parties[observer].role, Some("observer"));
+        let second_recording = &merged.dialog[objects + objects - 2];
+        assert_eq!(second_recording.parties, Some(vec![parties, parties + 1]));
+        let transfer = &merged.dialog[2 * objects - 1];
+        assert_eq!(transfer.transferor, Some(parties));
+        assert_eq!(transfer.transferee, Some(parties + 1));
+        assert_eq!(transfer.transfer_target, Some(parties + 1));
+        assert_eq!(transfer.original, Some(objects));
+        assert_eq!(transfer.consultation, Some(objects + objects - 2));
+        assert_eq!(transfer.dialogs, Some(vec![objects, objects + objects - 2]));
+        assert_eq!(transfer.recording_set, Some(objects + objects - 2));
+        assert!(merged.attachments.iter().all(|a| a.party == observer));
+        // The tie and the leg list name Dialog Objects, not leg positions.
+        let legs = merged
+            .attachments
+            .iter()
+            .find(|a| a.purpose == CALL_LEGS_PURPOSE)
+            .ok_or("a call-legs attachment")?;
+        let body: serde_json::Value = serde_json::from_str(&legs.body)?;
+        assert_eq!(body["ties"][0]["dialogs"], serde_json::json!([0, objects]));
+        assert_eq!(
+            body["legs"],
+            serde_json::json!([{ "dialog": 0 }, { "dialog": objects }])
+        );
+        Ok(())
+    }
+
+    /// No legs is no call.
+    #[test]
+    fn merging_no_legs_is_no_container() {
+        assert!(merge_call_legs(Vec::new(), &[], "uuid".into(), false).is_none());
+    }
+
     /// Export against a supplied set of facts and no capture analysis.
     fn export_with(dialog: &SipDialog, facts: &CaptureFacts) -> Result<Vcon, TestError> {
         Ok(export_dialog_at(
@@ -3217,6 +3693,7 @@ mod tests {
                 max_inline_media_bytes: None,
                 analysis: None,
                 media: &[],
+                related_legs: &[],
             },
             exported_at()?,
         ))
@@ -3272,6 +3749,7 @@ mod tests {
                 max_inline_media_bytes: None,
                 analysis: None,
                 media: std::slice::from_ref(&summary),
+                related_legs: &[],
             },
             exported_at()?,
         );
@@ -3444,6 +3922,7 @@ mod tests {
                 max_inline_media_bytes: None,
                 analysis: None,
                 media: &[],
+                related_legs: &[],
             },
             ObservedAudio::NotConsidered,
             exported_at()?,
@@ -3638,6 +4117,7 @@ mod tests {
                     max_inline_media_bytes: None,
                     analysis,
                     media: &[],
+                    related_legs: &[],
                 },
                 ObservedAudio::NotConsidered,
                 exported_at()?,
@@ -4977,6 +5457,7 @@ mod tests {
                 analysis: None,
                 max_inline_media_bytes: None,
                 media: &[],
+                related_legs: &[],
             },
             header,
             exported_at()?,
@@ -6323,6 +6804,7 @@ mod tests {
                 max_inline_media_bytes: None,
                 analysis: Some(&CaptureAnalysis::default()),
                 media: &[],
+                related_legs: &[],
             },
             exported_at()?,
         );
@@ -6386,6 +6868,7 @@ mod tests {
                 max_inline_media_bytes: None,
                 analysis: Some(&analysis),
                 media: &[],
+                related_legs: &[],
             },
             exported_at()?,
         ))?;
@@ -6536,6 +7019,7 @@ mod tests {
                 max_inline_media_bytes: None,
                 analysis: None,
                 media: &[],
+                related_legs: &[],
             },
             exported_at()?,
         );
@@ -6547,6 +7031,7 @@ mod tests {
                 max_inline_media_bytes: None,
                 analysis: None,
                 media: &[],
+                related_legs: &[],
             },
             exported_at()? + chrono::TimeDelta::days(400),
         );
@@ -6795,6 +7280,7 @@ mod tests {
                 analysis: None,
                 max_inline_media_bytes: None,
                 media: &[],
+                related_legs: &[],
             },
             "X-No-Record",
             exported_at()?,

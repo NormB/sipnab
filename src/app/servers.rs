@@ -157,6 +157,12 @@ pub struct Selection {
     /// Without them the doors compared against the shipped figures, and a
     /// `--pdd-threshold` reached the command line and stopped there.
     pub alias_thresholds: crate::sip::dsl::AliasThresholds,
+    /// Every export rule's spool, by rule name, which `GET /v1/vcon/spool`
+    /// and `vcon_spool_status` read.
+    pub vcon_spools: Vec<crate::app::vcon_spool::Spool>,
+    /// The filters of the rules with `live_audio = true`, which the REST
+    /// API's `/v1/calls` routes serve.
+    pub live_audio: Vec<crate::sip::dsl::FilterExpr>,
 }
 
 /// Handles to the running servers thread.
@@ -719,7 +725,8 @@ pub fn start_servers(
                 .map(std::path::PathBuf::from),
             // The spool this run's `--export-vcon-when` writes into: the same
             // directory the MCP server's `vcon_spool_status` reads.
-            vcon_spool: cli.output_args.export_vcon_dir.clone(),
+            vcon_spools: selection.vcon_spools.clone(),
+            live_audio: std::sync::Arc::new(selection.live_audio.clone()),
             pipeline_options: selection.pipeline_options,
             archive: crate::output::api::ArchivePasswordPolicy {
                 accept_remote: cli.listener_args.api_accept_archive_passwords,
@@ -833,10 +840,7 @@ pub fn start_servers(
             // The spool this run's `--export-vcon-when` writes into, so
             // `vcon_spool_status` reads the directory the capture fills.
             #[cfg(feature = "vcon")]
-            let s = match cli.output_args.export_vcon_dir.as_ref() {
-                Some(dir) => s.with_vcon_spool(dir),
-                None => s,
-            };
+            let s = s.with_vcon_spools(selection.vcon_spools.clone());
             let s = match cli.mcp_args.mcp_sampling_budget {
                 Some(per_hour) => s.with_sampling_budget(per_hour),
                 None => s,
@@ -1182,6 +1186,8 @@ mod tests {
             armed_detections: Vec::new(),
             pipeline_options: Default::default(),
             alias_thresholds: Default::default(),
+            vcon_spools: Vec::new(),
+            live_audio: Vec::new(),
         }
     }
 

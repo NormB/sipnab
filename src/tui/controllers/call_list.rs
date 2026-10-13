@@ -313,6 +313,7 @@ fn execute_call_list_action(app: &mut App, action: CallListAction) {
             app.filter_dialog.focused_field = 0;
             app.filter_dialog.sync_cursor();
             app.filter_dialog.error = None;
+            app.filter_dialog.known_names = app.named_filters.names().map(str::to_owned).collect();
             app.active_popup = Some(Popup::FilterDialog);
         }
         CallListAction::OpenSettings => {
@@ -1027,8 +1028,20 @@ mod tests {
         assert_eq!(app.active_popup, Some(Popup::SaveDialog));
 
         let mut app = App::new_test();
+        let mut defs = std::collections::BTreeMap::new();
+        defs.insert("west".to_string(), "src.ip == '10.0.0.1'".to_string());
+        defs.insert("sales".to_string(), "to.user == '7000'".to_string());
+        app.named_filters = crate::sip::named_filters::NamedFilters::resolve(
+            &defs,
+            &crate::sip::dsl::AliasThresholds::default(),
+        )?;
         handle_call_list_key(&mut app, key(KeyCode::F(7)));
         assert_eq!(app.active_popup, Some(Popup::FilterDialog));
+        assert_eq!(
+            app.filter_dialog.known_names,
+            vec!["sales".to_string(), "west".to_string()],
+            "F7 offers the run's [filters] names"
+        );
 
         let mut app = App::new_test();
         handle_call_list_key(&mut app, key(KeyCode::F(8)));

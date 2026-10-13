@@ -8,6 +8,136 @@ sipnab is pre-1.0: the public API and the CLI surface are not stable, and a
 breaking change may land in any release. Breaking changes are called out in the
 entry that carries them.
 
+## [0.5.216] - 2026-10-13
+
+### Added
+
+- **Named filters: a `[filters]` table, used as `@name` everywhere.** Define a
+  filter once in the config file (`sales = "@carrier-a AND to.user =~ '^8'"`)
+  and use it wherever sipnab takes a filter expression: `--filter`,
+  `--export-vcon-when`, `[filter] expression`, the REST `filter` parameter, an
+  MCP tool's `filter` argument, and a new Named filter field in the TUI filter
+  dialog, which lists the names the config defines. A name can be part of a
+  larger expression, can reference other names, and the built-in aliases work
+  the same way (`@problems`). sipnab resolves every name when it starts and
+  refuses to start, naming the entry, on a malformed name, a built-in name, an
+  unknown reference, a loop or an expansion that does not parse. A filter given
+  at run time that names something undefined is refused with the names that
+  are defined.
+- **Filter fields for calls through a PBX.** `from.host` and `to.host` (the
+  URI host without its port), `from.uri`, `to.uri` and `ruri` (the URIs as
+  written), `pai.user` (the P-Asserted-Identity user), `rtp.codecs` (every
+  codec a call used), `side` (`inbound`, `outbound` or `internal` relative to
+  a new `[pbx] addresses` list) and `endpoint` (the name the run's hosts file,
+  `--names` files and `[names.manual]` give either end). The URI fields are
+  captured when a dialog opens, so idle compaction cannot change what they
+  select.
+- **Export rules: `[[vcon.rule]]`.** Each rule pairs a filter (`when`, which
+  takes `@name` filters) with a directory (`dir`) and an audio setting
+  (`audio = "inline"` or `"omit"`, the default), with its own inline-media
+  budget (`max_inline_media_mib`). `audio = "url"` writes the call's audio to
+  a WAV beside the container and names it by an HTTPS `audio_url_base` with
+  the WAV's `content_hash`, for calls too long to carry inline; sipnab writes
+  the file and serves nothing, and the container's `media` is `referenced`.
+  A run can hold several rules, and
+  a call that matches several is written once per rule, into each rule's
+  directory, with the end of the run reporting each rule on its own line.
+  `--export-vcon-when` with `--export-vcon-dir` is one more rule. A rule with
+  `audio = "inline"` turns audio retention on for the run. On a live capture
+  each rule keeps its own record of what it wrote, and a call's retained audio
+  is given back only once every inline rule that matches it has written it.
+  REST `GET /v1/vcon/spool` and MCP `vcon_spool_status` take a `rule` naming
+  the spool to read, and their answer says which rule it is. sipnab refuses to
+  start on a rule with an unusable or repeated name, no `dir`, an unknown
+  `audio` value or key, or a `when` that does not resolve, and a live capture
+  with a rule refuses `--redact`, `--redact-map` and
+  `--content-deny-tombstone` as it does with `--export-vcon-when`.
+- **A vCon names the call's other legs, and a rule can write one container
+  per call.** A leg of a call through a PBX or a B2BUA carries a
+  `sipnab-related-legs` attachment listing the container uuid of each other
+  leg, the correlation strategy that tied them, whether it compared an
+  identifier, and its score, strongest first. Every export adds it: rules,
+  `--export-vcon-when`, `--export-vcon`, REST `/v1/dialogs/{call_id}/vcon` and
+  MCP `export_vcon`. A `[[vcon.rule]]` with `grouping = "call"` writes one
+  container per call instead, holding every leg the rule selects, with a
+  `sipnab-call-legs` attachment stating each tie, and a uuid of its own; on a
+  live capture it waits until every leg has ended or gone idle. `leg`, one
+  container per dialog, stays the default, because a timing tie can be wrong.
+- **Enrichment before a container is written: `[[vcon.enrich]]`.** Name a
+  service of your own, a URL or a program, and the rules whose calls go to it.
+  Each call is sent to it before its container is written, with each leg's
+  audio and the container, and the service's answer, one or more core-04
+  Analysis Objects such as a transcript or a summary, is appended to the
+  container's `analysis`. Services run in order, so a summarizer can read the
+  transcript. A `sipnab-enrichment` attachment records every service a call
+  was sent to, what was sent, and how it ended; a service that fails, times
+  out or answers with something that is not an analysis never loses the call.
+  On a live capture, calls wait in a queue of at most 64 so a slow service
+  never holds up the capture, and a call that finds it full is written at
+  once, saying so. `http://` is accepted only to a loopback address, and a
+  run with `--redact` and an enrichment is refused.
+- **A call's audio while it is in progress, over a WebSocket.** A
+  `[[vcon.rule]]` with `live_audio = true` serves the calls it matches on the
+  REST API: `GET /v1/calls/live` lists the calls in progress,
+  `GET /v1/calls/live/events` announces each as a server-sent event, and
+  `GET /v1/calls/{call_id}/audio` is a WebSocket that sends the call's audio as
+  16-bit PCM, one message per RTP packet, stream by stream, and closes when the
+  call ends. The routes need a token with the new `audio` scope
+  (`--token-scope audio`), which no other scope satisfies, and off a loopback
+  address a `live_audio` rule refuses to start without API TLS and a signing
+  key. A call `--content-deny-header` withholds is not served.
+- **A vCon written as the call starts and rewritten as it changes.** A
+  `[[vcon.rule]]` with `live = true` writes each matching call's container on
+  a live capture as soon as the call starts, and rewrites it in place, under
+  the same `uuid`, each time the call changes. Each write carries `updated_at`;
+  `created_at` stays the time of the first write. Audio and enrichment come
+  with the write after the call ends. With `-I` the key has no effect.
+- **G.722 audio is decoded.** A stream carrying G.722 (static payload type 9,
+  common on PBX extensions) is retained and written to a WAV or a vCon as
+  16 kHz audio, the rate of its samples rather than the 8 kHz RTP clock
+  [RFC 3551](https://www.rfc-editor.org/rfc/rfc3551) gives the payload type. The decoder follows ITU-T G.722's
+  fixed-point arithmetic and matches FFmpeg's decode sample for sample on a
+  tone and on full-scale noise.
+- **A live vCon export warns when idle compaction can reach a call first.**
+  With `[limits] idle_compact_after_secs` below the 120 seconds the export
+  waits before writing a call that has not ended, compaction could drop the
+  call's middle messages before its container is written; the run says so at
+  startup.
+
+### Changed
+
+- **The `Redaction:` line follows the export counts.** A run can export
+  through several rules now, each reporting its own `Wrote N vCon
+  container(s)` line, and the one redaction (one key, one `--redact-map`)
+  covers them all, so its line comes after every count rather than before
+  the single count it used to precede.
+
+### Fixed
+
+- **The TUI filter dialog resolves filters the way every other surface does.**
+  It parsed its expression directly, so a built-in alias referenced from it
+  was not expanded. It now goes through the same resolver as `--filter`, REST
+  and MCP, with the run's alias thresholds.
+- **`--redact` works with export rules alone.** A batch run with a
+  `[[vcon.rule]]` and `--redact`, and no `--export-vcon` or
+  `--export-vcon-when`, was refused as exporting nothing, because the check ran
+  before the config file was read. It now runs when the run is planned and
+  counts the rules, so the rules' containers are written redacted; a run with
+  `--redact` and no export of any kind is still refused, exit code 2.
+- **The `--export-vcon` help names every media outcome.** It listed five and
+  said no container points at media held elsewhere; a rule with
+  `audio = "url"` does, and its outcome, `referenced`, is now listed.
+
+### Internal
+
+- **Links whose text holds a bracketed code span are now checked.** The
+  documentation link gates found a link with the pattern `\[[^\]]*\]\(`,
+  which stops at the `]` inside a code span such as `` `[actions]` ``, so six
+  such links were never counted or checked for a valid target. They resolve.
+  `scripts/rfc-links.py` had the same pattern and also split each line at its
+  backticks, so an RFC mention inside such a link's text would have been
+  linked again, nesting a link in a link; it keeps the link whole now.
+
 ## [0.5.215] - 2026-10-13
 
 ### Changed

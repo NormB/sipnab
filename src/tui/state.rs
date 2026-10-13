@@ -291,6 +291,9 @@ pub struct TuiOptions {
     /// would be a view that could disagree, which is the defect
     /// [`crate::rtp::bands::QualityBands`] ended.
     pub quality_bands: crate::rtp::bands::QualityBands,
+    /// The run's alias thresholds, for a built-in alias the filter dialog
+    /// references as `@name`.
+    pub alias_thresholds: crate::sip::dsl::AliasThresholds,
     /// Capture files this session reads, which the save dialog must never
     /// write over (see [`crate::capture::output_guard`]).
     pub protected_inputs: crate::capture::output_guard::ProtectedInputs,
@@ -445,6 +448,7 @@ impl TuiOptions {
         app.set_from_to_mode(self.from_to_mode);
         app.declared_one_way_delay_ms = self.declared_one_way_delay_ms;
         app.quality_bands = self.quality_bands;
+        app.alias_thresholds = self.alias_thresholds;
         app.set_protected_inputs(self.protected_inputs);
         app.set_bpf_filter(self.bpf_filter, self.bpf_filter_generated);
         app.set_resolver(self.name_setup.resolver);
@@ -655,9 +659,9 @@ pub(in crate::tui) const FILTER_METHODS: [&str; 10] = [
 ];
 
 /// Number of text input fields in the filter dialog.
-pub(in crate::tui) const FILTER_TEXT_FIELD_COUNT: usize = 8;
+pub(in crate::tui) const FILTER_TEXT_FIELD_COUNT: usize = 9;
 
-/// Total focusable items: 8 text fields + 10 method checkboxes + the
+/// Total focusable items: 9 text fields + 10 method checkboxes + the
 /// "All" master checkbox + 2 buttons.
 pub(in crate::tui) const FILTER_ITEM_COUNT: usize =
     FILTER_TEXT_FIELD_COUNT + FILTER_METHODS.len() + 3;
@@ -1062,6 +1066,12 @@ pub struct FilterDialogState {
     /// the pair is the half-open `[after, before)` window the REST
     /// `/v1/dialogs` route and the MCP `search_by_time` tool apply.
     pub(in crate::tui) time_before: String,
+    /// Names of `[filters]` entries, space-separated, each with or without a
+    /// leading `@`. Each becomes `@name` and they AND together.
+    pub(in crate::tui) named: String,
+    /// The names the run's `[filters]` defines, filled when the dialog opens
+    /// and shown beside the Named field.
+    pub(in crate::tui) known_names: Vec<String>,
     /// Method checkbox states, indexed by position in FILTER_METHODS.
     pub(in crate::tui) methods: [bool; 10],
     /// Currently focused UI element index. The boundaries derive from
@@ -1088,6 +1098,8 @@ impl Default for FilterDialogState {
             header: String::new(),
             time_after: String::new(),
             time_before: String::new(),
+            named: String::new(),
+            known_names: Vec::new(),
             // All SIP methods checked by default == show every message. The
             // method filter only narrows once the user unchecks something.
             methods: [true; 10],
@@ -1129,6 +1141,7 @@ impl FilterDialogState {
             5 => &self.header,
             6 => &self.time_after,
             7 => &self.time_before,
+            8 => &self.named,
             _ => "",
         }
     }
@@ -1144,6 +1157,7 @@ impl FilterDialogState {
             5 => Some(&mut self.header),
             6 => Some(&mut self.time_after),
             7 => Some(&mut self.time_before),
+            8 => Some(&mut self.named),
             _ => None,
         }
     }
@@ -1309,6 +1323,11 @@ impl FilterDialogState {
         if let Some(term) = header_filter_term(&self.header) {
             parts.push(term);
         }
+        parts.extend(
+            self.named
+                .split_whitespace()
+                .map(|word| format!("@{}", word.trim_start_matches('@'))),
+        );
 
         // Method filter: if some (but not all or none) methods are checked
         let checked: Vec<&str> = self
@@ -1345,6 +1364,7 @@ impl FilterDialogState {
         self.header.clear();
         self.time_after.clear();
         self.time_before.clear();
+        self.named.clear();
         // Re-check every method so "clear filter" means show all, matching the
         // dialog's default state.
         self.methods = [true; 10];
@@ -1381,6 +1401,7 @@ impl FilterDialogState {
             && self.header.is_empty()
             && self.time_after.is_empty()
             && self.time_before.is_empty()
+            && self.named.is_empty()
             // All methods checked == no method narrowing == an "empty" filter.
             && self.methods.iter().all(|&v| v)
     }

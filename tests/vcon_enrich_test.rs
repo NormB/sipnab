@@ -1,0 +1,492 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
+//! Post-call enrichment: `[[vcon.enrich]]` sends a call's audio and container
+//! to the operator's own service before the container is written, and appends
+//! the Analysis Objects it answers with.
+//!
+//! The service here is a stub on a loopback port, so every way a service can
+//! behave is driven: it answers, it fails, it hangs past the timeout, and it
+//! answers with something that is not an analysis. The container is written in
+//! every case and says what happened.
+#![cfg(all(feature = "native", feature = "vcon"))]
+
+#[path = "support/executable.rs"]
+mod executable;
+#[path = "support/pcap_build.rs"]
+mod pcap_build;
+mod support;
+
+use std::io::{BufRead, BufReader, Read, Write};
+use std::net::TcpListener;
+use std::path::Path;
+use std::process::Command;
+use std::sync::mpsc;
+
+type TestError = Box<dyn std::error::Error>;
+
+const ENRICHMENT: &str = "sipnab-enrichment";
+
+/// How the stub service answers.
+#[derive(Clone, Copy)]
+enum Answer {
+    /// One transcript analysis.
+    Transcript,
+    /// One summary analysis, after reading what it was sent.
+    Summary,
+    /// HTTP 500.
+    Fail,
+    /// No answer for longer than the timeout.
+    Hang,
+    /// HTTP 200 with a body that is not an analysis list.
+    Malformed,
+}
+
+/// A stub service on a loopback port. Every request body it receives is sent
+/// on the returned channel.
+fn stub(answer: Answer) -> Result<(String, mpsc::Receiver<serde_json::Value>), TestError> {
+    let listener = TcpListener::bind("127.0.0.1:0")?;
+    let url = format!("http://{}/enrich", listener.local_addr()?);
+    let (tx, rx) = mpsc::channel();
+    std::thread::spawn(move || {
+        for stream in listener.incoming() {
+            let Ok(stream) = stream else { return };
+            let mut reader = BufReader::new(stream);
+            let mut len = 0usize;
+            let mut headers = Vec::new();
+            loop {
+                let mut line = String::new();
+                if reader.read_line(&mut line).unwrap_or(0) == 0 {
+                    break;
+                }
+                headers.push(line.trim_end().to_owned());
+                if let Some(v) = line.to_ascii_lowercase().strip_prefix("content-length:") {
+                    len = v.trim().parse().unwrap_or(0);
+                }
+                if line == "\r\n" {
+                    break;
+                }
+            }
+            let mut body = vec![0; len];
+            if reader.read_exact(&mut body).is_err() {
+                continue;
+            }
+            let mut request: serde_json::Value = serde_json::from_slice(&body).unwrap_or_default();
+            let seen = request.clone();
+            request["_headers"] = headers.into();
+            let reply = match answer {
+                Answer::Transcript => serde_json::json!({"analysis": [{
+                    "type": "transcript", "vendor": "stub", "product": "stub-stt",
+                    "encoding": "none", "mediatype": "text/plain", "body": "hello there"
+                }]})
+                .to_string(),
+                Answer::Summary => {
+                    let seen = seen["vcon"]["analysis"].as_array().map_or(0, Vec::len);
+                    serde_json::json!({"analysis": [{
+                        "type": "summary", "vendor": "stub", "encoding": "none",
+                        "body": format!("read {seen} earlier analysis")
+                    }]})
+                    .to_string()
+                }
+                Answer::Malformed => r#"{"analysis": [{"vendor": "no type"}]}"#.to_owned(),
+                Answer::Fail | Answer::Hang => String::new(),
+            };
+            let _ = tx.send(request);
+            let stream = reader.get_mut();
+            match answer {
+                Answer::Hang => std::thread::sleep(std::time::Duration::from_secs(5)),
+                Answer::Fail => {
+                    let _ = stream.write_all(
+                        b"HTTP/1.1 500 Internal Server Error\r\nContent-Length: 4\r\n\r\nboom",
+                    );
+                }
+                _ => {
+                    let _ = write!(
+                        stream,
+                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\
+                         Content-Length: {}\r\n\r\n{reply}",
+                        reply.len()
+                    );
+                }
+            }
+        }
+    });
+    Ok((url, rx))
+}
+
+/// A tone that differs per stream.
+fn tone(stream: usize, frame: usize, i: usize) -> u8 {
+    ((stream * 37 + frame * 3 + i) % 200) as u8
+}
+
+/// One answered call with a second of audio both ways.
+fn call() -> Vec<(Vec<u8>, u64)> {
+    pcap_build::g711_leg(
+        &pcap_build::G711Leg {
+            call_id: "enrich-call",
+            caller: ([10, 1, 0, 1], 20000, 0xa1a1_a1a1),
+            callee: ([10, 2, 0, 1], 30000, 0xa2a2_a2a2),
+            header: None,
+            start_us: 0,
+            ends: true,
+        },
+        1,
+        tone,
+    )
+}
+
+/// A rule writing into `dir`, then `enrich`.
+fn config(dir: &Path, enrich: &str) -> String {
+    format!(
+        "[[vcon.rule]]\nname = \"calls\"\nwhen = \"call_id =~ '.'\"\ndir = \"{}\"\n\n{enrich}",
+        dir.display()
+    )
+}
+
+/// One `[[vcon.enrich]]` for the rule, sending to `url`.
+fn service(name: &str, url: &str, extra: &str) -> String {
+    format!("[[vcon.enrich]]\nname = \"{name}\"\nrules = [\"calls\"]\nurl = \"{url}\"\n{extra}\n")
+}
+
+/// Run sipnab over the call with `config`.
+fn run(home: &Path, config: &str, extra: &[&str]) -> Result<std::process::Output, TestError> {
+    let pcap = home.join("call.pcap");
+    pcap_build::write_pcap_at(&pcap, &call(), 1)?;
+    let cfg = home.join("sipnab.toml");
+    std::fs::write(&cfg, config)?;
+    Ok(Command::new(env!("CARGO_BIN_EXE_sipnab"))
+        .args(["-N", "--no-cli-print", "-I"])
+        .arg(&pcap)
+        .arg("--config")
+        .arg(&cfg)
+        .args(extra)
+        .env("HOME", home)
+        .output()?)
+}
+
+/// The one container in `dir`.
+fn container(dir: &Path) -> Result<serde_json::Value, TestError> {
+    let mut found = Vec::new();
+    for entry in std::fs::read_dir(dir)? {
+        let path = entry?.path();
+        if path.to_string_lossy().ends_with(".vcon.json") {
+            found.push(serde_json::from_slice(&std::fs::read(&path)?)?);
+        }
+    }
+    assert_eq!(found.len(), 1, "one container in {}", dir.display());
+    Ok(found.remove(0))
+}
+
+/// The enrichment attachment's `services` list.
+fn outcomes(v: &serde_json::Value) -> Result<Vec<serde_json::Value>, TestError> {
+    let body = v["attachments"]
+        .as_array()
+        .ok_or("attachments")?
+        .iter()
+        .find(|a| a["purpose"] == ENRICHMENT)
+        .and_then(|a| a["body"].as_str())
+        .ok_or("an enrichment attachment")?;
+    let parsed: serde_json::Value = serde_json::from_str(body)?;
+    Ok(parsed["services"].as_array().ok_or("services")?.clone())
+}
+
+/// The analysis entries whose `type` is `kind`.
+fn analyses<'a>(v: &'a serde_json::Value, kind: &str) -> Vec<&'a serde_json::Value> {
+    v["analysis"]
+        .as_array()
+        .map(|a| a.iter().filter(|x| x["type"] == kind).collect())
+        .unwrap_or_default()
+}
+
+/// A service that answers: its analysis is appended, the request carried the
+/// call's audio and its container, and the container says what was sent where.
+#[test]
+fn an_answer_is_appended_and_the_container_says_where_the_audio_went() -> Result<(), TestError> {
+    let home = tempfile::tempdir()?;
+    let dir = home.path().join("out");
+    let (url, requests) = stub(Answer::Transcript)?;
+    let out = run(home.path(), &config(&dir, &service("stt", &url, "")), &[])?;
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(out.status.success(), "{stderr}");
+
+    let request = requests.try_recv()?;
+    assert_eq!(request["service"], "stt");
+    // One entry per leg, naming the leg's signaling object.
+    assert_eq!(
+        request["audio"].as_array().map(Vec::len),
+        Some(1),
+        "{request}"
+    );
+    assert_eq!(request["audio"][0]["mediatype"], "audio/wav", "{request}");
+    assert_eq!(request["audio"][0]["dialog"], 0);
+    assert_eq!(request["audio"][0]["sip_call_id"], "enrich-call");
+    assert!(
+        request["audio"][0]["body"]
+            .as_str()
+            .is_some_and(|b| b.len() > 1000)
+    );
+    assert_eq!(request["vcon"]["dialog"][0]["sip_call_id"], "enrich-call");
+    assert!(
+        request["vcon"]["analysis"]
+            .as_array()
+            .is_none_or(Vec::is_empty),
+        "the container goes without sipnab's own analysis: {request}"
+    );
+
+    let v = container(&dir)?;
+    let transcripts = analyses(&v, "transcript");
+    assert_eq!(transcripts.len(), 1, "{v}");
+    assert_eq!(transcripts[0]["body"], "hello there");
+    assert_eq!(transcripts[0]["vendor"], "stub");
+    assert_eq!(analyses(&v, "report").len(), 1, "sipnab's report stays");
+    let services = outcomes(&v)?;
+    assert_eq!(services.len(), 1);
+    assert_eq!(services[0]["service"], "stt");
+    assert_eq!(services[0]["outcome"], "ok", "{services:?}");
+    assert_eq!(
+        services[0]["sent"],
+        serde_json::json!(["audio", "signaling"])
+    );
+    assert_eq!(services[0]["target"], url.as_str());
+    let validator = support::schema::load_validator("vcon.schema.json")?;
+    support::schema::assert_valid(&validator, &v, "an enriched container");
+    Ok(())
+}
+
+/// Services run in order, and a later one is sent what an earlier one added.
+#[test]
+fn a_later_service_reads_an_earlier_answer() -> Result<(), TestError> {
+    let home = tempfile::tempdir()?;
+    let dir = home.path().join("out");
+    let (first, _) = stub(Answer::Transcript)?;
+    let (second, requests) = stub(Answer::Summary)?;
+    let enrich = service("stt", &first, "") + &service("summarize", &second, "");
+    let out = run(home.path(), &config(&dir, &enrich), &[])?;
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let request = requests.try_recv()?;
+    assert_eq!(
+        request["vcon"]["analysis"][0]["type"], "transcript",
+        "{request}"
+    );
+    let v = container(&dir)?;
+    assert_eq!(
+        analyses(&v, "summary")[0]["body"],
+        "read 1 earlier analysis"
+    );
+    Ok(())
+}
+
+/// `send = ["signaling"]` sends no audio, and the container records that,
+/// even when the rule retains the call's audio for its own container.
+#[test]
+fn signaling_only_sends_no_audio() -> Result<(), TestError> {
+    let home = tempfile::tempdir()?;
+    let dir = home.path().join("out");
+    let (url, requests) = stub(Answer::Transcript)?;
+    let enrich = service("stt", &url, "send = [\"signaling\"]");
+    let rule = config(&dir, &enrich).replace(
+        "when = \"call_id =~ '.'\"\n",
+        "when = \"call_id =~ '.'\"\naudio = \"inline\"\n",
+    );
+    assert!(
+        rule.contains("audio = \"inline\""),
+        "the rule retains audio"
+    );
+    let out = run(home.path(), &rule, &[])?;
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let request = requests.try_recv()?;
+    assert!(request.get("audio").is_none(), "{request}");
+    let v = container(&dir)?;
+    assert_eq!(outcomes(&v)?[0]["sent"], serde_json::json!(["signaling"]));
+    Ok(())
+}
+
+/// Every way a service can fail: the container is still written, without the
+/// service's analysis, and says which service failed and how.
+#[test]
+fn a_failing_service_never_loses_the_call() -> Result<(), TestError> {
+    for (answer, outcome) in [
+        (Answer::Fail, "failed"),
+        (Answer::Hang, "timeout"),
+        (Answer::Malformed, "malformed"),
+    ] {
+        let home = tempfile::tempdir()?;
+        let dir = home.path().join("out");
+        let (url, _) = stub(answer)?;
+        let enrich = service("stt", &url, "timeout_secs = 1");
+        let out = run(home.path(), &config(&dir, &enrich), &[])?;
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert!(out.status.success(), "{outcome}: {stderr}");
+        let v = container(&dir)?;
+        assert!(analyses(&v, "transcript").is_empty(), "{outcome}: {v}");
+        let services = outcomes(&v)?;
+        assert_eq!(services[0]["outcome"], outcome, "{services:?}");
+        assert!(
+            services[0]["detail"]
+                .as_str()
+                .is_some_and(|d| !d.is_empty()),
+            "{outcome}: {services:?}"
+        );
+        assert!(
+            stderr.contains("stt"),
+            "the run names the service: {stderr}"
+        );
+    }
+    Ok(())
+}
+
+/// A `command` service reads the request on stdin and answers on stdout.
+#[test]
+fn a_command_service_answers_on_stdout() -> Result<(), TestError> {
+    let home = tempfile::tempdir()?;
+    let dir = home.path().join("out");
+    let script = home.path().join("stt.sh");
+    executable::write_executable(
+        &script,
+        "#!/bin/sh\ncat > /dev/null\nprintf '%s' '{\"analysis\":[{\"type\":\"transcript\",\
+         \"vendor\":\"cmd\",\"encoding\":\"none\",\"body\":\"from a command\"}]}'\n",
+    )?;
+    let enrich = format!(
+        "[[vcon.enrich]]\nname = \"stt\"\nrules = [\"calls\"]\ncommand = \"{}\"\n",
+        script.display()
+    );
+    let out = run(home.path(), &config(&dir, &enrich), &[])?;
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let v = container(&dir)?;
+    assert_eq!(analyses(&v, "transcript")[0]["body"], "from a command");
+    assert_eq!(outcomes(&v)?[0]["outcome"], "ok");
+    Ok(())
+}
+
+/// What sipnab refuses at startup, each naming the enrichment.
+#[test]
+fn bad_enrichments_are_refused_at_startup() -> Result<(), TestError> {
+    let home = tempfile::tempdir()?;
+    let dir = home.path().join("out");
+    let cases = [
+        (
+            service("stt", "http://127.0.0.1:9/x", "").replace("[\"calls\"]", "[\"nope\"]"),
+            "no [[vcon.rule]] named 'nope'",
+        ),
+        (
+            "[[vcon.enrich]]\nname = \"stt\"\nrules = [\"calls\"]\n".to_owned(),
+            "one of url or command",
+        ),
+        (service("stt", "http://192.0.2.7/x", ""), "https"),
+        (
+            service("stt", "http://127.0.0.1:9/x", "send = [\"video\"]"),
+            "send",
+        ),
+        (
+            service("stt", "http://127.0.0.1:9/x", "")
+                + &service("stt", "http://127.0.0.1:9/y", ""),
+            "used by two",
+        ),
+    ];
+    for (enrich, needle) in cases {
+        let out = run(home.path(), &config(&dir, &enrich), &[])?;
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert!(!out.status.success(), "{needle}: {stderr}");
+        assert!(stderr.contains("[[vcon.enrich]]"), "{stderr}");
+        assert!(stderr.contains(needle), "{needle}: {stderr}");
+    }
+    // Redaction cannot pseudonymize what a service answers.
+    let out = run(
+        home.path(),
+        &config(&dir, &service("stt", "http://127.0.0.1:9/x", "")),
+        &["--redact"],
+    )?;
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(!out.status.success(), "{stderr}");
+    assert!(
+        stderr.contains("[[vcon.enrich]] cannot run with --redact"),
+        "{stderr}"
+    );
+    Ok(())
+}
+
+/// A command that exits non-zero, and one that does not answer in time: the
+/// container is written and records which.
+#[test]
+fn a_failing_command_never_loses_the_call() -> Result<(), TestError> {
+    for (body, outcome, detail) in [
+        ("cat > /dev/null\nexit 3", "failed", "exit"),
+        ("sleep 5", "timeout", "within 1 s"),
+    ] {
+        let home = tempfile::tempdir()?;
+        let dir = home.path().join("out");
+        let script = home.path().join("stt.sh");
+        executable::write_executable(&script, &format!("#!/bin/sh\n{body}\n"))?;
+        let enrich = format!(
+            "[[vcon.enrich]]\nname = \"stt\"\nrules = [\"calls\"]\ncommand = \"{}\"\n\
+             timeout_secs = 1\n",
+            script.display()
+        );
+        let out = run(home.path(), &config(&dir, &enrich), &[])?;
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let services = outcomes(&container(&dir)?)?;
+        assert_eq!(services[0]["outcome"], outcome, "{services:?}");
+        assert!(
+            services[0]["detail"]
+                .as_str()
+                .is_some_and(|d| d.contains(detail)),
+            "{services:?}"
+        );
+    }
+    Ok(())
+}
+
+/// `auth_file` names the header that authenticates; it is sent to the
+/// service and recorded nowhere in the container.
+#[test]
+fn the_auth_header_is_sent_and_not_recorded() -> Result<(), TestError> {
+    use std::os::unix::fs::PermissionsExt;
+    let home = tempfile::tempdir()?;
+    let dir = home.path().join("out");
+    let token = home.path().join("stt.token");
+    std::fs::write(&token, "Authorization: Bearer sekrit-token-value\n")?;
+    std::fs::set_permissions(&token, std::fs::Permissions::from_mode(0o600))?;
+    let (url, requests) = stub(Answer::Transcript)?;
+    let enrich = service("stt", &url, &format!("auth_file = \"{}\"", token.display()));
+    let out = run(home.path(), &config(&dir, &enrich), &[])?;
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let request = requests.try_recv()?;
+    let headers: Vec<&str> = request["_headers"]
+        .as_array()
+        .ok_or("headers")?
+        .iter()
+        .filter_map(serde_json::Value::as_str)
+        .collect();
+    assert!(
+        headers.contains(&"Authorization: Bearer sekrit-token-value"),
+        "{headers:?}"
+    );
+    let text = std::fs::read_dir(&dir)?
+        .filter_map(Result::ok)
+        .map(|e| std::fs::read_to_string(e.path()).unwrap_or_default())
+        .collect::<String>();
+    assert!(
+        !text.contains("sekrit"),
+        "the credential stays out of the container"
+    );
+    Ok(())
+}

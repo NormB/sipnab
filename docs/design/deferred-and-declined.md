@@ -336,8 +336,8 @@ guards, each visible in the code:
 
 1. **Off unless armed.** `allow_shutdown: bool`
    ([`server.rs:57`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L57)) is `false` in `new()`
-   ([`server.rs:982`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L982)) and only set by `with_shutdown()`
-   ([`server.rs:982`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L982)), which `servers.rs` calls only
+   ([`server.rs:1005`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L1005)) and only set by `with_shutdown()`
+   ([`server.rs:1005`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L1005)), which `servers.rs` calls only
    when `cli.mcp_allow_shutdown` is set
    ([`servers.rs:258-262`](https://github.com/NormB/sipnab/blob/main/src/app/servers.rs#L258-L262)). Refusal is the first
    statement of the handler ([`server.rs:2226`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L2226)).

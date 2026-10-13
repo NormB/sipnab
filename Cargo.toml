@@ -40,7 +40,7 @@ workspace = true
 
 [package]
 name = "sipnab"
-version = "0.5.215"
+version = "0.5.216"
 edition = "2024"
 rust-version = "1.99"
 authors = ["Norm Brandinger"]
@@ -212,6 +212,13 @@ tokio = { version = "1", features = ["full"], optional = true }
 # features OFF because they select aws-lc-rs; `ring` matches the rustls line
 # above, so one crypto provider serves every TLS surface.
 tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "logging", "tls12"], optional = true }
+# The live audio route's WebSocket: hyper's upgrade of the request, and
+# hyper-util's adapter from the upgraded connection to tokio I/O. The events
+# route's body is a futures-core Stream. All three are already built under
+# `api`, through axum; named here because the route uses them directly.
+hyper = { version = "1", optional = true }
+hyper-util = { version = "0.1", features = ["tokio"], optional = true }
+futures-core = { version = "0.3", optional = true }
 # OpenAPI 3.1 document for the REST surface, derived from the handlers rather
 # than written beside them. `docs/rest-api.md` is the prose reference and stays
 # hand-written; this is the machine-readable contract the website's Scalar page
@@ -343,7 +350,9 @@ metrics = ["native", "dep:base64", "dep:rustls"]
 audio = ["dep:libloading", "dep:libc"]
 # `rustls` and `tokio-rustls` are HTTPS for the API (`--api-tls-cert`). Not
 # `tls`: that feature is capture-side decryption and would drag rsa/aes/cbc in.
-api = ["native", "dep:axum", "dep:tokio", "dep:base64", "dep:hmac", "dep:sha2", "dep:utoipa", "dep:rustls", "dep:tokio-rustls"]
+# `ring` is the SHA-1 of the live audio route's WebSocket handshake
+# (src/output/websocket.rs); rustls already builds it, so it adds no crate.
+api = ["native", "dep:axum", "dep:tokio", "dep:base64", "dep:hmac", "dep:sha2", "dep:utoipa", "dep:rustls", "dep:tokio-rustls", "dep:ring", "dep:hyper", "dep:hyper-util", "dep:futures-core"]
 mcp = ["native", "dep:tokio", "dep:rmcp", "dep:base64", "dep:hmac", "dep:sha2"]
 mcp-http = ["mcp", "api", "rmcp/transport-streamable-http-server"]
 wasm = ["dep:wasm-bindgen", "dep:js-sys", "dep:web-sys", "dep:console_error_panic_hook"]

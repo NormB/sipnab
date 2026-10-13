@@ -124,6 +124,7 @@ fn every_container_carries_the_two_fields_the_store_requires() -> Result<(), Tes
             max_inline_media_bytes: None,
             analysis: None,
             media: &[],
+            related_legs: &[],
         },
     );
     let json: serde_json::Value = serde_json::from_str(
@@ -195,6 +196,7 @@ fn the_uuid_identifies_the_dialog_and_not_the_moment_of_export() -> Result<(), T
         max_inline_media_bytes: None,
         analysis: None,
         media: &[],
+        related_legs: &[],
     };
     let uuid_of = |v: &sipnab::output::vcon::Vcon| -> Result<String, TestError> {
         Ok(
@@ -247,6 +249,7 @@ fn a_signaling_only_container_is_far_beneath_the_store_ceiling() -> Result<(), T
             max_inline_media_bytes: None,
             analysis: None,
             media: &[],
+            related_legs: &[],
         },
     );
     let encoded = vcon
@@ -305,6 +308,7 @@ fn a_json_body_is_a_string_a_consumer_parses() -> Result<(), TestError> {
             max_inline_media_bytes: None,
             analysis: None,
             media: &[],
+            related_legs: &[],
         },
     );
     let json: serde_json::Value =
@@ -406,6 +410,7 @@ fn a_container_validates_against_the_working_group_schema() -> Result<(), TestEr
             max_inline_media_bytes: None,
             analysis: None,
             media: &[],
+            related_legs: &[],
         },
     );
     let json: serde_json::Value =
@@ -448,6 +453,7 @@ fn a_recording_without_content_is_a_bare_placeholder() -> Result<(), TestError> 
             max_inline_media_bytes: None,
             analysis: None,
             media: &[],
+            related_legs: &[],
         },
     );
     let json: serde_json::Value =
@@ -525,6 +531,7 @@ fn party_sip_and_tel(from_user: &str) -> Result<(Option<String>, Option<String>)
             max_inline_media_bytes: None,
             analysis: None,
             media: &[],
+            related_legs: &[],
         },
     );
     let json: serde_json::Value =
@@ -584,6 +591,7 @@ fn the_observer_carries_no_tel() -> Result<(), TestError> {
             max_inline_media_bytes: None,
             analysis: None,
             media: &[],
+            related_legs: &[],
         },
     );
     let json: serde_json::Value =
@@ -621,6 +629,7 @@ fn the_dialog_object_names_the_tags_that_distinguish_a_forked_leg() -> Result<()
             max_inline_media_bytes: None,
             analysis: None,
             media: &[],
+            related_legs: &[],
         },
     );
     let json: serde_json::Value =
@@ -775,6 +784,7 @@ fn uuid_of(
             max_inline_media_bytes: None,
             analysis: None,
             media: &[],
+            related_legs: &[],
         },
     );
     let json: serde_json::Value =
@@ -814,6 +824,7 @@ fn no_field_is_ever_emitted_as_an_explicit_null() -> Result<(), TestError> {
                 max_inline_media_bytes: None,
                 analysis,
                 media: &[],
+                related_legs: &[],
             },
         );
         let json: serde_json::Value =
@@ -871,6 +882,7 @@ fn no_container_asserts_a_setup_failure_for_a_call_that_connected() -> Result<()
             max_inline_media_bytes: None,
             analysis: None,
             media: &[],
+            related_legs: &[],
         },
     );
     let json: serde_json::Value =
@@ -921,6 +933,7 @@ fn a_container_meets_or_knowingly_diverges_from_the_second_consumer() -> Result<
             max_inline_media_bytes: None,
             analysis: None,
             media: &[],
+            related_legs: &[],
         },
     );
     let json: serde_json::Value =
