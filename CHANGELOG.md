@@ -8,6 +8,20 @@ sipnab is pre-1.0: the public API and the CLI surface are not stable, and a
 breaking change may land in any release. Breaking changes are called out in the
 entry that carries them.
 
+## [Unreleased]
+
+### Changed
+
+- **The homepage groups what sipnab supports into six cards.** The
+  "Check what sipnab supports" section was one 16-row table that named no
+  vCon capability. It is now six themed cards in two columns (one on a
+  phone): capture and inputs, analysis and diagnosis, call records (vCon),
+  security, the terminal UI, and integrations and output. It adds archives,
+  tunnels, multi-leg calls, the conformance linter, ranked analysis, the
+  vCon features, STIR/SHAKEN, TFPS, pseudonymized exports and process
+  hardening, and corrects two rows: Prometheus metrics include call, MOS and
+  security series, and the gnu no-audio packages carry no WASM plugins.
+
 ## [0.5.217] - 2026-10-13
 
 ### Added

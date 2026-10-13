@@ -1684,77 +1684,153 @@ input:focus-visible,
 }
 
 .comparison-inner {
-  max-width: $doc-width;
+  max-width: $max-width;
   margin: 0 auto;
 }
 
-.comparison-table-wrap {
-  overflow: hidden;
-  border: 1px solid $border;
-  border-radius: 12px;
-  box-shadow: 0 14px 44px rgba(0, 0, 0, 0.25);
+// The capabilities, grouped: one card per theme, two columns, each row a
+// capability name and one line on it. It replaced a 16-row table that read as
+// one long column and had no room for vCon. The cards take the feature cards'
+// colored top stripe so the two sections read as one design.
+.cap-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 1.25rem;
+
+  @media (max-width: 900px) {
+    grid-template-columns: minmax(0, 1fr);
+  }
 }
 
-.comparison-table {
-  width: 100%;
-  border-collapse: collapse;
-  font-size: 0.9rem;
+.cap-card {
+  background: $surface;
+  border: 1px solid $border;
+  border-top: 3px solid $border;
+  border-radius: 12px;
+  padding: 1.6rem 1.75rem 1.1rem;
+  transition: border-color 0.2s ease, box-shadow 0.2s ease;
 
-  th, td {
-    padding: 0.9rem 1.15rem;
-    text-align: left;
-    border-bottom: 1px solid $border;
-    vertical-align: top;
+  &:hover {
+    border-color: $border-light;
+    box-shadow: 0 14px 40px rgba(0, 0, 0, 0.3);
   }
 
-  th {
-    font-weight: 600;
-    color: $text;
-    background: darken($surface, 2%);
-    font-size: 0.82rem;
-    letter-spacing: 0.02em;
-    text-transform: uppercase;
-  }
+  &--amber, &--amber:hover { border-top-color: $accent; }
+  &--green, &--green:hover { border-top-color: $code-green; }
+  &--blue,  &--blue:hover  { border-top-color: $link; }
+}
 
-  // Capability column: emphasized, never wraps awkwardly.
-  td:first-child {
-    color: $text;
-    font-weight: 600;
-    width: 34%;
-    white-space: nowrap;
-  }
+.cap-title {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  margin: 0;
+  font-size: 1.15rem;
+  font-weight: 700;
+  color: $text;
+  letter-spacing: -0.01em;
+}
 
-  td:last-child {
-    color: $text-dim;
+.cap-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 34px;
+  height: 34px;
+  border-radius: 8px;
+  flex: none;
+
+  .cap-card--amber & { color: $accent;     background: rgba($accent, 0.12); }
+  .cap-card--green & { color: $code-green; background: rgba($code-green, 0.12); }
+  .cap-card--blue &  { color: $link;       background: rgba($link, 0.12); }
+}
+
+.cap-lede {
+  margin: 0.4rem 0 0.8rem;
+  font-size: 0.82rem;
+  color: $text-dim;
+  line-height: 1.55;
+}
+
+.cap-badge {
+  display: inline-block;
+  margin-right: 0.35rem;
+  padding: 0.1rem 0.55rem;
+  border: 1px solid $border-light;
+  border-radius: 999px;
+  font-family: $font-mono;
+  font-size: 0.7rem;
+  color: $text-dim;
+  white-space: nowrap;
+}
+
+.cap-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+
+  li {
+    display: grid;
+    grid-template-columns: 11.5rem minmax(0, 1fr);
+    gap: 0.9rem;
+    padding: 0.65rem 0;
+    border-top: 1px solid $border;
+    font-size: 0.86rem;
     line-height: 1.55;
-  }
 
-  // WCAG 1.4.1 (Use of Color): a link sitting INSIDE a sentence must be
-  // distinguishable from the prose around it by something other than color,
-  // unless the two colors differ by at least 3:1. Here they do not. axe-core
-  // measured the eBPF row's "Read the security implications first" link at
-  // 1.79:1 -- $accent #73d0ff against $text-dim #8a93a3 -- and reported
-  // link-in-text-block, serious, on the homepage.
-  //
-  // An underline fixes it without touching the palette, which is the reason it
-  // is here rather than a color change: the accent is used site-wide and
-  // moving it to clear 3:1 against dimmed prose would change every link on
-  // every page to satisfy one row of one table.
-  //
-  // Scoped to td:last-child deliberately. The capability column's link IS the
-  // whole cell, so there is no surrounding text for it to be confused with,
-  // the rule does not apply to it, and underlining it would add noise to fix
-  // nothing.
-  td:last-child a {
+    @media (max-width: 560px) {
+      grid-template-columns: minmax(0, 1fr);
+      gap: 0.15rem;
+    }
+  }
+}
+
+.cap-name {
+  color: $text;
+  font-weight: 600;
+  text-decoration: none;
+
+  &:hover { color: $accent; }
+}
+
+// WCAG 1.4.1 (Use of Color): a link inside dimmed prose must differ from it by
+// more than color, since $link against $text-dim is 1.79:1, under 3:1. axe
+// reported it on the eBPF row's "Read the security implications first" link.
+.cap-text {
+  color: $text-dim;
+
+  a {
+    text-decoration: underline;
+    text-underline-offset: 0.2em;
+  }
+}
+
+.cap-engineering {
+  margin: 1.25rem 0 0;
+  padding: 1.1rem 1.75rem;
+  background: $surface;
+  border: 1px solid $border;
+  border-radius: 12px;
+  font-size: 0.86rem;
+  color: $text-dim;
+  line-height: 1.6;
+
+  // WCAG 1.4.1, as for .cap-text above: these links sit in $text-dim prose.
+  a {
     text-decoration: underline;
     text-underline-offset: 0.2em;
   }
 
-  tr:last-child td { border-bottom: none; }
-  tbody tr {
-    transition: background 0.12s ease;
-    &:hover td { background: rgba($accent, 0.03); }
-    &:hover td:first-child { color: $accent; }
+  .cap-eng-name {
+    font-family: $font-mono;
+    font-weight: 700;
+    color: $accent;
+    margin-right: 0.5rem;
+  }
+
+  .cap-all {
+    font-weight: 600;
+    margin-left: 0.25rem;
   }
 }
 
@@ -3368,11 +3444,6 @@ input:focus-visible,
   // Wrap the quickstart install command instead of clipping it (the most
   // important copy-paste on the page); matches the download page's installer.
   .code-block-wrap pre { white-space: pre-wrap; word-break: break-word; }
-
-  // Keep the reference table readable on narrow screens.
-  .comparison-table { font-size: 0.82rem; }
-  .comparison-table th, .comparison-table td { padding: 0.7rem 0.8rem; }
-  .comparison-table td:first-child { width: auto; white-space: normal; }
 
   .code-block-wrap pre { font-size: 0.85rem; padding: 1.1rem; }
 }
