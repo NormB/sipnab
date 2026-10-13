@@ -7110,6 +7110,7 @@ fn live_settle() -> chrono::TimeDelta {
 /// written. A call on hold for longer than this is written early, with its
 /// completeness note saying it had not ended, and written again under the
 /// same name when the BYE arrives.
+#[cfg(feature = "vcon")]
 const LIVE_IDLE_WRITE: std::time::Duration = std::time::Duration::from_secs(120);
 
 /// The two waits a live sweep applies, as the predicate takes them.
