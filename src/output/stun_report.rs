@@ -8,7 +8,7 @@
 //! Binding Request drew no reply has no public address to advertise, so it
 //! falls back to the private one in its SDP, and one-way audio follows.
 //!
-//! TURN ([RFC 5766](https://www.rfc-editor.org/rfc/rfc5766)) rides the same
+//! TURN ([RFC 5766](https://www.rfc-editor.org/rfc/rfc5766.html)) rides the same
 //! transaction table, because a TURN message IS a STUN message. What it adds
 //! is one section the transaction table cannot hold: the allocations a server
 //! granted, with the lifetimes that decide when they lapse.
@@ -850,7 +850,7 @@ mod tests {
     }
 
     /// An ICE check, which is a Binding Request carrying the attributes
-    /// [RFC 8445 section 7.1](https://www.rfc-editor.org/rfc/rfc8445#section-7.1)
+    /// [RFC 8445 section 7.1](https://www.rfc-editor.org/rfc/rfc8445.html#section-7.1)
     /// requires (PRIORITY, ICE-CONTROLLING, and USE-CANDIDATE to nominate). Built as a modification of `tx` so the two cannot
     /// drift apart in any field the ICE code does not care about.
     fn ice_check(id: &str, answered: bool, nominates: bool) -> Result<StunTransaction, TestError> {

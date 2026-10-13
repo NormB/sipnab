@@ -9,7 +9,7 @@ to be true to reintroduce it honestly.
 
 ## The problem it solves
 
-sipnab groups SIP messages into dialogs keyed by **Call-ID**. That is [RFC 3261](https://www.rfc-editor.org/rfc/rfc3261)'s
+sipnab groups SIP messages into dialogs keyed by **Call-ID**. That is [RFC 3261](https://www.rfc-editor.org/rfc/rfc3261.html)'s
 dialog identity and it is right for ordinary traffic.
 
 It is wrong for two real populations:
@@ -28,8 +28,8 @@ transaction identifier.
 
 | mode | groups by | unit |
 |---|---|---|
-| `call-id` (default) | Call-ID | dialog ([RFC 3261 section 12](https://www.rfc-editor.org/rfc/rfc3261#section-12)) |
-| `branch` | Call-ID + top-Via branch | transaction ([RFC 3261 section 17](https://www.rfc-editor.org/rfc/rfc3261#section-17)) |
+| `call-id` (default) | Call-ID | dialog ([RFC 3261 section 12](https://www.rfc-editor.org/rfc/rfc3261.html#section-12)) |
+| `branch` | Call-ID + top-Via branch | transaction ([RFC 3261 section 17](https://www.rfc-editor.org/rfc/rfc3261.html#section-17)) |
 
 `branch` composes *with* Call-ID rather than replacing it. A branch is only
 required to be unique within a transaction; keying on it alone would merge
@@ -41,9 +41,9 @@ which is worse than the problem being solved.
 A single call does **not** have one branch. RFC 3261 requires:
 
 - the INVITE transaction to carry one branch,
-- the ACK to a 2xx to carry a **new** branch ([RFC 3261 section 8.1.1.7](https://www.rfc-editor.org/rfc/rfc3261#section-8.1.1.7)
+- the ACK to a 2xx to carry a **new** branch ([RFC 3261 section 8.1.1.7](https://www.rfc-editor.org/rfc/rfc3261.html#section-8.1.1.7)
   exempts only CANCEL and the ACK to a non-2xx, which
-  [section 17.1.1.3](https://www.rfc-editor.org/rfc/rfc3261#section-17.1.1.3) builds on the INVITE's own Via),
+  [section 17.1.1.3](https://www.rfc-editor.org/rfc/rfc3261.html#section-17.1.1.3) builds on the INVITE's own Via),
 - the BYE, being a separate transaction, to carry another.
 
 So under `branch`, one ordinary call becomes **three or more** tracked units,
@@ -73,7 +73,7 @@ branch  mode:  key = format!("{call_id}\n{branch}")     // \n cannot appear in
 [`src/sip/dialog.rs`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog.rs) for exactly this reason; reuse it rather than inventing a
 second convention.
 
-Messages with no branch ([RFC 2543](https://www.rfc-editor.org/rfc/rfc2543) peers) fall back to the Call-ID alone, so
+Messages with no branch ([RFC 2543](https://www.rfc-editor.org/rfc/rfc2543.html) peers) fall back to the Call-ID alone, so
 they group as they do today rather than vanishing into an empty-branch bucket.
 
 ### The blast radius, which is the real cost

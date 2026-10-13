@@ -137,7 +137,7 @@ Cause:      Q.850 cause 16 "NORMAL_CLEARING" [Reason]
 
 FreeSWITCH gives the callee's leg a Call-ID of its own, and its `INVITE`
 carries nothing that names the caller's leg: no `Session-ID` header, the one
-[RFC 7989](https://www.rfc-editor.org/rfc/rfc7989) defines for that. sipnab
+[RFC 7989](https://www.rfc-editor.org/rfc/rfc7989.html) defines for that. sipnab
 still ties the two together, from their addresses and their start times,
 and says so.
 

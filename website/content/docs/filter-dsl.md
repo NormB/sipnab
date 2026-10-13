@@ -148,7 +148,7 @@ case.
 sipnab -N -I capture.pcap --filter "rtp.jitter > 50.0 OR rtp.loss > 1.0" --json
 ```
 
-Jitter arrives in milliseconds ([RFC 3550](https://www.rfc-editor.org/rfc/rfc3550) interarrival jitter algorithm), and high values indicate network congestion. Loss is a percentage (0.0-100.0) whose acceptable thresholds are codec-dependent.
+Jitter arrives in milliseconds ([RFC 3550](https://www.rfc-editor.org/rfc/rfc3550.html) interarrival jitter algorithm), and high values indicate network congestion. Loss is a percentage (0.0-100.0) whose acceptable thresholds are codec-dependent.
 
 ### Failed international calls
 
@@ -236,7 +236,7 @@ sipnab -N -I capture.pcap --filter "rtp.ssrc == '0x12345678'" --json
 ### RTCP extended reports
 
 When a capture carries RTCP XR (PT=207), sipnab decodes the VoIP Metrics block
-([RFC 3611](https://www.rfc-editor.org/rfc/rfc3611) Section 4.7) and keeps it beside the stream the block names:
+([RFC 3611](https://www.rfc-editor.org/rfc/rfc3611.html) Section 4.7) and keeps it beside the stream the block names:
 
 - Round-trip delay and end-system delay
 - Signal level, noise level and residual echo return loss
@@ -490,7 +490,7 @@ because then it was the outcome.
 
 | Field | Description | Value |
 |-------|-------------|-------|
-| `time` | The instant of the dialog's first message | a quoted [RFC 3339](https://www.rfc-editor.org/rfc/rfc3339) instant, such as `'2026-10-09T10:00:00Z'` |
+| `time` | The instant of the dialog's first message | a quoted [RFC 3339](https://www.rfc-editor.org/rfc/rfc3339.html) instant, such as `'2026-10-09T10:00:00Z'` |
 
 `time` takes `<`, `<=`, `>`, `>=` and `==`, and nothing else: `!=`, `=~` and
 `in_subnet` are parse errors, and so is a literal that is not a quoted RFC 3339
@@ -544,7 +544,7 @@ header."P-Asserted-Identity" =~ 'sip:alice@'
 ```
 
 Write the name bare, or in quotes when it holds a character that would end a
-bare name. Either way it must be an [RFC 3261](https://www.rfc-editor.org/rfc/rfc3261)
+bare name. Either way it must be an [RFC 3261](https://www.rfc-editor.org/rfc/rfc3261.html)
 token of at most 256 bytes (see [Parser constraints](#parser-constraints)).
 
 ## Operators
@@ -563,7 +563,7 @@ token of at most 256 bytes (see [Parser constraints](#parser-constraints)).
 Notes:
 - Boolean fields only support `==` and `!=`.
 - Regex (`=~`) is not applicable to numeric or boolean fields.
-- `in_subnet` takes a CIDR literal on the right and an address-valued field on the left (`src.ip`, `dst.ip`). It uses the same rule as `--hep-allow`, so IPv4, IPv6 and IPv4-mapped IPv6 addresses ([RFC 4291 section 2.5.5.2](https://www.rfc-editor.org/rfc/rfc4291#section-2.5.5.2)) all compare as the allowlist compares them, and a bare address with no prefix reads as a host route. An unparseable address or block matches nothing rather than matching everything.
+- `in_subnet` takes a CIDR literal on the right and an address-valued field on the left (`src.ip`, `dst.ip`). It uses the same rule as `--hep-allow`, so IPv4, IPv6 and IPv4-mapped IPv6 addresses ([RFC 4291 section 2.5.5.2](https://www.rfc-editor.org/rfc/rfc4291.html#section-2.5.5.2)) all compare as the allowlist compares them, and a bare address with no prefix reads as a host route. An unparseable address or block matches nothing rather than matching everything.
 - Numeric equality uses epsilon comparison for floating-point precision. For computed values (`duration`, `pdd`, `rtp.mos`) prefer range operators (`>=`, `<`) over `==` — an exact match on a derived float rarely hits.
 
 > **Note:** String comparisons are case-sensitive. `state` values must exactly match one of the 13 values listed under [String Fields](#string-fields) above (`'Failed'`, not `'failed'`). Use `=~` with a case-insensitive regex pattern if you need case-insensitive matching: `state =~ '(?i)failed'`.

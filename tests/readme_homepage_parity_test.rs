@@ -27,7 +27,7 @@ const CAPABILITIES: &[(&str, &str)] = &[
     ("HEP v1/v2/v3", "HEP v1/v2/v3"),
     ("Tunnels and transports", "VXLAN"),
     ("TLS/SRTP decryption", "SSLKEYLOGFILE"),
-    ("eBPF TLS capture", "--uprobe-tls"),
+    ("TLS capture with uprobes", "--uprobe-tls"),
     ("RTP quality analysis", "RTCP XR"),
     ("VoIP diagnosis", "one-way audio"),
     ("Calls across legs", "B2BUA"),

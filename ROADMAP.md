@@ -101,7 +101,7 @@ Each of these is a decision recorded in the repository, with the reasons:
   it does not record it, so its vCons say only what it saw
   ([The five refusals, and the one role](docs/design/vcon.md#2-the-five-refusals-and-the-one-role)).
 - **Choose `X-` header names for you.** Correlation headers are yours to
-  configure, following [RFC 6648](https://www.rfc-editor.org/rfc/rfc6648)
+  configure, following [RFC 6648](https://www.rfc-editor.org/rfc/rfc6648.html)
   ([`xcid_headers`](docs/config-reference.md)).
 
 ## How to influence it

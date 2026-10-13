@@ -276,7 +276,7 @@ impl TlsRecordReassembler {
     }
 
     /// Read decrypted bytes as WebSocket when their connection is a WebSocket
-    /// session: SIP over WSS ([RFC 7118](https://www.rfc-editor.org/rfc/rfc7118)).
+    /// session: SIP over WSS ([RFC 7118](https://www.rfc-editor.org/rfc/rfc7118.html)).
     ///
     /// A connection becomes one when its decrypted bytes start the HTTP
     /// upgrade, its `101` answer, or a data frame
@@ -614,8 +614,8 @@ mod tests {
         r
     }
 
-    /// [RFC 5246 section 6.2.1](https://www.rfc-editor.org/rfc/rfc5246#section-6.2.1): *"Implementations MUST NOT send zero-length fragments
-    /// of Handshake, Alert, or ChangeCipherSpec content types."* [RFC 8446 section 5.1](https://www.rfc-editor.org/rfc/rfc8446#section-5.1)
+    /// [RFC 5246 section 6.2.1](https://www.rfc-editor.org/rfc/rfc5246.html#section-6.2.1): *"Implementations MUST NOT send zero-length fragments
+    /// of Handshake, Alert, or ChangeCipherSpec content types."* [RFC 8446 section 5.1](https://www.rfc-editor.org/rfc/rfc8446.html#section-5.1)
     /// repeats it for Handshake and says an Alert record *"MUST contain exactly
     /// one message"*.
     ///

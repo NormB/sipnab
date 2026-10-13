@@ -25,7 +25,7 @@
 
 use serde::Serialize;
 
-/// The magic cookie [RFC 3261 section 8.1.1.7](https://www.rfc-editor.org/rfc/rfc3261#section-8.1.1.7) requires every compliant branch to
+/// The magic cookie [RFC 3261 section 8.1.1.7](https://www.rfc-editor.org/rfc/rfc3261.html#section-8.1.1.7) requires every compliant branch to
 /// begin with.
 ///
 /// Not a fingerprint on its own — it is mandatory, so its presence says only
@@ -208,7 +208,7 @@ impl FingerprintAccumulator {
             let mut score = 0u8;
             // The BRANCH signal is the vendor extension, or -- where there is
             // none -- the remainder's shape. The magic cookie on its own is
-            // mandatory for every compliant sender ([RFC 3261 §8.1.1.7](https://www.rfc-editor.org/rfc/rfc3261#section-8.1.1.7)), so
+            // mandatory for every compliant sender ([RFC 3261 §8.1.1.7](https://www.rfc-editor.org/rfc/rfc3261.html#section-8.1.1.7)), so
             // counting it would hand a free point to whichever candidate
             // happens to want no extension, and `z9hG4bK-not-hex-at-all` --
             // an unrecognized stack -- read as `chan_sip` because of it.

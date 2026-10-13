@@ -191,7 +191,7 @@ which blocks the push:
 | `cd fuzz && cargo check` | `fuzz/` is a separate workspace nothing else compiles. |
 | `cargo check --no-default-features --features <combo> --tests` over the reduced combinations | `--all-features` never builds a tree without `native`, so `#[cfg]` rot is invisible to it. The `--tests` part matters: without it no test file compiles and the gate passes over nothing. |
 | `sh scripts/check-non-linux.sh` | Re-checks a copy of the tree with the `target_os` values swapped, so the macOS arm of every platform split compiles here. CI is the only non-Linux build in this project, and two macOS breaks reached it on 2026-08-07 with every other gate green. Runs on Linux hosts only — on macOS or a BSD your ordinary `cargo clippy` already is that build, and the gate says `NOT CHECKED` rather than pretending. |
-| `python3 scripts/check-yang.py` | A generator writes the `sipnab-diagnosis` YANG module from the analysis's tables, and a Rust test proves the committed file matches them; only a YANG implementation can say it is valid YANG. `pyang --lint` and `yanglint` compile it, `pyang --check-update-from` holds a new revision to the last, and `yanglint -t data` validates the [RFC 7951](https://www.rfc-editor.org/rfc/rfc7951) export every door writes. `NOT CHECKED` on a host with neither tool; CI installs both and fails without them. |
+| `python3 scripts/check-yang.py` | A generator writes the `sipnab-diagnosis` YANG module from the analysis's tables, and a Rust test proves the committed file matches them; only a YANG implementation can say it is valid YANG. `pyang --lint` and `yanglint` compile it, `pyang --check-update-from` holds a new revision to the last, and `yanglint -t data` validates the [RFC 7951](https://www.rfc-editor.org/rfc/rfc7951.html) export every door writes. `NOT CHECKED` on a host with neither tool; CI installs both and fails without them. |
 | `vale docs/ website/content/ README.md SUPPORT.md MAINTAINERS.md` | Prose style is invisible to every cargo command. Turned main red on 2026-08-03. |
 | `codespell` over CI's path list | Spelling likewise, and it reads `src/` too — the hits that broke CI were in doc comments. |
 | `scripts/tag-signature-check.sh` on every pushed `v*` tag | A release tag carries the name of the maintainer who publishes it. The tag must be an annotated tag with a good SSH signature from a key in `.github/allowed_signers`. Nothing in `cargo test` sees a tag. |
@@ -241,9 +241,9 @@ Write what a reader can act on:
 | Instead of | Write | Why |
 |---|---|---|
 | a hostname (invented here: `buildbox-7`, `sbc-east-2`) | what the machine IS -- `the aarch64 self-hosted runner`, `Jetson AGX Thor, 14 cores` | A benchmark needs the hardware; it never needs the box's name. |
-| an address on your LAN (`192.0.2.40` stands in for one here) | [RFC 5737](https://www.rfc-editor.org/rfc/rfc5737) -- `192.0.2.0/24`, `198.51.100.0/24`, `203.0.113.0/24` | Reserved for documentation, and a reader can tell at a glance it is an example. |
-| a global IPv6 address | [RFC 3849](https://www.rfc-editor.org/rfc/rfc3849) -- `2001:db8::/32` | Same reason. |
-| a real domain (`corp.example-isp.com`) | [RFC 2606](https://www.rfc-editor.org/rfc/rfc2606) -- `example.com`, or a `.test` / `.invalid` name | An address at a real domain reaches a real person. |
+| an address on your LAN (`192.0.2.40` stands in for one here) | [RFC 5737](https://www.rfc-editor.org/rfc/rfc5737.html) -- `192.0.2.0/24`, `198.51.100.0/24`, `203.0.113.0/24` | Reserved for documentation, and a reader can tell at a glance it is an example. |
+| a global IPv6 address | [RFC 3849](https://www.rfc-editor.org/rfc/rfc3849.html) -- `2001:db8::/32` | Same reason. |
+| a real domain (`corp.example-isp.com`) | [RFC 2606](https://www.rfc-editor.org/rfc/rfc2606.html) -- `example.com`, or a `.test` / `.invalid` name | An address at a real domain reaches a real person. |
 | `/home/you/pcaps` | `$HOME`, `/srv/pcaps`, or a path relative to the repo | An absolute home path names your account and runs on one machine. |
 | a gate log or a scratch file | nothing -- do not commit it, and add the pattern to `.gitignore` | A transcript carries the paths of the machine that produced it. |
 

@@ -64,7 +64,7 @@ use std::sync::LazyLock;
 /// The request-URI a rebuilt request carries when its container did not store
 /// one.
 ///
-/// `.invalid` is reserved by [RFC 2606 section 2](https://www.rfc-editor.org/rfc/rfc2606#section-2) for names that must never
+/// `.invalid` is reserved by [RFC 2606 section 2](https://www.rfc-editor.org/rfc/rfc2606.html#section-2) for names that must never
 /// resolve, so this cannot be confused with a real target and nothing can be
 /// sent to it.
 pub const REQUEST_URI_NOT_STORED: &str = "sip:request-uri-not-stored.invalid";

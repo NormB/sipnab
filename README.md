@@ -240,7 +240,7 @@ Next: [REST API and metrics](docs/rest-api.md),
 - **RTP quality.** Jitter, loss, MOS (mean opinion score, an estimate of how
   the call sounded, from the ITU-T G.107 E-model;
   [where it comes from](docs/mos-and-codecs.md)), RTCP XR
-  ([RFC 3611](https://www.rfc-editor.org/rfc/rfc3611)) reports, and one-way
+  ([RFC 3611](https://www.rfc-editor.org/rfc/rfc3611.html)) reports, and one-way
   audio
 - **Security analysis.** Scanner detection, registration floods, digest
   credential leaks, STIR/SHAKEN, and fraud heuristics, with alerts to syslog,
@@ -252,15 +252,17 @@ Next: [REST API and metrics](docs/rest-api.md),
   private key (`--tls-key`, TLS 1.2 RSA key exchange only), SRTP keys (the
   SDES `a=crypto` keys in the SDP, or a master-keys file with `--srtp-keys`),
   and DTLS-SRTP (`--dtls-keylog`,
-  [RFC 5764](https://www.rfc-editor.org/rfc/rfc5764)).
+  [RFC 5764](https://www.rfc-editor.org/rfc/rfc5764.html)).
   [Capture SIP over TLS](docs/tls-capture.md) helps you choose
-- **eBPF TLS capture.** This does not break TLS. On a host where you already
-  have root, kernel uprobes read the SIP plaintext inside OpenSSL or wolfSSL
-  before the library encrypts it (`--uprobe-tls`), so it needs no key,
-  certificate or restart. It is in the released Linux gnu tarballs, `.deb` and
-  `.rpm`, not the static musl builds, and needs a kernel with BTF
+- **TLS capture with uprobes.** This does not break TLS. On a host where you
+  already have root, kernel uprobes read the SIP plaintext inside OpenSSL or
+  wolfSSL before the library encrypts it (`--uprobe-tls`), so it needs no key,
+  certificate or restart. Every Linux build has it, and its default tracefs
+  backend needs no BTF. The eBPF backend, which also recovers the peer
+  addresses, is in the released Linux gnu tarballs, `.deb` and `.rpm`, not the
+  static musl builds, and needs a kernel with BTF
 - **SIPREC metadata.** Reads the recording metadata
-  ([RFC 7866](https://www.rfc-editor.org/rfc/rfc7866)) that a session recording
+  ([RFC 7866](https://www.rfc-editor.org/rfc/rfc7866.html)) that a session recording
   client sends. sipnab is not a recording client or server
 - **Relay correlation.** Ties media on an rtpengine relay
   ([rtpengine](docs/rtpengine.md)) or an rtpproxy relay (`--rtpproxy-control`)
@@ -286,7 +288,7 @@ Next: [REST API and metrics](docs/rest-api.md),
   split across IP fragments or TCP segments. Some need an option on a live
   capture: [Encapsulations](docs/encapsulations.md) lists which
 - **Ranked analysis and conformance.** `--analyze` lists every problem in a
-  capture, worst first, and `--yang-analyze` writes it as [RFC 7951](https://www.rfc-editor.org/rfc/rfc7951) JSON
+  capture, worst first, and `--yang-analyze` writes it as [RFC 7951](https://www.rfc-editor.org/rfc/rfc7951.html) JSON
   against a published YANG module; `--lint` checks RFC conformance with a
   rule ID and RFC section per finding
 - **pcap in and out.** Reads and writes pcap and pcapng, with rotation and

@@ -61,7 +61,7 @@ can be that collector (`-L`) or a sender (`-H`), over UDP, TCP or TLS.
 
 How much the spacing between RTP packets varies, in milliseconds. sipnab
 computes it with the interarrival algorithm of
-[RFC 3550](https://www.rfc-editor.org/rfc/rfc3550#appendix-A.8).
+[RFC 3550](https://www.rfc-editor.org/rfc/rfc3550.html#appendix-A.8).
 
 ## MCP
 
@@ -123,7 +123,7 @@ it to match RTP streams to dialogs.
 
 ## SIPREC, SRC and SRS
 
-SIPREC ([RFC 7866](https://www.rfc-editor.org/rfc/rfc7866)) is how a call gets
+SIPREC ([RFC 7866](https://www.rfc-editor.org/rfc/rfc7866.html)) is how a call gets
 recorded: the session recording client (SRC) sends the call's media and a
 metadata document to a session recording server (SRS). sipnab reads that
 metadata, meaning who was on the call and which stream belongs to whom. It

@@ -1234,9 +1234,9 @@ mod tests {
     }
 
     /// A TOC-only Opus packet is a legitimate one. A code-0 packet carries
-    /// N-1 bytes of frame ([RFC 6716 section 3.2.2](https://www.rfc-editor.org/rfc/rfc6716#section-3.2.2)), so its one frame is zero
+    /// N-1 bytes of frame ([RFC 6716 section 3.2.2](https://www.rfc-editor.org/rfc/rfc6716.html#section-3.2.2)), so its one frame is zero
     /// bytes, and "any Opus frame in any mode MAY have a length of 0"
-    /// ([RFC 6716 section 3.2.1](https://www.rfc-editor.org/rfc/rfc6716#section-3.2.1)). The decoder conceals the absent frame
+    /// ([RFC 6716 section 3.2.1](https://www.rfc-editor.org/rfc/rfc6716.html#section-3.2.1)). The decoder conceals the absent frame
     /// with a full frame of output, and those samples must be kept, in range.
     #[test]
     fn a_decodable_opus_frame_contributes_its_samples_in_range() -> Result<(), TestError> {

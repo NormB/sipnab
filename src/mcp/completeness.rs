@@ -653,7 +653,7 @@ mod tests {
     ///
     /// Inserting `source_exhausted` beside `sipnab-diagnosis:capture-analysis`
     /// the way every other object gets it would publish a document every YANG
-    /// validator refuses: [RFC 7951 section 4](https://www.rfc-editor.org/rfc/rfc7951#section-4) admits nothing unqualified at the
+    /// validator refuses: [RFC 7951 section 4](https://www.rfc-editor.org/rfc/rfc7951.html#section-4) admits nothing unqualified at the
     /// top. And the forced `false` has to reach one level down, where the
     /// document keeps its `complete`.
     #[test]

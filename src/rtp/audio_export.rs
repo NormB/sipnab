@@ -916,7 +916,7 @@ impl FrameDecoder {
     /// runs at `clock_rate`.
     ///
     /// G.711's is the clock rate. G.722's is 16 kHz whatever the clock rate
-    /// says: [RFC 3551 section 4.5.2](https://www.rfc-editor.org/rfc/rfc3551#section-4.5.2) gives payload type 9 an 8 kHz RTP clock
+    /// says: [RFC 3551 section 4.5.2](https://www.rfc-editor.org/rfc/rfc3551.html#section-4.5.2) gives payload type 9 an 8 kHz RTP clock
     /// for historical reasons, and the samples are 16 kHz. Opus decodes at
     /// 48 kHz.
     #[must_use]

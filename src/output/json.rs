@@ -118,7 +118,7 @@ struct MessageJson<'a> {
     #[serde(skip_serializing_if = "Option::is_none")]
     frame: Option<String>,
     /// The DSCP the frame carrying this message was marked with
-    /// ([RFC 2474](https://www.rfc-editor.org/rfc/rfc2474)), 0 to 63 — the
+    /// ([RFC 2474](https://www.rfc-editor.org/rfc/rfc2474.html)), 0 to 63 — the
     /// queue the network was asked to put this signaling in.
     ///
     /// Omitted, never null, when no IP header was observed: a HEP-fed message
@@ -313,7 +313,7 @@ struct StreamJson {
     #[serde(skip_serializing_if = "Option::is_none")]
     frame: Option<String>,
     /// DSCP of this stream's FIRST packet
-    /// ([RFC 2474](https://www.rfc-editor.org/rfc/rfc2474)), 0 to 63.
+    /// ([RFC 2474](https://www.rfc-editor.org/rfc/rfc2474.html)), 0 to 63.
     ///
     /// Voice is conventionally marked `EF` (46) and video `AF41` (34); 0 means
     /// the media is competing with bulk traffic, which is the single most
@@ -542,7 +542,7 @@ struct DialogJson {
     #[serde(skip_serializing_if = "Option::is_none")]
     final_status_code: Option<u16>,
     /// The reason phrase carried beside `final_status_code`, verbatim from the
-    /// wire. Free text per [RFC 3261 section 7.2](https://www.rfc-editor.org/rfc/rfc3261#section-7.2) — a sender may write anything, so
+    /// wire. Free text per [RFC 3261 section 7.2](https://www.rfc-editor.org/rfc/rfc3261.html#section-7.2) — a sender may write anything, so
     /// `500 Service Unavailable` is legal and common. Match on the code, not
     /// this. `None` when there is no final response.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -648,7 +648,7 @@ struct DialogJson {
 /// Header names [`MessageJson`] already carries as their own fields.
 ///
 /// The one place the exclusion is written down. Matched case-insensitively,
-/// because [RFC 3261 section 7.3.1](https://www.rfc-editor.org/rfc/rfc3261#section-7.3.1) makes header names case-insensitive and a sender
+/// because [RFC 3261 section 7.3.1](https://www.rfc-editor.org/rfc/rfc3261.html#section-7.3.1) makes header names case-insensitive and a sender
 /// that writes `call-id` must not get a second copy of it.
 ///
 /// Compact forms are not listed: the parser expands every registered one to

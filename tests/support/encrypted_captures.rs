@@ -403,7 +403,7 @@ pub fn wss_session(
     )
 }
 
-/// The client's HTTP upgrade request ([RFC 6455 section 4.1](https://www.rfc-editor.org/rfc/rfc6455#section-4.1)).
+/// The client's HTTP upgrade request ([RFC 6455 section 4.1](https://www.rfc-editor.org/rfc/rfc6455.html#section-4.1)).
 pub const UPGRADE: &str = "GET / HTTP/1.1\r\nHost: 10.9.1.2:7443\r\nUpgrade: websocket\r\n\
                        Connection: Upgrade\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n\
                        Sec-WebSocket-Protocol: sip\r\nSec-WebSocket-Version: 13\r\n\r\n";

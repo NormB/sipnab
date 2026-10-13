@@ -555,7 +555,7 @@ fn two_websocket_frames_in_one_tls_record_are_two_messages() -> Result<(), TestE
     Ok(())
 }
 
-/// A message fragmented across two frames ([RFC 6455 section 5.4](https://www.rfc-editor.org/rfc/rfc6455#section-5.4)):
+/// A message fragmented across two frames ([RFC 6455 section 5.4](https://www.rfc-editor.org/rfc/rfc6455.html#section-5.4)):
 /// a text frame with FIN clear, then a continuation frame with FIN set.
 #[test]
 fn a_message_fragmented_across_two_websocket_frames_is_one_message() -> Result<(), TestError> {

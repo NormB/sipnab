@@ -640,7 +640,7 @@ fn is_uuid(text: &str) -> bool {
             .all(|g| g.bytes().all(|b| b.is_ascii_hexdigit()))
 }
 
-/// A URI reference with a scheme, per [RFC 3986 section 3.1](https://www.rfc-editor.org/rfc/rfc3986#section-3.1).
+/// A URI reference with a scheme, per [RFC 3986 section 3.1](https://www.rfc-editor.org/rfc/rfc3986.html#section-3.1).
 fn is_uri(text: &str) -> bool {
     let Some((scheme, rest)) = text.split_once(':') else {
         return false;

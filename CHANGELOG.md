@@ -22,6 +22,27 @@ entry that carries them.
   hardening, and corrects two rows: Prometheus metrics include call, MOS and
   security series, and the gnu no-audio packages carry no WASM plugins.
 
+### Fixed
+
+- **Every homepage link lands on the section that answers it.** Several
+  capability cards linked to a page top or to a section that did not cover
+  the card, such as "Audio, notes and names" landing on RTP Streams. Each
+  link now goes to the section that answers it, and the docs gained what the
+  cards promised and the pages lacked: SIP over WebSocket and reassembly,
+  the HEP senders, the linter's exit code, plugin availability per release
+  build, and a table of the MCP tools that write or act with the flag that
+  allows each.
+- **The uprobe TLS capture card and the README described the wrong build
+  requirement.** They said the capability is not in the static musl builds
+  and needs a kernel with BTF. `--uprobe-tls` is in every Linux build, and
+  its default tracefs backend needs no BTF; only the eBPF backend needs BTF
+  and the gnu builds.
+- **RFC links keep their section anchor.** `rfc-editor.org/rfc/rfcN`
+  redirects to a metadata page and drops the `#section-` anchor, so a link to
+  "[RFC 3261 section 17.1.1.3](https://www.rfc-editor.org/rfc/rfc3261.html#section-17.1.1.3)" landed on a page without that section. Every
+  RFC link in the docs, the site, lint findings and MCP tool descriptions now
+  uses the `.html` page, which holds the anchor.
+
 ### Internal
 
 - **The `mcp_max_body_bytes` wiring probe waits for the capture to load.** It
@@ -172,7 +193,7 @@ entry that carries them.
 - **G.722 audio is decoded.** A stream carrying G.722 (static payload type 9,
   common on PBX extensions) is retained and written to a WAV or a vCon as
   16 kHz audio, the rate of its samples rather than the 8 kHz RTP clock
-  [RFC 3551](https://www.rfc-editor.org/rfc/rfc3551) gives the payload type. The decoder follows ITU-T G.722's
+  [RFC 3551](https://www.rfc-editor.org/rfc/rfc3551.html) gives the payload type. The decoder follows ITU-T G.722's
   fixed-point arithmetic and matches FFmpeg's decode sample for sample on a
   tone and on full-scale noise.
 - **A live vCon export warns when idle compaction can reach a call first.**
@@ -332,7 +353,7 @@ entry that carries them.
   2026-10-09T11:00:00Z` keeps the dialogs whose first message falls in the
   half-open window `[since, until)`, the window REST `/v1/dialogs` spells
   `after`/`before` and the MCP `search_by_time` tool spells `start`/`end`; all
-  three now read the bound with one [RFC 3339](https://www.rfc-editor.org/rfc/rfc3339) parser and apply one rule. The
+  three now read the bound with one [RFC 3339](https://www.rfc-editor.org/rfc/rfc3339.html) parser and apply one rule. The
   window joins `--filter` in one compiled filter, so `--report`,
   `--json-dialogs`, `--analyze`, the per-message stream and
   `--export-vcon-when` all honor it. A window holding none of the capture's
@@ -724,7 +745,7 @@ entry that carries them.
 - **A vCon callee's `sip_user_agent` no longer comes from a proxy.** The
   exporter read the callee's `User-Agent`/`Server` and `Contact` from the
   first response in the ladder. Through a proxy that is the proxy's own
-  `100 Trying`, which [RFC 3261 section 16.7](https://www.rfc-editor.org/rfc/rfc3261#section-16.7) keeps hop by hop, so a call
+  `100 Trying`, which [RFC 3261 section 16.7](https://www.rfc-editor.org/rfc/rfc3261.html#section-16.7) keeps hop by hop, so a call
   through OpenSIPS exported the proxy's `Server` banner as the callee's
   software and no callee `Contact`. Both now come only from messages the
   callee sent: a response from 101 to 699 carrying the dialog's remote `To`
@@ -987,7 +1008,7 @@ entry that carries them.
 - **A call challenged for credentials keeps its parties on the vCon
   recording.** A dialog took its remote tag from the first `To` tag it saw,
   which for a challenged call is the tag of the `401` or `407`. That response
-  creates no dialog ([RFC 3261 section 12.1](https://www.rfc-editor.org/rfc/rfc3261#section-12.1)), and the re-sent INVITE is answered
+  creates no dialog ([RFC 3261 section 12.1](https://www.rfc-editor.org/rfc/rfc3261.html#section-12.1)), and the re-sent INVITE is answered
   under another tag. The vCon exporter attributes an audio channel to the party
   whose own SDP advertised the stream's sending address, and it identifies the
   callee's SDP by that tag. So it found no callee endpoint, and
@@ -1078,7 +1099,7 @@ entry that carries them.
   connect now gives up after 3 seconds and counts as a `connect` failure, as
   a refused one does. Three seconds covers the first connection request and
   one retransmission, which a TCP sender sends one second after the first
-  ([RFC 6298](https://www.rfc-editor.org/rfc/rfc6298)); the next packet dials again. The limit is a fixed value with no
+  ([RFC 6298](https://www.rfc-editor.org/rfc/rfc6298.html)); the next packet dials again. The limit is a fixed value with no
   flag or key, as the 10-second TLS handshake limit is.
   Affected: `--hep-send` with `--hep-send-transport tcp` or `tls`.
 
@@ -2613,9 +2634,9 @@ entry that carries them.
   The detector counted refused credentialed REGISTERs inside a fixed
   one-second window and dropped any challenge that arrived more than 32 seconds
   after its REGISTER. That figure is Timer F from
-  [RFC 3261 section 17.1.2.2](https://www.rfc-editor.org/rfc/rfc3261#section-17.1.2.2)
+  [RFC 3261 section 17.1.2.2](https://www.rfc-editor.org/rfc/rfc3261.html#section-17.1.2.2)
   at the default T1 of 500 ms, and it is wrong for a network that runs a longer T1, which
-  [section 17.1.1.1](https://www.rfc-editor.org/rfc/rfc3261#section-17.1.1.1)
+  [section 17.1.1.1](https://www.rfc-editor.org/rfc/rfc3261.html#section-17.1.1.1)
   recommends on slow links, or behind a proxy whose final-response timer runs
   longer. `--reg-flood-window <SECS>` (`[security] reg_flood_window_secs`,
   default 1, range 1-3600) sets the window, and
@@ -2770,7 +2791,7 @@ entry that carries them.
   Decrypted WebSocket bytes now go through a per-direction stream that joins
   a frame across records, splits several frames out of one record, and joins
   a message fragmented across frames
-  ([RFC 6455 section 5.4](https://www.rfc-editor.org/rfc/rfc6455#section-5.4)),
+  ([RFC 6455 section 5.4](https://www.rfc-editor.org/rfc/rfc6455.html#section-5.4)),
   up to `MAX_WS_MESSAGE_SIZE` (65,536) bytes. A frame the capture never
   finished, or one that breaks RFC 6455, counts in the NOT DECODED line
   instead of vanishing. OpenSIPS also writes its `101 Switching Protocols`
@@ -3099,7 +3120,7 @@ entry that carries them.
   headers each considered: `header.x-cid == 'abc'`,
   `header.p-asserted-identity =~ 'sip:alice@'`. Header names are compared
   case-insensitively and a compact form names the same header as its long form
-  ([RFC 3261 section 7.3.3](https://www.rfc-editor.org/rfc/rfc3261#section-7.3.3)),
+  ([RFC 3261 section 7.3.3](https://www.rfc-editor.org/rfc/rfc3261.html#section-7.3.3)),
   so `header.k` and `header.Supported` are one field. A name is bounded at 256
   bytes (`MAX_HEADER_NAME_LEN`). It reaches every surface that takes a filter:
   `--filter`, the TUI filter dialog, REST and MCP.
@@ -3159,7 +3180,7 @@ entry that carries them.
   Two rtpengine relay fixtures were live captures from the lab network, a
   fuzz seed was a copy of a third-party capture, and the two oldest fixtures
   used private addresses. `tests/support/synthetic_captures.rs` now builds
-  all five, plus the empty fuzz seed, on [RFC 5737](https://www.rfc-editor.org/rfc/rfc5737) addresses and [RFC 7042](https://www.rfc-editor.org/rfc/rfc7042) MAC
+  all five, plus the empty fuzz seed, on [RFC 5737](https://www.rfc-editor.org/rfc/rfc5737.html) addresses and [RFC 7042](https://www.rfc-editor.org/rfc/rfc7042.html) MAC
   addresses, and `cargo run --features native --bin gen_fixture` writes them.
   `tests/synthetic_captures_test.rs` rebuilds each one and fails on the first
   byte that differs. The relay pair keeps what the live exchange showed:
@@ -3185,7 +3206,7 @@ entry that carries them.
   come out byte-identical. The two NAT fixtures change only their MAC
   addresses, which were outside the RFC 7042 documentation block, and in
   `stun_sdp_mismatch.pcap` the two SDP bodies' `Content-Length`, which said 126
-  for 134 bytes. Its [RFC 1918](https://www.rfc-editor.org/rfc/rfc1918) address stays, because it is the mismatch the
+  for 134 bytes. Its [RFC 1918](https://www.rfc-editor.org/rfc/rfc1918.html) address stays, because it is the mismatch the
   fixture shows, and the test that checks for documentation addresses lists
   it as the one deliberate exception.
 
@@ -3205,7 +3226,7 @@ entry that carries them.
   finding's unit changed, and a unit is part of an identity's description in
   the module, so the module gains a revision rather than editing the published
   one. Descriptions only: no node, identity or type changed, and
-  `pyang --check-update-from` holds the pair to [RFC 7950 section 11](https://www.rfc-editor.org/rfc/rfc7950#section-11). The
+  `pyang --check-update-from` holds the pair to [RFC 7950 section 11](https://www.rfc-editor.org/rfc/rfc7950.html#section-11). The
   2026-09-21 file stays beside it.
 - **A member whose link type sipnab does not decode no longer ends a filtered
   run.** When a BPF filter cannot compile against such a file — an LTE MAC log
@@ -3214,7 +3235,7 @@ entry that carries them.
   Every file of that kind now also gets a line naming its link type.
 
 - **Nothing sipnab sends is named with an `X-` prefix
-  ([RFC 6648](https://www.rfc-editor.org/rfc/rfc6648)).** Three names carried
+  ([RFC 6648](https://www.rfc-editor.org/rfc/rfc6648.html)).** Three names carried
   one, and each moves to its modern equivalent:
   - the REST audio response header `x-sipnab-audio-partial` is now
     `Sipnab-Audio-Partial`;
@@ -3223,14 +3244,14 @@ entry that carries them.
   - leg correlation no longer defaults to the `X-Call-ID` header. An estate that
     stamps one names it in `[sip] xcid_headers`, and the identifier that crosses
     a B2BUA by design,
-    [RFC 7989](https://www.rfc-editor.org/rfc/rfc7989) `Session-ID`, is
+    [RFC 7989](https://www.rfc-editor.org/rfc/rfc7989.html) `Session-ID`, is
     correlation strategy 0 and needs no configuration.
 
   `X-Content-Type-Options: nosniff` stays, as the one exception: the WHATWG
   Fetch Standard defines it under that name and there is no alternative
   spelling. A gate reads the REST and MCP surfaces and the published site
   headers and fails on any other `X-` name. Headers a CAPTURE carries are
-  untouched by all of this: [RFC 6648 section 2](https://www.rfc-editor.org/rfc/rfc6648#section-2) forbids treating a header
+  untouched by all of this: [RFC 6648 section 2](https://www.rfc-editor.org/rfc/rfc6648.html#section-2) forbids treating a header
   differently for its prefix, so `X-Asterisk-HangupCause` and an SBC's `X-CID`
   are read exactly as before.
 
@@ -3254,13 +3275,13 @@ entry that carries them.
   keys loaded from <file> — use only in test environments` as a warning.
 - **`--reg-flood` matches a challenge without a `Via` branch.** A 401 or 407
   settled a credentialed REGISTER only through the top `Via` branch, which an
-  [RFC 2543](https://www.rfc-editor.org/rfc/rfc2543) client does not send, so a branchless credential-stuffing run
+  [RFC 2543](https://www.rfc-editor.org/rfc/rfc2543.html) client does not send, so a branchless credential-stuffing run
   counted no failures at all. The detector now falls back to the `Call-ID` and
   `CSeq` that identify the transaction when there is no branch.
 - **`--reg-flood` no longer counts a challenge to an expired REGISTER.** A
   pending REGISTER stayed open until its source aged out, so a 401 minutes
   later still counted as a failure. A REGISTER's transaction now closes at
-  Timer F, 32 seconds ([RFC 3261 section 17.1.2.2](https://www.rfc-editor.org/rfc/rfc3261#section-17.1.2.2)).
+  Timer F, 32 seconds ([RFC 3261 section 17.1.2.2](https://www.rfc-editor.org/rfc/rfc3261.html#section-17.1.2.2)).
 
 - **Troubleshooting's decode example matches this release.** It quoted
   `unsupported link type 0` and said DLT 0, 9 and 276 had no decoder, while
@@ -3314,7 +3335,7 @@ entry that carries them.
   records a forwarded fragmented datagram once per interface, and sipnab read
   the second copy of a fragment as an overlap and discarded the datagram, and
   the SIP in it. An exact copy of a fragment already held is now ignored, as
-  [RFC 8200 section 4.5](https://www.rfc-editor.org/rfc/rfc8200#section-4.5) allows. Overlaps that differ still drop the datagram.
+  [RFC 8200 section 4.5](https://www.rfc-editor.org/rfc/rfc8200.html#section-4.5) allows. Overlaps that differ still drop the datagram.
 - **A failed DNS lookup is no longer reported as undeliverable media.** An
   ICMP error quoting a DNS message whose random ID starts with RTP's version
   bits read as RTP, and joined the critical `ICMP: media undeliverable`
@@ -3392,7 +3413,7 @@ entry that carries them.
   CI and in the pre-push hook, which reports NOT CHECKED where neither tool is
   installed.
 
-- **The capture analysis as [RFC 7951](https://www.rfc-editor.org/rfc/rfc7951) JSON, on every door.**
+- **The capture analysis as [RFC 7951](https://www.rfc-editor.org/rfc/rfc7951.html) JSON, on every door.**
   `--yang-analyze`, `GET /v1/report?format=yang-json` (answered as
   `application/yang-data+json`) and MCP `get_capture_report` with
   `format: "yang-json"` write the same analysis as a document that validates
@@ -3812,7 +3833,7 @@ entry that carries them.
   is gone: 1,503 in 142 files, covering the docs, the READMEs, this changelog
   and the rustdoc that docs.rs publishes. Each now names what it points at and
   links there:
-  - an RFC section, as "[RFC 3261 section 17.1.3](https://www.rfc-editor.org/rfc/rfc3261#section-17.1.3)";
+  - an RFC section, as "[RFC 3261 section 17.1.3](https://www.rfc-editor.org/rfc/rfc3261.html#section-17.1.3)";
   - an IETF draft, as a datatracker section link;
   - an IEEE, 3GPP or ITU-T clause, by standard and clause with a link to the
     standard's page;
@@ -3821,22 +3842,22 @@ entry that carries them.
   All 1,041 RFC section links now in the tree point at a section that exists.
   Each one was checked against the RFC's own HTML. The check turned up
   citations that pointed at the wrong section:
-  - `iat` freshness is [RFC 8224 section 6.2](https://www.rfc-editor.org/rfc/rfc8224#section-6.2), not 4.4, which does not exist
+  - `iat` freshness is [RFC 8224 section 6.2](https://www.rfc-editor.org/rfc/rfc8224.html#section-6.2), not 4.4, which does not exist
     (6 places).
-  - The TLS 1.3 key-update formula is [RFC 8446 section 7.2](https://www.rfc-editor.org/rfc/rfc8446#section-7.2), not 4.6.3.
-  - The UAS's wait for an ACK is [RFC 3261 section 13.3.1.4](https://www.rfc-editor.org/rfc/rfc3261#section-13.3.1.4), not Timer H's
+  - The TLS 1.3 key-update formula is [RFC 8446 section 7.2](https://www.rfc-editor.org/rfc/rfc8446.html#section-7.2), not 4.6.3.
+  - The UAS's wait for an ACK is [RFC 3261 section 13.3.1.4](https://www.rfc-editor.org/rfc/rfc3261.html#section-13.3.1.4), not Timer H's
     17.2.1. The ACK to a 2xx takes a new branch under
-    [RFC 3261 section 8.1.1.7](https://www.rfc-editor.org/rfc/rfc3261#section-8.1.1.7),
+    [RFC 3261 section 8.1.1.7](https://www.rfc-editor.org/rfc/rfc3261.html#section-8.1.1.7),
     not 17.1.1.3.
   - A G-PDU is [3GPP TS 29.281](https://portal.3gpp.org/desktopmodules/Specifications/SpecificationDetails.aspx?specificationId=1699)
     clause 7.1, not 7.3.
   - vCon's `redacted` object is
     [draft-ietf-vcon-vcon-core-03 section 4.1.8](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-03#section-4.1.8),
     not 4.1.
-  - Response codes 607 and 608 cited `§?`; they are [RFC 8197 section 5.1](https://www.rfc-editor.org/rfc/rfc8197#section-5.1) and
-    [RFC 8688 section 5.1](https://www.rfc-editor.org/rfc/rfc8688#section-5.1). Code 199 cited an example flow in [RFC 6228](https://www.rfc-editor.org/rfc/rfc6228) (section
+  - Response codes 607 and 608 cited `§?`; they are [RFC 8197 section 5.1](https://www.rfc-editor.org/rfc/rfc8197.html#section-5.1) and
+    [RFC 8688 section 5.1](https://www.rfc-editor.org/rfc/rfc8688.html#section-5.1). Code 199 cited an example flow in [RFC 6228](https://www.rfc-editor.org/rfc/rfc6228.html) (section
     9.1); it is defined in
-    [RFC 6228 section 1](https://www.rfc-editor.org/rfc/rfc6228#section-1).
+    [RFC 6228 section 1](https://www.rfc-editor.org/rfc/rfc6228.html#section-1).
 
   `scripts/rfc-links.py` now writes the new form, rewrites the old one, keeps
   the RFC across a list (`§21.5, §21.6`), links appendixes, never touches a
@@ -3928,7 +3949,7 @@ entry that carries them.
   now `400` or `invalid_params` (-32602), through one rule both surfaces share.
 - **The TFPS examples in the REST and MCP references show what sipnab sends.**
   They still showed the draft sipnab replaced: `rule` for `reason`,
-  `verdict: "blocked"` for `disposition: "block"`, [RFC 3339](https://www.rfc-editor.org/rfc/rfc3339) strings for epoch
+  `verdict: "blocked"` for `disposition: "block"`, [RFC 3339](https://www.rfc-editor.org/rfc/rfc3339.html) strings for epoch
   seconds, a six-field status, and refusals called `self`, `ignoreip` and
   `invalid` where TFPS says `local`, `declared`, `kernel` and `not-blocked`.
   They are rewritten from sipnab's real answers against the upstream
@@ -4048,7 +4069,7 @@ entry that carries them.
   now requires the hex body to be ASCII, and both duration parsers use
   `checked_mul` and reject an overflowing value. Each input flows straight from
   the command line or a config file, so a graceful rejection replaces the abort.
-- **The REST API accepts a lowercase `bearer` authorization scheme.** [RFC 7235](https://www.rfc-editor.org/rfc/rfc7235)
+- **The REST API accepts a lowercase `bearer` authorization scheme.** [RFC 7235](https://www.rfc-editor.org/rfc/rfc7235.html)
   makes the HTTP auth-scheme case-insensitive, but `check_auth` matched `Bearer`
   case-sensitively, so a spec-legal `Authorization: bearer <token>` was rejected
   with 401 — while the standalone metrics server's Basic check was already
@@ -4156,10 +4177,10 @@ entry that carries them.
   separator is present.
 - **A display name's escaped quote is no longer truncated.**
   `extract_display_name` stopped at the first `"`, so `"O\"Brien"` became `O\`;
-  it now honors `\"` and `\\` quoted-pairs and unescapes them ([RFC 3261](https://www.rfc-editor.org/rfc/rfc3261)
+  it now honors `\"` and `\\` quoted-pairs and unescapes them ([RFC 3261](https://www.rfc-editor.org/rfc/rfc3261.html)
   quoted-string).
 - **The SIPREC `boundary` parameter name is matched case-insensitively.**
-  `BOUNDARY=` was missed ([RFC 2045 section 5.1](https://www.rfc-editor.org/rfc/rfc2045#section-5.1) makes parameter names case-insensitive),
+  `BOUNDARY=` was missed ([RFC 2045 section 5.1](https://www.rfc-editor.org/rfc/rfc2045.html#section-5.1) makes parameter names case-insensitive),
   so the multipart body did not split and the recording metadata was lost.
 - **Filter-DSL ordering operators agree with equality on the tolerance
   boundary.** The DSL treated two numbers within `NUM_EQ_TOLERANCE` as equal for
@@ -4193,7 +4214,7 @@ entry that carries them.
   `expires` out of `"x>;expires=99" <sip:…>;expires=3600`, masking a
   de-registration or fabricating a shortened-grant finding. Both now skip the
   quoted display name first, like `extract_tag` and `extract_uri_host_port`
-  already do — [RFC 3261 section 25.1](https://www.rfc-editor.org/rfc/rfc3261#section-25.1) admits `<`, `>` and `;` inside a `quoted-string`.
+  already do — [RFC 3261 section 25.1](https://www.rfc-editor.org/rfc/rfc3261.html#section-25.1) admits `<`, `>` and `;` inside a `quoted-string`.
 - **`--wireshark` / `--tshark-filter` escape the Call-ID before it reaches a
   filter or a shell.** Both options built a Wireshark display filter — and the
   `tshark -r … -Y '…'` command line — by interpolating the raw Call-ID with no
@@ -4206,7 +4227,7 @@ entry that carries them.
   through the same helpers the MCP tool already used; the filename is
   shell-quoted too.
 - **A crafted STIR/SHAKEN `iat` cannot overflow the freshness check.** The
-  [RFC 8224 section 6.2](https://www.rfc-editor.org/rfc/rfc8224#section-6.2), Step 4, freshness test computed `(now_unix - iat).abs()` on `iat`, an
+  [RFC 8224 section 6.2](https://www.rfc-editor.org/rfc/rfc8224.html#section-6.2), Step 4, freshness test computed `(now_unix - iat).abs()` on `iat`, an
   attacker-supplied JWT claim reachable over the wire with `--stir-shaken`. An
   `iat` of `i64::MIN` overflowed the subtraction — a panic in a debug build, a
   wrapped and wrong `VerificationStatus` in a release build — and `.abs()` would
@@ -5339,7 +5360,7 @@ entry that carries them.
   got nothing, and read it as a deploy that had not landed. It is now a checker
   that names which of the six situations is happening, with an exit code each.
 
-- **A media stream the peers rejected became a media endpoint.** [RFC 3264](https://www.rfc-editor.org/rfc/rfc3264) sets
+- **A media stream the peers rejected became a media endpoint.** [RFC 3264](https://www.rfc-editor.org/rfc/rfc3264.html) sets
   a port of zero to reject an offered stream, to terminate an existing one, or
   to say a stream is not wanted. All three mean no media will arrive there, and
   sipnab registered an endpoint for it anyway — so a call that declined video
@@ -5455,8 +5476,8 @@ entry that carries them.
   that deletes the packet.** `is_dtls` checked a content type and a version and
   nothing else, so a datagram whose first three bytes happened to read that way
   was accepted whatever its length field claimed. Both remaining rules are
-  stated: [RFC 6347](https://www.rfc-editor.org/rfc/rfc6347) says each record must fit within a single datagram, and its
-  length field is the TLS 1.2 one, which [RFC 5246](https://www.rfc-editor.org/rfc/rfc5246) bounds at 2^14 + 2048.
+  stated: [RFC 6347](https://www.rfc-editor.org/rfc/rfc6347.html) says each record must fit within a single datagram, and its
+  length field is the TLS 1.2 one, which [RFC 5246](https://www.rfc-editor.org/rfc/rfc5246.html) bounds at 2^14 + 2048.
 
   The two errors here are not symmetric, which is the argument for tightening.
   A wrong yes makes the pipeline consume the datagram, so the packet leaves the
@@ -5471,7 +5492,7 @@ entry that carries them.
   on a media port". The rule landed on `rtp::rtcp::looks_like_rtcp`, which
   nothing in the capture path calls. The classifier a captured datagram
   actually reaches kept a private copy of the length logic and was never told,
-  so on a muxed port sipnab went on accepting compounds [RFC 3550](https://www.rfc-editor.org/rfc/rfc3550) forbids. The
+  so on a muxed port sipnab went on accepting compounds [RFC 3550](https://www.rfc-editor.org/rfc/rfc3550.html) forbids. The
   copy is gone, the muxed verdict comes from the one function that holds the
   content rules, and a test fails if the two ever answer differently again.
   Operators running 0.5.164 have the classifier described in its release note
@@ -5533,7 +5554,7 @@ entry that carries them.
   forbidden record rather than skipping it, because a record layer that
   resynchronizes on untrusted bytes walks off into a payload.
 
-- **The WebSocket detector accepted a length encoding [RFC 6455](https://www.rfc-editor.org/rfc/rfc6455) forbids.** The
+- **The WebSocket detector accepted a length encoding [RFC 6455](https://www.rfc-editor.org/rfc/rfc6455.html) forbids.** The
   RFC requires the shortest length form that can carry a payload, and the
   detector took the extended forms at face value: a two-byte length declaring
   fewer than 126 bytes read as a frame, and so did an eight-byte length
@@ -5560,11 +5581,11 @@ entry that carries them.
 - **The LLMNR detector left five RFC-mandated zero bits unspent.** LLMNR is bare
   DNS with no magic cookie, so a port number is the only strong evidence a
   datagram is a name lookup rather than something that landed on 5355 by
-  accident. [RFC 4795](https://www.rfc-editor.org/rfc/rfc4795) requires a query to carry RCODE zero and forbids the
+  accident. [RFC 4795](https://www.rfc-editor.org/rfc/rfc4795.html) requires a query to carry RCODE zero and forbids the
   truncation bit; neither was checked. Both are query-only, because a responder
   sets RCODE and the RFC forbids truncation only on queries.
 
-- **The STUN decoder accepted a message length [RFC 8489](https://www.rfc-editor.org/rfc/rfc8489) says never occurs.**
+- **The STUN decoder accepted a message length [RFC 8489](https://www.rfc-editor.org/rfc/rfc8489.html) says never occurs.**
   Every attribute is padded to a multiple of four, so the length field's last
   two bits are always zero --- and the RFC names that as a way to tell STUN from
   other protocols. The decoder did not check it, and it shares ports with RTP
@@ -5773,7 +5794,7 @@ entry that carries them.
   nothing unless it names exactly one mode, which real VoLTE signaling rarely
   does.
 
-  The new `crate::rtp::amr` reads [RFC 4867](https://www.rfc-editor.org/rfc/rfc4867)'s payload header in both packings.
+  The new `crate::rtp::amr` reads [RFC 4867](https://www.rfc-editor.org/rfc/rfc4867.html)'s payload header in both packings.
   The frame type straddles an octet boundary in the bandwidth-efficient one and
   sits in a table-of-contents octet in the octet-aligned one, so the packing is
   an explicit argument with **no default**: reading one as the other returns a
@@ -6188,7 +6209,7 @@ entry that carries them.
   and `frame_ref`. "The call ended" and "the call ended because the far end was
   out of order" are different answers, and only the second closes a ticket.
 
-  [RFC 3326](https://www.rfc-editor.org/rfc/rfc3326) `Reason` was already parsed and was read in exactly one place — the
+  [RFC 3326](https://www.rfc-editor.org/rfc/rfc3326.html) `Reason` was already parsed and was read in exactly one place — the
   final failure response — which a normally-cleared call never reaches. A
   `Reason` on a `BYE` or a `CANCEL` now counts, read from the last message that
   names a cause. `protocol` is carried because a cause code without its scale is
@@ -6272,7 +6293,7 @@ entry that carries them.
 - **A redacted vCon published the operator's proxy chain by name.**
   `Path`, `Route`, `Record-Route` and `Service-Route` were all on the
   redactor's host-bearing list. `Via` — the one header every SIP message
-  carries — was not, because [RFC 3261 section 20.42](https://www.rfc-editor.org/rfc/rfc3261#section-20.42) gives it `sent-protocol SP
+  carries — was not, because [RFC 3261 section 20.42](https://www.rfc-editor.org/rfc/rfc3261.html#section-20.42) gives it `sent-protocol SP
   sent-by`, not a name-addr, so it did not fit beside them and fell through to
   the free-text sweep, which finds addresses and numbers and walks straight
   past a hostname. Its `received` and `maddr` parameters go through the same
@@ -6330,7 +6351,7 @@ entry that carries them.
 
 - **`in_subnet` refused addresses the HEP allowlist accepts.**
   `--hep-allow 198.51.100.0/24` admits an agent whose packets arrive as
-  `::ffff:198.51.100.7` — [RFC 4291 section 2.5.5.2](https://www.rfc-editor.org/rfc/rfc4291#section-2.5.5.2) makes `::ffff:0:0/96` the
+  `::ffff:198.51.100.7` — [RFC 4291 section 2.5.5.2](https://www.rfc-editor.org/rfc/rfc4291.html#section-2.5.5.2) makes `::ffff:0:0/96` the
   representation *of* an IPv4 address rather than a different family, and the
   allowlist maps it accordingly. The filter DSL had its own CIDR rule and
   refused the same address, so `src.ip in_subnet '198.51.100.0/24'` selected
@@ -6561,7 +6582,7 @@ entry that carries them.
   invalidating six sentences.
 
 - **`--redact` leaked the real URI when a display name ended in an escaped
-  quote.** [RFC 3261 section 25.1](https://www.rfc-editor.org/rfc/rfc3261#section-25.1) lets `quoted-pair` escape the closing DQUOTE, so
+  quote.** [RFC 3261 section 25.1](https://www.rfc-editor.org/rfc/rfc3261.html#section-25.1) lets `quoted-pair` escape the closing DQUOTE, so
   `\"` does not end a quoted string. `split_top_level_commas` honored that;
   `name_addr_one` scanned for the first bare `"` and did not. A sender who
   closes the quote early — the display name is theirs to choose — moved every
@@ -6626,11 +6647,11 @@ entry that carries them.
 
 - **`--redact` returned everything after the first comma verbatim.** Every
   header in the identity and routing families is `value *(COMMA value)` —
-  [RFC 3325 section 9.1](https://www.rfc-editor.org/rfc/rfc3325#section-9.1), [RFC 3327 section 4](https://www.rfc-editor.org/rfc/rfc3327#section-4), [RFC 7044 section 5](https://www.rfc-editor.org/rfc/rfc7044#section-5), [RFC 3261 section 20.10](https://www.rfc-editor.org/rfc/rfc3261#section-20.10) and [RFC 3261 section 20.30](https://www.rfc-editor.org/rfc/rfc3261#section-20.30) — and a
+  [RFC 3325 section 9.1](https://www.rfc-editor.org/rfc/rfc3325.html#section-9.1), [RFC 3327 section 4](https://www.rfc-editor.org/rfc/rfc3327.html#section-4), [RFC 7044 section 5](https://www.rfc-editor.org/rfc/rfc7044.html#section-5), [RFC 3261 section 20.10](https://www.rfc-editor.org/rfc/rfc3261.html#section-20.10) and [RFC 3261 section 20.30](https://www.rfc-editor.org/rfc/rfc3261.html#section-20.30) — and a
   two-value `P-Asserted-Identity`, which is the ordinary IMS shape, came out of
   a container the tool calls redacted carrying a real E.164 subscriber number,
   a display name, and the operator's own core hostnames. Splitting is now quote
-  and bracket aware, because [RFC 3261 section 25.1](https://www.rfc-editor.org/rfc/rfc3261#section-25.1) puts `,` inside `qdtext`.
+  and bracket aware, because [RFC 3261 section 25.1](https://www.rfc-editor.org/rfc/rfc3261.html#section-25.1) puts `,` inside `qdtext`.
 
 - **The redactor had a second `P-Charging-Vector` parser** beside the correct
   one, and it tore `icid-value="aaa;SECRET"` in half and emitted the tail in
@@ -6638,27 +6659,27 @@ entry that carries them.
   whitespace also lost its mandatory quotes.
 
 - **A conformant `m=video 49170/2` fabricated facts about another stream.**
-  [RFC 8866 section 5.14](https://www.rfc-editor.org/rfc/rfc8866#section-5.14)'s port-count form failed to parse and the parser stayed "in
+  [RFC 8866 section 5.14](https://www.rfc-editor.org/rfc/rfc8866.html#section-5.14)'s port-count form failed to parse and the parser stayed "in
   media", so every following attribute landed on the previous section — an
   audio stream reported as sendonly, anchored to the video's address, carrying
   the video's codec.
 
 - **Session-level SDP direction attributes were dropped**, which silently
-  disarmed a lint rule: the same [RFC 3264 section 6.1](https://www.rfc-editor.org/rfc/rfc3264#section-6.1) violation fired when written at
-  media level and not at session level. [RFC 8866 section 6.7](https://www.rfc-editor.org/rfc/rfc8866#section-6.7) makes the session-level
+  disarmed a lint rule: the same [RFC 3264 section 6.1](https://www.rfc-editor.org/rfc/rfc3264.html#section-6.1) violation fired when written at
+  media level and not at session level. [RFC 8866 section 6.7](https://www.rfc-editor.org/rfc/rfc8866.html#section-6.7) makes the session-level
   value the default for any media description that declares none.
 
 - **A `Contact` URI parameter was read as the binding lifetime.**
   `<sip:alice@host;expires=60>;expires=3600` reported "Registration granted 60s
   against 3600s requested". Everything inside the angle brackets is URI
-  parameters ([RFC 3261 section 25.1](https://www.rfc-editor.org/rfc/rfc3261#section-25.1)); [section 10.2.1.1](https://www.rfc-editor.org/rfc/rfc3261#section-10.2.1.1) puts the lifetime on the header parameter.
+  parameters ([RFC 3261 section 25.1](https://www.rfc-editor.org/rfc/rfc3261.html#section-25.1)); [section 10.2.1.1](https://www.rfc-editor.org/rfc/rfc3261.html#section-10.2.1.1) puts the lifetime on the header parameter.
 
 - **A caller could choose the dialog identifier.** `extract_tag` anchored on the
   first `>` in the raw value, so a display name of `"A>;tag=decoy"` supplied the
-  From tag — half the dialog ID under [RFC 3261 section 12.1.1](https://www.rfc-editor.org/rfc/rfc3261#section-12.1.1). It also missed `; tag = x` and
+  From tag — half the dialog ID under [RFC 3261 section 12.1.1](https://www.rfc-editor.org/rfc/rfc3261.html#section-12.1.1). It also missed `; tag = x` and
   `;TAG=`, both conformant.
 
-- **A response with an empty Reason-Phrase was discarded.** [RFC 4475 section 3.1.1.13](https://www.rfc-editor.org/rfc/rfc4475#section-3.1.1.13):
+- **A response with an empty Reason-Phrase was discarded.** [RFC 4475 section 3.1.1.13](https://www.rfc-editor.org/rfc/rfc4475.html#section-3.1.1.13):
   "A parser must accept this message." `line.trim()` destroyed the required
   trailing space and the whole response vanished with only a debug line.
 
@@ -6669,38 +6690,38 @@ entry that carries them.
 - **`Session-ID` was remotely spoofable.** The `remote` parameter name was
   matched case-sensitively, and parameters were split without quote awareness —
   so one appended `generic-param` overwrote the genuine remote half and killed
-  B2BUA correlation silently. A duplicate now takes the first, per [RFC 7989 section 5](https://www.rfc-editor.org/rfc/rfc7989#section-5).
+  B2BUA correlation silently. A duplicate now takes the first, per [RFC 7989 section 5](https://www.rfc-editor.org/rfc/rfc7989.html#section-5).
 
-- **Only the first `Identity` header was read.** [RFC 8224 section 4](https://www.rfc-editor.org/rfc/rfc8224#section-4) permits more than
-  one, and an [RFC 8946](https://www.rfc-editor.org/rfc/rfc8946) diverted call carries two — the second PASSporT was
+- **Only the first `Identity` header was read.** [RFC 8224 section 4](https://www.rfc-editor.org/rfc/rfc8224.html#section-4) permits more than
+  one, and an [RFC 8946](https://www.rfc-editor.org/rfc/rfc8946.html) diverted call carries two — the second PASSporT was
   invisible everywhere. An unparseable token was logged at debug and nowhere
   else; it is now a warning and is carried in the result.
 
-- **[RFC 3611 section 4.7](https://www.rfc-editor.org/rfc/rfc3611#section-4.7) jitter-buffer fields were read two octets early**, so
+- **[RFC 3611 section 4.7](https://www.rfc-editor.org/rfc/rfc3611.html#section-4.7) jitter-buffer fields were read two octets early**, so
   `jb_nominal` held the RX-config bits, each later field held its predecessor's
   value, and JB abs max was never read at all. The 65535 ceiling was tested
   against the wrong field. The existing test built its fixture in the parser's
-  order and called the shortfall "2 bytes padding"; the [RFC 3611 section 4.7](https://www.rfc-editor.org/rfc/rfc3611#section-4.7) body is 32 octets of
+  order and called the shortfall "2 bytes padding"; the [RFC 3611 section 4.7](https://www.rfc-editor.org/rfc/rfc3611.html#section-4.7) body is 32 octets of
   defined fields.
 
-- **[RFC 3550 section 5.1](https://www.rfc-editor.org/rfc/rfc3550#section-5.1) padding was decoded and never stripped**, so padding octets
+- **[RFC 3550 section 5.1](https://www.rfc-editor.org/rfc/rfc3550.html#section-5.1) padding was decoded and never stripped**, so padding octets
   were counted into the reported bitrate and exported as audio samples.
 
 - **A truncated RTCP packet became a phantom RTP stream.** Only types 200-204
   were rejected, so a snaplen-truncated XR (207) fell through and its block
-  header was reported as an SSRC. [RFC 3551 section 6](https://www.rfc-editor.org/rfc/rfc3551#section-6) leaves payload types 64-95
+  header was reported as an SSRC. [RFC 3551 section 6](https://www.rfc-editor.org/rfc/rfc3551.html#section-6) leaves payload types 64-95
   unassigned precisely so RTCP types 192-223 stay distinguishable.
 
-- **Every DTMF keypress was counted three times.** [RFC 4733 section 2.5.1.4](https://www.rfc-editor.org/rfc/rfc4733#section-2.5.1.4) requires
+- **Every DTMF keypress was counted three times.** [RFC 4733 section 2.5.1.4](https://www.rfc-editor.org/rfc/rfc4733.html#section-2.5.1.4) requires
   the final packet be sent three times with the E bit set; the retransmissions
   share SSRC, RTP timestamp and event code, which is now the dedupe key.
 
 - **A STUN message reported a bad fingerprint because of trailing octets.**
   `attr_start` was measured against the datagram rather than the message.
-  Duplicate attributes took the last where [RFC 8489 section 14](https://www.rfc-editor.org/rfc/rfc8489#section-14) says the first — and
+  Duplicate attributes took the last where [RFC 8489 section 14](https://www.rfc-editor.org/rfc/rfc8489.html#section-14) says the first — and
   MESSAGE-INTEGRITY covers only what precedes it.
 
-- **TURN channel numbers used [RFC 5766](https://www.rfc-editor.org/rfc/rfc5766)'s range.** [RFC 8656](https://www.rfc-editor.org/rfc/rfc8656) Table 3 reserves
+- **TURN channel numbers used [RFC 5766](https://www.rfc-editor.org/rfc/rfc5766.html)'s range.** [RFC 8656](https://www.rfc-editor.org/rfc/rfc8656.html) Table 3 reserves
   `0x5000-0xFFFF`; narrowing also quarters the accidental-match rate, which is
   what previously let GTPv2-C control messages be unwrapped as relayed media.
 
@@ -6717,7 +6738,7 @@ entry that carries them.
   Both are real fields read by working code and neither was registered, so
   setting them worked and logged `Unknown config key`.
 
-- **437's reason phrase was superseded.** [RFC 8224 section 6.2.2](https://www.rfc-editor.org/rfc/rfc8224#section-6.2.2) renamed it to
+- **437's reason phrase was superseded.** [RFC 8224 section 6.2.2](https://www.rfc-editor.org/rfc/rfc8224.html#section-6.2.2) renamed it to
   Unsupported Credential.
 
 ### Added
@@ -6947,14 +6968,14 @@ entry that carries them.
 ### Fixed
 
 - **SIPREC metadata could not be read from what a real SRC sends.** sipnab has
-  parsed [RFC 7866](https://www.rfc-editor.org/rfc/rfc7866) `application/rs-metadata+xml` for a long time, against a
+  parsed [RFC 7866](https://www.rfc-editor.org/rfc/rfc7866.html) `application/rs-metadata+xml` for a long time, against a
   hand-written fixture that nests `<participant>` and `<stream>` inside
   `<session>` with `<aor>` as a child element. OpenSIPS's `siprec` module --
   read here from `modules/siprec/siprec_body.c`, since the packets that matter
   are the ones a real SRC sends -- emits them as siblings of `<session>` with
   `aor` an attribute of `<nameID>`. Two fields were dead as a result.
 
-  The recording mode is `<datamode>`, which is what [RFC 7866 section 7](https://www.rfc-editor.org/rfc/rfc7866#section-7) defines and
+  The recording mode is `<datamode>`, which is what [RFC 7866 section 7](https://www.rfc-editor.org/rfc/rfc7866.html#section-7) defines and
   what OpenSIPS writes; sipnab looked for `<mode>` and found nothing, so `mode`
   was `None` on every recorded call.
 
@@ -7744,7 +7765,7 @@ entry that carries them.
   convention, where the client supports it. A client that declared nothing is
   NOT treated as having refused -- there was nobody to ask, which is the common
   case and a different fact.
-- **[RFC 9728](https://www.rfc-editor.org/rfc/rfc9728) protected-resource metadata**, with a conformant
+- **[RFC 9728](https://www.rfc-editor.org/rfc/rfc9728.html) protected-resource metadata**, with a conformant
   `WWW-Authenticate` challenge on 401, behind `--mcp-resource-url`. Static and
   HMAC bearer tokens already covered self-hosted; this is what a hosted client
   needs to connect without a manual token paste. sipnab does not become an
@@ -8075,11 +8096,11 @@ entry that carries them.
   unreachable.** `DialogState::Expired` ("registration expired or
   de-registered") and `DialogState::Pending` were declared and nothing in the
   tree could produce them.
-  - [RFC 3261 section 10.2.2](https://www.rfc-editor.org/rfc/rfc3261#section-10.2.2) — a 2xx to a REGISTER carrying `Expires: 0` now reports
+  - [RFC 3261 section 10.2.2](https://www.rfc-editor.org/rfc/rfc3261.html#section-10.2.2) — a 2xx to a REGISTER carrying `Expires: 0` now reports
     `Expired`. A phone that had just removed its binding read as `Registered`.
-  - [RFC 6665 section 4.1.3](https://www.rfc-editor.org/rfc/rfc6665#section-4.1.3) — a NOTIFY now reports the `Subscription-State` it carries:
+  - [RFC 6665 section 4.1.3](https://www.rfc-editor.org/rfc/rfc6665.html#section-4.1.3) — a NOTIFY now reports the `Subscription-State` it carries:
     `pending` and `terminated` were both reported as `Active`.
-  - [RFC 6665 section 4.2.1](https://www.rfc-editor.org/rfc/rfc6665#section-4.2.1) — a 2xx to a zero-interval SUBSCRIBE now terminates the
+  - [RFC 6665 section 4.2.1](https://www.rfc-editor.org/rfc/rfc6665.html#section-4.2.1) — a 2xx to a zero-interval SUBSCRIBE now terminates the
     subscription instead of activating it.
 - **The reachability test hid the gap it was named for.**
   `every_declared_destination_is_reachable_and_every_state_is_swept` asserted a
@@ -8435,12 +8456,12 @@ entry that carries them.
   non-loose Record-Route, duplicate and mismatched Via branches, rebound dynamic
   payload types, one-way telephone-event, attributes on rejected streams and the
   Opus rtpmap rate. Three citations moved after reading the RFC text rather than
-  recalling it: rejected streams are [RFC 3264 section 8.2](https://www.rfc-editor.org/rfc/rfc3264#section-8.2)
-  not [section 6](https://www.rfc-editor.org/rfc/rfc3264#section-6), telephone-event is [RFC 3264 section 7](https://www.rfc-editor.org/rfc/rfc3264#section-7) rather than
-  [RFC 4733](https://www.rfc-editor.org/rfc/rfc4733) -- which carries no
+  recalling it: rejected streams are [RFC 3264 section 8.2](https://www.rfc-editor.org/rfc/rfc3264.html#section-8.2)
+  not [section 6](https://www.rfc-editor.org/rfc/rfc3264.html#section-6), telephone-event is [RFC 3264 section 7](https://www.rfc-editor.org/rfc/rfc3264.html#section-7) rather than
+  [RFC 4733](https://www.rfc-editor.org/rfc/rfc4733.html) -- which carries no
   offer/answer rule at all -- and Opus is
-  [RFC 7587 section 7](https://www.rfc-editor.org/rfc/rfc7587#section-7) not [section 4.1](https://www.rfc-editor.org/rfc/rfc7587#section-4.1), because section 4.1 is
-  not [RFC 2119](https://www.rfc-editor.org/rfc/rfc2119) language.
+  [RFC 7587 section 7](https://www.rfc-editor.org/rfc/rfc7587.html#section-7) not [section 4.1](https://www.rfc-editor.org/rfc/rfc7587.html#section-4.1), because section 4.1 is
+  not [RFC 2119](https://www.rfc-editor.org/rfc/rfc2119.html) language.
 - **`--lint-suppress-file` and `--lint-no-suppress`**, closing a gap where the
   MCP tools honored a `.sipnablint` beside a capture while the binary ignored it.
 - **Redaction for vCon export** (`--redact` and its options). Identities become
@@ -8585,7 +8606,7 @@ carried in the source tarball and the docs, not in the code.
   The draft's own schema contradicts its [section 4.3](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-03#section-4.3) prose here, and the vendored copy
   carries that single deviation with the reasoning in a `$comment`. See the
   vCon working group's issue #20.
-- **REST errors are [RFC 9457](https://www.rfc-editor.org/rfc/rfc9457) `application/problem+json`.** They were a bare
+- **REST errors are [RFC 9457](https://www.rfc-editor.org/rfc/rfc9457.html) `application/problem+json`.** They were a bare
   status code with no body, so a client got a number and had to guess which of a
   handler's several 400s it had hit. The `type` slug derives from the status
   rather than from free text at each call site.
@@ -8735,7 +8756,7 @@ carried in the source tarball and the docs, not in the code.
   `Proxy-Authorization`, `WWW-Authenticate` and `Proxy-Authenticate` never
   travel. Headers and the filter that makes them safe to publish landed in one
   change, deliberately.
-- **A vCon party carries `tel`** when the SIP user part is an [RFC 3966](https://www.rfc-editor.org/rfc/rfc3966) global
+- **A vCon party carries `tel`** when the SIP user part is an [RFC 3966](https://www.rfc-editor.org/rfc/rfc3966.html) global
   number, and the dialog object carries `sip_from_tag` and `sip_to_tag`. A
   conserver indexes parties by `tel`, `mailto` and `name` and by nothing else,
   so a container with none of the three answered only to its UUID; a Call-ID
@@ -9163,7 +9184,7 @@ carried in the source tarball and the docs, not in the code.
   rule shaped "first one wins" silently makes the proxy's account
   authoritative, which is the one thing the wire capture exists to check.
   Three things prevent it: copies are paired by transaction identity
-  ([RFC 3261 section 17.1.3](https://www.rfc-editor.org/rfc/rfc3261#section-17.1.3)/[RFC 3261 section 17.2.3](https://www.rfc-editor.org/rfc/rfc3261#section-17.2.3)), never by arrival position; both accounts are
+  ([RFC 3261 section 17.1.3](https://www.rfc-editor.org/rfc/rfc3261.html#section-17.1.3)/[RFC 3261 section 17.2.3](https://www.rfc-editor.org/rfc/rfc3261.html#section-17.2.3)), never by arrival position; both accounts are
   reported by name, with no expected/actual pair a surface could render as
   truth-and-deviation; and the two gap lists come from one closure applied
   twice with its arguments swapped, so a rule favouring either witness would
@@ -9185,7 +9206,7 @@ carried in the source tarball and the docs, not in the code.
 
   `input_origin` reaches the dialog and the stream, a stream records when its
   dialog arrived over a *different* source, and SDP endpoints expire after
-  300 s — grounded on [RFC 3261 section 16.8](https://www.rfc-editor.org/rfc/rfc3261#section-16.8) Timer C, measured on the capture clock so
+  300 s — grounded on [RFC 3261 section 16.8](https://www.rfc-editor.org/rfc/rfc3261.html#section-16.8) Timer C, measured on the capture clock so
   a replay behaves like the live run.
 
 ### Fixed
@@ -9232,7 +9253,7 @@ carried in the source tarball and the docs, not in the code.
 - **TLS 1.3 handshake plaintext was handed to the SIP layer.** Every protected
   record in TLS 1.3 carries outer content type 23, so a `NewSessionTicket` is
   indistinguishable from a SIP message until it is opened; only the inner type
-  separates them ([RFC 8446 section 5.2](https://www.rfc-editor.org/rfc/rfc8446#section-5.2)). Returning that plaintext looked harmless
+  separates them ([RFC 8446 section 5.2](https://www.rfc-editor.org/rfc/rfc8446.html#section-5.2)). Returning that plaintext looked harmless
   while each record was judged alone — it does not parse as SIP — and stopped
   being harmless the moment records became a stream: ticket bytes prepend
   themselves to the next real message and frame it as garbage. Measured on a
@@ -9485,7 +9506,7 @@ carried in the source tarball and the docs, not in the code.
 ### Fixed
 
 - **A TLS 1.3 KeyUpdate ended decryption for the rest of the connection.**
-  [RFC 8446 section 5.3](https://www.rfc-editor.org/rfc/rfc8446#section-5.3) is explicit: "The 64-bit sequence number is reset to zero at
+  [RFC 8446 section 5.3](https://www.rfc-editor.org/rfc/rfc8446.html#section-5.3) is explicit: "The 64-bit sequence number is reset to zero at
   each key change". A rekey therefore changes two things at once — the peer
   seals under a new application traffic secret, and its record counter restarts
   — and sipnab followed neither. Every later record from that direction was
@@ -9498,8 +9519,8 @@ carried in the source tarball and the docs, not in the code.
   sipnab now recognises the post-handshake message — inner content type 22
   carrying handshake type 24, inside an ordinary application_data record — and
   derives the next secret the way the RFC specifies,
-  `HKDF-Expand-Label(secret, "traffic upd", "", Hash.length)` ([RFC 8446 section 7.2](https://www.rfc-editor.org/rfc/rfc8446#section-7.2),
-  which the KeyUpdate message of [section 4.6.3](https://www.rfc-editor.org/rfc/rfc8446#section-4.6.3) invokes), rather
+  `HKDF-Expand-Label(secret, "traffic upd", "", Hash.length)` ([RFC 8446 section 7.2](https://www.rfc-editor.org/rfc/rfc8446.html#section-7.2),
+  which the KeyUpdate message of [section 4.6.3](https://www.rfc-editor.org/rfc/rfc8446.html#section-4.6.3) invokes), rather
   than needing it extracted again. The record counter for that direction
   returns to zero with it.
 
@@ -9722,7 +9743,7 @@ carried in the source tarball and the docs, not in the code.
     first match; it now takes the latest.
 
 - **TLS 1.3 decryption never recovered from a missed record.** The per-record
-  nonce comes from a counter each endpoint keeps privately ([RFC 8446 section 5.3](https://www.rfc-editor.org/rfc/rfc8446#section-5.3)), and
+  nonce comes from a counter each endpoint keeps privately ([RFC 8446 section 5.3](https://www.rfc-editor.org/rfc/rfc8446.html#section-5.3)), and
   nothing on the wire carries it. TLS 1.2 already searched a small window for
   it; TLS 1.3 tried one value and gave up, so a single dropped or unreassembled
   record froze the counter and killed decryption for the rest of the connection
@@ -9933,7 +9954,7 @@ version; these changes first shipped in 0.5.112.
   say what the answer meant, and three of the additions fixed a WRONG reading
   rather than a missing one:
 
-  - **`MAPPED-ADDRESS`** (the pre-[RFC 5389](https://www.rfc-editor.org/rfc/rfc5389) form). Servers older than the magic
+  - **`MAPPED-ADDRESS`** (the pre-[RFC 5389](https://www.rfc-editor.org/rfc/rfc5389.html) form). Servers older than the magic
     cookie still answer with it, and without reading it their *successful*
     response reported as no answer at all. When both forms arrive the XOR one
     wins whatever order they come in, because it is the one a NAT cannot
@@ -10063,7 +10084,7 @@ version; these changes first shipped in 0.5.112.
 ### Fixed
 
 - **A private media address offered to a public peer is flagged.** An SDP `c=`
-  line carrying an [RFC 1918](https://www.rfc-editor.org/rfc/rfc1918) / [RFC 4193](https://www.rfc-editor.org/rfc/rfc4193) / link-local address is correct inside
+  line carrying an [RFC 1918](https://www.rfc-editor.org/rfc/rfc1918.html) / [RFC 4193](https://www.rfc-editor.org/rfc/rfc4193.html) / link-local address is correct inside
   one LAN and correct behind an SBC that rewrites it downstream — and wrong
   when nothing rewrites it, silently. Raised only when the peer is itself
   public, and carrier-grade NAT space is deliberately excluded: it is routable
@@ -10487,7 +10508,7 @@ version; these changes first shipped in 0.5.112.
   and the SSRC ties the sentence to a row in `stream_count`'s stream list.
 
   Each side advertises a RECEIVE port in its SDP and, under symmetric RTP
-  ([RFC 4961](https://www.rfc-editor.org/rfc/rfc4961)), sends from that same port; NATs and many endpoints break that,
+  ([RFC 4961](https://www.rfc-editor.org/rfc/rfc4961.html)), sends from that same port; NATs and many endpoints break that,
   the far end replies to a port nothing is sending from, no pinhole was ever
   opened there, and the audio is one-way. That comparison is now made in both
   directions and stated when it fails — `10.0.2.15 advertised 16384 to receive
@@ -10613,7 +10634,7 @@ version; these changes first shipped in 0.5.112.
   rather than being a second number to keep in step.
 - **`--active-idle-window` / `[sip] active_idle_window_secs`** sets how long a
   dialog may go untouched and still count toward the active-dialog and
-  active-call gauges, which was a hard-coded hour. Twice [RFC 4028](https://www.rfc-editor.org/rfc/rfc4028)'s default
+  active-call gauges, which was a hard-coded hour. Twice [RFC 4028](https://www.rfc-editor.org/rfc/rfc4028.html)'s default
   `Session-Expires` grounds the DEFAULT, not the number being fixed: a contact
   center parks callers on hold past an hour and its gauge stops counting every
   one of them.
@@ -10813,7 +10834,7 @@ version; these changes first shipped in 0.5.112.
   move.
 - **A call whose `BYE` was lost no longer counts as a channel in use.** A UAS
   answers a `BYE` only after terminating the session
-  ([RFC 3261 section 15.1.2](https://www.rfc-editor.org/rfc/rfc3261#section-15.1.2)), so the
+  ([RFC 3261 section 15.1.2](https://www.rfc-editor.org/rfc/rfc3261.html#section-15.1.2)), so the
   `200` is proof the call ended even when the `BYE` itself fell outside the
   capture — a dropped packet, a one-directional tap, a rotated file. Such a
   call used to sit in `InCall` until it aged out of the active window.
@@ -11016,7 +11037,7 @@ unreachable thresholds became tunable.
   why the window is settable rather than only the counts: no count reaches a
   sweep whose probes never share a window. Every key refuses `0` by name from
   the flag and from the file. `scanner_answer_grace_ms` keeps
-  [RFC 3261](https://www.rfc-editor.org/rfc/rfc3261) Timer T1 as its default,
+  [RFC 3261](https://www.rfc-editor.org/rfc/rfc3261.html) Timer T1 as its default,
   and both references say so.
 
 ### Changed
@@ -11121,7 +11142,7 @@ can actually set.
   | Source | What it is |
   |---|---|
   | `xr_voip_metrics` | The reporting endpoint's own round trip between the two RTP interfaces. The quantity G.114 is about. Accurate, and rare — most stacks never emit an XR |
-  | `sender_report_echo` | Derived from a receiver report's `LSR`/`DLSR` pair per [RFC 3550 section 6.4.1](https://www.rfc-editor.org/rfc/rfc3550#section-6.4.1). The full round trip when the capture point sits with the sender of the SR, a lower bound otherwise |
+  | `sender_report_echo` | Derived from a receiver report's `LSR`/`DLSR` pair per [RFC 3550 section 6.4.1](https://www.rfc-editor.org/rfc/rfc3550.html#section-6.4.1). The full round trip when the capture point sits with the sender of the SR, a lower bound otherwise |
 
   The second source is why this is useful at all: plain receiver reports are
   mandatory, so latency is now available on almost every call rather than the
@@ -11188,7 +11209,7 @@ sipnab no longer discards captured data without a knob or a word.
   mid-message and parses as malformed, so an operator sees a broken message
   from a peer that sent a good one. An over-cap SCTP message is worse — dropped
   whole, so the calls it carried never appear at all. Neither ceiling comes
-  from TCP or from [RFC 4960](https://www.rfc-editor.org/rfc/rfc4960); both are sipnab's, and both now say so on stderr.
+  from TCP or from [RFC 4960](https://www.rfc-editor.org/rfc/rfc4960.html); both are sipnab's, and both now say so on stderr.
 
 - **The same stream was `Good` in the call list and `Warning` in its own detail
   view.** Four views banded jitter, loss and MOS independently and disagreed:
@@ -11415,7 +11436,7 @@ What sipnab claims about itself is now checked against what it does.
   transaction, then subtracted one from the other.
 
   Two rules now stand between those milestones and a number. An INVITE that
-  carries a To-tag is in-dialog ([RFC 3261 section 8.1.1.2](https://www.rfc-editor.org/rfc/rfc3261#section-8.1.1.2)) and is never recorded as
+  carries a To-tag is in-dialog ([RFC 3261 section 8.1.1.2](https://www.rfc-editor.org/rfc/rfc3261.html#section-8.1.1.2)) and is never recorded as
   the call's first INVITE, so a re-INVITE cannot start the clock however late
   the capture began — the message says so itself, rather than the answer
   depending on what the recording happened to catch. And no derived interval
@@ -11423,7 +11444,7 @@ What sipnab claims about itself is now checked against what it does.
   time is reported as unknown rather than as a duration.
 
   Matching CSeq numbers could not have caught this. Each side of a dialog keeps
-  its own CSeq space ([RFC 3261 section 12.2.1.1](https://www.rfc-editor.org/rfc/rfc3261#section-12.2.1.1)), and here both were at 102.
+  its own CSeq space ([RFC 3261 section 12.2.1.1](https://www.rfc-editor.org/rfc/rfc3261.html#section-12.2.1.1)), and here both were at 102.
 
   Across a 2,740-dialog corpus the fix withdraws 11 setup times, every one a
   session-timer re-INVITE (RFC 4028, `Session-Expires: 1800;refresher=uac`)
@@ -11502,7 +11523,7 @@ Remote capture becomes usable on more than one box, and on RHEL.
   strictly worse than running the terminal viewer on the box, because the terminal viewer at least sees
   the media.
 
-  **RTP is not forwarded.** [RFC 3550 section 6.2](https://www.rfc-editor.org/rfc/rfc3550#section-6.2) holds RTCP to a small fraction of
+  **RTP is not forwarded.** [RFC 3550 section 6.2](https://www.rfc-editor.org/rfc/rfc3550.html#section-6.2) holds RTCP to a small fraction of
   session bandwidth, so the quality summary crosses at a rate a WAN link and a
   UDP feed can absorb. Media is the opposite on both counts, and forwarding it
   would turn a monitoring feed into a call recorder aimed at the collector.
@@ -11786,7 +11807,7 @@ claiming a field that was never there.
 
 ### Added
 
-- **Correlation on [RFC 7315](https://www.rfc-editor.org/rfc/rfc7315) `P-Charging-Vector`, as two strategies rather than
+- **Correlation on [RFC 7315](https://www.rfc-editor.org/rfc/rfc7315.html) `P-Charging-Vector`, as two strategies rather than
   one.** In IMS and carrier networks this header is already on the wire, so it
   correlates a call across nodes with no configuration change from the
   operator — unlike RFC 7989 `Session-ID`, which is the durable fix but needs
@@ -11801,22 +11822,22 @@ claiming a field that was never there.
   | `charging_vector_icid` | 85 | plain `icid-value` equality — an intermediary carried a per-dialog identifier onto a second dialog |
 
   **Plain `icid-value` does not cross a B2BUA, and a design that assumes it
-  does is wrong about the case it was built for.** [RFC 7315 section 4.6](https://www.rfc-editor.org/rfc/rfc7315#section-4.6) scopes the value to "a
+  does is wrong about the case it was built for.** [RFC 7315 section 4.6](https://www.rfc-editor.org/rfc/rfc7315.html#section-4.6) scopes the value to "a
   dialog or a transaction outside a dialog" and makes uniqueness a MUST, so a
   conformant back-to-back user agent emits a *different* icid on each side.
-  [RFC 7315 section 4.6.4.1](https://www.rfc-editor.org/rfc/rfc7315#section-4.6.4.1) is the parameter that survives it: a B2BUA MAY add `related-icid`
+  [RFC 7315 section 4.6.4.1](https://www.rfc-editor.org/rfc/rfc7315.html#section-4.6.4.1) is the parameter that survives it: a B2BUA MAY add `related-icid`
   carrying "the icid value of the original dialog towards the remote end".
   Plain equality across a re-origination is a vendor behavior, not a
   guarantee, and it scores accordingly.
 
   Both report `identifier_match: true` — an icid comparison compares values,
   not timing — so `heuristic_only` stays false on an icid-only match.
-  **Neither value ever reaches a response.** The suggested construction in [RFC 7315 section 4.6](https://www.rfc-editor.org/rfc/rfc7315#section-4.6)
+  **Neither value ever reaches a response.** The suggested construction in [RFC 7315 section 4.6](https://www.rfc-editor.org/rfc/rfc7315.html#section-4.6)
   embeds the generating proxy's hostname, so the identifier is
   operator-internal by design and only the strategy name is surfaced.
 
   Two limits worth knowing before planning around it. The first proxy
-  generates the icid ([RFC 7315 section 5.6](https://www.rfc-editor.org/rfc/rfc7315#section-5.6)), so the leg arriving from an endpoint carries
+  generates the icid ([RFC 7315 section 5.6](https://www.rfc-editor.org/rfc/rfc7315.html#section-5.6)), so the leg arriving from an endpoint carries
   none — this helps on internal hops and **not at the access edge**. And there
   is no cardinality guard: a proxy that stamps one icid on every dialog would
   make plain-icid matching a false-match generator. No threshold was invented
@@ -11904,7 +11925,7 @@ reader cannot download is worse than a merged section.
 - **A quoted display name could spoof the host and user a call is attributed
   to.** `extract_uri_host_port` scanned the raw header for a scheme anywhere —
   `find("<sip:")`, then `<sips:`, then a bare `find("sip:")`, then `sips:`.
-  [RFC 3261 section 25.1](https://www.rfc-editor.org/rfc/rfc3261#section-25.1) lets a `quoted-string` display name hold any octet except an
+  [RFC 3261 section 25.1](https://www.rfc-editor.org/rfc/rfc3261.html#section-25.1) lets a `quoted-string` display name hold any octet except an
   unescaped `"`, including `<`, `>` and a complete URI, so that scan reads
   caller-controlled text and `find` returns the **first textual match, not the
   addressable URI**:
@@ -12413,11 +12434,11 @@ had drifted from the code are now what the code does.
   marking which. It carries its own message, which names `export_audio` rather
   than `-O` and does not claim the analysis is intact.
 
-- **Session-ID: the [RFC 7329](https://www.rfc-editor.org/rfc/rfc7329) legacy form is reported as an interop notice.**
+- **Session-ID: the [RFC 7329](https://www.rfc-editor.org/rfc/rfc7329.html) legacy form is reported as an interop notice.**
   `SessionId::legacy_rfc7329_form` was computed at parse time and read by
-  nothing outside `session_id.rs`. [RFC 7989 section 5](https://www.rfc-editor.org/rfc/rfc7989#section-5) states the `remote` parameter as
+  nothing outside `session_id.rs`. [RFC 7989 section 5](https://www.rfc-editor.org/rfc/rfc7989.html#section-5) states the `remote` parameter as
   a MUST with a named exception for backwards compatibility with RFC 7329, and
-  [RFC 7989 section 11](https://www.rfc-editor.org/rfc/rfc7989#section-11) details that case. The rule is cited to section 11 and raised as **interop at
+  [RFC 7989 section 11](https://www.rfc-editor.org/rfc/rfc7989.html#section-11) details that case. The rule is cited to section 11 and raised as **interop at
   notice severity, not as a MUST violation**: one message cannot tell a peer
   genuinely interworking with an RFC 7329 stack — which the RFC permits — from
   a modern peer that simply omits the parameter, and reporting a violation
@@ -12580,7 +12601,7 @@ reported success after reading only part of its input.
 - **Two RFC 7989 Session-ID lint rules.** The deviation detector was computed,
   tested, and surfaced nowhere. `SIP-7989-5-SESSION-ID-MALFORMED` fires when a
   half is not 32 characters of `[0-9a-f]`; `SIP-7989-5-SESSION-ID-UPPERCASE`
-  fires on uppercase hexadecimal, which [RFC 7989 section 5](https://www.rfc-editor.org/rfc/rfc7989#section-5) rules out twice over — its ABNF
+  fires on uppercase hexadecimal, which [RFC 7989 section 5](https://www.rfc-editor.org/rfc/rfc7989.html#section-5) rules out twice over — its ABNF
   admits `%x61-66` with no uppercase alternative, and the section closes by
   saying the values appear as lowercase. sipnab still correlates on an
   uppercase half, but a peer, SBC or log pipeline comparing bytes sees two
@@ -12825,9 +12846,9 @@ and the provenance a federated setup needs.
 - **MPLS accepted label stacks that the defining RFCs forbid.** The
   bottom-label cross-check covered only the two Explicit NULLs, so a stack
   bottomed with the Router Alert label (1, illegal at the bottom per
-  [RFC 3032 section 2.1](https://www.rfc-editor.org/rfc/rfc3032#section-2.1)), the Entropy Label Indicator (7, always followed by the entropy label
-  per [RFC 6790 section 4.2](https://www.rfc-editor.org/rfc/rfc6790#section-4.2)) or the GAL (13, "MUST always be followed by an ACH" per
-  [RFC 5586 section 4.2](https://www.rfc-editor.org/rfc/rfc5586#section-4.2)) was decoded as though it carried a user packet.
+  [RFC 3032 section 2.1](https://www.rfc-editor.org/rfc/rfc3032.html#section-2.1)), the Entropy Label Indicator (7, always followed by the entropy label
+  per [RFC 6790 section 4.2](https://www.rfc-editor.org/rfc/rfc6790.html#section-4.2)) or the GAL (13, "MUST always be followed by an ACH" per
+  [RFC 5586 section 4.2](https://www.rfc-editor.org/rfc/rfc5586.html#section-4.2)) was decoded as though it carried a user packet.
 
 ### Added
 
@@ -13131,12 +13152,12 @@ The drop counters added above are the instrument that measurement needs.
   out the remaining stages.
 
 - **Three more conformance rules: the dialog target, and reliable
-  provisionals.** A 2xx answer to `INVITE` with no `Contact` ([RFC 3261 section 12.1.1](https://www.rfc-editor.org/rfc/rfc3261#section-12.1.1))
+  provisionals.** A 2xx answer to `INVITE` with no `Contact` ([RFC 3261 section 12.1.1](https://www.rfc-editor.org/rfc/rfc3261.html#section-12.1.1))
   creates a dialog with no remote target, so the call answers and then cannot
   be acknowledged or hung up cleanly. A provisional demanding `100rel` with no
-  `RSeq` ([RFC 3262 section 3](https://www.rfc-editor.org/rfc/rfc3262#section-3)) asks its receiver to acknowledge a response it cannot
+  `RSeq` ([RFC 3262 section 3](https://www.rfc-editor.org/rfc/rfc3262.html#section-3)) asks its receiver to acknowledge a response it cannot
   name. And a reliable provisional the dialog never acknowledged with a `PRACK`
-  ([RFC 3262 section 4](https://www.rfc-editor.org/rfc/rfc3262#section-4)), which the caller hears as ringing that never becomes a call.
+  ([RFC 3262 section 4](https://www.rfc-editor.org/rfc/rfc3262.html#section-4)), which the caller hears as ringing that never becomes a call.
 
   The `PRACK` rule is the first dialog-scoped rule with a truncation guard. A
   capture is a window, not a transcript, and the naive version fires on every
@@ -13160,15 +13181,15 @@ The drop counters added above are the instrument that measurement needs.
   session timers, which are a routine interop breaker: a call that drops at
   exactly 30 minutes is almost always a refresher nobody claimed. All four read
   one message on its own, so a message linted alone still settles them.
-  `Session-Expires` below the `Min-SE` carried beside it ([RFC 4028 section 7.1](https://www.rfc-editor.org/rfc/rfc4028#section-7.1)) contradicts
+  `Session-Expires` below the `Min-SE` carried beside it ([RFC 4028 section 7.1](https://www.rfc-editor.org/rfc/rfc4028.html#section-7.1)) contradicts
   itself inside a single request and draws a 422 from any UAS honoring the
-  floor. `Session-Expires` and `Min-SE` each below the 90-second minimum ([RFC 4028 section 4](https://www.rfc-editor.org/rfc/rfc4028#section-4),
-  [section 5](https://www.rfc-editor.org/rfc/rfc4028#section-5)). And a 2xx answer to `INVITE` that negotiates a timer without naming a
-  refresher ([RFC 4028 section 9](https://www.rfc-editor.org/rfc/rfc4028#section-9)), where both ends can end up believing the other refreshes.
+  floor. `Session-Expires` and `Min-SE` each below the 90-second minimum ([RFC 4028 section 4](https://www.rfc-editor.org/rfc/rfc4028.html#section-4),
+  [section 5](https://www.rfc-editor.org/rfc/rfc4028.html#section-5)). And a 2xx answer to `INVITE` that negotiates a timer without naming a
+  refresher ([RFC 4028 section 9](https://www.rfc-editor.org/rfc/rfc4028.html#section-9)), where both ends can end up believing the other refreshes.
 
-  The [RFC 4028 section 9](https://www.rfc-editor.org/rfc/rfc4028#section-9) citation was checked against the table of contents in RFC 4028 rather
+  The [RFC 4028 section 9](https://www.rfc-editor.org/rfc/rfc4028.html#section-9) citation was checked against the table of contents in RFC 4028 rather
   than recalled, and the check earned itself: the behavior sections run 7 UAC,
-  8 Proxy, 9 UAS, and the recollection that put UAS at [section 8](https://www.rfc-editor.org/rfc/rfc4028#section-8) would have sent
+  8 Proxy, 9 UAS, and the recollection that put UAS at [section 8](https://www.rfc-editor.org/rfc/rfc4028.html#section-8) would have sent
   readers to the proxy's rules about the same header field.
 
   All four report zero against the local corpus, and that number was taken
@@ -13227,7 +13248,7 @@ The drop counters added above are the instrument that measurement needs.
 
   Findings cross the wire exactly as the library shapes them, `rfc` and
   `section` as separate typed fields rather than folded into the explanation.
-  That is the whole point of the shape: an agent quotes [RFC 3264 section 6.1](https://www.rfc-editor.org/rfc/rfc3264#section-6.1)
+  That is the whole point of the shape: an agent quotes [RFC 3264 section 6.1](https://www.rfc-editor.org/rfc/rfc3264.html#section-6.1)
   out of the data instead of inventing a section number that reads plausibly.
 
   `rulesets` narrows a run by catalog name (`all`, `must`, `rfc`, `interop`,
@@ -13242,7 +13263,7 @@ The drop counters added above are the instrument that measurement needs.
   lists behind, and only that field separates them.
   `OBS-5761-5.1.1-RTCP-MUX-UNANSWERED` is named there on every call: the stream
   store folds an RTCP report into the stream it describes and keeps no record
-  of the endpoint pair it arrived on, which is exactly what [RFC 5761](https://www.rfc-editor.org/rfc/rfc5761) section
+  of the endpoint pair it arrived on, which is exactly what [RFC 5761](https://www.rfc-editor.org/rfc/rfc5761.html) section
   5.1.1 asks about, so no MCP tool can raise it yet.
 
   Measured over the local corpus: 24,062 dialogs across 60 captures, every one
@@ -13374,7 +13395,7 @@ The drop counters added above are the instrument that measurement needs.
   request, ACK CSeq mismatch, and the RFC 3264 answer rules.
 
   Every finding carries its RFC section as a field rather than as prose inside a
-  string, which is what lets an agent cite [RFC 3261 section 20.10](https://www.rfc-editor.org/rfc/rfc3261#section-20.10) instead of
+  string, which is what lets an agent cite [RFC 3261 section 20.10](https://www.rfc-editor.org/rfc/rfc3261.html#section-20.10) instead of
   inventing a plausible-looking one. Rule ids are stable, so a finding is
   suppressible in CI and citable in a carrier ticket. Documented in
   `docs/sip-lint-rules.md`.
@@ -13466,7 +13487,7 @@ The drop counters added above are the instrument that measurement needs.
   each lost about 26% of their SIP to it; the deficits matched their ICMP counts
   exactly.
 
-  ICMPv4 ([RFC 792](https://www.rfc-editor.org/rfc/rfc792)) and ICMPv6 ([RFC 4443](https://www.rfc-editor.org/rfc/rfc4443)) errors are parsed, the quoted datagram
+  ICMPv4 ([RFC 792](https://www.rfc-editor.org/rfc/rfc792.html)) and ICMPv6 ([RFC 4443](https://www.rfc-editor.org/rfc/rfc4443.html)) errors are parsed, the quoted datagram
   is read as a *prefix* rather than a message, and the evidence is filed against
   the dialog by `Call-ID`. It surfaces as the `icmp_unreachable` finding in
   `--json-dialogs`, `--report`, the REST API and MCP, and as a capture-wide line
@@ -13620,7 +13641,7 @@ The drop counters added above are the instrument that measurement needs.
 
 - **SIP requests with an extension method were dropped from every output.**
   11,623 messages across the sample corpus. The parser matched a 14-name list,
-  when [RFC 3261 section 7.1](https://www.rfc-editor.org/rfc/rfc3261#section-7.1) makes the ` SIP/2.0` token the discriminator, not the
+  when [RFC 3261 section 7.1](https://www.rfc-editor.org/rfc/rfc3261.html#section-7.1) makes the ` SIP/2.0` token the discriminator, not the
   method. One capture had 1,215 dialogs holding only a `200 OK` whose request
   had been deleted.
 
@@ -13965,7 +13986,7 @@ The drop counters added above are the instrument that measurement needs.
   every one, but it never ran: the payload-only branch returns first.
 
   Below port 1024 the payload now has to be corroborated by that heuristic
-  instead of taken on its own word. Real media is untouched — [RFC 3550 section 11](https://www.rfc-editor.org/rfc/rfc3550#section-11)
+  instead of taken on its own word. Real media is untouched — [RFC 3550 section 11](https://www.rfc-editor.org/rfc/rfc3550.html#section-11)
   places RTP in the dynamic range, and nothing legitimately carries it on a
   system port. Re-run on the same corpus: 1213 streams, the four phantoms gone,
   every real stream and all 18241 dialogs unchanged.
@@ -14069,7 +14090,7 @@ The drop counters added above are the instrument that measurement needs.
 
   Scoring also needs the **mode**, which the codec name does not carry: the nine
   modes span `Ie,WB` 1 to 41, about 4.49 down to 3.51 MOS. `amr_wb_kbps_from_fmtp`
-  pins it from an SDP `mode-set` naming exactly one mode ([RFC 4867 section 8.1](https://www.rfc-editor.org/rfc/rfc4867#section-8.1)); a
+  pins it from an SDP `mode-set` naming exactly one mode ([RFC 4867 section 8.1](https://www.rfc-editor.org/rfc/rfc4867.html#section-8.1)); a
   multi-mode set says what the stream may do, not what it did.
 
   Two published oddities are preserved rather than smoothed: 23.85 kbit/s scores
@@ -14102,7 +14123,7 @@ The drop counters added above are the instrument that measurement needs.
   connected.** `SIP_CALL_RTP_G711` offers `PCMA`/`PCMU` and answers
   `pcma`/`pcmu` — each vendor's own spelling — and the comparison was an exact
   string match. A call that answered **200 OK** and carried real G.711 audio
-  was reported as a codec mismatch. [RFC 4855 section 1](https://www.rfc-editor.org/rfc/rfc4855#section-1) makes the encoding name
+  was reported as a codec mismatch. [RFC 4855 section 1](https://www.rfc-editor.org/rfc/rfc4855.html#section-1) makes the encoding name
   case-insensitive; the comparison now folds case while `offered` and
   `answered` keep each side's wire spelling, which is the evidence.
 
@@ -14587,11 +14608,11 @@ The drop counters added above are the instrument that measurement needs.
   still had to go back to the message stream to learn whether that was a 486, a
   503 or a 404 — the exact workaround the new flag exists to remove. Auth
   challenges are excluded, so a call challenged and then answered reports 200,
-  not the 401. The reason phrase is verbatim from the wire and [RFC 3261 section 7.2](https://www.rfc-editor.org/rfc/rfc3261#section-7.2)
+  not the 401. The reason phrase is verbatim from the wire and [RFC 3261 section 7.2](https://www.rfc-editor.org/rfc/rfc3261.html#section-7.2)
   leaves it free text, so match on the code.
 
 - **`DialogState::Redirected` — a 3xx is no longer indistinguishable from an
-  unanswered call.** [RFC 3261 section 21.3](https://www.rfc-editor.org/rfc/rfc3261#section-21.3): a redirect names a Contact the UAC should
+  unanswered call.** [RFC 3261 section 21.3](https://www.rfc-editor.org/rfc/rfc3261.html#section-21.3): a redirect names a Contact the UAC should
   try instead. The dialog ended, the call did not fail, and the retry is a new
   dialog with a new Call-ID. No handler matched 3xx at all before this, so a
   redirected call kept its pre-answer state and read as one nobody answered.
@@ -14674,7 +14695,7 @@ The drop counters added above are the instrument that measurement needs.
   makes all three configurable.
 
   The care is in what these *do not* report. A missing `ACK` is suppressed by a
-  `BYE`, because [RFC 3261 section 15](https://www.rfc-editor.org/rfc/rfc3261#section-15) means a hangup proves the `ACK` arrived — without
+  `BYE`, because [RFC 3261 section 15](https://www.rfc-editor.org/rfc/rfc3261.html#section-15) means a hangup proves the `ACK` arrived — without
   that guard an ordinary completed call whose capture dropped one packet was
   reported as broken, which a TUI snapshot caught and no unit test would have.
   A call with no final response is `NoFinalResponse`, never a failure, and is
@@ -14709,7 +14730,7 @@ The drop counters added above are the instrument that measurement needs.
 
 ### Fixed
 - **`explain_response_code()` had drifted from the registry in both
-  directions.** It explained **409 Conflict**, an [RFC 2543](https://www.rfc-editor.org/rfc/rfc2543) code that RFC 3261
+  directions.** It explained **409 Conflict**, an [RFC 2543](https://www.rfc-editor.org/rfc/rfc2543.html) code that RFC 3261
   removed and that appears in no registry — the same phantom Wikipedia lists — and
   had no explanation at all for **424 Bad Location Information**, **425 Bad Alert
   Message** or **430 Flow Failed**, all registered. The three are written now,
@@ -14725,9 +14746,9 @@ The drop counters added above are the instrument that measurement needs.
 - **`docs/sip-header-fields.md` — every header field, and the nineteen compact
   forms pinned to the registry.** All 134 fields from the IANA *Header Fields*
   registry, each with its compact alias where one exists and the RFC that defines
-  it, plus [RFC 3261 section 20](https://www.rfc-editor.org/rfc/rfc3261#section-20)'s own description for the 47 it defines.
+  it, plus [RFC 3261 section 20](https://www.rfc-editor.org/rfc/rfc3261.html#section-20)'s own description for the 47 it defines.
 
-  The compact forms are the part that matters. [RFC 3261 section 7.3.3](https://www.rfc-editor.org/rfc/rfc3261#section-7.3.3) makes `v:` and
+  The compact forms are the part that matters. [RFC 3261 section 7.3.3](https://www.rfc-editor.org/rfc/rfc3261.html#section-7.3.3) makes `v:` and
   `Via:` exactly equivalent, so a parser that knows only the long form does not
   merely miss a header — it can be walked past deliberately, which is the `y:`
   STIR/SHAKEN evasion `docs/design/compact-headers-spec.md` already records.
@@ -14758,14 +14779,14 @@ The drop counters added above are the instrument that measurement needs.
   CANCEL went uncaptured reported as one still waiting for an answer — a
   different diagnosis from the one the wire carried.
 
-  [RFC 3261 section 21.4.25](https://www.rfc-editor.org/rfc/rfc3261#section-21.4.25) says a 487 means the request "was terminated by a BYE or
+  [RFC 3261 section 21.4.25](https://www.rfc-editor.org/rfc/rfc3261.html#section-21.4.25) says a 487 means the request "was terminated by a BYE or
   CANCEL request". The 487 is itself the proof; seeing the CANCEL is not a
   precondition. A CANCEL can take a different path from the response, a capture
   can start mid-dialog, and sampling can drop it. A 487 whose CSeq method is
   INVITE now sets `Canceled` from `Trying`, `Ringing` or `Canceled`, guarded on
   those pre-answer states for the same reason the 2xx arm is: once a final 2xx
-  has established the call the CANCEL has no effect ([RFC 3261 section 9](https://www.rfc-editor.org/rfc/rfc3261#section-9),
-  [section 15](https://www.rfc-editor.org/rfc/rfc3261#section-15)), so a late 487 must
+  has established the call the CANCEL has no effect ([RFC 3261 section 9](https://www.rfc-editor.org/rfc/rfc3261.html#section-9),
+  [section 15](https://www.rfc-editor.org/rfc/rfc3261.html#section-15)), so a late 487 must
   not un-answer it.
 
   Neither path had a test and no sample capture in the repo contains a 487 at
@@ -14782,13 +14803,13 @@ The drop counters added above are the instrument that measurement needs.
   <https://www.iana.org/assignments/sip-parameters/sip-parameters-7.csv>, not
   Wikipedia, which disagrees with the registry in five phrases and lists two
   codes no registry has. 437 is *Unsupported Credential*, not *Unsupported
-  Certificate* — [RFC 8224 section 6.2.2](https://www.rfc-editor.org/rfc/rfc8224#section-6.2.2) names the latter as the previous name. 500 is
+  Certificate* — [RFC 8224 section 6.2.2](https://www.rfc-editor.org/rfc/rfc8224.html#section-6.2.2) names the latter as the previous name. 500 is
   *Server Internal Error*, not *Internal Server Error*. 202 reads *Accepted
   (Deprecated)*. 409 and 411 come from RFC 2543, which RFC 3261 obsoleted.
 
   IANA leaves `Reference` blank for the 50 codes RFC 3261 defines and cites an
   RFC for the other 25. Those 50 line up exactly with the 50 per-code
-  subsections in [RFC 3261 section 21](https://www.rfc-editor.org/rfc/rfc3261#section-21), which is how the convention was confirmed rather
+  subsections in [RFC 3261 section 21](https://www.rfc-editor.org/rfc/rfc3261.html#section-21), which is how the convention was confirmed rather
   than assumed.
 
   The classification is the part sipnab needs: `provisional`, `success`,
@@ -15828,7 +15849,7 @@ The drop counters added above are the instrument that measurement needs.
   than silently selecting the default.
 
   **`branch` counts transactions, not calls.** RFC 3261 gives the ACK to a 2xx
-  a new branch ([section 17.1.1.3](https://www.rfc-editor.org/rfc/rfc3261#section-17.1.1.3)) and the BYE another, so one ordinary call appears as
+  a new branch ([section 17.1.1.3](https://www.rfc-editor.org/rfc/rfc3261.html#section-17.1.1.3)) and the BYE another, so one ordinary call appears as
   three units. That is the transaction view working as intended, it is asserted
   by a test rather than left to be discovered, and it means `--limit` counts
   transactions in this mode. Design notes and the rejected alternatives are in
@@ -16629,7 +16650,7 @@ behavior changes.
   Content-Length overflow flags, pre-copy validation, Request-URI
   trimming, copy-free `regex::bytes` matcher with case-sensitive method
   matching, 7-bit payload-type enforcement, delayed-offer SDP
-  classification, folded MIME headers, the [RFC 7865](https://www.rfc-editor.org/rfc/rfc7865) nameID `aor`
+  classification, folded MIME headers, the [RFC 7865](https://www.rfc-editor.org/rfc/rfc7865.html) nameID `aor`
   attribute, and an exact `terminated`-token transfer check.
 
 ## [0.5.32] - 2026-07-24
@@ -16680,14 +16701,14 @@ behavior changes.
     retransmission still advances `updated_at`, so idle compaction no
     longer evicts a dialog under a retransmission flood.
   - SIPREC multipart bodies are split only on line-anchored
-    `--boundary` delimiters per [RFC 2046](https://www.rfc-editor.org/rfc/rfc2046); a boundary string occurring
+    `--boundary` delimiters per [RFC 2046](https://www.rfc-editor.org/rfc/rfc2046.html); a boundary string occurring
     mid-line inside part content (metadata XML, SDP) no longer
     corrupts part extraction.
   - Repeated T.38 re-INVITEs (session refresh) emit `T38Switch` once
     at the genuine audio→T.38 transition instead of on every other
     exchange; a real return to audio and back re-emits correctly.
   - STIR/SHAKEN PASSporTs retain every `dest.tn` entry and the
-    previously-unparsed `dest.uri` array ([RFC 8225 section 5.2.1](https://www.rfc-editor.org/rfc/rfc8225#section-5.2.1)) instead of
+    previously-unparsed `dest.uri` array ([RFC 8225 section 5.2.1](https://www.rfc-editor.org/rfc/rfc8225.html#section-5.2.1)) instead of
     keeping only the first TN.
   - Filter-DSL numeric equality (`==`/`!=`) uses a domain-grounded
     tolerance (5e-4, half the finest millisecond-derived step) instead
@@ -17102,7 +17123,7 @@ build provenance and the reworked website/download experience.
 
 ### Changed
 - Documentation & site overhaul (also landing in this release): per-parameter
-  CLI examples with a coverage ratchet, [RFC 5737](https://www.rfc-editor.org/rfc/rfc5737) example-IP sweep, the animated
+  CLI examples with a coverage ratchet, [RFC 5737](https://www.rfc-editor.org/rfc/rfc5737.html) example-IP sweep, the animated
   demos rebuilt on one shared style, the Wiki gaps closed (Troubleshooting +
   REST API ported, MCP docs merged), site navigation and learning-path
   reordered, and the oversized `api.md`/`install.md` split into focused pages.
@@ -17505,10 +17526,10 @@ Session-Expires, `y` Identity. Two of these fixed real analysis gaps:
   while remaining fully valid to real verifiers. Compact-form Identity
   headers are now extracted identically to the long form (regression test:
   `compact_identity_header_cannot_evade_extraction`).
-- **Transfer tracking:** a REFER using `r:` ([RFC 3515](https://www.rfc-editor.org/rfc/rfc3515)) now drives the
+- **Transfer tracking:** a REFER using `r:` ([RFC 3515](https://www.rfc-editor.org/rfc/rfc3515.html)) now drives the
   `Transferring` dialog state and `refer_to` like the long form.
 
-Determination and design in docs/design/compact-headers-spec.md. SigComp ([RFC 3320](https://www.rfc-editor.org/rfc/rfc3320)
+Determination and design in docs/design/compact-headers-spec.md. SigComp ([RFC 3320](https://www.rfc-editor.org/rfc/rfc3320.html)
 "compressed SIP") remains explicitly out of scope.
 
 ### Changed — one canonical dialog/stream summary across all surfaces (WS3)
@@ -17958,7 +17979,7 @@ tests-first (red → green) with adversarial-input coverage.
 ### Security
 - SRTP auth-tag verification now uses a constant-time comparison (shared with
   the API/MCP token check) instead of `==`, closing a MAC timing side channel.
-- SRTP session-key derivation now uses the real [RFC 3711 section 4.3.1](https://www.rfc-editor.org/rfc/rfc3711#section-4.3.1) AES-CM KDF
+- SRTP session-key derivation now uses the real [RFC 3711 section 4.3.1](https://www.rfc-editor.org/rfc/rfc3711.html#section-4.3.1) AES-CM KDF
   (validated against the RFC 3711 Appendix B.3 test vectors) instead of an
   HMAC stand-in, so the auth-tag verifier interoperates with standard SRTP.
   Verification also tries the first two ROC epochs (~131072 packets) rather
@@ -17970,7 +17991,7 @@ tests-first (red → green) with adversarial-input coverage.
 - SRTP key-parsing error messages (SDP `a=crypto` and the manual key file) no
   longer echo the candidate base64 key/salt bytes — they report only the length.
 - New `SrtpRocTracker` verifies SRTP auth tags with stateful per-SSRC rollover
-  tracking ([RFC 3711 section 3.3.1](https://www.rfc-editor.org/rfc/rfc3711#section-3.3.1) index estimation), so streams longer than 65536
+  tracking ([RFC 3711 section 3.3.1](https://www.rfc-editor.org/rfc/rfc3711.html#section-3.3.1) index estimation), so streams longer than 65536
   packets verify correctly instead of relying on the stateless two-epoch guess.
 - User resolution (`--user` / privilege drop) now uses the reentrant
   `getpwnam_r` instead of `getpwnam`, which returns a pointer into a shared

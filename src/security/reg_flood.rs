@@ -204,8 +204,8 @@ fn window_elapsed(window_start: DateTime<Utc>, now: DateTime<Utc>, window: TimeD
 /// How long a REGISTER's transaction stays open to a challenge, by default:
 /// Timer F, in milliseconds.
 ///
-/// [RFC 3261 section 17.1.2.2](https://www.rfc-editor.org/rfc/rfc3261#section-17.1.2.2) ends a non-INVITE client transaction at Timer F,
-/// 64*T1, and [section 17.1.1.1](https://www.rfc-editor.org/rfc/rfc3261#section-17.1.1.1) puts T1 at 500 ms by default, so 32 seconds.
+/// [RFC 3261 section 17.1.2.2](https://www.rfc-editor.org/rfc/rfc3261.html#section-17.1.2.2) ends a non-INVITE client transaction at Timer F,
+/// 64*T1, and [section 17.1.1.1](https://www.rfc-editor.org/rfc/rfc3261.html#section-17.1.1.1) puts T1 at 500 ms by default, so 32 seconds.
 /// A 401 that names a REGISTER older than that answers a transaction that has
 /// already ended, and counting it would let every unanswered REGISTER wait in
 /// the map to be charged by a stray. Not the failure window: a REGISTER sent
@@ -222,7 +222,7 @@ pub const BUILT_IN_TRANSACTION_TIMEOUT_MS: u64 = 32_000;
 
 /// The client transaction a REGISTER or its response belongs to.
 ///
-/// [RFC 3261 section 17.1.3](https://www.rfc-editor.org/rfc/rfc3261#section-17.1.3) matches a response to its request by the top `Via`
+/// [RFC 3261 section 17.1.3](https://www.rfc-editor.org/rfc/rfc3261.html#section-17.1.3) matches a response to its request by the top `Via`
 /// branch, and that is the key whenever there is one. An RFC 2543 client puts
 /// no branch in its `Via`, and a response copies the request's `Via`, so
 /// neither side has one. RFC 2543 identified the transaction by `Call-ID` and
@@ -1044,7 +1044,7 @@ mod tests {
 
     /// A challenge with no `Via` branch still settles the REGISTER it answers.
     ///
-    /// [RFC 3261 section 17.1.3](https://www.rfc-editor.org/rfc/rfc3261#section-17.1.3) matches a response to its client transaction
+    /// [RFC 3261 section 17.1.3](https://www.rfc-editor.org/rfc/rfc3261.html#section-17.1.3) matches a response to its client transaction
     /// by the top `Via` branch and the `CSeq` method, and the branch is only
     /// there when the client put one in. An RFC 2543 client does not, and a
     /// response copies the request's `Via` (section 8.2.6.2), so neither side
@@ -1113,7 +1113,7 @@ mod tests {
     /// A challenge that arrives after the REGISTER's transaction has timed
     /// out answers nothing that is still open.
     ///
-    /// [RFC 3261 section 17.1.2.2](https://www.rfc-editor.org/rfc/rfc3261#section-17.1.2.2) ends a non-INVITE client transaction at
+    /// [RFC 3261 section 17.1.2.2](https://www.rfc-editor.org/rfc/rfc3261.html#section-17.1.2.2) ends a non-INVITE client transaction at
     /// Timer F, 64*T1, which is 32 seconds. A pending REGISTER older than that
     /// is expired: a 401 naming it forty seconds later is a stray, and
     /// charging it would let one stale REGISTER per branch sit in the map for
@@ -1178,7 +1178,7 @@ mod tests {
     /// The transaction timeout is the operator's Timer F, not a constant.
     ///
     /// A network running T1 at one second has a Timer F of 64 seconds
-    /// ([RFC 3261 section 17.1.2.2](https://www.rfc-editor.org/rfc/rfc3261#section-17.1.2.2)), so a registrar's 401 forty seconds after the
+    /// ([RFC 3261 section 17.1.2.2](https://www.rfc-editor.org/rfc/rfc3261.html#section-17.1.2.2)), so a registrar's 401 forty seconds after the
     /// REGISTER answers a transaction that is still open, and it is a failure.
     /// Under the shipped 32 seconds the same 401 is a stray.
     #[test]

@@ -7,11 +7,11 @@
 //! So an encrypted container is two layers:
 //!
 //! - the signed form ([section 5.2](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-04#section-5.2)):
-//!   a General JWS JSON Serialization ([RFC 7515 section 7.2.1](https://www.rfc-editor.org/rfc/rfc7515#section-7.2.1))
+//!   a General JWS JSON Serialization ([RFC 7515 section 7.2.1](https://www.rfc-editor.org/rfc/rfc7515.html#section-7.2.1))
 //!   whose payload is the unsigned container, signed `RS256` with the
 //!   signer's certificate chain in `x5c`;
 //! - the encrypted form: a General JWE JSON Serialization
-//!   ([RFC 7516 section 7.2.1](https://www.rfc-editor.org/rfc/rfc7516#section-7.2.1))
+//!   ([RFC 7516 section 7.2.1](https://www.rfc-editor.org/rfc/rfc7516.html#section-7.2.1))
 //!   whose plaintext is that signed form, with the content key encrypted
 //!   `RSA-OAEP` to the recipient's certificate and the content encrypted
 //!   `A256CBC-HS512`, the algorithms the draft names.
@@ -92,7 +92,7 @@ pub struct Signer {
     /// The RSA private key the signature is made with.
     key: ring::signature::RsaKeyPair,
     /// The chain as `x5c` carries it: standard base64 DER, leaf first
-    /// ([RFC 7515 section 4.1.6](https://www.rfc-editor.org/rfc/rfc7515#section-4.1.6)).
+    /// ([RFC 7515 section 4.1.6](https://www.rfc-editor.org/rfc/rfc7515.html#section-4.1.6)).
     x5c: Vec<String>,
 }
 
@@ -173,7 +173,7 @@ impl Recipient {
     }
 }
 
-/// `A256CBC-HS512` encryption ([RFC 7518 section 5.2.5](https://www.rfc-editor.org/rfc/rfc7518#section-5.2.5)):
+/// `A256CBC-HS512` encryption ([RFC 7518 section 5.2.5](https://www.rfc-editor.org/rfc/rfc7518.html#section-5.2.5)):
 /// AES-256-CBC with PKCS #7 padding under the second half of `key`, and the
 /// first 32 bytes of HMAC-SHA-512 under the first half over the AAD, the IV,
 /// the ciphertext and the AAD's length in bits.
@@ -218,7 +218,7 @@ pub fn a256cbc_hs512_open(
     Ok(plaintext.to_vec())
 }
 
-/// The HMAC-SHA-512 of [RFC 7518 section 5.2.2.1](https://www.rfc-editor.org/rfc/rfc7518#section-5.2.2.1), before truncation.
+/// The HMAC-SHA-512 of [RFC 7518 section 5.2.2.1](https://www.rfc-editor.org/rfc/rfc7518.html#section-5.2.2.1), before truncation.
 fn cbc_hs512_mac(
     mac_key: &[u8],
     iv: &[u8],
@@ -529,7 +529,7 @@ fn der_element(input: &[u8]) -> Option<DerElement<'_>> {
 }
 
 /// The SubjectPublicKeyInfo of a DER certificate
-/// ([RFC 5280 section 4.1](https://www.rfc-editor.org/rfc/rfc5280#section-4.1)):
+/// ([RFC 5280 section 4.1](https://www.rfc-editor.org/rfc/rfc5280.html#section-4.1)):
 /// the seventh field of `tbsCertificate` when `version` is present.
 fn subject_public_key_info(certificate: &[u8]) -> Result<&[u8], String> {
     const BAD: &str = "the certificate is not DER X.509";

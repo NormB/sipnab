@@ -213,7 +213,7 @@ Three findings point at a specific cause rather than an absence.
 **Answered INVITE never acknowledged.** The caller must confirm an answer with
 an ACK. When no ACK arrives, the answering side sends the answer again and then
 ends the call. sipnab reports it once the answer has gone unacknowledged for
-`--ack-timeout` seconds. The default is 32 seconds ([RFC 3261](https://www.rfc-editor.org/rfc/rfc3261) Timer H). The
+`--ack-timeout` seconds. The default is 32 seconds ([RFC 3261](https://www.rfc-editor.org/rfc/rfc3261.html) Timer H). The
 call in this fixture ran 31.5 seconds without an ACK, so this run lowers the
 threshold to 30 seconds:
 

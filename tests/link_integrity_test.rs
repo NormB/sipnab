@@ -365,7 +365,7 @@ fn the_wiki_link_extractor_counts_only_markdown_journeys() -> Result<(), TestErr
         );
     }
     for skipped in [
-        "https://www.rfc-editor.org/rfc/rfc3326",
+        "https://www.rfc-editor.org/rfc/rfc3326.html",
         "http://127.0.0.1:8080/v1/dialogs",
         "mailto:security@example.com",
         "images/ladder.png",
@@ -1356,7 +1356,11 @@ fn wiki_intra_docs_links_resolve() -> Result<(), TestError> {
     // (the opening paragraph, the rule table's `encrypt_to` row and the
     // refusals table link "Encrypt what a rule writes") and docs/config-reference.md +1 (the
     // `encrypt_to` row links the same section).
-    const EXPECTED_WIKI_LINKS: usize = 1715;
+    // 1715 -> 1719 for the homepage link audit, attributed per file:
+    // docs/encapsulations.md +1 (the WebSocket section links `--ws-portrange`)
+    // and docs/output-formats.md +3 (three new rows of "Which output do I
+    // want?").
+    const EXPECTED_WIKI_LINKS: usize = 1719;
     // Raised 459 -> 460 when SRC1 stage 1 shipped: docs/cli-reference.md's
     // `--hep-listen` row now points at cookbook recipe 6d in docs/examples.md
     // rather than restating how to pair `-L` with `-d`. Attributed per file

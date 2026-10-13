@@ -208,11 +208,11 @@ const DEFAULT_PTIME_MS: f64 = 20.0;
 /// capture, a stream of one talkspurt — and is discarded rather than believed.
 const PLAUSIBLE_PTIME_MS: std::ops::RangeInclusive<f64> = 5.0..=200.0;
 
-/// Expedited Forwarding ([RFC 3246](https://www.rfc-editor.org/rfc/rfc3246)),
+/// Expedited Forwarding ([RFC 3246](https://www.rfc-editor.org/rfc/rfc3246.html)),
 /// the conventional marking for a voice bearer.
 pub const DSCP_EF: u8 = 46;
 
-/// VOICE-ADMIT ([RFC 5865](https://www.rfc-editor.org/rfc/rfc5865)): EF for
+/// VOICE-ADMIT ([RFC 5865](https://www.rfc-editor.org/rfc/rfc5865.html)): EF for
 /// traffic that also passed capacity admission control.
 pub const DSCP_VOICE_ADMIT: u8 = 44;
 
@@ -220,10 +220,10 @@ pub const DSCP_VOICE_ADMIT: u8 = 44;
 ///
 /// Covers the codepoints [IANA's DSCP registry](https://www.iana.org/assignments/dscp-registry/dscp-registry.xhtml)
 /// names — the class selectors of
-/// [RFC 2474 section 4.2.2](https://www.rfc-editor.org/rfc/rfc2474#section-4.2.2), the
+/// [RFC 2474 section 4.2.2](https://www.rfc-editor.org/rfc/rfc2474.html#section-4.2.2), the
 /// assured-forwarding classes of
-/// [RFC 2597 section 6](https://www.rfc-editor.org/rfc/rfc2597#section-6), EF, VOICE-ADMIT and
-/// LE ([RFC 8622](https://www.rfc-editor.org/rfc/rfc8622)).
+/// [RFC 2597 section 6](https://www.rfc-editor.org/rfc/rfc2597.html#section-6), EF, VOICE-ADMIT and
+/// LE ([RFC 8622](https://www.rfc-editor.org/rfc/rfc8622.html)).
 ///
 /// Everything else returns `"unassigned"` rather than a fabricated name. Half
 /// the 64-value space has no registered meaning and an operator is entitled to
@@ -610,7 +610,7 @@ pub struct RtpStream {
     /// modes span a full MOS point.
     pub amr_frame_types_seen: u16,
     /// DSCP of the FIRST packet of this stream
-    /// ([RFC 2474](https://www.rfc-editor.org/rfc/rfc2474)), 0 to 63.
+    /// ([RFC 2474](https://www.rfc-editor.org/rfc/rfc2474.html)), 0 to 63.
     ///
     /// First rather than latest, matching
     /// [`first_frame`](Self::first_frame): "what was this stream marked with"
@@ -803,9 +803,9 @@ impl RtpStream {
 
     /// Is this stream marked for the queue voice is supposed to be in?
     ///
-    /// `EF` ([RFC 3246](https://www.rfc-editor.org/rfc/rfc3246)) is the
+    /// `EF` ([RFC 3246](https://www.rfc-editor.org/rfc/rfc3246.html)) is the
     /// expedited-forwarding PHB, and `VOICE-ADMIT`
-    /// ([RFC 5865](https://www.rfc-editor.org/rfc/rfc5865)) is the
+    /// ([RFC 5865](https://www.rfc-editor.org/rfc/rfc5865.html)) is the
     /// capacity-admitted variant of it. Those two, and nothing else, are the
     /// conventional marking for a bearer.
     ///

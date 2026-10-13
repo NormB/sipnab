@@ -24,7 +24,7 @@ the other bundles and finds any tool by name.
 |---|---|---|
 | [`timeline`](#timeline) | `bucket_seconds?` | Call volume per fixed-width interval, so a gap or a spike is visible without reading every dialog |
 | [`group_dialogs`](#group-dialogs) | `by`, `metrics?`, `filter?`, `top_n?` | Carrier metrics per group — ASR, NER, ACD, post-dial delay, MOS, retransmissions — each beside the population it rests on |
-| [`search_by_time`](#search-by-time) | `start`, `end?`, `filter?`, `limit?`, `cursor?` | Dialogs whose first message falls in an [RFC 3339](https://www.rfc-editor.org/rfc/rfc3339) window |
+| [`search_by_time`](#search-by-time) | `start`, `end?`, `filter?`, `limit?`, `cursor?` | Dialogs whose first message falls in an [RFC 3339](https://www.rfc-editor.org/rfc/rfc3339.html) window |
 | [`validate_filter`](#validate-filter) | `expr` | Whether a filter DSL expression parses, the parser's message when it does not, and how many dialogs it selects — with no rows |
 | [`tail_dialogs`](#tail-dialogs) | `cursor?`, `limit?` | Cursor-based incremental dialog fetch |
 | [`await_condition`](#await-condition) | `filter`, `timeout_seconds?`, `poll_interval_ms?` | Waits until a filter matches or a deadline passes, whichever is first, so a live capture costs one call instead of a polling loop |
@@ -441,7 +441,7 @@ unmodified. A client that rebuilds a bare timestamp from a dialog's
 filter and loses or repeats the tied dialogs — that bare-timestamp
 form is still accepted, so the mistake is silent rather than an error.
 `|` occurs in neither an RFC 3339 timestamp nor a valid Call-ID
-([RFC 3261](https://www.rfc-editor.org/rfc/rfc3261) `word`), so the split is unambiguous.
+([RFC 3261](https://www.rfc-editor.org/rfc/rfc3261.html) `word`), so the split is unambiguous.
 
 `source_exhausted` is `false` while more dialog updates can still
 arrive and `true` once the capture source is fully drained — the end of
@@ -641,38 +641,38 @@ the same claim:
 
 | `strategy` | What it means | Survives a B2BUA? |
 |---|---|---|
-| `session_id` | [RFC 7989](https://www.rfc-editor.org/rfc/rfc7989) `Session-ID` matched | **Yes, by design** |
+| `session_id` | [RFC 7989](https://www.rfc-editor.org/rfc/rfc7989.html) `Session-ID` matched | **Yes, by design** |
 | `x_call_id` | A configured header matched (none configured by default) | Only if the SBC inserts it |
-| `charging_vector_related_icid` | One leg's [RFC 7315](https://www.rfc-editor.org/rfc/rfc7315) `related-icid` names the other's `icid-value` | Yes — but only when the B2BUA chose to emit it (`MAY`) |
-| `sdp_origin` | The [RFC 8866](https://www.rfc-editor.org/rfc/rfc8866) SDP origin tuple matched | Only if the SBC forwards SDP untouched |
+| `charging_vector_related_icid` | One leg's [RFC 7315](https://www.rfc-editor.org/rfc/rfc7315.html) `related-icid` names the other's `icid-value` | Yes — but only when the B2BUA chose to emit it (`MAY`) |
+| `sdp_origin` | The [RFC 8866](https://www.rfc-editor.org/rfc/rfc8866.html) SDP origin tuple matched | Only if the SBC forwards SDP untouched |
 | `charging_vector_icid` | Both legs carry the same RFC 7315 `icid-value` | Not by design: an ICID identifies one dialog, and a B2BUA is two |
 | `via_branch` | Two INVITEs shared a Via branch | No: a new transaction gets a new branch |
 | `timing_heuristic` | Same endpoint, close in time | Not an identifier at all |
 
 **The two `P-Charging-Vector` rows are one header and two different claims.**
-[RFC 7315 section 4.6](https://www.rfc-editor.org/rfc/rfc7315#section-4.6) says the ICID identifies *a dialog*, so a conformant B2BUA emits
+[RFC 7315 section 4.6](https://www.rfc-editor.org/rfc/rfc7315.html#section-4.6) says the ICID identifies *a dialog*, so a conformant B2BUA emits
 a different `icid-value` on each side and `charging_vector_icid` is silent
 across it — a match there means some intermediary copied a per-dialog
 identifier onto a second dialog, which no RFC grants.
 
 The parameter that
 addresses the hop is `related-icid`
-([RFC 7315 section 4.6.4.1](https://www.rfc-editor.org/rfc/rfc7315#section-4.6.4.1)), and it is optional.
+([RFC 7315 section 4.6.4.1](https://www.rfc-editor.org/rfc/rfc7315.html#section-4.6.4.1)), and it is optional.
 
 Two limits
 worth knowing before you rely on either:
 
 - The first proxy generates the icid
-  ([RFC 7315 section 5.6](https://www.rfc-editor.org/rfc/rfc7315#section-5.6)), so a leg arriving from an endpoint carries none and this is useless at
+  ([RFC 7315 section 5.6](https://www.rfc-editor.org/rfc/rfc7315.html#section-5.6)), so a leg arriving from an endpoint carries none and this is useless at
   the access edge.
-- [RFC 7315 section 4.6.2.2](https://www.rfc-editor.org/rfc/rfc7315#section-4.6.2.2) lets the next hop *"modify the contents"*, which
-  [RFC 7315 section 6.6](https://www.rfc-editor.org/rfc/rfc7315#section-6.6) calls normal behavior, so unlike `Session-ID` there is no end-to-end
+- [RFC 7315 section 4.6.2.2](https://www.rfc-editor.org/rfc/rfc7315.html#section-4.6.2.2) lets the next hop *"modify the contents"*, which
+  [RFC 7315 section 6.6](https://www.rfc-editor.org/rfc/rfc7315.html#section-6.6) calls normal behavior, so unlike `Session-ID` there is no end-to-end
   constancy requirement at all.
 
 Full argument:
 [`docs/design/icid-correlation.md`](https://github.com/NormB/sipnab/blob/main/docs/design/icid-correlation.md).
 
-Neither strategy puts the matched value in the response. [RFC 7315 section 4.6](https://www.rfc-editor.org/rfc/rfc7315#section-4.6)'s own
+Neither strategy puts the matched value in the response. [RFC 7315 section 4.6](https://www.rfc-editor.org/rfc/rfc7315.html#section-4.6)'s own
 suggested construction embeds the generating proxy's hostname or address in the
 icid, so it is operator-internal rather than opaque, and `strategy` names the
 strategy and nothing else.
@@ -1167,8 +1167,8 @@ payload type 8, that RTP arrived on a port no `m=` line advertised, that
 or that the packet spacing contradicts `a=ptime`. A linter reading message text
 reaches none of that, because the defect sits in neither message.
 
-The RFC 3261 syntax rules and the [RFC 3264](https://www.rfc-editor.org/rfc/rfc3264) offer/answer rules run alongside
-them. Everything citing [RFC 4566](https://www.rfc-editor.org/rfc/rfc4566), 3551 or 5761 belongs to the observation half.
+The RFC 3261 syntax rules and the [RFC 3264](https://www.rfc-editor.org/rfc/rfc3264.html) offer/answer rules run alongside
+them. Everything citing [RFC 4566](https://www.rfc-editor.org/rfc/rfc4566.html), 3551 or 5761 belongs to the observation half.
 [SIP conformance rules](@/docs/sip-lint-rules.md) lists every rule, the section behind
 it, and the suppression syntax.
 
@@ -1236,7 +1236,7 @@ packets in one:
 
 `rfc` and `section` stay separate fields rather than prose inside the
 explanation, and that is the whole point of the shape. An agent quotes
-[RFC 3264 section 6.1](https://www.rfc-editor.org/rfc/rfc3264#section-6.1) out of the data instead of inventing a section number that reads
+[RFC 3264 section 6.1](https://www.rfc-editor.org/rfc/rfc3264.html#section-6.1) out of the data instead of inventing a section number that reads
 plausibly, and `explain_rule` turns the identifier back into the citation and
 the link.
 
@@ -1396,7 +1396,7 @@ server. An unknown identifier fails with `invalid_params` (-32602) **listing all
   "rfc": 3264,
   "section": "6.1",
   "citation": "RFC 3264 §6.1",
-  "url": "https://www.rfc-editor.org/rfc/rfc3264#section-6.1",
+  "url": "https://www.rfc-editor.org/rfc/rfc3264.html#section-6.1",
   "scope": "media",
   "rulesets": ["all", "observation", "observed", "rfc3264"],
   "rule_catalog": "docs/sip-lint-rules.md"
@@ -1524,7 +1524,7 @@ the scenario sends the request and waits.
 For an INVITE the scenario sends an ACK either
 way, with the Via that RFC 3261 calls for in each case: a fresh branch on a 2xx,
 because that ACK is a new transaction, and `[last_Via:]` on a non-2xx, because
-[RFC 3261 section 17.1.1.3](https://www.rfc-editor.org/rfc/rfc3261#section-17.1.1.3) makes it
+[RFC 3261 section 17.1.1.3](https://www.rfc-editor.org/rfc/rfc3261.html#section-17.1.1.3) makes it
 part of the INVITE transaction.
 
 Twelve headers the scenario always owns come from the template whatever the

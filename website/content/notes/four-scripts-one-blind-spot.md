@@ -56,7 +56,7 @@ What each script did with that text:
 
 * `rfc-links.py`, which turns RFC citations into links, rewrote
   `see RFC 7989 §5 for Session-ID` inside the block as
-  `see [RFC 7989 §5](https://www.rfc-editor.org/rfc/rfc7989#section-5) for Session-ID`
+  `see [RFC 7989 §5](https://www.rfc-editor.org/rfc/rfc7989.html#section-5) for Session-ID`
   (output of the test in step 3 below, run against the old script). Text in
   that form, pasted into a shell, is a syntax error: `bash` exits with status 2
   and reports `syntax error near unexpected token`.
@@ -162,14 +162,14 @@ E
 E         ````markdown
 E         How to write a fenced block:
 E         ```
-E         see [RFC 7989 §5](https://www.rfc-editor.org/rfc/rfc7989#section-5) for Session-ID
+E         see [RFC 7989 §5](https://www.rfc-editor.org/rfc/rfc7989.html#section-5) for Session-ID
 E         ```
 E         still inside the outer block: see RFC 7989 §5 for Session-ID
 E         ````
 E         
 E         Prose below.
 E         
-E       assert 'markdown\nHow to write a fenced block:\n```\nsee RFC 7989 §5 for Session-ID\n```\nstill inside the outer block: see RFC 7989 §5 for Session-ID\n' in '````markdown\nHow to write a fenced block:\n```\nsee [RFC 7989 §5](https://www.rfc-editor.org/rfc/rfc7989#section-5) for Session-ID\n```\nstill inside the outer block: see RFC 7989 §5 for Session-ID\n````\n\nProse below.\n'
+E       assert 'markdown\nHow to write a fenced block:\n```\nsee RFC 7989 §5 for Session-ID\n```\nstill inside the outer block: see RFC 7989 §5 for Session-ID\n' in '````markdown\nHow to write a fenced block:\n```\nsee [RFC 7989 §5](https://www.rfc-editor.org/rfc/rfc7989.html#section-5) for Session-ID\n```\nstill inside the outer block: see RFC 7989 §5 for Session-ID\n````\n\nProse below.\n'
 
 scripts/tests/test_fenced_content_survives.py:70: AssertionError
 =========================== short test summary info ============================

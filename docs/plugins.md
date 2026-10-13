@@ -45,7 +45,9 @@ a script: from someone you trust, or after reading it.
 
 Plugins need a build with `--features plugins`, which is **not** in the default
 feature set. A stock binary carries no interpreter at all, so `sipnab --version`
-tells you whether the machine in front of you can load one.
+tells you whether the machine in front of you can load one. The released Linux
+gnu tarballs, `.deb` and `.rpm` packages and the macOS builds include it. The
+static musl tarballs and the gnu `-noaudio` packages do not.
 
 ## Writing one, start to finish
 

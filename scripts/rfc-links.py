@@ -1,7 +1,7 @@
 """Link RFC citations, following the convention already used 563 times here.
 
-  RFC 3261 §17.1.1.3  ->  https://www.rfc-editor.org/rfc/rfc3261#section-17.1.1.3
-  RFC 3261            ->  https://www.rfc-editor.org/rfc/rfc3261
+  RFC 3261 §17.1.1.3  ->  https://www.rfc-editor.org/rfc/rfc3261.html#section-17.1.1.3
+  RFC 3261            ->  https://www.rfc-editor.org/rfc/rfc3261.html
 
 Two rules, and the second one is the point:
 
@@ -16,6 +16,14 @@ Two rules, and the second one is the point:
 rfc-editor.org, not datatracker: it is the canonical publisher, and 563
 existing links here already use it. A second convention would be worse than
 either one alone.
+
+Every target is the `.html` page. `https://www.rfc-editor.org/rfc/rfcN`
+answers 302 to a metadata page under /info/ and drops the `#section-` anchor,
+so a reader following a section citation lands on a page without the
+section; `rfcN.html` answers 200 and holds the anchor (measured 2026-10-13).
+`canonical_rfc_urls` rewrites the redirecting form in every tracked text
+file, code and string literals included, because a URL a program prints
+redirects the same way.
 
 Fenced blocks are skipped -- a citation inside a shell example is part of the
 command, and a markdown link pasted into a terminal is a syntax error.
@@ -47,11 +55,28 @@ BARE = re.compile(r"\bRFC ?(\d{3,5})\b(?! ?§)(?! section )")
 LINK_SPAN = re.compile(r"\[(?:[^\]`]|`[^`]*`)*\]\([^)]*\)")
 
 
+# The redirecting form: `rfcN` followed by anything but another digit or a
+# dot, so `rfcN.html`, `rfcN.txt` and `rfcN.pdf` are left as they are.
+RFC_URL = re.compile(re.escape(BASE) + r"/rfc(\d+)(?![\d.])")
+
+
+# This script's own tests feed it the redirecting form as input, on purpose;
+# rewriting them would leave the rule untested.
+# `tests/doc_link_hygiene_test.rs` exempts the same file.
+INPUTS_ON_PURPOSE = {"scripts/tests/test_rfc_links.py"}
+
+
+def canonical_rfc_urls(text: str) -> tuple[str, int]:
+    """`text` with every `rfc-editor.org/rfc/rfcN` target made `rfcN.html`,
+    keeping any `#section-` anchor, and how many it changed."""
+    return RFC_URL.subn(lambda m: f"{BASE}/rfc{m.group(1)}.html", text)
+
+
 def _label(num: str, sec: str) -> str:
     """`[RFC 3261 section 7.3.1](...)`, or `appendix` for a lettered one."""
     if sec[0].isalpha():
-        return f"[RFC {num} appendix {sec}]({BASE}/rfc{num}#appendix-{sec})"
-    return f"[RFC {num} section {sec}]({BASE}/rfc{num}#section-{sec})"
+        return f"[RFC {num} appendix {sec}]({BASE}/rfc{num}.html#appendix-{sec})"
+    return f"[RFC {num} section {sec}]({BASE}/rfc{num}.html#section-{sec})"
 
 
 def _outside_links(pattern, text, repl):
@@ -104,7 +129,7 @@ def _prose(segment: str, seen: set, counts: list, link_bare: bool) -> str:
                 return m.group(0)
             seen.add(num)
             counts[1] += 1
-            return f"[RFC {num}]({BASE}/rfc{num})"
+            return f"[RFC {num}]({BASE}/rfc{num}.html)"
 
         segment = _outside_links(BARE, segment, bare)
     return segment
@@ -155,6 +180,7 @@ def _front_matter_lines(text: str) -> int:
 
 
 def convert(text: str) -> tuple[str, int, int]:
+    text, _ = canonical_rfc_urls(text)
     seen: set[str] = set()
     counts = [0, 0]
     out: list[str] = []
@@ -183,6 +209,7 @@ def convert_rust(text: str) -> tuple[str, int]:
     left alone. Bare `RFC N` mentions are not linked here: rustdoc is read one
     item at a time, and the first-mention rule has no page to count on.
     """
+    text, _ = canonical_rfc_urls(text)
     seen: set[str] = set()
     counts = [0, 0]
     out: list[str] = []
@@ -261,8 +288,41 @@ if __name__ == "__main__":
             print(f"  {f.relative_to(root)}: {s} section (rustdoc)")
             if apply:
                 f.write_text(out)
+    # The URL rule reaches every tracked text file: a URL in a test fixture,
+    # a workflow or a string a program prints redirects the same way.
+    urls = 0
+    for f in sorted(_tracked(root, ".")):
+        if not f.is_file() or f.suffix in (".md", ".rs"):
+            continue
+        if f.relative_to(root).as_posix() in INPUTS_ON_PURPOSE:
+            continue
+        try:
+            orig = f.read_text()
+        except (UnicodeDecodeError, OSError):
+            continue
+        out, n = canonical_rfc_urls(orig)
+        if n:
+            files += 1
+            urls += n
+            print(f"  {f.relative_to(root)}: {n} RFC URL(s) to the .html form")
+            if apply:
+                f.write_text(out)
+    for f in sorted(_tracked(root, "*.rs")):
+        if f.relative_to(root).parts[0] == "src":
+            continue  # src/ went through convert_rust above
+        orig = f.read_text()
+        out, n = canonical_rfc_urls(orig)
+        if n:
+            files += 1
+            urls += n
+            print(f"  {f.relative_to(root)}: {n} RFC URL(s) to the .html form")
+            if apply:
+                f.write_text(out)
     verb = "LINKED" if apply else "WOULD LINK"
-    print(f"{verb} {tot_s} section citations + {tot_b} first mentions across {files} files")
+    print(
+        f"{verb} {tot_s} section citations + {tot_b} first mentions across "
+        f"{files} files; {urls} RFC URL(s) outside markdown and src/ rewritten to .html"
+    )
     # Check mode is a gate: it fails when `--apply` would change anything.
     # It exited 0 whatever it found, so the test that calls it the tree's
     # gate could never fail, and the first-mention half of the rule was

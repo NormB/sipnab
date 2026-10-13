@@ -173,7 +173,7 @@ The end of a run reports each rule on its own line, for example
 A call through a PBX or a B2BUA is two dialogs or more, one per leg, each with
 its own Call-ID. sipnab ties the legs with the same correlation strategies
 `get_call_tree` and `GET /v1/dialogs/{call_id}/tree` report: an identifier
-both legs carry ([RFC 7989](https://www.rfc-editor.org/rfc/rfc7989) `Session-ID`, a header listed in
+both legs carry ([RFC 7989](https://www.rfc-editor.org/rfc/rfc7989.html) `Session-ID`, a header listed in
 [`[sip] xcid_headers`](@/docs/config.md#sip), the SDP origin, a charging
 vector or a Via branch), or, when the legs share none, a timing guess from shared
 addresses and close start times.
@@ -1401,7 +1401,7 @@ find the capture.
 
 `tel` is the only one of the three sipnab can supply from evidence, and it
 supplies it only when the SIP user part is unambiguously a telephone number:
-`+` followed by digits, an [RFC 3966](https://www.rfc-editor.org/rfc/rfc3966) global number. Everything else gets
+`+` followed by digits, an [RFC 3966](https://www.rfc-editor.org/rfc/rfc3966.html) global number. Everything else gets
 nothing, including bare digit runs — `1001` is an extension, and indexing it as
 a telephone number would put a wrong answer in a search index rather than no
 answer. The observer party never carries one at all.

@@ -1852,7 +1852,7 @@ mod tests {
     }
 
     /// An INVITE whose Content-Length promises a body that never arrived: one
-    /// error-severity conformance finding ([RFC 3261 section 20.14](https://www.rfc-editor.org/rfc/rfc3261#section-20.14)).
+    /// error-severity conformance finding ([RFC 3261 section 20.14](https://www.rfc-editor.org/rfc/rfc3261.html#section-20.14)).
     fn invite_with_missing_body(call_id: &str) -> Result<crate::sip::SipMessage, TestError> {
         parse_at(&crate::test_utils::build_sip_message(
             "INVITE sip:bob@example.com SIP/2.0",

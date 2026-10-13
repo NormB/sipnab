@@ -2,7 +2,7 @@
 
 //! Nothing sipnab SENDS is named with an `X-` prefix (RFC 6648).
 //!
-//! [RFC 6648](https://www.rfc-editor.org/rfc/rfc6648) section 3 tells creators
+//! [RFC 6648](https://www.rfc-editor.org/rfc/rfc6648.html) section 3 tells creators
 //! of new parameters they "SHOULD NOT prefix their parameter names with 'X-'
 //! or similar constructs", because a name that starts life as a private
 //! experiment is the name everyone ends up depending on. sipnab follows it and

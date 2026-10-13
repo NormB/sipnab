@@ -456,7 +456,7 @@ mod tests {
         Ok(())
     }
 
-    /// The `boundary` parameter name is case-insensitive ([RFC 2045 section 5.1](https://www.rfc-editor.org/rfc/rfc2045#section-5.1)), so an
+    /// The `boundary` parameter name is case-insensitive ([RFC 2045 section 5.1](https://www.rfc-editor.org/rfc/rfc2045.html#section-5.1)), so an
     /// uppercase or mixed-case `BOUNDARY=` is still recognized.
     #[test]
     fn test_extract_boundary_case_insensitive() -> Result<(), TestError> {
@@ -918,7 +918,7 @@ Content-Type: application/rs-metadata+xml\r\n\r\n\
     }
 
     /// A boundary string occurring mid-line inside part content is NOT a
-    /// delimiter ([RFC 2046 section 5.1.1](https://www.rfc-editor.org/rfc/rfc2046#section-5.1.1): delimiters must start a line); the part
+    /// delimiter ([RFC 2046 section 5.1.1](https://www.rfc-editor.org/rfc/rfc2046.html#section-5.1.1): delimiters must start a line); the part
     /// content must survive intact.
     #[test]
     fn test_boundary_mid_line_content_not_split() -> Result<(), TestError> {

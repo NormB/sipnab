@@ -14,9 +14,9 @@ use anyhow::{Result, bail};
 /// Maximum allowed WebSocket frame payload size (D17 limit: 64 KB).
 const MAX_FRAME_SIZE: u64 = 65_536;
 
-/// WebSocket text-frame opcode ([RFC 6455 section 5.2](https://www.rfc-editor.org/rfc/rfc6455#section-5.2)).
+/// WebSocket text-frame opcode ([RFC 6455 section 5.2](https://www.rfc-editor.org/rfc/rfc6455.html#section-5.2)).
 const OPCODE_TEXT: u8 = 1;
-/// WebSocket binary-frame opcode ([RFC 6455 section 5.2](https://www.rfc-editor.org/rfc/rfc6455#section-5.2)).
+/// WebSocket binary-frame opcode ([RFC 6455 section 5.2](https://www.rfc-editor.org/rfc/rfc6455.html#section-5.2)).
 const OPCODE_BINARY: u8 = 2;
 
 /// Ports where SIP-over-WebSocket traffic is expected when the operator has
@@ -94,18 +94,18 @@ pub fn ws_ports_description() -> String {
     }
 }
 
-/// WebSocket continuation-frame opcode ([RFC 6455 section 5.4](https://www.rfc-editor.org/rfc/rfc6455#section-5.4)).
+/// WebSocket continuation-frame opcode ([RFC 6455 section 5.4](https://www.rfc-editor.org/rfc/rfc6455.html#section-5.4)).
 const OPCODE_CONTINUATION: u8 = 0;
 
 /// Most bytes one SIP message may take when a sender fragments it across
-/// several WebSocket frames ([RFC 6455 section 5.4](https://www.rfc-editor.org/rfc/rfc6455#section-5.4)):
+/// several WebSocket frames ([RFC 6455 section 5.4](https://www.rfc-editor.org/rfc/rfc6455.html#section-5.4)):
 /// the same 64 KB as one frame's payload, `MAX_FRAME_SIZE`. A message that
 /// outgrows it is counted NOT DECODED and dropped rather than held.
 pub const MAX_WS_MESSAGE_SIZE: usize = 65_536;
 
 /// Most bytes the HTTP head of a WebSocket upgrade, request or `101` answer,
 /// may take before the blank line that ends it
-/// ([RFC 6455 section 4](https://www.rfc-editor.org/rfc/rfc6455#section-4)).
+/// ([RFC 6455 section 4](https://www.rfc-editor.org/rfc/rfc6455.html#section-4)).
 /// 8 KB, the default header buffer of common web servers. A head that
 /// outgrows it is counted NOT DECODED, and the stream reads frames after it.
 pub const MAX_WS_HANDSHAKE_SIZE: usize = 8_192;
@@ -122,7 +122,7 @@ enum Phase {
     Frames,
 }
 
-/// One frame header, as [RFC 6455 section 5.2](https://www.rfc-editor.org/rfc/rfc6455#section-5.2) lays it out.
+/// One frame header, as [RFC 6455 section 5.2](https://www.rfc-editor.org/rfc/rfc6455.html#section-5.2) lays it out.
 ///
 /// Layout only. Whether a FIN bit, reserved bit or opcode is acceptable is
 /// each caller's policy, so the byte arithmetic lives here once and the
@@ -195,7 +195,7 @@ pub(crate) fn parse_frame_header(data: &[u8]) -> Result<Option<FrameHeader>> {
     }))
 }
 
-/// `payload` unmasked with `mask` ([RFC 6455 section 5.3](https://www.rfc-editor.org/rfc/rfc6455#section-5.3)).
+/// `payload` unmasked with `mask` ([RFC 6455 section 5.3](https://www.rfc-editor.org/rfc/rfc6455.html#section-5.3)).
 fn unmask(payload: &[u8], mask: Option<[u8; 4]>) -> Vec<u8> {
     match mask {
         Some(key) => payload
@@ -213,7 +213,7 @@ fn unmask(payload: &[u8], mask: Option<[u8; 4]>) -> Vec<u8> {
 /// Whether `declared` is expressible in a shorter length form than `len7`
 /// chose.
 ///
-/// [RFC 6455 section 5.2](https://www.rfc-editor.org/rfc/rfc6455#section-5.2): *"the minimal number of bytes MUST be used to encode the
+/// [RFC 6455 section 5.2](https://www.rfc-editor.org/rfc/rfc6455.html#section-5.2): *"the minimal number of bytes MUST be used to encode the
 /// length, for example, the length of a 124-byte-long string can't be encoded
 /// as the sequence 126, 0, 124."* The RFC gives the example because the
 /// encoding is otherwise ambiguous, and an ambiguity a decoder accepts is
@@ -298,7 +298,7 @@ pub fn unwrap_websocket_frame(data: &[u8]) -> Result<Option<Vec<u8>>> {
 /// A sender may write one frame as several chunks: OpenSIPS writes each
 /// frame's 4-byte header in one TLS record and its payload in the next. It may
 /// write several frames in one chunk, and it may fragment one message across
-/// several frames ([RFC 6455 section 5.4](https://www.rfc-editor.org/rfc/rfc6455#section-5.4)).
+/// several frames ([RFC 6455 section 5.4](https://www.rfc-editor.org/rfc/rfc6455.html#section-5.4)).
 /// Reading each chunk as one whole frame lost everything OpenSIPS sent over
 /// WSS (found reproducing issue #301).
 ///
@@ -393,7 +393,7 @@ impl WsStream {
     ///
     /// # Errors
     ///
-    /// The frame breaks [RFC 6455 section 5](https://www.rfc-editor.org/rfc/rfc6455#section-5):
+    /// The frame breaks [RFC 6455 section 5](https://www.rfc-editor.org/rfc/rfc6455.html#section-5):
     /// reserved bits with no extension negotiated, an unknown opcode, a
     /// fragmented control frame, a continuation with no message open or a new
     /// message inside an open one, or a message past [`MAX_WS_MESSAGE_SIZE`].
@@ -574,7 +574,7 @@ mod tests {
         Ok(())
     }
 
-    /// Frames that break [RFC 6455 section 5](https://www.rfc-editor.org/rfc/rfc6455#section-5) are refused one by one, and the
+    /// Frames that break [RFC 6455 section 5](https://www.rfc-editor.org/rfc/rfc6455.html#section-5) are refused one by one, and the
     /// stream decodes the next good frame after each.
     #[test]
     fn a_stream_refuses_frames_that_break_the_protocol_and_recovers() -> Result<(), TestError> {
@@ -725,7 +725,7 @@ mod tests {
         frame
     }
 
-    /// [RFC 6455 section 5.2](https://www.rfc-editor.org/rfc/rfc6455#section-5.2): *"the minimal number of bytes MUST be used to
+    /// [RFC 6455 section 5.2](https://www.rfc-editor.org/rfc/rfc6455.html#section-5.2): *"the minimal number of bytes MUST be used to
     /// encode the length, for example, the length of a 124-byte-long string
     /// can't be encoded as the sequence 126, 0, 124."*
     ///

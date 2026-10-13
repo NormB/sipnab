@@ -407,7 +407,7 @@ fn explain_rule_resolves_an_identifier_to_its_real_citation() -> Result<(), Test
     );
     assert_eq!(bracket["citation"], "RFC 3261 §20");
     assert_eq!(
-        bracket["url"], "https://www.rfc-editor.org/rfc/rfc3261#section-20",
+        bracket["url"], "https://www.rfc-editor.org/rfc/rfc3261.html#section-20",
         "the link must reach the section, not the document"
     );
 

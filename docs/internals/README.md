@@ -81,7 +81,7 @@ reading the wrong one as current is the main trap here.
 |---|---|---|
 | [`../design/implementation-plan-v6.md`](../design/implementation-plan-v6.md) | The design-decision catalog D1–D21 and the original phase plan. | Its feature tables. The `tls-wolfssl`, `tls-openssl` and `grpc` features described there were never implemented and are not in `Cargo.toml`. D14's pluggable crypto backend never happened: one backend ships (`ring` + `rustls`). |
 | [`../design/implementation-plan-phases-8-10.md`](../design/implementation-plan-phases-8-10.md) | The MCP, HEP and observability designs, and the "Resolved Decisions" section that formally retires parts of v6. | Its D-numbering. It defines its own D20 (infrastructure-optional integration) and D21 (capture vs enrichment sources), which collide with v6's D20 and D21. Always say which document a D-number comes from. |
-| [`../design/compact-headers-spec.md`](../design/compact-headers-spec.md) | Why sipnab accepts all 19 [RFC 3261](https://www.rfc-editor.org/rfc/rfc3261) / IANA compact header forms, and the `y:` STIR/SHAKEN evasion case that motivated it. | Nothing — the code implements it and tests pin it. |
+| [`../design/compact-headers-spec.md`](../design/compact-headers-spec.md) | Why sipnab accepts all 19 [RFC 3261](https://www.rfc-editor.org/rfc/rfc3261.html) / IANA compact header forms, and the `y:` STIR/SHAKEN evasion case that motivated it. | Nothing — the code implements it and tests pin it. |
 | [`../design/kill-target-spoofing-spec.md`](../design/kill-target-spoofing-spec.md) | The scope and ethics of sending a scanner-kill response from the victim's `ip:port` rather than an ephemeral one. | Nothing — but read `--kill-scanner`'s guard rails in [`cli.rs`](../../src/cli.rs) alongside it. |
 | [`../design/dialog-tracking-modes.md`](../design/dialog-tracking-modes.md) | Why `--dialog-track` keys on Call-ID or on Call-ID plus top-Via branch, what the branch view costs everything downstream of the store, and the rejected alternatives. | Nothing outstanding. Its status line read "spec, not yet implemented" for six releases after the flag shipped in 0.5.54 — recorded here and left — and now reads IMPLEMENTED. `an_unimplemented_design_doc_does_not_name_a_shipped_flag` fails if a design doc calls itself unimplemented while naming a flag `Cli` accepts, so this column no longer has to carry that job. |
 
@@ -164,7 +164,7 @@ twelve in [`.githooks/pre-push`](../../.githooks/pre-push), each marked
 `clippy --workspace --all-features --all-targets`, `cargo doc` with `-D warnings`,
 a `fuzz` workspace check, the release-delivery tests, the reduced feature
 combinations, the non-Linux arm
-of every platform cfg, the YANG module and its [RFC 7951](https://www.rfc-editor.org/rfc/rfc7951) exports, the test count
+of every platform cfg, the YANG module and its [RFC 7951](https://www.rfc-editor.org/rfc/rfc7951.html) exports, the test count
 a commit message claims, the refusal to tag `v*` at a commit whose CI is not
 green, the prose linters, and a `zola build` of the website. Plus the conditional corpus gate, and the CI jobs behind
 them.

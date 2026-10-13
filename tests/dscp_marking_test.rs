@@ -112,7 +112,7 @@ fn message_json_reports_the_dscp_the_frame_carried() -> Result<(), TestError> {
 ///
 /// The counterpart to the test above and the reason it is not enough on its
 /// own: 0 is a real DSCP value (best effort, the default PHB of
-/// [RFC 2474](https://www.rfc-editor.org/rfc/rfc2474)), so a surface that
+/// [RFC 2474](https://www.rfc-editor.org/rfc/rfc2474.html)), so a surface that
 /// omits the key when the marking is 0 tells an agent "unknown" for a call
 /// whose marking is known and is the fault.
 #[test]

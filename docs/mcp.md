@@ -244,6 +244,30 @@ What differs from a headless MCP server:
   `sipnab.log` then holds `MCP HTTP server listening on 127.0.0.1:8735` and
   the rest of the run's log lines.
 
+## Tools that write or act
+
+Most tools only read what sipnab holds. Thirteen write a file or act on the
+host or on TFPS, and none of them can do either until you start the server
+with the flag that allows it:
+
+| Tool | What it does | Allowed by |
+|---|---|---|
+| `export_capture` | Writes the held SIP messages to a pcap file | `--mcp-file-root` |
+| `export_audio` | Writes a call's audio to a WAV file | `--mcp-file-root` |
+| `compare_captures` | Reads two capture files and compares them | `--mcp-file-root` |
+| `build_evidence_package` | Writes a directory of evidence for the calls it names | `--mcp-file-root` |
+| `generate_repro` | Returns a SIPp scenario; writes it to a file only when given a `filename` | `--mcp-file-root`, for the file |
+| `open_capture` | Replaces the capture the server is reading with a file from the file root | `--mcp-allow-open-capture` and `--mcp-file-root` |
+| `save_findings` | Writes findings to the log | `--mcp-allow-save-findings` |
+| `shutdown_server` | Stops the capture and the servers | `--mcp-allow-shutdown` |
+| `start_tls_capture` | Starts a uprobe TLS capture on this host | `--mcp-allow-tls-capture` |
+| `stop_tls_capture` | Stops the capture `start_tls_capture` began | `--mcp-allow-tls-capture`, to have started one |
+| `tfps_ban` | Asks TFPS to ban one source | `--allow-action tfps:mcp` |
+| `tfps_unban` | Asks TFPS to lift a ban sipnab placed | `--allow-action tfps:mcp` |
+| `actions_revert` | Backs out bans sipnab placed | `--allow-action tfps:mcp` |
+
+Over HTTP, the three TFPS tools also need a token with the actions scope.
+
 ## Explore the tools with MCP Inspector
 
 [MCP Inspector](https://github.com/modelcontextprotocol/inspector) is the

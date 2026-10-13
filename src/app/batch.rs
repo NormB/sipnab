@@ -291,7 +291,7 @@ struct PacketCounters {
     dtmf_count: u64,
     /// Which telephone-event end packets have already been counted.
     ///
-    /// [RFC 4733 section 2.5.1.4](https://www.rfc-editor.org/rfc/rfc4733#section-2.5.1.4) makes a sender transmit the final packet of an event
+    /// [RFC 4733 section 2.5.1.4](https://www.rfc-editor.org/rfc/rfc4733.html#section-2.5.1.4) makes a sender transmit the final packet of an event
     /// three times, so one keypress arrived as three events and was counted
     /// three times.
     dtmf_seen: rtp::dtmf::DtmfDedupe,
@@ -1728,7 +1728,7 @@ fn lapsed_allocation_lines(lapsed: &[&crate::stun::TurnAllocation]) -> Vec<Strin
 ///
 /// Reported beside the lapsed allocations rather than under `--stun` alone for
 /// the reason that finding is: a capture read WITHOUT the flag must still say
-/// it. [RFC 8445 section 7.3.1.1](https://www.rfc-editor.org/rfc/rfc8445#section-7.3.1.1) lets ICE resolve a role conflict itself, so this is
+/// it. [RFC 8445 section 7.3.1.1](https://www.rfc-editor.org/rfc/rfc8445.html#section-7.3.1.1) lets ICE resolve a role conflict itself, so this is
 /// not always fatal — and the line says which of the two it was, because
 /// warning at full weight about a conflict the agents fixed in one round trip
 /// is how a reader learns to skip the warning that matters.
@@ -5796,7 +5796,7 @@ fn dsl_filter_passes(
 
 /// Log every STIR/SHAKEN Identity header a message carries.
 ///
-/// EVERY Identity header. [RFC 8224 section 4](https://www.rfc-editor.org/rfc/rfc8224#section-4) permits more than one,
+/// EVERY Identity header. [RFC 8224 section 4](https://www.rfc-editor.org/rfc/rfc8224.html#section-4) permits more than one,
 /// and a diverted call under RFC 8946 carries a `ppt=shaken`
 /// PASSporT plus a `ppt=div` one — reading only the first made
 /// the second invisible on every surface.
@@ -5956,7 +5956,7 @@ fn apply_detector_effect(
 /// A connection that is a WebSocket session goes through that direction's
 /// WebSocket stream, which joins a frame across TLS records, several frames
 /// in one record, and a message across its fragments, and each SIP message
-/// out of it is labeled WSS ([RFC 7118](https://www.rfc-editor.org/rfc/rfc7118)).
+/// out of it is labeled WSS ([RFC 7118](https://www.rfc-editor.org/rfc/rfc7118.html)).
 /// Anything else is framed as SIP over TLS, not sniffed: a sender may write
 /// one SIP message as several records, and testing each record for SIP keeps
 /// an INVITE's headers and drops its SDP body.

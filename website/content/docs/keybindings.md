@@ -294,7 +294,7 @@ message of the selection rendered as one scrollable document.
 | q | Quit, after a confirmation **(configurable: `quit`)** |
 | Esc | Back to the view you came from (RTP Streams, Call Flow, or Quality Dashboard) |
 
-The Stream Detail view shows comprehensive per-stream quality data: MOS score, jitter statistics, quality intervals, burst/gap analysis ([RFC 3611](https://www.rfc-editor.org/rfc/rfc3611)), silence detection, and sparkline graphs for MOS and jitter trends over the stream's lifetime.
+The Stream Detail view shows comprehensive per-stream quality data: MOS score, jitter statistics, quality intervals, burst/gap analysis ([RFC 3611](https://www.rfc-editor.org/rfc/rfc3611.html)), silence detection, and sparkline graphs for MOS and jitter trends over the stream's lifetime.
 
 ## Quality dashboard
 
@@ -898,7 +898,7 @@ Each label says what its field matches: From user and To user match the
 user part of the URI, Source IP and Destination IP the addresses, and Text in
 message searches every SIP message of the call. Header takes `Name: text`, or
 a bare header name to find the calls that carry it. After and Before take an
-[RFC 3339](https://www.rfc-editor.org/rfc/rfc3339) timestamp, and the empty fields show an example in gray.
+[RFC 3339](https://www.rfc-editor.org/rfc/rfc3339.html) timestamp, and the empty fields show an example in gray.
 Named filter takes the names of [`[filters]`](@/docs/config.md#filters)
 entries, separated by spaces, with or without the leading `@`; while it is
 empty it lists the names the config defines.

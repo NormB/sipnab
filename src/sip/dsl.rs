@@ -389,7 +389,7 @@ enum Field {
     /// compact name is expanded through the parser's own table (RFC 3261
     /// section 7.3.3), so `header.k` and `header.Supported` read the same
     /// header whichever form it crossed the wire in. Names compare
-    /// case-insensitively ([RFC 3261 section 7.3.1](https://www.rfc-editor.org/rfc/rfc3261#section-7.3.1)); values compare exactly, as
+    /// case-insensitively ([RFC 3261 section 7.3.1](https://www.rfc-editor.org/rfc/rfc3261.html#section-7.3.1)); values compare exactly, as
     /// on every other string field.
     ///
     /// Matches when ANY header of that name, on ANY message of the dialog,
@@ -398,7 +398,7 @@ enum Field {
     /// such header matches no comparison at all, `!=` included, the rule every
     /// optional field here follows.
     ///
-    /// Nothing about the name is interpreted. [RFC 6648 section 2](https://www.rfc-editor.org/rfc/rfc6648#section-2) forbids
+    /// Nothing about the name is interpreted. [RFC 6648 section 2](https://www.rfc-editor.org/rfc/rfc6648.html#section-2) forbids
     /// assuming anything about a parameter from an `X-` in its name, and this
     /// field does not: `X-Foo` and `Foo` are two unrelated names, neither is
     /// stripped to the other, and a user-defined header is read exactly like a
@@ -2481,7 +2481,7 @@ mod tests {
     ///
     /// RTF1. `--hep-allow 198.51.100.0/24` admits an agent whose packets
     /// arrive as `::ffff:198.51.100.7`, because `CidrRange::contains` maps an
-    /// IPv4-mapped IPv6 address to its v4 form first — [RFC 4291 section 2.5.5.2](https://www.rfc-editor.org/rfc/rfc4291#section-2.5.5.2) makes
+    /// IPv4-mapped IPv6 address to its v4 form first — [RFC 4291 section 2.5.5.2](https://www.rfc-editor.org/rfc/rfc4291.html#section-2.5.5.2) makes
     /// `::ffff:0:0/96` the representation OF a v4 address, not a different
     /// family. `ip_in_cidr` had its own rule and refused the same address, so
     /// a filter over the traffic sipnab had just admitted selected none of it.
@@ -5109,7 +5109,7 @@ mod header_field_tests {
             .matches_dialog(dialog, &[], CaptureMedia::Absent, MosDelay::unknown()))
     }
 
-    /// Header names compare case-insensitively ([RFC 3261 section 7.3.1](https://www.rfc-editor.org/rfc/rfc3261#section-7.3.1));
+    /// Header names compare case-insensitively ([RFC 3261 section 7.3.1](https://www.rfc-editor.org/rfc/rfc3261.html#section-7.3.1));
     /// values compare the way every other string field does, exactly.
     #[test]
     fn a_header_name_matches_in_any_case_and_the_value_exactly() -> Result<(), TestError> {
@@ -5151,7 +5151,7 @@ mod header_field_tests {
     }
 
     /// A compact form names the same header as its long form, in the filter
-    /// and on the wire, in all four combinations ([RFC 3261 section 7.3.3](https://www.rfc-editor.org/rfc/rfc3261#section-7.3.3)).
+    /// and on the wire, in all four combinations ([RFC 3261 section 7.3.3](https://www.rfc-editor.org/rfc/rfc3261.html#section-7.3.3)).
     #[test]
     fn compact_forms_are_honored_on_both_sides() -> Result<(), TestError> {
         let compact_wire = dialog(&["k: 100rel"], &[])?;
@@ -5200,7 +5200,7 @@ mod header_field_tests {
         Ok(())
     }
 
-    /// [RFC 6648 section 2](https://www.rfc-editor.org/rfc/rfc6648#section-2): nothing is read into the `X-` prefix. `Foo` and
+    /// [RFC 6648 section 2](https://www.rfc-editor.org/rfc/rfc6648.html#section-2): nothing is read into the `X-` prefix. `Foo` and
     /// `X-Foo` are two unrelated names — neither is stripped to the other —
     /// and one filter on each selects symmetrically.
     #[test]

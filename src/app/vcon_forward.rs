@@ -419,7 +419,7 @@ impl std::fmt::Debug for AuthHeader {
     }
 }
 
-/// A `tchar` of [RFC 9110 section 5.6.2](https://www.rfc-editor.org/rfc/rfc9110#section-5.6.2): what an HTTP field name is made of.
+/// A `tchar` of [RFC 9110 section 5.6.2](https://www.rfc-editor.org/rfc/rfc9110.html#section-5.6.2): what an HTTP field name is made of.
 fn is_field_name_byte(b: u8) -> bool {
     b.is_ascii_alphanumeric() || b"!#$%&'*+-.^_`|~".contains(&b)
 }

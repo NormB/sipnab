@@ -234,7 +234,7 @@ fn address_caveats(ip: IpAddr) -> String {
 
 /// Whether the address belongs to space an operator routes themselves.
 ///
-/// Carrier-grade NAT ([RFC 6598](https://www.rfc-editor.org/rfc/rfc6598)) is
+/// Carrier-grade NAT ([RFC 6598](https://www.rfc-editor.org/rfc/rfc6598.html)) is
 /// deliberately NOT included, for the reason `private_media_address` excludes
 /// it: it is routable within the carrier that assigned it, and a large share of
 /// working mobile traffic arrives from it.

@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-//! The server half of [RFC 6455](https://www.rfc-editor.org/rfc/rfc6455)
+//! The server half of [RFC 6455](https://www.rfc-editor.org/rfc/rfc6455.html)
 //! WebSocket that the live audio route needs: the handshake's accept key, the
 //! frames a server sends, and the client frames it must answer.
 //!
@@ -9,11 +9,11 @@
 //! primitive the handshake needs, SHA-1, is already in every build that has
 //! the REST API, through rustls.
 
-/// The GUID [RFC 6455 section 1.3](https://www.rfc-editor.org/rfc/rfc6455#section-1.3)
+/// The GUID [RFC 6455 section 1.3](https://www.rfc-editor.org/rfc/rfc6455.html#section-1.3)
 /// appends to the client's key.
 const GUID: &str = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
 
-/// A frame's opcode, [RFC 6455 section 5.2](https://www.rfc-editor.org/rfc/rfc6455#section-5.2).
+/// A frame's opcode, [RFC 6455 section 5.2](https://www.rfc-editor.org/rfc/rfc6455.html#section-5.2).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Opcode {
     /// A UTF-8 text message.
@@ -66,7 +66,7 @@ pub fn accept_key(key: &str) -> String {
 }
 
 /// One whole, unfragmented frame a server sends: never masked, which
-/// [RFC 6455 section 5.1](https://www.rfc-editor.org/rfc/rfc6455#section-5.1)
+/// [RFC 6455 section 5.1](https://www.rfc-editor.org/rfc/rfc6455.html#section-5.1)
 /// forbids a server to do.
 #[must_use]
 pub fn frame(opcode: Opcode, payload: &[u8]) -> Vec<u8> {
@@ -104,7 +104,7 @@ pub struct ClientFrame {
 }
 
 /// The largest client frame read. A client of the audio route sends only
-/// control frames, whose payload [RFC 6455 section 5.5](https://www.rfc-editor.org/rfc/rfc6455#section-5.5)
+/// control frames, whose payload [RFC 6455 section 5.5](https://www.rfc-editor.org/rfc/rfc6455.html#section-5.5)
 /// caps at 125 bytes; this leaves room for a short text message.
 pub const MAX_CLIENT_FRAME: usize = 4096;
 
@@ -169,7 +169,7 @@ pub fn parse_client_frame(buf: &[u8]) -> Result<Option<(ClientFrame, usize)>, &'
 mod tests {
     use super::*;
 
-    /// The worked example of [RFC 6455 section 1.3](https://www.rfc-editor.org/rfc/rfc6455#section-1.3).
+    /// The worked example of [RFC 6455 section 1.3](https://www.rfc-editor.org/rfc/rfc6455.html#section-1.3).
     #[test]
     fn the_accept_key_is_the_rfc_example() {
         assert_eq!(

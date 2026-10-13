@@ -1,4 +1,4 @@
-# sipnab — Full [RFC 3261](https://www.rfc-editor.org/rfc/rfc3261) / IANA Compact-Form Header Support
+# sipnab — Full [RFC 3261](https://www.rfc-editor.org/rfc/rfc3261.html) / IANA Compact-Form Header Support
 
 **Status:** IMPLEMENTED (2026-07-03) — table extended to all 19 forms,
 three gap tests (parser expansion, `r:` transfer tracking, `y:` STIR/SHAKEN
@@ -9,7 +9,7 @@ corpus seeded. Kept for the determination record.
 
 ## 1. What the standard requires
 
-[RFC 3261 section 7.3.3](https://www.rfc-editor.org/rfc/rfc3261#section-7.3.3) ("Compact Form"):
+[RFC 3261 section 7.3.3](https://www.rfc-editor.org/rfc/rfc3261.html#section-7.3.3) ("Compact Form"):
 
 > SIP provides a mechanism to represent common header field names in an
 > abbreviated form. This may be useful when messages would otherwise become
@@ -19,7 +19,7 @@ corpus seeded. Kept for the determination record.
 > for the longer form of a header field name at any time without changing
 > the semantics of the message.
 
-Plus [RFC 3261 section 7.3.1](https://www.rfc-editor.org/rfc/rfc3261#section-7.3.1): header field names are always compared **case-insensitively**
+Plus [RFC 3261 section 7.3.1](https://www.rfc-editor.org/rfc/rfc3261.html#section-7.3.1): header field names are always compared **case-insensitively**
 (so `I:`, `i:`, `V:`, `v:` are all valid compact forms). Long and compact
 forms may be mixed freely within one message.
 
@@ -42,15 +42,15 @@ RFC 3261 itself defines ten compact forms, but the authoritative list is the
 | `s` | Subject | RFC 3261 | ✅ |
 | `t` | To | RFC 3261 | ✅ |
 | `v` | Via | RFC 3261 (+7118) | ✅ |
-| `a` | Accept-Contact | [RFC 3841](https://www.rfc-editor.org/rfc/rfc3841) | ❌ |
-| `b` | Referred-By | [RFC 3892](https://www.rfc-editor.org/rfc/rfc3892) | ❌ |
+| `a` | Accept-Contact | [RFC 3841](https://www.rfc-editor.org/rfc/rfc3841.html) | ❌ |
+| `b` | Referred-By | [RFC 3892](https://www.rfc-editor.org/rfc/rfc3892.html) | ❌ |
 | `d` | Request-Disposition | RFC 3841 | ❌ |
 | `j` | Reject-Contact | RFC 3841 | ❌ |
-| `o` | Event | [RFC 6665](https://www.rfc-editor.org/rfc/rfc6665) (+6446) | ❌ |
-| `r` | Refer-To | [RFC 3515](https://www.rfc-editor.org/rfc/rfc3515) | ❌ |
+| `o` | Event | [RFC 6665](https://www.rfc-editor.org/rfc/rfc6665.html) (+6446) | ❌ |
+| `r` | Refer-To | [RFC 3515](https://www.rfc-editor.org/rfc/rfc3515.html) | ❌ |
 | `u` | Allow-Events | RFC 6665 | ❌ |
-| `x` | Session-Expires | [RFC 4028](https://www.rfc-editor.org/rfc/rfc4028) | ❌ |
-| `y` | Identity | [RFC 8224](https://www.rfc-editor.org/rfc/rfc8224) | ❌ |
+| `x` | Session-Expires | [RFC 4028](https://www.rfc-editor.org/rfc/rfc4028.html) | ❌ |
+| `y` | Identity | [RFC 8224](https://www.rfc-editor.org/rfc/rfc8224.html) | ❌ |
 
 ## 2. Determination: what sipnab supports today
 
@@ -88,8 +88,8 @@ long-form lookup misses it. Concrete consumer impact found by audit:
    miss.
 
 **Explicitly out of scope — SigComp.** "Compressed SIP" can also mean
-signaling compression (SigComp, [RFC 3320](https://www.rfc-editor.org/rfc/rfc3320), negotiated via the `comp=sigcomp`
-Via/URI parameter, [RFC 3486](https://www.rfc-editor.org/rfc/rfc3486)). That is a bytecode-VM decompression layer,
+signaling compression (SigComp, [RFC 3320](https://www.rfc-editor.org/rfc/rfc3320.html), negotiated via the `comp=sigcomp`
+Via/URI parameter, [RFC 3486](https://www.rfc-editor.org/rfc/rfc3486.html)). That is a bytecode-VM decompression layer,
 essentially specific to 3GPP/IMS deployments; sipnab does not implement it
 and this spec does not propose to. If a capture contains SigComp-compressed
 SIP, sipnab will (correctly) not detect it as SIP. A future feature request

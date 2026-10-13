@@ -118,7 +118,7 @@ remedies, so a non-zero figure names its own flag:
   with both ports outside `--portrange`. Re-run with a range that covers the
   ports listed.
 - `unanalysed_websocket_messages` / `unanalysed_websocket_ports` —
-  SIP-over-WebSocket ([RFC 7118](https://www.rfc-editor.org/rfc/rfc7118)) on a
+  SIP-over-WebSocket ([RFC 7118](https://www.rfc-editor.org/rfc/rfc7118.html)) on a
   port outside the WebSocket set. Re-run with `--ws-portrange` covering the
   ports listed. Widening `--portrange` recovers none of it. This is the common
   case on a WSS listener behind a reverse proxy, and on Kamailio, OpenSIPS and
@@ -240,7 +240,7 @@ reports (`sipnab_capture_packets_total`), so the denominator here is the one
 every other number in the run measures against.
 
 **`yang-json`** answers the same analysis as `json`, encoded per
-[RFC 7951](https://www.rfc-editor.org/rfc/rfc7951) against the YANG module
+[RFC 7951](https://www.rfc-editor.org/rfc/rfc7951.html) against the YANG module
 `sipnab-diagnosis`, which `sipnab --print-yang-module` prints. The document is
 the first content block, and its one top-level member is
 `sipnab-diagnosis:capture-analysis`. RFC 7951 allows no other member there, so
@@ -486,7 +486,7 @@ incomplete answer — it reads as a confident wrong one. `total_matched` and
 burst of registrations lands on one millisecond — and a bare timestamp forces a
 choice between dropping the rest of that group and serving it twice. Resuming
 after the `(created_at, Call-ID)` pair splits the group exactly where the page
-ended. **Pass the value back unmodified.** A bare [RFC 3339](https://www.rfc-editor.org/rfc/rfc3339) timestamp still
+ended. **Pass the value back unmodified.** A bare [RFC 3339](https://www.rfc-editor.org/rfc/rfc3339.html) timestamp still
 parses, so rebuilding one by hand fails silently rather than erroring.
 
 The two tools page on different clocks, deliberately. `tail_dialogs` follows
@@ -783,7 +783,7 @@ the second closes a ticket.
 | `cause_code` | u16? | The cause number, on the scale `protocol` names. Absent when the message named a protocol and no cause — never zero for a missing value, because `0` is itself a Q.850 cause |
 | `cause_text` | string? | The human-readable cause. sipnab strips control characters and keeps the first `MAX_CAUSE_TEXT_CHARS` (200) — far past every value a gateway produces, and short enough that a crafted header cannot spend a context window |
 | `protocol` | string? | Which scale `cause_code` is on. `16` is normal clearing in Q.850 and is not a SIP status code at all, so a code without this is not interpretable |
-| `source_header` | string | Which header carried the cause: `Reason` ([RFC 3326](https://www.rfc-editor.org/rfc/rfc3326)) or `X-Asterisk-HangupCauseCode` |
+| `source_header` | string | Which header carried the cause: `Reason` ([RFC 3326](https://www.rfc-editor.org/rfc/rfc3326.html)) or `X-Asterisk-HangupCauseCode` |
 | `frame_ref` | usize | Index into the dialog's message list of the message that carried it |
 
 sipnab reads the **last** message that names a cause — a call that went through
@@ -830,7 +830,7 @@ Every `messages` row carries `call_id`, `is_request`, `cseq` (`method` and
 `timestamp`, `frame` and `schema_version`. Two more appear when sipnab observed
 them and are **left out rather than sent as null** when it did not:
 
-- `dscp` — the [RFC 2474](https://www.rfc-editor.org/rfc/rfc2474) marking on
+- `dscp` — the [RFC 2474](https://www.rfc-editor.org/rfc/rfc2474.html) marking on
   the frame that carried this message, 0 to 63. Absent means no IP header was
   read, which is what a HEP-delivered message looks like. `0` means sipnab saw
   the frame and the frame said best effort. Unmarked signaling is itself a
@@ -970,7 +970,7 @@ streams carry the Call-ID the relay named. `rtp_stats` answers from those
 streams: `dialog_seen` is `false`, and `dialog_absent` says why no dialog
 explains the media, with the same `reason` and `note` that
 [`reconcile_orphans`](mcp-tools-media.md#reconcile_orphans) gives it. The diagnosis still runs,
-without the SDP checks (`nat_mismatch`, `no_media`, the [RFC 4961](https://www.rfc-editor.org/rfc/rfc4961) port hints), which
+without the SDP checks (`nat_mismatch`, `no_media`, the [RFC 4961](https://www.rfc-editor.org/rfc/rfc4961.html) port hints), which
 need the dialog. [`media_diagnostics`](mcp-tools-media.md#media_diagnostics),
 [`explain_attribution`](mcp-tools-media.md#explain_attribution) and
 [`export_audio`](mcp-tools-media.md#export_audio) follow the same rule.

@@ -30,7 +30,7 @@ The parts, and what each one does:
 | **rtpengine** | Relays each call's media and sends a copy of it to the recorder. |
 | **vcon-siprec-adapter** | The recorder. It receives the copy over SIPREC, turns each finished call into a vCon, and posts it to vcon-server. |
 
-SIPREC ([RFC 7866](https://www.rfc-editor.org/rfc/rfc7866)) is the standard way for a SIP server to hand a copy of a call
+SIPREC ([RFC 7866](https://www.rfc-editor.org/rfc/rfc7866.html)) is the standard way for a SIP server to hand a copy of a call
 to a recorder: the proxy opens a second SIP session to the recorder and sends it
 both directions of the audio.
 

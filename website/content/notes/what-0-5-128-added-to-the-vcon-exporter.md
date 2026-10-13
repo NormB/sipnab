@@ -39,13 +39,13 @@ A container is one vCon file. 0.5.128 added these fields:
   `"PCMU/8000" <sip:sipp@10.0.2.20:5060>`, so the caller's `name` is
   `PCMU/8000`: a codec name, not a person.
 - **`parties[].stir`**, on the caller only, carries the PASSporT from an
-  observed `Identity` header ([RFC 8224](https://www.rfc-editor.org/rfc/rfc8224)),
+  observed `Identity` header ([RFC 8224](https://www.rfc-editor.org/rfc/rfc8224.html)),
   the signed token that STIR/SHAKEN caller authentication uses. sipnab keeps
   the token and drops the header's `info`, `alg` and `ppt` parameters. It
   checks only that the token has three non-empty dot-separated parts; it
   fetches no certificate and verifies no signature.
 - **`dialog[].session_id`** carries the `Session-ID` header pair
-  ([RFC 7989](https://www.rfc-editor.org/rfc/rfc7989)), an identifier that
+  ([RFC 7989](https://www.rfc-editor.org/rfc/rfc7989.html)), an identifier that
   stays the same on both sides of a B2BUA (a server that splits a call into
   two legs with different Call-IDs). A half that is `nil` or not a UUID is
   left out.
@@ -95,7 +95,7 @@ sipnab saw a final failure response, and then `disposition` gives the reason.
 ### REST error format
 
 sipnab's REST API answers an error with an
-[RFC 9457](https://www.rfc-editor.org/rfc/rfc9457) problem document, content
+[RFC 9457](https://www.rfc-editor.org/rfc/rfc9457.html) problem document, content
 type `application/problem+json`, holding `type`, `title`, `status` and
 sometimes `detail`. Before 0.5.128 an error was a status code with no body.
 sipnab builds the `type` URI from the status code alone, for example

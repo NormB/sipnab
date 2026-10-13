@@ -8,7 +8,7 @@
 //! because it ends in a wrong answer as often as in none (Norm, 2026-09-18).
 //!
 //! So a reference names what it points at and links there: "[RFC 3261 section
-//! 17.1.3](https://www.rfc-editor.org/rfc/rfc3261#section-17.1.3)", or a
+//! 17.1.3](https://www.rfc-editor.org/rfc/rfc3261.html#section-17.1.3)", or a
 //! document's section by its title with a link to the heading.
 //! `scripts/rfc-links.py` writes the RFC form.
 //!

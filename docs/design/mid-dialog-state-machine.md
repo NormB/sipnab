@@ -53,8 +53,8 @@ the cell.
 asks whether the dialog's own family needs inferring has an answer, and it is
 "yes".** The dialog's own
 family is needed, not only the arrival's. `NOTIFY` is the counterexample: the
-same request ends a transfer inside an INVITE dialog ([RFC 3515 section 2.4.6](https://www.rfc-editor.org/rfc/rfc3515#section-2.4.6)) and
-activates a subscription inside a SUBSCRIBE one ([RFC 6665 section 4.1.2](https://www.rfc-editor.org/rfc/rfc6665#section-4.1.2)), and nothing
+same request ends a transfer inside an INVITE dialog ([RFC 3515 section 2.4.6](https://www.rfc-editor.org/rfc/rfc3515.html#section-2.4.6)) and
+activates a subscription inside a SUBSCRIBE one ([RFC 6665 section 4.1.2](https://www.rfc-editor.org/rfc/rfc6665.html#section-4.1.2)), and nothing
 on the message distinguishes the two. `transition` therefore keeps the
 `family` parameter that
 [section 5, "How completeness is proven, rather than asserted"](#5-how-completeness-is-proven-rather-than-asserted)
@@ -77,12 +77,12 @@ cannot open a dialog — and `dialog.method` is untouched, as
 [section 3, "The central design decision: the dispatch key is wrong"](#3-the-central-design-decision-the-dispatch-key-is-wrong)
 intended. One
 cell arrived that this page never named: a `2xx` answering a `BYE` is proof the
-session ended ([RFC 3261 section 15.1.2](https://www.rfc-editor.org/rfc/rfc3261#section-15.1.2)), so a call whose `BYE` fell outside the
+session ended ([RFC 3261 section 15.1.2](https://www.rfc-editor.org/rfc/rfc3261.html#section-15.1.2)), so a call whose `BYE` fell outside the
 capture now leaves `InCall` instead of being counted as a live channel until it
 ages out. Its sibling is the trap above — a `2xx` answering a `CANCEL` proves
 only that the cancellation arrived
-([RFC 3261 section 9.1](https://www.rfc-editor.org/rfc/rfc3261#section-9.1) and
-[RFC 3261 section 9.2](https://www.rfc-editor.org/rfc/rfc3261#section-9.2)) — and the two together are why the
+([RFC 3261 section 9.1](https://www.rfc-editor.org/rfc/rfc3261.html#section-9.1) and
+[RFC 3261 section 9.2](https://www.rfc-editor.org/rfc/rfc3261.html#section-9.2)) — and the two together are why the
 transaction is a coordinate and the family is not enough.
 
 **What did not ship, deliberately.** `UPDATE`, `INFO`, `REFER` and `NOTIFY`
@@ -172,7 +172,7 @@ and `Pending` ([`timeline.rs:472`](https://github.com/NormB/sipnab/blob/main/src
 ## 2. Why the obvious fix failed five times
 
 The obvious fix is to dispatch on the method a request *implies* — a BYE or a
-CANCEL cannot open a dialog ([RFC 3261 section 9](https://www.rfc-editor.org/rfc/rfc3261#section-9), [RFC 3261 section 15](https://www.rfc-editor.org/rfc/rfc3261#section-15)), so it belongs to an INVITE. The
+CANCEL cannot open a dialog ([RFC 3261 section 9](https://www.rfc-editor.org/rfc/rfc3261.html#section-9), [RFC 3261 section 15](https://www.rfc-editor.org/rfc/rfc3261.html#section-15)), so it belongs to an INVITE. The
 backlog is right that this *"is almost certainly the right shape"*. Here is why
 routing to `update_invite_state` on its own makes things worse.
 
@@ -264,7 +264,7 @@ those arms are the part that was always the real content, the **state** guards:
 matches!(dialog.state, DialogState::Trying | DialogState::Ringing | DialogState::Canceled)
 ```
 
-That is the [RFC 3261 section 9](https://www.rfc-editor.org/rfc/rfc3261#section-9)/[RFC 3261 section 15](https://www.rfc-editor.org/rfc/rfc3261#section-15) rule the domain primer already documents
+That is the [RFC 3261 section 9](https://www.rfc-editor.org/rfc/rfc3261.html#section-9)/[RFC 3261 section 15](https://www.rfc-editor.org/rfc/rfc3261.html#section-15) rule the domain primer already documents
 ([`domain-primer.md:168-180`](https://github.com/NormB/sipnab/blob/main/docs/internals/domain-primer.md#L168-L180)): once a final 2xx
 has established the call, a CANCEL has no effect, so a late 487 must not
 un-answer it.
@@ -459,7 +459,7 @@ it. Properties, each a quantified statement over every cell:
 - **No cell moves an answered call back to a pre-answer state.** Nothing may take
   `InCall` to `Trying` or `Ringing`.
 - **The 2xx/CANCEL race resolves one way.** A 2xx in the INVITE family from
-  `Canceled` reaches `InCall`; no 487 may move `InCall`. [RFC 3261 section 9](https://www.rfc-editor.org/rfc/rfc3261#section-9) and [RFC 3261 section 15](https://www.rfc-editor.org/rfc/rfc3261#section-15),
+  `Canceled` reaches `InCall`; no 487 may move `InCall`. [RFC 3261 section 9](https://www.rfc-editor.org/rfc/rfc3261.html#section-9) and [RFC 3261 section 15](https://www.rfc-editor.org/rfc/rfc3261.html#section-15),
   and [`domain-primer.md:168-180`](https://github.com/NormB/sipnab/blob/main/docs/internals/domain-primer.md#L168-L180).
 - **Provisional and Challenge never decide an outcome.**
   `ResponseClass::Provisional` and `ResponseClass::Challenge` may only produce

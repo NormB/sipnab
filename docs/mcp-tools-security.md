@@ -198,7 +198,7 @@ quarters of a healthy fleet.
 
 | Field | Type | Description |
 |---|---|---|
-| `observation.contact_host` | string? | The host the `Contact` named, as written. Absent for `Contact: *`, which [RFC 3261 section 10.2.2](https://www.rfc-editor.org/rfc/rfc3261#section-10.2.2) defines as every binding and which names no host |
+| `observation.contact_host` | string? | The host the `Contact` named, as written. Absent for `Contact: *`, which [RFC 3261 section 10.2.2](https://www.rfc-editor.org/rfc/rfc3261.html#section-10.2.2) defines as every binding and which names no host |
 | `observation.contact_host_private` | bool? | Whether that host is one the public internet does not route to. Absent when the `Contact` names a domain: a name resolves somewhere the capture cannot see, and judging it either way would be a guess |
 | `observation.source_public` | bool | Whether the REGISTER arrived from a public address |
 | `observation.rewrite_required` | bool | The two together — the shape that calls for a NAT rewrite |
@@ -222,7 +222,7 @@ registrar sent to the private `Contact` carries no address belonging to the
 endpoint — that is exactly what going to the wrong host means — so nothing
 address-based can find it. The tie is the user part in the request URI and
 `To`, matched case-sensitively per
-[RFC 3261 section 19.1.4](https://www.rfc-editor.org/rfc/rfc3261#section-19.1.4).
+[RFC 3261 section 19.1.4](https://www.rfc-editor.org/rfc/rfc3261.html#section-19.1.4).
 
 [`diagnose_registration`](#diagnose_registration) reports the observation for a
 single call. The corroborated finding lives here, because settling it needs
@@ -239,7 +239,7 @@ handling. The banner cannot tell them apart. The syntax can.
 
 | Field | Type | Description |
 |---|---|---|
-| `branch_cookie` | string? | The `Via` branch's cookie: the mandatory `z9hG4bK` ([RFC 3261 section 8.1.1.7](https://www.rfc-editor.org/rfc/rfc3261#section-8.1.1.7)) plus any vendor extension before the per-transaction part. Echoed from the wire, bounded to `MAX_FINGERPRINT_CHARS` (32) |
+| `branch_cookie` | string? | The `Via` branch's cookie: the mandatory `z9hG4bK` ([RFC 3261 section 8.1.1.7](https://www.rfc-editor.org/rfc/rfc3261.html#section-8.1.1.7)) plus any vendor extension before the per-transaction part. Echoed from the wire, bounded to `MAX_FINGERPRINT_CHARS` (32) |
 | `branch_shape` | string? | What follows the cookie: `uuid`, `as-hex`, `hex` or `other` |
 | `tag_shape` | string? | The same vocabulary, for the `From` tag |
 | `callid_has_host` | bool? | Whether the `Call-ID` carries an `@host` part |
@@ -281,7 +281,7 @@ record alone would silently drop them, and the dropped ones are exactly the
 transfers and hand-offs an operator is looking for.
 
 **A `user` matches the From or To user part EXACTLY.** [RFC 3261
-section 19.1.4](https://www.rfc-editor.org/rfc/rfc3261#section-19.1.4) makes the user
+section 19.1.4](https://www.rfc-editor.org/rfc/rfc3261.html#section-19.1.4) makes the user
 part case-sensitive, so `Alice` and `alice` name two URIs, and folding the case
 here would file one endpoint's traffic under the name of a second.
 
@@ -314,8 +314,8 @@ straight into [`diagnose_registration`](#diagnose_registration).
 
 `user_agents` attributes a banner to whoever wrote it: `User-Agent` off requests
 the address SENT and `Server` off responses it sent, per [RFC 3261
-section 20.41](https://www.rfc-editor.org/rfc/rfc3261#section-20.41) and
-[RFC 3261 section 20.35](https://www.rfc-editor.org/rfc/rfc3261#section-20.35). Reading them off
+section 20.41](https://www.rfc-editor.org/rfc/rfc3261.html#section-20.41) and
+[RFC 3261 section 20.35](https://www.rfc-editor.org/rfc/rfc3261.html#section-20.35). Reading them off
 received messages would file the far end's software under this endpoint. For a
 `user` only `User-Agent` on requests whose From user matches counts, the one
 case where the URI identifies the party that wrote the header. Values arrive
@@ -403,7 +403,7 @@ honest reading and not a fault ruled out.
 
 | Field | Type | Description |
 |---|---|---|
-| `contact_host` | string? | The host the `Contact` named, as written. Absent for `Contact: *`, which [RFC 3261 section 10.2.2](https://www.rfc-editor.org/rfc/rfc3261#section-10.2.2) defines as every binding and which names no host |
+| `contact_host` | string? | The host the `Contact` named, as written. Absent for `Contact: *`, which [RFC 3261 section 10.2.2](https://www.rfc-editor.org/rfc/rfc3261.html#section-10.2.2) defines as every binding and which names no host |
 | `contact_host_private` | bool? | Whether that host is one the public internet does not route to. Absent when the `Contact` names a domain, which resolves somewhere the capture cannot see |
 | `source_public` | bool | Whether the REGISTER arrived from a public address |
 | `rewrite_required` | bool | The two together |
@@ -562,7 +562,7 @@ reg-flood, etc.). Backed by the AlertEngine's bounded ring buffer
 | Name | Type | Legal values | If omitted |
 |---|---|---|---|
 | `kinds` | string[]? | Exactly four names: `scanner`, `fraud`, `digest`, `reg_flood`. Anything else fails with `invalid_params` naming all four — including `reg-flood` with a hyphen, which suggests the underscore spelling. | Findings of every kind. |
-| `since` | string? | [RFC 3339](https://www.rfc-editor.org/rfc/rfc3339). Keeps findings recorded strictly after it. A malformed value fails with `since must be RFC 3339`. | The whole retained history. |
+| `since` | string? | [RFC 3339](https://www.rfc-editor.org/rfc/rfc3339.html). Keeps findings recorded strictly after it. A malformed value fails with `since must be RFC 3339`. | The whole retained history. |
 | `limit` | u32? | Ceiling is `--mcp-max-rows` (1000 by default). Higher clamps to it, `0` means the default. | 50 findings. |
 
 **Returns** — a page object, not a bare array:

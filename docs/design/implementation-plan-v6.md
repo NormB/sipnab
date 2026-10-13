@@ -558,7 +558,7 @@ StreamStore ──────── stores RtpStream objects, keyed by SSRC + s
 
 3. **RTP discovery does not require SDP.** SDP tells sipnab where media *should* go. Heuristic detection finds where media *actually* goes — even-port UDP with RTP v2 header structure, valid payload type, incrementing sequence numbers. After NAT, after RTPEngine, after any middlebox that rewrites media addresses, the actual stream is discoverable.
 
-4. **RTCP is parsed.** Sender Reports (SR) and Receiver Reports (RR) contain the remote side's quality experience. RTCP XR ([RFC 3611](https://www.rfc-editor.org/rfc/rfc3611)) carries MOS, burst loss metrics, and round-trip delay. Ignoring RTCP means seeing only half the quality picture.
+4. **RTCP is parsed.** Sender Reports (SR) and Receiver Reports (RR) contain the remote side's quality experience. RTCP XR ([RFC 3611](https://www.rfc-editor.org/rfc/rfc3611.html)) carries MOS, burst loss metrics, and round-trip delay. Ignoring RTCP means seeing only half the quality picture.
 
 5. **Quality is per-interval, not per-call.** A call averaging 20ms jitter might have a 3-second burst at 200ms that caused the user to hang up. sipnab records quality metrics per configurable interval (default: 1 second) so the shape of degradation is visible, not just the average.
 
@@ -854,7 +854,7 @@ Testing is not a phase — every phase includes its own tests. This section defi
 
 ### Pcap Test Corpus (≥ 50 pcaps, built incrementally)
 
-Basic calls, REGISTER, SUBSCRIBE/NOTIFY, forked calls, fragmented IP, TCP SIP, TLS SIP, WebSocket SIP, HEP, malformed messages, scanner traffic, STIR/SHAKEN Identity headers, [RFC 4733](https://www.rfc-editor.org/rfc/rfc4733) DTMF, codec negotiation edge cases, orphaned RTP streams (no SIP in capture), RTP with quality degradation (jitter bursts, packet loss), RTCP SR/RR/XR reports, SRTP with SDES keys in SDP, one-way audio scenarios (RTP in one direction only), RTPEngine-rewritten media addresses, comfort noise (CN) and silence suppression.
+Basic calls, REGISTER, SUBSCRIBE/NOTIFY, forked calls, fragmented IP, TCP SIP, TLS SIP, WebSocket SIP, HEP, malformed messages, scanner traffic, STIR/SHAKEN Identity headers, [RFC 4733](https://www.rfc-editor.org/rfc/rfc4733.html) DTMF, codec negotiation edge cases, orphaned RTP streams (no SIP in capture), RTP with quality degradation (jitter bursts, packet loss), RTCP SR/RR/XR reports, SRTP with SDES keys in SDP, one-way audio scenarios (RTP in one direction only), RTPEngine-rewritten media addresses, comfort noise (CN) and silence suppression.
 
 ---
 
@@ -1332,7 +1332,7 @@ sipnab accepts the full conventional flag set. When invoked without `-N`, it lau
   - `l` = Content-Length, `c` = Content-Type, `e` = Content-Encoding
   - `k` = Supported, `s` = Subject
   - Carriers and B2BUAs use these in production; without support, sipnab misses headers
-- [ ] **Header folding** — headers continued on the next line with leading whitespace (SP or HTAB per [RFC 3261 section 7.3.1](https://www.rfc-editor.org/rfc/rfc3261#section-7.3.1)) must be unfolded before value extraction
+- [ ] **Header folding** — headers continued on the next line with leading whitespace (SP or HTAB per [RFC 3261 section 7.3.1](https://www.rfc-editor.org/rfc/rfc3261.html#section-7.3.1)) must be unfolded before value extraction
 - [ ] **Multiple headers with same name** — Via, Record-Route, Route can appear multiple times; parser returns all instances, not just the first
 - [ ] Header extraction (lazy, on-demand):
   - Call-ID, X-Call-ID
@@ -1592,7 +1592,7 @@ RTP is parsed and tracked from Phase 2 onward — it is not deferred to a later 
   - **Default limit: 50,000 streams** (D17). Configurable via `--max-streams`.
   - Cross-reference with DialogStore: when SDP is parsed, link streams to their dialog by matching media IP:port. When a dialog is rotated/removed, unlink (but don't delete) its streams.
 - [ ] `rtp::quality` — basic per-interval metrics:
-  - Jitter calculation ([RFC 3550](https://www.rfc-editor.org/rfc/rfc3550) algorithm: running interarrival jitter)
+  - Jitter calculation ([RFC 3550](https://www.rfc-editor.org/rfc/rfc3550.html) algorithm: running interarrival jitter)
   - Packet loss: gap detection from sequence number discontinuities
   - Per-interval recording (default: every 1 second, configurable via `--rtp-interval`)
   - Store as `Vec<QualityInterval>` per stream (circular buffer, configurable depth)
@@ -2503,7 +2503,7 @@ SIP over TLS (SIPS, port 5061) is increasingly common. Without decryption, sipna
 
 ### 5.6 — SRTP Decryption
 
-SRTP ([RFC 3711](https://www.rfc-editor.org/rfc/rfc3711)) encrypts RTP media streams. Decryption requires the SRTP master key.
+SRTP ([RFC 3711](https://www.rfc-editor.org/rfc/rfc3711.html)) encrypts RTP media streams. Decryption requires the SRTP master key.
 
 **Key source chain (automatic):**
 

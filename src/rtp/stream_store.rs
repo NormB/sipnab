@@ -88,7 +88,7 @@ struct SdpEndpoint {
     /// load-bearing. `None` means no media description was ever supplied for
     /// this endpoint, so nothing is known about packing; an empty `Vec` means
     /// a description arrived and carried no format parameters, which
-    /// [RFC 4867 section 8.1](https://www.rfc-editor.org/rfc/rfc4867#section-8.1) settles as the bandwidth-efficient default. Collapsing the two
+    /// [RFC 4867 section 8.1](https://www.rfc-editor.org/rfc/rfc4867.html#section-8.1) settles as the bandwidth-efficient default. Collapsing the two
     /// would let an endpoint learned from a relay's control plane assert a
     /// packing nobody negotiated.
     media_formats: Option<Vec<String>>,
@@ -338,7 +338,7 @@ const MAX_PENDING_ORPHAN_SOCKETS: usize = 4096;
 /// name a NEW stream's dialog (F3).
 ///
 /// Grounded on the longest an offer can legitimately wait for its media.
-/// [RFC 3261 section 16.8](https://www.rfc-editor.org/rfc/rfc3261#section-16.8)
+/// [RFC 3261 section 16.8](https://www.rfc-editor.org/rfc/rfc3261.html#section-16.8)
 /// requires a proxy's Timer C to be **greater than 3 minutes**; when it fires
 /// the INVITE transaction is canceled and no media follows. So an offer
 /// unclaimed for longer than that will not be claimed legitimately through a
@@ -428,7 +428,7 @@ pub struct RemoteReceptionReport {
     /// source being reported on).
     pub reporter_ssrc: u32,
     /// Loss fraction over the reporting interval, times 256
-    /// ([RFC 3550 section 6.4.1](https://www.rfc-editor.org/rfc/rfc3550#section-6.4.1)). See [`Self::fraction_lost_pct`].
+    /// ([RFC 3550 section 6.4.1](https://www.rfc-editor.org/rfc/rfc3550.html#section-6.4.1)). See [`Self::fraction_lost_pct`].
     pub fraction_lost: u8,
     /// Packets lost since the reporter began receiving — a cumulative count
     /// over the reporter's whole session, not a rate and not scoped to the
@@ -2089,7 +2089,7 @@ impl StreamStore {
     ///    RTP; nothing weaker is needed and nothing stronger exists.
     /// 2. [`MediaMatch::Ssrc`] — the quoted payload named a tracked stream's
     ///    SSRC. This is what carries the commonest real case: RTCP runs one
-    ///    port above RTP ([RFC 3550 section 11](https://www.rfc-editor.org/rfc/rfc3550#section-11)), so an error about RTCP can never
+    ///    port above RTP ([RFC 3550 section 11](https://www.rfc-editor.org/rfc/rfc3550.html#section-11)), so an error about RTCP can never
     ///    match a stream's 5-tuple, and in one real corpus the media errors
     ///    were predominantly RTCP.
     /// 3. [`MediaMatch::Endpoint`] — one of the two sockets is an endpoint of
@@ -2476,10 +2476,10 @@ fn is_audio_capturable(codec: Option<&str>) -> bool {
 }
 
 /// Whether an SDP `m=` transport protocol is an SRTP profile: `RTP/SAVP`
-/// ([RFC 3711](https://www.rfc-editor.org/rfc/rfc3711)), `RTP/SAVPF`
-/// ([RFC 5124](https://www.rfc-editor.org/rfc/rfc5124)), and their DTLS-SRTP
+/// ([RFC 3711](https://www.rfc-editor.org/rfc/rfc3711.html)), `RTP/SAVPF`
+/// ([RFC 5124](https://www.rfc-editor.org/rfc/rfc5124.html)), and their DTLS-SRTP
 /// forms `UDP/TLS/RTP/SAVP` and `UDP/TLS/RTP/SAVPF`
-/// ([RFC 5764](https://www.rfc-editor.org/rfc/rfc5764)). Compared without
+/// ([RFC 5764](https://www.rfc-editor.org/rfc/rfc5764.html)). Compared without
 /// regard to case, as SDP tokens are.
 fn is_srtp_profile(proto: &str) -> bool {
     let proto = proto.to_ascii_uppercase();
@@ -2937,7 +2937,7 @@ a=rtpmap:96 H264/90000\r\n";
 
     /// An octet-aligned AMR payload whose first frame carries `ft`.
     ///
-    /// Built here from [RFC 4867 section 4.4.2](https://www.rfc-editor.org/rfc/rfc4867#section-4.4.2)'s layout rather than reused from
+    /// Built here from [RFC 4867 section 4.4.2](https://www.rfc-editor.org/rfc/rfc4867.html#section-4.4.2)'s layout rather than reused from
     /// `crate::rtp::amr`'s own tests, so a wrong layout in the reader cannot
     /// be canceled out by the same wrong layout in its fixture.
     fn amr_octet_aligned_payload(ft: u8) -> Vec<u8> {
@@ -5461,7 +5461,7 @@ a=rtpmap:96 H264/90000\r\n";
     }
 
     /// The companion rule is one port up from an EVEN media port, per
-    /// [RFC 3550 section 11](https://www.rfc-editor.org/rfc/rfc3550#section-11). Reading it as "any port, minus one" would attach an error on an
+    /// [RFC 3550 section 11](https://www.rfc-editor.org/rfc/rfc3550.html#section-11). Reading it as "any port, minus one" would attach an error on an
     /// even port to whatever odd port happened to be advertised below it.
     #[test]
     fn the_rtcp_companion_rule_only_applies_above_an_even_port() -> Result<(), TestError> {

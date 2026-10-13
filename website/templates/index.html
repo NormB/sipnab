@@ -26,7 +26,7 @@
   <div class="hero-bg" aria-hidden="true"></div>
   <div class="hero-inner">
     <h1 class="hero-title">sipnab <span class="version-badge" aria-hidden="true">v{{ config.extra.published_version }}</span></h1>
-    <p class="hero-tagline">See why a VoIP call failed, from its <a class="std-ref" href="https://www.rfc-editor.org/rfc/rfc3261" target="_blank" rel="noopener noreferrer">SIP</a> signaling and its <a class="std-ref" href="https://www.rfc-editor.org/rfc/rfc3550" target="_blank" rel="noopener noreferrer">RTP</a> audio.</p>
+    <p class="hero-tagline">See why a VoIP call failed, from its <a class="std-ref" href="https://www.rfc-editor.org/rfc/rfc3261.html" target="_blank" rel="noopener noreferrer">SIP</a> signaling and its <a class="std-ref" href="https://www.rfc-editor.org/rfc/rfc3550.html" target="_blank" rel="noopener noreferrer">RTP</a> audio.</p>
     <p class="hero-sub">Reads live traffic, a pcap file, or the copies your SIP proxies send (HEP). Shows the call flow, the audio quality and security warnings. One binary, no database, no server to run.</p>
     <div class="hero-actions">
       <a href="{{ get_url(path='@/docs/install.md') }}" class="btn btn-primary">Get started &rarr;</a>
@@ -72,7 +72,7 @@
           <li><a href="{{ get_url(path='@/docs/cli.md') }}#capture">A live network interface</a> <code>-d eth0</code></li>
           <li><a href="{{ get_url(path='@/docs/cli.md') }}#capture">pcap and pcapng files, folders, archives, stored vCons</a> <code>-I</code></li>
           <li><a href="{{ get_url(path='@/docs/homer-sipnab.md') }}">HEP copies from OpenSIPS, Kamailio, rtpengine</a> <code>-L</code> <code>-E</code></li>
-          <li><a href="{{ get_url(path='@/docs/tls-capture.md') }}">Encrypted SIP, with TLS keys or eBPF</a> <code>--keylog</code> <code>--uprobe-tls</code></li>
+          <li><a href="{{ get_url(path='@/docs/tls-capture.md') }}">Encrypted SIP, with TLS keys or kernel uprobes</a> <code>--keylog</code> <code>--uprobe-tls</code></li>
           <li><a href="{{ get_url(path='@/docs/encapsulations.md') }}">VLAN, MPLS, GTP-U, VXLAN, WebSocket</a> <code>--capture-tunnels</code></li>
           <li><a href="{{ get_url(path='@/docs/rtpengine-sipnab.md') }}">Media relay: rtpengine</a> <code>--rtpengine-control</code></li>
           <li><a href="{{ get_url(path='@/docs/rtpproxy-sipnab.md') }}">Media relay: rtpproxy</a> <code>--rtpproxy-control</code></li>
@@ -103,7 +103,7 @@
         </ul>
         <h3 class="sysmap-subhead" id="sysmap-act-h">What it can act on</h3>
         <ul aria-labelledby="sysmap-act-h">
-          <li><a href="{{ get_url(path='@/docs/fail2ban-sipnab.md') }}">Alerts and fail2ban</a> <code>--alert</code> <code>--fail2ban</code></li>
+          <li><a href="{{ get_url(path='@/docs/fail2ban-sipnab.md') }}">Alerts and fail2ban</a> <code>--syslog</code> <code>--fail2ban</code></li>
           <li><a href="{{ get_url(path='@/docs/tfps-sipnab.md') }}">TFPS bans, journaled and revertible</a> <code>--allow-action</code></li>
         </ul>
       </section>
@@ -171,12 +171,12 @@
         <h3 class="cap-title"><span class="cap-icon" aria-hidden="true"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2 12h4l3-8 6 16 3-8h4"/></svg></span>Capture and inputs</h3>
         <p class="cap-lede">Live interfaces, files, archives and HEP feeds, decrypted where you hold the keys.</p>
         <ul class="cap-list">
-          <li><a class="cap-name" href="{{ get_url(path='@/docs/cli.md') }}#capture">Live capture</a> <span class="cap-text">One or several interfaces, with the capture filter editable from the terminal UI.</span></li>
+          <li><a class="cap-name" href="{{ get_url(path='@/docs/cli.md') }}#capture">Live capture</a> <span class="cap-text">One or several interfaces, with the <a href="{{ get_url(path='@/docs/keybindings.md') }}#capture-filter-editor">capture filter editable from the terminal UI</a>.</span></li>
           <li><a class="cap-name" href="{{ get_url(path='@/docs/cli.md') }}#archives">Files and archives</a> <span class="cap-text">pcap and pcapng files, folders and globs, tar, gzip, and password-protected ZIP and 7z.</span></li>
           <li><a class="cap-name" href="{{ get_url(path='@/docs/integrations.md') }}#forward-to-homer-over-hep">HEP v1/v2/v3</a> <span class="cap-text">Sends HEP v3 to Homer, and receives HEP v1, v2 and v3 from Kamailio, OpenSIPS or Asterisk, so one sipnab reads every proxy with nothing installed on them.</span></li>
           <li><a class="cap-name" href="{{ get_url(path='@/docs/encapsulations.md') }}">Tunnels and transports</a> <span class="cap-text">VLAN, MPLS, GRE, VXLAN, SIP over WebSocket, and IP fragment and TCP reassembly.</span></li>
           <li><a class="cap-name" href="{{ get_url(path='@/docs/tls-capture.md') }}">TLS/SRTP decryption</a> <span class="cap-text">Decrypts TLS 1.2 and 1.3 with an SSLKEYLOGFILE or an RSA server key, and SRTP with the SDES keys from the SDP or DTLS-SRTP key logs.</span></li>
-          <li><a class="cap-name" href="{{ get_url(path='@/docs/uprobe-walkthrough.md') }}">eBPF TLS capture <em>(root, same host)</em></a> <span class="cap-text"><strong>This does not break TLS.</strong> On a host where you already have root, kernel uprobes read the SIP plaintext inside OpenSSL or wolfSSL before it is encrypted. It is in the released Linux gnu tarballs, <code>.deb</code> and <code>.rpm</code>, not the static musl builds, and needs a kernel with BTF. <a href="{{ get_url(path='@/docs/uprobe-walkthrough.md') }}">Read the security implications first</a>.</span></li>
+          <li><a class="cap-name" href="{{ get_url(path='@/docs/uprobe-walkthrough.md') }}">TLS capture with uprobes <em>(root, same host)</em></a> <span class="cap-text"><strong>This does not break TLS.</strong> On a host where you already have root, kernel uprobes read the SIP plaintext inside OpenSSL or wolfSSL before it is encrypted. Every Linux build has it, and its default tracefs backend needs no BTF. The eBPF backend, which also recovers the peer addresses, is in the released Linux gnu tarballs, <code>.deb</code> and <code>.rpm</code>, not the static musl builds, and needs a kernel with BTF. <a href="{{ get_url(path='@/docs/uprobe-walkthrough.md') }}">Read the security implications first</a>.</span></li>
         </ul>
       </article>
       <article class="cap-card cap-card--green">
@@ -184,7 +184,7 @@
         <p class="cap-lede">Why a call failed or sounded bad, with the evidence behind each finding.</p>
         <ul class="cap-list">
           <li><a class="cap-name" href="{{ get_url(path='@/docs/mos-and-codecs.md') }}">RTP quality analysis</a> <span class="cap-text">Jitter, packet loss and estimated MOS (ITU-T G.107 E-model) for every stream, plus RTCP XR (RFC 3611) reports.</span></li>
-          <li><a class="cap-name" href="{{ get_url(path='@/docs/cookbook.md') }}#4-diagnose-a-one-way-audio-complaint">VoIP diagnosis</a> <span class="cap-text">Finds one-way audio, NAT mismatches and slow call setup, with the SDP timeline behind each.</span></li>
+          <li><a class="cap-name" href="{{ get_url(path='@/docs/cookbook.md') }}#4-diagnose-a-one-way-audio-complaint">VoIP diagnosis</a> <span class="cap-text">Finds one-way audio and NAT mismatches, with the SDP offer and answer behind each, and <a href="{{ get_url(path='@/docs/cli.md') }}#measure-post-dial-delay-across-calls">calls slow to ring</a>.</span></li>
           <li><a class="cap-name" href="{{ get_url(path='@/docs/cli.md') }}#dialog">Calls across legs</a> <span class="cap-text">Ties the legs of a call through a B2BUA or PBX together, in one ladder.</span></li>
           <li><a class="cap-name" href="{{ get_url(path='@/docs/output-formats.md') }}#capture-analysis-json-analyze">Ranked analysis</a> <span class="cap-text">Every problem in a capture in one list, worst first.</span></li>
           <li><a class="cap-name" href="{{ get_url(path='@/docs/sip-lint-rules.md') }}">Conformance linter</a> <span class="cap-text">Findings with rule IDs and RFC sections, and an exit code a CI job can fail on.</span></li>
@@ -199,7 +199,7 @@
           <li><a class="cap-name" href="{{ get_url(path='@/docs/vcon.md') }}">Export as vCon</a> <span class="cap-text">One call, or every call a filter or one of several export rules selects.</span></li>
           <li><a class="cap-name" href="{{ get_url(path='@/docs/vcon.md') }}#calls-through-a-pbx-or-a-b2bua">Calls through a PBX</a> <span class="cap-text">One container per leg or one per call, each naming the other legs.</span></li>
           <li><a class="cap-name" href="{{ get_url(path='@/docs/vcon.md') }}#enrich-a-call-before-it-is-written">Enrichment</a> <span class="cap-text">Your own transcriber or summarizer adds its analysis before the container is written.</span></li>
-          <li><a class="cap-name" href="{{ get_url(path='@/docs/vcon.md') }}#hear-a-call-while-it-is-in-progress">Live calls</a> <span class="cap-text">Audio of a call in progress over a WebSocket, and containers rewritten as a call changes.</span></li>
+          <li><a class="cap-name" href="{{ get_url(path='@/docs/vcon.md') }}#hear-a-call-while-it-is-in-progress">Live calls</a> <span class="cap-text">Audio of a call in progress over a WebSocket, and <a href="{{ get_url(path='@/docs/vcon.md') }}#follow-a-call-while-it-is-in-progress">containers rewritten as the call changes</a>.</span></li>
           <li><a class="cap-name" href="{{ get_url(path='@/docs/vcon.md') }}#encrypt-what-a-rule-writes">Signed and encrypted</a> <span class="cap-text">Rules can encrypt: signed with JWS, then encrypted with JWE to your certificate.</span></li>
           <li><a class="cap-name" href="{{ get_url(path='@/docs/vcon-store.md') }}">Deliver to a store</a> <span class="cap-text"><code>sipnab --vcon-forward</code> delivers a spool to vcon.store, a vCon server or any HTTP store, and fetches stored ones back.</span></li>
           <li><a class="cap-name" href="{{ get_url(path='@/docs/vcon.md') }}#analyze-a-stored-vcon">Read stored vCons</a> <span class="cap-text"><code>-I</code> opens containers in the terminal UI, reports and analysis.</span></li>
@@ -210,11 +210,11 @@
         <p class="cap-lede">Attacks and fraud on the wire, and a process that keeps its own privileges low.</p>
         <ul class="cap-list">
           <li><a class="cap-name" href="{{ get_url(path='@/docs/cli.md') }}#security">Attack detection</a> <span class="cap-text">Detects scanners, toll fraud, wangiri calls and registration floods.</span></li>
-          <li><a class="cap-name" href="{{ get_url(path='@/docs/cookbook.md') }}">Digest and STIR/SHAKEN</a> <span class="cap-text">Flags weak digest authentication and decodes STIR/SHAKEN PASSporT claims.</span></li>
+          <li><a class="cap-name" href="{{ get_url(path='@/docs/cookbook.md') }}#34-detect-weak-digest-authentication-on-a-registrar">Digest and STIR/SHAKEN</a> <span class="cap-text">Flags weak digest authentication and <a href="{{ get_url(path='@/docs/cookbook.md') }}#33-check-what-a-stir-shaken-identity-header-actually-claims">decodes STIR/SHAKEN PASSporT claims</a>.</span></li>
           <li><a class="cap-name" href="{{ get_url(path='@/docs/cookbook.md') }}#10-detect-sip-scanners-and-auto-block-via-fail2ban">fail2ban and firewall rules</a> <span class="cap-text">Writes fail2ban output, and prints firewall rules without applying them.</span></li>
           <li><a class="cap-name" href="{{ get_url(path='@/docs/tfps-sipnab.md') }}">TFPS bans</a> <span class="cap-text">Off by default. Every ban it makes is journaled and can be reverted.</span></li>
           <li><a class="cap-name" href="{{ get_url(path='@/docs/cli.md') }}#output">Pseudonymized vCons</a> <span class="cap-text">Keyed pseudonyms in exported vCons, with a separate reverse map only the operator can read.</span></li>
-          <li><a class="cap-name" href="{{ get_url(path='@/docs/cli.md') }}#privilege">Hardened process</a> <span class="cap-text">Drops root after opening the capture, and can confine itself with Landlock and seccomp.</span></li>
+          <li><a class="cap-name" href="{{ get_url(path='@/docs/cli.md') }}#privilege">Hardened process</a> <span class="cap-text">Drops root after opening the capture, and can confine itself with <a href="{{ get_url(path='@/docs/cli.md') }}#security">Landlock and seccomp</a>.</span></li>
         </ul>
       </article>
       <article class="cap-card cap-card--green">
@@ -222,9 +222,9 @@
         <p class="cap-lede">Browse calls interactively, or run headless for scripts and pipelines.</p>
         <ul class="cap-list">
           <li><a class="cap-name" href="{{ get_url(path='@/docs/tui.md') }}">Terminal UI and headless mode</a> <span class="cap-text">Call list, call flow, merged multi-leg flow and message diff, or the same analysis without a screen.</span></li>
-          <li><a class="cap-name" href="{{ get_url(path='@/docs/keybindings.md') }}#quality-dashboard">Quality views</a> <span class="cap-text">Live MOS dashboard, loss map and call timeline.</span></li>
-          <li><a class="cap-name" href="{{ get_url(path='@/docs/keybindings.md') }}">Carrier views</a> <span class="cap-text">ASR, NER and ACD, top talkers and a call-volume histogram.</span></li>
-          <li><a class="cap-name" href="{{ get_url(path='@/docs/keybindings.md') }}#rtp-streams">Audio, notes and names</a> <span class="cap-text">Plays a stream, saves notes as pcapng comments, and names hosts from hosts files and DNS.</span></li>
+          <li><a class="cap-name" href="{{ get_url(path='@/docs/keybindings.md') }}#quality-dashboard">Quality views</a> <span class="cap-text">Live MOS dashboard and loss map.</span></li>
+          <li><a class="cap-name" href="{{ get_url(path='@/docs/keybindings.md') }}#carrier-metrics">Carrier views</a> <span class="cap-text">ASR, NER and ACD, <a href="{{ get_url(path='@/docs/keybindings.md') }}#top-talkers">top talkers</a> and a <a href="{{ get_url(path='@/docs/keybindings.md') }}#call-volume-histogram">call-volume histogram</a>.</span></li>
+          <li><a class="cap-name" href="{{ get_url(path='@/docs/keybindings.md') }}#stream-detail">Audio, notes and names</a> <span class="cap-text">Plays a stream, <a href="{{ get_url(path='@/docs/keybindings.md') }}#operator-notes">saves notes as PCAP-NG packet comments</a>, and <a href="{{ get_url(path='@/docs/keybindings.md') }}#name-resolution">names hosts from hosts files and DNS</a>.</span></li>
         </ul>
       </article>
       <article class="cap-card cap-card--blue">
@@ -232,15 +232,15 @@
         <p class="cap-lede">For dashboards, scripts and AI agents.</p>
         <ul class="cap-list">
           <li><a class="cap-name" href="{{ get_url(path='@/docs/api.md') }}">REST API</a> <span class="cap-text">Query dialogs, streams and stats over HTTP, with scoped tokens and TLS.</span></li>
-          <li><a class="cap-name" href="{{ get_url(path='@/docs/mcp.md') }}">MCP server</a> <span class="cap-text">Lets an AI agent such as Claude Code query captures over stdio or HTTP. 74 tools cover dialogs, RTP, diagnostics, and security findings. 61 are read-only, and the thirteen that write stay off until you enable them on the server.</span></li>
+          <li><a class="cap-name" href="{{ get_url(path='@/docs/mcp.md') }}">MCP server</a> <span class="cap-text">Lets an AI agent such as Claude Code query captures over stdio or HTTP. 74 tools cover dialogs, RTP, diagnostics, and security findings. 61 are read-only. Of <a href="{{ get_url(path='@/docs/mcp.md') }}#tools-that-write-or-act">the thirteen that write files or act on the host</a>, each refuses to until you start the server with the flag that allows it.</span></li>
           <li><a class="cap-name" href="{{ get_url(path='@/docs/metrics.md') }}">Prometheus metrics</a> <span class="cap-text">Series for calls, SIP responses, MOS and jitter, and security alerts, and counters for what sipnab captured, lost and could not read.</span></li>
-          <li><a class="cap-name" href="{{ get_url(path='@/docs/output-formats.md') }}">Export formats</a> <span class="cap-text">PCAP, PCAP-NG, TXT, JSON, NDJSON, CSV, HTML, Markdown, WAV audio, SIPp XML, RTP JSON, YANG (RFC 7951) and vCon.</span></li>
+          <li><a class="cap-name" href="{{ get_url(path='@/docs/keybindings.md') }}#save-popup">Export formats</a> <span class="cap-text">PCAP, PCAP-NG, TXT, JSON, NDJSON, CSV, HTML, Markdown, WAV audio, SIPp XML and RTP JSON from the terminal UI, and <a href="{{ get_url(path='@/docs/output-formats.md') }}#yang-export-yang-analyze">YANG (RFC 7951)</a> and <a href="{{ get_url(path='@/docs/vcon.md') }}">vCon</a> from the command line.</span></li>
           <li><a class="cap-name" href="{{ get_url(path='@/docs/plugins.md') }}">WASM plugins</a> <span class="cap-text">Loads your own dialog detections as sandboxed WebAssembly (<code>--plugin</code>). Off by default, and only in builds with the <code>plugins</code> feature: the gnu and macOS builds carry it, the static musl builds and the gnu no-audio packages do not.</span></li>
           <li><a class="cap-name" href="{{ get_url(path='@/analyze/_index.md') }}">Browser analysis</a> <span class="cap-text">Opens a pcap in your browser with WebAssembly. Nothing is uploaded or installed.</span></li>
         </ul>
       </article>
     </div>
-    <p class="cap-engineering"><a class="cap-eng-name" href="{{ get_url(path='@/docs/build.md') }}">Built in Rust</a> Rust everywhere except the OS boundary: 111 <code>unsafe</code> blocks, all of them FFI, and the build rejects any block that does not state its own soundness argument. {% if has_test_count %}{{ suite.automated_tests }} automated tests.{% else %}The full automated test suite runs on every pull request.{% endif %} Under 19 MB static binary. <a class="cap-all" href="{{ get_url(path='@/features.md') }}">Every capability</a></p>
+    <p class="cap-engineering"><a class="cap-eng-name" href="{{ get_url(path='@/docs/build.md') }}#rust-and-unsafe">Built in Rust</a> 111 <code>unsafe</code> blocks, most of them calls into the kernel or C libraries, and CI rejects any block that does not state its own soundness argument. {% if has_test_count %}{{ suite.automated_tests }} automated tests.{% else %}The full automated test suite runs on every pull request.{% endif %} Under 19 MB static binary. <a class="cap-all" href="{{ get_url(path='@/features.md') }}">Every capability</a></p>
   </div>
 </section>
 

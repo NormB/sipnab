@@ -28,16 +28,16 @@
 //!
 //! Nothing about the value. Only how it is written:
 //!
-//! * [RFC 7951 section 4](https://www.rfc-editor.org/rfc/rfc7951#section-4): the one top-level member is namespace-qualified,
+//! * [RFC 7951 section 4](https://www.rfc-editor.org/rfc/rfc7951.html#section-4): the one top-level member is namespace-qualified,
 //!   `"sipnab-diagnosis:capture-analysis"`;
-//! * [RFC 7951 section 6.1](https://www.rfc-editor.org/rfc/rfc7951#section-6.1): every `uint64` is a JSON **string**, because a JSON
+//! * [RFC 7951 section 6.1](https://www.rfc-editor.org/rfc/rfc7951.html#section-6.1): every `uint64` is a JSON **string**, because a JSON
 //!   number cannot carry 64 bits in every parser. `uint32` stays a number;
 //! * names are hyphenated (`frames_read` becomes `frames-read`), the YANG
-//!   convention of [RFC 9907 section 4.3.1](https://www.rfc-editor.org/rfc/rfc9907#section-4.3.1) — but identity names keep the analysis's
+//!   convention of [RFC 9907 section 4.3.1](https://www.rfc-editor.org/rfc/rfc9907.html#section-4.3.1) — but identity names keep the analysis's
 //!   own ids (`one_way_audio`), so a consumer joins the two encodings on one
 //!   string;
 //! * a JSON array's order has no YANG equivalent for state data —
-//!   [RFC 7950 section 7.7.7](https://www.rfc-editor.org/rfc/rfc7950#section-7.7.7) ignores `ordered-by` there — so the ranking the plain JSON carries
+//!   [RFC 7950 section 7.7.7](https://www.rfc-editor.org/rfc/rfc7950.html#section-7.7.7) ignores `ordered-by` there — so the ranking the plain JSON carries
 //!   by position is carried by an explicit `rank`, and each evidence row by
 //!   an `index`, both counted from 1;
 //! * `counts`, a JSON object used as a map, becomes a list keyed by `name`;
@@ -60,10 +60,10 @@ macro_rules! revision {
     };
 }
 
-/// The module name, which [RFC 7951 section 4](https://www.rfc-editor.org/rfc/rfc7951#section-4) also makes the member qualifier.
+/// The module name, which [RFC 7951 section 4](https://www.rfc-editor.org/rfc/rfc7951.html#section-4) also makes the member qualifier.
 pub const MODULE: &str = "sipnab-diagnosis";
 
-/// The module namespace. [RFC 7950 section 5.3](https://www.rfc-editor.org/rfc/rfc7950#section-5.3) leaves a private namespace to its
+/// The module namespace. [RFC 7950 section 5.3](https://www.rfc-editor.org/rfc/rfc7950.html#section-5.3) leaves a private namespace to its
 /// owner, and this one is under the project's own domain. It names the module;
 /// nothing is served at it.
 pub const NAMESPACE: &str = "https://sipnab.com/ns/yang/sipnab-diagnosis";
@@ -91,7 +91,7 @@ pub const REVISION: &str = revision!();
 /// fails the moment the two name different revisions.
 pub const MODULE_TEXT: &str = include_str!("../../yang/sipnab-diagnosis@2026-10-09.yang");
 
-/// The committed module's file name under `yang/`. [RFC 7950 section 5.2](https://www.rfc-editor.org/rfc/rfc7950#section-5.2) names a
+/// The committed module's file name under `yang/`. [RFC 7950 section 5.2](https://www.rfc-editor.org/rfc/rfc7950.html#section-5.2) names a
 /// module file `name@revision.yang`.
 #[must_use]
 pub fn module_file_name() -> String {
@@ -107,12 +107,12 @@ pub struct Revision {
     pub description: &'static str,
 }
 
-/// Every revision, newest first, as [RFC 7950 section 7.1.9](https://www.rfc-editor.org/rfc/rfc7950#section-7.1.9) orders them.
+/// Every revision, newest first, as [RFC 7950 section 7.1.9](https://www.rfc-editor.org/rfc/rfc7950.html#section-7.1.9) orders them.
 ///
 /// A published revision is never edited. Changing the module — a new finding
 /// kind or count label included — means a new entry here with a new date, the
 /// previous file kept beside the new one under `yang/`, and
-/// `pyang --check-update-from` holding the change to [RFC 7950 section 11](https://www.rfc-editor.org/rfc/rfc7950#section-11).
+/// `pyang --check-update-from` holding the change to [RFC 7950 section 11](https://www.rfc-editor.org/rfc/rfc7950.html#section-11).
 pub const REVISIONS: &[Revision] = &[
     Revision {
         date: revision!(),
@@ -140,7 +140,7 @@ pub enum Type {
     /// `uint32`: a JSON number in both encodings.
     Uint32,
     /// `uint64`: a JSON number in the plain encoding, and a decimal string in
-    /// the RFC 7951 one ([RFC 7951 section 6.1](https://www.rfc-editor.org/rfc/rfc7951#section-6.1)).
+    /// the RFC 7951 one ([RFC 7951 section 6.1](https://www.rfc-editor.org/rfc/rfc7951.html#section-6.1)).
     Uint64,
     /// `boolean`.
     Boolean,
@@ -704,7 +704,7 @@ fn encode_scalar(ty: Type, value: &Value, path: &str) -> Result<Value, CodecErro
 
 /// Whether YANG's `string` type can carry `c`.
 ///
-/// [RFC 7950 section 9.4](https://www.rfc-editor.org/rfc/rfc7950#section-9.4) admits the characters XML does: tab, carriage return, line
+/// [RFC 7950 section 9.4](https://www.rfc-editor.org/rfc/rfc7950.html#section-9.4) admits the characters XML does: tab, carriage return, line
 /// feed, and everything from U+0020 up except U+FFFE and U+FFFF (a Rust `char`
 /// is never a surrogate). libyang enforces it — a note holding U+001B fails
 /// validation outright.
@@ -933,7 +933,7 @@ fn decode_scalar(ty: Type, value: &Value, path: &str) -> Result<Value, CodecErro
 
 // ── The module text ────────────────────────────────────────────────────
 
-/// Escape a string for a YANG double-quoted string ([RFC 7950 section 6.1.3](https://www.rfc-editor.org/rfc/rfc7950#section-6.1.3)).
+/// Escape a string for a YANG double-quoted string ([RFC 7950 section 6.1.3](https://www.rfc-editor.org/rfc/rfc7950.html#section-6.1.3)).
 fn quote(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     for c in s.chars() {
@@ -960,7 +960,7 @@ const WIDTH: usize = 72;
 ///      continued one column in, under the opening quote.";
 /// ```
 ///
-/// [RFC 7950 section 6.1.3](https://www.rfc-editor.org/rfc/rfc7950#section-6.1.3) strips the continuation indentation up to the column
+/// [RFC 7950 section 6.1.3](https://www.rfc-editor.org/rfc/rfc7950.html#section-6.1.3) strips the continuation indentation up to the column
 /// after the opening quote, so the text reads back with single spaces where
 /// the lines break.
 fn text_statement(out: &mut String, indent: usize, keyword: &str, text: &str) {
@@ -1532,7 +1532,7 @@ mod tests {
         &doc["sipnab-diagnosis:capture-analysis"]
     }
 
-    /// [RFC 7951 section 6.1](https://www.rfc-editor.org/rfc/rfc7951#section-6.1): every `uint64` is a JSON string and every
+    /// [RFC 7951 section 6.1](https://www.rfc-editor.org/rfc/rfc7951.html#section-6.1): every `uint64` is a JSON string and every
     /// `uint32` stays a number.
     #[test]
     fn a_uint64_is_a_string_and_a_uint32_is_a_number() -> Result<(), TestError> {
@@ -1558,7 +1558,7 @@ mod tests {
         Ok(())
     }
 
-    /// [RFC 7951 section 4](https://www.rfc-editor.org/rfc/rfc7951#section-4): the top-level member is qualified by the module
+    /// [RFC 7951 section 4](https://www.rfc-editor.org/rfc/rfc7951.html#section-4): the top-level member is qualified by the module
     /// name, and nothing below it is.
     #[test]
     fn only_the_top_level_member_is_qualified() -> Result<(), TestError> {
@@ -1651,7 +1651,7 @@ mod tests {
 
     /// The ranking survives the trip even when a consumer reorders the list.
     ///
-    /// [RFC 7950 section 7.7.7](https://www.rfc-editor.org/rfc/rfc7950#section-7.7.7) lets a YANG tool reorder state data, so the
+    /// [RFC 7950 section 7.7.7](https://www.rfc-editor.org/rfc/rfc7950.html#section-7.7.7) lets a YANG tool reorder state data, so the
     /// decoder must restore order from `rank` and `index` and never from
     /// array position.
     #[test]
