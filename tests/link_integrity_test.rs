@@ -1395,7 +1395,10 @@ fn wiki_intra_docs_links_resolve() -> Result<(), TestError> {
     // 1738 -> 1739 for the vCon wire-message attachments, attributed per
     // file: docs/config-reference.md +1 (the `sip_messages` row links "The
     // INVITE and the final response").
-    const EXPECTED_WIKI_LINKS: usize = 1739;
+    // 1739 -> 1740 for vCon key events, attributed per file:
+    // docs/config-reference.md +1 (the `dtmf_events` row links "What the
+    // Dialog Object says about the call").
+    const EXPECTED_WIKI_LINKS: usize = 1740;
     // Raised 459 -> 460 when SRC1 stage 1 shipped: docs/cli-reference.md's
     // `--hep-listen` row now points at cookbook recipe "Take signaling from HEP and media off the wire, in one process" in docs/examples.md
     // rather than restating how to pair `-L` with `-d`. Attributed per file

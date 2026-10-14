@@ -1557,6 +1557,13 @@ pub struct VconRuleConfig {
     /// producer. Default `false`. Refused under `--redact`.
     #[serde(default)]
     pub sip_messages: Option<bool>,
+    /// Write each DTMF key press as `keydown` and `keyup` events in the
+    /// signaling Dialog Object's `party_history`, with the digit, from INFO
+    /// `application/dtmf-relay` and RFC 4733 telephone events. Turns
+    /// telephone-event decoding on for the run. Default `false`: a digit can
+    /// be a PIN. Removed under `--redact`.
+    #[serde(default)]
+    pub dtmf_events: Option<bool>,
 }
 
 /// The PBX sipnab runs beside.

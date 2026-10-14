@@ -1851,6 +1851,23 @@ sipnab fills these fields from what the capture shows, and leaves a field out wh
   - [Section 5.4 of draft-howe-vcon-sip-signaling-00](https://datatracker.ietf.org/doc/html/draft-howe-vcon-sip-signaling-00#section-5.4) defines it as "the sequence number from the CSeq header field of the INVITE or other dialog-creating request".
   - It is absent when the capture joined after that request.
 
+- `party_history` lists what the capture shows each party doing, in time order, per [section 4.3.13](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-04#section-4.3.13).
+  - Each entry has `party`, `time` and `event`.
+  - `join`: both parties, at the 200 to the initial INVITE, when the capture holds that INVITE and its 200.
+  - `drop`: the sender of the first BYE, at the BYE, and the other party at the 2xx that answers it.
+  - `hold`: a re-INVITE or UPDATE whose audio is `sendonly` or `inactive` puts the other party on hold, at the request.
+  - `unhold`: a later `sendrecv` offer from the same sender takes that party off hold.
+    A `recvonly` offer changes nothing.
+  - `keydown` and `keyup` carry the digit in `button`, and appear only from a rule with `dtmf_events = true`.
+    - An INFO with `application/dtmf-relay` is a `keydown` at the INFO and a `keyup` after its stated `Duration`.
+    - An [RFC 4733](https://www.rfc-editor.org/rfc/rfc4733.html) telephone event is a `keyup` at its end packet and a `keydown` its duration before.
+      The event belongs to the party whose own SDP advertised the sending socket.
+    - The rule turns telephone-event decoding on for the run.
+  - sipnab writes no `mute` or `unmute`, because SIP carries no signal for either.
+  - A message whose tags match neither party, or an event from a socket neither party advertised, adds nothing.
+  - `--redact` removes `keydown` and `keyup`, because a digit can be a PIN, and keeps the rest.
+  - A container that holds several legs moves each entry's `party` with the rest of the party indices.
+
 ## The SIP signaling attachments
 
 The `sip-signaling` extension of [draft-howe-vcon-sip-signaling-00](https://datatracker.ietf.org/doc/html/draft-howe-vcon-sip-signaling-00) stores SIP in attachments.

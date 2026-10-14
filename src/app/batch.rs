@@ -353,6 +353,9 @@ struct BatchContext<'a> {
     after_count: usize,
     /// SIP signaling port range; RTP is never gated by it.
     portrange: (u16, u16),
+    /// Decode RFC 4733 telephone events: `--telephone-event`, or a
+    /// `[[vcon.rule]]` with `dtmf_events`, which writes them.
+    telephone_events: bool,
 }
 
 /// Mutable processing state for the main receive loop.
@@ -4287,6 +4290,8 @@ impl BatchRunner {
                 // --after / -A trailing context counter
                 after_count: self.cli.output_args.after.unwrap_or(0),
                 portrange: self.policy.portrange,
+                telephone_events: self.cli.mode_args.telephone_event
+                    || self.vcon_rules.iter().any(|r| r.additions.dtmf_events),
             };
             let mut ds_guard = self.dialog_store.write();
             let mut ss_guard = self.stream_store.write();
@@ -5646,7 +5651,7 @@ impl PacketPass<'_, '_, '_> {
 
         // DTMF extraction (I2): if --telephone-event is set and we have
         // the RTP payload after the header, attempt DTMF decode.
-        if self.ctx.cli.mode_args.telephone_event && rtp_hdr.payload_offset < rtp_pp.payload.len() {
+        if self.ctx.telephone_events && rtp_hdr.payload_offset < rtp_pp.payload.len() {
             self.extract_dtmf(pp, rtp_pp, rtp_hdr);
         }
 
@@ -5710,6 +5715,7 @@ impl PacketPass<'_, '_, '_> {
         ) {
             self.counters.dtmf_count += 1;
             log_dtmf_digit(&dtmf, rtp_hdr.ssrc, self.ctx.cli.mode_args.dtmf_cleartext);
+            self.state.stream_store.record_key_press(&key, dtmf);
         }
     }
 }
@@ -7328,6 +7334,10 @@ pub struct RuleAdditions {
     /// `sip_messages`: the initial INVITE, its final response and their SDP
     /// as attachments ([`crate::output::vcon::add_sip_message_attachments`]).
     pub sip_messages: bool,
+    /// `dtmf_events`: `keydown` and `keyup` in the signaling object's
+    /// `party_history`, from INFO `application/dtmf-relay` and RFC 4733
+    /// telephone events ([`crate::output::vcon::add_key_events`]).
+    pub dtmf_events: bool,
 }
 
 /// How long a dialog that has not ended must have had no SIP and no RTP
@@ -8466,6 +8476,25 @@ impl LegWriter<'_> {
                 .unwrap_or(crate::output::vcon::MAX_INLINE_MEDIA_BYTES);
             crate::output::vcon::add_sip_message_attachments(container, dialog, budget);
         }
+        if additions.dtmf_events {
+            let presses: Vec<crate::output::vcon::RtpKeyPress> = self
+                .batch
+                .stream_store
+                .streams_for(&dialog.call_id)
+                .flat_map(|stream| {
+                    stream
+                        .key_presses
+                        .iter()
+                        .map(|press| crate::output::vcon::RtpKeyPress {
+                            src: stream.key.src,
+                            digit: press.digit,
+                            ended_at: press.timestamp,
+                            duration_ms: press.duration_ms,
+                        })
+                })
+                .collect();
+            crate::output::vcon::add_key_events(container, dialog, &presses);
+        }
     }
 
     /// One dialog's container as the export builds it, before the rule's
@@ -8621,6 +8650,7 @@ struct VconTarget<'a> {
 #[cfg(feature = "vcon")]
 static NO_ADDITIONS: RuleAdditions = RuleAdditions {
     sip_messages: false,
+    dtmf_events: false,
 };
 
 #[cfg(feature = "vcon")]
@@ -16060,6 +16090,7 @@ mod tests {
             output_opts: &output_opts,
             cli,
             no_rtp: false,
+            telephone_events: cli.mode_args.telephone_event,
             after_count: 0,
             portrange,
         };
@@ -16190,6 +16221,7 @@ mod tests {
             output_opts: &output_opts,
             cli,
             no_rtp: false,
+            telephone_events: cli.mode_args.telephone_event,
             after_count: 0,
             portrange: (5060, 5061),
         };
@@ -16617,6 +16649,7 @@ mod tests {
             output_opts: &output_opts,
             cli,
             no_rtp: false,
+            telephone_events: cli.mode_args.telephone_event,
             after_count: 0,
             portrange,
         };
@@ -17134,6 +17167,7 @@ mod tests {
             output_opts: &output_opts,
             cli,
             no_rtp: false,
+            telephone_events: cli.mode_args.telephone_event,
             after_count: 0,
             portrange,
         };
@@ -17223,6 +17257,7 @@ mod tests {
             output_opts: &output_opts,
             cli,
             no_rtp: false,
+            telephone_events: cli.mode_args.telephone_event,
             after_count: 0,
             portrange: (5060, 5061),
         };
@@ -17363,6 +17398,7 @@ mod tests {
             output_opts: &output_opts,
             cli: &cli,
             no_rtp: false,
+            telephone_events: cli.mode_args.telephone_event,
             after_count: 0,
             portrange: (5060, 5090),
         };
@@ -17575,6 +17611,7 @@ mod tests {
             output_opts: &output_opts,
             cli,
             no_rtp: false,
+            telephone_events: cli.mode_args.telephone_event,
             after_count: 0,
             portrange,
         };
@@ -17777,6 +17814,7 @@ mod tests {
             output_opts: &output_opts,
             cli,
             no_rtp: false,
+            telephone_events: cli.mode_args.telephone_event,
             after_count: 0,
             portrange,
         };

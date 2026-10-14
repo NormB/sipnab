@@ -12,6 +12,12 @@ entry that carries them.
 
 ### Added
 
+- **The vCon signaling Dialog Object carries `party_history`.**
+  - It lists `join`, `drop`, `hold` and `unhold` events the capture shows, per [section 4.3.13 of draft-ietf-vcon-vcon-core-04](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-04#section-4.3.13).
+  - The answer is the joins, the BYE and its 200 are the drops, and `sendonly` or `inactive` in a re-INVITE or UPDATE is a hold.
+  - New `[[vcon.rule]]` key `dtmf_events` adds `keydown` and `keyup` with the digit, from INFO `application/dtmf-relay` and [RFC 4733](https://www.rfc-editor.org/rfc/rfc4733.html) telephone events.
+    The key turns telephone-event decoding on for the run.
+  - `--redact` removes the key events.
 - **A vCon carries the network's STIR verdict as a `stir-verification-report` attachment.**
   - sipnab copies the `verstat` parameter (ATIS-1000074) from `P-Asserted-Identity` or `From` of the initial INVITE into the report of [section 7.3 of draft-howe-vcon-sip-signaling-00](https://datatracker.ietf.org/doc/html/draft-howe-vcon-sip-signaling-00#section-7.3).
   - `result` is `verified`, `failed` or `no-signature`, and the PASSporT's `attest`, `orig` and `dest` claims ride beside it.

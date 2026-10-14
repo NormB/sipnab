@@ -8,6 +8,9 @@
 #![cfg(all(feature = "native", feature = "vcon"))]
 
 use std::path::{Path, PathBuf};
+
+#[path = "support/pcap_build.rs"]
+mod pcap_build;
 use std::process::Command;
 
 type TestError = Box<dyn std::error::Error>;
@@ -371,5 +374,117 @@ fn redact_refuses_the_wire_messages() -> Result<(), TestError> {
             "{purpose} in {found:?}"
         );
     }
+    Ok(())
+}
+
+/// `run`, reading `capture` instead of [`CAPTURE`].
+fn run_on(capture: &str, config: &str, home: &Path) -> Result<std::process::Output, TestError> {
+    let path = home.join("rules.toml");
+    std::fs::write(&path, config)?;
+    Ok(Command::new(env!("CARGO_BIN_EXE_sipnab"))
+        .args(["-N", "-I", capture, "--no-cli-print"])
+        .arg("--config")
+        .arg(&path)
+        .env("HOME", home)
+        .output()?)
+}
+
+/// The `(event, button)` pairs of a container's signaling object.
+fn key_events(container: &serde_json::Value) -> Vec<(String, String)> {
+    container["dialog"][0]["party_history"]
+        .as_array()
+        .map(|list| {
+            list.iter()
+                .filter(|e| matches!(e["event"].as_str(), Some("keydown" | "keyup")))
+                .map(|e| {
+                    (
+                        e["event"].as_str().unwrap_or_default().to_owned(),
+                        e["button"].as_str().unwrap_or_default().to_owned(),
+                    )
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// `dtmf_events = true` writes each INFO `application/dtmf-relay` as a
+/// `keydown` and a `keyup` with its digit; a rule without it writes none.
+#[test]
+fn a_rule_with_dtmf_events_writes_the_info_key_presses() -> Result<(), TestError> {
+    let home = tempfile::tempdir()?;
+    let (with, without) = (home.path().join("with"), home.path().join("without"));
+    let when = "call_id == '2091060b-146f-e011-809a-0019cb53db77@admind-desktop'";
+    let config = rule("with", when, &with, "omit").replace(
+        "audio = \"omit\"\n",
+        "audio = \"omit\"\ndtmf_events = true\n",
+    ) + &rule("without", when, &without, "omit");
+    let out = run_on("tests/pcap-samples/DTMFsipinfo.pcap", &config, home.path())?;
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(out.status.success(), "{stderr}");
+    let written = containers(&with)?;
+    assert_eq!(written.len(), 1, "{stderr}");
+    let events = key_events(&written[0]);
+    assert!(
+        events.starts_with(&[
+            ("keydown".to_owned(), "1".to_owned()),
+            ("keyup".to_owned(), "1".to_owned()),
+        ]),
+        "{events:?}"
+    );
+    let plain = containers(&without)?;
+    assert_eq!(plain.len(), 1, "{stderr}");
+    assert!(key_events(&plain[0]).is_empty());
+    Ok(())
+}
+
+/// `dtmf_events = true` decodes RFC 4733 telephone events without
+/// `--telephone-event` and writes each for the party whose SDP advertised the
+/// sending socket: here the callee, `10.0.0.2:30000`, pressing `#`.
+#[test]
+fn a_rule_with_dtmf_events_writes_the_rtp_key_presses() -> Result<(), TestError> {
+    let home = tempfile::tempdir()?;
+    let capture = home.path().join("rtp-dtmf.pcap");
+    let mut frames = pcap_build::g711_call_both_ways("rtp-dtmf@test", 1, |_, _, _| 0xff);
+    // Event 11 (`#`), E bit set, duration 800 timestamp units (100 ms at
+    // 8000 Hz), sent three times as RFC 4733 section 2.5.1.4 repeats an end
+    // packet, half a second into the media.
+    for repeat in 0..3u16 {
+        let mut packet = vec![0x80, 101];
+        packet.extend_from_slice(&(100 + repeat).to_be_bytes());
+        packet.extend_from_slice(&8_000u32.to_be_bytes());
+        packet.extend_from_slice(&0x3333_3333u32.to_be_bytes());
+        packet.extend_from_slice(&[11, 0x80 | 10, 0x03, 0x20]);
+        frames.push((
+            pcap_build::udp_frame([10, 0, 0, 2], [10, 0, 0, 1], 30000, 20000, &packet),
+            510_000 + u64::from(repeat) * 1_000,
+        ));
+    }
+    frames.sort_by_key(|(_, at)| *at);
+    pcap_build::write_pcap_at(&capture, &frames, 1)?;
+
+    let dir = home.path().join("rtp");
+    let config = rule("rtp", "call_id == 'rtp-dtmf@test'", &dir, "omit").replace(
+        "audio = \"omit\"\n",
+        "audio = \"omit\"\ndtmf_events = true\n",
+    );
+    let out = run_on(&capture.to_string_lossy(), &config, home.path())?;
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(out.status.success(), "{stderr}");
+    let written = containers(&dir)?;
+    assert_eq!(written.len(), 1, "{stderr}");
+    let history = &written[0]["dialog"][0]["party_history"];
+    let keys: Vec<&serde_json::Value> = history
+        .as_array()
+        .map(|l| {
+            l.iter()
+                .filter(|e| matches!(e["event"].as_str(), Some("keydown" | "keyup")))
+                .collect()
+        })
+        .unwrap_or_default();
+    assert_eq!(keys.len(), 2, "one press, written once: {history:#}");
+    assert_eq!(keys[0]["event"], "keydown");
+    assert_eq!(keys[0]["party"], 1);
+    assert_eq!(keys[0]["button"], "#");
+    assert_eq!(keys[1]["event"], "keyup");
     Ok(())
 }

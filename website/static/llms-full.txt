@@ -27454,6 +27454,7 @@ and what they carry.
 | `compress` | string | `none` | For an encrypting rule: `gzip` signs the gzip ([RFC 1952](https://www.rfc-editor.org/rfc/rfc1952.html)) of the vCon instead of the vCon, as draft-ietf-vcon-vcon-core-04 section 5.2 allows, and the encrypted form names `cty: "application/vcon+gzip"`; `none` signs the vCon as it is. Refused on a rule without `encrypt_to`. See [Encrypt what a rule writes](vcon.md#encrypt-what-a-rule-writes) |
 | `sealed_updates` | string | `new-uuid` | What an encrypting rule writes when a call it already wrote changes. `new-uuid`: a new instance with a new uuid whose `amended` names the prior one (draft-ietf-vcon-vcon-core-04 section 4.1.9). `same-uuid`: rewrite the file under the same uuid, with a startup warning. `final-only`: write once, when the call ends. sipnab refuses any other value at startup. No effect without `encrypt_to`. See [When an encrypted call changes](vcon.md#when-an-encrypted-call-changes) |
 | `sip_messages` | boolean | `false` | Attach the initial INVITE and its final response in wire format, as `sip-invite` and `sip-response`, and each one's SDP as `sip-sdp`. The rule's inline budget covers them. `--redact` removes them. See [The INVITE and the final response](vcon.md#the-invite-and-the-final-response) |
+| `dtmf_events` | boolean | `false` | Write each DTMF key press as `keydown` and `keyup` events, with the digit, in the signaling Dialog Object's `party_history`, from INFO `application/dtmf-relay` and [RFC 4733](https://www.rfc-editor.org/rfc/rfc4733.html) telephone events. Turns telephone-event decoding on for the run, as `--telephone-event` does. `--redact` removes the events. See [What the Dialog Object says about the call](vcon.md#what-the-dialog-object-says-about-the-call) |
 | `grouping` | string | `leg` | `leg`: one container per dialog, each naming the call's other legs. `call`: one container per call, holding every leg the rule selects and the ties between them. See [Calls through a PBX or a B2BUA](vcon.md#calls-through-a-pbx-or-a-b2bua) |
 
 ```toml
@@ -45462,6 +45463,23 @@ sipnab fills these fields from what the capture shows, and leaves a field out wh
 - `sip_cseq` is the CSeq number of the request that created the dialog.
   - [Section 5.4 of draft-howe-vcon-sip-signaling-00](https://datatracker.ietf.org/doc/html/draft-howe-vcon-sip-signaling-00#section-5.4) defines it as "the sequence number from the CSeq header field of the INVITE or other dialog-creating request".
   - It is absent when the capture joined after that request.
+
+- `party_history` lists what the capture shows each party doing, in time order, per [section 4.3.13](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-04#section-4.3.13).
+  - Each entry has `party`, `time` and `event`.
+  - `join`: both parties, at the 200 to the initial INVITE, when the capture holds that INVITE and its 200.
+  - `drop`: the sender of the first BYE, at the BYE, and the other party at the 2xx that answers it.
+  - `hold`: a re-INVITE or UPDATE whose audio is `sendonly` or `inactive` puts the other party on hold, at the request.
+  - `unhold`: a later `sendrecv` offer from the same sender takes that party off hold.
+    A `recvonly` offer changes nothing.
+  - `keydown` and `keyup` carry the digit in `button`, and appear only from a rule with `dtmf_events = true`.
+    - An INFO with `application/dtmf-relay` is a `keydown` at the INFO and a `keyup` after its stated `Duration`.
+    - An [RFC 4733](https://www.rfc-editor.org/rfc/rfc4733.html) telephone event is a `keyup` at its end packet and a `keydown` its duration before.
+      The event belongs to the party whose own SDP advertised the sending socket.
+    - The rule turns telephone-event decoding on for the run.
+  - sipnab writes no `mute` or `unmute`, because SIP carries no signal for either.
+  - A message whose tags match neither party, or an event from a socket neither party advertised, adds nothing.
+  - `--redact` removes `keydown` and `keyup`, because a digit can be a PIN, and keeps the rest.
+  - A container that holds several legs moves each entry's `party` with the rest of the party indices.
 
 ## The SIP signaling attachments
 

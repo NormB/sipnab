@@ -434,6 +434,37 @@ pub struct Amended {
     pub uuid: String,
 }
 
+/// One Party_History Object of [core-04 section 4.3.13.1](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-04#section-4.3.13.1).
+///
+/// Shaped as one event, with who, when and what, so it maps one-to-one onto
+/// an entry of a later `events[]` array.
+#[derive(Debug, Clone, Serialize)]
+pub struct PartyEvent {
+    /// Index into [`Vcon::parties`] of the party the event is about.
+    pub party: usize,
+    /// When the capture shows it, RFC 3339.
+    pub time: String,
+    /// One of `join`, `drop`, `hold`, `unhold`, `keydown`, `keyup`. sipnab
+    /// writes no `mute` or `unmute`: SIP carries no signal for either.
+    pub event: &'static str,
+    /// The DTMF digit, on `keydown` and `keyup` only, where section 4.3.13.1
+    /// requires it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub button: Option<String>,
+}
+
+impl PartyEvent {
+    /// An event with no `button`.
+    fn at(party: usize, time: DateTime<Utc>, event: &'static str) -> Self {
+        Self {
+            party,
+            time: time.to_rfc3339(),
+            event,
+            button: None,
+        }
+    }
+}
+
 /// `redacted` ([core-04 section 4.1.8](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-04#section-4.1.8)) — content was withheld from this
 /// container.
 ///
@@ -621,6 +652,13 @@ pub struct Dialog {
     /// form section 4.3.5 gives an unknown originator.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub originator: Option<usize>,
+    /// `party_history` ([core-04 section 4.3.13](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-04#section-4.3.13)):
+    /// what the capture shows each party doing, in time order.
+    ///
+    /// On the signaling object only, and only events the capture shows (see
+    /// [`party_history_of`]). Absent when it shows none.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub party_history: Option<Vec<PartyEvent>>,
     /// Indices into [`Vcon::dialog`] of the objects this set groups.
     ///
     /// Present only on a [`RECORDING_SET_TYPE`] object, and named `recordings`
@@ -710,6 +748,7 @@ impl Dialog {
             duration: None,
             parties: None,
             originator: None,
+            party_history: None,
             dialogs: None,
             recording_set: None,
             mediatype: None,
@@ -1446,6 +1485,7 @@ impl crate::output::redact::Redact for Dialog {
             duration: _,
             parties: _,
             originator: _,
+            party_history,
             dialogs: _,
             recording_set: _,
             mediatype,
@@ -1459,6 +1499,15 @@ impl crate::output::redact::Redact for Dialog {
 
         if !sip_call_id.is_empty() {
             *sip_call_id = r.opaque(sip_call_id);
+        }
+        // A key event's `button` is the digit pressed, which can be a PIN or
+        // a card number, and no keyed transform of one digit hides it. The
+        // events go; the joins, drops and holds stay.
+        if let Some(events) = party_history.as_mut() {
+            events.retain(|e| !matches!(e.event, "keydown" | "keyup"));
+            if events.is_empty() {
+                *party_history = None;
+            }
         }
         if let Some(pair) = session_id.as_mut() {
             pair.local = pair.local.as_deref().map(|v| r.opaque(v));
@@ -1997,6 +2046,9 @@ pub fn export_dialog_and_completeness(
     let mut dialog_objects = vec![dialog_object(dialog, started.clone())];
     let media = media_objects(dialog, audio, &mut dialog_objects, context.media_budget());
     name_the_originator(&mut dialog_objects, caller);
+    // On index 0 after the media is placed, because a ring-wrapped recording
+    // replaces that object with its recording-set.
+    dialog_objects[0].party_history = party_history_of(dialog);
 
     // The transfer object goes last, after any media, for the same reason
     // media goes after signaling: appending never moves an existing index.
@@ -2285,6 +2337,7 @@ impl Dialog {
             duration,
             parties,
             originator,
+            party_history,
             dialogs,
             recording_set,
             mediatype,
@@ -2310,6 +2363,15 @@ impl Dialog {
             duration,
             parties: parties.map(|p| p.into_iter().map(party).collect()),
             originator: originator.map(party),
+            party_history: party_history.map(|events| {
+                events
+                    .into_iter()
+                    .map(|e| PartyEvent {
+                        party: party(e.party),
+                        ..e
+                    })
+                    .collect()
+            }),
             dialogs: dialogs.map(|d| d.into_iter().map(object).collect()),
             recording_set: recording_set.map(object),
             mediatype,
@@ -2847,6 +2909,207 @@ fn opened_by_the_caller(dialog: &SipDialog) -> bool {
         .messages
         .first()
         .is_some_and(|m| m.is_request && m.to_tag().is_none())
+}
+
+/// One RFC 4733 telephone event, as the RTP decoder saw its end packet.
+#[derive(Debug, Clone)]
+pub struct RtpKeyPress {
+    /// The socket the event's packets came from.
+    pub src: std::net::SocketAddr,
+    /// The digit the event names.
+    pub digit: char,
+    /// When sipnab captured the packet that ended the event (E bit set).
+    pub ended_at: DateTime<Utc>,
+    /// The event's duration from that packet, in milliseconds
+    /// ([RFC 4733 section 2.5.1.3](https://www.rfc-editor.org/rfc/rfc4733.html#section-2.5.1.3)).
+    pub duration_ms: u32,
+}
+
+/// Add `keydown` and `keyup` events ([core-04 section 4.3.13.1](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-04#section-4.3.13.1))
+/// to a one-leg container's signaling object, with the digit as `button`.
+///
+/// - An in-dialog INFO with `Content-Type: application/dtmf-relay` is a
+///   `keydown` at the INFO, for its sender, and a `keyup` `Duration`
+///   milliseconds later when the body states one. The digit is the
+///   `Signal` value.
+/// - An RFC 4733 event in `rtp` is a `keyup` at its end packet and a
+///   `keydown` its duration before, for the party whose own SDP advertised
+///   the event's source socket.
+///
+/// An INFO whose tags match neither party, or an event from a socket no
+/// party advertised, adds nothing. The events join the existing history in
+/// time order.
+///
+/// A rule asks for these with `dtmf_events`, because a digit can be a PIN.
+/// Redaction removes them (see the `Dialog` redaction).
+pub fn add_key_events(container: &mut Vcon, dialog: &SipDialog, rtp: &[RtpKeyPress]) {
+    let mut added: Vec<(DateTime<Utc>, PartyEvent)> = Vec::new();
+    let mut press = |party: usize, down: DateTime<Utc>, up: Option<DateTime<Utc>>, digit: &str| {
+        let key = |at: DateTime<Utc>, event: &'static str| PartyEvent {
+            button: Some(digit.to_string()),
+            ..PartyEvent::at(party, at, event)
+        };
+        added.push((down, key(down, "keydown")));
+        if let Some(up) = up {
+            added.push((up, key(up, "keyup")));
+        }
+    };
+
+    for m in &dialog.messages {
+        let is_relay = m.is_request
+            && m.method.as_ref() == Some(&crate::sip::SipMethod::Info)
+            && m.content_type().is_some_and(|ct| {
+                ct.to_ascii_lowercase()
+                    .starts_with("application/dtmf-relay")
+            });
+        if !is_relay {
+            continue;
+        }
+        let (Some(party), Some((digit, duration))) = (sender_party(dialog, m), dtmf_relay(&m.body))
+        else {
+            continue;
+        };
+        let up = duration.map(|ms| m.timestamp + chrono::TimeDelta::milliseconds(i64::from(ms)));
+        press(party, m.timestamp, up, &digit);
+    }
+
+    let advertised = advertised_media_endpoints(dialog);
+    for event in rtp {
+        let Some(party) = advertised
+            .iter()
+            .find(|(socket, _)| *socket == event.src)
+            .map(|(_, party)| *party)
+        else {
+            continue;
+        };
+        let down = event.ended_at - chrono::TimeDelta::milliseconds(i64::from(event.duration_ms));
+        press(party, down, Some(event.ended_at), &event.digit.to_string());
+    }
+
+    if added.is_empty() {
+        return;
+    }
+    let Some(signaling) = container.dialog.first_mut() else {
+        return;
+    };
+    let mut timed: Vec<(DateTime<Utc>, PartyEvent)> = signaling
+        .party_history
+        .take()
+        .unwrap_or_default()
+        .into_iter()
+        .map(|e| {
+            let at = DateTime::parse_from_rfc3339(&e.time)
+                .map_or(DateTime::<Utc>::MIN_UTC, |t| t.with_timezone(&Utc));
+            (at, e)
+        })
+        .collect();
+    timed.extend(added);
+    timed.sort_by_key(|(at, _)| *at);
+    signaling.party_history = Some(timed.into_iter().map(|(_, e)| e).collect());
+}
+
+/// The digit and the duration in milliseconds of an `application/dtmf-relay`
+/// body: `Signal=5` and `Duration=160` lines. `None` without a `Signal`.
+fn dtmf_relay(body: &[u8]) -> Option<(String, Option<u32>)> {
+    let text = std::str::from_utf8(body).ok()?;
+    let value = |name: &str| {
+        text.lines().find_map(|line| {
+            let (key, value) = line.split_once('=')?;
+            key.trim()
+                .eq_ignore_ascii_case(name)
+                .then(|| value.trim().to_string())
+        })
+    };
+    let digit = value("Signal").filter(|d| !d.is_empty())?;
+    let duration = value("Duration").and_then(|d| d.parse().ok());
+    Some((digit, duration))
+}
+
+/// The join, drop, hold and unhold events the capture shows, in time order,
+/// for [`Dialog::party_history`].
+///
+/// - `join`: both parties, at the 200 to the initial INVITE, when the capture
+///   holds that INVITE and its 200 (the rule [`conversation_secs`] uses).
+/// - `drop`: the sender of the first BYE, at the BYE, and the other party at
+///   the 2xx answering it, when captured.
+/// - `hold` and `unhold`: an in-dialog INVITE or UPDATE whose first audio
+///   media description is `sendonly` or `inactive` puts the OTHER party on
+///   hold, at the request's capture time. A later `sendrecv` from the same
+///   sender takes it off hold. `recvonly` changes nothing.
+///
+/// A message whose tags match neither party yields no event: the `party`
+/// would be a guess. `None` when there is no event.
+fn party_history_of(dialog: &SipDialog) -> Option<Vec<PartyEvent>> {
+    let mut events: Vec<(DateTime<Utc>, PartyEvent)> = Vec::new();
+    if dialog.timing.invite_sent.is_some()
+        && let Some(answered) = dialog.timing.answered_at
+    {
+        for party in [0, 1] {
+            events.push((answered, PartyEvent::at(party, answered, "join")));
+        }
+    }
+
+    let is = |m: &crate::sip::SipMessage, method: crate::sip::SipMethod| {
+        m.is_request && m.method.as_ref() == Some(&method)
+    };
+    if let Some(bye) = dialog
+        .messages
+        .iter()
+        .find(|m| is(m, crate::sip::SipMethod::Bye))
+        && let Some(sender) = sender_party(dialog, bye)
+    {
+        events.push((bye.timestamp, PartyEvent::at(sender, bye.timestamp, "drop")));
+        let bye_cseq = bye.cseq().map(|(n, _)| n);
+        if let Some(answer) = dialog.messages.iter().find(|m| {
+            !m.is_request
+                && m.status_code.is_some_and(|c| (200..300).contains(&c))
+                && m.cseq()
+                    .is_some_and(|(n, method)| Some(n) == bye_cseq && method == "BYE")
+        }) {
+            events.push((
+                answer.timestamp,
+                PartyEvent::at(1 - sender, answer.timestamp, "drop"),
+            ));
+        }
+    }
+
+    let mut held = [false, false];
+    for m in &dialog.messages {
+        let reoffer = (is(m, crate::sip::SipMethod::Invite) && m.to_tag().is_some())
+            || is(m, crate::sip::SipMethod::Update);
+        if !reoffer {
+            continue;
+        }
+        let (Some(sender), Some(direction)) = (sender_party(dialog, m), audio_direction(m)) else {
+            continue;
+        };
+        let other = 1 - sender;
+        use crate::sip::sdp::SdpDirection;
+        match direction {
+            SdpDirection::SendOnly | SdpDirection::Inactive if !held[other] => {
+                held[other] = true;
+                events.push((m.timestamp, PartyEvent::at(other, m.timestamp, "hold")));
+            }
+            SdpDirection::SendRecv if held[other] => {
+                held[other] = false;
+                events.push((m.timestamp, PartyEvent::at(other, m.timestamp, "unhold")));
+            }
+            _ => {}
+        }
+    }
+
+    events.sort_by_key(|(at, _)| *at);
+    (!events.is_empty()).then(|| events.into_iter().map(|(_, e)| e).collect())
+}
+
+/// The direction of the first audio media description in a message's SDP.
+fn audio_direction(m: &crate::sip::SipMessage) -> Option<crate::sip::sdp::SdpDirection> {
+    let session = crate::sip::sdp::parse_sdp(&m.body).ok()?;
+    session
+        .media
+        .iter()
+        .find(|media| media.media_type == "audio")
+        .map(|media| media.direction)
 }
 
 /// The CSeq number of the dialog-creating request, when the capture holds it
@@ -9018,6 +9281,327 @@ mod tests {
             report[0].body
         );
         assert_eq!(report[0].body["result"], "verified");
+        Ok(())
+    }
+
+    // ── party_history ──
+
+    /// An in-dialog re-INVITE or UPDATE from `sender` whose SDP says
+    /// `direction`.
+    fn reoffer(
+        method: &str,
+        cseq: u32,
+        sender: &str,
+        direction: &str,
+    ) -> Result<crate::sip::SipMessage, TestError> {
+        let body = format!("{}a={direction}\r\n", sdp_body(4000));
+        in_dialog_request(
+            method,
+            cseq,
+            sender,
+            &["Content-Type: application/sdp"],
+            body.as_bytes(),
+        )
+    }
+
+    /// A response from the far end to an in-dialog request from `sender`.
+    fn in_dialog_response(
+        status: &str,
+        cseq: u32,
+        method: &str,
+        sender: &str,
+    ) -> Result<crate::sip::SipMessage, TestError> {
+        let (from, to) = if sender == "alice" {
+            (
+                "From: \"Alice\" <sip:alice@example.com>;tag=t1",
+                "To: \"Bob\" <sip:bob@example.net>;tag=t2",
+            )
+        } else {
+            (
+                "From: \"Bob\" <sip:bob@example.net>;tag=t2",
+                "To: \"Alice\" <sip:alice@example.com>;tag=t1",
+            )
+        };
+        let cseq_line = format!("CSeq: {cseq} {method}");
+        message_with_body(
+            &format!("SIP/2.0 {status}"),
+            &[from, to, "Call-ID: vcon-fixture@example.com", &cseq_line],
+            b"",
+        )
+    }
+
+    /// `party_history` of the signaling object, as `(party, seconds after
+    /// [`ts`], event)`.
+    fn history(v: &Vcon) -> Result<Vec<(usize, i64, String)>, TestError> {
+        let json = valid_json(v)?;
+        let Some(list) = json["dialog"][0]["party_history"].as_array() else {
+            return Ok(Vec::new());
+        };
+        let t0 = ts()?;
+        list.iter()
+            .map(|e| {
+                let at = DateTime::parse_from_rfc3339(e["time"].as_str().ok_or("time")?)?
+                    .with_timezone(&Utc);
+                Ok((
+                    usize::try_from(e["party"].as_u64().ok_or("party")?)?,
+                    (at - t0).num_seconds(),
+                    e["event"].as_str().ok_or("event")?.to_string(),
+                ))
+            })
+            .collect()
+    }
+
+    /// GAP-17: both parties join at the answer, and each drops when the
+    /// capture shows it leaving: the BYE's sender at the BYE, the other at
+    /// the BYE's 200 ([core-04 section 4.3.13](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-04#section-4.3.13)).
+    #[test]
+    fn the_answer_and_the_bye_are_joins_and_drops() -> Result<(), TestError> {
+        let dialog = timed_dialog(vec![
+            (invite()?, 0),
+            (response(200, "OK")?, 3),
+            (in_dialog_request("ACK", 1, "alice", &[], b"")?, 3),
+            (in_dialog_request("BYE", 2, "bob", &[], b"")?, 63),
+            (in_dialog_response("200 OK", 2, "BYE", "bob")?, 64),
+        ])?;
+        let v = export_with(&dialog, &clean_facts())?;
+        assert_eq!(
+            history(&v)?,
+            vec![
+                (0, 3, "join".to_string()),
+                (1, 3, "join".to_string()),
+                (1, 63, "drop".to_string()),
+                (0, 64, "drop".to_string()),
+            ]
+        );
+        Ok(())
+    }
+
+    /// GAP-17: a re-INVITE or UPDATE whose SDP says `sendonly` or `inactive`
+    /// puts the OTHER party on hold; a later `sendrecv` from the same sender
+    /// takes it off hold. `recvonly` changes nothing.
+    #[test]
+    fn sdp_direction_in_a_reoffer_is_hold_and_unhold() -> Result<(), TestError> {
+        let dialog = timed_dialog(vec![
+            (invite()?, 0),
+            (response(200, "OK")?, 3),
+            (reoffer("INVITE", 2, "alice", "sendonly")?, 10),
+            (reoffer("INVITE", 3, "alice", "sendrecv")?, 20),
+            (reoffer("UPDATE", 1, "bob", "inactive")?, 30),
+            (reoffer("UPDATE", 2, "bob", "recvonly")?, 35),
+            (reoffer("UPDATE", 3, "bob", "sendrecv")?, 40),
+        ])?;
+        let v = export_with(&dialog, &clean_facts())?;
+        assert_eq!(
+            history(&v)?,
+            vec![
+                (0, 3, "join".to_string()),
+                (1, 3, "join".to_string()),
+                (1, 10, "hold".to_string()),
+                (1, 20, "unhold".to_string()),
+                (0, 30, "hold".to_string()),
+                (0, 40, "unhold".to_string()),
+            ]
+        );
+        Ok(())
+    }
+
+    /// GAP-17: only events the capture shows. An unanswered call has none; a
+    /// capture that joined mid-call shows no join; a `sendrecv` re-INVITE
+    /// with no hold before it is no unhold.
+    #[test]
+    fn no_event_is_written_that_the_capture_does_not_show() -> Result<(), TestError> {
+        let unanswered = export_with(
+            &dialog_with(&[response(486, "Busy Here")?])?,
+            &clean_facts(),
+        )?;
+        assert!(
+            valid_json(&unanswered)?["dialog"][0]
+                .get("party_history")
+                .is_none()
+        );
+
+        let mid_call = timed_dialog(vec![
+            (reoffer("INVITE", 5, "alice", "sendrecv")?, 0),
+            (in_dialog_request("BYE", 6, "alice", &[], b"")?, 9),
+        ])?;
+        assert_eq!(
+            history(&export_with(&mid_call, &clean_facts())?)?,
+            vec![(0, 9, "drop".to_string())]
+        );
+        Ok(())
+    }
+
+    /// GAP-17: merging legs moves `party_history` with the party array.
+    #[test]
+    fn merging_moves_the_party_history() -> Result<(), TestError> {
+        let first = export_with(&answered_and_ended()?, &clean_facts())?;
+        let observed = first.parties.len() - 1;
+        let objects = first.dialog.len();
+        let merged = merge_call_legs(
+            vec![first, export_with(&answered_and_ended()?, &clean_facts())?],
+            &[],
+            "uuid".into(),
+            false,
+        )
+        .ok_or("two legs merge")?;
+        let history = merged.dialog[objects]
+            .party_history
+            .as_ref()
+            .ok_or("the second leg's history")?;
+        assert_eq!(history[0].party, observed);
+        assert_eq!(history[1].party, observed + 1);
+        Ok(())
+    }
+
+    // ── keydown and keyup ──
+
+    /// One `party_history` entry as `(party, milliseconds after [`ts`],
+    /// event, button)`.
+    type KeyEvent = (usize, i64, String, Option<String>);
+
+    /// The signaling object's events, as [`KeyEvent`]s.
+    fn key_history(v: &Vcon) -> Result<Vec<KeyEvent>, TestError> {
+        let json = valid_json(v)?;
+        let t0 = ts()?;
+        json["dialog"][0]["party_history"]
+            .as_array()
+            .map(Vec::as_slice)
+            .unwrap_or_default()
+            .iter()
+            .map(|e| {
+                let at = DateTime::parse_from_rfc3339(e["time"].as_str().ok_or("time")?)?
+                    .with_timezone(&Utc);
+                Ok((
+                    usize::try_from(e["party"].as_u64().ok_or("party")?)?,
+                    (at - t0).num_milliseconds(),
+                    e["event"].as_str().ok_or("event")?.to_string(),
+                    e["button"].as_str().map(str::to_string),
+                ))
+            })
+            .collect()
+    }
+
+    /// An answered call with an SDP offer from Alice (10.0.0.1:4000) and an
+    /// answer from Bob (10.0.0.1:5000), and `more` after it.
+    fn answered_with_media(
+        more: Vec<(crate::sip::SipMessage, i64)>,
+    ) -> Result<SipDialog, TestError> {
+        let mut steps = vec![
+            (offer(1, &[])?, 0),
+            (answer_to(1, "200 OK", "t2", true)?, 1),
+        ];
+        steps.extend(more);
+        timed_dialog(steps)
+    }
+
+    /// GAP-17: an INFO `application/dtmf-relay` is a `keydown` at the INFO
+    /// and a `keyup` its stated `Duration` later, with the digit as
+    /// `button` ([core-04 section 4.3.13.1](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-04#section-4.3.13.1)).
+    #[test]
+    fn an_info_dtmf_relay_is_a_keydown_and_a_keyup() -> Result<(), TestError> {
+        let info = in_dialog_request(
+            "INFO",
+            2,
+            "alice",
+            &["Content-Type: application/dtmf-relay"],
+            b"Signal= 5\r\nDuration= 160\r\n",
+        )?;
+        let dialog = answered_with_media(vec![(info, 10)])?;
+        let mut v = export_with(&dialog, &clean_facts())?;
+        add_key_events(&mut v, &dialog, &[]);
+        assert_eq!(
+            key_history(&v)?,
+            vec![
+                (0, 1000, "join".into(), None),
+                (1, 1000, "join".into(), None),
+                (0, 10_000, "keydown".into(), Some("5".into())),
+                (0, 10_160, "keyup".into(), Some("5".into())),
+            ]
+        );
+        Ok(())
+    }
+
+    /// GAP-17: an RFC 4733 telephone event is a `keydown` at its end packet
+    /// less its duration, and a `keyup` at the end packet, for the party
+    /// whose own SDP advertised the sending socket.
+    #[test]
+    fn an_rtp_telephone_event_is_a_keydown_and_a_keyup() -> Result<(), TestError> {
+        let dialog = answered_with_media(Vec::new())?;
+        let mut v = export_with(&dialog, &clean_facts())?;
+        let pressed = |port: u16, digit: char| RtpKeyPress {
+            src: std::net::SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)), port),
+            digit,
+            ended_at: ts().unwrap_or_default() + chrono::TimeDelta::seconds(20),
+            duration_ms: 200,
+        };
+        add_key_events(&mut v, &dialog, &[pressed(5000, '#'), pressed(6000, '1')]);
+        assert_eq!(
+            key_history(&v)?,
+            vec![
+                (0, 1000, "join".into(), None),
+                (1, 1000, "join".into(), None),
+                (1, 19_800, "keydown".into(), Some("#".into())),
+                (1, 20_000, "keyup".into(), Some("#".into())),
+            ],
+            "a socket no party advertised yields no event"
+        );
+        Ok(())
+    }
+
+    /// GAP-17: redaction removes `keydown` and `keyup`: the digit can be a
+    /// PIN. The other events stay.
+    #[test]
+    fn redaction_removes_the_key_events() -> Result<(), TestError> {
+        use crate::output::redact::{Redact as _, RedactionKey, RedactionPolicy};
+        let info = in_dialog_request(
+            "INFO",
+            2,
+            "alice",
+            &["Content-Type: application/dtmf-relay"],
+            b"Signal=5\r\nDuration=160\r\n",
+        )?;
+        let dialog = answered_with_media(vec![(info, 10)])?;
+        let mut v = export_with(&dialog, &clean_facts())?;
+        add_key_events(&mut v, &dialog, &[]);
+        let policy = RedactionPolicy::new(RedactionKey::from_secret(b"keys"));
+        v.redact(&policy.redactor());
+        let events: Vec<String> = key_history(&v)?.into_iter().map(|e| e.2).collect();
+        assert_eq!(events, vec!["join".to_string(), "join".to_string()]);
+        Ok(())
+    }
+
+    /// GAP-17: the history is in time order whatever order the events are
+    /// found in: a hold and a key press before the BYE come before its drop.
+    #[test]
+    fn the_party_history_is_in_time_order() -> Result<(), TestError> {
+        let info = in_dialog_request(
+            "INFO",
+            3,
+            "bob",
+            &["Content-Type: application/dtmf-relay"],
+            b"Signal=7\r\nDuration=100\r\n",
+        )?;
+        let dialog = answered_with_media(vec![
+            (reoffer("INVITE", 2, "alice", "sendonly")?, 10),
+            (info, 20),
+            (in_dialog_request("BYE", 4, "alice", &[], b"")?, 63),
+        ])?;
+        let mut v = export_with(&dialog, &clean_facts())?;
+        assert_eq!(
+            history(&v)?,
+            vec![
+                (0, 1, "join".to_string()),
+                (1, 1, "join".to_string()),
+                (1, 10, "hold".to_string()),
+                (0, 63, "drop".to_string()),
+            ]
+        );
+        add_key_events(&mut v, &dialog, &[]);
+        let events: Vec<String> = key_history(&v)?.into_iter().map(|e| e.2).collect();
+        assert_eq!(
+            events,
+            ["join", "join", "hold", "keydown", "keyup", "drop"].map(String::from)
+        );
         Ok(())
     }
 }

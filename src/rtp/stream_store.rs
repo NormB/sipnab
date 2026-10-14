@@ -882,6 +882,18 @@ impl StreamStore {
         self.streams.get(&self.live_key(flow))
     }
 
+    /// Record one decoded telephone event on the stream `flow` belongs to
+    /// now, up to [`crate::rtp::stream::MAX_KEY_PRESSES`] per stream. A flow
+    /// with no stream records nothing.
+    pub fn record_key_press(&mut self, flow: &StreamKey, press: crate::rtp::dtmf::DtmfEvent) {
+        let key = self.live_key(flow);
+        if let Some(stream) = self.streams.get_mut(&key)
+            && stream.key_presses.len() < crate::rtp::stream::MAX_KEY_PRESSES
+        {
+            stream.key_presses.push(press);
+        }
+    }
+
     /// Whether the live stream at `key` must give way to a new one because a
     /// different call renegotiated one of its sockets after it began.
     fn call_changed(&self, key: &StreamKey) -> bool {
@@ -5280,6 +5292,37 @@ a=rtpmap:96 H264/90000\r\n";
             ts(0),
         );
         store
+    }
+
+    /// A decoded telephone event lands on the stream its packet belongs to,
+    /// at most `MAX_KEY_PRESSES` of them, and a flow with no stream records
+    /// nothing.
+    #[test]
+    fn a_key_press_is_recorded_on_its_stream_up_to_the_cap() {
+        let mut store = store_with_one_stream();
+        let flow = StreamKey {
+            ssrc: 0x00C0_FFEE,
+            src: std::net::SocketAddr::new(a(), 20000),
+            dst: std::net::SocketAddr::new(b(), 30000),
+            session: 0,
+        };
+        let press = crate::rtp::dtmf::DtmfEvent {
+            digit: '5',
+            duration_ms: 100,
+            timestamp: ts(1),
+        };
+        for _ in 0..crate::rtp::stream::MAX_KEY_PRESSES + 10 {
+            store.record_key_press(&flow, press.clone());
+        }
+        let stored: Vec<usize> = store
+            .streams_for("call-1")
+            .map(|s| s.key_presses.len())
+            .collect();
+        assert_eq!(stored, vec![crate::rtp::stream::MAX_KEY_PRESSES]);
+
+        let mut empty = StreamStore::new(100);
+        empty.record_key_press(&flow, press);
+        assert_eq!(empty.streams_for("call-1").count(), 0);
     }
 
     // ── what the correlation claims rest on ────────────────────────────────

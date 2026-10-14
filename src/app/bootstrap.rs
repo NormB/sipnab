@@ -4901,6 +4901,7 @@ pub(crate) fn vcon_rules(
             sealed_updates,
             additions: RuleAdditions {
                 sip_messages: rule.sip_messages.unwrap_or(false),
+                dtmf_events: rule.dtmf_events.unwrap_or(false),
             },
         });
     }
