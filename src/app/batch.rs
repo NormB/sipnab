@@ -10176,22 +10176,30 @@ mod tests {
     /// The containers of `sealed_sweeps`, ordered as written: the first has
     /// no `amended`, and each later one names the one before it.
     #[cfg(all(feature = "vcon", unix))]
-    fn in_chain_order(mut all: Vec<serde_json::Value>) -> Vec<serde_json::Value> {
+    fn in_chain_order(all: Vec<serde_json::Value>) -> Vec<serde_json::Value> {
+        let mut used = vec![false; all.len()];
         let mut ordered = Vec::new();
-        let mut prior: Option<serde_json::Value> = None;
-        while !all.is_empty() {
-            let next = all.iter().position(|v| match &prior {
-                None => v.get("amended").is_none(),
-                Some(p) => v["amended"]["uuid"] == p["uuid"],
+        let mut prior: Option<usize> = None;
+        loop {
+            let next = (0..all.len()).find(|&i| {
+                !used[i]
+                    && match prior {
+                        None => all[i].get("amended").is_none(),
+                        Some(p) => all[i]["amended"]["uuid"] == all[p]["uuid"],
+                    }
             });
             let Some(i) = next else {
                 break;
             };
-            let v = all.remove(i);
-            prior = Some(v.clone());
-            ordered.push(v);
+            used[i] = true;
+            ordered.push(all[i].clone());
+            prior = Some(i);
         }
-        ordered.extend(all);
+        for (i, v) in all.iter().enumerate() {
+            if !used[i] {
+                ordered.push(v.clone());
+            }
+        }
         ordered
     }
 
