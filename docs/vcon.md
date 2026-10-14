@@ -1463,8 +1463,7 @@ Why the default stays `application/json`:
   format container too.
 
 A conserver does not accept the gzip format. On 2026-10-14 the same
-self-hosted conserver (vcon-server at commit `f48d065`, `POST /vcon/external-ingress`)
-answered:
+self-hosted conserver (`POST /vcon/external-ingress`) answered:
 
 - `500 Internal Server Error` to a gzip format body sent as
   `Content-Type: application/vcon+gzip`, the type the forwarder sends;
@@ -1477,8 +1476,10 @@ So do not put a gzip format file in a spool that a conserver reads.
 - sipnab's own rules never write the gzip format.
   - `compress = "gzip"` compresses the vCon inside the signed or encrypted
     form. That file is JSON, so the forwarder sends it as JSON.
-  - How a conserver answers a signed or encrypted container was not
-    measured.
+  - On 2026-10-13 that conserver answered `204` to an encrypted
+    container. It runs a vcon-server branch that adds encrypted vCon
+    ingest. How an unmodified vcon-server answers a signed or encrypted
+    container was not measured.
 - The forwarder retries a `5xx` the way it retries any `5xx`:
   - It leaves the file in the spool, and the back-off doubles up to
     `--vcon-forward-backoff-cap` (default 300 seconds).
