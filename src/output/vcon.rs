@@ -1340,6 +1340,9 @@ impl crate::output::redact::Redact for Vcon {
         }
         for attachment in attachments.iter_mut() {
             attachment.redact(r);
+            if attachment.purpose == MESSAGE_TRACE_PURPOSE {
+                drop_trace_bodies(&mut attachment.body);
+            }
         }
         for report in analysis.iter_mut() {
             report.redact(r);
@@ -1513,6 +1516,25 @@ impl crate::output::redact::Redact for Analysis {
         // pair), so a record never reaches here from sipnab's own run; one
         // that did is dropped rather than carried beside redacted content.
         *provenance = None;
+    }
+}
+
+/// Remove `body` and `body_encoding` from every trace message, under
+/// redaction.
+///
+/// A message body can be the conversation itself (the text of a SIP MESSAGE)
+/// or a secret (a DTMF digit in an INFO), and no keyed transform of either
+/// keeps it useful and harmless. An SDP body is not lost: the trace keeps it
+/// in `sdp`, which redaction rewrites like any other field.
+fn drop_trace_bodies(body: &mut serde_json::Value) {
+    let Some(messages) = body["messages"].as_array_mut() else {
+        return;
+    };
+    for message in messages {
+        if let Some(map) = message.as_object_mut() {
+            map.remove("body");
+            map.remove("body_encoding");
+        }
     }
 }
 
@@ -2148,6 +2170,9 @@ pub fn merge_call_legs(
         for mut a in leg_attachments {
             a.party = party(a.party);
             a.dialog = object(a.dialog);
+            if a.purpose == MESSAGE_TRACE_PURPOSE {
+                move_trace_parties(&mut a.body, &party);
+            }
             attachments.push(a);
         }
         for mut a in leg_analysis {
@@ -2205,6 +2230,23 @@ pub fn merge_call_legs(
         attachments,
         analysis,
     })
+}
+
+/// Pass every trace message's `party` through `party`, for
+/// [`merge_call_legs`]: the index lives inside the body, where the
+/// attachment's own remap does not reach.
+fn move_trace_parties(body: &mut serde_json::Value, party: &impl Fn(usize) -> usize) {
+    let Some(messages) = body["messages"].as_array_mut() else {
+        return;
+    };
+    for message in messages {
+        if let Some(index) = message["party"]
+            .as_u64()
+            .and_then(|i| usize::try_from(i).ok())
+        {
+            message["party"] = party(index).into();
+        }
+    }
 }
 
 impl Dialog {
@@ -2990,6 +3032,7 @@ fn message_trace_attachment(dialog: &SipDialog, observer: usize, start: String) 
                 // `the_header_map_carries_every_header_the_list_would_have`
                 // pins.
                 map.remove("extension_headers");
+                draft_message_fields(map, dialog, m);
             }
             strip_credentials(&mut value);
             value
@@ -3010,13 +3053,69 @@ fn message_trace_attachment(dialog: &SipDialog, observer: usize, start: String) 
         // available. `schema_version` and `sip_call_id` are what existing
         // sipnab consumers already read, and dropping them would break those
         // for a draft that is still individual and at -00.
+        //
+        // `version` is the string "1.0", the trace format version
+        // draft-howe-vcon-sip-signaling-00 section 6.2.1 defines. It was the
+        // number 1 until the per-message fields below joined the body; a
+        // reader of sipnab's own shape reads `schema_version`, which is
+        // unchanged.
         body: serde_json::json!({
-            "version": DIAGNOSIS_SCHEMA_VERSION,
+            "version": TRACE_FORMAT_VERSION,
             "call_id": dialog.call_id,
             "schema_version": DIAGNOSIS_SCHEMA_VERSION,
             "sip_call_id": dialog.call_id,
             "messages": messages,
         }),
+    }
+}
+
+/// The trace format version [draft-howe-vcon-sip-signaling-00 section 6.2.1](https://datatracker.ietf.org/doc/html/draft-howe-vcon-sip-signaling-00#section-6.2.1)
+/// defines: "This document defines version \"1.0\"".
+pub const TRACE_FORMAT_VERSION: &str = "1.0";
+
+/// Add the per-message fields of the draft's trace format to one projected
+/// message, beside sipnab's own.
+///
+/// [draft-howe-vcon-sip-signaling-00 section 6.2.1](https://datatracker.ietf.org/doc/html/draft-howe-vcon-sip-signaling-00#section-6.2.1)
+/// names `timestamp`, `direction`, `party`, `method`, `status_code`,
+/// `status_text`, `headers` and `body`. The projection already carries
+/// `timestamp`, `method` (requests only), `status_code` (responses only) and
+/// `reason`; this adds the rest.
+///
+/// - `direction` is `"received"` on every message. The draft defines it "from
+///   the perspective of the vCon producer", and sipnab sent nothing: every
+///   message is a copy it received from the tap.
+/// - `party` is the sender's index when the message's tag names a party (see
+///   [`sender_party`]), and absent otherwise, which the draft allows "when
+///   the sender cannot be determined".
+/// - `status_text` is the reason phrase, on a response only.
+/// - `body` is the message body when it has one: the text when it is UTF-8,
+///   otherwise base64url with `body_encoding: "base64url"`, as the draft says
+///   for binary bodies.
+fn draft_message_fields(
+    map: &mut serde_json::Map<String, serde_json::Value>,
+    dialog: &SipDialog,
+    m: &crate::sip::SipMessage,
+) {
+    map.insert("direction".into(), "received".into());
+    if let Some(party) = sender_party(dialog, m) {
+        map.insert("party".into(), party.into());
+    }
+    if !m.is_request
+        && let Some(reason) = &m.reason
+    {
+        map.insert("status_text".into(), reason.clone().into());
+    }
+    if !m.body.is_empty() {
+        match std::str::from_utf8(&m.body) {
+            Ok(text) => {
+                map.insert("body".into(), text.into());
+            }
+            Err(_) => {
+                map.insert("body".into(), URL_SAFE_NO_PAD.encode(&m.body).into());
+                map.insert("body_encoding".into(), "base64url".into());
+            }
+        }
     }
 }
 
@@ -8001,6 +8100,151 @@ mod tests {
         let dialog = timed_dialog(vec![(in_dialog_request("BYE", 7, "bob", &[], b"")?, 0)])?;
         let json = valid_json(&export_with(&dialog, &clean_facts())?)?;
         assert!(json["dialog"][0].get("sip_cseq").is_none(), "{json:#}");
+        Ok(())
+    }
+
+    // ── The sip-message-trace body in the draft's shape ──
+
+    /// The trace attachment's body, as JSON.
+    fn trace_body(v: &Vcon) -> Result<serde_json::Value, TestError> {
+        let json = valid_json(v)?;
+        let trace = json["attachments"]
+            .as_array()
+            .and_then(|a| a.iter().find(|a| a["purpose"] == MESSAGE_TRACE_PURPOSE))
+            .ok_or("a trace attachment")?;
+        body_of(trace)
+    }
+
+    /// GAP-14: the trace body carries the fields of
+    /// [draft-howe-vcon-sip-signaling-00 section 6.2.1](https://datatracker.ietf.org/doc/html/draft-howe-vcon-sip-signaling-00#section-6.2.1):
+    /// `version` "1.0", and per message `direction`, `party`, `method` for a
+    /// request, `status_code` and `status_text` for a response. The
+    /// `schema_version: 1` fields stay for existing readers.
+    #[test]
+    fn the_trace_body_carries_the_draft_message_fields() -> Result<(), TestError> {
+        let body = trace_body(&export_with(&answered_and_ended()?, &clean_facts())?)?;
+        assert_eq!(body["version"], "1.0");
+        assert_eq!(body["call_id"], "vcon-fixture@example.com");
+        assert_eq!(body["schema_version"], 1);
+        let messages = body["messages"].as_array().ok_or("messages")?;
+        let invite = &messages[0];
+        assert_eq!(invite["direction"], "received");
+        assert_eq!(invite["party"], 0);
+        assert_eq!(invite["method"], "INVITE");
+        assert!(invite.get("status_code").is_none() && invite.get("status_text").is_none());
+        let answer = &messages[2];
+        assert_eq!(answer["party"], 1);
+        assert_eq!(answer["status_code"], 200);
+        assert_eq!(answer["status_text"], "OK");
+        assert!(answer.get("method").is_none(), "{answer:#}");
+        assert_eq!(messages[4]["method"], "BYE");
+        assert_eq!(messages[4]["party"], 0);
+        Ok(())
+    }
+
+    /// GAP-14: a message whose tags match neither party has no `party`; the
+    /// draft makes it optional "when the sender cannot be determined".
+    #[test]
+    fn a_trace_message_from_an_unknown_sender_names_no_party() -> Result<(), TestError> {
+        let trying = message(
+            "SIP/2.0 100 Trying",
+            &[
+                "From: \"Alice\" <sip:alice@example.com>;tag=t1",
+                "To: \"Bob\" <sip:bob@example.net>",
+                "Call-ID: vcon-fixture@example.com",
+                "CSeq: 1 INVITE",
+                "Content-Length: 0",
+            ],
+        )?;
+        let body = trace_body(&export_with(&dialog_with(&[trying])?, &clean_facts())?)?;
+        assert!(body["messages"][1].get("party").is_none(), "{body:#}");
+        assert_eq!(body["messages"][1]["direction"], "received");
+        Ok(())
+    }
+
+    /// GAP-14: a text body travels as the string; a body that is not UTF-8
+    /// travels as base64url with `body_encoding`, as the draft's `body` field
+    /// says.
+    #[test]
+    fn the_trace_carries_each_body_as_text_or_base64url() -> Result<(), TestError> {
+        let relay = in_dialog_request(
+            "INFO",
+            2,
+            "alice",
+            &["Content-Type: application/dtmf-relay"],
+            b"Signal=5\r\nDuration=160\r\n",
+        )?;
+        let binary = in_dialog_request(
+            "INFO",
+            3,
+            "alice",
+            &["Content-Type: application/octet-stream"],
+            &[0xff, 0xfe, 0x00, 0x41],
+        )?;
+        let dialog = timed_dialog(vec![
+            (invite()?, 0),
+            (response(200, "OK")?, 1),
+            (relay, 2),
+            (binary, 3),
+        ])?;
+        let body = trace_body(&export_with(&dialog, &clean_facts())?)?;
+        let messages = body["messages"].as_array().ok_or("messages")?;
+        assert_eq!(messages[2]["body"], "Signal=5\r\nDuration=160\r\n");
+        assert!(messages[2].get("body_encoding").is_none());
+        assert_eq!(
+            messages[3]["body"],
+            URL_SAFE_NO_PAD.encode([0xff, 0xfe, 0x00, 0x41])
+        );
+        assert_eq!(messages[3]["body_encoding"], "base64url");
+        assert!(messages[0].get("body").is_none(), "an empty body is absent");
+        Ok(())
+    }
+
+    /// GAP-14: under redaction no message body survives in the trace. A
+    /// body can be the conversation itself (a SIP MESSAGE), and the SDP it
+    /// would duplicate is already in the redacted `sdp` field.
+    #[test]
+    fn redaction_removes_every_trace_message_body() -> Result<(), TestError> {
+        use crate::output::redact::{Redact as _, RedactionKey, RedactionPolicy};
+        let relay = in_dialog_request(
+            "INFO",
+            2,
+            "alice",
+            &["Content-Type: application/dtmf-relay"],
+            b"Signal=5\r\nDuration=160\r\n",
+        )?;
+        let dialog = timed_dialog(vec![(invite()?, 0), (response(200, "OK")?, 1), (relay, 2)])?;
+        let mut v = export_with(&dialog, &clean_facts())?;
+        let policy = RedactionPolicy::new(RedactionKey::from_secret(b"trace"));
+        v.redact(&policy.redactor());
+        let body = trace_body(&v)?;
+        for m in body["messages"].as_array().ok_or("messages")? {
+            assert!(
+                m.get("body").is_none() && m.get("body_encoding").is_none(),
+                "{m:#}"
+            );
+        }
+        Ok(())
+    }
+
+    /// GAP-14: merging legs moves each trace message's `party` with the
+    /// party array, as it moves every other party index.
+    #[test]
+    fn merging_moves_every_trace_message_party() -> Result<(), TestError> {
+        let first = export_with(&answered_and_ended()?, &clean_facts())?;
+        let observed = first.parties.len() - 1;
+        let second = export_with(&answered_and_ended()?, &clean_facts())?;
+        let merged = merge_call_legs(vec![first, second], &[], "uuid".into(), false)
+            .ok_or("two legs merge")?;
+        let traces: Vec<&Attachment> = merged
+            .attachments
+            .iter()
+            .filter(|a| a.purpose == MESSAGE_TRACE_PURPOSE)
+            .collect();
+        assert_eq!(traces.len(), 2);
+        assert_eq!(traces[0].body["messages"][0]["party"], 0);
+        assert_eq!(traces[1].body["messages"][0]["party"], observed);
+        assert_eq!(traces[1].body["messages"][2]["party"], observed + 1);
         Ok(())
     }
 }

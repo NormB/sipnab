@@ -45337,6 +45337,7 @@ below declares `"encoding": "json"`.
               "method": "INVITE",
               "number": 1
             },
+            "direction": "received",
             "dscp": 0,
             "dst": "192.0.2.2",
             "dst_port": 5060,
@@ -45344,6 +45345,7 @@ below declares `"encoding": "json"`.
             "from": "<sip:1001@192.0.2.1>;tag=1928301774",
             "is_request": true,
             "method": "INVITE",
+            "party": 0,
             "schema_version": 1,
             "sdp": "",
             "src": "192.0.2.1",
@@ -45356,8 +45358,10 @@ below declares `"encoding": "json"`.
           … ELIDED: the 100, the 180, the 200, the ACK, the BYE and its 200,
           six more objects of the same shape …
         ],
+        "call_id": "test-call-1@192.0.2.1",
         "schema_version": 1,
-        "sip_call_id": "test-call-1@192.0.2.1"
+        "sip_call_id": "test-call-1@192.0.2.1",
+        "version": "1.0"
       }
     },
     {
@@ -45457,6 +45461,36 @@ sipnab fills these fields from what the capture shows, and leaves a field out wh
 - `sip_cseq` is the CSeq number of the request that created the dialog.
   - [Section 5.4 of draft-howe-vcon-sip-signaling-00](https://datatracker.ietf.org/doc/html/draft-howe-vcon-sip-signaling-00#section-5.4) defines it as "the sequence number from the CSeq header field of the INVITE or other dialog-creating request".
   - It is absent when the capture joined after that request.
+
+## The SIP signaling attachments
+
+The `sip-signaling` extension of [draft-howe-vcon-sip-signaling-00](https://datatracker.ietf.org/doc/html/draft-howe-vcon-sip-signaling-00) stores SIP in attachments.
+sipnab declares the extension in `extensions`.
+
+### The message trace
+
+The `sip-message-trace` attachment holds every message sipnab kept for the dialog.
+Its body follows the trace format of [section 6.2.1](https://datatracker.ietf.org/doc/html/draft-howe-vcon-sip-signaling-00#section-6.2.1), and keeps sipnab's own fields beside it.
+
+- `version` is the string `"1.0"`, the trace format version the draft defines.
+  - Until this release it was the number `1`.
+  - `schema_version` stays the number `1` for readers of sipnab's own shape.
+- `call_id` and `sip_call_id` both hold the Call-ID.
+- Each message carries the draft's fields.
+  - `timestamp` is when sipnab captured it.
+  - `direction` is `"received"` on every message.
+    The draft defines it from the producer's side, and sipnab sent nothing.
+  - `party` is the index of the party whose tag the message carries.
+    It is absent when the tags match neither party, such as a `100 Trying` from a proxy.
+  - A request carries `method`.
+    A response carries `status_code` and `status_text` instead.
+  - `headers` maps each header name to a list of its values, without the credential headers.
+  - `body` is the message body when there is one.
+    A body that is not UTF-8 is base64url text, with `body_encoding: "base64url"`.
+- Under `--redact`, no message keeps `body` or `body_encoding`.
+  - A body can be the conversation itself, such as the text of a SIP MESSAGE.
+  - The SDP is still in `sdp`, which redaction rewrites like every other field.
+- A container that holds several legs moves each message's `party` with the rest of the party indices.
 
 ## The container cannot say "this is an incomplete record", so sipnab says it twice
 

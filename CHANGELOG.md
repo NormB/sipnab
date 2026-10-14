@@ -12,6 +12,13 @@ entry that carries them.
 
 ### Added
 
+- **The vCon `sip-message-trace` body carries the draft's trace format.**
+  - The body and each message gain the fields of [section 6.2.1 of draft-howe-vcon-sip-signaling-00](https://datatracker.ietf.org/doc/html/draft-howe-vcon-sip-signaling-00#section-6.2.1): `direction`, `party`, `status_text` and `body`.
+  - `version` is now the string `"1.0"` the draft defines, and was the number `1`.
+    `schema_version` and every existing message field stay as they were.
+  - `direction` is `"received"` on every message, because sipnab sent nothing.
+  - `party` is absent when the message's tags match neither party.
+  - `--redact` removes each message's `body`.
 - **The vCon signaling Dialog Object carries `sip_cseq`.**
   - It is the CSeq number of the request that created the dialog, per [section 5.4 of draft-howe-vcon-sip-signaling-00](https://datatracker.ietf.org/doc/html/draft-howe-vcon-sip-signaling-00#section-5.4).
   - It is absent when the capture joined after that request.
