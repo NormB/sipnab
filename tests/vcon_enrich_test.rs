@@ -544,7 +544,7 @@ fn a_wtf_transcription_is_appended_and_declared() -> Result<(), TestError> {
     );
     let v = container(&dir)?;
     let wtf = analyses(&v, "wtf_transcription");
-    assert_eq!(wtf.len(), 1, "{v}");
+    assert_eq!(wtf.len(), 1);
     assert_eq!(wtf[0]["encoding"], "json");
     assert_eq!(
         wtf[0]["body"]["transcript"]["text"],
@@ -560,7 +560,7 @@ fn a_wtf_transcription_is_appended_and_declared() -> Result<(), TestError> {
         1,
         "{extensions:?}"
     );
-    assert!(v.get("critical").is_none(), "{v}");
+    assert!(v.get("critical").is_none());
     assert_eq!(outcomes(&v)?[0]["outcome"], "ok");
     let validator = support::schema::load_validator("vcon.schema.json")?;
     support::schema::assert_valid(&validator, &v, "a container with a WTF transcription");
@@ -578,7 +578,7 @@ fn an_invalid_wtf_transcription_is_recorded_as_a_failure() -> Result<(), TestErr
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(out.status.success(), "{stderr}");
     let v = container(&dir)?;
-    assert!(analyses(&v, "wtf_transcription").is_empty(), "{v}");
+    assert!(analyses(&v, "wtf_transcription").is_empty());
     let extensions = v["extensions"].as_array().ok_or("extensions")?;
     assert!(
         !extensions.iter().any(|e| e == "wtf_transcription"),
@@ -666,7 +666,7 @@ fn an_enrichment_carries_its_provenance() -> Result<(), TestError> {
 
     let transcript = analyses(&v, "transcript")[0];
     let record = provenance(transcript)?;
-    assert_eq!(record["model"]["vendor"], "stub", "{record}");
+    assert_eq!(record["model"]["vendor"], "stub");
     assert_eq!(record["model"]["name"], "stub-stt", "the analysis product");
     let at = record["generated_at"].as_str().ok_or("generated_at")?;
     assert!(
@@ -705,10 +705,7 @@ fn an_enrichment_carries_its_provenance() -> Result<(), TestError> {
     };
     let wav_hash = sipnab::app::vcon_hash::token(&wav);
     assert_eq!(v["dialog"][0]["content_hash"], wav_hash.as_str());
-    assert!(
-        inputs(record, "dialog").contains(&(0, wav_hash)),
-        "{record}"
-    );
+    assert!(inputs(record, "dialog").contains(&(0, wav_hash)));
 
     // The second service was sent the first one's transcript: its record
     // names it by its index in the container, with the hash of what was sent.
@@ -787,9 +784,9 @@ fn a_services_provenance_is_kept_and_completed() -> Result<(), TestError> {
     );
     assert!(
         inputs(record, "analysis").is_empty(),
-        "the service's own inputs are replaced: {record}"
+        "the service's own inputs are replaced"
     );
-    assert!(!inputs(record, "dialog").is_empty(), "{record}");
+    assert!(!inputs(record, "dialog").is_empty());
 
     let home = tempfile::tempdir()?;
     let dir = home.path().join("out");
@@ -797,7 +794,7 @@ fn a_services_provenance_is_kept_and_completed() -> Result<(), TestError> {
     let out = run(home.path(), &config(&dir, &service("sum", &url, "")), &[])?;
     assert!(out.status.success());
     let v = container(&dir)?;
-    assert!(analyses(&v, "summary").is_empty(), "{v}");
+    assert!(analyses(&v, "summary").is_empty());
     let services = outcomes(&v)?;
     assert_eq!(services[0]["outcome"], "malformed", "{services:?}");
     assert!(
@@ -860,7 +857,7 @@ fn an_opted_in_service_supplies_a_lawful_basis() -> Result<(), TestError> {
         .enumerate()
         .filter(|(_, a)| a["purpose"] == "lawful_basis")
         .collect();
-    assert_eq!(found.len(), 1, "{v}");
+    assert_eq!(found.len(), 1);
     let (index, carried) = found[0];
     for key in ["purpose", "start", "party", "dialog", "encoding", "body"] {
         assert_eq!(carried[key], sent[key], "{key} is carried unchanged");
@@ -894,10 +891,7 @@ fn a_lawful_basis_is_refused_unless_the_service_opts_in() -> Result<(), TestErro
     assert!(out.status.success());
     let v = container(&dir)?;
     let attachments = v["attachments"].as_array().ok_or("attachments")?;
-    assert!(
-        !attachments.iter().any(|a| a["purpose"] == "lawful_basis"),
-        "{v}"
-    );
+    assert!(!attachments.iter().any(|a| a["purpose"] == "lawful_basis"));
     let extensions = v["extensions"].as_array().ok_or("extensions")?;
     assert!(!extensions.iter().any(|e| e == "lawful_basis"));
     let services = outcomes(&v)?;

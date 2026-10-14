@@ -1637,11 +1637,9 @@ impl Forwarder {
             None
         };
         let scitt_tls = match &settings.scitt {
-            Some(scitt) if scitt.url.tls => Some(client_config(
-                scitt.ca.as_deref(),
-                None,
-                &SCITT_TRUST,
-            )?),
+            Some(scitt) if scitt.url.tls => {
+                Some(client_config(scitt.ca.as_deref(), None, &SCITT_TRUST)?)
+            }
             _ => None,
         };
         Ok(Self {

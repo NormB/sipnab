@@ -405,7 +405,7 @@ fn a_delivery_registers_created_and_sent() -> Result<(), TestError> {
     assert_eq!(report.delivered, ["a.vcon.json"]);
 
     let posts = scrapi.requests();
-    assert_eq!(posts.len(), 2, "{posts:?}");
+    assert_eq!(posts.len(), 2);
     let chain = ders(&chain_pem()?)?;
     let mut events = Vec::new();
     for post in &posts {
@@ -458,7 +458,7 @@ fn a_delivery_registers_created_and_sent() -> Result<(), TestError> {
     use base64::Engine as _;
     let record = rig.record("a.vcon.json")?;
     let statements = record["statements"].as_array().ok_or("statements")?;
-    assert_eq!(statements.len(), 2, "{record}");
+    assert_eq!(statements.len(), 2);
     for (s, event) in statements.iter().zip(["vcon_created", "vcon_sent"]) {
         assert_eq!(s["event"], event);
         assert_eq!(s["status"], 201);
@@ -490,7 +490,7 @@ fn a_rewritten_container_registers_only_sent() -> Result<(), TestError> {
     )?;
     Forwarder::new(rig.settings.clone())?.pass(Instant::now(), &never);
     let posts = scrapi.requests();
-    assert_eq!(posts.len(), 1, "{posts:?}");
+    assert_eq!(posts.len(), 1);
     assert_eq!(decode(&posts[0].body)?.payload["event"], "vcon_sent");
     Ok(())
 }
@@ -519,10 +519,10 @@ fn a_registration_that_does_not_complete_is_recorded_and_delivery_stands() -> Re
         record["statements"][0]["location"],
         "https://ts.example/entries/pending-1"
     );
-    assert!(record["statements"][0].get("receipt").is_none(), "{record}");
+    assert!(record["statements"][0].get("receipt").is_none());
     assert!(
         record["statements"][0].get("error").is_none(),
-        "a 202 registered: {record}"
+        "a 202 registered"
     );
 
     // RFC 9290 Concise Problem Details: {-1: title, -2: detail}.
@@ -558,7 +558,6 @@ fn a_registration_that_does_not_complete_is_recorded_and_delivery_stands() -> Re
         first["error"]
             .as_str()
             .is_some_and(|e| e.contains("Bad Signature Algorithm") && e.contains("not supported")),
-        "{record}"
     );
     assert!(first.get("receipt").is_none());
 
@@ -577,7 +576,6 @@ fn a_registration_that_does_not_complete_is_recorded_and_delivery_stands() -> Re
         record["statements"][0]["error"]
             .as_str()
             .is_some_and(|e| !e.is_empty()),
-        "{record}"
     );
     Ok(())
 }
@@ -612,7 +610,7 @@ fn an_https_service_is_trusted_by_its_own_ca() -> Result<(), TestError> {
     assert_eq!(report.delivered, ["a.vcon.json"]);
     assert_eq!(scrapi.requests().len(), 2);
     let record = rig.record("a.vcon.json")?;
-    assert_eq!(record["statements"][1]["status"], 201, "{record}");
+    assert_eq!(record["statements"][1]["status"], 201);
     Ok(())
 }
 
@@ -721,11 +719,8 @@ fn the_binary_registers_by_key_and_by_flag() -> Result<(), TestError> {
     let Some(Cbor::Map(claims)) = statement.header(15) else {
         return Err("no CWT Claims".into());
     };
-    assert!(
-        claims.iter().any(|(k, v)| k.as_integer() == Some(1.into())
-            && v == &Cbor::Text("https://flag.example/".into())),
-        "{claims:?}"
-    );
+    assert!(claims.iter().any(|(k, v)| k.as_integer() == Some(1.into())
+        && v == &Cbor::Text("https://flag.example/".into())));
     Ok(())
 }
 
@@ -793,7 +788,6 @@ fn the_binary_trusts_the_scitt_ca_and_sends_its_credential() -> Result<(), TestE
         posts
             .iter()
             .all(|p| p.header("x-api-key") == Some("scitt-key-value")),
-        "{posts:?}"
     );
     assert!(
         !err.contains("scitt-key-value"),

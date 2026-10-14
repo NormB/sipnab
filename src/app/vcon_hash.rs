@@ -7,7 +7,7 @@
 //! the core draft, "the hash algorithm name, a hyphen, and the base64url
 //! encoding (without padding) of the digest", SHA-512 recommended, and JSON
 //! material is canonicalized "with the JSON Canonicalization Scheme
-//! [RFC8785] before hashing, so that independent parties compute the same
+//! \[RFC8785\] before hashing, so that independent parties compute the same
 //! digest".
 
 /// The `sha512-` token of `bytes`.

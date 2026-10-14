@@ -1095,6 +1095,24 @@ Trust only the CA certificates in this PEM file for an \fBhttps://\fR store. Wit
 .TP
 \fB\-\-vcon\-forward\-extra\-ca\fR \fIFILE\fR
 Trust the CA certificates in this PEM file for an \fBhttps://\fR store in addition to the host's CA bundle: the store's certificate is accepted when the host's bundle or this file issued it. Use \-\-vcon\-forward\-ca instead to trust only the named file. Either flag replaces both \fB[vcon_forward] ca\fR and \fB[vcon_forward] extra_ca\fR.
+.TP
+\fB\-\-vcon\-forward\-scitt\-url\fR \fIURL\fR
+Register SCITT lifecycle statements (draft\-howe\-vcon\-lifecycle\-01) with the transparency service at this URL: \fBvcon_created\fR and \fBvcon_sent\fR for each container delivered, each a signed statement POSTed to \fB<URL>/entries\fR (draft\-ietf\-scitt\-scrapi). Needs \-\-vcon\-forward\-scitt\-sign\-key, \-\-vcon\-forward\-scitt\-sign\-cert and \-\-vcon\-forward\-scitt\-issuer. Overrides \fB[vcon_forward] scitt_url\fR.
+.TP
+\fB\-\-vcon\-forward\-scitt\-auth\-file\fR \fIFILE\fR
+File holding the one header that authenticates to the transparency service, as \fBHeader\-Name: value\fR on one line. Refused when other users can read it: chmod 600. Overrides \fB[vcon_forward] scitt_auth_file\fR.
+.TP
+\fB\-\-vcon\-forward\-scitt\-ca\fR \fIFILE\fR
+Trust only the CA certificates in this PEM file for an \fBhttps://\fR transparency service. Without it the host's CA bundle. Overrides \fB[vcon_forward] scitt_ca\fR.
+.TP
+\fB\-\-vcon\-forward\-scitt\-sign\-key\fR \fIFILE\fR
+The PEM RSA private key the lifecycle statements are signed with (RS256). Refused when other users can read it: chmod 600. Overrides \fB[vcon_forward] scitt_sign_key\fR.
+.TP
+\fB\-\-vcon\-forward\-scitt\-sign\-cert\fR \fIFILE\fR
+The PEM certificate chain of the signing key, leaf first, carried in each statement's \fBx5chain\fR. Overrides \fB[vcon_forward] scitt_sign_cert\fR.
+.TP
+\fB\-\-vcon\-forward\-scitt\-issuer\fR \fIURI\fR
+The issuer each lifecycle statement names (CWT claim \fBiss\fR), a URI such as \fBhttps://pbx.example.com/sipnab\fR. Overrides \fB[vcon_forward] scitt_issuer\fR.
 .SS vCon fetcher
 .TP
 \fB\-\-vcon\-fetch\fR \fIUUID\fR\&...

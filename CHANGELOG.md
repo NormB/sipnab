@@ -61,8 +61,8 @@ entry that carries them.
   - A `[[vcon.enrich]]` answer may hold an Analysis Object of type `wtf_transcription`, as [section 6.1 of draft-howe-vcon-wtf-extension-02](https://datatracker.ietf.org/doc/html/draft-howe-vcon-wtf-extension-02#section-6.1) defines it.
   - sipnab checks it for the draft's required `transcript`, `segments` and `metadata` sections and their members.
   - A container that holds one lists `wtf_transcription` in `extensions`, and not in `critical`.
-  - An answer whose WTF transcription fails the check is recorded as `malformed`, naming what is wrong, and none of it is kept.
-- **Each enrichment Analysis Object records how it was made.**
+  - sipnab records an answer whose WTF transcription fails the check as `malformed`, naming what is wrong, and keeps none of it.
+- **Each enrichment Analysis Object records its provenance.**
   - It carries a `provenance` record, as [section 4 of draft-howe-vcon-provenance-00](https://datatracker.ietf.org/doc/html/draft-howe-vcon-provenance-00#section-4) defines it, and the container lists `provenance` in `extensions`.
   - `model` and `generated_at` are the service's own when it sends a record, and otherwise come from the entry's `vendor` and `product` and the time sipnab read the answer.
   - `inputs` names each element sipnab sent the service, with the SHA-512 of its [RFC 8785](https://www.rfc-editor.org/rfc/rfc8785.html) form, and each leg's audio, with the SHA-512 of the WAV.
@@ -73,7 +73,8 @@ entry that carries them.
   - For each container delivered, the forwarder registers `vcon_created` (a container sipnab wrote once) and `vcon_sent`, the events of [section 5 of draft-howe-vcon-lifecycle-01](https://datatracker.ietf.org/doc/html/draft-howe-vcon-lifecycle-01#section-5).
   - Each is a COSE_Sign1 Signed Statement, signed RS256 with `--vcon-forward-scitt-sign-key` and carrying `--vcon-forward-scitt-sign-cert` in `x5chain`, POSTed to `<url>/entries` as [section 2.3 of draft-ietf-scitt-scrapi-11](https://datatracker.ietf.org/doc/html/draft-ietf-scitt-scrapi-11#section-2.3) defines.
   - `--vcon-forward-scitt-issuer` names the issuer, and `--vcon-forward-scitt-auth-file` and `--vcon-forward-scitt-ca` authenticate and trust the service.
-  - What the service answered, receipts included, goes into `<name>.scitt` beside the delivered container. A statement that does not register is recorded and not retried; the delivery stands.
+  - What the service answered, receipts included, goes into `<name>.scitt` beside the delivered container.
+  - sipnab records a statement that does not register and does not retry it. The delivery stands.
   - sipnab registers no `vcon_deleted`: it deletes no container.
 - **An enrichment service may supply a lawful basis, when you allow it.**
   - `lawful_basis = true` on a `[[vcon.enrich]]` lets its answer carry `attachments`, each a lawful basis attachment of [section 5 of draft-howe-vcon-lawful-basis-02](https://datatracker.ietf.org/doc/html/draft-howe-vcon-lawful-basis-02#section-5.1).

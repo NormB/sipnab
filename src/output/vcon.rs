@@ -660,7 +660,7 @@ pub struct Dialog {
     /// what the capture shows each party doing, in time order.
     ///
     /// On the signaling object only, and only events the capture shows (see
-    /// [`party_history_of`]). Absent when it shows none.
+    /// `party_history_of`). Absent when it shows none.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub party_history: Option<Vec<PartyEvent>>,
     /// `campaign` ([draft-ietf-vcon-cc-extension-02 section 3.2.1](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-cc-extension-02#section-3.2.1)),
@@ -3554,7 +3554,7 @@ fn is_wire_attachment(attachment: &Attachment) -> bool {
 /// together. An attachment that does not fit is left out and named, with its
 /// size, in the completeness attachment's `sip_messages_refused`.
 ///
-/// Redaction removes all three kinds (see [`is_wire_attachment`]): the bytes
+/// Redaction removes all three kinds (see `is_wire_attachment`): the bytes
 /// hold every identifier the trace holds, in a form redaction cannot rewrite
 /// without changing the message they are a copy of.
 pub fn add_sip_message_attachments(container: &mut Vcon, dialog: &SipDialog, budget: usize) {
@@ -3849,7 +3849,7 @@ pub const MAX_FINDING_TAGS: usize = 5;
 /// - `finding:<name>`: each detection of the signaling diagnosis the
 ///   container's analysis reports, by its field name, in the diagnosis's own
 ///   order and once across a call's legs, at most [`MAX_FINDING_TAGS`]. See
-///   [`finding_tags`].
+///   `finding_tags`.
 ///
 /// `party` is the observer, which wrote it; `dialog` is 0.
 pub fn add_tags(container: &mut Vcon, legs: &[&SipDialog], rule: &str, filters: &[&str]) {
@@ -8834,7 +8834,7 @@ mod tests {
         let v = export_with(&answered_and_ended()?, &clean_facts())?;
         let json = valid_json(&v)?;
         assert_eq!(json["dialog"][0]["parties"], serde_json::json!([0, 1]));
-        assert!(json["dialog"][0].get("originator").is_none(), "{json:#}");
+        assert!(json["dialog"][0].get("originator").is_none());
         Ok(())
     }
 
@@ -8870,7 +8870,7 @@ mod tests {
         let unanswered = timed_dialog(vec![(invite()?, 0), (response(486, "Busy Here")?, 3)])?;
         for dialog in [unended, unanswered] {
             let json = valid_json(&export_with(&dialog, &clean_facts())?)?;
-            assert!(json["dialog"][0].get("duration").is_none(), "{json:#}");
+            assert!(json["dialog"][0].get("duration").is_none());
         }
         Ok(())
     }
@@ -8885,7 +8885,7 @@ mod tests {
             (in_dialog_request("BYE", 2, "alice", &[], b"")?, 63),
         ])?;
         let json = valid_json(&export_with(&dialog, &clean_facts())?)?;
-        assert!(json["dialog"][0].get("duration").is_none(), "{json:#}");
+        assert!(json["dialog"][0].get("duration").is_none());
         Ok(())
     }
 
@@ -8904,10 +8904,7 @@ mod tests {
             .ok_or("an originator index")?;
         assert_eq!(originator, 2);
         let unknown = &json["parties"][2];
-        assert!(
-            unknown.get("sip").is_none() && unknown.get("role").is_none(),
-            "{unknown:#}"
-        );
+        assert!(unknown.get("sip").is_none() && unknown.get("role").is_none());
         assert_eq!(v.observer_index(), 3);
         assert_eq!(json["parties"][3]["role"], OBSERVER_ROLE);
         Ok(())
@@ -8946,7 +8943,7 @@ mod tests {
     fn a_dialog_first_seen_mid_call_carries_no_sip_cseq() -> Result<(), TestError> {
         let dialog = timed_dialog(vec![(in_dialog_request("BYE", 7, "bob", &[], b"")?, 0)])?;
         let json = valid_json(&export_with(&dialog, &clean_facts())?)?;
-        assert!(json["dialog"][0].get("sip_cseq").is_none(), "{json:#}");
+        assert!(json["dialog"][0].get("sip_cseq").is_none());
         Ok(())
     }
 
@@ -8983,7 +8980,7 @@ mod tests {
         assert_eq!(answer["party"], 1);
         assert_eq!(answer["status_code"], 200);
         assert_eq!(answer["status_text"], "OK");
-        assert!(answer.get("method").is_none(), "{answer:#}");
+        assert!(answer.get("method").is_none());
         assert_eq!(messages[4]["method"], "BYE");
         assert_eq!(messages[4]["party"], 0);
         Ok(())
@@ -9004,7 +9001,7 @@ mod tests {
             ],
         )?;
         let body = trace_body(&export_with(&dialog_with(&[trying])?, &clean_facts())?)?;
-        assert!(body["messages"][1].get("party").is_none(), "{body:#}");
+        assert!(body["messages"][1].get("party").is_none());
         assert_eq!(body["messages"][1]["direction"], "received");
         Ok(())
     }
@@ -9066,10 +9063,7 @@ mod tests {
         v.redact(&policy.redactor());
         let body = trace_body(&v)?;
         for m in body["messages"].as_array().ok_or("messages")? {
-            assert!(
-                m.get("body").is_none() && m.get("body_encoding").is_none(),
-                "{m:#}"
-            );
+            assert!(m.get("body").is_none() && m.get("body_encoding").is_none());
         }
         Ok(())
     }
@@ -9215,8 +9209,6 @@ mod tests {
                 .body
                 .as_str()
                 .is_some_and(|b| b.starts_with("SIP/2.0 200 OK\r\n")),
-            "{:?}",
-            response[0].body
         );
 
         let sdp = with_purpose(&v, SIP_SDP_PURPOSE);
@@ -9254,21 +9246,16 @@ mod tests {
         add_sip_message_attachments(&mut v, &dialog, MAX_INLINE_MEDIA_BYTES);
         let invite = with_purpose(&v, SIP_INVITE_PURPOSE);
         let text = invite[0].body.as_str().ok_or("a text body")?;
-        assert!(text.contains("CSeq: 2 INVITE"), "{text}");
-        assert!(
-            !text.to_ascii_lowercase().contains("proxy-authorization"),
-            "{text}"
-        );
-        assert!(!text.contains("secret"), "{text}");
-        assert!(text.ends_with(&sdp_body(4000)), "the body is kept: {text}");
+        assert!(text.contains("CSeq: 2 INVITE"));
+        assert!(!text.to_ascii_lowercase().contains("proxy-authorization"));
+        assert!(!text.contains("secret"));
+        assert!(text.ends_with(&sdp_body(4000)), "the body is kept");
         let response = with_purpose(&v, SIP_RESPONSE_PURPOSE);
         assert!(
             response[0]
                 .body
                 .as_str()
                 .is_some_and(|b| b.starts_with("SIP/2.0 200 OK")),
-            "{:?}",
-            response[0].body
         );
         Ok(())
     }
@@ -9427,13 +9414,12 @@ mod tests {
         assert_eq!(body["timestamp"], ts()?.to_rfc3339());
         assert!(
             body.get("verifier").is_none(),
-            "sipnab cannot name the verifier: {body:#}"
+            "sipnab cannot name the verifier"
         );
         assert!(
             body["reason"]
                 .as_str()
                 .is_some_and(|r| r.contains("sipnab verified nothing")),
-            "{body:#}"
         );
         Ok(())
     }
@@ -9513,16 +9499,8 @@ mod tests {
         v.redact(&policy.redactor());
         let report = with_purpose(&v, STIR_REPORT_PURPOSE);
         assert_eq!(report.len(), 1);
-        assert!(
-            report[0].body.get("orig_tn").is_none(),
-            "{:#}",
-            report[0].body
-        );
-        assert!(
-            report[0].body.get("dest_tn").is_none(),
-            "{:#}",
-            report[0].body
-        );
+        assert!(report[0].body.get("orig_tn").is_none());
+        assert!(report[0].body.get("dest_tn").is_none());
         assert_eq!(report[0].body["result"], "verified");
         Ok(())
     }
@@ -9911,7 +9889,7 @@ mod tests {
             (sip_message("bob", 1, "text/plain", b"hi back")?, 5),
         ])?;
         let texts = text_dialogs(&export_with(&dialog, &clean_facts())?)?;
-        assert_eq!(texts.len(), 2, "a retransmission is one text: {texts:#?}");
+        assert_eq!(texts.len(), 2, "a retransmission is one text");
         assert_eq!(texts[0]["parties"], serde_json::json!([0, 1]));
         assert_eq!(texts[0]["start"], ts()?.to_rfc3339());
         assert_eq!(texts[0]["mediatype"], "text/plain;charset=UTF-8");
@@ -9950,7 +9928,7 @@ mod tests {
             ),
         ])?;
         let texts = text_dialogs(&export_with(&dialog, &clean_facts())?)?;
-        assert_eq!(texts.len(), 1, "{texts:#?}");
+        assert_eq!(texts.len(), 1);
         assert_eq!(texts[0]["mediatype"], "application/vnd.3gpp.sms");
         assert_eq!(texts[0]["encoding"], "base64url");
         assert_eq!(texts[0]["body"], URL_SAFE_NO_PAD.encode([0x01, 0xff]));
@@ -9972,7 +9950,7 @@ mod tests {
         let texts = text_dialogs(&v)?;
         assert_eq!(texts.len(), 1);
         for field in ["body", "encoding", "mediatype"] {
-            assert!(texts[0].get(field).is_none(), "{field}: {:#}", texts[0]);
+            assert!(texts[0].get(field).is_none());
         }
         assert_eq!(texts[0]["parties"], serde_json::json!([0, 1]));
         Ok(())
@@ -10069,10 +10047,7 @@ mod tests {
         let json = valid_json(&v)?;
         assert_eq!(json["dialog"][0]["campaign"], "spring-renewals");
         assert_eq!(json["dialog"][0]["skill"], "billing");
-        assert!(
-            json["dialog"][0].get("interaction_id").is_none(),
-            "{json:#}"
-        );
+        assert!(json["dialog"][0].get("interaction_id").is_none());
         assert!(
             json["dialog"][0].get("interaction").is_none(),
             "the spec's name only"
