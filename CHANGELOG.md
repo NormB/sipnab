@@ -83,7 +83,7 @@ entry that carries them.
 
 - **An encrypting `[[vcon.rule]]` writes audio by URL as its own JWE.**
   - sipnab refused `audio = "url"` with `encrypt_to` at startup, because nothing encrypted the WAV beside the container.
-  - The rule now writes the audio file encrypted to the same `encrypt_to` certificate.
+  - The rule now writes the audio file encrypted to the same `encrypt_to` certificates as the container, one `recipients` entry each.
     - Its `cty` names the media type inside: `audio/x-wav`, or `audio/ogg` with `audio_format = "opus"`.
   - The file's name is `<content_hash>.wav.jwe` or `.ogg.jwe`, so it carries no Call-ID.
   - The sealed container's recording names the file's URL, the `mediatype` of the audio inside, and the `content_hash` of the file as written, the ciphertext.
@@ -137,6 +137,7 @@ entry that carries them.
   - The rule takes `sign_key`, `sign_cert` and `compress` from `[vcon]`, and never `[vcon] encrypt_to`.
   - sipnab refuses at startup `sign_only` beside the rule's own `encrypt_to`, and `sign_only` without a signing key.
   - Signing stays opt-in: `sign_key` without `encrypt_to` or `sign_only` is still refused.
+  - With `audio = "url"`, the audio file beside a signed container is the WAV or Ogg stream as it is. The signed container names its SHA-512.
   - The signature attests sipnab's record of what it observed, not who took part in the call: the container names sipnab as its observer party.
 - **The vCon forwarder names a gzip format container's media type.**
   - A container whose file starts with the gzip magic bytes `1f 8b` goes as `Content-Type: application/vcon+gzip`, as draft-ietf-vcon-vcon-core-04 section 5.4 says it should.
@@ -144,6 +145,7 @@ entry that carries them.
   - A `409` replace reads the uuid from inside the gzip.
   - `--vcon-forward-content-type <TYPE>` (`[vcon_forward] content_type`) sets the type of a JSON container: `application/json` (the default), `application/vcon+json` or `application/vcon`.
     - On 2026-10-14 a self-hosted conserver answered `422` to `application/vcon` and `204` to the other two, so the default stays `application/json`.
+  - The same conserver answered `500` to a gzip format container sent as `application/vcon+gzip`. The forwarder retries a `5xx` with no limit on tries, so do not put a gzip format file in a spool a conserver reads.
 - **Every vCon reader opens the signed, encrypted and gzip forms.**
   - The readers are `-I`, the MCP `analyze_vcon` and `validate_vcon` tools, and `POST /v1/vcon/analyze` and `POST /v1/vcon/validate`.
   - They share one step, as draft-ietf-vcon-vcon-core-04 section 5.4 tells the forms apart:

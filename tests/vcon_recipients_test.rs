@@ -239,3 +239,67 @@ fn the_section_takes_a_list_and_an_empty_list_is_refused() -> Result<(), TestErr
     assert!(!dir.exists());
     Ok(())
 }
+
+/// An encrypting rule with `audio = "url"` encrypts the audio file beside
+/// the container to the same recipient list as the container: one RSA and
+/// one EC P-256 certificate give the file two `recipients` entries, and
+/// each recipient's key opens it to the same WAV. A key that is neither
+/// recipient's does not open it.
+#[test]
+fn a_url_rule_encrypts_its_audio_file_to_every_recipient() -> Result<(), TestError> {
+    let home = tempfile::tempdir()?;
+    let (ec_key, ec_cert) = ec_identity(home.path(), "ec-recipient")?;
+    let (stranger_key, _) = ec_identity(home.path(), "stranger")?;
+    let rsa = rsa_key(home.path())?;
+    let dir = home.path().join("out");
+    let config = home.path().join("rules.toml");
+    std::fs::write(
+        &config,
+        format!(
+            "[[vcon.rule]]\nname = \"sealed\"\nwhen = \"{CALL}\"\ndir = \"{}\"\naudio = \"url\"\n\
+             audio_url_base = \"https://media.example.com/calls\"\n\
+             encrypt_to = [\"{FIXTURES}/fake_grp.crt\", \"{}\"]\nsign_key = \"{}\"\n\
+             sign_cert = \"{FIXTURES}/fake_grp.crt\"\n",
+            dir.display(),
+            ec_cert.display(),
+            rsa.display(),
+        ),
+    )?;
+    let out = Command::new(env!("CARGO_BIN_EXE_sipnab"))
+        .current_dir(env!("CARGO_MANIFEST_DIR"))
+        .args(["-N", "-I", CAPTURE, "--no-cli-print", "--config"])
+        .arg(&config)
+        .env("HOME", home.path())
+        .output()?;
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let audio_path = std::fs::read_dir(&dir)?
+        .map(|e| e.map(|e| e.path()))
+        .collect::<Result<Vec<_>, _>>()?
+        .into_iter()
+        .find(|p| p.to_string_lossy().ends_with(".wav.jwe"))
+        .ok_or("a .wav.jwe beside the container")?;
+    let file = std::fs::read(&audio_path)?;
+    let jwe: serde_json::Value = serde_json::from_slice(&file)?;
+    assert_eq!(vcon_jose::form_of(&jwe), Form::Encrypted);
+    assert_eq!(jwe["unprotected"]["cty"], "audio/x-wav");
+    let recipients = jwe["recipients"].as_array().ok_or("recipients")?;
+    assert_eq!(recipients.len(), 2, "one entry per encrypt_to certificate");
+    assert_eq!(recipients[0]["header"]["alg"], "RSA-OAEP");
+    assert_eq!(recipients[1]["header"]["alg"], "ECDH-ES+A256KW");
+
+    let by_rsa = vcon_jose::Opener::load(&rsa)?.open_file(&file)?;
+    let by_ec = vcon_jose::Opener::load(&ec_key)?.open_file(&file)?;
+    assert_eq!(&by_rsa[..4], b"RIFF", "the RSA recipient opens a WAV");
+    assert_eq!(by_rsa, by_ec, "both recipients open the same audio");
+    assert!(
+        vcon_jose::Opener::load(&stranger_key)?
+            .open_file(&file)
+            .is_err(),
+        "a key that is no recipient's does not open it"
+    );
+    Ok(())
+}

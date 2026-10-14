@@ -977,6 +977,11 @@ sign_cert = "/etc/sipnab/vcon-signing.crt"
   still refused.
 - Anyone can read the container: the signature protects its integrity, not
   its content.
+- With `audio = "url"`, the rule writes the audio file beside the container as
+  it is, a WAV or an Ogg stream, not as a JWE: it has no recipient to encrypt to.
+  - The signed container's recording names the file's URL and the SHA-512 of the
+    file in `content_hash`. The signature covers that hash, so a changed file no
+    longer matches it.
 - `-I` and the other readers verify it with no key: see
   [A signed, encrypted or compressed container](#a-signed-encrypted-or-compressed-container).
 
@@ -1453,6 +1458,34 @@ Why the default stays `application/json`:
   it gets it from the setting.
 - The forwarder reads the uuid a `409` replace needs from inside a gzip
   format container too.
+
+A conserver does not accept the gzip format. On 2026-10-14 the same
+self-hosted conserver (vcon-server at commit `f48d065`, `POST /vcon/external-ingress`)
+answered:
+
+- `500 Internal Server Error` to a gzip format body sent as
+  `Content-Type: application/vcon+gzip`, the type the forwarder sends;
+- `400` with `{"detail":"There was an error parsing the body"}` to the same
+  body sent as `application/json` with `Content-Encoding: gzip`. The
+  forwarder never sends `Content-Encoding`.
+
+So do not put a gzip format file in a spool that a conserver reads.
+
+- sipnab's own rules never write the gzip format.
+  - `compress = "gzip"` compresses the vCon inside the signed or encrypted
+    form. That file is JSON, so the forwarder sends it as JSON.
+  - How a conserver answers a signed or encrypted container was not
+    measured.
+- The forwarder retries a `5xx` the way it retries any `5xx`:
+  - It leaves the file in the spool, and the back-off doubles up to
+    `--vcon-forward-backoff-cap` (default 300 seconds).
+  - It sets no limit on the number of tries. While the forwarder runs, the
+    file draws a `500` at most once per back-off, and it never moves to
+    `failed/`.
+  - With `--vcon-forward-once`, the file stays in the spool and the run
+    exits `1`.
+  - The back-off is kept in memory, so a restarted forwarder starts it again
+    at `--vcon-forward-backoff-first`.
 
 Then it moves the file by the answer:
 
