@@ -152,6 +152,52 @@ pub fn captured_packets() -> u64 {
     CAPTURED_PACKETS.load(Ordering::Relaxed)
 }
 
+thread_local! {
+    /// Whether this thread is inside [`untallied`].
+    static UNTALLIED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Run `f` with this thread's process-wide capture counters held still.
+///
+/// A `--cores` worker reads a second copy of a packet another worker owns,
+/// to learn the SDP in it in capture order (see `crate::parallel`). That
+/// worker counts the packet: captured, undecodable, a reassembly timeout, an
+/// oversize header. The copy counting it again would report one packet as
+/// several. Every counter such a read can reach is incremented through
+/// [`tally`], which does nothing inside this scope.
+///
+/// Thread-local, so another thread's reads are counted as usual. Nested
+/// scopes restore the state they found. Only `crate::parallel` reads copies,
+/// so this exists only in the builds that have it.
+#[cfg(all(not(target_arch = "wasm32"), feature = "native"))]
+pub(crate) fn untallied<R>(f: impl FnOnce() -> R) -> R {
+    /// Restores the previous state on every path out, including a panic.
+    struct Restore(bool);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            UNTALLIED.with(|u| u.set(self.0));
+        }
+    }
+    let _restore = Restore(UNTALLIED.with(|u| u.replace(true)));
+    f()
+}
+
+/// Add `n` to a process-wide capture counter, unless this thread is inside
+/// [`untallied`].
+#[inline]
+pub(crate) fn tally(counter: &AtomicU64, n: u64) {
+    if tallying() {
+        counter.fetch_add(n, Ordering::Relaxed);
+    }
+}
+
+/// Whether this thread counts what it reads: `false` inside [`untallied`].
+/// For a site that records into something other than one counter.
+#[inline]
+pub(crate) fn tallying() -> bool {
+    !UNTALLIED.with(std::cell::Cell::get)
+}
+
 // ── Frames sipnab could not decode ───────────────────────────────────
 //
 // sipnab's failure mode for an encapsulation it cannot read was a CONFIDENT
@@ -743,7 +789,7 @@ pub fn snapped_undecodable_frames() -> u64 {
 /// the increment, and on that capture the information is worth more than the
 /// relaxed add costs.
 fn note_snapped_frame() {
-    SNAPPED_FRAMES.fetch_add(1, Ordering::Relaxed);
+    tally(&SNAPPED_FRAMES, 1);
 }
 
 /// The full undecodable breakdown for this run.
@@ -940,6 +986,9 @@ fn classify_undecodable(err: &CaptureError, facts: FrameFacts) -> Option<Undecod
 /// allocation and no lock: this runs once per undecodable frame, which on a
 /// capture sipnab cannot read is once per frame.
 pub fn record_undecodable(err: &CaptureError, facts: FrameFacts) {
+    if !tallying() {
+        return;
+    }
     let Some(reason) = classify_undecodable(err, facts) else {
         return;
     };
@@ -1156,7 +1205,7 @@ impl PacketProcessor {
     /// scrape). Counted before parsing: an unparseable frame was still
     /// captured.
     pub fn process(&mut self, packet: &Packet) -> ParsedPackets {
-        CAPTURED_PACKETS.fetch_add(1, Ordering::Relaxed);
+        tally(&CAPTURED_PACKETS, 1);
         let mut out = self.process_inner(packet);
         if let Some(limit) = self.parse_limit {
             for p in out.iter_mut() {
@@ -2579,6 +2628,41 @@ mod tests {
             let mut proc = PacketProcessor::new();
             // Too short to be a valid Ethernet/IP frame -> parse error path.
             assert!(proc.process(&packet(vec![0x01, 0x02, 0x03])).is_empty());
+            Ok(())
+        }
+
+        /// Inside [`untallied`], a counter routed through [`tally`] does not
+        /// move; outside it, it does. Every process-wide capture counter a
+        /// `--cores` copy could reach is incremented through `tally`.
+        #[cfg(not(target_arch = "wasm32"))]
+        #[test]
+        fn a_counter_does_not_move_inside_untallied() -> Result<(), TestError> {
+            let counter = AtomicU64::new(0);
+            untallied(|| tally(&counter, 3));
+            assert_eq!(counter.load(Ordering::Relaxed), 0, "suppressed");
+            tally(&counter, 3);
+            assert_eq!(counter.load(Ordering::Relaxed), 3, "counted again after");
+            // Nested scopes restore the outer state, not "on".
+            untallied(|| {
+                untallied(|| tally(&counter, 1));
+                tally(&counter, 1);
+            });
+            assert_eq!(counter.load(Ordering::Relaxed), 3, "still suppressed");
+            Ok(())
+        }
+
+        /// A frame a `--cores` worker reads only as a copy is not counted as
+        /// undecodable a second time: the worker that owns it counts it.
+        #[cfg(not(target_arch = "wasm32"))]
+        #[test]
+        #[serial_test::serial(undecodable_tally)]
+        fn an_untallied_frame_is_not_counted_as_undecodable() -> Result<(), TestError> {
+            let mut proc = PacketProcessor::new();
+            let before = undecodable_frames();
+            assert!(untallied(|| proc.process(&packet(vec![0x01, 0x02, 0x03]))).is_empty());
+            assert_eq!(undecodable_frames(), before, "the copy is not counted");
+            assert!(proc.process(&packet(vec![0x01, 0x02, 0x03])).is_empty());
+            assert_eq!(undecodable_frames(), before + 1, "the owner's read is");
             Ok(())
         }
 

@@ -453,7 +453,7 @@ impl FragmentReassembler {
             .retain(|_key, entry| now.duration_since(entry.created) < self.ttl);
         let evicted = before - self.entries.len();
         if evicted > 0 {
-            REASSEMBLY_TIMEOUTS.fetch_add(evicted as u64, Ordering::Relaxed);
+            super::tally(&REASSEMBLY_TIMEOUTS, evicted as u64);
             tracing::debug!("Fragment reassembler: swept {evicted} stale entries");
         }
     }
@@ -828,7 +828,7 @@ impl TcpReassembler {
             .is_some_and(|s| silent_past(s.last_packet_at, timestamp, self.ttl));
         if restarted {
             self.streams.remove(key);
-            REASSEMBLY_TIMEOUTS.fetch_add(1, Ordering::Relaxed);
+            super::tally(&REASSEMBLY_TIMEOUTS, 1);
             tracing::debug!(
                 "TCP {} -> {}: silent past the reassembly TTL; starting afresh",
                 key.src,
@@ -1054,8 +1054,8 @@ impl TcpReassembler {
         stream.resynced = true;
         self.gaps_skipped += 1;
         self.gap_bytes += spanned;
-        TCP_GAPS_SKIPPED.fetch_add(1, Ordering::Relaxed);
-        TCP_GAP_BYTES.fetch_add(spanned, Ordering::Relaxed);
+        super::tally(&TCP_GAPS_SKIPPED, 1);
+        super::tally(&TCP_GAP_BYTES, spanned);
         tracing::debug!(
             "TCP {} -> {}: resumed past {spanned} byte(s) the capture never held",
             key.src,
@@ -1134,7 +1134,7 @@ impl TcpReassembler {
             .retain(|_key, stream| now.duration_since(stream.last_seen) < self.ttl);
         let evicted = before - self.streams.len();
         if evicted > 0 {
-            REASSEMBLY_TIMEOUTS.fetch_add(evicted as u64, Ordering::Relaxed);
+            super::tally(&REASSEMBLY_TIMEOUTS, evicted as u64);
             tracing::debug!("TCP reassembler: swept {evicted} stale streams");
         }
     }

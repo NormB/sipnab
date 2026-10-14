@@ -12485,7 +12485,7 @@ sipnab -D
 line it shows the libpcap it is running, e.g.
 
 ```text
-sipnab 0.5.219 (<hash>) features: native,tui,audio,tls,hep,api,mcp,mcp-http,metrics,plugins,bpf,vcon,archive
+sipnab 0.5.220 (<hash>) features: native,tui,audio,tls,hep,api,mcp,mcp-http,metrics,plugins,bpf,vcon,archive
 libpcap version 1.10.5 (with TPACKET_V3); alternate capture backends named: none
 ```
 
@@ -29296,7 +29296,7 @@ that's the laptop itself):
 
    ```bash
    sipnab --version
-   # sipnab 0.5.219 (...) features: native,tui,audio,tls,hep,api,mcp,mcp-http,metrics,plugins,vcon,bpf
+   # sipnab 0.5.220 (...) features: native,tui,audio,tls,hep,api,mcp,mcp-http,metrics,plugins,vcon,bpf
    # libpcap version 1.10.5 (with TPACKET_V3); alternate capture backends named: none
    ```
 
@@ -30656,7 +30656,7 @@ Then confirm the build can do what you are about to ask of it:
 ```json
 {
   "schema_version": 1,
-  "version": "0.5.219",
+  "version": "0.5.220",
   "features": ["api", "audio", "hep", "mcp", "mcp-http", "metrics",
                "native", "plugins", "tls", "tui"],
   "can_decrypt": true,
@@ -31460,7 +31460,7 @@ client. The whole block is one pipeline.
 Expected first line of response:
 
 ```json
-{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2025-06-18","capabilities":{"tools":{}},"serverInfo":{"name":"sipnab","version": "0.5.219"},"instructions":"sipnab MCP server — queries captured SIP dialogs ..."}}
+{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2025-06-18","capabilities":{"tools":{}},"serverInfo":{"name":"sipnab","version": "0.5.220"},"instructions":"sipnab MCP server — queries captured SIP dialogs ..."}}
 ```
 
 ### Test the HTTP wire by hand
@@ -39211,7 +39211,7 @@ No parameters. Returns:
 ```jsonc
 {
   "schema_version": 1,
-  "version": "0.5.219",
+  "version": "0.5.220",
   "features": ["api", "hep", "mcp", "native", "tls", "tui"],
   "can_decrypt": true,           // tls
   "can_hep": true,               // hep
@@ -65932,6 +65932,15 @@ dispatcher + N workers.
 - The stores merge at EOF.
 - Flow correctness holds because a flow's packets share a host pair.
   - Therefore they share a worker.
+- A call's SIP and its RTP can run between different hosts, and so on
+  different workers.
+  - The dispatcher also sends a copy of each packet that can carry SDP to
+    every other worker, at the same place in that worker's sequence.
+  - A worker reads a copy only for the media sockets its SDP names, and counts
+    nothing from it.
+  - So each worker's `StreamStore` sees a later call take over a socket and an
+    SSRC at the point in the capture where it did, and starts that call's
+    stream there, as the single-threaded path does.
 
 ## Lock discipline
 

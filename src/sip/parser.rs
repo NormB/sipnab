@@ -483,7 +483,7 @@ static OVERSIZE_HEADERS_DROPPED: std::sync::atomic::AtomicU64 =
 
 /// Record that one header line was dropped for exceeding the length cap.
 pub fn note_oversize_header_dropped() {
-    OVERSIZE_HEADERS_DROPPED.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    crate::capture::tally(&OVERSIZE_HEADERS_DROPPED, 1);
 }
 
 /// How many header lines this process has dropped for exceeding the cap.

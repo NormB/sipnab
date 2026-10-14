@@ -1635,6 +1635,94 @@ pub fn peek_host_pair(packet: &Packet) -> Option<(IpAddr, IpAddr)> {
     }
 }
 
+/// What [`peek_transport`] read of a frame's outermost transport.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TransportPeek<'a> {
+    /// An IPv4 or IPv6 fragment. The first fragment's ports do not describe
+    /// the datagram's payload, and the others carry no ports at all, so only
+    /// reassembly can say what it holds.
+    Fragment,
+    /// A whole UDP datagram.
+    Udp {
+        /// UDP source port.
+        src_port: u16,
+        /// UDP destination port.
+        dst_port: u16,
+        /// The bytes after the UDP header, as captured.
+        payload: &'a [u8],
+    },
+    /// A TCP segment.
+    Tcp {
+        /// TCP source port.
+        src_port: u16,
+        /// TCP destination port.
+        dst_port: u16,
+        /// The bytes after the TCP header and its options, as captured.
+        payload: &'a [u8],
+    },
+}
+
+/// The outermost transport of a captured frame, read from its headers alone
+/// for the `--cores` dispatcher, which must decide where a packet goes without
+/// parsing it.
+///
+/// The same header walk as [`peek_host_pair`], one layer further down.
+/// `None` for a frame with no IP header the walk can name, a transport other
+/// than UDP or TCP, a header cut short, and a pre-parsed packet (whose bytes
+/// are already a transport payload; its caller reads that directly).
+pub fn peek_transport(packet: &Packet) -> Option<TransportPeek<'_>> {
+    const UDP: u8 = 17;
+    const TCP: u8 = 6;
+    const IPV6_FRAGMENT: u8 = 44;
+    let d: &[u8] = &packet.data;
+    let ip_off = outer_ip_offset(packet)?;
+    let (proto, l4) = match d.get(ip_off)? >> 4 {
+        4 => {
+            let ihl = usize::from(d.get(ip_off)? & 0x0f) * 4;
+            let frag = u16::from_be_bytes([*d.get(ip_off + 6)?, *d.get(ip_off + 7)?]);
+            // More Fragments set, or a non-zero offset.
+            if frag & 0x3fff != 0 {
+                return Some(TransportPeek::Fragment);
+            }
+            (*d.get(ip_off + 9)?, ip_off + ihl)
+        }
+        6 => {
+            let mut next = *d.get(ip_off + 6)?;
+            let mut at = ip_off + 40;
+            // Hop-by-Hop, Routing and Destination Options precede the
+            // transport in the order RFC 8200 section 4.1 recommends.
+            while matches!(next, 0 | 43 | 60) {
+                let len = (usize::from(*d.get(at + 1)?) + 1) * 8;
+                next = *d.get(at)?;
+                at += len;
+            }
+            if next == IPV6_FRAGMENT {
+                return Some(TransportPeek::Fragment);
+            }
+            (next, at)
+        }
+        _ => return None,
+    };
+    let src_port = u16::from_be_bytes([*d.get(l4)?, *d.get(l4 + 1)?]);
+    let dst_port = u16::from_be_bytes([*d.get(l4 + 2)?, *d.get(l4 + 3)?]);
+    match proto {
+        UDP => Some(TransportPeek::Udp {
+            src_port,
+            dst_port,
+            payload: d.get(l4 + 8..)?,
+        }),
+        TCP => {
+            let header = usize::from(d.get(l4 + 12)? >> 4) * 4;
+            Some(TransportPeek::Tcp {
+                src_port,
+                dst_port,
+                payload: d.get(l4 + header..)?,
+            })
+        }
+        _ => None,
+    }
+}
+
 /// Where the outermost IP header of a captured frame begins, for every link
 /// type sipnab decodes; `None` for a frame with no IP header this walk can
 /// name, and for pre-parsed (HEP) packets, whose bytes are a transport
@@ -3689,6 +3777,98 @@ mod tests {
             None
         );
         assert_eq!(peek_host_pair(&make_packet(vec![], DLT_EN10MB)?), None);
+        Ok(())
+    }
+
+    /// The transport peek reads a UDP or TCP frame's ports and payload, and
+    /// agrees with the full parse about both.
+    #[test]
+    fn peek_transport_reads_ports_and_payload() -> Result<(), TestError> {
+        let (a, b) = ([192, 0, 2, 10], [198, 51, 100, 20]);
+        let udp = make_packet(build_eth_ipv4_udp(a, b, 5060, 5062, b"OPTIONS"), DLT_EN10MB)?;
+        assert_eq!(
+            peek_transport(&udp),
+            Some(TransportPeek::Udp {
+                src_port: 5060,
+                dst_port: 5062,
+                payload: b"OPTIONS",
+            })
+        );
+        let parsed = parse_packet(&udp)?;
+        assert_eq!(&parsed.payload[..], b"OPTIONS");
+
+        let tcp = make_packet(
+            build_eth_ipv4_tcp(a, b, 40000, 5060, 7, 0x18, b"INVITE"),
+            DLT_EN10MB,
+        )?;
+        assert_eq!(
+            peek_transport(&tcp),
+            Some(TransportPeek::Tcp {
+                src_port: 40000,
+                dst_port: 5060,
+                payload: b"INVITE",
+            })
+        );
+
+        let v6 = make_packet(
+            build_eth_ipv6_udp([0x20; 16], [0x30; 16], 5061, 5060, b"SIP/2.0"),
+            DLT_EN10MB,
+        )?;
+        assert_eq!(
+            peek_transport(&v6),
+            Some(TransportPeek::Udp {
+                src_port: 5061,
+                dst_port: 5060,
+                payload: b"SIP/2.0",
+            })
+        );
+        Ok(())
+    }
+
+    /// An IP fragment is named as one, whichever fragment it is and in
+    /// either IP version: the first carries ports that do not describe the
+    /// rest, and the others carry none.
+    #[test]
+    fn peek_transport_names_every_fragment() -> Result<(), TestError> {
+        let (a, b) = ([192, 0, 2, 10], [198, 51, 100, 20]);
+        // IPv4 flags/offset sit at bytes 20-21 of an Ethernet frame.
+        let mut first = build_eth_ipv4_udp(a, b, 5060, 5060, b"INVITE");
+        first[20..22].copy_from_slice(&[0x20, 0x00]); // MF, offset 0
+        let mut later = build_eth_ipv4_udp(a, b, 5060, 5060, b"body");
+        later[20..22].copy_from_slice(&[0x00, 0xb9]); // last, offset 185
+        for frame in [first, later] {
+            assert_eq!(
+                peek_transport(&make_packet(frame, DLT_EN10MB)?),
+                Some(TransportPeek::Fragment)
+            );
+        }
+
+        // IPv6: a Fragment extension header (44) between the header and UDP.
+        let base = build_eth_ipv6_udp([0x20; 16], [0x30; 16], 5060, 5060, b"x");
+        let mut v6 = base[..54].to_vec();
+        v6[20] = 44; // next header: Fragment
+        v6.extend_from_slice(&[17, 0, 0x00, 0x01, 0, 0, 0, 1]); // next UDP, MF
+        v6.extend_from_slice(&base[54..]);
+        assert_eq!(
+            peek_transport(&make_packet(v6, DLT_EN10MB)?),
+            Some(TransportPeek::Fragment)
+        );
+        Ok(())
+    }
+
+    /// A frame that is neither UDP, TCP nor a fragment, or that the walk
+    /// cannot read, yields no transport.
+    #[test]
+    fn peek_transport_names_nothing_else() -> Result<(), TestError> {
+        let igmp = build_eth_ipv4_igmp([192, 0, 2, 10], [224, 0, 0, 1]);
+        assert_eq!(peek_transport(&make_packet(igmp, DLT_EN10MB)?), None);
+        let mut short = build_eth_ipv4_udp([192, 0, 2, 10], [198, 51, 100, 20], 5060, 5060, b"");
+        short.truncate(14 + 20 + 4); // half a UDP header
+        assert_eq!(peek_transport(&make_packet(short, DLT_EN10MB)?), None);
+        assert_eq!(
+            peek_transport(&make_packet(vec![0u8; 8], DLT_EN10MB)?),
+            None
+        );
         Ok(())
     }
 
