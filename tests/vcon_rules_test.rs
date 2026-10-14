@@ -488,3 +488,60 @@ fn a_rule_with_dtmf_events_writes_the_rtp_key_presses() -> Result<(), TestError>
     assert_eq!(keys[1]["event"], "keyup");
     Ok(())
 }
+
+/// The body of a container's `tags` attachment, when it has one.
+fn tags(container: &serde_json::Value) -> Option<serde_json::Value> {
+    container["attachments"]
+        .as_array()?
+        .iter()
+        .find(|a| a["purpose"] == "tags")
+        .map(|a| a["body"].clone())
+}
+
+/// A `[[vcon.rule]]` container carries a `tags` attachment naming the rule
+/// and each referenced `[filters]` name the call matched; the flag rule's
+/// container carries none.
+#[test]
+fn a_rule_container_is_tagged_with_its_rule_and_matched_filters() -> Result<(), TestError> {
+    let home = tempfile::tempdir()?;
+    let (dir, flags) = (home.path().join("tagged"), home.path().join("flags"));
+    let config =
+        format!("[filters]\nthe-call = \"{CALL}\"\nnobody = \"to.user == 'no-such-user'\"\n\n")
+            + &rule("tagged", "@nobody OR @the-call", &dir, "omit");
+    let flags_dir = flags.to_string_lossy().into_owned();
+    let path = home.path().join("rules.toml");
+    std::fs::write(&path, &config)?;
+    let out = Command::new(env!("CARGO_BIN_EXE_sipnab"))
+        .args(["-N", "-I", CAPTURE, "--no-cli-print"])
+        .arg("--config")
+        .arg(&path)
+        .args(["--export-vcon-when", CALL, "--export-vcon-dir", &flags_dir])
+        .env("HOME", home.path())
+        .output()?;
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(out.status.success(), "{stderr}");
+
+    let written = containers(&dir)?;
+    assert_eq!(written.len(), 1, "{stderr}");
+    let body = tags(&written[0]).ok_or("a tags attachment")?;
+    let list: Vec<&str> = body
+        .as_array()
+        .ok_or("a list body")?
+        .iter()
+        .filter_map(|t| t.as_str())
+        .collect();
+    assert_eq!(&list[..2], ["rule:tagged", "filter:the-call"], "{list:?}");
+    assert!(!list.contains(&"filter:nobody"), "{list:?}");
+    assert!(
+        list.iter().all(|t| t.matches(':').count() == 1),
+        "vcon-lib reads the text after the first colon up to the next: {list:?}"
+    );
+
+    let from_flags = containers(&flags)?;
+    assert_eq!(from_flags.len(), 1, "{stderr}");
+    assert!(
+        tags(&from_flags[0]).is_none(),
+        "the flag rule has no name to tag"
+    );
+    Ok(())
+}

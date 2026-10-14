@@ -284,6 +284,20 @@ fn substitute_refs(input: &str, mut lookup: impl FnMut(&str) -> Option<String>) 
     out
 }
 
+/// Every `@name` referenced outside a quoted string in `input`, each once, in
+/// the order it first appears.
+#[must_use]
+pub fn references(input: &str) -> Vec<&str> {
+    let mut names: Vec<&str> = Vec::new();
+    for (start, end) in reference_spans(input) {
+        let name = &input[start + 1..end];
+        if !names.contains(&name) {
+            names.push(name);
+        }
+    }
+    names
+}
+
 /// The first `@name` reference outside a quoted string in `input`, if any.
 #[must_use]
 pub fn first_reference(input: &str) -> Option<&str> {
@@ -343,6 +357,17 @@ mod tests {
 
     fn t() -> AliasThresholds {
         AliasThresholds::default()
+    }
+
+    /// Each reference once, in first-appearance order, and none inside a
+    /// quoted string.
+    #[test]
+    fn references_lists_each_name_once_outside_quotes() {
+        assert_eq!(
+            references("@a OR (@b AND @a) OR to.user == '@c' OR \"@d\""),
+            vec!["a", "b"]
+        );
+        assert!(references("method == 'INVITE'").is_empty());
     }
 
     #[test]

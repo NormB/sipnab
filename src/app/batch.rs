@@ -7338,6 +7338,21 @@ pub struct RuleAdditions {
     /// `party_history`, from INFO `application/dtmf-relay` and RFC 4733
     /// telephone events ([`crate::output::vcon::add_key_events`]).
     pub dtmf_events: bool,
+    /// The `tags` attachment: set for a `[[vcon.rule]]`, which has a name,
+    /// and `None` for the flag rule, which has none.
+    pub tags: Option<RuleTags>,
+}
+
+/// What a rule's `tags` attachment names
+/// ([`crate::output::vcon::add_tags`]).
+#[derive(Debug, Clone)]
+pub struct RuleTags {
+    /// The rule's name.
+    pub rule: String,
+    /// Each `@name` the rule's `when` references, in the order it first
+    /// appears, with its own compiled expansion: the container is tagged
+    /// with each one the call matches.
+    pub filters: Vec<(String, FilterExpr)>,
 }
 
 /// How long a dialog that has not ended must have had no SIP and no RTP
@@ -8003,6 +8018,13 @@ fn write_vcon_containers(
             }
         };
         let mut container = container;
+        // A withheld container carries the caveat alone.
+        if let Some(tags) = &target.additions.tags
+            && !matches!(unit, ContainerUnit::Leg(_, true))
+        {
+            let matched = matched_filters(&tags.filters, unit.legs(), batch.stream_store);
+            crate::output::vcon::add_tags(&mut container, unit.legs(), &tags.rule, &matched);
+        }
         let ended = unit.ended();
         // Only a live capture has first-write times; on an `-I` run a live
         // rule writes what any rule writes. A sealing rule's later instance
@@ -8107,6 +8129,31 @@ fn write_vcon_containers(
         written += 1;
     }
     Ok(written)
+}
+
+/// The names of `filters` that at least one of `legs` matches, in order.
+///
+/// Each leg is judged as the rule's own `when` judges it: with its streams,
+/// the capture's media facts and the delay basis `select_dialogs` uses.
+#[cfg(feature = "vcon")]
+fn matched_filters<'f>(
+    filters: &'f [(String, FilterExpr)],
+    legs: &[&crate::sip::dialog::SipDialog],
+    streams: &StreamStore,
+) -> Vec<&'f str> {
+    let capture = crate::rtp::diagnosis::CaptureMedia::of_store(streams);
+    let delay = crate::rtp::quality::MosDelay::from_capture(streams);
+    filters
+        .iter()
+        .filter(|(_, filter)| {
+            legs.iter().any(|leg| {
+                let own: Vec<&crate::rtp::stream::RtpStream> =
+                    streams.streams_for(&leg.call_id).collect();
+                filter.matches_dialog(leg, &own, capture, delay)
+            })
+        })
+        .map(|(name, _)| name.as_str())
+        .collect()
 }
 
 /// The bytes a rule writes for the serialized container `json`: `json`
@@ -8651,6 +8698,7 @@ struct VconTarget<'a> {
 static NO_ADDITIONS: RuleAdditions = RuleAdditions {
     sip_messages: false,
     dtmf_events: false,
+    tags: None,
 };
 
 #[cfg(feature = "vcon")]

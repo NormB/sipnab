@@ -12,6 +12,9 @@ entry that carries them.
 
 ### Added
 
+- **A `[[vcon.rule]]` container carries a `tags` attachment.**
+  - Its body is a list of `"name:value"` strings, the shape vcon-lib reads.
+  - It names the rule, each `@name` filter of the rule's `when` that the call matched, and up to five findings of the signaling diagnosis.
 - **A SIP MESSAGE becomes a vCon `text` Dialog Object.**
   - Each MESSAGE with content is a `text` object, per [section 4.3.1.3 of draft-ietf-vcon-vcon-core-04](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-04#section-4.3.1.3), with the sender first in `parties`, the capture time as `start`, and the body inline under its `Content-Type`.
   - Typing indications and empty messages are not text.

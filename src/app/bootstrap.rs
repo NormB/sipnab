@@ -4754,7 +4754,7 @@ pub(crate) fn vcon_rules(
     cli: &Cli,
     config: &Config,
 ) -> Result<Vec<crate::app::batch::VconRule>, PlanError> {
-    use crate::app::batch::{RuleAdditions, RuleAudio, RuleGrouping, VconRule};
+    use crate::app::batch::{RuleAdditions, RuleAudio, RuleGrouping, RuleTags, VconRule};
     let refuse = |message: String| PlanError::refused(crate::settings::Origin::ConfigFile, message);
     if let Some(e) = cli.inert_redaction_refusal(!config.vcon.rule.is_empty()) {
         return Err(PlanError::arg(e.to_string()));
@@ -4884,6 +4884,19 @@ pub(crate) fn vcon_rules(
             cli.matching_args.until,
         )
         .ok_or_else(|| refuse(format!("[[vcon.rule]] '{name}': no filter")))?;
+        // Each named filter `when` references, compiled on its own, so the
+        // container can say which of them the call matched.
+        let mut tag_filters = Vec::new();
+        for reference in crate::sip::named_filters::references(&rule.when) {
+            let text = resolved_filter_text(&format!("@{reference}"), cli, config)
+                .map_err(|e| refuse(format!("[[vcon.rule]] '{name}': {}", e.message)))?;
+            let compiled = FilterExpr::parse(&text).map_err(|e| {
+                refuse(format!(
+                    "[[vcon.rule]] '{name}': '@{reference}' is not a valid filter expression: {e}"
+                ))
+            })?;
+            tag_filters.push((reference.to_owned(), compiled));
+        }
         rules.push(VconRule {
             name: name.clone(),
             filter,
@@ -4902,6 +4915,10 @@ pub(crate) fn vcon_rules(
             additions: RuleAdditions {
                 sip_messages: rule.sip_messages.unwrap_or(false),
                 dtmf_events: rule.dtmf_events.unwrap_or(false),
+                tags: Some(RuleTags {
+                    rule: name.clone(),
+                    filters: tag_filters,
+                }),
             },
         });
     }

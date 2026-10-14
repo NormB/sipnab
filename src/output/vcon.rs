@@ -3797,6 +3797,94 @@ fn verstat_of(value: &str) -> Option<String> {
     (!verstat.is_empty()).then(|| verstat.to_string())
 }
 
+/// `purpose` of the attachment vcon-lib reads tags from
+/// (`Vcon.tags`, `Vcon.get_tag`): a list of `"name:value"` strings.
+pub const TAGS_PURPOSE: &str = "tags";
+
+/// The most `finding:` tags one container carries.
+pub const MAX_FINDING_TAGS: usize = 5;
+
+/// Add the `tags` attachment to a container a `[[vcon.rule]]` writes.
+///
+/// The body is a JSON list of `"name:value"` strings, the shape vcon-lib's
+/// `Vcon.add_tag` writes and `Vcon.get_tag` reads. vcon-lib takes the text
+/// between the first and the second colon as the value, and no value here
+/// holds a colon: rule and filter names are letters, digits, `-` and `_`.
+///
+/// - `rule:<name>`: the rule that wrote the container.
+/// - `filter:<name>`: each `[filters]` name the rule's `when` references,
+///   in the order it first appears, that the call matched on its own.
+/// - `finding:<name>`: each detection of the signaling diagnosis the
+///   container's analysis reports, by its field name, in the diagnosis's own
+///   order and once across a call's legs, at most [`MAX_FINDING_TAGS`]. See
+///   [`finding_tags`].
+///
+/// `party` is the observer, which wrote it; `dialog` is 0.
+pub fn add_tags(container: &mut Vcon, legs: &[&SipDialog], rule: &str, filters: &[&str]) {
+    let mut body: Vec<String> = vec![format!("rule:{rule}")];
+    body.extend(filters.iter().map(|f| format!("filter:{f}")));
+    body.extend(finding_tags(legs, MAX_FINDING_TAGS));
+    let start = container
+        .dialog
+        .first()
+        .and_then(|d| d.start.clone())
+        .unwrap_or_else(|| container.created_at.clone());
+    let party = container.observer_index();
+    container.attachments.push(Attachment {
+        purpose: TAGS_PURPOSE,
+        party,
+        dialog: 0,
+        start,
+        mediatype: "application/json",
+        encoding: "json",
+        body: body.into(),
+    });
+}
+
+/// `finding:<name>` for each detection the signaling diagnosis of `legs`
+/// reports, at most `max`.
+///
+/// The order is the order [`crate::sip::diagnosis::SignalingDiagnosis`]
+/// declares its detections, which puts the final failure first. The
+/// diagnosis's `hints` are prose, not detections, and are not tags.
+fn finding_tags(legs: &[&SipDialog], max: usize) -> Vec<String> {
+    let mut names: Vec<&'static str> = Vec::new();
+    for leg in legs {
+        let crate::sip::diagnosis::SignalingDiagnosis {
+            final_failure,
+            auth_loop,
+            retransmissions,
+            ack_missing,
+            abandoned,
+            post_dial_delay,
+            registration_failure,
+            icmp_unreachable,
+            source_disagreement,
+            hints: _,
+        } = crate::sip::diagnosis::diagnose_signaling(&leg.messages);
+        for (name, present) in [
+            ("final_failure", final_failure.is_some()),
+            ("auth_loop", auth_loop.is_some()),
+            ("retransmissions", retransmissions.is_some()),
+            ("ack_missing", ack_missing.is_some()),
+            ("abandoned", abandoned.is_some()),
+            ("post_dial_delay", post_dial_delay.is_some()),
+            ("registration_failure", registration_failure.is_some()),
+            ("icmp_unreachable", icmp_unreachable.is_some()),
+            ("source_disagreement", source_disagreement.is_some()),
+        ] {
+            if present && !names.contains(&name) {
+                names.push(name);
+            }
+        }
+    }
+    names
+        .into_iter()
+        .take(max)
+        .map(|name| format!("finding:{name}"))
+        .collect()
+}
+
 /// Remove every credential-bearing header from a JSON value, at any depth.
 ///
 /// Applied to each message body on its way into the container rather than
@@ -9806,6 +9894,64 @@ mod tests {
             assert!(texts[0].get(field).is_none(), "{field}: {:#}", texts[0]);
         }
         assert_eq!(texts[0]["parties"], serde_json::json!([0, 1]));
+        Ok(())
+    }
+
+    // ── the tags attachment ──
+
+    /// The `tags` attachments of `v`.
+    fn tags_of(v: &Vcon) -> Result<Vec<serde_json::Value>, TestError> {
+        let json = valid_json(v)?;
+        Ok(json["attachments"]
+            .as_array()
+            .map(|l| {
+                l.iter()
+                    .filter(|a| a["purpose"] == TAGS_PURPOSE)
+                    .cloned()
+                    .collect()
+            })
+            .unwrap_or_default())
+    }
+
+    /// GAP-24: one `tags` attachment whose body is the list of `name:value`
+    /// strings vcon-lib reads (`Vcon.get_tag` splits on the colon): the
+    /// rule, each named filter the call matched, then the findings.
+    #[test]
+    fn the_tags_name_the_rule_the_filters_and_the_findings() -> Result<(), TestError> {
+        let dialog = dialog_with(&[response(486, "Busy Here")?])?;
+        let mut v = export_with(&dialog, &clean_facts())?;
+        add_tags(&mut v, &[&dialog], "support", &["carrier-a", "busy"]);
+        let tags = tags_of(&v)?;
+        assert_eq!(tags.len(), 1);
+        assert_eq!(tags[0]["party"], v.observer_index());
+        assert_eq!(tags[0]["dialog"], 0);
+        assert_eq!(tags[0]["mediatype"], "application/json");
+        assert_eq!(tags[0]["encoding"], "json");
+        assert_eq!(
+            tags[0]["body"],
+            serde_json::json!([
+                "rule:support",
+                "filter:carrier-a",
+                "filter:busy",
+                "finding:final_failure"
+            ])
+        );
+        Ok(())
+    }
+
+    /// GAP-24: the findings are the signaling diagnosis's detections in its
+    /// own order, each once across a call's legs, and at most the cap.
+    #[test]
+    fn the_finding_tags_are_bounded_and_named_once() -> Result<(), TestError> {
+        let failed = dialog_with(&[response(486, "Busy Here")?])?;
+        let also_failed = dialog_with(&[response(486, "Busy Here")?])?;
+        assert_eq!(
+            finding_tags(&[&failed, &also_failed], MAX_FINDING_TAGS),
+            vec!["finding:final_failure".to_string()]
+        );
+        assert!(finding_tags(&[&failed], 0).is_empty());
+        let clean = answered_and_ended()?;
+        assert!(finding_tags(&[&clean], MAX_FINDING_TAGS).is_empty());
         Ok(())
     }
 }

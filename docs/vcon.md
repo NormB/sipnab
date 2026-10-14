@@ -1960,6 +1960,24 @@ sipnab copies that verdict into a `stir-verification-report` attachment, the rep
 - `party` is 0, the caller, and `dialog` is 0.
 - `--redact` removes `orig_tn` and `dest_tn`, as it removes the PASSporT from the party.
 
+### Tags
+
+Every container a `[[vcon.rule]]` writes carries a `tags` attachment.
+Its body is a list of `"name:value"` strings, the shape vcon-lib's `Vcon.add_tag` writes and `Vcon.get_tag` reads.
+
+- `rule:<name>` names the rule that wrote the container.
+- `filter:<name>` names each [named filter](filter-dsl.md#named-filters) the rule's `when` references by `@name` and the call matched on its own.
+  - The names follow the order of their first appearance in `when`.
+  - A call matches a filter when at least one of its legs does.
+- `finding:<name>` names each detection of the signaling diagnosis the analysis reports, at most five.
+  - The names are the field names of `signaling_diagnosis` in the analysis body, such as `final_failure` or `retransmissions`, in that object's order.
+  - A container that holds several legs names each finding once.
+- No value contains a colon.
+  vcon-lib takes the text between the first colon and the next one as the value.
+- `party` is the observer and `dialog` is 0.
+- A container from `--export-vcon-when`, the REST API or MCP has no rule name and carries no `tags` attachment.
+- A withheld container carries none.
+
 ## The container cannot say "this is an incomplete record", so sipnab says it twice
 
 This is the point of the page.

@@ -1398,7 +1398,9 @@ fn wiki_intra_docs_links_resolve() -> Result<(), TestError> {
     // 1739 -> 1740 for vCon key events, attributed per file:
     // docs/config-reference.md +1 (the `dtmf_events` row links "What the
     // Dialog Object says about the call").
-    const EXPECTED_WIKI_LINKS: usize = 1740;
+    // 1740 -> 1741 for the vCon tags attachment, attributed per file:
+    // docs/vcon.md +1 (the "Tags" section links named filters).
+    const EXPECTED_WIKI_LINKS: usize = 1741;
     // Raised 459 -> 460 when SRC1 stage 1 shipped: docs/cli-reference.md's
     // `--hep-listen` row now points at cookbook recipe "Take signaling from HEP and media off the wire, in one process" in docs/examples.md
     // rather than restating how to pair `-L` with `-d`. Attributed per file
