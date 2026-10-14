@@ -1707,6 +1707,22 @@ The `when` of the [`[[vcon.rule]]`](@/docs/vcon.md#write-calls-by-rule) named `{
 
 **Exit code:** 1.
 
+### `[[vcon.rule]] '{name}': '@{reference}' is not a valid filter expression: {e}`
+
+The `when` of the [`[[vcon.rule]]`](@/docs/vcon.md#write-calls-by-rule) named `{name}` references the named filter `@{reference}`, and its expansion does not parse on its own. sipnab compiles each referenced name by itself to tag a container with the names the call matched. `{e}` is the parser's reason.
+
+**What to do:** Correct that entry in `[filters]` so it is a complete expression by itself. Test it first with `sipnab -N -I capture.pcap --filter "@{reference}"`.
+
+**Exit code:** 1.
+
+### `[[vcon.rule]] '{name}' has {key} = '{header}', which is not a SIP header name: use letters, digits and '-', such as 'X-Queue'`
+
+The `campaign_header`, `skill_header` or `interaction_id_header` of the [`[[vcon.rule]]`](@/docs/vcon.md#write-calls-by-rule) named `{name}` is empty or holds a character a SIP header name cannot hold. `{key}` is the key and `{header}` the value. Such a name matches no header, and the Dialog parameter would stay empty on every call.
+
+**What to do:** Write the header name alone, without a colon or a value, such as `skill_header = "X-Queue"`.
+
+**Exit code:** 1.
+
 ### `[[vcon.rule]] '{name}': no filter`
 
 The [`[[vcon.rule]]`](@/docs/vcon.md#write-calls-by-rule) named `{name}` resolved to no filter at all. This is an internal check: a rule's `when` always gives one.

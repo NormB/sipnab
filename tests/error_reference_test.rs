@@ -758,7 +758,11 @@ const EXPECTED_UNRESOLVED: usize = 80;
 // 459 -> 462 (+3), SCITT lifecycle statements: src/app/vcon_forward.rs 3 (a
 // SCITT setting without the URL, an issuer that is not a URI, and the warning
 // for a statement that did not register). Nothing removed.
-const EXPECTED_TEMPLATES: usize = 462;
+// 462 -> 464 (+2), the vCon gap work: src/app/bootstrap.rs 2, both carried
+// by vcon_rules' refuse closure: a referenced `@name` whose expansion does
+// not parse on its own (compiled for the `tags` attachment), and a CC header
+// key that is not a SIP header name. Nothing removed.
+const EXPECTED_TEMPLATES: usize = 464;
 
 // ---------------------------------------------------------------------------
 // The page gates

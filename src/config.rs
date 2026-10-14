@@ -1564,6 +1564,17 @@ pub struct VconRuleConfig {
     /// be a PIN. Removed under `--redact`.
     #[serde(default)]
     pub dtmf_events: Option<bool>,
+    /// The SIP header whose value becomes the signaling Dialog Object's
+    /// `campaign` (draft-ietf-vcon-cc-extension-02 section 3.2.1).
+    #[serde(default)]
+    pub campaign_header: Option<String>,
+    /// The SIP header whose value becomes `skill` (section 3.2.4), such as
+    /// `X-Queue`.
+    #[serde(default)]
+    pub skill_header: Option<String>,
+    /// The SIP header whose value becomes `interaction_id` (section 3.2.3).
+    #[serde(default)]
+    pub interaction_id_header: Option<String>,
 }
 
 /// The PBX sipnab runs beside.

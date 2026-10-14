@@ -663,6 +663,19 @@ pub struct Dialog {
     /// [`party_history_of`]). Absent when it shows none.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub party_history: Option<Vec<PartyEvent>>,
+    /// `campaign` ([draft-ietf-vcon-cc-extension-02 section 3.2.1](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-cc-extension-02#section-3.2.1)),
+    /// from the header a rule's `campaign_header` names. See
+    /// [`add_cc_fields`].
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub campaign: Option<String>,
+    /// `skill` ([draft-ietf-vcon-cc-extension-02 section 3.2.4](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-cc-extension-02#section-3.2.4)),
+    /// from the header a rule's `skill_header` names.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub skill: Option<String>,
+    /// `interaction_id` ([draft-ietf-vcon-cc-extension-02 section 3.2.3](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-cc-extension-02#section-3.2.3)),
+    /// from the header a rule's `interaction_id_header` names.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub interaction_id: Option<String>,
     /// Indices into [`Vcon::dialog`] of the objects this set groups.
     ///
     /// Present only on a [`RECORDING_SET_TYPE`] object, and named `recordings`
@@ -753,6 +766,9 @@ impl Dialog {
             parties: None,
             originator: None,
             party_history: None,
+            campaign: None,
+            skill: None,
+            interaction_id: None,
             dialogs: None,
             recording_set: None,
             mediatype: None,
@@ -1490,6 +1506,9 @@ impl crate::output::redact::Redact for Dialog {
             parties: _,
             originator: _,
             party_history,
+            campaign,
+            skill,
+            interaction_id,
             dialogs: _,
             recording_set: _,
             mediatype,
@@ -1504,6 +1523,13 @@ impl crate::output::redact::Redact for Dialog {
         if !sip_call_id.is_empty() {
             *sip_call_id = r.opaque(sip_call_id);
         }
+        // The contact-center labels: draft-ietf-vcon-cc-extension-02 section 6
+        // calls `campaign` a candidate for review. `interaction_id` is a
+        // join key, so it becomes a token that still joins; the two labels
+        // are swept as free text.
+        *campaign = campaign.as_deref().map(|v| r.text(v));
+        *skill = skill.as_deref().map(|v| r.text(v));
+        *interaction_id = interaction_id.as_deref().map(|v| r.opaque(v));
         // A key event's `button` is the digit pressed, which can be a PIN or
         // a card number, and no keyed transform of one digit hides it. The
         // events go; the joins, drops and holds stay.
@@ -2348,6 +2374,9 @@ impl Dialog {
             parties,
             originator,
             party_history,
+            campaign,
+            skill,
+            interaction_id,
             dialogs,
             recording_set,
             mediatype,
@@ -2373,6 +2402,9 @@ impl Dialog {
             duration,
             parties: parties.map(|p| p.into_iter().map(party).collect()),
             originator: originator.map(party),
+            campaign,
+            skill,
+            interaction_id,
             party_history: party_history.map(|events| {
                 events
                     .into_iter()
@@ -3883,6 +3915,55 @@ fn finding_tags(legs: &[&SipDialog], max: usize) -> Vec<String> {
         .take(max)
         .map(|name| format!("finding:{name}"))
         .collect()
+}
+
+/// Which SIP header fills each contact-center Dialog parameter of
+/// [draft-ietf-vcon-cc-extension-02 section 3.2](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-cc-extension-02#section-3.2).
+///
+/// A `[[vcon.rule]]` names the headers (`campaign_header`, `skill_header`,
+/// `interaction_id_header`); `None` writes nothing for that parameter.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct CcHeaders<'a> {
+    /// The header whose value is `campaign` (section 3.2.1).
+    pub campaign: Option<&'a str>,
+    /// The header whose value is `skill` (section 3.2.4).
+    pub skill: Option<&'a str>,
+    /// The header whose value is `interaction_id` (section 3.2.3).
+    pub interaction_id: Option<&'a str>,
+}
+
+/// Fill `campaign`, `skill` and `interaction_id` on a one-leg container's
+/// signaling object from the headers `headers` names.
+///
+/// Each value is the first value of that header on the first message in the
+/// ladder that carries it, trimmed, matched without regard to case
+/// ([RFC 3261 section 7.3.1](https://www.rfc-editor.org/rfc/rfc3261.html#section-7.3.1)).
+/// A header the call never carried leaves its parameter absent. The `CC`
+/// extension these parameters belong to is already in `extensions`.
+///
+/// The parameter is `interaction_id`, as section 3.2.3 spells it. vcon-lib's
+/// Dialog allow-list spells it `interaction`; a vcon-lib reader that filters
+/// on that list drops `interaction_id`.
+pub fn add_cc_fields(container: &mut Vcon, dialog: &SipDialog, headers: CcHeaders<'_>) {
+    let first = |name: Option<&str>| -> Option<String> {
+        let name = name?;
+        dialog
+            .messages
+            .iter()
+            .find_map(|m| m.header(name))
+            .map(|v| v.trim().to_string())
+            .filter(|v| !v.is_empty())
+    };
+    let (campaign, skill, interaction_id) = (
+        first(headers.campaign),
+        first(headers.skill),
+        first(headers.interaction_id),
+    );
+    if let Some(signaling) = container.dialog.first_mut() {
+        signaling.campaign = campaign;
+        signaling.skill = skill;
+        signaling.interaction_id = interaction_id;
+    }
 }
 
 /// Remove every credential-bearing header from a JSON value, at any depth.
@@ -9952,6 +10033,93 @@ mod tests {
         assert!(finding_tags(&[&failed], 0).is_empty());
         let clean = answered_and_ended()?;
         assert!(finding_tags(&[&clean], MAX_FINDING_TAGS).is_empty());
+        Ok(())
+    }
+
+    // ── CC extension Dialog parameters ──
+
+    /// GAP-25: a rule's header mapping fills `campaign`, `skill` and
+    /// `interaction_id` on the signaling object
+    /// ([draft-ietf-vcon-cc-extension-02 section 3.2](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-cc-extension-02#section-3.2))
+    /// from the first message carrying each header, matched without regard
+    /// to case; a header with no value leaves its field absent.
+    #[test]
+    fn the_cc_headers_fill_campaign_skill_and_interaction_id() -> Result<(), TestError> {
+        let dialog = timed_dialog(vec![
+            (
+                invite_carrying(&[
+                    "X-Campaign: spring-renewals",
+                    "x-queue: billing",
+                    "X-Interaction-ID:",
+                ])?,
+                0,
+            ),
+            (response(200, "OK")?, 1),
+        ])?;
+        let mut v = export_with(&dialog, &clean_facts())?;
+        add_cc_fields(
+            &mut v,
+            &dialog,
+            CcHeaders {
+                campaign: Some("X-Campaign"),
+                skill: Some("X-Queue"),
+                interaction_id: Some("X-Interaction-ID"),
+            },
+        );
+        let json = valid_json(&v)?;
+        assert_eq!(json["dialog"][0]["campaign"], "spring-renewals");
+        assert_eq!(json["dialog"][0]["skill"], "billing");
+        assert!(
+            json["dialog"][0].get("interaction_id").is_none(),
+            "{json:#}"
+        );
+        assert!(
+            json["dialog"][0].get("interaction").is_none(),
+            "the spec's name only"
+        );
+        Ok(())
+    }
+
+    /// GAP-25: no mapping writes nothing.
+    #[test]
+    fn no_cc_mapping_writes_no_cc_field() -> Result<(), TestError> {
+        let dialog = timed_dialog(vec![(invite_carrying(&["X-Campaign: c"])?, 0)])?;
+        let mut v = export_with(&dialog, &clean_facts())?;
+        add_cc_fields(&mut v, &dialog, CcHeaders::default());
+        let json = valid_json(&v)?;
+        for field in ["campaign", "skill", "interaction_id"] {
+            assert!(json["dialog"][0].get(field).is_none(), "{field}");
+        }
+        Ok(())
+    }
+
+    /// GAP-25: under redaction `interaction_id` becomes a token, so two
+    /// containers of one interaction still join, and `campaign` and `skill`
+    /// are swept as text.
+    #[test]
+    fn redaction_tokenizes_the_interaction_id() -> Result<(), TestError> {
+        use crate::output::redact::{Redact as _, RedactionKey, RedactionPolicy};
+        let dialog = timed_dialog(vec![(
+            invite_carrying(&["X-Interaction-ID: 4155550100-77"])?,
+            0,
+        )])?;
+        let mut v = export_with(&dialog, &clean_facts())?;
+        add_cc_fields(
+            &mut v,
+            &dialog,
+            CcHeaders {
+                interaction_id: Some("X-Interaction-ID"),
+                ..CcHeaders::default()
+            },
+        );
+        let policy = RedactionPolicy::new(RedactionKey::from_secret(b"cc"));
+        v.redact(&policy.redactor());
+        let id = v.dialog[0]
+            .interaction_id
+            .as_deref()
+            .ok_or("an interaction_id")?;
+        assert_ne!(id, "4155550100-77");
+        assert_eq!(id, policy.redactor().opaque("4155550100-77"));
         Ok(())
     }
 }

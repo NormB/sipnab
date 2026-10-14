@@ -4884,6 +4884,23 @@ pub(crate) fn vcon_rules(
             cli.matching_args.until,
         )
         .ok_or_else(|| refuse(format!("[[vcon.rule]] '{name}': no filter")))?;
+        // A CC header must be a header name (an RFC 3261 token): anything
+        // else matches no header and would leave the parameter silently
+        // empty on every call.
+        for (key, header) in [
+            ("campaign_header", &rule.campaign_header),
+            ("skill_header", &rule.skill_header),
+            ("interaction_id_header", &rule.interaction_id_header),
+        ] {
+            if let Some(header) = header
+                && (header.is_empty() || !header.bytes().all(crate::sip::parser::is_token_byte))
+            {
+                return Err(refuse(format!(
+                    "[[vcon.rule]] '{name}' has {key} = '{header}', which is not a SIP \
+                     header name: use letters, digits and '-', such as 'X-Queue'"
+                )));
+            }
+        }
         // Each named filter `when` references, compiled on its own, so the
         // container can say which of them the call matched.
         let mut tag_filters = Vec::new();
@@ -4919,6 +4936,11 @@ pub(crate) fn vcon_rules(
                     rule: name.clone(),
                     filters: tag_filters,
                 }),
+                cc: crate::app::batch::RuleCcHeaders {
+                    campaign: rule.campaign_header.clone(),
+                    skill: rule.skill_header.clone(),
+                    interaction_id: rule.interaction_id_header.clone(),
+                },
             },
         });
     }

@@ -7341,6 +7341,22 @@ pub struct RuleAdditions {
     /// The `tags` attachment: set for a `[[vcon.rule]]`, which has a name,
     /// and `None` for the flag rule, which has none.
     pub tags: Option<RuleTags>,
+    /// The headers that fill the CC extension's Dialog parameters
+    /// (`crate::output::vcon::add_cc_fields`).
+    pub cc: RuleCcHeaders,
+}
+
+/// The `[[vcon.rule]]` keys `campaign_header`, `skill_header` and
+/// `interaction_id_header`: the SIP header that fills each contact-center
+/// Dialog parameter.
+#[derive(Debug, Clone, Default)]
+pub struct RuleCcHeaders {
+    /// The header whose value is `campaign`.
+    pub campaign: Option<String>,
+    /// The header whose value is `skill`.
+    pub skill: Option<String>,
+    /// The header whose value is `interaction_id`.
+    pub interaction_id: Option<String>,
 }
 
 /// What a rule's `tags` attachment names
@@ -8523,6 +8539,15 @@ impl LegWriter<'_> {
                 .unwrap_or(crate::output::vcon::MAX_INLINE_MEDIA_BYTES);
             crate::output::vcon::add_sip_message_attachments(container, dialog, budget);
         }
+        crate::output::vcon::add_cc_fields(
+            container,
+            dialog,
+            crate::output::vcon::CcHeaders {
+                campaign: additions.cc.campaign.as_deref(),
+                skill: additions.cc.skill.as_deref(),
+                interaction_id: additions.cc.interaction_id.as_deref(),
+            },
+        );
         if additions.dtmf_events {
             let presses: Vec<crate::output::vcon::RtpKeyPress> = self
                 .batch
@@ -8699,6 +8724,11 @@ static NO_ADDITIONS: RuleAdditions = RuleAdditions {
     sip_messages: false,
     dtmf_events: false,
     tags: None,
+    cc: RuleCcHeaders {
+        campaign: None,
+        skill: None,
+        interaction_id: None,
+    },
 };
 
 #[cfg(feature = "vcon")]

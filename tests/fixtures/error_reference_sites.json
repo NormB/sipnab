@@ -367,6 +367,8 @@
         "[[vcon.rule]] '{name}' has no dir: say where its containers go",
         "[[vcon.rule]] '{name}' has {why}",
         "[[vcon.rule]] '{name}': 'when' is not a valid filter expression: {e}",
+        "[[vcon.rule]] '{name}': '@{reference}' is not a valid filter expression: {e}",
+        "[[vcon.rule]] '{name}' has {key} = '{header}', which is not a SIP header name: use letters, digits and '-', such as 'X-Queue'",
         "[[vcon.rule]] '{name}': no filter",
         "[[vcon.rule]] '{name}': {}",
         "[[vcon.rule]] name '{name}' is not usable: a name is 1 to {} ASCII letters, digits, '-' or '_', starting with a letter or digit",

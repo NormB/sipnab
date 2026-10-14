@@ -1400,7 +1400,11 @@ fn wiki_intra_docs_links_resolve() -> Result<(), TestError> {
     // Dialog Object says about the call").
     // 1740 -> 1741 for the vCon tags attachment, attributed per file:
     // docs/vcon.md +1 (the "Tags" section links named filters).
-    const EXPECTED_WIKI_LINKS: usize = 1741;
+    // 1741 -> 1744 for the vCon CC header keys, attributed per file:
+    // docs/config-reference.md +1 (the `campaign_header` row links
+    // "Contact-center labels") and docs/errors.md +2 (the two new
+    // `[[vcon.rule]]` refusals link "Write calls by rule").
+    const EXPECTED_WIKI_LINKS: usize = 1744;
     // Raised 459 -> 460 when SRC1 stage 1 shipped: docs/cli-reference.md's
     // `--hep-listen` row now points at cookbook recipe "Take signaling from HEP and media off the wire, in one process" in docs/examples.md
     // rather than restating how to pair `-L` with `-d`. Attributed per file

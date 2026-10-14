@@ -12,6 +12,10 @@ entry that carries them.
 
 ### Added
 
+- **`[[vcon.rule]]` keys `campaign_header`, `skill_header` and `interaction_id_header` fill the vCon CC extension's Dialog parameters.**
+  - Each names a SIP header whose value becomes `campaign`, `skill` or `interaction_id` on the signaling Dialog Object, per [section 3.2 of draft-ietf-vcon-cc-extension-02](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-cc-extension-02#section-3.2).
+  - sipnab writes the draft's `interaction_id`; vcon-lib's Dialog list spells it `interaction`.
+  - `--redact` turns `interaction_id` into a token.
 - **A `[[vcon.rule]]` container carries a `tags` attachment.**
   - Its body is a list of `"name:value"` strings, the shape vcon-lib reads.
   - It names the rule, each `@name` filter of the rule's `when` that the call matched, and up to five findings of the signaling diagnosis.

@@ -1884,6 +1884,29 @@ These objects come after every other Dialog Object, so they move no index.
 - `--redact` removes the body, `encoding` and `mediatype`, and keeps `start` and `parties`, as it does for a recording.
 - sipnab does not parse MSRP, so text sent over an MSRP session has no text dialog.
 
+### Contact-center labels
+
+A rule can copy three SIP headers into the `campaign`, `skill` and `interaction_id` parameters of [draft-ietf-vcon-cc-extension-02 section 3.2](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-cc-extension-02#section-3.2).
+sipnab declares the `CC` extension in `extensions` already.
+
+```toml
+[[vcon.rule]]
+name                  = "queues"
+when                  = "method == 'INVITE'"
+dir                   = "/var/spool/sipnab-vcon/queues"
+campaign_header       = "X-Campaign"
+skill_header          = "X-Queue"
+interaction_id_header = "X-Interaction-ID"
+```
+
+- Each value comes from the first message in the call that carries the header, matched without regard to case.
+- A header the call never carried, or one with no value, leaves its parameter absent.
+- The values go on the first Dialog Object, the signaling one.
+- A key that is not a SIP header name, such as one holding a space or a colon, refuses the run.
+- `--redact` turns `interaction_id` into a token, so two containers of one interaction still match, and sweeps `campaign` and `skill` as free text.
+- The parameter is `interaction_id`, as section 3.2.3 spells it.
+  vcon-lib's list of Dialog parameters spells it `interaction`, so a vcon-lib reader that filters on that list drops it.
+
 ## The SIP signaling attachments
 
 The `sip-signaling` extension of [draft-howe-vcon-sip-signaling-00](https://datatracker.ietf.org/doc/html/draft-howe-vcon-sip-signaling-00) stores SIP in attachments.

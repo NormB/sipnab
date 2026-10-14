@@ -545,3 +545,62 @@ fn a_rule_container_is_tagged_with_its_rule_and_matched_filters() -> Result<(), 
     );
     Ok(())
 }
+
+/// `skill_header`, `campaign_header` and `interaction_id_header` copy the
+/// named headers' values into the signaling Dialog Object's `skill`,
+/// `campaign` and `interaction_id` (draft-ietf-vcon-cc-extension-02 section
+/// 3.2).
+#[test]
+fn a_rule_maps_headers_to_the_cc_dialog_parameters() -> Result<(), TestError> {
+    let home = tempfile::tempdir()?;
+    let capture = home.path().join("queue.pcap");
+    let frames = pcap_build::g711_leg(
+        &pcap_build::G711Leg {
+            call_id: "queued@test",
+            caller: ([10, 0, 0, 1], 20000, 0x1111_1111),
+            callee: ([10, 0, 0, 2], 30000, 0x2222_2222),
+            header: Some("X-Queue: billing"),
+            start_us: 0,
+            ends: true,
+        },
+        1,
+        |_, _, _| 0xff,
+    );
+    pcap_build::write_pcap_at(&capture, &frames, 1)?;
+    let dir = home.path().join("cc");
+    let config = rule("cc", "call_id == 'queued@test'", &dir, "omit").replace(
+        "audio = \"omit\"\n",
+        "audio = \"omit\"\nskill_header = \"X-Queue\"\ncampaign_header = \"X-Campaign\"\n",
+    );
+    let out = run_on(&capture.to_string_lossy(), &config, home.path())?;
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(out.status.success(), "{stderr}");
+    let written = containers(&dir)?;
+    assert_eq!(written.len(), 1, "{stderr}");
+    let signaling = &written[0]["dialog"][0];
+    assert_eq!(signaling["skill"], "billing", "{signaling:#}");
+    assert!(
+        signaling.get("campaign").is_none(),
+        "no X-Campaign on the wire"
+    );
+    Ok(())
+}
+
+/// A header name that is not an RFC 3261 token refuses the run, naming the
+/// rule and the key.
+#[test]
+fn a_cc_header_that_is_not_a_header_name_is_refused() -> Result<(), TestError> {
+    let home = tempfile::tempdir()?;
+    let config = rule("cc", CALL, &home.path().join("cc"), "omit").replace(
+        "audio = \"omit\"\n",
+        "audio = \"omit\"\nskill_header = \"X Queue:\"\n",
+    );
+    let out = run(&config, &[], home.path())?;
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(!out.status.success(), "{stderr}");
+    assert!(
+        stderr.contains("'cc'") && stderr.contains("skill_header"),
+        "{stderr}"
+    );
+    Ok(())
+}

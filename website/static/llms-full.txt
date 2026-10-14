@@ -21093,6 +21093,22 @@ The `when` of the [`[[vcon.rule]]`](vcon.md#write-calls-by-rule) named `{name}` 
 
 **Exit code:** 1.
 
+### `[[vcon.rule]] '{name}': '@{reference}' is not a valid filter expression: {e}`
+
+The `when` of the [`[[vcon.rule]]`](vcon.md#write-calls-by-rule) named `{name}` references the named filter `@{reference}`, and its expansion does not parse on its own. sipnab compiles each referenced name by itself to tag a container with the names the call matched. `{e}` is the parser's reason.
+
+**What to do:** Correct that entry in `[filters]` so it is a complete expression by itself. Test it first with `sipnab -N -I capture.pcap --filter "@{reference}"`.
+
+**Exit code:** 1.
+
+### `[[vcon.rule]] '{name}' has {key} = '{header}', which is not a SIP header name: use letters, digits and '-', such as 'X-Queue'`
+
+The `campaign_header`, `skill_header` or `interaction_id_header` of the [`[[vcon.rule]]`](vcon.md#write-calls-by-rule) named `{name}` is empty or holds a character a SIP header name cannot hold. `{key}` is the key and `{header}` the value. Such a name matches no header, and the Dialog parameter would stay empty on every call.
+
+**What to do:** Write the header name alone, without a colon or a value, such as `skill_header = "X-Queue"`.
+
+**Exit code:** 1.
+
 ### `[[vcon.rule]] '{name}': no filter`
 
 The [`[[vcon.rule]]`](vcon.md#write-calls-by-rule) named `{name}` resolved to no filter at all. This is an internal check: a rule's `when` always gives one.
@@ -27455,6 +27471,9 @@ and what they carry.
 | `sealed_updates` | string | `new-uuid` | What an encrypting rule writes when a call it already wrote changes. `new-uuid`: a new instance with a new uuid whose `amended` names the prior one (draft-ietf-vcon-vcon-core-04 section 4.1.9). `same-uuid`: rewrite the file under the same uuid, with a startup warning. `final-only`: write once, when the call ends. sipnab refuses any other value at startup. No effect without `encrypt_to`. See [When an encrypted call changes](vcon.md#when-an-encrypted-call-changes) |
 | `sip_messages` | boolean | `false` | Attach the initial INVITE and its final response in wire format, as `sip-invite` and `sip-response`, and each one's SDP as `sip-sdp`. The rule's inline budget covers them. `--redact` removes them. See [The INVITE and the final response](vcon.md#the-invite-and-the-final-response) |
 | `dtmf_events` | boolean | `false` | Write each DTMF key press as `keydown` and `keyup` events, with the digit, in the signaling Dialog Object's `party_history`, from INFO `application/dtmf-relay` and [RFC 4733](https://www.rfc-editor.org/rfc/rfc4733.html) telephone events. Turns telephone-event decoding on for the run, as `--telephone-event` does. `--redact` removes the events. See [What the Dialog Object says about the call](vcon.md#what-the-dialog-object-says-about-the-call) |
+| `campaign_header` | string | -- | The SIP header whose value becomes the signaling Dialog Object's `campaign`, from the first message that carries it. See [Contact-center labels](vcon.md#contact-center-labels) |
+| `skill_header` | string | -- | The SIP header whose value becomes `skill`, such as `X-Queue` |
+| `interaction_id_header` | string | -- | The SIP header whose value becomes `interaction_id` |
 | `grouping` | string | `leg` | `leg`: one container per dialog, each naming the call's other legs. `call`: one container per call, holding every leg the rule selects and the ties between them. See [Calls through a PBX or a B2BUA](vcon.md#calls-through-a-pbx-or-a-b2bua) |
 
 ```toml
@@ -45496,6 +45515,29 @@ These objects come after every other Dialog Object, so they move no index.
 - A MESSAGE with no body is not a text dialog, and neither is an `application/im-iscomposing+xml` typing indication ([RFC 3994](https://www.rfc-editor.org/rfc/rfc3994.html)).
 - `--redact` removes the body, `encoding` and `mediatype`, and keeps `start` and `parties`, as it does for a recording.
 - sipnab does not parse MSRP, so text sent over an MSRP session has no text dialog.
+
+### Contact-center labels
+
+A rule can copy three SIP headers into the `campaign`, `skill` and `interaction_id` parameters of [draft-ietf-vcon-cc-extension-02 section 3.2](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-cc-extension-02#section-3.2).
+sipnab declares the `CC` extension in `extensions` already.
+
+```toml
+[[vcon.rule]]
+name                  = "queues"
+when                  = "method == 'INVITE'"
+dir                   = "/var/spool/sipnab-vcon/queues"
+campaign_header       = "X-Campaign"
+skill_header          = "X-Queue"
+interaction_id_header = "X-Interaction-ID"
+```
+
+- Each value comes from the first message in the call that carries the header, matched without regard to case.
+- A header the call never carried, or one with no value, leaves its parameter absent.
+- The values go on the first Dialog Object, the signaling one.
+- A key that is not a SIP header name, such as one holding a space or a colon, refuses the run.
+- `--redact` turns `interaction_id` into a token, so two containers of one interaction still match, and sweeps `campaign` and `skill` as free text.
+- The parameter is `interaction_id`, as section 3.2.3 spells it.
+  vcon-lib's list of Dialog parameters spells it `interaction`, so a vcon-lib reader that filters on that list drops it.
 
 ## The SIP signaling attachments
 
