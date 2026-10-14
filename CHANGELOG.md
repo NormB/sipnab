@@ -105,6 +105,13 @@ entry that carries them.
     - It compiles libopus 1.6.1 from source and links it statically, so building `full` needs `cmake` and a C compiler.
     - The gnu, macOS and Docker builds carry it. The static musl builds, which have no vCon export, do not.
     - `sipnab --version` lists it.
+- **A `[[vcon.rule]]` can sign without encrypting.**
+  - `sign_only = true` writes the signed form of draft-ietf-vcon-vcon-core-04 section 5.2 alone: a JWS signed with `sign_key` and `sign_cert`, with no encryption.
+  - `compress = "gzip"` signs the gzip of the vCon, as for an encrypting rule.
+  - The rule takes `sign_key`, `sign_cert` and `compress` from `[vcon]`, and never `[vcon] encrypt_to`.
+  - sipnab refuses at startup `sign_only` beside the rule's own `encrypt_to`, and `sign_only` without a signing key.
+  - Signing stays opt-in: `sign_key` without `encrypt_to` or `sign_only` is still refused.
+  - The signature attests sipnab's record of what it observed, not who took part in the call: the container names sipnab as its observer party.
 - **The vCon forwarder names a gzip format container's media type.**
   - A container whose file starts with the gzip magic bytes `1f 8b` goes as `Content-Type: application/vcon+gzip`, as draft-ietf-vcon-vcon-core-04 section 5.4 says it should.
     - Before, every POST and PUT said `application/json`.

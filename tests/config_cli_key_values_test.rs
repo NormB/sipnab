@@ -414,6 +414,7 @@ static KEY_SPECS: &[KeySpec] = &[
                 "[{ name = \"r\", when = \"method == 'INVITE'\", dir = \"vcon-out\" }]",
                 "[{ name = \"r\", when = \"method == 'INVITE'\", dir = \"vcon-out\", sealed_updates = \"final-only\" }]",
                 "[{ name = \"r\", when = \"method == 'INVITE'\", dir = \"vcon-out\", audio = \"inline\", audio_format = \"wav\" }]",
+                "[{ name = \"r\", when = \"method == 'INVITE'\", dir = \"vcon-out\", sign_only = false }]",
             ],
             reject: &[
                 "[{ name = \"bad name\", when = \"method == 'INVITE'\", dir = \"d\" }]",
@@ -425,6 +426,8 @@ static KEY_SPECS: &[KeySpec] = &[
                 "[{ name = \"r\", when = \"method == 'INVITE'\", dir = \"d\", audio_format = \"wav\" }]",
                 "[{ name = \"r\", when = \"x\", dir = \"d\" }]",
                 "[{ name = \"r\", when = \"method == 'INVITE'\", dir = \"d\", compress = \"gzip\" }]",
+                "[{ name = \"r\", when = \"method == 'INVITE'\", dir = \"d\", sign_only = true }]",
+                "[{ name = \"r\", when = \"method == 'INVITE'\", dir = \"d\", sign_only = \"yes\" }]",
                 "[{ name = \"r\", when = \"method == 'INVITE'\", dir = \"d\", volume = 1 }]",
                 "[1]",
             ],

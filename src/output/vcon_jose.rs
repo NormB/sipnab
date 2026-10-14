@@ -863,12 +863,14 @@ impl rsa::rand_core::RngCore for Prefilled {
 
 impl rsa::rand_core::CryptoRng for Prefilled {}
 
-/// What an encrypting `[[vcon.rule]]` seals its containers with.
+/// What a sealing `[[vcon.rule]]` seals its containers with: an encrypting
+/// rule signs and encrypts, a `sign_only` rule signs.
 pub struct Sealing {
     /// The key and chain the signed form is signed with.
     pub signer: Signer,
-    /// The certificate the signed form is encrypted to.
-    pub recipient: Recipient,
+    /// The certificate the signed form is encrypted to; `None` writes the
+    /// signed form alone ([core-04 section 5.2](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-04#section-5.2)).
+    pub recipient: Option<Recipient>,
     /// Whether the vCon is gzip compressed inside the signed form.
     pub compression: Compression,
 }
@@ -884,14 +886,14 @@ impl std::fmt::Debug for Sealing {
 }
 
 impl Sealing {
-    /// The encrypted form of the unsigned container `unsigned`.
+    /// The sealed form of the unsigned container `unsigned`: the encrypted
+    /// form, or the signed form when there is no recipient.
     pub fn seal(&self, unsigned: &[u8], uuid: &str) -> Result<Vec<u8>, String> {
-        encrypt_compressed(
-            &sign_compressed(unsigned, uuid, &self.signer, self.compression)?,
-            uuid,
-            &self.recipient,
-            self.compression,
-        )
+        let signed = sign_compressed(unsigned, uuid, &self.signer, self.compression)?;
+        match &self.recipient {
+            Some(recipient) => encrypt_compressed(&signed, uuid, recipient, self.compression),
+            None => Ok(signed),
+        }
     }
 
     /// A file an encrypting rule writes beside its container (a `url`
@@ -910,7 +912,11 @@ impl Sealing {
             unprotected: serde_json::json!({ "cty": mediatype, "enc": JWE_ENC }),
             recipient: Some(serde_json::json!({ "alg": JWE_ALG })),
         };
-        encrypt_under(file, &self.recipient, &headers)
+        let recipient = self
+            .recipient
+            .as_ref()
+            .ok_or("a file is encrypted only by a rule that encrypts")?;
+        encrypt_under(file, recipient, &headers)
     }
 
     /// This sealing, compressing as `compression` says.
@@ -937,7 +943,22 @@ pub fn load_sealing(
             &read_private_key("signing key", sign_key)?,
             &read(sign_cert)?,
         )?,
-        recipient: Recipient::from_cert_pem(&read(encrypt_to)?)?,
+        recipient: Some(Recipient::from_cert_pem(&read(encrypt_to)?)?),
+        compression: Compression::None,
+    })
+}
+
+/// Read a `sign_only` rule's two files: the signing key, which must be
+/// readable by its owner only, and its chain.
+pub fn load_signing(
+    sign_key: &std::path::Path,
+    sign_cert: &std::path::Path,
+) -> Result<Sealing, String> {
+    let chain = std::fs::read_to_string(sign_cert)
+        .map_err(|e| format!("cannot read '{}': {e}", sign_cert.display()))?;
+    Ok(Sealing {
+        signer: Signer::from_pem(&read_private_key("signing key", sign_key)?, &chain)?,
+        recipient: None,
         compression: Compression::None,
     })
 }
@@ -1417,7 +1438,7 @@ mod tests {
         let seal_with = |c| -> Result<Vec<u8>, Box<dyn std::error::Error>> {
             Ok(Sealing {
                 signer: signer()?,
-                recipient: recipient()?,
+                recipient: Some(recipient()?),
                 compression: Compression::None,
             }
             .compressed(c)

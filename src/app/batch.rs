@@ -9292,7 +9292,9 @@ fn media_file<'a>(
     recording: crate::output::vcon::EncodedRecording<'a>,
     format: RuleAudioFormat,
 ) -> Result<(String, std::borrow::Cow<'a, [u8]>), String> {
-    match target.sealing {
+    // A rule that signs without encrypting writes the file as it is: the
+    // signed container names its `content_hash`.
+    match target.sealing.filter(|s| s.recipient.is_some()) {
         None => Ok((
             vcon_media_name(&vcon_spool_name(call_id, None), format.extension()),
             recording.bytes.into(),

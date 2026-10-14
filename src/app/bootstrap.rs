@@ -4773,14 +4773,23 @@ struct RuleSealing<'a> {
     sign_cert: Option<&'a std::path::Path>,
     /// `none` or `gzip`.
     compress: Option<&'a str>,
+    /// The rule's own `sign_only`: write the signed form alone.
+    sign_only: bool,
 }
 
 #[cfg(feature = "vcon")]
 impl<'a> RuleSealing<'a> {
     /// `rule`'s keys, each falling back to `section`'s.
     fn of(rule: &'a crate::config::VconRuleConfig, section: &'a crate::config::VconConfig) -> Self {
-        let encrypt_to = rule.encrypt_to.as_deref().or(section.encrypt_to.as_deref());
-        let inherit = encrypt_to.is_some();
+        let sign_only = rule.sign_only.unwrap_or(false);
+        // A sign_only rule asked for the signed form alone: it takes the
+        // section's signing keys and not its recipient.
+        let encrypt_to = if sign_only {
+            rule.encrypt_to.as_deref()
+        } else {
+            rule.encrypt_to.as_deref().or(section.encrypt_to.as_deref())
+        };
+        let inherit = encrypt_to.is_some() || sign_only;
         let pick = |own: Option<&'a std::path::Path>, theirs: Option<&'a std::path::Path>| {
             own.or(if inherit { theirs } else { None })
         };
@@ -4793,6 +4802,7 @@ impl<'a> RuleSealing<'a> {
             } else {
                 None
             }),
+            sign_only,
         }
     }
 }
@@ -4925,11 +4935,30 @@ pub(crate) fn vcon_rules(
             inherited.sign_key,
             inherited.sign_cert,
         ) {
+            (Some(_), _, _) if inherited.sign_only => {
+                return Err(refuse(format!(
+                    "[[vcon.rule]] '{name}' has sign_only and encrypt_to: sign_only writes \
+                     the signed form alone, encrypt_to the encrypted form; keep one"
+                )));
+            }
+            (None, Some(key), Some(cert)) if inherited.sign_only => Some(std::sync::Arc::new(
+                crate::output::vcon_jose::load_signing(key, cert)
+                    .map_err(|e| refuse(format!("[[vcon.rule]] '{name}': {e}")))?
+                    .compressed(rule_compression(name, inherited.compress).map_err(refuse)?),
+            )),
+            (None, _, _) if inherited.sign_only => {
+                return Err(refuse(format!(
+                    "[[vcon.rule]] '{name}' has sign_only and needs sign_key and sign_cert: \
+                     the signed form is signed with them \
+                     (draft-ietf-vcon-vcon-core-04 section 5.2)"
+                )));
+            }
             (None, None, None) => None,
             (None, _, _) => {
                 return Err(refuse(format!(
                     "[[vcon.rule]] '{name}' has sign_key or sign_cert without encrypt_to: \
-                     sipnab signs a container only as the inner layer of the encrypted form"
+                     sipnab signs a container as the inner layer of the encrypted form, or \
+                     alone with sign_only = true"
                 )));
             }
             (Some(_), None, _) | (Some(_), _, None) => {
@@ -4948,7 +4977,7 @@ pub(crate) fn vcon_rules(
         if sealing.is_none() && rule.compress.is_some() {
             return Err(refuse(format!(
                 "[[vcon.rule]] '{name}' has compress without encrypt_to: compress applies \
-                 to the encrypted form only"
+                 to the encrypted form, or to the signed form with sign_only = true"
             )));
         }
         let text = resolved_filter_text(&rule.when, cli, config)

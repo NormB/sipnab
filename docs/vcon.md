@@ -170,7 +170,8 @@ dir   = "/var/spool/sipnab-vcon/all"
 | `live_audio` | `true`: serve each matching call's audio while it is in progress, over the REST API. See [Hear a call while it is in progress](#hear-a-call-while-it-is-in-progress) |
 | `live` | `true`: on a live capture, write each matching call's container as the call starts and rewrite it in place each time the call changes. See [Follow a call while it is in progress](#follow-a-call-while-it-is-in-progress) |
 | `encrypt_to` | A PEM certificate. Set, the rule writes only the encrypted form, to that certificate's key. Needs `sign_key` and `sign_cert`. See [Encrypt what a rule writes](#encrypt-what-a-rule-writes) |
-| `sign_key`, `sign_cert` | The PEM RSA private key an encrypting rule signs with, and its certificate chain, leaf first |
+| `sign_key`, `sign_cert` | The PEM RSA private key an encrypting or `sign_only` rule signs with, and its certificate chain, leaf first |
+| `sign_only` | `true`: write the signed form alone, with no encryption. See [Sign without encrypting](#sign-without-encrypting) |
 | `compress` | For an encrypting rule: `none` (the default) or `gzip`, which signs the gzip of the vCon instead of the vCon. See [Encrypt what a rule writes](#encrypt-what-a-rule-writes) |
 | `sealed_updates` | What an encrypting rule writes when a call it already wrote changes: `new-uuid` (the default), `same-uuid` or `final-only`. No effect without `encrypt_to`. See [When an encrypted call changes](#when-an-encrypted-call-changes) |
 | `grouping` | `leg` (the default): one container per dialog. `call`: one container per call, holding every leg the rule selects. See [Calls through a PBX or a B2BUA](#calls-through-a-pbx-or-a-b2bua) |
@@ -912,6 +913,48 @@ sipnab refuses at startup any other `sealed_updates` value, naming the three.
 
 To read a call's latest version, follow the chain. The latest version is the
 one that no other version names in `amended`.
+
+### Sign without encrypting
+
+A rule with `sign_only = true` writes the signed form of
+[draft-ietf-vcon-vcon-core-04 section 5.2](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-04#section-5.2)
+alone: a JWS with no encryption.
+
+```toml
+[[vcon.rule]]
+name      = "archive"
+when      = "@support"
+dir       = "/var/spool/sipnab-vcon/archive"
+sign_only = true
+sign_key  = "/etc/sipnab/vcon-signing.key"
+sign_cert = "/etc/sipnab/vcon-signing.crt"
+```
+
+- sipnab signs each container as an encrypting rule does: `RS256`, the
+  `sign_cert` chain in `x5c`, the uuid in the signature's `header`.
+- `compress = "gzip"` signs the gzip of the vCon, as for an encrypting rule.
+- sipnab names each file `<uuid>.vcon.json`, and `sealed_updates` applies,
+  as for an encrypting rule.
+- The rule takes `sign_key`, `sign_cert` and `compress` from `[vcon]`. It
+  never takes `[vcon] encrypt_to`: it asked for the signed form alone.
+- sipnab refuses at startup:
+  - `sign_only` beside the rule's own `encrypt_to`;
+  - `sign_only` with no `sign_key` or no `sign_cert`.
+- Signing stays opt-in. `sign_key` without `encrypt_to` or `sign_only` is
+  still refused.
+- Anyone can read the container: the signature protects its integrity, not
+  its content.
+- `-I` and the other readers verify it with no key: see
+  [A signed, encrypted or compressed container](#a-signed-encrypted-or-compressed-container).
+
+**What the signature says.**
+
+- It says the holder of `sign_key` wrote these bytes, and that nobody changed
+  them since.
+- It attests sipnab's record of what it observed. It does not attest who took
+  part in the call, or that they wrote anything.
+- The container names sipnab as its observer party. The parties are what the
+  From and To headers said, not identities anyone established.
 
 ## The spool contract, for a bridge that consumes it
 

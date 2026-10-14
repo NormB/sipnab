@@ -1665,6 +1665,12 @@ pub struct VconRuleConfig {
     /// The SIP header whose value becomes `interaction_id` (section 3.2.3).
     #[serde(default)]
     pub interaction_id_header: Option<String>,
+    /// `true`: write the signed form of draft-ietf-vcon-vcon-core-04 section
+    /// 5.2 alone, signed with `sign_key` and `sign_cert`, with no
+    /// encryption. Refused beside the rule's own `encrypt_to`. Default
+    /// `false`: a rule signs only as the inner layer of the encrypted form.
+    #[serde(default)]
+    pub sign_only: Option<bool>,
 }
 
 /// The PBX sipnab runs beside.

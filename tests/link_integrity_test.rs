@@ -1419,7 +1419,11 @@ fn wiki_intra_docs_links_resolve() -> Result<(), TestError> {
     // 1756 -> 1757: docs/cli-reference.md +1, the
     // `--vcon-forward-content-type` row links "What it does with each
     // container".
-    const EXPECTED_WIKI_LINKS: usize = 1757;
+    // 1757 -> 1760 for `sign_only`: docs/config-reference.md +1 (its row
+    // links "Sign without encrypting") and docs/vcon.md +2 (the rule key
+    // table links that section, and the section links "A signed, encrypted
+    // or compressed container").
+    const EXPECTED_WIKI_LINKS: usize = 1760;
     // Raised 459 -> 460 when SRC1 stage 1 shipped: docs/cli-reference.md's
     // `--hep-listen` row now points at cookbook recipe "Take signaling from HEP and media off the wire, in one process" in docs/examples.md
     // rather than restating how to pair `-L` with `-d`. Attributed per file
