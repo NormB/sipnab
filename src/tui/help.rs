@@ -57,6 +57,7 @@ CALL LIST:
   D                Quality dashboard (live MOS/jitter/loss)
   T                Call timeline (selected dialog)
   F9               Clear the view filter and search
+  F                Show the F7 view filter as a summary or in full \u{2014} global
   F10              Choose columns
   Tab              Switch to RTP streams
   v                Show version / git commit \u{2014} global
@@ -500,6 +501,21 @@ mod tests {
     #[test]
     fn help_text_contains_f7() {
         assert!(HELP_TEXT.contains("F7"));
+    }
+
+    /// The help lists the key that switches line 3 between the F7 filter's
+    /// summary and its full expression, as a key that works in every view.
+    #[test]
+    fn help_text_lists_the_filter_detail_key() {
+        let line = HELP_TEXT
+            .lines()
+            .find(|l| l.trim_start().starts_with("F ") && l.contains("view filter"))
+            .unwrap_or_default();
+        assert!(
+            line.contains("summary") && line.contains("full"),
+            "{line:?}"
+        );
+        assert!(line.contains("global"), "{line:?}");
     }
 
     /// The help text mentions the Enter key.

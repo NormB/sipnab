@@ -37,6 +37,7 @@ Annotated screenshots of every view are in the [TUI visual tour](#tui-views) at 
 | v | Show version (with git commit) in the status line |
 | n | Cycle name resolution (Off / Static / DNS) |
 | N | Name the selected address (map IP → host/FQDN) |
+| F | Show the filter the F7 dialog built as a summary or in full on status line 3 **(configurable: `filter_detail`)** |
 | F12 | Toggle mouse capture — off enables the terminal's native drag-to-select (wheel scrolling pauses until re-enabled) |
 | Mouse wheel | Scroll (every view: lists move the selection, text views scroll) |
 
@@ -916,6 +917,7 @@ The three lines above the list say what you are looking at.
     - `[file re-scan]` when `B` re-read a capture file under the filter.
 - Line 3 is the view filter from `F7` and any search you kept with Enter.
   - It also carries status messages, with errors in red.
+  - A line wider than the terminal ends in `…`.
 
 The key bar
 at the bottom lists the keys of the view you are in, `F1 Help` first after the
@@ -1071,6 +1073,25 @@ Each label says what its field matches:
 anything the fields cannot say, the [Filter DSL](filter-dsl.md) takes the full
 expression.
 
+Status line 3 shows the applied selections as a summary, one short item per
+field:
+
+- `7 methods` counts the checked methods. One checked method shows its name,
+  as in `INVITE`.
+- `From~alice` names the field and the text it matches.
+- `@sales` names a `[filters]` entry.
+- `after 2026-07-07T08:00:00Z` repeats a time bound.
+
+For example, `F7: 7 methods, From~alice, To~bob · F full`.
+
+- Press `F` in any view to show the full expression instead, and again to
+  return to the summary.
+  - The key is `filter_detail` in
+    [`[keybindings]`](config-reference.md#keybindings).
+  - Set `view_filter_detail = "full"` under
+    [`[display]`](config-reference.md#display) to start with the full
+    expression.
+
 ### Save dialog (F2)
 
 Save captured data in multiple formats. Use `Tab` to cycle through formats.
@@ -1131,7 +1152,7 @@ Toggle display options without leaving the TUI.
 ## See also
 
 - [theme-guide.md](theme-guide.md) — recolor every TUI element via `[theme]`
-- [config-reference.md](config-reference.md#keybindings) — rebind the 11 configurable keys
+- [config-reference.md](config-reference.md#keybindings) — rebind the 12 configurable keys
   via `[keybindings]`
 - [filter-dsl.md](filter-dsl.md) — the expression language the F7 filter
   dialog compiles down to (and the `--filter` flag exposes directly)

@@ -342,6 +342,15 @@ static KEY_SPECS: &[KeySpec] = &[
     ),
     (
         "display",
+        "view_filter_detail",
+        KeyKind::Literal {
+            accept: &["\"summary\"", "\"full\""],
+            reject: &["\"x\"", "\"\"", "\"Summary\"", "\"short\""],
+            ctx: "",
+        },
+    ),
+    (
+        "display",
         "visible_columns",
         KeyKind::Literal {
             accept: &["[]", "[\"From\", \"To\"]", "[\"#\", \"state\", \"PDD\"]"],
@@ -573,6 +582,15 @@ static KEY_SPECS: &[KeySpec] = &[
                 "\"/var/tmp\"",
                 "\"/nonexistent/sipnab-x\"",
             ],
+            ctx: "",
+        },
+    ),
+    (
+        "keybindings",
+        "filter_detail",
+        KeyKind::Literal {
+            accept: &["\"F\"", "\"x\"", "\"F11\"", "\"q\""],
+            reject: &["\"\"", "\"5060-5061\"", "\"Shift-F\"", "\"/var/tmp\""],
             ctx: "",
         },
     ),

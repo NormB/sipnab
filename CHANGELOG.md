@@ -64,6 +64,20 @@ entry that carries them.
   - Each rule sets its own `sealed_updates`. The `[vcon]` section does not supply it.
   - A rule without `encrypt_to` still rewrites in place.
 
+- **Status line 3 shows the F7 filter as a summary.**
+  - Many selections in the filter dialog made the expression wider than the
+    terminal, so the view filter line could not be read.
+  - The line now names each selection in a few words, such as
+    `F7: 7 methods, From~alice, To~bob · F full`.
+    - Checked methods are a count, or the method's name when one is checked.
+    - Typed text, `[filters]` names and time bounds are shown as typed.
+  - `F` switches between the summary and the full expression, in every view.
+    - The key is `[keybindings] filter_detail`.
+    - `[display] view_filter_detail = "full"` starts with the full expression.
+  - A filter applied as an expression is always shown in full.
+  - A line 3 wider than the terminal now ends in `…` instead of stopping at
+    the edge.
+
 ### Fixed
 
 - **The encrypted form names a `cty` that core-04 lists.**

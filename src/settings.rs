@@ -858,6 +858,7 @@ pub const FILE_ONLY: &[(&str, &str, FileOnly)] = &[
     ("crash", "core", FileOnly::Tuning),
     ("display", "visible_columns", FileOnly::Tui),
     ("display", "mouse_capture", FileOnly::Tui),
+    ("display", "view_filter_detail", FileOnly::Tui),
     ("sip", "xcid_headers", FileOnly::Tuning),
     ("pbx", "addresses", FileOnly::Table),
     ("vcon", "rule", FileOnly::Table),
@@ -900,6 +901,7 @@ pub const FILE_ONLY: &[(&str, &str, FileOnly)] = &[
     ("keybindings", "extended_flow", FileOnly::Tui),
     ("keybindings", "clear_calls", FileOnly::Tui),
     ("keybindings", "column_selector", FileOnly::Tui),
+    ("keybindings", "filter_detail", FileOnly::Tui),
 ];
 
 /// Flags the CLI defines only when a cargo feature is compiled in, as

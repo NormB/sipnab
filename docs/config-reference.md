@@ -200,6 +200,7 @@ Output and TUI display settings.
 | `delta_time` | boolean | `false` | Show delta time between messages by default. `--delta-time` turns it on. `--no-delta-time` forces it off |
 | `from_to` | string | `"default"` | From/To column display: `"default"` (user else host:port), `"host-port"`, `"user"`, `"user-host-port"`. Cycle at runtime with `u`; `--from-to-mode` overrides this |
 | `mouse_capture` | boolean | `true` | Whether the TUI captures the mouse when it starts. `false` opens it with capture off, so the terminal's own drag-to-select works; `F12` toggles capture at runtime. With capture on, the mouse wheel scrolls |
+| `view_filter_detail` | string | `"summary"` | How status line 3 shows the filter the F7 dialog built. `"summary"` names each selection in a few words, such as `F7: 7 methods, From~alice`. `"full"` shows the expression. A filter typed as an expression is always shown in full. The `filter_detail` key (default `F`) toggles it at runtime. sipnab refuses any other value, naming the key |
 | `visible_columns` | array of strings | all columns | Call-list columns to show, by name (case-insensitive): `"#"`, `"Method"`, `"From"`, `"To"`, `"Source"`, `"Destination"`, `"State"`, `"Msgs"`, `"Date"`, `"PDD"`, `"Duration"`. Adjust at runtime with F10; `s` in the column selector writes the layout into the config file this run loaded (or the user config file (`$XDG_CONFIG_HOME/sipnab/sipnab.toml`, by default `~/.config/sipnab/sipnab.toml`) when none was), so it persists across sessions. sipnab refuses that save when the settings came from `/etc/sipnab/sipnab.toml` |
 
 ```toml
@@ -208,6 +209,7 @@ color = "always"
 payload_limit = 4096
 delta_time = true
 from_to = "user-host-port"
+view_filter_detail = "full"
 visible_columns = ["method", "from", "to", "source", "destination", "state", "msgs", "pdd"]
 ```
 
@@ -1162,7 +1164,7 @@ border = "#444466"
 
 ### [keybindings]
 
-TUI key binding overrides. The 11 configurable actions appear below. Unset fields use built-in defaults.
+TUI key binding overrides. The 12 configurable actions appear below. Unset fields use built-in defaults.
 
 Accepted key formats:
 
@@ -1183,6 +1185,7 @@ Accepted key formats:
 | `extended_flow` | string | `"F4"` | Toggle extended multi-leg flow |
 | `clear_calls` | string | `"F5"` | Clear all calls |
 | `column_selector` | string | `"F10"` | Open column selector |
+| `filter_detail` | string | `"F"` | Show the filter the F7 dialog built as a summary or in full on status line 3. Works in every view, ahead of the view's own keys; sipnab warns at startup when it takes a key a view uses |
 
 See [keybindings.md](keybindings.md) for the full shortcut reference, including the keys that are not remappable.
 
@@ -1199,6 +1202,7 @@ autoscroll = "A"
 extended_flow = "F4"
 clear_calls = "F5"
 column_selector = "F10"
+filter_detail = "F"
 ```
 
 <!-- vale sipnab.Headings = YES -->

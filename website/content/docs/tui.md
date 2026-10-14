@@ -132,6 +132,12 @@ Suspect a header changed across a retransmit or a proxy hop?
   - These fields build a filter.
   - There is no free-form expression field.
   - Pass the full [Filter DSL](@/docs/filter-dsl.md) through CLI `--filter`, for example `rtp.mos < 3.0`.
+- Status line 3 shows the filter the dialog built as a summary, such as
+  `F7: 7 methods, From~alice · F full`.
+  - `F` switches between the summary and the full expression, in every view.
+  - `view_filter_detail = "full"` under
+    [`[display]`](@/docs/config.md#display) opens the TUI with the full
+    expression.
 - `F9` clears the view filter and any kept search.
 - `i` prunes the dialogs that do *not* match, keeping only the matches.
 - `I` prunes the ones that do.

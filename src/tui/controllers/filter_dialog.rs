@@ -32,6 +32,12 @@ pub(in crate::tui) fn apply_filter_dialog(app: &mut App) {
     };
     let expr_text = app.filter_dialog.build_filter_expression();
     apply_filter_expression(app, expr_text, window);
+    // Applied: the filter now in force is the dialog's, so status line 3 may
+    // show it as the dialog's summary. Refused: the dialog stays open with its
+    // error, and the filter in force keeps its own summary.
+    if app.filter_dialog.error.is_none() {
+        app.active_filter_summary = app.filter_dialog.summary();
+    }
 }
 
 /// Start the session the way `-c` / `--calls-only` asks: only INVITE checked
@@ -91,7 +97,8 @@ fn resolve_dialog_text(app: &App, text: &str) -> Result<String, String> {
 /// the popup. On a successful parse, sets `app.active_filter` and
 /// `active_filter_text` and closes the popup; on a parse error, sets
 /// `app.filter_dialog.error` and leaves the popup open. Clears
-/// `app.status_error` on every path that applies.
+/// `app.status_error` and `app.active_filter_summary` on every path that
+/// applies.
 pub(in crate::tui) fn apply_filter_expression(
     app: &mut App,
     expr_text: Option<String>,
@@ -104,6 +111,7 @@ pub(in crate::tui) fn apply_filter_expression(
     if !app.filter_dialog.any_method_checked() {
         app.active_filter = Some(FilterExpr::never());
         app.active_filter_text = "(no methods selected)".to_string();
+        app.active_filter_summary = None;
         app.active_time_after = window.0;
         app.active_time_before = window.1;
         app.status_error = None;
@@ -149,6 +157,9 @@ pub(in crate::tui) fn apply_filter_expression(
     app.active_time_after = window.0;
     app.active_time_before = window.1;
     app.active_filter_text = describe_filter(expr_text.as_deref(), window);
+    // An expression applied here is shown as it is; only the dialog, which
+    // knows its own selections, attaches a summary afterwards.
+    app.active_filter_summary = None;
     app.status_error = None;
     app.filter_dialog.error = None;
     // The applied filter IS recorded, unlike the search query -- see
@@ -809,6 +820,161 @@ mod key_handling_tests {
         assert_eq!(app.filter_dialog.sip_from, "ab", "a button is not a field");
         assert_eq!(app.filter_dialog.focused_field, FILTER_BUTTON_IDX);
         assert_eq!(app.active_popup, Some(Popup::FilterDialog));
+        Ok(())
+    }
+}
+
+/// Tests for the dialog's summary: the few words status line 3 shows in place
+/// of the expression the dialog built.
+#[cfg(test)]
+mod summary_tests {
+    use super::*;
+    use crate::tui::FilterDialogState;
+
+    type TestError = Box<dyn std::error::Error>;
+
+    /// A dialog with seven methods checked and every text field set.
+    fn heavy_dialog() -> FilterDialogState {
+        let mut d = FilterDialogState::default();
+        // REGISTER, OPTIONS and NOTIFY off: seven of ten methods stay checked.
+        d.methods[0] = false;
+        d.methods[1] = false;
+        d.methods[6] = false;
+        d.sip_from = "alice".to_string();
+        d.sip_to = "bob".to_string();
+        d.source = "10.0.0.5".to_string();
+        d.destination = "10.0.0.9".to_string();
+        d.payload = "m=audio".to_string();
+        d.header = "X-Tenant: acme".to_string();
+        d.named = "@scanners".to_string();
+        d.time_after = "2026-07-07T08:00:00Z".to_string();
+        d
+    }
+
+    /// Each field that is set is one token, in the dialog's order, with the
+    /// typed text kept as typed; the checked methods are a count.
+    #[test]
+    fn the_summary_names_each_selection_in_a_few_words() -> Result<(), TestError> {
+        let summary = heavy_dialog()
+            .summary()
+            .ok_or("a set dialog has a summary")?;
+        assert_eq!(
+            summary,
+            "7 methods, From~alice, To~bob, Src~10.0.0.5, Dst~10.0.0.9, \
+             Payload~m=audio, Header~X-Tenant: acme, @scanners, \
+             after 2026-07-07T08:00:00Z"
+        );
+        Ok(())
+    }
+
+    /// An untouched dialog narrows nothing, so it has nothing to summarize.
+    #[test]
+    fn an_untouched_dialog_has_no_summary() {
+        assert_eq!(FilterDialogState::default().summary(), None);
+    }
+
+    /// One checked method is named, since the name is as short as a count;
+    /// every method checked adds no token; none checked says so.
+    #[test]
+    fn the_method_token_follows_how_many_are_checked() -> Result<(), TestError> {
+        let mut d = FilterDialogState {
+            methods: crate::tui::state::FILTER_METHODS.map(|m| m == "INVITE"),
+            ..FilterDialogState::default()
+        };
+        assert_eq!(d.summary().as_deref(), Some("INVITE"));
+        d.methods = [false; 10];
+        assert_eq!(d.summary().as_deref(), Some("no methods"));
+        d.methods = [true; 10];
+        d.time_before = "2026-07-07T09:00:00Z".to_string();
+        assert_eq!(d.summary().as_deref(), Some("before 2026-07-07T09:00:00Z"));
+        d.named = "a @b".to_string();
+        assert_eq!(
+            d.summary().as_deref(),
+            Some("@a, @b, before 2026-07-07T09:00:00Z")
+        );
+        Ok(())
+    }
+
+    /// Applying the dialog stores its summary beside the expression, and a
+    /// filter applied as an expression drops it, so a typed expression is
+    /// never shown abbreviated.
+    #[test]
+    fn applying_the_dialog_stores_its_summary_and_an_expression_drops_it() -> Result<(), TestError>
+    {
+        let mut app = App::new_test();
+        app.filter_dialog = heavy_dialog();
+        app.filter_dialog.named.clear();
+        apply_filter_dialog(&mut app);
+        assert!(
+            app.filter_dialog.error.is_none(),
+            "{:?}",
+            app.filter_dialog.error
+        );
+        assert!(app.active_filter_text.contains("method == 'INVITE'"));
+        assert_eq!(app.active_filter_summary, app.filter_dialog.summary());
+        assert!(app.active_filter_summary.is_some());
+
+        apply_filter_expression(&mut app, Some("method == 'BYE'".to_string()), (None, None));
+        assert_eq!(app.active_filter_text, "method == 'BYE'");
+        assert_eq!(app.active_filter_summary, None);
+        Ok(())
+    }
+
+    /// No method checked is applied on its own path; it still carries a
+    /// summary, and clearing the filter drops it.
+    #[test]
+    fn the_no_methods_filter_is_summarized_and_a_clear_drops_it() -> Result<(), TestError> {
+        let mut app = App::new_test();
+        app.filter_dialog.methods = [false; 10];
+        apply_filter_dialog(&mut app);
+        assert_eq!(app.active_filter_summary.as_deref(), Some("no methods"));
+        app.filter_dialog.methods = [true; 10];
+        apply_filter_dialog(&mut app);
+        assert!(app.active_filter.is_none(), "an empty dialog clears");
+        assert_eq!(app.active_filter_summary, None);
+        Ok(())
+    }
+
+    /// Every path that applies an expression drops the summary, including the
+    /// one for a dialog with no method checked.
+    #[test]
+    fn the_no_methods_path_drops_a_stale_summary() -> Result<(), TestError> {
+        let mut app = App::new_test();
+        app.active_filter_summary = Some("From~alice".to_string());
+        app.filter_dialog.methods = [false; 10];
+        apply_filter_expression(&mut app, Some("method == 'BYE'".to_string()), (None, None));
+        assert_eq!(app.active_filter_text, "(no methods selected)");
+        assert_eq!(app.active_filter_summary, None);
+        Ok(())
+    }
+
+    /// Clearing the filter drops its summary with it.
+    #[test]
+    fn clearing_the_active_filter_drops_its_summary() -> Result<(), TestError> {
+        let mut app = App::new_test();
+        app.filter_dialog.sip_from = "alice".to_string();
+        apply_filter_dialog(&mut app);
+        assert_eq!(app.active_filter_summary.as_deref(), Some("From~alice"));
+        app.clear_active_filter();
+        assert_eq!(app.active_filter_summary, None);
+        Ok(())
+    }
+
+    /// A dialog the DSL refuses keeps the filter that was in force, and that
+    /// filter's summary with it.
+    #[test]
+    fn a_refused_dialog_keeps_the_summary_in_force() -> Result<(), TestError> {
+        let mut app = App::new_test();
+        app.filter_dialog.sip_from = "alice".to_string();
+        apply_filter_dialog(&mut app);
+        assert_eq!(app.active_filter_summary.as_deref(), Some("From~alice"));
+        app.filter_dialog.header = "bad name: x".to_string();
+        apply_filter_dialog(&mut app);
+        assert!(
+            app.filter_dialog.error.is_some(),
+            "the header name is refused"
+        );
+        assert_eq!(app.active_filter_summary.as_deref(), Some("From~alice"));
         Ok(())
     }
 }

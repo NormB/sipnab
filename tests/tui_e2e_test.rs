@@ -287,6 +287,21 @@ mod tui_e2e {
         Ok(())
     }
 
+    /// `-c` applies the F7 filter, and status line 3 shows it as the dialog's
+    /// summary with the key that expands it; `F` shows the full expression
+    /// and `F` again returns to the summary.
+    #[test]
+    #[ignore = "needs tmux on PATH; run by CI with --ignored"]
+    fn tui_filter_detail_key_switches_the_view_filter_line() -> Result<(), TestError> {
+        let s = TuiSession::launch(80, 24, fixtures_dir(), &["-I", "sip_call.pcap", "-c"])?;
+        s.wait_for("View filter: F7: INVITE · F full")?;
+        s.literal("F")?;
+        s.wait_for("View filter: (method == 'INVITE')")?;
+        s.literal("F")?;
+        s.wait_for("View filter: F7: INVITE · F full")?;
+        Ok(())
+    }
+
     /// Tab in the real TUI switches to the stream list (the SSRC column header appears).
     #[test]
     #[ignore = "needs tmux on PATH; run by CI with --ignored"]

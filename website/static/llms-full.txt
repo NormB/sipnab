@@ -15596,6 +15596,12 @@ Suspect a header changed across a retransmit or a proxy hop?
   - These fields build a filter.
   - There is no free-form expression field.
   - Pass the full [Filter DSL](filter-dsl.md) through CLI `--filter`, for example `rtp.mos < 3.0`.
+- Status line 3 shows the filter the dialog built as a summary, such as
+  `F7: 7 methods, From~alice · F full`.
+  - `F` switches between the summary and the full expression, in every view.
+  - `view_filter_detail = "full"` under
+    [`[display]`](config-reference.md#display) opens the TUI with the full
+    expression.
 - `F9` clears the view filter and any kept search.
 - `i` prunes the dialogs that do *not* match, keeping only the matches.
 - `I` prunes the ones that do.
@@ -15778,6 +15784,7 @@ Annotated screenshots of every view are in the [TUI visual tour](#tui-views) at 
 | v | Show version (with git commit) in the status line |
 | n | Cycle name resolution (Off / Static / DNS) |
 | N | Name the selected address (map IP → host/FQDN) |
+| F | Show the filter the F7 dialog built as a summary or in full on status line 3 **(configurable: `filter_detail`)** |
 | F12 | Toggle mouse capture — off enables the terminal's native drag-to-select (wheel scrolling pauses until re-enabled) |
 | Mouse wheel | Scroll (every view: lists move the selection, text views scroll) |
 
@@ -16657,6 +16664,7 @@ The three lines above the list say what you are looking at.
     - `[file re-scan]` when `B` re-read a capture file under the filter.
 - Line 3 is the view filter from `F7` and any search you kept with Enter.
   - It also carries status messages, with errors in red.
+  - A line wider than the terminal ends in `…`.
 
 The key bar
 at the bottom lists the keys of the view you are in, `F1 Help` first after the
@@ -16812,6 +16820,25 @@ Each label says what its field matches:
 anything the fields cannot say, the [Filter DSL](filter-dsl.md) takes the full
 expression.
 
+Status line 3 shows the applied selections as a summary, one short item per
+field:
+
+- `7 methods` counts the checked methods. One checked method shows its name,
+  as in `INVITE`.
+- `From~alice` names the field and the text it matches.
+- `@sales` names a `[filters]` entry.
+- `after 2026-07-07T08:00:00Z` repeats a time bound.
+
+For example, `F7: 7 methods, From~alice, To~bob · F full`.
+
+- Press `F` in any view to show the full expression instead, and again to
+  return to the summary.
+  - The key is `filter_detail` in
+    [`[keybindings]`](config-reference.md#keybindings).
+  - Set `view_filter_detail = "full"` under
+    [`[display]`](config-reference.md#display) to start with the full
+    expression.
+
 ### Save dialog (F2)
 
 Save captured data in multiple formats. Use `Tab` to cycle through formats.
@@ -16872,7 +16899,7 @@ Toggle display options without leaving the TUI.
 ## See also
 
 - [theme-guide.md](theme-guide.md) — recolor every TUI element via `[theme]`
-- [config-reference.md](config-reference.md#keybindings) — rebind the 11 configurable keys
+- [config-reference.md](config-reference.md#keybindings) — rebind the 12 configurable keys
   via `[keybindings]`
 - [filter-dsl.md](filter-dsl.md) — the expression language the F7 filter
   dialog compiles down to (and the `--filter` flag exposes directly)
@@ -27220,6 +27247,7 @@ Output and TUI display settings.
 | `delta_time` | boolean | `false` | Show delta time between messages by default. `--delta-time` turns it on. `--no-delta-time` forces it off |
 | `from_to` | string | `"default"` | From/To column display: `"default"` (user else host:port), `"host-port"`, `"user"`, `"user-host-port"`. Cycle at runtime with `u`; `--from-to-mode` overrides this |
 | `mouse_capture` | boolean | `true` | Whether the TUI captures the mouse when it starts. `false` opens it with capture off, so the terminal's own drag-to-select works; `F12` toggles capture at runtime. With capture on, the mouse wheel scrolls |
+| `view_filter_detail` | string | `"summary"` | How status line 3 shows the filter the F7 dialog built. `"summary"` names each selection in a few words, such as `F7: 7 methods, From~alice`. `"full"` shows the expression. A filter typed as an expression is always shown in full. The `filter_detail` key (default `F`) toggles it at runtime. sipnab refuses any other value, naming the key |
 | `visible_columns` | array of strings | all columns | Call-list columns to show, by name (case-insensitive): `"#"`, `"Method"`, `"From"`, `"To"`, `"Source"`, `"Destination"`, `"State"`, `"Msgs"`, `"Date"`, `"PDD"`, `"Duration"`. Adjust at runtime with F10; `s` in the column selector writes the layout into the config file this run loaded (or the user config file (`$XDG_CONFIG_HOME/sipnab/sipnab.toml`, by default `~/.config/sipnab/sipnab.toml`) when none was), so it persists across sessions. sipnab refuses that save when the settings came from `/etc/sipnab/sipnab.toml` |
 
 ```toml
@@ -27228,6 +27256,7 @@ color = "always"
 payload_limit = 4096
 delta_time = true
 from_to = "user-host-port"
+view_filter_detail = "full"
 visible_columns = ["method", "from", "to", "source", "destination", "state", "msgs", "pdd"]
 ```
 
@@ -28182,7 +28211,7 @@ border = "#444466"
 
 ### [keybindings]
 
-TUI key binding overrides. The 11 configurable actions appear below. Unset fields use built-in defaults.
+TUI key binding overrides. The 12 configurable actions appear below. Unset fields use built-in defaults.
 
 Accepted key formats:
 
@@ -28203,6 +28232,7 @@ Accepted key formats:
 | `extended_flow` | string | `"F4"` | Toggle extended multi-leg flow |
 | `clear_calls` | string | `"F5"` | Clear all calls |
 | `column_selector` | string | `"F10"` | Open column selector |
+| `filter_detail` | string | `"F"` | Show the filter the F7 dialog built as a summary or in full on status line 3. Works in every view, ahead of the view's own keys; sipnab warns at startup when it takes a key a view uses |
 
 See [keybindings.md](keybindings.md) for the full shortcut reference, including the keys that are not remappable.
 
@@ -28219,6 +28249,7 @@ autoscroll = "A"
 extended_flow = "F4"
 clear_calls = "F5"
 column_selector = "F10"
+filter_detail = "F"
 ```
 
 <!-- vale sipnab.Headings = YES -->

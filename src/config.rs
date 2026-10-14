@@ -142,6 +142,7 @@ static KNOWN_KEYS: LazyLock<HashMap<&'static str, &'static [&'static str]>> = La
             "visible_columns",
             "from_to",
             "mouse_capture",
+            "view_filter_detail",
         ]
         .as_slice(),
     );
@@ -359,6 +360,7 @@ static KNOWN_KEYS: LazyLock<HashMap<&'static str, &'static [&'static str]>> = La
             "extended_flow",
             "clear_calls",
             "column_selector",
+            "filter_detail",
         ]
         .as_slice(),
     );
@@ -1318,6 +1320,10 @@ pub struct DisplayConfig {
     /// with capture off, so the terminal's own text selection works; F12
     /// toggles it at runtime. Unset or `true` captures it, for wheel scrolling.
     pub mouse_capture: Option<bool>,
+    /// How status line 3 shows the filter the F7 dialog built: `"summary"`
+    /// (one short token per selection) or `"full"` (the expression). The
+    /// `filter_detail` key toggles it at runtime. Unset means `"summary"`.
+    pub view_filter_detail: Option<String>,
 }
 
 impl DisplayConfig {
@@ -1339,8 +1345,8 @@ impl DisplayConfig {
         self.validate_tui_keys()
     }
 
-    /// The `[display]` keys only the TUI reads: `from_to` and
-    /// `visible_columns`. An unknown value used to be dropped when the TUI
+    /// The `[display]` keys only the TUI reads: `from_to`,
+    /// `view_filter_detail` and `visible_columns`. An unknown value used to be dropped when the TUI
     /// started, with only a log warning the TUI screen covers; an unknown
     /// column label hid that column, and `["x"]` hid all of them.
     ///
@@ -1355,6 +1361,13 @@ impl DisplayConfig {
                 return Err(crate::Error::ConfigInvalid(format!(
                     "[display] from_to must be one of default, host-port, user, \
                      user-host-port, got {m:?}"
+                )));
+            }
+            if let Some(m) = &self.view_filter_detail
+                && crate::tui::ViewFilterDetail::parse(m).is_none()
+            {
+                return Err(crate::Error::ConfigInvalid(format!(
+                    "[display] view_filter_detail must be one of summary, full, got {m:?}"
                 )));
             }
             let labels = crate::tui::call_list::COLUMN_LABELS;
@@ -3142,6 +3155,9 @@ pub struct KeybindingsConfig {
     pub clear_calls: Option<String>,
     /// Open column selector (default: `"F10"`).
     pub column_selector: Option<String>,
+    /// Switch status line 3 between the summary and the full expression of
+    /// the F7 dialog's filter (default: `"F"`).
+    pub filter_detail: Option<String>,
 }
 
 impl ThemeConfig {
@@ -3203,6 +3219,7 @@ impl KeybindingsConfig {
             ("extended_flow", &self.extended_flow),
             ("clear_calls", &self.clear_calls),
             ("column_selector", &self.column_selector),
+            ("filter_detail", &self.filter_detail),
         ] {
             if let Some(v) = value
                 && parse_keycode(v).is_none()
@@ -4359,6 +4376,47 @@ from_to = "user-host-port"
 "#;
         let config: Config = toml::from_str(toml_str)?;
         assert_eq!(config.display.from_to.as_deref(), Some("user-host-port"));
+        Ok(())
+    }
+
+    /// `[display] view_filter_detail` takes `summary` or `full`; any other
+    /// spelling is refused when the config loads, naming the key, instead of
+    /// being dropped when the TUI starts.
+    #[cfg(feature = "tui")]
+    #[test]
+    fn display_view_filter_detail_is_validated() -> Result<(), TestError> {
+        for ok in ["summary", "full"] {
+            let config: Config =
+                toml::from_str(&format!("[display]\nview_filter_detail = \"{ok}\"\n"))?;
+            assert_eq!(config.display.view_filter_detail.as_deref(), Some(ok));
+            config.display.validate()?;
+        }
+        let bad: Config = toml::from_str("[display]\nview_filter_detail = \"short\"\n")?;
+        let err = bad
+            .display
+            .validate()
+            .err()
+            .ok_or("an unknown mode must be refused")?
+            .to_string();
+        assert!(
+            err.contains("view_filter_detail") && err.contains("summary, full"),
+            "{err}"
+        );
+        Ok(())
+    }
+
+    /// `[keybindings] filter_detail` is checked like every other binding.
+    #[cfg(feature = "tui")]
+    #[test]
+    fn keybindings_filter_detail_is_validated() -> Result<(), TestError> {
+        let bad: Config = toml::from_str("[keybindings]\nfilter_detail = \"Shift-F\"\n")?;
+        let err = bad
+            .keybindings
+            .validate()
+            .err()
+            .ok_or("an unparseable key must be refused")?
+            .to_string();
+        assert!(err.contains("filter_detail"), "{err}");
         Ok(())
     }
 
