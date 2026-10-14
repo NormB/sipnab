@@ -235,6 +235,9 @@ fn every_flag_alias_is_documented() -> Result<(), TestError> {
 /// measured 98. The vCon Dialog content work added `MAX_FINDING_TAGS`
 /// (src/output/vcon.rs, +1) and `MAX_KEY_PRESSES` (src/rtp/stream.rs, +1);
 /// docs/vcon.md names both (-2), so the count holds at 98.
+/// The Opus and vCon reader picks added `MAX_PACKET` (src/rtp/ogg_opus.rs,
+/// +1) and `MAX_SIGNED_LAYERS` (src/output/vcon_jose.rs, +1); docs/vcon.md
+/// names both (-2), so it still holds at 98.
 const UNDOCUMENTED_CEILINGS: usize = 98;
 
 /// Whether a documented ceiling's parenthesized number matches the source.

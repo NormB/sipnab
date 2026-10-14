@@ -114,7 +114,7 @@ entry that carries them.
     - At most 256 KiB, at most 10 seconds, each URL once per run.
     - Without the flag sipnab fetches nothing and refuses such a container, naming the flag.
 - **`--vcon-resign` re-signs a signed vCon for a long-term archive.**
-  - draft-ietf-vcon-vcon-core-04 section 5.2.3: before the signing certificate of JWS1 expires, the vCon is verified and JWS1 is signed whole as the payload of JWS2.
+  - draft-ietf-vcon-vcon-core-04 section 5.2.3: before the signing certificate of JWS1 expires, a re-signer verifies the vCon and signs JWS1 whole as the payload of JWS2.
   - `sipnab --vcon-resign <FILE> --vcon-resign-key <KEY> --vcon-resign-cert <CHAIN> --vcon-resign-out <OUT>`:
     - verifies every signed layer of the input, and its outermost signer with `--vcon-signer-ca` and `--vcon-signer-sha256` when set;
     - refuses an outermost signing certificate outside its validity period, an unsigned input, and an output that exists;
@@ -149,9 +149,9 @@ entry that carries them.
 - **Every vCon reader opens the signed, encrypted and gzip forms.**
   - The readers are `-I`, the MCP `analyze_vcon` and `validate_vcon` tools, and `POST /v1/vcon/analyze` and `POST /v1/vcon/validate`.
   - They share one step, as draft-ietf-vcon-vcon-core-04 section 5.4 tells the forms apart:
-    - the gzip format (section 6.2), known by the magic bytes `1f 8b`, is inflated up to 64 MiB;
-    - the encrypted form (section 5.3) is decrypted with `--vcon-key <FILE>` (`[vcon_input] key`), a private key readable by its owner only;
-    - the signed form (section 5.2) is verified, with no key needed.
+    - sipnab inflates the gzip format (section 6.2), known by the magic bytes `1f 8b`, up to 64 MiB;
+    - sipnab decrypts the encrypted form (section 5.3) with `--vcon-key <FILE>` (`[vcon_input] key`), a private key readable by its owner only;
+    - sipnab verifies the signed form (section 5.2), with no key needed.
   - Without a key, sipnab refuses an encrypted container and names `--vcon-key`.
     - Before, `-I` reported it as a JSON object with none of the members a vCon has.
   - Before, `-I` handed a gzip format vCon to the capture reader, which reported it as not a capture.

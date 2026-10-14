@@ -241,8 +241,9 @@ The bitrate is 24 kbit/s per channel, constant.
 - [RFC 7587 section 3.1.1](https://www.rfc-editor.org/rfc/rfc7587.html#section-3.1.1) recommends 8 to 12 kbit/s for narrowband speech and 16 to 20 kbit/s for wideband speech. 24 kbit/s is above both.
 - Constant, because [RFC 7587 section 3.1.2](https://www.rfc-editor.org/rfc/rfc7587.html#section-3.1.2) names an encrypted stream as the reason to choose a constant bitrate. A rule with `encrypt_to` encrypts the recording.
 - A two-way call is two channels: 6,000 bytes of audio a second.
+- Each Opus packet is at most 1275 bytes (`MAX_PACKET` (1275) in the source), the largest [RFC 6716 section 3.4](https://www.rfc-editor.org/rfc/rfc6716.html#section-3.4) allows.
 
-The inline budget applies to the encoded size. Measured on `tests/pcap-samples/SIP_CALL_RTP_G711`, a two-way G.711 call of 17.502 seconds exported as 8 kHz stereo:
+The inline budget applies to the encoded size. Measured on [`tests/pcap-samples/SIP_CALL_RTP_G711`](https://github.com/NormB/sipnab/blob/main/tests/pcap-samples/SIP_CALL_RTP_G711), a two-way G.711 call of 17.502 seconds exported as 8 kHz stereo:
 
 | Format | File | base64url in the container | Seconds in the 5 MiB default |
 |--------|------|----------------------------|------------------------------|
@@ -1064,7 +1065,9 @@ INFO sipnab::app::bootstrap: --vcon-resign: wrote 'archived.vcon.json'
 - It refuses an unsigned or encrypted input: section 5.2.3 re-signs the signed
   form.
 
-Every reader walks the nesting, `-I` among them, up to 16 signed layers:
+Every reader walks the nesting, `-I` among them, up to 16 signed layers
+(`MAX_SIGNED_LAYERS` (16) in the source), and refuses a container with more.
+To read one:
 
 ```sh
 sipnab -N -I archived.vcon.json --json-dialogs --no-cli-print --quiet | jq -c '{call_id, msg_count}'
@@ -1484,8 +1487,8 @@ So do not put a gzip format file in a spool that a conserver reads.
     `failed/`.
   - With `--vcon-forward-once`, the file stays in the spool and the run
     exits `1`.
-  - The back-off is kept in memory, so a restarted forwarder starts it again
-    at `--vcon-forward-backoff-first`.
+  - The forwarder keeps the back-off in memory, so after a restart it starts
+    again at `--vcon-forward-backoff-first`.
 
 Then it moves the file by the answer:
 
