@@ -12,6 +12,12 @@ entry that carries them.
 
 ### Added
 
+- **`[[vcon.rule]] sip_messages` attaches the initial INVITE and its final response in wire format.**
+  - The attachments are `sip-invite` and `sip-response`, with `mediatype: "message/sip"`, and `sip-sdp` for each one's SDP, per [section 8.1 of draft-howe-vcon-sip-signaling-00](https://datatracker.ietf.org/doc/html/draft-howe-vcon-sip-signaling-00#section-8.1).
+  - The bytes lose their credential header lines, as the trace does.
+  - The rule's inline budget covers them, and the completeness attachment names any it refused.
+  - `--redact` removes them.
+  - The `-I` reader reads `message/sip` attachments only from a container that has no trace, so it reads no message twice.
 - **The vCon `sip-message-trace` body carries the draft's trace format.**
   - The body and each message gain the fields of [section 6.2.1 of draft-howe-vcon-sip-signaling-00](https://datatracker.ietf.org/doc/html/draft-howe-vcon-sip-signaling-00#section-6.2.1): `direction`, `party`, `status_text` and `body`.
   - `version` is now the string `"1.0"` the draft defines, and was the number `1`.

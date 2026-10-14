@@ -1338,6 +1338,9 @@ impl crate::output::redact::Redact for Vcon {
         for object in dialog.iter_mut() {
             object.redact(r);
         }
+        // The wire attachments are refused rather than rewritten: see
+        // `add_sip_message_attachments`.
+        attachments.retain(|a| !is_wire_attachment(a));
         for attachment in attachments.iter_mut() {
             attachment.redact(r);
             if attachment.purpose == MESSAGE_TRACE_PURPOSE {
@@ -3116,6 +3119,222 @@ fn draft_message_fields(
                 map.insert("body_encoding".into(), "base64url".into());
             }
         }
+    }
+}
+
+/// `purpose` of the initial INVITE in wire format,
+/// [draft-howe-vcon-sip-signaling-00 section 6.1.1](https://datatracker.ietf.org/doc/html/draft-howe-vcon-sip-signaling-00#section-6.1.1).
+pub const SIP_INVITE_PURPOSE: &str = "sip-invite";
+
+/// `purpose` of a SIP response in wire format,
+/// [draft-howe-vcon-sip-signaling-00 section 6.1.1](https://datatracker.ietf.org/doc/html/draft-howe-vcon-sip-signaling-00#section-6.1.1).
+pub const SIP_RESPONSE_PURPOSE: &str = "sip-response";
+
+/// `purpose` of an SDP body,
+/// [draft-howe-vcon-sip-signaling-00 section 6.3](https://datatracker.ietf.org/doc/html/draft-howe-vcon-sip-signaling-00#section-6.3).
+pub const SIP_SDP_PURPOSE: &str = "sip-sdp";
+
+/// The media type of a SIP message in wire format, which section 6.1.2 makes a
+/// MUST.
+const MESSAGE_SIP_MEDIATYPE: &str = "message/sip";
+
+/// The media type of an SDP attachment, which section 6.3 makes a MUST.
+const SDP_MEDIATYPE: &str = "application/sdp";
+
+/// Whether an attachment carries wire bytes or an SDP body, which redaction
+/// removes (see [`add_sip_message_attachments`]).
+fn is_wire_attachment(attachment: &Attachment) -> bool {
+    [SIP_INVITE_PURPOSE, SIP_RESPONSE_PURPOSE, SIP_SDP_PURPOSE].contains(&attachment.purpose)
+}
+
+/// Add the minimal producer's attachments of
+/// [draft-howe-vcon-sip-signaling-00 section 8.1](https://datatracker.ietf.org/doc/html/draft-howe-vcon-sip-signaling-00#section-8.1)
+/// to a one-leg container: the initial INVITE and its final response as
+/// `message/sip` (sections 6.1.1 and 6.1.2), and each one's SDP body as
+/// `application/sdp` (section 6.3).
+///
+/// Which messages:
+///
+/// - The final response is the first transmission of the last final (200 to
+///   699) response to an INVITE that carried no `To` tag. After a `407`
+///   challenge that is the answer to the re-sent INVITE.
+/// - The INVITE is the first transmission of the request with that
+///   response's CSeq number. With no final response it is the last initial
+///   INVITE.
+///
+/// Each attachment names the party whose tag the message carries, and the
+/// observer when the tag matches neither party (a proxy's own response).
+/// `start` is when sipnab captured the message, and `dialog` is 0, the
+/// signaling object.
+///
+/// The bytes are the message as captured, with every credential-bearing
+/// header line ([`CREDENTIAL_HEADERS`]) removed, as the trace removes them.
+/// UTF-8 bytes use the `none` encoding; anything else is base64url, as
+/// section 6.1.2 requires.
+///
+/// `budget` is the rule's inline budget in bytes, for these attachments
+/// together. An attachment that does not fit is left out and named, with its
+/// size, in the completeness attachment's `sip_messages_refused`.
+///
+/// Redaction removes all three kinds (see [`is_wire_attachment`]): the bytes
+/// hold every identifier the trace holds, in a form redaction cannot rewrite
+/// without changing the message they are a copy of.
+pub fn add_sip_message_attachments(container: &mut Vcon, dialog: &SipDialog, budget: usize) {
+    let observer = container.observer_index();
+    let (invite, response) = minimal_exchange(dialog);
+    let mut wanted: Vec<Attachment> = Vec::new();
+    for (purpose, message) in [
+        (SIP_INVITE_PURPOSE, invite),
+        (SIP_RESPONSE_PURPOSE, response),
+    ] {
+        let Some(m) = message else { continue };
+        let party = sender_party(dialog, m).unwrap_or(observer);
+        let start = m.timestamp.to_rfc3339();
+        let (encoding, body) = inline_text(&without_credentials(&m.raw));
+        wanted.push(Attachment {
+            purpose,
+            party,
+            dialog: 0,
+            start: start.clone(),
+            mediatype: MESSAGE_SIP_MEDIATYPE,
+            encoding,
+            body,
+        });
+        if m.content_type()
+            .is_some_and(|ct| ct.to_ascii_lowercase().starts_with(SDP_MEDIATYPE))
+            && !m.body.is_empty()
+        {
+            let (encoding, body) = inline_text(&m.body);
+            wanted.push(Attachment {
+                purpose: SIP_SDP_PURPOSE,
+                party,
+                dialog: 0,
+                start,
+                mediatype: SDP_MEDIATYPE,
+                encoding,
+                body,
+            });
+        }
+    }
+
+    let mut left = budget;
+    let mut refused: Vec<serde_json::Value> = Vec::new();
+    for attachment in wanted {
+        let bytes = attachment.body.as_str().map_or(0, str::len);
+        if bytes <= left {
+            left -= bytes;
+            container.attachments.push(attachment);
+        } else {
+            refused.push(serde_json::json!({
+                "purpose": attachment.purpose,
+                "bytes": bytes,
+            }));
+        }
+    }
+    if refused.is_empty() {
+        return;
+    }
+    if let Some(map) = container
+        .attachments
+        .iter_mut()
+        .find(|a| a.purpose == COMPLETENESS_PURPOSE)
+        .and_then(|a| a.body.as_object_mut())
+    {
+        map.insert("sip_messages_refused".into(), refused.into());
+    }
+}
+
+/// The initial INVITE and its final response, as [`add_sip_message_attachments`]
+/// chooses them.
+fn minimal_exchange(
+    dialog: &SipDialog,
+) -> (
+    Option<&crate::sip::SipMessage>,
+    Option<&crate::sip::SipMessage>,
+) {
+    let is_initial_invite = |m: &crate::sip::SipMessage| {
+        m.is_request
+            && m.method.as_ref() == Some(&crate::sip::SipMethod::Invite)
+            && m.to_tag().is_none()
+    };
+    let initial_cseqs: Vec<u32> = dialog
+        .messages
+        .iter()
+        .filter(|m| is_initial_invite(m))
+        .filter_map(|m| m.cseq().map(|(n, _)| n))
+        .collect();
+    let final_cseq = dialog
+        .messages
+        .iter()
+        .rev()
+        .filter(|m| !m.is_request && m.status_code.is_some_and(|c| (200..700).contains(&c)))
+        .filter_map(|m| m.cseq().filter(|(_, method)| *method == "INVITE"))
+        .map(|(n, _)| n)
+        .find(|n| initial_cseqs.contains(n));
+    let Some(cseq) = final_cseq else {
+        return (
+            dialog.messages.iter().rev().find(|m| is_initial_invite(m)),
+            None,
+        );
+    };
+    let in_transaction = |m: &&crate::sip::SipMessage| {
+        m.cseq()
+            .is_some_and(|(n, method)| n == cseq && method == "INVITE")
+    };
+    let invite = dialog
+        .messages
+        .iter()
+        .filter(in_transaction)
+        .find(|m| is_initial_invite(m));
+    // The LAST final status of the transaction, then its first transmission:
+    // a retransmitted 200 is the same response.
+    let last_final = dialog
+        .messages
+        .iter()
+        .rev()
+        .filter(in_transaction)
+        .find(|m| !m.is_request && m.status_code.is_some_and(|c| c >= 200))
+        .and_then(|m| m.status_code);
+    let response = dialog
+        .messages
+        .iter()
+        .filter(in_transaction)
+        .find(|m| !m.is_request && m.status_code == last_final);
+    (invite, response)
+}
+
+/// `raw` without the header lines whose name is a credential header, and
+/// without the folded continuation lines of those headers.
+///
+/// Only the header section is filtered; the body is kept byte for byte, so
+/// `Content-Length` still describes it.
+fn without_credentials(raw: &[u8]) -> Vec<u8> {
+    let split = raw
+        .windows(4)
+        .position(|w| w == b"\r\n\r\n")
+        .map_or(raw.len(), |i| i + 2);
+    let (head, rest) = raw.split_at(split);
+    let mut out = Vec::with_capacity(raw.len());
+    let mut dropping = false;
+    for line in head.split_inclusive(|b| *b == b'\n') {
+        let folded = line.first().is_some_and(|b| *b == b' ' || *b == b'\t');
+        if !folded {
+            dropping = std::str::from_utf8(line).is_ok_and(header_line_is_a_credential);
+        }
+        if !dropping {
+            out.extend_from_slice(line);
+        }
+    }
+    out.extend_from_slice(rest);
+    out
+}
+
+/// An inline attachment body: the text with the `none` encoding when it is
+/// UTF-8, otherwise base64url.
+fn inline_text(bytes: &[u8]) -> (&'static str, serde_json::Value) {
+    match std::str::from_utf8(bytes) {
+        Ok(text) => ("none", text.into()),
+        Err(_) => ("base64url", URL_SAFE_NO_PAD.encode(bytes).into()),
     }
 }
 
@@ -8245,6 +8464,271 @@ mod tests {
         assert_eq!(traces[0].body["messages"][0]["party"], 0);
         assert_eq!(traces[1].body["messages"][0]["party"], observed);
         assert_eq!(traces[1].body["messages"][2]["party"], observed + 1);
+        Ok(())
+    }
+
+    // ── sip-invite, sip-response and sip-sdp attachments ──
+
+    /// An SDP offer or answer with one audio line on `port`.
+    fn sdp_body(port: u16) -> String {
+        format!(
+            "v=0\r\no=- 1 1 IN IP4 10.0.0.1\r\ns=-\r\nc=IN IP4 10.0.0.1\r\nt=0 0\r\n\
+             m=audio {port} RTP/AVP 0\r\na=rtpmap:0 PCMU/8000\r\n"
+        )
+    }
+
+    /// A message parsed from a first line, headers and a body.
+    fn message_with_body(
+        first_line: &str,
+        headers: &[&str],
+        body: &[u8],
+    ) -> Result<crate::sip::SipMessage, TestError> {
+        let length = format!("Content-Length: {}", body.len());
+        let mut all: Vec<&str> = headers.to_vec();
+        all.push(&length);
+        Ok(parse_sip(
+            &build_sip(first_line, &all, body),
+            ts()?,
+            localhost(),
+            localhost(),
+            5060,
+            5060,
+            TransportProto::Udp,
+        )?)
+    }
+
+    /// An initial INVITE from Alice with CSeq `cseq`, extra headers and an
+    /// SDP offer.
+    fn offer(cseq: u32, extra: &[&str]) -> Result<crate::sip::SipMessage, TestError> {
+        let cseq_line = format!("CSeq: {cseq} INVITE");
+        let mut headers = vec![
+            "Via: SIP/2.0/UDP 10.0.0.1:5060;branch=z9hG4bK1",
+            "From: \"Alice\" <sip:alice@example.com>;tag=t1",
+            "To: \"Bob\" <sip:bob@example.net>",
+            "Call-ID: vcon-fixture@example.com",
+            &cseq_line,
+            "Content-Type: application/sdp",
+        ];
+        headers.extend_from_slice(extra);
+        message_with_body(
+            "INVITE sip:bob@example.net SIP/2.0",
+            &headers,
+            sdp_body(4000).as_bytes(),
+        )
+    }
+
+    /// A response from Bob to the INVITE with CSeq `cseq`, with an SDP answer
+    /// when `with_sdp`.
+    fn answer_to(
+        cseq: u32,
+        status: &str,
+        to_tag: &str,
+        with_sdp: bool,
+    ) -> Result<crate::sip::SipMessage, TestError> {
+        let cseq_line = format!("CSeq: {cseq} INVITE");
+        let to = format!("To: \"Bob\" <sip:bob@example.net>;tag={to_tag}");
+        let mut headers = vec![
+            "Via: SIP/2.0/UDP 10.0.0.1:5060;branch=z9hG4bK1",
+            "From: \"Alice\" <sip:alice@example.com>;tag=t1",
+            &to,
+            "Call-ID: vcon-fixture@example.com",
+            &cseq_line,
+        ];
+        let body = if with_sdp {
+            headers.push("Content-Type: application/sdp");
+            sdp_body(5000)
+        } else {
+            String::new()
+        };
+        message_with_body(&format!("SIP/2.0 {status}"), &headers, body.as_bytes())
+    }
+
+    /// The attachments of `v` with `purpose`.
+    fn with_purpose<'a>(v: &'a Vcon, purpose: &str) -> Vec<&'a Attachment> {
+        v.attachments
+            .iter()
+            .filter(|a| a.purpose == purpose)
+            .collect()
+    }
+
+    /// GAP-13: the minimal producer of
+    /// [draft-howe-vcon-sip-signaling-00 section 8.1](https://datatracker.ietf.org/doc/html/draft-howe-vcon-sip-signaling-00#section-8.1):
+    /// the initial INVITE and the final response as `message/sip`
+    /// attachments in full wire format (section 6.1.2), and each SDP body as
+    /// an `application/sdp` attachment (section 6.3), each naming its sender.
+    #[test]
+    fn the_initial_invite_and_final_response_travel_as_wire_messages() -> Result<(), TestError> {
+        let dialog = timed_dialog(vec![
+            (offer(1, &[])?, 0),
+            (answer_to(1, "180 Ringing", "t2", false)?, 1),
+            (answer_to(1, "200 OK", "t2", true)?, 2),
+        ])?;
+        let mut v = export_with(&dialog, &clean_facts())?;
+        add_sip_message_attachments(&mut v, &dialog, MAX_INLINE_MEDIA_BYTES);
+        valid_json(&v)?;
+
+        let invite = with_purpose(&v, SIP_INVITE_PURPOSE);
+        assert_eq!(invite.len(), 1);
+        assert_eq!(invite[0].mediatype, "message/sip");
+        assert_eq!(invite[0].encoding, "none");
+        assert_eq!(invite[0].party, 0);
+        assert_eq!(invite[0].dialog, 0);
+        assert_eq!(invite[0].start, dialog.messages[0].timestamp.to_rfc3339());
+        assert_eq!(
+            invite[0].body.as_str(),
+            std::str::from_utf8(&dialog.messages[0].raw).ok()
+        );
+
+        let response = with_purpose(&v, SIP_RESPONSE_PURPOSE);
+        assert_eq!(response.len(), 1, "the final response only");
+        assert_eq!(response[0].party, 1);
+        assert!(
+            response[0]
+                .body
+                .as_str()
+                .is_some_and(|b| b.starts_with("SIP/2.0 200 OK\r\n")),
+            "{:?}",
+            response[0].body
+        );
+
+        let sdp = with_purpose(&v, SIP_SDP_PURPOSE);
+        assert_eq!(sdp.len(), 2, "the offer and the answer");
+        assert_eq!(sdp[0].mediatype, "application/sdp");
+        assert_eq!(sdp[0].party, 0);
+        assert_eq!(sdp[0].body, serde_json::json!(sdp_body(4000)));
+        assert_eq!(sdp[1].party, 1);
+        assert_eq!(sdp[1].body, serde_json::json!(sdp_body(5000)));
+        Ok(())
+    }
+
+    /// GAP-13: a challenged call attaches the INVITE the final response
+    /// answered, and its credential header is removed from the wire bytes,
+    /// as it is removed from the trace.
+    #[test]
+    fn a_challenged_call_attaches_the_answered_invite_without_its_credentials()
+    -> Result<(), TestError> {
+        let dialog = timed_dialog(vec![
+            (offer(1, &[])?, 0),
+            (
+                answer_to(1, "407 Proxy Authentication Required", "p1", false)?,
+                1,
+            ),
+            (
+                offer(
+                    2,
+                    &["Proxy-Authorization: Digest username=\"alice\", response=\"secret\""],
+                )?,
+                2,
+            ),
+            (answer_to(2, "200 OK", "t2", true)?, 3),
+        ])?;
+        let mut v = export_with(&dialog, &clean_facts())?;
+        add_sip_message_attachments(&mut v, &dialog, MAX_INLINE_MEDIA_BYTES);
+        let invite = with_purpose(&v, SIP_INVITE_PURPOSE);
+        let text = invite[0].body.as_str().ok_or("a text body")?;
+        assert!(text.contains("CSeq: 2 INVITE"), "{text}");
+        assert!(
+            !text.to_ascii_lowercase().contains("proxy-authorization"),
+            "{text}"
+        );
+        assert!(!text.contains("secret"), "{text}");
+        assert!(text.ends_with(&sdp_body(4000)), "the body is kept: {text}");
+        let response = with_purpose(&v, SIP_RESPONSE_PURPOSE);
+        assert!(
+            response[0]
+                .body
+                .as_str()
+                .is_some_and(|b| b.starts_with("SIP/2.0 200 OK")),
+            "{:?}",
+            response[0].body
+        );
+        Ok(())
+    }
+
+    /// GAP-13: a message that is not UTF-8 is base64url, as section 6.1.2
+    /// requires for anything but the `none` encoding of UTF-8 text.
+    #[test]
+    fn a_wire_message_that_is_not_utf8_is_base64url() -> Result<(), TestError> {
+        let binary = message_with_body(
+            "INVITE sip:bob@example.net SIP/2.0",
+            &[
+                "From: \"Alice\" <sip:alice@example.com>;tag=t1",
+                "To: \"Bob\" <sip:bob@example.net>",
+                "Call-ID: vcon-fixture@example.com",
+                "CSeq: 1 INVITE",
+                "Content-Type: application/octet-stream",
+            ],
+            &[0xff, 0xfe],
+        )?;
+        let dialog = timed_dialog(vec![(binary, 0)])?;
+        let mut v = export_with(&dialog, &clean_facts())?;
+        add_sip_message_attachments(&mut v, &dialog, MAX_INLINE_MEDIA_BYTES);
+        let invite = with_purpose(&v, SIP_INVITE_PURPOSE);
+        assert_eq!(invite[0].encoding, "base64url");
+        assert_eq!(
+            invite[0].body,
+            serde_json::json!(URL_SAFE_NO_PAD.encode(&dialog.messages[0].raw))
+        );
+        Ok(())
+    }
+
+    /// GAP-13: the rule's inline budget covers these attachments. One that
+    /// does not fit is left out, and the completeness attachment names it.
+    #[test]
+    fn a_wire_message_over_the_budget_is_refused_and_named() -> Result<(), TestError> {
+        let dialog = timed_dialog(vec![
+            (offer(1, &[])?, 0),
+            (answer_to(1, "200 OK", "t2", true)?, 2),
+        ])?;
+        let mut v = export_with(&dialog, &clean_facts())?;
+        add_sip_message_attachments(&mut v, &dialog, 0);
+        for purpose in [SIP_INVITE_PURPOSE, SIP_RESPONSE_PURPOSE, SIP_SDP_PURPOSE] {
+            assert!(with_purpose(&v, purpose).is_empty(), "{purpose}");
+        }
+        let completeness = with_purpose(&v, COMPLETENESS_PURPOSE);
+        let refused = completeness[0].body["sip_messages_refused"]
+            .as_array()
+            .ok_or("a refused list")?;
+        assert_eq!(refused.len(), 4);
+        assert_eq!(refused[0]["purpose"], SIP_INVITE_PURPOSE);
+        assert!(refused[0]["bytes"].as_u64().is_some_and(|n| n > 0));
+        Ok(())
+    }
+
+    /// GAP-13: under redaction the wire attachments are removed. The bytes
+    /// hold every identifier the trace holds, in a form redaction cannot
+    /// rewrite without changing the message.
+    #[test]
+    fn redaction_removes_the_wire_attachments() -> Result<(), TestError> {
+        use crate::output::redact::{Redact as _, RedactionKey, RedactionPolicy};
+        let dialog = timed_dialog(vec![
+            (offer(1, &[])?, 0),
+            (answer_to(1, "200 OK", "t2", true)?, 2),
+        ])?;
+        let mut v = export_with(&dialog, &clean_facts())?;
+        add_sip_message_attachments(&mut v, &dialog, MAX_INLINE_MEDIA_BYTES);
+        assert_eq!(with_purpose(&v, SIP_SDP_PURPOSE).len(), 2, "precondition");
+        let policy = RedactionPolicy::new(RedactionKey::from_secret(b"wire"));
+        v.redact(&policy.redactor());
+        for purpose in [SIP_INVITE_PURPOSE, SIP_RESPONSE_PURPOSE, SIP_SDP_PURPOSE] {
+            assert!(with_purpose(&v, purpose).is_empty(), "{purpose}");
+        }
+        Ok(())
+    }
+
+    /// GAP-13: sipnab's own `-I` reader takes the messages from the trace and
+    /// does not read the wire attachments a second time.
+    #[test]
+    fn reading_the_container_back_counts_each_message_once() -> Result<(), TestError> {
+        let dialog = timed_dialog(vec![
+            (offer(1, &[])?, 0),
+            (answer_to(1, "200 OK", "t2", true)?, 2),
+        ])?;
+        let mut v = export_with(&dialog, &clean_facts())?;
+        add_sip_message_attachments(&mut v, &dialog, MAX_INLINE_MEDIA_BYTES);
+        let rebuilt = crate::capture::vcon_input::rebuild(&serde_json::to_value(&v)?, "test")
+            .map_err(|e| format!("{e}"))?;
+        assert_eq!(rebuilt.messages.len(), dialog.messages.len());
         Ok(())
     }
 }

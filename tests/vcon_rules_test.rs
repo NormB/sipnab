@@ -291,3 +291,85 @@ fn redact_without_any_export_is_refused() -> Result<(), TestError> {
     }
     Ok(())
 }
+
+/// The purposes of a container's attachments.
+fn purposes(container: &serde_json::Value) -> Vec<String> {
+    container["attachments"]
+        .as_array()
+        .map(|list| {
+            list.iter()
+                .filter_map(|a| a["purpose"].as_str().map(str::to_owned))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// `sip_messages = true` adds the initial INVITE and the final response as
+/// `message/sip` attachments, and their SDP as `application/sdp`
+/// (draft-howe-vcon-sip-signaling-00 section 8.1); a rule without it adds
+/// none.
+#[test]
+fn a_rule_with_sip_messages_attaches_the_wire_messages() -> Result<(), TestError> {
+    let home = tempfile::tempdir()?;
+    let (with, without) = (home.path().join("with"), home.path().join("without"));
+    let config = rule("with", CALL, &with, "omit").replace(
+        "audio = \"omit\"\n",
+        "audio = \"omit\"\nsip_messages = true\n",
+    ) + &rule("without", CALL, &without, "omit");
+    let out = run(&config, &[], home.path())?;
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(out.status.success(), "{stderr}");
+
+    let written = containers(&with)?;
+    assert_eq!(written.len(), 1, "{stderr}");
+    let found = purposes(&written[0]);
+    for purpose in ["sip-invite", "sip-response", "sip-sdp"] {
+        assert!(found.iter().any(|p| p == purpose), "{purpose} in {found:?}");
+    }
+    let invite = written[0]["attachments"]
+        .as_array()
+        .and_then(|l| l.iter().find(|a| a["purpose"] == "sip-invite"))
+        .ok_or("a sip-invite attachment")?;
+    assert_eq!(invite["mediatype"], "message/sip");
+    assert!(
+        invite["body"]
+            .as_str()
+            .is_some_and(|b| b.starts_with("INVITE ")),
+        "{invite}"
+    );
+
+    let plain = containers(&without)?;
+    assert_eq!(plain.len(), 1, "{stderr}");
+    let found = purposes(&plain[0]);
+    assert!(
+        !found
+            .iter()
+            .any(|p| p.starts_with("sip-") && p != "sip-message-trace"),
+        "{found:?}"
+    );
+    Ok(())
+}
+
+/// Under `--redact` a `sip_messages` rule writes no wire attachment.
+#[test]
+fn redact_refuses_the_wire_messages() -> Result<(), TestError> {
+    let home = tempfile::tempdir()?;
+    let dir = home.path().join("redacted");
+    let config = rule("redacted", CALL, &dir, "omit").replace(
+        "audio = \"omit\"\n",
+        "audio = \"omit\"\nsip_messages = true\n",
+    );
+    let out = run(&config, &["--redact"], home.path())?;
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(out.status.success(), "{stderr}");
+    let written = containers(&dir)?;
+    assert_eq!(written.len(), 1, "{stderr}");
+    let found = purposes(&written[0]);
+    for purpose in ["sip-invite", "sip-response", "sip-sdp"] {
+        assert!(
+            !found.iter().any(|p| p == purpose),
+            "{purpose} in {found:?}"
+        );
+    }
+    Ok(())
+}

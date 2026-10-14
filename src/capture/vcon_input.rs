@@ -468,6 +468,15 @@ mod reader {
             .as_array()
             .map(Vec::as_slice)
             .unwrap_or_default();
+        // A trace holds every message of the dialog, and the `message/sip`
+        // attachments beside it (draft-howe-vcon-sip-signaling-00 section
+        // 6.1, such as sipnab's `sip-invite` and `sip-response`) are copies of
+        // some of them. Reading both would put each copied message in the
+        // ladder twice, so `message/sip` is read only from a container that
+        // carries no trace.
+        let has_trace = attachments
+            .iter()
+            .any(|a| a["purpose"] == "sip-message-trace");
         for attachment in attachments {
             if attachment["purpose"] == "sip-message-trace" {
                 gaps.signaling = true;
@@ -475,9 +484,10 @@ mod reader {
                     Ok(trace) => read_trace(&trace, &mut messages, &mut gaps),
                     Err(e) => gaps.unreadable(format!("a sip-message-trace body: {e}")),
                 }
-            } else if attachment["mediatype"]
-                .as_str()
-                .is_some_and(|m| m.eq_ignore_ascii_case("message/sip"))
+            } else if !has_trace
+                && attachment["mediatype"]
+                    .as_str()
+                    .is_some_and(|m| m.eq_ignore_ascii_case("message/sip"))
             {
                 gaps.signaling = true;
                 match read_message_sip(attachment) {

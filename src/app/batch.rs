@@ -7298,6 +7298,8 @@ pub struct VconRule {
     pub sealing: Option<std::sync::Arc<crate::output::vcon_jose::Sealing>>,
     /// What a sealing rule writes when a call it already wrote changes.
     pub sealed_updates: SealedUpdates,
+    /// What the rule adds to each container it writes.
+    pub additions: RuleAdditions,
 }
 
 impl VconRule {
@@ -7315,6 +7317,17 @@ impl VconRule {
             )
         })
     }
+}
+
+/// What a rule adds to each container beyond what every export carries.
+///
+/// One value rather than one field per addition, so a new addition reaches
+/// every place a rule is resolved and written without a new parameter.
+#[derive(Debug, Clone, Default)]
+pub struct RuleAdditions {
+    /// `sip_messages`: the initial INVITE, its final response and their SDP
+    /// as attachments ([`crate::output::vcon::add_sip_message_attachments`]).
+    pub sip_messages: bool,
 }
 
 /// How long a dialog that has not ended must have had no SIP and no RTP
@@ -8426,6 +8439,48 @@ impl LegWriter<'_> {
         link: bool,
         written: usize,
     ) -> Result<crate::output::vcon::Vcon, (usize, String)> {
+        let mut container = self.leg_container(dialog, withheld, link, written)?;
+        // A withheld container carries the caveat alone, so nothing is added
+        // to it.
+        if !withheld {
+            self.add(&mut container, dialog);
+        }
+        Ok(container)
+    }
+
+    /// What the rule adds to one leg's container (see [`RuleAdditions`]).
+    ///
+    /// Added to the leg, before any merge, so `grouping = "call"` moves the
+    /// added party and dialog indices with the rest of the leg's.
+    fn add(
+        &self,
+        container: &mut crate::output::vcon::Vcon,
+        dialog: &crate::sip::dialog::SipDialog,
+    ) {
+        let additions = self.target.additions;
+        if additions.sip_messages {
+            let budget = self
+                .target
+                .max_inline
+                .or_else(|| media_budget(self.cli))
+                .unwrap_or(crate::output::vcon::MAX_INLINE_MEDIA_BYTES);
+            crate::output::vcon::add_sip_message_attachments(container, dialog, budget);
+        }
+    }
+
+    /// One dialog's container as the export builds it, before the rule's
+    /// additions.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::leg`].
+    fn leg_container(
+        &self,
+        dialog: &crate::sip::dialog::SipDialog,
+        withheld: bool,
+        link: bool,
+        written: usize,
+    ) -> Result<crate::output::vcon::Vcon, (usize, String)> {
         let Self {
             cli,
             target,
@@ -8558,7 +8613,15 @@ struct VconTarget<'a> {
     /// The `[[vcon.rule]]` name, for the run's report; `None` for the flag
     /// rule, whose lines read as they always have.
     label: Option<&'a str>,
+    /// What the rule adds to each container.
+    additions: &'a RuleAdditions,
 }
+
+/// The additions of a rule that adds nothing: the flag rule's.
+#[cfg(feature = "vcon")]
+static NO_ADDITIONS: RuleAdditions = RuleAdditions {
+    sip_messages: false,
+};
 
 #[cfg(feature = "vcon")]
 impl<'a> VconTarget<'a> {
@@ -8576,6 +8639,7 @@ impl<'a> VconTarget<'a> {
             sealed_updates: rule.sealed_updates,
             enrich: &rule.enrich,
             label: (rule.name != FLAG_RULE).then_some(rule.name.as_str()),
+            additions: &rule.additions,
         }
     }
 
@@ -8603,6 +8667,7 @@ impl<'a> VconTarget<'a> {
             sealed_updates: SealedUpdates::NewUuid,
             enrich: &[],
             label: None,
+            additions: &NO_ADDITIONS,
         })
     }
 
@@ -9627,6 +9692,7 @@ mod tests {
             live: false,
             sealing: None,
             sealed_updates: SealedUpdates::NewUuid,
+            additions: RuleAdditions::default(),
         })
     }
 
@@ -15571,8 +15637,7 @@ mod tests {
             encrypt_to: None,
             sign_key: None,
             sign_cert: None,
-            compress: None,
-            sealed_updates: None,
+            ..Default::default()
         };
         let mut config = crate::config::Config::default();
         assert!(!audio_retention_wanted(&base_cli(), &config));

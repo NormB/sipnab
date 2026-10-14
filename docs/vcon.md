@@ -1873,6 +1873,38 @@ Its body follows the trace format of [section 6.2.1](https://datatracker.ietf.or
   - The SDP is still in `sdp`, which redaction rewrites like every other field.
 - A container that holds several legs moves each message's `party` with the rest of the party indices.
 
+### The INVITE and the final response
+
+A rule with `sip_messages = true` attaches the two messages [section 8.1](https://datatracker.ietf.org/doc/html/draft-howe-vcon-sip-signaling-00#section-8.1) asks of a minimal producer.
+
+```toml
+[[vcon.rule]]
+name         = "with-wire-messages"
+when         = "method == 'INVITE'"
+dir          = "/var/spool/sipnab-vcon/wire"
+sip_messages = true
+```
+
+- `sip-invite` is the initial INVITE, and `sip-response` is its final response.
+  - Both use `mediatype: "message/sip"` and hold the message as captured, per [section 6.1.2](https://datatracker.ietf.org/doc/html/draft-howe-vcon-sip-signaling-00#section-6.1.2).
+  - The final response is the last 200 to 699 response to an INVITE without a `To` tag.
+    After a `407` challenge, that is the answer to the INVITE sent again with credentials.
+  - The INVITE is the one with that response's CSeq number.
+  - With no final response in the capture, sipnab attaches the last initial INVITE alone.
+- `sip-sdp` holds the SDP body of each of the two, with `mediatype: "application/sdp"`, per [section 6.3](https://datatracker.ietf.org/doc/html/draft-howe-vcon-sip-signaling-00#section-6.3).
+- Each attachment's `party` is the party whose tag the message carries.
+  - It is the observer when the tag matches neither party, such as a proxy's own response.
+  - `start` is when sipnab captured the message, and `dialog` is 0.
+- The bytes lose every credential header line, such as `Proxy-Authorization`, as the trace does.
+  - sipnab keeps the body byte for byte, so `Content-Length` still matches it.
+- UTF-8 messages use `encoding: "none"`; others use `base64url`.
+- The rule's inline budget, `max_inline_media_mib` or `--vcon-max-inline-media`, covers the attachments together.
+  - An attachment that does not fit stays out.
+    The `sipnab-capture-completeness` attachment names it, with its size, in `sip_messages_refused`.
+- `--redact` removes all three kinds of attachment.
+  - The bytes hold every identifier the trace holds, and redaction cannot rewrite them without changing the message they copy.
+- sipnab's own `-I` reader takes the messages from the trace, and reads `message/sip` attachments only from a container without a trace.
+
 ## The container cannot say "this is an incomplete record", so sipnab says it twice
 
 This is the point of the page.

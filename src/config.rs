@@ -1551,6 +1551,12 @@ pub struct VconRuleConfig {
     /// `encrypt_to`.
     #[serde(default)]
     pub sealed_updates: Option<String>,
+    /// Attach the initial INVITE and its final response in wire format
+    /// (`sip-invite`, `sip-response`) and their SDP (`sip-sdp`), as
+    /// draft-howe-vcon-sip-signaling-00 section 8.1 describes for a minimal
+    /// producer. Default `false`. Refused under `--redact`.
+    #[serde(default)]
+    pub sip_messages: Option<bool>,
 }
 
 /// The PBX sipnab runs beside.

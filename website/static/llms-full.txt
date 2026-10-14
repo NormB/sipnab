@@ -27453,6 +27453,7 @@ and what they carry.
 | `sign_cert` | string | -- | The PEM certificate chain of `sign_key`, leaf first, carried in each signature's `x5c` |
 | `compress` | string | `none` | For an encrypting rule: `gzip` signs the gzip ([RFC 1952](https://www.rfc-editor.org/rfc/rfc1952.html)) of the vCon instead of the vCon, as draft-ietf-vcon-vcon-core-04 section 5.2 allows, and the encrypted form names `cty: "application/vcon+gzip"`; `none` signs the vCon as it is. Refused on a rule without `encrypt_to`. See [Encrypt what a rule writes](vcon.md#encrypt-what-a-rule-writes) |
 | `sealed_updates` | string | `new-uuid` | What an encrypting rule writes when a call it already wrote changes. `new-uuid`: a new instance with a new uuid whose `amended` names the prior one (draft-ietf-vcon-vcon-core-04 section 4.1.9). `same-uuid`: rewrite the file under the same uuid, with a startup warning. `final-only`: write once, when the call ends. sipnab refuses any other value at startup. No effect without `encrypt_to`. See [When an encrypted call changes](vcon.md#when-an-encrypted-call-changes) |
+| `sip_messages` | boolean | `false` | Attach the initial INVITE and its final response in wire format, as `sip-invite` and `sip-response`, and each one's SDP as `sip-sdp`. The rule's inline budget covers them. `--redact` removes them. See [The INVITE and the final response](vcon.md#the-invite-and-the-final-response) |
 | `grouping` | string | `leg` | `leg`: one container per dialog, each naming the call's other legs. `call`: one container per call, holding every leg the rule selects and the ties between them. See [Calls through a PBX or a B2BUA](vcon.md#calls-through-a-pbx-or-a-b2bua) |
 
 ```toml
@@ -45491,6 +45492,38 @@ Its body follows the trace format of [section 6.2.1](https://datatracker.ietf.or
   - A body can be the conversation itself, such as the text of a SIP MESSAGE.
   - The SDP is still in `sdp`, which redaction rewrites like every other field.
 - A container that holds several legs moves each message's `party` with the rest of the party indices.
+
+### The INVITE and the final response
+
+A rule with `sip_messages = true` attaches the two messages [section 8.1](https://datatracker.ietf.org/doc/html/draft-howe-vcon-sip-signaling-00#section-8.1) asks of a minimal producer.
+
+```toml
+[[vcon.rule]]
+name         = "with-wire-messages"
+when         = "method == 'INVITE'"
+dir          = "/var/spool/sipnab-vcon/wire"
+sip_messages = true
+```
+
+- `sip-invite` is the initial INVITE, and `sip-response` is its final response.
+  - Both use `mediatype: "message/sip"` and hold the message as captured, per [section 6.1.2](https://datatracker.ietf.org/doc/html/draft-howe-vcon-sip-signaling-00#section-6.1.2).
+  - The final response is the last 200 to 699 response to an INVITE without a `To` tag.
+    After a `407` challenge, that is the answer to the INVITE sent again with credentials.
+  - The INVITE is the one with that response's CSeq number.
+  - With no final response in the capture, sipnab attaches the last initial INVITE alone.
+- `sip-sdp` holds the SDP body of each of the two, with `mediatype: "application/sdp"`, per [section 6.3](https://datatracker.ietf.org/doc/html/draft-howe-vcon-sip-signaling-00#section-6.3).
+- Each attachment's `party` is the party whose tag the message carries.
+  - It is the observer when the tag matches neither party, such as a proxy's own response.
+  - `start` is when sipnab captured the message, and `dialog` is 0.
+- The bytes lose every credential header line, such as `Proxy-Authorization`, as the trace does.
+  - sipnab keeps the body byte for byte, so `Content-Length` still matches it.
+- UTF-8 messages use `encoding: "none"`; others use `base64url`.
+- The rule's inline budget, `max_inline_media_mib` or `--vcon-max-inline-media`, covers the attachments together.
+  - An attachment that does not fit stays out.
+    The `sipnab-capture-completeness` attachment names it, with its size, in `sip_messages_refused`.
+- `--redact` removes all three kinds of attachment.
+  - The bytes hold every identifier the trace holds, and redaction cannot rewrite them without changing the message they copy.
+- sipnab's own `-I` reader takes the messages from the trace, and reads `message/sip` attachments only from a container without a trace.
 
 ## The container cannot say "this is an incomplete record", so sipnab says it twice
 

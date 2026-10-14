@@ -4754,7 +4754,7 @@ pub(crate) fn vcon_rules(
     cli: &Cli,
     config: &Config,
 ) -> Result<Vec<crate::app::batch::VconRule>, PlanError> {
-    use crate::app::batch::{RuleAudio, RuleGrouping, VconRule};
+    use crate::app::batch::{RuleAdditions, RuleAudio, RuleGrouping, VconRule};
     let refuse = |message: String| PlanError::refused(crate::settings::Origin::ConfigFile, message);
     if let Some(e) = cli.inert_redaction_refusal(!config.vcon.rule.is_empty()) {
         return Err(PlanError::arg(e.to_string()));
@@ -4785,6 +4785,7 @@ pub(crate) fn vcon_rules(
             live: false,
             sealing: None,
             sealed_updates: crate::app::batch::SealedUpdates::NewUuid,
+            additions: RuleAdditions::default(),
         });
     }
     for rule in &config.vcon.rule {
@@ -4898,6 +4899,9 @@ pub(crate) fn vcon_rules(
             live: rule.live.unwrap_or(false),
             sealing,
             sealed_updates,
+            additions: RuleAdditions {
+                sip_messages: rule.sip_messages.unwrap_or(false),
+            },
         });
     }
     if rules.iter().any(|r| r.live_audio)
@@ -6744,8 +6748,7 @@ mod tests {
                 encrypt_to: None,
                 sign_key: None,
                 sign_cert: None,
-                compress: None,
-                sealed_updates: None,
+                ..Default::default()
             })
             .collect();
         config
