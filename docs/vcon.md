@@ -364,6 +364,46 @@ The shape of `body` follows its `encoding`.
 
 `product`, `schema`, `mediatype` and `dialog` are optional. A missing `dialog` is the first leg's signaling object.
 
+**A WTF transcription.** An Analysis Object of type `wtf_transcription` is a
+transcription in the World Transcription Format of
+[draft-howe-vcon-wtf-extension-02](https://datatracker.ietf.org/doc/html/draft-howe-vcon-wtf-extension-02).
+sipnab checks it before it keeps it:
+
+- `encoding` is `json` and the body is a JSON object, as
+  [section 6.1 of the WTF draft](https://datatracker.ietf.org/doc/html/draft-howe-vcon-wtf-extension-02#section-6.1)
+  requires.
+- The body has the three sections
+  [section 4.2 of the WTF draft](https://datatracker.ietf.org/doc/html/draft-howe-vcon-wtf-extension-02#section-4.2)
+  requires, with the members
+  [section 6.2.1 of the WTF draft](https://datatracker.ietf.org/doc/html/draft-howe-vcon-wtf-extension-02#section-6.2.1)
+  lists:
+  - `transcript`: `text`, `language`, `duration` of 0 or more, and
+    `confidence` from 0 to 1.
+  - `segments`: each with a unique integer `id`, `start`, an `end` after
+    `start`, `text`, and `confidence` from 0 to 1. A `speaker` is an integer
+    or a string, and `words` is an array of integers.
+  - `metadata`: `created_at`, `processed_at`, `provider` and `model`.
+- The optional sections, `words`, `speakers`, `quality`, `extensions`,
+  `alternatives`, `enrichments` and `streaming`, stay as the service sent them.
+
+A container that holds a WTF transcription lists `wtf_transcription` in
+`extensions`. It is not in `critical`:
+[section 5.1 of the WTF draft](https://datatracker.ietf.org/doc/html/draft-howe-vcon-wtf-extension-02#section-5.1)
+classifies the extension as Compatible. An answer whose WTF transcription
+fails the check is `malformed`, and its `detail` names what is wrong.
+
+A transcriber can listen to a call on the
+[live audio WebSocket](#hear-a-call-while-it-is-in-progress) while the call is
+in progress:
+
+- sipnab sends the service nothing during the call, and reads nothing from it.
+- At the call's end, sipnab sends the service its `[[vcon.enrich]]` request.
+- The service answers with its final transcription. A `streaming` section,
+  [section 6.2.2.7 of the WTF draft](https://datatracker.ietf.org/doc/html/draft-howe-vcon-wtf-extension-02#section-6.2.2.7),
+  can carry the session's `session_id` and `is_final: true`.
+- Interim results stay with the service: sipnab has no route that receives
+  them.
+
 **What the container says.** Every enriched container carries a
 `sipnab-enrichment` attachment. It lists each service sipnab sent it to, with:
 

@@ -12,6 +12,12 @@ entry that carries them.
 
 ### Added
 
+- **Enrichment services may answer with WTF transcriptions.**
+  - A `[[vcon.enrich]]` answer may hold an Analysis Object of type `wtf_transcription`, as [section 6.1 of draft-howe-vcon-wtf-extension-02](https://datatracker.ietf.org/doc/html/draft-howe-vcon-wtf-extension-02#section-6.1) defines it.
+  - sipnab checks it for the draft's required `transcript`, `segments` and `metadata` sections and their members.
+  - A container that holds one lists `wtf_transcription` in `extensions`, and not in `critical`.
+  - An answer whose WTF transcription fails the check is recorded as `malformed`, naming what is wrong, and none of it is kept.
+
 - **An encrypting `[[vcon.rule]]` can compress what it encrypts.**
   - `compress = "gzip"` signs the gzip ([RFC 1952](https://www.rfc-editor.org/rfc/rfc1952.html)) of the vCon instead of the vCon.
     - draft-ietf-vcon-vcon-core-04 section 5.2 allows this.

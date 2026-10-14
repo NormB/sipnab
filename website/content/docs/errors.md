@@ -4025,6 +4025,22 @@ The `detail` of a `malformed` outcome: entry `{i}` of an [`[[vcon.enrich]]`](@/d
 
 **Exit code:** None. sipnab writes the call without the service's analysis.
 
+### `is a {WTF_TYPE} with encoding '{encoding}'; the WTF draft requires json`
+
+Part of the `detail` of a `malformed` outcome, after `analysis {i}`: a `[[vcon.enrich]]` service answered with a `wtf_transcription` whose `encoding` is not `json`. `{WTF_TYPE}` is `wtf_transcription` and `{encoding}` the value sent. [Section 6.1 of draft-howe-vcon-wtf-extension-02](https://datatracker.ietf.org/doc/html/draft-howe-vcon-wtf-extension-02#section-6.1) requires `json`. sipnab keeps none of that answer.
+
+**What to do:** Send the transcription as a JSON object with `encoding` `json`.
+
+**Exit code:** None. sipnab writes the call without the service's analysis.
+
+### `is a {WTF_TYPE} whose {what}`
+
+Part of the `detail` of a `malformed` outcome, after `analysis {i}`: a `wtf_transcription` from a `[[vcon.enrich]]` service lacks a member the WTF draft requires, or holds one out of range. `{what}` names it, such as `segments[0] ends at 1, not after its start 2` or `metadata has no model string`. sipnab keeps none of that answer.
+
+**What to do:** Fix the service's transcription to carry the `transcript`, `segments` and `metadata` members the WTF transcription check in the vCon guide lists.
+
+**Exit code:** None. sipnab writes the call without the service's analysis.
+
 ## Startup, privileges and the process
 
 ### `--allow-coredump: a core dump would contain the archive password this run holds`

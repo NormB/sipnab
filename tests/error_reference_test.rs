@@ -748,7 +748,9 @@ const EXPECTED_UNRESOLVED: usize = 80;
 // vcon_rules' refuse closure. Nothing removed.
 // 451 -> 452: src/config.rs `[display] view_filter_detail must be one of
 // summary, full, got {m:?}`, the F7 filter summary's mode key.
-const EXPECTED_TEMPLATES: usize = 452;
+// 452 -> 454 (+2), WTF transcriptions: src/app/vcon_enrich.rs 2 (the WTF
+// encoding refusal and the WTF member refusal). Nothing removed.
+const EXPECTED_TEMPLATES: usize = 454;
 
 // ---------------------------------------------------------------------------
 // The page gates

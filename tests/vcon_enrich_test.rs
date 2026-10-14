@@ -39,6 +39,8 @@ enum Answer {
     Hang,
     /// HTTP 200 with a body that is not an analysis list.
     Malformed,
+    /// HTTP 200 with this body.
+    Raw(&'static str),
 }
 
 /// A stub service on a loopback port. Every request body it receives is sent
@@ -88,6 +90,7 @@ fn stub(answer: Answer) -> Result<(String, mpsc::Receiver<serde_json::Value>), T
                     .to_string()
                 }
                 Answer::Malformed => r#"{"analysis": [{"vendor": "no type"}]}"#.to_owned(),
+                Answer::Raw(text) => text.to_owned(),
                 Answer::Fail | Answer::Hang => String::new(),
             };
             let _ = tx.send(request);
@@ -487,5 +490,108 @@ fn the_auth_header_is_sent_and_not_recorded() -> Result<(), TestError> {
         !text.contains("sekrit"),
         "the credential stays out of the container"
     );
+    Ok(())
+}
+
+/// A WTF transcription answer: the body of the first Analysis Object in
+/// [section 12.2 of draft-howe-vcon-wtf-extension-02](https://datatracker.ietf.org/doc/html/draft-howe-vcon-wtf-extension-02#section-12.2).
+const WTF_ANSWER: &str = r#"{"analysis": [{
+    "type": "wtf_transcription", "vendor": "openai", "product": "whisper-large-v3",
+    "encoding": "json",
+    "body": {
+        "transcript": {"text": "The quick brown fox jumps over the lazy dog.",
+                       "language": "en-US", "duration": 3.5, "confidence": 0.96},
+        "segments": [{"id": 0, "start": 0.0, "end": 3.5,
+                      "text": "The quick brown fox jumps over the lazy dog.",
+                      "confidence": 0.96, "speaker": 0}],
+        "metadata": {"created_at": "2025-01-02T12:00:00Z",
+                     "processed_at": "2025-01-02T12:00:15Z",
+                     "provider": "whisper", "model": "whisper-large-v3",
+                     "processing_time": 15.2}
+    }
+}]}"#;
+
+/// The same answer without its required `segments` section.
+const WTF_NO_SEGMENTS: &str = r#"{"analysis": [{
+    "type": "wtf_transcription", "vendor": "openai", "encoding": "json",
+    "body": {
+        "transcript": {"text": "t", "language": "en-US", "duration": 3.5, "confidence": 0.96},
+        "metadata": {"created_at": "2025-01-02T12:00:00Z",
+                     "processed_at": "2025-01-02T12:00:15Z",
+                     "provider": "whisper", "model": "whisper-large-v3"}
+    }
+}]}"#;
+
+/// A WTF transcription is appended as the Analysis Object the service sent,
+/// and the container declares the extension in `extensions` and not in
+/// `critical`.
+///
+/// [Section 5.1 of draft-howe-vcon-wtf-extension-02](https://datatracker.ietf.org/doc/html/draft-howe-vcon-wtf-extension-02#section-5.1):
+/// the extension "Does not require listing in the critical parameter".
+/// [Section 5.3](https://datatracker.ietf.org/doc/html/draft-howe-vcon-wtf-extension-02#section-5.3):
+/// a vCon holding one "SHOULD include \"wtf_transcription\" in the extensions
+/// array".
+#[test]
+fn a_wtf_transcription_is_appended_and_declared() -> Result<(), TestError> {
+    let home = tempfile::tempdir()?;
+    let dir = home.path().join("out");
+    let (url, _) = stub(Answer::Raw(WTF_ANSWER))?;
+    let out = run(home.path(), &config(&dir, &service("stt", &url, "")), &[])?;
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let v = container(&dir)?;
+    let wtf = analyses(&v, "wtf_transcription");
+    assert_eq!(wtf.len(), 1, "{v}");
+    assert_eq!(wtf[0]["encoding"], "json");
+    assert_eq!(
+        wtf[0]["body"]["transcript"]["text"],
+        "The quick brown fox jumps over the lazy dog."
+    );
+    assert_eq!(wtf[0]["body"]["segments"][0]["end"], 3.5);
+    let extensions = v["extensions"].as_array().ok_or("extensions")?;
+    assert_eq!(
+        extensions
+            .iter()
+            .filter(|e| *e == "wtf_transcription")
+            .count(),
+        1,
+        "{extensions:?}"
+    );
+    assert!(v.get("critical").is_none(), "{v}");
+    assert_eq!(outcomes(&v)?[0]["outcome"], "ok");
+    let validator = support::schema::load_validator("vcon.schema.json")?;
+    support::schema::assert_valid(&validator, &v, "a container with a WTF transcription");
+    Ok(())
+}
+
+/// A WTF transcription without a required section is not appended, and the
+/// container records the service's answer as malformed, naming the section.
+#[test]
+fn an_invalid_wtf_transcription_is_recorded_as_a_failure() -> Result<(), TestError> {
+    let home = tempfile::tempdir()?;
+    let dir = home.path().join("out");
+    let (url, _) = stub(Answer::Raw(WTF_NO_SEGMENTS))?;
+    let out = run(home.path(), &config(&dir, &service("stt", &url, "")), &[])?;
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(out.status.success(), "{stderr}");
+    let v = container(&dir)?;
+    assert!(analyses(&v, "wtf_transcription").is_empty(), "{v}");
+    let extensions = v["extensions"].as_array().ok_or("extensions")?;
+    assert!(
+        !extensions.iter().any(|e| e == "wtf_transcription"),
+        "{extensions:?}"
+    );
+    let services = outcomes(&v)?;
+    assert_eq!(services[0]["outcome"], "malformed", "{services:?}");
+    assert!(
+        services[0]["detail"]
+            .as_str()
+            .is_some_and(|d| d.contains("segments")),
+        "{services:?}"
+    );
+    assert!(stderr.contains("segments"), "{stderr}");
     Ok(())
 }
