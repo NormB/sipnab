@@ -1855,6 +1855,7 @@ sipnab fills these fields from what the capture shows, and leaves a field out wh
     - An [RFC 4733](https://www.rfc-editor.org/rfc/rfc4733.html) telephone event is a `keyup` at its end packet and a `keydown` its duration before.
       The event belongs to the party whose own SDP advertised the sending socket.
     - The rule turns telephone-event decoding on for the run.
+    - sipnab keeps at most 256 telephone events per RTP stream (`MAX_KEY_PRESSES` (256) in the source). It drops later ones.
   - sipnab writes no `mute` or `unmute`, because SIP carries no signal for either.
   - A message whose tags match neither party, or an event from a socket neither party advertised, adds nothing.
   - `--redact` removes `keydown` and `keyup`, because a digit can be a PIN, and keeps the rest.
@@ -1992,7 +1993,7 @@ Its body is a list of `"name:value"` strings, the shape vcon-lib's `Vcon.add_tag
 - `filter:<name>` names each [named filter](filter-dsl.md#named-filters) the rule's `when` references by `@name` and the call matched on its own.
   - The names follow the order of their first appearance in `when`.
   - A call matches a filter when at least one of its legs does.
-- `finding:<name>` names each detection of the signaling diagnosis the analysis reports, at most five.
+- `finding:<name>` names each detection of the signaling diagnosis the analysis reports, at most five (`MAX_FINDING_TAGS` (5) in the source).
   - The names are the field names of `signaling_diagnosis` in the analysis body, such as `final_failure` or `retransmissions`, in that object's order.
   - A container that holds several legs names each finding once.
 - No value contains a colon.

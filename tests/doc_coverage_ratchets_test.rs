@@ -230,7 +230,12 @@ fn every_flag_alias_is_documented() -> Result<(), TestError> {
 /// refusal. Both are named in `docs/design/` now, so the count went DOWN by one
 /// instead of up by one. Attributed by counting: 146 ceiling constants
 /// declared, 99 of them named in no document.
-const UNDOCUMENTED_CEILINGS: usize = 99;
+///
+/// 99 -> 98 on 2026-10-14, measured on release/0.5.219. origin/main already
+/// measured 98. The vCon Dialog content work added `MAX_FINDING_TAGS`
+/// (src/output/vcon.rs, +1) and `MAX_KEY_PRESSES` (src/rtp/stream.rs, +1);
+/// docs/vcon.md names both (-2), so the count holds at 98.
+const UNDOCUMENTED_CEILINGS: usize = 98;
 
 /// Whether a documented ceiling's parenthesized number matches the source.
 ///
