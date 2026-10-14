@@ -313,6 +313,10 @@ pub const RECORDING_SET_TYPE: &str = "recording-set";
 /// cannot.
 pub const INCOMPLETE_TYPE: &str = "incomplete";
 
+/// `type` of a Dialog Object holding text one party sent,
+/// [core-04 section 4.3.1.3](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-04#section-4.3.1.3).
+pub const TEXT_TYPE: &str = "text";
+
 /// Hash algorithm prefix of [`Dialog::content_hash`], per
 /// [section 2.2 of the core draft](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-04#section-2.2).
 pub const CONTENT_HASH_PREFIX: &str = "sha512-";
@@ -680,7 +684,7 @@ pub struct Dialog {
     pub recording_set: Option<usize>,
     /// IANA media type of [`Self::body`] — [`RECORDING_MEDIATYPE`].
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub mediatype: Option<&'static str>,
+    pub mediatype: Option<std::borrow::Cow<'static, str>>,
     /// Always `"base64url"` when [`Self::body`] is present.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub encoding: Option<&'static str>,
@@ -1529,7 +1533,9 @@ impl crate::output::redact::Redact for Dialog {
         // placeholder, whose content core-04 section 4.3.10 lets a redacted
         // vCon omit; `duration` stays, so the exporter still must not hand
         // one over.
-        if *kind == RECORDING_TYPE {
+        // A text dialog is the conversation too, so its content goes the same
+        // way, and its clock and parties stay.
+        if *kind == RECORDING_TYPE || *kind == TEXT_TYPE {
             *body = None;
             *url = None;
             *content_hash = None;
@@ -2084,6 +2090,10 @@ pub fn export_dialog_and_completeness(
         });
     }
 
+    // Text dialogs go last, after the transfer object, for the reason that
+    // object goes after the media: appending never moves an existing index.
+    dialog_objects.extend(text_dialogs_of(dialog));
+
     let completeness = completeness_of(context, &media, dialog.state().is_final());
 
     let mut attachments = vec![
@@ -2531,7 +2541,7 @@ fn place_recording(
         signaling.start = Some(decoded.first_retained.to_rfc3339());
         signaling.duration = Some(decoded.duration_secs);
         signaling.parties = channel_parties(dialog, decoded);
-        signaling.mediatype = Some(RECORDING_MEDIATYPE);
+        signaling.mediatype = Some(RECORDING_MEDIATYPE.into());
         signaling.content_hash = Some(content_hash(&decoded.wav));
         media.fill(signaling);
     }
@@ -2551,7 +2561,7 @@ fn recording_object(
         // consumer holding the audio can reach the call's clock.
         recording_set: Some(recording_set),
         parties: channel_parties(dialog, audio),
-        mediatype: Some(RECORDING_MEDIATYPE),
+        mediatype: Some(RECORDING_MEDIATYPE.into()),
         content_hash: Some(content_hash(&audio.wav)),
         ..Dialog::bare(RECORDING_TYPE, dialog.call_id.clone())
     };
@@ -3023,6 +3033,70 @@ fn dtmf_relay(body: &[u8]) -> Option<(String, Option<u32>)> {
     let digit = value("Signal").filter(|d| !d.is_empty())?;
     let duration = value("Duration").and_then(|d| d.parse().ok());
     Some((digit, duration))
+}
+
+/// One `text` Dialog Object ([core-04 section 4.3.1.3](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-04#section-4.3.1.3))
+/// per SIP MESSAGE ([RFC 3428](https://www.rfc-editor.org/rfc/rfc3428.html))
+/// that carried content.
+///
+/// - One per sender tag and CSeq number: a retransmission is the same text,
+///   and each direction numbers its own requests.
+/// - `start` is when sipnab captured the first transmission; core-04 section
+///   4.3.2 makes that the start of a text when the typing time is not known.
+/// - `parties` is the sender, then the other party, when the message's tag
+///   names the sender (see [`sender_party`]), so `originator` is never
+///   needed (core-04 section 4.3.5: for text, the originator is the sender).
+///   Absent when the tag names neither party.
+/// - `mediatype` is the message's `Content-Type`, as written. The body is
+///   inline: the text with `encoding: "none"` when it is UTF-8, otherwise
+///   base64url.
+/// - A MESSAGE with no body, or whose `Content-Type` is
+///   `application/im-iscomposing+xml` (an RFC 3994 typing indication rather
+///   than text a party sent), is not a text dialog.
+///
+/// MSRP is not parsed by sipnab, so a session that carries its text over
+/// MSRP has no text dialog.
+fn text_dialogs_of(dialog: &SipDialog) -> Vec<Dialog> {
+    let mut seen: Vec<(Option<&str>, u32)> = Vec::new();
+    let mut texts = Vec::new();
+    for m in &dialog.messages {
+        let is_text = m.is_request
+            && m.method.as_ref() == Some(&crate::sip::SipMethod::Message)
+            && !m.body.is_empty()
+            && !m.content_type().is_some_and(|ct| {
+                ct.to_ascii_lowercase()
+                    .starts_with("application/im-iscomposing+xml")
+            });
+        if !is_text {
+            continue;
+        }
+        if let Some((cseq, _)) = m.cseq() {
+            let key = (m.from_tag(), cseq);
+            if seen.contains(&key) {
+                continue;
+            }
+            seen.push(key);
+        }
+        let (encoding, body) = match std::str::from_utf8(&m.body) {
+            Ok(text) => ("none", text.to_string()),
+            Err(_) => ("base64url", URL_SAFE_NO_PAD.encode(&m.body)),
+        };
+        texts.push(Dialog {
+            start: Some(m.timestamp.to_rfc3339()),
+            parties: sender_party(dialog, m).map(|sender| vec![sender, 1 - sender]),
+            mediatype: Some(
+                m.content_type()
+                    .unwrap_or("text/plain")
+                    .trim()
+                    .to_string()
+                    .into(),
+            ),
+            encoding: Some(encoding),
+            body: Some(body),
+            ..Dialog::bare(TEXT_TYPE, dialog.call_id.clone())
+        });
+    }
+    texts
 }
 
 /// The join, drop, hold and unhold events the capture shows, in time order,
@@ -8476,7 +8550,7 @@ mod tests {
     fn redaction_refuses_inline_audio() -> Result<(), TestError> {
         use crate::output::redact::{Redact as _, RedactionKey, RedactionPolicy};
         let mut object = Dialog::bare(RECORDING_TYPE, "call-1".to_string());
-        object.mediatype = Some(RECORDING_MEDIATYPE);
+        object.mediatype = Some(RECORDING_MEDIATYPE.into());
         object.encoding = Some("base64url");
         object.body = Some("UklGRiQAAABXQVZF".to_string());
         object.content_hash = Some(format!("{CONTENT_HASH_PREFIX}abc"));
@@ -9602,6 +9676,136 @@ mod tests {
             events,
             ["join", "join", "hold", "keydown", "keyup", "drop"].map(String::from)
         );
+        Ok(())
+    }
+
+    // ── text dialogs from SIP MESSAGE ──
+
+    /// A SIP MESSAGE from `sender` with `cseq`, `content_type` and `body`.
+    fn sip_message(
+        sender: &str,
+        cseq: u32,
+        content_type: &str,
+        body: &[u8],
+    ) -> Result<crate::sip::SipMessage, TestError> {
+        let (from, to) = if sender == "alice" {
+            (
+                "From: \"Alice\" <sip:alice@example.com>;tag=t1",
+                "To: \"Bob\" <sip:bob@example.net>",
+            )
+        } else {
+            (
+                "From: \"Bob\" <sip:bob@example.net>;tag=t2",
+                "To: \"Alice\" <sip:alice@example.com>",
+            )
+        };
+        let cseq_line = format!("CSeq: {cseq} MESSAGE");
+        let ct = format!("Content-Type: {content_type}");
+        message_with_body(
+            "MESSAGE sip:peer@example.org SIP/2.0",
+            &[
+                from,
+                to,
+                "Call-ID: vcon-fixture@example.com",
+                &cseq_line,
+                &ct,
+            ],
+            body,
+        )
+    }
+
+    /// The `text` Dialog Objects of a container, as JSON.
+    fn text_dialogs(v: &Vcon) -> Result<Vec<serde_json::Value>, TestError> {
+        let json = valid_json(v)?;
+        Ok(json["dialog"]
+            .as_array()
+            .map(|l| l.iter().filter(|d| d["type"] == "text").cloned().collect())
+            .unwrap_or_default())
+    }
+
+    /// GAP-18: each SIP MESSAGE (RFC 3428) body is a `text` Dialog Object
+    /// ([core-04 section 4.3.1.3](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-04#section-4.3.1.3))
+    /// with its sender first in `parties`, its capture time as `start`, and
+    /// the body inline.
+    #[test]
+    fn each_sip_message_body_is_a_text_dialog() -> Result<(), TestError> {
+        let dialog = timed_dialog(vec![
+            (
+                sip_message("alice", 1, "text/plain;charset=UTF-8", b"hello")?,
+                0,
+            ),
+            (
+                sip_message("alice", 1, "text/plain;charset=UTF-8", b"hello")?,
+                1,
+            ),
+            (in_dialog_response("200 OK", 1, "MESSAGE", "alice")?, 1),
+            (sip_message("bob", 1, "text/plain", b"hi back")?, 5),
+        ])?;
+        let texts = text_dialogs(&export_with(&dialog, &clean_facts())?)?;
+        assert_eq!(texts.len(), 2, "a retransmission is one text: {texts:#?}");
+        assert_eq!(texts[0]["parties"], serde_json::json!([0, 1]));
+        assert_eq!(texts[0]["start"], ts()?.to_rfc3339());
+        assert_eq!(texts[0]["mediatype"], "text/plain;charset=UTF-8");
+        assert_eq!(texts[0]["encoding"], "none");
+        assert_eq!(texts[0]["body"], "hello");
+        assert_eq!(texts[0]["sip_call_id"], "vcon-fixture@example.com");
+        assert!(texts[0].get("originator").is_none());
+        assert_eq!(texts[1]["parties"], serde_json::json!([1, 0]));
+        assert_eq!(texts[1]["body"], "hi back");
+        assert!(
+            texts[1].get("originator").is_none(),
+            "the sender is listed first"
+        );
+        Ok(())
+    }
+
+    /// GAP-18: a composing indication (RFC 3994) is not text a party sent,
+    /// and an empty MESSAGE carries none; a body that is not UTF-8 is
+    /// base64url.
+    #[test]
+    fn only_a_message_with_content_is_a_text_dialog() -> Result<(), TestError> {
+        let dialog = timed_dialog(vec![
+            (
+                sip_message(
+                    "alice",
+                    1,
+                    "application/im-iscomposing+xml",
+                    b"<isComposing/>",
+                )?,
+                0,
+            ),
+            (sip_message("alice", 2, "text/plain", b"")?, 1),
+            (
+                sip_message("alice", 3, "application/vnd.3gpp.sms", &[0x01, 0xff])?,
+                2,
+            ),
+        ])?;
+        let texts = text_dialogs(&export_with(&dialog, &clean_facts())?)?;
+        assert_eq!(texts.len(), 1, "{texts:#?}");
+        assert_eq!(texts[0]["mediatype"], "application/vnd.3gpp.sms");
+        assert_eq!(texts[0]["encoding"], "base64url");
+        assert_eq!(texts[0]["body"], URL_SAFE_NO_PAD.encode([0x01, 0xff]));
+        Ok(())
+    }
+
+    /// GAP-18: under redaction a text dialog keeps its clock and parties and
+    /// loses its content, as a recording does: the text is the conversation.
+    #[test]
+    fn redaction_removes_the_text() -> Result<(), TestError> {
+        use crate::output::redact::{Redact as _, RedactionKey, RedactionPolicy};
+        let dialog = timed_dialog(vec![(
+            sip_message("alice", 1, "text/plain", b"my pin is 1234")?,
+            0,
+        )])?;
+        let mut v = export_with(&dialog, &clean_facts())?;
+        let policy = RedactionPolicy::new(RedactionKey::from_secret(b"text"));
+        v.redact(&policy.redactor());
+        let texts = text_dialogs(&v)?;
+        assert_eq!(texts.len(), 1);
+        for field in ["body", "encoding", "mediatype"] {
+            assert!(texts[0].get(field).is_none(), "{field}: {:#}", texts[0]);
+        }
+        assert_eq!(texts[0]["parties"], serde_json::json!([0, 1]));
         Ok(())
     }
 }

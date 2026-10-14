@@ -12,6 +12,11 @@ entry that carries them.
 
 ### Added
 
+- **A SIP MESSAGE becomes a vCon `text` Dialog Object.**
+  - Each MESSAGE with content is a `text` object, per [section 4.3.1.3 of draft-ietf-vcon-vcon-core-04](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-04#section-4.3.1.3), with the sender first in `parties`, the capture time as `start`, and the body inline under its `Content-Type`.
+  - Typing indications and empty messages are not text.
+  - `--redact` removes the text and keeps its clock and parties.
+  - sipnab does not parse MSRP, so MSRP text has no text dialog.
 - **The vCon signaling Dialog Object carries `party_history`.**
   - It lists `join`, `drop`, `hold` and `unhold` events the capture shows, per [section 4.3.13 of draft-ietf-vcon-vcon-core-04](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-04#section-4.3.13).
   - The answer is the joins, the BYE and its 200 are the drops, and `sendonly` or `inactive` in a re-INVITE or UPDATE is a hold.

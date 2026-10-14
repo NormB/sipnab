@@ -1860,6 +1860,22 @@ sipnab fills these fields from what the capture shows, and leaves a field out wh
   - `--redact` removes `keydown` and `keyup`, because a digit can be a PIN, and keeps the rest.
   - A container that holds several legs moves each entry's `party` with the rest of the party indices.
 
+### Text a party sent
+
+Each SIP MESSAGE ([RFC 3428](https://www.rfc-editor.org/rfc/rfc3428.html)) that carries content becomes a Dialog Object of type `text`, per [section 4.3.1.3 of draft-ietf-vcon-vcon-core-04](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-04#section-4.3.1.3).
+These objects come after every other Dialog Object, so they move no index.
+
+- There is one per message, and a retransmission with the same sender and CSeq is the same message.
+- `start` is when sipnab captured the message.
+  Section 4.3.2 uses the send time when the typing time is not known.
+- `parties` lists the sender first, then the other party, so the sender is the originator and `originator` stays absent.
+  - It is absent when the message's tag names neither party.
+- `mediatype` is the message's `Content-Type` as written, and the body is inline.
+  - A UTF-8 body uses `encoding: "none"`; any other body is base64url.
+- A MESSAGE with no body is not a text dialog, and neither is an `application/im-iscomposing+xml` typing indication ([RFC 3994](https://www.rfc-editor.org/rfc/rfc3994.html)).
+- `--redact` removes the body, `encoding` and `mediatype`, and keeps `start` and `parties`, as it does for a recording.
+- sipnab does not parse MSRP, so text sent over an MSRP session has no text dialog.
+
 ## The SIP signaling attachments
 
 The `sip-signaling` extension of [draft-howe-vcon-sip-signaling-00](https://datatracker.ietf.org/doc/html/draft-howe-vcon-sip-signaling-00) stores SIP in attachments.
