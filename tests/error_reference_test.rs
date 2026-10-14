@@ -707,7 +707,10 @@ fn lists() -> Result<Lists, TestError> {
 // in src/sip/named_filters.rs, out of scope.
 // 78 -> 79: src/app/bootstrap.rs `warn!("{msg}")` 8 -> 9, the call in
 // warn_vcon_rules that prints VconRule::sealed_updates_warning.
-const EXPECTED_UNRESOLVED: usize = 79;
+// 79 -> 80: src/config.rs parse_sha256_fingerprint's
+// `Err(format!("{text:?}: {WANT}"))`, whose text joins a const, for
+// [vcon_fetch] signer_sha256.
+const EXPECTED_UNRESOLVED: usize = 80;
 
 /// How many distinct templates the scope prints (informational lines
 /// excluded). Pinned with `==` so a new or removed message is a decision.
