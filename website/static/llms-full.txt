@@ -17521,6 +17521,7 @@ sipnab -d eth0,eth1 --multi-device --delta-time
 | `--vcon-key` | `<FILE>` | -- | Unreleased | Decrypt an encrypted vCon container (draft-ietf-vcon-vcon-core-04 section 5.3) with the RSA private key in this PEM file, then verify the signed form inside. Applies to every vCon reader: `-I`, the MCP `analyze_vcon` and `validate_vcon` tools, and `POST /v1/vcon/analyze` and `POST /v1/vcon/validate`. The file must be readable by its owner only. Without it sipnab refuses an encrypted container and names this flag. A signed container needs no key: sipnab verifies its signature. sipnab reads a gzip format container (section 6.2) with or without it. See [A signed, encrypted or compressed container](vcon.md#a-signed-encrypted-or-compressed-container). Config: `[vcon_input] key` |
 | `--vcon-signer-ca` | `<FILE\|system>` | -- | Unreleased | Read a signed or encrypted vCon container only when its signing certificate chains, through the intermediates in its `x5c`, to a CA certificate in this PEM file, with every certificate in the chain within its validity period. `system` uses the host's CA bundle; write `./system` for a file of that name. While this flag is in force, sipnab refuses an unsigned container: it has no signer to check. Config: `[vcon_input] signer_ca` |
 | `--vcon-signer-sha256` | `<HEX>` | -- | Unreleased | Read a signed or encrypted vCon container only when its signing certificate has this SHA-256 fingerprint: 64 hex digits, plain or in colon-separated pairs, either case, as `openssl x509 -noout -fingerprint -sha256` prints it. While this flag is in force, sipnab refuses an unsigned container. Config: `[vcon_input] signer_sha256` |
+| `--vcon-x5u-ca` | `<FILE\|system>` | -- | Unreleased | Fetch the certificate chain of a signed vCon container that names it only by an `x5u` URL (draft-ietf-vcon-vcon-core-04 section 5.2.2), over HTTPS, trusting the server only when it chains to a CA certificate in this PEM file; `system` uses the host's CA bundle. sipnab reads at most 256 KiB of the answer, waits at most 10 seconds, fetches each URL once per run, and refuses an `x5u` that is not `https://`. Without this flag sipnab fetches nothing, and refuses such a container naming this flag. sipnab verifies a signature that carries `x5c` with it, and does not fetch its `x5u`. Config: `[vcon_input] x5u_ca` |
 | `-O`, `--output` | `<FILE>` | -- | 0.3.0 | Write captured packets to a pcap file. `--filter` chooses what sipnab shows and analyzes, not what this file holds: a BPF filter (the positional argument, such as `"udp port 5060"`) narrows the file. Run as root, sipnab creates this file, and every `--split` file, after it drops privileges, so the drop user (`nobody` unless `--user` names another) must be able to write the directory. sipnab checks this before it reads the first packet and exits `1` when the drop user cannot. See [the note above](#bound-split-and-multi-interface-captures) |
 | `-B`, `--buffer` | `<MIB>` | `64` | 0.3.0 | Kernel capture buffer size in MiB (per device). See [Tuning capture](tuning-capture.md). sipnab refuses `0` (no ring at all) with exit `2`, and `[capture] buffer = 0` with exit `1`. Config: `[capture] buffer` |
 | `--buffer-budget` | `<MIB>` | `64` | 0.4.4 | Memory budget for the in-flight capture→processing queue. The queue grows under load up to this budget (capped, never OOM) and shrinks when idle; overrides `[capture] buffer_budget_mb`. Config: `[capture] buffer_budget_mb` |
@@ -17748,6 +17749,8 @@ sipnab -d eth0,eth1 --multi-device --delta-time
 - `sipnab -N -I sealed/ --vcon-key recipient.key --vcon-signer-ca system --json-dialogs` — read a directory of encrypted vCons, each only when a CA in the host's CA bundle issued its signer
 - `sipnab -N -I signed.vcon.json --vcon-signer-sha256 40:97:43:61:0C:C7:47:BD:40:82:E2:28:1C:53:A6:54:88:74:EB:E7:A7:2B:E4:A3:C8:CB:1B:CA:C8:97:BC:D6 --json-dialogs` — analyze a signed vCon only when one known certificate signed it
 - `sipnab -N -I sealed.vcon.json --vcon-key recipient.key --vcon-signer-ca signing-ca.pem --vcon-signer-sha256 409743610cc747bd4082e2281c53a6548874ebe7a72be4a3c8cb1bcac897bcd6 --report` — require both: the signing certificate chains to `signing-ca.pem` and has this fingerprint
+- `sipnab -N -I signed.vcon.json --vcon-x5u-ca system --json-dialogs` — analyze a signed vCon whose signature names its certificate chain only by an `x5u` URL: fetch the chain over HTTPS from a server the host's CA bundle trusts
+- `sipnab -N -I signed.vcon.json --vcon-x5u-ca pki-ca.pem --vcon-signer-ca signing-ca.pem --report` — fetch the `x5u` chain from a server the CA in `pki-ca.pem` issued, and read the vCon only when its signer chains to `signing-ca.pem`
 
 - `sudo sipnab --device eth0 --output capture.pcap --portrange 5060-5080 --count 10000` — record up to 10000 packets from eth0 into a pcap, watching a widened SIP port range
 - `sudo sipnab --device eth0 --buffer 16 --buffer-budget 128 --snaplen 2048 --quiet-bad-parse` — live-capture a busy link with bigger kernel and queue buffers, a capped snapshot length, and parse-error notices silenced (the CLI matcher -x)
@@ -27622,6 +27625,7 @@ and what they carry.
 | `encrypt_to` | string or array | -- | A PEM certificate, or a list of them, whose RSA or EC P-256 keys the rule encrypts its containers to: one container with one recipient entry per certificate. Set, the rule writes only the encrypted form of draft-ietf-vcon-vcon-core-04 section 5.3. Needs `sign_key` and `sign_cert`. sipnab refuses an empty list. See [Encrypt what a rule writes](vcon.md#encrypt-what-a-rule-writes) |
 | `sign_key` | string | -- | The PEM RSA or EC P-256 private key an encrypting or `sign_only` rule signs with, readable by its owner only. An RSA key signs `RS256`, an EC P-256 key `ES256` |
 | `sign_cert` | string | -- | The PEM certificate chain of `sign_key`, leaf first, carried in each signature's `x5c` |
+| `sign_cert_url` | string | -- | An `https://` URL that serves the PEM chain of `sign_cert`. sipnab writes it as each signature's `x5u` (draft-ietf-vcon-vcon-core-04 section 5.2.2), beside the `x5c`. Refused when it is not `https://`, and on a rule that does not sign. See [Name the chain by URL](vcon.md#name-the-chain-by-url) |
 | `sign_only` | boolean | `false` | `true`: write the signed form of draft-ietf-vcon-vcon-core-04 section 5.2 alone, signed with `sign_key` and `sign_cert`, with no encryption. The rule takes `sign_key`, `sign_cert` and `compress` from `[vcon]`, and not `[vcon] encrypt_to`. Refused beside the rule's own `encrypt_to`, and without a signing key. See [Sign without encrypting](vcon.md#sign-without-encrypting) |
 | `compress` | string | `none` | For an encrypting or `sign_only` rule: `gzip` signs the gzip ([RFC 1952](https://www.rfc-editor.org/rfc/rfc1952.html)) of the vCon instead of the vCon, as draft-ietf-vcon-vcon-core-04 section 5.2 allows, and the encrypted form names `cty: "application/vcon+gzip"`; `none` signs the vCon as it is. Refused on a rule without `encrypt_to`. See [Encrypt what a rule writes](vcon.md#encrypt-what-a-rule-writes) |
 | `sealed_updates` | string | `new-uuid` | What an encrypting rule writes when a call it already wrote changes. `new-uuid`: a new instance with a new uuid whose `amended` names the prior one (draft-ietf-vcon-vcon-core-04 section 4.1.9). `same-uuid`: rewrite the file under the same uuid, with a startup warning. `final-only`: write once, when the call ends. sipnab refuses any other value at startup. No effect without `encrypt_to`. See [When an encrypted call changes](vcon.md#when-an-encrypted-call-changes) |
@@ -28402,6 +28406,7 @@ How the vCon readers open a signed or encrypted container (see
 | `key` | path | -- | The RSA private key (PEM, readable by its owner only) that decrypts an encrypted container. Without it sipnab refuses an encrypted container. `--vcon-key` overrides it |
 | `signer_ca` | path | -- | The CA (PEM) a signed or encrypted container's signing certificate must chain to, through the intermediates in its `x5c`, every certificate within its validity period; `system` for the host's CA bundle. sipnab then refuses an unsigned container. `--vcon-signer-ca` overrides it |
 | `signer_sha256` | string | -- | The SHA-256 fingerprint the signing certificate must have: 64 hex digits, plain or colon-separated, either case. sipnab then refuses an unsigned container. `--vcon-signer-sha256` overrides it |
+| `x5u_ca` | path | -- | The CA (PEM) the HTTPS server of an `x5u` URL must chain to, or `system` for the host's CA bundle. Set, sipnab fetches the chain of a signature that names it only by `x5u`, within 256 KiB and 10 seconds. `--vcon-x5u-ca` overrides it |
 
 ```toml
 [vcon_input]
@@ -44812,6 +44817,46 @@ sign_cert = "/etc/sipnab/vcon-signing.crt"
   part in the call, or that they wrote anything.
 - The container names sipnab as its observer party. The parties are what the
   From and To headers said, not identities anyone established.
+
+### Name the chain by URL
+
+[Section 5.2.2 of draft-ietf-vcon-vcon-core-04](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-04#section-5.2.2)
+has each signature carry its certificate chain in `x5c`, or name it by an
+HTTPS URL in `x5u`.
+
+- A rule's `sign_cert_url` writes `x5u` beside the `x5c`:
+
+  ```toml
+  [[vcon.rule]]
+  name          = "archive"
+  when          = "@support"
+  dir           = "/var/spool/sipnab-vcon/archive"
+  sign_only     = true
+  sign_key      = "/etc/sipnab/vcon-signing.key"
+  sign_cert     = "/etc/sipnab/vcon-signing.crt"
+  sign_cert_url = "https://pki.example.com/vcon-signing.pem"
+  ```
+
+  - sipnab keeps the `x5c`, so a reader with no network access still
+    verifies the signature.
+  - sipnab refuses at startup a URL that is not `https://`, and
+    `sign_cert_url` on a rule that does not sign.
+  - sipnab serves nothing at the URL: put the PEM chain there yourself.
+- A reader verifies a signature that carries `x5c` with it, and fetches
+  nothing.
+- For a signature with `x5u` and no `x5c`, from another producer:
+  - `--vcon-x5u-ca <FILE|system>` (`[vcon_input] x5u_ca`) lets the readers
+    fetch the chain over HTTPS, trusting a server that chains to the CA in
+    the file, or to the host's CA bundle with `system`.
+  - sipnab reads at most 256 KiB of the answer and waits at most 10 seconds,
+    and fetches each URL once per run.
+  - Without the flag sipnab fetches nothing, and refuses the container naming
+    the flag. A container someone hands to the MCP or REST reader never makes
+    the server connect anywhere unless its operator gave the flag.
+  - sipnab refuses an `x5u` that is not `https://` before any fetch.
+  - The signature must verify against the first certificate the URL serves.
+    `--vcon-signer-ca` and `--vcon-signer-sha256` then check that chain, as
+    they check an `x5c`.
 
 ### Re-sign for a long-term archive
 

@@ -185,6 +185,10 @@ pub struct Signer {
     /// The chain as `x5c` carries it: standard base64 DER, leaf first
     /// ([RFC 7515 section 4.1.6](https://www.rfc-editor.org/rfc/rfc7515.html#section-4.1.6)).
     x5c: Vec<String>,
+    /// The `https://` URL that serves the chain, written as `x5u`
+    /// ([RFC 7515 section 4.1.5](https://www.rfc-editor.org/rfc/rfc7515.html#section-4.1.5))
+    /// beside `x5c`.
+    x5u: Option<String>,
 }
 
 impl Signer {
@@ -247,7 +251,20 @@ impl Signer {
         Ok(Self {
             key,
             x5c: chain.iter().map(|der| STANDARD.encode(der)).collect(),
+            x5u: None,
         })
+    }
+
+    /// This signer, also naming its chain by the URL `url` in `x5u`.
+    ///
+    /// # Errors
+    ///
+    /// A URL that is not `https://`: core-04 section 5.2.2 says x5u "MUST
+    /// contain an \[HTTPS\] URL".
+    pub fn with_cert_url(mut self, url: &str) -> Result<Self, String> {
+        check_x5u(url)?;
+        self.x5u = Some(url.to_owned());
+        Ok(self)
     }
 
     /// The JWS `alg` this signer signs with: `RS256` or `ES256`.
@@ -416,11 +433,15 @@ pub fn sign(unsigned: &[u8], uuid: &str, signer: &Signer) -> Result<Vec<u8>, Str
     let protected = URL_SAFE_NO_PAD.encode(serde_json::json!({ "alg": signer.alg() }).to_string());
     let payload = URL_SAFE_NO_PAD.encode(unsigned);
     let signature = signer.sign_input(format!("{protected}.{payload}").as_bytes())?;
+    let mut header = serde_json::json!({ "x5c": signer.x5c, "uuid": uuid });
+    if let Some(url) = &signer.x5u {
+        header["x5u"] = url.clone().into();
+    }
     serde_json::to_vec(&serde_json::json!({
         "payload": payload,
         "signatures": [{
             "protected": protected,
-            "header": { "x5c": signer.x5c, "uuid": uuid },
+            "header": header,
             "signature": URL_SAFE_NO_PAD.encode(signature),
         }],
     }))
@@ -693,7 +714,30 @@ pub fn verify(jws: &[u8]) -> Result<Vec<u8>, String> {
 /// would inflate to far more is refused without the larger vCon ever being
 /// held.
 pub fn verify_capped(jws: &[u8], max_unsigned: usize) -> Result<Vec<u8>, String> {
-    verify_with_signer(jws, max_unsigned).map(|(unsigned, _)| unsigned)
+    verify_with_signer(jws, max_unsigned, None).map(|(unsigned, _)| unsigned)
+}
+
+/// What fetches the PEM chain an `x5u` URL serves: the readers' HTTPS
+/// client, with its CA and its size and time caps.
+pub type X5uFetch = dyn Fn(&str) -> Result<Vec<u8>, String> + Send + Sync;
+
+/// Why a signature that names its chain only by `x5u` was not verified: no
+/// fetch was allowed.
+pub const X5U_NOT_FETCHED: &str = "the signature names its certificate by `x5u` (a URL) and \
+     carries no `x5c`: give --vcon-x5u-ca <FILE|system> to fetch it over https";
+
+/// Refuse an `x5u` that is not an `https://` URL: core-04 section 5.2.2 says
+/// x5u "MUST contain an \[HTTPS\] URL".
+fn check_x5u(url: &str) -> Result<(), String> {
+    let lower = url.to_ascii_lowercase();
+    if lower.starts_with("https://") && url.len() > "https://".len() {
+        Ok(())
+    } else {
+        Err(format!(
+            "x5u {url:?} is not an https URL, which draft-ietf-vcon-vcon-core-04 section \
+             5.2.2 requires"
+        ))
+    }
 }
 
 /// The gzip member ([RFC 1952](https://www.rfc-editor.org/rfc/rfc1952.html))
@@ -718,7 +762,11 @@ pub fn gunzip_capped(source: impl std::io::Read, cap: usize) -> Result<Vec<u8>, 
 
 /// [`verify`], and the DER of the certificate the first signature verified
 /// against.
-fn verify_with_signer(jws: &[u8], max_unsigned: usize) -> Result<(Vec<u8>, Vec<Vec<u8>>), String> {
+fn verify_with_signer(
+    jws: &[u8],
+    max_unsigned: usize,
+    x5u: Option<&X5uFetch>,
+) -> Result<(Vec<u8>, Vec<Vec<u8>>), String> {
     let value: serde_json::Value =
         serde_json::from_slice(jws).map_err(|e| format!("not JSON: {e}"))?;
     if form_of(&value) != Form::Signed {
@@ -752,19 +800,36 @@ fn verify_with_signer(jws: &[u8], max_unsigned: usize) -> Result<(Vec<u8>, Vec<V
                     .into(),
             );
         }
-        let chain = placed
-            .first()
-            .and_then(|c| c.as_array())
-            .filter(|c| !c.is_empty())
-            .ok_or("a signature carries no `x5c` certificate")?
-            .iter()
-            .map(|c| {
-                let text = c.as_str().ok_or("an `x5c` entry is not a string")?;
-                STANDARD
-                    .decode(text)
-                    .map_err(|e| format!("`x5c` is not base64: {e}"))
-            })
-            .collect::<Result<Vec<Vec<u8>>, String>>()?;
+        let chain = match placed.first() {
+            Some(x5c) => x5c
+                .as_array()
+                .filter(|c| !c.is_empty())
+                .ok_or("a signature's `x5c` is not a non-empty array")?
+                .iter()
+                .map(|c| {
+                    let text = c.as_str().ok_or("an `x5c` entry is not a string")?;
+                    STANDARD
+                        .decode(text)
+                        .map_err(|e| format!("`x5c` is not base64: {e}"))
+                })
+                .collect::<Result<Vec<Vec<u8>>, String>>()?,
+            // core-04 section 5.2.2: x5c or x5u. The x5u chain is fetched
+            // only when the reader allows it, and only over HTTPS.
+            None => {
+                let url = one_header(&headers, "x5u")?
+                    .ok_or("a signature carries no `x5c` or `x5u` certificate")?;
+                check_x5u(&url)?;
+                let fetch = x5u.ok_or(X5U_NOT_FETCHED)?;
+                let pem = fetch(&url)?;
+                let chain = certificates(&String::from_utf8_lossy(&pem));
+                if chain.is_empty() {
+                    return Err(format!(
+                        "x5u {url:?} serves no PEM certificate (RFC 7515 section 4.1.5)"
+                    ));
+                }
+                chain
+            }
+        };
         let leaf = chain
             .first()
             .ok_or("a signature carries no `x5c` certificate")?;
@@ -1344,6 +1409,17 @@ impl Sealing {
         self.compression = compression;
         self
     }
+
+    /// This sealing, its signatures also naming the chain by the URL `url`
+    /// in `x5u` ([`Signer::with_cert_url`]).
+    ///
+    /// # Errors
+    ///
+    /// A URL that is not `https://`.
+    pub fn with_cert_url(mut self, url: &str) -> Result<Self, String> {
+        self.signer = self.signer.with_cert_url(url)?;
+        Ok(self)
+    }
 }
 
 /// Read an encrypting rule's files: each recipient certificate, the signing
@@ -1533,6 +1609,8 @@ pub struct Opener {
     key_pem: Option<String>,
     /// Who must have signed what it opens.
     trust: SignerTrust,
+    /// What fetches an `x5u` chain; `None` fetches none.
+    x5u: Option<std::sync::Arc<X5uFetch>>,
 }
 
 /// Names no key material.
@@ -1561,6 +1639,7 @@ impl Opener {
         Ok(Self {
             key_pem: Some(key_pem),
             trust: SignerTrust::default(),
+            x5u: None,
         })
     }
 
@@ -1571,6 +1650,7 @@ impl Opener {
         Self {
             key_pem: None,
             trust: SignerTrust::default(),
+            x5u: None,
         }
     }
 
@@ -1578,6 +1658,14 @@ impl Opener {
     #[must_use]
     pub fn trusting(mut self, trust: SignerTrust) -> Self {
         self.trust = trust;
+        self
+    }
+
+    /// This opener, fetching the chain of a signature that names it only by
+    /// `x5u` with `fetch`.
+    #[must_use]
+    pub fn fetching_x5u(mut self, fetch: std::sync::Arc<X5uFetch>) -> Self {
+        self.x5u = Some(fetch);
         self
     }
 
@@ -1614,7 +1702,7 @@ impl Opener {
         use sha2::Digest as _;
         let key = self.key_pem.as_deref().ok_or(NO_KEY)?;
         let signed = decrypt(jwe, key)?;
-        let (unsigned, chain) = verify_with_signer(&signed, max_unsigned)?;
+        let (unsigned, chain) = verify_with_signer(&signed, max_unsigned, self.x5u.as_deref())?;
         self.trust.check(&chain, now)?;
         let signer = chain.first().cloned().unwrap_or_default();
         let signer_sha256 = colon_hex(&sha2::Sha256::digest(&signer));
@@ -1664,7 +1752,7 @@ pub fn resign_at(
         );
     }
     let inner = opener.unwrap_at(signed, max_unsigned, now)?;
-    let (_, chain) = verify_with_signer(signed, max_unsigned)?;
+    let (_, chain) = verify_with_signer(signed, max_unsigned, opener.x5u.as_deref())?;
     let leaf = chain
         .first()
         .ok_or("the signature carries no `x5c` certificate")?;
@@ -1862,7 +1950,8 @@ impl Opener {
                     "the container nests more than {MAX_SIGNED_LAYERS} signed layers"
                 ));
             }
-            let (unsigned, chain) = verify_with_signer(&current, max_unsigned)?;
+            let (unsigned, chain) =
+                verify_with_signer(&current, max_unsigned, self.x5u.as_deref())?;
             if depth == 1 {
                 self.trust.check(&chain, now)?;
             }

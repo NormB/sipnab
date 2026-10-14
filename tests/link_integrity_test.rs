@@ -1425,7 +1425,9 @@ fn wiki_intra_docs_links_resolve() -> Result<(), TestError> {
     // or compressed container").
     // 1760 -> 1761: docs/cli-reference.md +1, the `--vcon-resign` row links
     // "Re-sign for a long-term archive".
-    const EXPECTED_WIKI_LINKS: usize = 1761;
+    // 1761 -> 1762: docs/config-reference.md +1, the `sign_cert_url` row
+    // links "Name the chain by URL".
+    const EXPECTED_WIKI_LINKS: usize = 1762;
     // Raised 459 -> 460 when SRC1 stage 1 shipped: docs/cli-reference.md's
     // `--hep-listen` row now points at cookbook recipe "Take signaling from HEP and media off the wire, in one process" in docs/examples.md
     // rather than restating how to pair `-L` with `-d`. Attributed per file

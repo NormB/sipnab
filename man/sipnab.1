@@ -82,6 +82,9 @@ Read a signed or encrypted vCon container only when its signing certificate chai
 \fB\-\-vcon\-signer\-sha256\fR \fIHEX\fR
 Read a signed or encrypted vCon container only when its signing certificate has this SHA\-256 fingerprint: 64 hex digits, plain or colon\-separated, either case. An unsigned container is refused. Overrides \fB[vcon_input] signer_sha256\fR.
 .TP
+\fB\-\-vcon\-x5u\-ca\fR \fIFILE|system\fR
+Fetch the certificate chain of a signed vCon container that names it only by an \fBx5u\fR URL (draft\-ietf\-vcon\-vcon\-core\-04 section 5.2.2), over https, trusting the server only when it chains to a CA in this PEM file; \fBsystem\fR uses the host's CA bundle. Without it such a container is refused and nothing is fetched. Overrides \fB[vcon_input] x5u_ca\fR.
+.TP
 \fB\-O\fR, \fB\-\-output\fR \fIFILE\fR
 Write captured packets to a pcap file.
 .TP

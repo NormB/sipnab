@@ -105,6 +105,14 @@ entry that carries them.
     - It compiles libopus 1.6.1 from source and links it statically, so building `full` needs `cmake` and a C compiler.
     - The gnu, macOS and Docker builds carry it. The static musl builds, which have no vCon export, do not.
     - `sipnab --version` lists it.
+- **A signed vCon can name its certificate chain by URL (`x5u`).**
+  - draft-ietf-vcon-vcon-core-04 section 5.2.2: a signature carries `x5c` or `x5u`, and `x5u` is an HTTPS URL.
+  - Writing: a `[[vcon.rule]]` `sign_cert_url = "https://..."` writes `x5u` beside the `x5c`.
+    - sipnab refuses at startup a URL that is not `https://`, and `sign_cert_url` on a rule that does not sign.
+  - Reading: `--vcon-x5u-ca <FILE|system>` (`[vcon_input] x5u_ca`) fetches the chain of a signature that has `x5u` and no `x5c`.
+    - Over HTTPS only, through the fetcher's TLS client, trusting a server that chains to the CA in the file or, with `system`, to the host's CA bundle.
+    - At most 256 KiB, at most 10 seconds, each URL once per run.
+    - Without the flag sipnab fetches nothing and refuses such a container, naming the flag.
 - **`--vcon-resign` re-signs a signed vCon for a long-term archive.**
   - draft-ietf-vcon-vcon-core-04 section 5.2.3: before the signing certificate of JWS1 expires, the vCon is verified and JWS1 is signed whole as the payload of JWS2.
   - `sipnab --vcon-resign <FILE> --vcon-resign-key <KEY> --vcon-resign-cert <CHAIN> --vcon-resign-out <OUT>`:

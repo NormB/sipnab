@@ -801,6 +801,18 @@ pub struct CaptureArgs {
     )]
     pub vcon_signer_sha256: Option<String>,
 
+    /// Fetch the certificate chain of a signed vCon container that names it
+    /// only by an `x5u` URL (draft-ietf-vcon-vcon-core-04 section 5.2.2), over
+    /// https, trusting the server only when it chains to a CA in this PEM
+    /// file; `system` uses the host's CA bundle. Without it such a container
+    /// is refused and nothing is fetched. Overrides `[vcon_input] x5u_ca`.
+    #[arg(
+        help_heading = "Capture",
+        long = "vcon-x5u-ca",
+        value_name = "FILE|system"
+    )]
+    pub vcon_x5u_ca: Option<std::path::PathBuf>,
+
     /// Write captured packets to a pcap file.
     #[arg(
         help_heading = "Capture",

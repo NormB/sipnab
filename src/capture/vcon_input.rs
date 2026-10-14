@@ -485,6 +485,9 @@ mod reader {
         pub signer_ca: Option<crate::app::vcon_fetch::SignerCa>,
         /// The SHA-256 fingerprint a signed container's signer must have.
         pub signer_sha256: Option<[u8; 32]>,
+        /// The CA an `x5u` URL's server must chain to, which allows fetching
+        /// a chain named only by `x5u`; `None` fetches none.
+        pub x5u_ca: Option<crate::app::vcon_fetch::SignerCa>,
     }
 
     /// The opener built from the keys on first use, or why it was not.
@@ -530,7 +533,85 @@ mod reader {
         let trust =
             crate::app::vcon_fetch::signer_trust(keys.signer_ca.as_ref(), keys.signer_sha256)
                 .map_err(|(_, e)| e)?;
-        Ok(opener.trusting(trust))
+        let opener = opener.trusting(trust);
+        Ok(match &keys.x5u_ca {
+            Some(ca) => opener.fetching_x5u(x5u_fetcher(ca)?),
+            None => opener,
+        })
+    }
+
+    /// The most bytes of an `x5u` answer read: a certificate chain is a few
+    /// kilobytes, so a larger answer is not one.
+    pub const X5U_MAX_BYTES: usize = 256 * 1024;
+
+    /// The connect, read and write timeout of an `x5u` fetch.
+    pub const X5U_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+
+    /// What the `x5u` fetch's trust refusals call its setting and its peer.
+    const X5U_TRUST: crate::tls_files::TrustNames<'static> = crate::tls_files::TrustNames {
+        ca: "--vcon-x5u-ca",
+        extra: "--vcon-x5u-ca",
+        issuer: "the x5u server's CA",
+    };
+
+    /// The `x5u` fetch: an HTTPS `GET` through the fetcher's client
+    /// (`vcon_forward::client_config` and `exchange`), trusting `ca` (a file,
+    /// or the host's bundle for `system`), within [`X5U_TIMEOUT`] and
+    /// [`X5U_MAX_BYTES`]. Only a `2xx` answer is a chain. A chain fetched
+    /// once is kept for the process, so a directory of containers that name
+    /// one URL fetches it once.
+    fn x5u_fetcher(
+        ca: &crate::app::vcon_fetch::SignerCa,
+    ) -> Result<std::sync::Arc<crate::output::vcon_jose::X5uFetch>, String> {
+        use crate::app::vcon_fetch::SignerCa;
+        use crate::app::vcon_forward::{
+            Endpoint, client_config, exchange, read_body, read_head, status_of,
+        };
+        let file = match ca {
+            SignerCa::System(..) => None,
+            SignerCa::File(source) => Some(source.path.clone()),
+        };
+        let config = client_config(file.as_deref(), None, &X5U_TRUST)?;
+        let fetched: parking_lot::Mutex<std::collections::HashMap<String, Vec<u8>>> =
+            parking_lot::Mutex::default();
+        Ok(std::sync::Arc::new(move |url: &str| {
+            if let Some(chain) = fetched.lock().get(url) {
+                return Ok(chain.clone());
+            }
+            // The https rule is vcon_jose's, checked before any fetch.
+            let endpoint = Endpoint::parse(url).map_err(|e| format!("x5u {url:?}: {e}"))?;
+            let request = format!(
+                "GET {} HTTP/1.1\r\nHost: {}\r\nUser-Agent: sipnab/{}\r\nAccept: application/pem-certificate-chain\r\nConnection: close\r\n\r\n",
+                endpoint.target,
+                endpoint.host_header(),
+                env!("CARGO_PKG_VERSION")
+            );
+            exchange(
+                &endpoint,
+                X5U_TIMEOUT,
+                Some(&config),
+                request.as_bytes(),
+                |reader| {
+                    let head = read_head(reader, 64 * 1024, "the x5u fetch limit")?;
+                    let status = status_of(&head)?;
+                    if !(200..300).contains(&status) {
+                        return Err(format!("x5u {url:?} answered {status}"));
+                    }
+                    let (body, more) = read_body(reader, &head, X5U_MAX_BYTES);
+                    if more {
+                        return Err(format!(
+                            "x5u {url:?} answered more than {X5U_MAX_BYTES} bytes, more than a \
+                             certificate chain"
+                        ));
+                    }
+                    Ok(body)
+                },
+            )
+            .map_err(|e| format!("x5u {url:?}: {e}"))
+            .inspect(|chain| {
+                fetched.lock().insert(url.to_owned(), chain.clone());
+            })
+        }))
     }
 
     /// The unsigned container `bytes` hold, in whatever form they arrive:

@@ -371,6 +371,7 @@ Totals: CLI 354, TUI 25, REST 46, MCP 74.
 - `--vcon-signer-ca`
 - `--vcon-signer-sha256`
 - `--vcon-spool-status`
+- `--vcon-x5u-ca`
 - `--version`
 - `--wireshark`
 - `--word`

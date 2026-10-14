@@ -989,6 +989,46 @@ sign_cert = "/etc/sipnab/vcon-signing.crt"
 - The container names sipnab as its observer party. The parties are what the
   From and To headers said, not identities anyone established.
 
+### Name the chain by URL
+
+[Section 5.2.2 of draft-ietf-vcon-vcon-core-04](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-04#section-5.2.2)
+has each signature carry its certificate chain in `x5c`, or name it by an
+HTTPS URL in `x5u`.
+
+- A rule's `sign_cert_url` writes `x5u` beside the `x5c`:
+
+  ```toml
+  [[vcon.rule]]
+  name          = "archive"
+  when          = "@support"
+  dir           = "/var/spool/sipnab-vcon/archive"
+  sign_only     = true
+  sign_key      = "/etc/sipnab/vcon-signing.key"
+  sign_cert     = "/etc/sipnab/vcon-signing.crt"
+  sign_cert_url = "https://pki.example.com/vcon-signing.pem"
+  ```
+
+  - sipnab keeps the `x5c`, so a reader with no network access still
+    verifies the signature.
+  - sipnab refuses at startup a URL that is not `https://`, and
+    `sign_cert_url` on a rule that does not sign.
+  - sipnab serves nothing at the URL: put the PEM chain there yourself.
+- A reader verifies a signature that carries `x5c` with it, and fetches
+  nothing.
+- For a signature with `x5u` and no `x5c`, from another producer:
+  - `--vcon-x5u-ca <FILE|system>` (`[vcon_input] x5u_ca`) lets the readers
+    fetch the chain over HTTPS, trusting a server that chains to the CA in
+    the file, or to the host's CA bundle with `system`.
+  - sipnab reads at most 256 KiB of the answer and waits at most 10 seconds,
+    and fetches each URL once per run.
+  - Without the flag sipnab fetches nothing, and refuses the container naming
+    the flag. A container someone hands to the MCP or REST reader never makes
+    the server connect anywhere unless its operator gave the flag.
+  - sipnab refuses an `x5u` that is not `https://` before any fetch.
+  - The signature must verify against the first certificate the URL serves.
+    `--vcon-signer-ca` and `--vcon-signer-sha256` then check that chain, as
+    they check an `x5c`.
+
 ### Re-sign for a long-term archive
 
 A signing certificate expires in a few years, and an archive may keep a vCon

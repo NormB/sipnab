@@ -328,7 +328,7 @@ static KNOWN_KEYS: LazyLock<HashMap<&'static str, &'static [&'static str]>> = La
     // tools) open a signed or encrypted container.
     m.insert(
         "vcon_input",
-        ["key", "signer_ca", "signer_sha256"].as_slice(),
+        ["key", "signer_ca", "signer_sha256", "x5u_ca"].as_slice(),
     );
     m.insert(
         "names",
@@ -1066,6 +1066,10 @@ pub struct VconInputConfig {
     /// must have, hex, with or without colons. `--vcon-signer-sha256`
     /// overrides it.
     pub signer_sha256: Option<String>,
+    /// The CA (PEM) an `x5u` URL's HTTPS server must chain to, or `system`
+    /// for the host's CA bundle. Set, a signature that names its chain only
+    /// by `x5u` has the chain fetched. `--vcon-x5u-ca` overrides it.
+    pub x5u_ca: Option<PathBuf>,
 }
 
 impl VconInputConfig {
@@ -1706,6 +1710,11 @@ pub struct VconRuleConfig {
     /// `false`: a rule signs only as the inner layer of the encrypted form.
     #[serde(default)]
     pub sign_only: Option<bool>,
+    /// An `https://` URL serving the PEM chain of `sign_cert`: written as
+    /// each signature's `x5u` (draft-ietf-vcon-vcon-core-04 section 5.2.2),
+    /// beside its `x5c`.
+    #[serde(default)]
+    pub sign_cert_url: Option<String>,
 }
 
 /// The PBX sipnab runs beside.
@@ -3542,7 +3551,7 @@ impl Config {
     /// # Errors
     /// `crate::Error::ConfigInvalid`, naming the first such key.
     pub fn validate_paths(&self) -> Result<(), crate::Error> {
-        let keys: [(&str, Option<&Path>); 33] = [
+        let keys: [(&str, Option<&Path>); 34] = [
             ("[hep] tls_ca", self.hep.tls_ca.as_deref()),
             ("[hep] tls_extra_ca", self.hep.tls_extra_ca.as_deref()),
             ("[hep] tls_cert", self.hep.tls_cert.as_deref()),
@@ -3615,6 +3624,7 @@ impl Config {
                 "[vcon_input] signer_ca",
                 self.vcon_input.signer_ca.as_deref(),
             ),
+            ("[vcon_input] x5u_ca", self.vcon_input.x5u_ca.as_deref()),
             (
                 "[vcon] encrypt_to",
                 self.vcon

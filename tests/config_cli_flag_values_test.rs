@@ -136,6 +136,14 @@ static SPECS: &[Spec] = &[
         &[],
     ),
     (
+        "vcon-x5u-ca",
+        Kind::Text {
+            accept: &["x", " ", "0", "-1", "system"],
+            reject: &[("", 2)],
+        },
+        &[],
+    ),
+    (
         "vcon-signer-sha256",
         Kind::Text {
             accept: &[

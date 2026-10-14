@@ -4326,10 +4326,24 @@ pub fn reader_keys(
         })?),
         (None, None) => None,
     };
+    let x5u_ca = match (&flags.vcon_x5u_ca, &keys.x5u_ca) {
+        (Some(path), _) => Some(crate::app::vcon_fetch::signer_ca(
+            path,
+            "--vcon-x5u-ca",
+            Origin::CommandLine,
+        )),
+        (None, Some(path)) => Some(crate::app::vcon_fetch::signer_ca(
+            path,
+            "[vcon_input] x5u_ca",
+            Origin::ConfigFile,
+        )),
+        (None, None) => None,
+    };
     Ok(crate::capture::vcon_input::ReaderKeys {
         key,
         signer_ca,
         signer_sha256,
+        x5u_ca,
     })
 }
 
@@ -4984,11 +4998,11 @@ pub(crate) fn vcon_rules(
                      one recipient certificate"
                 )));
             }
-            (None, Some(key), Some(cert)) if inherited.sign_only => Some(std::sync::Arc::new(
+            (None, Some(key), Some(cert)) if inherited.sign_only => Some(
                 crate::output::vcon_jose::load_signing(key, cert)
                     .map_err(|e| refuse(format!("[[vcon.rule]] '{name}': {e}")))?
                     .compressed(rule_compression(name, inherited.compress).map_err(refuse)?),
-            )),
+            ),
             (None, _, _) if inherited.sign_only => {
                 return Err(refuse(format!(
                     "[[vcon.rule]] '{name}' has sign_only and needs sign_key and sign_cert: \
@@ -5011,12 +5025,28 @@ pub(crate) fn vcon_rules(
                      (draft-ietf-vcon-vcon-core-04 section 5.3)"
                 )));
             }
-            (Some(to), Some(key), Some(cert)) => Some(std::sync::Arc::new(
+            (Some(to), Some(key), Some(cert)) => Some(
                 crate::output::vcon_jose::load_sealing(to, key, cert)
                     .map_err(|e| refuse(format!("[[vcon.rule]] '{name}': {e}")))?
                     .compressed(rule_compression(name, inherited.compress).map_err(refuse)?),
-            )),
+            ),
         };
+        // core-04 section 5.2.2: the signature carries x5c or x5u, and x5u
+        // is an HTTPS URL. sipnab writes x5u beside x5c.
+        let sealing =
+            match (sealing, rule.sign_cert_url.as_deref()) {
+                (sealing, None) => sealing,
+                (Some(sealing), Some(url)) => Some(sealing.with_cert_url(url).map_err(|e| {
+                    refuse(format!("[[vcon.rule]] '{name}' has sign_cert_url: {e}"))
+                })?),
+                (None, Some(_)) => {
+                    return Err(refuse(format!(
+                        "[[vcon.rule]] '{name}' has sign_cert_url without a signing key: it names \
+                     the certificate of sign_key, on a rule with encrypt_to or sign_only = true"
+                    )));
+                }
+            }
+            .map(std::sync::Arc::new);
         if sealing.is_none() && rule.compress.is_some() {
             return Err(refuse(format!(
                 "[[vcon.rule]] '{name}' has compress without encrypt_to: compress applies \
