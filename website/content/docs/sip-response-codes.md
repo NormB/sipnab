@@ -13,24 +13,36 @@ Every SIP response code in the IANA registry, the section of the RFC that
 defines it, and how sipnab classifies it.
 
 **Source.** <https://www.iana.org/assignments/sip-parameters/sip-parameters-7.csv>
-— the IANA *Response Codes* registry, retrieved 2026-07-30. IANA is the registry
-of record: [RFC 3261 section 21](https://www.rfc-editor.org/rfc/rfc3261.html#section-21) defines 50 of these and later RFCs register the other 25,
-so no single RFC carries the whole list. A blank `Reference` in that CSV means
-RFC 3261, which is why those 50 line up exactly with [RFC 3261 section 21](https://www.rfc-editor.org/rfc/rfc3261.html#section-21).
+— the IANA *Response Codes* registry, retrieved 2026-07-30.
+
+- IANA is the registry of record.
+  - [RFC 3261 section 21](https://www.rfc-editor.org/rfc/rfc3261.html#section-21) defines 50 of these.
+  - Later RFCs register the other 25.
+  - So no single RFC carries the whole list.
+- A blank `Reference` in that CSV means RFC 3261.
+  That is why those 50 line up exactly with [RFC 3261 section 21](https://www.rfc-editor.org/rfc/rfc3261.html#section-21).
 
 **Wikipedia disagrees with the registry, so prefer this table.** Its list differs
-in five phrases and carries two codes that no registry has. 437 is *Unsupported
-Credential*, not *Unsupported Certificate* — [[RFC 8224 section 6.2.2](https://www.rfc-editor.org/rfc/rfc8224.html#section-6.2.2)] names the latter as
-the previous name. 500 is *Server Internal Error*, not *Internal Server Error*.
-202 reads *Accepted (Deprecated)*. 409 *Conflict* and 411 *Length Required* come from
-[RFC 2543](https://www.rfc-editor.org/rfc/rfc2543.html), which RFC 3261 obsoleted.
+in five phrases. It also carries two codes that no registry has.
+
+- 437 reads *Unsupported Credential*, not *Unsupported Certificate*.
+  [[RFC 8224 section 6.2.2](https://www.rfc-editor.org/rfc/rfc8224.html#section-6.2.2)] names the latter as
+  the previous name.
+- 500 is *Server Internal Error*, not *Internal Server Error*.
+- 202 reads *Accepted (Deprecated)*.
+- 409 *Conflict* and 411 *Length Required* come from
+  [RFC 2543](https://www.rfc-editor.org/rfc/rfc2543.html). RFC 3261 obsoleted that RFC.
 
 [[RFC 8224 section 6.2.2](https://www.rfc-editor.org/rfc/rfc8224.html#section-6.2.2)]: https://www.rfc-editor.org/rfc/rfc8224.html#section-6.2.2
 
-**Reason phrases on the wire are free text.** [RFC 3261 section 7.2](https://www.rfc-editor.org/rfc/rfc3261.html#section-7.2) lets a sender write
-anything after the code, so a capture showing `500 Service Unavailable` or `487
-Request Canceled` is legal, and both are common in the field. The phrase in this
-table is the canonical one. Match on the code, never on the text.
+**Reason phrases on the wire are free text.**
+
+- [RFC 3261 section 7.2](https://www.rfc-editor.org/rfc/rfc3261.html#section-7.2) lets a sender write
+  anything after the code.
+- So a capture showing `500 Service Unavailable` or `487
+  Request Canceled` is legal. Both are common in the field.
+- The phrase in this table is the canonical one.
+- Match on the code, never on the text.
 
 ## Classification
 
@@ -44,11 +56,13 @@ table is the canonical one. Match on the code, never on the text.
 | `declined` | The call reached the callee or an intermediary, which refused it. A human or a policy said no. |
 | `failure` | The call attempt failed. |
 
-Only `failure` is a failed call. `challenge`, `canceled`, `redirect` and
-`declined` each point somewhere different, and folding them together loses the
-distinction that tells an operator what to do next. A call that drew a `challenge`
-and never authenticated is a provisioning problem. One that ended `canceled` is a
-caller who hung up. One that came back `declined` reached a human who said no.
+Only `failure` is a failed call.
+
+- `challenge`, `canceled`, `redirect` and `declined` each point somewhere different.
+- Folding them together loses the distinction that tells an operator what to do next:
+  - A call that drew a `challenge` and never authenticated is a provisioning problem.
+  - A call that ended `canceled` is a caller who hung up.
+  - A call that came back `declined` reached a human who said no.
 
 <!-- vale off -->
 
@@ -81,7 +95,7 @@ The request succeeded.
 
 ## 3xx redirect
 
-The request needs different routing. Not a failure of the call, and not an answer either.
+The request needs different routing. It is not a failure of the call. It is not an answer either.
 
 | Code | Reason phrase | Defined in | Description |
 |---|---|---|---|
@@ -93,7 +107,7 @@ The request needs different routing. Not a failure of the call, and not an answe
 
 ## Challenge
 
-The server wants credentials or a security agreement, and the client retries. Intermediate, not an outcome.
+The server wants credentials or a security agreement. The client retries. This is intermediate, not an outcome.
 
 | Code | Reason phrase | Defined in | Description |
 |---|---|---|---|
@@ -103,7 +117,7 @@ The server wants credentials or a security agreement, and the client retries. In
 
 ## Canceled
 
-The caller gave up before a final response. Abandonment, not failure.
+The caller gave up before a final response. This is abandonment, not failure.
 
 | Code | Reason phrase | Defined in | Description |
 |---|---|---|---|
@@ -111,7 +125,7 @@ The caller gave up before a final response. Abandonment, not failure.
 
 ## Declined
 
-The call reached the callee or an intermediary, which refused it. A human or a policy said no.
+The call reached the callee or an intermediary. That party refused it. A human or a policy said no.
 
 | Code | Reason phrase | Defined in | Description |
 |---|---|---|---|

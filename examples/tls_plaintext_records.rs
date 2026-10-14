@@ -20,7 +20,7 @@
 //! way `call_summary` does.
 //!
 //! The four records are one client and server in a single `python3` process,
-//! pid 349147, the shape of the measured run in cookbook recipe 7h:
+//! pid 349147, the shape of the measured run in cookbook recipe "Read TLS *and* who the peer was":
 //!
 //! 1. a REGISTER from 127.0.0.1:36160 to 127.0.0.1:15061, paired with its socket;
 //! 2. the 200 OK back on the same connection;

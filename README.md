@@ -6,25 +6,38 @@
 [![codecov](https://codecov.io/gh/NormB/sipnab/graph/badge.svg)](https://codecov.io/gh/NormB/sipnab)
 
 **Read a SIP call and see why it failed.** SIP is the signaling protocol that
-sets up and tears down voice calls. sipnab reads that signaling from a live
-network interface, a pcap (packet capture) file, or a HEP feed that your SIP
-proxies send (HEP copies each SIP message to a collector over the network).
-From an interface or a file it also reads the RTP audio packets underneath,
-and grades their quality. It shows you the call flow, the audio quality, and
-the security signals around each call.
+sets up and tears down voice calls.
+
+- sipnab reads that signaling from one of these sources:
+  - a live network interface,
+  - a pcap (packet capture) file,
+  - a HEP feed that your SIP proxies send. HEP copies each SIP message to a
+    collector over the network.
+- From an interface or a file, it also reads the RTP audio packets underneath.
+  It grades their quality.
+- It shows you:
+  - the call flow,
+  - the audio quality,
+  - the security signals around each call.
 
 ![sipnab interactive TUI — call-flow ladder of a complete call: INVITE with SDP, 100 Trying, 180 Ringing, 200 OK, ACK, the RTP media line, then BYE and its 200 OK, with the decoded INVITE in the detail pane. One of seven dialogs in the same sample capture the analyze page loads](website/static/demos/hero-static.webp)
 
-sipnab is one binary with no database and no web UI to run. You can point it
-at one box's traffic, or have every proxy in a cluster send it
-HEP, so one listener sees calls across many nodes without anything installed
-on the production hosts. It keeps what it sees in memory and answers through
-its terminal view, a command line, a REST API, and an MCP server.
+sipnab is one binary with no database and no web UI to run.
 
-You can try it without installing anything: [sipnab.com/analyze](https://sipnab.com/analyze/)
-reads a pcap in your browser without uploading it. The full documentation lives at
-**[sipnab.com](https://sipnab.com)** and in [docs/](docs/README.md). The
-[Glossary](docs/glossary.md) defines the terms these pages use.
+- You can point it at one box's traffic.
+- Or you can have every proxy in a cluster send it HEP. Then one listener sees
+  calls across many nodes, without anything installed on the production hosts.
+- It keeps what it sees in memory.
+- It answers through its terminal view, a command line, a REST API, and an MCP
+  server.
+
+You can try it without installing anything.
+[sipnab.com/analyze](https://sipnab.com/analyze/) reads a pcap in your browser
+without uploading it.
+
+The full documentation lives at **[sipnab.com](https://sipnab.com)** and in
+[docs/](docs/README.md). The [Glossary](docs/glossary.md) defines the terms
+these pages use.
 
 ## Install
 
@@ -34,11 +47,16 @@ On Linux (x86_64 or aarch64) or macOS:
 curl -fsSL https://sipnab.com/install.sh | sh
 ```
 
-The script picks the build for your OS, CPU and glibc, checks it against the
-release's `.sha256` file, and installs it to `/usr/local/bin` (using `sudo`
-only if that directory is not writable). You can
-[read the script](https://sipnab.com/install.sh) first. To confirm the install,
-run `sipnab --version`: it prints the version and the features compiled in.
+The script does three things:
+
+- It picks the build for your OS, CPU and glibc.
+- It checks the build against the release's `.sha256` file.
+- It installs the build to `/usr/local/bin`. It uses `sudo` only if that
+  directory is not writable.
+
+You can [read the script](https://sipnab.com/install.sh) first. To confirm the
+install, run `sipnab --version`. It prints the version and the features
+compiled in.
 
 Other ways in:
 
@@ -55,9 +73,9 @@ Other ways in:
 Here are four common starting points. Each one ends with a link to the page
 that goes further.
 
-### 1. Triage a capture file
+### Triage a capture file
 
-Reading a file needs no root and no network interface, so it is the easiest
+Reading a file needs no root and no network interface. So it is the easiest
 place to start. This sample holds one completed call and four failed ones:
 
 ```bash
@@ -65,8 +83,10 @@ curl -LO https://github.com/NormB/sipnab/raw/main/tests/pcap-samples/sip-problem
 ```
 
 Open it in the TUI (text user interface), the interactive full-screen view.
-Press `F1` for the keys each view accepts. To quit, press `q` and then `y` to
-confirm, or `Ctrl-C` to quit at once:
+
+- Press `F1` for the keys each view accepts.
+- To quit, press `q` and then `y` to confirm.
+- Or press `Ctrl-C` to quit at once.
 
 ```bash
 sipnab -I sip-problem-call.pcap
@@ -79,35 +99,38 @@ List every call in the file, with its final status code, as a report table:
 sipnab -N -I sip-problem-call.pcap --report --no-cli-print
 ```
 
-Print only the messages of calls that failed or sounded poor, as JSON you can
-pipe into `jq`:
+Print only the messages of calls that failed or sounded poor. The output is
+JSON that you can pipe into `jq`:
 
 ```bash
 sipnab -N --json -I sip-problem-call.pcap --problems
 ```
 
-Explain one call. A Call-ID is the SIP header that names a call, and the
-report table above lists them:
+Explain one call. A Call-ID is the SIP header that names a call. The report
+table above lists them:
 
 ```bash
 sipnab -N -I sip-problem-call.pcap --call-report 'busy-3a2b1c@192.0.2.30' --no-cli-print
 ```
 
-Next: [Triage a capture from the command line](docs/first-cli-triage.md) walks
-through these commands with their output, and
-[Your first analysis in the TUI](docs/tui-walkthrough.md) does the same
-interactively.
+Next:
 
-### 2. Watch live traffic
+- [Triage a capture from the command line](docs/first-cli-triage.md) walks
+  through these commands with their output.
+- [Your first analysis in the TUI](docs/tui-walkthrough.md) does the same
+  interactively.
 
-Live capture on Linux needs raw-socket access. Rather than running sipnab as
-root, grant the binary the two capabilities once, then run it as yourself:
+### Watch live traffic
+
+Live capture on Linux needs raw-socket access. Instead of running sipnab as
+root, grant the binary the two capabilities once. Then run it as yourself:
 
 ```bash
 sudo sipnab --setup-caps
 ```
 
-Then capture on an interface. Replace `eth0` with yours, which `ip link` lists:
+Then capture on an interface. Replace `eth0` with your interface. `ip link`
+lists them:
 
 ```bash
 sipnab -d eth0
@@ -119,25 +142,31 @@ For a stream of JSON, one SIP message per line, add `-N --json`:
 sipnab -N -d eth0 --json
 ```
 
-Re-run `--setup-caps` after each upgrade, because replacing the binary clears
-its capabilities. On macOS, run live capture with `sudo` instead.
-[Capture live traffic without root](docs/install.md#capture-live-traffic-without-root)
-explains the privilege model, and
-[Tune capture on a busy server](docs/tuning-capture.md) covers packet loss.
+- Re-run `--setup-caps` after each upgrade. Replacing the binary clears its
+  capabilities.
+- On macOS, run live capture with `sudo` instead.
+- [Capture live traffic without root](docs/install.md#capture-live-traffic-without-root)
+  explains the privilege model.
+- [Tune capture on a busy server](docs/tuning-capture.md) covers packet loss.
 
-### 3. Receive HEP from your proxies
+### Receive HEP from your proxies
 
-Kamailio, OpenSIPS and Asterisk can each mirror their SIP traffic over HEP, so
-one sipnab listener sees the calls of every node without anything installed on
-the production hosts. A listener on a routable address must name the senders
-it accepts (`--hep-allow`) or share a secret with them (`--hep-auth-file`).
+Kamailio, OpenSIPS and Asterisk can each mirror their SIP traffic over HEP.
+Then one sipnab listener sees the calls of every node. You install nothing on
+the production hosts.
+
+A listener on a routable address must do one of two things:
+
+- name the senders it accepts (`--hep-allow`),
+- or share a secret with them (`--hep-auth-file`).
+
 Otherwise sipnab refuses to start it:
 
 ```bash
 sipnab -N -L 0.0.0.0:9060 --hep-allow 192.0.2.10
 ```
 
-To try it on one machine, bind to loopback and replay a capture into it from a
+To try it on one machine, bind to loopback. Then replay a capture into it from a
 second terminal with `-H` (HEP send):
 
 ```bash
@@ -148,17 +177,19 @@ sipnab -N -L 127.0.0.1:9060
 sipnab -N -I sip-problem-call.pcap -H 127.0.0.1:9060
 ```
 
-A proxy's HEP feed carries its SIP signaling, not the call audio, so for audio
-quality run sipnab where the media flows as well.
-[Run sipnab beside OpenSIPS](docs/opensips-sipnab.md),
-[Run sipnab beside Kamailio](docs/kamailio-sipnab.md) and
-[Connect sipnab to Homer](docs/homer-sipnab.md) set this up end to end, TLS
-transport included.
+A proxy's HEP feed carries its SIP signaling, not the call audio. For audio
+quality, run sipnab where the media flows as well.
 
-### 4. Serve the REST API, metrics and MCP
+These guides set this up end to end, TLS transport included:
+
+- [Run sipnab beside OpenSIPS](docs/opensips-sipnab.md)
+- [Run sipnab beside Kamailio](docs/kamailio-sipnab.md)
+- [Connect sipnab to Homer](docs/homer-sipnab.md)
+
+### Serve the REST API, metrics and MCP
 
 sipnab can answer other programs while it captures. Choose an API key and keep
-it in the environment, where sipnab reads it and where `ps` cannot see it:
+it in the environment. sipnab reads it there, and `ps` cannot see it there:
 
 ```bash
 export SIPNAB_API_KEY="$(openssl rand -hex 32)"
@@ -176,137 +207,186 @@ curl -H "Authorization: Bearer $SIPNAB_API_KEY" http://127.0.0.1:8080/v1/dialogs
 ```
 
 MCP (Model Context Protocol) lets an AI agent, such as Claude Code, call
-sipnab's analysis as tools. Over stdio, the default transport, the agent
-starts sipnab itself, so this is the command you register with your MCP
-client (`--mcp-transport http` serves remote agents instead):
+sipnab's analysis as tools.
+
+- Over stdio, the default transport, the agent starts sipnab itself. So this is
+  the command you register with your MCP client.
+- `--mcp-transport http` serves remote agents instead.
 
 ```bash
 sipnab --mcp -N -I sip-problem-call.pcap --mcp-tools core
 ```
 
-The server offers 74 tools, and every tool costs the agent context before it
-asks anything. `--mcp-tools core` loads a small set that still answers a whole
-call. Named bundles such as `signaling` and `media`, and bundles of your own in
-the config file, load other sets
-([Choosing which tools load](docs/mcp-tools.md#choosing-which-tools-load)).
+The server offers 74 tools. Every tool costs the agent context before it asks
+anything.
 
-Next: [REST API and metrics](docs/rest-api.md),
-[Prometheus metrics](docs/prometheus-metrics.md),
-[MCP server](docs/mcp.md), and
-[Connect an AI agent to sipnab](docs/mcp-deploy.md).
+- `--mcp-tools core` loads a small set that still answers a whole call.
+- Named bundles such as `signaling` and `media` load other sets.
+- Bundles of your own in the config file also load other sets.
+- See [Choosing which tools load](docs/mcp-tools.md#choosing-which-tools-load).
+
+Next:
+
+- [REST API and metrics](docs/rest-api.md)
+- [Prometheus metrics](docs/prometheus-metrics.md)
+- [MCP server](docs/mcp.md)
+- [Connect an AI agent to sipnab](docs/mcp-deploy.md)
 
 ## Security basics
 
-- **Privileges.** Reading files needs none. For live capture, prefer
-  `sudo sipnab --setup-caps` to running as root. Started as root, sipnab opens
-  the capture device and then drops to an unprivileged user (`nobody`, or
-  `--user`); `--chroot` confines it further.
-- **Listeners bind to loopback by default.** On a routable address, the REST
-  API refuses to start without `--api-key` or `--api-signing-key`, MCP over
-  HTTP without `--mcp-token` or `--mcp-signing-key`, and the metrics endpoint
-  without `--metrics-auth`. [Set up authentication](docs/auth.md) covers
-  signed tokens, rotation and revocation.
+- **Privileges.** Reading files needs none.
+  - For live capture, prefer `sudo sipnab --setup-caps` to running as root.
+  - Started as root, sipnab opens the capture device. Then it drops to an
+    unprivileged user (`nobody`, or `--user`).
+  - `--chroot` confines it further.
+- **Listeners bind to loopback by default.** On a routable address, these
+  refuse to start without an option:
+  - the REST API, without `--api-key` or `--api-signing-key`,
+  - MCP over HTTP, without `--mcp-token` or `--mcp-signing-key`,
+  - the metrics endpoint, without `--metrics-auth`.
+  - [Set up authentication](docs/auth.md) covers signed tokens, rotation and
+    revocation.
 - **TLS.** The REST API, MCP over HTTP and the metrics endpoint each serve
-  HTTPS themselves when given a certificate and key: `--api-tls-cert` /
-  `--api-tls-key` ([API TLS](docs/rest-api.md#api-tls)), `--mcp-tls-cert` /
-  `--mcp-tls-key` ([MCP TLS](docs/mcp-deploy.md#mcp-tls)) and
-  `--metrics-tls-cert` / `--metrics-tls-key`
-  ([Metrics TLS](docs/prometheus-metrics.md#metrics-tls)), or the matching
-  `tls_cert` / `tls_key` keys in `sipnab.toml`. HEP can use TLS in both
-  directions (`--hep-listen-transport tls`, `--hep-send-transport tls`), and
-  the sender either trusts only a named CA (`--hep-tls-ca`) or adds one to the
-  host's bundle (`--hep-tls-extra-ca`).
+  HTTPS themselves when given a certificate and key:
+  - `--api-tls-cert` / `--api-tls-key` ([API TLS](docs/rest-api.md#api-tls)),
+  - `--mcp-tls-cert` / `--mcp-tls-key` ([MCP TLS](docs/mcp-deploy.md#mcp-tls)),
+  - `--metrics-tls-cert` / `--metrics-tls-key`
+    ([Metrics TLS](docs/prometheus-metrics.md#metrics-tls)),
+  - or the matching `tls_cert` / `tls_key` keys in `sipnab.toml`.
+  - HEP can use TLS in both directions (`--hep-listen-transport tls`,
+    `--hep-send-transport tls`). The sender does one of two things:
+    - it trusts only a named CA (`--hep-tls-ca`),
+    - or it adds one to the host's bundle (`--hep-tls-extra-ca`).
 - **Sending.** Capture is passive. The features that send are off until you
-  ask for them, for example HEP forwarding (`-H`), reverse DNS
-  (`--reverse-dns`), and `--kill-scanner` and `-K`, which on a live interface
-  answer scanners with SIP responses. When sipnab reads a capture file, it
-  sends no scanner responses.
+  ask for them. For example:
+  - HEP forwarding (`-H`),
+  - reverse DNS (`--reverse-dns`),
+  - `--kill-scanner` and `-K`. On a live interface, these answer scanners with
+    SIP responses.
+  - When sipnab reads a capture file, it sends no scanner responses.
 - **The threat model.** [Threat model and security assessment](docs/threat-model.md)
   lists the assets, trust boundaries, mitigations and known gaps.
 
 ## What it does
 
-- **Several ways to read the results.** The interactive TUI, the
-  non-interactive CLI (`-N`), JSON (`--json`, one message per line), reports,
-  the REST API, and the MCP server
-- **Call analysis.** Dialog state, PDD (post-dial delay, the wait before
-  ringing), SIP header matching (`--from`, `--to` and the rest), and a
-  [filter language](docs/filter-dsl.md) of 42 fields, 8 operators and boolean
-  logic
-- **Diagnostic aliases.** `--problems`, `--slow-setup`, `--short-calls`,
-  `--one-way` and `--nat-issues` as flags; `codec-asym`, `ptime-asym`,
-  `payload-asym`, `duration-asym` and `late-media` through `--filter`
-  (for example `sipnab -N -I capture.pcap --filter codec-asym`)
-- **RTP quality.** Jitter, loss, MOS (mean opinion score, an estimate of how
-  the call sounded, from the ITU-T G.107 E-model;
-  [where it comes from](docs/mos-and-codecs.md)), RTCP XR
-  ([RFC 3611](https://www.rfc-editor.org/rfc/rfc3611.html)) reports, and one-way
-  audio
-- **Security analysis.** Scanner detection, registration floods, digest
-  credential leaks, STIR/SHAKEN, and fraud heuristics, with alerts to syslog,
-  JSON or a command of your own (`--alert`, `--alert-exec`). It can write
-  fail2ban input (`--fail2ban`), and ask [TFPS](docs/tfps-sipnab.md) to ban a
-  source, which is an action that stays off until `--allow-action` enables it
-- **HEP v3** send over UDP, TCP or TLS, and HEP v1/v2/v3 receive
-- **TLS and SRTP decryption.** From an SSLKEYLOGFILE (TLS 1.2 and 1.3), an RSA
-  private key (`--tls-key`, TLS 1.2 RSA key exchange only), SRTP keys (the
-  SDES `a=crypto` keys in the SDP, or a master-keys file with `--srtp-keys`),
-  and DTLS-SRTP (`--dtls-keylog`,
-  [RFC 5764](https://www.rfc-editor.org/rfc/rfc5764.html)).
-  [Capture SIP over TLS](docs/tls-capture.md) helps you choose
-- **TLS capture with uprobes.** This does not break TLS. On a host where you
-  already have root, kernel uprobes read the SIP plaintext inside OpenSSL or
-  wolfSSL before the library encrypts it (`--uprobe-tls`), so it needs no key,
-  certificate or restart. Every Linux build has it, and its default tracefs
-  backend needs no BTF. The eBPF backend, which also recovers the peer
-  addresses, is in the released Linux gnu tarballs, `.deb` and `.rpm`, not the
-  static musl builds, and needs a kernel with BTF
+- **Several ways to read the results.**
+  - the interactive TUI,
+  - the non-interactive CLI (`-N`),
+  - JSON (`--json`, one message per line),
+  - reports,
+  - the REST API,
+  - the MCP server.
+- **Call analysis.**
+  - dialog state,
+  - PDD (post-dial delay, the wait before ringing),
+  - SIP header matching (`--from`, `--to` and the rest),
+  - a [filter language](docs/filter-dsl.md) of 42 fields, 8 operators and
+    boolean logic.
+- **Diagnostic aliases.**
+  - As flags: `--problems`, `--slow-setup`, `--short-calls`, `--one-way` and
+    `--nat-issues`.
+  - Through `--filter`: `codec-asym`, `ptime-asym`, `payload-asym`,
+    `duration-asym` and `late-media`. For example:
+    `sipnab -N -I capture.pcap --filter codec-asym`.
+- **RTP quality.**
+  - jitter,
+  - loss,
+  - MOS (mean opinion score). This is an estimate of how the call sounded, from
+    the ITU-T G.107 E-model ([where it comes from](docs/mos-and-codecs.md)).
+  - RTCP XR ([RFC 3611](https://www.rfc-editor.org/rfc/rfc3611.html)) reports,
+  - one-way audio.
+- **Security analysis.**
+  - Scanner detection, registration floods, digest credential leaks,
+    STIR/SHAKEN, and fraud heuristics.
+  - It sends alerts to syslog, JSON or a command of your own (`--alert`,
+    `--alert-exec`).
+  - It can write fail2ban input (`--fail2ban`).
+  - It can ask [TFPS](docs/tfps-sipnab.md) to ban a source. That action stays
+    off until `--allow-action` enables it.
+- **HEP v3** send over UDP, TCP or TLS, and HEP v1/v2/v3 receive.
+- **TLS and SRTP decryption.** It decrypts from these sources:
+  - an SSLKEYLOGFILE (TLS 1.2 and 1.3),
+  - an RSA private key (`--tls-key`, TLS 1.2 RSA key exchange only),
+  - SRTP keys. These are the SDES `a=crypto` keys in the SDP, or a master-keys
+    file with `--srtp-keys`.
+  - DTLS-SRTP (`--dtls-keylog`,
+    [RFC 5764](https://www.rfc-editor.org/rfc/rfc5764.html)).
+  - [Capture SIP over TLS](docs/tls-capture.md) helps you choose.
+- **TLS capture with uprobes.** This does not break TLS.
+  - It works on a host where you already have root.
+  - Kernel uprobes read the SIP plaintext inside OpenSSL or wolfSSL, before
+    the library encrypts it (`--uprobe-tls`).
+  - So it needs no key, certificate or restart.
+  - Every Linux build has it. Its default tracefs backend needs no BTF.
+  - The eBPF backend also recovers the peer addresses.
+    - It is in the released Linux gnu tarballs, `.deb` and `.rpm`.
+    - It is not in the static musl builds.
+    - It needs a kernel with BTF.
 - **SIPREC metadata.** Reads the recording metadata
-  ([RFC 7866](https://www.rfc-editor.org/rfc/rfc7866.html)) that a session recording
-  client sends. sipnab is not a recording client or server
-- **Relay correlation.** Ties media on an rtpengine relay
-  ([rtpengine](docs/rtpengine.md)) or an rtpproxy relay (`--rtpproxy-control`)
-  back to its call, and reads rtpengine's own counters over its control port
-  (`--rtpengine-control`), labeled as the relay's report rather than
-  sipnab's measurement
-- **vCon export and delivery.** Writes each observed call as a vCon, a
-  conversation container (`--export-vcon`, [Export a call as a vCon](docs/vcon.md)).
-  `--vcon-forward`, a separate process, delivers them to a vCon store such as
-  vcon.store or a self-hosted conserver (in the gnu and macOS builds; the
-  static musl builds lack the `vcon` feature). `--vcon-forward-kind vcon-store`
-  adds vcon.store's ingest path and header and changes only the copy it sends,
-  because vcon.store's validator rejects the string-array `extensions` both
-  vCon drafts define ([Send sipnab's vCons to vcon.store](docs/vcon-store.md)).
-  Export rules (`[[vcon.rule]]`) pick calls by filter and write them per leg
-  or per call, a call can go to your own transcriber first (`[[vcon.enrich]]`),
-  you can follow and hear live calls while they are in progress, and a rule with
-  `encrypt_to` writes the signed and encrypted form
+  ([RFC 7866](https://www.rfc-editor.org/rfc/rfc7866.html)) that a session
+  recording client sends. sipnab is not a recording client or server.
+- **Relay correlation.**
+  - It ties media on a relay back to its call. The relay can be an rtpengine
+    relay ([rtpengine](docs/rtpengine.md)) or an rtpproxy relay
+    (`--rtpproxy-control`).
+  - It reads rtpengine's own counters over its control port
+    (`--rtpengine-control`). sipnab labels them as the relay's report, not
+    sipnab's measurement.
+- **vCon export and delivery.**
+  - It writes each observed call as a vCon, a conversation container
+    (`--export-vcon`, [Export a call as a vCon](docs/vcon.md)).
+  - `--vcon-forward`, a separate process, delivers them to a vCon store. Two
+    examples are vcon.store and a self-hosted conserver.
+    - It is in the gnu and macOS builds. The static musl builds lack the
+      `vcon` feature.
+  - `--vcon-forward-kind vcon-store` adds vcon.store's ingest path and header.
+    - It changes only the copy it sends.
+    - The reason: vcon.store's validator rejects the string-array `extensions`
+      that both vCon drafts define
+      ([Send sipnab's vCons to vcon.store](docs/vcon-store.md)).
+  - Export rules (`[[vcon.rule]]`) pick calls by filter. They write them
+    per leg or per call.
+  - A call can go to your own transcriber first (`[[vcon.enrich]]`).
+  - You can follow and hear live calls while they are in progress.
+  - A rule with `encrypt_to` writes the signed and encrypted form.
 - **Export formats.** pcap and pcapng, TXT, JSON, NDJSON, CSV, an HTML page of
-  the call flow, Markdown, WAV audio, SIPp XML scenarios and RTP JSON
-- **Tunnels and transports.** Reads SIP inside VLAN and QinQ tags, MPLS,
-  GRE, GTP-U, VXLAN, GENEVE and other tunnels, SIP over WebSocket, and SIP
-  split across IP fragments or TCP segments. Some need an option on a live
-  capture: [Encapsulations](docs/encapsulations.md) lists which
-- **Ranked analysis and conformance.** `--analyze` lists every problem in a
-  capture, worst first, and `--yang-analyze` writes it as [RFC 7951](https://www.rfc-editor.org/rfc/rfc7951.html) JSON
-  against a published YANG module; `--lint` checks RFC conformance with a
-  rule ID and RFC section per finding
-- **pcap in and out.** Reads and writes pcap and pcapng, with rotation and
-  splitting; reads directories, tar archives and password-protected ZIP and 7z
-  archives, and stored vCon containers as the SIP messages they hold.
-- **vCons with pseudonyms, and a hardened process.** `--redact` replaces
-  identities, addresses and hostnames in exported vCons with keyed
-  pseudonyms, and `--redact-map` writes the reverse map to a file only you can
-  read. A capture started as root drops to `--user` after opening its
-  devices, and can confine itself with a Landlock sandbox (`--sandbox`) and a
-  seccomp allowlist (`--seccomp`)
-- **MCP server.** 74 tools over stdio or HTTP: 61 only read, and the 13 that
-  write each say what they change. File writes stay inside `--mcp-file-root`;
-  swapping the capture, shutting the server down, recording findings and
-  asking TFPS to ban a source stay off until you enable them
-  (`--mcp-allow-open-capture`, `--mcp-allow-shutdown`,
-  `--mcp-allow-save-findings`, `--allow-action`).
-  [MCP server](docs/mcp.md) has a first working example
+  the call flow, Markdown, WAV audio, SIPp XML scenarios and RTP JSON.
+- **Tunnels and transports.** It reads SIP in these forms:
+  - inside VLAN and QinQ tags, MPLS, GRE, GTP-U, VXLAN, GENEVE and other
+    tunnels,
+  - SIP over WebSocket,
+  - SIP split across IP fragments or TCP segments.
+  - Some need an option on a live capture.
+    [Encapsulations](docs/encapsulations.md) lists which.
+- **Ranked analysis and conformance.**
+  - `--analyze` lists every problem in a capture, worst first.
+  - `--yang-analyze` writes it as
+    [RFC 7951](https://www.rfc-editor.org/rfc/rfc7951.html) JSON against a
+    published YANG module.
+  - `--lint` checks RFC conformance. Each finding has a rule ID and RFC
+    section.
+- **pcap in and out.**
+  - It reads and writes pcap and pcapng, with rotation and splitting.
+  - It reads directories, tar archives and password-protected ZIP and 7z
+    archives.
+  - It reads stored vCon containers as the SIP messages they hold.
+- **vCons with pseudonyms, and a hardened process.**
+  - `--redact` replaces identities, addresses and hostnames in exported vCons
+    with keyed pseudonyms.
+  - `--redact-map` writes the reverse map to a file only you can read.
+  - A capture started as root drops to `--user` after opening its devices.
+  - It can confine itself with a Landlock sandbox (`--sandbox`) and a seccomp
+    allowlist (`--seccomp`).
+- **MCP server.** 74 tools over stdio or HTTP.
+  - 61 only read.
+  - The 13 that write each say what they change.
+  - File writes stay inside `--mcp-file-root`.
+  - These stay off until you enable them:
+    - swapping the capture (`--mcp-allow-open-capture`),
+    - shutting the server down (`--mcp-allow-shutdown`),
+    - recording findings (`--mcp-allow-save-findings`),
+    - asking TFPS to ban a source (`--allow-action`).
+  - [MCP server](docs/mcp.md) has a first working example.
 
 ## The TUI
 
@@ -329,9 +409,10 @@ Next: [REST API and metrics](docs/rest-api.md),
 
 ## Build from source
 
-sipnab is Rust everywhere except the OS boundary: 111 `unsafe` blocks, all of
-them FFI, and the build rejects any block that does not state its own soundness
-argument.
+sipnab is Rust everywhere except the OS boundary.
+
+- It has 111 `unsafe` blocks, all of them FFI.
+- The build rejects any block that does not state its own soundness argument.
 
 You need **Rust 1.99+** (edition 2024) and the libpcap headers:
 
@@ -348,10 +429,14 @@ The binary is at `target/release/sipnab`.
 published crate instead.
 
 At run time, sipnab loads the system libpcap (`libpcap.so.1` on Linux). Only
-the static musl release binary carries its own. Audio playback in the TUI also
-needs `libasound` (ALSA), but loads it only when you press play: playback lives
-in a separate plugin, `libsipnab_audio.so`, so a binary built with audio
-starts fine on a host without libasound, and WAV export still works there.
+the static musl release binary carries its own.
+
+Audio playback in the TUI also needs `libasound` (ALSA).
+
+- It loads it only when you press play.
+- Playback lives in a separate plugin, `libsipnab_audio.so`.
+- So a binary built with audio starts fine on a host without libasound.
+- WAV export still works there.
 
 ### Feature flags
 
@@ -379,65 +464,73 @@ Every feature:
 cargo build --release --features full
 ```
 
-A headless capture host, with the HEP listener, REST API and MCP over HTTP,
-and no TUI or audio:
+A headless capture host has the HEP listener, REST API and MCP over HTTP. It
+has no TUI or audio:
 
 ```bash
 cargo build --release --no-default-features --features native,hep,api,mcp,mcp-http
 ```
 
-[Installation](docs/install.md#build-it-from-source) covers the other builds,
-[cross-compilation](docs/install.md#cross-compilation) included.
+[Installation](docs/install.md#build-it-from-source) covers the other builds.
+That includes [cross-compilation](docs/install.md#cross-compilation).
 
 ## Add it to your voice stack
 
-Step-by-step guides that install your SIP server, OpenSIPS, Kamailio,
-Asterisk or FreeSWITCH, and each piece beside it, then connect sipnab to it.
-Every command in each guide ran on fresh virtual machines, and each page names
-them.
+These are step-by-step guides.
 
-- **SIP proxy.** OpenSIPS and Kamailio carry your calls, and every other guide
-  builds on them: [Use OpenSIPS](docs/opensips.md) and
-  [run sipnab beside it](docs/opensips-sipnab.md);
-  [Use Kamailio](docs/kamailio.md) and
-  [run sipnab beside it](docs/kamailio-sipnab.md).
+- Each guide installs your SIP server: OpenSIPS, Kamailio, Asterisk or
+  FreeSWITCH.
+- It installs each piece beside it.
+- Then it connects sipnab to it.
+- Every command in each guide ran on fresh virtual machines. Each page names
+  them.
+
+- **SIP proxy.** OpenSIPS and Kamailio carry your calls. Every other guide
+  builds on them.
+  - [Use OpenSIPS](docs/opensips.md) and
+    [run sipnab beside it](docs/opensips-sipnab.md)
+  - [Use Kamailio](docs/kamailio.md) and
+    [run sipnab beside it](docs/kamailio-sipnab.md)
 - **PBX.** Asterisk answers calls and places them on to the callee, as two
-  legs: [Use Asterisk](docs/asterisk.md) and
-  [run sipnab beside it](docs/asterisk-sipnab.md).
-- **Softswitch.** FreeSWITCH answers each call and bridges it to the callee
-  as a second call, with the audio of both passing through it:
-  [Use FreeSWITCH](docs/freeswitch.md) and
-  [run sipnab beside it](docs/freeswitch-sipnab.md).
-- **Call records.** A vCon server keeps every call as a vCon. OpenSIPS records
-  calls into it over SIPREC, and sipnab can send its own vCons, built from what
-  it saw on the wire. `sipnab --vcon-forward` delivers them, to the server or
-  to vcon.store (in the gnu and macOS builds, which carry the `vcon` feature):
-  [Use a vCon server](docs/vcon-server.md),
-  [run sipnab beside it](docs/vcon-sipnab.md),
-  [send to vcon.store](docs/vcon-store.md).
-- **Attack blocking.** TFPS stops SIP scanners and fraud in the kernel with XDP,
-  and fail2ban bans them with an nftables rule:
-  [Use TFPS](docs/tfps.md) and [run sipnab beside it](docs/tfps-sipnab.md);
-  [Use fail2ban](docs/fail2ban.md) and
-  [run sipnab beside it](docs/fail2ban-sipnab.md).
-- **Media relay.** rtpengine or rtpproxy anchors every call's audio, and sipnab
-  matches the media on the relay with the call it belongs to:
-  [Use rtpengine](docs/rtpengine-relay.md) and
-  [run sipnab beside it](docs/rtpengine-sipnab.md);
-  [Use rtpproxy](docs/rtpproxy-relay.md) and
-  [run sipnab beside it](docs/rtpproxy-sipnab.md).
+  legs.
+  - [Use Asterisk](docs/asterisk.md) and
+    [run sipnab beside it](docs/asterisk-sipnab.md)
+- **Softswitch.** FreeSWITCH answers each call. It bridges the call to the
+  callee as a second call. The audio of both passes through it.
+  - [Use FreeSWITCH](docs/freeswitch.md) and
+    [run sipnab beside it](docs/freeswitch-sipnab.md)
+- **Call records.** A vCon server keeps every call as a vCon.
+  - OpenSIPS records calls into it over SIPREC.
+  - sipnab can send its own vCons, built from what it saw on the wire.
+  - The command `sipnab --vcon-forward` delivers them, to the server or to
+    vcon.store. It is in the gnu and macOS builds, which carry the `vcon`
+    feature.
+  - [Use a vCon server](docs/vcon-server.md),
+    [run sipnab beside it](docs/vcon-sipnab.md),
+    [send to vcon.store](docs/vcon-store.md)
+- **Attack blocking.** TFPS stops SIP scanners and fraud in the kernel with
+  XDP. fail2ban bans them with an nftables rule.
+  - [Use TFPS](docs/tfps.md) and [run sipnab beside it](docs/tfps-sipnab.md)
+  - [Use fail2ban](docs/fail2ban.md) and
+    [run sipnab beside it](docs/fail2ban-sipnab.md)
+- **Media relay.** rtpengine or rtpproxy anchors every call's audio. sipnab
+  matches the media on the relay with the call it belongs to.
+  - [Use rtpengine](docs/rtpengine-relay.md) and
+    [run sipnab beside it](docs/rtpengine-sipnab.md)
+  - [Use rtpproxy](docs/rtpproxy-relay.md) and
+    [run sipnab beside it](docs/rtpproxy-sipnab.md)
 - **Call history.** Homer keeps a searchable history of every call your proxy
-  sends it over HEP, and sipnab can join the same feed:
-  [Use Homer](docs/homer.md) and [run sipnab beside it](docs/homer-sipnab.md).
-- **Metrics.** Prometheus and Grafana graph your SIP proxy's statistics, and
-  sipnab adds its own call and media series beside them:
-  [Use Prometheus and Grafana](docs/prometheus.md) and
-  [run sipnab beside it](docs/prometheus-sipnab.md).
+  sends it over HEP. sipnab can join the same feed.
+  - [Use Homer](docs/homer.md) and [run sipnab beside it](docs/homer-sipnab.md)
+- **Metrics.** Prometheus and Grafana graph your SIP proxy's statistics.
+  sipnab adds its own call and media series beside them.
+  - [Use Prometheus and Grafana](docs/prometheus.md) and
+    [run sipnab beside it](docs/prometheus-sipnab.md)
 
 ## Where to read next
 
 [docs/README.md](docs/README.md) indexes every page by what you are trying to
-do. The ones most people need:
+do. Here are the ones most people need:
 
 | When you want to | Read |
 |---|---|
@@ -452,32 +545,42 @@ do. The ones most people need:
 
 ## Getting help
 
-Ask usage questions in
-[Discussions](https://github.com/NormB/sipnab/discussions), and report bugs in
-[Issues](https://github.com/NormB/sipnab/issues/new/choose).
-[SUPPORT.md](SUPPORT.md) explains which is which, and
-[MAINTAINERS.md](MAINTAINERS.md) says who answers and how fast.
+- Ask usage questions in
+  [Discussions](https://github.com/NormB/sipnab/discussions).
+- Report bugs in [Issues](https://github.com/NormB/sipnab/issues/new/choose).
+- [SUPPORT.md](SUPPORT.md) explains which is which.
+- [MAINTAINERS.md](MAINTAINERS.md) says who answers and how fast.
 
 ## Contributing
 
-We welcome contributions. [CONTRIBUTING.md](CONTRIBUTING.md) covers the build
-and test workflow, the git hooks, and the pull request checklist. Before we can
-merge a pull request, you sign the
-[Contributor License Agreement](CONTRIBUTING.md#contributor-license-agreement)
-once, and a pull request cannot merge until the `license/cla` check passes.
-If your change adds a dependency,
-read [Dependencies](CONTRIBUTING.md#dependencies) first. This project follows
-the [Contributor Covenant Code of Conduct](CODE_OF_CONDUCT.md).
-[ROADMAP.md](ROADMAP.md) says what we intend to work on over the next year,
-and what we have decided not to build.
+We welcome contributions.
+
+- [CONTRIBUTING.md](CONTRIBUTING.md) covers the build and test workflow, the
+  git hooks, and the pull request checklist.
+- Before we can merge a pull request, you sign the
+  [Contributor License Agreement](CONTRIBUTING.md#contributor-license-agreement)
+  once.
+- A pull request cannot merge until the `license/cla` check passes.
+- If your change adds a dependency, read
+  [Dependencies](CONTRIBUTING.md#dependencies) first.
+- This project follows the
+  [Contributor Covenant Code of Conduct](CODE_OF_CONDUCT.md).
+- [ROADMAP.md](ROADMAP.md) says what we intend to work on over the next year.
+  It also says what we have decided not to build.
 
 ## Security
 
-Found a vulnerability? **Do not open a public issue.** [SECURITY.md](SECURITY.md)
-gives the private reporting address, the response timeline, and what is in
-scope, such as parser crashes, key-material leaks, privilege-drop and chroot
-escapes, API and MCP authentication bypass, and command injection through the
-`--alert-exec` family.
+Found a vulnerability? **Do not open a public issue.**
+[SECURITY.md](SECURITY.md) gives:
+
+- the private reporting address,
+- the response timeline,
+- what is in scope. Examples:
+  - parser crashes,
+  - key-material leaks,
+  - privilege-drop and chroot escapes,
+  - API and MCP authentication bypass,
+  - command injection through the `--alert-exec` family.
 
 ## Support the project
 

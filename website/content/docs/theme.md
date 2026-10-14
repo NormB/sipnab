@@ -10,7 +10,10 @@ source = "docs/theme-guide.md"
 
 > **Quick start:** Create `~/.config/sipnab/sipnab.toml` with a `[theme]` section to customize colors. Or copy one of the preset themes below.
 
-sipnab's TUI uses 11 semantic color slots (plus `highlight`, a legacy alias for `selected`) that control every visual element. Customize them via the `[theme]` section in your config file.
+sipnab's TUI uses 11 semantic color slots. There is also `highlight`, a legacy alias for `selected`.
+
+- The slots control every visual element.
+- Customize them via the `[theme]` section in your config file.
 
 ## Color slots
 
@@ -36,29 +39,54 @@ default stays readable on both dark and light terminals.
 
 ### Named colors
 
-`black`, `white`, `red`, `green`, `yellow`, `blue`, `magenta`, `cyan`, `gray` (or `grey`), `dark_gray` (or `dark_grey`, `darkgray`, `darkgrey`), `reset` (or `default`). Names are case-insensitive, and an unrecognized one draws a warning and leaves that slot at its built-in default.
+- `black`
+- `white`
+- `red`
+- `green`
+- `yellow`
+- `blue`
+- `magenta`
+- `cyan`
+- `gray` (or `grey`)
+- `dark_gray` (or `dark_grey`, `darkgray`, `darkgrey`)
+- `reset` (or `default`)
+
+Names are case-insensitive. An unrecognized name draws a warning. It leaves that slot at its built-in default.
 
 ### Hex RGB
 
-`"#RRGGBB"` format, e.g., `"#ff8800"`, `"#1a1a2e"`. Requires a terminal with true-color (24-bit) support.
+Use the `"#RRGGBB"` format, for example `"#ff8800"`, `"#1a1a2e"`. This requires a terminal with true-color (24-bit) support.
 
 ## How to apply
 
-Create or edit your config file — sipnab loads the first one found, see
-[File Locations](@/docs/config.md#file-locations) in the Config Reference —
-then add a `[theme]` section with the color values you want to override.
-Omitted fields use the built-in defaults.
+- Create or edit your config file.
+  - sipnab loads the first one found.
+  - See [File Locations](@/docs/config.md#file-locations) in the Config
+    Reference.
+- Then add a `[theme]` section with the color values you want to override.
+- Omitted fields use the built-in defaults.
 
 ## Example themes
 
-Each theme below pairs a TOML block to copy into your config with a preview of
-the call list under that palette. The previews carry their colors inline, so a
-renderer that strips inline styles (the GitHub wiki) shows the same layout in
-plain text.
+Each theme below has two parts:
+
+- a TOML block to copy into your config,
+- a preview of the call list under that palette.
+
+The previews carry their colors inline. A renderer that strips inline styles
+(the GitHub wiki) shows the same layout in plain text.
 
 ### Dark (built-in default)
 
-The built-in theme works on dark terminal backgrounds without any configuration. It is deliberately palette-neutral: `background` and `foreground` are `reset` (your terminal's own colors show through, so it reads on light terminals too) and every other slot is an ANSI color name, so your terminal's palette picks the exact shades. The preview below stands in a representative xterm palette for those names.
+The built-in theme works on dark terminal backgrounds without any configuration. It is deliberately palette-neutral:
+
+- `background` and `foreground` are `reset`.
+  - Your terminal's own colors show through.
+  - So it reads on light terminals too.
+- Every other slot is an ANSI color name.
+  - So your terminal's palette picks the exact shades.
+
+The preview below stands in a representative xterm palette for those names.
 
 ```toml
 [theme]
@@ -120,7 +148,7 @@ border = "#6c7086"
 
 ### Nord
 
-Low-contrast theme based on the Nord palette. Easy on the eyes for long monitoring sessions.
+Low-contrast theme based on the Nord palette. It is easy on the eyes for long monitoring sessions.
 
 ```toml
 [theme]
@@ -211,7 +239,7 @@ border = "#7c6f64"
 
 ### Light terminal
 
-For light terminal backgrounds (white/cream). Uses darker colors for readability.
+For light terminal backgrounds (white/cream). It uses darker colors for readability.
 
 ```toml
 [theme]
@@ -274,7 +302,7 @@ border = "white"
 ## Tips
 
 - Use `reset` for `background` to inherit your terminal's background color. This is usually the best choice.
-- Hex colors require true-color terminal support (most modern terminals: iTerm2, Alacritty, kitty, WezTerm, Windows Terminal).
+- Hex colors require true-color terminal support. Most modern terminals have it: iTerm2, Alacritty, kitty, WezTerm, Windows Terminal.
 - Use `sipnab --dump-config` to confirm sipnab picked up your theme.
 - The `highlight` key is a legacy alias for `selected`. If a config carries both, `selected` wins.
 

@@ -97,7 +97,7 @@ impl EpbComment {
     /// A fixed label sipnab writes itself, such as the decrypted export's
     /// "sipnab: decrypted from TLS". `&'static` on purpose: a label is a
     /// compile-time constant, never text an operator or an agent supplied, so
-    /// no note can travel through this door (Invariant 13).
+    /// no note can travel through this door (Invariant "Operator notes are output, never input").
     pub(crate) fn fixed_label(text: &'static str) -> Self {
         Self(text.to_owned())
     }

@@ -10,19 +10,27 @@ kind = "feature"
 
 ## In short
 
-A vCon is a standard file format for describing one conversation: who took
-part, what they said or what a recorder captured, and what analysis found. sipnab can
-write one vCon file per call it captured. Release 0.5.128 added more caller and
-call details to those files, a record of call transfers, three new options, a
-structured error format for sipnab's REST API, and a safer way of writing files
-for another program to pick up. Release 0.5.208 revised two of those changes
-to follow a newer version of the vCon draft standard, and this page describes
-the current behavior.
+A vCon is a standard file format for describing one conversation. It says:
+
+- who took part,
+- what they said or what a recorder captured,
+- what analysis found.
+
+sipnab can write one vCon file per call it captured. Release 0.5.128 added:
+
+- more caller and call details to those files,
+- a record of call transfers,
+- three new options,
+- a structured error format for sipnab's REST API,
+- a safer way of writing files for another program to pick up.
+
+Release 0.5.208 revised two of those changes. It follows a newer version of
+the vCon draft standard. This page describes the current behavior.
 
 ## Who this is for
 
-Anyone who feeds sipnab's vCon files into a vCon store or another program and
-needs to know what each field means.
+Anyone who feeds sipnab's vCon files into a vCon store or another program.
+They need to know what each field means.
 
 ## What it does
 
@@ -30,87 +38,115 @@ needs to know what each field means.
 
 A container is one vCon file. 0.5.128 added these fields:
 
-- **`subject`** names the call as `SIP call <Call-ID>`, where the Call-ID is
-  the identifier SIP gives the call. It holds nothing else.
+- **`subject`** names the call as `SIP call <Call-ID>`.
+  - The Call-ID is the identifier SIP gives the call.
+  - It holds nothing else.
 - **`parties[].name`** carries the display name from the `From` or `To`
-  header. Every party also carries `validation: "none"`, because sipnab copies
-  what the message said and checks no identity. In
-  `tests/pcap-samples/sip-rtp-g711.pcap` the caller's `From` header reads
-  `"PCMU/8000" <sip:sipp@10.0.2.20:5060>`, so the caller's `name` is
-  `PCMU/8000`: a codec name, not a person.
+  header.
+  - Every party also carries `validation: "none"`.
+  - sipnab copies what the message said. It checks no identity.
+  - In `tests/pcap-samples/sip-rtp-g711.pcap` the caller's `From` header
+    reads `"PCMU/8000" <sip:sipp@10.0.2.20:5060>`.
+  - So the caller's `name` is `PCMU/8000`. That is a codec name, not a
+    person.
 - **`parties[].stir`**, on the caller only, carries the PASSporT from an
-  observed `Identity` header ([RFC 8224](https://www.rfc-editor.org/rfc/rfc8224.html)),
-  the signed token that STIR/SHAKEN caller authentication uses. sipnab keeps
-  the token and drops the header's `info`, `alg` and `ppt` parameters. It
-  checks only that the token has three non-empty dot-separated parts; it
-  fetches no certificate and verifies no signature.
+  observed `Identity` header ([RFC 8224](https://www.rfc-editor.org/rfc/rfc8224.html)).
+  - The PASSporT is the signed token that STIR/SHAKEN caller authentication
+    uses.
+  - sipnab keeps the token. It drops the header's `info`, `alg` and `ppt`
+    parameters.
+  - It checks only that the token has three non-empty dot-separated parts.
+  - It fetches no certificate and verifies no signature.
 - **`dialog[].session_id`** carries the `Session-ID` header pair
-  ([RFC 7989](https://www.rfc-editor.org/rfc/rfc7989.html)), an identifier that
-  stays the same on both sides of a B2BUA (a server that splits a call into
-  two legs with different Call-IDs). A half that is `nil` or not a UUID is
-  left out.
+  ([RFC 7989](https://www.rfc-editor.org/rfc/rfc7989.html)).
+  - That is an identifier that stays the same on both sides of a B2BUA (a
+    server that splits a call into two legs with different Call-IDs).
+  - sipnab leaves out a half that is `nil` or not a UUID.
 
 ### Transfer records
 
-When the capture holds a REFER (the SIP request that transfers a call), the
-container gains a Dialog Object of type `transfer`. It names the `transferor`
-(who sent the REFER), the `transferee` (the party the transfer moves) and the
-`transfer_target` (the party the `Refer-To` header names) as positions in the
-`parties` list, and `original` as the position of the call the transfer
-happened in. sipnab adds the `Refer-To` party to the list so it has a position.
+The capture may hold a REFER (the SIP request that transfers a call). Then the
+container gains a Dialog Object of type `transfer`.
 
-An attended transfer, which a `Replaces` parameter in the `Refer-To` address
-identifies, also names a `consultation`: the position of a placeholder Dialog
-Object for the consultation call, which this capture did not see. A blind
-transfer has no `consultation`.
+- It names these as positions in the `parties` list:
+  - the `transferor` (who sent the REFER),
+  - the `transferee` (the party the transfer moves),
+  - the `transfer_target` (the party the `Refer-To` header names).
+- It names `original` as the position of the call the transfer happened in.
+- sipnab adds the `Refer-To` party to the list so it has a position.
 
-In 0.5.128 that placeholder was an empty object, `{}`. Since 0.5.208 it is
-`{"type": "recording"}`, because draft-ietf-vcon-vcon-core-04 requires a
-`type` on every Dialog Object.
+A `Replaces` parameter in the `Refer-To` address identifies an attended
+transfer.
+
+- An attended transfer also names a `consultation`.
+  - That is the position of a placeholder Dialog Object for the consultation
+    call.
+  - This capture did not see that call.
+- A blind transfer has no `consultation`.
+
+In 0.5.128 that placeholder was an empty object, `{}`.
+
+- Since 0.5.208 it is `{"type": "recording"}`.
+- draft-ietf-vcon-vcon-core-04 requires a `type` on every Dialog Object.
 
 ### The `type` of a call with no audio
 
 Before 0.5.128, sipnab gave a Dialog Object with no audio the type
-`incomplete`, a value the draft reserves for a call whose setup failed. Every container for an
-answered call captured without audio therefore reported a setup failure. In
-0.5.128 such an object named no `type` at all. Since 0.5.208 it is
-`"type": "recording"` with no `body` or `url`. `incomplete` appears only when
-sipnab saw a final failure response, and then `disposition` gives the reason.
+`incomplete`.
+
+- The draft reserves that value for a call whose setup failed.
+- So every container for an answered call captured without audio reported a
+  setup failure.
+- In 0.5.128 such an object named no `type` at all.
+- Since 0.5.208 it is `"type": "recording"` with no `body` or `url`.
+- `incomplete` appears only when sipnab saw a final failure response.
+  - Then `disposition` gives the reason.
 
 ### New flags
 
 - **`--vcon-max-inline-media <MIB>`** sets the largest audio file a container
-  may carry inline, in MiB (default 5). `0` refuses every inline body without
-  turning the export off.
-- **`--content-deny-tombstone`** works with `--content-deny-header <NAME>`. A
-  call carrying the named header produces no container by default. With this
-  option it produces an identity-only container whose `redacted` object reads
-  `{"type": "content-withheld"}`, with no message trace, no audio and no
-  bodies. It is off by default because such a container shows that the call
-  took place.
+  may carry inline, in MiB (default 5).
+  - `0` refuses every inline body without turning the export off.
+- **`--content-deny-tombstone`** works with `--content-deny-header <NAME>`.
+  - A call carrying the named header produces no container by default.
+  - With this option it produces an identity-only container.
+    - Its `redacted` object reads `{"type": "content-withheld"}`.
+    - It has no message trace, no audio and no bodies.
+  - It is off by default. Such a container shows that the call took place.
 - **`--vcon-digest`** prints a SHA-256 checksum and file name for each
-  container written, in the format `sha256sum -c` reads, so a later reader can
-  confirm a file is the one sipnab wrote.
+  container written.
+  - It uses the format `sha256sum -c` reads.
+  - So a later reader can confirm a file is the one sipnab wrote.
 
 ### REST error format
 
 sipnab's REST API answers an error with an
-[RFC 9457](https://www.rfc-editor.org/rfc/rfc9457.html) problem document, content
-type `application/problem+json`, holding `type`, `title`, `status` and
-sometimes `detail`. Before 0.5.128 an error was a status code with no body.
-sipnab builds the `type` URI from the status code alone, for example
-`https://sipnab.com/problems/not-found` for 404, so the same kind of error has
-the same `type` on every route. `detail`, when present, says what happened.
+[RFC 9457](https://www.rfc-editor.org/rfc/rfc9457.html) problem document.
+
+- Its content type is `application/problem+json`.
+- It holds `type`, `title`, `status` and sometimes `detail`.
+- Before 0.5.128 an error was a status code with no body.
+- sipnab builds the `type` URI from the status code alone.
+  - An example is `https://sipnab.com/problems/not-found` for 404.
+  - So the same kind of error has the same `type` on every route.
+- `detail`, when present, says what happened.
 
 ### Safer spool writes
 
 `--export-vcon-dir` writes containers to a directory (the spool) that another
-program reads. Each file is now written under a temporary name beginning with
-a dot, flushed to disk, renamed to its final name, and the directory is then
-flushed too. A reader never sees a partly written file, and a failed write
-does not destroy an earlier container. The
-[spool contract](@/docs/vcon.md#the-spool-contract-for-a-bridge-that-consumes-it)
-describes the rules a reading program can rely on.
+program reads. Each file is now:
+
+- written under a temporary name beginning with a dot,
+- flushed to disk,
+- renamed to its final name.
+
+The directory is then flushed too.
+
+- A reader never sees a partly written file.
+- A failed write does not destroy an earlier container.
+- The
+  [spool contract](@/docs/vcon.md#the-spool-contract-for-a-bridge-that-consumes-it)
+  describes the rules a reading program can rely on.
 
 ## Example run
 
@@ -143,14 +179,16 @@ jq '{subject, caller: .parties[0].name, callee: .parties[1].name, validation: ([
 }
 ```
 
-The capture holds the call's audio packets, but this run kept no audio
-(`--retain-audio` was not given), so the Dialog Object is the `recording`
-placeholder with no content.
+The capture holds the call's audio packets.
 
-Write every call that has an INVITE to a spool directory, and record a
-checksum for each file.
-`--no-cli-print` keeps sipnab's per-message output off standard output, so the
-checksum file holds only checksum lines:
+- But this run kept no audio (`--retain-audio` was not given).
+- So the Dialog Object is the `recording` placeholder with no content.
+
+Write every call that has an INVITE to a spool directory. Record a checksum
+for each file.
+
+- `--no-cli-print` keeps sipnab's per-message output off standard output.
+- So the checksum file holds only checksum lines:
 
 ```bash
 sipnab -N --quiet --no-cli-print -I tests/pcap-samples/sip-rtp-g711.pcap --export-vcon-when "method == 'INVITE'" --export-vcon-dir spool --vcon-digest > SHA256SUMS
@@ -160,7 +198,7 @@ sipnab -N --quiet --no-cli-print -I tests/pcap-samples/sip-rtp-g711.pcap --expor
 Wrote 2 vCon container(s) to 'spool'.
 ```
 
-The checksum file names each container without its directory, so check it
+The checksum file names each container without its directory. So check it
 from inside the spool:
 
 ```bash
@@ -179,16 +217,17 @@ sha256sum -c ../SHA256SUMS
 ## Limits
 
 - The capture in the example carries no `Identity` header, no `Session-ID`
-  header and no REFER, so the example does not show `stir`, `session_id` or a
-  transfer record.
-- sipnab copies `stir` and does not verify it. The consumer must check
-  whether the caller's identity is genuine.
-- A transfer record describes the REFER sipnab saw. A placeholder stands for
-  the consultation call of an attended transfer; sipnab holds none of its
-  content.
-- A checksum describes the bytes sipnab wrote. A store that adds fields when
-  it receives a container holds different bytes, so the checksum confirms
-  what sipnab sent, not what the store kept.
+  header and no REFER.
+  - So the example does not show `stir`, `session_id` or a transfer record.
+- sipnab copies `stir` and does not verify it.
+  - The consumer must check whether the caller's identity is genuine.
+- A transfer record describes the REFER sipnab saw.
+  - A placeholder stands for the consultation call of an attended transfer.
+  - sipnab holds none of its content.
+- A checksum describes the bytes sipnab wrote.
+  - A store that adds fields when it receives a container holds different
+    bytes.
+  - So the checksum confirms what sipnab sent, not what the store kept.
 
 ## Terms used here
 
@@ -207,7 +246,7 @@ sha256sum -c ../SHA256SUMS
 - **REST API**: sipnab's HTTP interface, started with `--api`.
 - **Spool**: a directory where one program leaves files for another to pick
   up.
-- **SHA-256 checksum**: a fixed-length fingerprint of a file's bytes; any
+- **SHA-256 checksum**: a fixed-length fingerprint of a file's bytes. Any
   change to the file changes it.
 
 ## Related guides

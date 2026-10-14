@@ -11,25 +11,35 @@ kind = "feature"
 ## In short
 
 A count of calls only means something if you know whether sipnab saw all of the
-traffic. The network or the operating system can drop packets before sipnab
-reads them, sipnab can fail to decode some of them, and sipnab sets aside SIP
-on unexpected ports. sipnab counts each of these separately, adds a marker to its output when a run read only part of its
-input, and can write a record of the exact command that produced a result.
+traffic. Three things can keep traffic out of the count:
+
+- The network or the operating system can drop packets before sipnab reads
+  them.
+- sipnab can fail to decode some of them.
+- sipnab sets aside SIP on unexpected ports.
+
+sipnab does three things about this:
+
+- It counts each of these separately.
+- It adds a marker to its output when a run read only part of its input.
+- It can write a record of the exact command that produced a result.
 
 ## Who this is for
 
 Anyone who reads sipnab's call counts, reports or JSON output and needs to know
-whether they describe all of the traffic, including scripts and AI agents that
-consume that output.
+whether they describe all of the traffic. This includes scripts and AI agents
+that consume that output.
 
 ## What it does
 
 ### Five separate loss counters
 
-Each counter has a different cause and a different remedy, so sipnab keeps them
-apart instead of adding them together. Over MCP (the Model Context Protocol,
-the interface an AI agent uses to call sipnab's tools) the first four are in
-the `capture_quality` block of `capture_status`.
+Each counter has a different cause and a different remedy. So sipnab keeps them
+apart instead of adding them together.
+
+MCP is the Model Context Protocol, the interface an AI agent uses to call
+sipnab's tools. Over MCP, the first four are in the `capture_quality` block of
+`capture_status`.
 
 | Counter | What it counts | What to do |
 |---|---|---|
@@ -40,62 +50,88 @@ the `capture_quality` block of `capture_status`.
 | `unanalysed_sip_messages` | SIP whose source and destination ports are both outside `--portrange`. | Widen `--portrange` to the ports named in `unanalysed_busiest_ports`. |
 
 `capture_quality.degraded` is `true` when any of the first three counters is
-above zero. `degraded` leaves out `undecodable_frames` because ARP (the
-protocol that maps addresses on a local network) is undecodable to sipnab and
-appears on almost every capture, so the flag would always be true.
+above zero. `degraded` leaves out `undecodable_frames`:
+
+- ARP is the protocol that maps addresses on a local network.
+- ARP is undecodable to sipnab and appears on almost every capture.
+- So the flag would always be true.
 
 `--portrange` defaults to `5060-5061`. sipnab recognizes SIP on other ports as
-SIP and then leaves it out of every dialog and count. Four keys report it:
-`unanalysed_sip_messages` and `unanalysed_busiest_ports` (the five busiest
-ports carrying that SIP) for plain SIP, and `unanalysed_websocket_messages` and
-`unanalysed_websocket_ports` for SIP carried over WebSocket.
+SIP. Then it leaves it out of every dialog and count. Four keys report it:
+
+- For plain SIP:
+  - `unanalysed_sip_messages`
+  - `unanalysed_busiest_ports` (the five busiest ports carrying that SIP)
+- For SIP carried over WebSocket:
+  - `unanalysed_websocket_messages`
+  - `unanalysed_websocket_ports`
 
 The WebSocket pair is separate because widening `--portrange` recovers none of
-it: SIP over WebSocket needs `--ws-portrange`, whose default set is 80, 443,
-8080 and 8443. On the command line, `--analyze` lists the port-range loss first,
-as a `BLIND` finding. `BLIND` is the severity sipnab gives to anything that
-limits what the analysis could see. Step 2 of
+it.
+
+- SIP over WebSocket needs `--ws-portrange`.
+- Its default set is 80, 443, 8080 and 8443.
+
+On the command line, `--analyze` lists the port-range loss first, as a `BLIND`
+finding. `BLIND` is the severity sipnab gives to anything that limits what the
+analysis could see. The second check in
 [Check five things before you act on a sipnab finding](@/notes/a-finding-is-a-floor-not-a-verdict.md)
 shows that finding and the MCP fields on a capture whose SIP is on port 5080.
 
 ### Markers on a partial run
 
-When sipnab could not read all of its input, the run exits with status 1 and
-also says so in its output, because a program reading the output through a pipe
-does not see the exit status:
+sipnab may not be able to read all of its input. Then the run exits with
+status 1. It also says so in its output. A program reading the output through a
+pipe does not see the exit status.
 
 - `--report` ends with an `INCOMPLETE RUN` block that names each reason.
-- `--json-dialogs` writes one extra line after the dialogs, under a top-level
-  `sipnab_run` key that no dialog object has. Its `input_complete` field comes
-  from the same test as the exit status. A complete run writes no extra line.
-- Over MCP, answers drawn from the capture carry `source_exhausted` (sipnab has
-  read the source to its end) and `source_stopped_early` (the read ended before the
-  source did). Tools that answer from something other than the loaded
-  capture, such as `explain_response_code`, `query_relay`, `relay_stats` and the
-  TFPS tools, do not carry them. `capture_health` reads the loss counters twice, at the call and
-  again after a sampling window you choose, so it can show whether the capture is
-  losing packets now rather than at some time since the run started.
+- `--json-dialogs` writes one extra line after the dialogs.
+  - The line sits under a top-level `sipnab_run` key that no dialog object has.
+  - Its `input_complete` field comes from the same test as the exit status.
+  - A complete run writes no extra line.
+- Over MCP, answers drawn from the capture carry two fields:
+  - `source_exhausted`: sipnab has read the source to its end.
+  - `source_stopped_early`: the read ended before the source did.
+- Some tools answer from something other than the loaded capture. They do not
+  carry these fields. Examples are `explain_response_code`, `query_relay`,
+  `relay_stats` and the TFPS tools.
+- `capture_health` reads the loss counters twice:
+  - at the call,
+  - again after a sampling window you choose.
+  - So it can show whether the capture is losing packets now, rather than at
+    some time since the run started.
 
 ### A record of the command
 
-`--run-provenance-file FILE` appends one JSON line to `FILE` at startup, before
-sipnab loads its configuration or opens a capture device. The record holds the
-command-line arguments, the working directory, the user, the start time, the
-version and build features, and the capture instance token that MCP and REST
-answers also carry. sipnab opens the file for append and never truncates it, and
-creates it with mode `0600` (readable only by its owner) when it does not
-exist. If sipnab cannot write the record, it does not run.
+`--run-provenance-file FILE` appends one JSON line to `FILE` at startup. It
+does this before sipnab loads its configuration or opens a capture device. The
+record holds:
+
+- the command-line arguments,
+- the working directory,
+- the user,
+- the start time,
+- the version and build features,
+- the capture instance token that MCP and REST answers also carry.
+
+How sipnab handles the file:
+
+- It opens the file for append and never truncates it.
+- It creates it with mode `0600` (readable only by its owner) when it does not
+  exist.
+- If sipnab cannot write the record, it does not run.
 
 ## How to turn it on
 
-The loss counters, the `BLIND` finding and the partial-run markers are always
-on. The command record is off until you pass `--run-provenance-file`.
+- The loss counters, the `BLIND` finding and the partial-run markers are always
+  on.
+- The command record is off until you pass `--run-provenance-file`.
 
 ## Example: read a capture file that ends early
 
 These commands run from the root of a sipnab checkout. The first copies the
-first 30,000 bytes of a repository capture, which ends the copy part-way through
-a packet.
+first 30,000 bytes of a repository capture. The copy ends part-way through a
+packet.
 
 ```bash
 head -c 30000 tests/pcap-samples/sip-rtp-g711.pcap > cut.pcap
@@ -110,8 +146,9 @@ sipnab -N -q -I cut.pcap --json-dialogs --no-cli-print 2>/dev/null
 {"sipnab_run":{"archives":{"cut_short":false},"files":{"given":1,"not_reached":0,"read_in_full":0,"skipped":0,"stopped_early":1},"input_complete":false,"plugins":{"failed":0,"loaded":0,"requested":0},"reasons":["1 of 1 capture file(s) was not read to the end; every report from this run rests on a partial read"],"retention":{"messages_dropped":0}}}
 ```
 
-The first line is the one dialog sipnab read before the file ended. The second
-is the `sipnab_run` line. The exit status of the run is 1.
+- The first line is the one dialog sipnab read before the file ended.
+- The second is the `sipnab_run` line.
+- The exit status of the run is 1.
 
 The same file with `--report`:
 
@@ -153,8 +190,9 @@ jq -c '{seq, record, argv, version, instance: .capture.instance}' runs.jsonl
 ```
 
 The record also carries `ts`, `started`, `cwd`, `uid`, `user`, `pid` and
-`features`. The `jq` filter above leaves them out. A path sipnab cannot write
-to stops the run with exit status 2:
+`features`. The `jq` filter above leaves them out.
+
+A path sipnab cannot write to stops the run with exit status 2:
 
 ```bash
 sipnab -N -q -I tests/pcap-samples/sip-register.pcap --analyze --no-cli-print --run-provenance-file missing-dir/runs.jsonl
@@ -167,13 +205,14 @@ sipnab -N -q -I tests/pcap-samples/sip-register.pcap --analyze --no-cli-print --
 ## Limits
 
 - `degraded: false` means no counter recorded a loss. It does not prove the
-  capture saw every packet: loss before the capture point, such as an
-  overloaded mirror port, a tap that copies one direction only, or a filter
-  that excluded the traffic, is invisible to all three counters.
-- SIP set aside by `--portrange` does not change the exit status and does not
-  add a `sipnab_run` line or an `INCOMPLETE RUN` block. sipnab reports it in
-  the `BLIND` finding of `--analyze`, in messages on standard error, and in the
-  `unanalysed_*` keys over MCP.
+  capture saw every packet.
+  - Loss before the capture point is invisible to all three counters.
+  - Examples are an overloaded mirror port, a tap that copies one direction
+    only, or a filter that excluded the traffic.
+- SIP set aside by `--portrange` does not change the exit status.
+  - It does not add a `sipnab_run` line or an `INCOMPLETE RUN` block.
+  - sipnab reports it in three places: the `BLIND` finding of `--analyze`,
+    messages on standard error, and the `unanalysed_*` keys over MCP.
 - With `-q`, sipnab does not print the summary line that names port-range
   losses at the end of a run. It still prints the warnings on standard error.
 
@@ -195,7 +234,7 @@ sipnab -N -q -I tests/pcap-samples/sip-register.pcap --analyze --no-cli-print --
 - **Mirror port** (also SPAN port) and **tap**: switch features or devices that
   copy traffic to the machine running the capture.
 - **Jitter**: variation in the arrival time of audio packets.
-- **WebSocket**: a protocol that browsers use, which can carry SIP.
+- **WebSocket**: a protocol that browsers use. It can carry SIP.
 - **MCP**: Model Context Protocol, the interface an AI agent uses to call
   sipnab's tools.
 - **REST**: sipnab's HTTP interface.
@@ -206,7 +245,7 @@ sipnab -N -q -I tests/pcap-samples/sip-register.pcap --analyze --no-cli-print --
 ## Related guides
 
 - [The two counters mean different things](@/docs/tuning-capture.md#the-two-counters-mean-different-things)
-- [Interface and driver drops](@/docs/tuning-capture.md#7-interface-and-driver-drops)
+- [Interface and driver drops](@/docs/tuning-capture.md#interface-and-driver-drops)
 - [When the answer is partial](@/docs/cli.md#when-the-answer-is-partial)
 - [`--run-provenance-file` in the Security flags](@/docs/cli.md#security)
 - [SIP the port gate never analyzed](@/docs/api.md#sip-the-port-gate-never-analyzed)

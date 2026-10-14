@@ -148,7 +148,7 @@ verdict=$?
 
 if [ "$verdict" -eq 0 ]; then
     echo
-    echo "Record this in docs/internals/uprobe-capture.md, section 8:"
+    echo "Record this in docs/internals/uprobe-capture.md, section \"Testing it\":"
     echo "  version $version, artifact $target, $(uname -m), kernel $(uname -r), $(date -u +%Y-%m-%d)"
 fi
 exit "$verdict"

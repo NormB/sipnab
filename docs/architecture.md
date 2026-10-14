@@ -1,20 +1,31 @@
 # Architecture
 
-A codemap for contributors: what lives where, how data flows, and the design
-decisions that explain the shape of the code. For the historical roadmap and
+A codemap for contributors. It covers:
+
+- what lives where,
+- how data flows,
+- the design decisions that explain the shape of the code.
+
+For the historical roadmap and
 the full design-decision catalog (D1–D21), see `design/implementation-plan-v6.md`.
 This file tracks the code as it exists.
 
 ## One binary, two run modes, four answer surfaces
 
 `sipnab` is a single binary (plus the `sipnab-audio` dlopen'd plugin crate).
-It runs either as a **TUI** (interactive, ratatui) or in **batch/CLI mode**
-(parse → print/JSON/report → exit). Both modes share one library
+It runs in one of two modes:
+
+- as a **TUI** (interactive, ratatui),
+- or in **batch/CLI mode** (parse → print/JSON/report → exit).
+
+Both modes share one library
 ([`src/lib.rs`](https://github.com/NormB/sipnab/blob/main/src/lib.rs)). The binary ([`src/main.rs`](https://github.com/NormB/sipnab/blob/main/src/main.rs)) wires CLI flags to library calls.
 
-The run mode decides who drives. It does not decide who can ask: the same
-analysis is readable over four surfaces, all of them readers of the same two
-stores, none of them a second copy of the state.
+The run mode decides who drives. It does not decide who can ask.
+
+- The same analysis is readable over four surfaces.
+- All of them are readers of the same two stores.
+- None of them is a second copy of the state.
 
 | Surface | Flag | Who asks |
 |---|---|---|
@@ -23,24 +34,31 @@ stores, none of them a second copy of the state.
 | MCP | `--mcp`, plus `--mcp-transport http` to serve it over HTTP | An AI agent, calling Model Context Protocol tools |
 | Prometheus | `--metrics` | A scraper |
 
-MCP is not a wrapper bolted over the CLI. It is a first-class reader
-([`src/mcp/server.rs`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs)) that takes the same read locks
-the TUI takes, which is why an agent can query a live capture while it is
-still running. No tool mutates the analysis. For the write-back question and
-why it stays closed, see
-[`design/mcp-write-back.md`](design/mcp-write-back.md).
+MCP is not a wrapper bolted over the CLI.
 
-Two surfaces answering one question derive the answer once. `GET /v1/dialogs`
-and the MCP `list_dialogs` page each report which methods their match set
-holds, and both call `method_breakdown` in [`src/sip/dialog.rs`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog.rs) rather than
-tallying separately, so the ordering rule and its tie-break cannot drift apart
-between them. Each tallies the whole match set rather than the page it returns,
-because the composition of one page answers a different question. A fact two
-surfaces state is a fact one function derives.
+- It is a first-class reader
+  ([`src/mcp/server.rs`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs)).
+- It takes the same read locks the TUI takes.
+  That is why an agent can query a live capture while it is still running.
+- No tool mutates the analysis.
+- For the write-back question and why it stays closed, see
+  [`design/mcp-write-back.md`](design/mcp-write-back.md).
 
-The core is synchronous. Async (tokio) exists only at the edges, on one shared
-runtime ([`src/app/servers.rs`](https://github.com/NormB/sipnab/blob/main/src/app/servers.rs)), for the optional API and
-MCP servers.
+Two surfaces answering one question derive the answer once.
+
+- `GET /v1/dialogs` and the MCP `list_dialogs` page each report which methods their match set
+  holds.
+- Both call `method_breakdown` in [`src/sip/dialog.rs`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog.rs) rather than
+  tallying separately.
+  So the ordering rule and its tie-break cannot drift apart between them.
+- Each tallies the whole match set rather than the page it returns.
+  The composition of one page answers a different question.
+- A fact two surfaces state is a fact one function derives.
+
+The core is synchronous.
+
+- Async (tokio) exists only at the edges, for the optional API and MCP servers.
+- Those run on one shared runtime ([`src/app/servers.rs`](https://github.com/NormB/sipnab/blob/main/src/app/servers.rs)).
 
 ## Data flow
 
@@ -59,17 +77,25 @@ stdin        ─┘    channel     + TCP reassembly,           slice, zero-copy)
                                           TUI (try_read) ─┴─ outputs / API / MCP (read) ───┘
 ```
 
-Parsing always happens **outside** the store locks. Each store is
-write-locked once per packet, briefly. Payloads are `bytes::Bytes` slices of
-the captured frame end to end (see [`docs/internals/zero-copy-payloads.md`](https://github.com/NormB/sipnab/blob/main/docs/internals/zero-copy-payloads.md)).
+- Parsing always happens **outside** the store locks.
+- Each store is write-locked once per packet, briefly.
+- Payloads are `bytes::Bytes` slices of
+  the captured frame end to end (see [`docs/internals/zero-copy-payloads.md`](https://github.com/NormB/sipnab/blob/main/docs/internals/zero-copy-payloads.md)).
 
-> All four packet paths — live, batch, TUI file-open and the `--cores`
-> sharded path (`parallel.rs`) — classify through the one
-> `pipeline::classify_packet` router; only the per-path appliers differ.
+> All four packet paths classify through the one `pipeline::classify_packet` router:
+>
+> - live,
+> - batch,
+> - TUI file-open,
+> - the `--cores` sharded path (`parallel.rs`).
+>
+> Only the per-path appliers differ.
 
-For the same journey narrated packet by packet — every decision point, both
-store writes, and where each of the four paths diverges — see
-[docs/internals/subsystem-guide.md](internals/subsystem-guide.md).
+[docs/internals/subsystem-guide.md](internals/subsystem-guide.md) narrates the same journey packet by packet:
+
+- every decision point,
+- both store writes,
+- where each of the four paths diverges.
 
 ## Module map
 
@@ -172,50 +198,65 @@ harness/                  # docker-compose e2e (opensips + rtpengine + sipp)
 ## Threading model
 
 See [`docs/internals/threading.md`](https://github.com/NormB/sipnab/blob/main/docs/internals/threading.md) for the full topology and lock discipline.
-Short version: capture threads → bounded channel → one processing thread
-that owns all store writes. TUI, API and MCP are readers. Batch `--cores N` shards
-packets by host pair to worker threads with thread-local stores, merged at
-EOF.
+Short version:
+
+- Capture threads → bounded channel → one processing thread that owns all store writes.
+- TUI, API and MCP are readers.
+- Batch `--cores N` shards packets by host pair to worker threads with thread-local stores.
+  sipnab merges those stores at EOF.
 
 ## Key design decisions (abridged; full text in design/implementation-plan-v6.md)
 
-- **D2 — Synchronous core, async only at the edges.** The packet path is
-  plain threads + channels; tokio appears only inside the optional
-  API/MCP/Prometheus servers.
-- **D3 — Zero-copy payload spine.** `Packet.data`, `ParsedPacket.payload`,
-  `SipMessage.raw`/`body` are refcounted `Bytes` slices of one buffer.
-  Header parsing allocates lazily (canonical-name table + `Cow` unfold,
-  WS4.1) — 3→1 allocations per header on the hot path.
-- **D10 — Feature gates keep the binary small.** `native`, `tui`, `tls`,
-  `hep`, `api`, `mcp`, `mcp-http`, `audio`, `wasm`. Check [`Cargo.toml`](https://github.com/NormB/sipnab/blob/main/Cargo.toml)
-  before assuming a build includes a module.
-- **D11 — Key material is toxic waste.** `zeroize` on key types, redacting
-  `Debug` impls, `--tls-key`/keylog material never logged.
-- **D13 — RTP is first-class.** sipnab discovers streams heuristically even
-  without SIP/SDP; `rtp/` never depends on a dialog existing.
-- **D15 — Privilege drop.** sipnab sets `PR_SET_NO_NEW_PRIVS` at startup on
-  every run mode — root or not, because that flag has no precondition and the
-  recommended `--setup-caps` install has no root to drop — then drops root
-  right after socket open and disables core dumps whenever decryption keys are
-  resident ([`src/privilege.rs`](https://github.com/NormB/sipnab/blob/main/src/privilege.rs)); `--chroot` is available for daemon
-  deployments.
-- **D16 — Process isolation: scanner-kill yes, the REST API no.** D16
-  ([`docs/design/implementation-plan-v6.md:624`](https://github.com/NormB/sipnab/blob/main/docs/design/implementation-plan-v6.md#L624)) called for scanner-kill and the
-  REST API to run in forked children. **Scanner-kill does**: its worker is a
-  process of its own ([`src/process_isolation.rs`](https://github.com/NormB/sipnab/blob/main/src/process_isolation.rs)), this binary re-executed before the chroot and
-  the privilege drop. The parent creates the only sockets the kill path sends
-  through, hands them to the worker, and closes its own copies, so the process
-  parsing captured traffic holds none of them; the worker never creates a
-  socket, and holding none it refuses every request. The REST/MCP servers
-  still run as tasks on a shared runtime thread ([`src/app/servers.rs`](https://github.com/NormB/sipnab/blob/main/src/app/servers.rs)), in one address space
-  alongside the parsers, the stores, TLS key material and bearer tokens. Treat
-  the API bind address and key accordingly — and note that `panic = "abort"`
-  ([`Cargo.toml:328`](https://github.com/NormB/sipnab/blob/main/Cargo.toml#L328)) means a panic on any thread ends the whole process, so threads buy
-  no fault containment either. The analysis of whether to close the rest of
-  this gap, and why most of it should stay open, is in
-  [`docs/design/process-isolation-and-hot-path-cost.md`](https://github.com/NormB/sipnab/blob/main/docs/design/process-isolation-and-hot-path-cost.md).
-- **D17 — Warn and continue.** Malformed input must never crash the
-  process; parsers set `parse_error` and keep going ([`docs/fault-model.md`](https://github.com/NormB/sipnab/blob/main/docs/fault-model.md)).
+- **D2 — Synchronous core, async only at the edges.**
+  - The packet path is plain threads + channels.
+  - tokio appears only inside the optional API/MCP/Prometheus servers.
+- **D3 — Zero-copy payload spine.**
+  - `Packet.data`, `ParsedPacket.payload`,
+    `SipMessage.raw`/`body` are refcounted `Bytes` slices of one buffer.
+  - Header parsing allocates lazily (canonical-name table + `Cow` unfold,
+    WS4.1) — 3→1 allocations per header on the hot path.
+- **D10 — Feature gates keep the binary small.**
+  - `native`, `tui`, `tls`, `hep`, `api`, `mcp`, `mcp-http`, `audio`, `wasm`.
+  - Check [`Cargo.toml`](https://github.com/NormB/sipnab/blob/main/Cargo.toml)
+    before assuming a build includes a module.
+- **D11 — Key material is toxic waste.**
+  - `zeroize` on key types.
+  - Redacting `Debug` impls.
+  - `--tls-key`/keylog material never logged.
+- **D13 — RTP is first-class.**
+  - sipnab discovers streams heuristically even without SIP/SDP.
+  - `rtp/` never depends on a dialog existing.
+- **D15 — Privilege drop.**
+  - sipnab sets `PR_SET_NO_NEW_PRIVS` at startup on every run mode, root or not.
+    - That flag has no precondition.
+    - The recommended `--setup-caps` install has no root to drop.
+  - It then drops root right after socket open.
+  - It disables core dumps whenever decryption keys are
+    resident ([`src/privilege.rs`](https://github.com/NormB/sipnab/blob/main/src/privilege.rs)).
+  - `--chroot` is available for daemon deployments.
+- **D16 — Process isolation: scanner-kill yes, the REST API no.**
+  - D16
+    ([`docs/design/implementation-plan-v6.md:624`](https://github.com/NormB/sipnab/blob/main/docs/design/implementation-plan-v6.md#L624)) called for scanner-kill and the
+    REST API to run in forked children.
+  - **Scanner-kill does.**
+    - Its worker is a process of its own ([`src/process_isolation.rs`](https://github.com/NormB/sipnab/blob/main/src/process_isolation.rs)).
+      It is this binary, re-executed before the chroot and the privilege drop.
+    - The parent creates the only sockets the kill path sends through.
+      It hands them to the worker and closes its own copies.
+    - So the process parsing captured traffic holds none of them.
+    - The worker never creates a socket. Holding none, it refuses every request.
+  - The REST/MCP servers
+    still run as tasks on a shared runtime thread ([`src/app/servers.rs`](https://github.com/NormB/sipnab/blob/main/src/app/servers.rs)).
+    - They share one address space with the parsers, the stores, TLS key material and bearer tokens.
+    - Treat the API bind address and key accordingly.
+    - Note that `panic = "abort"`
+      ([`Cargo.toml:328`](https://github.com/NormB/sipnab/blob/main/Cargo.toml#L328)) means a panic on any thread ends the whole process.
+      So threads buy no fault containment either.
+  - [`docs/design/process-isolation-and-hot-path-cost.md`](https://github.com/NormB/sipnab/blob/main/docs/design/process-isolation-and-hot-path-cost.md)
+    analyzes whether to close the rest of this gap, and why most of it should stay open.
+- **D17 — Warn and continue.**
+  - Malformed input must never crash the process.
+  - Parsers set `parse_error` and keep going ([`docs/fault-model.md`](https://github.com/NormB/sipnab/blob/main/docs/fault-model.md)).
 
 ## Where to add things
 
@@ -229,7 +270,11 @@ EOF.
 | Add an MCP tool | `mcp/tools/` for a new group, else `mcp/server.rs` (`#[tool]`) + `mcp/shape.rs` |
 | Add a CLI flag | `cli.rs` + `flag_coverage_test.rs` forces a test |
 
-This table names the files. It does not name the order, the tests each change
-owes, or the gates that reject it.
+This table names the files. It does not name:
+
+- the order,
+- the tests each change owes,
+- the gates that reject it.
+
 [docs/internals/walkthroughs.md](internals/walkthroughs.md) has an ordered
 checklist for each row.

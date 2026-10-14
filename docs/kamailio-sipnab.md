@@ -1,9 +1,14 @@
 # Run sipnab beside Kamailio
 
-sipnab reads the SIP that passes through Kamailio off the wire, so it needs
-nothing from Kamailio: no module, no configuration change. On the Kamailio
-machine it sees both legs of every call, the caller's side into Kamailio and
-Kamailio's side out to the callee, and puts them together into one call.
+sipnab reads the SIP that passes through Kamailio off the wire. So it needs
+nothing from Kamailio: no module, no configuration change.
+
+On the Kamailio machine, sipnab sees both legs of every call:
+
+- the caller's side into Kamailio,
+- Kamailio's side out to the callee.
+
+It puts them together into one call.
 
 This guide adds sipnab to the Kamailio proxy from
 [Use Kamailio as your voice stack's SIP server](kamailio.md).
@@ -11,14 +16,20 @@ This guide adds sipnab to the Kamailio proxy from
 ## Tested on
 
 Every block on this page ran as written, in order, on 2026-10-01, with sipnab
-0.5.198 from its release package, on the Debian 13 (kernel 6.12.63) and Ubuntu
-24.04 (kernel 6.8.0) machines that [the Kamailio guide](kamailio.md) had set
-up, alone and beside OpenSIPS. The test calls carried audio, and the terminal
-interface showed each call on one row. On both, causing the fault under [When
-something does not work](#when-something-does-not-work) produced the message it
-quotes. The examples use `192.0.2.10` as the machine's address.
+0.5.198 from its release package.
 
-## 1. Install sipnab
+- It ran on the Debian 13 (kernel 6.12.63) and Ubuntu 24.04 (kernel 6.8.0)
+  machines that [the Kamailio guide](kamailio.md) had set up.
+- Kamailio ran alone and beside OpenSIPS.
+- The test calls carried audio.
+- The terminal interface showed each call on one row.
+- On both machines, causing the fault under [When
+  something does not work](#when-something-does-not-work) produced the message
+  it quotes.
+
+The examples use `192.0.2.10` as the machine's address.
+
+## Install sipnab
 
 ```bash
 # Run all of these, in order.
@@ -31,17 +42,17 @@ sudo apt-get install -y ./sipnab_${V}_amd64.deb
 sipnab --version
 ```
 
-## 2. Watch a call through Kamailio
+## Watch a call through Kamailio
 
-Start sipnab on every interface for 30 seconds, printing each SIP message as
-it passes and a report of the calls at the end:
+Start sipnab on every interface for 30 seconds. It prints each SIP message as
+it passes, and a report of the calls at the end:
 
 ```bash
 sudo sipnab -N -d any --duration 30 --report
 ```
 
-While it runs, place a test call from a second terminal, as in
-[step 3 of the Kamailio guide](kamailio.md#3-place-a-test-call):
+While it runs, place a test call from a second terminal. Do it as in
+[the Place a test call step of the Kamailio guide](kamailio.md#place-a-test-call):
 
 ```bash
 # Run all of these, in order.
@@ -50,40 +61,55 @@ sipp -sn uas -i 127.0.0.1 -p 5070 -rtp_echo -m 1 -bg
 sudo sipp -sf uac_rr.xml 192.0.2.10:5060 -i 192.0.2.10 -p 5080 -s echo -m 1 -timeout 90s
 ```
 
-sipnab prints every message Kamailio relays twice, once on each leg: the
-caller's `INVITE` to Kamailio at `192.0.2.10:5060`, then Kamailio's copy of it
-to the callee at `127.0.0.1:5070`, and the same for the replies and the `BYE`.
-Kamailio's own `100 trying -- your call is important to us` goes to the caller
-alone. When the 30 seconds are up, the report lists the call once, as
-`Completed`, with 13 messages from both legs. Below it, an `RTP Streams:` table
-holds the call's audio, which goes straight between the caller and the callee
-and never through Kamailio: the caller's 236 `PCMA` packets and 10
-`telephone-event` (DTMF) packets, and the same again coming back from the
-callee's echo, four streams in all.
+sipnab prints every message Kamailio relays twice, once on each leg:
 
-For the same view in a terminal interface, which updates as calls happen, run
-`sudo sipnab -d any` without `-N` and without `--duration`. It lists the call on
-one row, `Completed`, with the same 13 messages.
+- the caller's `INVITE` to Kamailio at `192.0.2.10:5060`,
+- then Kamailio's copy of it to the callee at `127.0.0.1:5070`,
+- and the same for the replies and the `BYE`.
+
+Kamailio's own `100 trying -- your call is important to us` goes to the caller
+alone.
+
+When the 30 seconds are up, the report lists the call once:
+
+- It shows the call as `Completed`, with 13 messages from both legs.
+- Below it, an `RTP Streams:` table holds the call's audio.
+  - The audio goes straight between the caller and the callee. It never goes
+    through Kamailio.
+  - The table shows the caller's 236 `PCMA` packets and 10 `telephone-event`
+    (DTMF) packets.
+  - It shows the same again coming back from the callee's echo.
+  - That is four streams in all.
+
+You can get the same view in a terminal interface, which updates as calls
+happen. Run `sudo sipnab -d any` without `-N` and without `--duration`. It
+lists the call on one row, `Completed`, with the same 13 messages.
 
 ## With OpenSIPS on the same machine
 
-With OpenSIPS on 5060 and Kamailio on 5062, as [OpenSIPS and Kamailio on one
-machine](kamailio.md#opensips-and-kamailio-on-one-machine) sets them up, give
-sipnab both ports:
+[OpenSIPS and Kamailio on one
+machine](kamailio.md#opensips-and-kamailio-on-one-machine) sets up OpenSIPS on
+5060 and Kamailio on 5062. With that setup, give sipnab both ports:
 
 ```bash
 sudo sipnab -N -d any --duration 30 --report --portrange 5060-5062
 ```
 
-A call through each proxy then appears in the report, one row per call. The
-two test calls send their audio from the same ports with the same RTP SSRC.
-sipnab starts a new stream when the second call's SDP renegotiates those ports,
-so the `RTP Streams:` table lists each call's streams on rows of their own:
-236 `PCMA` packets each way for each call, not one stream of 472 across both.
+A call through each proxy then appears in the report, one row per call.
+
+- The two test calls send their audio from the same ports with the same RTP
+  SSRC.
+- sipnab starts a new stream when the second call's SDP renegotiates those
+  ports.
+- So the `RTP Streams:` table lists each call's streams on rows of their own:
+  - 236 `PCMA` packets each way for each call,
+  - not one stream of 472 across both.
 
 ## When something does not work
 
 - **sipnab reports `No SIP signaling found, but ... RTP packets across ...
-  stream(s) were parsed`.** It saw the call's audio, which uses other ports,
-  but none of its SIP: Kamailio listens on a port outside 5060-5061, the range
-  sipnab watches by default. Give sipnab Kamailio's ports with `--portrange`.
+  stream(s) were parsed`.**
+  - It saw the call's audio, which uses other ports, but none of its SIP.
+  - Kamailio listens on a port outside 5060-5061, the range sipnab watches by
+    default.
+  - Give sipnab Kamailio's ports with `--portrange`.

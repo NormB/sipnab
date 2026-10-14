@@ -2,7 +2,7 @@
 vendor can open, and nothing else.
 
 `-O` narrows only by BPF, which selects addresses rather than SIP users
-(recipe 32). So the program finds the customer's calls, turns their
+(recipe "Export one customer's calls as a smaller capture"). So the program finds the customer's calls, turns their
 addresses into a BPF expression, exports, and reads the export back: each
 call must come out whole, and any other call that shares an address is a
 disclosure, so the export is refused and removed rather than handed over.

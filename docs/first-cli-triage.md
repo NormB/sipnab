@@ -1,29 +1,36 @@
 # Triage a capture from the command line
 
-Your first analysis without the TUI, one command at a time: list the calls in a
-capture, find the ones that went wrong, explain one of them, and hand the
-answer to another tool as JSON. Every command reads a file, so none of them
-needs root.
+Your first analysis without the TUI, one command at a time. You list the calls
+in a capture and find the ones that went wrong. You explain one of them and
+hand the answer to another tool as JSON.
 
-Each step shows the output it prints. sipnab also writes progress lines, such
-as `Reading from 'sample-call.pcap'`, to stderr. The outputs below leave those
-out. The [Glossary](glossary.md) defines any term you do not recognize.
+Every command reads a file, so none of them needs root.
 
-## 1. Download a capture
+- Each step shows the output it prints.
+- sipnab also writes progress lines, such as `Reading from 'sample-call.pcap'`,
+  to stderr. The outputs below leave those out.
+- The [Glossary](glossary.md) defines any term you do not recognize.
 
-Download the sample call the website uses. It holds one phone call between
-Alice and Bob, plus the registrations, subscriptions and keepalives around it:
+## Download a capture
+
+Download the sample call the website uses. It holds:
+
+- one phone call between Alice and Bob,
+- the registrations, subscriptions and keepalives around it.
 
 ```bash
 curl -LO https://sipnab.com/demos/sample-call.pcap
 ```
 
-## 2. List the calls
+## List the calls
 
-Ask for one line per [dialog](glossary.md#dialog), meaning every SIP message
-that shares a Call-ID. `-N` skips the TUI, `--report` prints the per-call
-table, and `--no-cli-print` leaves out the per-message lines that would
-otherwise come first:
+Ask for one line per [dialog](glossary.md#dialog). A dialog is every SIP
+message that shares a Call-ID.
+
+- `-N` skips the TUI.
+- `--report` prints the per-call table.
+- `--no-cli-print` leaves out the per-message lines. Without it, they would
+  come first.
 
 ```bash
 sipnab -N -I sample-call.pcap --report --no-cli-print
@@ -49,33 +56,47 @@ SSRC         PT   Codec    Clock  Source                Destination           Pk
 0x5e6f7a8b   0    PCMU     8000   192.0.2.20:10002      192.0.2.10:10000      300     0      0.0%    0ms      6s     64
 ```
 
-Read it left to right. The last row is the phone call: an INVITE that got a
-`200` answer, lasted 8 seconds, and waited 0.2 seconds for the first ringing
-response. That wait is the [PDD](glossary.md#pdd) (post-dial delay). The two
-streams below it are the call's audio, one per direction, with no loss.
+Read it left to right. The last row is the phone call. It is an INVITE that:
 
-The rows above it are not calls. They are registrations (`reg-`),
-subscriptions (`sub-`) and an OPTIONS keepalive (`opt-`), which sipnab tracks
-as dialogs too. The `Code` column reads INVITE answers only, so those rows
-show `-`.
+- got a `200` answer,
+- lasted 8 seconds,
+- waited 0.2 seconds for the first ringing response. That wait is the
+  [PDD](glossary.md#pdd) (post-dial delay).
 
-## 3. Find the calls that went wrong
+The two streams below it are the call's audio. There is one per direction,
+with no loss.
 
-`--problems` keeps only the dialogs that failed, or that show one-way audio,
-high loss or jitter, a NAT mismatch, retransmits, slow setup, or a media
-asymmetry. Combined with `--report`, it prints the same table filtered to
-those calls:
+The rows above it are not calls. sipnab tracks these as dialogs too:
+
+- registrations (`reg-`),
+- subscriptions (`sub-`),
+- an OPTIONS keepalive (`opt-`).
+
+The `Code` column reads INVITE answers only, so those rows show `-`.
+
+## Find the calls that went wrong
+
+`--problems` keeps only the dialogs that failed, or that show:
+
+- one-way audio,
+- high loss or jitter,
+- a NAT mismatch,
+- retransmits,
+- slow setup,
+- a media asymmetry.
+
+Combined with `--report`, it prints the same table, filtered to those calls:
 
 ```bash
 sipnab -N -I sample-call.pcap --problems --report --no-cli-print
 ```
 
-On the sample, the table is empty apart from its header, because nothing in it
-went wrong. **An empty answer is a result:** sipnab looked at every call and
-found no problem.
+On the sample, the table is empty apart from its header. Nothing in it went
+wrong. **An empty answer is a result:** sipnab looked at every call and found
+no problem.
 
 To see what a problem looks like, download a second sample from the
-repository. It holds five calls, four of which failed:
+repository. It holds five calls. Four of them failed:
 
 ```bash
 curl -LO https://github.com/NormB/sipnab/raw/main/tests/pcap-samples/sip-problem-call.pcap
@@ -94,14 +115,21 @@ notfound-1b2c3d@203.0.113.30     grace          heidi          Failed       404 
 unavail-4e5f60@192.0.2.50        ivan           judy           Failed       503    1s         4      -        -
 ```
 
-The completed call drops out, and the four failures remain with the response
-code that ended each one: busy, declined, not found, and unavailable.
+The completed call drops out. The four failures remain, each with the
+response code that ended it:
 
-## 4. Explain one call
+- busy,
+- declined,
+- not found,
+- unavailable.
+
+## Explain one call
 
 Pick a Call-ID from the table and ask for its report. Set it in a shell
-variable first, because most Call-IDs contain an `@` and some contain
-characters the shell would otherwise interpret:
+variable first:
+
+- Most Call-IDs contain an `@`.
+- Some contain characters the shell would otherwise interpret.
 
 ```bash
 CALL_ID='call-2c9d47@192.0.2.10'
@@ -139,20 +167,24 @@ Media Streams:
 Issues Detected: None
 ```
 
-The `SIP Transactions` line is the call in one row: the INVITE got `100
-Trying` after 6 ms, `180 Ringing` after 180 ms, and `200 OK` after 2.4
-seconds, when Bob answered. `Frame` names the packet the report starts from,
-so you can find the same bytes in Wireshark. `Issues Detected: None` is the
-verdict.
+The `SIP Transactions` line is the call in one row. The INVITE got:
+
+- `100 Trying` after 6 ms,
+- `180 Ringing` after 180 ms,
+- `200 OK` after 2.4 seconds, when Bob answered.
+
+`Frame` names the packet the report starts from. You can find the same bytes
+in Wireshark. `Issues Detected: None` is the verdict.
 
 Try the same command on `sip-problem-call.pcap` with
-`CALL_ID='busy-3a2b1c@192.0.2.30'`. Its report ends with
-`Final failure: 486 Busy Here` under `Signaling Issues`, and names the message
-that says so.
+`CALL_ID='busy-3a2b1c@192.0.2.30'`.
 
-## 5. Hand the answer to another tool
+- Its report ends with `Final failure: 486 Busy Here` under `Signaling Issues`.
+- It names the message that says so.
 
-`--json` prints one JSON object per SIP message, which `jq` can slice. This
+## Hand the answer to another tool
+
+`--json` prints one JSON object per SIP message. `jq` can slice it. This
 lists the call's messages in order, with the time of each:
 
 ```bash
@@ -169,9 +201,10 @@ sipnab -N -I sample-call.pcap --json | jq -r --arg id "$CALL_ID" 'select(.call_i
 2023-11-14T22:13:33.468+00:00	200
 ```
 
-`--json-dialogs` prints one JSON object per call instead, and needs
-`--no-cli-print` so the per-message lines stay out of the JSON. Its `timing`
-object carries the numbers from the report, in milliseconds:
+`--json-dialogs` prints one JSON object per call instead.
+
+- It needs `--no-cli-print`, so the per-message lines stay out of the JSON.
+- Its `timing` object carries the numbers from the report, in milliseconds:
 
 ```bash
 sipnab -N -I sample-call.pcap --json-dialogs --no-cli-print | jq --arg id "$CALL_ID" 'select(.call_id == $id) | .timing'
@@ -190,8 +223,8 @@ sipnab -N -I sample-call.pcap --json-dialogs --no-cli-print | jq --arg id "$CALL
 
 ## Where to go next
 
-- [Troubleshooting](troubleshooting.md) starts from a complaint, such as
-  one-way audio or a call that drops after 30 seconds, and says which command
+- [Troubleshooting](troubleshooting.md) starts from a complaint. Examples are
+  one-way audio or a call that drops after 30 seconds. It says which command
   answers it.
 - [Examples & recipes](examples.md) has a recipe for each task, from live
   capture to scanner blocking.

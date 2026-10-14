@@ -178,7 +178,7 @@ inside the TUI *clears* both stores rather than adding a session: `reset_for_loa
 documented as *"replacing all existing data."* There is no merge-on-open branch
 and no second-store branch. A comparison mode is a second writer against a second
 pair of stores, which puts it under
-[invariant 1](../internals/invariants.md)'s single-writer rule and needs the same
+[invariant "One writer per store, per run mode"](../internals/invariants.md)'s single-writer rule and needs the same
 treatment the in-TUI `pcap-load` path already got.
 
 **`View` cannot address a second session.** Every data-bearing variant of the

@@ -25,7 +25,7 @@
 //!   it cannot handle reports a clean page by not looking at it, which is the
 //!   shape [[feedback_empty_output_is_not_evidence]] warns about and the reason
 //!   RDR2 is open. Counting them without failing was that same shape with a
-//!   number printed beside it: the count sat at 1 for as long as recipe 12's
+//!   number printed beside it: the count sat at 1 for as long as recipe "Generate a call report (text / Markdown / JSON)"'s
 //!   second pass existed, and every run was green.
 //!
 //! A command that genuinely cannot be covered goes in the checker's
@@ -37,7 +37,7 @@
 //!
 //! Gated on the `full` feature set because the bucket a command lands in
 //! depends on it: `--help` from a binary built without `hep` does not list
-//! `--hep-listen`, so recipe 26 would "fail" on a build that was never asked
+//! `--hep-listen`, so recipe "Run sipnab as a HEP relay" would "fail" on a build that was never asked
 //! to carry it.
 #![cfg(all(
     feature = "native",
@@ -240,101 +240,59 @@ fn an_exemption_without_a_stated_reason_is_refused() -> Result<(), TestError> {
     Ok(())
 }
 
-/// Problems with the numbered recipes in `page`: a `## N.` heading out of
-/// sequence, a lettered `## Nb.` recipe not directly after recipe N, or an
-/// unnumbered `## ` section between two numbered recipes.
+/// The headings of `page`, outside fenced code, that start with a recipe
+/// number such as `## 4. ` or `### 6a. `.
 ///
-/// Readers and the "What do you want to do?" index find a recipe by its
-/// number, so the numbers run 1, 2, 3 in page order, and every unnumbered
-/// section sits before the first recipe or after the last.
-fn recipe_order_problems(page: &str) -> Vec<String> {
-    let mut problems = Vec::new();
-    let mut expected = 1u32;
-    let mut unnumbered_since_last: Option<String> = None;
+/// Norm, 2026-10-13: "remove the cookbook recipe numbers too". A recipe is
+/// found by its title and its link, so a number in front of it is one more
+/// thing a reader has to map, and the numbers went stale whenever a recipe
+/// was added in the middle.
+fn numbered_headings(page: &str) -> Vec<String> {
+    let mut found = Vec::new();
     let mut in_fence = false;
     for line in page.lines() {
         if line.trim_start().starts_with("```") {
             in_fence = !in_fence;
             continue;
         }
-        if in_fence {
+        if in_fence || !line.starts_with('#') {
             continue;
         }
-        let Some(heading) = line.strip_prefix("## ") else {
+        let text = line.trim_start_matches('#').trim_start();
+        let Some((label, _)) = text.split_once(". ") else {
             continue;
         };
-        let label = heading.split_once(". ").map(|(n, _)| n);
-        // A lettered recipe (`13b.`) belongs to the numbered one it follows.
-        if let Some((base, letter)) =
-            label.and_then(|l| l.split_at_checked(l.len().checked_sub(1)?))
-            && letter.chars().all(|c| c.is_ascii_lowercase())
-            && let Ok(n) = base.parse::<u32>()
-        {
-            if n + 1 != expected || unnumbered_since_last.is_some() {
-                problems.push(format!("recipe {base}{letter} does not follow recipe {n}"));
-            }
-            continue;
-        }
-        let number = label.and_then(|n| n.parse::<u32>().ok());
-        match number {
-            Some(n) => {
-                if let Some(between) = unnumbered_since_last.take() {
-                    problems.push(format!(
-                        "`## {between}` sits between recipe {} and recipe {n}",
-                        expected - 1
-                    ));
-                }
-                if n != expected {
-                    problems.push(format!("recipe {n} appears where {expected} belongs"));
-                }
-                expected = n + 1;
-            }
-            None if expected > 1 => {
-                unnumbered_since_last.get_or_insert_with(|| heading.to_string());
-            }
-            None => {}
+        let digits = label.trim_end_matches(|c: char| c.is_ascii_lowercase());
+        if !digits.is_empty() && digits.chars().all(|c| c.is_ascii_digit()) {
+            found.push(line.to_string());
         }
     }
-    problems
+    found
 }
 
-/// The cookbook's recipes are numbered 1 to N in page order, with no other
-/// section between two of them.
+/// No cookbook recipe heading carries a number.
 #[test]
-fn cookbook_recipes_are_numbered_in_page_order() -> Result<(), TestError> {
+fn cookbook_recipes_carry_no_numbers() -> Result<(), TestError> {
     let page =
         std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("docs/examples.md"))?;
-    let problems = recipe_order_problems(&page);
+    let numbered = numbered_headings(&page);
     assert!(
-        problems.is_empty(),
-        "docs/examples.md recipe order:\n{}",
-        problems.join("\n")
+        numbered.is_empty(),
+        "docs/examples.md has numbered recipe headings:\n{}",
+        numbered.join("\n")
     );
     Ok(())
 }
 
-/// The order predicate accepts a contiguous run with sections before and
-/// after it, and reports a gap, a repeat and a section inside the run.
+/// The heading scan reports `## 4. ` and `### 6a. `, and leaves a heading
+/// without a number, a heading that only contains a period, and a fenced
+/// line alone.
 #[test]
-fn the_recipe_order_predicate_reports_gaps_and_interlopers() -> Result<(), TestError> {
-    let ok = "## Intro\n## 1. A\n## 2. B\n```\n## 9. in a fence\n```\n## Next steps\n";
-    assert!(recipe_order_problems(ok).is_empty());
+fn the_numbered_heading_scan_tells_the_forms_apart() {
+    let page = "## Intro\n## 4. Diagnose\n### 6a. Set up\n## Version 2. Notes\n\
+                ```\n## 9. in a fence\n```\n## Next steps\n";
     assert_eq!(
-        recipe_order_problems("## 1. A\n## 3. C\n"),
-        ["recipe 3 appears where 2 belongs"]
+        numbered_headings(page),
+        ["## 4. Diagnose", "### 6a. Set up"]
     );
-    assert_eq!(
-        recipe_order_problems("## 1. A\n## 1. A again\n"),
-        ["recipe 1 appears where 2 belongs"]
-    );
-    assert!(recipe_order_problems("## 1. A\n## 1b. A again\n## 2. B\n").is_empty());
-    assert_eq!(
-        recipe_order_problems("## 1. A\n## 2. B\n## 1b. late\n"),
-        ["recipe 1b does not follow recipe 1"]
-    );
-    assert_eq!(
-        recipe_order_problems("## 1. A\n## Lookup\n## 2. B\n"),
-        ["`## Lookup` sits between recipe 1 and recipe 2"]
-    );
-    Ok(())
 }

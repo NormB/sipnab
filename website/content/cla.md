@@ -5,13 +5,16 @@ template = "page.html"
 +++
 
 Before your first pull request to **sipnab** can be merged, you need to sign the
-sipnab Individual Contributor License Agreement (CLA). It is a one-time step: it
-covers all of your past, present and future contributions, and you keep full
-ownership of your work.
+sipnab Individual Contributor License Agreement (CLA). It is a one-time step.
 
-Signing is handled by [CLA Assistant](https://cla-assistant.io/): when you open a
-pull request, a bot checks whether you have signed and, if not, leaves a comment
-with a link. You sign in the browser with your GitHub account.
+- It covers all of your past, present and future contributions.
+- You keep full ownership of your work.
+
+Signing is handled by [CLA Assistant](https://cla-assistant.io/).
+
+- When you open a pull request, a bot checks whether you have signed.
+- If you have not, it leaves a comment with a link.
+- You sign in the browser with your GitHub account.
 
 <p>
 <a class="btn btn-primary" href="https://cla-assistant.io/NormB/sipnab" target="_blank" rel="noopener noreferrer">Sign the CLA &rarr;</a>

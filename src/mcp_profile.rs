@@ -57,7 +57,7 @@
 ///   inconclusive) with the findings behind it, the answer an agent acts on
 ///   before it opens any one call. Without it a core box could list calls but
 ///   not say whether the capture as a whole is healthy, so the agent triage
-///   in the client examples, run as cookbook recipe 55 deploys, failed with
+///   in the client examples, run as cookbook recipe "Set up the MCP server for a hosted agent" deploys, failed with
 ///   "tool not found" (MCP-CORE-1).
 ///
 /// Deliberately NOT here: everything that answers a follow-up question an

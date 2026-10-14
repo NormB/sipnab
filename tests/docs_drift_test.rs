@@ -656,8 +656,9 @@ const FOREIGN_FLAGS: &[(&str, &[&str])] = &[
             // a reader cannot run is not a remedy.
             "docs/troubleshooting.md",
             "website/content/docs/troubleshooting.md",
-            // The TLS chooser names `--features bpf` because method 4 needs a
-            // build that carries it, exactly as the CLI reference does.
+            // The TLS chooser names `--features bpf` because the method
+            // "Plaintext and the peer address" needs a build that carries it,
+            // exactly as the CLI reference does.
             "docs/tls-capture.md",
             "website/content/docs/tls-capture.md",
             // The library page's worked-examples section gives the cargo
@@ -4708,7 +4709,7 @@ fn no_documentation_table_repeats_a_row() -> Result<(), TestError> {
     // the use-case table in docs/design/backlog.md, which has no mirror.
     // Attributed per file before the number moved.
     // Raised 615 -> 617 by the partial-export table in docs/examples.md
-    // recipe 13, which maps each thing an exported WAV's note can say to what
+    // recipe "Export RTP audio as WAV", which maps each thing an exported WAV's note can say to what
     // happened and what to do about it. One table, doubled by the generated
     // cookbook mirror. Attributed per file before the number moved.
     // 617 -> 622: the five tables in the generated
@@ -5056,7 +5057,7 @@ fn no_documentation_table_repeats_a_row() -> Result<(), TestError> {
     // once in the site mirror -- two tables, two mirrored copies, four in all.
     // 887 -> 889 by ST8: the "Relay statistics" section in docs/keybindings.md
     // adds one key table, counted once in docs/ and once in its site mirror.
-    // 889 -> 891 by ST-D1: recipe 64 in the cookbook (docs/examples.md) adds one
+    // 889 -> 891 by ST-D1: recipe "Read a relay's loss beside the loss you measured" in the cookbook (docs/examples.md) adds one
     // three-tier "loss" table, counted once in docs/ and once in its site mirror.
     // 891 -> 952 by PAR2: the surface-capability matrix
     // (docs/design/surface-capability-matrix.md) has one `| Surface | Detail |`
@@ -5700,7 +5701,7 @@ fn no_documentation_table_repeats_a_row() -> Result<(), TestError> {
         // per tracer scope and topology) and the map from each test the design
         // asked for to the name it shipped under. A design doc has no site
         // mirror, so two and not four. Attributed per file against HEAD:
-        // docs/examples.md gained recipe 6d and docs/cli-reference.md a
+        // docs/examples.md gained recipe "Take signaling from HEP and media off the wire, in one process" and docs/cli-reference.md a
         // rewritten `--hep-listen` row, both PROSE and rows inside an existing
         // table, so both held their counts along with their mirrors.
         //

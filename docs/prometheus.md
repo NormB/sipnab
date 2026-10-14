@@ -1,15 +1,23 @@
 # Add Prometheus and Grafana to your voice stack
 
-[Prometheus](https://prometheus.io) collects numbers over time: how many calls
-are up, how many failed, how busy each process is. It reads them from each
-program's metrics endpoint every few seconds and keeps the history.
-[Grafana](https://grafana.com) draws that history as dashboards and alerts on
-it.
+[Prometheus](https://prometheus.io) collects numbers over time:
 
-This guide stands up both beside an OpenSIPS proxy, has OpenSIPS publish its
-statistics, and shows a test call in the numbers. With Kamailio instead,
-[one section](#with-kamailio) replaces the OpenSIPS steps. This guide does not
-use sipnab. When you have this working,
+- how many calls are up,
+- how many failed,
+- how busy each process is.
+
+It reads them from each program's metrics endpoint every few seconds. It keeps
+the history. [Grafana](https://grafana.com) draws that history as dashboards
+and alerts on it.
+
+This guide:
+
+- stands up both beside an OpenSIPS proxy,
+- has OpenSIPS publish its statistics,
+- shows a test call in the numbers.
+
+With Kamailio instead, [one section](#with-kamailio) replaces the OpenSIPS
+steps. This guide does not use sipnab. When you have this working,
 [Add sipnab's metrics to Prometheus](prometheus-sipnab.md) adds sipnab's
 own.
 
@@ -27,9 +35,13 @@ they are apart.
 
 ## Tested on
 
-Every block on this page ran as written, in order, on 2026-09-28, on
-clean x86_64 virtual machines with 2 cores and 3 GB of memory, Debian 13
-(kernel 6.12.63) and Ubuntu 24.04.5 (kernel 6.8.0). On each, it ran:
+Every block on this page ran as written, in order, on 2026-09-28. It ran on
+clean x86_64 virtual machines with 2 cores and 3 GB of memory:
+
+- Debian 13 (kernel 6.12.63)
+- Ubuntu 24.04.5 (kernel 6.8.0)
+
+On each, it ran:
 
 - With OpenSIPS built from source on a machine with nothing installed.
 - With the OpenSIPS 4.0 packages.
@@ -58,20 +70,26 @@ everywhere it appears.
 
 Find your case, and follow the steps it names:
 
-- **No SIP server yet.** Follow every step. Step 2 builds OpenSIPS for you. If
-  you would rather run the OpenSIPS 4.0 packages, install them with
-  [step 1 of the OpenSIPS guide](opensips.md#1-install-opensips), then take
-  the packages' route in step 2.
-- **OpenSIPS already runs, from the packages or built from source.** Step 2
-  adds the two modules the metrics need. Step 3 finds your configuration file
-  and replaces it. On a machine whose script you want to keep, add the lines
-  step 3 marks to your own script instead.
-- **Kamailio already runs, or you want Kamailio.** Follow step 1, then
-  [With Kamailio](#with-kamailio), which takes you through the rest.
-- **Both OpenSIPS and Kamailio on one machine.** Set up OpenSIPS as above, then
-  see [With Kamailio](#with-kamailio), which covers both.
+- **No SIP server yet.** Follow every step.
+  - The Install OpenSIPS's metrics modules step builds OpenSIPS for you.
+  - You may rather run the OpenSIPS 4.0 packages. Then install them with
+    [the Install OpenSIPS step of the OpenSIPS guide](opensips.md#install-opensips).
+    After that, take the packages' route in the Install OpenSIPS's metrics
+    modules step.
+- **OpenSIPS already runs, from the packages or built from source.**
+  - The Install OpenSIPS's metrics modules step adds the two modules the
+    metrics need.
+  - The Configure OpenSIPS to publish its statistics step finds your
+    configuration file and replaces it.
+  - On a machine whose script you want to keep, add the lines that step marks
+    to your own script instead.
+- **Kamailio already runs, or you want Kamailio.** Follow the Install Docker
+  step. Then follow [With Kamailio](#with-kamailio), which takes you through
+  the rest.
+- **Both OpenSIPS and Kamailio on one machine.** Set up OpenSIPS as above.
+  Then see [With Kamailio](#with-kamailio), which covers both.
 
-## 1. Install Docker
+## Install Docker
 
 Prometheus and Grafana run as containers. Install Docker Engine and the
 Compose plugin from the Docker repository:
@@ -91,14 +109,14 @@ sudo apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plug
 sudo usermod -aG docker "$USER"
 ```
 
-Log out and back in so that your account's new `docker` group takes effect,
-then check:
+Log out and back in, so that your account's new `docker` group takes effect.
+Then check:
 
 ```bash
 docker compose version
 ```
 
-## 2. Install OpenSIPS's metrics modules
+## Install OpenSIPS's metrics modules
 
 OpenSIPS publishes its statistics with its `prometheus` module, over HTTP
 served by its `httpd` module.
@@ -109,15 +127,20 @@ served by its `httpd` module.
 sudo apt-get install -y opensips-http-modules opensips-prometheus-module
 ```
 
-**Or build OpenSIPS with them.** Skip this if you installed the packages. The
-`prometheus` module is part of OpenSIPS's default build, but the `httpd` module
-it publishes through is not: it needs `libmicrohttpd`. Install that and build
-`httpd` too. If you already built OpenSIPS from source by one of these guides,
-the block reuses that tree, `/usr/local/src/voice/opensips`, and rebuilds it
-with `httpd`. With a tree of your own, change `/usr/local/src/voice` in the
-block to the directory that holds it. OpenSIPS master also builds with compiler
-optimizations turned off, which is right for OpenSIPS's own developers and
-wrong for a proxy carrying calls, so turn them back on:
+**Or build OpenSIPS with them.** Skip this if you installed the packages.
+
+- The `prometheus` module is part of OpenSIPS's default build.
+- The `httpd` module it publishes through is not. It needs `libmicrohttpd`.
+  Install that and build `httpd` too.
+- You may have already built OpenSIPS from source by one of these guides.
+  Then the block reuses that tree, `/usr/local/src/voice/opensips`, and
+  rebuilds it with `httpd`.
+- With a tree of your own, change `/usr/local/src/voice` in the block to the
+  directory that holds it.
+- OpenSIPS master also builds with compiler optimizations turned off.
+  - That is right for OpenSIPS's own developers.
+  - It is wrong for a proxy carrying calls.
+  - So turn them back on:
 
 ```bash
 # Run all of these, in order.
@@ -135,11 +158,13 @@ sudo make install include_modules="httpd"
 ```
 
 Leave `DBG_MALLOC` as it is. With both it and `CC_O0` switched off, this commit
-of master does not compile: `net/tcp_conn_defs.h` calls `get_ticks()` without
-including the header that declares it, and only `DBG_MALLOC`'s headers happen
-to supply it.
+of master does not compile:
 
-## 3. Configure OpenSIPS to publish its statistics
+- `net/tcp_conn_defs.h` calls `get_ticks()` without including the header that
+  declares it.
+- Only `DBG_MALLOC`'s headers happen to supply it.
+
+## Configure OpenSIPS to publish its statistics
 
 This configuration is a minimal proxy with the metrics endpoint added. The
 metrics part is the block of `loadmodule` and `modparam` lines marked below.
@@ -147,9 +172,11 @@ metrics part is the block of `loadmodule` and `modparam` lines marked below.
 ### Write the configuration
 
 The packages and the source build keep their configuration and their modules in
-different places. The first two lines find them: `C` is your configuration
-file, and `M` the directory your install loads modules from, which the script's
-`mpath` names.
+different places. The first two lines find them:
+
+- `C` is your configuration file.
+- `M` is the directory your install loads modules from. The script's `mpath`
+  names it.
 
 ```bash
 # Run all of these, in order.
@@ -235,20 +262,25 @@ sudo grep '^mpath=' "$C"
 
 What the metrics lines do:
 
-- `httpd` serves HTTP on `127.0.0.1:8888`, the loopback address, so only this
+- `httpd` serves HTTP on `127.0.0.1:8888`, the loopback address. So only this
   machine can read the statistics.
-- `prometheus` publishes them at `/metrics` on that server. It publishes
-  nothing until `statistics` names what to publish; here the core, dialog,
-  transaction, memory and load groups. Each statistic becomes a series named
-  `opensips_` and the statistic's name, such as `opensips_processed_dialogs`.
-- `create_dialog()` makes OpenSIPS track each call, which is what the dialog
+- `prometheus` publishes them at `/metrics` on that server.
+  - It publishes nothing until `statistics` names what to publish.
+  - Here, that is the core, dialog, transaction, memory and load groups.
+  - Each statistic becomes a series named `opensips_` and the statistic's
+    name, such as `opensips_processed_dialogs`.
+- `create_dialog()` makes OpenSIPS track each call. That is what the dialog
   statistics count.
 
-### If you built OpenSIPS in step 2: give it a user and a unit
+### If you built OpenSIPS while installing its metrics modules: give it a user and a unit
 
-The packages come with an `opensips` user and a systemd unit. If you
-installed them, or if your source build already runs as a service, skip to
-[Check the configuration and start OpenSIPS](#check-the-configuration-and-start-opensips).
+The packages come with an `opensips` user and a systemd unit. Skip to
+[Check the configuration and start OpenSIPS](#check-the-configuration-and-start-opensips)
+in either case:
+
+- you installed them,
+- your source build already runs as a service.
+
 A fresh build has neither. Run OpenSIPS as its own user, under systemd:
 
 ```bash
@@ -295,11 +327,11 @@ curl -s 127.0.0.1:8888/metrics | awk '/^opensips_/ && n++ < 3'
 
 The last line prints the first three series OpenSIPS publishes.
 
-## 4. Start Prometheus and Grafana
+## Start Prometheus and Grafana
 
-Both run with the host's own network, so that Prometheus can reach OpenSIPS's
-endpoint on the loopback address. Choose a Grafana admin password and put it
-in `.env`, where Compose reads it:
+Both run with the host's own network. That way, Prometheus can reach
+OpenSIPS's endpoint on the loopback address. Choose a Grafana admin password.
+Put it in `.env`, where Compose reads it:
 
 ```bash
 # Run all of these, in order.
@@ -367,16 +399,18 @@ Check that Prometheus reaches OpenSIPS:
 curl -s localhost:9090/api/v1/targets | python3 -c 'import sys,json; [print(t["labels"]["job"], t["health"]) for t in json.load(sys.stdin)["data"]["activeTargets"]]'
 ```
 
-It prints `opensips up`. Open Grafana at `http://192.0.2.10:3000` and log in as
+It prints `opensips up`. Open Grafana at `http://192.0.2.10:3000`. Log in as
 `admin` with the password in `/opt/monitoring/.env`. The Prometheus data source
 is already there.
 
-## 5. Place a test call and watch the counter
+## Place a test call and watch the counter
 
 SIPp plays both ends: a callee on this machine, and a caller that dials through
-OpenSIPS. SIPp's built-in caller ignores the `Record-Route` header OpenSIPS
-adds, so its `BYE` would miss the proxy and draw `404 Not here`. The two `sed`
-lines make it honor the route set, the way a real phone does:
+OpenSIPS.
+
+- SIPp's built-in caller ignores the `Record-Route` header OpenSIPS adds.
+- So its `BYE` would miss the proxy and draw `404 Not here`.
+- The two `sed` lines make it honor the route set, the way a real phone does:
 
 ```bash
 # Run all of these, in order.
@@ -389,7 +423,7 @@ sipp -sn uas -i 127.0.0.1 -p 5070 -m 1 -bg
 sipp -sf uac_rr.xml 192.0.2.10:5060 -i 192.0.2.10 -p 5080 -m 1 -d 1000 -timeout 20s
 ```
 
-Prometheus scrapes every 5 seconds. Wait for one scrape, then ask it how many
+Prometheus scrapes every 5 seconds. Wait for one scrape. Then ask it how many
 dialogs OpenSIPS has processed:
 
 ```bash
@@ -401,7 +435,7 @@ curl -s localhost:9090/api/v1/query --data-urlencode 'query=opensips_processed_d
 
 It prints 1, the test call.
 
-## 6. Operate it
+## Operate it
 
 **Check health and read the logs.**
 
@@ -423,7 +457,7 @@ sudo systemctl restart opensips
 A restart of OpenSIPS starts its counters again from zero.
 
 **Uninstall.** `docker compose down -v` removes the containers *and* their
-volumes, which is the stored history and Grafana's settings:
+volumes. The volumes hold the stored history and Grafana's settings:
 
 ```bash
 # Run all of these, in order.
@@ -433,12 +467,17 @@ sudo systemctl disable --now opensips
 
 ## With Kamailio
 
-Kamailio publishes its statistics with its `xhttp_prom` module, over HTTP
-served by its `xhttp` module. Both come with the `kamailio` package. Set
-Kamailio up as [the Kamailio guide](kamailio.md) does, through its step 2, and
-follow step 1 here for Docker. In place of steps 2 and 3, add the metrics
-endpoint to Kamailio's configuration. The lines marked `metrics` are the ones
-to add to your own script:
+Kamailio publishes its statistics with its `xhttp_prom` module. It serves them
+over HTTP with its `xhttp` module. Both come with the `kamailio` package.
+
+- Set Kamailio up as [the Kamailio guide](kamailio.md) does, through its
+  Configure Kamailio as a proxy step.
+- Follow the Install Docker step here for Docker.
+- In place of the Install OpenSIPS's metrics modules step and the Configure
+  OpenSIPS to publish its statistics step, add the metrics endpoint to
+  Kamailio's configuration.
+
+The lines marked `metrics` are the ones to add to your own script:
 
 ```bash
 # Run all of these, in order.
@@ -527,15 +566,16 @@ curl -s 127.0.0.1:8888/metrics | awk '/^kamailio_/ && n++ < 3'
 What the metrics lines do:
 
 - `listen=tcp:127.0.0.1:8888` gives Kamailio a TCP socket on the loopback
-  address, and `xhttp` answers the HTTP requests that arrive on it. Only this
+  address. `xhttp` answers the HTTP requests that arrive on it. Only this
   machine can read the statistics.
 - `xhttp_prom_stats "all"` publishes every statistic Kamailio keeps. Each
   becomes a series named `kamailio_`, the group and the statistic's name, such
   as `kamailio_core_rcv_requests_invite`.
-- `event_route[xhttp:request]` is where Kamailio handles each HTTP request, and
+- `event_route[xhttp:request]` is where Kamailio handles each HTTP request.
   `prom_dispatch()` answers the ones for `/metrics`.
 
-Then follow step 4, and name the scrape job after Kamailio:
+Then follow the Start Prometheus and Grafana step. Name the scrape job after
+Kamailio:
 
 ```bash
 # Run all of these, in order.
@@ -545,8 +585,8 @@ docker compose restart prometheus
 until curl -fs -o /dev/null localhost:9090/-/ready; do sleep 2; done
 ```
 
-Place step 5's test call, then ask Prometheus how many `INVITE` requests
-Kamailio has received:
+Place the test call from the Place a test call and watch the counter step.
+Then ask Prometheus how many `INVITE` requests Kamailio has received:
 
 ```bash
 # Run all of these, in order.
@@ -555,20 +595,27 @@ curl -s localhost:9090/api/v1/query --data-urlencode 'query=kamailio_core_rcv_re
   | python3 -c 'import sys,json; print(json.load(sys.stdin)["data"]["result"][0]["value"][1])'
 ```
 
-It prints 1, the test call. The query names the `kamailio` job because, for
-the few minutes before the rename, Prometheus scraped the same endpoint as
-`opensips`, and a query still finds that series for up to five minutes after
-its last sample.
-Step 6 then works unchanged, with `kamailio` in
-place of `opensips` in the `systemctl` commands.
+It prints 1, the test call. The query names the `kamailio` job for two reasons:
+
+- For the few minutes before the rename, Prometheus scraped the same endpoint
+  as `opensips`.
+- A query still finds that series for up to five minutes after its last
+  sample.
+
+The Operate it step then works unchanged, with `kamailio` in place of
+`opensips` in the `systemctl` commands.
 
 **With OpenSIPS on the same machine,** OpenSIPS already serves its metrics on
-`127.0.0.1:8888`, and Kamailio listens for SIP on 5062, as [OpenSIPS and
+`127.0.0.1:8888`. Kamailio listens for SIP on 5062, as [OpenSIPS and
 Kamailio on one machine](kamailio.md#opensips-and-kamailio-on-one-machine) sets
-it up. Give Kamailio's endpoint its own port too: in the configuration above,
-change `5060` to `5062` in the first `listen` line, and `8888` to `8889` in the
-second `listen` line and in the `curl` line at the end. Then keep the
-`opensips` scrape job and add one for Kamailio, in place of renaming it:
+it up. Give Kamailio's endpoint its own port too. In the configuration above:
+
+- change `5060` to `5062` in the first `listen` line,
+- change `8888` to `8889` in the second `listen` line and in the `curl` line
+  at the end.
+
+Then keep the `opensips` scrape job and add one for Kamailio, in place of
+renaming it:
 
 ```bash
 # Run all of these, in order.
@@ -582,15 +629,16 @@ docker compose restart prometheus
 until curl -fs -o /dev/null localhost:9090/-/ready; do sleep 2; done
 ```
 
-Prometheus then shows both targets `up`, and each proxy's series under its own
-name: `opensips_` and `kamailio_`.
+Prometheus then shows both targets `up`. Each proxy's series appear under its
+own name: `opensips_` and `kamailio_`.
 
 ## Put the parts on different machines
 
 **Prometheus on its own machine.** The proxy's metrics endpoint has no
-authentication, so keep it on an internal address that only Prometheus can
-reach, here the proxy machine's own `192.0.2.10`. The first line finds the
-proxy's configuration: the OpenSIPS packages', a source build's, or Kamailio's:
+authentication. So keep it on an internal address that only Prometheus can
+reach. Here, that is the proxy machine's own `192.0.2.10`. The first line finds
+the proxy's configuration: the OpenSIPS packages', a source build's, or
+Kamailio's:
 
 ```bash
 # Run all of these, in order.
@@ -603,8 +651,11 @@ curl -s 192.0.2.10:8888/metrics | awk '/^(opensips|kamailio)_/ && n++ < 3'
 ```
 
 Allow port 8888 from the Prometheus machine only. On the Prometheus machine,
-here `192.0.2.20`, follow step 1 and step 4 there, then scrape the proxy's
-address in place of the loopback one:
+here `192.0.2.20`:
+
+- follow the Install Docker step and the Start Prometheus and Grafana step
+  there,
+- then scrape the proxy's address in place of the loopback one:
 
 ```bash
 # Run all of these, in order.
@@ -617,15 +668,15 @@ for i in $(seq 1 15); do curl -s localhost:9090/api/v1/targets | grep -qE '"heal
 curl -s localhost:9090/api/v1/targets | python3 -c 'import sys,json; [print(t["labels"]["job"], t["health"]) for t in json.load(sys.stdin)["data"]["activeTargets"]]'
 ```
 
-Right after the restart Prometheus lists no target, and then one that reads
-`unknown` until its first scrape, so the loop waits up to 30 seconds for an
-`up` or a `down`. It prints the proxy's job, `up`. With Kamailio, name the job
-as [With Kamailio](#with-kamailio) does.
+Right after the restart, Prometheus lists no target. Then it lists one that
+reads `unknown` until its first scrape. So the loop waits up to 30 seconds for
+an `up` or a `down`. It prints the proxy's job, `up`. With Kamailio, name the
+job as [With Kamailio](#with-kamailio) does.
 
 **Several SIP servers.** Add each one to the `targets` list, or give each its
 own job. Prometheus labels every series with the target it came from. OpenSIPS
-and Kamailio on one machine is that case, and [With Kamailio](#with-kamailio)
-sets it up.
+and Kamailio on one machine is that case. [With Kamailio](#with-kamailio) sets
+it up.
 
 ## When something does not work
 
@@ -633,8 +684,11 @@ sets it up.
   `statistics` parameter is missing. The `prometheus` module publishes nothing
   until it names what to publish.
 - **OpenSIPS does not start: `failed to load module 'httpd.so'`.** The module
-  is not installed. With the packages, install `opensips-http-modules`, as in
-  step 2. With a source build, build with `include_modules="httpd"`, which
-  needs `libmicrohttpd-dev`.
+  is not installed.
+  - With the packages, install `opensips-http-modules`, as in the Install
+    OpenSIPS's metrics modules step.
+  - With a source build, build with `include_modules="httpd"`. That needs
+    `libmicrohttpd-dev`.
 - **The target shows `down`.** Check `curl 127.0.0.1:8888/metrics` on the
-  OpenSIPS machine, then that the target address in `prometheus.yml` matches.
+  OpenSIPS machine. Then check that the target address in `prometheus.yml`
+  matches.

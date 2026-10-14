@@ -663,7 +663,7 @@ fn an_administratively_prohibited_media_error_names_the_filter() -> Result<(), T
 }
 
 /// The flow map is keyed by addresses and ports a remote party chooses, so it
-/// is bounded and says what it did at the bound (invariant 4). Past the cap the
+/// is bounded and says what it did at the bound (invariant "Every attacker-keyed map has a bound and a stated eviction policy"). Past the cap the
 /// exact error total still rises and the excess is counted as untracked, so a
 /// flood costs memory nothing and costs the report only detail it names.
 #[test]

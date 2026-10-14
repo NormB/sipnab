@@ -6,36 +6,68 @@ build that, operate it, prove it works, and recognize the failure modes that
 look like success.
 
 Hostnames in the sample output below appear as `<proxy-host>` and
-`<relay-host>`. Neither is a literal value. Both stand in for something taken
-out. `node` carries
-whatever hostname the container has, which is a private lab machine on one
-side and an ephemeral container ID on the other. Everything else in those
-samples is verbatim.
+`<relay-host>`.
 
-It describes a test harness rather than a production deployment. Every command
-here ran against a real build. The addresses belong to a private lab bridge,
-and the arrangement is deliberately more separated than a real one needs, so
-each half can prove itself on its own.
+- Neither is a literal value. Both stand in for something taken out.
+- `node` carries whatever hostname the container has.
+  - On one side that is a private lab machine.
+  - On the other side it is an ephemeral container ID.
+- Everything else in those samples is verbatim.
+
+It describes a test harness rather than a production deployment.
+
+- Every command here ran against a real build.
+- The addresses belong to a private lab bridge.
+- The arrangement is deliberately more separated than a real one needs. So
+  each half can prove itself on its own.
 
 ## Why two capture points
 
-A proxy and a media relay see different halves of a call. `sipnab-proxy` shares the OpenSIPS network namespace and sees INVITE, 200 OK, ACK, BYE — and no media at all. `sipnab-relay` shares the rtpengine namespace and sees RTP — and never a SIP message.
+A proxy and a media relay see different halves of a call.
 
-Neither can answer *“was this call healthy?”* alone. Joining them is the thing under test, and it only works because rtpengine mirrors its `ng` control plane where the relay can read it.
+- `sipnab-proxy` shares the OpenSIPS network namespace.
+  - It sees INVITE, 200 OK, ACK, BYE — and no media at all.
+- `sipnab-relay` shares the rtpengine namespace.
+  - It sees RTP — and never a SIP message.
+
+Neither can answer *“was this call healthy?”* alone.
+
+- Joining them is the thing under test.
+- It only works because rtpengine mirrors its `ng` control plane where the
+  relay can read it.
 
 > **Why separate namespaces, and why that is a workaround**
 >
-> Two sipnabs on one interface read the same packets and return the same answers — two copies of one capture point, which cannot show that a leg seen at the proxy is the leg seen at the relay. Giving rtpengine its own namespace makes them genuinely different.
+> Two sipnabs on one interface read the same packets and return the same answers.
 >
-> It should not have to. sipnab has `--no-rtp` for a signaling-only capture and no counterpart for media, so nothing expresses "watch only the relay half" and the topology has to carry what a flag should. Two instances in one namespace would be a perfectly good arrangement if each could learn what it is for. Treat the split as the current answer, not the right one.
+> - They are two copies of one capture point.
+> - They cannot show that a leg seen at the proxy is the leg seen at the relay.
+> - Giving rtpengine its own namespace makes them genuinely different.
+>
+> It should not have to.
+>
+> - sipnab has `--no-rtp` for a signaling-only capture and no counterpart for media.
+> - So nothing expresses "watch only the relay half".
+> - The topology has to carry what a flag should.
+> - Two instances in one namespace would be a perfectly good arrangement if each could learn what it is for.
+>
+> Treat the split as the current answer, not the right one.
 
 ## Choosing one node or two
 
 Answer this before deploying. It decides four other things.
 
-When OpenSIPS and rtpengine run on the same host, **one sipnab is enough and is the simpler build.** A single capture point sees the signaling and the media together, so it learns which streams belong to which call from the SDP — the way sipnab does it everywhere else.
+When OpenSIPS and rtpengine run on the same host, **one sipnab is enough and is the simpler build.**
 
-Two nodes exist for the case that cannot cover: a relay on separate hardware, which never sees an INVITE. Attribution then has to come from the rtpengine `ng` control plane instead, and that carries four requirements with it.
+- A single capture point sees the signaling and the media together.
+- So it learns which streams belong to which call from the SDP.
+- That is the way sipnab does it everywhere else.
+
+Two nodes exist for the case that cannot cover: a relay on separate hardware.
+
+- That relay never sees an INVITE.
+- Attribution then has to come from the rtpengine `ng` control plane instead.
+- That carries four requirements with it.
 
 |  | Single node (co-located) | Two nodes (separate relay) |
 |---|---|---|
@@ -60,7 +92,12 @@ flowchart LR
   SN --> CS["conserver"]
 ```
 
-Two files, and Compose merges them in order — the base defines every service, the overlay changes only what co-location makes different. Open either to see exactly what it sets.
+Two files. Compose merges them in order:
+
+- The base defines every service.
+- The overlay changes only what co-location makes different.
+
+Open either to see exactly what it sets.
 
 | Role | File | What it contains |
 |---|---|---|
@@ -69,7 +106,10 @@ Two files, and Compose merges them in order — the base defines every service, 
 
 ### MEDIA — rtpengine, co-located — the simple case
 
-On the same host as OpenSIPS, the control socket stays on loopback and **nothing needs mirroring**. sipnab reads the SDP that describes this media, so it can attribute streams without ever seeing an ng message.
+On the same host as OpenSIPS, the control socket stays on loopback. **Nothing needs mirroring**.
+
+- sipnab reads the SDP that describes this media.
+- So it can attribute streams without ever seeing an ng message.
 
 Set `HOST_IP` to the address rtpengine offers media on:
 
@@ -84,7 +124,7 @@ rtpengine \
   --port-min=30000 --port-max=30050
 ```
 
-OpenSIPS then points at `udp:127.0.0.1:22222`, and one sipnab watches the interface both use:
+OpenSIPS then points at `udp:127.0.0.1:22222`. One sipnab watches the interface both use:
 
 ```bash
 sipnab -N -d eth0 \
@@ -95,21 +135,30 @@ sipnab -N -d eth0 \
   "udp and (portrange 5060-5061 or portrange 30000-30050)"
 ```
 
-No `hep` feature, no `--hep-parse`, no control ports in the filter. Everything below this point applies only when the relay runs somewhere else.
+This needs:
+
+- no `hep` feature,
+- no `--hep-parse`,
+- no control ports in the filter.
+
+Everything below this point applies only when the relay runs somewhere else.
 
 ### MEDIA — rtpengine on separate hardware — mirroring its control plane
 
-Signaling cannot attribute a relay that never sees an INVITE, so the mirror becomes the only link. Without it every captured stream is media nobody can name.
+Signaling cannot attribute a relay that never sees an INVITE.
 
-Set `RELAY_IP` to the relay's own address and `COLLECTOR` to the host running the sipnab that receives the mirror:
+- So the mirror becomes the only link.
+- Without it every captured stream is media nobody can name.
 
-1. Set the relay's own address:
+Set `RELAY_IP` to the relay's own address. Set `COLLECTOR` to the host running the sipnab that receives the mirror:
+
+- Set the relay's own address:
 
    ```bash
    RELAY_IP=192.0.2.20
    ```
 
-2. Set the address of the host running the sipnab that receives the mirror:
+- Set the address of the host running the sipnab that receives the mirror:
 
    ```bash
    COLLECTOR=192.0.2.30
@@ -129,7 +178,11 @@ rtpengine \
 
 ### SIGNAL — OpenSIPS, anchoring every call
 
-Point the control socket at the relay. Co-located that is `udp:127.0.0.1:22222`. On separate hardware it is the relay's address, and loopback fails to reach it without saying so.
+Point the control socket at the relay.
+
+- Co-located that is `udp:127.0.0.1:22222`.
+- On separate hardware it is the relay's address.
+  - Loopback fails to reach it without saying so.
 
 ```
 loadmodule "rtpengine.so"
@@ -145,7 +198,15 @@ rtpengine_delete();
 
 ### SIGNAL — sipnab on a separate relay
 
-Only for the split arrangement — the co-located invocation is above. Build with the features you need — `vcon` to produce containers, `audio` to carry media, `hep` to decode the control plane. A build without `hep` refuses `--hep-parse` outright.
+Only for the split arrangement. The co-located invocation is above.
+
+Build with the features you need:
+
+- `vcon` to produce containers,
+- `audio` to carry media,
+- `hep` to decode the control plane.
+
+A build without `hep` refuses `--hep-parse` outright.
 
 Build it:
 
@@ -178,17 +239,38 @@ sipnab -N -d eth0 --api 127.0.0.1:8080 \
 
 > **`--hep-parse` does not name relay media**
 >
-> It is for HEP-encapsulated *SIP*: it unwraps each HEP datagram and reads the payload inside. It neither helps nor stops relay naming. sipnab recognizes mirrored rtpengine `ng` with or without it, and believes a sniffed mirror only when it went to the HEP port, 9060, either way. What relay naming needs is the `hep` build feature and the control-plane ports in the capture filter.
+> It is for HEP-encapsulated *SIP*.
+>
+> - It unwraps each HEP datagram and reads the payload inside.
+> - It neither helps nor stops relay naming.
+> - sipnab recognizes mirrored rtpengine `ng` with or without it.
+> - Either way, sipnab believes a sniffed mirror only when it went to the HEP port, 9060.
+>
+> What relay naming needs:
+>
+> - the `hep` build feature,
+> - the control-plane ports in the capture filter.
 
 > **The default filter excludes the control plane**
 >
-> Port 22222 and the HEP destination port are not in a SIP-and-media filter. The kernel drops them where no counter reports it, so the capture looks healthy and names nothing.
+> Port 22222 and the HEP destination port are not in a SIP-and-media filter.
+>
+> - The kernel drops them where no counter reports it.
+> - So the capture looks healthy and names nothing.
 
 > **sipnab discards RTP payloads unless you ask for them**
 >
-> Without `--retain-audio` the container carries a Dialog Object typed `recording` with no `body` and zero bytes, the placeholder of draft-ietf-vcon-vcon-core-04 section 4.3. That is a run that kept no audio, not a call that was silent, and the completeness caveat is the only thing that says which — read it before concluding anything about the media.
+> Without `--retain-audio` the container carries a Dialog Object typed `recording` with no `body` and zero bytes.
 >
-> Before 0.5.128 sipnab typed that object `incomplete`, which the vCon draft defines as a call that failed to reach conversation. A signaling-only container therefore reported every answered call as a failure.
+> - That is the placeholder of draft-ietf-vcon-vcon-core-04 section 4.3.
+> - It is a run that kept no audio, not a call that was silent.
+> - The completeness caveat is the only thing that says which.
+> - Read it before concluding anything about the media.
+>
+> Before 0.5.128 sipnab typed that object `incomplete`.
+>
+> - The vCon draft defines that as a call that failed to reach conversation.
+> - A signaling-only container therefore reported every answered call as a failure.
 
 ## Store a call
 
@@ -212,19 +294,28 @@ sequenceDiagram
 
 > **Posting without an ingress list stores nothing durable**
 >
-> `POST /vcon` with no `ingress_lists` writes the cache only. It answers **201**, it reads back correctly for about an hour, and then it vanishes — nothing ever wrote the durable tables. Name the ingress list, and confirm the row, every time.
+> `POST /vcon` with no `ingress_lists` writes the cache only.
+>
+> - It answers **201**.
+> - It reads back correctly for about an hour.
+> - Then it vanishes. Nothing ever wrote the durable tables.
+>
+> Name the ingress list, and confirm the row, every time.
 
-Set `CONSERVER` to the conserver's host and port, and `TOKEN` to the API token
-your conserver's configuration sets. The later commands on this page read the
-same `TOKEN`:
+Set these:
 
-1. Set the conserver's host and port:
+- `CONSERVER` to the conserver's host and port,
+- `TOKEN` to the API token your conserver's configuration sets.
+
+The later commands on this page read the same `TOKEN`:
+
+- Set the conserver's host and port:
 
    ```bash
    CONSERVER=127.0.0.1:8000
    ```
 
-2. Set the API token:
+- Set the API token:
 
    ```bash
    TOKEN='replace-with-your-conserver-api-token'
@@ -239,13 +330,19 @@ curl -s -X POST "http://$CONSERVER/vcon?ingress_lists=sipnab" \
   --data-binary @call.json
 ```
 
-Query the table, not the API: `select count(*) from vcons_observed where uuid = '<uuid>'`. A 201 tells you the store accepted the request. Only the row tells you it kept the call.
+Query the table, not the API: `select count(*) from vcons_observed where uuid = '<uuid>'`.
+
+- A 201 tells you the store accepted the request.
+- Only the row tells you it kept the call.
 
 Concretely, against a running harness:
 
-Set up the variables. The Call-ID needs percent-encoding because it contains
-an `@`, which a URL parser otherwise treats as the start of a host. `jq -rR
-@uri` does it without a helper script:
+Set up the variables.
+
+- The Call-ID needs percent-encoding because it contains an `@`.
+- A URL parser otherwise treats that as the start of a host.
+- `jq -rR
+  @uri` does it without a helper script:
 
 ```bash
 KEY=$(cat secrets/api.key) ENC=$(jq -rR @uri <<<'1-133@172.28.0.21')
@@ -275,7 +372,7 @@ python3 ../clients/python/vcon_view.py "$VCON_UUID" --audio call.wav
 
 ## User guide
 
-Day-to-day operation once the stack is up. Every task here reads and changes nothing unless it says otherwise.
+Day-to-day operation once the stack is up. Every task here reads and changes nothing, unless it says otherwise.
 
 ### Find the call you care about
 
@@ -289,7 +386,11 @@ curl -s -H "Authorization: Bearer $KEY" \
 
 ### See whether sipnab captured its media
 
-The relay node knows streams and, once it has decoded the control plane, which call each belongs to. A stream with a null `associated_dialog` is media the relay could not attribute — usually the control plane, not the media, is what went missing.
+The relay node knows streams.
+
+- Once it has decoded the control plane, it also knows which call each belongs to.
+- A stream with a null `associated_dialog` is media the relay could not attribute.
+  - Usually the control plane, not the media, is what went missing.
 
 ```bash
 curl -s -H "Authorization: Bearer $KEY" \
@@ -299,9 +400,9 @@ curl -s -H "Authorization: Bearer $KEY" \
 
 ### Build and keep the container
 
-Ask the node that holds both the Call-ID and the audio — on this topology, the relay.
+Ask the node that holds both the Call-ID and the audio. On this topology, that is the relay.
 
-Encode the Call-ID for the URL path — the `@` in it would otherwise read as a
+Encode the Call-ID for the URL path. The `@` in it would otherwise read as a
 host separator:
 
 ```bash
@@ -328,7 +429,7 @@ List the containers the store holds:
 python3 ../clients/python/vcon_view.py
 ```
 
-Show one container's parties, dialog and recording. Set `VCON_UUID` to a `uuid` from that list first:
+Show one container's parties, dialog and recording. First set `VCON_UUID` to a `uuid` from that list:
 
 ```bash
 VCON_UUID=018f3a2b-4c5d-8e6f-9012-3456789abcde
@@ -356,7 +457,12 @@ Three checks, in the order that fails fastest.
 
 ### Read the caveat before trusting the audio
 
-Every container carries a completeness note built from that run's own counters. It states what the capture missed, and it distinguishes what sipnab failed to see from what an operator chose not to keep. A container that says `PARTIAL` is not broken — it is telling you which question it can answer.
+Every container carries a completeness note built from that run's own counters.
+
+- It states what the capture missed.
+- It distinguishes what sipnab failed to see from what an operator chose not to keep.
+
+A container that says `PARTIAL` is not broken. It is telling you which question it can answer.
 
 ## Manage what you have stored
 
@@ -370,11 +476,16 @@ Every container carries a completeness note built from that run's own counters. 
 
 > **Stereo means two sources, or it means nothing**
 >
-> A relay sees each direction twice, arriving and leaving, so a two-party call yields four stream records carrying two SSRCs. A container whose two channels are byte-identical is one leg duplicated. sipnab selects one stream per SSRC to avoid exactly that. If you build containers another way, do the same.
+> A relay sees each direction twice, arriving and leaving.
+>
+> - So a two-party call yields four stream records carrying two SSRCs.
+> - A container whose two channels are byte-identical is one leg duplicated.
+> - sipnab selects one stream per SSRC to avoid exactly that.
+> - If you build containers another way, do the same.
 
 ## Topology
 
-Four containers on one bridge, plus two sipnab sidecars that join existing namespaces rather than getting their own.
+Four containers on one bridge. Plus two sipnab sidecars. The sidecars join existing namespaces rather than getting their own.
 
 ```mermaid
 flowchart LR
@@ -410,7 +521,12 @@ flowchart LR
 
 > **hep-sink is not optional**
 >
-> rtpengine *connects* its Homer socket. A destination that answers ICMP port-unreachable makes it give up and send nothing — which looks exactly like the feature not working. Something must absorb the datagrams even though sipnab reads them passively off the wire rather than receiving them.
+> rtpengine *connects* its Homer socket.
+>
+> - A destination that answers ICMP port-unreachable makes it give up and send nothing.
+> - That looks exactly like the feature not working.
+> - Something must absorb the datagrams.
+> - That holds even though sipnab reads them passively off the wire rather than receiving them.
 
 ## One call, end to end
 
@@ -446,13 +562,20 @@ sequenceDiagram
   OS->>UAS: BYE
 ```
 
-> **Read step 5 twice**
+> **Read the step "learns Call-ID + media ports" twice**
 >
-> That is the only step linking the two nodes. Signaling never transits rtpengine, so without the HEP mirror every relay stream carries `associated_dialog: null` and no downstream correlation can recover a Call-ID it was never told.
+> That is the only step linking the two nodes.
+>
+> - Signaling never transits rtpengine.
+> - So without the HEP mirror every relay stream carries `associated_dialog: null`.
+> - No downstream correlation can recover a Call-ID it was never told.
 
 ## Setup
 
-From a clone to a running stack. Docker and Docker Compose are the only prerequisites, and the repository builds everything else.
+From a clone to a running stack.
+
+- Docker and Docker Compose are the only prerequisites.
+- The repository builds everything else.
 
 Every command below runs from the `harness` directory.
 
@@ -460,11 +583,15 @@ Every command below runs from the `harness` directory.
 cd harness
 ```
 
-### Step 1 — mint the credentials
+### Mint the credentials
 
-Two secrets: a long-lived HMAC key that mints rotating MCP bearer tokens, and a
-REST API key. Both land in the harness `secrets/` directory, which the
-repository ignores by pattern. Both targets are idempotent.
+Two secrets:
+
+- a long-lived HMAC key that mints rotating MCP bearer tokens,
+- a REST API key.
+
+Both land in the harness `secrets/` directory. The repository ignores it by
+pattern. Both targets are idempotent.
 
 ```bash
 make signing-key
@@ -474,20 +601,24 @@ make signing-key
 make api-key
 ```
 
-### Step 2 — generate the two voices
+### Generate the two voices
 
-The caller and callee must play *different* media, or the two legs are
-indistinguishable. Real speech rather than a tone, because nobody can tell a
-well-recorded sine from a badly recorded one — a male caller counting up and a
-female callee counting down make a captured call audible as a call. The script
-defaults to `en_US-ryan-medium` with SSRC `0x0CA11E12` for the caller and
-`en_US-amy-medium` with SSRC `0x5AFE1234` for the callee.
+The caller and callee must play *different* media. Otherwise the two legs are
+indistinguishable.
+
+- Use real speech rather than a tone.
+  - Nobody can tell a well-recorded sine from a badly recorded one.
+  - A male caller counting up and a female callee counting down make a
+    captured call audible as a call.
+- The script defaults to:
+  - `en_US-ryan-medium` with SSRC `0x0CA11E12` for the caller,
+  - `en_US-amy-medium` with SSRC `0x5AFE1234` for the callee.
 
 ```bash
 ./scripts/make-speech-pcaps.sh
 ```
 
-### Step 3 — build and start
+### Build and start
 
 The sipnab image must carry `vcon`, `audio` and `hep`. Without `hep` the relay
 cannot decode the control plane at all.
@@ -504,10 +635,10 @@ docker compose up -d
 docker compose ps
 ```
 
-### Step 4 — confirm both nodes answer
+### Confirm both nodes answer
 
-Different `capture_identity.node` values are the proof that they are two
-capture points and not one reached twice.
+Different `capture_identity.node` values are the proof. They show two capture
+points, not one reached twice.
 
 ```bash
 KEY=$(cat secrets/api.key)
@@ -521,11 +652,16 @@ curl -s -H "Authorization: Bearer $KEY" http://127.0.0.1:8080/v1/stats | jq .cap
 curl -s -H "Authorization: Bearer $KEY" http://127.0.0.1:8081/v1/stats | jq .capture_identity
 ```
 
-### Step 5 — run the test
+### Run the test
 
-It places calls, waits for the relay to name the media, queries both nodes over
-REST and MCP, and writes a timestamped report to `results/e2e-<UTC>.md`. `CALLS`
-sets how many calls to place, and defaults to 3.
+The test:
+
+- places calls,
+- waits for the relay to name the media,
+- queries both nodes over REST and MCP,
+- writes a timestamped report to `results/e2e-<UTC>.md`.
+
+`CALLS` sets how many calls to place. It defaults to 3.
 
 ```bash
 CALLS=3 ./scripts/run-e2e.sh
@@ -533,7 +669,7 @@ CALLS=3 ./scripts/run-e2e.sh
 
 ## What a good run looks like
 
-The same call, the same audio, measured on both arrangements. One node or two changes where the evidence lives, not what it says.
+The same call, the same audio, measured on both arrangements. One node or two changes where the evidence lives. It does not change what the evidence says.
 
 ### Co-located — one sipnab
 
@@ -565,7 +701,10 @@ Call-ID                  State       Code  Strm  Pkts    Codec   MOS   2-way
   1 call(s) correlated across both nodes
 ```
 
-The proxy reports **zero streams** and the relay **zero dialogs**. That asymmetry is the arrangement working — neither node holds the other's half, and the join is what puts the call back together.
+The proxy reports **zero streams** and the relay **zero dialogs**. That asymmetry is the arrangement working.
+
+- Neither node holds the other's half.
+- The join is what puts the call back together.
 
 | Measured | What it is |
 |---|---|
@@ -574,7 +713,10 @@ The proxy reports **zero streams** and the relay **zero dialogs**. That asymmetr
 | **2** | distinct SSRCs |
 | **4.36** | MOS, both arrangements |
 
-Four stream records for two audio streams is correct, not duplication: a relay sees each direction arriving and leaving. Two SSRCs is the number of voices.
+Four stream records for two audio streams is correct, not duplication.
+
+- A relay sees each direction arriving and leaving.
+- Two SSRCs is the number of voices.
 
 ## The three clients
 
@@ -586,7 +728,13 @@ Both run on the host, outside the containers. Read-only.
 | [`../clients/python/mcp_probe.py`](https://github.com/NormB/sipnab/blob/main/clients/python/mcp_probe.py) | MCP 8731 / 8732 | Drives the door an agent uses; compares both nodes' answers |
 | [`../clients/python/vcon_view.py`](https://github.com/NormB/sipnab/blob/main/clients/python/vcon_view.py) | conserver 8000 | Lists stored vCons, renders one, extracts its audio as WAV |
 
-The two capture clients refuse to report on one node reached twice — `leg_correlate.py` compares capture instances, `mcp_probe.py` compares `capture_identity.instance`. Point them both at the same URL and they exit rather than present a node agreeing with itself as corroboration. `vcon_view.py` reads the conserver instead, so the check does not apply to it.
+The two capture clients refuse to report on one node reached twice.
+
+- `leg_correlate.py` compares capture instances.
+- `mcp_probe.py` compares `capture_identity.instance`.
+- Point them both at the same URL and they exit. They do not present a node
+  agreeing with itself as corroboration.
+- `vcon_view.py` reads the conserver instead. So the check does not apply to it.
 
 ## Traps
 
@@ -594,11 +742,17 @@ Each of these fails silently or reports something misleading. None announces its
 
 **HEP support requires --features hep**
 
-The build omitted the `hep` feature, so the relay could never decode the control plane and every stream stayed orphaned.
+The build omitted the `hep` feature.
+
+- So the relay could never decode the control plane.
+- Every stream stayed orphaned.
 
 **`media_creating_commands: 0`**
 
-Control traffic is on the wire and in the filter, yet nothing decodes. Check the port the mirror goes to: sipnab believes a sniffed mirror only on UDP port 9060, and logs one refusal naming any other port it saw.
+Control traffic is on the wire and in the filter, yet nothing decodes. Check the port the mirror goes to:
+
+- sipnab believes a sniffed mirror only on UDP port 9060.
+- It logs one refusal naming any other port it saw.
 
 **associated_dialog: null on every stream**
 
@@ -606,15 +760,31 @@ The default capture filter admits SIP and the media range only. The kernel drops
 
 **Everything correct, still nothing named**
 
-Feature built in, ports in the filter, datagrams on the wire, and no stream ever gets a Call-ID. Before 0.5.128, `--hep-parse` unwrapped the HEP datagram and discarded the wrapper that identifies mirrored ng.
+The symptoms:
+
+- feature built in,
+- ports in the filter,
+- datagrams on the wire,
+- no stream ever gets a Call-ID.
+
+Before 0.5.128, `--hep-parse` unwrapped the HEP datagram. It discarded the wrapper that identifies mirrored ng.
 
 **Correlation empty after a container restart**
 
-A sidecar shares the namespace of the service it watches. Recreating that service kills the sidecar, and a join over the surviving node reads as "no calls matched".
+A sidecar shares the namespace of the service it watches.
+
+- Recreating that service kills the sidecar.
+- A join over the surviving node then reads as "no calls matched".
 
 **Build says "Built", version unchanged**
 
-Three layers set the OpenSIPS ref: the Dockerfile ARG, the compose `args:` block, and a git-ignored `.env`. The last wins, so editing the first two produces a full cache hit.
+Three layers set the OpenSIPS ref:
+
+- the Dockerfile ARG,
+- the compose `args:` block,
+- a git-ignored `.env`.
+
+The last wins. So editing the first two produces a full cache hit.
 
 **Unsupported link-type 12**
 
@@ -626,25 +796,41 @@ SIPp rejects a `<nop>` that follows an `optional="true"` `<recv>`.
 
 **GET /vcons → 500**
 
-The plural path is in the conserver's OpenAPI schema but fails, which reads as a broken store rather than as a caller using the wrong path.
+The plural path is in the conserver's OpenAPI schema but fails. That reads as a broken store rather than as a caller using the wrong path.
 
 **Both WAV channels identical**
 
-Both ends replayed the same pcap, SSRC included, so the legs carried byte-identical audio.
+Both ends replayed the same pcap, SSRC included. So the legs carried byte-identical audio.
 
 **Counts far higher than the calls placed**
 
-A background call loop keeps dialing during a measurement, so every figure is the calls under test plus whatever the loop fit in the same window.
+A background call loop keeps dialing during a measurement. So every figure is the calls under test plus whatever the loop fit in the same window.
 
 ## The stereo trap, and where it now stands
 
-A relay capture makes it easy to export one leg twice. The relay sees each direction arriving and leaving, so four stream records exist for two audio streams, and an exporter that simply takes the first two it finds picks the same voice twice. The result is a stereo file whose channels are byte-identical: it claims a conversation and carries one side of it.
+A relay capture makes it easy to export one leg twice.
 
-sipnab closed that in its own exporter. It walks the exportable streams in first-seen order, keeps one per SSRC, takes two, and falls back to mono when only one source is present — so a two-source call exports as two voices and a one-source capture says so by being mono rather than by faking a second channel.
+- The relay sees each direction arriving and leaving.
+- So four stream records exist for two audio streams.
+- An exporter that simply takes the first two it finds picks the same voice twice.
+- The result is a stereo file whose channels are byte-identical.
+  - It claims a conversation and carries one side of it.
 
-The omission caveat counts SOURCES rather than records for the same reason: counting records would report two of four streams missing on a call where sipnab captured both parties.
+sipnab closed that in its own exporter. It:
 
-The trap still applies to anything building containers by another route. Apply the same rule there. To check a file you already hold, compare the channels — identical RMS across a whole recording means one leg, not a quiet line.
+- walks the exportable streams in first-seen order,
+- keeps one per SSRC,
+- takes two,
+- falls back to mono when only one source is present.
+
+So a two-source call exports as two voices. A one-source capture says so by being mono rather than by faking a second channel.
+
+The omission caveat counts SOURCES rather than records for the same reason. Counting records would report two of four streams missing on a call where sipnab captured both parties.
+
+The trap still applies to anything building containers by another route. Apply the same rule there.
+
+- To check a file you already hold, compare the channels.
+- Identical RMS across a whole recording means one leg, not a quiet line.
 
 ## Reference
 
@@ -684,7 +870,7 @@ Everything the rest of the page refers to, in one place.
 
 ### Real output
 
-Captured from a running stack, not written by hand. A synthetic sample teaches you the shape you expected rather than the one you get.
+Captured from a running stack, not written by hand. A synthetic sample teaches you the shape you expected. It does not teach the one you get.
 
 ```json
 {
@@ -706,9 +892,18 @@ Captured from a running stack, not written by hand. A synthetic sample teaches y
 }
 ```
 
-`instance` is what tells two nodes apart. Compare it before trusting any answer that claims to join them — two clients pointed at one sipnab otherwise agree with each other perfectly.
+`instance` is what tells two nodes apart.
 
-Read that `capture_quality` block as the keys this page uses rather than as the whole object. Current builds also report `invalid_timestamps`, the unanswered STUN/TURN counters and `ice_role_conflicts` there. The REST reference carries the full list.
+- Compare it before trusting any answer that claims to join them.
+- Two clients pointed at one sipnab otherwise agree with each other perfectly.
+
+Read that `capture_quality` block as the keys this page uses, not as the whole object. Current builds also report these there:
+
+- `invalid_timestamps`,
+- the unanswered STUN/TURN counters,
+- `ice_role_conflicts`.
+
+The REST reference carries the full list.
 
 ```
 1-141@172.28.0.21  172.28.0.20:6000  -> 172.28.0.11:30006  PCMA  4500p  jitter=0.00ms  mos=4.36
@@ -717,7 +912,11 @@ Read that `capture_quality` block as the keys this page uses rather than as the 
 1-141@172.28.0.21  172.28.0.11:30006 -> 172.28.0.20:6000   PCMA  4500p  jitter=0.34ms  mos=4.36
 ```
 
-Four rows, two audio streams. Each direction appears twice because the relay sees it arrive and sees it leave. All four carry a Call-ID, which is what the mirrored control plane bought — without it every row reads `associated_dialog: null`.
+Four rows, two audio streams.
+
+- Each direction appears twice because the relay sees it arrive and sees it leave.
+- All four carry a Call-ID. That is what the mirrored control plane bought.
+- Without it every row reads `associated_dialog: null`.
 
 ```json
 {
@@ -749,7 +948,14 @@ Four rows, two audio streams. Each direction appears twice because the relay see
 }
 ```
 
-Three things to read here. Every party carries `validation: "none"` — the wire carried these names, and sipnab identified nobody. The third party is sipnab itself, declared as an `observer`, so a consumer can see that something which never took part produced the container. And the recording is 30.0 s of an 89.988 s call, which the container states rather than leaves you to notice.
+Three things to read here:
+
+- Every party carries `validation: "none"`.
+  - The wire carried these names, and sipnab identified nobody.
+- The third party is sipnab itself, declared as an `observer`.
+  - So a consumer can see that something which never took part produced the container.
+- The recording is 30.0 s of an 89.988 s call.
+  - The container states this rather than leaves you to notice.
 
 ### Build features
 
@@ -758,40 +964,84 @@ cargo build --release \
   --features "native,tls,api,mcp,mcp-http,audio,vcon,hep"
 ```
 
-Drop `hep` and the relay cannot decode the control plane at all: sipnab refuses `--hep-parse` outright.
+Drop `hep` and the relay cannot decode the control plane at all. sipnab refuses `--hep-parse` outright.
 
 ## Two behaviors that surprise people
 
-Neither is a bug. Both produce output that passes inspection while meaning something other than it appears to.
+Neither is a bug. Both produce output that passes inspection. But the output means something other than it appears to.
 
 ### A stereo recording is not proof of two speakers
 
-A relay observes each direction of a call **twice** — once arriving, once leaving — so a two-party call reaches an exporter as four stream records carrying two SSRCs, and the two records of one leg can precede either record of the other.
+A relay observes each direction of a call **twice** — once arriving, once leaving.
 
-An exporter that takes the first two streams it finds therefore selects the same voice twice. The result is a stereo file whose channels are byte-identical: it claims a conversation and carries one side of it, and nothing in the file marks the difference.
+- So a two-party call reaches an exporter as four stream records carrying two SSRCs.
+- The two records of one leg can precede either record of the other.
 
-sipnab selects one stream per SSRC and falls back to mono when only one source is present, because duplicating a leg across two channels reads as a two-party recording to anyone who opens it. If you build containers by another route, apply the same rule. To check an existing file, compare the channels — identical RMS across a whole recording means one leg, not a quiet line.
+An exporter that takes the first two streams it finds therefore selects the same voice twice.
 
-The same reasoning governs the omission caveat: it counts *sources*, not records. Counting records reports two of four streams missing on a call where sipnab captured both parties, and a caveat naming a loss that never happened trains a reader to disregard caveats.
+- The result is a stereo file whose channels are byte-identical.
+- It claims a conversation and carries one side of it.
+- Nothing in the file marks the difference.
+
+sipnab selects one stream per SSRC. It falls back to mono when only one source is present.
+
+- The reason: duplicating a leg across two channels reads as a two-party recording to anyone who opens it.
+- If you build containers by another route, apply the same rule.
+- To check an existing file, compare the channels.
+  - Identical RMS across a whole recording means one leg, not a quiet line.
+
+The same reasoning governs the omission caveat. It counts *sources*, not records.
+
+- Counting records reports two of four streams missing on a call where sipnab captured both parties.
+- A caveat naming a loss that never happened trains a reader to disregard caveats.
 
 ### A create response is not a retention guarantee
 
-A conserver can accept a container, answer **201**, and return it byte-identical on the next request while never having written it to durable storage. Cache-backed writes behave this way by design, and the cache commonly expires in about an hour.
+A conserver can do all of these while never having written a container to durable storage:
 
-A round-trip performed immediately after the write proves acceptance and says nothing about retention. Every check a careful reader runs — matching UUID, matching content hash, a WAV that decodes and plays — passes against a container that vanishes overnight.
+- accept the container,
+- answer **201**,
+- return it byte-identical on the next request.
 
-Two habits close the gap. Post through an ingress chain, naming the list explicitly, so the container enters a pipeline that writes durably rather than landing in a cache. Then confirm by querying the durable table for the UUID, which asks a different question than the API does and takes no longer.
+Cache-backed writes behave this way by design. The cache commonly expires in about an hour.
 
-The listing route deserves the same suspicion: an index that only ever grows commonly backs it, so it offers UUIDs that expired hours ago and now answer 404.
+A round-trip performed immediately after the write proves acceptance. It says nothing about retention.
+
+- Every check a careful reader runs passes against a container that vanishes overnight:
+  - matching UUID,
+  - matching content hash,
+  - a WAV that decodes and plays.
+
+Two habits close the gap:
+
+- Post through an ingress chain, naming the list explicitly.
+  - So the container enters a pipeline that writes durably rather than landing in a cache.
+- Then confirm by querying the durable table for the UUID.
+  - That asks a different question than the API does and takes no longer.
+
+The listing route deserves the same suspicion.
+
+- An index that only ever grows commonly backs it.
+- So it offers UUIDs that expired hours ago and now answer 404.
 
 ## Before this carries real calls
 
-- **Recording law is not a deployment detail.** Consent requirements differ by jurisdiction and by who is on the call. Decide what the law lets you keep before building something that keeps it.
-- **Give each producer its own scoped key.** The key decides the role, so a shared key is a producer that can claim any role.
-- **Audio is the payload, so size the retention.** Ninety seconds of stereo G.711 is roughly a megabyte of base64 per call. Set a retention policy before the first busy day.
-- **Bind to loopback unless you mean otherwise.** A SIP service on `0.0.0.0` answers calls from anyone who can route to the host, and scanners find it.
-- **The file store's permissions are part of the design.** `0600` files in `0700` directories — call audio is not world-readable.
-- **Never commit the secrets directory.** It holds the signing key, the per-node tokens and the REST API key. Match by pattern, so a token for a node nobody has added yet is still covered.
+- **Recording law is not a deployment detail.**
+  - Consent requirements differ by jurisdiction and by who is on the call.
+  - Decide what the law lets you keep before building something that keeps it.
+- **Give each producer its own scoped key.**
+  - The key decides the role.
+  - So a shared key is a producer that can claim any role.
+- **Audio is the payload, so size the retention.**
+  - Ninety seconds of stereo G.711 is roughly a megabyte of base64 per call.
+  - Set a retention policy before the first busy day.
+- **Bind to loopback unless you mean otherwise.**
+  - A SIP service on `0.0.0.0` answers calls from anyone who can route to the host.
+  - Scanners find it.
+- **The file store's permissions are part of the design.** `0600` files in `0700` directories. Call audio is not world-readable.
+- **Never commit the secrets directory.**
+  - It holds the signing key, the per-node tokens and the REST API key.
+  - Match by pattern. Then a token for a node nobody has added yet is still covered.
 - **Captures and results are local artifacts.** A pcap from a shared network may hold traffic that was never yours to publish.
 
 Harness lives in `harness/`. Run `make help` for the full target list.

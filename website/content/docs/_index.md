@@ -23,13 +23,13 @@ page_template = "page.html"
 # question from delivering: a card that drops the reader above the section they
 # asked for looks correct to every gate that only follows the link.
 tasks = [
-  { title = "Analyze a pcap file", cmd = "sipnab -I capture.pcap", href = "/docs/cookbook/#1-triage-a-pcap-fast" },
-  { title = "Capture live SIP traffic", cmd = "sudo sipnab -d eth0", href = "/docs/cookbook/#2-live-capture-narrow-to-a-single-user" },
+  { title = "Analyze a pcap file", cmd = "sipnab -I capture.pcap", href = "/docs/cookbook/#triage-a-pcap-fast" },
+  { title = "Capture live SIP traffic", cmd = "sudo sipnab -d eth0", href = "/docs/cookbook/#live-capture-narrow-to-a-single-user" },
   { title = "Diagnose one-way audio", cmd = "sipnab -I dump.pcap --one-way", href = "/docs/troubleshooting/#one-way-audio" },
   { title = "Find failed calls", cmd = "sipnab -N -I dump.pcap --problems", href = "/docs/troubleshooting/#failed-calls" },
-  { title = "Set up a HEP capture server", cmd = "sipnab --hep-listen 0.0.0.0:9060", href = "/docs/cookbook/#6-wire-hep-from-your-sip-stack-to-a-central-sipnab" },
-  { title = "Decrypt TLS / SRTP", cmd = "sipnab -I tls.pcap --keylog keys.log", href = "/docs/cookbook/#7-decrypt-sip-over-tls-when-you-can-restart-the-phone-or-server-key-log-file-sslkeylogfile" },
-  { title = "Detect scanners & fraud", cmd = "sudo sipnab -N -d eth0 --fraud-detect", href = "/docs/cookbook/#10-detect-sip-scanners-and-auto-block-via-fail2ban" },
+  { title = "Set up a HEP capture server", cmd = "sipnab --hep-listen 0.0.0.0:9060", href = "/docs/cookbook/#wire-hep-from-your-sip-stack-to-a-central-sipnab" },
+  { title = "Decrypt TLS / SRTP", cmd = "sipnab -I tls.pcap --keylog keys.log", href = "/docs/cookbook/#decrypt-sip-over-tls-when-you-can-restart-the-phone-or-server-key-log-file-sslkeylogfile" },
+  { title = "Detect scanners & fraud", cmd = "sudo sipnab -N -d eth0 --fraud-detect", href = "/docs/cookbook/#detect-sip-scanners-and-auto-block-via-fail2ban" },
   { title = "Drive sipnab from an AI agent", cmd = "sipnab --mcp", href = "/docs/mcp/" },
 ]
 
@@ -85,68 +85,107 @@ steps = [
 
 ## What is sipnab?
 
-sipnab is a network analysis tool for Voice over IP. It captures and decodes
-**SIP** signaling — the protocol that sets up, modifies, and tears down calls —
-alongside the **RTP** media streams carrying the audio, and correlates the two
-so you can see a call as a call rather than as a pile of packets.
+sipnab is a network analysis tool for Voice over IP.
 
-It is one Rust binary. The same executable gives you an interactive terminal
-UI, a headless CLI for scripts and CI, a REST API, and an MCP server for AI
-agents — no daemon, no database, no runtime to install.
+- It captures and decodes **SIP** signaling. SIP is the protocol that sets up,
+  modifies, and tears down calls.
+- It also captures the **RTP** media streams carrying the audio.
+- It correlates the two. So you can see a call as a call rather than as a pile
+  of packets.
+
+It is one Rust binary. The same executable gives you:
+
+- an interactive terminal UI,
+- a headless CLI for scripts and CI,
+- a REST API,
+- and an MCP server for AI agents.
+
+There is no daemon, no database, and no runtime to install.
 
 ## Who it is for
 
 - **VoIP engineers** debugging call setup failures, one-way audio, and codec
   or NAT problems.
-- **SRE and on-call teams** who need a fast answer from a pcap at 3 AM, or a
-  headless run that exits non-zero when the Call-ID they asked about is not in
-  the capture.
+- **SRE and on-call teams** who need either of these:
+  - a fast answer from a pcap at 3 AM,
+  - or a headless run that exits non-zero when the Call-ID they asked about is
+    not in the capture.
 - **Security teams** auditing SIP-facing infrastructure for scanners,
   registration floods, toll fraud, and leaked credentials.
 
 ## What it does
 
-**Capture and decode.** Live interfaces, pcap/pcapng files, or a
-[HEP/EEP](/docs/cookbook/) listener fed by Kamailio, OpenSIPS, or FreeSWITCH.
-sipnab parses SIP over UDP, TCP, TLS, SCTP, and WebSocket, including IP
-fragmentation and TCP stream reassembly. All 19 compact header forms, from
-[RFC 3261](https://www.rfc-editor.org/rfc/rfc3261.html) and the IANA registry,
-resolve, so a message using `f:`/`t:`/`i:` is not a blind spot.
+**Capture and decode.**
 
-**Cross-check the proxy against the wire.** One run can take a HEP mirror and
-a live interface at once and report where the two disagree: messages the proxy
-believes it sent that never reached the wire, traffic on the wire the tracing
-never reported, and messages both saw carrying different SDP. A mirror answers
-"what does the proxy think it did". The interface answers "what actually left
-the box". Asking the suspect twice cannot tell you the proxy is misconfigured —
-see the [Cookbook](/docs/cookbook/).
+- Inputs: live interfaces, pcap/pcapng files, or a
+  [HEP/EEP](/docs/cookbook/) listener fed by Kamailio, OpenSIPS, or FreeSWITCH.
+- sipnab parses SIP over UDP, TCP, TLS, SCTP, and WebSocket.
+- This includes IP fragmentation and TCP stream reassembly.
+- All 19 compact header forms resolve. They come from
+  [RFC 3261](https://www.rfc-editor.org/rfc/rfc3261.html) and the IANA registry.
+- So a message using `f:`/`t:`/`i:` is not a blind spot.
 
-**Correlate calls.** sipnab follows dialogs across their lifetime and links them to
-their media through SDP, then rendered as a call list, a ladder-style call
-flow, and per-message detail.
+**Cross-check the proxy against the wire.**
 
-**Analyze media.** sipnab finds RTP streams in the packets themselves, so
-media is still analyzed when the signaling was never captured. sipnab computes
-interarrival jitter (the [RFC 3550](https://www.rfc-editor.org/rfc/rfc3550.html) algorithm), loss, MOS estimates, and a
-sequence-space loss map that distinguishes bursty loss from diffuse loss.
-It decodes [RFC 4733](https://www.rfc-editor.org/rfc/rfc4733.html) DTMF, and exports G.711 (PCMU/PCMA) and Opus streams as audio.
+- One run can take a HEP mirror and a live interface at once.
+- It reports where the two disagree:
+  - messages the proxy believes it sent that never reached the wire,
+  - traffic on the wire the tracing never reported,
+  - and messages both saw carrying different SDP.
+- A mirror answers "what does the proxy think it did".
+- The interface answers "what actually left the box".
+- Asking the suspect twice cannot tell you the proxy is misconfigured. See the
+  [Cookbook](/docs/cookbook/).
 
-**Decrypt.** With a TLS key log, sipnab decrypts TLS-carried SIP and SRTP
-in place, so encrypted captures stay readable without terminating the session
-elsewhere.
+**Correlate calls.**
 
-**Detect.** Opt-in detectors for SIP scanning (`--kill-scanner`), registration
-floods (`--reg-flood`), fraud heuristics (`--fraud-detect`), and digest
-credential leaks (`--digest-leak`), with alerts to syslog, JSON, or an external
-command, plus a `fail2ban`-compatible output.
+- sipnab follows dialogs across their lifetime.
+- It links them to their media through SDP.
+- sipnab renders the result as a call list, a ladder-style call flow, and
+  per-message detail.
 
-**Integrate.** JSON/NDJSON for pipelines, a REST API (`--api`), a Prometheus
-endpoint (`--metrics`), and an MCP server (`--mcp`) over stdio or streamable
-HTTP so an AI agent can query captures directly.
+**Analyze media.**
 
-There is also a **browser analyzer** at [/analyze/](/analyze/) that runs the
-same parsing core compiled to WebAssembly. It is a separate build from the CLI
-binary, and your pcap never leaves your machine.
+- sipnab finds RTP streams in the packets themselves. So media is still
+  analyzed when the signaling was never captured.
+- sipnab computes:
+  - interarrival jitter (the [RFC 3550](https://www.rfc-editor.org/rfc/rfc3550.html) algorithm),
+  - loss,
+  - MOS estimates,
+  - and a sequence-space loss map that distinguishes bursty loss from diffuse
+    loss.
+- It decodes [RFC 4733](https://www.rfc-editor.org/rfc/rfc4733.html) DTMF.
+- It exports G.711 (PCMU/PCMA) and Opus streams as audio.
+
+**Decrypt.**
+
+- With a TLS key log, sipnab decrypts TLS-carried SIP and SRTP in place.
+- So encrypted captures stay readable without terminating the session
+  elsewhere.
+
+**Detect.**
+
+- Opt-in detectors for:
+  - SIP scanning (`--kill-scanner`),
+  - registration floods (`--reg-flood`),
+  - fraud heuristics (`--fraud-detect`),
+  - and digest credential leaks (`--digest-leak`).
+- Alerts go to syslog, JSON, or an external command.
+- There is also a `fail2ban`-compatible output.
+
+**Integrate.**
+
+- JSON/NDJSON for pipelines.
+- A REST API (`--api`).
+- A Prometheus endpoint (`--metrics`).
+- An MCP server (`--mcp`) over stdio or streamable HTTP. So an AI agent can
+  query captures directly.
+
+There is also a **browser analyzer** at [/analyze/](/analyze/).
+
+- It runs the same parsing core compiled to WebAssembly.
+- It is a separate build from the CLI binary.
+- Your pcap never leaves your machine.
 
 ## Quick start
 
@@ -156,17 +195,20 @@ Analyze a pcap file in the TUI:
 sipnab -I capture.pcap
 ```
 
-Capture live on eth0. Live capture needs packet permissions — run
-`sudo sipnab --setup-caps` once on Linux to grant them, and drop the `sudo`
-afterwards:
+Capture live on eth0. Live capture needs packet permissions.
+
+- Run `sudo sipnab --setup-caps` once on Linux to grant them.
+- Drop the `sudo` afterwards:
 
 ```bash
 sudo sipnab -d eth0
 ```
 
-Headless, reporting only the calls that went wrong as NDJSON. `-N` is headless
-mode and `--json` emits one JSON object per line, so this one drops straight
-into `jq` or a log pipeline:
+Headless, reporting only the calls that went wrong as NDJSON.
+
+- `-N` is headless mode.
+- `--json` emits one JSON object per line.
+- So this one drops straight into `jq` or a log pipeline:
 
 ```bash
 sipnab -N -I capture.pcap --problems --json
@@ -174,7 +216,7 @@ sipnab -N -I capture.pcap --problems --json
 
 ## What is in your build
 
-sipnab's optional subsystems are Cargo features, so what a given binary
+sipnab's optional subsystems are Cargo features. So what a given binary
 supports depends on how someone built it:
 
 | Build | Included |

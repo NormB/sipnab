@@ -222,7 +222,7 @@ const LANDINGS: &[Landing] = &[
         &["MOS", "jitter", "loss", "G.107", "RTCP XR"],
     ),
     (
-        "@/docs/cookbook.md#4-diagnose-a-one-way-audio-complaint",
+        "@/docs/cookbook.md#diagnose-a-one-way-audio-complaint",
         "VoIP diagnosis",
         &["one-way", "NAT", "SDP"],
     ),
@@ -247,7 +247,7 @@ const LANDINGS: &[Landing] = &[
         &["lint", "RFC", "--lint-fail-on", "exit"],
     ),
     (
-        "@/docs/cookbook.md#61-ask-a-relay-whether-it-is-dropping-packets",
+        "@/docs/cookbook.md#ask-a-relay-whether-it-is-dropping-packets",
         "Relay statistics",
         &["rtpengine", "counter"],
     ),
@@ -304,17 +304,17 @@ const LANDINGS: &[Landing] = &[
         &["scanner", "fraud", "wangiri", "--reg-flood"],
     ),
     (
-        "@/docs/cookbook.md#34-detect-weak-digest-authentication-on-a-registrar",
+        "@/docs/cookbook.md#detect-weak-digest-authentication-on-a-registrar",
         "Digest and STIR/SHAKEN",
         &["digest"],
     ),
     (
-        "@/docs/cookbook.md#33-check-what-a-stir-shaken-identity-header-actually-claims",
+        "@/docs/cookbook.md#check-what-a-stir-shaken-identity-header-actually-claims",
         "decodes STIR/SHAKEN PASSporT claims",
         &["STIR", "PASSporT"],
     ),
     (
-        "@/docs/cookbook.md#10-detect-sip-scanners-and-auto-block-via-fail2ban",
+        "@/docs/cookbook.md#detect-sip-scanners-and-auto-block-via-fail2ban",
         "fail2ban and firewall rules",
         &["fail2ban", "--recommend-block"],
     ),

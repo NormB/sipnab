@@ -1,9 +1,11 @@
 # Observability Test Stack
 
 A Docker Compose stack for exercising sipnab's metrics and traces.
-Runs against a sipnab process on the same host (default) or against
-sipnab on a remote host reachable over the network. The same compose
-file works in both topologies — only the `SIPNAB_HOST` env var changes.
+
+- It runs against a sipnab process on the same host (default).
+- Or it runs against sipnab on a remote host reachable over the network.
+- The same compose file works in both topologies.
+  Only the `SIPNAB_HOST` env var changes.
 
 ## Stack
 
@@ -15,8 +17,10 @@ file works in both topologies — only the `SIPNAB_HOST` env var changes.
 | `grafana`        | `grafana/grafana:11.4.0`                         | UI; Prometheus + Tempo provisioned as datasources    |
 
 The existing `contrib/grafana/sipnab-dashboard.json` is the *user-importable*
-dashboard. A provisioning-ready copy lives at
-`grafana/dashboards/sipnab-overview.json` and is regenerated with `jq`:
+dashboard.
+
+- A provisioning-ready copy lives at `grafana/dashboards/sipnab-overview.json`.
+- It is regenerated with `jq`:
 
 ```bash
 jq 'del(.__inputs, .__requires, .templating) |
@@ -43,39 +47,52 @@ sipnab -N -L 0.0.0.0:9060 --hep-allow 192.0.2.0/24 --metrics 0.0.0.0:9100 \
     --metrics-auth-file /etc/sipnab/metrics-auth
 ```
 
-A non-loopback `--metrics` bind without credentials is refused at startup, so
-the command above will not run without `--metrics-auth-file`. The HEP listener
-is held to the same rule: replace `192.0.2.0/24` with the addresses your SIP
-proxies send from, or give it a shared secret with `--hep-auth-file`. Put the same
-`user:pass` in Prometheus's `basic_auth` block. Basic credentials are
-base64-encoded rather than encrypted — if the scrape crosses an untrusted
-network, serve it over HTTPS with `--metrics-tls-cert` and `--metrics-tls-key`
-([Metrics TLS](../../docs/prometheus-metrics.md#metrics-tls)) or terminate TLS
-upstream.
+A non-loopback `--metrics` bind without credentials is refused at startup.
 
-Open <http://localhost:3000> (admin/admin), navigate to the *sipnab*
-folder, open the *sipnab Overview* dashboard.
+- So the command above will not run without `--metrics-auth-file`.
+- The HEP listener is held to the same rule. Do one of these:
+  - Replace `192.0.2.0/24` with the addresses your SIP proxies send from.
+  - Or give it a shared secret with `--hep-auth-file`.
+- Put the same `user:pass` in Prometheus's `basic_auth` block.
+- Basic credentials are base64-encoded rather than encrypted.
+  If the scrape crosses an untrusted network, do one of these:
+  - Serve it over HTTPS with `--metrics-tls-cert` and `--metrics-tls-key`
+    ([Metrics TLS](../../docs/prometheus-metrics.md#metrics-tls)).
+  - Or terminate TLS upstream.
+
+Then open the dashboard:
+
+- Open <http://localhost:3000> (admin/admin).
+- Navigate to the *sipnab* folder.
+- Open the *sipnab Overview* dashboard.
 
 ## Co-located vs. remote sipnab
 
-The compose file is identical in both topologies. The only difference is
-how Prometheus reaches sipnab — controlled by `SIPNAB_HOST` in `.env`.
+The compose file is identical in both topologies.
+
+- The only difference is how Prometheus reaches sipnab.
+- `SIPNAB_HOST` in `.env` controls it.
 
 | Topology                                         | `.env`                                   | Effect                                                       |
 | ------------------------------------------------ | ---------------------------------------- | ------------------------------------------------------------ |
 | sipnab on the same host as the compose stack     | `SIPNAB_HOST=host-gateway` *(default)*   | Containers reach sipnab via Docker's host-gateway alias      |
 | sipnab on a different host (e.g. capture server) | `SIPNAB_HOST=<sipnab-host-or-ip>`        | Prometheus scrapes `<host>:9100` over the network            |
 
-`prometheus.yml`'s scrape target is the literal hostname `sipnab`, resolved
-inside each container by the compose-injected `extra_hosts` entry.
+`prometheus.yml`'s scrape target is the literal hostname `sipnab`.
+The compose-injected `extra_hosts` entry resolves it inside each container.
 
 ## Validating the stack
 
-These are read-only probes covering each service in turn, and running the whole
-set is what validating the stack means. Take them in order: the first three all
-go through Prometheus, so when `/-/healthy` fails the two after it report
-nothing about sipnab rather than a second, independent fault. The last two hit
-the collector and Grafana directly and still answer with Prometheus down.
+These are read-only probes covering each service in turn.
+Running the whole set is what validating the stack means.
+
+Take them in order:
+
+- The first three all go through Prometheus.
+  - When `/-/healthy` fails, the two after it report nothing about sipnab.
+  - They do not report a second, independent fault.
+- The last two hit the collector and Grafana directly.
+  They still answer with Prometheus down.
 
 ```bash
 # Run all of these, in order.
@@ -97,49 +114,53 @@ curl -sf 'localhost:3000/api/datasources/proxy/uid/tempo/ready'
 
 ## Retention
 
-Defaults: Prometheus 30 days, Tempo 7 days. Override via `.env`
-(`PROM_RETENTION=90d`, etc.). Volumes are named (`prometheus-data`,
-`tempo-data`, `grafana-data`) so a `docker compose down` *without* `-v`
-preserves history across restarts.
+- Defaults: Prometheus 30 days, Tempo 7 days.
+- Override via `.env` (`PROM_RETENTION=90d`, etc.).
+- Volumes are named (`prometheus-data`, `tempo-data`, `grafana-data`).
+  So a `docker compose down` *without* `-v` preserves history across restarts.
 
 ## Remote-sipnab deployment
 
 For a topology where sipnab runs on a separate capture host fed by HEP
 mirrors from upstream SIP/RTP services:
 
-1. Run this on the capture host (the included `sipnab-hep.service` is a sample
-   systemd unit — adjust user, paths, and capability set for your environment):
+- Run this on the capture host (the included `sipnab-hep.service` is a sample
+  systemd unit — adjust user, paths, and capability set for your environment):
 
-   ```bash
-   sipnab -N \
-       --hep-listen 0.0.0.0:9060 --hep-allow 10.0.0.0/8 \
-       --api 0.0.0.0:9100 --api-signing-key-file /etc/sipnab/api-key
-   ```
+  ```bash
+  sipnab -N \
+      --hep-listen 0.0.0.0:9060 --hep-allow 10.0.0.0/8 \
+      --api 0.0.0.0:9100 --api-signing-key-file /etc/sipnab/api-key
+  ```
 
-   Both binds are refused at startup without those companions: a non-loopback
-   HEP listener needs `--hep-allow` or `--hep-auth`, and a non-loopback REST API
-   needs a key. Replace `10.0.0.0/8` with the actual mirror sources.
-2. Run this compose stack on a separate host with `SIPNAB_HOST=<capture-host>`
-   in `.env`.
-3. Configure your SIP server to mirror HEP v3 to `<capture-host>:9060`
-   (OpenSIPS: `proto_hep` + `siptrace`; rtpengine: `homer = <host>:9060`;
-   Kamailio/FreeSWITCH have similar `siptrace`/`homer` modules).
+  Both binds are refused at startup without those companions: a non-loopback
+  HEP listener needs `--hep-allow` or `--hep-auth`, and a non-loopback REST API
+  needs a key. Replace `10.0.0.0/8` with the actual mirror sources.
+- Run this compose stack on a separate host with `SIPNAB_HOST=<capture-host>`
+  in `.env`.
+- Configure your SIP server to mirror HEP v3 to `<capture-host>:9060`
+  (OpenSIPS: `proto_hep` + `siptrace`; rtpengine: `homer = <host>:9060`;
+  Kamailio/FreeSWITCH have similar `siptrace`/`homer` modules).
 
 ### Runtime dependencies on the capture host
 
-A `--features full` (or `--features audio`) sipnab binary dynamically
-links `libasound.so.2` and refuses to start if it's missing — even in
-HEP-listener mode, where audio playback is never invoked. A
-`--features native` (or any build that includes the `native` feature)
-also links `libpcap.so.0.8`. On Debian/Ubuntu hosts:
+- A `--features full` (or `--features audio`) sipnab binary dynamically
+  links `libasound.so.2`.
+  - It refuses to start if it's missing.
+  - This holds even in HEP-listener mode, where audio playback is never invoked.
+- A `--features native` (or any build that includes the `native` feature)
+  also links `libpcap.so.0.8`.
+
+On Debian/Ubuntu hosts:
 
 ```bash
 apt-get install -y libpcap0.8 libasound2
 ```
 
-If you don't need TUI audio playback on the capture host (typical for
-a server that only runs `--hep-listen --api` or `--mcp`), build without
-the `audio` feature to drop the libasound dependency:
+You may not need TUI audio playback on the capture host.
+That is typical for a server that only runs `--hep-listen --api` or `--mcp`.
+If you don't need it, build without the `audio` feature.
+That drops the libasound dependency:
 
 ```bash
 cargo build --release --no-default-features \
@@ -148,13 +169,15 @@ cargo build --release --no-default-features \
 
 ### Cross-glibc compatibility
 
-If you build on a newer Debian/Ubuntu (e.g. Debian 13 / glibc 2.41) and
-deploy to an older one (Debian 12 / glibc 2.36), the binary will fail
-with `version 'GLIBC_2.39' not found`. Build inside a container
-matching the target's glibc — for example, `rust:1-bookworm` for
-Debian 12 deploys. (Release CI builds the gnu Linux binaries inside
-`rust:1-bookworm` for exactly this reason, with a workflow gate that
-fails if the glibc floor drifts above 2.36.) When in doubt, the static
-musl tarball — or `curl -fsSL https://sipnab.com/install.sh | sh`,
-which picks the right build for the host's glibc — sidesteps the issue
-entirely.
+Suppose you build on a newer Debian/Ubuntu (e.g. Debian 13 / glibc 2.41).
+Suppose you then deploy to an older one (Debian 12 / glibc 2.36).
+The binary will fail with `version 'GLIBC_2.39' not found`.
+
+- Build inside a container matching the target's glibc.
+  For example, use `rust:1-bookworm` for Debian 12 deploys.
+- Release CI builds the gnu Linux binaries inside `rust:1-bookworm` for
+  exactly this reason.
+  - A workflow gate fails if the glibc floor drifts above 2.36.
+- When in doubt, the static musl tarball sidesteps the issue entirely.
+  - So does `curl -fsSL https://sipnab.com/install.sh | sh`.
+    It picks the right build for the host's glibc.

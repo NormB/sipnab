@@ -11,30 +11,48 @@ kind = "howto"
 ## In short
 
 sipnab can serve a capture to an AI agent (a program driven by a language
-model) so the agent can ask questions about the calls in it. By default the
-agent can only read: every tool that would stop the server, write a file, load
-a different capture, read encrypted traffic, contact a media relay or ban an
-address refuses and names the setting that would allow it. This page lists
-those settings, the tools each one unlocks, and how to keep a file that
-records every request the agent makes.
+model). The agent can then ask questions about the calls in it.
+
+By default the agent can only read. Every tool that would do one of these
+refuses:
+
+- stop the server,
+- write a file,
+- load a different capture,
+- read encrypted traffic,
+- contact a media relay,
+- ban an address.
+
+The refusal names the setting that would allow it. This page lists:
+
+- those settings,
+- the tools each one unlocks,
+- how to keep a file that records every request the agent makes.
 
 ## Who this is for
 
-Operators who start `sipnab --mcp` for an agent and need to decide which
+Operators who start `sipnab --mcp` for an agent. They need to decide which
 actions to allow. For choosing which tools the agent sees at all, read
 [MCP tool bundles: choose which tools sipnab's MCP server loads](@/notes/fifty-seven-tools-and-the-two-that-stay-off.md).
 
 ## Before you start
 
-The commands below run from the root of a sipnab checkout, which holds the
-sample captures, and need `jq` to pick one field out of the JSON reply. Each
-one starts sipnab as an MCP server over stdio (standard input and output),
-sends it three JSON-RPC messages (an MCP client's opening handshake and one
-request), and prints the answer. `2>/dev/null` hides sipnab's log lines.
+The commands below run from the root of a sipnab checkout. That checkout holds
+the sample captures. The commands need `jq` to pick one field out of the JSON
+reply.
+
+Each command:
+
+- starts sipnab as an MCP server over stdio (standard input and output);
+- sends it three JSON-RPC messages (an MCP client's opening handshake and one
+  request);
+- prints the answer.
+
+`2>/dev/null` hides sipnab's log lines.
 
 ## Steps
 
-1. Start a server with no opt-in flags and ask it to stop itself:
+- Start a server with no opt-in flags and ask it to stop itself:
 
    ```bash
    printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"demo","version":"1"}}}' '{"jsonrpc":"2.0","method":"notifications/initialized"}' '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"shutdown_server","arguments":{}}}' | sipnab --mcp -N --quiet -I tests/pcap-samples/sip-proxy.pcap 2>/dev/null | jq -r 'select(.id==2) | .error.message'
@@ -44,12 +62,14 @@ request), and prints the answer. `2>/dev/null` hides sipnab's log lines.
    shutdown is disabled: start sipnab with --mcp-allow-shutdown to permit it. A stock server cannot be stopped by an agent.
    ```
 
-   The server lists the tool, and refuses the call with a message that names
-   the flag. Every gated tool behaves the same way, so an agent can tell the
-   operator which flag a task needs.
+  - The server lists the tool.
+  - It refuses the call with a message that names the flag.
+  - Every gated tool behaves the same way.
+  - So an agent can tell the operator which flag a task needs.
 
-2. List the tools that are not read-only. sipnab marks each tool with the MCP
-   `readOnlyHint` annotation; these are the tools marked `false`:
+- List the tools that are not read-only.
+  - sipnab marks each tool with the MCP `readOnlyHint` annotation.
+  - These are the tools marked `false`:
 
    ```bash
    printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"demo","version":"1"}}}' '{"jsonrpc":"2.0","method":"notifications/initialized"}' '{"jsonrpc":"2.0","id":2,"method":"tools/list"}' | sipnab --mcp -N --quiet -I tests/pcap-samples/sip-proxy.pcap 2>/dev/null | jq -r 'select(.id==2) | .result.tools[] | select(.annotations.readOnlyHint == false) | .name'
@@ -71,8 +91,8 @@ request), and prints the answer. `2>/dev/null` hides sipnab's log lines.
    tfps_unban
    ```
 
-3. List the tools that contact another system. These carry the
-   `openWorldHint` annotation set to `true`:
+- List the tools that contact another system. These carry the
+  `openWorldHint` annotation set to `true`:
 
    ```bash
    printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"demo","version":"1"}}}' '{"jsonrpc":"2.0","method":"notifications/initialized"}' '{"jsonrpc":"2.0","id":2,"method":"tools/list"}' | sipnab --mcp -N --quiet -I tests/pcap-samples/sip-proxy.pcap 2>/dev/null | jq -r 'select(.id==2) | .result.tools[] | select(.annotations.openWorldHint == true) | .name'
@@ -87,12 +107,14 @@ request), and prints the answer. `2>/dev/null` hides sipnab's log lines.
    tfps_unban
    ```
 
-   `query_relay`, `relay_stats` and `relay_compare` carry `readOnlyHint: true`
-   because they change nothing, but they send packets to a media relay.
+  `query_relay`, `relay_stats` and `relay_compare` carry `readOnlyHint: true`.
 
-4. Decide which flags the job needs, using the table below. Each row was
-   checked by calling the tools on a server started without the flag; every
-   one refused and named the flag.
+  - They change nothing.
+  - But they send packets to a media relay.
+
+- Decide which flags the job needs, using the table below.
+  - Each row's check called the tools on a server started without the flag.
+  - Every one refused and named the flag.
 
    | Flag | Tools it unlocks | What the agent can then do |
    |---|---|---|
@@ -105,12 +127,12 @@ request), and prints the answer. `2>/dev/null` hides sipnab's log lines.
    | `--mcp-allow-shutdown` | `shutdown_server` | Stop the server. The tool defaults to a dry run, and refuses to discard an unsaved live capture unless the call sets `discard_unsaved`. |
    | `--allow-action tfps:mcp` | `tfps_ban`, `tfps_unban`, `actions_revert` | Ask TFPS (a separate toll-fraud prevention program) to ban or release a source address. sipnab records each action in its actions journal first and refuses to start if it cannot use `--journal-dir`. Over HTTP the client also needs a token with the `actions` scope. |
 
-   A server started with `--mcp -N --quiet -I <file>` and none of these flags
-   reads the one capture on its command line and does nothing else.
+  Take a server started with `--mcp -N --quiet -I <file>` and none of these
+  flags. It reads the one capture on its command line and does nothing else.
 
-5. Start the server with the one flag the job needs, and with
-   `--mcp-audit-file` so sipnab records every tool call. This example allows
-   `save_findings` and records a finding:
+- Start the server with the one flag the job needs.
+  - Also add `--mcp-audit-file`, so sipnab records every tool call.
+  - This example allows `save_findings` and records a finding:
 
    ```bash
    printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"demo","version":"1"}}}' '{"jsonrpc":"2.0","method":"notifications/initialized"}' '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"save_findings","arguments":{"summary":"Call proxied-call-synth@192.0.2.101 completed normally."}}}' | sipnab --mcp -N --quiet -I tests/pcap-samples/sip-proxy.pcap --mcp-allow-save-findings --mcp-audit-file mcp-audit.jsonl 2>/dev/null | jq -c 'select(.id==2) | .result.structuredContent | {delivered_to, readable_over_mcp, recorded_total, remaining}'
@@ -120,8 +142,10 @@ request), and prints the answer. `2>/dev/null` hides sipnab's log lines.
    {"delivered_to":"sipnab log (tracing/journald/stderr)","readable_over_mcp":false,"recorded_total":1,"remaining":999}
    ```
 
-6. Read the audit file. It holds one JSON line per tool call, with the
-   arguments, the outcome and a sequence number:
+- Read the audit file. It holds one JSON line per tool call, with:
+  - the arguments,
+  - the outcome,
+  - a sequence number.
 
    ```bash
    cat mcp-audit.jsonl
@@ -131,10 +155,11 @@ request), and prints the answer. `2>/dev/null` hides sipnab's log lines.
    {"args":"{\"summary\":\"Call proxied-call-synth@192.0.2.101 completed normally.\"}","caller":"stdio","elapsed_ms":0,"error":null,"id":"2","outcome":"ok","seq":1,"tool":"save_findings","ts":"2026-10-12T00:52:40.594048333+00:00"}
    ```
 
-   `ts` is the time of the call, so it differs on every run.
+  `ts` is the time of the call. So it differs on every run.
 
-7. Check the file's permissions. sipnab creates it readable and writable by
-   its owner only, because it holds tool arguments:
+- Check the file's permissions.
+  - sipnab creates it readable and writable by its owner only.
+  - It does so because the file holds tool arguments:
 
    ```bash
    stat -c '%a' mcp-audit.jsonl
@@ -144,8 +169,9 @@ request), and prints the answer. `2>/dev/null` hides sipnab's log lines.
    600
    ```
 
-   sipnab appends to the file and never truncates it. If a record cannot be
-   written, sipnab refuses the tool call instead of answering it unrecorded.
+  - sipnab appends to the file and never truncates it.
+  - sipnab may fail to write a record. Then it refuses the tool call instead
+    of answering it unrecorded.
 
 ## Terms used here
 
@@ -154,11 +180,11 @@ request), and prints the answer. `2>/dev/null` hides sipnab's log lines.
 - **MCP**: Model Context Protocol, the protocol an agent uses to list and call
   the tools a server offers.
 - **JSON-RPC**: the request and reply format MCP messages use.
-- **stdio**: standard input and output; in stdio mode the agent's client
+- **stdio**: standard input and output. In stdio mode the agent's client
   starts sipnab and talks to it through these streams.
-- **Tool annotation**: a hint the server attaches to each tool, such as
-  `readOnlyHint` (the tool changes nothing) or `openWorldHint` (the tool
-  reaches a system outside the server).
+- **Tool annotation**: a hint the server attaches to each tool. Examples:
+  - `readOnlyHint` (the tool changes nothing),
+  - `openWorldHint` (the tool reaches a system outside the server).
 - **Capture**: a recording of network packets, here a pcap file.
 - **Media relay**: a server, such as rtpengine, that carries a call's audio
   between the two parties.
@@ -166,7 +192,7 @@ request), and prints the answer. `2>/dev/null` hides sipnab's log lines.
 - **Kernel probe (uprobe)**: a hook the Linux kernel places in a running
   program so another program can read data as it passes.
 - **TFPS**: a separate toll-fraud prevention program that bans source
-  addresses in the firewall; sipnab can ask it to act.
+  addresses in the firewall. sipnab can ask it to act.
 - **Audit file**: the file `--mcp-audit-file` names, holding one record per
   tool call.
 

@@ -759,7 +759,7 @@ fn wiki_intra_docs_links_resolve() -> Result<(), TestError> {
     // 498 -> 501 by three links, all pointing a reader at something runnable
     // rather than restating it: `docs/output-formats.md` +1 to the vCon page
     // from its new `--export-vcon` section, `docs/examples.md` +1 to the same
-    // page from recipe 13b, and `docs/examples.md` +1 to `rtpengine.md` from
+    // page from recipe "Export one call to a conversation archive as a vCon", and `docs/examples.md` +1 to `rtpengine.md` from
     // the §6b relay config, which previously told a reader to set up a mirror
     // and never said what reads it. Attributed per file; every other page in
     // this walk held its count.
@@ -916,8 +916,8 @@ fn wiki_intra_docs_links_resolve() -> Result<(), TestError> {
     // 719 -> 720 by ST8's `S` row in docs/keybindings.md, which links the new
     // "Relay statistics" section rather than restating it. One link, one page.
     // 720 -> 725 by ST-D1's four cookbook recipes in docs/examples.md: four rows
-    // in the "What do you want to do?" table linking recipes 61-64, plus recipe
-    // 64's cross-link to recipe 22. Five links, one page; the mirror is outside
+    // in the "What do you want to do?" table linking recipes "Ask a relay whether it is dropping packets" to "Read a relay's loss beside the loss you measured", plus the
+    // "Read a relay's loss beside the loss you measured" recipe's cross-link to recipe "Measure whether the loss is yours or the network's". Five links, one page; the mirror is outside
     // the extractor's walk.
     // 725 -> 726 by ST-D2's "Relay statistics" section in docs/rtpengine.md,
     // which links the cookbook's relay-statistics recipes rather than restating
@@ -940,9 +940,9 @@ fn wiki_intra_docs_links_resolve() -> Result<(), TestError> {
     // docs/mcp-deploy.md +1 each), and two for the RFC 7951 export
     // (docs/rest-api.md and docs/mcp-tools.md each link output-formats.md).
     // Merged from two branches that each counted against 763.
-    // 763 -> 766: Invariant 13 in docs/internals/invariants.md (operator notes
+    // 763 -> 766: Invariant "Operator notes are output, never input" in docs/internals/invariants.md (operator notes
     // are output, never input) links section 2 of deferred-and-declined.md and
-    // Invariants 5 and 9 rather than restating them. One page, three links;
+    // Invariants "Key material is toxic waste" and "One wire shape per concept" rather than restating them. One page, three links;
     // measured by this gate.
     // 766 -> 767: the `--notes` row in docs/cli-reference.md links the notes
     // file format in output-formats.md rather than restating it. Measured by
@@ -952,8 +952,8 @@ fn wiki_intra_docs_links_resolve() -> Result<(), TestError> {
     // section, and the `--notes` row in docs/cli-reference.md links the
     // call-flow keys. Measured by this gate.
     // 770 -> 775: the documented absences and the recipe. docs/mcp.md links the
-    // keybindings, the CLI reference and Invariant 13 (three), docs/rest-api.md
-    // links section 2 of deferred-and-declined.md (one), and recipe 65 in
+    // keybindings, the CLI reference and Invariant "Operator notes are output, never input" (three), docs/rest-api.md
+    // links section 2 of deferred-and-declined.md (one), and recipe "Send a carrier the capture with your notes on the frames" in
     // docs/examples.md links the TUI's operator-notes keys (one). Measured by
     // this gate.
     // 772 + 12 = 784: the operator-notes branch counted its twelve against
@@ -961,7 +961,7 @@ fn wiki_intra_docs_links_resolve() -> Result<(), TestError> {
     // 763 -> 771 by the HEP sender roster's pages: docs/keybindings.md +2
     // (the Capture health and HEP senders anchors), docs/mcp-tools.md +2 (the
     // `hep_senders` index row and the pointer from `capture_health`),
-    // docs/troubleshooting.md +2 (the symptom row and recipe 6e),
+    // docs/troubleshooting.md +2 (the symptom row and recipe "Find who feeds the collector and who it refuses"),
     // docs/prometheus-metrics.md +1 (to `GET /v1/hep/senders`) and
     // docs/rest-api.md +1 (to the metrics page). Counted per file against
     // HEAD with this gate's rule; no other page moved.
@@ -1003,7 +1003,7 @@ fn wiki_intra_docs_links_resolve() -> Result<(), TestError> {
     // docs/output-formats.md +10 (the "Which output do I want?" table's nine
     // section links and the REST API), docs/troubleshooting.md +6 (the vCon
     // symptom row, the cookbook recipes the how-tos now point at, and the
-    // link-type list), docs/examples.md +3 (goal-table rows for recipes 13b,
+    // link-type list), docs/examples.md +3 (goal-table rows for recipes "Export one call to a conversation archive as a vCon",
     // 60 and 65, which had none) and docs/cli-reference.md +2 (the "More:"
     // links that replaced two long cells).
     // Merge of docs-readability with main: 795 +41 (docs pass, above) +1
@@ -1021,7 +1021,7 @@ fn wiki_intra_docs_links_resolve() -> Result<(), TestError> {
     // and docs/mcp-tools.md +1, each pointing at the CLI reference's
     // Archives section. Counted per file against HEAD; no other page moved.
     // 837 -> 930 by the site-wave2 prose pass, which replaced bare references
-    // ("recipe 11", "7e and 7f", "the 2C tunnel", "Section 4") with links
+    // ("recipe "Find why a call sounds bad in one direction only"", "7e and 7f", "the 2C tunnel", "Section 4") with links
     // that name their target: about 40 in docs/examples.md, 21 in
     // docs/mcp-deploy.md, 20 in docs/mcp-estate.md, 25 in
     // docs/tuning-capture.md (mostly relabeled, some new) and 8 in
@@ -1059,20 +1059,20 @@ fn wiki_intra_docs_links_resolve() -> Result<(), TestError> {
     // measurement: with that file swapped back to HEAD the extractor finds
     // 948.
     // 952 -> 959: the capability examples (EX5). docs/client-examples.md +3,
-    // linking cookbook recipes 27, 26 and 7h; docs/examples.md +4, pointing
-    // recipes 27, 26, 7h and 52 at their runnable example. Attributed by
+    // linking cookbook recipes "Compare the same call at two nodes", "Run sipnab as a HEP relay" and "Read TLS *and* who the peer was"; docs/examples.md +4, pointing
+    // recipes "Compare the same call at two nodes", "Run sipnab as a HEP relay", "Read TLS *and* who the peer was" and "Check a vCon against the schema before a store rejects it" at their runnable example. Attributed by
     // measurement: with either file swapped back to HEAD the extractor finds
     // 956 and 955 respectively.
     // 959 -> 985: the operator tasks (EX6). docs/examples.md +12, pointing
-    // recipes 1, 3, 4, 10, 11, 16, 22, 23, 30, 32, 39 and 40 at their
+    // recipes "Triage a pcap fast", "Find every failed call, grouped by response code", "Diagnose a one-way audio complaint", "Detect SIP scanners and auto-block via fail2ban", "Find why a call sounds bad in one direction only", "Analyze a capture into one machine-readable verdict", "Measure whether the loss is yours or the network's", "Find the device flooding REGISTER", "Find calls that answered and were never acknowledged", "Export one customer's calls as a smaller capture", "Collect a directory of rotated captures into one analysis" and "Open the same evidence in Wireshark" at their
     // program; docs/client-examples.md +14, the operator-tasks table's twelve
-    // recipe links, the cookbook link above it and recipe 10c. Attributed by
+    // recipe links, the cookbook link above it and recipe "Block a scanner with a rule sipnab wrote, after reading the evidence". Attributed by
     // measurement: with either file swapped back to HEAD the extractor finds
     // 973 and 971 respectively.
     // 985 -> 993: the AI tasks (EX7). docs/mcp.md +5, its "Where to go next"
     // row linking the four AI-task sections and the section above them;
     // docs/client-examples.md +3, pointing at triage.py's section, cookbook
-    // recipe 55 and the filter DSL rather than restating them. Attributed by
+    // recipe "Set up the MCP server for a hosted agent" and the filter DSL rather than restating them. Attributed by
     // measurement: with either file swapped back to HEAD the extractor finds
     // 988 and 990 respectively.
     // 993 -> 998: READ-2 links five references that were plain text:
@@ -1298,7 +1298,7 @@ fn wiki_intra_docs_links_resolve() -> Result<(), TestError> {
     // docs/rest-api.md 2 (the MCP twin and the section that writes the
     // vcon.store-shaped container), docs/vcon.md 2 (the MCP tool and the REST
     // route), docs/cli-reference.md 1 (the `-I` row) and docs/examples.md 2
-    // (recipe 66's index row and its vcon.md link).
+    // (recipe "Analyze a call from a stored vCon"'s index row and its vcon.md link).
     // 1438 -> 1443: the whole-call audio budget: one link each to Audio
     // retention budget from docs/cli-reference.md, docs/mcp-tools.md,
     // docs/vcon-sipnab.md, docs/vcon.md and docs/config-reference.md.
@@ -1366,9 +1366,9 @@ fn wiki_intra_docs_links_resolve() -> Result<(), TestError> {
     // section, which links "Encrypt what a rule writes").
     const EXPECTED_WIKI_LINKS: usize = 1722;
     // Raised 459 -> 460 when SRC1 stage 1 shipped: docs/cli-reference.md's
-    // `--hep-listen` row now points at cookbook recipe 6d in docs/examples.md
+    // `--hep-listen` row now points at cookbook recipe "Take signaling from HEP and media off the wire, in one process" in docs/examples.md
     // rather than restating how to pair `-L` with `-d`. Attributed per file
-    // against HEAD before the number moved — docs/examples.md gained recipe 6d
+    // against HEAD before the number moved — docs/examples.md gained recipe "Take signaling from HEP and media off the wire, in one process"
     // itself, whose links are all external (GitHub handles and a repo path),
     // so it held its count, and the site mirrors are not walked by this
     // extractor at all.

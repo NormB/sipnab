@@ -1,16 +1,16 @@
 #!/usr/bin/env python3
 """Ban the scanners a capture accuses through TFPS, then check TFPS holds
-them (cookbook recipes 10 and 23).
+them (cookbook recipes "Detect SIP scanners and auto-block via fail2ban" and "Find the device flooding REGISTER").
 
     scanner_ban.py CAPTURE [--ttl SECONDS] [--reg-flood-threshold N] [--sipnab PATH]
 
 1. Runs `sipnab -N -I CAPTURE --kill-scanner --reg-flood --recommend-block`,
    which groups the scanner and registration-flood detections by source and
    says, for each source, whether it also completed a registration or a call
-   (recipe 10c). sipnab recommends and applies nothing.
+   (recipe "Block a scanner with a rule sipnab wrote, after reading the evidence"). sipnab recommends and applies nothing.
 2. Bans, through `POST /v1/tfps/ban` on a running sipnab, only the sources
    with no such counter-evidence, each for --ttl seconds (default 3600). A source that completed a registration is
-   a working peer whose credentials went wrong, the device recipe 23 finds,
+   a working peer whose credentials went wrong, the device recipe "Find the device flooding REGISTER" finds,
    and a ban would disconnect it: it is withheld and named.
 3. Reads `GET /v1/tfps/banned` and counts a ban only if TFPS lists the
    address as enforced.

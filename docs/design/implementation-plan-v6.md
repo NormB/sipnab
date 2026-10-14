@@ -421,7 +421,7 @@ Capture threads own their reassembly state — no shared mutable state between c
 > this lock) is what caps `--cores`, is in
 > [`process-isolation-and-hot-path-cost.md` section 2d, "Bypassing a shared-lock bottleneck"](process-isolation-and-hot-path-cost.md#2d-bypassing-a-shared-lock-bottleneck--no-and-this-is-measured);
 > the lock-ordering rules the batch path actually follows are in
-> [`invariants.md` section 2, "Dialog before stream, then alerts — one consistent order"](../internals/invariants.md#2-dialog-before-stream-then-alerts--one-consistent-order).
+> [`invariants.md`, "Dialog before stream, then alerts — one consistent order"](../internals/invariants.md#dialog-before-stream-then-alerts--one-consistent-order).
 
 This eliminates a global `capture_lock` mutex that would block the capture thread during every TUI redraw.
 

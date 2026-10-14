@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 //! One HEP sender roster, one answer: `GET /v1/hep/senders` and the MCP
-//! `hep_senders` tool return the same bytes (invariant 9, "one wire shape per
+//! `hep_senders` tool return the same bytes (invariant "One wire shape per concept", "one wire shape per
 //! concept").
 //!
 //! Both doors read the roster the listener hung on the capture meter, through

@@ -1,27 +1,36 @@
 # Use Kamailio as your voice stack's SIP server
 
-[Kamailio](https://www.kamailio.org) is an open-source SIP server, and with
-OpenSIPS one of the two most common SIP proxies in front of phones, PBXes and
-carriers. The two share their origins, and a routing script written for one
-reads much like one written for the other.
+[Kamailio](https://www.kamailio.org) is an open-source SIP server. With
+OpenSIPS, it is one of the two most common SIP proxies in front of phones,
+PBXes and carriers. The two share their origins. A routing script written for
+one reads much like one written for the other.
 
 The other voice-stack guides use OpenSIPS. This guide sets up Kamailio in the
-same role, as a proxy that routes each call and stays in its signaling path,
-and proves it with a test call. This guide does not use sipnab. When you have
-this working, [Run sipnab beside Kamailio](kamailio-sipnab.md) adds sipnab.
+same role:
+
+- as a proxy that routes each call and stays in its signaling path,
+- proved with a test call.
+
+This guide does not use sipnab. When you have this working, [Run sipnab beside
+Kamailio](kamailio-sipnab.md) adds sipnab.
 
 ## Tested on
 
-Every block on this page ran as written on 2026-10-01, on clean x86_64 virtual
-machines with 2 cores and 3 GB of memory, Debian 13 (kernel 6.12.63) and Ubuntu
-24.04 (kernel 6.8.0). On each, the install ran on the machine the OpenSIPS
-guide had used for its source build and then its uninstall, with no SIP server
-running. [OpenSIPS and Kamailio on one
-machine](#opensips-and-kamailio-on-one-machine), with OpenSIPS from the
-packages on 5060, and then the uninstall ran on both. Every test call carried
-audio both ways, counted on the wire, and causing each fault under [When
-something does not work](#when-something-does-not-work) produced what it
-describes, on both.
+Every block on this page ran as written on 2026-10-01.
+
+- The machines were clean x86_64 virtual machines with 2 cores and 3 GB of
+  memory:
+  - Debian 13 (kernel 6.12.63),
+  - Ubuntu 24.04 (kernel 6.8.0).
+- On each, the install ran on the machine the OpenSIPS guide had used for its
+  source build and then its uninstall. No SIP server was running.
+- [OpenSIPS and Kamailio on one
+  machine](#opensips-and-kamailio-on-one-machine) ran on both, with OpenSIPS
+  from the packages on 5060. Then the uninstall ran on both.
+- Every test call carried audio both ways, counted on the wire.
+- Causing each fault under [When
+  something does not work](#when-something-does-not-work) produced what it
+  describes, on both.
 
 | Software | Version |
 |---|---|
@@ -31,7 +40,7 @@ describes, on both.
 The examples use `192.0.2.10` as the machine's address. Replace it with yours
 everywhere it appears.
 
-## 1. Install Kamailio
+## Install Kamailio
 
 The distributions carry older Kamailio releases. The Kamailio project publishes
 current ones for Debian and Ubuntu, one repository per release series. Add the
@@ -55,32 +64,46 @@ sudo rm /usr/sbin/policy-rc.d
 /usr/sbin/kamailio -v | head -1
 ```
 
-The key's fingerprint, which `gpg --show-keys` prints, is
+`gpg --show-keys` prints the key's fingerprint. It is
 `E79ACECB87D8DCD23A20AD2FFB40D3E6508EA4C8`, the Kamailio Package Team's.
 
-The Kamailio package starts Kamailio the moment it installs, on its sample
-configuration, which listens on port 5060 of every address. The `policy-rc.d`
-file around the install is Debian's way to tell a package not to start its
-service, and the block removes it straight after. Kamailio stays stopped until
-the next step has given it your configuration.
+The Kamailio package starts Kamailio the moment it installs. It uses its sample
+configuration, which listens on port 5060 of every address.
+
+- The `policy-rc.d` file around the install is Debian's way to tell a package
+  not to start its service.
+- The block removes it straight after.
+- Kamailio stays stopped until the next step has given it your configuration.
 
 That matters most on a machine already running a SIP server on 5060, such as
-OpenSIPS. Two SIP servers on one UDP port do not refuse each other: the one
-that starts last silently receives all of that port's traffic. Measured with
-OpenSIPS running, Kamailio's sample configuration answered every request sent
-to 5060 the moment the package started it.
+OpenSIPS.
 
-## 2. Configure Kamailio as a proxy
+- Two SIP servers on one UDP port do not refuse each other. The one that
+  starts last silently receives all of that port's traffic.
+- A measurement with OpenSIPS running showed this. Kamailio's sample
+  configuration answered every request sent to 5060 the moment the package
+  started it.
 
-This configuration is a minimal proxy: it routes every call to one
-destination and stays in the path of the call's later requests. Your own
-script does much more (registration, authentication, routing to carriers).
+## Configure Kamailio as a proxy
 
-If OpenSIPS already runs on this machine, change `5060` to `5062` in the
-`listen` line before you run this block, and in the caller's
-`192.0.2.10:5060` in step 3, as
+This configuration is a minimal proxy:
+
+- it routes every call to one destination,
+- it stays in the path of the call's later requests.
+
+Your own script does much more (registration, authentication, routing to
+carriers).
+
+If OpenSIPS already runs on this machine, change `5060` to `5062` in two
+places, as
 [OpenSIPS and Kamailio on one machine](#opensips-and-kamailio-on-one-machine)
-explains. Otherwise step 3's call reaches OpenSIPS, and tests it instead.
+explains:
+
+- in the `listen` line, before you run this block,
+- in the caller's `192.0.2.10:5060` in the Place a test call step.
+
+Otherwise the Place a test call step's call reaches OpenSIPS, and tests it
+instead.
 
 ```bash
 # Run all of these, in order.
@@ -151,7 +174,7 @@ systemctl is-active kamailio
 
 What the parts do:
 
-- `record_route()` adds a `Record-Route` header naming Kamailio, so the call's
+- `record_route()` adds a `Record-Route` header naming Kamailio. So the call's
   later requests, the `ACK` and the `BYE`, come back through it.
 - `loose_route()` routes those later requests along the recorded route.
 - `t_relay()` forwards the request and handles retransmissions and replies.
@@ -159,14 +182,20 @@ What the parts do:
 
 `kamailio -c` checks the configuration before anything starts.
 
-## 3. Place a test call
+## Place a test call
 
-SIPp plays both ends: a callee on this machine that echoes audio back, and a
-caller that dials through Kamailio and plays a recorded G.711 sample, so the
-call carries real audio both ways. SIPp's built-in caller ignores the
-`Record-Route` header, so Kamailio cannot route its `ACK` and `BYE`. The two
-route `sed` lines make it honor the route set, the way a real phone does. The
-callee writes what it receives to `uas.msg`:
+SIPp plays both ends:
+
+- a callee on this machine that echoes audio back,
+- a caller that dials through Kamailio and plays a recorded G.711 sample.
+
+So the call carries real audio both ways.
+
+- SIPp's built-in caller ignores the `Record-Route` header. So Kamailio cannot
+  route its `ACK` and `BYE`.
+- The two route `sed` lines make it honor the route set, the way a real phone
+  does.
+- The callee writes what it receives to `uas.msg`:
 
 ```bash
 # Run all of these, in order.
@@ -182,19 +211,23 @@ awk '/INVITE sip:/{f=1} f' uas.msg | grep -m1 -i '^Record-Route:'
 ```
 
 The caller needs `sudo` because it plays the audio sample through a raw socket.
-It sends about 7 seconds of audio, then a short DTMF clip, and hangs up. At the
-end SIPp's statistics screen shows `Successful call` at 1, and the last line
-prints the `Record-Route` Kamailio added, such as
-`<sip:192.0.2.10;lr;ftag=52680SIPpTag091>`: Kamailio's address, `lr` for loose
-routing, and the caller's `From` tag.
+
+- It sends about 7 seconds of audio, then a short DTMF clip, and hangs up.
+- At the end, SIPp's statistics screen shows `Successful call` at 1.
+- The last line prints the `Record-Route` Kamailio added, such as
+  `<sip:192.0.2.10;lr;ftag=52680SIPpTag091>`. It holds:
+  - Kamailio's address,
+  - `lr` for loose routing,
+  - the caller's `From` tag.
 
 Kamailio carries the signaling only. The audio goes straight between the two
-ends, at the addresses and ports their SDP names, so this proxy never touches
-it. [Run sipnab beside Kamailio](kamailio-sipnab.md) shows both directions of
-it, and [rtpengine](rtpengine-relay.md#with-kamailio) puts a media relay in its
-path.
+ends, at the addresses and ports their SDP names. So this proxy never touches
+it.
 
-## 4. Operate it
+- [Run sipnab beside Kamailio](kamailio-sipnab.md) shows both directions of it.
+- [rtpengine](rtpengine-relay.md#with-kamailio) puts a media relay in its path.
+
+## Operate it
 
 **See what Kamailio has handled.** `kamcmd` asks the running Kamailio. Name a
 statistic, or a group with a trailing colon. The `core:` group holds the
@@ -206,7 +239,7 @@ sudo kamcmd stats.get_statistics rcv_requests_invite
 sudo kamcmd stats.get_statistics core: | grep -E 'rcv_(requests|replies_2xx)_invite'
 ```
 
-After the test call, `rcv_requests_invite` is 1, and so is
+After the test call, `rcv_requests_invite` is 1. So is
 `rcv_replies_2xx_invite`, the callee's `200 OK`.
 
 **Check health and read the logs.**
@@ -238,11 +271,13 @@ sudo rm /etc/apt/sources.list.d/kamailio.list /etc/apt/keyrings/kamailio.gpg
 ## OpenSIPS and Kamailio on one machine
 
 Developers often run both, to compare them or to test against each. They can
-share a machine as long as they do not share a port, and a shared port does
-not fail loudly: whichever server starts last silently takes all of its
-traffic. Keep OpenSIPS on 5060, as [the OpenSIPS guide](opensips.md) sets it
-up, and Kamailio on 5062. If you set Kamailio up on 5060 first, move it before
-OpenSIPS starts:
+share a machine as long as they do not share a port.
+
+- A shared port does not fail loudly. Whichever server starts last silently
+  takes all of its traffic.
+- Keep OpenSIPS on 5060, as [the OpenSIPS guide](opensips.md) sets it up.
+- Keep Kamailio on 5062.
+- If you set Kamailio up on 5060 first, move it before OpenSIPS starts:
 
 ```bash
 # Run all of these, in order.
@@ -253,7 +288,8 @@ sudo systemctl restart kamailio
 ```
 
 A test call now reaches Kamailio on 5062 and OpenSIPS on 5060. Place one
-through each, from `~/sipp`, with the callee from step 3 running:
+through each, from `~/sipp`, with the callee from the Place a test call step
+running:
 
 ```bash
 # Run all of these, in order.
@@ -263,8 +299,8 @@ sudo sipp -sf uac_rr.xml 192.0.2.10:5062 -i 192.0.2.10 -p 5080 -s echo -m 1 -tim
 sudo sipp -sf uac_rr.xml 192.0.2.10:5060 -i 192.0.2.10 -p 5080 -s echo -m 1 -timeout 90s
 ```
 
-Each shows `Successful call` at 1. sipnab watches ports 5060-5061 by default,
-so give it both proxies' ports: `--portrange 5060-5062`.
+Each shows `Successful call` at 1. sipnab watches ports 5060-5061 by default.
+So give it both proxies' ports: `--portrange 5060-5062`.
 
 ## Kamailio in the other voice-stack guides
 
@@ -284,18 +320,22 @@ Kamailio:
 ## When something does not work
 
 - **`apt-get` says `Could not get lock /var/lib/dpkg/lock-frontend. It is held
-  by process ...`.** Another package tool holds the lock: on a machine that
-  has just booted, usually the system's own scheduled update. Wait for it to
-  finish, then run the block again.
+  by process ...`.**
+  - Another package tool holds the lock. On a machine that has just booted,
+    this is usually the system's own scheduled update.
+  - Wait for it to finish, then run the block again.
 - **`kamailio -c` reports `parse error in config file` and `unknown command,
-  missing loadmodule?`.** The script calls a function whose module is not
-  loaded. The error names the line and column, and the line before it names
-  the function, such as `failed to find command is_method`. Load the module
-  that provides it.
+  missing loadmodule?`.**
+  - The script calls a function whose module is not loaded.
+  - The error names the line and column.
+  - The line before it names the function, such as
+    `failed to find command is_method`.
+  - Load the module that provides it.
 - **`kamcmd` says `connect(//var/run/kamailio/kamailio_ctl): No such file or
   directory`.** Kamailio is not running, or `ctl.so` is not loaded.
-- **The test call's `BYE` gets no answer.** The caller ignored the route set,
-  so Kamailio dropped its `ACK` and `BYE`. SIPp can still report the call as
-  successful: the callee, which never got the `ACK`, sends its `200 OK` again,
-  and SIPp takes one of those for the `BYE`'s answer. Use the edited
-  `uac_rr.xml`, not SIPp's built-in `uac_pcap`.
+- **The test call's `BYE` gets no answer.**
+  - The caller ignored the route set. So Kamailio dropped its `ACK` and `BYE`.
+  - SIPp can still report the call as successful:
+    - the callee, which never got the `ACK`, sends its `200 OK` again,
+    - SIPp takes one of those for the `BYE`'s answer.
+  - Use the edited `uac_rr.xml`, not SIPp's built-in `uac_pcap`.

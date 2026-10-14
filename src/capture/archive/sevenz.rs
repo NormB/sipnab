@@ -28,7 +28,7 @@
 //! A 7z key costs `2^NumCyclesPower` SHA-256 rounds, and the archive chooses
 //! the power. `sevenz-rust2` refuses a power above 24, 7-Zip's own ceiling
 //! (its default is 19), so a crafted archive cannot make one attempt take
-//! hours. A refusal is `bound_exceeded (7z key derivation)` (Invariant 4).
+//! hours. A refusal is `bound_exceeded (7z key derivation)` (Invariant "Every attacker-keyed map has a bound and a stated eviction policy").
 
 use std::io::{self, Read, Seek};
 

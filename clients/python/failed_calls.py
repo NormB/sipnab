@@ -1,16 +1,16 @@
 #!/usr/bin/env python3
-"""Why calls failed, grouped by final response code (cookbook recipes 3 and 30).
+"""Why calls failed, grouped by final response code (cookbook recipes "Find every failed call, grouped by response code" and "Find calls that answered and were never acknowledged").
 
     failed_calls.py
 
 Asks a running sipnab three things over REST:
 
 1. `GET /v1/aggregate?by=response_code` over the failed dialogs: one bucket
-   per final response code. Recipe 3's shell histogram counts every response
+   per final response code. Recipe "Find every failed call, grouped by response code"'s shell histogram counts every response
    inside a failed call, `100 Trying` included; this counts each call once.
 2. `GET /v1/dialogs?filter=...` per bucket: which calls those are.
 3. `GET /v1/report`: the capture's findings, for the calls that answered and
-   were never acknowledged (recipe 30). A missing `ACK` does not make a call
+   were never acknowledged (recipe "Find calls that answered and were never acknowledged"). A missing `ACK` does not make a call
    fail, so the grouping cannot show it, and sipnab reports one only after
    the answer has waited `--ack-timeout` (RFC 3261 Timer H, 32 s, unless the
    server was started with a shorter one).

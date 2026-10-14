@@ -155,7 +155,7 @@ struct Accepted {
 /// deleted. Both failures name the entry and the single line to remove.
 const ACCEPTED: &[Accepted] = &[
     // Empty, and it should stay that way. The two findings this gate reported
-    // when it was written -- `[cookbook recipe 6d]` -> the 32-section cookbook
+    // when it was written -- `[cookbook recipe "Take signaling from HEP and media off the wire, in one process"]` -> the 32-section cookbook
     // and `[the security implications]` -> the 20-heading uprobe walkthrough,
     // each in both documentation trees -- were fixed while it was being
     // written, with the anchors this gate proposed.

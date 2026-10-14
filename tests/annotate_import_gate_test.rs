@@ -278,7 +278,7 @@ fn only_the_permitted_modules_name_the_notes_module_or_the_comment_type() -> Res
     assert!(
         bad.is_empty(),
         "operator notes reached a module that must never see them. A note is \
-         output, never input (Invariant 13, docs/internals/invariants.md), and \
+         output, never input (Invariant \"Operator notes are output, never input\", docs/internals/invariants.md), and \
          an agent must not be able to read one or write text into a file that \
          leaves the box:\n  {}",
         bad.join("\n  ")

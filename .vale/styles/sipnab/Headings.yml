@@ -132,6 +132,9 @@ exceptions:
   - SSH
   - TCP
   - TLS
+  # The key-exchange algorithm docs/tls-capture.md names in a heading. An
+  # acronym, never a word.
+  - RSA
   # Kernel tracing acronyms: BPF is the technology, BTF the type
   # information a kernel publishes about itself. Neither is a word.
   - BPF

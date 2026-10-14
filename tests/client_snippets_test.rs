@@ -632,39 +632,56 @@ fn every_capability_example_runs_in_ci() -> Result<(), TestError> {
 /// linked from the recipes it carries out and run end to end in CI. `anchor`
 /// is the program's section of docs/client-examples.md, and `recipes` the
 /// numbered sections of docs/examples.md that point at it.
-const OPERATOR_TASKS: &[(&str, &str, &[u32])] = &[
+const OPERATOR_TASKS: &[(&str, &str, &[&str])] = &[
     (
         "clients/python/triage.py",
         "triage-a-capture-to-one-verdict",
-        &[1, 16],
+        &[
+            "Triage a pcap fast",
+            "Analyze a capture into one machine-readable verdict",
+        ],
     ),
     (
         "clients/python/failed_calls.py",
         "group-failed-calls-by-response-code",
-        &[3, 30],
+        &[
+            "Find every failed call, grouped by response code",
+            "Find calls that answered and were never acknowledged",
+        ],
     ),
     (
         "clients/python/one_way_audio.py",
         "diagnose-one-way-audio-and-whose-loss-it-is",
-        &[4, 11, 22],
+        &[
+            "Diagnose a one-way audio complaint",
+            "Find why a call sounds bad in one direction only",
+            "Measure whether the loss is yours or the network's",
+        ],
     ),
     (
         "clients/python/scanner_ban.py",
         "ban-a-scanner-through-tfps-and-verify-it",
-        &[10, 23],
+        &[
+            "Detect SIP scanners and auto-block via fail2ban",
+            "Find the device flooding REGISTER",
+        ],
     ),
     (
         "clients/python/customer_export.py",
         "export-the-calls-of-one-customer-from-rotated-captures",
-        &[39, 32, 40],
+        &[
+            "Collect a directory of rotated captures into one analysis",
+            "Export one customer's calls as a smaller capture",
+            "Open the same evidence in Wireshark",
+        ],
     ),
 ];
 
-/// The text of cookbook section `n`: from its `## n.` heading to the next
-/// second-level heading, subsections included.
-fn cookbook_section(cookbook: &str, n: u32) -> Option<String> {
-    let heading = format!("## {n}. ");
-    let start = cookbook.lines().position(|l| l.starts_with(&heading))?;
+/// The text of the cookbook recipe titled `title`: from its `## ` heading to
+/// the next second-level heading, subsections included.
+fn cookbook_section(cookbook: &str, title: &str) -> Option<String> {
+    let heading = format!("## {title}");
+    let start = cookbook.lines().position(|l| l == heading)?;
     let body: Vec<&str> = cookbook
         .lines()
         .skip(start + 1)
@@ -691,12 +708,12 @@ fn every_operator_task_runs_in_ci_and_is_linked_from_its_recipes() -> Result<(),
         "tests/fixtures/sip-scanner-and-register-flood.pcap",
         "tests/pcap-samples/sip-problem-call.pcap",
         "tests/fixtures/stun_sdp_mismatch.pcap",
-        // Recipe 30's timer, which the answered-never-acked capture needs.
+        // Recipe "Find calls that answered and were never acknowledged"'s timer, which the answered-never-acked capture needs.
         "--ack-timeout",
         // The TFPS peer the ban is relayed to, and the fake standing in for it.
         "--tfps-ctl",
         "clients/python/tests/fake_tfps_ctl.py",
-        // Recipe 40: the export opened by Wireshark's own engine.
+        // Recipe "Open the same evidence in Wireshark": the export opened by Wireshark's own engine.
         "capinfos",
         "tshark",
     ]
@@ -717,7 +734,7 @@ fn every_operator_task_runs_in_ci_and_is_linked_from_its_recipes() -> Result<(),
     let ci = read(".github/workflows/ci.yml")?;
     assert!(
         ci.contains("packages: tshark"),
-        "ci.yml must install tshark before the smoke run, or recipe 40's check has \
+        "ci.yml must install tshark before the smoke run, or recipe \"Open the same evidence in Wireshark\"'s check has \
          nothing to open the export with"
     );
 
@@ -737,10 +754,10 @@ fn every_operator_task_runs_in_ci_and_is_linked_from_its_recipes() -> Result<(),
         }
         let link = format!("client-examples.md#{anchor}");
         for n in *recipes {
-            match cookbook_section(&cookbook, *n) {
-                None => unlinked.push(format!("docs/examples.md has no recipe {n}")),
+            match cookbook_section(&cookbook, n) {
+                None => unlinked.push(format!("docs/examples.md has no recipe {n:?}")),
                 Some(text) if !text.contains(&link) => unlinked.push(format!(
-                    "docs/examples.md recipe {n} does not link {link} ({name})"
+                    "docs/examples.md recipe {n:?} does not link {link} ({name})"
                 )),
                 Some(_) => {}
             }
@@ -777,7 +794,7 @@ const AI_TASKS: &[(&str, &str)] = &[
 /// Each AI task runs in CI, has its section, and is linked from the MCP
 /// guide. The flags are the pieces that make the checks what they claim:
 /// an HTTP server with a signing key and a token minted from it (the shape
-/// recipe 55 deploys), and a file root for the evidence package. Without
+/// recipe "Set up the MCP server for a hosted agent" deploys), and a file root for the evidence package. Without
 /// them the HTTP check would be a stdio check with a different name.
 #[test]
 fn every_ai_task_runs_in_ci_and_is_linked_from_the_mcp_guide() -> Result<(), TestError> {
@@ -937,12 +954,12 @@ fn a_heading_slugs_the_way_the_page_anchors_it() -> Result<(), TestError> {
 
 #[test]
 fn a_cookbook_section_runs_to_the_next_second_level_heading() -> Result<(), TestError> {
-    let doc = "## 9. Nine\nnine\n## 10. Ten\nten\n### 10a. Sub\nsub\n## 11. Eleven\n";
+    let doc = "## Nine\nnine\n## Ten\nten\n### Sub\nsub\n## Ten more\n";
     assert_eq!(
-        cookbook_section(doc, 10).as_deref(),
-        Some("ten\n### 10a. Sub\nsub")
+        cookbook_section(doc, "Ten").as_deref(),
+        Some("ten\n### Sub\nsub")
     );
-    assert_eq!(cookbook_section(doc, 1), None);
+    assert_eq!(cookbook_section(doc, "One"), None);
     Ok(())
 }
 

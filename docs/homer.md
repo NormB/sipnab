@@ -1,16 +1,25 @@
 # Add Homer to your voice stack
 
 [Homer](https://github.com/sipcapture/homer) keeps a searchable history of
-your SIP traffic. Your SIP servers send it a copy of every message they handle,
-wrapped in HEP (the Homer Encapsulation Protocol), and Homer stores each one
-and shows you any past call as a ladder of messages. It answers "what happened
-to that call yesterday" without anyone having run a capture at the time.
+your SIP traffic.
+
+- Your SIP servers send it a copy of every message they handle.
+- HEP (the Homer Encapsulation Protocol) wraps each copy.
+- Homer stores each one.
+- Homer shows you any past call as a ladder of messages.
+
+It answers "what happened to that call yesterday" without anyone having run a
+capture at the time.
 
 This guide stands up Homer beside an OpenSIPS proxy and has OpenSIPS send it
 every call. With Kamailio instead, [one section](#with-kamailio) replaces
-the OpenSIPS steps. This guide does not use sipnab. When you have this working,
-[Connect sipnab to Homer](homer-sipnab.md) adds sipnab as a second receiver
-and as another source.
+the OpenSIPS steps.
+
+This guide does not use sipnab. When you have this working,
+[Connect sipnab to Homer](homer-sipnab.md) adds sipnab:
+
+- as a second receiver,
+- as another source.
 
 The parts, and what each one does:
 
@@ -27,9 +36,13 @@ they are apart.
 
 ## Tested on
 
-Every block on this page ran as written, in order, on 2026-09-28, on
-clean x86_64 virtual machines with 2 cores and 3 GB of memory, Debian 13
-(kernel 6.12.63) and Ubuntu 24.04.5 (kernel 6.8.0). On each, it ran:
+Every block on this page ran as written, in order, on 2026-09-28. The machines
+were clean x86_64 virtual machines with 2 cores and 3 GB of memory:
+
+- Debian 13 (kernel 6.12.63),
+- Ubuntu 24.04.5 (kernel 6.8.0).
+
+On each, it ran:
 
 - With OpenSIPS built from source on a machine with nothing installed.
 - With the OpenSIPS 4.0 packages.
@@ -59,21 +72,29 @@ everywhere it appears.
 
 Find your case, and follow the steps it names:
 
-- **No SIP server yet.** Follow every step. Step 3 builds OpenSIPS for you. If
-  you would rather run the OpenSIPS 4.0 packages, install them with
-  [step 1 of the OpenSIPS guide](opensips.md#1-install-opensips) and skip step
-  3 here.
-- **OpenSIPS already runs, from the packages or built from source.** Skip step
-  3. The `proto_hep`, `tracer` and `dialog` modules come with the `opensips`
-  package and with the default build, so there is nothing to add. Step 4 finds
-  your configuration file and replaces it. On a machine whose script you want
-  to keep, add the lines step 4 marks to your own script instead.
-- **Kamailio already runs, or you want Kamailio.** Follow steps 1 and 2, then
-  [With Kamailio](#with-kamailio) in place of steps 3 and 4, then steps 5 to 7.
+- **No SIP server yet.**
+  - Follow every step.
+  - The Build OpenSIPS step builds OpenSIPS for you.
+  - You may rather run the OpenSIPS 4.0 packages. Then install them with
+    [the Install OpenSIPS step of the OpenSIPS guide](opensips.md#install-opensips),
+    and skip the Build OpenSIPS step here.
+- **OpenSIPS already runs, from the packages or built from source.**
+  - Skip the Build OpenSIPS step.
+  - The `proto_hep`, `tracer` and `dialog` modules come with the `opensips`
+    package and with the default build. So there is nothing to add.
+  - The Configure OpenSIPS to send every call to Homer step finds your
+    configuration file and replaces it.
+  - On a machine whose script you want to keep, add the lines that step marks
+    to your own script instead.
+- **Kamailio already runs, or you want Kamailio.** Follow these, in order:
+  - the Install Docker and Start Homer steps,
+  - [With Kamailio](#with-kamailio), in place of the Build OpenSIPS and
+    Configure OpenSIPS to send every call to Homer steps,
+  - the steps from Place a test call to Operate it.
 - **Both OpenSIPS and Kamailio on one machine.** Set up OpenSIPS as above, then
   see [With Kamailio](#with-kamailio), which covers both.
 
-## 1. Install Docker
+## Install Docker
 
 Homer runs as containers. Install Docker Engine and the Compose plugin from
 the Docker repository:
@@ -93,19 +114,20 @@ sudo apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plug
 sudo usermod -aG docker "$USER"
 ```
 
-Log out and back in so that your account's new `docker` group takes effect,
-then check:
+Log out and back in so that your account's new `docker` group takes effect.
+Then check:
 
 ```bash
 docker compose version
 ```
 
-## 2. Start Homer
+## Start Homer
 
 The three services below are the ones in the sipcapture project's own
-[homer7-docker](https://github.com/sipcapture/homer7-docker) recipe, without
-the Prometheus, Grafana and Loki it also bundles. Choose a database password
-and put it in `.env`, where Compose reads it:
+[homer7-docker](https://github.com/sipcapture/homer7-docker) recipe. They leave
+out the Prometheus, Grafana and Loki it also bundles.
+
+Choose a database password and put it in `.env`, where Compose reads it:
 
 ```bash
 # Run all of these, in order.
@@ -179,13 +201,15 @@ EOF
 docker compose up -d
 ```
 
-`HEPLIFYSERVER_DBDROPDAYS` is how long Homer keeps messages: heplify-server
-drops each day's tables after 7 days here.
+`HEPLIFYSERVER_DBDROPDAYS` is how long Homer keeps messages. Here,
+heplify-server drops each day's tables after 7 days.
 
-The first start creates the tables, which took about 30 seconds on the test
-machines. heplify-server holds back what arrives until then, so a search
-before it has finished finds nothing. Wait until it logs that it has, and the
-web interface answers:
+The first start creates the tables. That took about 30 seconds on the test
+machines.
+
+- heplify-server holds back what arrives until then.
+- So a search before it has finished finds nothing.
+- Wait until it logs that it has finished, and the web interface answers:
 
 ```bash
 # Run all of these, in order.
@@ -198,15 +222,16 @@ Open `http://192.0.2.10:9080` and log in as `admin`, password `sipcapture`.
 Change that password under the user settings before anything else can reach
 the port.
 
-## 3. Build OpenSIPS
+## Build OpenSIPS
 
 Skip this step if OpenSIPS is already installed, from the packages or from
 source.
 
-OpenSIPS master builds with compiler optimizations turned off, which is right
-for OpenSIPS's own developers and wrong for a proxy carrying calls. Turn them
-back on before you build. The `proto_hep` and `tracer` modules are part of the
-default build:
+OpenSIPS master builds with compiler optimizations turned off. That is right
+for OpenSIPS's own developers and wrong for a proxy carrying calls.
+
+- Turn them back on before you build.
+- The `proto_hep` and `tracer` modules are part of the default build:
 
 ```bash
 # Run all of these, in order.
@@ -224,22 +249,28 @@ sudo make install
 ```
 
 Leave `DBG_MALLOC` as it is. With both it and `CC_O0` switched off, this commit
-of master does not compile: `net/tcp_conn_defs.h` calls `get_ticks()` without
-including the header that declares it, and only `DBG_MALLOC`'s headers happen
-to supply it.
+of master does not compile:
 
-## 4. Configure OpenSIPS to send every call to Homer
+- `net/tcp_conn_defs.h` calls `get_ticks()` without including the header that
+  declares it.
+- Only `DBG_MALLOC`'s headers happen to supply it.
+
+## Configure OpenSIPS to send every call to Homer
 
 This configuration is a minimal proxy with tracing added. Your own script does
-much more. The tracing part is the block marked below, and the `loadmodule`
-lines it needs.
+much more. The tracing part is:
+
+- the block marked below,
+- the `loadmodule` lines it needs.
 
 ### Write the configuration
 
 The packages and the source build keep their configuration and their modules in
-different places. The first two lines find them: `C` is your configuration
-file, and `M` the directory your install loads modules from, which the script's
-`mpath` names.
+different places. The first two lines find them:
+
+- `C` is your configuration file.
+- `M` is the directory your install loads modules from. The script's `mpath`
+  names it.
 
 ```bash
 # Run all of these, in order.
@@ -331,21 +362,24 @@ What the tracing lines do:
 
 - `socket=hep_udp:...` gives OpenSIPS a socket to send HEP from. Without it,
   OpenSIPS refuses to start: `No binding found for protocol proto_hep`.
-- `hep_id` names a HEP destination, `homer`: heplify-server on this machine,
-  HEP version 3 over UDP. Without `transport=udp`, OpenSIPS sends version 3
-  over TCP, which this heplify-server does not listen on.
+- `hep_id` names a HEP destination, `homer`.
+  - It is heplify-server on this machine, HEP version 3 over UDP.
+  - Without `transport=udp`, OpenSIPS sends version 3 over TCP. This
+    heplify-server does not listen on TCP.
 - `hep_capture_id` is the number Homer shows as the source of these messages.
   Give each SIP server its own.
 - `trace_id` defines `tid` as "send to `homer`".
-- `create_dialog()` makes OpenSIPS track the call, and `trace("tid", "d")`
-  sends every message of that dialog, both legs, until it ends.
+- `create_dialog()` makes OpenSIPS track the call. `trace("tid", "d")` sends
+  every message of that dialog, both legs, until it ends.
 
-### If you built OpenSIPS in step 3: give it a user and a unit
+### If you built OpenSIPS from source: give it a user and a unit
 
-The packages come with an `opensips` user and a systemd unit. If you
-installed them, or if your source build already runs as a service, skip to
-[Check the configuration and start OpenSIPS](#check-the-configuration-and-start-opensips).
-A fresh build has neither. Run OpenSIPS as its own user, under systemd:
+The packages come with an `opensips` user and a systemd unit.
+
+- If you installed them, or if your source build already runs as a service,
+  skip to
+  [Check the configuration and start OpenSIPS](#check-the-configuration-and-start-opensips).
+- A fresh build has neither. Run OpenSIPS as its own user, under systemd:
 
 ```bash
 # Run all of these, in order.
@@ -391,12 +425,16 @@ systemctl is-active opensips
 `opensips -C` checks the configuration and prints `config file ok` before you
 start anything.
 
-## 5. Place a test call
+## Place a test call
 
-SIPp plays both ends: a callee on this machine, and a caller that dials through
-OpenSIPS. SIPp's built-in caller ignores the `Record-Route` header OpenSIPS
-adds, so its `BYE` would miss the proxy and draw `404 Not here`. The two `sed`
-lines make it honor the route set, the way a real phone does:
+SIPp plays both ends:
+
+- a callee on this machine,
+- a caller that dials through OpenSIPS.
+
+SIPp's built-in caller ignores the `Record-Route` header OpenSIPS adds. So its
+`BYE` would miss the proxy and draw `404 Not here`. The two `sed` lines make it
+honor the route set, the way a real phone does:
 
 ```bash
 # Run all of these, in order.
@@ -411,16 +449,19 @@ sipp -sf uac_rr.xml 192.0.2.10:5060 -i 192.0.2.10 -p 5080 -s echo -m 1 -d 2000 -
 grep -m1 -i '^Call-ID:' uac.msg
 ```
 
-At the end SIPp's statistics screen shows `Successful call` at 1. The last
+At the end, SIPp's statistics screen shows `Successful call` at 1. The last
 line prints the call's Call-ID.
 
-## 6. Find the call in Homer
+## Find the call in Homer
 
 The web interface at `http://192.0.2.10:9080` searches what heplify-server
 stored. To check from the command line, query the database heplify-server
-writes. heplify-server writes in batches, at least every 4 seconds, so the
-first line waits for the last batch. Each row is one message, and OpenSIPS sent
-most of them twice, as it arrived and as it left:
+writes.
+
+- heplify-server writes in batches, at least every 4 seconds. So the first
+  line waits for the last batch.
+- Each row is one message.
+- OpenSIPS sent most of them twice, as it arrived and as it left:
 
 ```bash
 # Run all of these, in order.
@@ -433,7 +474,7 @@ docker compose exec -T db psql -U root -d homer_data -c \
      from hep_proto_1_call where data_header->>'callid' = '$CALL' order by create_date"
 ```
 
-## 7. Operate it
+## Operate it
 
 **Check health and read the logs.**
 
@@ -444,8 +485,10 @@ docker compose logs --tail 20 heplify-server
 systemctl is-active opensips
 ```
 
-heplify-server logs a line of statistics every five minutes, counting the HEP
-packets it received and any it filtered or failed to store.
+heplify-server logs a line of statistics every five minutes. It counts:
+
+- the HEP packets it received,
+- any it filtered or failed to store.
 
 **Keep more or fewer days.** Change `HEPLIFYSERVER_DBDROPDAYS` in
 `/opt/homer/docker-compose.yml` and recreate heplify-server:
@@ -458,7 +501,7 @@ docker compose up -d heplify-server
 ```
 
 **Restart.** A restart of heplify-server loses the HEP packets sent while it
-is down: HEP over UDP is not retried.
+is down. HEP over UDP is not retried.
 
 ```bash
 # Run all of these, in order.
@@ -467,7 +510,7 @@ sudo systemctl restart opensips
 ```
 
 **Uninstall.** `docker compose down -v` removes the containers *and* the
-database volume, which is every stored message:
+database volume. That volume is every stored message:
 
 ```bash
 # Run all of these, in order.
@@ -477,11 +520,15 @@ sudo systemctl disable --now opensips
 
 ## With Kamailio
 
-Kamailio sends HEP with its own `siptrace` module, which comes with the
-`kamailio` package. Set Kamailio up as [the Kamailio guide](kamailio.md) does,
-through its step 2, then follow steps 1 and 2 here for Homer. In place of steps
-3 and 4, add tracing to Kamailio's configuration. The lines marked `tracing`
-are the ones to add to your own script:
+Kamailio sends HEP with its own `siptrace` module. It comes with the
+`kamailio` package.
+
+- Set Kamailio up as [the Kamailio guide](kamailio.md) does, through its
+  Configure Kamailio as a proxy step.
+- Then follow the Install Docker and Start Homer steps here for Homer.
+- In place of the Build OpenSIPS and Configure OpenSIPS to send every call to
+  Homer steps, add tracing to Kamailio's configuration.
+- The lines marked `tracing` are the ones to add to your own script:
 
 ```bash
 # Run all of these, in order.
@@ -566,29 +613,35 @@ What the tracing lines do:
 - `hep_mode_on` and `hep_version` wrap each copy in HEP version 3, over UDP.
 - `hep_capture_id` is the number Homer shows as the source of these messages.
   Give each SIP server its own.
-- `trace_to_database 0` sends the copies to Homer only, not to a database of
-  Kamailio's own.
+- `trace_to_database 0` sends the copies to Homer only. It sends none to a
+  database of Kamailio's own.
 - `trace_on 1` and `trace_mode 1` copy every message Kamailio receives and
-  sends, with no call to `sip_trace()` in the script.
+  sends. The script needs no call to `sip_trace()`.
 
-Steps 5 to 7 then work unchanged, with `kamailio` in place of `opensips` in the
-`systemctl` commands.
-Kamailio, too, sends most messages twice, as each arrived and as it left: the
-test call's query in step 6 returns 13 rows.
+The steps from Place a test call to Operate it then work unchanged. Use
+`kamailio` in place of `opensips` in the `systemctl` commands.
+
+Kamailio, too, sends most messages twice, as each arrived and as it left. The
+test call's query in the Find the call in Homer step returns 13 rows.
 
 **With OpenSIPS on the same machine,** Kamailio listens on 5062, as
 [OpenSIPS and Kamailio on one machine](kamailio.md#opensips-and-kamailio-on-one-machine)
-sets it up: change `5060` to `5062` in the `listen` line above, and give it its
-own `hep_capture_id`, such as `102`, so that Homer shows which proxy saw each
-message. Both send to the same heplify-server.
+sets it up.
+
+- Change `5060` to `5062` in the `listen` line above.
+- Give it its own `hep_capture_id`, such as `102`. Then Homer shows which proxy
+  saw each message.
+- Both send to the same heplify-server.
 
 ## Put the parts on different machines
 
-**Homer on its own machine.** Set Homer up with steps 1 and 2 on that machine,
-here `192.0.2.20`, and point the SIP proxy at it. The first line finds the
-proxy's configuration: the OpenSIPS packages', a source build's, or Kamailio's.
-OpenSIPS also sends HEP from an address that reaches the other machine rather
-than from the loopback one:
+**Homer on its own machine.** Set Homer up with the Install Docker and Start
+Homer steps on that machine, here `192.0.2.20`. Point the SIP proxy at it.
+
+- The first line finds the proxy's configuration: the OpenSIPS packages', a
+  source build's, or Kamailio's.
+- OpenSIPS also sends HEP from an address that reaches the other machine,
+  rather than from the loopback one:
 
 ```bash
 # Run all of these, in order.
@@ -600,11 +653,15 @@ sudo grep -nE 'hep_id|hep_udp|duplicate_uri' "$C"
 case "$C" in */kamailio/*) sudo systemctl restart kamailio;; *) sudo systemctl restart opensips;; esac
 ```
 
-Open UDP 9060 on the Homer machine to your SIP servers only, and port 9080 to
-the people who use the interface. Place step 5's test call on the proxy's
-machine. Its last line prints the call's Call-ID. Find the call on the Homer
-machine, with that Call-ID in place of the example's. As in step 6, the first
-line waits for heplify-server's last batch:
+Open UDP 9060 on the Homer machine to your SIP servers only. Open port 9080 to
+the people who use the interface.
+
+- Place the Place a test call step's test call on the proxy's machine.
+- Its last line prints the call's Call-ID.
+- Find the call on the Homer machine, with that Call-ID in place of the
+  example's.
+- As in the Find the call in Homer step, the first line waits for
+  heplify-server's last batch:
 
 ```bash
 # Run all of these, in order.
@@ -617,7 +674,7 @@ docker compose exec -T db psql -U root -d homer_data -c \
 ```
 
 **Several SIP servers.** Give each one the same destination and its own
-capture id, so that Homer shows which server saw each message. OpenSIPS and
+capture id. Then Homer shows which server saw each message. OpenSIPS and
 Kamailio on one machine is that case, and
 [With Kamailio](#with-kamailio) sets it up.
 
@@ -625,9 +682,10 @@ Kamailio on one machine is that case, and
 
 - **OpenSIPS does not start: `No binding found for protocol proto_hep`.** The
   configuration loads `proto_hep` but has no `socket=hep_udp:...` line.
-- **The search finds nothing.** Check that heplify-server received anything:
-  `docker compose logs heplify-server`. If it logged no packets, check the
-  `hep_id` address and `transport=udp`.
+- **The search finds nothing.**
+  - Check that heplify-server received anything:
+    `docker compose logs heplify-server`.
+  - If it logged no packets, check the `hep_id` address and `transport=udp`.
 - **`hep_id` without `transport=udp`.** OpenSIPS then sent nothing at all to
   heplify-server, which listens on UDP. Keep `transport=udp` in `hep_id`.
 - **The test call's `BYE` gets `404 Not here`.** The caller ignored the route

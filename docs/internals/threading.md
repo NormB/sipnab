@@ -1,8 +1,10 @@
 # Threading model
 
-The topology below is the reality on `main` today. The core principle
-(design decision D2): the packet path is synchronous threads + channels.
-tokio exists only inside the optional servers.
+The topology below is the reality on `main` today.
+
+- The core principle is design decision D2.
+- The packet path is synchronous threads + channels.
+- tokio exists only inside the optional servers.
 
 ## Topology
 
@@ -47,47 +49,62 @@ capture thread(s)              │                          │
           threads here serve its pipes; --kill-scanner has no TUI path
 ```
 
-The mode column above is the part to keep true, and it is worth saying why.
-An earlier revision of this diagram drew every auxiliary thread as a child of
-the TUI event loop. Not one of them is: both run modes start four of them, and
-batch alone starts the scanner-kill worker.
+The mode column above is the part to keep true. It is worth saying why.
 
-That is not a cosmetic error —
-`--metrics` really did ship wired to the TUI path alone, so every
-headless `-N` deployment (which is every container and systemd unit) got no
-metrics at all, and this page said nothing that would have contradicted it.
-A diagram that groups threads by *who spawns them* rather than by *which mode
-runs them* reads as reassurance and hides exactly that class of defect.
+- An earlier revision of this diagram drew every auxiliary thread as a child of
+  the TUI event loop.
+- Not one of them is.
+  - Both run modes start four of them.
+  - Batch alone starts the scanner-kill worker.
+
+That is not a cosmetic error.
+
+- `--metrics` really did ship wired to the TUI path alone.
+- So every headless `-N` deployment got no metrics at all.
+  - That is every container and systemd unit.
+- This page said nothing that would have contradicted it.
+- A diagram can group threads by *who spawns them* rather than by *which mode
+  runs them*.
+  - Such a diagram reads as reassurance.
+  - It hides exactly that class of defect.
 
 The four spawn sites, none of which is the TUI event loop:
-[`start_servers()`](../../src/app/servers.rs) for the server runtime and the
-metrics listener, [`build_resolver()`](../../src/app/mod.rs) for the reverse-DNS
-worker, [`spawn_scanner_kill_worker()`](../../src/process_isolation.rs) for the
-kill worker, and
-[`relay_reconciler::spawn()`](../../src/app/relay_reconciler.rs) for the
-rtpengine reconciler.
 
-The Prometheus listener is **not** a task on the shared tokio runtime, and the
-distinction matters when reasoning about blocking: it is a raw
-[`TcpListener`](../../src/output/prometheus_server.rs) accept loop on its own
-thread, deliberately independent of tokio and axum so metrics stay scrapable
-when the async servers are not compiled in at all.
+- [`start_servers()`](../../src/app/servers.rs) for the server runtime and the
+  metrics listener.
+- [`build_resolver()`](../../src/app/mod.rs) for the reverse-DNS worker.
+- [`spawn_scanner_kill_worker()`](../../src/process_isolation.rs) for the
+  kill worker.
+- [`relay_reconciler::spawn()`](../../src/app/relay_reconciler.rs) for the
+  rtpengine reconciler.
 
-Each accepted scrape runs
-on a short-lived `metrics-conn` thread, and a `ConnGate` bounds those
-to 16 in flight — beyond that new connections get an immediate `503` rather
-than a thread (SN-02, CWE-770).
-[`start_metrics_server()`](../../src/output/prometheus_server.rs) spawns the
-thread itself, and `start_servers` calls it for both run modes.
+The Prometheus listener is **not** a task on the shared tokio runtime.
+The distinction matters when reasoning about blocking.
+
+- It is a raw [`TcpListener`](../../src/output/prometheus_server.rs) accept loop
+  on its own thread.
+- It is deliberately independent of tokio and axum.
+  - So metrics stay scrapable when the async servers are not compiled in at all.
+
+Each accepted scrape runs on a short-lived `metrics-conn` thread.
+
+- A `ConnGate` bounds those to 16 in flight.
+- Beyond that, new connections get an immediate `503` rather
+  than a thread (SN-02, CWE-770).
+- [`start_metrics_server()`](../../src/output/prometheus_server.rs) spawns the
+  thread itself.
+- `start_servers` calls it for both run modes.
 
 ## Named threads
 
-Every long-lived thread and its spawn site. A name in a backtrace maps
-straight back to a row here.
+Every long-lived thread and its spawn site.
+A name in a backtrace maps straight back to a row here.
 
-**Modes** is the column to trust when asking "does this run headless?" — the
-question `--metrics` got wrong. `both` means the thread exists under `-N` as
-well as in the TUI. `TUI` and `batch` mean it does not.
+**Modes** is the column to trust when asking "does this run headless?"
+
+- That is the question `--metrics` got wrong.
+- `both` means the thread exists under `-N` as well as in the TUI.
+- `TUI` and `batch` mean it does not.
 
 | Thread name | Modes | Spawned by | Role |
 |---|---|---|---|
@@ -113,49 +130,69 @@ well as in the TUI. `TUI` and `batch` mean it does not.
 ## How the capture thread ends
 
 Every fatal exit taken *after* [`start_capture()`](../../src/capture/native.rs)
-has to go through
-[`stop_and_join()`](../../src/capture/native.rs). There is no second correct
-way out.
+has to go through [`stop_and_join()`](../../src/capture/native.rs).
+There is no second correct way out.
 
 The reason is where the thread starts.
-[`bootstrap::launch()`](../../src/app/bootstrap.rs) spawns it **before** the
-readiness hand-shake, the chroot and the privilege drop, because the capture
-source must be open while the process still holds `CAP_NET_RAW`. Every failure
-from that point on — an unopenable source, an unusable `--chroot`, a refused
-privilege drop, a hardening step the kernel rejects, a companion server that
-cannot start — happens with a capture thread already running and holding its
-source. `std::process::exit` joins nothing and runs no destructors, so exiting
-directly abandons it.
 
-`stop_and_join` sets the global shutdown flag, drops the packet receiver, and
-joins. Both signals matter and neither is redundant: dropping the receiver
-ends a thread blocked on a send, and the flag ends one blocked elsewhere in its
-loop — a live capture waiting out its read timeout reaches the flag check first.
-One read never times out: libpcap's netmap module waits inside `pcap_next_ex`
-until a frame arrives, so on a silent link the flag check is never reached.
-For that read, the capture's `capture-stop:<device>` thread sees the same flag
-and calls `pcap_breakloop`, and the loop takes the broken read as a stop.
-The join has no timeout, matching the one the batch receive loop already performs
-at end of capture. A HEP listener blocked on its socket returns in milliseconds
-rather than hanging it.
+- [`bootstrap::launch()`](../../src/app/bootstrap.rs) spawns it **before** these steps:
+  - The readiness hand-shake.
+  - The chroot.
+  - The privilege drop.
+- The reason: the capture source must be open while the process still holds `CAP_NET_RAW`.
+- Every failure from that point on happens with a capture thread already
+  running and holding its source. Such failures include:
+  - An unopenable source.
+  - An unusable `--chroot`.
+  - A refused privilege drop.
+  - A hardening step the kernel rejects.
+  - A companion server that cannot start.
+- `std::process::exit` joins nothing and runs no destructors.
+  - So exiting directly abandons it.
 
-One consequence for callers that cannot reach the handle:
-[`BatchRunner::new()`](../../src/app/batch.rs) does not own it, so its four fatal
-paths return a `PlanError` instead of exiting, and `batch::run` — which holds
-both the handle and the receiver — does the teardown. A function that cannot
-clean up must hand the failure to one that can.
+`stop_and_join` does three things:
 
-**How a gate holds this.** ThreadSanitizer treats `thread leak` as a fatal
-finding, not a warning, and `cli_flag_behavior_test` exercises both shapes (a
-source that never opens, and a failure after it opened) so a regression fails
-there rather than waiting for the weekly sanitizer run. Before this rule,
-`sipnab -I /nonexistent.pcap` — a mistyped filename — leaked a thread.
+- It sets the global shutdown flag.
+- It drops the packet receiver.
+- It joins.
+
+Both signals matter, and neither is redundant.
+
+- Dropping the receiver ends a thread blocked on a send.
+- The flag ends one blocked elsewhere in its loop.
+  - A live capture waiting out its read timeout reaches the flag check first.
+- One read never times out.
+  - libpcap's netmap module waits inside `pcap_next_ex` until a frame arrives.
+  - So on a silent link the flag check is never reached.
+  - For that read, the capture's `capture-stop:<device>` thread sees the same flag
+    and calls `pcap_breakloop`.
+  - The loop takes the broken read as a stop.
+- The join has no timeout.
+  - That matches the one the batch receive loop already performs at end of capture.
+- A HEP listener blocked on its socket returns in milliseconds rather than hanging it.
+
+One consequence applies to callers that cannot reach the handle.
+
+- [`BatchRunner::new()`](../../src/app/batch.rs) does not own it.
+- So its four fatal paths return a `PlanError` instead of exiting.
+- `batch::run` holds both the handle and the receiver. It does the teardown.
+- A function that cannot clean up must hand the failure to one that can.
+
+**How a gate holds this.**
+
+- ThreadSanitizer treats `thread leak` as a fatal finding, not a warning.
+- `cli_flag_behavior_test` exercises both shapes:
+  - A source that never opens.
+  - A failure after it opened.
+- So a regression fails there, rather than waiting for the weekly sanitizer run.
+- Before this rule, `sipnab -I /nonexistent.pcap` (a mistyped filename) leaked a thread.
 
 ## The second writer: `pcap-load`
 
-Opening a pcap from inside the TUI spawns a second writer: the `pcap-load`
-worker writes the same stores the render thread is reading, which is why every
-render-side access is `try_read()` and never `read()`.
+Opening a pcap from inside the TUI spawns a second writer.
+
+- The `pcap-load` worker writes the same stores the render thread is reading.
+- That is why every render-side access is `try_read()` and never `read()`.
 
 ```mermaid
 sequenceDiagram
@@ -177,50 +214,60 @@ sequenceDiagram
 ```
 
 `--cores N` offline mode replaces the single processing thread with a
-dispatcher + N workers: the dispatcher does a cheap host-pair peek and shards
-raw packets over bounded channels. Each worker owns a private
-`PacketProcessor` + thread-local `DialogStore`/`StreamStore` (no locks on the
-hot path), and the stores merge at EOF. Flow correctness holds because a
-flow's packets share a host pair and therefore a worker.
+dispatcher + N workers.
+
+- The dispatcher does a cheap host-pair peek.
+- It shards raw packets over bounded channels.
+- Each worker owns a private `PacketProcessor` + thread-local
+  `DialogStore`/`StreamStore`.
+  - There are no locks on the hot path.
+- The stores merge at EOF.
+- Flow correctness holds because a flow's packets share a host pair.
+  - Therefore they share a worker.
 
 ## Lock discipline
 
-- **Parse outside the lock.** SIP/RTP/SDP parsing happens before any store
-  lock appears ([`classify_packet()`](../../src/pipeline.rs) touches no store
-  at all). Each store is then locked for writing **once per packet**, which
-  makes writes the most frequent lock operation in the process, not the rarest.
-- **Lock ordering:** when a path needs both stores, dialog store first, then
-  stream store. If it also needs the alert engine, that comes last. The
-  ordering is what carries the safety, because the guards are **not** always
-  disjoint.
-
-  [`process_packet()`](../../src/pipeline.rs) on the live path and
-  [`run_pcap_load()`](../../src/tui/controllers/file_open.rs) for the file-open
-  worker above each take one store at a time and release it before the other
-  — *"briefly"* is accurate there. The batch applier
-  ([`batch.rs`](../../src/app/batch.rs)) does **not** work that way: it holds
-  **both** write guards across the entire per-packet body.
-
-  This page
-  previously said both write locks were never held at once. That was never
-  true of the batch path.
-- **The guards queue side effects rather than performing them.** Alert
-  findings, per-message output and the `--alert-exec` / `--on-dialog-exec` /
-  `--on-quality-exec` spawns accumulate while the code holds the guards, and
-  replayed by `DeferredEffects::drain` after both drop, so no `fork`/`exec`, no
-  stdout write and no `AlertEngine` lock happens inside the critical section.
-
-  Until that change the batch loop took the alert engine's write lock nested
-  inside both store guards — a third lock deep in the hot path, with a
-  `posix_spawn` beside it. The full rule and what would re-create that edge are
-  in [Invariants, section 2, "Dialog before stream, then alerts — one consistent order"](invariants.md#2-dialog-before-stream-then-alerts--one-consistent-order).
+- **Parse outside the lock.**
+  - SIP/RTP/SDP parsing happens before any store lock appears.
+  - [`classify_packet()`](../../src/pipeline.rs) touches no store at all.
+  - Each store is then locked for writing **once per packet**.
+  - That makes writes the most frequent lock operation in the process, not the rarest.
+- **Lock ordering:**
+  - When a path needs both stores, dialog store first, then stream store.
+  - If it also needs the alert engine, that comes last.
+  - The ordering is what carries the safety.
+    The guards are **not** always disjoint.
+  - Two paths each take one store at a time and release it before the other.
+    *"briefly"* is accurate there.
+    - [`process_packet()`](../../src/pipeline.rs) on the live path.
+    - [`run_pcap_load()`](../../src/tui/controllers/file_open.rs) for the file-open
+      worker above.
+  - The batch applier ([`batch.rs`](../../src/app/batch.rs)) does **not** work that way.
+    - It holds **both** write guards across the entire per-packet body.
+  - This page previously said both write locks were never held at once.
+    That was never true of the batch path.
+- **The guards queue side effects rather than performing them.**
+  - These accumulate while the code holds the guards:
+    - Alert findings.
+    - Per-message output.
+    - The `--alert-exec` / `--on-dialog-exec` / `--on-quality-exec` spawns.
+  - `DeferredEffects::drain` replays them after both drop.
+  - So none of these happens inside the critical section:
+    - A `fork`/`exec`.
+    - A stdout write.
+    - An `AlertEngine` lock.
+  - Until that change, the batch loop took the alert engine's write lock nested
+    inside both store guards.
+    - That was a third lock deep in the hot path, with a `posix_spawn` beside it.
+  - The full rule and what would re-create that edge are
+    in [Invariants, "Dialog before stream, then alerts — one consistent order"](invariants.md#dialog-before-stream-then-alerts--one-consistent-order).
 - **The TUI never blocks:** all render-side store access is `try_read()`.
-  On contention the frame renders with the previous data (counts may be one
-  frame stale — this is deliberate. An adaptive 10 fps active / 2 fps idle
-  tick bounds staleness).
+  - On contention the frame renders with the previous data.
+  - Counts may be one frame stale. This is deliberate.
+  - An adaptive 10 fps active / 2 fps idle tick bounds staleness.
 - **Pause** is an `AtomicBool` checked by the processing thread. No lock.
-- `mcp/` denies `clippy::await_holding_lock` — parking_lot guards must never
-  live across an `.await`.
+- `mcp/` denies `clippy::await_holding_lock`.
+  - parking_lot guards must never live across an `.await`.
 
 ## Channels in use
 

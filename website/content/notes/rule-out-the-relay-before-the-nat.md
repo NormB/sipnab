@@ -10,12 +10,16 @@ kind = "howto"
 
 ## In short
 
-"One-way audio" means one person on a call can hear the other, but the other
-cannot hear them. Several different faults cause it: a network device rejecting the
-audio, an address rewritten by a router, a relay server that stopped
-forwarding, or a call set up to carry audio in one direction only.
-sipnab's `--analyze` report lists the problems it finds in a recorded call,
-most serious first, and this how-to follows that order, which is also the
+"One-way audio" means one person on a call can hear the other. The other
+person cannot hear them. Several different faults cause it:
+
+- a network device rejecting the audio,
+- an address rewritten by a router,
+- a relay server that stopped forwarding,
+- a call set up to carry audio in one direction only.
+
+sipnab's `--analyze` report lists the problems it finds in a recorded call.
+The most serious come first. This how-to follows that order. It is also the
 order of the troubleshooting guide.
 
 ## Who this is for
@@ -25,32 +29,42 @@ of the call.
 
 ## The order, and where it comes from
 
-1. **What sipnab could not read.** `--analyze` lists these "blind" findings
-   above every other finding (`Severity::Blind` in `src/analysis.rs`).
-2. **ICMP errors against the audio.** An ICMP error is a message a router or
-   host sends back when it cannot deliver a packet. The troubleshooting guide
-   says to act on these first, and `--analyze` rates them critical.
-3. **NAT.** The troubleshooting guide checks NAT next. NAT (network address
-   translation) is the router function that rewrites private addresses into
-   public ones.
-4. **STUN and TURN.** STUN lets a phone learn its public address; TURN relays
-   audio through a server. The guide's NAT section points to these checks.
-   `--analyze` rates NAT, STUN and TURN findings at the same level, major, and
-   within one level orders them by how many times each occurred.
-5. **The call's own setup, comfort noise and codecs.** These are the guide's
-   "if NAT is clean" checks. The one-way finding rests only on the audio
-   packets seen in each direction. It does not read the call's requested audio
-   direction (`src/rtp/diagnosis.rs`), so a call set up to send audio one way
-   is also reported as one-way audio.
+- **What sipnab could not read.**
+  - `--analyze` lists these "blind" findings above every other finding.
+  - See `Severity::Blind` in `src/analysis.rs`.
+- **ICMP errors against the audio.**
+  - An ICMP error is a message a router or host sends back when it cannot
+    deliver a packet.
+  - The troubleshooting guide says to act on these first.
+  - `--analyze` rates them critical.
+- **NAT.**
+  - The troubleshooting guide checks NAT next.
+  - NAT (network address translation) is the router function that rewrites
+    private addresses into public ones.
+- **STUN and TURN.**
+  - STUN lets a phone learn its public address.
+  - TURN relays audio through a server.
+  - The guide's NAT section points to these checks.
+  - `--analyze` rates NAT, STUN and TURN findings at the same level, major.
+  - Within one level, it orders them by how many times each occurred.
+- **The call's own setup, comfort noise and codecs.**
+  - These are the guide's "if NAT is clean" checks.
+  - The one-way finding rests only on the audio packets seen in each
+    direction.
+  - It does not read the call's requested audio direction
+    (`src/rtp/diagnosis.rs`).
+  - So a call set up to send audio one way is also reported as one-way audio.
 
-The captures used below ship in the sipnab repository. `-q` hides
-informational log lines, and `--no-cli-print` suppresses the per-message
-output. The output below has the trailing spaces at the ends of table lines
-removed.
+The captures used below ship in the sipnab repository.
+
+- `-q` hides informational log lines.
+- `--no-cli-print` suppresses the per-message output.
+- The output below has the trailing spaces at the ends of table lines
+  removed.
 
 ## Steps
 
-1. Run the analysis and read it from the top:
+- Run the analysis and read it from the top:
 
 ```bash
 sipnab -N -q -I tests/fixtures/stun_sdp_mismatch.pcap --analyze --no-cli-print
@@ -80,16 +94,18 @@ Capture analysis: 4 finding(s) across 1 dialog(s), 2 stream(s), 69 frame(s) read
      - client 192.168.10.50:5060, server 198.51.100.20:3478 | 2023-11-14 22:13:20.000 UTC | requests=2 | retransmitted, which by itself proves the first request went unanswered
 ```
 
-   On this capture all four findings concern one call. The phone's STUN
-   requests got no answer (finding 4), so it put its private address
-   192.168.10.50 in its SDP (finding 2), and its audio reached the far side
-   from a different address (finding 3).
+  On this capture all four findings concern one call:
 
-2. If the report starts with a BLIND finding, fix the capture or the options
-   before reading anything else, because every count below it is a lower
-   bound. This run deliberately restricts the SIP ports to 5070 on a capture
-   whose SIP uses 5060. `2>/dev/null` discards two warning lines that repeat
-   the same fact:
+  - The phone's STUN requests got no answer (finding 4).
+  - So it put its private address 192.168.10.50 in its SDP (finding 2).
+  - Its audio reached the far side from a different address (finding 3).
+
+- If the report starts with a BLIND finding, fix the capture or the options
+  before reading anything else.
+  - Every count below it is a lower bound.
+  - This run deliberately restricts the SIP ports to 5070 on a capture whose
+    SIP uses 5060.
+  - `2>/dev/null` discards two warning lines that repeat the same fact:
 
 ```bash
 sipnab -N -q -I tests/pcap-samples/sip-rtp-g711.pcap --analyze --no-cli-print --portrange 5070-5070 2>/dev/null
@@ -106,14 +122,16 @@ THIS ANALYSIS IS INCOMPLETE — sipnab did not read all of this capture. The fin
      - port 5060 | messages=10
 ```
 
-3. Look for an ICMP finding against the audio. None of the captures in the
-   repository contains one, so this step shows no output. The troubleshooting
-   guide's section "First: check whether the network already answered" shows
-   what sipnab prints. Such a finding names the address and port that rejected
-   the audio and the device that reported it.
+- Look for an ICMP finding against the audio.
+  - None of the captures in the repository contains one. So this step shows no
+    output.
+  - The troubleshooting guide's section "First: check whether the network
+    already answered" shows what sipnab prints.
+  - Such a finding names the address and port that rejected the audio. It also
+    names the device that reported it.
 
-4. Check NAT. `--nat-issues` selects calls whose audio arrived from an address
-   that no SDP in the call advertised:
+- Check NAT. `--nat-issues` selects calls whose audio arrived from an address
+  that no SDP in the call advertised:
 
 ```bash
 sipnab -N -q -I tests/fixtures/stun_sdp_mismatch.pcap --nat-issues --report --no-cli-print
@@ -131,14 +149,16 @@ SSRC         PT   Codec    Clock  Source                Destination           Pk
 0x55667788   0    PCMU     8000   203.0.113.7:41000     192.168.10.50:40000   30      0      0.0%    0ms      1s     66
 ```
 
-   A NAT match on its own can be normal. Read it together with a one-way
-   finding on the same call, as finding 3 in step 1 says.
+  A NAT match on its own can be normal. Read it together with a one-way
+  finding on the same call. Finding 3 in the first step says this.
 
-5. Check STUN and TURN. Unanswered STUN requests already appear in the
-   analysis (step 1, finding 4). For a call that went silent partway through,
-   check whether a TURN relay allocation expired. A TURN server grants an
-   allocation for a lifetime and removes it if the phone does not renew
-   (Refresh) it in time, which stops the relayed audio with no SIP message:
+- Check STUN and TURN.
+  - Unanswered STUN requests already appear in the analysis (first step, finding 4).
+  - For a call that went silent partway through, check whether a TURN relay
+    allocation expired.
+  - A TURN server grants an allocation for a lifetime.
+  - It removes the allocation if the phone does not renew (Refresh) it in time.
+  - That stops the relayed audio with no SIP message:
 
 ```bash
 sipnab -N -q -I tests/fixtures/turn_relay.pcap --stun --no-cli-print
@@ -165,12 +185,12 @@ Client                 Server                 Relayed Address        Lifetime  R
     media on it: 152 frame(s) on channel 0x4001, carrying 2 stream(s) (SSRC 0x11223344, 0x55667788)
 ```
 
-   `LAPSED` marks the allocation that ran past its lifetime. sipnab reports
-   that it saw no Refresh, which can also mean the capture missed it.
+  `LAPSED` marks the allocation that ran past its lifetime. sipnab reports
+  that it saw no Refresh. That can also mean the capture missed it.
 
-6. If none of the above applies, check whether the endpoints set the call up
-   to send audio one way. `tests/pcap-samples/sip-rtp-g711.pcap` holds two calls that
-   `--analyze` reports as one-way audio:
+- If none of the above applies, check whether the endpoints set the call up
+  to send audio one way. `tests/pcap-samples/sip-rtp-g711.pcap` holds two calls
+  that `--analyze` reports as one-way audio:
 
 ```bash
 sipnab -N -q -I tests/pcap-samples/sip-rtp-g711.pcap --analyze --no-cli-print
@@ -186,9 +206,9 @@ Capture analysis: 1 finding(s) across 2 dialog(s), 2 stream(s), 852 frame(s) rea
      - Call-ID 1-1968@10.0.2.20 | 10.0.2.20:5060 -> 10.0.2.15, SDP 10.0.2.20 | 2016-11-26 14:53:08.286 UTC | rtp_packets=414 streams=1 | 10.0.2.15:28102 -> 10.0.2.20:6000 carried 414 packet(s); nothing came back the other way
 ```
 
-   `--nat-issues` selects neither call on this capture. Select the one-way
-   calls whose SIP messages contain an SDP direction other than `sendrecv`
-   (two-way):
+  `--nat-issues` selects neither call on this capture. Select the one-way
+  calls whose SIP messages contain an SDP direction other than `sendrecv`
+  (two-way):
 
 ```bash
 sipnab -N -q -I tests/pcap-samples/sip-rtp-g711.pcap --filter "one_way == true AND payload =~ 'a=(sendonly|recvonly|inactive)'" --report --no-cli-print
@@ -207,25 +227,34 @@ SSRC         PT   Codec    Clock  Source                Destination           Pk
 0x343ffa34   8    PCMA     8000   10.0.2.15:28102       10.0.2.20:6000        414     0      0.0%    0ms      8s     64
 ```
 
-   In both calls the INVITE's SDP carries `a=recvonly` and the `200 OK`'s SDP
-   carries `a=sendonly`: both ends agreed that audio flows one way, and it did.
-   The MCP tool `get_sdp_timeline` shows the same thing per offer and answer
-   (`"mode":"recvonly"` for the offer and `"mode":"sendonly"` for the answer on
-   call `1-1966@10.0.2.20`). The `payload` field matches any message in the
-   call, so a call put on hold with a re-INVITE also matches this filter. Read
-   the matching messages before concluding.
+  In both calls:
 
-7. Check comfort noise and codecs last.
-   - Some trunks send comfort noise (generated background noise) instead of
-     audio during silence. sipnab does not report one-way audio when comfort
-     noise exceeds a share of a call's packets set by
-     `--cn-suppression-ratio`, default 0.3. Raising it can hide real one-way
-     calls, and lowering it reports more. On `sip-rtp-g711.pcap`, which carries
-     no comfort noise, `--cn-suppression-ratio 0.5` produces output identical
-     to step 6.
-   - The MCP tool `check_codec_negotiation` lists the codecs `offered`,
-     `answered` and `common` to both. For call `1-1966@10.0.2.20`, `common`
-     holds PCMU, so the two ends shared a codec.
+  - The INVITE's SDP carries `a=recvonly`.
+  - The `200 OK`'s SDP carries `a=sendonly`.
+  - Both ends agreed that audio flows one way, and it did.
+
+  The MCP tool `get_sdp_timeline` shows the same thing per offer and answer.
+  On call `1-1966@10.0.2.20` it shows `"mode":"recvonly"` for the offer and
+  `"mode":"sendonly"` for the answer.
+
+  The `payload` field matches any message in the call. So a call put on hold
+  with a re-INVITE also matches this filter. Read the matching messages before
+  concluding.
+
+- Check comfort noise and codecs last.
+  - Some trunks send comfort noise (generated background noise) instead of
+    audio during silence.
+    - sipnab does not report one-way audio when comfort noise exceeds a share
+      of a call's packets.
+    - `--cn-suppression-ratio` sets that share. The default is 0.3.
+    - Raising it can hide real one-way calls. Lowering it reports more.
+    - `sip-rtp-g711.pcap` carries no comfort noise. On it,
+      `--cn-suppression-ratio 0.5` produces output identical to the previous
+      step.
+  - The MCP tool `check_codec_negotiation` lists the codecs `offered`,
+    `answered` and `common` to both.
+    - For call `1-1966@10.0.2.20`, `common` holds PCMU.
+    - So the two ends shared a codec.
 
 ## Terms used here
 
@@ -260,8 +289,8 @@ SSRC         PT   Codec    Clock  Source                Destination           Pk
 - [NAT traversal issues](@/docs/troubleshooting.md#nat-traversal-issues)
 - [NAT discovery went unanswered](@/docs/troubleshooting.md#nat-discovery-went-unanswered)
 - [A relayed call that went quiet halfway through](@/docs/troubleshooting.md#a-relayed-call-that-went-quiet-halfway-through)
-- Cookbook [4. Diagnose a one-way audio complaint](@/docs/cookbook.md#4-diagnose-a-one-way-audio-complaint)
-  and [45. Check whether comfort noise explains a one-way finding](@/docs/cookbook.md#45-check-whether-comfort-noise-explains-a-one-way-finding)
+- Cookbook [4. Diagnose a one-way audio complaint](@/docs/cookbook.md#diagnose-a-one-way-audio-complaint)
+  and [45. Check whether comfort noise explains a one-way finding](@/docs/cookbook.md#check-whether-comfort-noise-explains-a-one-way-finding)
 - [STUN / TURN JSON (`--json-stun`)](@/docs/output-formats.md#stun-turn-json-json-stun)
 - [`get_sdp_timeline`](@/docs/mcp-tools-signaling.md#get-sdp-timeline) and
   [`check_codec_negotiation`](@/docs/mcp-tools-signaling.md#check-codec-negotiation)

@@ -1,16 +1,20 @@
 # Error messages
 
 When sipnab refuses to start a run, or stops part way through one, it prints a
-message saying why. This page lists those messages so that you can look one up
-by its text. Search this page for a distinctive part of the message you see,
-such as a flag name or the first few words.
+message. The message says why.
+
+- This page lists those messages, so that you can look one up by its text.
+- Search this page for a distinctive part of the message you see. For example,
+  search for a flag name or the first few words.
 
 ## How to read an entry
 
-Each heading is a message exactly as sipnab's source code writes it. A name in
-braces, such as `{path}`, is a placeholder: sipnab puts a value there, such as
-a file name, when it prints the message. A pair of empty braces, `{}`, is a
-placeholder without a name. `\n` marks a line break.
+Each heading is a message exactly as sipnab's source code writes it.
+
+- A name in braces, such as `{path}`, is a placeholder. sipnab puts a value
+  there when it prints the message, such as a file name.
+- A pair of empty braces, `{}`, is a placeholder without a name.
+- `\n` marks a line break.
 
 Under each heading:
 
@@ -18,33 +22,43 @@ Under each heading:
   hold;
 - **What to do** says how to get past it;
 - **Exit code** is the number sipnab returns to the shell when the message
-  stops the run. [Exit codes](cli-reference.md#exit-codes) in the CLI
-  reference explains each code. An entry marked as a warning does not stop
-  the run.
+  stops the run.
+  - [Exit codes](cli-reference.md#exit-codes) in the CLI reference explains
+    each code.
+  - An entry marked as a warning does not stop the run.
 
-sipnab prints most messages as log lines on stderr (the standard error
-stream, which a shell shows on the terminal unless you redirect it), in this
-form:
+sipnab prints most messages as log lines on stderr, in this form. stderr is
+the standard error stream. A shell shows it on the terminal unless you
+redirect it.
 
 ```text
 2026-10-12T04:04:45.184315Z ERROR sipnab::app::bootstrap: config file not found: /nonexistent/x.toml
 ```
 
-The part after the module name (`sipnab::app::bootstrap:`) is the message.
-`ERROR` lines are errors and `WARN` lines are warnings. In the terminal UI,
-sipnab shows only `ERROR` lines unless the `SIPNAB_LOG` environment variable
-sets a level, so run with `-N` (no terminal UI) or set `SIPNAB_LOG=info` to
-see the warnings as well. sipnab writes a few messages to stderr without the
-timestamp and level, because they decide the exit code and must appear even
-when logging is off.
+- The part after the module name (`sipnab::app::bootstrap:`) is the message.
+- `ERROR` lines are errors and `WARN` lines are warnings.
+- In the terminal UI, sipnab shows only `ERROR` lines, unless the `SIPNAB_LOG`
+  environment variable sets a level. To see the warnings as well, do one of
+  these:
+  - run with `-N` (no terminal UI);
+  - set `SIPNAB_LOG=info`.
+- sipnab writes a few messages to stderr without the timestamp and level.
+  These messages decide the exit code, so they must appear even when logging
+  is off.
 
 ## What this page covers
 
 The page lists the messages that the startup and exit path of the `sipnab`
-command raises: argument checks, the configuration file, the run planner that
-turns flags and the configuration into a run, and the run modes (batch,
-terminal UI, the listeners, vCon export, fetch and forwarding). It also lists
-the warnings that these parts of sipnab print while the run continues.
+command raises:
+
+- argument checks;
+- the configuration file;
+- the run planner, which turns flags and the configuration into a run;
+- the run modes (batch, terminal UI, the listeners, vCon export, fetch and
+  forwarding).
+
+It also lists the warnings that these parts of sipnab print while the run
+continues.
 
 The page does not list:
 
@@ -54,15 +68,17 @@ The page does not list:
   [MCP protocol](mcp-protocol.md) documents;
 - errors from the WebAssembly build of the library;
 - the text of errors that come from deeper inside sipnab or from the
-  operating system, for example from the capture code or from a file sipnab
-  cannot open. Startup messages often end with such a text after a colon. The
-  entry for the startup message explains the part before the colon.
+  operating system. For example, from the capture code, or from a file sipnab
+  cannot open.
+  - Startup messages often end with such a text after a colon.
+  - The entry for the startup message explains the part before the colon.
 
 A test,
 [`tests/error_reference_test.rs`](https://github.com/NormB/sipnab/blob/main/tests/error_reference_test.rs),
-reads the messages in the source code
-and fails when a message has no entry here, or when an entry names a message
-that sipnab no longer prints.
+reads the messages in the source code. It fails in two cases:
+
+- a message has no entry here;
+- an entry names a message that sipnab no longer prints.
 
 ## Command-line flags
 
@@ -86,15 +102,21 @@ The number in `--autostop` is 0. `{key}` is the condition (`duration`, `filesize
 
 A warning: the command line has both `-I` (read a capture file) and `-d` (capture from an interface). sipnab reads the file and does not open the interface.
 
-**What to do:** Remove `-I` to capture live traffic, or remove `-d` to silence the warning when you mean to read the file.
+**What to do:** Remove `-I` to capture live traffic. Or remove `-d` to silence the warning when you mean to read the file.
 
 **Exit code:** None. This is a warning, and the run continues.
 
 ### `--business-hours {reason}`
 
-The value given to `--business-hours` is not a usable working-hours window. `{reason}` says why: either the value is not two whole hours from 0 to 23 joined by `-` (the reason then quotes the value), or the start and end hours are equal, which would be a zero-length window that treats every call as off-hours.
+The value given to `--business-hours` is not a usable working-hours window. `{reason}` says why. There are two cases:
 
-**What to do:** Give `--business-hours` as `START-END` in whole hours 0-23 with different start and end, for example `8-18`, or `22-6` for a window that crosses midnight.
+- The value is not two whole hours from 0 to 23 joined by `-`. The reason then quotes the value.
+- The start and end hours are equal. That would be a zero-length window, which treats every call as off-hours.
+
+**What to do:** Give `--business-hours` as `START-END`, in whole hours 0-23, with different start and end.
+
+- For example, `8-18`.
+- Or `22-6` for a window that crosses midnight.
 
 **Exit code:** 2.
 
@@ -116,7 +138,11 @@ You gave `--lint` with a suppression file (`{name}`, from `--lint-suppress-file`
 
 ### `--capture-tunnels was given an empty port list; drop the flag, or pass ports, e.g. --capture-tunnels={TUNNEL_PORTS_DEFAULT_LIST}`
 
-`--capture-tunnels` takes a comma-separated list of UDP ports whose traffic the generated capture filter takes in full, for tunnels such as GTP-U or VXLAN. `{TUNNEL_PORTS_DEFAULT_LIST}` is the default list, `2152,4789,6081`. sipnab checks each port before it reaches this check, and an empty value fails that earlier check first, so a run prints the `Invalid --capture-tunnels port` message instead of this one.
+`--capture-tunnels` takes a comma-separated list of UDP ports. The generated capture filter takes the traffic on these ports in full. It is for tunnels such as GTP-U or VXLAN.
+
+- `{TUNNEL_PORTS_DEFAULT_LIST}` is the default list, `2152,4789,6081`.
+- sipnab checks each port before it reaches this check.
+- An empty value fails that earlier check first. So a run prints the `Invalid --capture-tunnels port` message instead of this one.
 
 **What to do:** Follow the entry for `Invalid --capture-tunnels port '{text}'`: pass one or more ports, for example `--capture-tunnels=2152,4789`, or remove the flag.
 
@@ -132,9 +158,17 @@ You gave `--lint` with a suppression file (`{name}`, from `--lint-suppress-file`
 
 ### `--cores {} cannot produce {}: the parallel reader rebuilds dialogs per shard and has no per-message stream or capture writer, so it would emit nothing and still exit 0. Drop --cores for these, or keep --cores and ask for a whole-capture view instead (--json-dialogs, --report, --call-report), which the parallel path does produce.`
 
-`--cores` above 1 with `-I` (and without `--multi-device`) uses the parallel file reader, which rebuilds dialogs per shard and has no per-message output or capture writer. The first placeholder is the `--cores` value. The second lists the requested outputs it cannot produce: `--json`/`--json-pretty`, `--text-dump`, `--fail2ban` and `-O/--output`. sipnab refuses rather than write nothing and exit 0.
+`--cores` above 1 with `-I` (and without `--multi-device`) uses the parallel file reader.
 
-**What to do:** Remove `--cores` (or set it to 1) to get those outputs, or keep `--cores` and ask for `--json-dialogs`, `--report` or `--call-report` instead.
+- That reader rebuilds dialogs per shard. It has no per-message output or capture writer.
+- The first placeholder is the `--cores` value.
+- The second lists the requested outputs it cannot produce: `--json`/`--json-pretty`, `--text-dump`, `--fail2ban` and `-O/--output`.
+- sipnab refuses rather than write nothing and exit 0.
+
+**What to do:** Do one of these:
+
+- Remove `--cores` (or set it to 1) to get those outputs.
+- Keep `--cores` and ask for `--json-dialogs`, `--report` or `--call-report` instead.
 
 **Exit code:** 2.
 
@@ -148,7 +182,12 @@ The `--autostop` value has no `:`. `{s}` is the value given. It must be a condit
 
 ### `Expected format 'start-end' (e.g., '5060-5061'), got '{s}'`
 
-A port range must be two port numbers joined by a single `-`, such as `5060-5061`. The value shown (`{s}`) did not split into exactly two parts at `-`, for example a single port or three numbers. The same parser reads `--portrange`, `[capture] portrange`, `--ws-portrange` and `[capture] ws_ports`. For the first two, the line starts with `Invalid --portrange:` or `Invalid [capture] portrange:`. For the WebSocket pair, it starts with `invalid config value: --ws-portrange:` or `invalid config value: [capture] ws_ports:`.
+A port range must be two port numbers joined by a single `-`, such as `5060-5061`.
+
+- The value shown (`{s}`) did not split into exactly two parts at `-`. For example, it is a single port or three numbers.
+- The same parser reads `--portrange`, `[capture] portrange`, `--ws-portrange` and `[capture] ws_ports`.
+  - For the first two, the line starts with `Invalid --portrange:` or `Invalid [capture] portrange:`.
+  - For the WebSocket pair, it starts with `invalid config value: --ws-portrange:` or `invalid config value: [capture] ws_ports:`.
 
 **What to do:** Write the range as `START-END`. For one port, repeat it (`5060-5060`). sipnab accepts a start equal to the end.
 
@@ -172,9 +211,17 @@ A port range must be two port numbers joined by a single `-`, such as `5060-5061
 
 ### `--fail2ban writes nothing for detections carried by HEP: the inner addresses are the sender's claim, and a jail line would ban whatever address it chose. Pass --hep-allow-kill to admit them once the feed is authenticated (--hep-auth) and trusted.`
 
-Startup warning for a run with `--fail2ban` that reads HEP (a HEP listener with `--hep-listen`, or `--hep-parse`/`-E`) without `--hep-allow-kill`. HEP (Homer Encapsulation Protocol) carries copies of SIP packets that another system sent, and the source and destination addresses inside are whatever that sender wrote. sipnab therefore writes no jail line for a detection that arrived over HEP.
+Startup warning for a run with `--fail2ban` that reads HEP without `--hep-allow-kill`.
 
-**What to do:** If you authenticate the HEP feed (`--hep-auth`) and trust it, add `--hep-allow-kill` so that HEP-carried detections reach the jail log. Otherwise this warning is normal, and the jail log stays empty for HEP traffic.
+- The run reads HEP with a HEP listener (`--hep-listen`), or with `--hep-parse`/`-E`.
+- HEP (Homer Encapsulation Protocol) carries copies of SIP packets that another system sent.
+- The source and destination addresses inside are whatever that sender wrote.
+- sipnab therefore writes no jail line for a detection that arrived over HEP.
+
+**What to do:**
+
+- If you authenticate the HEP feed (`--hep-auth`) and trust it, add `--hep-allow-kill`. Then HEP-carried detections reach the jail log.
+- Otherwise this warning is normal, and the jail log stays empty for HEP traffic.
 
 **Exit code:** None. This is a warning, and the run continues.
 
@@ -182,7 +229,13 @@ Startup warning for a run with `--fail2ban` that reads HEP (a HEP listener with 
 
 Startup warning for `--fail2ban` when none of the three producers of jail lines is active: no scanner detector (`--kill-scanner` or `[security] kill_scanner`), no `-K`/`--kill-target`, and no `--reg-flood`. With none of them, the run cannot write a jail line, so an empty jail log means sipnab looked for nothing.
 
-**What to do:** Add `--kill-scanner` to detect scanners, `-K`/`--kill-target <addr>` (also `addr:port` or `addr:lo-hi`) to name a source, or `--reg-flood` to detect registration floods. `--kill-ua <pattern>` only adds a User-Agent pattern, and sipnab accepts it only together with `--kill-scanner` or `[security] kill_scanner = true`.
+**What to do:** Add one of these:
+
+- `--kill-scanner` to detect scanners;
+- `-K`/`--kill-target <addr>` (also `addr:port` or `addr:lo-hi`) to name a source;
+- `--reg-flood` to detect registration floods.
+
+`--kill-ua <pattern>` only adds a User-Agent pattern. sipnab accepts it only together with `--kill-scanner` or `[security] kill_scanner = true`.
 
 **Exit code:** None. This is a warning, and the run continues.
 
@@ -196,7 +249,12 @@ sipnab could not read the file named by `--bpf-file`. A BPF filter is the packet
 
 ### `Failed to start multi-device capture: {e}`
 
-`--multi-device` could not start its captures. `{e}` is the reason: the device list given to `-d` is empty, has an empty entry (a doubled, leading or trailing comma), or has a name containing a null byte, or sipnab could not create a capture thread.
+`--multi-device` could not start its captures. `{e}` is the reason. It is one of these:
+
+- the device list given to `-d` is empty;
+- the list has an empty entry (a doubled, leading or trailing comma);
+- the list has a name containing a null byte;
+- sipnab could not create a capture thread.
 
 **What to do:** Give `-d` a comma-separated list of interface names with no empty entries, for example `-d eth0,docker0 --multi-device`.
 
@@ -212,9 +270,13 @@ A secret file given with `--hep-auth-file` or `--metrics-auth-file` is empty or 
 
 ### `--fraud-destination {bad:?} is not a destination sipnab can match: give ISO 3166-1 alpha-2 codes the dial plan labels (NANP for +1 numbers), comma-separated`
 
-One entry in the comma-separated `--fraud-destination` list is not a destination label sipnab knows. `{bad:?}` is the first such entry, shown in double quotes. Labels are the two-letter ISO 3166-1 alpha-2 country codes that sipnab's dial plan uses, compared without regard to case. Numbers starting with +1 carry the label `NANP` (North American Numbering Plan), so sipnab does not accept `US`.
+One entry in the comma-separated `--fraud-destination` list is not a destination label sipnab knows.
 
-**What to do:** Replace the named entry with a label from the dial plan, such as `GB` or `DO`, and use `NANP` for any +1 destination. Separate entries with commas.
+- `{bad:?}` is the first such entry, shown in double quotes.
+- Labels are the two-letter ISO 3166-1 alpha-2 country codes that sipnab's dial plan uses. sipnab compares them without regard to case.
+- Numbers starting with +1 carry the label `NANP` (North American Numbering Plan). So sipnab does not accept `US`.
+
+**What to do:** Replace the named entry with a label from the dial plan, such as `GB` or `DO`. Use `NANP` for any +1 destination. Separate entries with commas.
 
 **Exit code:** 2.
 
@@ -230,13 +292,17 @@ sipnab could not resolve the HEP authentication secret. `{e}` names the source: 
 
 A `-K`/`--kill-target` value failed to parse while sipnab built the detectors, and sipnab skips that one target. `{spec}` is the value, and `{e}` is the reason. The code notes that this is a fallback: sipnab checks the same values at startup and refuses a malformed value before the capture opens.
 
-**What to do:** Give the target as `ADDR`, `ADDR:PORT` or `ADDR:LO-HI` (an IPv6 address with a port goes in brackets, for example `[::1]:5060`).
+**What to do:** Give the target as `ADDR`, `ADDR:PORT` or `ADDR:LO-HI`. An IPv6 address with a port goes in brackets, for example `[::1]:5060`.
 
 **Exit code:** None. sipnab logs the error, and the run continues.
 
 ### `--input/-I and --hep-listen/-L cannot run together. This is a security refusal, not a scheduling one: packets read from a file carry historical addresses belonging to third parties who are not part of this analysis, and sipnab keeps them off the active response path by refusing to transmit for a FILE run at all. A composite source would remove that refusal while the per-packet gate still admitted them. Read the capture in its own run, and point -L at a separate sipnab.`
 
-sipnab refuses to read a capture file (`-I`) and listen for HEP (Homer Encapsulation Protocol, a format for mirroring SIP to a collector, `-L`) in one run. sipnab never transmits during a file run. Combining the two sources would remove that refusal, while packets from the file, which carry other parties' historical addresses, could still reach the active response path.
+sipnab refuses to read a capture file (`-I`) and listen for HEP (`-L`) in one run. HEP is Homer Encapsulation Protocol, a format for mirroring SIP to a collector.
+
+- sipnab never transmits during a file run.
+- Combining the two sources would remove that refusal.
+- Packets from the file carry other parties' historical addresses. They could still reach the active response path.
 
 **What to do:** Run two separate sipnab processes: one that reads the file with `-I`, and one that listens with `-L`.
 
@@ -244,7 +310,10 @@ sipnab refuses to read a capture file (`-I`) and listen for HEP (Homer Encapsula
 
 ### `Internal error building the --calls-only filter: {e}`
 
-`-c`/`--calls-only` keeps only INVITE dialogs by joining the expression `method == 'INVITE'` to the run's filter with `AND`, and that combined expression did not parse. sipnab has already checked any `--filter` expression by this point, so this indicates a fault in sipnab. `{e}` is the parser's error.
+`-c`/`--calls-only` keeps only INVITE dialogs. It joins the expression `method == 'INVITE'` to the run's filter with `AND`. That combined expression did not parse.
+
+- sipnab has already checked any `--filter` expression by this point. So this indicates a fault in sipnab.
+- `{e}` is the parser's error.
 
 **What to do:** Report the message with the command line. Running without `-c` avoids this step.
 
@@ -252,17 +321,22 @@ sipnab refuses to read a capture file (`-I`) and listen for HEP (Homer Encapsula
 
 ### `--until {} is not after --since {}: the window [--since, --until) would hold no instant`
 
-`--since` and `--until` keep the dialogs whose first message falls at or after `--since` and before `--until`. The `--until` time you gave, the first `{}`, is the same as or earlier than the `--since` time, the second `{}`, so no instant is in the window. sipnab prints both in [RFC 3339](https://www.rfc-editor.org/rfc/rfc3339.html) UTC.
+`--since` and `--until` keep the dialogs whose first message falls at or after `--since` and before `--until`.
 
-**What to do:** Give an `--until` time later than the `--since` time, or drop one of the two flags for a window open on that side.
+- The `--until` time you gave is the first `{}`.
+- It is the same as or earlier than the `--since` time, the second `{}`.
+- So no instant is in the window.
+- sipnab prints both in [RFC 3339](https://www.rfc-editor.org/rfc/rfc3339.html) UTC.
+
+**What to do:** Give an `--until` time later than the `--since` time. Or drop one of the two flags for a window open on that side.
 
 **Exit code:** 2.
 
 ### `--since/--until narrow the batch outputs and require -N/--no-tui mode. In the TUI, set the time range in the call list's filter dialog`
 
-`--since` and `--until` narrow the batch outputs (`--report`, `--json-dialogs`, the per-message stream and the queries), and the terminal UI shows none of them. You gave one of the flags without `-N`, so the run would start the terminal UI.
+`--since` and `--until` narrow the batch outputs: `--report`, `--json-dialogs`, the per-message stream and the queries. The terminal UI shows none of them. You gave one of the flags without `-N`, so the run would start the terminal UI.
 
-**What to do:** Add `-N` to run headless, or drop the flags and set the time range in the filter dialog of the call list in the terminal UI.
+**What to do:** Add `-N` to run headless. Or drop the flags and set the time range in the filter dialog of the call list in the terminal UI.
 
 **Exit code:** 2.
 
@@ -284,7 +358,16 @@ sipnab could not parse the SIP port range. `{portrange_source}` names where it c
 
 ### `invalid alert rule '{input}': {reason}`
 
-An alert rule from `--alert` or `[security] alert` does not follow the grammar `<name>:<threshold>/<window>[:<cooldown>]`. `{input}` is the rule, and `{reason}` names the part that failed: a missing `:` or `/`, an empty name, a threshold that is not a whole number, or a window or cooldown without an `s`, `m` or `h` suffix. The line starts with `--alert:` or `[security] alert:`. sipnab reads an entry without `:` as a channel name and checks it separately.
+An alert rule from `--alert` or `[security] alert` does not follow the grammar `<name>:<threshold>/<window>[:<cooldown>]`.
+
+- `{input}` is the rule.
+- `{reason}` names the part that failed:
+  - a missing `:` or `/`;
+  - an empty name;
+  - a threshold that is not a whole number;
+  - a window or cooldown without an `s`, `m` or `h` suffix.
+- The line starts with `--alert:` or `[security] alert:`.
+- sipnab reads an entry without `:` as a channel name, and checks it separately.
 
 **What to do:** Write the rule as in `scanner:10/1m` or `reg-flood:50/10s:5m`: a finding name, a count, `/`, a window with `s`, `m` or `h`, and optionally `:` and a cooldown.
 
@@ -292,7 +375,12 @@ An alert rule from `--alert` or `[security] alert` does not follow the grammar `
 
 ### `Invalid --autostop: {e}`
 
-sipnab could not use the `--autostop` value. `{e}` is the reason: the value has no `:`, the number is not a whole number, the number is 0, or the condition is not `duration` or `filesize`.
+sipnab could not use the `--autostop` value. `{e}` is the reason. It is one of these:
+
+- the value has no `:`;
+- the number is not a whole number;
+- the number is 0;
+- the condition is not `duration` or `filesize`.
 
 **What to do:** Use `--autostop duration:N` (seconds) or `--autostop filesize:N` (MiB), with N a whole number above 0.
 
@@ -302,13 +390,21 @@ sipnab could not use the `--autostop` value. `{e}` is the reason: the value has 
 
 An entry in the `--capture-tunnels` list is not a UDP port from 1 to 65535. `{text}` is the entry as given, after trimming spaces. An empty entry also produces this message. `{TUNNEL_PORTS_DEFAULT_LIST}` is the default list, `2152,4789,6081`.
 
-**What to do:** Give a comma-separated list of port numbers, for example `--capture-tunnels=2152,4789,6081`, or give the flag with no value to use the default.
+**What to do:** Give a comma-separated list of port numbers, for example `--capture-tunnels=2152,4789,6081`. Or give the flag with no value to use the default.
 
 **Exit code:** 2.
 
 ### `invalid CIDR '{input}': {reason}`
 
-A `--hep-allow` entry (the list of senders that may deliver HEP to `--hep-listen`) is not a valid address or CIDR range. `{input}` is the entry, and `{reason}` says what failed: an invalid IP address, an invalid prefix length, or a prefix longer than 32 (IPv4) or 128 (IPv6). The line starts with `Invalid --hep-allow CIDR '<entry>':`. sipnab accepts a bare address without `/` and reads it as that one host.
+A `--hep-allow` entry is not a valid address or CIDR range. That flag is the list of senders that may deliver HEP to `--hep-listen`.
+
+- `{input}` is the entry.
+- `{reason}` says what failed:
+  - an invalid IP address;
+  - an invalid prefix length;
+  - a prefix longer than 32 (IPv4) or 128 (IPv6).
+- The line starts with `Invalid --hep-allow CIDR '<entry>':`.
+- sipnab accepts a bare address without `/`, and reads it as that one host.
 
 **What to do:** Write each entry as an address (`192.0.2.40`) or an address with a prefix length (`198.51.100.0/24`, `2001:db8::/32`).
 
@@ -344,7 +440,10 @@ A SIP matching pattern did not compile as a regular expression. The patterns com
 
 **What to do:** Correct the named pattern's regular expression syntax, or quote it so the shell passes it unchanged.
 
-**Exit code:** 2 when the command line includes any of `--match`, `--from`, `--to`, `--contact` or `--ua`, and 1 otherwise (patterns from the config file).
+**Exit code:**
+
+- 2 when the command line includes any of `--match`, `--from`, `--to`, `--contact` or `--ua`;
+- 1 otherwise (patterns from the config file).
 
 ### `Invalid --hep-allow CIDR '{cidr}': {e}`
 
@@ -356,9 +455,13 @@ A `--hep-allow` value is not a valid address range. `--hep-allow` lists the send
 
 ### `Invalid --ws-portrange: {e}`
 
-The SIP over WebSocket port range that `--ws-portrange` gives is not usable. `{e}` says what is wrong: the value is not two ports joined by `-`, one side is not a port number from 0 to 65535, or the start is higher than the end.
+The SIP over WebSocket port range that `--ws-portrange` gives is not usable. `{e}` says what is wrong:
 
-**What to do:** Give the range as `START-END` with the lower port first, for example `8080-8443`, or remove the flag for the shipped ports.
+- the value is not two ports joined by `-`;
+- one side is not a port number from 0 to 65535;
+- the start is higher than the end.
+
+**What to do:** Give the range as `START-END` with the lower port first, for example `8080-8443`. Or remove the flag for the shipped ports.
 
 **Exit code:** 2.
 
@@ -388,15 +491,31 @@ The SIP over WebSocket port range that `--ws-portrange` gives is not usable. `{e
 
 ### `--kill-target '{spec}': {e}`
 
-sipnab could not read a `-K`/`--kill-target` value. `{spec}` is the value as you gave it, and `{e}` is the reason, such as an empty value, an address that is not IPv4 or IPv6, an unclosed `[`, a port that is not a number from 0 to 65535, or a port range whose start is above its end. sipnab checks each value at startup.
+sipnab could not read a `-K`/`--kill-target` value. sipnab checks each value at startup.
 
-**What to do:** Write each value as an address (`192.0.2.10`), an address with a port or port range (`192.0.2.10:5060` or `192.0.2.10:5060-5070`), or an IPv6 address in brackets with an optional port (`[2001:db8::1]:5060`).
+- `{spec}` is the value as you gave it.
+- `{e}` is the reason, such as:
+  - an empty value;
+  - an address that is not IPv4 or IPv6;
+  - an unclosed `[`;
+  - a port that is not a number from 0 to 65535;
+  - a port range whose start is above its end.
+
+**What to do:** Write each value in one of these forms:
+
+- an address (`192.0.2.10`);
+- an address with a port or port range (`192.0.2.10:5060` or `192.0.2.10:5060-5070`);
+- an IPv6 address in brackets, with an optional port (`[2001:db8::1]:5060`).
 
 **Exit code:** 2.
 
 ### `--multi-device and --hep-listen/-L cannot run together yet. One interface plus one HEP listener is supported; a device LIST plus a listener is not, because sipnab correlates a HEP-delivered dialog to a locally captured stream by SDP media endpoint alone and that index carries no node dimension — two sources advertising the same address and port would overwrite each other. Drop --multi-device, or drop -L.`
 
-You cannot combine `--multi-device` (a comma-separated device list given to `-d`) with a HEP listener (`-L`). sipnab matches a HEP-delivered call to locally captured media by the SDP media address and port alone. With several capture devices, two sources advertising the same address and port would overwrite each other. sipnab supports one interface plus one HEP listener.
+You cannot combine `--multi-device` with a HEP listener (`-L`). That flag takes a comma-separated device list given to `-d`.
+
+- sipnab matches a HEP-delivered call to locally captured media by the SDP media address and port alone.
+- With several capture devices, two sources could advertise the same address and port. They would overwrite each other.
+- sipnab supports one interface plus one HEP listener.
 
 **What to do:** Remove `--multi-device` and capture on one interface beside `-L`, or remove `-L`.
 
@@ -428,7 +547,10 @@ A measurement boundary or declared delay needs a finite number of 0 or more. `{v
 
 ### `--names {f:?} cannot be read: {e}`
 
-sipnab cannot open a file given to `--names` (an `/etc/hosts`-format file that maps IP addresses to names), or the path is a directory. `{f:?}` is the path in quotes and `{e}` is the reason. sipnab refuses instead of running without the names you asked it to use.
+sipnab cannot open a file given to `--names`, or the path is a directory. That flag takes an `/etc/hosts`-format file that maps IP addresses to names.
+
+- `{f:?}` is the path in quotes and `{e}` is the reason.
+- sipnab refuses instead of running without the names you asked it to use.
 
 **What to do:** Correct the path, make the file readable by the user running sipnab, or remove that `--names` argument.
 
@@ -452,7 +574,10 @@ In a run that starts the TUI, sipnab loads the `--notes` file before any capture
 
 ### `--notes names the notes for --write-annotated or the TUI's notes file, and this run is neither: nothing would read them`
 
-`--notes` names a notes file, which only `--write-annotated` and the interactive TUI read. This run is neither (for example it uses `-N`/`--no-tui`, MCP, or `--cores` with `-I`), so nothing would read the notes and sipnab refuses the flag.
+`--notes` names a notes file. Only `--write-annotated` and the interactive TUI read it.
+
+- This run is neither. For example, it uses `-N`/`--no-tui`, MCP, or `--cores` with `-I`.
+- So nothing would read the notes, and sipnab refuses the flag.
 
 **What to do:** Remove `--notes`, or use it with `--write-annotated <OUT> -I <capture>`, or in a run that starts the TUI.
 
@@ -460,7 +585,9 @@ In a run that starts the TUI, sipnab loads the `--notes` file before any capture
 
 ### `Output flags ({}) require -N/--no-tui mode (or --call-report, or --export-vcon)`
 
-The flags listed in parentheses print their results to standard output, which the interactive terminal interface (TUI) uses. You gave them on a run that starts the TUI. The list can include `--json`, `--json-dialogs`, `--json-pretty`, `--report`, `--stun`, `--json-stun`, `--analyze`, `--json-analyze`, `--yang-analyze`, `--hexdump`, `--fail2ban`, `--group-by` and `--recommend-block`.
+The flags listed in parentheses print their results to standard output. The interactive terminal interface (TUI) uses standard output. You gave them on a run that starts the TUI.
+
+The list can include `--json`, `--json-dialogs`, `--json-pretty`, `--report`, `--stun`, `--json-stun`, `--analyze`, `--json-analyze`, `--yang-analyze`, `--hexdump`, `--fail2ban`, `--group-by` and `--recommend-block`.
 
 **What to do:** Add `-N` (`--no-tui`) to run without the TUI. A run with `--call-report` or `--export-vcon` is also accepted.
 
@@ -468,7 +595,11 @@ The flags listed in parentheses print their results to standard output, which th
 
 ### `Port range start ({start}) > end ({end})`
 
-A port range has a first port larger than the second. `{start}` and `{end}` are the two numbers as read. The same parser reads `--portrange`, `[capture] portrange`, `--ws-portrange` and `[capture] ws_ports`, and the line starts with the name of the setting that held the value.
+A port range has a first port larger than the second.
+
+- `{start}` and `{end}` are the two numbers as read.
+- The same parser reads `--portrange`, `[capture] portrange`, `--ws-portrange` and `[capture] ws_ports`.
+- The line starts with the name of the setting that held the value.
 
 **What to do:** Put the lower port first, for example `5060-5080` rather than `5080-5060`.
 
@@ -492,7 +623,13 @@ An `--alert` (or `[security] alert`) value containing `:` is not a valid alert r
 
 ### `start and end must differ; "{start}-{end}" is a zero-width window that would treat every call as off-hours`
 
-A business-hours window (sipnab uses it to flag calls placed outside office hours) has the same start and end hour. `{start}` and `{end}` are the two hours. Such a window has no length, so every call would count as off-hours. The window comes from `--business-hours` (the line starts with `--business-hours`) or from `[security] business_hours` (the line starts with `invalid config value: [security] business_hours`).
+A business-hours window has the same start and end hour. sipnab uses this window to flag calls placed outside office hours.
+
+- `{start}` and `{end}` are the two hours.
+- Such a window has no length, so every call would count as off-hours.
+- The window comes from one of two places:
+  - `--business-hours` (the line starts with `--business-hours`);
+  - `[security] business_hours` (the line starts with `invalid config value: [security] business_hours`).
 
 **What to do:** Give two different whole hours from 0 to 23, such as `8-18`, or `22-6` for an overnight window.
 
@@ -558,9 +695,17 @@ sipnab could not parse an `--alert` (or `[security] alert`) rule. `{from}` names
 
 ### `cannot read config file {path}: {source}`
 
-sipnab found a config file (one that `-f`/`--config` or `$SIPNAB_CONFIG` names, or one at a default location) but could not read it as text. `{path}` is the file, and `{source}` is the operating-system or read error, such as permission denied, a directory, or content that is not UTF-8.
+sipnab found a config file but could not read it as text.
 
-**What to do:** Give the user running sipnab read access to the file, point `--config` at a regular text file, or start with `-F`/`--no-config` to use the built-in defaults.
+- The file is one that `-f`/`--config` or `$SIPNAB_CONFIG` names, or one at a default location.
+- `{path}` is the file.
+- `{source}` is the operating-system or read error. Examples are permission denied, a directory, or content that is not UTF-8.
+
+**What to do:** Do one of these:
+
+- Give the user running sipnab read access to the file.
+- Point `--config` at a regular text file.
+- Start with `-F`/`--no-config` to use the built-in defaults.
 
 **Exit code:** 1.
 
@@ -590,7 +735,11 @@ The file that `-f`/`--config` names does not exist. `{path}` is the path you gav
 
 ### `could not load names file {f}: {e}`
 
-sipnab could not read a names file (an `/etc/hosts`-format file of IP-to-name mappings from `--names` or `[names] hosts_file`) when it loaded names. `{f}` is the path, and `{e}` is the read error. Startup already refuses a names file it cannot read, so this appears when the file became unreadable after that check. The run continues without the names in that file.
+sipnab could not read a names file when it loaded names. A names file is an `/etc/hosts`-format file of IP-to-name mappings from `--names` or `[names] hosts_file`.
+
+- `{f}` is the path, and `{e}` is the read error.
+- Startup already refuses a names file it cannot read. So this appears when the file became unreadable after that check.
+- The run continues without the names in that file.
 
 **What to do:** Give the user sipnab runs as read access to the file, and restart sipnab.
 
@@ -598,7 +747,11 @@ sipnab could not read a names file (an `/etc/hosts`-format file of IP-to-name ma
 
 ### `create {}: {e}`
 
-sipnab could not create the folder that holds the configuration file while saving from the terminal UI, either the column layout (F10 selector) or a name for an address. `{}` is the folder path and `{e}` is the operating system's reason. sipnab writes nothing.
+sipnab could not create the folder that holds the configuration file. This happened while saving from the terminal UI, either the column layout (F10 selector) or a name for an address.
+
+- `{}` is the folder path.
+- `{e}` is the operating system's reason.
+- sipnab writes nothing.
 
 **What to do:** Create the folder yourself, or give the user running sipnab permission to create it, then save again.
 
@@ -606,7 +759,12 @@ sipnab could not create the folder that holds the configuration file while savin
 
 ### `[diagnosis] cn_suppression_ratio is a share of the packets and must be a finite number > 0 and <= 1, got {r}`
 
-`[diagnosis] cn_suppression_ratio` is the share of a call's packets, as a fraction of 1, that must be comfort noise (the background-noise packets a phone sends during silence) before sipnab accepts comfort noise as the reason for one-way audio. The value must be above 0, at most 1, and a finite number (not infinity or NaN, not-a-number). `{r}` is the value in the file. The printed line starts with `invalid config value: `.
+`[diagnosis] cn_suppression_ratio` is a share of a call's packets, as a fraction of 1.
+
+- That share must be comfort noise before sipnab accepts comfort noise as the reason for one-way audio. Comfort noise is the background-noise packets a phone sends during silence.
+- The value must be above 0, at most 1, and a finite number (not infinity or NaN, not-a-number).
+- `{r}` is the value in the file.
+- The printed line starts with `invalid config value: `.
 
 **What to do:** Set a number above 0 and at most 1, for example the default `0.3`, or remove the key.
 
@@ -630,7 +788,12 @@ sipnab could not create the folder that holds the configuration file while savin
 
 ### `[diagnosis] {key} must be a finite number > 0, got {v}`
 
-A `[diagnosis]` threshold is 0, negative, infinity or NaN (not-a-number). `{key}` is one of `post_dial_delay_secs`, `ack_timeout_secs`, `no_final_response_secs`, `duration_asymmetry_pct` or `duration_asymmetry_secs`, and `{v}` is its value. These thresholds decide when sipnab reports a call as faulty. The printed line starts with `invalid config value: `.
+A `[diagnosis]` threshold is 0, negative, infinity or NaN (not-a-number).
+
+- `{key}` is one of `post_dial_delay_secs`, `ack_timeout_secs`, `no_final_response_secs`, `duration_asymmetry_pct` or `duration_asymmetry_secs`.
+- `{v}` is its value.
+- These thresholds decide when sipnab reports a call as faulty.
+- The printed line starts with `invalid config value: `.
 
 **What to do:** Set the named key to a number above 0, or remove it. The defaults are 11, 32, 180, 5 and 2, in the order listed.
 
@@ -654,7 +817,11 @@ A `[diagnosis]` threshold is 0, negative, infinity or NaN (not-a-number). `{key}
 
 ### `[display] is not a table`
 
-You saved the column layout from the terminal UI (the `s` action in the F10 column selector), and sipnab could not add `visible_columns` to the configuration file because the file defines `display` as a plain value instead of a `[display]` table (section). sipnab writes nothing. The status line shows `Save columns failed: invalid config value: [display] is not a table`.
+You saved the column layout from the terminal UI (the `s` action in the F10 column selector). sipnab could not add `visible_columns` to the configuration file.
+
+- The reason: the file defines `display` as a plain value instead of a `[display]` table (section).
+- sipnab writes nothing.
+- The status line shows `Save columns failed: invalid config value: [display] is not a table`.
 
 **What to do:** Edit the configuration file so `display` is a `[display]` section, then save again.
 
@@ -662,7 +829,13 @@ You saved the column layout from the terminal UI (the `s` action in the F10 colu
 
 ### `[display] visible_columns names {col:?}, which is not a column; the columns are {}`
 
-`[display] visible_columns` lists the call-list columns the terminal UI shows. `{col:?}` is an entry that matches no column, and `{}` lists the valid names: `#`, `Method`, `From`, `To`, `Source`, `Destination`, `State`, `Msgs`, `Date`, `PDD` and `Duration`. sipnab compares names without regard to case, and checks this key only in builds that include the terminal UI. The printed line starts with `invalid config value: `.
+`[display] visible_columns` lists the call-list columns the terminal UI shows.
+
+- `{col:?}` is an entry that matches no column.
+- `{}` lists the valid names: `#`, `Method`, `From`, `To`, `Source`, `Destination`, `State`, `Msgs`, `Date`, `PDD` and `Duration`.
+- sipnab compares names without regard to case.
+- sipnab checks this key only in builds that include the terminal UI.
+- The printed line starts with `invalid config value: `.
 
 **What to do:** Correct or remove the named entry so every entry is one of the listed column names.
 
@@ -678,7 +851,12 @@ You saved the column layout from the terminal UI (the `s` action in the F10 colu
 
 ### `[filter] {key}: {problem}`
 
-`[filter] from` or `[filter] to` holds a pattern that does not compile. These keys hold a regular expression (a text-matching pattern) that sipnab matches against the From or To header. `{key}` is `from` or `to`, and `{problem}` starts with `failed to compile pattern` and the pattern, followed by the regular-expression library's reason, such as a syntax error or a pattern over the size limit. The printed line starts with `invalid config value: `.
+`[filter] from` or `[filter] to` holds a pattern that does not compile.
+
+- These keys hold a regular expression (a text-matching pattern). sipnab matches it against the From or To header.
+- `{key}` is `from` or `to`.
+- `{problem}` starts with `failed to compile pattern` and the pattern. The regular-expression library's reason follows, such as a syntax error or a pattern over the size limit.
+- The printed line starts with `invalid config value: `.
 
 **What to do:** Correct the pattern so it is a valid regular expression, or remove the key. Characters such as `(`, `[` and `+` have a special meaning and need a `\` before them to match literally.
 
@@ -694,7 +872,11 @@ You saved the column layout from the terminal UI (the `s` action in the F10 colu
 
 ### `ignoring invalid IP key {ip_str:?} in [names.manual]`
 
-A key in the `[names.manual]` table (manual IP-to-name mappings) is not an IP address, so sipnab skips the entry. `{ip_str:?}` is the key. The `sipnab` command checks this table at startup and first refuses such a key with `invalid config value: [names.manual] key "<key>" is not an IP address` (exit 1), so this warning appears only for a config that reached `sipnab::app::build_resolver` without that check.
+A key in the `[names.manual]` table (manual IP-to-name mappings) is not an IP address. So sipnab skips the entry.
+
+- `{ip_str:?}` is the key.
+- The `sipnab` command checks this table at startup. It first refuses such a key with `invalid config value: [names.manual] key "<key>" is not an IP address` (exit 1).
+- So this warning appears only for a config that reached `sipnab::app::build_resolver` without that check.
 
 **What to do:** Write each key as an IPv4 or IPv6 address, for example `"192.0.2.5" = "pbx1"`.
 
@@ -702,7 +884,15 @@ A key in the `[names.manual]` table (manual IP-to-name mappings) is not an IP ad
 
 ### `ignoring invalid name for {ip_str:?} in [names.manual]`
 
-A name in the `[names.manual]` table is not usable, so sipnab skips the entry. `{ip_str:?}` is the IP address the name belongs to. sipnab refuses a name that is empty, longer than 253 bytes, or contains a NUL or another control character. The `sipnab` command checks this table at startup and first refuses such a name with `invalid config value: [names.manual] name <name> is not a valid name` (exit 1), so this warning appears only for a config that reached `sipnab::app::build_resolver` without that check.
+A name in the `[names.manual]` table is not usable. So sipnab skips the entry.
+
+- `{ip_str:?}` is the IP address the name belongs to.
+- sipnab refuses a name that:
+  - is empty;
+  - is longer than 253 bytes;
+  - contains a NUL or another control character.
+- The `sipnab` command checks this table at startup. It first refuses such a name with `invalid config value: [names.manual] name <name> is not a valid name` (exit 1).
+- So this warning appears only for a config that reached `sipnab::app::build_resolver` without that check.
 
 **What to do:** Give a non-empty name of at most 253 bytes with no control characters.
 
@@ -710,7 +900,10 @@ A name in the `[names.manual]` table is not usable, so sipnab skips the entry. `
 
 ### `invalid config {path}: {source}`
 
-The config file at `{path}` is not valid TOML, or a value has the wrong type for its key (for example text where the key needs a number). `{source}` is the TOML parser's description of the problem. `<inline>` appears instead of a path when the text did not come from a file.
+The config file at `{path}` is not valid TOML. Or a value has the wrong type for its key, for example text where the key needs a number.
+
+- `{source}` is the TOML parser's description of the problem.
+- `<inline>` appears instead of a path when the text did not come from a file.
 
 **What to do:** Correct the TOML syntax or the value type that `{source}` describes, or start with `-F`/`--no-config` to skip the file.
 
@@ -726,7 +919,14 @@ The config file's `[filter] expression` did not parse as a dialog filter express
 
 ### `invalid config value: {0}`
 
-The config file parsed as TOML, but a value failed the checks sipnab applies. `{0}` names the section and key and says what is wrong: for example a number out of range, an unknown kind, an unreadable `hosts_file`, or a `${NAME}` that sipnab cannot expand, which also names the file. sipnab uses the same wrapper for a malformed `--ws-portrange` flag value.
+The config file parsed as TOML, but a value failed the checks sipnab applies.
+
+- `{0}` names the section and key, and says what is wrong. For example:
+  - a number out of range;
+  - an unknown kind;
+  - an unreadable `hosts_file`;
+  - a `${NAME}` that sipnab cannot expand, which also names the file.
+- sipnab uses the same wrapper for a malformed `--ws-portrange` flag value.
 
 **What to do:** Correct the key that the message names to a value it accepts. The message states the accepted values or range.
 
@@ -742,7 +942,12 @@ A path-valued key in the configuration file holds an empty string. `{key}` is th
 
 ### `` `${{{name}}}` is not a variable name: expected an ASCII letter or `_` followed by letters, digits or `_`. Shell default-value syntax is not supported ``
 
-A string in the config file contains `${...}` whose contents are not an environment-variable name. `{name}` is the text between the braces. A name must start with an ASCII letter or `_` and continue with letters, digits or `_`. sipnab refuses shell forms such as `${VAR:-default}` and an empty `${}`. The full line reads `invalid config value: <file>: <dotted.key>:` followed by this text, naming the file and the setting.
+A string in the config file contains `${...}`, and its contents are not an environment-variable name.
+
+- `{name}` is the text between the braces.
+- A name must start with an ASCII letter or `_`. It continues with letters, digits or `_`.
+- sipnab refuses shell forms such as `${VAR:-default}`, and an empty `${}`.
+- The full line reads `invalid config value: <file>: <dotted.key>:` followed by this text. It names the file and the setting.
 
 **What to do:** Write `${NAME}` with a plain variable name. To keep a literal `$` in a value, write `$$`.
 
@@ -758,9 +963,15 @@ A string in the config file uses `${NAME}`, and the environment sipnab runs in h
 
 ### `[keybindings] {key} = {v:?} is not a key: give one character, a function key (F1-F12) or a named key (Enter, Esc, Tab, Space, Backspace)`
 
-A `[keybindings]` value is not a key the terminal UI can read. `{key}` is the action (`quit`, `help`, `filter`, `save`, `search`, `settings`, `pause`, `autoscroll`, `extended_flow`, `clear_calls` or `column_selector`), and `{v:?}` is the value in the file. sipnab accepts one character, `F1` to `F12`, or `Enter`, `Esc`, `Tab`, `Space` or `Backspace` (also in lowercase). sipnab checks this section only in builds that include the terminal UI. The printed line starts with `invalid config value: `.
+A `[keybindings]` value is not a key the terminal UI can read.
 
-**What to do:** Set the named action to one character, a function key such as `F5`, or one of the named keys, or remove the line.
+- `{key}` is the action: `quit`, `help`, `filter`, `save`, `search`, `settings`, `pause`, `autoscroll`, `extended_flow`, `clear_calls` or `column_selector`.
+- `{v:?}` is the value in the file.
+- sipnab accepts one character, `F1` to `F12`, or `Enter`, `Esc`, `Tab`, `Space` or `Backspace` (also in lowercase).
+- sipnab checks this section only in builds that include the terminal UI.
+- The printed line starts with `invalid config value: `.
+
+**What to do:** Set the named action to one character, a function key such as `F5`, or one of the named keys. Or remove the line.
 
 **Exit code:** 1.
 
@@ -790,7 +1001,10 @@ A `[keybindings]` value is not a key the terminal UI can read. `{key}` is the ac
 
 ### `[limits] idle_compact_after_secs must be > 0 (0 would compact dialogs that are still active; to keep more of the ladder, raise this or raise keep_messages_per_idle_dialog)`
 
-`[limits] idle_compact_after_secs` is how many seconds a dialog (one SIP conversation, such as a call) must stay silent before sipnab compacts it, keeping only some of its messages. A value of 0 would compact dialogs that are still active. The printed line starts with `invalid config value: `.
+`[limits] idle_compact_after_secs` is how many seconds a dialog must stay silent before sipnab compacts it. A dialog is one SIP conversation, such as a call. Compacting keeps only some of its messages.
+
+- A value of 0 would compact dialogs that are still active.
+- The printed line starts with `invalid config value: `.
 
 **What to do:** Set a whole number of 1 or more, for example the default `600`. To keep more of each idle dialog, raise this value or `keep_messages_per_idle_dialog`.
 
@@ -806,7 +1020,11 @@ A `[keybindings]` value is not a key the terminal UI can read. `{key}` is the ac
 
 ### `[limits] max_audio_bytes must be >= {} (1 MiB), got {v}; to keep no audio at all, leave --retain-audio off`
 
-`[limits] max_audio_bytes` bounds the audio that `--retain-audio` keeps across every call. The value you set, `{v}`, is below the minimum, `{}`, 1048576 bytes. sipnab refuses it rather than read it as "keep nothing", because a budget smaller than one large frame would release every frame it received. The printed line starts with `invalid config value: `.
+`[limits] max_audio_bytes` bounds the audio that `--retain-audio` keeps across every call.
+
+- The value you set, `{v}`, is below the minimum, `{}`, 1048576 bytes.
+- sipnab refuses it rather than read it as "keep nothing". A budget smaller than one large frame would release every frame it received.
+- The printed line starts with `invalid config value: `.
 
 **What to do:** Set `max_audio_bytes` to 1048576 or more, or remove the key for the default. To keep no audio, leave `--retain-audio` off.
 
@@ -830,7 +1048,12 @@ A `[keybindings]` value is not a key the terminal UI can read. `{key}` is the ac
 
 ### `[limits] max_lost_sequences must be > 0 (0 would retain no losses, so the loss map and the burst/gap analysis would report a lossless call)`
 
-`[limits] max_lost_sequences` is how many lost RTP sequence numbers sipnab keeps for each media stream. RTP (Real-time Transport Protocol) carries the audio, and the packet-loss map and the burst and gap analysis read these numbers. A value of 0 would keep none, so every call would look lossless. The printed line starts with `invalid config value: `.
+`[limits] max_lost_sequences` is how many lost RTP sequence numbers sipnab keeps for each media stream.
+
+- RTP (Real-time Transport Protocol) carries the audio.
+- The packet-loss map and the burst and gap analysis read these numbers.
+- A value of 0 would keep none, so every call would look lossless.
+- The printed line starts with `invalid config value: `.
 
 **What to do:** Set a whole number of 1 or more, for example the default `1000`, or remove the key.
 
@@ -838,7 +1061,12 @@ A `[keybindings]` value is not a key the terminal UI can read. `{key}` is the ac
 
 ### `[limits] max_tcp_buffer must be >= {} (a smaller ceiling cannot hold one SIP header line, so every SIP/TCP message would be flushed mid-message and reported malformed), got {v}`
 
-`[limits] max_tcp_buffer` is how many bytes sipnab may buffer for one direction of a SIP over TCP connection before it flushes the buffer. `{}` is the smallest value accepted, 8192, the longest single header line the parser accepts, and `{v}` is the value in the file. A smaller buffer cannot hold one header line, so sipnab would report every SIP over TCP message as malformed. The printed line starts with `invalid config value: `.
+`[limits] max_tcp_buffer` is how many bytes sipnab may buffer for one direction of a SIP over TCP connection, before it flushes the buffer.
+
+- `{}` is the smallest value accepted, 8192. That is the longest single header line the parser accepts.
+- `{v}` is the value in the file.
+- A smaller buffer cannot hold one header line. So sipnab would report every SIP over TCP message as malformed.
+- The printed line starts with `invalid config value: `.
 
 **What to do:** Set a value of 8192 or more, for example the default `65536`, or remove the key.
 
@@ -846,9 +1074,14 @@ A `[keybindings]` value is not a key the terminal UI can read. `{key}` is the ac
 
 ### `[limits] max_tracked_peers must be >= {} (a map of one turns the per-peer cap into a global lock: the first peer to send in a window takes the only slot and every other peer is refused for the rest of it), got {v}`
 
-`[limits] max_tracked_peers` is how many different peers (HEP senders and MCP callers) one rate-limit window may track. `{}` is the smallest value accepted, 2, and `{v}` is the value in the file. With room for one peer, the first peer to send in a window would take the only slot and sipnab would refuse every other peer for the rest of that window. The printed line starts with `invalid config value: `.
+`[limits] max_tracked_peers` is how many different peers one rate-limit window may track. Peers are HEP senders and MCP callers.
 
-**What to do:** Set a value of 2 or more, for example the default `4096`, and at least the number of peers that send to this sipnab.
+- `{}` is the smallest value accepted, 2.
+- `{v}` is the value in the file.
+- With room for one peer, the first peer to send in a window would take the only slot. sipnab would then refuse every other peer for the rest of that window.
+- The printed line starts with `invalid config value: `.
+
+**What to do:** Set a value of 2 or more, for example the default `4096`. Set at least the number of peers that send to this sipnab.
 
 **Exit code:** 1.
 
@@ -878,7 +1111,10 @@ A `[keybindings]` value is not a key the terminal UI can read. `{key}` is the ac
 
 ### `[limits] metrics_max_conn must be > 0 (0 refuses every scrape and the /metrics endpoint answers 503 forever; to serve no metrics, drop --metrics)`
 
-`[limits] metrics_max_conn` is how many scrapes (requests from a monitoring system such as Prometheus) the `/metrics` endpoint serves at once before it answers `503`. A value of 0 would turn every scrape away. The printed line starts with `invalid config value: `.
+`[limits] metrics_max_conn` is how many scrapes the `/metrics` endpoint serves at once, before it answers `503`. A scrape is a request from a monitoring system such as Prometheus.
+
+- A value of 0 would turn every scrape away.
+- The printed line starts with `invalid config value: `.
 
 **What to do:** Set a whole number of 1 or more, for example the default `16`. To serve no metrics, leave out `--metrics`.
 
@@ -886,7 +1122,17 @@ A `[keybindings]` value is not a key the terminal UI can read. `{key}` is the ac
 
 ### `[limits] {key} must be 1-{max} ({why}), got {v}`
 
-A `[limits]` setting for the MCP `find_in_captures` sweep (a search across saved capture files) is 0 or above its maximum. `{key}` and `{max}` are one of: `mcp_sweep_max_files` up to 4294967295, `mcp_sweep_deadline_ms` up to 43200000, `mcp_sweep_max_running` up to 64, `mcp_sweep_max_held_results` up to 256, or `mcp_sweep_result_retention_secs` up to 43200. `{why}` says what each end of the range protects, and `{v}` is the value in the file. The printed line starts with `invalid config value: `.
+A `[limits]` setting for the MCP `find_in_captures` sweep is 0 or above its maximum. The sweep is a search across saved capture files.
+
+- `{key}` and `{max}` are one of:
+  - `mcp_sweep_max_files` up to 4294967295;
+  - `mcp_sweep_deadline_ms` up to 43200000;
+  - `mcp_sweep_max_running` up to 64;
+  - `mcp_sweep_max_held_results` up to 256;
+  - `mcp_sweep_result_retention_secs` up to 43200.
+- `{why}` says what each end of the range protects.
+- `{v}` is the value in the file.
+- The printed line starts with `invalid config value: `.
 
 **What to do:** Set the named key to a whole number from 1 to the maximum shown, or remove the key.
 
@@ -910,7 +1156,15 @@ A `[limits]` setting for the MCP `find_in_captures` sweep (a search across saved
 
 ### `[media.codec_ie] {codec} must be >= 0 and < {} (at or above that the E-model's loss term goes negative and MORE packet loss would RAISE the score), got {ie}`
 
-A `[media.codec_ie]` entry is out of range. Each entry sets the equipment impairment factor (`Ie`, the E-model's measure of how much a codec degrades voice quality) for one codec, which sipnab uses in its MOS (mean opinion score) estimate. `{codec}` is the codec name, `{}` is the upper limit 95, and `{ie}` is the value in the file. At 95 or above, more packet loss would raise the score. The printed line starts with `invalid config value: `.
+A `[media.codec_ie]` entry is out of range.
+
+- Each entry sets the equipment impairment factor (`Ie`) for one codec. That factor is the E-model's measure of how much a codec degrades voice quality.
+- sipnab uses it in its MOS (mean opinion score) estimate.
+- `{codec}` is the codec name.
+- `{}` is the upper limit 95.
+- `{ie}` is the value in the file.
+- At 95 or above, more packet loss would raise the score.
+- The printed line starts with `invalid config value: `.
 
 **What to do:** Set the codec's value to a number of 0 or more and below 95, or remove the entry.
 
@@ -934,7 +1188,14 @@ A `[media.codec_ie]` entry is out of range. Each entry sets the equipment impair
 
 ### `{key} must be > 0`
 
-A count in the configuration file is 0. `{key}` is the key, one of `[capture] snaplen`, `[capture] buffer`, or the `[limits]` keys `dialog_limit`, `mcp_max_rows`, `max_streams`, `max_reassembly`, `max_headers_per_message`, `max_messages_per_dialog`, `max_audio_frames`, `keep_messages_per_idle_dialog`, `max_groups`, `max_grouped_messages`, `max_metadata_file_bytes` or `max_gunzip_bytes`. The matching command-line flags refuse 0 too. The printed line starts with `invalid config value: `.
+A count in the configuration file is 0.
+
+- `{key}` is the key. It is one of:
+  - `[capture] snaplen`;
+  - `[capture] buffer`;
+  - the `[limits]` keys `dialog_limit`, `mcp_max_rows`, `max_streams`, `max_reassembly`, `max_headers_per_message`, `max_messages_per_dialog`, `max_audio_frames`, `keep_messages_per_idle_dialog`, `max_groups`, `max_grouped_messages`, `max_metadata_file_bytes` or `max_gunzip_bytes`.
+- The matching command-line flags refuse 0 too.
+- The printed line starts with `invalid config value: `.
 
 **What to do:** Set the named key to a whole number of 1 or more, or remove it for the default.
 
@@ -958,7 +1219,10 @@ sipnab could not open the file named by `[names] hosts_file`, a file of IP addre
 
 ### `[names] is not a table`
 
-In the terminal UI you named an address with `[names] persist_to_config` on, and sipnab tried to save the name in the `[names.manual]` table of the configuration file. The file defines `names` as a plain value instead of a `[names]` table (section), so sipnab writes nothing to it. The status line shows this text after `Named, but couldn't update` and the file path.
+In the terminal UI you named an address with `[names] persist_to_config` on. sipnab tried to save the name in the `[names.manual]` table of the configuration file.
+
+- The file defines `names` as a plain value instead of a `[names]` table (section). So sipnab writes nothing to it.
+- The status line shows this text after `Named, but couldn't update` and the file path.
 
 **What to do:** Edit the configuration file so `names` is a `[names]` section, then name the address again.
 
@@ -982,17 +1246,33 @@ A name in the `[names.manual]` table is empty, longer than 253 bytes, or contain
 
 ### `not saved: the settings in use come from {SYSTEM_CONFIG_PATH}, and a user file would hide every setting in it. Copy it to ~/.config/sipnab/sipnab.toml to save from the terminal UI`
 
-The terminal UI shows this on its status line when you ask for a save (the F10 column layout, or name edits with `[names] persist_to_config`) while the settings in use came from the system file `/etc/sipnab/sipnab.toml`. sipnab does not write a user file, because sipnab reads a user file before the system file, and the user file would hide every setting in it. sipnab saves nothing.
+The terminal UI shows this on its status line in this case:
 
-**What to do:** Copy `/etc/sipnab/sipnab.toml` to your user config file (`~/.config/sipnab/sipnab.toml`, or `$XDG_CONFIG_HOME/sipnab/sipnab.toml` when that variable holds an absolute path), start sipnab so it loads the copy (or with `--config` naming the copy), and save again.
+- You ask for a save: the F10 column layout, or name edits with `[names] persist_to_config`.
+- The settings in use came from the system file `/etc/sipnab/sipnab.toml`.
+
+sipnab does not write a user file. sipnab reads a user file before the system file, so the user file would hide every setting in it. sipnab saves nothing.
+
+**What to do:**
+
+- Copy `/etc/sipnab/sipnab.toml` to your user config file. That is `~/.config/sipnab/sipnab.toml`, or `$XDG_CONFIG_HOME/sipnab/sipnab.toml` when that variable holds an absolute path.
+- Start sipnab so it loads the copy (or with `--config` naming the copy).
+- Save again.
 
 **Exit code:** None. This is a status-line message, and the run continues.
 
 ### `{e}; off-hours fraud detection is OFF for this run`
 
-Fraud detection is on, but the business-hours window (`--business-hours` or `[security] business_hours`) did not parse. sipnab turns the off-hours check off for this run, and the other fraud checks still run. `{e}` is the parse error. The code notes that startup validation refuses a bad value first, so this line appears only when that validation did not run.
+Fraud detection is on, but the business-hours window (`--business-hours` or `[security] business_hours`) did not parse.
 
-**What to do:** Give the window as `START-END` in whole hours 0-23 with different start and end, for example `8-18`, or `22-6` for an overnight window.
+- sipnab turns the off-hours check off for this run. The other fraud checks still run.
+- `{e}` is the parse error.
+- The code notes that startup validation refuses a bad value first. So this line appears only when that validation did not run.
+
+**What to do:** Give the window as `START-END`, in whole hours 0-23, with different start and end.
+
+- For example, `8-18`.
+- Or `22-6` for an overnight window.
 
 **Exit code:** None. sipnab logs the error, and the run continues.
 
@@ -1006,7 +1286,12 @@ More than one default config file exists. sipnab read the first one named and no
 
 ### `read {}: {e}. Refusing to save, because writing what was merged into an empty file would replace the existing configuration`
 
-While saving from the terminal UI, sipnab could not read the existing configuration file. `{}` is the file path and `{e}` is the operating system's reason, such as permission denied, or a file that is not UTF-8 text. sipnab stops instead of saving, because writing into an empty copy would erase your other settings. A missing file is not an error: sipnab creates it.
+While saving from the terminal UI, sipnab could not read the existing configuration file.
+
+- `{}` is the file path.
+- `{e}` is the operating system's reason, such as permission denied, or a file that is not UTF-8 text.
+- sipnab stops instead of saving. Writing into an empty copy would erase your other settings.
+- A missing file is not an error: sipnab creates it.
 
 **What to do:** Make the file readable by the user running sipnab, or fix its contents, then save again.
 
@@ -1014,23 +1299,41 @@ While saving from the terminal UI, sipnab could not read the existing configurat
 
 ### `[security] business_hours {reason}`
 
-`[security] business_hours` is not a usable working-hours window. `{reason}` says why: either the value is not two whole hours from 0 to 23 joined by `-` (the reason then quotes the value), or the start and end hours are the same, which would make every call off-hours. The hours are UTC. The printed line starts with `invalid config value: `.
+`[security] business_hours` is not a usable working-hours window. `{reason}` says why. There are two cases:
 
-**What to do:** Write `business_hours` as `"START-END"` in whole hours from 0 to 23 with different start and end, for example `"8-18"`, or `"22-6"` for a window that crosses midnight.
+- The value is not two whole hours from 0 to 23 joined by `-`. The reason then quotes the value.
+- The start and end hours are the same. That would make every call off-hours.
+
+The hours are UTC. The printed line starts with `invalid config value: `.
+
+**What to do:** Write `business_hours` as `"START-END"`, in whole hours from 0 to 23, with different start and end.
+
+- For example, `"8-18"`.
+- Or `"22-6"` for a window that crosses midnight.
 
 **Exit code:** 1.
 
 ### `[security] fraud_destination {bad:?} is not a destination sipnab can match: give ISO 3166-1 alpha-2 codes the dial plan labels (NANP for +1 numbers), comma-separated`
 
-One entry in the comma-separated `[security] fraud_destination` list is not a destination label sipnab knows. `{bad:?}` is the first such entry, in double quotes. Labels are the two-letter ISO 3166-1 alpha-2 country codes from sipnab's dial plan, and numbers that start with +1 carry the label `NANP` (North American Numbering Plan). The printed line starts with `invalid config value: `.
+One entry in the comma-separated `[security] fraud_destination` list is not a destination label sipnab knows.
 
-**What to do:** Replace the named entry with a country code from the dial plan, such as `GB`, and use `NANP` for any +1 destination. Separate entries with commas.
+- `{bad:?}` is the first such entry, in double quotes.
+- Labels are the two-letter ISO 3166-1 alpha-2 country codes from sipnab's dial plan.
+- Numbers that start with +1 carry the label `NANP` (North American Numbering Plan).
+- The printed line starts with `invalid config value: `.
+
+**What to do:** Replace the named entry with a country code from the dial plan, such as `GB`. Use `NANP` for any +1 destination. Separate entries with commas.
 
 **Exit code:** 1.
 
 ### `[security] hep_hmac_window_secs must be 1-{MAX_HEP_HMAC_WINDOW_SECS} (the window is how long a captured packet stays replayable and how many nonces the receiver must remember; a sender more than {MAX_HEP_HMAC_WINDOW_SECS}s adrift has no working time daemon, which is what to fix), got {v}`
 
-`[security] hep_hmac_window_secs` is how many seconds a HEP packet's signed timestamp may differ from this machine's clock when `--hep-auth-mode hmac` is on. HEP is the protocol capture agents use to send packets to a collector. The value is 0 or above 300, the maximum that `{MAX_HEP_HMAC_WINDOW_SECS}` shows, and `{v}` is the value in the file. A wider window keeps a captured packet replayable for longer. The printed line starts with `invalid config value: `.
+`[security] hep_hmac_window_secs` is how many seconds a HEP packet's signed timestamp may differ from this machine's clock. It applies when `--hep-auth-mode hmac` is on. HEP is the protocol capture agents use to send packets to a collector.
+
+- The value is 0 or above 300, the maximum that `{MAX_HEP_HMAC_WINDOW_SECS}` shows.
+- `{v}` is the value in the file.
+- A wider window keeps a captured packet replayable for longer.
+- The printed line starts with `invalid config value: `.
 
 **What to do:** Set a whole number from 1 to 300, or remove the key for the default of 30. If a sender's clock is off by more than that, fix the time synchronization (for example NTP) on that sender.
 
@@ -1054,7 +1357,11 @@ One entry in the comma-separated `[security] fraud_destination` list is not a de
 
 ### `[security] {key} must be > 0`
 
-A fraud-detection or scanner-detection count, window or factor in `[security]` is 0. `{key}` is one of `fraud_short_call_secs`, `fraud_sequential_calls`, `scanner_enumeration_targets`, `fraud_volume_window_secs`, `fraud_wangiri_window_secs`, `scanner_window_secs`, `scanner_answer_grace_ms`, `fraud_wangiri_calls`, `fraud_volume_multiplier`, `fraud_volume_min_calls`, `scanner_behavioral_probes`, `scanner_rejected_probes`, `scanner_unanswered_probes` or `scanner_established_factor`. A value of 0 makes a detector report everything or nothing. The printed line starts with `invalid config value: `.
+A fraud-detection or scanner-detection count, window or factor in `[security]` is 0.
+
+- `{key}` is one of `fraud_short_call_secs`, `fraud_sequential_calls`, `scanner_enumeration_targets`, `fraud_volume_window_secs`, `fraud_wangiri_window_secs`, `scanner_window_secs`, `scanner_answer_grace_ms`, `fraud_wangiri_calls`, `fraud_volume_multiplier`, `fraud_volume_min_calls`, `scanner_behavioral_probes`, `scanner_rejected_probes`, `scanner_unanswered_probes` or `scanner_established_factor`.
+- A value of 0 makes a detector report everything or nothing.
+- The printed line starts with `invalid config value: `.
 
 **What to do:** Set the named key to a whole number of 1 or more, or remove it for the default.
 
@@ -1070,7 +1377,12 @@ A fraud-detection or scanner-detection count, window or factor in `[security]` i
 
 ### `[security] reg_flood_transaction_timeout_ms must be {MIN_TRANSACTION_TIMEOUT_MS}-{MAX_TRANSACTION_TIMEOUT_MS} (milliseconds; RFC 3261 Timer F is 64*T1, 32000 at the default T1 of 500 ms), got {v}`
 
-`[security] reg_flood_transaction_timeout_ms` is how long, in milliseconds, a REGISTER that carried credentials waits for the challenge that answers it. The accepted range is 1000 to 600000, which the two placeholders show, and `{v}` is the value in the file. [RFC 3261](https://www.rfc-editor.org/rfc/rfc3261.html) Timer F is 64 times T1, which is 32000 at the default T1 of 500 ms. The printed line starts with `invalid config value: `.
+`[security] reg_flood_transaction_timeout_ms` is how long, in milliseconds, a REGISTER that carried credentials waits for the challenge that answers it.
+
+- The accepted range is 1000 to 600000. The two placeholders show it.
+- `{v}` is the value in the file.
+- [RFC 3261](https://www.rfc-editor.org/rfc/rfc3261.html) Timer F is 64 times T1. That is 32000 at the default T1 of 500 ms.
+- The printed line starts with `invalid config value: `.
 
 **What to do:** Set a whole number from 1000 to 600000, or remove the key for the default of 32000.
 
@@ -1086,7 +1398,10 @@ A fraud-detection or scanner-detection count, window or factor in `[security]` i
 
 ### `[sip] active_idle_window_secs must be > 0 (0 leaves the active-dialog and active-call gauges permanently at zero, which reads as a quiet trunk rather than as a setting)`
 
-`[sip] active_idle_window_secs` is how many seconds a dialog may go without a message and still count toward the active-dialog and active-call gauges (counters in the metrics output). A value of 0 would keep both gauges at zero. The printed line starts with `invalid config value: `.
+`[sip] active_idle_window_secs` is how many seconds a dialog may go without a message and still count toward two gauges. The gauges are the active-dialog and active-call counters in the metrics output.
+
+- A value of 0 would keep both gauges at zero.
+- The printed line starts with `invalid config value: `.
 
 **What to do:** Set a whole number of 1 or more, for example the default `3600`, or remove the key.
 
@@ -1102,7 +1417,11 @@ A fraud-detection or scanner-detection count, window or factor in `[security]` i
 
 ### `sipnabrc is not valid TOML: {e}`
 
-While saving from the terminal UI, sipnab found that the existing configuration file is not valid TOML (the configuration file format), so it cannot update one section and keep the rest. `{e}` is the TOML parser's description of the problem and where it is. sipnab writes nothing.
+While saving from the terminal UI, sipnab found that the existing configuration file is not valid TOML (the configuration file format).
+
+- So it cannot update one section and keep the rest.
+- `{e}` is the TOML parser's description of the problem and where it is.
+- sipnab writes nothing.
 
 **What to do:** Fix the TOML syntax at the place the error names, then save again.
 
@@ -1110,15 +1429,29 @@ While saving from the terminal UI, sipnab found that the existing configuration 
 
 ### `[theme] {key} = {v:?} is not a color: give a name (red, dark_gray, reset, ...) or #rrggbb`
 
-A `[theme]` color is not one sipnab can read. `{key}` is the slot (`background`, `foreground`, `highlight`, `header`, `selected`, `accent`, `good`, `warning`, `bad`, `muted`, `border` or `status_bg`), and `{v:?}` is the value in the file. sipnab accepts `black`, `white`, `red`, `green`, `yellow`, `blue`, `magenta`, `cyan`, `gray`, `dark_gray`, `reset` (and a few alternative spellings) in any case, or `#` and six hexadecimal digits. sipnab checks this section only in builds that include the terminal UI. The printed line starts with `invalid config value: `.
+A `[theme]` color is not one sipnab can read.
 
-**What to do:** Set the named slot to one of the color names or to a value such as `#1e90ff`, or remove the line.
+- `{key}` is the slot: `background`, `foreground`, `highlight`, `header`, `selected`, `accent`, `good`, `warning`, `bad`, `muted`, `border` or `status_bg`.
+- `{v:?}` is the value in the file.
+- sipnab accepts, in any case:
+  - `black`, `white`, `red`, `green`, `yellow`, `blue`, `magenta`, `cyan`, `gray`, `dark_gray`, `reset` (and a few alternative spellings);
+  - or `#` and six hexadecimal digits.
+- sipnab checks this section only in builds that include the terminal UI.
+- The printed line starts with `invalid config value: `.
+
+**What to do:** Set the named slot to one of the color names, or to a value such as `#1e90ff`. Or remove the line.
 
 **Exit code:** 1.
 
 ### `Unknown color value: {s:?}`
 
-A `[theme]` color in the config file is not a color name sipnab knows (black, white, red, green, yellow, blue, magenta, cyan, gray or grey, `dark_gray` and its spellings, reset or default) and not a `#` value of 7 characters. `{s:?}` is the value as written. sipnab logs this warning while it checks the config at startup, and the refusal `invalid config value: [theme] <key> = "<value>" is not a color:` follows it. sipnab refuses a 7-character `#` value with non-hex digits without this warning line.
+A `[theme]` color in the config file is not a color sipnab knows.
+
+- It is not a known color name: black, white, red, green, yellow, blue, magenta, cyan, gray or grey, `dark_gray` and its spellings, reset or default.
+- It is not a `#` value of 7 characters.
+- `{s:?}` is the value as written.
+- sipnab logs this warning while it checks the config at startup. The refusal `invalid config value: [theme] <key> = "<value>" is not a color:` follows it.
+- sipnab refuses a 7-character `#` value with non-hex digits without this warning line.
 
 **What to do:** Use one of the listed names or a `#rrggbb` hex value for that `[theme]` key.
 
@@ -1134,9 +1467,14 @@ The config file contains a key or a section that sipnab does not recognize. `{ke
 
 ### `Unknown keybinding value: {s:?}`
 
-A `[keybindings]` value in the config file is not a key the terminal UI can bind. `{s:?}` is the value as written. sipnab accepts one character, `F1` to `F12`, or a named key (Esc, Space, Enter, Tab, Backspace and their listed spellings). sipnab logs this warning while it checks the config at startup, and the refusal `invalid config value: [keybindings] <key> = "<value>" is not a key:` follows it. sipnab refuses a value that starts with `F` or `f` but is not `F1` to `F12` without this warning line.
+A `[keybindings]` value in the config file is not a key the terminal UI can bind.
 
-**What to do:** Use one character, a function key from `F1` to `F12`, or one of the named keys for that `[keybindings]` entry.
+- `{s:?}` is the value as written.
+- sipnab accepts one character, `F1` to `F12`, or a named key (Esc, Space, Enter, Tab, Backspace and their listed spellings).
+- sipnab logs this warning while it checks the config at startup. The refusal `invalid config value: [keybindings] <key> = "<value>" is not a key:` follows it.
+- sipnab refuses a value that starts with `F` or `f` but is not `F1` to `F12`. It does so without this warning line.
+
+**What to do:** For that `[keybindings]` entry, use one character, a function key from `F1` to `F12`, or one of the named keys.
 
 **Exit code:** 1, from the refusal that follows this line.
 
@@ -1166,7 +1504,15 @@ A whole-number `[vcon_fetch]` key is out of range. `{}` is the key (`timeout`, `
 
 ### `[vcon_forward] {}: {e}`
 
-A whole-number `[vcon_forward]` key is out of range. `{}` is the key, and `{e}` reads `N is out of range: give a whole number from MIN to MAX` with the value and the limits. `interval` accepts 1 to 3600, `timeout` 1 to 600, and `backoff_first`, `backoff_cap`, `max_response_head` and `max_error_body` 1 to 4294967295. The printed line starts with `invalid config value: `.
+A whole-number `[vcon_forward]` key is out of range.
+
+- `{}` is the key.
+- `{e}` reads `N is out of range: give a whole number from MIN to MAX`, with the value and the limits.
+- The ranges are:
+  - `interval` accepts 1 to 3600;
+  - `timeout` 1 to 600;
+  - `backoff_first`, `backoff_cap`, `max_response_head` and `max_error_body` 1 to 4294967295.
+- The printed line starts with `invalid config value: `.
 
 **What to do:** Set the named key to a whole number in the range shown, or remove it.
 
@@ -1184,23 +1530,44 @@ A whole-number `[vcon_forward]` key is out of range. `{}` is the key, and `{e}` 
 
 sipnab could not write the configuration file while saving from the terminal UI. `{}` is the file path and `{e}` is the operating system's reason. sipnab writes to a temporary file in the same folder and then renames it, so the existing file stays unchanged.
 
-**What to do:** Give the user running sipnab permission to write in the folder that holds the file, and check that the disk has free space, then save again.
+**What to do:** Give the user running sipnab permission to write in the folder that holds the file. Check that the disk has free space. Then save again.
 
 **Exit code:** None. sipnab shows the error on the terminal UI status line, and the run continues.
 
 ### `{display}: {e}`
 
-A `${NAME}` reference to an environment variable in a configuration file string has no value sipnab can use. `{display}` is the configuration file path, and `{e}` is the dotted key path of the setting (for example `capture.device`, or `vcon_forward.ca`) followed by `: ` and the reason: the variable is not set, the `${` has no closing `}`, or the name is not a valid variable name. sipnab refuses an unset variable instead of replacing it with nothing. The printed line starts with `invalid config value: `.
+A `${NAME}` reference to an environment variable, in a configuration file string, has no value sipnab can use.
 
-**What to do:** Set the named variable in the environment that starts sipnab, close the `${`, or correct the name to letters, digits and `_` starting with a letter or `_`. Write `$$` for a literal `$`.
+- `{display}` is the configuration file path.
+- `{e}` is the dotted key path of the setting (for example `capture.device`, or `vcon_forward.ca`), followed by `: ` and the reason. The reason is one of these:
+  - the variable is not set;
+  - the `${` has no closing `}`;
+  - the name is not a valid variable name.
+- sipnab refuses an unset variable instead of replacing it with nothing.
+- The printed line starts with `invalid config value: `.
+
+**What to do:** Do one of these:
+
+- Set the named variable in the environment that starts sipnab.
+- Close the `${`.
+- Correct the name to letters, digits and `_`, starting with a letter or `_`.
+
+Write `$$` for a literal `$`.
 
 **Exit code:** 1.
 
 ### `[capture] ws_ports: {e}`
 
-The SIP over WebSocket port range that `[capture] ws_ports` in the configuration file gives is not usable. `{e}` says what is wrong: the value is not two ports joined by `-`, one side is not a port number from 0 to 65535, or the start is higher than the end. The printed line starts with `invalid config value: `. `--ws-portrange` on the command line replaces the key, and sipnab does not read the key when you give the flag.
+The SIP over WebSocket port range that `[capture] ws_ports` in the configuration file gives is not usable.
 
-**What to do:** Give the range as `START-END` with the lower port first, for example `8080-8443`, or remove the key for the shipped ports.
+- `{e}` says what is wrong:
+  - the value is not two ports joined by `-`;
+  - one side is not a port number from 0 to 65535;
+  - the start is higher than the end.
+- The printed line starts with `invalid config value: `.
+- `--ws-portrange` on the command line replaces the key. sipnab does not read the key when you give the flag.
+
+**What to do:** Give the range as `START-END` with the lower port first, for example `8080-8443`. Or remove the key for the shipped ports.
 
 **Exit code:** 1.
 
@@ -1262,7 +1629,10 @@ The reason inside `[[vcon.rule]] '{name}' has {why}` for a `grouping` value othe
 
 ### `[[vcon.rule]] '{name}' has audio = 'url' and no audio_url_base: say where your storage serves the WAV files sipnab writes beside the containers`
 
-The [`[[vcon.rule]]`](vcon.md#write-calls-by-rule) named `{name}` has `audio = "url"` and no `audio_url_base`. A `url` rule writes each call's WAV beside its container and names it by URL, which needs the base your storage serves the files from.
+The [`[[vcon.rule]]`](vcon.md#write-calls-by-rule) named `{name}` has `audio = "url"` and no `audio_url_base`.
+
+- A `url` rule writes each call's WAV beside its container, and names it by URL.
+- That needs the base your storage serves the files from.
 
 **What to do:** Add `audio_url_base = "https://..."`, or use `audio = "inline"` or `"omit"`.
 
@@ -1302,7 +1672,10 @@ The `when` of the [`[[vcon.rule]]`](vcon.md#write-calls-by-rule) named `{name}` 
 
 ### `[[vcon.rule]] with live_audio = true serves call audio on the REST API, and --api {addr} is not a loopback address. Off loopback, live audio needs TLS (--api-tls-cert and --api-tls-key) and a signing key (--api-signing-key or --api-signing-key-file) to mint tokens with the audio scope; or bind --api to 127.0.0.1`
 
-A rule with `live_audio = true` serves call audio on the REST API, and `--api` binds to an address other than loopback without TLS and a signing key. `{addr}` is the address. See [Hear a call while it is in progress](vcon.md#hear-a-call-while-it-is-in-progress).
+A rule with `live_audio = true` serves call audio on the REST API. `--api` binds to an address other than loopback, without TLS and a signing key.
+
+- `{addr}` is the address.
+- See [Hear a call while it is in progress](vcon.md#hear-a-call-while-it-is-in-progress).
 
 **What to do:** Bind `--api` to `127.0.0.1`, or give `--api-tls-cert`, `--api-tls-key` and `--api-signing-key-file`, and mint the transcriber a token with `--token-scope audio`.
 
@@ -1326,7 +1699,10 @@ Two [`[[vcon.enrich]]`](vcon.md#enrich-a-call-before-it-is-written) entries have
 
 ### `[[vcon.enrich]] cannot run with --redact: a service is sent the call as it was captured, and nothing it answers can be pseudonymized`
 
-The run has `--redact` and an [`[[vcon.enrich]]`](vcon.md#enrich-a-call-before-it-is-written). sipnab sends a service the call as it captured it, and cannot replace what the service answers, such as a transcript, with pseudonyms.
+The run has `--redact` and an [`[[vcon.enrich]]`](vcon.md#enrich-a-call-before-it-is-written).
+
+- sipnab sends a service the call as it captured it.
+- It cannot replace what the service answers, such as a transcript, with pseudonyms.
 
 **What to do:** Remove `--redact`, or remove the enrichment from this run.
 
@@ -1334,7 +1710,11 @@ The run has `--redact` and an [`[[vcon.enrich]]`](vcon.md#enrich-a-call-before-i
 
 ### `[limits] idle_compact_after_secs is {secs}, shorter than the {} s a live vCon export waits before it writes a call that has not ended, so idle compaction can drop that call's middle messages before its container is written. Set it to {} or more to keep them.`
 
-A live capture exports vCons, and `[limits] idle_compact_after_secs` is shorter than the time a live export waits before writing a call that has not ended. `{secs}` is the setting, the first `{}` is that wait in seconds, and the second the value to set. Idle compaction could drop the middle of such a call's messages before sipnab writes its container.
+A live capture exports vCons. `[limits] idle_compact_after_secs` is shorter than the time a live export waits before writing a call that has not ended.
+
+- `{secs}` is the setting.
+- The first `{}` is that wait in seconds. The second is the value to set.
+- Idle compaction could drop the middle of such a call's messages before sipnab writes its container.
 
 **What to do:** Set `[limits] idle_compact_after_secs` to the value named, or more.
 
@@ -1344,7 +1724,14 @@ A live capture exports vCons, and `[limits] idle_compact_after_secs` is shorter 
 
 ### `Capture did not complete: {e:#}`
 
-The capture thread stopped with an error before it read its whole input, so every report draws on only part of the input. `{e:#}` is the full error chain. The code names these causes: sipnab could not open the capture, libpcap rejected the BPF filter (the packet filter), a read failed fatally, or a filter compiles for the first file of a set but not for a later one.
+The capture thread stopped with an error before it read its whole input. So every report draws on only part of the input.
+
+- `{e:#}` is the full error chain.
+- The code names these causes:
+  - sipnab could not open the capture;
+  - libpcap rejected the BPF filter (the packet filter);
+  - a read failed fatally;
+  - a filter compiles for the first file of a set, but not for a later one.
 
 **What to do:** Act on the error text: correct the filter or the file it names. The reports that sipnab printed before the exit are partial.
 
@@ -1360,7 +1747,10 @@ The capture source (interface, file or socket) did not open. The text after the 
 
 ### `Capture thread panicked; the input was not read to the end`
 
-The capture thread crashed (a Rust panic) instead of returning, so sipnab did not read the input to the end, and the reports draw on only part of it.
+The capture thread crashed (a Rust panic) instead of returning.
+
+- So sipnab did not read the input to the end.
+- The reports draw on only part of it.
 
 **What to do:** This is a crash inside sipnab, not a usage error. Run the command again to confirm it, and report it with the command line and, if possible, the input.
 
@@ -1376,7 +1766,10 @@ The capture thread crashed (a Rust panic) instead of returning, so sipnab did no
 
 ### `--cores: no capture files to read`
 
-The multi-core reader (`--cores N` with `-I`) received an empty list of capture files. The code notes that the normal command line cannot reach this, because input resolution already fails the run when `-I` resolves to nothing. The check exists so the run cannot exit 0 with an empty report.
+The multi-core reader (`--cores N` with `-I`) received an empty list of capture files.
+
+- The code notes that the normal command line cannot reach this. Input resolution already fails the run when `-I` resolves to nothing.
+- The check exists so the run cannot exit 0 with an empty report.
 
 **What to do:** Pass `-I` with a capture file, directory or glob that contains at least one readable capture file.
 
@@ -1384,7 +1777,14 @@ The multi-core reader (`--cores N` with `-I`) received an empty list of capture 
 
 ### `-I/--input: {e:#}`
 
-sipnab could not turn the `-I`/`--input` values into a list of capture files to read. `{e:#}` is the reason with its full chain of causes, for example a path that does not exist, a glob pattern that matched no files, a directory with no capture files in it, or a pattern that is not valid.
+sipnab could not turn the `-I`/`--input` values into a list of capture files to read.
+
+`{e:#}` is the reason with its full chain of causes. For example:
+
+- a path that does not exist;
+- a glob pattern that matched no files;
+- a directory with no capture files in it;
+- a pattern that is not valid.
 
 **What to do:** Correct the path, glob or directory given to `-I` so that it names at least one readable capture file. The reason after the colon names the value that failed.
 
@@ -1392,7 +1792,13 @@ sipnab could not turn the `-I`/`--input` values into a list of capture files to 
 
 ### `multi-core reconstruction failed: {e:#}`
 
-The multi-core reader (`--cores N`) failed. `{e:#}` is the error chain. The code returns this error when there are no files, when sipnab cannot open the first file of the `-I` set, or when the BPF filter (the packet filter) does not compile against any file in the set. For a later file that sipnab cannot open, it logs the problem and skips the file instead.
+The multi-core reader (`--cores N`) failed. `{e:#}` is the error chain.
+
+- The code returns this error in these cases:
+  - there are no files;
+  - sipnab cannot open the first file of the `-I` set;
+  - the BPF filter (the packet filter) does not compile against any file in the set.
+- For a later file that sipnab cannot open, it logs the problem and skips the file instead.
 
 **What to do:** Act on the error text: make the first file readable, or correct the BPF filter so it applies to every file in the set.
 
@@ -1408,7 +1814,11 @@ The run names no capture source, and sipnab could not choose a default interface
 
 ### `No capture device found. Use -d <device> or -I <file>\n  Try: sudo sipnab`
 
-The run names no capture source (`-d`, `-I`, `-L`, a uprobe flag or `[capture] device`). sipnab tried to choose a default interface, found none, and the interface list is empty. On Linux the default is always the `any` pseudo-device, so this message appears on other systems, where an empty list often means the user lacks capture permission.
+The run names no capture source (`-d`, `-I`, `-L`, a uprobe flag or `[capture] device`).
+
+- sipnab tried to choose a default interface, and found none. The interface list is empty.
+- On Linux the default is always the `any` pseudo-device. So this message appears on other systems.
+- There, an empty list often means the user lacks capture permission.
 
 **What to do:** Name a source with `-d <device>` or `-I <file>`, or run with sudo so that sipnab can read the interface list.
 
@@ -1416,7 +1826,11 @@ The run names no capture source (`-d`, `-I`, `-L`, a uprobe flag or `[capture] d
 
 ### `not a frame pointer: {t}`
 
-A shorter form of the malformed frame pointer refusal. `{t}` is the text. `--show-frame` reports a pointer it cannot parse with the longer message that starts "not a frame pointer" and continues "expected <source>#<ordinal>". The pointer lookup that follows parsing does not return this case, so the current `--show-frame` code does not reach this form.
+A shorter form of the malformed frame pointer refusal. `{t}` is the text.
+
+- `--show-frame` reports a pointer it cannot parse with the longer message. That message starts "not a frame pointer" and continues "expected <source>#<ordinal>".
+- The pointer lookup that follows parsing does not return this case.
+- So the current `--show-frame` code does not reach this form.
 
 **What to do:** Give a pointer of the form `<source>#<ordinal>` or `<source>#<ordinal>@<digest>`, copied from the `frame` field of sipnab's output.
 
@@ -1432,23 +1846,41 @@ The value given to `--show-frame` is not a frame pointer. `{pointer}` is the val
 
 ### `--notes {}: {e}. sipnab will not start the TUI on it`
 
-The notes file named by `--notes` exists, but sipnab cannot use it, so the terminal UI (TUI) does not start. `{}` is the path. `{e}` says why: sipnab cannot read the file, a line (by number) is not a note sipnab accepts, or the file holds more than 10000 notes. sipnab accepts a path that does not exist yet and starts an empty notes session.
+The notes file named by `--notes` exists, but sipnab cannot use it. So the terminal UI (TUI) does not start.
 
-**What to do:** Fix the line the message names, reduce the file to 10000 notes or fewer, correct the file permissions, or name a new file with `--notes`.
+- `{}` is the path.
+- `{e}` says why:
+  - sipnab cannot read the file;
+  - a line (by number) is not a note sipnab accepts;
+  - the file holds more than 10000 notes.
+- sipnab accepts a path that does not exist yet, and starts an empty notes session.
+
+**What to do:** Do one of these:
+
+- Fix the line the message names.
+- Reduce the file to 10000 notes or fewer.
+- Correct the file permissions.
+- Name a new file with `--notes`.
 
 **Exit code:** 2.
 
 ### `refusing: cannot read {source}: {cause}`
 
-`--show-frame` could not open the capture the pointer names. `{source}` is the capture path from the pointer (or `<archive>/<member>` for a capture inside an archive) and `{cause}` the reason, for example a missing file, a file that is not a capture, or an archive with no member of that name.
+`--show-frame` could not open the capture the pointer names.
 
-**What to do:** Run the command from the directory the pointer's path is relative to, or make sure the capture still exists at that path and is readable.
+- `{source}` is the capture path from the pointer (or `<archive>/<member>` for a capture inside an archive).
+- `{cause}` is the reason. For example, a missing file, a file that is not a capture, or an archive with no member of that name.
+
+**What to do:** Run the command from the directory the pointer's path is relative to. Or make sure the capture still exists at that path and is readable.
 
 **Exit code:** 1.
 
 ### `refusing: {source} frame {ordinal} is not the frame this pointer was made against. The capture was rotated, truncated or rewritten since then. Showing you what is there now would look like an answer and be the wrong one.`
 
-The frame at position `{ordinal}` in `{source}` does not match the digest (the checksum after `@` in the pointer) that sipnab recorded when it made the pointer, so someone or something has rotated, truncated or rewritten the capture since. sipnab refuses to show a different frame.
+The frame at position `{ordinal}` in `{source}` does not match the digest that sipnab recorded when it made the pointer. The digest is the checksum after `@` in the pointer.
+
+- So someone or something has rotated, truncated or rewritten the capture since.
+- sipnab refuses to show a different frame.
 
 **What to do:** Find the original, unchanged capture that the pointer came from, or produce a new pointer from the current capture.
 
@@ -1458,13 +1890,17 @@ The frame at position `{ordinal}` in `{source}` does not match the digest (the c
 
 The capture `{source}` holds `{frames_present}` frames, so the frame number `{ordinal}` in the pointer does not exist. Frame numbers start at 0. The capture may have lost frames to truncation since sipnab made the pointer.
 
-**What to do:** Check that the pointer names the right capture, and that the capture is the complete file that the pointer came from.
+**What to do:** Check that the pointer names the right capture. Check that the capture is the complete file that the pointer came from.
 
 **Exit code:** 1.
 
 ### `refusing: read {ordinal} came from the TLS library inside {comm} (pid {pid}). sipnab read it out of the process, so it was never a frame on any wire — there is no capture to seek into and nothing to verify these bytes against.`
 
-The pointer given to `--show-frame` names data that sipnab read from inside a running program's TLS library through a uprobe, not a frame in a capture file. `{ordinal}` is the read number, `{comm}` the program's name and `{pid}` its process ID. There is no capture to read the bytes from.
+The pointer given to `--show-frame` names data that sipnab read through a uprobe. It is not a frame in a capture file. sipnab read the data from inside a running program's TLS library.
+
+- `{ordinal}` is the read number.
+- `{comm}` is the program's name and `{pid}` its process ID.
+- There is no capture to read the bytes from.
 
 **What to do:** None for this pointer. To see the bytes again, use the output of the run that captured them (for example its JSON output).
 
@@ -1506,7 +1942,13 @@ A query flag, named by `{flag}`, computed its answer, and sipnab could not write
 
 ### `Cannot emit --tshark-filter command: {e}`
 
-`--tshark-filter <EXPR>` prints a ready-to-paste `tshark -r <file> -Y <EXPR>` command, and sipnab could not name one file for `-r`. `{e}` is the reason, which is one of these: there is no `-I` file and no `-O` file (a live capture that saved nothing), the input is a member of an archive, or the input is several files. sipnab prints no command, and the run continues.
+`--tshark-filter <EXPR>` prints a ready-to-paste `tshark -r <file> -Y <EXPR>` command. sipnab could not name one file for `-r`.
+
+- `{e}` is the reason. It is one of these:
+  - there is no `-I` file and no `-O` file (a live capture that saved nothing);
+  - the input is a member of an archive;
+  - the input is several files.
+- sipnab prints no command, and the run continues.
 
 **What to do:** Use a single capture file with `-I`, or save a live capture with `-O <file>`. For an archive member, extract it first and run on the extracted file. For several files, run once per file.
 
@@ -1514,9 +1956,14 @@ A query flag, named by `{flag}`, computed its answer, and sipnab could not write
 
 ### `could not publish evidence`
 
-`--evidence-out` writes one JSON line per security finding that names a source (`-` means standard output, and any other value names a file that sipnab opens for append). Writing one line failed. The log line carries `src_ip` (the source the finding is about) and `error` (the write or serialization error). The evidence output lacks that finding, and its alert still runs.
+`--evidence-out` writes one JSON line per security finding that names a source.
 
-**What to do:** Check that the `--evidence-out` file accepts writes and that its disk has space, or that the reader on the other end of standard output is still running.
+- `-` means standard output. Any other value names a file that sipnab opens for append.
+- Writing one line failed.
+- The log line carries `src_ip` (the source the finding is about) and `error` (the write or serialization error).
+- The evidence output lacks that finding. Its alert still runs.
+
+**What to do:** Check that the `--evidence-out` file accepts writes, and that its disk has space. Or check that the reader on the other end of standard output is still running.
 
 **Exit code:** None. This is a warning, and the run continues.
 
@@ -1524,13 +1971,18 @@ A query flag, named by `{flag}`, computed its answer, and sipnab could not write
 
 sipnab could not open the file named by `--evidence-out`, where it appends one line per security finding. `{target}` is the path as you gave it, and `{e}` is the operating system's reason. sipnab opens the file in create-and-append mode before it reads the first packet. The value `-` means standard output, and sipnab does not open it as a file.
 
-**What to do:** Name a path whose directory exists and that the user sipnab runs as can create or append to, or pass `-` to write the findings to standard output.
+**What to do:** Name a path whose directory exists, and that the user sipnab runs as can create or append to. Or pass `-` to write the findings to standard output.
 
 **Exit code:** 2.
 
 ### `Failed to write DSB: {e:#}`
 
-With `--pcap-export-mode encrypted+dsb`, `--keylog <file>` and `--pcapng`, sipnab embeds the TLS key log in the `-O` output as a Decryption Secrets Block (DSB), so Wireshark can decrypt the file. Writing that block to the output file failed. `{e:#}` is the writer's error. The capture continues, and the file has no embedded keys.
+This applies with `--pcap-export-mode encrypted+dsb`, `--keylog <file>` and `--pcapng`.
+
+- sipnab then embeds the TLS key log in the `-O` output as a Decryption Secrets Block (DSB). So Wireshark can decrypt the file.
+- Writing that block to the output file failed.
+- `{e:#}` is the writer's error.
+- The capture continues, and the file has no embedded keys.
 
 **What to do:** Check free space and write access for the `-O` location. To decrypt the file later without the block, open it in Wireshark together with the same key log file.
 
@@ -1538,7 +1990,12 @@ With `--pcap-export-mode encrypted+dsb`, `--keylog <file>` and `--pcapng`, sipna
 
 ### `Failed to write name resolution block: {e:#}`
 
-With `--pcapng` and name resolution on (`--resolve`, `--reverse-dns`, or the `[names]` settings), sipnab writes a Name Resolution Block (a table of address-to-name entries) at the start of the `-O` file. Writing that block failed. `{e:#}` is the writer's error. The capture continues without the block.
+This applies with `--pcapng` and name resolution on (`--resolve`, `--reverse-dns`, or the `[names]` settings).
+
+- sipnab then writes a Name Resolution Block at the start of the `-O` file. That block is a table of address-to-name entries.
+- Writing that block failed.
+- `{e:#}` is the writer's error.
+- The capture continues without the block.
 
 **What to do:** Check free space and write access for the `-O` location.
 
@@ -1546,9 +2003,13 @@ With `--pcapng` and name resolution on (`--resolve`, `--reverse-dns`, or the `[n
 
 ### `Failed to write output: {e}`
 
-Writing the per-message output to standard output (the printed messages, `--json` lines and similar) failed for a reason other than a closed pipe. `{e}` is the error. The output is incomplete, so the run exits 1. sipnab does not count a closed pipe, such as `| head`, as an error.
+Writing the per-message output to standard output failed, for a reason other than a closed pipe. The per-message output is the printed messages, `--json` lines and similar.
 
-**What to do:** Check that the destination of standard output (a file or disk you redirected it to) has space and accepts writes.
+- `{e}` is the error.
+- The output is incomplete, so the run exits 1.
+- sipnab does not count a closed pipe, such as `| head`, as an error.
+
+**What to do:** Check that the destination of standard output has space and accepts writes. The destination is a file or disk you redirected it to.
 
 **Exit code:** 1.
 
@@ -1556,21 +2017,36 @@ Writing the per-message output to standard output (the printed messages, `--json
 
 sipnab could not write a packet to the `-O` capture file. `{}` is the writer's error. When the cause is a permission refusal after sipnab dropped privileges, the message adds the user name and the remedies. In a headless run the capture loop stops, sipnab prints the reports, and the run exits 1. In the TUI the packet-processing thread stops.
 
-**What to do:** Check free space and write access for the `-O` location. If the message names a user that sipnab dropped privileges to, give that user write access to the directory (for example `install -d -o <user> <dir>`), pass `--user <name>` for a user that can write there, or pass `--no-priv-drop`.
+**What to do:** Check free space and write access for the `-O` location.
+
+If the message names a user that sipnab dropped privileges to, do one of these:
+
+- give that user write access to the directory (for example `install -d -o <user> <dir>`);
+- pass `--user <name>` for a user that can write there;
+- pass `--no-priv-drop`.
 
 **Exit code:** 1 in a headless run. In the TUI, this path sets no exit code.
 
 ### `Failed to write report: {e}`
 
-sipnab could not write an end-of-run report (`--report`, `--json-dialogs`, `--stun`, `--json-stun`, `--analyze`, `--json-analyze`, `--yang-analyze`, `--hep-senders`, or `--export-vcon` to standard output) to standard output. `{e}` is the error. sipnab does not count a closed pipe as an error. sipnab produces none of the reports after the failed one.
+sipnab could not write an end-of-run report to standard output.
 
-**What to do:** Check that the destination of standard output (a file or disk you redirected it to) has space and accepts writes.
+- The reports are `--report`, `--json-dialogs`, `--stun`, `--json-stun`, `--analyze`, `--json-analyze`, `--yang-analyze`, `--hep-senders`, or `--export-vcon` to standard output.
+- `{e}` is the error.
+- sipnab does not count a closed pipe as an error.
+- sipnab produces none of the reports after the failed one.
+
+**What to do:** Check that the destination of standard output has space and accepts writes. The destination is a file or disk you redirected it to.
 
 **Exit code:** 1.
 
 ### `--hep-senders: the roster did not serialize: {e}`
 
-`--hep-senders` with `--json` prints the sender roster of the HEP listener (who sent HEP to this run, who went silent, whom sipnab refused) as one JSON object. Converting that roster to JSON failed. `{e}` is the JSON serializer's error. The run then exits.
+`--hep-senders` with `--json` prints the sender roster of the HEP listener as one JSON object. The roster says who sent HEP to this run, who went silent, and whom sipnab refused.
+
+- Converting that roster to JSON failed.
+- `{e}` is the JSON serializer's error.
+- The run then exits.
 
 **What to do:** Run without `--json` to get the same roster as a text table.
 
@@ -1586,7 +2062,11 @@ sipnab could not write an end-of-run report (`--report`, `--json-dialogs`, `--st
 
 ### `--notes {notes_path}: {e}`
 
-`--write-annotated` could not load the notes file named by `--notes` (`{notes_path}`). `{e}` says why: sipnab cannot read the file, a line is not a note sipnab accepts (the message gives its line number, and one bad line refuses the whole file), or the file holds more than 10,000 notes.
+`--write-annotated` could not load the notes file named by `--notes` (`{notes_path}`). `{e}` says why:
+
+- sipnab cannot read the file;
+- a line is not a note sipnab accepts. The message gives its line number. One bad line refuses the whole file;
+- the file holds more than 10,000 notes.
 
 **What to do:** Correct the path or permissions, or fix the line the message names, then run the command again.
 
@@ -1596,21 +2076,32 @@ sipnab could not write an end-of-run report (`--report`, `--json-dialogs`, `--st
 
 `--write-annotated` read the notes file named by `--notes` (`{notes_path}`) and found no notes in it (sipnab skips blank lines). A copy with no comments added would be identical to the input, so sipnab writes nothing.
 
-**What to do:** Add notes to the file (for example from the TUI) or name a notes file that contains them, then run the command again.
+**What to do:** Add notes to the file (for example from the TUI), or name a notes file that contains them. Then run the command again.
 
 **Exit code:** 1.
 
 ### `-O/--output cannot write a run that captures from two sources. '{out}' would be initialized from whichever member's first packet arrived first, and the two disagree about the link layer: the interface yields Ethernet frames, while HEP delivers a bare SIP payload with no link, IP or transport header to write. Capture the interface alone to write a pcap, or use --hep-send <ADDR> to forward the signaling to a collector instead of writing it.`
 
-`-O/--output` writes a capture file, and this run captures from two sources at once: a live interface (`-d` or the config file's device) and a HEP listener (`-L`). The interface delivers Ethernet frames, while HEP delivers bare SIP text with no link, IP or transport header, so one file cannot hold both. `{out}` is the `-O` path.
+`-O/--output` writes a capture file. This run captures from two sources at once:
 
-**What to do:** Capture the interface alone (without `-L`) to write a pcap, or keep both sources and use `--hep-send <ADDR>` to forward the signaling to a collector instead of `-O`.
+- a live interface (`-d` or the config file's device);
+- a HEP listener (`-L`).
+
+The interface delivers Ethernet frames. HEP delivers bare SIP text with no link, IP or transport header. So one file cannot hold both. `{out}` is the `-O` path.
+
+**What to do:** Do one of these:
+
+- Capture the interface alone (without `-L`) to write a pcap.
+- Keep both sources, and use `--hep-send <ADDR>` to forward the signaling to a collector instead of `-O`.
 
 **Exit code:** 2.
 
 ### `Output file may be incomplete: {e:#}`
 
-At the end of the run, the final flush of the `-O` capture file failed, so the end of the file may be missing. `{e:#}` is the error chain. In a headless run the exit code is 1.
+At the end of the run, the final flush of the `-O` capture file failed. So the end of the file may be missing.
+
+- `{e:#}` is the error chain.
+- In a headless run the exit code is 1.
 
 **What to do:** Check free space and write access for the `-O` location, and treat the file as truncated.
 
@@ -1618,7 +2109,15 @@ At the end of the run, the final flush of the `-O` capture file failed, so the e
 
 ### `plugin {}: {e}`
 
-sipnab could not load a `--plugin` file. `{}` is the path, and `{e}` is the reason: sipnab could not read the file, the file is not valid WebAssembly, it lacks a required export, or it reports an ABI version this build does not support. The run still produces its reports, which carry a marker naming the failure, and exits 1.
+sipnab could not load a `--plugin` file.
+
+- `{}` is the path.
+- `{e}` is the reason:
+  - sipnab could not read the file;
+  - the file is not valid WebAssembly;
+  - it lacks a required export;
+  - it reports an ABI version this build does not support.
+- The run still produces its reports. They carry a marker naming the failure. The run exits 1.
 
 **What to do:** Correct the path, or rebuild the plugin against the plugin ABI version this sipnab build reports.
 
@@ -1626,7 +2125,11 @@ sipnab could not load a `--plugin` file. `{}` is the path, and `{e}` is the reas
 
 ### `plugin {} on {}: {e}`
 
-A `--plugin` (a WebAssembly analysis module) failed while it analyzed one dialog for `--json-dialogs`. The first `{}` is the plugin name, the second is the Call-ID, and `{e}` is the reason (for example, the plugin trapped, ran out of its limits, or returned output in the wrong shape). sipnab prints that dialog's line without this plugin's findings.
+A `--plugin` (a WebAssembly analysis module) failed while it analyzed one dialog for `--json-dialogs`.
+
+- The first `{}` is the plugin name. The second is the Call-ID.
+- `{e}` is the reason. For example, the plugin trapped, ran out of its limits, or returned output in the wrong shape.
+- sipnab prints that dialog's line without this plugin's findings.
 
 **What to do:** Check the plugin that the message names against the dialog it names. The error text says which kind of failure occurred.
 
@@ -1650,7 +2153,15 @@ A `--plugin` (a WebAssembly analysis module) failed while it analyzed one dialog
 
 ### `--strip-secrets failed: {e}`
 
-`--strip-secrets` writes a copy of a `pcapng` capture with every Decryption Secrets Block (the block that stores TLS keys inside a `pcapng` file) removed, and the copy failed. `{e}` is the reason: sipnab cannot read the input, the input is larger than the in-memory size limit, it is not `pcapng`, a block has a truncated or invalid length, or sipnab cannot write the output. sipnab never modifies the input file.
+`--strip-secrets` writes a copy of a `pcapng` capture with every Decryption Secrets Block removed. That block stores TLS keys inside a `pcapng` file. The copy failed.
+
+- `{e}` is the reason:
+  - sipnab cannot read the input;
+  - the input is larger than the in-memory size limit;
+  - it is not `pcapng`;
+  - a block has a truncated or invalid length;
+  - sipnab cannot write the output.
+- sipnab never modifies the input file.
 
 **What to do:** Act on the reason given. For a file over the size limit, raise `--max-metadata-file-bytes` or `[limits] max_metadata_file_bytes`. A classic pcap has no secrets blocks to strip.
 
@@ -1668,7 +2179,7 @@ A `--plugin` (a WebAssembly analysis module) failed while it analyzed one dialog
 
 Part of the `Cannot emit --tshark-filter command:` message. The single input is a file that sipnab extracted from an archive and deletes after the run. `tshark -r` cannot read inside an archive, so sipnab prints no command. `'{}'` names the member.
 
-**What to do:** Extract that member from the archive, then point `tshark` at the extracted file, or run sipnab with `-I` on the extracted file.
+**What to do:** Extract that member from the archive. Then point `tshark` at the extracted file, or run sipnab with `-I` on the extracted file.
 
 **Exit code:** None. sipnab logs the error, and the run continues.
 
@@ -1684,13 +2195,16 @@ Part of the `Cannot emit --tshark-filter command:` message. The input is several
 
 sipnab could not open the file named by `--tui-audit-file` for appending. sipnab does not run the TUI without the record of operator actions you asked for. `{path}` is the path given, and `{e}` is the operating system error. sipnab opens the file in append mode and creates it with mode 0600 if it does not exist.
 
-**What to do:** Name a path in a directory that exists and that the sipnab user can write, or fix the permissions of the existing file.
+**What to do:** Name a path in a directory that exists and that the sipnab user can write. Or fix the permissions of the existing file.
 
 **Exit code:** 2.
 
 ### `--write-annotated needs --notes <FILE>`
 
-`--write-annotated` writes a copy of a capture with notes added as packet comments, and the notes come from the file named by `--notes`. The command line has no `--notes`. The command-line parser normally refuses this combination first, and this check is a second guard.
+`--write-annotated` writes a copy of a capture with notes added as packet comments. The notes come from the file named by `--notes`.
+
+- The command line has no `--notes`.
+- The command-line parser normally refuses this combination first. This check is a second guard.
 
 **What to do:** Add `--notes <FILE>` naming the notes file.
 
@@ -1698,9 +2212,23 @@ sipnab could not open the file named by `--tui-audit-file` for appending. sipnab
 
 ### `--write-annotated refused: {e}. Nothing was written to {out}.`
 
-sipnab did not write the annotated copy. `{e}` is the reason and `{out}` the output path, where sipnab left no file. The reasons include the following. The output name ends in a classic pcap extension (classic pcap has no comment field). A note's frame pointer has no `@<digest>`, names another capture, or names text that sipnab read through a uprobe. The capture holds fewer frames than a note names. A frame no longer matches its digest. sipnab cannot represent a frame timestamp. sipnab cannot read the capture or cannot write the copy.
+sipnab did not write the annotated copy.
 
-**What to do:** Act on the reason given. Name the output `.pcapng`, take frame pointers from `--json` output over the same capture (they end in `@<digest>`), and annotate one capture per run against the unchanged capture that you wrote the notes for.
+- `{e}` is the reason.
+- `{out}` is the output path. sipnab left no file there.
+- The reasons include the following:
+  - The output name ends in a classic pcap extension. Classic pcap has no comment field.
+  - A note's frame pointer has no `@<digest>`, names another capture, or names text that sipnab read through a uprobe.
+  - The capture holds fewer frames than a note names.
+  - A frame no longer matches its digest.
+  - sipnab cannot represent a frame timestamp.
+  - sipnab cannot read the capture, or cannot write the copy.
+
+**What to do:** Act on the reason given.
+
+- Name the output `.pcapng`.
+- Take frame pointers from `--json` output over the same capture. They end in `@<digest>`.
+- Annotate one capture per run, against the unchanged capture that you wrote the notes for.
 
 **Exit code:** 1.
 
@@ -1714,7 +2242,7 @@ sipnab did not write the annotated copy. `{e}` is the reason and `{out}` the out
 
 ### `--write-annotated {out} would overwrite the notes file it reads; name another output`
 
-The output path given to `--write-annotated` (`{out}`) is the same file as the notes file it reads (same spelling, or the same file after resolving links). Writing it would destroy the notes.
+The output path given to `--write-annotated` (`{out}`) is the same file as the notes file it reads. It has the same spelling, or is the same file after resolving links. Writing it would destroy the notes.
 
 **What to do:** Give `--write-annotated` a different output path.
 
@@ -1722,7 +2250,13 @@ The output path given to `--write-annotated` (`{out}`) is the same file as the n
 
 ### `{flag} writes {}, but -I resolved to {} files: {names}. {}`
 
-`--strip-secrets` and `--write-annotated` each write one output file from one input capture, and `-I` (which accepts directories, globs and repeated paths) resolved to several files. `{flag}` is the command, the next placeholder what it writes, then the file count, `{names}` the resolved files, and the last placeholder the advice. sipnab refuses rather than handle only the first file.
+`--strip-secrets` and `--write-annotated` each write one output file from one input capture. Here `-I` resolved to several files. That flag accepts directories, globs and repeated paths.
+
+- `{flag}` is the command.
+- The next placeholder is what it writes. Then comes the file count.
+- `{names}` is the resolved files.
+- The last placeholder is the advice.
+- sipnab refuses rather than handle only the first file.
 
 **What to do:** Run the command once per capture, giving `-I` a single file each time.
 
@@ -1740,7 +2274,11 @@ sipnab switched actions off for this run because it found damage in the actions 
 
 ### `actions journal: {} action(s) from the last run are still in doubt because TFPS could not be asked; new actions are refused until they are resolved`
 
-The actions journal records actions from the previous run whose result is unknown (for example, sipnab stopped while it was sending a ban), and sipnab could not ask TFPS about them at startup. `{}` is how many. sipnab refuses new bans and unbans until TFPS answers.
+The actions journal records actions from the previous run whose result is unknown. For example, sipnab stopped while it was sending a ban.
+
+- sipnab could not ask TFPS about them at startup.
+- `{}` is how many.
+- sipnab refuses new bans and unbans until TFPS answers.
 
 **What to do:** Make TFPS reachable at the address in the sipnab configuration. sipnab asks TFPS again once a minute and resolves the actions when it answers.
 
@@ -1750,7 +2288,7 @@ The actions journal records actions from the previous run whose result is unknow
 
 sipnab could not create the thread that checks the actions journal against TFPS once a minute, so sipnab refuses the run. `{e}` is the operating system error.
 
-**What to do:** Act on the operating system reason in `{e}` and run again, or run without `--allow-action`, so that sipnab starts no check thread.
+**What to do:** Act on the operating system reason in `{e}` and run again. Or run without `--allow-action`, so that sipnab starts no check thread.
 
 **Exit code:** 2.
 
@@ -1764,9 +2302,17 @@ The thread that runs the REST API and MCP servers could not create its async run
 
 ### `Failed to create HEP sender: {e:#}`
 
-sipnab could not set up the connection that `--hep-send` uses to forward captured packets in HEP (Homer Encapsulation Protocol) format. `{e:#}` is the reason with its full chain of causes: the destination address did not resolve, sipnab could not bind a local UDP socket, there is no route to the destination, the TCP or TLS connection failed, or, for `--hep-send-transport tls`, the destination has no host name to check the certificate against. The run stops instead of running without forwarding.
+sipnab could not set up the connection that `--hep-send` uses. That connection forwards captured packets in HEP (Homer Encapsulation Protocol) format.
 
-**What to do:** Correct the `--hep-send` address (`HOST:PORT`) or the transport flags named in the reason, and make sure the collector is reachable from this host.
+- `{e:#}` is the reason with its full chain of causes:
+  - the destination address did not resolve;
+  - sipnab could not bind a local UDP socket;
+  - there is no route to the destination;
+  - the TCP or TLS connection failed;
+  - for `--hep-send-transport tls`, the destination has no host name to check the certificate against.
+- The run stops instead of running without forwarding.
+
+**What to do:** Correct the `--hep-send` address (`HOST:PORT`), or the transport flags named in the reason. Make sure the collector is reachable from this host.
 
 **Exit code:** 2.
 
@@ -1774,13 +2320,17 @@ sipnab could not set up the connection that `--hep-send` uses to forward capture
 
 The operating system refused to create the thread that runs the REST API and MCP servers. `{e}` is the operating system error.
 
-**What to do:** Act on the operating system reason in `{e}` and run again, or run without `--api` and `--mcp`, so that sipnab starts no servers thread.
+**What to do:** Act on the operating system reason in `{e}` and run again. Or run without `--api` and `--mcp`, so that sipnab starts no servers thread.
 
 **Exit code:** 2.
 
 ### `Failed to start metrics server: {e}`
 
-The Prometheus metrics endpoint that you asked for with `--metrics` could not start. `{e}` gives the reason. The address is not a loopback address and you gave no `--metrics-auth` or `--metrics-auth-file`, or sipnab could not bind the port (for example because another program uses it), or sipnab could not create the server thread.
+The Prometheus metrics endpoint that you asked for with `--metrics` could not start. `{e}` gives the reason:
+
+- the address is not a loopback address, and you gave no `--metrics-auth` or `--metrics-auth-file`;
+- or sipnab could not bind the port, for example because another program uses it;
+- or sipnab could not create the server thread.
 
 **What to do:** Bind to `127.0.0.1`, or supply `--metrics-auth` or `--metrics-auth-file` for a routable address. Choose a free port, or remove `--metrics`.
 
@@ -1796,7 +2346,15 @@ The value of `--api` is not an address sipnab can listen on. `{e}` repeats the v
 
 ### `invalid bind address '{input}': {reason}`
 
-sipnab could not parse a listener address for `--api`, `--metrics` or `--mcp-bind`. `{input}` is the value, and `{reason}` repeats it with the parser's error. sipnab accepts a port (`8080`), `:port` (both bind 127.0.0.1), or `address:port` such as `0.0.0.0:8080` or `[::1]:8080`. The line starts with `Invalid --api address:`, `Invalid --metrics address:` or `Invalid --mcp-bind address:`.
+sipnab could not parse a listener address for `--api`, `--metrics` or `--mcp-bind`.
+
+- `{input}` is the value.
+- `{reason}` repeats it with the parser's error.
+- sipnab accepts:
+  - a port (`8080`);
+  - `:port` (both bind 127.0.0.1);
+  - `address:port`, such as `0.0.0.0:8080` or `[::1]:8080`.
+- The line starts with `Invalid --api address:`, `Invalid --metrics address:` or `Invalid --mcp-bind address:`.
 
 **What to do:** Give the address in one of the accepted forms, with a port from 0 to 65535.
 
@@ -1820,7 +2378,10 @@ sipnab could not parse the `--metrics` address (where the Prometheus metrics ser
 
 ### `--journal-show and --revert-actions need the 'api' or 'mcp' feature (not compiled in): no action can have been taken`
 
-`--journal-show` and `--revert-actions` read the journal of actions that the REST API or MCP server took. This sipnab build does not include the code for them, so there is no journal, and this build cannot have taken any action.
+`--journal-show` and `--revert-actions` read the journal of actions that the REST API or MCP server took.
+
+- This sipnab build does not include the code for them.
+- So there is no journal, and this build cannot have taken any action.
 
 **What to do:** Use a sipnab build compiled with the `api` or `mcp` feature on a Unix system, or remove the flags.
 
@@ -1828,15 +2389,23 @@ sipnab could not parse the `--metrics` address (where the Prometheus metrics ser
 
 ### `--mcp-audit-file {path}: {e}. sipnab refuses to serve MCP without the audit trail it was asked for`
 
-sipnab could not open the file named by `--mcp-audit-file` for appending. sipnab does not start MCP (Model Context Protocol, the interface AI assistants use to query sipnab) without the record of tool calls you asked for. `{path}` is the path given, and `{e}` is the operating system error. sipnab opens the file in append mode and creates it with mode 0600 if it does not exist.
+sipnab could not open the file named by `--mcp-audit-file` for appending.
 
-**What to do:** Name a path in a directory that exists and that the sipnab user can write, or fix the permissions of the existing file.
+- sipnab does not start MCP without the record of tool calls you asked for. MCP (Model Context Protocol) is the interface AI assistants use to query sipnab.
+- `{path}` is the path given.
+- `{e}` is the operating system error.
+- sipnab opens the file in append mode. It creates it with mode 0600 if it does not exist.
+
+**What to do:** Name a path in a directory that exists and that the sipnab user can write. Or fix the permissions of the existing file.
 
 **Exit code:** 2.
 
 ### `--mcp-tls-cert/--mcp-tls-key serve MCP over HTTPS and do nothing without --mcp --mcp-transport http`
 
-`--mcp-tls-cert` and `--mcp-tls-key` are the certificate and private key that the MCP (Model Context Protocol) server presents when it serves over HTTP, making it HTTPS. You gave at least one of them, but the run does not serve MCP over HTTP: either `--mcp` is absent or `--mcp-transport` is not `http` (the default is `stdio`).
+`--mcp-tls-cert` and `--mcp-tls-key` are the certificate and private key that the MCP (Model Context Protocol) server presents when it serves over HTTP. They make it HTTPS.
+
+- You gave at least one of them.
+- But the run does not serve MCP over HTTP. Either `--mcp` is absent, or `--mcp-transport` is not `http` (the default is `stdio`).
 
 **What to do:** Add `--mcp --mcp-transport http`, or remove `--mcp-tls-cert` and `--mcp-tls-key`.
 
@@ -1876,9 +2445,20 @@ sipnab could not resolve the metrics endpoint credential. `{e}` says why: sipnab
 
 ### `metrics TLS: {e:#}`
 
-sipnab could not set up HTTPS for the metrics endpoint. `{e:#}` gives the reason: you gave only one of `--metrics-tls-cert` and `--metrics-tls-key`, sipnab cannot read a file, the certificate file holds no certificate, the key file holds no private key, other users can read the key, or the key does not belong to the certificate.
+sipnab could not set up HTTPS for the metrics endpoint. `{e:#}` gives the reason:
 
-**What to do:** Give both `--metrics-tls-cert` and `--metrics-tls-key`, point them at a matching PEM certificate chain and private key, and make the key file unreadable by other users (for example `chmod 600` or `chmod 640`).
+- you gave only one of `--metrics-tls-cert` and `--metrics-tls-key`;
+- sipnab cannot read a file;
+- the certificate file holds no certificate;
+- the key file holds no private key;
+- other users can read the key;
+- the key does not belong to the certificate.
+
+**What to do:**
+
+- Give both `--metrics-tls-cert` and `--metrics-tls-key`.
+- Point them at a matching PEM certificate chain and private key.
+- Make the key file unreadable by other users (for example `chmod 600` or `chmod 640`).
 
 **Exit code:** 2.
 
@@ -1892,9 +2472,23 @@ sipnab could not set up HTTPS for the metrics endpoint. `{e:#}` gives the reason
 
 ### `server error: {0}`
 
-The REST API server (`--api`) could not start or stopped with an error. `{0}` says why: sipnab could not bind the address, the command gave only one of `--api-tls-cert` and `--api-tls-key`, a TLS file is unusable, the bind is not loopback and no `--api-key` or `--api-signing-key` exists, or sipnab could not set up the listener. At startup this stops the run before the TUI or capture begins. After startup, sipnab logs the error as `API server error:` followed by the reason, and the API stops serving.
+The REST API server (`--api`) could not start, or stopped with an error.
 
-**What to do:** Act on the reason in `{0}`: free or change the `--api` port, give both TLS files, bind `127.0.0.1`, or configure `--api-key` (`SIPNAB_API_KEY`) or `--api-signing-key` (`SIPNAB_API_SIGNING_KEY`) for a bind that is not loopback.
+- `{0}` says why:
+  - sipnab could not bind the address;
+  - the command gave only one of `--api-tls-cert` and `--api-tls-key`;
+  - a TLS file is unusable;
+  - the bind is not loopback, and no `--api-key` or `--api-signing-key` exists;
+  - sipnab could not set up the listener.
+- At startup this stops the run before the TUI or capture begins.
+- After startup, sipnab logs the error as `API server error:` followed by the reason. The API stops serving.
+
+**What to do:** Act on the reason in `{0}`:
+
+- free or change the `--api` port;
+- give both TLS files;
+- bind `127.0.0.1`;
+- or, for a bind that is not loopback, configure `--api-key` (`SIPNAB_API_KEY`) or `--api-signing-key` (`SIPNAB_API_SIGNING_KEY`).
 
 **Exit code:** 2 at startup. None for an error after startup: sipnab logs it, and the run continues.
 
@@ -1908,15 +2502,26 @@ A server running beside the capture stopped with an error. `{name}` is `API`, `M
 
 ### `{}: these opt-ins act on the sipnab process or the relay, and with the TUI up the operator at the terminal owns both. Add -N to serve MCP headless with them, or remove them to query this capture beside the TUI`
 
-The listed options (from `--mcp-allow-shutdown`, `--mcp-allow-open-capture`, `--mcp-allow-tls-capture`, `--mcp-allow-save-findings` and `--mcp-allow-relay-query`) let an MCP (Model Context Protocol) client act on the sipnab process or on the media relay. You gave them on a run that serves MCP over HTTP while the interactive terminal interface (TUI) is running, and sipnab refuses them there.
+The listed options let an MCP (Model Context Protocol) client act on the sipnab process or on the media relay. They come from `--mcp-allow-shutdown`, `--mcp-allow-open-capture`, `--mcp-allow-tls-capture`, `--mcp-allow-save-findings` and `--mcp-allow-relay-query`.
 
-**What to do:** Add `-N` to serve MCP without the TUI and keep the options, or remove the listed options to query the capture while the TUI runs.
+- You gave them on a run that serves MCP over HTTP while the interactive terminal interface (TUI) is running.
+- sipnab refuses them there.
+
+**What to do:** Do one of these:
+
+- Add `-N` to serve MCP without the TUI, and keep the options.
+- Remove the listed options to query the capture while the TUI runs.
 
 **Exit code:** 2.
 
 ### `token TTL must be positive, got {ttl}`
 
-`--mint-token` uses the lifetime from `--api-token-ttl` when the configuration has a REST API signing key, otherwise from `--mcp-token-ttl`, and that value is 0 or negative. `{ttl}` is the value in seconds. Both flags default to 3600.
+`--mint-token` takes the token lifetime from one of two flags:
+
+- from `--api-token-ttl` when the configuration has a REST API signing key;
+- otherwise from `--mcp-token-ttl`.
+
+That value is 0 or negative. `{ttl}` is the value in seconds. Both flags default to 3600.
 
 **What to do:** Give a positive number of seconds to the flag that applies, for example `--api-token-ttl 3600`.
 
@@ -1950,7 +2555,11 @@ sipnab could not create the thread that polls relay statistics for `--relay-stat
 
 ### `could not start the rtpengine reconciler ({e}); streams the signaling does not explain will stay unattributed`
 
-With `--rtpengine-control` on a live source, sipnab starts a background thread that asks the relay about RTP streams the SIP signaling does not explain. sipnab could not create that thread. `{e}` is the error. The capture continues, and such streams stay without a call attribution.
+With `--rtpengine-control` on a live source, sipnab starts a background thread. The thread asks the relay about RTP streams the SIP signaling does not explain.
+
+- sipnab could not create that thread.
+- `{e}` is the error.
+- The capture continues. Such streams stay without a call attribution.
 
 **What to do:** Act on the error text, then run again.
 
@@ -1960,7 +2569,7 @@ With `--rtpengine-control` on a live source, sipnab starts a background thread t
 
 A `--relay-stats-interval` poll failed. The first `{}` is `rtpengine at <addr>`, and `{e}` is the error. The request times out after 2 seconds. The poll keeps running on its interval.
 
-**What to do:** Check that the relay is running, that `--rtpengine-control` names its control port, and that this host can reach that port.
+**What to do:** Check that the relay is running. Check that `--rtpengine-control` names its control port, and that this host can reach that port.
 
 **Exit code:** None. sipnab logs the error, and the run continues.
 
@@ -2030,7 +2639,7 @@ The relay at `{addr}` answered the `--relay-compare` request for call `{call_id}
 
 ### `relay at {addr}: {e}; the reply was discarded and not read (suspect).`
 
-The relay at `{addr}` answered `--relay-stats` with a reply sipnab could not trust (for example a mismatched cookie), so sipnab discarded the reply. The run continues.
+The relay at `{addr}` answered `--relay-stats` with a reply sipnab could not trust (for example a mismatched cookie). So sipnab discarded the reply. The run continues.
 
 **What to do:** Check that only one client talks to the relay's control port with this address, then retry.
 
@@ -2038,7 +2647,7 @@ The relay at `{addr}` answered `--relay-stats` with a reply sipnab could not tru
 
 ### `--relay-compare needs a relay to ask. Name one with --rtpengine-control <addr>.`
 
-`--relay-compare <CALL-ID>` asks the media relay (rtpengine) for its RTP packet count for one call, but the command line has no relay address in `--rtpengine-control`, so sipnab asked nothing.
+`--relay-compare <CALL-ID>` asks the media relay (rtpengine) for its RTP packet count for one call. But the command line has no relay address in `--rtpengine-control`. So sipnab asked nothing.
 
 **What to do:** Add `--rtpengine-control <ip:port>` with the relay's ng control port, for example `--rtpengine-control 127.0.0.1:22222`.
 
@@ -2046,7 +2655,7 @@ The relay at `{addr}` answered `--relay-stats` with a reply sipnab could not tru
 
 ### `--relay-compare will not ask a relay on a run that reads a file: asking transmits. Compare from a live capture (-d <device>).`
 
-Asking the relay sends a packet, and sipnab does not transmit during a run without a live network source, so `--relay-compare` asked nothing.
+Asking the relay sends a packet. sipnab does not transmit during a run without a live network source. So `--relay-compare` asked nothing.
 
 **What to do:** Run the comparison during a live capture, for example with `-d <device>`.
 
@@ -2064,13 +2673,16 @@ Asking the relay sends a packet, and sipnab does not transmit during a run witho
 
 Polling a relay sends packets, and sipnab transmits only on a run that watches a live source. This run's source does not permit transmitting, so sipnab polls nothing, and the rest of the run continues. A live interface and a HEP listener permit transmitting. Capture files and uprobe reads do not.
 
-**What to do:** Run the poll from a live capture (`-d <device>`) or a HEP listener (`--hep-listen`), or remove `--relay-stats-interval` from runs that read files.
+**What to do:** Do one of these:
+
+- Run the poll from a live capture (`-d <device>`) or a HEP listener (`--hep-listen`).
+- Remove `--relay-stats-interval` from runs that read files.
 
 **Exit code:** None. sipnab logs the error, and the run continues.
 
 ### `--relay-stats needs a relay to ask. Name one with --rtpengine-control <addr>, for example --rtpengine-control 127.0.0.1:22222.`
 
-`--relay-stats`, `--relay-stats-call` or `--relay-stats-list` asks the media relay (rtpengine) for its own statistics, but the command line has no relay address in `--rtpengine-control`, so sipnab asked nothing.
+`--relay-stats`, `--relay-stats-call` or `--relay-stats-list` asks the media relay (rtpengine) for its own statistics. But the command line has no relay address in `--rtpengine-control`. So sipnab asked nothing.
 
 **What to do:** Add `--rtpengine-control <ip:port>`, for example `--rtpengine-control 127.0.0.1:22222`.
 
@@ -2078,7 +2690,10 @@ Polling a relay sends packets, and sipnab transmits only on a run that watches a
 
 ### `--relay-stats will not ask a relay on a run that reads a file: asking transmits, and a file's addresses are historical and belong to third parties. Ask from a live capture (-d <device>).`
 
-Asking the relay sends a packet, and sipnab does not transmit during a run without a live network source, so the relay statistics request (`--relay-stats`, `--relay-stats-call` or `--relay-stats-list`) asked nothing. The addresses in a capture file are historical and belong to other parties.
+Asking the relay sends a packet. sipnab does not transmit during a run without a live network source.
+
+- So the relay statistics request (`--relay-stats`, `--relay-stats-call` or `--relay-stats-list`) asked nothing.
+- The addresses in a capture file are historical, and belong to other parties.
 
 **What to do:** Ask from a live capture, for example `-d <device>`.
 
@@ -2086,7 +2701,11 @@ Asking the relay sends a packet, and sipnab does not transmit during a run witho
 
 ### `--rtpengine-control {addr} asks a live relay which calls are up right now, but this run is reading a capture FILE — offline analysis never transmits. The calls in a file ended in the past; the relay's answer would describe whatever is up TODAY, which is other people's traffic. Passive decoding of any relay control plane already in the capture still runs; capture live with -d <device> to ask.`
 
-A warning: `--rtpengine-control {addr}` asks a live relay which calls are active now, and this run has no live network source, so sipnab does not ask. The calls in a capture file ended in the past, and the relay's answer would describe current calls. sipnab still decodes any relay control traffic present in the capture.
+A warning: `--rtpengine-control {addr}` asks a live relay which calls are active now. This run has no live network source, so sipnab does not ask.
+
+- The calls in a capture file ended in the past.
+- The relay's answer would describe current calls.
+- sipnab still decodes any relay control traffic present in the capture.
 
 **What to do:** Capture live with `-d <device>` to have sipnab ask the relay, or remove `--rtpengine-control` from file runs.
 
@@ -2102,7 +2721,11 @@ The `--rtpengine-control` value `{addr}` is not an IP address and port, so `--re
 
 ### `--rtpengine-control {addr} is not an address and port ({e}). It names the relay's ng control port, for example 127.0.0.1:22222. Nothing was asked, so streams this relay handles stay unattributed.`
 
-At startup sipnab asks the relay named by `--rtpengine-control` which calls are active, so that it can attribute media streams to calls. The value `{addr}` is not an IP address and port (`{e}` is the parse error), so sipnab asked nothing, and streams that relay handles stay unattributed. The capture still runs.
+At startup sipnab asks the relay named by `--rtpengine-control` which calls are active. It does this to attribute media streams to calls.
+
+- The value `{addr}` is not an IP address and port. `{e}` is the parse error.
+- So sipnab asked nothing, and streams that relay handles stay unattributed.
+- The capture still runs.
 
 **What to do:** Give the relay's ng control port as numeric `IP:port`, for example `--rtpengine-control 127.0.0.1:22222`.
 
@@ -2126,7 +2749,14 @@ The `--rtpengine-control` value `{addr}` is not an IP address and port, so the r
 
 ### `{}: {} stepped backwards {} -> {} between polls; a cumulative counter cannot decrease, so the relay probably restarted (suspect). The counters below are since an unknown start.`
 
-Between two `--relay-stats-interval` polls, a numeric counter that the relay reports went down. The first `{}` is `rtpengine at <addr>`, the second is the counter name, and the last two are the previous and current values. Cumulative counters only increase, so sipnab marks the reading as suspect: the relay may have restarted, and the counters that follow count from an unknown start.
+Between two `--relay-stats-interval` polls, a numeric counter that the relay reports went down.
+
+- The first `{}` is `rtpengine at <addr>`.
+- The second is the counter name.
+- The last two are the previous and current values.
+- Cumulative counters only increase. So sipnab marks the reading as suspect:
+  - the relay may have restarted;
+  - the counters that follow count from an unknown start.
 
 **What to do:** Check whether the relay restarted at that time. Compare later readings with each other, not with readings before this line.
 
@@ -2142,7 +2772,10 @@ The background thread that polls the relay for statistics stopped with an intern
 
 ### `the rtpengine reconciler thread panicked`
 
-When the TUI closed, sipnab found that the rtpengine reconciler thread (which matches the media relay's view of calls with the sipnab view) had ended with a panic (an internal failure). Release builds use `panic = "abort"`, which ends the whole process at the panic, so this line appears only in builds that unwind on panic.
+When the TUI closed, sipnab found that the rtpengine reconciler thread had ended with a panic (an internal failure). That thread matches the media relay's view of calls with the sipnab view.
+
+- Release builds use `panic = "abort"`. That ends the whole process at the panic.
+- So this line appears only in builds that unwind on panic.
 
 **What to do:** This is an internal failure in sipnab, not a setting. Report it with the command line you used and the log output.
 
@@ -2162,7 +2795,11 @@ One relay statistics poll took longer than the `--relay-stats-interval`. The fir
 
 Explains why a key-log producer such as eCapture may have recorded no keys: it may have attached to a different TLS library or to a different process.
 
-**What to do:** Pass the key-log producer the library that the SIP daemon maps (shown in `/proc/<daemon-pid>/maps`), cover every worker process, and give sipnab `--keylog-watch`.
+**What to do:**
+
+- Pass the key-log producer the library that the SIP daemon maps (shown in `/proc/<daemon-pid>/maps`).
+- Cover every worker process.
+- Give sipnab `--keylog-watch`.
 
 **Exit code:** None. This is a warning, and the run continues.
 
@@ -2184,7 +2821,13 @@ The remedy for a capture that missed the TLS handshake.
 
 ### `Failed to load --dtls-keylog {keylog}: {e:#}`
 
-In the TUI, sipnab could not load the key log named by `--dtls-keylog`. That file supplies keys for decrypting DTLS-SRTP media (encrypted RTP whose keys come from a DTLS handshake). `{keylog}` is the path, and `{e:#}` is the reason with its causes: when sipnab could not read the file, `Loading DTLS keylog from` followed by the path and the operating system's reason, such as `No such file or directory` or `Permission denied`. The TUI keeps running without DTLS-SRTP decryption. A headless run (`-N`) prints the same text and exits 1.
+In the TUI, sipnab could not load the key log named by `--dtls-keylog`.
+
+- That file supplies keys for decrypting DTLS-SRTP media. DTLS-SRTP encrypts RTP, and its keys come from a DTLS handshake.
+- `{keylog}` is the path.
+- `{e:#}` is the reason with its causes. When sipnab could not read the file, it is `Loading DTLS keylog from`, followed by the path and the operating system's reason. Examples of the reason are `No such file or directory` or `Permission denied`.
+- The TUI keeps running without DTLS-SRTP decryption.
+- A headless run (`-N`) prints the same text and exits 1.
 
 **What to do:** Correct the path or the file permissions, or point `--dtls-keylog` at an NSS key log file (the `SSLKEYLOGFILE` format).
 
@@ -2192,15 +2835,28 @@ In the TUI, sipnab could not load the key log named by `--dtls-keylog`. That fil
 
 ### `Failed to load --keylog {}: {e:#}`
 
-sipnab could not read the TLS key log file named by `--keylog`. `{}` is that path and `{e:#}` is the reason with its full chain of causes, which includes the operating-system error or the parse error for the file. A run that asked for decryption stops instead of continuing without it.
+sipnab could not read the TLS key log file named by `--keylog`.
 
-**What to do:** Check that the path is correct, that the file exists and that the user sipnab runs as can read it, and that its lines are in NSS SSLKEYLOGFILE format.
+- `{}` is that path.
+- `{e:#}` is the reason with its full chain of causes. It includes the operating-system error, or the parse error for the file.
+- A run that asked for decryption stops instead of continuing without it.
+
+**What to do:** Check these:
+
+- the path is correct;
+- the file exists, and the user sipnab runs as can read it;
+- its lines are in NSS SSLKEYLOGFILE format.
 
 **Exit code:** 1.
 
 ### `Failed to load --srtp-keys {keyfile}: {e:#}`
 
-In the TUI, sipnab could not load the SRTP master-key file named by `--srtp-keys`. `{keyfile}` is the path, and `{e:#}` is the reason with its causes: when sipnab could not read the file, `Failed to read SRTP key file:` followed by the path and the operating system's reason, such as `No such file or directory` or `Permission denied`. The TUI keeps running with no SRTP decryption context. A headless run (`-N`) prints the same text and exits 1.
+In the TUI, sipnab could not load the SRTP master-key file named by `--srtp-keys`.
+
+- `{keyfile}` is the path.
+- `{e:#}` is the reason with its causes. When sipnab could not read the file, it is `Failed to read SRTP key file:`, followed by the path and the operating system's reason. Examples of the reason are `No such file or directory` or `Permission denied`.
+- The TUI keeps running with no SRTP decryption context.
+- A headless run (`-N`) prints the same text and exits 1.
 
 **What to do:** Correct the path or the file permissions, or fix the file's contents so that sipnab accepts each key line. Without `--srtp-keys`, sipnab still decrypts with SDES keys it reads from SDP `a=crypto` lines.
 
@@ -2208,9 +2864,17 @@ In the TUI, sipnab could not load the SRTP master-key file named by `--srtp-keys
 
 ### `Failed to load --tls-key {keyfile}: {e:#}`
 
-sipnab could not load the RSA private key named by `--tls-key`, which it uses to decrypt TLS 1.2 connections that use RSA key exchange. `{keyfile}` is the path. `{e:#}` is the reason with its causes: either `reading TLS private key from` followed by the path and the operating system's reason, such as `No such file or directory` or `Permission denied`, when sipnab could not read the file, or a statement that the file is not a PKCS#1 or PKCS#8 PEM RSA private key.
+sipnab could not load the RSA private key named by `--tls-key`. sipnab uses it to decrypt TLS 1.2 connections that use RSA key exchange.
 
-**What to do:** Check that the path is correct and readable by the user sipnab runs as, and that the file is an RSA private key in PEM format, the text format whose first line names `RSA PRIVATE KEY` or `PRIVATE KEY`.
+- `{keyfile}` is the path.
+- `{e:#}` is the reason with its causes. It is one of these:
+  - when sipnab could not read the file: `reading TLS private key from`, followed by the path and the operating system's reason. Examples of the reason are `No such file or directory` or `Permission denied`;
+  - a statement that the file is not a PKCS#1 or PKCS#8 PEM RSA private key.
+
+**What to do:** Check these:
+
+- the path is correct, and readable by the user sipnab runs as;
+- the file is an RSA private key in PEM format. That is the text format whose first line names `RSA PRIVATE KEY` or `PRIVATE KEY`.
 
 **Exit code:** 1.
 
@@ -2224,7 +2888,11 @@ sipnab could not load the RSA private key named by `--tls-key`, which it uses to
 
 ### `--hep-tls-cert/--hep-tls-key are what a TLS listener presents and do nothing without --hep-listen-transport tls`
 
-`--hep-tls-cert` and `--hep-tls-key` are the certificate and private key that the HEP listener (`--hep-listen`) presents to senders over TLS. You gave at least one of them, but you did not set `--hep-listen-transport` to `tls` (it defaults to UDP), so sipnab would use neither.
+`--hep-tls-cert` and `--hep-tls-key` are the certificate and private key that the HEP listener (`--hep-listen`) presents to senders over TLS.
+
+- You gave at least one of them.
+- But you did not set `--hep-listen-transport` to `tls`. It defaults to UDP.
+- So sipnab would use neither.
 
 **What to do:** Add `--hep-listen-transport tls` to accept HEP over TLS, or remove `--hep-tls-cert` and `--hep-tls-key`.
 
@@ -2232,7 +2900,10 @@ sipnab could not load the RSA private key named by `--tls-key`, which it uses to
 
 ### `--hep-tls-extra-ca adds to the roots the collector's certificate is verified against and does nothing without --hep-send-transport tls`
 
-`--hep-tls-extra-ca` adds certificate authorities (roots) to the set that sipnab uses to check the certificate of the HEP collector that `--hep-send` forwards to. That check happens only on a TLS connection, and you did not set `--hep-send-transport` to `tls` (it defaults to UDP).
+`--hep-tls-extra-ca` adds certificate authorities (roots) to a set. sipnab uses that set to check the certificate of the HEP collector that `--hep-send` forwards to.
+
+- That check happens only on a TLS connection.
+- You did not set `--hep-send-transport` to `tls`. It defaults to UDP.
 
 **What to do:** Add `--hep-send-transport tls` to forward over TLS, or remove `--hep-tls-extra-ca`.
 
@@ -2240,7 +2911,10 @@ sipnab could not load the RSA private key named by `--tls-key`, which it uses to
 
 ### `--keylog and --keylog-fd name different sources of the same secrets; pass one, not both`
 
-`--keylog` reads TLS session secrets (a key log file in NSS `SSLKEYLOGFILE` format) from a path, and `--keylog-fd` reads the same kind of secrets from an already-open file descriptor. You gave both, and sipnab does not choose between them.
+`--keylog` reads TLS session secrets from a path. The secrets are a key log file in NSS `SSLKEYLOGFILE` format.
+
+- `--keylog-fd` reads the same kind of secrets from an already-open file descriptor.
+- You gave both. sipnab does not choose between them.
 
 **What to do:** Keep one of the two flags and remove the other.
 
@@ -2248,9 +2922,18 @@ sipnab could not load the RSA private key named by `--tls-key`, which it uses to
 
 ### `--keylog-fd {fd} is not a readable descriptor: {e}`
 
-sipnab could not duplicate the file descriptor number given to `--keylog-fd`. `{fd}` is that number and `{e}` is the operating system error (for example, a bad file descriptor when that number is not open in sipnab's process). The run continues without this keylog stream, so no TLS secrets arrive from it.
+sipnab could not duplicate the file descriptor number given to `--keylog-fd`.
 
-**What to do:** Start sipnab from a process that passes the descriptor open to it (not closed on exec), and give `--keylog-fd` the number of that descriptor. Alternatively, name a keylog file or FIFO with `--keylog`.
+- `{fd}` is that number.
+- `{e}` is the operating system error. For example, a bad file descriptor when that number is not open in sipnab's process.
+- The run continues without this keylog stream. So no TLS secrets arrive from it.
+
+**What to do:**
+
+- Start sipnab from a process that passes the descriptor open to it (not closed on exec).
+- Give `--keylog-fd` the number of that descriptor.
+
+Alternatively, name a keylog file or FIFO with `--keylog`.
 
 **Exit code:** None. sipnab logs the error, and the run continues.
 
@@ -2272,15 +2955,26 @@ sipnab could not duplicate the file descriptor number given to `--keylog-fd`. `{
 
 ### `Keylog stream read failed: {e}`
 
-When the TLS key log is a stream (`--keylog-watch`, `--keylog-fd`, or a key log that sipnab opened in the privileged startup window, such as a FIFO), sipnab reads what the stream already holds before the first packet. That first read failed. `{e}` is the error. The run continues, and later polls of the same source still run.
+The TLS key log can be a stream:
 
-**What to do:** Check that the user sipnab runs as can read the key log path or descriptor, and that the producer is writing to it.
+- `--keylog-watch`;
+- `--keylog-fd`;
+- or a key log that sipnab opened in the privileged startup window, such as a FIFO.
+
+Then sipnab reads what the stream already holds before the first packet. That first read failed. `{e}` is the error. The run continues, and later polls of the same source still run.
+
+**What to do:** Check that the user sipnab runs as can read the key log path or descriptor. Check that the producer is writing to it.
 
 **Exit code:** None. This is a warning, and the run continues.
 
 ### `Key material is NOT locked into RAM: {reason}`
 
-A warning: the run loads decryption keys, and sipnab could not lock its memory into RAM, so the operating system may write key material to swap. `{reason}` gives the cause. On Linux, `mlockall` failed (usually because the memory-lock limit `RLIMIT_MEMLOCK` is too low). On other systems, the reason says that sipnab locks memory on Linux only. The run continues.
+A warning: the run loads decryption keys, and sipnab could not lock its memory into RAM. So the operating system may write key material to swap.
+
+- `{reason}` gives the cause.
+  - On Linux, `mlockall` failed. Usually the memory-lock limit `RLIMIT_MEMLOCK` is too low.
+  - On other systems, the reason says that sipnab locks memory on Linux only.
+- The run continues.
 
 **What to do:** Raise the memory-lock limit, with `ulimit -l` or `LimitMEMLOCK=` in the systemd unit, as the reason states.
 
@@ -2296,7 +2990,11 @@ A warning: the run loads decryption keys, and sipnab could not lock its memory i
 
 ### `\n{unreachable} of these cannot be reached from sipnab's mount namespace and would NOT be captured. They are most likely inside containers; run as root.`
 
-A warning after the `--uprobe-list` table: sipnab cannot open `{unreachable}` of the listed libraries at a path whose file matches the mapped library (it compares the inode, through `/proc/<pid>/root` and then the plain path). The table marks them `(UNREACHABLE)`, and sipnab would not probe them. Libraries inside containers are the usual case.
+A warning after the `--uprobe-list` table: sipnab cannot open `{unreachable}` of the listed libraries at a path whose file matches the mapped library.
+
+- sipnab compares the inode, through `/proc/<pid>/root` and then the plain path.
+- The table marks them `(UNREACHABLE)`, and sipnab would not probe them.
+- Libraries inside containers are the usual case.
 
 **What to do:** Run sipnab as root so it can reach the libraries through `/proc/<pid>/root`.
 
@@ -2306,7 +3004,11 @@ A warning after the `--uprobe-list` table: sipnab cannot open `{unreachable}` of
 
 `--uprobe-list` found no process mapping a TLS library sipnab can probe (OpenSSL or wolfSSL). It reads `/proc/<pid>/maps` for each process, and it does not see a process whose map it cannot read. When the command line includes `--uprobe-flavor`, sipnab counts only libraries of the named flavors.
 
-**What to do:** Run `sipnab --uprobe-list` as root so that every process's map is readable, and check that the program you want to observe is running and uses OpenSSL or wolfSSL. Remove `--uprobe-flavor` to count both flavors.
+**What to do:**
+
+- Run `sipnab --uprobe-list` as root, so that every process's map is readable.
+- Check that the program you want to observe is running, and uses OpenSSL or wolfSSL.
+- Remove `--uprobe-flavor` to count both flavors.
 
 **Exit code:** 1.
 
@@ -2336,7 +3038,7 @@ The remedy for a capture that joined connections already running.
 
 ### `sipnab could not decrypt {unread} TLS application-data record(s): it holds no key material for any session in this capture, so this run says nothing about what that traffic contained.`
 
-sipnab holds no key material for any TLS session in the capture, so `{unread}` application-data records went unread and the run says nothing about their contents.
+sipnab holds no key material for any TLS session in the capture. So `{unread}` application-data records went unread. The run says nothing about their contents.
 
 **What to do:** Read the lines that follow.
 
@@ -2360,7 +3062,7 @@ sipnab holds keys for the first number of TLS sessions and could not decrypt any
 
 ### `sipnab loaded {} keylog line(s) and built no session from any of them, so the {} TLS application-data record(s) in this capture went unread.`
 
-sipnab loaded the first number of key-log lines and could not build a TLS session from any of them, so the second number of TLS application-data records went unread.
+sipnab loaded the first number of key-log lines. It could not build a TLS session from any of them. So the second number of TLS application-data records went unread.
 
 **What to do:** Read the two lines that follow.
 
@@ -2368,7 +3070,7 @@ sipnab loaded the first number of key-log lines and could not build a TLS sessio
 
 ### `The handshake is missing. A TLS 1.2 key log gives the master secret; the server random and cipher suite that expand it into record keys are in the ServerHello, and a capture that started after the connection did never saw one. Nothing later in the capture can supply them.`
 
-Follows the line above. For TLS 1.2, the session keys also need the server random value and the cipher suite from the `ServerHello` message, and this capture started after the handshake.
+Follows the line above. For TLS 1.2, the session keys also need the server random value and the cipher suite from the `ServerHello` message. This capture started after the handshake.
 
 **What to do:** Capture the handshake, as the next line says.
 
@@ -2376,7 +3078,7 @@ Follows the line above. For TLS 1.2, the session keys also need the server rando
 
 ### `The usual cause is a capture that began against connections which were already running. A TLS record is numbered by a counter both endpoints keep privately, nothing on the wire carries it, and sipnab searches only the first {} records of a stream for it — a trunk that has been up for hours is far past that. Capturing the handshake does not help; the counter depends on how many records have gone by since.`
 
-A TLS record's sequence number is not on the wire, and sipnab searches only the first `{}` records of a stream for it. sipnab therefore cannot decrypt a capture that joined long-running connections.
+A TLS record's sequence number is not on the wire. sipnab searches only the first `{}` records of a stream for it. sipnab therefore cannot decrypt a capture that joined long-running connections.
 
 **What to do:** Restart the connection while the capture runs, as the next line says.
 
@@ -2392,7 +3094,11 @@ Lists the TLS library paths that processes on this host map. The second `{}` is 
 
 ### `TLS late decrypt: {} record(s) opened only after the capture ended -- their keys arrived too late to place the messages in this run. Re-read the saved capture with the same keylog to see them.`
 
-sipnab held some TLS records because their keys had not arrived, and at the end of the capture the late keys opened them. That came too late for this run's analysis to include them. `{}` is the number of records. sipnab holds records when the key log can grow during the run (`--keylog-watch` or `--keylog-fd`).
+sipnab held some TLS records because their keys had not arrived. At the end of the capture, the late keys opened them.
+
+- That came too late for this run's analysis to include them.
+- `{}` is the number of records.
+- sipnab holds records when the key log can grow during the run (`--keylog-watch` or `--keylog-fd`).
 
 **What to do:** Read the saved capture again with `-I <file>` and the same `--keylog`. On that run the keys are present from the start.
 
@@ -2408,7 +3114,9 @@ sipnab held some TLS records because their keys had not arrived, and at the end 
 
 ### `` --uprobe-list needs Linux kernel uprobes and a sipnab built with the `native` feature ``
 
-`--uprobe-list` lists the TLS libraries that sipnab could attach uprobes to (Linux kernel hooks on functions inside a running program's TLS library, used to read decrypted traffic). This build runs on a system without Linux uprobes, or its build did not include the `native` feature.
+`--uprobe-list` lists the TLS libraries that sipnab could attach uprobes to. Uprobes are Linux kernel hooks on functions inside a running program's TLS library. sipnab uses them to read decrypted traffic.
+
+This build runs on a system without Linux uprobes. Or its build did not include the `native` feature.
 
 **What to do:** Run a sipnab built with the `native` feature on Linux.
 
@@ -2418,15 +3126,24 @@ sipnab held some TLS records because their keys had not arrived, and at the end 
 
 ### `'{url}': a base URL with a query cannot take the read path; give a template holding {{uuid}}`
 
-You gave the fetcher a base URL with a `?query` and a store kind that builds the read address by adding a path (`vcon-store`, `conserver`, `vcon-mcp`). sipnab cannot add a path after a query. `{url}` is the URL as sipnab parsed it. The line starts with `--vcon-fetch-url` or `[vcon_fetch] url`.
+You gave the fetcher a base URL with a `?query`, and a store kind that builds the read address by adding a path (`vcon-store`, `conserver`, `vcon-mcp`).
 
-**What to do:** Give the full read URL as a template with `{uuid}` where the uuid goes, for example `https://host/api/vcon/{uuid}?x=1`, or remove the query from the base URL.
+- sipnab cannot add a path after a query.
+- `{url}` is the URL as sipnab parsed it.
+- The line starts with `--vcon-fetch-url` or `[vcon_fetch] url`.
+
+**What to do:** Do one of these:
+
+- Give the full read URL as a template, with `{uuid}` where the uuid goes. For example, `https://host/api/vcon/{uuid}?x=1`.
+- Remove the query from the base URL.
 
 **Exit code:** 2 when the URL came from `--vcon-fetch-url`, and 1 when it came from `[vcon_fetch] url`.
 
 ### `{AUTH_INLINE} and {AUTH_FLAG} both name the credential; give one`
 
-You gave the credential both inline (`--vcon-forward-auth` or `SIPNAB_VCON_FORWARD_AUTH`) and as a file (`--vcon-forward-auth-file`). The forwarder takes one source. The flag definition declares the two in conflict, so the command-line parser refuses the pair with its own message before this check runs.
+You gave the credential both inline (`--vcon-forward-auth` or `SIPNAB_VCON_FORWARD_AUTH`) and as a file (`--vcon-forward-auth-file`). The forwarder takes one source.
+
+The flag definition declares the two in conflict. So the command-line parser refuses the pair with its own message before this check runs.
 
 **What to do:** Keep one source. Unset `SIPNAB_VCON_FORWARD_AUTH` and drop `--vcon-forward-auth`, or drop `--vcon-forward-auth-file`.
 
@@ -2466,11 +3183,18 @@ The store answered container `{name}` with a status that the forwarder retries: 
 
 ### `'{shown}': a URL cannot hold whitespace`
 
-The vCon store URL contains a space, tab, line break or other control character, and sipnab refuses it. (A vCon is a JSON container for one conversation. The forwarder sends vCons to a store, and the fetcher reads them back.) The line starts with the setting the URL came from, for example `--vcon-forward-url` or `[vcon_fetch] url`. `{shown}` is the URL as written, with any `user:password@` part replaced by `[redacted]`.
+The vCon store URL contains a space, tab, line break or other control character. sipnab refuses it.
+
+- A vCon is a JSON container for one conversation. The forwarder sends vCons to a store, and the fetcher reads them back.
+- The line starts with the setting the URL came from, for example `--vcon-forward-url` or `[vcon_fetch] url`.
+- `{shown}` is the URL as written, with any `user:password@` part replaced by `[redacted]`.
 
 **What to do:** Remove the whitespace from the URL. Percent-encode a space that belongs in the path or query as `%20`.
 
-**Exit code:** 2 when the URL came from a flag (`--vcon-forward-url`, `--vcon-forward-replace-url` or `--vcon-fetch-url`), and 1 when it came from the config file (`[vcon_forward] url`, `[vcon_forward] replace_url` or `[vcon_fetch] url`).
+**Exit code:**
+
+- 2 when the URL came from a flag (`--vcon-forward-url`, `--vcon-forward-replace-url` or `--vcon-fetch-url`);
+- 1 when it came from the config file (`[vcon_forward] url`, `[vcon_forward] replace_url` or `[vcon_fetch] url`).
 
 ### `'{shown}': a URL sent to a store has no fragment`
 
@@ -2478,11 +3202,14 @@ The vCon store URL contains a `#`. sipnab refuses any URL with a `#` in it, beca
 
 **What to do:** Remove the `#` and everything after it from the URL. If a `#` belongs in the path or query, percent-encode it as `%23`.
 
-**Exit code:** 2 when the URL came from a flag (`--vcon-forward-url`, `--vcon-forward-replace-url` or `--vcon-fetch-url`), and 1 when it came from the config file (`[vcon_forward] url`, `[vcon_forward] replace_url` or `[vcon_fetch] url`).
+**Exit code:**
+
+- 2 when the URL came from a flag (`--vcon-forward-url`, `--vcon-forward-replace-url` or `--vcon-fetch-url`);
+- 1 when it came from the config file (`[vcon_forward] url`, `[vcon_forward] replace_url` or `[vcon_fetch] url`).
 
 ### `Call-ID '{call_id}' not found in tracked dialogs, so there is no dialog to export. --report lists the Call-IDs this run holds.`
 
-`--export-vcon <CALL-ID>` asks for one call as a vCon container (a JSON format for a call record), and this run tracked no dialog with that exact Call-ID, so sipnab exports nothing.
+`--export-vcon <CALL-ID>` asks for one call as a vCon container (a JSON format for a call record). This run tracked no dialog with that exact Call-ID. So sipnab exports nothing.
 
 **What to do:** Run with `--report` to list the Call-IDs this run holds, then pass one of them exactly. The match is exact. `--markdown` shows full Call-IDs in the table.
 
@@ -2490,9 +3217,18 @@ The vCon store URL contains a `#`. sipnab refuses any URL with a `#` in it, beca
 
 ### `{} cannot be used with {export} on a live capture. A live run writes each call's container shortly after the call ends, and a run stopped by a signal writes nothing more, so the redaction map and tombstones this run would write at its end are never written. Use {} with -I on a saved capture, which always runs to its end`
 
-The flags listed in the first `{}` (from `--redact`, `--redact-map` and `--content-deny-tombstone`) write their output when a run ends. `{export}` is `--export-vcon` or `--export-vcon-when`. On a live capture (no `-I`), sipnab writes each vCon container shortly after its call ends, and a live run that a signal stops writes nothing more, so this run would never write the redaction map and tombstones. The second `{}` is `it` or `them`.
+The flags listed in the first `{}` write their output when a run ends. They come from `--redact`, `--redact-map` and `--content-deny-tombstone`.
 
-**What to do:** Run the export with `-I` on a saved capture file, which always runs to its end, or remove the listed flags from the live run.
+- `{export}` is `--export-vcon` or `--export-vcon-when`.
+- On a live capture (no `-I`), sipnab writes each vCon container shortly after its call ends.
+- A live run that a signal stops writes nothing more.
+- So this run would never write the redaction map and tombstones.
+- The second `{}` is `it` or `them`.
+
+**What to do:** Do one of these:
+
+- Run the export with `-I` on a saved capture file. That always runs to its end.
+- Remove the listed flags from the live run.
 
 **Exit code:** 2.
 
@@ -2532,7 +3268,7 @@ The forwarder could not list the files in its spool directory at the start of a 
 
 sipnab could not create the directory named by `--export-vcon-dir`. The quoted path is that directory, and the text after it is the operating system's reason. sipnab wrote no vCon file.
 
-**What to do:** Check that the parent directory exists and that the user sipnab runs as can write to it, or name a different directory.
+**What to do:** Check that the parent directory exists, and that the user sipnab runs as can write to it. Or name a different directory.
 
 **Exit code:** 1.
 
@@ -2546,15 +3282,27 @@ After the store's answer, the forwarder could not rename container `{name}` into
 
 ### `{name}: could not return the rewritten container to the spool: {e}`
 
-Something rewrote container `{name}` in the spool while the forwarder was sending it. The forwarder had already moved the file into the delivered or failed directory and found that it was the newer version, which the store has not received. Linking it back into the spool failed. `{e}` is the operating system error. The newer version stays in the delivered or failed directory, and the forwarder does not send it.
+Something rewrote container `{name}` in the spool while the forwarder was sending it.
 
-**What to do:** Move `{name}` from the delivered or failed directory back into the spool so that the forwarder sends it, and give the sipnab user write permission on the spool.
+- The forwarder had already moved the file into the delivered or failed directory.
+- It found that the file was the newer version, which the store has not received.
+- Linking it back into the spool failed.
+- `{e}` is the operating system error.
+- The newer version stays in the delivered or failed directory. The forwarder does not send it.
+
+**What to do:**
+
+- Move `{name}` from the delivered or failed directory back into the spool, so that the forwarder sends it.
+- Give the sipnab user write permission on the spool.
 
 **Exit code:** None. sipnab logs the error, and the run continues. With `--vcon-forward-once`, the run exits 1.
 
 ### `{name}: could not write {record_name}: {e}`
 
-The forwarder moved container `{name}` to the failed directory, but could not write its failure record `{record_name}` (`<name>.error.json`, which holds the store's answer or the reason). `{e}` is the operating system error.
+The forwarder moved container `{name}` to the failed directory. But it could not write its failure record `{record_name}`.
+
+- The record is `<name>.error.json`. It holds the store's answer or the reason.
+- `{e}` is the operating system error.
 
 **What to do:** Give the sipnab user write permission on the failed directory, and check that the filesystem has free space.
 
@@ -2562,7 +3310,10 @@ The forwarder moved container `{name}` to the failed directory, but could not wr
 
 ### `Could not write '{}': {e}. {written} container(s) were written before this.`
 
-sipnab could not write the vCon file at the quoted path. The text after the path is the operating system's reason, and `{written}` is how many vCon files this run had already written before it stopped.
+sipnab could not write the vCon file at the quoted path.
+
+- The text after the path is the operating system's reason.
+- `{written}` is how many vCon files this run had already written before it stopped.
 
 **What to do:** Check free space and write permission in the `--export-vcon-dir` directory, then run the export again.
 
@@ -2572,7 +3323,9 @@ sipnab could not write the vCon file at the quoted path. The text after the path
 
 sipnab built the vCon container for `{call_id}` but could not write it to the `--vcon-out` path `'{}'`. `{e}` is the operating system's error. sipnab writes the file atomically (it renames a temporary file into place), so a file already at that path stays unchanged.
 
-**What to do:** Check that the directory of the `--vcon-out` path exists and that the user sipnab runs as can write to it, or choose another path. Without `--vcon-out`, sipnab writes the container to standard output.
+**What to do:** Check that the directory of the `--vcon-out` path exists, and that the user sipnab runs as can write to it. Or choose another path.
+
+Without `--vcon-out`, sipnab writes the container to standard output.
 
 **Exit code:** 1.
 
@@ -2602,7 +3355,13 @@ A run that selects calls with `--export-vcon-when` also needs `--export-vcon-dir
 
 ### `` gives `{name}` a value holding a control character ``
 
-The credential line names header `{name}`, but its value contains a control character (for example, a tab or a carriage return inside the value), and an HTTP header cannot carry one. sipnab does not print the value. The line starts with the source: `--vcon-forward-auth (or SIPNAB_VCON_FORWARD_AUTH)`, or the auth file setting and path. The forwarder and the fetcher read one header line, `Header-Name: value`. When `--vcon-forward-kind` or `--vcon-fetch-kind` is `vcon-store`, `conserver` or `vcon-mcp`, sipnab uses a line that fails this check as a bare key instead. You therefore see this refusal only with the `generic` kind (the default).
+The credential line names header `{name}`, but its value contains a control character. For example, a tab or a carriage return inside the value. An HTTP header cannot carry one.
+
+- sipnab does not print the value.
+- The line starts with the source: `--vcon-forward-auth (or SIPNAB_VCON_FORWARD_AUTH)`, or the auth file setting and path.
+- The forwarder and the fetcher read one header line, `Header-Name: value`.
+- When `--vcon-forward-kind` or `--vcon-fetch-kind` is `vcon-store`, `conserver` or `vcon-mcp`, sipnab uses a line that fails this check as a bare key instead.
+- You therefore see this refusal only with the `generic` kind (the default).
 
 **What to do:** Rewrite the credential as one line, `Header-Name: value`, with no control characters in the value.
 
@@ -2610,7 +3369,12 @@ The credential line names header `{name}`, but its value contains a control char
 
 ### `` gives `{name}` no value ``
 
-The credential line names header `{name}` but has nothing after the colon. The line starts with the source: `--vcon-forward-auth (or SIPNAB_VCON_FORWARD_AUTH)`, or the auth file setting and path. The forwarder and the fetcher read one header line, `Header-Name: value`. When `--vcon-forward-kind` or `--vcon-fetch-kind` is `vcon-store`, `conserver` or `vcon-mcp`, sipnab uses a line that fails this check as a bare key instead. You therefore see this refusal only with the `generic` kind (the default).
+The credential line names header `{name}`, but has nothing after the colon.
+
+- The line starts with the source: `--vcon-forward-auth (or SIPNAB_VCON_FORWARD_AUTH)`, or the auth file setting and path.
+- The forwarder and the fetcher read one header line, `Header-Name: value`.
+- When `--vcon-forward-kind` or `--vcon-fetch-kind` is `vcon-store`, `conserver` or `vcon-mcp`, sipnab uses a line that fails this check as a bare key instead.
+- You therefore see this refusal only with the `generic` kind (the default).
 
 **What to do:** Put the credential after the colon, for example `Authorization: Bearer <token>`.
 
@@ -2618,7 +3382,11 @@ The credential line names header `{name}` but has nothing after the colon. The l
 
 ### `'{}' has no {{uuid}} to fill in`
 
-The forwarder's replace URL holds no `{uuid}`. When the store answers 409 (it already holds that uuid), the forwarder sends the container with PUT to the replace URL, with the container's uuid filled in. `{}` is the template as written, with any `user:password@` part replaced by `[redacted]`. The line starts with `--vcon-forward-replace-url` or `[vcon_forward] replace_url`.
+The forwarder's replace URL holds no `{uuid}`.
+
+- When the store answers 409, it already holds that uuid. The forwarder then sends the container with PUT to the replace URL, with the container's uuid filled in.
+- `{}` is the template as written, with any `user:password@` part replaced by `[redacted]`.
+- The line starts with `--vcon-forward-replace-url` or `[vcon_forward] replace_url`.
 
 **What to do:** Write `{uuid}` in the replace URL where the uuid goes, for example `https://store.example.com/v1/vcons/{uuid}`.
 
@@ -2626,7 +3394,10 @@ The forwarder's replace URL holds no `{uuid}`. When the store answers 409 (it al
 
 ### `{flag} is a vCon fetcher setting and needs --vcon-fetch`
 
-`{flag}` is the first option you gave that only the vCon fetcher reads (a fetcher option such as `--vcon-fetch-url` or `--vcon-fetch-out`), but you did not give `--vcon-fetch`, so the fetcher does not run. vCon is a JSON format for a recorded conversation.
+`{flag}` is the first option you gave that only the vCon fetcher reads. That is a fetcher option such as `--vcon-fetch-url` or `--vcon-fetch-out`.
+
+- But you did not give `--vcon-fetch`. So the fetcher does not run.
+- vCon is a JSON format for a recorded conversation.
 
 **What to do:** Add `--vcon-fetch UUID` to fetch a vCon, or remove the named option.
 
@@ -2634,7 +3405,11 @@ The forwarder's replace URL holds no `{uuid}`. When the store answers 409 (it al
 
 ### `{flag} is a vCon forwarder setting and needs --vcon-forward`
 
-`{flag}` is the first option you gave that only the vCon forwarder reads (a forwarder option such as `--vcon-forward-url` or `--vcon-forward-once`), but you did not give `--vcon-forward`, so the forwarder does not run. This check skips `--vcon-forward-auth`. vCon is a JSON format for a recorded conversation.
+`{flag}` is the first option you gave that only the vCon forwarder reads. That is a forwarder option such as `--vcon-forward-url` or `--vcon-forward-once`.
+
+- But you did not give `--vcon-forward`. So the forwarder does not run.
+- This check skips `--vcon-forward-auth`.
+- vCon is a JSON format for a recorded conversation.
 
 **What to do:** Add `--vcon-forward` to run the forwarder, or remove the named option.
 
@@ -2652,13 +3427,22 @@ The value you gave `--vcon-fetch` is not a `uuid`, so sipnab requested nothing f
 
 The delivered or failed directory is on a different filesystem from the spool. The forwarder moves a container out of the spool by renaming it, which works only within one filesystem. `{flag}` is `--vcon-forward-done ([vcon_forward] done)` or `--vcon-forward-failed ([vcon_forward] failed)`, and `{}` is the directory.
 
-**What to do:** Choose a delivered and a failed directory on the spool's filesystem, or leave both unset to use `delivered` and `failed` inside the spool.
+**What to do:** Choose a delivered and a failed directory on the spool's filesystem. Or leave both unset to use `delivered` and `failed` inside the spool.
 
 **Exit code:** 2.
 
 ### `{value} is out of range: give a whole number from {} to {}`
 
-A whole-number setting of the vCon forwarder or fetcher is outside its range. `{value}` is the number given, and the two `{}` are the smallest and largest accepted values. Ranges: interval 1-3600 and timeout 1-600 seconds for the forwarder, timeout 1-600 for the fetcher, and 1-4294967295 for the back-off, response-head, error-body and size settings. For a flag (such as `--vcon-forward-interval`), the argument parser reports the error. For a key, it reads `invalid config value: [vcon_forward] <key>: ...` or `[vcon_fetch] <key>: ...`.
+A whole-number setting of the vCon forwarder or fetcher is outside its range.
+
+- `{value}` is the number given.
+- The two `{}` are the smallest and largest accepted values.
+- Ranges:
+  - interval 1-3600 and timeout 1-600 seconds for the forwarder;
+  - timeout 1-600 for the fetcher;
+  - 1-4294967295 for the back-off, response-head, error-body and size settings.
+- For a flag (such as `--vcon-forward-interval`), the argument parser reports the error.
+- For a key, it reads `invalid config value: [vcon_forward] <key>: ...` or `[vcon_fetch] <key>: ...`.
 
 **What to do:** Give a whole number inside the range the message states.
 
@@ -2666,7 +3450,7 @@ A whole-number setting of the vCon forwarder or fetcher is outside its range. `{
 
 ### `{endpoint} is plain http to another machine: the auth header and every container cross the network unencrypted. Use https:// for anything but loopback`
 
-The store URL `{endpoint}` uses plain `http` to a host that is not this machine, so the auth header and every container cross the network unencrypted.
+The store URL `{endpoint}` uses plain `http` to a host that is not this machine. So the auth header and every container cross the network unencrypted.
 
 **What to do:** Use an `https://` URL for anything but loopback.
 
@@ -2676,7 +3460,7 @@ The store URL `{endpoint}` uses plain `http` to a host that is not this machine,
 
 The delivered or failed directory is the spool directory itself. `{flag}` is `--vcon-forward-done ([vcon_forward] done)` or `--vcon-forward-failed ([vcon_forward] failed)`, and `{}` is the directory.
 
-**What to do:** Name a different directory on the spool's filesystem, or leave the setting unset to use `delivered` or `failed` inside the spool.
+**What to do:** Name a different directory on the spool's filesystem. Or leave the setting unset to use `delivered` or `failed` inside the spool.
 
 **Exit code:** 2.
 
@@ -2684,7 +3468,7 @@ The delivered or failed directory is the spool directory itself. `{flag}` is `--
 
 The credential file is larger than 8192 bytes. It must hold one line. `{from}` is the setting that named the file (`--vcon-forward-auth-file`, `[vcon_forward] auth_file`, `--vcon-fetch-auth-file` or `[vcon_fetch] auth_file`). `{shown}` is its path, and `{MAX_AUTH_FILE}` is 8192.
 
-**What to do:** Reduce the file to the one credential line, `Header-Name: value`, or to the bare key for a store kind that supplies the header.
+**What to do:** Reduce the file to the one credential line, `Header-Name: value`. Or reduce it to the bare key, for a store kind that supplies the header.
 
 **Exit code:** 2 when a flag named the file (`--vcon-forward-auth-file` or `--vcon-fetch-auth-file`), and 1 when `[vcon_forward] auth_file` or `[vcon_fetch] auth_file` named it.
 
@@ -2698,7 +3482,12 @@ The credential file is larger than 8192 bytes. It must hold one line. `{from}` i
 
 ### `` names `{name}`, which the forwarder writes itself; name the header that authenticates ``
 
-The credential line names header `{name}`, which the forwarder writes itself on every request (`Host`, `Content-Type`, `Content-Length`, `Transfer-Encoding`, `Connection`, `User-Agent` or `Expect`). The line starts with the source: `--vcon-forward-auth (or SIPNAB_VCON_FORWARD_AUTH)`, or the auth file setting and path. The forwarder and the fetcher read one header line, `Header-Name: value`. When `--vcon-forward-kind` or `--vcon-fetch-kind` is `vcon-store`, `conserver` or `vcon-mcp`, sipnab uses a line that fails this check as a bare key instead. You therefore see this refusal only with the `generic` kind (the default).
+The credential line names header `{name}`. The forwarder writes this header itself on every request (`Host`, `Content-Type`, `Content-Length`, `Transfer-Encoding`, `Connection`, `User-Agent` or `Expect`).
+
+- The line starts with the source: `--vcon-forward-auth (or SIPNAB_VCON_FORWARD_AUTH)`, or the auth file setting and path.
+- The forwarder and the fetcher read one header line, `Header-Name: value`.
+- When `--vcon-forward-kind` or `--vcon-fetch-kind` is `vcon-store`, `conserver` or `vcon-mcp`, sipnab uses a line that fails this check as a bare key instead.
+- You therefore see this refusal only with the `generic` kind (the default).
 
 **What to do:** Name the header the store authenticates with, for example `Authorization: Bearer <token>`.
 
@@ -2722,7 +3511,14 @@ sipnab could not take the vCon out of the store's answer from `{url}`. `{e}` is 
 
 ### `{name}: {endpoint} not reached: {e}; will retry`
 
-The PUT of container `{name}` to the replace URL (sent after a 409) failed before the forwarder could read a status. `{endpoint}` is the filled-in replace URL. `{e}` is the reason: no address, no connection, a TLS failure, or an answer the forwarder could not read (closed early, not HTTP, or headers over `--vcon-forward-max-response-head`).
+The PUT of container `{name}` to the replace URL failed before the forwarder could read a status. The forwarder sent the PUT after a 409.
+
+- `{endpoint}` is the filled-in replace URL.
+- `{e}` is the reason:
+  - no address;
+  - no connection;
+  - a TLS failure;
+  - an answer the forwarder could not read (closed early, not HTTP, or headers over `--vcon-forward-max-response-head`).
 
 **What to do:** Check that the host of the replace URL is reachable and serves HTTP or HTTPS. If `{e}` names the header limit, raise `--vcon-forward-max-response-head`.
 
@@ -2730,15 +3526,32 @@ The PUT of container `{name}` to the replace URL (sent after a 409) failed befor
 
 ### `{name}: {url} not reached: {e}; will retry`
 
-The POST of container `{name}` to the store failed before the forwarder could read a status. `{url}` is the store URL. `{e}` is the reason: the host does not resolve, no connection within `--vcon-forward-timeout`, a TLS failure, or an answer the forwarder could not read (closed early, not HTTP, or headers over `--vcon-forward-max-response-head`).
+The POST of container `{name}` to the store failed before the forwarder could read a status.
 
-**What to do:** Check that the store's host and port are reachable from this machine, and that the scheme (`http://` or `https://`) matches the store. If `{e}` names the header limit, raise `--vcon-forward-max-response-head`.
+- `{url}` is the store URL.
+- `{e}` is the reason:
+  - the host does not resolve;
+  - no connection within `--vcon-forward-timeout`;
+  - a TLS failure;
+  - an answer the forwarder could not read (closed early, not HTTP, or headers over `--vcon-forward-max-response-head`).
+
+**What to do:**
+
+- Check that the store's host and port are reachable from this machine.
+- Check that the scheme (`http://` or `https://`) matches the store.
+- If `{e}` names the header limit, raise `--vcon-forward-max-response-head`.
 
 **Exit code:** None. This is a warning. The container stays in the spool, and the forwarder retries it with a delay that doubles each time. With `--vcon-forward-once`, the run exits 1.
 
 ### `{}: no usable CA certificate`
 
-An `https://` store URL needs trusted CA certificates. The host's CA bundle (from `SSL_CERT_FILE`, or the system bundle) holds certificates, but `rustls`, the TLS library, accepted none of them. `{}` is the path of the bundle. This message applies to the host bundle only. A CA file named with `--vcon-forward-ca` or `--vcon-fetch-ca` stops at the first certificate that `rustls` rejects, with a different message.
+An `https://` store URL needs trusted CA certificates.
+
+- The host's CA bundle (from `SSL_CERT_FILE`, or the system bundle) holds certificates.
+- But `rustls`, the TLS library, accepted none of them.
+- `{}` is the path of the bundle.
+- This message applies to the host bundle only.
+- A CA file named with `--vcon-forward-ca` or `--vcon-fetch-ca` stops at the first certificate that `rustls` rejects. That case has a different message.
 
 **What to do:** Name the store's CA certificate with `--vcon-forward-ca` (forwarder) or `--vcon-fetch-ca` (fetcher), or point `SSL_CERT_FILE` at a valid PEM bundle.
 
@@ -2746,11 +3559,18 @@ An `https://` store URL needs trusted CA certificates. The host's CA bundle (fro
 
 ### `'{shown}': put credentials in --vcon-forward-auth-file, not in the URL`
 
-The vCon store URL holds a user name or password before an `@` (`https://user:secret@host/...`). sipnab refuses it so that the credential stays out of logs. The line starts with the setting the URL came from, for example `--vcon-forward-url` or `[vcon_fetch] url`. `{shown}` is the URL as written, with any `user:password@` part replaced by `[redacted]`.
+The vCon store URL holds a user name or password before an `@` (`https://user:secret@host/...`).
+
+- sipnab refuses it, so that the credential stays out of logs.
+- The line starts with the setting the URL came from, for example `--vcon-forward-url` or `[vcon_fetch] url`.
+- `{shown}` is the URL as written, with any `user:password@` part replaced by `[redacted]`.
 
 **What to do:** Remove the `user:password@` part from the URL. For the forwarder, put the credential in the file named by `--vcon-forward-auth-file` (or `[vcon_forward] auth_file`), or in `SIPNAB_VCON_FORWARD_AUTH`. For the fetcher, put it in the file named by `--vcon-fetch-auth-file` (or `[vcon_fetch] auth_file`).
 
-**Exit code:** 2 when the URL came from a flag (`--vcon-forward-url`, `--vcon-forward-replace-url` or `--vcon-fetch-url`), and 1 when it came from the config file (`[vcon_forward] url`, `[vcon_forward] replace_url` or `[vcon_fetch] url`).
+**Exit code:**
+
+- 2 when the URL came from a flag (`--vcon-forward-url`, `--vcon-forward-replace-url` or `--vcon-fetch-url`);
+- 1 when it came from the config file (`[vcon_forward] url`, `[vcon_forward] replace_url` or `[vcon_fetch] url`).
 
 ### `` --redact acts on the vCon exporter, which needs the 'vcon' Cargo feature this build does not carry. Rebuild with --features vcon (or --features full); `sipnab --version` lists the features a binary was built with ``
 
@@ -2762,7 +3582,13 @@ The vCon store URL holds a user name or password before an `@` (`https://user:se
 
 ### `--redact-map '{}' already exists and sipnab will not write over it. That file may be the only way back from tokens already sent somewhere`
 
-`--redact-map` names the file where sipnab writes the table that maps each redaction token back to the original value. A file (or link) already exists at that path, and sipnab refuses to replace it because it may be the only way to reverse tokens in containers that an earlier run exported. `'{}'` is the path. With `--export-vcon <CALL-ID>`, the refusal comes before sipnab writes the container, so sipnab exports nothing. With `--export-vcon-when`, sipnab has already written the containers to `--export-vcon-dir` when the refusal happens.
+`--redact-map` names the file where sipnab writes a table. The table maps each redaction token back to the original value.
+
+- A file (or link) already exists at that path.
+- sipnab refuses to replace it. It may be the only way to reverse tokens in containers that an earlier run exported.
+- `'{}'` is the path.
+- With `--export-vcon <CALL-ID>`, the refusal comes before sipnab writes the container. So sipnab exports nothing.
+- With `--export-vcon-when`, sipnab has already written the containers to `--export-vcon-dir` when the refusal happens.
 
 **What to do:** Pass `--redact-map` a path that does not exist yet, or move the existing file elsewhere first.
 
@@ -2778,7 +3604,13 @@ You gave `--redact` without `--redact-key-file`, so sipnab asked the operating s
 
 ### `--redact rewrites an EXPORTED container and this run exports none. Pair it with --export-vcon, --export-vcon-when or a [[vcon.rule]], or drop it — a run that accepted --redact and wrote nothing redacted would read as a redacted capture`
 
-`--redact` acts on the vCon containers that a run exports, and this run has no `--export-vcon`, no `--export-vcon-when` and no `[[vcon.rule]]` in its config file, so `--redact` has nothing to act on. vCon is a JSON format for a recorded conversation.
+`--redact` acts on the vCon containers that a run exports. This run has none of these:
+
+- `--export-vcon`;
+- `--export-vcon-when`;
+- a `[[vcon.rule]]` in its config file.
+
+So `--redact` has nothing to act on. vCon is a JSON format for a recorded conversation.
 
 **What to do:** Add `--export-vcon CALL-ID`, `--export-vcon-when` (with `--export-vcon-dir`) or a [`[[vcon.rule]]`](vcon.md#write-calls-by-rule), or remove `--redact`.
 
@@ -2786,23 +3618,50 @@ You gave `--redact` without `--redact-key-file`, so sipnab asked the operating s
 
 ### `refused {name}: {method} {url} answered {}; moved to '{}' beside {record_name}`
 
-The store answered with a 4xx status that a retry does not change (any 4xx except 401 and 403, and except 409 when you set a replace URL), so the forwarder moved the container to the failed directory. `{name}` is the container file, `{method}` is POST or PUT, and `{url}` is where the forwarder sent it. The first `{}` is the status, and the second is the failed directory. `{record_name}` is `<name>.error.json`, which holds the store's answer with the credential removed.
+The store answered with a 4xx status that a retry does not change. So the forwarder moved the container to the failed directory.
 
-**What to do:** Read `<name>.error.json` for the store's reason. Correct the container or the forwarder settings (for example `--vcon-forward-url`, `--vcon-forward-kind`, or `--vcon-forward-replace-url` for a 409), and move the container back into the spool to send it again.
+- Such a status is any 4xx except 401 and 403, and except 409 when you set a replace URL.
+- `{name}` is the container file.
+- `{method}` is POST or PUT.
+- `{url}` is where the forwarder sent it.
+- The first `{}` is the status. The second is the failed directory.
+- `{record_name}` is `<name>.error.json`. It holds the store's answer with the credential removed.
+
+**What to do:**
+
+- Read `<name>.error.json` for the store's reason.
+- Correct the container or the forwarder settings. For example, `--vcon-forward-url`, `--vcon-forward-kind`, or `--vcon-forward-replace-url` for a 409.
+- Move the container back into the spool to send it again.
 
 **Exit code:** None. This is a warning, and the run continues. With `--vcon-forward-once`, the run exits 1.
 
 ### `refused {name}: not sent: {reason} Moved to '{}' beside {record_name}`
 
-The store answered 409 (it already holds this uuid) and you set a replace URL, but the forwarder could not build the PUT request. The forwarder moved the container to the failed directory without sending it. `{name}` is the container file. `{reason}` says why: the container is not JSON, has no `uuid`, or its `uuid` is not 1 to 64 letters, digits or `-`, or the filled-in replace URL does not parse. `{}` is the failed directory. `{record_name}` is `<name>.error.json`, which holds the same reason.
+The store answered 409 (it already holds this uuid), and you set a replace URL. But the forwarder could not build the PUT request. The forwarder moved the container to the failed directory without sending it.
 
-**What to do:** Read `<name>.error.json` in the failed directory, correct the container or the replace URL (`--vcon-forward-replace-url`), and move the container back into the spool to send it again.
+- `{name}` is the container file.
+- `{reason}` says why:
+  - the container is not JSON;
+  - it has no `uuid`;
+  - its `uuid` is not 1 to 64 letters, digits or `-`;
+  - the filled-in replace URL does not parse.
+- `{}` is the failed directory.
+- `{record_name}` is `<name>.error.json`. It holds the same reason.
+
+**What to do:**
+
+- Read `<name>.error.json` in the failed directory.
+- Correct the container or the replace URL (`--vcon-forward-replace-url`).
+- Move the container back into the spool to send it again.
 
 **Exit code:** None. This is a warning, and the run continues. With `--vcon-forward-once`, the run exits 1.
 
 ### `{}: rustls rejected a certificate: {e}`
 
-The CA file named with `--vcon-forward-ca` or `--vcon-fetch-ca` holds a certificate that `rustls`, the TLS library, does not accept as a trust anchor. `{}` is the file, and `{e}` is the reason that `rustls` gives.
+The CA file named with `--vcon-forward-ca` or `--vcon-fetch-ca` holds a certificate that `rustls`, the TLS library, does not accept as a trust anchor.
+
+- `{}` is the file.
+- `{e}` is the reason that `rustls` gives.
 
 **What to do:** Replace the file with a PEM file that holds only valid CA certificates for the store.
 
@@ -2818,7 +3677,14 @@ The store's answer was larger than the `--vcon-fetch-max-size` limit (`{}` bytes
 
 ### `the answer's status line and headers are larger than {max} bytes ({flag})`
 
-The store's answer had a status line and headers larger than the limit, so sipnab stopped reading it. `{max}` is the limit in bytes (default 65536). `{flag}` is the setting that controls it: `--vcon-forward-max-response-head` for the forwarder, `--vcon-fetch-max-response-head` for the fetcher. The forwarder treats this as a failed send and retries the container. The fetcher records that uuid as failed.
+The store's answer had a status line and headers larger than the limit. So sipnab stopped reading it.
+
+- `{max}` is the limit in bytes (default 65536).
+- `{flag}` is the setting that controls it:
+  - `--vcon-forward-max-response-head` for the forwarder;
+  - `--vcon-fetch-max-response-head` for the fetcher.
+- The forwarder treats this as a failed send, and retries the container.
+- The fetcher records that uuid as failed.
 
 **What to do:** Raise the limit with the flag the message names, or with `[vcon_forward] max_response_head` or `[vcon_fetch] max_response_head` in the config file.
 
@@ -2834,7 +3700,7 @@ The store's answer from `{url}` is not JSON. `{e}` is the parser's reason.
 
 ### `{url}: the container's uuid is {}, not the one asked for; nothing was written`
 
-The container that the store returned carries a different `uuid` (`{}`, or `missing`) from the one requested, so sipnab did not write it.
+The container that the store returned carries a different `uuid` (`{}`, or `missing`) from the one requested. So sipnab did not write it.
 
 **What to do:** Report it to the store's operator.
 
@@ -2842,11 +3708,23 @@ The container that the store returned carries a different `uuid` (`{}`, or `miss
 
 ### `the first retry delay, {} s from {}, is longer than the longest, {} s from {}; give a first delay no longer than the cap`
 
-The vCon forwarder's first retry delay is longer than its longest retry delay. The four `{}` are, in order, the first delay in seconds and where it came from, then the longest delay and where it came from. A source is `--vcon-forward-backoff-first` or `--vcon-forward-backoff-cap`, `[vcon_forward] backoff_first` or `[vcon_forward] backoff_cap`, or `the default` (2 for the first delay, 300 for the longest). When sipnab finds this while it loads the configuration file, the printed line starts with `invalid config value: `.
+The vCon forwarder's first retry delay is longer than its longest retry delay.
+
+- The four `{}` are, in order:
+  - the first delay in seconds, and where it came from;
+  - the longest delay, and where it came from.
+- A source is one of:
+  - `--vcon-forward-backoff-first` or `--vcon-forward-backoff-cap`;
+  - `[vcon_forward] backoff_first` or `[vcon_forward] backoff_cap`;
+  - `the default` (2 for the first delay, 300 for the longest).
+- When sipnab finds this while it loads the configuration file, the printed line starts with `invalid config value: `.
 
 **What to do:** Make the first delay no longer than the longest: lower `backoff_first` or `--vcon-forward-backoff-first`, or raise `backoff_cap` or `--vcon-forward-backoff-cap`.
 
-**Exit code:** 1 when both values came from the configuration file or the defaults, and 2 when a command-line flag supplied one of them.
+**Exit code:**
+
+- 1 when both values came from the configuration file or the defaults;
+- 2 when a command-line flag supplied one of them.
 
 ### `The {what} for Call-ID '{}' would not serialize: {e}`
 
@@ -2862,19 +3740,28 @@ The vCon store URL does not start with `http://` or `https://`, the only two sch
 
 **What to do:** Write the URL with `http://` or `https://` in front, for example `https://store.example.com/v1/vcons`.
 
-**Exit code:** 2 when the URL came from a flag (`--vcon-forward-url`, `--vcon-forward-replace-url` or `--vcon-fetch-url`), and 1 when it came from the config file (`[vcon_forward] url`, `[vcon_forward] replace_url` or `[vcon_fetch] url`).
+**Exit code:**
+
+- 2 when the URL came from a flag (`--vcon-forward-url`, `--vcon-forward-replace-url` or `--vcon-fetch-url`);
+- 1 when it came from the config file (`[vcon_forward] url`, `[vcon_forward] replace_url` or `[vcon_fetch] url`).
 
 ### `'{url}': the {} kind reads at a URL template; write {{uuid}} where the uuid goes`
 
 The fetcher's store kind is `generic` (the default, which `--vcon-fetch-kind` or `[vcon_fetch] kind` sets). That kind has no built-in read path, and the URL holds no `{uuid}`. `{url}` is the URL as parsed, and `{}` is the kind name. The line starts with `--vcon-fetch-url` or `[vcon_fetch] url`.
 
-**What to do:** Write `{uuid}` in the URL where the container's uuid goes, for example `https://host/vcons/{uuid}`, or set `--vcon-fetch-kind` to `vcon-store`, `conserver` or `vcon-mcp`, which supply the read path.
+**What to do:** Do one of these:
+
+- Write `{uuid}` in the URL where the container's uuid goes, for example `https://host/vcons/{uuid}`.
+- Set `--vcon-fetch-kind` to `vcon-store`, `conserver` or `vcon-mcp`. These supply the read path.
 
 **Exit code:** 2 when the URL came from `--vcon-fetch-url`, and 1 when it came from `[vcon_fetch] url`.
 
 ### `'{}': the read URL holds no {{uuid}}`
 
-The fetcher's read URL holds no `{uuid}` when the fetcher starts. `{}` is the URL. The settings step (`read_url`) always produces a URL holding `{uuid}`, or refuses the run with its own message first, so a command-line run does not reach this check.
+The fetcher's read URL holds no `{uuid}` when the fetcher starts. `{}` is the URL.
+
+- The settings step (`read_url`) always produces a URL holding `{uuid}`. Or it refuses the run with its own message first.
+- So a command-line run does not reach this check.
 
 **What to do:** Write `{uuid}` in `--vcon-fetch-url` (or `[vcon_fetch] url`) where the uuid goes, or use a `--vcon-fetch-kind` that supplies the read path.
 
@@ -2890,7 +3777,10 @@ The store answered 404: it holds no vCon with that `uuid`.
 
 ### `` {} {} the 'vcon' Cargo feature, which this build does not carry. Rebuild with --features vcon (or --features full); `sipnab --version` lists the features a binary was built with ``
 
-This sipnab binary does not include the `vcon` Cargo feature (a build-time option), which contains the vCon exporter. vCon is a JSON format for a recorded conversation. The first `{}` lists the vCon flags you gave (from `--export-vcon`, `--export-vcon-when`, `--export-vcon-dir`, `--vcon-digest` and `--vcon-max-inline-media`), and the second `{}` is `needs` or `need`.
+This sipnab binary does not include the `vcon` Cargo feature (a build-time option). That feature contains the vCon exporter. vCon is a JSON format for a recorded conversation.
+
+- The first `{}` lists the vCon flags you gave. They come from `--export-vcon`, `--export-vcon-when`, `--export-vcon-dir`, `--vcon-digest` and `--vcon-max-inline-media`.
+- The second `{}` is `needs` or `need`.
 
 **What to do:** Use a sipnab binary built with `--features vcon` or `--features full`, or remove the listed flags. `sipnab --version` lists the Cargo features that a binary includes.
 
@@ -2962,9 +3852,14 @@ You gave `--vcon-forward` with no credential for the store from any source. The 
 
 ### `--vcon-spool-status: {e}`
 
-`--vcon-spool-status` could not report on the spool. `{e}` is the reason: `cannot read '{path}': {e}` when the spool directory, or its `delivered/` or `failed/` directory, exists but sipnab cannot list it, or the reason sipnab could not write the report as JSON. A directory that does not exist is not an error: it counts as empty.
+`--vcon-spool-status` could not report on the spool. `{e}` is the reason. It is one of these:
 
-**What to do:** Check the path, and check that the user sipnab runs as can list the spool directory and the `delivered/` and `failed/` directories beside it.
+- `cannot read '{path}': {e}`, when the spool directory, or its `delivered/` or `failed/` directory, exists but sipnab cannot list it;
+- the reason sipnab could not write the report as JSON.
+
+A directory that does not exist is not an error: it counts as empty.
+
+**What to do:** Check the path. Check that the user sipnab runs as can list the spool directory, and the `delivered/` and `failed/` directories beside it.
 
 **Exit code:** 1.
 
@@ -2980,7 +3875,7 @@ The spool status could not list a directory. `{path}` is the spool directory, or
 
 The spool status found a container in `failed/` with no failure record beside it. `{shown}` is the record's file name, the container's name followed by `.error.json`. This is not an error message: it is the `record_problem` value for that container in the status report, and the report continues.
 
-**What to do:** Read the container itself to find out why the forwarder moved it to `failed/`, or run the forwarder again on it.
+**What to do:** Read the container itself to find out why the forwarder moved it to `failed/`. Or run the forwarder again on it.
 
 **Exit code:** None. It is a field in the report.
 
@@ -3042,15 +3937,29 @@ sipnab could not write the fetched vCon to the file named before the colon. `{e}
 
 ### `Calls were still waiting for [[vcon.enrich]] after an hour; their containers are not written.`
 
-A live capture ended on its own (`--duration`) while calls still waited for an [`[[vcon.enrich]]`](vcon.md#enrich-a-call-before-it-is-written) service, and an hour passed without them finishing. Its `timeout_secs` bounds each service call, so this means a service kept every call waiting its full timeout.
+A live capture ended on its own (`--duration`) while calls still waited for an [`[[vcon.enrich]]`](vcon.md#enrich-a-call-before-it-is-written) service. An hour passed without them finishing.
 
-**What to do:** Check the service the earlier `[[vcon.enrich]] '...'` lines name, lower its `timeout_secs`, and re-export the calls from a saved capture with `-I`.
+- Its `timeout_secs` bounds each service call.
+- So this means a service kept every call waiting its full timeout.
+
+**What to do:**
+
+- Check the service the earlier `[[vcon.enrich]] '...'` lines name.
+- Lower its `timeout_secs`.
+- Re-export the calls from a saved capture with `-I`.
 
 **Exit code:** None. This is a warning, and the run ends.
 
 ### `{label}[[vcon.enrich]] '{}' for Call-ID '{call_id}': {}: {}. The container is written without its analysis and records this.`
 
-An [`[[vcon.enrich]]`](vcon.md#enrich-a-call-before-it-is-written) service did not succeed for one call. `{label}` names the rule, the first `{}` the service, `{call_id}` the call, then the outcome (`failed`, `timeout`, `malformed` or `queue-full`) and what happened. sipnab writes the call's container without that service's analysis, and its `sipnab-enrichment` attachment records the same outcome.
+An [`[[vcon.enrich]]`](vcon.md#enrich-a-call-before-it-is-written) service did not succeed for one call.
+
+- `{label}` names the rule.
+- The first `{}` is the service.
+- `{call_id}` is the call.
+- Then come the outcome (`failed`, `timeout`, `malformed` or `queue-full`) and what happened.
+- sipnab writes the call's container without that service's analysis.
+- Its `sipnab-enrichment` attachment records the same outcome.
 
 **What to do:** Read the detail: `failed` is the service's HTTP status or exit status, `timeout` its `timeout_secs`, `malformed` an answer that is not an `analysis` list. `queue-full` means 64 calls were waiting. The service is slower than the calls arrive.
 
@@ -3092,7 +4001,15 @@ The `detail` of a `malformed` outcome: entry `{i}` of an [`[[vcon.enrich]]`](vco
 
 ### `--allow-coredump: a core dump would contain the archive password this run holds`
 
-A warning that sipnab prints when this run holds an archive password (from `--archive-password`, `--archive-password-file`, `--archive-password-command`, `--archive-password-stdin`, the `SIPNAB_ARCHIVE_PASSWORD` environment variable or a systemd credentials directory) and the command line includes `--allow-coredump`. sipnab normally disables core dumps while it holds a password. With `--allow-coredump` it leaves them enabled, so a crash could write the password to a core file.
+A warning that sipnab prints in this case:
+
+- this run holds an archive password; and
+- the command line includes `--allow-coredump`.
+
+The password comes from `--archive-password`, `--archive-password-file`, `--archive-password-command`, `--archive-password-stdin`, the `SIPNAB_ARCHIVE_PASSWORD` environment variable or a systemd credentials directory.
+
+- sipnab normally disables core dumps while it holds a password.
+- With `--allow-coredump` it leaves them enabled. So a crash could write the password to a core file.
 
 **What to do:** Remove `--allow-coredump` to have sipnab disable core dumps while it holds the password. Keep it only if a core file containing the password is acceptable.
 
@@ -3100,15 +4017,19 @@ A warning that sipnab prints when this run holds an archive password (from `--ar
 
 ### `Capture thread exited before signaling ready`
 
-sipnab started its capture thread and waited for it to report that its source (interface, file or socket) was open, but the thread ended without reporting either success or failure.
+sipnab started its capture thread. It waited for the thread to report that its source (interface, file or socket) was open. But the thread ended without reporting either success or failure.
 
-**What to do:** Re-run with `SIPNAB_LOG=debug` to see what the capture thread logged before it ended, and report the output if the cause is not shown.
+**What to do:** Re-run with `SIPNAB_LOG=debug` to see what the capture thread logged before it ended. Report the output if the cause is not shown.
 
 **Exit code:** 1.
 
 ### `Could not block privilege escalation through exec: {e}`
 
-At startup sipnab sets the Linux `PR_SET_NO_NEW_PRIVS` flag, which stops any program it later starts from gaining privileges through a `setuid` or `setgid` file. The `prctl` call that sets the flag failed, or the flag read back as not set afterwards. `{e}` holds that reason, including the operating-system error. sipnab logs this as a warning and continues without that protection.
+At startup sipnab sets the Linux `PR_SET_NO_NEW_PRIVS` flag. That flag stops any program it later starts from gaining privileges through a `setuid` or `setgid` file.
+
+- The `prctl` call that sets the flag failed. Or the flag read back as not set afterwards.
+- `{e}` holds that reason, including the operating-system error.
+- sipnab logs this as a warning, and continues without that protection.
 
 **What to do:** No setting changes this step, and the run continues either way. The text after the colon names the system-call error to investigate on the host (the kernel or container must allow `prctl(PR_SET_NO_NEW_PRIVS)`).
 
@@ -3118,13 +4039,20 @@ At startup sipnab sets the Linux `PR_SET_NO_NEW_PRIVS` flag, which stops any pro
 
 sipnab answers SIP scanners from a separate worker process (a copy of its own executable), and starting that process failed. `{e}` is the operating system error. The scanner-kill response (`--kill-scanner`, `[security] kill_scanner` or `-K`) is off for this run. Detection, alerting and reporting continue.
 
-**What to do:** Check that sipnab can still find and execute its executable at the path it started from, and that the system allows it to create processes, then restart the run.
+**What to do:**
+
+- Check that sipnab can still find and execute its executable at the path it started from.
+- Check that the system allows it to create processes.
+- Then restart the run.
 
 **Exit code:** None. sipnab logs the error, and the run continues.
 
 ### `Failed to chroot: {e}`
 
-`--chroot` or `[privilege] chroot` asked sipnab to change its root directory after opening the capture, and the change failed. `{e}` names the failing call (`chroot` or `chdir(/)`) and the reason, or says the path is not valid UTF-8 or contains a null byte. Changing the root directory requires root privileges.
+`--chroot` or `[privilege] chroot` asked sipnab to change its root directory after opening the capture. The change failed.
+
+- `{e}` names the failing call (`chroot` or `chdir(/)`) and the reason. Or it says the path is not valid UTF-8, or contains a null byte.
+- Changing the root directory requires root privileges.
 
 **What to do:** Run sipnab as root when using `--chroot`, make sure the directory exists, or remove `--chroot` and `[privilege] chroot`.
 
@@ -3132,7 +4060,11 @@ sipnab answers SIP scanners from a separate worker process (a copy of its own ex
 
 ### `Failed to disable core dumps: {e}`
 
-The run loads decryption keys (`--tls-key`, `--keylog`, `--keylog-fd`, `--srtp-keys` or `--dtls-keylog`), so sipnab tells the operating system to exclude the process from core dumps, to keep keys out of core files, and the operating system refused. `{e}` names the failing call and says that `--allow-coredump` runs anyway.
+The run loads decryption keys (`--tls-key`, `--keylog`, `--keylog-fd`, `--srtp-keys` or `--dtls-keylog`).
+
+- So sipnab tells the operating system to exclude the process from core dumps. This keeps keys out of core files.
+- The operating system refused.
+- `{e}` names the failing call, and says that `--allow-coredump` runs anyway.
 
 **What to do:** Pass `--allow-coredump` if a core file containing key material is acceptable. Otherwise, run on a system that allows the call.
 
@@ -3164,7 +4096,10 @@ sipnab could not create the capture thread. `{e}` is the error from starting it 
 
 ### `--kill-spoof raw requires a raw socket but it could not be opened: {e}. Grant CAP_NET_RAW (sipnab --setup-caps / run under sudo) or use --kill-spoof ephemeral.`
 
-`--kill-spoof raw` requires a raw network socket so that responses sent to SIP scanners carry the scanned party's address and port as their source. Opening the socket failed. `{e}` is the operating system error, typically a missing `CAP_NET_RAW` capability (the Linux permission to open raw sockets).
+`--kill-spoof raw` requires a raw network socket. With it, responses sent to SIP scanners carry the scanned party's address and port as their source.
+
+- Opening the socket failed.
+- `{e}` is the operating system error. Typically it is a missing `CAP_NET_RAW` capability (the Linux permission to open raw sockets).
 
 **What to do:** Run `sipnab --setup-caps` once, or run the command under sudo, to grant `CAP_NET_RAW`. Alternatively use `--kill-spoof ephemeral`, or `--kill-spoof auto`, which falls back to sipnab's own port when the socket is unavailable.
 
@@ -3180,7 +4115,11 @@ sipnab lacks the permission to open the capture device. `{}` names the interface
 
 ### `Processing thread panicked: {}`
 
-When the TUI closed, sipnab found that the packet-processing thread had ended with a panic (an internal failure). `{}` is the panic message, or `<non-string panic payload>` when the panic carried no text. Release builds use `panic = "abort"`, which ends the whole process at the panic, so this line appears only in builds that unwind on panic.
+When the TUI closed, sipnab found that the packet-processing thread had ended with a panic (an internal failure).
+
+- `{}` is the panic message. Or it is `<non-string panic payload>` when the panic carried no text.
+- Release builds use `panic = "abort"`. That ends the whole process at the panic.
+- So this line appears only in builds that unwind on panic.
 
 **What to do:** This is an internal failure in sipnab, not a setting. Report it with the command line you used and the log output.
 
@@ -3188,7 +4127,10 @@ When the TUI closed, sipnab found that the packet-processing thread had ended wi
 
 ### `Scanner-kill: raw socket unavailable ({e}); falling back to ephemeral source port. Kill responses will come from sipnab's own port.`
 
-A warning: the default `--kill-spoof auto` tried to open a raw socket so that scanner responses could carry the scanned party's address, and the operating system refused (`{e}`). sipnab sends the responses from an ordinary UDP socket instead, so they come from sipnab's own address and port.
+A warning: the default `--kill-spoof auto` tried to open a raw socket, so that scanner responses could carry the scanned party's address. The operating system refused (`{e}`).
+
+- sipnab sends the responses from an ordinary UDP socket instead.
+- So they come from sipnab's own address and port.
 
 **What to do:** To send spoofed responses, grant `CAP_NET_RAW` with `sipnab --setup-caps` or run under sudo. To use sipnab's own port without this warning, pass `--kill-spoof ephemeral`.
 
@@ -3214,7 +4156,11 @@ The terminal UI returned an error. Setting up the terminal (raw mode, the altern
 
 ### `--since/--until: no dialog's first message falls in {window}; this capture's dialogs begin between {} and {}`
 
-The time window that `--since` and `--until` give holds none of the capture's dialogs, so every listing is empty. `{window}` is the window, written `[start, end)`, with `unbounded` for a side you did not give. The two `{}` are the first-message times of the earliest and the latest dialog in the capture. sipnab prints this line on stderr, so a JSON stream on stdout stays valid.
+The time window that `--since` and `--until` give holds none of the capture's dialogs. So every listing is empty.
+
+- `{window}` is the window, written `[start, end)`. It shows `unbounded` for a side you did not give.
+- The two `{}` are the first-message times of the earliest and the latest dialog in the capture.
+- sipnab prints this line on stderr, so a JSON stream on stdout stays valid.
 
 **What to do:** Move the window to cover the times the line names.
 
@@ -3246,7 +4192,11 @@ The remedy for frames sipnab could not decode.
 
 ### `{snapped} frame(s) arrived truncated by the capture's snaplen and {snapped_undecodable} of them were cut too short to decode at all, so nothing in those was analyzed (raise --snaplen)`
 
-Part of the capture-quality summary. The snapshot length (`snaplen`, the most bytes the capture keeps of each packet) cut `{snapped}` frames short, and `{snapped_undecodable}` of them were too short to decode at all, so sipnab analyzed nothing in those frames.
+Part of the capture-quality summary.
+
+- The snapshot length (`snaplen`) is the most bytes the capture keeps of each packet.
+- It cut `{snapped}` frames short.
+- `{snapped_undecodable}` of them were too short to decode at all. So sipnab analyzed nothing in those frames.
 
 **What to do:** Raise `--snaplen`.
 
@@ -3278,15 +4228,25 @@ Part of the capture-quality summary. TCP streams had `{holes}` gaps, totaling `{
 
 ### `IMPOSSIBLE RATE: {count} stream(s) carry more payload than their codec can produce — worst is {label} at {mult:.1}x its ceiling. The most common cause is the same traffic read twice: a directory holding a capture and its backup, or one call captured at two hops. Counts and rates in this run are inflated by that factor. sipnab does not de-duplicate, because two vantage points on one call are a legitimate input.`
 
-At least one RTP stream carried more payload per second than its codec can produce: more than 15% over the codec's fixed rate, measured over at least 0.5 seconds. `{count}` is the number of streams. `{label}` names the worst one (codec, SSRC, source and destination). `{mult:.1}` is how many times over the ceiling that stream ran. sipnab does not check variable-rate codecs such as Opus.
+At least one RTP stream carried more payload per second than its codec can produce. That means more than 15% over the codec's fixed rate, measured over at least 0.5 seconds.
 
-**What to do:** Check the `-I` input for the same traffic read twice, for example a directory holding a capture and its backup, and run again with one copy. If you meant to supply two captures of one call from different points, the counts include both by design.
+- `{count}` is the number of streams.
+- `{label}` names the worst one (codec, SSRC, source and destination).
+- `{mult:.1}` is how many times over the ceiling that stream ran.
+- sipnab does not check variable-rate codecs such as Opus.
+
+**What to do:** Check the `-I` input for the same traffic read twice. For example, a directory holding a capture and its backup. Run again with one copy.
+
+If you meant to supply two captures of one call from different points, the counts include both by design.
 
 **Exit code:** None. This is a warning, and the run continues.
 
 ### `--kill-ua {pattern} names a User-Agent for the scanner detector, and nothing in this run builds that detector — so the pattern is read by nobody and the run would report no scanners whether or not one is there. Add --kill-scanner (or set [security] kill_scanner = true) to arm the detection this pattern feeds. On a live capture --kill-scanner also arms the response path, which is why sipnab will not turn it on for you.`
 
-`--kill-ua` adds a User-Agent pattern for the scanner detector, and this run does not build that detector because you set neither `--kill-scanner` nor `[security] kill_scanner = true`. `{pattern}` is the pattern you gave. sipnab does not turn scanner detection on by itself, because on a live capture that also enables sending SIP responses to the detected scanners.
+`--kill-ua` adds a User-Agent pattern for the scanner detector. This run does not build that detector, because you set neither `--kill-scanner` nor `[security] kill_scanner = true`.
+
+- `{pattern}` is the pattern you gave.
+- sipnab does not turn scanner detection on by itself. On a live capture that would also enable sending SIP responses to the detected scanners.
 
 **What to do:** Add `--kill-scanner` or set `[security] kill_scanner = true` in the configuration file, or remove `--kill-ua`.
 
@@ -3334,7 +4294,9 @@ The capture held no SIP that sipnab found, and nothing else explains it.
 
 ### `No SIP traffic was decoded — but {} of {frames_read} frame(s){share} could not be decoded at all, so this is not a finding that the capture contains no SIP. Undecodable: {}.`
 
-sipnab decoded no SIP, and some frames failed to decode at all, so the zero is not a finding that the capture holds no SIP. The numbers are the undecodable frames, the frames read, and the reasons.
+sipnab decoded no SIP, and some frames failed to decode at all. So the zero is not a finding that the capture holds no SIP.
+
+The numbers are the undecodable frames, the frames read, and the reasons.
 
 **What to do:** Read the next line.
 
@@ -3350,7 +4312,12 @@ sipnab decoded no SIP, and it could not decrypt TLS traffic in the capture, so S
 
 ### `NOT ANALYZED: {} further SIP message(s) were seen on ports outside --portrange and are in none of the totals above. Busiest: {}. Re-run with --portrange 1-65535 to include them.`
 
-When sipnab reads a capture file, `--portrange` selects which ports carry SIP signaling. sipnab saw messages that look like SIP on other ports, did not analyze them, and left them out of every total. The first `{}` is the count. The second lists up to five of the busiest ports (the destination port of requests and the source port of responses) with message counts.
+When sipnab reads a capture file, `--portrange` selects which ports carry SIP signaling.
+
+- sipnab saw messages that look like SIP on other ports.
+- It did not analyze them, and left them out of every total.
+- The first `{}` is the count.
+- The second lists up to five of the busiest ports, with message counts. A port here is the destination port of requests and the source port of responses.
 
 **What to do:** Run again with `--portrange` widened to include the listed ports, or with `--portrange 1-65535` to include all of them.
 
@@ -3358,7 +4325,12 @@ When sipnab reads a capture file, `--portrange` selects which ports carry SIP si
 
 ### `NOT ANALYZED: {} SIP-over-WebSocket message(s) arrived on ports outside the WebSocket port set ({}) and are in none of the totals above. Busiest: {}. Re-run with --ws-portrange covering them (e.g. --ws-portrange 1-65535) to include them.`
 
-sipnab unwrapped some messages as SIP carried in WebSocket frames, but on ports outside the WebSocket port set, so sipnab did not analyze them, and every total leaves them out. The first `{}` is the message count. The second is the current port set (default 80, 443, 8080, 8443, or the `--ws-portrange` range). The third lists up to five of the busiest ports with message counts.
+sipnab unwrapped some messages as SIP carried in WebSocket frames. But they were on ports outside the WebSocket port set.
+
+- So sipnab did not analyze them, and every total leaves them out.
+- The first `{}` is the message count.
+- The second is the current port set (default 80, 443, 8080, 8443, or the `--ws-portrange` range).
+- The third lists up to five of the busiest ports, with message counts.
 
 **What to do:** Run again with `--ws-portrange` covering those ports (for example `--ws-portrange 1-65535`), or set `[capture] ws_ports` in the configuration file.
 
@@ -3374,9 +4346,12 @@ Start of the NOT DECODED notice. The first number is how many frames sipnab coul
 
 ### ` NOTHING IN THIS CAPTURE WAS READ — every frame failed to decode, so the totals above describe no traffic whatsoever and a zero among them is not evidence of absence.`
 
-Every frame in the capture failed to decode, so every total sipnab printed describes no traffic, and a zero is not evidence that something is absent.
+Every frame in the capture failed to decode.
 
-**What to do:** Convert the capture to a link type sipnab reads (for example with `editcap -T ether`) or open an issue naming the reported number.
+- So every total sipnab printed describes no traffic.
+- A zero is not evidence that something is absent.
+
+**What to do:** Convert the capture to a link type sipnab reads (for example with `editcap -T ether`). Or open an issue naming the reported number.
 
 **Exit code:** None. This is a warning, and the run continues.
 
@@ -3406,7 +4381,11 @@ Part of the capture-quality summary. The kernel capture buffer was full and lost
 
 ### `{bad_ts} packet(s) had a corrupt capture timestamp and were stamped with the wall clock (timing analysis is unreliable for this run)`
 
-Part of the capture-quality summary. `{bad_ts}` packets had a corrupt timestamp in the capture, and sipnab gave them the current clock time instead, so timing figures for this run are not reliable.
+Part of the capture-quality summary.
+
+- `{bad_ts}` packets had a corrupt timestamp in the capture.
+- sipnab gave them the current clock time instead.
+- So timing figures for this run are not reliable.
 
 **What to do:** Capture again, or repair the capture file. sipnab has no option that recovers the original timestamps.
 
@@ -3430,9 +4409,17 @@ Continues the NOT DECODED notice. Those frames are in none of the totals printed
 
 ### `{flags} refused: security detection is built only by the headless single-capture path, and this run is {path}. Nothing would be detected and no finding reported, so an empty result would not be an all-clear — which is why this is refused rather than warned about. To detect, {remedy}.`
 
-You gave security detection flags on a run that uses the parallel offline reader, which builds no detectors. sipnab picks that mode when `--cores` is above 1 with `-I` and without multi-device capture. `{flags}` lists the detection settings that the run asked for (from `--kill-scanner`, `-K/--kill-target`, `--fraud-detect`, `--digest-leak` and `--reg-flood`, including ones turned on in the configuration file). `{path}` is `the --cores parallel offline reader`, and `{remedy}` is `drop --cores (the single-core headless read detects)`.
+You gave security detection flags on a run that uses the parallel offline reader. That reader builds no detectors.
 
-**What to do:** Remove `--cores` (or set it to 1) so the run reads on a single core and builds the detectors, or remove the listed detection settings.
+- sipnab picks that mode when `--cores` is above 1 with `-I`, and without multi-device capture.
+- `{flags}` lists the detection settings that the run asked for. They come from `--kill-scanner`, `-K/--kill-target`, `--fraud-detect`, `--digest-leak` and `--reg-flood`, including ones turned on in the configuration file.
+- `{path}` is `the --cores parallel offline reader`.
+- `{remedy}` is `drop --cores (the single-core headless read detects)`.
+
+**What to do:** Do one of these:
+
+- Remove `--cores` (or set it to 1). The run then reads on a single core and builds the detectors.
+- Remove the listed detection settings.
 
 **Exit code:** 2.
 
@@ -3446,7 +4433,13 @@ sipnab read more than it kept. The `{}` part lists what sipnab dropped (messages
 
 ### `STIR/SHAKEN: unparseable Identity header: {e}`
 
-`--stir-shaken` logs every Identity header (the STIR/SHAKEN caller-ID signature, a JWT called a PASSporT) in each SIP message. sipnab could not parse one Identity header for one of these reasons: it does not have three parts separated by dots, its payload is not valid `base64url`, or the payload is not the expected JSON. `{e}` says which.
+`--stir-shaken` logs every Identity header in each SIP message. The Identity header is the STIR/SHAKEN caller-ID signature, a JWT called a PASSporT.
+
+sipnab could not parse one Identity header, for one of these reasons. `{e}` says which.
+
+- it does not have three parts separated by dots;
+- its payload is not valid `base64url`;
+- the payload is not the expected JSON.
 
 **What to do:** No flag changes this. The message describes the SIP message as sipnab received it. Inspect the Identity header of that message in the capture.
 
@@ -3454,7 +4447,10 @@ sipnab read more than it kept. The `{}` part lists what sipnab dropped (messages
 
 ### `That is a NAT-discovery failure, not a missing capture. An endpoint that cannot learn its reflexive address advertises its PRIVATE address in SDP, and the far end then sends media to somewhere it cannot reach — a call that signals cleanly and carries audio one way.`
 
-Explains the unanswered STUN/TURN requests: an endpoint that cannot learn its public address advertises its private one in SDP (the media description in the call setup), which gives one-way audio.
+Explains the unanswered STUN/TURN requests.
+
+- An endpoint that cannot learn its public address advertises its private one in SDP. SDP is the media description in the call setup.
+- That gives one-way audio.
 
 **What to do:** Read the next line.
 
@@ -3464,13 +4460,19 @@ Explains the unanswered STUN/TURN requests: an endpoint that cannot learn its pu
 
 The STUN/TURN requests drew no reply at all, which points at something in the path dropping UDP rather than at the server.
 
-**What to do:** Check whether a web filter, secure web gateway, firewall or IPS sits in the path, and whether it permits UDP to the STUN/TURN port.
+**What to do:**
+
+- Check whether a web filter, secure web gateway, firewall or IPS sits in the path.
+- Check whether it permits UDP to the STUN/TURN port.
 
 **Exit code:** None. This is a warning, and the run continues.
 
 ### ` THIS ANALYSIS IS MOSTLY BLIND — the totals above describe the minority of the capture sipnab could read, so a zero among them is not evidence of absence.`
 
-Half or more of the frames failed to decode, so the totals describe only the part of the capture sipnab could read, and a zero is not evidence that something is absent.
+Half or more of the frames failed to decode.
+
+- So the totals describe only the part of the capture sipnab could read.
+- A zero is not evidence that something is absent.
 
 **What to do:** Convert the capture (for example with `editcap -T ether`) or open an issue naming the reported number.
 
@@ -3496,7 +4498,12 @@ sipnab adds this to the line above when you did not give `--report`. `{finding}`
 
 ### `{what} contains invalid UTF-8`
 
-Library parser error. Bytes that must be text are not valid UTF-8. `{what}` is `SIP first line` or `SDP body`. In the `sipnab` program, sipnab drops a SIP-looking packet that fails this way and logs it only at debug level (`SIPNAB_LOG=debug`) as `SIP parse error: ...`. `-x`/`--quiet-bad-parse` silences that line. sipnab does not use a SIP message body that fails this way for media setup, and prints no message for it.
+Library parser error. Bytes that must be text are not valid UTF-8.
+
+- `{what}` is `SIP first line` or `SDP body`.
+- In the `sipnab` program, sipnab drops a SIP-looking packet that fails this way. It logs it only at debug level (`SIPNAB_LOG=debug`) as `SIP parse error: ...`.
+- `-x`/`--quiet-bad-parse` silences that line.
+- sipnab does not use a SIP message body that fails this way for media setup. It prints no message for it.
 
 **What to do:** The SIP first line or SDP body contained bytes that are not UTF-8 text.
 
@@ -3504,7 +4511,12 @@ Library parser error. Bytes that must be text are not valid UTF-8. `{what}` is `
 
 ### `empty {what}`
 
-Library parser error: the parser received empty input. `{what}` names the expected input: `SIP message` (from `parse_sip` or `parse_sip_bytes`) or `SDP body` (from `parse_sdp`). In the `sipnab` program, sipnab drops a SIP-looking packet that fails this way and logs it only at debug level (`SIPNAB_LOG=debug`) as `SIP parse error:` followed by this text. `-x`/`--quiet-bad-parse` silences that line. sipnab does not use a SIP message body that fails this way for media setup, and it prints no message for it.
+Library parser error: the parser received empty input.
+
+- `{what}` names the expected input: `SIP message` (from `parse_sip` or `parse_sip_bytes`) or `SDP body` (from `parse_sdp`).
+- In the `sipnab` program, sipnab drops a SIP-looking packet that fails this way. It logs it only at debug level (`SIPNAB_LOG=debug`) as `SIP parse error:` followed by this text.
+- `-x`/`--quiet-bad-parse` silences that line.
+- sipnab does not use a SIP message body that fails this way for media setup. It prints no message for it.
 
 **What to do:** The input was zero bytes long. Library callers should pass the whole SIP message or SDP body.
 
@@ -3512,7 +4524,14 @@ Library parser error: the parser received empty input. `{what}` names the expect
 
 ### `{kind} encapsulation depth exceeds limit ({limit})`
 
-Packet decoder error (library surface). A frame nests more encapsulation layers than the limit allows. Encapsulation layers are tunnels such as IP-in-IP, GRE, MPLS-in-IP, AH, ESP or UDP tunnels. `{kind}` is the layer that went over the limit, and `{limit}` is the limit, 5. The limit protects the decoder from crafted frames. In the `sipnab` program, this text appears only in debug logging (`SIPNAB_LOG=debug`) as `Skipping unparseable packet: ...`. sipnab counts the frame in the headless (`-N`) end-of-run `NOT DECODED` summary and in the `sipnab_capture_undecodable_frames_total` metric, and the run continues.
+Packet decoder error (library surface). A frame nests more encapsulation layers than the limit allows.
+
+- Encapsulation layers are tunnels such as IP-in-IP, GRE, MPLS-in-IP, AH, ESP or UDP tunnels.
+- `{kind}` is the layer that went over the limit.
+- `{limit}` is the limit, 5.
+- The limit protects the decoder from crafted frames.
+- In the `sipnab` program, this text appears only in debug logging (`SIPNAB_LOG=debug`) as `Skipping unparseable packet: ...`.
+- sipnab counts the frame in the headless (`-N`) end-of-run `NOT DECODED` summary, and in the `sipnab_capture_undecodable_frames_total` metric. The run continues.
 
 **What to do:** No setting changes the limit. sipnab does not decode frames nested this deeply.
 
@@ -3520,7 +4539,12 @@ Packet decoder error (library surface). A frame nests more encapsulation layers 
 
 ### `failed to decode {what}`
 
-Packet decoder error from the library: sipnab could not decode a link or network layer of a captured frame. `{what}` names the layer, such as `Ethernet packet`, `IP from encapsulated Ethernet frame` or `WebSocket frame`. When the capture cut the frame short (`snaplen`), sipnab counts the frame as truncated rather than as a decode error. In the `sipnab` program this text appears only in debug logging (`SIPNAB_LOG=debug`) on a line that starts with `Skipping` and ends with this text. sipnab counts the frame in the headless (`-N`) end-of-run `NOT DECODED` summary and in the `sipnab_capture_undecodable_frames_total` metric, and the run continues.
+Packet decoder error from the library: sipnab could not decode a link or network layer of a captured frame.
+
+- `{what}` names the layer, such as `Ethernet packet`, `IP from encapsulated Ethernet frame` or `WebSocket frame`.
+- When the capture cut the frame short (`snaplen`), sipnab counts the frame as truncated rather than as a decode error.
+- In the `sipnab` program this text appears only in debug logging (`SIPNAB_LOG=debug`). It is on a line that starts with `Skipping` and ends with this text.
+- sipnab counts the frame in the headless (`-N`) end-of-run `NOT DECODED` summary, and in the `sipnab_capture_undecodable_frames_total` metric. The run continues.
 
 **What to do:** If the summary reports the frames as truncated, capture again with a larger `--snaplen`. Otherwise the frame is in a format the decoder does not read.
 
@@ -3528,7 +4552,10 @@ Packet decoder error from the library: sipnab could not decode a link or network
 
 ### `gzip-compressed capture; decompress it first (sipnab's file loaders and decompress_capture do this automatically)`
 
-Library error from `PcapReader::new`: the bytes passed to it are still gzip-compressed. `decompress_capture` and the file loaders in sipnab decompress before reading, so only a program that calls `PcapReader::new` directly on compressed bytes sees this.
+Library error from `PcapReader::new`: the bytes passed to it are still gzip-compressed.
+
+- `decompress_capture` and the file loaders in sipnab decompress before reading.
+- So only a program that calls `PcapReader::new` directly on compressed bytes sees this.
 
 **What to do:** Pass the bytes through `sipnab::capture::pcap_reader::decompress_capture` first, as the message says, and give the result to `PcapReader::new`.
 
@@ -3536,7 +4563,11 @@ Library error from `PcapReader::new`: the bytes passed to it are still gzip-comp
 
 ### `gzip-compressed capture inflates past the {limit}-byte safety cap; raise --max-gunzip-bytes (or [limits] max_gunzip_bytes) for a capture you trust, or decompress it manually (e.g. gunzip) and open the raw file`
 
-Decompressing a gzip-compressed capture would produce more than `{limit}` bytes, the in-memory safety cap (default 1 GiB, 1073741824 bytes), so decompression stopped. The `sipnab` command opens `-I` files through libpcap and its archive layer, which report problems in their own words. This text comes from the library reader `PcapReader::new` or `decompress_capture`, and from the WebAssembly build's file loader.
+Decompressing a gzip-compressed capture would produce more than `{limit}` bytes. So decompression stopped.
+
+- That limit is the in-memory safety cap (default 1 GiB, 1073741824 bytes).
+- The `sipnab` command opens `-I` files through libpcap and its archive layer. Those report problems in their own words.
+- This text comes from the library reader `PcapReader::new` or `decompress_capture`, and from the WebAssembly build's file loader.
 
 **What to do:** Decompress the file with a separate tool such as `gunzip` and open the raw capture. A program that uses the library raises the cap with `sipnab::capture::pcap_reader::set_max_gunzip_bytes`.
 
@@ -3544,7 +4575,11 @@ Decompressing a gzip-compressed capture would produce more than `{limit}` bytes,
 
 ### `gzip stream is corrupt or truncated: {source}`
 
-Decompressing a gzip-compressed capture failed because the compressed data has damage or ends early. `{source}` is the error from the decompression step. The `sipnab` command opens `-I` files through libpcap and its archive layer, which report problems in their own words. This text comes from the library reader `PcapReader::new` or `decompress_capture`, and from the WebAssembly build's file loader.
+Decompressing a gzip-compressed capture failed, because the compressed data has damage or ends early.
+
+- `{source}` is the error from the decompression step.
+- The `sipnab` command opens `-I` files through libpcap and its archive layer. Those report problems in their own words.
+- This text comes from the library reader `PcapReader::new` or `decompress_capture`, and from the WebAssembly build's file loader.
 
 **What to do:** Obtain a complete, undamaged copy of the `.gz` file.
 
@@ -3552,7 +4587,12 @@ Decompressing a gzip-compressed capture failed because the compressed data has d
 
 ### `{what} has no IP layer`
 
-Packet decoder error (library surface). The frame carries no IP layer. Examples are ARP, a PPP frame without IP, a loopback frame of another address family, or an encapsulation that the decoder recognizes but cannot read. `{what}` names it. In the `sipnab` program, this text appears only in debug logging (`SIPNAB_LOG=debug`) as `Skipping unparseable packet: ...`. sipnab counts the frame in the headless (`-N`) end-of-run `NOT DECODED` summary and in the `sipnab_capture_undecodable_frames_total` metric, and the run continues.
+Packet decoder error (library surface). The frame carries no IP layer.
+
+- Examples are ARP, a PPP frame without IP, a loopback frame of another address family, or an encapsulation that the decoder recognizes but cannot read.
+- `{what}` names it.
+- In the `sipnab` program, this text appears only in debug logging (`SIPNAB_LOG=debug`) as `Skipping unparseable packet: ...`.
+- sipnab counts the frame in the headless (`-N`) end-of-run `NOT DECODED` summary, and in the `sipnab_capture_undecodable_frames_total` metric. The run continues.
 
 **What to do:** The run needs no action. Frames without IP carry no SIP or RTP.
 
@@ -3560,7 +4600,11 @@ Packet decoder error (library surface). The frame carries no IP layer. Examples 
 
 ### `ICMP packets are not processed by sipnab`
 
-The packet decoder (`parse_packet`, part of the library) does not turn ICMP or ICMPv6 packets into SIP or RTP data and returns this error for them. Before it returns, the native decoder records an ICMP error message that quotes an earlier packet as evidence for the matching dialog. In the `sipnab` program this text appears only in debug logging (`SIPNAB_LOG=debug`) on a line that starts with `Skipping` and ends with this text, and sipnab does not count the packet as undecodable.
+The packet decoder (`parse_packet`, part of the library) does not turn ICMP or ICMPv6 packets into SIP or RTP data. It returns this error for them.
+
+- Before it returns, the native decoder records an ICMP error message that quotes an earlier packet. The record is evidence for the matching dialog.
+- In the `sipnab` program this text appears only in debug logging (`SIPNAB_LOG=debug`). It is on a line that starts with `Skipping` and ends with this text.
+- sipnab does not count the packet as undecodable.
 
 **What to do:** You need to do nothing. Every ICMP packet ends this way after sipnab records any error evidence it carries.
 
@@ -3568,7 +4612,12 @@ The packet decoder (`parse_packet`, part of the library) does not turn ICMP or I
 
 ### `invalid SIP first line '{line}': {reason}`
 
-Library parser error: the first line ends in ` SIP/2.0`, so the parser reads it as a SIP request line, but it does not have the shape `METHOD Request-URI SIP/2.0`. `{line}` is the line, and `{reason}` is the problem, which is `no space before SIP version` when no Request-URI sits between the method and the version. In the `sipnab` program, sipnab drops a SIP-looking packet that fails this way and logs it only at debug level (`SIPNAB_LOG=debug`) as `SIP parse error:` followed by this text. `-x`/`--quiet-bad-parse` silences that line.
+Library parser error: the first line ends in ` SIP/2.0`. So the parser reads it as a SIP request line. But it does not have the shape `METHOD Request-URI SIP/2.0`.
+
+- `{line}` is the line.
+- `{reason}` is the problem. It is `no space before SIP version` when no Request-URI sits between the method and the version.
+- In the `sipnab` program, sipnab drops a SIP-looking packet that fails this way. It logs it only at debug level (`SIPNAB_LOG=debug`) as `SIP parse error:` followed by this text.
+- `-x`/`--quiet-bad-parse` silences that line.
 
 **What to do:** The request line has the wrong form. It must hold a method, a Request-URI and `SIP/2.0`, separated by spaces.
 
@@ -3576,7 +4625,11 @@ Library parser error: the first line ends in ` SIP/2.0`, so the parser reads it 
 
 ### `invalid SIP status code: '{code}'`
 
-Library parser error: the first line starts with `SIP/2.0 `, so the parser reads it as a SIP response status line, but the word after it is not a whole number from 0 to 65535. `{code}` is that word. In the `sipnab` program, sipnab drops a SIP-looking packet that fails this way and logs it only at debug level (`SIPNAB_LOG=debug`) as `SIP parse error:` followed by this text. `-x`/`--quiet-bad-parse` silences that line.
+Library parser error: the first line starts with `SIP/2.0 `. So the parser reads it as a SIP response status line. But the word after it is not a whole number from 0 to 65535.
+
+- `{code}` is that word.
+- In the `sipnab` program, sipnab drops a SIP-looking packet that fails this way. It logs it only at debug level (`SIPNAB_LOG=debug`) as `SIP parse error:` followed by this text.
+- `-x`/`--quiet-bad-parse` silences that line.
 
 **What to do:** The status line has the wrong form. It must be `SIP/2.0`, a numeric status code and an optional reason phrase, such as `SIP/2.0 200 OK`.
 
@@ -3584,7 +4637,10 @@ Library parser error: the first line starts with `SIP/2.0 `, so the parser reads
 
 ### `Microsoft Network Monitor (.cap) format is not supported. Convert to pcap with: editcap -F pcap input.cap output.pcap`
 
-The file starts with the Microsoft Network Monitor signature (magic `0x55424d47`), a capture format the built-in reader cannot read. The `sipnab` command opens `-I` files through libpcap and its archive layer, which report problems in their own words. This text comes from the library reader `PcapReader::new` or `decompress_capture`, and from the WebAssembly build's file loader.
+The file starts with the Microsoft Network Monitor signature (magic `0x55424d47`). The built-in reader cannot read that capture format.
+
+- The `sipnab` command opens `-I` files through libpcap and its archive layer. Those report problems in their own words.
+- This text comes from the library reader `PcapReader::new` or `decompress_capture`, and from the WebAssembly build's file loader.
 
 **What to do:** Convert the file to pcap with the `editcap -F pcap input.cap output.pcap` command that the message gives, then open the converted file.
 
@@ -3592,7 +4648,10 @@ The file starts with the Microsoft Network Monitor signature (magic `0x55424d47`
 
 ### `no CRLF found — not a SIP message`
 
-Library parser error: the data contains no CRLF (carriage return and line feed, the line ending SIP requires), so it cannot be a SIP message. In the `sipnab` program, sipnab drops a SIP-looking packet that fails this way and logs it only at debug level (`SIPNAB_LOG=debug`) as `SIP parse error:` followed by this text. `-x`/`--quiet-bad-parse` silences that line.
+Library parser error: the data contains no CRLF, so it cannot be a SIP message. CRLF is carriage return and line feed, the line ending SIP requires.
+
+- In the `sipnab` program, sipnab drops a SIP-looking packet that fails this way. It logs it only at debug level (`SIPNAB_LOG=debug`) as `SIP parse error:` followed by this text.
+- `-x`/`--quiet-bad-parse` silences that line.
 
 **What to do:** The input is not a SIP message, or it uses bare line feeds. SIP lines must end in CRLF.
 
@@ -3600,7 +4659,11 @@ Library parser error: the data contains no CRLF (carriage return and line feed, 
 
 ### `no IP payload in {what}`
 
-Packet decoder error from the library: the frame has an IP header but no payload behind it to read. `{what}` names the packet (`packet` or `inner packet`). In the `sipnab` program this text appears only in debug logging (`SIPNAB_LOG=debug`) on a line that starts with `Skipping` and ends with this text. sipnab counts the frame in the headless (`-N`) end-of-run `NOT DECODED` summary and in the `sipnab_capture_undecodable_frames_total` metric, and the run continues.
+Packet decoder error from the library: the frame has an IP header, but no payload behind it to read.
+
+- `{what}` names the packet (`packet` or `inner packet`).
+- In the `sipnab` program this text appears only in debug logging (`SIPNAB_LOG=debug`). It is on a line that starts with `Skipping` and ends with this text.
+- sipnab counts the frame in the headless (`-N`) end-of-run `NOT DECODED` summary, and in the `sipnab_capture_undecodable_frames_total` metric. The run continues.
 
 **What to do:** The run needs nothing from you. The frame carries nothing that sipnab can analyze.
 
@@ -3608,7 +4671,11 @@ Packet decoder error from the library: the frame has an IP header but no payload
 
 ### `not a pcap/pcapng file (magic: 0x{magic:08x}). Supported formats: .pcap, .pcapng, .cap (pcap format), and their gzip-compressed variants (.pcap.gz, .pcapng.gz)`
 
-The data does not start with a pcap, `pcapng` or Network Monitor signature, so it is not a capture file the built-in reader knows. `{magic}` is the first four bytes read as a little-endian number, in hex. The `sipnab` command opens `-I` files through libpcap and its archive layer, which report problems in their own words. This text comes from the library reader `PcapReader::new` or `decompress_capture`, and from the WebAssembly build's file loader.
+The data does not start with a pcap, `pcapng` or Network Monitor signature. So it is not a capture file the built-in reader knows.
+
+- `{magic}` is the first four bytes read as a little-endian number, in hex.
+- The `sipnab` command opens `-I` files through libpcap and its archive layer. Those report problems in their own words.
+- This text comes from the library reader `PcapReader::new` or `decompress_capture`, and from the WebAssembly build's file loader.
 
 **What to do:** Check that the file is a `.pcap` or `.pcapng` capture (gzip compression is fine), as the message lists. Convert a file in another format first.
 
@@ -3616,7 +4683,11 @@ The data does not start with a pcap, `pcapng` or Network Monitor signature, so i
 
 ### `not a SIP message: first line is '{line}'`
 
-Library parser error: the first line neither starts with `SIP/2.0 ` (a response) nor ends with ` SIP/2.0` (a request), so the data is not a SIP message. `{line}` is that line without its leading spaces. In the `sipnab` program, sipnab drops a SIP-looking packet that fails this way and logs it only at debug level (`SIPNAB_LOG=debug`) as `SIP parse error:` followed by this text. `-x`/`--quiet-bad-parse` silences that line.
+Library parser error: the first line neither starts with `SIP/2.0 ` (a response) nor ends with ` SIP/2.0` (a request). So the data is not a SIP message.
+
+- `{line}` is that line without its leading spaces.
+- In the `sipnab` program, sipnab drops a SIP-looking packet that fails this way. It logs it only at debug level (`SIPNAB_LOG=debug`) as `SIP parse error:` followed by this text.
+- `-x`/`--quiet-bad-parse` silences that line.
 
 **What to do:** The input is not SIP 2.0. On the command line, `-x`/`--quiet-bad-parse` hides the debug line for such packets.
 
@@ -3624,7 +4695,10 @@ Library parser error: the first line neither starts with `SIP/2.0 ` (a response)
 
 ### `no transport header (not UDP/TCP)`
 
-Packet decoder error from the library: the IP packet carries IGMP (multicast group management) rather than a transport that sipnab reads, such as UDP or TCP. In the `sipnab` program this text appears only in debug logging (`SIPNAB_LOG=debug`) on a line that starts with `Skipping` and ends with this text. sipnab counts the frame in the headless (`-N`) end-of-run `NOT DECODED` summary and in the `sipnab_capture_undecodable_frames_total` metric, and the run continues.
+Packet decoder error from the library: the IP packet carries IGMP (multicast group management). It does not carry a transport that sipnab reads, such as UDP or TCP.
+
+- In the `sipnab` program this text appears only in debug logging (`SIPNAB_LOG=debug`). It is on a line that starts with `Skipping` and ends with this text.
+- sipnab counts the frame in the headless (`-N`) end-of-run `NOT DECODED` summary, and in the `sipnab_capture_undecodable_frames_total` metric. The run continues.
 
 **What to do:** You need to do nothing. IGMP carries no SIP or RTP.
 
@@ -3632,7 +4706,10 @@ Packet decoder error from the library: the IP packet carries IGMP (multicast gro
 
 ### `RTP version {version}, expected 2`
 
-Library parser error from `parse_rtp_header`: the two version bits at the start of the RTP header (Real-time Transport Protocol, which carries call audio) do not hold 2. `{version}` is the value found. In the `sipnab` program the RTP detector treats such a UDP packet as not RTP and drops any half-detected stream for that address pair, without printing anything.
+Library parser error from `parse_rtp_header`. The two version bits at the start of the RTP header do not hold 2. RTP (Real-time Transport Protocol) carries call audio.
+
+- `{version}` is the value found.
+- In the `sipnab` program, the RTP detector treats such a UDP packet as not RTP. It drops any half-detected stream for that address pair, without printing anything.
 
 **What to do:** The input is not an RTP version 2 packet. Library callers should pass only the UDP payload of an RTP packet, starting at the RTP header.
 
@@ -3640,7 +4717,10 @@ Library parser error from `parse_rtp_header`: the two version bits at the start 
 
 ### `SDP must start with a v= line`
 
-Library parser error from `parse_sdp`: the first non-blank line of the SDP body (Session Description Protocol, the part of a SIP message that describes the media) does not begin with `v=`, or the body holds only blank lines. In the `sipnab` program, sipnab does not use a SIP message body that fails this way for media setup, and it prints no message.
+Library parser error from `parse_sdp`. SDP (Session Description Protocol) is the part of a SIP message that describes the media.
+
+- The first non-blank line of the SDP body does not begin with `v=`. Or the body holds only blank lines.
+- In the `sipnab` program, sipnab does not use a SIP message body that fails this way for media setup. It prints no message.
 
 **What to do:** The SDP body has the wrong form. It must start with a `v=0` line.
 
@@ -3648,7 +4728,15 @@ Library parser error from `parse_sdp`: the first non-blank line of the SDP body 
 
 ### `{what} too short: {got} bytes (need {need})`
 
-Data is shorter than the structure it must hold. `{what}` names the structure, `{got}` is the number of bytes available, and `{need}` is the number of bytes required. When the RTP parser reports it (`RTP header`, `RTP CSRC list`, `RTP extension header`, `RTP extension payload`), the RTP detector silently treats the packet as not RTP. When the capture reader reports it (`capture file`, `pcap global header`, `pcapng section header`), it comes from the library function `PcapReader::new`. When the packet decoder reports it (headers such as `Linux SLL packet` or `GRE header`), sipnab counts the frame as truncated in the headless (`-N`) end-of-run `NOT DECODED` summary.
+Data is shorter than the structure it must hold.
+
+- `{what}` names the structure.
+- `{got}` is the number of bytes available.
+- `{need}` is the number of bytes required.
+- The meaning depends on what reports it:
+  - The RTP parser (`RTP header`, `RTP CSRC list`, `RTP extension header`, `RTP extension payload`): the RTP detector silently treats the packet as not RTP.
+  - The capture reader (`capture file`, `pcap global header`, `pcapng section header`): it comes from the library function `PcapReader::new`.
+  - The packet decoder (headers such as `Linux SLL packet` or `GRE header`): sipnab counts the frame as truncated in the headless (`-N`) end-of-run `NOT DECODED` summary.
 
 **What to do:** For truncated frames, capture again with a larger `--snaplen`. For a capture file or RTP packet, the input ends early or is not in that format.
 
@@ -3656,7 +4744,11 @@ Data is shorter than the structure it must hold. `{what}` names the structure, `
 
 ### `unsupported GRE inner protocol: 0x{0:04X}`
 
-Packet decoder error from the library: a GRE tunnel packet carries an inner protocol other than IPv4, IPv6 or Transparent Ethernet Bridging (`0x6558`). `{0}` is the protocol type in hex. In the `sipnab` program this text appears only in debug logging (`SIPNAB_LOG=debug`) on a line that starts with `Skipping` and ends with this text. sipnab counts the frame in the headless (`-N`) end-of-run `NOT DECODED` summary and in the `sipnab_capture_undecodable_frames_total` metric, and the run continues.
+Packet decoder error from the library: a GRE tunnel packet carries an inner protocol other than IPv4, IPv6 or Transparent Ethernet Bridging (`0x6558`).
+
+- `{0}` is the protocol type in hex.
+- In the `sipnab` program this text appears only in debug logging (`SIPNAB_LOG=debug`). It is on a line that starts with `Skipping` and ends with this text.
+- sipnab counts the frame in the headless (`-N`) end-of-run `NOT DECODED` summary, and in the `sipnab_capture_undecodable_frames_total` metric. The run continues.
 
 **What to do:** The run needs nothing from you. sipnab does not decode traffic inside that tunnel type.
 
@@ -3664,7 +4756,16 @@ Packet decoder error from the library: a GRE tunnel packet carries an inner prot
 
 ### `unsupported IP protocol number: {0}`
 
-Packet decoder error (library surface). The packet's IP protocol number names a payload that sipnab does not read as a transport. `{0}` is that number. It occurs for an IP payload with no UDP, TCP or SCTP header that sipnab can slice, for ESP (protocol 50) that is not readable null-encrypted ESP, for an Authentication Header that protects something other than UDP or TCP, and for a HEP-delivered packet whose stated protocol maps to no SIP transport. In the `sipnab` program, this text appears only in debug logging (`SIPNAB_LOG=debug`) as `Skipping unparseable packet: ...`. sipnab counts the frame in the headless (`-N`) end-of-run `NOT DECODED` summary and in the `sipnab_capture_undecodable_frames_total` metric, and the run continues.
+Packet decoder error (library surface). The packet's IP protocol number names a payload that sipnab does not read as a transport.
+
+- `{0}` is that number.
+- It occurs for:
+  - an IP payload with no UDP, TCP or SCTP header that sipnab can slice;
+  - ESP (protocol 50) that is not readable null-encrypted ESP;
+  - an Authentication Header that protects something other than UDP or TCP;
+  - a HEP-delivered packet whose stated protocol maps to no SIP transport.
+- In the `sipnab` program, this text appears only in debug logging (`SIPNAB_LOG=debug`) as `Skipping unparseable packet: ...`.
+- sipnab counts the frame in the headless (`-N`) end-of-run `NOT DECODED` summary, and in the `sipnab_capture_undecodable_frames_total` metric. The run continues.
 
 **What to do:** The run needs no action. The headless (`-N`) end-of-run summary lists the protocol numbers it skipped as `no transport (IP protocol N)`.
 
@@ -3672,7 +4773,13 @@ Packet decoder error (library surface). The packet's IP protocol number names a 
 
 ### `unsupported link type: {0}`
 
-Packet decoder error (library surface). sipnab does not decode the capture's link-layer header type (the DLT number, which tells the reader how each frame starts). `{0}` is that number. sipnab supports Ethernet, Linux cooked capture v1 and v2, raw IP, PPP and BSD loopback. In the `sipnab` program, every frame of such a capture fails this way. The headless (`-N`) end-of-run summary reports `unsupported link type <N>`, and the run continues.
+Packet decoder error (library surface). sipnab does not decode the capture's link-layer header type.
+
+- The link-layer header type is the DLT number. It tells the reader how each frame starts.
+- `{0}` is that number.
+- sipnab supports Ethernet, Linux cooked capture v1 and v2, raw IP, PPP and BSD loopback.
+- In the `sipnab` program, every frame of such a capture fails this way.
+- The headless (`-N`) end-of-run summary reports `unsupported link type <N>`, and the run continues.
 
 **What to do:** Capture on an interface, or with a capture tool setting, that produces one of the supported link types.
 
@@ -3680,7 +4787,10 @@ Packet decoder error (library surface). sipnab does not decode the capture's lin
 
 ### `unsupported SDP version: '{version}'`
 
-Library parser error from `parse_sdp`. The SDP `v=` line gives a version other than `0`. `{version}` is the text after `v=`. In the `sipnab` program, sipnab does not use a SIP message body that fails this way for media setup, and prints no message.
+Library parser error from `parse_sdp`. The SDP `v=` line gives a version other than `0`.
+
+- `{version}` is the text after `v=`.
+- In the `sipnab` program, sipnab does not use a SIP message body that fails this way for media setup. It prints no message.
 
 **What to do:** The sender produced a malformed SDP body. Its first line must be `v=0`.
 

@@ -1,48 +1,64 @@
 # Threat model and security assessment
 
-This page answers three questions about sipnab: what an attacker would want
-from it, where an attacker can reach it, and what stops them. It also lists
-what does *not* stop them. The last section, residual risks, matters as much
-as the rest: an assessment that lists only defenses tells an operator nothing
-about where to add their own.
+This page answers three questions about sipnab:
+
+- what an attacker would want from it,
+- where an attacker can reach it,
+- what stops them.
+
+It also lists what does *not* stop them.
+
+- The last section, residual risks, matters as much as the rest.
+- An assessment that lists only defenses tells an operator nothing about where
+  to add their own.
 
 [`SECURITY.md`](https://github.com/NormB/sipnab/blob/main/SECURITY.md) says how
-to report a vulnerability and which classes of bug count as one. This page is
-the analysis behind that list. The [assurance case](assurance-case.md) builds
-on it: it argues that sipnab applies secure design principles and walks the
-CWE Top 25 weaknesses one by one.
+to report a vulnerability. It also says which classes of bug count as one.
+
+- This page is the analysis behind that list.
+- The [assurance case](assurance-case.md) builds on it.
+  - It argues that sipnab applies secure design principles.
+  - It walks the CWE Top 25 weaknesses one by one.
 
 ## Terms used on this page
 
 - **Asset**: something worth protecting, such as a TLS private key or the
   calls in a capture.
-- **Trust boundary**: a place where data or commands cross from something
-  sipnab does not control into sipnab. Every input an attacker can influence
+- **Trust boundary**: a place where data or commands cross into sipnab from
+  something sipnab does not control. Every input an attacker can influence
   crosses one.
 - **Threat**: a specific thing an attacker could try at a boundary.
-- **Mitigation**: the code that makes a threat fail or limits its damage. Every
-  mitigation below names the file, and usually the function, that implements
-  it, so a reader can check the claim instead of trusting it.
+- **Mitigation**: the code that makes a threat fail or limits its damage.
+  - Every mitigation below names the file, and usually the function, that
+    implements it.
+  - So a reader can check the claim instead of trusting it.
 - **Residual risk**: a threat that no mitigation fully covers today.
 - **Loopback**: the `127.0.0.1` or `::1` address, reachable only from the same
   machine.
 - **Bearer token**: a secret a client sends in an HTTP `Authorization: Bearer`
   header. Whoever holds the token has the access it grants.
 - **HMAC**: a keyed checksum. Only a holder of the key can produce a value that
-  verifies, so it proves who sent a message and that nobody changed it.
+  verifies. So it proves who sent a message, and that nobody changed it.
 
 ## Scope and method
 
 The assessment covers the `sipnab` binary built with the `full` feature set
-on Linux, which is the build that has every listener and every hook. It walks
-each trust boundary, names the likely threats there, and cites the code that
-answers each one. The authors read each cited function to confirm it does what
-this page says. Where the code does less than a reader might assume, the gap
-appears under [residual risks](#residual-risks-and-known-gaps).
+on Linux. That is the build that has every listener and every hook.
+
+- It walks each trust boundary.
+- It names the likely threats there.
+- It cites the code that answers each one.
+- The authors read each cited function to confirm it does what this page says.
+- The code may do less than a reader might assume. Then the gap appears under
+  [residual risks](#residual-risks-and-known-gaps).
 
 sipnab is mostly passive: it reads packets and reports on them. Two features
-act on other systems, scanner-kill (sends SIP responses) and the TFPS ban
-actions. Both are off by default.
+act on other systems:
+
+- scanner-kill (sends SIP responses),
+- the TFPS ban actions.
+
+Both are off by default.
 
 ## Assets
 
@@ -72,22 +88,24 @@ actions. Both are off by default.
 
 ## Packet capture input (live interfaces)
 
-Every packet on a monitored interface is attacker-controlled. A remote attacker
-needs no account and no connection, only the ability to send one SIP or RTP
-packet that crosses the wire sipnab watches.
+Every packet on a monitored interface is attacker-controlled.
+
+- A remote attacker needs no account and no connection.
+- The attacker needs only the ability to send one SIP or RTP packet that
+  crosses the wire sipnab watches.
 
 | Threat | Mitigation | Where |
 |---|---|---|
 | A malformed packet crashes a parser or corrupts memory. | The parsers are Rust. The project fuzzes every parser that reads untrusted bytes, and a smoke tier runs in ordinary CI. [Fault model](fault-model.md) counts the `unsafe` blocks and names where they live. | [`fuzz/fuzz_targets/`](https://github.com/NormB/sipnab/tree/main/fuzz/fuzz_targets), [`tests/smoke_fuzz_test.rs`](https://github.com/NormB/sipnab/blob/main/tests/smoke_fuzz_test.rs) |
 | A flood of unique Call-IDs or RTP SSRCs grows memory without limit. | The dialog and stream stores cap their size and evict. A regression test floods 50,000 identities into a 1,000-entry store. | [`tests/resource_bounds_test.rs`](https://github.com/NormB/sipnab/blob/main/tests/resource_bounds_test.rs) |
 | Oversized header lines, TCP streams or WebSocket frames exhaust memory. | Fixed caps on header-line length, on the reassembly buffer and on WebSocket message size. | [`src/sip/parser.rs::DEFAULT_MAX_HEADER_LINE_LEN`](https://github.com/NormB/sipnab/blob/main/src/sip/parser.rs), [`src/capture/reassembly.rs::DEFAULT_MAX_TCP_BUFFER`](https://github.com/NormB/sipnab/blob/main/src/capture/reassembly.rs), [`src/capture/websocket.rs::MAX_WS_MESSAGE_SIZE`](https://github.com/NormB/sipnab/blob/main/src/capture/websocket.rs) |
-| A parser bug becomes root code execution. | Once the capture thread reports the device open, sipnab drops to an unprivileged user (`nobody` unless `--user` names another) and checks that the drop took. See residual risk 10 for the window before the drop. It sets `PR_SET_NO_NEW_PRIVS` at startup so a later `exec` cannot regain privilege. | [`src/privilege.rs::drop_privileges`](https://github.com/NormB/sipnab/blob/main/src/privilege.rs), [`src/privilege.rs::verify_dropped`](https://github.com/NormB/sipnab/blob/main/src/privilege.rs), [`src/privilege.rs::block_privilege_escalation`](https://github.com/NormB/sipnab/blob/main/src/privilege.rs) |
+| A parser bug becomes root code execution. | Once the capture thread reports the device open, sipnab drops to an unprivileged user (`nobody` unless `--user` names another) and checks that the drop took. See residual risk "libpcap is C, and it runs briefly as root" for the window before the drop. It sets `PR_SET_NO_NEW_PRIVS` at startup so a later `exec` cannot regain privilege. | [`src/privilege.rs::drop_privileges`](https://github.com/NormB/sipnab/blob/main/src/privilege.rs), [`src/privilege.rs::verify_dropped`](https://github.com/NormB/sipnab/blob/main/src/privilege.rs), [`src/privilege.rs::block_privilege_escalation`](https://github.com/NormB/sipnab/blob/main/src/privilege.rs) |
 | A forged scanner packet turns scanner-kill into a reflector aimed at a victim. | Responses pass a global per-second cap (default 10, zero refused) and a fixed cap of three per destination per minute that no option raises. Only a live source can create the send sockets: a capture file or a uprobe source cannot. The sockets live in a separate worker process that starts with an emptied environment and clears its Linux capabilities. | [`src/cli.rs::DEFAULT_KILL_RATE_LIMIT`](https://github.com/NormB/sipnab/blob/main/src/cli.rs), [`src/process_isolation.rs::MAX_PER_DST_PER_MINUTE`](https://github.com/NormB/sipnab/blob/main/src/process_isolation.rs), [`src/security/transmit_guard.rs::for_source`](https://github.com/NormB/sipnab/blob/main/src/security/transmit_guard.rs), [`src/process_isolation/worker_process.rs::clear_capabilities`](https://github.com/NormB/sipnab/blob/main/src/process_isolation/worker_process.rs) |
 
 ## Capture and archive files
 
-A capture file is as hostile as the network it came from, and an archive adds
-decompression and file names chosen by its author.
+A capture file is as hostile as the network it came from. An archive adds
+decompression, and file names chosen by its author.
 
 | Threat | Mitigation | Where |
 |---|---|---|
@@ -101,9 +119,11 @@ decompression and file names chosen by its author.
 ## HEP senders
 
 HEP (Homer Encapsulation Protocol) lets a SIP server such as OpenSIPS or
-Kamailio mirror its traffic to sipnab over the network. A HEP packet carries
-the SIP message *and* the addresses it claims the message used, so a sender
-can assert any source address it likes.
+Kamailio mirror its traffic to sipnab over the network.
+
+- A HEP packet carries the SIP message *and* the addresses it claims the
+  message used.
+- So a sender can assert any source address it likes.
 
 | Threat | Mitigation | Where |
 |---|---|---|
@@ -134,11 +154,13 @@ metrics endpoint (`--metrics`) serves Prometheus counters.
 ## MCP clients
 
 MCP (Model Context Protocol) lets an AI agent query sipnab. The agent is a
-client like any other, with one extra risk: text inside a capture can reach
-the agent's prompt, so a hostile SIP header can try to talk the agent into
-calling a tool. The defenses therefore limit what *any* caller can do, rather
-than trusting the agent's judgment. [MCP deployment](mcp-deploy.md) covers
-running it safely.
+client like any other, with one extra risk:
+
+- Text inside a capture can reach the agent's prompt.
+- So a hostile SIP header can try to talk the agent into calling a tool.
+
+The defenses therefore limit what *any* caller can do. They do not trust the
+agent's judgment. [MCP deployment](mcp-deploy.md) covers running it safely.
 
 | Threat | Mitigation | Where |
 |---|---|---|
@@ -151,8 +173,10 @@ running it safely.
 ## Commands run by exec hooks
 
 `--on-dialog-exec`, `--on-quality-exec` and `--alert-exec` run an operator's
-command when an event fires. The event data comes from captured SIP, so a
-caller can choose the From header that reaches the command.
+command when an event fires.
+
+- The event data comes from captured SIP.
+- So a caller can choose the From header that reaches the command.
 
 | Threat | Mitigation | Where |
 |---|---|---|
@@ -161,9 +185,12 @@ caller can choose the From header that reaches the command.
 
 ## WASM plugins
 
-A plugin is a WebAssembly module that receives one dialog as JSON and returns
-findings. The `plugins` feature adds it, and the default build leaves it out.
-[WASM plugins](plugins.md) is the author's guide.
+A plugin is a WebAssembly module. It receives one dialog as JSON and returns
+findings.
+
+- The `plugins` feature adds it.
+- The default build leaves it out.
+- [WASM plugins](plugins.md) is the author's guide.
 
 | Threat | Mitigation | Where |
 |---|---|---|
@@ -172,7 +199,7 @@ findings. The `plugins` feature adds it, and the default build leaves it out.
 
 ## TLS and SRTP key material
 
-sipnab decrypts traffic that other systems encrypted, so it holds keys that
+sipnab decrypts traffic that other systems encrypted. So it holds keys that
 decrypt far more than one capture. [Capture SIP over TLS](tls-capture.md)
 covers the options.
 
@@ -186,11 +213,17 @@ covers the options.
 
 ## Configuration files and the command line
 
-sipnab reads a TOML file from `--config`, `$SIPNAB_CONFIG`,
-`$XDG_CONFIG_HOME/sipnab/sipnab.toml` (by default
-`~/.config/sipnab/sipnab.toml`), `~/.sipnabrc` or `/etc/sipnab/sipnab.toml`,
-the first it finds. The file can name commands to run (`alert_exec`), so write access
-to it amounts to running code as sipnab.
+sipnab reads a TOML file. It uses the first it finds of these:
+
+- `--config`,
+- `$SIPNAB_CONFIG`,
+- `$XDG_CONFIG_HOME/sipnab/sipnab.toml` (by default
+  `~/.config/sipnab/sipnab.toml`),
+- `~/.sipnabrc`,
+- `/etc/sipnab/sipnab.toml`.
+
+The file can name commands to run (`alert_exec`). So write access to it amounts
+to running code as sipnab.
 
 | Threat | Mitigation | Where |
 |---|---|---|
@@ -200,109 +233,138 @@ to it amounts to running code as sipnab.
 
 ## Hardening that spans every boundary
 
-- **Privilege drop and chroot.** During startup, `--user` sets the account
-  sipnab drops to and `--chroot` narrows the filesystem it can see
+- **Privilege drop and chroot.** These apply during startup
   ([`src/privilege.rs::do_chroot`](https://github.com/NormB/sipnab/blob/main/src/privilege.rs)).
-  [Architecture](architecture.md) explains the privilege-drop design.
+  - `--user` sets the account sipnab drops to.
+  - `--chroot` narrows the filesystem it can see.
+  - [Architecture](architecture.md) explains the privilege-drop design.
 - **Landlock path sandbox**, opt-in with `--sandbox`
   ([`src/sandbox.rs`](https://github.com/NormB/sipnab/blob/main/src/sandbox.rs)).
-- **Seccomp system-call filter**, opt-in with `--seccomp`. The `log` mode
-  records calls and blocks nothing. The `enforce` mode needs an allowlist the
-  operator supplies
+- **Seccomp system-call filter**, opt-in with `--seccomp`
   ([`src/seccomp.rs`](https://github.com/NormB/sipnab/blob/main/src/seccomp.rs),
   [syscall sandbox design](design/syscall-sandbox.md)).
-- **Dependency checks.** `cargo deny` and `cargo audit` run in CI against
-  [`deny.toml`](https://github.com/NormB/sipnab/blob/main/deny.toml), and
-  Dependabot watches for updates
-  ([`.github/dependabot.yml`](https://github.com/NormB/sipnab/blob/main/.github/dependabot.yml)).
+  - The `log` mode records calls and blocks nothing.
+  - The `enforce` mode needs an allowlist the operator supplies.
+- **Dependency checks.**
+  - `cargo deny` and `cargo audit` run in CI against
+    [`deny.toml`](https://github.com/NormB/sipnab/blob/main/deny.toml).
+  - Dependabot watches for updates
+    ([`.github/dependabot.yml`](https://github.com/NormB/sipnab/blob/main/.github/dependabot.yml)).
 
 ## Residual risks and known gaps
 
-Each item below is a threat the code does not fully answer today. Most are
-choices with a stated reason, and some are open work. An operator who needs
-protection against one of these has to supply it outside sipnab.
+Each item below is a threat the code does not fully answer today.
 
-1. **TLS is opt-in on every network listener.** The REST API, HTTP MCP and
-   the metrics endpoint serve HTTPS only when given a certificate and key
-   (`--api-tls-cert`, `--mcp-tls-cert`, `--metrics-tls-cert` and their key
-   flags, or the `tls_cert` / `tls_key` keys in `sipnab.toml`;
-   [`src/cli.rs::tls_settings_problem`](https://github.com/NormB/sipnab/blob/main/src/cli.rs)).
-   Without them each server logs a warning on a non-loopback bind but still
-   starts. Without TLS or a reverse proxy, bearer tokens, the metrics
-   endpoint's Basic credential (encoding, not encryption) and capture data
-   cross the network in clear text.
-2. **Loopback means no authentication.** With no key configured, the REST API
-   and HTTP MCP accept every request on a loopback bind
-   ([`src/output/api.rs::authenticate`](https://github.com/NormB/sipnab/blob/main/src/output/api.rs)).
-   On a shared host, every local user can read the capture through them.
-3. **Authenticated clients see real data.** `--redact` replaces identities with
-   pseudonyms in exported vCon containers only. The REST API and MCP answer
-   with the real addresses and identities, and neither calls the redactor
-   ([`src/output/redact.rs`](https://github.com/NormB/sipnab/blob/main/src/output/redact.rs)).
-4. **Failed MCP logins face no throttle.** The MCP rate limit counts tool calls
-   after authentication, and the HTTP bearer check has no limiter of its own
-   ([`src/mcp/transport.rs::auth_layer`](https://github.com/NormB/sipnab/blob/main/src/mcp/transport.rs)).
-   Signed tokens resist guessing through their 256-bit signature, but a short
-   static `--mcp-token` does not.
-5. **Plain HEP authentication is weak.** In the default `plain` mode, each
-   packet carries the shared secret in clear text, so anyone on the path can
-   read and reuse it, and nothing stops replays. The HMAC mode fixes both, but
-   only another sipnab sends it. A source allowlist alone trusts UDP source
-   addresses, which an attacker can forge.
-6. **Exec hooks inherit the environment.** The child processes start with
-   sipnab's full environment, including any `SIPNAB_API_KEY` or similar secret
-   set there
-   ([`src/output/event_exec.rs::spawn_command`](https://github.com/NormB/sipnab/blob/main/src/output/event_exec.rs)).
-   Passing data through variables also only helps while the hook script
-   quotes them: a script that runs `eval $SIPNAB_FROM` reintroduces the
-   injection.
-7. **No permission check on most secret files or the config file.** sipnab
-   checks permissions on archive password files and the HEP TLS key only. It
-   reads signing-key files
-   ([`src/app/servers.rs::read_signing_key_file`](https://github.com/NormB/sipnab/blob/main/src/app/servers.rs)),
-   `--tls-key` and the config file without checking who else can read or
-   write them. Whoever can write the config file can set `alert_exec`.
-8. **The sandbox and system-call filter are off by default.** Landlock and seccomp both default to
-   `off`
-   ([`src/sandbox.rs::SandboxMode`](https://github.com/NormB/sipnab/blob/main/src/sandbox.rs),
-   [`src/seccomp.rs::SeccompMode`](https://github.com/NormB/sipnab/blob/main/src/seccomp.rs)),
-   and no enforcing seccomp allowlist ships in the binary.
-9. **Capabilities survive a non-root start.** After `--setup-caps`, a non-root
-   sipnab holds `CAP_NET_RAW` and `CAP_NET_ADMIN` from the file itself. The
-   privilege drop does nothing for a process that did not start as root
-   ([`src/privilege.rs::drop_privileges`](https://github.com/NormB/sipnab/blob/main/src/privilege.rs)),
-   and only the scanner-kill worker clears its capability set. On macOS the
-   drop also needs an explicit `--user`.
-10. **libpcap is C, and it runs briefly as root.** It parses every live
-    packet before sipnab's Rust code does, inside the process that holds keys
-    and tokens. The capture thread starts reading as soon as it reports the
-    device open and does not wait for the privilege drop on the main thread
+- Most are choices with a stated reason.
+- Some are open work.
+- An operator who needs protection against one of these has to supply it
+  outside sipnab.
+
+- **TLS is opt-in on every network listener.**
+  - The REST API, HTTP MCP and the metrics endpoint serve HTTPS only when
+    given a certificate and key. These come from `--api-tls-cert`,
+    `--mcp-tls-cert`, `--metrics-tls-cert` and their key flags, or the
+    `tls_cert` / `tls_key` keys in `sipnab.toml`
+    ([`src/cli.rs::tls_settings_problem`](https://github.com/NormB/sipnab/blob/main/src/cli.rs)).
+  - Without them, each server logs a warning on a non-loopback bind but still
+    starts.
+  - Without TLS or a reverse proxy, these cross the network in clear text:
+    - bearer tokens,
+    - the metrics endpoint's Basic credential (encoding, not encryption),
+    - capture data.
+- **Loopback means no authentication.**
+  - With no key configured, the REST API and HTTP MCP accept every request on
+    a loopback bind
+    ([`src/output/api.rs::authenticate`](https://github.com/NormB/sipnab/blob/main/src/output/api.rs)).
+  - On a shared host, every local user can read the capture through them.
+- **Authenticated clients see real data.**
+  - `--redact` replaces identities with pseudonyms in exported vCon containers
+    only.
+  - The REST API and MCP answer with the real addresses and identities.
+    Neither calls the redactor
+    ([`src/output/redact.rs`](https://github.com/NormB/sipnab/blob/main/src/output/redact.rs)).
+- **Failed MCP logins face no throttle.**
+  - The MCP rate limit counts tool calls after authentication.
+  - The HTTP bearer check has no limiter of its own
+    ([`src/mcp/transport.rs::auth_layer`](https://github.com/NormB/sipnab/blob/main/src/mcp/transport.rs)).
+  - Signed tokens resist guessing through their 256-bit signature. A short
+    static `--mcp-token` does not.
+- **Plain HEP authentication is weak.**
+  - In the default `plain` mode, each packet carries the shared secret in
+    clear text.
+    - So anyone on the path can read and reuse it.
+    - Nothing stops replays.
+  - The HMAC mode fixes both, but only another sipnab sends it.
+  - A source allowlist alone trusts UDP source addresses. An attacker can
+    forge those.
+- **Exec hooks inherit the environment.**
+  - The child processes start with sipnab's full environment. That includes
+    any `SIPNAB_API_KEY` or similar secret set there
+    ([`src/output/event_exec.rs::spawn_command`](https://github.com/NormB/sipnab/blob/main/src/output/event_exec.rs)).
+  - Passing data through variables also only helps while the hook script
+    quotes them. A script that runs `eval $SIPNAB_FROM` reintroduces the
+    injection.
+- **No permission check on most secret files or the config file.**
+  - sipnab checks permissions on archive password files and the HEP TLS key
+    only.
+  - It reads these without checking who else can read or write them:
+    - signing-key files
+      ([`src/app/servers.rs::read_signing_key_file`](https://github.com/NormB/sipnab/blob/main/src/app/servers.rs)),
+    - `--tls-key`,
+    - the config file.
+  - Whoever can write the config file can set `alert_exec`.
+- **The sandbox and system-call filter are off by default.**
+  - Landlock and seccomp both default to `off`
+    ([`src/sandbox.rs::SandboxMode`](https://github.com/NormB/sipnab/blob/main/src/sandbox.rs),
+    [`src/seccomp.rs::SeccompMode`](https://github.com/NormB/sipnab/blob/main/src/seccomp.rs)).
+  - No enforcing seccomp allowlist ships in the binary.
+- **Capabilities survive a non-root start.**
+  - After `--setup-caps`, a non-root sipnab holds `CAP_NET_RAW` and
+    `CAP_NET_ADMIN` from the file itself.
+  - The privilege drop does nothing for a process that did not start as root
+    ([`src/privilege.rs::drop_privileges`](https://github.com/NormB/sipnab/blob/main/src/privilege.rs)).
+  - Only the scanner-kill worker clears its capability set.
+  - On macOS the drop also needs an explicit `--user`.
+- **libpcap is C, and it runs briefly as root.**
+  - It parses every live packet before sipnab's Rust code does. It does this
+    inside the process that holds keys and tokens.
+  - The capture thread starts reading as soon as it reports the device open.
+    It does not wait for the privilege drop on the main thread
     ([`src/capture/live.rs::capture_live`](https://github.com/NormB/sipnab/blob/main/src/capture/live.rs),
-    [`src/app/bootstrap.rs`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs)),
-    so the first packets of a root-started run can reach libpcap before the
-    drop. The privilege drop and the opt-in sandbox limit the damage after
-    that, and nothing removes the risk.
-11. **File-tool path check and file open are separate steps.** The MCP file
-    tools resolve the path and check it against the root, then open it later.
-    A local user who can change links inside `--mcp-file-root` between those
-    two steps could redirect a write. Keep the root writable by sipnab alone.
-12. **Plugins are not signed.** sipnab loads any module the operator names,
-    and a plugin can emit misleading findings even though it cannot touch the
+    [`src/app/bootstrap.rs`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs)).
+  - So the first packets of a root-started run can reach libpcap before the
+    drop.
+  - The privilege drop and the opt-in sandbox limit the damage after that.
+    Nothing removes the risk.
+- **File-tool path check and file open are separate steps.**
+  - The MCP file tools resolve the path and check it against the root. Then
+    they open it later.
+  - A local user who can change links inside `--mcp-file-root` between those
+    two steps could redirect a write.
+  - Keep the root writable by sipnab alone.
+- **Plugins are not signed.**
+  - sipnab loads any module the operator names.
+  - A plugin can emit misleading findings, even though it cannot touch the
     host.
-13. **The metrics endpoint does not check `Host`.** The REST API and HTTP MCP
-    refuse a `Host` that is not on their allowlist, which stops DNS
-    rebinding. The standalone `--metrics` server does not
-    ([`src/output/prometheus_server.rs::start_metrics_server`](https://github.com/NormB/sipnab/blob/main/src/output/prometheus_server.rs)),
-    so a web page can read the counters of a loopback metrics endpoint with no credentials
-    through a browser. It serves read-only counters and no capture content,
-    and a non-loopback bind already needs Basic auth. `--api-allowed-host '*'`
-    and `--mcp-allowed-host '*'` put the REST API and MCP back in the same
-    position.
+- **The metrics endpoint does not check `Host`.**
+  - The REST API and HTTP MCP refuse a `Host` that is not on their
+    allowlist. That stops DNS rebinding.
+  - The standalone `--metrics` server does not
+    ([`src/output/prometheus_server.rs::start_metrics_server`](https://github.com/NormB/sipnab/blob/main/src/output/prometheus_server.rs)).
+    So a web page can read the counters of a loopback metrics endpoint with
+    no credentials, through a browser.
+  - It serves read-only counters and no capture content.
+  - A non-loopback bind already needs Basic auth.
+  - `--api-allowed-host '*'` and `--mcp-allowed-host '*'` put the REST API
+    and MCP back in the same position.
 
 ## Keeping this page true
 
-[`tests/openssf_badge_test.rs`](https://github.com/NormB/sipnab/blob/main/tests/openssf_badge_test.rs) checks that this page names every trust
-boundary above, that every path it cites exists, and that every
-`file::name` citation names something defined in that file. A renamed
-function turns that test red, so the page cannot quietly point at code that
-moved.
+[`tests/openssf_badge_test.rs`](https://github.com/NormB/sipnab/blob/main/tests/openssf_badge_test.rs) checks three things:
+
+- this page names every trust boundary above,
+- every path it cites exists,
+- every `file::name` citation names something defined in that file.
+
+A renamed function turns that test red. So the page cannot quietly point at
+code that moved.

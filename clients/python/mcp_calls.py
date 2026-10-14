@@ -10,7 +10,7 @@ reach it, so the transport is chosen once, here:
 - HTTP: a sipnab already serving `--mcp-transport http`, reached with a
   bearer token through mcp_probe.py's client, the one the capture harness
   uses. A token minted by `--mint-token` from the server's signing key is
-  the shape recipe 55 deploys.
+  the shape recipe "Set up the MCP server for a hosted agent" deploys.
 
 Each call returns the tool's answer as parsed JSON, the first text block
 sipnab sends (the second is its provenance note). A tool error raises

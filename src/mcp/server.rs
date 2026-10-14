@@ -9752,7 +9752,7 @@ fn audit_args(arguments: Option<&rmcp::model::JsonObject>) -> String {
         return "{}".to_string();
     };
     // A password-like argument is refused, and its value never reaches the
-    // record of the refusal either (Invariant 5).
+    // record of the refusal either (Invariant "Key material is toxic waste").
     let mut args = args.clone();
     for (k, v) in &mut args {
         if is_password_like(k) {

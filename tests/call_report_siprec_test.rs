@@ -2,7 +2,7 @@
 
 //! `--call-report` on a recorded call prints the SIPREC block.
 //!
-//! `docs/examples.md` recipe 60 shows `--call-report` printing who is on a
+//! `docs/examples.md` recipe "See who is on a recorded call" shows `--call-report` printing who is on a
 //! recorded call, and the 0.5.152 CHANGELOG entry says the CLI report carries
 //! it. The block was added to `--report` only: `--call-report` printed it in
 //! its JSON form and left it out of the text and Markdown forms.
@@ -19,7 +19,7 @@ const SIPREC: &str = "tests/pcap-samples/siprec-opensips-invite.pcap";
 /// The Call-ID of the SIPREC dialog in [`SIPREC`].
 const SIPREC_CALL: &str = "4f1c0a2e-siprec@172.28.0.31";
 
-/// The block recipe 60 shows, for this capture's Call-ID.
+/// The block recipe "See who is on a recorded call" shows, for this capture's Call-ID.
 const BLOCK: &str = "SIPREC recording (4f1c0a2e-siprec@172.28.0.31): session 4f1c0a2e, complete
   participant sip:alice@example.invalid (Alice)
   participant sip:bob@example.invalid
@@ -39,7 +39,7 @@ fn run(extra: &[&str]) -> Result<String, TestError> {
     Ok(String::from_utf8(out.stdout)?)
 }
 
-/// The text call report carries the block, line for line as recipe 60 shows it.
+/// The text call report carries the block, line for line as recipe "See who is on a recorded call" shows it.
 #[test]
 fn the_text_call_report_names_the_recording() -> Result<(), TestError> {
     let out = run(&["--call-report", SIPREC_CALL])?;

@@ -361,7 +361,7 @@ pub const ARCHIVE_WRONG_LIMIT: usize = 5;
 /// The window [`ARCHIVE_WRONG_LIMIT`] counts over.
 pub const ARCHIVE_WRONG_WINDOW: std::time::Duration = std::time::Duration::from_secs(15 * 60);
 
-/// Token-and-archive pairs the wrong-password limiter tracks (Invariant 4).
+/// Token-and-archive pairs the wrong-password limiter tracks (Invariant "Every attacker-keyed map has a bound and a stated eviction policy").
 /// Past it, the pair with the oldest attempt is forgotten.
 pub const WRONG_PASSWORD_KEYS: usize = 4096;
 
@@ -15714,7 +15714,10 @@ mod archive_password_tests {
         for i in 0..(WRONG_PASSWORD_KEYS + 10) {
             lim.record(&(format!("t{i}"), "a.zip".into()), t0);
         }
-        assert!(lim.len() <= WRONG_PASSWORD_KEYS, "Invariant 4: bounded");
+        assert!(
+            lim.len() <= WRONG_PASSWORD_KEYS,
+            "Invariant \"Every attacker-keyed map has a bound and a stated eviction policy\": bounded"
+        );
         Ok(())
     }
 }

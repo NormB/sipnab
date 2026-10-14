@@ -2,9 +2,9 @@
 
 sipnab tests its TUI at three levels.
 
-## 1. Snapshot tests (tests/tui_snapshot_test.rs)
+## Snapshot tests (tests/tui_snapshot_test.rs)
 
-Uses ratatui's `TestBackend` to render views to an in-memory buffer, then `insta` for snapshot comparison.
+These tests use ratatui's `TestBackend` to render views to an in-memory buffer. Then they use `insta` for snapshot comparison.
 
 ### Running
 ```bash
@@ -12,9 +12,11 @@ cargo test --features tui --test tui_snapshot_test
 ```
 
 ### Updating snapshots
-When rendering changes intentionally — `--accept` rewrites the `.snap` files in
-place, and staging them in the same commit is what keeps CI comparing against
-the new rendering:
+Use this when rendering changes intentionally.
+
+- `--accept` rewrites the `.snap` files in place.
+- Stage them in the same commit.
+  - That is what keeps CI comparing against the new rendering.
 ```bash
 # Run all of these, in order.
 cargo insta test --features tui --accept
@@ -22,25 +24,36 @@ git add tests/snapshots/
 ```
 
 ### Adding a new snapshot test
-1. Create a test function that renders to `TestBackend`
-2. Call `insta::assert_snapshot!(buffer_to_string(&terminal))`
-3. Run `cargo insta test --accept` to create the initial snapshot
-4. Commit the `.snap` file
+- Create a test function that renders to `TestBackend`
+- Call `insta::assert_snapshot!(buffer_to_string(&terminal))`
+- Run `cargo insta test --accept` to create the initial snapshot
+- Commit the `.snap` file
 
-## 2. State machine tests (tests/tui_state_test.rs)
+## State machine tests (tests/tui_state_test.rs)
 
-Tests `App` state transitions without rendering. Uses `App::new_test()` and `App::handle_key()`.
+These tests check `App` state transitions without rendering. They use `App::new_test()` and `App::handle_key()`.
 
 ```bash
 cargo test --features tui --test tui_state_test
 ```
 
-## 3. PTY end-to-end tests (tests/tui_e2e_test.rs)
+## PTY end-to-end tests (tests/tui_e2e_test.rs)
 
-Drives the real binary inside a detached `tmux` session — not a bare PTY. sipnab's TUI queries the terminal at startup (crossterm emits `ESC[6n` to read the cursor position), and a bare pseudo-terminal has no emulator behind it to answer, so the TUI aborts with `cursor position could not be read`. tmux *is* a terminal emulator: it answers the query, provides a real window size, and lets the test send keys and snapshot the screen with `capture-pane`. These are `#[ignore]` by default and need `tmux` on `PATH`.
+These tests drive the real binary inside a detached `tmux` session. They do not use a bare PTY.
+
+- sipnab's TUI queries the terminal at startup.
+  - crossterm emits `ESC[6n` to read the cursor position.
+- A bare pseudo-terminal has no emulator behind it to answer.
+  - So the TUI aborts with `cursor position could not be read`.
+- tmux *is* a terminal emulator. It does three things:
+  - It answers the query.
+  - It provides a real window size.
+  - It lets the test send keys and snapshot the screen with `capture-pane`.
+- These tests are `#[ignore]` by default.
+- They need `tmux` on `PATH`.
 
 ```bash
 cargo test --features tui --test tui_e2e_test -- --ignored
 ```
 
-These tests are slower (~2s each) and may be flaky in CI.
+These tests are slower (~2s each). They may be flaky in CI.

@@ -40,7 +40,7 @@ shows the work rather than the verdict.
 | # | Request | Decision |
 |---|---|---|
 | 1 | TUI multi-session / multi-capture comparison | **Re-scoped.** The want is real; the specification is not buildable and the `-I` set does not substitute for it |
-| 2 | Write-back MCP tools | **Shipped.** Approved to move forward 2026-08-02; `save_findings` and `CaptureEtag` landed against the requirements [section 2's decision](#decision-on-write-back-and-what-would-change-it) set, and Invariant 7 was amended in the same change |
+| 2 | Write-back MCP tools | **Shipped.** Approved to move forward 2026-08-02; `save_findings` and `CaptureEtag` landed against the requirements [section 2's decision](#decision-on-write-back-and-what-would-change-it) set, and Invariant "MCP tools never edit the analysis, and every response has a ceiling" was amended in the same change |
 | 3 | Automated threat-mitigation hooks | **Fixes extracted and shipped; the action ledger deferred** on a named prerequisite |
 | 4 | `open_capture` MCP tool | **Approved to move forward** (2026-08-02). [Section 4, "The `open_capture` MCP tool"](#4-the-open_capture-mcp-tool) records what has to change first |
 
@@ -259,9 +259,9 @@ wire. The "What shipped" table at the end of this section records what was built
 against which requirement. Read the sections between here and there as the
 argument that produced those two things, not as a description of the surface.
 
-### Invariant 7, read literally, is not violated by anything in the tree
+### Invariant "MCP tools never edit the analysis, and every response has a ceiling", read literally, is not violated by anything in the tree
 
-[Invariant 7](../internals/invariants.md) stated, when this analysis was
+[Invariant "MCP tools never edit the analysis, and every response has a ceiling"](../internals/invariants.md) stated, when this analysis was
 written:
 
 > **Rule.** No MCP tool mutates a store, and every response hits a size ceiling
@@ -277,8 +277,8 @@ change meaning without saying so."* It goes on to name the one write:
 *"One tool accepts a WRITE: `save_findings`, behind
 `--mcp-allow-save-findings`."* The old quotation is kept above because the
 analysis that follows was reasoned against it and reads wrong without it. Where
-the two differ, invariant 7 in `invariants.md`,
-["MCP tools never edit the analysis, and every response has a ceiling"](../internals/invariants.md#7-mcp-tools-never-edit-the-analysis-and-every-response-has-a-ceiling), governs.
+the two differ, invariant "MCP tools never edit the analysis, and every response has a ceiling" in `invariants.md`,
+["MCP tools never edit the analysis, and every response has a ceiling"](../internals/invariants.md#mcp-tools-never-edit-the-analysis-and-every-response-has-a-ceiling), governs.
 
 There were 24 MCP tools when this analysis was written
 ([`server.rs`](../../src/mcp/server.rs), `#[tool(name = …)]` attributes); the
@@ -384,8 +384,8 @@ and it is not incidental — it is the tool working:
 
 D22's prompt-injection rule already governs the *descriptions* (never instruct
 the model to "trust", "verify" or "act on" content), and
-[`walkthroughs.md`](../internals/walkthroughs.md) restates it as step 2 of
-adding a tool.
+[`walkthroughs.md`](../internals/walkthroughs.md#add-an-mcp-tool) restates it in
+"Add an MCP tool", under writing the description.
 
 **Corrected 2026-08-02.** This section used to say the rule was convention
 rather than enforcement, because `mcp/server.rs` cited
@@ -466,8 +466,8 @@ requirement to satisfy rather than a reason to stop.
    field on `SipDialog` is a different proposal, because every diagnosis reads
    that struct, and should be judged on its own.
 
-**Invariant 7 moves with the first tool that ships.**
-[Invariant 7](../internals/invariants.md) says no MCP tool mutates a store, and
+**Invariant "MCP tools never edit the analysis, and every response has a ceiling" moves with the first tool that ships.**
+[Invariant "MCP tools never edit the analysis, and every response has a ceiling"](../internals/invariants.md) says no MCP tool mutates a store, and
 the analysis above establishes that this is still true of the tree. The first
 write-back tool makes it false. Amend it in the same change, rather than leaving
 a stated invariant the code has quietly stopped honoring.
@@ -478,7 +478,7 @@ a stated invariant the code has quietly stopped honoring.
 |---|---|
 | 1. Wire-visible store identity | [`src/provenance.rs`](../../src/provenance.rs): a `CaptureEtag` carrying a capture-instance id plus both store generations, stamped on `capture_status` and every paged whole-store response. [Section 4 (`open_capture`)](#4-the-open_capture-mcp-tool) consumes the same primitive, as planned — it was built once |
 | 2. Write-back state separate from the analysis | [`src/mcp/findings.rs`](../../src/mcp/findings.rs), reached by `save_findings` behind `--mcp-allow-save-findings` (off by default: `allow_save_findings` at [`server.rs:74`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L74), `false` in `new()` at `:161`, set only by `with_save_findings()` at `:233`) |
-| Invariant 7 amended in the same change | Invariant 7 of [`invariants.md`](../internals/invariants.md#7-mcp-tools-never-edit-the-analysis-and-every-response-has-a-ceiling) is retitled "MCP tools never edit the analysis, and every response has a ceiling" and now names `save_findings` explicitly, so nobody has to discover the write by reading the tool list |
+| Invariant "MCP tools never edit the analysis, and every response has a ceiling" amended in the same change | Invariant "MCP tools never edit the analysis, and every response has a ceiling" of [`invariants.md`](../internals/invariants.md#mcp-tools-never-edit-the-analysis-and-every-response-has-a-ceiling) is retitled "MCP tools never edit the analysis, and every response has a ceiling" and now names `save_findings` explicitly, so nobody has to discover the write by reading the tool list |
 
 The annotation store went further than requirement 2 asked, and the reason is
 worth recording because it is not the obvious build. There **is** no annotation
@@ -500,7 +500,7 @@ have no note surface, and the notes module is reachable only from the TUI, the
 run wiring and the pcapng writer. That reconciles with this section because
 neither thing it guards is touched: an agent's text never comes back as
 evidence, and no write changes what an operator is reading.
-[Invariant 13](../internals/invariants.md#13-operator-notes-are-output-never-input)
+[Invariant "Operator notes are output, never input"](../internals/invariants.md#operator-notes-are-output-never-input)
 records the rule and what enforces it.
 
 The REST half of requirement 1 is still open, the same gap
@@ -721,7 +721,7 @@ is a genuine dead end in the middle of an investigation.
 
 ### The costs, each verified
 
-**It would be a second writer against the live stores.** Invariant 1 is *"Exactly
+**It would be a second writer against the live stores.** Invariant "One writer per store, per run mode" is *"Exactly
 one thread writes `DialogStore` and `StreamStore` in a given run"*, and the page
 names its single exception: opening a pcap from inside the TUI, whose *"whole
 design — progress via `async_messages`, never a blocking read on the render side
@@ -737,7 +737,7 @@ servers share one thread running one `tokio::runtime::Builder::new_current_threa
 ([`servers.rs:327`](https://github.com/NormB/sipnab/blob/main/src/app/servers.rs#L327)). Reading a multi-gigabyte pcap
 inside a tool handler blocks that thread for the duration — every other MCP tool
 call and every REST request behind it. This is not a lock-across-await violation
-(invariant 8 is enforced by `clippy::await_holding_lock = "deny"` and would not
+(invariant "No lock across `.await`" is enforced by `clippy::await_holding_lock = "deny"` and would not
 fire), which makes it worse: nothing catches it. Avoiding it means a background
 thread plus a progress-polling tool, which is the TUI's `pcap-load` design ported
 to MCP — the real cost of the feature, and it is not small.
@@ -974,8 +974,8 @@ GnuTLS and NSS. ecapture carries roughly forty version-specific objects for
 exactly this. That is a permanent maintenance obligation on a project whose
 [positioning](positioning.md) is that it is *run*, not *operated*.
 
-**And the thing it buys is already bought, twice.** [`examples.md`](https://github.com/NormB/sipnab/blob/main/docs/examples.md), recipe 7e,
-["Decrypt traffic from a daemon you cannot restart"](https://github.com/NormB/sipnab/blob/main/docs/examples.md#7e-decrypt-traffic-from-a-daemon-you-cannot-restart),
+**And the thing it buys is already bought, twice.** [`examples.md`](https://github.com/NormB/sipnab/blob/main/docs/examples.md), recipe "Decrypt traffic from a daemon you cannot restart",
+["Decrypt traffic from a daemon you cannot restart"](https://github.com/NormB/sipnab/blob/main/docs/examples.md#decrypt-traffic-from-a-daemon-you-cannot-restart),
 documents `ecapture tls -m keylog` feeding `--keylog`, measured on a daemon with
 no `SSLKEYLOGFILE` anywhere. `TK4`'s `--keylog-fd` takes the same secrets over a
 pipe so they never reach disk. A native extractor would duplicate a mature

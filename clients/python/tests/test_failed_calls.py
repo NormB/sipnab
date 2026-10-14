@@ -1,7 +1,7 @@
 """Failed calls grouped by their final response code, and the calls that
 answered and were never acknowledged.
 
-Recipe 3's shell histogram counts every response inside a failed call, so a
+Recipe "Find every failed call, grouped by response code"'s shell histogram counts every response inside a failed call, so a
 `100 Trying` before the `486` is counted too. This groups each failed call
 once, under its final code, and names the calls in each group. A missing
 `ACK` never makes a call fail, so it is read from the capture's findings

@@ -10,37 +10,51 @@ kind = "postmortem"
 
 ## In short
 
-The sipnab.com homepage shows a still picture of sipnab, which changes to an
+The sipnab.com homepage shows a still picture of sipnab. It changes to an
 animation once the animation has loaded. The site's `/analyze` page offers a
-sample call to try. Until 2026-08-31 these three came from three different
-captured calls, so a visitor saw the picture change to a different call and
-was then offered a third. All three now use one capture, and a test fails if
-they ever differ again.
+sample call to try.
+
+- Until 2026-08-31 these three came from three different captured calls.
+  - So a visitor saw the picture change to a different call.
+  - The visitor was then offered a third.
+- All three now use one capture.
+- A test fails if they ever differ again.
 
 ## What happened
 
-A visitor's path through the site is: open the homepage, watch the animation,
-go to `/analyze`, and press "No capture handy? Load a sample call". Each of
-these comes from a capture file (a recording of network traffic):
+A visitor's path through the site is:
+
+- open the homepage,
+- watch the animation,
+- go to `/analyze`,
+- press "No capture handy? Load a sample call".
+
+Each of these comes from a capture file (a recording of network traffic):
 
 - `demos/hero.tape` records the homepage still picture;
 - `demos/01-intro.tape` records the animation that replaces it;
-- the `/analyze` sample is the file `website/static/demos/sample-call.pcap`,
-  which `website/static/js/analyze.js` downloads.
+- the `/analyze` sample is the file `website/static/demos/sample-call.pcap`.
+  `website/static/js/analyze.js` downloads it.
 
-The `.tape` files are scripts for VHS, a program that runs terminal commands
-and records the screen. Each script runs `sipnab -I <capture>`.
+The `.tape` files are scripts for VHS. VHS is a program that runs terminal
+commands and records the screen. Each script runs `sipnab -I <capture>`.
 
-Before 2026-08-31, `hero.tape` ran sipnab on
-`tests/pcap-samples/register-invite-reinvite-bye.pcap`, `01-intro.tape` ran it
-on `tests/pcap-samples/sip-rtp-g711.pcap`, and `/analyze` offered
-`sample-call.pcap`. The picture and the animation showed two different calls,
-and the sample was a third.
+Before 2026-08-31:
+
+- `hero.tape` ran sipnab on
+  `tests/pcap-samples/register-invite-reinvite-bye.pcap`;
+- `01-intro.tape` ran it on `tests/pcap-samples/sip-rtp-g711.pcap`;
+- `/analyze` offered `sample-call.pcap`.
+
+The picture and the animation showed two different calls. The sample was a
+third.
 
 On 2026-08-31 commit 70ec075d (first included in v0.5.140) moved the still
-picture to `sample-call.pcap`. It did not change the animation, which a
-different file sets, so from then until 2026-09-01 the picture and the sample
-agreed and the animation did not.
+picture to `sample-call.pcap`.
+
+- It did not change the animation. A different file sets the animation.
+- So from then until 2026-09-01 the picture and the sample agreed.
+- The animation did not.
 
 On 2026-09-01 commit a9aaf57a (first included in v0.5.142) moved the animation
 to `sample-call.pcap` as well.
@@ -48,11 +62,15 @@ to `sample-call.pcap` as well.
 ## Why it happened
 
 No test compared the three capture names. The requirement that all three
-show the same call was not written down anywhere a test could read. The facts
-live in separate files: the two `.tape` scripts name the captures they record,
-the `index.html` template chooses which recordings the homepage shows, and
-`analyze.js` names the sample. A change to one of these files does not show
-the others.
+show the same call was not written down anywhere a test could read.
+
+The facts live in separate files:
+
+- the two `.tape` scripts name the captures they record;
+- the `index.html` template chooses which recordings the homepage shows;
+- `analyze.js` names the sample.
+
+A change to one of these files does not show the others.
 
 ## What changed
 
@@ -63,9 +81,13 @@ contain this line:
 Type "sipnab -I website/static/demos/sample-call.pcap"
 ```
 
-`tests/demo_capture_agreement_test.rs` (added in a9aaf57a) reads the
-homepage template, every `.tape` file under `demos/` and `analyze.js`, and
-fails when:
+Commit a9aaf57a added `tests/demo_capture_agreement_test.rs`. It reads:
+
+- the homepage template,
+- every `.tape` file under `demos/`,
+- `analyze.js`.
+
+It fails when:
 
 - the animation's capture differs from the `/analyze` sample
   (`the_homepage_animation_and_the_analyze_sample_use_one_capture`);
@@ -74,19 +96,21 @@ fails when:
 - a `.tape` file names a capture that does not exist, or one that is not
   committed to the repository
   (`every_demo_tape_drives_a_capture_that_exists`,
-  `no_demo_tape_drives_an_uncommitted_capture`). Given a capture that does
-  not exist, sipnab prints an error such as
-  `-I/--input: 'tests/pcap-samples/does-not-exist.pcap' does not exist` and
-  exits, so a script that names a missing capture records that error instead
-  of a call.
+  `no_demo_tape_drives_an_uncommitted_capture`).
+  - Given a capture that does not exist, sipnab prints an error such as
+    `-I/--input: 'tests/pcap-samples/does-not-exist.pcap' does not exist`.
+    Then it exits.
+  - So a script that names a missing capture records that error instead of a
+    call.
 
-The test reads the capture name only from the argument after `-I`, so a path
+The test reads the capture name only from the argument after `-I`. So a path
 mentioned in a comment in a `.tape` file is not mistaken for the capture.
 
 ## What you can check yourself
 
 The sample call the site offers is in the repository. This lists what it
-contains (seven SIP dialogs, one of them a call with two RTP streams):
+contains. It holds seven SIP dialogs. One of them is a call with two RTP
+streams:
 
 ```bash
 sipnab -N -I website/static/demos/sample-call.pcap --report --no-cli-print
@@ -110,8 +134,8 @@ SSRC         PT   Codec    Clock  Source                Destination           Pk
 0x5e6f7a8b   0    PCMU     8000   192.0.2.20:10002      192.0.2.10:10000      300     0      0.0%    0ms      6s     64     
 ```
 
-The site serves the same file at `https://sipnab.com/demos/sample-call.pcap`, and
-the first-steps guide uses it.
+The site serves the same file at `https://sipnab.com/demos/sample-call.pcap`.
+The first-steps guide uses it.
 
 ## Terms used here
 
@@ -129,5 +153,5 @@ the first-steps guide uses it.
 
 ## Related guides
 
-- [Download a capture (uses the same sample call)](@/docs/first-cli-triage.md#1-download-a-capture)
-- [List the calls](@/docs/first-cli-triage.md#2-list-the-calls)
+- [Download a capture (uses the same sample call)](@/docs/first-cli-triage.md#download-a-capture)
+- [List the calls](@/docs/first-cli-triage.md#list-the-calls)

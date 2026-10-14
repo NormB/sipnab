@@ -198,7 +198,7 @@ alone.
   frequent operation in the process. This is the premise every later contention
   judgement rests on. Correct it in place, per the repo's own "refute your own
   claims in place" norm. *(= G2)*
-- [x] **D2 — [section 2 of `invariants.md`](../internals/invariants.md#2-dialog-before-stream-then-alerts--one-consistent-order)
+- [x] **D2 — [`invariants.md`, "Dialog before stream, then alerts — one consistent order"](../internals/invariants.md#dialog-before-stream-then-alerts--one-consistent-order)
   (the store lock-order rule) contradicts the batch applier.** It states
   "Never hold both write locks simultaneously" and then claims the batch
   applier "holds their stores by `&mut` and so have no ordering to get wrong" —

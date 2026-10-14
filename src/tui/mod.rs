@@ -441,7 +441,7 @@ pub struct App {
     /// this `App` is gone.
     action_trail: Option<Arc<action_trail::ActionTrail>>,
     /// The operator's notes, keyed by frame. Output only: the analysis never
-    /// reads them (Invariant 13 in `docs/internals/invariants.md`).
+    /// reads them (Invariant "Operator notes are output, never input" in `docs/internals/invariants.md`).
     notes: crate::annotate::Notes,
     /// Where the Notes save format writes by default: the `--notes` file.
     notes_path: Option<PathBuf>,
