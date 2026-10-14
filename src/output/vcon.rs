@@ -1346,6 +1346,14 @@ impl crate::output::redact::Redact for Vcon {
             if attachment.purpose == MESSAGE_TRACE_PURPOSE {
                 drop_trace_bodies(&mut attachment.body);
             }
+            // The numbers come out of the PASSporT, which redaction deletes
+            // from the party for the reason given there; they go with it.
+            if attachment.purpose == STIR_REPORT_PURPOSE
+                && let Some(map) = attachment.body.as_object_mut()
+            {
+                map.remove("orig_tn");
+                map.remove("dest_tn");
+            }
         }
         for report in analysis.iter_mut() {
             report.redact(r);
@@ -2030,6 +2038,7 @@ pub fn export_dialog_and_completeness(
         message_trace_attachment(dialog, observer, started.clone()),
         completeness_attachment(&completeness, observer, started.clone()),
     ];
+    attachments.extend(stir_verification_report(dialog));
     if !context.related_legs.is_empty() {
         attachments.push(Attachment {
             purpose: RELATED_LEGS_PURPOSE,
@@ -3336,6 +3345,119 @@ fn inline_text(bytes: &[u8]) -> (&'static str, serde_json::Value) {
         Ok(text) => ("none", text.into()),
         Err(_) => ("base64url", URL_SAFE_NO_PAD.encode(bytes).into()),
     }
+}
+
+/// `purpose` of the report that transcribes the network's STIR verdict,
+/// [draft-howe-vcon-sip-signaling-00 section 7.3](https://datatracker.ietf.org/doc/html/draft-howe-vcon-sip-signaling-00#section-7.3).
+pub const STIR_REPORT_PURPOSE: &str = "stir-verification-report";
+
+/// What the report says about who verified.
+const STIR_REPORT_REASON: &str = "Transcribed from the verstat parameter (ATIS-1000074) the \
+     network wrote on this header. sipnab verified nothing: it checked no signature and \
+     fetched no certificate, and the verifier is not named on the wire.";
+
+/// The `stir-verification-report` attachment, when the dialog-creating INVITE
+/// carries a `verstat` parameter.
+///
+/// sipnab transcribes; it does not verify. The terminating network writes
+/// `verstat` (ATIS-1000074) on `P-Asserted-Identity` or `From` after its own
+/// verification, and this report carries that verdict in the draft's shape:
+///
+/// - `result` maps `TN-Validation-Passed` to `verified` and
+///   `TN-Validation-Failed` to `failed`. `No-TN-Validation` is `no-signature`
+///   when the INVITE carried no `Identity` header, and is left out when it
+///   did, because the draft has no value for "not verified".
+/// - `attestation`, `orig_tn` and `dest_tn` are the PASSporT's own claims,
+///   when the INVITE carried one.
+/// - `timestamp` is when sipnab captured the INVITE, which is after the
+///   verification.
+/// - `verifier` is absent: the header does not name who verified.
+/// - `verstat` and `verstat_header` keep the value and where it was read.
+///
+/// `party` is 0, the caller whose PASSporT this is (section 7.2 asks the same
+/// of a certificate attachment), and `dialog` is 0.
+///
+/// `P-Asserted-Identity` is read before `From`, and the first initial INVITE
+/// carrying a `verstat` decides. No `verstat` is no report.
+fn stir_verification_report(dialog: &SipDialog) -> Option<Attachment> {
+    let (message, header, verstat) = dialog
+        .messages
+        .iter()
+        .filter(|m| {
+            m.is_request
+                && m.method.as_ref() == Some(&crate::sip::SipMethod::Invite)
+                && m.to_tag().is_none()
+        })
+        .find_map(|m| {
+            ["P-Asserted-Identity", "From"]
+                .into_iter()
+                .find_map(|header| {
+                    m.headers_by_name(header)
+                        .into_iter()
+                        .find_map(verstat_of)
+                        .map(|v| (m, header, v))
+                })
+        })?;
+    let passport = message.stir_shaken().and_then(Result::ok);
+    let result = match verstat.as_str() {
+        v if v.eq_ignore_ascii_case("TN-Validation-Passed") => Some("verified"),
+        v if v.eq_ignore_ascii_case("TN-Validation-Failed") => Some("failed"),
+        v if v.eq_ignore_ascii_case("No-TN-Validation") && message.header("Identity").is_none() => {
+            Some("no-signature")
+        }
+        _ => None,
+    };
+    let mut body = serde_json::Map::new();
+    body.insert("timestamp".into(), message.timestamp.to_rfc3339().into());
+    if let Some(result) = result {
+        body.insert("result".into(), result.into());
+    }
+    if let Some(info) = &passport {
+        let attestation = match info.attestation {
+            crate::sip::stir_shaken::Attestation::A => Some("A"),
+            crate::sip::stir_shaken::Attestation::B => Some("B"),
+            crate::sip::stir_shaken::Attestation::C => Some("C"),
+            _ => None,
+        };
+        if let Some(level) = attestation {
+            body.insert("attestation".into(), level.into());
+        }
+        if let Some(orig) = &info.orig_tn {
+            body.insert("orig_tn".into(), orig.clone().into());
+        }
+        if !info.dest_tn.is_empty() {
+            body.insert("dest_tn".into(), info.dest_tn.clone().into());
+        }
+    }
+    body.insert("reason".into(), STIR_REPORT_REASON.into());
+    body.insert("verstat".into(), verstat.into());
+    body.insert("verstat_header".into(), header.into());
+    Some(Attachment {
+        purpose: STIR_REPORT_PURPOSE,
+        party: 0,
+        dialog: 0,
+        start: message.timestamp.to_rfc3339(),
+        mediatype: "application/json",
+        encoding: "json",
+        body: serde_json::Value::Object(body),
+    })
+}
+
+/// The value of a `verstat` parameter anywhere in a header value: the text
+/// after `verstat=` up to `;`, `>`, `@`, `,` or white space.
+///
+/// Anywhere, because ATIS-1000074 places it as a URI parameter, which sits
+/// inside the angle brackets of a `sip:` URI's user part or after a `tel:`
+/// number.
+fn verstat_of(value: &str) -> Option<String> {
+    let lower = value.to_ascii_lowercase();
+    let at = lower.find("verstat=")? + "verstat=".len();
+    let rest = &value[at..];
+    let end = rest
+        .find(|c: char| matches!(c, ';' | '>' | '@' | ',') || c.is_whitespace())
+        .unwrap_or(rest.len());
+    let verstat = rest[..end].trim();
+    (!verstat.is_empty()).then(|| verstat.to_string())
 }
 
 /// Remove every credential-bearing header from a JSON value, at any depth.
@@ -8729,6 +8851,173 @@ mod tests {
         let rebuilt = crate::capture::vcon_input::rebuild(&serde_json::to_value(&v)?, "test")
             .map_err(|e| format!("{e}"))?;
         assert_eq!(rebuilt.messages.len(), dialog.messages.len());
+        Ok(())
+    }
+
+    // ── stir-verification-report ──
+
+    /// An `Identity` header carrying a PASSporT with attestation `attest`.
+    fn identity_header(attest: &str) -> String {
+        let header = URL_SAFE_NO_PAD.encode(br#"{"alg":"ES256","ppt":"shaken","typ":"passport"}"#);
+        let payload = URL_SAFE_NO_PAD.encode(
+            format!(
+                r#"{{"attest":"{attest}","dest":{{"tn":["12125559876"]}},"iat":1,"orig":{{"tn":"12125551234"}},"origid":"x"}}"#
+            )
+            .as_bytes(),
+        );
+        format!(
+            "Identity: {header}.{payload}.c2ln;info=<https://cert.example/c.pem>;alg=ES256;ppt=shaken"
+        )
+    }
+
+    /// An initial INVITE from Alice carrying `extra` headers.
+    fn invite_carrying(extra: &[&str]) -> Result<crate::sip::SipMessage, TestError> {
+        let mut headers = vec![
+            "From: \"Alice\" <sip:+12125551234@example.com>;tag=t1",
+            "To: \"Bob\" <sip:+12125559876@example.net>",
+            "Call-ID: vcon-fixture@example.com",
+            "CSeq: 1 INVITE",
+        ];
+        headers.extend_from_slice(extra);
+        message_with_body("INVITE sip:bob@example.net SIP/2.0", &headers, b"")
+    }
+
+    /// The `stir-verification-report` attachments of an export of `invite`.
+    fn stir_reports(invite: crate::sip::SipMessage) -> Result<Vec<Attachment>, TestError> {
+        let dialog = timed_dialog(vec![(invite, 0)])?;
+        let v = export_with(&dialog, &clean_facts())?;
+        valid_json(&v)?;
+        Ok(with_purpose(&v, STIR_REPORT_PURPOSE)
+            .into_iter()
+            .cloned()
+            .collect())
+    }
+
+    /// GAP-15: a `verstat` the network wrote on `P-Asserted-Identity`
+    /// becomes the report of
+    /// [draft-howe-vcon-sip-signaling-00 section 7.3](https://datatracker.ietf.org/doc/html/draft-howe-vcon-sip-signaling-00#section-7.3),
+    /// with the PASSporT's claims beside it and a reason saying sipnab
+    /// verified nothing.
+    #[test]
+    fn a_verstat_becomes_a_stir_verification_report() -> Result<(), TestError> {
+        let identity = identity_header("A");
+        let reports = stir_reports(invite_carrying(&[
+            "P-Asserted-Identity: <sip:+12125551234@example.com;verstat=TN-Validation-Passed>",
+            &identity,
+        ])?)?;
+        assert_eq!(reports.len(), 1);
+        let report = &reports[0];
+        assert_eq!(report.party, 0);
+        assert_eq!(report.dialog, 0);
+        assert_eq!(report.mediatype, "application/json");
+        assert_eq!(report.encoding, "json");
+        let body = &report.body;
+        assert_eq!(body["result"], "verified");
+        assert_eq!(body["verstat"], "TN-Validation-Passed");
+        assert_eq!(body["verstat_header"], "P-Asserted-Identity");
+        assert_eq!(body["attestation"], "A");
+        assert_eq!(body["orig_tn"], "12125551234");
+        assert_eq!(body["dest_tn"], serde_json::json!(["12125559876"]));
+        assert_eq!(body["timestamp"], ts()?.to_rfc3339());
+        assert!(
+            body.get("verifier").is_none(),
+            "sipnab cannot name the verifier: {body:#}"
+        );
+        assert!(
+            body["reason"]
+                .as_str()
+                .is_some_and(|r| r.contains("sipnab verified nothing")),
+            "{body:#}"
+        );
+        Ok(())
+    }
+
+    /// GAP-15: each ATIS-1000074 value maps onto the draft's `result`;
+    /// `No-TN-Validation` is `no-signature` only when no PASSporT was seen.
+    #[test]
+    fn each_verstat_value_maps_onto_the_draft_result() -> Result<(), TestError> {
+        let identity = identity_header("B");
+        let cases: [(&str, bool, Option<&str>); 4] = [
+            ("TN-Validation-Failed", true, Some("failed")),
+            ("TN-Validation-Passed", false, Some("verified")),
+            ("No-TN-Validation", false, Some("no-signature")),
+            ("No-TN-Validation", true, None),
+        ];
+        for (verstat, with_identity, result) in cases {
+            let pai = format!("P-Asserted-Identity: <tel:+12125551234;verstat={verstat}>");
+            let mut extra = vec![pai.as_str()];
+            if with_identity {
+                extra.push(&identity);
+            }
+            let reports = stir_reports(invite_carrying(&extra)?)?;
+            assert_eq!(reports.len(), 1, "{verstat}");
+            assert_eq!(
+                reports[0].body.get("result").and_then(|r| r.as_str()),
+                result,
+                "{verstat} with_identity={with_identity}"
+            );
+        }
+        Ok(())
+    }
+
+    /// GAP-15: with no `P-Asserted-Identity`, a `verstat` on `From` is read.
+    #[test]
+    fn a_verstat_on_from_is_read_when_no_pai_carries_one() -> Result<(), TestError> {
+        let message = message_with_body(
+            "INVITE sip:bob@example.net SIP/2.0",
+            &[
+                "From: <sip:+12125551234;verstat=TN-Validation-Passed@example.com;user=phone>;tag=t1",
+                "To: <sip:+12125559876@example.net>",
+                "Call-ID: vcon-fixture@example.com",
+                "CSeq: 1 INVITE",
+            ],
+            b"",
+        )?;
+        let reports = stir_reports(message)?;
+        assert_eq!(reports.len(), 1);
+        assert_eq!(reports[0].body["verstat_header"], "From");
+        assert_eq!(reports[0].body["verstat"], "TN-Validation-Passed");
+        Ok(())
+    }
+
+    /// GAP-15: no `verstat` is no verdict to transcribe, PASSporT or not.
+    #[test]
+    fn no_verstat_writes_no_report() -> Result<(), TestError> {
+        let identity = identity_header("A");
+        assert!(stir_reports(invite_carrying(&[&identity])?)?.is_empty());
+        assert!(stir_reports(invite()?)?.is_empty());
+        Ok(())
+    }
+
+    /// GAP-15: redaction deletes the telephone numbers the report copies out
+    /// of the PASSporT, as it deletes the PASSporT itself.
+    #[test]
+    fn redaction_deletes_the_report_numbers() -> Result<(), TestError> {
+        use crate::output::redact::{Redact as _, RedactionKey, RedactionPolicy};
+        let identity = identity_header("A");
+        let dialog = timed_dialog(vec![(
+            invite_carrying(&[
+                "P-Asserted-Identity: <tel:+12125551234;verstat=TN-Validation-Passed>",
+                &identity,
+            ])?,
+            0,
+        )])?;
+        let mut v = export_with(&dialog, &clean_facts())?;
+        let policy = RedactionPolicy::new(RedactionKey::from_secret(b"stir"));
+        v.redact(&policy.redactor());
+        let report = with_purpose(&v, STIR_REPORT_PURPOSE);
+        assert_eq!(report.len(), 1);
+        assert!(
+            report[0].body.get("orig_tn").is_none(),
+            "{:#}",
+            report[0].body
+        );
+        assert!(
+            report[0].body.get("dest_tn").is_none(),
+            "{:#}",
+            report[0].body
+        );
+        assert_eq!(report[0].body["result"], "verified");
         Ok(())
     }
 }

@@ -45525,6 +45525,28 @@ sip_messages = true
   - The bytes hold every identifier the trace holds, and redaction cannot rewrite them without changing the message they copy.
 - sipnab's own `-I` reader takes the messages from the trace, and reads `message/sip` attachments only from a container without a trace.
 
+### The network's STIR verdict
+
+sipnab checks no PASSporT signature and fetches no certificate.
+When the network has verified a call, it says so in a `verstat` parameter (ATIS-1000074) on `P-Asserted-Identity` or `From`.
+sipnab copies that verdict into a `stir-verification-report` attachment, the report of [section 7.3](https://datatracker.ietf.org/doc/html/draft-howe-vcon-sip-signaling-00#section-7.3).
+
+- The report comes from the first INVITE without a `To` tag that carries `verstat`.
+  - sipnab reads `P-Asserted-Identity` first, then `From`.
+  - With no `verstat`, there is no report, even when the INVITE carries a PASSporT.
+- `result` maps the `verstat` value onto the draft's values.
+  - `TN-Validation-Passed` is `verified`.
+  - `TN-Validation-Failed` is `failed`.
+  - `No-TN-Validation` is `no-signature` when the INVITE carried no `Identity` header.
+    When it carried one, `result` is absent, because the draft has no value for "not verified".
+- `attestation`, `orig_tn` and `dest_tn` are the claims of the PASSporT in the same INVITE, when there is one.
+- `timestamp` is when sipnab captured the INVITE, which is after the network verified it.
+- `verifier` is absent, because the header does not name who verified.
+- `reason` states that sipnab transcribed the value and verified nothing.
+- `verstat` and `verstat_header` keep the value as written and the header it came from.
+- `party` is 0, the caller, and `dialog` is 0.
+- `--redact` removes `orig_tn` and `dest_tn`, as it removes the PASSporT from the party.
+
 ## The container cannot say "this is an incomplete record", so sipnab says it twice
 
 This is the point of the page.

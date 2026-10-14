@@ -12,6 +12,11 @@ entry that carries them.
 
 ### Added
 
+- **A vCon carries the network's STIR verdict as a `stir-verification-report` attachment.**
+  - sipnab copies the `verstat` parameter (ATIS-1000074) from `P-Asserted-Identity` or `From` of the initial INVITE into the report of [section 7.3 of draft-howe-vcon-sip-signaling-00](https://datatracker.ietf.org/doc/html/draft-howe-vcon-sip-signaling-00#section-7.3).
+  - `result` is `verified`, `failed` or `no-signature`, and the PASSporT's `attest`, `orig` and `dest` claims ride beside it.
+  - The report says that sipnab verified nothing, and it names no verifier.
+  - With no `verstat`, there is no report.
 - **`[[vcon.rule]] sip_messages` attaches the initial INVITE and its final response in wire format.**
   - The attachments are `sip-invite` and `sip-response`, with `mediatype: "message/sip"`, and `sip-sdp` for each one's SDP, per [section 8.1 of draft-howe-vcon-sip-signaling-00](https://datatracker.ietf.org/doc/html/draft-howe-vcon-sip-signaling-00#section-8.1).
   - The bytes lose their credential header lines, as the trace does.
