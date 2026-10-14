@@ -613,7 +613,7 @@ mod tests {
     }
 
     /// The clock rate is the one the rtpmap bound to that payload type, and
-    /// the encoding name matches without regard to case (RFC 4566 section 6).
+    /// the encoding name matches without regard to case ([RFC 4566 section 6](https://www.rfc-editor.org/rfc/rfc4566.html#section-6)).
     #[test]
     fn the_clock_rate_comes_from_the_same_rtpmap_entry() {
         let map = rtpmap(&[
