@@ -4041,6 +4041,14 @@ Part of the `detail` of a `malformed` outcome, after `analysis {i}`: a `wtf_tran
 
 **Exit code:** None. sipnab writes the call without the service's analysis.
 
+### `a provenance whose model has no {key}`
+
+Part of the `detail` of a `malformed` outcome, after `analysis {i} has`: an analysis entry from a `[[vcon.enrich]]` service carries its own `provenance` record, and the record's `model` has no `vendor` or no `name`. `{key}` is the missing member. [Section 4.2.1 of draft-howe-vcon-provenance-00](https://datatracker.ietf.org/doc/html/draft-howe-vcon-provenance-00#section-4.2.1) requires both. sipnab keeps none of that answer.
+
+**What to do:** Send `model.vendor` and `model.name`, or leave `provenance` out and let sipnab write it from the entry's `vendor` and `product`.
+
+**Exit code:** None. sipnab writes the call without the service's analysis.
+
 ## Startup, privileges and the process
 
 ### `--allow-coredump: a core dump would contain the archive password this run holds`

@@ -595,3 +595,216 @@ fn an_invalid_wtf_transcription_is_recorded_as_a_failure() -> Result<(), TestErr
     assert!(stderr.contains("segments"), "{stderr}");
     Ok(())
 }
+
+/// The `provenance` record on `analysis`, an Analysis Object.
+fn provenance(analysis: &serde_json::Value) -> Result<&serde_json::Value, TestError> {
+    analysis
+        .get("provenance")
+        .filter(|p| p.is_object())
+        .ok_or_else(|| format!("no provenance object on {analysis}").into())
+}
+
+/// The `inputs` entries of `record` naming `element`, as (index, hash).
+fn inputs(record: &serde_json::Value, element: &str) -> Vec<(u64, String)> {
+    record["inputs"]
+        .as_array()
+        .map(|list| {
+            list.iter()
+                .filter(|i| i["element"] == element)
+                .map(|i| {
+                    (
+                        i["index"].as_u64().unwrap_or(u64::MAX),
+                        i["content_hash"].as_str().unwrap_or_default().to_owned(),
+                    )
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// Every enrichment Analysis Object carries a provenance record of
+/// draft-howe-vcon-provenance-00: the model, when it was generated, each
+/// element sipnab sent the service bound by its hash, and the hash of the
+/// output. The container lists `provenance` in `extensions`.
+///
+/// [Section 4.2.1](https://datatracker.ietf.org/doc/html/draft-howe-vcon-provenance-00#section-4.2.1)
+/// requires `model.vendor`, `model.name` and `generated_at`;
+/// [section 4.2.2](https://datatracker.ietf.org/doc/html/draft-howe-vcon-provenance-00#section-4.2.2)
+/// defines `inputs` and `output_hash`;
+/// [section 3](https://datatracker.ietf.org/doc/html/draft-howe-vcon-provenance-00#section-3)
+/// says a vCon holding one "SHOULD include \"provenance\" in the extensions
+/// array" and that it "Does not require listing in the critical parameter".
+#[test]
+fn an_enrichment_carries_its_provenance() -> Result<(), TestError> {
+    let home = tempfile::tempdir()?;
+    let dir = home.path().join("out");
+    let (first, first_requests) = stub(Answer::Transcript)?;
+    let (second, second_requests) = stub(Answer::Summary)?;
+    let enrich = service("stt", &first, "") + &service("summarize", &second, "");
+    let rule = config(&dir, &enrich).replace(
+        "when = \"call_id =~ '.'\"\n",
+        "when = \"call_id =~ '.'\"\naudio = \"inline\"\n",
+    );
+    assert!(
+        rule.contains("audio = \"inline\""),
+        "the rule inlines audio"
+    );
+    let out = run(home.path(), &rule, &[])?;
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let v = container(&dir)?;
+    let extensions = v["extensions"].as_array().ok_or("extensions")?;
+    assert_eq!(
+        extensions.iter().filter(|e| *e == "provenance").count(),
+        1,
+        "{extensions:?}"
+    );
+    assert!(v.get("critical").is_none());
+
+    let transcript = analyses(&v, "transcript")[0];
+    let record = provenance(transcript)?;
+    assert_eq!(record["model"]["vendor"], "stub", "{record}");
+    assert_eq!(record["model"]["name"], "stub-stt", "the analysis product");
+    let at = record["generated_at"].as_str().ok_or("generated_at")?;
+    assert!(
+        chrono::DateTime::parse_from_rfc3339(at).is_ok(),
+        "generated_at is RFC 3339: {at}"
+    );
+    // The output hash is over the body the service sent: a `none` body's
+    // text.
+    assert_eq!(
+        record["output_hash"],
+        sipnab::app::vcon_hash::token(b"hello there")
+    );
+
+    // Each element of the container sipnab sent, bound by the hash of its
+    // canonical form as sent.
+    let request = first_requests.try_recv()?;
+    for element in ["dialog", "attachments"] {
+        let sent = request["vcon"][element].as_array().ok_or(element)?;
+        let name = element.trim_end_matches('s');
+        let found = inputs(record, name);
+        for (i, item) in sent.iter().enumerate() {
+            let want = sipnab::app::vcon_hash::json_token(item);
+            assert!(
+                found.contains(&(i as u64, want.clone())),
+                "{name} {i} with {want}: {found:?}"
+            );
+        }
+    }
+    assert!(inputs(record, "analysis").is_empty(), "stt saw no analysis");
+    // The leg's audio, bound by the hash of the WAV sent, which is the
+    // content_hash core-04 gives the leg's inline recording.
+    let wav = request["audio"][0]["body"].as_str().ok_or("audio body")?;
+    let wav = {
+        use base64::Engine as _;
+        base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(wav)?
+    };
+    let wav_hash = sipnab::app::vcon_hash::token(&wav);
+    assert_eq!(v["dialog"][0]["content_hash"], wav_hash.as_str());
+    assert!(
+        inputs(record, "dialog").contains(&(0, wav_hash)),
+        "{record}"
+    );
+
+    // The second service was sent the first one's transcript: its record
+    // names it by its index in the container, with the hash of what was sent.
+    let summary = analyses(&v, "summary")[0];
+    let record = provenance(summary)?;
+    assert_eq!(
+        record["model"]["name"], "summarize",
+        "no product: the service name"
+    );
+    let request = second_requests.try_recv()?;
+    let sent = &request["vcon"]["analysis"][0];
+    let index = v["analysis"]
+        .as_array()
+        .ok_or("analysis")?
+        .iter()
+        .position(|a| a["type"] == "transcript")
+        .ok_or("the transcript")?;
+    assert_eq!(
+        inputs(record, "analysis"),
+        [(index as u64, sipnab::app::vcon_hash::json_token(sent))]
+    );
+    // sipnab's own report is not among them: it was not sent.
+    assert!(!inputs(record, "analysis").iter().any(|(i, _)| *i == 0));
+
+    // The enrichment attachment stays: it records outcomes that have no
+    // Analysis Object to carry a provenance record.
+    assert_eq!(outcomes(&v)?.len(), 2);
+    let validator = support::schema::load_validator("vcon.schema.json")?;
+    support::schema::assert_valid(&validator, &v, "a container with provenance");
+    Ok(())
+}
+
+/// A service's own provenance record is kept: its model, version,
+/// parameters and time. sipnab writes `inputs` and `output_hash` itself,
+/// from what it sent and what it carries. A record without a model name is
+/// refused, and the answer recorded as malformed.
+#[test]
+fn a_services_provenance_is_kept_and_completed() -> Result<(), TestError> {
+    const SUPPLIED: &str = r#"{"analysis": [{
+        "type": "summary", "vendor": "acme", "product": "m1", "encoding": "json",
+        "body": {"summary": "s"},
+        "provenance": {
+            "model": {"vendor": "acme", "name": "m1", "version": "m1-2026"},
+            "generated_at": "2026-01-02T03:04:05Z",
+            "parameters": {"temperature": 0.2},
+            "prompt": {"template": "https://example.com/prompts/summary/v1"},
+            "inputs": [{"element": "analysis", "index": 0}],
+            "output_hash": "sha512-not-this"
+        }
+    }]}"#;
+    const NO_NAME: &str = r#"{"analysis": [{
+        "type": "summary", "vendor": "acme", "encoding": "none", "body": "s",
+        "provenance": {"model": {"vendor": "acme"}, "generated_at": "2026-01-02T03:04:05Z"}
+    }]}"#;
+    let home = tempfile::tempdir()?;
+    let dir = home.path().join("out");
+    let (url, _) = stub(Answer::Raw(SUPPLIED))?;
+    let out = run(home.path(), &config(&dir, &service("sum", &url, "")), &[])?;
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let v = container(&dir)?;
+    let record = provenance(analyses(&v, "summary")[0])?;
+    assert_eq!(record["model"]["version"], "m1-2026");
+    assert_eq!(record["generated_at"], "2026-01-02T03:04:05Z");
+    assert_eq!(record["parameters"]["temperature"], 0.2);
+    assert_eq!(
+        record["prompt"]["template"],
+        "https://example.com/prompts/summary/v1"
+    );
+    assert_eq!(
+        record["output_hash"],
+        sipnab::app::vcon_hash::json_token(&serde_json::json!({"summary": "s"}))
+    );
+    assert!(
+        inputs(record, "analysis").is_empty(),
+        "the service's own inputs are replaced: {record}"
+    );
+    assert!(!inputs(record, "dialog").is_empty(), "{record}");
+
+    let home = tempfile::tempdir()?;
+    let dir = home.path().join("out");
+    let (url, _) = stub(Answer::Raw(NO_NAME))?;
+    let out = run(home.path(), &config(&dir, &service("sum", &url, "")), &[])?;
+    assert!(out.status.success());
+    let v = container(&dir)?;
+    assert!(analyses(&v, "summary").is_empty(), "{v}");
+    let services = outcomes(&v)?;
+    assert_eq!(services[0]["outcome"], "malformed", "{services:?}");
+    assert!(
+        services[0]["detail"]
+            .as_str()
+            .is_some_and(|d| d.contains("provenance") && d.contains("name")),
+        "{services:?}"
+    );
+    Ok(())
+}

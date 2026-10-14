@@ -17,6 +17,12 @@ entry that carries them.
   - sipnab checks it for the draft's required `transcript`, `segments` and `metadata` sections and their members.
   - A container that holds one lists `wtf_transcription` in `extensions`, and not in `critical`.
   - An answer whose WTF transcription fails the check is recorded as `malformed`, naming what is wrong, and none of it is kept.
+- **Each enrichment Analysis Object records how it was made.**
+  - It carries a `provenance` record, as [section 4 of draft-howe-vcon-provenance-00](https://datatracker.ietf.org/doc/html/draft-howe-vcon-provenance-00#section-4) defines it, and the container lists `provenance` in `extensions`.
+  - `model` and `generated_at` are the service's own when it sends a record, and otherwise come from the entry's `vendor` and `product` and the time sipnab read the answer.
+  - `inputs` names each element sipnab sent the service, with the SHA-512 of its [RFC 8785](https://www.rfc-editor.org/rfc/rfc8785.html) form, and each leg's audio, with the SHA-512 of the WAV.
+  - `output_hash` is the SHA-512 of the body sipnab carries.
+  - The `sipnab-enrichment` attachment stays: it also records the services that added nothing.
 
 - **An encrypting `[[vcon.rule]]` can compress what it encrypts.**
   - `compress = "gzip"` signs the gzip ([RFC 1952](https://www.rfc-editor.org/rfc/rfc1952.html)) of the vCon instead of the vCon.

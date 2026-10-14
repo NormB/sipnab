@@ -750,7 +750,9 @@ const EXPECTED_UNRESOLVED: usize = 80;
 // summary, full, got {m:?}`, the F7 filter summary's mode key.
 // 452 -> 454 (+2), WTF transcriptions: src/app/vcon_enrich.rs 2 (the WTF
 // encoding refusal and the WTF member refusal). Nothing removed.
-const EXPECTED_TEMPLATES: usize = 454;
+// 454 -> 455 (+1), provenance records: src/app/vcon_enrich.rs 1 (a service's
+// provenance whose model lacks a member). Nothing removed.
+const EXPECTED_TEMPLATES: usize = 455;
 
 // ---------------------------------------------------------------------------
 // The page gates

@@ -313,14 +313,22 @@ pub fn enrich(
         if service.send_signaling {
             sent.push("signaling");
         }
-        let request = request_body(container, own, audio, service);
+        let (request, sent_inputs) = request_body(container, own, audio, service);
         let (outcome, detail, added) = match ask(service, &request) {
             Err((outcome, detail)) => (outcome, detail, Vec::new()),
             Ok(answer) => match parse_answer(&answer, container.dialog.len(), first_leg) {
-                Ok(found) => {
+                Ok(mut found) => {
                     let start = container.analysis.len();
                     if found.iter().any(|a| a.kind == WTF_TYPE) {
                         declare(container, WTF_TYPE);
+                    }
+                    let received =
+                        chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
+                    for analysis in &mut found {
+                        complete_provenance(analysis, &service.name, &received, &sent_inputs);
+                    }
+                    if !found.is_empty() {
+                        declare(container, PROVENANCE_EXTENSION);
                     }
                     container.analysis.extend(found);
                     (
@@ -393,15 +401,37 @@ pub fn attach(container: &mut Vcon, records: &[Record]) {
     });
 }
 
+/// The extension name of a provenance record,
+/// [draft-howe-vcon-provenance-00 section 3](https://datatracker.ietf.org/doc/html/draft-howe-vcon-provenance-00#section-3).
+pub const PROVENANCE_EXTENSION: &str = "provenance";
+
+/// One `inputs` entry of a provenance record,
+/// [draft-howe-vcon-provenance-00 section 4.2.2](https://datatracker.ietf.org/doc/html/draft-howe-vcon-provenance-00#section-4.2.2):
+/// the element, its index in the container, and the hash of what was sent.
+fn input(element: &str, index: usize, content_hash: String) -> serde_json::Value {
+    serde_json::json!({ "element": element, "index": index, "content_hash": content_hash })
+}
+
 /// The request for `service`: the container with only the analysis earlier
-/// services added (those past index `own`), and the audio.
+/// services added (those past index `own`), and the audio. With it, the
+/// provenance `inputs` naming everything the request carried:
+///
+/// - With signaling, each Dialog, Attachment and earlier Analysis Object
+///   sent, by its index in the container, hashed over its RFC 8785 form as
+///   sent. An earlier analysis is sent at index `i` of the request and is
+///   `own + i` in the container.
+/// - With audio, each leg's signaling Dialog Object, hashed over the WAV
+///   sent. That is the value core-04's `content_hash` takes for the same
+///   audio inlined in the container.
 fn request_body(
     container: &Vcon,
     own: usize,
     audio: &[LegAudio<'_>],
     service: &Service,
-) -> Vec<u8> {
+) -> (Vec<u8>, Vec<serde_json::Value>) {
+    use crate::app::vcon_hash::{json_token, token};
     use base64::Engine as _;
+    let mut inputs = Vec::new();
     let mut doc = serde_json::json!({
         "schema": REQUEST_SCHEMA,
         "service": service.name,
@@ -413,9 +443,21 @@ fn request_body(
             let earlier: Vec<serde_json::Value> = list.split_off(own.min(list.len()));
             *list = earlier;
         }
+        for (key, element, offset) in [
+            ("dialog", "dialog", 0),
+            ("attachments", "attachment", 0),
+            ("analysis", "analysis", own),
+        ] {
+            for (i, item) in vcon[key].as_array().into_iter().flatten().enumerate() {
+                inputs.push(input(element, offset + i, json_token(item)));
+            }
+        }
         doc["vcon"] = vcon;
     }
     if service.send_audio && !audio.is_empty() {
+        for leg in audio {
+            inputs.push(input("dialog", leg.dialog, token(leg.wav)));
+        }
         doc["audio"] = audio
             .iter()
             .map(|a| {
@@ -429,7 +471,112 @@ fn request_body(
             })
             .collect();
     }
-    doc.to_string().into_bytes()
+    (doc.to_string().into_bytes(), inputs)
+}
+
+/// Complete `analysis`'s provenance record from what sipnab knows, keeping
+/// what the service said.
+///
+/// [Section 4.2.1 of draft-howe-vcon-provenance-00](https://datatracker.ietf.org/doc/html/draft-howe-vcon-provenance-00#section-4.2.1)
+/// requires `model.vendor`, `model.name` and `generated_at`:
+///
+/// - `model` is the service's own when it sent one. Otherwise `vendor` is the
+///   analysis `vendor` and `name` its `product`, which section 4.2.1 says
+///   they "SHOULD equal", or, with no `product`, the `[[vcon.enrich]]` name.
+/// - `generated_at` is the service's own, or `received`, when sipnab read
+///   the answer.
+///
+/// `inputs` and `output_hash` are always sipnab's: `inputs` is `sent`, what
+/// the request carried, and `output_hash` is [`output_hash`] of the body
+/// sipnab carries. A service's own `inputs` index the request, whose
+/// `analysis` list starts at a different index from the container's.
+fn complete_provenance(
+    analysis: &mut Analysis,
+    service: &str,
+    received: &str,
+    sent: &[serde_json::Value],
+) {
+    let mut record = match analysis.provenance.take() {
+        Some(serde_json::Value::Object(map)) => map,
+        _ => serde_json::Map::new(),
+    };
+    record.entry("model").or_insert_with(|| {
+        serde_json::json!({
+            "vendor": analysis.vendor,
+            "name": analysis.product.as_deref().unwrap_or(service),
+        })
+    });
+    record
+        .entry("generated_at")
+        .or_insert_with(|| received.into());
+    record.insert("inputs".into(), sent.to_vec().into());
+    record.insert(
+        "output_hash".into(),
+        output_hash(&analysis.encoding, &analysis.body).into(),
+    );
+    analysis.provenance = Some(serde_json::Value::Object(record));
+}
+
+/// The `output_hash` of an analysis body,
+/// [draft-howe-vcon-provenance-00 section 4.3](https://datatracker.ietf.org/doc/html/draft-howe-vcon-provenance-00#section-4.3):
+/// "computed over the exact byte sequence ... produced by the model", a JSON
+/// value "canonicalize[d] ... with the JSON Canonicalization Scheme".
+///
+/// - `json`: the RFC 8785 form of the body.
+/// - `base64url`: the decoded bytes.
+/// - `none`: the text's UTF-8 bytes.
+fn output_hash(encoding: &str, body: &serde_json::Value) -> String {
+    use crate::app::vcon_hash::{json_token, token};
+    use base64::Engine as _;
+    let text = body.as_str().unwrap_or_default();
+    match encoding {
+        "json" => json_token(body),
+        "base64url" => match base64::engine::general_purpose::URL_SAFE_NO_PAD
+            .decode(text.trim_end_matches('='))
+        {
+            Ok(bytes) => token(&bytes),
+            Err(_) => token(text.as_bytes()),
+        },
+        _ => token(text.as_bytes()),
+    }
+}
+
+/// An answer entry's own provenance record, checked for the members
+/// [draft-howe-vcon-provenance-00 section 4.2.1](https://datatracker.ietf.org/doc/html/draft-howe-vcon-provenance-00#section-4.2.1)
+/// requires: a `model` object with `vendor` and `name` strings, and a
+/// `generated_at` that is an RFC 3339 time.
+///
+/// # Errors
+///
+/// What is missing, naming the member.
+fn supplied_provenance(entry: &serde_json::Value) -> Result<Option<serde_json::Value>, String> {
+    let Some(record) = entry.get("provenance") else {
+        return Ok(None);
+    };
+    let map = record
+        .as_object()
+        .ok_or("a provenance that is not an object")?;
+    let model = map
+        .get("model")
+        .and_then(serde_json::Value::as_object)
+        .ok_or("a provenance with no model object")?;
+    for key in ["vendor", "name"] {
+        if !model
+            .get(key)
+            .and_then(serde_json::Value::as_str)
+            .is_some_and(|v| !v.is_empty())
+        {
+            return Err(format!("a provenance whose model has no {key}"));
+        }
+    }
+    if !map
+        .get("generated_at")
+        .and_then(serde_json::Value::as_str)
+        .is_some_and(|t| chrono::DateTime::parse_from_rfc3339(t).is_ok())
+    {
+        return Err("a provenance with no RFC 3339 generated_at".into());
+    }
+    Ok(Some(record.clone()))
 }
 
 /// Send `request` to `service` and return the answer's body.
@@ -780,6 +927,8 @@ fn parse_answer(
         if kind == WTF_TYPE {
             check_wtf(&encoding, &body).map_err(|why| format!("analysis {i} {why}"))?;
         }
+        let provenance =
+            supplied_provenance(entry).map_err(|why| format!("analysis {i} has {why}"))?;
         let optional =
             |key: &str| text(key).map(|v| std::borrow::Cow::<'static, str>::Owned(v.to_owned()));
         out.push(Analysis {
@@ -791,6 +940,7 @@ fn parse_answer(
             mediatype: optional("mediatype"),
             encoding,
             body,
+            provenance,
         });
     }
     Ok(out)
@@ -1169,6 +1319,38 @@ mod tests {
             Err(why) => assert!(why.contains("repeats the id"), "{why}"),
         }
         Ok(())
+    }
+
+    /// The output hash is over the bytes the body stands for: the canonical
+    /// JSON, the decoded base64url, or the text.
+    #[test]
+    fn the_output_hash_is_over_what_the_body_stands_for() {
+        use crate::app::vcon_hash::{json_token, token};
+        let object = serde_json::json!({"b": 1, "a": [true]});
+        assert_eq!(output_hash("json", &object), json_token(&object));
+        assert_eq!(output_hash("base64url", &"aGk".into()), token(b"hi"));
+        assert_eq!(output_hash("none", &"hi".into()), token(b"hi"));
+    }
+
+    /// A provenance record does not survive redaction: its hashes bind the
+    /// content before redaction.
+    #[test]
+    fn redaction_drops_a_provenance_record() {
+        use crate::output::redact::{Redact as _, RedactionKey, RedactionPolicy};
+        let mut analysis = Analysis {
+            kind: "summary".into(),
+            dialog: 0,
+            vendor: "v".into(),
+            product: None,
+            schema: None,
+            mediatype: None,
+            encoding: "none".into(),
+            body: "s".into(),
+            provenance: Some(serde_json::json!({"output_hash": "sha512-x"})),
+        };
+        let policy = RedactionPolicy::new(RedactionKey::from_secret(b"k"));
+        analysis.redact(&policy.redactor());
+        assert_eq!(analysis.provenance, None);
     }
 
     /// A job that changes nothing and tells `done` when it has run, after

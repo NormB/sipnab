@@ -23418,6 +23418,14 @@ Part of the `detail` of a `malformed` outcome, after `analysis {i}`: a `wtf_tran
 
 **Exit code:** None. sipnab writes the call without the service's analysis.
 
+### `a provenance whose model has no {key}`
+
+Part of the `detail` of a `malformed` outcome, after `analysis {i} has`: an analysis entry from a `[[vcon.enrich]]` service carries its own `provenance` record, and the record's `model` has no `vendor` or no `name`. `{key}` is the missing member. [Section 4.2.1 of draft-howe-vcon-provenance-00](https://datatracker.ietf.org/doc/html/draft-howe-vcon-provenance-00#section-4.2.1) requires both. sipnab keeps none of that answer.
+
+**What to do:** Send `model.vendor` and `model.name`, or leave `provenance` out and let sipnab write it from the entry's `vendor` and `product`.
+
+**Exit code:** None. sipnab writes the call without the service's analysis.
+
 ## Startup, privileges and the process
 
 ### `--allow-coredump: a core dump would contain the archive password this run holds`
@@ -43943,6 +43951,58 @@ in progress:
 - Interim results stay with the service: sipnab has no route that receives
   them.
 
+**Where each analysis came from.** Each Analysis Object a service adds carries
+a `provenance` record, as
+[draft-howe-vcon-provenance-00](https://datatracker.ietf.org/doc/html/draft-howe-vcon-provenance-00)
+defines it, and the container lists `provenance` in `extensions`. It is not
+in `critical`:
+[section 3 of the provenance draft](https://datatracker.ietf.org/doc/html/draft-howe-vcon-provenance-00#section-3)
+classifies the extension as Compatible.
+
+```json
+{"type": "transcript", "vendor": "example-stt", "product": "stt-2",
+ "encoding": "none", "body": "Hello, this is support...",
+ "provenance": {
+   "model": {"vendor": "example-stt", "name": "stt-2"},
+   "generated_at": "2026-10-13T14:22:05Z",
+   "inputs": [{"element": "dialog", "index": 0, "content_hash": "sha512-..."},
+              {"element": "attachment", "index": 0, "content_hash": "sha512-..."}],
+   "output_hash": "sha512-..."}}
+```
+
+- `model` and `generated_at` are the members
+  [section 4.2.1 of the provenance draft](https://datatracker.ietf.org/doc/html/draft-howe-vcon-provenance-00#section-4.2.1)
+  requires.
+  - An answer entry may carry its own `provenance` with them. sipnab keeps
+    its `model`, `generated_at`, `parameters`, `prompt`, `software` and
+    `registry`.
+  - Without one, `model.vendor` is the entry's `vendor`, and `model.name` its
+    `product`. With no `product`, `model.name` is the `[[vcon.enrich]]` name,
+    the only name sipnab holds for the service.
+  - Without one, `generated_at` is when sipnab read the answer.
+  - sipnab refuses an answer whose `provenance` has no `model.vendor`,
+    `model.name` or [RFC 3339](https://www.rfc-editor.org/rfc/rfc3339.html) `generated_at`, as `malformed`.
+- sipnab always writes `inputs` itself, from what it sent the service, and
+  replaces any the service sent. A service's own indices count the
+  request's `analysis` list, which starts after sipnab's report.
+  - With `signaling`: each Dialog, Attachment and earlier Analysis Object
+    sent, by its index in the container. Each `content_hash` is over the
+    element's [RFC 8785](https://www.rfc-editor.org/rfc/rfc8785.html) canonical JSON as sent.
+  - With `audio`: each leg's signaling Dialog Object. Its `content_hash` is
+    over the WAV sent, the value the Dialog Object's own `content_hash`
+    takes when the rule inlines the audio.
+- sipnab always writes `output_hash` itself, over the body it carries:
+  - `json`: the RFC 8785 canonical JSON.
+  - `base64url`: the decoded bytes.
+  - `none`: the text's UTF-8 bytes.
+- Every hash is `sha512-` and the base64url digest, the form
+  [section 4.3 of the provenance draft](https://datatracker.ietf.org/doc/html/draft-howe-vcon-provenance-00#section-4.3)
+  gives.
+
+The record says what sipnab sent the service and what it received. It does
+not say what the service's model read: a service may use part of what
+sipnab sent it.
+
 **What the container says.** Every enriched container carries a
 `sipnab-enrichment` attachment. It lists each service sipnab sent it to, with:
 
@@ -43954,6 +44014,7 @@ in progress:
 - the indices in `analysis` of what it added.
 
 So a reader of the container knows the call's audio left the host, and to which service.
+The attachment also records the services that added nothing, which no `provenance` record can.
 
 | `outcome` | Meaning |
 |-----------|---------|

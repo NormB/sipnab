@@ -772,6 +772,12 @@ pub struct Analysis {
     /// [section 2.3.2 of the core draft](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-04#section-2.3.2)
     /// defines for those encodings.
     pub body: serde_json::Value,
+    /// How an enrichment service generated this entry: the provenance record
+    /// of [draft-howe-vcon-provenance-00 section 4](https://datatracker.ietf.org/doc/html/draft-howe-vcon-provenance-00#section-4),
+    /// written by `crate::app::vcon_enrich`. `None` on sipnab's own report,
+    /// which no model generated.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub provenance: Option<serde_json::Value>,
 }
 
 /// One blind spot, flattened out of a [`crate::analysis::Finding`].
@@ -1470,8 +1476,14 @@ impl crate::output::redact::Redact for Analysis {
             mediatype: _,
             encoding: _,
             body,
+            provenance,
         } = self;
         redact_body(body, r);
+        // Its hashes bind the unredacted content, and its prompt may quote
+        // it. Enrichment never runs with `--redact` (startup refuses the
+        // pair), so a record never reaches here from sipnab's own run; one
+        // that did is dropped rather than carried beside redacted content.
+        *provenance = None;
     }
 }
 
@@ -3090,6 +3102,7 @@ fn report(
         mediatype: Some("application/json".into()),
         encoding: "json".into(),
         body,
+        provenance: None,
     }
 }
 
