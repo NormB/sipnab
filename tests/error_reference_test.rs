@@ -762,7 +762,11 @@ const EXPECTED_UNRESOLVED: usize = 80;
 // by vcon_rules' refuse closure: a referenced `@name` whose expansion does
 // not parse on its own (compiled for the `tags` attachment), and a CC header
 // key that is not a SIP header name. Nothing removed.
-const EXPECTED_TEMPLATES: usize = 464;
+// 464 -> 466: `audio_format`. src/app/batch.rs 1, the `audio_format`
+// reason (`Err(format!(..))` in RuleAudioFormat::parse); src/app/bootstrap.rs
+// 1, the `audio_format` without audio refusal, carried by vcon_rules' refuse
+// closure. Nothing removed.
+const EXPECTED_TEMPLATES: usize = 466;
 
 // ---------------------------------------------------------------------------
 // The page gates

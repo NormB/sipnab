@@ -4754,7 +4754,9 @@ pub(crate) fn vcon_rules(
     cli: &Cli,
     config: &Config,
 ) -> Result<Vec<crate::app::batch::VconRule>, PlanError> {
-    use crate::app::batch::{RuleAdditions, RuleAudio, RuleGrouping, RuleTags, VconRule};
+    use crate::app::batch::{
+        RuleAdditions, RuleAudio, RuleAudioFormat, RuleGrouping, RuleTags, VconRule,
+    };
     let refuse = |message: String| PlanError::refused(crate::settings::Origin::ConfigFile, message);
     if let Some(e) = cli.inert_redaction_refusal(!config.vcon.rule.is_empty()) {
         return Err(PlanError::arg(e.to_string()));
@@ -4779,6 +4781,7 @@ pub(crate) fn vcon_rules(
             audio: RuleAudio::Inline,
             max_inline: None,
             audio_url_base: None,
+            audio_format: RuleAudioFormat::Wav,
             grouping: RuleGrouping::Leg,
             enrich: Vec::new(),
             live_audio: false,
@@ -4811,6 +4814,15 @@ pub(crate) fn vcon_rules(
             .map_err(|why| refuse(format!("[[vcon.rule]] '{name}' has {why}")))?;
         let grouping = RuleGrouping::parse(rule.grouping.as_deref())
             .map_err(|why| refuse(format!("[[vcon.rule]] '{name}' has {why}")))?;
+        let audio_format =
+            RuleAudioFormat::parse(rule.audio_format.as_deref(), RuleAudioFormat::OPUS_BUILT)
+                .map_err(|why| refuse(format!("[[vcon.rule]] '{name}' has {why}")))?;
+        if audio == RuleAudio::Omit && rule.audio_format.is_some() {
+            return Err(refuse(format!(
+                "[[vcon.rule]] '{name}' has audio_format without audio = 'inline' or 'url': \
+                 the rule carries no audio to format"
+            )));
+        }
         let sealed_updates =
             crate::app::batch::SealedUpdates::parse(rule.sealed_updates.as_deref())
                 .map_err(|why| refuse(format!("[[vcon.rule]] '{name}' has {why}")))?;
@@ -4923,6 +4935,7 @@ pub(crate) fn vcon_rules(
                 .max_inline_media_mib
                 .map(|mib| mib.saturating_mul(1024 * 1024)),
             audio_url_base,
+            audio_format,
             grouping,
             enrich: Vec::new(),
             live_audio: rule.live_audio.unwrap_or(false),
@@ -6782,6 +6795,7 @@ mod tests {
                 audio: audio.map(str::to_owned),
                 max_inline_media_mib: None,
                 audio_url_base: None,
+                audio_format: None,
                 grouping: None,
                 live_audio: None,
                 live: None,

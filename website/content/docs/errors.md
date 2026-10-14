@@ -1650,7 +1650,9 @@ The [`[[vcon.rule]]`](@/docs/vcon.md#write-calls-by-rule) named `{name}` has no 
 
 ### `[[vcon.rule]] '{name}' has {why}`
 
-A key of the [`[[vcon.rule]]`](@/docs/vcon.md#write-calls-by-rule) named `{name}` has a value sipnab does not take. `{why}` names the key, the value and the values it takes: `audio` takes `inline`, `url` or `omit`, and `grouping` takes `leg` or `call`.
+A key of the [`[[vcon.rule]]`](@/docs/vcon.md#write-calls-by-rule) named `{name}` has a value sipnab does not take. `{why}` names the key, the value and the values it takes: `audio` takes `inline`, `url` or `omit`, `audio_format` takes `wav` or `opus`, and `grouping` takes `leg` or `call`.
+
+- A sipnab built without the `opus` Cargo feature refuses `audio_format = "opus"`, and `{why}` names the feature. The static musl builds do not have it.
 
 **What to do:** Set the key to one of the values `{why}` lists.
 
@@ -1677,6 +1679,24 @@ The reason inside `[[vcon.rule]] '{name}' has {why}` for a `grouping` value othe
 The reason inside `[[vcon.rule]] '{name}' has {why}` for a `sealed_updates` value other than `new-uuid`, `same-uuid` and `final-only`, which fill the three `{}`. `{other}` is the value given. See [When an encrypted call changes](@/docs/vcon.md#when-an-encrypted-call-changes).
 
 **What to do:** Set `sealed_updates` to `new-uuid` (the default: each change is a new instance with a new uuid), `same-uuid` (rewrite the file under the same uuid) or `final-only` (write once, when the call ends), or remove the key.
+
+**Exit code:** 1.
+
+### `audio_format = '{other}'; use 'wav' or 'opus'`
+
+The reason inside `[[vcon.rule]] '{name}' has {why}` for an `audio_format` value other than `wav` and `opus`. `{other}` is the value given. See [Audio as Ogg Opus](@/docs/vcon.md#audio-as-ogg-opus).
+
+**What to do:** Set `audio_format` to `wav` (the default) or `opus`, or remove the key.
+
+**Exit code:** 1.
+
+### `[[vcon.rule]] '{name}' has audio_format without audio = 'inline' or 'url': the rule carries no audio to format`
+
+The [`[[vcon.rule]]`](@/docs/vcon.md#write-calls-by-rule) named `{name}` sets `audio_format`, and its `audio` is `omit` or unset.
+
+- An `omit` rule writes no audio, so `audio_format` would do nothing.
+
+**What to do:** Remove `audio_format`, or set `audio = "inline"` or `"url"`.
 
 **Exit code:** 1.
 

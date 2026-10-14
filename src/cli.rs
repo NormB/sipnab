@@ -338,6 +338,9 @@ pub fn compiled_features() -> Vec<&'static str> {
     if cfg!(feature = "vcon") {
         out.push("vcon");
     }
+    if cfg!(feature = "opus") {
+        out.push("opus");
+    }
     if cfg!(feature = "archive") {
         out.push("archive");
     }

@@ -292,6 +292,14 @@ pub const CONTENT_PSEUDONYMIZED: &str = "pseudonymized";
 /// `mediatype` of the media sipnab inlines. RIFF/WAVE, 16-bit linear PCM.
 pub const RECORDING_MEDIATYPE: &str = "audio/x-wav";
 
+/// `mediatype` of a recording in Ogg Opus, a rule's `audio_format = "opus"`
+/// ([`crate::app::batch::RuleAudioFormat`]).
+///
+/// One of the media types [core-04 section 4.3.8](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-04#section-4.3.8)
+/// says a Dialog Object SHOULD use. No `codecs` parameter: core-04 section
+/// 2.2 defines "Mediatype" as `type "/" subtype` alone.
+pub const OGG_OPUS_MEDIATYPE: &str = "audio/ogg";
+
 /// `dialog.type` of the object carrying the media itself — the FILE's clock.
 pub const RECORDING_TYPE: &str = "recording";
 
@@ -707,7 +715,7 @@ pub struct Dialog {
     /// Where the media is served, when it is not inline.
     ///
     /// Set only for an export rule with `audio = "url"`, which names the base
-    /// URL; sipnab writes the WAV beside the container and hosts nothing
+    /// URL; sipnab writes the audio file beside the container and hosts nothing
     /// ([section 2.5 of `docs/design/vcon.md`](https://github.com/NormB/sipnab/blob/main/docs/design/vcon.md#25-never-host-artefacts)).
     /// Always beside [`Self::content_hash`], as
     /// [core-04 section 2.4](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-04#section-2.4)
@@ -717,10 +725,11 @@ pub struct Dialog {
     /// [`CONTENT_HASH_PREFIX`] followed by the base64url SHA-512 of the
     /// DECODED body.
     ///
-    /// Over the WAV bytes, not over their base64url text, so the value means
-    /// the same thing whether the media travels inline or an operator exported
-    /// it to a file: `sha512sum` on that `.wav` reproduces it. Hashing the
-    /// encoded text would produce a digest nothing outside this container
+    /// Over the file's bytes (the WAV, or the Ogg Opus stream of a rule with
+    /// `audio_format = "opus"`), not over their base64url text, so the value
+    /// means the same thing whether the media travels inline or an operator
+    /// exported it to a file: `sha512sum` on that file reproduces it. Hashing
+    /// the encoded text would produce a digest nothing outside this container
     /// could ever recompute.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub content_hash: Option<String>,
@@ -1157,6 +1166,41 @@ impl MediaOutcome {
     }
 }
 
+/// A recording's bytes in the format a rule chose, and their media type.
+#[derive(Debug, Clone, Copy)]
+pub struct EncodedRecording<'a> {
+    /// The file: a WAV, or an Ogg Opus stream.
+    pub bytes: &'a [u8],
+    /// Its `mediatype` ([core-04 section 4.3.8](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-04#section-4.3.8)).
+    pub mediatype: &'static str,
+    /// The format's name, as the over-budget refusal names it: `WAV` or
+    /// `Ogg Opus`.
+    pub format: &'static str,
+}
+
+impl<'a> EncodedRecording<'a> {
+    /// `audio`'s own WAV.
+    #[must_use]
+    pub fn wav(audio: &'a DialogAudio) -> Self {
+        Self {
+            bytes: &audio.wav,
+            mediatype: RECORDING_MEDIATYPE,
+            format: "WAV",
+        }
+    }
+}
+
+/// A recording written to a file beside the container and named by URL.
+#[derive(Debug, Clone, Copy)]
+pub struct ReferencedRecording<'a> {
+    /// The URL the operator's storage serves the file at.
+    pub url: &'a str,
+    /// The `mediatype` of the recording the file holds.
+    pub mediatype: &'static str,
+    /// The file's bytes as written. The `content_hash` is over these.
+    pub file: &'a [u8],
+}
+
 /// What a caller was able to decode for one dialog's media.
 ///
 /// A three-way answer rather than an `Option`, because the two "no media"
@@ -1173,10 +1217,14 @@ pub enum ObservedAudio<'a> {
     NothingToDecode(&'a str),
     /// Audio sipnab decoded for this dialog.
     Decoded(&'a DialogAudio),
-    /// Audio sipnab decoded and wrote to a WAV beside the container, served at
-    /// the URL by the operator's storage. Yields [`MediaOutcome::Referenced`]:
-    /// the recording names the URL and the WAV's hash and holds no body.
-    Referenced(&'a DialogAudio, &'a str),
+    /// Audio sipnab decoded, carried inline in the format a rule chose
+    /// (`audio_format`) rather than as the WAV.
+    Encoded(&'a DialogAudio, EncodedRecording<'a>),
+    /// Audio sipnab decoded and wrote to a file beside the container, served
+    /// at the URL by the operator's storage. Yields
+    /// [`MediaOutcome::Referenced`]: the recording names the URL and the
+    /// file's hash and holds no body.
+    Referenced(&'a DialogAudio, ReferencedRecording<'a>),
     /// The export is redacted, and redaction deletes audio rather than
     /// pseudonymizing it. Yields [`MediaOutcome::WithheldByRedaction`]: the
     /// Dialog Object stays the signaling one, typed by what it carries, which
@@ -2449,7 +2497,7 @@ fn media_objects(
     objects: &mut Vec<Dialog>,
     budget: usize,
 ) -> MediaVerdict {
-    let decoded = match audio {
+    let (decoded, encoded) = match audio {
         ObservedAudio::NotConsidered => {
             return MediaVerdict {
                 outcome: MediaOutcome::NotConsidered,
@@ -2471,9 +2519,19 @@ fn media_objects(
                 refusal: None,
             };
         }
-        ObservedAudio::Decoded(decoded) => decoded,
-        ObservedAudio::Referenced(decoded, url) => {
-            place_recording(dialog, decoded, objects, MediaBody::Url(url));
+        ObservedAudio::Decoded(decoded) => (decoded, EncodedRecording::wav(decoded)),
+        ObservedAudio::Encoded(decoded, encoded) => (decoded, encoded),
+        ObservedAudio::Referenced(decoded, file) => {
+            place_recording(
+                dialog,
+                decoded,
+                objects,
+                MediaBody::Url {
+                    url: file.url,
+                    mediatype: file.mediatype,
+                    content_hash: content_hash(file.file),
+                },
+            );
             return MediaVerdict {
                 outcome: MediaOutcome::Referenced,
                 note: Some(decoded.note.clone()),
@@ -2482,26 +2540,38 @@ fn media_objects(
         }
     };
 
-    let body = URL_SAFE_NO_PAD.encode(&decoded.wav);
+    // The budget is on what the container carries: the encoded bytes, as
+    // base64url, whatever format the rule chose.
+    let body = URL_SAFE_NO_PAD.encode(encoded.bytes);
     if body.len() > budget {
         return MediaVerdict {
             outcome: MediaOutcome::RefusedOverBudget,
             note: Some(decoded.note.clone()),
             refusal: Some(format!(
                 " — INCOMPLETE: sipnab decoded {:.1} second(s) of audio for this dialog and \
-                 REFUSED to carry it: base64url of the {} byte WAV is {} bytes, over the {} byte \
+                 REFUSED to carry it: base64url of the {} byte {} is {} bytes, over the {} byte \
                  budget this emitter enforces because one probed vCon store answers 204 and drops \
                  the payload without telling the producer. The audio was NOT truncated and is not \
                  in this container; export it beside this file with the export_audio MCP tool.",
                 decoded.duration_secs,
-                decoded.wav.len(),
+                encoded.bytes.len(),
+                encoded.format,
                 body.len(),
                 budget,
             )),
         };
     }
 
-    place_recording(dialog, decoded, objects, MediaBody::Inline(&body));
+    place_recording(
+        dialog,
+        decoded,
+        objects,
+        MediaBody::Inline {
+            body: &body,
+            mediatype: encoded.mediatype,
+            content_hash: content_hash(encoded.bytes),
+        },
+    );
 
     MediaVerdict {
         outcome: MediaOutcome::Carried,
@@ -2510,24 +2580,55 @@ fn media_objects(
     }
 }
 
-/// Where a recording's bytes are: inline as base64url, or at a URL.
-#[derive(Debug, Clone, Copy)]
+/// Where a recording's bytes are, inline as base64url or at a URL, with the
+/// `mediatype` and `content_hash` the object names.
+#[derive(Debug, Clone)]
 enum MediaBody<'a> {
-    /// The WAV, base64url-encoded, in `body`.
-    Inline(&'a str),
-    /// The WAV is served at this URL; the object carries its hash only.
-    Url(&'a str),
+    /// The file, base64url-encoded, in `body`. The hash is over the file.
+    Inline {
+        /// The base64url text.
+        body: &'a str,
+        /// The file's media type.
+        mediatype: &'static str,
+        /// [`content_hash`] of the file.
+        content_hash: String,
+    },
+    /// The file is served at this URL; the object carries its hash only,
+    /// over the file's bytes as written.
+    Url {
+        /// Where the operator's storage serves the file.
+        url: &'a str,
+        /// The media type of the recording the file holds.
+        mediatype: &'static str,
+        /// [`content_hash`] of the file as written.
+        content_hash: String,
+    },
 }
 
 impl MediaBody<'_> {
-    /// Fill `object`'s media fields: `body` and `encoding` inline, or `url`.
+    /// Fill `object`'s media fields: `mediatype` and `content_hash`, then
+    /// `body` and `encoding` inline, or `url`.
     fn fill(self, object: &mut Dialog) {
         match self {
-            Self::Inline(body) => {
+            Self::Inline {
+                body,
+                mediatype,
+                content_hash,
+            } => {
+                object.mediatype = Some(mediatype.into());
+                object.content_hash = Some(content_hash);
                 object.encoding = Some("base64url");
                 object.body = Some(body.to_string());
             }
-            Self::Url(url) => object.url = Some(url.to_string()),
+            Self::Url {
+                url,
+                mediatype,
+                content_hash,
+            } => {
+                object.mediatype = Some(mediatype.into());
+                object.content_hash = Some(content_hash);
+                object.url = Some(url.to_string());
+            }
         }
     }
 }
@@ -2573,8 +2674,6 @@ fn place_recording(
         signaling.start = Some(decoded.first_retained.to_rfc3339());
         signaling.duration = Some(decoded.duration_secs);
         signaling.parties = channel_parties(dialog, decoded);
-        signaling.mediatype = Some(RECORDING_MEDIATYPE.into());
-        signaling.content_hash = Some(content_hash(&decoded.wav));
         media.fill(signaling);
     }
 }
@@ -2593,8 +2692,6 @@ fn recording_object(
         // consumer holding the audio can reach the call's clock.
         recording_set: Some(recording_set),
         parties: channel_parties(dialog, audio),
-        mediatype: Some(RECORDING_MEDIATYPE.into()),
-        content_hash: Some(content_hash(&audio.wav)),
         ..Dialog::bare(RECORDING_TYPE, dialog.call_id.clone())
     };
     media.fill(&mut object);
@@ -2638,7 +2735,7 @@ fn recording_set_object(dialog: &SipDialog, audio: &DialogAudio, member: usize) 
 /// same call with the `export_audio` MCP tool can run `sha512sum` on the file and get a
 /// value that maps to this one; a digest of the encoded text is a number
 /// nothing outside this container could reproduce.
-fn content_hash(media: &[u8]) -> String {
+pub fn content_hash(media: &[u8]) -> String {
     let digest = Sha512::digest(media);
     format!("{CONTENT_HASH_PREFIX}{}", URL_SAFE_NO_PAD.encode(digest))
 }

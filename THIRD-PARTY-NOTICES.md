@@ -51,7 +51,7 @@ Files copied into the repository unmodified from another project's release. None
 | `tests/schemas/publisher/vcon_json_schema.json` | vCon JSON schema: `vcon_json_schema.json` of the IETF vCon working group's draft-ietf-vcon-vcon-core repository, unmodified. Test fixture only; it is in no release artifact. | commit 99589dd0b474d95c2feed52165fc2c95b1191d3d, tag draft-ietf-vcon-vcon-core-04 (2026-09-07) | <https://github.com/ietf-wg-vcon/draft-ietf-vcon-vcon-core> | IETF Trust Legal Provisions; code components under the Simplified BSD License, as the repository's CONTRIBUTING.md states | `b3c1ae28041dea304c978a0e9e04da18253fa58517ad3472a6adf1167c01a8d9` |
 | `tests/schemas/vcon.schema.json` | vCon JSON schema: the same file as tests/schemas/publisher/vcon_json_schema.json, byte for byte, under the name sipnab's validator reads. Compiled into the binary as the schema the validate_vcon tool and the REST validate route check against. | commit 99589dd0b474d95c2feed52165fc2c95b1191d3d, tag draft-ietf-vcon-vcon-core-04 (2026-09-07) | <https://github.com/ietf-wg-vcon/draft-ietf-vcon-vcon-core> | IETF Trust Legal Provisions; code components under the Simplified BSD License, as the repository's CONTRIBUTING.md states | `b3c1ae28041dea304c978a0e9e04da18253fa58517ad3472a6adf1167c01a8d9` |
 
-## Rust crates (413)
+## Rust crates (415)
 
 | Crate | Version | License |
 |---|---|---|
@@ -256,7 +256,9 @@ Files copied into the repository unmodified from another project's release. None
 | object | 0.39.1 | Apache-2.0 OR MIT |
 | once_cell | 1.21.4 | MIT OR Apache-2.0 |
 | once_cell_polyfill | 1.70.2 | MIT OR Apache-2.0 |
+| opus | 0.4.0 | MIT/Apache-2.0 |
 | opus-decoder | 0.1.1 | MIT OR Apache-2.0 |
+| opusic-sys | 0.7.5 | BSD-3-Clause |
 | ordered-float | 4.6.0 | MIT |
 | palette | 0.7.6 | MIT OR Apache-2.0 |
 | palette_derive | 0.7.6 | MIT OR Apache-2.0 |

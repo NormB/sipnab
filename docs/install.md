@@ -548,6 +548,8 @@ packages all ship a finished binary.
 - **libpcap headers** — `libpcap-dev` on Debian/Ubuntu, `libpcap-devel` on
   RHEL/Fedora. This is the one library sipnab links against.
 - **pkg-config** — how the build finds libpcap.
+- **cmake and a C compiler** — for `--features full`, whose `opus` feature
+  compiles libopus from source and links it into the binary.
 
 ### Install from a checkout, with capabilities
 
@@ -811,8 +813,9 @@ sipnab uses Cargo feature flags to control optional capability. The default buil
 | `plugins` | WASM plugin host (`--plugin`): runs sandboxed third-party dialog detections, so a detection nobody here wrote cannot reach the process it inspects. | `native`, `wasmi` |
 | `bpf` | eBPF TLS capture (`--uprobe-backend bpf`): reads SIP plaintext **and the peer addresses** with no key material. Needs a nightly toolchain and `bpf-linker` to build, and a kernel with `CONFIG_DEBUG_INFO_BTF` to run — without the linker the binary still builds and the backend refuses at runtime rather than capturing nothing silently. | `native`, `aya`, `sipnab-bpf-types/pod` |
 | `vcon` | vCon export: one observed dialog as an IETF conversation container, with the audio inline when the run retained it, or signed and encrypted when a `[[vcon.rule]]` sets `encrypt_to`. Non-default, because a container that leaves the machine is a publication surface and a capture tool should not grow one unless an operator asks. Adds `--export-vcon`/`--vcon-out`, the `export_vcon` MCP tool and `GET /v1/dialogs/{call_id}/vcon`. | `native`, `sha2`, `hmac`, `base64`, `rustls`, `rsa`, `ring`, `aes`, `cbc`, `sha1_oaep`, `webpki` |
+| `opus` | Ogg Opus recordings in vCon containers (`audio_format = "opus"` on a `[[vcon.rule]]`). Compiles libopus from the source `opusic-sys` vendors and links it statically, so building it needs `cmake` and a C compiler; the binary needs no system libopus. In `full`; not in the static musl builds, which have no vCon export. | `vcon`, `opus` |
 | `archive` | Password-protected ZIP and 7z input: `-I evidence.zip` reads the captures inside, stored, deflated, WinZip AES or ZipCrypto, and `-I evidence.7z` reads LZMA or LZMA2, AES-256 or not, without leaving a decrypted copy on disk. Adds `--archive-password-file`, `--archive-password-command`, `--archive-password-stdin`, `--archive-password` and `--archive-password-encoding`, and reads `SIPNAB_ARCHIVE_PASSWORD` and the systemd credential `archive-password`. | `native`, `zip`, `sevenz-rust2`, `zeroize`, `unicode-normalization` |
-| `full` | Everything: `native` + `tui` + `audio` + `tls` + `hep` + `api` + `mcp` + `mcp-http` + `metrics` + `plugins` + `vcon` + `archive` | all |
+| `full` | Everything: `native` + `tui` + `audio` + `tls` + `hep` + `api` + `mcp` + `mcp-http` + `metrics` + `plugins` + `vcon` + `opus` + `archive` | all |
 | `wasm` | WebAssembly target for in-browser pcap analysis | `wasm-bindgen`, `js-sys`, `web-sys`, `console_error_panic_hook` |
 
 Build with specific features. For the TUI plus TLS decryption and nothing else:

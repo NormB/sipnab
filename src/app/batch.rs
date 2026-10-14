@@ -7190,6 +7190,116 @@ impl RuleAudio {
     }
 }
 
+/// The format of the audio a rule's containers carry: the `[[vcon.rule]]`
+/// `audio_format` key.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum RuleAudioFormat {
+    /// RIFF/WAVE, 16-bit linear PCM, `audio/x-wav`. The default.
+    #[default]
+    Wav,
+    /// Ogg Opus, `audio/ogg`: the Opus codec (RFC 6716) in an Ogg stream
+    /// (RFC 7845), at [`crate::rtp::ogg_opus::BITRATE_PER_CHANNEL`]. Needs
+    /// the `opus` Cargo feature.
+    Opus,
+}
+
+impl RuleAudioFormat {
+    /// Whether this build can write [`Self::Opus`].
+    pub const OPUS_BUILT: bool = cfg!(feature = "opus");
+
+    /// A `[[vcon.rule]]` `audio_format` value: `wav`, `opus`, or unset,
+    /// which is `wav`. `opus_built` says whether this build has the `opus`
+    /// feature ([`Self::OPUS_BUILT`]); a test passes either.
+    ///
+    /// # Errors
+    ///
+    /// Any other value, and `opus` when `opus_built` is false, as the text
+    /// to report.
+    pub fn parse(value: Option<&str>, opus_built: bool) -> Result<Self, String> {
+        match value {
+            None | Some("wav") => Ok(Self::Wav),
+            Some("opus") if opus_built => Ok(Self::Opus),
+            Some("opus") => Err(
+                "audio_format = 'opus', and this sipnab was built without the \
+                 `opus` feature, which writes Ogg Opus. The static musl builds do not have it. \
+                 Use audio_format = 'wav', or a build with the feature"
+                    .to_owned(),
+            ),
+            Some(other) => Err(format!("audio_format = '{other}'; use 'wav' or 'opus'")),
+        }
+    }
+
+    /// The `mediatype` a recording in this format carries.
+    #[cfg(feature = "vcon")]
+    #[must_use]
+    pub fn mediatype(self) -> &'static str {
+        match self {
+            Self::Wav => crate::output::vcon::RECORDING_MEDIATYPE,
+            Self::Opus => crate::output::vcon::OGG_OPUS_MEDIATYPE,
+        }
+    }
+
+    /// The file extension of a recording in this format.
+    #[must_use]
+    pub fn extension(self) -> &'static str {
+        match self {
+            Self::Wav => "wav",
+            Self::Opus => "ogg",
+        }
+    }
+
+    /// The format's name, as a refusal names it.
+    #[must_use]
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Wav => "WAV",
+            Self::Opus => "Ogg Opus",
+        }
+    }
+
+    /// `audio` in this format: `None` for WAV, which is `audio.wav` itself.
+    ///
+    /// # Errors
+    ///
+    /// When the encoder refuses the audio, as the text to report.
+    pub fn encode(
+        self,
+        audio: &crate::rtp::audio_export::DialogAudio,
+    ) -> Result<Option<Vec<u8>>, String> {
+        match self {
+            Self::Wav => Ok(None),
+            #[cfg(feature = "opus")]
+            Self::Opus => crate::rtp::ogg_opus::encode_dialog_audio(audio)
+                .map(Some)
+                .map_err(|e| format!("{e:#}")),
+            #[cfg(not(feature = "opus"))]
+            Self::Opus => {
+                let _ = audio;
+                Self::parse(Some("opus"), false).map(|_| None)
+            }
+        }
+    }
+
+    /// The recording `audio` carries in this format, given what
+    /// [`Self::encode`] returned for it.
+    #[cfg(feature = "vcon")]
+    #[must_use]
+    pub fn recording<'a>(
+        self,
+        audio: &'a crate::rtp::audio_export::DialogAudio,
+        encoded: Option<&'a [u8]>,
+    ) -> crate::output::vcon::EncodedRecording<'a> {
+        match encoded {
+            Some(bytes) => crate::output::vcon::EncodedRecording {
+                bytes,
+                mediatype: self.mediatype(),
+                format: self.label(),
+            },
+            None => crate::output::vcon::EncodedRecording::wav(audio),
+        }
+    }
+}
+
 /// How a rule divides a call that crossed a B2BUA or a PBX, and so is several
 /// dialogs, into containers.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -7283,9 +7393,11 @@ pub struct VconRule {
     /// The rule's inline-media budget in bytes; `None` uses the run's
     /// (`--vcon-max-inline-media`).
     pub max_inline: Option<usize>,
-    /// The base URL a `Url` rule names its WAV files under, without a
+    /// The base URL a `Url` rule names its audio files under, without a
     /// trailing `/`.
     pub audio_url_base: Option<String>,
+    /// The format of the audio each container carries.
+    pub audio_format: RuleAudioFormat,
     /// One container per leg, or one per call.
     pub grouping: RuleGrouping,
     /// The `[[vcon.enrich]]` services this rule's calls go to, in order.
@@ -7936,10 +8048,17 @@ fn observed_audio<'a>(
     decoded: &'a anyhow::Result<crate::rtp::audio_export::DialogAudio>,
     reason: &'a str,
     redacting: bool,
+    encoded: Option<(RuleAudioFormat, &'a [u8])>,
 ) -> crate::output::vcon::ObservedAudio<'a> {
     match decoded.as_ref() {
         _ if redacting => crate::output::vcon::ObservedAudio::WithheldByRedaction,
-        Ok(audio) => crate::output::vcon::ObservedAudio::Decoded(audio),
+        Ok(audio) => match encoded {
+            Some((format, bytes)) => crate::output::vcon::ObservedAudio::Encoded(
+                audio,
+                format.recording(audio, Some(bytes)),
+            ),
+            None => crate::output::vcon::ObservedAudio::Decoded(audio),
+        },
         Err(_) => crate::output::vcon::ObservedAudio::NothingToDecode(reason),
     }
 }
@@ -8621,29 +8740,58 @@ impl LegWriter<'_> {
             .as_ref()
             .err()
             .map_or_else(String::new, |e| e.to_string());
+        // The rule's format, encoded once: the inline body and the file
+        // beside the container are the same bytes. Redaction carries no
+        // audio, so nothing is encoded for it.
+        let format = target.audio_format;
+        let encoded = match (decoded.as_ref(), redactor) {
+            (Ok(decoded_audio), None) => format.encode(decoded_audio).map_err(|e| {
+                (
+                    written,
+                    format!(
+                        "The audio of Call-ID '{}' could not be encoded as {}: {e}. \
+                         {written} container(s) were written before this.",
+                        spool_call_id(&dialog.call_id, None),
+                        format.label()
+                    ),
+                )
+            })?,
+            _ => None,
+        };
         let referenced = match (target.audio, target.url_base, decoded.as_ref(), redactor) {
             (RuleAudio::Url, Some(base), Ok(decoded_audio), None) => {
-                let name = vcon_wav_name(&vcon_spool_name(&dialog.call_id, None));
-                let wav_path = target.dir.join(&name);
-                write_container_atomically(&wav_path, &decoded_audio.wav).map_err(|e| {
+                let recording = format.recording(decoded_audio, encoded.as_deref());
+                let (name, file) = media_file(&dialog.call_id, recording, format);
+                let path = target.dir.join(&name);
+                write_container_atomically(&path, file).map_err(|e| {
                     (
                         written,
                         format!(
                             "Could not write '{}': {e}. {written} container(s) were \
                              written before this.",
-                            wav_path.display()
+                            path.display()
                         ),
                     )
                 })?;
-                Some((decoded_audio, format!("{base}/{name}")))
+                Some((decoded_audio, format!("{base}/{name}"), file))
             }
             _ => None,
         };
         let observed = match &referenced {
-            Some((decoded_audio, url)) => {
-                crate::output::vcon::ObservedAudio::Referenced(decoded_audio, url)
-            }
-            None => observed_audio(&decoded, &reason, redactor.is_some()),
+            Some((decoded_audio, url, file)) => crate::output::vcon::ObservedAudio::Referenced(
+                decoded_audio,
+                crate::output::vcon::ReferencedRecording {
+                    url,
+                    mediatype: format.mediatype(),
+                    file,
+                },
+            ),
+            None => observed_audio(
+                &decoded,
+                &reason,
+                redactor.is_some(),
+                encoded.as_deref().map(|bytes| (format, bytes)),
+            ),
         };
         Ok(crate::output::vcon::export_dialog_with_audio(
             dialog, &context, observed,
@@ -8696,8 +8844,10 @@ struct VconTarget<'a> {
     audio: RuleAudio,
     /// The rule's inline-media budget in bytes; `None` uses the run's.
     max_inline: Option<usize>,
-    /// The base URL a `Url` rule names its WAV files under.
+    /// The base URL a `Url` rule names its audio files under.
     url_base: Option<&'a str>,
+    /// The format of the audio each container carries.
+    audio_format: RuleAudioFormat,
     /// Write each call as it starts and rewrite it as it changes.
     live: bool,
     /// Sign and encrypt each container; `None` writes the unsigned form.
@@ -8738,6 +8888,7 @@ impl<'a> VconTarget<'a> {
             audio: rule.audio,
             max_inline: rule.max_inline,
             url_base: rule.audio_url_base.as_deref(),
+            audio_format: rule.audio_format,
             grouping: rule.grouping,
             live: rule.live,
             sealing: rule.sealing.as_ref(),
@@ -8766,6 +8917,7 @@ impl<'a> VconTarget<'a> {
             audio: RuleAudio::Inline,
             max_inline: None,
             url_base: None,
+            audio_format: RuleAudioFormat::Wav,
             grouping: RuleGrouping::Leg,
             live: false,
             sealing: None,
@@ -9107,12 +9259,26 @@ fn spool_call_id(call_id: &str, redactor: Option<&crate::output::redact::Redacto
     }
 }
 
-/// The WAV file name beside a container: the container's name with `.wav` in
-/// place of `.vcon.json`, so the two sort together and share the digest that
-/// keeps Call-IDs apart.
+/// The audio file name beside a container: the container's name with
+/// `.<extension>` in place of `.vcon.json`, so the two sort together and
+/// share the digest that keeps Call-IDs apart.
 #[cfg(feature = "vcon")]
-fn vcon_wav_name(container: &str) -> String {
-    format!("{}.wav", container.trim_end_matches(".vcon.json"))
+fn vcon_media_name(container: &str, extension: &str) -> String {
+    format!("{}.{extension}", container.trim_end_matches(".vcon.json"))
+}
+
+/// The name and bytes of the audio file a `url` rule writes beside a
+/// container: `recording` as written.
+#[cfg(feature = "vcon")]
+fn media_file<'a>(
+    call_id: &str,
+    recording: crate::output::vcon::EncodedRecording<'a>,
+    format: RuleAudioFormat,
+) -> (String, &'a [u8]) {
+    (
+        vcon_media_name(&vcon_spool_name(call_id, None), format.extension()),
+        recording.bytes,
+    )
 }
 
 /// The spool file name for `call_id`'s container: [`vcon_file_name`] of
@@ -9476,7 +9642,7 @@ fn write_single_vcon(
         .as_ref()
         .map(crate::output::redact::RedactionPolicy::redactor);
 
-    let audio = observed_audio(&decoded, &reason, redactor.is_some());
+    let audio = observed_audio(&decoded, &reason, redactor.is_some(), None);
 
     let container = crate::output::vcon::export_dialog_with_audio(
         dialog,
@@ -9791,6 +9957,7 @@ mod tests {
             audio,
             max_inline: None,
             audio_url_base: None,
+            audio_format: RuleAudioFormat::Wav,
             grouping: RuleGrouping::Leg,
             enrich: Vec::new(),
             live_audio: false,
@@ -10574,6 +10741,37 @@ mod tests {
             .ok_or("completeness")?;
         assert_eq!(ended, false);
         Ok(())
+    }
+
+    /// `audio_format`: unset and `wav` are WAV, `opus` is Ogg Opus in a build
+    /// with the `opus` feature and refused, naming the feature, in one
+    /// without; any other value is refused naming both.
+    #[test]
+    fn audio_format_parses_wav_and_opus_and_refuses_opus_without_the_feature() {
+        for built in [true, false] {
+            assert_eq!(
+                RuleAudioFormat::parse(None, built),
+                Ok(RuleAudioFormat::Wav)
+            );
+            assert_eq!(
+                RuleAudioFormat::parse(Some("wav"), built),
+                Ok(RuleAudioFormat::Wav)
+            );
+            let other = RuleAudioFormat::parse(Some("mp3"), built);
+            assert_eq!(
+                other,
+                Err("audio_format = 'mp3'; use 'wav' or 'opus'".to_owned())
+            );
+        }
+        assert_eq!(
+            RuleAudioFormat::parse(Some("opus"), true),
+            Ok(RuleAudioFormat::Opus)
+        );
+        let refused = RuleAudioFormat::parse(Some("opus"), false)
+            .err()
+            .unwrap_or_default();
+        assert!(refused.contains("`opus` feature"), "{refused}");
+        assert_eq!(RuleAudioFormat::OPUS_BUILT, cfg!(feature = "opus"));
     }
 
     /// The three `sealed_updates` names parse, unset is `new-uuid`, and any
@@ -15736,6 +15934,7 @@ mod tests {
             audio: audio.map(str::to_owned),
             max_inline_media_mib: None,
             audio_url_base: None,
+            audio_format: None,
             grouping: None,
             live_audio: None,
             live: None,

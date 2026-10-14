@@ -1514,6 +1514,11 @@ pub struct VconRuleConfig {
     /// and names `<base>/<file>` in it; it serves nothing.
     #[serde(default)]
     pub audio_url_base: Option<String>,
+    /// The format of the audio an `inline` or `url` rule carries: `wav` (the
+    /// default) or `opus` (Ogg Opus, `audio/ogg`). `opus` needs a build with
+    /// the `opus` feature.
+    #[serde(default)]
+    pub audio_format: Option<String>,
     /// `leg` (unset): one container per dialog, each naming the call's other
     /// legs. `call`: one container holding every leg of the call.
     #[serde(default)]

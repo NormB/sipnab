@@ -165,6 +165,50 @@ pub fn wav_bytes(
     out
 }
 
+/// The 16-bit samples of a RIFF/WAVE PCM file, interleaved as stored.
+///
+/// The reader [`wav_bytes`] needs beside it, so a WAV can be re-encoded (the
+/// Ogg Opus recordings of `crate::rtp::ogg_opus`) without a second decode of
+/// the RTP it came from. Walks the chunks rather than reading at byte 44: a
+/// file whose `data` follows another chunk is read too. `None` for anything
+/// that is not 16-bit PCM RIFF/WAVE, or whose `data` chunk runs past the end.
+#[must_use]
+pub fn pcm_samples(wav: &[u8]) -> Option<Vec<i16>> {
+    if wav.get(..4)? != b"RIFF" || wav.get(8..12)? != b"WAVE" {
+        return None;
+    }
+    let mut at = 12;
+    let mut pcm16 = false;
+    loop {
+        let id = wav.get(at..at + 4)?;
+        let size = usize::try_from(u32::from_le_bytes(
+            wav.get(at + 4..at + 8)?.try_into().ok()?,
+        ))
+        .ok()?;
+        let body = wav.get(at + 8..at.checked_add(8)?.checked_add(size)?)?;
+        match id {
+            b"fmt " => {
+                let format = u16::from_le_bytes(body.get(0..2)?.try_into().ok()?);
+                let bits = u16::from_le_bytes(body.get(14..16)?.try_into().ok()?);
+                pcm16 = format == 1 && bits == 16;
+            }
+            b"data" if pcm16 => {
+                return Some(
+                    body.as_chunks::<2>()
+                        .0
+                        .iter()
+                        .map(|b| i16::from_le_bytes(*b))
+                        .collect(),
+                );
+            }
+            b"data" => return None,
+            _ => {}
+        }
+        // RIFF pads every chunk body to an even length.
+        at += 8 + size + (size & 1);
+    }
+}
+
 /// Unit tests for the RIFF/WAVE PCM writer.
 #[cfg(test)]
 mod tests {
@@ -262,7 +306,7 @@ mod tests {
 
 #[cfg(test)]
 mod provenance_tests {
-    use super::info_chunk;
+    use super::{info_chunk, pcm_samples, wav_bytes};
     type TestError = Box<dyn std::error::Error>;
 
     /// RIFF pads every chunk body to an even length, and the pad byte is NOT
@@ -320,5 +364,43 @@ mod provenance_tests {
     fn no_comment_writes_no_chunk() -> Result<(), TestError> {
         assert!(info_chunk(None).is_empty());
         Ok(())
+    }
+
+    /// The samples [`wav_bytes`] wrote come back from [`pcm_samples`], with
+    /// the provenance note after `data` and without it.
+    #[test]
+    fn pcm_samples_reads_back_what_wav_bytes_wrote() {
+        let samples: Vec<i16> = (0..321).map(|i| (i * 97 - 15_000) as i16).collect();
+        for comment in [None, Some("captured by sipnab; partial: odd.")] {
+            let wav = wav_bytes(&samples, 8000, 1, comment);
+            assert_eq!(pcm_samples(&wav), Some(samples.clone()), "{comment:?}");
+        }
+    }
+
+    /// A chunk before `data` is walked past, not read as samples.
+    #[test]
+    fn pcm_samples_walks_past_a_chunk_before_data() {
+        let samples: Vec<i16> = vec![1, -2, 3, -4];
+        let plain = wav_bytes(&samples, 16_000, 2, None);
+        // RIFF header and fmt (36 bytes), then a LIST chunk, then data.
+        let mut moved = plain[..36].to_vec();
+        moved.extend_from_slice(&info_chunk(Some("odd")));
+        moved.extend_from_slice(&plain[36..]);
+        assert_eq!(pcm_samples(&moved), Some(samples));
+    }
+
+    /// Anything that is not 16-bit PCM RIFF/WAVE, or whose `data` runs past
+    /// the end, is `None`.
+    #[test]
+    fn pcm_samples_refuses_what_it_cannot_read() {
+        let wav = wav_bytes(&[5, 6, 7], 8000, 1, None);
+        assert_eq!(pcm_samples(b"OggS not a wav"), None);
+        assert_eq!(pcm_samples(&wav[..wav.len() - 1]), None, "truncated data");
+        let mut eight_bit = wav.clone();
+        eight_bit[34] = 8; // bits per sample
+        assert_eq!(pcm_samples(&eight_bit), None, "8-bit");
+        let mut float = wav;
+        float[20] = 3; // WAVE_FORMAT_IEEE_FLOAT
+        assert_eq!(pcm_samples(&float), None, "not PCM");
     }
 }

@@ -231,6 +231,155 @@ fn a_url_rule_writes_the_wav_beside_the_container_and_references_it() -> Result<
     Ok(())
 }
 
+/// The recording of the one container in `dir`, and that container.
+fn recording_in(dir: &Path) -> Result<(serde_json::Value, serde_json::Value), TestError> {
+    let container = containers(dir)?.into_iter().next().ok_or("a container")?;
+    let recording = container["dialog"]
+        .as_array()
+        .ok_or("dialog")?
+        .iter()
+        .find(|d| d["content_hash"].is_string())
+        .cloned()
+        .ok_or("a recording with a content_hash")?;
+    Ok((recording, container))
+}
+
+/// `sha512-` and the base64url SHA-512 of `bytes`.
+fn hash_of(bytes: &[u8]) -> String {
+    use base64::Engine as _;
+    use sha2::{Digest, Sha512};
+    format!(
+        "sha512-{}",
+        base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(Sha512::digest(bytes))
+    )
+}
+
+/// `audio_format = "opus"`: the recording is Ogg Opus, inline. Its
+/// `mediatype` is `audio/ogg`, its body is an Ogg stream whose first packet
+/// is the Opus ID header, and its `content_hash` is over the Ogg bytes. The
+/// same call as a WAV rule's recording is larger.
+#[cfg(feature = "opus")]
+#[test]
+fn an_opus_rule_carries_the_recording_as_ogg_opus() -> Result<(), TestError> {
+    use base64::Engine as _;
+    let home = tempfile::tempdir()?;
+    let (wav_dir, opus_dir) = (home.path().join("wav"), home.path().join("opus"));
+    let config = rule("as-wav", CALL, &wav_dir, "inline")
+        + &format!(
+            "{}audio_format = \"opus\"\n",
+            rule("as-opus", CALL, &opus_dir, "inline")
+        );
+    let out = run(&config, &[], home.path())?;
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let (recording, container) = recording_in(&opus_dir)?;
+    assert_eq!(media_of(&container)?, "carried");
+    assert_eq!(recording["mediatype"], "audio/ogg");
+    let body = base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .decode(recording["body"].as_str().ok_or("an inline body")?)?;
+    assert_eq!(&body[..4], b"OggS", "an Ogg page");
+    assert_eq!(&body[28..36], b"OpusHead", "the Opus ID header first");
+    assert_eq!(recording["content_hash"], hash_of(&body));
+
+    let (wav, _) = recording_in(&wav_dir)?;
+    assert_eq!(wav["mediatype"], "audio/x-wav", "the other rule keeps WAV");
+    assert_eq!(wav["duration"], recording["duration"], "the same audio");
+    let wav_body = wav["body"].as_str().ok_or("a WAV body")?;
+    let ogg_body = recording["body"].as_str().ok_or("an Ogg body")?;
+    assert!(
+        ogg_body.len() * 3 < wav_body.len(),
+        "Opus is a third of the WAV or less"
+    );
+    Ok(())
+}
+
+/// `audio = "url"` with `audio_format = "opus"` writes an `.ogg` beside the
+/// container, and the recording names it with `audio/ogg` and its hash.
+#[cfg(feature = "opus")]
+#[test]
+fn an_opus_url_rule_writes_an_ogg_beside_the_container() -> Result<(), TestError> {
+    let home = tempfile::tempdir()?;
+    let dir = home.path().join("by-url");
+    let config = format!(
+        "{}audio_url_base = \"https://media.example.com/calls\"\naudio_format = \"opus\"\n",
+        rule("by-url", CALL, &dir, "url")
+    );
+    let out = run(&config, &[], home.path())?;
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let (recording, _) = recording_in(&dir)?;
+    let url = recording["url"].as_str().ok_or("url")?;
+    let name = url
+        .strip_prefix("https://media.example.com/calls/")
+        .ok_or("the base plus a file name")?;
+    assert!(name.ends_with(".ogg"), "{name}");
+    let file = std::fs::read(dir.join(name))?;
+    assert_eq!(&file[..4], b"OggS");
+    assert_eq!(recording["mediatype"], "audio/ogg");
+    assert_eq!(recording["content_hash"], hash_of(&file));
+    Ok(())
+}
+
+/// An `audio_format` other than `wav` and `opus` is refused at startup,
+/// naming the rule and the two values; so is `audio_format` on a rule that
+/// carries no audio.
+#[test]
+fn an_audio_format_that_cannot_apply_is_refused() -> Result<(), TestError> {
+    let home = tempfile::tempdir()?;
+    let dir = home.path().join("x");
+    for (audio, format, needles) in [
+        ("inline", "flac", &["'flac'", "'wav'", "'opus'"][..]),
+        ("omit", "wav", &["audio_format", "'inline' or 'url'"][..]),
+    ] {
+        let config = format!(
+            "{}audio_format = \"{format}\"\n",
+            rule("fmt", CALL, &dir, audio)
+        );
+        let out = run(&config, &[], home.path())?;
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert_eq!(out.status.code(), Some(1), "{format}: {stderr}");
+        assert!(stderr.contains("'fmt'"), "{format}: {stderr}");
+        for needle in needles {
+            assert!(
+                stderr.contains(needle),
+                "{format}: wants {needle}: {stderr}"
+            );
+        }
+        assert!(!dir.exists(), "{format}: nothing written");
+    }
+    Ok(())
+}
+
+/// A build without the `opus` feature refuses `audio_format = "opus"` at
+/// startup and names the feature, rather than writing WAV under a setting
+/// that asked for Ogg Opus.
+#[cfg(not(feature = "opus"))]
+#[test]
+fn opus_is_refused_by_a_build_without_the_feature() -> Result<(), TestError> {
+    let home = tempfile::tempdir()?;
+    let dir = home.path().join("x");
+    let config = format!(
+        "{}audio_format = \"opus\"\n",
+        rule("needs-opus", CALL, &dir, "inline")
+    );
+    let out = run(&config, &[], home.path())?;
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(out.status.code(), Some(1), "{stderr}");
+    assert!(
+        stderr.contains("'needs-opus'") && stderr.contains("`opus` feature"),
+        "{stderr}"
+    );
+    assert!(!dir.exists(), "nothing written");
+    Ok(())
+}
+
 /// A `url` rule needs an HTTPS `audio_url_base`, and is refused without one.
 #[test]
 fn a_url_rule_needs_an_https_base() -> Result<(), TestError> {

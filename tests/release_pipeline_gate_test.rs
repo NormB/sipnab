@@ -927,9 +927,12 @@ fn the_backend_record_refuses_a_musl_binary_with_no_libpcap_banner() -> Result<(
 /// `audio` because the playback plugin arrives through `dlopen` and static musl
 /// has no dynamic loader. `plugins` and `vcon` because no release has ever
 /// built them into these artifacts and adding either changes what a static
-/// binary carries, a decision nobody has taken. Anything else `full` gains
-/// reaches these artifacts too, unless someone names it here with a reason.
-const NO_AUDIO_EXCLUSIONS: [&str; 3] = ["audio", "plugins", "vcon"];
+/// binary carries, a decision nobody has taken. `opus` because it writes Ogg
+/// Opus recordings into vCon containers, and these artifacts have no `vcon`;
+/// it is also C (libopus, compiled with cmake), which the static builds were
+/// decided to leave out. Anything else `full` gains reaches these artifacts
+/// too, unless someone names it here with a reason.
+const NO_AUDIO_EXCLUSIONS: [&str; 4] = ["audio", "opus", "plugins", "vcon"];
 
 /// Every published binary reads password-protected ZIP and 7z archives.
 ///

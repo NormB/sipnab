@@ -413,6 +413,7 @@ static KEY_SPECS: &[KeySpec] = &[
                 "[]",
                 "[{ name = \"r\", when = \"method == 'INVITE'\", dir = \"vcon-out\" }]",
                 "[{ name = \"r\", when = \"method == 'INVITE'\", dir = \"vcon-out\", sealed_updates = \"final-only\" }]",
+                "[{ name = \"r\", when = \"method == 'INVITE'\", dir = \"vcon-out\", audio = \"inline\", audio_format = \"wav\" }]",
             ],
             reject: &[
                 "[{ name = \"bad name\", when = \"method == 'INVITE'\", dir = \"d\" }]",
@@ -420,6 +421,8 @@ static KEY_SPECS: &[KeySpec] = &[
                 "[{ name = \"r\", when = \"method == 'INVITE'\", dir = \"d\", audio = \"loud\" }]",
                 "[{ name = \"r\", when = \"method == 'INVITE'\", dir = \"d\", grouping = \"dialog\" }]",
                 "[{ name = \"r\", when = \"method == 'INVITE'\", dir = \"d\", sealed_updates = \"sometimes\" }]",
+                "[{ name = \"r\", when = \"method == 'INVITE'\", dir = \"d\", audio = \"inline\", audio_format = \"flac\" }]",
+                "[{ name = \"r\", when = \"method == 'INVITE'\", dir = \"d\", audio_format = \"wav\" }]",
                 "[{ name = \"r\", when = \"x\", dir = \"d\" }]",
                 "[{ name = \"r\", when = \"method == 'INVITE'\", dir = \"d\", compress = \"gzip\" }]",
                 "[{ name = \"r\", when = \"method == 'INVITE'\", dir = \"d\", volume = 1 }]",

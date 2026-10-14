@@ -81,6 +81,22 @@ entry that carries them.
   - sipnab checks the shape, carries it as sent, lists `lawful_basis` in `extensions`, and names the service in its `sipnab-enrichment` line under `attachments`.
   - sipnab still writes no lawful basis of its own. Without the key, an answer with attachments is `malformed`.
 
+- **A `[[vcon.rule]]` can write its recordings as Ogg Opus.**
+  - `audio_format = "opus"` writes the recording as Opus ([RFC 6716](https://www.rfc-editor.org/rfc/rfc6716.html)) in Ogg ([RFC 7845](https://www.rfc-editor.org/rfc/rfc7845.html)), `mediatype` `audio/ogg`.
+    - draft-ietf-vcon-vcon-core-04 section 4.3.8 lists `audio/ogg` among the media types a Dialog Object SHOULD use.
+  - `audio_format = "wav"`, the default, writes the WAV as before.
+  - The bitrate is 24 kbit/s per channel, constant.
+  - The `content_hash` is over the Ogg bytes, and the inline budget applies to the encoded size.
+    - A two-way G.711 call fits the 5 MiB default for 643 seconds as Ogg Opus, against 122 as WAV.
+  - With `audio = "url"` the file beside the container is `.ogg`.
+  - sipnab refuses at startup:
+    - an `audio_format` other than `wav` and `opus`;
+    - an `audio_format` on a rule whose `audio` is `omit`;
+    - `opus` in a build without the `opus` feature, naming the feature.
+  - `opus` is a new Cargo feature, in `full`.
+    - It compiles libopus 1.6.1 from source and links it statically, so building `full` needs `cmake` and a C compiler.
+    - The gnu, macOS and Docker builds carry it. The static musl builds, which have no vCon export, do not.
+    - `sipnab --version` lists it.
 - **An encrypting `[[vcon.rule]]` can compress what it encrypts.**
   - `compress = "gzip"` signs the gzip ([RFC 1952](https://www.rfc-editor.org/rfc/rfc1952.html)) of the vCon instead of the vCon.
     - draft-ietf-vcon-vcon-core-04 section 5.2 allows this.

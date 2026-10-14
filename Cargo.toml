@@ -209,6 +209,10 @@ wasmi = { version = "2.0", optional = true }
 
 # Opus codec (pure Rust, no FFI — always available for WAV export)
 opus-decoder = "0.1"
+# Opus ENCODER for vCon recordings in Ogg Opus (feature `opus`). libopus
+# itself, built from the source opusic-sys vendors (libopus 1.6.1) with cmake
+# and linked statically, so a release binary needs no system libopus.
+opus = { version = "0.4.0", optional = true }
 
 # Phase 5: Metrics & API
 axum = { version = "0.8", optional = true }
@@ -397,7 +401,13 @@ vcon = ["native", "dep:sha2", "dep:hmac", "dep:base64", "dep:rustls", "dep:rsa",
 # `zeroize` is what clears a password when it is dropped; `unicode-normalization`
 # produces the NFC and NFD spellings a password may have been typed in.
 archive = ["native", "dep:zip", "dep:zeroize", "dep:unicode-normalization", "dep:sevenz-rust2"]
-full = ["native", "tui", "tls", "hep", "api", "audio", "mcp", "mcp-http", "metrics", "plugins", "vcon", "archive"]
+# Ogg Opus recordings in vCon containers (`audio_format = "opus"` on a
+# `[[vcon.rule]]`). Its own feature because it is C: libopus, compiled from
+# vendored source with cmake. IN `full`, so the gnu, macOS and Docker builds
+# carry it; NOT in the static musl builds, which keep WAV (release.yml's
+# noaudio_set leaves out `vcon`, and so this).
+opus = ["vcon", "dep:opus"]
+full = ["native", "tui", "tls", "hep", "api", "audio", "mcp", "mcp-http", "metrics", "plugins", "vcon", "opus", "archive"]
 
 # Userspace half of the eBPF backend. Stable Rust; only the KERNEL half needs
 # nightly.

@@ -11999,6 +11999,8 @@ packages all ship a finished binary.
 - **libpcap headers** — `libpcap-dev` on Debian/Ubuntu, `libpcap-devel` on
   RHEL/Fedora. This is the one library sipnab links against.
 - **pkg-config** — how the build finds libpcap.
+- **cmake and a C compiler** — for `--features full`, whose `opus` feature
+  compiles libopus from source and links it into the binary.
 
 ### Install from a checkout, with capabilities
 
@@ -12262,8 +12264,9 @@ sipnab uses Cargo feature flags to control optional capability. The default buil
 | `plugins` | WASM plugin host (`--plugin`): runs sandboxed third-party dialog detections, so a detection nobody here wrote cannot reach the process it inspects. | `native`, `wasmi` |
 | `bpf` | eBPF TLS capture (`--uprobe-backend bpf`): reads SIP plaintext **and the peer addresses** with no key material. Needs a nightly toolchain and `bpf-linker` to build, and a kernel with `CONFIG_DEBUG_INFO_BTF` to run — without the linker the binary still builds and the backend refuses at runtime rather than capturing nothing silently. | `native`, `aya`, `sipnab-bpf-types/pod` |
 | `vcon` | vCon export: one observed dialog as an IETF conversation container, with the audio inline when the run retained it, or signed and encrypted when a `[[vcon.rule]]` sets `encrypt_to`. Non-default, because a container that leaves the machine is a publication surface and a capture tool should not grow one unless an operator asks. Adds `--export-vcon`/`--vcon-out`, the `export_vcon` MCP tool and `GET /v1/dialogs/{call_id}/vcon`. | `native`, `sha2`, `hmac`, `base64`, `rustls`, `rsa`, `ring`, `aes`, `cbc`, `sha1_oaep`, `webpki` |
+| `opus` | Ogg Opus recordings in vCon containers (`audio_format = "opus"` on a `[[vcon.rule]]`). Compiles libopus from the source `opusic-sys` vendors and links it statically, so building it needs `cmake` and a C compiler; the binary needs no system libopus. In `full`; not in the static musl builds, which have no vCon export. | `vcon`, `opus` |
 | `archive` | Password-protected ZIP and 7z input: `-I evidence.zip` reads the captures inside, stored, deflated, WinZip AES or ZipCrypto, and `-I evidence.7z` reads LZMA or LZMA2, AES-256 or not, without leaving a decrypted copy on disk. Adds `--archive-password-file`, `--archive-password-command`, `--archive-password-stdin`, `--archive-password` and `--archive-password-encoding`, and reads `SIPNAB_ARCHIVE_PASSWORD` and the systemd credential `archive-password`. | `native`, `zip`, `sevenz-rust2`, `zeroize`, `unicode-normalization` |
-| `full` | Everything: `native` + `tui` + `audio` + `tls` + `hep` + `api` + `mcp` + `mcp-http` + `metrics` + `plugins` + `vcon` + `archive` | all |
+| `full` | Everything: `native` + `tui` + `audio` + `tls` + `hep` + `api` + `mcp` + `mcp-http` + `metrics` + `plugins` + `vcon` + `opus` + `archive` | all |
 | `wasm` | WebAssembly target for in-browser pcap analysis | `wasm-bindgen`, `js-sys`, `web-sys`, `console_error_panic_hook` |
 
 Build with specific features. For the TUI plus TLS decryption and nothing else:
@@ -21036,7 +21039,9 @@ The [`[[vcon.rule]]`](vcon.md#write-calls-by-rule) named `{name}` has no `dir`, 
 
 ### `[[vcon.rule]] '{name}' has {why}`
 
-A key of the [`[[vcon.rule]]`](vcon.md#write-calls-by-rule) named `{name}` has a value sipnab does not take. `{why}` names the key, the value and the values it takes: `audio` takes `inline`, `url` or `omit`, and `grouping` takes `leg` or `call`.
+A key of the [`[[vcon.rule]]`](vcon.md#write-calls-by-rule) named `{name}` has a value sipnab does not take. `{why}` names the key, the value and the values it takes: `audio` takes `inline`, `url` or `omit`, `audio_format` takes `wav` or `opus`, and `grouping` takes `leg` or `call`.
+
+- A sipnab built without the `opus` Cargo feature refuses `audio_format = "opus"`, and `{why}` names the feature. The static musl builds do not have it.
 
 **What to do:** Set the key to one of the values `{why}` lists.
 
@@ -21063,6 +21068,24 @@ The reason inside `[[vcon.rule]] '{name}' has {why}` for a `grouping` value othe
 The reason inside `[[vcon.rule]] '{name}' has {why}` for a `sealed_updates` value other than `new-uuid`, `same-uuid` and `final-only`, which fill the three `{}`. `{other}` is the value given. See [When an encrypted call changes](vcon.md#when-an-encrypted-call-changes).
 
 **What to do:** Set `sealed_updates` to `new-uuid` (the default: each change is a new instance with a new uuid), `same-uuid` (rewrite the file under the same uuid) or `final-only` (write once, when the call ends), or remove the key.
+
+**Exit code:** 1.
+
+### `audio_format = '{other}'; use 'wav' or 'opus'`
+
+The reason inside `[[vcon.rule]] '{name}' has {why}` for an `audio_format` value other than `wav` and `opus`. `{other}` is the value given. See [Audio as Ogg Opus](vcon.md#audio-as-ogg-opus).
+
+**What to do:** Set `audio_format` to `wav` (the default) or `opus`, or remove the key.
+
+**Exit code:** 1.
+
+### `[[vcon.rule]] '{name}' has audio_format without audio = 'inline' or 'url': the rule carries no audio to format`
+
+The [`[[vcon.rule]]`](vcon.md#write-calls-by-rule) named `{name}` sets `audio_format`, and its `audio` is `omit` or unset.
+
+- An `omit` rule writes no audio, so `audio_format` would do nothing.
+
+**What to do:** Remove `audio_format`, or set `audio = "inline"` or `"url"`.
 
 **Exit code:** 1.
 
@@ -27459,8 +27482,9 @@ and what they carry.
 | `name` | string | -- | The rule's name, 1 to 64 ASCII letters, digits, `-` or `_`. Required and unique |
 | `when` | string | -- | The filter a call must match; `@name` [named filters](filter-dsl.md#named-filters) resolve. Required |
 | `dir` | string | -- | The directory the rule writes to. Required |
-| `audio` | string | `omit` | `inline` carries the retained audio inside each container; `url` writes it to a WAV beside the container and names it by URL (see `audio_url_base`); both turn audio retention on for the run. `omit` carries none |
-| `audio_url_base` | string | -- | For `audio = "url"`: the HTTPS base URL your storage serves the rule's WAV files from. sipnab writes each WAV beside its container and names `<base>/<file>` in it |
+| `audio` | string | `omit` | `inline` carries the retained audio inside each container; `url` writes it to a file beside the container and names it by URL (see `audio_url_base`); both turn audio retention on for the run. `omit` carries none |
+| `audio_url_base` | string | -- | For `audio = "url"`: the HTTPS base URL your storage serves the rule's audio files from. sipnab writes each file beside its container and names `<base>/<file>` in it |
+| `audio_format` | string | `wav` | The format of the audio an `inline` or `url` rule carries. `wav`: `audio/x-wav`. `opus`: Ogg Opus, `audio/ogg`, at 24 kbit/s per channel; needs a build with the `opus` feature. sipnab refuses any other value, and the key on an `omit` rule, at startup. See [Audio as Ogg Opus](vcon.md#audio-as-ogg-opus) |
 | `max_inline_media_mib` | integer | `--vcon-max-inline-media` | The largest audio this rule's containers inline, in MiB; sipnab writes a call above it without its audio, saying so |
 | `live_audio` | boolean | `false` | Serve each matching call's audio while it is in progress on the REST API's `/v1/calls/{call_id}/audio` WebSocket, and list the calls at `/v1/calls/live`. Turns audio retention on. See [Hear a call while it is in progress](vcon.md#hear-a-call-while-it-is-in-progress) |
 | `live` | boolean | `false` | On a live capture, write each matching call's container as the call starts and rewrite it in place, with `updated_at`, each time the call changes. No effect with `-I`. See [Follow a call while it is in progress](vcon.md#follow-a-call-while-it-is-in-progress) |
@@ -43803,8 +43827,9 @@ dir   = "/var/spool/sipnab-vcon/all"
 | `when` | The filter a call must match. [Named filters](filter-dsl.md#named-filters) work here as `@name` |
 | `dir` | The directory the rule writes to. sipnab creates it if it is missing |
 | `audio` | `inline`: the audio the run retained travels inside the container, within `--vcon-max-inline-media`. `omit` (the default): no audio, and the container records `media: "not-considered"`. A rule with `inline` turns audio retention on for the run, as `--retain-audio` does |
-| `audio` = `url` | sipnab writes the audio to a WAV file beside the container, `<container name>.wav`, and the container's recording names `audio_url_base` followed by that file name, with the `content_hash` of the WAV file and no body; the completeness block records `media: "referenced"`. sipnab writes the file and serves nothing: the operator's storage serves the URL. Turns audio retention on, as `inline` does |
-| `audio_url_base` | For `audio = "url"`: the HTTPS base URL that serves the WAV files. Required with `url`; core-04 section 2.4.1 requires HTTPS for a reference |
+| `audio` = `url` | sipnab writes the audio to a file beside the container, `<container name>.wav` (or `.ogg` with `audio_format = "opus"`), and the container's recording names `audio_url_base` followed by that file name, with the `content_hash` of the file and no body; the completeness block records `media: "referenced"`. sipnab writes the file and serves nothing: the operator's storage serves the URL. Turns audio retention on, as `inline` does |
+| `audio_url_base` | For `audio = "url"`: the HTTPS base URL that serves the audio files. Required with `url`; core-04 section 2.4.1 requires HTTPS for a reference |
+| `audio_format` | `wav` (the default): the recording is a WAV, `audio/x-wav`. `opus`: Ogg Opus, `audio/ogg`, about a fifth of the size. Needs `audio = "inline"` or `"url"`. See [Audio as Ogg Opus](#audio-as-ogg-opus) |
 | `max_inline_media_mib` | The largest audio this rule's containers inline, in MiB. sipnab writes a call above it without its audio and the container records `media: "refused-over-budget"`. Unset: `--vcon-max-inline-media` |
 | `live_audio` | `true`: serve each matching call's audio while it is in progress, over the REST API. See [Hear a call while it is in progress](#hear-a-call-while-it-is-in-progress) |
 | `live` | `true`: on a live capture, write each matching call's container as the call starts and rewrite it in place each time the call changes. See [Follow a call while it is in progress](#follow-a-call-while-it-is-in-progress) |
@@ -43836,6 +43861,9 @@ sipnab checks every rule when it starts. It refuses to start, with exit code 1, 
 - a name is unusable or used twice,
 - a rule has no `dir`,
 - `audio` is not `inline`, `url` or `omit`,
+- `audio_format` is not `wav` or `opus`,
+- a rule whose `audio` is `omit` sets `audio_format`,
+- `audio_format` is `opus` and the build has no `opus` feature,
 - `grouping` is not `leg` or `call`,
 - `when` does not resolve.
 
@@ -43847,6 +43875,50 @@ and `--content-deny-tombstone`. It does the same with `--export-vcon-when`.
 
 The end of a run reports each rule on its own line, for example
 `[[vcon.rule]] 'all-calls': Wrote 2 vCon container(s) to '/var/spool/sipnab-vcon/all'.`
+
+### Audio as Ogg Opus
+
+`audio_format = "opus"` writes a rule's recordings in Ogg Opus instead of WAV:
+
+```toml
+[[vcon.rule]]
+name         = "support-with-audio"
+when         = "@support"
+dir          = "/var/spool/sipnab-vcon/support"
+audio        = "inline"
+audio_format = "opus"
+```
+
+What the recording is:
+
+- The Opus codec ([RFC 6716](https://www.rfc-editor.org/rfc/rfc6716.html)) in an Ogg stream ([RFC 7845](https://www.rfc-editor.org/rfc/rfc7845.html)).
+- Its `mediatype` is `audio/ogg`.
+  - [core-04 section 4.3.8](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-04#section-4.3.8) lists `audio/ogg` among the media types a Dialog Object SHOULD use.
+  - It carries no `codecs` parameter. [Section 2.2](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-04#section-2.2) defines a media type as `type "/" subtype` alone.
+- Its `content_hash` is over the Ogg bytes.
+- It holds the same audio the WAV would. sipnab encodes the PCM it decoded for the WAV.
+- The provenance note the WAV carries travels as the stream's `DESCRIPTION` comment.
+
+The bitrate is 24 kbit/s per channel, constant.
+
+- [RFC 7587 section 3.1.1](https://www.rfc-editor.org/rfc/rfc7587.html#section-3.1.1) recommends 8 to 12 kbit/s for narrowband speech and 16 to 20 kbit/s for wideband speech. 24 kbit/s is above both.
+- Constant, because [RFC 7587 section 3.1.2](https://www.rfc-editor.org/rfc/rfc7587.html#section-3.1.2) names an encrypted stream as the reason to choose a constant bitrate. A rule with `encrypt_to` encrypts the recording.
+- A two-way call is two channels: 6,000 bytes of audio a second.
+
+The inline budget applies to the encoded size. Measured on `tests/pcap-samples/SIP_CALL_RTP_G711`, a two-way G.711 call of 17.502 seconds exported as 8 kHz stereo:
+
+| Format | File | base64url in the container | Seconds in the 5 MiB default |
+|--------|------|----------------------------|------------------------------|
+| `wav` | 560,444 bytes | 747,259 bytes | 122 |
+| `opus` | 106,917 bytes | 142,556 bytes | 643 |
+
+Which builds carry it:
+
+- `opus` is its own Cargo feature, in `full`. It compiles libopus from source, which needs `cmake` and a C compiler.
+- The gnu tarballs and packages, the macOS tarballs and the Docker image carry it.
+- The static musl tarballs and the `-noaudio` packages do not. They have no vCon export.
+- `sipnab --version` lists `opus` when the binary carries it.
+- A build without it refuses `audio_format = "opus"` at startup and names the feature.
 
 ### Calls through a PBX or a B2BUA
 
@@ -46235,9 +46307,9 @@ Stated here rather than discovered later.
 - **It does not host audio.**
   - When the run retained the RTP payload, the container carries the audio INLINE.
     It is a `recording` Dialog Object with a `sha512-` content hash.
-  - A rule with `audio = "url"` instead writes the WAV file beside the container.
+  - A rule with `audio = "url"` instead writes the audio file beside the container.
     It names the file by a `url` under the rule's `audio_url_base`, with the
-    `content_hash` of the WAV file and no body.
+    `content_hash` of the file and no body.
   - The operator's storage serves that URL. sipnab does not check that it does.
   - A `--redact` export never names a `url`.
   - When the run retained no audio, the container says so in words and carries none.
@@ -46258,6 +46330,7 @@ Stated here rather than discovered later.
     second.
   - It fits the 5 MiB default for up to 122 seconds.
   - At 123 seconds, the container carries the refusal instead.
+  - As Ogg Opus (`audio_format = "opus"`) the same call fits for up to 643 seconds. See [Audio as Ogg Opus](#audio-as-ogg-opus).
   - Raise `--vcon-max-inline-media` to what the store you send to accepts.
     Or write the WAV beside the container with the `export_audio` MCP tool.
 

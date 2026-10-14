@@ -293,8 +293,9 @@ and what they carry.
 | `name` | string | -- | The rule's name, 1 to 64 ASCII letters, digits, `-` or `_`. Required and unique |
 | `when` | string | -- | The filter a call must match; `@name` [named filters](filter-dsl.md#named-filters) resolve. Required |
 | `dir` | string | -- | The directory the rule writes to. Required |
-| `audio` | string | `omit` | `inline` carries the retained audio inside each container; `url` writes it to a WAV beside the container and names it by URL (see `audio_url_base`); both turn audio retention on for the run. `omit` carries none |
-| `audio_url_base` | string | -- | For `audio = "url"`: the HTTPS base URL your storage serves the rule's WAV files from. sipnab writes each WAV beside its container and names `<base>/<file>` in it |
+| `audio` | string | `omit` | `inline` carries the retained audio inside each container; `url` writes it to a file beside the container and names it by URL (see `audio_url_base`); both turn audio retention on for the run. `omit` carries none |
+| `audio_url_base` | string | -- | For `audio = "url"`: the HTTPS base URL your storage serves the rule's audio files from. sipnab writes each file beside its container and names `<base>/<file>` in it |
+| `audio_format` | string | `wav` | The format of the audio an `inline` or `url` rule carries. `wav`: `audio/x-wav`. `opus`: Ogg Opus, `audio/ogg`, at 24 kbit/s per channel; needs a build with the `opus` feature. sipnab refuses any other value, and the key on an `omit` rule, at startup. See [Audio as Ogg Opus](vcon.md#audio-as-ogg-opus) |
 | `max_inline_media_mib` | integer | `--vcon-max-inline-media` | The largest audio this rule's containers inline, in MiB; sipnab writes a call above it without its audio, saying so |
 | `live_audio` | boolean | `false` | Serve each matching call's audio while it is in progress on the REST API's `/v1/calls/{call_id}/audio` WebSocket, and list the calls at `/v1/calls/live`. Turns audio retention on. See [Hear a call while it is in progress](vcon.md#hear-a-call-while-it-is-in-progress) |
 | `live` | boolean | `false` | On a live capture, write each matching call's container as the call starts and rewrite it in place, with `updated_at`, each time the call changes. No effect with `-I`. See [Follow a call while it is in progress](vcon.md#follow-a-call-while-it-is-in-progress) |

@@ -34,6 +34,8 @@ pub mod g722;
 pub mod heuristic;
 pub mod live_audio;
 pub mod loss_map;
+#[cfg(feature = "opus")]
+pub mod ogg_opus;
 pub mod opus_decode;
 pub mod parser;
 #[cfg(feature = "audio")]

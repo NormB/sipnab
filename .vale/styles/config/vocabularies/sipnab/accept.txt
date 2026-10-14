@@ -784,3 +784,6 @@ spandsp
 FFmpeg
 [Dd]ialplan
 [Dd]ialplan's
+Ogg
+libopus
+cmake
