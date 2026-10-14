@@ -343,6 +343,7 @@ Totals: CLI 354, TUI 25, REST 46, MCP 74.
 - `--vcon-forward-backoff-cap`
 - `--vcon-forward-backoff-first`
 - `--vcon-forward-ca`
+- `--vcon-forward-content-type`
 - `--vcon-forward-done`
 - `--vcon-forward-extra-ca`
 - `--vcon-forward-failed`

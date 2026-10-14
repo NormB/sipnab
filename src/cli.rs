@@ -4943,6 +4943,20 @@ pub struct VconForwardArgs {
     )]
     pub vcon_forward_max_error_body: Option<u64>,
 
+    /// The `Content-Type` of a JSON container: `application/json` (the
+    /// default), `application/vcon+json` or `application/vcon`. A gzip
+    /// format container always goes as `application/vcon+gzip`
+    /// (draft-ietf-vcon-vcon-core-04 section 5.4). Overrides
+    /// `[vcon_forward] content_type`.
+    #[arg(
+        help_heading = "vCon forwarder",
+        long = "vcon-forward-content-type",
+        value_name = "TYPE",
+        value_parser = parse_forward_content_type,
+        requires = "vcon_forward"
+    )]
+    pub vcon_forward_content_type: Option<String>,
+
     /// Trust only the CA certificates in this PEM file for an `https://`
     /// store. Without it the forwarder trusts the host's CA bundle.
     /// Overrides `[vcon_forward] ca`.
@@ -5305,6 +5319,10 @@ impl VconForwardArgs {
             (
                 "--vcon-forward-max-error-body",
                 self.vcon_forward_max_error_body.is_some(),
+            ),
+            (
+                "--vcon-forward-content-type",
+                self.vcon_forward_content_type.is_some(),
             ),
             ("--vcon-forward-ca", self.vcon_forward_ca.is_some()),
             (
@@ -8329,6 +8347,12 @@ fn parse_fetch_max_size(s: &str) -> Result<u64, String> {
 
 /// `--vcon-fetch-signer-sha256`: [`crate::config::parse_sha256_fingerprint`]'s
 /// rule, the text kept as given.
+/// `--vcon-forward-content-type`: [`crate::config::forward_content_type`]'s
+/// rule.
+fn parse_forward_content_type(s: &str) -> Result<String, String> {
+    crate::config::forward_content_type(s).map(str::to_owned)
+}
+
 fn parse_signer_sha256(s: &str) -> Result<String, String> {
     crate::config::parse_sha256_fingerprint(s).map(|_| s.to_owned())
 }

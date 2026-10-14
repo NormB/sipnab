@@ -1574,6 +1574,30 @@ A whole-number `[vcon_forward]` key is out of range.
 
 **Exit code:** 1.
 
+### `[vcon_forward] content_type: {e}`
+
+`[vcon_forward] content_type` names a media type the forwarder does not send for a JSON container.
+
+- `{e}` reads `"VALUE" is not one of application/json, application/vcon+json, application/vcon`, with the value from the file.
+- A gzip format container always goes as `application/vcon+gzip`, so that value is not accepted here.
+- The printed line starts with `invalid config value: `.
+
+**What to do:** Set `content_type` to one of the listed types, or remove the key for `application/json`.
+
+**Exit code:** 1.
+
+### `{value:?} is not one of {}`
+
+The media type given to `--vcon-forward-content-type`, or to `[vcon_forward] content_type`, is not one the forwarder sends for a JSON container.
+
+- `{value:?}` is the value given, and `{}` lists the accepted types: `application/json`, `application/vcon+json` and `application/vcon`.
+- From the flag, the line starts with `error: invalid value` and names the flag, and sipnab exits `2`.
+- From the config file, the line starts with `invalid config value: [vcon_forward] content_type: `, and sipnab exits `1`.
+
+**What to do:** Give one of the listed types, or leave the setting out for `application/json`. A gzip format container always goes as `application/vcon+gzip`.
+
+**Exit code:** 2 from the flag, 1 from the config file.
+
 ### `[vcon_forward] kind: {name:?} is not one of {}`
 
 `[vcon_forward] kind` names a vCon store type the forwarder does not know. A vCon is a standard JSON container for a conversation. `{name:?}` is the value in the file, and `{}` lists the accepted names: `generic`, `vcon-store` and `conserver`. The printed line starts with `invalid config value: `.

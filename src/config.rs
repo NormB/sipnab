@@ -301,6 +301,7 @@ static KNOWN_KEYS: LazyLock<HashMap<&'static str, &'static [&'static str]>> = La
             "scitt_sign_key",
             "scitt_sign_cert",
             "scitt_issuer",
+            "content_type",
         ]
         .as_slice(),
     );
@@ -661,6 +662,11 @@ pub struct VconForwardConfig {
     /// The statements' issuer (CWT claim `iss`), a URI.
     /// `--vcon-forward-scitt-issuer` overrides it.
     pub scitt_issuer: Option<String>,
+    /// The `Content-Type` of a JSON container, one of
+    /// [`FORWARD_CONTENT_TYPES`]; `application/json` when unset. A gzip
+    /// format container always goes as `application/vcon+gzip`.
+    /// `--vcon-forward-content-type` overrides it.
+    pub content_type: Option<String>,
 }
 
 /// A whole-number forwarder setting, declared once: its key, its flag, the
@@ -811,6 +817,33 @@ pub const FORWARD_NUMBERS: [ForwardNumber; 6] = [
 /// setting is given explicitly, as before kinds existed.
 pub const FORWARD_KINDS: &[&str] = &["generic", "vcon-store", "conserver"];
 
+/// The media types `--vcon-forward-content-type` and
+/// `[vcon_forward] content_type` accept for a JSON container, the default
+/// first. `application/vcon` is the type draft-ietf-vcon-vcon-core-04
+/// section 6.1 registers. A gzip format container always goes as
+/// `application/vcon+gzip` (section 5.4).
+pub const FORWARD_CONTENT_TYPES: &[&str] = &[
+    "application/json",
+    "application/vcon+json",
+    "application/vcon",
+];
+
+/// `value` when it is one of [`FORWARD_CONTENT_TYPES`].
+///
+/// # Errors
+///
+/// Any other value, naming the accepted ones.
+pub fn forward_content_type(value: &str) -> Result<&str, String> {
+    if FORWARD_CONTENT_TYPES.contains(&value) {
+        Ok(value)
+    } else {
+        Err(format!(
+            "{value:?} is not one of {}",
+            FORWARD_CONTENT_TYPES.join(", ")
+        ))
+    }
+}
+
 /// The names `--vcon-fetch-kind` and `[vcon_fetch] kind` accept, in the
 /// order of the store kind table: the forwarder's kinds, and `vcon-mcp`,
 /// which the fetcher reads from and the forwarder does not deliver to.
@@ -894,6 +927,11 @@ impl VconForwardConfig {
                 "[vcon_forward] kind: {name:?} is not one of {}",
                 FORWARD_KINDS.join(", ")
             )));
+        }
+        if let Some(value) = &self.content_type {
+            forward_content_type(value).map_err(|e| {
+                crate::Error::ConfigInvalid(format!("[vcon_forward] content_type: {e}"))
+            })?;
         }
         let first = FORWARD_BACKOFF_FIRST.pick(None, self.backoff_first);
         let cap = FORWARD_BACKOFF_CAP.pick(None, self.backoff_cap);

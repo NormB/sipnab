@@ -105,6 +105,12 @@ entry that carries them.
     - It compiles libopus 1.6.1 from source and links it statically, so building `full` needs `cmake` and a C compiler.
     - The gnu, macOS and Docker builds carry it. The static musl builds, which have no vCon export, do not.
     - `sipnab --version` lists it.
+- **The vCon forwarder names a gzip format container's media type.**
+  - A container whose file starts with the gzip magic bytes `1f 8b` goes as `Content-Type: application/vcon+gzip`, as draft-ietf-vcon-vcon-core-04 section 5.4 says it should.
+    - Before, every POST and PUT said `application/json`.
+  - A `409` replace reads the uuid from inside the gzip.
+  - `--vcon-forward-content-type <TYPE>` (`[vcon_forward] content_type`) sets the type of a JSON container: `application/json` (the default), `application/vcon+json` or `application/vcon`.
+    - On 2026-10-14 a self-hosted conserver answered `422` to `application/vcon` and `204` to the other two, so the default stays `application/json`.
 - **Every vCon reader opens the signed, encrypted and gzip forms.**
   - The readers are `-I`, the MCP `analyze_vcon` and `validate_vcon` tools, and `POST /v1/vcon/analyze` and `POST /v1/vcon/validate`.
   - They share one step, as draft-ietf-vcon-vcon-core-04 section 5.4 tells the forms apart:

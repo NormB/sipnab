@@ -1099,6 +1099,9 @@ The most bytes of a store's status line and headers the forwarder reads; an answ
 \fB\-\-vcon\-forward\-max\-error\-body\fR \fIBYTES\fR
 The most bytes of a store's answer to a refused container that its \fB<name>.error.json\fR record keeps, 1 to 4294967295. Default: 8192. Overrides \fB[vcon_forward] max_error_body\fR.
 .TP
+\fB\-\-vcon\-forward\-content\-type\fR \fITYPE\fR
+The \fBContent\-Type\fR of a JSON container: \fBapplication/json\fR (the default), \fBapplication/vcon+json\fR or \fBapplication/vcon\fR. A gzip format container always goes as \fBapplication/vcon+gzip\fR (draft\-ietf\-vcon\-vcon\-core\-04 section 5.4). Overrides \fB[vcon_forward] content_type\fR.
+.TP
 \fB\-\-vcon\-forward\-ca\fR \fIFILE\fR
 Trust only the CA certificates in this PEM file for an \fBhttps://\fR store. Without it the forwarder trusts the host's CA bundle. Overrides \fB[vcon_forward] ca\fR.
 .TP

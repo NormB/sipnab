@@ -2526,6 +2526,31 @@ static SPECS: &[Spec] = &[
         ],
     ),
     (
+        "vcon-forward-content-type",
+        Kind::Text {
+            accept: &[
+                "application/vcon+json",
+                "application/vcon",
+                "application/json",
+            ],
+            reject: &[
+                ("", 2),
+                ("x", 2),
+                ("application/vcon+gzip", 2),
+                ("APPLICATION/JSON", 2),
+                ("text/plain", 2),
+            ],
+        },
+        &[
+            "--vcon-forward-url",
+            "http://127.0.0.1:9/x",
+            "--vcon-forward-auth-file",
+            "/nonexistent/auth",
+            "--vcon-forward",
+            "/var/tmp",
+        ],
+    ),
+    (
         "vcon-forward-kind",
         Kind::Choice,
         &[

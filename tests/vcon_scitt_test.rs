@@ -275,6 +275,7 @@ impl Rig {
             kind: StoreKind::Generic,
             backoff: BackoffPolicy::default(),
             limits: ReadLimits::default(),
+            content_type: "application/json".into(),
             scitt: Some(ScittSettings {
                 url: Endpoint::parse(&scrapi.url("/scitt"))?,
                 auth,

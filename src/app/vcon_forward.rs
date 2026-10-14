@@ -622,8 +622,20 @@ impl<'de> serde::Deserialize<'de> for Members {
 /// # Errors
 ///
 /// Not JSON, no `uuid`, or a `uuid` that is empty, longer than 64 characters
-/// or holds a character outside `[0-9A-Za-z-]`.
+/// or holds a character outside `[0-9A-Za-z-]`. A gzip format container is
+/// inflated first, up to the `--vcon-fetch-max-size` default; one that does
+/// not inflate, or inflates past it, is refused.
 pub fn container_uuid(container: &[u8]) -> Result<String, String> {
+    // A gzip format container (draft-ietf-vcon-vcon-core-04 section 6.2)
+    // carries its uuid inside the gzip.
+    let inflated;
+    let container = if container.starts_with(&crate::output::vcon_jose::GZIP_MAGIC) {
+        let cap = usize::try_from(crate::config::FETCH_MAX_SIZE.default).unwrap_or(usize::MAX);
+        inflated = crate::output::vcon_jose::gunzip_capped(container, cap)?;
+        inflated.as_slice()
+    } else {
+        container
+    };
     let doc: serde_json::Value =
         serde_json::from_slice(container).map_err(|e| format!("the container is not JSON: {e}"))?;
     // The signed and encrypted forms carry the uuid in a header, readable
@@ -892,6 +904,11 @@ pub struct ForwardSettings {
     pub limits: ReadLimits,
     /// Where lifecycle statements are registered; `None` registers nothing.
     pub scitt: Option<crate::app::vcon_scitt::ScittSettings>,
+    /// The `Content-Type` of a JSON container, one of
+    /// [`crate::config::FORWARD_CONTENT_TYPES`]. A gzip format container
+    /// goes as `application/vcon+gzip` whatever this says
+    /// ([`body_content_type`]).
+    pub content_type: String,
 }
 
 /// Where the credential comes from, resolved but not yet read.
@@ -957,6 +974,8 @@ pub struct ForwardPlan {
     pub limits: ReadLimits,
     /// The transparency service lifecycle statements are registered with.
     pub scitt: Option<ScittPlan>,
+    /// The `Content-Type` of a JSON container.
+    pub content_type: String,
 }
 
 /// A file a SCITT setting names, the setting that named it, and where that
@@ -1390,6 +1409,12 @@ impl ForwardPlan {
             },
             limits: ReadLimits::from_bytes(head.0, body.0),
             scitt,
+            content_type: args
+                .vcon_forward_content_type
+                .as_deref()
+                .or(keys.content_type.as_deref())
+                .unwrap_or(crate::config::FORWARD_CONTENT_TYPES[0])
+                .to_owned(),
         })
     }
 
@@ -1426,6 +1451,7 @@ impl ForwardPlan {
                 backoff: self.backoff,
                 limits: self.limits,
                 scitt,
+                content_type: self.content_type,
             },
             self.interval,
         ))
@@ -1965,7 +1991,15 @@ impl Forwarder {
 
     /// One request to `endpoint`, over TLS when it is `https://`.
     fn send(&self, endpoint: &Endpoint, method: &str, body: &[u8]) -> Result<Answer, String> {
-        let mut request = request_head(endpoint, method, &self.settings.auth, Some(body.len()));
+        let mut request = request_head_typed(
+            endpoint,
+            method,
+            &self.settings.auth,
+            Some((
+                body.len(),
+                body_content_type(body, &self.settings.content_type),
+            )),
+        );
         request.extend_from_slice(body);
         // Read past the kept part by the most a credential can be, so the
         // credential is removed from the answer before the cut.
@@ -1993,14 +2027,44 @@ pub(crate) fn request_head(
     auth: &AuthHeader,
     body_len: Option<usize>,
 ) -> Vec<u8> {
+    request_head_typed(
+        endpoint,
+        method,
+        auth,
+        body_len.map(|len| (len, crate::config::FORWARD_CONTENT_TYPES[0])),
+    )
+}
+
+/// The `Content-Type` a container's bytes go with: `application/vcon+gzip`
+/// for the gzip format, known by the gzip magic bytes 1f 8b
+/// ([RFC 1952 section 2.3.1](https://www.rfc-editor.org/rfc/rfc1952.html#section-2.3.1)),
+/// as [draft-ietf-vcon-vcon-core-04 section 5.4](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-04#section-5.4)
+/// says it should be identified "when a media type is available, such as in
+/// the \[HTTPS\] Content-Type header"; `json_type` for a JSON container.
+#[must_use]
+pub fn body_content_type<'a>(body: &[u8], json_type: &'a str) -> &'a str {
+    if body.starts_with(&crate::output::vcon_jose::GZIP_MAGIC) {
+        crate::output::vcon_jose::CONTENT_TYPE_GZIP
+    } else {
+        json_type
+    }
+}
+
+/// [`request_head`], with the body's length and `Content-Type`.
+pub(crate) fn request_head_typed(
+    endpoint: &Endpoint,
+    method: &str,
+    auth: &AuthHeader,
+    body: Option<(usize, &str)>,
+) -> Vec<u8> {
     let mut head = format!(
         "{method} {} HTTP/1.1\r\nHost: {}\r\nUser-Agent: {USER_AGENT}\r\n",
         endpoint.target,
         endpoint.host_header(),
     );
-    match body_len {
-        Some(len) => head.push_str(&format!(
-            "Content-Type: application/json\r\nContent-Length: {len}\r\n"
+    match body {
+        Some((len, content_type)) => head.push_str(&format!(
+            "Content-Type: {content_type}\r\nContent-Length: {len}\r\n"
         )),
         None => head.push_str("Accept: application/json\r\n"),
     }

@@ -754,7 +754,10 @@ const EXPECTED_UNRESOLVED: usize = 82;
 // summary, full, got {m:?}`, the F7 filter summary's mode key.
 // 466 -> 467: src/config.rs `[vcon_input] signer_sha256: {e}`, the vCon
 // readers' signer fingerprint key. Nothing removed.
-const EXPECTED_TEMPLATES: usize = 467;
+// 467 -> 469: src/config.rs `[vcon_forward] content_type: {e}` and
+// `{value:?} is not one of {}` (forward_content_type, the rule
+// --vcon-forward-content-type and the key share). Nothing removed.
+const EXPECTED_TEMPLATES: usize = 469;
 
 // ---------------------------------------------------------------------------
 // The page gates

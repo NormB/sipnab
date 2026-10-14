@@ -1926,6 +1926,24 @@ static KEY_SPECS: &[KeySpec] = &[
     ),
     (
         "vcon_forward",
+        "content_type",
+        KeyKind::Literal {
+            accept: &[
+                "\"application/json\"",
+                "\"application/vcon+json\"",
+                "\"application/vcon\"",
+            ],
+            reject: &[
+                "\"\"",
+                "\"x\"",
+                "\"application/vcon+gzip\"",
+                "\"text/plain\"",
+            ],
+            ctx: "",
+        },
+    ),
+    (
+        "vcon_forward",
         "max_response_head",
         KeyKind::Int {
             lo: 1,

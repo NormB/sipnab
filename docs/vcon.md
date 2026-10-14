@@ -1270,9 +1270,27 @@ A container reaches the second store only after the first accepted it.
 
 The forwarder POSTs the file's bytes unchanged. It sends these headers:
 
-- `Content-Type: application/json`,
+- `Content-Type`:
+  - `application/json` for a JSON container, or the type
+    `--vcon-forward-content-type` (`[vcon_forward] content_type`) names:
+    `application/vcon+json` or `application/vcon`;
+  - `application/vcon+gzip` for a gzip format container, known by its first
+    two bytes `1f 8b`, whatever that setting says.
+    [draft-ietf-vcon-vcon-core-04 section 5.4](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-04#section-5.4)
+    says a gzip vCon should carry the media type `application/vcon+gzip`
+    wherever a media type travels, such as an HTTPS `Content-Type` header.
 - `User-Agent: sipnab/<version>`,
 - the header from the file.
+
+Why the default stays `application/json`:
+
+- On 2026-10-14 a self-hosted conserver answered `422` to a container sent
+  as `application/vcon`, and `204` to the same container sent as
+  `application/json` or `application/vcon+json`.
+- `application/vcon` is the type section 6.1 registers. A store that wants
+  it gets it from the setting.
+- The forwarder reads the uuid a `409` replace needs from inside a gzip
+  format container too.
 
 Then it moves the file by the answer:
 

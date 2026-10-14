@@ -1416,7 +1416,10 @@ fn wiki_intra_docs_links_resolve() -> Result<(), TestError> {
     // docs/config-reference.md +1 (the `[vcon_input]` section), and
     // 1754 -> 1756: docs/mcp-tools-vcon.md +1 (`analyze_vcon` links the
     // section) and docs/rest-api.md +1 (`POST /v1/vcon/validate` links it).
-    const EXPECTED_WIKI_LINKS: usize = 1756;
+    // 1756 -> 1757: docs/cli-reference.md +1, the
+    // `--vcon-forward-content-type` row links "What it does with each
+    // container".
+    const EXPECTED_WIKI_LINKS: usize = 1757;
     // Raised 459 -> 460 when SRC1 stage 1 shipped: docs/cli-reference.md's
     // `--hep-listen` row now points at cookbook recipe "Take signaling from HEP and media off the wire, in one process" in docs/examples.md
     // rather than restating how to pair `-L` with `-d`. Attributed per file
