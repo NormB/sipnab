@@ -123,6 +123,14 @@ entry that carries them.
   - The uuid code comment said `rand_b` came from the node name alone.
   - Each now states what the code does.
 
+### Internal
+
+- **The TUI end-to-end tests no longer leave a directory behind per session.**
+  - Each tmux session made its own `/tmp/sipnab-e2e-cfg-*` config directory, and nothing removed it.
+  - 95 had built up on one development host by 2026-10-14.
+  - The session now removes its directory when it drops.
+  - `a_dropped_session_removes_its_config_home` proves it.
+
 ## [0.5.218] - 2026-10-14
 
 ### Added

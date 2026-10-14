@@ -42,6 +42,8 @@ mod tui_e2e {
     struct TuiSession {
         /// tmux session name, unique per process and per test.
         name: String,
+        /// The session's own XDG_CONFIG_HOME, removed when the session drops.
+        cfg_home: std::path::PathBuf,
     }
 
     impl TuiSession {
@@ -113,7 +115,7 @@ mod tui_e2e {
                 .status()?;
             assert!(status.success(), "tmux new-session failed");
 
-            Ok(TuiSession { name })
+            Ok(TuiSession { name, cfg_home })
         }
 
         /// Default-size launch loading the bundled SIP call fixture.
@@ -256,12 +258,31 @@ mod tui_e2e {
 
     impl Drop for TuiSession {
         /// Best-effort `tmux kill-session` so a failed test never leaks a
-        /// running sipnab process.
+        /// running sipnab process, then removal of the session's own
+        /// XDG_CONFIG_HOME so a run leaves nothing in the temp directory.
         fn drop(&mut self) {
             let _ = Command::new("tmux")
                 .args(["kill-session", "-t", &self.name])
                 .status();
+            let _ = std::fs::remove_dir_all(&self.cfg_home);
         }
+    }
+
+    #[test]
+    #[ignore = "needs tmux on PATH; run by CI with --ignored"]
+    /// A session removes its own XDG_CONFIG_HOME when it drops. Each launch
+    /// made a /tmp/sipnab-e2e-cfg-* directory and none was ever removed: 95
+    /// had built up on one development host by 2026-10-14.
+    fn a_dropped_session_removes_its_config_home() -> Result<(), TestError> {
+        let session = TuiSession::launch_sip_call()?;
+        let cfg_home = session.cfg_home.clone();
+        assert!(cfg_home.is_dir(), "the session did not create {cfg_home:?}");
+        drop(session);
+        assert!(
+            !cfg_home.exists(),
+            "{cfg_home:?} is still on disk after the session dropped"
+        );
+        Ok(())
     }
 
     /// Absolute path to `tests/fixtures` (bundled demo pcaps such as
