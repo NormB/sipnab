@@ -50,7 +50,7 @@ Two environment variables tune it. To pin a specific version instead of taking
 whatever the latest release is:
 
 ```bash
-curl -fsSL https://sipnab.com/install.sh | SIPNAB_VERSION=0.5.217 sh
+curl -fsSL https://sipnab.com/install.sh | SIPNAB_VERSION=0.5.218 sh
 ```
 
 To install somewhere other than `/usr/local/bin`, use a directory you already
@@ -276,11 +276,11 @@ target triple (`arch-vendor-os-abi`).
   - the install script constructs them.
 
 Every command below reads the release number from a `VERSION` variable. Set
-it first, in the same shell, to the release you want, e.g. 0.5.217 for the
+it first, in the same shell, to the release you want, e.g. 0.5.218 for the
 latest:
 
 ```bash
-VERSION=0.5.217
+VERSION=0.5.218
 ```
 
 On Linux x86_64, the static musl tarball runs on any distro and any glibc,
@@ -400,13 +400,13 @@ Download the `.deb` for your architecture from the [latest release](https://gith
 - On older releases use the static musl tarball above.
 
 Download and install the amd64 (x86_64) package. Set `VERSION` to the release
-you want, e.g. 0.5.217, as in
+you want, e.g. 0.5.218, as in
 [Download a release binary yourself](#download-a-release-binary-yourself):
 
 - Set the version:
 
    ```bash
-   VERSION=0.5.217
+   VERSION=0.5.218
    ```
 
 - Download the package:
@@ -509,26 +509,26 @@ standard and a `-noaudio` variant.
 The standard package on an x86_64 host:
 
 ```bash
-sudo rpm -i sipnab-0.5.217-1.x86_64.rpm
+sudo rpm -i sipnab-0.5.218-1.x86_64.rpm
 ```
 
 The headless / no-ALSA variant on the same architecture:
 
 ```bash
-sudo rpm -i sipnab-0.5.217-1.x86_64-noaudio.rpm
+sudo rpm -i sipnab-0.5.218-1.x86_64-noaudio.rpm
 ```
 
 The standard package on an aarch64 (arm64) host. Pick the variant matching
 `uname -m`:
 
 ```bash
-sudo rpm -i sipnab-0.5.217-1.aarch64.rpm
+sudo rpm -i sipnab-0.5.218-1.aarch64.rpm
 ```
 
 The headless / no-ALSA variant on aarch64:
 
 ```bash
-sudo rpm -i sipnab-0.5.217-1.aarch64-noaudio.rpm
+sudo rpm -i sipnab-0.5.218-1.aarch64-noaudio.rpm
 ```
 
 ### Homebrew (macOS)
