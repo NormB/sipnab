@@ -1274,9 +1274,7 @@ mod tests {
         }
         assert!(
             packed.len() < plain.len(),
-            "{} {}",
-            packed.len(),
-            plain.len()
+            "the gzip form is smaller than the uncompressed form"
         );
         Ok(())
     }

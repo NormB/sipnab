@@ -4372,15 +4372,12 @@ mod tests {
         let chain: Vec<String> = (0..4).map(|n| revision_uuid(base, n)).collect();
         for (i, a) in chain.iter().enumerate() {
             for b in &chain[i + 1..] {
-                assert_ne!(a, b, "two revisions share a uuid: {chain:?}");
+                assert_ne!(a, b, "two revisions share a uuid");
             }
-            assert_eq!(&a[..13], &base[..13], "the timestamp is kept: {a}");
-            assert_eq!(&a[14..15], "8", "version 8: {a}");
-            assert!(
-                matches!(&a[19..20], "8" | "9" | "a" | "b"),
-                "variant 10: {a}"
-            );
-            assert_eq!(a.len(), 36, "{a}");
+            assert_eq!(&a[..13], &base[..13], "the timestamp is kept");
+            assert_eq!(&a[14..15], "8", "version 8");
+            assert!(matches!(&a[19..20], "8" | "9" | "a" | "b"), "variant 10");
+            assert_eq!(a.len(), 36);
         }
         assert_eq!(
             chain,
@@ -6265,7 +6262,7 @@ mod tests {
             response(487, "Request Terminated")?,
         ])?;
         let v = serde_json::to_value(export_with(&dialog, &clean_facts())?)?;
-        assert_eq!(v["dialog"][0]["type"], "incomplete", "{}", v["dialog"][0]);
+        assert_eq!(v["dialog"][0]["type"], "incomplete");
         assert_eq!(
             v["dialog"][0]["disposition"], "no-answer",
             "{}",
@@ -6308,7 +6305,7 @@ mod tests {
             "{}",
             v["dialog"][0]
         );
-        assert_ne!(v["dialog"][0]["type"], "incomplete", "{}", v["dialog"][0]);
+        assert_ne!(v["dialog"][0]["type"], "incomplete");
         Ok(())
     }
 

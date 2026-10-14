@@ -10212,19 +10212,19 @@ mod tests {
         let rule = sealed_rule(&dir, tmp.path(), true, SealedUpdates::NewUuid)?;
         assert_eq!(sealed_sweeps(rule)?, [1, 1, 1], "one write per change");
         let chain = in_chain_order(opened_containers(&dir)?);
-        assert_eq!(chain.len(), 3, "three instances, none replaced: {chain:?}");
+        assert_eq!(chain.len(), 3, "three instances, none replaced");
         let uuids: Vec<&str> = chain.iter().filter_map(|v| v["uuid"].as_str()).collect();
         assert_eq!(uuids.len(), 3);
         assert!(
             uuids[0] != uuids[1] && uuids[1] != uuids[2] && uuids[0] != uuids[2],
-            "{uuids:?}"
+            "the three instances have three different uuids"
         );
-        assert!(chain[0].get("amended").is_none(), "{}", chain[0]);
+        assert!(chain[0].get("amended").is_none());
         assert_eq!(chain[1]["amended"]["uuid"], uuids[0]);
         assert_eq!(chain[2]["amended"]["uuid"], uuids[1]);
         for v in &chain {
             assert_eq!(v["created_at"], chain[0]["created_at"], "created once");
-            assert!(v["updated_at"].is_string(), "{v}");
+            assert!(v["updated_at"].is_string());
         }
         assert_eq!(
             chain[2]["uuid"],
@@ -10264,8 +10264,8 @@ mod tests {
         let rule = sealed_rule(&dir, tmp.path(), true, SealedUpdates::SameUuid)?;
         assert_eq!(sealed_sweeps(rule)?, [1, 1, 1]);
         let all = opened_containers(&dir)?;
-        assert_eq!(all.len(), 1, "one file, rewritten: {all:?}");
-        assert!(all[0].get("amended").is_none(), "{}", all[0]);
+        assert_eq!(all.len(), 1, "one file, rewritten");
+        assert!(all[0].get("amended").is_none());
         Ok(())
     }
 
@@ -10286,7 +10286,10 @@ mod tests {
             "section 4.1.2",
             "MUST",
         ] {
-            assert!(warning.contains(needle), "{needle}: {warning}");
+            assert!(
+                warning.contains(needle),
+                "the startup warning lacks a required phrase"
+            );
         }
         for updates in [SealedUpdates::NewUuid, SealedUpdates::FinalOnly] {
             let rule = sealed_rule(&dir, tmp.path(), true, updates)?;
@@ -10313,7 +10316,7 @@ mod tests {
             "nothing before the call ends, then one write"
         );
         let all = opened_containers(&dir)?;
-        assert_eq!(all.len(), 1, "{all:?}");
+        assert_eq!(all.len(), 1);
         let body = all[0]["attachments"]
             .as_array()
             .ok_or("attachments")?
@@ -10322,7 +10325,7 @@ mod tests {
             .map(|a| a["body"].clone())
             .ok_or("completeness")?;
         assert_eq!(body["call_ended"], true, "{body}");
-        assert!(all[0].get("amended").is_none(), "{}", all[0]);
+        assert!(all[0].get("amended").is_none());
         Ok(())
     }
 
@@ -10339,7 +10342,7 @@ mod tests {
         let (wrote, _) = sealed_run(rule, &[(486, "Busy Here"), (486, "Busy Here")], false)?;
         assert_eq!(wrote, [1, 1, 1], "idle, ended, then changed");
         let chain = in_chain_order(opened_containers(&dir)?);
-        assert_eq!(chain.len(), 3, "{chain:?}");
+        assert_eq!(chain.len(), 3);
         for i in 1..3 {
             assert_eq!(chain[i]["amended"]["uuid"], chain[i - 1]["uuid"]);
             assert_ne!(chain[i]["uuid"], chain[i - 1]["uuid"]);
@@ -10347,9 +10350,9 @@ mod tests {
                 chain[i]["created_at"], chain[0]["created_at"],
                 "created once"
             );
-            assert!(chain[i]["updated_at"].is_string(), "{}", chain[i]);
+            assert!(chain[i]["updated_at"].is_string());
         }
-        assert!(chain[0].get("updated_at").is_none(), "{}", chain[0]);
+        assert!(chain[0].get("updated_at").is_none());
         Ok(())
     }
 
@@ -10382,7 +10385,7 @@ mod tests {
         assert_eq!(wrote, [0, 0], "nothing while the call runs");
         assert!(exported, "the end-of-run export succeeds");
         let all = opened_containers(&dir)?;
-        assert_eq!(all.len(), 1, "{all:?}");
+        assert_eq!(all.len(), 1);
         let ended = all[0]["attachments"]
             .as_array()
             .ok_or("attachments")?
@@ -12427,7 +12430,7 @@ mod tests {
             serde_json::from_str(&text).map_err(|e| format!("valid JSON: {e:?}"))?;
         let body = &v["analysis"][0]["body"];
         if !body.is_object() {
-            return Err(format!("an analysis body is the object itself: {v}").into());
+            return Err("an analysis body is the object itself".into());
         }
         Ok(body["capture_completeness"].clone())
     }
