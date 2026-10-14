@@ -35,7 +35,15 @@
 //! "encoding": "none" | "json" | "base64url", "product"?, "schema"?,
 //! "mediatype"?, "dialog"?} ]}`. A missing `dialog` is the first leg's
 //! signaling object. An answer with any entry that is not that shape is
-//! refused whole, and recorded as `malformed`.
+//! refused whole, and recorded as `malformed`. A `wtf_transcription` entry is
+//! also checked against draft-howe-vcon-wtf-extension-02, and an entry may
+//! carry its own draft-howe-vcon-provenance-00 `provenance` record, which
+//! sipnab completes with what it sent and what it carries.
+//!
+//! A service with `lawful_basis = true` may add `"attachments": [...]`, each a
+//! draft-howe-vcon-lawful-basis-02 attachment, carried as sent and listed
+//! under the service in the enrichment attachment. Without it, an answer
+//! with attachments is `malformed`.
 
 use std::io::{Read, Write};
 use std::path::PathBuf;
@@ -98,6 +106,8 @@ pub struct Service {
     send_audio: bool,
     /// Whether the container is sent.
     send_signaling: bool,
+    /// Whether a `lawful_basis` attachment in the answer is carried.
+    lawful_basis: bool,
 }
 
 impl Service {
@@ -223,6 +233,7 @@ pub fn services(
             timeout: Duration::from_secs(secs),
             send_audio,
             send_signaling,
+            lawful_basis: entry.lawful_basis.unwrap_or(false),
         }));
     }
     Ok(out)
@@ -291,6 +302,9 @@ pub struct Record {
     pub detail: String,
     /// The indices in `analysis` of what it added.
     pub analysis: Vec<usize>,
+    /// The indices in `attachments` of the lawful basis attachments it
+    /// supplied.
+    pub attachments: Vec<usize>,
 }
 
 /// Run `services` in order on `container`, appending each answer's analysis,
@@ -315,9 +329,9 @@ pub fn enrich(
         }
         let (request, sent_inputs) = request_body(container, own, audio, service);
         let (outcome, detail, added) = match ask(service, &request) {
-            Err((outcome, detail)) => (outcome, detail, Vec::new()),
-            Ok(answer) => match parse_answer(&answer, container.dialog.len(), first_leg) {
-                Ok(mut found) => {
+            Err((outcome, detail)) => (outcome, detail, (Vec::new(), Vec::new())),
+            Ok(answer) => match read_answer(&answer, container, first_leg, service) {
+                Ok((mut found, carried)) => {
                     let start = container.analysis.len();
                     if found.iter().any(|a| a.kind == WTF_TYPE) {
                         declare(container, WTF_TYPE);
@@ -331,13 +345,21 @@ pub fn enrich(
                         declare(container, PROVENANCE_EXTENSION);
                     }
                     container.analysis.extend(found);
+                    let first_attachment = container.attachments.len();
+                    if !carried.is_empty() {
+                        declare(container, LAWFUL_BASIS);
+                    }
+                    container.attachments.extend(carried);
                     (
                         Outcome::Ok,
                         String::new(),
-                        (start..container.analysis.len()).collect(),
+                        (
+                            (start..container.analysis.len()).collect(),
+                            (first_attachment..container.attachments.len()).collect(),
+                        ),
                     )
                 }
-                Err(why) => (Outcome::Malformed, why, Vec::new()),
+                Err(why) => (Outcome::Malformed, why, (Vec::new(), Vec::new())),
             },
         };
         records.push(Record {
@@ -346,7 +368,8 @@ pub fn enrich(
             sent,
             outcome,
             detail,
-            analysis: added,
+            analysis: added.0,
+            attachments: added.1,
         });
     }
     attach(container, &records);
@@ -387,6 +410,7 @@ pub fn attach(container: &mut Vcon, records: &[Record]) {
                 "outcome": r.outcome.as_str(),
                 "detail": r.detail,
                 "analysis": r.analysis,
+                "attachments": r.attachments,
             })
         })
         .collect();
@@ -472,6 +496,29 @@ fn request_body(
             .collect();
     }
     (doc.to_string().into_bytes(), inputs)
+}
+
+/// The Analysis Objects and the lawful basis attachments in `answer`.
+///
+/// # Errors
+///
+/// What is wrong with it.
+fn read_answer(
+    answer: &[u8],
+    container: &Vcon,
+    default_dialog: usize,
+    service: &Service,
+) -> Result<(Vec<Analysis>, Vec<Attachment>), String> {
+    let doc: serde_json::Value =
+        serde_json::from_slice(answer).map_err(|e| format!("the answer is not JSON: {e}"))?;
+    let found = answer_analysis(&doc, container.dialog.len(), default_dialog)?;
+    let carried = answer_attachments(
+        &doc,
+        service.lawful_basis,
+        container.parties.len(),
+        container.dialog.len(),
+    )?;
+    Ok((found, carried))
 }
 
 /// Complete `analysis`'s provenance record from what sipnab knows, keeping
@@ -875,22 +922,246 @@ pub fn queue_full_records(services: &[Arc<Service>]) -> Vec<Record> {
                  written without it"
             ),
             analysis: Vec::new(),
+            attachments: Vec::new(),
         })
         .collect()
 }
 
-/// The Analysis Objects in an answer, each checked.
+/// The `lawful_basis` attachments in an answer, each checked.
+///
+/// # Errors
+///
+/// What is wrong with the answer's attachments.
+fn answer_attachments(
+    doc: &serde_json::Value,
+    allowed: bool,
+    parties: usize,
+    dialogs: usize,
+) -> Result<Vec<Attachment>, String> {
+    let Some(list) = doc.get("attachments") else {
+        return Ok(Vec::new());
+    };
+    let list = list
+        .as_array()
+        .ok_or("the answer's attachments is not a list")?;
+    if list.is_empty() {
+        return Ok(Vec::new());
+    }
+    if !allowed {
+        return Err(format!(
+            "the answer has attachments, and sipnab carries an enrichment's attachment only \
+             for a [[vcon.enrich]] with lawful_basis = true, and only a {LAWFUL_BASIS} one"
+        ));
+    }
+    list.iter()
+        .enumerate()
+        .map(|(i, entry)| {
+            lawful_basis_attachment(entry, parties, dialogs)
+                .map_err(|why| format!("attachment {i} {why}"))
+        })
+        .collect()
+}
+
+/// The `purpose`, and the extension name, of a lawful basis attachment,
+/// [draft-howe-vcon-lawful-basis-02 section 4.2](https://datatracker.ietf.org/doc/html/draft-howe-vcon-lawful-basis-02#section-4.2)
+/// and [section 5.1](https://datatracker.ietf.org/doc/html/draft-howe-vcon-lawful-basis-02#section-5.1).
+pub const LAWFUL_BASIS: &str = "lawful_basis";
+
+/// The six values of `lawful_basis`,
+/// [draft-howe-vcon-lawful-basis-02 section 5.2.1](https://datatracker.ietf.org/doc/html/draft-howe-vcon-lawful-basis-02#section-5.2.1).
+const LAWFUL_BASES: [&str; 6] = [
+    "consent",
+    "contract",
+    "legal_obligation",
+    "vital_interests",
+    "public_task",
+    "legitimate_interests",
+];
+
+/// The members of a lawful basis attachment sipnab carries. Each is one the
+/// container's [`Attachment`] holds unchanged; a member outside the list
+/// could not be carried as sent.
+const LAWFUL_BASIS_MEMBERS: [&str; 7] = [
+    "purpose",
+    "start",
+    "party",
+    "dialog",
+    "encoding",
+    "body",
+    "mediatype",
+];
+
+/// One lawful basis attachment, checked for the shape of
+/// draft-howe-vcon-lawful-basis-02 section 5 and carried as sent.
+///
+/// - [Section 5.1](https://datatracker.ietf.org/doc/html/draft-howe-vcon-lawful-basis-02#section-5.1):
+///   `purpose` is `lawful_basis`, `encoding` is `json`, and `party` and
+///   `dialog` index the container. `start` is required too, by the core
+///   draft's schema; the lawful basis draft says SHOULD.
+/// - [Section 5.2.1](https://datatracker.ietf.org/doc/html/draft-howe-vcon-lawful-basis-02#section-5.2.1):
+///   the body has `lawful_basis` (one of six values), `expiration` (a string
+///   or null) and `purpose_grants`.
+/// - [Section 5.2.2](https://datatracker.ietf.org/doc/html/draft-howe-vcon-lawful-basis-02#section-5.2.2):
+///   `terms_of_service` and `status_interval` are strings, and
+///   `content_hash` and `registry` objects of strings.
+/// - [Sections 5.2.3 and 5.2.4](https://datatracker.ietf.org/doc/html/draft-howe-vcon-lawful-basis-02#section-5.2.3):
+///   each purpose grant has `purpose`, a boolean `granted`, `granted_at` and
+///   optional `conditions` strings; each proof mechanism has `proof_type`,
+///   `timestamp` and an object `proof_data`.
+///
+/// It does not verify `content_hash.value`: section 5.2.2 hashes "the
+/// canonicalized lawful basis attachment body" and does not say whether that
+/// body includes `content_hash` itself. It does not judge `expiration`
+/// either: sipnab carries the record and processes nothing under it.
+///
+/// # Errors
+///
+/// What is wrong, naming the member.
+fn lawful_basis_attachment(
+    entry: &serde_json::Value,
+    parties: usize,
+    dialogs: usize,
+) -> Result<Attachment, String> {
+    let map = entry.as_object().ok_or("is not an object")?;
+    if let Some(other) = map
+        .keys()
+        .find(|k| !LAWFUL_BASIS_MEMBERS.contains(&k.as_str()))
+    {
+        return Err(format!(
+            "has a {other} member, which sipnab cannot carry as sent"
+        ));
+    }
+    if map.get("purpose").and_then(serde_json::Value::as_str) != Some(LAWFUL_BASIS) {
+        return Err(format!("has a purpose other than {LAWFUL_BASIS}"));
+    }
+    if map.get("encoding").and_then(serde_json::Value::as_str) != Some("json") {
+        return Err("has an encoding other than json".into());
+    }
+    if map
+        .get("mediatype")
+        .is_some_and(|m| m.as_str() != Some("application/json"))
+    {
+        return Err("has a mediatype other than application/json".into());
+    }
+    let start = map
+        .get("start")
+        .and_then(serde_json::Value::as_str)
+        .filter(|t| chrono::DateTime::parse_from_rfc3339(t).is_ok())
+        .ok_or("has no RFC 3339 start, which the core draft's schema requires")?;
+    let index = |key: &str, len: usize| {
+        map.get(key)
+            .and_then(serde_json::Value::as_u64)
+            .and_then(|n| usize::try_from(n).ok())
+            .filter(|n| *n < len)
+            .ok_or(format!("names no {key} this container holds"))
+    };
+    let party = index("party", parties)?;
+    let dialog = index("dialog", dialogs)?;
+    let body = map.get("body").ok_or("has no body")?;
+    check_lawful_basis_body(body)?;
+    Ok(Attachment {
+        purpose: LAWFUL_BASIS,
+        party,
+        dialog,
+        start: start.to_owned(),
+        mediatype: "application/json",
+        encoding: "json",
+        body: body.clone(),
+    })
+}
+
+/// Check a lawful basis body's members. See [`lawful_basis_attachment`].
+///
+/// # Errors
+///
+/// What is wrong, naming the member.
+fn check_lawful_basis_body(body: &serde_json::Value) -> Result<(), String> {
+    use serde_json::Value;
+    let body = body.as_object().ok_or("has a body that is not an object")?;
+    let is_text = |v: Option<&Value>| v.is_some_and(Value::is_string);
+    let bad = |what: &str| Err(format!("has a body whose {what}"));
+    if !body
+        .get("lawful_basis")
+        .and_then(Value::as_str)
+        .is_some_and(|b| LAWFUL_BASES.contains(&b))
+    {
+        return bad("lawful_basis is not one of the six the draft names");
+    }
+    if !body
+        .get("expiration")
+        .is_some_and(|e| e.is_string() || e.is_null())
+    {
+        return bad("expiration is neither a time nor null");
+    }
+    let grants = body
+        .get("purpose_grants")
+        .and_then(Value::as_array)
+        .ok_or("has a body with no purpose_grants list")?;
+    for (n, grant) in grants.iter().enumerate() {
+        if !is_text(grant.get("purpose")) {
+            return bad(&format!("purpose_grants[{n}] has no purpose"));
+        }
+        if !grant.get("granted").is_some_and(Value::is_boolean) {
+            return bad(&format!("purpose_grants[{n}] has no boolean granted"));
+        }
+        if !is_text(grant.get("granted_at")) {
+            return bad(&format!("purpose_grants[{n}] has no granted_at"));
+        }
+        if grant.get("conditions").is_some_and(|c| {
+            !c.as_array()
+                .is_some_and(|list| list.iter().all(Value::is_string))
+        }) {
+            return bad(&format!(
+                "purpose_grants[{n}] has conditions that are not strings"
+            ));
+        }
+    }
+    for key in ["terms_of_service", "status_interval"] {
+        if body.get(key).is_some_and(|v| !v.is_string()) {
+            return bad(&format!("{key} is not a string"));
+        }
+    }
+    for (key, members) in [
+        (
+            "content_hash",
+            &["algorithm", "canonicalization", "value"][..],
+        ),
+        ("registry", &["type", "url"][..]),
+    ] {
+        if let Some(object) = body.get(key)
+            && !members.iter().all(|m| is_text(object.get(*m)))
+        {
+            return bad(&format!("{key} lacks one of {}", members.join(", ")));
+        }
+    }
+    if let Some(proofs) = body.get("proof_mechanisms") {
+        let proofs = proofs
+            .as_array()
+            .ok_or("has a body whose proof_mechanisms is not a list")?;
+        for (n, proof) in proofs.iter().enumerate() {
+            for key in ["proof_type", "timestamp"] {
+                if !is_text(proof.get(key)) {
+                    return bad(&format!("proof_mechanisms[{n}] has no {key}"));
+                }
+            }
+            if !proof.get("proof_data").is_some_and(Value::is_object) {
+                return bad(&format!("proof_mechanisms[{n}] has no proof_data object"));
+            }
+        }
+    }
+    Ok(())
+}
+
+/// The Analysis Objects in an answer already parsed, each checked.
 ///
 /// # Errors
 ///
 /// What is wrong with the answer, naming the entry.
-fn parse_answer(
-    body: &[u8],
+fn answer_analysis(
+    doc: &serde_json::Value,
     dialogs: usize,
     default_dialog: usize,
 ) -> Result<Vec<Analysis>, String> {
-    let doc: serde_json::Value =
-        serde_json::from_slice(body).map_err(|e| format!("the answer is not JSON: {e}"))?;
     let list = doc
         .get("analysis")
         .and_then(serde_json::Value::as_array)
@@ -1104,6 +1375,21 @@ mod tests {
     use super::*;
 
     type TestError = Box<dyn std::error::Error>;
+
+    /// The Analysis Objects in an answer, each checked.
+    ///
+    /// # Errors
+    ///
+    /// What is wrong with the answer, naming the entry.
+    fn parse_answer(
+        body: &[u8],
+        dialogs: usize,
+        default_dialog: usize,
+    ) -> Result<Vec<Analysis>, String> {
+        let doc: serde_json::Value =
+            serde_json::from_slice(body).map_err(|e| format!("the answer is not JSON: {e}"))?;
+        answer_analysis(&doc, dialogs, default_dialog)
+    }
 
     /// An answer holding `entry` alone.
     fn one(entry: &serde_json::Value) -> Vec<u8> {
@@ -1351,6 +1637,153 @@ mod tests {
         let policy = RedactionPolicy::new(RedactionKey::from_secret(b"k"));
         analysis.redact(&policy.redactor());
         assert_eq!(analysis.provenance, None);
+    }
+
+    /// The lawful basis attachment of section 5.3 of
+    /// draft-howe-vcon-lawful-basis-02, with the `start` core-04 requires.
+    fn lawful_basis() -> serde_json::Value {
+        serde_json::json!({
+            "purpose": "lawful_basis", "start": "2025-01-02T12:15:30Z",
+            "party": 0, "dialog": 0, "encoding": "json",
+            "body": {
+                "lawful_basis": "consent",
+                "expiration": null,
+                "purpose_grants": [{"purpose": "recording", "granted": true,
+                                    "granted_at": "2025-01-02T12:15:30Z",
+                                    "conditions": ["internal use"]}],
+                "proof_mechanisms": [{"proof_type": "verbal_confirmation",
+                                      "timestamp": "2025-01-02T12:15:30Z",
+                                      "proof_data": {"dialog_reference": 0}}],
+                "content_hash": {"algorithm": "sha-256", "canonicalization": "jcs",
+                                 "value": "a1b2"},
+                "registry": {"type": "scitt", "url": "https://example.com/r"}
+            }
+        })
+    }
+
+    /// The answer `{"analysis": [], "attachments": [attachment]}`.
+    fn with_attachment(attachment: &serde_json::Value) -> serde_json::Value {
+        serde_json::json!({ "analysis": [], "attachments": [attachment] })
+    }
+
+    /// A lawful basis attachment of the draft's shape is carried as sent,
+    /// and only when the service opts in.
+    #[test]
+    fn a_lawful_basis_is_carried_only_when_allowed() -> Result<(), TestError> {
+        let found = answer_attachments(&with_attachment(&lawful_basis()), true, 3, 1)?;
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].purpose, "lawful_basis");
+        assert_eq!(found[0].body, lawful_basis()["body"]);
+        assert_eq!(found[0].start, "2025-01-02T12:15:30Z");
+        assert_eq!((found[0].party, found[0].dialog), (0, 0));
+        assert!(
+            answer_attachments(&serde_json::json!({"analysis": []}), false, 3, 1)?.is_empty(),
+            "no attachments, nothing to allow"
+        );
+        match answer_attachments(&with_attachment(&lawful_basis()), false, 3, 1) {
+            Ok(_) => Err("carried a lawful basis the service was not allowed".into()),
+            Err(why) => {
+                assert!(why.contains("lawful_basis = true"), "{why}");
+                Ok(())
+            }
+        }
+    }
+
+    /// Every shape draft-howe-vcon-lawful-basis-02 section 5 rules out is
+    /// refused, naming what is wrong.
+    #[test]
+    fn a_lawful_basis_is_checked_against_the_draft() -> Result<(), TestError> {
+        let set = |path: &[&str], value: Option<serde_json::Value>| {
+            let mut entry = lawful_basis();
+            let mut at = &mut entry;
+            for key in &path[..path.len() - 1] {
+                at = match key.parse::<usize>() {
+                    Ok(n) => &mut at[n],
+                    Err(_) => &mut at[*key],
+                };
+            }
+            let last = path[path.len() - 1];
+            if let Some(map) = at.as_object_mut() {
+                match value {
+                    Some(v) => map.insert(last.to_owned(), v),
+                    None => map.remove(last),
+                };
+            }
+            with_attachment(&entry)
+        };
+        let cases: Vec<(serde_json::Value, &str)> = vec![
+            (set(&["purpose"], Some("consent".into())), "purpose"),
+            (set(&["encoding"], Some("none".into())), "encoding"),
+            (set(&["body"], Some("{}".into())), "body"),
+            (set(&["start"], None), "start"),
+            (set(&["start"], Some("yesterday".into())), "start"),
+            (set(&["party"], Some(3.into())), "party"),
+            (set(&["dialog"], Some(1.into())), "dialog"),
+            (set(&["filename"], Some("lb.json".into())), "filename"),
+            (set(&["mediatype"], Some("text/plain".into())), "mediatype"),
+            (
+                set(&["body", "lawful_basis"], Some("because".into())),
+                "lawful_basis",
+            ),
+            (set(&["body", "expiration"], None), "expiration"),
+            (set(&["body", "expiration"], Some(7.into())), "expiration"),
+            (set(&["body", "purpose_grants"], None), "purpose_grants"),
+            (
+                set(
+                    &["body", "purpose_grants", "0", "granted"],
+                    Some("yes".into()),
+                ),
+                "granted",
+            ),
+            (
+                set(&["body", "purpose_grants", "0", "purpose"], None),
+                "purpose",
+            ),
+            (
+                set(&["body", "purpose_grants", "0", "granted_at"], None),
+                "granted_at",
+            ),
+            (
+                set(
+                    &["body", "purpose_grants", "0", "conditions"],
+                    Some(1.into()),
+                ),
+                "conditions",
+            ),
+            (
+                set(
+                    &["body", "purpose_grants", "0", "conditions"],
+                    Some(serde_json::json!([1])),
+                ),
+                "conditions",
+            ),
+            (
+                set(&["body", "proof_mechanisms", "0", "proof_data"], None),
+                "proof_data",
+            ),
+            (
+                set(&["body", "proof_mechanisms", "0", "proof_type"], None),
+                "proof_type",
+            ),
+            (
+                set(&["body", "content_hash", "value"], None),
+                "content_hash",
+            ),
+            (set(&["body", "registry", "url"], None), "registry"),
+            (
+                set(&["body", "terms_of_service"], Some(1.into())),
+                "terms_of_service",
+            ),
+        ];
+        for (answer, needle) in cases {
+            match answer_attachments(&answer, true, 3, 1) {
+                Ok(_) => {
+                    return Err(format!("carried a lawful basis that should say '{needle}'").into());
+                }
+                Err(why) => assert!(why.contains(needle), "{needle}: {why}"),
+            }
+        }
+        Ok(())
     }
 
     /// A job that changes nothing and tells `done` when it has run, after

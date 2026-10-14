@@ -15,7 +15,10 @@
 //!   not the same claim, and a signature is read as the stronger one.
 //! * **No consent record and no lawful-basis attachment.** Nobody gave sipnab
 //!   permission for anything. An empty consent field would be a claim; an
-//!   absent one is the truth.
+//!   absent one is the truth. A lawful-basis attachment appears only when an
+//!   enrichment service with `lawful_basis = true` supplies one, and the
+//!   `sipnab-enrichment` attachment names that service as its source
+//!   (`crate::app::vcon_enrich`).
 //! * **No [`Party`] name that sipnab vouches for.** [`Party::name`] carries the
 //!   `From`/`To` display name when the wire had one, and that name is an
 //!   unverified assertion by whoever sent the request, which is why every

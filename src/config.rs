@@ -1454,6 +1454,11 @@ pub struct VconEnrichConfig {
     /// What is sent: `audio`, `signaling`, or both (the default).
     #[serde(default)]
     pub send: Option<Vec<String>>,
+    /// Carry a `lawful_basis` attachment the service answers with
+    /// (draft-howe-vcon-lawful-basis-02), checked for shape and marked as
+    /// the service's. Default `false`: an answer with attachments is refused.
+    #[serde(default)]
+    pub lawful_basis: Option<bool>,
 }
 
 /// One `[[vcon.rule]]`: a filter, the directory its containers go to, and

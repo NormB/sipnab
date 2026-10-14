@@ -808,3 +808,119 @@ fn a_services_provenance_is_kept_and_completed() -> Result<(), TestError> {
     );
     Ok(())
 }
+
+/// An answer holding no analysis and the lawful basis attachment of
+/// [section 5.3 of draft-howe-vcon-lawful-basis-02](https://datatracker.ietf.org/doc/html/draft-howe-vcon-lawful-basis-02#section-5.3).
+const LAWFUL_BASIS_ANSWER: &str = r#"{"analysis": [], "attachments": [{
+    "purpose": "lawful_basis", "start": "2025-01-02T12:15:30Z",
+    "party": 0, "dialog": 0, "encoding": "json",
+    "body": {
+        "lawful_basis": "consent",
+        "expiration": "2026-01-02T12:00:00Z",
+        "purpose_grants": [
+            {"purpose": "recording", "granted": true, "granted_at": "2025-01-02T12:15:30Z"},
+            {"purpose": "transcription", "granted": true, "granted_at": "2025-01-02T12:15:30Z"},
+            {"purpose": "sentiment_analysis", "granted": false, "granted_at": "2025-01-02T12:15:30Z"}
+        ],
+        "proof_mechanisms": [{
+            "proof_type": "verbal_confirmation", "timestamp": "2025-01-02T12:15:30Z",
+            "proof_data": {"dialog_reference": 0, "time_offset": "00:01:23",
+                           "confirmation_text": "Yes, I consent to recording this call"}
+        }],
+        "terms_of_service": "https://example.com/terms/v2024.1",
+        "status_interval": "30d",
+        "content_hash": {"algorithm": "sha-256", "canonicalization": "jcs",
+                         "value": "a1b2c3d4e5f6789abcdef0123456789abcdef0123456789abcdef0123456789ab"},
+        "registry": {"type": "scitt", "url": "https://transparency.example.com/lawful_purpose/registry"}
+    }
+}]}"#;
+
+/// With `lawful_basis = true`, a lawful basis attachment the service answers
+/// with is carried as it was sent, the container lists `lawful_basis` in
+/// `extensions`, and the service's line in the enrichment attachment names
+/// it, so it reads as the service's and not sipnab's.
+#[test]
+fn an_opted_in_service_supplies_a_lawful_basis() -> Result<(), TestError> {
+    let home = tempfile::tempdir()?;
+    let dir = home.path().join("out");
+    let (url, _) = stub(Answer::Raw(LAWFUL_BASIS_ANSWER))?;
+    let enrich = service("consent", &url, "lawful_basis = true");
+    let out = run(home.path(), &config(&dir, &enrich), &[])?;
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let v = container(&dir)?;
+    let sent: serde_json::Value = serde_json::from_str(LAWFUL_BASIS_ANSWER)?;
+    let sent = &sent["attachments"][0];
+    let attachments = v["attachments"].as_array().ok_or("attachments")?;
+    let found: Vec<(usize, &serde_json::Value)> = attachments
+        .iter()
+        .enumerate()
+        .filter(|(_, a)| a["purpose"] == "lawful_basis")
+        .collect();
+    assert_eq!(found.len(), 1, "{v}");
+    let (index, carried) = found[0];
+    for key in ["purpose", "start", "party", "dialog", "encoding", "body"] {
+        assert_eq!(carried[key], sent[key], "{key} is carried unchanged");
+    }
+    let extensions = v["extensions"].as_array().ok_or("extensions")?;
+    assert!(
+        extensions.iter().any(|e| e == "lawful_basis"),
+        "{extensions:?}"
+    );
+    assert!(v.get("critical").is_none());
+    let services = outcomes(&v)?;
+    assert_eq!(services[0]["outcome"], "ok", "{services:?}");
+    assert_eq!(services[0]["attachments"], serde_json::json!([index]));
+    let validator = support::schema::load_validator("vcon.schema.json")?;
+    support::schema::assert_valid(&validator, &v, "a container with a lawful basis");
+    Ok(())
+}
+
+/// Without `lawful_basis = true`, sipnab carries no lawful basis: an answer
+/// with attachments is recorded as malformed, saying how to allow it.
+#[test]
+fn a_lawful_basis_is_refused_unless_the_service_opts_in() -> Result<(), TestError> {
+    let home = tempfile::tempdir()?;
+    let dir = home.path().join("out");
+    let (url, _) = stub(Answer::Raw(LAWFUL_BASIS_ANSWER))?;
+    let out = run(
+        home.path(),
+        &config(&dir, &service("consent", &url, "")),
+        &[],
+    )?;
+    assert!(out.status.success());
+    let v = container(&dir)?;
+    let attachments = v["attachments"].as_array().ok_or("attachments")?;
+    assert!(
+        !attachments.iter().any(|a| a["purpose"] == "lawful_basis"),
+        "{v}"
+    );
+    let extensions = v["extensions"].as_array().ok_or("extensions")?;
+    assert!(!extensions.iter().any(|e| e == "lawful_basis"));
+    let services = outcomes(&v)?;
+    assert_eq!(services[0]["outcome"], "malformed", "{services:?}");
+    assert!(
+        services[0]["detail"]
+            .as_str()
+            .is_some_and(|d| d.contains("lawful_basis = true")),
+        "{services:?}"
+    );
+    Ok(())
+}
+
+/// `lawful_basis` takes `true` or `false`; anything else is refused at
+/// startup.
+#[test]
+fn lawful_basis_is_a_boolean() -> Result<(), TestError> {
+    let home = tempfile::tempdir()?;
+    let dir = home.path().join("out");
+    let enrich = service("consent", "http://127.0.0.1:9/x", "lawful_basis = \"yes\"");
+    let out = run(home.path(), &config(&dir, &enrich), &[])?;
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(!out.status.success(), "{stderr}");
+    assert!(stderr.contains("lawful_basis"), "{stderr}");
+    Ok(())
+}

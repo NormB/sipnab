@@ -752,7 +752,10 @@ const EXPECTED_UNRESOLVED: usize = 80;
 // encoding refusal and the WTF member refusal). Nothing removed.
 // 454 -> 455 (+1), provenance records: src/app/vcon_enrich.rs 1 (a service's
 // provenance whose model lacks a member). Nothing removed.
-const EXPECTED_TEMPLATES: usize = 455;
+// 455 -> 459 (+4), lawful basis pass-through: src/app/vcon_enrich.rs 4 (the
+// attachments refusal without lawful_basis = true, an unknown member, another
+// purpose, and a body member). Nothing removed.
+const EXPECTED_TEMPLATES: usize = 459;
 
 // ---------------------------------------------------------------------------
 // The page gates

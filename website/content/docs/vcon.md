@@ -32,8 +32,17 @@ When the run retained the RTP payload, the container also carries the audio, inl
 
 - It is the whole call, from its first frame, unless a retention limit cut it.
 - If a limit cut it, the container says so (see [Audio retention budget](@/docs/config.md#audio-retention-budget)).
-- None of them carries any claim that somebody consented to anything.
+- sipnab writes no claim that somebody consented to anything.
+- A lawful basis appears only when an enrichment service you allow supplies one.
+  - The container names that service as its source.
 - None carries a signature unless you configure a rule to encrypt its containers (see [Encrypt what a rule writes](#encrypt-what-a-rule-writes)).
+
+<!-- vale Google.Passive = NO -->
+
+The lawful basis is in
+[Enrich a call before it is written](#enrich-a-call-before-it-is-written).
+
+<!-- vale Google.Passive = YES -->
 
 **A sipnab vCon records what an instrument
 saw, not what the parties said.** Read [What may you conclude](#someone-handed-you-a-sipnab-vcon-what-may-you-conclude),
@@ -412,6 +421,50 @@ in progress:
 - Interim results stay with the service: sipnab has no route that receives
   them.
 
+**A lawful basis from a service.** sipnab writes no lawful basis of its
+own. A `[[vcon.enrich]]` with `lawful_basis = true` may answer with an
+`attachments` list beside `analysis`, each entry a lawful basis attachment of
+[draft-howe-vcon-lawful-basis-02](https://datatracker.ietf.org/doc/html/draft-howe-vcon-lawful-basis-02):
+
+```json
+{"analysis": [],
+ "attachments": [{"purpose": "lawful_basis", "start": "2026-10-13T12:15:30Z",
+                  "party": 0, "dialog": 0, "encoding": "json",
+                  "body": {"lawful_basis": "consent", "expiration": null,
+                           "purpose_grants": [{"purpose": "recording", "granted": true,
+                                               "granted_at": "2026-10-13T12:15:30Z"}]}}]}
+```
+
+- sipnab checks the shape
+  [section 5 of the lawful basis draft](https://datatracker.ietf.org/doc/html/draft-howe-vcon-lawful-basis-02#section-5.1)
+  gives:
+  - `purpose` is `lawful_basis` and `encoding` is `json`.
+  - `party` and `dialog` index the container, and `start` is an [RFC 3339](https://www.rfc-editor.org/rfc/rfc3339.html)
+    time, which the core draft's schema requires.
+  - `mediatype`, when present, is `application/json`. No other member is
+    allowed, because sipnab could not carry it as sent.
+  - The body has `lawful_basis`, one of the six values section 5.2.1 names,
+    `expiration`, a time or `null`, and `purpose_grants`, each with `purpose`,
+    a boolean `granted`, `granted_at`, and `conditions` strings when present.
+  - `terms_of_service` and `status_interval` are strings. `content_hash` and
+    `registry` hold the strings section 5.2.2 lists, and each
+    `proof_mechanisms` entry has `proof_type`, `timestamp` and a
+    `proof_data` object.
+- sipnab carries the attachment as the service sent it, writing
+  `mediatype: "application/json"` when the service left it out. The
+  container lists `lawful_basis` in `extensions`, and not in `critical`:
+  [section 4.1 of the lawful basis draft](https://datatracker.ietf.org/doc/html/draft-howe-vcon-lawful-basis-02#section-4.1)
+  classifies the extension as Compatible.
+- The service's line in the `sipnab-enrichment` attachment lists the
+  attachment's index under `attachments`, so a reader knows which service
+  supplied it. sipnab asserts nothing about it.
+- sipnab does not verify `content_hash.value`: section 5.2.2 hashes the
+  canonical form of the body and does not say whether that body includes the
+  `content_hash` member itself. sipnab does not judge `expiration` either,
+  because it processes nothing under the lawful basis.
+- Without `lawful_basis = true`, an answer that holds any attachment is
+  `malformed`, and sipnab keeps none of it.
+
 **Where each analysis came from.** Each Analysis Object a service adds carries
 a `provenance` record, as
 [draft-howe-vcon-provenance-00](https://datatracker.ietf.org/doc/html/draft-howe-vcon-provenance-00)
@@ -472,7 +525,8 @@ sipnab sent it.
 - what was `sent`,
 - the `outcome`,
 - a `detail` in words, when it did not succeed,
-- the indices in `analysis` of what it added.
+- the indices in `analysis` of what it added,
+- the indices in `attachments` of any lawful basis it supplied.
 
 So a reader of the container knows the call's audio left the host, and to which service.
 The attachment also records the services that added nothing, which no `provenance` record can.
@@ -1950,7 +2004,7 @@ Each refusal has an argument behind it in
 |---|---|
 | a JWS signature on an unsigned container | a signature over an observation verifies as a signature over a recording, so sipnab signs only as the inner layer of an encrypted container you configure, with your key ([Encrypt what a rule writes](#encrypt-what-a-rule-writes)) |
 | consent attachments | sipnab obtained no consent, and an empty consent field reads as "none recorded" |
-| lawful-basis attachments | the same, with a named regulatory reader on the other end |
+| lawful-basis attachments of its own | the same, with a named regulatory reader on the other end. sipnab carries one only from an enrichment service with `lawful_basis = true`, and records that service as its source |
 | a party `name` **that sipnab vouches for** | `From` and `To` are the caller's claim about the caller, trivially spoofed |
 | hosted artefacts by `url`, other than audio the operator serves | sipnab hosts nothing, so it cannot promise where a file lives. The one `url` it writes is a rule's `audio = "url"` recording, under the `audio_url_base` the operator's storage serves |
 

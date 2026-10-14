@@ -346,6 +346,7 @@ See [Enrich a call before it is written](@/docs/vcon.md#enrich-a-call-before-it-
 | `auth_file` | string | -- | A file holding one `Header-Name: value` line sent with each request, such as `Authorization: Bearer ...`. Never written to a container |
 | `timeout_secs` | integer | `120` | How long sipnab waits for the answer, 1 to 3600: the default is `DEFAULT_TIMEOUT_SECS` (120) and the largest `MAX_TIMEOUT_SECS` (3600) in [`src/app/vcon_enrich.rs`](https://github.com/NormB/sipnab/blob/main/src/app/vcon_enrich.rs) |
 | `send` | array of strings | `["audio", "signaling"]` | What sipnab sends the service: `audio` (each leg's WAV), `signaling` (the container), or both. Sending audio turns audio retention on for the run |
+| `lawful_basis` | bool | `false` | Carry a `lawful_basis` attachment the service answers with, checked for the shape of draft-howe-vcon-lawful-basis-02 and recorded as the service's. With `false`, an answer holding any attachment is `malformed` |
 
 ### [pbx]
 

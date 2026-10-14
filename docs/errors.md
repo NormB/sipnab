@@ -4041,6 +4041,38 @@ Part of the `detail` of a `malformed` outcome, after `analysis {i} has`: an anal
 
 **Exit code:** None. sipnab writes the call without the service's analysis.
 
+### `the answer has attachments, and sipnab carries an enrichment's attachment only for a [[vcon.enrich]] with lawful_basis = true, and only a {LAWFUL_BASIS} one`
+
+The `detail` of a `malformed` outcome: a `[[vcon.enrich]]` service answered with an `attachments` list, and its entry does not set `lawful_basis = true`. `{LAWFUL_BASIS}` is `lawful_basis`. sipnab writes no lawful basis of its own and carries one from a service only when you allow it. sipnab keeps none of that answer.
+
+**What to do:** Set `lawful_basis = true` on the `[[vcon.enrich]]` entry if that service is the source of the lawful basis you want carried, or remove `attachments` from its answer.
+
+**Exit code:** None. sipnab writes the call without the service's analysis.
+
+### `has a {other} member, which sipnab cannot carry as sent`
+
+Part of the `detail` of a `malformed` outcome, after `attachment {i}`: a lawful basis attachment from a `[[vcon.enrich]]` service has a member other than `purpose`, `start`, `party`, `dialog`, `encoding`, `body` and `mediatype`. `{other}` is the member. sipnab carries the attachment unchanged or not at all. sipnab keeps none of that answer.
+
+**What to do:** Send the attachment with those members only.
+
+**Exit code:** None. sipnab writes the call without the service's analysis.
+
+### `has a purpose other than {LAWFUL_BASIS}`
+
+Part of the `detail` of a `malformed` outcome, after `attachment {i}`: an attachment from a `[[vcon.enrich]]` service with `lawful_basis = true` has a `purpose` other than `lawful_basis`. `{LAWFUL_BASIS}` is `lawful_basis`. sipnab carries no other kind of attachment from a service. sipnab keeps none of that answer.
+
+**What to do:** Answer with lawful basis attachments only, `purpose` `lawful_basis`.
+
+**Exit code:** None. sipnab writes the call without the service's analysis.
+
+### `has a body whose {what}`
+
+Part of the `detail` of a `malformed` outcome, after `attachment {i}`: the body of a lawful basis attachment from a `[[vcon.enrich]]` service lacks a member [section 5.2 of draft-howe-vcon-lawful-basis-02](https://datatracker.ietf.org/doc/html/draft-howe-vcon-lawful-basis-02#section-5.2) requires, or holds one of the wrong type. `{what}` names it, such as `purpose_grants[0] has no boolean granted`. sipnab keeps none of that answer.
+
+**What to do:** Fix the body the service sends to the shape of section 5.2.
+
+**Exit code:** None. sipnab writes the call without the service's analysis.
+
 ## Startup, privileges and the process
 
 ### `--allow-coredump: a core dump would contain the archive password this run holds`
