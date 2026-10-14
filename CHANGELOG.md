@@ -306,6 +306,15 @@ entry that carries them.
   - PT 101 at 8000 Hz remains the default only when no SDP ties the stream to a session, or that session negotiated no telephone-event and bound nothing else to 101.
   - A vCon `dtmf_events` rule still writes no `keydown` for these keys, because their sending socket is no party's advertised endpoint.
 
+### Security
+
+- **rustls advanced to 0.23.46 (RUSTSEC-2026-0346, RUSTSEC-2026-0347, RUSTSEC-2026-0348, RUSTSEC-2026-0349).**
+  - [RUSTSEC-2026-0346](https://rustsec.org/advisories/RUSTSEC-2026-0346): `Debug` output of client session values exposed TLS secrets.
+  - [RUSTSEC-2026-0347](https://rustsec.org/advisories/RUSTSEC-2026-0347): buffered application data could be sent to the outer server after an ECH rejection.
+  - [RUSTSEC-2026-0348](https://rustsec.org/advisories/RUSTSEC-2026-0348): Brotli certificate decompression could allocate up to 1 GiB before authentication.
+  - [RUSTSEC-2026-0349](https://rustsec.org/advisories/RUSTSEC-2026-0349): an unauthenticated ServerHello could downgrade later connections to classical key exchange.
+  - 0.23.46 closes all four. Both lockfiles and the release binaries carry it.
+
 ### Internal
 
 - **The TUI end-to-end tests no longer leave a directory behind per session.**

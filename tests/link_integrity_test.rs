@@ -1427,6 +1427,8 @@ fn wiki_intra_docs_links_resolve() -> Result<(), TestError> {
     // "Re-sign for a long-term archive".
     // 1761 -> 1762: docs/config-reference.md +1, the `sign_cert_url` row
     // links "Name the chain by URL".
+    // 1762 -> 1763: docs/keybindings.md +1, the F6 / Ctrl+R row links
+    // "Follow each RTP stream in the call flow" in docs/tui-walkthrough.md.
     const EXPECTED_WIKI_LINKS: usize = 1763;
     // Raised 459 -> 460 when SRC1 stage 1 shipped: docs/cli-reference.md's
     // `--hep-listen` row now points at cookbook recipe "Take signaling from HEP and media off the wire, in one process" in docs/examples.md
