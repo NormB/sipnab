@@ -759,7 +759,11 @@ const EXPECTED_UNRESOLVED: usize = 82;
 // --vcon-forward-content-type and the key share). Nothing removed.
 // 469 -> 470: src/config.rs `[vcon] encrypt_to is an empty list: ...`,
 // the refusal of an empty recipient list. Nothing removed.
-const EXPECTED_TEMPLATES: usize = 470;
+// 470 -> 473: src/app/bootstrap.rs `--vcon-resign: {message}` and
+// `--vcon-resign requires the 'vcon' feature (not compiled in)`, and
+// src/app/vcon_resign.rs `'{}' is {len} bytes, over the {cap}-byte limit
+// for one container`. Nothing removed.
+const EXPECTED_TEMPLATES: usize = 473;
 
 // ---------------------------------------------------------------------------
 // The page gates

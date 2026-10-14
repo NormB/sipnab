@@ -305,7 +305,7 @@ pub fn reset_read_report() {
 
 #[cfg(feature = "vcon")]
 pub use reader::{
-    ContainerError, ReaderKeys, Rebuilt, RebuiltMessage, into_stores, open_bytes, packets,
+    ContainerError, ReaderKeys, Rebuilt, RebuiltMessage, into_stores, open_bytes, opener, packets,
     read_file, rebuild, set_reader_keys,
 };
 
@@ -505,8 +505,13 @@ mod reader {
         }
     }
 
-    /// The opener the keys make, read on first use and kept.
-    fn opener() -> Result<std::sync::Arc<Opener>, String> {
+    /// The opener the keys make, read on first use and kept: what every
+    /// reader, and `--vcon-resign`, checks a signer with.
+    ///
+    /// # Errors
+    ///
+    /// A key or CA file the keys name does not read.
+    pub fn opener() -> Result<std::sync::Arc<Opener>, String> {
         let mut held = KEYS.lock();
         if held.1.is_none() {
             held.1 = Some(build_opener(&held.0).map(std::sync::Arc::new));

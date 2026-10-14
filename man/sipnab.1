@@ -1169,6 +1169,19 @@ Write a decrypted container only when its signing certificate chains, through th
 .TP
 \fB\-\-vcon\-fetch\-signer\-sha256\fR \fIHEX\fR
 Write a decrypted container only when its signing certificate has this SHA\-256 fingerprint: 64 hex digits, plain or colon\-separated, either case, as \fBopenssl x509 \-noout \-fingerprint \-sha256\fR prints it. Needs \-\-vcon\-fetch\-decrypt\-key. Overrides \fB[vcon_fetch] signer_sha256\fR.
+.SS vCon archive
+.TP
+\fB\-\-vcon\-resign\fR \fIFILE\fR
+Re\-sign the signed vCon in this file (draft\-ietf\-vcon\-vcon\-core\-04 section 5.2.3): verify it, its signer's certificate within its validity period now, and sign it whole as the payload of a new JWS with \-\-vcon\-resign\-key and \-\-vcon\-resign\-cert, written to \-\-vcon\-resign\-out. \-\-vcon\-signer\-ca and \-\-vcon\-signer\-sha256 check its signer too. Exit 0 written, 1 refused, 2 bad settings. Needs the \fBvcon\fR feature.
+.TP
+\fB\-\-vcon\-resign\-key\fR \fIFILE\fR
+The PEM private key of the new signer: RSA, which signs \fBRS256\fR, or EC P\-256, which signs \fBES256\fR. Readable by its owner only.
+.TP
+\fB\-\-vcon\-resign\-cert\fR \fIFILE\fR
+The PEM certificate chain of \-\-vcon\-resign\-key, leaf first, carried in the new signature's \fBx5c\fR.
+.TP
+\fB\-\-vcon\-resign\-out\fR \fIFILE\fR
+Where the re\-signed vCon is written, mode 0600. sipnab never replaces a file that exists.
 .SS Config
 .TP
 \fB\-f\fR, \fB\-\-config\fR \fIFILE\fR

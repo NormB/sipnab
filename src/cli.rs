@@ -553,6 +553,10 @@ pub struct Cli {
     #[command(flatten)]
     pub vcon_fetch_args: VconFetchArgs,
 
+    // ── vCon archive ──
+    #[command(flatten)]
+    pub vcon_resign_args: VconResignArgs,
+
     // ── Config ──
     #[command(flatten)]
     pub config_args: ConfigArgs,
@@ -5049,6 +5053,63 @@ pub struct VconForwardArgs {
         requires = "vcon_forward"
     )]
     pub vcon_forward_scitt_issuer: Option<String>,
+}
+
+/// `--vcon-resign`: re-sign a signed vCon for a long-term archive, as
+/// draft-ietf-vcon-vcon-core-04 section 5.2.3 describes. A command of its
+/// own: it reads one file, writes one, and captures nothing.
+#[derive(clap::Args, Debug, Clone)]
+pub struct VconResignArgs {
+    /// Re-sign the signed vCon in this file (draft-ietf-vcon-vcon-core-04
+    /// section 5.2.3): verify it, its signer's certificate within its
+    /// validity period now, and sign it whole as the payload of a new JWS
+    /// with --vcon-resign-key and --vcon-resign-cert, written to
+    /// --vcon-resign-out. --vcon-signer-ca and --vcon-signer-sha256 check
+    /// its signer too. Exit 0 written, 1 refused, 2 bad settings. Needs the
+    /// `vcon` feature.
+    #[arg(
+        help_heading = "vCon archive",
+        long = "vcon-resign",
+        value_name = "FILE",
+        requires_all = ["vcon_resign_key", "vcon_resign_cert", "vcon_resign_out"],
+        conflicts_with_all = [
+            "device", "input", "hep_listen", "hep_send", "bpf_filter",
+            "bpf_file", "api", "mcp", "metrics", "export_vcon",
+            "export_vcon_when", "export_vcon_dir", "mint_token", "replay",
+            "vcon_forward", "vcon_fetch", "vcon_spool_status",
+        ]
+    )]
+    pub vcon_resign: Option<std::path::PathBuf>,
+
+    /// The PEM private key of the new signer: RSA, which signs `RS256`, or
+    /// EC P-256, which signs `ES256`. Readable by its owner only.
+    #[arg(
+        help_heading = "vCon archive",
+        long = "vcon-resign-key",
+        value_name = "FILE",
+        requires = "vcon_resign"
+    )]
+    pub vcon_resign_key: Option<std::path::PathBuf>,
+
+    /// The PEM certificate chain of --vcon-resign-key, leaf first, carried
+    /// in the new signature's `x5c`.
+    #[arg(
+        help_heading = "vCon archive",
+        long = "vcon-resign-cert",
+        value_name = "FILE",
+        requires = "vcon_resign"
+    )]
+    pub vcon_resign_cert: Option<std::path::PathBuf>,
+
+    /// Where the re-signed vCon is written, mode 0600. sipnab never
+    /// replaces a file that exists.
+    #[arg(
+        help_heading = "vCon archive",
+        long = "vcon-resign-out",
+        value_name = "FILE",
+        requires = "vcon_resign"
+    )]
+    pub vcon_resign_out: Option<std::path::PathBuf>,
 }
 
 /// `vCon fetcher` flags: the mode that reads stored vCons from a store by

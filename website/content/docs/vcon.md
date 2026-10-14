@@ -997,6 +997,52 @@ sign_cert = "/etc/sipnab/vcon-signing.crt"
 - The container names sipnab as its observer party. The parties are what the
   From and To headers said, not identities anyone established.
 
+### Re-sign for a long-term archive
+
+A signing certificate expires in a few years, and an archive may keep a vCon
+for ten or more.
+[Section 5.2.3 of draft-ietf-vcon-vcon-core-04](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-04#section-5.2.3)
+keeps its integrity by nesting: before the signing certificate of JWS1
+expires, the archive verifies the vCon and signs JWS1 whole as the payload of
+a new JWS2, and so on for the life of the archive.
+
+`--vcon-resign` does one step:
+
+```sh
+sipnab --vcon-resign signed/0158a120-0392-8337-ae55-829bc914b643.vcon.json --vcon-resign-key archive.key --vcon-resign-cert archive.crt --vcon-resign-out archived.vcon.json
+```
+
+```text
+INFO sipnab::app::bootstrap: --vcon-resign: wrote 'archived.vcon.json'
+```
+
+- sipnab verifies every signed layer of the input. With `--vcon-signer-ca` or
+  `--vcon-signer-sha256`, it also checks the outermost signer.
+- The outermost signing certificate must be within its validity period now.
+  Section 5.2.3 re-signs before it expires, so sipnab refuses an expired one.
+- The new JWS carries the input byte for byte as its payload. Its signature
+  `header` carries the new signer's `x5c` and the vCon's uuid.
+- The new key signs `RS256` (RSA) or `ES256` (EC P-256).
+- sipnab writes the result mode `0600`, and never replaces a file that exists.
+- It refuses an unsigned or encrypted input: section 5.2.3 re-signs the signed
+  form.
+
+Every reader walks the nesting, `-I` among them, up to 16 signed layers:
+
+```sh
+sipnab -N -I archived.vcon.json --json-dialogs --no-cli-print --quiet | jq -c '{call_id, msg_count}'
+```
+
+```text
+{"call_id":"1-1966@10.0.2.20","msg_count":6}
+```
+
+- Each layer's signature must verify.
+- `--vcon-signer-ca` and `--vcon-signer-sha256` check the outermost signer.
+  The section says the inner layers are then "assumed to have valid
+  integrity", so an inner certificate that has expired since does not stop
+  the read.
+
 ## The spool contract, for a bridge that consumes it
 
 `--export-vcon-dir` is a queue, and it never runs alone.

@@ -5334,7 +5334,9 @@ fn no_documentation_table_repeats_a_row() -> Result<(), TestError> {
     // ("Audio as Ogg Opus") and its site mirror.
     // 1211 -> 1213: the `[vcon_input]` key table in docs/config-reference.md
     // and its website mirror, website/content/docs/config.md.
-    const EXPECTED_TABLES: usize = 1213;
+    // 1213 -> 1215: the "vCon archive" flag table in docs/cli-reference.md
+    // and its website/content/docs/cli.md mirror.
+    const EXPECTED_TABLES: usize = 1215;
 
     let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     let out = std::process::Command::new("git")

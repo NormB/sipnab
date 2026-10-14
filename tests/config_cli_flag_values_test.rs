@@ -2571,6 +2571,66 @@ static SPECS: &[Spec] = &[
         &[],
     ),
     (
+        "vcon-resign",
+        Kind::Text {
+            accept: &["x", " ", "0", "-1"],
+            reject: &[("", 2)],
+        },
+        &[
+            "--vcon-resign-key",
+            "/nonexistent/key",
+            "--vcon-resign-cert",
+            "/nonexistent/cert",
+            "--vcon-resign-out",
+            "/nonexistent/out",
+        ],
+    ),
+    (
+        "vcon-resign-key",
+        Kind::Text {
+            accept: &["x", " ", "0", "-1"],
+            reject: &[("", 2)],
+        },
+        &[
+            "--vcon-resign",
+            "/nonexistent/in",
+            "--vcon-resign-cert",
+            "/nonexistent/cert",
+            "--vcon-resign-out",
+            "/nonexistent/out",
+        ],
+    ),
+    (
+        "vcon-resign-cert",
+        Kind::Text {
+            accept: &["x", " ", "0", "-1"],
+            reject: &[("", 2)],
+        },
+        &[
+            "--vcon-resign",
+            "/nonexistent/in",
+            "--vcon-resign-key",
+            "/nonexistent/key",
+            "--vcon-resign-out",
+            "/nonexistent/out",
+        ],
+    ),
+    (
+        "vcon-resign-out",
+        Kind::Text {
+            accept: &["x", " ", "0", "-1"],
+            reject: &[("", 2)],
+        },
+        &[
+            "--vcon-resign",
+            "/nonexistent/in",
+            "--vcon-resign-key",
+            "/nonexistent/key",
+            "--vcon-resign-cert",
+            "/nonexistent/cert",
+        ],
+    ),
+    (
         "vcon-fetch",
         Kind::Text {
             accept: &["x", "0", "-1", "-", "018bcfe5-6800-8a6b-a667-78f1c5213800"],

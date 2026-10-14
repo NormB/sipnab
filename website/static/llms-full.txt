@@ -19310,6 +19310,25 @@ Examples:
 - `sipnab --vcon-fetch 018bcfe5-6800-8a6b-a667-78f1c5213800 --vcon-fetch-kind conserver --vcon-fetch-url http://127.0.0.1:8000 --vcon-fetch-auth-file conserver.key --vcon-fetch-decrypt-key recipient.key --vcon-fetch-signer-ca signing-ca.pem --vcon-fetch-signer-sha256 409743610cc747bd4082e2281c53a6548874ebe7a72be4a3c8cb1bcac897bcd6 --vcon-fetch-out fetched` — require both: the signing certificate chains to `signing-ca.pem` and has this fingerprint
 
 
+## vCon archive
+
+`--vcon-resign` re-signs a signed vCon for a long-term archive, as
+[draft-ietf-vcon-vcon-core-04 section 5.2.3](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-04#section-5.2.3)
+describes. It reads one file and writes one, and captures nothing.
+
+| Flag | Value | Default | Since | Description |
+|------|-------|---------|-------|-------------|
+| `--vcon-resign` | `<FILE>` | -- | Unreleased | Re-sign the signed vCon in this file. sipnab verifies every signed layer, requires the outermost signing certificate to be within its validity period now, and signs the file whole, byte for byte, as the payload of a new JWS with the new signer's `x5c` and the vCon's uuid. `--vcon-signer-ca` and `--vcon-signer-sha256` check the input's signer too. Exit `0` when written, `1` when sipnab refuses the input or the output exists, `2` when a key, certificate or signer check does not load. Needs `--vcon-resign-key`, `--vcon-resign-cert` and `--vcon-resign-out`. See [Re-sign for a long-term archive](vcon.md#re-sign-for-a-long-term-archive) |
+| `--vcon-resign-key` | `<FILE>` | -- | Unreleased | The new signer's PEM private key: RSA, which signs `RS256`, or EC P-256, which signs `ES256`. Readable by its owner only |
+| `--vcon-resign-cert` | `<FILE>` | -- | Unreleased | The PEM certificate chain of `--vcon-resign-key`, leaf first, carried in the new signature's `x5c` |
+| `--vcon-resign-out` | `<FILE>` | -- | Unreleased | Where sipnab writes the re-signed vCon, mode `0600`. sipnab never replaces a file that exists, and exits `1` instead |
+
+**Examples**
+- `sipnab --vcon-resign signed/0158a120-0392-8337-ae55-829bc914b643.vcon.json --vcon-resign-key archive.key --vcon-resign-cert archive.crt --vcon-resign-out archived.vcon.json` — re-sign one signed vCon with the archive's key before its signing certificate expires
+- `sipnab --vcon-resign archived.vcon.json --vcon-resign-key archive-2036.key --vcon-resign-cert archive-2036.crt --vcon-resign-out archived-2036.vcon.json` — re-sign the archive again with the next key: the result nests three signed layers
+- `sipnab --vcon-resign signed.vcon.json --vcon-resign-key archive.key --vcon-resign-cert archive-chain.pem --vcon-resign-out archived.vcon.json --vcon-signer-ca signing-ca.pem` — re-sign only a vCon whose signer the CA in `signing-ca.pem` issued
+- `sipnab --vcon-resign signed.vcon.json --vcon-resign-key archive.key --vcon-resign-cert archive.crt --vcon-resign-out archived.vcon.json --config /etc/sipnab/sipnab.toml` — take the signer checks from the config file's `[vcon_input]` section
+
 ## Config
 
 | Flag | Value | Default | Since | Description |
@@ -23400,6 +23419,36 @@ The forwarder delivered the container `{name}`, and the transparency service at 
 **What to do:** Use a sipnab build that includes the `vcon` feature.
 
 **Exit code:** 2.
+
+### `--vcon-resign requires the 'vcon' feature (not compiled in)`
+
+`--vcon-resign` re-signs a signed vCon for a long-term archive. This build does not include the `vcon` feature, so it cannot sign.
+
+**What to do:** Use a sipnab build that includes the `vcon` feature.
+
+**Exit code:** 2.
+
+### `--vcon-resign: {message}`
+
+`--vcon-resign` wrote nothing. `{message}` is the reason. It is one of these:
+
+- `--vcon-resign-key: ...`, when the new signer's key or certificate does not read, the key is not RSA or EC P-256, other users can read the key, or the certificate is not the key's. Exit code 2.
+- a `[vcon_input]` or `--vcon-signer-ca` CA file that does not read. Exit code 2.
+- `'FILE': ...`, when sipnab refuses the input: it is not JSON, it is not the signed form, a signature does not verify, the signer checks refuse its outermost signer, or that signer's certificate is not valid now. Exit code 1.
+- `cannot read 'FILE': ...`, or the input is over the 64 MiB limit for one container. Exit code 1.
+- `'OUT' exists; sipnab never replaces it: name a new file`, or sipnab cannot create or write the output. Exit code 1.
+
+**What to do:** Act on the reason. An input whose signing certificate has expired cannot be re-signed: [section 5.2.3 of draft-ietf-vcon-vcon-core-04](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-04#section-5.2.3) re-signs before it expires.
+
+**Exit code:** 1 or 2, as listed.
+
+### `'{}' is {len} bytes, over the {cap}-byte limit for one container`
+
+`--vcon-resign` names an input over the 64 MiB limit for one vCon container, the limit `-I` applies too. sipnab reads nothing of it. The message follows `--vcon-resign: `.
+
+**What to do:** Check the file is the signed vCon you meant.
+
+**Exit code:** 1.
 
 ### `--vcon-spool-status requires the 'vcon' feature (not compiled in)`
 
@@ -44763,6 +44812,52 @@ sign_cert = "/etc/sipnab/vcon-signing.crt"
   part in the call, or that they wrote anything.
 - The container names sipnab as its observer party. The parties are what the
   From and To headers said, not identities anyone established.
+
+### Re-sign for a long-term archive
+
+A signing certificate expires in a few years, and an archive may keep a vCon
+for ten or more.
+[Section 5.2.3 of draft-ietf-vcon-vcon-core-04](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-04#section-5.2.3)
+keeps its integrity by nesting: before the signing certificate of JWS1
+expires, the archive verifies the vCon and signs JWS1 whole as the payload of
+a new JWS2, and so on for the life of the archive.
+
+`--vcon-resign` does one step:
+
+```sh
+sipnab --vcon-resign signed/0158a120-0392-8337-ae55-829bc914b643.vcon.json --vcon-resign-key archive.key --vcon-resign-cert archive.crt --vcon-resign-out archived.vcon.json
+```
+
+```text
+INFO sipnab::app::bootstrap: --vcon-resign: wrote 'archived.vcon.json'
+```
+
+- sipnab verifies every signed layer of the input. With `--vcon-signer-ca` or
+  `--vcon-signer-sha256`, it also checks the outermost signer.
+- The outermost signing certificate must be within its validity period now.
+  Section 5.2.3 re-signs before it expires, so sipnab refuses an expired one.
+- The new JWS carries the input byte for byte as its payload. Its signature
+  `header` carries the new signer's `x5c` and the vCon's uuid.
+- The new key signs `RS256` (RSA) or `ES256` (EC P-256).
+- sipnab writes the result mode `0600`, and never replaces a file that exists.
+- It refuses an unsigned or encrypted input: section 5.2.3 re-signs the signed
+  form.
+
+Every reader walks the nesting, `-I` among them, up to 16 signed layers:
+
+```sh
+sipnab -N -I archived.vcon.json --json-dialogs --no-cli-print --quiet | jq -c '{call_id, msg_count}'
+```
+
+```text
+{"call_id":"1-1966@10.0.2.20","msg_count":6}
+```
+
+- Each layer's signature must verify.
+- `--vcon-signer-ca` and `--vcon-signer-sha256` check the outermost signer.
+  The section says the inner layers are then "assumed to have valid
+  integrity", so an inner certificate that has expired since does not stop
+  the read.
 
 ## The spool contract, for a bridge that consumes it
 

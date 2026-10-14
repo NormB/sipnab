@@ -3967,6 +3967,36 @@ The forwarder delivered the container `{name}`, and the transparency service at 
 
 **Exit code:** 2.
 
+### `--vcon-resign requires the 'vcon' feature (not compiled in)`
+
+`--vcon-resign` re-signs a signed vCon for a long-term archive. This build does not include the `vcon` feature, so it cannot sign.
+
+**What to do:** Use a sipnab build that includes the `vcon` feature.
+
+**Exit code:** 2.
+
+### `--vcon-resign: {message}`
+
+`--vcon-resign` wrote nothing. `{message}` is the reason. It is one of these:
+
+- `--vcon-resign-key: ...`, when the new signer's key or certificate does not read, the key is not RSA or EC P-256, other users can read the key, or the certificate is not the key's. Exit code 2.
+- a `[vcon_input]` or `--vcon-signer-ca` CA file that does not read. Exit code 2.
+- `'FILE': ...`, when sipnab refuses the input: it is not JSON, it is not the signed form, a signature does not verify, the signer checks refuse its outermost signer, or that signer's certificate is not valid now. Exit code 1.
+- `cannot read 'FILE': ...`, or the input is over the 64 MiB limit for one container. Exit code 1.
+- `'OUT' exists; sipnab never replaces it: name a new file`, or sipnab cannot create or write the output. Exit code 1.
+
+**What to do:** Act on the reason. An input whose signing certificate has expired cannot be re-signed: [section 5.2.3 of draft-ietf-vcon-vcon-core-04](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-04#section-5.2.3) re-signs before it expires.
+
+**Exit code:** 1 or 2, as listed.
+
+### `'{}' is {len} bytes, over the {cap}-byte limit for one container`
+
+`--vcon-resign` names an input over the 64 MiB limit for one vCon container, the limit `-I` applies too. sipnab reads nothing of it. The message follows `--vcon-resign: `.
+
+**What to do:** Check the file is the signed vCon you meant.
+
+**Exit code:** 1.
+
 ### `--vcon-spool-status requires the 'vcon' feature (not compiled in)`
 
 `--vcon-spool-status` counts the vCon export spool: the containers pending, delivered and failed. This build does not include the `vcon` feature, so it cannot read the spool.

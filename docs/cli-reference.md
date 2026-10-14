@@ -2065,6 +2065,25 @@ Examples:
 - `sipnab --vcon-fetch 018bcfe5-6800-8a6b-a667-78f1c5213800 --vcon-fetch-kind conserver --vcon-fetch-url http://127.0.0.1:8000 --vcon-fetch-auth-file conserver.key --vcon-fetch-decrypt-key recipient.key --vcon-fetch-signer-ca signing-ca.pem --vcon-fetch-signer-sha256 409743610cc747bd4082e2281c53a6548874ebe7a72be4a3c8cb1bcac897bcd6 --vcon-fetch-out fetched` — require both: the signing certificate chains to `signing-ca.pem` and has this fingerprint
 
 
+## vCon archive
+
+`--vcon-resign` re-signs a signed vCon for a long-term archive, as
+[draft-ietf-vcon-vcon-core-04 section 5.2.3](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-04#section-5.2.3)
+describes. It reads one file and writes one, and captures nothing.
+
+| Flag | Value | Default | Since | Description |
+|------|-------|---------|-------|-------------|
+| `--vcon-resign` | `<FILE>` | -- | Unreleased | Re-sign the signed vCon in this file. sipnab verifies every signed layer, requires the outermost signing certificate to be within its validity period now, and signs the file whole, byte for byte, as the payload of a new JWS with the new signer's `x5c` and the vCon's uuid. `--vcon-signer-ca` and `--vcon-signer-sha256` check the input's signer too. Exit `0` when written, `1` when sipnab refuses the input or the output exists, `2` when a key, certificate or signer check does not load. Needs `--vcon-resign-key`, `--vcon-resign-cert` and `--vcon-resign-out`. See [Re-sign for a long-term archive](vcon.md#re-sign-for-a-long-term-archive) |
+| `--vcon-resign-key` | `<FILE>` | -- | Unreleased | The new signer's PEM private key: RSA, which signs `RS256`, or EC P-256, which signs `ES256`. Readable by its owner only |
+| `--vcon-resign-cert` | `<FILE>` | -- | Unreleased | The PEM certificate chain of `--vcon-resign-key`, leaf first, carried in the new signature's `x5c` |
+| `--vcon-resign-out` | `<FILE>` | -- | Unreleased | Where sipnab writes the re-signed vCon, mode `0600`. sipnab never replaces a file that exists, and exits `1` instead |
+
+**Examples**
+- `sipnab --vcon-resign signed/0158a120-0392-8337-ae55-829bc914b643.vcon.json --vcon-resign-key archive.key --vcon-resign-cert archive.crt --vcon-resign-out archived.vcon.json` — re-sign one signed vCon with the archive's key before its signing certificate expires
+- `sipnab --vcon-resign archived.vcon.json --vcon-resign-key archive-2036.key --vcon-resign-cert archive-2036.crt --vcon-resign-out archived-2036.vcon.json` — re-sign the archive again with the next key: the result nests three signed layers
+- `sipnab --vcon-resign signed.vcon.json --vcon-resign-key archive.key --vcon-resign-cert archive-chain.pem --vcon-resign-out archived.vcon.json --vcon-signer-ca signing-ca.pem` — re-sign only a vCon whose signer the CA in `signing-ca.pem` issued
+- `sipnab --vcon-resign signed.vcon.json --vcon-resign-key archive.key --vcon-resign-cert archive.crt --vcon-resign-out archived.vcon.json --config /etc/sipnab/sipnab.toml` — take the signer checks from the config file's `[vcon_input]` section
+
 ## Config
 
 | Flag | Value | Default | Since | Description |

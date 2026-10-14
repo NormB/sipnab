@@ -105,6 +105,14 @@ entry that carries them.
     - It compiles libopus 1.6.1 from source and links it statically, so building `full` needs `cmake` and a C compiler.
     - The gnu, macOS and Docker builds carry it. The static musl builds, which have no vCon export, do not.
     - `sipnab --version` lists it.
+- **`--vcon-resign` re-signs a signed vCon for a long-term archive.**
+  - draft-ietf-vcon-vcon-core-04 section 5.2.3: before the signing certificate of JWS1 expires, the vCon is verified and JWS1 is signed whole as the payload of JWS2.
+  - `sipnab --vcon-resign <FILE> --vcon-resign-key <KEY> --vcon-resign-cert <CHAIN> --vcon-resign-out <OUT>`:
+    - verifies every signed layer of the input, and its outermost signer with `--vcon-signer-ca` and `--vcon-signer-sha256` when set;
+    - refuses an outermost signing certificate outside its validity period, an unsigned input, and an output that exists;
+    - writes the new JWS, mode `0600`, with the input byte for byte as its payload.
+  - Exit `0` written, `1` refused, `2` a key, certificate or signer check that does not load.
+  - Every reader walks the nesting, up to 16 signed layers: each signature must verify, and the signer checks apply to the outermost.
 - **An encrypted vCon can have several recipients, and EC keys.**
   - `encrypt_to` in `[[vcon.rule]]` and `[vcon]` takes a list of certificates.
     - sipnab encrypts the container once and writes one `recipients` entry per certificate ([RFC 7516 section 7.2.1](https://www.rfc-editor.org/rfc/rfc7516.html#section-7.2.1)).

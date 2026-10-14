@@ -860,6 +860,12 @@ pub const FLAGS: &[(&str, Link)] = &[
     ("vcon-key", Link::Key("vcon_input", "key", Merge::Override)),
     ("vcon-max-inline-media", Link::Pending),
     ("vcon-out", Link::Input),
+    // Re-signing for an archive is a command of its own: it names one input
+    // file, the new signer's key and chain for this run, and one output.
+    ("vcon-resign", Link::Action),
+    ("vcon-resign-cert", Link::Input),
+    ("vcon-resign-key", Link::Input),
+    ("vcon-resign-out", Link::Input),
     (
         "vcon-signer-ca",
         Link::Key("vcon_input", "signer_ca", Merge::Override),

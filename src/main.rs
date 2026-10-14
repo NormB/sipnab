@@ -234,6 +234,13 @@ fn run_validation_steps(cli: &Cli) -> Result<sipnab::config::LoadedConfig, boots
     if let Some(code) = bootstrap::run_vcon_spool_status(cli) {
         sipnab::capture::archive::release_run_and_exit(code);
     }
+
+    // 4e. --vcon-resign: re-sign a signed vCon for an archive and exit. It
+    //     applies the config read in step 3a, for [vcon_input], and opens
+    //     no capture and no connection.
+    if let Some(code) = bootstrap::run_vcon_resign(cli, &read) {
+        sipnab::capture::archive::release_run_and_exit(code);
+    }
     read
 }
 

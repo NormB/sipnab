@@ -3242,6 +3242,7 @@ fn default_log_level(cli: &Cli) -> &'static str {
     let tui_active = !cli.mode_args.no_tui
         && cli.vcon_forward_args.vcon_forward.is_none()
         && cli.vcon_forward_args.vcon_spool_status.is_none()
+        && cli.vcon_resign_args.vcon_resign.is_none()
         && cli.vcon_fetch_args.vcon_fetch.is_empty();
     if cli.mode_args.quiet {
         "warn"
@@ -4189,6 +4190,38 @@ pub fn run_vcon_fetch(cli: &Cli, read: &Result<LoadedConfig, PlanError>) -> Opti
     {
         let _ = read;
         tracing::error!("--vcon-fetch requires the 'vcon' feature (not compiled in)");
+        Some(2)
+    }
+}
+
+/// Handle `--vcon-resign`: re-sign a signed vCon for a long-term archive
+/// (draft-ietf-vcon-vcon-core-04 section 5.2.3) and return the exit code, or
+/// `None` when the flag is absent. Applies the configuration `main` read, so
+/// `[vcon_input]` signer checks apply to the input; opens no capture.
+#[must_use]
+pub fn run_vcon_resign(cli: &Cli, read: &Result<LoadedConfig, PlanError>) -> Option<i32> {
+    cli.vcon_resign_args.vcon_resign.as_ref()?;
+    #[cfg(feature = "vcon")]
+    {
+        if let Err(code) = apply_read_config(cli, read) {
+            return Some(code);
+        }
+        let code = match crate::app::vcon_resign::run(&cli.vcon_resign_args) {
+            Ok(path) => {
+                tracing::info!("--vcon-resign: wrote '{}'", path.display());
+                0
+            }
+            Err((code, message)) => {
+                tracing::error!("--vcon-resign: {message}");
+                code
+            }
+        };
+        Some(code)
+    }
+    #[cfg(not(feature = "vcon"))]
+    {
+        let _ = read;
+        tracing::error!("--vcon-resign requires the 'vcon' feature (not compiled in)");
         Some(2)
     }
 }

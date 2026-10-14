@@ -364,6 +364,10 @@ Totals: CLI 354, TUI 25, REST 46, MCP 74.
 - `--vcon-key`
 - `--vcon-max-inline-media`
 - `--vcon-out`
+- `--vcon-resign`
+- `--vcon-resign-cert`
+- `--vcon-resign-key`
+- `--vcon-resign-out`
 - `--vcon-signer-ca`
 - `--vcon-signer-sha256`
 - `--vcon-spool-status`

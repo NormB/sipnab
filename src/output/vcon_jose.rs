@@ -1625,6 +1625,119 @@ impl Opener {
     }
 }
 
+/// The most signed layers a reader walks (core-04 section 5.2.3): one per
+/// re-signing, so a century of archive at one a decade, with room to spare.
+pub const MAX_SIGNED_LAYERS: usize = 16;
+
+/// Re-sign the signed vCon `signed` for a long-term archive, as
+/// [core-04 section 5.2.3](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-04#section-5.2.3)
+/// describes: "Before the expiration of the JWS1 signing certificate, the
+/// content of JWS1 (the vCon) is verified and then JWS1 is signed as the
+/// payload to construct JWS2."
+///
+/// - `signed` must be the signed form; `opener` verifies every layer and
+///   checks the outermost signer by its trust ([`Opener::unwrap_at`]).
+/// - The outermost signing certificate must be within its validity period
+///   at `now`, in seconds since the Unix epoch.
+/// - The new JWS carries `signed`, byte for byte, as its payload, and the
+///   uuid of the vCon inside in its signature's `header`.
+///
+/// # Errors
+///
+/// Not the signed form, a signature that does not verify, a signer the
+/// trust refuses, a signing certificate outside its validity period, or a
+/// signing failure.
+pub fn resign_at(
+    signed: &[u8],
+    signer: &Signer,
+    opener: &Opener,
+    max_unsigned: usize,
+    now: u64,
+) -> Result<Vec<u8>, String> {
+    let value: serde_json::Value =
+        serde_json::from_slice(signed).map_err(|e| format!("not JSON: {e}"))?;
+    if form_of(&value) != Form::Signed {
+        return Err(
+            "the vCon is not signed: draft-ietf-vcon-vcon-core-04 section 5.2.3 re-signs a \
+             signed vCon (the signed form, `payload` and `signatures`)"
+                .into(),
+        );
+    }
+    let inner = opener.unwrap_at(signed, max_unsigned, now)?;
+    let (_, chain) = verify_with_signer(signed, max_unsigned)?;
+    let leaf = chain
+        .first()
+        .ok_or("the signature carries no `x5c` certificate")?;
+    let (not_before, not_after) = certificate_validity(leaf)?;
+    if now < not_before || now > not_after {
+        return Err(format!(
+            "the vCon's signing certificate is not valid now: it is valid from {} to {} \
+             (seconds since the Unix epoch), and section 5.2.3 re-signs before it expires",
+            not_before, not_after
+        ));
+    }
+    let uuid = value["signatures"][0]["header"]["uuid"]
+        .as_str()
+        .map(str::to_owned)
+        .or_else(|| {
+            serde_json::from_slice::<serde_json::Value>(&inner.unsigned)
+                .ok()
+                .and_then(|v| v["uuid"].as_str().map(str::to_owned))
+        })
+        .ok_or("the vCon carries no uuid")?;
+    sign(signed, &uuid, signer)
+}
+
+/// The validity period of a DER certificate
+/// ([RFC 5280 section 4.1.2.5](https://www.rfc-editor.org/rfc/rfc5280.html#section-4.1.2.5)),
+/// `notBefore` and `notAfter` in seconds since the Unix epoch.
+///
+/// # Errors
+///
+/// A certificate that is not DER X.509, or a time that does not parse.
+pub fn certificate_validity(certificate: &[u8]) -> Result<(u64, u64), String> {
+    const BAD: &str = "the certificate is not DER X.509";
+    let (0x30, body, _, _) = der_element(certificate).ok_or(BAD)? else {
+        return Err(BAD.into());
+    };
+    let (0x30, tbs, _, _) = der_element(body).ok_or(BAD)? else {
+        return Err(BAD.into());
+    };
+    let mut rest = tbs;
+    if rest.first() == Some(&0xA0) {
+        rest = der_element(rest).ok_or(BAD)?.3;
+    }
+    // serialNumber, signature, issuer
+    for _ in 0..3 {
+        rest = der_element(rest).ok_or(BAD)?.3;
+    }
+    let (0x30, validity, _, _) = der_element(rest).ok_or(BAD)? else {
+        return Err(BAD.into());
+    };
+    let (tag, first, _, after) = der_element(validity).ok_or(BAD)?;
+    let (tag2, second, _, _) = der_element(after).ok_or(BAD)?;
+    Ok((x509_time(tag, first)?, x509_time(tag2, second)?))
+}
+
+/// A `UTCTime` (tag 0x17, `YYMMDDHHMMSSZ`, years 1950 to 2049) or
+/// `GeneralizedTime` (tag 0x18, `YYYYMMDDHHMMSSZ`) in seconds since the
+/// Unix epoch (RFC 5280 sections 4.1.2.5.1 and 4.1.2.5.2).
+fn x509_time(tag: u8, text: &[u8]) -> Result<u64, String> {
+    let text = std::str::from_utf8(text).map_err(|_| "a certificate time is not ASCII")?;
+    let full = match (tag, text.len()) {
+        (0x17, 13) => {
+            let year: u32 = text[..2].parse().map_err(|_| "a UTCTime year")?;
+            format!("{}{text}", if year >= 50 { "19" } else { "20" })
+        }
+        (0x18, 15) => text.to_owned(),
+        _ => return Err("a certificate time is neither UTCTime nor GeneralizedTime".into()),
+    };
+    let parsed = chrono::NaiveDateTime::parse_from_str(&full, "%Y%m%d%H%M%SZ")
+        .map_err(|e| format!("a certificate time does not parse: {e}"))?;
+    u64::try_from(parsed.and_utc().timestamp())
+        .map_err(|_| "a certificate time is before 1970".to_owned())
+}
+
 /// Why an encrypted container was not opened: no decryption key was given.
 pub const NO_KEY: &str = "the container is encrypted (draft-ietf-vcon-vcon-core-04 section 5.3), \
      and no decryption key was given: give --vcon-key, or [vcon_input] key in the config file";
@@ -1734,14 +1847,28 @@ impl Opener {
                 );
             }
         }
-        if form(&current) == Form::Signed {
+        if form(&current) != Form::Signed && self.trust.is_active() {
+            return Err(NOT_SIGNED.into());
+        }
+        // core-04 section 5.2.3: a signed vCon re-signed for an archive is
+        // the payload of the next JWS. Every layer's signature is verified;
+        // the outermost signer is the one the trust checks, and the inner
+        // ones are "assumed to have valid integrity".
+        let mut depth = 0usize;
+        while form(&current) == Form::Signed {
+            depth += 1;
+            if depth > MAX_SIGNED_LAYERS {
+                return Err(format!(
+                    "the container nests more than {MAX_SIGNED_LAYERS} signed layers"
+                ));
+            }
             let (unsigned, chain) = verify_with_signer(&current, max_unsigned)?;
-            self.trust.check(&chain, now)?;
+            if depth == 1 {
+                self.trust.check(&chain, now)?;
+            }
             let signer = chain.first().cloned().unwrap_or_default();
             layers.push(Layer::Signed(colon_hex(&sha2::Sha256::digest(&signer))));
             current = unsigned;
-        } else if self.trust.is_active() {
-            return Err(NOT_SIGNED.into());
         }
         Ok(Unwrapped {
             unsigned: current,
@@ -2469,6 +2596,66 @@ mod tests {
         assert!(err.contains("not the algorithm"), "{err}");
         let (other_key, _) = ec_pair()?;
         assert!(Signer::from_pem(&other_key, &cert).is_err(), "another key");
+        Ok(())
+    }
+
+    /// The validity period reads in both encodings RFC 5280 section
+    /// 4.1.2.5 allows: `UTCTime` through 2049, `GeneralizedTime` from 2050.
+    #[test]
+    fn certificate_validity_reads_utc_and_generalized_time() -> TestResult {
+        let key = rcgen::KeyPair::generate_for(&rcgen::PKCS_ECDSA_P256_SHA256)?;
+        let mut params = rcgen::CertificateParams::default();
+        params.not_before = rcgen::date_time_ymd(2020, 1, 1);
+        params.not_after = rcgen::date_time_ymd(2055, 1, 1);
+        let cert = params.self_signed(&key)?;
+        // 2020-01-01 and 2055-01-01, 00:00:00 UTC.
+        assert_eq!(
+            certificate_validity(cert.der())?,
+            (1_577_836_800, 2_682_374_400)
+        );
+        assert!(certificate_validity(b"not a certificate").is_err());
+        Ok(())
+    }
+
+    /// Re-signing nests the signed form, and the reader walks every layer
+    /// to the unsigned vCon, naming a signer per layer; one more layer than
+    /// [`MAX_SIGNED_LAYERS`] is refused.
+    #[test]
+    fn unwrap_walks_nested_signed_layers() -> TestResult {
+        let opener = Opener::without_key();
+        let mut current = sign(&unsigned(), UUID, &signer()?)?;
+        for depth in 1..=MAX_SIGNED_LAYERS {
+            let got = opener.unwrap_at(&current, usize::MAX, IN_2030)?;
+            assert_eq!(got.unsigned, unsigned());
+            assert_eq!(got.layers.len(), depth);
+            current = sign(&current, UUID, &signer()?)?;
+        }
+        let err = opener
+            .unwrap_at(&current, usize::MAX, IN_2030)
+            .err()
+            .ok_or("too deep a nesting was accepted")?;
+        assert!(err.contains("nests more than"), "{err}");
+        Ok(())
+    }
+
+    /// The trust checks the outermost signer of an archive, not the inner
+    /// ones core-04 section 5.2.3 assumes: an inner signer the CA did not
+    /// issue still reads under an outer one it did.
+    #[test]
+    fn the_trust_checks_the_outermost_signer_only() -> TestResult {
+        let ours = pki("archive", 2040)?;
+        let opener = Opener::without_key().trusting(SignerTrust::from_ca_pem(&ours.ca, true)?);
+        let inner = sign(&unsigned(), UUID, &signer()?)?;
+        assert!(opener.unwrap_at(&inner, usize::MAX, IN_2030).is_err());
+        let archive = sign(
+            &inner,
+            UUID,
+            &Signer::from_pem(&fixture("fake_grp.key")?, &ours.chain)?,
+        )?;
+        assert_eq!(
+            opener.unwrap_at(&archive, usize::MAX, IN_2030)?.unsigned,
+            unsigned()
+        );
         Ok(())
     }
 
