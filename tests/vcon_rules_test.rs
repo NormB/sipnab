@@ -232,6 +232,7 @@ fn a_url_rule_writes_the_wav_beside_the_container_and_references_it() -> Result<
 }
 
 /// The recording of the one container in `dir`, and that container.
+#[cfg(feature = "opus")]
 fn recording_in(dir: &Path) -> Result<(serde_json::Value, serde_json::Value), TestError> {
     let container = containers(dir)?.into_iter().next().ok_or("a container")?;
     let recording = container["dialog"]
@@ -245,6 +246,7 @@ fn recording_in(dir: &Path) -> Result<(serde_json::Value, serde_json::Value), Te
 }
 
 /// `sha512-` and the base64url SHA-512 of `bytes`.
+#[cfg(feature = "opus")]
 fn hash_of(bytes: &[u8]) -> String {
     use base64::Engine as _;
     use sha2::{Digest, Sha512};

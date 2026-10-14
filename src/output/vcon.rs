@@ -3864,7 +3864,6 @@ fn stir_verification_report(dialog: &SipDialog) -> Option<Attachment> {
                         .map(|v| (m, header, v))
                 })
         })?;
-    let passport = message.stir_shaken().and_then(Result::ok);
     let result = match verstat.as_str() {
         v if v.eq_ignore_ascii_case("TN-Validation-Passed") => Some("verified"),
         v if v.eq_ignore_ascii_case("TN-Validation-Failed") => Some("failed"),
@@ -3878,23 +3877,7 @@ fn stir_verification_report(dialog: &SipDialog) -> Option<Attachment> {
     if let Some(result) = result {
         body.insert("result".into(), result.into());
     }
-    if let Some(info) = &passport {
-        let attestation = match info.attestation {
-            crate::sip::stir_shaken::Attestation::A => Some("A"),
-            crate::sip::stir_shaken::Attestation::B => Some("B"),
-            crate::sip::stir_shaken::Attestation::C => Some("C"),
-            _ => None,
-        };
-        if let Some(level) = attestation {
-            body.insert("attestation".into(), level.into());
-        }
-        if let Some(orig) = &info.orig_tn {
-            body.insert("orig_tn".into(), orig.clone().into());
-        }
-        if !info.dest_tn.is_empty() {
-            body.insert("dest_tn".into(), info.dest_tn.clone().into());
-        }
-    }
+    add_passport_fields(&mut body, message);
     body.insert("reason".into(), STIR_REPORT_REASON.into());
     body.insert("verstat".into(), verstat.into());
     body.insert("verstat_header".into(), header.into());
@@ -3907,6 +3890,44 @@ fn stir_verification_report(dialog: &SipDialog) -> Option<Attachment> {
         encoding: "json",
         body: serde_json::Value::Object(body),
     })
+}
+
+/// Add the attestation and telephone numbers of the PASSporT in `message`'s
+/// `Identity` header to a STIR report body, when it parses.
+///
+/// The PASSporT parser is part of the `tls` feature, so a build without it
+/// writes the report with no `attestation`, `orig_tn` or `dest_tn`.
+#[cfg(feature = "tls")]
+fn add_passport_fields(
+    body: &mut serde_json::Map<String, serde_json::Value>,
+    message: &crate::sip::message::SipMessage,
+) {
+    let Some(info) = message.stir_shaken().and_then(Result::ok) else {
+        return;
+    };
+    let attestation = match info.attestation {
+        crate::sip::stir_shaken::Attestation::A => Some("A"),
+        crate::sip::stir_shaken::Attestation::B => Some("B"),
+        crate::sip::stir_shaken::Attestation::C => Some("C"),
+        _ => None,
+    };
+    if let Some(level) = attestation {
+        body.insert("attestation".into(), level.into());
+    }
+    if let Some(orig) = &info.orig_tn {
+        body.insert("orig_tn".into(), orig.clone().into());
+    }
+    if !info.dest_tn.is_empty() {
+        body.insert("dest_tn".into(), info.dest_tn.clone().into());
+    }
+}
+
+/// Without the `tls` feature there is no PASSporT parser, so nothing is added.
+#[cfg(not(feature = "tls"))]
+fn add_passport_fields(
+    _body: &mut serde_json::Map<String, serde_json::Value>,
+    _message: &crate::sip::message::SipMessage,
+) {
 }
 
 /// The value of a `verstat` parameter anywhere in a header value: the text
@@ -9488,6 +9509,8 @@ mod tests {
     /// [draft-howe-vcon-sip-signaling-00 section 7.3](https://datatracker.ietf.org/doc/html/draft-howe-vcon-sip-signaling-00#section-7.3),
     /// with the PASSporT's claims beside it and a reason saying sipnab
     /// verified nothing.
+    // The attestation and numbers come from the PASSporT parser, a `tls` item.
+    #[cfg(feature = "tls")]
     #[test]
     fn a_verstat_becomes_a_stir_verification_report() -> Result<(), TestError> {
         let identity = identity_header("A");
