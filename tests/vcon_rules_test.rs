@@ -489,6 +489,34 @@ fn a_rule_with_dtmf_events_writes_the_rtp_key_presses() -> Result<(), TestError>
     Ok(())
 }
 
+/// RTP key presses whose sending socket no party advertised are decoded and
+/// not written: `SIP_DTMF2.cap` carries seven keys at PT 96, sent from
+/// 192.168.105.172:4376, a socket neither party's SDP named. The party is the
+/// one whose own advertised endpoint sent the stream, the evidence the audio
+/// channels are attributed by, and here there is none, so `party_history`
+/// gets no `keydown` rather than one with a guessed party.
+#[test]
+fn rtp_key_presses_from_a_socket_no_party_advertised_are_not_attributed() -> Result<(), TestError> {
+    let home = tempfile::tempdir()?;
+    let dir = home.path().join("dtmf2");
+    let config = rule("dtmf2", "call_id == '25672@192.168.105.110'", &dir, "omit").replace(
+        "audio = \"omit\"\n",
+        "audio = \"omit\"\ndtmf_events = true\n",
+    );
+    let out = run_on("tests/pcap-samples/SIP_DTMF2.cap", &config, home.path())?;
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(out.status.success(), "{stderr}");
+    let decoded = stderr.lines().filter(|l| l.contains("DTMF digit=")).count();
+    assert_eq!(decoded, 7, "the seven keys are decoded\n{stderr}");
+    let written = containers(&dir)?;
+    assert_eq!(written.len(), 1, "{stderr}");
+    assert!(
+        key_events(&written[0]).is_empty(),
+        "no party to attribute to"
+    );
+    Ok(())
+}
+
 /// The body of a container's `tags` attachment, when it has one.
 fn tags(container: &serde_json::Value) -> Option<serde_json::Value> {
     container["attachments"]

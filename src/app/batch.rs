@@ -5676,12 +5676,14 @@ impl PacketPass<'_, '_, '_> {
     /// event.
     ///
     /// The telephone-event payload type and clock rate are negotiated in
-    /// SDP (`a=rtpmap:<pt> telephone-event/<clock>`), not fixed at the
-    /// PT 101 / 8000 Hz conventions. `process_rtp` resolved this
-    /// stream's codec, payload_type, and clock_rate from that rtpmap,
-    /// so when the codec is telephone-event we use the stream's
-    /// negotiated PT and clock; otherwise fall back to the conventions
-    /// (e.g. a DTMF-only stream with no observed SDP).
+    /// SDP (`a=rtpmap:<pt> telephone-event/<clock>`), any dynamic PT, and
+    /// are read per packet from the rtpmap of the session that owns the
+    /// stream ([`StreamStore::negotiated_rtpmap`]). Per packet, not from the
+    /// stream's codec: a sender commonly puts the events on the SSRC that
+    /// carries its audio, so the stream's codec is the audio codec. PT 101
+    /// at 8000 Hz is read only when no SDP ties the stream to a session, or
+    /// that session negotiated no telephone-event
+    /// ([`rtp::dtmf::FALLBACK_TELEPHONE_EVENT`]).
     #[inline]
     fn extract_dtmf(
         &mut self,
@@ -5691,17 +5693,12 @@ impl PacketPass<'_, '_, '_> {
     ) {
         let rtp_payload = &rtp_pp.payload[rtp_hdr.payload_offset..];
         let key = stream_key_of(pp, rtp_hdr);
-        let (expected_pt, clock_rate) = self
-            .state
-            .stream_store
-            .get_live(&key)
-            .filter(|s| {
-                s.codec
-                    .as_deref()
-                    .is_some_and(|c| c.eq_ignore_ascii_case("telephone-event"))
-            })
-            .map(|s| (s.payload_type, s.clock_rate))
-            .unwrap_or((101, 8000));
+        let Some((expected_pt, clock_rate)) = rtp::dtmf::telephone_event_format(
+            self.state.stream_store.negotiated_rtpmap(&key),
+            rtp_hdr.payload_type,
+        ) else {
+            return;
+        };
         if let Some(dtmf) = rtp::dtmf::extract_dtmf_with_clock(
             rtp_payload,
             rtp_hdr.payload_type,
@@ -16249,6 +16246,74 @@ mod tests {
         let packets = [rtp_dtmf_packet(40000, 101, 0x5555_6666, 9, 800)];
         let dtmf = drive_packets_dtmf(&cli, &packets, (5060, 5061))?;
         assert_eq!(dtmf, 1, "PT 101 fallback must decode when no SDP is seen");
+        Ok(())
+    }
+
+    /// `tests/pcap-samples/SIP_DTMF2.cap`, parsed: every frame sipnab
+    /// decodes, in capture order.
+    fn sip_dtmf2_packets() -> Result<Vec<ParsedPacket>, TestError> {
+        let data = std::fs::read("tests/pcap-samples/SIP_DTMF2.cap")?;
+        let mut packets = Vec::new();
+        for record in crate::capture::pcap_reader::PcapReader::new(&data)? {
+            let at = chrono::DateTime::from_timestamp(
+                i64::from(record.timestamp_secs),
+                record.timestamp_usecs * 1000,
+            )
+            .ok_or("a capture timestamp")?;
+            let caplen = record.data.len();
+            let frame = crate::capture::packet::Packet::new(
+                at,
+                record.data,
+                caplen,
+                record.orig_len as usize,
+                None,
+                record.link_type as i32,
+            );
+            if let Ok(pp) = crate::capture::parse::parse_packet(&frame) {
+                packets.push(pp);
+            }
+        }
+        Ok(packets)
+    }
+
+    /// The seven keys of `SIP_DTMF2.cap` land on the stream its dialog owns.
+    ///
+    /// The capture's 200 OK binds `a=rtpmap:96 telephone-event/8000`, and the
+    /// events ride PT 96 on the SSRC that carries the PCMA audio, sent from
+    /// 192.168.105.172:4376, a socket no SDP in the dialog advertised, to
+    /// 192.168.105.110:4376, the socket the 200 OK advertised. The stream is
+    /// tied to the dialog by that destination, the same link every other
+    /// stream gets, so the keys are recorded there.
+    #[test]
+    fn a_dynamic_telephone_event_type_on_the_audio_ssrc_is_decoded() -> Result<(), TestError> {
+        let mut cli = base_cli();
+        cli.mode_args.telephone_event = true;
+        let packets = sip_dtmf2_packets()?;
+        let driven = drive_packets_kept(
+            &cli,
+            &packets,
+            EventExecEngine::new(
+                None,
+                None,
+                0,
+                0.0,
+                crate::output::event_exec::DEFAULT_QUEUE_DEPTH,
+            ),
+        )?;
+        assert_eq!(driven.counters.dtmf_count, 7);
+        let sender: std::net::SocketAddr = "192.168.105.172:4376".parse()?;
+        let pressed: Vec<(std::net::SocketAddr, String)> = driven
+            .streams
+            .streams_for("25672@192.168.105.110")
+            .flat_map(|s| {
+                s.key_presses
+                    .iter()
+                    .map(move |p| (s.key.src, p.digit.to_string()))
+            })
+            .collect();
+        let expected: Vec<(std::net::SocketAddr, String)> =
+            "6789123".chars().map(|d| (sender, d.to_string())).collect();
+        assert_eq!(pressed, expected);
         Ok(())
     }
 

@@ -191,6 +191,13 @@ entry that carries them.
     - Since 0.5.125 sipnab keys the other 62 bits on the node, the dialog and the capture.
   - The uuid code comment said `rand_b` came from the node name alone.
   - Each now states what the code does.
+- **Telephone events at a dynamic payload type on the audio SSRC are decoded.**
+  - `tests/pcap-samples/SIP_DTMF2.cap` negotiates `a=rtpmap:96 telephone-event/8000` and sends seven keys at PT 96 on the SSRC that carries its PCMA audio.
+  - sipnab read the stream's codec as PCMA, looked for telephone events at PT 101, and decoded none of them.
+  - The payload type and clock rate now come from the `a=rtpmap` of the session that owns the stream, per packet, for any dynamic PT.
+  - The session is found through the same SDP endpoint that links the stream to its dialog, so a stream sent from a socket no SDP advertised reads the SDP that advertised its destination.
+  - PT 101 at 8000 Hz remains the default only when no SDP ties the stream to a session, or that session negotiated no telephone-event and bound nothing else to 101.
+  - A vCon `dtmf_events` rule still writes no `keydown` for these keys, because their sending socket is no party's advertised endpoint.
 
 ### Internal
 
