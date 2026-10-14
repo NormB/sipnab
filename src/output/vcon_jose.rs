@@ -2647,7 +2647,7 @@ mod tests {
         })
         .map_err(|_| "agree")?;
         let cek: [u8; 64] = cek.try_into().map_err(|_| "cek")?;
-        let iv = [7u8; 16];
+        let iv: [u8; 16] = ring::rand::generate(&random).map_err(|_| "iv")?.expose();
         let signed = sign(&unsigned(), UUID, &signer()?)?;
         let (ciphertext, tag) = a256cbc_hs512_seal(&cek, &iv, b"", &signed)?;
         let jwe = serde_json::json!({
