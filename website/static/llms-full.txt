@@ -20200,6 +20200,20 @@ A `[diagnosis]` threshold is 0, negative, infinity or NaN (not-a-number).
 
 **Exit code:** 1.
 
+### `[display] view_filter_detail must be one of summary, full, got {m:?}`
+
+`[display] view_filter_detail` names a display mode the terminal UI does not have.
+
+- `{m:?}` is the value in the file.
+- `summary` shows the filter-dialog (F7) part of the view filter as a short summary on status line 3.
+- `full` shows the whole expression.
+- sipnab checks this key only in builds that include the terminal UI.
+- The printed line starts with `invalid config value: `.
+
+**What to do:** Set `view_filter_detail` to `summary` or `full`, or remove the key.
+
+**Exit code:** 1.
+
 ### `[display] is not a table`
 
 You saved the column layout from the terminal UI (the `s` action in the F10 column selector). sipnab could not add `visible_columns` to the configuration file.

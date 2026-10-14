@@ -746,7 +746,9 @@ const EXPECTED_UNRESOLVED: usize = 80;
 // Nothing removed.
 // 450 -> 451: src/app/batch.rs 1, the `sealed_updates` reason carried by
 // vcon_rules' refuse closure. Nothing removed.
-const EXPECTED_TEMPLATES: usize = 451;
+// 451 -> 452: src/config.rs `[display] view_filter_detail must be one of
+// summary, full, got {m:?}`, the F7 filter summary's mode key.
+const EXPECTED_TEMPLATES: usize = 452;
 
 // ---------------------------------------------------------------------------
 // The page gates

@@ -268,11 +268,11 @@ mod tui_e2e {
         }
     }
 
-    #[test]
-    #[ignore = "needs tmux on PATH; run by CI with --ignored"]
     /// A session removes its own XDG_CONFIG_HOME when it drops. Each launch
     /// made a /tmp/sipnab-e2e-cfg-* directory and none was ever removed: 95
     /// had built up on one development host by 2026-10-14.
+    #[test]
+    #[ignore = "needs tmux on PATH; run by CI with --ignored"]
     fn a_dropped_session_removes_its_config_home() -> Result<(), TestError> {
         let session = TuiSession::launch_sip_call()?;
         let cfg_home = session.cfg_home.clone();
