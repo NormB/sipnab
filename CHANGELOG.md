@@ -251,6 +251,11 @@ entry that carries them.
 
 ### Fixed
 
+- **SDP in an OPTIONS response no longer links an RTP stream to the OPTIONS dialog.**
+  - Only SDP in an offer or an answer links a stream: an INVITE, ACK, PRACK or UPDATE, or a 1xx or 2xx response to one, per [RFC 6337 section 2.2](https://www.rfc-editor.org/rfc/rfc6337.html#section-2.2).
+  - SDP in any other method, or in a 3xx to 6xx response, links none. [RFC 6337 section 2.4](https://www.rfc-editor.org/rfc/rfc6337.html#section-2.4) names a 200 OK for OPTIONS and a 488 for INVITE as SDP that is neither an offer nor an answer.
+  - One rule, `sip::sdp::sdp_sets_up_media`, decides it for the batch, `--cores`, live and TUI paths.
+  - In a capture where a phone answered OPTIONS with its media socket and then took a call on it, the call's first 10 RTP packets were bound to the OPTIONS dialog. The stream then split in two when the call's 200 OK named that socket. It is now one stream of 362 packets, bound to the call, as tshark counts it.
 - **The encrypted form names a `cty` that core-04 lists.**
   - An encrypting rule wrote `cty: "application/vcon+json"`, the value of the draft's Appendix A.7 example.
   - Section 5.3.1 lists `application/vcon` and `application/vcon+gzip`.

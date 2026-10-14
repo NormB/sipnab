@@ -49100,6 +49100,9 @@ reached the called phones. People then chose not to answer.
 ## Orphan stream
 
 An RTP stream sipnab could not match to any dialog's SDP. It has no Call-ID.
+Only SDP in an offer or an answer can match a stream.
+SDP in a 3xx to 6xx response matches none.
+SDP in an OPTIONS response, or in any method other than INVITE, ACK, PRACK and UPDATE, matches none.
 Common causes:
 
 - NAT rewriting the media address,
@@ -61473,6 +61476,11 @@ It does not carry it in any SIP field.
 
 - It has no Call-ID and no From.
 - Nothing links it to signaling except the IP/port pair the SDP advertised.
+  - Only SDP in an offer or an answer links a stream.
+    That is SDP in an INVITE, ACK, PRACK or UPDATE, or in a 1xx or 2xx response to one.
+  - SDP in any other message links no stream.
+    An OPTIONS 200 OK, for example, describes capabilities and sets up no session ([RFC 6337 section 2.4](https://www.rfc-editor.org/rfc/rfc6337.html#section-2.4)).
+  - [`sdp_sets_up_media`](../../src/sip/sdp.rs) holds this rule for every capture path.
 
 That explains three things:
 

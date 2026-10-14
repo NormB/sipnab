@@ -2470,7 +2470,15 @@ fn sdp_links_for(
     let Some(call_id) = sip_msg.call_id() else {
         return Vec::new();
     };
-    let sdp_links = extract_sdp_links(&sdp, call_id);
+    // SDP that is not an offer or an answer sets up no media, so the sockets
+    // it names belong to no dialog through it. An OPTIONS 200 OK describes
+    // capabilities; linking it bound a call's early media to the OPTIONS
+    // dialog. The SDES keys below are still learned.
+    let sdp_links = if sip_msg.sdp_sets_up_media() {
+        extract_sdp_links(&sdp, call_id)
+    } else {
+        Vec::new()
+    };
 
     // Feed SDES `a=crypto` key material into the SRTP context
     // (mutates decrypt, not stores — so it belongs in
@@ -3560,6 +3568,216 @@ mod quiet_bad_parse_tests {
         assert_eq!(sdp.media[0].port, 0);
         assert_eq!(sdp.media[0].media_type, "video");
         assert!(extract_sdp_links(&sdp, "call-3").is_empty());
+        Ok(())
+    }
+
+    // ── Only offer/answer SDP links media to a dialog ───────────────────
+
+    /// A SIP message carrying one audio `m=` line at `addr:port`, its
+    /// `Content-Length` computed from the body.
+    fn sip_with_sdp(start_line: &str, call_id: &str, cseq: &str, addr: &str, port: u16) -> Vec<u8> {
+        let origin = format!("o=- 1 1 IN IP4 {addr}");
+        let connection = format!("c=IN IP4 {addr}");
+        let media = format!("m=audio {port} RTP/AVP 0");
+        let body = sdp_body(&["v=0", &origin, "s=-", &connection, "t=0 0", &media]);
+        let mut message = format!(
+            "{start_line}\r\n\
+             Via: SIP/2.0/UDP 10.0.0.1:5060;branch=z9hG4bK-{call_id}\r\n\
+             From: <sip:alice@example.com>;tag=a\r\n\
+             To: <sip:bob@example.com>;tag=b\r\n\
+             Call-ID: {call_id}\r\n\
+             CSeq: {cseq}\r\n\
+             Content-Type: application/sdp\r\n\
+             Content-Length: {}\r\n\r\n",
+            body.len()
+        )
+        .into_bytes();
+        message.extend_from_slice(&body);
+        message
+    }
+
+    /// Feed each SIP message through the live applier, then `packets` RTP
+    /// packets on one SSRC from `src` to `dst`, and return the stream store.
+    fn store_after(
+        messages: &[Vec<u8>],
+        src: (IpAddr, u16),
+        dst: (IpAddr, u16),
+        packets: u16,
+    ) -> Result<StreamStore, TestError> {
+        let dialogs = Arc::new(RwLock::new(DialogStore::new(100, false)));
+        let streams = Arc::new(RwLock::new(StreamStore::new(100)));
+        let mut heur = rtp::heuristic::RtpHeuristic::new();
+        let opts = PipelineOptions::default();
+        for message in messages {
+            let mut decrypt = MediaDecrypt::default();
+            process_packet(
+                &packet(message),
+                &dialogs,
+                &streams,
+                &mut heur,
+                &opts,
+                &mut decrypt,
+                None,
+            );
+        }
+        let mut store = std::mem::replace(&mut *streams.write(), StreamStore::new(1));
+        send_rtp(&mut store, src, dst, 0, packets);
+        Ok(store)
+    }
+
+    /// `count` PCMU packets on SSRC `0x530A_1D36` from `src` to `dst`,
+    /// sequence numbers from `first_seq`.
+    fn send_rtp(
+        store: &mut StreamStore,
+        src: (IpAddr, u16),
+        dst: (IpAddr, u16),
+        first_seq: u16,
+        count: u16,
+    ) {
+        let base = Utc::now();
+        for seq in first_seq..first_seq + count {
+            let mut parsed = packet(&[0u8; 12 + 160]);
+            parsed.src_addr = src.0;
+            parsed.src_port = src.1;
+            parsed.dst_addr = dst.0;
+            parsed.dst_port = dst.1;
+            parsed.timestamp = base + chrono::TimeDelta::milliseconds(i64::from(seq) * 20);
+            let header = crate::rtp::parser::RtpHeader {
+                version: 2,
+                padding: false,
+                extension: false,
+                csrc_count: 0,
+                marker: false,
+                payload_type: 0,
+                sequence: seq,
+                timestamp: u32::from(seq) * 160,
+                ssrc: 0x530A_1D36,
+                payload_offset: 12,
+            };
+            store.process_rtp(&parsed, &header, parsed.timestamp);
+        }
+    }
+
+    /// The two media sockets of the scenario below.
+    fn media_sockets() -> ((IpAddr, u16), (IpAddr, u16)) {
+        (
+            (IpAddr::V4(Ipv4Addr::new(192, 0, 2, 49)), 4000),
+            (IpAddr::V4(Ipv4Addr::new(192, 0, 2, 86)), 15886),
+        )
+    }
+
+    /// SDP in a 200 OK to OPTIONS links no RTP stream to the OPTIONS dialog.
+    ///
+    /// [RFC 3261 section 11.2](https://www.rfc-editor.org/rfc/rfc3261.html#section-11.2): an OPTIONS response body is sent "to
+    /// describe media capabilities", and [RFC 3264 section 9](https://www.rfc-editor.org/rfc/rfc3264.html#section-9) says such
+    /// SDP is identified as capabilities "from the context of the higher layer
+    /// protocol". It sets up no session, so the media it names belongs to no
+    /// dialog through it.
+    #[test]
+    fn an_options_200_sdp_links_no_stream() -> Result<(), TestError> {
+        let (caller, _) = media_sockets();
+        let far = (IpAddr::V4(Ipv4Addr::new(192, 0, 2, 7)), 30000);
+        let options_200 = sip_with_sdp(
+            "SIP/2.0 200 OK",
+            "options-1@test",
+            "1 OPTIONS",
+            "192.0.2.49",
+            4000,
+        );
+        let store = store_after(&[options_200], caller, far, 10)?;
+        assert_eq!(store.len(), 1, "the RTP made one stream");
+        let stream = store.iter().next().ok_or("one stream")?;
+        assert_eq!(
+            stream.associated_dialog, None,
+            "a capability description linked a stream to the OPTIONS dialog"
+        );
+        Ok(())
+    }
+
+    /// The positive control: the same SDP in a 200 OK to INVITE links it.
+    #[test]
+    fn an_invite_200_sdp_links_its_stream() -> Result<(), TestError> {
+        let (caller, _) = media_sockets();
+        let far = (IpAddr::V4(Ipv4Addr::new(192, 0, 2, 7)), 30000);
+        let invite_200 = sip_with_sdp(
+            "SIP/2.0 200 OK",
+            "call-1@test",
+            "1 INVITE",
+            "192.0.2.49",
+            4000,
+        );
+        let store = store_after(&[invite_200], caller, far, 10)?;
+        let stream = store.iter().next().ok_or("one stream")?;
+        assert_eq!(stream.associated_dialog.as_deref(), Some("call-1@test"));
+        Ok(())
+    }
+
+    /// The request half of the positive control: an INVITE's own SDP links
+    /// the stream sent to the socket it offered.
+    #[test]
+    fn an_invite_request_sdp_links_its_stream() -> Result<(), TestError> {
+        let (_, callee) = media_sockets();
+        let near = (IpAddr::V4(Ipv4Addr::new(192, 0, 2, 7)), 30000);
+        let invite = sip_with_sdp(
+            "INVITE sip:bob@example.com SIP/2.0",
+            "call-1@test",
+            "1 INVITE",
+            "192.0.2.86",
+            15886,
+        );
+        let store = store_after(&[invite], near, callee, 10)?;
+        let stream = store.iter().next().ok_or("one stream")?;
+        assert_eq!(stream.associated_dialog.as_deref(), Some("call-1@test"));
+        Ok(())
+    }
+
+    /// The capture that found the defect, reduced: an OPTIONS 200 advertised
+    /// the sender's socket, the INVITE advertised the receiver's, and RTP
+    /// began before the INVITE's 200 OK. Every packet is the call's, in one
+    /// stream.
+    #[test]
+    fn early_media_after_an_options_200_stays_one_stream_of_the_call() -> Result<(), TestError> {
+        let (caller, callee) = media_sockets();
+        let messages = [
+            sip_with_sdp(
+                "SIP/2.0 200 OK",
+                "options-1@test",
+                "1 OPTIONS",
+                "192.0.2.49",
+                4000,
+            ),
+            sip_with_sdp(
+                "INVITE sip:bob@example.com SIP/2.0",
+                "call-1@test",
+                "1 INVITE",
+                "192.0.2.86",
+                15886,
+            ),
+        ];
+        let mut store = store_after(&messages, caller, callee, 10)?;
+        // The 200 OK to the INVITE arrives, then the rest of the media.
+        let answer = sip_with_sdp(
+            "SIP/2.0 200 OK",
+            "call-1@test",
+            "1 INVITE",
+            "192.0.2.49",
+            4000,
+        );
+        let PacketAction::Sip { sdp_links, .. } =
+            classify(&packet(&answer), &PipelineOptions::default())
+        else {
+            return Err("the 200 OK classifies as SIP".into());
+        };
+        let provenance = rtp::stream_store::SdpProvenance::unknown();
+        for (ip, port, call_id, media) in &sdp_links {
+            store.link_to_dialog_with_sdp_from(*ip, *port, call_id, media, provenance);
+        }
+        send_rtp(&mut store, caller, callee, 10, 352);
+
+        assert_eq!(store.len(), 1, "one SSRC on one socket pair is one stream");
+        let stream = store.iter().next().ok_or("one stream")?;
+        assert_eq!(stream.packet_count, 362);
+        assert_eq!(stream.associated_dialog.as_deref(), Some("call-1@test"));
         Ok(())
     }
 
