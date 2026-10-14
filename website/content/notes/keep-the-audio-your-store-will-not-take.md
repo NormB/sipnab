@@ -76,7 +76,7 @@ store or program that reads them.
   `sipnab-dialog-diagnosis/1` analysis entry.
 
    ```bash
-   jq -r '.analysis[] | select(.schema == "sipnab-dialog-diagnosis/1") | .body | fromjson | .capture_completeness.media' calls/*.vcon.json
+   jq -r '.analysis[] | select(.schema == "sipnab-dialog-diagnosis/1") | .body.capture_completeness.media' calls/*.vcon.json
    ```
 
    ```text
@@ -121,7 +121,7 @@ store or program that reads them.
 - Check the media outcome of that container.
 
    ```bash
-   jq -r '.analysis[] | select(.schema == "sipnab-dialog-diagnosis/1") | .body | fromjson | .capture_completeness.media' calls-no-audio/*.vcon.json
+   jq -r '.analysis[] | select(.schema == "sipnab-dialog-diagnosis/1") | .body.capture_completeness.media' calls-no-audio/*.vcon.json
    ```
 
    ```text
@@ -138,7 +138,7 @@ store or program that reads them.
   before `INCOMPLETE`.
 
    ```bash
-   jq -r '.analysis[] | select(.schema == "sipnab-dialog-diagnosis/1") | .body | fromjson | .capture_completeness.note | split(" — ")[1]' calls-no-audio/*.vcon.json
+   jq -r '.analysis[] | select(.schema == "sipnab-dialog-diagnosis/1") | .body.capture_completeness.note | split(" — ")[1]' calls-no-audio/*.vcon.json
    ```
 
    ```text

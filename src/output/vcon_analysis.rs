@@ -164,6 +164,17 @@ pub fn analyze_container(container: &Value, limit: usize) -> Result<VconAnalysis
     if !container.is_object() {
         return Err(NotAContainer);
     }
+    // core-04 section 4.1.4: not even the schema check runs on a container
+    // sipnab cannot interpret.
+    if let Some(why) = crate::capture::vcon_input::critical_refusal(container) {
+        return Ok(VconAnalysis {
+            schema_version: VCON_ANALYSIS_SCHEMA_VERSION,
+            verdict: "unreadable".to_string(),
+            reason: Some(format!("a vCon container sipnab must not read: {why}")),
+            uuid: container["uuid"].as_str().map(str::to_string),
+            ..VconAnalysis::default()
+        });
+    }
     let schema_findings: Vec<ContainerFinding> = crate::output::vcon_schema::validate(container)
         .errors
         .into_iter()
@@ -394,6 +405,35 @@ mod tests {
             a.stored_media_quality,
             vec![json!({"ssrc": "0x1", "mos": 4.1})]
         );
+        Ok(())
+    }
+
+    /// A container listing a critical extension sipnab does not support is
+    /// not analyzed, and the answer names the extension.
+    ///
+    /// [Section 4.1.4 of draft-ietf-vcon-vcon-core-04](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-04#section-4.1.4):
+    /// "An implementation that does not recognize or support the extensions
+    /// listed in the critical parameter MUST NOT attempt to process or operate
+    /// on the vCon, except to reject it or report unsupported content."
+    #[test]
+    fn an_unsupported_critical_extension_is_not_analyzed() -> Result<(), TestError> {
+        let mut c = container(&["c1"]);
+        c["critical"] = json!(["x-redaction"]);
+        // A schema finding the check would report, had it run: it must not.
+        c.as_object_mut().map(|m| m.remove("created_at"));
+        assert!(!crate::output::vcon_schema::validate(&c).errors.is_empty());
+        let a = analyze_container(&c, 50)?;
+        assert_eq!(a.verdict, "unreadable");
+        assert!(
+            a.reason
+                .as_deref()
+                .is_some_and(|r| r.contains("x-redaction") && r.contains("section 4.1.4")),
+            "{:?}",
+            a.reason
+        );
+        assert!(a.analysis.is_none());
+        assert!(a.dialogs.is_empty());
+        assert!(a.schema_findings.is_empty(), "{:?}", a.schema_findings);
         Ok(())
     }
 

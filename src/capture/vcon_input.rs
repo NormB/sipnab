@@ -196,6 +196,63 @@ pub fn declared_extensions(container: &serde_json::Value) -> Vec<String> {
     }
 }
 
+/// The extensions `container` lists in `critical` that sipnab does not
+/// support, in the order listed. Empty when it lists none, or only ones in
+/// [`crate::output::vcon::DECLARED_EXTENSIONS`].
+///
+/// [Section 4.1.4 of draft-ietf-vcon-vcon-core-04](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-04#section-4.1.4):
+/// "An implementation that does not recognize or support the extensions
+/// listed in the critical parameter MUST NOT attempt to process or operate on
+/// the vCon, except to reject it or report unsupported content." Every reader
+/// (`-I`, `analyze_vcon`, `validate_vcon`, `POST /v1/vcon/analyze` and
+/// `POST /v1/vcon/validate`) refuses through [`critical_refusal`], so the
+/// rule is this one function.
+///
+/// `critical` is an array of names in core-04. A single string is read as one
+/// name, and an object (the form vcon.store gives `extensions`) contributes
+/// the names whose value is `true`. An array entry that is not a string is
+/// reported as its JSON text, since no supported name matches it.
+#[cfg(feature = "vcon")]
+#[must_use]
+pub fn unsupported_critical(container: &serde_json::Value) -> Vec<String> {
+    let listed: Vec<String> = match &container["critical"] {
+        serde_json::Value::Array(names) => names
+            .iter()
+            .map(|n| n.as_str().map_or_else(|| n.to_string(), str::to_string))
+            .collect(),
+        serde_json::Value::String(name) => vec![name.clone()],
+        serde_json::Value::Object(map) => map
+            .iter()
+            .filter(|(_, v)| v.as_bool() == Some(true))
+            .map(|(k, _)| k.clone())
+            .collect(),
+        _ => Vec::new(),
+    };
+    listed
+        .into_iter()
+        .filter(|name| !crate::output::vcon::DECLARED_EXTENSIONS.contains(&name.as_str()))
+        .collect()
+}
+
+/// Why sipnab must not read `container`, when its `critical` lists an
+/// extension sipnab does not support; `None` otherwise. See
+/// [`unsupported_critical`].
+#[cfg(feature = "vcon")]
+#[must_use]
+pub fn critical_refusal(container: &serde_json::Value) -> Option<String> {
+    let unsupported = unsupported_critical(container);
+    if unsupported.is_empty() {
+        return None;
+    }
+    Some(format!(
+        "its critical parameter lists {}, which sipnab does not support, and \
+         draft-ietf-vcon-vcon-core-04 section 4.1.4 forbids processing a vCon that \
+         lists an unsupported critical extension. sipnab supports {}",
+        unsupported.join(", "),
+        crate::output::vcon::DECLARED_EXTENSIONS.join(" and ")
+    ))
+}
+
 /// Containers this process has read into its stores, in read order.
 static READ: LazyLock<parking_lot::Mutex<Vec<VconProvenance>>> =
     LazyLock::new(|| parking_lot::Mutex::new(Vec::new()));
@@ -294,6 +351,9 @@ mod reader {
         /// The container stores no SIP message that could be rebuilt; the
         /// detail says why.
         NoSignaling(String),
+        /// The container's `critical` lists an extension sipnab does not
+        /// support; the detail names it. See [`super::critical_refusal`].
+        UnsupportedCritical(String),
     }
 
     impl std::fmt::Display for ContainerError {
@@ -313,6 +373,9 @@ mod reader {
                         f,
                         "a vCon container with no SIP signaling sipnab can read: {why}"
                     )
+                }
+                Self::UnsupportedCritical(why) => {
+                    write!(f, "a vCon container sipnab must not read: {why}")
                 }
             }
         }
@@ -393,6 +456,9 @@ mod reader {
             .any(|m| members.contains_key(*m))
         {
             return Err(ContainerError::NotAVcon);
+        }
+        if let Some(why) = super::critical_refusal(container) {
+            return Err(ContainerError::UnsupportedCritical(why));
         }
         let schema_findings = schema_finding_lines(container);
 
@@ -1036,6 +1102,62 @@ mod tests {
                     "Content-Length": ["24"]
                 }
             })
+        }
+
+        /// A container whose `critical` lists an extension sipnab does not
+        /// support is refused, naming each such extension and no other.
+        ///
+        /// [Section 4.1.4 of draft-ietf-vcon-vcon-core-04](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-04#section-4.1.4):
+        /// "An implementation that does not recognize or support the
+        /// extensions listed in the critical parameter MUST NOT attempt to
+        /// process or operate on the vCon, except to reject it or report
+        /// unsupported content."
+        #[test]
+        fn an_unsupported_critical_extension_is_refused_naming_it() -> Result<(), TestError> {
+            let mut c = container(trace(json!([invite()])));
+            c["critical"] = json!(["sip-signaling", "x-redaction", "x-other"]);
+            let err = rebuild(&c, "t")
+                .err()
+                .ok_or("a container sipnab cannot interpret must be refused")?
+                .to_string();
+            for needle in ["x-redaction", "x-other", "critical", "section 4.1.4"] {
+                assert!(err.contains(needle), "{needle}: {err}");
+            }
+            assert_eq!(
+                crate::capture::vcon_input::unsupported_critical(&c),
+                ["x-redaction", "x-other"],
+                "a supported one is not named"
+            );
+            Ok(())
+        }
+
+        /// `critical` is read in each form it can arrive in: the core-04
+        /// array, a single string, and the object form vcon.store gives
+        /// `extensions`; an entry that is not a string is reported as its
+        /// JSON text.
+        #[test]
+        fn critical_is_read_in_every_form() {
+            use crate::capture::vcon_input::unsupported_critical;
+            assert!(unsupported_critical(&json!({})).is_empty());
+            assert_eq!(unsupported_critical(&json!({"critical": "x"})), ["x"]);
+            assert_eq!(
+                unsupported_critical(&json!({"critical": {"x": true, "CC": true, "y": false}})),
+                ["x"]
+            );
+            assert_eq!(unsupported_critical(&json!({"critical": [5, "CC"]})), ["5"]);
+        }
+
+        /// A `critical` listing only what sipnab supports, or nothing, does
+        /// not stop the read.
+        #[test]
+        fn a_supported_or_empty_critical_list_is_read() -> Result<(), TestError> {
+            for critical in [json!([]), json!(["CC"]), json!(["sip-signaling", "CC"])] {
+                let mut c = container(trace(json!([invite()])));
+                c["critical"] = critical.clone();
+                let rebuilt = rebuild(&c, "t").map_err(|e| format!("{critical}: {e}"))?;
+                assert_eq!(rebuilt.messages.len(), 1, "{critical}");
+            }
+            Ok(())
         }
 
         #[test]

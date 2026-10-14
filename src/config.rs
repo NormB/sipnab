@@ -1502,6 +1502,11 @@ pub struct VconRuleConfig {
     /// 5.2 allows, and the encrypted form names `cty: "application/vcon+gzip"`.
     #[serde(default)]
     pub compress: Option<String>,
+    /// What an encrypting rule writes when a call it already wrote changes:
+    /// `new-uuid` (unset), `same-uuid` or `final-only`. No effect without
+    /// `encrypt_to`.
+    #[serde(default)]
+    pub sealed_updates: Option<String>,
 }
 
 /// The PBX sipnab runs beside.

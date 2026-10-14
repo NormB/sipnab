@@ -129,6 +129,59 @@ fn an_encrypting_rule_writes_only_the_encrypted_form() -> Result<(), TestError> 
     Ok(())
 }
 
+/// `sealed_updates = "same-uuid"` on an encrypting rule is warned about once
+/// at startup, naming the rule and the sections of
+/// draft-ietf-vcon-vcon-core-04 it departs from; the default is not.
+#[test]
+fn same_uuid_on_an_encrypting_rule_is_warned_about_at_startup() -> Result<(), TestError> {
+    let home = tempfile::tempdir()?;
+    let sealing = sealing(home.path(), "fake_grp.crt")?;
+    let warned = rule(
+        "kept",
+        &home.path().join("kept"),
+        &format!("{sealing}sealed_updates = \"same-uuid\"\n"),
+    );
+    let out = run(&warned, home.path())?;
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(out.status.success(), "{stderr}");
+    assert_eq!(
+        stderr.matches("sealed_updates = 'same-uuid'").count(),
+        1,
+        "one warning: {stderr}"
+    );
+    for needle in ["'kept'", "section 4.1.9", "section 4.1.2"] {
+        assert!(stderr.contains(needle), "{needle}: {stderr}");
+    }
+    let quiet = rule("fresh", &home.path().join("fresh"), &sealing);
+    let out = run(&quiet, home.path())?;
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(out.status.success(), "{stderr}");
+    assert!(!stderr.contains("sealed_updates"), "{stderr}");
+    Ok(())
+}
+
+/// A `sealed_updates` value other than the three is refused at startup,
+/// naming the rule and the three values.
+#[test]
+fn an_unknown_sealed_updates_value_is_refused() -> Result<(), TestError> {
+    let home = tempfile::tempdir()?;
+    let config = rule(
+        "odd",
+        &home.path().join("odd"),
+        &format!(
+            "{}sealed_updates = \"sometimes\"\n",
+            sealing(home.path(), "fake_grp.crt")?
+        ),
+    );
+    let out = run(&config, home.path())?;
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(!out.status.success(), "{stderr}");
+    for needle in ["'odd'", "sometimes", "new-uuid", "same-uuid", "final-only"] {
+        assert!(stderr.contains(needle), "{needle}: {stderr}");
+    }
+    Ok(())
+}
+
 /// Each refusal, with what its message must name.
 #[test]
 fn an_encrypting_rule_that_cannot_work_is_refused_at_startup() -> Result<(), TestError> {

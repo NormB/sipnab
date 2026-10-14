@@ -497,6 +497,7 @@ pub fn plan(cli: &Cli, config: &Config) -> Result<RunPlan, PlanError> {
     for msg in cli.inert_key_warnings(config) {
         tracing::warn!("{msg}");
     }
+    warn_vcon_rules(&vcon_rules);
 
     let mode = select_run_mode(cli);
     refuse_unread_detection(cli, config, &mode)?;
@@ -4783,6 +4784,7 @@ pub(crate) fn vcon_rules(
             live_audio: false,
             live: false,
             sealing: None,
+            sealed_updates: crate::app::batch::SealedUpdates::NewUuid,
         });
     }
     for rule in &config.vcon.rule {
@@ -4808,6 +4810,9 @@ pub(crate) fn vcon_rules(
             .map_err(|why| refuse(format!("[[vcon.rule]] '{name}' has {why}")))?;
         let grouping = RuleGrouping::parse(rule.grouping.as_deref())
             .map_err(|why| refuse(format!("[[vcon.rule]] '{name}' has {why}")))?;
+        let sealed_updates =
+            crate::app::batch::SealedUpdates::parse(rule.sealed_updates.as_deref())
+                .map_err(|why| refuse(format!("[[vcon.rule]] '{name}' has {why}")))?;
         // core-04 section 2.4.1: a by-reference url uses HTTPS.
         let audio_url_base = match (audio, rule.audio_url_base.as_deref()) {
             (RuleAudio::Url, None) => {
@@ -4892,6 +4897,7 @@ pub(crate) fn vcon_rules(
             live_audio: rule.live_audio.unwrap_or(false),
             live: rule.live.unwrap_or(false),
             sealing,
+            sealed_updates,
         });
     }
     if rules.iter().any(|r| r.live_audio)
@@ -4922,6 +4928,16 @@ pub(crate) fn vcon_rules(
         }
     }
     Ok(rules)
+}
+
+/// Log, once at startup, each warning a resolved export rule calls for.
+fn warn_vcon_rules(rules: &[crate::app::batch::VconRule]) {
+    for msg in rules
+        .iter()
+        .filter_map(crate::app::batch::VconRule::sealed_updates_warning)
+    {
+        tracing::warn!("{msg}");
+    }
 }
 
 /// Why the REST API cannot serve live audio as it is set up, or `None`.
@@ -6729,6 +6745,7 @@ mod tests {
                 sign_key: None,
                 sign_cert: None,
                 compress: None,
+                sealed_updates: None,
             })
             .collect();
         config

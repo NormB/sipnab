@@ -403,12 +403,14 @@ static KEY_SPECS: &[KeySpec] = &[
             accept: &[
                 "[]",
                 "[{ name = \"r\", when = \"method == 'INVITE'\", dir = \"vcon-out\" }]",
+                "[{ name = \"r\", when = \"method == 'INVITE'\", dir = \"vcon-out\", sealed_updates = \"final-only\" }]",
             ],
             reject: &[
                 "[{ name = \"bad name\", when = \"method == 'INVITE'\", dir = \"d\" }]",
                 "[{ name = \"r\", when = \"method == 'INVITE'\" }]",
                 "[{ name = \"r\", when = \"method == 'INVITE'\", dir = \"d\", audio = \"loud\" }]",
                 "[{ name = \"r\", when = \"method == 'INVITE'\", dir = \"d\", grouping = \"dialog\" }]",
+                "[{ name = \"r\", when = \"method == 'INVITE'\", dir = \"d\", sealed_updates = \"sometimes\" }]",
                 "[{ name = \"r\", when = \"x\", dir = \"d\" }]",
                 "[{ name = \"r\", when = \"method == 'INVITE'\", dir = \"d\", compress = \"gzip\" }]",
                 "[{ name = \"r\", when = \"method == 'INVITE'\", dir = \"d\", volume = 1 }]",

@@ -40,10 +40,9 @@ fn media_of(container: &serde_json::Value) -> Result<String, TestError> {
         .ok_or("attachments")?
         .iter()
         .find(|a| a["purpose"] == "sipnab-capture-completeness")
-        .and_then(|a| a["body"].as_str())
+        .map(|a| &a["body"])
         .ok_or("a capture_completeness attachment")?;
-    let v: serde_json::Value = serde_json::from_str(body)?;
-    Ok(v["media"].as_str().unwrap_or_default().to_owned())
+    Ok(body["media"].as_str().unwrap_or_default().to_owned())
 }
 
 /// Run sipnab over the capture with `config` and `extra` arguments.

@@ -68,9 +68,7 @@ fn an_exported_vcon_carries_the_calls_mos() -> Result<(), TestError> {
         &std::fs::read_to_string(&out).map_err(|e| format!("container: {e}"))?,
     )
     .map_err(|e| format!("JSON: {e}"))?;
-    let body: serde_json::Value =
-        serde_json::from_str(vcon["analysis"][0]["body"].as_str().ok_or("body string")?)
-            .map_err(|e| format!("body JSON: {e}"))?;
+    let body = &vcon["analysis"][0]["body"];
     let rows = body["media_quality"]
         .as_array()
         .ok_or_else(|| format!("no media_quality: {body}"))?;
@@ -134,9 +132,7 @@ fn an_exported_vcon_states_how_many_frames_the_run_read() -> Result<(), TestErro
         &std::fs::read_to_string(&out).map_err(|e| format!("container: {e}"))?,
     )
     .map_err(|e| format!("JSON: {e}"))?;
-    let body: serde_json::Value =
-        serde_json::from_str(vcon["analysis"][0]["body"].as_str().ok_or("body string")?)
-            .map_err(|e| format!("body JSON: {e}"))?;
+    let body = &vcon["analysis"][0]["body"];
     assert_eq!(body["capture_completeness"]["frames_read"], 7, "{body}");
     Ok(())
 }

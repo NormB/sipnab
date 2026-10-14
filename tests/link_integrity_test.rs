@@ -1371,7 +1371,16 @@ fn wiki_intra_docs_links_resolve() -> Result<(), TestError> {
     // 1724 -> 1726 for --vcon-fetch-signer-ca, attributed per file:
     // docs/cli-reference.md +1 (the flag's row links "Check who signed it")
     // and docs/vcon.md +1 (the encryption section's key list links it).
-    const EXPECTED_WIKI_LINKS: usize = 1726;
+    // 1726 -> 1729 for `sealed_updates`, attributed per file: docs/vcon.md +2
+    // (the rule table's `sealed_updates` row and the forwarder note link
+    // "When an encrypted call changes") and docs/config-reference.md +1 (the
+    // `sealed_updates` row links the same section). Then 1729 -> 1730:
+    // docs/errors.md +1, the `sealed_updates` refusal's entry links it too.
+    // 1730 -> 1731: docs/vcon.md +1, the limits section's B2BUA bullet links
+    // "Calls through a PBX or a B2BUA".
+    // 1731 -> 1732: docs/vcon.md +1, the encryption section's `live = true`
+    // bullet links "When an encrypted call changes".
+    const EXPECTED_WIKI_LINKS: usize = 1732;
     // Raised 459 -> 460 when SRC1 stage 1 shipped: docs/cli-reference.md's
     // `--hep-listen` row now points at cookbook recipe "Take signaling from HEP and media off the wire, in one process" in docs/examples.md
     // rather than restating how to pair `-L` with `-d`. Attributed per file

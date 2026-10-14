@@ -183,10 +183,9 @@ fn outcomes(v: &serde_json::Value) -> Result<Vec<serde_json::Value>, TestError> 
         .ok_or("attachments")?
         .iter()
         .find(|a| a["purpose"] == ENRICHMENT)
-        .and_then(|a| a["body"].as_str())
+        .map(|a| &a["body"])
         .ok_or("an enrichment attachment")?;
-    let parsed: serde_json::Value = serde_json::from_str(body)?;
-    Ok(parsed["services"].as_array().ok_or("services")?.clone())
+    Ok(body["services"].as_array().ok_or("services")?.clone())
 }
 
 /// The analysis entries whose `type` is `kind`.

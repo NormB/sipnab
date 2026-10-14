@@ -49,6 +49,20 @@ entry that carries them.
   - sipnab refuses the two forms together.
   - Either flag replaces both keys of its section.
   - The HEP sender, the forwarder and the fetcher now build their trust by one rule.
+- **An encrypting rule writes each change to a sealed vCon as a new instance.**
+  - [Section 4.1.9 of draft-ietf-vcon-vcon-core-04](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-04#section-4.1.9) says a change invalidates a signed or encrypted vCon.
+    - The producer MUST create a new instance version instead.
+  - A rule with `encrypt_to` rewrote the encrypted file under the same uuid each time a call changed.
+  - The new `[[vcon.rule]]` key `sealed_updates` sets what happens instead.
+    - `new-uuid` (the default) writes each later version as a new file with a new uuid.
+      - Its `amended` object names the uuid of the version before it.
+      - It keeps the first `created_at`.
+      - sipnab derives each later uuid from the first uuid and the version number. So two runs over one capture give one chain.
+    - `same-uuid` keeps the old behavior and logs a startup warning naming the rule.
+    - `final-only` writes one encrypted container, when the call ends.
+  - sipnab refuses any other value at startup.
+  - Each rule sets its own `sealed_updates`. The `[vcon]` section does not supply it.
+  - A rule without `encrypt_to` still rewrites in place.
 
 ### Fixed
 
@@ -65,6 +79,35 @@ entry that carries them.
     - It has no `protected` member.
   - The reader still accepts the placement that 0.5.217 and 0.5.218 wrote.
   - It refuses a header name given two different values in two places, `x5c` included.
+- **vCon `json` bodies are the JSON value, not its text.**
+  - [Section 2.3.2 of draft-ietf-vcon-vcon-core-04](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-04#section-2.3.2) defines a `json` body as a JSON value.
+  - sipnab wrote every attachment and analysis body as a string holding the JSON text.
+  - It now writes the object itself.
+  - `jq '.analysis[0].body.capture_completeness'` reads it without `fromjson`.
+  - An enrichment service may answer with any JSON value under `json`. A string is still accepted.
+  - The `-I` reader still accepts both shapes.
+- **sipnab refuses a vCon whose `critical` lists an extension it does not support.**
+  - [Section 4.1.4 of draft-ietf-vcon-vcon-core-04](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-04#section-4.1.4) says such a reader MUST NOT process or operate on the vCon, except to reject it or report it.
+  - No reader checked `critical`.
+  - sipnab supports the two extensions its own containers declare, `sip-signaling` and `CC`.
+  - `-I` now skips such a container, naming each unsupported extension.
+    - It fails when you named the container directly.
+  - `analyze_vcon` and `POST /v1/vcon/analyze` answer `verdict: unreadable` with that reason. They run no schema check.
+  - `validate_vcon` refuses it with `invalid_params`, and `POST /v1/vcon/validate` with `422`.
+- **A vCon for a call the caller canceled while it rang records `no-answer`.**
+  - sipnab wrote `disposition: "failed"` for a CANCEL followed by `487 Request Terminated`.
+  - [Section 4.3.11 of draft-ietf-vcon-vcon-core-04](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-04#section-4.3.11) defines `no-answer` for an attempt that nobody answered or accepted.
+  - It now writes `no-answer` when the capture holds the CANCEL.
+  - A `487` with no CANCEL in the capture stays `failed`. That is the value the section gives when the reason is not known.
+- **The vCon page's limits section described code that has since changed.**
+  - It said a container never carries a `url`.
+    - A rule with `audio = "url"` names the WAV file by URL.
+  - It said nothing ties the two legs of a B2BUA call.
+    - The `sipnab-related-legs` attachment and `grouping = "call"` do.
+  - It said 12 bits separate dialogs that opened in the same millisecond on one node.
+    - Since 0.5.125 sipnab keys the other 62 bits on the node, the dialog and the capture.
+  - The uuid code comment said `rand_b` came from the node name alone.
+  - Each now states what the code does.
 
 ## [0.5.218] - 2026-10-14
 

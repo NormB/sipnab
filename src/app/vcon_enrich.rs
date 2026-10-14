@@ -373,7 +373,7 @@ pub fn attach(container: &mut Vcon, records: &[Record]) {
         start,
         mediatype: "application/json",
         encoding: "json",
-        body: serde_json::json!({ "services": services }).to_string(),
+        body: serde_json::json!({ "services": services }),
     });
 }
 
@@ -749,9 +749,10 @@ fn parse_answer(
                 "analysis {i} has encoding '{encoding}'; core-04 allows none, json and base64url"
             ));
         }
-        let body = text("body")
-            .ok_or(format!("analysis {i} has no body string"))?
-            .to_owned();
+        let body = answer_body(entry, &encoding).ok_or(match encoding.as_ref() {
+            "json" => format!("analysis {i} has no body"),
+            _ => format!("analysis {i} has no body string"),
+        })?;
         let dialog = match entry.get("dialog") {
             None => default_dialog,
             Some(v) => v
@@ -774,6 +775,25 @@ fn parse_answer(
         });
     }
     Ok(out)
+}
+
+/// An analysis entry's body, in the shape its encoding allows.
+///
+/// [Section 2.3.2 of the core draft](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-04#section-2.3.2):
+/// "\"json\": The value of the body parameter is a JSON value (object,
+/// array, number, string, or one of the literals true, false, or null)", while
+/// `base64url` and `none` describe a string value. A `json` body is therefore
+/// kept as whatever JSON value it is, a string included, which is how a
+/// service written against earlier sipnab releases sends it; the other two
+/// must be strings. An absent `body` is `None` for every encoding.
+fn answer_body(entry: &serde_json::Value, encoding: &str) -> Option<serde_json::Value> {
+    let body = entry.get("body")?;
+    match encoding {
+        "json" => Some(body.clone()),
+        _ => body
+            .as_str()
+            .map(|text| serde_json::Value::String(text.to_owned())),
+    }
 }
 
 #[cfg(test)]
@@ -809,6 +829,47 @@ mod tests {
         assert_eq!(found[0].schema, None);
         entry["dialog"] = 1.into();
         assert_eq!(parse_answer(&one(&entry), 3, 2)?[0].dialog, 1);
+        Ok(())
+    }
+
+    /// With `encoding: "json"` the body is any JSON value, and it is kept as
+    /// that value.
+    ///
+    /// [Section 2.3.2 of the core draft](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-04#section-2.3.2):
+    /// "\"json\": The value of the body parameter is a JSON value (object,
+    /// array, number, string, or one of the literals true, false, or null)".
+    #[test]
+    fn a_json_encoded_body_may_be_any_json_value() -> Result<(), TestError> {
+        for body in [
+            serde_json::json!({"summary": "s"}),
+            serde_json::json!([1, 2]),
+            serde_json::json!(7),
+            serde_json::json!(true),
+            serde_json::Value::Null,
+            serde_json::json!("{\"summary\":\"s\"}"),
+        ] {
+            let mut entry = transcript();
+            entry["encoding"] = "json".into();
+            entry["body"] = body.clone();
+            let found = parse_answer(&one(&entry), 3, 0)?;
+            assert_eq!(found[0].body, body, "the body is kept as it was sent");
+        }
+        Ok(())
+    }
+
+    /// With `none` or `base64url` the body is a string, as section 2.3.2
+    /// defines both, and anything else is refused.
+    #[test]
+    fn a_text_encoded_body_must_be_a_string() -> Result<(), TestError> {
+        for encoding in ["none", "base64url"] {
+            let mut entry = transcript();
+            entry["encoding"] = encoding.into();
+            entry["body"] = serde_json::json!({"summary": "s"});
+            match parse_answer(&one(&entry), 3, 0) {
+                Ok(_) => return Err(format!("{encoding}: accepted an object body").into()),
+                Err(why) => assert!(why.contains("no body string"), "{encoding}: {why}"),
+            }
+        }
         Ok(())
     }
 
@@ -862,6 +923,7 @@ mod tests {
                 updated_at: None,
                 subject: String::new(),
                 redacted: None,
+                amended: None,
                 extensions: Vec::new(),
                 parties: Vec::new(),
                 dialog: Vec::new(),

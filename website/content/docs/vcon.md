@@ -170,6 +170,7 @@ dir   = "/var/spool/sipnab-vcon/all"
 | `encrypt_to` | A PEM certificate. Set, the rule writes only the encrypted form, to that certificate's key. Needs `sign_key` and `sign_cert`. See [Encrypt what a rule writes](#encrypt-what-a-rule-writes) |
 | `sign_key`, `sign_cert` | The PEM RSA private key an encrypting rule signs with, and its certificate chain, leaf first |
 | `compress` | For an encrypting rule: `none` (the default) or `gzip`, which signs the gzip of the vCon instead of the vCon. See [Encrypt what a rule writes](#encrypt-what-a-rule-writes) |
+| `sealed_updates` | What an encrypting rule writes when a call it already wrote changes: `new-uuid` (the default), `same-uuid` or `final-only`. No effect without `encrypt_to`. See [When an encrypted call changes](#when-an-encrypted-call-changes) |
 | `grouping` | `leg` (the default): one container per dialog. `call`: one container per call, holding every leg the rule selects. See [Calls through a PBX or a B2BUA](#calls-through-a-pbx-or-a-b2bua) |
 
 Other options work with rules:
@@ -360,7 +361,14 @@ Each Analysis Object must carry:
 - `type`,
 - `vendor`,
 - `encoding` (`none`, `json` or `base64url`),
-- `body` (a string).
+- `body`.
+
+The shape of `body` follows its `encoding`.
+
+- With `json` the body is any JSON value, as
+  [section 2.3.2 of the core draft](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-04#section-2.3.2)
+  defines it. sipnab keeps it as sent, a string included.
+- With `none` or `base64url` the body must be a string.
 
 `product`, `schema`, `mediatype` and `dialog` are optional. A missing `dialog` is the first leg's signaling object.
 
@@ -508,6 +516,8 @@ A forwarder delivers each rewrite as a new copy of the same container.
 
 - A store that refuses a `uuid` it already holds needs the forwarder to replace it.
 - See [What it does with each container](#what-it-does-with-each-container).
+- A rule with `encrypt_to` does not rewrite in place by default. See
+  [When an encrypted call changes](#when-an-encrypted-call-changes).
 
 ### Encrypt what a rule writes
 
@@ -614,7 +624,9 @@ The file holds the JWE: `unprotected`, `recipients`, `iv`, `ciphertext` and
 
 Every other rule key works with `encrypt_to`.
 
-- A `live = true` rule writes a new encrypted container each time the call changes.
+- A `live = true` rule writes a new encrypted container each time the call
+  changes. [When an encrypted call changes](#when-an-encrypted-call-changes)
+  says what that container is.
 - Enrichment services receive the call before sipnab encrypts it, as without `encrypt_to`.
 
 **Set the keys once for every rule.** `encrypt_to`, `sign_key`, `sign_cert`
@@ -649,7 +661,48 @@ with `[vcon] encrypt_to` set every rule encrypts. The section's `sign_key`,
 `[vcon] encrypt_to`, a rule with no `encrypt_to` of its own writes the
 unsigned form. The rule `--export-vcon-when` with `--export-vcon-dir` makes
 takes none of them. sipnab refuses at startup a `[vcon] compress` other than
-`none` or `gzip`.
+`none` or `gzip`. `sealed_updates` is not one of the section's keys: each rule
+sets its own.
+
+#### When an encrypted call changes
+
+A rule rewrites a call's container when the call changes after sipnab wrote it.
+
+- A `live = true` rule rewrites it on every change.
+- Any other rule on a live capture rewrites it on a late change. A `BYE` after
+  an idle write is one. A retransmitted final response is another.
+
+[Section 4.1.9 of draft-ietf-vcon-vcon-core-04](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-04#section-4.1.9)
+rules that out for a signed or encrypted container.
+
+- A change invalidates the container.
+- So the draft requires a new vCon instance version for each change.
+- It says the new version SHOULD name the prior one by its uuid.
+- A rule without `encrypt_to` writes the unsigned form. The draft lets a
+  producer modify that form, so such a rule rewrites it in place.
+
+`sealed_updates` sets what an encrypting rule does instead. A rule that does
+not set it uses `new-uuid`, whether its `encrypt_to` is its own or the
+section's.
+
+| Value | What the rule writes |
+|-------|----------------------|
+| `new-uuid` (the default) | Each later version of the call is a new instance in a new file, `<uuid>.vcon.json`. Its `amended` object names the uuid of the version before it. It keeps the first version's `created_at`, and its `updated_at` is when sipnab wrote it. The earlier files stay |
+| `same-uuid` | Each later version replaces the file under the same uuid, as releases before this setting did. This departs from section 4.1.9. It also departs from [section 4.1.2](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-04#section-4.1.2), which requires every uuid to be globally unique. sipnab logs one warning at startup naming the rule |
+| `final-only` | Nothing while the call is in progress. One encrypted container once every leg has ended, and none after it. When the run ends during a call, sipnab writes that call once then, and its completeness block records `call_ended: false` |
+
+sipnab refuses at startup any other `sealed_updates` value, naming the three.
+
+**The uuid of a later version.**
+
+- The first version has the call's uuid.
+- The uuid of version *n* (1, 2 and so on) keeps the first uuid's 48-bit timestamp.
+- It takes its other 74 bits from SHA-256 over `amended`, the first uuid and *n*.
+- It depends on nothing else. So two runs over the same capture write the same
+  chain of uuids.
+
+To read a call's latest version, follow the chain. The latest version is the
+one that no other version names in `amended`.
 
 ## The spool contract, for a bridge that consumes it
 
@@ -1366,15 +1419,17 @@ println!("{}", vcon.to_json().expect("the container serializes"));
 This is real output from that fixture. The page elides it only where the message trace repeats
 itself. Every value below came off a run against the committed capture.
 
-**One reading convention, stated once.** Every `body` is a JSON-encoded
-*string* on the wire.
+**One reading convention, stated once.** Every attachment and analysis `body`
+below declares `"encoding": "json"`.
 
-- [section 2.3.2 of the core draft](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-04#section-2.3.2) allows nothing else. A store
-  normalizes it to one anyway.
-- The blocks below show each `body` **decoded**, as
-  an object. An escaped one-line string is unreadable on a page.
-- What sipnab actually writes for the first one is `"body": "{\"messages\":[…]}"`.
-  A consumer parses it before indexing into it.
+- [Section 2.3.2 of the core draft](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-04#section-2.3.2)
+  defines that encoding as "The value of the body parameter is a JSON value
+  (object, array, number, string, or one of the literals true, false, or null)".
+- sipnab writes each of these bodies as the JSON object itself. A consumer
+  indexes into it directly.
+- A recording's body is `base64url` text, which is a string.
+- A store can return a `json` body as a string holding the JSON text. sipnab's
+  own readers accept both shapes.
 
 ```json
 {
@@ -1590,6 +1645,24 @@ The last two rows move together.
 - `disposition` names a failure **only** when sipnab saw the final response that caused it.
 - Its absence never means "the call succeeded".
 
+sipnab maps the final response to a value of that closed set:
+
+| Final response | `disposition` | What section 4.3.11 defines the value as |
+|---|---|---|
+| `486`, `600` | `busy` | the party was busy with another conversation |
+| `503` | `congestion` | system load stopped the attempt from completing |
+| `408`, `480`, and `487` after a CANCEL sipnab saw | `no-answer` | nobody answered or accepted the attempt |
+| any other `4xx`, `5xx` or `6xx`, a `487` with no CANCEL in the capture included | `failed` | the attempt failed, the value for a reason sipnab does not know |
+
+A caller who gives up while the call rings sends CANCEL.
+
+- The call ends with `487 Request Terminated`.
+- Nobody answered, so that call is `no-answer`.
+- sipnab never writes `hung-up`. The section defines it for a call that
+  connected and then ended before any conversation.
+- An answered call is not an `incomplete` object. The section says
+  `disposition` "SHOULD NOT be present for other dialog types".
+
 The extension mechanism offers no repair either. An extension is one of two kinds:
 
 - *ignorable*: the consumer that most needs the caveat drops it,
@@ -1786,7 +1859,7 @@ Each refusal has an argument behind it in
 | consent attachments | sipnab obtained no consent, and an empty consent field reads as "none recorded" |
 | lawful-basis attachments | the same, with a named regulatory reader on the other end |
 | a party `name` **that sipnab vouches for** | `From` and `To` are the caller's claim about the caller, trivially spoofed |
-| hosted artefacts by `url` | sipnab hosts nothing, so it cannot promise where a file lives |
+| hosted artefacts by `url`, other than audio the operator serves | sipnab hosts nothing, so it cannot promise where a file lives. The one `url` it writes is a rule's `audio = "url"` recording, under the `audio_url_base` the operator's storage serves |
 
 **sipnab EMITS a party `name` when the wire carried one.**
 
@@ -1984,6 +2057,21 @@ A container named directly with `-I` that sipnab cannot read stops the run
 instead, with the same reason. A file you named is one you expected
 sipnab to read.
 
+### A container listing an extension sipnab does not support is not read
+
+A container's `critical` parameter lists the extensions a reader must support
+to interpret it.
+
+- [Section 4.1.4 of draft-ietf-vcon-vcon-core-04](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-04#section-4.1.4)
+  says a reader that does not support one "MUST NOT attempt to process or
+  operate on the vCon, except to reject it or report unsupported content".
+- sipnab supports the two extensions its own containers declare, `sip-signaling` and `CC`.
+- sipnab skips a container whose `critical` lists anything else, as it skips a
+  container without readable SIP. The reason names each unsupported extension.
+- `analyze_vcon` and `POST /v1/vcon/analyze` answer `verdict: unreadable` with
+  that reason. They run no schema check.
+- `validate_vcon` and `POST /v1/vcon/validate` refuse the container.
+
 ### A container the schema refuses is still read
 
 What sipnab skips is a container whose SIP it cannot read.
@@ -2075,11 +2163,15 @@ for that container. The MCP tool and the REST route list it in
 
 Stated here rather than discovered later.
 
-- **It does not link to audio held elsewhere.**
+- **It does not host audio.**
   - When the run retained the RTP payload, the container carries the audio INLINE.
     It is a `recording` Dialog Object with a `sha512-` content hash.
-  - When it did not, the container says so in words and carries none.
-  - There is never a `url`. sipnab hosts nothing, and cannot promise where a file lives tomorrow.
+  - A rule with `audio = "url"` instead writes the WAV file beside the container.
+    It names the file by a `url` under the rule's `audio_url_base`, with the
+    `content_hash` of the WAV file and no body.
+  - The operator's storage serves that URL. sipnab does not check that it does.
+  - A `--redact` export never names a `url`.
+  - When the run retained no audio, the container says so in words and carries none.
 
   Audio over the inline budget draws an out-loud refusal rather than a silent truncation.
 
@@ -2109,18 +2201,30 @@ Stated here rather than discovered later.
   Every door (batch export, REST and MCP) reads the one value.
   So the same call cannot come back carrying
   audio through one and a refusal through another.
-- **It does not tie the two halves of a B2BUA call together.** Two Call-IDs
-  produce two containers. Nothing in either one links them.
+- **It ties the legs of a B2BUA call together only by its correlation.**
+  - With `grouping = "leg"`, the default, two Call-IDs produce two containers.
+    Each names the other in its `sipnab-related-legs` attachment, with the
+    strategy that tied them.
+  - With `grouping = "call"` one container holds every leg the rule selects.
+  - A tie that is a timing guess carries `identifier_match: false`. A busy
+    server can get it wrong.
+  - See [Calls through a PBX or a B2BUA](#calls-through-a-pbx-or-a-b2bua).
 - **It does not assemble a call across hops.** One container describes one
   observed dialog from one capture.
 - **It does not deduplicate across taps.**
   - Two sipnab boxes that saw the same dialog mint different uuids.
   - The uuid mixes in the node and the capture identity along with the Call-ID.
-- **It does not survive as a stable identifier across dialogs that opened in
-  the same millisecond on one node.**
-  - The uuid layout spends its entropy on the node.
-    That leaves 12 bits to separate same-millisecond dialogs.
-  - Deduplication on `uuid` is safe for re-exports of one dialog. That is what it exists for.
+- **Its uuid is a function of the dialog, the node and the capture, not a
+  random value.**
+  - The 48-bit timestamp is the dialog's first observed message.
+  - The other 74 bits are digests. `rand_a` (12 bits) digests the Call-ID and
+    the capture identity. `rand_b` (62 bits) digests the node name, the Call-ID
+    and the capture identity.
+  - Two dialogs that opened in the same millisecond on one node differ in those 74 bits.
+  - Re-exporting one dialog from one capture yields the same uuid. So
+    deduplication on `uuid` is safe for re-exports. That is what it exists for.
+  - Until 0.5.125 `rand_b` digested the node alone. That left 12 bits to
+    separate such dialogs.
 - **It does not store anything.** sipnab writes a container and forgets it.
   There is no vCon store, no index, no retention.
 

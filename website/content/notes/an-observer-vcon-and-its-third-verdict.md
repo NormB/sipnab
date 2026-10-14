@@ -139,7 +139,7 @@ jq -c '.dialog' out.json
 It holds no audio. The completeness value says why:
 
 ```bash
-jq '.analysis[0].body | fromjson | .capture_completeness' out.json
+jq '.analysis[0].body.capture_completeness' out.json
 ```
 
 ```json
@@ -171,7 +171,7 @@ jq '.analysis[0].body | fromjson | .capture_completeness' out.json
 The attachment holds the same value:
 
 ```bash
-jq '(.analysis[0].body | fromjson | .capture_completeness) == (.attachments[] | select(.purpose == "sipnab-capture-completeness") | .body | fromjson)' out.json
+jq '(.analysis[0].body.capture_completeness) == (.attachments[] | select(.purpose == "sipnab-capture-completeness") | .body)' out.json
 ```
 
 ```text

@@ -276,27 +276,18 @@ fn a_signaling_only_container_is_far_beneath_the_store_ceiling() -> Result<(), T
     Ok(())
 }
 
-/// An `encoding: "json"` body is a STRING, the way `base64url` bodies are.
+/// Every body has the shape its `encoding` defines.
 ///
-/// Measured, not reasoned. A container exported from a committed fixture was
-/// posted to a live conserver-backed store and read back: every attachment and
-/// analysis body sipnab sent as a JSON OBJECT came back as a JSON STRING, with
-/// the content identical once parsed.
-///
-/// The store is right and sipnab was wrong. Section 2.3 of
-/// `draft-ietf-vcon-vcon-core-04` pairs `body` with an `encoding` of `base64url`, `json` or `none`, and
-/// that pairing only means anything if the body is a string the encoding tells
-/// you how to read. sipnab already agreed with itself on half of it -- the
-/// recording object's `base64url` body has always been a string -- and
-/// disagreed on the other half.
-///
-/// The cost of the disagreement is not cosmetic. A consumer reaching for
-/// `body.blind_spots` on an object gets a field; on a string it gets nothing,
-/// with no error. The completeness caveat is the one thing §4 says a reader
-/// must not miss, so a shape that silently fails the obvious access is the
-/// worst possible field to be wrong about.
+/// [Section 2.3.2 of `draft-ietf-vcon-vcon-core-04`](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-04#section-2.3.2):
+/// "\"json\": The value of the body parameter is a JSON value (object, array,
+/// number, string, or one of the literals true, false, or null)", while
+/// "base64url" and "none" describe a string value. The CDDL in Appendix C:
+/// "body is any JSON value when encoding is \"json\"; otherwise body is a
+/// string". Every `json` body sipnab writes is an object, so a string in that
+/// position is the object's text, which a consumer would have to parse a
+/// second time to reach a field such as `blind_spots`.
 #[test]
-fn a_json_body_is_a_string_a_consumer_parses() -> Result<(), TestError> {
+fn every_body_has_the_shape_its_encoding_defines() -> Result<(), TestError> {
     let (store, call_id) = capture_of("sip_call.pcap")?;
     let dialog = store.get(&call_id).ok_or("the dialog is retrievable")?;
     let facts = CaptureFacts::default();
@@ -315,9 +306,9 @@ fn a_json_body_is_a_string_a_consumer_parses() -> Result<(), TestError> {
         serde_json::from_str(&vcon.to_json().map_err(|e| format!("serializes: {e}"))?)
             .map_err(|e| format!("valid JSON: {e}"))?;
 
-    // Every array that can carry a body, `dialog` included: §2.3.2 makes `body`
-    // a String whatever the encoding, so a media body must satisfy the rule
-    // even though the `json` filter below never reaches it.
+    // Every array that can carry a body, `dialog` included: a body whose
+    // encoding is not `json` is a string, so a media body must satisfy that
+    // rule even though the `json` filter below never reaches it.
     let mut any_body = 0usize;
     for node in [&json["attachments"], &json["analysis"], &json["dialog"]] {
         for item in node.as_array().unwrap_or(&Vec::new()) {
@@ -325,15 +316,13 @@ fn a_json_body_is_a_string_a_consumer_parses() -> Result<(), TestError> {
                 continue;
             };
             any_body += 1;
-            assert!(
-                body.is_string(),
-                "§2.3.2 makes `body` a String whatever the encoding, and this                  one is a {}: {item}",
-                if body.is_object() {
-                    "object"
-                } else {
-                    "non-string"
-                }
-            );
+            if item["encoding"] != "json" {
+                assert!(
+                    body.is_string(),
+                    "a body with encoding {} must be a string: {item}",
+                    item["encoding"]
+                );
+            }
         }
     }
     assert!(
@@ -352,22 +341,11 @@ fn a_json_body_is_a_string_a_consumer_parses() -> Result<(), TestError> {
             }
             checked += 1;
             let body = &item["body"];
-            let text = body.as_str().ok_or_else(|| {
-                format!(
-                    "{label} body declares `encoding: \"json\"` and is a {}, not a string. \
-                     A store normalizes it to a string on the way in, so a consumer that \
-                     reads it back gets a shape sipnab never sent: {item}",
-                    if body.is_object() {
-                        "object"
-                    } else {
-                        "non-string"
-                    }
-                )
-            })?;
-            // A string that is not parseable JSON would satisfy the assertion
-            // above and be useless to the consumer it exists for.
-            serde_json::from_str::<serde_json::Value>(text)
-                .map_err(|e| format!("a `json`-encoded body must parse as JSON: {e}: {text}"))?;
+            assert!(
+                body.is_object(),
+                "{label} body declares `encoding: \"json\"` and must be the JSON \
+                 object itself, not its text: {item}"
+            );
         }
     }
     assert!(

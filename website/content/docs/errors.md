@@ -1635,6 +1635,14 @@ The reason inside `[[vcon.rule]] '{name}' has {why}` for a `grouping` value othe
 
 **Exit code:** 1.
 
+### `sealed_updates = '{other}'; use '{}', '{}' or '{}'`
+
+The reason inside `[[vcon.rule]] '{name}' has {why}` for a `sealed_updates` value other than `new-uuid`, `same-uuid` and `final-only`, which fill the three `{}`. `{other}` is the value given. See [When an encrypted call changes](@/docs/vcon.md#when-an-encrypted-call-changes).
+
+**What to do:** Set `sealed_updates` to `new-uuid` (the default: each change is a new instance with a new uuid), `same-uuid` (rewrite the file under the same uuid) or `final-only` (write once, when the call ends), or remove the key.
+
+**Exit code:** 1.
+
 ### `[[vcon.rule]] '{name}' has audio = 'url' and no audio_url_base: say where your storage serves the WAV files sipnab writes beside the containers`
 
 The [`[[vcon.rule]]`](@/docs/vcon.md#write-calls-by-rule) named `{name}` has `audio = "url"` and no `audio_url_base`.

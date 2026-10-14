@@ -252,13 +252,13 @@ fn re_exporting_one_dialog_from_one_capture_keeps_its_identifier() -> Result<(),
 
 /// A `json`-encoded body, parsed.
 ///
-/// §2.3.2 makes `body` a STRING, so every read of one goes through here rather
-/// than indexing a `Value` that is not an object. The conserver's own model
-/// says the same in a comment: a caller handing it a dict gets it JSON-encoded
-/// before anything else touches the attachment.
+/// Section 2.3.2 of draft-ietf-vcon-vcon-core-04 makes an `encoding: "json"`
+/// body the JSON value itself, and every body sipnab writes is an object, so a
+/// string here is refused.
 fn body_of(node: &serde_json::Value) -> Result<serde_json::Value, TestError> {
-    let text = node["body"]
-        .as_str()
-        .ok_or_else(|| format!("a json body must be a string: {node}"))?;
-    Ok(serde_json::from_str(text).map_err(|e| format!("body must parse: {e}: {text}"))?)
+    let body = &node["body"];
+    if !body.is_object() {
+        return Err(format!("a json body must be the object itself: {node}").into());
+    }
+    Ok(body.clone())
 }

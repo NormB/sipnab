@@ -9608,7 +9608,7 @@
     },
     "/v1/vcon/analyze": {
       "post": {
-        "description": "Rebuild the SIP messages a stored vCon container holds and analyze them, apart from this server's capture: per dialog the `--json-dialogs` object, the signaling diagnosis and the message ladder, plus the capture analysis, whose first finding is `rebuilt_from_vcon`.\n\nReads a `sip-message-trace` attachment (sipnab's, and the draft-howe-vcon-sip-signaling trace form) and `message/sip` attachments. `not_recomputed` lists what a container cannot reproduce: no RTP is stored, so no media statistic is computed, and `stored_media_quality` carries the producer's own numbers verbatim. `schema_findings` lists where the container fails the vendored draft-ietf-vcon-vcon-core-04 schema, without stopping the analysis: a container a store reshaped is still read. A container with no SIP sipnab can read answers `verdict: unreadable` with the reason. The MCP `analyze_vcon` tool runs the same `vcon_analysis::analyze_container`.",
+        "description": "Rebuild the SIP messages a stored vCon container holds and analyze them, apart from this server's capture: per dialog the `--json-dialogs` object, the signaling diagnosis and the message ladder, plus the capture analysis, whose first finding is `rebuilt_from_vcon`.\n\nReads a `sip-message-trace` attachment (sipnab's, and the draft-howe-vcon-sip-signaling trace form) and `message/sip` attachments. `not_recomputed` lists what a container cannot reproduce: no RTP is stored, so no media statistic is computed, and `stored_media_quality` carries the producer's own numbers verbatim. `schema_findings` lists where the container fails the vendored draft-ietf-vcon-vcon-core-04 schema, without stopping the analysis: a container a store reshaped is still read. A container with no SIP sipnab can read, or whose `critical` lists an extension sipnab does not support, answers `verdict: unreadable` with the reason. The MCP `analyze_vcon` tool runs the same `vcon_analysis::analyze_container`.",
         "operationId": "post_vcon_analyze",
         "parameters": [
           {
@@ -9834,6 +9834,16 @@
               }
             },
             "description": "The body is over the 1 MiB request limit."
+          },
+          "422": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "The container's `critical` lists an extension sipnab does not support; draft-ietf-vcon-vcon-core-04 section 4.1.4 forbids operating on it. The detail names each one."
           },
           "503": {
             "content": {

@@ -242,8 +242,8 @@ document with a new digest and the same `uuid`. Deduplicate on the `uuid`.
 
 **What the container omits reaches you in the response.** A container over the
 size budget carries no audio, which looks exactly like a conversation that had
-none, and the caveat explaining the difference lives inside an attachment whose
-body is JSON text. So the response repeats it where a caller reads it.
+none, and the caveat explaining the difference lives inside an attachment in the
+container. So the response repeats it where a caller reads it.
 
 `completeness.note` is the container's own caveat, verbatim.
 `completeness.max_inline_media_bytes` is the budget this run ENFORCED, never the
@@ -399,9 +399,9 @@ carries a party the two observed headers did not name.
 
 `uuid` is a UUIDv8 whose timestamp half is the DIALOG's, not the export's, so
 re-exporting one dialog out of one capture keeps one identifier and a consumer
-can deduplicate on it. Two dialogs that opened in the same millisecond on the
-same node have only 12 bits separating them — that is inherent in the draft's
-layout, which spends a v7's entropy on a host-derived `rand_b`.
+can deduplicate on it. Its other 74 bits are digests keyed on the Call-ID,
+the capture identity and the node name, so two dialogs that opened in the
+same millisecond on the same node still differ in them.
 
 A binary built without the `vcon` Cargo feature does not offer this tool:
 it is absent from `tools/list`.
@@ -475,9 +475,14 @@ Object ([section 4.3.4](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vc
 ```
 
 A container that disagrees with the schema is an ANSWER, not a tool error. The
-call fails with `invalid_params` only when the REQUEST is wrong: neither
+call fails with `invalid_params` when the REQUEST is wrong: neither
 argument, both arguments, an unknown `call_id`, or a `container` that is not a
-JSON object.
+JSON object. It also fails with `invalid_params` (`reason: invalid_value`,
+`param: container`) for a container whose `critical` lists an extension sipnab
+does not support, naming each one:
+[section 4.1.4 of draft-ietf-vcon-vcon-core-04](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-04#section-4.1.4) says a reader "MUST NOT attempt to process or operate on the
+vCon, except to reject it or report unsupported content". sipnab supports
+`sip-signaling` and `CC`.
 
 **The validator reads the vendored file rather than a transcription of it.**
 `jsonschema` is a dev-dependency, so a validator built on it would ship only in
@@ -517,7 +522,7 @@ line, give it to `-I` instead: see
 | `verdict` | What it means |
 |---|---|
 | `analyzed` | sipnab rebuilt at least one SIP message, and the answer holds the analysis |
-| `unreadable` | The container stores no SIP message sipnab can rebuild, or is not a vCon at all. `reason` says which, and the answer holds no analysis |
+| `unreadable` | The container stores no SIP message sipnab can rebuild, is not a vCon at all, or lists in `critical` an extension sipnab does not support (sipnab supports only `sip-signaling` and `CC`; [section 4.1.4 of draft-ietf-vcon-vcon-core-04](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-04#section-4.1.4)). `reason` says which, and the answer holds no analysis. For an unsupported critical extension it holds no schema findings either |
 
 **A schema finding does not stop the analysis.** `schema_findings` lists every
 place the container disagrees with the vendored draft-ietf-vcon-vcon-core-04
