@@ -732,7 +732,7 @@ pub struct Attachment {
     /// [Section 2.3.2 of the core draft](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-04#section-2.3.2)
     /// defines the encoding this body declares: "\"json\": The value of the
     /// body parameter is a JSON value (object, array, number, string, or one
-    /// of the literals true, false, or null) as defined in [JSON]." The CDDL
+    /// of the literals true, false, or null) as defined in \[JSON\]." The CDDL
     /// in [Appendix C](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-04#appendix-C)
     /// says the same: "body is any JSON value when encoding is \"json\";
     /// otherwise body is a string". A string holding the object's text is
