@@ -573,6 +573,15 @@ pub struct Dialog {
     /// dialog was established.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub sip_to_tag: Option<String>,
+    /// `sip_cseq` ([draft-howe-vcon-sip-signaling-00 section 5.4](https://datatracker.ietf.org/doc/html/draft-howe-vcon-sip-signaling-00#section-5.4)):
+    /// "the sequence number from the CSeq header field of the INVITE or other
+    /// dialog-creating request".
+    ///
+    /// Absent when the capture did not hold that request. A later request's
+    /// number belongs to another transaction, and writing it here would point
+    /// a reader correlating against a trace at the wrong one.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sip_cseq: Option<u32>,
     /// RFC 3339 start of what this object describes.
     ///
     /// On a `recording` this is the first frame the FILE holds, which is later
@@ -696,6 +705,7 @@ impl Dialog {
             sip_call_id,
             sip_from_tag: None,
             sip_to_tag: None,
+            sip_cseq: None,
             start: None,
             duration: None,
             parties: None,
@@ -1416,6 +1426,8 @@ impl crate::output::redact::Redact for Dialog {
             // message trace, which keeps its own.
             sip_from_tag: _,
             sip_to_tag: _,
+            // A sequence number. It identifies a transaction, not a person.
+            sip_cseq: _,
             start: _,
             duration: _,
             parties: _,
@@ -2214,6 +2226,7 @@ impl Dialog {
             sip_call_id,
             sip_from_tag,
             sip_to_tag,
+            sip_cseq,
             start,
             duration,
             parties,
@@ -2238,6 +2251,7 @@ impl Dialog {
             sip_call_id,
             sip_from_tag,
             sip_to_tag,
+            sip_cseq,
             start,
             duration,
             parties: parties.map(|p| p.into_iter().map(party).collect()),
@@ -2744,6 +2758,7 @@ fn dialog_object(dialog: &SipDialog, start: String) -> Dialog {
         // measurement.
         sip_from_tag: dialog.from_tag.clone(),
         sip_to_tag: dialog.to_tag.clone(),
+        sip_cseq: creating_cseq(dialog),
         session_id: session_id_of(dialog),
         // ONE decision drives both fields, because core-04 sections 4.3.1.5
         // and 4.3.11 couple them: an `incomplete` object MUST carry a
@@ -2778,6 +2793,15 @@ fn opened_by_the_caller(dialog: &SipDialog) -> bool {
         .messages
         .first()
         .is_some_and(|m| m.is_request && m.to_tag().is_none())
+}
+
+/// The CSeq number of the dialog-creating request, when the capture holds it
+/// as the dialog's first message (see [`opened_by_the_caller`]).
+fn creating_cseq(dialog: &SipDialog) -> Option<u32> {
+    if !opened_by_the_caller(dialog) {
+        return None;
+    }
+    dialog.messages.first()?.cseq().map(|(number, _)| number)
 }
 
 /// The empty Party Object [core-04 section 4.3.5](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-04#section-4.3.5)
@@ -7940,6 +7964,43 @@ mod tests {
         );
         assert_eq!(v.observer_index(), 3);
         assert_eq!(json["parties"][3]["role"], OBSERVER_ROLE);
+        Ok(())
+    }
+
+    // ── sip_cseq ──
+
+    /// GAP-16: `sip_cseq` is the CSeq number of the dialog-creating request,
+    /// [draft-howe-vcon-sip-signaling-00 section 5.4](https://datatracker.ietf.org/doc/html/draft-howe-vcon-sip-signaling-00#section-5.4):
+    /// "the sequence number from the CSeq header field of the INVITE or other
+    /// dialog-creating request".
+    #[test]
+    fn the_signaling_object_carries_the_dialog_creating_cseq() -> Result<(), TestError> {
+        let invite = message(
+            "INVITE sip:bob@example.net SIP/2.0",
+            &[
+                "From: \"Alice\" <sip:alice@example.com>;tag=t1",
+                "To: \"Bob\" <sip:bob@example.net>",
+                "Call-ID: vcon-fixture@example.com",
+                "CSeq: 314159 INVITE",
+                "Content-Length: 0",
+            ],
+        )?;
+        let dialog = timed_dialog(vec![
+            (invite, 0),
+            (in_dialog_request("BYE", 314_160, "alice", &[], b"")?, 9),
+        ])?;
+        let json = valid_json(&export_with(&dialog, &clean_facts())?)?;
+        assert_eq!(json["dialog"][0]["sip_cseq"], serde_json::json!(314_159));
+        Ok(())
+    }
+
+    /// GAP-16: a capture that never saw the dialog-creating request has no
+    /// number to give, and a later request's CSeq is a different transaction.
+    #[test]
+    fn a_dialog_first_seen_mid_call_carries_no_sip_cseq() -> Result<(), TestError> {
+        let dialog = timed_dialog(vec![(in_dialog_request("BYE", 7, "bob", &[], b"")?, 0)])?;
+        let json = valid_json(&export_with(&dialog, &clean_facts())?)?;
+        assert!(json["dialog"][0].get("sip_cseq").is_none(), "{json:#}");
         Ok(())
     }
 }

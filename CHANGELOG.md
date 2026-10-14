@@ -12,6 +12,9 @@ entry that carries them.
 
 ### Added
 
+- **The vCon signaling Dialog Object carries `sip_cseq`.**
+  - It is the CSeq number of the request that created the dialog, per [section 5.4 of draft-howe-vcon-sip-signaling-00](https://datatracker.ietf.org/doc/html/draft-howe-vcon-sip-signaling-00#section-5.4).
+  - It is absent when the capture joined after that request.
 - **The vCon signaling Dialog Object names its parties and the conversation's length.**
   - `parties` is `[0, 1]`, the `From` party then the `To` party, per [section 4.3.4 of draft-ietf-vcon-vcon-core-04](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-04#section-4.3.4).
   - `duration` is the 200 to the initial INVITE through the BYE, in seconds, and is absent when the capture lacks any of the three.

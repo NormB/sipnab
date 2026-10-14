@@ -1702,6 +1702,7 @@ below declares `"encoding": "json"`.
       "sip_call_id": "test-call-1@192.0.2.1",
       "sip_from_tag": "1928301774",
       "sip_to_tag": "a6c85cf",
+      "sip_cseq": 1,
       "start": "2023-11-14T22:13:20+00:00",
       "duration": 58.0,
       "parties": [
@@ -1841,6 +1842,10 @@ sipnab fills these fields from what the capture shows, and leaves a field out wh
   - `start` stays the first message sipnab saw, so `start` plus `duration` is not the end of the call.
   - On an object with no `body` or `url`, `duration` is not the length of any recording.
     A consumer that reads `duration` to size media must check for content first.
+
+- `sip_cseq` is the CSeq number of the request that created the dialog.
+  - [Section 5.4 of draft-howe-vcon-sip-signaling-00](https://datatracker.ietf.org/doc/html/draft-howe-vcon-sip-signaling-00#section-5.4) defines it as "the sequence number from the CSeq header field of the INVITE or other dialog-creating request".
+  - It is absent when the capture joined after that request.
 
 ## The container cannot say "this is an incomplete record", so sipnab says it twice
 
