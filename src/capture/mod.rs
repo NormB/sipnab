@@ -167,7 +167,9 @@ thread_local! {
 /// [`tally`], which does nothing inside this scope.
 ///
 /// Thread-local, so another thread's reads are counted as usual. Nested
-/// scopes restore the state they found.
+/// scopes restore the state they found. Only `crate::parallel` reads copies,
+/// so this exists only in the builds that have it.
+#[cfg(all(not(target_arch = "wasm32"), feature = "native"))]
 pub(crate) fn untallied<R>(f: impl FnOnce() -> R) -> R {
     /// Restores the previous state on every path out, including a panic.
     struct Restore(bool);
@@ -2632,6 +2634,7 @@ mod tests {
         /// Inside [`untallied`], a counter routed through [`tally`] does not
         /// move; outside it, it does. Every process-wide capture counter a
         /// `--cores` copy could reach is incremented through `tally`.
+        #[cfg(not(target_arch = "wasm32"))]
         #[test]
         fn a_counter_does_not_move_inside_untallied() -> Result<(), TestError> {
             let counter = AtomicU64::new(0);
@@ -2650,6 +2653,7 @@ mod tests {
 
         /// A frame a `--cores` worker reads only as a copy is not counted as
         /// undecodable a second time: the worker that owns it counts it.
+        #[cfg(not(target_arch = "wasm32"))]
         #[test]
         #[serial_test::serial(undecodable_tally)]
         fn an_untallied_frame_is_not_counted_as_undecodable() -> Result<(), TestError> {
