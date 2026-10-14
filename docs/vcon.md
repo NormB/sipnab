@@ -1303,6 +1303,98 @@ config file the keys are `ca` and `extra_ca` in `[vcon_forward]` and
   - sipnab records no consent.
 - **It sends one container at a time**, in name order, one connection each.
 
+### Register lifecycle statements with a transparency service
+
+With `--vcon-forward-scitt-url` (or `[vcon_forward] scitt_url`), the
+forwarder registers SCITT lifecycle statements for each container it delivers.
+[Section 5 of draft-howe-vcon-lifecycle-01](https://datatracker.ietf.org/doc/html/draft-howe-vcon-lifecycle-01#section-5)
+names the events:
+
+- `vcon_created`, for a container sipnab wrote once: it has no `updated_at`,
+  or one equal to `created_at`. The capture process makes no outbound
+  connection, so the forwarder registers the creation when it delivers the
+  container.
+- `vcon_sent`, for every delivery: what the forwarder sent, to which store, and when.
+
+```toml
+[vcon_forward]
+url = "https://vcon.example.com/v1/vcons"
+auth_file = "/etc/sipnab/vcon.auth"
+scitt_url = "https://ts.example.com"
+scitt_auth_file = "/etc/sipnab/scitt.auth"
+scitt_sign_key = "/etc/sipnab/scitt.key"
+scitt_sign_cert = "/etc/sipnab/scitt.crt"
+scitt_issuer = "https://pbx.example.com/sipnab"
+```
+
+**The statement.** The lifecycle draft names the events and defines no
+statement format. sipnab follows the SCITT drafts that define one:
+
+- Each statement is a COSE_Sign1 Signed Statement, POSTed to
+  `<scitt_url>/entries` as `application/cose`, as
+  [section 2.3 of draft-ietf-scitt-scrapi-11](https://datatracker.ietf.org/doc/html/draft-ietf-scitt-scrapi-11#section-2.3)
+  defines.
+- The protected header carries what
+  [section 6 of draft-ietf-scitt-architecture-22](https://datatracker.ietf.org/doc/html/draft-ietf-scitt-architecture-22#section-6)
+  requires:
+  - `alg` (1): RS256, `-257`.
+  - `content type` (3): `application/json`.
+  - CWT Claims (15): `iss` (1) is `scitt_issuer`, a URI of at most
+    `MAX_ISSUER_LEN` (8192) characters, `sub` (2) is
+    `urn:uuid:<uuid>`, and `iat` (6) is the time of signing.
+  - `x5chain` (33): the certificate chain of `scitt_sign_cert`, leaf first.
+- The payload is a JSON object: `event`, `vcon_uuid`, `vcon_hash` (the
+  `sha512-` hash of the container's bytes as delivered), `at`, and for
+  `vcon_sent` the store's URL in `to`. It carries no party data.
+- The key is a PEM RSA key, the same kind an encrypting `[[vcon.rule]]` names
+  in `sign_key`, readable by its owner only.
+
+**What the service answered** goes into `<name>.scitt` beside the delivered
+container, one entry per statement:
+
+```json
+{"statements": [
+  {"event": "vcon_created", "status": 201,
+   "location": "https://ts.example.com/entries/67ed...", "receipt": "0oRDoQEm..."},
+  {"event": "vcon_sent", "status": 202,
+   "location": "https://ts.example.com/entries/67ee..."}]}
+```
+
+- `201`: the receipt, base64url, as the service returned it, and its
+  `Location`.
+- `202`: the `Location` of the receipt. sipnab does not poll it. Fetch the
+  receipt from that URL later, as
+  [section 2.4 of the SCRAPI draft](https://datatracker.ietf.org/doc/html/draft-ietf-scitt-scrapi-11#section-2.4)
+  describes.
+- `201` with a receipt longer than `MAX_RECEIPT` (65536) bytes: `error`
+  says so, and sipnab keeps no part of it.
+- Any other status: `error` holds the `title` and `detail` of the service's
+  Concise Problem Details, or the start of its answer.
+- No answer: `error` says why, and there is no `status`.
+
+The file name does not end in `.json`, so the delivered directory still counts
+containers only. sipnab logs and records a statement that does not register,
+and does not retry it. The store already holds the container, so the
+delivery stands.
+
+**What sipnab does not register.**
+
+- `vcon_deleted`: sipnab deletes no container. The delivered directory keeps
+  each one until you remove it.
+- The other events of section 5, such as `vcon_received` and
+  `vcon_consent_revoked`, describe acts sipnab does not perform.
+
+**What the drafts leave open, and sipnab chose.**
+
+- The lifecycle draft defines no payload, no subject and no content type.
+  sipnab's choices are the ones listed under the statement.
+- The architecture draft lets a transparency service's registration policy
+  refuse an algorithm. A service that admits only ECDSA answers RS256 with
+  `400`, and `<name>.scitt` records it.
+- Authentication is out of the SCRAPI draft's scope
+  ([section 4.3](https://datatracker.ietf.org/doc/html/draft-ietf-scitt-scrapi-11#section-4.3)).
+  `scitt_auth_file` sends one header line, as the store's `auth_file` does.
+
 ## Fetch a stored vCon
 
 `sipnab --vcon-fetch` is the forwarder's counterpart.

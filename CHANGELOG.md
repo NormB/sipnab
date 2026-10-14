@@ -23,6 +23,13 @@ entry that carries them.
   - `inputs` names each element sipnab sent the service, with the SHA-512 of its [RFC 8785](https://www.rfc-editor.org/rfc/rfc8785.html) form, and each leg's audio, with the SHA-512 of the WAV.
   - `output_hash` is the SHA-512 of the body sipnab carries.
   - The `sipnab-enrichment` attachment stays: it also records the services that added nothing.
+- **The vCon forwarder can register SCITT lifecycle statements.**
+  - `--vcon-forward-scitt-url` (or `[vcon_forward] scitt_url`) names a SCITT transparency service.
+  - For each container delivered, the forwarder registers `vcon_created` (a container sipnab wrote once) and `vcon_sent`, the events of [section 5 of draft-howe-vcon-lifecycle-01](https://datatracker.ietf.org/doc/html/draft-howe-vcon-lifecycle-01#section-5).
+  - Each is a COSE_Sign1 Signed Statement, signed RS256 with `--vcon-forward-scitt-sign-key` and carrying `--vcon-forward-scitt-sign-cert` in `x5chain`, POSTed to `<url>/entries` as [section 2.3 of draft-ietf-scitt-scrapi-11](https://datatracker.ietf.org/doc/html/draft-ietf-scitt-scrapi-11#section-2.3) defines.
+  - `--vcon-forward-scitt-issuer` names the issuer, and `--vcon-forward-scitt-auth-file` and `--vcon-forward-scitt-ca` authenticate and trust the service.
+  - What the service answered, receipts included, goes into `<name>.scitt` beside the delivered container. A statement that does not register is recorded and not retried; the delivery stands.
+  - sipnab registers no `vcon_deleted`: it deletes no container.
 - **An enrichment service may supply a lawful basis, when you allow it.**
   - `lawful_basis = true` on a `[[vcon.enrich]]` lets its answer carry `attachments`, each a lawful basis attachment of [section 5 of draft-howe-vcon-lawful-basis-02](https://datatracker.ietf.org/doc/html/draft-howe-vcon-lawful-basis-02#section-5.1).
   - sipnab checks the shape, carries it as sent, lists `lawful_basis` in `extensions`, and names the service in its `sipnab-enrichment` line under `attachments`.

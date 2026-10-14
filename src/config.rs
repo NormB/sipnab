@@ -294,6 +294,12 @@ static KNOWN_KEYS: LazyLock<HashMap<&'static str, &'static [&'static str]>> = La
             "backoff_cap",
             "max_response_head",
             "max_error_body",
+            "scitt_url",
+            "scitt_auth_file",
+            "scitt_ca",
+            "scitt_sign_key",
+            "scitt_sign_cert",
+            "scitt_issuer",
         ]
         .as_slice(),
     );
@@ -624,6 +630,26 @@ pub struct VconForwardConfig {
     /// The most bytes of a store's refusal kept in a failure record. See
     /// [`FORWARD_MAX_ERROR_BODY`].
     pub max_error_body: Option<u64>,
+    /// The SCITT transparency service that lifecycle statements are
+    /// registered with, by SCRAPI (`<url>/entries`). Unset, nothing is
+    /// registered. `--vcon-forward-scitt-url` overrides it.
+    pub scitt_url: Option<String>,
+    /// The file holding the one `Header-Name: value` line that authenticates
+    /// to the transparency service. `--vcon-forward-scitt-auth-file`
+    /// overrides it.
+    pub scitt_auth_file: Option<PathBuf>,
+    /// The only CA file trusted for an `https://` transparency service.
+    /// `--vcon-forward-scitt-ca` overrides it.
+    pub scitt_ca: Option<PathBuf>,
+    /// The PEM RSA private key the statements are signed with, readable by
+    /// its owner only. `--vcon-forward-scitt-sign-key` overrides it.
+    pub scitt_sign_key: Option<PathBuf>,
+    /// The PEM certificate chain of `scitt_sign_key`, leaf first.
+    /// `--vcon-forward-scitt-sign-cert` overrides it.
+    pub scitt_sign_cert: Option<PathBuf>,
+    /// The statements' issuer (CWT claim `iss`), a URI.
+    /// `--vcon-forward-scitt-issuer` overrides it.
+    pub scitt_issuer: Option<String>,
 }
 
 /// A whole-number forwarder setting, declared once: its key, its flag, the
@@ -3361,7 +3387,7 @@ impl Config {
     /// # Errors
     /// `crate::Error::ConfigInvalid`, naming the first such key.
     pub fn validate_paths(&self) -> Result<(), crate::Error> {
-        let keys: [(&str, Option<&Path>); 27] = [
+        let keys: [(&str, Option<&Path>); 31] = [
             ("[hep] tls_ca", self.hep.tls_ca.as_deref()),
             ("[hep] tls_extra_ca", self.hep.tls_extra_ca.as_deref()),
             ("[hep] tls_cert", self.hep.tls_cert.as_deref()),
@@ -3396,6 +3422,22 @@ impl Config {
             (
                 "[vcon_forward] extra_ca",
                 self.vcon_forward.extra_ca.as_deref(),
+            ),
+            (
+                "[vcon_forward] scitt_auth_file",
+                self.vcon_forward.scitt_auth_file.as_deref(),
+            ),
+            (
+                "[vcon_forward] scitt_ca",
+                self.vcon_forward.scitt_ca.as_deref(),
+            ),
+            (
+                "[vcon_forward] scitt_sign_key",
+                self.vcon_forward.scitt_sign_key.as_deref(),
+            ),
+            (
+                "[vcon_forward] scitt_sign_cert",
+                self.vcon_forward.scitt_sign_cert.as_deref(),
             ),
             ("[vcon_forward] done", self.vcon_forward.done.as_deref()),
             ("[vcon_forward] failed", self.vcon_forward.failed.as_deref()),

@@ -1389,7 +1389,10 @@ fn wiki_intra_docs_links_resolve() -> Result<(), TestError> {
     // 1736 -> 1737 for lawful basis pass-through, attributed per file:
     // docs/vcon.md +1 (the opening links "Enrich a call before it is
     // written").
-    const EXPECTED_WIKI_LINKS: usize = 1737;
+    // 1737 -> 1738 for SCITT lifecycle statements, attributed per file:
+    // docs/cli-reference.md +1 (the `--vcon-forward-scitt-url` row links
+    // "Register lifecycle statements with a transparency service").
+    const EXPECTED_WIKI_LINKS: usize = 1738;
     // Raised 459 -> 460 when SRC1 stage 1 shipped: docs/cli-reference.md's
     // `--hep-listen` row now points at cookbook recipe "Take signaling from HEP and media off the wire, in one process" in docs/examples.md
     // rather than restating how to pair `-L` with `-d`. Attributed per file

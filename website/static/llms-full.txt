@@ -19182,6 +19182,12 @@ The platforms also differ.
 | `--vcon-forward-backoff-cap` | `<SECS>` | `300` | 0.5.206 | The longest a container waits between tries, 1 to 4294967295, and no shorter than `--vcon-forward-backoff-first`. Config: `[vcon_forward] backoff_cap` |
 | `--vcon-forward-max-response-head` | `<BYTES>` | `65536` | 0.5.206 | The most bytes of a store's status line and headers read, 1 to 4294967295. The forwarder treats an answer with more as no answer, and the container waits for a retry. Config: `[vcon_forward] max_response_head` |
 | `--vcon-forward-max-error-body` | `<BYTES>` | `8192` | 0.5.206 | The most bytes of a store's answer to a refused container that its `<name>.error.json` record keeps, 1 to 4294967295. Config: `[vcon_forward] max_error_body` |
+| `--vcon-forward-scitt-url` | `<URL>` | -- | Unreleased | Register SCITT lifecycle statements (draft-howe-vcon-lifecycle-01) with the transparency service at this base URL. For each delivered container, `vcon_created` when sipnab wrote it once and `vcon_sent` every time, each a COSE_Sign1 Signed Statement POSTed to `<URL>/entries`. What the service answered goes into `<name>.scitt` beside the delivered container. sipnab logs and records a statement that does not register, and does not retry it; the delivery stands. Needs `--vcon-forward-scitt-sign-key`, `--vcon-forward-scitt-sign-cert` and `--vcon-forward-scitt-issuer`, each from its flag or its key; without one sipnab refuses the run with exit `2`, naming it. More: [Register lifecycle statements with a transparency service](vcon.md#register-lifecycle-statements-with-a-transparency-service). Config: `[vcon_forward] scitt_url` |
+| `--vcon-forward-scitt-auth-file` | `<FILE>` | -- | Unreleased | File holding one `Header-Name: value` line sent with each registration. Refused when other users can read it (`chmod 600` it). The store's credential never goes to the transparency service, and this one never goes to the store. Config: `[vcon_forward] scitt_auth_file` |
+| `--vcon-forward-scitt-ca` | `<FILE>` | host bundle | Unreleased | Trust only the CA certificates in this PEM file for an `https://` transparency service. Config: `[vcon_forward] scitt_ca` |
+| `--vcon-forward-scitt-sign-key` | `<FILE>` | -- | Unreleased | The PEM RSA private key that signs the statements (RS256), the same kind of key an encrypting `[[vcon.rule]]` names in `sign_key`. Refused when other users can read it (`chmod 600` it), with exit `2`; the same file named by `[vcon_forward] scitt_sign_key` exits `1`. Config: `[vcon_forward] scitt_sign_key` |
+| `--vcon-forward-scitt-sign-cert` | `<FILE>` | -- | Unreleased | The PEM certificate chain of the signing key, leaf first, carried in each statement's `x5chain`. sipnab refuses a chain whose first certificate is not the key's. Config: `[vcon_forward] scitt_sign_cert` |
+| `--vcon-forward-scitt-issuer` | `<URI>` | -- | Unreleased | The issuer each statement names in its CWT Claims (`iss`): a URI of 1 to 8192 characters, such as `https://pbx.example.com/sipnab`. Config: `[vcon_forward] scitt_issuer` |
 | `--vcon-spool-status` | `<SPOOL_DIR>` | -- | 0.5.212 | Print the state of an `--export-vcon-dir` spool as JSON and exit: containers pending, delivered and failed, and the `<name>.error.json` record beside each failed container. Reads the forwarder's default `delivered/` and `failed/` directories beside the spool. A snapshot of the files: it sends, moves, creates and deletes nothing. The MCP tool `vcon_spool_status` and `GET /v1/vcon/spool` give the same answer. Exit `0` after printing, also for a spool directory that does not exist yet, `1` when sipnab cannot read a directory that exists. Refused beside any capture flag, `--vcon-forward` and `--vcon-fetch` |
 
 **Examples**
@@ -19204,6 +19210,9 @@ The platforms also differ.
 - `sipnab --vcon-forward /var/spool/sipnab-vcon --vcon-forward-url https://vcon.example.com/v1/vcons --vcon-forward-auth-file vcon.auth --vcon-forward-done /var/spool/sipnab-vcon-sent --vcon-forward-failed /var/spool/sipnab-vcon-held --vcon-forward-interval 2` — keep delivered and refused containers beside the spool rather than inside it, on the same file system, and pass every two seconds
 - `sipnab --vcon-forward spool --vcon-forward-url https://vcon.example.com/v1/vcons --vcon-forward-auth-file vcon.auth --vcon-forward-replace-url 'https://vcon.example.com/v1/vcons/{uuid}' --vcon-forward-once` — a store that answers `409` for a uuid it holds: PUT the rewritten container to the uuid's own URL instead of filing it as refused
 - `sipnab --vcon-forward spool --vcon-forward-url https://vcon.example.com/v1/vcons --vcon-forward-auth-file vcon.auth --vcon-forward-replace-url 'https://vcon.example.com/v1/vcons/{uuid}' --vcon-forward-done sent --vcon-forward-failed held` — the same, polling, with the delivered and refused containers in `sent` and `held`
+- `sipnab --vcon-forward spool --vcon-forward-url https://vcon.example.com/v1/vcons --vcon-forward-auth-file vcon.auth --vcon-forward-scitt-url https://ts.example.com --vcon-forward-scitt-sign-key scitt.key --vcon-forward-scitt-sign-cert scitt.crt --vcon-forward-scitt-issuer https://pbx.example.com/sipnab` — register `vcon_created` and `vcon_sent` with the transparency service at `https://ts.example.com/entries` for each container delivered
+- `sipnab --vcon-forward spool --vcon-forward-url https://vcon.example.com/v1/vcons --vcon-forward-auth-file vcon.auth --vcon-forward-scitt-url https://ts.example.com --vcon-forward-scitt-auth-file scitt.auth --vcon-forward-scitt-ca ts-ca.pem --vcon-forward-scitt-sign-key scitt.key --vcon-forward-scitt-sign-cert scitt-chain.pem --vcon-forward-scitt-issuer urn:example:pbx-1 --vcon-forward-once` — the same once, to a service that needs a credential and has a certificate from a private CA
+- `sipnab --vcon-forward spool --config /etc/sipnab/forward.toml --vcon-forward-scitt-auth-file scitt-rotated.auth --vcon-forward-scitt-ca ts-ca-2026.pem` — take the other forwarder and SCITT settings from the config file, and replace its transparency service credential and CA for this run
 - `sipnab --vcon-spool-status spool` — print how many containers wait in `spool`, how many the forwarder delivered and refused, and the store's answer for each refusal
 - `sipnab --vcon-spool-status /var/spool/sipnab-vcon` — the same for a spool given by absolute path; a spool the capture has not written yet prints zeros and `"exists": false`
 
@@ -23238,6 +23247,30 @@ You gave `--vcon-forward` with no credential for the store from any source. The 
 **What to do:** Give `--vcon-forward-auth-file FILE`, set `[vcon_forward] auth_file` in the config file, or set the `SIPNAB_VCON_FORWARD_AUTH` environment variable. The file holds one line, `Header-Name: value`, or the bare key with a `--vcon-forward-kind` other than `generic`. Other users must not be able to read it (`chmod 600`).
 
 **Exit code:** 2.
+
+### `{from} needs --vcon-forward-scitt-url ([vcon_forward] scitt_url): the transparency service the lifecycle statements go to`
+
+You gave a SCITT setting, such as `--vcon-forward-scitt-issuer` or `[vcon_forward] scitt_sign_key`, without the URL of the transparency service. `{from}` names the setting. The other SCITT settings do nothing without the URL.
+
+**What to do:** Give `--vcon-forward-scitt-url URL` or `[vcon_forward] scitt_url`, or remove the SCITT settings.
+
+**Exit code:** 2.
+
+### `{issuer_from} {issuer:?} is not a URI: give a scheme and more, such as https://pbx.example.com/sipnab, of 1 to {} characters`
+
+The issuer of the lifecycle statements is not a URI. `{issuer_from}` names `--vcon-forward-scitt-issuer` or `[vcon_forward] scitt_issuer`, `{issuer:?}` is the value, and `{}` is `MAX_ISSUER_LEN` (8192). A statement carries an X.509 chain, and [section 6 of draft-ietf-scitt-architecture-22](https://datatracker.ietf.org/doc/html/draft-ietf-scitt-architecture-22#section-6) then requires `iss` to be a URI of 1 to 8192 characters.
+
+**What to do:** Give a URI with a scheme, such as `https://pbx.example.com/sipnab` or `urn:example:pbx-1`, with no spaces.
+
+**Exit code:** 2.
+
+### `{name}: a lifecycle statement did not register with {}; {record_name} says why`
+
+The forwarder delivered the container `{name}`, and the transparency service at `{}` did not register one of its lifecycle statements: it refused it, or it did not answer. `{record_name}` is the `<name>.scitt` record beside the delivered container, which holds the status and the service's reason. The delivery stands, and sipnab does not retry the statement.
+
+**What to do:** Read the record. A `400` names the service's reason, such as an algorithm its registration policy does not admit. Register the statement again by other means if the record must be complete.
+
+**Exit code:** None. This is a warning, and the forwarder continues.
 
 ### `--vcon-forward requires the 'vcon' feature (not compiled in)`
 
@@ -28125,6 +28158,12 @@ The vCon forwarder's settings (`sipnab --vcon-forward <SPOOL_DIR>`, see
 | `backoff_cap` | integer | `300` | The longest wait between tries, in seconds, 1 to 4294967295. `--vcon-forward-backoff-cap` overrides it |
 | `max_response_head` | integer | `65536` | The most bytes of a store's status line and headers read, 1 to 4294967295. The forwarder treats an answer with more as no answer and retries the container. `--vcon-forward-max-response-head` overrides it |
 | `max_error_body` | integer | `8192` | The most bytes of a refusal's body a `<name>.error.json` record keeps, 1 to 4294967295. `--vcon-forward-max-error-body` overrides it |
+| `scitt_url` | string | -- | The SCITT transparency service the forwarder registers lifecycle statements with, `vcon_created` and `vcon_sent`, by POSTing each to `<scitt_url>/entries`. Unset, it registers nothing. Needs `scitt_sign_key`, `scitt_sign_cert` and `scitt_issuer`. `--vcon-forward-scitt-url` overrides it |
+| `scitt_auth_file` | path | -- | File holding one `Header-Name: value` line sent with each registration. Refused when other users can read it. `--vcon-forward-scitt-auth-file` overrides it |
+| `scitt_ca` | path | host bundle | The only CA (PEM) trusted for an `https://` transparency service. `--vcon-forward-scitt-ca` overrides it |
+| `scitt_sign_key` | path | -- | The PEM RSA private key that signs the statements (RS256). Refused when other users can read it: a refusal from this key exits `1`, from the flag `2`. `--vcon-forward-scitt-sign-key` overrides it |
+| `scitt_sign_cert` | path | -- | The PEM certificate chain of `scitt_sign_key`, leaf first, carried in each statement's `x5chain`. `--vcon-forward-scitt-sign-cert` overrides it |
+| `scitt_issuer` | string | -- | The issuer each statement names (`iss`): a URI of 1 to 8192 characters. `--vcon-forward-scitt-issuer` overrides it |
 
 ```toml
 [vcon_forward]
@@ -44882,6 +44921,98 @@ config file the keys are `ca` and `extra_ca` in `[vcon_forward]` and
     store's, over an observation.
   - sipnab records no consent.
 - **It sends one container at a time**, in name order, one connection each.
+
+### Register lifecycle statements with a transparency service
+
+With `--vcon-forward-scitt-url` (or `[vcon_forward] scitt_url`), the
+forwarder registers SCITT lifecycle statements for each container it delivers.
+[Section 5 of draft-howe-vcon-lifecycle-01](https://datatracker.ietf.org/doc/html/draft-howe-vcon-lifecycle-01#section-5)
+names the events:
+
+- `vcon_created`, for a container sipnab wrote once: it has no `updated_at`,
+  or one equal to `created_at`. The capture process makes no outbound
+  connection, so the forwarder registers the creation when it delivers the
+  container.
+- `vcon_sent`, for every delivery: what the forwarder sent, to which store, and when.
+
+```toml
+[vcon_forward]
+url = "https://vcon.example.com/v1/vcons"
+auth_file = "/etc/sipnab/vcon.auth"
+scitt_url = "https://ts.example.com"
+scitt_auth_file = "/etc/sipnab/scitt.auth"
+scitt_sign_key = "/etc/sipnab/scitt.key"
+scitt_sign_cert = "/etc/sipnab/scitt.crt"
+scitt_issuer = "https://pbx.example.com/sipnab"
+```
+
+**The statement.** The lifecycle draft names the events and defines no
+statement format. sipnab follows the SCITT drafts that define one:
+
+- Each statement is a COSE_Sign1 Signed Statement, POSTed to
+  `<scitt_url>/entries` as `application/cose`, as
+  [section 2.3 of draft-ietf-scitt-scrapi-11](https://datatracker.ietf.org/doc/html/draft-ietf-scitt-scrapi-11#section-2.3)
+  defines.
+- The protected header carries what
+  [section 6 of draft-ietf-scitt-architecture-22](https://datatracker.ietf.org/doc/html/draft-ietf-scitt-architecture-22#section-6)
+  requires:
+  - `alg` (1): RS256, `-257`.
+  - `content type` (3): `application/json`.
+  - CWT Claims (15): `iss` (1) is `scitt_issuer`, a URI of at most
+    `MAX_ISSUER_LEN` (8192) characters, `sub` (2) is
+    `urn:uuid:<uuid>`, and `iat` (6) is the time of signing.
+  - `x5chain` (33): the certificate chain of `scitt_sign_cert`, leaf first.
+- The payload is a JSON object: `event`, `vcon_uuid`, `vcon_hash` (the
+  `sha512-` hash of the container's bytes as delivered), `at`, and for
+  `vcon_sent` the store's URL in `to`. It carries no party data.
+- The key is a PEM RSA key, the same kind an encrypting `[[vcon.rule]]` names
+  in `sign_key`, readable by its owner only.
+
+**What the service answered** goes into `<name>.scitt` beside the delivered
+container, one entry per statement:
+
+```json
+{"statements": [
+  {"event": "vcon_created", "status": 201,
+   "location": "https://ts.example.com/entries/67ed...", "receipt": "0oRDoQEm..."},
+  {"event": "vcon_sent", "status": 202,
+   "location": "https://ts.example.com/entries/67ee..."}]}
+```
+
+- `201`: the receipt, base64url, as the service returned it, and its
+  `Location`.
+- `202`: the `Location` of the receipt. sipnab does not poll it. Fetch the
+  receipt from that URL later, as
+  [section 2.4 of the SCRAPI draft](https://datatracker.ietf.org/doc/html/draft-ietf-scitt-scrapi-11#section-2.4)
+  describes.
+- `201` with a receipt longer than `MAX_RECEIPT` (65536) bytes: `error`
+  says so, and sipnab keeps no part of it.
+- Any other status: `error` holds the `title` and `detail` of the service's
+  Concise Problem Details, or the start of its answer.
+- No answer: `error` says why, and there is no `status`.
+
+The file name does not end in `.json`, so the delivered directory still counts
+containers only. sipnab logs and records a statement that does not register,
+and does not retry it. The store already holds the container, so the
+delivery stands.
+
+**What sipnab does not register.**
+
+- `vcon_deleted`: sipnab deletes no container. The delivered directory keeps
+  each one until you remove it.
+- The other events of section 5, such as `vcon_received` and
+  `vcon_consent_revoked`, describe acts sipnab does not perform.
+
+**What the drafts leave open, and sipnab chose.**
+
+- The lifecycle draft defines no payload, no subject and no content type.
+  sipnab's choices are the ones listed under the statement.
+- The architecture draft lets a transparency service's registration policy
+  refuse an algorithm. A service that admits only ECDSA answers RS256 with
+  `400`, and `<name>.scitt` records it.
+- Authentication is out of the SCRAPI draft's scope
+  ([section 4.3](https://datatracker.ietf.org/doc/html/draft-ietf-scitt-scrapi-11#section-4.3)).
+  `scitt_auth_file` sends one header line, as the store's `auth_file` does.
 
 ## Fetch a stored vCon
 

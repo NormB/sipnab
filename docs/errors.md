@@ -3854,6 +3854,30 @@ You gave `--vcon-forward` with no credential for the store from any source. The 
 
 **Exit code:** 2.
 
+### `{from} needs --vcon-forward-scitt-url ([vcon_forward] scitt_url): the transparency service the lifecycle statements go to`
+
+You gave a SCITT setting, such as `--vcon-forward-scitt-issuer` or `[vcon_forward] scitt_sign_key`, without the URL of the transparency service. `{from}` names the setting. The other SCITT settings do nothing without the URL.
+
+**What to do:** Give `--vcon-forward-scitt-url URL` or `[vcon_forward] scitt_url`, or remove the SCITT settings.
+
+**Exit code:** 2.
+
+### `{issuer_from} {issuer:?} is not a URI: give a scheme and more, such as https://pbx.example.com/sipnab, of 1 to {} characters`
+
+The issuer of the lifecycle statements is not a URI. `{issuer_from}` names `--vcon-forward-scitt-issuer` or `[vcon_forward] scitt_issuer`, `{issuer:?}` is the value, and `{}` is `MAX_ISSUER_LEN` (8192). A statement carries an X.509 chain, and [section 6 of draft-ietf-scitt-architecture-22](https://datatracker.ietf.org/doc/html/draft-ietf-scitt-architecture-22#section-6) then requires `iss` to be a URI of 1 to 8192 characters.
+
+**What to do:** Give a URI with a scheme, such as `https://pbx.example.com/sipnab` or `urn:example:pbx-1`, with no spaces.
+
+**Exit code:** 2.
+
+### `{name}: a lifecycle statement did not register with {}; {record_name} says why`
+
+The forwarder delivered the container `{name}`, and the transparency service at `{}` did not register one of its lifecycle statements: it refused it, or it did not answer. `{record_name}` is the `<name>.scitt` record beside the delivered container, which holds the status and the service's reason. The delivery stands, and sipnab does not retry the statement.
+
+**What to do:** Read the record. A `400` names the service's reason, such as an algorithm its registration policy does not admit. Register the statement again by other means if the record must be complete.
+
+**Exit code:** None. This is a warning, and the forwarder continues.
+
 ### `--vcon-forward requires the 'vcon' feature (not compiled in)`
 
 `--vcon-forward` delivers a spool directory of vCon files to a store. This build does not include the `vcon` feature, so it has no forwarder.

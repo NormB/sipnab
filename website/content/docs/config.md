@@ -1016,6 +1016,12 @@ The vCon forwarder's settings (`sipnab --vcon-forward <SPOOL_DIR>`, see
 | `backoff_cap` | integer | `300` | The longest wait between tries, in seconds, 1 to 4294967295. `--vcon-forward-backoff-cap` overrides it |
 | `max_response_head` | integer | `65536` | The most bytes of a store's status line and headers read, 1 to 4294967295. The forwarder treats an answer with more as no answer and retries the container. `--vcon-forward-max-response-head` overrides it |
 | `max_error_body` | integer | `8192` | The most bytes of a refusal's body a `<name>.error.json` record keeps, 1 to 4294967295. `--vcon-forward-max-error-body` overrides it |
+| `scitt_url` | string | -- | The SCITT transparency service the forwarder registers lifecycle statements with, `vcon_created` and `vcon_sent`, by POSTing each to `<scitt_url>/entries`. Unset, it registers nothing. Needs `scitt_sign_key`, `scitt_sign_cert` and `scitt_issuer`. `--vcon-forward-scitt-url` overrides it |
+| `scitt_auth_file` | path | -- | File holding one `Header-Name: value` line sent with each registration. Refused when other users can read it. `--vcon-forward-scitt-auth-file` overrides it |
+| `scitt_ca` | path | host bundle | The only CA (PEM) trusted for an `https://` transparency service. `--vcon-forward-scitt-ca` overrides it |
+| `scitt_sign_key` | path | -- | The PEM RSA private key that signs the statements (RS256). Refused when other users can read it: a refusal from this key exits `1`, from the flag `2`. `--vcon-forward-scitt-sign-key` overrides it |
+| `scitt_sign_cert` | path | -- | The PEM certificate chain of `scitt_sign_key`, leaf first, carried in each statement's `x5chain`. `--vcon-forward-scitt-sign-cert` overrides it |
+| `scitt_issuer` | string | -- | The issuer each statement names (`iss`): a URI of 1 to 8192 characters. `--vcon-forward-scitt-issuer` overrides it |
 
 ```toml
 [vcon_forward]

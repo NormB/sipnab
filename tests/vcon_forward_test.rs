@@ -262,6 +262,7 @@ impl Rig {
             kind: StoreKind::Generic,
             backoff: BackoffPolicy::default(),
             limits: ReadLimits::default(),
+            scitt: None,
         };
         Ok(Self { dir, settings })
     }

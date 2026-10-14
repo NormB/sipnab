@@ -1896,6 +1896,60 @@ static KEY_SPECS: &[KeySpec] = &[
             ctx: "",
         },
     ),
+    (
+        "vcon_forward",
+        "scitt_auth_file",
+        KeyKind::Literal {
+            accept: &["\"x\"", "\" \"", "\"0\"", "\"/var/spool/sipnab-vcon\""],
+            reject: &["\"\""],
+            ctx: "",
+        },
+    ),
+    (
+        "vcon_forward",
+        "scitt_ca",
+        KeyKind::Literal {
+            accept: &["\"x\"", "\" \"", "\"0\"", "\"/var/spool/sipnab-vcon\""],
+            reject: &["\"\""],
+            ctx: "",
+        },
+    ),
+    (
+        "vcon_forward",
+        "scitt_issuer",
+        KeyKind::Literal {
+            accept: &["\"https://sipnab.example/\"", "\"x\"", "\"\""],
+            reject: &[],
+            ctx: "",
+        },
+    ),
+    (
+        "vcon_forward",
+        "scitt_sign_cert",
+        KeyKind::Literal {
+            accept: &["\"x\"", "\" \"", "\"0\"", "\"/var/spool/sipnab-vcon\""],
+            reject: &["\"\""],
+            ctx: "",
+        },
+    ),
+    (
+        "vcon_forward",
+        "scitt_sign_key",
+        KeyKind::Literal {
+            accept: &["\"x\"", "\" \"", "\"0\"", "\"/var/spool/sipnab-vcon\""],
+            reject: &["\"\""],
+            ctx: "",
+        },
+    ),
+    (
+        "vcon_forward",
+        "scitt_url",
+        KeyKind::Literal {
+            accept: &["\"https://ts.example.com/scitt\"", "\"x\"", "\"\""],
+            reject: &[],
+            ctx: "",
+        },
+    ),
     ("vcon_forward", "timeout", KeyKind::Int { lo: 1, hi: 600 }),
     (
         "vcon_forward",

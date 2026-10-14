@@ -4932,6 +4932,74 @@ pub struct VconForwardArgs {
         conflicts_with = "vcon_forward_ca"
     )]
     pub vcon_forward_extra_ca: Option<std::path::PathBuf>,
+
+    /// Register SCITT lifecycle statements (draft-howe-vcon-lifecycle-01)
+    /// with the transparency service at this URL: `vcon_created` and
+    /// `vcon_sent` for each container delivered, each a signed statement
+    /// POSTed to `<URL>/entries` (draft-ietf-scitt-scrapi). Needs
+    /// --vcon-forward-scitt-sign-key, --vcon-forward-scitt-sign-cert and
+    /// --vcon-forward-scitt-issuer. Overrides `[vcon_forward] scitt_url`.
+    #[arg(
+        help_heading = "vCon forwarder",
+        long = "vcon-forward-scitt-url",
+        value_name = "URL",
+        requires = "vcon_forward"
+    )]
+    pub vcon_forward_scitt_url: Option<String>,
+
+    /// File holding the one header that authenticates to the transparency
+    /// service, as `Header-Name: value` on one line. Refused when other users
+    /// can read it: chmod 600. Overrides `[vcon_forward] scitt_auth_file`.
+    #[arg(
+        help_heading = "vCon forwarder",
+        long = "vcon-forward-scitt-auth-file",
+        value_name = "FILE",
+        requires = "vcon_forward"
+    )]
+    pub vcon_forward_scitt_auth_file: Option<std::path::PathBuf>,
+
+    /// Trust only the CA certificates in this PEM file for an `https://`
+    /// transparency service. Without it the host's CA bundle. Overrides
+    /// `[vcon_forward] scitt_ca`.
+    #[arg(
+        help_heading = "vCon forwarder",
+        long = "vcon-forward-scitt-ca",
+        value_name = "FILE",
+        requires = "vcon_forward"
+    )]
+    pub vcon_forward_scitt_ca: Option<std::path::PathBuf>,
+
+    /// The PEM RSA private key the lifecycle statements are signed with
+    /// (RS256). Refused when other users can read it: chmod 600. Overrides
+    /// `[vcon_forward] scitt_sign_key`.
+    #[arg(
+        help_heading = "vCon forwarder",
+        long = "vcon-forward-scitt-sign-key",
+        value_name = "FILE",
+        requires = "vcon_forward"
+    )]
+    pub vcon_forward_scitt_sign_key: Option<std::path::PathBuf>,
+
+    /// The PEM certificate chain of the signing key, leaf first, carried in
+    /// each statement's `x5chain`. Overrides `[vcon_forward] scitt_sign_cert`.
+    #[arg(
+        help_heading = "vCon forwarder",
+        long = "vcon-forward-scitt-sign-cert",
+        value_name = "FILE",
+        requires = "vcon_forward"
+    )]
+    pub vcon_forward_scitt_sign_cert: Option<std::path::PathBuf>,
+
+    /// The issuer each lifecycle statement names (CWT claim `iss`), a URI
+    /// such as `https://pbx.example.com/sipnab`. Overrides
+    /// `[vcon_forward] scitt_issuer`.
+    #[arg(
+        help_heading = "vCon forwarder",
+        long = "vcon-forward-scitt-issuer",
+        value_name = "URI",
+        requires = "vcon_forward"
+    )]
+    pub vcon_forward_scitt_issuer: Option<String>,
 }
 
 /// `vCon fetcher` flags: the mode that reads stored vCons from a store by
@@ -5204,6 +5272,30 @@ impl VconForwardArgs {
                 self.vcon_forward_max_error_body.is_some(),
             ),
             ("--vcon-forward-ca", self.vcon_forward_ca.is_some()),
+            (
+                "--vcon-forward-scitt-url",
+                self.vcon_forward_scitt_url.is_some(),
+            ),
+            (
+                "--vcon-forward-scitt-auth-file",
+                self.vcon_forward_scitt_auth_file.is_some(),
+            ),
+            (
+                "--vcon-forward-scitt-ca",
+                self.vcon_forward_scitt_ca.is_some(),
+            ),
+            (
+                "--vcon-forward-scitt-sign-key",
+                self.vcon_forward_scitt_sign_key.is_some(),
+            ),
+            (
+                "--vcon-forward-scitt-sign-cert",
+                self.vcon_forward_scitt_sign_cert.is_some(),
+            ),
+            (
+                "--vcon-forward-scitt-issuer",
+                self.vcon_forward_scitt_issuer.is_some(),
+            ),
         ]
         .into_iter()
         .find_map(|(flag, given)| given.then_some(flag))

@@ -4160,6 +4160,7 @@ dependencies = [
  "bytes",
  "cbc",
  "chrono",
+ "ciborium",
  "clap",
  "clap_complete",
  "console_error_panic_hook",

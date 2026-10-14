@@ -755,7 +755,10 @@ const EXPECTED_UNRESOLVED: usize = 80;
 // 455 -> 459 (+4), lawful basis pass-through: src/app/vcon_enrich.rs 4 (the
 // attachments refusal without lawful_basis = true, an unknown member, another
 // purpose, and a body member). Nothing removed.
-const EXPECTED_TEMPLATES: usize = 459;
+// 459 -> 462 (+3), SCITT lifecycle statements: src/app/vcon_forward.rs 3 (a
+// SCITT setting without the URL, an issuer that is not a URI, and the warning
+// for a statement that did not register). Nothing removed.
+const EXPECTED_TEMPLATES: usize = 462;
 
 // ---------------------------------------------------------------------------
 // The page gates

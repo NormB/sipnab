@@ -822,6 +822,30 @@ pub const FLAGS: &[(&str, Link)] = &[
         Link::Key("vcon_forward", "replace_url", Merge::Override),
     ),
     (
+        "vcon-forward-scitt-auth-file",
+        Link::Key("vcon_forward", "scitt_auth_file", Merge::Override),
+    ),
+    (
+        "vcon-forward-scitt-ca",
+        Link::Key("vcon_forward", "scitt_ca", Merge::Override),
+    ),
+    (
+        "vcon-forward-scitt-issuer",
+        Link::Key("vcon_forward", "scitt_issuer", Merge::Override),
+    ),
+    (
+        "vcon-forward-scitt-sign-cert",
+        Link::Key("vcon_forward", "scitt_sign_cert", Merge::Override),
+    ),
+    (
+        "vcon-forward-scitt-sign-key",
+        Link::Key("vcon_forward", "scitt_sign_key", Merge::Override),
+    ),
+    (
+        "vcon-forward-scitt-url",
+        Link::Key("vcon_forward", "scitt_url", Merge::Override),
+    ),
+    (
         "vcon-forward-timeout",
         Link::Key("vcon_forward", "timeout", Merge::Override),
     ),
