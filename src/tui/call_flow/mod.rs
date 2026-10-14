@@ -30,20 +30,29 @@ use super::{ColorMode, SdpDisplayMode, Theme, TimestampMode};
 
 // ── Bundled display options ────────────────────────────────────────
 
-/// One observed RTP media segment for a dialog: the codec actually carried on
-/// the wire (resolved from the RTP payload type) and the time window it was
-/// seen. The RTP-in-flow bar uses these to label the *used* codec rather than
-/// the full SDP offer list — and a re-INVITE that switches codecs shows up as a
-/// later segment with a different codec. Empty when no RTP was captured
-/// (SIP-only), in which case the bar falls back to the negotiated SDP answer.
-#[derive(Debug, Clone)]
-pub struct RtpCodecSegment {
-    /// Resolved codec name, e.g. `PCMU`, `G722`.
-    pub codec: String,
-    /// First time a packet of this stream was seen.
-    pub start: chrono::DateTime<chrono::Utc>,
-    /// Last time a packet of this stream was seen.
-    pub end: chrono::DateTime<chrono::Utc>,
+/// One RTP stream of the call, as the call flow's RTP display (F6) draws it:
+/// a row at the time of the stream's first packet, with an arrow from the
+/// column of `src` to the column of `dst` (#495).
+///
+/// Built from the stream store's streams linked to the dialog (or, in the
+/// extended and merged views, to every dialog the view shows). A copy rather
+/// than a borrow of the store's stream, so the ladder layout can be cached
+/// without holding the store's lock.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RtpFlowStream {
+    /// The stream's identity in the stream store. Its `src` is the
+    /// sender's socket and its `dst` the receiver's; Enter on the row opens
+    /// this stream.
+    pub key: crate::rtp::stream::StreamKey,
+    /// Codec name resolved for the stream, for example `PCMU`; `None` when
+    /// neither SDP nor the static payload-type table names it.
+    pub codec: Option<String>,
+    /// RTP payload type, shown when `codec` is `None`.
+    pub payload_type: u8,
+    /// Time of the stream's first packet: where its row sits in the ladder.
+    pub first_seen: DateTime<Utc>,
+    /// RTP packets counted so far.
+    pub packet_count: u64,
 }
 
 /// Display options for call flow rendering.
@@ -59,7 +68,8 @@ pub struct FlowDisplayOptions<'a> {
     pub ts_mode: TimestampMode,
     /// What drives arrow coloring (method class, Call-ID, or CSeq rotation).
     pub color_mode: ColorMode,
-    /// Whether to insert RTP-in-flow channel bars for media segments.
+    /// Whether to draw the call's RTP: one row per captured stream, or the
+    /// SDP-derived bar when no stream was captured (F6).
     pub show_rtp: bool,
     /// Index of the selected row among visible (non-spacer) rows, if any.
     pub selected_msg: Option<usize>,
@@ -69,9 +79,10 @@ pub struct FlowDisplayOptions<'a> {
     pub resolver: &'a crate::names::NameResolver,
     /// How endpoint labels are displayed (raw address vs resolved name).
     pub name_mode: crate::names::NameMode,
-    /// Observed RTP codec segments for this dialog (authoritative "used"
-    /// codec). Empty ⇒ fall back to the negotiated SDP answer codec.
-    pub rtp_segments: &'a [RtpCodecSegment],
+    /// The call's RTP streams, drawn as rows when `show_rtp` is on. Empty
+    /// means no RTP was captured for the call; the ladder then shows one
+    /// centered bar with the codec negotiated in SDP.
+    pub rtp_streams: &'a [RtpFlowStream],
 }
 
 // Re-export everything that external code uses.
@@ -273,8 +284,17 @@ pub struct FormattedMessage {
     pub sdp_badge: Option<String>,
     /// Whether this message is a retransmission.
     pub is_retransmission: bool,
-    /// Whether this message has an RTP bar in its extra_lines (for drill-down to stream detail).
+    /// Whether this row is RTP rather than a SIP message: the SDP-derived
+    /// media bar or a captured stream's row. Enter on it drills down to the
+    /// call's streams.
     pub is_rtp_bar: bool,
+    /// Shorter forms of `label`, longest first, for a gap too narrow for it:
+    /// the renderer draws the first that fits whole, or the bare arrow.
+    /// Empty for every row except a captured stream's.
+    pub label_fallbacks: Vec<String>,
+    /// Whether this row is one captured RTP stream, drawn as an arrow from
+    /// `src_col` to `dst_col` (#495). Always paired with `is_rtp_bar`.
+    pub is_rtp_stream: bool,
     /// Index into the raw message slice this row renders (`None` for
     /// synthetic rows: spacers and RTP bars). Keeps folding, expansion and
     /// selection independent of display-mode row insertion.

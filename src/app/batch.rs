@@ -353,6 +353,9 @@ struct BatchContext<'a> {
     after_count: usize,
     /// SIP signaling port range; RTP is never gated by it.
     portrange: (u16, u16),
+    /// Decode RFC 4733 telephone events: `--telephone-event`, or a
+    /// `[[vcon.rule]]` with `dtmf_events`, which writes them.
+    telephone_events: bool,
 }
 
 /// Mutable processing state for the main receive loop.
@@ -4287,6 +4290,8 @@ impl BatchRunner {
                 // --after / -A trailing context counter
                 after_count: self.cli.output_args.after.unwrap_or(0),
                 portrange: self.policy.portrange,
+                telephone_events: self.cli.mode_args.telephone_event
+                    || self.vcon_rules.iter().any(|r| r.additions.dtmf_events),
             };
             let mut ds_guard = self.dialog_store.write();
             let mut ss_guard = self.stream_store.write();
@@ -5646,7 +5651,7 @@ impl PacketPass<'_, '_, '_> {
 
         // DTMF extraction (I2): if --telephone-event is set and we have
         // the RTP payload after the header, attempt DTMF decode.
-        if self.ctx.cli.mode_args.telephone_event && rtp_hdr.payload_offset < rtp_pp.payload.len() {
+        if self.ctx.telephone_events && rtp_hdr.payload_offset < rtp_pp.payload.len() {
             self.extract_dtmf(pp, rtp_pp, rtp_hdr);
         }
 
@@ -5671,12 +5676,14 @@ impl PacketPass<'_, '_, '_> {
     /// event.
     ///
     /// The telephone-event payload type and clock rate are negotiated in
-    /// SDP (`a=rtpmap:<pt> telephone-event/<clock>`), not fixed at the
-    /// PT 101 / 8000 Hz conventions. `process_rtp` resolved this
-    /// stream's codec, payload_type, and clock_rate from that rtpmap,
-    /// so when the codec is telephone-event we use the stream's
-    /// negotiated PT and clock; otherwise fall back to the conventions
-    /// (e.g. a DTMF-only stream with no observed SDP).
+    /// SDP (`a=rtpmap:<pt> telephone-event/<clock>`), any dynamic PT, and
+    /// are read per packet from the rtpmap of the session that owns the
+    /// stream ([`StreamStore::negotiated_rtpmap`]). Per packet, not from the
+    /// stream's codec: a sender commonly puts the events on the SSRC that
+    /// carries its audio, so the stream's codec is the audio codec. PT 101
+    /// at 8000 Hz is read only when no SDP ties the stream to a session, or
+    /// that session negotiated no telephone-event
+    /// ([`rtp::dtmf::FALLBACK_TELEPHONE_EVENT`]).
     #[inline]
     fn extract_dtmf(
         &mut self,
@@ -5686,17 +5693,12 @@ impl PacketPass<'_, '_, '_> {
     ) {
         let rtp_payload = &rtp_pp.payload[rtp_hdr.payload_offset..];
         let key = stream_key_of(pp, rtp_hdr);
-        let (expected_pt, clock_rate) = self
-            .state
-            .stream_store
-            .get_live(&key)
-            .filter(|s| {
-                s.codec
-                    .as_deref()
-                    .is_some_and(|c| c.eq_ignore_ascii_case("telephone-event"))
-            })
-            .map(|s| (s.payload_type, s.clock_rate))
-            .unwrap_or((101, 8000));
+        let Some((expected_pt, clock_rate)) = rtp::dtmf::telephone_event_format(
+            self.state.stream_store.negotiated_rtpmap(&key),
+            rtp_hdr.payload_type,
+        ) else {
+            return;
+        };
         if let Some(dtmf) = rtp::dtmf::extract_dtmf_with_clock(
             rtp_payload,
             rtp_hdr.payload_type,
@@ -5710,6 +5712,7 @@ impl PacketPass<'_, '_, '_> {
         ) {
             self.counters.dtmf_count += 1;
             log_dtmf_digit(&dtmf, rtp_hdr.ssrc, self.ctx.cli.mode_args.dtmf_cleartext);
+            self.state.stream_store.record_key_press(&key, dtmf);
         }
     }
 }
@@ -7187,6 +7190,116 @@ impl RuleAudio {
     }
 }
 
+/// The format of the audio a rule's containers carry: the `[[vcon.rule]]`
+/// `audio_format` key.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum RuleAudioFormat {
+    /// RIFF/WAVE, 16-bit linear PCM, `audio/x-wav`. The default.
+    #[default]
+    Wav,
+    /// Ogg Opus, `audio/ogg`: the Opus codec (RFC 6716) in an Ogg stream
+    /// (RFC 7845), at [`crate::rtp::ogg_opus::BITRATE_PER_CHANNEL`]. Needs
+    /// the `opus` Cargo feature.
+    Opus,
+}
+
+impl RuleAudioFormat {
+    /// Whether this build can write [`Self::Opus`].
+    pub const OPUS_BUILT: bool = cfg!(feature = "opus");
+
+    /// A `[[vcon.rule]]` `audio_format` value: `wav`, `opus`, or unset,
+    /// which is `wav`. `opus_built` says whether this build has the `opus`
+    /// feature ([`Self::OPUS_BUILT`]); a test passes either.
+    ///
+    /// # Errors
+    ///
+    /// Any other value, and `opus` when `opus_built` is false, as the text
+    /// to report.
+    pub fn parse(value: Option<&str>, opus_built: bool) -> Result<Self, String> {
+        match value {
+            None | Some("wav") => Ok(Self::Wav),
+            Some("opus") if opus_built => Ok(Self::Opus),
+            Some("opus") => Err(
+                "audio_format = 'opus', and this sipnab was built without the \
+                 `opus` feature, which writes Ogg Opus. The static musl builds do not have it. \
+                 Use audio_format = 'wav', or a build with the feature"
+                    .to_owned(),
+            ),
+            Some(other) => Err(format!("audio_format = '{other}'; use 'wav' or 'opus'")),
+        }
+    }
+
+    /// The `mediatype` a recording in this format carries.
+    #[cfg(feature = "vcon")]
+    #[must_use]
+    pub fn mediatype(self) -> &'static str {
+        match self {
+            Self::Wav => crate::output::vcon::RECORDING_MEDIATYPE,
+            Self::Opus => crate::output::vcon::OGG_OPUS_MEDIATYPE,
+        }
+    }
+
+    /// The file extension of a recording in this format.
+    #[must_use]
+    pub fn extension(self) -> &'static str {
+        match self {
+            Self::Wav => "wav",
+            Self::Opus => "ogg",
+        }
+    }
+
+    /// The format's name, as a refusal names it.
+    #[must_use]
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Wav => "WAV",
+            Self::Opus => "Ogg Opus",
+        }
+    }
+
+    /// `audio` in this format: `None` for WAV, which is `audio.wav` itself.
+    ///
+    /// # Errors
+    ///
+    /// When the encoder refuses the audio, as the text to report.
+    pub fn encode(
+        self,
+        audio: &crate::rtp::audio_export::DialogAudio,
+    ) -> Result<Option<Vec<u8>>, String> {
+        match self {
+            Self::Wav => Ok(None),
+            #[cfg(feature = "opus")]
+            Self::Opus => crate::rtp::ogg_opus::encode_dialog_audio(audio)
+                .map(Some)
+                .map_err(|e| format!("{e:#}")),
+            #[cfg(not(feature = "opus"))]
+            Self::Opus => {
+                let _ = audio;
+                Self::parse(Some("opus"), false).map(|_| None)
+            }
+        }
+    }
+
+    /// The recording `audio` carries in this format, given what
+    /// [`Self::encode`] returned for it.
+    #[cfg(feature = "vcon")]
+    #[must_use]
+    pub fn recording<'a>(
+        self,
+        audio: &'a crate::rtp::audio_export::DialogAudio,
+        encoded: Option<&'a [u8]>,
+    ) -> crate::output::vcon::EncodedRecording<'a> {
+        match encoded {
+            Some(bytes) => crate::output::vcon::EncodedRecording {
+                bytes,
+                mediatype: self.mediatype(),
+                format: self.label(),
+            },
+            None => crate::output::vcon::EncodedRecording::wav(audio),
+        }
+    }
+}
+
 /// How a rule divides a call that crossed a B2BUA or a PBX, and so is several
 /// dialogs, into containers.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -7280,9 +7393,11 @@ pub struct VconRule {
     /// The rule's inline-media budget in bytes; `None` uses the run's
     /// (`--vcon-max-inline-media`).
     pub max_inline: Option<usize>,
-    /// The base URL a `Url` rule names its WAV files under, without a
+    /// The base URL a `Url` rule names its audio files under, without a
     /// trailing `/`.
     pub audio_url_base: Option<String>,
+    /// The format of the audio each container carries.
+    pub audio_format: RuleAudioFormat,
     /// One container per leg, or one per call.
     pub grouping: RuleGrouping,
     /// The `[[vcon.enrich]]` services this rule's calls go to, in order.
@@ -7298,6 +7413,8 @@ pub struct VconRule {
     pub sealing: Option<std::sync::Arc<crate::output::vcon_jose::Sealing>>,
     /// What a sealing rule writes when a call it already wrote changes.
     pub sealed_updates: SealedUpdates,
+    /// What the rule adds to each container it writes.
+    pub additions: RuleAdditions,
 }
 
 impl VconRule {
@@ -7315,6 +7432,52 @@ impl VconRule {
             )
         })
     }
+}
+
+/// What a rule adds to each container beyond what every export carries.
+///
+/// One value rather than one field per addition, so a new addition reaches
+/// every place a rule is resolved and written without a new parameter.
+#[derive(Debug, Clone, Default)]
+pub struct RuleAdditions {
+    /// `sip_messages`: the initial INVITE, its final response and their SDP
+    /// as attachments ([`crate::output::vcon::add_sip_message_attachments`]).
+    pub sip_messages: bool,
+    /// `dtmf_events`: `keydown` and `keyup` in the signaling object's
+    /// `party_history`, from INFO `application/dtmf-relay` and RFC 4733
+    /// telephone events ([`crate::output::vcon::add_key_events`]).
+    pub dtmf_events: bool,
+    /// The `tags` attachment: set for a `[[vcon.rule]]`, which has a name,
+    /// and `None` for the flag rule, which has none.
+    pub tags: Option<RuleTags>,
+    /// The headers that fill the CC extension's Dialog parameters
+    /// (`crate::output::vcon::add_cc_fields`).
+    pub cc: RuleCcHeaders,
+}
+
+/// The `[[vcon.rule]]` keys `campaign_header`, `skill_header` and
+/// `interaction_id_header`: the SIP header that fills each contact-center
+/// Dialog parameter.
+#[derive(Debug, Clone, Default)]
+pub struct RuleCcHeaders {
+    /// The header whose value is `campaign`.
+    pub campaign: Option<String>,
+    /// The header whose value is `skill`.
+    pub skill: Option<String>,
+    /// The header whose value is `interaction_id`.
+    pub interaction_id: Option<String>,
+}
+
+/// What a rule's `tags` attachment names
+/// ([`crate::output::vcon::add_tags`]).
+#[derive(Debug, Clone)]
+pub struct RuleTags {
+    /// The rule's name.
+    pub rule: String,
+    /// Each `@name` the rule's `when` references, in the order it first
+    /// appears, with its own compiled expansion: the container is tagged
+    /// with each one the call matches.
+    pub filters: Vec<(String, FilterExpr)>,
 }
 
 /// How long a dialog that has not ended must have had no SIP and no RTP
@@ -7885,10 +8048,17 @@ fn observed_audio<'a>(
     decoded: &'a anyhow::Result<crate::rtp::audio_export::DialogAudio>,
     reason: &'a str,
     redacting: bool,
+    encoded: Option<(RuleAudioFormat, &'a [u8])>,
 ) -> crate::output::vcon::ObservedAudio<'a> {
     match decoded.as_ref() {
         _ if redacting => crate::output::vcon::ObservedAudio::WithheldByRedaction,
-        Ok(audio) => crate::output::vcon::ObservedAudio::Decoded(audio),
+        Ok(audio) => match encoded {
+            Some((format, bytes)) => crate::output::vcon::ObservedAudio::Encoded(
+                audio,
+                format.recording(audio, Some(bytes)),
+            ),
+            None => crate::output::vcon::ObservedAudio::Decoded(audio),
+        },
         Err(_) => crate::output::vcon::ObservedAudio::NothingToDecode(reason),
     }
 }
@@ -7980,6 +8150,13 @@ fn write_vcon_containers(
             }
         };
         let mut container = container;
+        // A withheld container carries the caveat alone.
+        if let Some(tags) = &target.additions.tags
+            && !matches!(unit, ContainerUnit::Leg(_, true))
+        {
+            let matched = matched_filters(&tags.filters, unit.legs(), batch.stream_store);
+            crate::output::vcon::add_tags(&mut container, unit.legs(), &tags.rule, &matched);
+        }
         let ended = unit.ended();
         // Only a live capture has first-write times; on an `-I` run a live
         // rule writes what any rule writes. A sealing rule's later instance
@@ -8084,6 +8261,31 @@ fn write_vcon_containers(
         written += 1;
     }
     Ok(written)
+}
+
+/// The names of `filters` that at least one of `legs` matches, in order.
+///
+/// Each leg is judged as the rule's own `when` judges it: with its streams,
+/// the capture's media facts and the delay basis `select_dialogs` uses.
+#[cfg(feature = "vcon")]
+fn matched_filters<'f>(
+    filters: &'f [(String, FilterExpr)],
+    legs: &[&crate::sip::dialog::SipDialog],
+    streams: &StreamStore,
+) -> Vec<&'f str> {
+    let capture = crate::rtp::diagnosis::CaptureMedia::of_store(streams);
+    let delay = crate::rtp::quality::MosDelay::from_capture(streams);
+    filters
+        .iter()
+        .filter(|(_, filter)| {
+            legs.iter().any(|leg| {
+                let own: Vec<&crate::rtp::stream::RtpStream> =
+                    streams.streams_for(&leg.call_id).collect();
+                filter.matches_dialog(leg, &own, capture, delay)
+            })
+        })
+        .map(|(name, _)| name.as_str())
+        .collect()
 }
 
 /// The bytes a rule writes for the serialized container `json`: `json`
@@ -8426,6 +8628,76 @@ impl LegWriter<'_> {
         link: bool,
         written: usize,
     ) -> Result<crate::output::vcon::Vcon, (usize, String)> {
+        let mut container = self.leg_container(dialog, withheld, link, written)?;
+        // A withheld container carries the caveat alone, so nothing is added
+        // to it.
+        if !withheld {
+            self.add(&mut container, dialog);
+        }
+        Ok(container)
+    }
+
+    /// What the rule adds to one leg's container (see [`RuleAdditions`]).
+    ///
+    /// Added to the leg, before any merge, so `grouping = "call"` moves the
+    /// added party and dialog indices with the rest of the leg's.
+    fn add(
+        &self,
+        container: &mut crate::output::vcon::Vcon,
+        dialog: &crate::sip::dialog::SipDialog,
+    ) {
+        let additions = self.target.additions;
+        if additions.sip_messages {
+            let budget = self
+                .target
+                .max_inline
+                .or_else(|| media_budget(self.cli))
+                .unwrap_or(crate::output::vcon::MAX_INLINE_MEDIA_BYTES);
+            crate::output::vcon::add_sip_message_attachments(container, dialog, budget);
+        }
+        crate::output::vcon::add_cc_fields(
+            container,
+            dialog,
+            crate::output::vcon::CcHeaders {
+                campaign: additions.cc.campaign.as_deref(),
+                skill: additions.cc.skill.as_deref(),
+                interaction_id: additions.cc.interaction_id.as_deref(),
+            },
+        );
+        if additions.dtmf_events {
+            let presses: Vec<crate::output::vcon::RtpKeyPress> = self
+                .batch
+                .stream_store
+                .streams_for(&dialog.call_id)
+                .flat_map(|stream| {
+                    stream
+                        .key_presses
+                        .iter()
+                        .map(|press| crate::output::vcon::RtpKeyPress {
+                            src: stream.key.src,
+                            digit: press.digit,
+                            ended_at: press.timestamp,
+                            duration_ms: press.duration_ms,
+                        })
+                })
+                .collect();
+            crate::output::vcon::add_key_events(container, dialog, &presses);
+        }
+    }
+
+    /// One dialog's container as the export builds it, before the rule's
+    /// additions.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::leg`].
+    fn leg_container(
+        &self,
+        dialog: &crate::sip::dialog::SipDialog,
+        withheld: bool,
+        link: bool,
+        written: usize,
+    ) -> Result<crate::output::vcon::Vcon, (usize, String)> {
         let Self {
             cli,
             target,
@@ -8468,29 +8740,59 @@ impl LegWriter<'_> {
             .as_ref()
             .err()
             .map_or_else(String::new, |e| e.to_string());
+        // The rule's format, encoded once: the inline body and the file
+        // beside the container are the same bytes. Redaction carries no
+        // audio, so nothing is encoded for it.
+        let format = target.audio_format;
+        let encoded = match (decoded.as_ref(), redactor) {
+            (Ok(decoded_audio), None) => format.encode(decoded_audio).map_err(|e| {
+                (
+                    written,
+                    format!(
+                        "The audio of Call-ID '{}' could not be encoded as {}: {e}. \
+                         {written} container(s) were written before this.",
+                        spool_call_id(&dialog.call_id, None),
+                        format.label()
+                    ),
+                )
+            })?,
+            _ => None,
+        };
         let referenced = match (target.audio, target.url_base, decoded.as_ref(), redactor) {
             (RuleAudio::Url, Some(base), Ok(decoded_audio), None) => {
-                let name = vcon_wav_name(&vcon_spool_name(&dialog.call_id, None));
-                let wav_path = target.dir.join(&name);
-                write_container_atomically(&wav_path, &decoded_audio.wav).map_err(|e| {
+                let recording = format.recording(decoded_audio, encoded.as_deref());
+                let (name, file) = media_file(target, &dialog.call_id, recording, format)
+                    .map_err(|e| (written, e))?;
+                let path = target.dir.join(&name);
+                write_container_atomically(&path, &file).map_err(|e| {
                     (
                         written,
                         format!(
                             "Could not write '{}': {e}. {written} container(s) were \
                              written before this.",
-                            wav_path.display()
+                            path.display()
                         ),
                     )
                 })?;
-                Some((decoded_audio, format!("{base}/{name}")))
+                Some((decoded_audio, format!("{base}/{name}"), file))
             }
             _ => None,
         };
         let observed = match &referenced {
-            Some((decoded_audio, url)) => {
-                crate::output::vcon::ObservedAudio::Referenced(decoded_audio, url)
-            }
-            None => observed_audio(&decoded, &reason, redactor.is_some()),
+            Some((decoded_audio, url, file)) => crate::output::vcon::ObservedAudio::Referenced(
+                decoded_audio,
+                crate::output::vcon::ReferencedRecording {
+                    url,
+                    mediatype: format.mediatype(),
+                    file,
+                },
+            ),
+            None => observed_audio(
+                &decoded,
+                &reason,
+                redactor.is_some(),
+                encoded.as_deref().map(|bytes| (format, bytes)),
+            ),
         };
         Ok(crate::output::vcon::export_dialog_with_audio(
             dialog, &context, observed,
@@ -8543,8 +8845,10 @@ struct VconTarget<'a> {
     audio: RuleAudio,
     /// The rule's inline-media budget in bytes; `None` uses the run's.
     max_inline: Option<usize>,
-    /// The base URL a `Url` rule names its WAV files under.
+    /// The base URL a `Url` rule names its audio files under.
     url_base: Option<&'a str>,
+    /// The format of the audio each container carries.
+    audio_format: RuleAudioFormat,
     /// Write each call as it starts and rewrite it as it changes.
     live: bool,
     /// Sign and encrypt each container; `None` writes the unsigned form.
@@ -8558,7 +8862,22 @@ struct VconTarget<'a> {
     /// The `[[vcon.rule]]` name, for the run's report; `None` for the flag
     /// rule, whose lines read as they always have.
     label: Option<&'a str>,
+    /// What the rule adds to each container.
+    additions: &'a RuleAdditions,
 }
+
+/// The additions of a rule that adds nothing: the flag rule's.
+#[cfg(feature = "vcon")]
+static NO_ADDITIONS: RuleAdditions = RuleAdditions {
+    sip_messages: false,
+    dtmf_events: false,
+    tags: None,
+    cc: RuleCcHeaders {
+        campaign: None,
+        skill: None,
+        interaction_id: None,
+    },
+};
 
 #[cfg(feature = "vcon")]
 impl<'a> VconTarget<'a> {
@@ -8570,12 +8889,14 @@ impl<'a> VconTarget<'a> {
             audio: rule.audio,
             max_inline: rule.max_inline,
             url_base: rule.audio_url_base.as_deref(),
+            audio_format: rule.audio_format,
             grouping: rule.grouping,
             live: rule.live,
             sealing: rule.sealing.as_ref(),
             sealed_updates: rule.sealed_updates,
             enrich: &rule.enrich,
             label: (rule.name != FLAG_RULE).then_some(rule.name.as_str()),
+            additions: &rule.additions,
         }
     }
 
@@ -8597,12 +8918,14 @@ impl<'a> VconTarget<'a> {
             audio: RuleAudio::Inline,
             max_inline: None,
             url_base: None,
+            audio_format: RuleAudioFormat::Wav,
             grouping: RuleGrouping::Leg,
             live: false,
             sealing: None,
             sealed_updates: SealedUpdates::NewUuid,
             enrich: &[],
             label: None,
+            additions: &NO_ADDITIONS,
         })
     }
 
@@ -8937,12 +9260,62 @@ fn spool_call_id(call_id: &str, redactor: Option<&crate::output::redact::Redacto
     }
 }
 
-/// The WAV file name beside a container: the container's name with `.wav` in
-/// place of `.vcon.json`, so the two sort together and share the digest that
-/// keeps Call-IDs apart.
+/// The audio file name beside a container: the container's name with
+/// `.<extension>` in place of `.vcon.json`, so the two sort together and
+/// share the digest that keeps Call-IDs apart.
 #[cfg(feature = "vcon")]
-fn vcon_wav_name(container: &str) -> String {
-    format!("{}.wav", container.trim_end_matches(".vcon.json"))
+fn vcon_media_name(container: &str, extension: &str) -> String {
+    format!("{}.{extension}", container.trim_end_matches(".vcon.json"))
+}
+
+/// The name and bytes of the audio file a `url` rule writes beside a
+/// container: `recording` as written, or, for a rule that encrypts, its
+/// encrypted form.
+///
+/// An encrypting rule's file is a JWE to each of the rule's recipients
+/// ([`crate::output::vcon_jose::Sealing::encrypt_file`]). It is named
+/// `<content_hash>.<extension>.jwe`, by the hash of the ciphertext, because
+/// the name is not encrypted and a Call-ID can carry host names and
+/// addresses; the container is named by its uuid for the same reason.
+///
+/// The recording's `content_hash` is over these bytes, the ciphertext.
+/// core-04 section 2.2 defines the hash over "the body of the content at the
+/// given url", and the body served is the JWE. The draft does not say
+/// whether `mediatype` describes that served body or the media inside it.
+/// sipnab names the media inside (`audio/x-wav` or `audio/ogg`), which a
+/// reader needs once it has decrypted the file, and the JWE's `cty` names the
+/// same type.
+#[cfg(feature = "vcon")]
+fn media_file<'a>(
+    target: &VconTarget<'_>,
+    call_id: &str,
+    recording: crate::output::vcon::EncodedRecording<'a>,
+    format: RuleAudioFormat,
+) -> Result<(String, std::borrow::Cow<'a, [u8]>), String> {
+    // A rule that signs without encrypting writes the file as it is: the
+    // signed container names its `content_hash`.
+    match target.sealing.filter(|s| !s.recipients.is_empty()) {
+        None => Ok((
+            vcon_media_name(&vcon_spool_name(call_id, None), format.extension()),
+            recording.bytes.into(),
+        )),
+        Some(sealing) => {
+            let sealed = sealing
+                .encrypt_file(recording.bytes, recording.mediatype)
+                .map_err(|e| {
+                    format!(
+                        "The audio of Call-ID '{}' could not be encrypted: {e}",
+                        spool_call_id(call_id, None)
+                    )
+                })?;
+            let name = format!(
+                "{}.{}.jwe",
+                crate::output::vcon::content_hash(&sealed),
+                format.extension()
+            );
+            Ok((name, sealed.into()))
+        }
+    }
 }
 
 /// The spool file name for `call_id`'s container: [`vcon_file_name`] of
@@ -9306,7 +9679,7 @@ fn write_single_vcon(
         .as_ref()
         .map(crate::output::redact::RedactionPolicy::redactor);
 
-    let audio = observed_audio(&decoded, &reason, redactor.is_some());
+    let audio = observed_audio(&decoded, &reason, redactor.is_some(), None);
 
     let container = crate::output::vcon::export_dialog_with_audio(
         dialog,
@@ -9621,12 +9994,14 @@ mod tests {
             audio,
             max_inline: None,
             audio_url_base: None,
+            audio_format: RuleAudioFormat::Wav,
             grouping: RuleGrouping::Leg,
             enrich: Vec::new(),
             live_audio: false,
             live: false,
             sealing: None,
             sealed_updates: SealedUpdates::NewUuid,
+            additions: RuleAdditions::default(),
         })
     }
 
@@ -9829,7 +10204,9 @@ mod tests {
         let cert = std::path::PathBuf::from(format!("{fixtures}/fake_grp.crt"));
         let mut rule = test_rule("calls", "method == 'INVITE'", tmp.path(), RuleAudio::Omit)?;
         rule.sealing = Some(std::sync::Arc::new(crate::output::vcon_jose::load_sealing(
-            &cert, &key, &cert,
+            std::slice::from_ref(&cert),
+            &key,
+            &cert,
         )?));
         rule.enrich = crate::app::vcon_enrich::services(
             &[crate::config::VconEnrichConfig {
@@ -10073,7 +10450,9 @@ mod tests {
         let mut rule = test_rule("sealed", "method == 'INVITE'", dir, RuleAudio::Omit)?;
         rule.live = live;
         rule.sealing = Some(std::sync::Arc::new(crate::output::vcon_jose::load_sealing(
-            &cert, &key, &cert,
+            std::slice::from_ref(&cert),
+            &key,
+            &cert,
         )?));
         rule.sealed_updates = sealed_updates;
         Ok(rule)
@@ -10403,6 +10782,37 @@ mod tests {
             .ok_or("completeness")?;
         assert_eq!(ended, false);
         Ok(())
+    }
+
+    /// `audio_format`: unset and `wav` are WAV, `opus` is Ogg Opus in a build
+    /// with the `opus` feature and refused, naming the feature, in one
+    /// without; any other value is refused naming both.
+    #[test]
+    fn audio_format_parses_wav_and_opus_and_refuses_opus_without_the_feature() {
+        for built in [true, false] {
+            assert_eq!(
+                RuleAudioFormat::parse(None, built),
+                Ok(RuleAudioFormat::Wav)
+            );
+            assert_eq!(
+                RuleAudioFormat::parse(Some("wav"), built),
+                Ok(RuleAudioFormat::Wav)
+            );
+            let other = RuleAudioFormat::parse(Some("mp3"), built);
+            assert_eq!(
+                other,
+                Err("audio_format = 'mp3'; use 'wav' or 'opus'".to_owned())
+            );
+        }
+        assert_eq!(
+            RuleAudioFormat::parse(Some("opus"), true),
+            Ok(RuleAudioFormat::Opus)
+        );
+        let refused = RuleAudioFormat::parse(Some("opus"), false)
+            .err()
+            .unwrap_or_default();
+        assert!(refused.contains("`opus` feature"), "{refused}");
+        assert_eq!(RuleAudioFormat::OPUS_BUILT, cfg!(feature = "opus"));
     }
 
     /// The three `sealed_updates` names parse, unset is `new-uuid`, and any
@@ -15565,14 +15975,14 @@ mod tests {
             audio: audio.map(str::to_owned),
             max_inline_media_mib: None,
             audio_url_base: None,
+            audio_format: None,
             grouping: None,
             live_audio: None,
             live: None,
             encrypt_to: None,
             sign_key: None,
             sign_cert: None,
-            compress: None,
-            sealed_updates: None,
+            ..Default::default()
         };
         let mut config = crate::config::Config::default();
         assert!(!audio_retention_wanted(&base_cli(), &config));
@@ -15995,6 +16405,7 @@ mod tests {
             output_opts: &output_opts,
             cli,
             no_rtp: false,
+            telephone_events: cli.mode_args.telephone_event,
             after_count: 0,
             portrange,
         };
@@ -16078,6 +16489,74 @@ mod tests {
         Ok(())
     }
 
+    /// `tests/pcap-samples/SIP_DTMF2.cap`, parsed: every frame sipnab
+    /// decodes, in capture order.
+    fn sip_dtmf2_packets() -> Result<Vec<ParsedPacket>, TestError> {
+        let data = std::fs::read("tests/pcap-samples/SIP_DTMF2.cap")?;
+        let mut packets = Vec::new();
+        for record in crate::capture::pcap_reader::PcapReader::new(&data)? {
+            let at = chrono::DateTime::from_timestamp(
+                i64::from(record.timestamp_secs),
+                record.timestamp_usecs * 1000,
+            )
+            .ok_or("a capture timestamp")?;
+            let caplen = record.data.len();
+            let frame = crate::capture::packet::Packet::new(
+                at,
+                record.data,
+                caplen,
+                record.orig_len as usize,
+                None,
+                record.link_type as i32,
+            );
+            if let Ok(pp) = crate::capture::parse::parse_packet(&frame) {
+                packets.push(pp);
+            }
+        }
+        Ok(packets)
+    }
+
+    /// The seven keys of `SIP_DTMF2.cap` land on the stream its dialog owns.
+    ///
+    /// The capture's 200 OK binds `a=rtpmap:96 telephone-event/8000`, and the
+    /// events ride PT 96 on the SSRC that carries the PCMA audio, sent from
+    /// 192.168.105.172:4376, a socket no SDP in the dialog advertised, to
+    /// 192.168.105.110:4376, the socket the 200 OK advertised. The stream is
+    /// tied to the dialog by that destination, the same link every other
+    /// stream gets, so the keys are recorded there.
+    #[test]
+    fn a_dynamic_telephone_event_type_on_the_audio_ssrc_is_decoded() -> Result<(), TestError> {
+        let mut cli = base_cli();
+        cli.mode_args.telephone_event = true;
+        let packets = sip_dtmf2_packets()?;
+        let driven = drive_packets_kept(
+            &cli,
+            &packets,
+            EventExecEngine::new(
+                None,
+                None,
+                0,
+                0.0,
+                crate::output::event_exec::DEFAULT_QUEUE_DEPTH,
+            ),
+        )?;
+        assert_eq!(driven.counters.dtmf_count, 7);
+        let sender: std::net::SocketAddr = "192.168.105.172:4376".parse()?;
+        let pressed: Vec<(std::net::SocketAddr, String)> = driven
+            .streams
+            .streams_for("25672@192.168.105.110")
+            .flat_map(|s| {
+                s.key_presses
+                    .iter()
+                    .map(move |p| (s.key.src, p.digit.to_string()))
+            })
+            .collect();
+        let expected: Vec<(std::net::SocketAddr, String)> =
+            "6789123".chars().map(|d| (sender, d.to_string())).collect();
+        assert_eq!(pressed, expected);
+        Ok(())
+    }
+
     /// What [`drive_packets_kept`] leaves behind: the counters, the stream
     /// store and the event engine, with nothing drained or spawned.
     struct DrivenPackets {
@@ -16125,6 +16604,7 @@ mod tests {
             output_opts: &output_opts,
             cli,
             no_rtp: false,
+            telephone_events: cli.mode_args.telephone_event,
             after_count: 0,
             portrange: (5060, 5061),
         };
@@ -16552,6 +17032,7 @@ mod tests {
             output_opts: &output_opts,
             cli,
             no_rtp: false,
+            telephone_events: cli.mode_args.telephone_event,
             after_count: 0,
             portrange,
         };
@@ -17069,6 +17550,7 @@ mod tests {
             output_opts: &output_opts,
             cli,
             no_rtp: false,
+            telephone_events: cli.mode_args.telephone_event,
             after_count: 0,
             portrange,
         };
@@ -17158,6 +17640,7 @@ mod tests {
             output_opts: &output_opts,
             cli,
             no_rtp: false,
+            telephone_events: cli.mode_args.telephone_event,
             after_count: 0,
             portrange: (5060, 5061),
         };
@@ -17298,6 +17781,7 @@ mod tests {
             output_opts: &output_opts,
             cli: &cli,
             no_rtp: false,
+            telephone_events: cli.mode_args.telephone_event,
             after_count: 0,
             portrange: (5060, 5090),
         };
@@ -17510,6 +17994,7 @@ mod tests {
             output_opts: &output_opts,
             cli,
             no_rtp: false,
+            telephone_events: cli.mode_args.telephone_event,
             after_count: 0,
             portrange,
         };
@@ -17712,6 +18197,7 @@ mod tests {
             output_opts: &output_opts,
             cli,
             no_rtp: false,
+            telephone_events: cli.mode_args.telephone_event,
             after_count: 0,
             portrange,
         };

@@ -1384,7 +1384,52 @@ fn wiki_intra_docs_links_resolve() -> Result<(), TestError> {
     // file: docs/keybindings.md +2 (the summary paragraph links the
     // `filter_detail` key and the `view_filter_detail` key) and
     // docs/tui-walkthrough.md +1 (it links `view_filter_detail`).
-    const EXPECTED_WIKI_LINKS: usize = 1735;
+    // 1735 -> 1736 for WTF transcriptions, attributed per file: docs/vcon.md
+    // +1 (the WTF paragraph links "Hear a call while it is in progress").
+    // 1736 -> 1737 for lawful basis pass-through, attributed per file:
+    // docs/vcon.md +1 (the opening links "Enrich a call before it is
+    // written").
+    // 1737 -> 1738 for SCITT lifecycle statements, attributed per file:
+    // docs/cli-reference.md +1 (the `--vcon-forward-scitt-url` row links
+    // "Register lifecycle statements with a transparency service").
+    // 1738 -> 1739 for the vCon wire-message attachments, attributed per
+    // file: docs/config-reference.md +1 (the `sip_messages` row links "The
+    // INVITE and the final response").
+    // 1739 -> 1740 for vCon key events, attributed per file:
+    // docs/config-reference.md +1 (the `dtmf_events` row links "What the
+    // Dialog Object says about the call").
+    // 1740 -> 1741 for the vCon tags attachment, attributed per file:
+    // docs/vcon.md +1 (the "Tags" section links named filters).
+    // 1741 -> 1744 for the vCon CC header keys, attributed per file:
+    // docs/config-reference.md +1 (the `campaign_header` row links
+    // "Contact-center labels") and docs/errors.md +2 (the two new
+    // `[[vcon.rule]]` refusals link "Write calls by rule").
+    // 1744 -> 1749 for `audio_format`, attributed per file: docs/errors.md +2
+    // (the two new entries link "Audio as Ogg Opus" and the rule section),
+    // docs/config-reference.md +1 (the `audio_format` row links "Audio as Ogg
+    // Opus"), docs/vcon.md +2 (the rule table's `audio_format` row and the
+    // inline-budget bullet link the same section).
+    // 1749 -> 1754 for the vCon readers' signed, encrypted and gzip forms,
+    // attributed per file: docs/vcon.md +3 (the new section links "Encrypt
+    // what a rule writes" and "Check who signed it", and "Decrypt one" links
+    // the new section), docs/cli-reference.md +1 (the `--vcon-key` row),
+    // docs/config-reference.md +1 (the `[vcon_input]` section), and
+    // 1754 -> 1756: docs/mcp-tools-vcon.md +1 (`analyze_vcon` links the
+    // section) and docs/rest-api.md +1 (`POST /v1/vcon/validate` links it).
+    // 1756 -> 1757: docs/cli-reference.md +1, the
+    // `--vcon-forward-content-type` row links "What it does with each
+    // container".
+    // 1757 -> 1760 for `sign_only`: docs/config-reference.md +1 (its row
+    // links "Sign without encrypting") and docs/vcon.md +2 (the rule key
+    // table links that section, and the section links "A signed, encrypted
+    // or compressed container").
+    // 1760 -> 1761: docs/cli-reference.md +1, the `--vcon-resign` row links
+    // "Re-sign for a long-term archive".
+    // 1761 -> 1762: docs/config-reference.md +1, the `sign_cert_url` row
+    // links "Name the chain by URL".
+    // 1762 -> 1763: docs/keybindings.md +1, the F6 / Ctrl+R row links
+    // "Follow each RTP stream in the call flow" in docs/tui-walkthrough.md.
+    const EXPECTED_WIKI_LINKS: usize = 1763;
     // Raised 459 -> 460 when SRC1 stage 1 shipped: docs/cli-reference.md's
     // `--hep-listen` row now points at cookbook recipe "Take signaling from HEP and media off the wire, in one process" in docs/examples.md
     // rather than restating how to pair `-L` with `-d`. Attributed per file

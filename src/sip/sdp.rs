@@ -345,6 +345,41 @@ pub fn effective_address(media: &SdpMedia, session: &SdpSession) -> Option<Strin
         .map(|c| c.addr.clone())
 }
 
+/// Whether SDP carried in a message can set up a media session.
+///
+/// `method` is the request's method, or the `CSeq` method of a response.
+/// `status_code` is `None` for a request.
+///
+/// Only an offer or an answer sets up media. [RFC 6337 section 2.2](https://www.rfc-editor.org/rfc/rfc6337.html#section-2.2)
+/// Table 1 lists the six patterns that carry one: INVITE and its reliable
+/// provisional or 2xx response, the 2xx and the ACK, a reliable provisional
+/// response and its PRACK, PRACK and its 200, and UPDATE and its 2xx.
+/// [RFC 6337 section 2.4](https://www.rfc-editor.org/rfc/rfc6337.html#section-2.4) adds: "SIP can use a session description to
+/// describe capabilities apart from offer/answer exchange. Examples of this
+/// are a 200 OK response for OPTIONS and a 488 response for INVITE."
+///
+/// So:
+///
+/// - INVITE, ACK, PRACK and UPDATE requests set up media.
+/// - Their 1xx and 2xx responses set up media. A 1xx that is not reliable
+///   carries no answer under RFC 3262, but its SDP is what early media is
+///   sent to, so it is kept.
+/// - A 3xx to 6xx response sets up no media.
+/// - Every other method sets up no media: OPTIONS, MESSAGE, NOTIFY, INFO and
+///   the rest carry SDP only as a capability description or as content.
+///
+/// This is the one rule every path that links RTP streams to a dialog
+/// through SDP applies.
+#[must_use]
+pub fn sdp_sets_up_media(method: &crate::sip::method::SipMethod, status_code: Option<u16>) -> bool {
+    use crate::sip::method::SipMethod;
+    let offer_answer_method = matches!(
+        method,
+        SipMethod::Invite | SipMethod::Ack | SipMethod::Prack | SipMethod::Update
+    );
+    offer_answer_method && status_code.is_none_or(|status| status < 300)
+}
+
 /// Encoding name for a payload type statically assigned by RFC 3551, or
 /// `None` for the dynamic and unassigned range.
 ///
@@ -597,6 +632,71 @@ fn parse_crypto(value: &str) -> Option<SdpCrypto> {
 mod tests {
     /// Any error a test can return; `?` converts into it.
     type TestError = Box<dyn std::error::Error>;
+
+    // ── Which methods set up media ───────────────────────────────────────
+
+    /// Only the offer/answer methods set up media; every other method's SDP
+    /// describes capabilities or carries content.
+    ///
+    /// [RFC 6337 section 2.2](https://www.rfc-editor.org/rfc/rfc6337.html#section-2.2) Table 1 lists the six offer/answer
+    /// patterns: INVITE, its reliable provisional and 2xx responses, ACK,
+    /// PRACK and its 200, and UPDATE and its 2xx. [RFC 6337 section 2.4](https://www.rfc-editor.org/rfc/rfc6337.html#section-2.4)
+    /// names a 200 OK for OPTIONS and a 488 response for INVITE as session
+    /// descriptions that are neither an offer nor an answer.
+    #[test]
+    fn only_offer_answer_methods_set_up_media() {
+        use crate::sip::method::SipMethod;
+        // Requests: the request carries no status code.
+        for method in [
+            SipMethod::Invite,
+            SipMethod::Ack,
+            SipMethod::Prack,
+            SipMethod::Update,
+        ] {
+            assert!(
+                sdp_sets_up_media(&method, None),
+                "{method} request SDP is an offer or an answer"
+            );
+        }
+        for method in [
+            SipMethod::Options,
+            SipMethod::Message,
+            SipMethod::Notify,
+            SipMethod::Info,
+            SipMethod::Publish,
+            SipMethod::Subscribe,
+            SipMethod::Refer,
+            SipMethod::Register,
+            SipMethod::Bye,
+            SipMethod::Cancel,
+            SipMethod::Custom("FOO".into()),
+        ] {
+            assert!(
+                !sdp_sets_up_media(&method, None),
+                "{method} request SDP sets up no media"
+            );
+            assert!(
+                !sdp_sets_up_media(&method, Some(200)),
+                "a 200 to {method} sets up no media"
+            );
+        }
+        // Responses to an offer/answer method: provisional and 2xx answer or
+        // offer; a failure response does neither.
+        for status in [180, 183, 200, 202] {
+            assert!(
+                sdp_sets_up_media(&SipMethod::Invite, Some(status)),
+                "a {status} to INVITE can carry an answer or an offer"
+            );
+        }
+        assert!(sdp_sets_up_media(&SipMethod::Update, Some(200)));
+        assert!(sdp_sets_up_media(&SipMethod::Prack, Some(200)));
+        for status in [300, 404, 488, 503, 606] {
+            assert!(
+                !sdp_sets_up_media(&SipMethod::Invite, Some(status)),
+                "a {status} to INVITE carries no answer"
+            );
+        }
+    }
 
     // ── RFC 8866 §5.14: the `m=` port-count form ─────────────────────────
 

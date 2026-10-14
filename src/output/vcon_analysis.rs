@@ -159,11 +159,50 @@ impl std::error::Error for NotAContainer {}
 /// and one that fails the schema is analyzed with `schema_findings` beside
 /// the analysis.
 pub fn analyze_container(container: &Value, limit: usize) -> Result<VconAnalysis, NotAContainer> {
-    use crate::capture::vcon_input::{ContainerError, rebuild};
-
     if !container.is_object() {
         return Err(NotAContainer);
     }
+    let bytes = serde_json::to_vec(container).map_err(|_| NotAContainer)?;
+    analyze_bytes(&bytes, limit)
+}
+
+/// Analyze one container handed over as bytes, in any form: unsigned,
+/// signed, encrypted, or the gzip format of any of them. The one unwrap
+/// step every reader runs ([`crate::capture::vcon_input::open_bytes`])
+/// opens it first.
+///
+/// # Errors
+///
+/// [`NotAContainer`] when what is inside is not a JSON object. A container
+/// that does not open (no key, a signature that does not verify) is an
+/// answer, with `verdict: unreadable` and the reason.
+pub fn analyze_bytes(bytes: &[u8], limit: usize) -> Result<VconAnalysis, NotAContainer> {
+    use crate::capture::vcon_input::ContainerError;
+    let (container, opened) = match crate::capture::vcon_input::open_bytes(bytes) {
+        Ok(opened) => opened,
+        Err(ContainerError::NotJson(_)) => return Err(NotAContainer),
+        Err(e) => {
+            return Ok(VconAnalysis {
+                schema_version: VCON_ANALYSIS_SCHEMA_VERSION,
+                verdict: "unreadable".to_string(),
+                reason: Some(e.to_string()),
+                ..VconAnalysis::default()
+            });
+        }
+    };
+    if !container.is_object() {
+        return Err(NotAContainer);
+    }
+    analyze_unsigned(&container, opened, limit)
+}
+
+/// Analyze an unsigned container, `opened` naming the layers taken off it.
+fn analyze_unsigned(
+    container: &Value,
+    opened: Vec<String>,
+    limit: usize,
+) -> Result<VconAnalysis, NotAContainer> {
+    use crate::capture::vcon_input::{ContainerError, rebuild};
     // core-04 section 4.1.4: not even the schema check runs on a container
     // sipnab cannot interpret.
     if let Some(why) = crate::capture::vcon_input::critical_refusal(container) {
@@ -185,7 +224,10 @@ pub fn analyze_container(container: &Value, limit: usize) -> Result<VconAnalysis
         })
         .collect();
     let rebuilt = match rebuild(container, "inline") {
-        Ok(rebuilt) => rebuilt,
+        Ok(mut rebuilt) => {
+            rebuilt.provenance.opened = opened;
+            rebuilt
+        }
         Err(ContainerError::NotObject) => return Err(NotAContainer),
         Err(e) => {
             return Ok(VconAnalysis {

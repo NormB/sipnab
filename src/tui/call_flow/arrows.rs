@@ -29,13 +29,44 @@
 /// `(arrow, start_x)`: the rendered arrow string and the buffer column to
 /// start drawing it at (`min(src_x, dst_x) + 1`).
 pub fn format_arrow(label: &str, src_x: u16, dst_x: u16, is_response: bool) -> (String, u16) {
+    let line_char = if is_response { '\u{254C}' } else { '\u{2500}' };
+    format_arrow_with_shaft(Some(label), src_x, dst_x, line_char)
+}
+
+/// Whether `label` fits whole on an arrow between pipes `src_x` and `dst_x`:
+/// a pad on each side, at least one shaft glyph and the arrowhead must fit
+/// beside it. Measured in display columns. [`format_arrow_with_shaft`]
+/// draws a label that fits as it is and truncates one that does not.
+pub fn label_fits(label: &str, src_x: u16, dst_x: u16) -> bool {
+    use unicode_width::UnicodeWidthStr;
+    let width = usize::from(src_x.abs_diff(dst_x)).saturating_sub(1);
+    width >= 4 && label.width() + 4 <= width
+}
+
+/// [`format_arrow`] with the shaft glyph given: the call flow draws a
+/// captured RTP stream with the double rail `═` (U+2550), so media reads
+/// apart from the single-line SIP signaling arrows (#495).
+///
+/// # Arguments
+/// * `label` — text to center on the shaft; `None` draws the shaft and the
+///   arrowhead alone.
+/// * `src_x` — buffer column of the source participant's pipe.
+/// * `dst_x` — buffer column of the destination participant's pipe.
+/// * `line_char` — the shaft glyph.
+///
+/// # Returns
+/// `(arrow, start_x)`, as [`format_arrow`] returns them.
+pub fn format_arrow_with_shaft(
+    label: Option<&str>,
+    src_x: u16,
+    dst_x: u16,
+    line_char: char,
+) -> (String, u16) {
     use unicode_width::UnicodeWidthStr;
     let goes_right = dst_x > src_x;
     let start = src_x.min(dst_x) + 1; // after the source pipe
     let end = src_x.max(dst_x); // at the dest pipe (arrow head lands here)
     let width = (end - start) as usize;
-
-    let line_char = if is_response { '\u{254C}' } else { '\u{2500}' };
 
     if width < 4 {
         // Too narrow, minimal arrow
@@ -54,11 +85,13 @@ pub fn format_arrow(label: &str, src_x: u16, dst_x: u16, is_response: bool) -> (
     // line. `width - 4` = pads + line char + arrow head. All measurements
     // are in DISPLAY COLUMNS (CJK/emoji are 2-wide), not bytes, so a wide
     // label neither overflows nor under-pads the gap.
-    let fit_label = if label.width() + 4 > width {
-        let avail = width.saturating_sub(4);
-        (avail >= 8).then(|| truncate(label, avail))
-    } else {
-        Some(label.to_string())
+    let fit_label = match label {
+        None => None,
+        Some(label) if label_fits(label, src_x, dst_x) => Some(label.to_string()),
+        Some(label) => {
+            let avail = width.saturating_sub(4);
+            (avail >= 8).then(|| truncate(label, avail))
+        }
     };
     let arrow = match fit_label {
         None => {

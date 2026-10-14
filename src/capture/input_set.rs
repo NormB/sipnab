@@ -445,8 +445,14 @@ fn resolve_counting(
     for (path, explicit) in candidates {
         // A wrapper — gzip, tar, or both — is unwrapped here, before libpcap
         // is asked, and its captures join the set like files found in a
-        // directory. See `crate::capture::archive`.
-        match crate::capture::archive::container_format(&path) {
+        // directory. See `crate::capture::archive`. A gzip format vCon is
+        // not a wrapper: the vCon reader inflates it.
+        let format = if super::vcon_input::is_container_file(&path) {
+            Ok(None)
+        } else {
+            crate::capture::archive::container_format(&path)
+        };
+        match format {
             Ok(Some(f)) if crate::capture::archive::unwraps(f) => {
                 expand_archive(
                     &path,

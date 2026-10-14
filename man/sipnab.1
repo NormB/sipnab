@@ -1,7 +1,7 @@
 .\" sipnab.1 -- man page for sipnab
 .\" Copyright 2024-2026 Norm Brandinger
 .\" License: MIT OR Apache-2.0
-.TH SIPNAB 1 "2026-10-13" "sipnab 0.5.218" "User Commands"
+.TH SIPNAB 1 "2026-10-13" "sipnab 0.5.219" "User Commands"
 .SH NAME
 sipnab \- SIP & RTP capture, analysis, and security tool
 .SH SYNOPSIS
@@ -72,6 +72,18 @@ Descend into subdirectories when \fB\-I\fR names a directory.
 .TP
 \fB\-\-input\-name\fR \fIGLOB\fR
 Read only files whose name matches this pattern when \fB\-I\fR names a directory or an archive, e.g. \fB\-\-input\-name 'tg.pcap[0\-4]'\fR.
+.TP
+\fB\-\-vcon\-key\fR \fIFILE\fR
+Decrypt an encrypted vCon container (draft\-ietf\-vcon\-vcon\-core\-04 section 5.3) that \fB\-I\fR, the MCP vCon tools or the REST vCon routes read, with the RSA private key in this PEM file, then verify its signature. The file must be readable by its owner only. Without it an encrypted container is refused. Overrides \fB[vcon_input] key\fR.
+.TP
+\fB\-\-vcon\-signer\-ca\fR \fIFILE|system\fR
+Read a signed or encrypted vCon container only when its signing certificate chains, through the intermediates in its \fBx5c\fR, to a CA in this PEM file, each certificate within its validity period. \fBsystem\fR uses the host's CA bundle; write \fB./system\fR for a file of that name. An unsigned container is refused. Overrides \fB[vcon_input] signer_ca\fR.
+.TP
+\fB\-\-vcon\-signer\-sha256\fR \fIHEX\fR
+Read a signed or encrypted vCon container only when its signing certificate has this SHA\-256 fingerprint: 64 hex digits, plain or colon\-separated, either case. An unsigned container is refused. Overrides \fB[vcon_input] signer_sha256\fR.
+.TP
+\fB\-\-vcon\-x5u\-ca\fR \fIFILE|system\fR
+Fetch the certificate chain of a signed vCon container that names it only by an \fBx5u\fR URL (draft\-ietf\-vcon\-vcon\-core\-04 section 5.2.2), over https, trusting the server only when it chains to a CA in this PEM file; \fBsystem\fR uses the host's CA bundle. Without it such a container is refused and nothing is fetched. Overrides \fB[vcon_input] x5u_ca\fR.
 .TP
 \fB\-O\fR, \fB\-\-output\fR \fIFILE\fR
 Write captured packets to a pcap file.
@@ -1090,11 +1102,32 @@ The most bytes of a store's status line and headers the forwarder reads; an answ
 \fB\-\-vcon\-forward\-max\-error\-body\fR \fIBYTES\fR
 The most bytes of a store's answer to a refused container that its \fB<name>.error.json\fR record keeps, 1 to 4294967295. Default: 8192. Overrides \fB[vcon_forward] max_error_body\fR.
 .TP
+\fB\-\-vcon\-forward\-content\-type\fR \fITYPE\fR
+The \fBContent\-Type\fR of a JSON container: \fBapplication/json\fR (the default), \fBapplication/vcon+json\fR or \fBapplication/vcon\fR. A gzip format container always goes as \fBapplication/vcon+gzip\fR (draft\-ietf\-vcon\-vcon\-core\-04 section 5.4). Overrides \fB[vcon_forward] content_type\fR.
+.TP
 \fB\-\-vcon\-forward\-ca\fR \fIFILE\fR
 Trust only the CA certificates in this PEM file for an \fBhttps://\fR store. Without it the forwarder trusts the host's CA bundle. Overrides \fB[vcon_forward] ca\fR.
 .TP
 \fB\-\-vcon\-forward\-extra\-ca\fR \fIFILE\fR
 Trust the CA certificates in this PEM file for an \fBhttps://\fR store in addition to the host's CA bundle: the store's certificate is accepted when the host's bundle or this file issued it. Use \-\-vcon\-forward\-ca instead to trust only the named file. Either flag replaces both \fB[vcon_forward] ca\fR and \fB[vcon_forward] extra_ca\fR.
+.TP
+\fB\-\-vcon\-forward\-scitt\-url\fR \fIURL\fR
+Register SCITT lifecycle statements (draft\-howe\-vcon\-lifecycle\-01) with the transparency service at this URL: \fBvcon_created\fR and \fBvcon_sent\fR for each container delivered, each a signed statement POSTed to \fB<URL>/entries\fR (draft\-ietf\-scitt\-scrapi). Needs \-\-vcon\-forward\-scitt\-sign\-key, \-\-vcon\-forward\-scitt\-sign\-cert and \-\-vcon\-forward\-scitt\-issuer. Overrides \fB[vcon_forward] scitt_url\fR.
+.TP
+\fB\-\-vcon\-forward\-scitt\-auth\-file\fR \fIFILE\fR
+File holding the one header that authenticates to the transparency service, as \fBHeader\-Name: value\fR on one line. Refused when other users can read it: chmod 600. Overrides \fB[vcon_forward] scitt_auth_file\fR.
+.TP
+\fB\-\-vcon\-forward\-scitt\-ca\fR \fIFILE\fR
+Trust only the CA certificates in this PEM file for an \fBhttps://\fR transparency service. Without it the host's CA bundle. Overrides \fB[vcon_forward] scitt_ca\fR.
+.TP
+\fB\-\-vcon\-forward\-scitt\-sign\-key\fR \fIFILE\fR
+The PEM RSA private key the lifecycle statements are signed with (RS256). Refused when other users can read it: chmod 600. Overrides \fB[vcon_forward] scitt_sign_key\fR.
+.TP
+\fB\-\-vcon\-forward\-scitt\-sign\-cert\fR \fIFILE\fR
+The PEM certificate chain of the signing key, leaf first, carried in each statement's \fBx5chain\fR. Overrides \fB[vcon_forward] scitt_sign_cert\fR.
+.TP
+\fB\-\-vcon\-forward\-scitt\-issuer\fR \fIURI\fR
+The issuer each lifecycle statement names (CWT claim \fBiss\fR), a URI such as \fBhttps://pbx.example.com/sipnab\fR. Overrides \fB[vcon_forward] scitt_issuer\fR.
 .SS vCon fetcher
 .TP
 \fB\-\-vcon\-fetch\fR \fIUUID\fR\&...
@@ -1139,6 +1172,19 @@ Write a decrypted container only when its signing certificate chains, through th
 .TP
 \fB\-\-vcon\-fetch\-signer\-sha256\fR \fIHEX\fR
 Write a decrypted container only when its signing certificate has this SHA\-256 fingerprint: 64 hex digits, plain or colon\-separated, either case, as \fBopenssl x509 \-noout \-fingerprint \-sha256\fR prints it. Needs \-\-vcon\-fetch\-decrypt\-key. Overrides \fB[vcon_fetch] signer_sha256\fR.
+.SS vCon archive
+.TP
+\fB\-\-vcon\-resign\fR \fIFILE\fR
+Re\-sign the signed vCon in this file (draft\-ietf\-vcon\-vcon\-core\-04 section 5.2.3): verify it, its signer's certificate within its validity period now, and sign it whole as the payload of a new JWS with \-\-vcon\-resign\-key and \-\-vcon\-resign\-cert, written to \-\-vcon\-resign\-out. \-\-vcon\-signer\-ca and \-\-vcon\-signer\-sha256 check its signer too. Exit 0 written, 1 refused, 2 bad settings. Needs the \fBvcon\fR feature.
+.TP
+\fB\-\-vcon\-resign\-key\fR \fIFILE\fR
+The PEM private key of the new signer: RSA, which signs \fBRS256\fR, or EC P\-256, which signs \fBES256\fR. Readable by its owner only.
+.TP
+\fB\-\-vcon\-resign\-cert\fR \fIFILE\fR
+The PEM certificate chain of \-\-vcon\-resign\-key, leaf first, carried in the new signature's \fBx5c\fR.
+.TP
+\fB\-\-vcon\-resign\-out\fR \fIFILE\fR
+Where the re\-signed vCon is written, mode 0600. sipnab never replaces a file that exists.
 .SS Config
 .TP
 \fB\-f\fR, \fB\-\-config\fR \fIFILE\fR

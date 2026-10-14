@@ -51,7 +51,7 @@ Files copied into the repository unmodified from another project's release. None
 | `tests/schemas/publisher/vcon_json_schema.json` | vCon JSON schema: `vcon_json_schema.json` of the IETF vCon working group's draft-ietf-vcon-vcon-core repository, unmodified. Test fixture only; it is in no release artifact. | commit 99589dd0b474d95c2feed52165fc2c95b1191d3d, tag draft-ietf-vcon-vcon-core-04 (2026-09-07) | <https://github.com/ietf-wg-vcon/draft-ietf-vcon-vcon-core> | IETF Trust Legal Provisions; code components under the Simplified BSD License, as the repository's CONTRIBUTING.md states | `b3c1ae28041dea304c978a0e9e04da18253fa58517ad3472a6adf1167c01a8d9` |
 | `tests/schemas/vcon.schema.json` | vCon JSON schema: the same file as tests/schemas/publisher/vcon_json_schema.json, byte for byte, under the name sipnab's validator reads. Compiled into the binary as the schema the validate_vcon tool and the REST validate route check against. | commit 99589dd0b474d95c2feed52165fc2c95b1191d3d, tag draft-ietf-vcon-vcon-core-04 (2026-09-07) | <https://github.com/ietf-wg-vcon/draft-ietf-vcon-vcon-core> | IETF Trust Legal Provisions; code components under the Simplified BSD License, as the repository's CONTRIBUTING.md states | `b3c1ae28041dea304c978a0e9e04da18253fa58517ad3472a6adf1167c01a8d9` |
 
-## Rust crates (413)
+## Rust crates (426)
 
 | Crate | Version | License |
 |---|---|---|
@@ -80,6 +80,7 @@ Files copied into the repository unmodified from another project's release. None
 | axum-core | 0.5.6 | MIT |
 | aya | 0.14.0 | MIT OR Apache-2.0 |
 | aya-obj | 0.3.0 | MIT OR Apache-2.0 |
+| base16ct | 0.2.0 | Apache-2.0 OR MIT |
 | base64 | 0.22.1 | MIT OR Apache-2.0 |
 | base64 | 0.23.1 | MIT OR Apache-2.0 |
 | base64ct | 1.8.3 | Apache-2.0 OR MIT |
@@ -127,6 +128,7 @@ Files copied into the repository unmodified from another project's release. None
 | crossbeam-utils | 0.8.21 | MIT OR Apache-2.0 |
 | crossterm | 0.29.0 | MIT |
 | crossterm_winapi | 0.9.1 | MIT |
+| crypto-bigint | 0.5.5 | Apache-2.0 OR MIT |
 | crypto-common | 0.1.7 | MIT OR Apache-2.0 |
 | crypto-common | 0.2.2 | MIT OR Apache-2.0 |
 | csscolorparser | 0.6.2 | MIT OR Apache-2.0 |
@@ -148,7 +150,9 @@ Files copied into the repository unmodified from another project's release. None
 | document-features | 0.2.12 | MIT OR Apache-2.0 |
 | dunce | 1.0.5 | CC0-1.0 OR MIT-0 OR Apache-2.0 |
 | dyn-clone | 1.0.20 | MIT OR Apache-2.0 |
+| ecdsa | 0.16.9 | Apache-2.0 OR MIT |
 | either | 1.15.0 | MIT OR Apache-2.0 |
+| elliptic-curve | 0.13.8 | Apache-2.0 OR MIT |
 | env_filter | 2.0.0 | MIT OR Apache-2.0 |
 | env_logger | 0.11.11 | MIT OR Apache-2.0 |
 | equivalent | 1.0.2 | Apache-2.0 OR MIT |
@@ -160,6 +164,7 @@ Files copied into the repository unmodified from another project's release. None
 | fancy-regex | 0.11.0 | MIT |
 | fast-srgb8 | 1.0.0 | MIT OR Apache-2.0 OR CC0-1.0 |
 | fastrand | 2.4.1 | Apache-2.0 OR MIT |
+| ff | 0.13.1 | MIT/Apache-2.0 |
 | filedescriptor | 0.8.3 | MIT |
 | find-msvc-tools | 0.1.9 | MIT OR Apache-2.0 |
 | finl_unicode | 1.4.0 | (MIT OR Apache-2.0) AND Unicode-DFS-2016 |
@@ -184,12 +189,15 @@ Files copied into the repository unmodified from another project's release. None
 | getrandom | 0.3.4 | MIT OR Apache-2.0 |
 | getrandom | 0.4.3 | MIT OR Apache-2.0 |
 | glob | 0.3.4 | MIT OR Apache-2.0 |
+| group | 0.13.0 | MIT/Apache-2.0 |
 | h2 | 0.4.16 | MIT |
 | hashbrown | 0.15.5 | MIT OR Apache-2.0 |
 | hashbrown | 0.16.1 | MIT OR Apache-2.0 |
 | hashbrown | 0.17.0 | MIT OR Apache-2.0 |
 | heck | 0.5.0 | MIT OR Apache-2.0 |
 | hex | 0.4.3 | MIT OR Apache-2.0 |
+| hkdf | 0.12.4 | MIT OR Apache-2.0 |
+| hmac | 0.12.1 | MIT OR Apache-2.0 |
 | hmac | 0.13.0 | MIT OR Apache-2.0 |
 | http | 1.4.0 | MIT OR Apache-2.0 |
 | http-body | 1.0.1 | MIT |
@@ -256,8 +264,11 @@ Files copied into the repository unmodified from another project's release. None
 | object | 0.39.1 | Apache-2.0 OR MIT |
 | once_cell | 1.21.4 | MIT OR Apache-2.0 |
 | once_cell_polyfill | 1.70.2 | MIT OR Apache-2.0 |
+| opus | 0.4.0 | MIT/Apache-2.0 |
 | opus-decoder | 0.1.1 | MIT OR Apache-2.0 |
+| opusic-sys | 0.7.5 | BSD-3-Clause |
 | ordered-float | 4.6.0 | MIT |
+| p256 | 0.13.2 | Apache-2.0 OR MIT |
 | palette | 0.7.6 | MIT OR Apache-2.0 |
 | palette_derive | 0.7.6 | MIT OR Apache-2.0 |
 | parking_lot | 0.12.5 | MIT OR Apache-2.0 |
@@ -285,6 +296,7 @@ Files copied into the repository unmodified from another project's release. None
 | portable-atomic-util | 0.2.6 | Apache-2.0 OR MIT |
 | powerfmt | 0.2.0 | MIT OR Apache-2.0 |
 | ppv-lite86 | 0.2.21 | MIT OR Apache-2.0 |
+| primeorder | 0.13.6 | Apache-2.0 OR MIT |
 | proc-macro2 | 1.0.106 | MIT OR Apache-2.0 |
 | quote | 1.0.45 | MIT OR Apache-2.0 |
 | r-efi | 5.3.0 | MIT OR Apache-2.0 OR LGPL-2.1-or-later |
@@ -313,7 +325,7 @@ Files copied into the repository unmodified from another project's release. None
 | rsa | 0.9.10 | MIT OR Apache-2.0 |
 | rustc_version | 0.4.1 | MIT OR Apache-2.0 |
 | rustix | 1.1.4 | Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT |
-| rustls | 0.23.45 | Apache-2.0 OR ISC OR MIT |
+| rustls | 0.23.46 | Apache-2.0 OR ISC OR MIT |
 | rustls-pki-types | 1.14.0 | MIT OR Apache-2.0 |
 | rustls-webpki | 0.103.15 | ISC |
 | rustversion | 1.0.22 | MIT OR Apache-2.0 |
@@ -322,6 +334,7 @@ Files copied into the repository unmodified from another project's release. None
 | schemars | 1.2.1 | MIT |
 | schemars_derive | 1.2.1 | MIT |
 | scopeguard | 1.2.0 | MIT OR Apache-2.0 |
+| sec1 | 0.7.3 | Apache-2.0 OR MIT |
 | semver | 1.0.28 | MIT OR Apache-2.0 |
 | serde | 1.0.229 | MIT OR Apache-2.0 |
 | serde_core | 1.0.229 | MIT OR Apache-2.0 |

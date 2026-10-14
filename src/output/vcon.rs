@@ -15,7 +15,10 @@
 //!   not the same claim, and a signature is read as the stronger one.
 //! * **No consent record and no lawful-basis attachment.** Nobody gave sipnab
 //!   permission for anything. An empty consent field would be a claim; an
-//!   absent one is the truth.
+//!   absent one is the truth. A lawful-basis attachment appears only when an
+//!   enrichment service with `lawful_basis = true` supplies one, and the
+//!   `sipnab-enrichment` attachment names that service as its source
+//!   (`crate::app::vcon_enrich`).
 //! * **No [`Party`] name that sipnab vouches for.** [`Party::name`] carries the
 //!   `From`/`To` display name when the wire had one, and that name is an
 //!   unverified assertion by whoever sent the request, which is why every
@@ -289,6 +292,14 @@ pub const CONTENT_PSEUDONYMIZED: &str = "pseudonymized";
 /// `mediatype` of the media sipnab inlines. RIFF/WAVE, 16-bit linear PCM.
 pub const RECORDING_MEDIATYPE: &str = "audio/x-wav";
 
+/// `mediatype` of a recording in Ogg Opus, a rule's `audio_format = "opus"`
+/// ([`crate::app::batch::RuleAudioFormat`]).
+///
+/// One of the media types [core-04 section 4.3.8](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-04#section-4.3.8)
+/// says a Dialog Object SHOULD use. No `codecs` parameter: core-04 section
+/// 2.2 defines "Mediatype" as `type "/" subtype` alone.
+pub const OGG_OPUS_MEDIATYPE: &str = "audio/ogg";
+
 /// `dialog.type` of the object carrying the media itself — the FILE's clock.
 pub const RECORDING_TYPE: &str = "recording";
 
@@ -309,6 +320,10 @@ pub const RECORDING_SET_TYPE: &str = "recording-set";
 /// two it is, in words, on two surfaces a consumer walks past anyway — the enum
 /// cannot.
 pub const INCOMPLETE_TYPE: &str = "incomplete";
+
+/// `type` of a Dialog Object holding text one party sent,
+/// [core-04 section 4.3.1.3](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-04#section-4.3.1.3).
+pub const TEXT_TYPE: &str = "text";
 
 /// Hash algorithm prefix of [`Dialog::content_hash`], per
 /// [section 2.2 of the core draft](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-04#section-2.2).
@@ -429,6 +444,37 @@ pub struct Amended {
     /// draft also allows are never set: sipnab knows no URL that serves the
     /// prior instance.
     pub uuid: String,
+}
+
+/// One Party_History Object of [core-04 section 4.3.13.1](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-04#section-4.3.13.1).
+///
+/// Shaped as one event, with who, when and what, so it maps one-to-one onto
+/// an entry of a later `events[]` array.
+#[derive(Debug, Clone, Serialize)]
+pub struct PartyEvent {
+    /// Index into [`Vcon::parties`] of the party the event is about.
+    pub party: usize,
+    /// When the capture shows it, RFC 3339.
+    pub time: String,
+    /// One of `join`, `drop`, `hold`, `unhold`, `keydown`, `keyup`. sipnab
+    /// writes no `mute` or `unmute`: SIP carries no signal for either.
+    pub event: &'static str,
+    /// The DTMF digit, on `keydown` and `keyup` only, where section 4.3.13.1
+    /// requires it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub button: Option<String>,
+}
+
+impl PartyEvent {
+    /// An event with no `button`.
+    fn at(party: usize, time: DateTime<Utc>, event: &'static str) -> Self {
+        Self {
+            party,
+            time: time.to_rfc3339(),
+            event,
+            button: None,
+        }
+    }
 }
 
 /// `redacted` ([core-04 section 4.1.8](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-04#section-4.1.8)) — content was withheld from this
@@ -570,6 +616,15 @@ pub struct Dialog {
     /// dialog was established.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub sip_to_tag: Option<String>,
+    /// `sip_cseq` ([draft-howe-vcon-sip-signaling-00 section 5.4](https://datatracker.ietf.org/doc/html/draft-howe-vcon-sip-signaling-00#section-5.4)):
+    /// "the sequence number from the CSeq header field of the INVITE or other
+    /// dialog-creating request".
+    ///
+    /// Absent when the capture did not hold that request. A later request's
+    /// number belongs to another transaction, and writing it here would point
+    /// a reader correlating against a trace at the wrong one.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sip_cseq: Option<u32>,
     /// RFC 3339 start of what this object describes.
     ///
     /// On a `recording` this is the first frame the FILE holds, which is later
@@ -597,6 +652,38 @@ pub struct Dialog {
     /// array — and a plausible guess corrupts every cross-reference silently.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub parties: Option<Vec<usize>>,
+    /// `originator` ([core-04 section 4.3.5](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-04#section-4.3.5)):
+    /// the index of the calling party, written only when [`Self::parties`]
+    /// does not list it first.
+    ///
+    /// core-04 section 4.3.4 says the first listed party is implied to be the
+    /// originator, and section 4.3.5 says this parameter "is only provided if
+    /// the first party of the dialog Object parties list is NOT the
+    /// originator". When the capture did not see the dialog-creating request,
+    /// the caller is not known, and this names an empty Party Object, the
+    /// form section 4.3.5 gives an unknown originator.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub originator: Option<usize>,
+    /// `party_history` ([core-04 section 4.3.13](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-04#section-4.3.13)):
+    /// what the capture shows each party doing, in time order.
+    ///
+    /// On the signaling object only, and only events the capture shows (see
+    /// `party_history_of`). Absent when it shows none.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub party_history: Option<Vec<PartyEvent>>,
+    /// `campaign` ([draft-ietf-vcon-cc-extension-02 section 3.2.1](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-cc-extension-02#section-3.2.1)),
+    /// from the header a rule's `campaign_header` names. See
+    /// [`add_cc_fields`].
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub campaign: Option<String>,
+    /// `skill` ([draft-ietf-vcon-cc-extension-02 section 3.2.4](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-cc-extension-02#section-3.2.4)),
+    /// from the header a rule's `skill_header` names.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub skill: Option<String>,
+    /// `interaction_id` ([draft-ietf-vcon-cc-extension-02 section 3.2.3](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-cc-extension-02#section-3.2.3)),
+    /// from the header a rule's `interaction_id_header` names.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub interaction_id: Option<String>,
     /// Indices into [`Vcon::dialog`] of the objects this set groups.
     ///
     /// Present only on a [`RECORDING_SET_TYPE`] object, and named `recordings`
@@ -618,7 +705,7 @@ pub struct Dialog {
     pub recording_set: Option<usize>,
     /// IANA media type of [`Self::body`] — [`RECORDING_MEDIATYPE`].
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub mediatype: Option<&'static str>,
+    pub mediatype: Option<std::borrow::Cow<'static, str>>,
     /// Always `"base64url"` when [`Self::body`] is present.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub encoding: Option<&'static str>,
@@ -628,7 +715,7 @@ pub struct Dialog {
     /// Where the media is served, when it is not inline.
     ///
     /// Set only for an export rule with `audio = "url"`, which names the base
-    /// URL; sipnab writes the WAV beside the container and hosts nothing
+    /// URL; sipnab writes the audio file beside the container and hosts nothing
     /// ([section 2.5 of `docs/design/vcon.md`](https://github.com/NormB/sipnab/blob/main/docs/design/vcon.md#25-never-host-artefacts)).
     /// Always beside [`Self::content_hash`], as
     /// [core-04 section 2.4](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-04#section-2.4)
@@ -638,10 +725,11 @@ pub struct Dialog {
     /// [`CONTENT_HASH_PREFIX`] followed by the base64url SHA-512 of the
     /// DECODED body.
     ///
-    /// Over the WAV bytes, not over their base64url text, so the value means
-    /// the same thing whether the media travels inline or an operator exported
-    /// it to a file: `sha512sum` on that `.wav` reproduces it. Hashing the
-    /// encoded text would produce a digest nothing outside this container
+    /// Over the file's bytes (the WAV, or the Ogg Opus stream of a rule with
+    /// `audio_format = "opus"`), not over their base64url text, so the value
+    /// means the same thing whether the media travels inline or an operator
+    /// exported it to a file: `sha512sum` on that file reproduces it. Hashing
+    /// the encoded text would produce a digest nothing outside this container
     /// could ever recompute.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub content_hash: Option<String>,
@@ -681,9 +769,15 @@ impl Dialog {
             sip_call_id,
             sip_from_tag: None,
             sip_to_tag: None,
+            sip_cseq: None,
             start: None,
             duration: None,
             parties: None,
+            originator: None,
+            party_history: None,
+            campaign: None,
+            skill: None,
+            interaction_id: None,
             dialogs: None,
             recording_set: None,
             mediatype: None,
@@ -772,6 +866,12 @@ pub struct Analysis {
     /// [section 2.3.2 of the core draft](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-04#section-2.3.2)
     /// defines for those encodings.
     pub body: serde_json::Value,
+    /// How an enrichment service generated this entry: the provenance record
+    /// of [draft-howe-vcon-provenance-00 section 4](https://datatracker.ietf.org/doc/html/draft-howe-vcon-provenance-00#section-4),
+    /// written by `crate::app::vcon_enrich`. `None` on sipnab's own report,
+    /// which no model generated.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub provenance: Option<serde_json::Value>,
 }
 
 /// One blind spot, flattened out of a [`crate::analysis::Finding`].
@@ -1066,6 +1166,41 @@ impl MediaOutcome {
     }
 }
 
+/// A recording's bytes in the format a rule chose, and their media type.
+#[derive(Debug, Clone, Copy)]
+pub struct EncodedRecording<'a> {
+    /// The file: a WAV, or an Ogg Opus stream.
+    pub bytes: &'a [u8],
+    /// Its `mediatype` ([core-04 section 4.3.8](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-04#section-4.3.8)).
+    pub mediatype: &'static str,
+    /// The format's name, as the over-budget refusal names it: `WAV` or
+    /// `Ogg Opus`.
+    pub format: &'static str,
+}
+
+impl<'a> EncodedRecording<'a> {
+    /// `audio`'s own WAV.
+    #[must_use]
+    pub fn wav(audio: &'a DialogAudio) -> Self {
+        Self {
+            bytes: &audio.wav,
+            mediatype: RECORDING_MEDIATYPE,
+            format: "WAV",
+        }
+    }
+}
+
+/// A recording written to a file beside the container and named by URL.
+#[derive(Debug, Clone, Copy)]
+pub struct ReferencedRecording<'a> {
+    /// The URL the operator's storage serves the file at.
+    pub url: &'a str,
+    /// The `mediatype` of the recording the file holds.
+    pub mediatype: &'static str,
+    /// The file's bytes as written. The `content_hash` is over these.
+    pub file: &'a [u8],
+}
+
 /// What a caller was able to decode for one dialog's media.
 ///
 /// A three-way answer rather than an `Option`, because the two "no media"
@@ -1082,10 +1217,14 @@ pub enum ObservedAudio<'a> {
     NothingToDecode(&'a str),
     /// Audio sipnab decoded for this dialog.
     Decoded(&'a DialogAudio),
-    /// Audio sipnab decoded and wrote to a WAV beside the container, served at
-    /// the URL by the operator's storage. Yields [`MediaOutcome::Referenced`]:
-    /// the recording names the URL and the WAV's hash and holds no body.
-    Referenced(&'a DialogAudio, &'a str),
+    /// Audio sipnab decoded, carried inline in the format a rule chose
+    /// (`audio_format`) rather than as the WAV.
+    Encoded(&'a DialogAudio, EncodedRecording<'a>),
+    /// Audio sipnab decoded and wrote to a file beside the container, served
+    /// at the URL by the operator's storage. Yields
+    /// [`MediaOutcome::Referenced`]: the recording names the URL and the
+    /// file's hash and holds no body.
+    Referenced(&'a DialogAudio, ReferencedRecording<'a>),
     /// The export is redacted, and redaction deletes audio rather than
     /// pseudonymizing it. Yields [`MediaOutcome::WithheldByRedaction`]: the
     /// Dialog Object stays the signaling one, typed by what it carries, which
@@ -1306,8 +1445,27 @@ impl crate::output::redact::Redact for Vcon {
         for object in dialog.iter_mut() {
             object.redact(r);
         }
+        // The wire attachments are refused rather than rewritten: see
+        // `add_sip_message_attachments`.
+        attachments.retain(|a| !is_wire_attachment(a));
         for attachment in attachments.iter_mut() {
+            // Dropped before the rest is redacted, so the sweep records no
+            // token for a body the container will not hold: a redaction map
+            // entry whose original survives elsewhere (the `sdp` field keeps
+            // the `o=` session id) would claim a replacement that never
+            // happened.
+            if attachment.purpose == MESSAGE_TRACE_PURPOSE {
+                drop_trace_bodies(&mut attachment.body);
+            }
             attachment.redact(r);
+            // The numbers come out of the PASSporT, which redaction deletes
+            // from the party for the reason given there; they go with it.
+            if attachment.purpose == STIR_REPORT_PURPOSE
+                && let Some(map) = attachment.body.as_object_mut()
+            {
+                map.remove("orig_tn");
+                map.remove("dest_tn");
+            }
         }
         for report in analysis.iter_mut() {
             report.redact(r);
@@ -1394,9 +1552,16 @@ impl crate::output::redact::Redact for Dialog {
             // message trace, which keeps its own.
             sip_from_tag: _,
             sip_to_tag: _,
+            // A sequence number. It identifies a transaction, not a person.
+            sip_cseq: _,
             start: _,
             duration: _,
             parties: _,
+            originator: _,
+            party_history,
+            campaign,
+            skill,
+            interaction_id,
             dialogs: _,
             recording_set: _,
             mediatype,
@@ -1410,6 +1575,22 @@ impl crate::output::redact::Redact for Dialog {
 
         if !sip_call_id.is_empty() {
             *sip_call_id = r.opaque(sip_call_id);
+        }
+        // The contact-center labels: draft-ietf-vcon-cc-extension-02 section 6
+        // calls `campaign` a candidate for review. `interaction_id` is a
+        // join key, so it becomes a token that still joins; the two labels
+        // are swept as free text.
+        *campaign = campaign.as_deref().map(|v| r.text(v));
+        *skill = skill.as_deref().map(|v| r.text(v));
+        *interaction_id = interaction_id.as_deref().map(|v| r.opaque(v));
+        // A key event's `button` is the digit pressed, which can be a PIN or
+        // a card number, and no keyed transform of one digit hides it. The
+        // events go; the joins, drops and holds stay.
+        if let Some(events) = party_history.as_mut() {
+            events.retain(|e| !matches!(e.event, "keydown" | "keyup"));
+            if events.is_empty() {
+                *party_history = None;
+            }
         }
         if let Some(pair) = session_id.as_mut() {
             pair.local = pair.local.as_deref().map(|v| r.opaque(v));
@@ -1431,7 +1612,9 @@ impl crate::output::redact::Redact for Dialog {
         // placeholder, whose content core-04 section 4.3.10 lets a redacted
         // vCon omit; `duration` stays, so the exporter still must not hand
         // one over.
-        if *kind == RECORDING_TYPE {
+        // A text dialog is the conversation too, so its content goes the same
+        // way, and its clock and parties stay.
+        if *kind == RECORDING_TYPE || *kind == TEXT_TYPE {
             *body = None;
             *url = None;
             *content_hash = None;
@@ -1470,8 +1653,33 @@ impl crate::output::redact::Redact for Analysis {
             mediatype: _,
             encoding: _,
             body,
+            provenance,
         } = self;
         redact_body(body, r);
+        // Its hashes bind the unredacted content, and its prompt may quote
+        // it. Enrichment never runs with `--redact` (startup refuses the
+        // pair), so a record never reaches here from sipnab's own run; one
+        // that did is dropped rather than carried beside redacted content.
+        *provenance = None;
+    }
+}
+
+/// Remove `body` and `body_encoding` from every trace message, under
+/// redaction.
+///
+/// A message body can be the conversation itself (the text of a SIP MESSAGE)
+/// or a secret (a DTMF digit in an INFO), and no keyed transform of either
+/// keeps it useful and harmless. An SDP body is not lost: the trace keeps it
+/// in `sdp`, which redaction rewrites like any other field.
+fn drop_trace_bodies(body: &mut serde_json::Value) {
+    let Some(messages) = body["messages"].as_array_mut() else {
+        return;
+    };
+    for message in messages {
+        if let Some(map) = message.as_object_mut() {
+            map.remove("body");
+            map.remove("body_encoding");
+        }
     }
 }
 
@@ -1899,6 +2107,18 @@ pub fn export_dialog_and_completeness(
             parties.len() - 1
         });
 
+    // The calling party's index. Party 0 when the capture saw the
+    // dialog-creating request, whose `From` names the caller; otherwise an
+    // empty Party Object, which core-04 section 4.3.5 offers for an
+    // originator that is not known. It goes before the observer, for the
+    // reason the transfer target does.
+    let caller = if opened_by_the_caller(dialog) {
+        0
+    } else {
+        parties.push(unknown_originator_party());
+        parties.len() - 1
+    };
+
     parties.push(observer_party());
     // Last entry, computed before the borrow ends so both attachments and any
     // future analysis reference one number.
@@ -1910,6 +2130,10 @@ pub fn export_dialog_and_completeness(
     let started = observed_start(dialog);
     let mut dialog_objects = vec![dialog_object(dialog, started.clone())];
     let media = media_objects(dialog, audio, &mut dialog_objects, context.media_budget());
+    name_the_originator(&mut dialog_objects, caller);
+    // On index 0 after the media is placed, because a ring-wrapped recording
+    // replaces that object with its recording-set.
+    dialog_objects[0].party_history = party_history_of(dialog);
 
     // The transfer object goes last, after any media, for the same reason
     // media goes after signaling: appending never moves an existing index.
@@ -1945,12 +2169,17 @@ pub fn export_dialog_and_completeness(
         });
     }
 
+    // Text dialogs go last, after the transfer object, for the reason that
+    // object goes after the media: appending never moves an existing index.
+    dialog_objects.extend(text_dialogs_of(dialog));
+
     let completeness = completeness_of(context, &media, dialog.state().is_final());
 
     let mut attachments = vec![
         message_trace_attachment(dialog, observer, started.clone()),
         completeness_attachment(&completeness, observer, started.clone()),
     ];
+    attachments.extend(stir_verification_report(dialog));
     if !context.related_legs.is_empty() {
         attachments.push(Attachment {
             purpose: RELATED_LEGS_PURPOSE,
@@ -2094,6 +2323,9 @@ pub fn merge_call_legs(
         for mut a in leg_attachments {
             a.party = party(a.party);
             a.dialog = object(a.dialog);
+            if a.purpose == MESSAGE_TRACE_PURPOSE {
+                move_trace_parties(&mut a.body, &party);
+            }
             attachments.push(a);
         }
         for mut a in leg_analysis {
@@ -2153,6 +2385,23 @@ pub fn merge_call_legs(
     })
 }
 
+/// Pass every trace message's `party` through `party`, for
+/// [`merge_call_legs`]: the index lives inside the body, where the
+/// attachment's own remap does not reach.
+fn move_trace_parties(body: &mut serde_json::Value, party: &impl Fn(usize) -> usize) {
+    let Some(messages) = body["messages"].as_array_mut() else {
+        return;
+    };
+    for message in messages {
+        if let Some(index) = message["party"]
+            .as_u64()
+            .and_then(|i| usize::try_from(i).ok())
+        {
+            message["party"] = party(index).into();
+        }
+    }
+}
+
 impl Dialog {
     /// This object with every party index passed through `party` and every
     /// Dialog Object index through `object`, for [`merge_call_legs`].
@@ -2172,9 +2421,15 @@ impl Dialog {
             sip_call_id,
             sip_from_tag,
             sip_to_tag,
+            sip_cseq,
             start,
             duration,
             parties,
+            originator,
+            party_history,
+            campaign,
+            skill,
+            interaction_id,
             dialogs,
             recording_set,
             mediatype,
@@ -2195,9 +2450,23 @@ impl Dialog {
             sip_call_id,
             sip_from_tag,
             sip_to_tag,
+            sip_cseq,
             start,
             duration,
             parties: parties.map(|p| p.into_iter().map(party).collect()),
+            originator: originator.map(party),
+            campaign,
+            skill,
+            interaction_id,
+            party_history: party_history.map(|events| {
+                events
+                    .into_iter()
+                    .map(|e| PartyEvent {
+                        party: party(e.party),
+                        ..e
+                    })
+                    .collect()
+            }),
             dialogs: dialogs.map(|d| d.into_iter().map(object).collect()),
             recording_set: recording_set.map(object),
             mediatype,
@@ -2233,7 +2502,7 @@ fn media_objects(
     objects: &mut Vec<Dialog>,
     budget: usize,
 ) -> MediaVerdict {
-    let decoded = match audio {
+    let (decoded, encoded) = match audio {
         ObservedAudio::NotConsidered => {
             return MediaVerdict {
                 outcome: MediaOutcome::NotConsidered,
@@ -2255,9 +2524,19 @@ fn media_objects(
                 refusal: None,
             };
         }
-        ObservedAudio::Decoded(decoded) => decoded,
-        ObservedAudio::Referenced(decoded, url) => {
-            place_recording(dialog, decoded, objects, MediaBody::Url(url));
+        ObservedAudio::Decoded(decoded) => (decoded, EncodedRecording::wav(decoded)),
+        ObservedAudio::Encoded(decoded, encoded) => (decoded, encoded),
+        ObservedAudio::Referenced(decoded, file) => {
+            place_recording(
+                dialog,
+                decoded,
+                objects,
+                MediaBody::Url {
+                    url: file.url,
+                    mediatype: file.mediatype,
+                    content_hash: content_hash(file.file),
+                },
+            );
             return MediaVerdict {
                 outcome: MediaOutcome::Referenced,
                 note: Some(decoded.note.clone()),
@@ -2266,26 +2545,38 @@ fn media_objects(
         }
     };
 
-    let body = URL_SAFE_NO_PAD.encode(&decoded.wav);
+    // The budget is on what the container carries: the encoded bytes, as
+    // base64url, whatever format the rule chose.
+    let body = URL_SAFE_NO_PAD.encode(encoded.bytes);
     if body.len() > budget {
         return MediaVerdict {
             outcome: MediaOutcome::RefusedOverBudget,
             note: Some(decoded.note.clone()),
             refusal: Some(format!(
                 " — INCOMPLETE: sipnab decoded {:.1} second(s) of audio for this dialog and \
-                 REFUSED to carry it: base64url of the {} byte WAV is {} bytes, over the {} byte \
+                 REFUSED to carry it: base64url of the {} byte {} is {} bytes, over the {} byte \
                  budget this emitter enforces because one probed vCon store answers 204 and drops \
                  the payload without telling the producer. The audio was NOT truncated and is not \
                  in this container; export it beside this file with the export_audio MCP tool.",
                 decoded.duration_secs,
-                decoded.wav.len(),
+                encoded.bytes.len(),
+                encoded.format,
                 body.len(),
                 budget,
             )),
         };
     }
 
-    place_recording(dialog, decoded, objects, MediaBody::Inline(&body));
+    place_recording(
+        dialog,
+        decoded,
+        objects,
+        MediaBody::Inline {
+            body: &body,
+            mediatype: encoded.mediatype,
+            content_hash: content_hash(encoded.bytes),
+        },
+    );
 
     MediaVerdict {
         outcome: MediaOutcome::Carried,
@@ -2294,24 +2585,55 @@ fn media_objects(
     }
 }
 
-/// Where a recording's bytes are: inline as base64url, or at a URL.
-#[derive(Debug, Clone, Copy)]
+/// Where a recording's bytes are, inline as base64url or at a URL, with the
+/// `mediatype` and `content_hash` the object names.
+#[derive(Debug, Clone)]
 enum MediaBody<'a> {
-    /// The WAV, base64url-encoded, in `body`.
-    Inline(&'a str),
-    /// The WAV is served at this URL; the object carries its hash only.
-    Url(&'a str),
+    /// The file, base64url-encoded, in `body`. The hash is over the file.
+    Inline {
+        /// The base64url text.
+        body: &'a str,
+        /// The file's media type.
+        mediatype: &'static str,
+        /// [`content_hash`] of the file.
+        content_hash: String,
+    },
+    /// The file is served at this URL; the object carries its hash only,
+    /// over the file's bytes as written.
+    Url {
+        /// Where the operator's storage serves the file.
+        url: &'a str,
+        /// The media type of the recording the file holds.
+        mediatype: &'static str,
+        /// [`content_hash`] of the file as written.
+        content_hash: String,
+    },
 }
 
 impl MediaBody<'_> {
-    /// Fill `object`'s media fields: `body` and `encoding` inline, or `url`.
+    /// Fill `object`'s media fields: `mediatype` and `content_hash`, then
+    /// `body` and `encoding` inline, or `url`.
     fn fill(self, object: &mut Dialog) {
         match self {
-            Self::Inline(body) => {
+            Self::Inline {
+                body,
+                mediatype,
+                content_hash,
+            } => {
+                object.mediatype = Some(mediatype.into());
+                object.content_hash = Some(content_hash);
                 object.encoding = Some("base64url");
                 object.body = Some(body.to_string());
             }
-            Self::Url(url) => object.url = Some(url.to_string()),
+            Self::Url {
+                url,
+                mediatype,
+                content_hash,
+            } => {
+                object.mediatype = Some(mediatype.into());
+                object.content_hash = Some(content_hash);
+                object.url = Some(url.to_string());
+            }
         }
     }
 }
@@ -2357,8 +2679,6 @@ fn place_recording(
         signaling.start = Some(decoded.first_retained.to_rfc3339());
         signaling.duration = Some(decoded.duration_secs);
         signaling.parties = channel_parties(dialog, decoded);
-        signaling.mediatype = Some(RECORDING_MEDIATYPE);
-        signaling.content_hash = Some(content_hash(&decoded.wav));
         media.fill(signaling);
     }
 }
@@ -2377,8 +2697,6 @@ fn recording_object(
         // consumer holding the audio can reach the call's clock.
         recording_set: Some(recording_set),
         parties: channel_parties(dialog, audio),
-        mediatype: Some(RECORDING_MEDIATYPE),
-        content_hash: Some(content_hash(&audio.wav)),
         ..Dialog::bare(RECORDING_TYPE, dialog.call_id.clone())
     };
     media.fill(&mut object);
@@ -2422,7 +2740,7 @@ fn recording_set_object(dialog: &SipDialog, audio: &DialogAudio, member: usize) 
 /// same call with the `export_audio` MCP tool can run `sha512sum` on the file and get a
 /// value that maps to this one; a digest of the encoded text is a number
 /// nothing outside this container could reproduce.
-fn content_hash(media: &[u8]) -> String {
+pub fn content_hash(media: &[u8]) -> String {
     let digest = Sha512::digest(media);
     format!("{CONTENT_HASH_PREFIX}{}", URL_SAFE_NO_PAD.encode(digest))
 }
@@ -2700,6 +3018,7 @@ fn dialog_object(dialog: &SipDialog, start: String) -> Dialog {
         // measurement.
         sip_from_tag: dialog.from_tag.clone(),
         sip_to_tag: dialog.to_tag.clone(),
+        sip_cseq: creating_cseq(dialog),
         session_id: session_id_of(dialog),
         // ONE decision drives both fields, because core-04 sections 4.3.1.5
         // and 4.3.11 couple them: an `incomplete` object MUST carry a
@@ -2709,11 +3028,350 @@ fn dialog_object(dialog: &SipDialog, start: String) -> Dialog {
         // same as success.
         disposition: failure,
         start: Some(start),
+        // core-04 Table 1: `parties` SHOULD be present on a `recording` and
+        // is optional on an `incomplete`, where it names the parties the
+        // setup was attempted between. These are the indices of the `From`
+        // and `To` parties `observed_parties` built, in that order.
+        parties: Some(vec![0, 1]),
+        duration: conversation_secs(dialog),
         ..Dialog::bare(
             failure.map_or(RECORDING_TYPE, |_| INCOMPLETE_TYPE),
             dialog.call_id.clone(),
         )
     }
+}
+
+/// Whether the dialog's first observed message is the dialog-creating request.
+///
+/// A request with no `To` tag is outside any dialog
+/// ([RFC 3261 section 8.1.1.2](https://www.rfc-editor.org/rfc/rfc3261.html#section-8.1.1.2)),
+/// so its `From` is the party that originated this one. A tagged request or a
+/// response first means the capture joined after setup, and its `From` names
+/// whoever sent that one transaction, which may be either party.
+fn opened_by_the_caller(dialog: &SipDialog) -> bool {
+    dialog
+        .messages
+        .first()
+        .is_some_and(|m| m.is_request && m.to_tag().is_none())
+}
+
+/// One RFC 4733 telephone event, as the RTP decoder saw its end packet.
+#[derive(Debug, Clone)]
+pub struct RtpKeyPress {
+    /// The socket the event's packets came from.
+    pub src: std::net::SocketAddr,
+    /// The digit the event names.
+    pub digit: char,
+    /// When sipnab captured the packet that ended the event (E bit set).
+    pub ended_at: DateTime<Utc>,
+    /// The event's duration from that packet, in milliseconds
+    /// ([RFC 4733 section 2.5.1.3](https://www.rfc-editor.org/rfc/rfc4733.html#section-2.5.1.3)).
+    pub duration_ms: u32,
+}
+
+/// Add `keydown` and `keyup` events ([core-04 section 4.3.13.1](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-04#section-4.3.13.1))
+/// to a one-leg container's signaling object, with the digit as `button`.
+///
+/// - An in-dialog INFO with `Content-Type: application/dtmf-relay` is a
+///   `keydown` at the INFO, for its sender, and a `keyup` `Duration`
+///   milliseconds later when the body states one. The digit is the
+///   `Signal` value.
+/// - An RFC 4733 event in `rtp` is a `keyup` at its end packet and a
+///   `keydown` its duration before, for the party whose own SDP advertised
+///   the event's source socket.
+///
+/// An INFO whose tags match neither party, or an event from a socket no
+/// party advertised, adds nothing. The events join the existing history in
+/// time order.
+///
+/// A rule asks for these with `dtmf_events`, because a digit can be a PIN.
+/// Redaction removes them (see the `Dialog` redaction).
+pub fn add_key_events(container: &mut Vcon, dialog: &SipDialog, rtp: &[RtpKeyPress]) {
+    let mut added: Vec<(DateTime<Utc>, PartyEvent)> = Vec::new();
+    let mut press = |party: usize, down: DateTime<Utc>, up: Option<DateTime<Utc>>, digit: &str| {
+        let key = |at: DateTime<Utc>, event: &'static str| PartyEvent {
+            button: Some(digit.to_string()),
+            ..PartyEvent::at(party, at, event)
+        };
+        added.push((down, key(down, "keydown")));
+        if let Some(up) = up {
+            added.push((up, key(up, "keyup")));
+        }
+    };
+
+    for m in &dialog.messages {
+        let is_relay = m.is_request
+            && m.method.as_ref() == Some(&crate::sip::SipMethod::Info)
+            && m.content_type().is_some_and(|ct| {
+                ct.to_ascii_lowercase()
+                    .starts_with("application/dtmf-relay")
+            });
+        if !is_relay {
+            continue;
+        }
+        let (Some(party), Some((digit, duration))) = (sender_party(dialog, m), dtmf_relay(&m.body))
+        else {
+            continue;
+        };
+        let up = duration.map(|ms| m.timestamp + chrono::TimeDelta::milliseconds(i64::from(ms)));
+        press(party, m.timestamp, up, &digit);
+    }
+
+    let advertised = advertised_media_endpoints(dialog);
+    for event in rtp {
+        let Some(party) = advertised
+            .iter()
+            .find(|(socket, _)| *socket == event.src)
+            .map(|(_, party)| *party)
+        else {
+            continue;
+        };
+        let down = event.ended_at - chrono::TimeDelta::milliseconds(i64::from(event.duration_ms));
+        press(party, down, Some(event.ended_at), &event.digit.to_string());
+    }
+
+    if added.is_empty() {
+        return;
+    }
+    let Some(signaling) = container.dialog.first_mut() else {
+        return;
+    };
+    let mut timed: Vec<(DateTime<Utc>, PartyEvent)> = signaling
+        .party_history
+        .take()
+        .unwrap_or_default()
+        .into_iter()
+        .map(|e| {
+            let at = DateTime::parse_from_rfc3339(&e.time)
+                .map_or(DateTime::<Utc>::MIN_UTC, |t| t.with_timezone(&Utc));
+            (at, e)
+        })
+        .collect();
+    timed.extend(added);
+    timed.sort_by_key(|(at, _)| *at);
+    signaling.party_history = Some(timed.into_iter().map(|(_, e)| e).collect());
+}
+
+/// The digit and the duration in milliseconds of an `application/dtmf-relay`
+/// body: `Signal=5` and `Duration=160` lines. `None` without a `Signal`.
+fn dtmf_relay(body: &[u8]) -> Option<(String, Option<u32>)> {
+    let text = std::str::from_utf8(body).ok()?;
+    let value = |name: &str| {
+        text.lines().find_map(|line| {
+            let (key, value) = line.split_once('=')?;
+            key.trim()
+                .eq_ignore_ascii_case(name)
+                .then(|| value.trim().to_string())
+        })
+    };
+    let digit = value("Signal").filter(|d| !d.is_empty())?;
+    let duration = value("Duration").and_then(|d| d.parse().ok());
+    Some((digit, duration))
+}
+
+/// One `text` Dialog Object ([core-04 section 4.3.1.3](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-04#section-4.3.1.3))
+/// per SIP MESSAGE ([RFC 3428](https://www.rfc-editor.org/rfc/rfc3428.html))
+/// that carried content.
+///
+/// - One per sender tag and CSeq number: a retransmission is the same text,
+///   and each direction numbers its own requests.
+/// - `start` is when sipnab captured the first transmission; core-04 section
+///   4.3.2 makes that the start of a text when the typing time is not known.
+/// - `parties` is the sender, then the other party, when the message's tag
+///   names the sender (see [`sender_party`]), so `originator` is never
+///   needed (core-04 section 4.3.5: for text, the originator is the sender).
+///   Absent when the tag names neither party.
+/// - `mediatype` is the message's `Content-Type`, as written. The body is
+///   inline: the text with `encoding: "none"` when it is UTF-8, otherwise
+///   base64url.
+/// - A MESSAGE with no body, or whose `Content-Type` is
+///   `application/im-iscomposing+xml` (an RFC 3994 typing indication rather
+///   than text a party sent), is not a text dialog.
+///
+/// MSRP is not parsed by sipnab, so a session that carries its text over
+/// MSRP has no text dialog.
+fn text_dialogs_of(dialog: &SipDialog) -> Vec<Dialog> {
+    let mut seen: Vec<(Option<&str>, u32)> = Vec::new();
+    let mut texts = Vec::new();
+    for m in &dialog.messages {
+        let is_text = m.is_request
+            && m.method.as_ref() == Some(&crate::sip::SipMethod::Message)
+            && !m.body.is_empty()
+            && !m.content_type().is_some_and(|ct| {
+                ct.to_ascii_lowercase()
+                    .starts_with("application/im-iscomposing+xml")
+            });
+        if !is_text {
+            continue;
+        }
+        if let Some((cseq, _)) = m.cseq() {
+            let key = (m.from_tag(), cseq);
+            if seen.contains(&key) {
+                continue;
+            }
+            seen.push(key);
+        }
+        let (encoding, body) = match std::str::from_utf8(&m.body) {
+            Ok(text) => ("none", text.to_string()),
+            Err(_) => ("base64url", URL_SAFE_NO_PAD.encode(&m.body)),
+        };
+        texts.push(Dialog {
+            start: Some(m.timestamp.to_rfc3339()),
+            parties: sender_party(dialog, m).map(|sender| vec![sender, 1 - sender]),
+            mediatype: Some(
+                m.content_type()
+                    .unwrap_or("text/plain")
+                    .trim()
+                    .to_string()
+                    .into(),
+            ),
+            encoding: Some(encoding),
+            body: Some(body),
+            ..Dialog::bare(TEXT_TYPE, dialog.call_id.clone())
+        });
+    }
+    texts
+}
+
+/// The join, drop, hold and unhold events the capture shows, in time order,
+/// for [`Dialog::party_history`].
+///
+/// - `join`: both parties, at the 200 to the initial INVITE, when the capture
+///   holds that INVITE and its 200 (the rule [`conversation_secs`] uses).
+/// - `drop`: the sender of the first BYE, at the BYE, and the other party at
+///   the 2xx answering it, when captured.
+/// - `hold` and `unhold`: an in-dialog INVITE or UPDATE whose first audio
+///   media description is `sendonly` or `inactive` puts the OTHER party on
+///   hold, at the request's capture time. A later `sendrecv` from the same
+///   sender takes it off hold. `recvonly` changes nothing.
+///
+/// A message whose tags match neither party yields no event: the `party`
+/// would be a guess. `None` when there is no event.
+fn party_history_of(dialog: &SipDialog) -> Option<Vec<PartyEvent>> {
+    let mut events: Vec<(DateTime<Utc>, PartyEvent)> = Vec::new();
+    if dialog.timing.invite_sent.is_some()
+        && let Some(answered) = dialog.timing.answered_at
+    {
+        for party in [0, 1] {
+            events.push((answered, PartyEvent::at(party, answered, "join")));
+        }
+    }
+
+    let is = |m: &crate::sip::SipMessage, method: crate::sip::SipMethod| {
+        m.is_request && m.method.as_ref() == Some(&method)
+    };
+    if let Some(bye) = dialog
+        .messages
+        .iter()
+        .find(|m| is(m, crate::sip::SipMethod::Bye))
+        && let Some(sender) = sender_party(dialog, bye)
+    {
+        events.push((bye.timestamp, PartyEvent::at(sender, bye.timestamp, "drop")));
+        let bye_cseq = bye.cseq().map(|(n, _)| n);
+        if let Some(answer) = dialog.messages.iter().find(|m| {
+            !m.is_request
+                && m.status_code.is_some_and(|c| (200..300).contains(&c))
+                && m.cseq()
+                    .is_some_and(|(n, method)| Some(n) == bye_cseq && method == "BYE")
+        }) {
+            events.push((
+                answer.timestamp,
+                PartyEvent::at(1 - sender, answer.timestamp, "drop"),
+            ));
+        }
+    }
+
+    let mut held = [false, false];
+    for m in &dialog.messages {
+        let reoffer = (is(m, crate::sip::SipMethod::Invite) && m.to_tag().is_some())
+            || is(m, crate::sip::SipMethod::Update);
+        if !reoffer {
+            continue;
+        }
+        let (Some(sender), Some(direction)) = (sender_party(dialog, m), audio_direction(m)) else {
+            continue;
+        };
+        let other = 1 - sender;
+        use crate::sip::sdp::SdpDirection;
+        match direction {
+            SdpDirection::SendOnly | SdpDirection::Inactive if !held[other] => {
+                held[other] = true;
+                events.push((m.timestamp, PartyEvent::at(other, m.timestamp, "hold")));
+            }
+            SdpDirection::SendRecv if held[other] => {
+                held[other] = false;
+                events.push((m.timestamp, PartyEvent::at(other, m.timestamp, "unhold")));
+            }
+            _ => {}
+        }
+    }
+
+    events.sort_by_key(|(at, _)| *at);
+    (!events.is_empty()).then(|| events.into_iter().map(|(_, e)| e).collect())
+}
+
+/// The direction of the first audio media description in a message's SDP.
+fn audio_direction(m: &crate::sip::SipMessage) -> Option<crate::sip::sdp::SdpDirection> {
+    let session = crate::sip::sdp::parse_sdp(&m.body).ok()?;
+    session
+        .media
+        .iter()
+        .find(|media| media.media_type == "audio")
+        .map(|media| media.direction)
+}
+
+/// The CSeq number of the dialog-creating request, when the capture holds it
+/// as the dialog's first message (see [`opened_by_the_caller`]).
+fn creating_cseq(dialog: &SipDialog) -> Option<u32> {
+    if !opened_by_the_caller(dialog) {
+        return None;
+    }
+    dialog.messages.first()?.cseq().map(|(number, _)| number)
+}
+
+/// The empty Party Object [core-04 section 4.3.5](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-04#section-4.3.5)
+/// uses for an originator that is not known: "If the originator is not known,
+/// an empty Party Object ... may be used as ... the party referenced by the
+/// originator parameter". It carries only `validation: "none"`, which every
+/// sipnab party carries.
+fn unknown_originator_party() -> Party {
+    Party {
+        sip: None,
+        tel: None,
+        validation: "none",
+        role: None,
+        name: None,
+        stir: None,
+        sip_display_name: None,
+        sip_contact: None,
+        sip_user_agent: None,
+    }
+}
+
+/// Set `originator` on every object whose `parties` does not list the caller
+/// first, per [core-04 section 4.3.5](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-04#section-4.3.5).
+///
+/// An object with no `parties`, such as a transfer, where core-04 Table 1
+/// forbids `originator`, is left alone.
+fn name_the_originator(objects: &mut [Dialog], caller: usize) {
+    for object in objects {
+        if let Some(parties) = &object.parties {
+            object.originator = (parties.first() != Some(&caller)).then_some(caller);
+        }
+    }
+}
+
+/// The conversation's length in seconds, from the answer to the initial
+/// INVITE to the BYE, for the signaling object's `duration`
+/// ([core-04 section 4.3.3](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-04#section-4.3.3)).
+///
+/// `None` unless the capture holds the initial INVITE, its 200 and a BYE: an
+/// uncaptured INVITE leaves the 200 unattributable to the initial
+/// transaction, and an absent BYE means the end is not known.
+fn conversation_secs(dialog: &SipDialog) -> Option<f64> {
+    dialog.timing.invite_sent?;
+    let ms = dialog.timing.conversation_ms()?;
+    Some(ms as f64 / 1000.0)
 }
 
 /// The JWS alone from an RFC 8224 `Identity` header value.
@@ -2857,6 +3515,7 @@ fn message_trace_attachment(dialog: &SipDialog, observer: usize, start: String) 
                 // `the_header_map_carries_every_header_the_list_would_have`
                 // pins.
                 map.remove("extension_headers");
+                draft_message_fields(map, dialog, m);
             }
             strip_credentials(&mut value);
             value
@@ -2877,13 +3536,556 @@ fn message_trace_attachment(dialog: &SipDialog, observer: usize, start: String) 
         // available. `schema_version` and `sip_call_id` are what existing
         // sipnab consumers already read, and dropping them would break those
         // for a draft that is still individual and at -00.
+        //
+        // `version` is the string "1.0", the trace format version
+        // draft-howe-vcon-sip-signaling-00 section 6.2.1 defines. It was the
+        // number 1 until the per-message fields below joined the body; a
+        // reader of sipnab's own shape reads `schema_version`, which is
+        // unchanged.
         body: serde_json::json!({
-            "version": DIAGNOSIS_SCHEMA_VERSION,
+            "version": TRACE_FORMAT_VERSION,
             "call_id": dialog.call_id,
             "schema_version": DIAGNOSIS_SCHEMA_VERSION,
             "sip_call_id": dialog.call_id,
             "messages": messages,
         }),
+    }
+}
+
+/// The trace format version [draft-howe-vcon-sip-signaling-00 section 6.2.1](https://datatracker.ietf.org/doc/html/draft-howe-vcon-sip-signaling-00#section-6.2.1)
+/// defines: "This document defines version \"1.0\"".
+pub const TRACE_FORMAT_VERSION: &str = "1.0";
+
+/// Add the per-message fields of the draft's trace format to one projected
+/// message, beside sipnab's own.
+///
+/// [draft-howe-vcon-sip-signaling-00 section 6.2.1](https://datatracker.ietf.org/doc/html/draft-howe-vcon-sip-signaling-00#section-6.2.1)
+/// names `timestamp`, `direction`, `party`, `method`, `status_code`,
+/// `status_text`, `headers` and `body`. The projection already carries
+/// `timestamp`, `method` (requests only), `status_code` (responses only) and
+/// `reason`; this adds the rest.
+///
+/// - `direction` is `"received"` on every message. The draft defines it "from
+///   the perspective of the vCon producer", and sipnab sent nothing: every
+///   message is a copy it received from the tap.
+/// - `party` is the sender's index when the message's tag names a party (see
+///   [`sender_party`]), and absent otherwise, which the draft allows "when
+///   the sender cannot be determined".
+/// - `status_text` is the reason phrase, on a response only.
+/// - `body` is the message body when it has one: the text when it is UTF-8,
+///   otherwise base64url with `body_encoding: "base64url"`, as the draft says
+///   for binary bodies.
+fn draft_message_fields(
+    map: &mut serde_json::Map<String, serde_json::Value>,
+    dialog: &SipDialog,
+    m: &crate::sip::SipMessage,
+) {
+    map.insert("direction".into(), "received".into());
+    if let Some(party) = sender_party(dialog, m) {
+        map.insert("party".into(), party.into());
+    }
+    if !m.is_request
+        && let Some(reason) = &m.reason
+    {
+        map.insert("status_text".into(), reason.clone().into());
+    }
+    if !m.body.is_empty() {
+        match std::str::from_utf8(&m.body) {
+            Ok(text) => {
+                map.insert("body".into(), text.into());
+            }
+            Err(_) => {
+                map.insert("body".into(), URL_SAFE_NO_PAD.encode(&m.body).into());
+                map.insert("body_encoding".into(), "base64url".into());
+            }
+        }
+    }
+}
+
+/// `purpose` of the initial INVITE in wire format,
+/// [draft-howe-vcon-sip-signaling-00 section 6.1.1](https://datatracker.ietf.org/doc/html/draft-howe-vcon-sip-signaling-00#section-6.1.1).
+pub const SIP_INVITE_PURPOSE: &str = "sip-invite";
+
+/// `purpose` of a SIP response in wire format,
+/// [draft-howe-vcon-sip-signaling-00 section 6.1.1](https://datatracker.ietf.org/doc/html/draft-howe-vcon-sip-signaling-00#section-6.1.1).
+pub const SIP_RESPONSE_PURPOSE: &str = "sip-response";
+
+/// `purpose` of an SDP body,
+/// [draft-howe-vcon-sip-signaling-00 section 6.3](https://datatracker.ietf.org/doc/html/draft-howe-vcon-sip-signaling-00#section-6.3).
+pub const SIP_SDP_PURPOSE: &str = "sip-sdp";
+
+/// The media type of a SIP message in wire format, which section 6.1.2 makes a
+/// MUST.
+const MESSAGE_SIP_MEDIATYPE: &str = "message/sip";
+
+/// The media type of an SDP attachment, which section 6.3 makes a MUST.
+const SDP_MEDIATYPE: &str = "application/sdp";
+
+/// Whether an attachment carries wire bytes or an SDP body, which redaction
+/// removes (see [`add_sip_message_attachments`]).
+fn is_wire_attachment(attachment: &Attachment) -> bool {
+    [SIP_INVITE_PURPOSE, SIP_RESPONSE_PURPOSE, SIP_SDP_PURPOSE].contains(&attachment.purpose)
+}
+
+/// Add the minimal producer's attachments of
+/// [draft-howe-vcon-sip-signaling-00 section 8.1](https://datatracker.ietf.org/doc/html/draft-howe-vcon-sip-signaling-00#section-8.1)
+/// to a one-leg container: the initial INVITE and its final response as
+/// `message/sip` (sections 6.1.1 and 6.1.2), and each one's SDP body as
+/// `application/sdp` (section 6.3).
+///
+/// Which messages:
+///
+/// - The final response is the first transmission of the last final (200 to
+///   699) response to an INVITE that carried no `To` tag. After a `407`
+///   challenge that is the answer to the re-sent INVITE.
+/// - The INVITE is the first transmission of the request with that
+///   response's CSeq number. With no final response it is the last initial
+///   INVITE.
+///
+/// Each attachment names the party whose tag the message carries, and the
+/// observer when the tag matches neither party (a proxy's own response).
+/// `start` is when sipnab captured the message, and `dialog` is 0, the
+/// signaling object.
+///
+/// The bytes are the message as captured, with every credential-bearing
+/// header line ([`CREDENTIAL_HEADERS`]) removed, as the trace removes them.
+/// UTF-8 bytes use the `none` encoding; anything else is base64url, as
+/// section 6.1.2 requires.
+///
+/// `budget` is the rule's inline budget in bytes, for these attachments
+/// together. An attachment that does not fit is left out and named, with its
+/// size, in the completeness attachment's `sip_messages_refused`.
+///
+/// Redaction removes all three kinds (see `is_wire_attachment`): the bytes
+/// hold every identifier the trace holds, in a form redaction cannot rewrite
+/// without changing the message they are a copy of.
+pub fn add_sip_message_attachments(container: &mut Vcon, dialog: &SipDialog, budget: usize) {
+    let observer = container.observer_index();
+    let (invite, response) = minimal_exchange(dialog);
+    let mut wanted: Vec<Attachment> = Vec::new();
+    for (purpose, message) in [
+        (SIP_INVITE_PURPOSE, invite),
+        (SIP_RESPONSE_PURPOSE, response),
+    ] {
+        let Some(m) = message else { continue };
+        let party = sender_party(dialog, m).unwrap_or(observer);
+        let start = m.timestamp.to_rfc3339();
+        let (encoding, body) = inline_text(&without_credentials(&m.raw));
+        wanted.push(Attachment {
+            purpose,
+            party,
+            dialog: 0,
+            start: start.clone(),
+            mediatype: MESSAGE_SIP_MEDIATYPE,
+            encoding,
+            body,
+        });
+        if m.content_type()
+            .is_some_and(|ct| ct.to_ascii_lowercase().starts_with(SDP_MEDIATYPE))
+            && !m.body.is_empty()
+        {
+            let (encoding, body) = inline_text(&m.body);
+            wanted.push(Attachment {
+                purpose: SIP_SDP_PURPOSE,
+                party,
+                dialog: 0,
+                start,
+                mediatype: SDP_MEDIATYPE,
+                encoding,
+                body,
+            });
+        }
+    }
+
+    let mut left = budget;
+    let mut refused: Vec<serde_json::Value> = Vec::new();
+    for attachment in wanted {
+        let bytes = attachment.body.as_str().map_or(0, str::len);
+        if bytes <= left {
+            left -= bytes;
+            container.attachments.push(attachment);
+        } else {
+            refused.push(serde_json::json!({
+                "purpose": attachment.purpose,
+                "bytes": bytes,
+            }));
+        }
+    }
+    if refused.is_empty() {
+        return;
+    }
+    if let Some(map) = container
+        .attachments
+        .iter_mut()
+        .find(|a| a.purpose == COMPLETENESS_PURPOSE)
+        .and_then(|a| a.body.as_object_mut())
+    {
+        map.insert("sip_messages_refused".into(), refused.into());
+    }
+}
+
+/// The initial INVITE and its final response, as [`add_sip_message_attachments`]
+/// chooses them.
+fn minimal_exchange(
+    dialog: &SipDialog,
+) -> (
+    Option<&crate::sip::SipMessage>,
+    Option<&crate::sip::SipMessage>,
+) {
+    let is_initial_invite = |m: &crate::sip::SipMessage| {
+        m.is_request
+            && m.method.as_ref() == Some(&crate::sip::SipMethod::Invite)
+            && m.to_tag().is_none()
+    };
+    let initial_cseqs: Vec<u32> = dialog
+        .messages
+        .iter()
+        .filter(|m| is_initial_invite(m))
+        .filter_map(|m| m.cseq().map(|(n, _)| n))
+        .collect();
+    let final_cseq = dialog
+        .messages
+        .iter()
+        .rev()
+        .filter(|m| !m.is_request && m.status_code.is_some_and(|c| (200..700).contains(&c)))
+        .filter_map(|m| m.cseq().filter(|(_, method)| *method == "INVITE"))
+        .map(|(n, _)| n)
+        .find(|n| initial_cseqs.contains(n));
+    let Some(cseq) = final_cseq else {
+        return (
+            dialog.messages.iter().rev().find(|m| is_initial_invite(m)),
+            None,
+        );
+    };
+    let in_transaction = |m: &&crate::sip::SipMessage| {
+        m.cseq()
+            .is_some_and(|(n, method)| n == cseq && method == "INVITE")
+    };
+    let invite = dialog
+        .messages
+        .iter()
+        .filter(in_transaction)
+        .find(|m| is_initial_invite(m));
+    // The LAST final status of the transaction, then its first transmission:
+    // a retransmitted 200 is the same response.
+    let last_final = dialog
+        .messages
+        .iter()
+        .rev()
+        .filter(in_transaction)
+        .find(|m| !m.is_request && m.status_code.is_some_and(|c| c >= 200))
+        .and_then(|m| m.status_code);
+    let response = dialog
+        .messages
+        .iter()
+        .filter(in_transaction)
+        .find(|m| !m.is_request && m.status_code == last_final);
+    (invite, response)
+}
+
+/// `raw` without the header lines whose name is a credential header, and
+/// without the folded continuation lines of those headers.
+///
+/// Only the header section is filtered; the body is kept byte for byte, so
+/// `Content-Length` still describes it.
+fn without_credentials(raw: &[u8]) -> Vec<u8> {
+    let split = raw
+        .windows(4)
+        .position(|w| w == b"\r\n\r\n")
+        .map_or(raw.len(), |i| i + 2);
+    let (head, rest) = raw.split_at(split);
+    let mut out = Vec::with_capacity(raw.len());
+    let mut dropping = false;
+    for line in head.split_inclusive(|b| *b == b'\n') {
+        let folded = line.first().is_some_and(|b| *b == b' ' || *b == b'\t');
+        if !folded {
+            dropping = std::str::from_utf8(line).is_ok_and(header_line_is_a_credential);
+        }
+        if !dropping {
+            out.extend_from_slice(line);
+        }
+    }
+    out.extend_from_slice(rest);
+    out
+}
+
+/// An inline attachment body: the text with the `none` encoding when it is
+/// UTF-8, otherwise base64url.
+fn inline_text(bytes: &[u8]) -> (&'static str, serde_json::Value) {
+    match std::str::from_utf8(bytes) {
+        Ok(text) => ("none", text.into()),
+        Err(_) => ("base64url", URL_SAFE_NO_PAD.encode(bytes).into()),
+    }
+}
+
+/// `purpose` of the report that transcribes the network's STIR verdict,
+/// [draft-howe-vcon-sip-signaling-00 section 7.3](https://datatracker.ietf.org/doc/html/draft-howe-vcon-sip-signaling-00#section-7.3).
+pub const STIR_REPORT_PURPOSE: &str = "stir-verification-report";
+
+/// What the report says about who verified.
+const STIR_REPORT_REASON: &str = "Transcribed from the verstat parameter (ATIS-1000074) the \
+     network wrote on this header. sipnab verified nothing: it checked no signature and \
+     fetched no certificate, and the verifier is not named on the wire.";
+
+/// The `stir-verification-report` attachment, when the dialog-creating INVITE
+/// carries a `verstat` parameter.
+///
+/// sipnab transcribes; it does not verify. The terminating network writes
+/// `verstat` (ATIS-1000074) on `P-Asserted-Identity` or `From` after its own
+/// verification, and this report carries that verdict in the draft's shape:
+///
+/// - `result` maps `TN-Validation-Passed` to `verified` and
+///   `TN-Validation-Failed` to `failed`. `No-TN-Validation` is `no-signature`
+///   when the INVITE carried no `Identity` header, and is left out when it
+///   did, because the draft has no value for "not verified".
+/// - `attestation`, `orig_tn` and `dest_tn` are the PASSporT's own claims,
+///   when the INVITE carried one.
+/// - `timestamp` is when sipnab captured the INVITE, which is after the
+///   verification.
+/// - `verifier` is absent: the header does not name who verified.
+/// - `verstat` and `verstat_header` keep the value and where it was read.
+///
+/// `party` is 0, the caller whose PASSporT this is (section 7.2 asks the same
+/// of a certificate attachment), and `dialog` is 0.
+///
+/// `P-Asserted-Identity` is read before `From`, and the first initial INVITE
+/// carrying a `verstat` decides. No `verstat` is no report.
+fn stir_verification_report(dialog: &SipDialog) -> Option<Attachment> {
+    let (message, header, verstat) = dialog
+        .messages
+        .iter()
+        .filter(|m| {
+            m.is_request
+                && m.method.as_ref() == Some(&crate::sip::SipMethod::Invite)
+                && m.to_tag().is_none()
+        })
+        .find_map(|m| {
+            ["P-Asserted-Identity", "From"]
+                .into_iter()
+                .find_map(|header| {
+                    m.headers_by_name(header)
+                        .into_iter()
+                        .find_map(verstat_of)
+                        .map(|v| (m, header, v))
+                })
+        })?;
+    let result = match verstat.as_str() {
+        v if v.eq_ignore_ascii_case("TN-Validation-Passed") => Some("verified"),
+        v if v.eq_ignore_ascii_case("TN-Validation-Failed") => Some("failed"),
+        v if v.eq_ignore_ascii_case("No-TN-Validation") && message.header("Identity").is_none() => {
+            Some("no-signature")
+        }
+        _ => None,
+    };
+    let mut body = serde_json::Map::new();
+    body.insert("timestamp".into(), message.timestamp.to_rfc3339().into());
+    if let Some(result) = result {
+        body.insert("result".into(), result.into());
+    }
+    add_passport_fields(&mut body, message);
+    body.insert("reason".into(), STIR_REPORT_REASON.into());
+    body.insert("verstat".into(), verstat.into());
+    body.insert("verstat_header".into(), header.into());
+    Some(Attachment {
+        purpose: STIR_REPORT_PURPOSE,
+        party: 0,
+        dialog: 0,
+        start: message.timestamp.to_rfc3339(),
+        mediatype: "application/json",
+        encoding: "json",
+        body: serde_json::Value::Object(body),
+    })
+}
+
+/// Add the attestation and telephone numbers of the PASSporT in `message`'s
+/// `Identity` header to a STIR report body, when it parses.
+///
+/// The PASSporT parser is part of the `tls` feature, so a build without it
+/// writes the report with no `attestation`, `orig_tn` or `dest_tn`.
+#[cfg(feature = "tls")]
+fn add_passport_fields(
+    body: &mut serde_json::Map<String, serde_json::Value>,
+    message: &crate::sip::message::SipMessage,
+) {
+    let Some(info) = message.stir_shaken().and_then(Result::ok) else {
+        return;
+    };
+    let attestation = match info.attestation {
+        crate::sip::stir_shaken::Attestation::A => Some("A"),
+        crate::sip::stir_shaken::Attestation::B => Some("B"),
+        crate::sip::stir_shaken::Attestation::C => Some("C"),
+        _ => None,
+    };
+    if let Some(level) = attestation {
+        body.insert("attestation".into(), level.into());
+    }
+    if let Some(orig) = &info.orig_tn {
+        body.insert("orig_tn".into(), orig.clone().into());
+    }
+    if !info.dest_tn.is_empty() {
+        body.insert("dest_tn".into(), info.dest_tn.clone().into());
+    }
+}
+
+/// Without the `tls` feature there is no PASSporT parser, so nothing is added.
+#[cfg(not(feature = "tls"))]
+fn add_passport_fields(
+    _body: &mut serde_json::Map<String, serde_json::Value>,
+    _message: &crate::sip::message::SipMessage,
+) {
+}
+
+/// The value of a `verstat` parameter anywhere in a header value: the text
+/// after `verstat=` up to `;`, `>`, `@`, `,` or white space.
+///
+/// Anywhere, because ATIS-1000074 places it as a URI parameter, which sits
+/// inside the angle brackets of a `sip:` URI's user part or after a `tel:`
+/// number.
+fn verstat_of(value: &str) -> Option<String> {
+    let lower = value.to_ascii_lowercase();
+    let at = lower.find("verstat=")? + "verstat=".len();
+    let rest = &value[at..];
+    let end = rest
+        .find(|c: char| matches!(c, ';' | '>' | '@' | ',') || c.is_whitespace())
+        .unwrap_or(rest.len());
+    let verstat = rest[..end].trim();
+    (!verstat.is_empty()).then(|| verstat.to_string())
+}
+
+/// `purpose` of the attachment vcon-lib reads tags from
+/// (`Vcon.tags`, `Vcon.get_tag`): a list of `"name:value"` strings.
+pub const TAGS_PURPOSE: &str = "tags";
+
+/// The most `finding:` tags one container carries.
+pub const MAX_FINDING_TAGS: usize = 5;
+
+/// Add the `tags` attachment to a container a `[[vcon.rule]]` writes.
+///
+/// The body is a JSON list of `"name:value"` strings, the shape vcon-lib's
+/// `Vcon.add_tag` writes and `Vcon.get_tag` reads. vcon-lib takes the text
+/// between the first and the second colon as the value, and no value here
+/// holds a colon: rule and filter names are letters, digits, `-` and `_`.
+///
+/// - `rule:<name>`: the rule that wrote the container.
+/// - `filter:<name>`: each `[filters]` name the rule's `when` references,
+///   in the order it first appears, that the call matched on its own.
+/// - `finding:<name>`: each detection of the signaling diagnosis the
+///   container's analysis reports, by its field name, in the diagnosis's own
+///   order and once across a call's legs, at most [`MAX_FINDING_TAGS`]. See
+///   `finding_tags`.
+///
+/// `party` is the observer, which wrote it; `dialog` is 0.
+pub fn add_tags(container: &mut Vcon, legs: &[&SipDialog], rule: &str, filters: &[&str]) {
+    let mut body: Vec<String> = vec![format!("rule:{rule}")];
+    body.extend(filters.iter().map(|f| format!("filter:{f}")));
+    body.extend(finding_tags(legs, MAX_FINDING_TAGS));
+    let start = container
+        .dialog
+        .first()
+        .and_then(|d| d.start.clone())
+        .unwrap_or_else(|| container.created_at.clone());
+    let party = container.observer_index();
+    container.attachments.push(Attachment {
+        purpose: TAGS_PURPOSE,
+        party,
+        dialog: 0,
+        start,
+        mediatype: "application/json",
+        encoding: "json",
+        body: body.into(),
+    });
+}
+
+/// `finding:<name>` for each detection the signaling diagnosis of `legs`
+/// reports, at most `max`.
+///
+/// The order is the order [`crate::sip::diagnosis::SignalingDiagnosis`]
+/// declares its detections, which puts the final failure first. The
+/// diagnosis's `hints` are prose, not detections, and are not tags.
+fn finding_tags(legs: &[&SipDialog], max: usize) -> Vec<String> {
+    let mut names: Vec<&'static str> = Vec::new();
+    for leg in legs {
+        let crate::sip::diagnosis::SignalingDiagnosis {
+            final_failure,
+            auth_loop,
+            retransmissions,
+            ack_missing,
+            abandoned,
+            post_dial_delay,
+            registration_failure,
+            icmp_unreachable,
+            source_disagreement,
+            hints: _,
+        } = crate::sip::diagnosis::diagnose_signaling(&leg.messages);
+        for (name, present) in [
+            ("final_failure", final_failure.is_some()),
+            ("auth_loop", auth_loop.is_some()),
+            ("retransmissions", retransmissions.is_some()),
+            ("ack_missing", ack_missing.is_some()),
+            ("abandoned", abandoned.is_some()),
+            ("post_dial_delay", post_dial_delay.is_some()),
+            ("registration_failure", registration_failure.is_some()),
+            ("icmp_unreachable", icmp_unreachable.is_some()),
+            ("source_disagreement", source_disagreement.is_some()),
+        ] {
+            if present && !names.contains(&name) {
+                names.push(name);
+            }
+        }
+    }
+    names
+        .into_iter()
+        .take(max)
+        .map(|name| format!("finding:{name}"))
+        .collect()
+}
+
+/// Which SIP header fills each contact-center Dialog parameter of
+/// [draft-ietf-vcon-cc-extension-02 section 3.2](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-cc-extension-02#section-3.2).
+///
+/// A `[[vcon.rule]]` names the headers (`campaign_header`, `skill_header`,
+/// `interaction_id_header`); `None` writes nothing for that parameter.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct CcHeaders<'a> {
+    /// The header whose value is `campaign` (section 3.2.1).
+    pub campaign: Option<&'a str>,
+    /// The header whose value is `skill` (section 3.2.4).
+    pub skill: Option<&'a str>,
+    /// The header whose value is `interaction_id` (section 3.2.3).
+    pub interaction_id: Option<&'a str>,
+}
+
+/// Fill `campaign`, `skill` and `interaction_id` on a one-leg container's
+/// signaling object from the headers `headers` names.
+///
+/// Each value is the first value of that header on the first message in the
+/// ladder that carries it, trimmed, matched without regard to case
+/// ([RFC 3261 section 7.3.1](https://www.rfc-editor.org/rfc/rfc3261.html#section-7.3.1)).
+/// A header the call never carried leaves its parameter absent. The `CC`
+/// extension these parameters belong to is already in `extensions`.
+///
+/// The parameter is `interaction_id`, as section 3.2.3 spells it. vcon-lib's
+/// Dialog allow-list spells it `interaction`; a vcon-lib reader that filters
+/// on that list drops `interaction_id`.
+pub fn add_cc_fields(container: &mut Vcon, dialog: &SipDialog, headers: CcHeaders<'_>) {
+    let first = |name: Option<&str>| -> Option<String> {
+        let name = name?;
+        dialog
+            .messages
+            .iter()
+            .find_map(|m| m.header(name))
+            .map(|v| v.trim().to_string())
+            .filter(|v| !v.is_empty())
+    };
+    let (campaign, skill, interaction_id) = (
+        first(headers.campaign),
+        first(headers.skill),
+        first(headers.interaction_id),
+    );
+    if let Some(signaling) = container.dialog.first_mut() {
+        signaling.campaign = campaign;
+        signaling.skill = skill;
+        signaling.interaction_id = interaction_id;
     }
 }
 
@@ -3090,6 +4292,7 @@ fn report(
         mediatype: Some("application/json".into()),
         encoding: "json".into(),
         body,
+        provenance: None,
     }
 }
 
@@ -7639,7 +8842,7 @@ mod tests {
     fn redaction_refuses_inline_audio() -> Result<(), TestError> {
         use crate::output::redact::{Redact as _, RedactionKey, RedactionPolicy};
         let mut object = Dialog::bare(RECORDING_TYPE, "call-1".to_string());
-        object.mediatype = Some(RECORDING_MEDIATYPE);
+        object.mediatype = Some(RECORDING_MEDIATYPE.into());
         object.encoding = Some("base64url");
         object.body = Some("UklGRiQAAABXQVZF".to_string());
         object.content_hash = Some(format!("{CONTENT_HASH_PREFIX}abc"));
@@ -7657,6 +8860,1366 @@ mod tests {
             Some(4.5),
             "the clock stays: the export still has to say a recording existed"
         );
+        Ok(())
+    }
+
+    // ── The signaling Dialog Object's parties, originator and duration ──
+
+    /// A request in the fixture's dialog, sent by `sender` ("alice" or "bob").
+    ///
+    /// The tags follow the sender: Alice's requests carry `From` tag `t1`,
+    /// Bob's carry `t2`, which is what [`sender_party`] reads.
+    fn in_dialog_request(
+        method: &str,
+        cseq: u32,
+        sender: &str,
+        extra: &[&str],
+        body: &[u8],
+    ) -> Result<crate::sip::SipMessage, TestError> {
+        let (from, to) = if sender == "alice" {
+            (
+                "From: \"Alice\" <sip:alice@example.com>;tag=t1",
+                "To: \"Bob\" <sip:bob@example.net>;tag=t2",
+            )
+        } else {
+            (
+                "From: \"Bob\" <sip:bob@example.net>;tag=t2",
+                "To: \"Alice\" <sip:alice@example.com>;tag=t1",
+            )
+        };
+        let cseq_line = format!("CSeq: {cseq} {method}");
+        let length = format!("Content-Length: {}", body.len());
+        let mut headers = vec![from, to, "Call-ID: vcon-fixture@example.com", &cseq_line];
+        headers.extend_from_slice(extra);
+        headers.push(&length);
+        Ok(parse_sip(
+            &build_sip(
+                &format!("{method} sip:peer@example.org SIP/2.0"),
+                &headers,
+                body,
+            ),
+            ts()?,
+            localhost(),
+            localhost(),
+            5060,
+            5060,
+            TransportProto::Udp,
+        )?)
+    }
+
+    /// A dialog built the way the store builds one: state and timing updated
+    /// per message, each message stamped `secs` after [`ts`].
+    fn timed_dialog(steps: Vec<(crate::sip::SipMessage, i64)>) -> Result<SipDialog, TestError> {
+        let mut steps = steps.into_iter();
+        let (mut first, at) = steps.next().ok_or("a dialog needs one message")?;
+        first.timestamp = ts()? + chrono::TimeDelta::seconds(at);
+        let mut dialog = SipDialog::new(&first).ok_or("the first message opens a dialog")?;
+        let method = dialog.method.clone();
+        crate::sip::timing::update_timing(&mut dialog.timing, &first, &method);
+        for (mut m, at) in steps {
+            m.timestamp = ts()? + chrono::TimeDelta::seconds(at);
+            crate::sip::dialog::update_state(&mut dialog, &m);
+            crate::sip::timing::update_timing(&mut dialog.timing, &m, &method);
+            dialog.messages.push(m);
+        }
+        Ok(dialog)
+    }
+
+    /// An answered call Alice ended: INVITE at 0 s, 200 at 3 s, BYE at 63 s.
+    fn answered_and_ended() -> Result<SipDialog, TestError> {
+        timed_dialog(vec![
+            (invite()?, 0),
+            (response(180, "Ringing")?, 1),
+            (response(200, "OK")?, 3),
+            (in_dialog_request("ACK", 1, "alice", &[], b"")?, 3),
+            (in_dialog_request("BYE", 2, "alice", &[], b"")?, 63),
+        ])
+    }
+
+    /// The container as JSON, after checking it against the vendored schema.
+    fn valid_json(v: &Vcon) -> Result<serde_json::Value, TestError> {
+        use crate::output::vcon_schema::{SchemaVerdict, validate};
+        let json = serde_json::to_value(v)?;
+        let report = validate(&json);
+        if report.verdict != SchemaVerdict::Valid {
+            return Err(
+                format!("the container fails the vendored schema: {report:#?}\n{json:#}").into(),
+            );
+        }
+        Ok(json)
+    }
+
+    /// GAP-4: the signaling object names the `From` and `To` parties, in that
+    /// order, and no `originator`, because the opening INVITE's `From` is the
+    /// caller ([core-04 section 4.3.4](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-04#section-4.3.4)).
+    #[test]
+    fn the_signaling_object_names_from_then_to_as_its_parties() -> Result<(), TestError> {
+        let v = export_with(&answered_and_ended()?, &clean_facts())?;
+        let json = valid_json(&v)?;
+        assert_eq!(json["dialog"][0]["parties"], serde_json::json!([0, 1]));
+        assert!(json["dialog"][0].get("originator").is_none());
+        Ok(())
+    }
+
+    /// GAP-4: an unanswered call still names who was called; core-04 Table 1
+    /// lets an `incomplete` object carry the parties it tried to connect.
+    #[test]
+    fn a_failed_call_names_the_parties_it_tried_to_connect() -> Result<(), TestError> {
+        let v = export_with(
+            &dialog_with(&[response(486, "Busy Here")?])?,
+            &clean_facts(),
+        )?;
+        let json = valid_json(&v)?;
+        assert_eq!(json["dialog"][0]["type"], INCOMPLETE_TYPE);
+        assert_eq!(json["dialog"][0]["parties"], serde_json::json!([0, 1]));
+        Ok(())
+    }
+
+    /// GAP-4: `duration` is the conversation, answer to BYE, in seconds
+    /// ([core-04 section 4.3.3](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-04#section-4.3.3)).
+    #[test]
+    fn the_signaling_object_carries_answer_to_bye_as_its_duration() -> Result<(), TestError> {
+        let v = export_with(&answered_and_ended()?, &clean_facts())?;
+        let json = valid_json(&v)?;
+        assert_eq!(json["dialog"][0]["duration"], serde_json::json!(60.0));
+        Ok(())
+    }
+
+    /// GAP-4: no BYE, or no answer, is no duration: the capture does not hold
+    /// both ends, and an invented one would be read as measured.
+    #[test]
+    fn a_call_without_both_ends_carries_no_duration() -> Result<(), TestError> {
+        let unended = timed_dialog(vec![(invite()?, 0), (response(200, "OK")?, 3)])?;
+        let unanswered = timed_dialog(vec![(invite()?, 0), (response(486, "Busy Here")?, 3)])?;
+        for dialog in [unended, unanswered] {
+            let json = valid_json(&export_with(&dialog, &clean_facts())?)?;
+            assert!(json["dialog"][0].get("duration").is_none());
+        }
+        Ok(())
+    }
+
+    /// GAP-4: a 200 seen without its INVITE cannot be tied to the initial
+    /// transaction, so the conversation's start is not known and no
+    /// `duration` is written, even with a BYE.
+    #[test]
+    fn an_answer_without_its_invite_carries_no_duration() -> Result<(), TestError> {
+        let dialog = timed_dialog(vec![
+            (response(200, "OK")?, 3),
+            (in_dialog_request("BYE", 2, "alice", &[], b"")?, 63),
+        ])?;
+        let json = valid_json(&export_with(&dialog, &clean_facts())?)?;
+        assert!(json["dialog"][0].get("duration").is_none());
+        Ok(())
+    }
+
+    /// GAP-4: a capture that joined mid-call does not know who called. The
+    /// first party is then not known to be the originator, so `originator`
+    /// names an empty Party Object, the form core-04 section 4.3.5 gives an
+    /// unknown originator, and the observer stays last.
+    #[test]
+    fn a_dialog_first_seen_mid_call_names_an_unknown_originator() -> Result<(), TestError> {
+        let dialog = timed_dialog(vec![(in_dialog_request("BYE", 7, "bob", &[], b"")?, 0)])?;
+        let v = export_with(&dialog, &clean_facts())?;
+        let json = valid_json(&v)?;
+        assert_eq!(json["dialog"][0]["parties"], serde_json::json!([0, 1]));
+        let originator = json["dialog"][0]["originator"]
+            .as_u64()
+            .ok_or("an originator index")?;
+        assert_eq!(originator, 2);
+        let unknown = &json["parties"][2];
+        assert!(unknown.get("sip").is_none() && unknown.get("role").is_none());
+        assert_eq!(v.observer_index(), 3);
+        assert_eq!(json["parties"][3]["role"], OBSERVER_ROLE);
+        Ok(())
+    }
+
+    // ── sip_cseq ──
+
+    /// GAP-16: `sip_cseq` is the CSeq number of the dialog-creating request,
+    /// [draft-howe-vcon-sip-signaling-00 section 5.4](https://datatracker.ietf.org/doc/html/draft-howe-vcon-sip-signaling-00#section-5.4):
+    /// "the sequence number from the CSeq header field of the INVITE or other
+    /// dialog-creating request".
+    #[test]
+    fn the_signaling_object_carries_the_dialog_creating_cseq() -> Result<(), TestError> {
+        let invite = message(
+            "INVITE sip:bob@example.net SIP/2.0",
+            &[
+                "From: \"Alice\" <sip:alice@example.com>;tag=t1",
+                "To: \"Bob\" <sip:bob@example.net>",
+                "Call-ID: vcon-fixture@example.com",
+                "CSeq: 314159 INVITE",
+                "Content-Length: 0",
+            ],
+        )?;
+        let dialog = timed_dialog(vec![
+            (invite, 0),
+            (in_dialog_request("BYE", 314_160, "alice", &[], b"")?, 9),
+        ])?;
+        let json = valid_json(&export_with(&dialog, &clean_facts())?)?;
+        assert_eq!(json["dialog"][0]["sip_cseq"], serde_json::json!(314_159));
+        Ok(())
+    }
+
+    /// GAP-16: a capture that never saw the dialog-creating request has no
+    /// number to give, and a later request's CSeq is a different transaction.
+    #[test]
+    fn a_dialog_first_seen_mid_call_carries_no_sip_cseq() -> Result<(), TestError> {
+        let dialog = timed_dialog(vec![(in_dialog_request("BYE", 7, "bob", &[], b"")?, 0)])?;
+        let json = valid_json(&export_with(&dialog, &clean_facts())?)?;
+        assert!(json["dialog"][0].get("sip_cseq").is_none());
+        Ok(())
+    }
+
+    // ── The sip-message-trace body in the draft's shape ──
+
+    /// The trace attachment's body, as JSON.
+    fn trace_body(v: &Vcon) -> Result<serde_json::Value, TestError> {
+        let json = valid_json(v)?;
+        let trace = json["attachments"]
+            .as_array()
+            .and_then(|a| a.iter().find(|a| a["purpose"] == MESSAGE_TRACE_PURPOSE))
+            .ok_or("a trace attachment")?;
+        body_of(trace)
+    }
+
+    /// GAP-14: the trace body carries the fields of
+    /// [draft-howe-vcon-sip-signaling-00 section 6.2.1](https://datatracker.ietf.org/doc/html/draft-howe-vcon-sip-signaling-00#section-6.2.1):
+    /// `version` "1.0", and per message `direction`, `party`, `method` for a
+    /// request, `status_code` and `status_text` for a response. The
+    /// `schema_version: 1` fields stay for existing readers.
+    #[test]
+    fn the_trace_body_carries_the_draft_message_fields() -> Result<(), TestError> {
+        let body = trace_body(&export_with(&answered_and_ended()?, &clean_facts())?)?;
+        assert_eq!(body["version"], "1.0");
+        assert_eq!(body["call_id"], "vcon-fixture@example.com");
+        assert_eq!(body["schema_version"], 1);
+        let messages = body["messages"].as_array().ok_or("messages")?;
+        let invite = &messages[0];
+        assert_eq!(invite["direction"], "received");
+        assert_eq!(invite["party"], 0);
+        assert_eq!(invite["method"], "INVITE");
+        assert!(invite.get("status_code").is_none() && invite.get("status_text").is_none());
+        let answer = &messages[2];
+        assert_eq!(answer["party"], 1);
+        assert_eq!(answer["status_code"], 200);
+        assert_eq!(answer["status_text"], "OK");
+        assert!(answer.get("method").is_none());
+        assert_eq!(messages[4]["method"], "BYE");
+        assert_eq!(messages[4]["party"], 0);
+        Ok(())
+    }
+
+    /// GAP-14: a message whose tags match neither party has no `party`; the
+    /// draft makes it optional "when the sender cannot be determined".
+    #[test]
+    fn a_trace_message_from_an_unknown_sender_names_no_party() -> Result<(), TestError> {
+        let trying = message(
+            "SIP/2.0 100 Trying",
+            &[
+                "From: \"Alice\" <sip:alice@example.com>;tag=t1",
+                "To: \"Bob\" <sip:bob@example.net>",
+                "Call-ID: vcon-fixture@example.com",
+                "CSeq: 1 INVITE",
+                "Content-Length: 0",
+            ],
+        )?;
+        let body = trace_body(&export_with(&dialog_with(&[trying])?, &clean_facts())?)?;
+        assert!(body["messages"][1].get("party").is_none());
+        assert_eq!(body["messages"][1]["direction"], "received");
+        Ok(())
+    }
+
+    /// GAP-14: a text body travels as the string; a body that is not UTF-8
+    /// travels as base64url with `body_encoding`, as the draft's `body` field
+    /// says.
+    #[test]
+    fn the_trace_carries_each_body_as_text_or_base64url() -> Result<(), TestError> {
+        let relay = in_dialog_request(
+            "INFO",
+            2,
+            "alice",
+            &["Content-Type: application/dtmf-relay"],
+            b"Signal=5\r\nDuration=160\r\n",
+        )?;
+        let binary = in_dialog_request(
+            "INFO",
+            3,
+            "alice",
+            &["Content-Type: application/octet-stream"],
+            &[0xff, 0xfe, 0x00, 0x41],
+        )?;
+        let dialog = timed_dialog(vec![
+            (invite()?, 0),
+            (response(200, "OK")?, 1),
+            (relay, 2),
+            (binary, 3),
+        ])?;
+        let body = trace_body(&export_with(&dialog, &clean_facts())?)?;
+        let messages = body["messages"].as_array().ok_or("messages")?;
+        assert_eq!(messages[2]["body"], "Signal=5\r\nDuration=160\r\n");
+        assert!(messages[2].get("body_encoding").is_none());
+        assert_eq!(
+            messages[3]["body"],
+            URL_SAFE_NO_PAD.encode([0xff, 0xfe, 0x00, 0x41])
+        );
+        assert_eq!(messages[3]["body_encoding"], "base64url");
+        assert!(messages[0].get("body").is_none(), "an empty body is absent");
+        Ok(())
+    }
+
+    /// GAP-14: under redaction no message body survives in the trace. A
+    /// body can be the conversation itself (a SIP MESSAGE), and the SDP it
+    /// would duplicate is already in the redacted `sdp` field.
+    #[test]
+    fn redaction_removes_every_trace_message_body() -> Result<(), TestError> {
+        use crate::output::redact::{Redact as _, RedactionKey, RedactionPolicy};
+        let relay = in_dialog_request(
+            "INFO",
+            2,
+            "alice",
+            &["Content-Type: application/dtmf-relay"],
+            b"Signal=5\r\nDuration=160\r\n",
+        )?;
+        let dialog = timed_dialog(vec![(invite()?, 0), (response(200, "OK")?, 1), (relay, 2)])?;
+        let mut v = export_with(&dialog, &clean_facts())?;
+        let policy = RedactionPolicy::new(RedactionKey::from_secret(b"trace"));
+        v.redact(&policy.redactor());
+        let body = trace_body(&v)?;
+        for m in body["messages"].as_array().ok_or("messages")? {
+            assert!(m.get("body").is_none() && m.get("body_encoding").is_none());
+        }
+        Ok(())
+    }
+
+    /// GAP-14: merging legs moves each trace message's `party` with the
+    /// party array, as it moves every other party index.
+    #[test]
+    fn merging_moves_every_trace_message_party() -> Result<(), TestError> {
+        let first = export_with(&answered_and_ended()?, &clean_facts())?;
+        let observed = first.parties.len() - 1;
+        let second = export_with(&answered_and_ended()?, &clean_facts())?;
+        let merged = merge_call_legs(vec![first, second], &[], "uuid".into(), false)
+            .ok_or("two legs merge")?;
+        let traces: Vec<&Attachment> = merged
+            .attachments
+            .iter()
+            .filter(|a| a.purpose == MESSAGE_TRACE_PURPOSE)
+            .collect();
+        assert_eq!(traces.len(), 2);
+        assert_eq!(traces[0].body["messages"][0]["party"], 0);
+        assert_eq!(traces[1].body["messages"][0]["party"], observed);
+        assert_eq!(traces[1].body["messages"][2]["party"], observed + 1);
+        Ok(())
+    }
+
+    // ── sip-invite, sip-response and sip-sdp attachments ──
+
+    /// An SDP offer or answer with one audio line on `port`.
+    fn sdp_body(port: u16) -> String {
+        format!(
+            "v=0\r\no=- 1 1 IN IP4 10.0.0.1\r\ns=-\r\nc=IN IP4 10.0.0.1\r\nt=0 0\r\n\
+             m=audio {port} RTP/AVP 0\r\na=rtpmap:0 PCMU/8000\r\n"
+        )
+    }
+
+    /// A message parsed from a first line, headers and a body.
+    fn message_with_body(
+        first_line: &str,
+        headers: &[&str],
+        body: &[u8],
+    ) -> Result<crate::sip::SipMessage, TestError> {
+        let length = format!("Content-Length: {}", body.len());
+        let mut all: Vec<&str> = headers.to_vec();
+        all.push(&length);
+        Ok(parse_sip(
+            &build_sip(first_line, &all, body),
+            ts()?,
+            localhost(),
+            localhost(),
+            5060,
+            5060,
+            TransportProto::Udp,
+        )?)
+    }
+
+    /// An initial INVITE from Alice with CSeq `cseq`, extra headers and an
+    /// SDP offer.
+    fn offer(cseq: u32, extra: &[&str]) -> Result<crate::sip::SipMessage, TestError> {
+        let cseq_line = format!("CSeq: {cseq} INVITE");
+        let mut headers = vec![
+            "Via: SIP/2.0/UDP 10.0.0.1:5060;branch=z9hG4bK1",
+            "From: \"Alice\" <sip:alice@example.com>;tag=t1",
+            "To: \"Bob\" <sip:bob@example.net>",
+            "Call-ID: vcon-fixture@example.com",
+            &cseq_line,
+            "Content-Type: application/sdp",
+        ];
+        headers.extend_from_slice(extra);
+        message_with_body(
+            "INVITE sip:bob@example.net SIP/2.0",
+            &headers,
+            sdp_body(4000).as_bytes(),
+        )
+    }
+
+    /// A response from Bob to the INVITE with CSeq `cseq`, with an SDP answer
+    /// when `with_sdp`.
+    fn answer_to(
+        cseq: u32,
+        status: &str,
+        to_tag: &str,
+        with_sdp: bool,
+    ) -> Result<crate::sip::SipMessage, TestError> {
+        let cseq_line = format!("CSeq: {cseq} INVITE");
+        let to = format!("To: \"Bob\" <sip:bob@example.net>;tag={to_tag}");
+        let mut headers = vec![
+            "Via: SIP/2.0/UDP 10.0.0.1:5060;branch=z9hG4bK1",
+            "From: \"Alice\" <sip:alice@example.com>;tag=t1",
+            &to,
+            "Call-ID: vcon-fixture@example.com",
+            &cseq_line,
+        ];
+        let body = if with_sdp {
+            headers.push("Content-Type: application/sdp");
+            sdp_body(5000)
+        } else {
+            String::new()
+        };
+        message_with_body(&format!("SIP/2.0 {status}"), &headers, body.as_bytes())
+    }
+
+    /// The attachments of `v` with `purpose`.
+    fn with_purpose<'a>(v: &'a Vcon, purpose: &str) -> Vec<&'a Attachment> {
+        v.attachments
+            .iter()
+            .filter(|a| a.purpose == purpose)
+            .collect()
+    }
+
+    /// GAP-13: the minimal producer of
+    /// [draft-howe-vcon-sip-signaling-00 section 8.1](https://datatracker.ietf.org/doc/html/draft-howe-vcon-sip-signaling-00#section-8.1):
+    /// the initial INVITE and the final response as `message/sip`
+    /// attachments in full wire format (section 6.1.2), and each SDP body as
+    /// an `application/sdp` attachment (section 6.3), each naming its sender.
+    #[test]
+    fn the_initial_invite_and_final_response_travel_as_wire_messages() -> Result<(), TestError> {
+        let dialog = timed_dialog(vec![
+            (offer(1, &[])?, 0),
+            (answer_to(1, "180 Ringing", "t2", false)?, 1),
+            (answer_to(1, "200 OK", "t2", true)?, 2),
+        ])?;
+        let mut v = export_with(&dialog, &clean_facts())?;
+        add_sip_message_attachments(&mut v, &dialog, MAX_INLINE_MEDIA_BYTES);
+        valid_json(&v)?;
+
+        let invite = with_purpose(&v, SIP_INVITE_PURPOSE);
+        assert_eq!(invite.len(), 1);
+        assert_eq!(invite[0].mediatype, "message/sip");
+        assert_eq!(invite[0].encoding, "none");
+        assert_eq!(invite[0].party, 0);
+        assert_eq!(invite[0].dialog, 0);
+        assert_eq!(invite[0].start, dialog.messages[0].timestamp.to_rfc3339());
+        assert_eq!(
+            invite[0].body.as_str(),
+            std::str::from_utf8(&dialog.messages[0].raw).ok()
+        );
+
+        let response = with_purpose(&v, SIP_RESPONSE_PURPOSE);
+        assert_eq!(response.len(), 1, "the final response only");
+        assert_eq!(response[0].party, 1);
+        assert!(
+            response[0]
+                .body
+                .as_str()
+                .is_some_and(|b| b.starts_with("SIP/2.0 200 OK\r\n")),
+        );
+
+        let sdp = with_purpose(&v, SIP_SDP_PURPOSE);
+        assert_eq!(sdp.len(), 2, "the offer and the answer");
+        assert_eq!(sdp[0].mediatype, "application/sdp");
+        assert_eq!(sdp[0].party, 0);
+        assert_eq!(sdp[0].body, serde_json::json!(sdp_body(4000)));
+        assert_eq!(sdp[1].party, 1);
+        assert_eq!(sdp[1].body, serde_json::json!(sdp_body(5000)));
+        Ok(())
+    }
+
+    /// GAP-13: a challenged call attaches the INVITE the final response
+    /// answered, and its credential header is removed from the wire bytes,
+    /// as it is removed from the trace.
+    #[test]
+    fn a_challenged_call_attaches_the_answered_invite_without_its_credentials()
+    -> Result<(), TestError> {
+        let dialog = timed_dialog(vec![
+            (offer(1, &[])?, 0),
+            (
+                answer_to(1, "407 Proxy Authentication Required", "p1", false)?,
+                1,
+            ),
+            (
+                offer(
+                    2,
+                    &["Proxy-Authorization: Digest username=\"alice\", response=\"secret\""],
+                )?,
+                2,
+            ),
+            (answer_to(2, "200 OK", "t2", true)?, 3),
+        ])?;
+        let mut v = export_with(&dialog, &clean_facts())?;
+        add_sip_message_attachments(&mut v, &dialog, MAX_INLINE_MEDIA_BYTES);
+        let invite = with_purpose(&v, SIP_INVITE_PURPOSE);
+        let text = invite[0].body.as_str().ok_or("a text body")?;
+        assert!(text.contains("CSeq: 2 INVITE"));
+        assert!(!text.to_ascii_lowercase().contains("proxy-authorization"));
+        assert!(!text.contains("secret"));
+        assert!(text.ends_with(&sdp_body(4000)), "the body is kept");
+        let response = with_purpose(&v, SIP_RESPONSE_PURPOSE);
+        assert!(
+            response[0]
+                .body
+                .as_str()
+                .is_some_and(|b| b.starts_with("SIP/2.0 200 OK")),
+        );
+        Ok(())
+    }
+
+    /// GAP-13: a message that is not UTF-8 is base64url, as section 6.1.2
+    /// requires for anything but the `none` encoding of UTF-8 text.
+    #[test]
+    fn a_wire_message_that_is_not_utf8_is_base64url() -> Result<(), TestError> {
+        let binary = message_with_body(
+            "INVITE sip:bob@example.net SIP/2.0",
+            &[
+                "From: \"Alice\" <sip:alice@example.com>;tag=t1",
+                "To: \"Bob\" <sip:bob@example.net>",
+                "Call-ID: vcon-fixture@example.com",
+                "CSeq: 1 INVITE",
+                "Content-Type: application/octet-stream",
+            ],
+            &[0xff, 0xfe],
+        )?;
+        let dialog = timed_dialog(vec![(binary, 0)])?;
+        let mut v = export_with(&dialog, &clean_facts())?;
+        add_sip_message_attachments(&mut v, &dialog, MAX_INLINE_MEDIA_BYTES);
+        let invite = with_purpose(&v, SIP_INVITE_PURPOSE);
+        assert_eq!(invite[0].encoding, "base64url");
+        assert_eq!(
+            invite[0].body,
+            serde_json::json!(URL_SAFE_NO_PAD.encode(&dialog.messages[0].raw))
+        );
+        Ok(())
+    }
+
+    /// GAP-13: the rule's inline budget covers these attachments. One that
+    /// does not fit is left out, and the completeness attachment names it.
+    #[test]
+    fn a_wire_message_over_the_budget_is_refused_and_named() -> Result<(), TestError> {
+        let dialog = timed_dialog(vec![
+            (offer(1, &[])?, 0),
+            (answer_to(1, "200 OK", "t2", true)?, 2),
+        ])?;
+        let mut v = export_with(&dialog, &clean_facts())?;
+        add_sip_message_attachments(&mut v, &dialog, 0);
+        for purpose in [SIP_INVITE_PURPOSE, SIP_RESPONSE_PURPOSE, SIP_SDP_PURPOSE] {
+            assert!(with_purpose(&v, purpose).is_empty(), "{purpose}");
+        }
+        let completeness = with_purpose(&v, COMPLETENESS_PURPOSE);
+        let refused = completeness[0].body["sip_messages_refused"]
+            .as_array()
+            .ok_or("a refused list")?;
+        assert_eq!(refused.len(), 4);
+        assert_eq!(refused[0]["purpose"], SIP_INVITE_PURPOSE);
+        assert!(refused[0]["bytes"].as_u64().is_some_and(|n| n > 0));
+        Ok(())
+    }
+
+    /// GAP-13: under redaction the wire attachments are removed. The bytes
+    /// hold every identifier the trace holds, in a form redaction cannot
+    /// rewrite without changing the message.
+    #[test]
+    fn redaction_removes_the_wire_attachments() -> Result<(), TestError> {
+        use crate::output::redact::{Redact as _, RedactionKey, RedactionPolicy};
+        let dialog = timed_dialog(vec![
+            (offer(1, &[])?, 0),
+            (answer_to(1, "200 OK", "t2", true)?, 2),
+        ])?;
+        let mut v = export_with(&dialog, &clean_facts())?;
+        add_sip_message_attachments(&mut v, &dialog, MAX_INLINE_MEDIA_BYTES);
+        assert_eq!(with_purpose(&v, SIP_SDP_PURPOSE).len(), 2, "precondition");
+        let policy = RedactionPolicy::new(RedactionKey::from_secret(b"wire"));
+        v.redact(&policy.redactor());
+        for purpose in [SIP_INVITE_PURPOSE, SIP_RESPONSE_PURPOSE, SIP_SDP_PURPOSE] {
+            assert!(with_purpose(&v, purpose).is_empty(), "{purpose}");
+        }
+        Ok(())
+    }
+
+    /// GAP-13: sipnab's own `-I` reader takes the messages from the trace and
+    /// does not read the wire attachments a second time.
+    #[test]
+    fn reading_the_container_back_counts_each_message_once() -> Result<(), TestError> {
+        let dialog = timed_dialog(vec![
+            (offer(1, &[])?, 0),
+            (answer_to(1, "200 OK", "t2", true)?, 2),
+        ])?;
+        let mut v = export_with(&dialog, &clean_facts())?;
+        add_sip_message_attachments(&mut v, &dialog, MAX_INLINE_MEDIA_BYTES);
+        let rebuilt = crate::capture::vcon_input::rebuild(&serde_json::to_value(&v)?, "test")
+            .map_err(|e| format!("{e}"))?;
+        assert_eq!(rebuilt.messages.len(), dialog.messages.len());
+        Ok(())
+    }
+
+    // ── stir-verification-report ──
+
+    /// An `Identity` header carrying a PASSporT with attestation `attest`.
+    fn identity_header(attest: &str) -> String {
+        let header = URL_SAFE_NO_PAD.encode(br#"{"alg":"ES256","ppt":"shaken","typ":"passport"}"#);
+        let payload = URL_SAFE_NO_PAD.encode(
+            format!(
+                r#"{{"attest":"{attest}","dest":{{"tn":["12125559876"]}},"iat":1,"orig":{{"tn":"12125551234"}},"origid":"x"}}"#
+            )
+            .as_bytes(),
+        );
+        format!(
+            "Identity: {header}.{payload}.c2ln;info=<https://cert.example/c.pem>;alg=ES256;ppt=shaken"
+        )
+    }
+
+    /// An initial INVITE from Alice carrying `extra` headers.
+    fn invite_carrying(extra: &[&str]) -> Result<crate::sip::SipMessage, TestError> {
+        let mut headers = vec![
+            "From: \"Alice\" <sip:+12125551234@example.com>;tag=t1",
+            "To: \"Bob\" <sip:+12125559876@example.net>",
+            "Call-ID: vcon-fixture@example.com",
+            "CSeq: 1 INVITE",
+        ];
+        headers.extend_from_slice(extra);
+        message_with_body("INVITE sip:bob@example.net SIP/2.0", &headers, b"")
+    }
+
+    /// The `stir-verification-report` attachments of an export of `invite`.
+    fn stir_reports(invite: crate::sip::SipMessage) -> Result<Vec<Attachment>, TestError> {
+        let dialog = timed_dialog(vec![(invite, 0)])?;
+        let v = export_with(&dialog, &clean_facts())?;
+        valid_json(&v)?;
+        Ok(with_purpose(&v, STIR_REPORT_PURPOSE)
+            .into_iter()
+            .cloned()
+            .collect())
+    }
+
+    /// GAP-15: a `verstat` the network wrote on `P-Asserted-Identity`
+    /// becomes the report of
+    /// [draft-howe-vcon-sip-signaling-00 section 7.3](https://datatracker.ietf.org/doc/html/draft-howe-vcon-sip-signaling-00#section-7.3),
+    /// with the PASSporT's claims beside it and a reason saying sipnab
+    /// verified nothing.
+    // The attestation and numbers come from the PASSporT parser, a `tls` item.
+    #[cfg(feature = "tls")]
+    #[test]
+    fn a_verstat_becomes_a_stir_verification_report() -> Result<(), TestError> {
+        let identity = identity_header("A");
+        let reports = stir_reports(invite_carrying(&[
+            "P-Asserted-Identity: <sip:+12125551234@example.com;verstat=TN-Validation-Passed>",
+            &identity,
+        ])?)?;
+        assert_eq!(reports.len(), 1);
+        let report = &reports[0];
+        assert_eq!(report.party, 0);
+        assert_eq!(report.dialog, 0);
+        assert_eq!(report.mediatype, "application/json");
+        assert_eq!(report.encoding, "json");
+        let body = &report.body;
+        assert_eq!(body["result"], "verified");
+        assert_eq!(body["verstat"], "TN-Validation-Passed");
+        assert_eq!(body["verstat_header"], "P-Asserted-Identity");
+        assert_eq!(body["attestation"], "A");
+        assert_eq!(body["orig_tn"], "12125551234");
+        assert_eq!(body["dest_tn"], serde_json::json!(["12125559876"]));
+        assert_eq!(body["timestamp"], ts()?.to_rfc3339());
+        assert!(
+            body.get("verifier").is_none(),
+            "sipnab cannot name the verifier"
+        );
+        assert!(
+            body["reason"]
+                .as_str()
+                .is_some_and(|r| r.contains("sipnab verified nothing")),
+        );
+        Ok(())
+    }
+
+    /// GAP-15: each ATIS-1000074 value maps onto the draft's `result`;
+    /// `No-TN-Validation` is `no-signature` only when no PASSporT was seen.
+    #[test]
+    fn each_verstat_value_maps_onto_the_draft_result() -> Result<(), TestError> {
+        let identity = identity_header("B");
+        let cases: [(&str, bool, Option<&str>); 4] = [
+            ("TN-Validation-Failed", true, Some("failed")),
+            ("TN-Validation-Passed", false, Some("verified")),
+            ("No-TN-Validation", false, Some("no-signature")),
+            ("No-TN-Validation", true, None),
+        ];
+        for (verstat, with_identity, result) in cases {
+            let pai = format!("P-Asserted-Identity: <tel:+12125551234;verstat={verstat}>");
+            let mut extra = vec![pai.as_str()];
+            if with_identity {
+                extra.push(&identity);
+            }
+            let reports = stir_reports(invite_carrying(&extra)?)?;
+            assert_eq!(reports.len(), 1, "{verstat}");
+            assert_eq!(
+                reports[0].body.get("result").and_then(|r| r.as_str()),
+                result,
+                "{verstat} with_identity={with_identity}"
+            );
+        }
+        Ok(())
+    }
+
+    /// GAP-15: with no `P-Asserted-Identity`, a `verstat` on `From` is read.
+    #[test]
+    fn a_verstat_on_from_is_read_when_no_pai_carries_one() -> Result<(), TestError> {
+        let message = message_with_body(
+            "INVITE sip:bob@example.net SIP/2.0",
+            &[
+                "From: <sip:+12125551234;verstat=TN-Validation-Passed@example.com;user=phone>;tag=t1",
+                "To: <sip:+12125559876@example.net>",
+                "Call-ID: vcon-fixture@example.com",
+                "CSeq: 1 INVITE",
+            ],
+            b"",
+        )?;
+        let reports = stir_reports(message)?;
+        assert_eq!(reports.len(), 1);
+        assert_eq!(reports[0].body["verstat_header"], "From");
+        assert_eq!(reports[0].body["verstat"], "TN-Validation-Passed");
+        Ok(())
+    }
+
+    /// GAP-15: no `verstat` is no verdict to transcribe, PASSporT or not.
+    #[test]
+    fn no_verstat_writes_no_report() -> Result<(), TestError> {
+        let identity = identity_header("A");
+        assert!(stir_reports(invite_carrying(&[&identity])?)?.is_empty());
+        assert!(stir_reports(invite()?)?.is_empty());
+        Ok(())
+    }
+
+    /// GAP-15: redaction deletes the telephone numbers the report copies out
+    /// of the PASSporT, as it deletes the PASSporT itself.
+    #[test]
+    fn redaction_deletes_the_report_numbers() -> Result<(), TestError> {
+        use crate::output::redact::{Redact as _, RedactionKey, RedactionPolicy};
+        let identity = identity_header("A");
+        let dialog = timed_dialog(vec![(
+            invite_carrying(&[
+                "P-Asserted-Identity: <tel:+12125551234;verstat=TN-Validation-Passed>",
+                &identity,
+            ])?,
+            0,
+        )])?;
+        let mut v = export_with(&dialog, &clean_facts())?;
+        let policy = RedactionPolicy::new(RedactionKey::from_secret(b"stir"));
+        v.redact(&policy.redactor());
+        let report = with_purpose(&v, STIR_REPORT_PURPOSE);
+        assert_eq!(report.len(), 1);
+        assert!(report[0].body.get("orig_tn").is_none());
+        assert!(report[0].body.get("dest_tn").is_none());
+        assert_eq!(report[0].body["result"], "verified");
+        Ok(())
+    }
+
+    // ── party_history ──
+
+    /// An in-dialog re-INVITE or UPDATE from `sender` whose SDP says
+    /// `direction`.
+    fn reoffer(
+        method: &str,
+        cseq: u32,
+        sender: &str,
+        direction: &str,
+    ) -> Result<crate::sip::SipMessage, TestError> {
+        let body = format!("{}a={direction}\r\n", sdp_body(4000));
+        in_dialog_request(
+            method,
+            cseq,
+            sender,
+            &["Content-Type: application/sdp"],
+            body.as_bytes(),
+        )
+    }
+
+    /// A response from the far end to an in-dialog request from `sender`.
+    fn in_dialog_response(
+        status: &str,
+        cseq: u32,
+        method: &str,
+        sender: &str,
+    ) -> Result<crate::sip::SipMessage, TestError> {
+        let (from, to) = if sender == "alice" {
+            (
+                "From: \"Alice\" <sip:alice@example.com>;tag=t1",
+                "To: \"Bob\" <sip:bob@example.net>;tag=t2",
+            )
+        } else {
+            (
+                "From: \"Bob\" <sip:bob@example.net>;tag=t2",
+                "To: \"Alice\" <sip:alice@example.com>;tag=t1",
+            )
+        };
+        let cseq_line = format!("CSeq: {cseq} {method}");
+        message_with_body(
+            &format!("SIP/2.0 {status}"),
+            &[from, to, "Call-ID: vcon-fixture@example.com", &cseq_line],
+            b"",
+        )
+    }
+
+    /// `party_history` of the signaling object, as `(party, seconds after
+    /// [`ts`], event)`.
+    fn history(v: &Vcon) -> Result<Vec<(usize, i64, String)>, TestError> {
+        let json = valid_json(v)?;
+        let Some(list) = json["dialog"][0]["party_history"].as_array() else {
+            return Ok(Vec::new());
+        };
+        let t0 = ts()?;
+        list.iter()
+            .map(|e| {
+                let at = DateTime::parse_from_rfc3339(e["time"].as_str().ok_or("time")?)?
+                    .with_timezone(&Utc);
+                Ok((
+                    usize::try_from(e["party"].as_u64().ok_or("party")?)?,
+                    (at - t0).num_seconds(),
+                    e["event"].as_str().ok_or("event")?.to_string(),
+                ))
+            })
+            .collect()
+    }
+
+    /// GAP-17: both parties join at the answer, and each drops when the
+    /// capture shows it leaving: the BYE's sender at the BYE, the other at
+    /// the BYE's 200 ([core-04 section 4.3.13](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-04#section-4.3.13)).
+    #[test]
+    fn the_answer_and_the_bye_are_joins_and_drops() -> Result<(), TestError> {
+        let dialog = timed_dialog(vec![
+            (invite()?, 0),
+            (response(200, "OK")?, 3),
+            (in_dialog_request("ACK", 1, "alice", &[], b"")?, 3),
+            (in_dialog_request("BYE", 2, "bob", &[], b"")?, 63),
+            (in_dialog_response("200 OK", 2, "BYE", "bob")?, 64),
+        ])?;
+        let v = export_with(&dialog, &clean_facts())?;
+        assert_eq!(
+            history(&v)?,
+            vec![
+                (0, 3, "join".to_string()),
+                (1, 3, "join".to_string()),
+                (1, 63, "drop".to_string()),
+                (0, 64, "drop".to_string()),
+            ]
+        );
+        Ok(())
+    }
+
+    /// GAP-17: a re-INVITE or UPDATE whose SDP says `sendonly` or `inactive`
+    /// puts the OTHER party on hold; a later `sendrecv` from the same sender
+    /// takes it off hold. `recvonly` changes nothing.
+    #[test]
+    fn sdp_direction_in_a_reoffer_is_hold_and_unhold() -> Result<(), TestError> {
+        let dialog = timed_dialog(vec![
+            (invite()?, 0),
+            (response(200, "OK")?, 3),
+            (reoffer("INVITE", 2, "alice", "sendonly")?, 10),
+            (reoffer("INVITE", 3, "alice", "sendrecv")?, 20),
+            (reoffer("UPDATE", 1, "bob", "inactive")?, 30),
+            (reoffer("UPDATE", 2, "bob", "recvonly")?, 35),
+            (reoffer("UPDATE", 3, "bob", "sendrecv")?, 40),
+        ])?;
+        let v = export_with(&dialog, &clean_facts())?;
+        assert_eq!(
+            history(&v)?,
+            vec![
+                (0, 3, "join".to_string()),
+                (1, 3, "join".to_string()),
+                (1, 10, "hold".to_string()),
+                (1, 20, "unhold".to_string()),
+                (0, 30, "hold".to_string()),
+                (0, 40, "unhold".to_string()),
+            ]
+        );
+        Ok(())
+    }
+
+    /// GAP-17: only events the capture shows. An unanswered call has none; a
+    /// capture that joined mid-call shows no join; a `sendrecv` re-INVITE
+    /// with no hold before it is no unhold.
+    #[test]
+    fn no_event_is_written_that_the_capture_does_not_show() -> Result<(), TestError> {
+        let unanswered = export_with(
+            &dialog_with(&[response(486, "Busy Here")?])?,
+            &clean_facts(),
+        )?;
+        assert!(
+            valid_json(&unanswered)?["dialog"][0]
+                .get("party_history")
+                .is_none()
+        );
+
+        let mid_call = timed_dialog(vec![
+            (reoffer("INVITE", 5, "alice", "sendrecv")?, 0),
+            (in_dialog_request("BYE", 6, "alice", &[], b"")?, 9),
+        ])?;
+        assert_eq!(
+            history(&export_with(&mid_call, &clean_facts())?)?,
+            vec![(0, 9, "drop".to_string())]
+        );
+        Ok(())
+    }
+
+    /// GAP-17: merging legs moves `party_history` with the party array.
+    #[test]
+    fn merging_moves_the_party_history() -> Result<(), TestError> {
+        let first = export_with(&answered_and_ended()?, &clean_facts())?;
+        let observed = first.parties.len() - 1;
+        let objects = first.dialog.len();
+        let merged = merge_call_legs(
+            vec![first, export_with(&answered_and_ended()?, &clean_facts())?],
+            &[],
+            "uuid".into(),
+            false,
+        )
+        .ok_or("two legs merge")?;
+        let history = merged.dialog[objects]
+            .party_history
+            .as_ref()
+            .ok_or("the second leg's history")?;
+        assert_eq!(history[0].party, observed);
+        assert_eq!(history[1].party, observed + 1);
+        Ok(())
+    }
+
+    // ── keydown and keyup ──
+
+    /// One `party_history` entry as `(party, milliseconds after [`ts`],
+    /// event, button)`.
+    type KeyEvent = (usize, i64, String, Option<String>);
+
+    /// The signaling object's events, as [`KeyEvent`]s.
+    fn key_history(v: &Vcon) -> Result<Vec<KeyEvent>, TestError> {
+        let json = valid_json(v)?;
+        let t0 = ts()?;
+        json["dialog"][0]["party_history"]
+            .as_array()
+            .map(Vec::as_slice)
+            .unwrap_or_default()
+            .iter()
+            .map(|e| {
+                let at = DateTime::parse_from_rfc3339(e["time"].as_str().ok_or("time")?)?
+                    .with_timezone(&Utc);
+                Ok((
+                    usize::try_from(e["party"].as_u64().ok_or("party")?)?,
+                    (at - t0).num_milliseconds(),
+                    e["event"].as_str().ok_or("event")?.to_string(),
+                    e["button"].as_str().map(str::to_string),
+                ))
+            })
+            .collect()
+    }
+
+    /// An answered call with an SDP offer from Alice (10.0.0.1:4000) and an
+    /// answer from Bob (10.0.0.1:5000), and `more` after it.
+    fn answered_with_media(
+        more: Vec<(crate::sip::SipMessage, i64)>,
+    ) -> Result<SipDialog, TestError> {
+        let mut steps = vec![
+            (offer(1, &[])?, 0),
+            (answer_to(1, "200 OK", "t2", true)?, 1),
+        ];
+        steps.extend(more);
+        timed_dialog(steps)
+    }
+
+    /// GAP-17: an INFO `application/dtmf-relay` is a `keydown` at the INFO
+    /// and a `keyup` its stated `Duration` later, with the digit as
+    /// `button` ([core-04 section 4.3.13.1](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-04#section-4.3.13.1)).
+    #[test]
+    fn an_info_dtmf_relay_is_a_keydown_and_a_keyup() -> Result<(), TestError> {
+        let info = in_dialog_request(
+            "INFO",
+            2,
+            "alice",
+            &["Content-Type: application/dtmf-relay"],
+            b"Signal= 5\r\nDuration= 160\r\n",
+        )?;
+        let dialog = answered_with_media(vec![(info, 10)])?;
+        let mut v = export_with(&dialog, &clean_facts())?;
+        add_key_events(&mut v, &dialog, &[]);
+        assert_eq!(
+            key_history(&v)?,
+            vec![
+                (0, 1000, "join".into(), None),
+                (1, 1000, "join".into(), None),
+                (0, 10_000, "keydown".into(), Some("5".into())),
+                (0, 10_160, "keyup".into(), Some("5".into())),
+            ]
+        );
+        Ok(())
+    }
+
+    /// GAP-17: an RFC 4733 telephone event is a `keydown` at its end packet
+    /// less its duration, and a `keyup` at the end packet, for the party
+    /// whose own SDP advertised the sending socket.
+    #[test]
+    fn an_rtp_telephone_event_is_a_keydown_and_a_keyup() -> Result<(), TestError> {
+        let dialog = answered_with_media(Vec::new())?;
+        let mut v = export_with(&dialog, &clean_facts())?;
+        let pressed = |port: u16, digit: char| RtpKeyPress {
+            src: std::net::SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)), port),
+            digit,
+            ended_at: ts().unwrap_or_default() + chrono::TimeDelta::seconds(20),
+            duration_ms: 200,
+        };
+        add_key_events(&mut v, &dialog, &[pressed(5000, '#'), pressed(6000, '1')]);
+        assert_eq!(
+            key_history(&v)?,
+            vec![
+                (0, 1000, "join".into(), None),
+                (1, 1000, "join".into(), None),
+                (1, 19_800, "keydown".into(), Some("#".into())),
+                (1, 20_000, "keyup".into(), Some("#".into())),
+            ],
+            "a socket no party advertised yields no event"
+        );
+        Ok(())
+    }
+
+    /// GAP-17: redaction removes `keydown` and `keyup`: the digit can be a
+    /// PIN. The other events stay.
+    #[test]
+    fn redaction_removes_the_key_events() -> Result<(), TestError> {
+        use crate::output::redact::{Redact as _, RedactionKey, RedactionPolicy};
+        let info = in_dialog_request(
+            "INFO",
+            2,
+            "alice",
+            &["Content-Type: application/dtmf-relay"],
+            b"Signal=5\r\nDuration=160\r\n",
+        )?;
+        let dialog = answered_with_media(vec![(info, 10)])?;
+        let mut v = export_with(&dialog, &clean_facts())?;
+        add_key_events(&mut v, &dialog, &[]);
+        let policy = RedactionPolicy::new(RedactionKey::from_secret(b"keys"));
+        v.redact(&policy.redactor());
+        let events: Vec<String> = key_history(&v)?.into_iter().map(|e| e.2).collect();
+        assert_eq!(events, vec!["join".to_string(), "join".to_string()]);
+        Ok(())
+    }
+
+    /// GAP-17: the history is in time order whatever order the events are
+    /// found in: a hold and a key press before the BYE come before its drop.
+    #[test]
+    fn the_party_history_is_in_time_order() -> Result<(), TestError> {
+        let info = in_dialog_request(
+            "INFO",
+            3,
+            "bob",
+            &["Content-Type: application/dtmf-relay"],
+            b"Signal=7\r\nDuration=100\r\n",
+        )?;
+        let dialog = answered_with_media(vec![
+            (reoffer("INVITE", 2, "alice", "sendonly")?, 10),
+            (info, 20),
+            (in_dialog_request("BYE", 4, "alice", &[], b"")?, 63),
+        ])?;
+        let mut v = export_with(&dialog, &clean_facts())?;
+        assert_eq!(
+            history(&v)?,
+            vec![
+                (0, 1, "join".to_string()),
+                (1, 1, "join".to_string()),
+                (1, 10, "hold".to_string()),
+                (0, 63, "drop".to_string()),
+            ]
+        );
+        add_key_events(&mut v, &dialog, &[]);
+        let events: Vec<String> = key_history(&v)?.into_iter().map(|e| e.2).collect();
+        assert_eq!(
+            events,
+            ["join", "join", "hold", "keydown", "keyup", "drop"].map(String::from)
+        );
+        Ok(())
+    }
+
+    // ── text dialogs from SIP MESSAGE ──
+
+    /// A SIP MESSAGE from `sender` with `cseq`, `content_type` and `body`.
+    fn sip_message(
+        sender: &str,
+        cseq: u32,
+        content_type: &str,
+        body: &[u8],
+    ) -> Result<crate::sip::SipMessage, TestError> {
+        let (from, to) = if sender == "alice" {
+            (
+                "From: \"Alice\" <sip:alice@example.com>;tag=t1",
+                "To: \"Bob\" <sip:bob@example.net>",
+            )
+        } else {
+            (
+                "From: \"Bob\" <sip:bob@example.net>;tag=t2",
+                "To: \"Alice\" <sip:alice@example.com>",
+            )
+        };
+        let cseq_line = format!("CSeq: {cseq} MESSAGE");
+        let ct = format!("Content-Type: {content_type}");
+        message_with_body(
+            "MESSAGE sip:peer@example.org SIP/2.0",
+            &[
+                from,
+                to,
+                "Call-ID: vcon-fixture@example.com",
+                &cseq_line,
+                &ct,
+            ],
+            body,
+        )
+    }
+
+    /// The `text` Dialog Objects of a container, as JSON.
+    fn text_dialogs(v: &Vcon) -> Result<Vec<serde_json::Value>, TestError> {
+        let json = valid_json(v)?;
+        Ok(json["dialog"]
+            .as_array()
+            .map(|l| l.iter().filter(|d| d["type"] == "text").cloned().collect())
+            .unwrap_or_default())
+    }
+
+    /// GAP-18: each SIP MESSAGE (RFC 3428) body is a `text` Dialog Object
+    /// ([core-04 section 4.3.1.3](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-04#section-4.3.1.3))
+    /// with its sender first in `parties`, its capture time as `start`, and
+    /// the body inline.
+    #[test]
+    fn each_sip_message_body_is_a_text_dialog() -> Result<(), TestError> {
+        let dialog = timed_dialog(vec![
+            (
+                sip_message("alice", 1, "text/plain;charset=UTF-8", b"hello")?,
+                0,
+            ),
+            (
+                sip_message("alice", 1, "text/plain;charset=UTF-8", b"hello")?,
+                1,
+            ),
+            (in_dialog_response("200 OK", 1, "MESSAGE", "alice")?, 1),
+            (sip_message("bob", 1, "text/plain", b"hi back")?, 5),
+        ])?;
+        let texts = text_dialogs(&export_with(&dialog, &clean_facts())?)?;
+        assert_eq!(texts.len(), 2, "a retransmission is one text");
+        assert_eq!(texts[0]["parties"], serde_json::json!([0, 1]));
+        assert_eq!(texts[0]["start"], ts()?.to_rfc3339());
+        assert_eq!(texts[0]["mediatype"], "text/plain;charset=UTF-8");
+        assert_eq!(texts[0]["encoding"], "none");
+        assert_eq!(texts[0]["body"], "hello");
+        assert_eq!(texts[0]["sip_call_id"], "vcon-fixture@example.com");
+        assert!(texts[0].get("originator").is_none());
+        assert_eq!(texts[1]["parties"], serde_json::json!([1, 0]));
+        assert_eq!(texts[1]["body"], "hi back");
+        assert!(
+            texts[1].get("originator").is_none(),
+            "the sender is listed first"
+        );
+        Ok(())
+    }
+
+    /// GAP-18: a composing indication (RFC 3994) is not text a party sent,
+    /// and an empty MESSAGE carries none; a body that is not UTF-8 is
+    /// base64url.
+    #[test]
+    fn only_a_message_with_content_is_a_text_dialog() -> Result<(), TestError> {
+        let dialog = timed_dialog(vec![
+            (
+                sip_message(
+                    "alice",
+                    1,
+                    "application/im-iscomposing+xml",
+                    b"<isComposing/>",
+                )?,
+                0,
+            ),
+            (sip_message("alice", 2, "text/plain", b"")?, 1),
+            (
+                sip_message("alice", 3, "application/vnd.3gpp.sms", &[0x01, 0xff])?,
+                2,
+            ),
+        ])?;
+        let texts = text_dialogs(&export_with(&dialog, &clean_facts())?)?;
+        assert_eq!(texts.len(), 1);
+        assert_eq!(texts[0]["mediatype"], "application/vnd.3gpp.sms");
+        assert_eq!(texts[0]["encoding"], "base64url");
+        assert_eq!(texts[0]["body"], URL_SAFE_NO_PAD.encode([0x01, 0xff]));
+        Ok(())
+    }
+
+    /// GAP-18: under redaction a text dialog keeps its clock and parties and
+    /// loses its content, as a recording does: the text is the conversation.
+    #[test]
+    fn redaction_removes_the_text() -> Result<(), TestError> {
+        use crate::output::redact::{Redact as _, RedactionKey, RedactionPolicy};
+        let dialog = timed_dialog(vec![(
+            sip_message("alice", 1, "text/plain", b"my pin is 1234")?,
+            0,
+        )])?;
+        let mut v = export_with(&dialog, &clean_facts())?;
+        let policy = RedactionPolicy::new(RedactionKey::from_secret(b"text"));
+        v.redact(&policy.redactor());
+        let texts = text_dialogs(&v)?;
+        assert_eq!(texts.len(), 1);
+        for field in ["body", "encoding", "mediatype"] {
+            assert!(texts[0].get(field).is_none());
+        }
+        assert_eq!(texts[0]["parties"], serde_json::json!([0, 1]));
+        Ok(())
+    }
+
+    // ── the tags attachment ──
+
+    /// The `tags` attachments of `v`.
+    fn tags_of(v: &Vcon) -> Result<Vec<serde_json::Value>, TestError> {
+        let json = valid_json(v)?;
+        Ok(json["attachments"]
+            .as_array()
+            .map(|l| {
+                l.iter()
+                    .filter(|a| a["purpose"] == TAGS_PURPOSE)
+                    .cloned()
+                    .collect()
+            })
+            .unwrap_or_default())
+    }
+
+    /// GAP-24: one `tags` attachment whose body is the list of `name:value`
+    /// strings vcon-lib reads (`Vcon.get_tag` splits on the colon): the
+    /// rule, each named filter the call matched, then the findings.
+    #[test]
+    fn the_tags_name_the_rule_the_filters_and_the_findings() -> Result<(), TestError> {
+        let dialog = dialog_with(&[response(486, "Busy Here")?])?;
+        let mut v = export_with(&dialog, &clean_facts())?;
+        add_tags(&mut v, &[&dialog], "support", &["carrier-a", "busy"]);
+        let tags = tags_of(&v)?;
+        assert_eq!(tags.len(), 1);
+        assert_eq!(tags[0]["party"], v.observer_index());
+        assert_eq!(tags[0]["dialog"], 0);
+        assert_eq!(tags[0]["mediatype"], "application/json");
+        assert_eq!(tags[0]["encoding"], "json");
+        assert_eq!(
+            tags[0]["body"],
+            serde_json::json!([
+                "rule:support",
+                "filter:carrier-a",
+                "filter:busy",
+                "finding:final_failure"
+            ])
+        );
+        Ok(())
+    }
+
+    /// GAP-24: the findings are the signaling diagnosis's detections in its
+    /// own order, each once across a call's legs, and at most the cap.
+    #[test]
+    fn the_finding_tags_are_bounded_and_named_once() -> Result<(), TestError> {
+        let failed = dialog_with(&[response(486, "Busy Here")?])?;
+        let also_failed = dialog_with(&[response(486, "Busy Here")?])?;
+        assert_eq!(
+            finding_tags(&[&failed, &also_failed], MAX_FINDING_TAGS),
+            vec!["finding:final_failure".to_string()]
+        );
+        assert!(finding_tags(&[&failed], 0).is_empty());
+        let clean = answered_and_ended()?;
+        assert!(finding_tags(&[&clean], MAX_FINDING_TAGS).is_empty());
+        Ok(())
+    }
+
+    // ── CC extension Dialog parameters ──
+
+    /// GAP-25: a rule's header mapping fills `campaign`, `skill` and
+    /// `interaction_id` on the signaling object
+    /// ([draft-ietf-vcon-cc-extension-02 section 3.2](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-cc-extension-02#section-3.2))
+    /// from the first message carrying each header, matched without regard
+    /// to case; a header with no value leaves its field absent.
+    #[test]
+    fn the_cc_headers_fill_campaign_skill_and_interaction_id() -> Result<(), TestError> {
+        let dialog = timed_dialog(vec![
+            (
+                invite_carrying(&[
+                    "X-Campaign: spring-renewals",
+                    "x-queue: billing",
+                    "X-Interaction-ID:",
+                ])?,
+                0,
+            ),
+            (response(200, "OK")?, 1),
+        ])?;
+        let mut v = export_with(&dialog, &clean_facts())?;
+        add_cc_fields(
+            &mut v,
+            &dialog,
+            CcHeaders {
+                campaign: Some("X-Campaign"),
+                skill: Some("X-Queue"),
+                interaction_id: Some("X-Interaction-ID"),
+            },
+        );
+        let json = valid_json(&v)?;
+        assert_eq!(json["dialog"][0]["campaign"], "spring-renewals");
+        assert_eq!(json["dialog"][0]["skill"], "billing");
+        assert!(json["dialog"][0].get("interaction_id").is_none());
+        assert!(
+            json["dialog"][0].get("interaction").is_none(),
+            "the spec's name only"
+        );
+        Ok(())
+    }
+
+    /// GAP-25: no mapping writes nothing.
+    #[test]
+    fn no_cc_mapping_writes_no_cc_field() -> Result<(), TestError> {
+        let dialog = timed_dialog(vec![(invite_carrying(&["X-Campaign: c"])?, 0)])?;
+        let mut v = export_with(&dialog, &clean_facts())?;
+        add_cc_fields(&mut v, &dialog, CcHeaders::default());
+        let json = valid_json(&v)?;
+        for field in ["campaign", "skill", "interaction_id"] {
+            assert!(json["dialog"][0].get(field).is_none(), "{field}");
+        }
+        Ok(())
+    }
+
+    /// GAP-25: under redaction `interaction_id` becomes a token, so two
+    /// containers of one interaction still join, and `campaign` and `skill`
+    /// are swept as text.
+    #[test]
+    fn redaction_tokenizes_the_interaction_id() -> Result<(), TestError> {
+        use crate::output::redact::{Redact as _, RedactionKey, RedactionPolicy};
+        let dialog = timed_dialog(vec![(
+            invite_carrying(&["X-Interaction-ID: 4155550100-77"])?,
+            0,
+        )])?;
+        let mut v = export_with(&dialog, &clean_facts())?;
+        add_cc_fields(
+            &mut v,
+            &dialog,
+            CcHeaders {
+                interaction_id: Some("X-Interaction-ID"),
+                ..CcHeaders::default()
+            },
+        );
+        let policy = RedactionPolicy::new(RedactionKey::from_secret(b"cc"));
+        v.redact(&policy.redactor());
+        let id = v.dialog[0]
+            .interaction_id
+            .as_deref()
+            .ok_or("an interaction_id")?;
+        assert_ne!(id, "4155550100-77");
+        assert_eq!(id, policy.redactor().opaque("4155550100-77"));
         Ok(())
     }
 }

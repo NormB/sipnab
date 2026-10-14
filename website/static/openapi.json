@@ -9628,7 +9628,7 @@
               "schema": {}
             }
           },
-          "description": "The vCon container to analyze.",
+          "description": "The vCon container to analyze, in the unsigned, signed or encrypted form; the gzip format with Content-Type application/vcon+gzip.",
           "required": true
         },
         "responses": {
@@ -9791,7 +9791,7 @@
               "schema": {}
             }
           },
-          "description": "The vCon container to validate.",
+          "description": "The vCon container to validate, in the unsigned, signed or encrypted form; the gzip format with Content-Type application/vcon+gzip.",
           "required": true
         },
         "responses": {
@@ -9843,7 +9843,7 @@
                 }
               }
             },
-            "description": "The container's `critical` lists an extension sipnab does not support; draft-ietf-vcon-vcon-core-04 section 4.1.4 forbids operating on it. The detail names each one."
+            "description": "The container's `critical` lists an extension sipnab does not support, which draft-ietf-vcon-vcon-core-04 section 4.1.4 forbids operating on, or a signed, encrypted or gzip format container does not open. The detail says which."
           },
           "503": {
             "content": {

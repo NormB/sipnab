@@ -338,6 +338,9 @@ pub fn compiled_features() -> Vec<&'static str> {
     if cfg!(feature = "vcon") {
         out.push("vcon");
     }
+    if cfg!(feature = "opus") {
+        out.push("opus");
+    }
     if cfg!(feature = "archive") {
         out.push("archive");
     }
@@ -550,6 +553,10 @@ pub struct Cli {
     #[command(flatten)]
     pub vcon_fetch_args: VconFetchArgs,
 
+    // ── vCon archive ──
+    #[command(flatten)]
+    pub vcon_resign_args: VconResignArgs,
+
     // ── Config ──
     #[command(flatten)]
     pub config_args: ConfigArgs,
@@ -761,6 +768,50 @@ pub struct CaptureArgs {
         requires = "input"
     )]
     pub input_name: Option<String>,
+
+    /// Decrypt an encrypted vCon container (draft-ietf-vcon-vcon-core-04
+    /// section 5.3) that `-I`, the MCP vCon tools or the REST vCon routes
+    /// read, with the RSA private key in this PEM file, then verify its
+    /// signature. The file must be readable by its owner only. Without it an
+    /// encrypted container is refused. Overrides `[vcon_input] key`.
+    #[arg(help_heading = "Capture", long = "vcon-key", value_name = "FILE")]
+    pub vcon_key: Option<std::path::PathBuf>,
+
+    /// Read a signed or encrypted vCon container only when its signing
+    /// certificate chains, through the intermediates in its `x5c`, to a CA in
+    /// this PEM file, each certificate within its validity period. `system`
+    /// uses the host's CA bundle; write `./system` for a file of that name. An
+    /// unsigned container is refused. Overrides `[vcon_input] signer_ca`.
+    #[arg(
+        help_heading = "Capture",
+        long = "vcon-signer-ca",
+        value_name = "FILE|system"
+    )]
+    pub vcon_signer_ca: Option<std::path::PathBuf>,
+
+    /// Read a signed or encrypted vCon container only when its signing
+    /// certificate has this SHA-256 fingerprint: 64 hex digits, plain or
+    /// colon-separated, either case. An unsigned container is refused.
+    /// Overrides `[vcon_input] signer_sha256`.
+    #[arg(
+        help_heading = "Capture",
+        long = "vcon-signer-sha256",
+        value_name = "HEX",
+        value_parser = parse_signer_sha256
+    )]
+    pub vcon_signer_sha256: Option<String>,
+
+    /// Fetch the certificate chain of a signed vCon container that names it
+    /// only by an `x5u` URL (draft-ietf-vcon-vcon-core-04 section 5.2.2), over
+    /// https, trusting the server only when it chains to a CA in this PEM
+    /// file; `system` uses the host's CA bundle. Without it such a container
+    /// is refused and nothing is fetched. Overrides `[vcon_input] x5u_ca`.
+    #[arg(
+        help_heading = "Capture",
+        long = "vcon-x5u-ca",
+        value_name = "FILE|system"
+    )]
+    pub vcon_x5u_ca: Option<std::path::PathBuf>,
 
     /// Write captured packets to a pcap file.
     #[arg(
@@ -4908,6 +4959,20 @@ pub struct VconForwardArgs {
     )]
     pub vcon_forward_max_error_body: Option<u64>,
 
+    /// The `Content-Type` of a JSON container: `application/json` (the
+    /// default), `application/vcon+json` or `application/vcon`. A gzip
+    /// format container always goes as `application/vcon+gzip`
+    /// (draft-ietf-vcon-vcon-core-04 section 5.4). Overrides
+    /// `[vcon_forward] content_type`.
+    #[arg(
+        help_heading = "vCon forwarder",
+        long = "vcon-forward-content-type",
+        value_name = "TYPE",
+        value_parser = parse_forward_content_type,
+        requires = "vcon_forward"
+    )]
+    pub vcon_forward_content_type: Option<String>,
+
     /// Trust only the CA certificates in this PEM file for an `https://`
     /// store. Without it the forwarder trusts the host's CA bundle.
     /// Overrides `[vcon_forward] ca`.
@@ -4932,6 +4997,131 @@ pub struct VconForwardArgs {
         conflicts_with = "vcon_forward_ca"
     )]
     pub vcon_forward_extra_ca: Option<std::path::PathBuf>,
+
+    /// Register SCITT lifecycle statements (draft-howe-vcon-lifecycle-01)
+    /// with the transparency service at this URL: `vcon_created` and
+    /// `vcon_sent` for each container delivered, each a signed statement
+    /// POSTed to `<URL>/entries` (draft-ietf-scitt-scrapi). Needs
+    /// --vcon-forward-scitt-sign-key, --vcon-forward-scitt-sign-cert and
+    /// --vcon-forward-scitt-issuer. Overrides `[vcon_forward] scitt_url`.
+    #[arg(
+        help_heading = "vCon forwarder",
+        long = "vcon-forward-scitt-url",
+        value_name = "URL",
+        requires = "vcon_forward"
+    )]
+    pub vcon_forward_scitt_url: Option<String>,
+
+    /// File holding the one header that authenticates to the transparency
+    /// service, as `Header-Name: value` on one line. Refused when other users
+    /// can read it: chmod 600. Overrides `[vcon_forward] scitt_auth_file`.
+    #[arg(
+        help_heading = "vCon forwarder",
+        long = "vcon-forward-scitt-auth-file",
+        value_name = "FILE",
+        requires = "vcon_forward"
+    )]
+    pub vcon_forward_scitt_auth_file: Option<std::path::PathBuf>,
+
+    /// Trust only the CA certificates in this PEM file for an `https://`
+    /// transparency service. Without it the host's CA bundle. Overrides
+    /// `[vcon_forward] scitt_ca`.
+    #[arg(
+        help_heading = "vCon forwarder",
+        long = "vcon-forward-scitt-ca",
+        value_name = "FILE",
+        requires = "vcon_forward"
+    )]
+    pub vcon_forward_scitt_ca: Option<std::path::PathBuf>,
+
+    /// The PEM RSA private key the lifecycle statements are signed with
+    /// (RS256). Refused when other users can read it: chmod 600. Overrides
+    /// `[vcon_forward] scitt_sign_key`.
+    #[arg(
+        help_heading = "vCon forwarder",
+        long = "vcon-forward-scitt-sign-key",
+        value_name = "FILE",
+        requires = "vcon_forward"
+    )]
+    pub vcon_forward_scitt_sign_key: Option<std::path::PathBuf>,
+
+    /// The PEM certificate chain of the signing key, leaf first, carried in
+    /// each statement's `x5chain`. Overrides `[vcon_forward] scitt_sign_cert`.
+    #[arg(
+        help_heading = "vCon forwarder",
+        long = "vcon-forward-scitt-sign-cert",
+        value_name = "FILE",
+        requires = "vcon_forward"
+    )]
+    pub vcon_forward_scitt_sign_cert: Option<std::path::PathBuf>,
+
+    /// The issuer each lifecycle statement names (CWT claim `iss`), a URI
+    /// such as `https://pbx.example.com/sipnab`. Overrides
+    /// `[vcon_forward] scitt_issuer`.
+    #[arg(
+        help_heading = "vCon forwarder",
+        long = "vcon-forward-scitt-issuer",
+        value_name = "URI",
+        requires = "vcon_forward"
+    )]
+    pub vcon_forward_scitt_issuer: Option<String>,
+}
+
+/// `--vcon-resign`: re-sign a signed vCon for a long-term archive, as
+/// draft-ietf-vcon-vcon-core-04 section 5.2.3 describes. A command of its
+/// own: it reads one file, writes one, and captures nothing.
+#[derive(clap::Args, Debug, Clone)]
+pub struct VconResignArgs {
+    /// Re-sign the signed vCon in this file (draft-ietf-vcon-vcon-core-04
+    /// section 5.2.3): verify it, its signer's certificate within its
+    /// validity period now, and sign it whole as the payload of a new JWS
+    /// with --vcon-resign-key and --vcon-resign-cert, written to
+    /// --vcon-resign-out. --vcon-signer-ca and --vcon-signer-sha256 check
+    /// its signer too. Exit 0 written, 1 refused, 2 bad settings. Needs the
+    /// `vcon` feature.
+    #[arg(
+        help_heading = "vCon archive",
+        long = "vcon-resign",
+        value_name = "FILE",
+        requires_all = ["vcon_resign_key", "vcon_resign_cert", "vcon_resign_out"],
+        conflicts_with_all = [
+            "device", "input", "hep_listen", "hep_send", "bpf_filter",
+            "bpf_file", "api", "mcp", "metrics", "export_vcon",
+            "export_vcon_when", "export_vcon_dir", "mint_token", "replay",
+            "vcon_forward", "vcon_fetch", "vcon_spool_status",
+        ]
+    )]
+    pub vcon_resign: Option<std::path::PathBuf>,
+
+    /// The PEM private key of the new signer: RSA, which signs `RS256`, or
+    /// EC P-256, which signs `ES256`. Readable by its owner only.
+    #[arg(
+        help_heading = "vCon archive",
+        long = "vcon-resign-key",
+        value_name = "FILE",
+        requires = "vcon_resign"
+    )]
+    pub vcon_resign_key: Option<std::path::PathBuf>,
+
+    /// The PEM certificate chain of --vcon-resign-key, leaf first, carried
+    /// in the new signature's `x5c`.
+    #[arg(
+        help_heading = "vCon archive",
+        long = "vcon-resign-cert",
+        value_name = "FILE",
+        requires = "vcon_resign"
+    )]
+    pub vcon_resign_cert: Option<std::path::PathBuf>,
+
+    /// Where the re-signed vCon is written, mode 0600. sipnab never
+    /// replaces a file that exists.
+    #[arg(
+        help_heading = "vCon archive",
+        long = "vcon-resign-out",
+        value_name = "FILE",
+        requires = "vcon_resign"
+    )]
+    pub vcon_resign_out: Option<std::path::PathBuf>,
 }
 
 /// `vCon fetcher` flags: the mode that reads stored vCons from a store by
@@ -5203,7 +5393,35 @@ impl VconForwardArgs {
                 "--vcon-forward-max-error-body",
                 self.vcon_forward_max_error_body.is_some(),
             ),
+            (
+                "--vcon-forward-content-type",
+                self.vcon_forward_content_type.is_some(),
+            ),
             ("--vcon-forward-ca", self.vcon_forward_ca.is_some()),
+            (
+                "--vcon-forward-scitt-url",
+                self.vcon_forward_scitt_url.is_some(),
+            ),
+            (
+                "--vcon-forward-scitt-auth-file",
+                self.vcon_forward_scitt_auth_file.is_some(),
+            ),
+            (
+                "--vcon-forward-scitt-ca",
+                self.vcon_forward_scitt_ca.is_some(),
+            ),
+            (
+                "--vcon-forward-scitt-sign-key",
+                self.vcon_forward_scitt_sign_key.is_some(),
+            ),
+            (
+                "--vcon-forward-scitt-sign-cert",
+                self.vcon_forward_scitt_sign_cert.is_some(),
+            ),
+            (
+                "--vcon-forward-scitt-issuer",
+                self.vcon_forward_scitt_issuer.is_some(),
+            ),
         ]
         .into_iter()
         .find_map(|(flag, given)| given.then_some(flag))
@@ -8202,6 +8420,12 @@ fn parse_fetch_max_size(s: &str) -> Result<u64, String> {
 
 /// `--vcon-fetch-signer-sha256`: [`crate::config::parse_sha256_fingerprint`]'s
 /// rule, the text kept as given.
+/// `--vcon-forward-content-type`: [`crate::config::forward_content_type`]'s
+/// rule.
+fn parse_forward_content_type(s: &str) -> Result<String, String> {
+    crate::config::forward_content_type(s).map(str::to_owned)
+}
+
 fn parse_signer_sha256(s: &str) -> Result<String, String> {
     crate::config::parse_sha256_fingerprint(s).map(|_| s.to_owned())
 }

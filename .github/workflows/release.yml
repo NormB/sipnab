@@ -201,6 +201,11 @@ jobs:
             fi
           }
           apt_bounded 300 update
+          # cmake builds libopus from the source opusic-sys vendors, for the
+          # `opus` feature in `full`. rust:1-bookworm does not carry it. It
+          # runs on the build host, so the amd64 package serves the aarch64
+          # cross build too.
+          apt_bounded 600 install -y cmake
           if [ "$TARGET" = "aarch64-unknown-linux-gnu" ]; then
             dpkg --add-architecture arm64
             apt_bounded 300 update
@@ -257,9 +262,9 @@ jobs:
         id: features
         shell: bash
         run: |
-          # No-audio set = `full` minus `audio`, `plugins` and `vcon`, and
-          # NO_AUDIO_EXCLUSIONS in tests/release_pipeline_gate_test.rs names the
-          # same three: a feature added to `full` fails that gate until it is
+          # No-audio set = `full` minus `audio`, `opus`, `plugins` and `vcon`,
+          # and NO_AUDIO_EXCLUSIONS in tests/release_pipeline_gate_test.rs names
+          # the same four: a feature added to `full` fails that gate until it is
           # added here or excluded there with a reason. `archive` (ZIP and 7z
           # input, archive passwords) is pure Rust and ships here too.
           # musl is ALWAYS no-audio, and not as a preference: the playback

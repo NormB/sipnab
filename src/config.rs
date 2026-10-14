@@ -59,6 +59,7 @@ static KNOWN_KEYS: LazyLock<HashMap<&'static str, &'static [&'static str]>> = La
             "hep",
             "vcon_forward",
             "vcon_fetch",
+            "vcon_input",
         ]
         .as_slice(),
     );
@@ -294,6 +295,13 @@ static KNOWN_KEYS: LazyLock<HashMap<&'static str, &'static [&'static str]>> = La
             "backoff_cap",
             "max_response_head",
             "max_error_body",
+            "scitt_url",
+            "scitt_auth_file",
+            "scitt_ca",
+            "scitt_sign_key",
+            "scitt_sign_cert",
+            "scitt_issuer",
+            "content_type",
         ]
         .as_slice(),
     );
@@ -315,6 +323,12 @@ static KNOWN_KEYS: LazyLock<HashMap<&'static str, &'static [&'static str]>> = La
             "max_size",
         ]
         .as_slice(),
+    );
+    // [vcon_input] holds how the vCon readers (`-I`, the MCP and REST vCon
+    // tools) open a signed or encrypted container.
+    m.insert(
+        "vcon_input",
+        ["key", "signer_ca", "signer_sha256", "x5u_ca"].as_slice(),
     );
     m.insert(
         "names",
@@ -517,6 +531,10 @@ pub struct Config {
     /// The vCon fetcher's settings -- see [`VconFetchConfig`].
     #[serde(default)]
     pub vcon_fetch: VconFetchConfig,
+    /// How the vCon readers open a signed or encrypted container -- see
+    /// [`VconInputConfig`].
+    #[serde(default)]
+    pub vcon_input: VconInputConfig,
 }
 
 /// `[api]`: settings for the REST API that belong in a file rather than on
@@ -624,6 +642,31 @@ pub struct VconForwardConfig {
     /// The most bytes of a store's refusal kept in a failure record. See
     /// [`FORWARD_MAX_ERROR_BODY`].
     pub max_error_body: Option<u64>,
+    /// The SCITT transparency service that lifecycle statements are
+    /// registered with, by SCRAPI (`<url>/entries`). Unset, nothing is
+    /// registered. `--vcon-forward-scitt-url` overrides it.
+    pub scitt_url: Option<String>,
+    /// The file holding the one `Header-Name: value` line that authenticates
+    /// to the transparency service. `--vcon-forward-scitt-auth-file`
+    /// overrides it.
+    pub scitt_auth_file: Option<PathBuf>,
+    /// The only CA file trusted for an `https://` transparency service.
+    /// `--vcon-forward-scitt-ca` overrides it.
+    pub scitt_ca: Option<PathBuf>,
+    /// The PEM RSA private key the statements are signed with, readable by
+    /// its owner only. `--vcon-forward-scitt-sign-key` overrides it.
+    pub scitt_sign_key: Option<PathBuf>,
+    /// The PEM certificate chain of `scitt_sign_key`, leaf first.
+    /// `--vcon-forward-scitt-sign-cert` overrides it.
+    pub scitt_sign_cert: Option<PathBuf>,
+    /// The statements' issuer (CWT claim `iss`), a URI.
+    /// `--vcon-forward-scitt-issuer` overrides it.
+    pub scitt_issuer: Option<String>,
+    /// The `Content-Type` of a JSON container, one of
+    /// [`FORWARD_CONTENT_TYPES`]; `application/json` when unset. A gzip
+    /// format container always goes as `application/vcon+gzip`.
+    /// `--vcon-forward-content-type` overrides it.
+    pub content_type: Option<String>,
 }
 
 /// A whole-number forwarder setting, declared once: its key, its flag, the
@@ -774,6 +817,33 @@ pub const FORWARD_NUMBERS: [ForwardNumber; 6] = [
 /// setting is given explicitly, as before kinds existed.
 pub const FORWARD_KINDS: &[&str] = &["generic", "vcon-store", "conserver"];
 
+/// The media types `--vcon-forward-content-type` and
+/// `[vcon_forward] content_type` accept for a JSON container, the default
+/// first. `application/vcon` is the type draft-ietf-vcon-vcon-core-04
+/// section 6.1 registers. A gzip format container always goes as
+/// `application/vcon+gzip` (section 5.4).
+pub const FORWARD_CONTENT_TYPES: &[&str] = &[
+    "application/json",
+    "application/vcon+json",
+    "application/vcon",
+];
+
+/// `value` when it is one of [`FORWARD_CONTENT_TYPES`].
+///
+/// # Errors
+///
+/// Any other value, naming the accepted ones.
+pub fn forward_content_type(value: &str) -> Result<&str, String> {
+    if FORWARD_CONTENT_TYPES.contains(&value) {
+        Ok(value)
+    } else {
+        Err(format!(
+            "{value:?} is not one of {}",
+            FORWARD_CONTENT_TYPES.join(", ")
+        ))
+    }
+}
+
 /// The names `--vcon-fetch-kind` and `[vcon_fetch] kind` accept, in the
 /// order of the store kind table: the forwarder's kinds, and `vcon-mcp`,
 /// which the fetcher reads from and the forwarder does not deliver to.
@@ -857,6 +927,11 @@ impl VconForwardConfig {
                 "[vcon_forward] kind: {name:?} is not one of {}",
                 FORWARD_KINDS.join(", ")
             )));
+        }
+        if let Some(value) = &self.content_type {
+            forward_content_type(value).map_err(|e| {
+                crate::Error::ConfigInvalid(format!("[vcon_forward] content_type: {e}"))
+            })?;
         }
         let first = FORWARD_BACKOFF_FIRST.pick(None, self.backoff_first);
         let cap = FORWARD_BACKOFF_CAP.pick(None, self.backoff_cap);
@@ -969,6 +1044,46 @@ impl VconFetchConfig {
             (FETCH_MAX_RESPONSE_HEAD, self.max_response_head),
             (FETCH_MAX_SIZE, self.max_size),
         ]
+    }
+}
+
+/// `[vcon_input]`: how the vCon readers open a signed or encrypted
+/// container (draft-ietf-vcon-vcon-core-04 sections 5.2 and 5.3). The
+/// readers are `-I`, the MCP `analyze_vcon` and `validate_vcon` tools, and
+/// `POST /v1/vcon/analyze` and `POST /v1/vcon/validate`. Each key is the
+/// value of the flag of the same meaning, which overrides it.
+#[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(default)]
+pub struct VconInputConfig {
+    /// The PEM RSA private key that decrypts an encrypted container;
+    /// readable by its owner only. `--vcon-key` overrides it.
+    pub key: Option<PathBuf>,
+    /// The CA (PEM) a signed container's signing certificate must chain to,
+    /// or `system` for the host's CA bundle. `--vcon-signer-ca` overrides
+    /// it.
+    pub signer_ca: Option<PathBuf>,
+    /// The SHA-256 fingerprint a signed container's signing certificate
+    /// must have, hex, with or without colons. `--vcon-signer-sha256`
+    /// overrides it.
+    pub signer_sha256: Option<String>,
+    /// The CA (PEM) an `x5u` URL's HTTPS server must chain to, or `system`
+    /// for the host's CA bundle. Set, a signature that names its chain only
+    /// by `x5u` has the chain fetched. `--vcon-x5u-ca` overrides it.
+    pub x5u_ca: Option<PathBuf>,
+}
+
+impl VconInputConfig {
+    /// Refuse a fingerprint its flag would refuse.
+    ///
+    /// # Errors
+    /// `crate::Error::ConfigInvalid`, naming the key.
+    pub fn validate(&self) -> Result<(), crate::Error> {
+        if let Some(text) = &self.signer_sha256 {
+            parse_sha256_fingerprint(text).map_err(|e| {
+                crate::Error::ConfigInvalid(format!("[vcon_input] signer_sha256: {e}"))
+            })?;
+        }
+        Ok(())
     }
 }
 
@@ -1393,14 +1508,37 @@ pub struct VconConfig {
     pub rule: Vec<VconRuleConfig>,
     /// The enrichment services, in the order they run.
     pub enrich: Vec<VconEnrichConfig>,
-    /// The `encrypt_to` of every `[[vcon.rule]]` that sets none.
-    pub encrypt_to: Option<std::path::PathBuf>,
+    /// The `encrypt_to` of every `[[vcon.rule]]` that sets none: one
+    /// certificate, or a list of them.
+    pub encrypt_to: Option<PathList>,
     /// The `sign_key` of every encrypting `[[vcon.rule]]` that sets none.
     pub sign_key: Option<std::path::PathBuf>,
     /// The `sign_cert` of every encrypting `[[vcon.rule]]` that sets none.
     pub sign_cert: Option<std::path::PathBuf>,
     /// The `compress` of every encrypting `[[vcon.rule]]` that sets none.
     pub compress: Option<String>,
+}
+
+/// A path, or a list of them: what `encrypt_to` takes in `[vcon]` and
+/// `[[vcon.rule]]`. TOML writes one as a string and several as an array.
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(untagged)]
+pub enum PathList {
+    /// One path.
+    One(std::path::PathBuf),
+    /// Several, in the order written.
+    Many(Vec<std::path::PathBuf>),
+}
+
+impl PathList {
+    /// The paths, in the order written.
+    #[must_use]
+    pub fn paths(&self) -> &[std::path::PathBuf] {
+        match self {
+            Self::One(path) => std::slice::from_ref(path),
+            Self::Many(paths) => paths,
+        }
+    }
 }
 
 /// The values of `compress` in `[vcon]` and `[[vcon.rule]]`: `none` signs
@@ -1415,6 +1553,17 @@ impl VconConfig {
     /// # Errors
     /// `crate::Error::ConfigInvalid`, naming the key.
     pub fn validate(&self) -> Result<(), crate::Error> {
+        if self
+            .encrypt_to
+            .as_ref()
+            .is_some_and(|list| list.paths().is_empty())
+        {
+            return Err(crate::Error::ConfigInvalid(
+                "[vcon] encrypt_to is an empty list: name at least one recipient certificate, \
+                 or remove the key"
+                    .into(),
+            ));
+        }
         match &self.compress {
             Some(value) if !VCON_COMPRESSIONS.contains(&value.as_str()) => {
                 Err(crate::Error::ConfigInvalid(format!(
@@ -1454,6 +1603,11 @@ pub struct VconEnrichConfig {
     /// What is sent: `audio`, `signaling`, or both (the default).
     #[serde(default)]
     pub send: Option<Vec<String>>,
+    /// Carry a `lawful_basis` attachment the service answers with
+    /// (draft-howe-vcon-lawful-basis-02), checked for shape and marked as
+    /// the service's. Default `false`: an answer with attachments is refused.
+    #[serde(default)]
+    pub lawful_basis: Option<bool>,
 }
 
 /// One `[[vcon.rule]]`: a filter, the directory its containers go to, and
@@ -1483,6 +1637,11 @@ pub struct VconRuleConfig {
     /// and names `<base>/<file>` in it; it serves nothing.
     #[serde(default)]
     pub audio_url_base: Option<String>,
+    /// The format of the audio an `inline` or `url` rule carries: `wav` (the
+    /// default) or `opus` (Ogg Opus, `audio/ogg`). `opus` needs a build with
+    /// the `opus` feature.
+    #[serde(default)]
+    pub audio_format: Option<String>,
     /// `leg` (unset): one container per dialog, each naming the call's other
     /// legs. `call`: one container holding every leg of the call.
     #[serde(default)]
@@ -1496,12 +1655,13 @@ pub struct VconRuleConfig {
     /// Default `false`: one write, once the call has ended or gone idle.
     #[serde(default)]
     pub live: Option<bool>,
-    /// A PEM certificate holding the RSA key this rule's containers are
-    /// encrypted to. Set, the rule writes only the encrypted form of
+    /// The PEM certificate, or a list of them, holding the RSA or EC P-256
+    /// key each recipient of this rule's containers opens them with. Set,
+    /// the rule writes only the encrypted form of
     /// draft-ietf-vcon-vcon-core-04 section 5.3: signed with `sign_key` and
-    /// `sign_cert`, then encrypted.
+    /// `sign_cert`, then encrypted once, to every recipient.
     #[serde(default)]
-    pub encrypt_to: Option<std::path::PathBuf>,
+    pub encrypt_to: Option<PathList>,
     /// The PEM RSA private key an encrypting rule signs with. Readable by its
     /// owner only.
     #[serde(default)]
@@ -1520,6 +1680,41 @@ pub struct VconRuleConfig {
     /// `encrypt_to`.
     #[serde(default)]
     pub sealed_updates: Option<String>,
+    /// Attach the initial INVITE and its final response in wire format
+    /// (`sip-invite`, `sip-response`) and their SDP (`sip-sdp`), as
+    /// draft-howe-vcon-sip-signaling-00 section 8.1 describes for a minimal
+    /// producer. Default `false`. Refused under `--redact`.
+    #[serde(default)]
+    pub sip_messages: Option<bool>,
+    /// Write each DTMF key press as `keydown` and `keyup` events in the
+    /// signaling Dialog Object's `party_history`, with the digit, from INFO
+    /// `application/dtmf-relay` and RFC 4733 telephone events. Turns
+    /// telephone-event decoding on for the run. Default `false`: a digit can
+    /// be a PIN. Removed under `--redact`.
+    #[serde(default)]
+    pub dtmf_events: Option<bool>,
+    /// The SIP header whose value becomes the signaling Dialog Object's
+    /// `campaign` (draft-ietf-vcon-cc-extension-02 section 3.2.1).
+    #[serde(default)]
+    pub campaign_header: Option<String>,
+    /// The SIP header whose value becomes `skill` (section 3.2.4), such as
+    /// `X-Queue`.
+    #[serde(default)]
+    pub skill_header: Option<String>,
+    /// The SIP header whose value becomes `interaction_id` (section 3.2.3).
+    #[serde(default)]
+    pub interaction_id_header: Option<String>,
+    /// `true`: write the signed form of draft-ietf-vcon-vcon-core-04 section
+    /// 5.2 alone, signed with `sign_key` and `sign_cert`, with no
+    /// encryption. Refused beside the rule's own `encrypt_to`. Default
+    /// `false`: a rule signs only as the inner layer of the encrypted form.
+    #[serde(default)]
+    pub sign_only: Option<bool>,
+    /// An `https://` URL serving the PEM chain of `sign_cert`: written as
+    /// each signature's `x5u` (draft-ietf-vcon-vcon-core-04 section 5.2.2),
+    /// beside its `x5c`.
+    #[serde(default)]
+    pub sign_cert_url: Option<String>,
 }
 
 /// The PBX sipnab runs beside.
@@ -3356,7 +3551,7 @@ impl Config {
     /// # Errors
     /// `crate::Error::ConfigInvalid`, naming the first such key.
     pub fn validate_paths(&self) -> Result<(), crate::Error> {
-        let keys: [(&str, Option<&Path>); 27] = [
+        let keys: [(&str, Option<&Path>); 34] = [
             ("[hep] tls_ca", self.hep.tls_ca.as_deref()),
             ("[hep] tls_extra_ca", self.hep.tls_extra_ca.as_deref()),
             ("[hep] tls_cert", self.hep.tls_cert.as_deref()),
@@ -3392,6 +3587,22 @@ impl Config {
                 "[vcon_forward] extra_ca",
                 self.vcon_forward.extra_ca.as_deref(),
             ),
+            (
+                "[vcon_forward] scitt_auth_file",
+                self.vcon_forward.scitt_auth_file.as_deref(),
+            ),
+            (
+                "[vcon_forward] scitt_ca",
+                self.vcon_forward.scitt_ca.as_deref(),
+            ),
+            (
+                "[vcon_forward] scitt_sign_key",
+                self.vcon_forward.scitt_sign_key.as_deref(),
+            ),
+            (
+                "[vcon_forward] scitt_sign_cert",
+                self.vcon_forward.scitt_sign_cert.as_deref(),
+            ),
             ("[vcon_forward] done", self.vcon_forward.done.as_deref()),
             ("[vcon_forward] failed", self.vcon_forward.failed.as_deref()),
             (
@@ -3408,7 +3619,20 @@ impl Config {
                 "[vcon_fetch] signer_ca",
                 self.vcon_fetch.signer_ca.as_deref(),
             ),
-            ("[vcon] encrypt_to", self.vcon.encrypt_to.as_deref()),
+            ("[vcon_input] key", self.vcon_input.key.as_deref()),
+            (
+                "[vcon_input] signer_ca",
+                self.vcon_input.signer_ca.as_deref(),
+            ),
+            ("[vcon_input] x5u_ca", self.vcon_input.x5u_ca.as_deref()),
+            (
+                "[vcon] encrypt_to",
+                self.vcon
+                    .encrypt_to
+                    .as_ref()
+                    .and_then(|list| list.paths().iter().find(|p| p.as_os_str().is_empty()))
+                    .map(std::path::PathBuf::as_path),
+            ),
             ("[vcon] sign_key", self.vcon.sign_key.as_deref()),
             ("[vcon] sign_cert", self.vcon.sign_cert.as_deref()),
         ];

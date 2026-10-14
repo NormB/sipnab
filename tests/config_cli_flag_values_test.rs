@@ -120,6 +120,49 @@ static SPECS: &[Spec] = &[
         &["-I", FIXTURE_DIR],
     ),
     (
+        "vcon-key",
+        Kind::Text {
+            accept: &["x", " ", "0", "-1"],
+            reject: &[("", 2)],
+        },
+        &[],
+    ),
+    (
+        "vcon-signer-ca",
+        Kind::Text {
+            accept: &["x", " ", "0", "-1", "system"],
+            reject: &[("", 2)],
+        },
+        &[],
+    ),
+    (
+        "vcon-x5u-ca",
+        Kind::Text {
+            accept: &["x", " ", "0", "-1", "system"],
+            reject: &[("", 2)],
+        },
+        &[],
+    ),
+    (
+        "vcon-signer-sha256",
+        Kind::Text {
+            accept: &[
+                "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+                "FE:DC:BA:98:76:54:32:10:FE:DC:BA:98:76:54:32:10:FE:DC:BA:98:76:54:32:10:FE:DC:BA:98:76:54:32:10",
+            ],
+            reject: &[
+                ("", 2),
+                ("x", 2),
+                ("ab:cd", 2),
+                (
+                    "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef00",
+                    2,
+                ),
+            ],
+        },
+        &[],
+    ),
+    (
         "output",
         Kind::Text {
             accept: &["x", "", " ", "0"],
@@ -2261,6 +2304,136 @@ static SPECS: &[Spec] = &[
         ],
     ),
     (
+        "vcon-forward-scitt-url",
+        Kind::Text {
+            accept: &["http://127.0.0.1:9/s", "https://ts.example.com/scitt"],
+            reject: &[("x", 2), ("", 2), (" ", 2), ("ftp://127.0.0.1/x", 2)],
+        },
+        &[
+            "--vcon-forward-url",
+            "http://127.0.0.1:9/x",
+            "--vcon-forward-auth-file",
+            "/nonexistent/auth",
+            "--vcon-forward",
+            "/var/tmp",
+            "--vcon-forward-scitt-sign-key",
+            "/nonexistent/scitt.key",
+            "--vcon-forward-scitt-sign-cert",
+            "/nonexistent/scitt.crt",
+            "--vcon-forward-scitt-issuer",
+            "https://sipnab.example/",
+        ],
+    ),
+    (
+        "vcon-forward-scitt-auth-file",
+        Kind::Text {
+            accept: &["x", " ", "0", "-1"],
+            reject: &[("", 2)],
+        },
+        &[
+            "--vcon-forward-url",
+            "http://127.0.0.1:9/x",
+            "--vcon-forward-auth-file",
+            "/nonexistent/auth",
+            "--vcon-forward",
+            "/var/tmp",
+            "--vcon-forward-scitt-url",
+            "http://127.0.0.1:9/s",
+            "--vcon-forward-scitt-sign-key",
+            "/nonexistent/scitt.key",
+            "--vcon-forward-scitt-sign-cert",
+            "/nonexistent/scitt.crt",
+            "--vcon-forward-scitt-issuer",
+            "https://sipnab.example/",
+        ],
+    ),
+    (
+        "vcon-forward-scitt-ca",
+        Kind::Text {
+            accept: &["x", " ", "0", "-1"],
+            reject: &[("", 2)],
+        },
+        &[
+            "--vcon-forward-url",
+            "http://127.0.0.1:9/x",
+            "--vcon-forward-auth-file",
+            "/nonexistent/auth",
+            "--vcon-forward",
+            "/var/tmp",
+            "--vcon-forward-scitt-url",
+            "http://127.0.0.1:9/s",
+            "--vcon-forward-scitt-sign-key",
+            "/nonexistent/scitt.key",
+            "--vcon-forward-scitt-sign-cert",
+            "/nonexistent/scitt.crt",
+            "--vcon-forward-scitt-issuer",
+            "https://sipnab.example/",
+        ],
+    ),
+    (
+        "vcon-forward-scitt-sign-key",
+        Kind::Text {
+            accept: &["x", " ", "0", "-1"],
+            reject: &[("", 2)],
+        },
+        &[
+            "--vcon-forward-url",
+            "http://127.0.0.1:9/x",
+            "--vcon-forward-auth-file",
+            "/nonexistent/auth",
+            "--vcon-forward",
+            "/var/tmp",
+            "--vcon-forward-scitt-url",
+            "http://127.0.0.1:9/s",
+            "--vcon-forward-scitt-sign-cert",
+            "/nonexistent/scitt.crt",
+            "--vcon-forward-scitt-issuer",
+            "https://sipnab.example/",
+        ],
+    ),
+    (
+        "vcon-forward-scitt-sign-cert",
+        Kind::Text {
+            accept: &["x", " ", "0", "-1"],
+            reject: &[("", 2)],
+        },
+        &[
+            "--vcon-forward-url",
+            "http://127.0.0.1:9/x",
+            "--vcon-forward-auth-file",
+            "/nonexistent/auth",
+            "--vcon-forward",
+            "/var/tmp",
+            "--vcon-forward-scitt-url",
+            "http://127.0.0.1:9/s",
+            "--vcon-forward-scitt-sign-key",
+            "/nonexistent/scitt.key",
+            "--vcon-forward-scitt-issuer",
+            "https://sipnab.example/",
+        ],
+    ),
+    (
+        "vcon-forward-scitt-issuer",
+        Kind::Text {
+            accept: &["https://sipnab.example/", "urn:example:sipnab"],
+            reject: &[("x", 2), ("", 2), (" ", 2), ("https://a b", 2)],
+        },
+        &[
+            "--vcon-forward-url",
+            "http://127.0.0.1:9/x",
+            "--vcon-forward-auth-file",
+            "/nonexistent/auth",
+            "--vcon-forward",
+            "/var/tmp",
+            "--vcon-forward-scitt-url",
+            "http://127.0.0.1:9/s",
+            "--vcon-forward-scitt-sign-key",
+            "/nonexistent/scitt.key",
+            "--vcon-forward-scitt-sign-cert",
+            "/nonexistent/scitt.crt",
+        ],
+    ),
+    (
         "vcon-forward-ca",
         Kind::Text {
             accept: &["x", " ", "0", "-1"],
@@ -2361,6 +2534,31 @@ static SPECS: &[Spec] = &[
         ],
     ),
     (
+        "vcon-forward-content-type",
+        Kind::Text {
+            accept: &[
+                "application/vcon+json",
+                "application/vcon",
+                "application/json",
+            ],
+            reject: &[
+                ("", 2),
+                ("x", 2),
+                ("application/vcon+gzip", 2),
+                ("APPLICATION/JSON", 2),
+                ("text/plain", 2),
+            ],
+        },
+        &[
+            "--vcon-forward-url",
+            "http://127.0.0.1:9/x",
+            "--vcon-forward-auth-file",
+            "/nonexistent/auth",
+            "--vcon-forward",
+            "/var/tmp",
+        ],
+    ),
+    (
         "vcon-forward-kind",
         Kind::Choice,
         &[
@@ -2379,6 +2577,66 @@ static SPECS: &[Spec] = &[
             reject: &[("", 2)],
         },
         &[],
+    ),
+    (
+        "vcon-resign",
+        Kind::Text {
+            accept: &["x", " ", "0", "-1"],
+            reject: &[("", 2)],
+        },
+        &[
+            "--vcon-resign-key",
+            "/nonexistent/key",
+            "--vcon-resign-cert",
+            "/nonexistent/cert",
+            "--vcon-resign-out",
+            "/nonexistent/out",
+        ],
+    ),
+    (
+        "vcon-resign-key",
+        Kind::Text {
+            accept: &["x", " ", "0", "-1"],
+            reject: &[("", 2)],
+        },
+        &[
+            "--vcon-resign",
+            "/nonexistent/in",
+            "--vcon-resign-cert",
+            "/nonexistent/cert",
+            "--vcon-resign-out",
+            "/nonexistent/out",
+        ],
+    ),
+    (
+        "vcon-resign-cert",
+        Kind::Text {
+            accept: &["x", " ", "0", "-1"],
+            reject: &[("", 2)],
+        },
+        &[
+            "--vcon-resign",
+            "/nonexistent/in",
+            "--vcon-resign-key",
+            "/nonexistent/key",
+            "--vcon-resign-out",
+            "/nonexistent/out",
+        ],
+    ),
+    (
+        "vcon-resign-out",
+        Kind::Text {
+            accept: &["x", " ", "0", "-1"],
+            reject: &[("", 2)],
+        },
+        &[
+            "--vcon-resign",
+            "/nonexistent/in",
+            "--vcon-resign-key",
+            "/nonexistent/key",
+            "--vcon-resign-cert",
+            "/nonexistent/cert",
+        ],
     ),
     (
         "vcon-fetch",
@@ -3375,6 +3633,12 @@ fn fingerprint(cli: &sipnab::cli::Cli, config: &sipnab::config::Config) -> Strin
         format!(
             "{:?}",
             sipnab::app::vcon_fetch::FetchPlan::resolve(&cli.vcon_fetch_args, &config.vcon_fetch)
+        ),
+        // The keys the vCon readers open containers with, resolved from
+        // their flags and `[vcon_input]`; each file shows by its path alone.
+        format!(
+            "{:?}",
+            sipnab::app::bootstrap::reader_keys(cli, config).map_err(|(_, e)| e)
         ),
     ];
     let mut text = parts.join("\n");

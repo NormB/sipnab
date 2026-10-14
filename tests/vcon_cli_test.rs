@@ -591,8 +591,11 @@ fn a_redacted_export_of_retained_audio_carries_no_empty_recording()
                 object["type"], "recording-set",
                 "{label}: a recording-set stands for audio this export deleted: {object}"
             );
+            // `duration` is not in the list: on a contentless object it is the
+            // conversation, answer to BYE, which
+            // `a_recording_without_content_is_a_bare_placeholder` pins.
             if object.get("body").is_none() {
-                for media_field in ["mediatype", "encoding", "content_hash", "duration"] {
+                for media_field in ["mediatype", "encoding", "content_hash"] {
                     assert!(
                         object.get(media_field).is_none(),
                         "{label}: an object with no content describes media with \

@@ -360,7 +360,7 @@ pub(super) fn save_to_mermaid_path(app: &App, path_str: &str) -> String {
         theme: &app.theme,
         resolver: app.resolver.as_ref(),
         name_mode: app.name_mode,
-        rtp_segments: &[],
+        rtp_streams: &[],
     };
     let (participants, msgs) = call_flow::prepare_messages(
         &messages,

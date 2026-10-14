@@ -216,6 +216,55 @@ pub fn extract_dtmf_with_clock(
     })
 }
 
+/// The payload type and clock rate RFC 4733 telephone events are read at when
+/// no SDP describes the stream: PT 101 at 8000 Hz.
+///
+/// A convention, not a registration. [RFC 4733 section 7.1.1](https://www.rfc-editor.org/rfc/rfc4733.html#section-7.1.1)
+/// gives `telephone-event` no static payload type, so a session binds one
+/// from the dynamic range 96-127 of [RFC 3551 section 6](https://www.rfc-editor.org/rfc/rfc3551.html#section-6)
+/// with `a=rtpmap`. 101 is the number most implementations pick, which makes
+/// it the last-resort guess for a stream whose session the capture did not
+/// hold, or whose SDP negotiated no telephone-event, and only for that.
+pub const FALLBACK_TELEPHONE_EVENT: (u8, u32) = (101, 8000);
+
+/// The telephone-event payload type and clock rate to read a packet at, from
+/// the `a=rtpmap` list of the session that owns its stream.
+///
+/// # Arguments
+///
+/// * `rtpmap` — the owning session's `(payload type, encoding, clock rate)`
+///   bindings, or `None` when no SDP for the stream was seen.
+/// * `payload_type` — the PT in the packet's RTP header.
+///
+/// # Returns
+///
+/// `Some((payload_type, clock_rate))` when the session bound `payload_type`
+/// to `telephone-event` (the encoding name compared without regard to case,
+/// [RFC 4566 section 6](https://www.rfc-editor.org/rfc/rfc4566.html#section-6)).
+/// [`FALLBACK_TELEPHONE_EVENT`] when the packet carries its PT and nothing
+/// says otherwise: no SDP was seen, or the session negotiated no
+/// telephone-event and bound no encoding to that PT. Otherwise `None`: a
+/// session that bound telephone-event to another PT, or bound this PT to
+/// another encoding, says the packet is not one.
+#[must_use]
+pub fn telephone_event_format(
+    rtpmap: Option<&[(u8, String, u32)]>,
+    payload_type: u8,
+) -> Option<(u8, u32)> {
+    let rtpmap = rtpmap.unwrap_or_default();
+    let is_event = |encoding: &str| encoding.eq_ignore_ascii_case("telephone-event");
+    if let Some((pt, _, clock_rate)) = rtpmap
+        .iter()
+        .find(|(pt, encoding, _)| *pt == payload_type && is_event(encoding))
+    {
+        return Some((*pt, *clock_rate));
+    }
+    let silent = !rtpmap
+        .iter()
+        .any(|(pt, encoding, _)| is_event(encoding) || *pt == payload_type);
+    (silent && payload_type == FALLBACK_TELEPHONE_EVENT.0).then_some(FALLBACK_TELEPHONE_EVENT)
+}
+
 /// Map an RFC 4733 event code to its DTMF character.
 ///
 /// Returns `None` for event codes outside the DTMF range (0-15).
@@ -534,5 +583,74 @@ mod tests {
         let payload = build_event(1, true, 10, 1600);
         assert!(extract_dtmf_with_clock(&payload, 101, 101, 0, ts()?).is_none());
         Ok(())
+    }
+
+    /// An `a=rtpmap` list as the SDP endpoint store keeps it.
+    fn rtpmap(entries: &[(u8, &str, u32)]) -> Vec<(u8, String, u32)> {
+        entries
+            .iter()
+            .map(|(pt, encoding, clock)| (*pt, (*encoding).to_owned(), *clock))
+            .collect()
+    }
+
+    /// The telephone-event payload type is whichever one the session's rtpmap
+    /// bound, across the dynamic range: 96 (the first), 101 (the common
+    /// choice), 127 (the last).
+    #[test]
+    fn the_payload_type_comes_from_the_rtpmap() {
+        for pt in [96u8, 101, 127] {
+            let map = rtpmap(&[
+                (8, "PCMA", 8000),
+                (0, "PCMU", 8000),
+                (pt, "telephone-event", 8000),
+            ]);
+            assert_eq!(
+                telephone_event_format(Some(&map), pt),
+                Some((pt, 8000)),
+                "rtpmap telephone-event at {pt}"
+            );
+        }
+    }
+
+    /// The clock rate is the one the rtpmap bound to that payload type, and
+    /// the encoding name matches without regard to case ([RFC 4566 section 6](https://www.rfc-editor.org/rfc/rfc4566.html#section-6)).
+    #[test]
+    fn the_clock_rate_comes_from_the_same_rtpmap_entry() {
+        let map = rtpmap(&[
+            (96, "telephone-event", 8000),
+            (97, "Telephone-Event", 16_000),
+        ]);
+        assert_eq!(telephone_event_format(Some(&map), 96), Some((96, 8000)));
+        assert_eq!(telephone_event_format(Some(&map), 97), Some((97, 16_000)));
+    }
+
+    /// When the session's SDP was seen, a payload type it did not bind to
+    /// telephone-event is not read as one: 101 included, and a payload type
+    /// bound to an audio codec included.
+    #[test]
+    fn a_seen_sdp_without_that_binding_reads_no_telephone_event() {
+        let map = rtpmap(&[(8, "PCMA", 8000), (96, "telephone-event", 8000)]);
+        assert_eq!(telephone_event_format(Some(&map), 101), None);
+        assert_eq!(telephone_event_format(Some(&map), 8), None);
+        let opus = rtpmap(&[(101, "opus", 48_000)]);
+        assert_eq!(telephone_event_format(Some(&opus), 101), None);
+    }
+
+    /// With no SDP for the stream, PT 101 at 8000 Hz is the last-resort
+    /// default, and no other payload type is read as a telephone event.
+    #[test]
+    fn without_sdp_only_the_conventional_payload_type_is_read() {
+        assert_eq!(telephone_event_format(None, 101), Some((101, 8000)));
+        assert_eq!(telephone_event_format(None, 96), None);
+    }
+
+    /// A session that negotiated no telephone-event and bound nothing to 101
+    /// says nothing about PT 101, so the last-resort default still applies
+    /// to it, and to it alone.
+    #[test]
+    fn an_sdp_silent_on_telephone_events_leaves_the_default() {
+        let map = rtpmap(&[(0, "PCMU", 8000)]);
+        assert_eq!(telephone_event_format(Some(&map), 101), Some((101, 8000)));
+        assert_eq!(telephone_event_format(Some(&map), 96), None);
     }
 }

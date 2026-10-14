@@ -4071,7 +4071,7 @@ mod tui_state {
             theme: &theme,
             resolver: &resolver,
             name_mode: sipnab::names::NameMode::Off,
-            rtp_segments: &[],
+            rtp_streams: &[],
         };
 
         // No selection ⇒ default state is Normal for every rendered row.
@@ -4555,7 +4555,7 @@ mod tui_state {
             theme: &theme,
             resolver: Box::leak(Box::new(sipnab::names::NameResolver::new())),
             name_mode: sipnab::names::NameMode::Off,
-            rtp_segments: &[],
+            rtp_streams: &[],
         };
         let (participants, formatted) =
             prepare_messages(&messages, t0, None, &flow_opts, &fold_expanded);
@@ -4949,7 +4949,7 @@ mod tui_state {
             theme: &theme,
             resolver: Box::leak(Box::new(sipnab::names::NameResolver::new())),
             name_mode: sipnab::names::NameMode::Off,
-            rtp_segments: &[],
+            rtp_streams: &[],
         };
         let (_participants, formatted) =
             prepare_messages(&messages, t0, None, &flow_opts, &fold_expanded);
@@ -5013,7 +5013,7 @@ mod tui_state {
             theme: &theme,
             resolver: Box::leak(Box::new(sipnab::names::NameResolver::new())),
             name_mode: sipnab::names::NameMode::Off,
-            rtp_segments: &[],
+            rtp_streams: &[],
         };
         let (_participants, formatted) =
             prepare_messages(&messages, t0, None, &flow_opts, &fold_expanded);

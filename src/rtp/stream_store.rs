@@ -882,6 +882,42 @@ impl StreamStore {
         self.streams.get(&self.live_key(flow))
     }
 
+    /// The `a=rtpmap` bindings of the session that owns the stream `flow`
+    /// belongs to now, or `None` when no SDP ties the stream to one.
+    ///
+    /// Read from the SDP endpoint on the stream's source or destination socket
+    /// that names the stream's own dialog: the same two sockets, and the same
+    /// Call-ID, that [`Self::link_endpoint_from`] and `resolve_from_sdp` bound
+    /// the stream through. So a stream sent from a socket nobody advertised
+    /// (NAT, a media relay) reads the rtpmap of the SDP that advertised its
+    /// destination, exactly as it is linked to that SDP's dialog, and an
+    /// endpoint another call's SDP named on the other socket is never read.
+    ///
+    /// `None` for a stream with no dialog, and for one whose endpoint the
+    /// bounded endpoint map has since evicted.
+    #[must_use]
+    pub fn negotiated_rtpmap(&self, flow: &StreamKey) -> Option<&[(u8, String, u32)]> {
+        let stream = self.get_live(flow)?;
+        let call_id = stream.associated_dialog.as_deref()?;
+        [stream.key.src, stream.key.dst]
+            .into_iter()
+            .filter_map(|socket| self.sdp_endpoints.get(&(socket.ip(), socket.port())))
+            .find(|endpoint| endpoint.call_id == call_id)
+            .map(|endpoint| endpoint.rtpmap.as_slice())
+    }
+
+    /// Record one decoded telephone event on the stream `flow` belongs to
+    /// now, up to [`crate::rtp::stream::MAX_KEY_PRESSES`] per stream. A flow
+    /// with no stream records nothing.
+    pub fn record_key_press(&mut self, flow: &StreamKey, press: crate::rtp::dtmf::DtmfEvent) {
+        let key = self.live_key(flow);
+        if let Some(stream) = self.streams.get_mut(&key)
+            && stream.key_presses.len() < crate::rtp::stream::MAX_KEY_PRESSES
+        {
+            stream.key_presses.push(press);
+        }
+    }
+
     /// Whether the live stream at `key` must give way to a new one because a
     /// different call renegotiated one of its sockets after it began.
     fn call_changed(&self, key: &StreamKey) -> bool {
@@ -3277,6 +3313,88 @@ a=rtpmap:96 H264/90000\r\n";
         Ok(())
     }
 
+    /// The stream 10.0.0.1:`src_port` -> 10.0.0.2:`dst_port` on SSRC
+    /// `0x0D7F_0001`, created from one PCMA packet.
+    fn pcma_stream(store: &mut StreamStore, src_port: u16, dst_port: u16) -> StreamKey {
+        let parsed = make_parsed(src_port, dst_port, 160);
+        store.process_rtp(&parsed, &rtp_pkt(0x0D7F_0001, 1, 8, 0), ts(0));
+        StreamKey {
+            ssrc: 0x0D7F_0001,
+            src: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)), src_port),
+            dst: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2)), dst_port),
+            session: 0,
+        }
+    }
+
+    /// A stream sent from a socket no SDP advertised, to the socket its
+    /// dialog's SDP did, reads that SDP's rtpmap: the link that ties the
+    /// stream to the dialog is the one that names the session.
+    #[test]
+    fn the_rtpmap_follows_the_endpoint_that_links_the_stream() -> Result<(), TestError> {
+        let mut store = StreamStore::new(100);
+        let callee = IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2));
+        let rtpmap = vec![
+            (8u8, "PCMA".to_string(), 8000u32),
+            (96, "telephone-event".to_string(), 8000),
+        ];
+        store.link_endpoint(callee, 4376, "call-1", &rtpmap);
+        let key = pcma_stream(&mut store, 5004, 4376);
+        assert_eq!(
+            store.get(&key).and_then(|s| s.associated_dialog.as_deref()),
+            Some("call-1")
+        );
+        assert_eq!(store.negotiated_rtpmap(&key), Some(rtpmap.as_slice()));
+        Ok(())
+    }
+
+    /// An endpoint on the stream's other socket that another call's SDP named
+    /// is not the stream's session, and its rtpmap is not read, even on the
+    /// socket looked at first.
+    #[test]
+    fn another_calls_rtpmap_on_the_other_socket_is_not_read() -> Result<(), TestError> {
+        let mut store = StreamStore::new(100);
+        let caller = IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1));
+        let callee = IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2));
+        let own = vec![(97u8, "telephone-event".to_string(), 8000u32)];
+        let other = vec![(96u8, "telephone-event".to_string(), 8000u32)];
+        // RTP first, then the destination's SDP binds the stream to call-1;
+        // the source's SDP for call-2 arrives after and does not rebind it.
+        let key = pcma_stream(&mut store, 5004, 4376);
+        store.link_endpoint(callee, 4376, "call-1", &own);
+        store.link_endpoint(caller, 5004, "call-2", &other);
+        assert_eq!(
+            store.get(&key).and_then(|s| s.associated_dialog.as_deref()),
+            Some("call-1")
+        );
+        assert_eq!(store.negotiated_rtpmap(&key), Some(own.as_slice()));
+        Ok(())
+    }
+
+    /// A stream no SDP linked to a dialog has no session to read an rtpmap
+    /// from, even when an endpoint too old to bind it sits on its socket.
+    #[test]
+    fn a_stream_with_no_dialog_has_no_rtpmap() -> Result<(), TestError> {
+        let mut store = StreamStore::new(100);
+        let callee = IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2));
+        let stale = vec![(96u8, "telephone-event".to_string(), 8000u32)];
+        store.link_endpoint_from(
+            callee,
+            4376,
+            "call-1",
+            &stale,
+            None,
+            SdpProvenance::observed(crate::capture::parse::InputOrigin::Wire, ts(-1000)),
+        );
+        let key = pcma_stream(&mut store, 5004, 4376);
+        assert!(
+            store
+                .get(&key)
+                .is_some_and(|s| s.associated_dialog.is_none())
+        );
+        assert_eq!(store.negotiated_rtpmap(&key), None);
+        Ok(())
+    }
+
     /// clear() must drop remembered SDP endpoints along with the streams:
     /// a stream created *after* a clear must not resolve its dialog from an
     /// endpoint learned before the clear, resurrecting a dead association.
@@ -5280,6 +5398,37 @@ a=rtpmap:96 H264/90000\r\n";
             ts(0),
         );
         store
+    }
+
+    /// A decoded telephone event lands on the stream its packet belongs to,
+    /// at most `MAX_KEY_PRESSES` of them, and a flow with no stream records
+    /// nothing.
+    #[test]
+    fn a_key_press_is_recorded_on_its_stream_up_to_the_cap() {
+        let mut store = store_with_one_stream();
+        let flow = StreamKey {
+            ssrc: 0x00C0_FFEE,
+            src: std::net::SocketAddr::new(a(), 20000),
+            dst: std::net::SocketAddr::new(b(), 30000),
+            session: 0,
+        };
+        let press = crate::rtp::dtmf::DtmfEvent {
+            digit: '5',
+            duration_ms: 100,
+            timestamp: ts(1),
+        };
+        for _ in 0..crate::rtp::stream::MAX_KEY_PRESSES + 10 {
+            store.record_key_press(&flow, press.clone());
+        }
+        let stored: Vec<usize> = store
+            .streams_for("call-1")
+            .map(|s| s.key_presses.len())
+            .collect();
+        assert_eq!(stored, vec![crate::rtp::stream::MAX_KEY_PRESSES]);
+
+        let mut empty = StreamStore::new(100);
+        empty.record_key_press(&flow, press);
+        assert_eq!(empty.streams_for("call-1").count(), 0);
     }
 
     // ── what the correlation claims rest on ────────────────────────────────

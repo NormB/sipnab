@@ -8,6 +8,9 @@
 #![cfg(all(feature = "native", feature = "vcon"))]
 
 use std::path::{Path, PathBuf};
+
+#[path = "support/pcap_build.rs"]
+mod pcap_build;
 use std::process::Command;
 
 type TestError = Box<dyn std::error::Error>;
@@ -228,6 +231,157 @@ fn a_url_rule_writes_the_wav_beside_the_container_and_references_it() -> Result<
     Ok(())
 }
 
+/// The recording of the one container in `dir`, and that container.
+#[cfg(feature = "opus")]
+fn recording_in(dir: &Path) -> Result<(serde_json::Value, serde_json::Value), TestError> {
+    let container = containers(dir)?.into_iter().next().ok_or("a container")?;
+    let recording = container["dialog"]
+        .as_array()
+        .ok_or("dialog")?
+        .iter()
+        .find(|d| d["content_hash"].is_string())
+        .cloned()
+        .ok_or("a recording with a content_hash")?;
+    Ok((recording, container))
+}
+
+/// `sha512-` and the base64url SHA-512 of `bytes`.
+#[cfg(feature = "opus")]
+fn hash_of(bytes: &[u8]) -> String {
+    use base64::Engine as _;
+    use sha2::{Digest, Sha512};
+    format!(
+        "sha512-{}",
+        base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(Sha512::digest(bytes))
+    )
+}
+
+/// `audio_format = "opus"`: the recording is Ogg Opus, inline. Its
+/// `mediatype` is `audio/ogg`, its body is an Ogg stream whose first packet
+/// is the Opus ID header, and its `content_hash` is over the Ogg bytes. The
+/// same call as a WAV rule's recording is larger.
+#[cfg(feature = "opus")]
+#[test]
+fn an_opus_rule_carries_the_recording_as_ogg_opus() -> Result<(), TestError> {
+    use base64::Engine as _;
+    let home = tempfile::tempdir()?;
+    let (wav_dir, opus_dir) = (home.path().join("wav"), home.path().join("opus"));
+    let config = rule("as-wav", CALL, &wav_dir, "inline")
+        + &format!(
+            "{}audio_format = \"opus\"\n",
+            rule("as-opus", CALL, &opus_dir, "inline")
+        );
+    let out = run(&config, &[], home.path())?;
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let (recording, container) = recording_in(&opus_dir)?;
+    assert_eq!(media_of(&container)?, "carried");
+    assert_eq!(recording["mediatype"], "audio/ogg");
+    let body = base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .decode(recording["body"].as_str().ok_or("an inline body")?)?;
+    assert_eq!(&body[..4], b"OggS", "an Ogg page");
+    assert_eq!(&body[28..36], b"OpusHead", "the Opus ID header first");
+    assert_eq!(recording["content_hash"], hash_of(&body));
+
+    let (wav, _) = recording_in(&wav_dir)?;
+    assert_eq!(wav["mediatype"], "audio/x-wav", "the other rule keeps WAV");
+    assert_eq!(wav["duration"], recording["duration"], "the same audio");
+    let wav_body = wav["body"].as_str().ok_or("a WAV body")?;
+    let ogg_body = recording["body"].as_str().ok_or("an Ogg body")?;
+    assert!(
+        ogg_body.len() * 3 < wav_body.len(),
+        "Opus is a third of the WAV or less"
+    );
+    Ok(())
+}
+
+/// `audio = "url"` with `audio_format = "opus"` writes an `.ogg` beside the
+/// container, and the recording names it with `audio/ogg` and its hash.
+#[cfg(feature = "opus")]
+#[test]
+fn an_opus_url_rule_writes_an_ogg_beside_the_container() -> Result<(), TestError> {
+    let home = tempfile::tempdir()?;
+    let dir = home.path().join("by-url");
+    let config = format!(
+        "{}audio_url_base = \"https://media.example.com/calls\"\naudio_format = \"opus\"\n",
+        rule("by-url", CALL, &dir, "url")
+    );
+    let out = run(&config, &[], home.path())?;
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let (recording, _) = recording_in(&dir)?;
+    let url = recording["url"].as_str().ok_or("url")?;
+    let name = url
+        .strip_prefix("https://media.example.com/calls/")
+        .ok_or("the base plus a file name")?;
+    assert!(name.ends_with(".ogg"), "{name}");
+    let file = std::fs::read(dir.join(name))?;
+    assert_eq!(&file[..4], b"OggS");
+    assert_eq!(recording["mediatype"], "audio/ogg");
+    assert_eq!(recording["content_hash"], hash_of(&file));
+    Ok(())
+}
+
+/// An `audio_format` other than `wav` and `opus` is refused at startup,
+/// naming the rule and the two values; so is `audio_format` on a rule that
+/// carries no audio.
+#[test]
+fn an_audio_format_that_cannot_apply_is_refused() -> Result<(), TestError> {
+    let home = tempfile::tempdir()?;
+    let dir = home.path().join("x");
+    for (audio, format, needles) in [
+        ("inline", "flac", &["'flac'", "'wav'", "'opus'"][..]),
+        ("omit", "wav", &["audio_format", "'inline' or 'url'"][..]),
+    ] {
+        let config = format!(
+            "{}audio_format = \"{format}\"\n",
+            rule("fmt", CALL, &dir, audio)
+        );
+        let out = run(&config, &[], home.path())?;
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert_eq!(out.status.code(), Some(1), "{format}: {stderr}");
+        assert!(stderr.contains("'fmt'"), "{format}: {stderr}");
+        for needle in needles {
+            assert!(
+                stderr.contains(needle),
+                "{format}: wants {needle}: {stderr}"
+            );
+        }
+        assert!(!dir.exists(), "{format}: nothing written");
+    }
+    Ok(())
+}
+
+/// A build without the `opus` feature refuses `audio_format = "opus"` at
+/// startup and names the feature, rather than writing WAV under a setting
+/// that asked for Ogg Opus.
+#[cfg(not(feature = "opus"))]
+#[test]
+fn opus_is_refused_by_a_build_without_the_feature() -> Result<(), TestError> {
+    let home = tempfile::tempdir()?;
+    let dir = home.path().join("x");
+    let config = format!(
+        "{}audio_format = \"opus\"\n",
+        rule("needs-opus", CALL, &dir, "inline")
+    );
+    let out = run(&config, &[], home.path())?;
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(out.status.code(), Some(1), "{stderr}");
+    assert!(
+        stderr.contains("'needs-opus'") && stderr.contains("`opus` feature"),
+        "{stderr}"
+    );
+    assert!(!dir.exists(), "nothing written");
+    Ok(())
+}
+
 /// A `url` rule needs an HTTPS `audio_url_base`, and is refused without one.
 #[test]
 fn a_url_rule_needs_an_https_base() -> Result<(), TestError> {
@@ -289,5 +443,343 @@ fn redact_without_any_export_is_refused() -> Result<(), TestError> {
             "the remedy names rules: {stderr}"
         );
     }
+    Ok(())
+}
+
+/// The purposes of a container's attachments.
+fn purposes(container: &serde_json::Value) -> Vec<String> {
+    container["attachments"]
+        .as_array()
+        .map(|list| {
+            list.iter()
+                .filter_map(|a| a["purpose"].as_str().map(str::to_owned))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// `sip_messages = true` adds the initial INVITE and the final response as
+/// `message/sip` attachments, and their SDP as `application/sdp`
+/// (draft-howe-vcon-sip-signaling-00 section 8.1); a rule without it adds
+/// none.
+#[test]
+fn a_rule_with_sip_messages_attaches_the_wire_messages() -> Result<(), TestError> {
+    let home = tempfile::tempdir()?;
+    let (with, without) = (home.path().join("with"), home.path().join("without"));
+    let config = rule("with", CALL, &with, "omit").replace(
+        "audio = \"omit\"\n",
+        "audio = \"omit\"\nsip_messages = true\n",
+    ) + &rule("without", CALL, &without, "omit");
+    let out = run(&config, &[], home.path())?;
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(out.status.success(), "{stderr}");
+
+    let written = containers(&with)?;
+    assert_eq!(written.len(), 1, "{stderr}");
+    let found = purposes(&written[0]);
+    for purpose in ["sip-invite", "sip-response", "sip-sdp"] {
+        assert!(found.iter().any(|p| p == purpose), "{purpose} in {found:?}");
+    }
+    let invite = written[0]["attachments"]
+        .as_array()
+        .and_then(|l| l.iter().find(|a| a["purpose"] == "sip-invite"))
+        .ok_or("a sip-invite attachment")?;
+    assert_eq!(invite["mediatype"], "message/sip");
+    assert!(
+        invite["body"]
+            .as_str()
+            .is_some_and(|b| b.starts_with("INVITE ")),
+        "{invite}"
+    );
+
+    let plain = containers(&without)?;
+    assert_eq!(plain.len(), 1, "{stderr}");
+    let found = purposes(&plain[0]);
+    assert!(
+        !found
+            .iter()
+            .any(|p| p.starts_with("sip-") && p != "sip-message-trace"),
+        "{found:?}"
+    );
+    Ok(())
+}
+
+/// Under `--redact` a `sip_messages` rule writes no wire attachment.
+#[test]
+fn redact_refuses_the_wire_messages() -> Result<(), TestError> {
+    let home = tempfile::tempdir()?;
+    let dir = home.path().join("redacted");
+    let config = rule("redacted", CALL, &dir, "omit").replace(
+        "audio = \"omit\"\n",
+        "audio = \"omit\"\nsip_messages = true\n",
+    );
+    let out = run(&config, &["--redact"], home.path())?;
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(out.status.success(), "{stderr}");
+    let written = containers(&dir)?;
+    assert_eq!(written.len(), 1, "{stderr}");
+    let found = purposes(&written[0]);
+    for purpose in ["sip-invite", "sip-response", "sip-sdp"] {
+        assert!(
+            !found.iter().any(|p| p == purpose),
+            "{purpose} in {found:?}"
+        );
+    }
+    Ok(())
+}
+
+/// `run`, reading `capture` instead of [`CAPTURE`].
+fn run_on(capture: &str, config: &str, home: &Path) -> Result<std::process::Output, TestError> {
+    let path = home.join("rules.toml");
+    std::fs::write(&path, config)?;
+    Ok(Command::new(env!("CARGO_BIN_EXE_sipnab"))
+        .args(["-N", "-I", capture, "--no-cli-print"])
+        .arg("--config")
+        .arg(&path)
+        .env("HOME", home)
+        .output()?)
+}
+
+/// The `(event, button)` pairs of a container's signaling object.
+fn key_events(container: &serde_json::Value) -> Vec<(String, String)> {
+    container["dialog"][0]["party_history"]
+        .as_array()
+        .map(|list| {
+            list.iter()
+                .filter(|e| matches!(e["event"].as_str(), Some("keydown" | "keyup")))
+                .map(|e| {
+                    (
+                        e["event"].as_str().unwrap_or_default().to_owned(),
+                        e["button"].as_str().unwrap_or_default().to_owned(),
+                    )
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// `dtmf_events = true` writes each INFO `application/dtmf-relay` as a
+/// `keydown` and a `keyup` with its digit; a rule without it writes none.
+#[test]
+fn a_rule_with_dtmf_events_writes_the_info_key_presses() -> Result<(), TestError> {
+    let home = tempfile::tempdir()?;
+    let (with, without) = (home.path().join("with"), home.path().join("without"));
+    let when = "call_id == '2091060b-146f-e011-809a-0019cb53db77@admind-desktop'";
+    let config = rule("with", when, &with, "omit").replace(
+        "audio = \"omit\"\n",
+        "audio = \"omit\"\ndtmf_events = true\n",
+    ) + &rule("without", when, &without, "omit");
+    let out = run_on("tests/pcap-samples/DTMFsipinfo.pcap", &config, home.path())?;
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(out.status.success(), "{stderr}");
+    let written = containers(&with)?;
+    assert_eq!(written.len(), 1, "{stderr}");
+    let events = key_events(&written[0]);
+    assert!(
+        events.starts_with(&[
+            ("keydown".to_owned(), "1".to_owned()),
+            ("keyup".to_owned(), "1".to_owned()),
+        ]),
+        "{events:?}"
+    );
+    let plain = containers(&without)?;
+    assert_eq!(plain.len(), 1, "{stderr}");
+    assert!(key_events(&plain[0]).is_empty());
+    Ok(())
+}
+
+/// `dtmf_events = true` decodes RFC 4733 telephone events without
+/// `--telephone-event` and writes each for the party whose SDP advertised the
+/// sending socket: here the callee, `10.0.0.2:30000`, pressing `#`.
+#[test]
+fn a_rule_with_dtmf_events_writes_the_rtp_key_presses() -> Result<(), TestError> {
+    let home = tempfile::tempdir()?;
+    let capture = home.path().join("rtp-dtmf.pcap");
+    let mut frames = pcap_build::g711_call_both_ways("rtp-dtmf@test", 1, |_, _, _| 0xff);
+    // Event 11 (`#`), E bit set, duration 800 timestamp units (100 ms at
+    // 8000 Hz), sent three times as RFC 4733 section 2.5.1.4 repeats an end
+    // packet, half a second into the media.
+    for repeat in 0..3u16 {
+        let mut packet = vec![0x80, 101];
+        packet.extend_from_slice(&(100 + repeat).to_be_bytes());
+        packet.extend_from_slice(&8_000u32.to_be_bytes());
+        packet.extend_from_slice(&0x3333_3333u32.to_be_bytes());
+        packet.extend_from_slice(&[11, 0x80 | 10, 0x03, 0x20]);
+        frames.push((
+            pcap_build::udp_frame([10, 0, 0, 2], [10, 0, 0, 1], 30000, 20000, &packet),
+            510_000 + u64::from(repeat) * 1_000,
+        ));
+    }
+    frames.sort_by_key(|(_, at)| *at);
+    pcap_build::write_pcap_at(&capture, &frames, 1)?;
+
+    let dir = home.path().join("rtp");
+    let config = rule("rtp", "call_id == 'rtp-dtmf@test'", &dir, "omit").replace(
+        "audio = \"omit\"\n",
+        "audio = \"omit\"\ndtmf_events = true\n",
+    );
+    let out = run_on(&capture.to_string_lossy(), &config, home.path())?;
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(out.status.success(), "{stderr}");
+    let written = containers(&dir)?;
+    assert_eq!(written.len(), 1, "{stderr}");
+    let history = &written[0]["dialog"][0]["party_history"];
+    let keys: Vec<&serde_json::Value> = history
+        .as_array()
+        .map(|l| {
+            l.iter()
+                .filter(|e| matches!(e["event"].as_str(), Some("keydown" | "keyup")))
+                .collect()
+        })
+        .unwrap_or_default();
+    assert_eq!(keys.len(), 2, "one press, written once: {history:#}");
+    assert_eq!(keys[0]["event"], "keydown");
+    assert_eq!(keys[0]["party"], 1);
+    assert_eq!(keys[0]["button"], "#");
+    assert_eq!(keys[1]["event"], "keyup");
+    Ok(())
+}
+
+/// RTP key presses whose sending socket no party advertised are decoded and
+/// not written: `SIP_DTMF2.cap` carries seven keys at PT 96, sent from
+/// 192.168.105.172:4376, a socket neither party's SDP named. The party is the
+/// one whose own advertised endpoint sent the stream, the evidence the audio
+/// channels are attributed by, and here there is none, so `party_history`
+/// gets no `keydown` rather than one with a guessed party.
+#[test]
+fn rtp_key_presses_from_a_socket_no_party_advertised_are_not_attributed() -> Result<(), TestError> {
+    let home = tempfile::tempdir()?;
+    let dir = home.path().join("dtmf2");
+    let config = rule("dtmf2", "call_id == '25672@192.168.105.110'", &dir, "omit").replace(
+        "audio = \"omit\"\n",
+        "audio = \"omit\"\ndtmf_events = true\n",
+    );
+    let out = run_on("tests/pcap-samples/SIP_DTMF2.cap", &config, home.path())?;
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(out.status.success(), "{stderr}");
+    let decoded = stderr.lines().filter(|l| l.contains("DTMF digit=")).count();
+    assert_eq!(decoded, 7, "the seven keys are decoded\n{stderr}");
+    let written = containers(&dir)?;
+    assert_eq!(written.len(), 1, "{stderr}");
+    assert!(
+        key_events(&written[0]).is_empty(),
+        "no party to attribute to"
+    );
+    Ok(())
+}
+
+/// The body of a container's `tags` attachment, when it has one.
+fn tags(container: &serde_json::Value) -> Option<serde_json::Value> {
+    container["attachments"]
+        .as_array()?
+        .iter()
+        .find(|a| a["purpose"] == "tags")
+        .map(|a| a["body"].clone())
+}
+
+/// A `[[vcon.rule]]` container carries a `tags` attachment naming the rule
+/// and each referenced `[filters]` name the call matched; the flag rule's
+/// container carries none.
+#[test]
+fn a_rule_container_is_tagged_with_its_rule_and_matched_filters() -> Result<(), TestError> {
+    let home = tempfile::tempdir()?;
+    let (dir, flags) = (home.path().join("tagged"), home.path().join("flags"));
+    let config =
+        format!("[filters]\nthe-call = \"{CALL}\"\nnobody = \"to.user == 'no-such-user'\"\n\n")
+            + &rule("tagged", "@nobody OR @the-call", &dir, "omit");
+    let flags_dir = flags.to_string_lossy().into_owned();
+    let path = home.path().join("rules.toml");
+    std::fs::write(&path, &config)?;
+    let out = Command::new(env!("CARGO_BIN_EXE_sipnab"))
+        .args(["-N", "-I", CAPTURE, "--no-cli-print"])
+        .arg("--config")
+        .arg(&path)
+        .args(["--export-vcon-when", CALL, "--export-vcon-dir", &flags_dir])
+        .env("HOME", home.path())
+        .output()?;
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(out.status.success(), "{stderr}");
+
+    let written = containers(&dir)?;
+    assert_eq!(written.len(), 1, "{stderr}");
+    let body = tags(&written[0]).ok_or("a tags attachment")?;
+    let list: Vec<&str> = body
+        .as_array()
+        .ok_or("a list body")?
+        .iter()
+        .filter_map(|t| t.as_str())
+        .collect();
+    assert_eq!(&list[..2], ["rule:tagged", "filter:the-call"], "{list:?}");
+    assert!(!list.contains(&"filter:nobody"), "{list:?}");
+    assert!(
+        list.iter().all(|t| t.matches(':').count() == 1),
+        "vcon-lib reads the text after the first colon up to the next: {list:?}"
+    );
+
+    let from_flags = containers(&flags)?;
+    assert_eq!(from_flags.len(), 1, "{stderr}");
+    assert!(
+        tags(&from_flags[0]).is_none(),
+        "the flag rule has no name to tag"
+    );
+    Ok(())
+}
+
+/// `skill_header`, `campaign_header` and `interaction_id_header` copy the
+/// named headers' values into the signaling Dialog Object's `skill`,
+/// `campaign` and `interaction_id` (draft-ietf-vcon-cc-extension-02 section
+/// 3.2).
+#[test]
+fn a_rule_maps_headers_to_the_cc_dialog_parameters() -> Result<(), TestError> {
+    let home = tempfile::tempdir()?;
+    let capture = home.path().join("queue.pcap");
+    let frames = pcap_build::g711_leg(
+        &pcap_build::G711Leg {
+            call_id: "queued@test",
+            caller: ([10, 0, 0, 1], 20000, 0x1111_1111),
+            callee: ([10, 0, 0, 2], 30000, 0x2222_2222),
+            header: Some("X-Queue: billing"),
+            start_us: 0,
+            ends: true,
+        },
+        1,
+        |_, _, _| 0xff,
+    );
+    pcap_build::write_pcap_at(&capture, &frames, 1)?;
+    let dir = home.path().join("cc");
+    let config = rule("cc", "call_id == 'queued@test'", &dir, "omit").replace(
+        "audio = \"omit\"\n",
+        "audio = \"omit\"\nskill_header = \"X-Queue\"\ncampaign_header = \"X-Campaign\"\n",
+    );
+    let out = run_on(&capture.to_string_lossy(), &config, home.path())?;
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(out.status.success(), "{stderr}");
+    let written = containers(&dir)?;
+    assert_eq!(written.len(), 1, "{stderr}");
+    let signaling = &written[0]["dialog"][0];
+    assert_eq!(signaling["skill"], "billing", "{signaling:#}");
+    assert!(
+        signaling.get("campaign").is_none(),
+        "no X-Campaign on the wire"
+    );
+    Ok(())
+}
+
+/// A header name that is not an RFC 3261 token refuses the run, naming the
+/// rule and the key.
+#[test]
+fn a_cc_header_that_is_not_a_header_name_is_refused() -> Result<(), TestError> {
+    let home = tempfile::tempdir()?;
+    let config = rule("cc", CALL, &home.path().join("cc"), "omit").replace(
+        "audio = \"omit\"\n",
+        "audio = \"omit\"\nskill_header = \"X Queue:\"\n",
+    );
+    let out = run(&config, &[], home.path())?;
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(!out.status.success(), "{stderr}");
+    assert!(
+        stderr.contains("'cc'") && stderr.contains("skill_header"),
+        "{stderr}"
+    );
     Ok(())
 }

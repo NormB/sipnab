@@ -583,7 +583,8 @@ sudo sipnab -N -d eth0 --filter "rtp.mos < 3.0 OR rtp.jitter > 50" --json
 
 In the TUI, open the **Stream Detail** view:
 
-- Navigate to a call's flow view and press `Enter` on an RTP bar.
+- Navigate to a call's flow view, press `F6` to show its RTP streams, and
+  press `Enter` on a stream's row.
 - Or press `r` to jump to the streams list, then `Enter` on a stream.
 
 This view shows:

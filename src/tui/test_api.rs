@@ -63,6 +63,7 @@ impl App {
         self.stats.floor.elapse_for_test();
         self.dashboard_floor.elapse_for_test();
         self.flow.ladder.churn.elapse_for_test();
+        self.flow.ladder.media_churn.elapse_for_test();
     }
 
     /// Create an App whose dialog store already contains the given messages.
@@ -471,6 +472,24 @@ impl App {
             .participants
             .iter()
             .map(|p| p.label.clone())
+            .collect()
+    }
+
+    /// The RTP rows of the cached call-flow ladder, in ladder order, as
+    /// `(source column, destination column, label)` (test helper).
+    pub fn ladder_rtp_rows_for_test(&self) -> Vec<(usize, usize, String)> {
+        self.flow
+            .ladder
+            .rows
+            .iter()
+            .filter(|r| {
+                matches!(
+                    r.kind,
+                    crate::tui::call_flow::prepare::RowKind::RtpBar
+                        | crate::tui::call_flow::prepare::RowKind::RtpStream
+                )
+            })
+            .map(|r| (r.src_col, r.dst_col, r.label.clone()))
             .collect()
     }
 

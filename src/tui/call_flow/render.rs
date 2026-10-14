@@ -23,7 +23,9 @@ use crate::tui::Theme;
 use crate::tui::TimestampMode;
 
 use super::FlowDisplayOptions;
-use super::arrows::{format_arrow, format_arrow_left, format_arrow_right, truncate};
+use super::arrows::{
+    format_arrow_left, format_arrow_right, format_arrow_with_shaft, label_fits, truncate,
+};
 use super::prepare::{delta_style, format_message_label, format_sdp_codecs, message_style};
 use super::{
     ENDPOINT_COL_WIDTH, FormattedMessage, MIN_ARROW_WIDTH, Participant, SelectionState,
@@ -680,7 +682,9 @@ impl Ladder<'_> {
         // Pipes at ALL positions
         self.draw_pipes(buf, y, "\u{2502}", self.pipe_style); // │
 
-        if msg.is_rtp_bar {
+        // A captured stream is an arrow between its own columns; only the
+        // SDP-derived bar spans the ladder.
+        if msg.is_rtp_bar && !msg.is_rtp_stream {
             self.draw_rtp_bar(buf, msg, y);
         } else {
             self.draw_arrow(buf, msg, y);
@@ -761,7 +765,16 @@ impl Ladder<'_> {
             let start = src_x.saturating_add(1);
             let room = self.area.right().saturating_sub(start) as usize;
             if room > 2 {
-                let text = format!("\u{21ba} {label}");
+                // A stream row drops whole fields rather than cutting one.
+                let text = if msg.is_rtp_stream {
+                    std::iter::once(&label)
+                        .chain(&msg.label_fallbacks)
+                        .map(|l| format!("\u{21ba} {l}"))
+                        .find(|t| t.chars().count() <= room)
+                        .unwrap_or_else(|| "\u{21ba}".to_string())
+                } else {
+                    format!("\u{21ba} {label}")
+                };
                 crate::tui::render::set_string_clipped(
                     buf,
                     self.area,
@@ -773,7 +786,25 @@ impl Ladder<'_> {
             }
             return;
         }
-        let (arrow_str, arrow_x) = format_arrow(&label, src_x, dst_x, msg.is_response);
+        let shaft = if msg.is_rtp_stream {
+            '\u{2550}' // ═ media
+        } else if msg.is_response {
+            '\u{254C}' // ╌
+        } else {
+            '\u{2500}' // ─
+        };
+        // A stream row too long for its gap drops whole fields, as its
+        // fallbacks list them, and draws the bare arrow when none fits: a
+        // number cut short reads as another number.
+        let shown = if msg.is_rtp_stream {
+            std::iter::once(&label)
+                .chain(&msg.label_fallbacks)
+                .find(|l| label_fits(l, src_x, dst_x))
+                .map(String::as_str)
+        } else {
+            Some(label.as_str())
+        };
+        let (arrow_str, arrow_x) = format_arrow_with_shaft(shown, src_x, dst_x, shaft);
         let arrow_style = match msg.selection_state {
             SelectionState::Selected => msg.style.bg(SELECTION_BG).add_modifier(Modifier::BOLD),
             SelectionState::Related => msg.style,
@@ -2174,7 +2205,7 @@ mod tests {
             theme,
             resolver,
             name_mode: crate::names::NameMode::Off,
-            rtp_segments: &[],
+            rtp_streams: &[],
         }
     }
 
@@ -2278,6 +2309,8 @@ mod tests {
             sdp_badge: None,
             is_retransmission: false,
             is_rtp_bar: false,
+            is_rtp_stream: false,
+            label_fallbacks: Vec::new(),
             raw_index: None,
             diagnosis_note: None,
         })
@@ -2336,6 +2369,179 @@ mod tests {
         assert!(
             text.contains("CANCEL"),
             "a self-addressed CANCEL must still appear in the ladder; got:\n{text}"
+        );
+        Ok(())
+    }
+
+    /// A captured RTP stream's row is an arrow between ITS columns, pointing
+    /// at the receiver, with a double-rail shaft that sets media apart from
+    /// signaling; not the centered bar across every column (#495).
+    #[test]
+    fn a_stream_row_is_an_arrow_from_sender_to_receiver() -> Result<(), TestError> {
+        let theme = Theme::default();
+        let parts: Vec<Participant> = ["10.0.0.1:5060", "10.0.0.2:5060", "10.0.0.40"]
+            .iter()
+            .map(|a| Participant {
+                addr: (*a).into(),
+                label: (*a).into(),
+            })
+            .collect();
+        let stream = |src: usize, dst: usize, label: &str| -> Result<FormattedMessage, TestError> {
+            let mut m = fmt_msg("12:00:01.000", SelectionState::Normal, src, dst)?;
+            m.label = label.into();
+            m.is_rtp_bar = true;
+            m.is_rtp_stream = true;
+            Ok(m)
+        };
+        let msgs = vec![
+            fmt_msg("12:00:00.000", SelectionState::Selected, 0, 1)?,
+            stream(0, 2, "RTP (PCMA) 250")?,
+            stream(2, 1, "RTP (PCMA) one-way 9")?,
+        ];
+        let nav = FlowNavigation {
+            scroll_offset: 0,
+            mark_index: None,
+            selected_index: 0,
+            noted: Vec::new(),
+        };
+        let mut term = terminal(120, 12)?;
+        term.draw(|f| {
+            let a = f.area();
+            render_call_flow_direct(f, a, &parts, &msgs, &nav, &theme);
+        })?;
+        let text = buffer_text(&term)?;
+        let row = |needle: &str| -> Result<String, TestError> {
+            Ok(text
+                .lines()
+                .find(|l| l.contains(needle))
+                .ok_or_else(|| format!("no row with {needle:?}:\n{text}"))?
+                .to_string())
+        };
+        let right = row("RTP (PCMA) 250")?;
+        let left = row("RTP (PCMA) one-way 9")?;
+        let pipes = pipes_for(3, 120);
+        let at = |line: &str, x: u16| line.chars().nth(usize::from(x));
+        // 0 -> 2: the shaft starts after pipe 0 and the head sits against
+        // pipe 2.
+        assert_eq!(at(&right, pipes[2] - 1), Some('\u{25B6}'), "{right}");
+        assert_eq!(at(&right, pipes[2]), Some('\u{2502}'), "{right}");
+        assert_eq!(at(&right, pipes[0] + 1), Some('\u{2550}'), "{right}");
+        assert_eq!(at(&right, pipes[0]), Some('\u{2502}'), "{right}");
+        // 2 -> 1: the head is just right of pipe 1, pipe 0 is untouched.
+        assert_eq!(at(&left, pipes[1] + 1), Some('\u{25C0}'), "{left}");
+        assert_eq!(at(&left, pipes[2] - 1), Some('\u{2550}'), "{left}");
+        assert_eq!(at(&left, pipes[0] + 1), Some(' '), "{left}");
+        Ok(())
+    }
+
+    /// A stream row too long for its gap drops whole fields, never part of
+    /// one: the ports first, then the packet count. A number is never cut
+    /// (`55068` drawn as `5506...` reads as another port), no ellipsis is
+    /// drawn, and the arrowhead always shows the direction. Where the ports
+    /// fit, they are drawn (#495).
+    #[test]
+    fn a_narrow_stream_row_drops_whole_fields_never_part_of_a_number() -> Result<(), TestError> {
+        use crate::tui::call_flow::{RtpFlowStream, prepare_messages};
+        use std::net::SocketAddr;
+        let theme = Theme::default();
+        let t0 = base_ts()?;
+        let msgs = vec![
+            req("INVITE", "1 INVITE", "narrow@test", t0)?,
+            resp(
+                200,
+                "OK",
+                "1 INVITE",
+                "narrow@test",
+                t0 + TimeDelta::seconds(1),
+            )?,
+        ];
+        let stream = |src: SocketAddr, dst: SocketAddr, n: u64| RtpFlowStream {
+            key: crate::rtp::stream::StreamKey::new(0, src, dst),
+            codec: Some("PCMU".to_string()),
+            payload_type: 0,
+            first_seen: t0 + TimeDelta::seconds(2),
+            packet_count: n,
+        };
+        let a = SocketAddr::new(ip_a(), 8014);
+        let b = SocketAddr::new(ip_b(), 55068);
+        let streams = vec![stream(a, b, 194), stream(b, a, 187)];
+        let resolver = crate::names::NameResolver::new();
+        let opts = FlowDisplayOptions {
+            sdp_mode: SdpDisplayMode::None,
+            ts_mode: TimestampMode::Absolute,
+            color_mode: ColorMode::Method,
+            show_rtp: true,
+            selected_msg: None,
+            theme: &theme,
+            resolver: &resolver,
+            name_mode: crate::names::NameMode::Off,
+            rtp_streams: &streams,
+        };
+        let (parts, rows) =
+            prepare_messages(&msgs, t0, None, &opts, &std::collections::HashSet::new());
+        let whole = ["194", "187", "8014", "55068"];
+        let nav = FlowNavigation {
+            scroll_offset: 0,
+            mark_index: None,
+            selected_index: 0,
+            noted: Vec::new(),
+        };
+        let mut saw_ports = false;
+        let mut saw_count_without_ports = false;
+        for width in 20..=120u16 {
+            let mut term = terminal(width, 12)?;
+            term.draw(|f| {
+                let area = f.area();
+                render_call_flow_direct(f, area, &parts, &rows, &nav, &theme);
+            })?;
+            let text = buffer_text(&term)?;
+            if text.contains("too small") || text.contains("too narrow") {
+                // No ladder at this size: the notice is all there is.
+                continue;
+            }
+            let stream_rows: Vec<String> = text
+                .lines()
+                .filter(|l| l.contains('\u{2550}') || l.contains("RTP"))
+                .map(|l| l.chars().skip(TS_COL_WIDTH).collect())
+                .collect();
+            assert_eq!(stream_rows.len(), 2, "width {width}:\n{text}");
+            for row in &stream_rows {
+                assert!(
+                    !row.contains("...") && !row.contains('\u{2026}'),
+                    "width {width}: no ellipsis: {row}"
+                );
+                assert!(
+                    row.contains('\u{25B6}') || row.contains('\u{25C0}'),
+                    "width {width}: the arrowhead shows the direction: {row}"
+                );
+                assert!(
+                    row.contains('\u{2550}'),
+                    "width {width}: a shaft beside the head: {row}"
+                );
+                for number in row
+                    .split(|c: char| !c.is_ascii_digit())
+                    .filter(|w| !w.is_empty())
+                {
+                    assert!(
+                        whole.contains(&number),
+                        "width {width}: {number:?} is part of a number: {row}"
+                    );
+                }
+            }
+            if stream_rows.iter().any(|r| r.contains("8014\u{2192}55068")) {
+                saw_ports = true;
+            }
+            if stream_rows
+                .iter()
+                .any(|r| r.contains("RTP (PCMU) 194 ") && !r.contains("8014"))
+            {
+                saw_count_without_ports = true;
+            }
+        }
+        assert!(saw_ports, "the ports are drawn where they fit");
+        assert!(
+            saw_count_without_ports,
+            "a gap too narrow for the ports still shows codec and count"
         );
         Ok(())
     }

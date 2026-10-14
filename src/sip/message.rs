@@ -223,6 +223,23 @@ impl SipMessage {
         }
     }
 
+    /// Whether this message's SDP can set up a media session, by
+    /// [`sdp::sdp_sets_up_media`]. A request is judged by its method, a
+    /// response by its `CSeq` method and status code. `false` when neither
+    /// is known.
+    #[must_use]
+    pub fn sdp_sets_up_media(&self) -> bool {
+        if self.is_request {
+            self.method
+                .as_ref()
+                .is_some_and(|method| sdp::sdp_sets_up_media(method, None))
+        } else {
+            self.cseq().is_some_and(|(_, method)| {
+                sdp::sdp_sets_up_media(&SipMethod::parse(method), self.status_code)
+            })
+        }
+    }
+
     /// Return the value of the `Contact` header, if present.
     pub fn contact(&self) -> Option<&str> {
         self.header("Contact")

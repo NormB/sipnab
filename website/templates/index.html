@@ -201,7 +201,7 @@
           <li><a class="cap-name" href="{{ get_url(path='@/docs/vcon.md') }}#enrich-a-call-before-it-is-written">Enrichment</a> <span class="cap-text">Your own transcriber or summarizer adds its analysis before the container is written.</span></li>
           <li><a class="cap-name" href="{{ get_url(path='@/docs/vcon.md') }}#hear-a-call-while-it-is-in-progress">Live calls</a> <span class="cap-text">Audio of a call in progress over a WebSocket, and <a href="{{ get_url(path='@/docs/vcon.md') }}#follow-a-call-while-it-is-in-progress">containers rewritten as the call changes</a>.</span></li>
           <li><a class="cap-name" href="{{ get_url(path='@/docs/vcon.md') }}#encrypt-what-a-rule-writes">Signed and encrypted</a> <span class="cap-text">Rules can encrypt: signed with JWS, then encrypted with JWE to your certificate.</span></li>
-          <li><a class="cap-name" href="{{ get_url(path='@/docs/vcon-store.md') }}">Deliver to a store</a> <span class="cap-text"><code>sipnab --vcon-forward</code> delivers a spool to vcon.store, a vCon server or any HTTP store, and fetches stored ones back.</span></li>
+          <li><a class="cap-name" href="{{ get_url(path='@/docs/vcon-store.md') }}">Deliver to a store</a> <span class="cap-text"><code>sipnab --vcon-forward</code> delivers vCons to vcon.store, a vCon server or any HTTP store, and <code>sipnab --vcon-fetch</code> fetches stored ones back.</span></li>
           <li><a class="cap-name" href="{{ get_url(path='@/docs/vcon.md') }}#analyze-a-stored-vcon">Read stored vCons</a> <span class="cap-text"><code>-I</code> opens containers in the terminal UI, reports and analysis.</span></li>
         </ul>
       </article>

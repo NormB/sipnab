@@ -104,6 +104,9 @@ reached the called phones. People then chose not to answer.
 ## Orphan stream
 
 An RTP stream sipnab could not match to any dialog's SDP. It has no Call-ID.
+Only SDP in an offer or an answer can match a stream.
+SDP in a 3xx to 6xx response matches none.
+SDP in an OPTIONS response, or in any method other than INVITE, ACK, PRACK and UPDATE, matches none.
 Common causes:
 
 - NAT rewriting the media address,

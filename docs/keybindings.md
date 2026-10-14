@@ -158,13 +158,13 @@ active filter.
 | Key | Action |
 |-----|--------|
 | Tab / Shift+Tab | Switch focus between the ladder (left) and detail (right) panes |
-| Up / k | Previous message or RTP bar — or scroll detail up when the detail pane has focus |
-| Down / j | Next message or RTP bar — or scroll detail down when the detail pane has focus |
+| Up / k | Previous message or RTP row — or scroll detail up when the detail pane has focus |
+| Down / j | Next message or RTP row — or scroll detail down when the detail pane has focus |
 | PgUp | Page up (ladder, or detail when focused) |
 | PgDn | Page down (ladder, or detail when focused) |
 | Home | Jump to first message (or top of detail when focused) |
 | End | Jump to last message (or bottom of detail when focused) |
-| Enter | Open full-screen raw message view — or, with the cursor on an RTP bar, the Stream Detail view (MOS, jitter, quality intervals, burst/gap analysis, silence detection, sparklines) |
+| Enter | Open full-screen raw message view — or, with the cursor on an RTP stream's row, that stream's Stream Detail view (MOS, jitter, quality intervals, burst/gap analysis, silence detection, sparklines) |
 | Space | Select message for diff (press on two messages to compare) |
 | q | Quit, after a confirmation **(configurable: `quit`)** |
 | Esc | Back to call list |
@@ -194,7 +194,7 @@ active filter.
 | F1 / ? | Help **(configurable: `help`)** |
 | F2 | Save **(configurable: `save`)** |
 | F5 | Reset message-compare selection **(configurable: `clear_calls`)** |
-| F6 / Ctrl+R | Toggle RTP display in flow (`Ctrl+R` is an alias for front-ends that cannot send F-keys) |
+| F6 / Ctrl+R | Toggle the call's RTP streams in the ladder: one arrow per stream, from sender to receiver, with codec, packet count and a `one-way` mark (see [Follow each RTP stream in the call flow](tui-walkthrough.md#follow-each-rtp-stream-in-the-call-flow)). `Ctrl+R` is an alias for front-ends that cannot send F-keys |
 | F7 | Open filter dialog **(configurable: `filter`)** |
 | F9 | Clear filter: drops the view filter **and** the persisted search |
 

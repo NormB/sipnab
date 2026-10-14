@@ -200,7 +200,7 @@ const SIGNER_SHA256_KEY: &str = "[vcon_fetch] signer_sha256";
 
 /// The [`SignerCa`] `path` names: the host's bundle for `system`, else the
 /// file.
-fn signer_ca(path: &Path, from: &'static str, origin: crate::settings::Origin) -> SignerCa {
+pub fn signer_ca(path: &Path, from: &'static str, origin: crate::settings::Origin) -> SignerCa {
     if path.as_os_str() == SIGNER_CA_SYSTEM {
         SignerCa::System(from, origin)
     } else {
@@ -500,7 +500,7 @@ impl FetchPlan {
 /// The CA file cannot be read or holds no usable CA certificate, or, for
 /// `system`, the host has no CA bundle; with the
 /// [`crate::settings::Origin`] of the setting.
-fn signer_trust(
+pub fn signer_trust(
     ca: Option<&SignerCa>,
     sha256: Option<[u8; 32]>,
 ) -> Result<crate::output::vcon_jose::SignerTrust, (crate::settings::Origin, String)> {

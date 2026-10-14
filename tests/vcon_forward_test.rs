@@ -262,6 +262,8 @@ impl Rig {
             kind: StoreKind::Generic,
             backoff: BackoffPolicy::default(),
             limits: ReadLimits::default(),
+            scitt: None,
+            content_type: "application/json".into(),
         };
         Ok(Self { dir, settings })
     }
@@ -276,6 +278,14 @@ impl Rig {
 
     /// Put a container in the spool the way sipnab does: stage, rename.
     fn drop_in(&self, name: &str, bytes: &str) -> Result<(), TestError> {
+        let staged = self.spool().join(format!(".{name}.partial"));
+        std::fs::write(&staged, bytes)?;
+        std::fs::rename(&staged, self.spool().join(name))?;
+        Ok(())
+    }
+
+    /// [`Self::drop_in`] for bytes that are not text: a gzip format vCon.
+    fn drop_in_bytes(&self, name: &str, bytes: &[u8]) -> Result<(), TestError> {
         let staged = self.spool().join(format!(".{name}.partial"));
         std::fs::write(&staged, bytes)?;
         std::fs::rename(&staged, self.spool().join(name))?;
@@ -2287,5 +2297,123 @@ fn the_binary_refuses_ca_and_extra_ca_together() -> Result<(), TestError> {
         err.contains("[vcon_forward] ca") && err.contains("[vcon_forward] extra_ca"),
         "{err}"
     );
+    Ok(())
+}
+
+// ── Content-Type ─────────────────────────────────────────────────────────
+
+/// The gzip of `text` (RFC 1952): a gzip format vCon, draft-ietf-vcon-vcon-core-04
+/// section 6.2.
+fn gzip(text: &str) -> Result<Vec<u8>, TestError> {
+    let mut encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+    encoder.write_all(text.as_bytes())?;
+    Ok(encoder.finish()?)
+}
+
+/// core-04 section 5.4: a gzip format vCon "SHOULD be identified by the media
+/// type application/vcon+gzip when a media type is available, such as in the
+/// [HTTPS] Content-Type header". The forwarder sends the file as it is, with
+/// that type, whatever `content_type` says for a JSON body.
+#[test]
+fn a_gzip_format_container_is_posted_as_application_vcon_gzip() -> Result<(), TestError> {
+    let store = FakeStore::start(|_, _| Reply::Status(201, String::new()))?;
+    let mut rig = Rig::new(&store.url("/v1/vcons"), "Authorization")?;
+    let packed = gzip(&container(
+        "018bcfe5-6800-8a6b-a667-78f1c5213a01",
+        RECORDING,
+    ))?;
+    rig.drop_in_bytes("g.vcon.json", &packed)?;
+    rig.drop_in(
+        "j.vcon.json",
+        &container("018bcfe5-6800-8a6b-a667-78f1c5213a02", RECORDING),
+    )?;
+
+    let report = rig.forwarder()?.pass(Instant::now(), &never);
+    let seen = store.requests();
+    assert_eq!(seen.len(), 2);
+    assert_eq!(seen[0].body, packed, "the gzip file was rewritten");
+    assert_eq!(seen[0].header("content-type"), ["application/vcon+gzip"]);
+    assert_eq!(seen[1].header("content-type"), ["application/json"]);
+    assert_eq!(report.delivered, ["g.vcon.json", "j.vcon.json"]);
+
+    rig.settings.content_type = "application/vcon+json".into();
+    let packed = gzip(&container(
+        "018bcfe5-6800-8a6b-a667-78f1c5213a03",
+        RECORDING,
+    ))?;
+    rig.drop_in_bytes("h.vcon.json", &packed)?;
+    rig.drop_in(
+        "k.vcon.json",
+        &container("018bcfe5-6800-8a6b-a667-78f1c5213a04", RECORDING),
+    )?;
+    rig.forwarder()?.pass(Instant::now(), &never);
+    let seen = store.requests();
+    assert_eq!(seen[2].header("content-type"), ["application/vcon+gzip"]);
+    assert_eq!(seen[3].header("content-type"), ["application/vcon+json"]);
+    Ok(())
+}
+
+/// A gzip format container the store already holds is PUT to its uuid,
+/// read from inside the gzip, with the gzip media type.
+#[test]
+fn a_gzip_format_container_is_replaced_by_the_uuid_inside() -> Result<(), TestError> {
+    let store = FakeStore::start(|req, _| {
+        if req.method == "POST" {
+            Reply::Status(409, "exists".into())
+        } else {
+            Reply::Status(200, "{}".into())
+        }
+    })?;
+    let mut rig = Rig::new(&store.url("/v1/vcons"), "Authorization")?;
+    rig.settings.replace_url = Some(store.url("/v1/vcons/{uuid}"));
+    let packed = gzip(&container(
+        "018bcfe5-6800-8a6b-a667-78f1c5213a05",
+        RECORDING,
+    ))?;
+    rig.drop_in_bytes("g.vcon.json", &packed)?;
+
+    let report = rig.forwarder()?.pass(Instant::now(), &never);
+    let seen = store.requests();
+    assert_eq!(seen.len(), 2, "{seen:?}");
+    assert_eq!(seen[1].method, "PUT");
+    assert_eq!(
+        seen[1].target,
+        "/v1/vcons/018bcfe5-6800-8a6b-a667-78f1c5213a05"
+    );
+    assert_eq!(seen[1].body, packed);
+    assert_eq!(seen[1].header("content-type"), ["application/vcon+gzip"]);
+    assert_eq!(report.delivered, ["g.vcon.json"]);
+    Ok(())
+}
+
+/// `--vcon-forward-content-type` reaches the wire from the binary, and a
+/// value outside the list is refused with exit 2, naming the flag.
+#[test]
+fn the_binary_sends_the_content_type_flag_and_refuses_others() -> Result<(), TestError> {
+    let store = FakeStore::start(|_, _| Reply::Status(201, String::new()))?;
+    let rig = Rig::new(&store.url("/v1/vcons"), "Authorization")?;
+    rig.drop_in(
+        "j.vcon.json",
+        &container("018bcfe5-6800-8a6b-a667-78f1c5213a06", RECORDING),
+    )?;
+    let mut args = forward_args(&rig, &store.url("/v1/vcons"));
+    args.extend([
+        "--vcon-forward-content-type".into(),
+        "application/vcon".into(),
+    ]);
+    let argv: Vec<&str> = args.iter().map(String::as_str).collect();
+    let (out, err, code) = sipnab(&argv)?;
+    assert_eq!(code, Some(0), "stdout: {out}\nstderr: {err}");
+    assert_eq!(
+        store.requests()[0].header("content-type"),
+        ["application/vcon"]
+    );
+
+    let mut args = forward_args(&rig, &store.url("/v1/vcons"));
+    args.extend(["--vcon-forward-content-type".into(), "text/plain".into()]);
+    let argv: Vec<&str> = args.iter().map(String::as_str).collect();
+    let (_, err, code) = sipnab(&argv)?;
+    assert_eq!(code, Some(2), "{err}");
+    assert!(err.contains("--vcon-forward-content-type"), "{err}");
     Ok(())
 }

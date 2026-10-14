@@ -710,7 +710,11 @@ fn lists() -> Result<Lists, TestError> {
 // 79 -> 80: src/config.rs parse_sha256_fingerprint's
 // `Err(format!("{text:?}: {WANT}"))`, whose text joins a const, for
 // [vcon_fetch] signer_sha256.
-const EXPECTED_UNRESOLVED: usize = 80;
+// 80 -> 82: src/app/bootstrap.rs `PlanError { exit_code: 1, message:
+// e.to_string(), }` 11 -> 12, the `[vcon_input]` validate() call in
+// load_config, and `PlanError::refused(origin, problem)` 3 -> 4, the
+// bootstrap::reader_keys refusal.
+const EXPECTED_UNRESOLVED: usize = 82;
 
 /// How many distinct templates the scope prints (informational lines
 /// excluded). Pinned with `==` so a new or removed message is a decision.
@@ -748,7 +752,18 @@ const EXPECTED_UNRESOLVED: usize = 80;
 // vcon_rules' refuse closure. Nothing removed.
 // 451 -> 452: src/config.rs `[display] view_filter_detail must be one of
 // summary, full, got {m:?}`, the F7 filter summary's mode key.
-const EXPECTED_TEMPLATES: usize = 452;
+// 466 -> 467: src/config.rs `[vcon_input] signer_sha256: {e}`, the vCon
+// readers' signer fingerprint key. Nothing removed.
+// 467 -> 469: src/config.rs `[vcon_forward] content_type: {e}` and
+// `{value:?} is not one of {}` (forward_content_type, the rule
+// --vcon-forward-content-type and the key share). Nothing removed.
+// 469 -> 470: src/config.rs `[vcon] encrypt_to is an empty list: ...`,
+// the refusal of an empty recipient list. Nothing removed.
+// 470 -> 473: src/app/bootstrap.rs `--vcon-resign: {message}` and
+// `--vcon-resign requires the 'vcon' feature (not compiled in)`, and
+// src/app/vcon_resign.rs `'{}' is {len} bytes, over the {cap}-byte limit
+// for one container`. Nothing removed.
+const EXPECTED_TEMPLATES: usize = 473;
 
 // ---------------------------------------------------------------------------
 // The page gates

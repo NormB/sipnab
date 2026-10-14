@@ -82,7 +82,7 @@ const REMOVED: &str = "[auth value removed]";
 ///
 /// Not a setting: the header names the software that sent the request, and a
 /// setting would let the request name other software.
-const USER_AGENT: &str = concat!("sipnab/", env!("CARGO_PKG_VERSION"));
+pub(crate) const USER_AGENT: &str = concat!("sipnab/", env!("CARGO_PKG_VERSION"));
 
 /// The flag that bounds an answer's status line and headers, quoted when an
 /// answer passes it.
@@ -622,8 +622,20 @@ impl<'de> serde::Deserialize<'de> for Members {
 /// # Errors
 ///
 /// Not JSON, no `uuid`, or a `uuid` that is empty, longer than 64 characters
-/// or holds a character outside `[0-9A-Za-z-]`.
+/// or holds a character outside `[0-9A-Za-z-]`. A gzip format container is
+/// inflated first, up to the `--vcon-fetch-max-size` default; one that does
+/// not inflate, or inflates past it, is refused.
 pub fn container_uuid(container: &[u8]) -> Result<String, String> {
+    // A gzip format container (draft-ietf-vcon-vcon-core-04 section 6.2)
+    // carries its uuid inside the gzip.
+    let inflated;
+    let container = if container.starts_with(&crate::output::vcon_jose::GZIP_MAGIC) {
+        let cap = usize::try_from(crate::config::FETCH_MAX_SIZE.default).unwrap_or(usize::MAX);
+        inflated = crate::output::vcon_jose::gunzip_capped(container, cap)?;
+        inflated.as_slice()
+    } else {
+        container
+    };
     let doc: serde_json::Value =
         serde_json::from_slice(container).map_err(|e| format!("the container is not JSON: {e}"))?;
     // The signed and encrypted forms carry the uuid in a header, readable
@@ -890,6 +902,13 @@ pub struct ForwardSettings {
     pub backoff: BackoffPolicy,
     /// How much of an answer is read and kept.
     pub limits: ReadLimits,
+    /// Where lifecycle statements are registered; `None` registers nothing.
+    pub scitt: Option<crate::app::vcon_scitt::ScittSettings>,
+    /// The `Content-Type` of a JSON container, one of
+    /// [`crate::config::FORWARD_CONTENT_TYPES`]. A gzip format container
+    /// goes as `application/vcon+gzip` whatever this says
+    /// ([`body_content_type`]).
+    pub content_type: String,
 }
 
 /// Where the credential comes from, resolved but not yet read.
@@ -953,6 +972,213 @@ pub struct ForwardPlan {
     pub backoff: BackoffPolicy,
     /// How much of an answer is read and kept.
     pub limits: ReadLimits,
+    /// The transparency service lifecycle statements are registered with.
+    pub scitt: Option<ScittPlan>,
+    /// The `Content-Type` of a JSON container.
+    pub content_type: String,
+}
+
+/// A file a SCITT setting names, the setting that named it, and where that
+/// setting was given.
+#[derive(Clone)]
+pub struct NamedFile {
+    /// The file.
+    pub path: PathBuf,
+    /// The flag or key, for the messages.
+    pub from: &'static str,
+    /// Where it was given, which sets the exit code when the file is refused.
+    pub origin: crate::settings::Origin,
+}
+
+/// The SCITT settings, resolved from the flags and the `[vcon_forward]`
+/// keys, before any file is read.
+#[derive(Debug, Clone)]
+pub struct ScittPlan {
+    /// The transparency service's base URL.
+    pub url: Endpoint,
+    /// The file holding its auth header.
+    pub auth_file: Option<NamedFile>,
+    /// The only CA file trusted for an `https://` service.
+    pub ca: Option<PathBuf>,
+    /// The PEM RSA private key.
+    pub sign_key: NamedFile,
+    /// Its PEM certificate chain.
+    pub sign_cert: NamedFile,
+    /// The statements' `iss`.
+    pub issuer: String,
+}
+
+/// The path alone: a flag and its key that name the same file are the same
+/// setting.
+impl std::fmt::Debug for NamedFile {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "File({:?})", self.path)
+    }
+}
+
+/// The file named by `flag`, else by `key`.
+fn named_file(
+    flag: Option<&PathBuf>,
+    flag_name: &'static str,
+    key: Option<&PathBuf>,
+    key_name: &'static str,
+) -> Option<NamedFile> {
+    use crate::settings::Origin;
+    flag.map(|p| (p, flag_name, Origin::CommandLine))
+        .or_else(|| key.map(|p| (p, key_name, Origin::ConfigFile)))
+        .map(|(path, from, origin)| NamedFile {
+            path: path.clone(),
+            from,
+            origin,
+        })
+}
+
+/// The SCITT settings in force: `None` when no SCITT setting is given.
+///
+/// # Errors
+///
+/// A SCITT setting without the URL; the URL without a signing key, its
+/// certificate chain or an issuer; a URL that does not parse; an issuer
+/// that is not a URI. Each names the flag or key.
+fn scitt_plan(
+    args: &crate::cli::VconForwardArgs,
+    keys: &crate::config::VconForwardConfig,
+) -> Result<Option<ScittPlan>, String> {
+    let url = pick_text(
+        args.vcon_forward_scitt_url.as_deref(),
+        "--vcon-forward-scitt-url",
+        keys.scitt_url.as_deref(),
+        "[vcon_forward] scitt_url",
+    );
+    let issuer = pick_text(
+        args.vcon_forward_scitt_issuer.as_deref(),
+        "--vcon-forward-scitt-issuer",
+        keys.scitt_issuer.as_deref(),
+        "[vcon_forward] scitt_issuer",
+    );
+    let auth_file = named_file(
+        args.vcon_forward_scitt_auth_file.as_ref(),
+        "--vcon-forward-scitt-auth-file",
+        keys.scitt_auth_file.as_ref(),
+        "[vcon_forward] scitt_auth_file",
+    );
+    let ca = named_file(
+        args.vcon_forward_scitt_ca.as_ref(),
+        "--vcon-forward-scitt-ca",
+        keys.scitt_ca.as_ref(),
+        "[vcon_forward] scitt_ca",
+    );
+    let sign_key = named_file(
+        args.vcon_forward_scitt_sign_key.as_ref(),
+        "--vcon-forward-scitt-sign-key",
+        keys.scitt_sign_key.as_ref(),
+        "[vcon_forward] scitt_sign_key",
+    );
+    let sign_cert = named_file(
+        args.vcon_forward_scitt_sign_cert.as_ref(),
+        "--vcon-forward-scitt-sign-cert",
+        keys.scitt_sign_cert.as_ref(),
+        "[vcon_forward] scitt_sign_cert",
+    );
+    let Some((url_text, url_from)) = url else {
+        let given = [
+            issuer.map(|(_, from)| from),
+            auth_file.as_ref().map(|f| f.from),
+            ca.as_ref().map(|f| f.from),
+            sign_key.as_ref().map(|f| f.from),
+            sign_cert.as_ref().map(|f| f.from),
+        ];
+        return match given.into_iter().flatten().next() {
+            Some(from) => Err(format!(
+                "{from} needs --vcon-forward-scitt-url ([vcon_forward] scitt_url): the \
+                 transparency service the lifecycle statements go to"
+            )),
+            None => Ok(None),
+        };
+    };
+    let url = Endpoint::parse(url_text).map_err(|e| format!("{url_from} {e}"))?;
+    let need = |what: &str, flag: &str| {
+        format!(
+            "{url_from} needs {flag} ([vcon_forward] {what}): the lifecycle statements are \
+             signed"
+        )
+    };
+    let sign_key =
+        sign_key.ok_or_else(|| need("scitt_sign_key", "--vcon-forward-scitt-sign-key"))?;
+    let sign_cert =
+        sign_cert.ok_or_else(|| need("scitt_sign_cert", "--vcon-forward-scitt-sign-cert"))?;
+    let (issuer, issuer_from) = issuer.ok_or_else(|| {
+        format!(
+            "{url_from} needs --vcon-forward-scitt-issuer ([vcon_forward] scitt_issuer): the \
+             URI each statement names as its issuer"
+        )
+    })?;
+    if !crate::app::vcon_scitt::is_uri(issuer) {
+        return Err(format!(
+            "{issuer_from} {issuer:?} is not a URI: give a scheme and more, such as \
+             https://pbx.example.com/sipnab, of 1 to {} characters",
+            crate::app::vcon_scitt::MAX_ISSUER_LEN
+        ));
+    }
+    Ok(Some(ScittPlan {
+        url,
+        auth_file,
+        ca: ca.map(|f| f.path),
+        sign_key,
+        sign_cert,
+        issuer: issuer.to_owned(),
+    }))
+}
+
+impl ScittPlan {
+    /// The settings to run with, the key, chain and auth file read.
+    ///
+    /// # Errors
+    ///
+    /// A file is refused or does not load, with the
+    /// [`crate::settings::Origin`] of the setting that named it.
+    fn into_settings(
+        self,
+    ) -> Result<crate::app::vcon_scitt::ScittSettings, (crate::settings::Origin, String)> {
+        let key = {
+            let f = &self.sign_key;
+            let mut text = String::new();
+            crate::privilege::open_private_file(&f.path, f.from)
+                .and_then(|mut file| {
+                    file.read_to_string(&mut text)
+                        .map_err(|e| format!("{} '{}': {e}", f.from, f.path.display()))
+                })
+                .map_err(|e| (f.origin, e))?;
+            text
+        };
+        let cert = &self.sign_cert;
+        let chain = std::fs::read_to_string(&cert.path).map_err(|e| {
+            (
+                cert.origin,
+                format!("{} '{}': {e}", cert.from, cert.path.display()),
+            )
+        })?;
+        let signer = crate::app::vcon_scitt::ScittSigner::from_pem(&key, &chain).map_err(|e| {
+            (
+                self.sign_key.origin,
+                format!("{} and {}: {e}", self.sign_key.from, self.sign_cert.from),
+            )
+        })?;
+        let auth = self
+            .auth_file
+            .map(|f| {
+                AuthHeader::read_file_for(&f.path, f.from, StoreKind::Generic)
+                    .map_err(|e| (f.origin, e))
+            })
+            .transpose()?;
+        Ok(crate::app::vcon_scitt::ScittSettings {
+            url: self.url,
+            auth,
+            ca: self.ca,
+            signer: Arc::new(signer),
+            issuer: self.issuer,
+        })
+    }
 }
 
 /// Which step of [`ForwardPlan::resolve_refusal`] refused a setting.
@@ -973,6 +1199,14 @@ const FORWARD_TRUST: crate::tls_files::TrustNames<'static> = crate::tls_files::T
     ca: "--vcon-forward-ca",
     extra: "--vcon-forward-extra-ca",
     issuer: "the store's CA",
+};
+
+/// The names the transparency service's trust errors carry. The service has
+/// no `extra_ca`, so `extra` is never named.
+const SCITT_TRUST: crate::tls_files::TrustNames<'static> = crate::tls_files::TrustNames {
+    ca: "--vcon-forward-scitt-ca",
+    extra: "--vcon-forward-scitt-ca",
+    issuer: "the transparency service's CA",
 };
 
 /// The value in force of a text setting, and the name of where it came from:
@@ -1102,6 +1336,7 @@ impl ForwardPlan {
                 .map_err(|e| (ResolveStep::ReplaceUrl, format!("{from} {e}")))?;
         }
         let credential = credential(args, keys, kind).map_err(other)?;
+        let scitt = scitt_plan(args, keys).map_err(other)?;
         let interval = pick_number(FORWARD_INTERVAL, args.vcon_forward_interval, keys.interval)
             .map_err(other)?;
         let timeout =
@@ -1173,6 +1408,13 @@ impl ForwardPlan {
                 cap_secs: cap.0,
             },
             limits: ReadLimits::from_bytes(head.0, body.0),
+            scitt,
+            content_type: args
+                .vcon_forward_content_type
+                .as_deref()
+                .or(keys.content_type.as_deref())
+                .unwrap_or(crate::config::FORWARD_CONTENT_TYPES[0])
+                .to_owned(),
         })
     }
 
@@ -1193,6 +1435,7 @@ impl ForwardPlan {
                 AuthHeader::read_file_for(&path, from, self.kind).map_err(|e| (origin, e))?
             }
         };
+        let scitt = self.scitt.map(ScittPlan::into_settings).transpose()?;
         Ok((
             ForwardSettings {
                 spool: self.spool,
@@ -1207,6 +1450,8 @@ impl ForwardPlan {
                 kind: self.kind,
                 backoff: self.backoff,
                 limits: self.limits,
+                scitt,
+                content_type: self.content_type,
             },
             self.interval,
         ))
@@ -1348,6 +1593,8 @@ pub struct Forwarder {
     tls: Option<Arc<rustls::ClientConfig>>,
     /// The back-off of each container that failed a try, by name.
     waiting: HashMap<String, Backoff>,
+    /// The TLS client configuration for an `https://` transparency service.
+    scitt_tls: Option<Arc<rustls::ClientConfig>>,
 }
 
 impl Forwarder {
@@ -1415,10 +1662,17 @@ impl Forwarder {
         } else {
             None
         };
+        let scitt_tls = match &settings.scitt {
+            Some(scitt) if scitt.url.tls => {
+                Some(client_config(scitt.ca.as_deref(), None, &SCITT_TRUST)?)
+            }
+            _ => None,
+        };
         Ok(Self {
             settings,
             tls,
             waiting: HashMap::new(),
+            scitt_tls,
         })
     }
 
@@ -1514,13 +1768,49 @@ impl Forwarder {
             }
         };
         let delivered = self.settings.kind.facts().delivered;
-        match classify(
+        let outcome = match classify(
             answer.status,
             self.settings.replace_url.is_some(),
             delivered,
         ) {
             Verdict::Replace => self.replace(name, &before, &bytes),
             verdict => self.act_on(name, &before, verdict, &answer, "POST", url),
+        };
+        if outcome == Outcome::Delivered {
+            self.register_lifecycle(name, &bytes);
+        }
+        outcome
+    }
+
+    /// Register the delivered container's lifecycle statements, when a
+    /// transparency service is set, and write what it answered to
+    /// `<name>.scitt` beside the container. A registration that fails is
+    /// logged and recorded; the delivery stands.
+    fn register_lifecycle(&self, name: &str, bytes: &[u8]) {
+        let Some(scitt) = &self.settings.scitt else {
+            return;
+        };
+        let (record, registered) = crate::app::vcon_scitt::register_delivery(
+            scitt,
+            self.scitt_tls.as_ref(),
+            self.settings.timeout,
+            bytes,
+            &self.settings.url.to_string(),
+        );
+        let record_name = format!("{name}{}", crate::app::vcon_scitt::RECORD_SUFFIX);
+        if let Err(e) = write_atomically(
+            &self.settings.done_dir.join(&record_name),
+            record.as_bytes(),
+        ) {
+            tracing::error!("{name}: could not write {record_name}: {e}");
+        }
+        if !registered {
+            tracing::warn!(
+                "{name}: a lifecycle statement did not register with {}; {record_name} says why",
+                scitt.url
+            );
+        } else {
+            tracing::info!("{name}: lifecycle statements registered with {}", scitt.url);
         }
     }
 
@@ -1701,7 +1991,15 @@ impl Forwarder {
 
     /// One request to `endpoint`, over TLS when it is `https://`.
     fn send(&self, endpoint: &Endpoint, method: &str, body: &[u8]) -> Result<Answer, String> {
-        let mut request = request_head(endpoint, method, &self.settings.auth, Some(body.len()));
+        let mut request = request_head_typed(
+            endpoint,
+            method,
+            &self.settings.auth,
+            Some((
+                body.len(),
+                body_content_type(body, &self.settings.content_type),
+            )),
+        );
         request.extend_from_slice(body);
         // Read past the kept part by the most a credential can be, so the
         // credential is removed from the answer before the cut.
@@ -1729,14 +2027,44 @@ pub(crate) fn request_head(
     auth: &AuthHeader,
     body_len: Option<usize>,
 ) -> Vec<u8> {
+    request_head_typed(
+        endpoint,
+        method,
+        auth,
+        body_len.map(|len| (len, crate::config::FORWARD_CONTENT_TYPES[0])),
+    )
+}
+
+/// The `Content-Type` a container's bytes go with: `application/vcon+gzip`
+/// for the gzip format, known by the gzip magic bytes 1f 8b
+/// ([RFC 1952 section 2.3.1](https://www.rfc-editor.org/rfc/rfc1952.html#section-2.3.1)),
+/// as [draft-ietf-vcon-vcon-core-04 section 5.4](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-04#section-5.4)
+/// says it should be identified "when a media type is available, such as in
+/// the \[HTTPS\] Content-Type header"; `json_type` for a JSON container.
+#[must_use]
+pub fn body_content_type<'a>(body: &[u8], json_type: &'a str) -> &'a str {
+    if body.starts_with(&crate::output::vcon_jose::GZIP_MAGIC) {
+        crate::output::vcon_jose::CONTENT_TYPE_GZIP
+    } else {
+        json_type
+    }
+}
+
+/// [`request_head`], with the body's length and `Content-Type`.
+pub(crate) fn request_head_typed(
+    endpoint: &Endpoint,
+    method: &str,
+    auth: &AuthHeader,
+    body: Option<(usize, &str)>,
+) -> Vec<u8> {
     let mut head = format!(
         "{method} {} HTTP/1.1\r\nHost: {}\r\nUser-Agent: {USER_AGENT}\r\n",
         endpoint.target,
         endpoint.host_header(),
     );
-    match body_len {
-        Some(len) => head.push_str(&format!(
-            "Content-Type: application/json\r\nContent-Length: {len}\r\n"
+    match body {
+        Some((len, content_type)) => head.push_str(&format!(
+            "Content-Type: {content_type}\r\nContent-Length: {len}\r\n"
         )),
         None => head.push_str("Accept: application/json\r\n"),
     }

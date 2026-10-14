@@ -131,6 +131,12 @@ artefact. Handing them a container whose consent field is empty because sipnab
 never had one is the kind of mistake that gets read years later by someone with
 no access to this page.
 
+One path carries a lawful basis that is not sipnab's. A `[[vcon.enrich]]` with
+`lawful_basis = true` may answer with a lawful basis attachment. sipnab checks
+its shape, carries it as sent, and lists it under that service in the
+`sipnab-enrichment` attachment, so the container names the party that made
+the claim. It is off by default, and sipnab still writes none of its own.
+
 ### 2.4 Never vouch for a Party `name`, and always set `validation: "none"`
 
 What sipnab holds is the `From` and `To` header fields of an observed dialog.

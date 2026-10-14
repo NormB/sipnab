@@ -113,6 +113,10 @@ exceptions:
   # it cannot be sent directly.
   - STUN
   - TURN
+  # Audio formats: Ogg is the Xiph container (RFC 3533) and Opus the codec
+  # (RFC 6716), each spelled this way by the RFC that defines it.
+  - Ogg
+  - Opus
   - UA
 
   # --- Transport, wire formats and interfaces ---

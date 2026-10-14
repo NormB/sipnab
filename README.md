@@ -453,10 +453,11 @@ Audio playback in the TUI also needs `libasound` (ALSA).
 | `mcp-http` | MCP server over HTTP (Streamable HTTP). Implies `mcp` and `api` | no |
 | `plugins` | WASM plugin host (`--plugin`): sandboxed third-party detections | no |
 | `vcon` | vCon export of one observed call | no |
+| `opus` | Ogg Opus recordings in vCon containers. Compiles libopus from source, so building it needs `cmake` and a C compiler | no |
 | `archive` | Password-protected ZIP and 7z input | no |
 | `bpf` | eBPF TLS capture (`--uprobe-backend bpf`). Needs a nightly toolchain and `bpf-linker` to build, and a kernel with BTF to run. Outside `full` | no |
 | `wasm` | WebAssembly build for in-browser pcap analysis | no |
-| `full` | `native`, `tui`, `audio`, `metrics`, `tls`, `hep`, `api`, `mcp`, `mcp-http`, `plugins`, `vcon`, `archive` | no |
+| `full` | `native`, `tui`, `audio`, `metrics`, `tls`, `hep`, `api`, `mcp`, `mcp-http`, `plugins`, `vcon`, `opus`, `archive` | no |
 
 Every feature:
 

@@ -330,6 +330,11 @@ It does not carry it in any SIP field.
 
 - It has no Call-ID and no From.
 - Nothing links it to signaling except the IP/port pair the SDP advertised.
+  - Only SDP in an offer or an answer links a stream.
+    That is SDP in an INVITE, ACK, PRACK or UPDATE, or in a 1xx or 2xx response to one.
+  - SDP in any other message links no stream.
+    An OPTIONS 200 OK, for example, describes capabilities and sets up no session ([RFC 6337 section 2.4](https://www.rfc-editor.org/rfc/rfc6337.html#section-2.4)).
+  - [`sdp_sets_up_media`](https://github.com/NormB/sipnab/blob/main/src/sip/sdp.rs) holds this rule for every capture path.
 
 That explains three things:
 

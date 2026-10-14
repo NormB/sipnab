@@ -818,6 +818,9 @@ jobs:
           # this leg is what proves it still builds WITHOUT tui, tls, api or
           # mcp, which is the class of break `--all-features` cannot see.
           - vcon
+          # Ogg Opus recordings: libopus, compiled with cmake. In `full`; this
+          # leg proves it builds with only `vcon` beside it.
+          - opus
           # `audio` and `plugins` are each in `full` and so built by
           # `--all-features`, but never ALONE until these legs: a
           # `#[cfg(feature = "audio")]` or `"plugins"` block that leans on a
@@ -924,6 +927,10 @@ jobs:
       - name: Test (feature-gate refusals, no mcp and no hep)
         if: matrix.features == 'native'
         run: cargo test --no-default-features --features native --test feature_gate_test
+
+      - name: Test (vCon rules without opus)
+        if: matrix.features == 'vcon'
+        run: cargo test --no-default-features --features vcon --test vcon_rules_test
 
       - name: Test (mcp without mcp-http)
         if: matrix.features == 'mcp'

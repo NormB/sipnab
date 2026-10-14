@@ -3830,12 +3830,12 @@ async fn get_lint(
     tag = "operations",
     summary = "Validate a vCon container",
     description = "Check a vCon container a caller holds against sipnab's vendored schema, the producer-and-conserver boundary where a store that would refuse a container can tell whoever built it, before it is stored.\n\nThe schema is the working group's draft-ietf-vcon-vcon-core-04 schema, unmodified. `verdict` is `valid` or `invalid`, and `errors` names every finding. The MCP `validate_vcon` tool runs the same `vcon_schema::validate`.",
-    request_body(content = serde_json::Value, description = "The vCon container to validate.", content_type = "application/json"),
+    request_body(content = serde_json::Value, description = "The vCon container to validate, in the unsigned, signed or encrypted form; the gzip format with Content-Type application/vcon+gzip.", content_type = "application/json"),
     security(("bearer" = [])),
     responses(
         (status = 200, description = "The verdict and any findings.", body = schema::VconValidation),
         (status = 400, description = "The body is not a JSON object.", body = schema::ProblemJson, content_type = "application/problem+json"),
-        (status = 422, description = "The container's `critical` lists an extension sipnab does not support; draft-ietf-vcon-vcon-core-04 section 4.1.4 forbids operating on it. The detail names each one.", body = schema::ProblemJson, content_type = "application/problem+json"),
+        (status = 422, description = "The container's `critical` lists an extension sipnab does not support, which draft-ietf-vcon-vcon-core-04 section 4.1.4 forbids operating on, or a signed, encrypted or gzip format container does not open. The detail says which.", body = schema::ProblemJson, content_type = "application/problem+json"),
         (status = 401, description = "No bearer credential, or one this server does not accept.", body = schema::ProblemJson, content_type = "application/problem+json"),
         (status = 413, description = "The body is over the 1 MiB request limit.", body = schema::ProblemJson, content_type = "application/problem+json"),
         (status = 503, description = "Over the per-source-IP rate limit of 100 requests per second.", body = schema::ProblemJson, content_type = "application/problem+json"),
@@ -3845,11 +3845,28 @@ async fn post_vcon_validate(
     State(state): State<ApiState>,
     ConnectInfo(addr): ConnectInfo<SocketAddr>,
     headers: HeaderMap,
-    body: Result<Json<Value>, axum::extract::rejection::JsonRejection>,
+    body: Result<axum::body::Bytes, axum::extract::rejection::BytesRejection>,
 ) -> Result<impl IntoResponse, Problem> {
     guard(&state, &headers, addr.ip())?;
 
-    let container = json_body(body, Some("the body must be a JSON vCon container"))?;
+    let bytes = vcon_body(&headers, body)?;
+    // A signed or encrypted container is validated by the unsigned vCon
+    // inside, opened by the readers' one step.
+    let container = match crate::capture::vcon_input::open_bytes(&bytes) {
+        Ok((container, _)) => container,
+        Err(crate::capture::vcon_input::ContainerError::NotJson(_)) => {
+            return Err(Problem::detailed(
+                StatusCode::BAD_REQUEST,
+                "the body must be a JSON vCon container",
+            ));
+        }
+        Err(e) => {
+            return Err(Problem::detailed(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                e.to_string(),
+            ));
+        }
+    };
     if !container.is_object() {
         return Err(Problem::detailed(
             StatusCode::BAD_REQUEST,
@@ -3915,7 +3932,7 @@ async fn post_vcon_validate(
     summary = "Analyze a stored vCon container",
     description = "Rebuild the SIP messages a stored vCon container holds and analyze them, apart from this server's capture: per dialog the `--json-dialogs` object, the signaling diagnosis and the message ladder, plus the capture analysis, whose first finding is `rebuilt_from_vcon`.\n\nReads a `sip-message-trace` attachment (sipnab's, and the draft-howe-vcon-sip-signaling trace form) and `message/sip` attachments. `not_recomputed` lists what a container cannot reproduce: no RTP is stored, so no media statistic is computed, and `stored_media_quality` carries the producer's own numbers verbatim. `schema_findings` lists where the container fails the vendored draft-ietf-vcon-vcon-core-04 schema, without stopping the analysis: a container a store reshaped is still read. A container with no SIP sipnab can read, or whose `critical` lists an extension sipnab does not support, answers `verdict: unreadable` with the reason. The MCP `analyze_vcon` tool runs the same `vcon_analysis::analyze_container`.",
     params(VconAnalyzeParams),
-    request_body(content = serde_json::Value, description = "The vCon container to analyze.", content_type = "application/json"),
+    request_body(content = serde_json::Value, description = "The vCon container to analyze, in the unsigned, signed or encrypted form; the gzip format with Content-Type application/vcon+gzip.", content_type = "application/json"),
     security(("bearer" = [])),
     responses(
         (status = 200, description = "The analysis with any schema findings, or the reason a container with no readable SIP was not analyzed.", body = crate::output::vcon_analysis::VconAnalysis),
@@ -3930,15 +3947,65 @@ async fn post_vcon_analyze(
     ConnectInfo(addr): ConnectInfo<SocketAddr>,
     headers: HeaderMap,
     Query(params): Query<VconAnalyzeParams>,
-    body: Result<Json<Value>, axum::extract::rejection::JsonRejection>,
+    body: Result<axum::body::Bytes, axum::extract::rejection::BytesRejection>,
 ) -> Result<impl IntoResponse, Problem> {
     guard(&state, &headers, addr.ip())?;
 
-    let container = json_body(body, Some("the body must be a JSON vCon container"))?;
+    let bytes = vcon_body(&headers, body)?;
     let limit = resolve_page_limit(params.limit, state.max_rows);
-    let analysis = crate::output::vcon_analysis::analyze_container(&container, limit)
+    let analysis = crate::output::vcon_analysis::analyze_bytes(&bytes, limit)
         .map_err(|e| Problem::detailed(StatusCode::BAD_REQUEST, e.to_string()))?;
     Ok(Json(analysis))
+}
+
+/// The media types a vCon request body may carry: JSON
+/// ([RFC 8259](https://www.rfc-editor.org/rfc/rfc8259.html)), the vCon JSON
+/// format, and the gzip format
+/// ([draft-ietf-vcon-vcon-core-04 sections 6.1 and 6.2](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-04#section-6.2)).
+#[cfg(feature = "vcon")]
+pub const VCON_BODY_TYPES: [&str; 4] = [
+    "application/json",
+    "application/vcon",
+    "application/vcon+json",
+    "application/vcon+gzip",
+];
+
+/// The body of a vCon route, in any form the readers open: refused with
+/// 413 over the body limit, and with 400 when its `Content-Type` is not one
+/// of [`VCON_BODY_TYPES`] (parameters such as `charset` are ignored).
+#[cfg(feature = "vcon")]
+fn vcon_body(
+    headers: &HeaderMap,
+    body: Result<axum::body::Bytes, axum::extract::rejection::BytesRejection>,
+) -> Result<axum::body::Bytes, Problem> {
+    let bytes = match body {
+        Ok(bytes) => bytes,
+        Err(rejection) if rejection.status() == StatusCode::PAYLOAD_TOO_LARGE => {
+            return Err(Problem::new(StatusCode::PAYLOAD_TOO_LARGE));
+        }
+        Err(_) => {
+            return Err(Problem::detailed(
+                StatusCode::BAD_REQUEST,
+                "the body must be a JSON vCon container",
+            ));
+        }
+    };
+    let media_type = headers
+        .get(axum::http::header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.split(';').next())
+        .map(|v| v.trim().to_ascii_lowercase());
+    match media_type {
+        Some(t) if VCON_BODY_TYPES.contains(&t.as_str()) => Ok(bytes),
+        _ => Err(Problem::detailed(
+            StatusCode::BAD_REQUEST,
+            format!(
+                "the body must be a JSON vCon container, or a gzip format vCon, with \
+                 Content-Type {}",
+                VCON_BODY_TYPES.join(", ")
+            ),
+        )),
+    }
 }
 
 /// Query parameters for `GET /v1/vcon/spool`.

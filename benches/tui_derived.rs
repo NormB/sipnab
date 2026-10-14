@@ -177,7 +177,7 @@ fn bench_prepare_ladder(c: &mut Criterion) {
             theme: &theme,
             resolver: &resolver,
             name_mode: NameMode::Off,
-            rtp_segments: &[],
+            rtp_streams: &[],
         };
         b.iter(|| {
             prepare_messages(&msgs, first_ts, None, &opts, &folds)

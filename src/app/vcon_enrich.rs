@@ -35,7 +35,15 @@
 //! "encoding": "none" | "json" | "base64url", "product"?, "schema"?,
 //! "mediatype"?, "dialog"?} ]}`. A missing `dialog` is the first leg's
 //! signaling object. An answer with any entry that is not that shape is
-//! refused whole, and recorded as `malformed`.
+//! refused whole, and recorded as `malformed`. A `wtf_transcription` entry is
+//! also checked against draft-howe-vcon-wtf-extension-02, and an entry may
+//! carry its own draft-howe-vcon-provenance-00 `provenance` record, which
+//! sipnab completes with what it sent and what it carries.
+//!
+//! A service with `lawful_basis = true` may add `"attachments": [...]`, each a
+//! draft-howe-vcon-lawful-basis-02 attachment, carried as sent and listed
+//! under the service in the enrichment attachment. Without it, an answer
+//! with attachments is `malformed`.
 
 use std::io::{Read, Write};
 use std::path::PathBuf;
@@ -98,6 +106,8 @@ pub struct Service {
     send_audio: bool,
     /// Whether the container is sent.
     send_signaling: bool,
+    /// Whether a `lawful_basis` attachment in the answer is carried.
+    lawful_basis: bool,
 }
 
 impl Service {
@@ -223,6 +233,7 @@ pub fn services(
             timeout: Duration::from_secs(secs),
             send_audio,
             send_signaling,
+            lawful_basis: entry.lawful_basis.unwrap_or(false),
         }));
     }
     Ok(out)
@@ -291,6 +302,9 @@ pub struct Record {
     pub detail: String,
     /// The indices in `analysis` of what it added.
     pub analysis: Vec<usize>,
+    /// The indices in `attachments` of the lawful basis attachments it
+    /// supplied.
+    pub attachments: Vec<usize>,
 }
 
 /// Run `services` in order on `container`, appending each answer's analysis,
@@ -313,20 +327,39 @@ pub fn enrich(
         if service.send_signaling {
             sent.push("signaling");
         }
-        let request = request_body(container, own, audio, service);
+        let (request, sent_inputs) = request_body(container, own, audio, service);
         let (outcome, detail, added) = match ask(service, &request) {
-            Err((outcome, detail)) => (outcome, detail, Vec::new()),
-            Ok(answer) => match parse_answer(&answer, container.dialog.len(), first_leg) {
-                Ok(found) => {
+            Err((outcome, detail)) => (outcome, detail, (Vec::new(), Vec::new())),
+            Ok(answer) => match read_answer(&answer, container, first_leg, service) {
+                Ok((mut found, carried)) => {
                     let start = container.analysis.len();
+                    if found.iter().any(|a| a.kind == WTF_TYPE) {
+                        declare(container, WTF_TYPE);
+                    }
+                    let received =
+                        chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
+                    for analysis in &mut found {
+                        complete_provenance(analysis, &service.name, &received, &sent_inputs);
+                    }
+                    if !found.is_empty() {
+                        declare(container, PROVENANCE_EXTENSION);
+                    }
                     container.analysis.extend(found);
+                    let first_attachment = container.attachments.len();
+                    if !carried.is_empty() {
+                        declare(container, LAWFUL_BASIS);
+                    }
+                    container.attachments.extend(carried);
                     (
                         Outcome::Ok,
                         String::new(),
-                        (start..container.analysis.len()).collect(),
+                        (
+                            (start..container.analysis.len()).collect(),
+                            (first_attachment..container.attachments.len()).collect(),
+                        ),
                     )
                 }
-                Err(why) => (Outcome::Malformed, why, Vec::new()),
+                Err(why) => (Outcome::Malformed, why, (Vec::new(), Vec::new())),
             },
         };
         records.push(Record {
@@ -335,11 +368,25 @@ pub fn enrich(
             sent,
             outcome,
             detail,
-            analysis: added,
+            analysis: added.0,
+            attachments: added.1,
         });
     }
     attach(container, &records);
     records
+}
+
+/// List `extension` in the container's `extensions`, once.
+///
+/// [Section 4.1.3 of the core draft](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-04#section-4.1.3):
+/// `extensions` "SHOULD contain the list of names of all vCon extensions for
+/// any parameters used that are not defined in this core vCon schema
+/// document". Never `critical`: every extension an enrichment brings in is
+/// Compatible by its own draft.
+fn declare(container: &mut Vcon, extension: &'static str) {
+    if !container.extensions.contains(&extension) {
+        container.extensions.push(extension);
+    }
 }
 
 /// Append the attachment recording `records`.
@@ -363,6 +410,7 @@ pub fn attach(container: &mut Vcon, records: &[Record]) {
                 "outcome": r.outcome.as_str(),
                 "detail": r.detail,
                 "analysis": r.analysis,
+                "attachments": r.attachments,
             })
         })
         .collect();
@@ -377,15 +425,37 @@ pub fn attach(container: &mut Vcon, records: &[Record]) {
     });
 }
 
+/// The extension name of a provenance record,
+/// [draft-howe-vcon-provenance-00 section 3](https://datatracker.ietf.org/doc/html/draft-howe-vcon-provenance-00#section-3).
+pub const PROVENANCE_EXTENSION: &str = "provenance";
+
+/// One `inputs` entry of a provenance record,
+/// [draft-howe-vcon-provenance-00 section 4.2.2](https://datatracker.ietf.org/doc/html/draft-howe-vcon-provenance-00#section-4.2.2):
+/// the element, its index in the container, and the hash of what was sent.
+fn input(element: &str, index: usize, content_hash: String) -> serde_json::Value {
+    serde_json::json!({ "element": element, "index": index, "content_hash": content_hash })
+}
+
 /// The request for `service`: the container with only the analysis earlier
-/// services added (those past index `own`), and the audio.
+/// services added (those past index `own`), and the audio. With it, the
+/// provenance `inputs` naming everything the request carried:
+///
+/// - With signaling, each Dialog, Attachment and earlier Analysis Object
+///   sent, by its index in the container, hashed over its RFC 8785 form as
+///   sent. An earlier analysis is sent at index `i` of the request and is
+///   `own + i` in the container.
+/// - With audio, each leg's signaling Dialog Object, hashed over the WAV
+///   sent. That is the value core-04's `content_hash` takes for the same
+///   audio inlined in the container.
 fn request_body(
     container: &Vcon,
     own: usize,
     audio: &[LegAudio<'_>],
     service: &Service,
-) -> Vec<u8> {
+) -> (Vec<u8>, Vec<serde_json::Value>) {
+    use crate::app::vcon_hash::{json_token, token};
     use base64::Engine as _;
+    let mut inputs = Vec::new();
     let mut doc = serde_json::json!({
         "schema": REQUEST_SCHEMA,
         "service": service.name,
@@ -397,9 +467,21 @@ fn request_body(
             let earlier: Vec<serde_json::Value> = list.split_off(own.min(list.len()));
             *list = earlier;
         }
+        for (key, element, offset) in [
+            ("dialog", "dialog", 0),
+            ("attachments", "attachment", 0),
+            ("analysis", "analysis", own),
+        ] {
+            for (i, item) in vcon[key].as_array().into_iter().flatten().enumerate() {
+                inputs.push(input(element, offset + i, json_token(item)));
+            }
+        }
         doc["vcon"] = vcon;
     }
     if service.send_audio && !audio.is_empty() {
+        for leg in audio {
+            inputs.push(input("dialog", leg.dialog, token(leg.wav)));
+        }
         doc["audio"] = audio
             .iter()
             .map(|a| {
@@ -413,7 +495,135 @@ fn request_body(
             })
             .collect();
     }
-    doc.to_string().into_bytes()
+    (doc.to_string().into_bytes(), inputs)
+}
+
+/// The Analysis Objects and the lawful basis attachments in `answer`.
+///
+/// # Errors
+///
+/// What is wrong with it.
+fn read_answer(
+    answer: &[u8],
+    container: &Vcon,
+    default_dialog: usize,
+    service: &Service,
+) -> Result<(Vec<Analysis>, Vec<Attachment>), String> {
+    let doc: serde_json::Value =
+        serde_json::from_slice(answer).map_err(|e| format!("the answer is not JSON: {e}"))?;
+    let found = answer_analysis(&doc, container.dialog.len(), default_dialog)?;
+    let carried = answer_attachments(
+        &doc,
+        service.lawful_basis,
+        container.parties.len(),
+        container.dialog.len(),
+    )?;
+    Ok((found, carried))
+}
+
+/// Complete `analysis`'s provenance record from what sipnab knows, keeping
+/// what the service said.
+///
+/// [Section 4.2.1 of draft-howe-vcon-provenance-00](https://datatracker.ietf.org/doc/html/draft-howe-vcon-provenance-00#section-4.2.1)
+/// requires `model.vendor`, `model.name` and `generated_at`:
+///
+/// - `model` is the service's own when it sent one. Otherwise `vendor` is the
+///   analysis `vendor` and `name` its `product`, which section 4.2.1 says
+///   they "SHOULD equal", or, with no `product`, the `[[vcon.enrich]]` name.
+/// - `generated_at` is the service's own, or `received`, when sipnab read
+///   the answer.
+///
+/// `inputs` and `output_hash` are always sipnab's: `inputs` is `sent`, what
+/// the request carried, and `output_hash` is [`output_hash`] of the body
+/// sipnab carries. A service's own `inputs` index the request, whose
+/// `analysis` list starts at a different index from the container's.
+fn complete_provenance(
+    analysis: &mut Analysis,
+    service: &str,
+    received: &str,
+    sent: &[serde_json::Value],
+) {
+    let mut record = match analysis.provenance.take() {
+        Some(serde_json::Value::Object(map)) => map,
+        _ => serde_json::Map::new(),
+    };
+    record.entry("model").or_insert_with(|| {
+        serde_json::json!({
+            "vendor": analysis.vendor,
+            "name": analysis.product.as_deref().unwrap_or(service),
+        })
+    });
+    record
+        .entry("generated_at")
+        .or_insert_with(|| received.into());
+    record.insert("inputs".into(), sent.to_vec().into());
+    record.insert(
+        "output_hash".into(),
+        output_hash(&analysis.encoding, &analysis.body).into(),
+    );
+    analysis.provenance = Some(serde_json::Value::Object(record));
+}
+
+/// The `output_hash` of an analysis body,
+/// [draft-howe-vcon-provenance-00 section 4.3](https://datatracker.ietf.org/doc/html/draft-howe-vcon-provenance-00#section-4.3):
+/// "computed over the exact byte sequence ... produced by the model", a JSON
+/// value "canonicalize[d] ... with the JSON Canonicalization Scheme".
+///
+/// - `json`: the RFC 8785 form of the body.
+/// - `base64url`: the decoded bytes.
+/// - `none`: the text's UTF-8 bytes.
+fn output_hash(encoding: &str, body: &serde_json::Value) -> String {
+    use crate::app::vcon_hash::{json_token, token};
+    use base64::Engine as _;
+    let text = body.as_str().unwrap_or_default();
+    match encoding {
+        "json" => json_token(body),
+        "base64url" => match base64::engine::general_purpose::URL_SAFE_NO_PAD
+            .decode(text.trim_end_matches('='))
+        {
+            Ok(bytes) => token(&bytes),
+            Err(_) => token(text.as_bytes()),
+        },
+        _ => token(text.as_bytes()),
+    }
+}
+
+/// An answer entry's own provenance record, checked for the members
+/// [draft-howe-vcon-provenance-00 section 4.2.1](https://datatracker.ietf.org/doc/html/draft-howe-vcon-provenance-00#section-4.2.1)
+/// requires: a `model` object with `vendor` and `name` strings, and a
+/// `generated_at` that is an RFC 3339 time.
+///
+/// # Errors
+///
+/// What is missing, naming the member.
+fn supplied_provenance(entry: &serde_json::Value) -> Result<Option<serde_json::Value>, String> {
+    let Some(record) = entry.get("provenance") else {
+        return Ok(None);
+    };
+    let map = record
+        .as_object()
+        .ok_or("a provenance that is not an object")?;
+    let model = map
+        .get("model")
+        .and_then(serde_json::Value::as_object)
+        .ok_or("a provenance with no model object")?;
+    for key in ["vendor", "name"] {
+        if !model
+            .get(key)
+            .and_then(serde_json::Value::as_str)
+            .is_some_and(|v| !v.is_empty())
+        {
+            return Err(format!("a provenance whose model has no {key}"));
+        }
+    }
+    if !map
+        .get("generated_at")
+        .and_then(serde_json::Value::as_str)
+        .is_some_and(|t| chrono::DateTime::parse_from_rfc3339(t).is_ok())
+    {
+        return Err("a provenance with no RFC 3339 generated_at".into());
+    }
+    Ok(Some(record.clone()))
 }
 
 /// Send `request` to `service` and return the answer's body.
@@ -712,22 +922,246 @@ pub fn queue_full_records(services: &[Arc<Service>]) -> Vec<Record> {
                  written without it"
             ),
             analysis: Vec::new(),
+            attachments: Vec::new(),
         })
         .collect()
 }
 
-/// The Analysis Objects in an answer, each checked.
+/// The `lawful_basis` attachments in an answer, each checked.
+///
+/// # Errors
+///
+/// What is wrong with the answer's attachments.
+fn answer_attachments(
+    doc: &serde_json::Value,
+    allowed: bool,
+    parties: usize,
+    dialogs: usize,
+) -> Result<Vec<Attachment>, String> {
+    let Some(list) = doc.get("attachments") else {
+        return Ok(Vec::new());
+    };
+    let list = list
+        .as_array()
+        .ok_or("the answer's attachments is not a list")?;
+    if list.is_empty() {
+        return Ok(Vec::new());
+    }
+    if !allowed {
+        return Err(format!(
+            "the answer has attachments, and sipnab carries an enrichment's attachment only \
+             for a [[vcon.enrich]] with lawful_basis = true, and only a {LAWFUL_BASIS} one"
+        ));
+    }
+    list.iter()
+        .enumerate()
+        .map(|(i, entry)| {
+            lawful_basis_attachment(entry, parties, dialogs)
+                .map_err(|why| format!("attachment {i} {why}"))
+        })
+        .collect()
+}
+
+/// The `purpose`, and the extension name, of a lawful basis attachment,
+/// [draft-howe-vcon-lawful-basis-02 section 4.2](https://datatracker.ietf.org/doc/html/draft-howe-vcon-lawful-basis-02#section-4.2)
+/// and [section 5.1](https://datatracker.ietf.org/doc/html/draft-howe-vcon-lawful-basis-02#section-5.1).
+pub const LAWFUL_BASIS: &str = "lawful_basis";
+
+/// The six values of `lawful_basis`,
+/// [draft-howe-vcon-lawful-basis-02 section 5.2.1](https://datatracker.ietf.org/doc/html/draft-howe-vcon-lawful-basis-02#section-5.2.1).
+const LAWFUL_BASES: [&str; 6] = [
+    "consent",
+    "contract",
+    "legal_obligation",
+    "vital_interests",
+    "public_task",
+    "legitimate_interests",
+];
+
+/// The members of a lawful basis attachment sipnab carries. Each is one the
+/// container's [`Attachment`] holds unchanged; a member outside the list
+/// could not be carried as sent.
+const LAWFUL_BASIS_MEMBERS: [&str; 7] = [
+    "purpose",
+    "start",
+    "party",
+    "dialog",
+    "encoding",
+    "body",
+    "mediatype",
+];
+
+/// One lawful basis attachment, checked for the shape of
+/// draft-howe-vcon-lawful-basis-02 section 5 and carried as sent.
+///
+/// - [Section 5.1](https://datatracker.ietf.org/doc/html/draft-howe-vcon-lawful-basis-02#section-5.1):
+///   `purpose` is `lawful_basis`, `encoding` is `json`, and `party` and
+///   `dialog` index the container. `start` is required too, by the core
+///   draft's schema; the lawful basis draft says SHOULD.
+/// - [Section 5.2.1](https://datatracker.ietf.org/doc/html/draft-howe-vcon-lawful-basis-02#section-5.2.1):
+///   the body has `lawful_basis` (one of six values), `expiration` (a string
+///   or null) and `purpose_grants`.
+/// - [Section 5.2.2](https://datatracker.ietf.org/doc/html/draft-howe-vcon-lawful-basis-02#section-5.2.2):
+///   `terms_of_service` and `status_interval` are strings, and
+///   `content_hash` and `registry` objects of strings.
+/// - [Sections 5.2.3 and 5.2.4](https://datatracker.ietf.org/doc/html/draft-howe-vcon-lawful-basis-02#section-5.2.3):
+///   each purpose grant has `purpose`, a boolean `granted`, `granted_at` and
+///   optional `conditions` strings; each proof mechanism has `proof_type`,
+///   `timestamp` and an object `proof_data`.
+///
+/// It does not verify `content_hash.value`: section 5.2.2 hashes "the
+/// canonicalized lawful basis attachment body" and does not say whether that
+/// body includes `content_hash` itself. It does not judge `expiration`
+/// either: sipnab carries the record and processes nothing under it.
+///
+/// # Errors
+///
+/// What is wrong, naming the member.
+fn lawful_basis_attachment(
+    entry: &serde_json::Value,
+    parties: usize,
+    dialogs: usize,
+) -> Result<Attachment, String> {
+    let map = entry.as_object().ok_or("is not an object")?;
+    if let Some(other) = map
+        .keys()
+        .find(|k| !LAWFUL_BASIS_MEMBERS.contains(&k.as_str()))
+    {
+        return Err(format!(
+            "has a {other} member, which sipnab cannot carry as sent"
+        ));
+    }
+    if map.get("purpose").and_then(serde_json::Value::as_str) != Some(LAWFUL_BASIS) {
+        return Err(format!("has a purpose other than {LAWFUL_BASIS}"));
+    }
+    if map.get("encoding").and_then(serde_json::Value::as_str) != Some("json") {
+        return Err("has an encoding other than json".into());
+    }
+    if map
+        .get("mediatype")
+        .is_some_and(|m| m.as_str() != Some("application/json"))
+    {
+        return Err("has a mediatype other than application/json".into());
+    }
+    let start = map
+        .get("start")
+        .and_then(serde_json::Value::as_str)
+        .filter(|t| chrono::DateTime::parse_from_rfc3339(t).is_ok())
+        .ok_or("has no RFC 3339 start, which the core draft's schema requires")?;
+    let index = |key: &str, len: usize| {
+        map.get(key)
+            .and_then(serde_json::Value::as_u64)
+            .and_then(|n| usize::try_from(n).ok())
+            .filter(|n| *n < len)
+            .ok_or(format!("names no {key} this container holds"))
+    };
+    let party = index("party", parties)?;
+    let dialog = index("dialog", dialogs)?;
+    let body = map.get("body").ok_or("has no body")?;
+    check_lawful_basis_body(body)?;
+    Ok(Attachment {
+        purpose: LAWFUL_BASIS,
+        party,
+        dialog,
+        start: start.to_owned(),
+        mediatype: "application/json",
+        encoding: "json",
+        body: body.clone(),
+    })
+}
+
+/// Check a lawful basis body's members. See [`lawful_basis_attachment`].
+///
+/// # Errors
+///
+/// What is wrong, naming the member.
+fn check_lawful_basis_body(body: &serde_json::Value) -> Result<(), String> {
+    use serde_json::Value;
+    let body = body.as_object().ok_or("has a body that is not an object")?;
+    let is_text = |v: Option<&Value>| v.is_some_and(Value::is_string);
+    let bad = |what: &str| Err(format!("has a body whose {what}"));
+    if !body
+        .get("lawful_basis")
+        .and_then(Value::as_str)
+        .is_some_and(|b| LAWFUL_BASES.contains(&b))
+    {
+        return bad("lawful_basis is not one of the six the draft names");
+    }
+    if !body
+        .get("expiration")
+        .is_some_and(|e| e.is_string() || e.is_null())
+    {
+        return bad("expiration is neither a time nor null");
+    }
+    let grants = body
+        .get("purpose_grants")
+        .and_then(Value::as_array)
+        .ok_or("has a body with no purpose_grants list")?;
+    for (n, grant) in grants.iter().enumerate() {
+        if !is_text(grant.get("purpose")) {
+            return bad(&format!("purpose_grants[{n}] has no purpose"));
+        }
+        if !grant.get("granted").is_some_and(Value::is_boolean) {
+            return bad(&format!("purpose_grants[{n}] has no boolean granted"));
+        }
+        if !is_text(grant.get("granted_at")) {
+            return bad(&format!("purpose_grants[{n}] has no granted_at"));
+        }
+        if grant.get("conditions").is_some_and(|c| {
+            !c.as_array()
+                .is_some_and(|list| list.iter().all(Value::is_string))
+        }) {
+            return bad(&format!(
+                "purpose_grants[{n}] has conditions that are not strings"
+            ));
+        }
+    }
+    for key in ["terms_of_service", "status_interval"] {
+        if body.get(key).is_some_and(|v| !v.is_string()) {
+            return bad(&format!("{key} is not a string"));
+        }
+    }
+    for (key, members) in [
+        (
+            "content_hash",
+            &["algorithm", "canonicalization", "value"][..],
+        ),
+        ("registry", &["type", "url"][..]),
+    ] {
+        if let Some(object) = body.get(key)
+            && !members.iter().all(|m| is_text(object.get(*m)))
+        {
+            return bad(&format!("{key} lacks one of {}", members.join(", ")));
+        }
+    }
+    if let Some(proofs) = body.get("proof_mechanisms") {
+        let proofs = proofs
+            .as_array()
+            .ok_or("has a body whose proof_mechanisms is not a list")?;
+        for (n, proof) in proofs.iter().enumerate() {
+            for key in ["proof_type", "timestamp"] {
+                if !is_text(proof.get(key)) {
+                    return bad(&format!("proof_mechanisms[{n}] has no {key}"));
+                }
+            }
+            if !proof.get("proof_data").is_some_and(Value::is_object) {
+                return bad(&format!("proof_mechanisms[{n}] has no proof_data object"));
+            }
+        }
+    }
+    Ok(())
+}
+
+/// The Analysis Objects in an answer already parsed, each checked.
 ///
 /// # Errors
 ///
 /// What is wrong with the answer, naming the entry.
-fn parse_answer(
-    body: &[u8],
+fn answer_analysis(
+    doc: &serde_json::Value,
     dialogs: usize,
     default_dialog: usize,
 ) -> Result<Vec<Analysis>, String> {
-    let doc: serde_json::Value =
-        serde_json::from_slice(body).map_err(|e| format!("the answer is not JSON: {e}"))?;
     let list = doc
         .get("analysis")
         .and_then(serde_json::Value::as_array)
@@ -761,6 +1195,11 @@ fn parse_answer(
                 .filter(|n| *n < dialogs)
                 .ok_or(format!("analysis {i} names no dialog this container holds"))?,
         };
+        if kind == WTF_TYPE {
+            check_wtf(&encoding, &body).map_err(|why| format!("analysis {i} {why}"))?;
+        }
+        let provenance =
+            supplied_provenance(entry).map_err(|why| format!("analysis {i} has {why}"))?;
         let optional =
             |key: &str| text(key).map(|v| std::borrow::Cow::<'static, str>::Owned(v.to_owned()));
         out.push(Analysis {
@@ -772,9 +1211,144 @@ fn parse_answer(
             mediatype: optional("mediatype"),
             encoding,
             body,
+            provenance,
         });
     }
     Ok(out)
+}
+
+/// The analysis `type`, and the extension name, of a WTF transcription.
+///
+/// [Section 5.2 of draft-howe-vcon-wtf-extension-02](https://datatracker.ietf.org/doc/html/draft-howe-vcon-wtf-extension-02#section-5.2)
+/// registers the extension token, and
+/// [section 6.1](https://datatracker.ietf.org/doc/html/draft-howe-vcon-wtf-extension-02#section-6.1)
+/// says the analysis `type` "MUST be set to \"wtf_transcription\"".
+pub const WTF_TYPE: &str = "wtf_transcription";
+
+/// Whether `value` is a JSON number from 0 to 1, the range
+/// [section 8.1 of draft-howe-vcon-wtf-extension-02](https://datatracker.ietf.org/doc/html/draft-howe-vcon-wtf-extension-02#section-8.1)
+/// requires of every confidence score.
+fn is_unit(value: Option<&serde_json::Value>) -> bool {
+    value
+        .and_then(serde_json::Value::as_f64)
+        .is_some_and(|n| (0.0..=1.0).contains(&n))
+}
+
+/// Check a WTF transcription's `encoding` and `body` against what
+/// draft-howe-vcon-wtf-extension-02 requires.
+///
+/// - [Section 6.1](https://datatracker.ietf.org/doc/html/draft-howe-vcon-wtf-extension-02#section-6.1):
+///   `encoding` "MUST be set to \"json\"", and the body is a JSON object.
+/// - [Section 4.2](https://datatracker.ietf.org/doc/html/draft-howe-vcon-wtf-extension-02#section-4.2):
+///   "three required sections", `transcript`, `segments` and `metadata`.
+/// - [Section 6.2.1](https://datatracker.ietf.org/doc/html/draft-howe-vcon-wtf-extension-02#section-6.2.1):
+///   the members of each. `transcript` has `text`, `language`, `duration`
+///   (at least 0) and `confidence`. Each segment has a unique integer `id`,
+///   `start` and `end` with `end` after `start`, `text` and `confidence`;
+///   `speaker`, when present, is an integer or a string, and `words` an
+///   array of integers. `metadata` has `created_at`, `processed_at`,
+///   `provider` and `model`. The draft's own examples in
+///   [section 12.2](https://datatracker.ietf.org/doc/html/draft-howe-vcon-wtf-extension-02#section-12.2)
+///   omit `metadata.audio` and `metadata.options`, so neither is required.
+///
+/// # Errors
+///
+/// What is missing or out of range, naming the section and member.
+fn check_wtf(encoding: &str, body: &serde_json::Value) -> Result<(), String> {
+    if encoding != "json" {
+        return Err(format!(
+            "is a {WTF_TYPE} with encoding '{encoding}'; the WTF draft requires json"
+        ));
+    }
+    let body = body
+        .as_object()
+        .ok_or(format!("is a {WTF_TYPE} whose body is not a JSON object"))?;
+    let section = |name: &str| {
+        body.get(name).ok_or(format!(
+            "is a {WTF_TYPE} without its required {name} section"
+        ))
+    };
+    let transcript = section("transcript")?
+        .as_object()
+        .ok_or(format!("is a {WTF_TYPE} whose transcript is not an object"))?;
+    let segments = section("segments")?
+        .as_array()
+        .ok_or(format!("is a {WTF_TYPE} whose segments is not an array"))?;
+    let metadata = section("metadata")?
+        .as_object()
+        .ok_or(format!("is a {WTF_TYPE} whose metadata is not an object"))?;
+    let bad = |what: String| Err(format!("is a {WTF_TYPE} whose {what}"));
+    for key in ["text", "language"] {
+        if !transcript
+            .get(key)
+            .is_some_and(serde_json::Value::is_string)
+        {
+            return bad(format!("transcript has no {key} string"));
+        }
+    }
+    if !transcript
+        .get("duration")
+        .and_then(serde_json::Value::as_f64)
+        .is_some_and(|d| d >= 0.0)
+    {
+        return bad("transcript has no duration of 0 or more seconds".into());
+    }
+    if !is_unit(transcript.get("confidence")) {
+        return bad("transcript has no confidence from 0 to 1".into());
+    }
+    let mut ids = std::collections::HashSet::new();
+    for (n, segment) in segments.iter().enumerate() {
+        let Some(segment) = segment.as_object() else {
+            return bad(format!("segments[{n}] is not an object"));
+        };
+        match segment.get("id").and_then(serde_json::Value::as_i64) {
+            None => return bad(format!("segments[{n}] has no integer id")),
+            Some(id) if !ids.insert(id) => {
+                return bad(format!("segments[{n}] repeats the id {id}"));
+            }
+            Some(_) => {}
+        }
+        let time = |key: &str| segment.get(key).and_then(serde_json::Value::as_f64);
+        let (Some(start), Some(end)) = (time("start"), time("end")) else {
+            return bad(format!("segments[{n}] has no start and end in seconds"));
+        };
+        if end <= start {
+            return bad(format!(
+                "segments[{n}] ends at {end}, not after its start {start}"
+            ));
+        }
+        if !segment
+            .get("text")
+            .is_some_and(serde_json::Value::is_string)
+        {
+            return bad(format!("segments[{n}] has no text string"));
+        }
+        if !is_unit(segment.get("confidence")) {
+            return bad(format!("segments[{n}] has no confidence from 0 to 1"));
+        }
+        if segment
+            .get("speaker")
+            .is_some_and(|s| !(s.is_i64() || s.is_u64() || s.is_string()))
+        {
+            return bad(format!(
+                "segments[{n}] has a speaker that is neither an integer nor a string"
+            ));
+        }
+        if segment.get("words").is_some_and(|w| {
+            !w.as_array()
+                .is_some_and(|list| list.iter().all(|i| i.is_u64() || i.is_i64()))
+        }) {
+            return bad(format!(
+                "segments[{n}] has words that are not an array of integers"
+            ));
+        }
+    }
+    for key in ["created_at", "processed_at", "provider", "model"] {
+        if !metadata.get(key).is_some_and(serde_json::Value::is_string) {
+            return bad(format!("metadata has no {key} string"));
+        }
+    }
+    Ok(())
 }
 
 /// An analysis entry's body, in the shape its encoding allows.
@@ -801,6 +1375,21 @@ mod tests {
     use super::*;
 
     type TestError = Box<dyn std::error::Error>;
+
+    /// The Analysis Objects in an answer, each checked.
+    ///
+    /// # Errors
+    ///
+    /// What is wrong with the answer, naming the entry.
+    fn parse_answer(
+        body: &[u8],
+        dialogs: usize,
+        default_dialog: usize,
+    ) -> Result<Vec<Analysis>, String> {
+        let doc: serde_json::Value =
+            serde_json::from_slice(body).map_err(|e| format!("the answer is not JSON: {e}"))?;
+        answer_analysis(&doc, dialogs, default_dialog)
+    }
 
     /// An answer holding `entry` alone.
     fn one(entry: &serde_json::Value) -> Vec<u8> {
@@ -901,6 +1490,295 @@ mod tests {
             match parse_answer(&answer, 3, 0) {
                 Ok(_) => {
                     return Err(format!("accepted an answer that should say '{needle}'").into());
+                }
+                Err(why) => assert!(why.contains(needle), "{needle}: {why}"),
+            }
+        }
+        Ok(())
+    }
+
+    /// The WTF transcription of section 12.2 of
+    /// draft-howe-vcon-wtf-extension-02, as an answer entry.
+    fn wtf() -> serde_json::Value {
+        serde_json::json!({
+            "type": "wtf_transcription", "vendor": "openai", "encoding": "json",
+            "body": {
+                "transcript": {"text": "t", "language": "en-US", "duration": 3.5,
+                               "confidence": 0.96},
+                "segments": [{"id": 0, "start": 0.0, "end": 3.5, "text": "t",
+                              "confidence": 0.96, "speaker": 0, "words": [0, 1]}],
+                "metadata": {"created_at": "2025-01-02T12:00:00Z",
+                             "processed_at": "2025-01-02T12:00:15Z",
+                             "provider": "whisper", "model": "whisper-large-v3"}
+            }
+        })
+    }
+
+    /// A WTF transcription with every required section is kept, body and
+    /// all, and one with any of them wrong is refused, naming what is wrong.
+    #[test]
+    fn a_wtf_transcription_is_checked_against_the_draft() -> Result<(), TestError> {
+        let found = parse_answer(&one(&wtf()), 1, 0)?;
+        assert_eq!(found[0].kind, "wtf_transcription");
+        assert_eq!(found[0].body["segments"][0]["end"], 3.5);
+        let broken = |path: &[&str], value: Option<serde_json::Value>| {
+            let mut entry = wtf();
+            let mut at = &mut entry;
+            for key in &path[..path.len() - 1] {
+                at = match key.parse::<usize>() {
+                    Ok(n) => &mut at[n],
+                    Err(_) => &mut at[*key],
+                };
+            }
+            let last = path[path.len() - 1];
+            match (value, at.as_object_mut()) {
+                (Some(v), Some(map)) => {
+                    map.insert(last.to_owned(), v);
+                }
+                (None, Some(map)) => {
+                    map.remove(last);
+                }
+                _ => {}
+            }
+            one(&entry)
+        };
+        let cases: Vec<(Vec<u8>, &str)> = vec![
+            (
+                one(
+                    &serde_json::json!({"type": "wtf_transcription", "vendor": "v",
+                                        "encoding": "none", "body": "t"}),
+                ),
+                "requires json",
+            ),
+            (broken(&["body"], Some("{}".into())), "not a JSON object"),
+            (broken(&["body", "transcript"], None), "transcript section"),
+            (broken(&["body", "segments"], None), "segments section"),
+            (broken(&["body", "metadata"], None), "metadata section"),
+            (
+                broken(&["body", "transcript", "language"], None),
+                "language",
+            ),
+            (
+                broken(&["body", "transcript", "duration"], Some((-1).into())),
+                "duration",
+            ),
+            (
+                broken(&["body", "transcript", "confidence"], Some(96.into())),
+                "confidence",
+            ),
+            (broken(&["body", "segments", "0", "id"], None), "integer id"),
+            (
+                broken(&["body", "segments", "0", "end"], Some(0.0.into())),
+                "not after",
+            ),
+            (broken(&["body", "segments", "0", "text"], None), "text"),
+            (
+                broken(&["body", "segments", "0", "confidence"], Some(1.5.into())),
+                "confidence",
+            ),
+            (
+                broken(&["body", "segments", "0", "speaker"], Some(true.into())),
+                "speaker",
+            ),
+            (
+                broken(&["body", "segments", "0", "words"], Some("w".into())),
+                "words",
+            ),
+            (
+                broken(&["body", "metadata", "processed_at"], None),
+                "processed_at",
+            ),
+            (broken(&["body", "metadata", "model"], None), "model"),
+        ];
+        for (answer, needle) in cases {
+            match parse_answer(&answer, 1, 0) {
+                Ok(_) => return Err(format!("accepted a WTF that should say '{needle}'").into()),
+                Err(why) => assert!(why.contains(needle), "{needle}: {why}"),
+            }
+        }
+        // Two segments with one id.
+        let mut entry = wtf();
+        let segment = entry["body"]["segments"][0].clone();
+        entry["body"]["segments"] = serde_json::json!([segment.clone(), segment]);
+        match parse_answer(&one(&entry), 1, 0) {
+            Ok(_) => return Err("accepted a repeated segment id".into()),
+            Err(why) => assert!(why.contains("repeats the id"), "{why}"),
+        }
+        Ok(())
+    }
+
+    /// The output hash is over the bytes the body stands for: the canonical
+    /// JSON, the decoded base64url, or the text.
+    #[test]
+    fn the_output_hash_is_over_what_the_body_stands_for() {
+        use crate::app::vcon_hash::{json_token, token};
+        let object = serde_json::json!({"b": 1, "a": [true]});
+        assert_eq!(output_hash("json", &object), json_token(&object));
+        assert_eq!(output_hash("base64url", &"aGk".into()), token(b"hi"));
+        assert_eq!(output_hash("none", &"hi".into()), token(b"hi"));
+    }
+
+    /// A provenance record does not survive redaction: its hashes bind the
+    /// content before redaction.
+    #[test]
+    fn redaction_drops_a_provenance_record() {
+        use crate::output::redact::{Redact as _, RedactionKey, RedactionPolicy};
+        let mut analysis = Analysis {
+            kind: "summary".into(),
+            dialog: 0,
+            vendor: "v".into(),
+            product: None,
+            schema: None,
+            mediatype: None,
+            encoding: "none".into(),
+            body: "s".into(),
+            provenance: Some(serde_json::json!({"output_hash": "sha512-x"})),
+        };
+        let policy = RedactionPolicy::new(RedactionKey::from_secret(b"k"));
+        analysis.redact(&policy.redactor());
+        assert_eq!(analysis.provenance, None);
+    }
+
+    /// The lawful basis attachment of section 5.3 of
+    /// draft-howe-vcon-lawful-basis-02, with the `start` core-04 requires.
+    fn lawful_basis() -> serde_json::Value {
+        serde_json::json!({
+            "purpose": "lawful_basis", "start": "2025-01-02T12:15:30Z",
+            "party": 0, "dialog": 0, "encoding": "json",
+            "body": {
+                "lawful_basis": "consent",
+                "expiration": null,
+                "purpose_grants": [{"purpose": "recording", "granted": true,
+                                    "granted_at": "2025-01-02T12:15:30Z",
+                                    "conditions": ["internal use"]}],
+                "proof_mechanisms": [{"proof_type": "verbal_confirmation",
+                                      "timestamp": "2025-01-02T12:15:30Z",
+                                      "proof_data": {"dialog_reference": 0}}],
+                "content_hash": {"algorithm": "sha-256", "canonicalization": "jcs",
+                                 "value": "a1b2"},
+                "registry": {"type": "scitt", "url": "https://example.com/r"}
+            }
+        })
+    }
+
+    /// The answer `{"analysis": [], "attachments": [attachment]}`.
+    fn with_attachment(attachment: &serde_json::Value) -> serde_json::Value {
+        serde_json::json!({ "analysis": [], "attachments": [attachment] })
+    }
+
+    /// A lawful basis attachment of the draft's shape is carried as sent,
+    /// and only when the service opts in.
+    #[test]
+    fn a_lawful_basis_is_carried_only_when_allowed() -> Result<(), TestError> {
+        let found = answer_attachments(&with_attachment(&lawful_basis()), true, 3, 1)?;
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].purpose, "lawful_basis");
+        assert_eq!(found[0].body, lawful_basis()["body"]);
+        assert_eq!(found[0].start, "2025-01-02T12:15:30Z");
+        assert_eq!((found[0].party, found[0].dialog), (0, 0));
+        assert!(
+            answer_attachments(&serde_json::json!({"analysis": []}), false, 3, 1)?.is_empty(),
+            "no attachments, nothing to allow"
+        );
+        match answer_attachments(&with_attachment(&lawful_basis()), false, 3, 1) {
+            Ok(_) => Err("carried a lawful basis the service was not allowed".into()),
+            Err(why) => {
+                assert!(why.contains("lawful_basis = true"), "{why}");
+                Ok(())
+            }
+        }
+    }
+
+    /// Every shape draft-howe-vcon-lawful-basis-02 section 5 rules out is
+    /// refused, naming what is wrong.
+    #[test]
+    fn a_lawful_basis_is_checked_against_the_draft() -> Result<(), TestError> {
+        let set = |path: &[&str], value: Option<serde_json::Value>| {
+            let mut entry = lawful_basis();
+            let mut at = &mut entry;
+            for key in &path[..path.len() - 1] {
+                at = match key.parse::<usize>() {
+                    Ok(n) => &mut at[n],
+                    Err(_) => &mut at[*key],
+                };
+            }
+            let last = path[path.len() - 1];
+            if let Some(map) = at.as_object_mut() {
+                match value {
+                    Some(v) => map.insert(last.to_owned(), v),
+                    None => map.remove(last),
+                };
+            }
+            with_attachment(&entry)
+        };
+        let cases: Vec<(serde_json::Value, &str)> = vec![
+            (set(&["purpose"], Some("consent".into())), "purpose"),
+            (set(&["encoding"], Some("none".into())), "encoding"),
+            (set(&["body"], Some("{}".into())), "body"),
+            (set(&["start"], None), "start"),
+            (set(&["start"], Some("yesterday".into())), "start"),
+            (set(&["party"], Some(3.into())), "party"),
+            (set(&["dialog"], Some(1.into())), "dialog"),
+            (set(&["filename"], Some("lb.json".into())), "filename"),
+            (set(&["mediatype"], Some("text/plain".into())), "mediatype"),
+            (
+                set(&["body", "lawful_basis"], Some("because".into())),
+                "lawful_basis",
+            ),
+            (set(&["body", "expiration"], None), "expiration"),
+            (set(&["body", "expiration"], Some(7.into())), "expiration"),
+            (set(&["body", "purpose_grants"], None), "purpose_grants"),
+            (
+                set(
+                    &["body", "purpose_grants", "0", "granted"],
+                    Some("yes".into()),
+                ),
+                "granted",
+            ),
+            (
+                set(&["body", "purpose_grants", "0", "purpose"], None),
+                "purpose",
+            ),
+            (
+                set(&["body", "purpose_grants", "0", "granted_at"], None),
+                "granted_at",
+            ),
+            (
+                set(
+                    &["body", "purpose_grants", "0", "conditions"],
+                    Some(1.into()),
+                ),
+                "conditions",
+            ),
+            (
+                set(
+                    &["body", "purpose_grants", "0", "conditions"],
+                    Some(serde_json::json!([1])),
+                ),
+                "conditions",
+            ),
+            (
+                set(&["body", "proof_mechanisms", "0", "proof_data"], None),
+                "proof_data",
+            ),
+            (
+                set(&["body", "proof_mechanisms", "0", "proof_type"], None),
+                "proof_type",
+            ),
+            (
+                set(&["body", "content_hash", "value"], None),
+                "content_hash",
+            ),
+            (set(&["body", "registry", "url"], None), "registry"),
+            (
+                set(&["body", "terms_of_service"], Some(1.into())),
+                "terms_of_service",
+            ),
+        ];
+        for (answer, needle) in cases {
+            match answer_attachments(&answer, true, 3, 1) {
+                Ok(_) => {
+                    return Err(format!("carried a lawful basis that should say '{needle}'").into());
                 }
                 Err(why) => assert!(why.contains(needle), "{needle}: {why}"),
             }

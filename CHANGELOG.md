@@ -8,10 +8,158 @@ sipnab is pre-1.0: the public API and the CLI surface are not stable, and a
 breaking change may land in any release. Breaking changes are called out in the
 entry that carries them.
 
-## [Unreleased]
+## [0.5.219] - 2026-10-14
 
 ### Added
 
+- **`[[vcon.rule]]` keys `campaign_header`, `skill_header` and `interaction_id_header` fill the vCon CC extension's Dialog parameters.**
+  - Each names a SIP header whose value becomes `campaign`, `skill` or `interaction_id` on the signaling Dialog Object, per [section 3.2 of draft-ietf-vcon-cc-extension-02](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-cc-extension-02#section-3.2).
+  - sipnab writes the draft's `interaction_id`; vcon-lib's Dialog list spells it `interaction`.
+  - `--redact` turns `interaction_id` into a token.
+- **A `[[vcon.rule]]` container carries a `tags` attachment.**
+  - Its body is a list of `"name:value"` strings, the shape vcon-lib reads.
+  - It names the rule, each `@name` filter of the rule's `when` that the call matched, and up to five findings of the signaling diagnosis.
+- **A SIP MESSAGE becomes a vCon `text` Dialog Object.**
+  - Each MESSAGE with content is a `text` object, per [section 4.3.1.3 of draft-ietf-vcon-vcon-core-04](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-04#section-4.3.1.3), with the sender first in `parties`, the capture time as `start`, and the body inline under its `Content-Type`.
+  - Typing indications and empty messages are not text.
+  - `--redact` removes the text and keeps its clock and parties.
+  - sipnab does not parse MSRP, so MSRP text has no text dialog.
+- **The vCon signaling Dialog Object carries `party_history`.**
+  - It lists `join`, `drop`, `hold` and `unhold` events the capture shows, per [section 4.3.13 of draft-ietf-vcon-vcon-core-04](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-04#section-4.3.13).
+  - The answer is the joins, the BYE and its 200 are the drops, and `sendonly` or `inactive` in a re-INVITE or UPDATE is a hold.
+  - New `[[vcon.rule]]` key `dtmf_events` adds `keydown` and `keyup` with the digit, from INFO `application/dtmf-relay` and [RFC 4733](https://www.rfc-editor.org/rfc/rfc4733.html) telephone events.
+    The key turns telephone-event decoding on for the run.
+  - `--redact` removes the key events.
+- **A vCon carries the network's STIR verdict as a `stir-verification-report` attachment.**
+  - sipnab copies the `verstat` parameter (ATIS-1000074) from `P-Asserted-Identity` or `From` of the initial INVITE into the report of [section 7.3 of draft-howe-vcon-sip-signaling-00](https://datatracker.ietf.org/doc/html/draft-howe-vcon-sip-signaling-00#section-7.3).
+  - `result` is `verified`, `failed` or `no-signature`, and the PASSporT's `attest`, `orig` and `dest` claims ride beside it.
+  - The report says that sipnab verified nothing, and it names no verifier.
+  - With no `verstat`, there is no report.
+- **`[[vcon.rule]] sip_messages` attaches the initial INVITE and its final response in wire format.**
+  - The attachments are `sip-invite` and `sip-response`, with `mediatype: "message/sip"`, and `sip-sdp` for each one's SDP, per [section 8.1 of draft-howe-vcon-sip-signaling-00](https://datatracker.ietf.org/doc/html/draft-howe-vcon-sip-signaling-00#section-8.1).
+  - The bytes lose their credential header lines, as the trace does.
+  - The rule's inline budget covers them, and the completeness attachment names any it refused.
+  - `--redact` removes them.
+  - The `-I` reader reads `message/sip` attachments only from a container that has no trace, so it reads no message twice.
+- **The vCon `sip-message-trace` body carries the draft's trace format.**
+  - The body and each message gain the fields of [section 6.2.1 of draft-howe-vcon-sip-signaling-00](https://datatracker.ietf.org/doc/html/draft-howe-vcon-sip-signaling-00#section-6.2.1): `direction`, `party`, `status_text` and `body`.
+  - `version` is now the string `"1.0"` the draft defines, and was the number `1`.
+    `schema_version` and every existing message field stay as they were.
+  - `direction` is `"received"` on every message, because sipnab sent nothing.
+  - `party` is absent when the message's tags match neither party.
+  - `--redact` removes each message's `body`.
+- **The vCon signaling Dialog Object carries `sip_cseq`.**
+  - It is the CSeq number of the request that created the dialog, per [section 5.4 of draft-howe-vcon-sip-signaling-00](https://datatracker.ietf.org/doc/html/draft-howe-vcon-sip-signaling-00#section-5.4).
+  - It is absent when the capture joined after that request.
+- **The vCon signaling Dialog Object names its parties and the conversation's length.**
+  - `parties` is `[0, 1]`, the `From` party then the `To` party, per [section 4.3.4 of draft-ietf-vcon-vcon-core-04](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-04#section-4.3.4).
+  - `duration` is the 200 to the initial INVITE through the BYE, in seconds, and is absent when the capture lacks any of the three.
+  - A capture that joined after the call began does not know the caller.
+    The container then adds an empty party and `originator` names it, per [section 4.3.5](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-04#section-4.3.5).
+
+- **Enrichment services may answer with WTF transcriptions.**
+  - A `[[vcon.enrich]]` answer may hold an Analysis Object of type `wtf_transcription`, as [section 6.1 of draft-howe-vcon-wtf-extension-02](https://datatracker.ietf.org/doc/html/draft-howe-vcon-wtf-extension-02#section-6.1) defines it.
+  - sipnab checks it for the draft's required `transcript`, `segments` and `metadata` sections and their members.
+  - A container that holds one lists `wtf_transcription` in `extensions`, and not in `critical`.
+  - sipnab records an answer whose WTF transcription fails the check as `malformed`, naming what is wrong, and keeps none of it.
+- **Each enrichment Analysis Object records its provenance.**
+  - It carries a `provenance` record, as [section 4 of draft-howe-vcon-provenance-00](https://datatracker.ietf.org/doc/html/draft-howe-vcon-provenance-00#section-4) defines it, and the container lists `provenance` in `extensions`.
+  - `model` and `generated_at` are the service's own when it sends a record, and otherwise come from the entry's `vendor` and `product` and the time sipnab read the answer.
+  - `inputs` names each element sipnab sent the service, with the SHA-512 of its [RFC 8785](https://www.rfc-editor.org/rfc/rfc8785.html) form, and each leg's audio, with the SHA-512 of the WAV.
+  - `output_hash` is the SHA-512 of the body sipnab carries.
+  - The `sipnab-enrichment` attachment stays: it also records the services that added nothing.
+- **The vCon forwarder can register SCITT lifecycle statements.**
+  - `--vcon-forward-scitt-url` (or `[vcon_forward] scitt_url`) names a SCITT transparency service.
+  - For each container delivered, the forwarder registers `vcon_created` (a container sipnab wrote once) and `vcon_sent`, the events of [section 5 of draft-howe-vcon-lifecycle-01](https://datatracker.ietf.org/doc/html/draft-howe-vcon-lifecycle-01#section-5).
+  - Each is a COSE_Sign1 Signed Statement, signed RS256 with `--vcon-forward-scitt-sign-key` and carrying `--vcon-forward-scitt-sign-cert` in `x5chain`, POSTed to `<url>/entries` as [section 2.3 of draft-ietf-scitt-scrapi-11](https://datatracker.ietf.org/doc/html/draft-ietf-scitt-scrapi-11#section-2.3) defines.
+  - `--vcon-forward-scitt-issuer` names the issuer, and `--vcon-forward-scitt-auth-file` and `--vcon-forward-scitt-ca` authenticate and trust the service.
+  - What the service answered, receipts included, goes into `<name>.scitt` beside the delivered container.
+  - sipnab records a statement that does not register and does not retry it. The delivery stands.
+  - sipnab registers no `vcon_deleted`: it deletes no container.
+- **An enrichment service may supply a lawful basis, when you allow it.**
+  - `lawful_basis = true` on a `[[vcon.enrich]]` lets its answer carry `attachments`, each a lawful basis attachment of [section 5 of draft-howe-vcon-lawful-basis-02](https://datatracker.ietf.org/doc/html/draft-howe-vcon-lawful-basis-02#section-5.1).
+  - sipnab checks the shape, carries it as sent, lists `lawful_basis` in `extensions`, and names the service in its `sipnab-enrichment` line under `attachments`.
+  - sipnab still writes no lawful basis of its own. Without the key, an answer with attachments is `malformed`.
+
+- **An encrypting `[[vcon.rule]]` writes audio by URL as its own JWE.**
+  - sipnab refused `audio = "url"` with `encrypt_to` at startup, because nothing encrypted the WAV beside the container.
+  - The rule now writes the audio file encrypted to the same `encrypt_to` certificates as the container, one `recipients` entry each.
+    - Its `cty` names the media type inside: `audio/x-wav`, or `audio/ogg` with `audio_format = "opus"`.
+  - The file's name is `<content_hash>.wav.jwe` or `.ogg.jwe`, so it carries no Call-ID.
+  - The sealed container's recording names the file's URL, the `mediatype` of the audio inside, and the `content_hash` of the file as written, the ciphertext.
+    - draft-ietf-vcon-vcon-core-04 section 2.2 hashes the body of the content at the given `url`.
+  - The `encrypt_to` private key decrypts it, through the same JOSE code as the container.
+- **A `[[vcon.rule]]` can write its recordings as Ogg Opus.**
+  - `audio_format = "opus"` writes the recording as Opus ([RFC 6716](https://www.rfc-editor.org/rfc/rfc6716.html)) in Ogg ([RFC 7845](https://www.rfc-editor.org/rfc/rfc7845.html)), `mediatype` `audio/ogg`.
+    - draft-ietf-vcon-vcon-core-04 section 4.3.8 lists `audio/ogg` among the media types a Dialog Object SHOULD use.
+  - `audio_format = "wav"`, the default, writes the WAV as before.
+  - The bitrate is 24 kbit/s per channel, constant.
+  - The `content_hash` is over the Ogg bytes, and the inline budget applies to the encoded size.
+    - A two-way G.711 call fits the 5 MiB default for 643 seconds as Ogg Opus, against 122 as WAV.
+  - With `audio = "url"` the file beside the container is `.ogg`.
+  - sipnab refuses at startup:
+    - an `audio_format` other than `wav` and `opus`;
+    - an `audio_format` on a rule whose `audio` is `omit`;
+    - `opus` in a build without the `opus` feature, naming the feature.
+  - `opus` is a new Cargo feature, in `full`.
+    - It compiles libopus 1.6.1 from source and links it statically, so building `full` needs `cmake` and a C compiler.
+    - The gnu, macOS and Docker builds carry it. The static musl builds, which have no vCon export, do not.
+    - `sipnab --version` lists it.
+- **A signed vCon can name its certificate chain by URL (`x5u`).**
+  - draft-ietf-vcon-vcon-core-04 section 5.2.2: a signature carries `x5c` or `x5u`, and `x5u` is an HTTPS URL.
+  - Writing: a `[[vcon.rule]]` `sign_cert_url = "https://..."` writes `x5u` beside the `x5c`.
+    - sipnab refuses at startup a URL that is not `https://`, and `sign_cert_url` on a rule that does not sign.
+  - Reading: `--vcon-x5u-ca <FILE|system>` (`[vcon_input] x5u_ca`) fetches the chain of a signature that has `x5u` and no `x5c`.
+    - Over HTTPS only, through the fetcher's TLS client, trusting a server that chains to the CA in the file or, with `system`, to the host's CA bundle.
+    - At most 256 KiB, at most 10 seconds, each URL once per run.
+    - Without the flag sipnab fetches nothing and refuses such a container, naming the flag.
+- **`--vcon-resign` re-signs a signed vCon for a long-term archive.**
+  - draft-ietf-vcon-vcon-core-04 section 5.2.3: before the signing certificate of JWS1 expires, a re-signer verifies the vCon and signs JWS1 whole as the payload of JWS2.
+  - `sipnab --vcon-resign <FILE> --vcon-resign-key <KEY> --vcon-resign-cert <CHAIN> --vcon-resign-out <OUT>`:
+    - verifies every signed layer of the input, and its outermost signer with `--vcon-signer-ca` and `--vcon-signer-sha256` when set;
+    - refuses an outermost signing certificate outside its validity period, an unsigned input, and an output that exists;
+    - writes the new JWS, mode `0600`, with the input byte for byte as its payload.
+  - Exit `0` written, `1` refused, `2` a key, certificate or signer check that does not load.
+  - Every reader walks the nesting, up to 16 signed layers: each signature must verify, and the signer checks apply to the outermost.
+- **An encrypted vCon can have several recipients, and EC keys.**
+  - `encrypt_to` in `[[vcon.rule]]` and `[vcon]` takes a list of certificates.
+    - sipnab encrypts the container once and writes one `recipients` entry per certificate ([RFC 7516 section 7.2.1](https://www.rfc-editor.org/rfc/rfc7516.html#section-7.2.1)).
+    - Each recipient opens it with its own key.
+    - sipnab refuses an empty list.
+  - An EC P-256 recipient certificate gets `ECDH-ES+A256KW` ([RFC 7518 section 4.6](https://www.rfc-editor.org/rfc/rfc7518.html#section-4.6)), with the content key wrapped by AES key wrap ([RFC 3394](https://www.rfc-editor.org/rfc/rfc3394.html)); an RSA one keeps `RSA-OAEP`.
+  - An EC P-256 `sign_key` signs `ES256`; an RSA one keeps `RS256`.
+  - The readers and the fetcher open an `ECDH-ES+A256KW` or `ECDH-ES` entry with an EC P-256 key, and verify `ES256`.
+    - They refuse a signature whose `alg` is not the algorithm of its certificate's key.
+  - Decrypting with a static EC key uses the `p256` crate 0.13.2, new to the `vcon` feature; osv.dev lists no advisory for it or the crates it adds.
+- **A `[[vcon.rule]]` can sign without encrypting.**
+  - `sign_only = true` writes the signed form of draft-ietf-vcon-vcon-core-04 section 5.2 alone: a JWS signed with `sign_key` and `sign_cert`, with no encryption.
+  - `compress = "gzip"` signs the gzip of the vCon, as for an encrypting rule.
+  - The rule takes `sign_key`, `sign_cert` and `compress` from `[vcon]`, and never `[vcon] encrypt_to`.
+  - sipnab refuses at startup `sign_only` beside the rule's own `encrypt_to`, and `sign_only` without a signing key.
+  - Signing stays opt-in: `sign_key` without `encrypt_to` or `sign_only` is still refused.
+  - With `audio = "url"`, the audio file beside a signed container is the WAV or Ogg stream as it is. The signed container names its SHA-512.
+  - The signature attests sipnab's record of what it observed, not who took part in the call: the container names sipnab as its observer party.
+- **The vCon forwarder names a gzip format container's media type.**
+  - A container whose file starts with the gzip magic bytes `1f 8b` goes as `Content-Type: application/vcon+gzip`, as draft-ietf-vcon-vcon-core-04 section 5.4 says it should.
+    - Before, every POST and PUT said `application/json`.
+  - A `409` replace reads the uuid from inside the gzip.
+  - `--vcon-forward-content-type <TYPE>` (`[vcon_forward] content_type`) sets the type of a JSON container: `application/json` (the default), `application/vcon+json` or `application/vcon`.
+    - On 2026-10-14 a self-hosted conserver answered `422` to `application/vcon` and `204` to the other two, so the default stays `application/json`.
+  - The same conserver answered `500` to a gzip format container sent as `application/vcon+gzip`. The forwarder retries a `5xx` with no limit on tries, so do not put a gzip format file in a spool a conserver reads.
+- **Every vCon reader opens the signed, encrypted and gzip forms.**
+  - The readers are `-I`, the MCP `analyze_vcon` and `validate_vcon` tools, and `POST /v1/vcon/analyze` and `POST /v1/vcon/validate`.
+  - They share one step, as draft-ietf-vcon-vcon-core-04 section 5.4 tells the forms apart:
+    - sipnab inflates the gzip format (section 6.2), known by the magic bytes `1f 8b`, up to 64 MiB;
+    - sipnab decrypts the encrypted form (section 5.3) with `--vcon-key <FILE>` (`[vcon_input] key`), a private key readable by its owner only;
+    - sipnab verifies the signed form (section 5.2), with no key needed.
+  - Without a key, sipnab refuses an encrypted container and names `--vcon-key`.
+    - Before, `-I` reported it as a JSON object with none of the members a vCon has.
+  - Before, `-I` handed a gzip format vCon to the capture reader, which reported it as not a capture.
+  - `--vcon-signer-ca <FILE|system>` and `--vcon-signer-sha256 <HEX>` (`[vcon_input] signer_ca`, `signer_sha256`) check the signer, by the fetcher's rules.
+    - With either set, sipnab refuses an unsigned container.
+  - `analyze_vcon` takes `container_base64`, the bytes of any form, for the gzip format.
+  - The REST routes take `Content-Type: application/vcon+gzip`, `application/vcon` and `application/vcon+json` beside `application/json`.
+  - The `rebuilt_from_vcon` finding names each layer opened and the signer's SHA-256 fingerprint.
 - **An encrypting `[[vcon.rule]]` can compress what it encrypts.**
   - `compress = "gzip"` signs the gzip ([RFC 1952](https://www.rfc-editor.org/rfc/rfc1952.html)) of the vCon instead of the vCon.
     - draft-ietf-vcon-vcon-core-04 section 5.2 allows this.
@@ -77,9 +225,37 @@ entry that carries them.
   - A filter applied as an expression is always shown in full.
   - A line 3 wider than the terminal now ends in `…` instead of stopping at
     the edge.
+- **`F6` in the call flow draws each RTP stream of the call as its own arrow** ([#495](https://github.com/NormB/sipnab/issues/495)).
+  - It replaces the single centered `RTP` bar, which showed neither direction
+    nor the number of streams.
+  - Each stream is a row at the time of its first packet, among the SIP
+    messages.
+    - The arrow runs from the sender's column to the receiver's column.
+    - The label reads like `RTP (PCMA) 250 6000→33912`: codec, packet count,
+      source and destination port.
+    - The packet count follows the capture while it runs.
+    - In a narrow gap the label drops whole fields, the ports first and then
+      the count. It never shows part of a number.
+  - A stream with no reverse stream (the same two sockets, swapped) is marked
+    `one-way`.
+  - A media address no SIP message uses gets its own column, labeled with the
+    IP address.
+    - On a media relay's host, such as one running rtpengine, the ladder now
+      shows the relay's media address and both legs of the media path.
+  - The extended view (`x`) draws the streams of every leg it shows.
+  - `Enter` on a stream's row opens that stream, and the Mermaid export (`E`)
+    includes stream rows.
+  - A call with no captured RTP still shows the SDP-derived bar.
+  - Reported by Ihor Olkhovskyi ([@igorolhovskiy](https://github.com/igorolhovskiy)) in
+    [#495](https://github.com/NormB/sipnab/issues/495), which this closes.
 
 ### Fixed
 
+- **SDP in an OPTIONS response no longer links an RTP stream to the OPTIONS dialog.**
+  - Only SDP in an offer or an answer links a stream: an INVITE, ACK, PRACK or UPDATE, or a 1xx or 2xx response to one, per [RFC 6337 section 2.2](https://www.rfc-editor.org/rfc/rfc6337.html#section-2.2).
+  - SDP in any other method, or in a 3xx to 6xx response, links none. [RFC 6337 section 2.4](https://www.rfc-editor.org/rfc/rfc6337.html#section-2.4) names a 200 OK for OPTIONS and a 488 for INVITE as SDP that is neither an offer nor an answer.
+  - One rule, `sip::sdp::sdp_sets_up_media`, decides it for the batch, `--cores`, live and TUI paths.
+  - In a capture where a phone answered OPTIONS with its media socket and then took a call on it, the call's first 10 RTP packets were bound to the OPTIONS dialog. The stream then split in two when the call's 200 OK named that socket. It is now one stream of 362 packets, bound to the call, as tshark counts it.
 - **The encrypted form names a `cty` that core-04 lists.**
   - An encrypting rule wrote `cty: "application/vcon+json"`, the value of the draft's Appendix A.7 example.
   - Section 5.3.1 lists `application/vcon` and `application/vcon+gzip`.
@@ -122,6 +298,22 @@ entry that carries them.
     - Since 0.5.125 sipnab keys the other 62 bits on the node, the dialog and the capture.
   - The uuid code comment said `rand_b` came from the node name alone.
   - Each now states what the code does.
+- **sipnab decodes telephone events at a dynamic payload type on the audio SSRC.**
+  - `tests/pcap-samples/SIP_DTMF2.cap` negotiates `a=rtpmap:96 telephone-event/8000` and sends seven keys at PT 96 on the SSRC that carries its PCMA audio.
+  - sipnab read the stream's codec as PCMA, looked for telephone events at PT 101, and decoded none of them.
+  - The payload type and clock rate now come from the `a=rtpmap` of the session that owns the stream, per packet, for any dynamic PT.
+  - sipnab finds the session through the same SDP endpoint that links the stream to its dialog, so a stream sent from a socket no SDP advertised reads the SDP that advertised its destination.
+  - PT 101 at 8000 Hz remains the default only when no SDP ties the stream to a session, or that session negotiated no telephone-event and bound nothing else to 101.
+  - A vCon `dtmf_events` rule still writes no `keydown` for these keys, because their sending socket is no party's advertised endpoint.
+
+### Security
+
+- **rustls advanced to 0.23.46 (RUSTSEC-2026-0346, RUSTSEC-2026-0347, RUSTSEC-2026-0348, RUSTSEC-2026-0349).**
+  - [RUSTSEC-2026-0346](https://rustsec.org/advisories/RUSTSEC-2026-0346): `Debug` output of client session values exposed TLS secrets.
+  - [RUSTSEC-2026-0347](https://rustsec.org/advisories/RUSTSEC-2026-0347): buffered application data could be sent to the outer server after an ECH rejection.
+  - [RUSTSEC-2026-0348](https://rustsec.org/advisories/RUSTSEC-2026-0348): Brotli certificate decompression could allocate up to 1 GiB before authentication.
+  - [RUSTSEC-2026-0349](https://rustsec.org/advisories/RUSTSEC-2026-0349): an unauthenticated ServerHello could downgrade later connections to classical key exchange.
+  - 0.23.46 closes all four. Both lockfiles and the release binaries carry it.
 
 ### Internal
 

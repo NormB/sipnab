@@ -11,9 +11,9 @@ reachable three ways and not four is visible only once these four are set
 beside one another. [`tests/capability_matrix_test.rs`](https://github.com/NormB/sipnab/blob/main/tests/capability_matrix_test.rs) keeps
 this current and requires the matrix to account for every row here.
 
-Totals: CLI 348, TUI 25, REST 46, MCP 74.
+Totals: CLI 363, TUI 25, REST 46, MCP 74.
 
-## CLI flags (348)
+## CLI flags (363)
 
 - `--ack-timeout`
 - `--active-idle-window`
@@ -343,6 +343,7 @@ Totals: CLI 348, TUI 25, REST 46, MCP 74.
 - `--vcon-forward-backoff-cap`
 - `--vcon-forward-backoff-first`
 - `--vcon-forward-ca`
+- `--vcon-forward-content-type`
 - `--vcon-forward-done`
 - `--vcon-forward-extra-ca`
 - `--vcon-forward-failed`
@@ -352,11 +353,25 @@ Totals: CLI 348, TUI 25, REST 46, MCP 74.
 - `--vcon-forward-max-response-head`
 - `--vcon-forward-once`
 - `--vcon-forward-replace-url`
+- `--vcon-forward-scitt-auth-file`
+- `--vcon-forward-scitt-ca`
+- `--vcon-forward-scitt-issuer`
+- `--vcon-forward-scitt-sign-cert`
+- `--vcon-forward-scitt-sign-key`
+- `--vcon-forward-scitt-url`
 - `--vcon-forward-timeout`
 - `--vcon-forward-url`
+- `--vcon-key`
 - `--vcon-max-inline-media`
 - `--vcon-out`
+- `--vcon-resign`
+- `--vcon-resign-cert`
+- `--vcon-resign-key`
+- `--vcon-resign-out`
+- `--vcon-signer-ca`
+- `--vcon-signer-sha256`
 - `--vcon-spool-status`
+- `--vcon-x5u-ca`
 - `--version`
 - `--wireshark`
 - `--word`

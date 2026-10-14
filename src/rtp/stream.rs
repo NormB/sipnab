@@ -631,6 +631,11 @@ pub struct RtpStream {
     /// typically — reads as clean from either endpoint alone, and this pair is
     /// the only place a capture can say so.
     pub dscp_last: Option<u8>,
+    /// The RFC 4733 telephone events decoded on this stream, one per event,
+    /// in arrival order, at most [`MAX_KEY_PRESSES`]. Filled only when the
+    /// run decodes telephone events (`--telephone-event`, or a
+    /// `[[vcon.rule]]` with `dtmf_events`).
+    pub key_presses: Vec<crate::rtp::dtmf::DtmfEvent>,
 
     /// The stream store's SDP binding counter when this stream began.
     ///
@@ -674,6 +679,10 @@ pub struct RtpStream {
     /// Lost packets in the current interval.
     interval_lost: u64,
 }
+
+/// The most telephone events one stream keeps. A stream that sends more is
+/// not a person pressing keys, and the list must not grow without bound.
+pub const MAX_KEY_PRESSES: usize = 256;
 
 impl RtpStream {
     /// How many DISTINCT AMR speech modes this stream's payloads carried.
@@ -1082,6 +1091,7 @@ impl RtpStream {
             // stamps both immediately after construction.
             dscp_first: None,
             dscp_last: None,
+            key_presses: Vec::new(),
             lost_seq_cap: lost_seq_log_cap(),
             // Derived from the period, here, so the pair can never describe two
             // different spans however the period arrived.

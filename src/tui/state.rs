@@ -952,20 +952,31 @@ pub(in crate::tui) struct LadderKey {
     pub(in crate::tui) sdp_mode: SdpDisplayMode,
     /// Timestamp display mode (Scaled inserts spacer rows).
     pub(in crate::tui) ts_mode: TimestampMode,
-    /// Whether RTP bars are laid out between messages.
+    /// Whether RTP rows (streams, or the SDP-derived bar) are laid out.
     pub(in crate::tui) show_rtp: bool,
     /// Name-resolution mode (changes participant labels).
     pub(in crate::tui) name_mode: crate::names::NameMode,
     /// [`crate::names::NameResolver::generation`] — participant labels.
     pub(in crate::tui) resolver_generation: u64,
-    /// [`crate::rtp::stream_store::StreamStore::generation`] when RTP
-    /// segments feed the layout (plain view with RTP bars on) — `None`
-    /// when they don't (extended view, or bars off).
-    pub(in crate::tui) stream_generation: Option<u64>,
+    /// [`LadderCache::media_rev`] when the call's RTP streams feed the
+    /// layout (RTP display on); `None` when it is off, so stream churn
+    /// cannot force a relayout.
+    pub(in crate::tui) media_rev: Option<u64>,
     /// Message indices whose retransmit folds are expanded.
     pub(in crate::tui) fold_expanded: HashSet<usize>,
     /// Checked dialogs a multi-selection flow merges (display order);
     /// empty for the classic single-dialog ladder.
+    pub(in crate::tui) merged_calls: Vec<String>,
+}
+
+/// The dialogs whose RTP streams the call flow draws: what the view shows.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(in crate::tui) struct MediaScope {
+    /// The view's anchor Call-ID.
+    pub(in crate::tui) call_id: String,
+    /// Whether the extended (multi-leg) view is on.
+    pub(in crate::tui) extended: bool,
+    /// The dialogs a multi-selection flow merges (empty otherwise).
     pub(in crate::tui) merged_calls: Vec<String>,
 }
 
@@ -981,12 +992,18 @@ pub(in crate::tui) struct LadderCache {
     pub(in crate::tui) participants: Vec<call_flow::Participant>,
     /// Laid-out ladder rows (messages, SDP detail, RTP bars, spacers).
     pub(in crate::tui) rows: Vec<call_flow::LayoutRow>,
-    /// Cached RTP codec segments for `segs_key`'s dialog — the layout
-    /// input recomputed only when the stream store structurally changes.
-    /// (A segment's `end` may lag behind live packets; nothing reads it.)
-    pub(in crate::tui) rtp_segs: Vec<call_flow::RtpCodecSegment>,
-    /// `(call_id, stream-store generation)` the segments were derived at.
-    pub(in crate::tui) segs_key: Option<(String, u64)>,
+    /// The RTP streams of the dialogs the view shows, as of the last
+    /// stream-store scan: one ladder row each while the RTP display is on.
+    pub(in crate::tui) rtp_streams: Vec<call_flow::RtpFlowStream>,
+    /// Which dialogs `rtp_streams` was scanned for; `None` until the first
+    /// scan, and while the RTP display is off.
+    pub(in crate::tui) streams_scope: Option<MediaScope>,
+    /// Bumped whenever a scan changes `rtp_streams` (a new stream, a new
+    /// link, a packet count that moved); the ladder key carries it.
+    pub(in crate::tui) media_rev: u64,
+    /// Floors stream-store rescans for the same scope, so packet counts
+    /// refresh about three times a second rather than on every tick.
+    pub(in crate::tui) media_churn: ChurnFloor,
     /// Per position in the laid-out message slice: which dialog the
     /// message belongs to and its index within THAT dialog's messages.
     /// Filled for merged/extended ladders (their slice interleaves several

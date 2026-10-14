@@ -33,9 +33,9 @@ use chrono::{DateTime, TimeDelta, Utc};
 use sipnab::analysis::CaptureFacts;
 use sipnab::net::TransportProto;
 use sipnab::output::vcon::{
-    ExportContext, ExportedDialog, MAX_INLINE_MEDIA_BYTES, MediaOutcome, ObservedAudio, Omission,
-    RECORDING_MEDIATYPE, RECORDING_SET_TYPE, RECORDING_TYPE, Vcon, export_dialog_and_completeness,
-    export_dialog_with_audio,
+    EncodedRecording, ExportContext, ExportedDialog, MAX_INLINE_MEDIA_BYTES, MediaOutcome,
+    ObservedAudio, Omission, RECORDING_MEDIATYPE, RECORDING_SET_TYPE, RECORDING_TYPE,
+    ReferencedRecording, Vcon, export_dialog_and_completeness, export_dialog_with_audio,
 };
 use sipnab::rtp::audio_export::{DialogAudio, decode_dialog_audio};
 use sipnab::rtp::parser::RtpHeader;
@@ -1287,19 +1287,21 @@ fn audio_withheld_by_redaction_leaves_the_signaling_object_typed_by_the_rule()
             disposition,
             "{label}: {object}"
         );
-        for media_field in [
-            "body",
-            "mediatype",
-            "encoding",
-            "content_hash",
-            "parties",
-            "duration",
-        ] {
+        for media_field in ["body", "mediatype", "encoding", "content_hash"] {
             assert!(
                 object.get(media_field).is_none(),
                 "{label}: {media_field} in {object}"
             );
         }
+        // The signaling parties, `From` then `To`, never a channel map: there
+        // is no audio for a channel to carry. `duration`, when present, is the
+        // conversation the signaling shows, not a length of media.
+        assert_eq!(object["parties"], serde_json::json!([0, 1]), "{label}");
+        let conversation = dialog
+            .timing
+            .conversation_ms()
+            .map(|ms| serde_json::json!(ms as f64 / 1000.0));
+        assert_eq!(object.get("duration").cloned(), conversation, "{label}");
         assert_eq!(
             completeness(&json)?["media"],
             "withheld-by-redaction",
@@ -1343,7 +1345,14 @@ fn referenced_audio_is_a_url_and_the_hash_of_its_wav() -> Result<(), TestError> 
             media: &[],
             related_legs: &[],
         },
-        ObservedAudio::Referenced(&audio, url),
+        ObservedAudio::Referenced(
+            &audio,
+            ReferencedRecording {
+                url,
+                mediatype: RECORDING_MEDIATYPE,
+                file: &audio.wav,
+            },
+        ),
     );
     let json = json_of(&vcon)?;
     let recording = dialog_of(&json, RECORDING_TYPE)?.ok_or("a recording object")?;
@@ -1379,5 +1388,167 @@ fn referenced_audio_is_a_url_and_the_hash_of_its_wav() -> Result<(), TestError> 
     if let Err(e) = validator.validate(&json) {
         return Err(format!("does not validate: {e}\n{json:#}").into());
     }
+    Ok(())
+}
+
+// ── A rule's audio_format: the bytes the container carries ───────────
+
+/// `sha512-` and the base64url SHA-512 of `bytes`.
+fn hash_of(bytes: &[u8]) -> String {
+    use base64::Engine as _;
+    use sha2::{Digest, Sha512};
+    format!(
+        "sha512-{}",
+        base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(Sha512::digest(bytes))
+    )
+}
+
+/// The one-second fixture call `call_id`, and its decoded audio.
+fn one_second(call_id: &str) -> Result<(DialogStore, DialogAudio), TestError> {
+    let store = dialog_store(call_id, sock(10, 0, 0, 1, 20000), sock(10, 0, 0, 2, 30000))?;
+    let s = stream(
+        sock(10, 0, 0, 1, 20000),
+        sock(10, 0, 0, 2, 30000),
+        1,
+        50,
+        0xFF,
+        0,
+        TimeDelta::seconds(1),
+    )?;
+    let audio = decode_dialog_audio(&[&s])?;
+    Ok((store, audio))
+}
+
+/// Export `call_id` from `store` with `observed` as its media, under `budget`.
+fn export_observed(
+    store: &DialogStore,
+    call_id: &str,
+    budget: Option<usize>,
+    observed: ObservedAudio<'_>,
+) -> Result<serde_json::Value, TestError> {
+    let dialog = store.get(call_id).ok_or("the fixture dialog")?;
+    let facts = CaptureFacts::default();
+    let vcon = export_dialog_with_audio(
+        dialog,
+        &ExportContext {
+            capture_id: "vcon-media-fixture.pcap",
+            facts: &facts,
+            max_inline_media_bytes: budget,
+            analysis: None,
+            media: &[],
+            related_legs: &[],
+        },
+        observed,
+    );
+    json_of(&vcon)
+}
+
+/// `bytes` as an Ogg Opus recording.
+fn ogg(bytes: &[u8]) -> EncodedRecording<'_> {
+    EncodedRecording {
+        bytes,
+        mediatype: "audio/ogg",
+        format: "Ogg Opus",
+    }
+}
+
+/// Audio carried in another format: the recording's `mediatype` is that
+/// format's, its body is those bytes, and its `content_hash` is over those
+/// bytes, not over the WAV they were made from.
+#[test]
+fn an_encoded_recording_carries_its_own_bytes_mediatype_and_hash() -> Result<(), TestError> {
+    use base64::Engine as _;
+    let bytes = b"OggS stands in for an Ogg Opus stream".to_vec();
+    let (store, audio) = one_second("encoded@example.com")?;
+    let json = export_observed(
+        &store,
+        "encoded@example.com",
+        None,
+        ObservedAudio::Encoded(&audio, ogg(&bytes)),
+    )?;
+    let recording = dialog_of(&json, RECORDING_TYPE)?.ok_or("a recording object")?;
+    assert_eq!(recording["mediatype"], "audio/ogg");
+    let body = recording["body"].as_str().ok_or("an inline body")?;
+    assert_eq!(
+        base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(body)?,
+        bytes,
+        "the body is the encoded bytes"
+    );
+    assert_eq!(
+        recording["content_hash"],
+        hash_of(&bytes),
+        "over the encoded bytes"
+    );
+    assert_eq!(completeness(&json)?["media"], "carried");
+    Ok(())
+}
+
+/// The inline budget is measured on the encoded size: audio whose WAV is
+/// over a budget is carried when its encoded form is under it, and an
+/// encoded form over it is refused, naming its format and its own size.
+#[test]
+fn the_inline_budget_applies_to_the_encoded_size() -> Result<(), TestError> {
+    let small = vec![7_u8; 900];
+    let large = vec![7_u8; 3000];
+    // One second of one-channel 8 kHz WAV is about 16 KB: over 2000 bytes of
+    // base64url, which 900 encoded bytes are not.
+    let (store, audio) = one_second("budget@example.com")?;
+    assert!(
+        audio.wav.len() * 4 / 3 > 2000,
+        "the WAV alone is over the budget"
+    );
+    let carried = export_observed(
+        &store,
+        "budget@example.com",
+        Some(2000),
+        ObservedAudio::Encoded(&audio, ogg(&small)),
+    )?;
+    assert_eq!(completeness(&carried)?["media"], "carried");
+    let refused = export_observed(
+        &store,
+        "budget@example.com",
+        Some(2000),
+        ObservedAudio::Encoded(&audio, ogg(&large)),
+    )?;
+    let c = completeness(&refused)?;
+    assert_eq!(c["media"], "refused-over-budget");
+    let note = c["note"].as_str().ok_or("the caveat")?;
+    assert!(
+        note.contains("the 3000 byte Ogg Opus is 4000 bytes"),
+        "the refusal names the encoded size and format: {note}"
+    );
+    Ok(())
+}
+
+/// A referenced recording names the `mediatype` of what the file holds and
+/// hashes the file's bytes as written, which for an encrypting rule are the
+/// ciphertext rather than the audio.
+#[test]
+fn a_referenced_recording_hashes_the_file_as_written() -> Result<(), TestError> {
+    let file = b"{\"ciphertext\": \"stands in for an encrypted recording\"}".to_vec();
+    let url = "https://media.example.com/calls/x.ogg.jwe";
+    let (store, audio) = one_second("by-url@example.com")?;
+    let json = export_observed(
+        &store,
+        "by-url@example.com",
+        None,
+        ObservedAudio::Referenced(
+            &audio,
+            ReferencedRecording {
+                url,
+                mediatype: "audio/ogg",
+                file: &file,
+            },
+        ),
+    )?;
+    let recording = dialog_of(&json, RECORDING_TYPE)?.ok_or("a recording object")?;
+    assert_eq!(recording["url"], url);
+    assert_eq!(recording["mediatype"], "audio/ogg");
+    assert_eq!(
+        recording["content_hash"],
+        hash_of(&file),
+        "over the file's bytes"
+    );
+    assert!(recording.get("body").is_none(), "{recording}");
     Ok(())
 }

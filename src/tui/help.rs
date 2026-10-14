@@ -88,7 +88,7 @@ CALL FLOW:
   [ / ]            Scroll the detail pane (any focus)
   F2               Save
   F4, x            Extended multi-leg flow
-  F6, Ctrl+R       Toggle RTP display
+  F6, Ctrl+R       RTP streams in the ladder (one arrow each)
   r                RTP Streams of this call (Esc comes back here)
   N                Name endpoints (Tab/Shift+Tab between participants)
 

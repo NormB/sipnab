@@ -282,8 +282,8 @@ rule inherits when it does not set its own.
 |-----|------|---------|-------------|
 | `rule` | array of tables | `[]` | Export rules, each `[[vcon.rule]]`. See [the export rule keys](#vcon-rule) |
 | `enrich` | array of tables | `[]` | Enrichment services, each `[[vcon.enrich]]`. See [the enrichment keys](#vcon-enrich) |
-| `encrypt_to` | string | -- | The `encrypt_to` of every `[[vcon.rule]]` that sets none: with it, every rule encrypts. A rule's own value overrides it |
-| `sign_key` | string | -- | The `sign_key` of every encrypting `[[vcon.rule]]` that sets none. A rule's own value overrides it |
+| `encrypt_to` | string or array | -- | The `encrypt_to` of every `[[vcon.rule]]` that sets none: with it, every rule except a `sign_only` one encrypts. One certificate, or a list of them. sipnab refuses an empty list. A rule's own value overrides it |
+| `sign_key` | string | -- | The `sign_key` of every encrypting or `sign_only` `[[vcon.rule]]` that sets none. A rule's own value overrides it |
 | `sign_cert` | string | -- | The `sign_cert` of every encrypting `[[vcon.rule]]` that sets none. A rule's own value overrides it |
 | `compress` | string | `none` | The `compress` of every encrypting `[[vcon.rule]]` that sets none: `none` or `gzip`. A rule's own value overrides it |
 
@@ -301,16 +301,24 @@ and what they carry.
 | `name` | string | -- | The rule's name, 1 to 64 ASCII letters, digits, `-` or `_`. Required and unique |
 | `when` | string | -- | The filter a call must match; `@name` [named filters](@/docs/filter-dsl.md#named-filters) resolve. Required |
 | `dir` | string | -- | The directory the rule writes to. Required |
-| `audio` | string | `omit` | `inline` carries the retained audio inside each container; `url` writes it to a WAV beside the container and names it by URL (see `audio_url_base`); both turn audio retention on for the run. `omit` carries none |
-| `audio_url_base` | string | -- | For `audio = "url"`: the HTTPS base URL your storage serves the rule's WAV files from. sipnab writes each WAV beside its container and names `<base>/<file>` in it |
+| `audio` | string | `omit` | `inline` carries the retained audio inside each container; `url` writes it to a file beside the container and names it by URL (see `audio_url_base`); both turn audio retention on for the run. `omit` carries none |
+| `audio_url_base` | string | -- | For `audio = "url"`: the HTTPS base URL your storage serves the rule's audio files from. sipnab writes each file beside its container and names `<base>/<file>` in it |
+| `audio_format` | string | `wav` | The format of the audio an `inline` or `url` rule carries. `wav`: `audio/x-wav`. `opus`: Ogg Opus, `audio/ogg`, at 24 kbit/s per channel; needs a build with the `opus` feature. sipnab refuses any other value, and the key on an `omit` rule, at startup. See [Audio as Ogg Opus](@/docs/vcon.md#audio-as-ogg-opus) |
 | `max_inline_media_mib` | integer | `--vcon-max-inline-media` | The largest audio this rule's containers inline, in MiB; sipnab writes a call above it without its audio, saying so |
 | `live_audio` | boolean | `false` | Serve each matching call's audio while it is in progress on the REST API's `/v1/calls/{call_id}/audio` WebSocket, and list the calls at `/v1/calls/live`. Turns audio retention on. See [Hear a call while it is in progress](@/docs/vcon.md#hear-a-call-while-it-is-in-progress) |
 | `live` | boolean | `false` | On a live capture, write each matching call's container as the call starts and rewrite it in place, with `updated_at`, each time the call changes. No effect with `-I`. See [Follow a call while it is in progress](@/docs/vcon.md#follow-a-call-while-it-is-in-progress) |
-| `encrypt_to` | string | -- | A PEM certificate whose RSA key the rule encrypts its containers to. Set, the rule writes only the encrypted form of draft-ietf-vcon-vcon-core-04 section 5.3. Needs `sign_key` and `sign_cert`. See [Encrypt what a rule writes](@/docs/vcon.md#encrypt-what-a-rule-writes) |
-| `sign_key` | string | -- | The PEM RSA private key an encrypting rule signs with, readable by its owner only |
+| `encrypt_to` | string or array | -- | A PEM certificate, or a list of them, whose RSA or EC P-256 keys the rule encrypts its containers to: one container with one recipient entry per certificate. Set, the rule writes only the encrypted form of draft-ietf-vcon-vcon-core-04 section 5.3. Needs `sign_key` and `sign_cert`. sipnab refuses an empty list. See [Encrypt what a rule writes](@/docs/vcon.md#encrypt-what-a-rule-writes) |
+| `sign_key` | string | -- | The PEM RSA or EC P-256 private key an encrypting or `sign_only` rule signs with, readable by its owner only. An RSA key signs `RS256`, an EC P-256 key `ES256` |
 | `sign_cert` | string | -- | The PEM certificate chain of `sign_key`, leaf first, carried in each signature's `x5c` |
-| `compress` | string | `none` | For an encrypting rule: `gzip` signs the gzip ([RFC 1952](https://www.rfc-editor.org/rfc/rfc1952.html)) of the vCon instead of the vCon, as draft-ietf-vcon-vcon-core-04 section 5.2 allows, and the encrypted form names `cty: "application/vcon+gzip"`; `none` signs the vCon as it is. Refused on a rule without `encrypt_to`. See [Encrypt what a rule writes](@/docs/vcon.md#encrypt-what-a-rule-writes) |
+| `sign_cert_url` | string | -- | An `https://` URL that serves the PEM chain of `sign_cert`. sipnab writes it as each signature's `x5u` (draft-ietf-vcon-vcon-core-04 section 5.2.2), beside the `x5c`. Refused when it is not `https://`, and on a rule that does not sign. See [Name the chain by URL](@/docs/vcon.md#name-the-chain-by-url) |
+| `sign_only` | boolean | `false` | `true`: write the signed form of draft-ietf-vcon-vcon-core-04 section 5.2 alone, signed with `sign_key` and `sign_cert`, with no encryption. The rule takes `sign_key`, `sign_cert` and `compress` from `[vcon]`, and not `[vcon] encrypt_to`. Refused beside the rule's own `encrypt_to`, and without a signing key. See [Sign without encrypting](@/docs/vcon.md#sign-without-encrypting) |
+| `compress` | string | `none` | For an encrypting or `sign_only` rule: `gzip` signs the gzip ([RFC 1952](https://www.rfc-editor.org/rfc/rfc1952.html)) of the vCon instead of the vCon, as draft-ietf-vcon-vcon-core-04 section 5.2 allows, and the encrypted form names `cty: "application/vcon+gzip"`; `none` signs the vCon as it is. Refused on a rule without `encrypt_to`. See [Encrypt what a rule writes](@/docs/vcon.md#encrypt-what-a-rule-writes) |
 | `sealed_updates` | string | `new-uuid` | What an encrypting rule writes when a call it already wrote changes. `new-uuid`: a new instance with a new uuid whose `amended` names the prior one (draft-ietf-vcon-vcon-core-04 section 4.1.9). `same-uuid`: rewrite the file under the same uuid, with a startup warning. `final-only`: write once, when the call ends. sipnab refuses any other value at startup. No effect without `encrypt_to`. See [When an encrypted call changes](@/docs/vcon.md#when-an-encrypted-call-changes) |
+| `sip_messages` | boolean | `false` | Attach the initial INVITE and its final response in wire format, as `sip-invite` and `sip-response`, and each one's SDP as `sip-sdp`. The rule's inline budget covers them. `--redact` removes them. See [The INVITE and the final response](@/docs/vcon.md#the-invite-and-the-final-response) |
+| `dtmf_events` | boolean | `false` | Write each DTMF key press as `keydown` and `keyup` events, with the digit, in the signaling Dialog Object's `party_history`, from INFO `application/dtmf-relay` and [RFC 4733](https://www.rfc-editor.org/rfc/rfc4733.html) telephone events. Turns telephone-event decoding on for the run, as `--telephone-event` does. `--redact` removes the events. See [What the Dialog Object says about the call](@/docs/vcon.md#what-the-dialog-object-says-about-the-call) |
+| `campaign_header` | string | -- | The SIP header whose value becomes the signaling Dialog Object's `campaign`, from the first message that carries it. See [Contact-center labels](@/docs/vcon.md#contact-center-labels) |
+| `skill_header` | string | -- | The SIP header whose value becomes `skill`, such as `X-Queue` |
+| `interaction_id_header` | string | -- | The SIP header whose value becomes `interaction_id` |
 | `grouping` | string | `leg` | `leg`: one container per dialog, each naming the call's other legs. `call`: one container per call, holding every leg the rule selects and the ties between them. See [Calls through a PBX or a B2BUA](@/docs/vcon.md#calls-through-a-pbx-or-a-b2bua) |
 
 ```toml
@@ -346,6 +354,7 @@ See [Enrich a call before it is written](@/docs/vcon.md#enrich-a-call-before-it-
 | `auth_file` | string | -- | A file holding one `Header-Name: value` line sent with each request, such as `Authorization: Bearer ...`. Never written to a container |
 | `timeout_secs` | integer | `120` | How long sipnab waits for the answer, 1 to 3600: the default is `DEFAULT_TIMEOUT_SECS` (120) and the largest `MAX_TIMEOUT_SECS` (3600) in [`src/app/vcon_enrich.rs`](https://github.com/NormB/sipnab/blob/main/src/app/vcon_enrich.rs) |
 | `send` | array of strings | `["audio", "signaling"]` | What sipnab sends the service: `audio` (each leg's WAV), `signaling` (the container), or both. Sending audio turns audio retention on for the run |
+| `lawful_basis` | bool | `false` | Carry a `lawful_basis` attachment the service answers with, checked for the shape of draft-howe-vcon-lawful-basis-02 and recorded as the service's. With `false`, an answer holding any attachment is `malformed` |
 
 ### [pbx]
 
@@ -1015,6 +1024,13 @@ The vCon forwarder's settings (`sipnab --vcon-forward <SPOOL_DIR>`, see
 | `backoff_cap` | integer | `300` | The longest wait between tries, in seconds, 1 to 4294967295. `--vcon-forward-backoff-cap` overrides it |
 | `max_response_head` | integer | `65536` | The most bytes of a store's status line and headers read, 1 to 4294967295. The forwarder treats an answer with more as no answer and retries the container. `--vcon-forward-max-response-head` overrides it |
 | `max_error_body` | integer | `8192` | The most bytes of a refusal's body a `<name>.error.json` record keeps, 1 to 4294967295. `--vcon-forward-max-error-body` overrides it |
+| `scitt_url` | string | -- | The SCITT transparency service the forwarder registers lifecycle statements with, `vcon_created` and `vcon_sent`, by POSTing each to `<scitt_url>/entries`. Unset, it registers nothing. Needs `scitt_sign_key`, `scitt_sign_cert` and `scitt_issuer`. `--vcon-forward-scitt-url` overrides it |
+| `scitt_auth_file` | path | -- | File holding one `Header-Name: value` line sent with each registration. Refused when other users can read it. `--vcon-forward-scitt-auth-file` overrides it |
+| `scitt_ca` | path | host bundle | The only CA (PEM) trusted for an `https://` transparency service. `--vcon-forward-scitt-ca` overrides it |
+| `scitt_sign_key` | path | -- | The PEM RSA private key that signs the statements (RS256). Refused when other users can read it: a refusal from this key exits `1`, from the flag `2`. `--vcon-forward-scitt-sign-key` overrides it |
+| `scitt_sign_cert` | path | -- | The PEM certificate chain of `scitt_sign_key`, leaf first, carried in each statement's `x5chain`. `--vcon-forward-scitt-sign-cert` overrides it |
+| `scitt_issuer` | string | -- | The issuer each statement names (`iss`): a URI of 1 to 8192 characters. `--vcon-forward-scitt-issuer` overrides it |
+| `content_type` | string | `"application/json"` | The `Content-Type` of a JSON container: `application/json`, `application/vcon+json` or `application/vcon`. A gzip format container always goes as `application/vcon+gzip`. `--vcon-forward-content-type` overrides it |
 
 ```toml
 [vcon_forward]
@@ -1058,6 +1074,29 @@ kind = "vcon-store"
 url = "https://api.vcon.store"
 auth_file = "/etc/sipnab/vcon-store.key"
 timeout = 60
+```
+
+### `[vcon_input]`
+
+How the vCon readers open a signed or encrypted container (see
+[A signed, encrypted or compressed container](@/docs/vcon.md#a-signed-encrypted-or-compressed-container)).
+
+- The readers are `-I`, the MCP `analyze_vcon` and `validate_vcon` tools, and
+  `POST /v1/vcon/analyze` and `POST /v1/vcon/validate`.
+- A flag replaces its key.
+- sipnab reads the files when it reads the first container.
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `key` | path | -- | The RSA private key (PEM, readable by its owner only) that decrypts an encrypted container. Without it sipnab refuses an encrypted container. `--vcon-key` overrides it |
+| `signer_ca` | path | -- | The CA (PEM) a signed or encrypted container's signing certificate must chain to, through the intermediates in its `x5c`, every certificate within its validity period; `system` for the host's CA bundle. sipnab then refuses an unsigned container. `--vcon-signer-ca` overrides it |
+| `signer_sha256` | string | -- | The SHA-256 fingerprint the signing certificate must have: 64 hex digits, plain or colon-separated, either case. sipnab then refuses an unsigned container. `--vcon-signer-sha256` overrides it |
+| `x5u_ca` | path | -- | The CA (PEM) the HTTPS server of an `x5u` URL must chain to, or `system` for the host's CA bundle. Set, sipnab fetches the chain of a signature that names it only by `x5u`, within 256 KiB and 10 seconds. `--vcon-x5u-ca` overrides it |
+
+```toml
+[vcon_input]
+key = "/etc/sipnab/vcon-recipient.key"
+signer_ca = "/etc/sipnab/vcon-signer-ca.pem"
 ```
 
 ### [privilege]

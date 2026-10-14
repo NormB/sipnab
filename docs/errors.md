@@ -1519,11 +1519,32 @@ A whole-number `[vcon_fetch]` key is out of range. `{}` is the key (`timeout`, `
 
 **Exit code:** 1.
 
+### `[vcon_input] signer_sha256: {e}`
+
+`[vcon_input] signer_sha256` is not a SHA-256 fingerprint.
+
+- `{e}` reads `"VALUE": a SHA-256 fingerprint is 64 hex digits, plain or in colon-separated pairs`, with the value from the file.
+- The printed line starts with `invalid config value: `.
+
+**What to do:** Set `signer_sha256` to the signing certificate's fingerprint, for example the output of `openssl x509 -noout -fingerprint -sha256 -in signing.crt`, or remove the key.
+
+**Exit code:** 1.
+
 ### `[vcon_fetch] kind: {name:?} is not one of {}`
 
 `[vcon_fetch] kind` names a vCon store type sipnab does not know. A vCon is a standard JSON container for a conversation. `{name:?}` is the value in the file, and `{}` lists the accepted names: `generic`, `vcon-store`, `conserver` and `vcon-mcp`. The printed line starts with `invalid config value: `.
 
 **What to do:** Set `kind` to one of the listed names, or remove the key.
+
+**Exit code:** 1.
+
+### `[vcon] encrypt_to is an empty list: name at least one recipient certificate, or remove the key`
+
+`[vcon] encrypt_to` is `[]`. Nobody could open a container encrypted to no recipient, so sipnab refuses the list rather than write one.
+
+- The printed line starts with `invalid config value: `.
+
+**What to do:** List at least one recipient certificate, or remove the key so that no rule inherits it.
 
 **Exit code:** 1.
 
@@ -1554,6 +1575,30 @@ A whole-number `[vcon_forward]` key is out of range.
 **What to do:** Set the named key to a whole number in the range shown, or remove it.
 
 **Exit code:** 1.
+
+### `[vcon_forward] content_type: {e}`
+
+`[vcon_forward] content_type` names a media type the forwarder does not send for a JSON container.
+
+- `{e}` reads `"VALUE" is not one of application/json, application/vcon+json, application/vcon`, with the value from the file.
+- A gzip format container always goes as `application/vcon+gzip`, so that value is not accepted here.
+- The printed line starts with `invalid config value: `.
+
+**What to do:** Set `content_type` to one of the listed types, or remove the key for `application/json`.
+
+**Exit code:** 1.
+
+### `{value:?} is not one of {}`
+
+The media type given to `--vcon-forward-content-type`, or to `[vcon_forward] content_type`, is not one the forwarder sends for a JSON container.
+
+- `{value:?}` is the value given, and `{}` lists the accepted types: `application/json`, `application/vcon+json` and `application/vcon`.
+- From the flag, the line starts with `error: invalid value` and names the flag, and sipnab exits `2`.
+- From the config file, the line starts with `invalid config value: [vcon_forward] content_type: `, and sipnab exits `1`.
+
+**What to do:** Give one of the listed types, or leave the setting out for `application/json`. A gzip format container always goes as `application/vcon+gzip`.
+
+**Exit code:** 2 from the flag, 1 from the config file.
 
 ### `[vcon_forward] kind: {name:?} is not one of {}`
 
@@ -1642,7 +1687,9 @@ The [`[[vcon.rule]]`](vcon.md#write-calls-by-rule) named `{name}` has no `dir`, 
 
 ### `[[vcon.rule]] '{name}' has {why}`
 
-A key of the [`[[vcon.rule]]`](vcon.md#write-calls-by-rule) named `{name}` has a value sipnab does not take. `{why}` names the key, the value and the values it takes: `audio` takes `inline`, `url` or `omit`, and `grouping` takes `leg` or `call`.
+A key of the [`[[vcon.rule]]`](vcon.md#write-calls-by-rule) named `{name}` has a value sipnab does not take. `{why}` names the key, the value and the values it takes: `audio` takes `inline`, `url` or `omit`, `audio_format` takes `wav` or `opus`, and `grouping` takes `leg` or `call`.
+
+- A sipnab built without the `opus` Cargo feature refuses `audio_format = "opus"`, and `{why}` names the feature. The static musl builds do not have it.
 
 **What to do:** Set the key to one of the values `{why}` lists.
 
@@ -1672,11 +1719,29 @@ The reason inside `[[vcon.rule]] '{name}' has {why}` for a `sealed_updates` valu
 
 **Exit code:** 1.
 
-### `[[vcon.rule]] '{name}' has audio = 'url' and no audio_url_base: say where your storage serves the WAV files sipnab writes beside the containers`
+### `audio_format = '{other}'; use 'wav' or 'opus'`
+
+The reason inside `[[vcon.rule]] '{name}' has {why}` for an `audio_format` value other than `wav` and `opus`. `{other}` is the value given. See [Audio as Ogg Opus](vcon.md#audio-as-ogg-opus).
+
+**What to do:** Set `audio_format` to `wav` (the default) or `opus`, or remove the key.
+
+**Exit code:** 1.
+
+### `[[vcon.rule]] '{name}' has audio_format without audio = 'inline' or 'url': the rule carries no audio to format`
+
+The [`[[vcon.rule]]`](vcon.md#write-calls-by-rule) named `{name}` sets `audio_format`, and its `audio` is `omit` or unset.
+
+- An `omit` rule writes no audio, so `audio_format` would do nothing.
+
+**What to do:** Remove `audio_format`, or set `audio = "inline"` or `"url"`.
+
+**Exit code:** 1.
+
+### `[[vcon.rule]] '{name}' has audio = 'url' and no audio_url_base: say where your storage serves the audio files sipnab writes beside the containers`
 
 The [`[[vcon.rule]]`](vcon.md#write-calls-by-rule) named `{name}` has `audio = "url"` and no `audio_url_base`.
 
-- A `url` rule writes each call's WAV beside its container, and names it by URL.
+- A `url` rule writes each call's audio file beside its container, and names it by URL.
 - That needs the base your storage serves the files from.
 
 **What to do:** Add `audio_url_base = "https://..."`, or use `audio = "inline"` or `"omit"`.
@@ -1696,6 +1761,22 @@ The `audio_url_base` of the [`[[vcon.rule]]`](vcon.md#write-calls-by-rule) named
 The `when` of the [`[[vcon.rule]]`](vcon.md#write-calls-by-rule) named `{name}` does not parse as a filter expression. `{e}` is the parser's reason. See [Filter DSL](filter-dsl.md).
 
 **What to do:** Correct the expression. Test it first with `sipnab -N -I capture.pcap --filter "..."`.
+
+**Exit code:** 1.
+
+### `[[vcon.rule]] '{name}': '@{reference}' is not a valid filter expression: {e}`
+
+The `when` of the [`[[vcon.rule]]`](vcon.md#write-calls-by-rule) named `{name}` references the named filter `@{reference}`, and its expansion does not parse on its own. sipnab compiles each referenced name by itself to tag a container with the names the call matched. `{e}` is the parser's reason.
+
+**What to do:** Correct that entry in `[filters]` so it is a complete expression by itself. Test it first with `sipnab -N -I capture.pcap --filter "@{reference}"`.
+
+**Exit code:** 1.
+
+### `[[vcon.rule]] '{name}' has {key} = '{header}', which is not a SIP header name: use letters, digits and '-', such as 'X-Queue'`
+
+The `campaign_header`, `skill_header` or `interaction_id_header` of the [`[[vcon.rule]]`](vcon.md#write-calls-by-rule) named `{name}` is empty or holds a character a SIP header name cannot hold. `{key}` is the key and `{header}` the value. Such a name matches no header, and the Dialog parameter would stay empty on every call.
+
+**What to do:** Write the header name alone, without a colon or a value, such as `skill_header = "X-Queue"`.
 
 **Exit code:** 1.
 
@@ -3854,6 +3935,30 @@ You gave `--vcon-forward` with no credential for the store from any source. The 
 
 **Exit code:** 2.
 
+### `{from} needs --vcon-forward-scitt-url ([vcon_forward] scitt_url): the transparency service the lifecycle statements go to`
+
+You gave a SCITT setting, such as `--vcon-forward-scitt-issuer` or `[vcon_forward] scitt_sign_key`, without the URL of the transparency service. `{from}` names the setting. The other SCITT settings do nothing without the URL.
+
+**What to do:** Give `--vcon-forward-scitt-url URL` or `[vcon_forward] scitt_url`, or remove the SCITT settings.
+
+**Exit code:** 2.
+
+### `{issuer_from} {issuer:?} is not a URI: give a scheme and more, such as https://pbx.example.com/sipnab, of 1 to {} characters`
+
+The issuer of the lifecycle statements is not a URI. `{issuer_from}` names `--vcon-forward-scitt-issuer` or `[vcon_forward] scitt_issuer`, `{issuer:?}` is the value, and `{}` is `MAX_ISSUER_LEN` (8192). A statement carries an X.509 chain, and [section 6 of draft-ietf-scitt-architecture-22](https://datatracker.ietf.org/doc/html/draft-ietf-scitt-architecture-22#section-6) then requires `iss` to be a URI of 1 to 8192 characters.
+
+**What to do:** Give a URI with a scheme, such as `https://pbx.example.com/sipnab` or `urn:example:pbx-1`, with no spaces.
+
+**Exit code:** 2.
+
+### `{name}: a lifecycle statement did not register with {}; {record_name} says why`
+
+The forwarder delivered the container `{name}`, and the transparency service at `{}` did not register one of its lifecycle statements: it refused it, or it did not answer. `{record_name}` is the `<name>.scitt` record beside the delivered container, which holds the status and the service's reason. The delivery stands, and sipnab does not retry the statement.
+
+**What to do:** Read the record. A `400` names the service's reason, such as an algorithm its registration policy does not admit. Register the statement again by other means if the record must be complete.
+
+**Exit code:** None. This is a warning, and the forwarder continues.
+
 ### `--vcon-forward requires the 'vcon' feature (not compiled in)`
 
 `--vcon-forward` delivers a spool directory of vCon files to a store. This build does not include the `vcon` feature, so it has no forwarder.
@@ -3861,6 +3966,36 @@ You gave `--vcon-forward` with no credential for the store from any source. The 
 **What to do:** Use a sipnab build that includes the `vcon` feature.
 
 **Exit code:** 2.
+
+### `--vcon-resign requires the 'vcon' feature (not compiled in)`
+
+`--vcon-resign` re-signs a signed vCon for a long-term archive. This build does not include the `vcon` feature, so it cannot sign.
+
+**What to do:** Use a sipnab build that includes the `vcon` feature.
+
+**Exit code:** 2.
+
+### `--vcon-resign: {message}`
+
+`--vcon-resign` wrote nothing. `{message}` is the reason. It is one of these:
+
+- `--vcon-resign-key: ...`, when the new signer's key or certificate does not read, the key is not RSA or EC P-256, other users can read the key, or the certificate is not the key's. Exit code 2.
+- a `[vcon_input]` or `--vcon-signer-ca` CA file that does not read. Exit code 2.
+- `'FILE': ...`, when sipnab refuses the input: it is not JSON, it is not the signed form, a signature does not verify, the signer checks refuse its outermost signer, or that signer's certificate is not valid now. Exit code 1.
+- `cannot read 'FILE': ...`, or the input is over the 64 MiB limit for one container. Exit code 1.
+- `'OUT' exists; sipnab never replaces it: name a new file`, or sipnab cannot create or write the output. Exit code 1.
+
+**What to do:** Act on the reason. An input whose signing certificate has expired cannot be re-signed: [section 5.2.3 of draft-ietf-vcon-vcon-core-04](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-04#section-5.2.3) re-signs before it expires.
+
+**Exit code:** 1 or 2, as listed.
+
+### `'{}' is {len} bytes, over the {cap}-byte limit for one container`
+
+`--vcon-resign` names an input over the 64 MiB limit for one vCon container, the limit `-I` applies too. sipnab reads nothing of it. The message follows `--vcon-resign: `.
+
+**What to do:** Check the file is the signed vCon you meant.
+
+**Exit code:** 1.
 
 ### `--vcon-spool-status requires the 'vcon' feature (not compiled in)`
 
@@ -4014,6 +4149,62 @@ The `detail` an [`[[vcon.enrich]]`](vcon.md#enrich-a-call-before-it-is-written) 
 The `detail` of a `malformed` outcome: entry `{i}` of an [`[[vcon.enrich]]`](vcon.md#enrich-a-call-before-it-is-written) service's `analysis` has an `encoding` core-04 does not define. `{encoding}` is the value. sipnab keeps none of that answer.
 
 **What to do:** Answer with `encoding` `none`, `json` or `base64url`.
+
+**Exit code:** None. sipnab writes the call without the service's analysis.
+
+### `is a {WTF_TYPE} with encoding '{encoding}'; the WTF draft requires json`
+
+Part of the `detail` of a `malformed` outcome, after `analysis {i}`: a `[[vcon.enrich]]` service answered with a `wtf_transcription` whose `encoding` is not `json`. `{WTF_TYPE}` is `wtf_transcription` and `{encoding}` the value sent. [Section 6.1 of draft-howe-vcon-wtf-extension-02](https://datatracker.ietf.org/doc/html/draft-howe-vcon-wtf-extension-02#section-6.1) requires `json`. sipnab keeps none of that answer.
+
+**What to do:** Send the transcription as a JSON object with `encoding` `json`.
+
+**Exit code:** None. sipnab writes the call without the service's analysis.
+
+### `is a {WTF_TYPE} whose {what}`
+
+Part of the `detail` of a `malformed` outcome, after `analysis {i}`: a `wtf_transcription` from a `[[vcon.enrich]]` service lacks a member the WTF draft requires, or holds one out of range. `{what}` names it, such as `segments[0] ends at 1, not after its start 2` or `metadata has no model string`. sipnab keeps none of that answer.
+
+**What to do:** Fix the service's transcription to carry the `transcript`, `segments` and `metadata` members the WTF transcription check in the vCon guide lists.
+
+**Exit code:** None. sipnab writes the call without the service's analysis.
+
+### `a provenance whose model has no {key}`
+
+Part of the `detail` of a `malformed` outcome, after `analysis {i} has`: an analysis entry from a `[[vcon.enrich]]` service carries its own `provenance` record, and the record's `model` has no `vendor` or no `name`. `{key}` is the missing member. [Section 4.2.1 of draft-howe-vcon-provenance-00](https://datatracker.ietf.org/doc/html/draft-howe-vcon-provenance-00#section-4.2.1) requires both. sipnab keeps none of that answer.
+
+**What to do:** Send `model.vendor` and `model.name`, or leave `provenance` out and let sipnab write it from the entry's `vendor` and `product`.
+
+**Exit code:** None. sipnab writes the call without the service's analysis.
+
+### `the answer has attachments, and sipnab carries an enrichment's attachment only for a [[vcon.enrich]] with lawful_basis = true, and only a {LAWFUL_BASIS} one`
+
+The `detail` of a `malformed` outcome: a `[[vcon.enrich]]` service answered with an `attachments` list, and its entry does not set `lawful_basis = true`. `{LAWFUL_BASIS}` is `lawful_basis`. sipnab writes no lawful basis of its own and carries one from a service only when you allow it. sipnab keeps none of that answer.
+
+**What to do:** Set `lawful_basis = true` on the `[[vcon.enrich]]` entry if that service is the source of the lawful basis you want carried, or remove `attachments` from its answer.
+
+**Exit code:** None. sipnab writes the call without the service's analysis.
+
+### `has a {other} member, which sipnab cannot carry as sent`
+
+Part of the `detail` of a `malformed` outcome, after `attachment {i}`: a lawful basis attachment from a `[[vcon.enrich]]` service has a member other than `purpose`, `start`, `party`, `dialog`, `encoding`, `body` and `mediatype`. `{other}` is the member. sipnab carries the attachment unchanged or not at all. sipnab keeps none of that answer.
+
+**What to do:** Send the attachment with those members only.
+
+**Exit code:** None. sipnab writes the call without the service's analysis.
+
+### `has a purpose other than {LAWFUL_BASIS}`
+
+Part of the `detail` of a `malformed` outcome, after `attachment {i}`: an attachment from a `[[vcon.enrich]]` service with `lawful_basis = true` has a `purpose` other than `lawful_basis`. `{LAWFUL_BASIS}` is `lawful_basis`. sipnab carries no other kind of attachment from a service. sipnab keeps none of that answer.
+
+**What to do:** Answer with lawful basis attachments only, `purpose` `lawful_basis`.
+
+**Exit code:** None. sipnab writes the call without the service's analysis.
+
+### `has a body whose {what}`
+
+Part of the `detail` of a `malformed` outcome, after `attachment {i}`: the body of a lawful basis attachment from a `[[vcon.enrich]]` service lacks a member [section 5.2 of draft-howe-vcon-lawful-basis-02](https://datatracker.ietf.org/doc/html/draft-howe-vcon-lawful-basis-02#section-5.2) requires, or holds one of the wrong type. `{what}` names it, such as `purpose_grants[0] has no boolean granted`. sipnab keeps none of that answer.
+
+**What to do:** Fix the body the service sends to the shape of section 5.2.
 
 **Exit code:** None. sipnab writes the call without the service's analysis.
 

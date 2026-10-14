@@ -23,6 +23,12 @@ pub mod vcon_fetch;
 #[cfg(feature = "vcon")]
 pub mod vcon_forward;
 #[cfg(feature = "vcon")]
+pub mod vcon_hash;
+#[cfg(feature = "vcon")]
+pub mod vcon_resign;
+#[cfg(feature = "vcon")]
+pub mod vcon_scitt;
+#[cfg(feature = "vcon")]
 pub mod vcon_spool;
 
 /// A build without the vCon exporter has no spools. The type exists so the

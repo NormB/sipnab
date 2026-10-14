@@ -3242,6 +3242,7 @@ fn default_log_level(cli: &Cli) -> &'static str {
     let tui_active = !cli.mode_args.no_tui
         && cli.vcon_forward_args.vcon_forward.is_none()
         && cli.vcon_forward_args.vcon_spool_status.is_none()
+        && cli.vcon_resign_args.vcon_resign.is_none()
         && cli.vcon_fetch_args.vcon_fetch.is_empty();
     if cli.mode_args.quiet {
         "warn"
@@ -4193,6 +4194,38 @@ pub fn run_vcon_fetch(cli: &Cli, read: &Result<LoadedConfig, PlanError>) -> Opti
     }
 }
 
+/// Handle `--vcon-resign`: re-sign a signed vCon for a long-term archive
+/// (draft-ietf-vcon-vcon-core-04 section 5.2.3) and return the exit code, or
+/// `None` when the flag is absent. Applies the configuration `main` read, so
+/// `[vcon_input]` signer checks apply to the input; opens no capture.
+#[must_use]
+pub fn run_vcon_resign(cli: &Cli, read: &Result<LoadedConfig, PlanError>) -> Option<i32> {
+    cli.vcon_resign_args.vcon_resign.as_ref()?;
+    #[cfg(feature = "vcon")]
+    {
+        if let Err(code) = apply_read_config(cli, read) {
+            return Some(code);
+        }
+        let code = match crate::app::vcon_resign::run(&cli.vcon_resign_args) {
+            Ok(path) => {
+                tracing::info!("--vcon-resign: wrote '{}'", path.display());
+                0
+            }
+            Err((code, message)) => {
+                tracing::error!("--vcon-resign: {message}");
+                code
+            }
+        };
+        Some(code)
+    }
+    #[cfg(not(feature = "vcon"))]
+    {
+        let _ = read;
+        tracing::error!("--vcon-resign requires the 'vcon' feature (not compiled in)");
+        Some(2)
+    }
+}
+
 /// [`apply_config`] over the configuration `main` already read, logging the
 /// refusal: the vCon forwarder and fetcher read no config of their own, so
 /// the file is read once per process.
@@ -4240,6 +4273,78 @@ fn fetcher_settings_problem(
         let _ = config;
         None
     }
+}
+
+/// The keys the vCon readers open containers with: each flag, else its
+/// `[vcon_input]` key. Reads no file.
+///
+/// # Errors
+///
+/// A fingerprint that does not parse, with the origin of the setting that
+/// gave it.
+#[cfg(feature = "vcon")]
+pub fn reader_keys(
+    cli: &Cli,
+    config: &Config,
+) -> Result<crate::capture::vcon_input::ReaderKeys, (crate::settings::Origin, String)> {
+    use crate::app::vcon_fetch::{AuthSource, signer_ca};
+    use crate::settings::Origin;
+    let flags = &cli.capture_args;
+    let keys = &config.vcon_input;
+    let key = match (&flags.vcon_key, &keys.key) {
+        (Some(path), _) => Some(AuthSource {
+            path: path.clone(),
+            from: "--vcon-key",
+            origin: Origin::CommandLine,
+        }),
+        (None, Some(path)) => Some(AuthSource {
+            path: path.clone(),
+            from: "[vcon_input] key",
+            origin: Origin::ConfigFile,
+        }),
+        (None, None) => None,
+    };
+    let signer_ca = match (&flags.vcon_signer_ca, &keys.signer_ca) {
+        (Some(path), _) => Some(signer_ca(path, "--vcon-signer-ca", Origin::CommandLine)),
+        (None, Some(path)) => Some(signer_ca(
+            path,
+            "[vcon_input] signer_ca",
+            Origin::ConfigFile,
+        )),
+        (None, None) => None,
+    };
+    let signer_sha256 = match (&flags.vcon_signer_sha256, &keys.signer_sha256) {
+        (Some(text), _) => Some(
+            crate::config::parse_sha256_fingerprint(text)
+                .map_err(|e| (Origin::CommandLine, format!("--vcon-signer-sha256: {e}")))?,
+        ),
+        (None, Some(text)) => Some(crate::config::parse_sha256_fingerprint(text).map_err(|e| {
+            (
+                Origin::ConfigFile,
+                format!("[vcon_input] signer_sha256: {e}"),
+            )
+        })?),
+        (None, None) => None,
+    };
+    let x5u_ca = match (&flags.vcon_x5u_ca, &keys.x5u_ca) {
+        (Some(path), _) => Some(crate::app::vcon_fetch::signer_ca(
+            path,
+            "--vcon-x5u-ca",
+            Origin::CommandLine,
+        )),
+        (None, Some(path)) => Some(crate::app::vcon_fetch::signer_ca(
+            path,
+            "[vcon_input] x5u_ca",
+            Origin::ConfigFile,
+        )),
+        (None, None) => None,
+    };
+    Ok(crate::capture::vcon_input::ReaderKeys {
+        key,
+        signer_ca,
+        signer_sha256,
+        x5u_ca,
+    })
 }
 
 /// Why a `--vcon-forward` run's settings cannot be used, or `None` (also
@@ -4396,6 +4501,14 @@ pub fn apply_config(cli: &Cli, loaded: LoadedConfig) -> Result<LoadedConfig, Pla
         });
     }
 
+    // [vcon_input] signer_sha256, by the rule --vcon-signer-sha256 follows.
+    if let Err(e) = loaded.config.vcon_input.validate() {
+        return Err(PlanError {
+            exit_code: 1,
+            message: e.to_string(),
+        });
+    }
+
     // [names] carries dns_cache_entries, which --dns-cache-entries refuses at
     // 0; the file must too, and until now [names] was the one section with no
     // validator wired in here at all.
@@ -4457,6 +4570,14 @@ pub fn apply_config(cli: &Cli, loaded: LoadedConfig) -> Result<LoadedConfig, Pla
     // The fetcher's settings, by the fetcher's own resolver, the same way.
     if let Some((origin, problem)) = fetcher_settings_problem(cli, &loaded.config) {
         return Err(PlanError::refused(origin, problem));
+    }
+
+    // How every vCon reader in this process opens a signed or encrypted
+    // container. The files are read when the first container is.
+    #[cfg(feature = "vcon")]
+    match reader_keys(cli, &loaded.config) {
+        Ok(keys) => crate::capture::vcon_input::set_reader_keys(keys),
+        Err((origin, problem)) => return Err(PlanError::refused(origin, problem)),
     }
 
     // Apply configurable security limits from the [limits] section.
@@ -4691,22 +4812,35 @@ fn build_selection_expr(cli: &Cli, config: &Config) -> Result<Option<FilterExpr>
 /// did not set; its own are refused as before.
 #[cfg(feature = "vcon")]
 struct RuleSealing<'a> {
-    /// The certificate the rule encrypts to.
-    encrypt_to: Option<&'a std::path::Path>,
+    /// The certificates the rule encrypts to.
+    encrypt_to: Option<&'a [std::path::PathBuf]>,
     /// The key the rule signs with.
     sign_key: Option<&'a std::path::Path>,
     /// The chain of `sign_key`.
     sign_cert: Option<&'a std::path::Path>,
     /// `none` or `gzip`.
     compress: Option<&'a str>,
+    /// The rule's own `sign_only`: write the signed form alone.
+    sign_only: bool,
 }
 
 #[cfg(feature = "vcon")]
 impl<'a> RuleSealing<'a> {
     /// `rule`'s keys, each falling back to `section`'s.
     fn of(rule: &'a crate::config::VconRuleConfig, section: &'a crate::config::VconConfig) -> Self {
-        let encrypt_to = rule.encrypt_to.as_deref().or(section.encrypt_to.as_deref());
-        let inherit = encrypt_to.is_some();
+        let sign_only = rule.sign_only.unwrap_or(false);
+        // A sign_only rule asked for the signed form alone: it takes the
+        // section's signing keys and not its recipient.
+        let own = rule.encrypt_to.as_ref().map(crate::config::PathList::paths);
+        let encrypt_to = if sign_only {
+            own
+        } else {
+            own.or(section
+                .encrypt_to
+                .as_ref()
+                .map(crate::config::PathList::paths))
+        };
+        let inherit = encrypt_to.is_some() || sign_only;
         let pick = |own: Option<&'a std::path::Path>, theirs: Option<&'a std::path::Path>| {
             own.or(if inherit { theirs } else { None })
         };
@@ -4719,6 +4853,7 @@ impl<'a> RuleSealing<'a> {
             } else {
                 None
             }),
+            sign_only,
         }
     }
 }
@@ -4754,7 +4889,9 @@ pub(crate) fn vcon_rules(
     cli: &Cli,
     config: &Config,
 ) -> Result<Vec<crate::app::batch::VconRule>, PlanError> {
-    use crate::app::batch::{RuleAudio, RuleGrouping, VconRule};
+    use crate::app::batch::{
+        RuleAdditions, RuleAudio, RuleAudioFormat, RuleGrouping, RuleTags, VconRule,
+    };
     let refuse = |message: String| PlanError::refused(crate::settings::Origin::ConfigFile, message);
     if let Some(e) = cli.inert_redaction_refusal(!config.vcon.rule.is_empty()) {
         return Err(PlanError::arg(e.to_string()));
@@ -4779,12 +4916,14 @@ pub(crate) fn vcon_rules(
             audio: RuleAudio::Inline,
             max_inline: None,
             audio_url_base: None,
+            audio_format: RuleAudioFormat::Wav,
             grouping: RuleGrouping::Leg,
             enrich: Vec::new(),
             live_audio: false,
             live: false,
             sealing: None,
             sealed_updates: crate::app::batch::SealedUpdates::NewUuid,
+            additions: RuleAdditions::default(),
         });
     }
     for rule in &config.vcon.rule {
@@ -4810,6 +4949,15 @@ pub(crate) fn vcon_rules(
             .map_err(|why| refuse(format!("[[vcon.rule]] '{name}' has {why}")))?;
         let grouping = RuleGrouping::parse(rule.grouping.as_deref())
             .map_err(|why| refuse(format!("[[vcon.rule]] '{name}' has {why}")))?;
+        let audio_format =
+            RuleAudioFormat::parse(rule.audio_format.as_deref(), RuleAudioFormat::OPUS_BUILT)
+                .map_err(|why| refuse(format!("[[vcon.rule]] '{name}' has {why}")))?;
+        if audio == RuleAudio::Omit && rule.audio_format.is_some() {
+            return Err(refuse(format!(
+                "[[vcon.rule]] '{name}' has audio_format without audio = 'inline' or 'url': \
+                 the rule carries no audio to format"
+            )));
+        }
         let sealed_updates =
             crate::app::batch::SealedUpdates::parse(rule.sealed_updates.as_deref())
                 .map_err(|why| refuse(format!("[[vcon.rule]] '{name}' has {why}")))?;
@@ -4818,7 +4966,7 @@ pub(crate) fn vcon_rules(
             (RuleAudio::Url, None) => {
                 return Err(refuse(format!(
                     "[[vcon.rule]] '{name}' has audio = 'url' and no audio_url_base: say \
-                     where your storage serves the WAV files sipnab writes beside the containers"
+                     where your storage serves the audio files sipnab writes beside the containers"
                 )));
             }
             (RuleAudio::Url, Some(base)) if !base.starts_with("https://") => {
@@ -4838,11 +4986,36 @@ pub(crate) fn vcon_rules(
             inherited.sign_key,
             inherited.sign_cert,
         ) {
+            (Some(_), _, _) if inherited.sign_only => {
+                return Err(refuse(format!(
+                    "[[vcon.rule]] '{name}' has sign_only and encrypt_to: sign_only writes \
+                     the signed form alone, encrypt_to the encrypted form; keep one"
+                )));
+            }
+            (Some([]), _, _) => {
+                return Err(refuse(format!(
+                    "[[vcon.rule]] '{name}' has encrypt_to as an empty list: name at least \
+                     one recipient certificate"
+                )));
+            }
+            (None, Some(key), Some(cert)) if inherited.sign_only => Some(
+                crate::output::vcon_jose::load_signing(key, cert)
+                    .map_err(|e| refuse(format!("[[vcon.rule]] '{name}': {e}")))?
+                    .compressed(rule_compression(name, inherited.compress).map_err(refuse)?),
+            ),
+            (None, _, _) if inherited.sign_only => {
+                return Err(refuse(format!(
+                    "[[vcon.rule]] '{name}' has sign_only and needs sign_key and sign_cert: \
+                     the signed form is signed with them \
+                     (draft-ietf-vcon-vcon-core-04 section 5.2)"
+                )));
+            }
             (None, None, None) => None,
             (None, _, _) => {
                 return Err(refuse(format!(
                     "[[vcon.rule]] '{name}' has sign_key or sign_cert without encrypt_to: \
-                     sipnab signs a container only as the inner layer of the encrypted form"
+                     sipnab signs a container as the inner layer of the encrypted form, or \
+                     alone with sign_only = true"
                 )));
             }
             (Some(_), None, _) | (Some(_), _, None) => {
@@ -4852,22 +5025,32 @@ pub(crate) fn vcon_rules(
                      (draft-ietf-vcon-vcon-core-04 section 5.3)"
                 )));
             }
-            (Some(_), Some(_), Some(_)) if audio == RuleAudio::Url => {
-                return Err(refuse(format!(
-                    "[[vcon.rule]] '{name}' has encrypt_to and audio = 'url': the WAV file \
-                     beside the container would not be encrypted; use audio = 'inline' or 'omit'"
-                )));
-            }
-            (Some(to), Some(key), Some(cert)) => Some(std::sync::Arc::new(
+            (Some(to), Some(key), Some(cert)) => Some(
                 crate::output::vcon_jose::load_sealing(to, key, cert)
                     .map_err(|e| refuse(format!("[[vcon.rule]] '{name}': {e}")))?
                     .compressed(rule_compression(name, inherited.compress).map_err(refuse)?),
-            )),
+            ),
         };
+        // core-04 section 5.2.2: the signature carries x5c or x5u, and x5u
+        // is an HTTPS URL. sipnab writes x5u beside x5c.
+        let sealing =
+            match (sealing, rule.sign_cert_url.as_deref()) {
+                (sealing, None) => sealing,
+                (Some(sealing), Some(url)) => Some(sealing.with_cert_url(url).map_err(|e| {
+                    refuse(format!("[[vcon.rule]] '{name}' has sign_cert_url: {e}"))
+                })?),
+                (None, Some(_)) => {
+                    return Err(refuse(format!(
+                        "[[vcon.rule]] '{name}' has sign_cert_url without a signing key: it names \
+                     the certificate of sign_key, on a rule with encrypt_to or sign_only = true"
+                    )));
+                }
+            }
+            .map(std::sync::Arc::new);
         if sealing.is_none() && rule.compress.is_some() {
             return Err(refuse(format!(
                 "[[vcon.rule]] '{name}' has compress without encrypt_to: compress applies \
-                 to the encrypted form only"
+                 to the encrypted form, or to the signed form with sign_only = true"
             )));
         }
         let text = resolved_filter_text(&rule.when, cli, config)
@@ -4883,6 +5066,36 @@ pub(crate) fn vcon_rules(
             cli.matching_args.until,
         )
         .ok_or_else(|| refuse(format!("[[vcon.rule]] '{name}': no filter")))?;
+        // A CC header must be a header name (an RFC 3261 token): anything
+        // else matches no header and would leave the parameter silently
+        // empty on every call.
+        for (key, header) in [
+            ("campaign_header", &rule.campaign_header),
+            ("skill_header", &rule.skill_header),
+            ("interaction_id_header", &rule.interaction_id_header),
+        ] {
+            if let Some(header) = header
+                && (header.is_empty() || !header.bytes().all(crate::sip::parser::is_token_byte))
+            {
+                return Err(refuse(format!(
+                    "[[vcon.rule]] '{name}' has {key} = '{header}', which is not a SIP \
+                     header name: use letters, digits and '-', such as 'X-Queue'"
+                )));
+            }
+        }
+        // Each named filter `when` references, compiled on its own, so the
+        // container can say which of them the call matched.
+        let mut tag_filters = Vec::new();
+        for reference in crate::sip::named_filters::references(&rule.when) {
+            let text = resolved_filter_text(&format!("@{reference}"), cli, config)
+                .map_err(|e| refuse(format!("[[vcon.rule]] '{name}': {}", e.message)))?;
+            let compiled = FilterExpr::parse(&text).map_err(|e| {
+                refuse(format!(
+                    "[[vcon.rule]] '{name}': '@{reference}' is not a valid filter expression: {e}"
+                ))
+            })?;
+            tag_filters.push((reference.to_owned(), compiled));
+        }
         rules.push(VconRule {
             name: name.clone(),
             filter,
@@ -4892,12 +5105,26 @@ pub(crate) fn vcon_rules(
                 .max_inline_media_mib
                 .map(|mib| mib.saturating_mul(1024 * 1024)),
             audio_url_base,
+            audio_format,
             grouping,
             enrich: Vec::new(),
             live_audio: rule.live_audio.unwrap_or(false),
             live: rule.live.unwrap_or(false),
             sealing,
             sealed_updates,
+            additions: RuleAdditions {
+                sip_messages: rule.sip_messages.unwrap_or(false),
+                dtmf_events: rule.dtmf_events.unwrap_or(false),
+                tags: Some(RuleTags {
+                    rule: name.clone(),
+                    filters: tag_filters,
+                }),
+                cc: crate::app::batch::RuleCcHeaders {
+                    campaign: rule.campaign_header.clone(),
+                    skill: rule.skill_header.clone(),
+                    interaction_id: rule.interaction_id_header.clone(),
+                },
+            },
         });
     }
     if rules.iter().any(|r| r.live_audio)
@@ -6738,14 +6965,14 @@ mod tests {
                 audio: audio.map(str::to_owned),
                 max_inline_media_mib: None,
                 audio_url_base: None,
+                audio_format: None,
                 grouping: None,
                 live_audio: None,
                 live: None,
                 encrypt_to: None,
                 sign_key: None,
                 sign_cert: None,
-                compress: None,
-                sealed_updates: None,
+                ..Default::default()
             })
             .collect();
         config

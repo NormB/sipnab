@@ -362,11 +362,14 @@
       "call": "PlanError::refused(crate::settings::Origin::ConfigFile, message)",
       "count": 1,
       "carries": [
-        "[[vcon.rule]] '{name}' has audio = 'url' and no audio_url_base: say where your storage serves the WAV files sipnab writes beside the containers",
+        "[[vcon.rule]] '{name}' has audio = 'url' and no audio_url_base: say where your storage serves the audio files sipnab writes beside the containers",
         "[[vcon.rule]] '{name}' has audio_url_base '{base}': a vCon names external media over https (draft-ietf-vcon-vcon-core-04 section 2.4.1)",
+        "[[vcon.rule]] '{name}' has audio_format without audio = 'inline' or 'url': the rule carries no audio to format",
         "[[vcon.rule]] '{name}' has no dir: say where its containers go",
         "[[vcon.rule]] '{name}' has {why}",
         "[[vcon.rule]] '{name}': 'when' is not a valid filter expression: {e}",
+        "[[vcon.rule]] '{name}': '@{reference}' is not a valid filter expression: {e}",
+        "[[vcon.rule]] '{name}' has {key} = '{header}', which is not a SIP header name: use letters, digits and '-', such as 'X-Queue'",
         "[[vcon.rule]] '{name}': no filter",
         "[[vcon.rule]] '{name}': {}",
         "[[vcon.rule]] name '{name}' is not usable: a name is 1 to {} ASCII letters, digits, '-' or '_', starting with a letter or digit",
@@ -451,9 +454,9 @@
     {
       "file": "src/app/bootstrap.rs",
       "call": "PlanError { exit_code: 1, message: e.to_string(), }",
-      "count": 11,
+      "count": 12,
       "carries": [],
-      "why": "All 11 occurrences in src/app/bootstrap.rs::load_config carry crate::Error from Config::load and the [section] validate() methods in src/config.rs; those build text as Error::ConfigInvalid(format!(..)) (not an extracted kind) and Config::load also carries io and toml library Display (ConfigRead/ConfigParse)."
+      "why": "All 12 occurrences in src/app/bootstrap.rs::load_config carry crate::Error from Config::load and the [section] validate() methods in src/config.rs; those build text as Error::ConfigInvalid(format!(..)) (not an extracted kind) and Config::load also carries io and toml library Display (ConfigRead/ConfigParse)."
     },
     {
       "file": "src/app/bootstrap.rs",
@@ -500,9 +503,9 @@
     {
       "file": "src/app/bootstrap.rs",
       "call": "PlanError::refused(origin, problem)",
-      "count": 3,
+      "count": 4,
       "carries": [],
-      "why": "src/cli.rs::Cli::tls_settings_refusal (no site) and the vcon_forward/vcon_fetch resolvers behind forwarder_settings_problem/fetcher_settings_problem, which pass out-of-scope error text through."
+      "why": "src/cli.rs::Cli::tls_settings_refusal (no site), the vcon_forward/vcon_fetch resolvers behind forwarder_settings_problem/fetcher_settings_problem, and bootstrap::reader_keys (the vCon readers' fingerprint flag and key, whose flag clap's value parser refuses first), which pass out-of-scope error text through."
     },
     {
       "file": "src/app/bootstrap.rs",

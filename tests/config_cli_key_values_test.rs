@@ -413,6 +413,8 @@ static KEY_SPECS: &[KeySpec] = &[
                 "[]",
                 "[{ name = \"r\", when = \"method == 'INVITE'\", dir = \"vcon-out\" }]",
                 "[{ name = \"r\", when = \"method == 'INVITE'\", dir = \"vcon-out\", sealed_updates = \"final-only\" }]",
+                "[{ name = \"r\", when = \"method == 'INVITE'\", dir = \"vcon-out\", audio = \"inline\", audio_format = \"wav\" }]",
+                "[{ name = \"r\", when = \"method == 'INVITE'\", dir = \"vcon-out\", sign_only = false }]",
             ],
             reject: &[
                 "[{ name = \"bad name\", when = \"method == 'INVITE'\", dir = \"d\" }]",
@@ -420,8 +422,13 @@ static KEY_SPECS: &[KeySpec] = &[
                 "[{ name = \"r\", when = \"method == 'INVITE'\", dir = \"d\", audio = \"loud\" }]",
                 "[{ name = \"r\", when = \"method == 'INVITE'\", dir = \"d\", grouping = \"dialog\" }]",
                 "[{ name = \"r\", when = \"method == 'INVITE'\", dir = \"d\", sealed_updates = \"sometimes\" }]",
+                "[{ name = \"r\", when = \"method == 'INVITE'\", dir = \"d\", audio = \"inline\", audio_format = \"flac\" }]",
+                "[{ name = \"r\", when = \"method == 'INVITE'\", dir = \"d\", audio_format = \"wav\" }]",
                 "[{ name = \"r\", when = \"x\", dir = \"d\" }]",
                 "[{ name = \"r\", when = \"method == 'INVITE'\", dir = \"d\", compress = \"gzip\" }]",
+                "[{ name = \"r\", when = \"method == 'INVITE'\", dir = \"d\", sign_only = true }]",
+                "[{ name = \"r\", when = \"method == 'INVITE'\", dir = \"d\", sign_cert_url = \"https://pki.example.com/c.pem\" }]",
+                "[{ name = \"r\", when = \"method == 'INVITE'\", dir = \"d\", sign_only = \"yes\" }]",
                 "[{ name = \"r\", when = \"method == 'INVITE'\", dir = \"d\", volume = 1 }]",
                 "[1]",
             ],
@@ -437,8 +444,10 @@ static KEY_SPECS: &[KeySpec] = &[
                 "\" \"",
                 "\"0\"",
                 "\"/etc/sipnab/vcon-encrypt_to.pem\"",
+                "[\"/etc/sipnab/a.pem\", \"/etc/sipnab/b.pem\"]",
+                "[\"x\"]",
             ],
-            reject: &["\"\""],
+            reject: &["\"\"", "[]", "[\"x\", \"\"]", "1", "[1]"],
             ctx: "",
         },
     ),
@@ -1800,6 +1809,67 @@ static KEY_SPECS: &[KeySpec] = &[
         },
     ),
     (
+        "vcon_input",
+        "key",
+        KeyKind::Literal {
+            accept: &[
+                "\"x\"",
+                "\" \"",
+                "\"0\"",
+                "\"/etc/sipnab/vcon-recipient.key\"",
+            ],
+            reject: &["\"\""],
+            ctx: "",
+        },
+    ),
+    (
+        "vcon_input",
+        "signer_ca",
+        KeyKind::Literal {
+            accept: &[
+                "\"x\"",
+                "\" \"",
+                "\"0\"",
+                "\"system\"",
+                "\"/etc/sipnab/vcon-signer-ca.pem\"",
+            ],
+            reject: &["\"\""],
+            ctx: "",
+        },
+    ),
+    (
+        "vcon_input",
+        "x5u_ca",
+        KeyKind::Literal {
+            accept: &[
+                "\"x\"",
+                "\" \"",
+                "\"0\"",
+                "\"system\"",
+                "\"/etc/sipnab/x5u-ca.pem\"",
+            ],
+            reject: &["\"\""],
+            ctx: "",
+        },
+    ),
+    (
+        "vcon_input",
+        "signer_sha256",
+        KeyKind::Literal {
+            accept: &[
+                "\"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\"",
+                "\"FE:DC:BA:98:76:54:32:10:FE:DC:BA:98:76:54:32:10:FE:DC:BA:98:76:54:32:10:FE:DC:BA:98:76:54:32:10\"",
+            ],
+            reject: &[
+                "\"\"",
+                "\"x\"",
+                "\"ab:cd\"",
+                "\"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef00\"",
+            ],
+            ctx: "",
+        },
+    ),
+    (
         "vcon_forward",
         "auth_file",
         KeyKind::Literal {
@@ -1877,6 +1947,24 @@ static KEY_SPECS: &[KeySpec] = &[
     ),
     (
         "vcon_forward",
+        "content_type",
+        KeyKind::Literal {
+            accept: &[
+                "\"application/json\"",
+                "\"application/vcon+json\"",
+                "\"application/vcon\"",
+            ],
+            reject: &[
+                "\"\"",
+                "\"x\"",
+                "\"application/vcon+gzip\"",
+                "\"text/plain\"",
+            ],
+            ctx: "",
+        },
+    ),
+    (
+        "vcon_forward",
         "max_response_head",
         KeyKind::Int {
             lo: 1,
@@ -1892,6 +1980,60 @@ static KEY_SPECS: &[KeySpec] = &[
                 "\"x\"",
                 "\"\"",
             ],
+            reject: &[],
+            ctx: "",
+        },
+    ),
+    (
+        "vcon_forward",
+        "scitt_auth_file",
+        KeyKind::Literal {
+            accept: &["\"x\"", "\" \"", "\"0\"", "\"/var/spool/sipnab-vcon\""],
+            reject: &["\"\""],
+            ctx: "",
+        },
+    ),
+    (
+        "vcon_forward",
+        "scitt_ca",
+        KeyKind::Literal {
+            accept: &["\"x\"", "\" \"", "\"0\"", "\"/var/spool/sipnab-vcon\""],
+            reject: &["\"\""],
+            ctx: "",
+        },
+    ),
+    (
+        "vcon_forward",
+        "scitt_issuer",
+        KeyKind::Literal {
+            accept: &["\"https://sipnab.example/\"", "\"x\"", "\"\""],
+            reject: &[],
+            ctx: "",
+        },
+    ),
+    (
+        "vcon_forward",
+        "scitt_sign_cert",
+        KeyKind::Literal {
+            accept: &["\"x\"", "\" \"", "\"0\"", "\"/var/spool/sipnab-vcon\""],
+            reject: &["\"\""],
+            ctx: "",
+        },
+    ),
+    (
+        "vcon_forward",
+        "scitt_sign_key",
+        KeyKind::Literal {
+            accept: &["\"x\"", "\" \"", "\"0\"", "\"/var/spool/sipnab-vcon\""],
+            reject: &["\"\""],
+            ctx: "",
+        },
+    ),
+    (
+        "vcon_forward",
+        "scitt_url",
+        KeyKind::Literal {
+            accept: &["\"https://ts.example.com/scitt\"", "\"x\"", "\"\""],
             reject: &[],
             ctx: "",
         },

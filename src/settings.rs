@@ -789,6 +789,10 @@ pub const FLAGS: &[(&str, Link)] = &[
         Link::Key("vcon_forward", "ca", Merge::Override),
     ),
     (
+        "vcon-forward-content-type",
+        Link::Key("vcon_forward", "content_type", Merge::Override),
+    ),
+    (
         "vcon-forward-done",
         Link::Key("vcon_forward", "done", Merge::Override),
     ),
@@ -822,6 +826,30 @@ pub const FLAGS: &[(&str, Link)] = &[
         Link::Key("vcon_forward", "replace_url", Merge::Override),
     ),
     (
+        "vcon-forward-scitt-auth-file",
+        Link::Key("vcon_forward", "scitt_auth_file", Merge::Override),
+    ),
+    (
+        "vcon-forward-scitt-ca",
+        Link::Key("vcon_forward", "scitt_ca", Merge::Override),
+    ),
+    (
+        "vcon-forward-scitt-issuer",
+        Link::Key("vcon_forward", "scitt_issuer", Merge::Override),
+    ),
+    (
+        "vcon-forward-scitt-sign-cert",
+        Link::Key("vcon_forward", "scitt_sign_cert", Merge::Override),
+    ),
+    (
+        "vcon-forward-scitt-sign-key",
+        Link::Key("vcon_forward", "scitt_sign_key", Merge::Override),
+    ),
+    (
+        "vcon-forward-scitt-url",
+        Link::Key("vcon_forward", "scitt_url", Merge::Override),
+    ),
+    (
         "vcon-forward-timeout",
         Link::Key("vcon_forward", "timeout", Merge::Override),
     ),
@@ -829,9 +857,28 @@ pub const FLAGS: &[(&str, Link)] = &[
         "vcon-forward-url",
         Link::Key("vcon_forward", "url", Merge::Override),
     ),
+    ("vcon-key", Link::Key("vcon_input", "key", Merge::Override)),
     ("vcon-max-inline-media", Link::Pending),
     ("vcon-out", Link::Input),
+    // Re-signing for an archive is a command of its own: it names one input
+    // file, the new signer's key and chain for this run, and one output.
+    ("vcon-resign", Link::Action),
+    ("vcon-resign-cert", Link::Input),
+    ("vcon-resign-key", Link::Input),
+    ("vcon-resign-out", Link::Input),
+    (
+        "vcon-signer-ca",
+        Link::Key("vcon_input", "signer_ca", Merge::Override),
+    ),
+    (
+        "vcon-signer-sha256",
+        Link::Key("vcon_input", "signer_sha256", Merge::Override),
+    ),
     ("vcon-spool-status", Link::Action),
+    (
+        "vcon-x5u-ca",
+        Link::Key("vcon_input", "x5u_ca", Merge::Override),
+    ),
     ("wireshark", Link::PerRun),
     ("word", Link::PerRun),
     ("write-annotated", Link::Action),

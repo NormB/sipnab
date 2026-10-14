@@ -3150,9 +3150,10 @@ fn feature_tables_cover_every_cargo_feature() -> Result<(), TestError> {
     }
 
     // 14 -> 15: `archive`, password-protected ZIP input.
+    // 15 -> 16: `opus`, Ogg Opus recordings in vCon containers.
     assert_eq!(
-        seen, 15,
-        "feature extraction found {seen} features, expected 15. Bump when a \
+        seen, 16,
+        "feature extraction found {seen} features, expected 16. Bump when a \
          feature is added; a drop means the parser stopped reading Cargo.toml's \
          table and the comparison below narrowed."
     );
@@ -5329,7 +5330,13 @@ fn no_documentation_table_repeats_a_row() -> Result<(), TestError> {
     // ("When an encrypted call changes") and its site mirror.
     // 1207 -> 1209: the disposition mapping table in docs/vcon.md and its
     // site mirror.
-    const EXPECTED_TABLES: usize = 1209;
+    // 1209 -> 1211: the WAV against Ogg Opus budget table in docs/vcon.md
+    // ("Audio as Ogg Opus") and its site mirror.
+    // 1211 -> 1213: the `[vcon_input]` key table in docs/config-reference.md
+    // and its website mirror, website/content/docs/config.md.
+    // 1213 -> 1215: the "vCon archive" flag table in docs/cli-reference.md
+    // and its website/content/docs/cli.md mirror.
+    const EXPECTED_TABLES: usize = 1215;
 
     let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     let out = std::process::Command::new("git")
