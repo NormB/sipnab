@@ -8761,9 +8761,10 @@ impl LegWriter<'_> {
         let referenced = match (target.audio, target.url_base, decoded.as_ref(), redactor) {
             (RuleAudio::Url, Some(base), Ok(decoded_audio), None) => {
                 let recording = format.recording(decoded_audio, encoded.as_deref());
-                let (name, file) = media_file(&dialog.call_id, recording, format);
+                let (name, file) = media_file(target, &dialog.call_id, recording, format)
+                    .map_err(|e| (written, e))?;
                 let path = target.dir.join(&name);
-                write_container_atomically(&path, file).map_err(|e| {
+                write_container_atomically(&path, &file).map_err(|e| {
                     (
                         written,
                         format!(
@@ -9268,17 +9269,51 @@ fn vcon_media_name(container: &str, extension: &str) -> String {
 }
 
 /// The name and bytes of the audio file a `url` rule writes beside a
-/// container: `recording` as written.
+/// container: `recording` as written, or, for a rule that encrypts, its
+/// encrypted form.
+///
+/// An encrypting rule's file is a JWE to the rule's recipient
+/// ([`crate::output::vcon_jose::Sealing::encrypt_file`]). It is named
+/// `<content_hash>.<extension>.jwe`, by the hash of the ciphertext, because
+/// the name is not encrypted and a Call-ID can carry host names and
+/// addresses; the container is named by its uuid for the same reason.
+///
+/// The recording's `content_hash` is over these bytes, the ciphertext.
+/// core-04 section 2.2 defines the hash over "the body of the content at the
+/// given url", and the body served is the JWE. The draft does not say
+/// whether `mediatype` describes that served body or the media inside it.
+/// sipnab names the media inside (`audio/x-wav` or `audio/ogg`), which a
+/// reader needs once it has decrypted the file, and the JWE's `cty` names the
+/// same type.
 #[cfg(feature = "vcon")]
 fn media_file<'a>(
+    target: &VconTarget<'_>,
     call_id: &str,
     recording: crate::output::vcon::EncodedRecording<'a>,
     format: RuleAudioFormat,
-) -> (String, &'a [u8]) {
-    (
-        vcon_media_name(&vcon_spool_name(call_id, None), format.extension()),
-        recording.bytes,
-    )
+) -> Result<(String, std::borrow::Cow<'a, [u8]>), String> {
+    match target.sealing {
+        None => Ok((
+            vcon_media_name(&vcon_spool_name(call_id, None), format.extension()),
+            recording.bytes.into(),
+        )),
+        Some(sealing) => {
+            let sealed = sealing
+                .encrypt_file(recording.bytes, recording.mediatype)
+                .map_err(|e| {
+                    format!(
+                        "The audio of Call-ID '{}' could not be encrypted: {e}",
+                        spool_call_id(call_id, None)
+                    )
+                })?;
+            let name = format!(
+                "{}.{}.jwe",
+                crate::output::vcon::content_hash(&sealed),
+                format.extension()
+            );
+            Ok((name, sealed.into()))
+        }
+    }
 }
 
 /// The spool file name for `call_id`'s container: [`vcon_file_name`] of

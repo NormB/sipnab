@@ -362,7 +362,7 @@
       "call": "PlanError::refused(crate::settings::Origin::ConfigFile, message)",
       "count": 1,
       "carries": [
-        "[[vcon.rule]] '{name}' has audio = 'url' and no audio_url_base: say where your storage serves the WAV files sipnab writes beside the containers",
+        "[[vcon.rule]] '{name}' has audio = 'url' and no audio_url_base: say where your storage serves the audio files sipnab writes beside the containers",
         "[[vcon.rule]] '{name}' has audio_url_base '{base}': a vCon names external media over https (draft-ietf-vcon-vcon-core-04 section 2.4.1)",
         "[[vcon.rule]] '{name}' has audio_format without audio = 'inline' or 'url': the rule carries no audio to format",
         "[[vcon.rule]] '{name}' has no dir: say where its containers go",

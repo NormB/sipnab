@@ -1700,11 +1700,11 @@ The [`[[vcon.rule]]`](@/docs/vcon.md#write-calls-by-rule) named `{name}` sets `a
 
 **Exit code:** 1.
 
-### `[[vcon.rule]] '{name}' has audio = 'url' and no audio_url_base: say where your storage serves the WAV files sipnab writes beside the containers`
+### `[[vcon.rule]] '{name}' has audio = 'url' and no audio_url_base: say where your storage serves the audio files sipnab writes beside the containers`
 
 The [`[[vcon.rule]]`](@/docs/vcon.md#write-calls-by-rule) named `{name}` has `audio = "url"` and no `audio_url_base`.
 
-- A `url` rule writes each call's WAV beside its container, and names it by URL.
+- A `url` rule writes each call's audio file beside its container, and names it by URL.
 - That needs the base your storage serves the files from.
 
 **What to do:** Add `audio_url_base = "https://..."`, or use `audio = "inline"` or `"omit"`.

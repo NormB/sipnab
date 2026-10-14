@@ -81,6 +81,14 @@ entry that carries them.
   - sipnab checks the shape, carries it as sent, lists `lawful_basis` in `extensions`, and names the service in its `sipnab-enrichment` line under `attachments`.
   - sipnab still writes no lawful basis of its own. Without the key, an answer with attachments is `malformed`.
 
+- **An encrypting `[[vcon.rule]]` writes audio by URL as its own JWE.**
+  - `audio = "url"` with `encrypt_to` was refused at startup, because the WAV beside the container would not be encrypted.
+  - The rule now writes the audio file encrypted to the same `encrypt_to` certificate.
+    - Its `cty` names the media type inside: `audio/x-wav`, or `audio/ogg` with `audio_format = "opus"`.
+  - The file is named `<content_hash>.wav.jwe` or `.ogg.jwe`, so its name carries no Call-ID.
+  - The sealed container's recording names the file's URL, the `mediatype` of the audio inside, and the `content_hash` of the file as written, the ciphertext.
+    - draft-ietf-vcon-vcon-core-04 section 2.2 hashes "the body of the content at the given url".
+  - The `encrypt_to` private key decrypts it, through the same JOSE code as the container.
 - **A `[[vcon.rule]]` can write its recordings as Ogg Opus.**
   - `audio_format = "opus"` writes the recording as Opus ([RFC 6716](https://www.rfc-editor.org/rfc/rfc6716.html)) in Ogg ([RFC 7845](https://www.rfc-editor.org/rfc/rfc7845.html)), `mediatype` `audio/ogg`.
     - draft-ietf-vcon-vcon-core-04 section 4.3.8 lists `audio/ogg` among the media types a Dialog Object SHOULD use.

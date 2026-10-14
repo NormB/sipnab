@@ -894,6 +894,25 @@ impl Sealing {
         )
     }
 
+    /// A file an encrypting rule writes beside its container (a `url`
+    /// rule's recording), encrypted to the same recipient: a General JWE
+    /// JSON Serialization whose plaintext is `file` and whose `cty` is
+    /// `mediatype`, with the headers placed as [`encrypt_compressed`] places
+    /// them.
+    ///
+    /// Encrypted, not signed: the sealed container is signed, and it names
+    /// this file's `content_hash`, which covers these bytes. No `uuid`: the
+    /// file is not a vCon, and [`decrypt`] compares an unprotected `uuid`
+    /// with the signed vCon inside.
+    pub fn encrypt_file(&self, file: &[u8], mediatype: &str) -> Result<Vec<u8>, String> {
+        let headers = JweHeaders {
+            protected: None,
+            unprotected: serde_json::json!({ "cty": mediatype, "enc": JWE_ENC }),
+            recipient: Some(serde_json::json!({ "alg": JWE_ALG })),
+        };
+        encrypt_under(file, &self.recipient, &headers)
+    }
+
     /// This sealing, compressing as `compression` says.
     #[must_use]
     pub fn compressed(mut self, compression: Compression) -> Self {
@@ -1122,6 +1141,14 @@ impl Opener {
             .duration_since(std::time::UNIX_EPOCH)
             .map_or(0, |d| d.as_secs());
         self.open_at(jwe, max_unsigned, now)
+    }
+
+    /// A file an encrypting rule wrote beside its container
+    /// ([`Sealing::encrypt_file`]), decrypted. Its integrity against the
+    /// container is the container's `content_hash`, which the caller checks
+    /// over `jwe`.
+    pub fn open_file(&self, jwe: &[u8]) -> Result<Vec<u8>, String> {
+        decrypt(jwe, &self.key_pem)
     }
 
     /// [`Self::open`] at `now`, in seconds since the Unix epoch: the time the

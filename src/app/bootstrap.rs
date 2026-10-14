@@ -4831,7 +4831,7 @@ pub(crate) fn vcon_rules(
             (RuleAudio::Url, None) => {
                 return Err(refuse(format!(
                     "[[vcon.rule]] '{name}' has audio = 'url' and no audio_url_base: say \
-                     where your storage serves the WAV files sipnab writes beside the containers"
+                     where your storage serves the audio files sipnab writes beside the containers"
                 )));
             }
             (RuleAudio::Url, Some(base)) if !base.starts_with("https://") => {
@@ -4863,12 +4863,6 @@ pub(crate) fn vcon_rules(
                     "[[vcon.rule]] '{name}' has encrypt_to and needs sign_key and sign_cert: \
                      the encrypted form encrypts the signed form \
                      (draft-ietf-vcon-vcon-core-04 section 5.3)"
-                )));
-            }
-            (Some(_), Some(_), Some(_)) if audio == RuleAudio::Url => {
-                return Err(refuse(format!(
-                    "[[vcon.rule]] '{name}' has encrypt_to and audio = 'url': the WAV file \
-                     beside the container would not be encrypted; use audio = 'inline' or 'omit'"
                 )));
             }
             (Some(to), Some(key), Some(cert)) => Some(std::sync::Arc::new(

@@ -245,22 +245,146 @@ fn an_encrypting_rule_that_cannot_work_is_refused_at_startup() -> Result<(), Tes
     Ok(())
 }
 
-/// `audio = "url"` writes the WAV beside the container, where encryption
-/// would not reach it.
+/// `sha512-` and the base64url SHA-512 of `bytes`.
+fn hash_of(bytes: &[u8]) -> String {
+    use base64::Engine as _;
+    use sha2::{Digest, Sha512};
+    format!(
+        "sha512-{}",
+        base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(Sha512::digest(bytes))
+    )
+}
+
+/// `audio = "url"` on an encrypting rule writes the audio beside the
+/// container as its own JWE, encrypted to the same recipient. The file is
+/// named by its hash, not by the Call-ID. The sealed container's recording
+/// names the file's URL, the `mediatype` of the audio inside, and the
+/// `content_hash` of the file as written, which is the ciphertext. The key
+/// that opens the container opens the file, and the audio inside is the WAV
+/// an unencrypted `url` rule writes for the same call.
 #[test]
-fn an_encrypting_rule_refuses_audio_by_url() -> Result<(), TestError> {
+fn an_encrypting_rule_writes_audio_by_url_as_its_own_jwe() -> Result<(), TestError> {
+    let home = tempfile::tempdir()?;
+    let (plain, sealed) = (home.path().join("plain"), home.path().join("sealed"));
+    let url_lines = "audio_url_base = \"https://media.example.com/calls\"\n";
+    let config = format!(
+        "[[vcon.rule]]\nname = \"plain\"\nwhen = \"{CALL}\"\ndir = \"{}\"\naudio = \"url\"\n{url_lines}\n\
+         [[vcon.rule]]\nname = \"sealed\"\nwhen = \"{CALL}\"\ndir = \"{}\"\naudio = \"url\"\n{url_lines}{}",
+        plain.display(),
+        sealed.display(),
+        sealing(home.path(), "fake_grp.crt")?
+    );
+    let out = run(&config, home.path())?;
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let written = files(&sealed)?;
+    assert_eq!(written.len(), 2, "the container and the audio: {written:?}");
+    let (container_path, audio_path) = if written[0].to_string_lossy().ends_with(".vcon.json") {
+        (&written[0], &written[1])
+    } else {
+        (&written[1], &written[0])
+    };
+    let audio_name = audio_path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .ok_or("name")?;
+    assert!(audio_name.ends_with(".wav.jwe"), "{audio_name}");
+    assert!(
+        !audio_name.contains("1-1966"),
+        "no Call-ID in the name: {audio_name}"
+    );
+
+    let key = std::fs::read_to_string(format!("{FIXTURES}/fake_grp.key"))?;
+    let unsigned = vcon_jose::verify(&vcon_jose::decrypt(&std::fs::read(container_path)?, &key)?)?;
+    let inner: serde_json::Value = serde_json::from_slice(&unsigned)?;
+    let recording = inner["dialog"]
+        .as_array()
+        .ok_or("dialog")?
+        .iter()
+        .find(|d| d["url"].is_string())
+        .ok_or("a recording with a url")?;
+    assert_eq!(
+        recording["url"],
+        format!("https://media.example.com/calls/{audio_name}")
+    );
+    assert_eq!(recording["mediatype"], "audio/x-wav", "the audio inside");
+    assert!(recording.get("body").is_none(), "{recording}");
+
+    let file = std::fs::read(audio_path)?;
+    assert_eq!(
+        recording["content_hash"],
+        hash_of(&file),
+        "over the file as written"
+    );
+    let jwe: serde_json::Value = serde_json::from_slice(&file)?;
+    assert_eq!(vcon_jose::form_of(&jwe), Form::Encrypted);
+    assert_eq!(jwe["unprotected"]["cty"], "audio/x-wav");
+    // The WAV's first 48 bytes, raw or in either base64 alphabet, do not
+    // appear: 64 characters of chance match in random ciphertext is out of
+    // reach, where a 4-byte "RIFF" is not.
+    let plain_wav = std::fs::read(
+        files(&plain)?
+            .into_iter()
+            .find(|p| p.to_string_lossy().ends_with(".wav"))
+            .ok_or("the plain rule's WAV")?,
+    )?;
+    let head = &plain_wav[..48];
+    let text = String::from_utf8(file.clone())?;
+    {
+        use base64::Engine as _;
+        use base64::engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD};
+        assert!(
+            !file.windows(head.len()).any(|w| w == head)
+                && !text.contains(&URL_SAFE_NO_PAD.encode(head))
+                && !text.contains(&STANDARD.encode(head)),
+            "no WAV in clear"
+        );
+    }
+
+    let opener = vcon_jose::Opener::load(&home.path().join("fake_grp.key"))?;
+    let audio = opener.open_file(&file)?;
+    assert_eq!(&audio[..4], b"RIFF");
+    assert_eq!(audio, plain_wav, "the same audio");
+    assert_eq!(
+        vcon_jose::decrypt(&file, &key)?,
+        audio,
+        "decrypt reads it too"
+    );
+    Ok(())
+}
+
+/// The same with `audio_format = "opus"`: the file inside the JWE is the
+/// Ogg Opus stream, and the `mediatype` and `cty` say so.
+#[cfg(feature = "opus")]
+#[test]
+fn an_encrypting_opus_rule_writes_ogg_opus_as_its_own_jwe() -> Result<(), TestError> {
     let home = tempfile::tempdir()?;
     let dir = home.path().join("sealed");
     let config = format!(
         "[[vcon.rule]]\nname = \"sealed\"\nwhen = \"{CALL}\"\ndir = \"{}\"\naudio = \"url\"\n\
-         audio_url_base = \"https://media.example.com/calls\"\n{}",
+         audio_format = \"opus\"\naudio_url_base = \"https://media.example.com/calls\"\n{}",
         dir.display(),
         sealing(home.path(), "fake_grp.crt")?
     );
     let out = run(&config, home.path())?;
-    let stderr = String::from_utf8_lossy(&out.stderr);
-    assert_eq!(out.status.code(), Some(1), "{stderr}");
-    assert!(stderr.contains("audio = 'url'"), "{stderr}");
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let audio_path = files(&dir)?
+        .into_iter()
+        .find(|p| p.to_string_lossy().ends_with(".ogg.jwe"))
+        .ok_or("an .ogg.jwe beside the container")?;
+    let file = std::fs::read(&audio_path)?;
+    let jwe: serde_json::Value = serde_json::from_slice(&file)?;
+    assert_eq!(jwe["unprotected"]["cty"], "audio/ogg");
+    let opener = vcon_jose::Opener::load(&home.path().join("fake_grp.key"))?;
+    assert_eq!(&opener.open_file(&file)?[..4], b"OggS");
     Ok(())
 }
 

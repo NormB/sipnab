@@ -792,6 +792,28 @@ The file holds the JWE: `unprotected`, `recipients`, `iv`, `ciphertext` and
   - sipnab decrypts that example and verifies its signature.
   - It signs the same bytes with the same key to the same signature.
 
+**Audio by URL.** With `audio = "url"`, an encrypting rule writes the audio
+beside the container as its own JWE:
+
+- sipnab encrypts it to the same `encrypt_to` certificate as the container.
+  - Its plaintext is the WAV, or the Ogg Opus stream with `audio_format = "opus"`.
+  - Its `unprotected` header carries `cty`, the media type of that plaintext, and no `uuid`.
+  - sipnab encrypts it and does not sign it. The signed container names its `content_hash`.
+- sipnab names it `<content_hash>.wav.jwe` or `<content_hash>.ogg.jwe`, by the hash of the file as written.
+  - The name carries no Call-ID, for the reason the container's does not.
+- The container's recording names:
+  - `url`: `audio_url_base` followed by that file name;
+  - `mediatype`: the media type of the audio inside, `audio/x-wav` or `audio/ogg`;
+  - `content_hash`: the hash of the file as written, which is the ciphertext.
+- Why the hash covers the ciphertext:
+  - [core-04 section 2.2](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-04#section-2.2) defines the hash over the body of the content at the `url`, and the body your storage serves is the JWE.
+  - The draft does not say whether `mediatype` describes that body or the media inside it. sipnab names the media inside, which a reader needs after decrypting.
+- Each write uses a fresh content key, so each write of a call writes a new file.
+  - sipnab deletes none of them.
+  - Under `sealed_updates = "new-uuid"`, the earlier instances name the earlier files. Under `same-uuid`, nothing names them.
+- To read one: fetch the file from your storage, check its SHA-512 against the container's `content_hash`, and decrypt it with the private key of the `encrypt_to` certificate.
+  - `--vcon-fetch` fetches containers. It does not fetch the URLs inside them.
+
 **What the keys must be.**
 
 - `encrypt_to` and `sign_cert` hold PEM certificates. Each key is RSA, at
@@ -812,8 +834,6 @@ The file holds the JWE: `unprotected`, `recipients`, `iv`, `ciphertext` and
   or that holds a key other than RSA of at least 2048 bits
 - a `sign_cert` whose first certificate is not the certificate of `sign_key`
 - a `sign_key` that other users can read (`chmod 600` it)
-- `audio = "url"`: sipnab would not encrypt the WAV file beside the container.
-  Use `inline` or `omit`.
 - a `compress` other than `none` or `gzip`, or `compress` on a rule without
   `encrypt_to`
 
@@ -2695,6 +2715,11 @@ Stated here rather than discovered later.
   - A tie that is a timing guess carries `identifier_match: false`. A busy
     server can get it wrong.
   - See [Calls through a PBX or a B2BUA](#calls-through-a-pbx-or-a-b2bua).
+- **It does not write a `.vconz` bundle.**
+  - draft-miller-vcon-zip-bundle-00 names each external file by its `content_hash`, with an extension from the `mediatype`.
+  - For an encrypted recording that rule gives the ciphertext an `.ogg` or `.wav` extension.
+  - For an encrypted vCon the draft says both that a bundle creator MUST NOT decrypt and that it SHOULD decrypt when it holds the keys.
+  - The draft expired on May 10, 2026.
 - **It does not assemble a call across hops.** One container describes one
   observed dialog from one capture.
 - **It does not deduplicate across taps.**

@@ -44,7 +44,7 @@ pub const BITRATE_PER_CHANNEL: i32 = 24_000;
 /// first.
 const OPUS_RATES: [u32; 5] = [8_000, 12_000, 16_000, 24_000, 48_000];
 
-/// The rate every Ogg Opus granule position counts in (RFC 7845 section 4).
+/// The rate every Ogg Opus granule position counts in ([RFC 7845 section 4](https://www.rfc-editor.org/rfc/rfc7845.html#section-4)).
 const GRANULE_RATE: u32 = 48_000;
 
 /// Frames of 20 ms: 50 a second.
@@ -53,7 +53,7 @@ const FRAMES_PER_SECOND: u32 = 50;
 /// Audio packets per Ogg page: one second.
 const PACKETS_PER_PAGE: usize = 50;
 
-/// The largest Opus packet libopus writes (RFC 6716 section 3.4, R4).
+/// The largest Opus packet libopus writes ([RFC 6716 section 3.4](https://www.rfc-editor.org/rfc/rfc6716.html#section-3.4), R4).
 const MAX_PACKET: usize = 1275;
 
 /// `audio`'s PCM as an Ogg Opus file.
@@ -159,7 +159,7 @@ pub fn encode(
     Ok(stream.out)
 }
 
-/// The ID header, RFC 7845 section 5.1, channel mapping family 0.
+/// The ID header, [RFC 7845 section 5.1](https://www.rfc-editor.org/rfc/rfc7845.html#section-5.1), channel mapping family 0.
 fn id_header(channels: u16, pre_skip: u16, input_rate: u32) -> Vec<u8> {
     let mut out = b"OpusHead".to_vec();
     out.push(1); // version
@@ -171,7 +171,7 @@ fn id_header(channels: u16, pre_skip: u16, input_rate: u32) -> Vec<u8> {
     out
 }
 
-/// The comment header, RFC 7845 section 5.2: libopus's version as the
+/// The comment header, [RFC 7845 section 5.2](https://www.rfc-editor.org/rfc/rfc7845.html#section-5.2): libopus's version as the
 /// vendor, and `comment` as the one `DESCRIPTION` comment.
 fn comment_header(comment: Option<&str>) -> Vec<u8> {
     let mut out = b"OpusTags".to_vec();
@@ -496,7 +496,7 @@ mod tests {
         Ok(())
     }
 
-    /// RFC 7845 section 3's layout: the ID header alone on the first page
+    /// [RFC 7845 section 3](https://www.rfc-editor.org/rfc/rfc7845.html#section-3)'s layout: the ID header alone on the first page
     /// (beginning of stream), the comment header finishing the second, the
     /// audio after, the last page marked end of stream, granule positions
     /// zero on the header pages and rising after, one serial, and sequence
