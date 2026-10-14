@@ -882,6 +882,8 @@ pub struct ForwardSettings {
     pub timeout: Duration,
     /// The only CA file trusted for HTTPS; the host's bundle when `None`.
     pub ca: Option<PathBuf>,
+    /// A CA file trusted for HTTPS in addition to the host's bundle.
+    pub extra_ca: Option<PathBuf>,
     /// The kind of store: which statuses count as delivered.
     pub kind: StoreKind,
     /// How retries are spaced.
@@ -945,6 +947,8 @@ pub struct ForwardPlan {
     pub interval: Duration,
     /// The only CA file trusted for HTTPS.
     pub ca: Option<PathBuf>,
+    /// A CA file trusted for HTTPS in addition to the host's bundle.
+    pub extra_ca: Option<PathBuf>,
     /// How retries are spaced.
     pub backoff: BackoffPolicy,
     /// How much of an answer is read and kept.
@@ -960,7 +964,16 @@ enum ResolveStep {
     ReplaceUrl,
     /// Anything else, each of which involves a flag.
     Other,
+    /// A refusal of the config file's keys alone.
+    Keys,
 }
+
+/// What the forwarder's trust refusals call its settings and its peer.
+const FORWARD_TRUST: crate::tls_files::TrustNames<'static> = crate::tls_files::TrustNames {
+    ca: "--vcon-forward-ca",
+    extra: "--vcon-forward-extra-ca",
+    issuer: "the store's CA",
+};
 
 /// The value in force of a text setting, and the name of where it came from:
 /// the flag, else the key.
@@ -1027,6 +1040,7 @@ impl ForwardPlan {
             ResolveStep::Url => (url_origin, message),
             ResolveStep::ReplaceUrl => (replace_origin, message),
             ResolveStep::Other => flag(message),
+            ResolveStep::Keys => (Origin::ConfigFile, message),
         })
     }
 
@@ -1121,6 +1135,19 @@ impl ForwardPlan {
             keys.max_error_body,
         )
         .map_err(other)?;
+        let (ca, extra_ca) = crate::config::trust_pair(
+            (
+                args.vcon_forward_ca.as_ref(),
+                args.vcon_forward_extra_ca.as_ref(),
+            ),
+            (keys.ca.as_ref(), keys.extra_ca.as_ref()),
+        );
+        if ca.is_some() && extra_ca.is_some() {
+            return Err((
+                ResolveStep::Keys,
+                crate::config::trust_keys_conflict("vcon_forward", "ca", "extra_ca"),
+            ));
+        }
         Ok(Self {
             done_dir: args
                 .vcon_forward_done
@@ -1132,7 +1159,8 @@ impl ForwardPlan {
                 .clone()
                 .or_else(|| keys.failed.clone())
                 .unwrap_or_else(|| default_failed_dir(&spool)),
-            ca: args.vcon_forward_ca.clone().or_else(|| keys.ca.clone()),
+            ca,
+            extra_ca,
             replace_url: replace.map(|(t, _)| t.to_string()),
             spool,
             kind,
@@ -1175,6 +1203,7 @@ impl ForwardPlan {
                 failed_dir: self.failed_dir,
                 timeout: self.timeout,
                 ca: self.ca,
+                extra_ca: self.extra_ca,
                 kind: self.kind,
                 backoff: self.backoff,
                 limits: self.limits,
@@ -1378,7 +1407,11 @@ impl Forwarder {
                 .tls;
         }
         let tls = if needs_tls {
-            Some(client_config(settings.ca.as_deref(), "--vcon-forward-ca")?)
+            Some(client_config(
+                settings.ca.as_deref(),
+                settings.extra_ca.as_deref(),
+                &FORWARD_TRUST,
+            )?)
         } else {
             None
         };
@@ -1777,31 +1810,16 @@ fn replace_endpoint(template: &str, uuid: &str) -> Result<Endpoint, String> {
 /// the host has no bundle.
 pub(crate) fn client_config(
     ca: Option<&Path>,
-    ca_flag: &str,
+    extra: Option<&Path>,
+    names: &crate::tls_files::TrustNames<'_>,
 ) -> Result<Arc<rustls::ClientConfig>, String> {
-    let mut roots = rustls::RootCertStore::empty();
-    let (path, strict) = match ca {
-        Some(path) => (path.to_path_buf(), true),
-        None => (
-            crate::tls_files::host_ca_bundle().ok_or_else(|| {
-                format!("no CA bundle found on this host; name the store's CA with {ca_flag}")
-            })?,
-            false,
-        ),
-    };
-    for cert in crate::tls_files::pem_certificates(&path).map_err(|e| format!("{e:#}"))? {
-        if let Err(e) = roots.add(cert)
-            && strict
-        {
-            return Err(format!(
-                "{}: rustls rejected a certificate: {e}",
-                path.display()
-            ));
-        }
-    }
-    if roots.is_empty() {
-        return Err(format!("{}: no usable CA certificate", path.display()));
-    }
+    let roots = crate::tls_files::trust_roots(
+        ca,
+        extra,
+        crate::tls_files::host_ca_bundle().as_deref(),
+        names,
+    )
+    .map_err(|e| format!("{e:#}"))?;
     let config = rustls::ClientConfig::builder_with_provider(crate::tls_files::provider())
         .with_safe_default_protocol_versions()
         .map_err(|e| e.to_string())?

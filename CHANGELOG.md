@@ -8,6 +8,64 @@ sipnab is pre-1.0: the public API and the CLI surface are not stable, and a
 breaking change may land in any release. Breaking changes are called out in the
 entry that carries them.
 
+## [Unreleased]
+
+### Added
+
+- **An encrypting `[[vcon.rule]]` can compress what it encrypts.**
+  - `compress = "gzip"` signs the gzip ([RFC 1952](https://www.rfc-editor.org/rfc/rfc1952.html)) of the vCon instead of the vCon.
+    - draft-ietf-vcon-vcon-core-04 section 5.2 allows this.
+    - The encrypted form then names `cty: "application/vcon+gzip"`.
+  - `compress = "none"`, the default, signs the vCon as it is.
+  - sipnab refuses at startup:
+    - a `compress` other than those two;
+    - a `compress` on a rule without `encrypt_to`.
+  - `--vcon-fetch-decrypt-key` inflates a gzip payload after the signature verifies.
+    - It stops at `--vcon-fetch-max-size`.
+    - It refuses a container whose vCon inflates past that size.
+  - The fetcher refuses a container that carries a JWE `zip` header, which sipnab never writes.
+- **`--vcon-fetch` can check who signed a decrypted vCon.**
+  - `--vcon-fetch-signer-ca <FILE>` (`[vcon_fetch] signer_ca`):
+    - writes a decrypted container only when its signing certificate chains, through the intermediates in its `x5c`, to a CA certificate in that file;
+    - requires every certificate to be within its validity period;
+    - takes the value `system` to use the host's CA bundle.
+  - `--vcon-fetch-signer-sha256 <HEX>` (`[vcon_fetch] signer_sha256`):
+    - writes it only when the signing certificate has that SHA-256 fingerprint;
+    - accepts the fingerprint plain or colon-separated, in either case.
+  - Each needs `--vcon-fetch-decrypt-key`.
+  - With either, the fetcher writes nothing, and the log line says why, for:
+    - a container whose signer fails the check;
+    - a container that is not encrypted.
+- **`[vcon]` sets the sealing keys once for every rule.**
+  - `encrypt_to`, `sign_key`, `sign_cert` and `compress` in the `[vcon]` section are the values of each `[[vcon.rule]]` that does not set its own.
+  - A rule's own value overrides the section's, key by key.
+  - A rule encrypts when it has an `encrypt_to`, its own or the section's.
+  - The section's `sign_key`, `sign_cert` and `compress` apply only to rules that encrypt.
+    - So a rule without an `encrypt_to` still writes the unsigned form.
+- **The vCon forwarder and fetcher can add a CA to the host's bundle.**
+  - `--vcon-forward-extra-ca` (`[vcon_forward] extra_ca`) and `--vcon-fetch-extra-ca` (`[vcon_fetch] extra_ca`) trust a CA file in addition to the host's CA bundle.
+    - `--hep-tls-extra-ca` does the same for the HEP sender.
+  - `--vcon-forward-ca` and `--vcon-fetch-ca` still trust only their file.
+  - sipnab refuses the two forms together.
+  - Either flag replaces both keys of its section.
+  - The HEP sender, the forwarder and the fetcher now build their trust by one rule.
+
+### Fixed
+
+- **The encrypted form names a `cty` that core-04 lists.**
+  - An encrypting rule wrote `cty: "application/vcon+json"`, the value of the draft's Appendix A.7 example.
+  - Section 5.3.1 lists `application/vcon` and `application/vcon+gzip`.
+  - sipnab now writes `application/vcon`, or `application/vcon+gzip` with `compress = "gzip"`.
+  - The fetcher reads any `cty`, so it still opens a container written with the old value.
+- **The signed and encrypted forms place their headers as core-04 says.**
+  - The signature carries `x5c` and `uuid` in its unprotected `header` (draft-ietf-vcon-vcon-core-04 section 5.2).
+    - `alg` alone is protected.
+  - The encrypted form carries `cty`, `enc` and `uuid` in `unprotected` (section 5.3.1).
+    - It carries `alg` in each recipient's `header` (section 5.3.2).
+    - It has no `protected` member.
+  - The reader still accepts the placement that 0.5.217 and 0.5.218 wrote.
+  - It refuses a header name given two different values in two places, `x5c` included.
+
 ## [0.5.218] - 2026-10-14
 
 ### Added

@@ -11,9 +11,9 @@ reachable three ways and not four is visible only once these four are set
 beside one another. [`tests/capability_matrix_test.rs`](https://github.com/NormB/sipnab/blob/main/tests/capability_matrix_test.rs) keeps
 this current and requires the matrix to account for every row here.
 
-Totals: CLI 344, TUI 25, REST 46, MCP 74.
+Totals: CLI 348, TUI 25, REST 46, MCP 74.
 
-## CLI flags (344)
+## CLI flags (348)
 
 - `--ack-timeout`
 - `--active-idle-window`
@@ -327,11 +327,14 @@ Totals: CLI 344, TUI 25, REST 46, MCP 74.
 - `--vcon-fetch-auth-file`
 - `--vcon-fetch-ca`
 - `--vcon-fetch-decrypt-key`
+- `--vcon-fetch-extra-ca`
 - `--vcon-fetch-kind`
 - `--vcon-fetch-max-response-head`
 - `--vcon-fetch-max-size`
 - `--vcon-fetch-out`
 - `--vcon-fetch-overwrite`
+- `--vcon-fetch-signer-ca`
+- `--vcon-fetch-signer-sha256`
 - `--vcon-fetch-timeout`
 - `--vcon-fetch-url`
 - `--vcon-forward`
@@ -341,6 +344,7 @@ Totals: CLI 344, TUI 25, REST 46, MCP 74.
 - `--vcon-forward-backoff-first`
 - `--vcon-forward-ca`
 - `--vcon-forward-done`
+- `--vcon-forward-extra-ca`
 - `--vcon-forward-failed`
 - `--vcon-forward-interval`
 - `--vcon-forward-kind`

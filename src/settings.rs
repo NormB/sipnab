@@ -733,6 +733,10 @@ pub const FLAGS: &[(&str, Link)] = &[
         Link::Key("vcon_fetch", "decrypt_key", Merge::Override),
     ),
     (
+        "vcon-fetch-extra-ca",
+        Link::Key("vcon_fetch", "extra_ca", Merge::Override),
+    ),
+    (
         "vcon-fetch-kind",
         Link::Key("vcon_fetch", "kind", Merge::Override),
     ),
@@ -746,6 +750,14 @@ pub const FLAGS: &[(&str, Link)] = &[
     ),
     ("vcon-fetch-out", Link::Input),
     ("vcon-fetch-overwrite", Link::PerRun),
+    (
+        "vcon-fetch-signer-ca",
+        Link::Key("vcon_fetch", "signer_ca", Merge::Override),
+    ),
+    (
+        "vcon-fetch-signer-sha256",
+        Link::Key("vcon_fetch", "signer_sha256", Merge::Override),
+    ),
     (
         "vcon-fetch-timeout",
         Link::Key("vcon_fetch", "timeout", Merge::Override),
@@ -779,6 +791,10 @@ pub const FLAGS: &[(&str, Link)] = &[
     (
         "vcon-forward-done",
         Link::Key("vcon_forward", "done", Merge::Override),
+    ),
+    (
+        "vcon-forward-extra-ca",
+        Link::Key("vcon_forward", "extra_ca", Merge::Override),
     ),
     (
         "vcon-forward-failed",
@@ -846,6 +862,10 @@ pub const FILE_ONLY: &[(&str, &str, FileOnly)] = &[
     ("pbx", "addresses", FileOnly::Table),
     ("vcon", "rule", FileOnly::Table),
     ("vcon", "enrich", FileOnly::Table),
+    ("vcon", "encrypt_to", FileOnly::Table),
+    ("vcon", "sign_key", FileOnly::Table),
+    ("vcon", "sign_cert", FileOnly::Table),
+    ("vcon", "compress", FileOnly::Table),
     ("limits", "max_header_line", FileOnly::Tuning),
     ("limits", "max_headers_per_message", FileOnly::Tuning),
     ("limits", "max_messages_per_dialog", FileOnly::Tuning),

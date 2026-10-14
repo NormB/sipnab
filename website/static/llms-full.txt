@@ -12253,7 +12253,7 @@ sipnab uses Cargo feature flags to control optional capability. The default buil
 | `metrics` | Standalone Prometheus `/metrics` server: a raw TCP listener and plain threads, no axum/tokio, so scraping does not drag in the `api` feature or its async runtime. Included by default. | `native`, `base64`, `rustls` |
 | `plugins` | WASM plugin host (`--plugin`): runs sandboxed third-party dialog detections, so a detection nobody here wrote cannot reach the process it inspects. | `native`, `wasmi` |
 | `bpf` | eBPF TLS capture (`--uprobe-backend bpf`): reads SIP plaintext **and the peer addresses** with no key material. Needs a nightly toolchain and `bpf-linker` to build, and a kernel with `CONFIG_DEBUG_INFO_BTF` to run — without the linker the binary still builds and the backend refuses at runtime rather than capturing nothing silently. | `native`, `aya`, `sipnab-bpf-types/pod` |
-| `vcon` | vCon export: one observed dialog as an IETF conversation container, with the audio inline when the run retained it, or signed and encrypted when a `[[vcon.rule]]` sets `encrypt_to`. Non-default, because a container that leaves the machine is a publication surface and a capture tool should not grow one unless an operator asks. Adds `--export-vcon`/`--vcon-out`, the `export_vcon` MCP tool and `GET /v1/dialogs/{call_id}/vcon`. | `native`, `sha2`, `hmac`, `base64`, `rustls`, `rsa`, `ring`, `aes`, `cbc`, `sha1_oaep` |
+| `vcon` | vCon export: one observed dialog as an IETF conversation container, with the audio inline when the run retained it, or signed and encrypted when a `[[vcon.rule]]` sets `encrypt_to`. Non-default, because a container that leaves the machine is a publication surface and a capture tool should not grow one unless an operator asks. Adds `--export-vcon`/`--vcon-out`, the `export_vcon` MCP tool and `GET /v1/dialogs/{call_id}/vcon`. | `native`, `sha2`, `hmac`, `base64`, `rustls`, `rsa`, `ring`, `aes`, `cbc`, `sha1_oaep`, `webpki` |
 | `archive` | Password-protected ZIP and 7z input: `-I evidence.zip` reads the captures inside, stored, deflated, WinZip AES or ZipCrypto, and `-I evidence.7z` reads LZMA or LZMA2, AES-256 or not, without leaving a decrypted copy on disk. Adds `--archive-password-file`, `--archive-password-command`, `--archive-password-stdin`, `--archive-password` and `--archive-password-encoding`, and reads `SIPNAB_ARCHIVE_PASSWORD` and the systemd credential `archive-password`. | `native`, `zip`, `sevenz-rust2`, `zeroize`, `unicode-normalization` |
 | `full` | Everything: `native` + `tui` + `audio` + `tls` + `hep` + `api` + `mcp` + `mcp-http` + `metrics` + `plugins` + `vcon` + `archive` | all |
 | `wasm` | WebAssembly target for in-browser pcap analysis | `wasm-bindgen`, `js-sys`, `web-sys`, `console_error_panic_hook` |
@@ -19142,6 +19142,7 @@ The platforms also differ.
 | `--vcon-forward-interval` | `<SECS>` | `5` | 0.5.205 | Seconds between passes, 1 to 3600. Config: `[vcon_forward] interval` |
 | `--vcon-forward-timeout` | `<SECS>` | `30` | 0.5.205 | Seconds to wait to connect, and for each read and write, before the store counts as unreachable and the container waits for a retry, 1 to 600. Config: `[vcon_forward] timeout` |
 | `--vcon-forward-ca` | `<FILE>` | host bundle | 0.5.205 | Trust only the CA certificates in this PEM file for an `https://` store. Without it the forwarder trusts the host's CA bundle. Config: `[vcon_forward] ca` |
+| `--vcon-forward-extra-ca` | `<FILE>` | -- | Unreleased | Trust the CA certificates in this PEM file for an `https://` store **in addition to** the host's CA bundle: the forwarder accepts the store's certificate when the host's bundle or this file issued it. Use `--vcon-forward-ca` instead to trust only the named file; the forwarder refuses the two together. Either flag replaces both `[vcon_forward] ca` and `[vcon_forward] extra_ca`. Config: `[vcon_forward] extra_ca` |
 | `--vcon-forward-backoff-first` | `<SECS>` | `2` | 0.5.206 | Seconds a container waits after its first failed try (a `5xx`, a timeout or no connection); each failed try doubles the wait, up to `--vcon-forward-backoff-cap`. 1 to 4294967295, and no longer than the cap. Config: `[vcon_forward] backoff_first` |
 | `--vcon-forward-backoff-cap` | `<SECS>` | `300` | 0.5.206 | The longest a container waits between tries, 1 to 4294967295, and no shorter than `--vcon-forward-backoff-first`. Config: `[vcon_forward] backoff_cap` |
 | `--vcon-forward-max-response-head` | `<BYTES>` | `65536` | 0.5.206 | The most bytes of a store's status line and headers read, 1 to 4294967295. The forwarder treats an answer with more as no answer, and the container waits for a retry. Config: `[vcon_forward] max_response_head` |
@@ -19163,6 +19164,8 @@ The platforms also differ.
 - `sipnab --vcon-forward spool --vcon-forward-url https://proxy.example.com/vcon --vcon-forward-auth-file vcon.auth --vcon-forward-max-response-head 131072 --vcon-forward-once` — a store behind a proxy that adds large headers: read up to 128 KiB of them
 - `sipnab --vcon-forward spool --vcon-forward-url https://vcon.example.com/v1/vcons --vcon-forward-auth-file vcon.auth --vcon-forward-ca store-ca.pem --vcon-forward-timeout 10` — a store whose certificate a private CA issued: trust only that CA, and give up on a silent store after ten seconds rather than thirty
 - `sipnab --vcon-forward spool --vcon-forward-url https://vcon.example.com/v1/vcons --vcon-forward-auth-file vcon.auth --vcon-forward-ca store-ca.pem --vcon-forward-interval 60 --vcon-forward-timeout 120` — a store across a slow link: pass over the spool once a minute and wait up to two minutes for each answer
+- `sipnab --vcon-forward spool --vcon-forward-url https://vcon.example.com/v1/vcons --vcon-forward-auth-file vcon.auth --vcon-forward-extra-ca store-ca.pem` — a store whose certificate a private CA issued, on a host whose CA bundle should still count: trust that CA as well as the host's bundle
+- `sipnab --vcon-forward spool --vcon-forward-url https://vcon.example.com/v1/vcons --vcon-forward-auth-file vcon.auth --vcon-forward-extra-ca /etc/sipnab/store-ca.pem --vcon-forward-once` — deliver once to such a store and exit
 - `sipnab --vcon-forward /var/spool/sipnab-vcon --vcon-forward-url https://vcon.example.com/v1/vcons --vcon-forward-auth-file vcon.auth --vcon-forward-done /var/spool/sipnab-vcon-sent --vcon-forward-failed /var/spool/sipnab-vcon-held --vcon-forward-interval 2` — keep delivered and refused containers beside the spool rather than inside it, on the same file system, and pass every two seconds
 - `sipnab --vcon-forward spool --vcon-forward-url https://vcon.example.com/v1/vcons --vcon-forward-auth-file vcon.auth --vcon-forward-replace-url 'https://vcon.example.com/v1/vcons/{uuid}' --vcon-forward-once` — a store that answers `409` for a uuid it holds: PUT the rewritten container to the uuid's own URL instead of filing it as refused
 - `sipnab --vcon-forward spool --vcon-forward-url https://vcon.example.com/v1/vcons --vcon-forward-auth-file vcon.auth --vcon-forward-replace-url 'https://vcon.example.com/v1/vcons/{uuid}' --vcon-forward-done sent --vcon-forward-failed held` — the same, polling, with the delivered and refused containers in `sent` and `held`
@@ -19195,7 +19198,10 @@ store by uuid and writes each to a file.
 | `--vcon-fetch-max-size` | `<BYTES>` | `67108864` | 0.5.209 | The largest answer the fetcher reads for one container, 1 to 4294967295. The fetcher refuses a larger one and writes nothing for it. The default, 64 MiB, holds a container with an hour of inline G.711 audio. Config: `[vcon_fetch] max_size` |
 | `--vcon-fetch-max-response-head` | `<BYTES>` | `65536` | 0.5.209 | The most bytes of a store's status line and headers read, 1 to 4294967295. The fetcher refuses an answer with more. Config: `[vcon_fetch] max_response_head` |
 | `--vcon-fetch-ca` | `<FILE>` | host bundle | 0.5.209 | Trust only the CA certificates in this PEM file for an `https://` store. Without it the fetcher trusts the host's CA bundle. Config: `[vcon_fetch] ca` |
+| `--vcon-fetch-extra-ca` | `<FILE>` | -- | Unreleased | Trust the CA certificates in this PEM file for an `https://` store **in addition to** the host's CA bundle: the fetcher accepts the store's certificate when the host's bundle or this file issued it. Use `--vcon-fetch-ca` instead to trust only the named file; the fetcher refuses the two together. Either flag replaces both `[vcon_fetch] ca` and `[vcon_fetch] extra_ca`. Config: `[vcon_fetch] extra_ca` |
 | `--vcon-fetch-decrypt-key` | `<FILE>` | -- | 0.5.218 | Decrypt each encrypted container with the RSA private key in this PEM file, verify its signature, and write the unsigned vCon inside. The file must be readable by its owner only. Without it the fetcher writes an encrypted container as the store holds it. See [Fetch an encrypted vCon](vcon.md#fetch-an-encrypted-vcon). Config: `[vcon_fetch] decrypt_key` |
+| `--vcon-fetch-signer-ca` | `<FILE\|system>` | -- | Unreleased | Write a decrypted container only when its signing certificate chains, through the intermediates in its `x5c`, to a CA certificate in this PEM file, with every certificate in the chain within its validity period. `system` uses the host's CA bundle; write `./system` for a file of that name. A container that is not encrypted has no signer to check and the fetcher writes nothing for it. Needs `--vcon-fetch-decrypt-key`. See [Check who signed it](vcon.md#check-who-signed-it). Config: `[vcon_fetch] signer_ca` |
+| `--vcon-fetch-signer-sha256` | `<HEX>` | -- | Unreleased | Write a decrypted container only when its signing certificate has this SHA-256 fingerprint: 64 hex digits, plain or in colon-separated pairs, either case, as `openssl x509 -noout -fingerprint -sha256` prints it. A container that is not encrypted has no signer to check and the fetcher writes nothing for it. Needs `--vcon-fetch-decrypt-key`. Config: `[vcon_fetch] signer_sha256` |
 
 Examples:
 
@@ -19210,8 +19216,14 @@ Examples:
 - `sipnab --vcon-fetch 018bcfe5-6800-8a6b-a667-78f1c5213800 --config /etc/sipnab/vcon-store.toml` — take every fetcher setting from a config file's `[vcon_fetch]` section
 - `sipnab --vcon-fetch 018bcfe5-6800-8a6b-a667-78f1c5213800 --vcon-fetch-kind vcon-store --vcon-fetch-url https://api.vcon.store --vcon-fetch-auth-file vcon-store.key --vcon-fetch-out fetched --vcon-fetch-overwrite --vcon-fetch-timeout 120` — replace an earlier copy across a slow link, waiting up to two minutes for each read
 - `sipnab --vcon-fetch 018bcfe5-6800-8a6b-a667-78f1c5213800 --vcon-fetch-kind conserver --vcon-fetch-url https://conserver.example.com --vcon-fetch-auth-file conserver.key --vcon-fetch-ca conserver-ca.pem --vcon-fetch-max-size 1048576 --vcon-fetch-max-response-head 16384` — a conserver whose certificate a private CA issued, holding containers without inline audio: refuse any answer over 1 MiB, or with more than 16 KiB of headers
+- `sipnab --vcon-fetch 018bcfe5-6800-8a6b-a667-78f1c5213800 --vcon-fetch-kind conserver --vcon-fetch-url https://conserver.example.com --vcon-fetch-auth-file conserver.key --vcon-fetch-extra-ca conserver-ca.pem` — a conserver whose certificate a private CA issued, on a host whose CA bundle should still count: trust that CA as well as the host's bundle
+- `sipnab --vcon-fetch - --vcon-fetch-kind conserver --vcon-fetch-url https://conserver.example.com --vcon-fetch-auth-file conserver.key --vcon-fetch-extra-ca /etc/sipnab/conserver-ca.pem --vcon-fetch-out fetched < uuids.txt` — fetch every vCon listed in `uuids.txt` from such a store
 - `sipnab --vcon-fetch 018bcfe5-6800-8a6b-a667-78f1c5213800 --vcon-fetch-kind conserver --vcon-fetch-url http://127.0.0.1:8000 --vcon-fetch-auth-file conserver.key --vcon-fetch-decrypt-key recipient.key --vcon-fetch-out fetched` — read an encrypted vCon from a conserver, decrypt it with the recipient's private key, verify its signature, and write the unsigned vCon
 - `sipnab --vcon-fetch - --vcon-fetch-kind conserver --vcon-fetch-url http://127.0.0.1:8000 --vcon-fetch-auth-file conserver.key --vcon-fetch-decrypt-key recipient.key --vcon-fetch-out fetched < uuids.txt` — decrypt every vCon listed in `uuids.txt`, one uuid per line; the fetcher writes a container that is not encrypted as the store holds it
+- `sipnab --vcon-fetch 018bcfe5-6800-8a6b-a667-78f1c5213800 --vcon-fetch-kind conserver --vcon-fetch-url http://127.0.0.1:8000 --vcon-fetch-auth-file conserver.key --vcon-fetch-decrypt-key recipient.key --vcon-fetch-signer-ca signing-ca.pem --vcon-fetch-out fetched` — decrypt a vCon and write it only when the CA in `signing-ca.pem` issued its signing certificate
+- `sipnab --vcon-fetch - --vcon-fetch-kind conserver --vcon-fetch-url http://127.0.0.1:8000 --vcon-fetch-auth-file conserver.key --vcon-fetch-decrypt-key recipient.key --vcon-fetch-signer-ca system --vcon-fetch-out fetched < uuids.txt` — decrypt every vCon listed in `uuids.txt` and write each only when a CA in the host's CA bundle issued its signing certificate
+- `sipnab --vcon-fetch 018bcfe5-6800-8a6b-a667-78f1c5213800 --vcon-fetch-kind conserver --vcon-fetch-url http://127.0.0.1:8000 --vcon-fetch-auth-file conserver.key --vcon-fetch-decrypt-key recipient.key --vcon-fetch-signer-sha256 40:97:43:61:0C:C7:47:BD:40:82:E2:28:1C:53:A6:54:88:74:EB:E7:A7:2B:E4:A3:C8:CB:1B:CA:C8:97:BC:D6 --vcon-fetch-out fetched` — decrypt a vCon and write it only when one known certificate signed it
+- `sipnab --vcon-fetch 018bcfe5-6800-8a6b-a667-78f1c5213800 --vcon-fetch-kind conserver --vcon-fetch-url http://127.0.0.1:8000 --vcon-fetch-auth-file conserver.key --vcon-fetch-decrypt-key recipient.key --vcon-fetch-signer-ca signing-ca.pem --vcon-fetch-signer-sha256 409743610cc747bd4082e2281c53a6548874ebe7a72be4a3c8cb1bcac897bcd6 --vcon-fetch-out fetched` — require both: the signing certificate chains to `signing-ca.pem` and has this fingerprint
 
 
 ## Config
@@ -27258,12 +27270,18 @@ naming the entry, when:
 
 ### [vcon]
 
-vCon export settings, each an array of tables that you write once per entry.
+vCon export settings: the export rules and enrichment services, each an
+array of tables that you write once per entry, and the sealing keys every
+rule inherits when it does not set its own.
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
 | `rule` | array of tables | `[]` | Export rules, each `[[vcon.rule]]`. See [the export rule keys](#vconrule) |
 | `enrich` | array of tables | `[]` | Enrichment services, each `[[vcon.enrich]]`. See [the enrichment keys](#vconenrich) |
+| `encrypt_to` | string | -- | The `encrypt_to` of every `[[vcon.rule]]` that sets none: with it, every rule encrypts. A rule's own value overrides it |
+| `sign_key` | string | -- | The `sign_key` of every encrypting `[[vcon.rule]]` that sets none. A rule's own value overrides it |
+| `sign_cert` | string | -- | The `sign_cert` of every encrypting `[[vcon.rule]]` that sets none. A rule's own value overrides it |
+| `compress` | string | `none` | The `compress` of every encrypting `[[vcon.rule]]` that sets none: `none` or `gzip`. A rule's own value overrides it |
 
 ### [[vcon.rule]]
 
@@ -27287,6 +27305,7 @@ and what they carry.
 | `encrypt_to` | string | -- | A PEM certificate whose RSA key the rule encrypts its containers to. Set, the rule writes only the encrypted form of draft-ietf-vcon-vcon-core-04 section 5.3. Needs `sign_key` and `sign_cert`. See [Encrypt what a rule writes](vcon.md#encrypt-what-a-rule-writes) |
 | `sign_key` | string | -- | The PEM RSA private key an encrypting rule signs with, readable by its owner only |
 | `sign_cert` | string | -- | The PEM certificate chain of `sign_key`, leaf first, carried in each signature's `x5c` |
+| `compress` | string | `none` | For an encrypting rule: `gzip` signs the gzip ([RFC 1952](https://www.rfc-editor.org/rfc/rfc1952.html)) of the vCon instead of the vCon, as draft-ietf-vcon-vcon-core-04 section 5.2 allows, and the encrypted form names `cty: "application/vcon+gzip"`; `none` signs the vCon as it is. Refused on a rule without `encrypt_to`. See [Encrypt what a rule writes](vcon.md#encrypt-what-a-rule-writes) |
 | `grouping` | string | `leg` | `leg`: one container per dialog, each naming the call's other legs. `call`: one container per call, holding every leg the rule selects and the ties between them. See [Calls through a PBX or a B2BUA](vcon.md#calls-through-a-pbx-or-a-b2bua) |
 
 ```toml
@@ -27982,6 +28001,7 @@ The vCon forwarder's settings (`sipnab --vcon-forward <SPOOL_DIR>`, see
 | `replace_url` | string | -- | URL template the forwarder PUTs a container to when the POST answers `409`, with `{uuid}` replaced by the container's `uuid`. Checked when the forwarder starts. A template refused from this key exits `1`; from `--vcon-forward-replace-url`, `2`. `--vcon-forward-replace-url` overrides it |
 | `auth_file` | path | -- | File holding the credential: one `Header-Name: value` line, or the bare key with a `kind` other than `generic`. Refused when other users can read it, and beside `--vcon-forward-auth` or `SIPNAB_VCON_FORWARD_AUTH`. A file sipnab cannot read, or one that holds no credential, stops the forwarder with exit 1, as any refused key does. `--vcon-forward-auth-file` overrides it |
 | `ca` | path | host bundle | The only CA (PEM) trusted for an `https://` store. `--vcon-forward-ca` overrides it |
+| `extra_ca` | path | -- | A CA (PEM) trusted for an `https://` store in addition to the host's CA bundle. Refused beside `ca`. `--vcon-forward-ca` and `--vcon-forward-extra-ca` each replace both keys |
 | `done` | path | `<SPOOL_DIR>/delivered` | Where a delivered container goes. Must be on the spool's file system. `--vcon-forward-done` overrides it |
 | `failed` | path | `<SPOOL_DIR>/failed` | Where a refused container goes, beside `<name>.error.json`. Must be on the spool's file system. `--vcon-forward-failed` overrides it |
 | `interval` | integer | `5` | Seconds between passes over the spool, 1 to 3600. `--vcon-forward-interval` overrides it |
@@ -28019,7 +28039,10 @@ The vCon fetcher's settings (`sipnab --vcon-fetch <UUID>...`, see
 | `url` | string | -- | The store's base URL, or, for the `generic` kind, a URL template holding `{uuid}`. Checked when the fetcher starts, by the rule `--vcon-fetch-url` follows. A URL refused from this key exits `1`; the same URL from `--vcon-fetch-url` exits `2`. `--vcon-fetch-url` overrides it |
 | `auth_file` | path | -- | File holding the credential: one `Header-Name: value` line, or the bare key with a `kind` other than `generic`. Refused when other users can read it. A file sipnab cannot read, or one that holds no credential, stops the fetcher with exit 1, as any refused key does. `--vcon-fetch-auth-file` overrides it |
 | `ca` | path | host bundle | The only CA (PEM) trusted for an `https://` store. `--vcon-fetch-ca` overrides it |
+| `extra_ca` | path | -- | A CA (PEM) trusted for an `https://` store in addition to the host's CA bundle. Refused beside `ca`. `--vcon-fetch-ca` and `--vcon-fetch-extra-ca` each replace both keys |
 | `decrypt_key` | path | -- | The RSA private key (PEM, readable by its owner only) that decrypts an encrypted container. `--vcon-fetch-decrypt-key` overrides it |
+| `signer_ca` | path | -- | The CA (PEM) a decrypted container's signing certificate must chain to, through the intermediates in its `x5c`, every certificate within its validity period; `system` for the host's CA bundle. Needs `decrypt_key`. `--vcon-fetch-signer-ca` overrides it |
+| `signer_sha256` | string | -- | The SHA-256 fingerprint the signing certificate of a decrypted container must have: 64 hex digits, plain or colon-separated, either case. Needs `decrypt_key`. `--vcon-fetch-signer-sha256` overrides it |
 | `timeout` | integer | `30` | Seconds to wait to connect, and for each read and write, 1 to 600. `--vcon-fetch-timeout` overrides it |
 | `max_size` | integer | `67108864` | The largest answer read for one container, in bytes, 1 to 4294967295. `--vcon-fetch-max-size` overrides it |
 | `max_response_head` | integer | `65536` | The most bytes of a store's status line and headers read, 1 to 4294967295. `--vcon-fetch-max-response-head` overrides it |
@@ -43596,6 +43619,7 @@ dir   = "/var/spool/sipnab-vcon/all"
 | `live` | `true`: on a live capture, write each matching call's container as the call starts and rewrite it in place each time the call changes. See [Follow a call while it is in progress](#follow-a-call-while-it-is-in-progress) |
 | `encrypt_to` | A PEM certificate. Set, the rule writes only the encrypted form, to that certificate's key. Needs `sign_key` and `sign_cert`. See [Encrypt what a rule writes](#encrypt-what-a-rule-writes) |
 | `sign_key`, `sign_cert` | The PEM RSA private key an encrypting rule signs with, and its certificate chain, leaf first |
+| `compress` | For an encrypting rule: `none` (the default) or `gzip`, which signs the gzip of the vCon instead of the vCon. See [Encrypt what a rule writes](#encrypt-what-a-rule-writes) |
 | `grouping` | `leg` (the default): one container per dialog. `call`: one container per call, holding every leg the rule selects. See [Calls through a PBX or a B2BUA](#calls-through-a-pbx-or-a-b2bua) |
 
 Other options work with rules:
@@ -43957,15 +43981,41 @@ The draft requires the producer to sign a container before it encrypts it. So th
 rule does both, in this order:
 
 - sipnab signs the container with `sign_key` (JWS, `RS256`).
-  - The signature carries the `sign_cert` chain in `x5c`.
+  - The signature carries the `sign_cert` chain in `x5c`, in the signature's unprotected `header`.
+    - [core-04 section 5.2](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-04#section-5.2) requires it there.
+  - The protected header holds `alg`.
 - sipnab encrypts that signed container to the RSA key in the `encrypt_to`
   certificate.
   - It uses JWE: `RSA-OAEP` for the content key, `A256CBC-HS512` for the
     content.
   - It uses a fresh content key for every write.
 
-The file holds the JWE: `protected`, `unprotected`, `recipients`, `iv`,
-`ciphertext` and `tag`.
+**Compress before encrypting.**
+
+- `compress = "gzip"` compresses the vCon with gzip ([RFC 1952](https://www.rfc-editor.org/rfc/rfc1952.html)) before sipnab signs it.
+  - The JWS payload is then the gzip of the vCon, and the signature covers those bytes.
+  - [core-04 section 5.2](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-04#section-5.2) allows this.
+  - The encrypted form then names `cty: "application/vcon+gzip"`, the second value [section 5.3.1](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-04#section-5.3.1) lists.
+- Encrypted data does not compress, so a rule that wants a smaller file compresses before encryption.
+- [Section 6.2](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-04#section-6.2) says applications SHOULD accept a gzip vCon and need not send one.
+- `compress = "none"`, the default, writes the vCon uncompressed.
+- sipnab writes no JWE `zip` header.
+
+The file holds the JWE: `unprotected`, `recipients`, `iv`, `ciphertext` and
+`tag`.
+
+- Its `unprotected` header carries:
+  - the container's `uuid`;
+  - `enc: "A256CBC-HS512"`;
+  - `cty: "application/vcon"`, or `application/vcon+gzip` with `compress = "gzip"`.
+  - [core-04 section 5.3.1](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-04#section-5.3.1) lists these.
+  - A store and the forwarder's replace URL can use the uuid without the key.
+- Each recipient's `header` carries `alg: "RSA-OAEP"`.
+- With nothing left for a protected header to hold, the JWE has no `protected` member.
+- sipnab 0.5.217 and 0.5.218 wrote `alg` and `enc` in a `protected` member, and `x5c` in the signature's protected header.
+  - The fetcher reads those containers too.
+- sipnab names each file `<uuid>.vcon.json` rather than after the Call-ID.
+  - A Call-ID can carry host names and addresses, and the file name is not encrypted.
 
 - Its `unprotected` header carries the container's
   `uuid` and `cty: "application/vcon+json"`.
@@ -43996,6 +44046,8 @@ The file holds the JWE: `protected`, `unprotected`, `recipients`, `iv`,
   - The first certificate in `sign_cert` must be that key's certificate.
 - sipnab does not check who issued either certificate or when it expires.
   - Whoever decrypts a container decides whether to trust the signer's chain.
+  - The fetcher checks it with `--vcon-fetch-signer-ca` and
+    `--vcon-fetch-signer-sha256` (see [Check who signed it](#check-who-signed-it)).
 
 **What it refuses at startup**, naming the rule:
 
@@ -44007,11 +44059,47 @@ The file holds the JWE: `protected`, `unprotected`, `recipients`, `iv`,
 - a `sign_key` that other users can read (`chmod 600` it)
 - `audio = "url"`: sipnab would not encrypt the WAV file beside the container.
   Use `inline` or `omit`.
+- a `compress` other than `none` or `gzip`, or `compress` on a rule without
+  `encrypt_to`
 
 Every other rule key works with `encrypt_to`.
 
 - A `live = true` rule writes a new encrypted container each time the call changes.
 - Enrichment services receive the call before sipnab encrypts it, as without `encrypt_to`.
+
+**Set the keys once for every rule.** `encrypt_to`, `sign_key`, `sign_cert`
+and `compress` in the `[vcon]` section are the values of each rule that does
+not set its own. A rule's own value overrides the section's, key by key:
+
+```toml
+[vcon]
+encrypt_to = "/etc/sipnab/vcon-recipient.crt"
+sign_key   = "/etc/sipnab/vcon-signing.key"
+sign_cert  = "/etc/sipnab/vcon-signing.crt"
+compress   = "gzip"
+
+[[vcon.rule]]
+name = "support"
+when = "@support"
+dir  = "/var/spool/sipnab-vcon/support"
+
+[[vcon.rule]]
+name       = "legal"
+when       = "@legal"
+dir        = "/var/spool/sipnab-vcon/legal"
+encrypt_to = "/etc/sipnab/vcon-legal.crt"
+compress   = "none"
+```
+
+Here both rules sign with the section's key. `support` encrypts to the
+section's certificate with gzip, and `legal` to its own certificate without
+it. A rule encrypts when it has an `encrypt_to`, its own or the section's, so
+with `[vcon] encrypt_to` set every rule encrypts. The section's `sign_key`,
+`sign_cert` and `compress` apply only to a rule that encrypts: without
+`[vcon] encrypt_to`, a rule with no `encrypt_to` of its own writes the
+unsigned form. The rule `--export-vcon-when` with `--export-vcon-dir` makes
+takes none of them. sipnab refuses at startup a `[vcon] compress` other than
+`none` or `gzip`.
 
 ## The spool contract, for a bridge that consumes it
 
@@ -44426,6 +44514,24 @@ The forwarder reads the spool by the contract above.
   - The forwarder checks that the file it moves is the file it
     sent. It leaves a newer one in the spool for the next pass.
 
+### Trust a store's certificate
+
+Over `https://`, the forwarder and the fetcher verify the store's
+certificate against the host's CA bundle. Two settings change that, the same
+pair the HEP sender has (`--hep-tls-ca` and `--hep-tls-extra-ca`):
+
+| Forwarder | Fetcher | What the client trusts |
+|-----------|---------|------------------------|
+| -- | -- | the host's CA bundle |
+| `--vcon-forward-ca <FILE>` | `--vcon-fetch-ca <FILE>` | only the CA certificates in the file |
+| `--vcon-forward-extra-ca <FILE>` | `--vcon-fetch-extra-ca <FILE>` | the host's CA bundle and the CA certificates in the file |
+
+Use the second form for a store whose certificate a private CA issued, on a
+host whose public roots should still count. sipnab refuses the two together,
+and refuses the second form on a host with no CA bundle to add to. In the
+config file the keys are `ca` and `extra_ca` in `[vcon_forward]` and
+`[vcon_fetch]`. A flag of either form replaces both keys of its section.
+
 ### What it guarantees, and what it does not
 
 - **A `2xx` means the store accepted the container, not that it kept it.**
@@ -44569,19 +44675,53 @@ For each encrypted container the fetcher:
 - decrypts it with the key;
 - verifies the signature of the signed form inside against the first
   certificate in its `x5c`;
+- inflates the payload when it is gzip (it starts with the gzip magic bytes
+  `1f 8b`), stopping at `--vcon-fetch-max-size` bytes;
 - checks that the vCon inside holds the uuid asked for;
 - checks it against the vendored schema;
 - writes it to `<uuid>.vcon.json`, mode `0600`.
 
 The log line gives the SHA-256 fingerprint of the certificate the signature
 verified against. Compare it with your signing certificate:
-`openssl x509 -noout -fingerprint -sha256 -in vcon-signing.crt`. The fetcher
-does not check who issued that certificate.
+`openssl x509 -noout -fingerprint -sha256 -in vcon-signing.crt`.
 
-If the key does not decrypt the container, or the signature does not verify,
-the fetcher writes nothing for that uuid and the run exits `1`. Without
+If the key does not decrypt the container, the signature does not verify,
+a header carries a JWE `zip`, or a gzip payload inflates past
+`--vcon-fetch-max-size`, the fetcher writes nothing for that uuid and the run exits `1`. Without
 `--vcon-fetch-decrypt-key`, it writes an encrypted container as the store
 holds it, and says so in its log line.
+
+#### Check who signed it
+
+A valid signature shows that the holder of the key in `x5c` signed the
+container. It does not show who that is. Two settings make the fetcher check
+the signer before it writes anything. Each needs `--vcon-fetch-decrypt-key`.
+
+- `--vcon-fetch-signer-ca <FILE>` (`[vcon_fetch] signer_ca`): the signing
+  certificate must chain, through the intermediate certificates the
+  container carries in `x5c`, to a CA certificate in this PEM file, and every
+  certificate in that chain must be within its validity period now. The value
+  `system` uses the host's CA bundle, the one the fetcher trusts for HTTPS;
+  write `./system` for a file of that name. The fetcher does not check the
+  signing certificate's extended key usage.
+- `--vcon-fetch-signer-sha256 <HEX>` (`[vcon_fetch] signer_sha256`): the
+  signing certificate's SHA-256 fingerprint must be this one. Write it as
+  `openssl x509 -noout -fingerprint -sha256` prints it, or as 64 hex digits
+  without colons, in either case.
+
+```sh
+sipnab --vcon-fetch 0158a120-0392-81a5-a0a3-98c35ae1193c \
+  --vcon-fetch-kind conserver --vcon-fetch-url http://127.0.0.1:8000 \
+  --vcon-fetch-auth-file conserver.key --vcon-fetch-out fetched \
+  --vcon-fetch-decrypt-key /etc/sipnab/vcon-recipient.key \
+  --vcon-fetch-signer-ca /etc/sipnab/vcon-signing-ca.pem
+```
+
+With both, the fetcher applies both. With either, it writes nothing for a
+container whose signer fails the check, nor for a container that is not
+encrypted, which has no signer to check. The log line says why and the run
+exits `1`. When a container carries more than one signature, the checks
+apply to the first, the one the log line names.
 
 ### Read what came back
 

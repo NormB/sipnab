@@ -5323,7 +5323,9 @@ fn no_documentation_table_repeats_a_row() -> Result<(), TestError> {
     // 1200 -> 1201: the source table of tests/fixtures/vcon-jose/README.md.
     // 1201 -> 1203: the "Tools that write or act" table in docs/mcp.md and
     // its site mirror.
-    const EXPECTED_TABLES: usize = 1203;
+    // 1203 -> 1205: the "Trust a store's certificate" table of docs/vcon.md
+    // and its website/content/docs/vcon.md mirror.
+    const EXPECTED_TABLES: usize = 1205;
 
     let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     let out = std::process::Command::new("git")

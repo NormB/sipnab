@@ -44,6 +44,14 @@ use std::time::{Duration, Instant};
 
 use crate::output::vcon::{Analysis, Attachment, Vcon};
 
+/// What an enrichment service's trust refusals name: the service has no CA
+/// setting, so each names its URL key.
+const ENRICH_TRUST: crate::tls_files::TrustNames<'static> = crate::tls_files::TrustNames {
+    ca: "[[vcon.enrich]] url",
+    extra: "[[vcon.enrich]] url",
+    issuer: "the service's CA",
+};
+
 /// The `purpose` of the attachment recording every service's outcome.
 pub const ENRICHMENT_PURPOSE: &str = "sipnab-enrichment";
 
@@ -201,8 +209,7 @@ pub fn services(
             .map_err(say)?;
         let tls = match &target {
             Target::Url(endpoint) if endpoint.tls => Some(
-                crate::app::vcon_forward::client_config(None, "[[vcon.enrich]] url")
-                    .map_err(say)?,
+                crate::app::vcon_forward::client_config(None, None, &ENRICH_TRUST).map_err(say)?,
             ),
             _ => None,
         };

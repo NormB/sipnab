@@ -1092,6 +1092,9 @@ The most bytes of a store's answer to a refused container that its \fB<name>.err
 .TP
 \fB\-\-vcon\-forward\-ca\fR \fIFILE\fR
 Trust only the CA certificates in this PEM file for an \fBhttps://\fR store. Without it the forwarder trusts the host's CA bundle. Overrides \fB[vcon_forward] ca\fR.
+.TP
+\fB\-\-vcon\-forward\-extra\-ca\fR \fIFILE\fR
+Trust the CA certificates in this PEM file for an \fBhttps://\fR store in addition to the host's CA bundle: the store's certificate is accepted when the host's bundle or this file issued it. Use \-\-vcon\-forward\-ca instead to trust only the named file. Either flag replaces both \fB[vcon_forward] ca\fR and \fB[vcon_forward] extra_ca\fR.
 .SS vCon fetcher
 .TP
 \fB\-\-vcon\-fetch\fR \fIUUID\fR\&...
@@ -1125,8 +1128,17 @@ The most bytes of a store's status line and headers the fetcher reads, 1 to 4294
 \fB\-\-vcon\-fetch\-ca\fR \fIFILE\fR
 Trust only the CA certificates in this PEM file for an \fBhttps://\fR store. Without it the fetcher trusts the host's CA bundle. Overrides \fB[vcon_fetch] ca\fR.
 .TP
+\fB\-\-vcon\-fetch\-extra\-ca\fR \fIFILE\fR
+Trust the CA certificates in this PEM file for an \fBhttps://\fR store in addition to the host's CA bundle: the store's certificate is accepted when the host's bundle or this file issued it. Use \-\-vcon\-fetch\-ca instead to trust only the named file. Either flag replaces both \fB[vcon_fetch] ca\fR and \fB[vcon_fetch] extra_ca\fR.
+.TP
 \fB\-\-vcon\-fetch\-decrypt\-key\fR \fIFILE\fR
 Decrypt each encrypted container (draft\-ietf\-vcon\-vcon\-core\-04 section 5.3) with the RSA private key in this PEM file, verify its signature, and write the unsigned vCon inside. The file must be readable by its owner only. Without it the fetcher writes an encrypted container as the store holds it. Overrides \fB[vcon_fetch] decrypt_key\fR.
+.TP
+\fB\-\-vcon\-fetch\-signer\-ca\fR \fIFILE|system\fR
+Write a decrypted container only when its signing certificate chains, through the intermediates in its \fBx5c\fR, to a CA in this PEM file, each certificate within its validity period. \fBsystem\fR uses the host's CA bundle instead; write \fB./system\fR for a file of that name. Needs \-\-vcon\-fetch\-decrypt\-key. Overrides \fB[vcon_fetch] signer_ca\fR.
+.TP
+\fB\-\-vcon\-fetch\-signer\-sha256\fR \fIHEX\fR
+Write a decrypted container only when its signing certificate has this SHA\-256 fingerprint: 64 hex digits, plain or colon\-separated, either case, as \fBopenssl x509 \-noout \-fingerprint \-sha256\fR prints it. Needs \-\-vcon\-fetch\-decrypt\-key. Overrides \fB[vcon_fetch] signer_sha256\fR.
 .SS Config
 .TP
 \fB\-f\fR, \fB\-\-config\fR \fIFILE\fR

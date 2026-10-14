@@ -15038,6 +15038,7 @@ mod tests {
             encrypt_to: None,
             sign_key: None,
             sign_cert: None,
+            compress: None,
         };
         let mut config = crate::config::Config::default();
         assert!(!audio_retention_wanted(&base_cli(), &config));

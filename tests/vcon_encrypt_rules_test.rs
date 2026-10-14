@@ -229,3 +229,260 @@ fn an_encrypting_rule_refuses_a_signing_key_others_can_read() -> Result<(), Test
     assert!(stderr.contains("chmod 600"), "{stderr}");
     Ok(())
 }
+
+/// The one container `dir` holds, as JSON, and its size.
+fn only_container(dir: &Path) -> Result<(serde_json::Value, u64), TestError> {
+    let written = files(dir)?;
+    assert_eq!(written.len(), 1, "{written:?}");
+    let bytes = std::fs::read(&written[0])?;
+    Ok((serde_json::from_slice(&bytes)?, bytes.len() as u64))
+}
+
+/// `compress = "gzip"` signs the gzip of the vCon (core-04 section 5.2) and
+/// names `cty` `application/vcon+gzip` (section 5.3.1); `compress = "none"`
+/// and no `compress` name `application/vcon`. Each decrypts to the same
+/// vCon. No container carries a JWE `zip`.
+#[test]
+fn an_encrypting_rule_compresses_when_told() -> Result<(), TestError> {
+    use base64::Engine as _;
+    let home = tempfile::tempdir()?;
+    let seal = sealing(home.path(), "fake_grp.crt")?;
+    let dirs: Vec<PathBuf> = ["unset", "none", "gzip"]
+        .iter()
+        .map(|n| home.path().join(n))
+        .collect();
+    let config = rule("unset", &dirs[0], &seal)
+        + &rule("none", &dirs[1], &format!("{seal}compress = \"none\"\n"))
+        + &rule("gzip", &dirs[2], &format!("{seal}compress = \"gzip\"\n"));
+    let out = run(&config, home.path())?;
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let key = std::fs::read_to_string(format!("{FIXTURES}/fake_grp.key"))?;
+    let mut opened = Vec::new();
+    let mut sizes = Vec::new();
+    for (dir, cty) in dirs.iter().zip([
+        "application/vcon",
+        "application/vcon",
+        "application/vcon+gzip",
+    ]) {
+        let (value, size) = only_container(dir)?;
+        assert_eq!(value["unprotected"]["cty"], cty, "{}", dir.display());
+        let protected: serde_json::Value = match value.get("protected") {
+            Some(text) => serde_json::from_slice(
+                &base64::engine::general_purpose::URL_SAFE_NO_PAD
+                    .decode(text.as_str().ok_or("protected")?)?,
+            )?,
+            None => serde_json::Value::Null,
+        };
+        assert_eq!(protected.get("zip"), None);
+        assert_eq!(value["unprotected"].get("zip"), None);
+        let unsigned = vcon_jose::verify(&vcon_jose::decrypt(value.to_string().as_bytes(), &key)?)?;
+        opened.push(serde_json::from_slice::<serde_json::Value>(&unsigned)?);
+        sizes.push(size);
+    }
+    for member in ["parties", "dialog"] {
+        assert_eq!(opened[1][member], opened[2][member], "{member}");
+    }
+    assert!(sizes[2] < sizes[1], "{sizes:?}");
+    Ok(())
+}
+
+/// A `compress` value other than `none` or `gzip`, and `compress` on a rule
+/// that does not encrypt, are refused at startup.
+#[test]
+fn a_compress_that_cannot_apply_is_refused() -> Result<(), TestError> {
+    let home = tempfile::tempdir()?;
+    let dir = home.path().join("sealed");
+    let seal = sealing(home.path(), "fake_grp.crt")?;
+    for (extra, expected) in [
+        (format!("{seal}compress = \"deflate\"\n"), "deflate"),
+        ("compress = \"gzip\"\n".to_string(), "without encrypt_to"),
+    ] {
+        let out = run(&rule("sealed", &dir, &extra), home.path())?;
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert_eq!(out.status.code(), Some(1), "{extra}: {stderr}");
+        assert!(stderr.contains("'sealed'"), "{extra}: {stderr}");
+        assert!(stderr.contains("compress"), "{extra}: {stderr}");
+        assert!(stderr.contains(expected), "{extra}: {stderr}");
+        assert!(!dir.exists(), "{extra}: nothing written");
+    }
+    Ok(())
+}
+
+// ── [vcon] defaults ─────────────────────────────────────────────────────
+
+/// The signing certificate (DER) of a sealed container's first signature,
+/// opened with `key_name`.
+fn signer_der(bytes: &[u8], key_name: &str) -> Result<Vec<u8>, TestError> {
+    use base64::Engine as _;
+    let key = std::fs::read_to_string(format!("{FIXTURES}/{key_name}"))?;
+    let jws: serde_json::Value = serde_json::from_slice(&vcon_jose::decrypt(bytes, &key)?)?;
+    Ok(base64::engine::general_purpose::STANDARD.decode(
+        jws["signatures"][0]["header"]["x5c"][0]
+            .as_str()
+            .ok_or("x5c")?,
+    )?)
+}
+
+/// The DER of the first certificate in the PEM fixture `name`.
+fn fixture_der(name: &str) -> Result<Vec<u8>, TestError> {
+    use base64::Engine as _;
+    let pem = std::fs::read_to_string(format!("{FIXTURES}/{name}"))?;
+    let body: String = pem
+        .lines()
+        .skip_while(|l| !l.starts_with("-----BEGIN"))
+        .skip(1)
+        .take_while(|l| !l.starts_with("-----END"))
+        .collect();
+    Ok(base64::engine::general_purpose::STANDARD.decode(body)?)
+}
+
+/// A rule that sets none of the four keys takes each from `[vcon]`: it
+/// encrypts to the section's certificate, signs with the section's key, and
+/// compresses as the section says. A rule's own `compress` overrides it.
+#[test]
+fn a_rule_inherits_the_vcon_section_s_sealing() -> Result<(), TestError> {
+    let home = tempfile::tempdir()?;
+    let (inherits, overrides) = (home.path().join("inherits"), home.path().join("overrides"));
+    let config = format!(
+        "[vcon]\n{}compress = \"gzip\"\n\n{}{}",
+        sealing(home.path(), "fake_grp.crt")?,
+        rule("inherits", &inherits, ""),
+        rule("overrides", &overrides, "compress = \"none\"\n"),
+    );
+    let out = run(&config, home.path())?;
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let key = std::fs::read_to_string(format!("{FIXTURES}/fake_grp.key"))?;
+    for (dir, cty) in [
+        (&inherits, "application/vcon+gzip"),
+        (&overrides, "application/vcon"),
+    ] {
+        let written = files(dir)?;
+        assert_eq!(written.len(), 1, "{written:?}");
+        let bytes = std::fs::read(&written[0])?;
+        let value: serde_json::Value = serde_json::from_slice(&bytes)?;
+        assert_eq!(
+            vcon_jose::form_of(&value),
+            Form::Encrypted,
+            "{}",
+            dir.display()
+        );
+        assert_eq!(value["unprotected"]["cty"], cty, "{}", dir.display());
+        vcon_jose::verify(&vcon_jose::decrypt(&bytes, &key)?)?;
+    }
+    Ok(())
+}
+
+/// A rule's own `encrypt_to`, `sign_key` and `sign_cert` override the
+/// section's: the container opens with the rule's recipient key, not the
+/// section's, and carries the rule's signing certificate.
+#[test]
+fn a_rule_s_own_keys_override_the_vcon_section() -> Result<(), TestError> {
+    let home = tempfile::tempdir()?;
+    let dir = home.path().join("own");
+    let other_key = private_copy(home.path(), "other.key")?;
+    let config = format!(
+        "[vcon]\nencrypt_to = \"{FIXTURES}/other.crt\"\nsign_key = \"{}\"\nsign_cert = \"{FIXTURES}/other.crt\"\n\n{}",
+        other_key.display(),
+        rule("own", &dir, &sealing(home.path(), "fake_grp.crt")?),
+    );
+    let out = run(&config, home.path())?;
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let written = files(&dir)?;
+    assert_eq!(written.len(), 1, "{written:?}");
+    let bytes = std::fs::read(&written[0])?;
+    let other = std::fs::read_to_string(format!("{FIXTURES}/other.key"))?;
+    assert!(
+        vcon_jose::decrypt(&bytes, &other).is_err(),
+        "the section's recipient"
+    );
+    assert_eq!(
+        signer_der(&bytes, "fake_grp.key")?,
+        fixture_der("fake_grp.crt")?
+    );
+    Ok(())
+}
+
+/// `[vcon]` signing keys without `[vcon] encrypt_to` apply to the rules
+/// that encrypt; a rule that does not encrypt writes the unsigned form, and
+/// is not refused for keys it did not set.
+#[test]
+fn section_signing_keys_apply_only_to_rules_that_encrypt() -> Result<(), TestError> {
+    let home = tempfile::tempdir()?;
+    let (plain, sealed) = (home.path().join("plain"), home.path().join("sealed"));
+    let config = format!(
+        "[vcon]\nsign_key = \"{}\"\nsign_cert = \"{}\"\ncompress = \"gzip\"\n\n{}{}",
+        private_copy(home.path(), "fake_grp.key")?.display(),
+        chain(home.path())?.display(),
+        rule("plain", &plain, ""),
+        rule(
+            "sealed",
+            &sealed,
+            &format!("encrypt_to = \"{FIXTURES}/fake_grp.crt\"\n")
+        ),
+    );
+    let out = run(&config, home.path())?;
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let plain_value: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&files(&plain)?[0])?)?;
+    assert_eq!(vcon_jose::form_of(&plain_value), Form::Unsigned);
+    let sealed_value: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&files(&sealed)?[0])?)?;
+    assert_eq!(vcon_jose::form_of(&sealed_value), Form::Encrypted);
+    assert_eq!(sealed_value["unprotected"]["cty"], "application/vcon+gzip");
+    Ok(())
+}
+
+/// A `[vcon]` value that cannot work is refused at startup, naming the
+/// section key or the rule that inherits it.
+#[test]
+fn a_vcon_section_default_that_cannot_work_is_refused() -> Result<(), TestError> {
+    let home = tempfile::tempdir()?;
+    let dir = home.path().join("sealed");
+    let cases: Vec<(String, &str)> = vec![
+        (
+            format!(
+                "[vcon]\ncompress = \"deflate\"\n\n{}",
+                rule("sealed", &dir, "")
+            ),
+            "[vcon] compress",
+        ),
+        (
+            format!(
+                "[vcon]\nencrypt_to = \"{FIXTURES}/fake_grp.crt\"\n\n{}",
+                rule("sealed", &dir, "")
+            ),
+            "needs sign_key and sign_cert",
+        ),
+        (
+            format!("[vcon]\nencrypt_to = \"\"\n\n{}", rule("sealed", &dir, "")),
+            "[vcon] encrypt_to",
+        ),
+    ];
+    for (config, expected) in cases {
+        let out = run(&config, home.path())?;
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert_eq!(out.status.code(), Some(1), "{config}: {stderr}");
+        assert!(
+            stderr.contains(expected),
+            "{config}: wants {expected:?}: {stderr}"
+        );
+        assert!(!dir.exists(), "{config}: nothing written");
+    }
+    Ok(())
+}

@@ -1364,7 +1364,14 @@ fn wiki_intra_docs_links_resolve() -> Result<(), TestError> {
     // docs/cli-reference.md +1 (the flag's row links "Fetch an encrypted
     // vCon") and docs/vcon.md +2 (the fetcher's answer table links that
     // section, which links "Encrypt what a rule writes").
-    const EXPECTED_WIKI_LINKS: usize = 1722;
+    // 1722 -> 1724 for `compress` on [[vcon.rule]], attributed per file:
+    // docs/config-reference.md +1 (the `compress` row links "Encrypt what a
+    // rule writes") and docs/vcon.md +1 (the rule table's `compress` row
+    // links the same section).
+    // 1724 -> 1726 for --vcon-fetch-signer-ca, attributed per file:
+    // docs/cli-reference.md +1 (the flag's row links "Check who signed it")
+    // and docs/vcon.md +1 (the encryption section's key list links it).
+    const EXPECTED_WIKI_LINKS: usize = 1726;
     // Raised 459 -> 460 when SRC1 stage 1 shipped: docs/cli-reference.md's
     // `--hep-listen` row now points at cookbook recipe "Take signaling from HEP and media off the wire, in one process" in docs/examples.md
     // rather than restating how to pair `-L` with `-d`. Attributed per file

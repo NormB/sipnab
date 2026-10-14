@@ -67,6 +67,97 @@ pub(crate) fn host_ca_bundle() -> Option<std::path::PathBuf> {
         })
 }
 
+/// What a trust rule's refusals call its two settings and the certificate
+/// the operator is told to name.
+#[cfg(any(feature = "hep", feature = "vcon"))]
+pub(crate) struct TrustNames<'a> {
+    /// The setting whose CA file replaces the trust store (`--hep-tls-ca`).
+    pub ca: &'a str,
+    /// The setting whose CA file joins the host's bundle
+    /// (`--hep-tls-extra-ca`).
+    pub extra: &'a str,
+    /// The certificate to name with [`Self::ca`]: "the collector's issuer".
+    pub issuer: &'a str,
+}
+
+/// The roots a TLS client trusts, by one rule for every client that has a
+/// replacing CA setting and an adding one.
+///
+/// * `ca` — the replacing CA file: the whole store.
+/// * `extra` — the adding CA file: joined to `host_bundle`.
+/// * `host_bundle` — the host's CA bundle, if it has one
+///   ([`host_ca_bundle`]); a parameter so the rule can be driven with any
+///   bundle, or none.
+///
+/// With neither file, the host's bundle. Individual certificates a host
+/// bundle carries that rustls declines are skipped, because one unsupported
+/// root in a 140-certificate bundle must not take the other 139 with it; a
+/// bundle from which nothing at all loads is an error.
+///
+/// # Errors
+///
+/// Both files named; a named file that cannot be read, holds no
+/// certificate, or holds one rustls refuses; or no host bundle where one is
+/// needed, the message naming `names.ca` as the way out.
+#[cfg(any(feature = "hep", feature = "vcon"))]
+pub(crate) fn trust_roots(
+    ca: Option<&std::path::Path>,
+    extra: Option<&std::path::Path>,
+    host_bundle: Option<&std::path::Path>,
+    names: &TrustNames<'_>,
+) -> Result<rustls::RootCertStore> {
+    let TrustNames {
+        ca: ca_name,
+        extra: extra_name,
+        issuer,
+    } = names;
+    ensure!(
+        !(ca.is_some() && extra.is_some()),
+        "{ca_name} and {extra_name} cannot both be used: {ca_name} \
+         trusts only its file, {extra_name} trusts its file in addition \
+         to the host's CA bundle"
+    );
+    let mut store = rustls::RootCertStore::empty();
+    if let Some(path) = ca {
+        for cert in pem_certificates(path)? {
+            store
+                .add(cert)
+                .with_context(|| format!("{}: rustls rejected a certificate", path.display()))?;
+        }
+        return Ok(store);
+    }
+    let bundle = match (host_bundle, extra) {
+        (Some(bundle), _) => bundle,
+        (None, Some(_)) => anyhow::bail!(
+            "no system CA bundle found for {extra_name} to add to; name \
+             {issuer} with {ca_name} to trust only that file"
+        ),
+        (None, None) => {
+            anyhow::bail!("no system CA bundle found; name {issuer} with {ca_name}")
+        }
+    };
+    let mut added = 0usize;
+    for cert in pem_certificates(bundle)? {
+        if store.add(cert).is_ok() {
+            added += 1;
+        }
+    }
+    ensure!(
+        added > 0,
+        "{}: the system CA bundle yielded no usable certificate; name \
+         {issuer} with {ca_name}",
+        bundle.display()
+    );
+    if let Some(path) = extra {
+        for cert in pem_certificates(path)? {
+            store
+                .add(cert)
+                .with_context(|| format!("{}: rustls rejected a certificate", path.display()))?;
+        }
+    }
+    Ok(store)
+}
+
 /// A `rustls` server configuration presenting the chain in `cert` with the
 /// key in `key`.
 ///
