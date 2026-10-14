@@ -206,6 +206,115 @@ fn worker_stream_store(cfg: &ParallelConfig) -> StreamStore {
     ss
 }
 
+/// The worker that owns `packet`: the one its host pair shards to, or worker
+/// 0 when the peek can read no host pair.
+///
+/// The ONE rule for ownership. The dispatchers send a packet to its owner
+/// by it; a worker that also receives copies (see [`Fanout`]) tells its own
+/// packets from the copies by it; and a lost batch is weighed by it.
+fn owner_of(packet: &crate::capture::packet::Packet, workers: usize) -> usize {
+    crate::capture::parse::peek_host_pair(packet).map_or(0, |(a, b)| shard_for(a, b, workers))
+}
+
+/// Which packets EVERY worker reads, not only the one that owns them.
+///
+/// # Why any packet is read twice
+///
+/// A stream is keyed by its SSRC and socket pair, and two calls can use the
+/// same of both one after the other. The stream store splits them when SDP
+/// from the second call renegotiates one of the sockets after the first
+/// call's stream began (see `crate::rtp::stream_store`). That decision is
+/// made as each RTP packet arrives, so it needs the SDP the capture held
+/// BEFORE that packet, and only that SDP.
+///
+/// Sharding by host pair sends a call's SIP and its RTP to different workers
+/// whenever they run between different hosts — a proxy and a media gateway,
+/// an SBC with a separate media address, any carrier capture. The worker
+/// measuring the RTP never saw the SDP, never split, and two calls became one
+/// stream with both calls' packets, a duration spanning the gap between them
+/// and jitter measured across it. `reassociate_all` after the merge cannot
+/// repair that: it relinks streams, and by then the two calls' packets are
+/// one stream's counters.
+///
+/// So the dispatcher sends a COPY of every packet that may carry SDP to every
+/// other worker, in the same position in each worker's sequence as in the
+/// capture. A worker reads a copy only for its SDP
+/// ([`crate::pipeline::sdp_links_of`]) through its own reassembly, and counts
+/// nothing from it: the owner counts the packet, once.
+///
+/// # What is copied
+///
+/// Only what can hold SDP that `--portrange` lets through, so the copies are
+/// a small share of SIP and none of the media:
+///
+/// * a UDP datagram on a SIP port that is SIP and names `application/sdp`
+///   (the content type [`crate::sip::SipMessage::sdp`] requires);
+/// * every TCP segment on a SIP port, because a segment in the middle of a
+///   connection is only readable after the ones before it;
+/// * every IP fragment, whose ports are unknown until reassembly;
+/// * under `--hep-parse`, every HEP datagram, whose SIP no port range gates;
+/// * a pre-parsed packet that is SIP;
+/// * and none of these under `--no-rtp` (no stream to split) or `--no-dialog`
+///   (no SDP is linked).
+///
+/// # What is not copied
+///
+/// SIP inside a tunnel the peek does not open (GRE, VXLAN, IP-in-IP): the
+/// peek reads the outer header only, and the outer host pair is the tunnel's.
+#[derive(Debug, Clone, Copy)]
+struct Fanout {
+    /// Whether a copy could change any worker's answer.
+    enabled: bool,
+    /// `--portrange`.
+    portrange: (u16, u16),
+    /// `--hep-parse`.
+    hep_parse: bool,
+}
+
+impl Fanout {
+    /// The fan-out rule for a run configured by `cfg`.
+    fn of(cfg: &ParallelConfig) -> Self {
+        Self {
+            enabled: !cfg.no_rtp && !cfg.no_dialog,
+            portrange: cfg.portrange,
+            hep_parse: cfg.hep_parse,
+        }
+    }
+
+    /// Whether every worker reads `packet`. See [`Fanout`].
+    fn needs(&self, packet: &crate::capture::packet::Packet) -> bool {
+        use crate::capture::parse::{TransportPeek, peek_transport};
+        use crate::pipeline::port_in_range;
+        use crate::sip::parser::starts_sip_message;
+        if !self.enabled {
+            return false;
+        }
+        if packet.pre_parsed.is_some() {
+            return starts_sip_message(&packet.data);
+        }
+        let is_hep = |payload: &[u8]| self.hep_parse && payload.starts_with(b"HEP3");
+        match peek_transport(packet) {
+            None => false,
+            Some(TransportPeek::Fragment) => true,
+            Some(TransportPeek::Tcp {
+                src_port,
+                dst_port,
+                payload,
+            }) => port_in_range(src_port, dst_port, self.portrange) || is_hep(payload),
+            Some(TransportPeek::Udp {
+                src_port,
+                dst_port,
+                payload,
+            }) => {
+                is_hep(payload)
+                    || (port_in_range(src_port, dst_port, self.portrange)
+                        && starts_sip_message(payload)
+                        && memchr::memmem::find(payload, b"application/sdp").is_some())
+            }
+        }
+    }
+}
+
 /// Merged reconstruction output of all workers.
 pub struct ReconResult {
     /// Merged dialogs from every worker.
@@ -382,15 +491,8 @@ fn reconstruct(
     sip: &mut u64,
     rtp: &mut u64,
 ) {
-    use crate::pipeline::{MediaDecrypt, PacketAction, PipelineOptions, classify_packet};
-    let opts = PipelineOptions {
-        no_dialog: cfg.no_dialog,
-        no_rtp: cfg.no_rtp,
-        sip_portrange: Some(cfg.portrange),
-        rtpproxy_control: cfg.rtpproxy_control,
-        quiet_bad_parse: cfg.quiet_bad_parse,
-        hep_parse: cfg.hep_parse,
-    };
+    use crate::pipeline::{MediaDecrypt, PacketAction, classify_packet};
+    let opts = pipeline_options(cfg);
     // `--hep-parse`, by the rule `--cores 1` applies. The packet was sharded
     // by its outer addresses, which for a HEP copy are the same for every
     // call, so one worker takes the whole copy: correct, if not parallel.
@@ -407,16 +509,7 @@ fn reconstruct(
                 // The store takes the message by move — cloning a SipMessage
                 // deep-copies every header String.
                 ds.process_message(*msg);
-                // Same provenance the single-threaded router records, so a
-                // `--cores` run and a `--cores 1` run reach the same answer
-                // about which source advertised an endpoint and when.
-                let provenance = crate::rtp::stream_store::SdpProvenance::observed(
-                    pp.input_origin,
-                    pp.timestamp,
-                );
-                for (ip, port, call_id, media) in &sdp_links {
-                    ss.link_to_dialog_with_sdp_from(*ip, *port, call_id, media, provenance);
-                }
+                learn_links(ss, pp, &sdp_links);
             }
         }
         PacketAction::RelayControl(message) => {
@@ -433,6 +526,175 @@ fn reconstruct(
             ss.process_rtp(pp, &hdr, pp.timestamp);
             *rtp += 1;
         }
+    }
+}
+
+/// The classifier options a `--cores` worker applies, the same for the
+/// packets it owns and the copies it reads.
+fn pipeline_options(cfg: &ParallelConfig) -> crate::pipeline::PipelineOptions {
+    crate::pipeline::PipelineOptions {
+        no_dialog: cfg.no_dialog,
+        no_rtp: cfg.no_rtp,
+        sip_portrange: Some(cfg.portrange),
+        rtpproxy_control: cfg.rtpproxy_control,
+        quiet_bad_parse: cfg.quiet_bad_parse,
+        hep_parse: cfg.hep_parse,
+    }
+}
+
+/// Bind the media sockets SDP in `pp` named to their call, in `ss`.
+///
+/// Same provenance the single-threaded router records, so a `--cores` run
+/// and a `--cores 1` run reach the same answer about which source advertised
+/// an endpoint and when.
+fn learn_links(
+    ss: &mut StreamStore,
+    pp: &ParsedPacket,
+    links: &[(IpAddr, u16, String, crate::sip::sdp::SdpMedia)],
+) {
+    let provenance =
+        crate::rtp::stream_store::SdpProvenance::observed(pp.input_origin, pp.timestamp);
+    for (ip, port, call_id, media) in links {
+        ss.link_to_dialog_with_sdp_from(*ip, *port, call_id, media, provenance);
+    }
+}
+
+/// One `--cores` worker: thread-local stores, and the reassembly for the
+/// packets it owns and, separately, for the copies it reads (see [`Fanout`]).
+///
+/// Written once for both entry points, so the channel-fed and the file-fed
+/// pools cannot treat a packet differently.
+struct Worker {
+    /// This worker's index, compared with [`owner_of`].
+    index: usize,
+    /// How many workers the run has.
+    workers: usize,
+    /// The run's configuration.
+    cfg: ParallelConfig,
+    /// Reassembly for the packets this worker owns.
+    processor: PacketProcessor,
+    /// Reassembly for the copies, kept apart so that what is left in it at
+    /// the end of the input is still known to be copies.
+    copies: PacketProcessor,
+    /// This worker's dialogs.
+    ds: DialogStore,
+    /// This worker's streams.
+    ss: StreamStore,
+    /// Heuristic RTP discovery for the flows this worker owns.
+    heuristic: crate::rtp::heuristic::RtpHeuristic,
+    /// SIP messages reconstructed.
+    sip: u64,
+    /// RTP packets processed.
+    rtp: u64,
+    /// Parsed packets reconstructed.
+    total: u64,
+}
+
+/// What a worker hands back for the merge: dialogs, streams, and the SIP,
+/// RTP and parsed totals.
+type WorkerResult = (DialogStore, StreamStore, u64, u64, u64);
+
+impl Worker {
+    /// Worker `index` of `workers`.
+    fn new(index: usize, workers: usize, cfg: ParallelConfig) -> Self {
+        let reassembly = |cfg: &ParallelConfig| {
+            PacketProcessor::with_max_sessions(cfg.max_reassembly)
+                .with_reassembly(cfg.reassembly)
+                .with_parse_limit(cfg.parse_limit)
+        };
+        let ds = {
+            let mut ds = DialogStore::new(cfg.max_dialogs, cfg.rotate);
+            ds.set_tracking(cfg.dialog_tracking);
+            ds
+        }
+        .with_xcid_headers(cfg.xcid_headers.clone())
+        .with_leg_correlation_window_ms(cfg.leg_correlation_window_ms);
+        Self {
+            index,
+            workers,
+            processor: reassembly(&cfg),
+            copies: reassembly(&cfg),
+            ds,
+            ss: worker_stream_store(&cfg),
+            heuristic: crate::rtp::heuristic::RtpHeuristic::new(),
+            sip: 0,
+            rtp: 0,
+            total: 0,
+            cfg,
+        }
+    }
+
+    /// Read one packet: reconstruct it if this worker owns it, or learn the
+    /// SDP in it if it is a copy.
+    fn feed(&mut self, packet: &crate::capture::packet::Packet) {
+        if owner_of(packet, self.workers) == self.index {
+            for pp in self.processor.process(packet) {
+                self.reconstruct(&pp);
+            }
+        } else {
+            let copies = &mut self.copies;
+            let parsed = crate::capture::untallied(|| copies.process(packet));
+            for pp in parsed {
+                self.learn_from_copy(&pp);
+            }
+        }
+    }
+
+    /// The input is done: release what only its end could, and hand the
+    /// stores back.
+    fn finish(mut self) -> WorkerResult {
+        for pp in self.processor.finish() {
+            self.reconstruct(&pp);
+        }
+        let copies = &mut self.copies;
+        for pp in crate::capture::untallied(|| copies.finish()) {
+            self.learn_from_copy(&pp);
+        }
+        (self.ds, self.ss, self.sip, self.rtp, self.total)
+    }
+
+    /// Reconstruct one parsed packet this worker owns.
+    fn reconstruct(&mut self, pp: &ParsedPacket) {
+        self.total += 1;
+        reconstruct(
+            pp,
+            &mut self.ds,
+            &mut self.ss,
+            &mut self.heuristic,
+            &self.cfg,
+            &mut self.sip,
+            &mut self.rtp,
+        );
+    }
+
+    /// Learn the SDP links in one parsed copy, counting nothing.
+    fn learn_from_copy(&mut self, pp: &ParsedPacket) {
+        let opts = pipeline_options(&self.cfg);
+        crate::capture::untallied(|| {
+            let Some(pp) = crate::pipeline::apply_hep_parse(pp, opts.hep_parse) else {
+                return;
+            };
+            let links = crate::pipeline::sdp_links_of(&pp, &opts);
+            learn_links(&mut self.ss, &pp, &links);
+        });
+    }
+}
+
+/// [`shard_send`] for a batch that may hold copies: a lost batch weighs only
+/// the packets `shard` owns, because a copy lost with it is not a packet the
+/// capture lost. Weighed only when the send fails, so the dispatcher's
+/// healthy path touches no packet.
+fn shard_send_batch(
+    txs: &[crossbeam_channel::Sender<Vec<crate::capture::packet::Packet>>],
+    shard: usize,
+    batch: Vec<crate::capture::packet::Packet>,
+) -> u64 {
+    match txs[shard].send(batch) {
+        Ok(()) => 0,
+        Err(crossbeam_channel::SendError(batch)) => batch
+            .iter()
+            .filter(|p| owner_of(p, txs.len()) == shard)
+            .count() as u64,
     }
 }
 
@@ -457,50 +719,15 @@ pub fn run_offline_parallel(rx: PacketRx, cfg: ParallelConfig) -> ReconResult {
     let (txs, rxs): (Vec<_>, Vec<_>) = (0..n).map(|_| bounded::<Packet>(8192)).unzip();
     let workers: Vec<_> = rxs
         .into_iter()
-        .map(|wrx| {
+        .enumerate()
+        .map(|(index, wrx)| {
             let cfg = cfg.clone();
             thread::spawn(move || {
-                let mut processor = PacketProcessor::with_max_sessions(cfg.max_reassembly)
-                    .with_reassembly(cfg.reassembly)
-                    .with_parse_limit(cfg.parse_limit);
-                let mut ds = {
-                    let mut ds = DialogStore::new(cfg.max_dialogs, cfg.rotate);
-                    ds.set_tracking(cfg.dialog_tracking);
-                    ds
-                }
-                .with_xcid_headers(cfg.xcid_headers.clone())
-                .with_leg_correlation_window_ms(cfg.leg_correlation_window_ms);
-                let mut ss = worker_stream_store(&cfg);
-                let mut heuristic = crate::rtp::heuristic::RtpHeuristic::new();
-                let (mut sip, mut rtp, mut total) = (0u64, 0u64, 0u64);
+                let mut worker = Worker::new(index, n, cfg);
                 for packet in wrx.iter() {
-                    for pp in processor.process(&packet) {
-                        total += 1;
-                        reconstruct(
-                            &pp,
-                            &mut ds,
-                            &mut ss,
-                            &mut heuristic,
-                            &cfg,
-                            &mut sip,
-                            &mut rtp,
-                        );
-                    }
+                    worker.feed(&packet);
                 }
-                // The input is done: release what only its end could.
-                for pp in processor.finish() {
-                    total += 1;
-                    reconstruct(
-                        &pp,
-                        &mut ds,
-                        &mut ss,
-                        &mut heuristic,
-                        &cfg,
-                        &mut sip,
-                        &mut rtp,
-                    );
-                }
-                (ds, ss, sip, rtp, total)
+                worker.finish()
             })
         })
         .collect();
@@ -509,6 +736,7 @@ pub fn run_offline_parallel(rx: PacketRx, cfg: ParallelConfig) -> ReconResult {
     // the peek can't read routes to worker 0 (still correct via its own reassembly).
     // The dispatcher is also the only place that sees EVERY packet's timestamp, so
     // it is where the capture clock for the post-merge sweep is kept.
+    let fanout = Fanout::of(&cfg);
     let mut dropped: u64 = 0;
     let mut packets_read: u64 = 0;
     let mut unshardable: u64 = 0;
@@ -528,6 +756,13 @@ pub fn run_offline_parallel(rx: PacketRx, cfg: ParallelConfig) -> ReconResult {
                         0
                     }
                 };
+                if fanout.needs(&packet) {
+                    for other in (0..n).filter(|&w| w != s) {
+                        // A copy lost to a dead worker is not a packet the
+                        // capture lost: weight 0.
+                        shard_send(&txs[other], packet.clone(), 0);
+                    }
+                }
                 dropped += shard_send(&txs[s], packet, 1);
             }
             Err(crossbeam_channel::RecvTimeoutError::Disconnected) => break,
@@ -685,6 +920,7 @@ fn shard_opened<S: ShardSink>(
     path: &std::path::Path,
     capture_config: &crate::capture::CaptureConfig,
     n: usize,
+    fanout: Fanout,
     budget: Option<u64>,
     sink: &mut S,
 ) -> FileRead {
@@ -789,18 +1025,19 @@ fn shard_opened<S: ShardSink>(
                         0
                     }
                 };
-                batches[s].push(packet);
+                // The copies ride in each other worker's batch at the
+                // packet's place in the capture (see `Fanout`). They are not
+                // read packets: `read.count` counts the original once.
+                if fanout.needs(&packet)
+                    && !(0..n)
+                        .filter(|&w| w != s)
+                        .all(|w| push_and_flush(&mut batches, w, packet.clone(), sink))
+                {
+                    break;
+                }
                 read.count += 1;
-                if batches[s].len() >= BATCH {
-                    let full = std::mem::replace(&mut batches[s], Vec::with_capacity(BATCH));
-                    // A refused batch ends the read and is not recorded.
-                    // The only sink that refuses is the queue one, and it
-                    // refuses only once the run has already been refused —
-                    // this file's verdict is on its way to a dispatcher that
-                    // has stopped reading verdicts.
-                    if !sink.emit(s, full) {
-                        break;
-                    }
+                if !push_and_flush(&mut batches, s, packet, sink) {
+                    break;
                 }
             }
             Ok(None) => break,
@@ -827,6 +1064,27 @@ fn shard_opened<S: ShardSink>(
         }
     }
     read
+}
+
+/// Append `packet` to `shard`'s batch, handing the batch to `sink` once it
+/// is full. `false` when the sink refused it: the read ends there.
+///
+/// A refused batch ends the read and is not recorded. The only sink that
+/// refuses is the queue one, and it refuses only once the run has already
+/// been refused — this file's verdict is on its way to a dispatcher that has
+/// stopped reading verdicts.
+fn push_and_flush<S: ShardSink>(
+    batches: &mut [Vec<crate::capture::packet::Packet>],
+    shard: usize,
+    packet: crate::capture::packet::Packet,
+    sink: &mut S,
+) -> bool {
+    batches[shard].push(packet);
+    if batches[shard].len() < BATCH {
+        return true;
+    }
+    let full = std::mem::replace(&mut batches[shard], Vec::with_capacity(BATCH));
+    sink.emit(shard, full)
 }
 
 /// What one file's read produced, reported as ONE value rather than written
@@ -882,8 +1140,7 @@ struct DirectSink<'a> {
 
 impl ShardSink for DirectSink<'_> {
     fn emit(&mut self, shard: usize, batch: Vec<crate::capture::packet::Packet>) -> bool {
-        let weight = batch.len() as u64;
-        self.dropped += shard_send(&self.txs[shard], batch, weight);
+        self.dropped += shard_send_batch(self.txs, shard, batch);
         // A dead worker does NOT stop the read: the loss is counted and
         // reported once at the end, exactly as it was before this sink
         // existed. Stopping here would turn one dead shard into a truncated
@@ -936,6 +1193,7 @@ fn shard_set(
     txs: &[crossbeam_channel::Sender<Vec<crate::capture::packet::Packet>>],
     progress: &mut ReadProgress,
     tally: &mut crate::capture::file::ReadTally,
+    fanout: Fanout,
 ) -> anyhow::Result<()> {
     for (i, path) in paths.iter().enumerate() {
         let Some((mut cap, _gz_guard)) = open_member(path, i == 0, tally)? else {
@@ -960,7 +1218,15 @@ fn shard_set(
         let budget = capture_config
             .count
             .map(|max| max.saturating_sub(progress.count));
-        let read = shard_opened(&mut cap, path, capture_config, txs.len(), budget, &mut sink);
+        let read = shard_opened(
+            &mut cap,
+            path,
+            capture_config,
+            txs.len(),
+            fanout,
+            budget,
+            &mut sink,
+        );
         progress.dropped += sink.dropped;
         if tally_member_read(read, path, progress, tally).is_break() {
             return Ok(());
@@ -1510,6 +1776,7 @@ fn read_one_file(
     path: &std::path::Path,
     capture_config: &crate::capture::CaptureConfig,
     shards: usize,
+    fanout: Fanout,
     tx: &crossbeam_channel::Sender<ReaderMsg>,
     runway: &Runway,
 ) -> FileOutcome {
@@ -1528,6 +1795,7 @@ fn read_one_file(
         path,
         capture_config,
         shards,
+        fanout,
         None,
         &mut sink,
     ))
@@ -1619,6 +1887,7 @@ fn shard_set_parallel(
     progress: &mut ReadProgress,
     tally: &mut crate::capture::file::ReadTally,
     readers: usize,
+    fanout: Fanout,
 ) -> anyhow::Result<()> {
     debug_assert!(paths.len() > 1 && readers > 1 && capture_config.count.is_none());
     let shards = txs.len();
@@ -1643,8 +1912,15 @@ fn shard_set_parallel(
                     if runway.canceled() {
                         return;
                     }
-                    let outcome =
-                        read_one_file(file, &paths[file], capture_config, shards, &tx, runway);
+                    let outcome = read_one_file(
+                        file,
+                        &paths[file],
+                        capture_config,
+                        shards,
+                        fanout,
+                        &tx,
+                        runway,
+                    );
                     // Retired BEFORE the verdict is queued: the `Done` message
                     // sits behind every batch this file produced and the
                     // dispatcher will not see it for a while, but the runway
@@ -1737,8 +2013,7 @@ fn dispatch_in_file_order(
                     packets,
                 }) => {
                     announce(&mut announced);
-                    let weight = packets.len() as u64;
-                    progress.dropped += shard_send(&txs[shard], packets, weight);
+                    progress.dropped += shard_send_batch(txs, shard, packets);
                     // After the send, not before: the reserve exists to bound
                     // what is IN FLIGHT, and this batch is only out of flight
                     // once a worker owns it.
@@ -1878,52 +2153,17 @@ pub fn run_offline_parallel_file(
     let (txs, rxs): (Vec<_>, Vec<_>) = (0..n).map(|_| bounded::<Vec<Packet>>(64)).unzip();
     let workers: Vec<_> = rxs
         .into_iter()
-        .map(|wrx| {
+        .enumerate()
+        .map(|(index, wrx)| {
             let cfg = cfg.clone();
             thread::spawn(move || {
-                let mut processor = PacketProcessor::with_max_sessions(cfg.max_reassembly)
-                    .with_reassembly(cfg.reassembly)
-                    .with_parse_limit(cfg.parse_limit);
-                let mut ds = {
-                    let mut ds = DialogStore::new(cfg.max_dialogs, cfg.rotate);
-                    ds.set_tracking(cfg.dialog_tracking);
-                    ds
-                }
-                .with_xcid_headers(cfg.xcid_headers.clone())
-                .with_leg_correlation_window_ms(cfg.leg_correlation_window_ms);
-                let mut ss = worker_stream_store(&cfg);
-                let mut heuristic = crate::rtp::heuristic::RtpHeuristic::new();
-                let (mut sip, mut rtp, mut total) = (0u64, 0u64, 0u64);
+                let mut worker = Worker::new(index, n, cfg);
                 for batch in wrx.iter() {
                     for packet in batch.iter() {
-                        for pp in processor.process(packet) {
-                            total += 1;
-                            reconstruct(
-                                &pp,
-                                &mut ds,
-                                &mut ss,
-                                &mut heuristic,
-                                &cfg,
-                                &mut sip,
-                                &mut rtp,
-                            );
-                        }
+                        worker.feed(packet);
                     }
                 }
-                // The input is done: release what only its end could.
-                for pp in processor.finish() {
-                    total += 1;
-                    reconstruct(
-                        &pp,
-                        &mut ds,
-                        &mut ss,
-                        &mut heuristic,
-                        &cfg,
-                        &mut sip,
-                        &mut rtp,
-                    );
-                }
-                (ds, ss, sip, rtp, total)
+                worker.finish()
             })
         })
         .collect();
@@ -1949,6 +2189,7 @@ pub fn run_offline_parallel_file(
     // the serial reader because "the first N packets of the set" is defined in
     // read order (see [`shard_set_parallel`]).
     let readers = paths.len().min(n);
+    let fanout = Fanout::of(&cfg);
     let read = if readers > 1 && capture_config.count.is_none() {
         shard_set_parallel(
             paths,
@@ -1957,9 +2198,17 @@ pub fn run_offline_parallel_file(
             &mut progress,
             &mut tally,
             readers,
+            fanout,
         )
     } else {
-        shard_set(paths, capture_config, &txs, &mut progress, &mut tally)
+        shard_set(
+            paths,
+            capture_config,
+            &txs,
+            &mut progress,
+            &mut tally,
+            fanout,
+        )
     };
     // Reported before the error is propagated, and on every path out, exactly
     // as `capture_files` does it: a filter that fails against file twelve still
@@ -2941,7 +3190,15 @@ mod tests {
             given: paths.len(),
             ..crate::capture::file::ReadTally::default()
         };
-        let read = shard_set(paths, capture_config, &txs, &mut progress, &mut tally);
+        let fanout = Fanout::of(&pcfg(2));
+        let read = shard_set(
+            paths,
+            capture_config,
+            &txs,
+            &mut progress,
+            &mut tally,
+            fanout,
+        );
         (read, tally, progress.count)
     }
 
@@ -3591,6 +3848,428 @@ mod tests {
             Ok(false),
             "a canceled runway must release its waiters, and tell them the \
              run is over rather than admitting them"
+        );
+        Ok(())
+    }
+
+    // ── Two calls on one reused SSRC and socket pair (DEF28) ────────────
+
+    /// An Ethernet/IPv4/UDP frame between two chosen hosts.
+    #[cfg(feature = "native")]
+    fn eth_udp_between(
+        src: [u8; 4],
+        dst: [u8; 4],
+        sport: u16,
+        dport: u16,
+        payload: &[u8],
+    ) -> Vec<u8> {
+        let mut frame = eth_ipv4_udp(sport, dport, payload);
+        // eth_ipv4_udp writes 10.0.0.1 -> 10.0.0.2 at the IPv4 address offsets.
+        frame[26..30].copy_from_slice(&src);
+        frame[30..34].copy_from_slice(&dst);
+        frame
+    }
+
+    /// One SIP message carrying an SDP body that advertises `media` as the
+    /// sender's audio socket.
+    #[cfg(feature = "native")]
+    fn sip_with_sdp(first_line: &str, call_id: &str, media: ([u8; 4], u16)) -> Vec<u8> {
+        let [a, b, c, d] = media.0;
+        let sdp = format!(
+            "v=0\r\no=- 1 1 IN IP4 {a}.{b}.{c}.{d}\r\ns=-\r\nc=IN IP4 {a}.{b}.{c}.{d}\r\n\
+             t=0 0\r\nm=audio {} RTP/AVP 0\r\na=rtpmap:0 PCMU/8000\r\n",
+            media.1
+        );
+        let to_tag = if first_line.starts_with("SIP/2.0") {
+            format!(";tag=b-{call_id}")
+        } else {
+            String::new()
+        };
+        format!(
+            "{first_line}\r\nVia: SIP/2.0/UDP 10.9.0.1:5060;branch=z9hG4bK-{call_id}\r\n\
+             From: <sip:a@x>;tag=a-{call_id}\r\nTo: <sip:b@x>{to_tag}\r\n\
+             Call-ID: {call_id}\r\nCSeq: 1 INVITE\r\nContent-Type: application/sdp\r\n\
+             Content-Length: {}\r\n\r\n{sdp}",
+            sdp.len(),
+        )
+        .into_bytes()
+    }
+
+    /// An Ethernet/IPv4/TCP frame between two chosen hosts.
+    #[cfg(feature = "native")]
+    fn eth_tcp_between(
+        src: ([u8; 4], u16),
+        dst: ([u8; 4], u16),
+        seq: u32,
+        flags: u8,
+        payload: &[u8],
+    ) -> Vec<u8> {
+        let mut frame = eth_ipv4_tcp(src.1, dst.1, seq, flags, payload);
+        frame[26..30].copy_from_slice(&src.0);
+        frame[30..34].copy_from_slice(&dst.0);
+        frame
+    }
+
+    /// How the fixture's SIP travels.
+    #[cfg(feature = "native")]
+    #[derive(Clone, Copy)]
+    enum Signaling {
+        /// One datagram per message, 5060 to 5060.
+        Udp,
+        /// One connection from an ephemeral port to 5060, every message a
+        /// pushed segment of it.
+        Tcp,
+    }
+
+    /// Two calls, one after the other, whose SDP negotiates the SAME two
+    /// media sockets and whose media reuses the SAME SSRC: the SIP runs
+    /// between `sip_hosts`, the RTP between `rtp_hosts`. The frames, in
+    /// capture order.
+    #[cfg(feature = "native")]
+    fn two_calls_on_one_flow(
+        sip_hosts: ([u8; 4], [u8; 4]),
+        rtp_hosts: ([u8; 4], [u8; 4]),
+        signaling: Signaling,
+    ) -> Vec<Vec<u8>> {
+        let (uac, uas) = ((sip_hosts.0, 40_001), (sip_hosts.1, 5060));
+        let (mut uac_seq, mut uas_seq) = (5_001u32, 9_001u32);
+        let mut frames = Vec::new();
+        if let Signaling::Tcp = signaling {
+            frames.push(eth_tcp_between(uac, uas, 5_000, 0x02, b""));
+            frames.push(eth_tcp_between(uas, uac, 9_000, 0x12, b""));
+        }
+        let (caller, callee) = rtp_hosts;
+        for call in ["def28-call-1", "def28-call-2"] {
+            let offer = sip_with_sdp("INVITE sip:b@x SIP/2.0", call, (caller, 20000));
+            let answer = sip_with_sdp("SIP/2.0 200 OK", call, (callee, 30000));
+            match signaling {
+                Signaling::Udp => {
+                    frames.push(eth_udp_between(uac.0, uas.0, 5060, 5060, &offer));
+                    frames.push(eth_udp_between(uas.0, uac.0, 5060, 5060, &answer));
+                }
+                Signaling::Tcp => {
+                    frames.push(eth_tcp_between(uac, uas, uac_seq, 0x18, &offer));
+                    uac_seq += offer.len() as u32;
+                    frames.push(eth_tcp_between(uas, uac, uas_seq, 0x18, &answer));
+                    uas_seq += answer.len() as u32;
+                }
+            }
+            for seq in 0..5u16 {
+                let mut rtp = vec![0x80, 0x00];
+                rtp.extend_from_slice(&seq.to_be_bytes());
+                rtp.extend_from_slice(&(160u32 * u32::from(seq)).to_be_bytes());
+                rtp.extend_from_slice(&0x1122_3344u32.to_be_bytes());
+                rtp.extend_from_slice(&[0xaa; 160]);
+                frames.push(eth_udp_between(caller, callee, 20000, 30000, &rtp));
+            }
+        }
+        frames
+    }
+
+    /// `frames` on the channel the streamed `--cores` path reads, 20 ms apart.
+    #[cfg(feature = "native")]
+    fn channel_of(frames: Vec<Vec<u8>>) -> Result<crate::capture::channel::PacketRx, TestError> {
+        use crate::capture::packet::Packet;
+        let (tx, rx) = crate::capture::channel::packet_channel(1024);
+        let base = chrono::DateTime::from_timestamp(1_700_000_000, 0).ok_or("valid timestamp")?;
+        for (i, frame) in frames.into_iter().enumerate() {
+            let len = frame.len();
+            let ts = base + chrono::TimeDelta::milliseconds(20 * i as i64);
+            tx.send(Packet::new(ts, frame, len, len, None, 1))
+                .map_err(|e| format!("worker pool must accept packets: {e:?}"))?;
+        }
+        drop(tx);
+        Ok(rx)
+    }
+
+    /// A host pair that shards to a different worker of two than `other`.
+    #[cfg(feature = "native")]
+    fn hosts_on_the_other_worker(
+        other: ([u8; 4], [u8; 4]),
+    ) -> Result<([u8; 4], [u8; 4]), TestError> {
+        let shard = |(a, b): ([u8; 4], [u8; 4])| shard_for(IpAddr::from(a), IpAddr::from(b), 2);
+        (1u8..=250)
+            .map(|n| ([10, 2, 0, n], [10, 2, 1, n]))
+            .find(|hosts| shard(*hosts) != shard(other))
+            .ok_or_else(|| "a host pair on the other worker".into())
+    }
+
+    /// Each call owns exactly one stream with exactly its own five packets.
+    #[cfg(feature = "native")]
+    fn assert_one_stream_per_call(r: &ReconResult, case: &str) {
+        assert_eq!(
+            r.stream_store.len(),
+            2,
+            "{case}: two calls on a reused SSRC and socket pair are two streams, \
+             not one"
+        );
+        for call in ["def28-call-1", "def28-call-2"] {
+            let mine: Vec<u64> = r
+                .stream_store
+                .streams_for(call)
+                .map(|s| s.packet_count)
+                .collect();
+            assert_eq!(
+                mine,
+                [5],
+                "{case}: {call} owns one stream of its own five packets"
+            );
+        }
+    }
+
+    /// The packets every worker reads a copy of are counted once: the
+    /// fixture's four SIP messages and ten RTP packets, each dialog holding
+    /// its offer and answer once, and no more parsed packets than frames
+    /// (the fixture holds no fragment and no segment carrying two messages,
+    /// so a parsed total above the frames read is a copy counted).
+    #[cfg(feature = "native")]
+    fn assert_counted_once(r: &ReconResult, frames: usize, case: &str) {
+        assert_eq!(
+            (r.sip_count, r.rtp_count, r.packets_read),
+            (4, 10, frames as u64),
+            "{case}: (SIP, RTP, read) counted once"
+        );
+        assert!(
+            r.total_count <= r.packets_read,
+            "{case}: {} parsed from {} frames",
+            r.total_count,
+            r.packets_read
+        );
+        let mut messages: Vec<(String, usize)> = r
+            .dialog_store
+            .iter()
+            .map(|d| (d.call_id.clone(), d.messages.len()))
+            .collect();
+        messages.sort();
+        assert_eq!(
+            messages,
+            [
+                ("def28-call-1".to_string(), 2),
+                ("def28-call-2".to_string(), 2)
+            ],
+            "{case}: each dialog holds its messages once"
+        );
+        assert_eq!(r.dropped_count, 0, "{case}: no worker died");
+    }
+
+    /// The SIP host pair every DEF28 test uses.
+    #[cfg(feature = "native")]
+    const SIP_HOSTS: ([u8; 4], [u8; 4]) = ([10, 1, 0, 1], [10, 1, 0, 2]);
+
+    /// Control for the tests below: SIP and RTP on ONE host pair land on one
+    /// worker, and the fixture yields one stream per call. Without it, a
+    /// fixture that split on no path at all would make the cross-worker tests
+    /// fail for the wrong reason.
+    #[cfg(feature = "native")]
+    #[test]
+    fn two_calls_on_one_host_pair_stay_two_streams_under_cores() -> Result<(), TestError> {
+        for signaling in [Signaling::Udp, Signaling::Tcp] {
+            let frames = two_calls_on_one_flow(SIP_HOSTS, SIP_HOSTS, signaling);
+            let r = run_offline_parallel(channel_of(frames)?, pcfg(2));
+            assert_one_stream_per_call(&r, "same host pair");
+        }
+        Ok(())
+    }
+
+    /// DEF28: under `--cores`, two calls whose SIP and RTP run on different
+    /// host pairs stay two streams, as they do on `--cores 1`.
+    ///
+    /// The SIP shards to one worker and the RTP to another, so the worker
+    /// that measures the RTP must still learn that a second call took the
+    /// sockets over, at the point in the capture where it did.
+    #[cfg(feature = "native")]
+    #[test]
+    fn two_calls_whose_sip_and_rtp_use_different_hosts_stay_two_streams_under_cores()
+    -> Result<(), TestError> {
+        let rtp_hosts = hosts_on_the_other_worker(SIP_HOSTS)?;
+        let frames = two_calls_on_one_flow(SIP_HOSTS, rtp_hosts, Signaling::Udp);
+        let count = frames.len();
+        let r = run_offline_parallel(channel_of(frames)?, pcfg(2));
+        assert_one_stream_per_call(&r, "SIP and RTP on different workers");
+        assert_counted_once(&r, count, "SIP and RTP on different workers");
+        Ok(())
+    }
+
+    /// DEF28 with the SIP over TCP: the worker that measures the RTP
+    /// reassembles its own copy of the connection, and the owner's count of
+    /// the connection's messages is not doubled.
+    #[cfg(feature = "native")]
+    #[test]
+    fn two_calls_signaled_over_tcp_stay_two_streams_under_cores() -> Result<(), TestError> {
+        let rtp_hosts = hosts_on_the_other_worker(SIP_HOSTS)?;
+        let frames = two_calls_on_one_flow(SIP_HOSTS, rtp_hosts, Signaling::Tcp);
+        let count = frames.len();
+        let r = run_offline_parallel(channel_of(frames)?, pcfg(2));
+        assert_one_stream_per_call(&r, "SIP over TCP on another worker");
+        assert_counted_once(&r, count, "SIP over TCP on another worker");
+        Ok(())
+    }
+
+    /// DEF28 on the path `-I` takes: the file reader batches per worker,
+    /// and the copies ride in each worker's batch in capture order.
+    #[cfg(feature = "native")]
+    #[test]
+    fn two_calls_read_from_a_file_stay_two_streams_under_cores() -> Result<(), TestError> {
+        use crate::capture::CaptureConfig;
+        let dir = tempfile::tempdir().map_err(|e| format!("temp dir: {e:?}"))?;
+        let rtp_hosts = hosts_on_the_other_worker(SIP_HOSTS)?;
+        let frames = two_calls_on_one_flow(SIP_HOSTS, rtp_hosts, Signaling::Udp);
+        let split = write_eth_pcap(dir.path(), "split.pcap", &frames)?;
+        let r = run_offline_parallel_file(&[split], &CaptureConfig::default(), pcfg(2))?;
+        assert_one_stream_per_call(&r, "file, SIP and RTP on different workers");
+        assert_counted_once(&r, frames.len(), "file, SIP and RTP on different workers");
+        Ok(())
+    }
+
+    /// A `ParallelConfig` with `--portrange`'s default, 5060-5061.
+    #[cfg(feature = "native")]
+    fn pcfg_default_range() -> ParallelConfig {
+        ParallelConfig {
+            portrange: (5060, 5061),
+            ..pcfg(2)
+        }
+    }
+
+    /// `frame` as a packet read from an Ethernet capture.
+    #[cfg(feature = "native")]
+    fn eth_packet(frame: Vec<u8>) -> crate::capture::packet::Packet {
+        let len = frame.len();
+        crate::capture::packet::Packet::new(chrono::Utc::now(), frame, len, len, None, 1)
+    }
+
+    /// SIP that carries SDP goes to every worker; SIP without it, SIP
+    /// outside `--portrange` and media go only to their owner.
+    #[cfg(feature = "native")]
+    #[test]
+    fn only_sdp_bearing_sip_is_read_by_every_worker() {
+        let fanout = Fanout::of(&pcfg_default_range());
+        let offer = sip_with_sdp("INVITE sip:b@x SIP/2.0", "c", ([10, 2, 0, 1], 20000));
+        let (a, b) = SIP_HOSTS;
+        assert!(fanout.needs(&eth_packet(eth_udp_between(a, b, 5060, 5060, &offer))));
+        let options = b"OPTIONS sip:b@x SIP/2.0\r\nCall-ID: o\r\nContent-Length: 0\r\n\r\n";
+        assert!(!fanout.needs(&eth_packet(eth_udp_between(a, b, 5060, 5060, options))));
+        assert!(!fanout.needs(&eth_packet(eth_udp_between(a, b, 7060, 7060, &offer))));
+        let rtp = rtp_frame(0x1122_3344, 1);
+        assert!(!fanout.needs(&eth_packet(rtp)));
+    }
+
+    /// A TCP segment on a SIP port and an IP fragment go to every worker:
+    /// what they hold is only known once reassembled.
+    #[cfg(feature = "native")]
+    #[test]
+    fn sip_connections_and_fragments_are_read_by_every_worker() {
+        let fanout = Fanout::of(&pcfg_default_range());
+        let (a, b) = SIP_HOSTS;
+        let middle = b"a=rtpmap:0 PCMU/8000\r\n";
+        assert!(fanout.needs(&eth_packet(eth_tcp_between(
+            (a, 40_001),
+            (b, 5060),
+            7,
+            0x18,
+            middle
+        ))));
+        assert!(!fanout.needs(&eth_packet(eth_tcp_between(
+            (a, 40_001),
+            (b, 8000),
+            7,
+            0x18,
+            middle
+        ))));
+        let mut fragment = eth_udp_between(a, b, 40_000, 40_002, b"anything");
+        fragment[20..22].copy_from_slice(&[0x00, 0xb9]); // last fragment, offset 185
+        assert!(fanout.needs(&eth_packet(fragment)));
+    }
+
+    /// Under `--hep-parse` a HEP datagram goes to every worker, whatever its
+    /// port: the SIP inside it is not gated by `--portrange`.
+    #[cfg(feature = "native")]
+    #[test]
+    fn hep_is_read_by_every_worker_only_under_hep_parse() {
+        let (a, b) = SIP_HOSTS;
+        let hep = eth_packet(eth_udp_between(a, b, 40_000, 9060, b"HEP3\x00\x10rest"));
+        assert!(!Fanout::of(&pcfg_default_range()).needs(&hep));
+        let hep_parse = ParallelConfig {
+            hep_parse: true,
+            ..pcfg_default_range()
+        };
+        assert!(Fanout::of(&hep_parse).needs(&hep));
+    }
+
+    /// With no stream store to inform (`--no-rtp`) or no SDP to learn
+    /// (`--no-dialog`), nothing is copied.
+    #[cfg(feature = "native")]
+    #[test]
+    fn nothing_is_copied_when_no_stream_could_use_it() {
+        let offer = sip_with_sdp("INVITE sip:b@x SIP/2.0", "c", ([10, 2, 0, 1], 20000));
+        let (a, b) = SIP_HOSTS;
+        let invite = eth_packet(eth_udp_between(a, b, 5060, 5060, &offer));
+        for cfg in [
+            ParallelConfig {
+                no_rtp: true,
+                ..pcfg_default_range()
+            },
+            ParallelConfig {
+                no_dialog: true,
+                ..pcfg_default_range()
+            },
+        ] {
+            assert!(!Fanout::of(&cfg).needs(&invite));
+        }
+    }
+
+    /// A batch lost to a dead worker weighs only the packets that worker
+    /// owned: a copy lost with it is not a packet the capture lost.
+    #[cfg(feature = "native")]
+    #[test]
+    fn a_lost_batch_weighs_only_the_packets_its_worker_owned() -> Result<(), TestError> {
+        let (txs, rxs): (Vec<_>, Vec<_>) = (0..2).map(|_| crossbeam_channel::unbounded()).unzip();
+        drop(rxs);
+        let (a, b) = SIP_HOSTS;
+        let owned = eth_packet(eth_udp_between(a, b, 5060, 5060, b"x"));
+        let shard = owner_of(&owned, 2);
+        let other = hosts_on_the_other_worker(SIP_HOSTS)?;
+        let copy = eth_packet(eth_udp_between(other.0, other.1, 5060, 5060, b"y"));
+        assert_ne!(owner_of(&copy, 2), shard, "the fixture holds a copy");
+        assert_eq!(
+            shard_send_batch(&txs, shard, vec![owned.clone(), copy, owned]),
+            2,
+            "two owned packets lost, the copy not counted"
+        );
+        Ok(())
+    }
+
+    /// A packet every worker reads is counted by its owner alone: here, a
+    /// frame the decoder refuses is one undecodable frame, not one per
+    /// worker.
+    ///
+    /// The frame's IPv4 total length claims more than the frame holds, which
+    /// the transport peek does not check and the decoder refuses, so it is
+    /// copied and then fails to decode on both workers.
+    #[cfg(feature = "native")]
+    #[test]
+    #[serial_test::serial(undecodable_tally)]
+    fn a_copied_frame_is_counted_by_its_owner_only() -> Result<(), TestError> {
+        let offer = sip_with_sdp("INVITE sip:b@x SIP/2.0", "c", ([10, 2, 0, 1], 20000));
+        let (a, b) = SIP_HOSTS;
+        let mut frame = eth_udp_between(a, b, 5060, 5060, &offer);
+        let claimed = u16::from_be_bytes([frame[16], frame[17]]) + 100;
+        frame[16..18].copy_from_slice(&claimed.to_be_bytes());
+        let packet = eth_packet(frame.clone());
+        assert!(
+            Fanout::of(&pcfg_default_range()).needs(&packet),
+            "the fixture is a copied frame"
+        );
+        assert!(
+            crate::capture::parse::parse_packet(&packet).is_err(),
+            "the fixture is a frame the decoder refuses"
+        );
+        let before = crate::capture::undecodable_frames();
+        let r = run_offline_parallel(channel_of(vec![frame])?, pcfg_default_range());
+        assert_eq!(r.packets_read, 1);
+        assert_eq!(
+            crate::capture::undecodable_frames(),
+            before + 1,
+            "one frame, counted once"
         );
         Ok(())
     }

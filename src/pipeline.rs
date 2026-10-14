@@ -1966,6 +1966,26 @@ pub fn is_rtcp_packet(data: &[u8], dst_port: u16) -> bool {
 /// deliberately runs LAST: it decides whether recognized SIP is analyzed or
 /// counted, and running it first is what made the loss invisible.
 pub fn try_websocket_unwrap(pp: &ParsedPacket) -> Option<Vec<u8>> {
+    match websocket_sip(pp)? {
+        WebSocketSip::OnPort(payload) => Some(payload),
+        WebSocketSip::OffPort(payload) => {
+            record_ws_port_skip(pp.src_port, pp.dst_port, &payload);
+            None
+        }
+    }
+}
+
+/// SIP found inside a WebSocket frame, and whether its port is in the set.
+enum WebSocketSip {
+    /// On a WebSocket port: the SIP is analyzed.
+    OnPort(Vec<u8>),
+    /// Outside the port set: the SIP is discarded, and counted by whoever
+    /// owns the packet.
+    OffPort(Vec<u8>),
+}
+
+/// The rule behind [`try_websocket_unwrap`], recording nothing.
+fn websocket_sip(pp: &ParsedPacket) -> Option<WebSocketSip> {
     if pp.transport != TransportProto::Tcp {
         return None;
     }
@@ -1987,11 +2007,10 @@ pub fn try_websocket_unwrap(pp: &ParsedPacket) -> Option<Vec<u8>> {
     };
 
     if !websocket::is_ws_port(pp.dst_port) && !websocket::is_ws_port(pp.src_port) {
-        record_ws_port_skip(pp.src_port, pp.dst_port, &payload);
-        return None;
+        return Some(WebSocketSip::OffPort(payload));
     }
 
-    Some(payload)
+    Some(WebSocketSip::OnPort(payload))
 }
 
 /// Options controlling which protocols the pipeline tracks.
@@ -2339,22 +2358,7 @@ fn classify_signaling(
     // so a request using an RFC 3261 §7.1 `extension-method` was discarded here
     // — before the parser, which handles it — and never appeared in any output.
     let sip_looks_like_sip = sip::parser::starts_sip_message(effective_payload);
-    // `--portrange` picks SIP out of a capture that holds everything: the
-    // file-reading stand-in for the BPF filter a live capture applies. A HEP
-    // message was selected by its sender, and its ports are the sender's
-    // assertion, not something sipnab captured, so the gate never applies to
-    // it. It used to, and a proxy tracing SIP on 7060 fed `-L` or
-    // `--hep-parse` nothing but a NOT ANALYZED notice (issue #301).
-    //
-    // A message rebuilt from a stored vCon is exempt for the same reason: its
-    // producer already chose the SIP, and the ports are the container's
-    // record of a call, not traffic this run is picking signaling out of.
-    let sip_port_ok = matches!(
-        pp.input_origin,
-        crate::capture::parse::InputOrigin::Hep | crate::capture::parse::InputOrigin::Vcon
-    ) || opts
-        .sip_portrange
-        .is_none_or(|range| port_in_range(pp.src_port, pp.dst_port, range));
+    let sip_port_ok = sip_port_ok(pp, opts);
     if let Some(range) = opts.sip_portrange
         && !sip_port_ok
         && sip_looks_like_sip
@@ -2413,6 +2417,68 @@ fn parse_sip_action(
             }
             PacketAction::None
         }
+    }
+}
+
+/// Whether `--portrange` lets `pp` be read as SIP.
+///
+/// `--portrange` picks SIP out of a capture that holds everything: the
+/// file-reading stand-in for the BPF filter a live capture applies. A HEP
+/// message was selected by its sender, and its ports are the sender's
+/// assertion, not something sipnab captured, so the gate never applies to
+/// it. It used to, and a proxy tracing SIP on 7060 fed `-L` or
+/// `--hep-parse` nothing but a NOT ANALYZED notice (issue #301).
+///
+/// A message rebuilt from a stored vCon is exempt for the same reason: its
+/// producer already chose the SIP, and the ports are the container's
+/// record of a call, not traffic this run is picking signaling out of.
+fn sip_port_ok(pp: &ParsedPacket, opts: &PipelineOptions) -> bool {
+    matches!(
+        pp.input_origin,
+        crate::capture::parse::InputOrigin::Hep | crate::capture::parse::InputOrigin::Vcon
+    ) || opts
+        .sip_portrange
+        .is_none_or(|range| port_in_range(pp.src_port, pp.dst_port, range))
+}
+
+/// The SDP links [`classify_packet`] would derive from `pp`, and nothing
+/// else: no message, no counter, no record of what was skipped.
+///
+/// For a `--cores` worker reading a copy of a packet another worker owns
+/// (see `crate::parallel`). The owner classifies the packet and records
+/// everything a packet records; the copy exists only so that every worker's
+/// stream store learns which call holds which media socket at the same point
+/// in the capture as the owner's does. Recording the skip or the parse error
+/// a second time would report one packet as several.
+///
+/// The same gate, the same WebSocket rule, the same parser and the same link
+/// derivation as the classifier: the rules are shared, not copied.
+pub fn sdp_links_of(
+    pp: &ParsedPacket,
+    opts: &PipelineOptions,
+) -> Vec<(std::net::IpAddr, u16, String, sip::sdp::SdpMedia)> {
+    if opts.no_dialog || !sip_port_ok(pp, opts) {
+        return Vec::new();
+    }
+    let (payload, transport): (bytes::Bytes, TransportProto) = match websocket_sip(pp) {
+        Some(WebSocketSip::OnPort(payload)) => (payload.into(), TransportProto::Ws),
+        Some(WebSocketSip::OffPort(_)) => return Vec::new(),
+        None => (pp.payload.clone(), pp.transport),
+    };
+    if !sip::parser::starts_sip_message(&payload) {
+        return Vec::new();
+    }
+    match sip::parser::parse_sip_bytes(
+        &payload,
+        pp.timestamp,
+        pp.src_addr,
+        pp.dst_addr,
+        pp.src_port,
+        pp.dst_port,
+        transport,
+    ) {
+        Ok(sip_msg) => sdp_links_for(&sip_msg, opts, &mut MediaDecrypt::default()),
+        Err(_) => Vec::new(),
     }
 }
 
@@ -5079,6 +5145,110 @@ mod rtpproxy_control_tests {
             )),
             "rtpproxy asserted this over a bare datagram, and says so"
         );
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod sdp_links_of_tests {
+    //! `sdp_links_of`: what a `--cores` worker learns from a copy of a
+    //! packet another worker owns.
+
+    use super::*;
+    use crate::capture::parse::{ParsedPacket, TransportProto};
+    use std::net::{IpAddr, Ipv4Addr};
+
+    /// Any error a test can return; `?` converts into it.
+    type TestError = Box<dyn std::error::Error>;
+
+    /// An INVITE offering PCMU on 192.0.2.7:20000, as UDP between `port`s.
+    fn invite(port: u16) -> ParsedPacket {
+        let sdp = "v=0\r\no=- 1 1 IN IP4 192.0.2.7\r\ns=-\r\nc=IN IP4 192.0.2.7\r\n\
+                   t=0 0\r\nm=audio 20000 RTP/AVP 0\r\na=rtpmap:0 PCMU/8000\r\n";
+        let sip = format!(
+            "INVITE sip:bob@example.com SIP/2.0\r\n\
+             Via: SIP/2.0/UDP 10.0.0.1:{port};branch=z9hG4bKs1\r\n\
+             From: <sip:alice@example.com>;tag=s1\r\nTo: <sip:bob@example.com>\r\n\
+             Call-ID: links-of@test\r\nCSeq: 1 INVITE\r\n\
+             Content-Type: application/sdp\r\nContent-Length: {}\r\n\r\n{sdp}",
+            sdp.len()
+        );
+        ParsedPacket {
+            frame_bytes: None,
+            frame: None,
+            timestamp: chrono::Utc::now(),
+            src_addr: IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)),
+            dst_addr: IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2)),
+            src_port: port,
+            dst_port: port,
+            transport: TransportProto::Udp,
+            payload: sip.into_bytes().into(),
+            ip_id: None,
+            tcp_seq: None,
+            tcp_flags: None,
+            fragment_offset: None,
+            more_fragments: false,
+            ip_protocol: 17,
+            dscp: None,
+            input_origin: crate::capture::parse::InputOrigin::Wire,
+            hep: None,
+        }
+    }
+
+    /// The options a `--cores` run with the default port range uses.
+    fn opts() -> PipelineOptions {
+        PipelineOptions {
+            sip_portrange: Some((5060, 5061)),
+            ..PipelineOptions::default()
+        }
+    }
+
+    /// A copy yields exactly the links the full classifier derives from the
+    /// same packet.
+    #[test]
+    fn a_copy_learns_the_links_the_classifier_derives() -> Result<(), TestError> {
+        let pp = invite(5060);
+        let links = sdp_links_of(&pp, &opts());
+        assert_eq!(links.len(), 1, "one audio endpoint: {links:?}");
+        assert_eq!(
+            (links[0].0, links[0].1, links[0].2.as_str()),
+            (
+                IpAddr::V4(Ipv4Addr::new(192, 0, 2, 7)),
+                20000,
+                "links-of@test"
+            )
+        );
+        let mut heur = crate::rtp::heuristic::RtpHeuristic::new();
+        let mut decrypt = MediaDecrypt::default();
+        let PacketAction::Sip { sdp_links, .. } =
+            classify_packet(&pp, &mut heur, &opts(), &mut decrypt)
+        else {
+            return Err("the classifier reads the INVITE as SIP".into());
+        };
+        // `SdpMedia` has no `PartialEq`; its `Debug` names every field.
+        assert_eq!(format!("{links:?}"), format!("{sdp_links:?}"));
+        Ok(())
+    }
+
+    /// A copy outside `--portrange` yields nothing and records nothing: the
+    /// worker that owns the packet records the skip, once.
+    #[test]
+    #[serial_test::serial(portrange_skips)]
+    fn a_copy_outside_the_port_range_learns_and_records_nothing() -> Result<(), TestError> {
+        let before = portrange_skip_report();
+        assert!(sdp_links_of(&invite(7060), &opts()).is_empty());
+        assert_eq!(portrange_skip_report(), before, "no skip recorded");
+        Ok(())
+    }
+
+    /// `--no-dialog` links nothing, as the classifier links nothing.
+    #[test]
+    fn a_copy_under_no_dialog_learns_nothing() -> Result<(), TestError> {
+        let o = PipelineOptions {
+            no_dialog: true,
+            ..opts()
+        };
+        assert!(sdp_links_of(&invite(5060), &o).is_empty());
         Ok(())
     }
 }

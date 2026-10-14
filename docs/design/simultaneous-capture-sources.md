@@ -151,7 +151,7 @@ by SDP media endpoint, and the key is a bare `(IpAddr, u16)`.
 `extract_sdp_links` ([`src/pipeline.rs:1783`](https://github.com/NormB/sipnab/blob/main/src/pipeline.rs#L1783)) resolves each `m=` section's address
 through `effective_address` ([`src/sip/sdp.rs:340`](https://github.com/NormB/sipnab/blob/main/src/sip/sdp.rs#L340)) — media-level `c=` when
 present, session-level otherwise — and yields `(ip, port, call_id, media)`
-tuples. `process_packet` ([`src/pipeline.rs:2851`](https://github.com/NormB/sipnab/blob/main/src/pipeline.rs#L2851)) feeds each one to `link_to_dialog_with_sdp`
+tuples. `process_packet` ([`src/pipeline.rs:2925`](https://github.com/NormB/sipnab/blob/main/src/pipeline.rs#L2925)) feeds each one to `link_to_dialog_with_sdp`
 ([`src/rtp/stream_store.rs:1657`](https://github.com/NormB/sipnab/blob/main/src/rtp/stream_store.rs#L1657)), which lands in `link_endpoint_with_ptime`
 ([`src/rtp/stream_store.rs:1766`](https://github.com/NormB/sipnab/blob/main/src/rtp/stream_store.rs#L1766)). That function does two things:
 

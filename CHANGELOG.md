@@ -8,6 +8,16 @@ sipnab is pre-1.0: the public API and the CLI surface are not stable, and a
 breaking change may land in any release. Breaking changes are called out in the
 entry that carries them.
 
+## [Unreleased]
+
+### Fixed
+
+- **Under `--cores`, two calls that reuse one media socket pair and SSRC stay two RTP streams when their SIP and RTP run between different hosts.**
+  - `--cores` sends each packet to the worker that owns its host pair, so the worker measuring the RTP never saw the SDP that showed a second call taking the sockets over. Both calls' packets became one stream, with a duration and jitter measured across the gap between the calls.
+  - The dispatcher now also gives every other worker a copy of each packet that can carry SDP: SIP over UDP on a `--portrange` port that names `application/sdp`, every TCP segment on a `--portrange` port, every IP fragment, and every HEP datagram under `--hep-parse`.
+  - A worker reads a copy only for the media sockets its SDP names, and counts nothing from it, so SIP, RTP, dialog and undecodable-frame counts are unchanged.
+  - SIP inside a tunnel that the dispatcher does not open (GRE, VXLAN, IP-in-IP) is not copied.
+
 ## [0.5.219] - 2026-10-14
 
 ### Added
