@@ -3,7 +3,7 @@
 //! Operator notes: the `C` key, the one-line editor it opens, and the question
 //! a capture swap asks while notes are not saved.
 //!
-//! A note is output, never input (Invariant 13 in
+//! A note is output, never input (Invariant "Operator notes are output, never input" in
 //! `docs/internals/invariants.md`). This module only moves it between the
 //! editor and `App::notes`; the text itself stays inside
 //! [`crate::annotate`], which is the one place that can read it.

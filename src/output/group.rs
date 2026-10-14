@@ -11,7 +11,7 @@
 //!
 //! That makes this a map keyed on attacker-supplied data — `Call-ID` and the
 //! `From` user come off the wire — so it is bounded like every other such map
-//! in the tree (invariant 4). Two independent caps apply:
+//! in the tree (invariant "Every attacker-keyed map has a bound and a stated eviction policy"). Two independent caps apply:
 //!
 //! * [`DEFAULT_MAX_GROUPS`] distinct keys, and
 //! * [`DEFAULT_MAX_BUFFERED`] messages in total.

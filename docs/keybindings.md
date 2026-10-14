@@ -8,7 +8,12 @@ Annotated screenshots of every view are in the [TUI visual tour](#tui-views) at 
 
 ## Essential keys
 
-> **Quick start:** `j`/`k` for vim-style up/down, `Enter` to drill into a call, `Esc` to go back, `Tab` to switch between Call List and RTP Streams.
+> **Quick start:**
+>
+> - `j`/`k` for vim-style up/down.
+> - `Enter` to drill into a call.
+> - `Esc` to go back.
+> - `Tab` to switch between Call List and RTP Streams.
 
 | Key | Action | Views |
 |-----|--------|-------|
@@ -38,8 +43,9 @@ Annotated screenshots of every view are in the [TUI visual tour](#tui-views) at 
 ### Quit confirmation
 
 `Esc` and the quit key open a confirmation rather than ending the session.
-`Esc` means "go back" in every other view, and it was ending captures that had
-been running for hours.
+
+- `Esc` means "go back" in every other view.
+- It was ending captures that had been running for hours.
 
 | Key | Action |
 |-----|--------|
@@ -50,25 +56,36 @@ been running for hours.
 Any other key leaves the question on screen. A stray keypress must not dismiss
 the dialog, and it certainly must not answer it.
 
-`v`, `n`, and `F12` ship as fallbacks: a key you explicitly rebind in
-`[keybindings]` always wins over them. In the Raw Message view with an active
-search, `n`/`N` are match navigation instead.
+`v`, `n`, and `F12` ship as fallbacks.
+
+- A key you explicitly rebind in `[keybindings]` always wins over them.
+- In the Raw Message view with an active search, `n`/`N` are match navigation
+  instead.
 
 ## Copying text
 
 Clipboard copies (`y` in the Raw Message view, `E` in the Call Flow view) use
-**OSC 52**, an escape sequence the terminal maps to your system clipboard. It
-travels in-band over the pty, so it works across SSH with no X11 forwarding —
-your terminal must support it, and most modern ones (kitty, WezTerm, iTerm2,
-Windows Terminal, foot, recent xterm) do.
+**OSC 52**. This is an escape sequence the terminal maps to your system
+clipboard.
+
+- It travels in-band over the pty. So it works across SSH with no X11
+  forwarding.
+- Your terminal must support it. Most modern ones (kitty, WezTerm, iTerm2,
+  Windows Terminal, foot, recent xterm) do.
 
 On top of OSC 52, sipnab also feeds
-`pbcopy`/`xclip` silently when one is available. Copies stop at 72 KiB
-(terminals limit OSC 52 payloads). The status line reports how much it copied.
+`pbcopy`/`xclip` silently when one is available.
 
-To select arbitrary screen text with the mouse, press `F12` to turn mouse
-capture off and drag as usual, then `F12` again to get wheel scrolling back.
-In many terminals holding **Shift** while dragging bypasses mouse capture
+- Copies stop at 72 KiB (terminals limit OSC 52 payloads).
+- The status line reports how much it copied.
+
+To select arbitrary screen text with the mouse:
+
+- Press `F12` to turn mouse capture off.
+- Drag as usual.
+- Press `F12` again to get wheel scrolling back.
+
+In many terminals, holding **Shift** while dragging bypasses mouse capture
 without toggling anything.
 To start every session with capture off, set `mouse_capture = false` under
 [`[display]`](config-reference.md#display) in the config file.
@@ -125,11 +142,15 @@ To start every session with capture off, set `mouse_capture = false` under
 | F9 | Clear filter: drops the view filter **and** the persisted search |
 | F10 | Column selector **(configurable: `column_selector`)** — a popup to show/hide any of the eleven Call List columns (#, Method, From, To, Source, Destination, State, Msgs, Date, PDD, Duration) |
 
-A search committed with Enter keeps narrowing the list and appears on the
+A search committed with Enter keeps narrowing the list. It appears on the
 status line as `Search: /query (F9 clears)`. F9 clears it together with any
 active filter.
 
-> **Gotcha:** the `clear_calls` action binds `F5` in *both* views — in the Call List it clears calls, in the Call Flow it resets a pending message-compare selection. Rebinding `clear_calls` moves both.
+> **Gotcha:** the `clear_calls` action binds `F5` in *both* views.
+>
+> - In the Call List it clears calls.
+> - In the Call Flow it resets a pending message-compare selection.
+> - Rebinding `clear_calls` moves both.
 
 ## Call flow
 
@@ -177,29 +198,46 @@ active filter.
 | F9 | Clear filter: drops the view filter **and** the persisted search |
 
 While the detail pane shows, `Tab` moves keyboard focus between the two panes.
-The status line names the focused pane (`Focus: Ladder` / `Focus: Detail`),
-and that pane gets a highlighted border. When either pane has more rows than fit, a
-vertical scrollbar appears on its right edge. `[` and `]` always scroll the
-detail pane regardless of focus.
+
+- The status line names the focused pane (`Focus: Ladder` / `Focus: Detail`).
+- That pane gets a highlighted border.
+- When either pane has more rows than fit, a vertical scrollbar appears on its
+  right edge.
+- `[` and `]` always scroll the detail pane regardless of focus.
 
 ### Operator notes
 
-`C` opens a one-line editor on the selected message. Enter keeps the note, an
-empty note removes it, and Esc leaves it as it was. sipnab refuses a note over
-4096 bytes, or one holding a control character, an SDES `inline:` key, a TLS
-key-log line or a digest `response=` value, and says why on the status line
-without repeating it. A message sipnab read from no frame takes no note.
+`C` opens a one-line editor on the selected message.
 
-The note goes three places. The pane under the flow, titled "operator note —
-not sipnab analysis". A PCAP-NG save, as the packet comment on that message's
-frame, with a line naming the frame you typed it on. And the NOTES format of
-the save dialog (`F2`, Tab to NOTES), which writes the file `--notes` resumes
-from. A classic PCAP save refuses rather than drop the notes. sipnab never
-reads a packet comment back.
+- Enter keeps the note.
+- An empty note removes it.
+- Esc leaves it as it was.
+
+sipnab refuses a note over 4096 bytes, or one holding:
+
+- a control character,
+- an SDES `inline:` key,
+- a TLS key-log line,
+- or a digest `response=` value.
+
+It says why on the status line without repeating it. A message sipnab read
+from no frame takes no note.
+
+The note goes three places:
+
+- The pane under the flow, titled "operator note —
+  not sipnab analysis".
+- A PCAP-NG save, as the packet comment on that message's frame. A line names
+  the frame you typed it on.
+- The NOTES format of the save dialog (`F2`, Tab to NOTES). It writes the file
+  `--notes` resumes from.
+
+A classic PCAP save refuses rather than drop the notes. sipnab never reads a
+packet comment back.
 
 Quitting with notes you have not saved to a notes file says so in the quit
-confirmation. Opening another capture asks first, because the notes are about
-this capture's frames and opening another drops them.
+confirmation. Opening another capture asks first. The notes are about this
+capture's frames, and opening another drops them.
 
 ## Raw message
 
@@ -236,8 +274,8 @@ this capture's frames and opening another drops them.
 
 ## Combined detail
 
-Opened from the call flow with `a` (transaction) or `A` (whole dialog): every
-message of the selection rendered as one scrollable document.
+Opened from the call flow with `a` (transaction) or `A` (whole dialog). It
+renders every message of the selection as one scrollable document.
 
 | Key | Action |
 |-----|--------|
@@ -285,13 +323,24 @@ message of the selection rendered as one scrollable document.
 | q | Quit, after a confirmation **(configurable: `quit`)** |
 | Esc | Back to the view you came from (RTP Streams, Call Flow, or Quality Dashboard) |
 
-The Stream Detail view shows comprehensive per-stream quality data: MOS score, jitter statistics, quality intervals, burst/gap analysis ([RFC 3611](https://www.rfc-editor.org/rfc/rfc3611.html)), silence detection, and sparkline graphs for MOS and jitter trends over the stream's lifetime.
+The Stream Detail view shows comprehensive per-stream quality data:
+
+- MOS score,
+- jitter statistics,
+- quality intervals,
+- burst/gap analysis ([RFC 3611](https://www.rfc-editor.org/rfc/rfc3611.html)),
+- silence detection,
+- sparkline graphs for MOS and jitter trends over the stream's lifetime.
 
 ## Quality dashboard
 
-Live call-quality overview: aggregate MOS/jitter/loss with the worst
-streams ranked first and per-stream trend sparklines. Open with `D` from
-the Call List or RTP Streams view.
+Live call-quality overview:
+
+- aggregate MOS/jitter/loss,
+- the worst streams ranked first,
+- per-stream trend sparklines.
+
+Open with `D` from the Call List or RTP Streams view.
 
 | Key | Action |
 |-----|--------|
@@ -314,10 +363,14 @@ the Call List or RTP Streams view.
 ## Top talkers
 
 Every source IP in the capture, ranked by the number of dialogs it took part
-in, then by messages. Each row counts the participant's dialogs, messages,
-INVITEs, and how many of those INVITEs got an answer or failed. The view
-credits a participant for every dialog it took part in, so the shares
-overlap. Open with `g` from the Call List.
+in, then by messages.
+
+- Each row counts the participant's dialogs, messages, INVITEs, and how many
+  of those INVITEs got an answer or failed.
+- The view credits a participant for every dialog it took part in. So the
+  shares overlap.
+
+Open with `g` from the Call List.
 
 | Key | Action |
 |-----|--------|
@@ -329,10 +382,13 @@ overlap. Open with `g` from the Call List.
 ## Carrier metrics
 
 Answer-seizure ratio (ASR), network effectiveness ratio (NER) and average call
-duration (ACD) for each destination IP, the address each call went to.
-A call attempt is an INVITE that got a final response; a group with no call
-attempt shows `—` rather than a zero. The figures come from the same
-calculation as `GET /v1/dialogs/rates`. Open with `m` from the Call List.
+duration (ACD) for each destination IP. That is the address each call went to.
+
+- A call attempt is an INVITE that got a final response.
+- A group with no call attempt shows `—` rather than a zero.
+- The figures come from the same calculation as `GET /v1/dialogs/rates`.
+
+Open with `m` from the Call List.
 
 | Key | Action |
 |-----|--------|
@@ -344,8 +400,12 @@ calculation as `GET /v1/dialogs/rates`. Open with `m` from the Call List.
 ## Compare two calls
 
 Two dialogs side by side: Call-ID, state, final status, message count and the
-methods each carried. The view marks each field that differs `(differs)`,
-lists the differences by name, and shows a failed call's diagnosis hints.
+methods each carried. The view:
+
+- marks each field that differs `(differs)`,
+- lists the differences by name,
+- shows a failed call's diagnosis hints.
+
 Star exactly two dialogs with `Space` in the Call List, then press `c`.
 
 | Key | Action |
@@ -357,11 +417,18 @@ Star exactly two dialogs with `Space` in the Call List, then press `c`.
 
 ## Endpoint rollup
 
-Everything the selected dialog's source address did in the capture: its
-dialogs, messages sent and received, counts by method and by state, INVITE
-outcomes, registrations, the User-Agent and Server values it sent, its RTP
-streams with codecs, loss and jitter, and its most recent Call-IDs. The same
-report as `GET /v1/endpoints`. Open with `e` from the Call List.
+Everything the selected dialog's source address did in the capture:
+
+- its dialogs,
+- messages sent and received,
+- counts by method and by state,
+- INVITE outcomes,
+- registrations,
+- the User-Agent and Server values it sent,
+- its RTP streams with codecs, loss and jitter,
+- its most recent Call-IDs.
+
+The same report as `GET /v1/endpoints`. Open with `e` from the Call List.
 
 | Key | Action |
 |-----|--------|
@@ -372,9 +439,12 @@ report as `GET /v1/endpoints`. Open with `e` from the Call List.
 
 ## Capture health
 
-The capture's own health: the loss, decode and media-path counters, and on a
-run with a HEP listener (`-L`) one line counting its senders. Open with `h`
-from the Call List.
+The capture's own health:
+
+- the loss, decode and media-path counters,
+- on a run with a HEP listener (`-L`), one line counting its senders.
+
+Open with `h` from the Call List.
 
 | Key | Action |
 |-----|--------|
@@ -386,10 +456,14 @@ from the Call List.
 
 ## HEP senders
 
-Who is feeding the `-L` listener: each sender (the capture id it claims and
-the address it sends from), its packet count, when it was last heard and
-whether it went silent, then every address the listener refused, with the
-reasons. The same table `--hep-senders` prints at the end of a headless run.
+Who is feeding the `-L` listener:
+
+- each sender (the capture id it claims and the address it sends from),
+- its packet count,
+- when it was last heard and whether it went silent,
+- then every address the listener refused, with the reasons.
+
+The same table `--hep-senders` prints at the end of a headless run.
 A session with no listener says so. Open with `s` from Capture health.
 
 | Key | Action |
@@ -401,8 +475,8 @@ A session with no listener says so. Open with `s` from Capture health.
 
 ## Call volume histogram
 
-Calls per 60-second bucket across the capture, one bar per bucket, scaled
-against the busiest bucket. Open with `b` from the Call List.
+Calls per 60-second bucket across the capture, one bar per bucket. The view
+scales the bars against the busiest bucket. Open with `b` from the Call List.
 
 | Key | Action |
 |-----|--------|
@@ -413,11 +487,23 @@ against the busiest bucket. Open with `b` from the Call List.
 
 ## SDP offer/answer timeline
 
-Each SDP offer and answer of the selected dialog in order: its time, the
-codecs, the media address and port, and the direction attribute
-(`sendrecv`, `sendonly` and so on). The row of a mid-call change names it:
-on hold, resumed, codec change, switched to T.38 fax, media anchor moved, or
-a transfer. Open with `o` from the Call List.
+Each SDP offer and answer of the selected dialog in order:
+
+- its time,
+- the codecs,
+- the media address and port,
+- the direction attribute (`sendrecv`, `sendonly` and so on).
+
+The row of a mid-call change names it:
+
+- on hold,
+- resumed,
+- codec change,
+- switched to T.38 fax,
+- media anchor moved,
+- or a transfer.
+
+Open with `o` from the Call List.
 
 | Key | Action |
 |-----|--------|
@@ -428,10 +514,18 @@ a transfer. Open with `o` from the Call List.
 
 ## RFC conformance
 
-The selected dialog's RFC conformance findings, the same ones
-`GET /v1/dialogs/:call_id/lint` returns. Each names its severity, the RFC
-section, the message it came from, the rule ID, what sipnab observed,
-what the RFC expects, and why it matters. Open with `f` from the Call List.
+The selected dialog's RFC conformance findings. They are the same ones
+`GET /v1/dialogs/:call_id/lint` returns. Each names:
+
+- its severity,
+- the RFC section,
+- the message it came from,
+- the rule ID,
+- what sipnab observed,
+- what the RFC expects,
+- and why it matters.
+
+Open with `f` from the Call List.
 
 | Key | Action |
 |-----|--------|
@@ -443,7 +537,11 @@ what the RFC expects, and why it matters. Open with `f` from the Call List.
 ## TFPS observe
 
 What an enforcing [TFPS](tfps.md) peer reports, read by running its
-`tfps_ctl` command: the sources it bans now, or its per-source drop counters.
+`tfps_ctl` command:
+
+- the sources it bans now,
+- or its per-source drop counters.
+
 The view only reads; it bans and unbans nothing. Without `tfps_ctl` on the
 `PATH` (or named by `--tfps-ctl` or `[tfps] ctl`) the view says so. Open with
 `x` from the Call List.
@@ -459,13 +557,17 @@ The view only reads; it bans and unbans nothing. Without `tfps_ctl` on the
 
 ## Security findings
 
-The detectors armed on this run and the alerts they raised: each finding's
-rule, source address, detail and time. It shows 200 findings and gives the
-total when more matched. With no detector
-armed the view says that nothing was watching, so an empty list is not a clean
-bill. The same report as `GET /v1/security/findings`. Arm a detector with
-`--kill-scanner`, `--fraud-detect`, `--digest-leak` or `--reg-flood`. Open
-with `a` from the Call List.
+The detectors armed on this run and the alerts they raised. For each finding:
+rule, source address, detail and time.
+
+- It shows 200 findings and gives the total when more matched.
+- With no detector armed, the view says that nothing was watching. So an
+  empty list is not a clean bill.
+- The same report as `GET /v1/security/findings`.
+- Arm a detector with `--kill-scanner`, `--fraud-detect`, `--digest-leak` or
+  `--reg-flood`.
+
+Open with `a` from the Call List.
 
 | Key | Action |
 |-----|--------|
@@ -476,13 +578,18 @@ with `a` from the Call List.
 
 ## Capture filter editor
 
-Appends an expression to the BPF capture filter. The upper pane previews the
-filter in force; the lower pane takes the expression. `Enter` compiles the
-combined filter first and refuses one libpcap rejects, with the reason on the
-status line. A live capture then applies it to the running capture, and
-sipnab reads a single capture file again under it. With several input files, or
-none, it reports that the filter compiles and applies nothing. Open with `B`
-from the Call List.
+Appends an expression to the BPF capture filter.
+
+- The upper pane previews the filter in force.
+- The lower pane takes the expression.
+- `Enter` compiles the combined filter first. It refuses one libpcap rejects,
+  with the reason on the status line.
+- A live capture then applies it to the running capture.
+- sipnab reads a single capture file again under it.
+- With several input files, or none, it reports that the filter compiles and
+  applies nothing.
+
+Open with `B` from the Call List.
 
 | Key | Action |
 |-----|--------|
@@ -496,14 +603,16 @@ from the Call List.
 
 ## Relay statistics
 
-The live relay's own view of media, asked over its control socket — distinct
-from the **Statistics** view above, which is about what this capture saw. Open
-with `S`: from the Call List it asks the relay's global counters, and from a
-call's flow view it scopes them to that call.
+The live relay's own view of media, asked over its control socket. This is
+distinct from the **Statistics** view above, which is about what this capture
+saw. Open with `S`:
+
+- From the Call List it asks the relay's global counters.
+- From a call's flow view it scopes them to that call.
 
 It needs a relay control address and
 a live capture. A run reading a file reports that it may not ask. The ask runs
-in the background, so the view never freezes waiting on a slow relay.
+in the background. So the view never freezes waiting on a slow relay.
 
 | Key | Action |
 |-----|--------|
@@ -558,7 +667,7 @@ Save formats: **PCAP**, **PCAP-NG**, **TXT**, **JSON**, **NDJSON**, **CSV**, **M
 | Home / End | Jump to start/end of text field |
 | (any char) | Insert character in focused text field |
 
-The SIP-method grid starts with an **All** master checkbox: Space on it checks
+The SIP-method grid starts with an **All** master checkbox. Space on it checks
 or unchecks every method at once.
 
 ## Settings popup
@@ -570,7 +679,9 @@ or unchecks every method at once.
 | Down / j | Next setting |
 | Enter / Space | Toggle or cycle the focused setting |
 
-Settings items: Colors, Timestamps, Autoscroll, Detail pane, SDP, Syntax colors. Values read as the rest of the TUI spells them: `Delta from previous`, `Call-ID`, `Hidden`, `On` and `Off`.
+Settings items: Colors, Timestamps, Autoscroll, Detail pane, SDP, Syntax colors.
+
+Values read as the rest of the TUI spells them: `Delta from previous`, `Call-ID`, `Hidden`, `On` and `Off`.
 
 ## File open popup
 
@@ -591,25 +702,33 @@ and `Tab` again returns to the browser.
 | Home / End (typed path) | Jump to the start or end of the path |
 | Delete | Typed path: delete the character under the cursor |
 
-The browser lists `.pcap`, `.pcapng`, and `.cap` files, their
-gzip-compressed forms (`*.pcap.gz`, …), and archives of captures (`.tar`,
-`.tgz`, `.tar.gz`, and `.zip` in builds with the `archive` feature). sipnab
-decompresses on the fly, and loads an archive as the
-set of captures it holds, member by member into one view. The status line says
-how many captures came out of the archive and how many members it did not read.
+The browser lists:
 
-If sipnab cannot read the directory — most often because it started with
-`sudo` and dropped privileges to an unprivileged user that can't read your
-home directory — the dialog shows the reason instead of a blank list. Run
-sipnab **without** `sudo` (see [install.md](install.md#capture-live-traffic-without-root) for capabilities) to
-browse your own files.
+- `.pcap`, `.pcapng`, and `.cap` files,
+- their gzip-compressed forms (`*.pcap.gz`, …),
+- archives of captures (`.tar`, `.tgz`, `.tar.gz`, and `.zip` in builds with
+  the `archive` feature).
+
+sipnab decompresses on the fly. It loads an archive as the set of captures it
+holds, member by member into one view. The status line says how many captures
+came out of the archive and how many members it did not read.
+
+If sipnab cannot read the directory, the dialog shows the reason instead of a
+blank list.
+
+- The most common cause: sipnab started with `sudo` and dropped privileges to
+  an unprivileged user that can't read your home directory.
+- Run sipnab **without** `sudo` to browse your own files. See
+  [install.md](install.md#capture-live-traffic-without-root) for capabilities.
 
 ## Archive password popup
 
 A capture load that meets an encrypted archive member asks here when no
 password you configured opens it (see [Archives](cli-reference.md#archives)).
-The load waits for the answer. The popup names the archive, the member and
-the attempt, and each archive gets three attempts.
+
+- The load waits for the answer.
+- The popup names the archive, the member and the attempt.
+- Each archive gets three attempts.
 
 | Key | Action |
 |-----|--------|
@@ -619,13 +738,16 @@ the attempt, and each archive gets three attempts.
 | Ctrl-U | Clear the entry |
 | Backspace | Delete the last character |
 
-A paste arrives as one entry, so a password manager works and no character
-of the password acts as a key. The session remembers the password that opened
-an archive for that archive only, and forgets it when another capture opens.
-The action trail says `archive_password_accepted` or
-`archive_locked_members_skipped` with the archive's name, never the password
-or its length. The status line counts locked members and marks an archive
-that uses ZipCrypto, which protects nothing.
+A paste arrives as one entry. So a password manager works, and no character
+of the password acts as a key.
+
+- The session remembers the password that opened an archive for that archive
+  only. It forgets it when another capture opens.
+- The action trail says `archive_password_accepted` or
+  `archive_locked_members_skipped` with the archive's name. It never says the
+  password or its length.
+- The status line counts locked members. It marks an archive that uses
+  ZipCrypto, which protects nothing.
 
 ## Column selector
 
@@ -639,26 +761,31 @@ that uses ZipCrypto, which protects nothing.
 
 ## Timestamp modes
 
-Press `t` in the Call List or Call Flow to cycle through the timestamp modes (both views share the mode):
+Press `t` in the Call List or Call Flow to cycle through the timestamp modes. Both views share the mode:
 
-1. **Absolute** -- `HH:MM:SS.mmm` wall-clock time
-2. **Delta from previous** (default) -- `+N.NNNs` time since previous entry. Color-coded in call flow:
-   - Green: < 100 ms
-   - Yellow: 100 ms - 1 s
-   - Red: 1 s - 5 s
-   - Bold red: > 5 s
-3. **Delta from first** -- `+N.NNNs` cumulative time from first entry
-4. **Scaled** -- delta-from-previous timestamps plus time-proportional spacer rows, so
-   quiet gaps are visible in the ladder. The set of visible messages is
-   identical in every mode — only the presentation changes.
+- **Absolute** -- `HH:MM:SS.mmm` wall-clock time
+- **Delta from previous** (default) -- `+N.NNNs` time since previous entry. Color-coded in call flow:
+  - Green: < 100 ms
+  - Yellow: 100 ms - 1 s
+  - Red: 1 s - 5 s
+  - Bold red: > 5 s
+- **Delta from first** -- `+N.NNNs` cumulative time from first entry
+- **Scaled** -- delta-from-previous timestamps plus time-proportional spacer rows.
+  So quiet gaps are visible in the ladder. The set of visible messages is
+  identical in every mode. Only the presentation changes.
 
-In the Call List the timing column's header names the mode, because the
-column shows different data in each: **Start** in Absolute (the dialog's
-start time, `HH:MM:SS`), **+Prev** in Delta from previous (time since the dialog above
-it, in the list's current sort order), and **+First** in Delta from first (time
-since the first dialog). The spacer rows of Scaled belong to the ladder, so
-the Call List shows Scaled as **+Prev**. The F10 column selector and the
-`visible_columns` setting still call this column `Date`.
+In the Call List, the timing column's header names the mode. The column shows
+different data in each:
+
+- **Start** in Absolute (the dialog's start time, `HH:MM:SS`).
+- **+Prev** in Delta from previous (time since the dialog above it, in the
+  list's current sort order).
+- **+First** in Delta from first (time since the first dialog).
+- The spacer rows of Scaled belong to the ladder. So the Call List shows
+  Scaled as **+Prev**.
+
+The F10 column selector and the `visible_columns` setting still call this
+column `Date`.
 
 <div class="terminal">
 <div class="terminal-bar">
@@ -678,37 +805,57 @@ the Call List shows Scaled as **+Prev**. The F10 column selector and the
 
 ## Name resolution
 
-sipnab can display host names instead of raw IP addresses (Wireshark-style),
-in the call list **Source**/**Destination** columns, call-flow participant
-labels, and the RTP stream views. Press **`n`** to cycle the mode (shown
-briefly in the status line):
+sipnab can display host names instead of raw IP addresses (Wireshark-style).
+It does so in:
 
-1. **Off** (default) -- raw `ip:port`
-2. **Static** -- operator mappings + the system `/etc/hosts`. No network traffic
-3. **DNS** -- additionally resolves via reverse DNS (PTR), looked up on a
-   background worker and cached (so the UI never blocks)
+- the call list **Source**/**Destination** columns,
+- call-flow participant labels,
+- the RTP stream views.
 
-Names come from four sources, highest priority first: operator-entered
-mappings, then `/etc/hosts` (or a `--names` / `[names] hosts_file`), then any
-Name Resolution Block in the capture you opened, then reverse DNS.
+Press **`n`** to cycle the mode (shown briefly in the status line):
+
+- **Off** (default) -- raw `ip:port`
+- **Static** -- operator mappings + the system `/etc/hosts`. No network traffic
+- **DNS** -- additionally resolves via reverse DNS (PTR). A background worker
+  looks names up and caches them (so the UI never blocks)
+
+Names come from four sources, highest priority first:
+
+- operator-entered mappings,
+- then `/etc/hosts` (or a `--names` / `[names] hosts_file`),
+- then any Name Resolution Block in the capture you opened,
+- then reverse DNS.
+
 Substitution touches only the IP. The `:port` stays (`sbc-edge:5060`).
 
 To name an address **in context**, select a call-list row, stream row, or
-call-flow message and press **`N`**. A popup opens with the endpoints of that
-row or message (a call-list row offers its source and its destination), each
-pre-filled with the name it has now. **`Tab`** and **`Shift+Tab`** move between
-the endpoints. Type a host/FQDN and press Enter to apply every endpoint (an
-empty name clears that mapping); **`Esc`** closes the popup without applying. Naming an
-address turns resolution on automatically, and sipnab saves the mapping to
-`$XDG_CONFIG_HOME/sipnab/hosts` (`~/.config/sipnab/hosts`) so it persists
+call-flow message and press **`N`**.
+
+- A popup opens with the endpoints of that row or message. A call-list row
+  offers its source and its destination.
+- Each endpoint is pre-filled with the name it has now.
+- **`Tab`** and **`Shift+Tab`** move between the endpoints.
+- Type a host/FQDN and press Enter to apply every endpoint. An empty name
+  clears that mapping.
+- **`Esc`** closes the popup without applying.
+
+Naming an address turns resolution on automatically. sipnab saves the mapping
+to `$XDG_CONFIG_HOME/sipnab/hosts` (`~/.config/sipnab/hosts`) so it persists
 across runs.
 
-Mappings can also persist into your **config file**: set
-`[names] persist_to_config = true` and `N`-dialog edits land in the
-`[names.manual]` table of the file this run loaded (`~/.sipnabrc`, a
-`--config` file, whichever it was), or of the user config file (`$XDG_CONFIG_HOME/sipnab/sipnab.toml`, by
-default `~/.config/sipnab/sipnab.toml`) when none was, leaving comments and other sections intact. When the settings came
-from `/etc/sipnab/sipnab.toml`, edits are not written there and the status line says so when the session opens. You can also pre-declare mappings there by hand:
+Mappings can also persist into your **config file**.
+
+- Set `[names] persist_to_config = true`. `N`-dialog edits then land in the
+  `[names.manual]` table of:
+  - the file this run loaded (`~/.sipnabrc`, a `--config` file, whichever it
+    was),
+  - or the user config file (`$XDG_CONFIG_HOME/sipnab/sipnab.toml`, by default
+    `~/.config/sipnab/sipnab.toml`) when none was.
+- The edits leave comments and other sections intact.
+- When the settings came from `/etc/sipnab/sipnab.toml`, edits are not written
+  there. The status line says so when the session opens.
+
+You can also pre-declare mappings there by hand:
 
 ```toml
 [names.manual]
@@ -716,13 +863,16 @@ from `/etc/sipnab/sipnab.toml`, edits are not written there and the status line 
 ```
 
 When saving a capture as **PCAP-NG** with resolution active, sipnab embeds the
-mappings as a Name Resolution Block, and reads them back when you reopen the file.
+mappings as a Name Resolution Block. It reads them back when you reopen the file.
 
-Related flags: `--resolve` (start with resolution on), `--reverse-dns` (enable
-PTR lookups, which implies `--resolve`), `--names <FILE>` (preload an
-`/etc/hosts`-format mapping file, repeatable). See
-[cli-reference.md](cli-reference.md#name-resolution) and the `[names]` section of
-[config-reference.md](config-reference.md#names).
+Related flags:
+
+- `--resolve` (start with resolution on),
+- `--reverse-dns` (enable PTR lookups, which implies `--resolve`),
+- `--names <FILE>` (preload an `/etc/hosts`-format mapping file, repeatable).
+
+See [cli-reference.md](cli-reference.md#name-resolution) and the `[names]`
+section of [config-reference.md](config-reference.md#names).
 
 ---
 
@@ -751,21 +901,32 @@ The call list is the main view when sipnab starts. It shows all tracked SIP dial
 <span class="t-muted">  Esc Quit  F1 Help  Enter Open call  Tab Streams  F2 Save  F7 Filter</span></pre>
 </div>
 
-The three lines above the list say what you are looking at. Line 1 names
-the source (`Live capture: eth0` or `File: call.pcap`), how many dialogs the
-list shows out of how many sipnab holds, and whether autoscroll is on. Line 2
-is the capture (BPF) filter the kernel applies, `none` when sipnab compiled
-no filter. When the filter belongs to a different source from the one line 1
-names, line 2 says which after the filter: `[live capture]` when a file opened
-with `O` replaced the screen while the live capture keeps running behind it,
-`[file re-scan]` when `B` re-read a capture file under the filter. Line 3 is the view filter from `F7` and any search you kept with
-Enter, and it also carries status messages, with errors in red.
+The three lines above the list say what you are looking at.
+
+- Line 1 names:
+  - the source (`Live capture: eth0` or `File: call.pcap`),
+  - how many dialogs the list shows out of how many sipnab holds,
+  - whether autoscroll is on.
+- Line 2 is the capture (BPF) filter the kernel applies. It is `none` when
+  sipnab compiled no filter.
+  - The filter can belong to a different source from the one line 1 names.
+    Then line 2 says which after the filter:
+    - `[live capture]` when a file opened with `O` replaced the screen while
+      the live capture keeps running behind it,
+    - `[file re-scan]` when `B` re-read a capture file under the filter.
+- Line 3 is the view filter from `F7` and any search you kept with Enter.
+  - It also carries status messages, with errors in red.
 
 The key bar
 at the bottom lists the keys of the view you are in, `F1 Help` first after the
 way out, and fewer of them on a narrow terminal.
 
-> **Tip:** Press `Space` to star dialogs — a starred row shows `[*]` in the `#` column (the `▸` above is just the cursor). `F2` then saves only the starred dialogs, and `Enter` opens two or more of them as a single merged flow. Use `<` / `>` to sort by different columns and `Z` to reverse sort direction.
+> **Tip:**
+>
+> - Press `Space` to star dialogs. A starred row shows `[*]` in the `#` column (the `▸` above is just the cursor).
+> - `F2` then saves only the starred dialogs.
+> - `Enter` opens two or more of them as a single merged flow.
+> - Use `<` / `>` to sort by different columns and `Z` to reverse sort direction.
 
 ### Call flow view
 
@@ -798,7 +959,11 @@ The call flow shows a ladder diagram for a selected dialog, with timing, SDP, an
 <span class="t-muted">  Esc Back  F1 Help  ↑↓ Move  Enter Raw  d SDP  t Time  c Color  R Detail</span></pre>
 </div>
 
-> **Tip:** Press `m` to set a mark at any message, then navigate to another message to see the delta badge showing elapsed time between them. Press `M` to clear the mark. Use `d` to cycle through SDP display modes (none / summary / full).
+> **Tip:**
+>
+> - Press `m` to set a mark at any message. Then navigate to another message to see the delta badge showing elapsed time between them.
+> - Press `M` to clear the mark.
+> - Use `d` to cycle through SDP display modes (none / summary / full).
 
 ### Raw message view
 
@@ -855,7 +1020,10 @@ Shows all tracked RTP streams with quality metrics. Switch here from the Call Li
 <span class="t-muted">  Esc Back  F1 Help  Enter Detail  Tab Calls  F2 Save WAV  F7 Filter  a All/Call</span></pre>
 </div>
 
-> **Tip:** Streams marked `orphan` have no matching SIP dialog. This often indicates RTP arriving on unexpected ports (check your NAT/ALG config) or calls that started before capture began.
+> **Tip:** Streams marked `orphan` have no matching SIP dialog. This often indicates:
+>
+> - RTP arriving on unexpected ports (check your NAT/ALG config),
+> - or calls that started before capture began.
 
 ### Filter dialog (F7)
 
@@ -885,14 +1053,19 @@ The filter popup lets you build filter expressions with text fields and checkbox
 <span class="t-muted"> Tab Next  Space Toggle  Enter Apply  Esc Cancel  F9 Clear</span></pre>
 </div>
 
-Each label says what its field matches: From user and To user match the
-user part of the URI, Source IP and Destination IP the addresses, and Text in
-message searches every SIP message of the call. Header takes `Name: text`, or
-a bare header name to find the calls that carry it. After and Before take an
-[RFC 3339](https://www.rfc-editor.org/rfc/rfc3339.html) timestamp, and the empty fields show an example in gray.
-Named filter takes the names of [`[filters]`](config-reference.md#filters)
-entries, separated by spaces, with or without the leading `@`; while it is
-empty it lists the names the config defines.
+Each label says what its field matches:
+
+- From user and To user match the user part of the URI.
+- Source IP and Destination IP match the addresses.
+- Text in message searches every SIP message of the call.
+- Header takes `Name: text`, or a bare header name to find the calls that
+  carry it.
+- After and Before take an
+  [RFC 3339](https://www.rfc-editor.org/rfc/rfc3339.html) timestamp.
+- The empty fields show an example in gray.
+- Named filter takes the names of [`[filters]`](config-reference.md#filters)
+  entries, separated by spaces, with or without the leading `@`. While it is
+  empty, it lists the names the config defines.
 
 > **Tip:** Press `F9` to clear every field and the method boxes at once. For
 anything the fields cannot say, the [Filter DSL](filter-dsl.md) takes the full
@@ -923,11 +1096,14 @@ Save captured data in multiple formats. Use `Tab` to cycle through formats.
 <span class="t-muted"> Enter Save  Tab Format  Esc Cancel</span></pre>
 </div>
 
-The path and the dialog count stay at the top and the keys at the bottom on
-any terminal height, and only the format list scrolls. With no dialog checked the
+The path and the dialog count stay at the top on any terminal height. The keys
+stay at the bottom. Only the format list scrolls. With no dialog checked, the
 count line says `none checked, so all are saved`.
 
-> **Tip:** Select specific dialogs in the Call List with `Space` before pressing `F2`. The save dialog shows the count and saves only those. **HTML** writes a ladder diagram page drawn with Mermaid that you can open in any browser.
+> **Tip:**
+>
+> - Select specific dialogs in the Call List with `Space` before pressing `F2`. The save dialog shows the count and saves only those.
+> - **HTML** writes a ladder diagram page drawn with Mermaid that you can open in any browser.
 
 ### Settings dialog (F8)
 

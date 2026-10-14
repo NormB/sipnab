@@ -1,11 +1,13 @@
 # contrib
 
-Optional integrations you can adopt if they suit your deployment. sipnab runs without
-any of it, and none of it ships inside the `.deb`, `.rpm`, or Homebrew formula —
-[`packaging/`](../packaging/README.md) builds those.
+Optional integrations you can adopt if they suit your deployment.
 
-Treat these as starting points to copy and adapt, not as configuration the
-project keeps in lockstep with your infrastructure.
+- sipnab runs without any of it.
+- None of it ships inside the `.deb`, `.rpm`, or Homebrew formula.
+  [`packaging/`](../packaging/README.md) builds those.
+
+Treat these as starting points to copy and adapt. They are not configuration
+the project keeps in lockstep with your infrastructure.
 
 | Path | What it is |
 |------|------------|
@@ -18,10 +20,12 @@ project keeps in lockstep with your infrastructure.
 
 ## Where things live
 
-The split is by who maintains the contract, not by who wrote the file — all of
+The split is by who maintains the contract, not by who wrote the file. All of
 this is first-party:
 
-- **`packaging/`** — release machinery. Runs on every tag, gated by CI, and a
-  broken path there breaks a published artifact.
-- **`contrib/`** — examples. Nothing here runs unless you choose to run it, and
-  the only automated check is that `sipnabrc.example` still parses.
+- **`packaging/`** — release machinery.
+  - It runs on every tag, gated by CI.
+  - A broken path there breaks a published artifact.
+- **`contrib/`** — examples.
+  - Nothing here runs unless you choose to run it.
+  - The only automated check is that `sipnabrc.example` still parses.

@@ -1,59 +1,84 @@
 # Let sipnab name rtpengine's media
 
-Capture on a media relay and you get the audio of every call, but nothing in
-an RTP packet says which call it belongs to. The name is in the signaling,
-and a relay on its own machine never sees the signaling. sipnab can still name
-the media, two ways:
+Capture on a media relay and you get the audio of every call. But nothing in
+an RTP packet says which call it belongs to. The name is in the signaling. A
+relay on its own machine never sees the signaling. sipnab can still name the
+media, in two ways:
 
-- **It reads the relay's control plane.** rtpengine can copy every request
-  your SIP proxy sends it, such as `offer` and `answer`, to a HEP collector.
-  Each copy carries the Call-ID and the ports rtpengine gave the call, so
-  sipnab can tie the media on those ports to the call.
-- **It asks the relay.** A call that was up before sipnab started left no
-  `offer` for sipnab to read. With `--rtpengine-control`, sipnab asks
-  rtpengine which calls it holds and which ports each one uses.
+- **It reads the relay's control plane.**
+  - rtpengine can copy every request your SIP proxy sends it, such as `offer`
+    and `answer`, to a HEP collector.
+  - Each copy carries the Call-ID and the ports rtpengine gave the call.
+  - So sipnab can tie the media on those ports to the call.
+- **It asks the relay.**
+  - A call that was up before sipnab started left no `offer` for sipnab to
+    read.
+  - With `--rtpengine-control`, sipnab asks rtpengine which calls it holds
+    and which ports each one uses.
 
 This guide sets up both against the stack from
-[Add rtpengine to your voice stack](rtpengine-relay.md): first on the
-machine that runs the SIP proxy and rtpengine together, then with rtpengine on
-a machine of its own. The proxy is OpenSIPS, from its packages or built from
-source, or Kamailio, set up as that guide's
-[With Kamailio](rtpengine-relay.md#with-kamailio) section sets it up. sipnab
-never talks to the proxy, so every step is the same for each, apart from the
-one line in step 5 that edits the proxy's configuration. The
-[rtpengine reference](rtpengine.md) explains what sipnab does with the relay's
-answers, and how far it trusts them.
+[Add rtpengine to your voice stack](rtpengine-relay.md):
+
+- first on the machine that runs the SIP proxy and rtpengine together,
+- then with rtpengine on a machine of its own.
+
+The proxy is one of these:
+
+- OpenSIPS, from its packages or built from source,
+- Kamailio, set up as that guide's
+  [With Kamailio](rtpengine-relay.md#with-kamailio) section sets it up.
+
+sipnab never talks to the proxy. So every step is the same for each proxy.
+The one exception is the line in the rtpengine on its own machine step that
+edits the proxy's configuration.
+
+The [rtpengine reference](rtpengine.md) explains what sipnab does with the
+relay's answers, and how far it trusts them.
 
 ## What sipnab asks rtpengine
 
 sipnab sends rtpengine three of its commands, and no others. All three only
-read: `list` names the calls the relay holds, `query` returns one call's ports
-and counters, and `statistics` returns the relay's own totals. To name calls,
-sipnab asks once at startup, and again only when a stream turns up that
-nothing explains, never on a timer. No sipnab command,
-flag, REST route or MCP tool can make rtpengine create, change or delete a
-call.
+read:
+
+- `list` names the calls the relay holds.
+- `query` returns one call's ports and counters.
+- `statistics` returns the relay's own totals.
+
+To name calls, sipnab asks once at startup. It asks again only when a stream
+turns up that nothing explains. It never asks on a timer.
+
+No sipnab command, flag, REST route or MCP tool can make rtpengine create,
+change or delete a call.
 
 ## Tested on
 
 Every block on this page ran as written, in order, on 2026-10-01, with
-sipnab 0.5.198 from its release package, on clean x86_64 virtual machines
-with 2 cores and 3 GB of memory, Debian 13 (kernel 6.12.63) and Ubuntu
-24.04.5 (kernel 6.8.0): the relay beside OpenSIPS built from source, beside
-Kamailio, and beside the OpenSIPS 4.0 packages with Kamailio on 5062. Each
-test call played SIPp's G.711 sample and DTMF through rtpengine. Step 5's
-blocks ran with the relay's control address moved to the machine's own
-address, and on 2026-09-28 they also ran with the relay on a machine of its
-own and the proxy on another. On both systems, causing the first, third and
-fourth faults under
-[When something does not work](#when-something-does-not-work) produced what
-they describe, and the second item's cause, a call up before sipnab started
-with no mirror and no `--rtpengine-control`, left its streams unnamed.
+sipnab 0.5.198 from its release package.
+
+- The machines were clean x86_64 virtual machines with 2 cores and 3 GB of
+  memory:
+  - Debian 13 (kernel 6.12.63),
+  - Ubuntu 24.04.5 (kernel 6.8.0).
+- The relay ran in three setups:
+  - beside OpenSIPS built from source,
+  - beside Kamailio,
+  - beside the OpenSIPS 4.0 packages with Kamailio on 5062.
+- Each test call played SIPp's G.711 sample and DTMF through rtpengine.
+- The rtpengine on its own machine step's blocks ran with the relay's control
+  address moved to the machine's own address.
+  - On 2026-09-28 they also ran with the relay on a machine of its own and
+    the proxy on another.
+- On both systems, the faults under
+  [When something does not work](#when-something-does-not-work) behaved as
+  follows:
+  - Causing the first, third and fourth faults produced what they describe.
+  - The second item's cause was a call up before sipnab started, with no
+    mirror and no `--rtpengine-control`. It left its streams unnamed.
 
 The examples use `192.0.2.10` for the machine that runs the SIP proxy and
 `192.0.2.20` for the relay's own machine. Replace them with yours.
 
-## 1. Install sipnab
+## Install sipnab
 
 On the machine that runs rtpengine:
 
@@ -68,15 +93,18 @@ sudo apt-get install -y ./sipnab_${V}_amd64.deb
 sipnab --version
 ```
 
-## 2. Let sipnab see the media
+## Let sipnab see the media
 
-When you give it no capture filter, a live sipnab builds one. Up to 0.5.192,
-that filter admitted SIP signaling only, ports 5060-5061: the kernel dropped
-every RTP packet before sipnab saw it, and a report showed the calls with no
-audio at all. Later versions admit RTP on any port as well. Either way, give
-sipnab a filter that names rtpengine's media ports. It works on every version,
-and it keeps the capture to the relay's own traffic. This guide uses the range
-from the rtpengine guide, 30000-39999:
+When you give it no capture filter, a live sipnab builds one.
+
+- Up to 0.5.192, that filter admitted SIP signaling only, ports 5060-5061.
+  - The kernel dropped every RTP packet before sipnab saw it.
+  - A report showed the calls with no audio at all.
+- Later versions admit RTP on any port as well.
+
+Either way, give sipnab a filter that names rtpengine's media ports. It works
+on every version. It keeps the capture to the relay's own traffic. This guide
+uses the range from the rtpengine guide, 30000-39999:
 
 ```text
 portrange 5060-5061 or udp portrange 30000-39999
@@ -89,10 +117,10 @@ Check the range against `port-min` and `port-max` in
 With OpenSIPS and Kamailio on one machine, Kamailio on 5062, widen the
 signaling range to `portrange 5060-5062`.
 
-## 3. Name a call that was already up
+## Name a call that was already up
 
 Start a test call and leave it running. The caller plays about 8 seconds of
-audio, so start sipnab within a second or two:
+audio. So start sipnab within a second or two:
 
 ```bash
 # Run all of these, in order.
@@ -106,14 +134,15 @@ sudo sipnab -N -d any --rtpengine-control 127.0.0.1:2223 --duration 6 --report \
 ```
 
 `--rtpengine-control` takes rtpengine's control address, its `listen-ng`
-setting. sipnab asks before it opens the capture, and logs the answer first:
+setting. sipnab asks before it opens the capture. It logs the answer first:
 
 ```text
 rtpengine at 127.0.0.1:2223: 1 call(s) enumerated, complete; queried 1 of them, 4 relay port(s) now attributable
 ```
 
-The call's `INVITE` went by before sipnab started, so sipnab saw no SIP for it.
-Its streams still carry its name, the Call-ID that `rtpengine-ctl` printed:
+The call's `INVITE` went by before sipnab started. So sipnab saw no SIP for
+it. Its streams still carry its name, the Call-ID that `rtpengine-ctl`
+printed:
 
 ```text
 Calls named by a media relay (no SIP for them in this capture):
@@ -122,20 +151,26 @@ Call-ID                                                      Streams
 1-36802@192.0.2.10                                           4
 ```
 
-Two of the four streams carry PCMA, the codec the caller offered, and two
-carry PCMU. SIPp's callee answers with PCMU only, so rtpengine converts the
-audio from one codec to the other between the two sides of the call.
+- Two of the four streams carry PCMA, the codec the caller offered.
+- Two carry PCMU.
+- SIPp's callee answers with PCMU only. So rtpengine converts the audio from
+  one codec to the other between the two sides of the call.
 
-Run the same call without `--rtpengine-control` and the four streams land
+Run the same call without `--rtpengine-control`. Then the four streams land
 under `Orphaned Streams` instead, with no call to name them.
 
-## 4. Ask the relay about one call
+## Ask the relay about one call
 
-sipnab can also print rtpengine's own counters for one call: its packets and
-bytes per stream, and the codec on each side. These are what the relay says
-about itself, so sipnab marks them `relay_reported`, apart from what it
-measured on the wire. The first line waits until the relay no longer holds
-the call from step 3, which takes up to a minute after it ends:
+sipnab can also print rtpengine's own counters for one call:
+
+- its packets and bytes per stream,
+- the codec on each side.
+
+These are what the relay says about itself. So sipnab marks them
+`relay_reported`, apart from what it measured on the wire.
+
+The first line waits until the relay no longer holds the call from the Name a
+call that was already up step. That takes up to a minute after the call ends:
 
 ```bash
 # Run all of these, in order.
@@ -149,26 +184,31 @@ sudo sipnab -N -d any --rtpengine-control 127.0.0.1:2223 --relay-stats-call "$CA
   | grep -E 'Relay statistics|codec|ingress SSRCs.0.packets'
 ```
 
-After SIPp's two `Background mode` lines, sipnab's first line names the
-relay, the call and the moment sipnab asked. Each side of the call shows its
-codec, `PCMA/8000` on the caller's side and `PCMU/8000` on the callee's, and
-the packets rtpengine has received on it so far.
+SIPp prints two `Background mode` lines. After them, sipnab's first line
+names the relay, the call and the moment sipnab asked. Each side of the call
+shows:
 
-Asking the relay needs a live capture, so the command also captures for one
-second. That capture sees no SIP and ends with `No SIP signaling found`,
-followed by a count of the RTP packets it parsed. The relay's counters above
-it are the answer.
+- its codec, `PCMA/8000` on the caller's side and `PCMU/8000` on the callee's,
+- the packets rtpengine has received on it so far.
 
-## 5. rtpengine on its own machine
+Asking the relay needs a live capture. So the command also captures for one
+second.
+
+- That capture sees no SIP.
+- It ends with `No SIP signaling found`, followed by a count of the RTP
+  packets it parsed.
+- The relay's counters above it are the answer.
+
+## rtpengine on its own machine
 
 Move rtpengine to its own machine as described in
 [Put rtpengine on its own machine](rtpengine-relay.md#put-rtpengine-on-its-own-machine).
-The relay's machine now carries media and no SIP, and that is where sipnab
-runs. Install sipnab there as in step 1.
+The relay's machine now carries media and no SIP. That is where sipnab runs.
+Install sipnab there as in the Install sipnab step.
 
-**Mirror the control plane to sipnab.** Add these lines to the `[rtpengine]`
-section of `/etc/rtpengine/rtpengine.conf`, on the relay's machine, and restart
-rtpengine:
+**Mirror the control plane to sipnab.** On the relay's machine, add these
+lines to the `[rtpengine]` section of `/etc/rtpengine/rtpengine.conf`. Then
+restart rtpengine:
 
 ```bash
 # Run all of these, in order.
@@ -177,12 +217,16 @@ sed -n '/^\[rtpengine\]/,/^\[/p' /etc/rtpengine/rtpengine.conf | grep '^homer'
 sudo systemctl restart ngcp-rtpengine-daemon
 ```
 
-`homer-enable-ng = true` is the line that matters: without it, rtpengine sends
-only RTCP statistics, which carry no Call-ID. `homer-id` identifies this relay
-when you have several, so give each one its own.
+- `homer-enable-ng = true` is the line that matters.
+  - Without it, rtpengine sends only RTCP statistics.
+  - RTCP statistics carry no Call-ID.
+- `homer-id` identifies this relay when you have several. So give each one
+  its own.
 
 rtpengine now sends a HEP copy of every control request to `127.0.0.1:9060`.
-sipnab's HEP listener receives them there, while its capture takes the media.
+sipnab's HEP listener receives them there. Its capture takes the media at the
+same time.
+
 If rtpengine already sends to a Homer collector, keep that destination. The
 [rtpengine reference](rtpengine.md#if-rtpengine-already-reports-to-homer)
 covers that case.
@@ -193,12 +237,17 @@ covers that case.
 sudo sipnab -N -d any --hep-listen 127.0.0.1:9060 --duration 25 --report "udp portrange 30000-39999"
 ```
 
-While it runs, place a test call on the proxy's machine. The rtpengine
-guide's callee listens on `127.0.0.1`, which the relay cannot reach from its
-own machine, so start the callee on the machine's address instead, with its
-media on ports 7000-7100 so that it does not collide with the caller's 6000,
-and point the proxy at it. The first line finds the proxy's configuration: the
-OpenSIPS packages', a source build's, or Kamailio's:
+While it runs, place a test call on the proxy's machine.
+
+- The rtpengine guide's callee listens on `127.0.0.1`. The relay cannot reach
+  that from its own machine.
+- So start the callee on the machine's address instead.
+  - Put its media on ports 7000-7100, so that it does not collide with the
+    caller's 6000.
+- Point the proxy at it.
+
+The first line finds the proxy's configuration: the OpenSIPS packages', a
+source build's, or Kamailio's:
 
 ```bash
 # Run all of these, in order.
@@ -220,31 +269,41 @@ Call-ID                                                      Streams
 1-37258@192.0.2.10                                           8
 ```
 
-Eight streams here: the four audio streams and the DTMF events the caller
-sends, each counted on both sides of the relay.
+There are eight streams here: the four audio streams and the DTMF events the
+caller sends. The report counts each one on both sides of the relay.
 
-For calls already up when sipnab starts, add `--rtpengine-control
-127.0.0.1:2223` if the relay's control port still listens on the loopback
-address, or the relay's own address if you moved it there. Run sipnab on the
-relay's machine rather than asking across the network: rtpengine's control
-protocol has no authentication, and only your SIP proxy should reach it.
+For calls already up when sipnab starts, add one of these:
+
+- `--rtpengine-control
+  127.0.0.1:2223`, if the relay's control port still listens on the loopback
+  address,
+- or the same flag with the relay's own address, if you moved it there.
+
+Run sipnab on the relay's machine rather than asking across the network.
+
+- rtpengine's control protocol has no authentication.
+- Only your SIP proxy should reach it.
 
 ## When something does not work
 
 - **The report shows calls but `0 RTP packets`.** sipnab's filter admitted
-  signaling only. Add the relay's media range, as in step 2.
+  signaling only. Add the relay's media range, as in the Let sipnab see the
+  media step.
 - **Streams appear, but no call names them.** On a machine without the SIP,
-  sipnab has neither the mirror nor an answer from the relay. Check that
-  `homer-enable-ng = true` is in the `[rtpengine]` section, and that sipnab
-  was listening on the `homer` address before the call started.
+  sipnab has neither the mirror nor an answer from the relay. Check two
+  things:
+  - `homer-enable-ng = true` is in the `[rtpengine]` section.
+  - sipnab was listening on the `homer` address before the call started.
 - **`could not be asked which calls are up: no reply ... Connection refused`.**
   Nothing listens at the `--rtpengine-control` address. Give it the
   `listen-ng` value from the `[rtpengine]` section.
 - **rtpengine logs `Connection error from Homer at 127.0.0.1:9060: Connection
   refused`, or `Write error to Homer at 127.0.0.1:9060: Connection
-  refused`.** Nothing was listening at the `homer` address. The first message
-  comes when a listener that was there goes away; after that, each call
-  rtpengine tries to mirror logs the second. rtpengine loses the copies it
-  sent while nothing listened, so sipnab cannot name those calls. Start
-  sipnab's HEP listener before the calls you want named. With the rtpengine
-  this guide builds, rtpengine mirrors the next call again without a restart.
+  refused`.** Nothing was listening at the `homer` address.
+  - The first message comes when a listener that was there goes away.
+  - After that, each call rtpengine tries to mirror logs the second.
+  - rtpengine loses the copies it sent while nothing listened. So sipnab
+    cannot name those calls.
+  - Start sipnab's HEP listener before the calls you want named.
+  - With the rtpengine this guide builds, rtpengine mirrors the next call
+    again without a restart.

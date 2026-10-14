@@ -1,17 +1,29 @@
 # Ban SIP scanners with fail2ban
 
-[fail2ban](https://github.com/fail2ban/fail2ban) reads your servers' logs and
-bans the addresses that show up in them for the wrong reasons, by adding them
-to a firewall rule. Make your SIP server write one log line for each scanner
-request and each wrong password, and fail2ban bans SIP scanners and password
-guessers. It is the firewall alternative to [TFPS](tfps.md): TFPS reads the
-SIP traffic itself and drops attackers with an XDP program, while fail2ban acts
-on what your SIP server logged, and bans with an ordinary nftables rule.
+[fail2ban](https://github.com/fail2ban/fail2ban) reads your servers' logs. It
+bans the addresses that show up in them for the wrong reasons. It does that by
+adding them to a firewall rule.
 
-This guide sets up OpenSIPS as a registrar that logs scanners and failed
-passwords, has fail2ban ban on those lines, and proves it from this machine
-with a scanner, a password guesser and a phone that keeps working. This guide
-does not use sipnab. When fail2ban is working,
+- Make your SIP server write one log line for each scanner request and each
+  wrong password.
+- fail2ban then bans SIP scanners and password guessers.
+
+It is the firewall alternative to [TFPS](tfps.md):
+
+- TFPS reads the SIP traffic itself and drops attackers with an XDP program.
+- fail2ban acts on what your SIP server logged. It bans with an ordinary
+  nftables rule.
+
+This guide does the following:
+
+- It sets up OpenSIPS as a registrar that logs scanners and failed passwords.
+- It has fail2ban ban on those lines.
+- It proves it from this machine with:
+  - a scanner,
+  - a password guesser,
+  - a phone that keeps working.
+
+This guide does not use sipnab. When fail2ban is working,
 [Feed fail2ban from sipnab](fail2ban-sipnab.md) adds sipnab as a second source
 of bans.
 
@@ -19,21 +31,29 @@ Three terms used below:
 
 - **Filter**: the patterns that pick the failure lines out of a log, and the
   address in each.
-- **Jail**: one filter put to work: which log it reads, how many failures
-  within how long earn a ban (`maxretry`, `findtime`), how long a ban lasts
-  (`bantime`), and what a ban blocks.
-- **Ban action**: what fail2ban runs to ban and unban. Here it adds the address
-  to an nftables set, and a rule beside the set refuses that set's SIP traffic.
+- **Jail**: one filter put to work. A jail sets:
+  - which log it reads,
+  - how many failures within how long earn a ban (`maxretry`, `findtime`),
+  - how long a ban lasts (`bantime`),
+  - what a ban blocks.
+- **Ban action**: what fail2ban runs to ban and unban.
+  - Here it adds the address to an nftables set.
+  - A rule beside the set refuses that set's SIP traffic.
 
 ## Tested on
 
-Every block on this page, and every command in step 9's table, ran as written,
-in order, on 2026-10-01, on clean x86_64 virtual machines with 2 cores and 3 GB
-of memory, Debian 13 (kernel 6.12.111) and Ubuntu 24.04 (kernel 6.8.0), with
-the scanner and the phone on the same machine as step 4 sets them up. On
-Debian 13, each fault under
-[When something does not work](#when-something-does-not-work) happened during
-these runs, with the message it quotes.
+Every block on this page ran as written, in order, on 2026-10-01. So did every
+command in the table in "Operate it".
+
+- The machines were clean x86_64 virtual machines with 2 cores and 3 GB of
+  memory.
+- They ran Debian 13 (kernel 6.12.111) and Ubuntu 24.04 (kernel 6.8.0).
+- The scanner and the phone were on the same machine, as
+  "Give this machine a scanner and a phone to test with"
+  sets them up.
+- On Debian 13, each fault under
+  [When something does not work](#when-something-does-not-work) happened
+  during these runs, with the message it quotes.
 
 | Software | Version |
 |---|---|
@@ -42,27 +62,36 @@ these runs, with the message it quotes.
 | SIPp (for the test call) | the distribution's `sip-tester` |
 
 The examples use `192.0.2.10` as the SIP server's address. Replace it with
-yours everywhere it appears. The scanner (`198.51.100.60`) and the phone
-(`203.0.113.70`) are test addresses that step 4 creates on this machine.
+yours everywhere it appears.
+
+- The scanner (`198.51.100.60`) and the phone (`203.0.113.70`) are test
+  addresses.
+- The section "Give this machine a scanner and a phone to test with"
+  creates them on this machine.
 
 ## Before you start: OpenSIPS
 
-Run step 1 of [Use OpenSIPS as your voice stack's SIP server](opensips.md),
-installing the 4.0 packages, then come back here. Step 1 below replaces that
-guide's configuration with one that authenticates phones and logs what
-fail2ban needs.
+- Run [Install OpenSIPS](opensips.md#install-opensips) in the guide "Use OpenSIPS as your voice stack's SIP server".
+  - It installs the 4.0 packages.
+- Then come back here.
+- The section "Make OpenSIPS log scanners and wrong passwords" below replaces that guide's configuration.
+  - The new configuration authenticates phones.
+  - It logs what fail2ban needs.
 
-## 1. Make OpenSIPS log scanners and wrong passwords
+## Make OpenSIPS log scanners and wrong passwords
 
-Password checks need OpenSIPS's `auth` module, which is in its own package.
-The configuration below registers one test account, `1001`, routes its calls
-to a test callee on this machine, and writes a log line for two things:
+Password checks need OpenSIPS's `auth` module. It is in its own package. The
+configuration below does three things:
 
-- a request whose `User-Agent` names a known scanner tool. OpenSIPS answers
-  it with nothing.
-- a request whose credentials are wrong: a wrong password, or a user that does
-  not exist. A request that carries no credentials yet is the normal first
-  half of a login, and is not logged.
+- It registers one test account, `1001`.
+- It routes its calls to a test callee on this machine.
+- It writes a log line for two things:
+  - a request whose `User-Agent` names a known scanner tool.
+    - OpenSIPS answers it with nothing.
+  - a request whose credentials are wrong: a wrong password, or a user that
+    does not exist.
+    - OpenSIPS does not log a request that carries no credentials yet. Such a
+      request is the normal first half of a login.
 
 ```bash
 # Run all of these, in order.
@@ -176,14 +205,14 @@ sudo systemctl restart opensips
 systemctl is-active opensips
 ```
 
-OpenSIPS writes these lines to the systemd journal, where they look like this:
+OpenSIPS writes these lines to the systemd journal. There they look like this:
 
 ```text
 ... /usr/sbin/opensips[15830]: WARNING:SIP scanner from 198.51.100.60: User-Agent "friendly-scanner"
 ... /usr/sbin/opensips[15830]: WARNING:SIP auth failure from 198.51.100.60 for "1001"
 ```
 
-## 2. Install fail2ban
+## Install fail2ban
 
 ```bash
 # Run all of these, in order.
@@ -193,12 +222,15 @@ fail2ban-client --version
 
 The jail below bans with nftables, so the command installs it too.
 
-## 3. Tell fail2ban what to look for, and what to ban
+## Tell fail2ban what to look for, and what to ban
 
 The filter reads OpenSIPS's lines from the journal. The jail bans an address
-after 3 matching lines within 10 minutes, for an hour, on the SIP ports only:
-its rule names ports 5060 and 5061, so a banned address can still reach your
-other services, SSH included:
+after 3 matching lines within 10 minutes.
+
+- The ban lasts for an hour.
+- It covers the SIP ports only.
+  - Its rule names ports 5060 and 5061.
+  - So a banned address can still reach your other services, SSH included:
 
 ```bash
 # Run all of these, in order.
@@ -230,18 +262,23 @@ sleep 3
 sudo fail2ban-client status opensips
 ```
 
-The status shows the jail with `Journal matches: _SYSTEMD_UNIT=opensips.service`
-and nobody banned yet. When it starts, the jail also reads the last
-`findtime` of the journal, so failures logged before it ran can earn a ban.
+- The status shows the jail with
+  `Journal matches: _SYSTEMD_UNIT=opensips.service`.
+- It shows nobody banned yet.
+- When it starts, the jail also reads the last `findtime` of the journal.
+  - So failures logged before it ran can earn a ban.
 
-`_daemon` matches the program name the journal records, `/usr/sbin/opensips`
-for the packages.
+`_daemon` matches the program name the journal records. For the packages, that
+is `/usr/sbin/opensips`.
 
-## 4. Give this machine a scanner and a phone to test with
+## Give this machine a scanner and a phone to test with
 
-Each test address lives in a network namespace, a separate network stack on
-this machine with its own address, linked to this one by a virtual cable. Its
-requests reach OpenSIPS from that address, as if from another machine:
+Each test address lives in a network namespace.
+
+- A network namespace is a separate network stack on this machine with its own
+  address.
+- A virtual cable links it to this one.
+- Its requests reach OpenSIPS from that address, as if from another machine:
 
 ```bash
 # Run all of these, in order.
@@ -319,7 +356,7 @@ for i in range(count):
 EOF
 ```
 
-## 5. Check that a phone registers and calls
+## Check that a phone registers and calls
 
 The phone at `203.0.113.70` registers as `1001` with the right password:
 
@@ -329,9 +366,10 @@ sudo ip netns exec phone python3 ~/f2b-test/sipreq.py 192.0.2.10 REGISTER 1 Micr
 
 It prints `REGISTER 1001: SIP/2.0 200 OK`.
 
-Then it places a call through OpenSIPS, with SIPp playing both ends: a callee
-on this machine, and the phone, which answers OpenSIPS's challenge with its
-password:
+Then it places a call through OpenSIPS. SIPp plays both ends:
+
+- a callee on this machine,
+- the phone, which answers OpenSIPS's challenge with its password:
 
 ```bash
 # Run all of these, in order.
@@ -438,20 +476,24 @@ sudo ip netns exec phone sipp -sf call.xml 192.0.2.10:5060 -i 203.0.113.70 -p 50
 grep -E 'Successful call|Failed call' call.screen
 ```
 
-OpenSIPS challenged the call, the phone answered the challenge, the callee
-answered, and the phone hung up:
+The output shows these events:
+
+- OpenSIPS challenged the call.
+- The phone answered the challenge.
+- The callee answered.
+- The phone hung up:
 
 ```text
   Successful call        |        0                  |        1
   Failed call            |        0                  |        0
 ```
 
-The phone's first `INVITE` drew a challenge, which is the normal first half of
-a login, so OpenSIPS logged nothing for it.
+The phone's first `INVITE` drew a challenge. That is the normal first half of
+a login. So OpenSIPS logged nothing for it.
 
-## 6. Watch fail2ban ban a scanner
+## Watch fail2ban ban a scanner
 
-The scanner walks extensions the way SIPVicious's `svwar` does, announcing
+The scanner walks extensions the way SIPVicious's `svwar` does. It announces
 itself as `friendly-scanner`. Then it tries once more:
 
 ```bash
@@ -463,14 +505,18 @@ sudo nft list table inet f2b-table
 sudo ip netns exec scanner python3 ~/f2b-test/sipreq.py 192.0.2.10 OPTIONS 1
 ```
 
-OpenSIPS answered none of the scanner's `REGISTER`s: each prints `no answer`,
-or `refused` if the ban was already in place. The jail lists the scanner:
+OpenSIPS answered none of the scanner's `REGISTER`s.
+
+- Each prints `no answer`.
+- Or it prints `refused` if the ban was already in place.
+
+The jail lists the scanner:
 
 ```text
    `- Banned IP list:	198.51.100.60
 ```
 
-nftables holds it in the jail's set, and refuses its SIP traffic:
+nftables holds it in the jail's set. It refuses its SIP traffic:
 
 ```text
 	set addr-set-opensips {
@@ -481,8 +527,10 @@ nftables holds it in the jail's set, and refuses its SIP traffic:
 		udp dport { 5060, 5061 } ip saddr @addr-set-opensips reject with icmp port-unreachable
 ```
 
-The last request prints `OPTIONS 100: refused`: the firewall answered with an
-ICMP port unreachable, and OpenSIPS never saw it.
+The last request prints `OPTIONS 100: refused`.
+
+- The firewall answered with an ICMP port unreachable.
+- OpenSIPS never saw it.
 
 The phone is not affected. It still registers:
 
@@ -490,7 +538,7 @@ The phone is not affected. It still registers:
 sudo ip netns exec phone python3 ~/f2b-test/sipreq.py 192.0.2.10 REGISTER 1 MicroSIP 1001 correct-horse-1001
 ```
 
-## 7. Lift a ban
+## Lift a ban
 
 ```bash
 # Run all of these, in order.
@@ -498,15 +546,18 @@ sudo fail2ban-client set opensips unbanip 198.51.100.60
 sudo ip netns exec scanner python3 ~/f2b-test/sipreq.py 192.0.2.10 OPTIONS 1
 ```
 
-`unbanip` prints `1`, the number of addresses it unbanned, and the scanner's
-`OPTIONS` gets an answer again: `OPTIONS 100: SIP/2.0 200 OK`.
+- `unbanip` prints `1`, the number of addresses it unbanned.
+- The scanner's `OPTIONS` gets an answer again: `OPTIONS 100: SIP/2.0 200 OK`.
 
-## 8. Watch a password guesser get banned, and the ban run out
+## Watch a password guesser get banned, and the ban run out
 
-A password guesser uses an ordinary `User-Agent` and a real user name. To see
-a ban end on its own without waiting an hour, shorten this jail's `bantime` to
-60 seconds while it runs, then put it back. `fail2ban-client set` changes the
-running jail only, and the jail file still says an hour:
+A password guesser uses an ordinary `User-Agent` and a real user name.
+
+- You can see a ban end on its own without waiting an hour.
+  - Shorten this jail's `bantime` to 60 seconds while it runs.
+  - Then put it back.
+- `fail2ban-client set` changes the running jail only.
+  - The jail file still says an hour:
 
 ```bash
 # Run all of these, in order.
@@ -520,22 +571,28 @@ sudo ip netns exec scanner python3 ~/f2b-test/sipreq.py 192.0.2.10 OPTIONS 1
 sudo fail2ban-client set opensips bantime 3600
 ```
 
-Each guess prints `REGISTER 1001: SIP/2.0 401 Unauthorized`. A guess or two
-past the third can still get an answer, because fail2ban acts on the log line
-after OpenSIPS has written it. `banip --with-time` shows when the ban started
-and ends, 60 seconds later:
+- Each guess prints `REGISTER 1001: SIP/2.0 401 Unauthorized`.
+- A guess or two past the third can still get an answer.
+  - fail2ban acts on the log line after OpenSIPS has written it.
+- `banip --with-time` shows when the ban started and ends, 60 seconds later:
 
 ```text
 198.51.100.60 	2026-10-01 03:47:03 + 60 = 2026-10-01 03:48:03
 ```
 
-The ban starts from the time of the failure that earned it. After the wait,
-`Banned IP list:` is empty and the `OPTIONS` gets an answer again.
+The ban starts from the time of the failure that earned it. After the wait:
 
-## 9. Operate it
+- `Banned IP list:` is empty.
+- The `OPTIONS` gets an answer again.
 
-The commands below, in this order, ban a test address by hand, look at it,
-restart fail2ban, and lift the ban:
+## Operate it
+
+The commands below do these things, in this order:
+
+- ban a test address by hand,
+- look at it,
+- restart fail2ban,
+- lift the ban.
 
 | Command | What it does |
 |---|---|
@@ -557,7 +614,7 @@ sudo ip netns del phone
 rm -rf ~/f2b-test
 ```
 
-**Uninstall.** Stopping fail2ban removes its nftables table, so no ban
+**Uninstall.** Stopping fail2ban removes its nftables table. So no ban
 outlives it:
 
 ```bash
@@ -567,16 +624,21 @@ sudo rm -f /etc/fail2ban/filter.d/opensips.conf /etc/fail2ban/jail.d/opensips.lo
 sudo apt-get purge -y fail2ban
 ```
 
-This keeps the OpenSIPS configuration from step 1. To uninstall OpenSIPS too,
-see [its guide](opensips.md#4-operate-it).
+This keeps the OpenSIPS configuration from
+"Make OpenSIPS log scanners and wrong passwords".
+To uninstall OpenSIPS too, see [its guide](opensips.md#operate-it).
 
 ## When something does not work
 
-- **The jail never bans.** Check what the filter matches:
-  `sudo fail2ban-regex systemd-journal opensips` reports `Failregex: 0 total`
-  when it matches nothing. If OpenSIPS runs under another unit or another
-  program name, `journalmatch` or `_daemon` does not fit it: see how the
-  journal records the program with `sudo journalctl -u opensips -n 5`.
-- **fail2ban does not start.** `sudo journalctl -u fail2ban -n 20` names the
-  jail and the reason. One jail that fails stops fail2ban, and every jail with
-  it, SSH's included.
+- **The jail never bans.**
+  - Check what the filter matches.
+    `sudo fail2ban-regex systemd-journal opensips` reports `Failregex: 0 total`
+    when it matches nothing.
+  - OpenSIPS may run under another unit or another program name.
+    - Then `journalmatch` or `_daemon` does not fit it.
+    - See how the journal records the program with
+      `sudo journalctl -u opensips -n 5`.
+- **fail2ban does not start.**
+  - `sudo journalctl -u fail2ban -n 20` names the jail and the reason.
+  - One jail that fails stops fail2ban.
+    - Every jail stops with it, SSH's included.

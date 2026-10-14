@@ -1,11 +1,19 @@
 # Filter DSL reference
 
-> **Quick start:** `sipnab -N -I capture.pcap --filter "state == 'Failed'"`
-> shows the failed calls in a capture, and
-> `sipnab -N -I capture.pcap --problems` sweeps for every kind of problem at
-> once. Keep the `-N`: without it the TUI opens instead.
+> **Quick start:**
+>
+> - `sipnab -N -I capture.pcap --filter "state == 'Failed'"` shows the failed
+>   calls in a capture.
+> - `sipnab -N -I capture.pcap --problems` sweeps for every kind of problem at
+>   once.
+> - Keep the `-N`. Without it, the TUI opens instead.
 
-sipnab includes a declarative, non-Turing-complete filter language for matching SIP dialogs and their associated RTP streams. You pass expressions through the [`--filter` CLI flag](cli-reference.md#matching) or the `expression` key in the [`[filter]` config section](config-reference.md#filter). The [Diagnostic Aliases](cli-reference.md#diagnostic-aliases) CLI flags (`--problems`, `--slow-setup`, and so on) expand to the named aliases documented below.
+sipnab includes a declarative, non-Turing-complete filter language. It matches SIP dialogs and their associated RTP streams.
+
+- You pass expressions through either:
+  - the [`--filter` CLI flag](cli-reference.md#matching), or
+  - the `expression` key in the [`[filter]` config section](config-reference.md#filter).
+- The [Diagnostic Aliases](cli-reference.md#diagnostic-aliases) CLI flags (`--problems`, `--slow-setup`, and so on) expand to the named aliases documented below.
 
 ## What a filter narrows
 
@@ -14,20 +22,24 @@ A filter selects **dialogs**, and every output that lists dialogs honors it:
 - The per-message stream (the default output, `--json`, `-T`) emits only
   messages belonging to matching dialogs.
 - `--json-dialogs` emits one line per matching dialog.
-- `--report` prints only matching dialogs, and the RTP tables beneath the dialog
-  table hold only the streams linked to them. With no filter it still lists
-  every stream the capture holds, orphans included.
-- `--call-report <CALL-ID>` is **not** narrowed: it names one call, and a lookup
-  by name is not a listing.
+- `--report` prints only matching dialogs.
+  - The RTP tables beneath the dialog table hold only the streams linked to
+    them.
+  - With no filter, it still lists every stream the capture holds, orphans
+    included.
+- `--call-report <CALL-ID>` is **not** narrowed. It names one call, and a
+  lookup by name is not a listing.
 
 The [`--since`/`--until` time window](cli-reference.md#scope-a-run-to-a-time-window)
-joins the filter: the run's filter is `(<your filter>) AND time >= '<since>' AND
-time < '<until>'`, and `--json-analyze` reports it in that form.
+joins the filter.
+
+- The run's filter is `(<your filter>) AND time >= '<since>' AND time < '<until>'`.
+- `--json-analyze` reports it in that form.
 
 ## Examples
 
-Each entry below is one complete expression, and `--filter` takes exactly one:
-these are catalogs to pick a line from, not blocks to copy whole.
+Each entry below is one complete expression. `--filter` takes exactly one.
+These are catalogs to pick a line from. They are not blocks to copy whole.
 
 ### Basic field matching
 
@@ -69,7 +81,7 @@ these are catalogs to pick a line from, not blocks to copy whole.
 
 ### Real-world diagnostic queries
 
-The DSL has no comment syntax, so this page labels each query in prose — a `#`
+The DSL has no comment syntax, so this page labels each query in prose. A `#`
 line handed to `--filter` is a parse error, not a note.
 
 - Find calls with poor quality from a specific extension: `from.user =~ '^1001' AND rtp.mos < 3.0`
@@ -78,14 +90,18 @@ line handed to `--filter` is a parse error, not a note.
 - Find calls with audio issues: `one_way == true OR no_media == true OR rtp.jitter > 100.0`
 - Find scanner activity by User-Agent: `ua =~ 'sipvicious|friendly-scanner|sipcli'`
 
-> **Note:** The filter DSL evaluates against dialogs, not individual messages. A filter like `method == 'INVITE'` matches dialogs that opened with an INVITE, including all subsequent messages in that dialog (180, 200, ACK, BYE, etc.).
+> **Note:** The filter DSL evaluates against dialogs, not individual messages.
+> A filter like `method == 'INVITE'` matches dialogs that opened with an INVITE.
+> That includes all subsequent messages in that dialog (180, 200, ACK, BYE, etc.).
 
 ## Operational Recipes
 
-Filter-DSL recipes, one per real-world task, each a complete command line. Swap
-`-I capture.pcap` for `-d eth0` (as root) to run any of them against live
-traffic. For broader task recipes beyond the DSL, see the
-[Cookbook](examples.md) and [Troubleshooting](troubleshooting.md).
+Filter-DSL recipes, one per real-world task. Each one is a complete command line.
+
+- Swap `-I capture.pcap` for `-d eth0` (as root) to run any of them against
+  live traffic.
+- For broader task recipes beyond the DSL, see the [Cookbook](examples.md) and
+  [Troubleshooting](troubleshooting.md).
 
 ### Poor audio quality (low MOS)
 
@@ -93,25 +109,33 @@ traffic. For broader task recipes beyond the DSL, see the
 sipnab -N -I capture.pcap --filter "rtp.mos < 3.0 AND rtp.packets > 0 AND state == 'Completed'" --json
 ```
 
-An unmeasured `rtp.mos` is unknown, and an unknown value matches no threshold
-in either direction. A dialog that carried no RTP never matches
-`rtp.mos < 3.0`, so `rtp.packets > 0` no longer guards against a `0.0`.
+An unmeasured `rtp.mos` is unknown. An unknown value matches no threshold in
+either direction.
 
-This page used to say the clause was mandatory, because a signaling-only
-dialog reported `0.0` and satisfied the threshold. That was true before the
-fix and is not true now.
+- A dialog that carried no RTP never matches `rtp.mos < 3.0`.
+- So `rtp.packets > 0` no longer guards against a `0.0`.
 
-The clause is still worth keeping for a different reason. It excludes calls
-that carried too few packets for the E-model to mean anything, which is a
-judgment about sample size rather than a guard against a phantom zero. To
-select the calls that carry no media, write `rtp.packets == 0` or
-`no_media == true` instead.
+This page used to say the clause was mandatory. A signaling-only dialog
+reported `0.0` and satisfied the threshold. That was true before the fix and
+is not true now.
 
-`state == 'Completed'` keeps only completed calls -- in-progress calls may not
+The clause is still worth keeping for a different reason.
+
+- It excludes calls that carried too few packets for the E-model to mean
+  anything.
+- That is a judgment about sample size. It is not a guard against a phantom
+  zero.
+- To select the calls that carry no media, write `rtp.packets == 0` or
+  `no_media == true` instead.
+
+`state == 'Completed'` keeps only completed calls. In-progress calls may not
 have enough RTP data for an accurate MOS calculation.
 
-MOS values follow the ITU-T G.107 E-model: 4.0+ is toll quality, 3.5-4.0 is
-acceptable, below 3.0 is noticeable degradation.
+MOS values follow the ITU-T G.107 E-model:
+
+- 4.0+ is toll quality.
+- 3.5-4.0 is acceptable.
+- Below 3.0 is noticeable degradation.
 
 ### One-way audio
 
@@ -119,7 +143,8 @@ acceptable, below 3.0 is noticeable degradation.
 sipnab -N -I capture.pcap --filter "one_way == true AND duration > 10.0" --report
 ```
 
-The duration check avoids false positives during early call setup when RTP hasn't started flowing yet. For calls where no RTP ever flowed at all, use `no_media == true` instead.
+The duration check avoids false positives during early call setup, when RTP hasn't started flowing yet.
+For calls where no RTP ever flowed at all, use `no_media == true` instead.
 
 ### NAT issues
 
@@ -127,11 +152,12 @@ The duration check avoids false positives during early call setup when RTP hasn'
 sipnab -N -I capture.pcap --filter "nat_mismatch == true AND method == 'INVITE'" --json
 ```
 
-NAT mismatch means RTP reached the capture point from an address that no SDP in
-the dialog advertised, which is what a NAT rewriting the media source looks
-like from the wire. It is a common cause of one-way audio and of call setup
-failures behind NAT -- combine it with the `one_way` field to catch the classic
-case.
+NAT mismatch means RTP reached the capture point from an address that no SDP
+in the dialog advertised. That is what a NAT rewriting the media source looks
+like from the wire.
+
+- It is a common cause of one-way audio, and of call setup failures behind NAT.
+- Combine it with the `one_way` field to catch the classic case.
 
 ### High jitter or packet loss
 
@@ -139,7 +165,8 @@ case.
 sipnab -N -I capture.pcap --filter "rtp.jitter > 50.0 OR rtp.loss > 1.0" --json
 ```
 
-Jitter arrives in milliseconds ([RFC 3550](https://www.rfc-editor.org/rfc/rfc3550.html) interarrival jitter algorithm), and high values indicate network congestion. Loss is a percentage (0.0-100.0) whose acceptable thresholds are codec-dependent.
+- Jitter arrives in milliseconds ([RFC 3550](https://www.rfc-editor.org/rfc/rfc3550.html) interarrival jitter algorithm). High values indicate network congestion.
+- Loss is a percentage (0.0-100.0). Its acceptable thresholds are codec-dependent.
 
 ### Failed international calls
 
@@ -155,7 +182,13 @@ The `^\+` regex matches E.164 formatted numbers (international prefix).
 sipnab -N -I capture.pcap --filter "method == 'REGISTER' AND retransmits > 5" --report
 ```
 
-High retransmit counts on REGISTER indicate network issues, DNS failures, or server overload. Append `AND src.ip == '192.0.2.50'` to isolate a specific endpoint.
+High retransmit counts on REGISTER indicate:
+
+- network issues,
+- DNS failures,
+- server overload.
+
+Append `AND src.ip == '192.0.2.50'` to isolate a specific endpoint.
 
 ### Scanner activity
 
@@ -183,14 +216,22 @@ Filter for failures targeting a specific SIP trunk IP.
 sipnab -N -I capture.pcap --report
 ```
 
-Orphaned streams have no matching SIP dialog or SDP, so no dialog filter can
-select them and the DSL offers no field for them. The boolean-field note above
-covers why `rtp.orphaned` is a parse error. The `--report`
-output carries an "Orphaned Streams" section, and the [REST
-API](rest-api.md#get-v1streams) answers the same question at
-`/v1/streams?orphaned=true` when you run sipnab with `--api`. Orphans usually
-mean RTP arriving on unexpected ports (check your NAT/ALG config) or calls that
-started before capture began.
+Orphaned streams have no matching SIP dialog or SDP.
+
+- No dialog filter can select them, and the DSL offers no field for them.
+- The boolean-field note above covers why `rtp.orphaned` is a parse error.
+
+Where to find them:
+
+- The `--report` output carries an "Orphaned Streams" section.
+- The [REST
+  API](rest-api.md#get-v1streams) answers the same question at
+  `/v1/streams?orphaned=true` when you run sipnab with `--api`.
+
+Orphans usually mean one of these:
+
+- RTP arriving on unexpected ports (check your NAT/ALG config),
+- calls that started before capture began.
 
 ### Track one user's packet loss (B2BUA debugging)
 
@@ -206,7 +247,10 @@ Tracks a specific user's calls that have packet loss, regardless of call directi
 sipnab -N -I capture.pcap --filter "msg_count > 20 AND method == 'INVITE'" --json
 ```
 
-Dialogs with many messages often indicate retransmission issues or complex call flows (transfers, re-INVITEs).
+Dialogs with many messages often indicate:
+
+- retransmission issues,
+- complex call flows (transfers, re-INVITEs).
 
 ### Stream investigation by codec or SSRC
 
@@ -216,9 +260,10 @@ Select every dialog carrying one codec, for codec-specific quality analysis:
 sipnab -N -I capture.pcap --filter "rtp.codec == 'PCMU'" --json
 ```
 
-Trace a single media stream by its SSRC. `rtp.ssrc` compares against the SSRC
-rendered as `0x`-prefixed lowercase hex, so the literal needs the `0x` prefix or
-it matches nothing:
+Trace a single media stream by its SSRC.
+
+- `rtp.ssrc` compares against the SSRC rendered as `0x`-prefixed lowercase hex.
+- So the literal needs the `0x` prefix, or it matches nothing:
 
 ```bash
 sipnab -N -I capture.pcap --filter "rtp.ssrc == '0x12345678'" --json
@@ -227,7 +272,7 @@ sipnab -N -I capture.pcap --filter "rtp.ssrc == '0x12345678'" --json
 ### RTCP extended reports
 
 When a capture carries RTCP XR (PT=207), sipnab decodes the VoIP Metrics block
-([RFC 3611](https://www.rfc-editor.org/rfc/rfc3611.html) Section 4.7) and keeps it beside the stream the block names:
+([RFC 3611](https://www.rfc-editor.org/rfc/rfc3611.html) Section 4.7). It keeps the block beside the stream the block names. The block holds:
 
 - Round-trip delay and end-system delay
 - Signal level, noise level and residual echo return loss
@@ -236,28 +281,42 @@ When a capture carries RTCP XR (PT=207), sipnab decodes the VoIP Metrics block
 - Burst and gap loss densities and durations
 - Jitter buffer nominal, maximum and absolute maximum delay
 
-**Every figure above belongs to the endpoint that sent it, not to sipnab.** The
-TUI Stream Detail view shows them in a **Reported by Far End (RTCP XR)** section
-of their own, below everything sipnab measured. Nothing there feeds the MOS,
-jitter or loss sipnab computes. RTCP carries no authentication, and a mid-path
-capture watches a different path segment than the endpoint reports on, so the
-two disagreeing is the finding rather than a conflict to resolve. This is the
-same rule the reception-report figures follow -- see
-[mos-and-codecs.md](mos-and-codecs.md#mos-comes-from-what-sipnab-measured-never-from-what-the-far-end-claimed).
+**Every figure above belongs to the endpoint that sent it, not to sipnab.**
 
-RFC 3611 reserves the value 127 for "this parameter is unavailable" on all
-seven of its single-byte quality fields: the R-factor and the external
-R-factor, both MOS fields, the signal and noise levels, and the residual echo
-return loss. sipnab renders each of those as `n/a`. A raw render would put an R-factor of 127
-on a scale that stops at 100, and a MOS of 12.7 on a scale that stops at 5.0.
+- The TUI Stream Detail view shows them in a **Reported by Far End (RTCP XR)**
+  section of their own, below everything sipnab measured.
+- Nothing there feeds the MOS, jitter or loss sipnab computes.
+- If the two disagree, that is the finding. It is not a conflict to resolve.
+  The reasons:
+  - RTCP carries no authentication.
+  - A mid-path capture watches a different path segment than the endpoint
+    reports on.
+- This is the same rule the reception-report figures follow. See
+  [mos-and-codecs.md](mos-and-codecs.md#mos-comes-from-what-sipnab-measured-never-from-what-the-far-end-claimed).
 
-No surface reads any other XR block type yet. The parser turns three of them
-into typed values -- Loss RLE, Duplicate RLE and Receiver Reference Time -- and
-records Packet Receipt Times, DLRR and Statistics Summary by block-type number
-alone.
+RFC 3611 reserves the value 127 for "this parameter is unavailable". It does
+this on all seven of its single-byte quality fields:
+
+- the R-factor and the external R-factor,
+- both MOS fields,
+- the signal and noise levels,
+- the residual echo return loss.
+
+sipnab renders each of those as `n/a`. A raw render would put:
+
+- an R-factor of 127 on a scale that stops at 100,
+- a MOS of 12.7 on a scale that stops at 5.0.
+
+No surface reads any other XR block type yet.
+
+- The parser turns three of them into typed values: Loss RLE, Duplicate RLE
+  and Receiver Reference Time.
+- It records Packet Receipt Times, DLRR and Statistics Summary by block-type
+  number alone.
 
 `--json`, `--report`, the REST API and the Prometheus exporter carry sipnab's own
-measurements only. No filter DSL field matches an XR value.
+measurements only.
+No filter DSL field matches an XR value.
 
 ## Grammar
 
@@ -270,11 +329,15 @@ atom        = comparison | "(" expr ")"
 comparison  = field operator value
 ```
 
-Operator precedence (highest to lowest): `NOT`, `AND`, `OR`. Use parentheses to override.
+Operator precedence (highest to lowest): `NOT`, `AND`, `OR`.
+Use parentheses to override.
 
 ## Fields
 
-All 42 addressable fields, organized by type. They answer to 43 names: `response_code` is also spelled `final_status_code`, and an alias is not a second field. Beyond these, `header.<name>` reads any SIP header by a name you choose. See [Any header by name](#any-header-by-name).
+All 42 addressable fields, organized by type.
+
+- They answer to 43 names. `response_code` is also spelled `final_status_code`. An alias is not a second field.
+- Beyond these, `header.<name>` reads any SIP header by a name you choose. See [Any header by name](#any-header-by-name).
 
 ### String fields
 
@@ -304,12 +367,14 @@ All 42 addressable fields, organized by type. They answer to 43 names: `response
 
 **Valid `state` values:** `Trying`, `Ringing`, `InCall`, `Completed`, `Canceled`, `Failed`, `Redirected`, `Registered`, `Expired`, `Pending`, `Active`, `Terminated`, `Transferring`
 
-> **`payload` vs `-e`/`--match`:** the `payload` field matches per dialog (true
-> if any message matches). The `-e`/`--match` flag is the
-> per-message match-expression: it selects the matching messages and then
-> *follows the dialog* — every message after the first match in that dialog is
-> emitted too. Use `-e` for grep-style streaming output. Use `payload` inside a
-> larger `--filter` expression.
+> **`payload` vs `-e`/`--match`:**
+>
+> - The `payload` field matches per dialog (true if any message matches).
+> - The `-e`/`--match` flag is the per-message match-expression.
+>   - It selects the matching messages and then *follows the dialog*.
+>   - sipnab emits every message after the first match in that dialog too.
+> - Use `-e` for grep-style streaming output.
+> - Use `payload` inside a larger `--filter` expression.
 
 ### Numeric fields
 
@@ -328,21 +393,30 @@ All 42 addressable fields, organized by type. They answer to 43 names: `response
 | `rtp.loss` | Packet loss (worst/highest across streams) | percentage (0-100), unknown with no RTP |
 | `rtp.packets` | Total RTP packets (sum across all streams) | count (`0` is a real count, never unknown) |
 
-> **An unmeasured value matches no comparison.** `pdd`, `setup_time`,
-> `rtp.mos`, `rtp.jitter` and `rtp.loss` are unknown when the capture holds
-> nothing to measure them from — no RTP for the media fields, no captured
-> INVITE or 200 OK for the timing ones. An unknown matches no numeric operator,
-> including `!=`: it is not "different from 3.0", it is unknown. This is the
-> rule SQL uses for `NULL`, for the same reason.
+> **An unmeasured value matches no comparison.**
+>
+> - `pdd`, `setup_time`, `rtp.mos`, `rtp.jitter` and `rtp.loss` are unknown
+>   when the capture holds nothing to measure them from:
+>   - no RTP for the media fields,
+>   - no captured INVITE or 200 OK for the timing ones.
+> - An unknown matches no numeric operator, including `!=`. It is not
+>   "different from 3.0". It is unknown.
+> - This is the rule SQL uses for `NULL`, for the same reason.
 >
 > Reading them as `0` instead would put them below every threshold anyone
-> would type, so `rtp.mos < 3.0` would select every call carrying no media at
-> all: 2292 of 2311 dialogs on one real trunk capture, rather than the 2
-> genuine ones. A saved filter carrying an `AND rtp.packets > 0` guard is
-> redundant rather than wrong.
+> would type.
 >
-> To select the calls that carry no media, ask for that directly: `rtp.packets
-> == 0` is a real count of zero, and `no_media` is the diagnosis itself.
+> - Then `rtp.mos < 3.0` would select every call carrying no media at all.
+> - On one real trunk capture, that is 2292 of 2311 dialogs, rather than the 2
+>   genuine ones.
+> - A saved filter carrying an `AND rtp.packets > 0` guard is redundant rather
+>   than wrong.
+>
+> To select the calls that carry no media, ask for that directly:
+>
+> - `rtp.packets == 0` is a real count of zero.
+> - `no_media` is the diagnosis itself.
+>
 > **Pair any `rtp.*` threshold with `rtp.packets > 0`** to ask about calls that
 > actually had media.
 
@@ -350,8 +424,8 @@ All 42 addressable fields, organized by type. They answer to 43 names: `response
 ### Asking by class
 
 The [IANA registry](https://www.iana.org/assignments/sip-parameters/sip-parameters.xhtml#sip-parameters-7)
-groups every response code into six classes, and `response_class` is that
-class. Ask by number or by the registry's own name — they mean the same thing:
+groups every response code into six classes. `response_class` is that
+class. Ask by number or by the registry's own name. They mean the same thing:
 
 | Class | Number | Name |
 |---|---|---|
@@ -366,44 +440,58 @@ class. Ask by number or by the registry's own name — they mean the same thing:
 sipnab -N -I capture.pcap --filter "response_class == 'server failure'"
 ```
 
-**`failure` means all three failure classes** — 4xx, 5xx and 6xx together —
-because that is what the word means at a console. `failures` and `failed` are
-the same question. Naming one class is how you ask for one class:
+**`failure` means all three failure classes**: 4xx, 5xx and 6xx together.
+
+- That is what the word means at a console.
+- `failures` and `failed` are the same question.
+- Naming one class is how you ask for one class:
 
 ```bash
 sipnab -N -I capture.pcap --filter "response_class == 'failure'"
 ```
 
-Matching is membership, not string equality, so `!=` stays honest: a 503 is a
-server failure by every spelling, and `response_class != 'Server Failure'` is
-false for it. Case, hyphens and underscores are typing variants, not different
-questions.
+Matching is membership, not string equality, so `!=` stays honest.
 
-`response_code >= 500 AND response_code < 600` says the same as `'5xx'`, and
+- A 503 is a server failure by every spelling.
+- So `response_class != 'Server Failure'` is false for it.
+- Case, hyphens and underscores are typing variants, not different questions.
+
+`response_code >= 500 AND response_code < 600` says the same as `'5xx'`. It
 says it as arithmetic. A bound wrong by one is silent.
 
-**A dialog is never `1xx`, and that is not an omission.** This is the class of
-the FINAL response, and a provisional one is by definition not final — a call
-sitting on 183 has no outcome yet, so it has no class at all, the same as a
-call that has heard nothing. Reach for `state` there instead.
+**A dialog is never `1xx`, and that is not an omission.**
+
+- This is the class of the FINAL response.
+- A provisional one is by definition not final.
+- A call sitting on 183 has no outcome yet. So it has no class at all, the
+  same as a call that has heard nothing.
+- Reach for `state` there instead.
 
 **This is not the classification on the
-[response-code reference](sip-response-codes.md).** That page groups codes by
-what they mean for a CALL, and it is narrower: there a challenge, a
-cancellation and a decline are each *not* failures, because each tells the
-operator to do something different. `response_class` is the numeric registry
-and nothing else. Neither one borrows the other's name, deliberately.
+[response-code reference](sip-response-codes.md).**
+
+- That page groups codes by what they mean for a CALL, and it is narrower.
+- There, a challenge, a cancellation and a decline are each *not* failures.
+  Each tells the operator to do something different.
+- `response_class` is the numeric registry and nothing else.
+- Neither one borrows the other's name, deliberately.
 
 ### Why `response_code` and not just `state`
 
-`state` answers what happened. `response_code` answers why, and they are not
-the same question. Every one of 403, 404, 408, 486, 503 and 603 is
-`state == 'Failed'`, and they have different owners: a 403 is authorization, a
-408 is a timer, a 486 is the callee, a 503 is capacity upstream.
+`state` answers what happened. `response_code` answers why. They are not the
+same question.
+
+Every one of 403, 404, 408, 486, 503 and 603 is `state == 'Failed'`. They have
+different owners:
+
+- a 403 is authorization,
+- a 408 is a timer,
+- a 486 is the callee,
+- a 503 is capacity upstream.
 
 Asking "which
-release cause dominates on this trunk in the last ten minutes" needs the code,
-and asking it by class needs a numeric field rather than a set of names:
+release cause dominates on this trunk in the last ten minutes" needs the code.
+Asking it by class needs a numeric field rather than a set of names:
 
 Every server-side failure, whatever the specific cause:
 
@@ -417,15 +505,20 @@ The one cause you suspect, on the carrier you suspect:
 sipnab -N -I capture.pcap --filter "response_code == 503 AND dst.ip == '198.51.100.7'"
 ```
 
-A call still in progress has no final response. It matches NOTHING -- not
-`response_code < 400`, not `>= 400`, not `== 0` -- because a zero default would
-sweep every ringing call into the success bucket.
+A call still in progress has no final response. It matches NOTHING:
+
+- not `response_code < 400`,
+- not `>= 400`,
+- not `== 0`.
+
+A zero default would sweep every ringing call into the success bucket.
 
 Auth challenges follow
-[`final_status_code`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog.rs):
-a call challenged and then answered reports 200, not the 407, because the
-challenge was intermediate. A call only ever challenged reports the challenge,
-because then it was the outcome.
+[`final_status_code`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog.rs).
+
+- A call challenged and then answered reports 200, not the 407. The challenge
+  was intermediate.
+- A call only ever challenged reports the challenge. Then it was the outcome.
 
 ### Boolean fields
 
@@ -440,42 +533,64 @@ because then it was the outcome.
 | `duration_asymmetry` | True if one leg's media duration is materially shorter than the other's |
 | `late_media` | True if RTP starts noticeably later than the answering 200 OK |
 
-> **What `nat_mismatch` compares.** A dialog advertises a media address on each
-> side — the caller's in the offer, the callee's in the answer — and a
-> re-INVITE may add more. `nat_mismatch` is true when a stream carries a source
-> address that **none** of them named.
+> **What `nat_mismatch` compares.**
 >
-> Set membership, not equality against one
-> `c=` line: a healthy two-way call sources RTP from two different advertised
-> addresses, so comparing each stream against a single `c=` would flag one
-> direction of every call in the capture. Addresses only, never ports, because
-> NAT and RTP proxies rewrite the port on ordinary calls without breaking
-> anything.
+> - A dialog advertises a media address on each side:
+>   - the caller's in the offer,
+>   - the callee's in the answer.
+> - A re-INVITE may add more.
+> - `nat_mismatch` is true when a stream carries a source address that **none**
+>   of them named.
 >
-> **What `no_media` requires.** All four: the far end answered an offer, the
-> dialog reached a 2xx, at least one exchange described media that should carry
-> audio, and no RTP arrived for the call. "Should carry audio" excludes the
-> forms that ask for silence —
-> `a=inactive`, `m=` port `0`, a black-holed `c=0.0.0.0`, and non-RTP transports
-> such as T.38 `m=image ... udptl` — so a call held for its whole life is not
-> reported as a media failure.
+> It uses set membership, not equality against one `c=` line.
 >
-> **`no_media` is silent on a capture that holds no RTP.** A signaling-only
-> tap, a HEP feed or `--no-rtp` cannot show that one call had no audio, because
-> no call in it has any. On such a capture the flag stays false by design rather
-> than selecting every answered dialog. Pair `no_media` with the knowledge of
-> where your tap sits: if media does not traverse it, the question is
-> unanswerable and sipnab declines to answer it.
+> - A healthy two-way call sources RTP from two different advertised addresses.
+> - So comparing each stream against a single `c=` would flag one direction of
+>   every call in the capture.
 >
-> **`rtp.orphaned` is a parse error, not a field.** It would ask whether a
-> stream *belonging to this dialog* belongs to no dialog: a stream counts as an
-> orphan exactly when no dialog claims it, so the two halves exclude each other
-> and the field matches nothing on any capture while `NOT rtp.orphaned` matches
-> everything. Rejecting it at the parser beats a silent falsehood.
+> It compares addresses only, never ports. NAT and RTP proxies rewrite the port
+> on ordinary calls without breaking anything.
 >
-> Orphaned media is real and still reachable: read the "Orphaned Streams" section of
-> `--report`, or the REST API's `/v1/streams?orphaned=true`, both of which model
-> streams rather than dialogs.
+> **What `no_media` requires.** All four:
+>
+> - the far end answered an offer,
+> - the dialog reached a 2xx,
+> - at least one exchange described media that should carry audio,
+> - no RTP arrived for the call.
+>
+> "Should carry audio" excludes the forms that ask for silence:
+>
+> - `a=inactive`,
+> - `m=` port `0`,
+> - a black-holed `c=0.0.0.0`,
+> - non-RTP transports such as T.38 `m=image ... udptl`.
+>
+> So a call held for its whole life is not reported as a media failure.
+>
+> **`no_media` is silent on a capture that holds no RTP.**
+>
+> - A signaling-only tap, a HEP feed or `--no-rtp` cannot show that one call
+>   had no audio. No call in it has any.
+> - On such a capture, the flag stays false by design. It does not select every
+>   answered dialog.
+> - Pair `no_media` with the knowledge of where your tap sits. If media does not
+>   traverse it, the question is unanswerable, and sipnab declines to answer it.
+>
+> **`rtp.orphaned` is a parse error, not a field.**
+>
+> - It would ask whether a stream *belonging to this dialog* belongs to no
+>   dialog.
+> - A stream counts as an orphan exactly when no dialog claims it. So the two
+>   halves exclude each other.
+> - The field would match nothing on any capture, while `NOT rtp.orphaned`
+>   would match everything.
+> - Rejecting it at the parser beats a silent falsehood.
+>
+> Orphaned media is real and still reachable. Both of these model streams
+> rather than dialogs:
+>
+> - the "Orphaned Streams" section of `--report`,
+> - the REST API's `/v1/streams?orphaned=true`.
 
 ### Time field
 
@@ -483,14 +598,21 @@ because then it was the outcome.
 |-------|-------------|-------|
 | `time` | The instant of the dialog's first message | a quoted [RFC 3339](https://www.rfc-editor.org/rfc/rfc3339.html) instant, such as `'2026-10-09T10:00:00Z'` |
 
-`time` takes `<`, `<=`, `>`, `>=` and `==`, and nothing else: `!=`, `=~` and
-`in_subnet` are parse errors, and so is a literal that is not a quoted RFC 3339
-instant. sipnab converts an offset other than `Z`, so `'2026-10-09T12:00:00+02:00'`
-is the same instant as `'2026-10-09T10:00:00Z'`.
+`time` takes `<`, `<=`, `>`, `>=` and `==`, and nothing else.
 
-It is the instant the REST `/v1/dialogs` `after`/`before` window, the MCP
-`search_by_time` tool and the `--since`/`--until` flags bound. Write a window
-half-open, `>=` at the start and `<` at the end, to select what those select:
+- `!=`, `=~` and `in_subnet` are parse errors.
+- So is a literal that is not a quoted RFC 3339 instant.
+- sipnab converts an offset other than `Z`. So `'2026-10-09T12:00:00+02:00'`
+  is the same instant as `'2026-10-09T10:00:00Z'`.
+
+It is the instant that these bound:
+
+- the REST `/v1/dialogs` `after`/`before` window,
+- the MCP `search_by_time` tool,
+- the `--since`/`--until` flags.
+
+Write a window half-open, `>=` at the start and `<` at the end. Then it selects
+what those select:
 
 ```text
 time >= '2026-10-09T10:00:00Z' AND time < '2026-10-09T11:00:00Z'
@@ -499,9 +621,10 @@ time >= '2026-10-09T10:00:00Z' AND time < '2026-10-09T11:00:00Z'
 ### Named filters
 
 Define a filter once in the config file's [`[filters]`](config-reference.md#filters)
-table and use it by name, as `@name`, wherever sipnab takes a filter
-expression. A name can appear inside a larger expression and inside another
-named filter, and an expression can reference the built-in aliases the same way:
+table. Use it by name, as `@name`, wherever sipnab takes a filter expression.
+
+- A name can appear inside a larger expression and inside another named filter.
+- An expression can reference the built-in aliases the same way:
 
 ```toml
 [filters]
@@ -514,28 +637,32 @@ bad-sales = "@sales AND @problems"
 sipnab -N -I capture.pcap --config sipnab.toml --filter "@sales AND method == 'INVITE'"
 ```
 
-sipnab replaces `@name` with the named filter's expression in parentheses, so
-each definition keeps the precedence it has as written. An `@` inside a
-quoted string is text, not a reference. sipnab resolves every name when it
-starts. See [`[filters]`](config-reference.md#filters) for what it refuses.
-sipnab refuses a filter given at run time that names something undefined, on
-the command line or through REST or MCP, and lists the defined names.
+- sipnab replaces `@name` with the named filter's expression in parentheses.
+  So each definition keeps the precedence it has as written.
+- An `@` inside a quoted string is text, not a reference.
+- sipnab resolves every name when it starts. See
+  [`[filters]`](config-reference.md#filters) for what it refuses.
+- sipnab refuses a filter given at run time that names something undefined.
+  - This applies on the command line or through REST or MCP.
+  - sipnab lists the defined names.
 
 ### Any header by name
 
-`header.<name>` compares the value of a SIP header you name, as a string. It
-matches when any header of that name, on any message sipnab holds for the
-dialog, satisfies the comparison. sipnab compares a header that appears on
-several lines one line at a time, matches header names without regard to
-case, and expands a compact form first, so `header.f` reads `From`.
+`header.<name>` compares the value of a SIP header you name, as a string.
+
+- It matches when any header of that name satisfies the comparison. That
+  header can be on any message sipnab holds for the dialog.
+- sipnab compares a header that appears on several lines one line at a time.
+- It matches header names without regard to case.
+- It expands a compact form first, so `header.f` reads `From`.
 
 ```text
 header.X-Trunk == 'north-east'
 header."P-Asserted-Identity" =~ 'sip:alice@'
 ```
 
-Write the name bare, or in quotes when it holds a character that would end a
-bare name. Either way it must be an [RFC 3261](https://www.rfc-editor.org/rfc/rfc3261.html)
+Write the name bare. Use quotes when it holds a character that would end a
+bare name. Either way, it must be an [RFC 3261](https://www.rfc-editor.org/rfc/rfc3261.html)
 token of at most 256 bytes (see [Parser constraints](#parser-constraints)).
 
 ## Operators
@@ -554,10 +681,19 @@ token of at most 256 bytes (see [Parser constraints](#parser-constraints)).
 Notes:
 - Boolean fields only support `==` and `!=`.
 - Regex (`=~`) is not applicable to numeric or boolean fields.
-- `in_subnet` takes a CIDR literal on the right and an address-valued field on the left (`src.ip`, `dst.ip`). It uses the same rule as `--hep-allow`, so IPv4, IPv6 and IPv4-mapped IPv6 addresses ([RFC 4291 section 2.5.5.2](https://www.rfc-editor.org/rfc/rfc4291.html#section-2.5.5.2)) all compare as the allowlist compares them, and a bare address with no prefix reads as a host route. An unparseable address or block matches nothing rather than matching everything.
-- Numeric equality uses epsilon comparison for floating-point precision. For computed values (`duration`, `pdd`, `rtp.mos`) prefer range operators (`>=`, `<`) over `==` — an exact match on a derived float rarely hits.
+- `in_subnet` takes a CIDR literal on the right and an address-valued field on the left (`src.ip`, `dst.ip`).
+  - It uses the same rule as `--hep-allow`.
+  - So IPv4, IPv6 and IPv4-mapped IPv6 addresses ([RFC 4291 section 2.5.5.2](https://www.rfc-editor.org/rfc/rfc4291.html#section-2.5.5.2)) all compare as the allowlist compares them.
+  - A bare address with no prefix reads as a host route.
+  - An unparseable address or block matches nothing, rather than matching everything.
+- Numeric equality uses epsilon comparison for floating-point precision.
+  - For computed values (`duration`, `pdd`, `rtp.mos`), prefer range operators (`>=`, `<`) over `==`.
+  - An exact match on a derived float rarely hits.
 
-> **Note:** String comparisons are case-sensitive. `state` values must exactly match one of the 13 values listed under [String Fields](#string-fields) above (`'Failed'`, not `'failed'`). Use `=~` with a case-insensitive regex pattern if you need case-insensitive matching: `state =~ '(?i)failed'`.
+> **Note:** String comparisons are case-sensitive.
+>
+> - `state` values must exactly match one of the 13 values listed under [String Fields](#string-fields) above (`'Failed'`, not `'failed'`).
+> - Use `=~` with a case-insensitive regex pattern if you need case-insensitive matching: `state =~ '(?i)failed'`.
 
 ## Values
 
@@ -569,14 +705,17 @@ Notes:
 | `'...'` with `=~` | Regex | `'friendly.*scanner'`, `'^1001'` |
 | `'...'` after `time` | RFC 3339 instant | `'2026-10-09T10:00:00Z'`, `'2026-10-09T12:00:00+02:00'` |
 
-Inside a quoted string a backslash escapes the next character, so the
-delimiter itself is expressible: `\'` and `\"` yield a literal quote
-(`'it\'s'`, `"say \"hi\""`). Every other `\x` sequence — including `\\` — stays
-verbatim, backslash and all, so regex metacharacters and
-classes still reach the engine unchanged (`from.user =~ '\d\d\d\d'`,
-`payload =~ 'example\.com'`, and `'\\'` for a literal backslash in a regex).
+Inside a quoted string, a backslash escapes the next character.
 
-> **Tip:** sipnab compiles each regex once and reuses it across all messages. Avoid unbounded quantifiers on large captures (e.g., prefer `from.user =~ '^100[0-9]$'` over `from.user =~ '.*100[0-9].*'`).
+- So the delimiter itself is expressible. `\'` and `\"` yield a literal quote
+  (`'it\'s'`, `"say \"hi\""`).
+- Every other `\x` sequence, including `\\`, stays verbatim, backslash and all.
+- So regex metacharacters and classes still reach the engine unchanged
+  (`from.user =~ '\d\d\d\d'`, `payload =~ 'example\.com'`, and `'\\'` for a
+  literal backslash in a regex).
+
+> **Tip:** sipnab compiles each regex once and reuses it across all messages.
+> Avoid unbounded quantifiers on large captures (e.g., prefer `from.user =~ '^100[0-9]$'` over `from.user =~ '.*100[0-9].*'`).
 
 ## Boolean combinators
 
@@ -590,14 +729,19 @@ Parentheses `( )` group sub-expressions to override default precedence.
 
 ## Named aliases
 
-These preset expressions are available as dedicated CLI flags where they exist
-(`--problems`, etc.), as shorthand to `--filter` (e.g. `--filter codec-asym`),
-as the value of any MCP tool's `filter` argument, as the value of the REST API's
-[`filter` query parameter](rest-api.md#get-v1dialogs) (e.g.
-`/v1/dialogs?filter=codec-asym`), and as `kinds` entries for the MCP
-[`find_problems`](mcp-tools-core.md#find_problems) tool. They expand to DSL
-expressions internally, through one function, with the thresholds the run's
-flags and config set.
+These preset expressions are available as:
+
+- dedicated CLI flags where they exist (`--problems`, etc.),
+- shorthand to `--filter` (e.g. `--filter codec-asym`),
+- the value of any MCP tool's `filter` argument,
+- the value of the REST API's
+  [`filter` query parameter](rest-api.md#get-v1dialogs) (e.g.
+  `/v1/dialogs?filter=codec-asym`),
+- `kinds` entries for the MCP
+  [`find_problems`](mcp-tools-core.md#find_problems) tool.
+
+They expand to DSL expressions internally, through one function. They use the
+thresholds the run's flags and config set.
 
 | Alias | Dedicated CLI Flag | Expansion |
 |-------|--------------------|-----------|
@@ -613,39 +757,54 @@ flags and config set.
 | `late-media` | — (use `--filter late-media`) | `late_media == true` |
 
 `--filter` first tries to resolve the argument as an alias name. If no alias
-matches, it parses the argument as a DSL expression. The alias and the
-expression it expands to select the same dialogs, so
-`sipnab -N -I capture.pcap --filter codec-asym` and
-`sipnab -N -I capture.pcap --filter "codec_asymmetry == true"` are equivalent —
-pick whichever reads better in the command you are writing.
+matches, it parses the argument as a DSL expression.
+
+The alias and the expression it expands to select the same dialogs. So these
+are equivalent:
+
+- `sipnab -N -I capture.pcap --filter codec-asym`
+- `sipnab -N -I capture.pcap --filter "codec_asymmetry == true"`
+
+Pick whichever reads better in the command you are writing.
 
 The dedicated flag, the `--filter <alias>` spelling and the MCP `kinds` entry
-are three names for one expression: `sipnab --short-calls`,
-`sipnab --filter short-calls` and
-`sipnab --filter "duration < 3.0 AND state == 'Completed'"` all select the same
-dialogs. Combining several flags ORs their expansions together. If `--filter`
-is also present, its expression is ANDed with that result. For example,
-`--problems --filter "from.user == '1001'"` keeps problem calls from user 1001.
+are three names for one expression. These all select the same dialogs:
+
+- `sipnab --short-calls`
+- `sipnab --filter short-calls`
+- `sipnab --filter "duration < 3.0 AND state == 'Completed'"`
+
+Combining flags:
+
+- Combining several flags ORs their expansions together.
+- If `--filter` is also present, its expression is ANDed with that result.
+- For example, `--problems --filter "from.user == '1001'"` keeps problem calls
+  from user 1001.
 
 `--nat-issues` / `--filter nat-issues` selects the calls whose RTP arrived from
-an address the SDP never advertised. The boolean-field note above says what that
-means and what it deliberately ignores.
+an address the SDP never advertised. The boolean-field note above says:
+
+- what that means,
+- what it deliberately ignores.
 
 ## Parser constraints
 
 
-- **Expression nodes: 1024** (`MAX_EXPRESSION_NODES`). The bound a caller is
-  most likely to reach, and the reason it exists is not tidiness: without it a
-  deeply repetitive expression drove the parser into a stack overflow that
-  aborts the process rather than returning an error. A filter over the cap is
-  refused by `validate_filter` and by every flag that takes one.
+- **Expression nodes: 1024** (`MAX_EXPRESSION_NODES`).
+  - This is the bound a caller is most likely to reach.
+  - The reason it exists is not tidiness. Without it, a deeply repetitive
+    expression drove the parser into a stack overflow. That aborts the process
+    rather than returning an error.
+  - `validate_filter` refuses a filter over the cap, and so does every flag
+    that takes one.
 - Maximum parenthesis nesting depth: **50 levels** (`MAX_NESTING_DEPTH`).
-  It bounds recursion in the parser itself. How large the resulting tree may
-  grow is the separate node bound above.
+  - It bounds recursion in the parser itself.
+  - How large the resulting tree may grow is the separate node bound above.
 - **Header name length: 256 bytes** (`MAX_HEADER_NAME_LEN`), for the
-  `header.<name>` field. Whoever sent the message chose the header name, so
-  sipnab bounds the field that names one like every other input.
-  `FilterExpr::parse` refuses a longer name and states the limit.
+  `header.<name>` field.
+  - Whoever sent the message chose the header name. So sipnab bounds the field
+    that names one, like every other input.
+  - `FilterExpr::parse` refuses a longer name and states the limit.
 - Maximum regex pattern size: **1 MB** (1,000,000 bytes)
 - Empty expressions produce a parse error
 - Trailing unparsed input produces a parse error with position

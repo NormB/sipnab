@@ -9,7 +9,7 @@
 //!
 //! Each run's password is also a SENTINEL: every run here is made at
 //! `SIPNAB_LOG=trace`, and no byte of its stdout or stderr may contain the
-//! password (Invariant 5).
+//! password (Invariant "Key material is toxic waste").
 #![cfg(all(feature = "native", feature = "archive"))]
 
 use std::io::Write;
@@ -148,7 +148,7 @@ fn read_args(spec: &str) -> Vec<String> {
     .collect()
 }
 
-/// Invariant 5, for one run: the password appears in no byte of its output.
+/// Invariant "Key material is toxic waste", for one run: the password appears in no byte of its output.
 fn assert_sealed(r: &Run, password: &str) {
     for (what, text) in [("stdout", &r.stdout), ("stderr", &r.stderr)] {
         assert!(!text.contains(password), "the password appeared in {what}");

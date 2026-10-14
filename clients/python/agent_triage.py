@@ -8,7 +8,7 @@ With captures, sipnab is started as an MCP stdio child (no network, no
 token). With --url, the program reaches a sipnab already serving MCP over
 HTTP, presenting the bearer token in --token-file: a token minted with
 `sipnab --mint-token --token-scope read` from the server's signing key is
-the shape cookbook recipe 55 deploys. Both ways it asks the same three
+the shape cookbook recipe "Set up the MCP server for a hosted agent" deploys. Both ways it asks the same three
 things:
 
     capture_status      until a file source is read to its end

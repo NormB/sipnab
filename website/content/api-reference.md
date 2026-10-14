@@ -8,36 +8,51 @@ openapi_reference = true
 +++
 
 This page renders sipnab's OpenAPI 3.1 document. sipnab generates that document
-from the REST handlers themselves, so the routes the server serves and the
-routes this page shows are one list by construction rather than by
-proofreading.
+from the REST handlers themselves.
+
+- So the routes the server serves and the routes this page shows are one list.
+- They are one list by construction rather than by proofreading.
 
 The machine-readable file lives at
 [/openapi.json](https://sipnab.com/openapi.json). Point any OpenAPI tool at it:
-a client generator, a schema validator, or your editor.
 
-For the written reference -- how to choose an API key, what the two
-authentication schemes are for, the bind-address rules, and the curl and jq
-recipes -- read [REST API](@/docs/api.md). This page is the mechanical half:
-the shape of every request and every response.
+- a client generator,
+- a schema validator,
+- or your editor.
+
+For the written reference, read [REST API](@/docs/api.md). It covers:
+
+- how to choose an API key,
+- what the two authentication schemes are for,
+- the bind-address rules,
+- and the curl and jq recipes.
+
+This page is the mechanical half: the shape of every request and every response.
 
 ## Three things to know before you read it
 
-**The document describes a full build.** A route appears here when the build
-serving it compiles the feature behind it. A build without vCon export answers
-no `/v1/dialogs/{call_id}/vcon`, and the document that build generates lists
-none. The published document covers everything, so read it as the ceiling
-rather than as a promise about the binary you are running.
+**The document describes a full build.**
 
-**This page cannot send a request, and does not offer to.** Your sipnab runs on
-your own machine, and this site's Content Security Policy lets the page reach
-this site and nowhere else. A "send request" button here could never reach your
-capture, so the page hides it rather than letting it fail in a way that reads
-as a broken API.
+- A route appears here when the build serving it compiles the feature behind it.
+- A build without vCon export answers no `/v1/dialogs/{call_id}/vcon`. The
+  document that build generates lists none.
+- The published document covers everything. So read it as the ceiling, rather
+  than as a promise about the binary you are running.
 
-**Nothing here leaves your browser.** This site serves the Scalar renderer
-itself, with telemetry off and the request proxy empty, so the page contacts no
-other host.
+**This page cannot send a request, and does not offer to.**
+
+- Your sipnab runs on your own machine.
+- This site's Content Security Policy lets the page reach this site and nowhere
+  else.
+- A "send request" button here could never reach your capture.
+- So the page hides it. It does not let it fail in a way that reads as a broken
+  API.
+
+**Nothing here leaves your browser.**
+
+- This site serves the Scalar renderer itself.
+- Telemetry is off and the request proxy is empty.
+- So the page contacts no other host.
 
 <div id="scalar-app" data-openapi-url="/openapi.json"></div>
 

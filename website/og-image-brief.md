@@ -38,13 +38,13 @@ may be reproduced at small size, but the full wordmark matters more.
 
 ## Required content
 
-1. Wordmark: `sipnab` — lowercase, JetBrains Mono bold, `#ffcc66`,
-   the dominant element.
-2. Tagline (Inter, `#cbccc6`):
-   **The SIP & RTP analysis tool for people who ship voice infrastructure.**
-3. One supporting line (Inter or mono, `#707a8c`):
-   **One binary. Terminal UI · CLI · REST API · WebAssembly. Built in Rust.**
-4. Domain, small, bottom corner (mono, `#707a8c`): `sipnab.com`
+- Wordmark: `sipnab` — lowercase, JetBrains Mono bold, `#ffcc66`,
+  the dominant element.
+- Tagline (Inter, `#cbccc6`):
+  **The SIP & RTP analysis tool for people who ship voice infrastructure.**
+- One supporting line (Inter or mono, `#707a8c`):
+  **One binary. Terminal UI · CLI · REST API · WebAssembly. Built in Rust.**
+- Domain, small, bottom corner (mono, `#707a8c`): `sipnab.com`
 
 Do NOT include: version numbers, GitHub octocat/logos (trademark),
 screenshots with unreadable micro-text, stock-photo imagery, gradients

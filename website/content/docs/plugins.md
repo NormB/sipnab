@@ -10,32 +10,44 @@ source = "docs/plugins.md"
 
 Add your own detection to sipnab's diagnosis, without forking it.
 
-A plugin is a small WebAssembly module that receives one reconstructed dialog
-and returns findings. Those findings appear beside sipnab's built-in ones, in
-the same shape, so every surface that renders a finding renders yours with no
-extra work.
+A plugin is a small WebAssembly module. It receives one reconstructed dialog
+and returns findings.
+
+- Those findings appear beside sipnab's built-in ones, in the same shape.
+- So every surface that renders a finding renders yours with no extra work.
 
 ## When you want one
 
-sipnab already lets you *select* dialogs — the [filter DSL](@/docs/filter-dsl.md)
-picks them by field, [NDJSON](@/docs/output-formats.md) pipes them anywhere, and
-`--alert exec` reacts to them. What none of those do is *diagnose*: express a
-site-specific fault pattern and have sipnab report it as a finding, with
-evidence, in `--call-report` and the TUI and the JSON alike.
+sipnab already lets you *select* dialogs:
 
-That is the one hole a plugin fills. If you can already answer your question
-with a filter or a `jq` pipeline, use those — they need no build step and no
-trust decision.
+- the [filter DSL](@/docs/filter-dsl.md) picks them by field,
+- [NDJSON](@/docs/output-formats.md) pipes them anywhere,
+- `--alert exec` reacts to them.
+
+What none of those do is *diagnose*:
+
+- express a site-specific fault pattern,
+- and have sipnab report it as a finding, with evidence, in `--call-report`
+  and the TUI and the JSON alike.
+
+That is the one hole a plugin fills.
+
+- If you can already answer your question with a filter or a `jq` pipeline,
+  use those.
+- They need no build step and no trust decision.
 
 ## What it costs you to trust one
 
-A plugin is a `.wasm` file, which is exactly the kind of artifact people copy
-off the internet, so read this before loading one someone sent you.
+A plugin is a `.wasm` file. That is exactly the kind of artifact people copy
+off the internet. So read this before loading one someone sent you.
 
-**A plugin has no imports at all.** Not a restricted set — none. No WASI, no
-filesystem, no network, no clock, not even logging. The only things crossing
-the boundary are integers and the bytes sipnab copies into the plugin's own
-linear memory. A module that imports anything fails to instantiate.
+**A plugin has no imports at all.** Not a restricted set — none.
+
+- No WASI, no filesystem, no network, no clock, not even logging.
+- The only things crossing the boundary are:
+  - integers,
+  - the bytes sipnab copies into the plugin's own linear memory.
+- A module that imports anything fails to instantiate.
 
 | Bounded | How |
 |---|---|
@@ -45,38 +57,58 @@ linear memory. A module that imports anything fails to instantiate.
 | Output size | 4 MiB per reply |
 | Blast radius | A trap, an exhausted fuel budget or a malformed reply fails *that dialog's* plugin findings, and nothing else |
 
-**What is not bounded is what it reads.** A plugin sees every dialog sipnab
-reconstructs, including `Authorization` headers and `MESSAGE` bodies. It cannot
-send them anywhere — it has no imports — but it can decide what to report, and
-a finding's `summary` is a string it chose. Load a plugin the way you would run
-a script: from someone you trust, or after reading it.
+**What is not bounded is what it reads.**
 
-Plugins need a build with `--features plugins`, which is **not** in the default
-feature set. A stock binary carries no interpreter at all, so `sipnab --version`
-tells you whether the machine in front of you can load one. The released Linux
-gnu tarballs, `.deb` and `.rpm` packages and the macOS builds include it. The
-static musl tarballs and the gnu `-noaudio` packages do not.
+- A plugin sees every dialog sipnab reconstructs. This includes
+  `Authorization` headers and `MESSAGE` bodies.
+- It cannot send them anywhere. It has no imports.
+- But it can decide what to report. A finding's `summary` is a string it chose.
+- Load a plugin the way you would run a script:
+  - from someone you trust,
+  - or after reading it.
+
+Plugins need a build with `--features plugins`. That feature is **not** in the
+default feature set.
+
+- A stock binary carries no interpreter at all. So `sipnab --version` tells
+  you whether the machine in front of you can load one.
+- These released builds include it:
+  - the Linux gnu tarballs,
+  - the `.deb` and `.rpm` packages,
+  - the macOS builds.
+- These do not:
+  - the static musl tarballs,
+  - the gnu `-noaudio` packages.
 
 ## Writing one, start to finish
 
 The worked example is [`crates/sipnab-plugin-example`](https://github.com/NormB/sipnab/tree/main/crates/sipnab-plugin-example).
-It flags **short answered calls** — picked up and torn down inside five seconds,
-which is a bad route, a codec the far end rejected, or wangiri-style fraud
-dialling. It is deliberately not a built-in: whether three seconds is a problem
-depends entirely on your traffic, which is the shape a plugin is for.
+It flags **short answered calls**. These are calls picked up and torn down
+inside five seconds. Such a call means one of:
 
-### 1. A crate that builds to WASM
+- a bad route,
+- a codec the far end rejected,
+- wangiri-style fraud dialling.
+
+It is deliberately not a built-in.
+
+- Whether three seconds is a problem depends entirely on your traffic.
+- That is the shape a plugin is for.
+
+### A crate that builds to WASM
 
 ```toml
 [lib]
 crate-type = ["cdylib"]
 ```
 
-Target `wasm32-unknown-unknown`. `std` works there. A `no_std` plugin is
-smaller but needs its own allocator and panic handler, which is a lot of
-ceremony for a detection.
+Target `wasm32-unknown-unknown`. `std` works there.
 
-### 2. Three exports, and nothing imported
+- A `no_std` plugin is smaller.
+- But it needs its own allocator and panic handler.
+- That is a lot of ceremony for a detection.
+
+### Three exports, and nothing imported
 
 ```rust
 #[unsafe(no_mangle)]
@@ -91,21 +123,27 @@ pub unsafe extern "C" fn sipnab_analyze(ptr: i32, len: i32) -> i64 {
 }
 ```
 
-There is no deallocator, and that is deliberate rather than an omission.
-sipnab instantiates the module once per dialog and drops the store when
-`sipnab_analyze` returns, so the plugin's entire linear memory goes with it and
-there is nothing left to reclaim. Both documents used to require a
-`sipnab_dealloc` that the host never looked up, so a plugin that omitted it
-loaded and ran anyway — a requirement nothing checks teaches an author to
-distrust the rest of the page.
+There is no deallocator. That is deliberate rather than an omission.
 
-sipnab checks the ABI version at load rather than on first use: a plugin built
-against a later ABI would misread its input and report confident nonsense,
-which is worse than not loading.
+- sipnab instantiates the module once per dialog.
+- It drops the store when `sipnab_analyze` returns.
+- So the plugin's entire linear memory goes with it. There is nothing left to
+  reclaim.
+- Both documents used to require a `sipnab_dealloc` that the host never looked
+  up.
+  - So a plugin that omitted it loaded and ran anyway.
+  - A requirement nothing checks teaches an author to distrust the rest of the
+    page.
 
-### 3. Read the input, return findings
+sipnab checks the ABI version at load rather than on first use.
 
-Look at the input before writing code — it is the same per-dialog JSON
+- A plugin built against a later ABI would misread its input and report
+  confident nonsense.
+- That is worse than not loading.
+
+### Read the input, return findings
+
+Look at the input before writing code. It is the same per-dialog JSON
 `--json-dialogs` emits, with the `messages` array alongside it:
 
 ```sh
@@ -120,12 +158,14 @@ Return findings in this shape:
                   "evidence": [3, 5] } ] }
 ```
 
-`evidence` indexes the dialog's own message list and is **mandatory** — sipnab
-rejects a finding that leaves it empty. Every built-in detection names the
-messages behind it, and a third-party finding answers to the same rule rather
-than entering as a lesser citizen.
+`evidence` indexes the dialog's own message list. It is **mandatory**.
 
-### 4. Build and run it
+- sipnab rejects a finding that leaves it empty.
+- Every built-in detection names the messages behind it.
+- A third-party finding answers to the same rule rather than entering as a
+  lesser citizen.
+
+### Build and run it
 
 ```sh
 # Run all of these, in order.
@@ -136,15 +176,19 @@ sipnab -N -I capture.pcap --json-dialogs --no-cli-print \
   --plugin target/wasm32-unknown-unknown/release/sipnab_plugin_example.wasm
 ```
 
-`--plugin` is repeatable. Each plugin gets its own sandbox, and a failure in
-one never stops the capture or the others.
+`--plugin` is repeatable.
 
-### 5. Where the findings come out
+- Each plugin gets its own sandbox.
+- A failure in one never stops the capture or the others.
 
-Under a top-level `plugin_findings` array, separate from `signaling_diagnosis`,
-and each finding carries the plugin's own name — filled in by sipnab from the
-file stem, never by the plugin, so a plugin cannot attribute a finding to
-another plugin or to a built-in detection.
+### Where the findings come out
+
+Under a top-level `plugin_findings` array, separate from `signaling_diagnosis`.
+
+- Each finding carries the plugin's own name.
+- sipnab fills in that name from the file stem, never the plugin.
+- So a plugin cannot attribute a finding to another plugin or to a built-in
+  detection.
 
 That separation is the point. A reader can always tell which findings sipnab
 stands behind and which came from third-party code.
@@ -153,11 +197,13 @@ stands behind and which came from third-party code.
 
 - Findings currently reach `--json-dialogs` only. The other surfaces render the
   shape but are not yet wired to it.
-- One hook point: post-dialog analysis. There is deliberately no packet-level
-  hook — handing every packet to an interpreter would undo the capture path's
-  performance, and the [benchmarks](@/docs/benchmarks.md) with it.
-- Plugins observe rather than mutate. A plugin that could rewrite a dialog
-  would make every other surface's output unattributable.
+- One hook point: post-dialog analysis.
+  - There is deliberately no packet-level hook.
+  - Handing every packet to an interpreter would undo the capture path's
+    performance, and the [benchmarks](@/docs/benchmarks.md) with it.
+- Plugins observe rather than mutate.
+  - A plugin that could rewrite a dialog would make every other surface's
+    output unattributable.
 
 ## See also
 

@@ -164,7 +164,7 @@ poller written against the original capture works unchanged against the new one.
 
 ### The second-writer question
 
-Invariant 1 gives each store exactly one writer, with the TUI's `pcap-load` as
+Invariant "One writer per store, per run mode" gives each store exactly one writer, with the TUI's `pcap-load` as
 the documented exception. This is the second. Two conditions make it safe and
 `open_capture` enforces both before spawning:
 

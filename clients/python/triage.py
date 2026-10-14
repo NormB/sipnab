@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Triage a capture to one machine verdict (cookbook recipes 1 and 16).
+"""Triage a capture to one machine verdict (cookbook recipes "Triage a pcap fast" and "Analyze a capture into one machine-readable verdict").
 
     triage.py capture.pcap [more.pcap ...] [--sipnab PATH]
 
@@ -16,7 +16,7 @@ is the verdict, for a pipeline that reads nothing else:
 
 The third state is why this exists rather than `--json-analyze` alone. A
 capture whose SIP sits outside `--portrange`, or that holds no SIP at all,
-analyzes to an empty finding list, which reads as clean (recipe 16's
+analyzes to an empty finding list, which reads as clean (recipe "Analyze a capture into one machine-readable verdict"'s
 pitfall). Standard library only; sipnab comes from `--sipnab`, else
 `$SIPNAB_BIN`, else `sipnab` on PATH.
 """

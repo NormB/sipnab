@@ -678,7 +678,7 @@ fn linked_code_targets_exist() -> Result<(), TestError> {
     // paragraph on why this file belongs to a phase-two commit names the
     // constant both release gates read. Attributed the same way: 7 relative
     // code links in that file before, 8 after, no other page touched.
-    // 424 -> 425: one, in `docs/internals/invariants.md`, where invariant 3
+    // 424 -> 425: one, in `docs/internals/invariants.md`, where invariant "All four paths classify through one function"
     // gains the paragraph on a wire rule written twice under a single
     // classifier, linking the test that gates it. Attributed by counting that
     // file: 55 relative code links before, 56 after, no other page touched.
@@ -718,7 +718,7 @@ fn linked_code_targets_exist() -> Result<(), TestError> {
     // schema, `src/analysis/yang.rs`, `tests/yang_module_test.rs`,
     // `scripts/check-yang.py`). Merged from two branches that each counted
     // against 432.
-    // 432 -> 433: one, in `docs/internals/invariants.md`, where Invariant 13
+    // 432 -> 433: one, in `docs/internals/invariants.md`, where Invariant "Operator notes are output, never input"
     // (operator notes are output, never input) links `src/annotate/mod.rs`,
     // the sealed `NoteText` it is enforced by. Measured by this gate.
     // 433 -> 436: three, in the same section: the import allow-list
@@ -728,7 +728,7 @@ fn linked_code_targets_exist() -> Result<(), TestError> {
     // `src/analysis.rs`, forbidden). Measured by this gate.
     // 441 + 4 = 445: the operator-notes branch counted its four against 432
     // and merged after the two above.
-    // 432 -> 433: one, in `docs/internals/invariants.md`, where invariant 4
+    // 432 -> 433: one, in `docs/internals/invariants.md`, where invariant "Every attacker-keyed map has a bound and a stated eviction policy"
     // gains the HEP sender roster's two attacker-keyed maps and links
     // `src/capture/hep_roster.rs`. Attributed by counting every page under
     // `docs/internals/` against HEAD: invariants.md gained exactly that link
@@ -748,7 +748,7 @@ fn linked_code_targets_exist() -> Result<(), TestError> {
     // links it. Attributed by counting `](../../` links on every page under
     // `docs/internals/` against HEAD: rtpengine-control-plane.md moved
     // 25 -> 26, and no other page changed.
-    // 446 -> 448: two, in `docs/internals/invariants.md`, where invariant 4
+    // 446 -> 448: two, in `docs/internals/invariants.md`, where invariant "Every attacker-keyed map has a bound and a stated eviction policy"
     // gains the bounds on an archive named with `-I` and links
     // `src/capture/archive/mod.rs`, the walk that enforces them, and
     // `src/capture/archive/tar.rs`, whose long-name cap it names. Attributed
@@ -757,19 +757,19 @@ fn linked_code_targets_exist() -> Result<(), TestError> {
     // Merge of the fixtures branch with main: 446 +4 (fixtures) +2 (archive
     // invariants) = 452. Each side's attribution is above.
     // 452 -> 456 by password-protected archives: four, in
-    // `docs/internals/invariants.md`. Invariant 4 gains the ZIP and password
+    // `docs/internals/invariants.md`. Invariant "Every attacker-keyed map has a bound and a stated eviction policy" gains the ZIP and password
     // bounds and links `src/capture/archive/zipped.rs` and
-    // `src/capture/archive/password.rs`; invariant 5 gains the
+    // `src/capture/archive/password.rs`; invariant "Key material is toxic waste" gains the
     // archive-password paragraph, links `password.rs` again for
     // `ArchivePassword`, and names the sentinel test
     // `tests/archive_password_test.rs`. Attributed by diffing
     // `docs/internals/` against the merge base: invariants.md gained exactly
     // those four and no other page changed.
-    // 456 -> 457: invariant 4 in `docs/internals/invariants.md` names the
+    // 456 -> 457: invariant "Every attacker-keyed map has a bound and a stated eviction policy" in `docs/internals/invariants.md` names the
     // REST wrong-password limiter and links `src/output/api.rs`. Attributed
     // by diffing `docs/internals/` against HEAD: that one link and no other
     // page changed.
-    // 457 -> 458: invariant 4 names 7z's key-derivation bound and links
+    // 457 -> 458: invariant "Every attacker-keyed map has a bound and a stated eviction policy" names 7z's key-derivation bound and links
     // `src/capture/archive/sevenz.rs`, which reports it. Attributed by
     // diffing `docs/internals/` against HEAD: that one link and no other page
     // changed.

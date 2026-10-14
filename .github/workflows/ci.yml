@@ -182,7 +182,7 @@ jobs:
         run: cargo build --all-features --bins --examples
 
       # tshark and capinfos, for the operator task that exports one customer's
-      # calls (cookbook recipe 40): Wireshark's own engine, not sipnab, must
+      # calls (cookbook recipe "Open the same evidence in Wireshark"): Wireshark's own engine, not sipnab, must
       # open the export and run the command sipnab printed for it. Ubuntu's
       # package, through the cached installer every hosted job uses. The
       # preseed answers the one question wireshark-common asks (may non-root

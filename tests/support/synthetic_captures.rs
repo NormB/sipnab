@@ -2511,8 +2511,8 @@ pub fn stun_sdp_mismatch() -> Vec<u8> {
 //
 // The captures the operator-task programs in clients/python run against in
 // scripts/smoke-clients.sh: a call answered and never acknowledged (cookbook
-// recipe 30), and a registrar watched while a scanner probes it and two
-// sources retry refused credentials (recipes 10 and 23).
+// recipe "Find calls that answered and were never acknowledged"), and a registrar watched while a scanner probes it and two
+// sources retry refused credentials (recipes "Detect SIP scanners and auto-block via fail2ban" and "Find the device flooding REGISTER").
 
 /// The MAC addresses of every frame in the operator-task fixtures.
 const OPERATOR_MACS: ([u8; 6], [u8; 6]) = (doc_mac(0x12), doc_mac(0x11));
@@ -2543,7 +2543,7 @@ fn sip_frame(ident: u16, src: [u8; 4], dst: [u8; 4], text: &str) -> Vec<u8> {
 /// 31.5 s, then silence. No `ACK` and no `BYE` follow, so the capture ends
 /// with the call up on one side only. The last answer is 31.5 s after the
 /// first, under the 32 s Timer H sipnab defaults to, so the finding needs
-/// `--ack-timeout` below that, as recipe 30 shows.
+/// `--ack-timeout` below that, as recipe "Find calls that answered and were never acknowledged" shows.
 pub fn answered_never_acked() -> Vec<u8> {
     const CALLER: [u8; 4] = [192, 0, 2, 70];
     const CALLEE: [u8; 4] = [192, 0, 2, 80];
@@ -2603,10 +2603,10 @@ pub fn answered_never_acked() -> Vec<u8> {
 /// accepted. The scanner at 203.0.113.42 sends OPTIONS as `friendly-scanner`
 /// to six extensions, each answered `404`. The device at 198.51.100.77
 /// (`SynthSwitch/1.0`) sends twelve REGISTERs carrying the same credentials
-/// inside one second, each challenged `401`, the pattern recipe 23 describes.
+/// inside one second, each challenged `401`, the pattern recipe "Find the device flooding REGISTER" describes.
 /// Then the PBX does the same after its credentials change: twelve refused
 /// retries, from a source that completed a registration earlier in the file,
-/// which is the counter-evidence recipe 10c exists to show.
+/// which is the counter-evidence recipe "Block a scanner with a rule sipnab wrote, after reading the evidence" exists to show.
 pub fn scanner_and_register_flood() -> Vec<u8> {
     const REGISTRAR: [u8; 4] = [192, 0, 2, 20];
     const PBX: [u8; 4] = [192, 0, 2, 10];

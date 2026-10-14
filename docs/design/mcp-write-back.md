@@ -22,7 +22,7 @@ fourth is not documentation — it is a promise sipnab transmits to every client
 at handshake.
 
 **As an invariant.** [`docs/internals/invariants.md`](../internals/invariants.md)
-[section 7, "MCP tools never edit the analysis, and every response has a ceiling"](../internals/invariants.md#7-mcp-tools-never-edit-the-analysis-and-every-response-has-a-ceiling), in full:
+["MCP tools never edit the analysis, and every response has a ceiling"](../internals/invariants.md#mcp-tools-never-edit-the-analysis-and-every-response-has-a-ceiling), in full:
 
 > ## 7. MCP tools never mutate, and every response has a ceiling
 >
@@ -261,7 +261,7 @@ writes to something nobody looks at, which answers the motivation in section 2
 only if a later tool reads the copy back — at which point two stores can
 disagree and every consumer needs to say which it meant. The complexity lands on
 `output/model.rs`, whose whole job under
-[invariant 9](../internals/invariants.md) is that there is *one* wire shape per
+[invariant "One wire shape per concept"](../internals/invariants.md) is that there is *one* wire shape per
 concept.
 
 **B. Require an explicit flag.** `--mcp-allow-write`, following
@@ -330,7 +330,7 @@ touching the analysis at all.
   That is the property that makes it safe, and it must be stated in the tool's
   doc comment so a later change that adds a reader is visibly a different
   proposal.
-- Invariant 7 is untouched: no store is mutated, and the response is a filename.
+- Invariant "MCP tools never edit the analysis, and every response has a ceiling" is untouched: no store is mutated, and the response is a filename.
 - The handshake `instructions` string (`server.rs:2364`) stays accurate, because
   read-only access to *dialogs, streams, diagnostics and findings* remains a
   true description of what the tools return.

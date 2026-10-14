@@ -10,12 +10,15 @@ kind = "howto"
 
 ## In short
 
-A call can complete its setup correctly, get an answer, and still carry no
-sound. Before reading that as a network fault, check that you captured at a
-point where the audio packets pass at all: a capture that holds only signaling
-cannot say anything about audio. sipnab does not report "no audio" for calls
-in a capture that holds no audio packets at all. This page gives the checks in
-order, with the sipnab command for each.
+A call can complete its setup correctly and get an answer. It can still carry
+no sound.
+
+- Before reading that as a network fault, check where you captured.
+  - The audio packets must pass that point at all.
+  - A capture that holds only signaling cannot say anything about audio.
+- sipnab does not report "no audio" for calls in a capture that holds no audio
+  packets at all.
+- This page gives the checks in order, with the sipnab command for each.
 
 ## Who this is for
 
@@ -24,16 +27,20 @@ signaling shows as answered.
 
 ## Steps
 
-The commands below run from the root of a sipnab checkout against captures in
-`tests/pcap-samples/` and `tests/fixtures/`. `--quiet` hides informational
-log lines. Warnings still print, with a timestamp. The output shown has the
-trailing spaces at the ends of table rows removed.
+The commands below run from the root of a sipnab checkout. They use captures
+in `tests/pcap-samples/` and `tests/fixtures/`.
 
-### 1. Check that the capture holds audio packets at all
+- `--quiet` hides informational log lines.
+- Warnings still print, with a timestamp.
+- The output shown has the trailing spaces at the ends of table rows removed.
 
-Call audio travels as RTP (Real-time Transport Protocol) packets, on a path
-that can differ from the signaling path. `--report` lists the calls, then an
-`RTP Streams:` table of the audio streams it found:
+### Check that the capture holds audio packets at all
+
+Call audio travels as RTP (Real-time Transport Protocol) packets. Its path can
+differ from the signaling path.
+
+`--report` lists the calls. Then it prints an `RTP Streams:` table of the
+audio streams it found:
 
 ```bash
 sipnab -N -I tests/pcap-samples/sip-rtp-g711.pcap --report --no-cli-print --quiet
@@ -52,9 +59,9 @@ SSRC         PT   Codec    Clock  Source                Destination           Pk
 0x343ffa34   8    PCMA     8000   10.0.2.15:28102       10.0.2.20:6000        414     0      0.0%    0ms      8s     64
 ```
 
-The same capture read through a BPF expression that keeps only the SIP port
-(BPF is the packet filter language of libpcap and tcpdump) has the same two
-answered calls and no stream table:
+Read the same capture through a BPF expression that keeps only the SIP port.
+BPF is the packet filter language of libpcap and tcpdump. The result has the
+same two answered calls and no stream table:
 
 ```bash
 sipnab -N -I tests/pcap-samples/sip-rtp-g711.pcap --report --no-cli-print --quiet 'udp port 5060'
@@ -67,16 +74,25 @@ Call-ID                          From           To             State        Code
 1-1968@10.0.2.20                 sipp           test           InCall       200    0s         4      -        -
 ```
 
-If `--report` prints neither an `RTP Streams:` table nor an `Orphaned
-Streams:` table (step 3), the capture holds no audio and cannot answer a
-question about it. Capture again at a point the audio passes through. No sipnab
-option recovers packets that were never captured.
+`--report` may print neither an `RTP Streams:` table nor an `Orphaned
+Streams:` table (see the orphaned-audio step below).
+
+- Then the capture holds no audio.
+- It cannot answer a question about audio.
+- Capture again at a point the audio passes through.
+- No sipnab option recovers packets that were never captured.
 
 sipnab has a finding for an answered call with no audio, `[CRITICAL] No media
-on an answered call`. It does not raise it when the capture as a whole holds no
-RTP, because then sipnab would report every answered call, including every call
-from a signaling-only source: a capture point the audio does not pass
-through, a HEP feed, or a run with `--no-rtp`. On the signaling-only read above:
+on an answered call`.
+
+- It does not raise it when the capture as a whole holds no RTP.
+- Otherwise sipnab would report every answered call. That includes every call
+  from a signaling-only source:
+  - a capture point the audio does not pass through,
+  - a HEP feed,
+  - a run with `--no-rtp`.
+
+On the signaling-only read above:
 
 ```bash
 sipnab -N -I tests/pcap-samples/sip-rtp-g711.pcap --analyze --no-cli-print --quiet 'udp port 5060'
@@ -86,11 +102,12 @@ sipnab -N -I tests/pcap-samples/sip-rtp-g711.pcap --analyze --no-cli-print --qui
 No problems found in 2 dialog(s) and 0 stream(s) across 10 frame(s). Every frame decoded, no port gate discarded SIP, and no retention cap was reached — so this is a statement about the capture, not only about what sipnab could read of it.
 ```
 
-### 2. Check that the port range discarded no SIP
+### Check that the port range discarded no SIP
 
-By default sipnab reads SIP only on ports 5060 to 5061 (`--portrange`). sipnab
-recognizes SIP on any other port and then discards it, and the audio of those
-calls then belongs to no call:
+By default sipnab reads SIP only on ports 5060 to 5061 (`--portrange`).
+
+- sipnab recognizes SIP on any other port and then discards it.
+- The audio of those calls then belongs to no call:
 
 ```bash
 sipnab -N -I tests/pcap-samples/codec-negotiation.pcap --analyze --no-cli-print --quiet
@@ -109,8 +126,10 @@ THIS ANALYSIS IS INCOMPLETE — sipnab did not read all of this capture. The fin
      - port 5080 | messages=10
 ```
 
-sipnab lists `[BLIND]` findings first: they say what sipnab could not read. Here
-the SIP ran on port 5080. Widen the range and read the capture again:
+sipnab lists `[BLIND]` findings first. They say what sipnab could not read.
+
+- Here the SIP ran on port 5080.
+- Widen the range and read the capture again:
 
 ```bash
 sipnab -N -I tests/pcap-samples/codec-negotiation.pcap --portrange 1-65535 --analyze --no-cli-print --quiet
@@ -120,14 +139,15 @@ sipnab -N -I tests/pcap-samples/codec-negotiation.pcap --portrange 1-65535 --ana
 No problems found in 1 dialog(s) and 4 stream(s) across 614 frame(s). Every frame decoded, no port gate discarded SIP, and no retention cap was reached — so this is a statement about the capture, not only about what sipnab could read of it.
 ```
 
-With the range widened, the capture has one call and its four streams attach
-to it.
+With the range widened, the capture has one call. Its four streams attach to
+it.
 
-### 3. Explain audio that belongs to no call
+### Explain audio that belongs to no call
 
-An orphaned stream is an audio stream that no captured call claims. With the
-default port range, `--report` on the same capture lists the four streams
-under `Orphaned Streams:`:
+An orphaned stream is an audio stream that no captured call claims.
+
+With the default port range, `--report` on the same capture lists the four
+streams under `Orphaned Streams:`:
 
 ```bash
 sipnab -N -I tests/pcap-samples/codec-negotiation.pcap --report --no-cli-print --quiet
@@ -148,14 +168,15 @@ SSRC         Source                   Destination              Pkts     Duration
 0x2d374e76   127.0.0.1:5084           127.0.0.1:5094           151      2s
 ```
 
-When sipnab runs as an MCP server (`sipnab --mcp -N`, the interface an AI agent
-uses), two tools answer the same questions:
+sipnab can run as an MCP server (`sipnab --mcp -N`). That is the interface an
+AI agent uses. Two tools answer the same questions:
 
 - `capture_status` reports `stream_count`, `orphaned_stream_count` and
-  `unanalysed_sip_messages` beside the call counts. On this capture with the
-  default port range it reported `"dialog_count":0`, `"stream_count":4`,
-  `"orphaned_stream_count":4` and `"unanalysed_sip_messages":10`. The field
-  name uses British spelling in the API; the name is exact.
+  `unanalysed_sip_messages` beside the call counts.
+  - On this capture with the default port range it reported
+    `"dialog_count":0`, `"stream_count":4`, `"orphaned_stream_count":4` and
+    `"unanalysed_sip_messages":10`.
+  - The field name uses British spelling in the API. The name is exact.
 - `reconcile_orphans` gives a reason for each orphaned stream:
 
 | reason | what it means |
@@ -165,18 +186,24 @@ uses), two tools answer the same questions:
 | `never-named` | nothing in this capture named this endpoint |
 
 `relay_was_consulted` is a field of the whole answer, not of each row. On this
-capture each of the four rows had `"reason":"never-named"` and the answer had
-`"relay_was_consulted":false`, and each row carried this `note`:
+capture:
+
+- each of the four rows had `"reason":"never-named"`;
+- the answer had `"relay_was_consulted":false`;
+- each row carried this `note`:
 
 ```text
 nothing in this capture named this endpoint. A relay could answer it and none was asked: that is an absence of evidence, not evidence of absence
 ```
 
-### 4. Check whether the audio started late rather than never
+### Check whether the audio started late rather than never
 
-If audio starts long after the `200 OK` (the answer), the first part of the
-conversation is missing from the call. sipnab reports this as `Media started late` when the
-delay exceeds `--late-media-ms`, which defaults to 500 milliseconds:
+Audio can start long after the `200 OK` (the answer). Then the first part of
+the conversation is missing from the call.
+
+- sipnab reports this as `Media started late`.
+- It does so when the delay exceeds `--late-media-ms`. That option defaults
+  to 500 milliseconds:
 
 ```bash
 sipnab -N -I tests/pcap-samples/SIP_DTMF2.cap --analyze --no-cli-print --quiet
@@ -201,21 +228,25 @@ Capture analysis: 3 finding(s) across 5 dialog(s), 2 stream(s), 1360 frame(s) re
      - Call-ID 25672@192.168.105.110 | 192.168.105.110:5060 -> 192.168.105.105 | 2005-09-09 12:03:17.334 UTC | delay_after_200_ok_ms=22501 | a leg started late
 ```
 
-Finding 3 shows audio that began 22,501 milliseconds after the answer. Set
-`--late-media-ms` to the delay you expect your network to meet.
-`--filter late-media` selects the same calls for a report, and the MCP
-`find_problems` tool accepts `late-media` as a kind.
+- Finding 3 shows audio that began 22,501 milliseconds after the answer.
+- Set `--late-media-ms` to the delay you expect your network to meet.
+- `--filter late-media` selects the same calls for a report.
+- The MCP `find_problems` tool accepts `late-media` as a kind.
 
-### 5. Look for findings that name a cause
+### Look for findings that name a cause
 
 Three findings point at a specific cause rather than an absence.
 
-**Answered INVITE never acknowledged.** The caller must confirm an answer with
-an ACK. When no ACK arrives, the answering side sends the answer again and then
-ends the call. sipnab reports it once the answer has gone unacknowledged for
-`--ack-timeout` seconds. The default is 32 seconds ([RFC 3261](https://www.rfc-editor.org/rfc/rfc3261.html) Timer H). The
-call in this fixture ran 31.5 seconds without an ACK, so this run lowers the
-threshold to 30 seconds:
+**Answered INVITE never acknowledged.**
+
+- The caller must confirm an answer with an ACK.
+- When no ACK arrives, the answering side sends the answer again. Then it
+  ends the call.
+- sipnab reports it once the answer has gone unacknowledged for
+  `--ack-timeout` seconds.
+- The default is 32 seconds ([RFC 3261](https://www.rfc-editor.org/rfc/rfc3261.html) Timer H).
+- The call in this fixture ran 31.5 seconds without an ACK. So this run
+  lowers the threshold to 30 seconds:
 
 ```bash
 sipnab -N -I tests/fixtures/sip-answered-never-acked.pcap --ack-timeout 30 --analyze --no-cli-print --quiet
@@ -234,18 +265,24 @@ With the default of 32 seconds, the same capture reports no problems.
 
 <!-- vale Google.Passive = NO -->
 
-**ICMP: media undeliverable.** A router or host answered an audio packet with
-an ICMP error, which means nothing was listening on the address and port the
-sender addressed the audio to. sipnab's description of the finding reads: "Check that the
-media relay is running and that the port the SDP advertised is the port it is
-bound to." No capture in the repository produces this finding.
+**ICMP: media undeliverable.**
+
+- A router or host answered an audio packet with an ICMP error.
+- That means nothing was listening on the address and port the sender
+  addressed the audio to.
+- sipnab's description of the finding reads: "Check that the
+  media relay is running and that the port the SDP advertised is the port it is
+  bound to."
+- No capture in the repository produces this finding.
 
 <!-- vale Google.Passive = YES -->
 
-**ICE role conflict with no nominated pair.** ICE is the procedure two
-endpoints use to find a network path for audio. One side must be
-"controlling" and the other "controlled". `--stun` reports the checks, and
-names a conflict that ended with no path chosen:
+**ICE role conflict with no nominated pair.**
+
+- ICE is the procedure two endpoints use to find a network path for audio.
+- One side must be "controlling" and the other "controlled".
+- `--stun` reports the checks. It names a conflict that ended with no path
+  chosen:
 
 ```bash
 sipnab -N -I tests/fixtures/ice_checks.pcap --stun --no-cli-print --quiet
@@ -266,21 +303,23 @@ ICE: 5 connectivity check(s), 5 answered.
   ROLE CONFLICT 192.0.2.11:50006 <-> 203.0.113.11:16002: both claimed controlling, 2 x 487 Role Conflict. No pair between them was ever nominated, so this is a candidate cause of media that never started.
 ```
 
-The endpoints nominated the first pair. The second pair had both sides claim
-`controlling`, and no path between them was ever nominated, so audio between
-those two addresses had no agreed path.
+- The endpoints nominated the first pair.
+- The second pair had both sides claim `controlling`.
+  - No path between them was ever nominated.
+  - So audio between those two addresses had no agreed path.
 
 ## Order of checks
 
-1. Does `--report` print an `RTP Streams:` or `Orphaned Streams:` table? If
-   not, capture at a point the audio passes through.
-2. Is there a `[BLIND] SIP discarded by --portrange` finding? If so, re-read
-   with `--portrange 1-65535`.
-3. Are there orphaned streams? Ask `reconcile_orphans` why.
-4. Did the audio start late? Check `Media started late` against
-   `--late-media-ms`.
-5. Is there a missing ACK, an ICMP error, or an ICE role conflict with no
-   nominated pair?
+- Does `--report` print an `RTP Streams:` or `Orphaned Streams:` table?
+  - If not, capture at a point the audio passes through.
+- Is there a `[BLIND] SIP discarded by --portrange` finding?
+  - If so, re-read with `--portrange 1-65535`.
+- Are there orphaned streams?
+  - Ask `reconcile_orphans` why.
+- Did the audio start late?
+  - Check `Media started late` against `--late-media-ms`.
+- Is there a missing ACK, an ICMP error, or an ICE role conflict with no
+  nominated pair?
 
 ## Terms used here
 
@@ -303,8 +342,8 @@ those two addresses had no agreed path.
 - **ICMP**: the protocol routers and hosts use to report delivery errors.
 - **ICE, STUN**: the procedure, and the request protocol it uses, by which two
   endpoints test and choose a network path for audio.
-- **Timer H**: the RFC 3261 timer, 32 seconds by default, after which an
-  the answering side abandons an unacknowledged answer.
+- **Timer H**: the RFC 3261 timer, 32 seconds by default. After it, the
+  answering side abandons an unacknowledged answer.
 
 ## Related guides
 

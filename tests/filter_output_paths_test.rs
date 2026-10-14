@@ -441,7 +441,7 @@ fn call_report_names_a_dialog_regardless_of_the_filter() -> Result<(), TestError
 // has been seen and correlated. So `--filter` does not narrow `-O`, and that
 // is a design constraint rather than a defect.
 //
-// The defect was the page that said otherwise. Cookbook recipe 32, "Export one
+// The defect was the page that said otherwise. Cookbook recipe "Export one
 // customer's calls as a smaller capture", opened by naming the risk -- "the
 // file is 4 GB of everyone's traffic. Sending all of it is both slow and a
 // disclosure" -- and then told the reader `-O` "writes the packets that
@@ -495,7 +495,7 @@ fn a_dialog_filter_does_not_narrow_the_output_capture() -> Result<(), TestError>
     assert_eq!(
         a, b,
         "`-O` now honors `--filter`. That is a BEHAVIOR CHANGE with a \
-         documentation consequence: cookbook recipe 32 and the redaction \
+         documentation consequence: cookbook recipe \"Export one customer's calls as a smaller capture\" and the redaction \
          how-to both tell a reader that `-O` does NOT narrow, and one of them \
          exists because the opposite claim was a disclosure hazard. Update \
          both, then change this pin."

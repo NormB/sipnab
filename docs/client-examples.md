@@ -1,9 +1,12 @@
 # Runnable client examples
 
-These Python clients demonstrate multi-step operator tasks. Run commands from
-the repository root with Python 3. The programs use its standard library.
-Their parsing and analysis tests run in CI without a lab. A complete live run
-requires the services described in the [capture harness](vcon-harness.md).
+These Python clients demonstrate multi-step operator tasks.
+
+- Run commands from the repository root with Python 3.
+- The programs use its standard library.
+- Their parsing and analysis tests run in CI without a lab.
+- A complete live run requires the services described in the
+  [capture harness](vcon-harness.md).
 
 | Program | What it does | Live prerequisites |
 |---|---|---|
@@ -30,9 +33,17 @@ python3 -m pytest clients/python/tests -q
 
 ## Languages and lifecycle
 
-sipnab declares client examples in six languages: Rust, Python, Go,
-JavaScript (TypeScript counts as JavaScript), C and C++. An operator's program walks
-through six steps, and each language should have one program per step:
+sipnab declares client examples in six languages:
+
+- Rust,
+- Python,
+- Go,
+- JavaScript (TypeScript counts as JavaScript),
+- C,
+- C++.
+
+An operator's program walks through six steps. Each language should have one
+program per step:
 
 - **configure**: starts sipnab from a configuration it writes or chooses.
 - **capture**: starts sipnab on a capture source and takes its output.
@@ -41,9 +52,10 @@ through six steps, and each language should have one program per step:
 - **process**: turns what it read into an answer an operator acts on.
 - **stop**: stops a running sipnab through its own interface.
 
-"Not yet" marks a step that language has no program for. A test holds this
-table to the programs in `clients/`, so a program listed here exists and makes
-the call its step needs.
+"Not yet" marks a step that language has no program for.
+
+- A test holds this table to the programs in `clients/`.
+- So a program listed here exists, and makes the call its step needs.
 
 | Language | configure | capture | read | command | process | stop |
 |---|---|---|---|---|---|---|
@@ -56,11 +68,18 @@ the call its step needs.
 
 ## Reference-page programs
 
-Each Python, Go, JavaScript and TypeScript example on the
-[REST API](rest-api.md), [Prometheus metrics](prometheus-metrics.md) and
-[MCP deployment](mcp-deploy.md) pages is the core of one of these programs. A
-test holds each page's example to its program byte for byte. CI builds every
-program and runs it against a sipnab replaying committed captures.
+Each Python, Go, JavaScript and TypeScript example on these pages is the core
+of one of these programs:
+
+- [REST API](rest-api.md),
+- [Prometheus metrics](prometheus-metrics.md),
+- [MCP deployment](mcp-deploy.md).
+
+How they stay true:
+
+- A test holds each page's example to its program byte for byte.
+- CI builds every program and runs it against a sipnab replaying committed
+  captures.
 
 | Program | What it does | Go | JavaScript | Python |
 |---|---|---|---|---|
@@ -73,10 +92,13 @@ program and runs it against a sipnab replaying committed captures.
 | `stats` | Dialog totals and post-dial delay | [main.go](../clients/go/stats/main.go) | [stats.mjs](../clients/javascript/stats.mjs) | [stats.py](../clients/python/stats.py) |
 | `metrics` | The Prometheus exposition | [main.go](../clients/go/metrics/main.go) | [metrics.mjs](../clients/javascript/metrics.mjs) | [metrics.py](../clients/python/metrics.py) |
 
-Each REST program reads the base URL from `SIPNAB_URL` (default
-`http://127.0.0.1:8080`) and the token from `SIPNAB_API_KEY`. `get-dialog`,
-`dialog-report` and `get-stream` take the Call-ID or SSRC as their first
-argument. Run one against a sipnab started with `--api 127.0.0.1:8080`:
+- Each REST program reads:
+  - the base URL from `SIPNAB_URL` (default `http://127.0.0.1:8080`),
+  - the token from `SIPNAB_API_KEY`.
+- `get-dialog`, `dialog-report` and `get-stream` take the Call-ID or SSRC as
+  their first argument.
+
+Run one against a sipnab started with `--api 127.0.0.1:8080`:
 
 ```bash
 # Run all of these, in order.
@@ -86,19 +108,23 @@ python3 clients/python/list_dialogs.py
 node clients/javascript/list-dialogs.mjs
 ```
 
-The MCP stdio clients start sipnab themselves:
-[`sipnab_mcp.py`](../clients/python/sipnab_mcp.py) needs the SDK from
-[`clients/python/requirements-mcp.txt`](https://github.com/NormB/sipnab/blob/main/clients/python/requirements-mcp.txt), and
-[`sipnab-mcp.ts`](../clients/typescript/sipnab-mcp.ts) needs `npm ci` in
-`clients/typescript`. Both take a capture path.
+The MCP stdio clients start sipnab themselves. Both take a capture path.
+
+- [`sipnab_mcp.py`](../clients/python/sipnab_mcp.py) needs the SDK from
+  [`clients/python/requirements-mcp.txt`](https://github.com/NormB/sipnab/blob/main/clients/python/requirements-mcp.txt).
+- [`sipnab-mcp.ts`](../clients/typescript/sipnab-mcp.ts) needs `npm ci` in
+  `clients/typescript`.
 
 The site's [Call the REST API from code](https://sipnab.com/docs/api-clients/)
 page shows three whole REST clients, held the same way:
-[`clients/go/sipnab-client`](../clients/go/sipnab-client/main.go),
-[`clients/typescript/sipnab-client.ts`](../clients/typescript/sipnab-client.ts)
-and [`clients/rust`](../clients/rust/src/main.rs), a member of the Cargo
-workspace. Each lists the failed dialogs a page at a time and fetches each
-one. Run the Rust one with `cargo run -p sipnab-client`.
+
+- [`clients/go/sipnab-client`](../clients/go/sipnab-client/main.go),
+- [`clients/typescript/sipnab-client.ts`](../clients/typescript/sipnab-client.ts),
+- [`clients/rust`](../clients/rust/src/main.rs), a member of the Cargo
+  workspace.
+
+Each lists the failed dialogs a page at a time and fetches each one. Run the
+Rust one with `cargo run -p sipnab-client`.
 
 ## Capability examples
 
@@ -115,12 +141,19 @@ captures.
 
 ### Join one call seen at two nodes
 
-A proxy sees a call's signaling and none of its media, and a relay such as
-rtpengine sees the media and none of the signaling. The relay learns the
-Call-ID from its `ng` control plane, which rtpengine can mirror over HEP, and
-sipnab records it on each stream as `associated_dialog`. The join is
-[`leg_correlate.py`](../clients/python/leg_correlate.py) grouping the relay's
-streams by that field and pairing each group with the proxy's dialog:
+Each node sees only half of a call:
+
+- A proxy sees a call's signaling and none of its media.
+- A relay such as rtpengine sees the media and none of the signaling.
+
+How the halves connect:
+
+- The relay learns the Call-ID from its `ng` control plane. rtpengine can
+  mirror that over HEP.
+- sipnab records the Call-ID on each stream as `associated_dialog`.
+- [`leg_correlate.py`](../clients/python/leg_correlate.py) makes the join. It
+  groups the relay's streams by that field and pairs each group with the
+  proxy's dialog:
 
 <!-- snippet: clients/python/leg_correlate.py#leg-join -->
 ```python
@@ -134,32 +167,40 @@ for s in relay["streams"]:
         unnamed.append(s)
 ```
 
-The program reports streams the relay could not name as `UNNAMED MEDIA`
-rather than dropping them, and refuses two URLs that reach the same
-sipnab. CI replays [`tests/fixtures/opensips-proxy-signaling.pcap`](https://github.com/NormB/sipnab/raw/main/tests/fixtures/opensips-proxy-signaling.pcap) on one sipnab and
-[`tests/fixtures/rtpengine-opensips-ng.pcap`](https://github.com/NormB/sipnab/raw/main/tests/fixtures/rtpengine-opensips-ng.pcap) on another, one call from its two
-capture points, and expects this row:
+- The program reports streams the relay could not name as `UNNAMED MEDIA`,
+  rather than dropping them.
+- It refuses two URLs that reach the same sipnab.
+
+CI replays one call from its two capture points, and expects this row:
+
+- [`tests/fixtures/opensips-proxy-signaling.pcap`](https://github.com/NormB/sipnab/raw/main/tests/fixtures/opensips-proxy-signaling.pcap) on one sipnab,
+- [`tests/fixtures/rtpengine-opensips-ng.pcap`](https://github.com/NormB/sipnab/raw/main/tests/fixtures/rtpengine-opensips-ng.pcap) on another.
 
 ```text
 1-4062@198.51.100.21     Completed   200   2     40      G722,PCMU  4.22  yes
 ```
 
-The caller sent G.722 and the relay forwarded PCMU, so transcoding shows as
-two codecs on one call. [Cookbook recipe 27](examples.md#27-compare-the-same-call-at-two-nodes)
-compares one call's messages at two nodes. This example joins the halves that
-no single node holds.
+The caller sent G.722 and the relay forwarded PCMU. So transcoding shows as
+two codecs on one call.
+
+- [Cookbook recipe "Compare the same call at two nodes"](examples.md#compare-the-same-call-at-two-nodes)
+  compares one call's messages at two nodes.
+- This example joins the halves that no single node holds.
 
 ### Check a vCon against the publisher's schema
 
 [`vcon_validate.py`](../clients/python/vcon_validate.py) checks containers
 against
-[`tests/schemas/publisher/vcon_json_schema.json`](https://github.com/NormB/sipnab/blob/main/tests/schemas/publisher/vcon_json_schema.json),
-the vCon working group's schema file exactly as it stands in
-[ietf-wg-vcon/draft-ietf-vcon-vcon-core](https://github.com/ietf-wg-vcon/draft-ietf-vcon-vcon-core/blob/99589dd0b474d95c2feed52165fc2c95b1191d3d/vcon_json_schema.json)
-at commit `99589dd0`, the `draft-ietf-vcon-vcon-core-04` tag. The engine is `jsonschema`, not sipnab. A plain
-`jsonschema` install checks none of the three formats the schema uses, so the
-program brings a checker for each and refuses a schema whose formats it
-cannot check:
+[`tests/schemas/publisher/vcon_json_schema.json`](https://github.com/NormB/sipnab/blob/main/tests/schemas/publisher/vcon_json_schema.json).
+
+- That is the vCon working group's schema file exactly as it stands in
+  [ietf-wg-vcon/draft-ietf-vcon-vcon-core](https://github.com/ietf-wg-vcon/draft-ietf-vcon-vcon-core/blob/99589dd0b474d95c2feed52165fc2c95b1191d3d/vcon_json_schema.json)
+  at commit `99589dd0`, the `draft-ietf-vcon-vcon-core-04` tag.
+- The engine is `jsonschema`, not sipnab.
+- A plain `jsonschema` install checks none of the three formats the schema
+  uses. So the program:
+  - brings a checker for each,
+  - refuses a schema whose formats it cannot check:
 
 <!-- snippet: clients/python/vcon_validate.py#vcon-validate -->
 ```python
@@ -186,10 +227,13 @@ sipnab -N -I capture.pcap --export-vcon 'a84b4c76e66710@pc33.atlanta.example.com
 python3 clients/python/vcon_validate.py call.vcon
 ```
 
-A failed call passes, and so does a call that completed without exported
-media: sipnab writes its Dialog Object as the `recording` placeholder of
-[section 4.3 of draft-ietf-vcon-vcon-core-04](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-04#section-4.3), a type and no
-content. sipnab's own copy of the schema,
+A failed call passes. So does a call that completed without exported media.
+
+- sipnab writes its Dialog Object as the `recording` placeholder of
+  [section 4.3 of draft-ietf-vcon-vcon-core-04](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-04#section-4.3).
+- That placeholder is a type and no content.
+
+sipnab's own copy of the schema,
 [`tests/schemas/vcon.schema.json`](https://github.com/NormB/sipnab/blob/main/tests/schemas/vcon.schema.json),
 has the same bytes as the publisher's file:
 
@@ -199,7 +243,7 @@ valid    completed.vcon
 ```
 
 A container sipnab wrote before it followed core-04 carries a Dialog Object
-with no `type`, and the publisher's file refuses it:
+with no `type`. The publisher's file refuses it:
 
 ```text
 invalid  completed.vcon
@@ -209,10 +253,16 @@ invalid  completed.vcon
 ### See who feeds a HEP collector
 
 A sipnab started with `--hep-listen` collects HEP from any number of agents:
-an SBC, a proxy, or another sipnab running `--hep-send`.
+
+- an SBC,
+- a proxy,
+- another sipnab running `--hep-send`.
+
 [`hep_senders.py`](../clients/python/hep_senders.py) reads
-`GET /v1/hep/senders` and prints one line per sender and one per source the
-listener refused:
+`GET /v1/hep/senders`. It prints:
+
+- one line per sender,
+- one line per source the listener refused:
 
 <!-- snippet: clients/python/hep_senders.py#hep-senders -->
 ```python
@@ -232,10 +282,13 @@ lines.append(
 return lines
 ```
 
-CI starts a collector on loopback and two agents, each replaying a committed
-capture to it under its own capture ID. It checks the roster and the
-collector's dialogs only after the collector's counters show every packet
-admitted, because sipnab discards unprocessed input when it stops:
+CI starts a collector on loopback and two agents.
+
+- Each agent replays a committed capture to the collector under its own
+  capture ID.
+- CI checks the roster and the collector's dialogs only after the collector's
+  counters show every packet admitted.
+- The reason: sipnab discards unprocessed input when it stops.
 
 ```text
 hep:101@127.0.0.1  capture id 101  23 packets
@@ -244,18 +297,21 @@ hep:102@127.0.0.1  capture id 102  7 packets
 ```
 
 The capture ID is the sender's claim. Nothing proves it without `--hep-auth`.
-[Cookbook recipe 26](examples.md#26-run-sipnab-as-a-hep-relay) covers the
+
+[Cookbook recipe "Run sipnab as a HEP relay"](examples.md#run-sipnab-as-a-hep-relay) covers the
 listener's flags.
 
 ### Read TLS without keys: the half that needs no kernel
 
-`--uprobe-tls --uprobe-backend bpf` reads SIP out of the TLS library and pairs
+`--uprobe-tls --uprobe-backend bpf` reads SIP out of the TLS library. It pairs
 each write with the socket that sent it
-([cookbook recipe 7h](examples.md#7h-read-tls-and-who-the-peer-was)). The
-live half needs root and a kernel with BTF, so no CI runner can run it.
-[`tls_plaintext_records.rs`](../examples/tls_plaintext_records.rs) runs the
-other half: it lays out records exactly as the BPF program publishes them and
-passes each through the decode the backend runs:
+([cookbook recipe "Read TLS *and* who the peer was"](examples.md#read-tls-and-who-the-peer-was)).
+
+- The live half needs root and a kernel with BTF. So no CI runner can run it.
+- [`tls_plaintext_records.rs`](../examples/tls_plaintext_records.rs) runs the
+  other half:
+  - It lays out records exactly as the BPF program publishes them.
+  - It passes each one through the decode the backend runs:
 
 ```bash
 cargo run --example tls_plaintext_records
@@ -268,41 +324,59 @@ OPTIONS    0.0.0.0:0 -> 0.0.0.0:0  TCP  uprobe:python3/349147#2
 record 3 dropped: not a SIP message
 ```
 
-The TLS library buffered the third write rather than sending it, so the
-program paired it with no socket and sipnab reports no peer rather than
-guessing one. sipnab drops the fourth, which is not SIP.
+- The TLS library buffered the third write rather than sending it.
+  - So the program paired it with no socket.
+  - sipnab reports no peer rather than guessing one.
+- sipnab drops the fourth, which is not SIP.
 
 ## Operator tasks
 
 Each of these programs carries out one multi-step recipe from the
-[cookbook](examples.md), the steps an operator would otherwise type one at a
-time, and ends with the answer the recipe is for. Single-command recipes stay
-recipes. CI runs each program against committed captures and checks the exact
-lines it prints, plus a failure case: a wrong token, a missing call or
-customer, a capture with nothing to judge, or no TFPS.
+[cookbook](examples.md).
+
+- It runs the steps an operator would otherwise type one at a time.
+- It ends with the answer the recipe is for.
+- Single-command recipes stay recipes.
+
+CI runs each program against committed captures. It checks the exact lines it
+prints, plus a failure case:
+
+- a wrong token,
+- a missing call or customer,
+- a capture with nothing to judge,
+- no TFPS.
 
 | Program | Recipes | How CI runs it |
 |---|---|---|
-| [triage.py](../clients/python/triage.py) | [1](examples.md#1-triage-a-pcap-fast), [16](examples.md#16-analyze-a-capture-into-one-machine-readable-verdict) | Four failed calls, one clean call, and a capture with no dialog to judge |
-| [failed_calls.py](../clients/python/failed_calls.py) | [3](examples.md#3-find-every-failed-call-grouped-by-response-code), [30](examples.md#30-find-calls-that-answered-and-were-never-acknowledged) | A sipnab serving four failed calls and one answer nobody acknowledged |
-| [one_way_audio.py](../clients/python/one_way_audio.py) | [4](examples.md#4-diagnose-a-one-way-audio-complaint), [11](examples.md#11-find-why-a-call-sounds-bad-in-one-direction-only), [22](examples.md#22-measure-whether-the-loss-is-yours-or-the-networks) | A phone behind NAT that hears the far end and is not heard |
-| [scanner_ban.py](../clients/python/scanner_ban.py) | [10](examples.md#10-detect-sip-scanners-and-auto-block-via-fail2ban), [23](examples.md#23-find-the-device-flooding-register) | A scanner and two flooding sources, banned through a stand-in for `tfps_ctl` |
-| [customer_export.py](../clients/python/customer_export.py) | [39](examples.md#39-collect-a-directory-of-rotated-captures-into-one-analysis), [32](examples.md#32-export-one-customers-calls-as-a-smaller-capture), [40](examples.md#40-open-the-same-evidence-in-wireshark) | Three rotated files, one export, opened by `tshark` and `capinfos` |
+| [triage.py](../clients/python/triage.py) | [1](examples.md#triage-a-pcap-fast), [16](examples.md#analyze-a-capture-into-one-machine-readable-verdict) | Four failed calls, one clean call, and a capture with no dialog to judge |
+| [failed_calls.py](../clients/python/failed_calls.py) | [3](examples.md#find-every-failed-call-grouped-by-response-code), [30](examples.md#find-calls-that-answered-and-were-never-acknowledged) | A sipnab serving four failed calls and one answer nobody acknowledged |
+| [one_way_audio.py](../clients/python/one_way_audio.py) | [4](examples.md#diagnose-a-one-way-audio-complaint), [11](examples.md#find-why-a-call-sounds-bad-in-one-direction-only), [22](examples.md#measure-whether-the-loss-is-yours-or-the-networks) | A phone behind NAT that hears the far end and is not heard |
+| [scanner_ban.py](../clients/python/scanner_ban.py) | [10](examples.md#detect-sip-scanners-and-auto-block-via-fail2ban), [23](examples.md#find-the-device-flooding-register) | A scanner and two flooding sources, banned through a stand-in for `tfps_ctl` |
+| [customer_export.py](../clients/python/customer_export.py) | [39](examples.md#collect-a-directory-of-rotated-captures-into-one-analysis), [32](examples.md#export-one-customers-calls-as-a-smaller-capture), [40](examples.md#open-the-same-evidence-in-wireshark) | Three rotated files, one export, opened by `tshark` and `capinfos` |
 
-The two programs that read a capture file, `triage.py` and
-`customer_export.py`, run sipnab themselves. `scanner_ban.py` does both: it
-reads the capture, then bans through a running sipnab. Each finds sipnab through
-`--sipnab`, else `SIPNAB_BIN`, else `PATH`. The REST programs read
-`SIPNAB_URL` and `SIPNAB_API_KEY`, like the reference-page programs.
+- The two programs that read a capture file, `triage.py` and
+  `customer_export.py`, run sipnab themselves.
+- `scanner_ban.py` does both. It reads the capture, then bans through a
+  running sipnab.
+- Each finds sipnab through `--sipnab`, else `SIPNAB_BIN`, else `PATH`.
+- The REST programs read `SIPNAB_URL` and `SIPNAB_API_KEY`, like the
+  reference-page programs.
 
 ### Triage a capture to one verdict
 
-[`triage.py`](../clients/python/triage.py) runs `--json-analyze` and turns
-its one object into a verdict and an exit status: `0` clean, `1` problems,
-`2` inconclusive, `3` sipnab could not read the input. The third verdict is
-the reason the program exists. A capture with no SIP in it, or with its SIP
-outside `--portrange`, analyzes to an empty list of findings, and an empty
-list reads as clean:
+[`triage.py`](../clients/python/triage.py) runs `--json-analyze`. It turns
+its one object into a verdict and an exit status:
+
+- `0` clean,
+- `1` problems,
+- `2` inconclusive,
+- `3` sipnab could not read the input.
+
+The third verdict is the reason the program exists.
+
+- A capture with no SIP in it analyzes to an empty list of findings.
+- So does a capture with its SIP outside `--portrange`.
+- An empty list reads as clean:
 
 <!-- snippet: clients/python/triage.py#triage-verdict -->
 ```python
@@ -348,13 +422,17 @@ problems: 23 frame(s), 5 dialog(s), 0 stream(s)
 
 ### Group failed calls by response code
 
-The shell histogram in recipe 3 counts every response inside a failed call,
-so the `100 Trying` before a `486` counts too.
-[`failed_calls.py`](../clients/python/failed_calls.py) counts each call once,
-under its final code, through `GET /v1/aggregate`, and names the calls in each
-group. A call answered and never acknowledged has not failed, so the grouping
-cannot show it. The program reads those calls from the capture's findings
-(`GET /v1/report`):
+The shell histogram in recipe "Find every failed call, grouped by response code" counts every response inside a failed call.
+So the `100 Trying` before a `486` counts too.
+
+[`failed_calls.py`](../clients/python/failed_calls.py) works differently:
+
+- It counts each call once, under its final code, through `GET /v1/aggregate`.
+- It names the calls in each group.
+- A call answered and never acknowledged has not failed. So the grouping
+  cannot show it.
+- The program reads those calls from the capture's findings
+  (`GET /v1/report`):
 
 <!-- snippet: clients/python/failed_calls.py#failed-calls -->
 ```python
@@ -372,10 +450,11 @@ report = get("/v1/report")
 ```
 
 sipnab reports a missing `ACK` only once the answer has waited
-`--ack-timeout`, which defaults to [RFC 3261](https://www.rfc-editor.org/rfc/rfc3261.html) Timer H, 32 seconds. CI starts
-sipnab with `--ack-timeout 5` against
+`--ack-timeout`. That defaults to [RFC 3261](https://www.rfc-editor.org/rfc/rfc3261.html) Timer H, 32 seconds.
+
+CI starts sipnab with `--ack-timeout 5` against
 [`tests/fixtures/sip-answered-never-acked.pcap`](https://github.com/NormB/sipnab/raw/main/tests/fixtures/sip-answered-never-acked.pcap),
-whose answer waited 31.5 seconds, beside the four failed calls:
+beside the four failed calls. The answer in that capture waited 31.5 seconds:
 
 ```text
 4 failed call(s), by final response code:
@@ -393,12 +472,17 @@ whose answer waited 31.5 seconds, beside the four failed calls:
 
 ### Diagnose one-way audio, and whose loss it is
 
-[`one_way_audio.py`](../clients/python/one_way_audio.py) takes a Call-ID and
-prints the call's diagnosis and streams (recipe 4), the asymmetry signals the
-filter language holds and the report does not (recipe 11), and whether the
-loss figures belong to the network or to the capture (recipe 22). sipnab
-counts a packet the capture host dropped as network loss, so the last line
-comes from `GET /v1/stats`:
+[`one_way_audio.py`](../clients/python/one_way_audio.py) takes a Call-ID. It
+prints:
+
+- the call's diagnosis and streams (recipe "Diagnose a one-way audio complaint"),
+- the asymmetry signals the filter language holds and the report does not
+  (recipe "Find why a call sounds bad in one direction only"),
+- whether the loss figures belong to the network or to the capture
+  (recipe "Measure whether the loss is yours or the network's").
+
+sipnab counts a packet the capture host dropped as network loss. So the last
+line comes from `GET /v1/stats`:
 
 <!-- snippet: clients/python/one_way_audio.py#whose-loss -->
 ```python
@@ -431,8 +515,10 @@ return lines
 ```
 
 For the phone behind NAT in
-[`tests/fixtures/stun_sdp_mismatch.pcap`](https://github.com/NormB/sipnab/raw/main/tests/fixtures/stun_sdp_mismatch.pcap),
-media flows both ways, and the reply arrives from an address no SDP offered:
+[`tests/fixtures/stun_sdp_mismatch.pcap`](https://github.com/NormB/sipnab/raw/main/tests/fixtures/stun_sdp_mismatch.pcap):
+
+- media flows both ways,
+- the reply arrives from an address no SDP offered.
 
 ```text
 stun-sdp-mismatch-1@192.168.10.50  Completed  200
@@ -443,25 +529,36 @@ NAT mismatch: yes
 hint: RTP flowed 192.168.10.50:40000 -> 198.51.100.30:41000 only (SSRC 0x11223344). No reverse media flow detected.
 ```
 
-Three more hints follow, then `asymmetry: none` and the capture's verdict on
-its own loss. Loss upstream of the capture point, such as a SPAN port that
-mirrors one direction, is invisible to both counters.
+Three more hints follow. Then come `asymmetry: none` and the capture's verdict
+on its own loss.
+
+Loss upstream of the capture point is invisible to both counters. An example
+is a SPAN port that mirrors one direction.
 
 ### Ban a scanner through TFPS, and verify it
 
-sipnab recommends and applies nothing ([recipe 10c](examples.md#10c-block-a-scanner-with-a-rule-sipnab-wrote-after-reading-the-evidence)).
-[`scanner_ban.py`](../clients/python/scanner_ban.py) reads the accusations
-`--recommend-block` prints, bans through `POST /v1/tfps/ban` only the sources
-with no counter-evidence, and counts a ban only once `GET /v1/tfps/banned`
-lists it as enforced. A source that completed a registration before its
-credentials went wrong is the device recipe 23 finds, and a ban would cut
-off a working peer. The program withholds that source and names it.
+sipnab recommends and applies nothing ([recipe "Block a scanner with a rule sipnab wrote, after reading the evidence"](examples.md#block-a-scanner-with-a-rule-sipnab-wrote-after-reading-the-evidence)).
 
-A ban changes another system, so sipnab takes it only when started with
-`--allow-action tfps:rest`, and only from a token minted with
-`--token-scope actions`. The program reads with `SIPNAB_API_KEY` and bans with
-`SIPNAB_ACTION_TOKEN`. Every ban expires, after `--ttl` seconds (an hour by
-default):
+[`scanner_ban.py`](../clients/python/scanner_ban.py):
+
+- reads the accusations `--recommend-block` prints,
+- bans through `POST /v1/tfps/ban` only the sources with no counter-evidence,
+- counts a ban only once `GET /v1/tfps/banned` lists it as enforced.
+
+The program withholds some sources:
+
+- A source that completed a registration before its credentials went wrong is
+  the device recipe "Find the device flooding REGISTER" finds.
+- A ban would cut off a working peer.
+- The program withholds that source and names it.
+
+A ban changes another system. So sipnab takes it only:
+
+- when started with `--allow-action tfps:rest`,
+- from a token minted with `--token-scope actions`.
+
+The program reads with `SIPNAB_API_KEY` and bans with `SIPNAB_ACTION_TOKEN`.
+Every ban expires, after `--ttl` seconds (an hour by default):
 
 <!-- snippet: clients/python/scanner_ban.py#tfps-ban -->
 ```python
@@ -498,22 +595,28 @@ withheld 192.0.2.10 (reg_flood): it also completed a registration or a call in t
 verified 2 of 2 ban(s) in TFPS's banned list
 ```
 
-TFPS's `ban` writes a pinned BPF map as root, so CI cannot run the real
-peer. It starts sipnab with `--tfps-ctl` naming
-[`clients/python/tests/fake_tfps_ctl.py`](https://github.com/NormB/sipnab/blob/main/clients/python/tests/fake_tfps_ctl.py),
-which answers in the documents `tfps_ctl --json` prints: a test holds every
-line to the fixtures pinned against the real binary. It keeps its block list
-in a file, and CI checks that the file holds the two banned addresses. Run the
-program against a real TFPS before trusting it with a production block list.
+TFPS's `ban` writes a pinned BPF map as root. So CI cannot run the real peer.
+
+- CI starts sipnab with `--tfps-ctl` naming
+  [`clients/python/tests/fake_tfps_ctl.py`](https://github.com/NormB/sipnab/blob/main/clients/python/tests/fake_tfps_ctl.py).
+- That program answers in the documents `tfps_ctl --json` prints. A test holds
+  every line to the fixtures pinned against the real binary.
+- It keeps its block list in a file. CI checks that the file holds the two
+  banned addresses.
+
+Run the program against a real TFPS before trusting it with a production
+block list.
 
 ### Export the calls of one customer from rotated captures
 
 [`customer_export.py`](../clients/python/customer_export.py) takes a
-directory of rotated captures (recipe 39) and a SIP user. It exports that
-user's calls with `-O` and a BPF expression over their addresses (recipe 32)
-and prints the `tshark` command that opens the result (recipe 40). BPF
-selects addresses, not users, so the program reads the export back before it
-calls it done:
+directory of rotated captures (recipe "Collect a directory of rotated captures into one analysis") and a SIP user.
+
+- It exports that user's calls with `-O` and a BPF expression over their
+  addresses (recipe "Export one customer's calls as a smaller capture").
+- It prints the `tshark` command that opens the result (recipe "Open the same evidence in Wireshark").
+- BPF selects addresses, not users. So the program reads the export back
+  before it calls it done:
 
 <!-- snippet: clients/python/customer_export.py#export-check -->
 ```python
@@ -534,11 +637,17 @@ for call_id in sorted(set(got) - set(wanted)):
 return problems
 ```
 
-When another customer's call shares an address, the program removes the
-export rather than handing it over, and recipe 32's vCon export is the way
-to go. CI cuts `sip-problem-call.pcap` into three files the way a wrapped
-`tcpdump -C -W` ring leaves them, exports the call placed by `alice`, which crosses all
-three, and has `capinfos` and `tshark` read the result:
+When another customer's call shares an address:
+
+- the program removes the export rather than handing it over,
+- recipe "Export one customer's calls as a smaller capture"'s vCon export is the way to go.
+
+What CI does:
+
+- It cuts `sip-problem-call.pcap` into three files, the way a wrapped
+  `tcpdump -C -W` ring leaves them.
+- It exports the call placed by `alice`, which crosses all three.
+- It has `capinfos` and `tshark` read the result:
 
 ```text
 alice: 1 call(s)
@@ -550,17 +659,22 @@ tshark -r 'alice.pcap' -Y 'sip.Call-ID == "completed-9f8e7d@192.0.2.10"' -V
 
 ## AI tasks
 
-Each of these programs does what an agent does with sipnab over MCP, and
-ends with the answer the agent would act on. They share
-[`mcp_calls.py`](../clients/python/mcp_calls.py), which reaches sipnab over
-stdio through the MCP SDK in
-[`clients/python/requirements-mcp.txt`](https://github.com/NormB/sipnab/blob/main/clients/python/requirements-mcp.txt),
-or over HTTP through the client in
-[`mcp_probe.py`](../clients/python/mcp_probe.py). Before asking anything
-else, each waits for `capture_status` to report the file read to its end,
-because an answer given earlier describes part of the capture. CI runs every
-program against committed captures and checks the exact lines it prints,
-plus a failure case.
+Each of these programs does what an agent does with sipnab over MCP. Each
+ends with the answer the agent would act on.
+
+They share [`mcp_calls.py`](../clients/python/mcp_calls.py). It reaches sipnab
+over either:
+
+- stdio, through the MCP SDK in
+  [`clients/python/requirements-mcp.txt`](https://github.com/NormB/sipnab/blob/main/clients/python/requirements-mcp.txt),
+- HTTP, through the client in
+  [`mcp_probe.py`](../clients/python/mcp_probe.py).
+
+Before asking anything else, each waits for `capture_status` to report the
+file read to its end. An answer given earlier describes part of the capture.
+
+CI runs every program against committed captures. It checks the exact lines
+it prints, plus a failure case.
 
 | Program | What it does | How CI runs it |
 |---|---|---|
@@ -570,13 +684,19 @@ plus a failure case.
 
 ### Triage a capture over MCP, as an agent
 
-[`agent_triage.py`](../clients/python/agent_triage.py) starts sipnab as an
-MCP stdio child, pages through `list_dialogs` with its cursor, and asks
-`get_capture_report` for the findings. The verdict is the one
-[`triage.py`](#triage-a-capture-to-one-verdict) gives, with the same exit
-status. The program adds what an agent needs from two answers: a check that
-both describe one capture, a summary by state, and one `next:` line per call
-a finding names, with the tool to call next:
+[`agent_triage.py`](../clients/python/agent_triage.py):
+
+- starts sipnab as an MCP stdio child,
+- pages through `list_dialogs` with its cursor,
+- asks `get_capture_report` for the findings.
+
+The verdict is the one [`triage.py`](#triage-a-capture-to-one-verdict) gives,
+with the same exit status. The program adds what an agent needs from two
+answers:
+
+- a check that both describe one capture,
+- a summary by state,
+- one `next:` line per call a finding names, with the tool to call next:
 
 <!-- snippet: clients/python/agent_triage.py#agent-verdict -->
 ```python
@@ -631,20 +751,25 @@ next: triage_call busy-3a2b1c@192.0.2.30
 next: triage_call notfound-1b2c3d@203.0.113.30
 ```
 
-A dialog in the `Failed` state that no finding names, while the report says
-clean, makes the verdict inconclusive: one of the two answers is wrong, and
-an agent that picked either would be guessing.
+Take a dialog in the `Failed` state that no finding names, while the report
+says clean. That makes the verdict inconclusive.
+
+- One of the two answers is wrong.
+- An agent that picked either would be guessing.
 
 ### Reach a production box over HTTP with a signed token
 
-The same program takes `--url` and `--token-file` instead of a capture, and
-asks a sipnab serving `--mcp-transport http`. The server holds a signing key,
-and each agent gets a short-lived token minted from it with
-`--mint-token --token-scope read`, the shape
-[cookbook recipe 55](examples.md#55-set-up-the-mcp-server-for-a-hosted-agent)
-deploys. A `read` token reaches only the tools annotated read-only, which
-includes every tool this triage calls. The client is the one in
-`mcp_probe.py`:
+The same program takes `--url` and `--token-file` instead of a capture. It
+asks a sipnab serving `--mcp-transport http`.
+
+- The server holds a signing key.
+- Each agent gets a short-lived token minted from it with
+  `--mint-token --token-scope read`. This is the shape
+  [cookbook recipe "Set up the MCP server for a hosted agent"](examples.md#set-up-the-mcp-server-for-a-hosted-agent)
+  deploys.
+- A `read` token reaches only the tools annotated read-only. That includes
+  every tool this triage calls.
+- The client is the one in `mcp_probe.py`:
 
 <!-- snippet: clients/python/mcp_calls.py#signed-http -->
 ```python
@@ -663,21 +788,27 @@ sipnab --mint-token --token-scope read --token-id agent-a --mcp-signing-key-file
 python3 clients/python/agent_triage.py --url http://127.0.0.1:8731 --token-file agent.token
 ```
 
-CI generates a signing key at run time and starts sipnab on loopback port 0,
-reading the port it logs. The signed token must print the same lines as the
-stdio run. A token signed with another key, a token minted from the same key
-for the REST API, and a request with no token must each get a `401`.
-The server runs `--mcp-tools core`, as recipe 55 deploys it, so the check also
-proves the core set can answer this triage.
+CI generates a signing key at run time. It starts sipnab on loopback port 0,
+reading the port it logs.
+
+- The signed token must print the same lines as the stdio run.
+- Each of these must get a `401`:
+  - a token signed with another key,
+  - a token minted from the same key for the REST API,
+  - a request with no token.
+- The server runs `--mcp-tools core`, as recipe "Set up the MCP server for a hosted agent" deploys it. So the check
+  also proves the core set can answer this triage.
 
 ### Hand an agent an evidence package and a repro script
 
 [`evidence_handoff.py`](../clients/python/evidence_handoff.py) takes the
-calls the findings name and asks `build_evidence_package` for one directory
-holding them, then `generate_repro` for a SIPp scenario per call, pinning the
-Request-URI. sipnab writes both under `--mcp-file-root` and never over a name
-already taken. The program reads the files back rather than trusting either
-answer:
+calls the findings name. It then asks:
+
+- `build_evidence_package` for one directory holding them,
+- `generate_repro` for a SIPp scenario per call, pinning the Request-URI.
+
+sipnab writes both under `--mcp-file-root`, and never over a name already
+taken. The program reads the files back rather than trusting either answer:
 
 <!-- snippet: clients/python/evidence_handoff.py#package-check -->
 ```python
@@ -699,9 +830,12 @@ if "README.md" in on_disk and REBUILT not in (pkg / "README.md").read_text():
 return problems
 ```
 
-Each scenario on disk must be the text the answer returned, and must assert
-the final response the capture held. The program prints one `sha256` line
-per file, relative to the file root:
+Each scenario on disk must:
+
+- be the text the answer returned,
+- assert the final response the capture held.
+
+The program prints one `sha256` line per file, relative to the file root:
 
 ```bash
 python3 clients/python/evidence_handoff.py capture.pcap --file-root /var/lib/sipnab/evidence --name failed-calls
@@ -715,24 +849,30 @@ repro failed-calls.call-03.xml  busy-3a2b1c@192.0.2.30  asserts 486  pinned requ
 repro failed-calls.call-04.xml  notfound-1b2c3d@203.0.113.30  asserts 404  pinned request_uri
 ```
 
-CI runs it twice over one capture into two file roots and requires the same
-output and byte-identical files. The one difference between the two runs is
-the absolute path each answer carries, which the program prints relative to
-its root. Nothing else needs normalizing: the package holds no clock time,
-host name or random value. The package files and scenario files match across
-time zones and capture file paths. The README and manifest name the sipnab
-version, so the hashes change with a release, and CI compares two runs
-rather than pinning them.
+CI runs it twice over one capture, into two file roots. It requires the same
+output and byte-identical files.
+
+- The one difference between the two runs is the absolute path each answer
+  carries. The program prints it relative to its root.
+- Nothing else needs normalizing. The package holds no clock time, host name
+  or random value.
+- The package files and scenario files match across time zones and capture
+  file paths.
+- The README and manifest name the sipnab version. So the hashes change with
+  a release, and CI compares two runs rather than pinning them.
 
 ### Aggregate dialogs into bounded JSON for a model
 
 [`aggregate_for_model.py`](../clients/python/aggregate_for_model.py) sends a
-[filter-DSL](filter-dsl.md) expression to `aggregate_dialogs` and prints one
-line of JSON no longer than `--max-bytes`. sipnab bounds the number of
-buckets (`--mcp-max-rows`) and the length of each value taken from a packet
-(256 bytes, then a marker). It does not bound the answer as a whole, because
-the budget belongs to the model reading it. So the program makes the cut,
-whole buckets at a time:
+[filter-DSL](filter-dsl.md) expression to `aggregate_dialogs`. It prints one
+line of JSON no longer than `--max-bytes`.
+
+- sipnab bounds:
+  - the number of buckets (`--mcp-max-rows`),
+  - the length of each value taken from a packet (256 bytes, then a marker).
+- It does not bound the answer as a whole. The budget belongs to the model
+  reading it.
+- So the program makes the cut, whole buckets at a time:
 
 <!-- snippet: clients/python/aggregate_for_model.py#model-bound -->
 ```python
@@ -770,11 +910,13 @@ while lo < hi:
 return doc(lo), len(buckets) - lo
 ```
 
-A cut in the middle of a string leaves a model an unterminated value to
-complete. Dropping whole buckets into `other_count` keeps the JSON valid
-under every budget and keeps the counts adding up to `total_matched`.
-Values sipnab took from packets keep its untrusted-data markers, which is
-why the budget counts bytes: each marker character is three.
+- A cut in the middle of a string leaves a model an unterminated value to
+  complete.
+- Dropping whole buckets into `other_count`:
+  - keeps the JSON valid under every budget,
+  - keeps the counts adding up to `total_matched`.
+- Values sipnab took from packets keep its untrusted-data markers. That is why
+  the budget counts bytes: each marker character is three.
 
 ```bash
 python3 clients/python/aggregate_for_model.py capture.pcap --group-by response_code --filter "state == 'Failed'" --max-bytes 200
@@ -786,7 +928,7 @@ python3 clients/python/aggregate_for_model.py capture.pcap --group-by response_c
 
 ## Run everything CI runs
 
-Build sipnab with every feature and its examples, then run the smoke script.
+Build sipnab with every feature and its examples. Then run the smoke script.
 The operator tasks also need `tshark` and `capinfos`, from Ubuntu's `tshark`
 package:
 
@@ -796,8 +938,8 @@ cargo build --all-features --bins --examples
 scripts/smoke-clients.sh target/debug/sipnab
 ```
 
-For Rust, see the [library API](library.md) and its executable rustdoc examples.
-For individual CLI commands, use the [cookbook](examples.md). C and C++ have no
-client examples, so no C or C++ bar applies yet. The `c` blocks in
-[capture tuning](tuning-capture.md) quote libpcap's source and are citations,
-not examples.
+- For Rust, see the [library API](library.md) and its executable rustdoc examples.
+- For individual CLI commands, use the [cookbook](examples.md).
+- C and C++ have no client examples. So no C or C++ bar applies yet.
+- The `c` blocks in [capture tuning](tuning-capture.md) quote libpcap's source.
+  They are citations, not examples.

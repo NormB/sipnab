@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
-"""One-way audio on one call, and whose loss it is (cookbook recipes 4, 11
-and 22).
+"""One-way audio on one call, and whose loss it is (cookbook recipes "Diagnose a one-way audio complaint", "Find why a call sounds bad in one direction only"
+and "Measure whether the loss is yours or the network's").
 
     one_way_audio.py CALL-ID
 
@@ -8,14 +8,14 @@ Asks a running sipnab, over REST:
 
 1. `GET /v1/dialogs/{call_id}/report`: the diagnosis (one-way audio, NAT
    mismatch and the hints that name the addresses and ports), and each RTP
-   stream with its packets and loss (recipe 4).
+   stream with its packets and loss (recipe "Diagnose a one-way audio complaint").
 2. `GET /v1/dialogs?filter=call_id == ... AND <signal> == true` for each of
    the five asymmetry signals: different codec, packetization, payload type
-   or duration on the two legs, or media starting late (recipe 11). They live
+   or duration on the two legs, or media starting late (recipe "Find why a call sounds bad in one direction only"). They live
    in the filter language, not in the report's diagnosis block.
 3. `GET /v1/stats`: what the capture itself lost. A dropped packet is counted
    as network loss that never happened, so the loss figures are the
-   network's only when the capture host dropped nothing (recipe 22).
+   network's only when the capture host dropped nothing (recipe "Measure whether the loss is yours or the network's").
 
 SIPNAB_URL sets the API base URL (default http://127.0.0.1:8080) and
 SIPNAB_API_KEY the bearer token (default my-secret-token). Standard library

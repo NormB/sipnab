@@ -1737,7 +1737,7 @@ mod tests {
     ///
     /// The JSON form of this report already carried the `siprec` object; the
     /// text and Markdown forms printed nothing about the recording, while
-    /// `docs/examples.md` recipe 60 shows `--call-report` printing it.
+    /// `docs/examples.md` recipe "See who is on a recorded call" shows `--call-report` printing it.
     #[test]
     fn a_recorded_call_names_its_recording_in_the_call_report() -> Result<(), TestError> {
         let d = recorded_dialog()?;

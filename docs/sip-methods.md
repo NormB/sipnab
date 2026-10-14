@@ -4,36 +4,45 @@ Every method in the IANA registry, the RFC section that defines it, and which
 dialog state machine sipnab runs it through.
 
 **Source.** <https://www.iana.org/assignments/sip-parameters/sip-parameters-6.csv>
-— the IANA *Methods* registry, retrieved 2026-07-30. [RFC 3261](https://www.rfc-editor.org/rfc/rfc3261.html) defines six of
-these and later RFCs register the rest, the same arrangement as the response
-codes in [SIP response codes](sip-response-codes.md).
+— the IANA *Methods* registry, retrieved 2026-07-30.
 
-`SipMethod` in [`src/sip/method.rs`](../src/sip/method.rs) names all fourteen,
-and `covers_the_iana_methods_registry` holds it to this list. A method outside
-the registry parses as `Custom` and takes the generic dialog handler, which is
-right for a private extension and wrong for a registered one nobody noticed.
+- [RFC 3261](https://www.rfc-editor.org/rfc/rfc3261.html) defines six of these.
+- Later RFCs register the rest.
+- The response codes in [SIP response codes](sip-response-codes.md) follow the same arrangement.
+
+`SipMethod` in [`src/sip/method.rs`](../src/sip/method.rs) names all fourteen.
+`covers_the_iana_methods_registry` holds it to this list.
+
+- A method outside the registry parses as `Custom`. It takes the generic dialog handler.
+  - That is right for a private extension.
+  - It is wrong for a registered method that nobody noticed.
 
 ## Dialog state machines
 
-sipnab dispatches on the method that opened the dialog, corrected for the four
-methods that cannot open one. `ACK`, `BYE`, `CANCEL` and `PRACK` each
-presuppose an INVITE ([RFC 3261 section 13.2.2.4](https://www.rfc-editor.org/rfc/rfc3261.html#section-13.2.2.4),
-[RFC 3261 section 15.1](https://www.rfc-editor.org/rfc/rfc3261.html#section-15.1),
-[RFC 3261 section 9.1](https://www.rfc-editor.org/rfc/rfc3261.html#section-9.1),
-[RFC 3262 section 4](https://www.rfc-editor.org/rfc/rfc3262.html#section-4)), so a capture
-that opens on one is an INVITE dialog seen from its middle and runs through the
-INVITE machine. Two more methods get their own machine and the rest share a
-generic one.
+sipnab dispatches on the method that opened the dialog. It corrects this for the four
+methods that cannot open one.
+
+- `ACK`, `BYE`, `CANCEL` and `PRACK` each presuppose an INVITE:
+  - [RFC 3261 section 13.2.2.4](https://www.rfc-editor.org/rfc/rfc3261.html#section-13.2.2.4)
+  - [RFC 3261 section 15.1](https://www.rfc-editor.org/rfc/rfc3261.html#section-15.1)
+  - [RFC 3261 section 9.1](https://www.rfc-editor.org/rfc/rfc3261.html#section-9.1)
+  - [RFC 3262 section 4](https://www.rfc-editor.org/rfc/rfc3262.html#section-4)
+- A capture that opens on one of them is an INVITE dialog seen from its middle.
+  It runs through the INVITE machine.
+- Two more methods get their own machine.
+- The rest share a generic one.
 
 Which machine handles a message is one question. Which *transaction* the
-message belongs to is another. A response answers the transaction its `CSeq`
-method names ([RFC 3261 section 8.1.1.5](https://www.rfc-editor.org/rfc/rfc3261.html#section-8.1.1.5)).
-So a `200 OK` in an INVITE dialog means the callee picked up only when that
-`CSeq` says `INVITE`. The same code answering a `CANCEL` means the cancellation
-arrived, and nothing more.
+message belongs to is another.
+
+- A response answers the transaction that its `CSeq` method names
+  ([RFC 3261 section 8.1.1.5](https://www.rfc-editor.org/rfc/rfc3261.html#section-8.1.1.5)).
+- So a `200 OK` in an INVITE dialog means the callee picked up only when that
+  `CSeq` says `INVITE`.
+- The same code answering a `CANCEL` means the cancellation arrived, and nothing more.
 
 Every dialog opens in `Trying`. From there each machine reaches only its own
-states, and a state no machine reaches is a state no filter can select:
+states. A state that no machine reaches is a state that no filter can select:
 
 | Machine | Methods | States it reaches |
 |---|---|---|
@@ -42,8 +51,9 @@ states, and a state no machine reaches is a state no filter can select:
 | SUBSCRIBE | `SUBSCRIBE` | `Pending`, `Active`, `Terminated`, `Redirected` |
 | generic | the other seven | `Completed`, `Redirected`, `Failed` |
 
-`Expired` is a de-registration: a 2xx to a `REGISTER` whose `Contact` granted
-zero seconds. `Redirected` is a 3xx, which every machine can draw.
+- `Expired` is a de-registration. It is a 2xx to a `REGISTER` whose `Contact` granted
+  zero seconds.
+- `Redirected` is a 3xx. Every machine can draw it.
 
 <!-- vale off -->
 

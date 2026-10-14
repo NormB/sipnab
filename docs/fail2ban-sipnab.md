@@ -1,18 +1,22 @@
 # Feed fail2ban from sipnab
 
 [fail2ban](fail2ban.md) bans the addresses that a log names. sipnab can write
-that log. Its scanner detector and its registration-flood detector each find
-attackers in the SIP traffic sipnab captures, and with `--fail2ban` sipnab
-writes one line for each detection. The filter and jail in sipnab's
-[`contrib/fail2ban`](https://github.com/NormB/sipnab/tree/main/contrib/fail2ban)
-turn those lines into bans. sipnab writes the lines, and fail2ban decides and
-bans.
+that log.
+
+- sipnab has a scanner detector and a registration-flood detector.
+  - Each finds attackers in the SIP traffic sipnab captures.
+- With `--fail2ban`, sipnab writes one line for each detection.
+- The filter and jail in sipnab's
+  [`contrib/fail2ban`](https://github.com/NormB/sipnab/tree/main/contrib/fail2ban)
+  turn those lines into bans.
+- sipnab writes the lines. fail2ban decides and bans.
 
 sipnab's lines come from the traffic it captures, not from your SIP server's
 log.
 
 This guide starts where [Ban SIP scanners with fail2ban](fail2ban.md) ends,
-before its uninstall: OpenSIPS, fail2ban and the two test addresses in place.
+before its uninstall. OpenSIPS, fail2ban and the two test addresses are in
+place.
 
 ## What sipnab writes
 
@@ -23,23 +27,28 @@ Two kinds of line, one per detection:
 2026-10-01 03:51:13 sipnab[17540]: reg_flood src=198.51.100.60 count=51
 ```
 
-- `scanner_detected` comes from the scanner detector, `--kill-scanner`. sipnab
-  quotes `ua` and `method`.
+- `scanner_detected` comes from the scanner detector, `--kill-scanner`.
+  - sipnab quotes `ua` and `method`.
 - `reg_flood` comes from the registration-flood detector, `--reg-flood`.
-  `count` is how many REGISTERs with credentials the registrar refused from
-  that address within one second. Out of the box the threshold is 50, and
-  sipnab writes a line for each refusal past it, so 80 refusals in a burst
-  write 30 lines, `count=51` to `count=80`.
+  - `count` is how many REGISTERs with credentials the registrar refused from
+    that address within one second.
+  - Out of the box the threshold is 50.
+  - sipnab writes a line for each refusal past it.
+  - So 80 refusals in a burst write 30 lines, `count=51` to `count=80`.
 
-`--fail2ban` itself detects nothing: it only chooses the format. Without a
+`--fail2ban` itself detects nothing. It only chooses the format. Without a
 detector beside it, sipnab warns when it starts that `no detector is running,
 so this run will emit nothing`.
 
-**Know what `--kill-scanner` sends.** On a live capture, the scanner detector
-also answers the scanner requests it detects, from a separate process. The
-answer is a `200 OK`, sent with your SIP server's address and port as its
-source. Watching the scanner's side, the request OpenSIPS ignored on purpose
-got an answer within milliseconds:
+**Know what `--kill-scanner` sends.**
+
+- On a live capture, the scanner detector also answers the scanner requests it
+  detects.
+  - It answers from a separate process.
+- The answer is a `200 OK`.
+  - It carries your SIP server's address and port as its source.
+- Watching the scanner's side, the request OpenSIPS ignored on purpose got an
+  answer within milliseconds:
 
 ```text
 03:50:04.370537 IP 198.51.100.60.54184 > 192.0.2.10.5060: SIP: OPTIONS sip:192.0.2.10 SIP/2.0
@@ -47,20 +56,27 @@ got an answer within milliseconds:
 ```
 
 So with sipnab running this way, a scanner learns that something answers on
-your SIP port, even when your SIP server answers nothing.
+your SIP port. That is true even when your SIP server answers nothing.
 
 ## Tested on
 
-Every block on this page, and every command in step 7's table, ran as written,
-in order, on 2026-10-01, with sipnab 0.5.199 from its release package and the
-`contrib/fail2ban` files as this version of the page describes them, on the
-machines [the fail2ban guide](fail2ban.md#tested-on) ran on: clean x86_64
-virtual machines with 2 cores and 3 GB of memory, Debian 13 (kernel 6.12.111)
-and Ubuntu 24.04 (kernel 6.8.0), right after that guide's step 8. Step 6 ran
-on both: Debian 13's `iptables` package is 1.8.11 and reports `(nf_tables)`.
-A capture on both showed the answer `--kill-scanner` sends.
+Every block on this page ran as written, in order, on 2026-10-01. So did every
+command in the table in "Operate it".
 
-## 1. Install sipnab
+- They ran with sipnab 0.5.199 from its release package.
+- They ran with the `contrib/fail2ban` files as this version of the page
+  describes them.
+- They ran on the machines [the fail2ban guide](fail2ban.md#tested-on) ran on:
+  - clean x86_64 virtual machines with 2 cores and 3 GB of memory,
+  - Debian 13 (kernel 6.12.111) and Ubuntu 24.04 (kernel 6.8.0).
+- They ran right after that guide's section
+  "Watch a password guesser get banned, and the ban run out".
+- The section "Ban with iptables instead of nftables"
+  ran on both.
+  - Debian 13's `iptables` package is 1.8.11 and reports `(nf_tables)`.
+- A capture on both showed the answer `--kill-scanner` sends.
+
+## Install sipnab
 
 ```bash
 # Run all of these, in order.
@@ -72,15 +88,19 @@ curl -fsSL https://github.com/NormB/sipnab/releases/download/v$V/SHA256SUMS.txt 
 sudo apt-get install -y ./sipnab_${V}_amd64.deb
 ```
 
-The package installs a service that runs sipnab as the `sipnab` user,
-capturing on every interface. It does not start it.
+The package installs a service that runs sipnab as the `sipnab` user. The
+service captures on every interface. The package does not start it.
 
-## 2. Run sipnab with its detectors, writing the log
+## Run sipnab with its detectors, writing the log
 
-A drop-in adds the two detectors and `--fail2ban` to the packaged command, and
-sends sipnab's standard output, where the lines go, to `/var/log/sipnab.log`,
-the file the contrib jail reads. sipnab's own messages, on standard error, stay
-in the journal:
+A drop-in does two things:
+
+- It adds the two detectors and `--fail2ban` to the packaged command.
+- It sends sipnab's standard output, where the lines go, to
+  `/var/log/sipnab.log`.
+  - That is the file the contrib jail reads.
+
+sipnab's own messages, on standard error, stay in the journal:
 
 ```bash
 # Run all of these, in order.
@@ -100,12 +120,14 @@ systemctl is-active sipnab
 sudo ls -l /var/log/sipnab.log
 ```
 
-`--no-cli-print` keeps every SIP message out of the log, but does not hold back
-the detection lines. systemd creates the log file when the service starts.
-Start sipnab before the jail: fail2ban refuses to start a jail whose log file
-does not exist, and stops every other jail with it.
+- `--no-cli-print` keeps every SIP message out of the log.
+  - It does not hold back the detection lines.
+- systemd creates the log file when the service starts.
+- Start sipnab before the jail.
+  - fail2ban refuses to start a jail whose log file does not exist.
+  - It stops every other jail with it.
 
-## 3. Install sipnab's filter and jail
+## Install sipnab's filter and jail
 
 Fetch both files at the tag of the sipnab you installed:
 
@@ -119,10 +141,17 @@ sudo curl -fsSL "https://raw.githubusercontent.com/NormB/sipnab/v$V/contrib/fail
 cat /etc/fail2ban/jail.d/sipnab.conf
 ```
 
-The jail, `sipnab-scanner`, reads `/var/log/sipnab.log` and bans an address
-after 5 lines within 60 seconds, for an hour, on every port, UDP and TCP, with
-nftables. `backend = auto` makes it read that file even where the
-distribution's default is the systemd journal, as on Ubuntu 24.04. Load it:
+The jail is `sipnab-scanner`.
+
+- It reads `/var/log/sipnab.log`.
+- It bans an address after 5 lines within 60 seconds.
+  - The ban lasts for an hour.
+  - It covers every port, UDP and TCP.
+  - It uses nftables.
+- `backend = auto` makes it read that file even where the distribution's
+  default is the systemd journal, as on Ubuntu 24.04.
+
+Load it:
 
 ```bash
 # Run all of these, in order.
@@ -134,11 +163,15 @@ sudo fail2ban-client status sipnab-scanner
 The status shows `File list: /var/log/sipnab.log`.
 
 Before you leave this running on real traffic, measure who the detectors would
-name on a capture of your own, as
-[Detect SIP scanners and auto-block via fail2ban](examples.md#10-detect-sip-scanners-and-auto-block-via-fail2ban)
-shows. Change the jail in a `sipnab.local` beside it, never in `sipnab.conf`,
-which the next download replaces. For example, never ban the phone's network,
-and wait for 10 detections rather than 5:
+name on a capture of your own.
+[Detect SIP scanners and auto-block via fail2ban](examples.md#detect-sip-scanners-and-auto-block-via-fail2ban)
+shows how.
+
+- Change the jail in a `sipnab.local` beside it.
+- Never change it in `sipnab.conf`. The next download replaces that file.
+
+For example, never ban the phone's network, and wait for 10 detections rather
+than 5:
 
 ```bash
 # Run all of these, in order.
@@ -154,7 +187,7 @@ sudo fail2ban-client get sipnab-scanner maxretry
 ```
 
 The jail now prints the three ignored ranges and `10`. Take the example out
-again before step 4, which counts to 5:
+again before "Watch sipnab's lines become a ban". That section counts to 5:
 
 ```bash
 # Run all of these, in order.
@@ -166,13 +199,14 @@ sudo fail2ban-client get sipnab-scanner maxretry
 
 It prints `5`.
 
-## 4. Watch sipnab's lines become a ban
+## Watch sipnab's lines become a ban
 
-Start with the scanner unbanned in every jail, in case the fail2ban guide's
-tests left a ban behind. The OpenSIPS jail would also ban this scanner, after
-its third request, so have that jail ignore it while you watch sipnab's, until
-the end of step 5. Then the scanner sends four `OPTIONS` as
-`friendly-scanner`:
+- Start with the scanner unbanned in every jail.
+  - The fail2ban guide's tests may have left a ban behind.
+- The OpenSIPS jail would also ban this scanner, after its third request.
+  - So have that jail ignore it while you watch sipnab's.
+  - Keep that until the end of "Watch a registration flood become a ban".
+- Then the scanner sends four `OPTIONS` as `friendly-scanner`:
 
 ```bash
 # Run all of these, in order.
@@ -184,12 +218,16 @@ sudo grep -c 'scanner_detected src=198.51.100.60 ' /var/log/sipnab.log
 sudo fail2ban-client status sipnab-scanner
 ```
 
-The first three print `SIP/2.0 200 OK`: sipnab's answer, not OpenSIPS's. The
-fourth prints `no answer`, because sipnab answers one source at most three
-times a minute. sipnab wrote a `scanner_detected src=198.51.100.60` line for
-each of the four, and the jail counts them, `Total failed: 4`, but has banned
-nobody: `Banned IP list:` is empty. The fifth inside 60 seconds earns the
-ban:
+- The first three print `SIP/2.0 200 OK`.
+  - That is sipnab's answer, not OpenSIPS's.
+- The fourth prints `no answer`.
+  - sipnab answers one source at most three times a minute.
+- sipnab wrote a `scanner_detected src=198.51.100.60` line for each of the
+  four.
+- The jail counts them, `Total failed: 4`.
+  - But it has banned nobody: `Banned IP list:` is empty.
+
+The fifth inside 60 seconds earns the ban:
 
 ```bash
 # Run all of these, in order.
@@ -200,8 +238,9 @@ sudo nft list set inet f2b-table addr-set-sipnab
 sudo ip netns exec scanner python3 ~/f2b-test/sipreq.py 192.0.2.10 OPTIONS 1
 ```
 
-The jail lists `198.51.100.60`, nftables holds it in `addr-set-sipnab`, and the
-next `OPTIONS` prints `refused`.
+- The jail lists `198.51.100.60`.
+- nftables holds it in `addr-set-sipnab`.
+- The next `OPTIONS` prints `refused`.
 
 The phone is not affected, and sipnab wrote nothing about it:
 
@@ -213,10 +252,11 @@ sudo grep -c 203.0.113.70 /var/log/sipnab.log || true
 
 It prints `REGISTER 1001: SIP/2.0 200 OK`, then `0`.
 
-## 5. Watch a registration flood become a ban
+## Watch a registration flood become a ban
 
-Lift the scanner's ban first. The OpenSIPS jail still ignores the address, so
-only sipnab's jail acts. Afterwards, the OpenSIPS jail stops ignoring it:
+- Lift the scanner's ban first.
+- The OpenSIPS jail still ignores the address, so only sipnab's jail acts.
+- Afterwards, the OpenSIPS jail stops ignoring it:
 
 ```bash
 # Run all of these, in order.
@@ -228,16 +268,24 @@ sudo fail2ban-client status sipnab-scanner
 sudo fail2ban-client set opensips delignoreip 198.51.100.60
 ```
 
-All 80 guesses print `REGISTER 1001: SIP/2.0 401 Unauthorized`. sipnab wrote 30
-`reg_flood` lines for them, and the jail lists `198.51.100.60`.
+- All 80 guesses print `REGISTER 1001: SIP/2.0 401 Unauthorized`.
+- sipnab wrote 30 `reg_flood` lines for them.
+- The jail lists `198.51.100.60`.
 
-## 6. Ban with iptables instead of nftables
+## Ban with iptables instead of nftables
 
-The shipped jail bans with nftables, which worked on both systems this guide
-ran on. On a host where you manage the firewall with the `iptables` command,
-give the jail fail2ban's iptables action, which the shipped file shows in a
-comment. This installs `iptables`, switches the jail to it in a `sipnab.local`,
-and bans the scanner again with five `OPTIONS`:
+The shipped jail bans with nftables. That worked on both systems this guide
+ran on.
+
+- You may manage the firewall with the `iptables` command on a host.
+- There, give the jail fail2ban's iptables action.
+  - The shipped file shows it in a comment.
+
+This block does three things:
+
+- It installs `iptables`.
+- It switches the jail to it in a `sipnab.local`.
+- It bans the scanner again with five `OPTIONS`:
 
 ```bash
 # Run all of these, in order.
@@ -257,10 +305,12 @@ sudo iptables -S f2b-sipnab
 sudo ip netns exec scanner python3 ~/f2b-test/sipreq.py 192.0.2.10 OPTIONS 1
 ```
 
-`iptables -V` names its backend in brackets: `(nf_tables)` is the iptables
-command writing nftables rules for you, `(legacy)` the old kernel tables. The
-jail lists `198.51.100.60`, the `f2b-sipnab` chain holds a rule rejecting it,
-and the next `OPTIONS` prints `refused`.
+- `iptables -V` names its backend in brackets.
+  - `(nf_tables)` is the iptables command writing nftables rules for you.
+  - `(legacy)` is the old kernel tables.
+- The jail lists `198.51.100.60`.
+- The `f2b-sipnab` chain holds a rule rejecting it.
+- The next `OPTIONS` prints `refused`.
 
 To go back to nftables, remove the override:
 
@@ -272,7 +322,7 @@ sleep 3
 sudo fail2ban-client status sipnab-scanner
 ```
 
-## 7. Operate it
+## Operate it
 
 | Command | What it does |
 |---|---|
@@ -303,7 +353,10 @@ sudo apt-get purge -y sipnab
 ## When something does not work
 
 - **fail2ban does not start, and `journalctl -u fail2ban` says `Have not found
-  any log file for sipnab-scanner jail`.** `/var/log/sipnab.log` does not exist
-  yet. Start sipnab as in step 2, then restart fail2ban.
-- **The log stays empty.** Run `sudo journalctl -u sipnab -n 20`. sipnab warns
-  there when `--fail2ban` has no detector beside it.
+  any log file for sipnab-scanner jail`.**
+  - `/var/log/sipnab.log` does not exist yet.
+  - Start sipnab as in "Run sipnab with its detectors, writing the log".
+  - Then restart fail2ban.
+- **The log stays empty.**
+  - Run `sudo journalctl -u sipnab -n 20`.
+  - sipnab warns there when `--fail2ban` has no detector beside it.

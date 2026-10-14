@@ -109,7 +109,7 @@ build. A parser bug reached from a crafted packet does not kill a worker; it
 kills the capture, the servers, and the evidence.
 
 That is a genuine point in favor of processes. It is also a threat the project
-already attacks head-on. D17 / [invariant 11](../internals/invariants.md) says:
+already attacks head-on. D17 / [invariant "Warn and continue on malformed input"](../internals/invariants.md) says:
 
 > No parser reachable from packet bytes may panic, `unwrap()`, or exit.
 
@@ -213,7 +213,7 @@ currently a pointer dereference.
 **Two paths *write* the stores from outside the capture loop.** `open_capture`
 spawns `mcp-pcap-load` ([`mcp/load.rs:132-174`](https://github.com/NormB/sipnab/blob/main/src/mcp/load.rs#L132-L174)) and the
 TUI's file-open spawns `pcap-load`. Both are documented exceptions to
-[invariant 1](../internals/invariants.md). Across a process boundary they stop
+[invariant "One writer per store, per run mode"](../internals/invariants.md). Across a process boundary they stop
 being exceptions and start being a replication problem.
 
 **The TUI depends on being able to *fail* to read.** Every render-side access is
@@ -271,7 +271,7 @@ the entire per-packet body, which includes:
   locks are held,
 - buffered stdout writes.
 
-This violates two written rules. [Invariant 2](../internals/invariants.md) says
+This violates two written rules. [Invariant "Dialog before stream, then alerts — one consistent order"](../internals/invariants.md) says
 *"Never hold both write locks simultaneously"*, and
 [`threading.md:144-147`](https://github.com/NormB/sipnab/blob/main/docs/internals/threading.md#L144-L147) says each store takes *"one
 write lock per packet, briefly"*. A `posix_spawn` is on the order of hundreds of

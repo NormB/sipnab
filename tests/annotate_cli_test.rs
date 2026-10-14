@@ -6,7 +6,7 @@
 //! the library, because the defect either would be is "the copy an operator
 //! sends is wrong", which only the command's own output can show:
 //!
-//! 1. **sipnab never reads a packet comment** (L4 of the design, Invariant 13
+//! 1. **sipnab never reads a packet comment** (L4 of the design, Invariant "Operator notes are output, never input"
 //!    in `docs/internals/invariants.md`). An annotated copy and its original
 //!    produce byte-identical `--json` once the path is normalized, and a
 //!    sentinel note appears in no `--json` line and in no MCP `get_message` or

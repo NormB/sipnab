@@ -10,44 +10,62 @@ kind = "howto"
 
 ## In short
 
-When a phone system encrypts its call signaling with TLS, a network recording
-shows only scrambled bytes. If you have administrator (root) access to the
-server but cannot restart it or obtain its keys, sipnab can read the signaling
-inside the running server program, just before the program encrypts it. This
-how-to walks through checking that the server is readable, running the
-capture, and getting the network addresses of the other side when you need
-them.
+A phone system may encrypt its call signaling with TLS. Then a network
+recording shows only scrambled bytes.
+
+You may have administrator (root) access to the server but be unable to
+restart it or obtain its keys. Then sipnab can read the signaling inside the
+running server program, just before the program encrypts it.
+
+This how-to walks through:
+
+- checking that the server is readable,
+- running the capture,
+- getting the network addresses of the other side when you need them.
 
 ## Who this is for
 
-Engineers with root on a Linux host running a SIP server over TLS who cannot
-restart it. If you can restart an endpoint with `SSLKEYLOGFILE` set, or you
-want keys that decrypt a recording later, read
+Engineers with root on a Linux host running a SIP server over TLS. They cannot
+restart it.
+
+Read
 [Decrypting SIP over TLS from session key logs](@/notes/reading-tls-without-a-certificate.md)
-instead.
+instead in either of these cases:
+
+- You can restart an endpoint with `SSLKEYLOGFILE` set.
+- You want keys that decrypt a recording later.
 
 ## What this method does and does not do
 
 A uprobe is a Linux kernel hook on a function in a program or shared library.
-`--uprobe-tls` places one on the TLS library's write function (`SSL_write` for
-OpenSSL, `wolfSSL_write` for wolfSSL) and reads the bytes the server hands to
-that function, before the library encrypts them. It recovers no key and decrypts no
-recording. The plaintext exists only in the sipnab run that read it. To keep a
-recording that others can decrypt later, use the key log method in the note
-linked above.
 
-It reads process memory, so anyone who can run it can read every SIP session
-on that host, credentials included. Read the security section of the uprobe
+- `--uprobe-tls` places one on the TLS library's write function:
+  - `SSL_write` for OpenSSL,
+  - `wolfSSL_write` for wolfSSL.
+- It reads the bytes the server hands to that function, before the library
+  encrypts them.
+- It recovers no key and decrypts no recording.
+- The plaintext exists only in the sipnab run that read it.
+- To keep a recording that others can decrypt later, use the key log method in
+  the note linked above.
+
+It reads process memory. So anyone who can run it can read every SIP session on
+that host, credentials included. Read the security section of the uprobe
 walkthrough before using it on a production host.
 
 ## Steps
 
-The commands below need root and a TLS server, which were not available for
-this note. Their output comes from the guides where they record it, with
-the source named. This note invents nothing below.
+The commands below need root and a TLS server. These were not available for
+this note.
 
-1. Confirm that the host is Linux with tracefs (the kernel's tracing file
-   system) mounted:
+- Their output comes from the guides where they record it, with the source
+  named.
+- This note invents nothing below.
+
+The steps:
+
+- Confirm that the host is Linux with tracefs (the kernel's tracing file
+  system) mounted:
 
 ```bash
 ls -d /sys/kernel/tracing
@@ -59,7 +77,7 @@ ls -d /sys/kernel/tracing
 
    If the directory is missing, the uprobe walkthrough shows how to mount it.
 
-2. List the TLS libraries sipnab would probe. This installs nothing:
+- List the TLS libraries sipnab would probe. This installs nothing:
 
 ```bash
 sudo sipnab --uprobe-list
@@ -73,16 +91,21 @@ OpenSSL        21143    12  /proc/954/root/usr/lib/x86_64-linux-gnu/libssl.so.3
 wolfSSL     17433084     1  /proc/982702/root/usr/lib/libwolfssl.so.42.2.0
 ```
 
-   Each row is one library file, the number of processes (PIDS) that map it,
-   and its path as seen through one of those processes (`/proc/<pid>/root`),
-   which also works for a server running in a container. Two rows with the
-   same path and different inodes are two different copies of the library. If
-   your SIP server's library is not listed, the capture cannot read it: for
-   example, a server statically linked with its TLS library maps no `libssl`
-   file. `--uprobe-library <PATH>` names a library directly instead.
+   Each row is one library file. It shows:
 
-   When sipnab finds nothing, it prints this (recorded in the uprobe
-   walkthrough and in `src/app/bootstrap.rs`) and exits with code 1:
+   - the number of processes (PIDS) that map it,
+   - its path as seen through one of those processes (`/proc/<pid>/root`).
+     This also works for a server running in a container.
+
+   Two rows with the same path and different inodes are two different copies of
+   the library.
+
+   The list may not show your SIP server's library. Then the capture cannot
+   read it. For example, a server statically linked with its TLS library maps no
+   `libssl` file. `--uprobe-library <PATH>` names a library directly instead.
+
+   When sipnab finds nothing, it prints this and exits with code 1. The uprobe
+   walkthrough and `src/app/bootstrap.rs` record the text:
 
 ```text
 No TLS library is mapped by any process sipnab can see.
@@ -90,10 +113,10 @@ Either nothing here uses OpenSSL or wolfSSL, or sipnab cannot read
 /proc/<pid>/maps — try again as root.
 ```
 
-   A run without root sees only its own processes, so run this as root before
+   A run without root sees only its own processes. So run this as root before
    concluding the host uses no TLS.
 
-3. Start the capture with the default `tracefs` backend:
+- Start the capture with the default `tracefs` backend:
 
 ```bash
 sudo sipnab -N --uprobe-tls
@@ -105,29 +128,38 @@ sudo sipnab -N --uprobe-tls
 12:57:47.360 0.0.0.0:0 -> 0.0.0.0:0 REGISTER TCP origin=uprobe
 ```
 
-   This backend sees no network connection, so messages carry no addresses
-   (`0.0.0.0:0`), dialogs carry the label `uprobe:<process>/<pid>`, and
-   `origin=uprobe` marks the line as uprobe input. sipnab probes every TLS
-   library it found. `--uprobe-flavor openssl` or `--uprobe-flavor wolfssl`
-   narrows that.
+   This backend sees no network connection. So:
 
-4. If the capture attaches but reports no messages, the server may call a
-   different write function. Some OpenSSL 3 programs call `SSL_write_ex`
-   instead of `SSL_write`. Step 4 of the uprobe walkthrough's tracefs section
-   shows how to list the write functions the server binary imports. Then probe
-   the function it names (the guides record no output for this command):
+   - messages carry no addresses (`0.0.0.0:0`),
+   - dialogs carry the label `uprobe:<process>/<pid>`,
+   - `origin=uprobe` marks the line as uprobe input.
+
+   sipnab probes every TLS library it found. `--uprobe-flavor openssl` or
+   `--uprobe-flavor wolfssl` narrows that.
+
+- The capture may attach but report no messages. Then the server may call a
+  different write function.
+  - Some OpenSSL 3 programs call `SSL_write_ex` instead of `SSL_write`.
+  - The uprobe walkthrough section "The symbol may not be the one you
+    expect" shows how to list the write functions the server binary imports.
+  - Then probe the function it names. The guides record no output for this
+    command:
 
 ```bash
 sudo sipnab -N --uprobe-tls --uprobe-symbol SSL_write_ex
 ```
 
-5. To get the other side's address and port, use the `bpf` backend. It pairs
-   each write with the kernel's `tcp_sendmsg` call on the same thread and
-   recovers the connection's addresses. It needs three things: a sipnab built
-   with the `bpf` feature, a build that also produced the kernel programs (this
-   needs `bpf-linker` and a nightly Rust toolchain on the build host), and a kernel with BTF
-   (`CONFIG_DEBUG_INFO_BTF`), which provides `/sys/kernel/btf/vmlinux`. Check
-   the build first:
+- To get the other side's address and port, use the `bpf` backend.
+  - It pairs each write with the kernel's `tcp_sendmsg` call on the same
+    thread.
+  - It recovers the connection's addresses.
+  - It needs three things:
+    - a sipnab built with the `bpf` feature,
+    - a build that also produced the kernel programs. This needs `bpf-linker`
+      and a nightly Rust toolchain on the build host.
+    - a kernel with BTF (`CONFIG_DEBUG_INFO_BTF`), which provides
+      `/sys/kernel/btf/vmlinux`.
+  - Check the build first:
 
 ```bash
 sipnab --version
@@ -140,19 +172,21 @@ sipnab 0.5.211 (15e5e7bd) features: native,tui,audio,tls,hep,api,mcp,mcp-http,me
 libpcap version 1.10.4 (with TPACKET_V3); alternate capture backends named: none
 ```
 
-   `bpf` is not in that list, so this binary refuses the backend. Running
+   `bpf` is not in that list. So this binary refuses the backend. Running
    `sipnab -N --uprobe-tls --uprobe-backend bpf` with it logged this error and
-   exited with code 1 (message text from `src/capture/native.rs` line 47):
+   exited with code 1. The message text is from `src/capture/native.rs`
+   line 47:
 
 ```text
 --uprobe-backend bpf needs a sipnab built with the `bpf` feature; this binary does not carry it
 ```
 
-   A binary that lists `bpf` but came from a build without `bpf-linker` refuses with
-   the "no kernel programs" message quoted in the uprobe walkthrough. sipnab
-   never falls back to `tracefs` on its own. With all three in place, widen
-   `--portrange`, because the ports a uprobe reports are the connection's
-   actual ports, often not 5061:
+   A binary may list `bpf` but come from a build without `bpf-linker`. It
+   refuses with the "no kernel programs" message quoted in the uprobe
+   walkthrough. sipnab never falls back to `tracefs` on its own.
+
+   With all three in place, widen `--portrange`. The ports a uprobe reports are
+   the connection's actual ports, often not 5061:
 
 ```bash
 sudo sipnab -N --uprobe-tls --uprobe-backend bpf --portrange 0-65535
@@ -165,13 +199,14 @@ sudo sipnab -N --uprobe-tls --uprobe-backend bpf --portrange 0-65535
 REGISTER   127.0.0.1:36160 -> 127.0.0.1:15061  TCP  uprobe:python3/349147#1
 ```
 
-   A write the library buffered instead of sending at once does not pair with
-   a send, and sipnab reports that message with no addresses rather than
-   guessing one.
+   The library may buffer a write instead of sending it at once. That write does
+   not pair with a send. sipnab reports that message with no addresses rather
+   than guessing one.
 
-6. After the capture, confirm that sipnab removed its probes (the tracefs
-   backend only — the kernel frees the programs of the `bpf` backend on exit). The
-   walkthrough states that this prints nothing:
+- After the capture, confirm that sipnab removed its probes.
+  - This is for the tracefs backend only. The kernel frees the programs of the
+    `bpf` backend on exit.
+  - The walkthrough states that this prints nothing:
 
 ```bash
 sudo grep sipnab_ /sys/kernel/tracing/uprobe_events
@@ -181,13 +216,13 @@ sudo grep sipnab_ /sys/kernel/tracing/uprobe_events
 
 | You need | Use |
 |---|---|
-| The SIP text now, with no keys and no restart | `--uprobe-tls` (steps 1 to 4) |
-| The same, plus the other side's address and port | `--uprobe-tls --uprobe-backend bpf` (step 5) |
+| The SIP text now, with no keys and no restart | `--uprobe-tls` (the `tracefs` steps above) |
+| The same, plus the other side's address and port | `--uprobe-tls --uprobe-backend bpf` (the `bpf` backend step above) |
 | A recording that you or others can decrypt later | Keys from the endpoint or from eCapture, read with `--keylog` or `--keylog-fd`; see [Decrypting SIP over TLS from session key logs](@/notes/reading-tls-without-a-certificate.md) |
 
-The server's private key (`--tls-key`) decrypts only TLS 1.2 sessions that
-used RSA key exchange. Sessions using ECDHE, DHE or TLS 1.3 have forward
-secrecy, and the private key does not decrypt them.
+The server's private key (`--tls-key`) decrypts only TLS 1.2 sessions that used
+RSA key exchange. Sessions using ECDHE, DHE or TLS 1.3 have forward secrecy.
+The private key does not decrypt them.
 
 ## Terms used here
 
@@ -197,20 +232,20 @@ secrecy, and the private key does not decrypt them.
 - **Root**: the Linux administrator account.
 - **uprobe**: a Linux kernel hook placed on a function in a user program or
   library.
-- **tracefs**: the kernel file system, under `/sys/kernel/tracing`, through
-  which programs manage tracing hooks.
+- **tracefs**: the kernel file system under `/sys/kernel/tracing`. Programs
+  manage tracing hooks through it.
 - **eBPF / `bpf` backend**: a Linux facility that runs small verified programs
-  in the kernel; sipnab's `bpf` backend uses it to read the connection
+  in the kernel. sipnab's `bpf` backend uses it to read the connection
   addresses.
 - **BTF**: BPF Type Format, the kernel's description of its own data
   structures, at `/sys/kernel/btf/vmlinux`.
-- **Inode**: the file system's number for one file; two paths with the same
+- **Inode**: the file system's number for one file. Two paths with the same
   inode are the same file.
 - **Shared library / statically linked**: code loaded from a separate file at
-  run time, versus code built into the program itself.
+  run time, compared with code built into the program itself.
 - **Dialog**: one SIP conversation, such as one call.
-- **Forward secrecy**: a key-exchange property under which the server's
-  private key cannot decrypt recorded sessions.
+- **Forward secrecy**: a key-exchange property. Under it, the server's private
+  key cannot decrypt recorded sessions.
 - **eCapture**: an open-source eBPF tool that extracts TLS keys from running
   programs.
 
@@ -223,8 +258,8 @@ secrecy, and the private key does not decrypt them.
 - [Walkthrough: the eBPF backend](@/docs/uprobe-walkthrough.md#walkthrough-the-ebpf-backend)
 - [Cleaning up](@/docs/uprobe-walkthrough.md#cleaning-up)
 - [Capture SIP over TLS: which method can you use?](@/docs/tls-capture.md#which-method-can-you-use)
-- [Method 3: no keys at all](@/docs/tls-capture.md#3-no-keys-at-all-read-the-plaintext-in-the-process)
-  and [method 4: plaintext and the peer address](@/docs/tls-capture.md#4-plaintext-and-the-peer-address)
-- Cookbook [7g](@/docs/cookbook.md#7g-read-tls-with-no-keys-at-all) and
-  [7h](@/docs/cookbook.md#7h-read-tls-and-who-the-peer-was)
+- [No keys at all](@/docs/tls-capture.md#no-keys-at-all-read-the-plaintext-in-the-process)
+  and [Plaintext and the peer address](@/docs/tls-capture.md#plaintext-and-the-peer-address)
+- Cookbook [7g](@/docs/cookbook.md#read-tls-with-no-keys-at-all) and
+  [7h](@/docs/cookbook.md#read-tls-and-who-the-peer-was)
 - [CLI reference: TLS / decryption](@/docs/cli.md#tls-decryption)

@@ -10,7 +10,10 @@ source = "docs/config-reference.md"
 
 sipnab reads configuration from a TOML file. CLI flags ([cli-reference.md](@/docs/cli.md)) always override config file values.
 
-Configuration is optional: with no file present sipnab runs on its built-in defaults. A config file exists to set persistent defaults for your environment.
+Configuration is optional.
+
+- With no file present, sipnab runs on its built-in defaults.
+- A config file exists to set persistent defaults for your environment.
 
 ## Minimal Config
 
@@ -28,7 +31,7 @@ portrange = "5060-5080"
 post_dial_delay_secs = 6.0
 ```
 
-`sipnab -D` prints the configuration it loaded, so you can check the file took
+`sipnab -D` prints the configuration it loaded. So you can check the file took
 effect.
 
 ## File Locations
@@ -43,21 +46,34 @@ sipnab reads configuration from the first file it finds in this order:
 | 4 | `~/.sipnabrc` |
 | 5 | `/etc/sipnab/sipnab.toml` |
 
-sipnab reads only that first file. It does not merge a later one into it, so a
-setting in `~/.sipnabrc` does nothing while `~/.config/sipnab/sipnab.toml`
-exists. When more than one of rows 3 to 5 exists, sipnab says which file it
-read and which it did not: a warning on stderr, a line in `--dump-config`
-output, and the status line when the terminal UI opens. A `--config` file or
-`$SIPNAB_CONFIG` is your choice, so it raises no such notice.
+sipnab reads only that first file.
+
+- It does not merge a later one into it.
+- So a setting in `~/.sipnabrc` does nothing while
+  `~/.config/sipnab/sipnab.toml` exists.
+
+When more than one of rows 3 to 5 exists, sipnab says which file it read and
+which it did not. It says so in three places:
+
+- a warning on stderr;
+- a line in `--dump-config` output;
+- the status line when the terminal UI opens.
+
+A `--config` file or `$SIPNAB_CONFIG` is your choice, so it raises no such
+notice.
 
 ```text
 # Loaded from: /home/you/.config/sipnab/sipnab.toml
 # Also present and NOT read: /home/you/.sipnabrc
 ```
 
-Use `--no-config` (`-F`) to skip all file loading. Use `--dump-config` (`-D`) to print which file sipnab loaded and the keys it set — see the note under [Full example](#full-example) for what `-D` does and does not show.
+- Use `--no-config` (`-F`) to skip all file loading.
+- Use `--dump-config` (`-D`) to print which file sipnab loaded and the keys it
+  set. See the note under [Full example](#full-example) for what `-D` does and
+  does not show.
 
-Unknown keys produce a warning and go no further, so one config can span versions.
+Unknown keys produce a warning and go no further. So one config can span
+versions.
 
 ## Environment variables in values
 
@@ -69,37 +85,44 @@ variable's value when it reads the file:
 report_dir = "/home/${SUDO_USER}/sipnab"
 ```
 
-The case this exists for is `sudo`. Capture needs privileges, so sipnab is
-often run under `sudo`, and after `sudo -i` a file written by that run lands in
-root's directory rather than in the directory of whoever ran the command.
-`${SUDO_USER}` is the only thing that can say which one that is at the moment
-sipnab reads the file.
+The case this exists for is `sudo`.
+
+- Capture needs privileges, so sipnab often runs under `sudo`.
+- After `sudo -i`, a file written by that run lands in root's directory. It
+  does not land in the directory of whoever ran the command.
+- `${SUDO_USER}` is the only thing that can say which one that is at the moment
+  sipnab reads the file.
 
 Four rules, and they hold everywhere a string does:
 
-- **`${NAME}` expands.** `NAME` is an ASCII letter or `_` followed by letters,
-  digits or `_`. sipnab rejects shell's `${NAME:-default}` and `${NAME-other}`
-  outright rather than half-supporting them.
-- **An unset variable is an error.** sipnab names the setting and the variable
-  and does not start. Expanding to nothing would turn
-  `/home/${SUDO_USER}/sipnab` into `/home//sipnab`, which is a real, writable
-  directory that is not the one you meant.
+- **`${NAME}` expands.**
+  - `NAME` is an ASCII letter or `_` followed by letters, digits or `_`.
+  - sipnab rejects shell's `${NAME:-default}` and `${NAME-other}` outright
+    rather than half-supporting them.
+- **An unset variable is an error.**
+  - sipnab names the setting and the variable and does not start.
+  - Expanding to nothing would turn `/home/${SUDO_USER}/sipnab` into
+    `/home//sipnab`.
+  - That is a real, writable directory that is not the one you meant.
 - **`$$` is a literal `$`.** Write `$${NAME}` for a literal `${NAME}`.
 - **A bare `$NAME` is literal text.** Braces are the whole syntax.
 
-What a variable expands to is data. It is never scanned again, so a value that
-itself contains `${...}` stays as it is.
+What a variable expands to is data. sipnab never scans it again. So a value
+that itself contains `${...}` stays as it is.
 
-`--dump-config` prints values after expansion, which is what sipnab is actually
+`--dump-config` prints values after expansion. That is what sipnab is actually
 using.
 
 ## Format
 
 Standard [TOML](https://toml.io/). All sections and keys are optional. Only set values you want to change from defaults.
 
-A file sipnab cannot read, or a value in it sipnab refuses, stops the run before
-anything starts with exit status `1`, naming the key. The same value given as a
-flag exits `2`. See [Exit codes](@/docs/cli.md#exit-codes).
+A file sipnab cannot read, or a value in it sipnab refuses, stops the run
+before anything starts.
+
+- The exit status is `1`, and the message names the key.
+- The same value given as a flag exits `2`.
+- See [Exit codes](@/docs/cli.md#exit-codes).
 
 ## Sections
 
@@ -139,7 +162,7 @@ no_rtp = false
 promisc = true
 ```
 
-The loopback HEP deployment, from the file alone — a proxy mirrors HEP to
+The loopback HEP deployment, from the file alone. A proxy mirrors HEP to
 UDP/9063 on `lo`, and any number of readers sniff it at once:
 
 ```toml
@@ -151,20 +174,28 @@ hep_parse = true
 bpf_filter = "udp dst port 9063"
 ```
 
-sipnab reads the copies without any process listening on UDP/9063, but a port
-with no listener costs messages with some senders. The kernel answers each
-datagram sent to a closed port with an ICMP port-unreachable message, and a
-sender that uses a connected UDP socket then fails its next send. Measured on
-2026-10-07 with sipnab's own sender before it changed: `sipnab -H
-127.0.0.1:19063` sent a 7-message call to a port with no listener, 3 of the 7
-sends failed, and a reader on `lo` saw 4 messages. sipnab's `-H` now sends UDP
-from an unconnected socket, which the kernel does not report the ICMP message
-to, so it loses no message this way: on 2026-10-08 the same run to a port with
-no listener reported 7 sent and none failed. Other senders, such as a proxy's
-HEP module, still may. Keep a receiver bound to the port while you sniff it:
-`sipnab -L 127.0.0.1:9063` is one, and it reads the copies itself. Whether a
-proxy loses copies this way depends on whether its HEP sender uses a connected
-socket.
+sipnab reads the copies without any process listening on UDP/9063. But a port
+with no listener costs messages with some senders.
+
+- The kernel answers each datagram sent to a closed port with an ICMP
+  port-unreachable message.
+- A sender that uses a connected UDP socket then fails its next send.
+- Measured on 2026-10-07 with sipnab's own sender before it changed:
+  - `sipnab -H
+    127.0.0.1:19063` sent a 7-message call to a port with no listener;
+  - 3 of the 7 sends failed;
+  - a reader on `lo` saw 4 messages.
+- sipnab's `-H` now sends UDP from an unconnected socket.
+  - The kernel does not report the ICMP message to that socket.
+  - So it loses no message this way.
+  - On 2026-10-08 the same run to a port with no listener reported 7 sent and
+    none failed.
+- Other senders, such as a proxy's HEP module, still may.
+  - Whether a proxy loses copies this way depends on whether its HEP sender
+    uses a connected socket.
+
+Keep a receiver bound to the port while you sniff it. `sipnab -L 127.0.0.1:9063`
+is one, and it reads the copies itself.
 
 ### [display]
 
@@ -207,10 +238,17 @@ expression = "method == 'INVITE'"
 
 ### [filters]
 
-Named filters. Each key is a name and each value a filter expression. Use a
-name as `@name` wherever sipnab takes a filter expression: `--filter`,
-`--export-vcon-when`, `[filter] expression`, the REST `filter` parameter, an
-MCP tool's `filter` argument, and the TUI filter dialog's Named filter field.
+Named filters. Each key is a name and each value a filter expression.
+
+Use a name as `@name` wherever sipnab takes a filter expression:
+
+- `--filter`;
+- `--export-vcon-when`;
+- `[filter] expression`;
+- the REST `filter` parameter;
+- an MCP tool's `filter` argument;
+- the TUI filter dialog's Named filter field.
+
 See [Named filters](@/docs/filter-dsl.md#named-filters).
 
 | Key | Type | Default | Description |
@@ -224,10 +262,13 @@ support   = "to.user == '7000' OR header.X-Queue == 'support'"
 sales     = "@carrier-a AND to.user =~ '^8[0-9]{3}$'"
 ```
 
-sipnab resolves every name when it starts and refuses to start, exit code 1,
-naming the entry, when a name does not parse or is a built-in alias, when an
-entry references a name nothing defines, when entries reference each other in
-a loop, or when an expansion is not a valid expression.
+sipnab resolves every name when it starts. It refuses to start, exit code 1,
+naming the entry, when:
+
+- a name does not parse or is a built-in alias;
+- an entry references a name nothing defines;
+- entries reference each other in a loop;
+- an expansion is not a valid expression.
 
 ### [vcon]
 
@@ -240,9 +281,12 @@ vCon export settings, each an array of tables that you write once per entry.
 
 ### [[vcon.rule]]
 
-Export rules: each pairs a filter with the directory its vCon containers go to
-and what they carry. A run can hold several, and sipnab writes a call matching
-several once per rule. See [Write calls by rule](@/docs/vcon.md#write-calls-by-rule).
+Export rules. Each pairs a filter with the directory its vCon containers go to
+and what they carry.
+
+- A run can hold several.
+- sipnab writes a call matching several once per rule.
+- See [Write calls by rule](@/docs/vcon.md#write-calls-by-rule).
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
@@ -269,9 +313,11 @@ audio = "inline"
 
 ### [[vcon.enrich]]
 
-Enrichment services: sipnab sends each one the calls of the rules it names
-before it writes their containers, and appends the Analysis Objects of its
-answer.
+Enrichment services.
+
+- sipnab sends each one the calls of the rules it names, before it writes their
+  containers.
+- It appends the Analysis Objects of its answer.
 
 <!-- The link text repeats the heading it links to, whose wording the anchor
 fixes. See the comment above that heading in vcon.md. -->
@@ -357,30 +403,42 @@ Security detection defaults.
 
 **HEP HMAC token version 2, and what a mixed fleet sees.** sipnab 0.5.131
 moved `HMAC_TOKEN_VERSION` from 1 to 2 and refuses v1 by name. Two things
-follow. A sender still on 0.5.130 or earlier against a newer collector has
-**every packet refused**, and the symptom is a collector receiving nothing --
-which operators reliably attribute to routing, a firewall, or a dead agent
-long before they suspect a token version. Upgrade the collector last, or
-upgrade both together.
+follow.
 
-The reason it is not a compatible change is the second thing: v1's MAC did not
-cover the addressing chunks, so an attacker who captured a v1 token from one
-sender could replay it against a third party, and could point a published
-`--hep-allow-kill` control somewhere nobody issued it for. v2 covers them. There is no
-flag to accept v1 again, deliberately.
+- A sender still on 0.5.130 or earlier against a newer collector has **every
+  packet refused**.
+  - The symptom is a collector receiving nothing.
+  - Operators reliably attribute that to routing, a firewall, or a dead agent
+    long before they suspect a token version.
+  - Upgrade the collector last, or upgrade both together.
+- The second thing is the reason it is not a compatible change.
+  - v1's MAC did not cover the addressing chunks.
+  - So an attacker who captured a v1 token from one sender could replay it
+    against a third party.
+  - The attacker could also point a published `--hep-allow-kill` control
+    somewhere nobody issued it for.
+  - v2 covers them.
+  - There is no flag to accept v1 again, deliberately.
 
 sipnab bounds `reg_flood_window_secs` and `reg_flood_transaction_timeout_ms`
-at both ends, and a value outside the range fails validation with the key, the
-range and the value in the message. The `--reg-flood-window` and
-`--reg-flood-transaction-timeout` flags refuse the same values, because both
-doors read the same constants in [`src/security/reg_flood.rs`](https://github.com/NormB/sipnab/blob/main/src/security/reg_flood.rs):
-`MAX_WINDOW_SECS` (3,600), `MIN_TRANSACTION_TIMEOUT_MS` (1,000) and
-`MAX_TRANSACTION_TIMEOUT_MS` (600,000).
+at both ends.
 
-Every `scanner_*` key above rejects `0` and names the key. A zero count reports
-the first probe of any kind as a scanner, a zero window resets the counters on
-every packet so nothing ever accumulates, and a zero grace restores the very
-defect `scanner_answer_grace_ms` exists to prevent.
+- A value outside the range fails validation. The message holds the key, the
+  range and the value.
+- The `--reg-flood-window` and `--reg-flood-transaction-timeout` flags refuse
+  the same values.
+- That is because both doors read the same constants in [`src/security/reg_flood.rs`](https://github.com/NormB/sipnab/blob/main/src/security/reg_flood.rs):
+  - `MAX_WINDOW_SECS` (3,600);
+  - `MIN_TRANSACTION_TIMEOUT_MS` (1,000);
+  - `MAX_TRANSACTION_TIMEOUT_MS` (600,000).
+
+Every `scanner_*` key above rejects `0` and names the key.
+
+- A zero count reports the first probe of any kind as a scanner.
+- A zero window resets the counters on every packet, so nothing ever
+  accumulates.
+- A zero grace restores the very defect `scanner_answer_grace_ms` exists to
+  prevent.
 
 ```toml
 [security]
@@ -405,29 +463,37 @@ alert_exec = "/usr/local/bin/sipnab-alert.sh"
 ### `[tfps]`
 
 > **The peer this needs.** These read [TFPS](https://github.com/sippulse/tfps)
-> through its `tfps_ctl` program in JSON mode, the `--json` flag. TFPS gained
-> that mode in [sippulse/tfps#6](https://github.com/sippulse/tfps/pull/6),
-> merged on 2026-09-18, and no tagged release carries it yet: v0.2.1, the
-> newest, rejects `--json`.
+> through its `tfps_ctl` program in JSON mode, the `--json` flag.
 >
-> Until the next release, build TFPS from its `master` branch. To check the `tfps_ctl` you have, run
-> `tfps_ctl status --json`. One line of JSON means it is ready, and
-> `unknown option: --json` means it predates the mode. Against an older
-> `tfps_ctl` these answer with that error and name what to install.
+> - TFPS gained that mode in [sippulse/tfps#6](https://github.com/sippulse/tfps/pull/6),
+>   merged on 2026-09-18.
+> - No tagged release carries it yet. v0.2.1, the newest, rejects `--json`.
+>
+> Until the next release, build TFPS from its `master` branch.
+>
+> - To check the `tfps_ctl` you have, run `tfps_ctl status --json`.
+>   - One line of JSON means it is ready.
+>   - `unknown option: --json` means it predates the mode.
+> - Against an older `tfps_ctl`, these answer with that error and name what to
+>   install.
 >
 > The kernel-drop question (`GET /v1/tfps/dropped`, the `tfps_dropped` MCP
-> tool) is the exception: it needs a `dropped` subcommand that no TFPS build
+> tool) is the exception. It needs a `dropped` subcommand that no TFPS build
 > has, released or on `master`.
 
 Where the toll-fraud prevention system (TFPS) is, when one runs on this host.
 
-TFPS is optional peer software: it condemns sources and enforces that
-decision in the firewall. sipnab bans nothing on its own, and asks TFPS to ban
-only when you turn that on under [`[actions]`](#actions). The `tfps_*` MCP
-tools and the `/v1/tfps/` REST routes ask it through its `tfps_ctl` program,
-and this section says where that program and its database are. Leave the
-section out and sipnab looks for `tfps_ctl` on `PATH` the moment a TFPS tool
-runs, and does nothing about TFPS at any other time.
+TFPS is optional peer software. It condemns sources and enforces that
+decision in the firewall.
+
+- sipnab bans nothing on its own.
+- It asks TFPS to ban only when you turn that on under [`[actions]`](#actions).
+- The `tfps_*` MCP tools and the `/v1/tfps/` REST routes ask it through its
+  `tfps_ctl` program.
+- This section says where that program and its database are.
+- Leave the section out, and sipnab:
+  - looks for `tfps_ctl` on `PATH` the moment a TFPS tool runs;
+  - does nothing about TFPS at any other time.
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
@@ -443,20 +509,26 @@ db = "/var/lib/tfps/tfps.db"
 ### `[actions]`
 
 What sipnab may change in another system, and from where. **Empty by
-default: sipnab changes no system outside itself.** It publishes what it saw
-to destinations you name and asks other software read-only questions. An
-action, such as asking TFPS to ban a source, runs only when enabled here or
-with `--allow-action`. The two add together.
+default: sipnab changes no system outside itself.**
 
-One key per target, each a list of the surfaces that may ask: `"rest"` for
-the REST API, `"mcp"` for the MCP tools. A target or surface sipnab does not
-know stops it at startup, rather than sipnab reading it as "nothing enabled".
+- It publishes what it saw to destinations you name.
+- It asks other software read-only questions.
+- An action, such as asking TFPS to ban a source, runs only when enabled here
+  or with `--allow-action`. The two add together.
+
+One key per target. Each is a list of the surfaces that may ask:
+
+- `"rest"` for the REST API;
+- `"mcp"` for the MCP tools.
+
+A target or surface sipnab does not know stops it at startup. sipnab does not
+read it as "nothing enabled".
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
 | `tfps` | list of strings | `[]` | Surfaces that may ask TFPS to ban and unban, and back a ban out: `POST /v1/tfps/ban`, `/unban` and `/v1/actions/revert` over REST; `tfps_ban`, `tfps_unban` and `actions_revert` over MCP. A REST caller also needs a token minted with `--token-scope actions`, and so does an MCP client over HTTP. `--allow-action` adds to it |
 
-Enabling anything needs the [actions journal](#journal): sipnab refuses to
+Enabling anything needs the [actions journal](#journal). sipnab refuses to
 start without a directory it can use for it.
 
 ```toml
@@ -466,11 +538,18 @@ tfps = ["rest"]
 
 ### `[action_limits]`
 
-The limits every action passes, so a stolen credential or a runaway agent
-can do only so much, and so that every ban ends on its own. Each key left out
-keeps the value shown. None can be `0`: that would turn the limit off, and
-sipnab refuses to start instead. The limits survive a restart: sipnab rebuilds
-them from the journal, so crashing it does not reset them.
+The limits every action passes. They exist for two reasons:
+
+- so a stolen credential or a runaway agent can do only so much;
+- so that every ban ends on its own.
+
+Rules for the keys:
+
+- Each key left out keeps the value shown.
+- None can be `0`. That would turn the limit off, so sipnab refuses to start
+  instead.
+- The limits survive a restart. sipnab rebuilds them from the journal, so
+  crashing it does not reset them.
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
@@ -480,8 +559,11 @@ them from the journal, so crashing it does not reset them.
 | `default_ban_secs` | integer | `3600` | How long a ban lasts when the caller does not say |
 | `max_ban_secs` | integer | `604800` | The longest ban sipnab asks for (7 days). sipnab refuses a longer request, or `0` (TFPS's "forever"), rather than shortening it |
 
-Some addresses are never banned whatever these say: `0.0.0.0`, the broadcast
-address, loopback and multicast addresses.
+Whatever these say, sipnab never bans some addresses:
+
+- `0.0.0.0`;
+- the broadcast address;
+- loopback and multicast addresses.
 
 ```toml
 [action_limits]
@@ -494,10 +576,15 @@ max_ban_secs = 86400
 
 ### `[journal]`
 
-Where sipnab records the actions it takes, so that after a restart or a
-crash it knows which bans are its own, what was in flight, and how much of
-each limit it has spent. `sipnab --journal-show` prints what it holds, and
-`sipnab --revert-actions` backs actions out.
+Where sipnab records the actions it takes. After a restart or a crash, it
+then knows:
+
+- which bans are its own;
+- what was in flight;
+- how much of each limit it has spent.
+
+`sipnab --journal-show` prints what it holds. `sipnab --revert-actions` backs
+actions out.
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
@@ -510,14 +597,21 @@ dir = "/srv/sipnab/journal"
 
 ### [diagnosis]
 
-Thresholds the signaling and media checks compare against. A number here
-decides whether a call that is working gets reported as broken, so the defaults
-are standards figures and a network that knows its own numbers beats a
-recommendation written for the general case. Every value must be a finite
-number greater than zero: sipnab refuses `0`, a negative number, `nan` and
-`inf`, naming the key. `duration_asymmetry_pct` must also be 100 or less,
-`cn_suppression_ratio` 1 or less, and `late_media_ms` is a whole number of at
-least 1. The matching flags follow the same rules.
+Thresholds the signaling and media checks compare against.
+
+- A number here decides whether a call that is working gets reported as
+  broken.
+- So the defaults are standards figures.
+- A network that knows its own numbers beats a recommendation written for the
+  general case.
+
+Every value must be a finite number greater than zero.
+
+- sipnab refuses `0`, a negative number, `nan` and `inf`, naming the key.
+- `duration_asymmetry_pct` must also be 100 or less.
+- `cn_suppression_ratio` must be 1 or less.
+- `late_media_ms` is a whole number of at least 1.
+- The matching flags follow the same rules.
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
@@ -564,26 +658,33 @@ iLBC = 11.0
 
 ### [quality]
 
-Where the quality color column turns yellow, and where it turns red. A number
-here decides only what catches an operator's eye during triage, which is a
-different question from `[diagnosis]`: that one decides whether a call that is
-working counts as broken.
+Where the quality color column turns yellow, and where it turns red.
 
-The defaults suit a general-purpose trunk, and the
-right values belong to the network you are watching -- 30 ms of jitter is
-already a fault on a LAN PBX, and 1 percent loss is unremarkable on an
-international one.
+- A number here decides only what catches an operator's eye during triage.
+- That is a different question from `[diagnosis]`. That one decides whether a
+  call that is working counts as broken.
 
-Unset keys keep the shipped default, so a file may move one boundary without
-restating the other seven. Every value must be a finite number of zero or more,
-and each warn boundary must leave a reachable middle against its matching bad
-boundary. A set that does not fails validation and names the key. Zero itself
-counts as a real setting: `loss_warn_pct = 0.0` means any loss at all is worth
-a color.
+The defaults suit a general-purpose trunk. The right values belong to the
+network you are watching.
 
-These bands paint the TUI. A `-N` run prints the measurements themselves rather
-than a color, so sipnab validates a band set on a non-interactive run and then
-never consults it.
+- 30 ms of jitter is already a fault on a LAN PBX.
+- 1 percent loss is unremarkable on an international one.
+
+Rules for the values:
+
+- Unset keys keep the shipped default. So a file may move one boundary without
+  restating the other seven.
+- Every value must be a finite number of zero or more.
+- Each warn boundary must leave a reachable middle against its matching bad
+  boundary. A set that does not fails validation and names the key.
+- Zero itself counts as a real setting. `loss_warn_pct = 0.0` means any loss at
+  all is worth a color.
+
+These bands paint the TUI.
+
+- A `-N` run prints the measurements themselves rather than a color.
+- So sipnab validates a band set on a non-interactive run and then never
+  consults it.
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
@@ -665,17 +766,25 @@ keep_messages_per_idle_dialog = 20
 max_audio_bytes = 1073741824
 ```
 
-The compaction pair — `idle_compact_after_secs` and
-`keep_messages_per_idle_dialog` — is where a limit discards a ladder sipnab
-already holds, so a call that went quiet shows fewer messages than crossed the
-wire. sipnab warns once per run when this first happens. The retention logs
-(`max_audio_frames` when set, `max_audio_bytes`, `max_lost_sequences`) drop
-their oldest entries as they fill. Every other key here refuses to take
-something in.
+How the limits behave when they fill:
 
-Raise both when the ladder matters more than the footprint — a call parked on
-hold, a dialog waiting on a slow PSTN leg, or a capture you paused all go quiet
+- The compaction pair is `idle_compact_after_secs` and
+  `keep_messages_per_idle_dialog`.
+  - This is where a limit discards a ladder sipnab already holds.
+  - So a call that went quiet shows fewer messages than crossed the wire.
+  - sipnab warns once per run when this first happens.
+- The retention logs (`max_audio_frames` when set, `max_audio_bytes`,
+  `max_lost_sequences`) drop their oldest entries as they fill.
+- Every other key here refuses to take something in.
+
+Raise both when the ladder matters more than the footprint. These all go quiet
 for longer than ten minutes while still being the thing under investigation:
+
+- a call parked on hold;
+- a dialog waiting on a slow PSTN leg;
+- a capture you paused.
+
+For example:
 
 ```toml
 [limits]
@@ -686,9 +795,10 @@ keep_messages_per_idle_dialog = 500
 #### Audio retention budget
 
 The terminal UI, and any run with `--retain-audio`, keeps each RTP stream's
-G.711, G.722 and Opus payload so that sipnab can write it to a WAV file or a vCon. By
-default sipnab keeps the whole call, from the first frame. `max_audio_bytes`
-bounds the memory this uses, across every stream at once.
+G.711, G.722 and Opus payload. Then sipnab can write it to a WAV file or a vCon.
+
+- By default sipnab keeps the whole call, from the first frame.
+- `max_audio_bytes` bounds the memory this uses, across every stream at once.
 
 sipnab charges each retained frame against the budget:
 
@@ -697,9 +807,12 @@ sipnab charges each retained frame against the budget:
 - 32 bytes for each slot of the stream's frame buffer, spare capacity
   included.
 
-For 20 ms G.711 (160 bytes a frame) that is 264 bytes a frame: 13,200 bytes a
-second for each direction, and 26,400 bytes a second for a call with media both
-ways. The default of 1 GiB (1,073,741,824 bytes) therefore holds 40,672
+For 20 ms G.711 (160 bytes a frame) that is 264 bytes a frame:
+
+- 13,200 bytes a second for each direction;
+- 26,400 bytes a second for a call with media both ways.
+
+The default of 1 GiB (1,073,741,824 bytes) therefore holds 40,672
 call-seconds, which is:
 
 | Calls held at once | Each lasting |
@@ -708,39 +821,53 @@ call-seconds, which is:
 | 67 | 10 minutes |
 | 225 | 3 minutes |
 
-The charge is an upper bound. Measured on aarch64 Linux with the allocator
-the sipnab binary ships with (mimalloc), a 20 ms G.711 frame used 192.6 bytes,
-so at the budget the heap the audio really holds is about 0.73 GiB. With
-`--cores N`, each worker gets 1/N of the budget, so the run as a whole stays
-inside it.
+The charge is an upper bound.
 
-When retained audio reaches the budget, sipnab releases the earliest frames of the oldest
-stream that still holds audio, one frame at a time, until the total is back
-inside it. On a live capture the oldest stream is normally a call that has
-already ended. sipnab counts the frames released on the stream. That call's
-WAV export, its vCon `media_note`, and the note inside the WAV then say
-`PARTIAL: the [limits] max_audio_bytes retention budget was reached and
-released N earlier frame(s)`, and its vCon wraps the recording in a
-`recording-set` that carries the call's own start and duration. sipnab never
-drops audio without counting it.
+- Measured on aarch64 Linux with the allocator the sipnab binary ships with
+  (mimalloc), a 20 ms G.711 frame used 192.6 bytes.
+- So at the budget, the heap the audio really holds is about 0.73 GiB.
+- With `--cores N`, each worker gets 1/N of the budget. So the run as a whole
+  stays inside it.
+
+When retained audio reaches the budget, sipnab releases frames:
+
+- It releases the earliest frames of the oldest stream that still holds audio.
+- It releases one frame at a time, until the total is back inside it.
+- On a live capture the oldest stream is normally a call that has already
+  ended.
+
+sipnab counts the frames released on the stream.
+
+- That call's WAV export, its vCon `media_note`, and the note inside the WAV
+  then say `PARTIAL: the [limits] max_audio_bytes retention budget was reached and
+  released N earlier frame(s)`.
+- Its vCon wraps the recording in a `recording-set` that carries the call's own
+  start and duration.
+- sipnab never drops audio without counting it.
 
 A live capture that writes vCon containers (`--export-vcon-when` or
 `--export-vcon` with a device) releases each call's audio once it writes the
-call's container, because the container carries it. An export of that call
-made later says how many frames sipnab released and why.
+call's container. The container carries it. An export of that call made later
+says how many frames sipnab released and why.
 
 Raise `max_audio_bytes` for a host that keeps more or longer calls in memory at
-once. In the source, the default is `DEFAULT_MAX_AUDIO_BYTES` (1073741824) and
-the minimum is `MIN_MAX_AUDIO_BYTES` (1048576). Set `max_audio_frames` to cap each stream as well. For example, 1500
-frames is the last 30 seconds of a 20 ms stream.
+once.
+
+- In the source, the default is `DEFAULT_MAX_AUDIO_BYTES` (1073741824).
+- The minimum is `MIN_MAX_AUDIO_BYTES` (1048576).
+- Set `max_audio_frames` to cap each stream as well. For example, 1500 frames
+  is the last 30 seconds of a 20 ms stream.
 
 ### [mcp]
 
 Which tools the MCP server registers, and whether it sends their output
-schemas. Every tool sipnab offers a client costs its context window before the
-agent asks anything, so give a client that needs a few tools only those few.
-See [Choosing which tools load](@/docs/mcp-tools.md#choosing-which-tools-load) for what
-each bundle holds.
+schemas.
+
+- Every tool sipnab offers a client costs its context window before the agent
+  asks anything.
+- So give a client that needs a few tools only those few.
+- See [Choosing which tools load](@/docs/mcp-tools.md#choosing-which-tools-load) for
+  what each bundle holds.
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
@@ -762,9 +889,11 @@ voice = ["media", "get_sdp_timeline", "check_codec_negotiation"]
 
 Which `Host` names the REST API answers, beyond `localhost`, `127.0.0.1`,
 `::1` and the address `--api` binds (any IP address on a `0.0.0.0` or `::`
-bind). The check stops a web page from reaching the API through your browser
-by pointing its own name at `127.0.0.1` (DNS rebinding). See
-[Which `Host` names the API answers](@/docs/api.md#which-host-names-the-api-answers).
+bind).
+
+- The check stops a web page from reaching the API through your browser by
+  pointing its own name at `127.0.0.1` (DNS rebinding).
+- See [Which `Host` names the API answers](@/docs/api.md#which-host-names-the-api-answers).
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
@@ -781,21 +910,28 @@ tls_key = "/etc/sipnab/api.key"
 
 ### TLS files in the config file
 
-`[api]`, `[mcp]` and `[metrics]` each take a `tls_cert` and `tls_key`, and
-`[hep]` takes the HEP sender's and listener's TLS files. The listener itself is
-still started on the command line (`--api`, `--mcp --mcp-transport http`,
-`--metrics`, `--hep-send`, `--hep-listen`). The keys say what it serves with
-when it starts.
+`[api]`, `[mcp]` and `[metrics]` each take a `tls_cert` and `tls_key`.
+`[hep]` takes the HEP sender's and listener's TLS files.
+
+- The listener itself still starts on the command line (`--api`,
+  `--mcp --mcp-transport http`, `--metrics`, `--hep-send`, `--hep-listen`).
+- The keys say what it serves with when it starts.
+
+How the flags and keys combine:
 
 - Each flag replaces its own key. A certificate from the command line and its
   key from the file make a pair.
 - Once sipnab combines the flags and the file, a certificate without a key, or
-  a key without a certificate, stops it at startup. The message names the half
-  you set and both the flag and the key that would set the other.
-  This check covers every listener's keys, whether or not this run starts it.
-- A file sipnab cannot read, a file with no certificate or no private key, a
-  key any other user can read, and a key that is not the certificate's each
-  stop sipnab at startup when the listener starts, naming the file.
+  a key without a certificate, stops it at startup.
+  - The message names the half you set.
+  - It also names both the flag and the key that would set the other.
+  - This check covers every listener's keys, whether or not this run starts it.
+- Each of these stops sipnab at startup when the listener starts, naming the
+  file:
+  - a file sipnab cannot read;
+  - a file with no certificate or no private key;
+  - a key any other user can read;
+  - a key that is not the certificate's.
 
 ### [metrics]
 
@@ -814,9 +950,11 @@ tls_key = "/etc/sipnab/metrics.key"
 
 ### [hep]
 
-TLS for HEP: the CA the sender (`--hep-send-transport tls`) checks the
-collector's certificate against, and the certificate a TLS listener
-(`--hep-listen-transport tls`) presents.
+TLS for HEP:
+
+- the CA the sender (`--hep-send-transport tls`) checks the collector's
+  certificate against;
+- the certificate a TLS listener (`--hep-listen-transport tls`) presents.
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
@@ -825,10 +963,12 @@ collector's certificate against, and the certificate a TLS listener
 | `tls_cert` | path | -- | PEM certificate chain a TLS HEP listener presents, the server's certificate first. A TLS listener needs this and `tls_key`, from here or from the flags. An empty string fails validation and names the key. On a run without `--hep-listen` it does nothing, and sipnab says so in a startup warning naming the key. `--hep-tls-cert` overrides it |
 | `tls_key` | path | -- | PEM private key for `tls_cert`. sipnab refuses a key any other user on the host can read. An empty string fails validation and names the key. On a run without `--hep-listen` it does nothing, and sipnab says so in a startup warning naming the key. `--hep-tls-key` overrides it |
 
-The sender's trust is one setting. When the command line names
-`--hep-tls-ca` or `--hep-tls-extra-ca`, it replaces both `tls_ca` and
-`tls_extra_ca`, so a `tls_ca` in the file cannot combine with an
-`--hep-tls-extra-ca` on the command line.
+The sender's trust is one setting.
+
+- When the command line names `--hep-tls-ca` or `--hep-tls-extra-ca`, it
+  replaces both `tls_ca` and `tls_extra_ca`.
+- So a `tls_ca` in the file cannot combine with an `--hep-tls-extra-ca` on the
+  command line.
 
 ```toml
 [hep]
@@ -838,12 +978,16 @@ tls_extra_ca = "/etc/sipnab/collector-ca.pem"
 ### `[vcon_forward]`
 
 The vCon forwarder's settings (`sipnab --vcon-forward <SPOOL_DIR>`, see
-[Deliver the spool to a store](@/docs/vcon.md#deliver-the-spool-to-a-store)). The
-spool and `--vcon-forward-once` stay on the command line. The credential's
-value has no key: `auth_file` names the file that holds it, and
-`--vcon-forward-auth` or the `SIPNAB_VCON_FORWARD_AUTH` environment variable
-carries it without a file. A flag replaces its key. With neither, a `kind`
-other than `generic` supplies the value, and then the default applies.
+[Deliver the spool to a store](@/docs/vcon.md#deliver-the-spool-to-a-store)).
+
+- The spool and `--vcon-forward-once` stay on the command line.
+- The credential's value has no key.
+  - `auth_file` names the file that holds it.
+  - `--vcon-forward-auth` or the `SIPNAB_VCON_FORWARD_AUTH` environment
+    variable carries it without a file.
+- A flag replaces its key.
+- With neither, a `kind` other than `generic` supplies the value. Then the
+  default applies.
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
@@ -874,11 +1018,14 @@ interval = 10
 ### `[vcon_fetch]`
 
 The vCon fetcher's settings (`sipnab --vcon-fetch <UUID>...`, see
-[Fetch a stored vCon](@/docs/vcon.md#fetch-a-stored-vcon)). The uuids,
-`--vcon-fetch-out` and `--vcon-fetch-overwrite` stay on the command line. The
-credential's value has no key: `auth_file` names the file that holds it. A
-flag replaces its key. With neither, a `kind` other than `generic` supplies
-the value, and then the default applies.
+[Fetch a stored vCon](@/docs/vcon.md#fetch-a-stored-vcon)).
+
+- The uuids, `--vcon-fetch-out` and `--vcon-fetch-overwrite` stay on the
+  command line.
+- The credential's value has no key. `auth_file` names the file that holds it.
+- A flag replaces its key.
+- With neither, a `kind` other than `generic` supplies the value. Then the
+  default applies.
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
@@ -944,10 +1091,12 @@ persist_to_config = true
 
 ### [crash]
 
-What happens when sipnab panics: the panic hook restores the terminal
-(release builds abort without unwinding, so raw mode / mouse capture would
-otherwise stay on), writes a crash report, and then either exits cleanly
-or aborts so the OS can produce a core dump.
+What happens when sipnab panics. The panic hook:
+
+- restores the terminal (release builds abort without unwinding, so raw mode /
+  mouse capture would otherwise stay on);
+- writes a crash report;
+- then either exits cleanly or aborts so the OS can produce a core dump.
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
@@ -966,7 +1115,12 @@ core = false
 
 ### [theme]
 
-TUI color theme with 11 semantic color slots (plus `highlight`, a legacy alias for `selected`). Each field accepts a color name or a hex RGB value. Unset fields use built-in defaults. See [theme-guide.md](@/docs/theme.md) for the full customization guide and its preset themes.
+TUI color theme with 11 semantic color slots (plus `highlight`, a legacy alias for `selected`).
+
+- Each field accepts a color name or a hex RGB value.
+- Unset fields use built-in defaults.
+- See [theme-guide.md](@/docs/theme.md) for the full customization guide and its
+  preset themes.
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
@@ -984,6 +1138,7 @@ TUI color theme with 11 semantic color slots (plus `highlight`, a legacy alias f
 | `status_bg` | string | `"#303040"` | Status bar background band, kept distinct from the terminal background so the status line stays visible |
 
 Supported color values:
+
 - Named: `black`, `white`, `red`, `green`, `yellow`, `blue`, `magenta`, `cyan`, `gray`, `dark_gray`, `reset`
 - Hex RGB: `"#RRGGBB"` (e.g., `"#ff8800"`)
 
@@ -1006,6 +1161,7 @@ border = "#444466"
 TUI key binding overrides. The 11 configurable actions appear below. Unset fields use built-in defaults.
 
 Accepted key formats:
+
 - Single characters: `"q"`, `"/"`, `"A"`
 - Function keys: `"F1"` through `"F12"`
 - Special names: `"Esc"`, `"Space"`, `"Enter"`, `"Tab"`, `"Backspace"`
@@ -1154,22 +1310,27 @@ column_selector = "F10"
 ```
 
 > **Tip:** Use `sipnab --dump-config` to see which file sipnab actually loaded
-> and what that file set. It prints the path it came from, then every section
-> header with the keys that file supplied under each.
+> and what that file set.
+>
+> - It prints the path it came from.
+> - It then prints every section header with the keys that file supplied under
+>   each.
 >
 > Read the omissions carefully, because `-D` shows less than "effective
 > configuration" suggests:
 >
-> - **Built-in defaults do not appear.** A key you did not set prints nothing,
->   not its default. `sipnab -F --dump-config` therefore prints a list of empty
->   section headers, which is correct output and not a fault. The defaults are
->   the ones in the tables on this page.
-> - **CLI flags do not appear.** They arrive later in startup, so `-D` cannot
->   show what a flag would override. Compare against the
->   [CLI reference](@/docs/cli.md) for that.
+> - **Built-in defaults do not appear.**
+>   - A key you did not set prints nothing, not its default.
+>   - `sipnab -F --dump-config` therefore prints a list of empty section
+>     headers. That is correct output and not a fault.
+>   - The defaults are the ones in the tables on this page.
+> - **CLI flags do not appear.**
+>   - They arrive later in startup, so `-D` cannot show what a flag would
+>     override.
+>   - Compare against the [CLI reference](@/docs/cli.md) for that.
 > - **There is no environment-variable override layer.** `SIPNAB_CONFIG` only
 >   selects which file to read.
 >
 > So `-D` answers "did sipnab read the file I meant, and did it accept my
-> keys?" — which is the question behind most configuration surprises. It does
-> not answer "what value is this setting running with?".
+> keys?". That is the question behind most configuration surprises. It does not
+> answer "what value is this setting running with?".

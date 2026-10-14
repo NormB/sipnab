@@ -1,83 +1,107 @@
 # SIP and RTP: the model the code assumes
 
-Written for the Rust engineer who is new to VoIP. Nearly every subtle bug in
-this tree is a protocol-semantics bug wearing a Rust costume — the code
-compiles, the tests pass, and the number on screen is wrong because the
-protocol does not mean what it looks like it means.
+Written for the Rust engineer who is new to VoIP.
+Nearly every subtle bug in this tree is a protocol-semantics bug wearing a Rust costume.
 
-Each concept names the file that encodes it, so this doubles as an index into
-the source.
+- The code compiles.
+- The tests pass.
+- The number on screen is wrong.
+  The protocol does not mean what it looks like it means.
 
-The diagrams here use the same mermaid `sequenceDiagram` form sipnab itself
-exports: press `E` in the Call Flow view to copy a diagram to the clipboard, or
-`F2` and Tab through the save formats to Mermaid. You can regenerate every one
-of them from a real capture.
+Each concept names the file that encodes it.
+So this doubles as an index into the source.
+
+The diagrams here use the same mermaid `sequenceDiagram` form sipnab itself exports.
+
+- Press `E` in the Call Flow view to copy a diagram to the clipboard.
+- Or press `F2` and Tab through the save formats to Mermaid.
+- You can regenerate every one of them from a real capture.
 
 ## SIP
 
 ### Dialog, transaction, and what the store actually keys on
 
-A **transaction** is one request plus its responses. A **dialog** is the
-longer-lived relationship a successful INVITE establishes — it spans many
-transactions (INVITE, re-INVITE, BYE) and is what a human means by "a call".
+A **transaction** is one request plus its responses.
+
+A **dialog** is the longer-lived relationship a successful INVITE establishes.
+
+- It spans many transactions (INVITE, re-INVITE, BYE).
+- It is what a human means by "a call".
 
 [RFC 3261](https://www.rfc-editor.org/rfc/rfc3261.html) identifies a dialog by the triple Call-ID + From-tag + To-tag.
-sipnab's [`DialogStore`](../../src/sip/dialog_store.rs) keys its map on
-**Call-ID alone** and keeps `from_tag`/`to_tag` as fields on
-[`SipDialog`](../../src/sip/dialog.rs). That is a deliberate simplification for
-a capture tool: at capture time the To-tag does not exist yet (it arrives in
-the first response), so keying on the full triple would mean re-keying every
-dialog mid-flight.
 
-sipnab still captures the tags, and it tells forked calls that share a Call-ID
-apart downstream rather than by the map key. `to_tag` takes the first `To` tag
-seen, and a stronger one replaces it: a 101-199 response to the opening
-request, then a 2xx to it. A `401` or `407` challenge carries a tag of its own
-and creates no dialog, so the answer to the re-sent request replaces that tag.
-A tag equal to `from_tag` never becomes `to_tag`: it is the answer to a request
-the remote party sent.
+- sipnab's [`DialogStore`](../../src/sip/dialog_store.rs) keys its map on **Call-ID alone**.
+- It keeps `from_tag`/`to_tag` as fields on [`SipDialog`](../../src/sip/dialog.rs).
+- That is a deliberate simplification for a capture tool.
+  - At capture time the To-tag does not exist yet (it arrives in the first response).
+  - So keying on the full triple would mean re-keying every dialog mid-flight.
 
-Two things must be knowable before a message gets a dialog at all: its Call-ID,
-and its method. The method requirement is the less obvious one, and it exists
-because [`SipDialog::method`](../../src/sip/dialog.rs) takes its value once at creation
-and never corrected.
+sipnab still captures the tags.
+It tells forked calls that share a Call-ID apart downstream, not by the map key.
 
-A response derives it from CSeq, so a malformed response —
-Call-ID present, CSeq absent — used to create a dialog under that Call-ID
-labeled with an invented method, and the genuine INVITE arriving afterwards
-matched that entry instead of creating its own. The label then outlived the
-capture. Such a message now creates no dialog. It is still captured, counted, and
-searchable, and the INVITE that follows creates the dialog correctly.
+- `to_tag` takes the first `To` tag seen.
+- A stronger one replaces it:
+  - a 101-199 response to the opening request;
+  - then a 2xx to it.
+- A `401` or `407` challenge carries a tag of its own and creates no dialog.
+  So the answer to the re-sent request replaces that tag.
+- A tag equal to `from_tag` never becomes `to_tag`.
+  It is the answer to a request the remote party sent.
+
+Two things must be knowable before a message gets a dialog at all: its Call-ID, and its method.
+
+- The method requirement is the less obvious one.
+- It exists because [`SipDialog::method`](../../src/sip/dialog.rs) takes its value once at creation and never corrected.
+
+A response derives it from CSeq.
+
+- A malformed response has Call-ID present and CSeq absent.
+- Such a response used to create a dialog under that Call-ID, labeled with an invented method.
+- The genuine INVITE arriving afterwards matched that entry instead of creating its own.
+- The label then outlived the capture.
+
+Such a message now creates no dialog.
+
+- It is still captured, counted, and searchable.
+- The INVITE that follows creates the dialog correctly.
 
 ### CSeq pins the transaction
 
-Every request carries `CSeq: <number> <METHOD>`. Responses echo it, and that
-echo is the only reliable way to know *which* request a response answers.
+Every request carries `CSeq: <number> <METHOD>`.
+Responses echo it.
+That echo is the only reliable way to know *which* request a response answers.
 
-This is not pedantry. [`update_timing()`](../../src/sip/timing.rs) records the
-initial INVITE's CSeq number in `invite_cseq` precisely so that a **re-INVITE's
-200 OK cannot overwrite `answered_at`**. Without that pin, a call put on hold
-twenty minutes in reports a twenty-minute setup time — a plausible-looking
-number that is simply false.
+This is not pedantry.
+
+- [`update_timing()`](../../src/sip/timing.rs) records the initial INVITE's CSeq number in `invite_cseq`.
+- It does this so that a **re-INVITE's 200 OK cannot overwrite `answered_at`**.
+- Without that pin, a call put on hold twenty minutes in reports a twenty-minute setup time.
+  That is a plausible-looking number that is simply false.
 
 ### Auth challenges are pending, not failure
 
-A 401 or 407 is the server saying "try again with credentials". Nearly every
-real call starts with one. Treating it as a final failure would report most of
-a healthy carrier's traffic as failed.
+A 401 or 407 is the server saying "try again with credentials".
 
-[`SipDialog`](../../src/sip/dialog.rs) therefore treats 401/407 as
-*intermediate*: the reported outcome is the maximum non-challenge final
-response, and the challenge only becomes the answer for a call that drew a
-challenge and **never** authenticated.
+- Nearly every real call starts with one.
+- Treating it as a final failure would report most of a healthy carrier's traffic as failed.
+
+[`SipDialog`](../../src/sip/dialog.rs) therefore treats 401/407 as *intermediate*.
+
+- The reported outcome is the maximum non-challenge final response.
+- The challenge only becomes the answer for a call that drew a challenge and **never** authenticated.
 
 That rule now holds for the dialog *state* as well, not only the reported code.
-It did not for a long time: only the REGISTER handler skipped challenges, so a
-challenged INVITE went to `Failed` and the 2xx that followed could not lift it
-back out, because that transition only admits the pre-answer states. A captured
-BYE hid the result by forcing `Completed`, which is why it survived — the calls
-it misreported were the ones still up, or the ones whose BYE never made it into
-the capture.
+It did not for a long time.
+
+- Only the REGISTER handler skipped challenges.
+- So a challenged INVITE went to `Failed`.
+- The 2xx that followed could not lift it back out.
+  That transition only admits the pre-answer states.
+- A captured BYE hid the result by forcing `Completed`.
+  That is why the defect survived.
+- The calls it misreported were:
+  - the ones still up;
+  - the ones whose BYE never made it into the capture.
 
 The exchange, with what each hop tells the analyzer.
 
@@ -106,10 +130,13 @@ sequenceDiagram
 
 ### The INVITE three-way handshake, and why ACK is special
 
-INVITE alone among SIP methods takes a separate ACK transaction to confirm. Two
-consequences the code encodes: sipnab records the ACK but makes **no state
-transition** (the 200 already moved the dialog to `InCall`), and an ACK may
-carry SDP — see delayed offer below.
+INVITE alone among SIP methods takes a separate ACK transaction to confirm.
+The code encodes two consequences:
+
+- sipnab records the ACK but makes **no state transition**.
+  The 200 already moved the dialog to `InCall`.
+- An ACK may carry SDP.
+  See delayed offer below.
 
 Non-INVITE transactions (REGISTER, OPTIONS, MESSAGE) are simple
 request/response with no ACK at all.
@@ -117,21 +144,29 @@ request/response with no ACK at all.
 ### Post-dial delay stops at the ringing
 
 `pdd_ms()` in [`timing.rs`](../../src/sip/timing.rs) measures INVITE → first
-180/183. A `100 Trying` **does not count**: it means "I got your request", not
-"the callee's phone is ringing", and any proxy emits it immediately. Measuring to
-the 100 would report an excellent PDD for a call the caller experienced as ten
-seconds of silence.
+180/183.
+
+- A `100 Trying` **does not count**.
+  - It means "I got your request", not "the callee's phone is ringing".
+  - Any proxy emits it immediately.
+- Measuring to the 100 would report an excellent PDD for a call the caller experienced as ten seconds of silence.
 
 ### Offer/answer, and the delayed-offer inversion
 
 Normally the request carries the SDP **offer** and the response carries the
-**answer**. [RFC 3261 section 13.2.1](https://www.rfc-editor.org/rfc/rfc3261.html#section-13.2.1) allows an offerless INVITE, and then the roles
-invert: the 200 OK carries the offer and the ACK carries the answer.
+**answer**.
 
-[`determine_offer_answer()`](../../src/sip/sdp_timeline.rs) encodes exactly
-that: an ACK is *always* an answer, and a response bearing SDP with no
-preceding offer in the dialog is itself the offer. Label these by message type
-alone and every delayed-offer call in the capture is backwards.
+[RFC 3261 section 13.2.1](https://www.rfc-editor.org/rfc/rfc3261.html#section-13.2.1) allows an offerless INVITE.
+Then the roles invert:
+
+- the 200 OK carries the offer;
+- the ACK carries the answer.
+
+[`determine_offer_answer()`](../../src/sip/sdp_timeline.rs) encodes exactly that.
+
+- An ACK is *always* an answer.
+- A response bearing SDP with no preceding offer in the dialog is itself the offer.
+- Label these by message type alone, and every delayed-offer call in the capture is backwards.
 
 ```mermaid
 sequenceDiagram
@@ -149,13 +184,15 @@ sequenceDiagram
 
 ### Hold and resume are direction attributes
 
-A re-INVITE with `a=sendonly` puts the far end on hold, and `a=sendrecv` resumes.
-[`sdp.rs`](../../src/sip/sdp.rs) parses `sendonly`/`recvonly`/`inactive` into a
-direction on the media description. The older [RFC 2543](https://www.rfc-editor.org/rfc/rfc2543.html) convention of holding by
-setting the connection address to `c=0.0.0.0` is **not** recognized as hold
-here — such a call reads as media simply stopping.
-Media stopping mid-call is therefore not automatically a fault — check the SDP
-timeline before calling it one-way audio.
+A re-INVITE with `a=sendonly` puts the far end on hold.
+`a=sendrecv` resumes.
+
+- [`sdp.rs`](../../src/sip/sdp.rs) parses `sendonly`/`recvonly`/`inactive` into a direction on the media description.
+- The older [RFC 2543](https://www.rfc-editor.org/rfc/rfc2543.html) convention holds by setting the connection address to `c=0.0.0.0`.
+  - That is **not** recognized as hold here.
+  - Such a call reads as media simply stopping.
+- Media stopping mid-call is therefore not automatically a fault.
+  Check the SDP timeline before calling it one-way audio.
 
 ```mermaid
 sequenceDiagram
@@ -175,29 +212,40 @@ sequenceDiagram
 
 ### CANCEL versus 200 OK is a race
 
-CANCEL asks to abandon an INVITE with no final response yet. If the callee's
-200 OK crosses it on the wire, both exist in the capture and the naive reading
-("last response wins") gives the wrong outcome.
+CANCEL asks to abandon an INVITE with no final response yet.
+
+- The callee's 200 OK may cross it on the wire.
+- Then both exist in the capture.
+- The naive reading ("last response wins") gives the wrong outcome.
 
 The transition table in
 [`dialog_state_machine.rs`](../../src/sip/dialog_state_machine.rs) resolves this
-by CSeq method: a CANCEL request moves the dialog to `Canceled`, and so does
-the 487 on its own. Either is sufficient, because a CANCEL can travel a
-different path from the response and a capture can begin mid-dialog — requiring
-both once left a canceled call sitting in `Ringing` forever. The 487 is the
-reported outcome. The 200 that merely acknowledged the CANCEL transaction drops
-out, because it belongs to a different CSeq.
+by CSeq method.
 
-The transaction is a coordinate of the table rather than a filter the code
-applies afterwards, and this exchange shows why. A capture may open on any of
-these five messages. Open on the `CANCEL` or the `487` and the caller gave up.
-Open on the `200` and nothing yet says how the call ended — same family, same
-code that establishes a call one line above, opposite meaning.
+- A CANCEL request moves the dialog to `Canceled`.
+- So does the 487 on its own.
+- Either is sufficient.
+  - A CANCEL can travel a different path from the response.
+  - A capture can begin mid-dialog.
+  - Requiring both once left a canceled call sitting in `Ringing` forever.
+- The 487 is the reported outcome.
+- The 200 that merely acknowledged the CANCEL transaction drops out.
+  It belongs to a different CSeq.
 
-The sibling case
-runs the other way: a `2xx` answering a `BYE` *is* evidence the session ended
-([RFC 3261 section 15.1.2](https://www.rfc-editor.org/rfc/rfc3261.html#section-15.1.2)), so
-a call whose `BYE` fell outside the capture still leaves `InCall`.
+The transaction is a coordinate of the table, not a filter the code applies afterwards.
+This exchange shows why.
+
+- A capture may open on any of these five messages.
+- Open on the `CANCEL` or the `487`, and the caller gave up.
+- Open on the `200`, and nothing yet says how the call ended.
+  - It is the same family and the same code that establishes a call one line above.
+  - It has the opposite meaning.
+
+The sibling case runs the other way.
+
+- A `2xx` answering a `BYE` *is* evidence the session ended
+  ([RFC 3261 section 15.1.2](https://www.rfc-editor.org/rfc/rfc3261.html#section-15.1.2)).
+- So a call whose `BYE` fell outside the capture still leaves `InCall`.
 
 ```mermaid
 sequenceDiagram
@@ -217,10 +265,11 @@ sequenceDiagram
 
 ### Multi-leg correlation
 
-A B2BUA (SBC, PBX) terminates one call and originates another, so one
-human call is two Call-IDs with no shared identifier by default.
-[`dialog_store.rs`](../../src/sip/dialog_store.rs) correlates legs seven ways,
-each with a confidence score and each reported under its own reason:
+A B2BUA (SBC, PBX) terminates one call and originates another.
+So one human call is two Call-IDs with no shared identifier by default.
+
+[`dialog_store.rs`](../../src/sip/dialog_store.rs) correlates legs seven ways.
+Each has a confidence score and its own reported reason:
 
 | Reason | Score | Survives a B2BUA? |
 |---|---|---|
@@ -232,80 +281,95 @@ each with a confidence score and each reported under its own reason:
 | `ViaBranch` — a shared branch parameter | 80 | No: a new transaction gets a new branch |
 | `TimingHeuristic` — endpoint overlap plus timing | 50 | Not an identifier at all |
 
-The two charging-vector rows are one header and two different claims, which is
-why they are two reasons rather than one with a sub-field. The argument, and
-what is still unverified about it, is
+The two charging-vector rows are one header and two different claims.
+That is why they are two reasons rather than one with a sub-field.
+The argument, and what is still unverified about it, is
 [`docs/design/icid-correlation.md`](../design/icid-correlation.md).
 
-`SdpOrigin` compares the whole uniqueness tuple RFC 8866 defines —
-`<username> <sess-id> <nettype> <addrtype> <unicast-address>` — and never
-`sess-id` alone, which the RFC recommends deriving from a timestamp and which
-two unrelated calls from one user agent can therefore share. It excludes
-`sess-version` deliberately, so a re-INVITE for hold or a codec change does not
-break the match.
+`SdpOrigin` compares the whole uniqueness tuple RFC 8866 defines:
+`<username> <sess-id> <nettype> <addrtype> <unicast-address>`.
 
-Two of those scores are 100 and they are not interchangeable. `SessionId` is a
-standard whose entire purpose is surviving intermediaries that rewrite
-everything else. `XCallId` is a vendor convention that works only when someone
-configured it. Reporting them separately is what lets a reader tell how far to
-trust a call tree.
+- It never compares `sess-id` alone.
+  - The RFC recommends deriving it from a timestamp.
+  - So two unrelated calls from one user agent can share it.
+- It excludes `sess-version` deliberately.
+  So a re-INVITE for hold or a codec change does not break the match.
 
-The bottom row is the one to be careful with. "Same endpoint IP within two
-seconds" is a guess, and on a busy SBC many unrelated calls share an endpoint IP
-inside that window. It exists because most deployments set no correlation header
-at all — see
-[`session_id.rs`](../../src/sip/session_id.rs) for why the halves of a
-`Session-ID` swap across the SBC, and why matching is therefore set
-intersection rather than string equality.
+Two of those scores are 100, and they are not interchangeable.
+
+- `SessionId` is a standard.
+  Its entire purpose is surviving intermediaries that rewrite everything else.
+- `XCallId` is a vendor convention.
+  It works only when someone configured it.
+- Reporting them separately is what lets a reader tell how far to trust a call tree.
+
+The bottom row is the one to be careful with.
+
+- "Same endpoint IP within two seconds" is a guess.
+- On a busy SBC, many unrelated calls share an endpoint IP inside that window.
+- It exists because most deployments set no correlation header at all.
+- See [`session_id.rs`](../../src/sip/session_id.rs) for two things:
+  - why the halves of a `Session-ID` swap across the SBC;
+  - why matching is therefore set intersection rather than string equality.
 
 ## RTP
 
 ### Streams exist without dialogs
 
-An RTP stream carries its identity in its **SSRC**, a 32-bit random number, not in any
-SIP field. It has no Call-ID, no From, nothing linking it to signaling except
-the IP/port pair the SDP advertised.
+An RTP stream carries its identity in its **SSRC**, a 32-bit random number.
+It does not carry it in any SIP field.
 
-That is why [`StreamStore`](../../src/rtp/stream_store.rs) is a first-class
-store rather than a child of the dialog store (D13), why sipnab discovers streams
-heuristically when it never saw their SDP, and why the `--cores` merge
-needs a re-association pass: the media and the signaling can be sharded to
-different workers.
+- It has no Call-ID and no From.
+- Nothing links it to signaling except the IP/port pair the SDP advertised.
+
+That explains three things:
+
+- why [`StreamStore`](../../src/rtp/stream_store.rs) is a first-class store rather than a child of the dialog store (D13);
+- why sipnab discovers streams heuristically when it never saw their SDP;
+- why the `--cores` merge needs a re-association pass.
+  The media and the signaling can be sharded to different workers.
 
 ### Sequence numbers wrap at 65536
 
-The 16-bit sequence number wraps roughly every 20 minutes of voice. Loss
-detection compares `wrapping_add(1)` against the received sequence
-([`stream.rs`](../../src/rtp/stream.rs)). A plain `>` comparison reports one
-enormous loss burst per wrap on every long call.
+The 16-bit sequence number wraps roughly every 20 minutes of voice.
+
+- Loss detection compares `wrapping_add(1)` against the received sequence
+  ([`stream.rs`](../../src/rtp/stream.rs)).
+- A plain `>` comparison reports one enormous loss burst per wrap on every long call.
 
 ### Timestamps are not wall-clock
 
-The RTP timestamp is a **media sample counter** at the codec's clock rate, not
-a time value. Converting it needs
-[`clock_rate_from_pt()`](../../src/rtp/stream.rs) for static payload types or
-the `a=rtpmap` clock rate for dynamic ones.
+The RTP timestamp is a **media sample counter** at the codec's clock rate.
+It is not a time value.
+Converting it needs one of these:
 
-G.722 is the trap worth knowing: [RFC 3551](https://www.rfc-editor.org/rfc/rfc3551.html) assigns it a **8000 Hz RTP clock
-despite 16 kHz audio**, so the obvious "clock rate = sample rate" assumption
-halves or doubles every derived duration.
+- [`clock_rate_from_pt()`](../../src/rtp/stream.rs) for static payload types;
+- the `a=rtpmap` clock rate for dynamic ones.
+
+G.722 is the trap worth knowing.
+
+- [RFC 3551](https://www.rfc-editor.org/rfc/rfc3551.html) assigns it a **8000 Hz RTP clock
+  despite 16 kHz audio**.
+- So the obvious "clock rate = sample rate" assumption halves or doubles every derived duration.
 
 ### Jitter is a signed transit delta, not a variance
 
 [RFC 3550 section 6.4.1](https://www.rfc-editor.org/rfc/rfc3550.html#section-6.4.1) defines interarrival jitter as a smoothed mean of the
 *difference in transit time* between consecutive packets:
-`J(i) = J(i-1) + (|D(i-1,i)| - J(i-1)) / 16`. `stream.rs` computes the transit
-delta as a **signed** `i32` before taking the absolute value — with unsigned
-arithmetic a single reordered packet underflows and reports a jitter spike of
-about 4.29 billion.
+`J(i) = J(i-1) + (|D(i-1,i)| - J(i-1)) / 16`.
+
+- `stream.rs` computes the transit delta as a **signed** `i32` before taking the absolute value.
+- With unsigned arithmetic, a single reordered packet underflows.
+  It reports a jitter spike of about 4.29 billion.
 
 RTCP receiver reports carry a jitter field too, but **in RTP timestamp units**.
-[`stream_store.rs`](../../src/rtp/stream_store.rs) converts with the stream's
-clock rate before storing it, so the RTCP-reported and locally measured numbers
-are comparable and MOS gets a millisecond value either way.
 
-The report block is where two of this codebase's historical bugs lived, and
-both are visible in the same six fields.
+- [`stream_store.rs`](../../src/rtp/stream_store.rs) converts with the stream's clock rate before storing it.
+- So the RTCP-reported and locally measured numbers are comparable.
+- MOS gets a millisecond value either way.
+
+The report block is where two of this codebase's historical bugs lived.
+Both are visible in the same six fields.
 
 ```mermaid
 sequenceDiagram
@@ -326,49 +390,59 @@ sequenceDiagram
 ### MOS is an estimate, not a measurement
 
 [`estimate_mos_with_delay()`](../../src/rtp/quality.rs) is an E-model
-computation from jitter, loss, codec **and one-way path delay** — a model
-output on the 1.0–4.5 scale, not an opinion score from a listener. Say
-"estimated MOS" in anything user-facing. The distinction is the difference
-between a tool an engineer trusts and one they re-derive.
+computation from jitter, loss, codec **and one-way path delay**.
 
-The delay term is the one input a passive tap cannot measure, so
-[`MosDelay`](../../src/rtp/quality.rs) resolves it per stream and every surface
-scores through that: what the operator declared, then what an endpoint reported
-in an RTCP XR VoIP-metrics block, then what sipnab derives from a receiver
-report's sender-report echo, then a labeled assumption.
+- It is a model output on the 1.0–4.5 scale.
+- It is not an opinion score from a listener.
+- Say "estimated MOS" in anything user-facing.
+- The distinction is the difference between a tool an engineer trusts and one they re-derive.
 
-Score a stream any
-other way and two surfaces report two numbers for one call — G.107's delay
-penalty has a knee at 177.3 ms, and a call past it reads more than a full MOS
-point too high on the assumption.
+The delay term is the one input a passive tap cannot measure.
+So [`MosDelay`](../../src/rtp/quality.rs) resolves it per stream, and every surface scores through that.
+The order is:
+
+- what the operator declared;
+- then what an endpoint reported in an RTCP XR VoIP-metrics block;
+- then what sipnab derives from a receiver report's sender-report echo;
+- then a labeled assumption.
+
+Score a stream any other way, and two surfaces report two numbers for one call.
+
+- G.107's delay penalty has a knee at 177.3 ms.
+- A call past it reads more than a full MOS point too high on the assumption.
 
 ### Bursty loss and diffuse loss are not the same impairment
 
-Ten percent loss in one clump is a dropped word. Ten percent scattered is a
-faint crackle a codec's concealment mostly hides.
-[`analyze_burst_gap()`](../../src/rtp/quality.rs) classifies which it is, and
-the loss map view renders it in sequence space.
+- Ten percent loss in one clump is a dropped word.
+- Ten percent scattered is a faint crackle a codec's concealment mostly hides.
+- [`analyze_burst_gap()`](../../src/rtp/quality.rs) classifies which it is.
+- The loss map view renders it in sequence space.
 
 ### DTMF travels out of band, and depends on the clock
 
 [RFC 4733](https://www.rfc-editor.org/rfc/rfc4733.html) telephone-events carry digits as their own payload type, negotiated
-in SDP. [`extract_dtmf_with_clock()`](../../src/rtp/dtmf.rs) needs both the
-negotiated PT and its **rtpmap clock rate** — event duration arrives in
-clock ticks, so decoding a 16 kHz telephone-event with an assumed 8 kHz clock
-reports every digit as twice its real length.
+in SDP.
+
+- [`extract_dtmf_with_clock()`](../../src/rtp/dtmf.rs) needs both the negotiated PT and its **rtpmap clock rate**.
+- Event duration arrives in clock ticks.
+- So decoding a 16 kHz telephone-event with an assumed 8 kHz clock reports every digit as twice its real length.
 
 ### Symmetric RTP, NAT, and one-way audio
 
 Endpoints normally send from the same port they receive on ("symmetric RTP").
-Behind NAT the address in the SDP is the private one and the media actually
-arrives from a translated address — so the naive match of SDP address against
-observed source fails, and the stream looks unassociated.
 
-[`diagnose_media()`](../../src/rtp/diagnosis.rs) is where sipnab untangles this:
-it infers one-way audio from the directed-endpoint set, `nat_mismatch` from
-SDP-versus-observed address disagreement, and the two combine into the
-diagnosis an operator reads. It also checks whether comfort-noise frames
-explain an asymmetry before flagging it — silence suppression is not a fault.
+- Behind NAT, the address in the SDP is the private one.
+- The media actually arrives from a translated address.
+- So the naive match of SDP address against observed source fails.
+- The stream looks unassociated.
+
+[`diagnose_media()`](../../src/rtp/diagnosis.rs) is where sipnab untangles this.
+
+- It infers one-way audio from the directed-endpoint set.
+- It infers `nat_mismatch` from SDP-versus-observed address disagreement.
+- The two combine into the diagnosis an operator reads.
+- It also checks whether comfort-noise frames explain an asymmetry before flagging it.
+  Silence suppression is not a fault.
 
 ```mermaid
 sequenceDiagram
@@ -388,9 +462,11 @@ sequenceDiagram
 
 ## What this model prevents
 
-Every one of these was a real defect in this codebase, found and fixed. They
-are worth reading as a set, because none of them is a Rust mistake — each is a
-place where correct-looking code encoded a wrong protocol assumption.
+Every one of these was a real defect in this codebase, found and fixed.
+They are worth reading as a set.
+
+- None of them is a Rust mistake.
+- Each is a place where correct-looking code encoded a wrong protocol assumption.
 
 | The wrong assumption | What it produced | Where it is now handled |
 |---|---|---|
@@ -402,5 +478,6 @@ place where correct-looking code encoded a wrong protocol assumption.
 | SDP role follows message type | Delayed-offer calls labeled backwards | [`determine_offer_answer()`](../../src/sip/sdp_timeline.rs) |
 | 401/407 is a failure | Most of a healthy carrier's calls reported as failed | Non-challenge maximum in [`dialog.rs`](../../src/sip/dialog.rs) |
 
-The lesson generalizes: when a number looks wrong, the bug is usually not in
-the arithmetic. It is in what someone assumed the field meant.
+The lesson generalizes.
+When a number looks wrong, the bug is usually not in the arithmetic.
+It is in what someone assumed the field meant.

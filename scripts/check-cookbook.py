@@ -152,7 +152,7 @@ VCON_SUFFIX = ".vcon.json"
 # directory named after the case. Two recipes that both write `./vcons` would
 # otherwise share it, and sipnab refuses to write over an existing
 # `--redact-map` -- so the second case's output would depend on which ran
-# first. Measured 2026-09-25: the second run of recipe 51 exits 1 with
+# first. Measured 2026-09-25: the second run of recipe "Export every failed call as a redacted vCon in one pass" exits 1 with
 # "--redact-map './redact-map.json' already exists".
 OUTPUT_FLAGS = frozenset({
     "-O", "--output",
@@ -167,7 +167,7 @@ OUTPUT_FLAGS = frozenset({
 # refused too -- one of the two is wrong, and a reader cannot tell which.
 # These commands stay exit-status-only.
 OUTPUT_UNPINNED: dict[str, str] = {
-    # Recipes 1, 4, 7 and 13 open the TUI (no -N). A trycmd case has no
+    # Recipes "Triage a pcap fast", "Diagnose a one-way audio complaint", "Decrypt SIP over TLS when you can restart the phone or server — key log file (SSLKEYLOGFILE)" and "Export RTP audio as WAV" open the TUI (no -N). A trycmd case has no
     # terminal, so the TUI refuses to start and sipnab exits 1 with
     # TUI_REFUSAL; a golden would pin that refusal as the expected output, and
     # reached_the_tui counts the refusal as the run succeeding this far. What the TUI draws is pinned where a terminal exists:
@@ -698,7 +698,7 @@ def main() -> int:
             # loop the reader runs, and nothing here can execute it standalone.
             #
             # Asked after the substitution rather than before, which is the
-            # whole difference: recipe 12's second pass writes
+            # whole difference: recipe "Generate a call report (text / Markdown / JSON)"'s second pass writes
             # `--call-report "$cid"`, and `$cid` is the same placeholder as the
             # page's own `abc123@host` -- a real Call-ID read out of the
             # fixture replaces both. Refusing it on the bare sight of a `$`

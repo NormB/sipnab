@@ -1,31 +1,45 @@
 # SIP parameters
 
-Every SIP URI parameter, header-field parameter and option tag in the IANA
-registry, with the RFC that defines it and whether sipnab parses it today.
+This page lists every SIP URI parameter, header-field parameter and option tag in the IANA
+registry. For each entry it gives:
 
-Built from the IANA registries directly, the same way
+- the RFC that defines it,
+- whether sipnab parses it today.
+
+This page comes from the IANA registries directly.
 [sip-response-codes.md](sip-response-codes.md) and [sip-methods.md](sip-methods.md)
-were, so the tables move when IANA does rather than when someone remembers.
+come from them the same way.
+So the tables move when IANA does, not when someone remembers.
 
 ## What sipnab parses
 
-**Three parameters, deliberately stated conservatively.** `branch` (top `Via`),
-`tag` (`From`/`To`) and `expires` (`Contact` parameter, falling back to the
-`Expires` header). The `expires` parameter on `Subscription-State` is a
-different registration and sipnab does not read it: a `NOTIFY` contributes its
-`Subscription-State` **value token** — `active`, `pending`, `terminated` — and
-the parameters after the `;` go unread.
+**Three parameters, deliberately stated conservatively:**
+
+- `branch` (top `Via`)
+- `tag` (`From`/`To`)
+- `expires` (`Contact` parameter, falling back to the `Expires` header)
+
+The `expires` parameter on `Subscription-State` is a different registration.
+sipnab does not read it.
+
+- A `NOTIFY` contributes its `Subscription-State` **value token**: `active`, `pending`, `terminated`.
+- The parameters after the `;` go unread.
 
 An earlier draft of this page computed the column by grepping the source for
-each parameter name, which reported 41 of 204. That number was wrong and
-flattering: `m`, `code`, `alg` and `count` all appear in unrelated code, and a
-substring match is not evidence of parsing. The list below names only what
-traces to an actual extraction site, so it understates rather than overstates.
+each parameter name. That reported 41 of 204.
 
-Everything else in these tables is **carried verbatim** — sipnab preserves the
-full header, so an unparsed parameter is visible in `get_message`, the TUI
-detail pane and any export. Unparsed means "not given a named accessor or a
-filter field", not "discarded".
+- That number was wrong and flattering.
+  - `m`, `code`, `alg` and `count` all appear in unrelated code.
+  - A substring match is not evidence of parsing.
+- The list below names only what traces to an actual extraction site.
+  So it understates rather than overstates.
+
+sipnab carries everything else in these tables **verbatim**.
+
+- sipnab preserves the full header.
+- So an unparsed parameter is visible in `get_message`, the TUI
+  detail pane and any export.
+- Unparsed means "not given a named accessor or a filter field". It does not mean "discarded".
 
 ## SIP/SIPS URI parameters (35)
 
@@ -75,9 +89,10 @@ Parameters after a `;` in a SIP URI, e.g. `sip:alice@example.com;transport=tcp`.
 
 ## Header field parameters (201)
 
-Parameters attached to a specific header field. The same name can mean
-different things on different headers, which is why the header is part of the
-registration.
+Parameters attached to a specific header field.
+
+- The same name can mean different things on different headers.
+- That is why the header is part of the registration.
 
 <!-- vale off -->
 
@@ -289,9 +304,12 @@ registration.
 
 ## Option tags (36)
 
-Values for `Require`, `Supported`, `Proxy-Require` and `Unsupported`. They
-negotiate extensions, so a `420 Bad Extension` is usually an option tag one end
-required and the other did not support — compare the two lists.
+Values for `Require`, `Supported`, `Proxy-Require` and `Unsupported`.
+
+- They negotiate extensions.
+- So a `420 Bad Extension` is usually an option tag that one end
+  required and the other did not support.
+- Compare the two lists.
 
 <!-- vale off -->
 

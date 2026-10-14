@@ -330,13 +330,13 @@ Full instructions, including artifact download and checksum verification, are in
 In short — the generator runs first, because both harnesses read the corpus it
 writes:
 
-1. Generate the corpus:
+- Generate the corpus:
 
    ```sh
    python3 bench/carrier.py --calls 5000 --out corpus.pcap
    ```
 
-2. Run the scaling harness against it:
+- Then run the scaling harness against it:
 
    ```sh
    bench/scaling.sh "$BIN" corpus.pcap 535000 --cores 1,2,4,8 --runs 5

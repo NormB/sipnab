@@ -3577,7 +3577,7 @@ fn notes_refusal(cli: &Cli) -> Option<i32> {
     }
     // The TUI reads the notes file again once it starts, but a file sipnab
     // refuses is refused HERE, before any capture opens: stopping later would
-    // leave a running capture thread behind (Invariant 12).
+    // leave a running capture thread behind (Invariant "A fatal exit never abandons the capture thread").
     if let Some(path) = cli.name_args.notes.as_deref()
         && let Some(refusal) = tui_notes_refusal(path)
     {

@@ -11,19 +11,24 @@ kind = "postmortem"
 ## In short
 
 From 0.5.118 to 0.5.121, sipnab read capture files more slowly than 0.5.117
-did: a check that runs before reading loaded the whole file into memory first.
-A benchmark check exists to catch slowdowns like this, but it compared each
-release against a reference figure that nobody had updated for several
-releases, so it passed. 0.5.122 fixed the code and updated the reference
-figure, and 0.5.161 added a test that keeps the published figure and the
-reference figure equal.
+did.
+
+- A check that runs before reading loaded the whole file into memory first.
+- A benchmark check exists to catch slowdowns like this. But it compared each
+  release against a reference figure that nobody had updated for several
+  releases. So it passed.
+- 0.5.122 fixed the code and updated the reference figure.
+- 0.5.161 added a test that keeps the published figure and the reference
+  figure equal.
 
 ## What happened
 
-sipnab 0.5.118 shipped on 2026-08-20. 0.5.119, 0.5.120 and 0.5.121 followed on
-2026-08-21, and 0.5.122 fixed the slowdown the same day. The 0.5.122 entry in
-`CHANGELOG.md` records the measurements, on a 128 MB benchmark capture read
-with four parallel workers (`--cores 4`):
+- sipnab 0.5.118 shipped on 2026-08-20.
+- 0.5.119, 0.5.120 and 0.5.121 followed on 2026-08-21.
+- 0.5.122 fixed the slowdown the same day.
+
+The 0.5.122 entry in `CHANGELOG.md` records the measurements. They used a
+128 MB benchmark capture read with four parallel workers (`--cores 4`):
 
 | Version | Packets per second | Memory in use |
 |---|---:|---:|
@@ -42,10 +47,14 @@ releases and passed each time.
 ### Reading the whole file
 
 Before sipnab reads a capture file, it checks whether the file is a merged
-pcapng: a pcapng file whose recorded interfaces disagree, which the standard
-capture library cannot read. The function is `is_merged` in
-`src/capture/merged.rs`, and three call sites run it before sipnab reads the
-first packet. In 0.5.118 it began with:
+pcapng.
+
+- A merged pcapng is a pcapng file whose recorded interfaces disagree.
+- The standard capture library cannot read it.
+- The function is `is_merged` in `src/capture/merged.rs`.
+- Three call sites run it before sipnab reads the first packet.
+
+In 0.5.118 it began with:
 
 ```rust
 pub fn is_merged(path: &Path) -> bool {
@@ -59,10 +68,14 @@ pub fn is_merged(path: &Path) -> bool {
 ```
 
 `std::fs::read` loads the whole file into memory. For an ordinary pcap file the
-first four bytes decide the answer, so every run over a pcap file loaded
-the entire capture, compared four bytes, discarded the copy, and then started
-reading packets. The comment above the function described the intended
-behavior:
+first four bytes decide the answer. So every run over a pcap file:
+
+- loaded the entire capture,
+- compared four bytes,
+- discarded the copy,
+- and then started reading packets.
+
+The comment above the function described the intended behavior:
 
 > Cheap: reads interface description blocks only, and stops at the first
 > disagreement. A single-interface file — the overwhelming majority — costs
@@ -74,35 +87,46 @@ read.
 ### Comparing against an old figure
 
 `bench/regression-gate.sh` compares four-worker throughput against the figure
-in `bench/baseline.json` and fails below 80% of it (`floor_pct`). At 0.5.121
-that file still held 2,280,000 packets per second, measured on 0.5.104. Release
-0.5.108 had raised real throughput to about 3.30M. The benchmarks page changed
-to the new figure at that time, and the baseline file did not.
+in `bench/baseline.json`. It fails below 80% of it (`floor_pct`).
 
-So the check compared 2.40M against 2.28M, a result of 105%, and passed. With a
-baseline 31% below the real figure, the check would have passed any result
-above 1.82M (80% of 2.28M), a drop of up to about 45% from 3.30M.
+- At 0.5.121 that file still held 2,280,000 packets per second, measured on
+  0.5.104.
+- Release 0.5.108 had raised real throughput to about 3.30M.
+- The benchmarks page changed to the new figure at that time. The baseline
+  file did not.
+
+So the check compared 2.40M against 2.28M. The result was 105%, and the check
+passed.
+
+The baseline was 31% below the real figure. With that baseline, the check
+would have passed any result above 1.82M (80% of 2.28M). That is a drop of up
+to about 45% from 3.30M.
 
 ## What changed
 
-- **The code.** `is_merged` now opens the file and reads four bytes first. When
-  the first four bytes are not the pcapng marker, it returns without reading
-  anything else. sipnab still reads a real pcapng file in full,
-  because its interface blocks may appear anywhere in it.
+- **The code.** `is_merged` now opens the file and reads four bytes first.
+  - When the first four bytes are not the pcapng marker, it returns without
+    reading anything else.
+  - sipnab still reads a real pcapng file in full. Its interface blocks may
+    appear anywhere in it.
 - **A test of the effect.**
   `a_classic_pcap_is_rejected_without_reading_the_capture` in
-  `src/capture/merged.rs` passes an input made of the four-byte ordinary pcap
-  marker and 1 MiB of filler through a reader that counts bytes, and fails if
-  the check reads more than 16 of them.
-- **The baseline.** 0.5.122 set the baseline to 3.25M, the lowest of three
-  measurement runs, so the 80% floor (2.60M) cannot
-  sit above a figure the benchmark host produces. 2.40M is below that floor.
-  The current baseline is 3.52M, measured on 2026-10-11, with a floor of 2.82M.
-- **One figure, enforced by a test.** The benchmarks page and the baseline file
-  are now updated together, and
-  `benchmarks_pages_headline_matches_the_committed_baseline` in
-  `tests/site_journey_test.rs` fails if the page's headline figure and the
-  baseline differ.
+  `src/capture/merged.rs`:
+  - passes an input through a reader that counts bytes. The input is the
+    four-byte ordinary pcap marker and 1 MiB of filler.
+  - fails if the check reads more than 16 of them.
+- **The baseline.** 0.5.122 set the baseline to 3.25M.
+  - That is the lowest of three measurement runs.
+  - So the 80% floor (2.60M) cannot sit above a figure the benchmark host
+    produces.
+  - 2.40M is below that floor.
+  - The current baseline is 3.52M, measured on 2026-10-11, with a floor of
+    2.82M.
+- **One figure, enforced by a test.**
+  - The benchmarks page and the baseline file are now updated together.
+  - `benchmarks_pages_headline_matches_the_committed_baseline` in
+    `tests/site_journey_test.rs` fails if the page's headline figure and the
+    baseline differ.
 
 ## What you can check yourself
 
@@ -160,7 +184,7 @@ jq '.cores_4_pkts_per_s, .floor_pct' bench/baseline.json
 - **Throughput**: how many packets per second sipnab processes when it reads a
   capture file.
 - **Capture file, pcap, pcapng**: files of recorded network packets. pcap is
-  the older format and pcapng the newer one, which can record several network
+  the older format. pcapng is the newer one. It can record several network
   interfaces in one file.
 - **Benchmark**: a repeatable speed measurement on a fixed input.
 - **Baseline**: the committed reference figure that the check compares a new

@@ -13,7 +13,7 @@
 //!
 //! # The single-writer rule
 //!
-//! sipnab's stores have one writer (invariant 1, `docs/internals/invariants.md`).
+//! sipnab's stores have one writer (invariant "One writer per store, per run mode", `docs/internals/invariants.md`).
 //! A uprobe capture is a **live** writer that never finishes on its own, so it
 //! may only start when the existing source has stopped for good: a file source,
 //! already exhausted. `start_tls_capture` enforces that before spawning, the

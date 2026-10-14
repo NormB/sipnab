@@ -23,39 +23,49 @@ A first run needs only a handful of these flags:
 - [`--json`](#output) prints output as NDJSON, one JSON object per line. Requires `-N`.
 - [`--filter`](#matching) takes a Filter DSL expression or a diagnostic alias name, such as `codec-asym` or `late-media`, and a [named filter](@/docs/filter-dsl.md#named-filters) as `@name`.
 
-The **Since** column names the first sipnab release whose command line accepted the flag, under its current name or one of its aliases. It comes from [`src/cli.rs`](https://github.com/NormB/sipnab/blob/main/src/cli.rs) at each release tag, `v0.3.0` onward. The pre-release tags `v0.1.0-alpha` and `v0.2.0-beta` do not count as releases. A flag that a release removed and a later release restored keeps the release it first appeared in. The changelog lists four version numbers that were never tagged or released: 0.3.1, 0.4.1, 0.5.76 and 0.5.111. A flag first added in one of them shows the next release. `Unreleased` means no release has the flag yet: it is in the source but not in a published version.
+The **Since** column names the first sipnab release whose command line accepted the flag. The flag may have its current name or one of its aliases.
 
-CLI flags always override config file values (see [config-reference.md](@/docs/config.md)). Boolean flags default to `off` (false) unless otherwise noted. For task-oriented recipes rather than a flag catalog, start with [examples.md](@/docs/cookbook.md).
+- The column comes from [`src/cli.rs`](https://github.com/NormB/sipnab/blob/main/src/cli.rs) at each release tag, `v0.3.0` onward.
+- The pre-release tags `v0.1.0-alpha` and `v0.2.0-beta` do not count as releases.
+- A release may remove a flag and a later release may restore it. That flag keeps the release it first appeared in.
+- The changelog lists four version numbers that were never tagged or released: 0.3.1, 0.4.1, 0.5.76 and 0.5.111. A flag first added in one of them shows the next release.
+- `Unreleased` means no release has the flag yet. It is in the source but not in a published version.
+
+CLI flags always override config file values (see [config-reference.md](@/docs/config.md)).
+
+- Boolean flags default to `off` (false) unless otherwise noted.
+- For task-oriented recipes rather than a flag catalog, start with [examples.md](@/docs/cookbook.md).
 
 ## Common recipes
 
-A few flag combinations to get productive fast. For the full task-oriented
-collection — triage, filtering, recording, security, HEP — see the
-[Cookbook](@/docs/cookbook.md). For symptom-driven diagnostics see
-[Troubleshooting](@/docs/troubleshooting.md). This page is otherwise a flag
-reference (grouped below).
+A few flag combinations to get productive fast.
+
+- For the full task-oriented collection, see the [Cookbook](@/docs/cookbook.md). It covers triage, filtering, recording, security and HEP.
+- For symptom-driven diagnostics, see [Troubleshooting](@/docs/troubleshooting.md).
+- This page is otherwise a flag reference (grouped below).
 
 ### Debug a failed call
 
-Start by listing every failed call in the pcap, which is where the Call-IDs
-worth chasing come from.
+Start by listing every failed call in the pcap. The Call-IDs worth chasing come from this list.
 
 ```bash
 sipnab -N -I capture.pcap --filter "state == 'Failed'"
 ```
 
 With one of those Call-IDs in hand, print just that dialog's call flow.
-`--no-cli-print` is what makes it *just* that: on its own, `--call-report`
-appends the report to the whole capture's per-message dump, so the report you
-came for arrives after every message in the file.
+
+- `--no-cli-print` is what makes it *just* that.
+- On its own, `--call-report` appends the report to the whole capture's per-message dump.
+- So without it, the report you came for arrives after every message in the file.
 
 ```bash
 sipnab -N -I capture.pcap --call-report "abc123@host" --no-cli-print
 ```
 
-When the finding belongs in a ticket, write the same report as Markdown to a
-file instead of reading it on the terminal. Keep `--no-cli-print` here too, or
-`report.md` opens with hundreds of lines of raw SIP before its first heading.
+When the finding belongs in a ticket, write the same report as Markdown to a file. Do not read it on the terminal.
+
+- Keep `--no-cli-print` here too.
+- Without it, `report.md` opens with hundreds of lines of raw SIP before its first heading.
 
 ```bash
 sipnab -N -I capture.pcap --call-report "abc123@host" --markdown --no-cli-print > report.md
@@ -63,23 +73,25 @@ sipnab -N -I capture.pcap --call-report "abc123@host" --markdown --no-cli-print 
 
 ### Monitor live SIP quality
 
-Watch live traffic for calls that are already degraded — MOS below 3.0, or
-audio flowing in only one direction.
+Watch live traffic for calls that are already degraded:
+
+- MOS below 3.0, or
+- audio flowing in only one direction.
 
 ```bash
 sudo sipnab -N -d eth0 --filter "rtp.mos < 3.0 OR one_way == true"
 ```
 
-Feed the same set of problem calls into a monitoring pipeline as NDJSON while
-keeping a copy on disk.
+Feed the same set of problem calls into a monitoring pipeline as NDJSON. Keep a copy on disk at the same time.
 
 ```bash
 sudo sipnab -N -d eth0 --problems --json | tee /var/log/sipnab/problems.ndjson
 ```
 
-Hand each quality drop to an external alerting script rather than reading it
-yourself. `--exec-rate-limit` bounds the invocations per second, so one bad
-trunk cannot fork a process per stream.
+Hand each quality drop to an external alerting script rather than reading it yourself.
+
+- `--exec-rate-limit` bounds the invocations per second.
+- So one bad trunk cannot fork a process per stream.
 
 ```bash
 sudo sipnab -d eth0 --on-quality-exec "/usr/local/bin/pagerduty-alert.sh" \
@@ -88,17 +100,16 @@ sudo sipnab -d eth0 --on-quality-exec "/usr/local/bin/pagerduty-alert.sh" \
 
 ### Measure post-dial delay across calls
 
-Find the calls whose setup took longer than three seconds, as NDJSON for
-whatever consumes it next.
+Find the calls whose setup took longer than three seconds. The output is NDJSON for whatever consumes it next.
 
 ```bash
 sipnab -N -I capture.pcap --filter "pdd > 3.0" --json
 ```
 
-The `--slow-setup` alias asks the same question against the run's own post-dial
-delay threshold — 11 seconds, unless `--pdd-threshold` or
-`[diagnosis] post_dial_delay_secs` moves it — so a quick check needs no filter
-expression at all.
+The `--slow-setup` alias asks the same question against the run's own post-dial delay threshold.
+
+- The threshold is 11 seconds, unless `--pdd-threshold` or `[diagnosis] post_dial_delay_secs` moves it.
+- So a quick check needs no filter expression at all.
 
 ```bash
 sipnab -N -I capture.pcap --slow-setup --report
@@ -106,25 +117,28 @@ sipnab -N -I capture.pcap --slow-setup --report
 
 ### Security monitoring
 
-Detect SIP scanning and append it in fail2ban's format to the log its jail
-reads. `--kill-scanner` is what detects — `--fail2ban` only chooses the format,
-so leaving it out leaves the log empty.
+Detect SIP scanning and append it in fail2ban's format to the log its jail reads.
 
-Every example below passes `-N`, and that is not a style choice. Only the
-headless single-capture path builds the detectors: the interactive TUI (the
-default when you leave `-N` off) and the `--cores N` parallel reader both run
-without them. Ask for detection on either and sipnab warns at startup that it
-accepts the flag and ignores it, because an empty finding list otherwise reads
-as an all-clear.
+- `--kill-scanner` is what detects.
+- `--fail2ban` only chooses the format, so leaving it out leaves the log empty.
+
+Every example below passes `-N`, and that is not a style choice.
+
+- Only the headless single-capture path builds the detectors.
+- Two paths run without them:
+  - the interactive TUI (the default when you leave `-N` off),
+  - the `--cores N` parallel reader.
+- Ask for detection on either and sipnab warns at startup. The warning says it accepts the flag and ignores it.
+- Without that warning, an empty finding list reads as an all-clear.
 
 ```bash
 sudo sipnab -N -d eth0 --kill-scanner --fail2ban >> /var/log/sipnab/scanners.log
 ```
 
-Before that log reaches a jail, run the same detectors over a capture of an
-ordinary hour and read the list of addresses they would ban. On a carrier trunk
-it routinely names your own SBCs, because the enumeration signature and a busy
-hunt group look alike.
+Before that log reaches a jail, run the same detectors over a capture of an ordinary hour. Read the list of addresses they would ban.
+
+- On a carrier trunk it routinely names your own SBCs.
+- The reason: the enumeration signature and a busy hunt group look alike.
 
 ```bash
 sipnab -N -I capture.pcap --kill-scanner --fail2ban \
@@ -137,8 +151,7 @@ Audit a capture for digest credentials that went out where anyone could read the
 sipnab -N -I capture.pcap --digest-leak
 ```
 
-Run the whole sweep at once — scanners, fraud heuristics, and registration
-floods — with alerts going to both syslog and structured JSON.
+Run the whole sweep at once: scanners, fraud heuristics, and registration floods. Alerts go to both syslog and structured JSON.
 
 ```bash
 sudo sipnab -N -d eth0 --kill-scanner --fraud-detect --reg-flood \
@@ -153,8 +166,7 @@ Print a display filter to paste into Wireshark after opening the capture.
 sipnab -N -I capture.pcap --wireshark
 ```
 
-Or print a tshark-compatible filter string, when the next step is a shell
-pipeline rather than the Wireshark GUI.
+Or print a tshark-compatible filter string. Use this when the next step is a shell pipeline rather than the Wireshark GUI.
 
 ```bash
 sipnab -I capture.pcap --tshark-filter 'sip.from.user == "1001"'
@@ -162,11 +174,11 @@ sipnab -I capture.pcap --tshark-filter 'sip.from.user == "1001"'
 
 ### Export call audio as WAV
 
-Audio export is a TUI workflow — see [Keybindings](@/docs/keybindings.md#rtp-streams).
+Audio export is a TUI workflow. See [Keybindings](@/docs/keybindings.md#rtp-streams).
 
 ### Pipe through jq for custom analysis
 
-Count failures by response code, so the dominant one is obvious.
+Count failures by response code. The dominant one is then obvious.
 
 ```bash
 sipnab -N -I capture.pcap --filter "state == 'Failed'" --json \
@@ -174,7 +186,7 @@ sipnab -N -I capture.pcap --filter "state == 'Failed'" --json \
   | sort | uniq -c | sort -rn
 ```
 
-List every distinct User-Agent the capture saw, to find the odd endpoint out.
+List every distinct User-Agent the capture saw. This finds the odd endpoint out.
 
 ```bash
 sipnab -N -I capture.pcap --json \
@@ -189,55 +201,63 @@ Stop after a fixed packet count and summarize the capture.
 sipnab -N -d eth0 -n 1000 --report
 ```
 
-Roll to a new pcapng every 50 MiB, so a long capture does not become one file
-too large to open.
+Roll to a new pcapng every 50 MiB. Then a long capture does not become one file too large to open.
 
 ```bash
 sipnab -d eth0 -O /var/captures/sip.pcapng --pcapng --split filesize:50
 ```
 
-Keep only the newest four of those files, so a long capture fits a fixed
-amount of disk. `--split-keep` **deletes** the older files as rotation creates
-new ones, and it deletes only the files this run wrote.
+Keep only the newest four of those files. Then a long capture fits a fixed amount of disk.
+
+- `--split-keep` **deletes** the older files as rotation creates new ones.
+- It deletes only the files this run wrote.
 
 ```bash
 sipnab -d eth0 -O /var/captures/sip.pcapng --pcapng --split filesize:50 --split-keep 4
 ```
 
-**The drop user creates the output files.** Run as root, sipnab opens the
-capture device, then drops privileges to `nobody` (or the `--user` you name)
-before it creates the `-O` file, and it creates every `--split` file later
-still. Right after the drop, before it reads the first packet, sipnab checks
-that the drop user can create the `-O` file, `--export-vcon-dir`,
-`--vcon-out` and `--redact-map`. A directory only root may write, such as one
-made with a plain `sudo mkdir`, therefore ends the run at startup with exit
-code `1`:
+**The drop user creates the output files.** Run as root, sipnab does this:
+
+- It opens the capture device.
+- It drops privileges to `nobody` (or the `--user` you name) before it creates the `-O` file.
+- It creates every `--split` file later still.
+- Right after the drop, before it reads the first packet, it checks that the drop user can create these:
+  - the `-O` file,
+  - `--export-vcon-dir`,
+  - `--vcon-out`,
+  - `--redact-map`.
+
+So a directory only root may write ends the run at startup with exit code `1`. One example is a directory made with a plain `sudo mkdir`:
 
 ```text
 Failed to create output file '/var/captures/sip.pcapng': Permission denied (os error 13). sipnab dropped privileges to user 'nobody' before opening output; make the directory writable by that user (e.g. install -d -o nobody <dir>), pass --user <name> for a user that can write there, or --no-priv-drop.
 ```
 
-Give the directory to the drop user with `sudo install -d -o nobody
-/var/captures`, pass `--user` naming an account that can already write it, or
-keep root for the whole run with `--no-priv-drop`.
+There are three fixes:
+
+- Give the directory to the drop user with `sudo install -d -o nobody /var/captures`.
+- Pass `--user` naming an account that can already write it.
+- Keep root for the whole run with `--no-priv-drop`.
 
 > **`--split-keep` deletes capture files.** sipnab deletes nothing unless you
-> pass the flag, and nothing at `--split-keep 0`, because a capture is very
-> often the only copy of the evidence.
+> pass the flag. It deletes nothing at `--split-keep 0`. The reason: a capture
+> is very often the only copy of the evidence.
 >
-> sipnab deletes only the files the
-> running process created and named — it never lists the directory, so a file
-> an earlier run, another tool, or you left beside them stays where it is,
-> however closely its name resembles a rotation.
+> - sipnab deletes only the files the running process created and named.
+> - It never lists the directory. So a file left beside them stays where it is:
+>   - a file from an earlier run, from another tool, or from you,
+>   - however closely its name resembles a rotation.
 >
-> A run that dies mid-capture
-> leaves behind whatever it had not yet deleted. The next run starts its own
-> list and never adopts those files. sipnab names each file it deletes in the
-> log and counts them in the closing summary.
+> A run that dies mid-capture leaves behind whatever it had not yet deleted.
+>
+> - The next run starts its own list and never adopts those files.
+> - sipnab names each file it deletes in the log.
+> - It counts them in the closing summary.
 
-Capture across every interface at once, timestamping each message relative to
-the one before it. On Linux the `any` pseudo-device is what makes this every
-interface — `--multi-device` is for naming a specific list, as below.
+Capture across every interface at once. Timestamp each message relative to the one before it.
+
+- On Linux the `any` pseudo-device is what makes this every interface.
+- `--multi-device` is for naming a specific list, as below.
 
 ```bash
 sipnab -d any --delta-time
@@ -249,7 +269,7 @@ Capture on two named interfaces instead, one libpcap handle each.
 sipnab -d eth0,eth1 --multi-device --delta-time
 ```
 
-> **Tip:** Every output flag (`--json`, `--report`, `--fail2ban`, etc.) needs `-N`. Think of it as "non-interactive mode" -- it disables the TUI and writes to stdout instead.
+> **Tip:** Every output flag (`--json`, `--report`, `--fail2ban`, etc.) needs `-N`. Think of it as "non-interactive mode". It disables the TUI and writes to stdout instead.
 
 ---
 
@@ -265,7 +285,7 @@ sipnab -d eth0,eth1 --multi-device --delta-time
 | `-B`, `--buffer` | `<MIB>` | `64` | 0.3.0 | Kernel capture buffer size in MiB (per device). See [Tuning capture](@/docs/tuning-capture.md). sipnab refuses `0` (no ring at all) with exit `2`, and `[capture] buffer = 0` with exit `1`. Config: `[capture] buffer` |
 | `--buffer-budget` | `<MIB>` | `64` | 0.4.4 | Memory budget for the in-flight capture→processing queue. The queue grows under load up to this budget (capped, never OOM) and shrinks when idle; overrides `[capture] buffer_budget_mb`. Config: `[capture] buffer_budget_mb` |
 | `--snaplen` | `<BYTES>` | `65535` | 0.3.0 | Snapshot length for packet capture (bytes). sipnab refuses `0` (no byte of any packet) with exit `2`, and `[capture] snaplen = 0` with exit `1`. Config: `[capture] snaplen` |
-| `--capture-profile` | `signaling\|full` | -- | 0.5.109 | Picks a `--snaplen` for you: `signaling` is 1500 bytes, which keeps every SIP header whole and drops most of each RTP payload, and `full` is 65535. An explicit `--snaplen` overrides it. More: [Tuning capture](@/docs/tuning-capture.md#4-snapshot-length-snaplen-and-why-it-decides-your-ring-capacity). Config: `[capture] snaplen` |
+| `--capture-profile` | `signaling\|full` | -- | 0.5.109 | Picks a `--snaplen` for you: `signaling` is 1500 bytes, which keeps every SIP header whole and drops most of each RTP payload, and `full` is 65535. An explicit `--snaplen` overrides it. More: [Tuning capture](@/docs/tuning-capture.md#snapshot-length-snaplen-and-why-it-decides-your-ring-capacity). Config: `[capture] snaplen` |
 | `-S`, `--limitlen` | `<BYTES>` | -- | 0.5.9 | Parse only the first N bytes of each packet. Caps what the SIP parser and matchers inspect, independent of `--snaplen` (capture length) and `--payload-limit` (display truncation). At least 1: sipnab refuses `0` |
 | `--no-reassembly` | -- | off | 0.5.9 | Disable IP-fragment and TCP-segment reassembly; sipnab parses every packet standalone (inverse of segment reassembly). Useful for pure single-packet UDP scanning |
 | `-x`, `--quiet-bad-parse` | -- | off | 0.5.10 | Suppress the per-packet "SIP parse error" diagnostic emitted when a SIP-looking packet fails to parse. sipnab drops the packet either way; this only silences the notice on a noisy link. sipnab logs the notice at debug level, so it shows only with `SIPNAB_LOG=debug` |
@@ -288,30 +308,43 @@ sipnab -d eth0,eth1 --multi-device --delta-time
 
 > **The auto-generated filter looks through VLAN, QinQ, PPPoE and MPLS.**
 > With no filter of your own on a live capture, sipnab builds one from
-> `--portrange` that also matches SIP inside one VLAN tag, QinQ, PPPoE Session
-> and one or two MPLS labels, on Ethernet and on Linux cooked captures. A bare
-> `portrange` would match none of that traffic. See
-> [How the generated filter reaches encapsulated SIP](@/docs/encapsulations.md#how-the-generated-filter-reaches-encapsulated-sip)
-> for the offsets it probes and its two limits.
+> `--portrange`.
+>
+> - It also matches SIP inside these, on Ethernet and on Linux cooked captures:
+>   - one VLAN tag,
+>   - QinQ,
+>   - PPPoE Session,
+>   - one or two MPLS labels.
+> - A bare `portrange` would match none of that traffic.
+> - See
+>   [How the generated filter reaches encapsulated SIP](@/docs/encapsulations.md#how-the-generated-filter-reaches-encapsulated-sip)
+>   for the offsets it probes and its two limits.
 >
 > **The auto-generated filter admits the media too.** RTP travels on whatever
-> ports SDP negotiated, so the filter admits UDP on any port whose first
-> payload byte marks RTP version 2, over IPv4 and IPv6 without extension
-> headers. Media inside a VLAN tag or a tunnel is not admitted: name it in a
-> filter of your own. With `--no-rtp` the filter stays signaling-only, since
-> nothing would read the media. With `--hep-listen` as well as `-d`, the
-> interface takes the media only, because the HEP mirror already delivers the
-> signaling and taking it off the wire too would deliver every message twice.
-> Up to 0.5.192 the filter admitted signaling only, and a default live capture
-> measured no media at all.
+> ports SDP negotiated.
+>
+> - So the filter admits UDP on any port whose first payload byte marks RTP
+>   version 2. This covers IPv4 and IPv6 without extension headers.
+> - Media inside a VLAN tag or a tunnel is not admitted. Name it in a filter of
+>   your own.
+> - With `--no-rtp` the filter stays signaling-only. Nothing would read the
+>   media.
+> - With `--hep-listen` as well as `-d`, the interface takes the media only.
+>   - The HEP mirror already delivers the signaling.
+>   - Taking it off the wire too would deliver every message twice.
+> - Up to 0.5.192 the filter admitted signaling only. A default live capture
+>   then measured no media at all.
 >
 > **UDP tunnels are opt-in.** GTP-U, VXLAN and GENEVE are not covered by
-> default and sipnab says so at startup. BPF cannot parse a variable-length
-> GTP-U extension-header chain to reach the inner port, so the only way to
-> cover them is to capture everything on the port — see `--capture-tunnels`.
+> default, and sipnab says so at startup.
+>
+> - BPF cannot parse a variable-length GTP-U extension-header chain to reach
+>   the inner port.
+> - So the only way to cover them is to capture everything on the port. See
+>   `--capture-tunnels`.
 >
 > **A filter you supply is never rewritten.** It goes to `pcap_compile`
-> exactly as typed. If it looks encapsulation-blind, sipnab says so once and
+> exactly as typed. If it looks encapsulation-blind, sipnab says so once. It
 > still uses your expression.
 
 > **What you get when you omit `-d`.** The default is not the same everywhere,
@@ -322,57 +355,86 @@ sipnab -d eth0,eth1 --multi-device --delta-time
 > | Linux | the `any` pseudo-device | **every interface at once**, loopback included |
 > | macOS / BSD | libpcap's default device, from the routing table; otherwise the first non-loopback interface | **one interface** |
 >
-> On Linux this default is deliberate: a SIP proxy often talks to
-> itself over loopback, so capturing only `eth0` silently misses it. Pass
-> `-d any` to say so explicitly. Promiscuous mode does not apply to `any`, so
-> `--no-promisc` changes nothing there.
+> On Linux this default is deliberate.
 >
-> On macOS you get a *single* interface. If SIP is not on the one libpcap
-> picked, you see nothing and the capture looks merely quiet — name `-d`
-> explicitly.
+> - A SIP proxy often talks to itself over loopback. So capturing only `eth0`
+>   silently misses it.
+> - Pass `-d any` to say so explicitly.
+> - Promiscuous mode does not apply to `any`. So `--no-promisc` changes
+>   nothing there.
+>
+> On macOS you get a *single* interface.
+>
+> - If SIP is not on the one libpcap picked, you see nothing.
+> - The capture then looks merely quiet.
+> - Name `-d` explicitly.
 
 > **Reading a set of files: order comes from the packets, not the names.**
-> `tcpdump -C 100 -W 10` writes a ring buffer — `tg.pcap0` through `tg.pcap9` —
-> and then **wraps**, overwriting the oldest file in place. A real set measured
-> for this feature ran `tg.pcap7`, `tg.pcap8`, `tg.pcap9`, `tg.pcap0` …
-> `tg.pcap6` in time order: the numeric suffix records where tcpdump was in its
-> cycle, not when the packets arrived.
 >
-> So sipnab sorts by each file's **first packet timestamp**. Neither
-> lexicographic nor natural-numeric filename order reconstructs that capture,
-> and replaying it out of order corrupts every timing derivation — post-dial
-> delay, setup time, retransmission detection, and the [RFC 3261](https://www.rfc-editor.org/rfc/rfc3261.html) Timer B/C/H
-> bounds all assume timestamps only move forward.
+> - `tcpdump -C 100 -W 10` writes a ring buffer, `tg.pcap0` through `tg.pcap9`.
+> - It then **wraps** and overwrites the oldest file in place.
+> - A real set measured for this feature ran `tg.pcap7`, `tg.pcap8`,
+>   `tg.pcap9`, `tg.pcap0` … `tg.pcap6` in time order.
+> - The numeric suffix records where tcpdump was in its cycle. It does not
+>   record when the packets arrived.
 >
-> sipnab recognizes a capture by **opening it**, not by its extension —
-> `tg.pcap0` has the extension `pcap0`, and plenty of captures have none at
-> all. It decompresses gzip members transparently, so a directory holding both
-> `.pcap` and `.pcap.gz` needs nothing special.
+> So sipnab sorts by each file's **first packet timestamp**.
 >
-> A file you name directly with `-I` that sipnab cannot read is an error. One
-> it *discovers* by expanding a directory or glob it skips with a warning,
-> because directories hold other things.
+> - Neither lexicographic nor natural-numeric filename order reconstructs that
+>   capture.
+> - Replaying it out of order corrupts every timing derivation. These all
+>   assume timestamps only move forward:
+>   - post-dial delay,
+>   - setup time,
+>   - retransmission detection,
+>   - the [RFC 3261](https://www.rfc-editor.org/rfc/rfc3261.html) Timer B/C/H
+>     bounds.
 >
-> **Why it matters beyond tidiness:** reading a split capture as a set is the
-> only way to see a call whose INVITE lands in one file and whose BYE lands in
-> the next. Analyzed one file at a time, that call appears as one that never
-> ends plus a stray BYE, and neither half is the truth. On the 10-file, 921 MB
-> set above, 2271 of 20512 calls — **11%** — spanned a boundary.
+> sipnab recognizes a capture by **opening it**, not by its extension.
+>
+> - `tg.pcap0` has the extension `pcap0`. Plenty of captures have none at all.
+> - It decompresses gzip members transparently. So a directory holding both
+>   `.pcap` and `.pcap.gz` needs nothing special.
+>
+> A file you name directly with `-I` that sipnab cannot read is an error.
+> sipnab may instead *discover* a file by expanding a directory or glob. It
+> skips such a file with a warning, because directories hold other things.
+>
+> **Why it matters beyond tidiness:** a call's INVITE may land in one file and
+> its BYE in the next.
+>
+> - Reading a split capture as a set is the only way to see that call.
+> - Analyzed one file at a time, that call appears as one that never ends plus
+>   a stray BYE. Neither half is the truth.
+> - On the 10-file, 921 MB set above, 2271 of 20512 calls (**11%**) spanned a
+>   boundary.
 
-> **`-I` and `-d` are alternatives, not companions.** sipnab accepts both, and the FILE wins: sipnab reads it, never opens the interface, and the output looks like a normal run. sipnab warns on stderr when you do this. To switch a file command to live capture, **remove `-I`** rather than adding `-d` beside it.
+> **`-I` and `-d` are alternatives, not companions.** sipnab accepts both, and the FILE wins.
+>
+> - sipnab reads the file and never opens the interface.
+> - The output looks like a normal run.
+> - sipnab warns on stderr when you do this.
+> - To switch a file command to live capture, **remove `-I`** rather than adding `-d` beside it.
 
 > **`--portrange` decides how much of the file you analyze.** The default,
-> `5060-5061`, is narrow. SIP on other ports is ordinary: carriers and SBCs use
-> 5070, 5080 and others routinely, and a capture from a real trunk commonly
-> carries a large share of its signaling outside the default.
+> `5060-5061`, is narrow.
 >
-> Reading a file, sipnab skips any SIP message whose source **and** destination
-> ports both fall outside the range. A skipped message reaches no message count,
-> no dialog, and no output format — so every total you read, and every ratio you
-> compute from one, describes the range and not the capture. sipnab counts what
-> it skipped and says so on stderr and at the end of the run, naming the busiest
-> ports so there is something to widen to, and `--report` names the count in
-> its `INCOMPLETE RUN` block:
+> - SIP on other ports is ordinary. Carriers and SBCs use 5070, 5080 and
+>   others routinely.
+> - A capture from a real trunk commonly carries a large share of its
+>   signaling outside the default.
+>
+> Reading a file, sipnab skips any SIP message whose source **and**
+> destination ports both fall outside the range.
+>
+> - A skipped message reaches no message count, no dialog, and no output
+>   format.
+> - So every total you read describes the range and not the capture. So does
+>   every ratio you compute from one.
+> - sipnab counts what it skipped. It says so on stderr and at the end of the
+>   run.
+> - It names the busiest ports, so there is something to widen to.
+> - `--report` names the count in its `INCOMPLETE RUN` block:
 >
 > ```text
 > NOT ANALYZED: 1 further SIP message(s) were seen on ports outside --portrange
@@ -381,21 +443,29 @@ sipnab -d eth0,eth1 --multi-device --delta-time
 > ```
 >
 > `--portrange 1-65535` analyzes everything the capture holds. Reach for it
-> first on an unfamiliar capture, then narrow once you know what is in there.
+> first on an unfamiliar capture. Narrow it once you know what is in there.
 >
-> **Live capture is different, and worse.** With no explicit BPF filter sipnab
-> compiles the range into the filter, so the kernel drops the traffic before
-> sipnab sees it — nothing downstream, this counter included, can report what
-> went missing. Set the range correctly *before* the capture, because no rerun
-> recovers it.
+> **Live capture is different, and worse.**
+>
+> - With no explicit BPF filter, sipnab compiles the range into the filter.
+> - So the kernel drops the traffic before sipnab sees it.
+> - Nothing downstream, this counter included, can report what went missing.
+> - Set the range correctly *before* the capture, because no rerun recovers
+>   it.
 
-> **`NOT DECODED` is the other line to read before the totals.** `--portrange`
-> is about SIP sipnab chose not to analyze. This is about frames it could not
-> read at all — an unsupported link type, an EtherType carrying no IP, an IP
-> protocol that is no transport, a truncated frame, a decode error. Such a
-> frame counts as a packet (it arrived) and reaches no message, dialog or
-> stream, so on its own the summary reports the same thing whether the capture
-> held no SIP or sipnab understood none of it:
+> **`NOT DECODED` is the other line to read before the totals.**
+>
+> - `--portrange` is about SIP sipnab chose not to analyze.
+> - This line is about frames it could not read at all:
+>   - an unsupported link type,
+>   - an EtherType carrying no IP,
+>   - an IP protocol that is no transport,
+>   - a truncated frame,
+>   - a decode error.
+> - Such a frame counts as a packet (it arrived). It reaches no message, dialog
+>   or stream.
+> - So on its own, the summary reports the same thing in two cases: the
+>   capture held no SIP, or sipnab understood none of it:
 >
 > ```text
 > NOT DECODED: 49 of 49 frame(s) (100.0%) produced nothing and are in none of
@@ -404,17 +474,22 @@ sipnab -d eth0,eth1 --multi-device --delta-time
 > no traffic whatsoever and a zero among them is not evidence of absence.
 > ```
 >
-> Every reason carries the number that identifies it, because that number is
-> what you act on: `unsupported link type 0` says the file is `DLT_NULL` and
-> `editcap -T ether in.pcap out.pcap` converts it. A small count is normal —
-> ARP is undecodable by definition and appears on any Ethernet capture — so
-> read the share, not the count.
+> Every reason carries the number that identifies it. That number is what you
+> act on.
 >
-> When the share is high, sipnab additionally
-> refuses to state "No SIP traffic found" as a finding, because it has no basis
-> for one. The same breakdown appears as a `NOT DECODED (capture-wide)` section
-> in `--report`, and as `sipnab_capture_undecodable_frames_total{reason}` plus
-> `sipnab_capture_undecoded_fraction` on `/metrics`.
+> - `unsupported link type 0` says the file is `DLT_NULL`.
+> - `editcap -T ether in.pcap out.pcap` converts it.
+>
+> A small count is normal. ARP is undecodable by definition and appears on any
+> Ethernet capture. So read the share, not the count.
+>
+> When the share is high, sipnab additionally refuses to state
+> "No SIP traffic found" as a finding. It has no basis for one. The same breakdown appears in
+> two more places:
+>
+> - as a `NOT DECODED (capture-wide)` section in `--report`,
+> - as `sipnab_capture_undecodable_frames_total{reason}` plus
+>   `sipnab_capture_undecoded_fraction` on `/metrics`.
 >
 > [`docs/troubleshooting.md`](https://github.com/NormB/sipnab/blob/main/docs/troubleshooting.md) tables what each reason means and what to do about
 > it.
@@ -454,61 +529,96 @@ sipnab -d eth0,eth1 --multi-device --delta-time
 
 ### Archives read like directories
 
-Point `-I` at a `.tar`, a `.tgz`, a `.tar.gz` or a `.zip` (see
-[Archives](#archives) for password-protected ones) and sipnab reads it the way it
-reads a directory. Every capture inside joins the set, in capture order,
-alongside anything else `-I` named. Nobody has to unpack it
-first, and the answer matches what reading the unpacked directory gives.
+Point `-I` at a `.tar`, a `.tgz`, a `.tar.gz` or a `.zip`, and sipnab reads it
+the way it reads a directory. See [Archives](#archives) for password-protected
+ones.
 
-- **Layers nest.** A gzip-compressed member such as `ring-3.pcap.gz`, a tar
-  inside a `.tgz`, or both, unwrap on the way to the capture, up to four layers
-  deep. sipnab identifies each layer by its first bytes, never by its name, so
-  a gzip file named `c.pcap` still opens.
+- Every capture inside joins the set, in capture order, alongside anything else
+  `-I` named.
+- Nobody has to unpack it first.
+- The answer matches what reading the unpacked directory gives.
+
+The rules:
+
+- **Layers nest.** These unwrap on the way to the capture, up to four layers
+  deep:
+  - a gzip-compressed member such as `ring-3.pcap.gz`,
+  - a tar inside a `.tgz`,
+  - or both.
+
+  sipnab identifies each layer by its first bytes, never by its name. So a
+  gzip file named `c.pcap` still opens.
 - **sipnab accounts for every member.** A member that is not a capture gets a
-  `Skipping` line naming it and the reason: empty, not a capture (with its
-  first four bytes), a link, a device node, a sparse file, or a format sipnab
-  does not unwrap, such as 7-Zip, `zstd`, `xz` or `bzip2`. The closing `-I
-  resolved to` line counts them.
+  `Skipping` line naming it and the reason. The reasons are:
+  - empty,
+  - not a capture (with its first four bytes),
+  - a link,
+  - a device node,
+  - a sparse file,
+  - a format sipnab does not unwrap, such as 7-Zip, `zstd`, `xz` or `bzip2`.
 
-  A member whose link type sipnab does not
-  decode, such as an LTE MAC log, gets a line naming it, and its frames count
-  as not decoded. A BPF filter that cannot compile against that link type
-  skips the member instead of ending the run.
-- **Names come from the archive, paths never do.** sipnab writes each member
-  to a file it names itself, in a private directory under `$TMPDIR`, and
-  deletes that directory when the run ends. A member called `../../etc/x`
-  lands in that directory like any other. Output, logs and frame pointers name
-  a member `<archive>/<member>`, for example `session.tgz/ring/a.pcap#12`, and
-  `--show-frame` reads that member straight back out of the archive.
-- **Inflation stops at a ceiling.** Every byte any gzip layer produces counts
-  against `--max-gunzip-bytes`, summed across the layers of one input, and one
-  archive may hold at most 10,000 entries. An archive cut short, or stopped at
-  a ceiling, keeps what arrived and marks the run incomplete: exit status `1`,
-  and `archives.cut_short` in the `sipnab_run` record.
+  The closing `-I resolved to` line counts them.
+
+  A member may have a link type sipnab does not decode, such as an LTE MAC log.
+  - It gets a line naming it.
+  - Its frames count as not decoded.
+  - A BPF filter that cannot compile against that link type skips the member.
+    It does not end the run.
+- **Names come from the archive, paths never do.**
+  - sipnab writes each member to a file it names itself, in a private directory
+    under `$TMPDIR`.
+  - It deletes that directory when the run ends.
+  - A member called `../../etc/x` lands in that directory like any other.
+  - Output, logs and frame pointers name a member `<archive>/<member>`. For
+    example: `session.tgz/ring/a.pcap#12`.
+  - `--show-frame` reads that member straight back out of the archive.
+- **Inflation stops at a ceiling.**
+  - Every byte any gzip layer produces counts against `--max-gunzip-bytes`.
+    sipnab sums the count across the layers of one input.
+  - One archive may hold at most 10,000 entries.
+  - An archive cut short, or stopped at a ceiling, keeps what arrived. It
+    marks the run incomplete:
+    - exit status `1`,
+    - `archives.cut_short` in the `sipnab_run` record.
 - **`--input-name` filters members** by file name, the same way it filters a
-  directory's files. On a single compressed capture it still refuses, because
-  there is nothing to choose between.
-- **Decryption works on members exactly as on plain files.** `--keylog`, the
-  secrets a pcapng embeds, SDES keys in the SDP and `--dtls-keylog` each decrypt
-  a member the same whether it arrived plain, gzip-compressed, in a tar, in a
-  `.tgz`, or gzip-compressed inside a `.tgz`.
+  directory's files. On a single compressed capture it still refuses. There is
+  nothing to choose between.
+- **Decryption works on members exactly as on plain files.** Each of these
+  decrypts a member the same way:
+  - `--keylog`,
+  - the secrets a pcapng embeds,
+  - SDES keys in the SDP,
+  - `--dtls-keylog`.
 
-A run that dies without cleaning up, from a crash or `kill -9`, leaves its
-directory behind holding a lock that died with it. The next run that unpacks an
-archive removes it.
+  It does not matter whether the member arrived plain, gzip-compressed, in a
+  tar, in a `.tgz`, or gzip-compressed inside a `.tgz`.
+
+A run may die without cleaning up, from a crash or `kill -9`.
+
+- It leaves its directory behind, holding a lock that died with it.
+- The next run that unpacks an archive removes it.
 
 ## Archives
 
-Captures often travel as password-protected ZIP files, because they carry
-subscriber identities, numbers and credentials. Unpacking one by hand leaves a
-decrypted copy on disk, which defeats the password. Point `-I` at the ZIP
-instead: sipnab opens it, reads the captures inside, and deletes its own
-owner-only copy of each member when the run ends. A ZIP reads like a `.tgz`,
-so everything in [Archives read like directories](#archives-read-like-directories)
-applies to it, and a ZIP nested in a tar, or a tar in a ZIP, unwraps too.
-Builds with the `archive` feature read ZIP and 7z files. The `full` build and
-every release binary include it, the static musl tarballs and the `-noaudio`
-packages among them.
+Captures often travel as password-protected ZIP files. They carry subscriber
+identities, numbers and credentials.
+
+- Unpacking one by hand leaves a decrypted copy on disk. That defeats the
+  password.
+- Point `-I` at the ZIP instead. sipnab then:
+  - opens it,
+  - reads the captures inside,
+  - deletes its own owner-only copy of each member when the run ends.
+- A ZIP reads like a `.tgz`. So everything in
+  [Archives read like directories](#archives-read-like-directories) applies to
+  it.
+- A ZIP nested in a tar, or a tar in a ZIP, unwraps too.
+
+Builds with the `archive` feature read ZIP and 7z files. These include it:
+
+- the `full` build,
+- every release binary, the static musl tarballs and the `-noaudio` packages
+  among them.
 
 | Flag | Value | Default | Since | Description |
 |------|-------|---------|-------|-------------|
@@ -522,70 +632,106 @@ packages among them.
 **Where a password comes from, best first.** sipnab tries every source you
 configure, in this order, before it gives up on a member:
 
-1. `--archive-password-file`, for scripts and services.
-2. `--archive-password-command`.
-3. `--archive-password-stdin`.
-4. The systemd credential `archive-password`. When
-   `$CREDENTIALS_DIRECTORY/archive-password` exists, sipnab reads it like a
-   password file, so `LoadCredential=archive-password:/etc/sipnab/pcaps.pw`
-   or `LoadCredentialEncrypted=` in the unit is all it takes. Writing
-   `--archive-password-file %d/archive-password` in the unit works too.
-5. The `SIPNAB_ARCHIVE_PASSWORD` environment variable. It ranks below every
-   source above because a process's environment leaks: child processes
-   inherit it, and systemd and OWASP both advise against secrets there.
-6. `--archive-password`, which warns on every use.
-7. The prompt. When no configured password opens a member, sipnab asks on
-   the terminal, the way ssh and sudo do: `Password for evidence.zip (member
-   voip/call3.pcap, attempt 1 of 3):`. It reads `/dev/tty`, not stdin, so it
-   still asks with stdin redirected, and it echoes nothing. Each archive gets
-   three attempts. An empty entry, or Ctrl-D, skips that archive's locked
-   members, Ctrl-U clears the line, and Ctrl-C stops the run. sipnab restores
-   the terminal on every one of those paths. With no terminal, as in cron, CI
-   or a detached agent, or with `--no-password-prompt`, it never asks and
-   never waits, and locked members count as `encrypted_no_password`. A TUI
-   run asks here for the archives `-I` names, before it draws. A capture
-   opened inside the TUI asks in its own window, described in
-   [Archive password popup](@/docs/keybindings.md#archive-password-popup).
+- `--archive-password-file`, for scripts and services.
+- `--archive-password-command`.
+- `--archive-password-stdin`.
+- The systemd credential `archive-password`.
+  - When `$CREDENTIALS_DIRECTORY/archive-password` exists, sipnab reads it like
+    a password file.
+  - So `LoadCredential=archive-password:/etc/sipnab/pcaps.pw` or
+    `LoadCredentialEncrypted=` in the unit is all it takes.
+  - Writing `--archive-password-file %d/archive-password` in the unit works
+    too.
+- The `SIPNAB_ARCHIVE_PASSWORD` environment variable. It ranks below every
+  source above because a process's environment leaks:
+  - child processes inherit it,
+  - systemd and OWASP both advise against secrets there.
+- `--archive-password`, which warns on every use.
+- The prompt. When no configured password opens a member, sipnab asks on the
+  terminal, the way ssh and sudo do: `Password for evidence.zip (member voip/call3.pcap, attempt 1 of 3):`.
+  - It reads `/dev/tty`, not stdin. So it still asks with stdin redirected.
+  - It echoes nothing.
+  - Each archive gets three attempts.
+  - An empty entry, or Ctrl-D, skips that archive's locked members.
+  - Ctrl-U clears the line.
+  - Ctrl-C stops the run.
+  - sipnab restores the terminal on every one of those paths.
+  - Sometimes it never asks and never waits. Locked members then count as
+    `encrypted_no_password`. This happens:
+    - with no terminal, as in cron, CI or a detached agent,
+    - or with `--no-password-prompt`.
+  - A TUI run asks here for the archives `-I` names, before it draws.
+  - A capture opened inside the TUI asks in its own window, described in
+    [Archive password popup](@/docs/keybindings.md#archive-password-popup).
 
-**How sipnab tries them.** The password that opened one member of an archive
-goes first for that archive's other members, and never for another archive
-unless you configured it. ZIP never records which encoding its creator typed
-the password in, so sipnab also tries a non-ASCII password in its NFC and NFD forms
-and in the CP437, CP850 and CP1252 code pages that `unzip` and 7-Zip fall back
-to. All of those spellings count as one attempt. Passwords may be up to 4096
-bytes, and sipnab refuses a longer one whole rather than cutting it short.
+**How sipnab tries them.**
 
-**What it reads.** ZIP members stored or deflated, unencrypted, encrypted with
-WinZip AES (128, 192 or 256-bit), or encrypted with the legacy ZipCrypto. 7z
-archives compressed with LZMA or LZMA2, unencrypted or AES-256, with or without
-an encrypted member list. A 7z password covers the whole archive, and the
-format stores it as UTF-16 text, so sipnab tries its NFC and NFD forms but no
-code pages. A 7z sets how much work deriving its key takes, and sipnab refuses
-one asking for more than 7-Zip's own ceiling of 2^24 rounds as
-`bound_exceeded (7z key derivation)`, since a crafted archive could otherwise
-make one attempt take hours.
-sipnab reads ZipCrypto and warns once per archive that it protects nothing:
-the `bkcrack` tool recovers its keys from 12 known bytes, and a capture's first bytes are
-predictable. A wrong password fails the format's own check. For the one wrong
-password in 256 that slips past ZipCrypto's check byte, the member's CRC fails
-instead, and sipnab moves on to the next candidate.
+- The password that opened one member of an archive goes first for that
+  archive's other members.
+- It never goes to another archive unless you configured it.
+- ZIP never records which encoding its creator typed the password in. So
+  sipnab also tries a non-ASCII password in these forms:
+  - its NFC and NFD forms,
+  - the CP437, CP850 and CP1252 code pages that `unzip` and 7-Zip fall back
+    to.
+- All of those spellings count as one attempt.
+- Passwords may be up to 4096 bytes. sipnab refuses a longer one whole rather
+  than cutting it short.
+
+**What it reads.**
+
+- ZIP members stored or deflated:
+  - unencrypted,
+  - encrypted with WinZip AES (128, 192 or 256-bit),
+  - or encrypted with the legacy ZipCrypto.
+- 7z archives compressed with LZMA or LZMA2:
+  - unencrypted or AES-256,
+  - with or without an encrypted member list.
+- A 7z password covers the whole archive. The format stores it as UTF-16 text.
+  So sipnab tries its NFC and NFD forms but no code pages.
+- A 7z sets how much work deriving its key takes.
+  - sipnab refuses one asking for more than 7-Zip's own ceiling of 2^24
+    rounds, as `bound_exceeded (7z key derivation)`.
+  - The reason: a crafted archive could otherwise make one attempt take hours.
+
+sipnab reads ZipCrypto and warns once per archive that it protects nothing.
+
+- The `bkcrack` tool recovers its keys from 12 known bytes.
+- A capture's first bytes are predictable.
+- A wrong password fails the format's own check.
+- One wrong password in 256 slips past ZipCrypto's check byte. For that one, the
+  member's CRC fails instead, and sipnab moves on to the next candidate.
 
 **What it reports.** Each member sipnab does not read gets a `Skipping` line
-with the reason: `encrypted, and no password was supplied`, `encrypted, and
-no password supplied opens it`, or a format it cannot decrypt. An archive you
-name with `-I` of which sipnab reads nothing fails the run with exit status
-`1`, naming each member with its reason code, such as
-`evidence.zip/call3.pcap: encrypted_no_password`. If some members open, the
-run succeeds and the closing `-I resolved to` line counts the rest.
+with the reason. The reason is one of these:
 
-**Where the password never goes.** No log line at any level, error message,
-output format or export contains it. A run that holds a password turns core
-dumps off, and `--allow-coredump` warns that a dump would contain it.
+- `encrypted, and no password was supplied`,
+- `encrypted, and no password supplied opens it`,
+- a format it cannot decrypt.
 
-**Exports carry the data out unencrypted.** `-O`, `--strip-secrets` and
-`--write-annotated` from a member decrypted out of a password archive each warn
-once that they write that data unencrypted. The section comment of a
-`--write-annotated` copy says so too, and names no password.
+You may name an archive with `-I` and sipnab may read nothing from it.
+
+- That fails the run with exit status `1`.
+- It names each member with its reason code, such as
+  `evidence.zip/call3.pcap: encrypted_no_password`.
+- If some members open, the run succeeds. The closing `-I resolved to` line
+  counts the rest.
+
+**Where the password never goes.** No log line at any level contains it. No
+error message, output format or export contains it either.
+
+- A run that holds a password turns core dumps off.
+- `--allow-coredump` warns that a dump would contain it.
+
+**Exports carry the data out unencrypted.**
+
+- These each warn once that they write that data unencrypted, when they write
+  from a member decrypted out of a password archive:
+  - `-O`,
+  - `--strip-secrets`,
+  - `--write-annotated`.
+- The section comment of a `--write-annotated` copy says so too. It names no
+  password.
 
 **Examples**
 
@@ -620,22 +766,38 @@ once that they write that data unencrypted. The section comment of a
 - `sipnab --no-tui -I lab.pcap --telephone-event --dtmf-cleartext` — read a capture you own and disclose the digit values. Also set `SIPNAB_LOG=debug`, or the run prints nothing but the mask
 - `sudo sipnab --no-tui -d eth0 --telephone-event --dtmf-cleartext 2>dtmf.log` — capture live and steer the cleartext digits into a file whose permissions you control instead of a shared terminal or journald. Again needs `SIPNAB_LOG=debug`
 
-**Read this before using `--dtmf-cleartext`.** DTMF digits keyed after answer are
-PINs, calling-card numbers, account numbers and credit-card numbers with their
-CVVs, and [RFC 4733](https://www.rfc-editor.org/rfc/rfc4733.html) carries them in the clear no matter how well the signaling
-layer protected the call. So `-t` alone logs everything you diagnose with — that an event
-arrived, its duration, its SSRC, its timestamp — with the digit value replaced by
-`x`:
+**Read this before using `--dtmf-cleartext`.** DTMF digits keyed after answer
+include:
+
+- PINs,
+- calling-card numbers,
+- account numbers,
+- credit-card numbers with their CVVs.
+
+[RFC 4733](https://www.rfc-editor.org/rfc/rfc4733.html) carries them in the clear no matter how well the signaling layer
+protected the call. So `-t` alone logs everything you diagnose with, with the
+digit value replaced by `x`:
+
+- that an event arrived,
+- its duration,
+- its SSRC,
+- its timestamp.
 
 `DTMF digit='x' duration=200ms ssrc=0xdeadbeef`
 
 `--dtmf-cleartext` adds a second line carrying the value. It is not a display
-setting. It puts a caller's PIN wherever this run's log goes — your terminal, a
-redirected file, journald, and every aggregator downstream of journald. Turning
-it on takes two deliberate acts, because sipnab writes the cleartext line at
-`debug` while the masked line stays at `info`: pass the flag **and** raise the
-level.
-Either one alone shows you nothing but the mask. Both, in one copyable line:
+setting.
+
+- It puts a caller's PIN wherever this run's log goes:
+  - your terminal,
+  - a redirected file,
+  - journald,
+  - every aggregator downstream of journald.
+- Turning it on takes two deliberate acts. sipnab writes the cleartext line at
+  `debug` while the masked line stays at `info`. So:
+  - pass the flag **and**
+  - raise the level.
+- Either one alone shows you nothing but the mask. Both, in one copyable line:
 
 ```bash
 SIPNAB_LOG=debug sipnab --no-tui -I lab.pcap --telephone-event --dtmf-cleartext 2>dtmf.log
@@ -645,13 +807,15 @@ SIPNAB_LOG=debug sipnab --no-tui -I lab.pcap --telephone-event --dtmf-cleartext 
 keeps a count. Nothing else carries the digits: no report, no JSON field, no MCP
 tool.
 
-Two consequences follow, and both bite the obvious command lines. Adding
-`-t` to a TUI session shows you nothing, because TUI mode floors the log level at
-`error` to keep the alternate screen intact. Adding `--quiet` also hides them,
-because it floors the level at `warn`. Use `-N` without `--quiet`.
+Two consequences follow, and both bite the obvious command lines.
 
-`SIPNAB_LOG=info` does override the TUI floor, but sipnab sets that floor to
-stop log lines corrupting the alternate screen, so redirect stderr if you do.
+- Adding `-t` to a TUI session shows you nothing. TUI mode floors the log level
+  at `error` to keep the alternate screen intact.
+- Adding `--quiet` also hides them. It floors the level at `warn`.
+- Use `-N` without `--quiet`.
+
+`SIPNAB_LOG=info` does override the TUI floor. But sipnab sets that floor to
+stop log lines corrupting the alternate screen. So redirect stderr if you do.
 
 
 ## Matching
@@ -684,20 +848,27 @@ stop log lines corrupting the alternate screen, so redirect stderr if you do.
 
 ## Queries
 
-A query flag answers one question about the capture and exits. Each one
-prints the same answer as the REST route and the MCP tool for that question,
-because all three call the same function: a table by default, Markdown with
-`--markdown`, and with `--json` one JSON object on the last line of stdout, in
-exactly the shape the REST route returns. Every query honors `--filter` and the
-time window below.
+A query flag answers one question about the capture and exits.
+
+- Each one prints the same answer as the REST route and the MCP tool for that
+  question. All three call the same function.
+- The output is:
+  - a table by default,
+  - Markdown with `--markdown`,
+  - with `--json`, one JSON object on the last line of stdout, in exactly the
+    shape the REST route returns.
+- Every query honors `--filter` and the time window below.
 
 ### Scope a run to a time window
 
 `--since` and `--until` keep the dialogs whose first message falls in the
-half-open window `[--since, --until)`: a dialog at exactly `--since` is in, a
-dialog at exactly `--until` is in the next window, so adjacent windows never
-count a call twice. Either bound alone leaves the other side open. Values are
-[RFC 3339](https://www.rfc-editor.org/rfc/rfc3339.html) instants, and sipnab converts an offset other than `Z` to UTC.
+half-open window `[--since, --until)`.
+
+- A dialog at exactly `--since` is in.
+- A dialog at exactly `--until` is in the next window.
+- So adjacent windows never count a call twice.
+- Either bound alone leaves the other side open.
+- Values are [RFC 3339](https://www.rfc-editor.org/rfc/rfc3339.html) instants. sipnab converts an offset other than `Z` to UTC.
 
 The window is the one every surface applies, under three spellings:
 
@@ -708,20 +879,35 @@ The window is the one every surface applies, under three spellings:
 | MCP | `search_by_time` with `start` / `end` |
 | Filter DSL | `time >= '<RFC3339>' AND time < '<RFC3339>'` |
 
-The CLI cannot use REST's names because `-A`/`--after` already sets the
-context lines printed after a match.
+The CLI cannot use REST's names. `-A`/`--after` already sets the context lines
+printed after a match.
 
 The window joins `--filter` and the diagnostic alias flags in one compiled
-filter, so `--report`, `--json-dialogs`, `--analyze`, the per-message stream,
-`--export-vcon-when` and every query see the same dialogs. `--call-report` and
-`--export-vcon` name one call by Call-ID and are not narrowed.
+filter. So these all see the same dialogs:
 
-A window that holds none of the capture's dialogs exits 0 with empty listings,
-and says so on stderr, naming the window and the span the capture's dialogs
-cover. An `--until` that is not after `--since`, or a value that is not RFC
-3339, exits 2. The flags need `-N`: in the TUI, set the time range in the call
-list's filter dialog.
+- `--report`,
+- `--json-dialogs`,
+- `--analyze`,
+- the per-message stream,
+- `--export-vcon-when`,
+- every query.
 
+`--call-report` and `--export-vcon` name one call by Call-ID and are not
+narrowed.
+
+A window may hold none of the capture's dialogs.
+
+- The run exits 0 with empty listings.
+- It says so on stderr, naming the window and the span the capture's dialogs
+  cover.
+
+These exit 2:
+
+- an `--until` that is not after `--since`,
+- a value that is not RFC 3339.
+
+The flags need `-N`. In the TUI, set the time range in the call list's filter
+dialog.
 **Examples**
 
 - `sipnab -N -I capture.pcap --json-dialogs --no-cli-print --since 2026-10-09T10:00:00Z --until 2026-10-09T11:00:00Z` — one JSON line per call that started between 10:00 and 11:00 UTC
@@ -762,13 +948,18 @@ See the [Name Resolution](@/docs/keybindings.md#name-resolution) keys for in-TUI
 | `--show-frame` | `<POINTER>` | -- | 0.5.77 | Resolve a frame pointer from a previous run, print that frame, then exit. Takes `<source>#<ordinal>` or `<source>#<ordinal>@<digest>` — the form the `frame` field of `--json-dialogs`, `--report`, the REST API and MCP carries. With a digest, sipnab checks the bytes against it and refuses a capture that changed after sipnab minted the pointer, writing nothing to stdout. Without one, sipnab prints the frame and marks it `UNVERIFIED`. |
 
 Note: with resolution active, sipnab saves name mappings into a pcapng Name
-Resolution Block — on both the TUI save path and the headless `-O --pcapng`
-export (whenever `--resolve`/`--names` apply). Headless pcapng exports also
-describe themselves: the Section Header Block records the producing application
-(`sipnab <version>`) and OS, and the Interface Description Block records the
-capture source as the interface name. Opening a pcapng reads embedded NRB names
-and DSB TLS secrets back, and decrypts with them. See
-[the design doc](https://github.com/NormB/sipnab/blob/main/docs/design/pcapng-metadata.md).
+Resolution Block.
+
+- This happens on both the TUI save path and the headless `-O --pcapng` export
+  (whenever `--resolve`/`--names` apply).
+- Headless pcapng exports also describe themselves:
+  - the Section Header Block records the producing application
+    (`sipnab <version>`) and OS,
+  - the Interface Description Block records the capture source as the
+    interface name.
+- Opening a pcapng reads embedded NRB names and DSB TLS secrets back. sipnab
+  decrypts with them.
+- See [the design doc](https://github.com/NormB/sipnab/blob/main/docs/design/pcapng-metadata.md).
 
 **Examples**
 
@@ -780,10 +971,13 @@ and DSB TLS secrets back, and decrypts with them. See
 
 ## Operator notes
 
-A note is a remark a person writes about one SIP message, carried to the
-person who opens the capture next. sipnab writes each note into a pcapng
-packet comment, where Wireshark shows it beside the frame. sipnab never reads a
-packet comment back: a note is output, never part of the analysis.
+A note is a remark a person writes about one SIP message. It travels to the
+person who opens the capture next.
+
+- sipnab writes each note into a pcapng packet comment. Wireshark shows it
+  beside the frame.
+- sipnab never reads a packet comment back. A note is output, never part of
+  the analysis.
 
 | Flag | Value | Default | Since | Description |
 |------|-------|---------|-------|-------------|
@@ -809,9 +1003,11 @@ Shortcut flags that expand to predefined filter DSL expressions. See [filter-dsl
 | `--one-way` | -- | off | 0.3.0 | Show calls with potential one-way audio issues |
 | `--nat-issues` | -- | off | 0.3.0 | Show calls whose RTP arrived from an address no SDP advertised (NAT-rewritten media source) |
 
-Multiple diagnostic flags combine with OR. Adding `--filter` ANDs its
-expression with that selection: `--problems --filter "from.user == '1001'"`
-selects only problem calls from user 1001.
+Multiple diagnostic flags combine with OR.
+
+- Adding `--filter` ANDs its expression with that selection.
+- For example, `--problems --filter "from.user == '1001'"` selects only problem
+  calls from user 1001.
 
 **Examples**
 
@@ -925,7 +1121,7 @@ selects only problem calls from user 1001.
 - `sipnab -N -I capture.pcap --export-vcon-when 'duration > 0' --export-vcon-dir ./out/ --content-deny-header Privacy --content-deny-tombstone` -- off by default for a reason worth stating: a tombstone reveals that the call EXISTED. If the header means "this call must leave no trace", leave the flag off and let the dialog produce nothing at all
 - `sipnab -N -I ./captures --export-vcon-when 'duration > 30' --export-vcon-dir ./long/ --vcon-digest > SHA256SUMS` -- record what sipnab wrote. The digests go to stdout in `sha256sum` format while the progress summary stays on stderr, so the redirect captures the one and not the other
 - `sipnab -N -I capture.pcap --export-vcon-when 'duration > 0' --export-vcon-dir ./out/ --vcon-digest | tee ./out/SHA256SUMS` -- keep the digests beside the containers they describe, so the spool carries its own manifest. The name in each line is the bare file name rather than a path, so a spool that is later moved or mounted elsewhere still verifies from inside its own directory
-- `cd ./long/ && sha256sum -c ../SHA256SUMS` -- verify later with the standard tool and no glue. This is a digest, not a signature: a signature over sipnab's bytes could never verify against the object a store holds, because a conserver adds fields on ingest. What the digest buys is binding an emission to a store's own ledger entry out of band
+- `cd ./long/ && sha256sum -c ../SHA256SUMS` -- verify later with the standard tool and no glue. This is a digest, not a signature. A signature over sipnab's bytes could never verify against the object a store holds, because a conserver adds fields on ingest. What the digest buys is binding an emission to a store's own ledger entry out of band
 - `sipnab -N -I capture.pcap --tshark-filter 'sip.Method == "INVITE"'` — print a tshark-compatible display filter for the INVITE traffic in a capture. sipnab hands the expression to tshark's `-Y` verbatim, so it takes WIRESHARK display-filter syntax rather than sipnab's `--filter` DSL: `sip.Method`, not `method`. Quote the whole expression in single quotes so the inner double quotes survive the shell
 
 
@@ -942,11 +1138,14 @@ selects only problem calls from user 1001.
 | `--no-dialog` | -- | off | 0.3.0 | Disable dialog tracking entirely (message-only mode) |
 | `--tag` | `<TAG>` | -- | 0.3.0 | Filter dialogs by tag value |
 
-> **`branch` counts transactions, not calls.** RFC 3261 gives the ACK to a 2xx a
-> new branch ([RFC 3261 section 17.1.1.3](https://www.rfc-editor.org/rfc/rfc3261.html#section-17.1.1.3)) and the BYE another, so one ordinary call appears as
-> three or more units. That is the transaction view working as intended. Use it
-> when a capture reuses one Call-ID across many transactions — load generators,
-> proxies under test — and note that `--limit` then counts transactions too.
+> **`branch` counts transactions, not calls.**
+>
+> - RFC 3261 gives the ACK to a 2xx a new branch ([RFC 3261 section 17.1.1.3](https://www.rfc-editor.org/rfc/rfc3261.html#section-17.1.1.3)). It gives the BYE another.
+> - So one ordinary call appears as three or more units.
+> - That is the transaction view working as intended.
+> - Use it when a capture reuses one Call-ID across many transactions, such as
+>   load generators or proxies under test.
+> - Note that `--limit` then counts transactions too.
 
 **Examples**
 
@@ -1008,10 +1207,12 @@ selects only problem calls from user 1001.
 
 ## Diagnosis thresholds
 
-The numbers the signaling and media checks compare against. Each decides
-whether a call that is working gets reported as broken, so the defaults are
-standards figures for the general case and your own network beats them. Every
-flag has a config key under `[diagnosis]`, and the flag wins.
+The numbers the signaling and media checks compare against.
+
+- Each decides whether a call that is working gets reported as broken.
+- So the defaults are standards figures for the general case. Your own network
+  beats them.
+- Every flag has a config key under `[diagnosis]`, and the flag wins.
 
 | Flag | Value | Default | Since | Description |
 |------|-------|---------|-------|-------------|
@@ -1038,20 +1239,25 @@ flag has a config key under `[diagnosis]`, and the flag wins.
 
 ## Quality color bands
 
-Where the quality color column turns yellow, and where it turns red. This is
-a different question from the diagnosis thresholds above: those decide whether
-a working call counts as broken, while these decide only what catches an
-operator's eye during triage. Every flag has a config key under `[quality]`,
-and the flag wins.
+Where the quality color column turns yellow, and where it turns red.
 
-The shipped figures suit a general-purpose trunk, and the right values belong
-to the network you are watching — 30 ms of jitter is already a fault on a LAN
-PBX, and 1 percent loss is unremarkable on an international one. A column
-tuned for neither is wrong in both directions.
+- This is a different question from the diagnosis thresholds above.
+- Those decide whether a working call counts as broken.
+- These decide only what catches an operator's eye during triage.
+- Every flag has a config key under `[quality]`, and the flag wins.
 
-These bands paint the TUI. A `-N` run prints the measurements themselves
-rather than a color, so sipnab validates a band set on a non-interactive run
-and then never consults it.
+The shipped figures suit a general-purpose trunk. The right values belong to
+the network you are watching.
+
+- 30 ms of jitter is already a fault on a LAN PBX.
+- 1 percent loss is unremarkable on an international one.
+- A column tuned for neither is wrong in both directions.
+
+These bands paint the TUI.
+
+- A `-N` run prints the measurements themselves rather than a color.
+- So sipnab validates a band set on a non-interactive run and then never
+  consults it.
 
 | Flag | Value | Default | Since | Description |
 |------|-------|---------|-------|-------------|
@@ -1064,15 +1270,18 @@ and then never consults it.
 | `--rtt-warn-ms` | `<MS>` | `300.0` | 0.5.97 | Round trip at or above which the column turns yellow. The default is ITU-T G.114's 150 ms one-way guidance doubled. Config: `[quality] rtt_warn_ms` |
 | `--rtt-bad-ms` | `<MS>` | `800.0` | 0.5.97 | Round trip at or above which the column turns red. The default is G.114's 400 ms one-way figure doubled. Config: `[quality] rtt_bad_ms` |
 
-sipnab refuses a warn boundary that sits above its matching bad boundary,
-rather than silently reordering the pair, because that pair leaves an
-unreachable middle: nothing would ever render as a warning, and whoever wrote
-it would see green until the value was already bad.
+sipnab refuses a warn boundary that sits above its matching bad boundary. It
+does not silently reorder the pair.
 
-A boundary that is not a
-finite, non-negative number fails for a worse reason — every comparison
-against `NaN` is false, so a single one would paint the whole column green and
-report a healthy network in the middle of an outage.
+- That pair leaves an unreachable middle. Nothing would ever render as a
+  warning.
+- Whoever wrote it would see green until the value was already bad.
+
+A boundary that is not a finite, non-negative number fails for a worse reason.
+
+- Every comparison against `NaN` is false.
+- So a single one would paint the whole column green.
+- It would report a healthy network in the middle of an outage.
 
 **Examples**
 
@@ -1139,18 +1348,21 @@ report a healthy network in the middle of an outage.
 | `--tui-audit-file` | `<FILE>` | -- | 0.5.131 | Record what the operator did in the TUI, one JSON line per action appended to FILE (`seq`, `ts`, `record`, `action`, `target`, `format`, `caller`, `outcome`, `error`). Actions, not keystrokes: the capture opened, the capture swapped, a filter applied or cleared, an export and its destination — including one sipnab refused. A keystroke log of the TUI bindings would be mostly navigation, unreadable at review time, and a privacy hazard of its own, so **the search field is never recorded**, neither the query nor the fact that the operator typed one. Same writer and same file shape as `--mcp-audit-file`: append-only, never truncated, one sequence number per record so a gap is a lost record, created mode `0600`. A path sipnab cannot open stops the run before sipnab takes the terminal, and sipnab refuses `-N` rather than accepting it with nothing to record. **A write that fails mid-session does NOT stop the TUI** — an operator holding a live capture that exists nowhere else must not lose it because a log partition filled; the lost record leaves a permanent hole in the numbering, the status line says the trail is incomplete, and the closing `session_end` record and the exit message on standard error name the count. Leave it off and nothing changes. Feature: `tui` |
 
 > **`--alert` accepts a channel or a threshold rule.** Channels are `syslog`, `json` or `exec`.
-> `--syslog` and `--alert-json` are the equivalent boolean forms. Naming the
-> channel here does the same thing. A value containing `:` is instead parsed as
-> an alert rule (`<name>:<threshold>/<window>[:<cooldown>]`, window needs an
-> `s`/`m`/`h` suffix).
+>
+> - `--syslog` and `--alert-json` are the equivalent boolean forms. Naming the
+>   channel here does the same thing.
+> - A value containing `:` is instead parsed as an alert rule
+>   (`<name>:<threshold>/<window>[:<cooldown>]`). The window needs an
+>   `s`/`m`/`h` suffix.
 >
 > Rule names are `scanner`, `fraud`, `digest` and
-> `reg-flood` (also `reg_flood`). An unknown rule name exits 2 at startup.
-> A rule counts detector findings, not raw packets.
+> `reg-flood` (also `reg_flood`).
 >
-> An unrecognized bare word draws a warning naming the
-> valid channels. It used to fail silently, so a documented `--alert syslog`
-> enabled nothing at all.
+> - An unknown rule name exits 2 at startup.
+> - A rule counts detector findings, not raw packets.
+>
+> An unrecognized bare word draws a warning naming the valid channels. It used
+> to fail silently. So a documented `--alert syslog` enabled nothing at all.
 
 **Examples**
 - `sipnab -N -I capture.pcap --no-fraud-detect --report` — skip fraud detection for one run when your config file sets `[security] fraud_detect = true`
@@ -1213,36 +1425,49 @@ report a healthy network in the middle of an outage.
 | `--exec-queue-depth` | `<N>` | `100` | 0.5.100 | Hook commands allowed to be running at once before sipnab drops `--on-dialog-exec` and `--on-quality-exec` events. The second ceiling above `--exec-rate-limit`, and the binding one for any hook that takes longer than a second: its slot is still occupied when the next second's budget arrives, so on a busy trunk this is what events actually meet. Config: `[limits] exec_queue_depth` |
 
 **What a hook receives.** Every command gets the event as environment
-variables. `--on-dialog-exec` sets `SIPNAB_CALL_ID`, `SIPNAB_FROM`,
-`SIPNAB_TO`, `SIPNAB_STATE`, `SIPNAB_METHOD` and `SIPNAB_JSON` (the whole
-dialog). `--on-quality-exec` sets `SIPNAB_SSRC`, `SIPNAB_SRC`, `SIPNAB_MOS`,
-`SIPNAB_JITTER`, `SIPNAB_LOSS` and `SIPNAB_STREAM_JSON` — the stream object
-under its own name, never `SIPNAB_JSON`. Rule hooks add `SIPNAB_RULE`,
-`SIPNAB_DETAIL` and `SIPNAB_VARIABLE`.
+variables.
 
-**A hook inherits sipnab's whole environment, credentials included.** sipnab
-does not clear the environment before spawning, so a hook sees
-`SIPNAB_API_SIGNING_KEY`, `SIPNAB_MCP_TOKEN` and `SIPNAB_HEP_AUTH` if you set
-them there — and [Authentication](@/docs/auth.md) recommends exactly that. This is
-deliberate: a hook that must call back into the API needs the credential, and
-stripping the environment would break that without making anything safer,
-since a hook already runs as you.
+- `--on-dialog-exec` sets `SIPNAB_CALL_ID`, `SIPNAB_FROM`, `SIPNAB_TO`,
+  `SIPNAB_STATE`, `SIPNAB_METHOD` and `SIPNAB_JSON` (the whole dialog).
+- `--on-quality-exec` sets `SIPNAB_SSRC`, `SIPNAB_SRC`, `SIPNAB_MOS`,
+  `SIPNAB_JITTER`, `SIPNAB_LOSS` and `SIPNAB_STREAM_JSON`. That last one is the
+  stream object under its own name, never `SIPNAB_JSON`.
+- Rule hooks add `SIPNAB_RULE`, `SIPNAB_DETAIL` and `SIPNAB_VARIABLE`.
 
-It does mean a hook command is as trusted as
-the process: do not pass one a string built from capture data, and do not run
-one you would not run by hand with your keys exported.
+**A hook inherits sipnab's whole environment, credentials included.**
 
-**Hooks cannot gain privileges.** sipnab sets `PR_SET_NO_NEW_PRIVS` at startup
-on Linux, on every run and whether or not it is root, and every command it
-spawns inherits that flag. A hook may run anything you can already run. What it
-cannot do is get *more* than you have through a setuid or setgid helper:
-`sudo`, `pkexec` and `ping` start, then fail for want of the privilege they
-normally acquire.
+- sipnab does not clear the environment before spawning.
+- So a hook sees `SIPNAB_API_SIGNING_KEY`, `SIPNAB_MCP_TOKEN` and
+  `SIPNAB_HEP_AUTH` if you set them there. [Authentication](@/docs/auth.md)
+  recommends exactly that.
+- This is deliberate:
+  - a hook that must call back into the API needs the credential,
+  - stripping the environment would break that without making anything safer,
+    since a hook already runs as you.
 
-A hook that needs to act privileged should ask something that
-already is — a socket to a daemon, a `systemd` unit it triggers — rather than
-trying to become privileged itself. Root runs have always behaved this way.
-Unprivileged runs (`sipnab --setup-caps`) now do too.
+It does mean a hook command is as trusted as the process.
+
+- Do not pass one a string built from capture data.
+- Do not run one you would not run by hand with your keys exported.
+
+**Hooks cannot gain privileges.**
+
+- sipnab sets `PR_SET_NO_NEW_PRIVS` at startup on Linux. It does so on every
+  run, whether or not it is root.
+- Every command it spawns inherits that flag.
+- A hook may run anything you can already run.
+- What it cannot do is get *more* than you have through a setuid or setgid
+  helper. `sudo`, `pkexec` and `ping` start, then fail for want of the
+  privilege they normally acquire.
+
+A hook that needs to act privileged should ask something that already is,
+rather than trying to become privileged itself. For example:
+
+- a socket to a daemon,
+- a `systemd` unit it triggers.
+
+Root runs have always behaved this way. Unprivileged runs
+(`sipnab --setup-caps`) now do too.
 
 **Examples**
 
@@ -1275,7 +1500,7 @@ Unprivileged runs (`sipnab --setup-caps`) now do too.
 | `--api-accept-archive-passwords` | -- | off | 0.5.187 | Accept the `Sipnab-Archive-Password` header on `GET /v1/captures/compare` from a client that is not on this host. Without `--api-tls-cert` sipnab serves plain HTTP, so the password crosses the network in the clear unless TLS terminates in front: making sure it does is your job when you pass this. Without it, only a loopback client may send one, and a remote one gets `403`. Feature: `api` |
 | `--api-file-root` | `<DIR>` | -- | 0.5.177 | Directory of capture files `GET /v1/captures/compare` may diff. The REST counterpart of `--mcp-file-root`, off for the same reason: every other REST answer comes from bytes sipnab already holds, while this reads FILES a client names. It takes a bare FILENAME, never a path: sipnab rejects a separator, a `..` or an absolute prefix before touching the filesystem, and refuses a symlink that resolves out of the root at open, by the same check `-O` uses. Without this flag the compare route answers `503`. Naming one directory means the worst a client can do is name files inside it. Feature: `api` |
 | `--metrics-max-conn` | `<N>` | `16` | 0.5.100 | Metrics scrapes served at once before further ones get `503`. The gate stops a burst of slow clients exhausting threads and taking monitoring down, and sixteen suits one Prometheus; an HA pair, a federating parent, a `remote_write` shard, an alertmanager sidecar and one engineer's `curl` reach it without anything unusual happening. A refused scrape leaves a hole in the series that reads as a capture that died rather than as a busy endpoint. Config: `[limits] metrics_max_conn` Feature: `metrics` |
-| `-L`, `--hep-listen` | `<ADDR>` | -- | 0.3.0 | Listen for HEP (Homer Encapsulation Protocol) packets. **Combines with `-d <iface>`**: HEP then supplies signaling while the interface supplies the RTP a HEP feed cannot carry, and streams bind to dialogs by SDP media endpoint. With no BPF expression of your own, the interface gets a media-only default, since the mirror carries the signaling (up to 0.5.192 it got the signaling filter, captured no media and saw every mirrored message a second time); an explicit expression such as `sipnab -N -d eth0 -L 127.0.0.1:9060 "udp portrange 10000-20000"` narrows it to your media ports. One interface and one listener only: `--multi-device` with `-L`, `-I` with `-L`, and `-O` alongside the pair are each refused with the reason. See [cookbook recipe 6d](@/docs/cookbook.md#6d-take-signaling-from-hep-and-media-off-the-wire-in-one-process). The decrypted TLS and WebSocket legs OpenSIPS and Kamailio trace arrive with IP protocol 22, 50 or 6 and decode as TLS, WS or WSS, see [How `--hep-listen` reads the transport](#how-hep-listen-reads-the-transport). `--portrange` does not apply to HEP messages, so a proxy tracing SIP on 7060 needs no `--portrange 1-65535`. Each message takes the time its HEP packet carries; a HEP v3 packet without a `TS_SEC` chunk, and a HEP v1 packet, take the time sipnab received them. sipnab reads HEP v1 and v2 packets in the layout the `captagent` capture agent writes and Kamailio's `sipcapture` module reads: IPv4 or IPv6 addresses by the family byte, the transport by the IP protocol byte, and for v2 the time and capture ID in its time header. Feature: `hep` |
+| `-L`, `--hep-listen` | `<ADDR>` | -- | 0.3.0 | Listen for HEP (Homer Encapsulation Protocol) packets. **Combines with `-d <iface>`**: HEP then supplies signaling while the interface supplies the RTP a HEP feed cannot carry, and streams bind to dialogs by SDP media endpoint. With no BPF expression of your own, the interface gets a media-only default, since the mirror carries the signaling (up to 0.5.192 it got the signaling filter, captured no media and saw every mirrored message a second time); an explicit expression such as `sipnab -N -d eth0 -L 127.0.0.1:9060 "udp portrange 10000-20000"` narrows it to your media ports. One interface and one listener only: `--multi-device` with `-L`, `-I` with `-L`, and `-O` alongside the pair are each refused with the reason. See [cookbook recipe "Take signaling from HEP and media off the wire, in one process"](@/docs/cookbook.md#take-signaling-from-hep-and-media-off-the-wire-in-one-process). The decrypted TLS and WebSocket legs OpenSIPS and Kamailio trace arrive with IP protocol 22, 50 or 6 and decode as TLS, WS or WSS, see [How `--hep-listen` reads the transport](#how-hep-listen-reads-the-transport). `--portrange` does not apply to HEP messages, so a proxy tracing SIP on 7060 needs no `--portrange 1-65535`. Each message takes the time its HEP packet carries; a HEP v3 packet without a `TS_SEC` chunk, and a HEP v1 packet, take the time sipnab received them. sipnab reads HEP v1 and v2 packets in the layout the `captagent` capture agent writes and Kamailio's `sipcapture` module reads: IPv4 or IPv6 addresses by the family byte, the transport by the IP protocol byte, and for v2 the time and capture ID in its time header. Feature: `hep` |
 | `-H`, `--hep-send` | `<ADDR>` | -- | 0.3.0 | Send captured packets via HEP to a remote collector: SIP as protocol type 1 and RTCP as type 5, so the collector can report media quality and not only call setup. RTP is never forwarded. **On `-I <file>` this forwards the file's contents**: every SIP message and RTCP report sipnab reads out of the capture goes to `<ADDR>` as recorded, redacted in no way. sipnab announces that at startup, naming the flag, the destination and the capture files, before it reads the first packet. See [What `--hep-send` sends](#what-hep-send-sends). **A headless run ends with one line saying what it exported**: packets sent, failures by kind (`connect`, `tls_handshake`, `write`) and reconnects, at `warn` when anything failed. Over UDP "sent" means handed to the kernel, and a collector that is down produces no failure; the line says so. `runtime_stats`, `GET /v1/runtime` (`hep_export`) and the Prometheus `sipnab_hep_export_*` series carry the same counts while it runs. Feature: `hep` |
 | `--hep-send-transport` | `<udp\|tcp\|tls>` | `udp` | 0.5.150 | Transport `--hep-send` uses to reach the collector. Homer's collectors accept all three. HEP v3 carries its own total length, so a `tcp` or `tls` feed is packets laid end to end with no extra framing, and sipnab sets `TCP_NODELAY` because these are small packets whose value is timeliness. A write that fails drops the connection and the next packet dials again — one reconnect per packet, never a loop, so a collector that is down does not turn forwarding into a spin. Every connect, the first and each reconnect, gives up after 3 seconds and counts as a `connect` failure, as a refused one does. A collector whose host or firewall drops the connection request without answering otherwise held forwarding, and the shutdown that waits for it, for the operating system's own limit, about 127 seconds on Linux. Three seconds lets the first request and one retransmission go unanswered before sipnab gives up, and the next packet dials again. Refused without `--hep-send`, which is the side it governs. Feature: `hep` |
 | `--hep-listen-transport` | `<udp\|tcp\|tls>` | `udp` | 0.5.150 | Transport `--hep-listen` accepts. A `tcp` or `tls` listener serves several agents at once, one connection each, and reads every connection as HEP v3 packets delimited by the total length in each header. **HEP v1 and v2 are datagram-only**: they declare no total length, so nothing can delimit it on a stream. A peer that sends bytes that are not HEP v3 loses its connection, because a stream offers no point to resynchronize at. Refused without `--hep-listen`, which is the side it governs. Feature: `hep` |
@@ -1362,30 +1587,45 @@ Unprivileged runs (`sipnab --setup-caps`) now do too.
 ### What `--hep-send` sends
 
 `--hep-send <ADDR>` forwards every SIP message **and every RTCP report** sipnab
-reads to the collector at `<ADDR>`, byte for byte as the capture holds it. On a
-live capture that matches what the flag sounds like. Traffic passes the
+reads to the collector at `<ADDR>`. It forwards them byte for byte as the
+capture holds them.
+
+On a live capture that matches what the flag sounds like. Traffic passes the
 interface, and a copy reaches Homer.
 
-Each datagram's IP protocol chunk carries the transport the message arrived
-on: 17 for UDP, 6 for TCP, TLS and WebSocket, 132 for SCTP. A collector
-filtering by transport finds a TCP trunk under TCP.
+Each datagram's IP protocol chunk carries the transport the message arrived on:
 
-RTCP travels as HEP protocol type 5, which is what lets a remote collector
-report media quality — loss, jitter, MOS — rather than only whether calls
+- 17 for UDP,
+- 6 for TCP, TLS and WebSocket,
+- 132 for SCTP.
+
+A collector filtering by transport finds a TCP trunk under TCP.
+
+RTCP travels as HEP protocol type 5. That is what lets a remote collector
+report media quality (loss, jitter, MOS) rather than only whether calls
 connect.
 
-**RTP is never forwarded.** RTCP is a control channel that [RFC 3550 section 6.2](https://www.rfc-editor.org/rfc/rfc3550.html#section-6.2)
-holds to a small fraction of session bandwidth, so it carries the quality
-summary at a rate a WAN link and a UDP feed can absorb. The media itself is the
-opposite on both counts, and forwarding it would make this a call recorder
-pointed at the collector.
+**RTP is never forwarded.**
 
-On `-I <file>` the same sentence carries a sharper meaning. The messages sipnab
-reads come out of the capture file, so that file's signaling leaves the
-machine: request lines, headers, URIs, and any message bodies it holds. sipnab
-redacts nothing and drops nothing beyond what `--portrange` and the matching
-flags already exclude. Testing a HEP pipeline against a customer capture
-therefore ships that customer's signaling to whatever `<ADDR>` names.
+- RTCP is a control channel that [RFC 3550 section 6.2](https://www.rfc-editor.org/rfc/rfc3550.html#section-6.2)
+  holds to a small fraction of session bandwidth.
+- So it carries the quality summary at a rate a WAN link and a UDP feed can
+  absorb.
+- The media itself is the opposite on both counts.
+- Forwarding it would make this a call recorder pointed at the collector.
+
+On `-I <file>` the same sentence carries a sharper meaning.
+
+- The messages sipnab reads come out of the capture file.
+- So that file's signaling leaves the machine:
+  - request lines,
+  - headers,
+  - URIs,
+  - any message bodies it holds.
+- sipnab redacts nothing. It drops nothing beyond what `--portrange` and the
+  matching flags already exclude.
+- Testing a HEP pipeline against a customer capture therefore ships that
+  customer's signaling to whatever `<ADDR>` names.
 
 sipnab announces this before it reads the first packet:
 
@@ -1400,30 +1640,37 @@ That line is a warning rather than a refusal, because you chose the
 destination. Replaying an archive into your own collector stays a supported
 workflow. Two habits keep it uneventful:
 
-- Name a collector you control. sipnab never takes the destination from the
-  capture. The address always comes from your command line or your config file,
-  and no code path exists that turns a recorded address into an export target.
+- Name a collector you control.
+  - sipnab never takes the destination from the capture.
+  - The address always comes from your command line or your config file.
+  - No code path exists that turns a recorded address into an export target.
 - Read the startup warning before you walk away. It names the flag, the
   destination, and the capture files.
 
-The scanner-kill path works the other way round and refuses to run offline. It
-aims at addresses recorded *inside* the capture, which belong to third parties
-who have nothing to do with your analysis, so `-I file` grants it nothing at
-all. See [Security](#security).
+The scanner-kill path works the other way round and refuses to run offline.
+
+- It aims at addresses recorded *inside* the capture.
+- Those belong to third parties who have nothing to do with your analysis.
+- So `-I file` grants it nothing at all. See [Security](#security).
 
 ### How `--hep-listen` reads the transport
 
 A HEP packet names the transport of the message it carries in its IP protocol
-chunk (`0x0002`). The [HEP3 specification](https://github.com/sipcapture/hep/blob/83451db00e99f43b24dc68a391c0a7b2bb749b02/docs/HEP3_Network_Protocol_Specification_REV_37.pdf)
-defines that chunk as the IP protocol ID, and sipnab reads 17 as UDP, 6 as TCP
-and 132 as SCTP.
+chunk (`0x0002`).
 
-OpenSIPS and Kamailio also send a decrypted TLS or WebSocket message over
-HEP. Its payload is plain SIP, and no IP protocol number means TLS or
-WebSocket, so both proxies put a fake number in the chunk. Neither number
-tells WS from WSS, and Kamailio's does not even tell TLS from WebSocket, so
-sipnab reads the number first and lets the message's top Via narrow it to WS
-or WSS:
+- The [HEP3 specification](https://github.com/sipcapture/hep/blob/83451db00e99f43b24dc68a391c0a7b2bb749b02/docs/HEP3_Network_Protocol_Specification_REV_37.pdf)
+  defines that chunk as the IP protocol ID.
+- sipnab reads 17 as UDP, 6 as TCP and 132 as SCTP.
+
+OpenSIPS and Kamailio also send a decrypted TLS or WebSocket message over HEP.
+
+- Its payload is plain SIP.
+- No IP protocol number means TLS or WebSocket. So both proxies put a fake
+  number in the chunk.
+- Neither number tells WS from WSS.
+- Kamailio's does not even tell TLS from WebSocket.
+- So sipnab reads the number first. It lets the message's top Via narrow it to
+  WS or WSS:
 
 | Number | Sender | What the sender means | sipnab reports |
 |---|---|---|---|
@@ -1432,45 +1679,62 @@ or WSS:
 | 50 (`IPPROTO_ESP`) | OpenSIPS `tracer` | WS or WSS | WS, or WSS as the top Via says |
 | 6 (TCP) | Kamailio `siptrace`, for a message it sends | TCP, or WS on a TCP connection | TCP, or WS or WSS as the top Via says |
 
-The last row exists because Kamailio traces a message it sends with the
-protocol of the socket it sends from, and a WebSocket connection's socket is
-a TCP one. A reply to a WS client therefore arrives as 6, and only its Via
-says WebSocket. The Via only ever narrows to WS or WSS. A Via naming UDP never
-turns a TCP leg into UDP.
+The last row exists because of how Kamailio traces a message it sends.
 
-The sources are OpenSIPS
-[`modules/tracer/tracer.c`](https://github.com/OpenSIPS/opensips/blob/5fa4e627187f23544e702db0a47dbe877a407117/modules/tracer/tracer.c#L3584-L3591)
-and its own receiver
-[`modules/proto_hep/proto_hep.c`](https://github.com/OpenSIPS/opensips/blob/5fa4e627187f23544e702db0a47dbe877a407117/modules/proto_hep/proto_hep.c#L1132-L1138),
-and Kamailio
-[`src/modules/siptrace/siptrace_hep.c`](https://github.com/kamailio/kamailio/blob/24cbec17f6030f7a9a3c632f0a0842a37b46bdf5/src/modules/siptrace/siptrace_hep.c#L480-L495),
-[`siptrace.c`](https://github.com/kamailio/kamailio/blob/24cbec17f6030f7a9a3c632f0a0842a37b46bdf5/src/modules/siptrace/siptrace.c#L1393) and
-[`siptrace_send.c`](https://github.com/kamailio/kamailio/blob/24cbec17f6030f7a9a3c632f0a0842a37b46bdf5/src/modules/siptrace/siptrace_send.c#L387-L403). The top Via names the
-transport of the hop a message travels on, as
-[RFC 3261 section 18.2.2](https://www.rfc-editor.org/rfc/rfc3261.html#section-18.2.2)
-has a response travel back over the transport its Via names, and
-[RFC 7118 section 5.1](https://www.rfc-editor.org/rfc/rfc7118.html#section-5.1) defines
-`WS` and `WSS` as Via transports.
+- It uses the protocol of the socket it sends from.
+- A WebSocket connection's socket is a TCP one.
+- So a reply to a WS client arrives as 6, and only its Via says WebSocket.
+- The Via only ever narrows to WS or WSS.
+- A Via naming UDP never turns a TCP leg into UDP.
 
-The `transport` field of each `--json` message carries the name, so
+The sources:
+
+- OpenSIPS
+  [`modules/tracer/tracer.c`](https://github.com/OpenSIPS/opensips/blob/5fa4e627187f23544e702db0a47dbe877a407117/modules/tracer/tracer.c#L3584-L3591)
+  and its own receiver
+  [`modules/proto_hep/proto_hep.c`](https://github.com/OpenSIPS/opensips/blob/5fa4e627187f23544e702db0a47dbe877a407117/modules/proto_hep/proto_hep.c#L1132-L1138),
+- Kamailio
+  [`src/modules/siptrace/siptrace_hep.c`](https://github.com/kamailio/kamailio/blob/24cbec17f6030f7a9a3c632f0a0842a37b46bdf5/src/modules/siptrace/siptrace_hep.c#L480-L495),
+  [`siptrace.c`](https://github.com/kamailio/kamailio/blob/24cbec17f6030f7a9a3c632f0a0842a37b46bdf5/src/modules/siptrace/siptrace.c#L1393) and
+  [`siptrace_send.c`](https://github.com/kamailio/kamailio/blob/24cbec17f6030f7a9a3c632f0a0842a37b46bdf5/src/modules/siptrace/siptrace_send.c#L387-L403).
+
+The top Via names the transport of the hop a message travels on.
+
+- [RFC 3261 section 18.2.2](https://www.rfc-editor.org/rfc/rfc3261.html#section-18.2.2)
+  has a response travel back over the transport its Via names.
+- [RFC 7118 section 5.1](https://www.rfc-editor.org/rfc/rfc7118.html#section-5.1) defines
+  `WS` and `WSS` as Via transports.
+
+The `transport` field of each `--json` message carries the name. So
 `jq 'select(.transport == "WSS")'` picks these legs out of a run that also
-captures the wire. A WebSocket leg captured from the wire itself reports WS
-when it is plain, and WSS when sipnab decrypted it with `--keylog`.
+captures the wire.
 
-`--hep-parse` reads a HEP datagram it finds on the wire or in a capture file
-by the same rule, and counts one whose number names no transport in the NOT
+A WebSocket leg captured from the wire itself reports:
+
+- WS when it is plain,
+- WSS when sipnab decrypted it with `--keylog`.
+
+`--hep-parse` reads a HEP datagram it finds on the wire or in a capture file by
+the same rule. A datagram whose number names no transport counts in the NOT
 DECODED line by that number, as a listener does.
 
-sipnab applies all of this to HEP input only. On a frame read from an
-interface or a file, 50 is a real IPsec ESP packet, sipnab refuses 22, and 6
-is TCP whatever the payload says, as before. Any other number a HEP sender
-puts in the chunk stays in the NOT DECODED line, by number.
+sipnab applies all of this to HEP input only. On a frame read from an interface
+or a file, as before:
+
+- 50 is a real IPsec ESP packet,
+- sipnab refuses 22,
+- 6 is TCP whatever the payload says.
+
+Any other number a HEP sender puts in the chunk stays in the NOT DECODED line,
+by number.
 
 ## MCP server
 
-Run sipnab as a Model Context Protocol server so an AI agent can drive
-it. See [MCP Server](@/docs/mcp.md) for the full guide. [Network Listeners](#network-listeners) lists the `--mint-token` /
-`--token-id` pair that issues MCP bearer tokens — it serves the REST API too.
+Run sipnab as a Model Context Protocol server so an AI agent can drive it.
+
+- See [MCP Server](@/docs/mcp.md) for the full guide.
+- [Network Listeners](#network-listeners) lists the `--mint-token` /
+  `--token-id` pair that issues MCP bearer tokens. It serves the REST API too.
 
 | Flag | Value | Default | Since | Description |
 |------|-------|---------|-------|-------------|
@@ -1580,9 +1844,9 @@ it. See [MCP Server](@/docs/mcp.md) for the full guide. [Network Listeners](#net
 - `sipnab -N -I capture.pcap --tls-key /etc/sipnab/tls-rsa.key --keylog /etc/sipnab/keys.log --allow-coredump` — decrypt TLS 1.2 RSA-key-exchange SIP from a pcap using an RSA private key, with core dumps left enabled
 - `sipnab -N -I capture.pcap --srtp-keys /etc/sipnab/srtp.keys --dtls-keylog /etc/sipnab/dtls.log` — decrypt SRTP media in an offline pcap from an SRTP master-keys file plus DTLS-SRTP handshake keys
 - `sudo sipnab -d eth0 --tls-key /etc/sipnab/tls-rsa.key --srtp-keys /etc/sipnab/srtp.keys --keylog /etc/sipnab/keys.log --keylog-watch --allow-coredump` — live decrypt both SIP (RSA key) and SRTP media, watching the key log for new PFS session keys
-- `sudo sh -c 'ecapture tls -m keylog --keylogfile=/dev/stdout | sipnab -N -d eth0 --keylog-fd 0'` — read SIP over TLS with **no certificate and no restart of the SIP daemon**: an eBPF extractor pulls session secrets out of the running daemon's OpenSSL and pipes them straight in, so nothing is ever written to disk. sipnab cannot launch the extractor itself, because every child inherits `PR_SET_NO_NEW_PRIVS` and so can never acquire `CAP_BPF`
+- `sudo sh -c 'ecapture tls -m keylog --keylogfile=/dev/stdout | sipnab -N -d eth0 --keylog-fd 0'` — read SIP over TLS with **no certificate and no restart of the SIP daemon**: an eBPF extractor pulls session secrets out of the running daemon's OpenSSL. It pipes them straight in, so nothing is ever written to disk. sipnab cannot launch the extractor itself, because every child inherits `PR_SET_NO_NEW_PRIVS` and so can never acquire `CAP_BPF`
 - `sudo sipnab -N -d eth0 --keylog-fd 3 --user sipnab 3< /run/sip.keys` — take the secrets on descriptor 3 opened by the shell, then drop to an unprivileged user for the capture itself. The pipe is already open, so nothing has to be reachable from `/run` afterwards
-- `sudo mkfifo -m 600 /run/sip.keys && sudo sipnab -N -d eth0 --keylog /run/sip.keys --keylog-watch` — the same idea through a named pipe rather than a descriptor, for a producer started separately by systemd. sipnab opens the FIFO while still privileged, before it drops to an unprivileged user and can no longer reach `/run`
+- `sudo mkfifo -m 600 /run/sip.keys && sudo sipnab -N -d eth0 --keylog /run/sip.keys --keylog-watch` — the same idea through a named pipe rather than a descriptor, for a producer started separately by systemd. sipnab opens the FIFO while still privileged. It does so before it drops to an unprivileged user and can no longer reach `/run`
 - `sudo sipnab -N -d eth0 --keylog /run/sip.keys --keylog-watch --tls-lockon-window 8388608` — read a carrier trunk that has been up for days without restarting it. The record counter is not on the wire, so a capture joining an established connection has to find it. The default reaches about a day of a trunk at ten records a second, and this raises the ceiling to roughly a week
 - `sipnab -N -I trunk.pcap --keylog keys.log --tls-lockon-window 4096` — narrow the search when reading a capture whose key log holds secrets for many unrelated connections, so a session that can never match gives up sooner instead of spending the run's trial budget
 - `sudo sipnab --uprobe-list` — **run this first.** Report which TLS libraries processes on this host are actually mapping, and exit without installing a single probe. Answers the only question that matters before starting: is the daemon you care about using a library sipnab can read?
@@ -1610,17 +1874,22 @@ it. See [MCP Server](@/docs/mcp.md) for the full guide. [Network Listeners](#net
 | `--chroot` | `<DIR>` | -- | 0.3.0 | Chroot to this directory after initialization. Config: `[privilege] chroot` |
 | `--setup-caps` | -- | off | 0.4.3 | Grant this binary the Linux capabilities for live capture (`cap_net_raw,cap_net_admin+ep` via `setcap`) so it runs without `sudo`, then exit. Re-invokes through `sudo` when not already root. Linux only. |
 
-**`--user` does nothing unless the process is root.** sipnab skips the drop
-when `geteuid() != 0` and says so only at `debug` — so under the recommended
-install (`--setup-caps`, then run without `sudo`) clap parses the flag, the log
-line goes where nobody watches, and the drop never arms. That is the intended
-behavior: an unprivileged process has nothing to drop. This note exists because
-the flag's presence otherwise reads as a guarantee.
+**`--user` does nothing unless the process is root.**
 
-The platforms also differ. On Linux, root plus `--user` drops to that user. On
-macOS, sipnab skips the drop even as root unless you pass `--user`: dropping to
-`nobody` strands the process without a per-user login session, which crashes
-CoreAudio the moment anything touches it.
+- sipnab skips the drop when `geteuid() != 0`. It says so only at `debug`.
+- Take the recommended install (`--setup-caps`, then run without `sudo`):
+  - clap parses the flag,
+  - the log line goes where nobody watches,
+  - the drop never arms.
+- That is the intended behavior. An unprivileged process has nothing to drop.
+- This note exists because the flag's presence otherwise reads as a guarantee.
+
+The platforms also differ.
+
+- On Linux, root plus `--user` drops to that user.
+- On macOS, sipnab skips the drop even as root unless you pass `--user`.
+  Dropping to `nobody` strands the process without a per-user login session.
+  That crashes CoreAudio the moment anything touches it.
 
 **Examples**
 - `sipnab -N -I capture.pcap --priv-drop --report` — drop privileges as usual when your config file sets `[privilege] no_priv_drop = true`
@@ -1673,13 +1942,17 @@ CoreAudio the moment anything touches it.
 ## vCon forwarder
 
 `--vcon-forward` runs sipnab as the process that delivers an
-`--export-vcon-dir` spool to a vCon store. It captures nothing, and sipnab
-refuses it beside any capture source, listener or export flag. The other flags
-in this section need it, except `--vcon-spool-status`, which reads a spool's
-state and runs on its own. Each flag but `--vcon-forward`, `--vcon-forward-once`,
-`--vcon-forward-auth` and `--vcon-spool-status` has a `[vcon_forward]` key in
-the config file, which the flag overrides. Needs the `vcon` Cargo feature. More:
-[Deliver the spool to a store](@/docs/vcon.md#deliver-the-spool-to-a-store).
+`--export-vcon-dir` spool to a vCon store.
+
+- It captures nothing.
+- sipnab refuses it beside any capture source, listener or export flag.
+- The other flags in this section need it, except `--vcon-spool-status`. That
+  flag reads a spool's state and runs on its own.
+- Each flag but `--vcon-forward`, `--vcon-forward-once`, `--vcon-forward-auth`
+  and `--vcon-spool-status` has a `[vcon_forward]` key in the config file. The
+  flag overrides the key.
+- Needs the `vcon` Cargo feature.
+- More: [Deliver the spool to a store](@/docs/vcon.md#deliver-the-spool-to-a-store).
 
 | Flag | Value | Default | Since | Description |
 |------|-------|---------|-------|-------------|
@@ -1725,13 +1998,16 @@ the config file, which the flag overrides. Needs the `vcon` Cargo feature. More:
 ## vCon fetcher
 
 `--vcon-fetch` runs sipnab as the process that reads stored vCons back from a
-store by uuid and writes each to a file. It captures nothing, and sipnab
-refuses it beside any capture source, listener or export flag, and beside
-`--vcon-forward`. The other flags in this section need it. Each flag but
-`--vcon-fetch`, `--vcon-fetch-out` and `--vcon-fetch-overwrite` has a
-`[vcon_fetch]` key in the config file, which the flag overrides. Needs the
-`vcon` Cargo feature. More:
-[Fetch a stored vCon](@/docs/vcon.md#fetch-a-stored-vcon).
+store by uuid and writes each to a file.
+
+- It captures nothing.
+- sipnab refuses it beside any capture source, listener or export flag, and
+  beside `--vcon-forward`.
+- The other flags in this section need it.
+- Each flag but `--vcon-fetch`, `--vcon-fetch-out` and `--vcon-fetch-overwrite`
+  has a `[vcon_fetch]` key in the config file. The flag overrides the key.
+- Needs the `vcon` Cargo feature.
+- More: [Fetch a stored vCon](@/docs/vcon.md#fetch-a-stored-vcon).
 
 | Flag | Value | Default | Since | Description |
 |------|-------|---------|-------|-------------|
@@ -1745,7 +2021,7 @@ refuses it beside any capture source, listener or export flag, and beside
 | `--vcon-fetch-max-size` | `<BYTES>` | `67108864` | 0.5.209 | The largest answer the fetcher reads for one container, 1 to 4294967295. The fetcher refuses a larger one and writes nothing for it. The default, 64 MiB, holds a container with an hour of inline G.711 audio. Config: `[vcon_fetch] max_size` |
 | `--vcon-fetch-max-response-head` | `<BYTES>` | `65536` | 0.5.209 | The most bytes of a store's status line and headers read, 1 to 4294967295. The fetcher refuses an answer with more. Config: `[vcon_fetch] max_response_head` |
 | `--vcon-fetch-ca` | `<FILE>` | host bundle | 0.5.209 | Trust only the CA certificates in this PEM file for an `https://` store. Without it the fetcher trusts the host's CA bundle. Config: `[vcon_fetch] ca` |
-| `--vcon-fetch-decrypt-key` | `<FILE>` | -- | Unreleased | Decrypt each encrypted container with the RSA private key in this PEM file, verify its signature, and write the unsigned vCon inside. The file must be readable by its owner only. Without it the fetcher writes an encrypted container as the store holds it. See [Fetch an encrypted vCon](@/docs/vcon.md#fetch-an-encrypted-vcon). Config: `[vcon_fetch] decrypt_key` |
+| `--vcon-fetch-decrypt-key` | `<FILE>` | -- | 0.5.218 | Decrypt each encrypted container with the RSA private key in this PEM file, verify its signature, and write the unsigned vCon inside. The file must be readable by its owner only. Without it the fetcher writes an encrypted container as the store holds it. See [Fetch an encrypted vCon](@/docs/vcon.md#fetch-an-encrypted-vcon). Config: `[vcon_fetch] decrypt_key` |
 
 Examples:
 
@@ -1788,7 +2064,10 @@ Examples:
 - Output flags (`--json`, `--json-pretty`, `--report`, `--hexdump`, `--fail2ban`) require `-N` / `--no-tui` mode, unless `--call-report` is also specified.
 - `--kill-response` accepts values 100-699 only.
 - Feature-gated flags (`tls`, `hep`, `api`, `mcp`, `mcp-http`) produce startup errors when the required feature is not compiled in.
-- `--mcp` is incompatible with stdout-writing flags (`--json`, `--json-pretty`, `--report`, `--call-report`, `--hexdump`, `--wireshark`, `--tshark-filter`) on every transport, not just stdio — sipnab refuses to start. Combine `--mcp` with `--quiet` to suppress text-mode capture output.
+- `--mcp` is incompatible with stdout-writing flags. sipnab refuses to start.
+  - The flags are `--json`, `--json-pretty`, `--report`, `--call-report`, `--hexdump`, `--wireshark` and `--tshark-filter`.
+  - This holds on every transport, not just stdio.
+  - Combine `--mcp` with `--quiet` to suppress text-mode capture output.
 - HTTP MCP transport (`--mcp --mcp-transport http`) on a non-loopback `--mcp-bind` requires `--mcp-token` / `--mcp-token-file` / `SIPNAB_MCP_TOKEN`. Loopback binds need no token.
 
 ## Examples
@@ -1819,45 +2098,60 @@ Scripts can rely on these:
 [Error messages](@/docs/errors.md) lists the message sipnab prints with a non-zero
 exit code, what it means, and what to do.
 
-A run that read its input in full and stopped where you asked it to stop —
-`-l/--limit`, `--duration` — still exits `0`. The distinction is whether
-sipnab failed to do what you asked, not whether it read everything there was.
+A run may read its input in full and stop where you asked it to stop
+(`-l/--limit`, `--duration`). It still exits `0`.
+
+- The distinction is whether sipnab failed to do what you asked.
+- It is not whether it read everything there was.
 
 ### When the answer is partial
 
-`1` says something went wrong. It cannot say what, and a consumer reading
-`--json-dialogs` on a pipe never sees it at all. So a run that could not
-deliver the whole answer also says so in its output:
+`1` says something went wrong.
 
-- **`--json-dialogs`** emits one extra NDJSON line, after the dialogs, under a
-  top-level `sipnab_run` key that no dialog object has. A clean run emits
-  nothing extra, so runs with nothing wrong with them look exactly as they do
-  today.
+- It cannot say what.
+- A consumer reading `--json-dialogs` on a pipe never sees it at all.
+
+So a run that could not deliver the whole answer also says so in its output:
+
+- **`--json-dialogs`** emits one extra NDJSON line, after the dialogs.
+  - The line is under a top-level `sipnab_run` key that no dialog object has.
+  - A clean run emits nothing extra. So runs with nothing wrong with them look
+    exactly as they do today.
 - **`--report`** ends with an `INCOMPLETE RUN` block naming each reason.
 
 ```json
 {"sipnab_run":{"input_complete":false,"reasons":["1 of 1 capture file(s) was not read to the end; every report from this run rests on a partial read"],"files":{"given":1,"read_in_full":0,"stopped_early":1,"skipped":0,"not_reached":0},"plugins":{"requested":0,"loaded":0,"failed":0},"retention":{"messages_dropped":0},"archives":{"cut_short":false},"port_gate":{"sip_outside_portrange":0,"sip_outside_ws_ports":0}}}
 ```
 
-`input_complete` is the same predicate as the exit status, so a script reading
+`input_complete` is the same predicate as the exit status. So a script reading
 stdout and a script reading `$?` cannot reach different verdicts.
 
 `archives.cut_short` is `true` when sipnab could not unpack an archive `-I`
-named to its end: the archive stops early, a header fails its checksum, or the
-walk reaches a ceiling. Members past that point are in no report. That is data missing
-from the input, and it fails the run like a truncated file does.
+named to its end. That happens when:
+
+- the archive stops early,
+- a header fails its checksum,
+- or the walk reaches a ceiling.
+
+Members past that point are in no report. That is data missing from the input.
+It fails the run like a truncated file does.
 
 `retention.messages_dropped` counts captured messages that idle compaction
-discarded (`[limits] idle_compact_after_secs`) — it appears because those
-ladders are short, and it is deliberately NOT a failure, because a retention
-policy doing what you configured it to do is not a run that went wrong.
+discarded (`[limits] idle_compact_after_secs`).
+
+- It appears because those ladders are short.
+- It is deliberately NOT a failure. A retention policy doing what you
+  configured it to do is not a run that went wrong.
 
 `port_gate` counts SIP that sipnab did not analyze because of the port it used:
-`sip_outside_portrange` for messages with both ports outside `--portrange`,
-and `sip_outside_ws_ports` for SIP over WebSocket on a port outside the
-WebSocket port set (`--ws-portrange`). Like retention, it is not a failure,
-because the range is what you asked for. `--report` names either count in its
-`INCOMPLETE RUN` block, in the words the run summary uses on stderr:
+
+- `sip_outside_portrange` for messages with both ports outside `--portrange`,
+- `sip_outside_ws_ports` for SIP over WebSocket on a port outside the
+  WebSocket port set (`--ws-portrange`).
+
+Like retention, it is not a failure, because the range is what you asked for.
+`--report` names either count in its `INCOMPLETE RUN` block. It uses the words
+the run summary uses on stderr:
 
 ```text
 INCOMPLETE RUN — this report does not describe the whole capture:

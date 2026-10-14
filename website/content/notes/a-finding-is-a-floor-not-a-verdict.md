@@ -10,33 +10,42 @@ kind = "howto"
 
 ## In short
 
-sipnab reads a network capture and lists the problems it found in the phone
-calls inside it. A list like that can be incomplete without looking incomplete:
-sipnab may not have finished reading, may have set some traffic aside, or may
-not have been checking for a given problem at all. This how-to shows the five
-checks to make before you act on a finding, and the exact output or field that
-answers each one.
+sipnab reads a network capture. It lists the problems it found in the phone
+calls inside it. A list like that can be incomplete without looking
+incomplete:
+
+- sipnab may not have finished reading.
+- It may have set some traffic aside.
+- It may not have been checking for a given problem at all.
+
+This how-to shows the five checks to make before you act on a finding. For
+each one, it shows the exact output or field that answers it.
 
 ## Who this is for
 
-Anyone who reads sipnab's problem list, at the command line with `--analyze` or
-through an AI agent connected over MCP (the Model Context Protocol, the
-interface an agent uses to call sipnab's tools).
+Anyone who reads sipnab's problem list:
+
+- at the command line with `--analyze`, or
+- through an AI agent connected over MCP. MCP is the Model Context Protocol,
+  the interface an agent uses to call sipnab's tools.
 
 ## Before you start
 
-The commands run from the root of a sipnab checkout, against captures in
-`tests/pcap-samples/`. The MCP examples drive the server over standard input
-with `printf` and select fields with `jq`, so you can reproduce each answer
-without an agent. An agent sends the same tool call and receives the same
-fields. `--node-name lab` sets the name that appears in
-`capture_identity.node`. Without it, sipnab uses the host name.
+The commands run from the root of a sipnab checkout. They read captures in
+`tests/pcap-samples/`.
 
-## 1. Check that the answer is the whole answer
+- The MCP examples drive the server over standard input with `printf`.
+- They select fields with `jq`.
+- So you can reproduce each answer without an agent.
+- An agent sends the same tool call and receives the same fields.
+- `--node-name lab` sets the name that appears in `capture_identity.node`.
+  Without it, sipnab uses the host name.
 
-An MCP answer that lists dialogs (a dialog is one call, or one registration,
-from its first SIP message to its last) carries five fields that say how much
-of the capture stands behind it.
+## Check that the answer is the whole answer
+
+Some MCP answers list dialogs. A dialog is one call, or one registration, from
+its first SIP message to its last. Such an answer carries five fields. They
+say how much of the capture stands behind it.
 
 ```bash
 printf '%s\n' \
@@ -53,32 +62,46 @@ printf '%s\n' \
 
 - `returned` is the number of rows on this page. Here it is 1 because the call
   asked for `limit: 1`.
-- `total_matched` is the number of dialogs that match across the whole capture,
-  whatever `limit` and the paging cursor say. Here it is 4. This is the number
-  that answers "how many".
+- `total_matched` is the number of dialogs that match across the whole capture.
+  - It ignores `limit` and the paging cursor.
+  - Here it is 4.
+  - This is the number that answers "how many".
 - `truncated: true` means more matching rows exist than this page holds.
 - `source_exhausted` is true once sipnab has read the capture to its end.
-  sipnab reads a file in the background, so a call made right after the server
-  starts can arrive before the file is fully loaded.
-- `source_stopped_early` is true when the read ended before the file did, for
-  example on a cut-off file or a read error.
+  - sipnab reads a file in the background.
+  - So a call made right after the server starts can arrive before the file is
+    fully loaded.
+- `source_stopped_early` is true when the read ended before the file did.
+  Examples are a cut-off file or a read error.
 
-The answer describes the whole capture only when `source_exhausted` is true and
-`source_stopped_early` is false. Until then, every count is a lower bound, and
-sipnab leaves `truncated: false` out of the answer rather than send it, so a
-missing `truncated` key does not mean `false`. Each of these answers also carries
-`capture_identity.instance`. If it changes between two pages, the server
-loaded a different capture and the cursor from the earlier page no longer
-applies.
+The answer describes the whole capture only when both of these hold:
 
-## 2. Check what sipnab set aside
+- `source_exhausted` is true.
+- `source_stopped_early` is false.
 
-sipnab analyzes SIP (the signaling protocol that sets up and ends calls) only
-on the ports named by `--portrange`, which defaults to `5060-5061`. When both the
-source and the destination port of a SIP message fall outside that range,
-sipnab recognizes the message, counts it, and leaves it out of every dialog and
-every other count. The capture `codec-negotiation.pcap` carries its SIP on port
-5080.
+Until then:
+
+- Every count is a lower bound.
+- sipnab leaves `truncated: false` out of the answer rather than send it. So a
+  missing `truncated` key does not mean `false`.
+
+Each of these answers also carries `capture_identity.instance`. It can change
+between two pages. Then the server loaded a different capture, and the cursor
+from the earlier page no longer applies.
+
+## Check what sipnab set aside
+
+SIP is the signaling protocol that sets up and ends calls. sipnab analyzes SIP
+only on the ports named by `--portrange`. The default is `5060-5061`.
+
+A SIP message can have both its source and its destination port outside that
+range. Then sipnab:
+
+- recognizes the message,
+- counts it,
+- leaves it out of every dialog and every other count.
+
+The capture `codec-negotiation.pcap` carries its SIP on port 5080.
 
 ```bash
 sipnab -N -q -I tests/pcap-samples/codec-negotiation.pcap --analyze --no-cli-print
@@ -97,10 +120,13 @@ THIS ANALYSIS IS INCOMPLETE — sipnab did not read all of this capture. The fin
      - port 5080 | messages=10
 ```
 
-The two `WARN` lines go to standard error, and the rest goes to standard output.
-`BLIND` is the severity sipnab gives to anything that limits what the analysis
-could see. It ranks above `CRITICAL`, so it is always first in the list. Run the
-same capture with the range the finding names:
+The two `WARN` lines go to standard error. The rest goes to standard output.
+
+- `BLIND` is the severity sipnab gives to anything that limits what the
+  analysis could see.
+- It ranks above `CRITICAL`. So it is always first in the list.
+
+Run the same capture with the range the finding names:
 
 ```bash
 sipnab -N -q -I tests/pcap-samples/codec-negotiation.pcap --portrange 1-65535 --analyze --no-cli-print
@@ -147,19 +173,25 @@ printf '%s\n' \
 }
 ```
 
-`dialog_count: 0` next to `unanalysed_sip_messages: 10` means the capture held
-SIP that sipnab did not analyze, not that the capture held no calls. The
-`capture_quality` block counts packets the capture lost or could not use, such
-as `kernel_dropped_packets` and `undecodable_frames`.
+Read `dialog_count: 0` next to `unanalysed_sip_messages: 10` this way:
+
+- The capture held SIP that sipnab did not analyze.
+- It does not mean the capture held no calls.
+
+The `capture_quality` block counts packets the capture lost or could not use.
+Examples are `kernel_dropped_packets` and `undecodable_frames`.
 [How sipnab reports what a capture missed](@/notes/a-total-that-cannot-say-what-it-missed.md)
 explains each counter.
 
-## 3. Check that a detector was running
+## Check that a detector was running
 
-The security findings list is empty in two different situations: no detector
-was running, or a detector ran and matched nothing. A detector is one of the
-optional security checks, each turned on by its own flag. The answer says which
-situation applies.
+A detector is one of the optional security checks. Its own flag turns each
+one on. The security findings list is empty in two different situations:
+
+- No detector was running.
+- A detector ran and matched nothing.
+
+The answer says which situation applies.
 
 ```bash
 printf '%s\n' \
@@ -186,9 +218,9 @@ printf '%s\n' \
 }
 ```
 
-The same call on a server started with `--kill-scanner` (the scanner detector)
-reports which detector ran. This command removes the `findings` array to keep
-the output short:
+Make the same call on a server started with `--kill-scanner` (the scanner
+detector). The answer reports which detector ran. This command removes the
+`findings` array to keep the output short:
 
 ```bash
 printf '%s\n' \
@@ -206,22 +238,31 @@ printf '%s\n' \
 Only this second answer supports the statement "the scanner detector found
 nothing in this capture".
 
-`describe_endpoint` follows the same rule for one address or user. Its
-`findings.selectable` field is `false` when you ask about the endpoint by SIP
-user, because sipnab files security findings against a source address and has
-no way to select them by user. `failure_rate_pct` is `null`, not `0.0`, when no
-call reached a final response, and `registration.applicable` is `false` when
-no registration dialog involves the endpoint.
+`describe_endpoint` follows the same rule for one address or user.
 
-## 4. Read the finding's own text
+- Its `findings.selectable` field is `false` when you ask about the endpoint by
+  SIP user.
+  - sipnab files security findings against a source address.
+  - It has no way to select them by user.
+- `failure_rate_pct` is `null`, not `0.0`, when no call reached a final
+  response.
+- `registration.applicable` is `false` when no registration dialog involves the
+  endpoint.
 
-sipnab ranks findings by what the caller and the operator lost. `BLIND` means
-the analysis itself is incomplete. `CRITICAL` means nobody could hear: the
-phones agreed on audio and none arrived, or it arrived in one direction only.
-`MAJOR` means the call failed or the audio path shows damage, without proof that
-the audio was absent. `MINOR` means measurable degradation, or an outcome that
-is often normal, which sipnab lists so you can rule it out. Read the text of a
-finding before acting on it.
+## Read the finding's own text
+
+sipnab ranks findings by what the caller and the operator lost.
+
+- `BLIND` means the analysis itself is incomplete.
+- `CRITICAL` means nobody could hear:
+  - the phones agreed on audio and none arrived, or
+  - it arrived in one direction only.
+- `MAJOR` means the call failed or the audio path shows damage. There is no
+  proof that the audio was absent.
+- `MINOR` means measurable degradation, or an outcome that is often normal.
+  sipnab lists it so you can rule it out.
+
+Read the text of a finding before acting on it.
 
 ```bash
 sipnab -N -q -I tests/pcap-samples/sip-problem-call.pcap --analyze --no-cli-print
@@ -243,27 +284,39 @@ Capture analysis: 2 finding(s) across 5 dialog(s), 0 stream(s), 23 frame(s) read
      - Call-ID notfound-1b2c3d@203.0.113.30 | 203.0.113.30:5060 -> 203.0.113.40 | 2023-11-14 22:13:29.000 UTC | status_code=404 | Not Found
 ```
 
-The 4xx finding names a 486 (the called phone was busy) and a 404 (the number
-does not exist). Both are ordinary call outcomes, and the finding text says so.
+The 4xx finding names two codes:
 
-The same command on `tests/pcap-samples/SIP_DTMF2.cap` reports a finding whose
-text gives the same kind of instruction:
+- a 486: the called phone was busy,
+- a 404: the number does not exist.
+
+Both are ordinary call outcomes, and the finding text says so.
+
+Run the same command on `tests/pcap-samples/SIP_DTMF2.cap`. It reports a
+finding whose text gives the same kind of instruction:
 
 ```text
 1. [MAJOR] RTP source no SDP advertised — 1 call(s)
    Media arrived from an address that no SDP in the dialog named — the signature of a NAT rewriting the media source. Frequently benign on its own (symmetric RTP through a NAT looks exactly like this); read it together with any one-way audio on the same call.
 ```
 
-These are the first two lines of that finding. RTP is the stream that carries
-the audio, SDP is the part of a SIP message that says where that stream should
-go, and NAT is address translation by a router or firewall. For a one-way audio finding, see
+These are the first two lines of that finding.
+
+- RTP is the stream that carries the audio.
+- SDP is the part of a SIP message that says where that stream should go.
+- NAT is address translation by a router or firewall.
+
+For a one-way audio finding, see
 [Rule out the media relay before you blame NAT](@/notes/rule-out-the-relay-before-the-nat.md).
 
-## 5. Check the packet behind the finding
+## Check the packet behind the finding
 
-Each dialog in an answer carries a `frame` pointer: the capture file, the
-frame's position in it, and a digest (a short fingerprint of the frame's
-bytes). The `find_problems` call in step 1 returned the pointer
+Each dialog in an answer carries a `frame` pointer. It holds:
+
+- the capture file,
+- the frame's position in it,
+- a digest, which is a short fingerprint of the frame's bytes.
+
+The `find_problems` call in the first check returned the pointer
 `tests/pcap-samples/sip-problem-call.pcap#5@884d4525ec86f71b`.
 
 ```bash
@@ -310,11 +363,15 @@ VERIFIED  tests/pcap-samples/sip-problem-call.pcap#5@884d4525ec86f71b
 00000210  65 76 65 6e 74 2f 38 30  30 30 0d 0a              |event/8000..|
 ```
 
-`VERIFIED` means the bytes at that position still match the digest. When they
-do not, because someone replaced, cut short or rewrote the file after sipnab
-made the pointer, sipnab prints nothing on standard output and exits with
-status 1. To see that refusal, give the same frame a digest that does not
-match:
+`VERIFIED` means the bytes at that position still match the digest.
+
+The bytes may not match. That happens when someone replaced, cut short or
+rewrote the file after sipnab made the pointer. Then sipnab:
+
+- prints nothing on standard output,
+- exits with status 1.
+
+To see that refusal, give the same frame a digest that does not match:
 
 ```bash
 sipnab -N -q -I tests/pcap-samples/sip-problem-call.pcap --show-frame 'tests/pcap-samples/sip-problem-call.pcap#5@0000000000000000'
@@ -324,9 +381,9 @@ sipnab -N -q -I tests/pcap-samples/sip-problem-call.pcap --show-frame 'tests/pca
 2026-10-12T00:40:53.072446Z ERROR sipnab::app::bootstrap: refusing: tests/pcap-samples/sip-problem-call.pcap frame 5 is not the frame this pointer was made against. The capture was rotated, truncated or rewritten since then. Showing you what is there now would look like an answer and be the wrong one.
 ```
 
-A pointer without a digest (`tests/pcap-samples/sip-problem-call.pcap#5`)
-prints the frame marked `UNVERIFIED`, because there is nothing to check the
-bytes against.
+A pointer can have no digest (`tests/pcap-samples/sip-problem-call.pcap#5`).
+It prints the frame marked `UNVERIFIED`. There is nothing to check the bytes
+against.
 
 ## Terms used here
 
@@ -361,5 +418,5 @@ bytes against.
   [`find_problems`](@/docs/mcp-tools-core.md#find-problems),
   [`describe_endpoint`](@/docs/mcp-tools-security.md#describe-endpoint) and
   [`security_findings`](@/docs/mcp-tools-security.md#security-findings)
-- [Find the calls that went wrong](@/docs/first-cli-triage.md#3-find-the-calls-that-went-wrong)
+- [Find the calls that went wrong](@/docs/first-cli-triage.md#find-the-calls-that-went-wrong)
 - [`--show-frame` and frame pointers](@/docs/cli.md#pcapng-metadata)

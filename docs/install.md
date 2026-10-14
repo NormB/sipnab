@@ -1,10 +1,12 @@
 # Installing sipnab
 
-sipnab is a single binary. The static Linux musl build needs nothing else. The
-other builds load the system's libpcap, which macOS always has and a Linux
-package manager installs. You do not need Rust, a compiler, or a toolchain to
-run it. Those are only for the build-it-yourself path near the end of this
-page.
+sipnab is a single binary.
+
+- The static Linux musl build needs nothing else.
+- The other builds load the system's libpcap. macOS always has it, and a Linux
+  package manager installs it.
+- You do not need Rust, a compiler, or a toolchain to run it. Those are only
+  for the build-it-yourself path near the end of this page.
 
 Most people should run the one-line installer and be reading a capture inside a
 minute.
@@ -33,12 +35,16 @@ One command on Linux (x86_64/aarch64) or macOS:
 curl -fsSL https://sipnab.com/install.sh | sh
 ```
 
-The install script detects your OS, CPU architecture, and glibc version,
-downloads the matching versioned release tarball
-(`sipnab-<version>-<target-triple>.tar.gz`) together with its `.sha256` file,
-**verifies the checksum**, and installs the binary to `/usr/local/bin` (using
-`sudo` only if that directory isn't writable). Prefer to read it first:
-<https://sipnab.com/install.sh>.
+The install script:
+
+- detects your OS, CPU architecture, and glibc version,
+- downloads the matching versioned release tarball
+  (`sipnab-<version>-<target-triple>.tar.gz`) together with its `.sha256` file,
+- **verifies the checksum**,
+- installs the binary to `/usr/local/bin` (using `sudo` only if that directory
+  isn't writable).
+
+Prefer to read it first: <https://sipnab.com/install.sh>.
 
 Two environment variables tune it. To pin a specific version instead of taking
 whatever the latest release is:
@@ -47,32 +53,37 @@ whatever the latest release is:
 curl -fsSL https://sipnab.com/install.sh | SIPNAB_VERSION=0.5.217 sh
 ```
 
-To install somewhere other than `/usr/local/bin` — a directory you already own,
-so root never enters into it:
+To install somewhere other than `/usr/local/bin`, use a directory you already
+own. Then root never enters into it:
 
 ```bash
 curl -fsSL https://sipnab.com/install.sh | SIPNAB_INSTALL_DIR="$HOME/.local/bin" sh
 ```
 
-Then confirm it landed — one command, and the answer is the version plus the
-features compiled in:
+Then confirm it landed. It is one command, and the answer is the version plus
+the features compiled in:
 
 ```bash
 sipnab --version
 ```
 
-If that prints a version, the install worked. Go to
-[Check it worked](#check-it-worked) for the fuller checks, or
-[Next steps](#next-steps) to start reading captures.
-If the shell cannot find `sipnab`, the install directory is not on your `PATH`
-— see [Check it worked](#check-it-worked).
+If that prints a version, the install worked.
 
-On Linux the installer chooses between two builds. Hosts with glibc 2.36 or
-newer (Debian 12+, Ubuntu 23.04+) get the dynamically linked **`-gnu`** build,
-which needs libpcap from your package manager. Older hosts, and hosts with no
-glibc, get the static **musl** build, which needs nothing else. It lacks TUI
-audio playback, WASM plugins, vCon export and the eBPF uprobe backend, and
-reads password-protected ZIP and 7z archives like every other release build.
+- Go to [Check it worked](#check-it-worked) for the fuller checks, or
+  [Next steps](#next-steps) to start reading captures.
+- If the shell cannot find `sipnab`, the install directory is not on your
+  `PATH`. See [Check it worked](#check-it-worked).
+
+On Linux the installer chooses between two builds.
+- Hosts with glibc 2.36 or newer (Debian 12+, Ubuntu 23.04+) get the
+  dynamically linked **`-gnu`** build. That build needs libpcap from your
+  package manager.
+- Older hosts, and hosts with no glibc, get the static **musl** build. It
+  needs nothing else.
+  - It lacks TUI audio playback, WASM plugins, vCon export and the eBPF uprobe
+    backend.
+  - It reads password-protected ZIP and 7z archives like every other release
+    build.
 
 ## Download a release binary yourself
 
@@ -83,9 +94,10 @@ ready-made links for the current release.
 
 ### Release artifacts
 
-Substitute the release version for `<version>` throughout. `SHA256SUMS.txt`
-covers every file, and the tarballs additionally ship an individual
-`.sha256` sidecar.
+Substitute the release version for `<version>` throughout.
+
+- `SHA256SUMS.txt` covers every file.
+- The tarballs additionally ship an individual `.sha256` sidecar.
 
 | File | CPU | Runs on | Notes |
 |---|---|---|---|
@@ -112,10 +124,13 @@ covers every file, and the tarballs additionally ship an individual
 
 ### Which capture backends an artifact can reach
 
-libpcap selects a capture backend from the device name, and sipnab passes the
-name through: `--device netmap:eth0` reaches libpcap's netmap module when the
-libpcap behind that binary carries one. **Which artifact you installed
-decides whether it was**, and the three families differ:
+libpcap selects a capture backend from the device name. sipnab passes the
+name through.
+
+- `--device netmap:eth0` reaches libpcap's netmap module when the libpcap
+  behind that binary carries one.
+- **Which artifact you installed decides whether it was**. The three families
+  differ:
 
 | Artifact family | libpcap | netmap | DPDK | AF_XDP |
 |---|---|---|---|---|
@@ -134,61 +149,72 @@ decides whether it was**, and the three families differ:
 > on the same interface. Point it at the interface carrying your SIP service
 > and the service goes dark until sipnab exits.
 
-Debian and Ubuntu build libpcap without netmap, so the `.deb`, the `.rpm` and
-the Docker image answer `No such device exists` for a `netmap:` name. The
-static musl tarballs answer `netmap open: cannot access netmap:eth0` instead —
-a different error, and the difference is the whole point: the first says the
-module is absent, the second says the module tried and your kernel has no
-netmap device.
+Debian and Ubuntu build libpcap without netmap.
+
+- So the `.deb`, the `.rpm` and the Docker image answer
+  `No such device exists` for a `netmap:` name.
+- The static musl tarballs answer `netmap open: cannot access netmap:eth0`
+  instead. This is a different error, and the difference is the whole point:
+  - the first says the module is absent,
+  - the second says the module tried and your kernel has no netmap device.
 
 **On 0.5.183 and earlier, the musl tarballs' netmap module does not work
-with a current netmap kernel module.** Those builds compiled libpcap against
-netmap's `v13.0` headers, which speak netmap API 13, and a netmap module built
-from current netmap sources accepts API 14 and later. On Debian 13
-(kernel 6.12) the open fails with
-`nm_open [948] NIOCREGIF failed: Invalid argument netmap:<iface>`, and the
-kernel log says `Minimum supported API is 14 (requested 13)`.
+with a current netmap kernel module.**
+
+- Those builds compiled libpcap against netmap's `v13.0` headers, which speak
+  netmap API 13.
+- A netmap module built from current netmap sources accepts API 14 and later.
+- On Debian 13 (kernel 6.12) the open fails with
+  `nm_open [948] NIOCREGIF failed: Invalid argument netmap:<iface>`.
+- The kernel log says `Minimum supported API is 14 (requested 13)`.
 
 netmap `v13.0`
 itself no longer compiles against that kernel, so there is no older module to
 pair it with.
 
 The same libpcap 1.10.6 built against current netmap headers
-captures through `netmap:` on that host, and the 0.5.184 build uses them:
-its published x86_64-musl binary captured 5 of 5 SIP messages through
+captures through `netmap:` on that host. The 0.5.184 build uses them.
+Its published x86_64-musl binary captured 5 of 5 SIP messages through
 `netmap:` there. On 0.5.183 and earlier, treat the musl netmap column as not
 usable.
 
 **On 0.5.188 and earlier, a `netmap:` capture crashes on the first frame its
-filter drops after it has captured a packet.** libpcap's netmap module reports
-a frame its BPF filter rejects as a successful read that delivers no data, and
-those builds then copied the previous packet's length from address 0. The
-kernel log names the capture thread: `capture-netmap:[...]: segfault at 0`.
-It looked like a crash at shutdown because the dropped frame is usually link
-chatter, such as an IPv6 router solicitation, that arrives while the capture
-sits idle. An idle capture survived only because no packet had yet set a
-length to copy. Later builds check that a read delivered a packet before they
-copy it.
+filter drops after it has captured a packet.**
+
+- libpcap's netmap module reports a frame its BPF filter rejects as a
+  successful read that delivers no data.
+- Those builds then copied the previous packet's length from address 0.
+- The kernel log names the capture thread:
+  `capture-netmap:[...]: segfault at 0`.
+- It looked like a crash at shutdown. The dropped frame is usually link
+  chatter, such as an IPv6 router solicitation, that arrives while the
+  capture sits idle.
+- An idle capture survived only because no packet had yet set a length to
+  copy.
+- Later builds check that a read delivered a packet before they copy it.
 
 A `netmap:` capture on a link that carries no traffic at all used not to stop
-on SIGTERM until a frame arrived, and `--duration` could not end it either.
-libpcap's netmap module waits for a frame inside its own read and never hands
-control back while the link is silent. Later builds break that read with
-`pcap_breakloop` when a stop is due. Measured on the same host, on a veth pair
-with IPv6 turned off: the older build was still running 15 seconds after
-SIGTERM in 10 runs of 10, and the fixed build exited in 30 to 71 ms, and at
-3.0 seconds under `--duration 3s`.
+on SIGTERM until a frame arrived. `--duration` could not end it either.
 
-macOS builds libpcap on BPF alone, with netmap and DPDK both left out, and
+- libpcap's netmap module waits for a frame inside its own read. It never
+  hands control back while the link is silent.
+- Later builds break that read with `pcap_breakloop` when a stop is due.
+- Measured on the same host, on a veth pair with IPv6 turned off:
+  - the older build was still running 15 seconds after SIGTERM in 10 runs
+    of 10,
+  - the fixed build exited in 30 to 71 ms, and at 3.0 seconds under
+    `--duration 3s`.
+
+macOS builds libpcap on BPF alone, with netmap and DPDK both left out.
 Homebrew on macOS installs the same darwin tarball rather than bringing a
 libpcap of its own. A `netmap:` or `dpdk:` name on a Mac reaches nothing.
 
-No artifact sipnab publishes carries DPDK, and no libpcap has an AF_XDP
-backend at all, so an `xdp:` name is never a capture path.
+No artifact sipnab publishes carries DPDK. No libpcap has an AF_XDP backend at
+all. So an `xdp:` name is never a capture path.
 
 Ask sipnab what its own binary runs. The second line of `--version` is the
-libpcap it loaded, asked of the library at runtime rather than recorded at
-build time, so on a gnu build it names your host's library:
+libpcap it loaded. sipnab asks the library at runtime rather than recording it
+at build time. So on a gnu build it names your host's library:
 
 ```bash
 sipnab --version
@@ -206,12 +232,14 @@ and on Debian 13's libpcap:
 libpcap version 1.10.5 (with TPACKET_V3); alternate capture backends named: none
 ```
 
-A backend the banner does not name remains unconfirmed rather than absent. libpcap
-puts netmap in its banner only from 1.10.6, and names DPDK only in a build
-that captures from DPDK alone. The same report is the `libpcap` block of the
-MCP [`server_capabilities`](mcp-tools-server.md#server_capabilities) tool and of the
-REST [`GET /v1/capabilities`](rest-api.md#get-v1capabilities) route, and it
-sits under the version in the TUI help view (F1).
+A backend the banner does not name remains unconfirmed rather than absent.
+
+- libpcap puts netmap in its banner only from 1.10.6.
+- libpcap names DPDK only in a build that captures from DPDK alone.
+- The same report is the `libpcap` block of the MCP
+  [`server_capabilities`](mcp-tools-server.md#server_capabilities) tool and of
+  the REST [`GET /v1/capabilities`](rest-api.md#get-v1capabilities) route.
+- It also sits under the version in the TUI help view (F1).
 
 A sipnab that predates the report prints only the first line. For one of
 those, look for the banner yourself:
@@ -230,16 +258,22 @@ strings /usr/lib/*/libpcap.so.* | grep 'libpcap version'
 ### Architecture naming
 
 `x86_64` = `amd64` (Intel/AMD) and `aarch64` = `arm64` (ARM) are the same chips
-under two spellings. Tarballs and `.rpm` packages use `x86_64`/`aarch64`, and `.deb`
-packages use `amd64`/`arm64`. `uname -m` reports which one you have.
+under two spellings.
+
+- Tarballs and `.rpm` packages use `x86_64`/`aarch64`.
+- `.deb` packages use `amd64`/`arm64`.
+- `uname -m` reports which one you have.
 
 The `unknown` in `x86_64-unknown-linux-gnu` is the **vendor** field of the Rust
-target triple (`arch-vendor-os-abi`) — the canonical value meaning "no specific
-vendor", which is why the macOS files say `apple` in that position. It is part
-of the platform name, not a failed detection or a broken build. The names stay
-canonical triples deliberately: they match `rustc -vV`, they are what
-`SHA256SUMS.txt` and the build-provenance attestation cover, and the install
-script constructs them.
+target triple (`arch-vendor-os-abi`).
+
+- It is the canonical value meaning "no specific vendor". That is why the
+  macOS files say `apple` in that position.
+- It is part of the platform name, not a failed detection or a broken build.
+- The names stay canonical triples deliberately:
+  - they match `rustc -vV`,
+  - they are what `SHA256SUMS.txt` and the build-provenance attestation cover,
+  - the install script constructs them.
 
 Every command below reads the release number from a `VERSION` variable. Set
 it first, in the same shell, to the release you want, e.g. 0.5.217 for the
@@ -252,19 +286,19 @@ VERSION=0.5.217
 On Linux x86_64, the static musl tarball runs on any distro and any glibc,
 Alpine included:
 
-1. Download the tarball:
+- Download the tarball:
 
    ```bash
    curl -LO "https://github.com/NormB/sipnab/releases/download/v$VERSION/sipnab-$VERSION-x86_64-unknown-linux-musl.tar.gz"
    ```
 
-2. Unpack it:
+- Unpack it:
 
    ```bash
    tar xzf "sipnab-$VERSION-x86_64-unknown-linux-musl.tar.gz"
    ```
 
-3. Install the binary:
+- Install the binary:
 
    ```bash
    sudo install -m 755 "sipnab-$VERSION-x86_64-unknown-linux-musl/sipnab" /usr/local/bin/sipnab
@@ -272,67 +306,68 @@ Alpine included:
 
 The same three steps on Linux aarch64, against the aarch64 musl tarball:
 
-1. Download the tarball:
+- Download the tarball:
 
    ```bash
    curl -LO "https://github.com/NormB/sipnab/releases/download/v$VERSION/sipnab-$VERSION-aarch64-unknown-linux-musl.tar.gz"
    ```
 
-2. Unpack it:
+- Unpack it:
 
    ```bash
    tar xzf "sipnab-$VERSION-aarch64-unknown-linux-musl.tar.gz"
    ```
 
-3. Install the binary:
+- Install the binary:
 
    ```bash
    sudo install -m 755 "sipnab-$VERSION-aarch64-unknown-linux-musl/sipnab" /usr/local/bin/sipnab
    ```
 
 A manual download of the gnu build that checks the checksum before installing.
-`TARGET` names the build, and the tarball unpacks into `./sipnab-$VERSION-$TARGET/`:
+`TARGET` names the build. The tarball unpacks into `./sipnab-$VERSION-$TARGET/`:
 
-1. Set the target:
+- Set the target:
 
    ```bash
    TARGET=x86_64-unknown-linux-gnu
    ```
 
-2. Download the tarball:
+- Download the tarball:
 
    ```bash
    curl -LO "https://github.com/NormB/sipnab/releases/download/v$VERSION/sipnab-$VERSION-$TARGET.tar.gz"
    ```
 
-3. Download its checksum file:
+- Download its checksum file:
 
    ```bash
    curl -LO "https://github.com/NormB/sipnab/releases/download/v$VERSION/sipnab-$VERSION-$TARGET.tar.gz.sha256"
    ```
 
-4. Check the checksum:
+- Check the checksum:
 
    ```bash
    sha256sum -c "sipnab-$VERSION-$TARGET.tar.gz.sha256"
    ```
 
-5. Unpack the tarball:
+- Unpack the tarball:
 
    ```bash
    tar -xzf "sipnab-$VERSION-$TARGET.tar.gz"
    ```
 
-6. Install the binary:
+- Install the binary:
 
    ```bash
    sudo install -m 755 "sipnab-$VERSION-$TARGET/sipnab" /usr/local/bin/sipnab
    ```
 
-The dynamic `…-unknown-linux-gnu.tar.gz` builds add TUI audio playback but
-require glibc >= 2.36 (Debian 12+, Ubuntu 23.04+) and libpcap. On an older
-distribution they fail with `` version `GLIBC_2.36' not found ``, so use the
-static musl build there.
+The dynamic `…-unknown-linux-gnu.tar.gz` builds add TUI audio playback.
+
+- They require glibc >= 2.36 (Debian 12+, Ubuntu 23.04+) and libpcap.
+- On an older distribution they fail with
+  `` version `GLIBC_2.36' not found ``. Use the static musl build there.
 
 ## Install with cargo
 
@@ -341,87 +376,102 @@ cargo install sipnab --features full
 ```
 
 > **On Alpine or any musl target, `--features full` does not give you audio.**
-> The playback plugin arrives through `dlopen`, and static musl has no dynamic
-> loader — it returns "Dynamic loading not supported". The build succeeds and
-> the binary reports `audio` in `--version`, but playback can never work. Build
-> without the `audio` feature, or build dynamically linked
-> (`RUSTFLAGS="-C target-feature=-crt-static"` plus `apk add alsa-lib
-> alsa-lib-dev`), which is Alpine-only. See the site's
-> [Build from Source](https://sipnab.com/docs/build/#audio-on-musl-and-alpine)
-> page for both recipes.
+>
+> - The playback plugin arrives through `dlopen`.
+> - Static musl has no dynamic loader. It returns "Dynamic loading not
+>   supported".
+> - The build succeeds and the binary reports `audio` in `--version`. But
+>   playback can never work.
+> - Build without the `audio` feature. Or build dynamically linked
+>   (`RUSTFLAGS="-C target-feature=-crt-static"` plus `apk add alsa-lib
+>   alsa-lib-dev`), which is Alpine-only.
+> - See the site's
+>   [Build from Source](https://sipnab.com/docs/build/#audio-on-musl-and-alpine)
+>   page for both recipes.
 
 ## Install with your package manager
 
 ### Debian/Ubuntu (.deb)
 
-Download the `.deb` for your architecture from the [latest release](https://github.com/NormB/sipnab/releases/latest) and install with `apt` (it resolves the `libpcap0.8` runtime dependency). The `.deb` needs glibc >= 2.36, i.e. Debian 12+ / Ubuntu 23.04+ -- on older releases use the static musl tarball above.
+Download the `.deb` for your architecture from the [latest release](https://github.com/NormB/sipnab/releases/latest).
+
+- Install it with `apt`. It resolves the `libpcap0.8` runtime dependency.
+- The `.deb` needs glibc >= 2.36, i.e. Debian 12+ / Ubuntu 23.04+.
+- On older releases use the static musl tarball above.
 
 Download and install the amd64 (x86_64) package. Set `VERSION` to the release
 you want, e.g. 0.5.217, as in
 [Download a release binary yourself](#download-a-release-binary-yourself):
 
-1. Set the version:
+- Set the version:
 
    ```bash
    VERSION=0.5.217
    ```
 
-2. Download the package:
+- Download the package:
 
    ```bash
    curl -LO "https://github.com/NormB/sipnab/releases/download/v$VERSION/sipnab_${VERSION}_amd64.deb"
    ```
 
-3. Install it:
+- Install it:
 
    ```bash
    sudo apt install "./sipnab_${VERSION}_amd64.deb"
    ```
 
 On an arm64 (aarch64) host, take the arm64 package instead, with `VERSION` set
-as above — installing the
-wrong-architecture `.deb` over the right one leaves you with a binary that does
-not run:
+as above. Installing the wrong-architecture `.deb` over the right one leaves
+you with a binary that does not run:
 
-1. Download the package:
+- Download the package:
 
    ```bash
    curl -LO "https://github.com/NormB/sipnab/releases/download/v$VERSION/sipnab_${VERSION}_arm64.deb"
    ```
 
-2. Install it:
+- Install it:
 
    ```bash
    sudo apt install "./sipnab_${VERSION}_arm64.deb"
    ```
 
-The package installs `/usr/bin/sipnab`, the man page, and a systemd unit, and
-creates a `sipnab` system user for privilege dropping. On Ubuntu 24.04+ the
-dependency resolves to `libpcap0.8t64`.
+The package installs `/usr/bin/sipnab`, the man page, and a systemd unit.
+
+- It creates a `sipnab` system user for privilege dropping.
+- On Ubuntu 24.04+ the dependency resolves to `libpcap0.8t64`.
 
 The unit is not started for you. `sudo systemctl enable --now sipnab` starts a
-capture on every interface as the `sipnab` user, with only the two capabilities
-live capture needs. It logs to syslog, keeps the per-message stream out of the
-journal, and serves metrics on `127.0.0.1:9090`. The REST API stays off. Change
-any of that with a drop-in (`sudo systemctl edit sipnab`), which a package
-upgrade leaves alone.
+capture on every interface as the `sipnab` user. The unit:
 
-The standard package ships the audio playback plugin and therefore
-*Recommends* `libasound2`, which apt installs by default — pulling the ALSA
-stack (~500 kB) onto the system. For headless servers, each release also
-publishes a **`-noaudio`** package with no plugin and no ALSA dependency
-(everything else — WAV export included — works the same, and only live playback
-in the TUI is unavailable).
+- uses only the two capabilities live capture needs,
+- logs to syslog,
+- keeps the per-message stream out of the journal,
+- serves metrics on `127.0.0.1:9090`.
+
+The REST API stays off. Change any of that with a drop-in
+(`sudo systemctl edit sipnab`). A package upgrade leaves the drop-in alone.
+
+The standard package ships the audio playback plugin. It therefore
+*Recommends* `libasound2`.
+
+- apt installs it by default. That pulls the ALSA stack (~500 kB)
+  onto the system.
+- For headless servers, each release also publishes a **`-noaudio`** package.
+  It has no plugin and no ALSA dependency.
+  - Everything else, WAV export included, works the same.
+  - Only live playback in the TUI is unavailable.
 
 The headless amd64 (x86_64) package:
 
-1. Download the package:
+- Download the package:
 
    ```bash
    curl -LO "https://github.com/NormB/sipnab/releases/download/v$VERSION/sipnab_${VERSION}_amd64-noaudio.deb"
    ```
 
-2. Install it:
+- Install it:
 
    ```bash
    sudo apt install "./sipnab_${VERSION}_amd64-noaudio.deb"
@@ -429,28 +479,32 @@ The headless amd64 (x86_64) package:
 
 The headless arm64 (aarch64) package, for arm64 hosts:
 
-1. Download the package:
+- Download the package:
 
    ```bash
    curl -LO "https://github.com/NormB/sipnab/releases/download/v$VERSION/sipnab_${VERSION}_arm64-noaudio.deb"
    ```
 
-2. Install it:
+- Install it:
 
    ```bash
    sudo apt install "./sipnab_${VERSION}_arm64-noaudio.deb"
    ```
 
 Alternatively, install the standard package with
-`sudo apt install --no-install-recommends "./sipnab_${VERSION}_amd64.deb"` to
-skip the ALSA packages while keeping the plugin on disk (playback then works
-as soon as `libasound2` lands).
+`sudo apt install --no-install-recommends "./sipnab_${VERSION}_amd64.deb"`.
+
+- This skips the ALSA packages while keeping the plugin on disk.
+- Playback then works as soon as `libasound2` lands.
 
 ### RHEL/Fedora (.rpm)
 
-`.rpm` packages ship per release for `x86_64` and `aarch64`, each in a
-standard and a `-noaudio` variant (no audio plugin, no `alsa-lib` weak
-dependency — for headless servers, mirroring the `.deb` variants).
+`.rpm` packages ship per release for `x86_64` and `aarch64`. Each comes in a
+standard and a `-noaudio` variant.
+
+- The no-audio variant has no audio plugin and no `alsa-lib` weak
+  dependency.
+- It is for headless servers, mirroring the `.deb` variants.
 
 The standard package on an x86_64 host:
 
@@ -464,7 +518,7 @@ The headless / no-ALSA variant on the same architecture:
 sudo rpm -i sipnab-0.5.217-1.x86_64-noaudio.rpm
 ```
 
-The standard package on an aarch64 (arm64) host — pick the variant matching
+The standard package on an aarch64 (arm64) host. Pick the variant matching
 `uname -m`:
 
 ```bash
@@ -497,56 +551,59 @@ packages all ship a finished binary.
 
 ### Install from a checkout, with capabilities
 
-`cargo install` has no post-install hook, so a source install leaves you to run
-`--setup-caps` yourself. [`scripts/install-from-source.sh`](https://github.com/NormB/sipnab/blob/main/scripts/install-from-source.sh) does both:
+`cargo install` has no post-install hook. So a source install leaves you to
+run `--setup-caps` yourself. [`scripts/install-from-source.sh`](https://github.com/NormB/sipnab/blob/main/scripts/install-from-source.sh) does both:
 
-1. Clone the repository:
+- Clone the repository:
 
    ```bash
    git clone https://github.com/NormB/sipnab.git
    ```
 
-2. Change into it:
+- Change into it:
 
    ```bash
    cd sipnab
    ```
 
-3. Run the install script:
+- Run the install script:
 
    ```bash
    ./scripts/install-from-source.sh --features full
    ```
 
-It runs `cargo install --path . --bin sipnab` (forwarding any arguments), then
-on Linux invokes the binary's own `--setup-caps` so live capture works without
-`sudo`. Non-Linux platforms skip the capability step and point you at `sudo`.
+The script does this:
 
-This is a *source* install and is distinct from the one-line installer at
-<https://sipnab.com/install.sh>, which downloads a prebuilt release binary
-and compiles nothing.
+- It runs `cargo install --path . --bin sipnab` (forwarding any arguments).
+- Then on Linux it invokes the binary's own `--setup-caps`. So live capture
+  works without `sudo`.
+- Non-Linux platforms skip the capability step and point you at `sudo`.
+
+This is a *source* install. It is distinct from the one-line installer at
+<https://sipnab.com/install.sh>. That installer downloads a prebuilt release
+binary and compiles nothing.
 
 ### Basic build (TUI only, default features)
 
-1. Clone the repository:
+- Clone the repository:
 
    ```bash
    git clone https://github.com/NormB/sipnab.git
    ```
 
-2. Change into it:
+- Change into it:
 
    ```bash
    cd sipnab
    ```
 
-3. Build the release binary:
+- Build the release binary:
 
    ```bash
    cargo build --release
    ```
 
-4. Copy it onto your `PATH`:
+- Copy it onto your `PATH`:
 
    ```bash
    sudo cp target/release/sipnab /usr/local/bin/
@@ -567,9 +624,11 @@ SIPNAB_LOG=trace cargo run -- -N -I test.pcap
 ## Verify a download is genuine
 
 Every release artifact is checksummed, signed with sigstore build provenance,
-and accompanied by a CycloneDX SBOM. The installer script verifies the sha256
-for you. These steps are for manual downloads, mirrors, and anything that
-reached you by a route you did not choose.
+and accompanied by a CycloneDX SBOM.
+
+- The installer script verifies the sha256 for you.
+- These steps are for manual downloads, mirrors, and anything that reached you
+  by a route you did not choose.
 
 **Checksum.** `SHA256SUMS.txt` covers every tarball, `.deb`, `.rpm`, symbol
 file, and SBOM in the release:
@@ -579,8 +638,8 @@ sha256sum -c SHA256SUMS.txt --ignore-missing
 ```
 
 **Provenance.** A checksum only proves the file matches the list. It says
-nothing about who produced the list. The attestation is cryptographic proof the
-artifact came from sipnab's own release workflow, at a specific commit:
+nothing about who produced the list. The attestation is cryptographic proof
+the artifact came from sipnab's own release workflow, at a specific commit:
 
 ```bash
 gh attestation verify "sipnab-$VERSION-x86_64-unknown-linux-gnu.tar.gz" \
@@ -590,12 +649,15 @@ gh attestation verify "sipnab-$VERSION-x86_64-unknown-linux-gnu.tar.gz" \
 This is what detects a rehosted or tampered copy, including one served with a
 matching checksum file.
 
-**This needs `gh` 2.49 or newer** — check with `gh --version`. The subcommand
-did not exist before then, and distributions lag: Ubuntu 24.04 ships 2.45, where
-the command prints `unknown command "attestation"` followed by the general help
-text **and still exits 0**. Piped or scripted, that reads as success while
-verifying nothing. Install a current `gh` from
-<https://github.com/cli/cli/releases> rather than trusting a silent pass.
+**This needs `gh` 2.49 or newer.** Check with `gh --version`.
+
+- The subcommand did not exist before then, and distributions lag.
+- Ubuntu 24.04 ships 2.45. There the command prints
+  `unknown command "attestation"` followed by the general help text **and
+  still exits 0**.
+- Piped or scripted, that reads as success while verifying nothing.
+- Install a current `gh` from <https://github.com/cli/cli/releases> rather
+  than trusting a silent pass.
 
 **Dependencies.** Two CycloneDX SBOMs ship with each release:
 
@@ -605,35 +667,48 @@ verifying nothing. Install a current `gh` from
 | `sipnab-audio-<version>.cdx.json` | `libsipnab_audio.so`, the playback plugin |
 
 There are two because the plugin is a separate crate loaded at runtime with
-`dlopen`, and it brings in dependencies — `alsa`, `cpal`, `rodio` among them —
-that appear nowhere in the binary's own graph. Scanning only the first would
-quietly miss them. Feed either to any CycloneDX-aware scanner:
+`dlopen`.
+
+- It brings in dependencies, `alsa`, `cpal`, `rodio` among them.
+- Those appear nowhere in the binary's own graph.
+- Scanning only the first would quietly miss them.
+
+Feed either to any CycloneDX-aware scanner:
 
 ```bash
 grype "sbom:sipnab-$VERSION.cdx.json"      # or trivy sbom, osv-scanner, ...
 ```
 
-The binary SBOM covers all features, so it is a superset of
-what any single published binary contains — it never under-reports.
+The binary SBOM covers all features. So it is a superset of what any single
+published binary contains. It never under-reports.
 
 ### Rebuild a release and compare it
 
 A checksum and an attestation say where a binary came from. A rebuild says
-what it contains: the `sipnab` binary in each Linux gnu tarball is
-reproducible, so building the release's tag yourself gives the same bytes.
-Compare the binary, not the tarball or a package: those carry file times.
-The audio plugin beside the binary is not covered yet. This applies to
-releases built after reproducible builds landed. [`CHANGELOG.md`](https://github.com/NormB/sipnab/blob/main/CHANGELOG.md) names the
-first one.
+what it contains.
 
-You need a git checkout of the tag, not a source tarball: the binary embeds
-the commit hash and the tag, and a tarball has neither. You also need the
-same toolchain the release used. For the gnu targets, that is the
-`rust:1-bookworm` image `release.yml` pins by digest, Rust 1.99.0, the eBPF
-nightly [`bpf/rust-toolchain.toml`](https://github.com/NormB/sipnab/blob/main/bpf/rust-toolchain.toml) names, and bpf-linker 0.11.0. The release
-job's log shows each version it used.
+- The `sipnab` binary in each Linux gnu tarball is reproducible. Building the
+  release's tag yourself gives the same bytes.
+- Compare the binary, not the tarball or a package. Those carry file times.
+- The audio plugin beside the binary is not covered yet.
+- This applies to releases built after reproducible builds landed.
+  [`CHANGELOG.md`](https://github.com/NormB/sipnab/blob/main/CHANGELOG.md)
+  names the first one.
 
-1. Check out the tag and install the pinned eBPF nightly:
+You need a git checkout of the tag, not a source tarball. The binary embeds
+the commit hash and the tag, and a tarball has neither.
+
+You also need the same toolchain the release used. For the gnu targets, that
+is:
+
+- the `rust:1-bookworm` image `release.yml` pins by digest,
+- Rust 1.99.0,
+- the eBPF nightly [`bpf/rust-toolchain.toml`](https://github.com/NormB/sipnab/blob/main/bpf/rust-toolchain.toml) names,
+- and bpf-linker 0.11.0.
+
+The release job's log shows each version it used.
+
+- Check out the tag and install the pinned eBPF nightly:
 
    ```bash
    # Run all of these, in order.
@@ -642,14 +717,14 @@ job's log shows each version it used.
    (cd bpf && rustup toolchain install)
    ```
 
-2. Build the way the release does, with the feature set the release gives
+- Build the way the release does, with the feature set the release gives
    that target (`full,bpf` for the gnu tarballs):
 
    ```bash
    SIPNAB_BPF_REQUIRED=1 bash scripts/reproducible-build.sh build x86_64-unknown-linux-gnu full,bpf
    ```
 
-3. Strip it the way the release does. The binary carries the symbol file's
+- Strip it the way the release does. The binary carries the symbol file's
    name, so use the release's name for it:
 
    ```bash
@@ -657,7 +732,7 @@ job's log shows each version it used.
        "sipnab-$VERSION-x86_64-unknown-linux-gnu"
    ```
 
-4. Compare it with the binary from the release tarball:
+- Compare it with the binary from the release tarball:
 
    ```bash
    bash scripts/reproducible-build.sh compare \
@@ -669,8 +744,8 @@ job's log shows each version it used.
    The usual cause is a different toolchain rather than a different source.
 
 To check that the project's own build repeats, without a published binary to
-compare against, `check` builds a commit or tag twice in two directories and
-compares the two:
+compare against, use `check`. It builds a commit or tag twice in two
+directories and compares the two:
 
 ```bash
 SIPNAB_BPF_REQUIRED=1 bash scripts/reproducible-build.sh check \
@@ -683,31 +758,37 @@ what it covers and what a rebuild must hold fixed.
 
 ## Capture live traffic without root
 
-Reading a pcap file needs no special permissions at all. Live capture
-(`sipnab -d <iface>` or the default `any` device) needs libpcap and raw-socket
-access. Rather than running the whole TUI as root, grant the binary the Linux
-capabilities once and then run it as your normal user:
+Reading a pcap file needs no special permissions at all.
+
+- Live capture (`sipnab -d <iface>` or the default `any` device) needs libpcap
+  and raw-socket access.
+- Rather than running the whole TUI as root, grant the binary the Linux
+  capabilities once. Then run it as your normal user:
 
 ```bash
 sudo sipnab --setup-caps
 # equivalent to: sudo setcap cap_net_raw,cap_net_admin+ep $(command -v sipnab)
 ```
 
-`--setup-caps` runs `setcap` on the sipnab binary (re-invoking through `sudo`
-itself when not already root) and exits. After that, **run sipnab without
+`--setup-caps` runs `setcap` on the sipnab binary and exits. It re-invokes
+itself through `sudo` when not already root. After that, **run sipnab without
 `sudo`**:
 
 ```bash
 sipnab            # live capture works; no sudo needed
 ```
 
-Prefer this to `sudo sipnab`. When started as root, sipnab opens the capture
-device and then drops privileges to an unprivileged user (`nobody` by default,
-or `--user <name>`). That dropped user usually **cannot read your home
-directory**, so the in-TUI file browser (`O`) comes up empty — it shows a
-"run without sudo" message explaining why. Running unprivileged with
-capabilities avoids this entirely. (Re-run `--setup-caps` after
-each reinstall, since replacing the file clears its capabilities.)
+Prefer this to `sudo sipnab`.
+
+- When started as root, sipnab opens the capture device. Then it drops
+  privileges to an unprivileged user (`nobody` by default, or
+  `--user <name>`).
+- That dropped user usually **cannot read your home directory**.
+- So the in-TUI file browser (`O`) comes up empty. It shows a
+  "run without sudo" message explaining why.
+- Running unprivileged with capabilities avoids this entirely.
+- Re-run `--setup-caps` after each reinstall. Replacing the file clears its
+  capabilities.
 
 > macOS and other non-Linux platforms have no file capabilities. Run live
 > capture under `sudo` there.
@@ -740,8 +821,8 @@ Build with specific features. For the TUI plus TLS decryption and nothing else:
 cargo build --release --features tui,tls
 ```
 
-For a headless capture host — HEP listener, REST API, and MCP over HTTP, with
-no TUI and no audio:
+For a headless capture host, with HEP listener, REST API, and MCP over HTTP,
+and with no TUI and no audio:
 
 ```bash
 cargo build --release --no-default-features --features native,hep,api,mcp,mcp-http
@@ -753,32 +834,35 @@ For everything:
 cargo build --release --features full
 ```
 
-`libasound.so.2` is an **optional** runtime dependency. The `audio` feature
-builds a separate plugin, `libsipnab_audio.so`, installed to `/usr/lib/sipnab/`
-by the `.deb` (or placed next to the binary in dev builds). The `sipnab` binary
-`dlopen`s this plugin only when you actually play a stream, so an audio-enabled
-binary starts fine on a host without libasound.
+`libasound.so.2` is an **optional** runtime dependency.
 
-If libasound (or the plugin) is
-missing, playback returns a clear error and you can still export the stream to a
-WAV file (F2).
+- The `audio` feature builds a separate plugin, `libsipnab_audio.so`.
+  - The `.deb` installs it to `/usr/lib/sipnab/`.
+  - Dev builds place it next to the binary.
+- The `sipnab` binary `dlopen`s this plugin only when you actually play a
+  stream.
+- So an audio-enabled binary starts fine on a host without libasound.
+
+If libasound (or the plugin) is missing, playback returns a clear error. You
+can still export the stream to a WAV file (F2).
 
 On Debian/Ubuntu the package carries `libasound2` as a `Recommends`. Install it for live playback. Only `libpcap0.8` is a hard dependency.
-For a fully audio-free build, drop the `audio` feature and the plugin is not
+For a fully audio-free build, drop the `audio` feature. Then the plugin is not
 built.
 
 ## Turn on the MCP server
 
 To run sipnab as a Model Context Protocol server for an AI agent (Claude Code,
-Claude Desktop, …), start with [MCP server](mcp.md), which covers the `mcp` and
-`mcp-http` features and a first working example.
-[Connect an AI agent to sipnab](mcp-deploy.md) covers running it on a server,
-including token-file generation and the systemd unit.
+Claude Desktop, …), start with [MCP server](mcp.md).
+
+- It covers the `mcp` and `mcp-http` features and a first working example.
+- [Connect an AI agent to sipnab](mcp-deploy.md) covers running it on a
+  server, including token-file generation and the systemd unit.
 
 ## Release profile
 
 The release build uses LTO, a single codegen unit, and symbol stripping for a
-small binary. It also aborts on panic rather than unwinding, and compiles
+small binary. It also aborts on panic rather than unwinding. It compiles
 line-table debug info:
 
 ```toml
@@ -792,16 +876,19 @@ debug = "line-tables-only"
 
 Target binary size (musl, stripped): <= 19 MB.
 
-A local `cargo build --release` strips at link time, so the line tables never
-reach the binary. The release workflow appends `-C strip=none` to `RUSTFLAGS`
-for the same profile instead, and
-[`scripts/split-debuginfo.sh`](https://github.com/NormB/sipnab/blob/main/scripts/split-debuginfo.sh)
-moves the symbols into the `.debug` file each release publishes before it
-strips the binary. The published binary carries the same code either way and
-is within 100 bytes of the same size (the split drops `.comment` and adds a
-`.gnu_debuglink`), and the
-symbol file resolves the addresses in a
-[crash report](troubleshooting.md#send-us-a-crash-report) or a core dump.
+A local `cargo build --release` strips at link time. So the line tables never
+reach the binary.
+
+- The release workflow appends `-C strip=none` to `RUSTFLAGS` for the same
+  profile instead.
+- [`scripts/split-debuginfo.sh`](https://github.com/NormB/sipnab/blob/main/scripts/split-debuginfo.sh)
+  moves the symbols into the `.debug` file each release publishes. It does
+  this before it strips the binary.
+- The published binary carries the same code either way. It is within 100
+  bytes of the same size (the split drops `.comment` and adds a
+  `.gnu_debuglink`).
+- The symbol file resolves the addresses in a
+  [crash report](troubleshooting.md#send-us-a-crash-report) or a core dump.
 
 ## Cross-compilation
 
@@ -848,17 +935,26 @@ docker run --rm -v /path/to/capture.pcap:/data/capture.pcap \
 docker build -t sipnab .
 ```
 
-The multi-stage Dockerfile uses `rust:1.99-slim-trixie` for the build stage and `debian:trixie-slim` for the runtime image. The runtime image includes only `libpcap0.8t64` and runs as a non-root `sipnab` user.
+The multi-stage Dockerfile uses `rust:1.99-slim-trixie` for the build stage and `debian:trixie-slim` for the runtime image.
+
+- The runtime image includes only `libpcap0.8t64`.
+- It runs as a non-root `sipnab` user.
 
 ## Platform notes
 
 ### Linux
 
-Full capability. Live capture requires `CAP_NET_RAW` capability or root. Privilege dropping (`--user`) uses `setuid`/`setgid` after opening capture devices.
+Full capability.
+
+- Live capture requires `CAP_NET_RAW` capability or root.
+- Privilege dropping (`--user`) uses `setuid`/`setgid` after opening capture devices.
 
 ### macOS
 
-TUI and pcap file analysis work fully. Live capture requires root or BPF device access. Install libpcap headers via Xcode Command Line Tools (included by default) or Homebrew.
+TUI and pcap file analysis work fully.
+
+- Live capture requires root or BPF device access.
+- Install libpcap headers via Xcode Command Line Tools (included by default) or Homebrew.
 
 ### FreeBSD / other
 
@@ -885,8 +981,8 @@ Open a capture file in the TUI, which is the quickest end-to-end test:
 sipnab -I /path/to/capture.pcap
 ```
 
-Or read the same file in CLI mode — non-interactive, the first few SIP
-messages. `-N` streams one line per **message**, not per call:
+Or read the same file in CLI mode. It is non-interactive and shows the first
+few SIP messages. `-N` streams one line per **message**, not per call:
 
 ```bash
 sipnab -N -I /path/to/capture.pcap | head -5
@@ -906,38 +1002,43 @@ report wants:
 sipnab -D
 ```
 
-`--version` lists the Cargo features compiled into the binary, and on a
-second line the libpcap it is running, e.g.
+`--version` lists the Cargo features compiled into the binary. On a second
+line it shows the libpcap it is running, e.g.
 
 ```text
-sipnab 0.5.217 (<hash>) features: native,tui,audio,tls,hep,api,mcp,mcp-http,metrics,plugins,bpf,vcon,archive
+sipnab 0.5.218 (<hash>) features: native,tui,audio,tls,hep,api,mcp,mcp-http,metrics,plugins,bpf,vcon,archive
 libpcap version 1.10.5 (with TPACKET_V3); alternate capture backends named: none
 ```
 
 This is the fastest way to confirm a build carries the feature set
-you expected (e.g. that `mcp-http` is present on a server build). The second
-line names the libpcap that decides whether a `netmap:` device can work — see
-[which capture backends an artifact can
-reach](#which-capture-backends-an-artifact-can-reach). `-V` prints only the
-first line.
+you expected (e.g. that `mcp-http` is present on a server build).
+
+- The second line names the libpcap that decides whether a `netmap:` device
+  can work. See
+  [which capture backends an artifact can
+  reach](#which-capture-backends-an-artifact-can-reach).
+- `-V` prints only the first line.
 
 The list differs by artifact, and deliberately. The example above is a
-`*-linux-gnu` release binary on a Debian 13 host, whose libpcap names no
+`*-linux-gnu` release binary on a Debian 13 host. That host's libpcap names no
 alternate backend.
 
-Those binaries carry `bpf`, the uprobe backend that can
-report the peer address a TLS session went out to. The static musl tarballs and
-the macOS builds do not — musl has no room under the published size ceiling and
-`aya` is Linux-only — so on those, `--uprobe-tls` falls back to the `tracefs`
-backend, whose dialogs name a process rather than a peer, and
-`--uprobe-backend bpf` refuses rather than pretending.
+Those binaries carry `bpf`, the uprobe backend that can report the peer
+address a TLS session went out to.
+
+- The static musl tarballs and the macOS builds do not carry it:
+  - musl has no room under the published size ceiling,
+  - `aya` is Linux-only.
+- So on those, `--uprobe-tls` falls back to the `tracefs` backend. Its dialogs
+  name a process rather than a peer.
+- `--uprobe-backend bpf` refuses rather than pretending.
 
 The musl tarballs also
 omit `audio` (static musl has no `dlopen`).
 
-A first non-interactive run against a capture looks like this — timestamp,
-source, destination, method or status line, transport, one line per SIP
-message:
+A first non-interactive run against a capture looks like this. Each SIP
+message gets one line: timestamp, source, destination, method or status line,
+transport:
 
 ```text
 $ sipnab -N -I demo.pcap | head -4
@@ -957,28 +1058,34 @@ a84b4c76e66710@192.0.2.5         alice          alice          Registered   200 
 3848276298220188511@192.0.2.6    alice          bob            Completed    200    14s        15     0.7s     -
 ```
 
-Two things surprise people here. The `Code` column is the final answer to the
-dialog's INVITE, or to the request that opened a dialog without one, with an
-answered challenge skipped, so the `REGISTER` row shows the registrar's 200
-and not its 401. And `Duration` is the
-span from the dialog's first message to its last, not talk time.
+Two things surprise people here.
+
+- The `Code` column is the final answer to the dialog's INVITE, or to the
+  request that opened a dialog without one.
+  - It skips an answered challenge.
+  - So the `REGISTER` row shows the registrar's 200 and not its 401.
+- `Duration` is the span from the dialog's first message to its last, not
+  talk time.
 
 ## Upgrade sipnab
 
 Upgrade the same way you installed. Each route below replaces the binary with
-the newer release and keeps your configuration.
+the newer release. It keeps your configuration.
 
 **Before you upgrade, read the changelog.** sipnab is pre-1.0 and makes no
-Semantic Versioning promise: any release may change a flag, a config key or an
-output format. [CHANGELOG.md](https://github.com/NormB/sipnab/blob/main/CHANGELOG.md)
-calls out each breaking change in the entry that carries it, marked
-**Breaking:** (entries up to 0.5.100 spell it `BREAKING:`). Search the entries
-between your version and the new one for that word.
+Semantic Versioning promise. Any release may change a flag, a config key or an
+output format.
 
-**Only the latest release gets fixes**, security fixes included, and there
-are no long-term support branches (see
-[SECURITY.md](https://github.com/NormB/sipnab/blob/main/SECURITY.md#supported-versions)).
-Upgrading is how you get a fix.
+- [CHANGELOG.md](https://github.com/NormB/sipnab/blob/main/CHANGELOG.md)
+  calls out each breaking change in the entry that carries it.
+- It marks them **Breaking:** (entries up to 0.5.100 spell it `BREAKING:`).
+- Search the entries between your version and the new one for that word.
+
+**Only the latest release gets fixes**, security fixes included.
+
+- There are no long-term support branches (see
+  [SECURITY.md](https://github.com/NormB/sipnab/blob/main/SECURITY.md#supported-versions)).
+- Upgrading is how you get a fix.
 
 Check the version you run now, and again after the upgrade:
 
@@ -995,8 +1102,8 @@ binary in place:
 curl -fsSL https://sipnab.com/install.sh | sh
 ```
 
-If you installed with `SIPNAB_INSTALL_DIR`, set it again, or the new binary
-lands in `/usr/local/bin` beside the old one:
+If you installed with `SIPNAB_INSTALL_DIR`, set it again. Otherwise the new
+binary lands in `/usr/local/bin` beside the old one:
 
 ```bash
 curl -fsSL https://sipnab.com/install.sh | SIPNAB_INSTALL_DIR="$HOME/.local/bin" sh
@@ -1012,21 +1119,21 @@ Repeat the download steps in
 ### With a .deb package
 
 Download the new `.deb` as in
-[Install with your package manager](#install-with-your-package-manager) and
-install it over the old one.
+[Install with your package manager](#install-with-your-package-manager).
+Install it over the old one.
 apt treats a newer version of an installed package as an upgrade:
 
 ```bash
 sudo apt install "./sipnab_${VERSION}_amd64.deb"
 ```
 
-`sudo dpkg -i` with the same file also upgrades, but does not fetch a missing
-dependency, which `apt` does.
+`sudo dpkg -i` with the same file also upgrades. But it does not fetch a
+missing dependency, which `apt` does.
 
 ### With an .rpm package
 
 Use `rpm -U`, not `rpm -i`. `rpm -i` refuses a package that is already
-installed, while `-U` replaces the installed version:
+installed. `-U` replaces the installed version:
 
 ```bash
 sudo rpm -U "sipnab-${VERSION}-1.x86_64.rpm"
@@ -1049,9 +1156,11 @@ brew upgrade NormB/tap/sipnab
 
 ### With cargo
 
-Install the new version over the old one. `--force` replaces the installed
-binary, and `--locked` builds with the exact dependency versions the release's
-own tests ran against:
+Install the new version over the old one.
+
+- `--force` replaces the installed binary.
+- `--locked` builds with the exact dependency versions the release's own
+  tests ran against:
 
 ```bash
 cargo install sipnab --features full --locked --force
@@ -1080,14 +1189,17 @@ docker pull ghcr.io/normb/sipnab:latest
 ### What an upgrade keeps, and what to redo
 
 **Your configuration survives every route.** No package ships a configuration
-file: the `.deb` creates an empty `/etc/sipnab` directory and the `.rpm`
-creates nothing there. An upgrade replaces only the files the package ships,
-so `/etc/sipnab/sipnab.toml` and `~/.config/sipnab/` stay as you left them.
-The installer, the tarball, Homebrew and cargo never touch either location.
+file.
+
+- The `.deb` creates an empty `/etc/sipnab` directory. The `.rpm` creates
+  nothing there.
+- An upgrade replaces only the files the package ships. So
+  `/etc/sipnab/sipnab.toml` and `~/.config/sipnab/` stay as you left them.
+- The installer, the tarball, Homebrew and cargo never touch either location.
 
 **Capabilities do not survive a replaced binary.** If you granted live capture
-without root, grant it again after the upgrade, because replacing the file
-clears its capabilities (see
+without root, grant it again after the upgrade. Replacing the file clears its
+capabilities (see
 [Capture live traffic without root](#capture-live-traffic-without-root)):
 
 ```bash
@@ -1106,15 +1218,16 @@ sudo systemctl restart sipnab
 ```
 
 The package upgrade replaces the unit file too. Put your changes to the unit
-in a drop-in (`sudo systemctl edit sipnab`), which the upgrade leaves alone.
+in a drop-in (`sudo systemctl edit sipnab`). The upgrade leaves the drop-in
+alone.
 
 ## Uninstall it
 
 Remove sipnab the way you installed it. Every method below removes the binary
 itself. The last part covers the files sipnab may have read but never created.
 
-If you used the one-line installer, it copied a single binary and nothing else,
-so deleting that file is the whole uninstall:
+If you used the one-line installer, it copied a single binary and nothing
+else. So deleting that file is the whole uninstall:
 
 ```bash
 sudo rm -f /usr/local/bin/sipnab
@@ -1152,30 +1265,54 @@ cargo uninstall sipnab
 ```
 
 **No run creates a configuration file on its own, so there is usually nothing
-to clean up.** sipnab reads the first configuration file it finds: the one
-named by `--config`, then `$SIPNAB_CONFIG`, `$XDG_CONFIG_HOME/sipnab/sipnab.toml`
-(by default `~/.config/sipnab/sipnab.toml`), `~/.sipnabrc` and
-`/etc/sipnab/sipnab.toml`. It reads the credential files
-named by `--hep-auth-file`, `--mcp-token-file` and `--mcp-signing-key-file`. It
-writes none of those on its own — you do, if you want them.
+to clean up.**
 
-Two TUI actions are the exception, and both need you to ask for them:
-`s` in the F10 column selector saves the layout to `[display] visible_columns`,
-and, with `[names] persist_to_config = true`, the `N` naming dialog saves
-mappings to `[names.manual]`. Either writes into the config file the run loaded, whichever of the five it was, and leaves the rest of the file, comments included, intact. With no
-file loaded it creates the user config file and its directory
-(`$XDG_CONFIG_HOME/sipnab/sipnab.toml`, by default `~/.config/sipnab/sipnab.toml`). When the settings came from `/etc/sipnab/sipnab.toml`, sipnab refuses the save
-and says so on the status line, because a file of your own would hide every setting in it: copy that file to `~/.config/sipnab/sipnab.toml` first. The `N` dialog also keeps a mapping file at
-`~/.config/sipnab/hosts` whatever the config says. Remove what you find there:
+- sipnab reads the first configuration file it finds:
+  - the one named by `--config`,
+  - then `$SIPNAB_CONFIG`,
+  - `$XDG_CONFIG_HOME/sipnab/sipnab.toml` (by default
+    `~/.config/sipnab/sipnab.toml`),
+  - `~/.sipnabrc`,
+  - and `/etc/sipnab/sipnab.toml`.
+- It reads the credential files named by `--hep-auth-file`,
+  `--mcp-token-file` and `--mcp-signing-key-file`.
+- It writes none of those on its own. You do, if you want them.
+
+Two TUI actions are the exception. Both need you to ask for them:
+
+- `s` in the F10 column selector saves the layout to
+  `[display] visible_columns`.
+- With `[names] persist_to_config = true`, the `N` naming dialog saves
+  mappings to `[names.manual]`.
+
+Where they write:
+
+- Either writes into the config file the run loaded, whichever of the five it
+  was. It leaves the rest of the file, comments included, intact.
+- With no file loaded, it creates the user config file and its directory
+  (`$XDG_CONFIG_HOME/sipnab/sipnab.toml`, by default
+  `~/.config/sipnab/sipnab.toml`).
+- When the settings came from `/etc/sipnab/sipnab.toml`, sipnab refuses the
+  save and says so on the status line.
+  - A file of your own would hide every setting in it.
+  - Copy that file to `~/.config/sipnab/sipnab.toml` first.
+- The `N` dialog also keeps a mapping file at `~/.config/sipnab/hosts`
+  whatever the config says.
+
+Remove what you find there:
 
 ```bash
 rm -rf ~/.config/sipnab
 ```
 
-No package removes a system-wide config file, because none ships one. The
-`.deb` creates an empty `/etc/sipnab` directory and the `.rpm` creates nothing
-there, so a `sipnab.toml` you put in `/etc/sipnab` survives `apt remove`,
-`apt purge` and `dnf remove` alike. Remove it yourself:
+No package removes a system-wide config file, because none ships one.
+
+- The `.deb` creates an empty `/etc/sipnab` directory. The `.rpm` creates
+  nothing there.
+- So a `sipnab.toml` you put in `/etc/sipnab` survives `apt remove`,
+  `apt purge` and `dnf remove` alike.
+
+Remove it yourself:
 
 ```bash
 sudo rm -rf /etc/sipnab
@@ -1191,18 +1328,27 @@ sudo rm -rf /etc/sipnab
 <summary>Why / how we know</summary>
 
 **The glibc cutover.** 2.36 is the floor the release workflow enforces on
-every gnu binary, and the installer uses the same cutover, serving musl only to
-hosts below glibc 2.36 or with no glibc at all. One number in both places is
-what stops a host the gnu build runs on from taking the static build and losing
-TUI audio for nothing.
+every gnu binary.
 
-**The two macOS floors.** They differ because they are the pinned compiler's own defaults,
-one per target. `release.yml` pins `MACOSX_DEPLOYMENT_TARGET` to exactly
-those two values, so a toolchain bump cannot move a published floor without
-someone deciding to, and `published_macos_floors_match_the_toolchain` holds
-[`website/config.toml`](https://github.com/NormB/sipnab/blob/main/website/config.toml) to what the workflow pins — refusing a floor below the
-compiler's own default, which would agree on paper and still name an OS the
-binary cannot run on. Read them from the toolchain rather than trusting a copy:
+- The installer uses the same cutover. It serves musl only to hosts below
+  glibc 2.36 or with no glibc at all.
+- One number in both places stops a host the gnu build runs on from taking
+  the static build. That host would lose TUI audio for nothing.
+
+**The two macOS floors.** They differ because they are the pinned compiler's
+own defaults, one per target.
+
+- `release.yml` pins `MACOSX_DEPLOYMENT_TARGET` to exactly those two values.
+  So a toolchain bump cannot move a published floor without someone deciding
+  to.
+- `published_macos_floors_match_the_toolchain` holds
+  [`website/config.toml`](https://github.com/NormB/sipnab/blob/main/website/config.toml)
+  to what the workflow pins.
+  - It refuses a floor below the compiler's own default.
+  - Such a floor would agree on paper and still name an OS the binary cannot
+    run on.
+
+Read them from the toolchain rather than trusting a copy:
 
 ```bash
 rustc --print deployment-target --target x86_64-apple-darwin
@@ -1212,9 +1358,10 @@ rustc --print deployment-target --target x86_64-apple-darwin
 rustc --print deployment-target --target aarch64-apple-darwin
 ```
 
-**How the release keeps the glibc floor.** The gnu targets build inside a Debian
-bookworm container, and a release-workflow gate rejects any binary linking a
-`GLIBC_` symbol newer than 2.36. A gate enforces the floor rather than estimating it.
+**How the release keeps the glibc floor.** The gnu targets build inside a
+Debian bookworm container. A release-workflow gate rejects any binary linking
+a `GLIBC_` symbol newer than 2.36. A gate enforces the floor rather than
+estimating it.
 
 **The size ceiling.** The "Enforce published binary size" step in
 `release.yml` checks the 19 MB ceiling against the real musl artifact on every

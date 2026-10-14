@@ -22,56 +22,61 @@ cargo install sipnab --features full
 
 ### Install from a checkout, with capabilities
 
-`cargo install` has no post-install hook, so a source install leaves you to run
+`cargo install` has no post-install hook. So a source install leaves you to run
 `--setup-caps` yourself. [`scripts/install-from-source.sh`](https://github.com/NormB/sipnab/blob/main/scripts/install-from-source.sh) does both:
 
-1. Clone the repository:
+- Clone the repository:
 
    ```bash
    git clone https://github.com/NormB/sipnab.git
    ```
 
-2. Change into the checkout:
+- Change into the checkout:
 
    ```bash
    cd sipnab
    ```
 
-3. Run the install script:
+- Run the install script:
 
    ```bash
    ./scripts/install-from-source.sh --features full
    ```
 
-It runs `cargo install --path . --bin sipnab` (forwarding any arguments), then
-on Linux invokes the binary's own `--setup-caps` so live capture works without
-`sudo`. Non-Linux platforms skip the capability step and point you at `sudo`.
+The script does this:
 
-This is a *source* install and is distinct from the one-line installer at
-<https://sipnab.com/install.sh>, which downloads a prebuilt release binary
-and compiles nothing.
+- It runs `cargo install --path . --bin sipnab`, forwarding any arguments.
+- Then on Linux it invokes the binary's own `--setup-caps`. So live capture
+  works without `sudo`.
+- Non-Linux platforms skip the capability step and point you at `sudo`.
+
+This is a *source* install. It is distinct from the one-line installer at
+<https://sipnab.com/install.sh>.
+
+- That installer downloads a prebuilt release binary.
+- It compiles nothing.
 
 ### Basic build (TUI only, default features)
 
-1. Clone the repository:
+- Clone the repository:
 
    ```bash
    git clone https://github.com/NormB/sipnab.git
    ```
 
-2. Change into the checkout:
+- Change into the checkout:
 
    ```bash
    cd sipnab
    ```
 
-3. Build the release binary:
+- Build the release binary:
 
    ```bash
    cargo build --release
    ```
 
-4. Copy it onto your `PATH`:
+- Copy it onto your `PATH`:
 
    ```bash
    sudo cp target/release/sipnab /usr/local/bin/
@@ -111,82 +116,124 @@ sipnab uses Cargo feature flags to control optional capability. The default buil
 | `full` | Everything: `native` + `tui` + `audio` + `tls` + `hep` + `api` + `mcp` + `mcp-http` + `metrics` + `plugins` + `vcon` + `archive` | all |
 | `wasm` | WebAssembly target for in-browser pcap analysis | `wasm-bindgen`, `js-sys`, `web-sys`, `console_error_panic_hook` |
 
-Build with specific features. The TUI and TLS decryption only — no audio plugin,
-HEP, REST API or MCP compiled in:
+Build with specific features. This example builds the TUI and TLS decryption
+only. It compiles in no audio plugin, HEP, REST API or MCP:
 
 ```bash
 cargo build --release --features tui,tls
 ```
 
-A headless capture host — HEP listener, REST API and MCP over HTTP, with the TUI
-and audio left out because a server has no use for either:
+A headless capture host has a HEP listener, REST API and MCP over HTTP. It leaves
+out the TUI and audio, because a server has no use for either:
 
 ```bash
 cargo build --release --no-default-features --features native,hep,api,mcp,mcp-http
 ```
 
-Everything — the feature set the official macOS releases ship:
+Everything. This is the feature set the official macOS releases ship:
 
 ```bash
 cargo build --release --features full
 ```
 
-The published `*-linux-gnu` binaries add one more. `bpf` is outside `full`
-because its kernel half needs a nightly toolchain and `bpf-linker`, and this
-project cannot demand either of a contributor — but the release runner installs
-both,
-so the Linux glibc tarballs, `.deb` and `.rpm` all ship it and
-`--uprobe-tls --uprobe-backend bpf` works on them out of the box:
+The published `*-linux-gnu` binaries add one more.
 
-Building it needs two things a stock toolchain does not have: a nightly
-toolchain carrying the `rust-src` component, installed with `rustup`, and
-`bpf-linker` on `PATH` — either `cargo install bpf-linker` or the prebuilt
-static tarball the release workflow uses. Pick the `bpf-linker` release that
-matches your LLVM: 0.9.13 pairs with LLVM 19, 0.11 with LLVM 23.1.
+- `bpf` is outside `full`. Its kernel half needs a nightly toolchain and
+  `bpf-linker`.
+- This project cannot demand either of a contributor.
+- But the release runner installs both.
+- So the Linux glibc tarballs, `.deb` and `.rpm` all ship it.
+- `--uprobe-tls --uprobe-backend bpf` works on them out of the box:
 
-Without either, the build still succeeds and prints a warning, and the resulting binary
-refuses `--uprobe-backend bpf` at run time rather than capturing nothing. Set
-`SIPNAB_BPF_REQUIRED=1` to turn that warning into a build failure, which is
-what the release workflow does.
+Building it needs two things a stock toolchain does not have:
+
+- a nightly toolchain carrying the `rust-src` component, installed with
+  `rustup`,
+- and `bpf-linker` on `PATH`. Get it with either `cargo install bpf-linker` or
+  the prebuilt static tarball the release workflow uses.
+- Pick the `bpf-linker` release that matches your LLVM:
+  - 0.9.13 pairs with LLVM 19,
+  - 0.11 pairs with LLVM 23.1.
+
+Without either, the build still succeeds and prints a warning.
+
+- The resulting binary refuses `--uprobe-backend bpf` at run time. It does not
+  capture nothing.
+- Set `SIPNAB_BPF_REQUIRED=1` to turn that warning into a build failure.
+- The release workflow does that.
 
 ```bash
 cargo build --release --features full,bpf
 ```
 
-The musl tarballs and the macOS builds do **not** carry it: `bpf` costs about
-576 KiB, which the static musl binary has no room for under the published size
-ceiling, and `aya` is a Linux-only dependency that would compile to nothing on
-macOS. `sipnab --version` lists every compiled feature, so it is how you tell
-which build you are holding.
+The musl tarballs and the macOS builds do **not** carry it.
+
+- `bpf` costs about 576 KiB. The static musl binary has no room for that under
+  the published size ceiling.
+- `aya` is a Linux-only dependency. It would compile to nothing on macOS.
+
+`sipnab --version` lists every compiled feature. So it is how you tell which
+build you are holding.
 
 ### What features do you need?
 
-- **Most users (interactive analysis):** `cargo build --release` -- default features (`native` + `tui` + `audio` + `metrics`) give you interactive TUI, CLI mode, audio playback of captured RTP, and the standalone Prometheus endpoint.
-- **CI/scripting only (no TUI):** `cargo build --release --no-default-features --features native` -- headless binary for automation pipelines.
-- **MCP / AI-agent server:** add `mcp` (stdio) or `mcp,mcp-http` (HTTP). See [MCP Server](@/docs/mcp.md) for the runtime configuration.
-- **Headless capture host with HEP + Prometheus + MCP:** `cargo build --release --no-default-features --features native,hep,api,mcp,mcp-http` -- the typical "fleet capture server" feature set, leaves out the TUI and audio playback you don't need on a server.
-- **Full installation:** `cargo build --release --features full` -- everything except `wasm` and `bpf`.
-- **Peer addresses from a TLS uprobe:** add `bpf` (`cargo build --release --features full,bpf`) -- needs a nightly toolchain and `bpf-linker` at build time, and a kernel with `CONFIG_DEBUG_INFO_BTF` at run time. Already compiled into every published `*-linux-gnu` binary.
-- **WASM/browser analysis:** `cargo build --release --features wasm` -- WebAssembly target for in-browser pcap analysis (see Analyze page).
+- **Most users (interactive analysis):** `cargo build --release`.
+  - Default features (`native` + `tui` + `audio` + `metrics`) give you:
+    - interactive TUI,
+    - CLI mode,
+    - audio playback of captured RTP,
+    - and the standalone Prometheus endpoint.
+- **CI/scripting only (no TUI):** `cargo build --release --no-default-features --features native`.
+  - This is a headless binary for automation pipelines.
+- **MCP / AI-agent server:** add `mcp` (stdio) or `mcp,mcp-http` (HTTP).
+  - See [MCP Server](@/docs/mcp.md) for the runtime configuration.
+- **Headless capture host with HEP + Prometheus + MCP:** `cargo build --release --no-default-features --features native,hep,api,mcp,mcp-http`.
+  - This is the typical "fleet capture server" feature set.
+  - It leaves out the TUI and audio playback you don't need on a server.
+- **Full installation:** `cargo build --release --features full`.
+  - This is everything except `wasm` and `bpf`.
+- **Peer addresses from a TLS uprobe:** add `bpf` (`cargo build --release --features full,bpf`).
+  - It needs a nightly toolchain and `bpf-linker` at build time.
+  - It needs a kernel with `CONFIG_DEBUG_INFO_BTF` at run time.
+  - It is already compiled into every published `*-linux-gnu` binary.
+- **WASM/browser analysis:** `cargo build --release --features wasm`.
+  - This is the WebAssembly target for in-browser pcap analysis (see Analyze page).
 
 ### Runtime dependencies
 
-`libasound.so.2` is an **optional** runtime dependency. The `audio` feature builds a separate plugin, `libsipnab_audio.so`, installed to `/usr/lib/sipnab/` by the `.deb` (or placed next to the binary in dev builds). The `sipnab` binary `dlopen`s this plugin only when you actually play a stream, so an audio-enabled binary starts fine on a host without libasound.
+`libasound.so.2` is an **optional** runtime dependency.
 
-If libasound (or the plugin) is missing, playback returns a clear error and you can still export the stream to a WAV file (F2). Only `libpcap0.8` is a hard dependency:
+- The `audio` feature builds a separate plugin, `libsipnab_audio.so`.
+  - The `.deb` installs it to `/usr/lib/sipnab/`.
+  - Dev builds place it next to the binary.
+- The `sipnab` binary `dlopen`s this plugin only when you actually play a
+  stream.
+- So an audio-enabled binary starts fine on a host without libasound.
+
+If libasound (or the plugin) is missing:
+
+- playback returns a clear error,
+- and you can still export the stream to a WAV file (F2).
+
+Only `libpcap0.8` is a hard dependency:
 
 ```bash
 apt-get install -y libpcap0.8
 ```
 
-libasound is optional and only affects live playback. Skip it on a server: the
-binary still starts, and WAV export (F2) still works without it.
+libasound is optional and only affects live playback. Skip it on a server:
+
+- the binary still starts,
+- and WAV export (F2) still works without it.
 
 ```bash
 apt-get install -y libasound2
 ```
 
-If you don't need TUI audio playback on the host (typical for a `--hep-listen` / `--api` / `--mcp` server), install the `-noaudio` `.deb`, or build without the `audio` feature so the plugin is not built at all:
+You may not need TUI audio playback on the host. That is typical for a `--hep-listen` / `--api` / `--mcp` server. Then do one of these:
+
+- install the `-noaudio` `.deb`,
+- or build without the `audio` feature, so the plugin is not built at all:
 
 ```bash
 cargo build --release --no-default-features \
@@ -195,9 +242,13 @@ cargo build --release --no-default-features \
 
 ### Audio on musl and Alpine
 
-**A statically linked musl build can never play audio, whatever features you compile in.** The plugin arrives through `dlopen`, and static musl has no dynamic loader at all — `dlopen` returns `NULL` with *"Dynamic loading not supported"*. This is why the release builds the `…-linux-musl` tarballs without `audio`.
+**A statically linked musl build can never play audio, whatever features you compile in.**
 
-This matters because it fails quietly. `cargo build --release --features full` on Alpine succeeds, and the binary then reports:
+- The plugin arrives through `dlopen`.
+- Static musl has no dynamic loader at all. `dlopen` returns `NULL` with *"Dynamic loading not supported"*.
+- This is why the release builds the `…-linux-musl` tarballs without `audio`.
+
+This matters because it fails quietly. `cargo build --release --features full` on Alpine succeeds. The binary then reports:
 
 ```text
 sipnab <version> features: native,tui,audio,tls,hep,api,mcp,mcp-http,metrics,plugins,vcon,archive
@@ -205,64 +256,92 @@ sipnab <version> features: native,tui,audio,tls,hep,api,mcp,mcp-http,metrics,plu
 
 It advertises `audio` it cannot deliver. Nothing errors until you try to play a stream.
 
-Two supported ways to build on Alpine, depending on what you want. Pick one — the
-two produce incompatible binaries.
+There are two supported ways to build on Alpine, depending on what you want.
+Pick one. The two produce incompatible binaries.
 
-Portable, no audio. This is what the release ships: static, zero runtime deps,
-runs on any Linux distro regardless of libc.
+Portable, no audio. This is what the release ships:
 
-1. Install the build dependencies:
+- static,
+- zero runtime deps,
+- runs on any Linux distro regardless of libc.
+
+- Install the build dependencies:
 
    ```bash
    apk add --no-cache musl-dev libpcap-dev pkgconf
    ```
 
-2. Build the static binary:
+- Build the static binary:
 
    ```bash
    cargo build --release --no-default-features \
        --features native,tui,tls,hep,api,mcp,mcp-http
    ```
 
-Alpine-only, with audio. Dynamically linked, so `dlopen` works and the plugin
-loads. Needs alsa-lib at runtime and does NOT run on glibc hosts.
+Alpine-only, with audio.
 
-1. Install the build dependencies, including ALSA:
+- Dynamically linked. So `dlopen` works and the plugin loads.
+- Needs alsa-lib at runtime.
+- Does NOT run on glibc hosts.
+
+- Install the build dependencies, including ALSA:
 
    ```bash
    apk add --no-cache musl-dev libpcap-dev pkgconf alsa-lib alsa-lib-dev
    ```
 
-2. Build sipnab, dynamically linked:
+- Build sipnab, dynamically linked:
 
    ```bash
    RUSTFLAGS="-C target-feature=-crt-static" cargo build --release --features full
    ```
 
-3. Build the audio plugin the same way:
+- Build the audio plugin the same way:
 
    ```bash
    RUSTFLAGS="-C target-feature=-crt-static" cargo build --release -p sipnab-audio
    ```
 
-A CI job checks both paths on `rust:1.97-alpine`: the full test suite passes on Alpine with zero failures and the same test count as the glibc host, and in the dynamic build the plugin links `libasound.so.2` and `dlopen`s successfully while the `sipnab` binary itself still links only libpcap, libgcc and libc.
+A CI job checks both paths on `rust:1.97-alpine`:
+
+- The full test suite passes on Alpine with zero failures.
+- It has the same test count as the glibc host.
+- In the dynamic build, the plugin links `libasound.so.2` and `dlopen`s successfully.
+- The `sipnab` binary itself still links only libpcap, libgcc and libc.
 
 ### Cross-glibc compatibility
 
-The release `-gnu` builds require **glibc >= 2.36** (the floor the release workflow enforces on every gnu binary). On older hosts they refuse to start with `version 'GLIBC_2.36' not found`. The [installer script](@/docs/install.md#install-in-one-command) handles this automatically — below the 2.36 floor it falls back to the static musl build.
+The release `-gnu` builds require **glibc >= 2.36**.
 
-The same applies to your own builds: if you build on a newer Debian/Ubuntu (e.g. Debian 13 / glibc 2.41) and deploy to an older one (Debian 12 / glibc 2.36), build inside a container matching the target's glibc -- for example, `rust:1-bookworm` for Debian 12 deploys, or use musl (the static `--target x86_64-unknown-linux-musl` builds the release CI publishes).
+- That is the floor the release workflow enforces on every gnu binary.
+- On older hosts they refuse to start with `version 'GLIBC_2.36' not found`.
+- The [installer script](@/docs/install.md#install-in-one-command) handles this
+  automatically. Below the 2.36 floor it falls back to the static musl build.
+
+The same applies to your own builds.
+
+- You may build on a newer Debian/Ubuntu (e.g. Debian 13 / glibc 2.41).
+- And you may deploy to an older one (Debian 12 / glibc 2.36).
+- Then do one of these:
+  - build inside a container matching the target's glibc. For example,
+    `rust:1-bookworm` for Debian 12 deploys.
+  - or use musl. These are the static `--target x86_64-unknown-linux-musl`
+    builds the release CI publishes.
 
 ## Rust and `unsafe`
 
-sipnab is a Rust program. Its `unsafe` blocks are mostly calls into the
-kernel and C libraries such as libc and libpcap, and reads of memory the
-kernel shares with it. Every block carries a `// SAFETY:` comment that states
-its soundness argument: `Cargo.toml` turns on clippy's
-`undocumented_unsafe_blocks` lint, and CI runs clippy with `-D warnings`, so a
-block without one fails the build.
+sipnab is a Rust program. Its `unsafe` blocks are mostly two kinds:
 
-The release workflow also enforces a size ceiling: it refuses a static musl
+- calls into the kernel and C libraries such as libc and libpcap,
+- and reads of memory the kernel shares with it.
+
+Every block carries a `// SAFETY:` comment that states its soundness argument.
+
+- `Cargo.toml` turns on clippy's `undocumented_unsafe_blocks` lint.
+- CI runs clippy with `-D warnings`.
+- So a block without one fails the build.
+
+The release workflow also enforces a size ceiling. It refuses a static musl
 binary larger than `binary_size_ceiling_mb` in
 [`website/config.toml`](https://github.com/NormB/sipnab/blob/main/website/config.toml).
 
@@ -277,13 +356,17 @@ codegen-units = 1
 strip = true
 ```
 
-Target binary size (musl, stripped): <= 19 MB. Enforced against the real artifact by the "Enforce published binary size" step in release.yml.
+Target binary size (musl, stripped): <= 19 MB.
+The "Enforce published binary size" step in release.yml enforces it against the real artifact.
 
 ## Cross-compilation
 
-sipnab uses [cross](https://github.com/cross-rs/cross) for cross-compilation. It
-runs each build in a container that already carries the target's toolchain, so
-the host needs no cross-linker of its own. Install it once:
+sipnab uses [cross](https://github.com/cross-rs/cross) for cross-compilation.
+
+- It runs each build in a container that already carries the target's toolchain.
+- So the host needs no cross-linker of its own.
+
+Install it once:
 
 ```bash
 cargo install cross

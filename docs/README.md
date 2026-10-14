@@ -21,16 +21,16 @@ questions:
 Follow these in order on your first day. They assume nothing and show what you
 should see at each step.
 
-1. **[Install sipnab](install.md)**: the one-line installer, prebuilt
-   binaries, packages, or a source build. Reading a capture file needs no
-   privileges. Live capture needs root or `CAP_NET_RAW`, which
-   `sudo sipnab --setup-caps` grants once.
-2. **[Triage a capture from the command line](first-cli-triage.md)**: download
-   a sample call, list its calls, find the failed ones, explain one, and pipe
-   the answer into `jq`.
-3. **[Your first analysis in the TUI](tui-walkthrough.md)**: open the same
-   capture interactively, read the call-flow ladder, measure a delay, and
-   inspect the audio quality.
+- **[Install sipnab](install.md)**: the one-line installer, prebuilt
+  binaries, packages, or a source build. Reading a capture file needs no
+  privileges. Live capture needs root or `CAP_NET_RAW`, which
+  `sudo sipnab --setup-caps` grants once.
+- **[Triage a capture from the command line](first-cli-triage.md)**: download
+  a sample call, list its calls, find the failed ones, explain one, and pipe
+  the answer into `jq`.
+- **[Your first analysis in the TUI](tui-walkthrough.md)**: open the same
+  capture interactively, read the call-flow ladder, measure a delay, and
+  inspect the audio quality.
 
 The [Glossary](glossary.md) defines PDD, MOS, B2BUA and the other terms these
 pages use.

@@ -13,18 +13,24 @@ Every header field in the IANA registry, its compact form where one exists, and
 the RFC that defines it.
 
 **Source.** <https://www.iana.org/assignments/sip-parameters/sip-parameters-2.csv>
-— the IANA *Header Fields* registry, retrieved 2026-07-30, 134 fields. The same
-arrangement as [SIP request methods](@/docs/sip-methods.md) and
-[SIP response codes](@/docs/sip-response-codes.md): [RFC 3261](https://www.rfc-editor.org/rfc/rfc3261.html) defines 47 and later RFCs
-register the rest.
+— the IANA *Header Fields* registry, retrieved 2026-07-30, 134 fields.
+
+- The arrangement is the same as in [SIP request methods](@/docs/sip-methods.md) and
+  [SIP response codes](@/docs/sip-response-codes.md).
+- [RFC 3261](https://www.rfc-editor.org/rfc/rfc3261.html) defines 47.
+- Later RFCs register the rest.
 
 ## Compact forms
 
-Nineteen fields have a single-letter alias. [RFC 3261 section 7.3.3](https://www.rfc-editor.org/rfc/rfc3261.html#section-7.3.3) makes them exactly
-equivalent to the long form, so a parser that misses one misreads the message —
-and an attacker who knows which ones a tool ignores can hide a header in plain
-sight. `COMPACT_HEADERS` in [`src/sip/parser.rs`](https://github.com/NormB/sipnab/blob/main/src/sip/parser.rs) carries
-all nineteen, and `compact_headers_match_the_iana_registry` holds it to this
+Nineteen fields have a single-letter alias.
+[RFC 3261 section 7.3.3](https://www.rfc-editor.org/rfc/rfc3261.html#section-7.3.3) makes them exactly
+equivalent to the long form.
+
+- A parser that misses one misreads the message.
+- An attacker who knows which ones a tool ignores can hide a header in plain sight.
+
+`COMPACT_HEADERS` in [`src/sip/parser.rs`](https://github.com/NormB/sipnab/blob/main/src/sip/parser.rs) carries
+all nineteen. `compact_headers_match_the_iana_registry` holds it to this
 table.
 
 | Compact | Header field | Defined in |
@@ -51,9 +57,10 @@ table.
 
 ## All header fields
 
-The Description column quotes [RFC 3261 section 20](https://www.rfc-editor.org/rfc/rfc3261.html#section-20) for the fields it defines. A field
-registered by a later RFC carries its reference without a description, because
-no single section defines them all — follow the link.
+The Description column quotes [RFC 3261 section 20](https://www.rfc-editor.org/rfc/rfc3261.html#section-20) for the fields it defines.
+
+- A field registered by a later RFC carries its reference without a description.
+- The reason is that no single section defines them all. Follow the link.
 
 <!-- vale off -->
 

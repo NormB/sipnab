@@ -1,16 +1,27 @@
 # Test architecture
 
-Over two hundred integration-test binaries under [`tests/`](../../tests) — every
-`tests/*.rs` file is one, because nothing turns Cargo's auto-discovery off —
-plus unit tests inside `src/`, plus doctests. The exact total is not repeated
-here on purpose: the homepage stat card carries it and a pre-commit gate holds
-it, so any number written on this page would be wrong within a week. The
-opening sentence read "fifty" until 2026-09-06, when a sweep of these pages
-counted 238.
+The tests are of three kinds:
 
-What follows is the map: what each tier asserts, how to regenerate its
-artifacts, and — most importantly — the roster of *gate tests* that fail you
-for reasons that have nothing to do with the code you were writing.
+- Over two hundred integration-test binaries under [`tests/`](../../tests).
+  - Every `tests/*.rs` file is one.
+  - That is because nothing turns Cargo's auto-discovery off.
+- Unit tests inside `src/`.
+- Doctests.
+
+The exact total is not repeated here on purpose.
+
+- The homepage stat card carries it.
+- A pre-commit gate holds it.
+- So any number written on this page would be wrong within a week.
+- The opening sentence read "fifty" until 2026-09-06.
+- On that date a sweep of these pages counted 238.
+
+What follows is the map:
+
+- What each tier asserts.
+- How to regenerate its artifacts.
+- Most importantly, the roster of *gate tests*.
+  - These fail you for reasons that have nothing to do with the code you were writing.
 
 ## Tiers
 
@@ -31,7 +42,7 @@ for reasons that have nothing to do with the code you were writing.
 ## [`tests/support/`](../../tests/support/)
 
 Files in a subdirectory of `tests/` are **not** compiled as their own test
-binaries, so an explicit path attribute pulls shared helpers in:
+binaries. So an explicit path attribute pulls shared helpers in:
 
 ```rust
 #[path = "support/run.rs"]
@@ -39,7 +50,7 @@ mod run;
 ```
 
 That idiom is why the same module appears in several test files
-with no `mod.rs` chain — each test binary compiles its own copy.
+with no `mod.rs` chain. Each test binary compiles its own copy.
 
 | Helper | Provides |
 |---|---|
@@ -56,9 +67,10 @@ with no `mod.rs` chain — each test binary compiles its own copy.
 
 ## Fixtures and corpora
 
-Every command below ran against the current tree and left it unchanged —
-that is the point of documenting them: if one produces a diff, something has
-drifted.
+Every command below ran against the current tree and left it unchanged.
+
+- That is the point of documenting them.
+- If one produces a diff, something has drifted.
 
 | Artifact | Regenerate with |
 |---|---|
@@ -73,28 +85,37 @@ drifted.
 
 ### The public vCon datasets
 
-The vcon-dev community publishes five vCon datasets as git repositories:
-17,443 containers in all, none of which carries SIP signaling.
-[`tests/fixtures/vcon-datasets/PINS.tsv`](../../tests/fixtures/vcon-datasets/PINS.tsv)
-pins each one to a commit and records the license of its LICENSE file at that
-commit. Two tests read them.
+The vcon-dev community publishes five vCon datasets as git repositories.
+
+- They hold 17,443 containers in all.
+- None of them carries SIP signaling.
+- [`tests/fixtures/vcon-datasets/PINS.tsv`](../../tests/fixtures/vcon-datasets/PINS.tsv)
+  pins each one to a commit.
+  - It records the license of its LICENSE file at that commit.
+
+Two tests read them.
 
 - [`vcon_dataset_subset_test`](../../tests/vcon_dataset_subset_test.rs) runs on
-  every build with the `vcon` feature. It reads the four containers committed
-  under [`tests/fixtures/vcon-datasets/`](../../tests/fixtures/vcon-datasets/README.md)
-  and pins the findings `vcon_schema::validate` reports for each. It also
-  checks that the `jsonschema` reference engine agrees, that each container is
-  valid once the test repairs its recorded dataset issues, and that the fetcher
-  (`--vcon-fetch-kind generic`, against a server on `127.0.0.1`) saves each
-  one unchanged. Each dataset directory there carries the LICENSE file of its
-  dataset and a README with the source path and SHA-256 of every file.
+  every build with the `vcon` feature.
+  - It reads the four containers committed
+    under [`tests/fixtures/vcon-datasets/`](../../tests/fixtures/vcon-datasets/README.md).
+  - It pins the findings `vcon_schema::validate` reports for each.
+  - It also checks three more things:
+    - The `jsonschema` reference engine agrees.
+    - Each container is valid once the test repairs its recorded dataset issues.
+    - The fetcher (`--vcon-fetch-kind generic`, against a server on `127.0.0.1`)
+      saves each one unchanged.
+  - Each dataset directory there carries the LICENSE file of its dataset.
+  - It also carries a README with the source path and SHA-256 of every file.
 - [`vcon_dataset_corpus_test`](../../tests/vcon_dataset_corpus_test.rs) reads
-  every container in the five datasets. It runs only when
-  `SIPNAB_VCON_DATASETS` names a directory that
-  [`scripts/fetch-vcon-datasets.py`](../../scripts/fetch-vcon-datasets.py)
-  filled. Without it, the binary prints one `NOTICE` line saying its gates did
-  not run, as the capture corpus does. The pre-push corpus gate does not run
-  it: that gate selects tests by the name `SIPNAB_CORPUS`.
+  every container in the five datasets.
+  - It runs only when `SIPNAB_VCON_DATASETS` names a directory that
+    [`scripts/fetch-vcon-datasets.py`](../../scripts/fetch-vcon-datasets.py)
+    filled.
+  - Without it, the binary prints one `NOTICE` line saying its gates did
+    not run, as the capture corpus does.
+  - The pre-push corpus gate does not run it.
+    That gate selects tests by the name `SIPNAB_CORPUS`.
 
 Fetch the datasets and run the corpus test:
 
@@ -105,20 +126,31 @@ SIPNAB_VCON_DATASETS="$HOME/vcon-datasets" \
   cargo test --features full --profile corpus --test vcon_dataset_corpus_test
 ```
 
-The script runs only `git`: it fetches each pinned commit, checks it out
-detached with hooks and symbolic links turned off, and refuses a checkout
-whose HEAD is not the pinned commit or whose files have changed. A second run
-verifies the cache and moves a dataset whose pin changed. The five datasets
-take about 2.3 GB of disk, and the corrected copy described below about
-2.2 GB more.
+The script runs only `git`.
 
-The corpus test prints, for each dataset, the number of containers, the number
-the schema accepts, and each finding with the number of containers that carry
-it. It asserts that each dataset is at its pinned commit and that sipnab and
-the reference agree on every container, both on the verdict and on the
-instance paths of the findings. It also asserts the per-dataset counts
-measured on 2026-10-09, which hold for as long as the pins do. Moving a pin in
-`PINS.tsv` means measuring again and rewriting `EXPECTED` in the test.
+- It fetches each pinned commit.
+- It checks it out detached, with hooks and symbolic links turned off.
+- It refuses a checkout whose HEAD is not the pinned commit.
+- It refuses a checkout whose files have changed.
+- A second run verifies the cache and moves a dataset whose pin changed.
+- The five datasets take about 2.3 GB of disk.
+- The corrected copy described below takes about 2.2 GB more.
+
+The corpus test prints three things for each dataset:
+
+- The number of containers.
+- The number the schema accepts.
+- Each finding, with the number of containers that carry it.
+
+It asserts these things:
+
+- Each dataset is at its pinned commit.
+- sipnab and the reference agree on every container.
+  - They agree on the verdict.
+  - They agree on the instance paths of the findings.
+- The per-dataset counts measured on 2026-10-09.
+  - These hold for as long as the pins do.
+  - Moving a pin in `PINS.tsv` means measuring again and rewriting `EXPECTED` in the test.
 
 What the five datasets get, at their pins:
 
@@ -132,37 +164,50 @@ What the five datasets get, at their pins:
 
 Each finding is a rule that draft-ietf-vcon-vcon-core-04 states in its prose
 and in its schema:
-[section 4.4.5](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-04#section-4.4.5)
-for an inline attachment's `mediatype`,
-[section 4.4.2](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-04#section-4.4.2)
-for `start`,
-[section 2.4](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-04#section-2.4)
-for `content_hash` beside `url`, and
-[section 2.3.2](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-04#section-2.3.2)
-for `encoding`. The reference engine reports the same findings at the same
-paths. With those four repaired, every one of the 17,443 containers is valid
+
+- [section 4.4.5](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-04#section-4.4.5)
+  for an inline attachment's `mediatype`.
+- [section 4.4.2](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-04#section-4.4.2)
+  for `start`.
+- [section 2.4](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-04#section-2.4)
+  for `content_hash` beside `url`.
+- [section 2.3.2](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-04#section-2.3.2)
+  for `encoding`.
+
+The reference engine reports the same findings at the same paths.
+With those four repaired, every one of the 17,443 containers is valid
 to sipnab and to the reference engine.
 
 #### The corrected copy
 
 [`tests/fixtures/vcon-datasets/CORRECTED.tsv`](../../tests/fixtures/vcon-datasets/CORRECTED.tsv)
-pins [NormB/vcon-datasets-core04](https://github.com/NormB/vcon-datasets-core04),
-a copy of the first three datasets with two kinds of key added and nothing
-else changed: `mediatype` on every inline attachment, and `content_hash` on
-the 425 IETF audio recordings whose files it downloaded, with an IETF login,
-and hashed. Its CHANGES.md lists what it leaves open and why. fake-vcons and tadhack-2025 are not in it, for the contact data
-described in the subset README. The fetch script fetches both pins files
-unless `--pins` names others, and accepts `--pins` more than once.
+pins [NormB/vcon-datasets-core04](https://github.com/NormB/vcon-datasets-core04).
 
-The corpus test holds the corrected copy to three things, beside the tests
-above that pin the upstream findings. It is at its pinned commit. Each
-corrected dataset gets the answer measured on 2026-10-11, with sipnab and the
-reference agreeing on every container. Each corrected container is its
-upstream container with keys added: the test counts the added `content_hash`
-values (425) and requires each to be a SHA-512 token, and with them set aside,
-repairing both containers with the test's own repair gives the same document
-and the corrected one needs no `mediatype` repair. That last check compares this repository's repair rule with the
-corrected repository's own, on all 16,799 containers.
+- It is a copy of the first three datasets.
+- It adds two kinds of key and changes nothing else:
+  - `mediatype` on every inline attachment.
+  - `content_hash` on the 425 IETF audio recordings whose files it downloaded,
+    with an IETF login, and hashed.
+- Its CHANGES.md lists what it leaves open and why.
+- fake-vcons and tadhack-2025 are not in it.
+  - The reason is the contact data described in the subset README.
+- The fetch script fetches both pins files unless `--pins` names others.
+- It accepts `--pins` more than once.
+
+The corpus test holds the corrected copy to three things.
+These are beside the tests above that pin the upstream findings.
+
+- It is at its pinned commit.
+- Each corrected dataset gets the answer measured on 2026-10-11.
+  - sipnab and the reference agree on every container.
+- Each corrected container is its upstream container with keys added.
+  - The test counts the added `content_hash` values (425).
+  - It requires each to be a SHA-512 token.
+  - With them set aside, repairing both containers with the test's own repair
+    gives the same document.
+  - The corrected one needs no `mediatype` repair.
+  - That last check compares this repository's repair rule with the
+    corrected repository's own, on all 16,799 containers.
 
 | Dataset | Containers | Valid | Findings, with the number of containers that carry each |
 |---|---|---|---|
@@ -170,17 +215,21 @@ corrected repository's own, on all 16,799 containers.
 | `ietf-meeting-vcons` | 8,181 | 4,527 | Dialog Object with `url` and no `content_hash`: 3,654 |
 | `vcon-dataset-city-of-newport-ri` | 115 | 0 | Dialog Object with `url` and no `content_hash`: 115 |
 
-The remaining finding needs a hash of each recording, and no fetch returns
-these recordings to hash: the IETF ones are YouTube pages, and the Newport
-video host refused the download.
+The remaining finding needs a hash of each recording.
+No fetch returns these recordings to hash.
 
-Accepting a snapshot or overwriting a golden is a **decision**, not a fix. Read
-the diff first: these files are the record of what the tool promised its users.
+- The IETF ones are YouTube pages.
+- The Newport video host refused the download.
+
+Accepting a snapshot or overwriting a golden is a **decision**, not a fix.
+
+- Read the diff first.
+- These files are the record of what the tool promised its users.
 
 ## The gate-test roster
 
-These fail on changes you thought had nothing to do with them. Each one exists because
-the thing it guards silently rotted at least once.
+These fail on changes you thought had nothing to do with them.
+Each one exists because the thing it guards silently rotted at least once.
 
 | Gate | Trips when |
 |---|---|
@@ -205,50 +254,75 @@ the thing it guards silently rotted at least once.
 | [`support_selftest`](../../tests/support_selftest.rs) | The shared normalization helper changes behavior under the tests that depend on it. |
 | [`released_port_scan_test`](../../tests/released_port_scan_test.rs) | A test under `tests/` binds a loopback port 0, reads the port, and releases the socket before using the number, which a test running alongside can take in between. |
 
-The rule for all of them: **the gate is not the problem**. If
-`flag_coverage_test` fails, the flag needs a test. If `dev_docs_drift_test`
-fails, a page now lies. Adding an exemption is the last resort, and every
-exemption list in this repo works as a ratchet so it cannot quietly grow.
+The rule for all of them: **the gate is not the problem**.
+
+- If `flag_coverage_test` fails, the flag needs a test.
+- If `dev_docs_drift_test` fails, a page now lies.
+- Adding an exemption is the last resort.
+- Every exemption list in this repo works as a ratchet, so it cannot quietly grow.
 
 ## The development loop
 
-**Logging.** `SIPNAB_LOG` is a `tracing` `EnvFilter`, so it takes levels and
-per-module directives (`SIPNAB_LOG=debug`, `SIPNAB_LOG=sipnab::rtp=trace`).
-In TUI mode sipnab suppresses logging unless `SIPNAB_LOG` says otherwise — the
-alternative is log lines painting over the interface. `-q` lowers the default
-in CLI mode. Configured by [`init_logging()`](../../src/app/bootstrap.rs).
+**Logging.** `SIPNAB_LOG` is a `tracing` `EnvFilter`.
 
-**Benches.** `cargo bench --profile profiling`. Plain `cargo bench` *cannot
-build*: the `cdylib` crate type needed for the WASM build forces
-`panic = "abort"` into the lib unit while bench units build with
-unwind, so shared dependencies get built twice with incompatible panic
-strategies and fail to unify. The `profiling` profile is release codegen with
-`panic = "unwind"` and debug symbols kept, which is also what callgrind wants.
-Baselines live in [`benches/BASELINES.md`](../../benches/BASELINES.md).
+- So it takes levels and per-module directives
+  (`SIPNAB_LOG=debug`, `SIPNAB_LOG=sipnab::rtp=trace`).
+- In TUI mode sipnab suppresses logging unless `SIPNAB_LOG` says otherwise.
+  - The alternative is log lines painting over the interface.
+- `-q` lowers the default in CLI mode.
+- Configured by [`init_logging()`](../../src/app/bootstrap.rs).
 
-**nextest.** [`.config/nextest.toml`](../../.config/nextest.toml) defines three profiles: `default` (no retries, 30s slow timeout), `ci` (no retries, no
-fail-fast, immediate-final output) and `e2e` (2 retries, 60s timeout) for the
-timing-sensitive tmux tests. Worth knowing: **no workflow currently invokes
-nextest** — CI runs plain `cargo test`. The config is there for local use and
-for the day the e2e shim goes away.
+**Benches.** `cargo bench --profile profiling`.
 
-**The docker lab.** [`harness/`](../../harness) is a docker-compose stack —
-OpenSIPS, rtpengine, SIPp — for generating real traffic. `make up` in that
-directory builds and starts it, and `make down` tears it down.
+- Plain `cargo bench` *cannot build*.
+  - The `cdylib` crate type needed for the WASM build forces
+    `panic = "abort"` into the lib unit.
+  - Bench units build with unwind.
+  - So shared dependencies get built twice with incompatible panic strategies.
+  - They fail to unify.
+- The `profiling` profile is release codegen with `panic = "unwind"` and
+  debug symbols kept.
+  - That is also what callgrind wants.
+- Baselines live in [`benches/BASELINES.md`](../../benches/BASELINES.md).
 
-**WASM.** One pre-commit gate covers the browser analyzer: it checks that
-[`website/static/wasm/sipnab.js`](../../website/static/wasm/sipnab.js) still exports
-every function the site calls.
+**nextest.** [`.config/nextest.toml`](../../.config/nextest.toml) defines three profiles:
+
+- `default` (no retries, 30s slow timeout).
+- `ci` (no retries, no fail-fast, immediate-final output).
+- `e2e` (2 retries, 60s timeout) for the timing-sensitive tmux tests.
+
+Worth knowing: **no workflow currently invokes nextest**.
+
+- CI runs plain `cargo test`.
+- The config is there for local use.
+- It is also there for the day the e2e shim goes away.
+
+**The docker lab.** [`harness/`](../../harness) is a docker-compose stack
+for generating real traffic.
+
+- It holds OpenSIPS, rtpengine and SIPp.
+- `make up` in that directory builds and starts it.
+- `make down` tears it down.
+
+**WASM.** One pre-commit gate covers the browser analyzer.
+It checks that [`website/static/wasm/sipnab.js`](../../website/static/wasm/sipnab.js)
+still exports every function the site calls.
 
 A second gate once demanded a freshly built bundle alongside any staged
-[`src/wasm.rs`](../../src/wasm.rs). It no longer exists, nor does the binary it guarded: the published
-analyzer went eleven releases stale while that gate stayed green, because
-[`src/wasm.rs`](../../src/wasm.rs) had no commits in the window — the interface held still while the
-implementation behind it moved. The Pages workflow builds the bundle at deploy
-time now, so the build produces what ships rather than the tree carrying it, and it cannot go stale.
+[`src/wasm.rs`](../../src/wasm.rs).
 
-**Feature matrices.** A green `cargo test --features full` is not proof: CI
-also builds reduced feature sets, and code behind `#[cfg(not(feature = ...))]`
-is invisible to the full build. Before pushing, `cargo clippy --workspace --all-features
---all-targets -- -D warnings` and the `fuzz` workspace check are what the
-pre-push hook runs for exactly this reason.
+- It no longer exists, nor does the binary it guarded.
+- The published analyzer went eleven releases stale while that gate stayed green.
+  - The reason: [`src/wasm.rs`](../../src/wasm.rs) had no commits in the window.
+  - The interface held still while the implementation behind it moved.
+- The Pages workflow builds the bundle at deploy time now.
+  - So the build produces what ships, rather than the tree carrying it.
+  - It cannot go stale.
+
+**Feature matrices.** A green `cargo test --features full` is not proof.
+
+- CI also builds reduced feature sets.
+- Code behind `#[cfg(not(feature = ...))]` is invisible to the full build.
+- For exactly this reason, the pre-push hook runs two checks before pushing:
+  - `cargo clippy --workspace --all-features --all-targets -- -D warnings`.
+  - The `fuzz` workspace check.

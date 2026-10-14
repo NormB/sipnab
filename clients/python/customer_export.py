@@ -1,22 +1,22 @@
 #!/usr/bin/env python3
 """One customer's calls out of a directory of rotated captures, as a capture
-Wireshark opens (cookbook recipes 39, 32 and 40).
+Wireshark opens (cookbook recipes "Collect a directory of rotated captures into one analysis", "Export one customer's calls as a smaller capture" and "Open the same evidence in Wireshark").
 
     customer_export.py INPUT --user USER --out FILE [--sipnab PATH]
 
 INPUT is what `-I` takes: a file, a directory of rotated captures or a glob.
 sipnab reads the files in the order their packets arrived, not by name, so a
-call that crosses files comes out as one call (recipe 39).
+call that crosses files comes out as one call (recipe "Collect a directory of rotated captures into one analysis").
 
 1. Finds the calls whose From or To user is USER, with every address their
    signaling and SDP name.
 2. Exports with `-O` and a BPF expression over those addresses. `-O` is
-   narrowed by BPF alone, which selects addresses, not SIP users (recipe 32).
+   narrowed by BPF alone, which selects addresses, not SIP users (recipe "Export one customer's calls as a smaller capture").
 3. Reads the export back: each call must come out whole, and no other call
    may be in it. Another customer's call that shares an address with this one
    is a disclosure BPF cannot prevent, so the export is removed, not kept.
 4. Prints the tshark command that opens the export filtered to these calls,
-   as `--tshark-filter` writes it (recipe 40), for the reader to run.
+   as `--tshark-filter` writes it (recipe "Open the same evidence in Wireshark"), for the reader to run.
 
 Exits 0 with the export written, 1 when there is no such call, the export
 lost part of a call or carried another, or sipnab failed. sipnab comes from

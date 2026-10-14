@@ -381,7 +381,7 @@ expect "rust tls_plaintext_records (BPF records, no kernel)" \
 # REST ones ask one sipnab, "ops", serving three captures at once.
 export SIPNAB_BIN="$BIN"
 
-# Triage to one verdict (recipes 1 and 16). The exit status IS the verdict:
+# Triage to one verdict (recipes "Triage a pcap fast" and "Analyze a capture into one machine-readable verdict"). The exit status IS the verdict:
 # 1 for findings, 0 for clean, 2 for a capture with nothing to judge, which
 # --json-analyze alone reports as an empty, clean-looking list. 3 is sipnab
 # failing to read the input at all.
@@ -405,7 +405,7 @@ grep -q "does not exist" "$WORK/err" || fail "triage.py did not pass on why sipn
 
 # The ops sipnab. sip-problem-call.pcap holds four failed calls, sip-answered-
 # never-acked.pcap a call answered and never acknowledged, which sipnab
-# reports only after --ack-timeout (recipe 30: the answer waited 31.5 s, under
+# reports only after --ack-timeout (recipe "Find calls that answered and were never acknowledged": the answer waited 31.5 s, under
 # the 32 s Timer H default), and stun_sdp_mismatch.pcap a one-way call behind
 # NAT. --tfps-ctl names the fake tfps_ctl beside the Python tests: TFPS bans
 # by writing a BPF map as root, which no runner allows. The fake answers in
@@ -431,7 +431,7 @@ serve ops "$OPS_PORT" --node-name ops --ack-timeout 5 \
 wait_for ops "$SERVED_PID" "$OPS/v1/stats" '"source_exhausted":true'
 
 # Failed calls by final response code, and the call nobody acknowledged
-# (recipes 3 and 30).
+# (recipes "Find every failed call, grouped by response code" and "Find calls that answered and were never acknowledged").
 expect "python failed_calls (four failures, one missing ACK)" \
 	"4 failed call(s), by final response code:" \
 	"  404  1 call(s)" "    notfound-1b2c3d@203.0.113.30" \
@@ -448,7 +448,7 @@ expect "python failed_calls (no missing ACK)" \
 	-- "$PYTHON" clients/python/failed_calls.py
 refuse "python failed_calls" -- env SIPNAB_URL="$OPS" "$PYTHON" clients/python/failed_calls.py
 
-# One-way audio and whose loss it is (recipes 4, 11 and 22). The replay
+# One-way audio and whose loss it is (recipes "Diagnose a one-way audio complaint", "Find why a call sounds bad in one direction only" and "Measure whether the loss is yours or the network's"). The replay
 # dropped nothing, so the loss is the network's; none of the five asymmetry
 # filters matches this call.
 NAT_CALL="stun-sdp-mismatch-1@192.168.10.50"
@@ -468,7 +468,7 @@ grep -q "HTTP 404" "$WORK/err" || fail "one_way_audio.py did not name the 404: $
 refuse "python one_way_audio" -- env SIPNAB_URL="$OPS" "$PYTHON" clients/python/one_way_audio.py "$NAT_CALL"
 
 # A scanner and a flooding device banned through POST /v1/tfps/ban, and the
-# banned list read back (recipes 10 and 23). sipnab accuses three sources;
+# banned list read back (recipes "Detect SIP scanners and auto-block via fail2ban" and "Find the device flooding REGISTER"). sipnab accuses three sources;
 # the PBX completed a registration before its credentials went wrong, so it
 # is withheld. The ban uses the actions token; the reads use the API key.
 SCAN_CAPTURE=tests/fixtures/sip-scanner-and-register-flood.pcap
@@ -500,7 +500,7 @@ expect "python scanner_ban (nobody accused)" "no source accused in tests/fixture
 	-- env SIPNAB_URL="$OPS" "$PYTHON" clients/python/scanner_ban.py tests/fixtures/sip_call.pcap
 
 # One customer's calls from rotated captures, exported and opened by tshark
-# (recipes 39, 32 and 40). sip-problem-call.pcap is cut into three files the
+# (recipes "Collect a directory of rotated captures into one analysis", "Export one customer's calls as a smaller capture" and "Open the same evidence in Wireshark"). sip-problem-call.pcap is cut into three files the
 # way a wrapped `tcpdump -C -W` ring leaves them: the oldest packets in
 # tg.pcap2, the newest in tg.pcap1. alice's call crosses all three.
 mkdir -p "$WORK/rotated" "$WORK/export"
@@ -525,7 +525,7 @@ expect "python customer_export (alice, from three rotated files)" \
 	"wrote $ALICE: 7 SIP message(s), every call whole, no other call" \
 	"tshark -r '$ALICE' -Y 'sip.Call-ID == \"completed-9f8e7d@192.0.2.10\"' -V" \
 	-- "$PYTHON" clients/python/customer_export.py "$WORK/rotated" --user alice --out "$ALICE"
-# Recipe 40, checked by Wireshark's own engine rather than by sipnab: the
+# Recipe "Open the same evidence in Wireshark", checked by Wireshark's own engine rather than by sipnab: the
 # export opens, holds the call's seven packets and nothing else, and the
 # command sipnab printed runs and shows the INVITE.
 # Each tool writes to a file before grep reads it: `grep -q` exits at its
@@ -595,7 +595,7 @@ expect_exit "python agent_triage (stdio, no such capture)" 3 \
 	-- "$PYTHON" clients/python/agent_triage.py "$WORK/no-such.pcap"
 grep -q "does not exist" "$WORK/err" || fail "agent_triage.py did not pass on why sipnab failed: $(head -c 400 "$WORK/err")"
 
-# The same triage over HTTP, the shape recipe 55 deploys: `--mcp-tools core`,
+# The same triage over HTTP, the shape recipe "Set up the MCP server for a hosted agent" deploys: `--mcp-tools core`,
 # a signing key file (generated here, never committed), and a short-lived
 # read-scoped token minted from it. Core, not the full set: the triage needs
 # get_capture_report, which core lacked until MCP-CORE-1, and a box set up by

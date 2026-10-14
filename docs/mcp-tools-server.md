@@ -157,17 +157,17 @@ dropping packets **now**".
 
 Three questions it answers on a busy production server:
 
-1. **Does the capture path drop packets under load?** Read
-   `in_window.kernel_dropped` and `in_window.interface_dropped`. They stay
-   apart because their fixes disagree — a bigger ring buffer cures the first
-   and does nothing for the second.
-2. **What is on this wire that sipnab cannot decode?** Read
-   `undecodable_by_reason`. Each entry names the reason as a code and carries
-   the number that identifies it: the link type, the EtherType, or the IP
-   protocol.
-3. **What does the encapsulation-aware capture filter cost?** Run the same
-   window twice, once with `--capture-tunnels` and once without, and compare
-   `in_window.packets` against the two drop counters.
+- **Does the capture path drop packets under load?** Read
+  `in_window.kernel_dropped` and `in_window.interface_dropped`. They stay
+  apart because their fixes disagree — a bigger ring buffer cures the first
+  and does nothing for the second.
+- **What is on this wire that sipnab cannot decode?** Read
+  `undecodable_by_reason`. Each entry names the reason as a code and carries
+  the number that identifies it: the link type, the EtherType, or the IP
+  protocol.
+- **What does the encapsulation-aware capture filter cost?** Run the same
+  window twice, once with `--capture-tunnels` and once without, and compare
+  `in_window.packets` against the two drop counters.
 
 | Name | Type | Legal values | If omitted |
 |---|---|---|---|
@@ -422,7 +422,7 @@ No parameters. Returns:
 ```jsonc
 {
   "schema_version": 1,
-  "version": "0.5.217",
+  "version": "0.5.218",
   "features": ["api", "hep", "mcp", "native", "tls", "tui"],
   "can_decrypt": true,           // tls
   "can_hep": true,               // hep

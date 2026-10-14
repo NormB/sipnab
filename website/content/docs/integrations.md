@@ -6,16 +6,28 @@ description = "Forward captured traffic to HEP/Homer, run external commands on d
 
 ## Forward to Homer over HEP
 
-sipnab receives HEP v1, v2 and v3 and sends HEP v3 (Homer Encapsulation Protocol, [specification](https://github.com/sipcapture/HEP)) for integration with Homer/SIPCAPTURE.
+sipnab works with Homer/SIPCAPTURE over HEP (Homer Encapsulation Protocol, [specification](https://github.com/sipcapture/HEP)).
+
+- sipnab receives HEP v1, v2 and v3.
+- sipnab sends HEP v3.
 
 ### Receiving HEP
 
 OpenSIPS, Kamailio and Asterisk can each send copies of their SIP to sipnab
-over HEP. [Homer and sipnab](@/docs/homer-sipnab.md#2-sipnab-as-a-second-receiver) sets this up for OpenSIPS
-and Kamailio, and [Receive Asterisk's HEP](@/docs/asterisk-sipnab.md#7-receive-asterisk-s-hep)
-for Asterisk.
+over HEP.
 
-A routable bind needs a guard — sipnab refuses `-L 0.0.0.0:9060` unless a source allowlist or a shared secret constrains it:
+- [Homer and sipnab](@/docs/homer-sipnab.md#sipnab-as-a-second-receiver) sets this up for
+  OpenSIPS and Kamailio.
+- [Receive Asterisk's HEP](@/docs/asterisk-sipnab.md#receive-asterisk-s-hep)
+  sets it up for Asterisk.
+
+A routable bind needs a guard. sipnab refuses `-L 0.0.0.0:9060` unless one of
+these constrains it:
+
+- a source allowlist,
+- or a shared secret.
+
+For example:
 
 ```bash
 sipnab -L 0.0.0.0:9060 -E --hep-allow 192.0.2.0/24
@@ -37,7 +49,14 @@ sipnab -d eth0 -H 192.0.2.50:9060
 
 ## Run a command on an event
 
-sipnab can execute external commands on dialog state changes or quality drops. The command receives event data via `SIPNAB_*` environment variables (`SIPNAB_JSON` carries the full dialog JSON) — never on stdin and never interpolated into the command line. Event execution works in **all modes** (TUI, CLI, and API) -- it is not specific to the API feature.
+sipnab can execute external commands on dialog state changes or quality drops.
+
+- The command receives event data via `SIPNAB_*` environment variables.
+  - `SIPNAB_JSON` carries the full dialog JSON.
+  - The data never arrives on stdin.
+  - It is never interpolated into the command line.
+- Event execution works in **all modes** (TUI, CLI, and API).
+- It is not specific to the API feature.
 
 Run a script when any dialog changes state:
 
@@ -58,15 +77,21 @@ Rate-limit exec invocations. The default is 10 per second:
 sipnab -d eth0 --on-dialog-exec "logger" --exec-rate-limit 5
 ```
 
-> **Warning:** Always use `--exec-rate-limit` in production to prevent response amplification. Under a SIP flood, an unthrottled exec handler could fork-bomb the system. The default limit of 10/sec is conservative -- adjust based on your use case.
+> **Warning:** Always use `--exec-rate-limit` in production to prevent response amplification.
+>
+> - Under a SIP flood, an unthrottled exec handler could fork-bomb the system.
+> - The default limit of 10/sec is conservative. Adjust it based on your use case.
 
 ## Block scanners with fail2ban
 
 `--fail2ban` switches sipnab's per-message output to log lines fail2ban can
-read. It selects a **format** and detects nothing on its own: `--kill-scanner`
-(or `--kill-ua`) produces `scanner_detected` lines and `--reg-flood` produces
-`reg_flood` lines. Without one of those the log stays empty, and an empty jail
-log reads as "nothing attacked me".
+read.
+
+- It selects a **format**. It detects nothing on its own.
+- `--kill-scanner` (or `--kill-ua`) produces `scanner_detected` lines.
+- `--reg-flood` produces `reg_flood` lines.
+- Without one of those the log stays empty.
+- An empty jail log reads as "nothing attacked me".
 
 ```bash
 sipnab -N -d eth0 --kill-scanner --reg-flood --fail2ban >> /var/log/sipnab-fail2ban.log
@@ -80,26 +105,33 @@ The two line shapes, from [`src/output/fail2ban.rs`](https://github.com/NormB/si
 2026-05-05 12:34:57 sipnab[12345]: reg_flood src=203.0.113.42 count=37
 ```
 
-sipnab quotes `ua=` and `method=`, and a bare `-` means the request carried no such
-header at all — worth keeping distinct, because a missing `User-Agent` is itself
-a scanner signal while a client sending the string `-` renders as `"-"`. `src=`
-is never quoted: it holds a parsed IP address, not text from the wire.
+sipnab quotes `ua=` and `method=`.
+
+- A bare `-` means the request carried no such header at all.
+- This is worth keeping distinct:
+  - a missing `User-Agent` is itself a scanner signal,
+  - while a client sending the string `-` renders as `"-"`.
+- `src=` is never quoted. It holds a parsed IP address, not text from the wire.
 
 ### Measure it against your own traffic first
 
-The detectors suit a honeypot or an edge box, and a carrier trunk is neither —
-[the Cookbook](/docs/cookbook/#10b-wire-to-fail2ban) sets out exactly what the
-behavioral rules test. Point sipnab at a capture of an ordinary hour and count
-who it would have banned:
+The detectors suit a honeypot or an edge box. A carrier trunk is neither.
+
+- [The Cookbook](/docs/cookbook/#wire-to-fail2ban) sets out exactly what the
+  behavioral rules test.
+- Point sipnab at a capture of an ordinary hour.
+- Count who it would have banned:
 
 ```bash
 sipnab -N -I trunk.pcap --kill-scanner --fail2ban \
   | grep -oE 'src=[^ ]+' | sort | uniq -c | sort -rn
 ```
 
-Every address in that list is one the jail below would ban. On a real trunk the
-top entries are routinely your own carrier's SBCs. Put each of them in
-`ignoreip` and raise `maxretry` until the list holds only what you meant.
+Every address in that list is one the jail below would ban.
+
+- On a real trunk the top entries are routinely your own carrier's SBCs.
+- Put each of them in `ignoreip`.
+- Raise `maxretry` until the list holds only what you meant.
 
 ### Filter and jail
 
@@ -133,13 +165,17 @@ action = iptables-allports[name=sipnab, protocol=udp]
 ```
 
 Check the filter against a real log before you enable the jail.
-`fail2ban-regex` reports what it would have matched, and bans nothing:
+`fail2ban-regex` reports what it would have matched. It bans nothing:
 
 ```bash
 fail2ban-regex /var/log/sipnab-fail2ban.log /etc/fail2ban/filter.d/sipnab.conf
 ```
 
-> **Tip:** Combine `--kill-scanner` with `--kill-ua "friendly-scanner|sipvicious"` to target specific scanner signatures. The `--kill-response` flag (default: 200) picks the SIP response code that goes back to detected scanners. Reading a capture file, `--kill-scanner` detects and reports but never transmits — only a live capture arms the response.
+> **Tip:** Combine `--kill-scanner` with `--kill-ua "friendly-scanner|sipvicious"` to target specific scanner signatures.
+>
+> - The `--kill-response` flag (default: 200) picks the SIP response code that goes back to detected scanners.
+> - Reading a capture file, `--kill-scanner` detects and reports but never transmits.
+> - Only a live capture arms the response.
 
 ## Send alerts to syslog
 
@@ -149,4 +185,8 @@ Send security alerts to syslog:
 sipnab -d eth0 --kill-scanner --alert syslog --syslog
 ```
 
-Alerts go out with facility `LOG_LOCAL0` and a severity keyed to event type (scanner=warning, fraud=alert). Use your syslog server's filtering to route sipnab events to dedicated log files or SIEM systems.
+Alerts go out with facility `LOG_LOCAL0`.
+
+- sipnab keys the severity to event type (scanner=warning, fraud=alert).
+- Use your syslog server's filtering to route sipnab events to dedicated log
+  files or SIEM systems.

@@ -21,7 +21,7 @@
 //!
 //! # The store writes
 //!
-//! The worker is a second writer against stores that invariant 1 gives one
+//! The worker is a second writer against stores that invariant "One writer per store, per run mode" gives one
 //! writer (see `docs/internals/invariants.md`). Two conditions make that safe
 //! and `open_capture` enforces both before spawning: the original source must
 //! be a file rather than a live interface, and it must already be exhausted, so

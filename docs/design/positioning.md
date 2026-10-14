@@ -79,7 +79,7 @@ viewer fed by HEP alone decodes every RTCP report and can show no quality figure
 for any of them. Received RTCP reaches the MOS delay term (`MosDelay::resolve`,
 [`quality.rs:605`](https://github.com/NormB/sipnab/blob/main/src/rtp/quality.rs#L605)) only when the same
 process also sees the media, which is the `-L` plus `-d` arrangement of cookbook
-recipe 6d. This was established 2026-09-02 by reading the path, not by running
+recipe "Take signaling from HEP and media off the wire, in one process". This was established 2026-09-02 by reading the path, not by running
 it end to end; the end-to-end run is still owed.
 
 **Multi-node correlation.** Without it, sipnab-plus-HEP is "the terminal viewer that can see

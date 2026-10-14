@@ -1,66 +1,75 @@
 # Capture SIP over TLS
 
-You have SIP on port 5061, sipnab shows you nothing useful, and you want to
-see the signaling. This page picks the method for you.
+You have SIP on port 5061. sipnab shows you nothing useful. You want to see
+the signaling. This page picks the method for you.
 
 **For many production deployments this is not an advanced topic — it is the
-only topic.** A hardened SIP server often does not listen on 5060 at all, so
-every call is TLS and a capture that reads only plaintext reads nothing. If
-that is your situation, start at the table below rather than with the
-plaintext quick-start elsewhere in these docs.
+only topic.**
 
-**The short version.** The wire alone never yields encrypted traffic —
-modern TLS uses forward secrecy, so even the server's private key does not
-open a captured session. Something on a machine you control has to hand over
-the session keys, or hand over the plaintext. Every method below is one of
-those two, and they differ only in what access each demands.
+- A hardened SIP server often does not listen on 5060 at all.
+- So every call is TLS, and a capture that reads only plaintext reads nothing.
+- If that is your situation, start at the table below. Do not start with the
+  plaintext quick-start elsewhere in these docs.
+
+**The short version.** The wire alone never yields encrypted traffic.
+
+- Modern TLS uses forward secrecy. So even the server's private key does not
+  open a captured session.
+- Something on a machine you control has to hand over one of these:
+  - the session keys,
+  - the plaintext.
+- Every method below is one of those two. They differ only in what access each
+  demands.
 
 ## Which method can you use?
 
-Answer these in order. Each branch ends at one numbered method below, and the
-question that separates two branches is always an access question rather than
-a protocol one.
+Answer these in order.
+
+- Each branch ends at one method below.
+- The question that separates two branches is always an access question. It is
+  never a protocol question.
 
 ```mermaid
 flowchart TD
     S["SIP on 5061, and sipnab decodes nothing"] --> Q1{"Can you set SSLKEYLOGFILE<br/>on an endpoint and restart it?"}
-    Q1 -->|yes| M1["Method 1: --keylog<br/>full decryption, live or from a pcap"]
+    Q1 -->|yes| M1["The endpoint writes a key log: --keylog<br/>full decryption, live or from a pcap"]
     Q1 -->|no| Q2{"Can you get root on the SIP host?"}
     Q2 -->|no| Q6{"Old TLS 1.2 server on RSA key exchange,<br/>and you hold its private key?"}
-    Q6 -->|yes| M6["Method 6: --tls-key<br/>non-PFS handshakes only"]
+    Q6 -->|yes| M6["The old RSA case: --tls-key<br/>non-PFS handshakes only"]
     Q6 -->|no| X["Nothing opens it.<br/>Read What does not work, and why"]
-    Q2 -->|yes| L["Method 2: sudo sipnab --uprobe-list<br/>names the TLS libraries this host runs"]
+    Q2 -->|yes| L["Check what you have: sudo sipnab --uprobe-list<br/>names the TLS libraries this host runs"]
     L --> Q3{"Do you want keys you can keep,<br/>or plaintext right now?"}
-    Q3 -->|keys| M5["Method 5: eCapture, then --keylog<br/>daemon untouched, and the pcap stays readable"]
+    Q3 -->|keys| M5["Lift keys from a daemon: eCapture, then --keylog<br/>daemon untouched, and the pcap stays readable"]
     Q3 -->|plaintext| Q4{"BTF kernel, and a build<br/>carrying the bpf feature?"}
-    Q4 -->|yes| M4["Method 4: --uprobe-tls --uprobe-backend bpf<br/>plaintext with the real 5-tuple"]
-    Q4 -->|no| M3["Method 3: --uprobe-tls<br/>plaintext, no peer addresses"]
+    Q4 -->|yes| M4["Plaintext and the peer address: --uprobe-tls --uprobe-backend bpf<br/>plaintext with the real 5-tuple"]
+    Q4 -->|no| M3["No keys at all: --uprobe-tls<br/>plaintext, no peer addresses"]
 ```
 
-The table says the same thing in rows. Read down the first column and stop at
+The table says the same thing in rows. Read down the first column. Stop at
 the first row you can satisfy.
 
 | If you can… | Use | Needs | Gets you |
 |---|---|---|---|
-| Set `SSLKEYLOGFILE` on the endpoint (a soft client, test UA, or a daemon you can restart) | [`--keylog`](#1-the-endpoint-writes-a-key-log) | Nothing special | Full decryption, live or from a pcap |
-| Get root on the SIP host, but **not** restart the daemon | [`--uprobe-tls`](#3-no-keys-at-all-read-the-plaintext-in-the-process) | Linux, root | Plaintext, no peer addresses |
-| Get root **and** the kernel has BTF | [`--uprobe-tls --uprobe-backend bpf`](#4-plaintext-and-the-peer-address) | Linux, root, BTF, a `bpf` build | Plaintext **with** the real 5‑tuple |
-| Run a helper on the SIP host but prefer keys to plaintext | [eCapture → `--keylog`](#5-lift-keys-from-a-daemon-you-cannot-restart) | Linux, root | Full decryption, daemon untouched |
-| Only reach an old TLS 1.2 server using RSA key exchange | [`--tls-key`](#6-the-old-rsa-case) | The server's private key | Decryption, **non-PFS handshakes only** |
+| Set `SSLKEYLOGFILE` on the endpoint (a soft client, test UA, or a daemon you can restart) | [`--keylog`](#the-endpoint-writes-a-key-log) | Nothing special | Full decryption, live or from a pcap |
+| Get root on the SIP host, but **not** restart the daemon | [`--uprobe-tls`](#no-keys-at-all-read-the-plaintext-in-the-process) | Linux, root | Plaintext, no peer addresses |
+| Get root **and** the kernel has BTF | [`--uprobe-tls --uprobe-backend bpf`](#plaintext-and-the-peer-address) | Linux, root, BTF, a `bpf` build | Plaintext **with** the real 5‑tuple |
+| Run a helper on the SIP host but prefer keys to plaintext | [eCapture → `--keylog`](#lift-keys-from-a-daemon-you-cannot-restart) | Linux, root | Full decryption, daemon untouched |
+| Only reach an old TLS 1.2 server using RSA key exchange | [`--tls-key`](#the-old-rsa-case) | The server's private key | Decryption, **non-PFS handshakes only** |
 | None of the above | — | — | Nothing. See [what does not work](#what-does-not-work-and-why) |
 
-**Most people want [`--keylog`](#1-the-endpoint-writes-a-key-log) or
-[`--uprobe-tls`](#3-no-keys-at-all-read-the-plaintext-in-the-process).**
-`--keylog` if you are testing and control an endpoint. `--uprobe-tls` if you
-are on a production box and cannot restart anything —
-that is the case sipnab exists for, and the one people assume is impossible.
+**Most people want [`--keylog`](#the-endpoint-writes-a-key-log) or
+[`--uprobe-tls`](#no-keys-at-all-read-the-plaintext-in-the-process).**
+- `--keylog` if you are testing and control an endpoint.
+- `--uprobe-tls` if you are on a production box and cannot restart anything.
+  - That is the case sipnab exists for.
+  - It is the one people assume is impossible.
 
 ---
 
-## 1. The endpoint writes a key log
+## The endpoint writes a key log
 
-The ordinary case, and the cheapest. Any TLS library built on OpenSSL, NSS or
-GnuTLS writes session keys to the file named by `SSLKEYLOGFILE`.
+This is the ordinary case, and the cheapest. Any TLS library built on OpenSSL,
+NSS or GnuTLS writes session keys to the file named by `SSLKEYLOGFILE`.
 
 ```sh
 # Run all of these, in order.
@@ -69,51 +78,64 @@ export SSLKEYLOGFILE=/tmp/sip-keys.log
 sudo sipnab -d eth0 --keylog /tmp/sip-keys.log --keylog-watch
 ```
 
-`--keylog-watch` re-reads the file as it grows, so keys minted after sipnab
-starts still decrypt. Without it you get only the sessions whose keys were
-already written.
+`--keylog-watch` re-reads the file as it grows.
 
-Same flag reads a capture you already recorded:
+- So keys minted after sipnab starts still decrypt.
+- Without it you get only the sessions whose keys were already written.
+
+The same flag reads a capture you already recorded:
 
 ```sh
 sipnab -I tls-capture.pcap --keylog /tmp/sip-keys.log
 ```
 
-The full recipes, including exporting a decrypted pcap for Wireshark and
-keeping keys off disk entirely, are cookbook recipes 7a to 7f, under
-[recipe 7, "Decrypt SIP over TLS with a key log file"](examples.md#7-decrypt-sip-over-tls-when-you-can-restart-the-phone-or-server--key-log-file-sslkeylogfile).
+The full recipes are cookbook recipes "Live decryption (UA produces keys, sipnab follows)" to "Decrypt without writing the keys to disk", under
+[recipe "Decrypt SIP over TLS with a key log file"](examples.md#decrypt-sip-over-tls-when-you-can-restart-the-phone-or-server--key-log-file-sslkeylogfile).
+They include:
 
-## 2. Check what you have before going further
+- exporting a decrypted pcap for Wireshark,
+- keeping keys off disk entirely.
+
+## Check what you have before going further
 
 ```sh
 sudo sipnab --uprobe-list
 ```
 
-Installs nothing. It prints the TLS libraries running on this host and which
-processes use them — which tells you whether rows 3 and 4 are even available
-before you spend time on them.
+This installs nothing. It prints:
 
-## 3. No keys at all: read the plaintext in the process
+- the TLS libraries running on this host,
+- which processes use them.
 
-This is the method the long-standing upstream feature request
-asks for — TLS visibility with no recompile and no certificate — and it is
-what sipnab does here.
+That tells you whether the methods "No keys at all" and "Plaintext and the
+peer address" are even available. You learn it before you spend time on them.
+
+## No keys at all: read the plaintext in the process
+
+This is the method the long-standing upstream feature request asks for: TLS
+visibility with no recompile and no certificate. It is what sipnab does here.
 
 ```sh
 sudo sipnab -N --uprobe-tls
 ```
 
-sipnab attaches a uprobe to the TLS library's write function and reads the
-bytes **before** the library encrypts them. It recovers no key, decrypts
-nothing, and touches no other machine.
+sipnab attaches a uprobe to the TLS library's write function. It reads the
+bytes **before** the library encrypts them.
 
-Dialogs carry **no addresses and port 0**, labeled `uprobe:<process>/<pid>`.
-A uprobe sees the bytes an application handed its TLS library and nothing
-about the socket underneath, so sipnab names the process rather than inventing
-a peer. If you need the addresses, use method 4.
+- It recovers no key.
+- It decrypts nothing.
+- It touches no other machine.
+
+Dialogs carry **no addresses and port 0**. Their label is
+`uprobe:<process>/<pid>`.
+
+- A uprobe sees the bytes an application handed its TLS library.
+- It sees nothing about the socket underneath.
+- So sipnab names the process rather than inventing a peer.
+- If you need the addresses, use the method "Plaintext and the peer address".
 
 **If it attaches and reports zero messages**, the symbol is almost certainly
-wrong — OpenSSL 3 applications increasingly call `SSL_write_ex` rather than
+wrong. OpenSSL 3 applications increasingly call `SSL_write_ex` rather than
 `SSL_write`:
 
 ```sh
@@ -123,35 +145,50 @@ sudo sipnab -N --uprobe-tls --uprobe-symbol SSL_write_ex
 ```
 
 Read [the security implications](uprobe-walkthrough.md#security-implications-stated-plainly) before using this on a
-production host. It reads process memory, so anyone who can run it can read
-every SIP session on that machine, credentials included.
+production host.
 
-## 4. Plaintext **and** the peer address
+- It reads process memory.
+- So anyone who can run it can read every SIP session on that machine,
+  credentials included.
+
+## Plaintext **and** the peer address
 
 ```sh
 sudo sipnab -N --uprobe-tls --uprobe-backend bpf --portrange 0-65535
 ```
 
-Adds a kernel probe on `tcp_sendmsg` and pairs it with the write by thread, so
-dialogs carry the real 5-tuple. Needs a kernel with `CONFIG_DEBUG_INFO_BTF=y`
-and a sipnab that actually holds the kernel programs — `--features bpf` compiles
-the loader, and the programs themselves need a nightly toolchain and
-`bpf-linker` on the build host. A build missing either still succeeds and
-produces a binary that lists `bpf` and refuses at attach time. The uprobe
-walkthrough linked at the foot of this page carries the message and the
-build-time switch that turns that gap into a build failure.
+This adds a kernel probe on `tcp_sendmsg`. It pairs the probe with the write
+by thread. So dialogs carry the real 5-tuple.
 
-sipnab **refuses** rather than falling back in silence, because a silent
-downgrade would leave you with no peers and no reason given.
+It needs two things:
 
-Widen `--portrange`. The port a uprobe reports is whatever the socket used,
-which is usually ephemeral rather than 5061.
+- a kernel with `CONFIG_DEBUG_INFO_BTF=y`,
+- a sipnab that actually holds the kernel programs.
+  - `--features bpf` compiles the loader.
+  - The programs themselves need a nightly toolchain and `bpf-linker` on the
+    build host.
 
-## 5. Lift keys from a daemon you cannot restart
+A build missing either still succeeds.
 
-If you would rather have keys than plaintext — keys decrypt a pcap you keep,
-and plaintext does not — [eCapture](https://github.com/gojue/ecapture) reads
-them out of a running process and sipnab consumes them unchanged:
+- It produces a binary that lists `bpf` and refuses at attach time.
+- The uprobe walkthrough linked at the foot of this page carries the message.
+  It also carries the build-time switch that turns that gap into a build
+  failure.
+
+sipnab **refuses** rather than falling back in silence. A silent downgrade
+would leave you with no peers and no reason given.
+
+Widen `--portrange`. The port a uprobe reports is whatever the socket used.
+That is usually ephemeral rather than 5061.
+
+## Lift keys from a daemon you cannot restart
+
+You may rather have keys than plaintext. Keys decrypt a pcap you keep, and
+plaintext does not.
+
+- [eCapture](https://github.com/gojue/ecapture) reads them out of a running
+  process.
+- sipnab consumes them unchanged:
 
 ```sh
 # Run all of these, in order.
@@ -163,99 +200,141 @@ sudo ecapture tls -m keylog --libssl="$LIBSSL" --keylogfile=/tmp/keys.log &
 sudo sipnab -d eth0 --keylog /tmp/keys.log --keylog-watch
 ```
 
-The uprobe attaches to the library, not to one process, so a forking daemon
-needs no `--pid` — it covers every worker that maps that path, and `--pid`
-would restrict you to one of them. Check the path it chose in eCapture's own
-startup line (`openssl_path=`) before trusting the run.
+The uprobe attaches to the library, not to one process.
+
+- So a forking daemon needs no `--pid`.
+- It covers every worker that maps that path.
+- `--pid` would restrict you to one of them.
+
+Check the path it chose in eCapture's own startup line (`openssl_path=`)
+before trusting the run.
 
 **Start the capture before the connections you want to read.** This is the
-single biggest trap on long-lived trunks, and it bites differently in each TLS
+single biggest trap on long-lived trunks. It bites differently in each TLS
 version:
 
 - **TLS 1.3** ([RFC 8446](https://www.rfc-editor.org/rfc/rfc8446.html)) numbers each record with a counter both endpoints keep privately.
-  Nothing on the wire carries it, so sipnab searches for it — about a million
-  records, roughly a day of a trunk ticking over at ten records a second. The
-  search costs one AEAD tag check per candidate and runs once per direction per
-  session, so it is a one-off of about a second, not a per-record cost. Past
-  that, the keys are right and the records still do not open.
-  `--tls-lockon-window` moves that ceiling. Raising it costs nothing on a
-  connection captured from its handshake, because the search widens only as
-  records fail to open, so raise it for a carrier trunk held open for days. A
-  separate per-run trial budget — four full windows — stops one session whose
-  keys belong to some other connection from spending a window on every record
-  it gets offered.
-- **TLS 1.2** ([RFC 5246](https://www.rfc-editor.org/rfc/rfc5246.html)) is worse: a `CLIENT_RANDOM` line gives the master secret, and the
-  server random and cipher suite that expand it into record keys are in the
-  ServerHello. Miss the handshake and there is no way to use the secret at all,
-  now or later.
+  - Nothing on the wire carries it, so sipnab searches for it.
+  - The search covers about a million records. That is roughly a day of a
+    trunk ticking over at ten records a second.
+  - The search costs one AEAD tag check per candidate. It runs once per
+    direction per session.
+  - So it is a one-off of about a second, not a per-record cost.
+  - Past that, the keys are right and the records still do not open.
+  - `--tls-lockon-window` moves that ceiling.
+    - Raising it costs nothing on a connection captured from its handshake.
+      The search widens only as records fail to open.
+    - So raise it for a carrier trunk held open for days.
+  - A separate per-run trial budget — four full windows — limits one case.
+    It stops one session whose keys belong to some other connection from
+    spending a window on every record it gets offered.
+- **TLS 1.2** ([RFC 5246](https://www.rfc-editor.org/rfc/rfc5246.html)) is worse.
+  - A `CLIENT_RANDOM` line gives the master secret.
+  - The server random and cipher suite that expand it into record keys are in
+    the ServerHello.
+  - Miss the handshake and there is no way to use the secret at all, now or
+    later.
 
 sipnab says which of these happened, with counts. The fix is at capture time
-either way: bounce the connection, or the far end, while capturing, so the
-capture catches the stream from its handshake and its first record.
+either way:
 
-Cookbook [recipe 7e, "Decrypt traffic from a daemon you cannot restart"](examples.md#7e-decrypt-traffic-from-a-daemon-you-cannot-restart) has the full
-sequence, and [recipe 7f, "Decrypt without writing the keys to disk"](examples.md#7f-decrypt-without-writing-the-keys-to-disk) shows
-feeding keys through a pipe so they never reach disk.
+- Bounce the connection, or the far end, while capturing.
+- So the capture catches the stream from its handshake and its first record.
 
-## 6. The old RSA case
+Cookbook [recipe "Decrypt traffic from a daemon you cannot restart"](examples.md#decrypt-traffic-from-a-daemon-you-cannot-restart) has the full
+sequence. [Recipe "Decrypt without writing the keys to disk"](examples.md#decrypt-without-writing-the-keys-to-disk) shows
+feeding keys through a pipe, so they never reach disk.
+
+## The old RSA case
 
 ```sh
 sipnab -I capture.pcap --tls-key server.key
 ```
 
-Works **only** for TLS 1.2 handshakes that used RSA key exchange. Any
-ECDHE/DHE handshake — which is every modern configuration, and mandatory in
-TLS 1.3 — has forward secrecy, and the private key does not decrypt a recorded
-session. If this produces nothing, your traffic is almost certainly PFS and
-you need method 1, 3, 4 or 5.
+This works **only** for TLS 1.2 handshakes that used RSA key exchange.
+
+- Any ECDHE/DHE handshake has forward secrecy. That is every modern
+  configuration, and it is mandatory in TLS 1.3.
+- With forward secrecy, the private key does not decrypt a recorded session.
+- If this produces nothing, your traffic is almost certainly PFS. You need one
+  of these methods:
+  - "The endpoint writes a key log",
+  - "No keys at all",
+  - "Plaintext and the peer address",
+  - "Lift keys from a daemon you cannot restart".
 
 ## Media as well as signaling
 
 SRTP keys arrive two ways, and sipnab reads both:
 
-- **SDES** — keys travel in the SDP, so decrypting the signaling decrypts the
-  media with it. Nothing extra to do.
-- **DTLS-SRTP** — a DTLS handshake carries the keys. Point `--dtls-keylog` at an
-  NSS-format key log and sipnab runs the [RFC 5764](https://www.rfc-editor.org/rfc/rfc5764.html) exporter over it to reach the
-  SRTP keys, cookbook [recipe 7d, "Decrypt SRTP from a DTLS keylog"](examples.md#7d-decrypt-srtp-from-a-dtls-keylog).
+- **SDES** — keys travel in the SDP.
+  - So decrypting the signaling decrypts the media with it.
+  - There is nothing extra to do.
+- **DTLS-SRTP** — a DTLS handshake carries the keys.
+  - Point `--dtls-keylog` at an NSS-format key log.
+  - sipnab runs the [RFC 5764](https://www.rfc-editor.org/rfc/rfc5764.html) exporter over it to reach the SRTP keys.
+  - See cookbook [recipe "Decrypt SRTP from a DTLS keylog"](examples.md#decrypt-srtp-from-a-dtls-keylog).
 
-`--dtls-keylog` is a separate flag from `--keylog` because the two name
-different handshakes. If you already hold SRTP master keys rather than a
-handshake, `--srtp-keys` takes them directly.
+`--dtls-keylog` is a separate flag from `--keylog`. The two name different
+handshakes. If you already hold SRTP master keys rather than a handshake,
+`--srtp-keys` takes them directly.
 
-Without a key, SRTP media is still measured: packet counts, loss, jitter and
-timing come from the RTP header, which SRTP leaves in the clear. The payload is
-not kept as audio. When the SDP declares an SRTP profile (`RTP/SAVP`,
-`RTP/SAVPF`, `UDP/TLS/RTP/SAVP` or `UDP/TLS/RTP/SAVPF`), sipnab keeps only the
-payload it decrypted, because a payload it could not decrypt is ciphertext and
-decodes as noise. A WAV export or a vCon for such a call then carries no audio
-and says how many packets sipnab could not decrypt. If sipnab decrypted only
-some packets, it marks the audio PARTIAL and counts the others.
+Without a key, SRTP media is still measured.
+
+- Packet counts, loss, jitter and timing come from the RTP header. SRTP leaves
+  that header in the clear.
+- The payload is not kept as audio.
+- The SDP may declare an SRTP profile (`RTP/SAVP`, `RTP/SAVPF`,
+  `UDP/TLS/RTP/SAVP` or `UDP/TLS/RTP/SAVPF`). Then sipnab keeps only the
+  payload it decrypted.
+  - A payload it could not decrypt is ciphertext, and decodes as noise.
+  - A WAV export or a vCon for such a call then carries no audio. It says how
+    many packets sipnab could not decrypt.
+  - If sipnab decrypted only some packets, it marks the audio PARTIAL and
+    counts the others.
 
 ## When the keys arrive after the call starts
 
-Any run whose keys arrive while it runs has one race: method 1 or method 5
-with `--keylog-watch`, or keys fed through a descriptor with `--keylog-fd`.
-Methods 3 and 4 use no keys, so they do not have it. You attach the key source
-to a daemon that is already running, a call arrives, and the first records
-reach sipnab before the first key does. On a SIP session the first record is the INVITE, so the
-symptom is not "a few records are unreadable" — it is a call with no offer in
-it, which sipnab then reports as a media mismatch or a NAT problem, because
-from the dialog's point of view that is exactly what it looks like.
+Any run whose keys arrive while it runs has one race. Such runs are:
+
+- "The endpoint writes a key log" or "Lift keys from a daemon you cannot
+  restart", with `--keylog-watch`,
+- keys fed through a descriptor with `--keylog-fd`.
+
+"No keys at all" and "Plaintext and the peer address" use no keys. So they
+do not have it.
+
+The race goes like this:
+
+- You attach the key source to a daemon that is already running.
+- A call arrives.
+- The first records reach sipnab before the first key does.
+
+On a SIP session the first record is the INVITE.
+
+- So the symptom is not "a few records are unreadable".
+- It is a call with no offer in it.
+- sipnab then reports that as a media mismatch or a NAT problem. From the
+  dialog's point of view, that is exactly what it looks like.
 
 With `--keylog-watch` or `--keylog-fd`, sipnab holds application data it
-cannot open yet and retries it as soon as a key for that session turns up. No
-separate flag switches this on. sipnab reads a plain `--keylog` file, without
-`--keylog-watch`, once at startup and holds nothing: no key arrives later in
-the run, so a record the loaded keys cannot open now never opens. A run that
-recovered records says so:
+cannot open yet. It retries the data as soon as a key for that session turns
+up. No separate flag switches this on.
+
+sipnab reads a plain `--keylog` file, without `--keylog-watch`, once at
+startup. It holds nothing then.
+
+- No key arrives later in the run.
+- So a record the loaded keys cannot open now never opens.
+
+A run that recovered records says so:
 
 ```text
 TLS late decrypt: recovered 3 record(s) that arrived before their keys
 ```
 
-The hold has limits, because a peer whose keys never arrive would otherwise
-grow it without end:
+The hold has limits. Otherwise a peer whose keys never arrive would grow it
+without end:
 
 | Bound | Value |
 |---|---|
@@ -265,12 +344,14 @@ grow it without end:
 | Age | 5 seconds |
 
 Those bounds are the reason to start the key source **before** the capture
-wherever you can. Recovery closes a gap measured in packets, not one measured
-in minutes.
+wherever you can. Recovery closes a gap measured in packets. It does not close
+one measured in minutes.
 
-The run also says what the hold could NOT recover, because "we never had the
-keys for those records" and "we had them and had already discarded the
-ciphertext" are different problems with different fixes:
+The run also says what the hold could NOT recover. These two are different
+problems with different fixes:
+
+- "we never had the keys for those records",
+- "we had them and had already discarded the ciphertext".
 
 ```text
 sipnab discarded 3 TLS record(s) held from before a key arrived: the
@@ -280,8 +361,8 @@ capture, or expect the first message of a call to be missing.
 ```
 
 That one argues for starting the key source earlier, or for a bigger bound.
-Records still held when the run ended produce a different line, which argues
-for neither:
+Records still held when the run ended produce a different line. That line
+argues for neither:
 
 ```text
 5 TLS record(s) were still waiting when the run ended: no key ever arrived
@@ -294,21 +375,25 @@ have helped -- the key source never produced those secrets.
 
 Stated plainly, because time spent here is time people lose:
 
-- **A packet capture alone.** No amount of sipnab flags decrypts a pcap with
-  no keys. If the handshake had forward secrecy, the information required is
-  not in the capture and never was.
-- **The server's private key, on modern TLS.** See method 6.
+- **A packet capture alone.**
+  - No amount of sipnab flags decrypts a pcap with no keys.
+  - If the handshake had forward secrecy, the information required is not in
+    the capture and never was.
+- **The server's private key, on modern TLS.** See the section on the old
+  RSA case.
 - **A mirror port or tap, by itself.** It gives you the same ciphertext as a
   local capture. You still need keys or plaintext from an endpoint.
-- **Any of methods 3–5 against a machine you do not control.** They read
+- **"No keys at all", "Plaintext and the peer address" or "Lift keys from a
+  daemon you cannot restart", against a machine you do not control.** They read
   process memory on the host they run on. That is the whole boundary.
 - **Attaching to a long-lived connection and expecting the back catalog.**
-  Keys extracted from a running process decrypt records captured from that
-  point on, provided the capture catches the stream early enough. sipnab does
-  recover records that reached it in the moments before the key did, described
-  above, but that closes a gap of packets rather than one of history: traffic
-  that went past before the capture started is not in the capture, and nothing
-  recovers it.
+  - Keys extracted from a running process decrypt records captured from that
+    point on. That holds if the capture catches the stream early enough.
+  - sipnab does recover records that reached it in the moments before the key
+    did, as described above.
+  - But that closes a gap of packets, not one of history.
+  - Traffic that went past before the capture started is not in the capture.
+    Nothing recovers it.
 
 ## Still stuck?
 
@@ -316,7 +401,7 @@ Stated plainly, because time spent here is time people lose:
 |---|---|
 | `--uprobe-list` finds no TLS library | It reads `/proc/<pid>/maps`, and an unprivileged run sees only its own processes. Re-run with `sudo` |
 | `--uprobe-list` marks a library `(UNREACHABLE)` | The path lives in another mount namespace, almost always a container. Run as root |
-| Attaches, reports 0 messages | Wrong symbol — try `--uprobe-symbol SSL_write_ex` (see [method 3](#3-no-keys-at-all-read-the-plaintext-in-the-process)) |
+| Attaches, reports 0 messages | Wrong symbol — try `--uprobe-symbol SSL_write_ex` (see [No keys at all](#no-keys-at-all-read-the-plaintext-in-the-process)) |
 | `needs this kernel's BTF` | No `CONFIG_DEBUG_INFO_BTF`; use `--uprobe-backend tracefs` |
 | `no kernel programs` | Binary carries the `bpf` feature and not the programs — the build host had no `bpf-linker`. Use `tracefs`, or rebuild somewhere that has it |
 | Keylog present, still encrypted | Keys minted after start — add `--keylog-watch` |
@@ -325,7 +410,7 @@ Stated plainly, because time spent here is time people lose:
 | Keys load, sessions listed, nothing decrypts | The capture joined TLS 1.3 connections already running, past the record numbers sipnab searches. Restart the connection while capturing, or raise `--tls-lockon-window` |
 | Keys load, no sessions listed | TLS 1.2 without the handshake — the ServerHello never got captured, and the master secret alone cannot make record keys. Restart the connection while capturing |
 | TLS 1.2, right keys, still nothing | A CBC suite. sipnab refuses to emit record plaintext it cannot MAC-verify, so a forged capture cannot inject "decrypted" SIP. Configure an AES-GCM suite |
-| Addresses show `0.0.0.0:0` | Expected on the tracefs backend; use [method 4](#4-plaintext-and-the-peer-address) for peers |
+| Addresses show `0.0.0.0:0` | Expected on the tracefs backend; use [Plaintext and the peer address](#plaintext-and-the-peer-address) for peers |
 
 More in [Troubleshooting](troubleshooting.md) and the
 [uprobe walkthrough](uprobe-walkthrough.md).

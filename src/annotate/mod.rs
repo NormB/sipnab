@@ -44,7 +44,7 @@
 //!
 //! The file leaves the box, and the SIP it carries may have been decrypted
 //! from TLS. A decryption key pasted into a note would travel in clear where
-//! it had traveled encrypted, which is Invariant 5 in
+//! it had traveled encrypted, which is Invariant "Key material is toxic waste" in
 //! `docs/internals/invariants.md` ("key material is toxic waste"). So a note
 //! holding an SDES `inline:` key, a TLS key-log line or a digest `response=`
 //! value is REFUSED, not warned about and not trimmed. So is a note over
@@ -73,7 +73,7 @@ pub const MAX_NOTE_BYTES: usize = 4096;
 
 /// Most notes one session or one notes file may hold.
 ///
-/// A bound in the spirit of Invariant 4: a notes file is input the CLI reads,
+/// A bound in the spirit of Invariant "Every attacker-keyed map has a bound and a stated eviction policy": a notes file is input the CLI reads,
 /// and one of any size would otherwise be admitted whole. Past the bound a
 /// note is refused and the refusal says so; nothing is evicted, because
 /// dropping a note an operator wrote is worse than telling them it did not
@@ -286,7 +286,7 @@ const DIGEST_MIN_HEX: usize = 8;
 /// Which key or credential shape `text` holds, if any.
 ///
 /// Pure, so each shape is tested directly and in both directions. The three
-/// shapes are the three things Invariant 5 and the vCon redactor already
+/// shapes are the three things Invariant "Key material is toxic waste" and the vCon redactor already
 /// treat as secret: SDES media keys, TLS secrets, and digest credentials.
 fn secret_shape(text: &str) -> Option<NoteRefusal> {
     if has_sdes_key(text) {
