@@ -785,6 +785,8 @@ The file holds the JWE: `unprotected`, `recipients`, `iv`, `ciphertext` and
   the `encrypt_to` certificate.
 - Then the recipient verifies the signature against the
   certificate in `x5c`.
+- sipnab reads it back with `-I` and `--vcon-key`
+  ([A signed, encrypted or compressed container](#a-signed-encrypted-or-compressed-container)).
 - The working group's reference tool is the `vcon`
   command of [vcon-dev/vcon](https://github.com/vcon-dev/vcon).
   - It does this with `vcon decrypt <key> <cert>` and then `vcon verify <ca cert>`.
@@ -2561,6 +2563,108 @@ sipnab -N -I stored --json-dialogs --no-cli-print --quiet | jq -c '{call_id, msg
 A container named directly with `-I` that sipnab cannot read stops the run
 instead, with the same reason. A file you named is one you expected
 sipnab to read.
+
+### A signed, encrypted or compressed container
+
+A vCon arrives in one of three JSON forms, and a producer may compress any of them
+([draft-ietf-vcon-vcon-core-04 section 5.4](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-04#section-5.4)).
+Every reader opens each one with the same step: `-I`, `analyze_vcon`,
+`validate_vcon`, `POST /v1/vcon/analyze` and `POST /v1/vcon/validate`.
+
+- The gzip format ([section 6.2](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-04#section-6.2)):
+  - sipnab knows it by the gzip magic bytes `1f 8b`, under any file name.
+  - It inflates it, up to 64 MiB, and reads the form inside.
+  - A gzip-compressed capture inflates to a capture and stays a capture.
+- The signed form ([section 5.2](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-04#section-5.2)):
+  - sipnab verifies the signature against the first certificate in `x5c`.
+  - It refuses a container whose signature does not verify.
+  - It needs no key.
+- The encrypted form ([section 5.3](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-04#section-5.3)):
+  - sipnab decrypts it with the private key `--vcon-key` names, or
+    `[vcon_input] key`. The key file must be readable by its owner only.
+  - It then verifies the signed form inside. It refuses an encrypted container
+    that does not hold the signed form.
+  - Without a key it refuses the container and names the flag. It never
+    analyzes the encrypted JSON as a container with no SIP.
+
+So sipnab reads its own encrypted output back. This `sipnab.toml` writes the
+two INVITE dialogs of the sample capture encrypted and gzip compressed, as
+[Encrypt what a rule writes](#encrypt-what-a-rule-writes) describes.
+`recipient.key` is the private key of `recipient.crt`, mode `0600`:
+
+```toml
+[[vcon.rule]]
+name = "sealed"
+when = "method == \"INVITE\""
+dir = "sealed"
+encrypt_to = "recipient.crt"
+sign_key = "signer.key"
+sign_cert = "signer-chain.pem"
+compress = "gzip"
+```
+
+```sh
+# Run all of these, in order.
+sipnab -N -I sip-rtp-g711.pcap --config sipnab.toml --no-cli-print --quiet
+sipnab -N -I sealed --vcon-key recipient.key --json-dialogs --no-cli-print --quiet | jq -c '{call_id, msg_count, input_origin}'
+```
+
+```text
+[[vcon.rule]] 'sealed': Wrote 2 vCon container(s) to 'sealed'.
+{"call_id":"1-1966@10.0.2.20","msg_count":6,"input_origin":"vcon"}
+{"call_id":"1-1968@10.0.2.20","msg_count":4,"input_origin":"vcon"}
+```
+
+Without `--vcon-key`, a container named with `-I` stops the run with exit 1:
+
+```text
+cannot open the vCon container: the container is encrypted (draft-ietf-vcon-vcon-core-04 section 5.3), and no decryption key was given: give --vcon-key, or [vcon_input] key in the config file
+```
+
+A gzip format vCon reads like any other:
+
+```sh
+# Run all of these, in order.
+gzip -k call.vcon.json
+sipnab -N -I call.vcon.json.gz --json-dialogs --no-cli-print --quiet | jq -c '{call_id, msg_count}'
+```
+
+```text
+{"call_id":"1-1966@10.0.2.20","msg_count":6}
+```
+
+The `rebuilt_from_vcon` finding names each layer sipnab opened, and who signed it:
+
+```text
+Opened from: encrypted form, decrypted; signed form, verified, signer SHA-256 4A:27:CF:...
+```
+
+Two settings check who signed it, as the fetcher's do
+([Check who signed it](#check-who-signed-it)):
+
+- `--vcon-signer-ca <FILE|system>` (`[vcon_input] signer_ca`): the signing
+  certificate must chain to a CA in the file, every certificate within its
+  validity period.
+- `--vcon-signer-sha256 <HEX>` (`[vcon_input] signer_sha256`): the signing
+  certificate must have this fingerprint.
+- With either set, sipnab refuses an unsigned container: it has no signer to
+  check.
+
+The MCP and REST readers:
+
+- `analyze_vcon` takes a signed or encrypted container as `container`, and
+  any form, the gzip format included, as `container_base64`.
+- `POST /v1/vcon/analyze` and `POST /v1/vcon/validate` take a JSON body with
+  `Content-Type: application/json`, `application/vcon` or
+  `application/vcon+json`, and a gzip format body with
+  `Content-Type: application/vcon+gzip`.
+- `validate_vcon` and `POST /v1/vcon/validate` validate the unsigned vCon
+  inside.
+- A container that does not open is a `verdict: unreadable` answer from the
+  analyze tool and route. The validate tool and route refuse it; the route
+  answers `422`.
+- They read with the server's `--vcon-key`, `--vcon-signer-ca` and
+  `--vcon-signer-sha256`.
 
 ### A container listing an extension sipnab does not support is not read
 

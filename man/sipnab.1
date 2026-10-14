@@ -73,6 +73,15 @@ Descend into subdirectories when \fB\-I\fR names a directory.
 \fB\-\-input\-name\fR \fIGLOB\fR
 Read only files whose name matches this pattern when \fB\-I\fR names a directory or an archive, e.g. \fB\-\-input\-name 'tg.pcap[0\-4]'\fR.
 .TP
+\fB\-\-vcon\-key\fR \fIFILE\fR
+Decrypt an encrypted vCon container (draft\-ietf\-vcon\-vcon\-core\-04 section 5.3) that \fB\-I\fR, the MCP vCon tools or the REST vCon routes read, with the RSA private key in this PEM file, then verify its signature. The file must be readable by its owner only. Without it an encrypted container is refused. Overrides \fB[vcon_input] key\fR.
+.TP
+\fB\-\-vcon\-signer\-ca\fR \fIFILE|system\fR
+Read a signed or encrypted vCon container only when its signing certificate chains, through the intermediates in its \fBx5c\fR, to a CA in this PEM file, each certificate within its validity period. \fBsystem\fR uses the host's CA bundle; write \fB./system\fR for a file of that name. An unsigned container is refused. Overrides \fB[vcon_input] signer_ca\fR.
+.TP
+\fB\-\-vcon\-signer\-sha256\fR \fIHEX\fR
+Read a signed or encrypted vCon container only when its signing certificate has this SHA\-256 fingerprint: 64 hex digits, plain or colon\-separated, either case. An unsigned container is refused. Overrides \fB[vcon_input] signer_sha256\fR.
+.TP
 \fB\-O\fR, \fB\-\-output\fR \fIFILE\fR
 Write captured packets to a pcap file.
 .TP

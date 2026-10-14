@@ -1803,6 +1803,52 @@ static KEY_SPECS: &[KeySpec] = &[
         },
     ),
     (
+        "vcon_input",
+        "key",
+        KeyKind::Literal {
+            accept: &[
+                "\"x\"",
+                "\" \"",
+                "\"0\"",
+                "\"/etc/sipnab/vcon-recipient.key\"",
+            ],
+            reject: &["\"\""],
+            ctx: "",
+        },
+    ),
+    (
+        "vcon_input",
+        "signer_ca",
+        KeyKind::Literal {
+            accept: &[
+                "\"x\"",
+                "\" \"",
+                "\"0\"",
+                "\"system\"",
+                "\"/etc/sipnab/vcon-signer-ca.pem\"",
+            ],
+            reject: &["\"\""],
+            ctx: "",
+        },
+    ),
+    (
+        "vcon_input",
+        "signer_sha256",
+        KeyKind::Literal {
+            accept: &[
+                "\"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\"",
+                "\"FE:DC:BA:98:76:54:32:10:FE:DC:BA:98:76:54:32:10:FE:DC:BA:98:76:54:32:10:FE:DC:BA:98:76:54:32:10\"",
+            ],
+            reject: &[
+                "\"\"",
+                "\"x\"",
+                "\"ab:cd\"",
+                "\"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef00\"",
+            ],
+            ctx: "",
+        },
+    ),
+    (
         "vcon_forward",
         "auth_file",
         KeyKind::Literal {

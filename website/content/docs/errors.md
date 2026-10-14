@@ -1527,6 +1527,17 @@ A whole-number `[vcon_fetch]` key is out of range. `{}` is the key (`timeout`, `
 
 **Exit code:** 1.
 
+### `[vcon_input] signer_sha256: {e}`
+
+`[vcon_input] signer_sha256` is not a SHA-256 fingerprint.
+
+- `{e}` reads `"VALUE": a SHA-256 fingerprint is 64 hex digits, plain or in colon-separated pairs`, with the value from the file.
+- The printed line starts with `invalid config value: `.
+
+**What to do:** Set `signer_sha256` to the signing certificate's fingerprint, for example the output of `openssl x509 -noout -fingerprint -sha256 -in signing.crt`, or remove the key.
+
+**Exit code:** 1.
+
 ### `[vcon_fetch] kind: {name:?} is not one of {}`
 
 `[vcon_fetch] kind` names a vCon store type sipnab does not know. A vCon is a standard JSON container for a conversation. `{name:?}` is the value in the file, and `{}` lists the accepted names: `generic`, `vcon-store`, `conserver` and `vcon-mcp`. The printed line starts with `invalid config value: `.

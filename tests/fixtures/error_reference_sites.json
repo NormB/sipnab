@@ -454,9 +454,9 @@
     {
       "file": "src/app/bootstrap.rs",
       "call": "PlanError { exit_code: 1, message: e.to_string(), }",
-      "count": 11,
+      "count": 12,
       "carries": [],
-      "why": "All 11 occurrences in src/app/bootstrap.rs::load_config carry crate::Error from Config::load and the [section] validate() methods in src/config.rs; those build text as Error::ConfigInvalid(format!(..)) (not an extracted kind) and Config::load also carries io and toml library Display (ConfigRead/ConfigParse)."
+      "why": "All 12 occurrences in src/app/bootstrap.rs::load_config carry crate::Error from Config::load and the [section] validate() methods in src/config.rs; those build text as Error::ConfigInvalid(format!(..)) (not an extracted kind) and Config::load also carries io and toml library Display (ConfigRead/ConfigParse)."
     },
     {
       "file": "src/app/bootstrap.rs",
@@ -503,9 +503,9 @@
     {
       "file": "src/app/bootstrap.rs",
       "call": "PlanError::refused(origin, problem)",
-      "count": 3,
+      "count": 4,
       "carries": [],
-      "why": "src/cli.rs::Cli::tls_settings_refusal (no site) and the vcon_forward/vcon_fetch resolvers behind forwarder_settings_problem/fetcher_settings_problem, which pass out-of-scope error text through."
+      "why": "src/cli.rs::Cli::tls_settings_refusal (no site), the vcon_forward/vcon_fetch resolvers behind forwarder_settings_problem/fetcher_settings_problem, and bootstrap::reader_keys (the vCon readers' fingerprint flag and key, whose flag clap's value parser refuses first), which pass out-of-scope error text through."
     },
     {
       "file": "src/app/bootstrap.rs",

@@ -4289,6 +4289,19 @@ The response is `schema_version` 2. Version 1 also had:
 The body must be the JSON object itself, not a string holding it. A non-object
 is a `400`.
 
+For a signed, encrypted or gzip format container, sipnab validates the unsigned
+vCon inside.
+
+- The body's `Content-Type` is `application/json`, `application/vcon`,
+  `application/vcon+json` or, for the gzip format, `application/vcon+gzip`.
+  Another is a `400`.
+- sipnab opens it with the server's `--vcon-key`, `--vcon-signer-ca` and
+  `--vcon-signer-sha256`: see
+  [A signed, encrypted or compressed container](vcon.md#a-signed-encrypted-or-compressed-container).
+- A container that does not open is a `422` with the reason: an encrypted one
+  with no `--vcon-key`, a signature that does not verify, a signer the checks
+  refuse.
+
 A container whose `critical` lists an extension sipnab does not support is a `422` naming each one.
 
 - sipnab supports `sip-signaling` and `CC`.
@@ -4309,7 +4322,19 @@ from the capture this server holds. The answer carries:
   - the message ladder,
 - the capture analysis.
 
-It reads no store and writes none. The body is the container.
+It reads no store and writes none. The body is the container, in any form
+`POST /v1/vcon/validate` takes: sipnab opens a signed, encrypted or gzip
+format container first, and one that does not open answers
+`verdict: unreadable` with the reason. A gzip format container:
+
+```bash
+curl -s -X POST -H "Authorization: Bearer $SIPNAB_API_KEY" -H "Content-Type: application/vcon+gzip" \
+  --data-binary @call.vcon.json.gz 'http://127.0.0.1:8080/v1/vcon/analyze' | jq -c '{verdict, call_id: .dialogs[0].call_id}'
+```
+
+```json
+{"verdict":"analyzed","call_id":"1-1966@10.0.2.20"}
+```
 
 - `limit` (default 50, ceiling
   `--api-max-rows`) bounds the dialogs returned.

@@ -120,6 +120,41 @@ static SPECS: &[Spec] = &[
         &["-I", FIXTURE_DIR],
     ),
     (
+        "vcon-key",
+        Kind::Text {
+            accept: &["x", " ", "0", "-1"],
+            reject: &[("", 2)],
+        },
+        &[],
+    ),
+    (
+        "vcon-signer-ca",
+        Kind::Text {
+            accept: &["x", " ", "0", "-1", "system"],
+            reject: &[("", 2)],
+        },
+        &[],
+    ),
+    (
+        "vcon-signer-sha256",
+        Kind::Text {
+            accept: &[
+                "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+                "FE:DC:BA:98:76:54:32:10:FE:DC:BA:98:76:54:32:10:FE:DC:BA:98:76:54:32:10:FE:DC:BA:98:76:54:32:10",
+            ],
+            reject: &[
+                ("", 2),
+                ("x", 2),
+                ("ab:cd", 2),
+                (
+                    "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef00",
+                    2,
+                ),
+            ],
+        },
+        &[],
+    ),
+    (
         "output",
         Kind::Text {
             accept: &["x", "", " ", "0"],
@@ -3505,6 +3540,12 @@ fn fingerprint(cli: &sipnab::cli::Cli, config: &sipnab::config::Config) -> Strin
         format!(
             "{:?}",
             sipnab::app::vcon_fetch::FetchPlan::resolve(&cli.vcon_fetch_args, &config.vcon_fetch)
+        ),
+        // The keys the vCon readers open containers with, resolved from
+        // their flags and `[vcon_input]`; each file shows by its path alone.
+        format!(
+            "{:?}",
+            sipnab::app::bootstrap::reader_keys(cli, config).map_err(|(_, e)| e)
         ),
     ];
     let mut text = parts.join("\n");

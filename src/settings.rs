@@ -853,8 +853,17 @@ pub const FLAGS: &[(&str, Link)] = &[
         "vcon-forward-url",
         Link::Key("vcon_forward", "url", Merge::Override),
     ),
+    ("vcon-key", Link::Key("vcon_input", "key", Merge::Override)),
     ("vcon-max-inline-media", Link::Pending),
     ("vcon-out", Link::Input),
+    (
+        "vcon-signer-ca",
+        Link::Key("vcon_input", "signer_ca", Merge::Override),
+    ),
+    (
+        "vcon-signer-sha256",
+        Link::Key("vcon_input", "signer_sha256", Merge::Override),
+    ),
     ("vcon-spool-status", Link::Action),
     ("wireshark", Link::PerRun),
     ("word", Link::PerRun),

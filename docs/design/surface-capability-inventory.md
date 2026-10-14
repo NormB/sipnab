@@ -360,8 +360,11 @@ Totals: CLI 354, TUI 25, REST 46, MCP 74.
 - `--vcon-forward-scitt-url`
 - `--vcon-forward-timeout`
 - `--vcon-forward-url`
+- `--vcon-key`
 - `--vcon-max-inline-media`
 - `--vcon-out`
+- `--vcon-signer-ca`
+- `--vcon-signer-sha256`
 - `--vcon-spool-status`
 - `--version`
 - `--wireshark`

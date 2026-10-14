@@ -98,10 +98,19 @@ pub fn is_container_file_name(name: &str) -> bool {
     lower.len() > ".vcon.json".len() && lower.ends_with(".vcon.json")
 }
 
+/// The first two bytes of every gzip member, ID1 and ID2
+/// ([RFC 1952 section 2.3.1](https://www.rfc-editor.org/rfc/rfc1952.html#section-2.3.1)).
+pub const GZIP_MAGIC: [u8; 2] = [0x1f, 0x8b];
+
 /// Whether the file at `path` is read as a vCon container.
 ///
-/// Reads at most 64 bytes. A file that cannot be opened is not one: the
-/// capture path then reports why it cannot be opened, as it always has.
+/// Reads at most 64 bytes. A file that starts with the gzip magic is a gzip
+/// format vCon
+/// ([draft-ietf-vcon-vcon-core-04 section 5.4](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-04#section-5.4))
+/// when the first 64 bytes it inflates to pass [`sniffs_as_container`];
+/// a gzip-compressed capture inflates to its capture magic and stays a
+/// capture. A file that cannot be opened is not one: the capture path then
+/// reports why it cannot be opened, as it always has.
 #[cfg(feature = "native")]
 #[must_use]
 pub fn is_container_file(path: &std::path::Path) -> bool {
@@ -112,6 +121,18 @@ pub fn is_container_file(path: &std::path::Path) -> bool {
     let mut prefix = Vec::with_capacity(64);
     if file.take(64).read_to_end(&mut prefix).is_err() {
         return false;
+    }
+    if prefix.starts_with(&GZIP_MAGIC) {
+        let Ok(file) = std::fs::File::open(path) else {
+            return false;
+        };
+        let mut inflated = Vec::with_capacity(64);
+        // A short or damaged member keeps what inflated before the error,
+        // and the reader then reports the damage.
+        let _ = flate2::read::GzDecoder::new(file)
+            .take(64)
+            .read_to_end(&mut inflated);
+        return sniffs_as_container(&inflated);
     }
     sniffs_as_container(&prefix)
 }
@@ -136,6 +157,10 @@ pub struct VconProvenance {
     /// never a reason to skip a container whose SIP is readable: vcon.store,
     /// for one, hands a container back with `extensions` as an object.
     pub schema_findings: Vec<String>,
+    /// The layers taken off the container to reach the unsigned vCon,
+    /// outermost first: the gzip format, the encrypted form, the signed form
+    /// and its signer. Empty for an unsigned container.
+    pub opened: Vec<String>,
 }
 
 impl VconProvenance {
@@ -151,6 +176,11 @@ impl VconProvenance {
             note.push_str(" The container fails the draft-ietf-vcon-vcon-core-04 schema: ");
             note.push_str(&self.schema_findings.join("; "));
             note.push_str(". Its SIP was read regardless.");
+        }
+        if !self.opened.is_empty() {
+            note.push_str(" Opened from: ");
+            note.push_str(&self.opened.join("; "));
+            note.push('.');
         }
         if let Some(producer) = &self.producer_note {
             note.push_str(" The producer's caveat: ");
@@ -275,7 +305,8 @@ pub fn reset_read_report() {
 
 #[cfg(feature = "vcon")]
 pub use reader::{
-    ContainerError, Rebuilt, RebuiltMessage, into_stores, packets, read_file, rebuild,
+    ContainerError, ReaderKeys, Rebuilt, RebuiltMessage, into_stores, open_bytes, packets,
+    read_file, rebuild, set_reader_keys,
 };
 
 #[cfg(all(feature = "native", not(feature = "vcon")))]
@@ -354,6 +385,10 @@ mod reader {
         /// The container's `critical` lists an extension sipnab does not
         /// support; the detail names it. See [`super::critical_refusal`].
         UnsupportedCritical(String),
+        /// The container is signed, encrypted or in the gzip format, and
+        /// did not open: no key, a signature that does not verify, a signer
+        /// the checks refuse. The detail says which.
+        Unopened(String),
     }
 
     impl std::fmt::Display for ContainerError {
@@ -377,6 +412,7 @@ mod reader {
                 Self::UnsupportedCritical(why) => {
                     write!(f, "a vCon container sipnab must not read: {why}")
                 }
+                Self::Unopened(why) => write!(f, "cannot open the vCon container: {why}"),
             }
         }
     }
@@ -431,9 +467,91 @@ mod reader {
             )));
         }
         let bytes = std::fs::read(path).map_err(|e| ContainerError::Unreadable(e.to_string()))?;
-        let value: Value =
-            serde_json::from_slice(&bytes).map_err(|e| ContainerError::NotJson(e.to_string()))?;
-        rebuild(&value, &crate::capture::archive::source_name(path))
+        let (value, opened) = open_bytes(&bytes)?;
+        let mut rebuilt = rebuild(&value, &crate::capture::archive::source_name(path))?;
+        rebuilt.provenance.opened = opened;
+        Ok(rebuilt)
+    }
+
+    /// How the readers open a signed or encrypted container: the decryption
+    /// key and the signer checks `--vcon-key`, `--vcon-signer-ca` and
+    /// `--vcon-signer-sha256` (or `[vcon_input]`) name. Each names the
+    /// setting it came from, which its refusals quote.
+    #[derive(Debug, Clone, Default, PartialEq, Eq)]
+    pub struct ReaderKeys {
+        /// The PEM RSA private key that decrypts an encrypted container.
+        pub key: Option<crate::app::vcon_fetch::AuthSource>,
+        /// The CA a signed container's signer must chain to.
+        pub signer_ca: Option<crate::app::vcon_fetch::SignerCa>,
+        /// The SHA-256 fingerprint a signed container's signer must have.
+        pub signer_sha256: Option<[u8; 32]>,
+    }
+
+    /// The opener built from the keys on first use, or why it was not.
+    type Built = Option<Result<std::sync::Arc<Opener>, String>>;
+
+    /// The keys this process reads with, and the opener built from them on
+    /// first use: the files are read once, when the first container is.
+    static KEYS: std::sync::LazyLock<parking_lot::Mutex<(ReaderKeys, Built)>> =
+        std::sync::LazyLock::new(|| parking_lot::Mutex::new((ReaderKeys::default(), None)));
+
+    use crate::output::vcon_jose::Opener;
+
+    /// Set the keys every reader in this process opens containers with.
+    pub fn set_reader_keys(keys: ReaderKeys) {
+        let mut held = KEYS.lock();
+        if held.0 != keys {
+            *held = (keys, None);
+        }
+    }
+
+    /// The opener the keys make, read on first use and kept.
+    fn opener() -> Result<std::sync::Arc<Opener>, String> {
+        let mut held = KEYS.lock();
+        if held.1.is_none() {
+            held.1 = Some(build_opener(&held.0).map(std::sync::Arc::new));
+        }
+        held.1.clone().unwrap_or_else(|| Err("no opener".into()))
+    }
+
+    /// Read the key and the signer CA `keys` name.
+    fn build_opener(keys: &ReaderKeys) -> Result<Opener, String> {
+        let opener = match &keys.key {
+            Some(source) => {
+                Opener::load(&source.path).map_err(|e| format!("{}: {e}", source.from))?
+            }
+            None => Opener::without_key(),
+        };
+        let trust =
+            crate::app::vcon_fetch::signer_trust(keys.signer_ca.as_ref(), keys.signer_sha256)
+                .map_err(|(_, e)| e)?;
+        Ok(opener.trusting(trust))
+    }
+
+    /// The unsigned container `bytes` hold, in whatever form they arrive:
+    /// the one unwrap step every reader runs (`-I`, the MCP `analyze_vcon`
+    /// and `validate_vcon` tools, `POST /v1/vcon/analyze` and
+    /// `POST /v1/vcon/validate`). The gzip format is inflated, the encrypted
+    /// form decrypted with the reader's key, the signed form verified and
+    /// its signer checked ([`Opener::unwrap`]), all within
+    /// [`MAX_CONTAINER_BYTES`]. Returns the container and a description of
+    /// each layer taken off, outermost first.
+    ///
+    /// # Errors
+    ///
+    /// [`ContainerError::Unopened`] when a layer does not open, and
+    /// [`ContainerError::NotJson`] when what is inside is not JSON.
+    pub fn open_bytes(bytes: &[u8]) -> Result<(Value, Vec<String>), ContainerError> {
+        let cap = usize::try_from(MAX_CONTAINER_BYTES).unwrap_or(usize::MAX);
+        let unwrapped = opener()
+            .and_then(|opener| opener.unwrap(bytes, cap))
+            .map_err(ContainerError::Unopened)?;
+        let value = serde_json::from_slice(&unwrapped.unsigned)
+            .map_err(|e| ContainerError::NotJson(e.to_string()))?;
+        Ok((
+            value,
+            unwrapped.layers.iter().map(ToString::to_string).collect(),
+        ))
     }
 
     /// Validate `container` and rebuild every SIP message it stores.
@@ -515,6 +633,7 @@ mod reader {
             not_recomputed: gaps.sentences(stored_media_quality.len()),
             producer_note: producer_note(container),
             schema_findings,
+            opened: Vec::new(),
         };
         Ok(Rebuilt {
             first_message: messages.first().map(|m| m.timestamp),
@@ -1041,6 +1160,7 @@ mod tests {
             not_recomputed: vec!["media: none".to_string(), "bodies: 1".to_string()],
             producer_note: Some("Produced by sipnab.".to_string()),
             schema_findings: vec!["/extensions (type): expected an array".to_string()],
+            opened: Vec::new(),
         };
         let note = p.note();
         assert!(note.starts_with("3 SIP message(s)"), "{note}");

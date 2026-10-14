@@ -1081,10 +1081,11 @@ fn colon_hex(bytes: &[u8]) -> String {
 }
 
 /// What opens an encrypted container a store hands back: the recipient's
-/// private key, read from a file only its owner can read.
+/// private key, read from a file only its owner can read. Without a key it
+/// still verifies a signed container ([`Opener::unwrap`]).
 pub struct Opener {
-    /// The PEM text of the RSA private key.
-    key_pem: String,
+    /// The PEM text of the RSA private key, when one was given.
+    key_pem: Option<String>,
     /// Who must have signed what it opens.
     trust: SignerTrust,
 }
@@ -1113,9 +1114,19 @@ impl Opener {
         let key_pem = read_private_key("decryption key", path)?;
         private_key(&key_pem)?;
         Ok(Self {
-            key_pem,
+            key_pem: Some(key_pem),
             trust: SignerTrust::default(),
         })
+    }
+
+    /// An opener with no decryption key: [`Self::unwrap`] verifies a signed
+    /// container and refuses an encrypted one.
+    #[must_use]
+    pub fn without_key() -> Self {
+        Self {
+            key_pem: None,
+            trust: SignerTrust::default(),
+        }
     }
 
     /// This opener, returning only containers whose signer `trust` accepts.
@@ -1148,14 +1159,16 @@ impl Opener {
     /// container is the container's `content_hash`, which the caller checks
     /// over `jwe`.
     pub fn open_file(&self, jwe: &[u8]) -> Result<Vec<u8>, String> {
-        decrypt(jwe, &self.key_pem)
+        let key = self.key_pem.as_deref().ok_or(NO_KEY)?;
+        decrypt(jwe, key)
     }
 
     /// [`Self::open`] at `now`, in seconds since the Unix epoch: the time the
     /// signer's certificates must be valid at.
     pub fn open_at(&self, jwe: &[u8], max_unsigned: usize, now: u64) -> Result<Opened, String> {
         use sha2::Digest as _;
-        let signed = decrypt(jwe, &self.key_pem)?;
+        let key = self.key_pem.as_deref().ok_or(NO_KEY)?;
+        let signed = decrypt(jwe, key)?;
         let (unsigned, chain) = verify_with_signer(&signed, max_unsigned)?;
         self.trust.check(&chain, now)?;
         let signer = chain.first().cloned().unwrap_or_default();
@@ -1163,6 +1176,131 @@ impl Opener {
         Ok(Opened {
             unsigned,
             signer_sha256,
+        })
+    }
+}
+
+/// Why an encrypted container was not opened: no decryption key was given.
+pub const NO_KEY: &str = "the container is encrypted (draft-ietf-vcon-vcon-core-04 section 5.3), \
+     and no decryption key was given: give --vcon-key, or [vcon_input] key in the config file";
+
+/// Why a container was refused when a signer check is configured and the
+/// container carries no signature.
+pub const NOT_SIGNED: &str = "the container is not signed, so it has no signer for \
+     --vcon-signer-ca or --vcon-signer-sha256 to check";
+
+/// One layer [`Opener::unwrap`] took off a container on its way to the
+/// unsigned vCon.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Layer {
+    /// The gzip format ([core-04 section 6.2](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-04#section-6.2)),
+    /// inflated.
+    Gzip,
+    /// The encrypted form, decrypted.
+    Encrypted,
+    /// The signed form, verified: the SHA-256 fingerprint of the signing
+    /// certificate, as `openssl x509 -noout -fingerprint -sha256` prints it.
+    Signed(String),
+}
+
+impl std::fmt::Display for Layer {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Gzip => f.write_str("gzip format, inflated"),
+            Self::Encrypted => f.write_str("encrypted form, decrypted"),
+            Self::Signed(fingerprint) => {
+                write!(f, "signed form, verified, signer SHA-256 {fingerprint}")
+            }
+        }
+    }
+}
+
+/// A container in any form, unwrapped to the unsigned vCon.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Unwrapped {
+    /// The unsigned vCon, or the bytes as given when they are not a JSON
+    /// form this reads.
+    pub unsigned: Vec<u8>,
+    /// The layers taken off, outermost first. Empty for an unsigned vCon.
+    pub layers: Vec<Layer>,
+}
+
+impl Opener {
+    /// The unsigned vCon inside `bytes`, whatever form they are in, as
+    /// [core-04 section 5.4](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-04#section-5.4)
+    /// tells the forms apart:
+    ///
+    /// - bytes that start with the gzip magic ([RFC 1952 section 2.3.1](https://www.rfc-editor.org/rfc/rfc1952.html#section-2.3.1)) are
+    ///   inflated first, up to `max_unsigned` bytes;
+    /// - the encrypted form is decrypted with this opener's key, and refused
+    ///   with [`NO_KEY`] when it has none; its plaintext must be the signed
+    ///   form, as section 5.3 requires;
+    /// - the signed form is verified, and its signer checked by this
+    ///   opener's trust;
+    /// - anything else is returned as it is, for the reader to judge.
+    ///
+    /// With a signer check configured, a container with no signed layer is
+    /// refused with [`NOT_SIGNED`].
+    ///
+    /// # Errors
+    ///
+    /// Why the container did not inflate, decrypt or verify, or why its
+    /// signer was refused.
+    pub fn unwrap(&self, bytes: &[u8], max_unsigned: usize) -> Result<Unwrapped, String> {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.as_secs());
+        self.unwrap_at(bytes, max_unsigned, now)
+    }
+
+    /// [`Self::unwrap`] at `now`, in seconds since the Unix epoch: the time
+    /// the signer's certificates must be valid at.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::unwrap`].
+    pub fn unwrap_at(
+        &self,
+        bytes: &[u8],
+        max_unsigned: usize,
+        now: u64,
+    ) -> Result<Unwrapped, String> {
+        use sha2::Digest as _;
+        let mut layers = Vec::new();
+        let mut current = if bytes.starts_with(&GZIP_MAGIC) {
+            layers.push(Layer::Gzip);
+            gunzip_capped(bytes, max_unsigned)?
+        } else {
+            bytes.to_vec()
+        };
+        let form = |bytes: &[u8]| {
+            serde_json::from_slice::<serde_json::Value>(bytes)
+                .map_or(Form::Unknown, |value| form_of(&value))
+        };
+        if form(&current) == Form::Encrypted {
+            let key = self.key_pem.as_deref().ok_or(NO_KEY)?;
+            current = decrypt(&current, key)?;
+            layers.push(Layer::Encrypted);
+            if form(&current) != Form::Signed {
+                return Err(
+                    "the encrypted container does not hold the signed form, which \
+                     draft-ietf-vcon-vcon-core-04 section 5.3 requires"
+                        .into(),
+                );
+            }
+        }
+        if form(&current) == Form::Signed {
+            let (unsigned, chain) = verify_with_signer(&current, max_unsigned)?;
+            self.trust.check(&chain, now)?;
+            let signer = chain.first().cloned().unwrap_or_default();
+            layers.push(Layer::Signed(colon_hex(&sha2::Sha256::digest(&signer))));
+            current = unsigned;
+        } else if self.trust.is_active() {
+            return Err(NOT_SIGNED.into());
+        }
+        Ok(Unwrapped {
+            unsigned: current,
+            layers,
         })
     }
 }
@@ -1617,6 +1755,127 @@ mod tests {
             unsigned()
         );
         assert!(!Opener::load(&path)?.checks_signer());
+        Ok(())
+    }
+
+    /// The gzip of `bytes`.
+    fn gzipped(bytes: &[u8]) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
+        use std::io::Write as _;
+        let mut encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+        encoder.write_all(bytes)?;
+        Ok(encoder.finish()?)
+    }
+
+    /// An opener holding the fixture key, from a private copy.
+    fn keyed_opener() -> Result<(Opener, tempfile::TempDir), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("k.pem");
+        std::fs::write(&path, fixture("fake_grp.key")?)?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))?;
+        }
+        Ok((Opener::load(&path)?, dir))
+    }
+
+    /// core-04 section 5.4: every form, and the gzip format of each, unwraps
+    /// to the unsigned vCon, naming each layer taken off.
+    #[test]
+    fn unwrap_reads_every_form_and_its_gzip_format() -> TestResult {
+        let (opener, _dir) = keyed_opener()?;
+        let signed = sign(&unsigned(), UUID, &signer()?)?;
+        let sealed = seal(&unsigned(), UUID, &signer()?, &recipient()?)?;
+        let cases: [(Vec<u8>, &[&str]); 6] = [
+            (unsigned(), &[]),
+            (gzipped(&unsigned())?, &["gzip"]),
+            (signed.clone(), &["signed"]),
+            (gzipped(&signed)?, &["gzip", "signed"]),
+            (sealed.clone(), &["encrypted", "signed"]),
+            (gzipped(&sealed)?, &["gzip", "encrypted", "signed"]),
+        ];
+        for (bytes, want) in cases {
+            let got = opener.unwrap(&bytes, usize::MAX)?;
+            assert_eq!(got.unsigned, unsigned());
+            let names: Vec<&str> = got
+                .layers
+                .iter()
+                .map(|l| match l {
+                    Layer::Gzip => "gzip",
+                    Layer::Encrypted => "encrypted",
+                    Layer::Signed(_) => "signed",
+                })
+                .collect();
+            assert_eq!(names, want);
+        }
+        Ok(())
+    }
+
+    /// Without a key an encrypted container is refused with [`NO_KEY`]; a
+    /// signed one still verifies.
+    #[test]
+    fn unwrap_without_a_key_refuses_only_the_encrypted_form() -> TestResult {
+        let opener = Opener::without_key();
+        let sealed = seal(&unsigned(), UUID, &signer()?, &recipient()?)?;
+        assert_eq!(
+            opener.unwrap(&sealed, usize::MAX).err().as_deref(),
+            Some(NO_KEY)
+        );
+        let signed = sign(&unsigned(), UUID, &signer()?)?;
+        assert_eq!(opener.unwrap(&signed, usize::MAX)?.unsigned, unsigned());
+        Ok(())
+    }
+
+    /// With a signer check, a container with no signed layer is refused with
+    /// [`NOT_SIGNED`], in the gzip format too.
+    #[test]
+    fn unwrap_with_a_signer_check_refuses_an_unsigned_container() -> TestResult {
+        let pki = pki("checked", 2040)?;
+        let opener = Opener::without_key().trusting(SignerTrust::from_ca_pem(&pki.ca, true)?);
+        for bytes in [unsigned(), gzipped(&unsigned())?] {
+            assert_eq!(
+                opener
+                    .unwrap_at(&bytes, usize::MAX, IN_2030)
+                    .err()
+                    .as_deref(),
+                Some(NOT_SIGNED)
+            );
+        }
+        let ours = Signer::from_pem(&fixture("fake_grp.key")?, &pki.chain)?;
+        let signed = sign(&unsigned(), UUID, &ours)?;
+        assert_eq!(
+            opener.unwrap_at(&signed, usize::MAX, IN_2030)?.unsigned,
+            unsigned()
+        );
+        let theirs = sign(&unsigned(), UUID, &signer()?)?;
+        assert!(opener.unwrap_at(&theirs, usize::MAX, IN_2030).is_err());
+        Ok(())
+    }
+
+    /// core-04 section 5.3: an encrypted container must hold the signed
+    /// form; one that holds the unsigned vCon directly is refused.
+    #[test]
+    fn unwrap_refuses_an_encrypted_container_that_is_not_signed_inside() -> TestResult {
+        let (opener, _dir) = keyed_opener()?;
+        let jwe = encrypt(&unsigned(), UUID, &recipient()?)?;
+        let err = opener
+            .unwrap(&jwe, usize::MAX)
+            .err()
+            .ok_or("an unsigned plaintext was accepted")?;
+        assert!(err.contains("signed form"), "{err}");
+        Ok(())
+    }
+
+    /// The gzip format is inflated within the cap.
+    #[test]
+    fn unwrap_caps_the_gzip_format() -> TestResult {
+        let opener = Opener::without_key();
+        let size = unsigned().len();
+        assert!(opener.unwrap(&gzipped(&unsigned())?, size - 1).is_err());
+        assert_eq!(
+            opener.unwrap(&gzipped(&unsigned())?, size)?.unsigned,
+            unsigned()
+        );
         Ok(())
     }
 

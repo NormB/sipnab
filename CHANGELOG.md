@@ -105,6 +105,20 @@ entry that carries them.
     - It compiles libopus 1.6.1 from source and links it statically, so building `full` needs `cmake` and a C compiler.
     - The gnu, macOS and Docker builds carry it. The static musl builds, which have no vCon export, do not.
     - `sipnab --version` lists it.
+- **Every vCon reader opens the signed, encrypted and gzip forms.**
+  - The readers are `-I`, the MCP `analyze_vcon` and `validate_vcon` tools, and `POST /v1/vcon/analyze` and `POST /v1/vcon/validate`.
+  - They share one step, as draft-ietf-vcon-vcon-core-04 section 5.4 tells the forms apart:
+    - the gzip format (section 6.2), known by the magic bytes `1f 8b`, is inflated up to 64 MiB;
+    - the encrypted form (section 5.3) is decrypted with `--vcon-key <FILE>` (`[vcon_input] key`), a private key readable by its owner only;
+    - the signed form (section 5.2) is verified, with no key needed.
+  - Without a key, sipnab refuses an encrypted container and names `--vcon-key`.
+    - Before, `-I` reported it as a JSON object with none of the members a vCon has.
+  - Before, `-I` handed a gzip format vCon to the capture reader, which reported it as not a capture.
+  - `--vcon-signer-ca <FILE|system>` and `--vcon-signer-sha256 <HEX>` (`[vcon_input] signer_ca`, `signer_sha256`) check the signer, by the fetcher's rules.
+    - With either set, sipnab refuses an unsigned container.
+  - `analyze_vcon` takes `container_base64`, the bytes of any form, for the gzip format.
+  - The REST routes take `Content-Type: application/vcon+gzip`, `application/vcon` and `application/vcon+json` beside `application/json`.
+  - The `rebuilt_from_vcon` finding names each layer opened and the signer's SHA-256 fingerprint.
 - **An encrypting `[[vcon.rule]]` can compress what it encrypts.**
   - `compress = "gzip"` signs the gzip ([RFC 1952](https://www.rfc-editor.org/rfc/rfc1952.html)) of the vCon instead of the vCon.
     - draft-ietf-vcon-vcon-core-04 section 5.2 allows this.

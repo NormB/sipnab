@@ -134,11 +134,13 @@ pub struct ValidateVconParams {
 #[schemars(crate = "rmcp::schemars")]
 pub struct AnalyzeVconParams {
     /// The container to analyze, supplied by the caller: one sipnab exported,
-    /// or one another producer wrote.
+    /// or one another producer wrote. Signed and encrypted forms are opened.
     /// Advertised as an object rather than as "anything at all", for the
     /// reason `validate_vcon`'s `container` gives.
     #[schemars(with = "Option<std::collections::BTreeMap<String, serde_json::Value>>")]
     pub container: Option<serde_json::Value>,
+    /// Or the container's bytes in base64, as for the gzip format.
+    pub container_base64: Option<String>,
     /// Maximum dialogs to return (default 50, ceiling `--mcp-max-rows`, itself 1000 unless the operator says otherwise).
     ///
     /// `total_dialogs` says how many the container holds.
@@ -381,16 +383,35 @@ impl SipnabMcp {
         &self,
         Parameters(params): Parameters<AnalyzeVconParams>,
     ) -> Result<CallToolResult, rmcp::ErrorData> {
-        let container = params.container.ok_or_else(|| {
-            errors::refuse_param(
-                Reason::MissingParam,
-                "container",
-                "give `container`: the vCon container to analyze, as a JSON object",
-            )
-        })?;
         let limit = resolve_limit_with_cap(params.limit, self.row_cap);
-        let analysis = crate::output::vcon_analysis::analyze_container(&container, limit)
-            .map_err(|e| errors::refuse_param(Reason::InvalidValue, "container", e.to_string()))?;
+        let analysis = match (params.container, params.container_base64) {
+            (Some(_), Some(_)) => {
+                return Err(errors::refuse(
+                    Reason::ConflictingParams,
+                    "`container` and `container_base64` are alternatives: give the \
+                     container as JSON, or its bytes in base64. Give one",
+                ));
+            }
+            (None, None) => {
+                return Err(errors::refuse_param(
+                    Reason::MissingParam,
+                    "container",
+                    "give `container`: the vCon container to analyze, as a JSON object, \
+                     or `container_base64`: its bytes in base64",
+                ));
+            }
+            (Some(container), None) => {
+                crate::output::vcon_analysis::analyze_container(&container, limit).map_err(|e| {
+                    errors::refuse_param(Reason::InvalidValue, "container", e.to_string())
+                })?
+            }
+            (None, Some(text)) => {
+                let bytes = decode_base64(&text)?;
+                crate::output::vcon_analysis::analyze_bytes(&bytes, limit).map_err(|e| {
+                    errors::refuse_param(Reason::InvalidValue, "container_base64", e.to_string())
+                })?
+            }
+        };
         let value = serde_json::to_value(&analysis).map_err(|e| {
             rmcp::ErrorData::internal_error(
                 format!("analysis response serialization failed: {e}"),
@@ -631,6 +652,15 @@ impl SipnabMcp {
                          itself, not a string holding it",
                     ));
                 }
+                // A signed or encrypted container is validated by the
+                // unsigned vCon inside, opened by the readers' one step.
+                let bytes = serde_json::to_vec(&container).map_err(|e| {
+                    rmcp::ErrorData::internal_error(format!("re-encoding the container: {e}"), None)
+                })?;
+                let (container, _) =
+                    crate::capture::vcon_input::open_bytes(&bytes).map_err(|e| {
+                        errors::refuse_param(Reason::InvalidValue, "container", e.to_string())
+                    })?;
                 if let Some(why) = crate::capture::vcon_input::critical_refusal(&container) {
                     return Err(errors::refuse_param(
                         Reason::InvalidValue,
@@ -956,6 +986,24 @@ impl SipnabMcp {
             call_id: None,
         })
     }
+}
+
+/// The bytes `text` holds in standard base64.
+///
+/// # Errors
+///
+/// `invalid_params` naming `container_base64` when it is not base64.
+fn decode_base64(text: &str) -> Result<Vec<u8>, rmcp::ErrorData> {
+    use base64::Engine as _;
+    base64::engine::general_purpose::STANDARD
+        .decode(text.trim())
+        .map_err(|e| {
+            errors::refuse_param(
+                Reason::InvalidValue,
+                "container_base64",
+                format!("`container_base64` is not standard base64: {e}"),
+            )
+        })
 }
 
 /// The completeness carrier, in the shape this response publishes it.
@@ -2695,6 +2743,7 @@ mod tests {
         let result = empty_server()
             .analyze_vcon(Parameters(AnalyzeVconParams {
                 container: Some(container.clone()),
+                container_base64: None,
                 limit: None,
             }))
             .await
@@ -2716,6 +2765,7 @@ mod tests {
             let err = empty_server()
                 .analyze_vcon(Parameters(AnalyzeVconParams {
                     container,
+                    container_base64: None,
                     limit: None,
                 }))
                 .await
@@ -2726,6 +2776,7 @@ mod tests {
         let result = empty_server()
             .analyze_vcon(Parameters(AnalyzeVconParams {
                 container: Some(serde_json::json!({"vcon": "0.4.0"})),
+                container_base64: None,
                 limit: None,
             }))
             .await

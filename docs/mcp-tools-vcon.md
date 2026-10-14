@@ -16,7 +16,7 @@ the other bundles and finds any tool by name.
 | [`siprec_metadata`](#siprec_metadata) | `call_id` | The SIPREC ([RFC 7866](https://www.rfc-editor.org/rfc/rfc7866.html)) recording metadata a call carried: session id, mode, participants with AOR and display name, and the recorded streams, each naming its `m=` line label and the participant that sends it |
 | [`export_vcon`](#export_vcon) | `call_id?`, `filter?`, `limit?`, `cursor?`, `media?` | Dialogs as vCon conversation containers, structured JSON, each with its SHA-256. One `call_id` or a whole filtered set, paged with `cursor`. Unsigned, retained audio inline unless `media` is `omit`, and every omission stated in the response |
 | [`validate_vcon`](#validate_vcon) | `call_id?`, `container?` | Checks a container against the working group's draft-ietf-vcon-vcon-core-04 schema and names every finding |
-| [`analyze_vcon`](#analyze_vcon) | `container`, `limit?` | Rebuilds the SIP messages a stored container holds and analyzes them apart from the loaded capture: per dialog the `--json-dialogs` object, the signaling diagnosis and the ladder, plus the capture analysis and what a container cannot reproduce |
+| [`analyze_vcon`](#analyze_vcon) | `container` or `container_base64`, `limit?` | Rebuilds the SIP messages a stored container holds and analyzes them apart from the loaded capture: per dialog the `--json-dialogs` object, the signaling diagnosis and the ladder, plus the capture analysis and what a container cannot reproduce |
 | [`vcon_spool_status`](#vcon_spool_status) | `limit?`, `cursor?`, `rule?` | Counts the `--export-vcon-dir` spool: containers pending, delivered and failed, with the store's answer from each failed container's record. A snapshot of files; sends, moves and deletes nothing |
 
 
@@ -499,13 +499,18 @@ sipnab rebuilds the container's SIP messages and analyzes them in stores of
 their own. The tool leaves the loaded capture untouched, records nothing, and
 connects nowhere. It reads two stored forms: a `sip-message-trace` attachment (sipnab's,
 and the trace form of draft-howe-vcon-sip-signaling-00) and `message/sip`
-attachments, one whole message each. To analyze a container on the command
+attachments, one whole message each. It opens a signed, encrypted or gzip
+format container first, with the server's `--vcon-key`, `--vcon-signer-ca` and
+`--vcon-signer-sha256`: see
+[A signed, encrypted or compressed container](vcon.md#a-signed-encrypted-or-compressed-container).
+To analyze a container on the command
 line, give it to `-I` instead: see
 [Analyze a stored vCon](vcon.md#analyze-a-stored-vcon).
 
 | Name | Type | Legal values | If omitted |
 |---|---|---|---|
-| `container` | object | The container itself, not a string holding it. | Required. The call fails with `invalid_params`. |
+| `container` | object | The container itself, not a string holding it, in the unsigned, signed or encrypted form. | Give this or `container_base64`. With neither, the call fails with `invalid_params`. |
+| `container_base64` | string | The container's bytes in standard base64, in any form, the gzip format included. | Give this or `container`. With both, the call fails with `invalid_params`. |
 | `limit` | integer | The most dialogs to return. Ceiling `--mcp-max-rows`. | 50. `total_dialogs` counts every dialog the container holds, and `truncated` says whether the limit cut the list. |
 
 **Two verdicts.**
@@ -513,7 +518,7 @@ line, give it to `-I` instead: see
 | `verdict` | What it means |
 |---|---|
 | `analyzed` | sipnab rebuilt at least one SIP message, and the answer holds the analysis |
-| `unreadable` | The container stores no SIP message sipnab can rebuild, is not a vCon at all, or lists in `critical` an extension sipnab does not support (sipnab supports only `sip-signaling` and `CC`; [section 4.1.4 of draft-ietf-vcon-vcon-core-04](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-04#section-4.1.4)). `reason` says which, and the answer holds no analysis. For an unsupported critical extension it holds no schema findings either |
+| `unreadable` | The container does not open (an encrypted container and no `--vcon-key`, a signature that does not verify, a signer the checks refuse), stores no SIP message sipnab can rebuild, is not a vCon at all, or lists in `critical` an extension sipnab does not support (sipnab supports only `sip-signaling` and `CC`; [section 4.1.4 of draft-ietf-vcon-vcon-core-04](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-04#section-4.1.4)). `reason` says which, and the answer holds no analysis. For an unsupported critical extension it holds no schema findings either |
 
 **A schema finding does not stop the analysis.** `schema_findings` lists every
 place the container disagrees with the vendored draft-ietf-vcon-vcon-core-04

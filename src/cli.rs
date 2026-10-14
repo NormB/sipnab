@@ -765,6 +765,38 @@ pub struct CaptureArgs {
     )]
     pub input_name: Option<String>,
 
+    /// Decrypt an encrypted vCon container (draft-ietf-vcon-vcon-core-04
+    /// section 5.3) that `-I`, the MCP vCon tools or the REST vCon routes
+    /// read, with the RSA private key in this PEM file, then verify its
+    /// signature. The file must be readable by its owner only. Without it an
+    /// encrypted container is refused. Overrides `[vcon_input] key`.
+    #[arg(help_heading = "Capture", long = "vcon-key", value_name = "FILE")]
+    pub vcon_key: Option<std::path::PathBuf>,
+
+    /// Read a signed or encrypted vCon container only when its signing
+    /// certificate chains, through the intermediates in its `x5c`, to a CA in
+    /// this PEM file, each certificate within its validity period. `system`
+    /// uses the host's CA bundle; write `./system` for a file of that name. An
+    /// unsigned container is refused. Overrides `[vcon_input] signer_ca`.
+    #[arg(
+        help_heading = "Capture",
+        long = "vcon-signer-ca",
+        value_name = "FILE|system"
+    )]
+    pub vcon_signer_ca: Option<std::path::PathBuf>,
+
+    /// Read a signed or encrypted vCon container only when its signing
+    /// certificate has this SHA-256 fingerprint: 64 hex digits, plain or
+    /// colon-separated, either case. An unsigned container is refused.
+    /// Overrides `[vcon_input] signer_sha256`.
+    #[arg(
+        help_heading = "Capture",
+        long = "vcon-signer-sha256",
+        value_name = "HEX",
+        value_parser = parse_signer_sha256
+    )]
+    pub vcon_signer_sha256: Option<String>,
+
     /// Write captured packets to a pcap file.
     #[arg(
         help_heading = "Capture",

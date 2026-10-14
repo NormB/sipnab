@@ -1073,6 +1073,28 @@ auth_file = "/etc/sipnab/vcon-store.key"
 timeout = 60
 ```
 
+### `[vcon_input]`
+
+How the vCon readers open a signed or encrypted container (see
+[A signed, encrypted or compressed container](@/docs/vcon.md#a-signed-encrypted-or-compressed-container)).
+
+- The readers are `-I`, the MCP `analyze_vcon` and `validate_vcon` tools, and
+  `POST /v1/vcon/analyze` and `POST /v1/vcon/validate`.
+- A flag replaces its key.
+- sipnab reads the files when it reads the first container.
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `key` | path | -- | The RSA private key (PEM, readable by its owner only) that decrypts an encrypted container. Without it sipnab refuses an encrypted container. `--vcon-key` overrides it |
+| `signer_ca` | path | -- | The CA (PEM) a signed or encrypted container's signing certificate must chain to, through the intermediates in its `x5c`, every certificate within its validity period; `system` for the host's CA bundle. sipnab then refuses an unsigned container. `--vcon-signer-ca` overrides it |
+| `signer_sha256` | string | -- | The SHA-256 fingerprint the signing certificate must have: 64 hex digits, plain or colon-separated, either case. sipnab then refuses an unsigned container. `--vcon-signer-sha256` overrides it |
+
+```toml
+[vcon_input]
+key = "/etc/sipnab/vcon-recipient.key"
+signer_ca = "/etc/sipnab/vcon-signer-ca.pem"
+```
+
 ### [privilege]
 
 Privilege separation settings (Linux only).

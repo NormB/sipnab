@@ -710,7 +710,11 @@ fn lists() -> Result<Lists, TestError> {
 // 79 -> 80: src/config.rs parse_sha256_fingerprint's
 // `Err(format!("{text:?}: {WANT}"))`, whose text joins a const, for
 // [vcon_fetch] signer_sha256.
-const EXPECTED_UNRESOLVED: usize = 80;
+// 80 -> 82: src/app/bootstrap.rs `PlanError { exit_code: 1, message:
+// e.to_string(), }` 11 -> 12, the `[vcon_input]` validate() call in
+// load_config, and `PlanError::refused(origin, problem)` 3 -> 4, the
+// bootstrap::reader_keys refusal.
+const EXPECTED_UNRESOLVED: usize = 82;
 
 /// How many distinct templates the scope prints (informational lines
 /// excluded). Pinned with `==` so a new or removed message is a decision.
@@ -748,25 +752,9 @@ const EXPECTED_UNRESOLVED: usize = 80;
 // vcon_rules' refuse closure. Nothing removed.
 // 451 -> 452: src/config.rs `[display] view_filter_detail must be one of
 // summary, full, got {m:?}`, the F7 filter summary's mode key.
-// 452 -> 454 (+2), WTF transcriptions: src/app/vcon_enrich.rs 2 (the WTF
-// encoding refusal and the WTF member refusal). Nothing removed.
-// 454 -> 455 (+1), provenance records: src/app/vcon_enrich.rs 1 (a service's
-// provenance whose model lacks a member). Nothing removed.
-// 455 -> 459 (+4), lawful basis pass-through: src/app/vcon_enrich.rs 4 (the
-// attachments refusal without lawful_basis = true, an unknown member, another
-// purpose, and a body member). Nothing removed.
-// 459 -> 462 (+3), SCITT lifecycle statements: src/app/vcon_forward.rs 3 (a
-// SCITT setting without the URL, an issuer that is not a URI, and the warning
-// for a statement that did not register). Nothing removed.
-// 462 -> 464 (+2), the vCon gap work: src/app/bootstrap.rs 2, both carried
-// by vcon_rules' refuse closure: a referenced `@name` whose expansion does
-// not parse on its own (compiled for the `tags` attachment), and a CC header
-// key that is not a SIP header name. Nothing removed.
-// 464 -> 466: `audio_format`. src/app/batch.rs 1, the `audio_format`
-// reason (`Err(format!(..))` in RuleAudioFormat::parse); src/app/bootstrap.rs
-// 1, the `audio_format` without audio refusal, carried by vcon_rules' refuse
-// closure. Nothing removed.
-const EXPECTED_TEMPLATES: usize = 466;
+// 466 -> 467: src/config.rs `[vcon_input] signer_sha256: {e}`, the vCon
+// readers' signer fingerprint key. Nothing removed.
+const EXPECTED_TEMPLATES: usize = 467;
 
 // ---------------------------------------------------------------------------
 // The page gates

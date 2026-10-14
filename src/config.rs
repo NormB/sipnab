@@ -59,6 +59,7 @@ static KNOWN_KEYS: LazyLock<HashMap<&'static str, &'static [&'static str]>> = La
             "hep",
             "vcon_forward",
             "vcon_fetch",
+            "vcon_input",
         ]
         .as_slice(),
     );
@@ -322,6 +323,12 @@ static KNOWN_KEYS: LazyLock<HashMap<&'static str, &'static [&'static str]>> = La
         ]
         .as_slice(),
     );
+    // [vcon_input] holds how the vCon readers (`-I`, the MCP and REST vCon
+    // tools) open a signed or encrypted container.
+    m.insert(
+        "vcon_input",
+        ["key", "signer_ca", "signer_sha256"].as_slice(),
+    );
     m.insert(
         "names",
         [
@@ -523,6 +530,10 @@ pub struct Config {
     /// The vCon fetcher's settings -- see [`VconFetchConfig`].
     #[serde(default)]
     pub vcon_fetch: VconFetchConfig,
+    /// How the vCon readers open a signed or encrypted container -- see
+    /// [`VconInputConfig`].
+    #[serde(default)]
+    pub vcon_input: VconInputConfig,
 }
 
 /// `[api]`: settings for the REST API that belong in a file rather than on
@@ -995,6 +1006,42 @@ impl VconFetchConfig {
             (FETCH_MAX_RESPONSE_HEAD, self.max_response_head),
             (FETCH_MAX_SIZE, self.max_size),
         ]
+    }
+}
+
+/// `[vcon_input]`: how the vCon readers open a signed or encrypted
+/// container (draft-ietf-vcon-vcon-core-04 sections 5.2 and 5.3). The
+/// readers are `-I`, the MCP `analyze_vcon` and `validate_vcon` tools, and
+/// `POST /v1/vcon/analyze` and `POST /v1/vcon/validate`. Each key is the
+/// value of the flag of the same meaning, which overrides it.
+#[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(default)]
+pub struct VconInputConfig {
+    /// The PEM RSA private key that decrypts an encrypted container;
+    /// readable by its owner only. `--vcon-key` overrides it.
+    pub key: Option<PathBuf>,
+    /// The CA (PEM) a signed container's signing certificate must chain to,
+    /// or `system` for the host's CA bundle. `--vcon-signer-ca` overrides
+    /// it.
+    pub signer_ca: Option<PathBuf>,
+    /// The SHA-256 fingerprint a signed container's signing certificate
+    /// must have, hex, with or without colons. `--vcon-signer-sha256`
+    /// overrides it.
+    pub signer_sha256: Option<String>,
+}
+
+impl VconInputConfig {
+    /// Refuse a fingerprint its flag would refuse.
+    ///
+    /// # Errors
+    /// `crate::Error::ConfigInvalid`, naming the key.
+    pub fn validate(&self) -> Result<(), crate::Error> {
+        if let Some(text) = &self.signer_sha256 {
+            parse_sha256_fingerprint(text).map_err(|e| {
+                crate::Error::ConfigInvalid(format!("[vcon_input] signer_sha256: {e}"))
+            })?;
+        }
+        Ok(())
     }
 }
 
@@ -3416,7 +3463,7 @@ impl Config {
     /// # Errors
     /// `crate::Error::ConfigInvalid`, naming the first such key.
     pub fn validate_paths(&self) -> Result<(), crate::Error> {
-        let keys: [(&str, Option<&Path>); 31] = [
+        let keys: [(&str, Option<&Path>); 33] = [
             ("[hep] tls_ca", self.hep.tls_ca.as_deref()),
             ("[hep] tls_extra_ca", self.hep.tls_extra_ca.as_deref()),
             ("[hep] tls_cert", self.hep.tls_cert.as_deref()),
@@ -3483,6 +3530,11 @@ impl Config {
             (
                 "[vcon_fetch] signer_ca",
                 self.vcon_fetch.signer_ca.as_deref(),
+            ),
+            ("[vcon_input] key", self.vcon_input.key.as_deref()),
+            (
+                "[vcon_input] signer_ca",
+                self.vcon_input.signer_ca.as_deref(),
             ),
             ("[vcon] encrypt_to", self.vcon.encrypt_to.as_deref()),
             ("[vcon] sign_key", self.vcon.sign_key.as_deref()),

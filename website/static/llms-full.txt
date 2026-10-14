@@ -10503,6 +10503,19 @@ The response is `schema_version` 2. Version 1 also had:
 The body must be the JSON object itself, not a string holding it. A non-object
 is a `400`.
 
+For a signed, encrypted or gzip format container, sipnab validates the unsigned
+vCon inside.
+
+- The body's `Content-Type` is `application/json`, `application/vcon`,
+  `application/vcon+json` or, for the gzip format, `application/vcon+gzip`.
+  Another is a `400`.
+- sipnab opens it with the server's `--vcon-key`, `--vcon-signer-ca` and
+  `--vcon-signer-sha256`: see
+  [A signed, encrypted or compressed container](vcon.md#a-signed-encrypted-or-compressed-container).
+- A container that does not open is a `422` with the reason: an encrypted one
+  with no `--vcon-key`, a signature that does not verify, a signer the checks
+  refuse.
+
 A container whose `critical` lists an extension sipnab does not support is a `422` naming each one.
 
 - sipnab supports `sip-signaling` and `CC`.
@@ -10523,7 +10536,19 @@ from the capture this server holds. The answer carries:
   - the message ladder,
 - the capture analysis.
 
-It reads no store and writes none. The body is the container.
+It reads no store and writes none. The body is the container, in any form
+`POST /v1/vcon/validate` takes: sipnab opens a signed, encrypted or gzip
+format container first, and one that does not open answers
+`verdict: unreadable` with the reason. A gzip format container:
+
+```bash
+curl -s -X POST -H "Authorization: Bearer $SIPNAB_API_KEY" -H "Content-Type: application/vcon+gzip" \
+  --data-binary @call.vcon.json.gz 'http://127.0.0.1:8080/v1/vcon/analyze' | jq -c '{verdict, call_id: .dialogs[0].call_id}'
+```
+
+```json
+{"verdict":"analyzed","call_id":"1-1966@10.0.2.20"}
+```
 
 - `limit` (default 50, ceiling
   `--api-max-rows`) bounds the dialogs returned.
@@ -17493,6 +17518,9 @@ sipnab -d eth0,eth1 --multi-device --delta-time
 | `-I`, `--input` | `<FILE\|DIR\|GLOB>` | -- | 0.3.0 | Read packets from a capture file, a directory of them, an archive of them, or a glob, instead of live capture. **Repeatable.** sipnab reads the files in capture order, never in filename order — see the note below. A `.tar`, `.tgz` or `.tar.gz` reads like a directory: see [Archives read like directories](#archives-read-like-directories). A stored vCon container (`*.vcon.json`, or any file whose first character other than whitespace is `{`) reads as the SIP messages it stores, marked `origin=vcon`, with no media. sipnab reports a schema finding and reads the container anyway, and skips one with no SIP it can read, naming the reason: see [Analyze a stored vCon](vcon.md#analyze-a-stored-vcon) |
 | `--recursive` | -- | off | 0.5.70 | Descend into subdirectories when `-I` names a directory |
 | `--input-name` | `<GLOB>` | -- | 0.5.70 | Read only files whose *name* matches this pattern when `-I` names a directory or an archive. Applies at every depth under `--recursive`, and to an archive's members at every depth |
+| `--vcon-key` | `<FILE>` | -- | Unreleased | Decrypt an encrypted vCon container (draft-ietf-vcon-vcon-core-04 section 5.3) with the RSA private key in this PEM file, then verify the signed form inside. Applies to every vCon reader: `-I`, the MCP `analyze_vcon` and `validate_vcon` tools, and `POST /v1/vcon/analyze` and `POST /v1/vcon/validate`. The file must be readable by its owner only. Without it sipnab refuses an encrypted container and names this flag. A signed container needs no key: sipnab verifies its signature. sipnab reads a gzip format container (section 6.2) with or without it. See [A signed, encrypted or compressed container](vcon.md#a-signed-encrypted-or-compressed-container). Config: `[vcon_input] key` |
+| `--vcon-signer-ca` | `<FILE\|system>` | -- | Unreleased | Read a signed or encrypted vCon container only when its signing certificate chains, through the intermediates in its `x5c`, to a CA certificate in this PEM file, with every certificate in the chain within its validity period. `system` uses the host's CA bundle; write `./system` for a file of that name. While this flag is in force, sipnab refuses an unsigned container: it has no signer to check. Config: `[vcon_input] signer_ca` |
+| `--vcon-signer-sha256` | `<HEX>` | -- | Unreleased | Read a signed or encrypted vCon container only when its signing certificate has this SHA-256 fingerprint: 64 hex digits, plain or in colon-separated pairs, either case, as `openssl x509 -noout -fingerprint -sha256` prints it. While this flag is in force, sipnab refuses an unsigned container. Config: `[vcon_input] signer_sha256` |
 | `-O`, `--output` | `<FILE>` | -- | 0.3.0 | Write captured packets to a pcap file. `--filter` chooses what sipnab shows and analyzes, not what this file holds: a BPF filter (the positional argument, such as `"udp port 5060"`) narrows the file. Run as root, sipnab creates this file, and every `--split` file, after it drops privileges, so the drop user (`nobody` unless `--user` names another) must be able to write the directory. sipnab checks this before it reads the first packet and exits `1` when the drop user cannot. See [the note above](#bound-split-and-multi-interface-captures) |
 | `-B`, `--buffer` | `<MIB>` | `64` | 0.3.0 | Kernel capture buffer size in MiB (per device). See [Tuning capture](tuning-capture.md). sipnab refuses `0` (no ring at all) with exit `2`, and `[capture] buffer = 0` with exit `1`. Config: `[capture] buffer` |
 | `--buffer-budget` | `<MIB>` | `64` | 0.4.4 | Memory budget for the in-flight capture→processing queue. The queue grows under load up to this budget (capped, never OOM) and shrinks when idle; overrides `[capture] buffer_budget_mb`. Config: `[capture] buffer_budget_mb` |
@@ -17714,6 +17742,12 @@ sipnab -d eth0,eth1 --multi-device --delta-time
 - `sipnab -N -I capture.pcap --rtp --report` — analyze the media too when your config file sets `[capture] no_rtp = true`
 - `sipnab -N -I capture.pcap --no-rtp --rtp --report` — the last of the pair wins, so this run analyzes RTP
 - `sipnab -N -I capture.pcap -e INVITE udp port 5060` — the `sngrep` habit `sngrep INVITE udp port 5060`, written for sipnab: the match expression goes after `-e` and the words after the options are the capture filter
+- `sipnab -N -I 0192d6a4-1b2c-8d3e-9f40-5a6b7c8d9e0f.vcon.json --vcon-key recipient.key --json-dialogs` — analyze an encrypted vCon sipnab wrote: decrypt it with the recipient's private key, verify its signature, and print its dialogs
+- `sipnab --mcp -N -I capture.pcap --vcon-key /etc/sipnab/vcon-recipient.key` — serve the MCP tools with a key, so `analyze_vcon` and `validate_vcon` read encrypted containers an agent hands over
+- `sipnab -N -I signed.vcon.json --vcon-signer-ca signing-ca.pem --report` — analyze a signed vCon only when the CA in `signing-ca.pem` issued its signing certificate
+- `sipnab -N -I sealed/ --vcon-key recipient.key --vcon-signer-ca system --json-dialogs` — read a directory of encrypted vCons, each only when a CA in the host's CA bundle issued its signer
+- `sipnab -N -I signed.vcon.json --vcon-signer-sha256 40:97:43:61:0C:C7:47:BD:40:82:E2:28:1C:53:A6:54:88:74:EB:E7:A7:2B:E4:A3:C8:CB:1B:CA:C8:97:BC:D6 --json-dialogs` — analyze a signed vCon only when one known certificate signed it
+- `sipnab -N -I sealed.vcon.json --vcon-key recipient.key --vcon-signer-ca signing-ca.pem --vcon-signer-sha256 409743610cc747bd4082e2281c53a6548874ebe7a72be4a3c8cb1bcac897bcd6 --report` — require both: the signing certificate chains to `signing-ca.pem` and has this fingerprint
 
 - `sudo sipnab --device eth0 --output capture.pcap --portrange 5060-5080 --count 10000` — record up to 10000 packets from eth0 into a pcap, watching a widened SIP port range
 - `sudo sipnab --device eth0 --buffer 16 --buffer-budget 128 --snaplen 2048 --quiet-bad-parse` — live-capture a busy link with bigger kernel and queue buffers, a capped snapshot length, and parse-error notices silenced (the CLI matcher -x)
@@ -20908,6 +20942,17 @@ A whole-number `[vcon_fetch]` key is out of range. `{}` is the key (`timeout`, `
 ### `[vcon_fetch] signer_sha256: {e}`
 
 `[vcon_fetch] signer_sha256` is not a SHA-256 fingerprint.
+
+- `{e}` reads `"VALUE": a SHA-256 fingerprint is 64 hex digits, plain or in colon-separated pairs`, with the value from the file.
+- The printed line starts with `invalid config value: `.
+
+**What to do:** Set `signer_sha256` to the signing certificate's fingerprint, for example the output of `openssl x509 -noout -fingerprint -sha256 -in signing.crt`, or remove the key.
+
+**Exit code:** 1.
+
+### `[vcon_input] signer_sha256: {e}`
+
+`[vcon_input] signer_sha256` is not a SHA-256 fingerprint.
 
 - `{e}` reads `"VALUE": a SHA-256 fingerprint is 64 hex digits, plain or in colon-separated pairs`, with the value from the file.
 - The printed line starts with `invalid config value: `.
@@ -28252,6 +28297,28 @@ kind = "vcon-store"
 url = "https://api.vcon.store"
 auth_file = "/etc/sipnab/vcon-store.key"
 timeout = 60
+```
+
+### `[vcon_input]`
+
+How the vCon readers open a signed or encrypted container (see
+[A signed, encrypted or compressed container](vcon.md#a-signed-encrypted-or-compressed-container)).
+
+- The readers are `-I`, the MCP `analyze_vcon` and `validate_vcon` tools, and
+  `POST /v1/vcon/analyze` and `POST /v1/vcon/validate`.
+- A flag replaces its key.
+- sipnab reads the files when it reads the first container.
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `key` | path | -- | The RSA private key (PEM, readable by its owner only) that decrypts an encrypted container. Without it sipnab refuses an encrypted container. `--vcon-key` overrides it |
+| `signer_ca` | path | -- | The CA (PEM) a signed or encrypted container's signing certificate must chain to, through the intermediates in its `x5c`, every certificate within its validity period; `system` for the host's CA bundle. sipnab then refuses an unsigned container. `--vcon-signer-ca` overrides it |
+| `signer_sha256` | string | -- | The SHA-256 fingerprint the signing certificate must have: 64 hex digits, plain or colon-separated, either case. sipnab then refuses an unsigned container. `--vcon-signer-sha256` overrides it |
+
+```toml
+[vcon_input]
+key = "/etc/sipnab/vcon-recipient.key"
+signer_ca = "/etc/sipnab/vcon-signer-ca.pem"
 ```
 
 ### [privilege]
@@ -39181,7 +39248,7 @@ the other bundles and finds any tool by name.
 | [`siprec_metadata`](#siprec_metadata) | `call_id` | The SIPREC ([RFC 7866](https://www.rfc-editor.org/rfc/rfc7866.html)) recording metadata a call carried: session id, mode, participants with AOR and display name, and the recorded streams, each naming its `m=` line label and the participant that sends it |
 | [`export_vcon`](#export_vcon) | `call_id?`, `filter?`, `limit?`, `cursor?`, `media?` | Dialogs as vCon conversation containers, structured JSON, each with its SHA-256. One `call_id` or a whole filtered set, paged with `cursor`. Unsigned, retained audio inline unless `media` is `omit`, and every omission stated in the response |
 | [`validate_vcon`](#validate_vcon) | `call_id?`, `container?` | Checks a container against the working group's draft-ietf-vcon-vcon-core-04 schema and names every finding |
-| [`analyze_vcon`](#analyze_vcon) | `container`, `limit?` | Rebuilds the SIP messages a stored container holds and analyzes them apart from the loaded capture: per dialog the `--json-dialogs` object, the signaling diagnosis and the ladder, plus the capture analysis and what a container cannot reproduce |
+| [`analyze_vcon`](#analyze_vcon) | `container` or `container_base64`, `limit?` | Rebuilds the SIP messages a stored container holds and analyzes them apart from the loaded capture: per dialog the `--json-dialogs` object, the signaling diagnosis and the ladder, plus the capture analysis and what a container cannot reproduce |
 | [`vcon_spool_status`](#vcon_spool_status) | `limit?`, `cursor?`, `rule?` | Counts the `--export-vcon-dir` spool: containers pending, delivered and failed, with the store's answer from each failed container's record. A snapshot of files; sends, moves and deletes nothing |
 
 
@@ -39664,13 +39731,18 @@ sipnab rebuilds the container's SIP messages and analyzes them in stores of
 their own. The tool leaves the loaded capture untouched, records nothing, and
 connects nowhere. It reads two stored forms: a `sip-message-trace` attachment (sipnab's,
 and the trace form of draft-howe-vcon-sip-signaling-00) and `message/sip`
-attachments, one whole message each. To analyze a container on the command
+attachments, one whole message each. It opens a signed, encrypted or gzip
+format container first, with the server's `--vcon-key`, `--vcon-signer-ca` and
+`--vcon-signer-sha256`: see
+[A signed, encrypted or compressed container](vcon.md#a-signed-encrypted-or-compressed-container).
+To analyze a container on the command
 line, give it to `-I` instead: see
 [Analyze a stored vCon](vcon.md#analyze-a-stored-vcon).
 
 | Name | Type | Legal values | If omitted |
 |---|---|---|---|
-| `container` | object | The container itself, not a string holding it. | Required. The call fails with `invalid_params`. |
+| `container` | object | The container itself, not a string holding it, in the unsigned, signed or encrypted form. | Give this or `container_base64`. With neither, the call fails with `invalid_params`. |
+| `container_base64` | string | The container's bytes in standard base64, in any form, the gzip format included. | Give this or `container`. With both, the call fails with `invalid_params`. |
 | `limit` | integer | The most dialogs to return. Ceiling `--mcp-max-rows`. | 50. `total_dialogs` counts every dialog the container holds, and `truncated` says whether the limit cut the list. |
 
 **Two verdicts.**
@@ -39678,7 +39750,7 @@ line, give it to `-I` instead: see
 | `verdict` | What it means |
 |---|---|
 | `analyzed` | sipnab rebuilt at least one SIP message, and the answer holds the analysis |
-| `unreadable` | The container stores no SIP message sipnab can rebuild, is not a vCon at all, or lists in `critical` an extension sipnab does not support (sipnab supports only `sip-signaling` and `CC`; [section 4.1.4 of draft-ietf-vcon-vcon-core-04](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-04#section-4.1.4)). `reason` says which, and the answer holds no analysis. For an unsupported critical extension it holds no schema findings either |
+| `unreadable` | The container does not open (an encrypted container and no `--vcon-key`, a signature that does not verify, a signer the checks refuse), stores no SIP message sipnab can rebuild, is not a vCon at all, or lists in `critical` an extension sipnab does not support (sipnab supports only `sip-signaling` and `CC`; [section 4.1.4 of draft-ietf-vcon-vcon-core-04](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-04#section-4.1.4)). `reason` says which, and the answer holds no analysis. For an unsupported critical extension it holds no schema findings either |
 
 **A schema finding does not stop the analysis.** `schema_findings` lists every
 place the container disagrees with the vendored draft-ietf-vcon-vcon-core-04
@@ -44441,6 +44513,8 @@ The file holds the JWE: `unprotected`, `recipients`, `iv`, `ciphertext` and
   the `encrypt_to` certificate.
 - Then the recipient verifies the signature against the
   certificate in `x5c`.
+- sipnab reads it back with `-I` and `--vcon-key`
+  ([A signed, encrypted or compressed container](#a-signed-encrypted-or-compressed-container)).
 - The working group's reference tool is the `vcon`
   command of [vcon-dev/vcon](https://github.com/vcon-dev/vcon).
   - It does this with `vcon decrypt <key> <cert>` and then `vcon verify <ca cert>`.
@@ -46217,6 +46291,108 @@ sipnab -N -I stored --json-dialogs --no-cli-print --quiet | jq -c '{call_id, msg
 A container named directly with `-I` that sipnab cannot read stops the run
 instead, with the same reason. A file you named is one you expected
 sipnab to read.
+
+### A signed, encrypted or compressed container
+
+A vCon arrives in one of three JSON forms, and a producer may compress any of them
+([draft-ietf-vcon-vcon-core-04 section 5.4](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-04#section-5.4)).
+Every reader opens each one with the same step: `-I`, `analyze_vcon`,
+`validate_vcon`, `POST /v1/vcon/analyze` and `POST /v1/vcon/validate`.
+
+- The gzip format ([section 6.2](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-04#section-6.2)):
+  - sipnab knows it by the gzip magic bytes `1f 8b`, under any file name.
+  - It inflates it, up to 64 MiB, and reads the form inside.
+  - A gzip-compressed capture inflates to a capture and stays a capture.
+- The signed form ([section 5.2](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-04#section-5.2)):
+  - sipnab verifies the signature against the first certificate in `x5c`.
+  - It refuses a container whose signature does not verify.
+  - It needs no key.
+- The encrypted form ([section 5.3](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-04#section-5.3)):
+  - sipnab decrypts it with the private key `--vcon-key` names, or
+    `[vcon_input] key`. The key file must be readable by its owner only.
+  - It then verifies the signed form inside. It refuses an encrypted container
+    that does not hold the signed form.
+  - Without a key it refuses the container and names the flag. It never
+    analyzes the encrypted JSON as a container with no SIP.
+
+So sipnab reads its own encrypted output back. This `sipnab.toml` writes the
+two INVITE dialogs of the sample capture encrypted and gzip compressed, as
+[Encrypt what a rule writes](#encrypt-what-a-rule-writes) describes.
+`recipient.key` is the private key of `recipient.crt`, mode `0600`:
+
+```toml
+[[vcon.rule]]
+name = "sealed"
+when = "method == \"INVITE\""
+dir = "sealed"
+encrypt_to = "recipient.crt"
+sign_key = "signer.key"
+sign_cert = "signer-chain.pem"
+compress = "gzip"
+```
+
+```sh
+# Run all of these, in order.
+sipnab -N -I sip-rtp-g711.pcap --config sipnab.toml --no-cli-print --quiet
+sipnab -N -I sealed --vcon-key recipient.key --json-dialogs --no-cli-print --quiet | jq -c '{call_id, msg_count, input_origin}'
+```
+
+```text
+[[vcon.rule]] 'sealed': Wrote 2 vCon container(s) to 'sealed'.
+{"call_id":"1-1966@10.0.2.20","msg_count":6,"input_origin":"vcon"}
+{"call_id":"1-1968@10.0.2.20","msg_count":4,"input_origin":"vcon"}
+```
+
+Without `--vcon-key`, a container named with `-I` stops the run with exit 1:
+
+```text
+cannot open the vCon container: the container is encrypted (draft-ietf-vcon-vcon-core-04 section 5.3), and no decryption key was given: give --vcon-key, or [vcon_input] key in the config file
+```
+
+A gzip format vCon reads like any other:
+
+```sh
+# Run all of these, in order.
+gzip -k call.vcon.json
+sipnab -N -I call.vcon.json.gz --json-dialogs --no-cli-print --quiet | jq -c '{call_id, msg_count}'
+```
+
+```text
+{"call_id":"1-1966@10.0.2.20","msg_count":6}
+```
+
+The `rebuilt_from_vcon` finding names each layer sipnab opened, and who signed it:
+
+```text
+Opened from: encrypted form, decrypted; signed form, verified, signer SHA-256 4A:27:CF:...
+```
+
+Two settings check who signed it, as the fetcher's do
+([Check who signed it](#check-who-signed-it)):
+
+- `--vcon-signer-ca <FILE|system>` (`[vcon_input] signer_ca`): the signing
+  certificate must chain to a CA in the file, every certificate within its
+  validity period.
+- `--vcon-signer-sha256 <HEX>` (`[vcon_input] signer_sha256`): the signing
+  certificate must have this fingerprint.
+- With either set, sipnab refuses an unsigned container: it has no signer to
+  check.
+
+The MCP and REST readers:
+
+- `analyze_vcon` takes a signed or encrypted container as `container`, and
+  any form, the gzip format included, as `container_base64`.
+- `POST /v1/vcon/analyze` and `POST /v1/vcon/validate` take a JSON body with
+  `Content-Type: application/json`, `application/vcon` or
+  `application/vcon+json`, and a gzip format body with
+  `Content-Type: application/vcon+gzip`.
+- `validate_vcon` and `POST /v1/vcon/validate` validate the unsigned vCon
+  inside.
+- A container that does not open is a `verdict: unreadable` answer from the
+  analyze tool and route. The validate tool and route refuse it; the route
+  answers `422`.
+- They read with the server's `--vcon-key`, `--vcon-signer-ca` and
+  `--vcon-signer-sha256`.
 
 ### A container listing an extension sipnab does not support is not read
 

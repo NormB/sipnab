@@ -4242,6 +4242,64 @@ fn fetcher_settings_problem(
     }
 }
 
+/// The keys the vCon readers open containers with: each flag, else its
+/// `[vcon_input]` key. Reads no file.
+///
+/// # Errors
+///
+/// A fingerprint that does not parse, with the origin of the setting that
+/// gave it.
+#[cfg(feature = "vcon")]
+pub fn reader_keys(
+    cli: &Cli,
+    config: &Config,
+) -> Result<crate::capture::vcon_input::ReaderKeys, (crate::settings::Origin, String)> {
+    use crate::app::vcon_fetch::{AuthSource, signer_ca};
+    use crate::settings::Origin;
+    let flags = &cli.capture_args;
+    let keys = &config.vcon_input;
+    let key = match (&flags.vcon_key, &keys.key) {
+        (Some(path), _) => Some(AuthSource {
+            path: path.clone(),
+            from: "--vcon-key",
+            origin: Origin::CommandLine,
+        }),
+        (None, Some(path)) => Some(AuthSource {
+            path: path.clone(),
+            from: "[vcon_input] key",
+            origin: Origin::ConfigFile,
+        }),
+        (None, None) => None,
+    };
+    let signer_ca = match (&flags.vcon_signer_ca, &keys.signer_ca) {
+        (Some(path), _) => Some(signer_ca(path, "--vcon-signer-ca", Origin::CommandLine)),
+        (None, Some(path)) => Some(signer_ca(
+            path,
+            "[vcon_input] signer_ca",
+            Origin::ConfigFile,
+        )),
+        (None, None) => None,
+    };
+    let signer_sha256 = match (&flags.vcon_signer_sha256, &keys.signer_sha256) {
+        (Some(text), _) => Some(
+            crate::config::parse_sha256_fingerprint(text)
+                .map_err(|e| (Origin::CommandLine, format!("--vcon-signer-sha256: {e}")))?,
+        ),
+        (None, Some(text)) => Some(crate::config::parse_sha256_fingerprint(text).map_err(|e| {
+            (
+                Origin::ConfigFile,
+                format!("[vcon_input] signer_sha256: {e}"),
+            )
+        })?),
+        (None, None) => None,
+    };
+    Ok(crate::capture::vcon_input::ReaderKeys {
+        key,
+        signer_ca,
+        signer_sha256,
+    })
+}
+
 /// Why a `--vcon-forward` run's settings cannot be used, or `None` (also
 /// when this is not a forwarder run). Feature-swapped: without the `vcon`
 /// feature [`run_vcon_forward`] refuses the run before the config is applied.
@@ -4396,6 +4454,14 @@ pub fn apply_config(cli: &Cli, loaded: LoadedConfig) -> Result<LoadedConfig, Pla
         });
     }
 
+    // [vcon_input] signer_sha256, by the rule --vcon-signer-sha256 follows.
+    if let Err(e) = loaded.config.vcon_input.validate() {
+        return Err(PlanError {
+            exit_code: 1,
+            message: e.to_string(),
+        });
+    }
+
     // [names] carries dns_cache_entries, which --dns-cache-entries refuses at
     // 0; the file must too, and until now [names] was the one section with no
     // validator wired in here at all.
@@ -4457,6 +4523,14 @@ pub fn apply_config(cli: &Cli, loaded: LoadedConfig) -> Result<LoadedConfig, Pla
     // The fetcher's settings, by the fetcher's own resolver, the same way.
     if let Some((origin, problem)) = fetcher_settings_problem(cli, &loaded.config) {
         return Err(PlanError::refused(origin, problem));
+    }
+
+    // How every vCon reader in this process opens a signed or encrypted
+    // container. The files are read when the first container is.
+    #[cfg(feature = "vcon")]
+    match reader_keys(cli, &loaded.config) {
+        Ok(keys) => crate::capture::vcon_input::set_reader_keys(keys),
+        Err((origin, problem)) => return Err(PlanError::refused(origin, problem)),
     }
 
     // Apply configurable security limits from the [limits] section.

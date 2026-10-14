@@ -1409,7 +1409,14 @@ fn wiki_intra_docs_links_resolve() -> Result<(), TestError> {
     // docs/config-reference.md +1 (the `audio_format` row links "Audio as Ogg
     // Opus"), docs/vcon.md +2 (the rule table's `audio_format` row and the
     // inline-budget bullet link the same section).
-    const EXPECTED_WIKI_LINKS: usize = 1749;
+    // 1749 -> 1754 for the vCon readers' signed, encrypted and gzip forms,
+    // attributed per file: docs/vcon.md +3 (the new section links "Encrypt
+    // what a rule writes" and "Check who signed it", and "Decrypt one" links
+    // the new section), docs/cli-reference.md +1 (the `--vcon-key` row),
+    // docs/config-reference.md +1 (the `[vcon_input]` section), and
+    // 1754 -> 1756: docs/mcp-tools-vcon.md +1 (`analyze_vcon` links the
+    // section) and docs/rest-api.md +1 (`POST /v1/vcon/validate` links it).
+    const EXPECTED_WIKI_LINKS: usize = 1756;
     // Raised 459 -> 460 when SRC1 stage 1 shipped: docs/cli-reference.md's
     // `--hep-listen` row now points at cookbook recipe "Take signaling from HEP and media off the wire, in one process" in docs/examples.md
     // rather than restating how to pair `-L` with `-d`. Attributed per file
