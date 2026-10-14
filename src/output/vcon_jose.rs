@@ -1086,8 +1086,11 @@ pub fn concat_kdf(z: &[u8], alg: &str, apu: &[u8], apv: &[u8], len: usize) -> Ve
 }
 
 /// The default initial value of AES key wrap
-/// ([RFC 3394 section 2.2.3.1](https://www.rfc-editor.org/rfc/rfc3394.html#section-2.2.3.1)).
-const KEY_WRAP_IV: [u8; 8] = [0xA6; 8];
+/// ([RFC 3394 section 2.2.3.1](https://www.rfc-editor.org/rfc/rfc3394.html#section-2.2.3.1)):
+/// the starting value of the integrity check register `A`, which unwrapping
+/// must reproduce. A public constant every implementation shares, not key
+/// material.
+const RFC3394_DEFAULT_A: [u8; 8] = [0xA6; 8];
 
 /// AES-256 key wrap ([RFC 3394 section 2.2.1](https://www.rfc-editor.org/rfc/rfc3394.html#section-2.2.1))
 /// of `key`, a whole number of 64-bit blocks, at least two, under `kek`.
@@ -1101,7 +1104,7 @@ pub fn aes_key_wrap(kek: &[u8; 32], key: &[u8]) -> Result<Vec<u8>, String> {
         return Err("AES key wrap takes a whole number of at least two 64-bit blocks".into());
     }
     let cipher = aes::Aes256::new_from_slice(kek).map_err(|e| format!("AES-256 key: {e}"))?;
-    let mut check = KEY_WRAP_IV;
+    let mut check = RFC3394_DEFAULT_A;
     let mut blocks: Vec<[u8; 8]> = key.as_chunks::<8>().0.to_vec();
     let count = blocks.len() as u64;
     for round in 0..6u64 {
@@ -1159,7 +1162,7 @@ pub fn aes_key_unwrap(kek: &[u8; 32], wrapped: &[u8]) -> Result<Vec<u8>, String>
             block.copy_from_slice(&buffer[8..]);
         }
     }
-    if check != KEY_WRAP_IV {
+    if check != RFC3394_DEFAULT_A {
         return Err("the wrapped key's integrity check fails".into());
     }
     Ok(blocks.concat())

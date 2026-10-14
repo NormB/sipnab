@@ -1449,10 +1449,15 @@ impl crate::output::redact::Redact for Vcon {
         // `add_sip_message_attachments`.
         attachments.retain(|a| !is_wire_attachment(a));
         for attachment in attachments.iter_mut() {
-            attachment.redact(r);
+            // Dropped before the rest is redacted, so the sweep records no
+            // token for a body the container will not hold: a redaction map
+            // entry whose original survives elsewhere (the `sdp` field keeps
+            // the `o=` session id) would claim a replacement that never
+            // happened.
             if attachment.purpose == MESSAGE_TRACE_PURPOSE {
                 drop_trace_bodies(&mut attachment.body);
             }
+            attachment.redact(r);
             // The numbers come out of the PASSporT, which redaction deletes
             // from the party for the reason given there; they go with it.
             if attachment.purpose == STIR_REPORT_PURPOSE
