@@ -288,6 +288,10 @@ pub struct FormattedMessage {
     /// media bar or a captured stream's row. Enter on it drills down to the
     /// call's streams.
     pub is_rtp_bar: bool,
+    /// Shorter forms of `label`, longest first, for a gap too narrow for it:
+    /// the renderer draws the first that fits whole, or the bare arrow.
+    /// Empty for every row except a captured stream's.
+    pub label_fallbacks: Vec<String>,
     /// Whether this row is one captured RTP stream, drawn as an arrow from
     /// `src_col` to `dst_col` (#495). Always paired with `is_rtp_bar`.
     pub is_rtp_stream: bool,

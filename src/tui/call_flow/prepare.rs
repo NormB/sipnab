@@ -240,6 +240,10 @@ pub struct LayoutRow {
     /// by marking the exact messages a finding was drawn from rather than
     /// asserting the finding somewhere else and leaving the reader to locate them.
     pub diagnosis_note: Option<String>,
+    /// Shorter forms of `label`, longest first, for a gap too narrow for it
+    /// (see `stream_labels`). Empty for every row except a captured
+    /// stream's.
+    pub label_fallbacks: Vec<String>,
     /// The stream a captured RTP stream's row draws (`None` for every
     /// other row): Enter on the row opens this stream.
     pub stream_key: Option<crate::rtp::stream::StreamKey>,
@@ -354,6 +358,7 @@ pub fn layout(
             timestamp,
             ts_class,
             label: format_message_label(msg),
+            label_fallbacks: Vec::new(),
             kind: message_kind(msg),
             src_col: column_of(&endpoints, (msg.src_addr, msg.src_port), 0),
             dst_col: column_of(
@@ -383,6 +388,7 @@ pub fn layout(
                 timestamp: rtp_timestamp,
                 ts_class: rtp_ts_class,
                 label: rtp_label,
+                label_fallbacks: Vec::new(),
                 kind: RowKind::RtpBar,
                 src_col: 0,
                 dst_col: 0,
@@ -513,23 +519,34 @@ fn is_one_way(s: &RtpFlowStream, all: &[&RtpFlowStream]) -> bool {
         .any(|o| o.key.src == s.key.dst && o.key.dst == s.key.src)
 }
 
-/// A stream row's label, modeled on sngrep's `RTP (g711u) 1234`: the codec
-/// (or the payload type when no codec is known), `one-way` when the stream
-/// has no reverse, the packet count, and the source and destination ports.
-/// The one-way mark comes before the count so that a label truncated to fit
-/// a narrow gap loses the count and the ports first.
-fn stream_label(s: &RtpFlowStream, one_way: bool) -> String {
+/// A stream row's label and its shorter forms, longest first.
+///
+/// The full label is modeled on sngrep's `RTP (g711u) 1234`: the codec (or
+/// the payload type when no codec is known), `one-way` when the stream has
+/// no reverse, the packet count, and the source and destination ports.
+///
+/// The renderer draws the first form that fits the gap whole, so a narrow
+/// gap drops whole fields in this order: the ports, the count, the codec,
+/// then `one-way`. No form holds part of a field: a port cut from `55068` to
+/// `5506` reads as another port.
+fn stream_labels(s: &RtpFlowStream, one_way: bool) -> (String, Vec<String>) {
     let codec = s
         .codec
         .clone()
         .unwrap_or_else(|| format!("PT {}", s.payload_type));
     let mark = if one_way { " one-way" } else { "" };
-    format!(
-        "RTP ({codec}){mark} {} {}\u{2192}{}",
-        s.packet_count,
+    let no_ports = format!("RTP ({codec}){mark} {}", s.packet_count);
+    let full = format!(
+        "{no_ports} {}\u{2192}{}",
         s.key.src.port(),
         s.key.dst.port()
-    )
+    );
+    let mut fallbacks = vec![no_ports, format!("RTP ({codec}){mark}")];
+    if one_way {
+        fallbacks.push("RTP one-way".to_string());
+    }
+    fallbacks.push("RTP".to_string());
+    (full, fallbacks)
 }
 
 /// The ladder row of stream `s`: an arrow from its sender's column to its
@@ -542,10 +559,12 @@ fn stream_row(
     clock: &mut LadderClock,
 ) -> LayoutRow {
     let (timestamp, ts_class) = clock.stamp(s.first_seen, TsClass::Accent);
+    let (label, label_fallbacks) = stream_labels(s, is_one_way(s, all));
     LayoutRow {
         timestamp,
         ts_class,
-        label: stream_label(s, is_one_way(s, all)),
+        label,
+        label_fallbacks,
         kind: RowKind::RtpStream,
         src_col: media_column(endpoints, s.key.src.ip()),
         dst_col: media_column(endpoints, s.key.dst.ip()),
@@ -974,6 +993,7 @@ fn spacer_row(si: usize, delta_ms: u64, prev_ts_raw: chrono::DateTime<chrono::Ut
         timestamp: spacer_ts,
         ts_class: TsClass::SpacerDim,
         label: String::new(),
+        label_fallbacks: Vec::new(),
         kind: RowKind::Spacer,
         src_col: 0,
         dst_col: 0,
@@ -1039,6 +1059,7 @@ pub fn style(rows: &[LayoutRow], opts: &StyleOptions<'_>) -> Vec<FormattedMessag
                 timestamp: row.timestamp.clone(),
                 timestamp_style,
                 label: row.label.clone(),
+                label_fallbacks: row.label_fallbacks.clone(),
                 style,
                 src_col: row.src_col,
                 dst_col: row.dst_col,
@@ -3185,6 +3206,40 @@ mod tests {
         assert!(
             prepared.iter().all(|m| !m.label.contains("one-way")),
             "a paired call shows no mark"
+        );
+        Ok(())
+    }
+
+    /// A stream row's shorter labels drop whole fields: the ports, then the
+    /// count, then the codec; `one-way` goes last of all.
+    #[test]
+    fn stream_label_fallbacks_drop_ports_then_count() -> Result<(), TestError> {
+        let theme = Theme::default();
+        let streams = vec![flow_stream(
+            (addr_b(), 55068),
+            (addr_a(), 8014),
+            Some("PCMU"),
+            t0() + TimeDelta::seconds(2),
+            187,
+        )];
+        let mut o = opts(&theme);
+        o.show_rtp = true;
+        o.rtp_streams = &streams;
+        let (_p, prepared) =
+            prepare_messages(&answered_call("fb")?, t0(), None, &o, &HashSet::new());
+        let row = prepared
+            .iter()
+            .find(|m| m.is_rtp_stream)
+            .ok_or("stream row")?;
+        assert_eq!(row.label, "RTP (PCMU) one-way 187 55068\u{2192}8014");
+        assert_eq!(
+            row.label_fallbacks,
+            vec![
+                "RTP (PCMU) one-way 187".to_string(),
+                "RTP (PCMU) one-way".to_string(),
+                "RTP one-way".to_string(),
+                "RTP".to_string(),
+            ]
         );
         Ok(())
     }

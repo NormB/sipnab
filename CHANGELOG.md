@@ -234,6 +234,8 @@ entry that carries them.
     - The label reads like `RTP (PCMA) 250 6000→33912`: codec, packet count,
       source and destination port.
     - The packet count follows the capture while it runs.
+    - In a narrow gap the label drops whole fields, the ports first and then
+      the count. It never shows part of a number.
   - A stream with no reverse stream (the same two sockets, swapped) is marked
     `one-way`.
   - A media address no SIP message uses gets its own column, labeled with the

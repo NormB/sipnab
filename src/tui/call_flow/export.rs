@@ -220,6 +220,7 @@ mod tests {
             is_retransmission: false,
             is_rtp_bar: false,
             is_rtp_stream: false,
+            label_fallbacks: Vec::new(),
             raw_index: None,
             diagnosis_note: None,
         }

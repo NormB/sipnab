@@ -218,8 +218,10 @@ ladder.
     whatever the port.
 - The extended view (`x`) draws the streams of every leg it shows. A
   multi-selection flow draws the streams of every call it merges.
-- sipnab cuts a label longer than the gap between its two columns from the
-  end. `-` widens the ladder, and `R` hides the detail pane.
+- In a gap too narrow for the whole label, sipnab drops whole fields.
+  - The ports go first, then the count, then the codec. `one-way` goes last.
+  - sipnab never draws part of a number, and the arrowhead always shows.
+  - `-` widens the ladder, and `R` hides the detail pane.
 - `Enter` on a stream's row opens that stream's **Stream Detail**.
 - With the ladder narrowed to one transaction (`f`), sipnab draws no stream
   rows.
