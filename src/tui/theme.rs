@@ -157,6 +157,10 @@ pub struct Keymap {
     pub clear_calls: KeyCode,
     /// Open the column selector (default F10).
     pub column_selector: KeyCode,
+    /// Switch status line 3 between the summary and the full expression of
+    /// the F7 dialog's filter (default `F`). Answered in every view, ahead of
+    /// the view's own keys.
+    pub filter_detail: KeyCode,
 }
 
 impl Default for Keymap {
@@ -174,6 +178,7 @@ impl Default for Keymap {
             extended_flow: KeyCode::F(4),
             clear_calls: KeyCode::F(5),
             column_selector: KeyCode::F(10),
+            filter_detail: KeyCode::Char('F'),
         }
     }
 }
@@ -193,11 +198,12 @@ impl Keymap {
         apply_key(&mut km.extended_flow, &config.extended_flow);
         apply_key(&mut km.clear_calls, &config.clear_calls);
         apply_key(&mut km.column_selector, &config.column_selector);
+        apply_key(&mut km.filter_detail, &config.filter_detail);
         km
     }
 
     /// `(name, key)` pairs for every rebindable action.
-    fn fields(&self) -> [(&'static str, KeyCode); 11] {
+    fn fields(&self) -> [(&'static str, KeyCode); 12] {
         [
             ("quit", self.quit),
             ("help", self.help),
@@ -210,6 +216,7 @@ impl Keymap {
             ("extended_flow", self.extended_flow),
             ("clear_calls", self.clear_calls),
             ("column_selector", self.column_selector),
+            ("filter_detail", self.filter_detail),
         ]
     }
 
@@ -228,6 +235,7 @@ impl Keymap {
             "extended_flow" => self.extended_flow = code,
             "clear_calls" => self.clear_calls = code,
             "column_selector" => self.column_selector = code,
+            "filter_detail" => self.filter_detail = code,
             // gate: unreachable because every caller iterates `Self::fields`,
             // and `set_field_accepts_every_name_fields_produces` holds the
             // two lists together.
@@ -328,6 +336,21 @@ impl Keymap {
                     ));
                     break;
                 }
+            }
+        }
+
+        // The filter-detail key is answered before any view sees the key
+        // (`controllers::handle_key_event`), so a view key it lands on can no
+        // longer fire in that view.
+        let detail = KeyEvent::new(self.filter_detail, KeyModifiers::NONE);
+        for (view, mapper) in mappers {
+            if mapper(self, detail).is_some() {
+                out.push(format!(
+                    "keybinding 'filter_detail' = {} takes that key from the {view} \
+                     view, where its own action will never fire",
+                    key_label(self.filter_detail)
+                ));
+                break;
             }
         }
         out
@@ -498,6 +521,60 @@ mod keymap_collision_tests {
             collisions.is_empty(),
             "save='z' is a clean rebind: {collisions:?}"
         );
+    }
+
+    /// The filter-detail key is `F` by default, a letter no view uses.
+    #[test]
+    fn the_filter_detail_key_defaults_to_shift_f() {
+        assert_eq!(Keymap::default().filter_detail, KeyCode::Char('F'));
+    }
+
+    /// `[keybindings] filter_detail` rebinds the key.
+    #[test]
+    fn the_filter_detail_key_is_rebound_from_config() {
+        let config = KeybindingsConfig {
+            filter_detail: Some("W".to_string()),
+            ..Default::default()
+        };
+        assert_eq!(
+            Keymap::from_config(&config).filter_detail,
+            KeyCode::Char('W')
+        );
+    }
+
+    /// The filter-detail key is answered before any view sees the key, so
+    /// binding it to a view's own key takes that key from the view. The
+    /// warning says so and names the view.
+    #[test]
+    fn a_filter_detail_key_that_takes_a_view_key_is_reported() {
+        // 'r' opens the raw message in the call list.
+        let km = Keymap {
+            filter_detail: KeyCode::Char('r'),
+            ..Default::default()
+        };
+        let collisions = km.collisions();
+        assert!(
+            collisions
+                .iter()
+                .any(|c| c.contains("'filter_detail' = 'r'") && c.contains("call list")),
+            "expected a warning that filter_detail takes 'r', got: {collisions:?}"
+        );
+        // One warning names the first view; several views using the key do
+        // not repeat it.
+        assert_eq!(
+            collisions
+                .iter()
+                .filter(|c| c.contains("'filter_detail'"))
+                .count(),
+            1,
+            "{collisions:?}"
+        );
+        // 'W' is used by no view: nothing to report.
+        let free = Keymap {
+            filter_detail: KeyCode::Char('W'),
+            ..Default::default()
+        };
+        assert!(free.collisions().is_empty(), "{:?}", free.collisions());
     }
 
     /// The wrap toggle is a call-flow built-in: rebinding onto 'w' must

@@ -947,6 +947,10 @@ fn linked_symbols_resolve_to_a_definition() -> Result<(), TestError> {
     // Raised 87 -> 88 by that same `tel_uri()` citation — the only symbol the
     // developer docs gained. Attributed per file: `internals/vcon.md` +1, every
     // other developer page unchanged.
+    // Unchanged at 88 when `internals/vcon.md` stopped citing `json_text()`,
+    // which no longer exists because a `json` body is now the JSON value
+    // itself, and cited `answer_body()` in `src/app/vcon_enrich.rs` in the
+    // same paragraph instead. One symbol claim out, one in, same page.
     const EXPECTED_SYMBOL_CLAIMS: usize = 88;
     // A definition boundary, not a substring. `source.contains("fn run_offline_paral")`
     // was satisfied by `fn run_offline_parallel`, so a doc could name a function

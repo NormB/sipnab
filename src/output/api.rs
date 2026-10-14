@@ -3817,7 +3817,8 @@ async fn get_lint(
 /// # Returns
 ///
 /// 200 with the verdict and any findings; 400 when the body is not a JSON
-/// object; 401/503 from the guard.
+/// object; 422 when its `critical` lists an extension sipnab does not
+/// support; 401/503 from the guard.
 ///
 /// # Side effects
 ///
@@ -3834,6 +3835,7 @@ async fn get_lint(
     responses(
         (status = 200, description = "The verdict and any findings.", body = schema::VconValidation),
         (status = 400, description = "The body is not a JSON object.", body = schema::ProblemJson, content_type = "application/problem+json"),
+        (status = 422, description = "The container's `critical` lists an extension sipnab does not support; draft-ietf-vcon-vcon-core-04 section 4.1.4 forbids operating on it. The detail names each one.", body = schema::ProblemJson, content_type = "application/problem+json"),
         (status = 401, description = "No bearer credential, or one this server does not accept.", body = schema::ProblemJson, content_type = "application/problem+json"),
         (status = 413, description = "The body is over the 1 MiB request limit.", body = schema::ProblemJson, content_type = "application/problem+json"),
         (status = 503, description = "Over the per-source-IP rate limit of 100 requests per second.", body = schema::ProblemJson, content_type = "application/problem+json"),
@@ -3853,6 +3855,13 @@ async fn post_vcon_validate(
             StatusCode::BAD_REQUEST,
             "a vCon container is a JSON object; pass the container itself, not a \
              string or array holding it",
+        ));
+    }
+
+    if let Some(why) = crate::capture::vcon_input::critical_refusal(&container) {
+        return Err(Problem::detailed(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            format!("sipnab must not validate this vCon container: {why}"),
         ));
     }
 
@@ -3904,7 +3913,7 @@ async fn post_vcon_validate(
     path = "/v1/vcon/analyze",
     tag = "operations",
     summary = "Analyze a stored vCon container",
-    description = "Rebuild the SIP messages a stored vCon container holds and analyze them, apart from this server's capture: per dialog the `--json-dialogs` object, the signaling diagnosis and the message ladder, plus the capture analysis, whose first finding is `rebuilt_from_vcon`.\n\nReads a `sip-message-trace` attachment (sipnab's, and the draft-howe-vcon-sip-signaling trace form) and `message/sip` attachments. `not_recomputed` lists what a container cannot reproduce: no RTP is stored, so no media statistic is computed, and `stored_media_quality` carries the producer's own numbers verbatim. `schema_findings` lists where the container fails the vendored draft-ietf-vcon-vcon-core-04 schema, without stopping the analysis: a container a store reshaped is still read. A container with no SIP sipnab can read answers `verdict: unreadable` with the reason. The MCP `analyze_vcon` tool runs the same `vcon_analysis::analyze_container`.",
+    description = "Rebuild the SIP messages a stored vCon container holds and analyze them, apart from this server's capture: per dialog the `--json-dialogs` object, the signaling diagnosis and the message ladder, plus the capture analysis, whose first finding is `rebuilt_from_vcon`.\n\nReads a `sip-message-trace` attachment (sipnab's, and the draft-howe-vcon-sip-signaling trace form) and `message/sip` attachments. `not_recomputed` lists what a container cannot reproduce: no RTP is stored, so no media statistic is computed, and `stored_media_quality` carries the producer's own numbers verbatim. `schema_findings` lists where the container fails the vendored draft-ietf-vcon-vcon-core-04 schema, without stopping the analysis: a container a store reshaped is still read. A container with no SIP sipnab can read, or whose `critical` lists an extension sipnab does not support, answers `verdict: unreadable` with the reason. The MCP `analyze_vcon` tool runs the same `vcon_analysis::analyze_container`.",
     params(VconAnalyzeParams),
     request_body(content = serde_json::Value, description = "The vCon container to analyze.", content_type = "application/json"),
     security(("bearer" = [])),
@@ -9777,6 +9786,33 @@ mod tests {
         Ok(())
     }
 
+    /// A container listing a critical extension sipnab does not support is a
+    /// 422 naming the extension, not a verdict.
+    ///
+    /// [Section 4.1.4 of draft-ietf-vcon-vcon-core-04](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-04#section-4.1.4):
+    /// "An implementation that does not recognize or support the extensions
+    /// listed in the critical parameter MUST NOT attempt to process or operate
+    /// on the vCon, except to reject it or report unsupported content."
+    #[cfg(feature = "vcon")]
+    #[tokio::test]
+    async fn vcon_validate_refuses_an_unsupported_critical_extension() -> Result<(), TestError> {
+        let container = serde_json::json!({
+            "vcon": "0.4.0",
+            "uuid": "01928e10-193e-8231-b9a2-279e0d16bc46",
+            "created_at": "2026-10-09T12:00:00Z",
+            "critical": ["x-redaction"],
+            "parties": [],
+        });
+        let resp = build_router(make_state())
+            .oneshot(test_post("/v1/vcon/validate", &container.to_string())?)
+            .await
+            .map_err(|e| format!("oneshot: {e:?}"))?;
+        assert_eq!(resp.status(), StatusCode::UNPROCESSABLE_ENTITY);
+        let body = body_to_string(resp.into_body()).await?;
+        assert!(body.contains("x-redaction"), "{body}");
+        Ok(())
+    }
+
     /// A body that is not JSON at all is a 400.
     #[cfg(feature = "vcon")]
     #[tokio::test]
@@ -12750,23 +12786,13 @@ mod tests {
             .iter()
             .find(|a| a["purpose"] == crate::output::vcon::COMPLETENESS_PURPOSE)
             .ok_or_else(|| format!("no completeness attachment: {parsed}"))?;
-        // §2.3.2 makes `body` a String, so both reads parse it rather than
-        // indexing a `Value` that is not an object.
-        let attachment_body: serde_json::Value = serde_json::from_str(
-            attachment["body"]
-                .as_str()
-                .ok_or("a json body is a string")?,
-        )
-        .map_err(|e| format!("the attachment body parses: {e:?}"))?;
+        // Section 2.3.2 of core-04 makes an `encoding: "json"` body the JSON
+        // value itself, so both reads index the object directly.
+        let attachment_body = &attachment["body"];
         let from_attachment = attachment_body["note"]
             .as_str()
             .ok_or_else(|| format!("attachment note is not a string: {parsed}"))?;
-        let analysis_body: serde_json::Value = serde_json::from_str(
-            parsed["analysis"][0]["body"]
-                .as_str()
-                .ok_or("a json body is a string")?,
-        )
-        .map_err(|e| format!("the analysis body parses: {e:?}"))?;
+        let analysis_body = &parsed["analysis"][0]["body"];
         let from_analysis = analysis_body["capture_completeness"]["note"]
             .as_str()
             .ok_or_else(|| format!("analysis note is not a string: {parsed}"))?;

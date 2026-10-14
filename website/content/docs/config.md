@@ -208,6 +208,7 @@ Output and TUI display settings.
 | `delta_time` | boolean | `false` | Show delta time between messages by default. `--delta-time` turns it on. `--no-delta-time` forces it off |
 | `from_to` | string | `"default"` | From/To column display: `"default"` (user else host:port), `"host-port"`, `"user"`, `"user-host-port"`. Cycle at runtime with `u`; `--from-to-mode` overrides this |
 | `mouse_capture` | boolean | `true` | Whether the TUI captures the mouse when it starts. `false` opens it with capture off, so the terminal's own drag-to-select works; `F12` toggles capture at runtime. With capture on, the mouse wheel scrolls |
+| `view_filter_detail` | string | `"summary"` | How status line 3 shows the filter the F7 dialog built. `"summary"` names each selection in a few words, such as `F7: 7 methods, From~alice`. `"full"` shows the expression. A filter typed as an expression is always shown in full. The `filter_detail` key (default `F`) toggles it at runtime. sipnab refuses any other value, naming the key |
 | `visible_columns` | array of strings | all columns | Call-list columns to show, by name (case-insensitive): `"#"`, `"Method"`, `"From"`, `"To"`, `"Source"`, `"Destination"`, `"State"`, `"Msgs"`, `"Date"`, `"PDD"`, `"Duration"`. Adjust at runtime with F10; `s` in the column selector writes the layout into the config file this run loaded (or the user config file (`$XDG_CONFIG_HOME/sipnab/sipnab.toml`, by default `~/.config/sipnab/sipnab.toml`) when none was), so it persists across sessions. sipnab refuses that save when the settings came from `/etc/sipnab/sipnab.toml` |
 
 ```toml
@@ -216,6 +217,7 @@ color = "always"
 payload_limit = 4096
 delta_time = true
 from_to = "user-host-port"
+view_filter_detail = "full"
 visible_columns = ["method", "from", "to", "source", "destination", "state", "msgs", "pdd"]
 ```
 
@@ -272,12 +274,18 @@ naming the entry, when:
 
 ### [vcon]
 
-vCon export settings, each an array of tables that you write once per entry.
+vCon export settings: the export rules and enrichment services, each an
+array of tables that you write once per entry, and the sealing keys every
+rule inherits when it does not set its own.
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
 | `rule` | array of tables | `[]` | Export rules, each `[[vcon.rule]]`. See [the export rule keys](#vcon-rule) |
 | `enrich` | array of tables | `[]` | Enrichment services, each `[[vcon.enrich]]`. See [the enrichment keys](#vcon-enrich) |
+| `encrypt_to` | string | -- | The `encrypt_to` of every `[[vcon.rule]]` that sets none: with it, every rule encrypts. A rule's own value overrides it |
+| `sign_key` | string | -- | The `sign_key` of every encrypting `[[vcon.rule]]` that sets none. A rule's own value overrides it |
+| `sign_cert` | string | -- | The `sign_cert` of every encrypting `[[vcon.rule]]` that sets none. A rule's own value overrides it |
+| `compress` | string | `none` | The `compress` of every encrypting `[[vcon.rule]]` that sets none: `none` or `gzip`. A rule's own value overrides it |
 
 ### [[vcon.rule]]
 
@@ -301,6 +309,8 @@ and what they carry.
 | `encrypt_to` | string | -- | A PEM certificate whose RSA key the rule encrypts its containers to. Set, the rule writes only the encrypted form of draft-ietf-vcon-vcon-core-04 section 5.3. Needs `sign_key` and `sign_cert`. See [Encrypt what a rule writes](@/docs/vcon.md#encrypt-what-a-rule-writes) |
 | `sign_key` | string | -- | The PEM RSA private key an encrypting rule signs with, readable by its owner only |
 | `sign_cert` | string | -- | The PEM certificate chain of `sign_key`, leaf first, carried in each signature's `x5c` |
+| `compress` | string | `none` | For an encrypting rule: `gzip` signs the gzip ([RFC 1952](https://www.rfc-editor.org/rfc/rfc1952.html)) of the vCon instead of the vCon, as draft-ietf-vcon-vcon-core-04 section 5.2 allows, and the encrypted form names `cty: "application/vcon+gzip"`; `none` signs the vCon as it is. Refused on a rule without `encrypt_to`. See [Encrypt what a rule writes](@/docs/vcon.md#encrypt-what-a-rule-writes) |
+| `sealed_updates` | string | `new-uuid` | What an encrypting rule writes when a call it already wrote changes. `new-uuid`: a new instance with a new uuid whose `amended` names the prior one (draft-ietf-vcon-vcon-core-04 section 4.1.9). `same-uuid`: rewrite the file under the same uuid, with a startup warning. `final-only`: write once, when the call ends. sipnab refuses any other value at startup. No effect without `encrypt_to`. See [When an encrypted call changes](@/docs/vcon.md#when-an-encrypted-call-changes) |
 | `grouping` | string | `leg` | `leg`: one container per dialog, each naming the call's other legs. `call`: one container per call, holding every leg the rule selects and the ties between them. See [Calls through a PBX or a B2BUA](@/docs/vcon.md#calls-through-a-pbx-or-a-b2bua) |
 
 ```toml
@@ -996,6 +1006,7 @@ The vCon forwarder's settings (`sipnab --vcon-forward <SPOOL_DIR>`, see
 | `replace_url` | string | -- | URL template the forwarder PUTs a container to when the POST answers `409`, with `{uuid}` replaced by the container's `uuid`. Checked when the forwarder starts. A template refused from this key exits `1`; from `--vcon-forward-replace-url`, `2`. `--vcon-forward-replace-url` overrides it |
 | `auth_file` | path | -- | File holding the credential: one `Header-Name: value` line, or the bare key with a `kind` other than `generic`. Refused when other users can read it, and beside `--vcon-forward-auth` or `SIPNAB_VCON_FORWARD_AUTH`. A file sipnab cannot read, or one that holds no credential, stops the forwarder with exit 1, as any refused key does. `--vcon-forward-auth-file` overrides it |
 | `ca` | path | host bundle | The only CA (PEM) trusted for an `https://` store. `--vcon-forward-ca` overrides it |
+| `extra_ca` | path | -- | A CA (PEM) trusted for an `https://` store in addition to the host's CA bundle. Refused beside `ca`. `--vcon-forward-ca` and `--vcon-forward-extra-ca` each replace both keys |
 | `done` | path | `<SPOOL_DIR>/delivered` | Where a delivered container goes. Must be on the spool's file system. `--vcon-forward-done` overrides it |
 | `failed` | path | `<SPOOL_DIR>/failed` | Where a refused container goes, beside `<name>.error.json`. Must be on the spool's file system. `--vcon-forward-failed` overrides it |
 | `interval` | integer | `5` | Seconds between passes over the spool, 1 to 3600. `--vcon-forward-interval` overrides it |
@@ -1033,7 +1044,10 @@ The vCon fetcher's settings (`sipnab --vcon-fetch <UUID>...`, see
 | `url` | string | -- | The store's base URL, or, for the `generic` kind, a URL template holding `{uuid}`. Checked when the fetcher starts, by the rule `--vcon-fetch-url` follows. A URL refused from this key exits `1`; the same URL from `--vcon-fetch-url` exits `2`. `--vcon-fetch-url` overrides it |
 | `auth_file` | path | -- | File holding the credential: one `Header-Name: value` line, or the bare key with a `kind` other than `generic`. Refused when other users can read it. A file sipnab cannot read, or one that holds no credential, stops the fetcher with exit 1, as any refused key does. `--vcon-fetch-auth-file` overrides it |
 | `ca` | path | host bundle | The only CA (PEM) trusted for an `https://` store. `--vcon-fetch-ca` overrides it |
+| `extra_ca` | path | -- | A CA (PEM) trusted for an `https://` store in addition to the host's CA bundle. Refused beside `ca`. `--vcon-fetch-ca` and `--vcon-fetch-extra-ca` each replace both keys |
 | `decrypt_key` | path | -- | The RSA private key (PEM, readable by its owner only) that decrypts an encrypted container. `--vcon-fetch-decrypt-key` overrides it |
+| `signer_ca` | path | -- | The CA (PEM) a decrypted container's signing certificate must chain to, through the intermediates in its `x5c`, every certificate within its validity period; `system` for the host's CA bundle. Needs `decrypt_key`. `--vcon-fetch-signer-ca` overrides it |
+| `signer_sha256` | string | -- | The SHA-256 fingerprint the signing certificate of a decrypted container must have: 64 hex digits, plain or colon-separated, either case. Needs `decrypt_key`. `--vcon-fetch-signer-sha256` overrides it |
 | `timeout` | integer | `30` | Seconds to wait to connect, and for each read and write, 1 to 600. `--vcon-fetch-timeout` overrides it |
 | `max_size` | integer | `67108864` | The largest answer read for one container, in bytes, 1 to 4294967295. `--vcon-fetch-max-size` overrides it |
 | `max_response_head` | integer | `65536` | The most bytes of a store's status line and headers read, 1 to 4294967295. `--vcon-fetch-max-response-head` overrides it |
@@ -1158,7 +1172,7 @@ border = "#444466"
 
 ### [keybindings]
 
-TUI key binding overrides. The 11 configurable actions appear below. Unset fields use built-in defaults.
+TUI key binding overrides. The 12 configurable actions appear below. Unset fields use built-in defaults.
 
 Accepted key formats:
 
@@ -1179,6 +1193,7 @@ Accepted key formats:
 | `extended_flow` | string | `"F4"` | Toggle extended multi-leg flow |
 | `clear_calls` | string | `"F5"` | Clear all calls |
 | `column_selector` | string | `"F10"` | Open column selector |
+| `filter_detail` | string | `"F"` | Show the filter the F7 dialog built as a summary or in full on status line 3. Works in every view, ahead of the view's own keys; sipnab warns at startup when it takes a key a view uses |
 
 See [keybindings.md](@/docs/keybindings.md) for the full shortcut reference, including the keys that are not remappable.
 
@@ -1195,6 +1210,7 @@ autoscroll = "A"
 extended_flow = "F4"
 clear_calls = "F5"
 column_selector = "F10"
+filter_detail = "F"
 ```
 
 <!-- vale sipnab.Headings = YES -->

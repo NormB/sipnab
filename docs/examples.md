@@ -2036,10 +2036,10 @@ sipnab -N -I capture.pcap --export-vcon '1-1966@10.0.2.20'   | curl -fsS -X POST
 ```
 
 Read the caveat before you trust the contents.
-Every `body` is a JSON-encoded string. That means `jq` needs a parse on the way in:
+The analysis `body` is the JSON object itself. So `jq` indexes into it directly:
 
 ```sh
-sipnab -N -I capture.pcap --export-vcon '1-1966@10.0.2.20'   | jq -r '.analysis[0].body | fromjson | .capture_completeness.note'
+sipnab -N -I capture.pcap --export-vcon '1-1966@10.0.2.20'   | jq -r '.analysis[0].body.capture_completeness.note'
 ```
 
 This needs a build carrying the non-default `vcon` feature.

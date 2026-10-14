@@ -49,7 +49,7 @@ was driving all of them.
 
 | Surface | Rows | `e2e` | `parsed` | `referenced` | `none` |
 |---|---|---|---|---|---|
-| CLI flags | 344 | 267 | 33 | 44 | 0 |
+| CLI flags | 348 | 271 | 33 | 44 | 0 |
 | HTTP routes | 46 | 46 | -- | 0 | 0 |
 | MCP tools | 74 | 74 | -- | 0 | 0 |
 
@@ -101,7 +101,7 @@ behind them.
 | `--ws-portrange` |  | `RANGE` | Capture | e2e | `tests/config_cli_defects_test.rs` |  |  |
 | `--multi-device` |  |  | Capture | parsed | `src/cli.rs` |  |  |
 | `--no-rtp` |  |  | Capture | e2e | `tests/cli_options_test.rs`, `tests/cli_test.rs` |  |  |
-| `--rtp` |  |  | Capture | referenced | `src/app/batch.rs`, `src/app/bootstrap.rs` +14 |  |  |
+| `--rtp` |  |  | Capture | referenced | `src/app/batch.rs`, `src/app/bootstrap.rs` +15 |  |  |
 | `--no-promisc` | `-p` |  | Capture | e2e | `tests/plugin_example_test.rs` |  |  |
 | `--bpf-file` |  | `FILE` | Capture | e2e | `tests/cli_flag_behavior_test.rs` |  |  |
 | `--capture-tunnels` |  |  | Capture | parsed | `src/cli.rs` |  |  |
@@ -411,6 +411,7 @@ behind them.
 | `--vcon-forward-max-response-head` |  | `BYTES` | vCon forwarder | referenced | `src/app/vcon_forward.rs`, `src/cli.rs` +1 |  |  |
 | `--vcon-forward-max-error-body` |  | `BYTES` | vCon forwarder | referenced | `src/app/vcon_forward.rs`, `src/cli.rs` +1 |  |  |
 | `--vcon-forward-ca` |  | `FILE` | vCon forwarder | e2e | `tests/vcon_forward_test.rs` |  |  |
+| `--vcon-forward-extra-ca` |  | `FILE` | vCon forwarder | e2e | `tests/vcon_forward_test.rs` |  |  |
 | `--vcon-fetch` |  | `UUID` | vCon fetcher | e2e | `tests/config_cli_flag_values_test.rs`, `tests/vcon_fetch_test.rs` |  |  |
 | `--vcon-fetch-url` |  | `URL` | vCon fetcher | e2e | `tests/config_cli_flag_values_test.rs`, `tests/doc_commands_run_test.rs` +1 |  |  |
 | `--vcon-fetch-auth-file` |  | `FILE` | vCon fetcher | e2e | `tests/config_cli_flag_values_test.rs`, `tests/vcon_fetch_test.rs` |  |  |
@@ -421,8 +422,11 @@ behind them.
 | `--vcon-fetch-max-size` |  | `BYTES` | vCon fetcher | referenced | `src/app/vcon_fetch.rs`, `src/cli.rs` +2 |  |  |
 | `--vcon-fetch-max-response-head` |  | `BYTES` | vCon fetcher | e2e | `tests/vcon_fetch_test.rs` |  |  |
 | `--vcon-fetch-ca` |  | `FILE` | vCon fetcher | e2e | `tests/vcon_fetch_test.rs` |  |  |
-| `--vcon-fetch-decrypt-key` |  | `FILE` | vCon fetcher | e2e | `tests/vcon_fetch_test.rs` |  |  |
-| `--config` | `-f` | `FILE` | Config | e2e | `tests/actions_journal_mcp_test.rs`, `tests/actions_journal_rest_test.rs` +28 |  |  |
+| `--vcon-fetch-extra-ca` |  | `FILE` | vCon fetcher | e2e | `tests/vcon_fetch_test.rs` |  |  |
+| `--vcon-fetch-decrypt-key` |  | `FILE` | vCon fetcher | e2e | `tests/config_cli_flag_values_test.rs`, `tests/vcon_fetch_test.rs` |  |  |
+| `--vcon-fetch-signer-ca` |  |  | vCon fetcher | e2e | `tests/vcon_fetch_test.rs` |  |  |
+| `--vcon-fetch-signer-sha256` |  | `HEX` | vCon fetcher | e2e | `tests/vcon_fetch_test.rs` |  |  |
+| `--config` | `-f` | `FILE` | Config | e2e | `tests/actions_journal_mcp_test.rs`, `tests/actions_journal_rest_test.rs` +29 |  |  |
 | `--no-config` | `-F` |  | Config | e2e | `tests/annotate_cli_test.rs`, `tests/call_report_siprec_test.rs` +28 |  |  |
 | `--dump-config` | `-D` |  | Config | e2e | `tests/cli_flag_behavior_test.rs`, `tests/cli_options_test.rs` +4 |  |  |
 | `--completions` |  | `SHELL` | Config | e2e | `tests/cli_help_test.rs` | **behavior** | completions_emit_scripts_for_each_shell runs the real binary for bash/zsh/fish; unknown shell exits 2 |

@@ -7001,8 +7001,12 @@ pub struct LiveVconTracker {
     /// Call-ID to the `updated_at` its container was written at.
     written: std::collections::HashMap<String, chrono::DateTime<chrono::Utc>>,
     /// Call-ID to when its container was first written: the `created_at` a
-    /// `live = true` rule keeps on every rewrite.
+    /// `live = true` rule, or a sealing rule, keeps on every rewrite.
     first_written: std::collections::HashMap<String, chrono::DateTime<chrono::Utc>>,
+    /// Call-ID (the first leg's, for a call container) to how many sealed
+    /// instances a sealing rule has written for it, which names the next
+    /// instance's uuid under `sealed_updates = "new-uuid"`.
+    sealed_instances: std::collections::HashMap<String, u32>,
     /// Set when a sweep could not write a container it owed, so the run can
     /// end non-zero instead of reporting an export that did not happen.
     failed: bool,
@@ -7036,6 +7040,8 @@ impl LiveVconTracker {
     pub fn prune(&mut self, still_held: impl Fn(&str) -> bool) {
         self.written.retain(|call_id, _| still_held(call_id));
         self.first_written.retain(|call_id, _| still_held(call_id));
+        self.sealed_instances
+            .retain(|call_id, _| still_held(call_id));
     }
 
     /// How many dialogs are tracked.
@@ -7210,6 +7216,55 @@ impl RuleGrouping {
     }
 }
 
+/// What a rule that seals its containers (`encrypt_to`) writes when a call it
+/// already wrote changes: the `[[vcon.rule]]` `sealed_updates` key.
+///
+/// [Section 4.1.9 of the core draft](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-04#section-4.1.9):
+/// "A signed or encrypted vCon cannot be modified without invalidating it.
+/// In these cases, to allow for adding of additional information a new vCon
+/// instance version MUST be created." A rule that does not seal rewrites its
+/// container in place, which the draft permits for the unsigned form, and
+/// this setting does not apply to it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum SealedUpdates {
+    /// Each later write is a new instance with its own uuid, naming the
+    /// instance before it in `amended`. The earlier files stay. The default.
+    #[default]
+    NewUuid,
+    /// Each later write replaces the file under the same uuid. Departs from
+    /// section 4.1.9 and from section 4.1.2 ("The UUID value MUST be globally
+    /// unique"); startup warns.
+    SameUuid,
+    /// Nothing is written until the call ends; then the container is sealed
+    /// once.
+    FinalOnly,
+}
+
+impl SealedUpdates {
+    /// The three names, as configuration spells them.
+    pub const NAMES: [&'static str; 3] = ["new-uuid", "same-uuid", "final-only"];
+
+    /// A `[[vcon.rule]]` `sealed_updates` value: `new-uuid`, `same-uuid`,
+    /// `final-only`, or unset, which is `new-uuid`.
+    ///
+    /// # Errors
+    ///
+    /// Any other value, as the text to report.
+    pub fn parse(value: Option<&str>) -> Result<Self, String> {
+        match value {
+            None | Some("new-uuid") => Ok(Self::NewUuid),
+            Some("same-uuid") => Ok(Self::SameUuid),
+            Some("final-only") => Ok(Self::FinalOnly),
+            Some(other) => Err(format!(
+                "sealed_updates = '{other}'; use '{}', '{}' or '{}'",
+                Self::NAMES[0],
+                Self::NAMES[1],
+                Self::NAMES[2]
+            )),
+        }
+    }
+}
+
 /// One export rule, resolved: a `[[vcon.rule]]`, or the rule
 /// `--export-vcon-when` with `--export-vcon-dir` make.
 #[derive(Debug, Clone)]
@@ -7241,6 +7296,25 @@ pub struct VconRule {
     /// What the rule signs and encrypts its containers with; `None` writes
     /// the unsigned form.
     pub sealing: Option<std::sync::Arc<crate::output::vcon_jose::Sealing>>,
+    /// What a sealing rule writes when a call it already wrote changes.
+    pub sealed_updates: SealedUpdates,
+}
+
+impl VconRule {
+    /// The startup warning this rule's `sealed_updates` calls for, if any.
+    #[must_use]
+    pub fn sealed_updates_warning(&self) -> Option<String> {
+        (self.sealing.is_some() && self.sealed_updates == SealedUpdates::SameUuid).then(|| {
+            format!(
+                "[[vcon.rule]] '{}' has sealed_updates = 'same-uuid': each change to a call \
+                 rewrites its sealed container under the same uuid. This departs from \
+                 draft-ietf-vcon-vcon-core-04 section 4.1.9 (\"a new vCon instance version \
+                 MUST be created\") and section 4.1.2 (\"The UUID value MUST be globally \
+                 unique\"); 'new-uuid' writes each change as a new instance instead",
+                self.name
+            )
+        })
+    }
 }
 
 /// How long a dialog that has not ended must have had no SIP and no RTP
@@ -7469,6 +7543,17 @@ fn live_target_sweep(
         tracker,
         now,
     );
+    let units: Vec<ContainerUnit<'_>> = units
+        .into_iter()
+        .filter(|unit| {
+            let before = unit
+                .key()
+                .and_then(|k| tracker.sealed_instances.get(k))
+                .copied()
+                .unwrap_or(0);
+            sealed_write_allowed(target, unit, before, false)
+        })
+        .collect();
     if units.is_empty() {
         return (0, selected);
     }
@@ -7490,21 +7575,25 @@ fn live_target_sweep(
             suppressed_by_deny,
             defer_enrichment: true,
             first_written: Some(&tracker.first_written),
+            sealed_instances: Some(&tracker.sealed_instances),
             now,
         },
         &units,
         None,
     );
-    if target.live {
-        for dialog in units
-            .iter()
-            .take(*outcome.as_ref().unwrap_or_else(|(n, _)| n))
-            .flat_map(ContainerUnit::legs)
-        {
+    let written = *outcome.as_ref().unwrap_or_else(|(n, _)| n);
+    if target.live || target.sealing.is_some() {
+        for dialog in units.iter().take(written).flat_map(ContainerUnit::legs) {
             tracker
                 .first_written
                 .entry(dialog.call_id.clone())
                 .or_insert(now);
+        }
+    }
+    if target.sealing.is_some() {
+        for key in units.iter().take(written).filter_map(ContainerUnit::key) {
+            let count = tracker.sealed_instances.entry(key.to_owned()).or_insert(0);
+            *count = count.saturating_add(1);
         }
     }
     (settle_live_writes(tracker, &units, dir, outcome), selected)
@@ -7757,6 +7846,9 @@ struct VconBatch<'a> {
     /// When each call's container was first written, which a `live = true`
     /// rule's rewrites keep as `created_at`.
     first_written: Option<&'a std::collections::HashMap<String, chrono::DateTime<chrono::Utc>>>,
+    /// How many sealed instances each call already has, which names the next
+    /// instance's uuid for a `sealed_updates = "new-uuid"` rule.
+    sealed_instances: Option<&'a std::collections::HashMap<String, u32>>,
     /// The moment this write happens: a live sweep's clock, so a container's
     /// `updated_at` and the tracker's record of it are one value.
     now: chrono::DateTime<chrono::Utc>,
@@ -7888,14 +7980,38 @@ fn write_vcon_containers(
             }
         };
         let mut container = container;
-        let ended = unit.legs().iter().all(|d| d.state().is_final());
+        let ended = unit.ended();
         // Only a live capture has first-write times; on an `-I` run a live
-        // rule writes what any rule writes.
-        if let (true, Some(first_written)) = (target.live, batch.first_written) {
+        // rule writes what any rule writes. A sealing rule's later instance
+        // keeps the first `created_at` too, whether or not the rule is live.
+        // The first write's `created_at` is the tracker's clock, the value
+        // the tracker records, so a later instance repeats it exactly.
+        if let (true, Some(first_written)) =
+            (target.live || target.sealing.is_some(), batch.first_written)
+        {
             let now = batch.now;
-            let first = first_written.get(&root.call_id).copied().unwrap_or(now);
-            container.created_at = first.to_rfc3339();
-            container.updated_at = Some(now.to_rfc3339());
+            let first = first_written.get(&root.call_id).copied();
+            container.created_at = first.unwrap_or(now).to_rfc3339();
+            if target.live || first.is_some() {
+                container.updated_at = Some(now.to_rfc3339());
+            }
+        }
+        // core-04 section 4.1.9: a sealed container is never modified; a
+        // later version is a new instance naming the prior one.
+        let sealed_before = batch
+            .sealed_instances
+            .and_then(|m| m.get(&root.call_id))
+            .copied()
+            .unwrap_or(0);
+        if target.sealing.is_some()
+            && target.sealed_updates == SealedUpdates::NewUuid
+            && sealed_before > 0
+        {
+            let base = std::mem::take(&mut container.uuid);
+            container.uuid = crate::output::vcon::revision_uuid(&base, sealed_before);
+            container.amended = Some(crate::output::vcon::Amended {
+                uuid: crate::output::vcon::revision_uuid(&base, sealed_before - 1),
+            });
         }
         // An encrypted container is named by its uuid: a Call-ID can carry
         // host names and addresses, and the name is not encrypted.
@@ -8126,6 +8242,36 @@ impl<'d> ContainerUnit<'d> {
             Self::Call(group) => &group.legs,
         }
     }
+
+    /// The Call-ID a container's records are keyed on: the dialog's, or the
+    /// first leg's for a call.
+    fn key(&self) -> Option<&'d str> {
+        self.legs().first().map(|d| d.call_id.as_str())
+    }
+
+    /// Whether every dialog in the unit has ended.
+    fn ended(&self) -> bool {
+        self.legs().iter().all(|d| d.state().is_final())
+    }
+}
+
+/// Whether a sealing `target` writes `unit` now, by its `sealed_updates`.
+///
+/// Only `final-only` holds a write back: until every leg has ended, unless
+/// `run_ended` (the end-of-run export, after which nothing more is
+/// captured), and for good once one sealed instance was written. Every other
+/// target writes whatever is due.
+#[cfg(feature = "vcon")]
+fn sealed_write_allowed(
+    target: &VconTarget<'_>,
+    unit: &ContainerUnit<'_>,
+    sealed_before: u32,
+    run_ended: bool,
+) -> bool {
+    if target.sealing.is_none() || target.sealed_updates != SealedUpdates::FinalOnly {
+        return true;
+    }
+    sealed_before == 0 && (run_ended || unit.ended())
 }
 
 /// The containers one rule writes for `dialogs` and `tombstones`, as its
@@ -8403,6 +8549,8 @@ struct VconTarget<'a> {
     live: bool,
     /// Sign and encrypt each container; `None` writes the unsigned form.
     sealing: Option<&'a std::sync::Arc<crate::output::vcon_jose::Sealing>>,
+    /// What a sealing target writes when a call it already wrote changes.
+    sealed_updates: SealedUpdates,
     /// One container per leg, or one per call.
     grouping: RuleGrouping,
     /// The enrichment services, in order.
@@ -8425,6 +8573,7 @@ impl<'a> VconTarget<'a> {
             grouping: rule.grouping,
             live: rule.live,
             sealing: rule.sealing.as_ref(),
+            sealed_updates: rule.sealed_updates,
             enrich: &rule.enrich,
             label: (rule.name != FLAG_RULE).then_some(rule.name.as_str()),
         }
@@ -8451,6 +8600,7 @@ impl<'a> VconTarget<'a> {
             grouping: RuleGrouping::Leg,
             live: false,
             sealing: None,
+            sealed_updates: SealedUpdates::NewUuid,
             enrich: &[],
             label: None,
         })
@@ -8495,6 +8645,7 @@ fn export_vcon_selection_after(
             suppressed_by_deny: 0,
             defer_enrichment: false,
             first_written: None,
+            sealed_instances: None,
             now: chrono::Utc::now(),
         },
     )
@@ -8594,13 +8745,25 @@ fn export_target(
     } else {
         &[]
     };
-    let units = container_units(target.grouping, batch.dialog_store, &dialogs, tombstones);
+    let units: Vec<ContainerUnit<'_>> =
+        container_units(target.grouping, batch.dialog_store, &dialogs, tombstones)
+            .into_iter()
+            .filter(|unit| {
+                let before = unit
+                    .key()
+                    .and_then(|k| live.and_then(|t| t.sealed_instances.get(k)))
+                    .copied()
+                    .unwrap_or(0);
+                sealed_write_allowed(target, unit, before, true)
+            })
+            .collect();
     let written = match write_vcon_containers(
         cli,
         target,
         &VconBatch {
             suppressed_by_deny,
             first_written: live.map(|t| &t.first_written),
+            sealed_instances: live.map(|t| &t.sealed_instances),
             ..*batch
         },
         &units,
@@ -9064,6 +9227,7 @@ fn export_vcon(
                 suppressed_by_deny: 0,
                 defer_enrichment: false,
                 first_written: None,
+                sealed_instances: None,
                 now: chrono::Utc::now(),
             },
         );
@@ -9462,6 +9626,7 @@ mod tests {
             live_audio: false,
             live: false,
             sealing: None,
+            sealed_updates: SealedUpdates::NewUuid,
         })
     }
 
@@ -9732,6 +9897,7 @@ mod tests {
                 updated_at: None,
                 subject: String::new(),
                 redacted: None,
+                amended: None,
                 extensions: Vec::new(),
                 parties: Vec::new(),
                 dialog: Vec::new(),
@@ -9795,7 +9961,7 @@ mod tests {
             .iter()
             .find(|a| a.purpose == crate::app::vcon_enrich::ENRICHMENT_PURPOSE)
             .ok_or("an enrichment attachment")?;
-        let body: serde_json::Value = serde_json::from_str(&attachment.body)?;
+        let body = &attachment.body;
         assert_eq!(body["services"][0]["outcome"], "queue-full", "{body}");
         assert_eq!(body["services"][0]["sent"], serde_json::json!([]), "{body}");
         let _ = open.send(());
@@ -9860,9 +10026,9 @@ mod tests {
                 .ok_or("attachments")?
                 .iter()
                 .find(|a| a["purpose"] == "sipnab-capture-completeness")
-                .and_then(|a| a["body"].as_str())
+                .map(|a| a["body"].clone())
                 .ok_or("completeness")?;
-            Ok(serde_json::from_str(body)?)
+            Ok(body)
         };
         assert_eq!(completeness(&first)?["call_ended"], false);
 
@@ -9886,6 +10052,385 @@ mod tests {
         );
         assert_eq!(completeness(&last)?["call_ended"], true);
         Ok(())
+    }
+
+    /// A sealing rule over the fixture keys, writing to `dir`, with
+    /// `sealed_updates`.
+    #[cfg(all(feature = "vcon", unix))]
+    fn sealed_rule(
+        dir: &std::path::Path,
+        keys: &std::path::Path,
+        live: bool,
+        sealed_updates: SealedUpdates,
+    ) -> Result<VconRule, TestError> {
+        use std::os::unix::fs::PermissionsExt as _;
+        let fixtures = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/vcon-jose");
+        let key = keys.join("sign.key");
+        std::fs::copy(format!("{fixtures}/fake_grp.key"), &key).map_err(|e| format!("{e:?}"))?;
+        std::fs::set_permissions(&key, std::fs::Permissions::from_mode(0o600))
+            .map_err(|e| format!("{e:?}"))?;
+        let cert = std::path::PathBuf::from(format!("{fixtures}/fake_grp.crt"));
+        let mut rule = test_rule("sealed", "method == 'INVITE'", dir, RuleAudio::Omit)?;
+        rule.live = live;
+        rule.sealing = Some(std::sync::Arc::new(crate::output::vcon_jose::load_sealing(
+            &cert, &key, &cert,
+        )?));
+        rule.sealed_updates = sealed_updates;
+        Ok(rule)
+    }
+
+    /// Every sealed container in `dir`, decrypted and verified, by file name.
+    #[cfg(all(feature = "vcon", unix))]
+    fn opened_containers(dir: &std::path::Path) -> Result<Vec<serde_json::Value>, TestError> {
+        let key = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/fixtures/vcon-jose/fake_grp.key"
+        ))
+        .map_err(|e| format!("{e:?}"))?;
+        let mut paths: Vec<std::path::PathBuf> = match std::fs::read_dir(dir) {
+            Ok(entries) => entries
+                .filter_map(Result::ok)
+                .map(|e| e.path())
+                .filter(|p| p.to_string_lossy().ends_with(".vcon.json"))
+                .collect(),
+            Err(_) => Vec::new(),
+        };
+        paths.sort();
+        let mut out = Vec::new();
+        for path in paths {
+            let bytes = std::fs::read(&path).map_err(|e| format!("{e:?}"))?;
+            let jws = crate::output::vcon_jose::decrypt(&bytes, &key)?;
+            out.push(serde_json::from_slice(&crate::output::vcon_jose::verify(
+                &jws,
+            )?)?);
+        }
+        Ok(out)
+    }
+
+    /// Run one call through a sealing rule's live sweeps: the INVITE, then a
+    /// 180, then a 486, a second apart, one sweep after each. Returns what
+    /// each sweep wrote.
+    #[cfg(all(feature = "vcon", unix))]
+    fn sealed_sweeps(rule: VconRule) -> Result<Vec<usize>, TestError> {
+        Ok(sealed_run(rule, &[(180, "Ringing"), (486, "Busy Here")], false)?.0)
+    }
+
+    /// The INVITE, then each of `responses`, a second apart, one live sweep
+    /// after each; then, with `end_run`, the end-of-run export. Returns what
+    /// each sweep wrote and what the end-of-run export wrote.
+    #[cfg(all(feature = "vcon", unix))]
+    fn sealed_run(
+        rule: VconRule,
+        responses: &[(u16, &str)],
+        end_run: bool,
+    ) -> Result<(Vec<usize>, bool), TestError> {
+        let rules = vec![rule];
+        let cli = Cli::parse_from_args(["sipnab"]);
+        let streams = StreamStore::new(16);
+        let mut trackers = vec![LiveVconTracker::default()];
+        let mut store = DialogStore::new(16, true);
+        let mut wrote = Vec::new();
+        let mut messages = vec![invite_msg("sealed-call@example.com")?];
+        for (code, reason) in responses {
+            messages.push(response_msg("sealed-call@example.com", *code, reason)?);
+        }
+        // Fixed message times, so two runs observe the same call.
+        let start = chrono::DateTime::parse_from_rfc3339("2026-01-05T12:00:00Z")
+            .map_err(|e| format!("{e:?}"))?
+            .with_timezone(&chrono::Utc);
+        for (seconds, mut message) in (0_i64..).zip(messages) {
+            message.timestamp = start + chrono::TimeDelta::seconds(seconds);
+            store.process_message(message);
+            wrote.push(live_rules_sweep(
+                &cli,
+                &rules,
+                CaptureRead {
+                    dialogs: &store,
+                    streams: &streams,
+                    frames_read: 1,
+                },
+                None,
+                &mut trackers,
+                chrono::Utc::now(),
+            ));
+        }
+        let ended = end_run
+            && export_targets_after(
+                &cli,
+                &[(VconTarget::of(&rules[0]), trackers.first())],
+                &VconBatch {
+                    dialog_store: &store,
+                    stream_store: &streams,
+                    frames_read: 1,
+                    gate: None,
+                    suppressed_by_deny: 0,
+                    defer_enrichment: false,
+                    first_written: None,
+                    sealed_instances: None,
+                    now: chrono::Utc::now(),
+                },
+            );
+        Ok((wrote, ended))
+    }
+
+    /// The containers of `sealed_sweeps`, ordered as written: the first has
+    /// no `amended`, and each later one names the one before it.
+    #[cfg(all(feature = "vcon", unix))]
+    fn in_chain_order(all: Vec<serde_json::Value>) -> Vec<serde_json::Value> {
+        let mut used = vec![false; all.len()];
+        let mut ordered = Vec::new();
+        let mut prior: Option<usize> = None;
+        loop {
+            let next = (0..all.len()).find(|&i| {
+                !used[i]
+                    && match prior {
+                        None => all[i].get("amended").is_none(),
+                        Some(p) => all[i]["amended"]["uuid"] == all[p]["uuid"],
+                    }
+            });
+            let Some(i) = next else {
+                break;
+            };
+            used[i] = true;
+            ordered.push(all[i].clone());
+            prior = Some(i);
+        }
+        for (i, v) in all.iter().enumerate() {
+            if !used[i] {
+                ordered.push(v.clone());
+            }
+        }
+        ordered
+    }
+
+    /// `sealed_updates = "new-uuid"` (the default): a sealing rule's later
+    /// write of a call is a new instance with its own uuid, naming the prior
+    /// instance in `amended`, keeping the first `created_at`, and the earlier
+    /// files stay.
+    ///
+    /// [Section 4.1.9 of the core draft](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-04#section-4.1.9):
+    /// "A signed or encrypted vCon cannot be modified without invalidating
+    /// it. In these cases, to allow for adding of additional information a new
+    /// vCon instance version MUST be created."
+    #[cfg(all(feature = "vcon", unix))]
+    #[test]
+    fn a_sealed_rewrite_is_a_new_instance_naming_the_prior_one() -> Result<(), TestError> {
+        let tmp = tempfile::tempdir().map_err(|e| format!("temp dir: {e:?}"))?;
+        let dir = tmp.path().join("sealed");
+        let rule = sealed_rule(&dir, tmp.path(), true, SealedUpdates::NewUuid)?;
+        assert_eq!(sealed_sweeps(rule)?, [1, 1, 1], "one write per change");
+        let chain = in_chain_order(opened_containers(&dir)?);
+        assert_eq!(chain.len(), 3, "three instances, none replaced");
+        let uuids: Vec<&str> = chain.iter().filter_map(|v| v["uuid"].as_str()).collect();
+        assert_eq!(uuids.len(), 3);
+        assert!(
+            uuids[0] != uuids[1] && uuids[1] != uuids[2] && uuids[0] != uuids[2],
+            "the three instances have three different uuids"
+        );
+        assert!(chain[0].get("amended").is_none());
+        assert_eq!(chain[1]["amended"]["uuid"], uuids[0]);
+        assert_eq!(chain[2]["amended"]["uuid"], uuids[1]);
+        for v in &chain {
+            assert_eq!(v["created_at"], chain[0]["created_at"], "created once");
+            assert!(v["updated_at"].is_string());
+        }
+        assert_eq!(
+            chain[2]["uuid"],
+            crate::output::vcon::revision_uuid(uuids[0], 2)
+        );
+        Ok(())
+    }
+
+    /// Two runs over the same call give the same uuid chain: each later uuid
+    /// is a function of the first and the revision number, not of the clock.
+    #[cfg(all(feature = "vcon", unix))]
+    #[test]
+    fn a_sealed_uuid_chain_is_the_same_on_every_run() -> Result<(), TestError> {
+        let mut chains = Vec::new();
+        for _ in 0..2 {
+            let tmp = tempfile::tempdir().map_err(|e| format!("temp dir: {e:?}"))?;
+            let dir = tmp.path().join("sealed");
+            sealed_sweeps(sealed_rule(&dir, tmp.path(), true, SealedUpdates::NewUuid)?)?;
+            let chain: Vec<serde_json::Value> = in_chain_order(opened_containers(&dir)?)
+                .iter()
+                .map(|v| v["uuid"].clone())
+                .collect();
+            chains.push(chain);
+        }
+        assert_eq!(chains[0].len(), 3, "{chains:?}");
+        assert_eq!(chains[0], chains[1]);
+        Ok(())
+    }
+
+    /// `sealed_updates = "same-uuid"`: the sealed file is rewritten under the
+    /// one uuid, as before the setting existed, with no `amended`.
+    #[cfg(all(feature = "vcon", unix))]
+    #[test]
+    fn same_uuid_rewrites_the_sealed_file_in_place() -> Result<(), TestError> {
+        let tmp = tempfile::tempdir().map_err(|e| format!("temp dir: {e:?}"))?;
+        let dir = tmp.path().join("sealed");
+        let rule = sealed_rule(&dir, tmp.path(), true, SealedUpdates::SameUuid)?;
+        assert_eq!(sealed_sweeps(rule)?, [1, 1, 1]);
+        let all = opened_containers(&dir)?;
+        assert_eq!(all.len(), 1, "one file, rewritten");
+        assert!(all[0].get("amended").is_none());
+        Ok(())
+    }
+
+    /// `same-uuid` on a sealing rule is warned about at startup, naming the
+    /// rule and the two sections it departs from; nothing else is.
+    #[cfg(all(feature = "vcon", unix))]
+    #[test]
+    fn only_a_sealing_same_uuid_rule_is_warned_about() -> Result<(), TestError> {
+        let tmp = tempfile::tempdir().map_err(|e| format!("temp dir: {e:?}"))?;
+        let dir = tmp.path().join("sealed");
+        let warning = sealed_rule(&dir, tmp.path(), true, SealedUpdates::SameUuid)?
+            .sealed_updates_warning()
+            .ok_or("same-uuid on a sealing rule warns")?;
+        for needle in [
+            "'sealed'",
+            "same-uuid",
+            "section 4.1.9",
+            "section 4.1.2",
+            "MUST",
+        ] {
+            assert!(
+                warning.contains(needle),
+                "the startup warning lacks a required phrase"
+            );
+        }
+        for updates in [SealedUpdates::NewUuid, SealedUpdates::FinalOnly] {
+            let rule = sealed_rule(&dir, tmp.path(), true, updates)?;
+            assert_eq!(rule.sealed_updates_warning(), None, "{updates:?}");
+        }
+        let mut unsealed = test_rule("plain", "method == 'INVITE'", &dir, RuleAudio::Omit)?;
+        unsealed.sealed_updates = SealedUpdates::SameUuid;
+        assert_eq!(unsealed.sealed_updates_warning(), None, "nothing is sealed");
+        Ok(())
+    }
+
+    /// `sealed_updates = "final-only"`: nothing is written while the call is
+    /// in progress, then one sealed container once it ends, and no further
+    /// one after that.
+    #[cfg(all(feature = "vcon", unix))]
+    #[test]
+    fn final_only_seals_once_when_the_call_ends() -> Result<(), TestError> {
+        let tmp = tempfile::tempdir().map_err(|e| format!("temp dir: {e:?}"))?;
+        let dir = tmp.path().join("sealed");
+        let rule = sealed_rule(&dir, tmp.path(), true, SealedUpdates::FinalOnly)?;
+        assert_eq!(
+            sealed_sweeps(rule)?,
+            [0, 0, 1],
+            "nothing before the call ends, then one write"
+        );
+        let all = opened_containers(&dir)?;
+        assert_eq!(all.len(), 1);
+        let body = all[0]["attachments"]
+            .as_array()
+            .ok_or("attachments")?
+            .iter()
+            .find(|a| a["purpose"] == "sipnab-capture-completeness")
+            .map(|a| a["body"].clone())
+            .ok_or("completeness")?;
+        assert_eq!(body["call_ended"], true, "{body}");
+        assert!(all[0].get("amended").is_none());
+        Ok(())
+    }
+
+    /// A sealing rule that is not `live` writes a call once it ends or has
+    /// been quiet for the idle period (the fixture's messages are months old,
+    /// so the INVITE alone is idle), and each later change is a new instance
+    /// naming the one before, with the first `created_at`.
+    #[cfg(all(feature = "vcon", unix))]
+    #[test]
+    fn a_sealed_rewrite_by_a_rule_that_is_not_live_is_a_new_instance() -> Result<(), TestError> {
+        let tmp = tempfile::tempdir().map_err(|e| format!("temp dir: {e:?}"))?;
+        let dir = tmp.path().join("sealed");
+        let rule = sealed_rule(&dir, tmp.path(), false, SealedUpdates::NewUuid)?;
+        let (wrote, _) = sealed_run(rule, &[(486, "Busy Here"), (486, "Busy Here")], false)?;
+        assert_eq!(wrote, [1, 1, 1], "idle, ended, then changed");
+        let chain = in_chain_order(opened_containers(&dir)?);
+        assert_eq!(chain.len(), 3);
+        for i in 1..3 {
+            assert_eq!(chain[i]["amended"]["uuid"], chain[i - 1]["uuid"]);
+            assert_ne!(chain[i]["uuid"], chain[i - 1]["uuid"]);
+            assert_eq!(
+                chain[i]["created_at"], chain[0]["created_at"],
+                "created once"
+            );
+            assert!(chain[i]["updated_at"].is_string());
+        }
+        assert!(chain[0].get("updated_at").is_none());
+        Ok(())
+    }
+
+    /// `final-only` seals a call once: a change after the sealed write, and
+    /// the end of the run, write nothing more.
+    #[cfg(all(feature = "vcon", unix))]
+    #[test]
+    fn final_only_never_seals_a_call_twice() -> Result<(), TestError> {
+        let tmp = tempfile::tempdir().map_err(|e| format!("temp dir: {e:?}"))?;
+        let dir = tmp.path().join("sealed");
+        let rule = sealed_rule(&dir, tmp.path(), true, SealedUpdates::FinalOnly)?;
+        let (wrote, exported) = sealed_run(rule, &[(486, "Busy Here"), (486, "Busy Here")], true)?;
+        assert_eq!(wrote, [0, 1, 0], "one sealed write, at the end of the call");
+        assert!(exported, "the end-of-run export succeeds");
+        assert_eq!(opened_containers(&dir)?.len(), 1);
+        Ok(())
+    }
+
+    /// `final-only` on a call still in progress when the run ends: nothing
+    /// while it runs, then one sealed container at the end of the run, which
+    /// records that the call had not ended. Nothing more is captured after
+    /// that, so this is the call's last state.
+    #[cfg(all(feature = "vcon", unix))]
+    #[test]
+    fn final_only_seals_an_unended_call_once_when_the_run_ends() -> Result<(), TestError> {
+        let tmp = tempfile::tempdir().map_err(|e| format!("temp dir: {e:?}"))?;
+        let dir = tmp.path().join("sealed");
+        let rule = sealed_rule(&dir, tmp.path(), true, SealedUpdates::FinalOnly)?;
+        let (wrote, exported) = sealed_run(rule, &[(180, "Ringing")], true)?;
+        assert_eq!(wrote, [0, 0], "nothing while the call runs");
+        assert!(exported, "the end-of-run export succeeds");
+        let all = opened_containers(&dir)?;
+        assert_eq!(all.len(), 1);
+        let ended = all[0]["attachments"]
+            .as_array()
+            .ok_or("attachments")?
+            .iter()
+            .find(|a| a["purpose"] == "sipnab-capture-completeness")
+            .map(|a| a["body"]["call_ended"].clone())
+            .ok_or("completeness")?;
+        assert_eq!(ended, false);
+        Ok(())
+    }
+
+    /// The three `sealed_updates` names parse, unset is `new-uuid`, and any
+    /// other value is refused naming all three.
+    #[cfg(feature = "vcon")]
+    #[test]
+    fn sealed_updates_parses_its_three_names_and_refuses_others() {
+        assert_eq!(SealedUpdates::parse(None), Ok(SealedUpdates::NewUuid));
+        assert_eq!(
+            SealedUpdates::parse(Some("new-uuid")),
+            Ok(SealedUpdates::NewUuid)
+        );
+        assert_eq!(
+            SealedUpdates::parse(Some("same-uuid")),
+            Ok(SealedUpdates::SameUuid)
+        );
+        assert_eq!(
+            SealedUpdates::parse(Some("final-only")),
+            Ok(SealedUpdates::FinalOnly)
+        );
+        for bad in ["", "new_uuid", "New-UUID", "always"] {
+            let parsed = SealedUpdates::parse(Some(bad));
+            assert!(parsed.is_err(), "'{bad}' parsed as {parsed:?}");
+            let why = parsed.err().unwrap_or_default();
+            for name in SealedUpdates::NAMES {
+                assert!(why.contains(name), "{bad}: {why}");
+            }
+        }
     }
 
     /// The vCon a rule writes for one call at the end of a run, read back.
@@ -11891,12 +12436,11 @@ mod tests {
             .map_err(|e| format!("readable: {e:?}"))?;
         let v: serde_json::Value =
             serde_json::from_str(&text).map_err(|e| format!("valid JSON: {e:?}"))?;
-        let body = v["analysis"][0]["body"]
-            .as_str()
-            .ok_or_else(|| format!("an analysis body is a string: {v}"))?;
-        let parsed: serde_json::Value =
-            serde_json::from_str(body).map_err(|e| format!("the analysis body parses: {e:?}"))?;
-        Ok(parsed["capture_completeness"].clone())
+        let body = &v["analysis"][0]["body"];
+        if !body.is_object() {
+            return Err("an analysis body is the object itself".into());
+        }
+        Ok(body["capture_completeness"].clone())
     }
 
     /// The suppressed count reaches the container a consumer reads.
@@ -13501,8 +14045,6 @@ mod tests {
             for item in items.iter_mut() {
                 let completeness = item
                     .get("body")
-                    .and_then(serde_json::Value::as_str)
-                    .and_then(|b| serde_json::from_str::<serde_json::Value>(b).ok())
                     .and_then(|b| b.get("capture_completeness").cloned());
                 if let Some(obj) = item.as_object_mut() {
                     obj.remove("body");
@@ -13551,12 +14093,7 @@ mod tests {
                 std::fs::read_to_string(entry.path()).map_err(|e| format!("readable: {e:?}"))?;
             let v: serde_json::Value =
                 serde_json::from_str(&text).map_err(|e| format!("valid JSON: {e:?}"))?;
-            let body: serde_json::Value = serde_json::from_str(
-                v["analysis"][0]["body"]
-                    .as_str()
-                    .ok_or_else(|| format!("an analysis body is a string: {v}"))?,
-            )
-            .map_err(|e| format!("the analysis body parses: {e:?}"))?;
+            let body = &v["analysis"][0]["body"];
             if body["signaling_diagnosis"]["abandoned"].is_null()
                 && !body["signaling_diagnosis"]["final_failure"].is_null()
             {
@@ -13600,10 +14137,7 @@ mod tests {
                 std::fs::read_to_string(entry.path()).map_err(|e| format!("readable: {e:?}"))?;
             let v: serde_json::Value =
                 serde_json::from_str(&text).map_err(|e| format!("valid JSON: {e:?}"))?;
-            let body: serde_json::Value =
-                serde_json::from_str(v["analysis"][0]["body"].as_str().ok_or("a string body")?)
-                    .map_err(|e| format!("parses: {e:?}"))?;
-            let c = &body["capture_completeness"];
+            let c = &v["analysis"][0]["body"]["capture_completeness"];
             for key in ["gate_closed_during_run", "dialogs_suppressed_by_deny"] {
                 assert!(
                     c.get(key).is_some_and(|x| !x.is_null()),
@@ -13674,7 +14208,7 @@ mod tests {
             "parties": [{"tel": null}],
             "analysis": [{
                 "type": "sipnab-analysis",
-                "body": "{\"signaling_diagnosis\":{\"abandoned\":null}}"
+                "body": {"signaling_diagnosis": {"abandoned": null}}
             }]
         });
         let text = v.to_string();
@@ -13704,8 +14238,7 @@ mod tests {
         let body = serde_json::json!({
             "capture_completeness": {"frames_read": 7, "media_note": null},
             "signaling_diagnosis": {"abandoned": null}
-        })
-        .to_string();
+        });
         let v = serde_json::json!({
             "vcon": "0.4.0",
             "analysis": [{"type": "sipnab-analysis", "body": body}]
@@ -15038,6 +15571,8 @@ mod tests {
             encrypt_to: None,
             sign_key: None,
             sign_cert: None,
+            compress: None,
+            sealed_updates: None,
         };
         let mut config = crate::config::Config::default();
         assert!(!audio_retention_wanted(&base_cli(), &config));

@@ -142,12 +142,24 @@ static KNOWN_KEYS: LazyLock<HashMap<&'static str, &'static [&'static str]>> = La
             "visible_columns",
             "from_to",
             "mouse_capture",
+            "view_filter_detail",
         ]
         .as_slice(),
     );
     m.insert("filter", ["from", "to", "expression"].as_slice());
     m.insert("pbx", ["addresses"].as_slice());
-    m.insert("vcon", ["rule", "enrich"].as_slice());
+    m.insert(
+        "vcon",
+        [
+            "rule",
+            "enrich",
+            "encrypt_to",
+            "sign_key",
+            "sign_cert",
+            "compress",
+        ]
+        .as_slice(),
+    );
     m.insert(
         "sip",
         [
@@ -273,6 +285,7 @@ static KNOWN_KEYS: LazyLock<HashMap<&'static str, &'static [&'static str]>> = La
             "replace_url",
             "auth_file",
             "ca",
+            "extra_ca",
             "done",
             "failed",
             "interval",
@@ -293,7 +306,10 @@ static KNOWN_KEYS: LazyLock<HashMap<&'static str, &'static [&'static str]>> = La
             "url",
             "auth_file",
             "ca",
+            "extra_ca",
             "decrypt_key",
+            "signer_ca",
+            "signer_sha256",
             "timeout",
             "max_response_head",
             "max_size",
@@ -344,6 +360,7 @@ static KNOWN_KEYS: LazyLock<HashMap<&'static str, &'static [&'static str]>> = La
             "extended_flow",
             "clear_calls",
             "column_selector",
+            "filter_detail",
         ]
         .as_slice(),
     );
@@ -583,6 +600,10 @@ pub struct VconForwardConfig {
     /// The only CA file trusted for an `https://` store.
     /// `--vcon-forward-ca` overrides it.
     pub ca: Option<PathBuf>,
+    /// A CA file trusted for an `https://` store in addition to the host's
+    /// CA bundle; refused beside `ca`. `--vcon-forward-extra-ca` overrides
+    /// it.
+    pub extra_ca: Option<PathBuf>,
     /// Where a delivered container goes. `--vcon-forward-done` overrides it.
     pub done: Option<PathBuf>,
     /// Where a refused container goes. `--vcon-forward-failed` overrides it.
@@ -885,9 +906,19 @@ pub struct VconFetchConfig {
     /// The only CA file trusted for an `https://` store. `--vcon-fetch-ca`
     /// overrides it.
     pub ca: Option<PathBuf>,
+    /// A CA file trusted for an `https://` store in addition to the host's
+    /// CA bundle; refused beside `ca`. `--vcon-fetch-extra-ca` overrides it.
+    pub extra_ca: Option<PathBuf>,
     /// The RSA private key that decrypts an encrypted container; readable by
     /// its owner only. `--vcon-fetch-decrypt-key` overrides it.
     pub decrypt_key: Option<PathBuf>,
+    /// The CA (PEM) a decrypted container's signing certificate must chain
+    /// to, or `system` for the host's CA bundle. `--vcon-fetch-signer-ca`
+    /// overrides it.
+    pub signer_ca: Option<PathBuf>,
+    /// The SHA-256 fingerprint the signing certificate must have, hex, with
+    /// or without colons. `--vcon-fetch-signer-sha256` overrides it.
+    pub signer_sha256: Option<String>,
     /// Seconds to wait to connect and for each read and write. See
     /// [`FETCH_TIMEOUT`].
     pub timeout: Option<u64>,
@@ -914,6 +945,11 @@ impl VconFetchConfig {
                 })?;
             }
         }
+        if let Some(text) = &self.signer_sha256 {
+            parse_sha256_fingerprint(text).map_err(|e| {
+                crate::Error::ConfigInvalid(format!("[vcon_fetch] signer_sha256: {e}"))
+            })?;
+        }
         if let Some(name) = &self.kind
             && !FETCH_KINDS.contains(&name.as_str())
         {
@@ -934,6 +970,68 @@ impl VconFetchConfig {
             (FETCH_MAX_SIZE, self.max_size),
         ]
     }
+}
+
+/// A TLS client's trust, as `(replace-with CA, add-to-host CA)`, from its
+/// pair of flags and its pair of keys.
+///
+/// ONE setting rather than two keys: when the command line names either
+/// flag, the flags replace both keys. Resolved key by key, a file's
+/// replacing CA and a flag's adding CA would make a pair that means "only
+/// this file" and "the host's roots too" at once. The HEP sender, the vCon
+/// forwarder and the vCon fetcher each resolve their trust here.
+#[must_use]
+pub fn trust_pair(
+    flags: (Option<&PathBuf>, Option<&PathBuf>),
+    keys: (Option<&PathBuf>, Option<&PathBuf>),
+) -> (Option<PathBuf>, Option<PathBuf>) {
+    let pick = if flags.0.is_some() || flags.1.is_some() {
+        flags
+    } else {
+        keys
+    };
+    (pick.0.cloned(), pick.1.cloned())
+}
+
+/// The refusal of a config file that sets both of a TLS client's CA keys in
+/// `[section]`: `ca_key` trusts only its file, `extra_key` its file and the
+/// host's bundle.
+#[must_use]
+pub fn trust_keys_conflict(section: &str, ca_key: &str, extra_key: &str) -> String {
+    format!(
+        "[{section}] {ca_key} and [{section}] {extra_key} cannot both be set: {ca_key} trusts \
+         only its file, {extra_key} trusts its file in addition to the host's CA bundle"
+    )
+}
+
+/// A SHA-256 certificate fingerprint written as hex: 64 hex digits, either
+/// plain or in pairs separated by colons (as `openssl x509 -fingerprint
+/// -sha256` prints it), upper or lower case.
+///
+/// # Errors
+///
+/// Any other text, saying what was expected.
+pub fn parse_sha256_fingerprint(text: &str) -> Result<[u8; 32], String> {
+    const WANT: &str = "a SHA-256 fingerprint is 64 hex digits, plain or in colon-separated pairs";
+    let text = text.trim();
+    let digits: String = if text.contains(':') {
+        let pairs: Vec<&str> = text.split(':').collect();
+        if pairs.len() != 32 || pairs.iter().any(|p| p.len() != 2) {
+            return Err(format!("{text:?}: {WANT}"));
+        }
+        pairs.concat()
+    } else {
+        text.to_owned()
+    };
+    if digits.len() != 64 || !digits.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return Err(format!("{text:?}: {WANT}"));
+    }
+    let mut out = [0u8; 32];
+    for (byte, pair) in out.iter_mut().zip(digits.as_bytes().chunks(2)) {
+        let pair = std::str::from_utf8(pair).map_err(|_| format!("{text:?}: {WANT}"))?;
+        *byte = u8::from_str_radix(pair, 16).map_err(|_| format!("{text:?}: {WANT}"))?;
+    }
+    Ok(out)
 }
 
 /// `[mcp]`: which tools the MCP server registers, and whether it advertises
@@ -1222,6 +1320,10 @@ pub struct DisplayConfig {
     /// with capture off, so the terminal's own text selection works; F12
     /// toggles it at runtime. Unset or `true` captures it, for wheel scrolling.
     pub mouse_capture: Option<bool>,
+    /// How status line 3 shows the filter the F7 dialog built: `"summary"`
+    /// (one short token per selection) or `"full"` (the expression). The
+    /// `filter_detail` key toggles it at runtime. Unset means `"summary"`.
+    pub view_filter_detail: Option<String>,
 }
 
 impl DisplayConfig {
@@ -1243,8 +1345,8 @@ impl DisplayConfig {
         self.validate_tui_keys()
     }
 
-    /// The `[display]` keys only the TUI reads: `from_to` and
-    /// `visible_columns`. An unknown value used to be dropped when the TUI
+    /// The `[display]` keys only the TUI reads: `from_to`,
+    /// `view_filter_detail` and `visible_columns`. An unknown value used to be dropped when the TUI
     /// started, with only a log warning the TUI screen covers; an unknown
     /// column label hid that column, and `["x"]` hid all of them.
     ///
@@ -1259,6 +1361,13 @@ impl DisplayConfig {
                 return Err(crate::Error::ConfigInvalid(format!(
                     "[display] from_to must be one of default, host-port, user, \
                      user-host-port, got {m:?}"
+                )));
+            }
+            if let Some(m) = &self.view_filter_detail
+                && crate::tui::ViewFilterDetail::parse(m).is_none()
+            {
+                return Err(crate::Error::ConfigInvalid(format!(
+                    "[display] view_filter_detail must be one of summary, full, got {m:?}"
                 )));
             }
             let labels = crate::tui::call_list::COLUMN_LABELS;
@@ -1284,6 +1393,38 @@ pub struct VconConfig {
     pub rule: Vec<VconRuleConfig>,
     /// The enrichment services, in the order they run.
     pub enrich: Vec<VconEnrichConfig>,
+    /// The `encrypt_to` of every `[[vcon.rule]]` that sets none.
+    pub encrypt_to: Option<std::path::PathBuf>,
+    /// The `sign_key` of every encrypting `[[vcon.rule]]` that sets none.
+    pub sign_key: Option<std::path::PathBuf>,
+    /// The `sign_cert` of every encrypting `[[vcon.rule]]` that sets none.
+    pub sign_cert: Option<std::path::PathBuf>,
+    /// The `compress` of every encrypting `[[vcon.rule]]` that sets none.
+    pub compress: Option<String>,
+}
+
+/// The values of `compress` in `[vcon]` and `[[vcon.rule]]`: `none` signs
+/// the vCon as it is, `gzip` signs its gzip.
+pub const VCON_COMPRESSIONS: [&str; 2] = ["none", "gzip"];
+
+impl VconConfig {
+    /// Refuse a section-level `compress` other than [`VCON_COMPRESSIONS`].
+    /// The section's paths are checked by [`Config::validate_paths`], and
+    /// the keys and certificates when a rule that encrypts loads them.
+    ///
+    /// # Errors
+    /// `crate::Error::ConfigInvalid`, naming the key.
+    pub fn validate(&self) -> Result<(), crate::Error> {
+        match &self.compress {
+            Some(value) if !VCON_COMPRESSIONS.contains(&value.as_str()) => {
+                Err(crate::Error::ConfigInvalid(format!(
+                    "[vcon] compress: {value:?} is not one of {}",
+                    VCON_COMPRESSIONS.join(", ")
+                )))
+            }
+            _ => Ok(()),
+        }
+    }
 }
 
 /// One `[[vcon.enrich]]`: a service a call's audio and container are sent to
@@ -1369,6 +1510,16 @@ pub struct VconRuleConfig {
     /// signature's `x5c`.
     #[serde(default)]
     pub sign_cert: Option<std::path::PathBuf>,
+    /// For an encrypting rule: `none` (the default) signs the vCon as it is;
+    /// `gzip` signs its gzip instead, as draft-ietf-vcon-vcon-core-04 section
+    /// 5.2 allows, and the encrypted form names `cty: "application/vcon+gzip"`.
+    #[serde(default)]
+    pub compress: Option<String>,
+    /// What an encrypting rule writes when a call it already wrote changes:
+    /// `new-uuid` (unset), `same-uuid` or `final-only`. No effect without
+    /// `encrypt_to`.
+    #[serde(default)]
+    pub sealed_updates: Option<String>,
 }
 
 /// The PBX sipnab runs beside.
@@ -3004,6 +3155,9 @@ pub struct KeybindingsConfig {
     pub clear_calls: Option<String>,
     /// Open column selector (default: `"F10"`).
     pub column_selector: Option<String>,
+    /// Switch status line 3 between the summary and the full expression of
+    /// the F7 dialog's filter (default: `"F"`).
+    pub filter_detail: Option<String>,
 }
 
 impl ThemeConfig {
@@ -3065,6 +3219,7 @@ impl KeybindingsConfig {
             ("extended_flow", &self.extended_flow),
             ("clear_calls", &self.clear_calls),
             ("column_selector", &self.column_selector),
+            ("filter_detail", &self.filter_detail),
         ] {
             if let Some(v) = value
                 && parse_keycode(v).is_none()
@@ -3201,7 +3356,7 @@ impl Config {
     /// # Errors
     /// `crate::Error::ConfigInvalid`, naming the first such key.
     pub fn validate_paths(&self) -> Result<(), crate::Error> {
-        let keys: [(&str, Option<&Path>); 21] = [
+        let keys: [(&str, Option<&Path>); 27] = [
             ("[hep] tls_ca", self.hep.tls_ca.as_deref()),
             ("[hep] tls_extra_ca", self.hep.tls_extra_ca.as_deref()),
             ("[hep] tls_cert", self.hep.tls_cert.as_deref()),
@@ -3233,6 +3388,10 @@ impl Config {
                 self.vcon_forward.auth_file.as_deref(),
             ),
             ("[vcon_forward] ca", self.vcon_forward.ca.as_deref()),
+            (
+                "[vcon_forward] extra_ca",
+                self.vcon_forward.extra_ca.as_deref(),
+            ),
             ("[vcon_forward] done", self.vcon_forward.done.as_deref()),
             ("[vcon_forward] failed", self.vcon_forward.failed.as_deref()),
             (
@@ -3240,10 +3399,18 @@ impl Config {
                 self.vcon_fetch.auth_file.as_deref(),
             ),
             ("[vcon_fetch] ca", self.vcon_fetch.ca.as_deref()),
+            ("[vcon_fetch] extra_ca", self.vcon_fetch.extra_ca.as_deref()),
             (
                 "[vcon_fetch] decrypt_key",
                 self.vcon_fetch.decrypt_key.as_deref(),
             ),
+            (
+                "[vcon_fetch] signer_ca",
+                self.vcon_fetch.signer_ca.as_deref(),
+            ),
+            ("[vcon] encrypt_to", self.vcon.encrypt_to.as_deref()),
+            ("[vcon] sign_key", self.vcon.sign_key.as_deref()),
+            ("[vcon] sign_cert", self.vcon.sign_cert.as_deref()),
         ];
         for (key, value) in keys {
             if value.is_some_and(|p| p.as_os_str().is_empty()) {
@@ -4209,6 +4376,47 @@ from_to = "user-host-port"
 "#;
         let config: Config = toml::from_str(toml_str)?;
         assert_eq!(config.display.from_to.as_deref(), Some("user-host-port"));
+        Ok(())
+    }
+
+    /// `[display] view_filter_detail` takes `summary` or `full`; any other
+    /// spelling is refused when the config loads, naming the key, instead of
+    /// being dropped when the TUI starts.
+    #[cfg(feature = "tui")]
+    #[test]
+    fn display_view_filter_detail_is_validated() -> Result<(), TestError> {
+        for ok in ["summary", "full"] {
+            let config: Config =
+                toml::from_str(&format!("[display]\nview_filter_detail = \"{ok}\"\n"))?;
+            assert_eq!(config.display.view_filter_detail.as_deref(), Some(ok));
+            config.display.validate()?;
+        }
+        let bad: Config = toml::from_str("[display]\nview_filter_detail = \"short\"\n")?;
+        let err = bad
+            .display
+            .validate()
+            .err()
+            .ok_or("an unknown mode must be refused")?
+            .to_string();
+        assert!(
+            err.contains("view_filter_detail") && err.contains("summary, full"),
+            "{err}"
+        );
+        Ok(())
+    }
+
+    /// `[keybindings] filter_detail` is checked like every other binding.
+    #[cfg(feature = "tui")]
+    #[test]
+    fn keybindings_filter_detail_is_validated() -> Result<(), TestError> {
+        let bad: Config = toml::from_str("[keybindings]\nfilter_detail = \"Shift-F\"\n")?;
+        let err = bad
+            .keybindings
+            .validate()
+            .err()
+            .ok_or("an unparseable key must be refused")?
+            .to_string();
+        assert!(err.contains("filter_detail"), "{err}");
         Ok(())
     }
 

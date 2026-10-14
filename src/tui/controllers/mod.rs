@@ -60,7 +60,8 @@ pub use timeline::{TimelineAction, timeline_action};
 /// # Side effects
 /// Priority order: Ctrl-C sets `should_quit`; an open popup receives the
 /// key via `handle_popup_key`; active search input goes to
-/// `handle_search_input`. The global fallbacks then apply for keys not
+/// `handle_search_input`. The filter-detail key (default `F`) then toggles
+/// `app.view_filter_detail` in every view. The global fallbacks apply for keys not
 /// claimed by the keymap: `v`/`V` show the version on the status line,
 /// `n` cycles the name-resolution mode (except during raw-view match
 /// navigation), and `?` re-dispatches as the configured help key. All
@@ -89,6 +90,14 @@ pub(in crate::tui) fn handle_key_event(app: &mut App, key: KeyEvent) {
     // or `?` reaches the editor instead of the global fallback keys below.
     if app.current_view == View::BpfFilter {
         handle_bpf_filter_key(app, key);
+        return;
+    }
+
+    // The filter-detail key switches status line 3 between the F7 filter's
+    // summary and its full expression. The mode belongs to the session, so it
+    // is answered here, in every view, before any view sees the key.
+    if key.code == app.keymap.filter_detail {
+        app.view_filter_detail = app.view_filter_detail.toggled();
         return;
     }
 
@@ -137,6 +146,8 @@ pub(in crate::tui) fn handle_key_event(app: &mut App, key: KeyEvent) {
 
 /// Whether the user's keymap binds `code`. The global fallback keys (`v`,
 /// `n`, `?`, `F12`) answer only a key it does not, so a rebind always wins.
+/// `filter_detail` is not listed: it is answered before the fallbacks, so a
+/// key it binds never reaches them.
 pub(in crate::tui) fn keymap_binds(km: &crate::tui::theme::Keymap, code: KeyCode) -> bool {
     [
         km.quit,
@@ -2988,6 +2999,107 @@ mod mouse_capture_toggle_tests {
             app.mouse_capture_enabled,
             "rebound F12 must not also toggle mouse capture"
         );
+        Ok(())
+    }
+}
+
+/// Tests for the key that switches status line 3 between the F7 filter's
+/// summary and its full expression.
+#[cfg(test)]
+mod filter_detail_toggle_tests {
+    use super::*;
+    use crate::tui::ViewFilterDetail;
+    use crossterm::event::KeyModifiers;
+
+    /// Any error a test can return; `?` converts into it.
+    type TestError = Box<dyn std::error::Error>;
+
+    /// Press `code` with no modifier.
+    fn press(app: &mut App, code: KeyCode) {
+        handle_key_event(app, KeyEvent::new(code, KeyModifiers::NONE));
+    }
+
+    /// The default key flips the mode, and the mode holds while the operator
+    /// moves between views, since it belongs to the session.
+    #[test]
+    fn the_key_flips_the_mode_and_the_mode_holds_across_views() -> Result<(), TestError> {
+        let mut app = App::new_test();
+        assert_eq!(app.view_filter_detail, ViewFilterDetail::Summary);
+        press(&mut app, KeyCode::Char('F'));
+        assert_eq!(app.view_filter_detail, ViewFilterDetail::Full);
+        // Tab to the stream list and back: the mode is untouched.
+        press(&mut app, KeyCode::Tab);
+        assert_eq!(app.current_view, View::StreamList, "Tab opens the streams");
+        assert_eq!(app.view_filter_detail, ViewFilterDetail::Full);
+        press(&mut app, KeyCode::Char('F'));
+        assert_eq!(app.view_filter_detail, ViewFilterDetail::Summary);
+        press(&mut app, KeyCode::Tab);
+        assert_eq!(app.current_view, View::CallList);
+        assert_eq!(app.view_filter_detail, ViewFilterDetail::Summary);
+        Ok(())
+    }
+
+    /// The key works in each view that shows the filter on line 3.
+    #[test]
+    fn the_key_toggles_in_every_view_that_shows_the_filter() -> Result<(), TestError> {
+        for view in [
+            View::CallList,
+            View::StreamList,
+            View::RawMessage {
+                call_id: "x".to_string(),
+                message_index: 0,
+            },
+            View::Help,
+        ] {
+            let mut app = App::new_test();
+            app.current_view = view.clone();
+            press(&mut app, KeyCode::Char('F'));
+            assert_eq!(
+                app.view_filter_detail,
+                ViewFilterDetail::Full,
+                "no toggle in {view:?}"
+            );
+            assert_eq!(app.current_view, view, "the toggle moved the view");
+        }
+        Ok(())
+    }
+
+    /// A rebound key toggles and the default letter then does not.
+    #[test]
+    fn a_rebound_key_toggles_and_the_default_letter_then_does_not() -> Result<(), TestError> {
+        let mut app = App::new_test();
+        app.keymap.filter_detail = KeyCode::Char('W');
+        press(&mut app, KeyCode::Char('F'));
+        assert_eq!(app.view_filter_detail, ViewFilterDetail::Summary);
+        press(&mut app, KeyCode::Char('W'));
+        assert_eq!(app.view_filter_detail, ViewFilterDetail::Full);
+        Ok(())
+    }
+
+    /// The key is consumed by the toggle: a view that also binds it does not
+    /// act on the same press.
+    #[test]
+    fn the_toggle_consumes_the_key() -> Result<(), TestError> {
+        let mut app = App::new_test();
+        app.keymap.filter_detail = KeyCode::F(10);
+        press(&mut app, KeyCode::F(10));
+        assert_eq!(app.view_filter_detail, ViewFilterDetail::Full);
+        assert!(
+            !app.call_list.column_selector_open,
+            "the call list also acted on the key"
+        );
+        Ok(())
+    }
+
+    /// While a search query is being typed, the letter is part of the query.
+    #[test]
+    fn the_key_types_into_an_open_search() -> Result<(), TestError> {
+        let mut app = App::new_test();
+        press(&mut app, KeyCode::Char('/'));
+        assert!(app.search_active, "precondition: search is open");
+        press(&mut app, KeyCode::Char('F'));
+        assert_eq!(app.search_query, "F");
+        assert_eq!(app.view_filter_detail, ViewFilterDetail::Summary);
         Ok(())
     }
 }

@@ -185,13 +185,15 @@ fn a_sealed_container_opens_back_to_the_same_bytes_and_shows_nothing_in_clear()
         value["unprotected"]["uuid"],
         "019a0000-0000-8000-8000-000000000001"
     );
-    assert_eq!(value["unprotected"]["cty"], "application/vcon+json");
-    let protected: serde_json::Value =
-        serde_json::from_slice(&b64u(value["protected"].as_str().ok_or("protected")?)?)?;
     assert_eq!(
-        protected,
-        serde_json::json!({ "alg": "RSA-OAEP", "enc": "A256CBC-HS512" })
+        value["unprotected"]["cty"], "application/vcon",
+        "core-04 section 5.3.1"
     );
+    // core-04 sections 5.3.1 and 5.3.2: `enc` unprotected, `alg` per
+    // recipient, and no protected header left.
+    assert_eq!(value["unprotected"]["enc"], "A256CBC-HS512");
+    assert_eq!(value["recipients"][0]["header"]["alg"], "RSA-OAEP");
+    assert_eq!(value.get("protected"), None);
 
     let signed = vcon_jose::decrypt(&sealed, &fixture("fake_grp.key")?)?;
     let jws: serde_json::Value = serde_json::from_slice(&signed)?;
@@ -204,9 +206,12 @@ fn a_sealed_container_opens_back_to_the_same_bytes_and_shows_nothing_in_clear()
             .as_str()
             .ok_or("protected")?,
     )?)?;
-    assert_eq!(jws_protected["alg"], "RS256");
+    assert_eq!(jws_protected, serde_json::json!({ "alg": "RS256" }));
+    // core-04 section 5.2: `x5c` in the unprotected `header`.
     assert_eq!(
-        jws_protected["x5c"].as_array().map(Vec::len),
+        jws["signatures"][0]["header"]["x5c"]
+            .as_array()
+            .map(Vec::len),
         Some(3),
         "the whole chain, leaf first"
     );

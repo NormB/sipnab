@@ -258,6 +258,7 @@ impl Rig {
             auth: AuthHeader::read_file(&auth_file)?,
             timeout: Duration::from_secs(5),
             ca: None,
+            extra_ca: None,
             kind: StoreKind::Generic,
             backoff: BackoffPolicy::default(),
             limits: ReadLimits::default(),
@@ -2172,6 +2173,119 @@ fn an_unredacted_spool_keeps_its_call_id_name() -> Result<(), TestError> {
     assert!(
         digest_out.contains("  1-1966_10.0.2.20-1cc03f180ff8a774.vcon.json"),
         "{digest_out}"
+    );
+    Ok(())
+}
+
+/// An HTTPS store whose certificate `pki`'s CA issued, accepting every
+/// container.
+fn tls_store(pki: &tls_pki::TestPki) -> Result<FakeStore, TestError> {
+    use rustls::pki_types::pem::PemObject;
+    let chain = rustls::pki_types::CertificateDer::pem_file_iter(&pki.cert)?
+        .collect::<Result<Vec<_>, _>>()?;
+    let key = rustls::pki_types::PrivateKeyDer::from_pem_file(&pki.key)?;
+    let server = rustls::ServerConfig::builder_with_provider(Arc::new(
+        rustls::crypto::ring::default_provider(),
+    ))
+    .with_safe_default_protocol_versions()?
+    .with_no_client_auth()
+    .with_single_cert(chain, key)?;
+    FakeStore::start_with(
+        Arc::new(|_: &Recorded, _| Reply::Status(201, String::new())),
+        Some(Arc::new(server)),
+    )
+}
+
+/// `--vcon-forward-extra-ca` adds its CA to the host's bundle: a store its
+/// CA issued is reached, though the host's bundle (`SSL_CERT_FILE`, here
+/// another test CA) does not hold that CA, and without the flag the same
+/// store is refused. The flag replaces both `[vcon_forward] ca` and
+/// `[vcon_forward] extra_ca`: a config file naming a CA that did not issue
+/// the store's certificate does not stop it.
+#[test]
+fn the_binary_trusts_an_extra_ca_beside_the_host_bundle() -> Result<(), TestError> {
+    let pki = tls_pki::test_pki("vcon-forward-extra")?;
+    let host = tls_pki::test_pki("vcon-forward-host")?;
+    let store = tls_store(&pki)?;
+    let url = format!("https://{}/v1/vcons", store.addr);
+    let env = [("SSL_CERT_FILE", host.ca_file.as_str())];
+
+    let rig = Rig::new(&url, "Authorization")?;
+    rig.drop_in("a.vcon.json", &container("018bcfe5-31", RECORDING))?;
+    let argv: Vec<String> = forward_args(&rig, &url);
+    let argv: Vec<&str> = argv.iter().map(String::as_str).collect();
+    let (_, err, code) = sipnab_env(&argv, &env)?;
+    assert_eq!(
+        code,
+        Some(1),
+        "the host bundle alone trusted a test CA: {err}"
+    );
+
+    let mut args = forward_args(&rig, &url);
+    args.extend(["--vcon-forward-extra-ca".into(), pki.ca_file.clone()]);
+    let argv: Vec<&str> = args.iter().map(String::as_str).collect();
+    let (_, err, code) = sipnab_env(&argv, &env)?;
+    assert_eq!(code, Some(0), "{err}");
+    assert!(rig.settings.done_dir.join("a.vcon.json").exists(), "{err}");
+
+    let rig = Rig::new(&url, "Authorization")?;
+    rig.drop_in("b.vcon.json", &container("018bcfe5-32", RECORDING))?;
+    let config = rig.dir.path().join("forward.toml");
+    std::fs::write(
+        &config,
+        format!("[vcon_forward]\nca = \"{}\"\n", host.ca_file),
+    )?;
+    let mut args = forward_args(&rig, &url);
+    args.retain(|a| a != "--no-config");
+    args.extend([
+        "--config".into(),
+        config.display().to_string(),
+        "--vcon-forward-extra-ca".into(),
+        pki.ca_file.clone(),
+    ]);
+    let argv: Vec<&str> = args.iter().map(String::as_str).collect();
+    let (_, err, code) = sipnab_env(&argv, &env)?;
+    assert_eq!(
+        code,
+        Some(0),
+        "the flag did not replace [vcon_forward] ca: {err}"
+    );
+    Ok(())
+}
+
+/// The replacing CA and the adding one together are refused: from flags
+/// with exit 2, from the config file with exit 1, each naming both.
+#[test]
+fn the_binary_refuses_ca_and_extra_ca_together() -> Result<(), TestError> {
+    let rig = Rig::new("https://127.0.0.1:9/v1/vcons", "Authorization")?;
+    let mut args = forward_args(&rig, "https://127.0.0.1:9/v1/vcons");
+    args.extend([
+        "--vcon-forward-ca".into(),
+        "a.pem".into(),
+        "--vcon-forward-extra-ca".into(),
+        "b.pem".into(),
+    ]);
+    let argv: Vec<&str> = args.iter().map(String::as_str).collect();
+    let (_, err, code) = sipnab(&argv)?;
+    assert_eq!(code, Some(2), "{err}");
+    assert!(
+        err.contains("--vcon-forward-ca") && err.contains("--vcon-forward-extra-ca"),
+        "{err}"
+    );
+    let config = rig.dir.path().join("forward.toml");
+    std::fs::write(
+        &config,
+        "[vcon_forward]\nca = \"a.pem\"\nextra_ca = \"b.pem\"\n",
+    )?;
+    let mut args = forward_args(&rig, "https://127.0.0.1:9/v1/vcons");
+    args.retain(|a| a != "--no-config");
+    args.extend(["--config".into(), config.display().to_string()]);
+    let argv: Vec<&str> = args.iter().map(String::as_str).collect();
+    let (_, err, code) = sipnab(&argv)?;
+    assert_eq!(code, Some(1), "{err}");
+    assert!(
+        err.contains("[vcon_forward] ca") && err.contains("[vcon_forward] extra_ca"),
+        "{err}"
     );
     Ok(())
 }

@@ -428,6 +428,56 @@ fn a_redacted_container_keeps_its_pseudonyms() -> Result<(), TestError> {
 /// The publisher's own conforming example (core-04 Appendix A.4) is a valid
 /// container with a recording and no SIP. There is nothing to analyze, so
 /// naming it with `-I` fails the run and says why.
+/// `-I` refuses a container whose `critical` lists an extension sipnab does
+/// not support, naming it, and reads the rest of a set.
+///
+/// [Section 4.1.4 of draft-ietf-vcon-vcon-core-04](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-04#section-4.1.4):
+/// "An implementation that does not recognize or support the extensions listed
+/// in the critical parameter MUST NOT attempt to process or operate on the
+/// vCon, except to reject it or report unsupported content."
+#[test]
+fn a_container_with_an_unsupported_critical_extension_is_refused() -> Result<(), TestError> {
+    let dir = tmp_dir("critical")?;
+    let files = export_sample(&dir, &[])?;
+    let mut container: serde_json::Value = serde_json::from_slice(&std::fs::read(&files[0])?)?;
+    container["critical"] = serde_json::json!(["x-redaction"]);
+    std::fs::write(&files[0], container.to_string())?;
+
+    let out = run(&[
+        "-N",
+        "-I",
+        files[0].to_str().ok_or("utf-8")?,
+        "--json-dialogs",
+    ])?;
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        !out.status.success(),
+        "a named container sipnab must not read: {stderr}"
+    );
+    assert!(stderr.contains("x-redaction"), "{stderr}");
+    assert!(
+        json_lines(&String::from_utf8(out.stdout)?)
+            .iter()
+            .all(|v| v.get("msg_count").is_none()),
+        "nothing from it is analyzed"
+    );
+
+    let out = run(&["-N", "-I", dir.to_str().ok_or("utf-8")?, "--json-dialogs"])?;
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        out.status.success(),
+        "the other container is read: {stderr}"
+    );
+    assert!(stderr.contains("x-redaction"), "{stderr}");
+    let dialogs = json_lines(&String::from_utf8(out.stdout)?)
+        .into_iter()
+        .filter(|v| v.get("msg_count").is_some())
+        .count();
+    assert_eq!(dialogs, 1, "only the readable container's dialog");
+    std::fs::remove_dir_all(&dir)?;
+    Ok(())
+}
+
 #[test]
 fn a_valid_container_without_signaling_is_refused_with_the_reason() -> Result<(), TestError> {
     let dir = tmp_dir("appendix")?;

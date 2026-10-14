@@ -332,11 +332,7 @@ pub(in crate::tui) fn render_status_line3(frame: &mut ratatui::Frame, area: Rect
         vec![Span::styled(content, cyan)]
     } else {
         let yellow = Style::default().fg(app.theme.selected);
-        let filter_text = if app.active_filter_text.is_empty() {
-            FILTER_NONE
-        } else {
-            app.active_filter_text.as_str()
-        };
+        let (filter_text, detail_hint) = view_filter_text(app);
         // A search query persisted with Enter keeps narrowing the list, so
         // it must stay visible here — an invisible query makes the view
         // filter look broken ("148 dialogs, 4 shown").
@@ -345,16 +341,90 @@ pub(in crate::tui) fn render_status_line3(frame: &mut ratatui::Frame, area: Rect
         } else {
             format!("    Search: /{} (F9 clears)", app.search_query)
         };
-        vec![
-            Span::raw(L3_PREFIX),
-            Span::styled(filter_text.to_string(), yellow),
-            Span::styled(search_text, yellow),
-            Span::styled(stream_scope_text(app), yellow),
-        ]
+        fit_spans_to_cols(
+            vec![
+                Span::raw(L3_PREFIX),
+                Span::styled(filter_text, yellow),
+                Span::raw(detail_hint),
+                Span::styled(search_text, yellow),
+                Span::styled(stream_scope_text(app), yellow),
+            ],
+            w,
+        )
     };
 
     let line3 = Paragraph::new(Line::from(spans)).style(status_bar_style(&app.theme));
     frame.render_widget(line3, area);
+}
+
+/// The view filter as status line 3 shows it, and the hint that follows it.
+///
+/// A filter the F7 dialog applied carries the dialog's summary. In summary
+/// mode that summary is shown after the filter key's name, `F7: 7 methods,
+/// From~alice`, followed by the key that shows the full expression. In full
+/// mode, and for every filter that has no summary, the expression is shown as
+/// it is applied, with no hint. Pure.
+///
+/// # Returns
+/// `(filter text, hint)`; the hint is empty when nothing is abbreviated.
+fn view_filter_text(app: &App) -> (String, String) {
+    if app.active_filter_text.is_empty() {
+        return (FILTER_NONE.to_string(), String::new());
+    }
+    match (&app.active_filter_summary, app.view_filter_detail) {
+        (Some(summary), crate::tui::ViewFilterDetail::Summary) => (
+            format!("{}: {summary}", key_name(app.keymap.filter)),
+            format!(" · {} full", key_name(app.keymap.filter_detail)),
+        ),
+        _ => (app.active_filter_text.clone(), String::new()),
+    }
+}
+
+/// A key as the status line names it: `F7`, `F`, `Tab`.
+fn key_name(code: crate::tui::KeyCode) -> String {
+    match code {
+        crate::tui::KeyCode::F(n) => format!("F{n}"),
+        crate::tui::KeyCode::Char(c) => c.to_string(),
+        other => format!("{other:?}"),
+    }
+}
+
+/// Fit a row of spans into `cols` rendered columns, marking any cut with `…`.
+///
+/// Ratatui clips a line at the edge of its area, so a view filter wider than
+/// the terminal used to stop mid-expression with nothing to say it went on.
+/// The cut keeps each span's style and puts `…` in the last column, the way
+/// [`fit_bpf_to_cols`] marks the capture filter on line 2.
+///
+/// # Returns
+/// The spans unchanged when they fit; otherwise their leading columns and
+/// `…`, never wider than `cols`.
+fn fit_spans_to_cols(spans: Vec<Span<'static>>, cols: usize) -> Vec<Span<'static>> {
+    let total: usize = spans.iter().map(|s| display_cols(&s.content)).sum();
+    if total <= cols {
+        return spans;
+    }
+    // One column is reserved for the marker, so the cut is always visible.
+    let budget = cols.saturating_sub(1);
+    let mut used = 0usize;
+    let mut out = Vec::new();
+    for span in spans {
+        let mut kept = String::new();
+        for ch in span.content.chars() {
+            let w = display_cols(ch.encode_utf8(&mut [0u8; 4]));
+            if used + w > budget {
+                if cols > 0 {
+                    kept.push('…');
+                }
+                out.push(Span::styled(kept, span.style));
+                return out;
+            }
+            kept.push(ch);
+            used += w;
+        }
+        out.push(Span::styled(kept, span.style));
+    }
+    out
 }
 
 /// What a stream list `r` narrowed to a call adds to status line 3: which
@@ -1262,6 +1332,172 @@ mod tests {
             !line(&app)?.contains("Streams:"),
             "Tab lists every stream silently"
         );
+        Ok(())
+    }
+
+    /// An app with a heavy F7 selection applied: seven methods, both parties
+    /// and a source address.
+    fn app_with_heavy_f7_filter() -> Result<App, TestError> {
+        let mut app = App::new_test();
+        let d = &mut app.filter_dialog;
+        d.methods[0] = false;
+        d.methods[1] = false;
+        d.methods[6] = false;
+        d.sip_from = "alice".to_string();
+        d.sip_to = "bob".to_string();
+        d.source = "10.0.0.5".to_string();
+        crate::tui::controllers::apply_filter_dialog(&mut app);
+        if let Some(e) = app.filter_dialog.error.take() {
+            return Err(e.into());
+        }
+        Ok(app)
+    }
+
+    /// Many F7 selections stay readable at 80 columns in summary mode: the
+    /// whole summary and the key that expands it fit, and no DSL leaks in.
+    #[test]
+    fn many_f7_selections_stay_readable_at_80_columns() -> Result<(), TestError> {
+        let app = app_with_heavy_f7_filter()?;
+        assert!(
+            display_cols(&app.active_filter_text) > 80,
+            "precondition: the expression is wider than the row"
+        );
+        let row = status_row(&app, 80, render_status_line3)?;
+        assert_eq!(
+            row.trim_end(),
+            " View filter: F7: 7 methods, From~alice, To~bob, Src~10.0.0.5 · F full"
+        );
+        Ok(())
+    }
+
+    /// Full mode shows the expression exactly as it is applied.
+    #[test]
+    fn full_mode_shows_the_exact_expression() -> Result<(), TestError> {
+        let mut app = app_with_heavy_f7_filter()?;
+        app.view_filter_detail = crate::tui::ViewFilterDetail::Full;
+        let row = status_row(&app, 400, render_status_line3)?;
+        assert_eq!(
+            row.trim_end(),
+            format!("{L3_PREFIX}{}", app.active_filter_text)
+        );
+        Ok(())
+    }
+
+    /// A filter that did not come from the dialog is never summarized: with
+    /// no summary stored, summary mode shows the expression and no hint.
+    #[test]
+    fn a_typed_expression_is_never_summarized() -> Result<(), TestError> {
+        let mut app = App::new_test();
+        let typed = "method == 'INVITE' AND from.user =~ 'alice'";
+        crate::tui::controllers::apply_filter_expression(
+            &mut app,
+            Some(typed.to_string()),
+            (None, None),
+        );
+        assert_eq!(
+            app.view_filter_detail,
+            crate::tui::ViewFilterDetail::Summary
+        );
+        let row = status_row(&app, 80, render_status_line3)?;
+        assert_eq!(row.trim_end(), format!("{L3_PREFIX}{typed}"));
+        Ok(())
+    }
+
+    /// A line 3 wider than the terminal ends in `…` at the last column, in
+    /// either mode, instead of stopping where the screen does.
+    #[test]
+    fn an_overflowing_line3_ends_with_an_ellipsis() -> Result<(), TestError> {
+        let mut app = app_with_heavy_f7_filter()?;
+        app.view_filter_detail = crate::tui::ViewFilterDetail::Full;
+        let full = status_row(&app, 80, render_status_line3)?;
+        assert!(full.ends_with('…'), "full mode: {full:?}");
+        assert!(full.starts_with(" View filter: from.user"), "{full:?}");
+
+        app.view_filter_detail = crate::tui::ViewFilterDetail::Summary;
+        app.active_filter_summary = Some("Payload~".to_string() + &"x".repeat(100));
+        let summary = status_row(&app, 80, render_status_line3)?;
+        assert!(summary.ends_with('…'), "summary mode: {summary:?}");
+        assert!(
+            summary.starts_with(" View filter: F7: Payload~xxx"),
+            "{summary:?}"
+        );
+        Ok(())
+    }
+
+    /// A key is named the way the key bar names it.
+    #[test]
+    fn keys_are_named_as_the_key_bar_names_them() {
+        use crossterm::event::KeyCode;
+        assert_eq!(key_name(KeyCode::F(7)), "F7");
+        assert_eq!(key_name(KeyCode::Char('F')), "F");
+        assert_eq!(key_name(KeyCode::Tab), "Tab");
+    }
+
+    /// Spans that exactly fill the row are left whole; one column fewer cuts
+    /// them, keeping each span's style; one column holds only the marker and
+    /// zero columns hold nothing.
+    #[test]
+    fn spans_are_cut_at_the_row_edge_with_a_marker() {
+        let bold = Style::default().add_modifier(Modifier::BOLD);
+        let spans = || vec![Span::raw("abc"), Span::styled("defg", bold)];
+        let text = |v: &[Span<'static>]| v.iter().map(|s| s.content.as_ref()).collect::<String>();
+        assert_eq!(text(&fit_spans_to_cols(spans(), 7)), "abcdefg");
+        let cut = fit_spans_to_cols(spans(), 6);
+        assert_eq!(text(&cut), "abcde…");
+        assert_eq!(cut.last().map(|s| s.style), Some(bold), "{cut:?}");
+        assert_eq!(text(&fit_spans_to_cols(spans(), 1)), "…");
+        assert_eq!(text(&fit_spans_to_cols(spans(), 0)), "");
+    }
+
+    /// A line that fits is not marked as cut.
+    #[test]
+    fn a_line3_that_fits_has_no_ellipsis() -> Result<(), TestError> {
+        let mut app = App::new_test();
+        app.active_filter_text = "from.user =~ '1001'".to_string();
+        let row = status_row(&app, 80, render_status_line3)?;
+        assert!(!row.contains('…'), "{row:?}");
+        Ok(())
+    }
+
+    /// The search prompt, a status message and the mouse-capture reminder
+    /// still take line 3 over the filter, and the call flow keeps its mode
+    /// hints.
+    #[test]
+    fn the_overlays_keep_priority_over_the_summary() -> Result<(), TestError> {
+        let mut app = app_with_heavy_f7_filter()?;
+        app.search_active = true;
+        app.search_query = "abc".to_string();
+        assert_eq!(
+            status_row(&app, 80, render_status_line3)?.trim_end(),
+            " /abc"
+        );
+        app.search_active = false;
+        app.status_error = Some("Saved".to_string());
+        assert_eq!(
+            status_row(&app, 80, render_status_line3)?.trim_end(),
+            " Saved"
+        );
+        app.status_error = None;
+        app.mouse_capture_enabled = false;
+        assert!(status_row(&app, 80, render_status_line3)?.contains("Mouse capture OFF"));
+        app.mouse_capture_enabled = true;
+        app.current_view = View::CallFlow("call-1@test".to_string());
+        let flow = status_row(&app, 120, render_status_line3)?;
+        assert!(flow.contains("Detail: "), "{flow:?}");
+        assert!(!flow.contains("F7:"), "{flow:?}");
+        Ok(())
+    }
+
+    /// The summary names the keys the operator configured: the filter key
+    /// that opens the dialog and the key that expands the summary.
+    #[test]
+    fn the_summary_names_the_configured_keys() -> Result<(), TestError> {
+        let mut app = app_with_heavy_f7_filter()?;
+        app.keymap.filter = crossterm::event::KeyCode::Char('g');
+        app.keymap.filter_detail = crossterm::event::KeyCode::F(11);
+        let row = status_row(&app, 120, render_status_line3)?;
+        assert!(row.starts_with(" View filter: g: 7 methods"), "{row:?}");
+        assert!(row.trim_end().ends_with(" · F11 full"), "{row:?}");
         Ok(())
     }
 

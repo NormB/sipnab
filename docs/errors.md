@@ -815,6 +815,20 @@ A `[diagnosis]` threshold is 0, negative, infinity or NaN (not-a-number).
 
 **Exit code:** 1.
 
+### `[display] view_filter_detail must be one of summary, full, got {m:?}`
+
+`[display] view_filter_detail` names a display mode the terminal UI does not have.
+
+- `{m:?}` is the value in the file.
+- `summary` shows the filter-dialog (F7) part of the view filter as a short summary on status line 3.
+- `full` shows the whole expression.
+- sipnab checks this key only in builds that include the terminal UI.
+- The printed line starts with `invalid config value: `.
+
+**What to do:** Set `view_filter_detail` to `summary` or `full`, or remove the key.
+
+**Exit code:** 1.
+
 ### `[display] is not a table`
 
 You saved the column layout from the terminal UI (the `s` action in the F10 column selector). sipnab could not add `visible_columns` to the configuration file.
@@ -1494,11 +1508,34 @@ A whole-number `[vcon_fetch]` key is out of range. `{}` is the key (`timeout`, `
 
 **Exit code:** 1.
 
+### `[vcon_fetch] signer_sha256: {e}`
+
+`[vcon_fetch] signer_sha256` is not a SHA-256 fingerprint.
+
+- `{e}` reads `"VALUE": a SHA-256 fingerprint is 64 hex digits, plain or in colon-separated pairs`, with the value from the file.
+- The printed line starts with `invalid config value: `.
+
+**What to do:** Set `signer_sha256` to the signing certificate's fingerprint, for example the output of `openssl x509 -noout -fingerprint -sha256 -in signing.crt`, or remove the key.
+
+**Exit code:** 1.
+
 ### `[vcon_fetch] kind: {name:?} is not one of {}`
 
 `[vcon_fetch] kind` names a vCon store type sipnab does not know. A vCon is a standard JSON container for a conversation. `{name:?}` is the value in the file, and `{}` lists the accepted names: `generic`, `vcon-store`, `conserver` and `vcon-mcp`. The printed line starts with `invalid config value: `.
 
 **What to do:** Set `kind` to one of the listed names, or remove the key.
+
+**Exit code:** 1.
+
+### `[vcon] compress: {value:?} is not one of {}`
+
+The `[vcon]` section's `compress` key names a compression sipnab does not write.
+
+- `{value:?}` is the value in the file.
+- `{}` lists the accepted values: `none` and `gzip`.
+- The printed line starts with `invalid config value: `.
+
+**What to do:** Set `compress` to `none` or `gzip`, or remove the key.
 
 **Exit code:** 1.
 
@@ -1624,6 +1661,14 @@ The reason inside `[[vcon.rule]] '{name}' has {why}` for an `audio` value other 
 The reason inside `[[vcon.rule]] '{name}' has {why}` for a `grouping` value other than `leg` and `call`. `{other}` is the value given. See [Calls through a PBX or a B2BUA](vcon.md#calls-through-a-pbx-or-a-b2bua).
 
 **What to do:** Set `grouping` to `leg` (one container per dialog) or `call` (one per call).
+
+**Exit code:** 1.
+
+### `sealed_updates = '{other}'; use '{}', '{}' or '{}'`
+
+The reason inside `[[vcon.rule]] '{name}' has {why}` for a `sealed_updates` value other than `new-uuid`, `same-uuid` and `final-only`, which fill the three `{}`. `{other}` is the value given. See [When an encrypted call changes](vcon.md#when-an-encrypted-call-changes).
+
+**What to do:** Set `sealed_updates` to `new-uuid` (the default: each change is a new instance with a new uuid), `same-uuid` (rewrite the file under the same uuid) or `final-only` (write once, when the call ends), or remove the key.
 
 **Exit code:** 1.
 
@@ -3543,20 +3588,6 @@ The POST of container `{name}` to the store failed before the forwarder could re
 
 **Exit code:** None. This is a warning. The container stays in the spool, and the forwarder retries it with a delay that doubles each time. With `--vcon-forward-once`, the run exits 1.
 
-### `{}: no usable CA certificate`
-
-An `https://` store URL needs trusted CA certificates.
-
-- The host's CA bundle (from `SSL_CERT_FILE`, or the system bundle) holds certificates.
-- But `rustls`, the TLS library, accepted none of them.
-- `{}` is the path of the bundle.
-- This message applies to the host bundle only.
-- A CA file named with `--vcon-forward-ca` or `--vcon-fetch-ca` stops at the first certificate that `rustls` rejects. That case has a different message.
-
-**What to do:** Name the store's CA certificate with `--vcon-forward-ca` (forwarder) or `--vcon-fetch-ca` (fetcher), or point `SSL_CERT_FILE` at a valid PEM bundle.
-
-**Exit code:** 2.
-
 ### `'{shown}': put credentials in --vcon-forward-auth-file, not in the URL`
 
 The vCon store URL holds a user name or password before an `@` (`https://user:secret@host/...`).
@@ -3655,17 +3686,6 @@ The store answered 409 (it already holds this uuid), and you set a replace URL. 
 - Move the container back into the spool to send it again.
 
 **Exit code:** None. This is a warning, and the run continues. With `--vcon-forward-once`, the run exits 1.
-
-### `{}: rustls rejected a certificate: {e}`
-
-The CA file named with `--vcon-forward-ca` or `--vcon-fetch-ca` holds a certificate that `rustls`, the TLS library, does not accept as a trust anchor.
-
-- `{}` is the file.
-- `{e}` is the reason that `rustls` gives.
-
-**What to do:** Replace the file with a PEM file that holds only valid CA certificates for the store.
-
-**Exit code:** 2.
 
 ### `the answer is larger than {} bytes (--vcon-fetch-max-size); nothing was written`
 

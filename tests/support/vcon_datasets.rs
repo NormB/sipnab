@@ -401,6 +401,7 @@ pub fn fetch_round_trip(
         kind: StoreKind::Generic,
         auth: AuthHeader::read_file_for(&auth_file, "--vcon-fetch-auth-file", StoreKind::Generic)?,
         ca: None,
+        extra_ca: None,
         timeout: Duration::from_secs(30),
         limits: FetchLimits {
             response_head: 64 * 1024,

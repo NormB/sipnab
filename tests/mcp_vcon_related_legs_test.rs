@@ -46,8 +46,7 @@ fn export_vcon_names_the_other_leg() -> Result<(), TestError> {
             .iter()
             .find(|x| x["purpose"] == "sipnab-related-legs")
             .ok_or("a related-legs attachment")?;
-        let body: serde_json::Value =
-            serde_json::from_str(attachment["body"].as_str().ok_or("string body")?)?;
+        let body = &attachment["body"];
         assert_eq!(body["legs"][0]["uuid"], other["uuid"], "{body}");
         assert_eq!(body["legs"][0]["identifier_match"], true, "{body}");
     }

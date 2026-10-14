@@ -4918,6 +4918,20 @@ pub struct VconForwardArgs {
         requires = "vcon_forward"
     )]
     pub vcon_forward_ca: Option<std::path::PathBuf>,
+
+    /// Trust the CA certificates in this PEM file for an `https://` store in
+    /// addition to the host's CA bundle: the store's certificate is accepted
+    /// when the host's bundle or this file issued it. Use --vcon-forward-ca
+    /// instead to trust only the named file. Either flag replaces both
+    /// `[vcon_forward] ca` and `[vcon_forward] extra_ca`.
+    #[arg(
+        help_heading = "vCon forwarder",
+        long = "vcon-forward-extra-ca",
+        value_name = "FILE",
+        requires = "vcon_forward",
+        conflicts_with = "vcon_forward_ca"
+    )]
+    pub vcon_forward_extra_ca: Option<std::path::PathBuf>,
 }
 
 /// `vCon fetcher` flags: the mode that reads stored vCons from a store by
@@ -5059,6 +5073,20 @@ pub struct VconFetchArgs {
     )]
     pub vcon_fetch_ca: Option<std::path::PathBuf>,
 
+    /// Trust the CA certificates in this PEM file for an `https://` store in
+    /// addition to the host's CA bundle: the store's certificate is accepted
+    /// when the host's bundle or this file issued it. Use --vcon-fetch-ca
+    /// instead to trust only the named file. Either flag replaces both
+    /// `[vcon_fetch] ca` and `[vcon_fetch] extra_ca`.
+    #[arg(
+        help_heading = "vCon fetcher",
+        long = "vcon-fetch-extra-ca",
+        value_name = "FILE",
+        requires = "vcon_fetch",
+        conflicts_with = "vcon_fetch_ca"
+    )]
+    pub vcon_fetch_extra_ca: Option<std::path::PathBuf>,
+
     /// Decrypt each encrypted container (draft-ietf-vcon-vcon-core-04 section
     /// 5.3) with the RSA private key in this PEM file, verify its signature,
     /// and write the unsigned vCon inside. The file must be readable by its
@@ -5071,6 +5099,32 @@ pub struct VconFetchArgs {
         requires = "vcon_fetch"
     )]
     pub vcon_fetch_decrypt_key: Option<std::path::PathBuf>,
+
+    /// Write a decrypted container only when its signing certificate chains,
+    /// through the intermediates in its `x5c`, to a CA in this PEM file, each
+    /// certificate within its validity period. `system` uses the host's CA
+    /// bundle instead; write `./system` for a file of that name. Needs
+    /// --vcon-fetch-decrypt-key. Overrides `[vcon_fetch] signer_ca`.
+    #[arg(
+        help_heading = "vCon fetcher",
+        long = "vcon-fetch-signer-ca",
+        value_name = "FILE|system",
+        requires = "vcon_fetch"
+    )]
+    pub vcon_fetch_signer_ca: Option<std::path::PathBuf>,
+
+    /// Write a decrypted container only when its signing certificate has this
+    /// SHA-256 fingerprint: 64 hex digits, plain or colon-separated, either
+    /// case, as `openssl x509 -noout -fingerprint -sha256` prints it. Needs
+    /// --vcon-fetch-decrypt-key. Overrides `[vcon_fetch] signer_sha256`.
+    #[arg(
+        help_heading = "vCon fetcher",
+        long = "vcon-fetch-signer-sha256",
+        value_name = "HEX",
+        value_parser = parse_signer_sha256,
+        requires = "vcon_fetch"
+    )]
+    pub vcon_fetch_signer_sha256: Option<String>,
 }
 
 impl VconFetchArgs {
@@ -6311,14 +6365,13 @@ impl Cli {
         &self,
         config: &crate::config::Config,
     ) -> (Option<std::path::PathBuf>, Option<std::path::PathBuf>) {
-        if self.hep_args.hep_tls_ca.is_some() || self.hep_args.hep_tls_extra_ca.is_some() {
+        crate::config::trust_pair(
             (
-                self.hep_args.hep_tls_ca.clone(),
-                self.hep_args.hep_tls_extra_ca.clone(),
-            )
-        } else {
-            (config.hep.tls_ca.clone(), config.hep.tls_extra_ca.clone())
-        }
+                self.hep_args.hep_tls_ca.as_ref(),
+                self.hep_args.hep_tls_extra_ca.as_ref(),
+            ),
+            (config.hep.tls_ca.as_ref(), config.hep.tls_extra_ca.as_ref()),
+        )
     }
 
     /// The HEP listener's certificate and key: each flag, else its `[hep]`
@@ -6408,10 +6461,7 @@ impl Cli {
         {
             return Some((
                 Origin::ConfigFile,
-                "[hep] tls_ca and [hep] tls_extra_ca cannot both be set: tls_ca trusts \
-                 only its file, tls_extra_ca trusts its file in addition to the host's \
-                 CA bundle"
-                    .to_string(),
+                crate::config::trust_keys_conflict("hep", "tls_ca", "tls_extra_ca"),
             ));
         }
         let (hep_cert, hep_key) = self.hep_tls_files(config);
@@ -8148,6 +8198,12 @@ fn parse_fetch_timeout(s: &str) -> Result<u64, String> {
 /// `--vcon-fetch-max-size`: [`crate::config::FETCH_MAX_SIZE`]'s rule.
 fn parse_fetch_max_size(s: &str) -> Result<u64, String> {
     crate::config::FETCH_MAX_SIZE.parse(s)
+}
+
+/// `--vcon-fetch-signer-sha256`: [`crate::config::parse_sha256_fingerprint`]'s
+/// rule, the text kept as given.
+fn parse_signer_sha256(s: &str) -> Result<String, String> {
+    crate::config::parse_sha256_fingerprint(s).map(|_| s.to_owned())
 }
 
 /// `--vcon-fetch-max-response-head`:

@@ -127,8 +127,8 @@ Pick either and the caveat fails.
 So the caveat goes into two surfaces a consumer walks past anyway:
 
 - `capture_completeness` inside `analysis[0].body`, beside the diagnosis.
-  - `body` is a JSON-encoded **string**.
-  - So that is a path through the decoded text, not a path a reader can index directly. See below.
+  - `body` is the JSON object itself.
+  - So a reader indexes into it directly. See below.
 - An attachment with purpose `sipnab-capture-completeness`.
   - Its `party` index names the sipnab observer.
 
@@ -191,17 +191,23 @@ They did not come from what looked natural in Rust.
 - A hand-written test agreed with the wrong answer.
 - The same misreading produced both.
 
-**`body` is a String, never an object.**
+**`body` takes the shape its `encoding` defines.**
 
-- [Section 2.3.2 of the core draft](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-04#section-2.3.2) says so.
-- `vcon-server`'s own model enforces it.
-  - Hand its `Vcon` a `dict` and it JSON-encodes the value before anything else sees the attachment.
-- So [`json_text()`](https://github.com/NormB/sipnab/blob/main/src/output/vcon.rs) serializes every structured body to
-  text on the way out.
-- Every test that reads one parses it back.
-- A body typed as `serde_json::Value` round-trips fine through `serde_json`.
-  - It fails against a real store.
-  - That is exactly the class of defect a local test cannot see.
+- [Section 2.3.2 of the core draft](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-04#section-2.3.2)
+  defines `"json"` as "The value of the body parameter is a JSON value (object,
+  array, number, string, or one of the literals true, false, or null)".
+- The CDDL in [Appendix C](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-04#appendix-C)
+  states that `body` is any JSON value when `encoding` is `"json"`, and a string otherwise.
+- `Attachment::body` and `Analysis::body` are `serde_json::Value`.
+  - Every `json` body sipnab writes is the object itself.
+- Earlier releases wrote the object's text as a string.
+  - That is a JSON string value, not the object the encoding describes.
+- The readers still accept that shape.
+  - [`answer_body()`](https://github.com/NormB/sipnab/blob/main/src/app/vcon_enrich.rs) keeps a `json` body from an
+    enrichment service as whatever JSON value it is.
+  - The `-I` reader parses a string `json` body as JSON text.
+- The gate is `every_body_has_the_shape_its_encoding_defines`, in the ingest
+  contract test named under the schema gate below.
 
 **core-03 had two defects on this one field, and core-04 settled both.**
 

@@ -2276,6 +2276,21 @@ static SPECS: &[Spec] = &[
         ],
     ),
     (
+        "vcon-forward-extra-ca",
+        Kind::Text {
+            accept: &["x", " ", "0", "-1"],
+            reject: &[("", 2)],
+        },
+        &[
+            "--vcon-forward-url",
+            "http://127.0.0.1:9/x",
+            "--vcon-forward-auth-file",
+            "/nonexistent/auth",
+            "--vcon-forward",
+            "/var/tmp",
+        ],
+    ),
+    (
         "vcon-forward-auth",
         Kind::Text {
             accept: &["x", "Authorization: Bearer x"],
@@ -2458,6 +2473,51 @@ static SPECS: &[Spec] = &[
         ],
     ),
     (
+        "vcon-fetch-signer-ca",
+        Kind::Text {
+            accept: &["x", " ", "0", "-1", "system"],
+            reject: &[("", 2)],
+        },
+        &[
+            "--vcon-fetch-url",
+            "http://127.0.0.1:9/v/{uuid}",
+            "--vcon-fetch-auth-file",
+            "/nonexistent/auth",
+            "--vcon-fetch-decrypt-key",
+            "/nonexistent/key",
+            "--vcon-fetch",
+            "018bcfe5-6800-8a6b-a667-78f1c5213800",
+        ],
+    ),
+    (
+        "vcon-fetch-signer-sha256",
+        Kind::Text {
+            accept: &[
+                "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+                "FE:DC:BA:98:76:54:32:10:FE:DC:BA:98:76:54:32:10:FE:DC:BA:98:76:54:32:10:FE:DC:BA:98:76:54:32:10",
+            ],
+            reject: &[
+                ("", 2),
+                ("x", 2),
+                ("ab:cd", 2),
+                (
+                    "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef00",
+                    2,
+                ),
+            ],
+        },
+        &[
+            "--vcon-fetch-url",
+            "http://127.0.0.1:9/v/{uuid}",
+            "--vcon-fetch-auth-file",
+            "/nonexistent/auth",
+            "--vcon-fetch-decrypt-key",
+            "/nonexistent/key",
+            "--vcon-fetch",
+            "018bcfe5-6800-8a6b-a667-78f1c5213800",
+        ],
+    ),
+    (
         "vcon-fetch-overwrite",
         Kind::Switch,
         &[
@@ -2513,6 +2573,21 @@ static SPECS: &[Spec] = &[
     ),
     (
         "vcon-fetch-ca",
+        Kind::Text {
+            accept: &["x", " ", "0", "-1"],
+            reject: &[("", 2)],
+        },
+        &[
+            "--vcon-fetch-url",
+            "http://127.0.0.1:9/v/{uuid}",
+            "--vcon-fetch-auth-file",
+            "/nonexistent/auth",
+            "--vcon-fetch",
+            "018bcfe5-6800-8a6b-a667-78f1c5213800",
+        ],
+    ),
+    (
+        "vcon-fetch-extra-ca",
         Kind::Text {
             accept: &["x", " ", "0", "-1"],
             reject: &[("", 2)],

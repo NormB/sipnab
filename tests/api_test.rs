@@ -736,15 +736,12 @@ fn vcon_route_is_served_by_the_shipping_binary() -> Result<(), TestError> {
         "the container must name the Call-ID it was built from: {body}"
     );
 
-    // draft-ietf-vcon-vcon-core §2.3.2 makes `body` a String, so the read goes
-    // through a parse. A `Value` index here would silently yield `null` against
-    // a spec-conforming container and pass against a non-conforming one.
-    let analysis_body: serde_json::Value = serde_json::from_str(
-        body["analysis"][0]["body"]
-            .as_str()
-            .ok_or_else(|| format!("an analysis body must be a string: {body}"))?,
-    )
-    .map_err(|e| format!("the analysis body must parse: {e}: {body}"))?;
+    // Section 2.3.2 of draft-ietf-vcon-vcon-core-04 makes an `encoding: "json"`
+    // body the JSON value itself, so the report is read as the object.
+    let analysis_body = &body["analysis"][0]["body"];
+    if !analysis_body.is_object() {
+        return Err(format!("an analysis body must be the object itself: {body}").into());
+    }
     let note = analysis_body["capture_completeness"]["note"]
         .as_str()
         .ok_or_else(|| format!("no completeness note: {body}"))?;
@@ -2011,8 +2008,7 @@ fn the_vcon_route_names_the_other_leg() -> Result<(), TestError> {
             .iter()
             .find(|x| x["purpose"] == "sipnab-related-legs")
             .ok_or("a related-legs attachment")?;
-        let body: serde_json::Value =
-            serde_json::from_str(attachment["body"].as_str().ok_or("string body")?)?;
+        let body = &attachment["body"];
         assert_eq!(body["legs"][0]["uuid"], other["uuid"], "{body}");
         assert_eq!(body["legs"][0]["strategy"], "x_call_id", "{body}");
     }

@@ -4200,6 +4200,7 @@ dependencies = [
  "rmcp",
  "rsa",
  "rustls",
+ "rustls-webpki",
  "serde",
  "serde_json",
  "serial_test",

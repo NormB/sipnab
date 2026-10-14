@@ -631,6 +631,13 @@ impl SipnabMcp {
                          itself, not a string holding it",
                     ));
                 }
+                if let Some(why) = crate::capture::vcon_input::critical_refusal(&container) {
+                    return Err(errors::refuse_param(
+                        Reason::InvalidValue,
+                        "container",
+                        format!("sipnab must not validate this vCon container: {why}"),
+                    ));
+                }
                 self.validate_container(&container)?
             }
         };
@@ -1580,12 +1587,7 @@ mod tests {
         .await?;
         let entry = &v["containers"][0];
 
-        let inside: serde_json::Value = serde_json::from_str(
-            entry["container"]["analysis"][0]["body"]
-                .as_str()
-                .ok_or("the analysis body is JSON text")?,
-        )
-        .map_err(|e| format!("the analysis body parses: {e:?}"))?;
+        let inside = &entry["container"]["analysis"][0]["body"];
         let in_container = inside["capture_completeness"]["note"]
             .as_str()
             .ok_or("the container carries a note")?;
@@ -1992,12 +1994,7 @@ mod tests {
     /// The `capture_completeness` object the container itself carries.
     #[cfg(feature = "vcon")]
     fn carried_completeness(container: &serde_json::Value) -> Result<serde_json::Value, TestError> {
-        let body: serde_json::Value = serde_json::from_str(
-            container["analysis"][0]["body"]
-                .as_str()
-                .ok_or("the analysis body is JSON text")?,
-        )
-        .map_err(|e| format!("the analysis body parses: {e:?}"))?;
+        let body = &container["analysis"][0]["body"];
         Ok(body["capture_completeness"].clone())
     }
 
@@ -2621,6 +2618,36 @@ mod tests {
     ///
     /// The likely mistake is handing over the container as a STRING, which is
     /// what every surface here warns about in the other direction.
+    /// A container listing a critical extension sipnab does not support is
+    /// refused, naming it, rather than validated.
+    ///
+    /// [Section 4.1.4 of draft-ietf-vcon-vcon-core-04](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-04#section-4.1.4):
+    /// "An implementation that does not recognize or support the extensions
+    /// listed in the critical parameter MUST NOT attempt to process or operate
+    /// on the vCon, except to reject it or report unsupported content."
+    #[cfg(feature = "vcon")]
+    #[tokio::test]
+    async fn validate_vcon_refuses_an_unsupported_critical_extension() -> Result<(), TestError> {
+        let err = empty_server()
+            .validate_vcon(Parameters(ValidateVconParams {
+                container: Some(serde_json::json!({
+                    "vcon": "0.4.0",
+                    "uuid": "01928e10-193e-8231-b9a2-279e0d16bc46",
+                    "created_at": "2026-10-09T12:00:00Z",
+                    "critical": ["x-redaction"],
+                    "parties": [],
+                })),
+                ..ValidateVconParams::default()
+            }))
+            .await
+            .err()
+            .ok_or("a container sipnab cannot interpret must be refused")?;
+        let text = format!("{err:?}");
+        assert!(text.contains("x-redaction"), "{text}");
+        assert_eq!(code_of(err), -32602);
+        Ok(())
+    }
+
     #[tokio::test]
     async fn validate_vcon_refuses_a_container_that_is_not_an_object() -> Result<(), TestError> {
         let err = empty_server()

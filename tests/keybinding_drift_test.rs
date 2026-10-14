@@ -149,6 +149,7 @@ fn keymap_default_keys_are_documented() -> Result<(), TestError> {
         ("extended_flow", km.extended_flow),
         ("clear_calls", km.clear_calls),
         ("column_selector", km.column_selector),
+        ("filter_detail", km.filter_detail),
     ] {
         let tok = token_for(kc);
         assert!(
@@ -347,8 +348,9 @@ fn every_documented_view_key_is_handled() -> Result<(), TestError> {
     ];
     /// Keys handled globally in handle_key_event, valid in every view.
     fn is_global(kc: KeyCode) -> bool {
-        // '?' re-dispatches as the help key from any view.
-        matches!(kc, KeyCode::Char('v' | 'V' | 'n' | '?'))
+        // '?' re-dispatches as the help key from any view. The filter-detail
+        // key is answered before any view sees the key.
+        matches!(kc, KeyCode::Char('v' | 'V' | 'n' | '?')) || kc == Keymap::default().filter_detail
     }
 
     /// Map a help token to the KeyCode it advertises. `None` = not a plain

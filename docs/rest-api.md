@@ -4287,7 +4287,14 @@ The response is `schema_version` 2. Version 1 also had:
   Dialog Object core-03 allowed. core-04 no longer allows it.
 
 The body must be the JSON object itself, not a string holding it. A non-object
-is a `400`. The MCP tool `validate_vcon` runs the same `vcon_schema::validate`.
+is a `400`.
+
+A container whose `critical` lists an extension sipnab does not support is a `422` naming each one.
+
+- sipnab supports `sip-signaling` and `CC`.
+- [Section 4.1.4 of draft-ietf-vcon-vcon-core-04](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-04#section-4.1.4) forbids operating on such a container.
+
+The MCP tool `validate_vcon` runs the same `vcon_schema::validate`.
 
 ---
 
@@ -4389,7 +4396,8 @@ curl -s -X POST -H "Authorization: Bearer $SIPNAB_API_KEY" -H "Content-Type: app
   `rebuilt_from_vcon` finding.
 
 The body must be the JSON object itself, not a string holding it. A non-object
-is a `400`.
+is a `400`. A container whose `critical` lists an extension sipnab does not
+support answers `verdict: unreadable`, with a reason naming each one.
 
 The MCP tool [`analyze_vcon`](mcp-tools-vcon.md#analyze_vcon) runs the
 same `vcon_analysis::analyze_container` and answers with the same body. Its

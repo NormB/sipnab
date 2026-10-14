@@ -202,6 +202,18 @@ fn tui_mouse_capture_off(config: &Config) -> bool {
     config.display.mouse_capture == Some(false)
 }
 
+/// How status line 3 opens showing the F7 dialog's filter: `[display]
+/// view_filter_detail`. Unset keeps the summary. The config loader has already
+/// refused any other spelling.
+fn tui_view_filter_detail(config: &Config) -> crate::tui::ViewFilterDetail {
+    config
+        .display
+        .view_filter_detail
+        .as_deref()
+        .and_then(crate::tui::ViewFilterDetail::parse)
+        .unwrap_or_default()
+}
+
 /// Run interactive TUI mode: wraps stores in `Arc<RwLock>`, spawns the
 /// packet-processing thread that drives the shared pipeline, starts the
 /// API/metrics companions when configured, and runs the terminal main loop
@@ -746,6 +758,7 @@ pub fn run_tui_mode(
             // -c / --calls-only: the session opens filtered to calls (#474).
             calls_only: cli.mode_args.calls_only,
             mouse_capture_off: tui_mouse_capture_off(&config),
+            view_filter_detail: tui_view_filter_detail(&config),
         },
     )
     .err();
@@ -2048,6 +2061,25 @@ mod tests {
         let on: Config = toml::from_str("[display]\nmouse_capture = true\n")?;
         assert!(!super::tui_mouse_capture_off(&on));
         assert!(!super::tui_mouse_capture_off(&Config::default()));
+        Ok(())
+    }
+
+    /// `[display] view_filter_detail` sets how line 3 opens; unset is the
+    /// summary.
+    #[test]
+    fn the_view_filter_detail_key_is_read_from_the_config_file() -> Result<(), TestError> {
+        use crate::tui::ViewFilterDetail;
+        let full: Config = toml::from_str("[display]\nview_filter_detail = \"full\"\n")?;
+        assert_eq!(super::tui_view_filter_detail(&full), ViewFilterDetail::Full);
+        let summary: Config = toml::from_str("[display]\nview_filter_detail = \"summary\"\n")?;
+        assert_eq!(
+            super::tui_view_filter_detail(&summary),
+            ViewFilterDetail::Summary
+        );
+        assert_eq!(
+            super::tui_view_filter_detail(&Config::default()),
+            ViewFilterDetail::Summary
+        );
         Ok(())
     }
 

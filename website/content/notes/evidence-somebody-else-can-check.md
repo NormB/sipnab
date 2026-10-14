@@ -150,7 +150,7 @@ sent.
     `sipnab-capture-completeness`.
 
 ```bash
-jq '.analysis[0].body | fromjson | .capture_completeness | del(.node, .note)' codec-reject-synth-3513dc650e9bad6e.vcon.json
+jq '.analysis[0].body.capture_completeness | del(.node, .note)' codec-reject-synth-3513dc650e9bad6e.vcon.json
 ```
 
 ```text

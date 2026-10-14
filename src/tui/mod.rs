@@ -158,6 +158,13 @@ pub struct App {
     /// the time window too, so the displayed-list cache key invalidates when the
     /// window changes.
     active_filter_text: String,
+    /// The F7 dialog's selections in a few words, set when the dialog applies
+    /// the active filter. `None` when the filter came from anywhere else, so a
+    /// typed expression is never abbreviated.
+    active_filter_summary: Option<String>,
+    /// Whether status line 3 shows the dialog's filter as its summary or as
+    /// the full expression. Lives on the session, so it holds across views.
+    view_filter_detail: ViewFilterDetail,
     /// Active time-window lower bound (inclusive) — the filter dialog's `After`
     /// field, applied to the call list beside `active_filter`.
     active_time_after: Option<chrono::DateTime<chrono::Utc>>,
@@ -516,6 +523,8 @@ impl App {
             settings_dialog: SettingsDialogState::default(),
             active_filter: None,
             active_filter_text: String::new(),
+            active_filter_summary: None,
+            view_filter_detail: ViewFilterDetail::default(),
             active_time_after: None,
             active_time_before: None,
             status_error: None,
@@ -732,6 +741,7 @@ impl App {
     pub(crate) fn clear_active_filter(&mut self) {
         self.active_filter = None;
         self.active_filter_text.clear();
+        self.active_filter_summary = None;
         self.active_time_after = None;
         self.active_time_before = None;
         self.record_action("filter_cleared", "", "", "ok", "");
@@ -2369,6 +2379,25 @@ mod tests {
         assert!(!off.mouse_capture_enabled);
         let (d, s) = stores();
         assert!(TuiOptions::default().into_app(d, s).mouse_capture_enabled);
+        Ok(())
+    }
+
+    /// `[display] view_filter_detail = "full"` opens the session showing the
+    /// F7 dialog's expression; the default is the summary.
+    #[test]
+    fn view_filter_detail_reaches_the_session() -> Result<(), TestError> {
+        let (d, s) = stores();
+        let full = TuiOptions {
+            view_filter_detail: ViewFilterDetail::Full,
+            ..TuiOptions::default()
+        }
+        .into_app(d, s);
+        assert_eq!(full.view_filter_detail, ViewFilterDetail::Full);
+        let (d, s) = stores();
+        assert_eq!(
+            TuiOptions::default().into_app(d, s).view_filter_detail,
+            ViewFilterDetail::Summary
+        );
         Ok(())
     }
 

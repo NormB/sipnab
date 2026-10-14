@@ -232,6 +232,43 @@ impl FromToMode {
     }
 }
 
+/// How status line 3 shows the part of the view filter the F7 dialog built.
+///
+/// The dialog expands its selections into one DSL expression. Seven checked
+/// methods alone are over 150 columns, so the expression is wider than most
+/// terminals. `Summary` names each selection in a few words instead; `Full`
+/// shows the expression. A filter the operator typed as DSL is shown in full
+/// in both modes. Set with `[display] view_filter_detail`, toggled with the
+/// `filter_detail` key.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ViewFilterDetail {
+    /// One short token per dialog selection: `7 methods, From~alice`.
+    #[default]
+    Summary,
+    /// The expression the dialog built, exactly as it is applied.
+    Full,
+}
+
+impl ViewFilterDetail {
+    /// The other mode.
+    pub(in crate::tui) fn toggled(self) -> Self {
+        match self {
+            Self::Summary => Self::Full,
+            Self::Full => Self::Summary,
+        }
+    }
+
+    /// Parse a `[display] view_filter_detail` value. `None` for any other
+    /// spelling.
+    pub fn parse(s: &str) -> Option<Self> {
+        match s {
+            "summary" => Some(Self::Summary),
+            "full" => Some(Self::Full),
+            _ => None,
+        }
+    }
+}
+
 // ── Session wiring passed in from CLI/config ────────────────────────
 
 /// Name-resolution wiring passed into the TUI from CLI/config.
@@ -383,6 +420,9 @@ pub struct TuiOptions {
     pub calls_only: bool,
     /// `[display] mouse_capture = false`: open with mouse capture off (#484).
     pub mouse_capture_off: bool,
+    /// `[display] view_filter_detail`: how status line 3 opens showing the F7
+    /// dialog's filter.
+    pub view_filter_detail: ViewFilterDetail,
     /// The capture-mode label the status bar opens with (`Online (eth0)`,
     /// `Offline (call.pcap)`). `None` keeps the built-in `Online (any)`.
     pub capture_mode: Option<String>,
@@ -484,6 +524,7 @@ impl TuiOptions {
         app.set_notes(self.notes, self.notes_path);
         app.capture_meter = self.capture_meter;
         app.mouse_capture_enabled = !self.mouse_capture_off;
+        app.view_filter_detail = self.view_filter_detail;
         // Last, once the action trail is attached, so the applied filter is
         // recorded the way one applied from the dialog is.
         if self.calls_only {
@@ -1354,6 +1395,60 @@ impl FilterDialogState {
             None
         } else {
             Some(parts.join(" AND "))
+        }
+    }
+
+    /// The selections in a few words, for status line 3's summary mode.
+    ///
+    /// One token per field that is set, in the dialog's order. Typed text is
+    /// kept as typed, so `From~alice` names the From field and the text
+    /// matched. A `[filters]` name is kept as `@name`. The method checkboxes
+    /// become a count, or the method's name when one is checked. A time bound
+    /// is kept as typed after `after` or `before`.
+    ///
+    /// # Returns
+    /// `None` when nothing narrows the list: every field empty and every
+    /// method checked.
+    pub(in crate::tui) fn summary(&self) -> Option<String> {
+        let mut parts: Vec<String> = Vec::new();
+        let checked = self.methods.iter().filter(|&&on| on).count();
+        if checked == 0 {
+            parts.push("no methods".to_string());
+        } else if checked == 1 {
+            let i = self.methods.iter().position(|&on| on).unwrap_or_default();
+            parts.push(FILTER_METHODS[i].to_string());
+        } else if checked < self.methods.len() {
+            parts.push(format!("{checked} methods"));
+        }
+        for (label, text) in [
+            ("From", &self.sip_from),
+            ("To", &self.sip_to),
+            ("Src", &self.source),
+            ("Dst", &self.destination),
+            ("Payload", &self.payload),
+        ] {
+            if !text.is_empty() {
+                parts.push(format!("{label}~{text}"));
+            }
+        }
+        let header = self.header.trim();
+        if !header.is_empty() {
+            parts.push(format!("Header~{header}"));
+        }
+        parts.extend(
+            self.named
+                .split_whitespace()
+                .map(|word| format!("@{}", word.trim_start_matches('@'))),
+        );
+        for (label, text) in [("after", &self.time_after), ("before", &self.time_before)] {
+            if !text.is_empty() {
+                parts.push(format!("{label} {text}"));
+            }
+        }
+        if parts.is_empty() {
+            None
+        } else {
+            Some(parts.join(", "))
         }
     }
 

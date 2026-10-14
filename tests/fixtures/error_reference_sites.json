@@ -286,6 +286,13 @@
     },
     {
       "file": "src/config.rs",
+      "call": "Err(format!(\"{text:?}: {WANT}\"))",
+      "count": 2,
+      "carries": [],
+      "why": "parse_sha256_fingerprint in config.rs: {text:?} is the configured value and WANT is the const &str \"a SHA-256 fingerprint is 64 hex digits, plain or in colon-separated pairs\" in that function. The text reaches the user through the [vcon_fetch] signer_sha256 ConfigInvalid site, documented as `[vcon_fetch] signer_sha256: {e}`."
+    },
+    {
+      "file": "src/config.rs",
       "call": "Error::ConfigInvalid(problem)",
       "count": 1,
       "carries": [
@@ -444,9 +451,9 @@
     {
       "file": "src/app/bootstrap.rs",
       "call": "PlanError { exit_code: 1, message: e.to_string(), }",
-      "count": 10,
+      "count": 11,
       "carries": [],
-      "why": "All 10 occurrences in src/app/bootstrap.rs::load_config carry crate::Error from Config::load and the [section] validate() methods in src/config.rs; those build text as Error::ConfigInvalid(format!(..)) (not an extracted kind) and Config::load also carries io and toml library Display (ConfigRead/ConfigParse)."
+      "why": "All 11 occurrences in src/app/bootstrap.rs::load_config carry crate::Error from Config::load and the [section] validate() methods in src/config.rs; those build text as Error::ConfigInvalid(format!(..)) (not an extracted kind) and Config::load also carries io and toml library Display (ConfigRead/ConfigParse)."
     },
     {
       "file": "src/app/bootstrap.rs",
@@ -549,9 +556,9 @@
     {
       "file": "src/app/bootstrap.rs",
       "call": "warn!(\"{msg}\")",
-      "count": 8,
+      "count": 9,
       "carries": [],
-      "why": "7 occurrences are in-file helpers (hep_listen_ignored_warning, config_filter_file_notice, two_clocks_warning, composite_filter_warning, tunnel_omission_notice, explicit_filter_encap_notice, tunnel_ports_ignored_notice, degraded_run_warnings, comparison_gap), but one prints src/cli.rs::Cli::inert_key_warnings (format! with no site in another in-scope file)."
+      "why": "7 occurrences are in-file helpers (hep_listen_ignored_warning, config_filter_file_notice, two_clocks_warning, composite_filter_warning, tunnel_omission_notice, explicit_filter_encap_notice, tunnel_ports_ignored_notice, degraded_run_warnings, comparison_gap), one prints src/cli.rs::Cli::inert_key_warnings (format! with no site in another in-scope file), and one, in warn_vcon_rules, prints src/app/batch.rs::VconRule::sealed_updates_warning (a format! literal)."
     },
     {
       "file": "src/app/bootstrap.rs",

@@ -40,6 +40,8 @@ pub struct FetchSettings {
     pub auth: AuthHeader,
     /// The only CA file trusted for HTTPS; the host's bundle when `None`.
     pub ca: Option<PathBuf>,
+    /// A CA file trusted for HTTPS in addition to the host's bundle.
+    pub extra_ca: Option<PathBuf>,
     /// The connect, read and write timeout.
     pub timeout: Duration,
     /// How much of an answer is read.
@@ -127,6 +129,8 @@ pub struct FetchPlan {
     pub auth: AuthSource,
     /// The only CA file trusted for HTTPS.
     pub ca: Option<PathBuf>,
+    /// A CA file trusted for HTTPS in addition to the host's bundle.
+    pub extra_ca: Option<PathBuf>,
     /// The connect, read and write timeout.
     pub timeout: Duration,
     /// How much of an answer is read.
@@ -137,7 +141,35 @@ pub struct FetchPlan {
     pub overwrite: bool,
     /// The file holding the key that decrypts an encrypted container.
     pub decrypt_key: Option<AuthSource>,
+    /// The CA a decrypted container's signer must chain to.
+    pub signer_ca: Option<SignerCa>,
+    /// The SHA-256 fingerprint a decrypted container's signer must have.
+    pub signer_sha256: Option<[u8; 32]>,
 }
+
+/// Where the CA a signer must chain to comes from.
+#[derive(Clone, PartialEq, Eq)]
+pub enum SignerCa {
+    /// The host's CA bundle: the value `system`, and the setting that gave
+    /// it.
+    System(&'static str, crate::settings::Origin),
+    /// A PEM file, and the setting that named it.
+    File(AuthSource),
+}
+
+impl std::fmt::Debug for SignerCa {
+    /// The value alone: a flag and its key that name the same CA are the
+    /// same setting.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::System(..) => write!(f, "System"),
+            Self::File(source) => write!(f, "{source:?}"),
+        }
+    }
+}
+
+/// The value of `--vcon-fetch-signer-ca` that names the host's CA bundle.
+pub const SIGNER_CA_SYSTEM: &str = "system";
 
 /// The flag that names the uuids, quoted in their refusals.
 const MODE_FLAG: &str = "--vcon-fetch";
@@ -153,6 +185,39 @@ const DECRYPT_FLAG: &str = "--vcon-fetch-decrypt-key";
 
 /// The key that names the decrypt key, quoted in its refusals.
 const DECRYPT_KEY: &str = "[vcon_fetch] decrypt_key";
+
+/// The flag that names the signer's CA, quoted in its refusals.
+const SIGNER_CA_FLAG: &str = "--vcon-fetch-signer-ca";
+
+/// The key that names the signer's CA, quoted in its refusals.
+const SIGNER_CA_KEY: &str = "[vcon_fetch] signer_ca";
+
+/// The flag that pins the signer's fingerprint, quoted in its refusals.
+const SIGNER_SHA256_FLAG: &str = "--vcon-fetch-signer-sha256";
+
+/// The key that pins the signer's fingerprint, quoted in its refusals.
+const SIGNER_SHA256_KEY: &str = "[vcon_fetch] signer_sha256";
+
+/// The [`SignerCa`] `path` names: the host's bundle for `system`, else the
+/// file.
+fn signer_ca(path: &Path, from: &'static str, origin: crate::settings::Origin) -> SignerCa {
+    if path.as_os_str() == SIGNER_CA_SYSTEM {
+        SignerCa::System(from, origin)
+    } else {
+        SignerCa::File(AuthSource {
+            path: path.to_path_buf(),
+            from,
+            origin,
+        })
+    }
+}
+
+/// What the fetcher's trust refusals call its settings and its peer.
+const FETCH_TRUST: crate::tls_files::TrustNames<'static> = crate::tls_files::TrustNames {
+    ca: "--vcon-fetch-ca",
+    extra: "--vcon-fetch-extra-ca",
+    issuer: "the store's CA",
+};
 
 /// The value of `--vcon-fetch` that asks for the uuids on standard input.
 const STDIN: &str = "-";
@@ -280,13 +345,27 @@ impl FetchPlan {
         .map_err(flag)?;
         let size =
             pick_number(FETCH_MAX_SIZE, args.vcon_fetch_max_size, keys.max_size).map_err(flag)?;
-        Ok(Self {
+        let (ca, extra_ca) = crate::config::trust_pair(
+            (
+                args.vcon_fetch_ca.as_ref(),
+                args.vcon_fetch_extra_ca.as_ref(),
+            ),
+            (keys.ca.as_ref(), keys.extra_ca.as_ref()),
+        );
+        if ca.is_some() && extra_ca.is_some() {
+            return Err((
+                Origin::ConfigFile,
+                crate::config::trust_keys_conflict("vcon_fetch", "ca", "extra_ca"),
+            ));
+        }
+        let plan = Self {
             uuids,
             from_stdin,
             kind,
             url,
             auth,
-            ca: args.vcon_fetch_ca.clone().or_else(|| keys.ca.clone()),
+            ca,
+            extra_ca,
             timeout: Duration::from_secs(timeout),
             limits: FetchLimits {
                 response_head: usize::try_from(head).unwrap_or(usize::MAX),
@@ -297,6 +376,22 @@ impl FetchPlan {
                 .clone()
                 .unwrap_or_else(|| PathBuf::from(".")),
             overwrite: args.vcon_fetch_overwrite,
+            signer_ca: match (&args.vcon_fetch_signer_ca, &keys.signer_ca) {
+                (Some(path), _) => Some(signer_ca(path, SIGNER_CA_FLAG, Origin::CommandLine)),
+                (None, Some(path)) => Some(signer_ca(path, SIGNER_CA_KEY, Origin::ConfigFile)),
+                (None, None) => None,
+            },
+            signer_sha256: match (&args.vcon_fetch_signer_sha256, &keys.signer_sha256) {
+                (Some(text), _) => Some(
+                    crate::config::parse_sha256_fingerprint(text)
+                        .map_err(|e| flag(format!("{SIGNER_SHA256_FLAG}: {e}")))?,
+                ),
+                (None, Some(text)) => Some(
+                    crate::config::parse_sha256_fingerprint(text)
+                        .map_err(|e| (Origin::ConfigFile, format!("{SIGNER_SHA256_KEY}: {e}")))?,
+                ),
+                (None, None) => None,
+            },
             decrypt_key: match (&args.vcon_fetch_decrypt_key, &keys.decrypt_key) {
                 (Some(path), _) => Some(AuthSource {
                     path: path.clone(),
@@ -310,7 +405,40 @@ impl FetchPlan {
                 }),
                 (None, None) => None,
             },
-        })
+        };
+        plan.signer_check_refusal(args)?;
+        Ok(plan)
+    }
+
+    /// A signer check with no decryption key: only a decrypted container has
+    /// a signer to check. Refused from the flag (exit 2) when a signer flag
+    /// was given, else from the key (exit 1).
+    fn signer_check_refusal(
+        &self,
+        args: &crate::cli::VconFetchArgs,
+    ) -> Result<(), (crate::settings::Origin, String)> {
+        use crate::settings::Origin;
+        if self.decrypt_key.is_some() || (self.signer_ca.is_none() && self.signer_sha256.is_none())
+        {
+            return Ok(());
+        }
+        let from_flag =
+            args.vcon_fetch_signer_ca.is_some() || args.vcon_fetch_signer_sha256.is_some();
+        let (origin, named) = if from_flag {
+            (
+                Origin::CommandLine,
+                format!("{SIGNER_CA_FLAG} and {SIGNER_SHA256_FLAG} need {DECRYPT_FLAG}"),
+            )
+        } else {
+            (
+                Origin::ConfigFile,
+                format!("{SIGNER_CA_KEY} and {SIGNER_SHA256_KEY} need {DECRYPT_KEY}"),
+            )
+        };
+        Err((
+            origin,
+            format!("{named}: only a decrypted container has a signer to check"),
+        ))
     }
 
     /// Every uuid to fetch: the ones on the command line, then, when `-` was
@@ -348,6 +476,7 @@ impl FetchPlan {
             kind: self.kind,
             auth,
             ca: self.ca,
+            extra_ca: self.extra_ca,
             timeout: self.timeout,
             limits: self.limits,
             out_dir: self.out_dir,
@@ -355,12 +484,66 @@ impl FetchPlan {
             decrypt: match self.decrypt_key {
                 Some(key) => Some(Arc::new(
                     crate::output::vcon_jose::Opener::load(&key.path)
-                        .map_err(|e| (key.origin, format!("{}: {e}", key.from)))?,
+                        .map_err(|e| (key.origin, format!("{}: {e}", key.from)))?
+                        .trusting(signer_trust(self.signer_ca.as_ref(), self.signer_sha256)?),
                 )),
                 None => None,
             },
         })
     }
+}
+
+/// The signer checks `ca` and `sha256` ask for, the CA read.
+///
+/// # Errors
+///
+/// The CA file cannot be read or holds no usable CA certificate, or, for
+/// `system`, the host has no CA bundle; with the
+/// [`crate::settings::Origin`] of the setting.
+fn signer_trust(
+    ca: Option<&SignerCa>,
+    sha256: Option<[u8; 32]>,
+) -> Result<crate::output::vcon_jose::SignerTrust, (crate::settings::Origin, String)> {
+    use crate::output::vcon_jose::SignerTrust;
+    let trust = match ca {
+        None => SignerTrust::default(),
+        Some(SignerCa::System(from, origin)) => {
+            let bundle = crate::tls_files::host_ca_bundle().ok_or_else(|| {
+                (
+                    *origin,
+                    format!(
+                        "{from} system: no CA bundle found on this host; name a CA file instead"
+                    ),
+                )
+            })?;
+            let pem = std::fs::read_to_string(&bundle).map_err(|e| {
+                (
+                    *origin,
+                    format!("{from} system: '{}': {e}", bundle.display()),
+                )
+            })?;
+            SignerTrust::from_ca_pem(&pem, false).map_err(|e| {
+                (
+                    *origin,
+                    format!("{from} system: '{}': {e}", bundle.display()),
+                )
+            })?
+        }
+        Some(SignerCa::File(source)) => {
+            let refuse = |e: String| {
+                (
+                    source.origin,
+                    format!("{} '{}': {e}", source.from, source.path.display()),
+                )
+            };
+            let pem = std::fs::read_to_string(&source.path).map_err(|e| refuse(e.to_string()))?;
+            SignerTrust::from_ca_pem(&pem, true).map_err(refuse)?
+        }
+    };
+    Ok(match sha256 {
+        Some(pin) => trust.pinned(pin),
+        None => trust,
+    })
 }
 
 /// The read URL for `url` and a store of `kind`: its target holds `{uuid}`.
@@ -507,7 +690,11 @@ impl Fetcher {
             ));
         }
         let tls = if settings.url.tls {
-            Some(client_config(settings.ca.as_deref(), "--vcon-fetch-ca")?)
+            Some(client_config(
+                settings.ca.as_deref(),
+                settings.extra_ca.as_deref(),
+                &FETCH_TRUST,
+            )?)
         } else {
             None
         };
@@ -607,6 +794,15 @@ impl Fetcher {
         }
         let encrypted =
             crate::output::vcon_jose::form_of(&doc) == crate::output::vcon_jose::Form::Encrypted;
+        if !encrypted
+            && let Some(opener) = &self.settings.decrypt
+            && opener.checks_signer()
+        {
+            return Fetched::Failed(format!(
+                "{url}: the container is not encrypted, so it has no signer for \
+                 {SIGNER_CA_FLAG} or {SIGNER_SHA256_FLAG} to check; nothing was written"
+            ));
+        }
         if encrypted {
             let Some(opener) = &self.settings.decrypt else {
                 return match self.write(&path, &container) {
@@ -614,7 +810,7 @@ impl Fetcher {
                     Err(outcome) => outcome,
                 };
             };
-            let opened = match opener.open(&container) {
+            let opened = match opener.open(&container, self.settings.limits.max_size) {
                 Ok(o) => o,
                 Err(e) => {
                     return Fetched::Failed(format!(

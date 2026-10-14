@@ -46,9 +46,8 @@ fn related(container: &serde_json::Value) -> Result<Option<serde_json::Value>, T
         .find(|a| a["purpose"] == RELATED);
     match found {
         None => Ok(None),
-        Some(a) => Ok(Some(serde_json::from_str(
-            a["body"].as_str().ok_or("a string body")?,
-        )?)),
+        Some(a) if a["body"].is_object() => Ok(Some(a["body"].clone())),
+        Some(a) => Err(format!("the related-legs body is the object itself: {a}").into()),
     }
 }
 
@@ -320,7 +319,8 @@ fn attachment(container: &serde_json::Value, purpose: &str) -> Option<serde_json
         .as_array()?
         .iter()
         .find(|a| a["purpose"] == purpose)
-        .and_then(|a| serde_json::from_str(a["body"].as_str()?).ok())
+        .map(|a| a["body"].clone())
+        .filter(serde_json::Value::is_object)
 }
 
 /// Every party and dialog index the container holds points inside it.

@@ -705,7 +705,12 @@ fn lists() -> Result<Lists, TestError> {
 // inert --redact refusal (an `Error::CliValidation` literal in src/cli.rs),
 // and `PlanError::arg(unknown_reference_message(...))`, whose text is built
 // in src/sip/named_filters.rs, out of scope.
-const EXPECTED_UNRESOLVED: usize = 78;
+// 78 -> 79: src/app/bootstrap.rs `warn!("{msg}")` 8 -> 9, the call in
+// warn_vcon_rules that prints VconRule::sealed_updates_warning.
+// 79 -> 80: src/config.rs parse_sha256_fingerprint's
+// `Err(format!("{text:?}: {WANT}"))`, whose text joins a const, for
+// [vcon_fetch] signer_sha256.
+const EXPECTED_UNRESOLVED: usize = 80;
 
 /// How many distinct templates the scope prints (informational lines
 /// excluded). Pinned with `==` so a new or removed message is a decision.
@@ -739,7 +744,11 @@ const EXPECTED_UNRESOLVED: usize = 78;
 // write-after-enrichment failure, and the `audio` and `grouping` reasons),
 // src/app/vcon_enrich.rs 5 (two name refusals and three outcome details).
 // Nothing removed.
-const EXPECTED_TEMPLATES: usize = 450;
+// 450 -> 451: src/app/batch.rs 1, the `sealed_updates` reason carried by
+// vcon_rules' refuse closure. Nothing removed.
+// 451 -> 452: src/config.rs `[display] view_filter_detail must be one of
+// summary, full, got {m:?}`, the F7 filter summary's mode key.
+const EXPECTED_TEMPLATES: usize = 452;
 
 // ---------------------------------------------------------------------------
 // The page gates

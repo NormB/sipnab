@@ -20,11 +20,12 @@
 //!   `From`/`To` display name when the wire had one, and that name is an
 //!   unverified assertion by whoever sent the request, which is why every
 //!   party emits `validation: "none"` beside it.
-//! * **No `url` by-reference, ever.**
+//! * **No `url` by-reference that sipnab vouches for.**
 //!   [Section 2.4.1 of the core draft](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-04#section-2.4.1)
-//!   requires HTTPS, and sipnab hosts nothing: a URL here would be a promise
-//!   that a file is somewhere and stays there, made by a tool that is run
-//!   rather than operated. Media travels inline or it does not travel.
+//!   requires HTTPS, and sipnab hosts nothing. The one `url` a container
+//!   carries is a recording a rule with `audio = "url"` wrote beside it, named
+//!   under the `audio_url_base` the operator's storage serves, with the WAV
+//!   file's `content_hash`; sipnab does not check that the URL serves it.
 //!
 //! # Media: a `recording` Dialog Object is not a recording
 //!
@@ -119,6 +120,14 @@ pub const SIP_SIGNALING_EXTENSION: &str = "sip-signaling";
 /// values are agent/customer/supervisor/sme/thirdparty, and it permits others:
 /// "Other values for the role parameter MAY also be used."
 pub const CC_EXTENSION: &str = "CC";
+
+/// Every extension sipnab's containers declare, which are the extensions
+/// sipnab supports when it reads a container.
+///
+/// One list for both sides: the writer declares these in `extensions`, and a
+/// reader refuses a container whose `critical` names anything else
+/// ([`crate::capture::vcon_input::unsupported_critical`]).
+pub const DECLARED_EXTENSIONS: [&str; 2] = [SIP_SIGNALING_EXTENSION, CC_EXTENSION];
 
 /// `purpose` of the attachment carrying the per-message signaling trace.
 pub const MESSAGE_TRACE_PURPOSE: &str = "sip-message-trace";
@@ -400,6 +409,26 @@ pub struct Party {
     /// this is the only slot in the declared vocabulary that holds one.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub sip_user_agent: Option<String>,
+}
+
+/// `amended` ([core-04 section 4.1.9](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-04#section-4.1.9)) — the instance this
+/// one replaces.
+///
+/// A sealed container cannot be changed: "A signed or encrypted vCon cannot
+/// be modified without invalidating it. In these cases, to allow for adding of
+/// additional information a new vCon instance version MUST be created." A
+/// sealing rule with `sealed_updates = "new-uuid"` therefore writes each later
+/// version of a call as a new instance carrying this object.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct Amended {
+    /// The uuid of the prior instance.
+    ///
+    /// [Section 4.1.9 of the core draft](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-04#section-4.1.9):
+    /// "The prior vCon instance version SHOULD be referenced via the uuid of
+    /// the prior vCon instance version". The `url` and `content_hash` the
+    /// draft also allows are never set: sipnab knows no URL that serves the
+    /// prior instance.
+    pub uuid: String,
 }
 
 /// `redacted` ([core-04 section 4.1.8](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-04#section-4.1.8)) — content was withheld from this
@@ -695,26 +724,20 @@ pub struct Attachment {
     pub start: String,
     /// Always `application/json`.
     pub mediatype: &'static str,
-    /// Always `json` — the body is JSON TEXT, not base64url text.
+    /// Always `json`: the body is a JSON value, not base64url text.
     pub encoding: &'static str,
-    /// The attachment itself, as a JSON string a consumer parses.
+    /// The attachment itself, as the JSON value (an object on every
+    /// attachment sipnab writes).
     ///
-    /// A string rather than an object, and that is the format's rule rather
-    /// than a preference. [Section 2.3 of the core draft](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-04#section-2.3) pairs `body` with
-    /// an `encoding` of `base64url`, `json` or `none`, and the pairing only
-    /// means anything if the body is a string the encoding says how to read.
-    /// sipnab already agreed with itself on half of it: [`Dialog::body`] has
-    /// always carried base64url TEXT.
-    ///
-    /// Measured, not merely reasoned. A container exported from a fixture and
-    /// posted to a live conserver-backed store came back with every body
-    /// sipnab had sent as an object normalized to a string — identical once
-    /// parsed, and a different shape from the one it sent. A consumer reaching
-    /// for `body.blind_spots` on an object gets a field; on a string it gets
-    /// nothing, silently. The completeness caveat is the one thing
-    /// [section 4 of `docs/design/vcon.md`](https://github.com/NormB/sipnab/blob/main/docs/design/vcon.md#4-what-follows-for-the-design) says a reader must not miss,
-    /// which makes it the worst field to be wrong about.
-    pub body: String,
+    /// [Section 2.3.2 of the core draft](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-04#section-2.3.2)
+    /// defines the encoding this body declares: "\"json\": The value of the
+    /// body parameter is a JSON value (object, array, number, string, or one
+    /// of the literals true, false, or null) as defined in \[JSON\]." The CDDL
+    /// in [Appendix C](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-04#appendix-C)
+    /// says the same: "body is any JSON value when encoding is \"json\";
+    /// otherwise body is a string". A string holding the object's text is
+    /// therefore a JSON string value, not the object.
+    pub body: serde_json::Value,
 }
 
 /// What sipnab determined about this dialog.
@@ -741,11 +764,14 @@ pub struct Analysis {
     pub mediatype: Option<std::borrow::Cow<'static, str>>,
     /// `json` on sipnab's own; `json`, `none` or `base64url`.
     pub encoding: std::borrow::Cow<'static, str>,
-    /// The report, as a JSON string a consumer parses.
+    /// The report itself.
     ///
-    /// A string for the reason [`Attachment::body`] is one, and measured the
-    /// same way.
-    pub body: String,
+    /// With `encoding: "json"` this is the JSON value, as for
+    /// [`Attachment::body`]. With `none` or `base64url` it is a string, the
+    /// only shape
+    /// [section 2.3.2 of the core draft](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-04#section-2.3.2)
+    /// defines for those encodings.
+    pub body: serde_json::Value,
 }
 
 /// One blind spot, flattened out of a [`crate::analysis::Finding`].
@@ -1101,6 +1127,11 @@ pub struct Vcon {
     /// whose content a deny header suppressed. See [`Redacted`].
     #[serde(skip_serializing_if = "Option::is_none")]
     pub redacted: Option<Redacted>,
+    /// `amended` ([core-04 section 4.1.9](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-04#section-4.1.9)) — present
+    /// ONLY on a later instance a sealing rule wrote for a call it had already
+    /// sealed, naming the instance before it. See [`Amended`].
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub amended: Option<Amended>,
     /// Always `["sip-signaling"]`. `critical` is absent by construction —
     /// there is no field for it here, because nothing in this container may
     /// refuse itself to a generic reader.
@@ -1221,6 +1252,9 @@ impl crate::output::redact::Redact for Vcon {
             updated_at: _,
             subject,
             redacted,
+            // A uuid derived from this container's own uuid scheme (see
+            // `revision_uuid`), so it identifies nobody.
+            amended: _,
             // A fixed list of extension names.
             extensions: _,
             parties,
@@ -1290,12 +1324,11 @@ impl crate::output::redact::Redact for Vcon {
             if attachment.purpose != COMPLETENESS_PURPOSE {
                 continue;
             }
-            let Ok(mut body) = serde_json::from_str::<serde_json::Value>(&attachment.body) else {
-                continue;
-            };
-            if let (Some(map), Ok(value)) = (body.as_object_mut(), serde_json::to_value(&report)) {
+            if let (Some(map), Ok(value)) = (
+                attachment.body.as_object_mut(),
+                serde_json::to_value(&report),
+            ) {
                 map.insert("redaction".to_string(), value);
-                attachment.body = json_text(&body);
             }
         }
     }
@@ -1422,7 +1455,7 @@ impl crate::output::redact::Redact for Attachment {
             encoding: _,
             body,
         } = self;
-        *body = redact_json_text(body, r);
+        redact_body(body, r);
     }
 }
 
@@ -1438,26 +1471,30 @@ impl crate::output::redact::Redact for Analysis {
             encoding: _,
             body,
         } = self;
-        *body = redact_json_text(body, r);
+        redact_body(body, r);
     }
 }
 
-/// Redact a JSON document that travels as a string.
+/// Redact an [`Attachment::body`] or an [`Analysis::body`] in place.
 ///
-/// [`Attachment::body`] and [`Analysis::body`] are JSON TEXT rather than
-/// objects — the format's own rule, see [`Attachment::body`] — so redaction has
-/// to parse before it can walk. A body that will not parse is swept as free
-/// text instead of being passed through: it is still capture-derived, and
-/// "sipnab could not read its own attachment" is not a reason to publish it
-/// unredacted.
-fn redact_json_text(body: &str, r: &crate::output::redact::Redactor<'_>) -> String {
-    match serde_json::from_str::<serde_json::Value>(body) {
-        Ok(mut value) => {
+/// An object or an array is walked field by field. A string is either JSON
+/// text (an enrichment service may still send its `json` body that way, and
+/// a `none` body may hold JSON) or free text: JSON text is parsed, walked and
+/// written back as text, so its shape is kept; anything else, base64url
+/// included, is swept as free text instead of being passed through, because
+/// it is still capture-derived.
+fn redact_body(body: &mut serde_json::Value, r: &crate::output::redact::Redactor<'_>) {
+    let serde_json::Value::String(text) = body else {
+        crate::output::redact::redact_json(body, r);
+        return;
+    };
+    *text = match serde_json::from_str::<serde_json::Value>(text) {
+        Ok(mut value) if value.is_object() || value.is_array() => {
             crate::output::redact::redact_json(&mut value, r);
-            json_text(&value)
+            serde_json::to_string(&value).unwrap_or_else(|_| r.text(text))
         }
-        Err(_) => r.text(body),
-    }
+        _ => r.text(text),
+    };
 }
 
 /// Everything an export needs that is not in the dialog itself.
@@ -1758,7 +1795,8 @@ pub fn export_withheld_dialog_at(
         redacted: Some(Redacted {
             kind: CONTENT_WITHHELD,
         }),
-        extensions: vec![SIP_SIGNALING_EXTENSION, CC_EXTENSION],
+        amended: None,
+        extensions: DECLARED_EXTENSIONS.to_vec(),
         parties,
         dialog: vec![object],
         // No trace attachment: the trace IS the withheld content. The caveat
@@ -1921,7 +1959,7 @@ pub fn export_dialog_and_completeness(
             start: started,
             mediatype: "application/json",
             encoding: "json",
-            body: json_text(&serde_json::json!({ "legs": context.related_legs })),
+            body: serde_json::json!({ "legs": context.related_legs }),
         });
     }
 
@@ -1932,7 +1970,8 @@ pub fn export_dialog_and_completeness(
         updated_at: None,
         subject: subject_of(dialog),
         redacted: None,
-        extensions: vec![SIP_SIGNALING_EXTENSION, CC_EXTENSION],
+        amended: None,
+        extensions: DECLARED_EXTENSIONS.to_vec(),
         parties,
         dialog: dialog_objects,
         attachments,
@@ -2022,6 +2061,7 @@ pub fn merge_call_legs(
             updated_at: _,
             subject: _,
             redacted: leg_redacted,
+            amended: _,
             extensions: leg_extensions,
             parties: leg_parties,
             dialog: leg_dialog,
@@ -2094,7 +2134,7 @@ pub fn merge_call_legs(
         start,
         mediatype: "application/json",
         encoding: "json",
-        body: json_text(&body),
+        body,
     });
 
     Some(Vcon {
@@ -2104,6 +2144,7 @@ pub fn merge_call_legs(
         updated_at: None,
         subject,
         redacted,
+        amended: None,
         extensions,
         parties,
         dialog,
@@ -2631,7 +2672,13 @@ fn dialog_object(dialog: &SipDialog, start: String) -> Dialog {
     // -- the call succeeded, no final response was seen, or the final response
     // was a redirect -- and all three share the same property: sipnab observed
     // no failure, so no failure may be reported.
-    let failure = dialog.final_status_code().and_then(failure_disposition);
+    let caller_canceled = dialog
+        .messages
+        .iter()
+        .any(|m| m.is_request && m.method == Some(crate::sip::SipMethod::Cancel));
+    let failure = dialog
+        .final_status_code()
+        .and_then(|code| failure_disposition(code, caller_canceled));
 
     Dialog {
         // At construction this object carries no content: it is the core-04
@@ -2748,8 +2795,22 @@ fn observed_start(dialog: &SipDialog) -> String {
 /// dispositions describe an OUTCOME a person would recognize, and there is no
 /// disposition that means "403 Forbidden"; mapping every code to its own
 /// invented string would produce a vocabulary no consumer implements.
-fn failure_disposition(code: u16) -> Option<&'static str> {
+///
+/// `487 Request Terminated` after a CANCEL sipnab observed (`caller_canceled`)
+/// is the caller giving up while the call rang:
+/// [section 4.3.11 of the core draft](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-04#section-4.3.11)
+/// defines "\"no-answer\" - a call or connection was attempted, but no one
+/// answered or accepted the connection". It is not "hung-up", which the same
+/// section defines as "a call or connection was made, but the party hung-up
+/// before any conversation occurred": the call was never made. A 487 without
+/// an observed CANCEL stays "failed", because "If the reason that the call or
+/// conversation failed is not known ... the disposition value \"failed\"
+/// SHOULD be used". sipnab never emits "hung-up": an answered call is not an
+/// `incomplete` Dialog Object, and the section says disposition "SHOULD NOT
+/// be present for other dialog types".
+fn failure_disposition(code: u16, caller_canceled: bool) -> Option<&'static str> {
     match code {
+        487 if caller_canceled => Some("no-answer"),
         486 | 600 => Some("busy"),
         503 => Some("congestion"),
         408 | 480 => Some("no-answer"),
@@ -2816,13 +2877,13 @@ fn message_trace_attachment(dialog: &SipDialog, observer: usize, start: String) 
         // available. `schema_version` and `sip_call_id` are what existing
         // sipnab consumers already read, and dropping them would break those
         // for a draft that is still individual and at -00.
-        body: json_text(&serde_json::json!({
+        body: serde_json::json!({
             "version": DIAGNOSIS_SCHEMA_VERSION,
             "call_id": dialog.call_id,
             "schema_version": DIAGNOSIS_SCHEMA_VERSION,
             "sip_call_id": dialog.call_id,
             "messages": messages,
-        })),
+        }),
     }
 }
 
@@ -2927,12 +2988,12 @@ fn withheld_caveat(note: &str, exported_at: DateTime<Utc>) -> Attachment {
         start: exported_at.to_rfc3339(),
         mediatype: "application/json",
         encoding: "json",
-        body: json_text(&serde_json::json!({
+        body: serde_json::json!({
             "note": note,
             "content_withheld": true,
             "sipnab_version": env!("CARGO_PKG_VERSION"),
             "node": node_name(),
-        })),
+        }),
     }
 }
 
@@ -2949,7 +3010,7 @@ fn completeness_attachment(
         start,
         mediatype: "application/json",
         encoding: "json",
-        body: json_text(&to_value_or_note(completeness)),
+        body: to_value_or_note(completeness),
     }
 }
 
@@ -3028,7 +3089,7 @@ fn report(
         schema: Some(ANALYSIS_SCHEMA.into()),
         mediatype: Some("application/json".into()),
         encoding: "json".into(),
-        body: json_text(&body),
+        body,
     }
 }
 
@@ -3046,17 +3107,6 @@ fn to_value_or_note<T: Serialize>(value: &T) -> serde_json::Value {
             "error": format!("sipnab could not serialize this field: {e}"),
         })
     })
-}
-
-/// A JSON value as the TEXT an `encoding: "json"` body carries.
-///
-/// Never fails in practice — the input is already a `serde_json::Value`, which
-/// serializes — but the fallback is a real message rather than an unwrap,
-/// because a body that vanished would leave an attachment whose purpose
-/// promises something the container does not hold.
-fn json_text(value: &serde_json::Value) -> String {
-    serde_json::to_string(value)
-        .unwrap_or_else(|e| format!("{{\"error\":\"sipnab could not serialize this body: {e}\"}}"))
 }
 
 /// Read the completeness of a capture off its facts, its analysis, and what
@@ -3308,10 +3358,14 @@ fn media_clause(outcome: MediaOutcome) -> &'static str {
 /// Laid out like a UUIDv7 — a 48-bit millisecond timestamp, a 12-bit `rand_a`,
 /// then a 62-bit `rand_b` — with two deliberate choices:
 ///
-/// * **`rand_b` is host-derived**, taken from the high 62 bits of a digest of
-///   the node name, which is what the draft asks for. Two containers written
-///   on one box therefore share those bits: that is the point, not a leak of
-///   entropy.
+/// * **`rand_b` is keyed on the node, the dialog and the capture**: the high 62
+///   bits of SHA-256 over the node name, the Call-ID (or a call's leg
+///   Call-IDs) and the capture identity. The draft asks for a digest of the
+///   host name alone; mixing in the dialog and the capture keeps two dialogs
+///   that opened in the same millisecond on one node apart, and the value is
+///   still a function of stable inputs. Keying it on the node alone, as
+///   releases before 0.5.125 did, left `rand_a`'s 12 bits as the only
+///   difference between such dialogs.
 /// * **The timestamp is the DIALOG's, not the export's.** With the export
 ///   clock in there, re-exporting one dialog would mint a new identifier every
 ///   time, and a consumer deduplicating on `uuid` would accumulate copies of
@@ -3323,10 +3377,10 @@ fn media_clause(outcome: MediaOutcome) -> &'static str {
 ///
 /// # What this identifier does not promise
 ///
-/// Uniqueness beyond 12 bits for two dialogs that opened in the same
-/// millisecond on the same node. That is inherent in the draft's layout — a
-/// host-derived `rand_b` spends the entropy a v7 would have used — and it is
-/// stated here rather than discovered by a consumer that assumed otherwise.
+/// Randomness. Two dialogs that opened in the same millisecond on the same
+/// node differ in the 74 digest bits, which separates them unless two of
+/// those digests collide; nothing random is mixed in, so the same dialog from
+/// the same capture on the same node always yields the same value.
 ///
 /// # Why SHA-256 and not SHA-1
 ///
@@ -3419,6 +3473,72 @@ fn uuid_for(started: DateTime<Utc>, key: &str, capture_id: &str) -> String {
     format_uuid(&bytes)
 }
 
+/// The uuid of the `revision`-th later instance of the container whose first
+/// instance has uuid `base`; revision 0 is `base` itself.
+///
+/// A rule that seals its containers with `sealed_updates = "new-uuid"` writes
+/// each later version of a call as a new instance, because
+/// [section 4.1.9 of the core draft](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-04#section-4.1.9)
+/// says "A signed or encrypted vCon cannot be modified without invalidating
+/// it. In these cases, to allow for adding of additional information a new
+/// vCon instance version MUST be created", and
+/// [section 4.1.2](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-04#section-4.1.2)
+/// says "The UUID value MUST be globally unique".
+///
+/// The layout is [`dialog_uuid`]'s, with these inputs:
+///
+/// * the 48-bit timestamp is `base`'s, so every instance of one call carries
+///   the call's start;
+/// * `rand_a` (12 bits) and `rand_b` (62 bits) are the leading bits of
+///   SHA-256 over `amended`, `base` and the revision number as four
+///   big-endian bytes, separated by 0x1e.
+///
+/// The value is therefore a function of the first instance's uuid and the
+/// revision number alone: the same call from the same capture, rewritten the
+/// same number of times, yields the same chain of uuids on every run, and the
+/// first instance's determinism properties carry over. Two revisions of one
+/// call differ in at least the 74 hashed bits.
+#[must_use]
+pub fn revision_uuid(base: &str, revision: u32) -> String {
+    if revision == 0 {
+        return base.to_owned();
+    }
+    let hex: Vec<u8> = base
+        .bytes()
+        .filter(u8::is_ascii_hexdigit)
+        .map(|c| match c {
+            b'0'..=b'9' => c - b'0',
+            b'a'..=b'f' => c - b'a' + 10,
+            _ => c - b'A' + 10,
+        })
+        .collect();
+    let mut bytes = [0u8; 16];
+    // The first 12 hex digits are the 48-bit timestamp. A base that is not a
+    // uuid keeps a zero timestamp; the hashed bits still separate revisions.
+    if hex.len() == 32 {
+        for (i, byte) in bytes.iter_mut().take(6).enumerate() {
+            *byte = (hex[2 * i] << 4) | hex[2 * i + 1];
+        }
+    }
+    let mut seed = Sha256::new();
+    seed.update(b"amended");
+    seed.update([0x1e]);
+    seed.update(base.as_bytes());
+    seed.update([0x1e]);
+    seed.update(revision.to_be_bytes());
+    let seed = seed.finalize();
+    let rand_a = u16::from_be_bytes([seed[0], seed[1]]) >> 4;
+    // Version 8 in the high nibble of octet 6, per RFC 9562 §4.2.
+    bytes[6] = 0x80 | u8::try_from(rand_a >> 8).unwrap_or(0);
+    bytes[7] = u8::try_from(rand_a & 0xff).unwrap_or(0);
+    let mut top = [0u8; 8];
+    top.copy_from_slice(&seed[2..10]);
+    let rand_b = u64::from_be_bytes(top) >> 2;
+    // Variant `10` in the two high bits of octet 8, per RFC 9562 §4.1.
+    bytes[8..].copy_from_slice(&(0x8000_0000_0000_0000_u64 | rand_b).to_be_bytes());
+    format_uuid(&bytes)
+}
+
 /// The capture identity a uuid is seeded from, with one file spelled one way.
 ///
 /// `capture_id` is the SOURCE half of a frame pointer -- the path exactly as
@@ -3497,15 +3617,15 @@ mod tests {
 
     /// A `json`-encoded body, parsed.
     ///
-    /// [Section 2.3.2 of the core draft](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-04#section-2.3.2) makes `body` a STRING, so a read
-    /// goes through here rather than indexing a `Value` that is not an object.
-    /// The conserver's own model says the same in a comment: a caller handing
-    /// it a dict gets it JSON-encoded before anything else sees the attachment.
+    /// [Section 2.3.2 of the core draft](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-04#section-2.3.2)
+    /// makes an `encoding: "json"` body the JSON value itself, and every body
+    /// sipnab writes is an object, so a string here is refused.
     fn body_of(node: &serde_json::Value) -> Result<serde_json::Value, TestError> {
-        let text = node["body"]
-            .as_str()
-            .ok_or_else(|| format!("a json body must be a string: {node}"))?;
-        Ok(serde_json::from_str(text).map_err(|e| format!("body must parse: {e}: {text}"))?)
+        let body = &node["body"];
+        if !body.is_object() {
+            return Err(format!("a json body must be the object itself: {node}").into());
+        }
+        Ok(body.clone())
     }
 
     use super::*;
@@ -3668,7 +3788,7 @@ mod tests {
             .iter()
             .find(|a| a.purpose == CALL_LEGS_PURPOSE)
             .ok_or("a call-legs attachment")?;
-        let body: serde_json::Value = serde_json::from_str(&legs.body)?;
+        let body = &legs.body;
         assert_eq!(body["ties"][0]["dialogs"], serde_json::json!([0, objects]));
         assert_eq!(
             body["legs"],
@@ -3702,9 +3822,11 @@ mod tests {
     /// The analysis body parsed out of an exported container.
     fn report_body(v: &Vcon) -> Result<serde_json::Value, TestError> {
         let json: serde_json::Value = serde_json::from_str(&serde_json::to_string(v)?)?;
-        Ok(serde_json::from_str(
-            json["analysis"][0]["body"].as_str().ok_or("string body")?,
-        )?)
+        let body = &json["analysis"][0]["body"];
+        if !body.is_object() {
+            return Err(format!("the analysis body is the object itself: {body}").into());
+        }
+        Ok(body.clone())
     }
 
     /// One PCMU stream's summary, as `GET /v1/streams` reports it.
@@ -4232,6 +4354,71 @@ mod tests {
         Ok(())
     }
 
+    /// A later instance's uuid is a function of the first instance's uuid
+    /// and the revision number alone: revision 0 is the first instance, each
+    /// later revision differs from every other, the value is a well-formed
+    /// UUIDv8, and it keeps the first instance's 48-bit timestamp.
+    ///
+    /// [Section 4.1.2 of the core draft](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-04#section-4.1.2):
+    /// "The UUID value MUST be globally unique."
+    #[test]
+    fn a_revision_uuid_is_new_deterministic_and_well_formed() {
+        let base = "018bcfe5-6800-8a6b-a667-78f1c5213800";
+        assert_eq!(
+            revision_uuid(base, 0),
+            base,
+            "revision 0 is the first instance"
+        );
+        let chain: Vec<String> = (0..4).map(|n| revision_uuid(base, n)).collect();
+        for (i, a) in chain.iter().enumerate() {
+            for b in &chain[i + 1..] {
+                assert_ne!(a, b, "two revisions share a uuid");
+            }
+            assert_eq!(&a[..13], &base[..13], "the timestamp is kept");
+            assert_eq!(&a[14..15], "8", "version 8");
+            assert!(matches!(&a[19..20], "8" | "9" | "a" | "b"), "variant 10");
+            assert_eq!(a.len(), 36);
+        }
+        assert_eq!(
+            chain,
+            (0..4).map(|n| revision_uuid(base, n)).collect::<Vec<_>>()
+        );
+        assert_ne!(
+            revision_uuid(base, 1),
+            revision_uuid("018bcfe5-6800-8a6b-a667-78f1c5213801", 1),
+            "the derivation is keyed on the first instance's uuid"
+        );
+    }
+
+    /// Every `encoding: "json"` body is the JSON value itself, never a string
+    /// holding JSON text.
+    ///
+    /// [Section 2.3.2 of the core draft](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-04#section-2.3.2):
+    /// "\"json\": The value of the body parameter is a JSON value (object,
+    /// array, number, string, or one of the literals true, false, or null)".
+    /// sipnab's bodies are objects, so a string in that position is the
+    /// object's text, which a consumer would have to parse a second time.
+    #[test]
+    fn a_json_encoded_body_is_the_json_value_not_its_text() -> Result<(), TestError> {
+        let v = export_with(&dialog_with(&[response(200, "OK")?])?, &clean_facts())?;
+        let json: serde_json::Value = serde_json::from_str(&serde_json::to_string(&v)?)?;
+        let mut seen = 0;
+        for key in ["attachments", "analysis"] {
+            for object in json[key].as_array().ok_or("an array")? {
+                if object["encoding"] == "json" {
+                    seen += 1;
+                    assert!(
+                        object["body"].is_object(),
+                        "a {key} body with encoding json must be the object, not its text: {}",
+                        object["body"]
+                    );
+                }
+            }
+        }
+        assert!(seen >= 2, "the export carries json bodies to check: {json}");
+        Ok(())
+    }
+
     /// The counts reach the container as fields, not only as prose.
     ///
     /// A consumer branching on this should not have to parse an English
@@ -4243,11 +4430,7 @@ mod tests {
         facts.dialogs_suppressed_by_deny = 5;
         let v = export_with(&dialog_with(&[response(200, "OK")?])?, &facts)?;
         let json: serde_json::Value = serde_json::from_str(&serde_json::to_string(&v)?)?;
-        let c = &json["analysis"][0]["body"];
-        let body: serde_json::Value = serde_json::from_str(
-            c.as_str()
-                .ok_or_else(|| format!("an analysis body is a string: {json}"))?,
-        )?;
+        let body = &json["analysis"][0]["body"];
         let completeness = &body["capture_completeness"];
         assert_eq!(
             completeness["gate_closed_during_run"], true,
@@ -6046,6 +6229,83 @@ mod tests {
             "a 3xx redirect did not fail: {}",
             v["dialog"][0]
         );
+        Ok(())
+    }
+
+    /// A CANCEL for the [`invite`] transaction: the caller giving up.
+    fn cancel() -> Result<crate::sip::SipMessage, TestError> {
+        message(
+            "CANCEL sip:bob@example.net SIP/2.0",
+            &[
+                "From: \"Alice\" <sip:alice@example.com>;tag=t1",
+                "To: \"Bob\" <sip:bob@example.net>",
+                "Call-ID: vcon-fixture@example.com",
+                "CSeq: 1 CANCEL",
+                "Content-Length: 0",
+            ],
+        )
+    }
+
+    /// A call the caller canceled while it rang, ended by `487 Request
+    /// Terminated`, is `no-answer`.
+    ///
+    /// [Section 4.3.11 of the core draft](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-04#section-4.3.11):
+    /// "\"no-answer\" - a call or connection was attempted, but no one answered
+    /// or accepted the connection". Not `hung-up`, which is "a call or
+    /// connection was made, but the party hung-up before any conversation
+    /// occurred": an unanswered call was never made.
+    #[test]
+    fn a_canceled_unanswered_call_is_no_answer_per_section_4_3_11() -> Result<(), TestError> {
+        let dialog = dialog_with(&[
+            response(180, "Ringing")?,
+            cancel()?,
+            response(487, "Request Terminated")?,
+        ])?;
+        let v = serde_json::to_value(export_with(&dialog, &clean_facts())?)?;
+        assert_eq!(v["dialog"][0]["type"], "incomplete");
+        assert_eq!(
+            v["dialog"][0]["disposition"], "no-answer",
+            "{}",
+            v["dialog"][0]
+        );
+        Ok(())
+    }
+
+    /// A 487 with no CANCEL in the capture keeps `failed`: sipnab did not
+    /// see why the request ended, and section 4.3.11 says "If the reason that
+    /// the call or conversation failed is not known ... the disposition value
+    /// \"failed\" SHOULD be used". A CANCEL that lost the race to `486`
+    /// leaves the call `busy`, the outcome the far end reported.
+    #[test]
+    fn only_an_observed_cancel_makes_a_487_no_answer() -> Result<(), TestError> {
+        for (messages, expected) in [
+            (vec![response(487, "Request Terminated")?], "failed"),
+            (vec![cancel()?, response(486, "Busy Here")?], "busy"),
+        ] {
+            let dialog = dialog_with(&messages)?;
+            let v = serde_json::to_value(export_with(&dialog, &clean_facts())?)?;
+            assert_eq!(
+                v["dialog"][0]["disposition"], expected,
+                "{}",
+                v["dialog"][0]
+            );
+        }
+        Ok(())
+    }
+
+    /// A call answered after a CANCEL crossed the `200` is not an incomplete
+    /// dialog at all, so it carries no disposition: section 4.3.11 says
+    /// disposition "SHOULD NOT be present for other dialog types".
+    #[test]
+    fn an_answered_call_carries_no_disposition_even_after_a_cancel() -> Result<(), TestError> {
+        let dialog = dialog_with(&[cancel()?, response(200, "OK")?])?;
+        let v = serde_json::to_value(export_with(&dialog, &clean_facts())?)?;
+        assert!(
+            v["dialog"][0].get("disposition").is_none(),
+            "{}",
+            v["dialog"][0]
+        );
+        assert_ne!(v["dialog"][0]["type"], "incomplete");
         Ok(())
     }
 

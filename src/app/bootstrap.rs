@@ -497,6 +497,7 @@ pub fn plan(cli: &Cli, config: &Config) -> Result<RunPlan, PlanError> {
     for msg in cli.inert_key_warnings(config) {
         tracing::warn!("{msg}");
     }
+    warn_vcon_rules(&vcon_rules);
 
     let mode = select_run_mode(cli);
     refuse_unread_detection(cli, config, &mode)?;
@@ -4379,6 +4380,14 @@ pub fn apply_config(cli: &Cli, loaded: LoadedConfig) -> Result<LoadedConfig, Pla
         });
     }
 
+    // [vcon] compress, the default of every encrypting [[vcon.rule]].
+    if let Err(e) = loaded.config.vcon.validate() {
+        return Err(PlanError {
+            exit_code: 1,
+            message: e.to_string(),
+        });
+    }
+
     // [vcon_fetch] keys likewise: the ranges and the kind name.
     if let Err(e) = loaded.config.vcon_fetch.validate() {
         return Err(PlanError {
@@ -4673,6 +4682,64 @@ fn build_selection_expr(cli: &Cli, config: &Config) -> Result<Option<FilterExpr>
     })
 }
 
+/// The sealing keys of one `[[vcon.rule]]`, each its own value or, when it
+/// sets none, the `[vcon]` section's.
+///
+/// A rule encrypts when it has an `encrypt_to`, its own or the section's.
+/// The section's `sign_key`, `sign_cert` and `compress` apply only to a rule
+/// that encrypts, so a rule that does not encrypt is not refused for keys it
+/// did not set; its own are refused as before.
+#[cfg(feature = "vcon")]
+struct RuleSealing<'a> {
+    /// The certificate the rule encrypts to.
+    encrypt_to: Option<&'a std::path::Path>,
+    /// The key the rule signs with.
+    sign_key: Option<&'a std::path::Path>,
+    /// The chain of `sign_key`.
+    sign_cert: Option<&'a std::path::Path>,
+    /// `none` or `gzip`.
+    compress: Option<&'a str>,
+}
+
+#[cfg(feature = "vcon")]
+impl<'a> RuleSealing<'a> {
+    /// `rule`'s keys, each falling back to `section`'s.
+    fn of(rule: &'a crate::config::VconRuleConfig, section: &'a crate::config::VconConfig) -> Self {
+        let encrypt_to = rule.encrypt_to.as_deref().or(section.encrypt_to.as_deref());
+        let inherit = encrypt_to.is_some();
+        let pick = |own: Option<&'a std::path::Path>, theirs: Option<&'a std::path::Path>| {
+            own.or(if inherit { theirs } else { None })
+        };
+        Self {
+            encrypt_to,
+            sign_key: pick(rule.sign_key.as_deref(), section.sign_key.as_deref()),
+            sign_cert: pick(rule.sign_cert.as_deref(), section.sign_cert.as_deref()),
+            compress: rule.compress.as_deref().or(if inherit {
+                section.compress.as_deref()
+            } else {
+                None
+            }),
+        }
+    }
+}
+
+/// The compression of the encrypting `[[vcon.rule]]` named `name`: its
+/// `compress` value, `none` when unset.
+///
+/// # Errors
+///
+/// A value other than `none` or `deflate`, naming the rule.
+#[cfg(feature = "vcon")]
+fn rule_compression(
+    name: &str,
+    compress: Option<&str>,
+) -> Result<crate::output::vcon_jose::Compression, String> {
+    compress.map_or(Ok(crate::output::vcon_jose::Compression::None), |value| {
+        crate::output::vcon_jose::Compression::parse(value)
+            .map_err(|e| format!("[[vcon.rule]] '{name}' has {e}"))
+    })
+}
+
 /// The run's export rules: each `[[vcon.rule]]`, then the rule
 /// `--export-vcon-when` with `--export-vcon-dir` make.
 ///
@@ -4717,6 +4784,7 @@ pub(crate) fn vcon_rules(
             live_audio: false,
             live: false,
             sealing: None,
+            sealed_updates: crate::app::batch::SealedUpdates::NewUuid,
         });
     }
     for rule in &config.vcon.rule {
@@ -4742,6 +4810,9 @@ pub(crate) fn vcon_rules(
             .map_err(|why| refuse(format!("[[vcon.rule]] '{name}' has {why}")))?;
         let grouping = RuleGrouping::parse(rule.grouping.as_deref())
             .map_err(|why| refuse(format!("[[vcon.rule]] '{name}' has {why}")))?;
+        let sealed_updates =
+            crate::app::batch::SealedUpdates::parse(rule.sealed_updates.as_deref())
+                .map_err(|why| refuse(format!("[[vcon.rule]] '{name}' has {why}")))?;
         // core-04 section 2.4.1: a by-reference url uses HTTPS.
         let audio_url_base = match (audio, rule.audio_url_base.as_deref()) {
             (RuleAudio::Url, None) => {
@@ -4761,7 +4832,12 @@ pub(crate) fn vcon_rules(
         };
         // core-04 section 5.3: the encrypted form is the signed form,
         // encrypted, so an encrypting rule signs too.
-        let sealing = match (&rule.encrypt_to, &rule.sign_key, &rule.sign_cert) {
+        let inherited = RuleSealing::of(rule, &config.vcon);
+        let sealing = match (
+            inherited.encrypt_to,
+            inherited.sign_key,
+            inherited.sign_cert,
+        ) {
             (None, None, None) => None,
             (None, _, _) => {
                 return Err(refuse(format!(
@@ -4784,9 +4860,16 @@ pub(crate) fn vcon_rules(
             }
             (Some(to), Some(key), Some(cert)) => Some(std::sync::Arc::new(
                 crate::output::vcon_jose::load_sealing(to, key, cert)
-                    .map_err(|e| refuse(format!("[[vcon.rule]] '{name}': {e}")))?,
+                    .map_err(|e| refuse(format!("[[vcon.rule]] '{name}': {e}")))?
+                    .compressed(rule_compression(name, inherited.compress).map_err(refuse)?),
             )),
         };
+        if sealing.is_none() && rule.compress.is_some() {
+            return Err(refuse(format!(
+                "[[vcon.rule]] '{name}' has compress without encrypt_to: compress applies \
+                 to the encrypted form only"
+            )));
+        }
         let text = resolved_filter_text(&rule.when, cli, config)
             .map_err(|e| refuse(format!("[[vcon.rule]] '{name}': {}", e.message)))?;
         let filter = FilterExpr::parse(&text).map_err(|e| {
@@ -4814,6 +4897,7 @@ pub(crate) fn vcon_rules(
             live_audio: rule.live_audio.unwrap_or(false),
             live: rule.live.unwrap_or(false),
             sealing,
+            sealed_updates,
         });
     }
     if rules.iter().any(|r| r.live_audio)
@@ -4844,6 +4928,16 @@ pub(crate) fn vcon_rules(
         }
     }
     Ok(rules)
+}
+
+/// Log, once at startup, each warning a resolved export rule calls for.
+fn warn_vcon_rules(rules: &[crate::app::batch::VconRule]) {
+    for msg in rules
+        .iter()
+        .filter_map(crate::app::batch::VconRule::sealed_updates_warning)
+    {
+        tracing::warn!("{msg}");
+    }
 }
 
 /// Why the REST API cannot serve live audio as it is set up, or `None`.
@@ -6650,6 +6744,8 @@ mod tests {
                 encrypt_to: None,
                 sign_key: None,
                 sign_cert: None,
+                compress: None,
+                sealed_updates: None,
             })
             .collect();
         config

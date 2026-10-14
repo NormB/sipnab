@@ -342,6 +342,15 @@ static KEY_SPECS: &[KeySpec] = &[
     ),
     (
         "display",
+        "view_filter_detail",
+        KeyKind::Literal {
+            accept: &["\"summary\"", "\"full\""],
+            reject: &["\"x\"", "\"\"", "\"Summary\"", "\"short\""],
+            ctx: "",
+        },
+    ),
+    (
+        "display",
         "visible_columns",
         KeyKind::Literal {
             accept: &["[]", "[\"From\", \"To\"]", "[\"#\", \"state\", \"PDD\"]"],
@@ -403,16 +412,70 @@ static KEY_SPECS: &[KeySpec] = &[
             accept: &[
                 "[]",
                 "[{ name = \"r\", when = \"method == 'INVITE'\", dir = \"vcon-out\" }]",
+                "[{ name = \"r\", when = \"method == 'INVITE'\", dir = \"vcon-out\", sealed_updates = \"final-only\" }]",
             ],
             reject: &[
                 "[{ name = \"bad name\", when = \"method == 'INVITE'\", dir = \"d\" }]",
                 "[{ name = \"r\", when = \"method == 'INVITE'\" }]",
                 "[{ name = \"r\", when = \"method == 'INVITE'\", dir = \"d\", audio = \"loud\" }]",
                 "[{ name = \"r\", when = \"method == 'INVITE'\", dir = \"d\", grouping = \"dialog\" }]",
+                "[{ name = \"r\", when = \"method == 'INVITE'\", dir = \"d\", sealed_updates = \"sometimes\" }]",
                 "[{ name = \"r\", when = \"x\", dir = \"d\" }]",
+                "[{ name = \"r\", when = \"method == 'INVITE'\", dir = \"d\", compress = \"gzip\" }]",
                 "[{ name = \"r\", when = \"method == 'INVITE'\", dir = \"d\", volume = 1 }]",
                 "[1]",
             ],
+            ctx: "",
+        },
+    ),
+    (
+        "vcon",
+        "encrypt_to",
+        KeyKind::Literal {
+            accept: &[
+                "\"x\"",
+                "\" \"",
+                "\"0\"",
+                "\"/etc/sipnab/vcon-encrypt_to.pem\"",
+            ],
+            reject: &["\"\""],
+            ctx: "",
+        },
+    ),
+    (
+        "vcon",
+        "sign_key",
+        KeyKind::Literal {
+            accept: &[
+                "\"x\"",
+                "\" \"",
+                "\"0\"",
+                "\"/etc/sipnab/vcon-sign_key.pem\"",
+            ],
+            reject: &["\"\""],
+            ctx: "",
+        },
+    ),
+    (
+        "vcon",
+        "sign_cert",
+        KeyKind::Literal {
+            accept: &[
+                "\"x\"",
+                "\" \"",
+                "\"0\"",
+                "\"/etc/sipnab/vcon-sign_cert.pem\"",
+            ],
+            reject: &["\"\""],
+            ctx: "",
+        },
+    ),
+    (
+        "vcon",
+        "compress",
+        KeyKind::Literal {
+            accept: &["\"none\"", "\"gzip\""],
+            reject: &["\"deflate\"", "\"\"", "\"GZIP\"", "1"],
             ctx: "",
         },
     ),
@@ -519,6 +582,15 @@ static KEY_SPECS: &[KeySpec] = &[
                 "\"/var/tmp\"",
                 "\"/nonexistent/sipnab-x\"",
             ],
+            ctx: "",
+        },
+    ),
+    (
+        "keybindings",
+        "filter_detail",
+        KeyKind::Literal {
+            accept: &["\"F\"", "\"x\"", "\"F11\"", "\"q\""],
+            reject: &["\"\"", "\"5060-5061\"", "\"Shift-F\"", "\"/var/tmp\""],
             ctx: "",
         },
     ),
@@ -1648,6 +1720,15 @@ static KEY_SPECS: &[KeySpec] = &[
     ),
     (
         "vcon_fetch",
+        "extra_ca",
+        KeyKind::Literal {
+            accept: &["\"x\"", "\" \"", "\"0\"", "\"/etc/sipnab/store-ca.pem\""],
+            reject: &["\"\""],
+            ctx: "",
+        },
+    ),
+    (
+        "vcon_fetch",
         "kind",
         KeyKind::Literal {
             accept: &[
@@ -1674,6 +1755,38 @@ static KEY_SPECS: &[KeySpec] = &[
         KeyKind::Int {
             lo: 1,
             hi: 4294967295,
+        },
+    ),
+    (
+        "vcon_fetch",
+        "signer_ca",
+        KeyKind::Literal {
+            accept: &[
+                "\"x\"",
+                "\" \"",
+                "\"0\"",
+                "\"system\"",
+                "\"/etc/sipnab/vcon-signer-ca.pem\"",
+            ],
+            reject: &["\"\""],
+            ctx: "decrypt_key = \"/nonexistent/key\"",
+        },
+    ),
+    (
+        "vcon_fetch",
+        "signer_sha256",
+        KeyKind::Literal {
+            accept: &[
+                "\"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\"",
+                "\"FE:DC:BA:98:76:54:32:10:FE:DC:BA:98:76:54:32:10:FE:DC:BA:98:76:54:32:10:FE:DC:BA:98:76:54:32:10\"",
+            ],
+            reject: &[
+                "\"\"",
+                "\"x\"",
+                "\"ab:cd\"",
+                "\"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef00\"",
+            ],
+            ctx: "decrypt_key = \"/nonexistent/key\"",
         },
     ),
     ("vcon_fetch", "timeout", KeyKind::Int { lo: 1, hi: 600 }),
@@ -1722,6 +1835,15 @@ static KEY_SPECS: &[KeySpec] = &[
         "done",
         KeyKind::Literal {
             accept: &["\"x\"", "\" \"", "\"0\"", "\"/var/spool/sipnab-vcon\""],
+            reject: &["\"\""],
+            ctx: "",
+        },
+    ),
+    (
+        "vcon_forward",
+        "extra_ca",
+        KeyKind::Literal {
+            accept: &["\"x\"", "\" \"", "\"0\"", "\"/etc/sipnab/store-ca.pem\""],
             reject: &["\"\""],
             ctx: "",
         },

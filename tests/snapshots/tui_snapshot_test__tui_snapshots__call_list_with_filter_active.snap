@@ -4,7 +4,7 @@ expression: output
 ---
  Live capture: any    Dialogs: 1 shown of 3    Autoscroll: on
  Capture filter (BPF): none
- View filter: from.user =~ '1003'
+ View filter: F7: From~1003 · F full
   # ▲    Method    From To   Source          Destination     State      Msgs +Prev    PDD    Duratio
 > [ ] 1  INVITE    1003 1004 10.0.0.1        10.0.0.2        FAILED ⚠   2    +0.000s         1.0s
 

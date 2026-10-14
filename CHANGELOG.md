@@ -8,6 +8,129 @@ sipnab is pre-1.0: the public API and the CLI surface are not stable, and a
 breaking change may land in any release. Breaking changes are called out in the
 entry that carries them.
 
+## [Unreleased]
+
+### Added
+
+- **An encrypting `[[vcon.rule]]` can compress what it encrypts.**
+  - `compress = "gzip"` signs the gzip ([RFC 1952](https://www.rfc-editor.org/rfc/rfc1952.html)) of the vCon instead of the vCon.
+    - draft-ietf-vcon-vcon-core-04 section 5.2 allows this.
+    - The encrypted form then names `cty: "application/vcon+gzip"`.
+  - `compress = "none"`, the default, signs the vCon as it is.
+  - sipnab refuses at startup:
+    - a `compress` other than those two;
+    - a `compress` on a rule without `encrypt_to`.
+  - `--vcon-fetch-decrypt-key` inflates a gzip payload after the signature verifies.
+    - It stops at `--vcon-fetch-max-size`.
+    - It refuses a container whose vCon inflates past that size.
+  - The fetcher refuses a container that carries a JWE `zip` header, which sipnab never writes.
+- **`--vcon-fetch` can check who signed a decrypted vCon.**
+  - `--vcon-fetch-signer-ca <FILE>` (`[vcon_fetch] signer_ca`):
+    - writes a decrypted container only when its signing certificate chains, through the intermediates in its `x5c`, to a CA certificate in that file;
+    - requires every certificate to be within its validity period;
+    - takes the value `system` to use the host's CA bundle.
+  - `--vcon-fetch-signer-sha256 <HEX>` (`[vcon_fetch] signer_sha256`):
+    - writes it only when the signing certificate has that SHA-256 fingerprint;
+    - accepts the fingerprint plain or colon-separated, in either case.
+  - Each needs `--vcon-fetch-decrypt-key`.
+  - With either, the fetcher writes nothing, and the log line says why, for:
+    - a container whose signer fails the check;
+    - a container that is not encrypted.
+- **`[vcon]` sets the sealing keys once for every rule.**
+  - `encrypt_to`, `sign_key`, `sign_cert` and `compress` in the `[vcon]` section are the values of each `[[vcon.rule]]` that does not set its own.
+  - A rule's own value overrides the section's, key by key.
+  - A rule encrypts when it has an `encrypt_to`, its own or the section's.
+  - The section's `sign_key`, `sign_cert` and `compress` apply only to rules that encrypt.
+    - So a rule without an `encrypt_to` still writes the unsigned form.
+- **The vCon forwarder and fetcher can add a CA to the host's bundle.**
+  - `--vcon-forward-extra-ca` (`[vcon_forward] extra_ca`) and `--vcon-fetch-extra-ca` (`[vcon_fetch] extra_ca`) trust a CA file in addition to the host's CA bundle.
+    - `--hep-tls-extra-ca` does the same for the HEP sender.
+  - `--vcon-forward-ca` and `--vcon-fetch-ca` still trust only their file.
+  - sipnab refuses the two forms together.
+  - Either flag replaces both keys of its section.
+  - The HEP sender, the forwarder and the fetcher now build their trust by one rule.
+- **An encrypting rule writes each change to a sealed vCon as a new instance.**
+  - [Section 4.1.9 of draft-ietf-vcon-vcon-core-04](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-04#section-4.1.9) says a change invalidates a signed or encrypted vCon.
+    - The producer MUST create a new instance version instead.
+  - A rule with `encrypt_to` rewrote the encrypted file under the same uuid each time a call changed.
+  - The new `[[vcon.rule]]` key `sealed_updates` sets what happens instead.
+    - `new-uuid` (the default) writes each later version as a new file with a new uuid.
+      - Its `amended` object names the uuid of the version before it.
+      - It keeps the first `created_at`.
+      - sipnab derives each later uuid from the first uuid and the version number. So two runs over one capture give one chain.
+    - `same-uuid` keeps the old behavior and logs a startup warning naming the rule.
+    - `final-only` writes one encrypted container, when the call ends.
+  - sipnab refuses any other value at startup.
+  - Each rule sets its own `sealed_updates`. The `[vcon]` section does not supply it.
+  - A rule without `encrypt_to` still rewrites in place.
+
+- **Status line 3 shows the F7 filter as a summary.**
+  - Many selections in the filter dialog made the expression wider than the
+    terminal, so the view filter line could not be read.
+  - The line now names each selection in a few words, such as
+    `F7: 7 methods, From~alice, To~bob · F full`.
+    - Checked methods are a count, or the method's name when one is checked.
+    - Typed text, `[filters]` names and time bounds are shown as typed.
+  - `F` switches between the summary and the full expression, in every view.
+    - The key is `[keybindings] filter_detail`.
+    - `[display] view_filter_detail = "full"` starts with the full expression.
+  - A filter applied as an expression is always shown in full.
+  - A line 3 wider than the terminal now ends in `…` instead of stopping at
+    the edge.
+
+### Fixed
+
+- **The encrypted form names a `cty` that core-04 lists.**
+  - An encrypting rule wrote `cty: "application/vcon+json"`, the value of the draft's Appendix A.7 example.
+  - Section 5.3.1 lists `application/vcon` and `application/vcon+gzip`.
+  - sipnab now writes `application/vcon`, or `application/vcon+gzip` with `compress = "gzip"`.
+  - The fetcher reads any `cty`, so it still opens a container written with the old value.
+- **The signed and encrypted forms place their headers as core-04 says.**
+  - The signature carries `x5c` and `uuid` in its unprotected `header` (draft-ietf-vcon-vcon-core-04 section 5.2).
+    - `alg` alone is protected.
+  - The encrypted form carries `cty`, `enc` and `uuid` in `unprotected` (section 5.3.1).
+    - It carries `alg` in each recipient's `header` (section 5.3.2).
+    - It has no `protected` member.
+  - The reader still accepts the placement that 0.5.217 and 0.5.218 wrote.
+  - It refuses a header name given two different values in two places, `x5c` included.
+- **vCon `json` bodies are the JSON value, not its text.**
+  - [Section 2.3.2 of draft-ietf-vcon-vcon-core-04](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-04#section-2.3.2) defines a `json` body as a JSON value.
+  - sipnab wrote every attachment and analysis body as a string holding the JSON text.
+  - It now writes the object itself.
+  - `jq '.analysis[0].body.capture_completeness'` reads it without `fromjson`.
+  - An enrichment service may answer with any JSON value under `json`. A string is still accepted.
+  - The `-I` reader still accepts both shapes.
+- **sipnab refuses a vCon whose `critical` lists an extension it does not support.**
+  - [Section 4.1.4 of draft-ietf-vcon-vcon-core-04](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-04#section-4.1.4) says such a reader MUST NOT process or operate on the vCon, except to reject it or report it.
+  - No reader checked `critical`.
+  - sipnab supports the two extensions its own containers declare, `sip-signaling` and `CC`.
+  - `-I` now skips such a container, naming each unsupported extension.
+    - It fails when you named the container directly.
+  - `analyze_vcon` and `POST /v1/vcon/analyze` answer `verdict: unreadable` with that reason. They run no schema check.
+  - `validate_vcon` refuses it with `invalid_params`, and `POST /v1/vcon/validate` with `422`.
+- **A vCon for a call the caller canceled while it rang records `no-answer`.**
+  - sipnab wrote `disposition: "failed"` for a CANCEL followed by `487 Request Terminated`.
+  - [Section 4.3.11 of draft-ietf-vcon-vcon-core-04](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-04#section-4.3.11) defines `no-answer` for an attempt that nobody answered or accepted.
+  - It now writes `no-answer` when the capture holds the CANCEL.
+  - A `487` with no CANCEL in the capture stays `failed`. That is the value the section gives when the reason is not known.
+- **The vCon page's limits section described code that has since changed.**
+  - It said a container never carries a `url`.
+    - A rule with `audio = "url"` names the WAV file by URL.
+  - It said nothing ties the two legs of a B2BUA call.
+    - The `sipnab-related-legs` attachment and `grouping = "call"` do.
+  - It said 12 bits separate dialogs that opened in the same millisecond on one node.
+    - Since 0.5.125 sipnab keys the other 62 bits on the node, the dialog and the capture.
+  - The uuid code comment said `rand_b` came from the node name alone.
+  - Each now states what the code does.
+
+### Internal
+
+- **The TUI end-to-end tests no longer leave a directory behind per session.**
+  - Each tmux session made its own `/tmp/sipnab-e2e-cfg-*` config directory, and nothing removed it.
+  - 95 had built up on one development host by 2026-10-14.
+  - The session now removes its directory when it drops.
+  - `a_dropped_session_removes_its_config_home` proves it.
+
 ## [0.5.218] - 2026-10-14
 
 ### Added
