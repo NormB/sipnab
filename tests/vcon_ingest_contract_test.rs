@@ -406,9 +406,12 @@ fn a_container_validates_against_the_working_group_schema() -> Result<(), TestEr
 /// Section 4.3 gives a call known to have occurred, with nothing captured from
 /// it, a placeholder typed `recording`; section 4.3.8 waives `mediatype` when
 /// the content is absent. What a contentless object must never do is DESCRIBE
-/// content: a `mediatype`, `encoding`, `content_hash`, `filename` or
-/// `duration` beside no `body` and no `url` promises a consumer media it
-/// cannot reach.
+/// content: a `mediatype`, `encoding`, `content_hash` or `filename` beside no
+/// `body` and no `url` promises a consumer media it cannot reach.
+///
+/// `duration` is the exception, and it is pinned to the CALL: the
+/// conversation from the 200 to the BYE (section 4.3.3), which the fixture
+/// holds as 58 seconds. Any other value would be describing media.
 ///
 /// This guards a SIGNALING-ONLY container, which is the case where the
 /// placeholder occurs: over a media fixture every `recording` object has a
@@ -449,19 +452,18 @@ fn a_recording_without_content_is_a_bare_placeholder() -> Result<(), TestError> 
          placeholder, or this test checks nothing: {json}"
     );
     for object in placeholders {
-        for media_field in [
-            "mediatype",
-            "encoding",
-            "content_hash",
-            "filename",
-            "duration",
-        ] {
+        for media_field in ["mediatype", "encoding", "content_hash", "filename"] {
             assert!(
                 object.get(media_field).is_none(),
                 "a placeholder with no content describes media with \
                  `{media_field}`: {object}"
             );
         }
+        assert_eq!(
+            object["duration"],
+            serde_json::json!(58.0),
+            "a placeholder's duration is the conversation, answer to BYE: {object}"
+        );
     }
     Ok(())
 }
@@ -930,24 +932,21 @@ fn a_container_meets_or_knowingly_diverges_from_the_second_consumer() -> Result<
          requirement must hold: {errors:#?}"
     );
 
-    // The divergence: their Dialog requires `parties` on the DIALOG OBJECT.
-    // sipnab carries parties at container level and names them per channel
-    // only where each channel could be attributed from evidence. Inventing a
-    // dialog-level parties array to satisfy a validator would assert an
-    // attribution nothing measured.
+    // Their Dialog requires `parties` on the DIALOG OBJECT. This was a
+    // divergence until the signaling object named its `From` and `To`
+    // parties, which core-04 section 4.3.4 makes a SHOULD on a `recording`.
     assert!(
-        errors.iter().any(|e| e.contains("parties")),
-        "expected the known dialog-level `parties` divergence: {errors:#?}"
+        !errors.iter().any(|e| e.contains("parties")),
+        "the signaling object names its parties, so vcon.store's `parties` \
+         requirement must hold: {errors:#?}"
     );
 
-    // Everything else must pass. A third failure is news, and it is the reason
-    // this test asserts the divergence set rather than merely `is_err`.
-    assert_eq!(
-        errors.len(),
-        1,
-        "a sipnab container diverges from vcon.store in exactly one known \
-         way; a second is either a regression here or a change there: \
-         {errors:#?}"
+    // Everything must pass. A failure is news, and it is the reason this test
+    // asserts the error set rather than merely `is_err`.
+    assert!(
+        errors.is_empty(),
+        "a sipnab container meets vcon.store's schema; an error is either a \
+         regression here or a change there: {errors:#?}"
     );
     Ok(())
 }

@@ -1287,19 +1287,21 @@ fn audio_withheld_by_redaction_leaves_the_signaling_object_typed_by_the_rule()
             disposition,
             "{label}: {object}"
         );
-        for media_field in [
-            "body",
-            "mediatype",
-            "encoding",
-            "content_hash",
-            "parties",
-            "duration",
-        ] {
+        for media_field in ["body", "mediatype", "encoding", "content_hash"] {
             assert!(
                 object.get(media_field).is_none(),
                 "{label}: {media_field} in {object}"
             );
         }
+        // The signaling parties, `From` then `To`, never a channel map: there
+        // is no audio for a channel to carry. `duration`, when present, is the
+        // conversation the signaling shows, not a length of media.
+        assert_eq!(object["parties"], serde_json::json!([0, 1]), "{label}");
+        let conversation = dialog
+            .timing
+            .conversation_ms()
+            .map(|ms| serde_json::json!(ms as f64 / 1000.0));
+        assert_eq!(object.get("duration").cloned(), conversation, "{label}");
         assert_eq!(
             completeness(&json)?["media"],
             "withheld-by-redaction",

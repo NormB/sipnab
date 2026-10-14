@@ -1699,7 +1699,15 @@ below declares `"encoding": "json"`.
   "dialog": [
     {
       "type": "recording",
-      "sip_call_id": "test-call-1@192.0.2.1"
+      "sip_call_id": "test-call-1@192.0.2.1",
+      "sip_from_tag": "1928301774",
+      "sip_to_tag": "a6c85cf",
+      "start": "2023-11-14T22:13:20+00:00",
+      "duration": 58.0,
+      "parties": [
+        0,
+        1
+      ]
     }
   ],
   "attachments": [
@@ -1811,6 +1819,28 @@ nothing else.
 
 **The completeness body appears twice.** It appears once as an attachment, and once inside the
 report. The next section is about why.
+
+## What the Dialog Object says about the call
+
+The first Dialog Object describes the call's signaling.
+sipnab fills these fields from what the capture shows, and leaves a field out when the capture does not show it.
+
+- `parties` is `[0, 1]`: the `From` party, then the `To` party.
+  - [Section 4.3.4 of draft-ietf-vcon-vcon-core-04](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-04#section-4.3.4) makes `parties` a SHOULD on a `recording` and optional on an `incomplete`.
+  - On an `incomplete` object it names the two parties the call tried to connect.
+  - A container that carries audio lists the parties per channel instead, and only when sipnab can attribute every channel.
+- `originator` is absent when party 0 is the caller.
+  - [Section 4.3.5](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-04#section-4.3.5) writes it only when the first listed party is not the originator.
+  - Party 0 is the caller when the capture holds the request that created the dialog, which carries no `To` tag.
+  - When the capture joined the call later, the caller is not known.
+    sipnab then adds an empty party, which carries only `validation`, before the observer, and `originator` names it.
+    Section 4.3.5 gives that form for an originator that is not known.
+- `duration` is the conversation in seconds, from the 200 to the initial INVITE to the BYE.
+  - [Section 4.3.3](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-04#section-4.3.3) defines `duration` in seconds.
+  - It is absent when the capture lacks the initial INVITE, its 200 or the BYE.
+  - `start` stays the first message sipnab saw, so `start` plus `duration` is not the end of the call.
+  - On an object with no `body` or `url`, `duration` is not the length of any recording.
+    A consumer that reads `duration` to size media must check for content first.
 
 ## The container cannot say "this is an incomplete record", so sipnab says it twice
 

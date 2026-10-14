@@ -600,6 +600,18 @@ pub struct Dialog {
     /// array — and a plausible guess corrupts every cross-reference silently.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub parties: Option<Vec<usize>>,
+    /// `originator` ([core-04 section 4.3.5](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-04#section-4.3.5)):
+    /// the index of the calling party, written only when [`Self::parties`]
+    /// does not list it first.
+    ///
+    /// core-04 section 4.3.4 says the first listed party is implied to be the
+    /// originator, and section 4.3.5 says this parameter "is only provided if
+    /// the first party of the dialog Object parties list is NOT the
+    /// originator". When the capture did not see the dialog-creating request,
+    /// the caller is not known, and this names an empty Party Object, the
+    /// form section 4.3.5 gives an unknown originator.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub originator: Option<usize>,
     /// Indices into [`Vcon::dialog`] of the objects this set groups.
     ///
     /// Present only on a [`RECORDING_SET_TYPE`] object, and named `recordings`
@@ -687,6 +699,7 @@ impl Dialog {
             start: None,
             duration: None,
             parties: None,
+            originator: None,
             dialogs: None,
             recording_set: None,
             mediatype: None,
@@ -1406,6 +1419,7 @@ impl crate::output::redact::Redact for Dialog {
             start: _,
             duration: _,
             parties: _,
+            originator: _,
             dialogs: _,
             recording_set: _,
             mediatype,
@@ -1914,6 +1928,18 @@ pub fn export_dialog_and_completeness(
             parties.len() - 1
         });
 
+    // The calling party's index. Party 0 when the capture saw the
+    // dialog-creating request, whose `From` names the caller; otherwise an
+    // empty Party Object, which core-04 section 4.3.5 offers for an
+    // originator that is not known. It goes before the observer, for the
+    // reason the transfer target does.
+    let caller = if opened_by_the_caller(dialog) {
+        0
+    } else {
+        parties.push(unknown_originator_party());
+        parties.len() - 1
+    };
+
     parties.push(observer_party());
     // Last entry, computed before the borrow ends so both attachments and any
     // future analysis reference one number.
@@ -1925,6 +1951,7 @@ pub fn export_dialog_and_completeness(
     let started = observed_start(dialog);
     let mut dialog_objects = vec![dialog_object(dialog, started.clone())];
     let media = media_objects(dialog, audio, &mut dialog_objects, context.media_budget());
+    name_the_originator(&mut dialog_objects, caller);
 
     // The transfer object goes last, after any media, for the same reason
     // media goes after signaling: appending never moves an existing index.
@@ -2190,6 +2217,7 @@ impl Dialog {
             start,
             duration,
             parties,
+            originator,
             dialogs,
             recording_set,
             mediatype,
@@ -2213,6 +2241,7 @@ impl Dialog {
             start,
             duration,
             parties: parties.map(|p| p.into_iter().map(party).collect()),
+            originator: originator.map(party),
             dialogs: dialogs.map(|d| d.into_iter().map(object).collect()),
             recording_set: recording_set.map(object),
             mediatype,
@@ -2724,11 +2753,76 @@ fn dialog_object(dialog: &SipDialog, start: String) -> Dialog {
         // same as success.
         disposition: failure,
         start: Some(start),
+        // core-04 Table 1: `parties` SHOULD be present on a `recording` and
+        // is optional on an `incomplete`, where it names the parties the
+        // setup was attempted between. These are the indices of the `From`
+        // and `To` parties `observed_parties` built, in that order.
+        parties: Some(vec![0, 1]),
+        duration: conversation_secs(dialog),
         ..Dialog::bare(
             failure.map_or(RECORDING_TYPE, |_| INCOMPLETE_TYPE),
             dialog.call_id.clone(),
         )
     }
+}
+
+/// Whether the dialog's first observed message is the dialog-creating request.
+///
+/// A request with no `To` tag is outside any dialog
+/// ([RFC 3261 section 8.1.1.2](https://www.rfc-editor.org/rfc/rfc3261.html#section-8.1.1.2)),
+/// so its `From` is the party that originated this one. A tagged request or a
+/// response first means the capture joined after setup, and its `From` names
+/// whoever sent that one transaction, which may be either party.
+fn opened_by_the_caller(dialog: &SipDialog) -> bool {
+    dialog
+        .messages
+        .first()
+        .is_some_and(|m| m.is_request && m.to_tag().is_none())
+}
+
+/// The empty Party Object [core-04 section 4.3.5](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-04#section-4.3.5)
+/// uses for an originator that is not known: "If the originator is not known,
+/// an empty Party Object ... may be used as ... the party referenced by the
+/// originator parameter". It carries only `validation: "none"`, which every
+/// sipnab party carries.
+fn unknown_originator_party() -> Party {
+    Party {
+        sip: None,
+        tel: None,
+        validation: "none",
+        role: None,
+        name: None,
+        stir: None,
+        sip_display_name: None,
+        sip_contact: None,
+        sip_user_agent: None,
+    }
+}
+
+/// Set `originator` on every object whose `parties` does not list the caller
+/// first, per [core-04 section 4.3.5](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-04#section-4.3.5).
+///
+/// An object with no `parties`, such as a transfer, where core-04 Table 1
+/// forbids `originator`, is left alone.
+fn name_the_originator(objects: &mut [Dialog], caller: usize) {
+    for object in objects {
+        if let Some(parties) = &object.parties {
+            object.originator = (parties.first() != Some(&caller)).then_some(caller);
+        }
+    }
+}
+
+/// The conversation's length in seconds, from the answer to the initial
+/// INVITE to the BYE, for the signaling object's `duration`
+/// ([core-04 section 4.3.3](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-04#section-4.3.3)).
+///
+/// `None` unless the capture holds the initial INVITE, its 200 and a BYE: an
+/// uncaptured INVITE leaves the 200 unattributable to the initial
+/// transaction, and an absent BYE means the end is not known.
+fn conversation_secs(dialog: &SipDialog) -> Option<f64> {
+    dialog.timing.invite_sent?;
+    let ms = dialog.timing.conversation_ms()?;
+    Some(ms as f64 / 1000.0)
 }
 
 /// The JWS alone from an RFC 8224 `Identity` header value.
@@ -7673,6 +7767,179 @@ mod tests {
             Some(4.5),
             "the clock stays: the export still has to say a recording existed"
         );
+        Ok(())
+    }
+
+    // ── The signaling Dialog Object's parties, originator and duration ──
+
+    /// A request in the fixture's dialog, sent by `sender` ("alice" or "bob").
+    ///
+    /// The tags follow the sender: Alice's requests carry `From` tag `t1`,
+    /// Bob's carry `t2`, which is what [`sender_party`] reads.
+    fn in_dialog_request(
+        method: &str,
+        cseq: u32,
+        sender: &str,
+        extra: &[&str],
+        body: &[u8],
+    ) -> Result<crate::sip::SipMessage, TestError> {
+        let (from, to) = if sender == "alice" {
+            (
+                "From: \"Alice\" <sip:alice@example.com>;tag=t1",
+                "To: \"Bob\" <sip:bob@example.net>;tag=t2",
+            )
+        } else {
+            (
+                "From: \"Bob\" <sip:bob@example.net>;tag=t2",
+                "To: \"Alice\" <sip:alice@example.com>;tag=t1",
+            )
+        };
+        let cseq_line = format!("CSeq: {cseq} {method}");
+        let length = format!("Content-Length: {}", body.len());
+        let mut headers = vec![from, to, "Call-ID: vcon-fixture@example.com", &cseq_line];
+        headers.extend_from_slice(extra);
+        headers.push(&length);
+        Ok(parse_sip(
+            &build_sip(
+                &format!("{method} sip:peer@example.org SIP/2.0"),
+                &headers,
+                body,
+            ),
+            ts()?,
+            localhost(),
+            localhost(),
+            5060,
+            5060,
+            TransportProto::Udp,
+        )?)
+    }
+
+    /// A dialog built the way the store builds one: state and timing updated
+    /// per message, each message stamped `secs` after [`ts`].
+    fn timed_dialog(steps: Vec<(crate::sip::SipMessage, i64)>) -> Result<SipDialog, TestError> {
+        let mut steps = steps.into_iter();
+        let (mut first, at) = steps.next().ok_or("a dialog needs one message")?;
+        first.timestamp = ts()? + chrono::TimeDelta::seconds(at);
+        let mut dialog = SipDialog::new(&first).ok_or("the first message opens a dialog")?;
+        let method = dialog.method.clone();
+        crate::sip::timing::update_timing(&mut dialog.timing, &first, &method);
+        for (mut m, at) in steps {
+            m.timestamp = ts()? + chrono::TimeDelta::seconds(at);
+            crate::sip::dialog::update_state(&mut dialog, &m);
+            crate::sip::timing::update_timing(&mut dialog.timing, &m, &method);
+            dialog.messages.push(m);
+        }
+        Ok(dialog)
+    }
+
+    /// An answered call Alice ended: INVITE at 0 s, 200 at 3 s, BYE at 63 s.
+    fn answered_and_ended() -> Result<SipDialog, TestError> {
+        timed_dialog(vec![
+            (invite()?, 0),
+            (response(180, "Ringing")?, 1),
+            (response(200, "OK")?, 3),
+            (in_dialog_request("ACK", 1, "alice", &[], b"")?, 3),
+            (in_dialog_request("BYE", 2, "alice", &[], b"")?, 63),
+        ])
+    }
+
+    /// The container as JSON, after checking it against the vendored schema.
+    fn valid_json(v: &Vcon) -> Result<serde_json::Value, TestError> {
+        use crate::output::vcon_schema::{SchemaVerdict, validate};
+        let json = serde_json::to_value(v)?;
+        let report = validate(&json);
+        if report.verdict != SchemaVerdict::Valid {
+            return Err(
+                format!("the container fails the vendored schema: {report:#?}\n{json:#}").into(),
+            );
+        }
+        Ok(json)
+    }
+
+    /// GAP-4: the signaling object names the `From` and `To` parties, in that
+    /// order, and no `originator`, because the opening INVITE's `From` is the
+    /// caller ([core-04 section 4.3.4](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-04#section-4.3.4)).
+    #[test]
+    fn the_signaling_object_names_from_then_to_as_its_parties() -> Result<(), TestError> {
+        let v = export_with(&answered_and_ended()?, &clean_facts())?;
+        let json = valid_json(&v)?;
+        assert_eq!(json["dialog"][0]["parties"], serde_json::json!([0, 1]));
+        assert!(json["dialog"][0].get("originator").is_none(), "{json:#}");
+        Ok(())
+    }
+
+    /// GAP-4: an unanswered call still names who was called; core-04 Table 1
+    /// lets an `incomplete` object carry the parties it tried to connect.
+    #[test]
+    fn a_failed_call_names_the_parties_it_tried_to_connect() -> Result<(), TestError> {
+        let v = export_with(
+            &dialog_with(&[response(486, "Busy Here")?])?,
+            &clean_facts(),
+        )?;
+        let json = valid_json(&v)?;
+        assert_eq!(json["dialog"][0]["type"], INCOMPLETE_TYPE);
+        assert_eq!(json["dialog"][0]["parties"], serde_json::json!([0, 1]));
+        Ok(())
+    }
+
+    /// GAP-4: `duration` is the conversation, answer to BYE, in seconds
+    /// ([core-04 section 4.3.3](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-04#section-4.3.3)).
+    #[test]
+    fn the_signaling_object_carries_answer_to_bye_as_its_duration() -> Result<(), TestError> {
+        let v = export_with(&answered_and_ended()?, &clean_facts())?;
+        let json = valid_json(&v)?;
+        assert_eq!(json["dialog"][0]["duration"], serde_json::json!(60.0));
+        Ok(())
+    }
+
+    /// GAP-4: no BYE, or no answer, is no duration: the capture does not hold
+    /// both ends, and an invented one would be read as measured.
+    #[test]
+    fn a_call_without_both_ends_carries_no_duration() -> Result<(), TestError> {
+        let unended = timed_dialog(vec![(invite()?, 0), (response(200, "OK")?, 3)])?;
+        let unanswered = timed_dialog(vec![(invite()?, 0), (response(486, "Busy Here")?, 3)])?;
+        for dialog in [unended, unanswered] {
+            let json = valid_json(&export_with(&dialog, &clean_facts())?)?;
+            assert!(json["dialog"][0].get("duration").is_none(), "{json:#}");
+        }
+        Ok(())
+    }
+
+    /// GAP-4: a 200 seen without its INVITE cannot be tied to the initial
+    /// transaction, so the conversation's start is not known and no
+    /// `duration` is written, even with a BYE.
+    #[test]
+    fn an_answer_without_its_invite_carries_no_duration() -> Result<(), TestError> {
+        let dialog = timed_dialog(vec![
+            (response(200, "OK")?, 3),
+            (in_dialog_request("BYE", 2, "alice", &[], b"")?, 63),
+        ])?;
+        let json = valid_json(&export_with(&dialog, &clean_facts())?)?;
+        assert!(json["dialog"][0].get("duration").is_none(), "{json:#}");
+        Ok(())
+    }
+
+    /// GAP-4: a capture that joined mid-call does not know who called. The
+    /// first party is then not known to be the originator, so `originator`
+    /// names an empty Party Object, the form core-04 section 4.3.5 gives an
+    /// unknown originator, and the observer stays last.
+    #[test]
+    fn a_dialog_first_seen_mid_call_names_an_unknown_originator() -> Result<(), TestError> {
+        let dialog = timed_dialog(vec![(in_dialog_request("BYE", 7, "bob", &[], b"")?, 0)])?;
+        let v = export_with(&dialog, &clean_facts())?;
+        let json = valid_json(&v)?;
+        assert_eq!(json["dialog"][0]["parties"], serde_json::json!([0, 1]));
+        let originator = json["dialog"][0]["originator"]
+            .as_u64()
+            .ok_or("an originator index")?;
+        assert_eq!(originator, 2);
+        let unknown = &json["parties"][2];
+        assert!(
+            unknown.get("sip").is_none() && unknown.get("role").is_none(),
+            "{unknown:#}"
+        );
+        assert_eq!(v.observer_index(), 3);
+        assert_eq!(json["parties"][3]["role"], OBSERVER_ROLE);
         Ok(())
     }
 }

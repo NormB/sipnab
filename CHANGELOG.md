@@ -12,6 +12,12 @@ entry that carries them.
 
 ### Added
 
+- **The vCon signaling Dialog Object names its parties and the conversation's length.**
+  - `parties` is `[0, 1]`, the `From` party then the `To` party, per [section 4.3.4 of draft-ietf-vcon-vcon-core-04](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-04#section-4.3.4).
+  - `duration` is the 200 to the initial INVITE through the BYE, in seconds, and is absent when the capture lacks any of the three.
+  - A capture that joined after the call began does not know the caller.
+    The container then adds an empty party and `originator` names it, per [section 4.3.5](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-04#section-4.3.5).
+
 - **Enrichment services may answer with WTF transcriptions.**
   - A `[[vcon.enrich]]` answer may hold an Analysis Object of type `wtf_transcription`, as [section 6.1 of draft-howe-vcon-wtf-extension-02](https://datatracker.ietf.org/doc/html/draft-howe-vcon-wtf-extension-02#section-6.1) defines it.
   - sipnab checks it for the draft's required `transcript`, `segments` and `metadata` sections and their members.
