@@ -408,6 +408,7 @@ pub fn fetch_round_trip(
         },
         out_dir: dir.path().join("out"),
         overwrite: false,
+        decrypt: None,
     };
     let fetcher = Fetcher::new(settings)?;
     let mut out = Vec::new();

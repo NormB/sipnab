@@ -15767,6 +15767,7 @@ refuses it beside any capture source, listener or export flag, and beside
 | `--vcon-fetch-max-size` | `<BYTES>` | `67108864` | 0.5.209 | The largest answer the fetcher reads for one container, 1 to 4294967295. The fetcher refuses a larger one and writes nothing for it. The default, 64 MiB, holds a container with an hour of inline G.711 audio. Config: `[vcon_fetch] max_size` |
 | `--vcon-fetch-max-response-head` | `<BYTES>` | `65536` | 0.5.209 | The most bytes of a store's status line and headers read, 1 to 4294967295. The fetcher refuses an answer with more. Config: `[vcon_fetch] max_response_head` |
 | `--vcon-fetch-ca` | `<FILE>` | host bundle | 0.5.209 | Trust only the CA certificates in this PEM file for an `https://` store. Without it the fetcher trusts the host's CA bundle. Config: `[vcon_fetch] ca` |
+| `--vcon-fetch-decrypt-key` | `<FILE>` | -- | Unreleased | Decrypt each encrypted container with the RSA private key in this PEM file, verify its signature, and write the unsigned vCon inside. The file must be readable by its owner only. Without it the fetcher writes an encrypted container as the store holds it. See [Fetch an encrypted vCon](vcon.md#fetch-an-encrypted-vcon). Config: `[vcon_fetch] decrypt_key` |
 
 Examples:
 
@@ -15781,6 +15782,8 @@ Examples:
 - `sipnab --vcon-fetch 018bcfe5-6800-8a6b-a667-78f1c5213800 --config /etc/sipnab/vcon-store.toml` — take every fetcher setting from a config file's `[vcon_fetch]` section
 - `sipnab --vcon-fetch 018bcfe5-6800-8a6b-a667-78f1c5213800 --vcon-fetch-kind vcon-store --vcon-fetch-url https://api.vcon.store --vcon-fetch-auth-file vcon-store.key --vcon-fetch-out fetched --vcon-fetch-overwrite --vcon-fetch-timeout 120` — replace an earlier copy across a slow link, waiting up to two minutes for each read
 - `sipnab --vcon-fetch 018bcfe5-6800-8a6b-a667-78f1c5213800 --vcon-fetch-kind conserver --vcon-fetch-url https://conserver.example.com --vcon-fetch-auth-file conserver.key --vcon-fetch-ca conserver-ca.pem --vcon-fetch-max-size 1048576 --vcon-fetch-max-response-head 16384` — a conserver whose certificate a private CA issued, holding containers without inline audio: refuse any answer over 1 MiB, or with more than 16 KiB of headers
+- `sipnab --vcon-fetch 018bcfe5-6800-8a6b-a667-78f1c5213800 --vcon-fetch-kind conserver --vcon-fetch-url http://127.0.0.1:8000 --vcon-fetch-auth-file conserver.key --vcon-fetch-decrypt-key recipient.key --vcon-fetch-out fetched` — read an encrypted vCon from a conserver, decrypt it with the recipient's private key, verify its signature, and write the unsigned vCon
+- `sipnab --vcon-fetch - --vcon-fetch-kind conserver --vcon-fetch-url http://127.0.0.1:8000 --vcon-fetch-auth-file conserver.key --vcon-fetch-decrypt-key recipient.key --vcon-fetch-out fetched < uuids.txt` — decrypt every vCon listed in `uuids.txt`, one uuid per line; the fetcher writes a container that is not encrypted as the store holds it
 
 
 ## Config
@@ -22918,6 +22921,7 @@ the value, and then the default applies.
 | `url` | string | -- | The store's base URL, or, for the `generic` kind, a URL template holding `{uuid}`. Checked when the fetcher starts, by the rule `--vcon-fetch-url` follows. A URL refused from this key exits `1`; the same URL from `--vcon-fetch-url` exits `2`. `--vcon-fetch-url` overrides it |
 | `auth_file` | path | -- | File holding the credential: one `Header-Name: value` line, or the bare key with a `kind` other than `generic`. Refused when other users can read it. A file sipnab cannot read, or one that holds no credential, stops the fetcher with exit 1, as any refused key does. `--vcon-fetch-auth-file` overrides it |
 | `ca` | path | host bundle | The only CA (PEM) trusted for an `https://` store. `--vcon-fetch-ca` overrides it |
+| `decrypt_key` | path | -- | The RSA private key (PEM, readable by its owner only) that decrypts an encrypted container. `--vcon-fetch-decrypt-key` overrides it |
 | `timeout` | integer | `30` | Seconds to wait to connect, and for each read and write, 1 to 600. `--vcon-fetch-timeout` overrides it |
 | `max_size` | integer | `67108864` | The largest answer read for one container, in bytes, 1 to 4294967295. `--vcon-fetch-max-size` overrides it |
 | `max_response_head` | integer | `65536` | The most bytes of a store's status line and headers read, 1 to 4294967295. `--vcon-fetch-max-response-head` overrides it |
@@ -37835,7 +37839,7 @@ written, for any kind.
 
 | The store answers | The fetcher |
 |---|---|
-| `2xx` with the container | writes it to `<uuid>.vcon.json`, mode `0600`, without the kind's envelope, every other byte as the store sent it |
+| `2xx` with the container | writes it to `<uuid>.vcon.json`, mode `0600`, without the kind's envelope, every other byte as the store sent it. With `--vcon-fetch-decrypt-key`, it writes an encrypted container decrypted: see [Fetch an encrypted vCon](#fetch-an-encrypted-vcon) |
 | `2xx` with a body larger than `--vcon-fetch-max-size`, not JSON, without the kind's envelope, or holding another uuid | writes nothing for that uuid |
 | `404` | writes nothing for that uuid, and logs that the store holds none |
 | `401` or `403` | stops: asks for no further uuid, and exits `3` |
@@ -37855,6 +37859,39 @@ each, `1` when it wrote none for some uuid or the schema refuses one, `2` when s
 refuses a setting given on the command line, `3` when the store refused the
 credential or the client. A config file sipnab refuses exits `1`, as on any
 run.
+
+### Fetch an encrypted vCon
+
+A container that an [encrypting rule](#encrypt-what-a-rule-writes) wrote is in
+the encrypted form, and a store hands it back as the forwarder sent it. Give the
+fetcher the private key of the `encrypt_to` certificate, readable by its owner
+only, and it writes the vCon inside:
+
+```sh
+sipnab --vcon-fetch 0158a120-0392-81a5-a0a3-98c35ae1193c \
+  --vcon-fetch-kind conserver --vcon-fetch-url http://127.0.0.1:8000 \
+  --vcon-fetch-auth-file conserver.key --vcon-fetch-out fetched \
+  --vcon-fetch-decrypt-key /etc/sipnab/vcon-recipient.key
+```
+
+For each encrypted container the fetcher:
+
+1. finds the uuid in the container's `unprotected` header,
+2. decrypts it with the key,
+3. verifies the signature of the signed form inside against the first
+   certificate in its `x5c`, and
+4. checks that the vCon inside holds the uuid asked for, checks it against the
+   vendored schema, and writes it to `<uuid>.vcon.json`, mode `0600`.
+
+The log line gives the SHA-256 fingerprint of the certificate the signature
+verified against. Compare it with your signing certificate:
+`openssl x509 -noout -fingerprint -sha256 -in vcon-signing.crt`. The fetcher
+does not check who issued that certificate.
+
+If the key does not decrypt the container, or the signature does not verify,
+the fetcher writes nothing for that uuid and the run exits `1`. Without
+`--vcon-fetch-decrypt-key`, it writes an encrypted container as the store
+holds it, and says so in its log line.
 
 ### Read what came back
 

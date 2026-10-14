@@ -1360,7 +1360,11 @@ fn wiki_intra_docs_links_resolve() -> Result<(), TestError> {
     // docs/encapsulations.md +1 (the WebSocket section links `--ws-portrange`)
     // and docs/output-formats.md +3 (three new rows of "Which output do I
     // want?").
-    const EXPECTED_WIKI_LINKS: usize = 1719;
+    // 1719 -> 1722 for --vcon-fetch-decrypt-key, attributed per file:
+    // docs/cli-reference.md +1 (the flag's row links "Fetch an encrypted
+    // vCon") and docs/vcon.md +2 (the fetcher's answer table links that
+    // section, which links "Encrypt what a rule writes").
+    const EXPECTED_WIKI_LINKS: usize = 1722;
     // Raised 459 -> 460 when SRC1 stage 1 shipped: docs/cli-reference.md's
     // `--hep-listen` row now points at cookbook recipe 6d in docs/examples.md
     // rather than restating how to pair `-L` with `-d`. Attributed per file

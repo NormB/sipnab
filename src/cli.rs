@@ -5058,6 +5058,19 @@ pub struct VconFetchArgs {
         requires = "vcon_fetch"
     )]
     pub vcon_fetch_ca: Option<std::path::PathBuf>,
+
+    /// Decrypt each encrypted container (draft-ietf-vcon-vcon-core-04 section
+    /// 5.3) with the RSA private key in this PEM file, verify its signature,
+    /// and write the unsigned vCon inside. The file must be readable by its
+    /// owner only. Without it the fetcher writes an encrypted container as the
+    /// store holds it. Overrides `[vcon_fetch] decrypt_key`.
+    #[arg(
+        help_heading = "vCon fetcher",
+        long = "vcon-fetch-decrypt-key",
+        value_name = "FILE",
+        requires = "vcon_fetch"
+    )]
+    pub vcon_fetch_decrypt_key: Option<std::path::PathBuf>,
 }
 
 impl VconFetchArgs {

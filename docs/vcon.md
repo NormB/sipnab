@@ -874,7 +874,7 @@ written, for any kind.
 
 | The store answers | The fetcher |
 |---|---|
-| `2xx` with the container | writes it to `<uuid>.vcon.json`, mode `0600`, without the kind's envelope, every other byte as the store sent it |
+| `2xx` with the container | writes it to `<uuid>.vcon.json`, mode `0600`, without the kind's envelope, every other byte as the store sent it. With `--vcon-fetch-decrypt-key`, it writes an encrypted container decrypted: see [Fetch an encrypted vCon](#fetch-an-encrypted-vcon) |
 | `2xx` with a body larger than `--vcon-fetch-max-size`, not JSON, without the kind's envelope, or holding another uuid | writes nothing for that uuid |
 | `404` | writes nothing for that uuid, and logs that the store holds none |
 | `401` or `403` | stops: asks for no further uuid, and exits `3` |
@@ -894,6 +894,39 @@ each, `1` when it wrote none for some uuid or the schema refuses one, `2` when s
 refuses a setting given on the command line, `3` when the store refused the
 credential or the client. A config file sipnab refuses exits `1`, as on any
 run.
+
+### Fetch an encrypted vCon
+
+A container that an [encrypting rule](#encrypt-what-a-rule-writes) wrote is in
+the encrypted form, and a store hands it back as the forwarder sent it. Give the
+fetcher the private key of the `encrypt_to` certificate, readable by its owner
+only, and it writes the vCon inside:
+
+```sh
+sipnab --vcon-fetch 0158a120-0392-81a5-a0a3-98c35ae1193c \
+  --vcon-fetch-kind conserver --vcon-fetch-url http://127.0.0.1:8000 \
+  --vcon-fetch-auth-file conserver.key --vcon-fetch-out fetched \
+  --vcon-fetch-decrypt-key /etc/sipnab/vcon-recipient.key
+```
+
+For each encrypted container the fetcher:
+
+1. finds the uuid in the container's `unprotected` header,
+2. decrypts it with the key,
+3. verifies the signature of the signed form inside against the first
+   certificate in its `x5c`, and
+4. checks that the vCon inside holds the uuid asked for, checks it against the
+   vendored schema, and writes it to `<uuid>.vcon.json`, mode `0600`.
+
+The log line gives the SHA-256 fingerprint of the certificate the signature
+verified against. Compare it with your signing certificate:
+`openssl x509 -noout -fingerprint -sha256 -in vcon-signing.crt`. The fetcher
+does not check who issued that certificate.
+
+If the key does not decrypt the container, or the signature does not verify,
+the fetcher writes nothing for that uuid and the run exits `1`. Without
+`--vcon-fetch-decrypt-key`, it writes an encrypted container as the store
+holds it, and says so in its log line.
 
 ### Read what came back
 

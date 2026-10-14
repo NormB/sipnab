@@ -1745,6 +1745,7 @@ refuses it beside any capture source, listener or export flag, and beside
 | `--vcon-fetch-max-size` | `<BYTES>` | `67108864` | 0.5.209 | The largest answer the fetcher reads for one container, 1 to 4294967295. The fetcher refuses a larger one and writes nothing for it. The default, 64 MiB, holds a container with an hour of inline G.711 audio. Config: `[vcon_fetch] max_size` |
 | `--vcon-fetch-max-response-head` | `<BYTES>` | `65536` | 0.5.209 | The most bytes of a store's status line and headers read, 1 to 4294967295. The fetcher refuses an answer with more. Config: `[vcon_fetch] max_response_head` |
 | `--vcon-fetch-ca` | `<FILE>` | host bundle | 0.5.209 | Trust only the CA certificates in this PEM file for an `https://` store. Without it the fetcher trusts the host's CA bundle. Config: `[vcon_fetch] ca` |
+| `--vcon-fetch-decrypt-key` | `<FILE>` | -- | Unreleased | Decrypt each encrypted container with the RSA private key in this PEM file, verify its signature, and write the unsigned vCon inside. The file must be readable by its owner only. Without it the fetcher writes an encrypted container as the store holds it. See [Fetch an encrypted vCon](@/docs/vcon.md#fetch-an-encrypted-vcon). Config: `[vcon_fetch] decrypt_key` |
 
 Examples:
 
@@ -1759,6 +1760,8 @@ Examples:
 - `sipnab --vcon-fetch 018bcfe5-6800-8a6b-a667-78f1c5213800 --config /etc/sipnab/vcon-store.toml` — take every fetcher setting from a config file's `[vcon_fetch]` section
 - `sipnab --vcon-fetch 018bcfe5-6800-8a6b-a667-78f1c5213800 --vcon-fetch-kind vcon-store --vcon-fetch-url https://api.vcon.store --vcon-fetch-auth-file vcon-store.key --vcon-fetch-out fetched --vcon-fetch-overwrite --vcon-fetch-timeout 120` — replace an earlier copy across a slow link, waiting up to two minutes for each read
 - `sipnab --vcon-fetch 018bcfe5-6800-8a6b-a667-78f1c5213800 --vcon-fetch-kind conserver --vcon-fetch-url https://conserver.example.com --vcon-fetch-auth-file conserver.key --vcon-fetch-ca conserver-ca.pem --vcon-fetch-max-size 1048576 --vcon-fetch-max-response-head 16384` — a conserver whose certificate a private CA issued, holding containers without inline audio: refuse any answer over 1 MiB, or with more than 16 KiB of headers
+- `sipnab --vcon-fetch 018bcfe5-6800-8a6b-a667-78f1c5213800 --vcon-fetch-kind conserver --vcon-fetch-url http://127.0.0.1:8000 --vcon-fetch-auth-file conserver.key --vcon-fetch-decrypt-key recipient.key --vcon-fetch-out fetched` — read an encrypted vCon from a conserver, decrypt it with the recipient's private key, verify its signature, and write the unsigned vCon
+- `sipnab --vcon-fetch - --vcon-fetch-kind conserver --vcon-fetch-url http://127.0.0.1:8000 --vcon-fetch-auth-file conserver.key --vcon-fetch-decrypt-key recipient.key --vcon-fetch-out fetched < uuids.txt` — decrypt every vCon listed in `uuids.txt`, one uuid per line; the fetcher writes a container that is not encrypted as the store holds it
 
 
 ## Config
