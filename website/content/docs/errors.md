@@ -1546,6 +1546,16 @@ A whole-number `[vcon_fetch]` key is out of range. `{}` is the key (`timeout`, `
 
 **Exit code:** 1.
 
+### `[vcon] encrypt_to is an empty list: name at least one recipient certificate, or remove the key`
+
+`[vcon] encrypt_to` is `[]`. Nobody could open a container encrypted to no recipient, so sipnab refuses the list rather than write one.
+
+- The printed line starts with `invalid config value: `.
+
+**What to do:** List at least one recipient certificate, or remove the key so that no rule inherits it.
+
+**Exit code:** 1.
+
 ### `[vcon] compress: {value:?} is not one of {}`
 
 The `[vcon]` section's `compress` key names a compression sipnab does not write.

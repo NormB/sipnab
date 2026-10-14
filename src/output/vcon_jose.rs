@@ -8,13 +8,15 @@
 //!
 //! - the signed form ([section 5.2](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-04#section-5.2)):
 //!   a General JWS JSON Serialization ([RFC 7515 section 7.2.1](https://www.rfc-editor.org/rfc/rfc7515.html#section-7.2.1))
-//!   whose payload is the unsigned container, signed `RS256` with the
-//!   signer's certificate chain in `x5c`;
+//!   whose payload is the unsigned container, signed `RS256` (an RSA key)
+//!   or `ES256` (an EC P-256 key) with the signer's certificate chain in
+//!   `x5c`;
 //! - the encrypted form: a General JWE JSON Serialization
 //!   ([RFC 7516 section 7.2.1](https://www.rfc-editor.org/rfc/rfc7516.html#section-7.2.1))
-//!   whose plaintext is that signed form, with the content key encrypted
-//!   `RSA-OAEP` to the recipient's certificate and the content encrypted
-//!   `A256CBC-HS512`, the algorithms the draft names.
+//!   whose plaintext is that signed form, with one content key encrypted to
+//!   each recipient's certificate, `RSA-OAEP` for an RSA key and
+//!   `ECDH-ES+A256KW` for an EC P-256 key, and the content encrypted
+//!   `A256CBC-HS512`, the content encryption the draft names.
 //!
 //! Header placement, as core-04 sections 5.2, 5.2.2, 5.3.1 and 5.3.2 and its
 //! Appendix C CDDL place them. RFC 7515 and RFC 7516 require the protected
@@ -51,7 +53,7 @@
 use base64::Engine as _;
 use base64::engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD};
 use ring::rand::SecureRandom as _;
-use rsa::pkcs8::{DecodePrivateKey as _, DecodePublicKey as _};
+use rsa::pkcs8::DecodePublicKey as _;
 use rsa::traits::PublicKeyParts as _;
 
 /// JWE key encryption, the value core-04 section 5.3.3 names.
@@ -60,6 +62,16 @@ pub const JWE_ALG: &str = "RSA-OAEP";
 pub const JWE_ENC: &str = "A256CBC-HS512";
 /// JWS signature algorithm, the value core-04 section 5.2.2 names.
 pub const JWS_ALG: &str = "RS256";
+/// JWS signature algorithm of an EC P-256 signer: ECDSA with SHA-256
+/// ([RFC 7518 section 3.4](https://www.rfc-editor.org/rfc/rfc7518.html#section-3.4)).
+pub const JWS_ALG_ES256: &str = "ES256";
+/// JWE key management for an EC P-256 recipient: ECDH-ES with the content
+/// key wrapped by AES-256 key wrap
+/// ([RFC 7518 section 4.6](https://www.rfc-editor.org/rfc/rfc7518.html#section-4.6)),
+/// which, unlike direct `ECDH-ES`, serves one content key to many recipients.
+pub const JWE_ALG_ECDH: &str = "ECDH-ES+A256KW";
+/// JWE direct key agreement with ECDH-ES: read, never written.
+pub const JWE_ALG_ECDH_DIRECT: &str = "ECDH-ES";
 /// The `cty` of the encrypted form when the vCon inside is not compressed:
 /// the first value [core-04 section 5.3.1](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-04#section-5.3.1)
 /// names. The draft's Appendix A.7 example writes `application/vcon+json`,
@@ -80,6 +92,13 @@ pub const MIN_RSA_BITS: usize = 2048;
 const RSA_ENCRYPTION_OID: &[u8] = &[
     0x06, 0x09, 0x2A, 0x86, 0x48, 0x86, 0xF7, 0x0D, 0x01, 0x01, 0x01,
 ];
+
+/// The DER of the `id-ecPublicKey` object identifier, 1.2.840.10045.2.1
+/// ([RFC 5480 section 2.1.1](https://www.rfc-editor.org/rfc/rfc5480.html#section-2.1.1)).
+const EC_PUBLIC_KEY_OID: &[u8] = &[0x06, 0x07, 0x2A, 0x86, 0x48, 0xCE, 0x3D, 0x02, 0x01];
+
+/// The DER of the `secp256r1` (P-256) curve identifier, 1.2.840.10045.3.1.7.
+const P256_OID: &[u8] = &[0x06, 0x08, 0x2A, 0x86, 0x48, 0xCE, 0x3D, 0x03, 0x01, 0x07];
 
 /// Which of the three forms a container is in, by the members
 /// [core-04 section 5.4](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-04#section-5.4)
@@ -151,38 +170,75 @@ impl Compression {
     }
 }
 
+/// The private key a signature is made with.
+enum SigningKey {
+    /// An RSA key: `RS256`.
+    Rsa(ring::signature::RsaKeyPair),
+    /// An EC P-256 key: `ES256`.
+    Es256(ring::signature::EcdsaKeyPair),
+}
+
 /// The key and certificate chain a container is signed with.
 pub struct Signer {
-    /// The RSA private key the signature is made with.
-    key: ring::signature::RsaKeyPair,
+    /// The private key the signature is made with.
+    key: SigningKey,
     /// The chain as `x5c` carries it: standard base64 DER, leaf first
     /// ([RFC 7515 section 4.1.6](https://www.rfc-editor.org/rfc/rfc7515.html#section-4.1.6)).
     x5c: Vec<String>,
 }
 
 impl Signer {
-    /// A signer from a PEM RSA private key (`PRIVATE KEY` or `RSA PRIVATE
-    /// KEY`) and a PEM certificate chain, leaf first. The leaf must be the
-    /// key's own certificate.
+    /// A signer from a PEM private key and a PEM certificate chain, leaf
+    /// first. The key is RSA (`PRIVATE KEY` or `RSA PRIVATE KEY`), which signs
+    /// `RS256`, or EC P-256 (`PRIVATE KEY` or `EC PRIVATE KEY`), which signs
+    /// `ES256`. The leaf must be the key's own certificate.
     pub fn from_pem(key_pem: &str, chain_pem: &str) -> Result<Self, String> {
-        let key = pem_blocks(key_pem)
+        let (label, der) = pem_blocks(key_pem)
             .into_iter()
-            .find_map(|(label, der)| match label.as_str() {
-                "PRIVATE KEY" => Some(ring::signature::RsaKeyPair::from_pkcs8(&der)),
-                "RSA PRIVATE KEY" => Some(ring::signature::RsaKeyPair::from_der(&der)),
-                _ => None,
+            .find(|(label, _)| {
+                ["PRIVATE KEY", "RSA PRIVATE KEY", "EC PRIVATE KEY"].contains(&label.as_str())
             })
-            .ok_or("the signing key file holds no PEM `PRIVATE KEY` or `RSA PRIVATE KEY`")?
-            .map_err(|e| {
-                format!(
-                    "the signing key is not an RSA key of {MIN_RSA_BITS} to 8192 bits that can sign: {e}"
-                )
-            })?;
+            .ok_or(
+                "the signing key file holds no PEM `PRIVATE KEY`, `RSA PRIVATE KEY` or \
+                 `EC PRIVATE KEY`",
+            )?;
+        let random = ring::rand::SystemRandom::new();
+        let not_usable = |e: &dyn std::fmt::Display| {
+            format!(
+                "the signing key is neither an RSA key of {MIN_RSA_BITS} to 8192 bits nor an \
+                 EC P-256 key that can sign: {e}"
+            )
+        };
+        let key = match label.as_str() {
+            "RSA PRIVATE KEY" => SigningKey::Rsa(
+                ring::signature::RsaKeyPair::from_der(&der).map_err(|e| not_usable(&e))?,
+            ),
+            "EC PRIVATE KEY" => SigningKey::Es256(es256_from_sec1(&der, &random)?),
+            _ => match ring::signature::RsaKeyPair::from_pkcs8(&der) {
+                Ok(rsa) => SigningKey::Rsa(rsa),
+                Err(rsa_error) => SigningKey::Es256(
+                    ring::signature::EcdsaKeyPair::from_pkcs8(
+                        &ring::signature::ECDSA_P256_SHA256_FIXED_SIGNING,
+                        &der,
+                        &random,
+                    )
+                    .map_err(|_| not_usable(&rsa_error))?,
+                ),
+            },
+        };
         let chain = certificates(chain_pem);
         let leaf = chain
             .first()
             .ok_or("the signing certificate file holds no certificate (PEM `CERTIFICATE`)")?;
-        if rsa_public_key(subject_public_key_info(leaf)?)? != key.public().as_ref() {
+        let matches = match (&key, public_key(subject_public_key_info(leaf)?)?) {
+            (SigningKey::Rsa(rsa), PublicKey::Rsa(public)) => public == rsa.public().as_ref(),
+            (SigningKey::Es256(ec), PublicKey::P256(point)) => {
+                use ring::signature::KeyPair as _;
+                point == ec.public_key().as_ref()
+            }
+            _ => false,
+        };
+        if !matches {
             return Err(
                 "the signing certificate (the first in its file) does not match the signing key"
                     .into(),
@@ -194,37 +250,89 @@ impl Signer {
         })
     }
 
-    /// The `RS256` signature (RSASSA-PKCS1-v1_5 with SHA-256) over `input`.
+    /// The JWS `alg` this signer signs with: `RS256` or `ES256`.
+    #[must_use]
+    pub fn alg(&self) -> &'static str {
+        match self.key {
+            SigningKey::Rsa(_) => JWS_ALG,
+            SigningKey::Es256(_) => JWS_ALG_ES256,
+        }
+    }
+
+    /// The signature over `input`: `RS256` (RSASSA-PKCS1-v1_5 with
+    /// SHA-256) for an RSA key, `ES256` (ECDSA P-256 with SHA-256, the
+    /// 64-byte `r || s` [RFC 7518 section 3.4](https://www.rfc-editor.org/rfc/rfc7518.html#section-3.4) defines) for an EC key.
+    pub fn sign_input(&self, input: &[u8]) -> Result<Vec<u8>, String> {
+        let random = ring::rand::SystemRandom::new();
+        match &self.key {
+            SigningKey::Rsa(key) => {
+                let mut signature = vec![0; key.public().modulus_len()];
+                key.sign(
+                    &ring::signature::RSA_PKCS1_SHA256,
+                    &random,
+                    input,
+                    &mut signature,
+                )
+                .map_err(|_| "RS256 signing failed".to_owned())?;
+                Ok(signature)
+            }
+            SigningKey::Es256(key) => Ok(key
+                .sign(&random, input)
+                .map_err(|_| "ES256 signing failed".to_owned())?
+                .as_ref()
+                .to_vec()),
+        }
+    }
+
+    /// [`Self::sign_input`] for an RSA signer.
     pub fn rs256(&self, input: &[u8]) -> Result<Vec<u8>, String> {
-        let mut signature = vec![0; self.key.public().modulus_len()];
-        self.key
-            .sign(
-                &ring::signature::RSA_PKCS1_SHA256,
-                &ring::rand::SystemRandom::new(),
-                input,
-                &mut signature,
-            )
-            .map_err(|_| "RS256 signing failed".to_owned())?;
-        Ok(signature)
+        self.sign_input(input)
     }
 }
 
+/// An `ES256` key pair from a SEC1 `EC PRIVATE KEY`
+/// ([RFC 5915](https://www.rfc-editor.org/rfc/rfc5915.html)), which ring
+/// does not parse: p256 reads it, and ring takes the scalar and the point.
+fn es256_from_sec1(
+    der: &[u8],
+    random: &ring::rand::SystemRandom,
+) -> Result<ring::signature::EcdsaKeyPair, String> {
+    let secret = p256::SecretKey::from_sec1_der(der)
+        .map_err(|e| format!("the signing key is not an EC P-256 key: {e}"))?;
+    let point = secret.public_key().to_sec1_bytes();
+    ring::signature::EcdsaKeyPair::from_private_key_and_public_key(
+        &ring::signature::ECDSA_P256_SHA256_FIXED_SIGNING,
+        secret.to_bytes().as_slice(),
+        &point,
+        random,
+    )
+    .map_err(|e| format!("the signing key is not an EC P-256 key that can sign: {e}"))
+}
+
 /// The certificate a container is encrypted to.
-pub struct Recipient {
-    /// The RSA public key the content key is encrypted to.
-    key: rsa::RsaPublicKey,
+pub enum Recipient {
+    /// An RSA key: the content key is encrypted `RSA-OAEP`.
+    Rsa(rsa::RsaPublicKey),
+    /// An EC P-256 key, as the uncompressed point: the content key is
+    /// wrapped under a key agreed `ECDH-ES+A256KW`.
+    P256(Vec<u8>),
 }
 
 impl Recipient {
     /// A recipient from a PEM certificate: the first `CERTIFICATE` in `pem`,
-    /// which must carry an RSA key of at least [`MIN_RSA_BITS`].
+    /// which must carry an RSA key of at least [`MIN_RSA_BITS`] or an EC
+    /// P-256 key.
     pub fn from_cert_pem(pem: &str) -> Result<Self, String> {
         let certificates = certificates(pem);
         let leaf = certificates
             .first()
             .ok_or("the recipient file holds no certificate (PEM `CERTIFICATE`)")?;
         let spki = subject_public_key_info(leaf)?;
-        rsa_public_key(spki)?;
+        if let PublicKey::P256(point) = public_key(spki)? {
+            p256::PublicKey::from_sec1_bytes(point)
+                .map_err(|e| format!("the recipient certificate's EC key does not parse: {e}"))?;
+            return Ok(Self::P256(point.to_vec()));
+        }
         let key = rsa::RsaPublicKey::from_public_key_der(spki)
             .map_err(|e| format!("the recipient certificate's RSA key does not parse: {e}"))?;
         let bits = key.size().saturating_mul(8);
@@ -233,7 +341,7 @@ impl Recipient {
                 "the recipient certificate's RSA key is {bits} bits; at least {MIN_RSA_BITS} are required"
             ));
         }
-        Ok(Self { key })
+        Ok(Self::Rsa(key))
     }
 }
 
@@ -305,9 +413,9 @@ fn cbc_hs512_mac(
 
 /// The signed form of `unsigned`: a General JWS JSON Serialization.
 pub fn sign(unsigned: &[u8], uuid: &str, signer: &Signer) -> Result<Vec<u8>, String> {
-    let protected = URL_SAFE_NO_PAD.encode(serde_json::json!({ "alg": JWS_ALG }).to_string());
+    let protected = URL_SAFE_NO_PAD.encode(serde_json::json!({ "alg": signer.alg() }).to_string());
     let payload = URL_SAFE_NO_PAD.encode(unsigned);
-    let signature = signer.rs256(format!("{protected}.{payload}").as_bytes())?;
+    let signature = signer.sign_input(format!("{protected}.{payload}").as_bytes())?;
     serde_json::to_vec(&serde_json::json!({
         "payload": payload,
         "signatures": [{
@@ -356,6 +464,20 @@ pub fn encrypt_compressed(
     recipient: &Recipient,
     compression: Compression,
 ) -> Result<Vec<u8>, String> {
+    encrypt_to_all(signed, uuid, std::slice::from_ref(recipient), compression)
+}
+
+/// [`encrypt_compressed`] to every one of `recipients`: one content key,
+/// encrypted to each, in the `recipients` array of the General JWE JSON
+/// Serialization ([RFC 7516 section 7.2.1](https://www.rfc-editor.org/rfc/rfc7516.html#section-7.2.1)).
+/// An RSA recipient's `header` names `RSA-OAEP`; an EC P-256 recipient's
+/// names `ECDH-ES+A256KW` and carries the `epk` its key was agreed with.
+pub fn encrypt_to_all(
+    signed: &[u8],
+    uuid: &str,
+    recipients: &[Recipient],
+    compression: Compression,
+) -> Result<Vec<u8>, String> {
     let cty = match compression {
         Compression::None => CONTENT_TYPE,
         Compression::Gzip => CONTENT_TYPE_GZIP,
@@ -368,7 +490,7 @@ pub fn encrypt_compressed(
         unprotected: serde_json::json!({ "cty": cty, "enc": JWE_ENC, "uuid": uuid }),
         recipient: Some(serde_json::json!({ "alg": JWE_ALG })),
     };
-    encrypt_under(signed, recipient, &headers)
+    encrypt_under(signed, recipients, &headers)
 }
 
 /// The three header places of a General JWE JSON Serialization
@@ -379,17 +501,21 @@ struct JweHeaders {
     protected: Option<serde_json::Value>,
     /// The shared `unprotected` header.
     unprotected: serde_json::Value,
-    /// The one recipient's `header`; `None` writes none.
+    /// An RSA recipient's `header`; `None` writes none. An EC recipient's
+    /// header is always `alg` and `epk`.
     recipient: Option<serde_json::Value>,
 }
 
-/// Encrypt `signed` to `recipient` with `headers`, a fresh content key and
-/// IV.
+/// Encrypt `signed` to every one of `recipients` with `headers`, a fresh
+/// content key and IV.
 fn encrypt_under(
     signed: &[u8],
-    recipient: &Recipient,
+    recipients: &[Recipient],
     headers: &JweHeaders,
 ) -> Result<Vec<u8>, String> {
+    if recipients.is_empty() {
+        return Err("the container has no recipient to encrypt to".into());
+    }
     let random = ring::rand::SystemRandom::new();
     let fresh = || "the system random source failed".to_owned();
     let cek: [u8; 64] = ring::rand::generate(&random).map_err(|_| fresh())?.expose();
@@ -400,29 +526,41 @@ fn encrypt_under(
         .map(|h| URL_SAFE_NO_PAD.encode(h.to_string()));
     let aad = protected.clone().unwrap_or_default();
     let (ciphertext, tag) = a256cbc_hs512_seal(&cek, &iv, aad.as_bytes(), signed)?;
-    let mut seed = Prefilled::new(&random)?;
-    let encrypted_key = recipient
-        .key
-        .encrypt(&mut seed, rsa::Oaep::new::<sha1_oaep::Sha1>(), &cek)
-        .map_err(|e| format!("RSA-OAEP: {e}"))?;
-    seed.finish()?;
-    let mut one = serde_json::Map::new();
-    if let Some(header) = &headers.recipient {
-        one.insert("header".into(), header.clone());
+    let mut entries = Vec::with_capacity(recipients.len());
+    for recipient in recipients {
+        let (header, encrypted_key) = match recipient {
+            Recipient::Rsa(key) => {
+                let mut seed = Prefilled::new(&random)?;
+                let encrypted_key = key
+                    .encrypt(&mut seed, rsa::Oaep::new::<sha1_oaep::Sha1>(), &cek)
+                    .map_err(|e| format!("RSA-OAEP: {e}"))?;
+                seed.finish()?;
+                (headers.recipient.clone(), encrypted_key)
+            }
+            Recipient::P256(point) => {
+                let (epk, kek) = ecdh_es_kek_for(point, &random)?;
+                (
+                    Some(serde_json::json!({ "alg": JWE_ALG_ECDH, "epk": epk })),
+                    aes_key_wrap(&kek, &cek)?,
+                )
+            }
+        };
+        let mut one = serde_json::Map::new();
+        if let Some(header) = header {
+            one.insert("header".into(), header);
+        }
+        one.insert(
+            "encrypted_key".into(),
+            URL_SAFE_NO_PAD.encode(encrypted_key).into(),
+        );
+        entries.push(serde_json::Value::Object(one));
     }
-    one.insert(
-        "encrypted_key".into(),
-        URL_SAFE_NO_PAD.encode(encrypted_key).into(),
-    );
     let mut jwe = serde_json::Map::new();
     if let Some(protected) = protected {
         jwe.insert("protected".into(), protected.into());
     }
     jwe.insert("unprotected".into(), headers.unprotected.clone());
-    jwe.insert(
-        "recipients".into(),
-        vec![serde_json::Value::Object(one)].into(),
-    );
+    jwe.insert("recipients".into(), entries.into());
     jwe.insert("iv".into(), URL_SAFE_NO_PAD.encode(iv).into());
     jwe.insert(
         "ciphertext".into(),
@@ -453,7 +591,7 @@ pub fn decrypt(jwe: &[u8], key_pem: &str) -> Result<Vec<u8>, String> {
     if form_of(&value) != Form::Encrypted {
         return Err("not an encrypted vCon: it has no `ciphertext` and `recipients`".into());
     }
-    let key = private_key(key_pem)?;
+    let key = decryption_key(key_pem)?;
     let protected_b64 = value
         .get("protected")
         .and_then(|p| p.as_str())
@@ -490,16 +628,25 @@ pub fn decrypt(jwe: &[u8], key_pem: &str) -> Result<Vec<u8>, String> {
         let headers = [&protected, &value["unprotected"], &recipient["header"]];
         let alg = one_header(&headers, "alg")?;
         let enc = one_header(&headers, "enc")?;
-        if alg.as_deref() != Some(JWE_ALG) || enc.as_deref() != Some(JWE_ENC) {
+        let known = [JWE_ALG, JWE_ALG_ECDH, JWE_ALG_ECDH_DIRECT];
+        if !alg.as_deref().is_some_and(|a| known.contains(&a)) || enc.as_deref() != Some(JWE_ENC) {
             last = format!(
-                "a recipient uses alg {alg:?} and enc {enc:?}; sipnab reads {JWE_ALG} with {JWE_ENC}"
+                "a recipient uses alg {alg:?} and enc {enc:?}; sipnab reads {} with {JWE_ENC}",
+                known.join(", ")
             );
             continue;
         }
-        let Ok(cek) = key.decrypt(
-            rsa::Oaep::new::<sha1_oaep::Sha1>(),
-            &b64u_field(recipient, "encrypted_key")?,
-        ) else {
+        let encrypted_key = b64u_field(recipient, "encrypted_key")?;
+        let opened = match (&key, alg.as_deref()) {
+            (DecryptionKey::Rsa(rsa), Some(JWE_ALG)) => rsa
+                .decrypt(rsa::Oaep::new::<sha1_oaep::Sha1>(), &encrypted_key)
+                .ok(),
+            (DecryptionKey::P256(secret), Some(agreement)) if agreement != JWE_ALG => {
+                content_key_by_ecdh(secret, &headers, agreement, &encrypted_key)?
+            }
+            _ => None,
+        };
+        let Some(cek) = opened else {
             last = "no recipient's content key opens with this private key".into();
             continue;
         };
@@ -593,9 +740,9 @@ fn verify_with_signer(jws: &[u8], max_unsigned: usize) -> Result<(Vec<u8>, Vec<V
         let protected = decode_header(protected_b64)?;
         let headers = [&protected, &signature["header"]];
         let alg = one_header(&headers, "alg")?;
-        if alg.as_deref() != Some(JWS_ALG) {
+        if alg.as_deref() != Some(JWS_ALG) && alg.as_deref() != Some(JWS_ALG_ES256) {
             return Err(format!(
-                "a signature uses alg {alg:?}; sipnab verifies {JWS_ALG}"
+                "a signature uses alg {alg:?}; sipnab verifies {JWS_ALG} and {JWS_ALG_ES256}"
             ));
         }
         let placed: Vec<&serde_json::Value> = headers.iter().filter_map(|h| h.get("x5c")).collect();
@@ -621,16 +768,28 @@ fn verify_with_signer(jws: &[u8], max_unsigned: usize) -> Result<(Vec<u8>, Vec<V
         let leaf = chain
             .first()
             .ok_or("a signature carries no `x5c` certificate")?;
-        let public = rsa_public_key(subject_public_key_info(leaf)?)?;
-        ring::signature::UnparsedPublicKey::new(
-            &ring::signature::RSA_PKCS1_2048_8192_SHA256,
-            public,
-        )
-        .verify(
-            format!("{protected_b64}.{payload_b64}").as_bytes(),
-            &b64u_field(signature, "signature")?,
-        )
-        .map_err(|_| "a signature does not verify against its certificate".to_owned())?;
+        // The algorithm the key's type allows, and the `alg` must agree:
+        // a changed `alg` cannot pick another verification.
+        let (algorithm, public): (&dyn ring::signature::VerificationAlgorithm, &[u8]) =
+            match (public_key(subject_public_key_info(leaf)?)?, alg.as_deref()) {
+                (PublicKey::Rsa(key), Some(JWS_ALG)) => {
+                    (&ring::signature::RSA_PKCS1_2048_8192_SHA256, key)
+                }
+                (PublicKey::P256(point), Some(JWS_ALG_ES256)) => {
+                    (&ring::signature::ECDSA_P256_SHA256_FIXED, point)
+                }
+                _ => {
+                    return Err(format!(
+                        "a signature's alg {alg:?} is not the algorithm of its certificate's key"
+                    ));
+                }
+            };
+        ring::signature::UnparsedPublicKey::new(algorithm, public)
+            .verify(
+                format!("{protected_b64}.{payload_b64}").as_bytes(),
+                &b64u_field(signature, "signature")?,
+            )
+            .map_err(|_| "a signature does not verify against its certificate".to_owned())?;
         signer.get_or_insert(chain);
     }
     let payload = URL_SAFE_NO_PAD
@@ -684,12 +843,261 @@ fn b64u_field(value: &serde_json::Value, name: &str) -> Result<Vec<u8>, String> 
         .map_err(|e| format!("`{name}` is not base64url: {e}"))
 }
 
-/// A PEM RSA private key, PKCS #8 or PKCS #1.
-fn private_key(pem: &str) -> Result<rsa::RsaPrivateKey, String> {
+/// The private key an encrypted container is opened with.
+enum DecryptionKey {
+    /// An RSA key, for an `RSA-OAEP` recipient.
+    Rsa(Box<rsa::RsaPrivateKey>),
+    /// An EC P-256 key, for an `ECDH-ES+A256KW` or `ECDH-ES` recipient.
+    P256(p256::SecretKey),
+}
+
+/// A PEM private key: RSA (PKCS #8 or PKCS #1) or EC P-256 (PKCS #8 or
+/// SEC1 `EC PRIVATE KEY`).
+fn decryption_key(pem: &str) -> Result<DecryptionKey, String> {
+    use p256::pkcs8::DecodePrivateKey as _;
     use rsa::pkcs1::DecodeRsaPrivateKey as _;
-    rsa::RsaPrivateKey::from_pkcs8_pem(pem)
-        .or_else(|_| rsa::RsaPrivateKey::from_pkcs1_pem(pem))
-        .map_err(|e| format!("the private key is not a PEM RSA key: {e}"))
+    if let Ok(key) =
+        rsa::RsaPrivateKey::from_pkcs8_pem(pem).or_else(|_| rsa::RsaPrivateKey::from_pkcs1_pem(pem))
+    {
+        return Ok(DecryptionKey::Rsa(Box::new(key)));
+    }
+    pem_blocks(pem)
+        .into_iter()
+        .find_map(|(label, der)| match label.as_str() {
+            "PRIVATE KEY" => p256::SecretKey::from_pkcs8_der(&der).ok(),
+            "EC PRIVATE KEY" => p256::SecretKey::from_sec1_der(&der).ok(),
+            _ => None,
+        })
+        .map(DecryptionKey::P256)
+        .ok_or_else(|| "the private key is neither a PEM RSA key nor a PEM EC P-256 key".into())
+}
+
+/// The content key of an ECDH-ES recipient whose headers are `headers`,
+/// agreed between `secret` and the recipient's `epk`
+/// ([RFC 7518 section 4.6](https://www.rfc-editor.org/rfc/rfc7518.html#section-4.6)):
+/// unwrapped from `encrypted_key` for `ECDH-ES+A256KW`, the agreed key
+/// itself for `ECDH-ES`. `None` when it does not open with this key.
+///
+/// # Errors
+///
+/// An `epk`, `apu` or `apv` that is not what [RFC 7518 section 4.6.1](https://www.rfc-editor.org/rfc/rfc7518.html#section-4.6.1) says.
+fn content_key_by_ecdh(
+    secret: &p256::SecretKey,
+    headers: &[&serde_json::Value],
+    alg: &str,
+    encrypted_key: &[u8],
+) -> Result<Option<Vec<u8>>, String> {
+    let epk = headers
+        .iter()
+        .find_map(|h| h.get("epk"))
+        .ok_or("an ECDH-ES recipient carries no `epk`")?;
+    let point = point_of_jwk(epk)?;
+    let party = |name: &str| -> Result<Vec<u8>, String> {
+        match one_header(headers, name)? {
+            Some(text) => URL_SAFE_NO_PAD
+                .decode(text)
+                .map_err(|e| format!("`{name}` is not base64url: {e}")),
+            None => Ok(Vec::new()),
+        }
+    };
+    let (apu, apv) = (party("apu")?, party("apv")?);
+    let Some(z) = ecdh_static(secret, &point) else {
+        return Ok(None);
+    };
+    if alg == JWE_ALG_ECDH_DIRECT {
+        if !encrypted_key.is_empty() {
+            return Err("an ECDH-ES recipient carries an `encrypted_key`".into());
+        }
+        return Ok(Some(concat_kdf(&z, JWE_ENC, &apu, &apv, 64)));
+    }
+    let kek: [u8; 32] = concat_kdf(&z, JWE_ALG_ECDH, &apu, &apv, 32)
+        .try_into()
+        .map_err(|_| "the key-encryption key is not 32 bytes".to_owned())?;
+    Ok(aes_key_unwrap(&kek, encrypted_key).ok())
+}
+
+/// The ECDH shared secret `Z` of `secret` and the uncompressed P-256
+/// `point`, or `None` when the point is not on the curve.
+fn ecdh_static(secret: &p256::SecretKey, point: &[u8]) -> Option<Vec<u8>> {
+    let public = p256::PublicKey::from_sec1_bytes(point).ok()?;
+    let shared = p256::ecdh::diffie_hellman(secret.to_nonzero_scalar(), public.as_affine());
+    Some(shared.raw_secret_bytes().to_vec())
+}
+
+/// A fresh ephemeral key agreed with the recipient's uncompressed P-256
+/// `point`: the ephemeral public key as the JWK `epk`, and the
+/// `ECDH-ES+A256KW` key-encryption key derived from the agreement with no
+/// `apu` or `apv`.
+fn ecdh_es_kek_for(
+    point: &[u8],
+    random: &ring::rand::SystemRandom,
+) -> Result<(serde_json::Value, [u8; 32]), String> {
+    use ring::agreement;
+    let ephemeral = agreement::EphemeralPrivateKey::generate(&agreement::ECDH_P256, random)
+        .map_err(|_| "the system random source failed".to_owned())?;
+    let public = ephemeral
+        .compute_public_key()
+        .map_err(|_| "the ephemeral EC key has no public key".to_owned())?;
+    let epk = jwk_of_point(public.as_ref())?;
+    let peer = agreement::UnparsedPublicKey::new(&agreement::ECDH_P256, point);
+    let kek = agreement::agree_ephemeral(ephemeral, &peer, |z| {
+        concat_kdf(z, JWE_ALG_ECDH, &[], &[], 32)
+    })
+    .map_err(|_| "ECDH with the recipient's EC key failed".to_owned())?;
+    let kek: [u8; 32] = kek
+        .try_into()
+        .map_err(|_| "the key-encryption key is not 32 bytes".to_owned())?;
+    Ok((epk, kek))
+}
+
+/// The JWK of an uncompressed P-256 point
+/// ([RFC 7518 section 6.2.1](https://www.rfc-editor.org/rfc/rfc7518.html#section-6.2.1)).
+fn jwk_of_point(point: &[u8]) -> Result<serde_json::Value, String> {
+    match point {
+        [0x04, rest @ ..] if rest.len() == 64 => Ok(serde_json::json!({
+            "kty": "EC",
+            "crv": "P-256",
+            "x": URL_SAFE_NO_PAD.encode(&rest[..32]),
+            "y": URL_SAFE_NO_PAD.encode(&rest[32..]),
+        })),
+        _ => Err("an EC public key is not an uncompressed P-256 point".into()),
+    }
+}
+
+/// The uncompressed P-256 point of a JWK `epk`.
+fn point_of_jwk(jwk: &serde_json::Value) -> Result<Vec<u8>, String> {
+    if jwk["kty"] != "EC" || jwk["crv"] != "P-256" {
+        return Err(format!(
+            "an `epk` is kty {} crv {}; sipnab reads EC P-256",
+            jwk["kty"], jwk["crv"]
+        ));
+    }
+    let coordinate = |name: &str| -> Result<Vec<u8>, String> {
+        let bytes = b64u_field(jwk, name)?;
+        if bytes.len() == 32 {
+            Ok(bytes)
+        } else {
+            Err(format!("the `epk` coordinate `{name}` is not 32 bytes"))
+        }
+    };
+    let mut point = vec![0x04];
+    point.extend(coordinate("x")?);
+    point.extend(coordinate("y")?);
+    Ok(point)
+}
+
+/// The Concat KDF of [RFC 7518 section 4.6.2](https://www.rfc-editor.org/rfc/rfc7518.html#section-4.6.2)
+/// (NIST SP 800-56A section 5.8.1, SHA-256): `len` bytes from the shared
+/// secret `z`, with `AlgorithmID` `alg`, `PartyUInfo` `apu`, `PartyVInfo`
+/// `apv` and `SuppPubInfo` the key length in bits.
+#[must_use]
+pub fn concat_kdf(z: &[u8], alg: &str, apu: &[u8], apv: &[u8], len: usize) -> Vec<u8> {
+    use sha2::Digest as _;
+    let field = |bytes: &[u8]| {
+        let mut out = u32::try_from(bytes.len())
+            .unwrap_or(u32::MAX)
+            .to_be_bytes()
+            .to_vec();
+        out.extend_from_slice(bytes);
+        out
+    };
+    let mut other = field(alg.as_bytes());
+    other.extend(field(apu));
+    other.extend(field(apv));
+    let bits = u32::try_from(len.saturating_mul(8)).unwrap_or(u32::MAX);
+    other.extend_from_slice(&bits.to_be_bytes());
+    let mut out = Vec::with_capacity(len + 32);
+    let mut round: u32 = 1;
+    while out.len() < len {
+        let mut hash = sha2::Sha256::new();
+        hash.update(round.to_be_bytes());
+        hash.update(z);
+        hash.update(&other);
+        out.extend_from_slice(&hash.finalize());
+        round = round.saturating_add(1);
+    }
+    out.truncate(len);
+    out
+}
+
+/// The default initial value of AES key wrap
+/// ([RFC 3394 section 2.2.3.1](https://www.rfc-editor.org/rfc/rfc3394.html#section-2.2.3.1)).
+const KEY_WRAP_IV: [u8; 8] = [0xA6; 8];
+
+/// AES-256 key wrap ([RFC 3394 section 2.2.1](https://www.rfc-editor.org/rfc/rfc3394.html#section-2.2.1))
+/// of `key`, a whole number of 64-bit blocks, at least two, under `kek`.
+///
+/// # Errors
+///
+/// A `key` that is not a whole number of at least two 64-bit blocks.
+pub fn aes_key_wrap(kek: &[u8; 32], key: &[u8]) -> Result<Vec<u8>, String> {
+    use aes::cipher::{BlockCipherEncrypt as _, KeyInit as _};
+    if !key.len().is_multiple_of(8) || key.len() < 16 {
+        return Err("AES key wrap takes a whole number of at least two 64-bit blocks".into());
+    }
+    let cipher = aes::Aes256::new_from_slice(kek).map_err(|e| format!("AES-256 key: {e}"))?;
+    let mut check = KEY_WRAP_IV;
+    let mut blocks: Vec<[u8; 8]> = key.as_chunks::<8>().0.to_vec();
+    let count = blocks.len() as u64;
+    for round in 0..6u64 {
+        for (index, block) in blocks.iter_mut().enumerate() {
+            let mut buffer = aes::Block::default();
+            buffer[..8].copy_from_slice(&check);
+            buffer[8..].copy_from_slice(block);
+            cipher.encrypt_block(&mut buffer);
+            let step = count * round + (index as u64) + 1;
+            for (out, (high, counter)) in check
+                .iter_mut()
+                .zip(buffer[..8].iter().zip(step.to_be_bytes()))
+            {
+                *out = high ^ counter;
+            }
+            block.copy_from_slice(&buffer[8..]);
+        }
+    }
+    let mut wrapped = check.to_vec();
+    for block in blocks {
+        wrapped.extend_from_slice(&block);
+    }
+    Ok(wrapped)
+}
+
+/// AES-256 key unwrap ([RFC 3394 section 2.2.2](https://www.rfc-editor.org/rfc/rfc3394.html#section-2.2.2)):
+/// the key `wrapped` holds under `kek`.
+///
+/// # Errors
+///
+/// A length that is not a wrapped key's, or an integrity check that fails:
+/// the wrong `kek`, or bytes changed.
+pub fn aes_key_unwrap(kek: &[u8; 32], wrapped: &[u8]) -> Result<Vec<u8>, String> {
+    use aes::cipher::{BlockCipherDecrypt as _, KeyInit as _};
+    if !wrapped.len().is_multiple_of(8) || wrapped.len() < 24 {
+        return Err("a wrapped key is a whole number of at least three 64-bit blocks".into());
+    }
+    let cipher = aes::Aes256::new_from_slice(kek).map_err(|e| format!("AES-256 key: {e}"))?;
+    let mut check: [u8; 8] = wrapped[..8].try_into().unwrap_or([0; 8]);
+    let mut blocks: Vec<[u8; 8]> = wrapped[8..].as_chunks::<8>().0.to_vec();
+    let count = blocks.len() as u64;
+    for round in (0..6u64).rev() {
+        for (index, block) in blocks.iter_mut().enumerate().rev() {
+            let step = count * round + (index as u64) + 1;
+            let mut buffer = aes::Block::default();
+            for (out, (high, counter)) in buffer[..8]
+                .iter_mut()
+                .zip(check.iter().zip(step.to_be_bytes()))
+            {
+                *out = high ^ counter;
+            }
+            buffer[8..].copy_from_slice(block);
+            cipher.decrypt_block(&mut buffer);
+            check.copy_from_slice(&buffer[..8]);
+            block.copy_from_slice(&buffer[8..]);
+        }
+    }
+    if check != KEY_WRAP_IV {
+        return Err("the wrapped key's integrity check fails".into());
+    }
+    Ok(blocks.concat())
 }
 
 /// Every `-----BEGIN <label>-----` block in `text`, decoded.
@@ -775,19 +1183,32 @@ fn subject_public_key_info(certificate: &[u8]) -> Result<&[u8], String> {
     }
 }
 
-/// The PKCS #1 `RSAPublicKey` inside an `rsaEncryption` SubjectPublicKeyInfo.
-fn rsa_public_key(spki: &[u8]) -> Result<&[u8], String> {
-    const NOT_RSA: &str = "the certificate's key is not an RSA key (rsaEncryption)";
-    let (_, spki, _, _) = der_element(spki).ok_or(NOT_RSA)?;
-    let (0x30, algorithm, _, rest) = der_element(spki).ok_or(NOT_RSA)? else {
-        return Err(NOT_RSA.into());
+/// The public key a certificate carries.
+enum PublicKey<'a> {
+    /// The PKCS #1 `RSAPublicKey` of an `rsaEncryption` key.
+    Rsa(&'a [u8]),
+    /// The uncompressed point of an `id-ecPublicKey` key on P-256.
+    P256(&'a [u8]),
+}
+
+/// The key inside a SubjectPublicKeyInfo: RSA, or EC on P-256
+/// ([RFC 5480 section 2](https://www.rfc-editor.org/rfc/rfc5480.html#section-2)).
+fn public_key(spki: &[u8]) -> Result<PublicKey<'_>, String> {
+    const NOT_KNOWN: &str =
+        "the certificate's key is neither an RSA key (rsaEncryption) nor an EC P-256 key";
+    let (_, spki, _, _) = der_element(spki).ok_or(NOT_KNOWN)?;
+    let (0x30, algorithm, _, rest) = der_element(spki).ok_or(NOT_KNOWN)? else {
+        return Err(NOT_KNOWN.into());
     };
-    if !algorithm.starts_with(RSA_ENCRYPTION_OID) {
-        return Err(NOT_RSA.into());
+    let Some((0x03, [0, key @ ..], _, _)) = der_element(rest) else {
+        return Err(NOT_KNOWN.into());
+    };
+    if algorithm.starts_with(RSA_ENCRYPTION_OID) {
+        return Ok(PublicKey::Rsa(key));
     }
-    match der_element(rest) {
-        Some((0x03, [0, key @ ..], _, _)) => Ok(key),
-        _ => Err(NOT_RSA.into()),
+    match algorithm.strip_prefix(EC_PUBLIC_KEY_OID) {
+        Some(P256_OID) if key.len() == 65 && key[0] == 0x04 => Ok(PublicKey::P256(key)),
+        _ => Err(NOT_KNOWN.into()),
     }
 }
 
@@ -868,9 +1289,10 @@ impl rsa::rand_core::CryptoRng for Prefilled {}
 pub struct Sealing {
     /// The key and chain the signed form is signed with.
     pub signer: Signer,
-    /// The certificate the signed form is encrypted to; `None` writes the
-    /// signed form alone ([core-04 section 5.2](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-04#section-5.2)).
-    pub recipient: Option<Recipient>,
+    /// The certificates the signed form is encrypted to, each a recipient
+    /// of the one JWE; none writes the signed form alone
+    /// ([core-04 section 5.2](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-04#section-5.2)).
+    pub recipients: Vec<Recipient>,
     /// Whether the vCon is gzip compressed inside the signed form.
     pub compression: Compression,
 }
@@ -890,15 +1312,16 @@ impl Sealing {
     /// form, or the signed form when there is no recipient.
     pub fn seal(&self, unsigned: &[u8], uuid: &str) -> Result<Vec<u8>, String> {
         let signed = sign_compressed(unsigned, uuid, &self.signer, self.compression)?;
-        match &self.recipient {
-            Some(recipient) => encrypt_compressed(&signed, uuid, recipient, self.compression),
-            None => Ok(signed),
+        if self.recipients.is_empty() {
+            return Ok(signed);
         }
+        encrypt_to_all(&signed, uuid, &self.recipients, self.compression)
     }
 
     /// A file an encrypting rule writes beside its container (a `url`
-    /// rule's recording), encrypted to the same recipient: a General JWE
-    /// JSON Serialization whose plaintext is `file` and whose `cty` is
+    /// rule's recording), encrypted to the same recipients as the container,
+    /// one `recipients` entry each: a General JWE JSON Serialization whose
+    /// plaintext is `file` and whose `cty` is
     /// `mediatype`, with the headers placed as [`encrypt_compressed`] places
     /// them.
     ///
@@ -912,11 +1335,7 @@ impl Sealing {
             unprotected: serde_json::json!({ "cty": mediatype, "enc": JWE_ENC }),
             recipient: Some(serde_json::json!({ "alg": JWE_ALG })),
         };
-        let recipient = self
-            .recipient
-            .as_ref()
-            .ok_or("a file is encrypted only by a rule that encrypts")?;
-        encrypt_under(file, recipient, &headers)
+        encrypt_under(file, &self.recipients, &headers)
     }
 
     /// This sealing, compressing as `compression` says.
@@ -927,11 +1346,10 @@ impl Sealing {
     }
 }
 
-/// Read an encrypting rule's three files: the recipient certificate, the
-/// signing key, which must be readable by its owner only, and the signing
-/// chain.
+/// Read an encrypting rule's files: each recipient certificate, the signing
+/// key, which must be readable by its owner only, and the signing chain.
 pub fn load_sealing(
-    encrypt_to: &std::path::Path,
+    encrypt_to: &[std::path::PathBuf],
     sign_key: &std::path::Path,
     sign_cert: &std::path::Path,
 ) -> Result<Sealing, String> {
@@ -943,7 +1361,13 @@ pub fn load_sealing(
             &read_private_key("signing key", sign_key)?,
             &read(sign_cert)?,
         )?,
-        recipient: Some(Recipient::from_cert_pem(&read(encrypt_to)?)?),
+        recipients: encrypt_to
+            .iter()
+            .map(|path| {
+                Recipient::from_cert_pem(&read(path)?)
+                    .map_err(|e| format!("'{}': {e}", path.display()))
+            })
+            .collect::<Result<_, String>>()?,
         compression: Compression::None,
     })
 }
@@ -958,7 +1382,7 @@ pub fn load_signing(
         .map_err(|e| format!("cannot read '{}': {e}", sign_cert.display()))?;
     Ok(Sealing {
         signer: Signer::from_pem(&read_private_key("signing key", sign_key)?, &chain)?,
-        recipient: None,
+        recipients: Vec::new(),
         compression: Compression::None,
     })
 }
@@ -1133,7 +1557,7 @@ impl Opener {
     /// owner only.
     pub fn load(path: &std::path::Path) -> Result<Self, String> {
         let key_pem = read_private_key("decryption key", path)?;
-        private_key(&key_pem)?;
+        decryption_key(&key_pem)?;
         Ok(Self {
             key_pem: Some(key_pem),
             trust: SignerTrust::default(),
@@ -1438,7 +1862,7 @@ mod tests {
         let seal_with = |c| -> Result<Vec<u8>, Box<dyn std::error::Error>> {
             Ok(Sealing {
                 signer: signer()?,
-                recipient: Some(recipient()?),
+                recipients: vec![recipient()?],
                 compression: Compression::None,
             }
             .compressed(c)
@@ -1477,7 +1901,7 @@ mod tests {
             unprotected: serde_json::json!({ "cty": CONTENT_TYPE, "uuid": UUID }),
             recipient: None,
         };
-        let jwe = encrypt_under(&signed, &recipient()?, &headers)?;
+        let jwe = encrypt_under(&signed, std::slice::from_ref(&recipient()?), &headers)?;
         let err = decrypt(&jwe, &key)
             .err()
             .ok_or("zip in protected accepted")?;
@@ -1900,6 +2324,154 @@ mod tests {
         Ok(())
     }
 
+    /// Hex text to bytes, for the published test vectors.
+    fn hex(text: &str) -> Vec<u8> {
+        let digits: Vec<u8> = text
+            .bytes()
+            .filter(u8::is_ascii_hexdigit)
+            .map(|b| (b as char).to_digit(16).unwrap_or(0) as u8)
+            .collect();
+        digits.chunks(2).map(|p| (p[0] << 4) | p[1]).collect()
+    }
+
+    /// [RFC 3394 section 4.6](https://www.rfc-editor.org/rfc/rfc3394.html#section-4.6): 256 bits of key data wrapped with a
+    /// 256-bit KEK. Unwrap gives the key back; a changed byte or another
+    /// KEK fails the integrity check.
+    #[test]
+    fn aes_key_wrap_matches_rfc_3394_section_4_6() -> TestResult {
+        let kek: [u8; 32] = hex("000102030405060708090A0B0C0D0E0F101112131415161718191A1B1C1D1E1F")
+            .try_into()
+            .map_err(|_| "kek")?;
+        let key = hex("00112233445566778899AABBCCDDEEFF000102030405060708090A0B0C0D0E0F");
+        let wrapped = hex(
+            "28C9F404C4B810F4 CBCCB35CFB87F826 3F5786E2D80ED326 CBC7F0E71A99F43B FB988B9B7A02DD21",
+        );
+        assert_eq!(aes_key_wrap(&kek, &key)?, wrapped);
+        assert_eq!(aes_key_unwrap(&kek, &wrapped)?, key);
+        let mut changed = wrapped.clone();
+        changed[20] ^= 1;
+        assert!(aes_key_unwrap(&kek, &changed).is_err());
+        let mut other = kek;
+        other[0] ^= 1;
+        assert!(aes_key_unwrap(&other, &wrapped).is_err());
+        assert!(aes_key_wrap(&kek, &key[..15]).is_err());
+        Ok(())
+    }
+
+    /// [RFC 7518 Appendix C](https://www.rfc-editor.org/rfc/rfc7518.html#appendix-C): Bob's static key agreed with Alice's ephemeral
+    /// key gives the published `Z`, and the Concat KDF the published key.
+    #[test]
+    fn ecdh_and_the_concat_kdf_match_rfc_7518_appendix_c() -> TestResult {
+        let d = URL_SAFE_NO_PAD.decode("VEmDZpDXXK8p8N0Cndsxs924q6nS1RXFASRl6BfUqdw")?;
+        let bob = p256::SecretKey::from_slice(&d)?;
+        let alice = point_of_jwk(&serde_json::json!({
+            "kty": "EC", "crv": "P-256",
+            "x": "gI0GAILBdu7T53akrFmMyGcsF3n5dO7MmwNBHKW5SV0",
+            "y": "SLW_xSffzlPWrHEVI30DHM_4egVwt3NQqeUD7nMFpps",
+        }))?;
+        let z = ecdh_static(&bob, &alice).ok_or("not on the curve")?;
+        assert_eq!(
+            z,
+            [
+                158, 86, 217, 29, 129, 113, 53, 211, 114, 131, 66, 131, 191, 132, 38, 156, 251, 49,
+                110, 163, 218, 128, 106, 72, 246, 218, 167, 121, 140, 254, 144, 196
+            ]
+        );
+        let key = concat_kdf(&z, "A128GCM", b"Alice", b"Bob", 16);
+        assert_eq!(URL_SAFE_NO_PAD.encode(key), "VqqN6vgjbSBcIijNcacQGg");
+        Ok(())
+    }
+
+    /// A fresh EC P-256 key and its self-signed certificate, PEM.
+    fn ec_pair() -> Result<(String, String), Box<dyn std::error::Error>> {
+        let key = rcgen::KeyPair::generate_for(&rcgen::PKCS_ECDSA_P256_SHA256)?;
+        let cert = rcgen::CertificateParams::default().self_signed(&key)?;
+        Ok((key.serialize_pem(), cert.pem()))
+    }
+
+    /// One content key, an RSA and an EC recipient: each key opens the
+    /// container, a third does not, and the EC recipient's header carries
+    /// `ECDH-ES+A256KW` and its `epk`.
+    #[test]
+    fn every_recipient_opens_a_container_encrypted_to_several() -> TestResult {
+        let (ec_key, ec_cert) = ec_pair()?;
+        let (stranger, _) = ec_pair()?;
+        let recipients = vec![recipient()?, Recipient::from_cert_pem(&ec_cert)?];
+        let signed = sign(&unsigned(), UUID, &signer()?)?;
+        let jwe = encrypt_to_all(&signed, UUID, &recipients, Compression::None)?;
+        let value: serde_json::Value = serde_json::from_slice(&jwe)?;
+        assert_eq!(value["recipients"][0]["header"]["alg"], JWE_ALG);
+        assert_eq!(value["recipients"][1]["header"]["alg"], JWE_ALG_ECDH);
+        assert_eq!(value["recipients"][1]["header"]["epk"]["crv"], "P-256");
+        assert_eq!(decrypt(&jwe, &fixture("fake_grp.key")?)?, signed);
+        assert_eq!(decrypt(&jwe, &ec_key)?, signed);
+        assert!(decrypt(&jwe, &stranger).is_err());
+        Ok(())
+    }
+
+    /// A direct `ECDH-ES` recipient ([RFC 7518 section 4.6](https://www.rfc-editor.org/rfc/rfc7518.html#section-4.6), the agreed key is
+    /// the content key) is read, as another producer may write one.
+    #[test]
+    fn a_direct_ecdh_es_recipient_is_read() -> TestResult {
+        let (ec_key, ec_cert) = ec_pair()?;
+        let Recipient::P256(point) = Recipient::from_cert_pem(&ec_cert)? else {
+            return Err("an EC recipient".into());
+        };
+        let random = ring::rand::SystemRandom::new();
+        let ephemeral =
+            ring::agreement::EphemeralPrivateKey::generate(&ring::agreement::ECDH_P256, &random)
+                .map_err(|_| "random")?;
+        let epk = jwk_of_point(ephemeral.compute_public_key().map_err(|_| "epk")?.as_ref())?;
+        let peer = ring::agreement::UnparsedPublicKey::new(&ring::agreement::ECDH_P256, &point);
+        let cek = ring::agreement::agree_ephemeral(ephemeral, &peer, |z| {
+            concat_kdf(z, JWE_ENC, b"", b"", 64)
+        })
+        .map_err(|_| "agree")?;
+        let cek: [u8; 64] = cek.try_into().map_err(|_| "cek")?;
+        let iv = [7u8; 16];
+        let signed = sign(&unsigned(), UUID, &signer()?)?;
+        let (ciphertext, tag) = a256cbc_hs512_seal(&cek, &iv, b"", &signed)?;
+        let jwe = serde_json::json!({
+            "unprotected": { "enc": JWE_ENC, "cty": CONTENT_TYPE },
+            "recipients": [{ "header": { "alg": JWE_ALG_ECDH_DIRECT, "epk": epk }, "encrypted_key": "" }],
+            "iv": URL_SAFE_NO_PAD.encode(iv),
+            "ciphertext": URL_SAFE_NO_PAD.encode(ciphertext),
+            "tag": URL_SAFE_NO_PAD.encode(tag),
+        });
+        assert_eq!(decrypt(jwe.to_string().as_bytes(), &ec_key)?, signed);
+        Ok(())
+    }
+
+    /// An EC signer signs `ES256` and verifies; the `alg` must be the one
+    /// its certificate's key allows, so `RS256` on an EC certificate is
+    /// refused.
+    #[test]
+    fn an_ec_signer_signs_es256_and_alg_must_match_the_key() -> TestResult {
+        let (key, cert) = ec_pair()?;
+        let ec = Signer::from_pem(&key, &cert)?;
+        assert_eq!(ec.alg(), JWS_ALG_ES256);
+        let signed = sign(&unsigned(), UUID, &ec)?;
+        assert_eq!(verify(&signed)?, unsigned());
+        let payload = URL_SAFE_NO_PAD.encode(unsigned());
+        let protected = URL_SAFE_NO_PAD.encode(serde_json::json!({ "alg": JWS_ALG }).to_string());
+        let signature = ec.sign_input(format!("{protected}.{payload}").as_bytes())?;
+        let lying = serde_json::json!({
+            "payload": payload,
+            "signatures": [{
+                "protected": protected,
+                "header": { "x5c": ec.x5c, "uuid": UUID },
+                "signature": URL_SAFE_NO_PAD.encode(signature),
+            }],
+        });
+        let err = verify(lying.to_string().as_bytes())
+            .err()
+            .ok_or("RS256 on an EC certificate was accepted")?;
+        assert!(err.contains("not the algorithm"), "{err}");
+        let (other_key, _) = ec_pair()?;
+        assert!(Signer::from_pem(&other_key, &cert).is_err(), "another key");
+        Ok(())
+    }
+
     #[test]
     fn a_fingerprint_is_read_plain_or_with_colons_in_either_case() -> TestResult {
         let hex = "409743610cc747bd4082e2281c53a6548874ebe7a72be4a3c8cb1bcac897bcd6";
@@ -1964,7 +2536,11 @@ mod tests {
             unprotected: serde_json::json!({ "cty": "application/vcon+json", "uuid": UUID }),
             recipient: None,
         };
-        Ok(encrypt_under(signed, &recipient()?, &headers)?)
+        Ok(encrypt_under(
+            signed,
+            std::slice::from_ref(&recipient()?),
+            &headers,
+        )?)
     }
 
     /// The names of a JSON object.
@@ -2098,7 +2674,7 @@ mod tests {
             unprotected: serde_json::json!({ "cty": CONTENT_TYPE, "enc": JWE_ENC, "uuid": UUID }),
             recipient: Some(serde_json::json!({ "alg": JWE_ALG })),
         };
-        let jwe = encrypt_under(&signed, &recipient()?, &headers)?;
+        let jwe = encrypt_under(&signed, std::slice::from_ref(&recipient()?), &headers)?;
         let err = decrypt(&jwe, &fixture("fake_grp.key")?)
             .err()
             .ok_or("two enc values accepted")?;

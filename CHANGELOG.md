@@ -105,6 +105,16 @@ entry that carries them.
     - It compiles libopus 1.6.1 from source and links it statically, so building `full` needs `cmake` and a C compiler.
     - The gnu, macOS and Docker builds carry it. The static musl builds, which have no vCon export, do not.
     - `sipnab --version` lists it.
+- **An encrypted vCon can have several recipients, and EC keys.**
+  - `encrypt_to` in `[[vcon.rule]]` and `[vcon]` takes a list of certificates.
+    - sipnab encrypts the container once and writes one `recipients` entry per certificate ([RFC 7516 section 7.2.1](https://www.rfc-editor.org/rfc/rfc7516.html#section-7.2.1)).
+    - Each recipient opens it with its own key.
+    - sipnab refuses an empty list.
+  - An EC P-256 recipient certificate gets `ECDH-ES+A256KW` ([RFC 7518 section 4.6](https://www.rfc-editor.org/rfc/rfc7518.html#section-4.6)), with the content key wrapped by AES key wrap ([RFC 3394](https://www.rfc-editor.org/rfc/rfc3394.html)); an RSA one keeps `RSA-OAEP`.
+  - An EC P-256 `sign_key` signs `ES256`; an RSA one keeps `RS256`.
+  - The readers and the fetcher open an `ECDH-ES+A256KW` or `ECDH-ES` entry with an EC P-256 key, and verify `ES256`.
+    - They refuse a signature whose `alg` is not the algorithm of its certificate's key.
+  - Decrypting with a static EC key uses the `p256` crate 0.13.2, new to the `vcon` feature; osv.dev lists no advisory for it or the crates it adds.
 - **A `[[vcon.rule]]` can sign without encrypting.**
   - `sign_only = true` writes the signed form of draft-ietf-vcon-vcon-core-04 section 5.2 alone: a JWS signed with `sign_key` and `sign_cert`, with no encryption.
   - `compress = "gzip"` signs the gzip of the vCon, as for an encrypting rule.

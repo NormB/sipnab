@@ -9272,7 +9272,7 @@ fn vcon_media_name(container: &str, extension: &str) -> String {
 /// container: `recording` as written, or, for a rule that encrypts, its
 /// encrypted form.
 ///
-/// An encrypting rule's file is a JWE to the rule's recipient
+/// An encrypting rule's file is a JWE to each of the rule's recipients
 /// ([`crate::output::vcon_jose::Sealing::encrypt_file`]). It is named
 /// `<content_hash>.<extension>.jwe`, by the hash of the ciphertext, because
 /// the name is not encrypted and a Call-ID can carry host names and
@@ -9294,7 +9294,7 @@ fn media_file<'a>(
 ) -> Result<(String, std::borrow::Cow<'a, [u8]>), String> {
     // A rule that signs without encrypting writes the file as it is: the
     // signed container names its `content_hash`.
-    match target.sealing.filter(|s| s.recipient.is_some()) {
+    match target.sealing.filter(|s| !s.recipients.is_empty()) {
         None => Ok((
             vcon_media_name(&vcon_spool_name(call_id, None), format.extension()),
             recording.bytes.into(),
@@ -10204,7 +10204,9 @@ mod tests {
         let cert = std::path::PathBuf::from(format!("{fixtures}/fake_grp.crt"));
         let mut rule = test_rule("calls", "method == 'INVITE'", tmp.path(), RuleAudio::Omit)?;
         rule.sealing = Some(std::sync::Arc::new(crate::output::vcon_jose::load_sealing(
-            &cert, &key, &cert,
+            std::slice::from_ref(&cert),
+            &key,
+            &cert,
         )?));
         rule.enrich = crate::app::vcon_enrich::services(
             &[crate::config::VconEnrichConfig {
@@ -10448,7 +10450,9 @@ mod tests {
         let mut rule = test_rule("sealed", "method == 'INVITE'", dir, RuleAudio::Omit)?;
         rule.live = live;
         rule.sealing = Some(std::sync::Arc::new(crate::output::vcon_jose::load_sealing(
-            &cert, &key, &cert,
+            std::slice::from_ref(&cert),
+            &key,
+            &cert,
         )?));
         rule.sealed_updates = sealed_updates;
         Ok(rule)

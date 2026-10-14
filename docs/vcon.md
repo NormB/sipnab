@@ -169,8 +169,8 @@ dir   = "/var/spool/sipnab-vcon/all"
 | `max_inline_media_mib` | The largest audio this rule's containers inline, in MiB. sipnab writes a call above it without its audio and the container records `media: "refused-over-budget"`. Unset: `--vcon-max-inline-media` |
 | `live_audio` | `true`: serve each matching call's audio while it is in progress, over the REST API. See [Hear a call while it is in progress](#hear-a-call-while-it-is-in-progress) |
 | `live` | `true`: on a live capture, write each matching call's container as the call starts and rewrite it in place each time the call changes. See [Follow a call while it is in progress](#follow-a-call-while-it-is-in-progress) |
-| `encrypt_to` | A PEM certificate. Set, the rule writes only the encrypted form, to that certificate's key. Needs `sign_key` and `sign_cert`. See [Encrypt what a rule writes](#encrypt-what-a-rule-writes) |
-| `sign_key`, `sign_cert` | The PEM RSA private key an encrypting or `sign_only` rule signs with, and its certificate chain, leaf first |
+| `encrypt_to` | A PEM certificate, or a list of them. Set, the rule writes only the encrypted form, once, to every certificate's key. Needs `sign_key` and `sign_cert`. See [Encrypt what a rule writes](#encrypt-what-a-rule-writes) |
+| `sign_key`, `sign_cert` | The PEM RSA or EC P-256 private key an encrypting or `sign_only` rule signs with, and its certificate chain, leaf first |
 | `sign_only` | `true`: write the signed form alone, with no encryption. See [Sign without encrypting](#sign-without-encrypting) |
 | `compress` | For an encrypting rule: `none` (the default) or `gzip`, which signs the gzip of the vCon instead of the vCon. See [Encrypt what a rule writes](#encrypt-what-a-rule-writes) |
 | `sealed_updates` | What an encrypting rule writes when a call it already wrote changes: `new-uuid` (the default), `same-uuid` or `final-only`. No effect without `encrypt_to`. See [When an encrypted call changes](#when-an-encrypted-call-changes) |
@@ -787,10 +787,26 @@ The file holds the JWE: `unprotected`, `recipients`, `iv`, `ciphertext` and
   - sipnab decrypts that example and verifies its signature.
   - It signs the same bytes with the same key to the same signature.
 
+**Encrypt to several recipients.** `encrypt_to` takes a list of
+certificates. sipnab encrypts the container once, with one content key, and
+writes one entry per certificate in its `recipients` array
+([RFC 7516 section 7.2.1](https://www.rfc-editor.org/rfc/rfc7516.html#section-7.2.1)).
+Each recipient opens it with its own private key:
+
+```toml
+[[vcon.rule]]
+name       = "support"
+when       = "@support"
+dir        = "/var/spool/sipnab-vcon/support"
+encrypt_to = ["/etc/sipnab/vcon-store.crt", "/etc/sipnab/vcon-legal.crt"]
+sign_key   = "/etc/sipnab/vcon-signing.key"
+sign_cert  = "/etc/sipnab/vcon-signing.crt"
+```
+
 **Audio by URL.** With `audio = "url"`, an encrypting rule writes the audio
 beside the container as its own JWE:
 
-- sipnab encrypts it to the same `encrypt_to` certificate as the container.
+- sipnab encrypts it to the same `encrypt_to` certificates as the container, with one `recipients` entry for each.
   - Its plaintext is the WAV, or the Ogg Opus stream with `audio_format = "opus"`.
   - Its `unprotected` header carries `cty`, the media type of that plaintext, and no `uuid`.
   - sipnab encrypts it and does not sign it. The signed container names its `content_hash`.
@@ -812,10 +828,26 @@ beside the container as its own JWE:
 **What the keys must be.**
 
 - `encrypt_to` and `sign_cert` hold PEM certificates. Each key is RSA, at
-  least 2048 bits.
-- `sign_key` is a PEM RSA private key (`PRIVATE KEY` or `RSA PRIVATE KEY`).
-  It is readable by its owner only.
+  least 2048 bits, or EC on the P-256 curve.
+  - An RSA recipient's entry names `alg: "RSA-OAEP"`, the value core-04
+    section 5.3.3 names.
+  - An EC recipient's entry names `alg: "ECDH-ES+A256KW"` and carries the
+    `epk`, the ephemeral key sipnab agreed the key-encryption key with
+    ([RFC 7518 section 4.6](https://www.rfc-editor.org/rfc/rfc7518.html#section-4.6)).
+    sipnab wraps the content key with AES key wrap
+    ([RFC 3394](https://www.rfc-editor.org/rfc/rfc3394.html)).
+- `sign_key` is a PEM private key, readable by its owner only:
+  - RSA (`PRIVATE KEY` or `RSA PRIVATE KEY`), which signs `RS256`, the value
+    core-04 section 5.2.2 names;
+  - EC P-256 (`PRIVATE KEY` or `EC PRIVATE KEY`), which signs `ES256`
+    ([RFC 7518 section 3.4](https://www.rfc-editor.org/rfc/rfc7518.html#section-3.4)).
+    Section 5.2.2 says `alg` SHOULD be `RS256`, so a reader that knows only
+    `RS256` cannot verify it.
   - The first certificate in `sign_cert` must be that key's certificate.
+- A reader verifies a signature with the algorithm of the certificate's key.
+  sipnab refuses an `alg` that is not that algorithm.
+- `--vcon-key` and `--vcon-fetch-decrypt-key` take an RSA or an EC P-256
+  private key, and open the entry for that key.
 - sipnab does not check who issued either certificate or when it expires.
   - Whoever decrypts a container decides whether to trust the signer's chain.
   - The fetcher checks it with `--vcon-fetch-signer-ca` and
@@ -826,7 +858,8 @@ beside the container as its own JWE:
 - `encrypt_to` without `sign_key` and `sign_cert`, or either of those without
   `encrypt_to`
 - a key or certificate file that sipnab cannot read, that holds no key or certificate,
-  or that holds a key other than RSA of at least 2048 bits
+  or that holds a key other than RSA of at least 2048 bits or EC P-256
+- an empty `encrypt_to` list
 - a `sign_cert` whose first certificate is not the certificate of `sign_key`
 - a `sign_key` that other users can read (`chmod 600` it)
 - a `compress` other than `none` or `gzip`, or `compress` on a rule without

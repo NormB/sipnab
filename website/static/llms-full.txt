@@ -12288,7 +12288,7 @@ sipnab uses Cargo feature flags to control optional capability. The default buil
 | `metrics` | Standalone Prometheus `/metrics` server: a raw TCP listener and plain threads, no axum/tokio, so scraping does not drag in the `api` feature or its async runtime. Included by default. | `native`, `base64`, `rustls` |
 | `plugins` | WASM plugin host (`--plugin`): runs sandboxed third-party dialog detections, so a detection nobody here wrote cannot reach the process it inspects. | `native`, `wasmi` |
 | `bpf` | eBPF TLS capture (`--uprobe-backend bpf`): reads SIP plaintext **and the peer addresses** with no key material. Needs a nightly toolchain and `bpf-linker` to build, and a kernel with `CONFIG_DEBUG_INFO_BTF` to run — without the linker the binary still builds and the backend refuses at runtime rather than capturing nothing silently. | `native`, `aya`, `sipnab-bpf-types/pod` |
-| `vcon` | vCon export: one observed dialog as an IETF conversation container, with the audio inline when the run retained it, or signed and encrypted when a `[[vcon.rule]]` sets `encrypt_to`. Non-default, because a container that leaves the machine is a publication surface and a capture tool should not grow one unless an operator asks. Adds `--export-vcon`/`--vcon-out`, the `export_vcon` MCP tool and `GET /v1/dialogs/{call_id}/vcon`. | `native`, `sha2`, `hmac`, `base64`, `rustls`, `rsa`, `ring`, `aes`, `cbc`, `sha1_oaep`, `webpki` |
+| `vcon` | vCon export: one observed dialog as an IETF conversation container, with the audio inline when the run retained it, or signed and encrypted when a `[[vcon.rule]]` sets `encrypt_to`. Non-default, because a container that leaves the machine is a publication surface and a capture tool should not grow one unless an operator asks. Adds `--export-vcon`/`--vcon-out`, the `export_vcon` MCP tool and `GET /v1/dialogs/{call_id}/vcon`. | `native`, `sha2`, `hmac`, `base64`, `rustls`, `rsa`, `ring`, `aes`, `cbc`, `sha1_oaep`, `webpki`, `p256` |
 | `opus` | Ogg Opus recordings in vCon containers (`audio_format = "opus"` on a `[[vcon.rule]]`). Compiles libopus from the source `opusic-sys` vendors and links it statically, so building it needs `cmake` and a C compiler; the binary needs no system libopus. In `full`; not in the static musl builds, which have no vCon export. | `vcon`, `opus` |
 | `archive` | Password-protected ZIP and 7z input: `-I evidence.zip` reads the captures inside, stored, deflated, WinZip AES or ZipCrypto, and `-I evidence.7z` reads LZMA or LZMA2, AES-256 or not, without leaving a decrypted copy on disk. Adds `--archive-password-file`, `--archive-password-command`, `--archive-password-stdin`, `--archive-password` and `--archive-password-encoding`, and reads `SIPNAB_ARCHIVE_PASSWORD` and the systemd credential `archive-password`. | `native`, `zip`, `sevenz-rust2`, `zeroize`, `unicode-normalization` |
 | `full` | Everything: `native` + `tui` + `audio` + `tls` + `hep` + `api` + `mcp` + `mcp-http` + `metrics` + `plugins` + `vcon` + `opus` + `archive` | all |
@@ -20972,6 +20972,16 @@ A whole-number `[vcon_fetch]` key is out of range. `{}` is the key (`timeout`, `
 
 **Exit code:** 1.
 
+### `[vcon] encrypt_to is an empty list: name at least one recipient certificate, or remove the key`
+
+`[vcon] encrypt_to` is `[]`. Nobody could open a container encrypted to no recipient, so sipnab refuses the list rather than write one.
+
+- The printed line starts with `invalid config value: `.
+
+**What to do:** List at least one recipient certificate, or remove the key so that no rule inherits it.
+
+**Exit code:** 1.
+
 ### `[vcon] compress: {value:?} is not one of {}`
 
 The `[vcon]` section's `compress` key names a compression sipnab does not write.
@@ -27535,8 +27545,8 @@ rule inherits when it does not set its own.
 |-----|------|---------|-------------|
 | `rule` | array of tables | `[]` | Export rules, each `[[vcon.rule]]`. See [the export rule keys](#vconrule) |
 | `enrich` | array of tables | `[]` | Enrichment services, each `[[vcon.enrich]]`. See [the enrichment keys](#vconenrich) |
-| `encrypt_to` | string | -- | The `encrypt_to` of every `[[vcon.rule]]` that sets none: with it, every rule encrypts. A rule's own value overrides it |
-| `sign_key` | string | -- | The `sign_key` of every encrypting `[[vcon.rule]]` that sets none. A rule's own value overrides it |
+| `encrypt_to` | string or array | -- | The `encrypt_to` of every `[[vcon.rule]]` that sets none: with it, every rule except a `sign_only` one encrypts. One certificate, or a list of them. sipnab refuses an empty list. A rule's own value overrides it |
+| `sign_key` | string | -- | The `sign_key` of every encrypting or `sign_only` `[[vcon.rule]]` that sets none. A rule's own value overrides it |
 | `sign_cert` | string | -- | The `sign_cert` of every encrypting `[[vcon.rule]]` that sets none. A rule's own value overrides it |
 | `compress` | string | `none` | The `compress` of every encrypting `[[vcon.rule]]` that sets none: `none` or `gzip`. A rule's own value overrides it |
 
@@ -27560,8 +27570,8 @@ and what they carry.
 | `max_inline_media_mib` | integer | `--vcon-max-inline-media` | The largest audio this rule's containers inline, in MiB; sipnab writes a call above it without its audio, saying so |
 | `live_audio` | boolean | `false` | Serve each matching call's audio while it is in progress on the REST API's `/v1/calls/{call_id}/audio` WebSocket, and list the calls at `/v1/calls/live`. Turns audio retention on. See [Hear a call while it is in progress](vcon.md#hear-a-call-while-it-is-in-progress) |
 | `live` | boolean | `false` | On a live capture, write each matching call's container as the call starts and rewrite it in place, with `updated_at`, each time the call changes. No effect with `-I`. See [Follow a call while it is in progress](vcon.md#follow-a-call-while-it-is-in-progress) |
-| `encrypt_to` | string | -- | A PEM certificate whose RSA key the rule encrypts its containers to. Set, the rule writes only the encrypted form of draft-ietf-vcon-vcon-core-04 section 5.3. Needs `sign_key` and `sign_cert`. See [Encrypt what a rule writes](vcon.md#encrypt-what-a-rule-writes) |
-| `sign_key` | string | -- | The PEM RSA private key an encrypting or `sign_only` rule signs with, readable by its owner only |
+| `encrypt_to` | string or array | -- | A PEM certificate, or a list of them, whose RSA or EC P-256 keys the rule encrypts its containers to: one container with one recipient entry per certificate. Set, the rule writes only the encrypted form of draft-ietf-vcon-vcon-core-04 section 5.3. Needs `sign_key` and `sign_cert`. sipnab refuses an empty list. See [Encrypt what a rule writes](vcon.md#encrypt-what-a-rule-writes) |
+| `sign_key` | string | -- | The PEM RSA or EC P-256 private key an encrypting or `sign_only` rule signs with, readable by its owner only. An RSA key signs `RS256`, an EC P-256 key `ES256` |
 | `sign_cert` | string | -- | The PEM certificate chain of `sign_key`, leaf first, carried in each signature's `x5c` |
 | `sign_only` | boolean | `false` | `true`: write the signed form of draft-ietf-vcon-vcon-core-04 section 5.2 alone, signed with `sign_key` and `sign_cert`, with no encryption. The rule takes `sign_key`, `sign_cert` and `compress` from `[vcon]`, and not `[vcon] encrypt_to`. Refused beside the rule's own `encrypt_to`, and without a signing key. See [Sign without encrypting](vcon.md#sign-without-encrypting) |
 | `compress` | string | `none` | For an encrypting or `sign_only` rule: `gzip` signs the gzip ([RFC 1952](https://www.rfc-editor.org/rfc/rfc1952.html)) of the vCon instead of the vCon, as draft-ietf-vcon-vcon-core-04 section 5.2 allows, and the encrypted form names `cty: "application/vcon+gzip"`; `none` signs the vCon as it is. Refused on a rule without `encrypt_to`. See [Encrypt what a rule writes](vcon.md#encrypt-what-a-rule-writes) |
@@ -43934,8 +43944,8 @@ dir   = "/var/spool/sipnab-vcon/all"
 | `max_inline_media_mib` | The largest audio this rule's containers inline, in MiB. sipnab writes a call above it without its audio and the container records `media: "refused-over-budget"`. Unset: `--vcon-max-inline-media` |
 | `live_audio` | `true`: serve each matching call's audio while it is in progress, over the REST API. See [Hear a call while it is in progress](#hear-a-call-while-it-is-in-progress) |
 | `live` | `true`: on a live capture, write each matching call's container as the call starts and rewrite it in place each time the call changes. See [Follow a call while it is in progress](#follow-a-call-while-it-is-in-progress) |
-| `encrypt_to` | A PEM certificate. Set, the rule writes only the encrypted form, to that certificate's key. Needs `sign_key` and `sign_cert`. See [Encrypt what a rule writes](#encrypt-what-a-rule-writes) |
-| `sign_key`, `sign_cert` | The PEM RSA private key an encrypting or `sign_only` rule signs with, and its certificate chain, leaf first |
+| `encrypt_to` | A PEM certificate, or a list of them. Set, the rule writes only the encrypted form, once, to every certificate's key. Needs `sign_key` and `sign_cert`. See [Encrypt what a rule writes](#encrypt-what-a-rule-writes) |
+| `sign_key`, `sign_cert` | The PEM RSA or EC P-256 private key an encrypting or `sign_only` rule signs with, and its certificate chain, leaf first |
 | `sign_only` | `true`: write the signed form alone, with no encryption. See [Sign without encrypting](#sign-without-encrypting) |
 | `compress` | For an encrypting rule: `none` (the default) or `gzip`, which signs the gzip of the vCon instead of the vCon. See [Encrypt what a rule writes](#encrypt-what-a-rule-writes) |
 | `sealed_updates` | What an encrypting rule writes when a call it already wrote changes: `new-uuid` (the default), `same-uuid` or `final-only`. No effect without `encrypt_to`. See [When an encrypted call changes](#when-an-encrypted-call-changes) |
@@ -44552,10 +44562,26 @@ The file holds the JWE: `unprotected`, `recipients`, `iv`, `ciphertext` and
   - sipnab decrypts that example and verifies its signature.
   - It signs the same bytes with the same key to the same signature.
 
+**Encrypt to several recipients.** `encrypt_to` takes a list of
+certificates. sipnab encrypts the container once, with one content key, and
+writes one entry per certificate in its `recipients` array
+([RFC 7516 section 7.2.1](https://www.rfc-editor.org/rfc/rfc7516.html#section-7.2.1)).
+Each recipient opens it with its own private key:
+
+```toml
+[[vcon.rule]]
+name       = "support"
+when       = "@support"
+dir        = "/var/spool/sipnab-vcon/support"
+encrypt_to = ["/etc/sipnab/vcon-store.crt", "/etc/sipnab/vcon-legal.crt"]
+sign_key   = "/etc/sipnab/vcon-signing.key"
+sign_cert  = "/etc/sipnab/vcon-signing.crt"
+```
+
 **Audio by URL.** With `audio = "url"`, an encrypting rule writes the audio
 beside the container as its own JWE:
 
-- sipnab encrypts it to the same `encrypt_to` certificate as the container.
+- sipnab encrypts it to the same `encrypt_to` certificates as the container, with one `recipients` entry for each.
   - Its plaintext is the WAV, or the Ogg Opus stream with `audio_format = "opus"`.
   - Its `unprotected` header carries `cty`, the media type of that plaintext, and no `uuid`.
   - sipnab encrypts it and does not sign it. The signed container names its `content_hash`.
@@ -44577,10 +44603,26 @@ beside the container as its own JWE:
 **What the keys must be.**
 
 - `encrypt_to` and `sign_cert` hold PEM certificates. Each key is RSA, at
-  least 2048 bits.
-- `sign_key` is a PEM RSA private key (`PRIVATE KEY` or `RSA PRIVATE KEY`).
-  It is readable by its owner only.
+  least 2048 bits, or EC on the P-256 curve.
+  - An RSA recipient's entry names `alg: "RSA-OAEP"`, the value core-04
+    section 5.3.3 names.
+  - An EC recipient's entry names `alg: "ECDH-ES+A256KW"` and carries the
+    `epk`, the ephemeral key sipnab agreed the key-encryption key with
+    ([RFC 7518 section 4.6](https://www.rfc-editor.org/rfc/rfc7518.html#section-4.6)).
+    sipnab wraps the content key with AES key wrap
+    ([RFC 3394](https://www.rfc-editor.org/rfc/rfc3394.html)).
+- `sign_key` is a PEM private key, readable by its owner only:
+  - RSA (`PRIVATE KEY` or `RSA PRIVATE KEY`), which signs `RS256`, the value
+    core-04 section 5.2.2 names;
+  - EC P-256 (`PRIVATE KEY` or `EC PRIVATE KEY`), which signs `ES256`
+    ([RFC 7518 section 3.4](https://www.rfc-editor.org/rfc/rfc7518.html#section-3.4)).
+    Section 5.2.2 says `alg` SHOULD be `RS256`, so a reader that knows only
+    `RS256` cannot verify it.
   - The first certificate in `sign_cert` must be that key's certificate.
+- A reader verifies a signature with the algorithm of the certificate's key.
+  sipnab refuses an `alg` that is not that algorithm.
+- `--vcon-key` and `--vcon-fetch-decrypt-key` take an RSA or an EC P-256
+  private key, and open the entry for that key.
 - sipnab does not check who issued either certificate or when it expires.
   - Whoever decrypts a container decides whether to trust the signer's chain.
   - The fetcher checks it with `--vcon-fetch-signer-ca` and
@@ -44591,7 +44633,8 @@ beside the container as its own JWE:
 - `encrypt_to` without `sign_key` and `sign_cert`, or either of those without
   `encrypt_to`
 - a key or certificate file that sipnab cannot read, that holds no key or certificate,
-  or that holds a key other than RSA of at least 2048 bits
+  or that holds a key other than RSA of at least 2048 bits or EC P-256
+- an empty `encrypt_to` list
 - a `sign_cert` whose first certificate is not the certificate of `sign_key`
 - a `sign_key` that other users can read (`chmod 600` it)
 - a `compress` other than `none` or `gzip`, or `compress` on a rule without

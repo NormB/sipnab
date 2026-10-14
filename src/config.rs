@@ -1504,14 +1504,37 @@ pub struct VconConfig {
     pub rule: Vec<VconRuleConfig>,
     /// The enrichment services, in the order they run.
     pub enrich: Vec<VconEnrichConfig>,
-    /// The `encrypt_to` of every `[[vcon.rule]]` that sets none.
-    pub encrypt_to: Option<std::path::PathBuf>,
+    /// The `encrypt_to` of every `[[vcon.rule]]` that sets none: one
+    /// certificate, or a list of them.
+    pub encrypt_to: Option<PathList>,
     /// The `sign_key` of every encrypting `[[vcon.rule]]` that sets none.
     pub sign_key: Option<std::path::PathBuf>,
     /// The `sign_cert` of every encrypting `[[vcon.rule]]` that sets none.
     pub sign_cert: Option<std::path::PathBuf>,
     /// The `compress` of every encrypting `[[vcon.rule]]` that sets none.
     pub compress: Option<String>,
+}
+
+/// A path, or a list of them: what `encrypt_to` takes in `[vcon]` and
+/// `[[vcon.rule]]`. TOML writes one as a string and several as an array.
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(untagged)]
+pub enum PathList {
+    /// One path.
+    One(std::path::PathBuf),
+    /// Several, in the order written.
+    Many(Vec<std::path::PathBuf>),
+}
+
+impl PathList {
+    /// The paths, in the order written.
+    #[must_use]
+    pub fn paths(&self) -> &[std::path::PathBuf] {
+        match self {
+            Self::One(path) => std::slice::from_ref(path),
+            Self::Many(paths) => paths,
+        }
+    }
 }
 
 /// The values of `compress` in `[vcon]` and `[[vcon.rule]]`: `none` signs
@@ -1526,6 +1549,17 @@ impl VconConfig {
     /// # Errors
     /// `crate::Error::ConfigInvalid`, naming the key.
     pub fn validate(&self) -> Result<(), crate::Error> {
+        if self
+            .encrypt_to
+            .as_ref()
+            .is_some_and(|list| list.paths().is_empty())
+        {
+            return Err(crate::Error::ConfigInvalid(
+                "[vcon] encrypt_to is an empty list: name at least one recipient certificate, \
+                 or remove the key"
+                    .into(),
+            ));
+        }
         match &self.compress {
             Some(value) if !VCON_COMPRESSIONS.contains(&value.as_str()) => {
                 Err(crate::Error::ConfigInvalid(format!(
@@ -1617,12 +1651,13 @@ pub struct VconRuleConfig {
     /// Default `false`: one write, once the call has ended or gone idle.
     #[serde(default)]
     pub live: Option<bool>,
-    /// A PEM certificate holding the RSA key this rule's containers are
-    /// encrypted to. Set, the rule writes only the encrypted form of
+    /// The PEM certificate, or a list of them, holding the RSA or EC P-256
+    /// key each recipient of this rule's containers opens them with. Set,
+    /// the rule writes only the encrypted form of
     /// draft-ietf-vcon-vcon-core-04 section 5.3: signed with `sign_key` and
-    /// `sign_cert`, then encrypted.
+    /// `sign_cert`, then encrypted once, to every recipient.
     #[serde(default)]
-    pub encrypt_to: Option<std::path::PathBuf>,
+    pub encrypt_to: Option<PathList>,
     /// The PEM RSA private key an encrypting rule signs with. Readable by its
     /// owner only.
     #[serde(default)]
@@ -3580,7 +3615,14 @@ impl Config {
                 "[vcon_input] signer_ca",
                 self.vcon_input.signer_ca.as_deref(),
             ),
-            ("[vcon] encrypt_to", self.vcon.encrypt_to.as_deref()),
+            (
+                "[vcon] encrypt_to",
+                self.vcon
+                    .encrypt_to
+                    .as_ref()
+                    .and_then(|list| list.paths().iter().find(|p| p.as_os_str().is_empty()))
+                    .map(std::path::PathBuf::as_path),
+            ),
             ("[vcon] sign_key", self.vcon.sign_key.as_deref()),
             ("[vcon] sign_cert", self.vcon.sign_cert.as_deref()),
         ];

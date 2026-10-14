@@ -757,7 +757,9 @@ const EXPECTED_UNRESOLVED: usize = 82;
 // 467 -> 469: src/config.rs `[vcon_forward] content_type: {e}` and
 // `{value:?} is not one of {}` (forward_content_type, the rule
 // --vcon-forward-content-type and the key share). Nothing removed.
-const EXPECTED_TEMPLATES: usize = 469;
+// 469 -> 470: src/config.rs `[vcon] encrypt_to is an empty list: ...`,
+// the refusal of an empty recipient list. Nothing removed.
+const EXPECTED_TEMPLATES: usize = 470;
 
 // ---------------------------------------------------------------------------
 // The page gates

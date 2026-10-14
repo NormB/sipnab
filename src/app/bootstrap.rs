@@ -4765,8 +4765,8 @@ fn build_selection_expr(cli: &Cli, config: &Config) -> Result<Option<FilterExpr>
 /// did not set; its own are refused as before.
 #[cfg(feature = "vcon")]
 struct RuleSealing<'a> {
-    /// The certificate the rule encrypts to.
-    encrypt_to: Option<&'a std::path::Path>,
+    /// The certificates the rule encrypts to.
+    encrypt_to: Option<&'a [std::path::PathBuf]>,
     /// The key the rule signs with.
     sign_key: Option<&'a std::path::Path>,
     /// The chain of `sign_key`.
@@ -4784,10 +4784,14 @@ impl<'a> RuleSealing<'a> {
         let sign_only = rule.sign_only.unwrap_or(false);
         // A sign_only rule asked for the signed form alone: it takes the
         // section's signing keys and not its recipient.
+        let own = rule.encrypt_to.as_ref().map(crate::config::PathList::paths);
         let encrypt_to = if sign_only {
-            rule.encrypt_to.as_deref()
+            own
         } else {
-            rule.encrypt_to.as_deref().or(section.encrypt_to.as_deref())
+            own.or(section
+                .encrypt_to
+                .as_ref()
+                .map(crate::config::PathList::paths))
         };
         let inherit = encrypt_to.is_some() || sign_only;
         let pick = |own: Option<&'a std::path::Path>, theirs: Option<&'a std::path::Path>| {
@@ -4939,6 +4943,12 @@ pub(crate) fn vcon_rules(
                 return Err(refuse(format!(
                     "[[vcon.rule]] '{name}' has sign_only and encrypt_to: sign_only writes \
                      the signed form alone, encrypt_to the encrypted form; keep one"
+                )));
+            }
+            (Some([]), _, _) => {
+                return Err(refuse(format!(
+                    "[[vcon.rule]] '{name}' has encrypt_to as an empty list: name at least \
+                     one recipient certificate"
                 )));
             }
             (None, Some(key), Some(cert)) if inherited.sign_only => Some(std::sync::Arc::new(
