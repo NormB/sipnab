@@ -19,7 +19,7 @@ use crate::tui::TimestampMode;
 
 use super::FlowDisplayOptions;
 use super::arrows::truncate;
-use super::{FormattedMessage, Participant, RtpCodecSegment, SelectionState, TS_COL_WIDTH};
+use super::{FormattedMessage, Participant, RtpFlowStream, SelectionState, TS_COL_WIDTH};
 
 /// Compute a color-coded style for a delta timestamp based on its magnitude.
 ///
@@ -83,14 +83,15 @@ pub struct LayoutOptions<'a> {
     pub sdp_mode: SdpDisplayMode,
     /// Timestamp column format; `Scaled` also inserts spacer rows.
     pub ts_mode: TimestampMode,
-    /// Whether to insert RTP-in-flow channel bars for media segments.
+    /// Whether to draw the call's RTP: one row per captured stream, or the
+    /// SDP-derived bar when no stream was captured (F6).
     pub show_rtp: bool,
     /// Resolver mapping endpoint addresses to display names.
     pub resolver: &'a crate::names::NameResolver,
     /// How endpoint labels are displayed (raw address vs resolved name).
     pub name_mode: crate::names::NameMode,
-    /// Observed RTP codec segments (authoritative "used" codec per phase).
-    pub rtp_segments: &'a [RtpCodecSegment],
+    /// The call's RTP streams, one row each when `show_rtp` is on.
+    pub rtp_streams: &'a [RtpFlowStream],
 }
 
 impl<'a> From<&FlowDisplayOptions<'a>> for LayoutOptions<'a> {
@@ -102,7 +103,7 @@ impl<'a> From<&FlowDisplayOptions<'a>> for LayoutOptions<'a> {
             show_rtp: o.show_rtp,
             resolver: o.resolver,
             name_mode: o.name_mode,
-            rtp_segments: o.rtp_segments,
+            rtp_streams: o.rtp_streams,
         }
     }
 }
@@ -174,8 +175,12 @@ pub enum RowKind {
         /// (`ColorMode::CSeq`).
         cseq_idx: usize,
     },
-    /// A synthetic RTP-in-flow channel bar.
+    /// A synthetic RTP-in-flow channel bar, drawn from SDP when the call's
+    /// RTP was not captured.
     RtpBar,
+    /// One captured RTP stream: an arrow from the sender's column to the
+    /// receiver's, at the time of the stream's first packet (#495).
+    RtpStream,
     /// A synthetic time-proportional spacer row (Scaled mode).
     Spacer,
 }
@@ -235,6 +240,9 @@ pub struct LayoutRow {
     /// by marking the exact messages a finding was drawn from rather than
     /// asserting the finding somewhere else and leaving the reader to locate them.
     pub diagnosis_note: Option<String>,
+    /// The stream a captured RTP stream's row draws (`None` for every
+    /// other row): Enter on the row opens this stream.
+    pub stream_key: Option<crate::rtp::stream::StreamKey>,
 }
 
 /// The arrow color rotation used by `ColorMode::CallId` / `ColorMode::CSeq`.
@@ -295,7 +303,14 @@ pub fn layout(
         return (Vec::new(), Vec::new());
     }
 
-    let (endpoints, participants) = discover_participants(messages, opts);
+    // The call's streams, in first-packet order; none with RTP display off.
+    let mut streams: Vec<&RtpFlowStream> = if opts.show_rtp {
+        opts.rtp_streams.iter().collect()
+    } else {
+        Vec::new()
+    };
+    streams.sort_by_key(|s| s.first_seen);
+    let (endpoints, participants) = discover_participants(messages, &streams, opts);
 
     let mut clock = LadderClock {
         mode: opts.ts_mode,
@@ -309,8 +324,13 @@ pub fn layout(
     // SDP-delta-badge pass below reuses this parse instead of re-parsing every
     // body a second time.
     let mut msg_sdps: Vec<Option<sdp::SdpSession>> = Vec::with_capacity(messages.len());
+    let mut pending_streams = streams.iter().peekable();
 
     for (mi, msg) in messages.iter().enumerate() {
+        // Streams whose first packet precedes this message go above it.
+        while let Some(s) = pending_streams.next_if(|s| s.first_seen < msg.timestamp) {
+            result.push(stream_row(s, &streams, &endpoints, &mut clock));
+        }
         // Parse this message's SDP once per iteration — the SDP-info line, the
         // early-media probe, and both codec lookups below all need it, and
         // `SipMessage::sdp()` re-parses the body on every call. The parse is
@@ -322,8 +342,10 @@ pub fn layout(
         push_sdp_info_lines(&mut extra_lines, msg, msg_sdp.as_ref(), opts.sdp_mode);
         push_siprec_lines(&mut extra_lines, msg);
 
-        let deferred_rtp_bar = if opts.show_rtp {
-            media.observe(msg, msg_sdp.as_ref(), opts.rtp_segments)
+        // The SDP-derived bar stands in only for a call with no captured
+        // stream; captured streams draw their own rows.
+        let deferred_rtp_bar = if opts.show_rtp && streams.is_empty() {
+            media.observe(msg, msg_sdp.as_ref())
         } else {
             None
         };
@@ -350,6 +372,7 @@ pub fn layout(
             is_retransmission: msg.is_retransmission,
             raw_index: Some(mi),
             diagnosis_note: None,
+            stream_key: None,
         });
 
         // Push the deferred RTP bar as a separate selectable entry
@@ -374,11 +397,16 @@ pub fn layout(
                 is_retransmission: false,
                 raw_index: None,
                 diagnosis_note: None,
+                stream_key: None,
             });
         }
 
         // Retain the parse for the delta-badge pass (one entry per message).
         msg_sdps.push(msg_sdp);
+    }
+    // Streams that start after the last message.
+    for s in pending_streams {
+        result.push(stream_row(s, &streams, &endpoints, &mut clock));
     }
 
     apply_sdp_badges(messages, &msg_sdps, &mut result);
@@ -405,8 +433,14 @@ pub fn layout(
 ///
 /// The raw `(ip, port)` pair remains the matching key; the displayed label
 /// may be a resolved name when name resolution is active.
+///
+/// A stream address whose IP no SIP endpoint has (a media relay's address,
+/// say) adds a column after the signaling ones, keyed `(ip, 0)` and labeled
+/// with the bare IP, as sngrep does: media matches a column by IP alone (see
+/// `media_column`), so the port would name one of possibly many.
 fn discover_participants(
     messages: &[SipMessage],
+    streams: &[&RtpFlowStream],
     opts: &LayoutOptions<'_>,
 ) -> (Vec<(std::net::IpAddr, u16)>, Vec<Participant>) {
     let mut endpoints: Vec<(std::net::IpAddr, u16)> = Vec::new();
@@ -417,9 +451,24 @@ fn discover_participants(
             }
         }
     }
+    let signaling = endpoints.len();
+    for s in streams {
+        for ip in [s.key.src.ip(), s.key.dst.ip()] {
+            if !endpoints.iter().any(|e| e.0 == ip) {
+                endpoints.push((ip, 0));
+            }
+        }
+    }
     let participants: Vec<Participant> = endpoints
         .iter()
-        .map(|&(ip, port)| {
+        .enumerate()
+        .map(|(i, &(ip, port))| {
+            if i >= signaling {
+                return Participant {
+                    addr: ip.to_string(),
+                    label: truncate(&opts.resolver.label_ip(ip, opts.name_mode), 20),
+                };
+            }
             // Bracketed for IPv6: `2001:db8::1:5060` cannot be read back
             // into an address and a port, and this string is the participant
             // IDENTITY in an exported diagram.
@@ -447,6 +496,72 @@ fn column_of(
     fallback: usize,
 ) -> usize {
     endpoints.iter().position(|e| *e == ep).unwrap_or(fallback)
+}
+
+/// The column a stream address is drawn at: the first column with its IP,
+/// whatever the port, as sngrep matches media to columns. Every stream IP
+/// has one, because `discover_participants` adds a column for each IP no
+/// SIP endpoint has; 0 is only a defensive fallback.
+fn media_column(endpoints: &[(std::net::IpAddr, u16)], ip: std::net::IpAddr) -> usize {
+    endpoints.iter().position(|e| e.0 == ip).unwrap_or(0)
+}
+
+/// Whether no stream in `all` runs the other way between the same two
+/// sockets as `s`: media that flows in one direction only.
+fn is_one_way(s: &RtpFlowStream, all: &[&RtpFlowStream]) -> bool {
+    !all.iter()
+        .any(|o| o.key.src == s.key.dst && o.key.dst == s.key.src)
+}
+
+/// A stream row's label, modeled on sngrep's `RTP (g711u) 1234`: the codec
+/// (or the payload type when no codec is known), `one-way` when the stream
+/// has no reverse, the packet count, and the source and destination ports.
+/// The one-way mark comes before the count so that a label truncated to fit
+/// a narrow gap loses the count and the ports first.
+fn stream_label(s: &RtpFlowStream, one_way: bool) -> String {
+    let codec = s
+        .codec
+        .clone()
+        .unwrap_or_else(|| format!("PT {}", s.payload_type));
+    let mark = if one_way { " one-way" } else { "" };
+    format!(
+        "RTP ({codec}){mark} {} {}\u{2192}{}",
+        s.packet_count,
+        s.key.src.port(),
+        s.key.dst.port()
+    )
+}
+
+/// The ladder row of stream `s`: an arrow from its sender's column to its
+/// receiver's, stamped with its first packet's time. `all` is every stream
+/// of the call, for the one-way test.
+fn stream_row(
+    s: &RtpFlowStream,
+    all: &[&RtpFlowStream],
+    endpoints: &[(std::net::IpAddr, u16)],
+    clock: &mut LadderClock,
+) -> LayoutRow {
+    let (timestamp, ts_class) = clock.stamp(s.first_seen, TsClass::Accent);
+    LayoutRow {
+        timestamp,
+        ts_class,
+        label: stream_label(s, is_one_way(s, all)),
+        kind: RowKind::RtpStream,
+        src_col: media_column(endpoints, s.key.src.ip()),
+        dst_col: media_column(endpoints, s.key.dst.ip()),
+        pdd_note: None,
+        extra_lines: Vec::new(),
+        call_id: String::new(),
+        is_response: false,
+        raw_timestamp: s.first_seen,
+        folded_count: 0,
+        fold_label: None,
+        sdp_badge: None,
+        is_retransmission: false,
+        raw_index: None,
+        diagnosis_note: None,
+        stream_key: Some(s.key.clone()),
+    }
 }
 
 /// Arrow coloring is applied in style(); here only its theme-free inputs
@@ -593,13 +708,13 @@ fn push_siprec_lines(extra_lines: &mut Vec<String>, msg: &SipMessage) {
     }
 }
 
-/// RTP-in-flow bar state. One bar per INVITE transaction that carries media —
-/// the initial call AND each re-INVITE that (re)establishes the stream —
-/// so RTP is shown flowing in every media segment, not just the first.
-/// The codec is the one ACTUALLY USED (observed RTP segment, falling back
-/// to the single negotiated SDP answer codec), so a re-INVITE that
-/// switches PCMU → G722 shows the new codec while one that keeps it still
-/// shows the continuing stream.
+/// SDP-only media bar state, for a call whose RTP was not captured (a
+/// signaling-only capture, or HEP without media). One centered bar per
+/// INVITE transaction that carries media — the initial call AND each
+/// re-INVITE that (re)establishes it — labeled with the codec the SDP
+/// answer negotiated, so a re-INVITE that switches PCMU → G722 shows the new
+/// codec. A call with captured streams draws one row per stream instead
+/// (see `stream_row`), and none of these bars.
 #[derive(Default)]
 struct MediaBars {
     /// Whether media is flowing: set by a bar, cleared by a BYE.
@@ -621,10 +736,9 @@ impl MediaBars {
         &mut self,
         msg: &SipMessage,
         msg_sdp: Option<&sdp::SdpSession>,
-        rtp_segments: &[RtpCodecSegment],
     ) -> Option<(chrono::DateTime<chrono::Utc>, String)> {
         let cseq_num = msg.cseq().map(|(n, _)| n);
-        let early = self.early_media_bar(msg, msg_sdp, rtp_segments, cseq_num);
+        let early = self.early_media_bar(msg, msg_sdp, cseq_num);
 
         // Remember the negotiated (single, preferred) codec from a 200 OK to
         // an INVITE — initial OR re-INVITE — to label the following ACK bar.
@@ -635,7 +749,7 @@ impl MediaBars {
             self.pending_answer_codec = msg_sdp.and_then(first_sdp_codec);
         }
 
-        let bar = early.or_else(|| self.ack_bar(msg, rtp_segments, cseq_num));
+        let bar = early.or_else(|| self.ack_bar(msg, cseq_num));
         if msg.is_request
             && msg.method.as_ref() == Some(&crate::sip::SipMethod::Bye)
             && self.in_call
@@ -654,7 +768,6 @@ impl MediaBars {
         &mut self,
         msg: &SipMessage,
         msg_sdp: Option<&sdp::SdpSession>,
-        rtp_segments: &[RtpCodecSegment],
         cseq_num: Option<u32>,
     ) -> Option<(chrono::DateTime<chrono::Utc>, String)> {
         let is_invite_early_media = !msg.is_request
@@ -666,8 +779,7 @@ impl MediaBars {
             return None;
         }
         self.in_call = true;
-        let codec = segment_codec_at(rtp_segments, msg.timestamp)
-            .or_else(|| msg_sdp.and_then(first_sdp_codec));
+        let codec = msg_sdp.and_then(first_sdp_codec);
         self.last_bar_cseq = cseq_num;
         Some((msg.timestamp, rtp_flow_label(codec.as_deref())))
     }
@@ -683,7 +795,6 @@ impl MediaBars {
     fn ack_bar(
         &mut self,
         msg: &SipMessage,
-        rtp_segments: &[RtpCodecSegment],
         cseq_num: Option<u32>,
     ) -> Option<(chrono::DateTime<chrono::Utc>, String)> {
         let is_invite_ack =
@@ -691,8 +802,7 @@ impl MediaBars {
         if !is_invite_ack {
             return None;
         }
-        let codec = segment_codec_at(rtp_segments, msg.timestamp)
-            .or_else(|| self.pending_answer_codec.clone());
+        let codec = self.pending_answer_codec.clone();
         let already_drawn = self.last_bar_cseq.is_some() && self.last_bar_cseq == cseq_num;
         let mut bar = None;
         if !already_drawn && (!self.in_call || codec.is_some()) {
@@ -878,6 +988,7 @@ fn spacer_row(si: usize, delta_ms: u64, prev_ts_raw: chrono::DateTime<chrono::Ut
         is_retransmission: false,
         raw_index: None,
         diagnosis_note: None,
+        stream_key: None,
     }
 }
 
@@ -913,7 +1024,7 @@ pub fn style(rows: &[LayoutRow], opts: &StyleOptions<'_>) -> Vec<FormattedMessag
             };
             let style = match &row.kind {
                 RowKind::Spacer => spacer_style,
-                RowKind::RtpBar => Style::default().fg(theme.accent),
+                RowKind::RtpBar | RowKind::RtpStream => Style::default().fg(theme.accent),
                 RowKind::Message {
                     class,
                     cid_idx,
@@ -947,7 +1058,8 @@ pub fn style(rows: &[LayoutRow], opts: &StyleOptions<'_>) -> Vec<FormattedMessag
                 is_spacer: row.kind == RowKind::Spacer,
                 sdp_badge: row.sdp_badge.clone(),
                 is_retransmission: row.is_retransmission,
-                is_rtp_bar: row.kind == RowKind::RtpBar,
+                is_rtp_bar: matches!(row.kind, RowKind::RtpBar | RowKind::RtpStream),
+                is_rtp_stream: row.kind == RowKind::RtpStream,
                 raw_index: row.raw_index,
                 diagnosis_note: row.diagnosis_note.clone(),
             }
@@ -1350,23 +1462,6 @@ fn first_sdp_codec(session: &sdp::SdpSession) -> Option<String> {
         .filter(|s| !s.is_empty())
 }
 
-/// The codec carried by the RTP segment that flows *from* ladder time `ts` — the
-/// segment whose start is closest to `ts`. A media bar is emitted at an ACK (or
-/// early-media provisional), and that phase's RTP begins right after, so the
-/// nearest-starting segment is the media for this phase: the initial ACK maps to
-/// the first segment, and a re-INVITE ACK that renegotiates the codec maps to
-/// the later segment (PCMU → G722). Returns `None` only when no RTP is linked to
-/// the dialog, in which case the caller falls back to the negotiated SDP codec.
-fn segment_codec_at(
-    segments: &[RtpCodecSegment],
-    ts: chrono::DateTime<chrono::Utc>,
-) -> Option<String> {
-    segments
-        .iter()
-        .min_by_key(|s| (s.start - ts).num_milliseconds().abs())
-        .map(|s| s.codec.clone())
-}
-
 /// Tests for the data-preparation stage: layout/style split, folding,
 /// RTP bars, SDP badges, selection, and codec extraction.
 #[cfg(test)]
@@ -1682,7 +1777,7 @@ mod tests {
             theme,
             resolver,
             name_mode: crate::names::NameMode::Off,
-            rtp_segments: &[],
+            rtp_streams: &[],
         }
     }
 
@@ -2790,19 +2885,24 @@ mod tests {
     }
 
     /// When the answer non-conformantly lists several codecs but RTP actually
-    /// carries one, the observed RTP segment wins over the SDP-first codec.
+    /// carries one, the captured stream's codec is what the ladder shows: the
+    /// stream's own row says PCMU, and no SDP-derived bar says PCMA (#495
+    /// replaced the single bar, whose codec this test used to pin, with one
+    /// row per captured stream).
     #[test]
-    fn prepare_rtp_bar_prefers_observed_rtp_over_sdp() -> Result<(), TestError> {
+    fn prepare_captured_stream_codec_wins_over_sdp() -> Result<(), TestError> {
         let theme = Theme::default();
-        // Observed RTP is PCMU, active across the call.
-        let segs = vec![RtpCodecSegment {
-            codec: "PCMU".to_string(),
-            start: t0() + TimeDelta::seconds(1),
-            end: t0() + TimeDelta::seconds(9),
-        }];
+        // Observed RTP is PCMU, from B to A.
+        let streams = vec![flow_stream(
+            (addr_b(), 20002),
+            (addr_a(), 20000),
+            Some("PCMU"),
+            t0() + TimeDelta::seconds(1),
+            400,
+        )];
         let mut o = opts(&theme);
         o.show_rtp = true;
-        o.rtp_segments = &segs;
+        o.rtp_streams = &streams;
         let msgs = vec![
             invite_with_sdp(
                 "crtpwin",
@@ -2830,19 +2930,291 @@ mod tests {
             bye("crtpwin", 2, t0() + TimeDelta::seconds(10))?,
         ];
         let (_p, prepared) = prepare_messages(&msgs, t0(), None, &o, &HashSet::new());
-        let bar = prepared
-            .iter()
-            .find(|m| m.is_rtp_bar)
-            .ok_or("a media bar")?;
+        let rtp: Vec<&FormattedMessage> = prepared.iter().filter(|m| m.is_rtp_bar).collect();
+        assert_eq!(rtp.len(), 1, "one row for the one stream: {rtp:?}");
+        assert!(rtp[0].is_rtp_stream, "a stream row, not the SDP bar");
         assert!(
-            bar.label.contains("PCMU"),
+            rtp[0].label.contains("PCMU"),
             "observed RTP PCMU should win over SDP-first PCMA: {:?}",
-            bar.label
+            rtp[0].label
         );
         assert!(
-            !bar.label.contains("PCMA"),
+            !rtp[0].label.contains("PCMA"),
             "must not show SDP-first PCMA when RTP is PCMU: {:?}",
-            bar.label
+            rtp[0].label
+        );
+        Ok(())
+    }
+
+    // ── RTP stream rows (#495) ────────────────────────────────────────
+
+    /// A captured stream for `rtp_streams`.
+    fn flow_stream(
+        src: (IpAddr, u16),
+        dst: (IpAddr, u16),
+        codec: Option<&str>,
+        first_seen: DateTime<Utc>,
+        packet_count: u64,
+    ) -> RtpFlowStream {
+        RtpFlowStream {
+            key: crate::rtp::stream::StreamKey::new(
+                0,
+                std::net::SocketAddr::new(src.0, src.1),
+                std::net::SocketAddr::new(dst.0, dst.1),
+            ),
+            codec: codec.map(str::to_string),
+            payload_type: 0,
+            first_seen,
+            packet_count,
+        }
+    }
+
+    /// INVITE, 200 OK and ACK at t0 / t0+1s, BYE at t0+10s, all between A
+    /// (column 0) and B (column 1).
+    fn answered_call(cid: &str) -> Result<Vec<SipMessage>, TestError> {
+        Ok(vec![
+            invite(cid, 1, t0())?,
+            response(cid, 200, "OK", 1, "INVITE", t0() + TimeDelta::seconds(1))?,
+            ack(cid, 1, t0() + TimeDelta::seconds(1))?,
+            bye(cid, 2, t0() + TimeDelta::seconds(10))?,
+        ])
+    }
+
+    /// The (label, src_col, dst_col) of every row, in ladder order.
+    fn row_summary(rows: &[FormattedMessage]) -> Vec<(String, usize, usize)> {
+        rows.iter()
+            .map(|m| (m.label.clone(), m.src_col, m.dst_col))
+            .collect()
+    }
+
+    /// sngrep's call flow with RTP shown: each stream is its own row at the
+    /// time of its first packet, among the SIP messages, an arrow from the
+    /// sender's column to the receiver's, labeled `RTP (codec) count`. The
+    /// SDP-derived bar is not drawn when streams were captured.
+    #[test]
+    fn stream_rows_point_from_sender_to_receiver_in_time_order() -> Result<(), TestError> {
+        let theme = Theme::default();
+        let streams = vec![
+            flow_stream(
+                (addr_b(), 30000),
+                (addr_a(), 20000),
+                Some("PCMU"),
+                t0() + TimeDelta::milliseconds(2500),
+                245,
+            ),
+            flow_stream(
+                (addr_a(), 20000),
+                (addr_b(), 30000),
+                Some("PCMU"),
+                t0() + TimeDelta::milliseconds(1500),
+                250,
+            ),
+        ];
+        let mut o = opts(&theme);
+        o.show_rtp = true;
+        o.rtp_streams = &streams;
+        let (participants, prepared) =
+            prepare_messages(&answered_call("rows")?, t0(), None, &o, &HashSet::new());
+        assert_eq!(participants.len(), 2, "no column added: {participants:?}");
+        assert_eq!(
+            row_summary(&prepared),
+            vec![
+                ("INVITE".to_string(), 0, 1),
+                ("200 OK".to_string(), 1, 0),
+                ("ACK".to_string(), 0, 1),
+                ("RTP (PCMU) 250 20000\u{2192}30000".to_string(), 0, 1),
+                ("RTP (PCMU) 245 30000\u{2192}20000".to_string(), 1, 0),
+                ("BYE".to_string(), 0, 1),
+            ]
+        );
+        let rtp: Vec<&FormattedMessage> = prepared.iter().filter(|m| m.is_rtp_bar).collect();
+        assert!(
+            rtp.iter().all(|m| m.is_rtp_stream && m.raw_index.is_none()),
+            "stream rows are not messages: {rtp:?}"
+        );
+        assert_eq!(
+            rtp[0].raw_timestamp,
+            t0() + TimeDelta::milliseconds(1500),
+            "a row sits at its stream's first packet"
+        );
+        Ok(())
+    }
+
+    /// Streams that start before the first message or after the last one
+    /// still get rows, first and last respectively.
+    #[test]
+    fn stream_rows_before_the_first_and_after_the_last_message() -> Result<(), TestError> {
+        let theme = Theme::default();
+        let streams = vec![
+            flow_stream(
+                (addr_a(), 1),
+                (addr_b(), 2),
+                Some("PCMA"),
+                t0() - TimeDelta::seconds(1),
+                5,
+            ),
+            flow_stream(
+                (addr_b(), 2),
+                (addr_a(), 1),
+                Some("PCMA"),
+                t0() + TimeDelta::seconds(20),
+                6,
+            ),
+        ];
+        let mut o = opts(&theme);
+        o.show_rtp = true;
+        o.rtp_streams = &streams;
+        let (_p, prepared) =
+            prepare_messages(&answered_call("edges")?, t0(), None, &o, &HashSet::new());
+        let labels: Vec<&str> = prepared.iter().map(|m| m.label.as_str()).collect();
+        assert_eq!(
+            labels.first(),
+            Some(&"RTP (PCMA) 5 1\u{2192}2"),
+            "{labels:?}"
+        );
+        assert_eq!(
+            labels.last(),
+            Some(&"RTP (PCMA) 6 2\u{2192}1"),
+            "{labels:?}"
+        );
+        assert_eq!(labels.len(), 6, "{labels:?}");
+        Ok(())
+    }
+
+    /// A media address that no SIP message uses (a media relay's address)
+    /// gets a column of its own, labeled with the bare IP, as sngrep does.
+    /// A media address that shares an IP with a signaling column reuses that
+    /// column, whatever the port.
+    #[test]
+    fn a_media_only_address_gets_its_own_column() -> Result<(), TestError> {
+        let theme = Theme::default();
+        let relay = IpAddr::V4(Ipv4Addr::new(10, 0, 0, 40));
+        let streams = vec![
+            flow_stream(
+                (addr_a(), 6000),
+                (relay, 33912),
+                Some("PCMA"),
+                t0() + TimeDelta::milliseconds(1100),
+                250,
+            ),
+            flow_stream(
+                (relay, 36140),
+                (addr_b(), 6000),
+                Some("PCMA"),
+                t0() + TimeDelta::milliseconds(1200),
+                250,
+            ),
+        ];
+        let mut o = opts(&theme);
+        o.show_rtp = true;
+        o.rtp_streams = &streams;
+        let (participants, prepared) =
+            prepare_messages(&answered_call("relay")?, t0(), None, &o, &HashSet::new());
+        let addrs: Vec<&str> = participants.iter().map(|p| p.addr.as_str()).collect();
+        assert_eq!(addrs, vec!["10.0.0.1:5060", "10.0.0.2:5060", "10.0.0.40"]);
+        assert_eq!(participants[2].label, "10.0.0.40");
+        let rtp: Vec<(usize, usize)> = prepared
+            .iter()
+            .filter(|m| m.is_rtp_stream)
+            .map(|m| (m.src_col, m.dst_col))
+            .collect();
+        assert_eq!(rtp, vec![(0, 2), (2, 1)]);
+
+        // With the RTP display off there is no media column.
+        o.show_rtp = false;
+        let (participants, _) =
+            prepare_messages(&answered_call("relay")?, t0(), None, &o, &HashSet::new());
+        assert_eq!(participants.len(), 2, "{participants:?}");
+        Ok(())
+    }
+
+    /// A stream with no reverse stream (swapped sockets) is marked one-way,
+    /// before its packet count so the mark survives a truncated label. A
+    /// pair is not marked.
+    #[test]
+    fn a_stream_without_its_reverse_is_marked_one_way() -> Result<(), TestError> {
+        let theme = Theme::default();
+        let a = (addr_a(), 20000);
+        let b = (addr_b(), 30000);
+        let mut o = opts(&theme);
+        o.show_rtp = true;
+
+        let lone = vec![flow_stream(
+            b,
+            a,
+            Some("PCMU"),
+            t0() + TimeDelta::seconds(2),
+            17,
+        )];
+        o.rtp_streams = &lone;
+        let (_p, prepared) =
+            prepare_messages(&answered_call("oneway")?, t0(), None, &o, &HashSet::new());
+        let row = prepared
+            .iter()
+            .find(|m| m.is_rtp_stream)
+            .ok_or("stream row")?;
+        assert_eq!(row.label, "RTP (PCMU) one-way 17 30000\u{2192}20000");
+
+        // Same addresses, other ports: not the reverse of this stream.
+        let crossed = vec![
+            flow_stream(b, a, Some("PCMU"), t0() + TimeDelta::seconds(2), 17),
+            flow_stream(
+                (addr_a(), 20002),
+                b,
+                Some("PCMU"),
+                t0() + TimeDelta::seconds(2),
+                9,
+            ),
+        ];
+        o.rtp_streams = &crossed;
+        let (_p, prepared) =
+            prepare_messages(&answered_call("oneway")?, t0(), None, &o, &HashSet::new());
+        let marked = prepared
+            .iter()
+            .filter(|m| m.is_rtp_stream && m.label.contains("one-way"))
+            .count();
+        assert_eq!(marked, 2, "neither is the other's reverse");
+
+        let pair = vec![
+            flow_stream(b, a, Some("PCMU"), t0() + TimeDelta::seconds(2), 17),
+            flow_stream(a, b, Some("PCMU"), t0() + TimeDelta::seconds(2), 18),
+        ];
+        o.rtp_streams = &pair;
+        let (_p, prepared) =
+            prepare_messages(&answered_call("oneway")?, t0(), None, &o, &HashSet::new());
+        assert!(
+            prepared.iter().all(|m| !m.label.contains("one-way")),
+            "a paired call shows no mark"
+        );
+        Ok(())
+    }
+
+    /// A stream whose codec is unknown names its RTP payload type instead.
+    #[test]
+    fn a_stream_without_a_codec_names_its_payload_type() -> Result<(), TestError> {
+        let theme = Theme::default();
+        let mut s = flow_stream(
+            (addr_a(), 4000),
+            (addr_b(), 4002),
+            None,
+            t0() + TimeDelta::seconds(2),
+            3,
+        );
+        s.payload_type = 96;
+        let streams = vec![s];
+        let mut o = opts(&theme);
+        o.show_rtp = true;
+        o.rtp_streams = &streams;
+        let (_p, prepared) =
+            prepare_messages(&answered_call("pt")?, t0(), None, &o, &HashSet::new());
+        let row = prepared
+            .iter()
+            .find(|m| m.is_rtp_stream)
+            .ok_or("stream row")?;
+        assert!(
+            row.label.starts_with("RTP (PT 96) one-way 3"),
+            "{}",
+            row.label
         );
         Ok(())
     }

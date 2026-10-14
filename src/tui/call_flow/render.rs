@@ -23,7 +23,7 @@ use crate::tui::Theme;
 use crate::tui::TimestampMode;
 
 use super::FlowDisplayOptions;
-use super::arrows::{format_arrow, format_arrow_left, format_arrow_right, truncate};
+use super::arrows::{format_arrow_left, format_arrow_right, format_arrow_with_shaft, truncate};
 use super::prepare::{delta_style, format_message_label, format_sdp_codecs, message_style};
 use super::{
     ENDPOINT_COL_WIDTH, FormattedMessage, MIN_ARROW_WIDTH, Participant, SelectionState,
@@ -680,7 +680,9 @@ impl Ladder<'_> {
         // Pipes at ALL positions
         self.draw_pipes(buf, y, "\u{2502}", self.pipe_style); // │
 
-        if msg.is_rtp_bar {
+        // A captured stream is an arrow between its own columns; only the
+        // SDP-derived bar spans the ladder.
+        if msg.is_rtp_bar && !msg.is_rtp_stream {
             self.draw_rtp_bar(buf, msg, y);
         } else {
             self.draw_arrow(buf, msg, y);
@@ -773,7 +775,14 @@ impl Ladder<'_> {
             }
             return;
         }
-        let (arrow_str, arrow_x) = format_arrow(&label, src_x, dst_x, msg.is_response);
+        let shaft = if msg.is_rtp_stream {
+            '\u{2550}' // ═ media
+        } else if msg.is_response {
+            '\u{254C}' // ╌
+        } else {
+            '\u{2500}' // ─
+        };
+        let (arrow_str, arrow_x) = format_arrow_with_shaft(&label, src_x, dst_x, shaft);
         let arrow_style = match msg.selection_state {
             SelectionState::Selected => msg.style.bg(SELECTION_BG).add_modifier(Modifier::BOLD),
             SelectionState::Related => msg.style,
@@ -2174,7 +2183,7 @@ mod tests {
             theme,
             resolver,
             name_mode: crate::names::NameMode::Off,
-            rtp_segments: &[],
+            rtp_streams: &[],
         }
     }
 
@@ -2278,6 +2287,7 @@ mod tests {
             sdp_badge: None,
             is_retransmission: false,
             is_rtp_bar: false,
+            is_rtp_stream: false,
             raw_index: None,
             diagnosis_note: None,
         })
@@ -2337,6 +2347,67 @@ mod tests {
             text.contains("CANCEL"),
             "a self-addressed CANCEL must still appear in the ladder; got:\n{text}"
         );
+        Ok(())
+    }
+
+    /// A captured RTP stream's row is an arrow between ITS columns, pointing
+    /// at the receiver, with a double-rail shaft that sets media apart from
+    /// signaling; not the centered bar across every column (#495).
+    #[test]
+    fn a_stream_row_is_an_arrow_from_sender_to_receiver() -> Result<(), TestError> {
+        let theme = Theme::default();
+        let parts: Vec<Participant> = ["10.0.0.1:5060", "10.0.0.2:5060", "10.0.0.40"]
+            .iter()
+            .map(|a| Participant {
+                addr: (*a).into(),
+                label: (*a).into(),
+            })
+            .collect();
+        let stream = |src: usize, dst: usize, label: &str| -> Result<FormattedMessage, TestError> {
+            let mut m = fmt_msg("12:00:01.000", SelectionState::Normal, src, dst)?;
+            m.label = label.into();
+            m.is_rtp_bar = true;
+            m.is_rtp_stream = true;
+            Ok(m)
+        };
+        let msgs = vec![
+            fmt_msg("12:00:00.000", SelectionState::Selected, 0, 1)?,
+            stream(0, 2, "RTP (PCMA) 250")?,
+            stream(2, 1, "RTP (PCMA) one-way 9")?,
+        ];
+        let nav = FlowNavigation {
+            scroll_offset: 0,
+            mark_index: None,
+            selected_index: 0,
+            noted: Vec::new(),
+        };
+        let mut term = terminal(120, 12)?;
+        term.draw(|f| {
+            let a = f.area();
+            render_call_flow_direct(f, a, &parts, &msgs, &nav, &theme);
+        })?;
+        let text = buffer_text(&term)?;
+        let row = |needle: &str| -> Result<String, TestError> {
+            Ok(text
+                .lines()
+                .find(|l| l.contains(needle))
+                .ok_or_else(|| format!("no row with {needle:?}:\n{text}"))?
+                .to_string())
+        };
+        let right = row("RTP (PCMA) 250")?;
+        let left = row("RTP (PCMA) one-way 9")?;
+        let pipes = pipes_for(3, 120);
+        let at = |line: &str, x: u16| line.chars().nth(usize::from(x));
+        // 0 -> 2: the shaft starts after pipe 0 and the head sits against
+        // pipe 2.
+        assert_eq!(at(&right, pipes[2] - 1), Some('\u{25B6}'), "{right}");
+        assert_eq!(at(&right, pipes[2]), Some('\u{2502}'), "{right}");
+        assert_eq!(at(&right, pipes[0] + 1), Some('\u{2550}'), "{right}");
+        assert_eq!(at(&right, pipes[0]), Some('\u{2502}'), "{right}");
+        // 2 -> 1: the head is just right of pipe 1, pipe 0 is untouched.
+        assert_eq!(at(&left, pipes[1] + 1), Some('\u{25C0}'), "{left}");
+        assert_eq!(at(&left, pipes[2] - 1), Some('\u{2550}'), "{left}");
+        assert_eq!(at(&left, pipes[0] + 1), Some(' '), "{left}");
         Ok(())
     }
 

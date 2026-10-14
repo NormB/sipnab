@@ -728,8 +728,9 @@ fn flow_visible_msg_count(app: &App) -> usize {
 /// * `msg_count` - visible row count; selections at/past it are ignored.
 ///
 /// # Side effects
-/// For an RTP bar, resolves a stream linked to the dialog (or any
-/// stream), resets `stream_detail_scroll`, records the flow as the
+/// For a captured stream's row, opens that stream; for the SDP-derived RTP
+/// bar, the dialog's first linked stream. Either way it resets
+/// `stream_detail_scroll`, records the flow as the
 /// return view, and switches to `View::StreamDetail` — or reports "No
 /// RTP streams found". For a message row, resets `raw_msg_scroll`,
 /// records the return view, and switches to `View::RawMessage` of the
@@ -744,10 +745,12 @@ fn activate_selected(app: &mut App, msg_count: usize) {
             // Find a stream linked to this dialog, or any stream
             // A stream linked to this call, never another call's: with none
             // linked, the narrowed stream list says why (#482).
-            let stream_key = {
+            // A captured stream's row names its stream; the SDP-derived bar
+            // names none and opens the call's first linked stream.
+            let stream_key = selected_stream_row_key(app).or_else(|| {
                 let store = app.stream_store.read();
                 store.streams_for(&cid).next().map(|s| s.key.clone())
-            };
+            });
             if let Some(key) = stream_key {
                 app.stream_detail_scroll = 0;
                 app.stream_detail_return_view = Some(app.current_view.clone());
@@ -768,6 +771,18 @@ fn activate_selected(app: &mut App, msg_count: usize) {
             };
         }
     }
+}
+
+/// The stream of the selected ladder row, when that row is a captured RTP
+/// stream's (#495): `flow.selected` counts the rows that are not spacers.
+fn selected_stream_row_key(app: &App) -> Option<crate::rtp::stream::StreamKey> {
+    app.flow
+        .ladder
+        .rows
+        .iter()
+        .filter(|r| r.kind != call_flow::prepare::RowKind::Spacer)
+        .nth(app.flow.selected)
+        .and_then(|r| r.stream_key.clone())
 }
 
 /// `C`: open the note editor for the selected message.
@@ -978,7 +993,7 @@ fn export_mermaid_to_clipboard(app: &mut App) {
             }
             let ft = d.messages[0].timestamp;
             let pdd = d.timing.pdd_ms();
-            let rtp_segs = app.rtp_codec_segments(call_id);
+            let rtp_streams = app.rtp_flow_streams(call_id);
             let flow_opts = call_flow::FlowDisplayOptions {
                 sdp_mode: app.sdp_display_mode,
                 ts_mode: app.timestamp_mode,
@@ -988,7 +1003,7 @@ fn export_mermaid_to_clipboard(app: &mut App) {
                 theme: &app.theme,
                 resolver: app.resolver.as_ref(),
                 name_mode: app.name_mode,
-                rtp_segments: &rtp_segs,
+                rtp_streams: &rtp_streams,
             };
             let (participants, msgs) = call_flow::prepare_messages(
                 &d.messages,

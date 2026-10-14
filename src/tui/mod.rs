@@ -1538,7 +1538,7 @@ impl App {
         };
         let cid = view_cid.clone();
 
-        let stream_generation = self.sync_ladder_segments(&cid);
+        let media_rev = self.sync_ladder_streams(store, &cid);
         let key = LadderKey {
             call_id: cid.clone(),
             source: self.ladder_source(store, &cid),
@@ -1548,7 +1548,7 @@ impl App {
             show_rtp: self.flow.show_rtp,
             name_mode: self.name_mode,
             resolver_generation: self.resolver.generation(),
-            stream_generation,
+            media_rev,
             fold_expanded: self.flow.fold_expanded.clone(),
             merged_calls: self.flow.merged_calls.clone(),
         };
@@ -1571,43 +1571,67 @@ impl App {
         self.flow.ladder.churn.mark();
     }
 
-    /// RTP codec segments feed the layout only in the plain view
-    /// with RTP bars on; recompute them only when the stream store
-    /// structurally changed (on contention keep the previous ones).
+    /// The RTP streams of the dialogs the view shows feed the layout while
+    /// the RTP display is on (#495). They are rescanned at once when the
+    /// view's scope changes (another dialog, the extended or merged view),
+    /// and otherwise at most once per churn floor, so packet counts follow
+    /// the store although per-packet updates do not move its generation.
     ///
-    /// Returns the stream generation the cached segments belong to, for the
-    /// ladder key; `None` when the view draws no RTP bars.
-    fn sync_ladder_segments(&mut self, cid: &str) -> Option<u64> {
-        if !self.flow.show_rtp || self.flow.extended {
+    /// Returns the media revision for the ladder key; `None` when the view
+    /// draws no RTP, so stream churn cannot force a relayout.
+    fn sync_ladder_streams(&mut self, store: &DialogStore, cid: &str) -> Option<u64> {
+        if !self.flow.show_rtp {
+            self.flow.ladder.streams_scope = None;
             return None;
         }
-        let Some(ss) = self.stream_store.try_read() else {
-            // Contended: reuse the segments (and their generation)
-            // the cache already holds so the ladder key still hits.
-            return self.flow.ladder.segs_key.as_ref().map(|(_, g)| *g);
+        let scope = MediaScope {
+            call_id: cid.to_string(),
+            extended: self.flow.extended,
+            merged_calls: self.flow.merged_calls.clone(),
         };
-        let g = ss.generation();
-        let same_cid = self
-            .flow
-            .ladder
-            .segs_key
-            .as_ref()
-            .is_some_and(|(c, _)| c == cid);
-        let same = self
-            .flow
-            .ladder
-            .segs_key
-            .as_ref()
-            .is_some_and(|(c, gg)| c == cid && *gg == g);
-        // Same dialog + stream churn only: adopt the new
-        // generation at the churn floor. A different dialog
-        // (user navigation) refreshes immediately.
-        if !same && (!same_cid || self.flow.ladder.churn.ready()) {
-            self.flow.ladder.rtp_segs = Self::rtp_codec_segments_from(&ss, cid);
-            self.flow.ladder.segs_key = Some((cid.to_string(), g));
-            self.flow.ladder.churn.mark();
+        let same_scope = self.flow.ladder.streams_scope.as_ref() == Some(&scope);
+        if same_scope && !self.flow.ladder.media_churn.ready() {
+            return Some(self.flow.ladder.media_rev);
         }
-        self.flow.ladder.segs_key.as_ref().map(|(_, g)| *g)
+        let call_ids = Self::media_call_ids(store, &scope);
+        let Some(ss) = self.stream_store.try_read() else {
+            // Contended. Another scope's streams must not be drawn under
+            // this one: drop them and retry next tick.
+            if !same_scope {
+                self.flow.ladder.rtp_streams.clear();
+                self.flow.ladder.streams_scope = None;
+                self.flow.ladder.media_rev += 1;
+            }
+            return Some(self.flow.ladder.media_rev);
+        };
+        let streams = Self::rtp_flow_streams_from(&ss, &call_ids);
+        drop(ss);
+        self.flow.ladder.media_churn.mark();
+        if !same_scope || streams != self.flow.ladder.rtp_streams {
+            self.flow.ladder.rtp_streams = streams;
+            self.flow.ladder.media_rev += 1;
+        }
+        self.flow.ladder.streams_scope = Some(scope);
+        Some(self.flow.ladder.media_rev)
+    }
+
+    /// The Call-IDs whose streams the call flow draws for `scope`: every
+    /// merged dialog, or the anchor dialog and, in the extended view, each
+    /// leg correlated with it.
+    fn media_call_ids(store: &DialogStore, scope: &MediaScope) -> Vec<String> {
+        if !scope.merged_calls.is_empty() {
+            return scope.merged_calls.clone();
+        }
+        let mut ids = vec![scope.call_id.clone()];
+        if scope.extended {
+            ids.extend(
+                store
+                    .find_correlated(&scope.call_id)
+                    .into_iter()
+                    .map(|d| d.call_id.clone()),
+            );
+        }
+        ids
     }
 
     /// What the ladder for `cid` is derived from, for the ladder key.
@@ -1693,8 +1717,9 @@ impl App {
     /// dialog and index it came from, in time order, and keep the tags as
     /// the ladder's row provenance.
     ///
-    /// Draws no RTP bars and no PDD note: the view spans dialogs, the cached
-    /// segments belong to one dialog, and a post-dial delay belongs to one.
+    /// Draws every shown dialog's RTP streams when the RTP display is on, but
+    /// no SDP-derived bar and no PDD note: that bar and a post-dial delay
+    /// each describe one dialog, and the view spans several.
     fn interleaved_ladder(
         &mut self,
         mut tagged: Vec<(&crate::sip::SipMessage, (String, usize))>,
@@ -1709,13 +1734,15 @@ impl App {
         if owned.is_empty() {
             return (Vec::new(), Vec::new());
         }
+        // With no captured stream, `show_rtp` would draw the SDP bar of
+        // whichever dialog's INVITE came first; leave it off instead.
         let lopts = call_flow::LayoutOptions {
             sdp_mode: self.sdp_display_mode,
             ts_mode: self.timestamp_mode,
-            show_rtp: false,
+            show_rtp: self.flow.show_rtp && !self.flow.ladder.rtp_streams.is_empty(),
             resolver: self.resolver.as_ref(),
             name_mode: self.name_mode,
-            rtp_segments: &[],
+            rtp_streams: &self.flow.ladder.rtp_streams,
         };
         call_flow::layout(
             &owned,
@@ -1759,7 +1786,13 @@ impl App {
             show_rtp: self.flow.show_rtp,
             resolver: self.resolver.as_ref(),
             name_mode: self.name_mode,
-            rtp_segments: &self.flow.ladder.rtp_segs,
+            // A transaction filter narrows the ladder to one transaction;
+            // the call's streams are not part of it.
+            rtp_streams: if self.flow.transaction_filter.is_some() {
+                &[]
+            } else {
+                &self.flow.ladder.rtp_streams
+            },
         };
         call_flow::layout(
             msgs_ref,
@@ -1888,52 +1921,55 @@ impl App {
         self.paused
     }
 
-    /// Observed RTP codec segments for a dialog, oldest first — the codecs
-    /// actually carried on the wire (resolved from each stream's payload type),
-    /// each with the window it was seen. Drives the call-flow RTP-in-flow bar so
-    /// it shows the *used* codec (and a re-INVITE codec switch as a later
-    /// segment), not the full SDP offer. Empty when no RTP is linked to the
-    /// dialog, in which case the bar falls back to the negotiated SDP answer.
+    /// The RTP streams linked to `call_id`, in first-packet order, for the
+    /// Mermaid export of the call flow.
     ///
     /// # Arguments
     ///
-    /// * `call_id` — Call-ID of the dialog whose linked streams to scan.
+    /// * `call_id` — Call-ID of the dialog whose linked streams to list.
     ///
     /// # Returns
     ///
-    /// Codec segments sorted by start time; empty only when no linked
-    /// stream carries a resolved codec.
-    fn rtp_codec_segments(&self, call_id: &str) -> Vec<call_flow::RtpCodecSegment> {
+    /// The streams sorted by first packet; empty when none is linked.
+    fn rtp_flow_streams(&self, call_id: &str) -> Vec<call_flow::RtpFlowStream> {
         // Blocking read: the only caller is the Mermaid export path, which
         // is not frame-rate-critical — an export must never silently drop
-        // RTP segments because the processing thread transiently held the
+        // RTP streams because the processing thread transiently held the
         // write lock. (The ladder render never calls this; it re-styles
-        // the segments cached by `sync_caches`.) Acquired dialog→stream,
-        // the same order as every other multi-lock site.
+        // the streams cached by `sync_caches`.)
         let store = self.stream_store.read();
-        Self::rtp_codec_segments_from(&store, call_id)
+        Self::rtp_flow_streams_from(&store, &[call_id.to_string()])
     }
 
-    /// Build sorted RTP codec segments for `call_id` from an already-acquired
-    /// stream store. Shared by [`Self::rtp_codec_segments`] (the blocking
-    /// export path) and the `sync_caches` ladder cache, which holds a
-    /// non-blocking read guard and must not re-lock the store.
-    fn rtp_codec_segments_from(
+    /// The RTP streams linked to any of `call_ids`, from an
+    /// already-acquired stream store, sorted by first packet (then by
+    /// sockets, so equal times keep one order). Shared by
+    /// [`Self::rtp_flow_streams`] (the blocking export path) and the ladder
+    /// cache, which holds a non-blocking read guard and must not re-lock.
+    fn rtp_flow_streams_from(
         store: &StreamStore,
-        call_id: &str,
-    ) -> Vec<call_flow::RtpCodecSegment> {
-        let mut segs: Vec<call_flow::RtpCodecSegment> = store
-            .streams_for(call_id)
-            .filter_map(|s| {
-                s.codec.clone().map(|codec| call_flow::RtpCodecSegment {
-                    codec,
-                    start: s.first_seen,
-                    end: s.last_seen,
-                })
+        call_ids: &[String],
+    ) -> Vec<call_flow::RtpFlowStream> {
+        let mut streams: Vec<call_flow::RtpFlowStream> = call_ids
+            .iter()
+            .flat_map(|cid| store.streams_for(cid))
+            .map(|s| call_flow::RtpFlowStream {
+                key: s.key.clone(),
+                codec: s.codec.clone(),
+                payload_type: s.payload_type,
+                first_seen: s.first_seen,
+                packet_count: s.packet_count,
             })
             .collect();
-        segs.sort_by_key(|s| s.start);
-        segs
+        streams.sort_by(|a, b| {
+            (a.first_seen, a.key.src, a.key.dst, a.key.ssrc).cmp(&(
+                b.first_seen,
+                b.key.src,
+                b.key.dst,
+                b.key.ssrc,
+            ))
+        });
+        streams
     }
 
     /// Reset every UI-cache churn floor: called on discrete completion
@@ -1945,6 +1981,7 @@ impl App {
         self.stats.floor.clear();
         self.dashboard_floor.clear();
         self.flow.ladder.churn.clear();
+        self.flow.ladder.media_churn.clear();
     }
 
     /// Compute the poll timeout based on how recently data was updated.
@@ -2924,7 +2961,7 @@ mod tests {
             );
         }
         assert_eq!(
-            app.rtp_codec_segments("contended@test").len(),
+            app.rtp_flow_streams("contended@test").len(),
             1,
             "fixture sanity: one linked PCMU stream uncontended"
         );
@@ -2943,7 +2980,7 @@ mod tests {
             Ok(())
         });
         locked_rx.recv()?;
-        let segs = app.rtp_codec_segments("contended@test");
+        let segs = app.rtp_flow_streams("contended@test");
         writer.join().map_err(|_| "thread panicked")??;
         assert_eq!(
             segs.len(),
@@ -3106,10 +3143,209 @@ mod tests {
         app.current_view = View::CallFlow("nobars@test".to_string());
         app.flow.show_rtp = false;
         app.sync_caches();
-        assert_eq!(app.flow.ladder.segs_key, None);
+        assert_eq!(app.flow.ladder.streams_scope, None);
         assert_eq!(
-            app.flow.ladder.key.as_ref().map(|k| k.stream_generation),
+            app.flow.ladder.key.as_ref().map(|k| k.media_rev),
             Some(None)
+        );
+        Ok(())
+    }
+
+    /// Send one RTP packet with sequence `seq` from 10.0.0.1:20000 to
+    /// 10.0.0.2:30000 (SSRC 0xCAFE) into `ss`.
+    fn send_rtp(ss: &mut crate::rtp::stream_store::StreamStore, seq: u16) -> Result<(), TestError> {
+        let ts = chrono::DateTime::from_timestamp(1_718_452_801, 0).ok_or("a valid timestamp")?
+            + chrono::TimeDelta::milliseconds(20 * i64::from(seq));
+        let parsed = crate::capture::ParsedPacket {
+            frame_bytes: None,
+            frame: None,
+            timestamp: ts,
+            src_addr: std::net::IpAddr::V4(std::net::Ipv4Addr::new(10, 0, 0, 1)),
+            dst_addr: std::net::IpAddr::V4(std::net::Ipv4Addr::new(10, 0, 0, 2)),
+            src_port: 20000,
+            dst_port: 30000,
+            transport: crate::capture::parse::TransportProto::Udp,
+            payload: vec![0u8; 172].into(),
+            ip_id: None,
+            tcp_seq: None,
+            tcp_flags: None,
+            fragment_offset: None,
+            more_fragments: false,
+            ip_protocol: 17,
+            dscp: None,
+            input_origin: crate::capture::parse::InputOrigin::Wire,
+            hep: None,
+        };
+        let rtp = crate::rtp::parser::RtpHeader {
+            version: 2,
+            padding: false,
+            extension: false,
+            csrc_count: 0,
+            marker: false,
+            payload_type: 0,
+            sequence: seq,
+            timestamp: u32::from(seq) * 160,
+            ssrc: 0xCAFE,
+            payload_offset: 12,
+        };
+        ss.process_rtp(&parsed, &rtp, ts);
+        Ok(())
+    }
+
+    /// The labels of the cached ladder's RTP stream rows.
+    fn stream_row_labels(app: &App) -> Vec<String> {
+        app.ladder_rtp_rows_for_test()
+            .into_iter()
+            .map(|(_, _, label)| label)
+            .collect()
+    }
+
+    /// A stream row's packet count follows the store as packets arrive,
+    /// although per-packet updates do not move the store's generation. The
+    /// refresh is floored like every other churn-driven relayout (#495).
+    #[test]
+    fn stream_rows_follow_live_packet_counts() -> Result<(), TestError> {
+        use controllers::test_support::{base_ts, make_invite};
+        let mut app = App::with_processed_messages(vec![make_invite(
+            "live@test",
+            "1001",
+            "1002",
+            base_ts(),
+        )?]);
+        {
+            let ss = app.stream_store.clone();
+            let mut ss = ss.write();
+            send_rtp(&mut ss, 1)?;
+            ss.link_to_dialog(
+                std::net::IpAddr::V4(std::net::Ipv4Addr::new(10, 0, 0, 2)),
+                30000,
+                "live@test",
+            );
+        }
+        app.current_view = View::CallFlow("live@test".to_string());
+        app.flow.show_rtp = true;
+        app.sync_caches();
+        assert_eq!(
+            stream_row_labels(&app),
+            vec!["RTP (PCMU) one-way 1 20000\u{2192}30000".to_string()]
+        );
+
+        let generation = {
+            let ss = app.stream_store.clone();
+            let mut ss = ss.write();
+            let g = ss.generation();
+            send_rtp(&mut ss, 2)?;
+            send_rtp(&mut ss, 3)?;
+            assert_eq!(ss.generation(), g, "per-packet updates keep the generation");
+            g
+        };
+        app.elapse_churn_floors_for_test();
+        app.sync_caches();
+        assert_eq!(
+            stream_row_labels(&app),
+            vec!["RTP (PCMU) one-way 3 20000\u{2192}30000".to_string()],
+            "the count follows the store at generation {generation}"
+        );
+        Ok(())
+    }
+
+    /// Enter on a stream's row opens THAT stream's detail, not the call's
+    /// first stream: with one row per stream, the row names the stream (#495).
+    #[test]
+    fn enter_on_a_stream_row_opens_that_stream() -> Result<(), TestError> {
+        use controllers::test_support::{base_ts, make_invite, test_stream};
+        let mut app = App::with_processed_messages(vec![make_invite(
+            "pick@test",
+            "1001",
+            "1002",
+            base_ts(),
+        )?]);
+        let second = test_stream(2, Some("pick@test"));
+        {
+            let ss = app.stream_store.clone();
+            let mut ss = ss.write();
+            ss.insert_for_test(test_stream(1, Some("pick@test")));
+            ss.insert_for_test(second.clone());
+        }
+        app.current_view = View::CallFlow("pick@test".to_string());
+        app.flow.show_rtp = true;
+        // Rows: the INVITE, then the streams in first-packet order (SSRC 1's
+        // source port sorts first at equal times). Row 2 is SSRC 2.
+        app.flow.selected = 2;
+        let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(120, 30))?;
+        terminal.draw(|frame| app.render(frame))?;
+        assert_eq!(app.flow.cached_msg_count, 3, "fixture: three rows");
+        app.handle_key(KeyCode::Enter);
+        assert_eq!(app.current_view, View::StreamDetail(second.key));
+        Ok(())
+    }
+
+    /// The extended view draws the streams of every leg it shows, not only
+    /// the anchor dialog's: two legs with different Call-IDs, joined by
+    /// their RFC 7989 Session-ID, each with one stream (#495).
+    #[test]
+    fn the_extended_view_draws_every_legs_streams() -> Result<(), TestError> {
+        use controllers::test_support::{base_ts, raw_sip};
+        let leg = |cid: &str, from: std::net::IpAddr, to: std::net::IpAddr| {
+            let raw = raw_sip(
+                "INVITE sip:bob@example.com SIP/2.0",
+                &[
+                    "From: <sip:alice@example.com>;tag=t1",
+                    "To: <sip:bob@example.com>",
+                    &format!("Call-ID: {cid}"),
+                    "CSeq: 1 INVITE",
+                    "Session-ID: ab30317f1a784dc48ff824d0d3715d86;remote=00000000000000000000000000000000",
+                    "Content-Length: 0",
+                ],
+            );
+            crate::sip::parser::parse_sip(
+                &raw,
+                base_ts(),
+                from,
+                to,
+                5060,
+                5060,
+                crate::capture::parse::TransportProto::Udp,
+            )
+            .map_err(|e| format!("parse INVITE: {e:?}"))
+        };
+        let ip = |d: u8| std::net::IpAddr::V4(std::net::Ipv4Addr::new(10, 0, 0, d));
+        let mut app = App::with_processed_messages(vec![
+            leg("leg-a@test", ip(1), ip(2))?,
+            leg("leg-b@test", ip(2), ip(3))?,
+        ]);
+        {
+            let ss = app.stream_store.clone();
+            let mut ss = ss.write();
+            ss.insert_for_test(controllers::test_support::test_stream(
+                1,
+                Some("leg-a@test"),
+            ));
+            ss.insert_for_test(controllers::test_support::test_stream(
+                2,
+                Some("leg-b@test"),
+            ));
+        }
+        app.current_view = View::CallFlow("leg-a@test".to_string());
+        app.flow.show_rtp = true;
+        app.sync_caches();
+        assert_eq!(stream_row_labels(&app).len(), 1, "the plain view: one leg");
+        app.flow.extended = true;
+        app.sync_caches();
+        assert_eq!(
+            app.flow
+                .ladder
+                .index_map
+                .iter()
+                .filter(|(c, _)| c == "leg-b@test")
+                .count(),
+            1,
+            "fixture: the extended view joins the second leg"
+        );
+        assert_eq!(
+            stream_row_labels(&app).len(),
+            2,
+            "the extended view: both legs' streams"
         );
         Ok(())
     }

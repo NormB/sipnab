@@ -156,7 +156,7 @@ From a Call Flow, `r` opens the same view narrowed to that call's streams.
   unlinked. Status line 3 counts those, and `a` shows them.
 
 Press `Enter` on a stream to open **Stream Detail**. You can also press it on
-an `██ RTP ██` bar back in the Call Flow. Stream Detail shows:
+a stream's row in the Call Flow (`F6`). Stream Detail shows:
 
 - [MOS](glossary.md#mos) (mean opinion score, an estimate of how the call
   sounded),
@@ -176,6 +176,47 @@ section at the bottom.
 
 With an `audio` build, `Shift+P` plays the stream (G.711). `Esc` returns to the
 RTP Streams list. `Tab` there switches back to the Call List.
+
+## Follow each RTP stream in the call flow
+
+Press `F6` (or `Ctrl+R`) in the Call Flow to draw the call's RTP streams in the
+ladder.
+
+- RTP (Real-time Transport Protocol) carries the call's audio and video.
+  - A stream is one direction of it: packets from one address and port to
+    another.
+  - A stream belongs to the call when an SDP sipnab captured names its address
+    and port. The `r` view uses the same link.
+- Each stream gets its own row, at the time of its first packet, among the SIP
+  messages.
+- The row is an arrow from the sender's column to the receiver's column.
+  - A double line (`═`) marks it as media rather than a SIP message.
+- The label reads like `RTP (PCMA) 250 6000→33912`:
+  - the codec, or `PT` and the RTP payload type number when sipnab cannot name
+    the codec;
+  - the packet count, which grows while a live capture runs;
+  - the source port and the destination port.
+- `one-way` before the count marks a stream with no reverse stream.
+  - The reverse stream runs from the receiver's address and port back to the
+    sender's.
+  - A call whose streams are all paired shows no mark.
+- A media address that no SIP message uses gets a column of its own, labeled
+  with the bare IP address.
+  - This is how a media relay shows, such as rtpengine on the capture host.
+    Media arrives at the relay's address and leaves from it, so the ladder
+    shows both legs of the media path.
+  - A media address whose IP a SIP column already has uses that column,
+    whatever the port.
+- The extended view (`x`) draws the streams of every leg it shows. A
+  multi-selection flow draws the streams of every call it merges.
+- sipnab cuts a label longer than the gap between its two columns from the
+  end. `-` widens the ladder, and `R` hides the detail pane.
+- `Enter` on a stream's row opens that stream's **Stream Detail**.
+- With the ladder narrowed to one transaction (`f`), sipnab draws no stream
+  rows.
+- A call with no captured RTP, such as one in a signaling-only capture, gets
+  one bar across the ladder instead. It shows the codec the SDP answer
+  negotiated.
 
 ## Trace a call through proxies (multi-leg)
 

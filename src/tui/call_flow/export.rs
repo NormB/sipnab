@@ -79,9 +79,10 @@ pub fn export_mermaid_html(participants: &[Participant], messages: &[FormattedMe
 ///
 /// Each participant becomes a `participant <id> as <label>` line (positional
 /// id); each message becomes an arrow line, `->>` for requests
-/// and `-->>` for responses, labeled with the message label. Synthetic
-/// spacer and RTP-bar rows, rows with empty labels, and rows whose column
-/// indices fall outside `participants` are skipped.
+/// and `-->>` for responses, labeled with the message label. A captured RTP
+/// stream's row exports as an arrow from its sender to its receiver.
+/// Synthetic spacer rows, the SDP-derived RTP bar, rows with empty labels,
+/// and rows whose column indices fall outside `participants` are skipped.
 ///
 /// # Arguments
 /// * `participants` — endpoint columns; `src_col`/`dst_col` index into this.
@@ -99,7 +100,9 @@ pub fn export_mermaid(participants: &[Participant], messages: &[FormattedMessage
     // so `--name-mode` name resolution survives the export.
     let rows: Vec<crate::mermaid::DiagramRow> = messages
         .iter()
-        .filter(|m| !m.is_spacer && !m.is_rtp_bar && !m.label.is_empty())
+        // The SDP-derived RTP bar has no columns of its own and is skipped;
+        // a captured stream's row is a real arrow and exports as one.
+        .filter(|m| !m.is_spacer && (!m.is_rtp_bar || m.is_rtp_stream) && !m.label.is_empty())
         .filter(|m| m.src_col < participants.len() && m.dst_col < participants.len())
         .map(|m| crate::mermaid::DiagramRow {
             from: participants[m.src_col].addr.clone(),
@@ -216,6 +219,7 @@ mod tests {
             sdp_badge: None,
             is_retransmission: false,
             is_rtp_bar: false,
+            is_rtp_stream: false,
             raw_index: None,
             diagnosis_note: None,
         }
@@ -406,6 +410,36 @@ mod tests {
         // Only the two real messages export as arrows.
         let msg_lines: Vec<&str> = out.lines().filter(|l| l.contains("->>")).collect();
         assert_eq!(msg_lines.len(), 2, "expected 2 arrows: {out}");
+    }
+
+    /// A captured RTP stream's row has real columns: it exports as an arrow
+    /// from the sender to the receiver, and a media-only column it reaches
+    /// becomes a participant (#495).
+    #[test]
+    fn mermaid_exports_rtp_stream_rows() {
+        let participants = vec![
+            Participant {
+                addr: "10.0.0.1:5060".to_string(),
+                label: "alice".to_string(),
+            },
+            Participant {
+                addr: "10.0.0.2:5060".to_string(),
+                label: "bob".to_string(),
+            },
+            Participant {
+                addr: "10.0.0.40".to_string(),
+                label: "10.0.0.40".to_string(),
+            },
+        ];
+        let mut stream = test_msg(2, 0, "RTP (PCMA) 250 33912\u{2192}6000", false);
+        stream.is_rtp_bar = true;
+        stream.is_rtp_stream = true;
+        let messages = vec![test_msg(0, 1, "INVITE", false), stream];
+        let out = export_mermaid(&participants, &messages);
+        let arrows: Vec<&str> = out.lines().filter(|l| l.contains("->>")).collect();
+        assert_eq!(arrows.len(), 2, "INVITE and the stream: {out}");
+        assert!(arrows[1].contains("RTP (PCMA) 250"), "{out}");
+        assert!(out.contains("10.0.0.40"), "the media column: {out}");
     }
 
     /// A three-party (proxied) flow lists all participants and one arrow

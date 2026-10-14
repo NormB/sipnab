@@ -225,6 +225,27 @@ entry that carries them.
   - A filter applied as an expression is always shown in full.
   - A line 3 wider than the terminal now ends in `…` instead of stopping at
     the edge.
+- **`F6` in the call flow draws each RTP stream of the call as its own arrow** ([#495](https://github.com/NormB/sipnab/issues/495)).
+  - It replaces the single centered `RTP` bar, which showed neither direction
+    nor the number of streams.
+  - Each stream is a row at the time of its first packet, among the SIP
+    messages.
+    - The arrow runs from the sender's column to the receiver's column.
+    - The label reads like `RTP (PCMA) 250 6000→33912`: codec, packet count,
+      source and destination port.
+    - The packet count follows the capture while it runs.
+  - A stream with no reverse stream (the same two sockets, swapped) is marked
+    `one-way`.
+  - A media address no SIP message uses gets its own column, labeled with the
+    IP address.
+    - On a media relay's host, such as one running rtpengine, the ladder now
+      shows the relay's media address and both legs of the media path.
+  - The extended view (`x`) draws the streams of every leg it shows.
+  - `Enter` on a stream's row opens that stream, and the Mermaid export (`E`)
+    includes stream rows.
+  - A call with no captured RTP still shows the SDP-derived bar.
+  - Reported by Ihor Olkhovskyi ([@igorolhovskiy](https://github.com/igorolhovskiy)) in
+    [#495](https://github.com/NormB/sipnab/issues/495), which this closes.
 
 ### Fixed
 
