@@ -1346,6 +1346,8 @@ pub(crate) fn audio_retention_wanted(cli: &Cli, config: &Config) -> bool {
         })
         // A live-audio rule serves the retained audio as it arrives.
         || config.vcon.rule.iter().any(|r| r.live_audio == Some(true))
+        // So does a live RTP fork, which sends it.
+        || config.vcon.rule.iter().any(|r| r.live_rtp.is_some())
         // An enrichment that sends audio needs the audio retained to send it.
         || config.vcon.enrich.iter().any(|e| {
             e.send
@@ -3733,6 +3735,8 @@ impl BatchRunner {
         let live_vcon = lp.live_vcon.take();
         #[cfg(feature = "vcon")]
         let vcon_end = vcon_run_end(live_vcon.as_deref(), signals::shutdown_requested());
+        #[cfg(feature = "vcon")]
+        self.finish_live_rtp(&mut lp);
         #[cfg(not(feature = "vcon"))]
         let vcon_end = VconRunEnd::Whole;
 
@@ -3891,6 +3895,8 @@ impl BatchRunner {
         }
 
         self.sweep_if_due(lp);
+        #[cfg(feature = "vcon")]
+        self.fork_live_rtp_if_due(lp);
         #[cfg(feature = "tls")]
         self.poll_keylog_if_due(lp);
 
@@ -3971,6 +3977,62 @@ impl BatchRunner {
             );
         }
         self.engines.sweep(lp.security_max_age);
+    }
+
+    /// `live_rtp`: send what the matching calls retained since the last look,
+    /// every `live_rtp::POLL` of wall time.
+    #[cfg(feature = "vcon")]
+    fn fork_live_rtp_if_due(&mut self, lp: &mut ReceiveLoop) {
+        let Some(fork) = lp.live_rtp.as_mut() else {
+            return;
+        };
+        if fork.due() {
+            self.live_rtp_pass(fork, false);
+        }
+    }
+
+    /// One look of `fork` at the stores, and its datagrams sent.
+    #[cfg(feature = "vcon")]
+    fn live_rtp_pass(&self, fork: &mut crate::output::live_rtp::Forwarder, input_ended: bool) {
+        let out = {
+            let ds = self.dialog_store.read();
+            let ss = self.stream_store.read();
+            fork.pass(
+                &ds,
+                &ss,
+                self.cli.output_args.content_deny_header.as_deref(),
+                input_ended,
+            )
+        };
+        fork.send(&out);
+    }
+
+    /// The end of the run for `live_rtp`: on a stop request, every call's
+    /// stop at once with nothing more of its audio; otherwise what is still
+    /// queued, paced, and then each call's stop.
+    #[cfg(feature = "vcon")]
+    fn finish_live_rtp(&self, lp: &mut ReceiveLoop) {
+        let Some(mut fork) = lp.live_rtp.take() else {
+            return;
+        };
+        loop {
+            if signals::shutdown_requested() {
+                let out = fork.stop_all();
+                fork.send(&out);
+                break;
+            }
+            self.live_rtp_pass(&mut fork, true);
+            if fork.is_idle() {
+                break;
+            }
+            std::thread::sleep(crate::output::live_rtp::POLL);
+        }
+        if fork.unsent() > 0 {
+            tracing::warn!(
+                "live_rtp: {} datagram(s) could not be sent to their target",
+                fork.unsent()
+            );
+        }
     }
 
     /// --keylog-watch: poll for new keys in the keylog source, on its
@@ -4777,6 +4839,9 @@ struct ReceiveLoop {
     /// `Cli::exports_vcon_live`.
     #[cfg(feature = "vcon")]
     live_vcon: Option<Vec<LiveVconTracker>>,
+    /// The live RTP fork of the rules with a `live_rtp` target.
+    #[cfg(feature = "vcon")]
+    live_rtp: Option<crate::output::live_rtp::Forwarder>,
     /// When `--keylog-watch` last read the keylog source; see
     /// [`KEYLOG_POLL_INTERVAL`].
     #[cfg(feature = "tls")]
@@ -4838,6 +4903,8 @@ impl ReceiveLoop {
             sweep_clock: SweepClock::new(cli.has_input()),
             #[cfg(feature = "vcon")]
             live_vcon: start_live_vcon(cli, &runner.config, &runner.vcon_rules),
+            #[cfg(feature = "vcon")]
+            live_rtp: crate::output::live_rtp::Forwarder::new(&runner.vcon_rules),
             #[cfg(feature = "tls")]
             keylog_poll_clock: std::time::Instant::now(),
             security_max_age: cli.security_sweep_max_age(&runner.config),
@@ -7406,6 +7473,9 @@ pub struct VconRule {
     /// Whether the REST API serves this rule's calls' audio while they are in
     /// progress.
     pub live_audio: bool,
+    /// Where each matching call's audio is sent as RTP while it is captured
+    /// (`live_rtp`); `None` sends nothing.
+    pub live_rtp: Option<crate::output::live_rtp::Target>,
     /// Whether a live capture writes each call as it starts and rewrites it
     /// as it changes.
     pub live: bool,
@@ -10000,6 +10070,7 @@ mod tests {
             grouping: RuleGrouping::Leg,
             enrich: Vec::new(),
             live_audio: false,
+            live_rtp: None,
             live: false,
             sealing: None,
             sealed_updates: SealedUpdates::NewUuid,

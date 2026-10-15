@@ -1652,6 +1652,17 @@ pub struct VconRuleConfig {
     /// API's `/v1/calls/{call_id}/audio` WebSocket. Default `false`.
     #[serde(default)]
     pub live_audio: Option<bool>,
+    /// A UDP `host:port` that each matching call's decoded audio is sent to
+    /// as it is captured: RTP with an L16 payload, 16 kHz mono, one stream
+    /// per leg, and a JSON start and stop message per call. A loopback
+    /// address unless `live_rtp_allow_remote` is set.
+    #[serde(default)]
+    pub live_rtp: Option<String>,
+    /// Let `live_rtp` name an address other than loopback. Plain RTP is not
+    /// encrypted or authenticated, so the audio crosses the network readable
+    /// by anyone on the path. Default `false`.
+    #[serde(default)]
+    pub live_rtp_allow_remote: Option<bool>,
     /// On a live capture, write each matching call's container as it starts
     /// and rewrite it in place, with `updated_at`, as the call changes.
     /// Default `false`: one write, once the call has ended or gone idle.

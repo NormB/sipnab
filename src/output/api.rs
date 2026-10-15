@@ -3287,20 +3287,12 @@ fn live_audio_calls<'a>(
     ds: &'a DialogStore,
     ss: &'a crate::rtp::stream_store::StreamStore,
 ) -> Vec<&'a crate::sip::dialog::SipDialog> {
-    let mut out: Vec<&crate::sip::dialog::SipDialog> = Vec::new();
-    for filter in state.live_audio.iter() {
-        for (dialog, _) in crate::sip::dsl::select_dialogs(Some(filter), ds, ss).dialogs {
-            if !out.iter().any(|d| d.call_id == dialog.call_id)
-                && !crate::output::vcon::denied_by_header(
-                    dialog,
-                    state.content_deny_header.as_deref(),
-                )
-            {
-                out.push(dialog);
-            }
-        }
-    }
-    out
+    crate::output::vcon::live_calls(
+        state.live_audio.iter(),
+        ds,
+        ss,
+        state.content_deny_header.as_deref(),
+    )
 }
 
 /// One call in progress, as `GET /v1/calls/live` and its events give it.
@@ -3598,13 +3590,7 @@ fn audio_pass(
         Some(d) if d.state().is_final() => Some("the call ended"),
         Some(_) => None,
     };
-    let mut streams: Vec<&crate::rtp::stream::RtpStream> = ss.streams_for(call_id).collect();
-    streams.sort_by(|a, b| {
-        a.first_seen
-            .cmp(&b.first_seen)
-            .then(a.key.ssrc.cmp(&b.key.ssrc))
-    });
-    for stream in streams {
+    for stream in crate::rtp::live_audio::call_streams(&ss, call_id) {
         if !followed.iter().any(|(k, _)| *k == stream.key) {
             let index = u8::try_from(followed.len()).unwrap_or(u8::MAX);
             let entry = match crate::rtp::live_audio::LiveStream::new(stream) {

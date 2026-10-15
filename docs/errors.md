@@ -1807,6 +1807,29 @@ A rule with `live_audio = true` serves call audio on the REST API. `--api` binds
 
 **Exit code:** 1.
 
+### `[[vcon.rule]] '{}' live_rtp = '{}' sends nothing in this run: only a headless run (-N) without --cores forks live audio`
+
+A rule names a `live_rtp` target, and the run is a `--cores` run or the terminal UI. Neither sends live audio.
+
+- The first `{}` is the rule's name, the second its target.
+- See [Send a call's audio as RTP](vcon.md#send-a-calls-audio-as-rtp).
+
+**What to do:** Run with `-N` and without `--cores` to send the audio.
+
+**Exit code:** None. The run continues.
+
+### `live_rtp: {} datagram(s) could not be sent to their target`
+
+At the end of the run, the count of RTP packets and control messages a `live_rtp` rule could not send. A send fails when the target's port refuses it, or when the socket stays full for 20 ms.
+
+- `{}` is the count.
+- The receiver sees a gap in the sequence numbers of a leg that lost a packet.
+- See [Send a call's audio as RTP](vcon.md#send-a-calls-audio-as-rtp).
+
+**What to do:** Check that a program is reading the target's port, and that it keeps up with the audio.
+
+**Exit code:** None. The run continues.
+
 ### `[[vcon.enrich]] name '{name}' is not usable: a name is 1 to {} ASCII letters, digits, '-' or '_', starting with a letter or digit`
 
 An [`[[vcon.enrich]]`](vcon.md#enrich-a-call-before-it-is-written) has a `name` sipnab cannot use. `{name}` is the name, and `{}` is the longest a name may be.

@@ -14,6 +14,22 @@ use crate::rtp::audio_export::{FrameDecoder, stream_wall_ms};
 use crate::rtp::stream::RtpStream;
 use crate::rtp::timeline::{Step, Timeline, samples_to_ticks, ticks_to_samples};
 
+/// `call_id`'s streams in the order live audio numbers them: first seen
+/// first, SSRC breaking a tie.
+#[must_use]
+pub fn call_streams<'a>(
+    ss: &'a crate::rtp::stream_store::StreamStore,
+    call_id: &'a str,
+) -> Vec<&'a RtpStream> {
+    let mut streams: Vec<&RtpStream> = ss.streams_for(call_id).collect();
+    streams.sort_by(|a, b| {
+        a.first_seen
+            .cmp(&b.first_seen)
+            .then(a.key.ssrc.cmp(&b.key.ssrc))
+    });
+    streams
+}
+
 /// One stream being followed.
 pub struct LiveStream {
     /// The decoder, carrying the codec's state from frame to frame.

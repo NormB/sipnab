@@ -500,6 +500,8 @@ pub fn plan(cli: &Cli, config: &Config) -> Result<RunPlan, PlanError> {
     warn_vcon_rules(&vcon_rules);
 
     let mode = select_run_mode(cli);
+    #[cfg(feature = "vcon")]
+    warn_live_rtp(&vcon_rules, &mode, source.as_ref());
     refuse_unread_detection(cli, config, &mode)?;
 
     // Immediate mode picks the kernel ring format, so it can only be answered
@@ -4956,6 +4958,7 @@ pub(crate) fn vcon_rules(
             grouping: RuleGrouping::Leg,
             enrich: Vec::new(),
             live_audio: false,
+            live_rtp: None,
             live: false,
             sealing: None,
             sealed_updates: crate::app::batch::SealedUpdates::NewUuid,
@@ -5145,6 +5148,18 @@ pub(crate) fn vcon_rules(
             grouping,
             enrich: Vec::new(),
             live_audio: rule.live_audio.unwrap_or(false),
+            live_rtp: rule
+                .live_rtp
+                .as_deref()
+                .map(|value| {
+                    crate::output::live_rtp::Target::resolve(
+                        name,
+                        value,
+                        rule.live_rtp_allow_remote.unwrap_or(false),
+                    )
+                })
+                .transpose()
+                .map_err(refuse)?,
             live: rule.live.unwrap_or(false),
             sealing,
             sealed_updates,
@@ -5191,6 +5206,37 @@ pub(crate) fn vcon_rules(
         }
     }
     Ok(rules)
+}
+
+/// What a run says at startup about its `live_rtp` rules.
+///
+/// Only the headless run forks live audio, so in another mode a rule with a
+/// target says that it sends nothing, rather than looking armed. In the
+/// headless run, a target is the operator's, so a file source is not refused;
+/// what it owes them is a sentence saying the file's audio leaves.
+#[cfg(feature = "vcon")]
+fn warn_live_rtp(
+    rules: &[crate::app::batch::VconRule],
+    mode: &RunMode,
+    source: Option<&CaptureSource>,
+) {
+    for rule in rules {
+        let Some(target) = rule.live_rtp.as_ref() else {
+            continue;
+        };
+        if !matches!(mode, RunMode::Batch) {
+            tracing::warn!(
+                "[[vcon.rule]] '{}' live_rtp = '{}' sends nothing in this run: only a headless \
+                 run (-N) without --cores forks live audio",
+                rule.name,
+                target.as_str()
+            );
+        } else if let Some(CaptureSource::File { paths }) = source
+            && let Some(notice) = crate::output::live_rtp::file_notice(&rule.name, target, paths)
+        {
+            tracing::warn!("{notice}");
+        }
+    }
 }
 
 /// Log, once at startup, each warning a resolved export rule calls for.

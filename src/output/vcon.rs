@@ -1765,6 +1765,32 @@ pub fn denied_by_header(dialog: &crate::sip::dialog::SipDialog, header: Option<&
     header.is_some_and(|h| dialog.messages.iter().any(|m| m.header(h).is_some()))
 }
 
+/// The calls live audio goes out for: those one of `filters` selects that
+/// `deny_header` does not withhold, each once, in store order.
+///
+/// The one decision for every live audio surface: the REST API's WebSocket
+/// and list, and the RTP fork of `live_rtp`. A call one of them would send,
+/// the other would too.
+#[must_use]
+pub fn live_calls<'a, 'f>(
+    filters: impl IntoIterator<Item = &'f crate::sip::dsl::FilterExpr>,
+    ds: &'a crate::sip::dialog_store::DialogStore,
+    ss: &'a crate::rtp::stream_store::StreamStore,
+    deny_header: Option<&str>,
+) -> Vec<&'a crate::sip::dialog::SipDialog> {
+    let mut out: Vec<&crate::sip::dialog::SipDialog> = Vec::new();
+    for filter in filters {
+        for (dialog, _) in crate::sip::dsl::select_dialogs(Some(filter), ds, ss).dialogs {
+            if !out.iter().any(|d| d.call_id == dialog.call_id)
+                && !denied_by_header(dialog, deny_header)
+            {
+                out.push(dialog);
+            }
+        }
+    }
+    out
+}
+
 /// The quality of `call_id`'s RTP streams for [`ExportContext::media`], on the
 /// delay basis `GET /v1/streams` uses, so the container and the API report
 /// the same figures.

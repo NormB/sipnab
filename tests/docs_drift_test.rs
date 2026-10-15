@@ -5356,7 +5356,9 @@ fn no_documentation_table_repeats_a_row() -> Result<(), TestError> {
     // docs/design/surface-capability-matrix.md, which has no mirror.
     // 1224 -> 1226: the "vCon audio fetch" flag table in
     // docs/cli-reference.md and its website/content/docs/cli.md mirror.
-    const EXPECTED_TABLES: usize = 1226;
+    // 1226 -> 1230: the control message table and the leg object table in
+    // docs/vcon.md ("Send a call's audio as RTP") and their site mirror.
+    const EXPECTED_TABLES: usize = 1230;
 
     let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     let out = std::process::Command::new("git")

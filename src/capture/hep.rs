@@ -3587,60 +3587,8 @@ const HEP_TRUST: crate::tls_files::TrustNames<'static> = crate::tls_files::Trust
 /// The flag an operator types to ask for the HEP export, quoted verbatim in
 /// [`file_export_notice`] so the message names what they wrote.
 pub const HEP_SEND_FLAG: &str = "--hep-send";
-
-/// A destination the **operator** named — on the command line or in a
-/// configuration file — for sipnab to originate traffic at.
-///
-/// [`from_cli_flag`](Self::from_cli_flag) is the only constructor, and the
-/// omissions are the design: there is deliberately no `From<IpAddr>`, no
-/// `From<SocketAddr>`, no constructor taking a [`Packet`],
-/// [`HepPacket`] or a parsed SIP message. A future call site that wants to
-/// export to an address it read out of the capture cannot express it, because
-/// there is no function to call — the same trick
-/// [`crate::security::transmit_guard::TransmitPermit`]'s private field plays
-/// on the capture *source*, applied here to the *destination*.
-///
-/// That distinction is the whole point. "The operator named this collector"
-/// licenses sending them the capture. It licenses nothing about the addresses
-/// inside the capture, and the type is what keeps those two apart when the
-/// next exporter is written.
-#[derive(Debug, Clone)]
-pub struct OperatorDestination {
-    /// The flag the value arrived on, quoted back in operator-facing text.
-    flag: &'static str,
-    /// The destination as the operator wrote it (`host:port`), unresolved.
-    value: String,
-}
-
-impl OperatorDestination {
-    /// Record a destination the operator supplied through `flag`.
-    ///
-    /// `value` must come from a command-line argument or a configuration
-    /// file. Passing an address formatted out of captured traffic would defeat
-    /// the type, and is the one misuse it cannot detect — which is why no
-    /// constructor accepts an address type in the first place.
-    ///
-    /// # Arguments
-    ///
-    /// * `flag` — the flag the operator typed, e.g. [`HEP_SEND_FLAG`].
-    /// * `value` — the destination they gave it, in `host:port` form.
-    pub fn from_cli_flag(flag: &'static str, value: &str) -> Self {
-        Self {
-            flag,
-            value: value.to_string(),
-        }
-    }
-
-    /// The flag this destination arrived on.
-    pub fn flag(&self) -> &'static str {
-        self.flag
-    }
-
-    /// The destination as the operator wrote it, unresolved.
-    pub fn as_str(&self) -> &str {
-        &self.value
-    }
-}
+/// Re-exported from the module it moved to when a second capability needed it.
+pub use crate::security::operator_destination::OperatorDestination;
 
 /// Proof that the operator, in this run, named the destination sipnab is
 /// about to originate traffic at.

@@ -175,9 +175,15 @@ narrower, and all three parts now have a fix:
    [`tests/hep_send_file_export_test.rs`](https://github.com/NormB/sipnab/blob/main/tests/hep_send_file_export_test.rs) pins the absence of every conversion
    that would let a recorded address become a destination.
 
-`OperatorDestination` lives in `capture/hep.rs` rather than in `security/`
-because HEP export is its only caller today, which is recommendation 2 of
-section 7. Promote it when a second capability needs it.
+`OperatorDestination` lived in `capture/hep.rs` rather than in `security/`
+while HEP export was its only caller, which is recommendation 2 of section 7.
+The live RTP fork of `[[vcon.rule]] live_rtp` is the second capability, so it
+now lives in
+[`src/security/operator_destination.rs`](../../src/security/operator_destination.rs),
+and `capture::hep` re-exports it. The fork has its own permit,
+`output::live_rtp::LiveRtpPermit`, minted from an `OperatorDestination` and
+required by the one function that sends; it converts into neither of the
+other two permits.
 
 **A related, smaller one.** `--reverse-dns` calls `reverse_dns`
 ([`names.rs:637`](https://github.com/NormB/sipnab/blob/main/src/names.rs#L637)), whose own doc comment says *"Emits DNS

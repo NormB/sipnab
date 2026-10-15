@@ -168,6 +168,8 @@ dir   = "/var/spool/sipnab-vcon/all"
 | `audio_format` | `wav` (the default): the recording is a WAV, `audio/x-wav`. `opus`: Ogg Opus, `audio/ogg`, about a fifth of the size. Needs `audio = "inline"` or `"url"`. See [Audio as Ogg Opus](#audio-as-ogg-opus) |
 | `max_inline_media_mib` | The largest audio this rule's containers inline, in MiB. sipnab writes a call above it without its audio and the container records `media: "refused-over-budget"`. Unset: `--vcon-max-inline-media` |
 | `live_audio` | `true`: serve each matching call's audio while it is in progress, over the REST API. See [Hear a call while it is in progress](#hear-a-call-while-it-is-in-progress) |
+| `live_rtp` | A UDP `host:port`: send each matching call's audio there as RTP while it is in progress. See [Send a call's audio as RTP](#send-a-calls-audio-as-rtp) |
+| `live_rtp_allow_remote` | `true`: let `live_rtp` name an address other than loopback. See [Send a call's audio as RTP](#send-a-calls-audio-as-rtp) |
 | `live` | `true`: on a live capture, write each matching call's container as the call starts and rewrite it in place each time the call changes. See [Follow a call while it is in progress](#follow-a-call-while-it-is-in-progress) |
 | `encrypt_to` | A PEM certificate, or a list of them. Set, the rule writes only the encrypted form, once, to every certificate's key. Needs `sign_key` and `sign_cert`. See [Encrypt what a rule writes](#encrypt-what-a-rule-writes) |
 | `sign_key`, `sign_cert` | The PEM RSA or EC P-256 private key an encrypting or `sign_only` rule signs with, and its certificate chain, leaf first |
@@ -666,6 +668,110 @@ The `GET /v1/calls/:call_id/audio` section of the
 A [`[[vcon.enrich]]`](#enrich-a-call-before-it-is-written) service on the same
 rule can return, at the call's end, what a transcriber produces during the call.
 So the transcript is in the call's container.
+
+### Send a call's audio as RTP
+
+A rule with `live_rtp` sends the audio of the calls it matches, as sipnab
+captures them, to a UDP address as RTP.
+
+- It suits a program that takes audio in on a UDP port, such as a local
+  speech-to-text service.
+- `live_audio` serves the same audio for a client to fetch; `live_rtp` sends
+  it without a client asking.
+
+```toml
+[[vcon.rule]]
+name     = "support"
+when     = "@support"
+dir      = "/var/spool/sipnab-vcon/support"
+live_rtp = "127.0.0.1:40000"
+```
+
+**What arrives at the address.**
+
+- Each leg of the call is one RTP stream ([RFC 3550](https://www.rfc-editor.org/rfc/rfc3550.html)).
+  - A leg is one direction of the call's audio: one captured RTP stream.
+  - Each stream has an SSRC of its own. Every stream goes to the one address,
+    so a receiver opens one port and tells the legs apart by SSRC.
+- The payload is L16 ([RFC 3551 section 4.5.11](https://www.rfc-editor.org/rfc/rfc3551.html#section-4.5.11)):
+  16-bit signed samples in network byte order, 16 kHz, one channel.
+  - Payload type 96, a dynamic type. The static L16 types, 10 and 11, are
+    44.1 kHz.
+  - 320 samples (20 ms) a packet. Only the last packet of a leg can be
+    shorter.
+  - sipnab interpolates G.711 (8 kHz) up to 16 kHz, and Opus (48 kHz) down.
+    G.722 decodes at 16 kHz.
+  - The first packet of each leg carries the marker bit. The sequence
+    number steps by one and the timestamp by the samples in the packet before.
+- Control messages arrive at the same address, one JSON object a datagram.
+  - A control message starts with `{`. An RTP packet never does: its first
+    byte is 0x80 to 0xBF, the range
+    [RFC 7983 section 7](https://www.rfc-editor.org/rfc/rfc7983.html#section-7)
+    gives RTP on a shared port.
+
+| `type` | When | Carries |
+|--------|------|---------|
+| `start` | Once per call, before its first packet | `call_id`, `rule`, and `legs`: each leg sipnab holds so far |
+| `leg` | A leg first seen after the `start`, before its first packet | `call_id`, `rule`, and the `leg` |
+| `stop` | Once per call, after its last packet | `call_id`, `rule`, `reason`, and `legs` with what each one sent |
+
+Each leg is an object:
+
+| Key | Meaning |
+|-----|---------|
+| `index` | The leg's place in the call, from 0, in the order sipnab first saw them |
+| `status` | `sending`, `withheld` (SRTP that no key decrypted) or `skipped` (a codec sipnab does not decode) |
+| `reason` | Why a `withheld` or `skipped` leg sends nothing |
+| `ssrc` | The SSRC of the stream sipnab sends, for a `sending` leg |
+| `payload_type`, `encoding`, `rate`, `channels` | `96`, `"L16"`, `16000`, `1`, for a `sending` leg |
+| `captured` | The captured stream: its `ssrc`, `src` and `dst` addresses, `codec`, `rate` and `packets` so far |
+| `packets`, `samples` | What sipnab has sent of the leg |
+| `missed_frames` | Frames sipnab released from retention before it sent them |
+| `failed_frames` | Frames the decoder refused |
+| `undecrypted_packets` | Captured SRTP packets that no key decrypted |
+
+The `reason` of a `stop` is one of:
+
+- `the call ended`,
+- `the call is no longer held`,
+- `the call carries the --content-deny-header header`,
+- `the capture ended`: the input ended, or a live capture reached `-c` or its
+  duration, with the call still up,
+- `sipnab stopped`: sipnab received a stop request, such as SIGTERM. It sends
+  each call's stop at once, and none of the audio still queued.
+
+A control message is one UDP datagram, and UDP does not resend a lost one. The
+RTP packets still carry their SSRC, and the `stop` repeats every leg.
+
+**When sipnab sends the audio.**
+
+- As sipnab captures it. sipnab looks for new audio every 20 ms.
+- Audio that waits, such as a capture file read faster than real time, goes
+  at up to `MAX_PACKETS_PER_PASS` (10) packets a leg every 20 ms: ten times
+  real time.
+- With `-I`, sipnab sends every queued packet and each call's stop before it
+  exits. The calls that had not ended stop with `the capture ended`.
+- sipnab tells you at startup when a rule sends the audio of a capture file.
+
+**What sipnab never sends.**
+
+- Audio a key could not decrypt. Such a leg is `withheld`, with the reason,
+  and gets no stream.
+- A call that `--content-deny-header` withholds. A call that gains the header
+  while sipnab sends it stops at once.
+
+**Where it may go.**
+
+- sipnab refuses to start, with exit code 1, when `live_rtp` names an address
+  other than loopback, unless the rule also sets `live_rtp_allow_remote = true`.
+  - RTP has no encryption and no authentication. Off loopback, anyone on the
+    path can hear the call.
+  - Set the opt-in only on a network you control.
+- It also refuses a `live_rtp` that does not resolve to an address. sipnab
+  resolves it once, at startup.
+- A `live_rtp` rule turns audio retention on, as `live_audio` does.
+- `live_rtp` runs in a headless run (`-N`). A `--cores` run and the terminal
+  UI send nothing, and say so at startup.
 
 ### Follow a call while it is in progress
 

@@ -126,6 +126,13 @@ entry that carries them.
   - sipnab refuses a `url` that is not `https://` without connecting: section 2.4.1 says "HTTPS MUST be used for retrieval".
   - `--vcon-audio-fetch-ca`, `--vcon-audio-fetch-extra-ca` and `--vcon-audio-fetch-max-size` (default 64 MiB) set the trust and the size limit.
   - Exit 0 when sipnab wrote every recording, 1 when the container does not open, names no recording by `url`, or sipnab refused any recording, and 2 when sipnab cannot use a key, CA or output directory.
+- **`[[vcon.rule]] live_rtp = "host:port"` sends each matching call's audio to a UDP address as RTP while the call is in progress.**
+  - Each leg is one RTP stream ([RFC 3550](https://www.rfc-editor.org/rfc/rfc3550.html)) with its own SSRC, carrying L16 ([RFC 3551 section 4.5.11](https://www.rfc-editor.org/rfc/rfc3551.html#section-4.5.11)) at 16 kHz mono in 20 ms packets, payload type 96. sipnab interpolates G.711 up to 16 kHz and Opus down.
+  - JSON control messages go to the same address: `start` before a call's first packet, `leg` for a leg seen later, and `stop` after its last packet. Each names the call, maps each sent SSRC to the captured stream, and gives the codec and rate.
+  - The calls are the ones the `live_audio` WebSocket would serve: the rule's filter, less those `--content-deny-header` withholds. A leg that is SRTP no key decrypted sends nothing, and the control messages say why.
+  - sipnab refuses an address other than loopback, with exit code 1, unless the rule sets `live_rtp_allow_remote = true`: RTP has no encryption or authentication.
+  - Audio that waits, such as a capture file read with `-I`, goes at up to ten times real time. sipnab warns at startup when a rule sends a capture file's audio.
+  - See [Send a call's audio as RTP](docs/vcon.md#send-a-calls-audio-as-rtp).
 
 ## [0.5.220] - 2026-10-14
 

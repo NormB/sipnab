@@ -952,6 +952,19 @@ pub fn g711_leg(
     secs: usize,
     payload_byte: fn(usize, usize, usize) -> u8,
 ) -> Vec<(Vec<u8>, u64)> {
+    g711_leg_with_profile(leg, secs, payload_byte, "RTP/AVP")
+}
+
+/// [`g711_leg`] with the SDP transport `profile` in both media descriptions,
+/// such as `RTP/SAVP` for a call that negotiates SRTP. The packets are the
+/// same plain RTP either way, so a run that holds no key decrypts none of
+/// them.
+pub fn g711_leg_with_profile(
+    leg: &G711Leg<'_>,
+    secs: usize,
+    payload_byte: fn(usize, usize, usize) -> u8,
+    profile: &str,
+) -> Vec<(Vec<u8>, u64)> {
     let rtp = |stream: usize, seq: usize, ssrc: u32| {
         let mut p = vec![0x80, 0x00];
         p.extend_from_slice(&((seq & 0xffff) as u16).to_be_bytes());
@@ -966,7 +979,7 @@ pub fn g711_leg(
     let sdp = |ip: &std::net::Ipv4Addr, port: u16| {
         format!(
             "v=0\r\no=- 1 1 IN IP4 {ip}\r\ns=-\r\nc=IN IP4 {ip}\r\nt=0 0\r\n\
-             m=audio {port} RTP/AVP 0\r\na=rtpmap:0 PCMU/8000\r\na=ptime:20\r\n"
+             m=audio {port} {profile} 0\r\na=rtpmap:0 PCMU/8000\r\na=ptime:20\r\n"
         )
     };
     let offer = sdp(&a_ip, a_port);

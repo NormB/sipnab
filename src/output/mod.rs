@@ -56,6 +56,16 @@ pub mod fail2ban;
 pub mod group;
 pub mod hexdump;
 pub mod json;
+#[cfg(feature = "vcon")]
+pub mod live_rtp;
+/// A build without the vCon exporter forks no live audio. The type exists so
+/// an export rule has one shape in every build, as `vcon_jose` does.
+#[cfg(not(feature = "vcon"))]
+pub mod live_rtp {
+    /// A rule's live RTP target, which this build cannot have.
+    #[derive(Debug, Clone)]
+    pub enum Target {}
+}
 pub mod model;
 pub mod persistence;
 pub mod prometheus;

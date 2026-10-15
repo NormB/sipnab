@@ -1446,7 +1446,11 @@ fn wiki_intra_docs_links_resolve() -> Result<(), TestError> {
     // 1786 -> 1788: docs/cli-reference.md +1, the "vCon audio fetch"
     // section links "Fetch the audio a vCon names"; docs/vcon.md +1,
     // the "Audio by URL" list links the same section.
-    const EXPECTED_WIKI_LINKS: usize = 1788;
+    // 1788 -> 1793: docs/vcon.md +2, the `live_rtp` and
+    // `live_rtp_allow_remote` rows link "Send a call's audio as RTP";
+    // docs/config-reference.md +1, the `live_rtp` row links it; docs/errors.md
+    // +2, the two `live_rtp` entries link it.
+    const EXPECTED_WIKI_LINKS: usize = 1793;
     // Raised 459 -> 460 when SRC1 stage 1 shipped: docs/cli-reference.md's
     // `--hep-listen` row now points at cookbook recipe "Take signaling from HEP and media off the wire, in one process" in docs/examples.md
     // rather than restating how to pair `-L` with `-d`. Attributed per file
