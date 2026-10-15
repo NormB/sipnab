@@ -1393,6 +1393,7 @@ static SPECS: &[Spec] = &[
         &[],
     ),
     ("api-allow-relay-query", Kind::Switch, &[]),
+    ("api-allow-vcon-fetch", Kind::Switch, &[]),
     (
         "api-file-root",
         Kind::Text {
@@ -1790,6 +1791,7 @@ static SPECS: &[Spec] = &[
     ("retain-audio", Kind::Switch, &[]),
     ("mcp-allow-open-capture", Kind::Switch, &[]),
     ("mcp-allow-relay-query", Kind::Switch, &[]),
+    ("mcp-allow-vcon-fetch", Kind::Switch, &[]),
     ("mcp-allow-tls-capture", Kind::Switch, &[]),
     (
         "node-name",

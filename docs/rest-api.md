@@ -4528,6 +4528,55 @@ feature registers this route.
 
 ---
 
+### GET /v1/vcon/fetch/:uuid
+
+One vCon container from the operator's vCon store, by uuid, returned in the
+answer. sipnab writes no file.
+
+- It connects to the store the `[vcon_fetch]` section of the config file
+  configures, so it is off unless the run has `--api-allow-vcon-fetch`.
+- The store, its kind, the credential and the decryption key come from
+  `[vcon_fetch]` only. The client gives the uuid and nothing else, and the
+  answer never holds a key or the credential.
+- The request, the credential, the CA, the size limit, the decryption and
+  the signer checks are `sipnab --vcon-fetch`'s, by the same function
+  ([Fetch a stored vCon](vcon.md#fetch-a-stored-vcon)).
+- The MCP tool [`fetch_vcon`](mcp-tools-vcon.md#fetch_vcon) gives the same
+  answer. Its section describes every field.
+
+| Status | When |
+|---|---|
+| `200` | The container, with `stored_form`, `decrypted`, `signature_verified`, `signer_sha256` and `schema_findings` |
+| `400` | The uuid is not 1 to 64 characters, each a letter, a digit or `-`. sipnab sends nothing |
+| `404` | The store answered `404` |
+| `502` | Anything else the fetcher refuses: another status, a timeout, an answer over `[vcon_fetch] max_size`, another uuid inside, a key that does not decrypt, a signer that fails a check. `detail` says which, with the credential removed |
+| `503` | No `--api-allow-vcon-fetch`, or no `[vcon_fetch] url`; `detail` names the flag or the keys. Also the rate limit |
+
+**curl:**
+
+```bash
+curl -s -H "Authorization: Bearer $SIPNAB_API_KEY" \
+  http://127.0.0.1:18080/v1/vcon/fetch/0158a120-0392-8751-9a04-9decf1485b22 \
+  | jq -c 'del(.container)'
+```
+
+**Response**, from a run started with `--api-allow-vcon-fetch` and a
+`[vcon_fetch]` conserver store holding that container, `container` left out:
+
+```json
+{"decrypted":false,"schema_findings":[],"schema_version":1,"signature_verified":false,"signer_sha256":null,"stored_form":"unsigned","uuid":"0158a120-0392-8751-9a04-9decf1485b22"}
+```
+
+Without the flag:
+
+```json
+{"detail":"fetching a vCon from the store is off on this server: start sipnab with --api-allow-vcon-fetch, and configure the store in [vcon_fetch]","status":503,"title":"Service Unavailable","type":"https://sipnab.com/problems/unavailable"}
+```
+
+Only a build with the `vcon` feature registers this route.
+
+---
+
 ### GET /v1/relay/stats
 
 The relay's own global counters, tiered `relay_reported`.

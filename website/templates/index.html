@@ -232,7 +232,7 @@
         <p class="cap-lede">For dashboards, scripts and AI agents.</p>
         <ul class="cap-list">
           <li><a class="cap-name" href="{{ get_url(path='@/docs/api.md') }}">REST API</a> <span class="cap-text">Query dialogs, streams and stats over HTTP, with scoped tokens and TLS.</span></li>
-          <li><a class="cap-name" href="{{ get_url(path='@/docs/mcp.md') }}">MCP server</a> <span class="cap-text">Lets an AI agent such as Claude Code query captures over stdio or HTTP. 74 tools cover dialogs, RTP, diagnostics, and security findings. 61 are read-only. Of <a href="{{ get_url(path='@/docs/mcp.md') }}#tools-that-write-or-act">the thirteen that write files or act on the host</a>, each refuses to until you start the server with the flag that allows it.</span></li>
+          <li><a class="cap-name" href="{{ get_url(path='@/docs/mcp.md') }}">MCP server</a> <span class="cap-text">Lets an AI agent such as Claude Code query captures over stdio or HTTP. 75 tools cover dialogs, RTP, diagnostics, and security findings. 62 are read-only. Of <a href="{{ get_url(path='@/docs/mcp.md') }}#tools-that-write-or-act">the thirteen that write files or act on the host</a>, each refuses to until you start the server with the flag that allows it.</span></li>
           <li><a class="cap-name" href="{{ get_url(path='@/docs/metrics.md') }}">Prometheus metrics</a> <span class="cap-text">Series for calls, SIP responses, MOS and jitter, and security alerts, and counters for what sipnab captured, lost and could not read.</span></li>
           <li><a class="cap-name" href="{{ get_url(path='@/docs/keybindings.md') }}#save-popup">Export formats</a> <span class="cap-text">PCAP, PCAP-NG, TXT, JSON, NDJSON, CSV, HTML, Markdown, WAV audio, SIPp XML and RTP JSON from the terminal UI, and <a href="{{ get_url(path='@/docs/output-formats.md') }}#yang-export-yang-analyze">YANG (RFC 7951)</a> and <a href="{{ get_url(path='@/docs/vcon.md') }}">vCon</a> from the command line.</span></li>
           <li><a class="cap-name" href="{{ get_url(path='@/docs/plugins.md') }}">WASM plugins</a> <span class="cap-text">Loads your own dialog detections as sandboxed WebAssembly (<code>--plugin</code>). Off by default, and only in builds with the <code>plugins</code> feature: the gnu and macOS builds carry it, the static musl builds and the gnu no-audio packages do not.</span></li>
@@ -668,7 +668,7 @@ Issues Detected:
         <span class="arch-label">Stripped binary ceiling, enforced at release (musl, static)</span>
       </a>
       <a class="arch-item fade-in-up" href="{{ get_url(path='@/docs/mcp-tools.md') }}">
-        <span class="arch-stat" data-count="74" data-suffix=" MCP tools">74 MCP tools</span>
+        <span class="arch-stat" data-count="75" data-suffix=" MCP tools">75 MCP tools</span>
         <span class="arch-label">Agent-callable analysis: triage, conformance lint, evidence, correlation</span>
       </a>
       {# The label argues REACH, not a benchmark win. Throughput is why one

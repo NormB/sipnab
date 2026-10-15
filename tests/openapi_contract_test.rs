@@ -980,6 +980,13 @@ fn every_documented_response_matches_what_the_server_sends() -> Result<(), TestE
         if path == "/v1/calls/live" {
             continue;
         }
+        // `/v1/vcon/fetch/{uuid}` answers only on a server started with
+        // `--api-allow-vcon-fetch` and a `[vcon_fetch]` store, which this
+        // walk's server has not; the in-crate tests in src/output/api.rs and
+        // src/app/vcon_fetch.rs run it against a stub store.
+        if path == "/v1/vcon/fetch/{uuid}" {
+            continue;
+        }
         let url = path
             .replace("{call_id}", &encode(&call_id))
             .replace("{id}", &encode(&ssrc));

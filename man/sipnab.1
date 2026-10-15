@@ -708,6 +708,9 @@ Rows one list\-style REST response may return (default 1000). Config: \fB[limits
 \fB\-\-api\-allow\-relay\-query\fR
 Let REST clients query the relay named by \fB\-\-rtpengine\-control\fR (\fBGET /v1/relay/...\fR), which transmits (ST5).
 .TP
+\fB\-\-api\-allow\-vcon\-fetch\fR
+Let REST clients read a vCon from the operator's \fB[vcon_fetch]\fR store by uuid (\fBGET /v1/vcon/fetch/{uuid}\fR), which connects to it.
+.TP
 \fB\-\-api\-file\-root\fR \fIDIR\fR
 Directory of capture files \fBGET /v1/captures/compare\fR may diff.
 .TP
@@ -829,6 +832,9 @@ Allow the \fBopen_capture\fR MCP tool to load a different capture.
 .TP
 \fB\-\-mcp\-allow\-relay\-query\fR
 Let an agent ask the live relay what it is holding (\fBquery_relay\fR).
+.TP
+\fB\-\-mcp\-allow\-vcon\-fetch\fR
+Let an agent read a vCon from the operator's \fB[vcon_fetch]\fR store by uuid (\fBfetch_vcon\fR), which connects to it.
 .TP
 \fB\-\-mcp\-allow\-tls\-capture\fR
 Let an agent install kernel uprobes and read TLS plaintext (\fBstart_tls_capture\fR, \fBstop_tls_capture\fR).

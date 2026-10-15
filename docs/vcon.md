@@ -1691,7 +1691,10 @@ delivery stands.
 - It needs the `vcon` feature.
 - Like the forwarder, it captures nothing.
   - sipnab refuses it beside any capture source, listener or export flag.
-  - So the capture process keeps making no outbound connection.
+  - So the capture process keeps making no outbound connection, unless the
+    operator opts a server in as
+    [Fetch from an agent or a REST client](#fetch-from-an-agent-or-a-rest-client)
+    describes.
 
 ### Fetch one
 
@@ -1853,6 +1856,61 @@ Each file is one vCon, as JSON.
   [Analyze a stored vCon](#analyze-a-stored-vcon)).
 - Any JSON tool reads it too.
   For example: `jq '.parties, .dialog[].type' fetched/<uuid>.vcon.json`.
+
+### Fetch from an agent or a REST client
+
+A running sipnab server can read one container from the same store by uuid
+and hand it back in the answer:
+
+- the MCP tool [`fetch_vcon`](mcp-tools-vcon.md#fetch_vcon), with
+  `--mcp-allow-vcon-fetch`;
+- [`GET /v1/vcon/fetch/{uuid}`](rest-api.md#get-v1vconfetchuuid), with
+  `--api-allow-vcon-fetch`.
+
+Each door is off unless the run has its flag, because this is the one way a
+server process connects to a vCon store. The store comes from the
+`[vcon_fetch]` keys in the config file and from nowhere else:
+
+- `url`, `kind` and `auth_file` say where and with which credential;
+- `decrypt_key`, `signer_ca` and `signer_sha256` decrypt an encrypted container
+  and check who signed it, as they do for the fetcher;
+- `timeout`, `max_size`, `max_response_head`, `ca` and `extra_ca` apply as
+  they do for the fetcher.
+
+The caller gives a uuid and nothing else. It never names a URL, a kind or a
+key, and the answer never holds a key or the credential. Each request makes
+the checks the fetcher makes, by the same function, and writes no file. With a
+door's flag and no `[vcon_fetch] url`, that door refuses each request and names
+the keys. A `[vcon_fetch]` store whose credential or key file sipnab cannot
+read stops the run at startup, naming the flag.
+
+```toml
+[vcon_fetch]
+kind = "conserver"
+url = "http://127.0.0.1:8765"
+auth_file = "store.key"
+```
+
+```sh
+sipnab -N -I sip-rtp-g711.pcap --config sipnab.toml --api 127.0.0.1:18080 --api-key "$SIPNAB_API_KEY" --api-allow-vcon-fetch
+```
+
+```sh
+curl -s -H "Authorization: Bearer $SIPNAB_API_KEY" \
+  http://127.0.0.1:18080/v1/vcon/fetch/0158a120-0392-8751-9a04-9decf1485b22 \
+  | jq -c 'del(.container)'
+```
+
+```json
+{"decrypted":false,"schema_findings":[],"schema_version":1,"signature_verified":false,"signer_sha256":null,"stored_form":"unsigned","uuid":"0158a120-0392-8751-9a04-9decf1485b22"}
+```
+
+`container` holds the vCon: decrypted when the store held it encrypted and
+the config sets `decrypt_key`, else as the store holds it. `decrypted`,
+`signature_verified` and `signer_sha256` say which checks it passed. A signed
+container that is not encrypted comes back as stored, with
+`signature_verified: false`: the fetcher verifies a signature only inside an
+encrypted container.
 
 ## Walk through one, end to end
 

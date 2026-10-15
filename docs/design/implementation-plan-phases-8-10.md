@@ -1682,11 +1682,11 @@ For implementers picking this up, the bridge from each MCP tool to existing func
 | `tail_dialogs` | `DialogStore::iter` filtered by `updated_at > cursor` |
 | `security_findings` | `security::AlertEngine` history (extend with ring buffer) |
 | `snapshot_pcap` | `capture::PcapWriter` + filter on captured packets |
-| `stats` | Mirrors `GET /v1/stats` from `output::api::get_stats` ([`src/output/api.rs:5536`](https://github.com/NormB/sipnab/blob/main/src/output/api.rs#L5536)) |
+| `stats` | Mirrors `GET /v1/stats` from `output::api::get_stats` ([`src/output/api.rs:5619`](https://github.com/NormB/sipnab/blob/main/src/output/api.rs#L5619)) |
 
 | Phase 8 infra | Reuses |
 |---|---|
-| Bind address parsing | `output::api::parse_bind_addr` ([`src/output/api.rs:1107`](https://github.com/NormB/sipnab/blob/main/src/output/api.rs#L1107)) |
+| Bind address parsing | `output::api::parse_bind_addr` ([`src/output/api.rs:1128`](https://github.com/NormB/sipnab/blob/main/src/output/api.rs#L1128)) |
 | Bearer auth | `output::api::check_auth` + `constant_time_eq` ([`src/output/api.rs:279`](https://github.com/NormB/sipnab/blob/main/src/output/api.rs#L279), `:309`) |
 | Rate limiting | `output::api::RateLimiter` ([`src/output/api.rs:562`](https://github.com/NormB/sipnab/blob/main/src/output/api.rs#L562)) |
 | Shared store mirroring | `mirror_to_shared_stores` — **gone**; no such function exists today |

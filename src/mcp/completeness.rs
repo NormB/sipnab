@@ -130,6 +130,9 @@ pub const SOURCE_INDEPENDENT_TOOLS: &[&str] = &[
     "decode_ng",
     "explain_response_code",
     "explain_rule",
+    // Reads one container from the operator's vCon store. How much of the
+    // capture has been read says nothing about what another system holds.
+    "fetch_vcon",
     "list_captures",
     // Answers from the RELAY, not from the capture store. Stamping it with how
     // much of the capture has been read would attach a fact about sipnab's

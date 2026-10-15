@@ -66,6 +66,7 @@ fn metrics_only() -> Selection {
         armed_detections: Vec::new(),
         pipeline_options: Default::default(),
         vcon_spools: Vec::new(),
+        vcon_fetch: Default::default(),
         live_audio: Vec::new(),
         alias_thresholds: Default::default(),
     }

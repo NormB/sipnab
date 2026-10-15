@@ -124,6 +124,11 @@ pub struct SipnabMcp {
     /// this one makes no outbound vCon connection and moves no file.
     #[cfg(feature = "vcon")]
     pub(crate) vcon_spools: Vec<crate::app::vcon_spool::Spool>,
+    /// The operator's `[vcon_fetch]` store, which `fetch_vcon` reads by
+    /// uuid: off unless `--mcp-allow-vcon-fetch` was given. Nothing a caller
+    /// sends picks the store, the kind or the credential.
+    #[cfg(feature = "vcon")]
+    pub(crate) vcon_fetch: crate::app::vcon_fetch::Access,
     /// The numbers the diagnostic filter aliases compare against.
     ///
     /// Carried here for the same reason `row_cap` is: `find_problems` used to
@@ -406,6 +411,8 @@ impl SipnabMcp {
             content_deny_header: None,
             #[cfg(feature = "vcon")]
             vcon_spools: Vec::new(),
+            #[cfg(feature = "vcon")]
+            vcon_fetch: crate::app::vcon_fetch::Access::Off,
             alias_thresholds: crate::sip::dsl::AliasThresholds::default(),
             body_cap: super::shape::DEFAULT_MAX_BODY_BYTES,
             response_cap: crate::cli::Cli::DEFAULT_MCP_MAX_RESPONSE_BYTES as usize,
@@ -653,6 +660,15 @@ impl SipnabMcp {
     #[must_use]
     pub fn with_vcon_spools(mut self, spools: Vec<crate::app::vcon_spool::Spool>) -> Self {
         self.vcon_spools = spools;
+        self
+    }
+
+    /// Let `fetch_vcon` read the operator's `[vcon_fetch]` store, as
+    /// `--mcp-allow-vcon-fetch` resolved it.
+    #[cfg(feature = "vcon")]
+    #[must_use]
+    pub fn with_vcon_fetch(mut self, access: crate::app::vcon_fetch::Access) -> Self {
+        self.vcon_fetch = access;
         self
     }
 
@@ -11223,6 +11239,7 @@ mod tests {
             armed_detections: Vec::new(),
             file_root,
             vcon_spools,
+            vcon_fetch: Default::default(),
             live_audio: std::sync::Arc::default(),
             pipeline_options: Default::default(),
             archive: ArchivePasswordPolicy::default(),
@@ -12863,7 +12880,10 @@ mod tests {
             // 8_500 -> 8_700 and full 87_000 -> 87_300: `vcon_spool_status`
             // took a `rule` parameter naming which export rule's spool to
             // read; vcon measured 8,525 and full 87,125, both +156.
-            ("vcon", 8_700),
+            // 8_700 -> 9_700 and full 87_500 -> 88_400: `fetch_vcon`, the
+            // opt-in read of the operator's vCon store; vcon measured 9,516
+            // and full 88,234.
+            ("vcon", 9_700),
             ("tls", 3_000),
             // full 83_500 -> 85_500: the three changes above together, the
             // paged-tool byte budget, the response schemas and the vCon
@@ -12875,7 +12895,8 @@ mod tests {
             // full 87_300 -> 87_500: `list_captures` and `find_in_captures`
             // name the vCon containers they list and sweep; captures measured
             // 12,696 and full 87,395.
-            ("full", 87_500),
+            // full 87_500 -> 88_400: `fetch_vcon`, as the vcon row above says.
+            ("full", 88_400),
         ];
         let sizes: std::collections::BTreeMap<String, usize> = empty_server()
             .with_output_schemas(false)

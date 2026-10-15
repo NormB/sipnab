@@ -3176,6 +3176,19 @@ pub struct ListenerArgs {
     #[arg(help_heading = "Network listeners", long = "api-allow-relay-query")]
     pub api_allow_relay_query: bool,
 
+    /// Let REST clients read a vCon from the operator's `[vcon_fetch]`
+    /// store by uuid (`GET /v1/vcon/fetch/{uuid}`), which connects to it.
+    ///
+    /// The REST counterpart of `--mcp-allow-vcon-fetch`, off for the same
+    /// reason: every other REST answer comes from bytes sipnab already
+    /// holds, and this one opens a connection to the store `[vcon_fetch] url`
+    /// names, with the credential and decryption key `[vcon_fetch]` names --
+    /// never a URL or key a client chooses. Without this flag the route
+    /// answers 503 naming it; without `[vcon_fetch] url`, 503 naming the key.
+    /// The container comes back in the answer; no file is written.
+    #[arg(help_heading = "Network listeners", long = "api-allow-vcon-fetch")]
+    pub api_allow_vcon_fetch: bool,
+
     /// Directory of capture files `GET /v1/captures/compare` may diff.
     ///
     /// The REST counterpart of `--mcp-file-root`, and off for the same reason:
@@ -4030,6 +4043,22 @@ pub struct McpArgs {
         long = "mcp-allow-relay-query"
     )]
     pub mcp_allow_relay_query: bool,
+
+    /// Let an agent read a vCon from the operator's `[vcon_fetch]` store by
+    /// uuid (`fetch_vcon`), which connects to it.
+    ///
+    /// Off by default because this tool opens a connection: every other vCon
+    /// tool answers from bytes sipnab already has. The store, its kind, the
+    /// credential and the decryption key come from `[vcon_fetch]` in the
+    /// config file and from nowhere else -- the tool takes a uuid and
+    /// nothing that picks a destination, and never returns a key. Without
+    /// `[vcon_fetch] url` the tool refuses and names the key. The container
+    /// comes back in the answer; no file is written.
+    #[arg(
+        help_heading = "MCP (Model Context Protocol)",
+        long = "mcp-allow-vcon-fetch"
+    )]
+    pub mcp_allow_vcon_fetch: bool,
 
     /// Let an agent install kernel uprobes and read TLS plaintext
     /// (`start_tls_capture`, `stop_tls_capture`).
@@ -5130,7 +5159,7 @@ pub struct VconResignArgs {
 /// A separate process from any capture, like the forwarder: `--vcon-fetch`
 /// conflicts with every capture source, listener and export flag, so the
 /// capture process keeps making no outbound connection.
-#[derive(clap::Args, Debug, Clone)]
+#[derive(clap::Args, Debug, Clone, Default)]
 pub struct VconFetchArgs {
     /// Run as the vCon fetcher: read the container with each of these uuids
     /// from the store at --vcon-fetch-url and write it to
@@ -7855,6 +7884,11 @@ impl Cli {
                 out.vcon_max_inline_media.is_some(),
                 "--vcon-max-inline-media",
             ),
+            (
+                self.listener_args.api_allow_vcon_fetch,
+                "--api-allow-vcon-fetch",
+            ),
+            (self.mcp_args.mcp_allow_vcon_fetch, "--mcp-allow-vcon-fetch"),
         ]
         .into_iter()
         .filter_map(|(set, flag)| set.then_some(flag))
@@ -11058,6 +11092,8 @@ mod tests {
         ],
         &["--vcon-digest"],
         &["--vcon-max-inline-media", "4"],
+        &["--api", "127.0.0.1:0", "--api-allow-vcon-fetch"],
+        &["--mcp", "--mcp-allow-vcon-fetch"],
     ];
 
     /// VCON-NOFEAT-1: a build without the exporter used to refuse only

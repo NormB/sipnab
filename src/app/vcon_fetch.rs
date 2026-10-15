@@ -683,6 +683,19 @@ impl Fetcher {
     /// The URL holds no `{uuid}`, HTTPS is needed and no CA loads, or the
     /// output directory is not one or cannot be created.
     pub fn new(settings: FetchSettings) -> Result<Self, String> {
+        let fetcher = Self::reader(settings)?;
+        prepare_out_dir(&fetcher.settings.out_dir)?;
+        Ok(fetcher)
+    }
+
+    /// [`Self::new`] for a fetcher that writes no file: the MCP `fetch_vcon`
+    /// tool and `GET /v1/vcon/fetch/{uuid}`, which return the container
+    /// inline. The output directory is neither checked nor created.
+    ///
+    /// # Errors
+    ///
+    /// The URL holds no `{uuid}`, or HTTPS is needed and no CA loads.
+    pub fn reader(settings: FetchSettings) -> Result<Self, String> {
         if !settings.url.target.contains("{uuid}") {
             return Err(format!(
                 "'{}': the read URL holds no {{uuid}}",
@@ -698,7 +711,6 @@ impl Fetcher {
         } else {
             None
         };
-        prepare_out_dir(&settings.out_dir)?;
         Ok(Self { settings, tls })
     }
 
@@ -724,6 +736,42 @@ impl Fetcher {
         if !self.settings.overwrite && std::fs::symlink_metadata(&path).is_ok() {
             return Fetched::Exists(path);
         }
+        let held = match self.retrieve(uuid) {
+            Retrieved::Container(held) => held,
+            Retrieved::NotFound => return Fetched::NotFound,
+            Retrieved::Failed(why) => return Fetched::Failed(why),
+            Retrieved::Halt(why) => return Fetched::Halt(why),
+        };
+        if let Err(outcome) = self.write(&path, &held.bytes) {
+            return outcome;
+        }
+        match (held.stored_form, held.signer) {
+            (crate::output::vcon_jose::Form::Encrypted, Some(signer)) => Fetched::Decrypted {
+                path,
+                findings: held.findings,
+                signer,
+            },
+            (crate::output::vcon_jose::Form::Encrypted, None) => Fetched::Encrypted(path),
+            _ => Fetched::Saved {
+                path,
+                findings: held.findings,
+            },
+        }
+    }
+
+    /// Read the container with `uuid` from the store into memory, with every
+    /// check [`Self::fetch_one`] makes before it writes: the status, the size
+    /// limit, the kind's envelope, the uuid inside, and for an encrypted
+    /// container with a key, the decryption, the signature and the signer
+    /// checks. Writes nothing.
+    ///
+    /// The one rule for both the fetcher and the server doors that return a
+    /// container inline ([`fetch_inline`]).
+    #[must_use]
+    pub fn retrieve(&self, uuid: &str) -> Retrieved {
+        if !is_path_uuid(uuid) {
+            return Retrieved::Failed(format!("{uuid:?} is not a uuid"));
+        }
         let mut url = self.settings.url.clone();
         url.target = url.target.replace("{uuid}", uuid);
         let request = request_head(&url, "GET", &self.settings.auth, None);
@@ -736,7 +784,7 @@ impl Fetcher {
             |r| read_answer(r, limits),
         ) {
             Ok(answer) => answer,
-            Err(e) => return Fetched::Failed(format!("{url}: {e}")),
+            Err(e) => return Retrieved::Failed(format!("{url}: {e}")),
         };
         let quoted = || {
             let text = String::from_utf8_lossy(&answer.body);
@@ -749,35 +797,35 @@ impl Fetcher {
         };
         match answer.status {
             401 | 403 => {
-                return Fetched::Halt(format!(
+                return Retrieved::Halt(format!(
                     "{url} answered {}: the store refused the credential or this client \
                      ({}); nothing more is fetched",
                     answer.status,
                     quoted()
                 ));
             }
-            404 => return Fetched::NotFound,
+            404 => return Retrieved::NotFound,
             200..=299 => {}
             status => {
-                return Fetched::Failed(format!("{url} answered {status} ({})", quoted()));
+                return Retrieved::Failed(format!("{url} answered {status} ({})", quoted()));
             }
         }
         if answer.oversized {
-            return Fetched::Failed(format!(
+            return Retrieved::Failed(format!(
                 "the answer is larger than {} bytes (--vcon-fetch-max-size); nothing was written",
                 limits.max_size
             ));
         }
         if let Some(problem) = &answer.short {
-            return Fetched::Failed(format!("{url}: {problem}; nothing was written"));
+            return Retrieved::Failed(format!("{url}: {problem}; nothing was written"));
         }
         let container = match unwrap_container(self.settings.kind, &answer.body) {
             Ok(c) => c,
-            Err(e) => return Fetched::Failed(format!("{url}: {e}; nothing was written")),
+            Err(e) => return Retrieved::Failed(format!("{url}: {e}; nothing was written")),
         };
         let doc: serde_json::Value = match serde_json::from_slice(&container) {
             Ok(doc) => doc,
-            Err(e) => return Fetched::Failed(format!("{url}: the container is not JSON: {e}")),
+            Err(e) => return Retrieved::Failed(format!("{url}: the container is not JSON: {e}")),
         };
         // The uuid by the rule the forwarder files a container under: the
         // top-level member, or the header a signed or encrypted container
@@ -787,33 +835,35 @@ impl Fetcher {
             .as_deref()
             .is_some_and(|h| h.eq_ignore_ascii_case(uuid))
         {
-            return Fetched::Failed(format!(
+            return Retrieved::Failed(format!(
                 "{url}: the container's uuid is {}, not the one asked for; nothing was written",
                 held.map_or_else(|| "missing".to_string(), |h| format!("{h:?}"))
             ));
         }
-        let encrypted =
-            crate::output::vcon_jose::form_of(&doc) == crate::output::vcon_jose::Form::Encrypted;
+        let stored_form = crate::output::vcon_jose::form_of(&doc);
+        let encrypted = stored_form == crate::output::vcon_jose::Form::Encrypted;
         if !encrypted
             && let Some(opener) = &self.settings.decrypt
             && opener.checks_signer()
         {
-            return Fetched::Failed(format!(
+            return Retrieved::Failed(format!(
                 "{url}: the container is not encrypted, so it has no signer for \
                  {SIGNER_CA_FLAG} or {SIGNER_SHA256_FLAG} to check; nothing was written"
             ));
         }
         if encrypted {
             let Some(opener) = &self.settings.decrypt else {
-                return match self.write(&path, &container) {
-                    Ok(()) => Fetched::Encrypted(path),
-                    Err(outcome) => outcome,
-                };
+                return Retrieved::Container(Held {
+                    bytes: container,
+                    stored_form,
+                    signer: None,
+                    findings: Vec::new(),
+                });
             };
             let opened = match opener.open(&container, self.settings.limits.max_size) {
                 Ok(o) => o,
                 Err(e) => {
-                    return Fetched::Failed(format!(
+                    return Retrieved::Failed(format!(
                         "{url}: the container is encrypted and did not decrypt with \
                          --vcon-fetch-decrypt-key ({e}); nothing was written"
                     ));
@@ -822,34 +872,32 @@ impl Fetcher {
             let inner: serde_json::Value = match serde_json::from_slice(&opened.unsigned) {
                 Ok(v) => v,
                 Err(e) => {
-                    return Fetched::Failed(format!(
+                    return Retrieved::Failed(format!(
                         "{url}: the decrypted container is not JSON: {e}; nothing was written"
                     ));
                 }
             };
             let inner_uuid = inner.get("uuid").and_then(serde_json::Value::as_str);
             if !inner_uuid.is_some_and(|h| h.eq_ignore_ascii_case(uuid)) {
-                return Fetched::Failed(format!(
+                return Retrieved::Failed(format!(
                     "{url}: the decrypted container's uuid is {}, not the one asked for; \
                      nothing was written",
                     inner_uuid.map_or_else(|| "missing".to_string(), |h| format!("{h:?}"))
                 ));
             }
-            let findings = schema_findings(&inner);
-            return match self.write(&path, &opened.unsigned) {
-                Ok(()) => Fetched::Decrypted {
-                    path,
-                    findings,
-                    signer: opened.signer_sha256,
-                },
-                Err(outcome) => outcome,
-            };
+            return Retrieved::Container(Held {
+                findings: schema_findings(&inner),
+                bytes: opened.unsigned,
+                stored_form,
+                signer: Some(opened.signer_sha256),
+            });
         }
-        let findings = schema_findings(&doc);
-        match self.write(&path, &container) {
-            Ok(()) => Fetched::Saved { path, findings },
-            Err(outcome) => outcome,
-        }
+        Retrieved::Container(Held {
+            findings: schema_findings(&doc),
+            bytes: container,
+            stored_form,
+            signer: None,
+        })
     }
 
     /// Write `bytes` to `path`, private, or the outcome that says why not.
@@ -862,6 +910,210 @@ impl Fetcher {
             }
         })
     }
+}
+
+/// One container read from the store and held in memory.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Held {
+    /// The unsigned container when an encrypted one was decrypted, else the
+    /// container as the store holds it, the kind's envelope removed.
+    pub bytes: Vec<u8>,
+    /// The form the store held it in.
+    pub stored_form: crate::output::vcon_jose::Form,
+    /// The SHA-256 fingerprint of the certificate the signature verified
+    /// against: present only when an encrypted container was decrypted.
+    pub signer: Option<String>,
+    /// What the core-04 schema found in [`Self::bytes`], one line each.
+    /// Empty for a container left encrypted, which the schema cannot read.
+    pub findings: Vec<String>,
+}
+
+/// What [`Fetcher::retrieve`] got for one uuid.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Retrieved {
+    /// The container, every check passed.
+    Container(Held),
+    /// The store holds no container with this uuid (`404`).
+    NotFound,
+    /// Anything else, and why.
+    Failed(String),
+    /// The store refused the credential or the client (`401`, `403`).
+    Halt(String),
+}
+
+/// Whether a server door may fetch a container, and from which store.
+///
+/// Built once, when the server starts, from the door's opt-in flag and the
+/// operator's `[vcon_fetch]` keys. Nothing a caller sends picks the store,
+/// the kind or the credential.
+#[derive(Debug, Clone, Default)]
+pub enum Access {
+    /// The door's opt-in flag was not given.
+    #[default]
+    Off,
+    /// The flag was given and no `[vcon_fetch] url` is configured.
+    NotConfigured,
+    /// The operator's store.
+    Ready(Arc<Fetcher>),
+}
+
+impl Access {
+    /// The access a door opted in with `flag` (`allowed`) has to the store
+    /// `keys` configure. Reads the credential and the decryption key, and
+    /// loads the CA, as `sipnab --vcon-fetch` does.
+    ///
+    /// # Errors
+    ///
+    /// A store that the fetcher's own resolver refuses, or whose files do
+    /// not read, with the message prefixed by `flag`.
+    pub fn resolve(
+        flag: &str,
+        allowed: bool,
+        keys: &crate::config::VconFetchConfig,
+    ) -> Result<Self, String> {
+        if !allowed {
+            return Ok(Self::Off);
+        }
+        if keys.url.is_none() {
+            return Ok(Self::NotConfigured);
+        }
+        let refuse = |e: String| format!("{flag}: {e}");
+        let plan =
+            FetchPlan::resolve(&crate::cli::VconFetchArgs::default(), keys).map_err(refuse)?;
+        let settings = plan.into_settings().map_err(|(_, e)| refuse(e))?;
+        Ok(Self::Ready(Arc::new(
+            Fetcher::reader(settings).map_err(refuse)?,
+        )))
+    }
+}
+
+/// Why an inline fetch returned no container.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum InlineRefusal {
+    /// The door's opt-in flag was not given.
+    Off,
+    /// No `[vcon_fetch]` store is configured.
+    NotConfigured,
+    /// The uuid is not one a URL path may carry.
+    NotAUuid,
+    /// The store holds no container with this uuid (`404`).
+    NotFound,
+    /// Anything else, and why. The store's answer is quoted with the
+    /// credential removed.
+    Store(String),
+}
+
+impl InlineRefusal {
+    /// The sentence a door answers with, naming `flag`, the door's opt-in.
+    #[must_use]
+    pub fn message(&self, flag: &str) -> String {
+        match self {
+            Self::Off => format!(
+                "fetching a vCon from the store is off on this server: start sipnab with \
+                 {flag}, and configure the store in [vcon_fetch]"
+            ),
+            Self::NotConfigured => format!(
+                "{flag} is set, but no vCon store is configured: set [vcon_fetch] url and \
+                 [vcon_fetch] auth_file in the config file"
+            ),
+            Self::NotAUuid => "the uuid is not one (1 to 64 characters, each a letter, a \
+                               digit or '-')"
+                .to_string(),
+            Self::NotFound => "the store holds no such vCon (404)".to_string(),
+            Self::Store(why) => why.clone(),
+        }
+    }
+}
+
+/// The name of `form` in an answer.
+fn form_name(form: crate::output::vcon_jose::Form) -> &'static str {
+    use crate::output::vcon_jose::Form;
+    match form {
+        Form::Unsigned => "unsigned",
+        Form::Signed => "signed",
+        Form::Encrypted => "encrypted",
+        Form::Unknown => "unknown",
+    }
+}
+
+/// Fetch the container with `uuid` from the operator's store and return it
+/// inline, with what was checked: the MCP `fetch_vcon` tool and
+/// `GET /v1/vcon/fetch/{uuid}`. Writes no file.
+///
+/// The checks are [`Fetcher::retrieve`]'s, the fetcher's own. The answer
+/// carries `stored_form` (`unsigned`, `signed`, `encrypted`), `decrypted`,
+/// `signature_verified` and `signer_sha256`, which are set only when an
+/// encrypted container was decrypted with `[vcon_fetch] decrypt_key` and its
+/// signature verified, the schema findings, and `container`. It carries no
+/// key and no credential.
+///
+/// # Errors
+///
+/// [`InlineRefusal`]: the door is off or has no store, the uuid is not one,
+/// the store holds no such container, or anything else the fetcher refuses.
+pub fn fetch_inline(access: &Access, uuid: &str) -> Result<InlineVcon, InlineRefusal> {
+    let fetcher = match access {
+        Access::Off => return Err(InlineRefusal::Off),
+        Access::NotConfigured => return Err(InlineRefusal::NotConfigured),
+        Access::Ready(fetcher) => fetcher,
+    };
+    if !is_path_uuid(uuid) {
+        return Err(InlineRefusal::NotAUuid);
+    }
+    let held = match fetcher.retrieve(uuid) {
+        Retrieved::Container(held) => held,
+        Retrieved::NotFound => return Err(InlineRefusal::NotFound),
+        Retrieved::Failed(why) | Retrieved::Halt(why) => return Err(InlineRefusal::Store(why)),
+    };
+    let container: serde_json::Value = serde_json::from_slice(&held.bytes)
+        .map_err(|e| InlineRefusal::Store(format!("the container is not JSON: {e}")))?;
+    let verified = held.signer.is_some();
+    Ok(InlineVcon {
+        container,
+        decrypted: verified,
+        schema_findings: held.findings,
+        schema_version: 1,
+        signature_verified: verified,
+        signer_sha256: held.signer,
+        stored_form: form_name(held.stored_form).to_string(),
+        uuid: uuid.to_string(),
+    })
+}
+
+/// One container read from the operator's store, and what was checked:
+/// the answer of the MCP `fetch_vcon` tool and `GET /v1/vcon/fetch/{uuid}`.
+///
+/// It carries no key and no credential. The members are in name order.
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+#[cfg_attr(feature = "mcp", derive(rmcp::schemars::JsonSchema))]
+#[cfg_attr(feature = "mcp", schemars(crate = "rmcp::schemars"))]
+#[cfg_attr(feature = "api", derive(utoipa::ToSchema))]
+pub struct InlineVcon {
+    /// The vCon: the unsigned container when sipnab decrypted it, else the
+    /// container as the store holds it, without the store kind's envelope.
+    #[cfg_attr(feature = "api", schema(value_type = Object))]
+    pub container: serde_json::Value,
+    /// Whether sipnab decrypted an encrypted container with
+    /// `[vcon_fetch] decrypt_key`.
+    pub decrypted: bool,
+    /// Where the container fails the draft-ietf-vcon-vcon-core-04 schema,
+    /// one line each. Empty for a valid container and for one left
+    /// encrypted.
+    pub schema_findings: Vec<String>,
+    /// The version of this answer's shape.
+    pub schema_version: u32,
+    /// Whether the signed form inside a decrypted container verified and
+    /// passed `[vcon_fetch] signer_ca` and `signer_sha256` when the operator
+    /// sets them. Always `false` for a container that was not encrypted.
+    pub signature_verified: bool,
+    /// The SHA-256 fingerprint of the certificate the signature verified
+    /// against, as `openssl x509 -noout -fingerprint -sha256` prints it.
+    pub signer_sha256: Option<String>,
+    /// The form the store held the container in: `unsigned`, `signed`,
+    /// `encrypted` or `unknown`.
+    pub stored_form: String,
+    /// The uuid asked for.
+    pub uuid: String,
 }
 
 /// What the core-04 schema finds in `doc`, one line each.
@@ -1553,5 +1805,348 @@ mod tests {
             &crate::config::FETCH_KINDS[..crate::config::FORWARD_KINDS.len()],
             crate::config::FORWARD_KINDS
         );
+    }
+
+    // ── Fetching for a server door: fetch_inline ─────────────────────────
+
+    use super::stub_store::{self, ready};
+
+    /// The uuid the inline tests fetch. Synthetic.
+    const INLINE_UUID: &str = stub_store::UUID;
+
+    /// Without the opt-in, nothing is fetched, and the refusal names the
+    /// flag the door was given.
+    #[test]
+    fn an_inline_fetch_is_refused_without_the_opt_in() -> TestResult {
+        let stub = stub_store::start(200, stub_store::container(INLINE_UUID))?;
+        let refused = fetch_inline(&Access::Off, INLINE_UUID);
+        assert_eq!(refused, Err(InlineRefusal::Off));
+        let message = InlineRefusal::Off.message("--mcp-allow-vcon-fetch");
+        assert!(message.contains("--mcp-allow-vcon-fetch"), "{message}");
+        let unset = InlineRefusal::NotConfigured.message("--api-allow-vcon-fetch");
+        assert!(
+            unset.contains("[vcon_fetch] url") && unset.contains("--api-allow-vcon-fetch"),
+            "{unset}"
+        );
+        assert_eq!(
+            fetch_inline(&Access::NotConfigured, INLINE_UUID),
+            Err(InlineRefusal::NotConfigured)
+        );
+        assert_eq!(stub.hits(), 0, "a refused fetch sends nothing");
+        Ok(())
+    }
+
+    /// The opt-in alone is not a store: off stays off whatever the keys say,
+    /// the opt-in without `[vcon_fetch] url` is "not configured", a store
+    /// with no credential is refused naming the opt-in, and a full store is
+    /// ready.
+    #[test]
+    fn the_door_s_access_follows_the_opt_in_and_the_keys() -> TestResult {
+        let dir = tempfile::tempdir()?;
+        let auth = stub_store::private_file(dir.path(), "auth", &stub_store::secret())?;
+        let store = keys(&format!(
+            "kind = \"conserver\"\nurl = \"http://127.0.0.1:9\"\nauth_file = {:?}",
+            auth.display().to_string()
+        ))?;
+        let flag = "--mcp-allow-vcon-fetch";
+        assert!(matches!(Access::resolve(flag, false, &store)?, Access::Off));
+        assert!(matches!(
+            Access::resolve(flag, true, &keys("")?)?,
+            Access::NotConfigured
+        ));
+        let e = Access::resolve(flag, true, &keys("url = \"http://127.0.0.1:9/v/{uuid}\"")?)
+            .err()
+            .ok_or("a store with no credential was accepted")?;
+        assert!(
+            e.contains(flag) && e.contains("[vcon_fetch] auth_file"),
+            "{e}"
+        );
+        assert!(matches!(
+            Access::resolve(flag, true, &store)?,
+            Access::Ready(_)
+        ));
+        Ok(())
+    }
+
+    /// An unsigned container comes back inline, as the store holds it, with
+    /// nothing verified, and no file is written.
+    #[test]
+    fn an_unsigned_container_comes_back_inline() -> TestResult {
+        let stored = stub_store::container(INLINE_UUID);
+        let stub = stub_store::start(200, stored.clone())?;
+        let (dir, access) = ready(&stub, false)?;
+        let v = serde_json::to_value(
+            fetch_inline(&access, INLINE_UUID).map_err(|e| e.message("--x"))?,
+        )?;
+        assert_eq!(v["uuid"], INLINE_UUID, "{v}");
+        assert_eq!(v["stored_form"], "unsigned", "{v}");
+        assert_eq!(v["decrypted"], false, "{v}");
+        assert_eq!(v["signature_verified"], false, "{v}");
+        assert!(v["signer_sha256"].is_null(), "{v}");
+        assert_eq!(v["schema_findings"], serde_json::json!([]), "{v}");
+        let want: serde_json::Value = serde_json::from_str(&stored)?;
+        assert_eq!(v["container"], want, "{v}");
+        assert_eq!(stub.hits(), 1);
+        assert!(
+            !dir.path().join("out").exists(),
+            "an inline fetch writes no file"
+        );
+        Ok(())
+    }
+
+    /// An encrypted container is decrypted with the configured key, its
+    /// signature verified, and the unsigned container inside comes back
+    /// with the signer's fingerprint. Neither the key nor the credential
+    /// appears in the answer.
+    #[test]
+    fn an_encrypted_container_comes_back_decrypted() -> TestResult {
+        let stub = stub_store::start(200, stub_store::sealed(INLINE_UUID)?)?;
+        let (_dir, access) = ready(&stub, true)?;
+        let v = serde_json::to_value(
+            fetch_inline(&access, INLINE_UUID).map_err(|e| e.message("--x"))?,
+        )?;
+        assert_eq!(v["stored_form"], "encrypted", "{v}");
+        assert_eq!(v["decrypted"], true, "{v}");
+        assert_eq!(v["signature_verified"], true, "{v}");
+        assert_eq!(
+            v["signer_sha256"],
+            stub_store::fixture_fingerprint()?,
+            "{v}"
+        );
+        let want: serde_json::Value = serde_json::from_str(&stub_store::container(INLINE_UUID))?;
+        assert_eq!(v["container"], want, "{v}");
+        let text = v.to_string();
+        assert!(!text.contains("PRIVATE KEY"), "{text}");
+        assert!(!text.contains(&stub_store::secret()), "{text}");
+        Ok(())
+    }
+
+    /// Without a key, an encrypted container comes back as the store holds
+    /// it, and the answer says it was not decrypted.
+    #[test]
+    fn an_encrypted_container_without_a_key_comes_back_as_stored() -> TestResult {
+        let sealed = stub_store::sealed(INLINE_UUID)?;
+        let stub = stub_store::start(200, sealed.clone())?;
+        let (_dir, access) = ready(&stub, false)?;
+        let v = serde_json::to_value(
+            fetch_inline(&access, INLINE_UUID).map_err(|e| e.message("--x"))?,
+        )?;
+        assert_eq!(v["stored_form"], "encrypted", "{v}");
+        assert_eq!(v["decrypted"], false, "{v}");
+        assert!(v["signer_sha256"].is_null(), "{v}");
+        let want: serde_json::Value = serde_json::from_str(&sealed)?;
+        assert_eq!(v["container"], want, "{v}");
+        Ok(())
+    }
+
+    /// A `404` is "the store holds no such vCon", not a failure.
+    #[test]
+    fn a_missing_container_is_not_found_inline() -> TestResult {
+        let stub = stub_store::start(404, "{}".to_string())?;
+        let (_dir, access) = ready(&stub, false)?;
+        assert_eq!(
+            fetch_inline(&access, INLINE_UUID),
+            Err(InlineRefusal::NotFound)
+        );
+        Ok(())
+    }
+
+    /// A uuid a URL path may not carry is refused before anything is sent.
+    #[test]
+    fn a_uuid_that_is_not_one_is_refused_unsent() -> TestResult {
+        let stub = stub_store::start(200, stub_store::container(INLINE_UUID))?;
+        let (_dir, access) = ready(&stub, false)?;
+        for bad in ["../etc/passwd", "", "a b", "x?y=1"] {
+            assert_eq!(
+                fetch_inline(&access, bad),
+                Err(InlineRefusal::NotAUuid),
+                "{bad:?}"
+            );
+        }
+        assert_eq!(stub.hits(), 0, "nothing was sent");
+        Ok(())
+    }
+}
+
+/// A vCon store on `127.0.0.1` for the in-crate tests of every door that
+/// fetches: it answers each request with one scripted status and body, and
+/// counts the requests. The same pattern `tests/vcon_fetch_test.rs` uses; no
+/// test contacts the internet.
+#[cfg(test)]
+pub(crate) mod stub_store {
+    use std::io::{Read, Write};
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+    use std::time::Duration;
+
+    /// The fixtures the encryption tests use.
+    const JOSE: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/vcon-jose");
+
+    /// The uuid the stub tests fetch. Synthetic.
+    pub(crate) const UUID: &str = "018bcfe5-6800-8a6b-a667-78f1c5213800";
+
+    /// A `[vcon_fetch]` store at `stub`, read as a conserver, opening
+    /// encrypted containers with the fixture key when `decrypting`. The
+    /// directory holds the auth file and the key, and is where a file would
+    /// land if anything wrote one.
+    pub(crate) fn ready(
+        stub: &Stub,
+        decrypting: bool,
+    ) -> Result<(tempfile::TempDir, super::Access), Box<dyn std::error::Error>> {
+        use crate::app::vcon_forward::{AuthHeader, Endpoint, StoreKind};
+        let dir = tempfile::tempdir()?;
+        let auth = private_file(dir.path(), "auth", &secret())?;
+        let decrypt = if decrypting {
+            let key = private_copy(dir.path(), "fake_grp.key")?;
+            Some(Arc::new(crate::output::vcon_jose::Opener::load(&key)?))
+        } else {
+            None
+        };
+        let settings = super::FetchSettings {
+            url: super::read_url(&Endpoint::parse(&stub.url)?, StoreKind::Conserver)?,
+            kind: StoreKind::Conserver,
+            auth: AuthHeader::read_file_for(&auth, super::AUTH_KEY, StoreKind::Conserver)?,
+            ca: None,
+            extra_ca: None,
+            timeout: Duration::from_secs(5),
+            limits: super::FetchLimits {
+                response_head: 64 * 1024,
+                max_size: 1024 * 1024,
+            },
+            out_dir: dir.path().join("out"),
+            overwrite: false,
+            decrypt,
+        };
+        Ok((
+            dir,
+            super::Access::Ready(Arc::new(super::Fetcher::reader(settings)?)),
+        ))
+    }
+
+    /// A running store. It stops when dropped.
+    pub(crate) struct Stub {
+        /// `http://127.0.0.1:<port>`.
+        pub(crate) url: String,
+        hits: Arc<AtomicUsize>,
+        stop: Arc<AtomicBool>,
+    }
+
+    impl Stub {
+        /// Requests received so far.
+        pub(crate) fn hits(&self) -> usize {
+            self.hits.load(Ordering::SeqCst)
+        }
+    }
+
+    impl Drop for Stub {
+        fn drop(&mut self) {
+            self.stop.store(true, Ordering::SeqCst);
+        }
+    }
+
+    /// Start a store that answers every request with `status` and `body`.
+    pub(crate) fn start(status: u16, body: String) -> std::io::Result<Stub> {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0")?;
+        listener.set_nonblocking(true)?;
+        let url = format!("http://{}", listener.local_addr()?);
+        let hits = Arc::new(AtomicUsize::new(0));
+        let stop = Arc::new(AtomicBool::new(false));
+        let (count, halt) = (Arc::clone(&hits), Arc::clone(&stop));
+        std::thread::spawn(move || {
+            while !halt.load(Ordering::SeqCst) {
+                let Ok((mut sock, _)) = listener.accept() else {
+                    std::thread::sleep(Duration::from_millis(5));
+                    continue;
+                };
+                let _ = sock.set_nonblocking(false);
+                let _ = sock.set_read_timeout(Some(Duration::from_secs(5)));
+                let mut head = Vec::new();
+                let mut byte = [0u8; 1];
+                while !head.ends_with(b"\r\n\r\n") {
+                    match sock.read(&mut byte) {
+                        Ok(1) => head.push(byte[0]),
+                        _ => break,
+                    }
+                }
+                count.fetch_add(1, Ordering::SeqCst);
+                let answer = format!(
+                    "HTTP/1.1 {status} Scripted\r\nContent-Length: {}\r\n\
+                     Content-Type: application/json\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                let _ = sock.write_all(answer.as_bytes());
+                let _ = sock.flush();
+            }
+        });
+        Ok(Stub { url, hits, stop })
+    }
+
+    /// The credential every stub's auth file carries. Built at run time so
+    /// no scanner reads a literal credential here.
+    pub(crate) fn secret() -> String {
+        format!("vcf_test_{}", "5d0a8e17c3b2")
+    }
+
+    /// Write `text` to `dir/name`, mode 0600.
+    pub(crate) fn private_file(
+        dir: &std::path::Path,
+        name: &str,
+        text: &str,
+    ) -> std::io::Result<std::path::PathBuf> {
+        use std::os::unix::fs::PermissionsExt;
+        let path = dir.join(name);
+        std::fs::write(&path, format!("{text}\n"))?;
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))?;
+        Ok(path)
+    }
+
+    /// The encryption fixture `name`, copied to `dir` with mode 0600: a
+    /// private key other users can read is refused, and git checks the
+    /// fixtures out 0644.
+    pub(crate) fn private_copy(
+        dir: &std::path::Path,
+        name: &str,
+    ) -> std::io::Result<std::path::PathBuf> {
+        use std::os::unix::fs::PermissionsExt;
+        let path = dir.join(name);
+        std::fs::copy(format!("{JOSE}/{name}"), &path)?;
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))?;
+        Ok(path)
+    }
+
+    /// A synthetic unsigned container with `uuid`. Not anyone's call.
+    pub(crate) fn container(uuid: &str) -> String {
+        format!(
+            r#"{{"vcon":"0.4.0","uuid":"{uuid}","created_at":"2026-10-07T12:00:00+00:00","parties":[{{"tel":"+15550100001"}},{{"tel":"+15550100002"}}],"dialog":[],"attachments":[],"analysis":[]}}"#
+        )
+    }
+
+    /// [`container`], signed and encrypted to the fixture certificate, as an
+    /// encrypting `[[vcon.rule]]` writes it.
+    pub(crate) fn sealed(uuid: &str) -> Result<String, Box<dyn std::error::Error>> {
+        use crate::output::vcon_jose::{Recipient, Signer, seal};
+        let key = std::fs::read_to_string(format!("{JOSE}/fake_grp.key"))?;
+        let cert = std::fs::read_to_string(format!("{JOSE}/fake_grp.crt"))?;
+        let bytes = seal(
+            container(uuid).as_bytes(),
+            uuid,
+            &Signer::from_pem(&key, &cert)?,
+            &Recipient::from_cert_pem(&cert)?,
+        )?;
+        Ok(String::from_utf8(bytes)?)
+    }
+
+    /// The fixture certificate's SHA-256 fingerprint, as openssl prints it.
+    pub(crate) fn fixture_fingerprint() -> Result<String, Box<dyn std::error::Error>> {
+        use base64::Engine as _;
+        use sha2::Digest as _;
+        let pem = std::fs::read_to_string(format!("{JOSE}/fake_grp.crt"))?;
+        let b64: String = pem.lines().filter(|l| !l.starts_with("-----")).collect();
+        let der = base64::engine::general_purpose::STANDARD.decode(b64)?;
+        Ok(sha2::Sha256::digest(&der)
+            .iter()
+            .map(|b| format!("{b:02X}"))
+            .collect::<Vec<_>>()
+            .join(":"))
     }
 }

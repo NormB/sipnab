@@ -1432,7 +1432,11 @@ fn wiki_intra_docs_links_resolve() -> Result<(), TestError> {
     // 1763 -> 1766: docs/mcp-tools-captures.md +3, `list_captures` links
     // `open_capture` and the vCon reader's forms in docs/vcon.md, and
     // `find_in_captures` links `list_captures`.
-    const EXPECTED_WIKI_LINKS: usize = 1766;
+    // 1766 -> 1779: `fetch_vcon` and `GET /v1/vcon/fetch/:uuid`, +13 links
+    // across docs/cli-reference.md, docs/config-reference.md, docs/vcon.md,
+    // docs/mcp-tools.md, docs/mcp-tools-vcon.md and docs/rest-api.md, which
+    // link the tool, the route and "Fetch a stored vCon" to each other.
+    const EXPECTED_WIKI_LINKS: usize = 1779;
     // Raised 459 -> 460 when SRC1 stage 1 shipped: docs/cli-reference.md's
     // `--hep-listen` row now points at cookbook recipe "Take signaling from HEP and media off the wire, in one process" in docs/examples.md
     // rather than restating how to pair `-L` with `-d`. Attributed per file

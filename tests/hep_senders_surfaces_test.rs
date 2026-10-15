@@ -112,6 +112,7 @@ fn rest_state(meter: sipnab::capture::channel::CaptureMeter) -> ApiState {
         armed_detections: Vec::new(),
         file_root: None,
         vcon_spools: Vec::new(),
+        vcon_fetch: Default::default(),
         live_audio: std::sync::Arc::default(),
         pipeline_options: Default::default(),
         archive: sipnab::output::api::ArchivePasswordPolicy::default(),

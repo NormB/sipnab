@@ -307,6 +307,18 @@ pub struct VconSpoolStatusParams {
     pub rule: Option<String>,
 }
 
+/// Parameters for `fetch_vcon`.
+///
+/// The uuid and nothing else. The store, its kind, the credential and the
+/// decryption key are the operator's `[vcon_fetch]` settings: an agent that
+/// could name a URL could make this server connect wherever it chose.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
+#[schemars(crate = "rmcp::schemars")]
+pub struct FetchVconParams {
+    /// The uuid of the vCon to read from the operator's store.
+    pub uuid: String,
+}
+
 /// Which dialogs an export was asked for.
 ///
 /// A caller that sent both `call_id` and `filter` has a malformed request, and
@@ -496,6 +508,72 @@ impl SipnabMcp {
         })?;
         // The record bodies are text a vCon store wrote. They are fenced, and
         // the note says what the fence means.
+        Ok(CallToolResult::success(vec![
+            ContentBlock::json(value)?,
+            ContentBlock::text(crate::mcp::shape::untrusted_note()),
+        ]))
+    }
+
+    /// Read one container from the operator's vCon store by uuid and return
+    /// it inline.
+    ///
+    /// # Errors
+    ///
+    /// `invalid_params` (-32602) when the run was not given
+    /// `--mcp-allow-vcon-fetch` or has no `[vcon_fetch]` store, for a uuid
+    /// that is not one, and when the store holds no such vCon;
+    /// `internal_error` (-32603) for anything else the fetcher refuses, the
+    /// store's answer fenced as untrusted text.
+    #[tool(
+        name = "fetch_vcon",
+        description = "Reads one vCon container from the operator's vCon \
+                       store by uuid and returns it inline, writing no file. \
+                       This CONNECTS to the store [vcon_fetch] configures: \
+                       off unless --mcp-allow-vcon-fetch is given, and the \
+                       store, its credential and the decryption key come \
+                       from operator configuration only, never from an \
+                       argument. An encrypted container is decrypted with \
+                       [vcon_fetch] decrypt_key when one is set and its \
+                       signature verified. Returns stored_form, decrypted, \
+                       signature_verified, signer_sha256, schema_findings \
+                       and container.",
+        output_schema = schema_for_output::<crate::app::vcon_fetch::InlineVcon>(),
+        annotations(read_only_hint = true, open_world_hint = true)
+    )]
+    pub async fn fetch_vcon(
+        &self,
+        Parameters(params): Parameters<FetchVconParams>,
+    ) -> Result<CallToolResult, rmcp::ErrorData> {
+        use crate::app::vcon_fetch::{InlineRefusal, fetch_inline};
+        const FLAG: &str = "--mcp-allow-vcon-fetch";
+        let access = self.vcon_fetch.clone();
+        let uuid = params.uuid;
+        // The fetcher's connection blocks, so it runs off the runtime thread
+        // that serves every other request.
+        let fetched = tokio::task::spawn_blocking(move || fetch_inline(&access, &uuid))
+            .await
+            .map_err(|e| {
+                rmcp::ErrorData::internal_error(format!("the fetch stopped: {e}"), None)
+            })?;
+        let value = fetched.map_err(|refusal| match refusal {
+            InlineRefusal::Off | InlineRefusal::NotConfigured => {
+                errors::refuse(Reason::NotEnabled, refusal.message(FLAG))
+            }
+            InlineRefusal::NotAUuid => {
+                errors::refuse_param(Reason::InvalidValue, "uuid", refusal.message(FLAG))
+            }
+            InlineRefusal::NotFound => errors::refuse(Reason::NotFound, refusal.message(FLAG)),
+            // The store's answer is text another system wrote.
+            InlineRefusal::Store(_) => rmcp::ErrorData::internal_error(
+                crate::mcp::shape::fence(&crate::mcp::shape::truncate_string(
+                    &refusal.message(FLAG),
+                    self.body_cap,
+                )),
+                None,
+            ),
+        })?;
+        // The container holds whatever its producer stored: header values,
+        // display names, SDP. The note says so.
         Ok(CallToolResult::success(vec![
             ContentBlock::json(value)?,
             ContentBlock::text(crate::mcp::shape::untrusted_note()),
@@ -2782,6 +2860,112 @@ mod tests {
             .await
             .map_err(|e| format!("an unreadable container is an answer: {e:?}"))?;
         assert_eq!(payload(&result)?["verdict"], "unreadable");
+        Ok(())
+    }
+
+    // ── fetch_vcon ───────────────────────────────────────────────────────
+
+    use crate::app::vcon_fetch::stub_store;
+
+    /// `fetch_vcon` for `uuid`.
+    async fn fetch(srv: &SipnabMcp, uuid: &str) -> Result<CallToolResult, rmcp::ErrorData> {
+        srv.fetch_vcon(Parameters(FetchVconParams {
+            uuid: uuid.to_string(),
+        }))
+        .await
+    }
+
+    /// Without `--mcp-allow-vcon-fetch` the tool is refused naming the flag,
+    /// and nothing reaches the store; with the flag and no `[vcon_fetch]`
+    /// store it is refused naming the keys.
+    #[tokio::test]
+    async fn fetch_vcon_is_refused_without_the_opt_in() -> Result<(), TestError> {
+        let stub = stub_store::start(200, stub_store::container(stub_store::UUID))?;
+        let err = fetch(&empty_server(), stub_store::UUID)
+            .await
+            .err()
+            .ok_or("a server without the opt-in must refuse")?;
+        let message = message_of(err);
+        assert!(message.contains("--mcp-allow-vcon-fetch"), "{message}");
+        let unset = empty_server().with_vcon_fetch(crate::app::vcon_fetch::Access::NotConfigured);
+        let message = message_of(
+            fetch(&unset, stub_store::UUID)
+                .await
+                .err()
+                .ok_or("a server with no store must refuse")?,
+        );
+        assert!(message.contains("[vcon_fetch] url"), "{message}");
+        assert_eq!(stub.hits(), 0);
+        Ok(())
+    }
+
+    /// An unsigned container comes back inline, as the store holds it.
+    #[tokio::test]
+    async fn fetch_vcon_returns_an_unsigned_container_inline() -> Result<(), TestError> {
+        let stored = stub_store::container(stub_store::UUID);
+        let stub = stub_store::start(200, stored.clone())?;
+        let (_dir, access) = stub_store::ready(&stub, false)?;
+        let srv = empty_server().with_vcon_fetch(access);
+        let result = fetch(&srv, stub_store::UUID)
+            .await
+            .map_err(|e| format!("fetched: {e:?}"))?;
+        let v = payload(&result)?;
+        assert_eq!(v["stored_form"], "unsigned", "{v}");
+        assert_eq!(v["decrypted"], false, "{v}");
+        let want: serde_json::Value = serde_json::from_str(&stored)?;
+        assert_eq!(v["container"], want, "{v}");
+        Ok(())
+    }
+
+    /// An encrypted container is decrypted with the configured key and comes
+    /// back with its signer; the answer holds no key and no credential.
+    #[tokio::test]
+    async fn fetch_vcon_decrypts_with_the_configured_key() -> Result<(), TestError> {
+        let stub = stub_store::start(200, stub_store::sealed(stub_store::UUID)?)?;
+        let (_dir, access) = stub_store::ready(&stub, true)?;
+        let srv = empty_server().with_vcon_fetch(access);
+        let result = fetch(&srv, stub_store::UUID)
+            .await
+            .map_err(|e| format!("fetched: {e:?}"))?;
+        let v = payload(&result)?;
+        assert_eq!(v["stored_form"], "encrypted", "{v}");
+        assert_eq!(v["decrypted"], true, "{v}");
+        assert_eq!(v["signature_verified"], true, "{v}");
+        assert_eq!(
+            v["signer_sha256"],
+            stub_store::fixture_fingerprint()?,
+            "{v}"
+        );
+        let want: serde_json::Value =
+            serde_json::from_str(&stub_store::container(stub_store::UUID))?;
+        assert_eq!(v["container"], want, "{v}");
+        let text = serde_json::to_string(&result)?;
+        assert!(!text.contains("PRIVATE KEY"), "{text}");
+        assert!(!text.contains(&stub_store::secret()), "{text}");
+        Ok(())
+    }
+
+    /// A `404` is refused as "no such vCon", and a uuid a URL path may not
+    /// carry is refused as an invalid parameter before anything is sent.
+    #[tokio::test]
+    async fn fetch_vcon_names_a_missing_container_and_a_bad_uuid() -> Result<(), TestError> {
+        let stub = stub_store::start(404, "{}".to_string())?;
+        let (_dir, access) = stub_store::ready(&stub, false)?;
+        let srv = empty_server().with_vcon_fetch(access);
+        let missing = message_of(
+            fetch(&srv, stub_store::UUID)
+                .await
+                .err()
+                .ok_or("a 404 must be refused")?,
+        );
+        assert!(missing.contains("404"), "{missing}");
+        let bad = fetch(&srv, "../etc/passwd")
+            .await
+            .err()
+            .ok_or("a path must be refused")?;
+        assert_eq!(code_of(bad.clone()), -32602);
+        assert!(message_of(bad).contains("uuid"));
+        assert_eq!(stub.hits(), 1, "only the 404 request reached the store");
         Ok(())
     }
 }

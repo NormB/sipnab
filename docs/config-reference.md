@@ -1045,6 +1045,10 @@ The vCon fetcher's settings (`sipnab --vcon-fetch <UUID>...`, see
 - A flag replaces its key.
 - With neither, a `kind` other than `generic` supplies the value. Then the
   default applies.
+- A server opted in with `--mcp-allow-vcon-fetch` or `--api-allow-vcon-fetch`
+  reads the same store with these keys alone, for the MCP `fetch_vcon` tool
+  and `GET /v1/vcon/fetch/:uuid`
+  ([Fetch from an agent or a REST client](vcon.md#fetch-from-an-agent-or-a-rest-client)).
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|

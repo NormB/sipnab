@@ -47,6 +47,35 @@ pub mod vcon_spool {
     }
 }
 
+/// A build without the vCon exporter has no fetcher, so no server door can
+/// fetch. The type exists so the REST state has one shape in every build.
+#[cfg(not(feature = "vcon"))]
+pub mod vcon_fetch {
+    /// Whether a server door may fetch: never, in this build.
+    #[derive(Debug, Clone, Default)]
+    pub enum Access {
+        /// No fetcher is compiled in.
+        #[default]
+        Off,
+    }
+
+    impl Access {
+        /// Always [`Access::Off`]: a build without the `vcon` feature
+        /// refuses the opt-in flags at startup, before this is asked.
+        ///
+        /// # Errors
+        ///
+        /// Never.
+        pub fn resolve(
+            _flag: &str,
+            _allowed: bool,
+            _keys: &crate::config::VconFetchConfig,
+        ) -> Result<Self, String> {
+            Ok(Self::Off)
+        }
+    }
+}
+
 /// A build without the vCon exporter has no enrichment services, for the
 /// reason it has no spools: a rule's list of them is empty by construction.
 #[cfg(not(feature = "vcon"))]

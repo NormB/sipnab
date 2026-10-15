@@ -3114,6 +3114,61 @@
         ],
         "type": "object"
       },
+      "InlineVcon": {
+        "description": "One container read from the operator's store, and what was checked:\nthe answer of the MCP `fetch_vcon` tool and `GET /v1/vcon/fetch/{uuid}`.\n\nIt carries no key and no credential. The members are in name order.",
+        "properties": {
+          "container": {
+            "description": "The vCon: the unsigned container when sipnab decrypted it, else the\ncontainer as the store holds it, without the store kind's envelope.",
+            "type": "object"
+          },
+          "decrypted": {
+            "description": "Whether sipnab decrypted an encrypted container with\n`[vcon_fetch] decrypt_key`.",
+            "type": "boolean"
+          },
+          "schema_findings": {
+            "description": "Where the container fails the draft-ietf-vcon-vcon-core-04 schema,\none line each. Empty for a valid container and for one left\nencrypted.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "schema_version": {
+            "description": "The version of this answer's shape.",
+            "format": "int32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "signature_verified": {
+            "description": "Whether the signed form inside a decrypted container verified and\npassed `[vcon_fetch] signer_ca` and `signer_sha256` when the operator\nsets them. Always `false` for a container that was not encrypted.",
+            "type": "boolean"
+          },
+          "signer_sha256": {
+            "description": "The SHA-256 fingerprint of the certificate the signature verified\nagainst, as `openssl x509 -noout -fingerprint -sha256` prints it.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "stored_form": {
+            "description": "The form the store held the container in: `unsigned`, `signed`,\n`encrypted` or `unknown`.",
+            "type": "string"
+          },
+          "uuid": {
+            "description": "The uuid asked for.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "container",
+          "decrypted",
+          "schema_findings",
+          "schema_version",
+          "signature_verified",
+          "stored_form",
+          "uuid"
+        ],
+        "type": "object"
+      },
       "LadderRow": {
         "description": "One message of a dialog's ladder.",
         "properties": {
@@ -9689,6 +9744,94 @@
           }
         ],
         "summary": "Analyze a stored vCon container",
+        "tags": [
+          "operations"
+        ]
+      }
+    },
+    "/v1/vcon/fetch/{uuid}": {
+      "get": {
+        "description": "Reads one vCon container by uuid from the store `[vcon_fetch]` configures and returns it inline, with the checks `sipnab --vcon-fetch` makes: the size limit, the store kind's envelope, the uuid inside, and for an encrypted container with `[vcon_fetch] decrypt_key`, the decryption, the signature and the signer checks. This CONNECTS to the store, so it is off unless `--api-allow-vcon-fetch` is set, and answers 503 naming the flag otherwise. The store, its credential and the key come from the config file only; the answer holds no key and no credential, and no file is written. The same answer as the MCP `fetch_vcon` tool, from the same function.",
+        "operationId": "get_vcon_fetch",
+        "parameters": [
+          {
+            "description": "The vCon's uuid: 1 to 64 characters, each a letter, a digit or '-'.",
+            "in": "path",
+            "name": "uuid",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/InlineVcon"
+                }
+              }
+            },
+            "description": "The container, `stored_form`, `decrypted`, `signature_verified`, `signer_sha256` and `schema_findings`."
+          },
+          "400": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "The uuid is not one."
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "No bearer credential, or one this server does not accept."
+          },
+          "404": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "The store holds no vCon with this uuid."
+          },
+          "502": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "The store refused, failed or answered something the fetcher refuses; the detail says which."
+          },
+          "503": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Over the per-source-IP rate limit, or the server was started without `--api-allow-vcon-fetch` or a `[vcon_fetch] url`."
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "One vCon from the operator's store",
         "tags": [
           "operations"
         ]

@@ -10,6 +10,15 @@ entry that carries them.
 
 ## [Unreleased]
 
+### Added
+
+- **MCP `fetch_vcon` and `GET /v1/vcon/fetch/{uuid}` read one vCon from the operator's store by uuid and return it in the answer.**
+  - Each is off unless the run has its flag: `--mcp-allow-vcon-fetch` or `--api-allow-vcon-fetch`. Without the flag, or without `[vcon_fetch] url`, the tool and the route refuse and name what is missing.
+  - The store, its kind, the credential and the decryption key come from the `[vcon_fetch]` keys only. The caller gives a uuid and nothing else, and the answer holds no key and no credential.
+  - The request, the credential, the CA, the size limit, the decryption and the signer checks are `sipnab --vcon-fetch`'s, by one shared function. sipnab writes no file.
+  - The answer carries `stored_form`, `decrypted`, `signature_verified`, `signer_sha256`, `schema_findings` and `container`.
+  - The tool is in the `vcon` bundle.
+
 ### Fixed
 
 - **A relay control message read off a capture interface or a file no longer reports the HEP listener's trust.**

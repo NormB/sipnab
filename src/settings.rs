@@ -134,6 +134,7 @@ pub const FLAGS: &[(&str, Link)] = &[
     ("api", Link::Pending),
     ("api-accept-archive-passwords", Link::Pending),
     ("api-allow-relay-query", Link::Pending),
+    ("api-allow-vcon-fetch", Link::PerRun),
     (
         "api-allowed-host",
         Link::Key("api", "allowed_hosts", Merge::Override),
@@ -421,6 +422,7 @@ pub const FLAGS: &[(&str, Link)] = &[
     ("mcp", Link::PerRun),
     ("mcp-allow-open-capture", Link::Pending),
     ("mcp-allow-relay-query", Link::Pending),
+    ("mcp-allow-vcon-fetch", Link::PerRun),
     ("mcp-allow-save-findings", Link::Pending),
     ("mcp-allow-shutdown", Link::Pending),
     ("mcp-allow-tls-capture", Link::Pending),

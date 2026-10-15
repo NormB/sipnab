@@ -63,7 +63,7 @@ A bundle is a named set of tools defined in sipnab's code.
 | [`relay`](@/docs/mcp-tools-relay.md) | 4 | Questions put to the configured media relay, and decoding the relay control messages sipnab captured. |
 | [`tfps`](@/docs/mcp-tools-tfps.md) | 7 | The toll-fraud prevention peer (TFPS): what it blocks and logs, and the operator's ban, unban and revert actions. |
 | [`server`](@/docs/mcp-tools-server.md) | 5 | The sipnab process and its capture path: capture health, HEP senders, resource use, build capabilities, and shutdown. |
-| [`vcon`](@/docs/mcp-tools-vcon.md) | 5 | vCon conversation containers, exported, validated and analyzed, the vCon export spool's counts, and the SIPREC recording metadata a call carried. |
+| [`vcon`](@/docs/mcp-tools-vcon.md) | 6 | vCon conversation containers, exported, validated, analyzed and read from the operator's store, the vCon export spool's counts, and the SIPREC recording metadata a call carried. |
 | [`tls`](@/docs/mcp-tools-tls.md) | 3 | Reading SIP inside TLS without keys through kernel uprobes, and which TLS libraries this host runs. |
 
 ### Choosing which tools load
@@ -123,9 +123,9 @@ resource.
 | relay | 4 | 4,240 | 20,029 |
 | tfps | 7 | 5,563 | 15,947 |
 | server | 5 | 5,394 | 27,170 |
-| vcon | 5 | 8,369 | 24,354 |
+| vcon | 6 | 9,516 | 27,544 |
 | tls | 3 | 2,850 | 4,943 |
-| full | 74 | 86,969 | 261,500 |
+| full | 75 | 88,234 | 264,813 |
 
 Bytes are the compact JSON of each tool's `tools/list` entry, summed over the
 bundle.
@@ -139,8 +139,8 @@ bundle.
 > - `vcon_spool_status` and the `cursor` and `media` parameters of
 >   `export_vcon`.
 >
-> The `vcon` and `full` rows hold a second measurement, taken once
-> `analyze_vcon` joined them.
+> The `vcon` and `full` rows hold a later measurement, taken once
+> `fetch_vcon` joined them.
 >
 > - Sizes, tool counts and bundle membership may change in later releases.
 > - A build without a feature does not register that feature's tools, so its
@@ -177,6 +177,7 @@ links to its section on the bundle's page.
 | [`export_audio`](@/docs/mcp-tools-media.md#export-audio) | [media](@/docs/mcp-tools-media.md) | Writes a call's RTP audio to a WAV in `--mcp-file-root`; needs the server started with `--retain-audio` |
 | [`export_capture`](@/docs/mcp-tools-captures.md#export-capture) | [captures](@/docs/mcp-tools-captures.md) | Writes held SIP signaling to a pcap in `--mcp-file-root` (re-synthesized frames, no RTP) |
 | [`export_vcon`](@/docs/mcp-tools-vcon.md#export-vcon) | [vcon](@/docs/mcp-tools-vcon.md) | Dialogs as vCon conversation containers, structured JSON, each with its SHA-256. One `call_id` or a whole filtered set, paged with `cursor`. Unsigned, retained audio inline unless `media` is `omit`, and every omission stated in the response |
+| [`fetch_vcon`](@/docs/mcp-tools-vcon.md#fetch-vcon) | [vcon](@/docs/mcp-tools-vcon.md) | **Connects, off by default.** One container from the operator's `[vcon_fetch]` store by uuid, returned inline with the checks it passed. Needs `--mcp-allow-vcon-fetch`; the store and its keys come from operator configuration only |
 | [`find_correlated`](@/docs/mcp-tools-signaling.md#find-correlated) | [signaling](@/docs/mcp-tools-signaling.md) | The other legs of the same call across a B2BUA, each with a score AND the strategy that matched it |
 | [`find_in_captures`](@/docs/mcp-tools-captures.md#find-in-captures) | [captures](@/docs/mcp-tools-captures.md) | Which capture files hold dialogs matching a filter, without opening any of them; a sweep that outlasts its wait returns a job |
 | [`find_in_captures_status`](@/docs/mcp-tools-captures.md#find-in-captures-status) | [captures](@/docs/mcp-tools-captures.md) | A `find_in_captures` job's progress, or its result once it finishes |
@@ -420,7 +421,7 @@ inside a window a human client never sees. On a 921 MB capture,
 `capture_status` have always carried `source_exhausted`. Now every tool that
 answers from the capture does.
 
-Nineteen tools are the exception, because their answer cannot move with
+Twenty tools are the exception, because their answer cannot move with
 the load. How much of the capture sipnab has read says nothing about what
 their sources hold:
 - Eleven read something other than the capture store:
@@ -431,10 +432,11 @@ their sources hold:
     forwarder drains;
   - `compare_captures`, which reads two files and never the loaded capture;
   - `analyze_vcon`, which analyzes a container the caller hands over.
-- The other eight ask another process:
+- The other nine ask another process:
   - `query_relay` and `relay_stats` put the question to the media relay;
   - `tfps_status`, `tfps_banned`, `tfps_dropped`, `tfps_labels`, `tfps_ban`
-    and `tfps_unban` put it to the toll-fraud prevention peer.
+    and `tfps_unban` put it to the toll-fraud prevention peer;
+  - `fetch_vcon` puts it to the operator's vCon store.
 
 The tools that answer with a rendered document have no object to put a field
 in. These are `render_ladder`, and `get_capture_report` / `get_dialog_report`
