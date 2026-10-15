@@ -1610,68 +1610,78 @@ mod tests {
         IpAddr::V4(Ipv4Addr::from(0x0c00_0000 + i as u32))
     }
 
-    /// A detector holding exactly `MAX_SOURCE_ENTRIES` sources, none of them
-    /// in the probe range.
-    fn full_detector() -> Result<RegFloodDetector, TestError> {
+    /// REGISTERs from new addresses admitted to a full map by
+    /// [`entries_walked_admitting_at_cap`].
+    const ADMISSIONS: usize = 1_000;
+
+    /// A detector whose source map is capped at `cap` and holds exactly `cap`
+    /// sources, none of them in the probe range.
+    fn full_detector_at(cap: usize) -> Result<RegFloodDetector, TestError> {
         let mut det = RegFloodDetector::new(50);
-        for i in 0..MAX_SOURCE_ENTRIES {
+        det.sources = LruMap::new(cap);
+        for i in 0..cap {
             let src = IpAddr::V4(Ipv4Addr::from(0x0a00_0000 + i as u32));
             let _ = det.check(&register_at(src, "z9hG4bK-fill", false, ts()?)?);
         }
-        assert_eq!(
-            det.sources.len(),
-            MAX_SOURCE_ENTRIES,
-            "fixture: the map is full"
-        );
+        assert_eq!(det.sources.len(), cap, "fixture: the map is full");
         Ok(det)
     }
 
+    /// Entries of the source map walked while [`ADMISSIONS`] REGISTERs from
+    /// new addresses are admitted to a map already full at `cap`.
+    fn entries_walked_admitting_at_cap(cap: usize) -> Result<u64, TestError> {
+        let mut det = full_detector_at(cap)?;
+        let before = det.sources.entries_walked();
+        for i in 0..ADMISSIONS {
+            let msg = register_at(probe_ip(i), &format!("z9hG4bK-probe-{i}"), false, ts()?)?;
+            let _ = det.check(&msg);
+        }
+        let walked = det.sources.entries_walked() - before;
+        assert_eq!(
+            det.sources.len(),
+            cap,
+            "control: the cap must still hold after {ADMISSIONS} new sources"
+        );
+        assert!(
+            det.sources.contains_key(&probe_ip(ADMISSIONS - 1)),
+            "control: the newest source was admitted"
+        );
+        Ok(walked)
+    }
+
     /// The failure this shipped with. A spoofed-source flood fills the map,
-    /// and from then on every REGISTER from a new address pays for a scan of
+    /// and from then on every REGISTER from a new address paid for a scan of
     /// all ten thousand entries to choose a victim -- on the capture thread,
     /// inside `process_parsed_packet`, under both store write locks, while
     /// every MCP and API reader waits and the kernel's drop counter climbs.
+    /// That scan made admission at the cap 371x dearer than admission to an
+    /// empty map.
     ///
-    /// Measured as a ratio rather than a bound: the same thousand messages,
-    /// parsed up front so only `check` is timed, into a fresh detector and
-    /// into a full one, the minimum of three rounds each so a descheduled
-    /// thread cannot inflate either side. Constant-time eviction makes the
-    /// two costs alike (measured at 1.3x); the shipped scan made the full one
-    /// 371x dearer.
+    /// Counted, not timed. The map counts every entry its walks (`iter`,
+    /// `values_mut`, `retain`) visit, and choosing a victim by scanning the
+    /// map is such a walk. Admitting a thousand new sources to a full map
+    /// must walk at most one entry per admission, and the same number at a
+    /// cap of 1,000 as at the shipped cap of 10,000; a scan walks `cap`
+    /// entries per admission. The wall-clock ratio this replaces failed on
+    /// a loaded CI runner, 5.5x against a bound of 5.0, with constant-time
+    /// eviction in place.
     #[test]
-    fn admitting_a_source_at_cap_costs_no_more_than_admitting_one_to_an_empty_map()
-    -> Result<(), TestError> {
-        use std::time::{Duration, Instant};
-        let probe: Vec<SipMessage> = (0..1_000)
-            .map(|i| register_at(probe_ip(i), &format!("z9hG4bK-probe-{i}"), false, ts()?))
-            .collect::<Result<_, _>>()?;
-        let time_probe = |det: &mut RegFloodDetector| {
-            let started = Instant::now();
-            for msg in &probe {
-                let _ = det.check(msg);
-            }
-            started.elapsed()
-        };
-
-        let mut empty_cost = Duration::MAX;
-        let mut full_cost = Duration::MAX;
-        for _ in 0..3 {
-            let mut fresh = RegFloodDetector::new(50);
-            empty_cost = empty_cost.min(time_probe(&mut fresh));
-            let mut full = full_detector()?;
-            full_cost = full_cost.min(time_probe(&mut full));
-            assert_eq!(
-                full.sources.len(),
-                MAX_SOURCE_ENTRIES,
-                "control: the cap must still hold after a thousand new sources"
-            );
-        }
-        let ratio = full_cost.as_nanos() as f64 / empty_cost.as_nanos().max(1) as f64;
+    fn admitting_a_source_at_cap_walks_no_more_of_the_map_as_the_map_grows() -> Result<(), TestError>
+    {
+        let small = entries_walked_admitting_at_cap(1_000)?;
+        let large = entries_walked_admitting_at_cap(MAX_SOURCE_ENTRIES)?;
+        let bound = ADMISSIONS as u64;
         assert!(
-            ratio < 5.0,
-            "admitting a source to a full map cost {ratio:.1}x what admitting one to \
-             an empty map cost ({full_cost:?} against {empty_cost:?} for 1,000 \
-             REGISTERs): eviction is scanning the map"
+            small <= bound && large <= bound,
+            "admitting {ADMISSIONS} sources to a full map walked {small} entries at a \
+             cap of 1,000 and {large} at a cap of {MAX_SOURCE_ENTRIES}, more than one \
+             per admission: eviction is scanning the map"
+        );
+        assert_eq!(
+            small, large,
+            "the entries walked while admitting {ADMISSIONS} sources grew with the map \
+             ({small} at a cap of 1,000, {large} at a cap of {MAX_SOURCE_ENTRIES}): \
+             eviction is scanning the map"
         );
         Ok(())
     }

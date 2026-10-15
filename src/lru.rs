@@ -23,6 +23,8 @@
 use std::borrow::Borrow;
 use std::collections::HashMap;
 use std::hash::Hash;
+#[cfg(test)]
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 /// The index that means "no slot": the head's `prev` and the tail's `next`.
 const NIL: usize = usize::MAX;
@@ -59,6 +61,11 @@ pub struct LruMap<K, V> {
     /// The bound. At least one: a map that can hold nothing cannot hand out
     /// a `&mut V`.
     capacity: usize,
+    /// Entries visited by the walks `iter`, `values_mut` and `retain`, so a
+    /// test can count the work an operation does instead of timing it.
+    /// Atomic rather than a `Cell` so the map stays `Sync`.
+    #[cfg(test)]
+    walked: AtomicUsize,
 }
 
 impl<K: Hash + Eq + Clone, V> LruMap<K, V> {
@@ -71,7 +78,18 @@ impl<K: Hash + Eq + Clone, V> LruMap<K, V> {
             head: NIL,
             tail: NIL,
             capacity: capacity.max(1),
+            #[cfg(test)]
+            walked: AtomicUsize::new(0),
         }
+    }
+
+    /// How many entries the walks `iter`, `values_mut` and `retain` have
+    /// visited since the map was made. Test-only: it lets a test assert that
+    /// an operation does not walk the map, which a wall-clock ratio can only
+    /// suggest.
+    #[cfg(test)]
+    pub fn entries_walked(&self) -> u64 {
+        u64::try_from(self.walked.load(Ordering::Relaxed)).unwrap_or(u64::MAX)
     }
 
     /// The bound this map holds itself to.
@@ -169,6 +187,8 @@ impl<K: Hash + Eq + Clone, V> LruMap<K, V> {
     pub fn retain(&mut self, mut keep: impl FnMut(&K, &mut V) -> bool) {
         let mut slot = self.head;
         while slot != NIL {
+            #[cfg(test)]
+            self.walked.fetch_add(1, Ordering::Relaxed);
             let next = self.entries[slot].next;
             let entry = &mut self.entries[slot];
             if keep(&entry.key, &mut entry.value) {
@@ -188,12 +208,20 @@ impl<K: Hash + Eq + Clone, V> LruMap<K, V> {
         Iter {
             entries: &self.entries,
             slot: self.head,
+            #[cfg(test)]
+            walked: &self.walked,
         }
     }
 
     /// Every value, mutably, in no particular order and without touching.
     pub fn values_mut(&mut self) -> impl Iterator<Item = &mut V> {
-        self.entries.iter_mut().map(|entry| &mut entry.value)
+        #[cfg(test)]
+        let walked = &self.walked;
+        self.entries.iter_mut().map(move |entry| {
+            #[cfg(test)]
+            walked.fetch_add(1, Ordering::Relaxed);
+            &mut entry.value
+        })
     }
 
     /// Make `slot` the most recently used entry.
@@ -284,6 +312,9 @@ pub struct Iter<'a, K, V> {
     entries: &'a [Entry<K, V>],
     /// The next slot to yield, or [`NIL`] when done.
     slot: usize,
+    /// The map's count of entries walked.
+    #[cfg(test)]
+    walked: &'a AtomicUsize,
 }
 
 impl<'a, K, V> Iterator for Iter<'a, K, V> {
@@ -293,6 +324,8 @@ impl<'a, K, V> Iterator for Iter<'a, K, V> {
         if self.slot == NIL {
             return None;
         }
+        #[cfg(test)]
+        self.walked.fetch_add(1, Ordering::Relaxed);
         let entry = &self.entries[self.slot];
         self.slot = entry.next;
         Some((&entry.key, &entry.value))
