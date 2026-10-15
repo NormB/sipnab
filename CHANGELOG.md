@@ -139,6 +139,13 @@ entry that carries them.
   - The timeout path took whatever the stderr reader thread had read by then. On a loaded host the reader had often not been scheduled yet, so the error carried an empty stderr even though the peer had written its diagnosis.
   - It now waits for the reader to reach the end of the pipe, which happens as soon as the process-group kill closes it. A pipe still held open by a process outside the group is waited on for at most 2 seconds.
   - With the load average between 130 and 190, `a_peer_that_hangs_is_stopped_and_reported` lost the stderr in 3 runs of 300 before the change and in none of 300 after.
+- **`--cores` reads a copied SIP datagram once instead of once per worker, recovering part of the throughput 0.5.220 lost.**
+  - Since 0.5.220 each worker also reads a copy of every packet that can carry SDP, so that two calls reusing one media socket pair stay two streams. Every worker parsed its own copy of each SIP datagram, and every worker read the headers of every packet it received and hashed its host pair to tell its own packets from the copies.
+  - The dispatcher now marks each packet it hands a worker as owned or as a copy. The copies of a whole UDP datagram or of a HEP message share one read: the first worker to reach one parses it and the others take its media sockets. A TCP segment or an IP fragment is still read through each worker's own reassembly. The dispatcher reads a packet's host pair and transport in one pass over its headers.
+  - Measured on the `bench/carrier.py --calls 5000` capture (535,000 packets) with `-N -I --cores 4 --report --no-cli-print`, 20 interleaved pairs per comparison, load average 16 to 18, medians:
+    - against 0.5.220: 3.27 million packets per second against 3.12 million, faster in 18 of 20 pairs, and 0.550 against 0.565 seconds of user plus system CPU;
+    - against the code before the 0.5.220 change: 3.13 million against 3.45 million, slower in 20 of 20 pairs, and 0.550 against 0.500 seconds. On this capture the copies still cost about 9% of throughput.
+  - Reports are byte-identical to 0.5.220 at `--cores 4` and `--cores 1`, on that capture and on a 20,000-call capture.
 
 ### Internal
 

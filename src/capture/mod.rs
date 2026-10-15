@@ -1133,6 +1133,46 @@ fn max_tcp_leftover() -> usize {
     reassembly::max_tcp_buffer()
 }
 
+/// Whether `parsed` is an IPv4 or IPv6 fragment: More Fragments set, or a
+/// non-zero offset.
+fn is_fragment(parsed: &ParsedPacket) -> bool {
+    parsed.fragment_offset.is_some_and(|off| off > 0) || parsed.more_fragments
+}
+
+/// Whether reassembly hands `parsed` on exactly as it arrived, holding and
+/// changing nothing. The one rule [`PacketProcessor::process`] and
+/// [`PacketProcessor::process_whole`] both apply.
+///
+/// * Reassembly disabled (`--no-reassembly`): every packet stands alone. IP
+///   fragments and TCP segments are neither reassembled nor reframed.
+/// * A uprobe read is a complete application write, not a segment of a byte
+///   stream. It is reported as TCP because that is what the TLS session runs
+///   over, but it never traversed a sequence space: it was taken where the
+///   application handed the bytes to its TLS library, in one call, with the
+///   message boundary the application chose. Feeding it to the TCP
+///   reassembler is what silence looked like before this: the reassembler
+///   orders segments by sequence number, a uprobe packet carries
+///   `tcp_seq: None`, and every message was held for neighbors that would
+///   never arrive. Both uprobe backends captured packets and produced zero SIP
+///   messages.
+/// * A HEP message is the same shape for the same reason (issue #301). The
+///   sender's tracer hands its HEP module one whole SIP message it has already
+///   parsed out of its connection, and HEP carries no sequence number or
+///   flags. The reassembler returns nothing without both, so every message a
+///   HEP sender marked TCP (IP protocol 6) vanished without even counting as
+///   undecodable.
+/// * A message rebuilt from a stored vCon is whole by construction: the
+///   container stored it as one message.
+/// * A UDP datagram that is not a fragment is ready as it is.
+fn passes_through(parsed: &ParsedPacket, reassembly: bool) -> bool {
+    !reassembly
+        || matches!(
+            parsed.input_origin,
+            parse::InputOrigin::Uprobe | parse::InputOrigin::Hep | parse::InputOrigin::Vcon
+        )
+        || (parsed.transport == parse::TransportProto::Udp && !is_fragment(parsed))
+}
+
 impl PacketProcessor {
     /// Create a new packet processor with default reassembly limits.
     pub fn new() -> Self {
@@ -1207,6 +1247,41 @@ impl PacketProcessor {
     pub fn process(&mut self, packet: &Packet) -> ParsedPackets {
         tally(&CAPTURED_PACKETS, 1);
         let mut out = self.process_inner(packet);
+        self.limit(&mut out);
+        out
+    }
+
+    /// [`Self::process`] for a packet that reassembly passes through
+    /// unchanged, without touching this processor: `None` for one that
+    /// reassembly would hold or rebuild.
+    ///
+    /// For the `--cores` dispatcher's copies (see `crate::parallel`): every
+    /// worker that reads a copy of such a packet reads the same thing, so one
+    /// read serves them all. The frame is decoded here and, when the answer
+    /// is `None`, decoded again by the `process` call that must follow; that
+    /// is paid only by a packet the transport peek took for a whole datagram
+    /// and the decoder did not. Counts nothing [`Self::process`] does not:
+    /// an undecodable frame is recorded, and the captured-packet counter is
+    /// not moved, because the caller reads copies inside [`untallied`].
+    ///
+    /// Compiled where `crate::parallel` is, its one caller.
+    #[cfg(all(not(target_arch = "wasm32"), feature = "native"))]
+    pub(crate) fn process_whole(&self, packet: &Packet) -> Option<ParsedPackets> {
+        let parsed = match decode_captured_frame(packet) {
+            Ok(parsed) => parsed,
+            // `process` returns nothing for it and keeps no state.
+            Err(_) => return Some(SmallVec::new()),
+        };
+        if !passes_through(&parsed, self.reassembly) {
+            return None;
+        }
+        let mut out: ParsedPackets = smallvec![parsed];
+        self.limit(&mut out);
+        Some(out)
+    }
+
+    /// Apply the `-S`/`--limitlen` parse cap to every packet in `out`.
+    fn limit(&self, out: &mut ParsedPackets) {
         if let Some(limit) = self.parse_limit {
             for p in out.iter_mut() {
                 if p.payload.len() > limit {
@@ -1214,7 +1289,6 @@ impl PacketProcessor {
                 }
             }
         }
-        out
     }
 
     /// Core dispatch behind `process`: parse the packet, then route it through
@@ -1258,45 +1332,13 @@ impl PacketProcessor {
             }
         };
 
-        // Reassembly disabled (`--no-reassembly`): every packet stands alone —
-        // IP fragments and TCP segments are neither reassembled nor reframed.
-        if !self.reassembly {
-            return smallvec![parsed];
-        }
-
-        // A uprobe read is a complete application write, not a segment of a
-        // byte stream. It is reported as TCP because that is what the TLS
-        // session runs over, but it never traversed a sequence space: it was
-        // taken where the application handed the bytes to its TLS library, in
-        // one call, with the message boundary the application chose.
-        //
-        // Feeding it to the TCP reassembler is what silence looked like before
-        // this: the reassembler orders segments by sequence number, a uprobe
-        // packet carries `tcp_seq: None`, and every message was held for
-        // neighbors that would never arrive. Both uprobe backends captured
-        // packets and produced zero SIP messages.
-        //
-        // A HEP message is the same shape for the same reason (issue #301).
-        // The sender's tracer hands its HEP module one whole SIP message it has
-        // already parsed out of its connection, and HEP carries no sequence
-        // number or flags. The reassembler returns nothing without both, so
-        // every message a HEP sender marked TCP (IP protocol 6) vanished
-        // without even counting as undecodable.
-        //
-        // A message rebuilt from a stored vCon is whole by construction: the
-        // container stored it as one message.
-        if matches!(
-            parsed.input_origin,
-            parse::InputOrigin::Uprobe | parse::InputOrigin::Hep | parse::InputOrigin::Vcon
-        ) {
+        // Whole as it is: see `passes_through`.
+        if passes_through(&parsed, self.reassembly) {
             return smallvec![parsed];
         }
 
         // Check if this is an IP fragment that needs reassembly
-        let is_fragment =
-            parsed.fragment_offset.is_some_and(|off| off > 0) || parsed.more_fragments;
-
-        if is_fragment {
+        if is_fragment(&parsed) {
             return match self.fragment_reassembler.insert(&parsed) {
                 Some(mut reassembled) => {
                     // The reassembled buffer is the full IP payload (transport
@@ -2541,6 +2583,96 @@ mod tests {
         fn packet(data: Vec<u8>) -> Packet {
             let n = data.len();
             Packet::new(Utc::now(), data, n, n, None, 1) // linktype 1 = Ethernet
+        }
+
+        /// `frame`, an Ethernet/IPv4/UDP frame from [`eth_ipv4_udp`], as the
+        /// same addresses, ports and payload carried in one TCP segment.
+        #[cfg(all(not(target_arch = "wasm32"), feature = "native"))]
+        fn as_tcp_segment(frame: &[u8], seq: u32) -> Vec<u8> {
+            let (headers, payload) = frame.split_at(42);
+            let mut p = headers[..34].to_vec();
+            p[23] = 6; // TCP
+            let total = (20 + 20 + payload.len()) as u16;
+            p[16..18].copy_from_slice(&total.to_be_bytes());
+            p.extend_from_slice(&headers[34..38]); // the same two ports
+            p.extend_from_slice(&seq.to_be_bytes());
+            p.extend_from_slice(&[0, 0, 0, 0]); // ack
+            p.extend_from_slice(&[0x50, 0x18]); // 20-byte header, PSH+ACK
+            p.extend_from_slice(&[0xff, 0xff, 0, 0, 0, 0]); // window, checksum, urgent
+            p.extend_from_slice(payload);
+            p
+        }
+
+        /// `process_whole` is `process` for a packet reassembly passes
+        /// through unchanged: a whole UDP datagram, a pre-parsed packet, and
+        /// under `--no-reassembly` every packet. For a packet reassembly
+        /// would hold or rebuild, a fragment or a TCP segment, it is `None`.
+        /// A `--cores` worker shares one read of such a packet between
+        /// workers only because the two agree.
+        #[cfg(all(not(target_arch = "wasm32"), feature = "native"))]
+        #[test]
+        fn process_whole_is_process_for_a_packet_reassembly_passes_through() -> Result<(), TestError>
+        {
+            let sip = b"INVITE sip:x SIP/2.0\r\nCall-ID: whole\r\n\r\n";
+            let datagram = packet(eth_ipv4_udp(5060, 5060, sip));
+            let mut fragment = eth_ipv4_udp(5060, 5060, sip);
+            fragment[20..22].copy_from_slice(&[0x20, 0x00]); // More Fragments
+            let fragment = packet(fragment);
+            let segment = packet(as_tcp_segment(&eth_ipv4_udp(5060, 5060, sip), 7));
+            let pre_parsed = |ip_protocol| {
+                Packet::with_pre_parsed(
+                    Utc::now(),
+                    sip.to_vec(),
+                    None,
+                    crate::capture::packet::PreParsed {
+                        src_addr: [10, 0, 0, 1].into(),
+                        dst_addr: [10, 0, 0, 2].into(),
+                        src_port: 5060,
+                        dst_port: 5060,
+                        ip_protocol,
+                        hep: None,
+                        vcon: None,
+                    },
+                )
+            };
+            let same =
+                |whole: &PacketProcessor, p: &Packet, mut own: PacketProcessor, case: &str| {
+                    let shared = whole.process_whole(p);
+                    assert!(shared.is_some(), "{case}: passes through");
+                    assert_eq!(
+                        format!("{shared:?}"),
+                        format!("{:?}", Some(own.process(p))),
+                        "{case}: the same as process"
+                    );
+                };
+            for limit in [None, Some(10)] {
+                let fresh = || PacketProcessor::new().with_parse_limit(limit);
+                same(&fresh(), &datagram, fresh(), "a UDP datagram");
+                same(
+                    &fresh(),
+                    &pre_parsed(17),
+                    fresh(),
+                    "a pre-parsed UDP packet",
+                );
+            }
+            let on = PacketProcessor::new();
+            assert!(on.process_whole(&fragment).is_none(), "a fragment is held");
+            assert!(
+                on.process_whole(&segment).is_none(),
+                "a segment is reassembled"
+            );
+            // A pre-parsed packet is a whole message whatever its transport:
+            // HEP, uprobe and vCon sources hand over messages, not segments.
+            same(
+                &on,
+                &pre_parsed(6),
+                PacketProcessor::new(),
+                "a pre-parsed TCP message",
+            );
+            let off = || PacketProcessor::new().with_reassembly(false);
+            same(&off(), &fragment, off(), "a fragment under --no-reassembly");
+            same(&off(), &segment, off(), "a segment under --no-reassembly");
+            Ok(())
         }
 
         /// A plain UDP SIP packet yields exactly one parsed packet with the

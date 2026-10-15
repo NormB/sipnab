@@ -290,9 +290,10 @@ A skipped frame is not a bug.
 
 Offline reconstruction shards by **host pair**, not by packet or by call.
 
-- The reader peeks only the link and IP headers.
-  - [`peek_host_pair()`](https://github.com/NormB/sipnab/blob/main/src/capture/parse.rs) reads fixed offsets.
-  - It does no transport parse and no allocation.
+- The reader peeks only the link, IP and transport headers.
+  - [`peek_frame()`](https://github.com/NormB/sipnab/blob/main/src/capture/parse.rs) walks to the outer IP header once and reads the host pair and the UDP or TCP ports there.
+  - For a UDP datagram on a `--portrange` port it also checks whether the payload starts a SIP message that names `application/sdp`. That decides whether every worker receives a copy.
+  - It does no SIP parse and no allocation.
 - Then [`shard_for()`](https://github.com/NormB/sipnab/blob/main/src/parallel.rs) maps that pair to a worker.
 - The mapping is direction-independent.
   - So a call's request and response legs land on the same worker.

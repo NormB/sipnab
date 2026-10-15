@@ -206,16 +206,6 @@ fn worker_stream_store(cfg: &ParallelConfig) -> StreamStore {
     ss
 }
 
-/// The worker that owns `packet`: the one its host pair shards to, or worker
-/// 0 when the peek can read no host pair.
-///
-/// The ONE rule for ownership. The dispatchers send a packet to its owner
-/// by it; a worker that also receives copies (see [`Fanout`]) tells its own
-/// packets from the copies by it; and a lost batch is weighed by it.
-fn owner_of(packet: &crate::capture::packet::Packet, workers: usize) -> usize {
-    crate::capture::parse::peek_host_pair(packet).map_or(0, |(a, b)| shard_for(a, b, workers))
-}
-
 /// Which packets EVERY worker reads, not only the one that owns them.
 ///
 /// # Why any packet is read twice
@@ -282,37 +272,143 @@ impl Fanout {
     }
 
     /// Whether every worker reads `packet`. See [`Fanout`].
+    #[cfg(test)]
     fn needs(&self, packet: &crate::capture::packet::Packet) -> bool {
-        use crate::capture::parse::{TransportPeek, peek_transport};
+        self.copy_of(packet).is_some()
+    }
+
+    /// How every other worker reads `packet`, or `None` when only its owner
+    /// does. See [`Fanout`].
+    #[cfg(test)]
+    fn copy_of(&self, packet: &crate::capture::packet::Packet) -> Option<CopyRead> {
+        self.copy_read(packet, crate::capture::parse::peek_transport(packet))
+    }
+
+    /// [`Self::copy_of`] for a packet whose transport the dispatcher has
+    /// already peeked (`crate::capture::parse::peek_frame`).
+    fn copy_read(
+        &self,
+        packet: &crate::capture::packet::Packet,
+        transport: Option<crate::capture::parse::TransportPeek<'_>>,
+    ) -> Option<CopyRead> {
+        use crate::capture::parse::TransportPeek;
         use crate::pipeline::port_in_range;
         use crate::sip::parser::starts_sip_message;
+        /// The content type [`crate::sip::SipMessage::sdp`] requires, searched
+        /// for by one searcher built once rather than one per datagram.
+        static SDP_TYPE: std::sync::LazyLock<memchr::memmem::Finder<'static>> =
+            std::sync::LazyLock::new(|| memchr::memmem::Finder::new(b"application/sdp"));
         if !self.enabled {
-            return false;
+            return None;
         }
         if packet.pre_parsed.is_some() {
-            return starts_sip_message(&packet.data);
+            return starts_sip_message(&packet.data).then_some(CopyRead::Shared);
         }
         let is_hep = |payload: &[u8]| self.hep_parse && payload.starts_with(b"HEP3");
-        match peek_transport(packet) {
-            None => false,
-            Some(TransportPeek::Fragment) => true,
-            Some(TransportPeek::Tcp {
+        match transport? {
+            TransportPeek::Fragment => Some(CopyRead::Reassembled),
+            TransportPeek::Tcp {
                 src_port,
                 dst_port,
                 payload,
-            }) => port_in_range(src_port, dst_port, self.portrange) || is_hep(payload),
-            Some(TransportPeek::Udp {
+            } => (port_in_range(src_port, dst_port, self.portrange) || is_hep(payload))
+                .then_some(CopyRead::Reassembled),
+            TransportPeek::Udp {
                 src_port,
                 dst_port,
                 payload,
-            }) => {
-                is_hep(payload)
-                    || (port_in_range(src_port, dst_port, self.portrange)
-                        && starts_sip_message(payload)
-                        && memchr::memmem::find(payload, b"application/sdp").is_some())
+            } => (is_hep(payload)
+                || (port_in_range(src_port, dst_port, self.portrange)
+                    && starts_sip_message(payload)
+                    && SDP_TYPE.find(payload).is_some()))
+            .then_some(CopyRead::Shared),
+        }
+    }
+}
+
+/// How the workers that receive a copy read it (see [`Fanout`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CopyRead {
+    /// The peek found a whole UDP datagram or a pre-parsed message, which
+    /// reassembly passes through unchanged
+    /// ([`PacketProcessor::process_whole`]). Every worker that reads it reads
+    /// the same links, so the first to read it records them for the rest.
+    Shared,
+    /// A TCP segment or an IP fragment: what it holds depends on the segments
+    /// and fragments before it, so each worker reads it through its own
+    /// reassembly of the copies.
+    Reassembled,
+}
+
+/// One packet as the dispatcher hands it to one worker.
+///
+/// The dispatcher decides ownership once, by the host-pair shard, and says
+/// which it is: a worker does not peek and hash every packet again to find
+/// out.
+#[derive(Debug, Clone)]
+enum Delivery {
+    /// A packet this worker owns: it reconstructs and counts it.
+    Owned(crate::capture::packet::Packet),
+    /// A copy of a packet another worker owns: this worker learns the SDP in
+    /// it and counts nothing. Every worker's copy of one packet carries the
+    /// same [`SharedRead`] when its read is [`CopyRead::Shared`].
+    Copy(
+        crate::capture::packet::Packet,
+        Option<std::sync::Arc<SharedRead>>,
+    ),
+}
+
+impl Delivery {
+    /// The packet, owned or copied.
+    fn packet(&self) -> &crate::capture::packet::Packet {
+        match self {
+            Self::Owned(packet) | Self::Copy(packet, _) => packet,
+        }
+    }
+}
+
+/// The links one copied packet carries, read by the first worker to reach it
+/// and taken from here by every other worker that receives a copy.
+///
+/// `None` inside the cell when the full decode found a packet reassembly
+/// would hold or rebuild after all (the peek reads only the outer headers):
+/// each worker then reads its copy through its own reassembly.
+#[derive(Debug, Default)]
+struct SharedRead(std::sync::OnceLock<Option<Vec<CopyLinks>>>);
+
+/// The SDP links in one parsed packet, with the provenance they are recorded
+/// under.
+#[derive(Debug)]
+struct CopyLinks {
+    /// When and from which kind of source the SDP was seen.
+    provenance: crate::rtp::stream_store::SdpProvenance,
+    /// The media sockets it names and the call each belongs to.
+    links: Vec<(IpAddr, u16, String, crate::sip::sdp::SdpMedia)>,
+}
+
+/// Hand `packet`, which worker `owner` of `n` owns, to `send`: first a copy
+/// to every other worker when `read` (from [`Fanout`]) says each of them
+/// reads it, then the packet to its owner. The copies of a packet with a
+/// [`CopyRead::Shared`] read share one [`SharedRead`].
+///
+/// The one place both dispatchers decide what each worker receives. Stops at
+/// the first `send` that returns `false`, and returns `false` then.
+fn deliver(
+    packet: crate::capture::packet::Packet,
+    owner: usize,
+    n: usize,
+    read: Option<CopyRead>,
+    mut send: impl FnMut(usize, Delivery) -> bool,
+) -> bool {
+    if let Some(read) = read {
+        let shared = (read == CopyRead::Shared).then(std::sync::Arc::<SharedRead>::default);
+        for other in (0..n).filter(|&w| w != owner) {
+            if !send(other, Delivery::Copy(packet.clone(), shared.clone())) {
+                return false;
             }
         }
     }
+    send(owner, Delivery::Owned(packet))
 }
 
 /// Merged reconstruction output of all workers.
@@ -552,8 +648,30 @@ fn learn_links(
     pp: &ParsedPacket,
     links: &[(IpAddr, u16, String, crate::sip::sdp::SdpMedia)],
 ) {
-    let provenance =
-        crate::rtp::stream_store::SdpProvenance::observed(pp.input_origin, pp.timestamp);
+    learn_links_from(ss, sdp_provenance(pp), links);
+}
+
+/// The provenance SDP in `pp` is recorded under.
+fn sdp_provenance(pp: &ParsedPacket) -> crate::rtp::stream_store::SdpProvenance {
+    crate::rtp::stream_store::SdpProvenance::observed(pp.input_origin, pp.timestamp)
+}
+
+/// The SDP links in one parsed copy, read as `opts` reads them: `None` when
+/// `--hep-parse` cannot unwrap it. Called inside [`crate::capture::untallied`].
+fn copy_links(pp: &ParsedPacket, opts: &crate::pipeline::PipelineOptions) -> Option<CopyLinks> {
+    let pp = crate::pipeline::apply_hep_parse(pp, opts.hep_parse)?;
+    Some(CopyLinks {
+        provenance: sdp_provenance(&pp),
+        links: crate::pipeline::sdp_links_of(&pp, opts),
+    })
+}
+
+/// [`learn_links`] for links already read, with the provenance they carry.
+fn learn_links_from(
+    ss: &mut StreamStore,
+    provenance: crate::rtp::stream_store::SdpProvenance,
+    links: &[(IpAddr, u16, String, crate::sip::sdp::SdpMedia)],
+) {
     for (ip, port, call_id, media) in links {
         ss.link_to_dialog_with_sdp_from(*ip, *port, call_id, media, provenance);
     }
@@ -565,10 +683,6 @@ fn learn_links(
 /// Written once for both entry points, so the channel-fed and the file-fed
 /// pools cannot treat a packet differently.
 struct Worker {
-    /// This worker's index, compared with [`owner_of`].
-    index: usize,
-    /// How many workers the run has.
-    workers: usize,
     /// The run's configuration.
     cfg: ParallelConfig,
     /// Reassembly for the packets this worker owns.
@@ -595,8 +709,8 @@ struct Worker {
 type WorkerResult = (DialogStore, StreamStore, u64, u64, u64);
 
 impl Worker {
-    /// Worker `index` of `workers`.
-    fn new(index: usize, workers: usize, cfg: ParallelConfig) -> Self {
+    /// A worker for a run configured by `cfg`.
+    fn new(cfg: ParallelConfig) -> Self {
         let reassembly = |cfg: &ParallelConfig| {
             PacketProcessor::with_max_sessions(cfg.max_reassembly)
                 .with_reassembly(cfg.reassembly)
@@ -610,8 +724,6 @@ impl Worker {
         .with_xcid_headers(cfg.xcid_headers.clone())
         .with_leg_correlation_window_ms(cfg.leg_correlation_window_ms);
         Self {
-            index,
-            workers,
             processor: reassembly(&cfg),
             copies: reassembly(&cfg),
             ds,
@@ -624,19 +736,47 @@ impl Worker {
         }
     }
 
-    /// Read one packet: reconstruct it if this worker owns it, or learn the
-    /// SDP in it if it is a copy.
-    fn feed(&mut self, packet: &crate::capture::packet::Packet) {
-        if owner_of(packet, self.workers) == self.index {
-            for pp in self.processor.process(packet) {
-                self.reconstruct(&pp);
+    /// Read one delivery: reconstruct a packet this worker owns, or learn
+    /// the SDP in a copy.
+    fn feed(&mut self, delivery: &Delivery) {
+        match delivery {
+            Delivery::Owned(packet) => {
+                for pp in self.processor.process(packet) {
+                    self.reconstruct(&pp);
+                }
             }
-        } else {
-            let copies = &mut self.copies;
-            let parsed = crate::capture::untallied(|| copies.process(packet));
-            for pp in parsed {
-                self.learn_from_copy(&pp);
+            Delivery::Copy(packet, shared) => self.read_copy(packet, shared.as_deref()),
+        }
+    }
+
+    /// Learn the SDP links in a copy, counting nothing: from `shared` when
+    /// another worker has already read it, recording them there when this
+    /// worker is the first, and through this worker's own reassembly of the
+    /// copies when the packet is one reassembly holds or rebuilds.
+    fn read_copy(&mut self, packet: &crate::capture::packet::Packet, shared: Option<&SharedRead>) {
+        if let Some(shared) = shared {
+            let (copies, opts) = (&self.copies, pipeline_options(&self.cfg));
+            let read = shared.0.get_or_init(|| {
+                crate::capture::untallied(|| {
+                    copies.process_whole(packet).map(|parsed| {
+                        parsed
+                            .iter()
+                            .filter_map(|pp| copy_links(pp, &opts))
+                            .collect()
+                    })
+                })
+            });
+            if let Some(read) = read {
+                for copy in read {
+                    learn_links_from(&mut self.ss, copy.provenance, &copy.links);
+                }
+                return;
             }
+        }
+        let copies = &mut self.copies;
+        let parsed = crate::capture::untallied(|| copies.process(packet));
+        for pp in parsed {
+            self.learn_from_copy(&pp);
         }
     }
 
@@ -671,29 +811,27 @@ impl Worker {
     fn learn_from_copy(&mut self, pp: &ParsedPacket) {
         let opts = pipeline_options(&self.cfg);
         crate::capture::untallied(|| {
-            let Some(pp) = crate::pipeline::apply_hep_parse(pp, opts.hep_parse) else {
-                return;
-            };
-            let links = crate::pipeline::sdp_links_of(&pp, &opts);
-            learn_links(&mut self.ss, &pp, &links);
+            if let Some(copy) = copy_links(pp, &opts) {
+                learn_links_from(&mut self.ss, copy.provenance, &copy.links);
+            }
         });
     }
 }
 
 /// [`shard_send`] for a batch that may hold copies: a lost batch weighs only
-/// the packets `shard` owns, because a copy lost with it is not a packet the
-/// capture lost. Weighed only when the send fails, so the dispatcher's
-/// healthy path touches no packet.
+/// the packets `shard` owns, as the dispatcher marked them, because a copy
+/// lost with it is not a packet the capture lost. Weighed only when the send
+/// fails, so the dispatcher's healthy path touches no packet.
 fn shard_send_batch(
-    txs: &[crossbeam_channel::Sender<Vec<crate::capture::packet::Packet>>],
+    txs: &[crossbeam_channel::Sender<Vec<Delivery>>],
     shard: usize,
-    batch: Vec<crate::capture::packet::Packet>,
+    batch: Vec<Delivery>,
 ) -> u64 {
     match txs[shard].send(batch) {
         Ok(()) => 0,
         Err(crossbeam_channel::SendError(batch)) => batch
             .iter()
-            .filter(|p| owner_of(p, txs.len()) == shard)
+            .filter(|d| matches!(d, Delivery::Owned(_)))
             .count() as u64,
     }
 }
@@ -712,20 +850,18 @@ fn shard_send_batch(
 /// Returns the merged stores for report generation. Reconstruction only — see
 /// `reconstruct`; advanced features stay on the single-threaded path.
 pub fn run_offline_parallel(rx: PacketRx, cfg: ParallelConfig) -> ReconResult {
-    use crate::capture::packet::Packet;
     use crossbeam_channel::bounded;
     let n = cfg.cores.max(2);
 
-    let (txs, rxs): (Vec<_>, Vec<_>) = (0..n).map(|_| bounded::<Packet>(8192)).unzip();
+    let (txs, rxs): (Vec<_>, Vec<_>) = (0..n).map(|_| bounded::<Delivery>(8192)).unzip();
     let workers: Vec<_> = rxs
         .into_iter()
-        .enumerate()
-        .map(|(index, wrx)| {
+        .map(|wrx| {
             let cfg = cfg.clone();
             thread::spawn(move || {
-                let mut worker = Worker::new(index, n, cfg);
-                for packet in wrx.iter() {
-                    worker.feed(&packet);
+                let mut worker = Worker::new(cfg);
+                for delivery in wrx.iter() {
+                    worker.feed(&delivery);
                 }
                 worker.finish()
             })
@@ -746,7 +882,9 @@ pub fn run_offline_parallel(rx: PacketRx, cfg: ParallelConfig) -> ReconResult {
             Ok(packet) => {
                 clock.observe(packet.timestamp);
                 packets_read += 1;
-                let s = match crate::capture::parse::peek_host_pair(&packet) {
+                // One walk to the outer IP header for both questions.
+                let peek = crate::capture::parse::peek_frame(&packet);
+                let s = match peek.hosts {
                     Some((a, b)) => shard_for(a, b, n),
                     // Counted, not merely tolerated. Two plain `u64` increments
                     // on the dispatcher's serial path: no atomic, no lock, no
@@ -756,14 +894,14 @@ pub fn run_offline_parallel(rx: PacketRx, cfg: ParallelConfig) -> ReconResult {
                         0
                     }
                 };
-                if fanout.needs(&packet) {
-                    for other in (0..n).filter(|&w| w != s) {
-                        // A copy lost to a dead worker is not a packet the
-                        // capture lost: weight 0.
-                        shard_send(&txs[other], packet.clone(), 0);
-                    }
-                }
-                dropped += shard_send(&txs[s], packet, 1);
+                let copy = fanout.copy_read(&packet, peek.transport);
+                deliver(packet, s, n, copy, |w, delivery| {
+                    // A copy lost to a dead worker is not a packet the
+                    // capture lost: weight 0.
+                    let weight = u64::from(matches!(delivery, Delivery::Owned(_)));
+                    dropped += shard_send(&txs[w], delivery, weight);
+                    true
+                });
             }
             Err(crossbeam_channel::RecvTimeoutError::Disconnected) => break,
             Err(crossbeam_channel::RecvTimeoutError::Timeout) => continue,
@@ -945,7 +1083,7 @@ fn shard_opened<S: ShardSink>(
     let mut ordinal: u64 = 0;
 
     // One partial batch per shard, this FILE's own; see the doc comment.
-    let mut batches: Vec<Vec<Packet>> = (0..n).map(|_| Vec::with_capacity(BATCH)).collect();
+    let mut batches: Vec<Vec<Delivery>> = (0..n).map(|_| Vec::with_capacity(BATCH)).collect();
     let mut read = FileRead::default();
 
     // Frames are cut from a shared block rather than allocated one at a time.
@@ -1015,7 +1153,9 @@ fn shard_opened<S: ShardSink>(
                 if read.latest.is_none_or(|latest| packet.timestamp > latest) {
                     read.latest = Some(packet.timestamp);
                 }
-                let s = match crate::capture::parse::peek_host_pair(&packet) {
+                // One walk to the outer IP header for both questions.
+                let peek = crate::capture::parse::peek_frame(&packet);
+                let s = match peek.hosts {
                     Some((a, b)) => shard_for(a, b, n),
                     // Counted, not merely tolerated — see the same branch in
                     // `run_offline_parallel`. One `u64` increment on the
@@ -1028,15 +1168,14 @@ fn shard_opened<S: ShardSink>(
                 // The copies ride in each other worker's batch at the
                 // packet's place in the capture (see `Fanout`). They are not
                 // read packets: `read.count` counts the original once.
-                if fanout.needs(&packet)
-                    && !(0..n)
-                        .filter(|&w| w != s)
-                        .all(|w| push_and_flush(&mut batches, w, packet.clone(), sink))
-                {
-                    break;
-                }
-                read.count += 1;
-                if !push_and_flush(&mut batches, s, packet, sink) {
+                let copy = fanout.copy_read(&packet, peek.transport);
+                let delivered = deliver(packet, s, n, copy, |w, delivery| {
+                    if matches!(delivery, Delivery::Owned(_)) {
+                        read.count += 1;
+                    }
+                    push_and_flush(&mut batches, w, delivery, sink)
+                });
+                if !delivered {
                     break;
                 }
             }
@@ -1074,12 +1213,12 @@ fn shard_opened<S: ShardSink>(
 /// been refused — this file's verdict is on its way to a dispatcher that has
 /// stopped reading verdicts.
 fn push_and_flush<S: ShardSink>(
-    batches: &mut [Vec<crate::capture::packet::Packet>],
+    batches: &mut [Vec<Delivery>],
     shard: usize,
-    packet: crate::capture::packet::Packet,
+    delivery: Delivery,
     sink: &mut S,
 ) -> bool {
-    batches[shard].push(packet);
+    batches[shard].push(delivery);
     if batches[shard].len() < BATCH {
         return true;
     }
@@ -1127,19 +1266,19 @@ struct FileRead {
 trait ShardSink {
     /// Hand `batch` to the worker that owns `shard`. `false` means stop
     /// reading.
-    fn emit(&mut self, shard: usize, batch: Vec<crate::capture::packet::Packet>) -> bool;
+    fn emit(&mut self, shard: usize, batch: Vec<Delivery>) -> bool;
 }
 
 /// The single-file sink: one hop, straight to the worker.
 struct DirectSink<'a> {
     /// One sender per worker, indexed by shard.
-    txs: &'a [crossbeam_channel::Sender<Vec<crate::capture::packet::Packet>>],
+    txs: &'a [crossbeam_channel::Sender<Vec<Delivery>>],
     /// Raw packets lost because a worker's shard channel had closed.
     dropped: u64,
 }
 
 impl ShardSink for DirectSink<'_> {
-    fn emit(&mut self, shard: usize, batch: Vec<crate::capture::packet::Packet>) -> bool {
+    fn emit(&mut self, shard: usize, batch: Vec<Delivery>) -> bool {
         self.dropped += shard_send_batch(self.txs, shard, batch);
         // A dead worker does NOT stop the read: the loss is counted and
         // reported once at the end, exactly as it was before this sink
@@ -1190,7 +1329,7 @@ impl ShardSink for DirectSink<'_> {
 fn shard_set(
     paths: &[std::path::PathBuf],
     capture_config: &crate::capture::CaptureConfig,
-    txs: &[crossbeam_channel::Sender<Vec<crate::capture::packet::Packet>>],
+    txs: &[crossbeam_channel::Sender<Vec<Delivery>>],
     progress: &mut ReadProgress,
     tally: &mut crate::capture::file::ReadTally,
     fanout: Fanout,
@@ -1471,8 +1610,8 @@ const DISPATCH_RESERVE_BYTES: usize = 8 * 1024 * 1024;
 /// frame, plus the `Packet` that carries the frame. The second half is what
 /// gives the charge a floor — a capture of 64-byte frames would otherwise buy
 /// a runway of millions of packets for nothing.
-fn read_ahead_charge(batch: &[crate::capture::packet::Packet]) -> usize {
-    let frames: usize = batch.iter().map(|p| p.data.len()).sum();
+fn read_ahead_charge(batch: &[Delivery]) -> usize {
+    let frames: usize = batch.iter().map(|d| d.packet().data.len()).sum();
     frames + std::mem::size_of_val(batch)
 }
 
@@ -1487,7 +1626,7 @@ enum ReaderMsg {
         /// it otherwise never touches.
         charge: usize,
         /// The packets, already stamped with source and ordinal.
-        packets: Vec<crate::capture::packet::Packet>,
+        packets: Vec<Delivery>,
     },
     /// This file is finished — read, refused, or never opened. Always the LAST
     /// message a file sends, which is how the dispatcher knows it may move on
@@ -1743,7 +1882,7 @@ struct QueueSink<'a> {
 }
 
 impl ShardSink for QueueSink<'_> {
-    fn emit(&mut self, shard: usize, batch: Vec<crate::capture::packet::Packet>) -> bool {
+    fn emit(&mut self, shard: usize, batch: Vec<Delivery>) -> bool {
         // Walked once, here, on the thread that just built the batch and has
         // every `Packet` in its cache — not on the dispatcher, which otherwise
         // touches nothing but the pointer.
@@ -1883,7 +2022,7 @@ fn read_one_file(
 fn shard_set_parallel(
     paths: &[std::path::PathBuf],
     capture_config: &crate::capture::CaptureConfig,
-    txs: &[crossbeam_channel::Sender<Vec<crate::capture::packet::Packet>>],
+    txs: &[crossbeam_channel::Sender<Vec<Delivery>>],
     progress: &mut ReadProgress,
     tally: &mut crate::capture::file::ReadTally,
     readers: usize,
@@ -1981,7 +2120,7 @@ fn shard_set_parallel(
 /// file lost.
 fn dispatch_in_file_order(
     paths: &[std::path::PathBuf],
-    txs: &[crossbeam_channel::Sender<Vec<crate::capture::packet::Packet>>],
+    txs: &[crossbeam_channel::Sender<Vec<Delivery>>],
     queues: &[crossbeam_channel::Receiver<ReaderMsg>],
     runway: &Runway,
     progress: &mut ReadProgress,
@@ -2142,7 +2281,6 @@ pub fn run_offline_parallel_file(
     capture_config: &crate::capture::CaptureConfig,
     cfg: ParallelConfig,
 ) -> anyhow::Result<ReconResult> {
-    use crate::capture::packet::Packet;
     use crossbeam_channel::bounded;
     let n = cfg.cores.max(2);
 
@@ -2150,17 +2288,16 @@ pub fn run_offline_parallel_file(
         anyhow::bail!("no capture files to read");
     }
 
-    let (txs, rxs): (Vec<_>, Vec<_>) = (0..n).map(|_| bounded::<Vec<Packet>>(64)).unzip();
+    let (txs, rxs): (Vec<_>, Vec<_>) = (0..n).map(|_| bounded::<Vec<Delivery>>(64)).unzip();
     let workers: Vec<_> = rxs
         .into_iter()
-        .enumerate()
-        .map(|(index, wrx)| {
+        .map(|wrx| {
             let cfg = cfg.clone();
             thread::spawn(move || {
-                let mut worker = Worker::new(index, n, cfg);
+                let mut worker = Worker::new(cfg);
                 for batch in wrx.iter() {
-                    for packet in batch.iter() {
-                        worker.feed(packet);
+                    for delivery in batch.iter() {
+                        worker.feed(delivery);
                     }
                 }
                 worker.finish()
@@ -4226,15 +4363,131 @@ mod tests {
         drop(rxs);
         let (a, b) = SIP_HOSTS;
         let owned = eth_packet(eth_udp_between(a, b, 5060, 5060, b"x"));
-        let shard = owner_of(&owned, 2);
+        let shard = shard_for(IpAddr::from(a), IpAddr::from(b), 2);
         let other = hosts_on_the_other_worker(SIP_HOSTS)?;
         let copy = eth_packet(eth_udp_between(other.0, other.1, 5060, 5060, b"y"));
-        assert_ne!(owner_of(&copy, 2), shard, "the fixture holds a copy");
+        let batch = vec![
+            Delivery::Owned(owned.clone()),
+            Delivery::Copy(copy, None),
+            Delivery::Owned(owned),
+        ];
         assert_eq!(
-            shard_send_batch(&txs, shard, vec![owned.clone(), copy, owned]),
+            shard_send_batch(&txs, shard, batch),
             2,
             "two owned packets lost, the copy not counted"
         );
+        Ok(())
+    }
+
+    /// What each of three workers receives for one packet: its owner the
+    /// packet, marked owned, and each other worker a copy when every worker
+    /// reads it. The copies of a whole SDP-bearing datagram share ONE read;
+    /// the copies of a TCP segment or a fragment carry none, because each
+    /// worker reads those through its own reassembly.
+    #[cfg(feature = "native")]
+    #[test]
+    fn every_worker_receives_a_copy_and_whole_datagrams_share_one_read() {
+        let fanout = Fanout::of(&pcfg_default_range());
+        let (a, b) = SIP_HOSTS;
+        let received = |packet| {
+            let mut got: Vec<(usize, Delivery)> = Vec::new();
+            let read = fanout.copy_of(&packet);
+            assert!(deliver(packet, 1, 3, read, |w, d| {
+                got.push((w, d));
+                true
+            }));
+            got
+        };
+        let kinds = |got: &[(usize, Delivery)]| -> Vec<(usize, &'static str)> {
+            got.iter()
+                .map(|(w, d)| match d {
+                    Delivery::Owned(_) => (*w, "owned"),
+                    Delivery::Copy(_, Some(_)) => (*w, "shared copy"),
+                    Delivery::Copy(_, None) => (*w, "copy"),
+                })
+                .collect()
+        };
+
+        let offer = sip_with_sdp("INVITE sip:b@x SIP/2.0", "c", ([10, 2, 0, 1], 20000));
+        let got = received(eth_packet(eth_udp_between(a, b, 5060, 5060, &offer)));
+        assert_eq!(
+            kinds(&got),
+            [(0, "shared copy"), (2, "shared copy"), (1, "owned")]
+        );
+        let shared: Vec<_> = got
+            .iter()
+            .filter_map(|(_, d)| match d {
+                Delivery::Copy(_, shared) => shared.clone(),
+                Delivery::Owned(_) => None,
+            })
+            .collect();
+        assert!(
+            std::sync::Arc::ptr_eq(&shared[0], &shared[1]),
+            "both copies share one read"
+        );
+
+        let got = received(eth_packet(rtp_frame(0x1122_3344, 1)));
+        assert_eq!(kinds(&got), [(1, "owned")], "media goes to its owner only");
+
+        let segment = eth_tcp_between((a, 40_001), (b, 5060), 7, 0x18, &offer);
+        assert_eq!(
+            kinds(&received(eth_packet(segment))),
+            [(0, "copy"), (2, "copy"), (1, "owned")]
+        );
+        let mut fragment = eth_udp_between(a, b, 5060, 5060, &offer);
+        fragment[20..22].copy_from_slice(&[0x20, 0x00]); // More Fragments
+        assert_eq!(
+            kinds(&received(eth_packet(fragment))),
+            [(0, "copy"), (2, "copy"), (1, "owned")]
+        );
+    }
+
+    /// A worker that reaches a shared copy first reads it and records the
+    /// links for the others; a worker that reaches it later takes the
+    /// recorded links and does not read the packet again. The second worker
+    /// here is handed a read that names no socket, so a socket in its store
+    /// could only have come from parsing the packet itself.
+    #[cfg(feature = "native")]
+    #[test]
+    fn a_shared_copy_is_read_by_the_first_worker_only() -> Result<(), TestError> {
+        let media = ([10, 2, 0, 1], 20000);
+        let offer = sip_with_sdp("INVITE sip:b@x SIP/2.0", "c", media);
+        let (a, b) = SIP_HOSTS;
+        let invite = eth_packet(eth_udp_between(a, b, 5060, 5060, &offer));
+        let socket = (IpAddr::from(media.0), media.1);
+
+        let shared = std::sync::Arc::new(SharedRead::default());
+        let mut first = Worker::new(pcfg_default_range());
+        first.feed(&Delivery::Copy(invite.clone(), Some(shared.clone())));
+        assert!(
+            first
+                .ss
+                .sdp_endpoint_provenance(socket.0, socket.1)
+                .is_some(),
+            "the first worker learned the offer's socket"
+        );
+        let recorded = shared.0.get().ok_or("the first worker recorded its read")?;
+        let recorded = recorded
+            .as_ref()
+            .ok_or("a whole datagram's read is shared")?;
+        assert_eq!(recorded.len(), 1, "one parsed packet");
+        assert_eq!(recorded[0].links.len(), 1, "one media socket");
+
+        let names_nothing = SharedRead::default();
+        assert!(names_nothing.0.set(Some(Vec::new())).is_ok());
+        let mut later = Worker::new(pcfg_default_range());
+        later.feed(&Delivery::Copy(invite.clone(), Some(names_nothing.into())));
+        assert!(
+            later
+                .ss
+                .sdp_endpoint_provenance(socket.0, socket.1)
+                .is_none(),
+            "a later worker takes the recorded read"
+        );
+
+        // The mark decides ownership: the same packet, owned, is reconstructed.
+        later.feed(&Delivery::Owned(invite));
+        assert_eq!(later.sip, 1, "an owned packet is counted");
         Ok(())
     }
 
