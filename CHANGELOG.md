@@ -156,6 +156,10 @@ entry that carries them.
   - `cargo clippy --no-default-features --lib -- -D warnings` failed on main: `impl From<ActionPolicy> for Actions` used `..Self::default()`, which does nothing once the feature-gated `service` field is absent.
   - The struct is now built field by field, each under its declaration's `cfg`.
   - Every clippy gate ran `--all-features` only. CI's new "Clippy with no features" step and a matching pre-push gate run the no-feature build, and `tests/clippy_scope_parity_test.rs` requires both.
+- **`a_live_sweep_queues_enrichment_and_the_worker_writes` checks that the sweep did not wait by order of events, not by a 900 ms bound.**
+  - The test's service slept 1 second, and the sweep had to return within 900 ms. On a loaded host the sweep alone took longer, and the test reported that the sweep had waited for the service.
+  - The service now answers only once the test creates a release file, so the sweep returning with nothing written proves it did not wait. A sweep that waited would write the container itself, and the test fails on it.
+  - Interleaved with the old test under stress, with the load average between 170 and 370: 14 of 450 runs failed before, 0 of 450 after. Making the sweep enrich in place fails the test.
 
 - **`a_peer_that_hangs_is_stopped_and_reported` tolerates a host too loaded to start a shell's `sleep` within 3 seconds.**
   - Its fake must have started a grandchild before the timeout fires. The test repeated a run without one at 300 ms, 1 s and 3 s, and then failed. With the load average at 113 to 185 it failed that way in 20 runs of 300.

@@ -10229,11 +10229,21 @@ mod tests {
 
     /// A live sweep hands an enriching rule's call to the enrichment queue and
     /// goes on; the worker enriches the container and writes it.
+    ///
+    /// The service does not answer until the test releases it, so "the sweep
+    /// did not wait" is observed as an order of events, not a duration: the
+    /// sweep returns while the service is still held, and nothing is written
+    /// until it is let go. A sweep that waited for the service would write
+    /// the container itself, after the service gave up holding (60 s), and
+    /// the file it wrote is what fails the test. A bound of 900 ms against a
+    /// one-second service measured the machine as much as the sweep, and
+    /// failed in 14 of 450 runs with the load average between 170 and 370.
     #[cfg(feature = "vcon")]
     #[test]
     fn a_live_sweep_queues_enrichment_and_the_worker_writes() -> Result<(), TestError> {
         let tmp = tempfile::tempdir().map_err(|e| format!("temp dir: {e:?}"))?;
         let script = tmp.path().join("stt.sh");
+        let release = tmp.path().join("release");
         // Written by a child process, so this one never holds a writable
         // descriptor a sibling test's fork could inherit (ETXTBSY on exec).
         let mut writer = std::process::Command::new("sh")
@@ -10244,9 +10254,14 @@ mod tests {
             .map_err(|e| format!("{e:?}"))?;
         std::io::Write::write_all(
             &mut writer.stdin.take().ok_or("the writer's stdin")?,
-            "#!/bin/sh\ncat > /dev/null\nsleep 1\nprintf '%s' '{\"analysis\":[{\"type\":\
-             \"transcript\",\"vendor\":\"t\",\"encoding\":\"none\",\"body\":\"x\"}]}'\n"
-                .as_bytes(),
+            format!(
+                "#!/bin/sh\ncat > /dev/null\ni=0\n\
+                 while [ ! -e '{}' ] && [ \"$i\" -lt 600 ]; do sleep 0.1; i=$((i+1)); done\n\
+                 printf '%s' '{{\"analysis\":[{{\"type\":\
+                 \"transcript\",\"vendor\":\"t\",\"encoding\":\"none\",\"body\":\"x\"}}]}}'\n",
+                release.display()
+            )
+            .as_bytes(),
         )
         .map_err(|e| format!("{e:?}"))?;
         assert!(writer.wait().map_err(|e| format!("{e:?}"))?.success());
@@ -10271,7 +10286,6 @@ mod tests {
             streams: &streams,
             frames_read: 4,
         };
-        let started = std::time::Instant::now();
         let n = live_rules_sweep(
             &Cli::parse_from_args(["sipnab"]),
             &rules,
@@ -10281,13 +10295,19 @@ mod tests {
             later,
         );
         assert_eq!(n, 1, "the call is counted when it is queued");
-        assert!(
-            started.elapsed() < std::time::Duration::from_millis(900),
-            "the sweep did not wait for the service"
+        let written = std::fs::read_dir(&dir).map_or(0, Iterator::count);
+        assert_eq!(
+            written, 0,
+            "the sweep returned after the container was written, so it waited \
+             for the service it should have queued"
         );
+        std::fs::write(&release, b"").map_err(|e| format!("{e:?}"))?;
+        // A ceiling on a wait that ends as soon as the worker is done, not a
+        // measurement: once the script sees the release file, the worker has
+        // only the service's answer left to attach and write.
         assert!(
             crate::app::vcon_enrich::queue()
-                .drain(std::time::Instant::now() + std::time::Duration::from_secs(10)),
+                .drain(std::time::Instant::now() + std::time::Duration::from_secs(60)),
             "the worker finished"
         );
         let file = std::fs::read_dir(&dir)
