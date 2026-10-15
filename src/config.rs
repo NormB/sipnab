@@ -643,8 +643,9 @@ pub struct VconForwardConfig {
     /// [`FORWARD_MAX_ERROR_BODY`].
     pub max_error_body: Option<u64>,
     /// The SCITT transparency service that lifecycle statements are
-    /// registered with, by SCRAPI (`<url>/entries`). Unset, nothing is
-    /// registered. `--vcon-forward-scitt-url` overrides it.
+    /// registered with, by SCRAPI (`<url>/entries`); a `202`'s `Location`
+    /// is polled for the receipt within `timeout`, on this URL's origin only.
+    /// Unset, nothing is registered. `--vcon-forward-scitt-url` overrides it.
     pub scitt_url: Option<String>,
     /// The file holding the one `Header-Name: value` line that authenticates
     /// to the transparency service. `--vcon-forward-scitt-auth-file`
@@ -653,8 +654,9 @@ pub struct VconForwardConfig {
     /// The only CA file trusted for an `https://` transparency service.
     /// `--vcon-forward-scitt-ca` overrides it.
     pub scitt_ca: Option<PathBuf>,
-    /// The PEM RSA private key the statements are signed with, readable by
-    /// its owner only. `--vcon-forward-scitt-sign-key` overrides it.
+    /// The PEM private key the statements are signed with, RSA (RS256) or
+    /// EC P-256 (ES256), readable by its owner only.
+    /// `--vcon-forward-scitt-sign-key` overrides it.
     pub scitt_sign_key: Option<PathBuf>,
     /// The PEM certificate chain of `scitt_sign_key`, leaf first.
     /// `--vcon-forward-scitt-sign-cert` overrides it.

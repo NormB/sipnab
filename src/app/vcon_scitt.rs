@@ -23,13 +23,18 @@
 //! - [draft-ietf-scitt-scrapi-11 section 2.3](https://datatracker.ietf.org/doc/html/draft-ietf-scitt-scrapi-11#section-2.3):
 //!   POSTed to `/entries` as `application/cose`, answered by `201` with the
 //!   receipt or `202` with a `Location` to poll.
+//! - [draft-ietf-scitt-scrapi-11 section 2.4](https://datatracker.ietf.org/doc/html/draft-ietf-scitt-scrapi-11#section-2.4):
+//!   a GET on that `Location` answers `200` with the receipt, `204` while
+//!   the registration is running, or `404` when it failed. The forwarder
+//!   polls it within its timeout, and only on the service's own origin.
 //!
 //! What sipnab chose where the drafts leave it open:
 //!
-//! - `alg` is RS256 (`-257`, [RFC 8812 section 2](https://www.rfc-editor.org/rfc/rfc8812.html#section-2)),
-//!   so the key is the same kind of PEM RSA key an encrypting
-//!   `[[vcon.rule]]` signs with. A transparency service whose registration
-//!   policy admits other algorithms only refuses it, and the record says so.
+//! - `alg` follows the key, as it does for an encrypting `[[vcon.rule]]`'s
+//!   signing key: ES256 (`-7`, [RFC 9053 section 2.1](https://www.rfc-editor.org/rfc/rfc9053.html#section-2.1))
+//!   for an EC P-256 key, RS256 (`-257`, [RFC 8812 section 2](https://www.rfc-editor.org/rfc/rfc8812.html#section-2))
+//!   for an RSA key. A transparency service whose registration policy
+//!   admits other algorithms only refuses it, and the record says so.
 //! - `sub` is `urn:uuid:<uuid>` ([RFC 9562 section 4](https://www.rfc-editor.org/rfc/rfc9562.html#section-4)),
 //!   so every statement about one vCon shares a subject.
 //! - The payload is a JSON object naming the event, the vCon's `uuid`, the
@@ -38,12 +43,14 @@
 //!
 //! The forwarder writes what each registration returned to `<name>.scitt`
 //! beside the delivered container. A registration that fails is recorded
-//! there and not retried: the store already holds the container.
+//! there and not retried: the store already holds the container. A receipt
+//! still running when the timeout ran out is recorded as `pending`, with
+//! its `Location`.
 
 use std::io::BufRead;
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use crate::app::vcon_forward::{AuthHeader, Endpoint};
 use crate::output::vcon_jose::Signer;
@@ -63,6 +70,30 @@ const MAX_RECEIPT: usize = 64 * 1024;
 /// The COSE algorithm of RS256, RSASSA-PKCS1-v1_5 with SHA-256,
 /// [RFC 8812 section 2](https://www.rfc-editor.org/rfc/rfc8812.html#section-2).
 const RS256: i64 = -257;
+
+/// The COSE algorithm of ES256, ECDSA with SHA-256,
+/// [RFC 9053 section 2.1](https://www.rfc-editor.org/rfc/rfc9053.html#section-2.1).
+const ES256: i64 = -7;
+
+/// The wait before the first poll of a `202`'s `Location` that names no
+/// `Retry-After`; it doubles after each poll.
+const FIRST_POLL_WAIT: Duration = Duration::from_millis(250);
+
+/// The most GETs on one `Location`:
+/// [SCRAPI section 5.1](https://datatracker.ietf.org/doc/html/draft-ietf-scitt-scrapi-11#section-5.1)
+/// has a client "cap the total number of retries". The forwarder timeout
+/// bounds the polling first unless the service answers with `Retry-After: 0`.
+const MAX_POLLS: u32 = 16;
+
+/// The COSE `alg` of a statement signed by a signer whose JWS `alg` is
+/// `jws_alg`: [`ES256`] for an EC P-256 key, [`RS256`] for an RSA key.
+fn cose_alg(jws_alg: &str) -> i64 {
+    if jws_alg == crate::output::vcon_jose::JWS_ALG_ES256 {
+        ES256
+    } else {
+        RS256
+    }
+}
 
 /// The longest `iss`,
 /// [draft-ietf-scitt-architecture-22 section 6](https://datatracker.ietf.org/doc/html/draft-ietf-scitt-architecture-22#section-6):
@@ -92,15 +123,16 @@ impl Event {
 
 /// The key the statements are signed with, and its certificate chain.
 pub struct ScittSigner {
-    /// The RSA key, as an encrypting `[[vcon.rule]]` loads it.
+    /// The RSA or EC P-256 key, as an encrypting `[[vcon.rule]]` loads it.
     signer: Signer,
     /// The chain as `x5chain` carries it: DER, leaf first.
     chain: Vec<Vec<u8>>,
 }
 
 impl ScittSigner {
-    /// A signer from a PEM RSA private key and its PEM certificate chain,
-    /// leaf first. [`Signer::from_pem`] checks that the leaf is the key's.
+    /// A signer from a PEM private key, RSA (RS256) or EC P-256 (ES256),
+    /// and its PEM certificate chain, leaf first. [`Signer::from_pem`]
+    /// checks that the leaf is the key's.
     ///
     /// # Errors
     ///
@@ -317,7 +349,10 @@ pub fn statement(facts: &Facts<'_>, settings: &ScittSettings) -> Result<Vec<u8>,
     // Labels in ascending order, the order RFC 8949 section 4.2.1 gives
     // their encodings: 1, 3, 15 (one byte each), then 33.
     let protected = Cbor::Map(vec![
-        (Cbor::Int(1), Cbor::Int(RS256)),
+        (
+            Cbor::Int(1),
+            Cbor::Int(cose_alg(settings.signer.signer.alg())),
+        ),
         (Cbor::Int(3), Cbor::Text("application/json".into())),
         (
             Cbor::Int(15),
@@ -337,7 +372,7 @@ pub fn statement(facts: &Facts<'_>, settings: &ScittSettings) -> Result<Vec<u8>,
         Cbor::Bytes(payload.clone()),
     ])
     .encode();
-    let signature = settings.signer.signer.rs256(&to_be_signed)?;
+    let signature = settings.signer.signer.sign_input(&to_be_signed)?;
     Ok(Cbor::Tag(
         18,
         Box::new(Cbor::Array(vec![
@@ -361,12 +396,50 @@ pub struct Registration {
     /// The `Location` of the receipt resource.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub location: Option<String>,
-    /// The receipt of a `201`, base64url.
+    /// The receipt, base64url: of a `201`, or of the `200` a GET on a
+    /// `202`'s `Location` answered.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub receipt: Option<String>,
-    /// Why it did not register.
+    /// Why it did not register: the POST's refusal, or a `4xx` a GET on
+    /// the `Location` answered (a registration that failed).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
+    /// The HTTP status of the last GET on a `202`'s `Location`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub poll_status: Option<u16>,
+    /// The receipt had not come when the forwarder timeout ran out or a
+    /// stop was asked for: the registration is running, and the receipt
+    /// can be fetched from `location` later.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub pending: bool,
+    /// Why the `Location` was not polled (another origin than the service
+    /// URL, or no `Location`), or the last answer that was not a receipt.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub poll_error: Option<String>,
+}
+
+impl Registration {
+    /// A registration of `event` with nothing recorded yet.
+    fn of(event: Event) -> Self {
+        Self {
+            event: event.as_str(),
+            status: None,
+            location: None,
+            receipt: None,
+            error: None,
+            poll_status: None,
+            pending: false,
+            poll_error: None,
+        }
+    }
+
+    /// A registration of `event` that did not happen, and why.
+    fn failed(event: Event, why: String) -> Self {
+        Self {
+            error: Some(why),
+            ..Self::of(event)
+        }
+    }
 }
 
 /// The events to register for the delivered `container`: `vcon_created`
@@ -400,12 +473,19 @@ fn events(container: &[u8]) -> Result<(Vec<Event>, String, String), String> {
 /// the record's text, and whether every statement registered (`201` or
 /// `202`).
 ///
+/// A `202`'s `Location` is polled for the receipt until the registration's
+/// `timeout` runs out, and only on the service's origin
+/// ([`receipt_endpoint`]). Once `stop` says so, polling ends and
+/// no further statement is sent.
+///
 /// # Arguments
 ///
 /// * `container` — the bytes the store accepted.
 /// * `store` — the store's URL, the `to` of `vcon_sent`.
-/// * `timeout` — the connect, read and write timeout.
+/// * `timeout` — the connect, read and write timeout, and the most time
+///   one registration, its POST and its polling, takes.
 /// * `tls` — the client configuration for an `https://` service.
+/// * `stop` — whether a stop was asked for.
 #[must_use]
 pub fn register_delivery(
     settings: &ScittSettings,
@@ -413,20 +493,21 @@ pub fn register_delivery(
     timeout: Duration,
     container: &[u8],
     store: &str,
+    stop: &dyn Fn() -> bool,
 ) -> (String, bool) {
     let now = chrono::Utc::now();
     let sent_at = now.to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
     let statements: Vec<Registration> = match events(container) {
-        Err(why) => vec![Registration {
-            event: Event::Sent.as_str(),
-            status: None,
-            location: None,
-            receipt: None,
-            error: Some(why),
-        }],
+        Err(why) => vec![Registration::failed(Event::Sent, why)],
         Ok((events, uuid, created)) => events
             .into_iter()
             .map(|event| {
+                if stop() {
+                    return Registration::failed(
+                        event,
+                        "not sent: a stop was asked for".to_owned(),
+                    );
+                }
                 let facts = Facts {
                     event,
                     uuid: &uuid,
@@ -440,14 +521,17 @@ pub fn register_delivery(
                     issued_at: now.timestamp(),
                 };
                 match statement(&facts, settings) {
-                    Ok(bytes) => register(settings, tls, timeout, event, &bytes),
-                    Err(why) => Registration {
-                        event: event.as_str(),
-                        status: None,
-                        location: None,
-                        receipt: None,
-                        error: Some(why),
-                    },
+                    Ok(bytes) => {
+                        let link = Link {
+                            settings,
+                            tls,
+                            timeout,
+                            deadline: Instant::now() + timeout,
+                            stop,
+                        };
+                        register(&link, event, &bytes)
+                    }
+                    Err(why) => Registration::failed(event, why),
                 }
             })
             .collect(),
@@ -478,76 +562,313 @@ pub fn entries(url: &Endpoint) -> Endpoint {
     out
 }
 
-/// POST `statement` to the service and read what it answered.
-fn register(
-    settings: &ScittSettings,
-    tls: Option<&Arc<rustls::ClientConfig>>,
+/// What one registration talks to the transparency service with.
+struct Link<'a> {
+    /// The service.
+    settings: &'a ScittSettings,
+    /// The client configuration for an `https://` service.
+    tls: Option<&'a Arc<rustls::ClientConfig>>,
+    /// The connect, read and write timeout.
     timeout: Duration,
-    event: Event,
-    statement: &[u8],
-) -> Registration {
-    use base64::Engine as _;
-    let endpoint = entries(&settings.url);
-    let mut head = format!(
-        "POST {} HTTP/1.1\r\nHost: {}\r\nUser-Agent: {}\r\nContent-Type: application/cose\r\n\
-         Accept: application/cose\r\nContent-Length: {}\r\nConnection: close\r\n",
-        endpoint.target,
-        endpoint.host_header(),
-        crate::app::vcon_forward::USER_AGENT,
-        statement.len()
-    );
-    if let Some(auth) = &settings.auth {
-        head.push_str(&auth.line());
-        head.push_str("\r\n");
+    /// When the registration's time runs out: no poll starts after it.
+    deadline: Instant,
+    /// Whether a stop was asked for.
+    stop: &'a dyn Fn() -> bool,
+}
+
+/// One answer of the transparency service.
+struct Answer {
+    /// The HTTP status.
+    status: u16,
+    /// The `Location` header.
+    location: Option<String>,
+    /// The wait the `Retry-After` header asks for.
+    retry_after: Option<Duration>,
+    /// At most [`MAX_RECEIPT`] bytes of the body; none for a `202` or a
+    /// `204`, which carry none.
+    body: Vec<u8>,
+    /// The body was longer.
+    truncated: bool,
+}
+
+impl Link<'_> {
+    /// `text` with the service's credential removed.
+    fn scrub(&self, text: String) -> String {
+        match &self.settings.auth {
+            Some(auth) => auth.scrub(&text),
+            None => text,
+        }
     }
-    head.push_str("\r\n");
-    let mut request = head.into_bytes();
-    request.extend_from_slice(statement);
-    let scrub = |text: String| match &settings.auth {
-        Some(auth) => auth.scrub(&text),
-        None => text,
+
+    /// Send `method` to `endpoint`, with `body` as `application/cose` when
+    /// given, and read the answer, `io` the connect, read and write timeout.
+    fn send(
+        &self,
+        endpoint: &Endpoint,
+        method: &str,
+        body: Option<&[u8]>,
+        io: Duration,
+    ) -> Result<Answer, String> {
+        use std::fmt::Write as _;
+        let mut head = format!(
+            "{method} {} HTTP/1.1\r\nHost: {}\r\nUser-Agent: {}\r\n",
+            endpoint.target,
+            endpoint.host_header(),
+            crate::app::vcon_forward::USER_AGENT,
+        );
+        if let Some(body) = body {
+            let _ = write!(
+                head,
+                "Content-Type: application/cose\r\nContent-Length: {}\r\n",
+                body.len()
+            );
+        }
+        head.push_str("Accept: application/cose\r\nConnection: close\r\n");
+        if let Some(auth) = &self.settings.auth {
+            head.push_str(&auth.line());
+            head.push_str("\r\n");
+        }
+        head.push_str("\r\n");
+        let mut request = head.into_bytes();
+        if let Some(body) = body {
+            request.extend_from_slice(body);
+        }
+        crate::app::vcon_forward::exchange(
+            endpoint,
+            io,
+            self.tls,
+            &request,
+            |reader: &mut dyn BufRead| {
+                use crate::app::vcon_forward::header_value;
+                let head = crate::app::vcon_forward::read_head(
+                    reader,
+                    64 * 1024,
+                    "--vcon-forward-scitt-url",
+                )?;
+                let status = crate::app::vcon_forward::status_of(&head)?;
+                let (body, truncated) = if matches!(status, 202 | 204) {
+                    (Vec::new(), false)
+                } else {
+                    crate::app::vcon_forward::read_body(reader, &head, MAX_RECEIPT)
+                };
+                Ok(Answer {
+                    status,
+                    location: header_value(&head, "location").map(str::to_owned),
+                    retry_after: header_value(&head, "retry-after")
+                        .and_then(|v| retry_after(v, chrono::Utc::now())),
+                    body,
+                    truncated,
+                })
+            },
+        )
+        .map_err(|e| self.scrub(e))
+    }
+}
+
+/// POST `statement` to the service and read what it answered; for a `202`,
+/// [`poll`] its `Location` for the receipt.
+fn register(link: &Link<'_>, event: Event, statement: &[u8]) -> Registration {
+    let mut out = Registration::of(event);
+    let answer = match link.send(
+        &entries(&link.settings.url),
+        "POST",
+        Some(statement),
+        link.timeout,
+    ) {
+        Ok(answer) => answer,
+        Err(e) => {
+            out.error = Some(e);
+            return out;
+        }
     };
-    let answered = crate::app::vcon_forward::exchange(
-        &endpoint,
-        timeout,
-        tls,
-        &request,
-        |reader: &mut dyn BufRead| {
-            let head =
-                crate::app::vcon_forward::read_head(reader, 64 * 1024, "--vcon-forward-scitt-url")?;
-            let status = crate::app::vcon_forward::status_of(&head)?;
-            let location =
-                crate::app::vcon_forward::header_value(&head, "location").map(str::to_owned);
-            let (body, truncated) = crate::app::vcon_forward::read_body(reader, &head, MAX_RECEIPT);
-            Ok((status, location, body, truncated))
+    out.status = Some(answer.status);
+    out.location.clone_from(&answer.location);
+    match answer.status {
+        201 => keep_receipt(&mut out, &answer),
+        202 => match &answer.location {
+            None => {
+                out.poll_error = Some(
+                    "not polled: the 202 names no Location (SCRAPI section 2.3.2 requires one)"
+                        .into(),
+                );
+            }
+            Some(location) => match receipt_endpoint(&link.settings.url, location) {
+                Err(why) => out.poll_error = Some(link.scrub(why)),
+                Ok(at) => poll(link, &at, answer.retry_after, &mut out),
+            },
         },
-    );
-    let mut out = Registration {
-        event: event.as_str(),
-        status: None,
-        location: None,
-        receipt: None,
-        error: None,
-    };
-    match answered {
-        Err(e) => out.error = Some(scrub(e)),
-        Ok((status, location, body, truncated)) => {
-            out.status = Some(status);
-            out.location = location;
-            match status {
-                201 if truncated => {
-                    out.error = Some(format!("the receipt is longer than {MAX_RECEIPT} bytes"));
-                }
-                201 => {
-                    out.receipt =
-                        Some(base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(&body));
-                }
-                202 => {}
-                _ => out.error = Some(scrub(problem(&body))),
+        _ => out.error = Some(link.scrub(problem(&answer.body))),
+    }
+    out
+}
+
+/// Keep `answer`'s body as the receipt, unless it was cut short.
+fn keep_receipt(out: &mut Registration, answer: &Answer) {
+    use base64::Engine as _;
+    if answer.truncated {
+        out.error = Some(format!("the receipt is longer than {MAX_RECEIPT} bytes"));
+    } else {
+        out.receipt = Some(base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(&answer.body));
+    }
+}
+
+/// Poll `at`, a `202`'s `Location`, for the receipt,
+/// [SCRAPI section 2.4](https://datatracker.ietf.org/doc/html/draft-ietf-scitt-scrapi-11#section-2.4):
+/// a GET with `Accept: application/cose`, answered `200` with the receipt,
+/// `204` while the registration is running, or `404` when it failed.
+///
+/// - `200`: the body is the receipt; polling ends.
+/// - `204`, or `202`: still running (RFC 9110's `202` is "not yet
+///   completed"); poll again.
+/// - `429` or a `5xx`: poll again; the record keeps the answer as
+///   `poll_error` until a later one replaces it.
+/// - Any other `4xx`: the registration failed; its problem is the error.
+/// - Anything else ends polling, recorded as `poll_error`.
+///
+/// Each poll waits first: the `Retry-After` of the last answer, a minimum
+/// ([SCRAPI section 5.1](https://datatracker.ietf.org/doc/html/draft-ietf-scitt-scrapi-11#section-5.1)),
+/// else [`poll_wait`]'s jittered doubling. A wait that would reach the
+/// deadline, [`MAX_POLLS`] polls, or a stop ends polling with the receipt
+/// `pending`.
+fn poll(link: &Link<'_>, at: &Endpoint, first: Option<Duration>, out: &mut Registration) {
+    let mut retry = first;
+    for attempt in 0..MAX_POLLS {
+        let wait = poll_wait(retry, attempt, jitter());
+        if wait >= link.deadline.saturating_duration_since(Instant::now()) {
+            out.pending = true;
+            return;
+        }
+        if !crate::app::vcon_forward::sleep_unless_stopped(wait, link.stop) {
+            out.pending = true;
+            out.poll_error = Some("polling ended: a stop was asked for".into());
+            return;
+        }
+        let left = link.deadline.saturating_duration_since(Instant::now());
+        if left.is_zero() {
+            out.pending = true;
+            return;
+        }
+        let answer = match link.send(at, "GET", None, link.timeout.min(left)) {
+            Ok(answer) => answer,
+            Err(e) => {
+                out.poll_error = Some(e);
+                retry = None;
+                continue;
+            }
+        };
+        out.poll_status = Some(answer.status);
+        retry = answer.retry_after;
+        match answer.status {
+            200 => {
+                out.poll_error = None;
+                keep_receipt(out, &answer);
+                return;
+            }
+            202 | 204 => out.poll_error = None,
+            429 | 500..=599 => {
+                out.poll_error =
+                    Some(link.scrub(format!("{}: {}", answer.status, problem(&answer.body))));
+            }
+            400..=499 => {
+                out.error = Some(link.scrub(problem(&answer.body)));
+                return;
+            }
+            other => {
+                out.poll_error = Some(format!(
+                    "polling ended: the Location answered {other}, not a receipt"
+                ));
+                return;
             }
         }
     }
-    out
+    out.pending = true;
+}
+
+/// A random byte, the jitter of [`poll_wait`]; 255 (no jitter) when the
+/// system has none to give.
+fn jitter() -> u8 {
+    use ring::rand::SecureRandom as _;
+    let mut byte = [u8::MAX];
+    let _ = ring::rand::SystemRandom::new().fill(&mut byte);
+    byte[0]
+}
+
+/// The wait before poll number `attempt` (0 for the first): `retry_after`
+/// when the last answer named one; else [`FIRST_POLL_WAIT`] doubled per
+/// attempt, scaled by `jitter` to between half (0) and all (255) of it,
+/// which SCRAPI section 5.1 asks of a client without a `Retry-After`:
+/// "exponential backoff with jitter".
+fn poll_wait(retry_after: Option<Duration>, attempt: u32, jitter: u8) -> Duration {
+    if let Some(wait) = retry_after {
+        return wait;
+    }
+    let full = FIRST_POLL_WAIT.saturating_mul(1u32.checked_shl(attempt).unwrap_or(u32::MAX));
+    full / 2 + full.saturating_mul(u32::from(jitter)) / 510
+}
+
+/// The wait a `Retry-After` value asks for, at `now`:
+/// [RFC 9110 section 10.2.3](https://www.rfc-editor.org/rfc/rfc9110.html#section-10.2.3)'s
+/// delay-seconds, or an HTTP-date in any of the three forms
+/// [section 5.6.7](https://www.rfc-editor.org/rfc/rfc9110.html#section-5.6.7)
+/// has a recipient accept. A date in the past is no wait; anything else is
+/// no value.
+#[must_use]
+pub fn retry_after(value: &str, now: chrono::DateTime<chrono::Utc>) -> Option<Duration> {
+    let value = value.trim();
+    if value.is_empty() {
+        return None;
+    }
+    if value.bytes().all(|b| b.is_ascii_digit()) {
+        return Some(
+            value
+                .parse::<u64>()
+                .map_or(Duration::MAX, Duration::from_secs),
+        );
+    }
+    let at = chrono::DateTime::parse_from_rfc2822(value)
+        .map(|d| d.with_timezone(&chrono::Utc))
+        .ok()
+        .or_else(|| {
+            // rfc850-date, then asctime-date.
+            ["%A, %d-%b-%y %H:%M:%S GMT", "%a %b %e %H:%M:%S %Y"]
+                .iter()
+                .find_map(|form| chrono::NaiveDateTime::parse_from_str(value, form).ok())
+                .map(|naive| naive.and_utc())
+        })?;
+    Some((at - now).to_std().unwrap_or(Duration::ZERO))
+}
+
+/// The endpoint a `202`'s `location` names, which must be on the service's
+/// origin: the scheme, host and port of `service`. A path alone
+/// (`/entries/1`) is on it.
+///
+/// # Errors
+///
+/// `location` is not an `http://` or `https://` URL or an absolute path, or
+/// it is on another origin. The forwarder does not poll it: the service's
+/// credential goes only to the service.
+pub fn receipt_endpoint(service: &Endpoint, location: &str) -> Result<Endpoint, String> {
+    let scheme = if service.tls { "https" } else { "http" };
+    let origin = format!("{scheme}://{}", service.host_header());
+    let absolute = if location.starts_with('/') && !location.starts_with("//") {
+        format!("{origin}{location}")
+    } else {
+        location.to_owned()
+    };
+    let refuse = |why: &str| {
+        format!(
+            "not polled: the Location {location:?} is not on the transparency service's origin \
+             {origin}{why}"
+        )
+    };
+    let at = Endpoint::parse(&absolute).map_err(|e| refuse(&format!(" ({e})")))?;
+    if at.tls != service.tls
+        || !at.host.eq_ignore_ascii_case(&service.host)
+        || at.port != service.port
+    {
+        return Err(refuse(""));
+    }
+    Ok(at)
 }
 
 /// A refusal's body in words: the `title` and `detail` of an RFC 9290
@@ -739,5 +1060,102 @@ mod tests {
         ];
         assert_eq!(problem(&cbor), "Bad: why");
         assert_eq!(problem(b"plain refusal"), "plain refusal");
+    }
+
+    /// An EC P-256 signer's statements carry ES256 (-7, RFC 9053 section
+    /// 2.1); an RSA signer's RS256 (-257, [RFC 8812 section 2](https://www.rfc-editor.org/rfc/rfc8812.html#section-2)).
+    #[test]
+    fn the_cose_alg_follows_the_key() {
+        assert_eq!(cose_alg(crate::output::vcon_jose::JWS_ALG_ES256), -7);
+        assert_eq!(cose_alg(crate::output::vcon_jose::JWS_ALG), -257);
+    }
+
+    /// `Retry-After` is delay-seconds or an HTTP-date in any of the three
+    /// forms [RFC 9110 section 5.6.7](https://www.rfc-editor.org/rfc/rfc9110.html#section-5.6.7) has a recipient accept; anything else
+    /// is no value.
+    #[test]
+    fn retry_after_reads_seconds_and_each_http_date_form() -> Result<(), String> {
+        let now = chrono::DateTime::parse_from_rfc3339("1994-11-06T08:49:30Z")
+            .map_err(|e| e.to_string())?
+            .with_timezone(&chrono::Utc);
+        let seven = Some(Duration::from_secs(7));
+        assert_eq!(retry_after("0", now), Some(Duration::ZERO));
+        assert_eq!(retry_after(" 120 ", now), Some(Duration::from_secs(120)));
+        assert_eq!(
+            retry_after("99999999999999999999999", now),
+            Some(Duration::MAX),
+            "too many seconds to count is still a wait"
+        );
+        assert_eq!(retry_after("Sun, 06 Nov 1994 08:49:37 GMT", now), seven);
+        assert_eq!(retry_after("Sunday, 06-Nov-94 08:49:37 GMT", now), seven);
+        assert_eq!(retry_after("Sun Nov  6 08:49:37 1994", now), seven);
+        assert_eq!(
+            retry_after("Sun, 06 Nov 1994 08:00:00 GMT", now),
+            Some(Duration::ZERO),
+            "a date in the past is no wait"
+        );
+        for bad in ["", "-1", "1.5", "soon", "5 s"] {
+            assert_eq!(retry_after(bad, now), None, "{bad:?}");
+        }
+        Ok(())
+    }
+
+    /// Without `Retry-After` the wait starts at [`FIRST_POLL_WAIT`] and
+    /// doubles each poll, scaled by the jitter to between half and all of
+    /// it; with one, it is that value.
+    #[test]
+    fn a_poll_waits_for_retry_after_else_a_jittered_doubling() {
+        let ms = Duration::from_millis;
+        assert_eq!(poll_wait(None, 0, 255), FIRST_POLL_WAIT);
+        assert_eq!(poll_wait(None, 0, 0), FIRST_POLL_WAIT / 2);
+        assert_eq!(poll_wait(None, 1, 255), FIRST_POLL_WAIT * 2);
+        assert_eq!(poll_wait(None, 3, 255), FIRST_POLL_WAIT * 8);
+        for attempt in 0..MAX_POLLS {
+            for jitter in [0, 128, 255] {
+                let wait = poll_wait(None, attempt, jitter);
+                let full = poll_wait(None, attempt, 255);
+                assert!(wait >= full / 2 && wait <= full, "{attempt} {jitter}");
+            }
+        }
+        assert_eq!(
+            poll_wait(None, 200, 255),
+            poll_wait(None, 63, 255),
+            "no overflow"
+        );
+        assert_eq!(poll_wait(Some(ms(1500)), 4, 0), ms(1500));
+        assert_eq!(poll_wait(Some(Duration::ZERO), 0, 255), Duration::ZERO);
+    }
+
+    /// A `Location` is polled only on the service's origin: its scheme,
+    /// host and port. A path alone is on it.
+    #[test]
+    fn a_location_is_polled_only_on_the_services_origin() -> Result<(), String> {
+        let service = Endpoint::parse("https://ts.example:8443/scitt")?;
+        for good in [
+            "https://ts.example:8443/scitt/entries/1",
+            "https://TS.example:8443/entries/1?x=1",
+            "/scitt/entries/1",
+        ] {
+            let got = receipt_endpoint(&service, good)?;
+            assert!(got.tls && got.port == 8443, "{good}");
+            assert!(got.target.ends_with("entries/1") || got.target.ends_with("x=1"));
+        }
+        let plain = Endpoint::parse("http://ts.example/scitt")?;
+        assert_eq!(
+            receipt_endpoint(&plain, "http://ts.example:80/e/1")?.target,
+            "/e/1"
+        );
+        for bad in [
+            "http://ts.example:8443/entries/1",
+            "https://ts.example/entries/1",
+            "https://other.example:8443/entries/1",
+            "//other.example:8443/entries/1",
+            "entries/1",
+            "ftp://ts.example:8443/entries/1",
+        ] {
+            let why = receipt_endpoint(&service, bad).err().ok_or(bad)?;
+            assert!(why.contains("origin"), "{bad}: {why}");
+        }
+        Ok(())
     }
 }

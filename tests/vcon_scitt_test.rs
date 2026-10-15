@@ -41,9 +41,12 @@ const ISSUER: &str = "https://sipnab.example/forwarder";
 /// One request a fake server received.
 #[derive(Debug, Clone)]
 struct Recorded {
+    method: String,
     target: String,
     headers: Vec<(String, String)>,
     body: Vec<u8>,
+    /// When the request's head had been read.
+    at: Instant,
 }
 
 impl Recorded {
@@ -138,14 +141,11 @@ fn serve(
         buf.push(byte[0]);
     }
     let head = String::from_utf8_lossy(&buf).into_owned();
+    let at = Instant::now();
     let mut lines = head.split("\r\n");
-    let target = lines
-        .next()
-        .unwrap_or_default()
-        .split(' ')
-        .nth(1)
-        .unwrap_or_default()
-        .to_owned();
+    let mut request_line = lines.next().unwrap_or_default().split(' ');
+    let method = request_line.next().unwrap_or_default().to_owned();
+    let target = request_line.next().unwrap_or_default().to_owned();
     let headers: Vec<(String, String)> = lines
         .filter_map(|l| l.split_once(':'))
         .map(|(n, v)| (n.trim().to_owned(), v.trim().to_owned()))
@@ -158,9 +158,11 @@ fn serve(
     let mut body = vec![0u8; len];
     sock.read_exact(&mut body)?;
     let req = Recorded {
+        method,
         target,
         headers,
         body,
+        at,
     };
     log.lock().push(req.clone());
     sock.write_all(&reply(&req))?;
@@ -245,6 +247,19 @@ struct Rig {
 
 impl Rig {
     fn new(store: &Fake, scrapi: &Fake, scitt_auth: Option<&str>) -> Result<Self, TestError> {
+        let key = std::fs::read_to_string(Path::new(FIXTURES).join("fake_grp.key"))?;
+        Self::signed_by(store, scrapi, scitt_auth, &key, &chain_pem()?)
+    }
+
+    /// [`Rig::new`] with the statements signed by `key` (PEM) under
+    /// `chain` (PEM, leaf first).
+    fn signed_by(
+        store: &Fake,
+        scrapi: &Fake,
+        scitt_auth: Option<&str>,
+        key: &str,
+        chain: &str,
+    ) -> Result<Self, TestError> {
         use std::os::unix::fs::PermissionsExt;
         let dir = tempfile::tempdir()?;
         let spool = dir.path().join("spool");
@@ -252,7 +267,6 @@ impl Rig {
         let auth_file = dir.path().join("auth");
         std::fs::write(&auth_file, "Authorization: Bearer store-token-value\n")?;
         std::fs::set_permissions(&auth_file, std::fs::Permissions::from_mode(0o600))?;
-        let key = std::fs::read_to_string(Path::new(FIXTURES).join("fake_grp.key"))?;
         let auth = match scitt_auth {
             Some(line) => {
                 let path = dir.path().join("scitt-auth");
@@ -280,7 +294,7 @@ impl Rig {
                 url: Endpoint::parse(&scrapi.url("/scitt"))?,
                 auth,
                 ca: None,
-                signer: Arc::new(ScittSigner::from_pem(&key, &chain_pem()?)?),
+                signer: Arc::new(ScittSigner::from_pem(key, chain)?),
                 issuer: ISSUER.into(),
             }),
         };
@@ -342,6 +356,31 @@ impl Statement {
 /// and verify its RS256 signature over the Sig_structure of
 /// [RFC 9052 section 4.4](https://www.rfc-editor.org/rfc/rfc9052.html#section-4.4).
 fn decode(bytes: &[u8]) -> Result<Statement, TestError> {
+    let (to_be_signed, signature, statement) = open(bytes)?;
+    ring::signature::UnparsedPublicKey::new(
+        &ring::signature::RSA_PKCS1_2048_8192_SHA256,
+        public_key()?,
+    )
+    .verify(&to_be_signed, &signature)
+    .map_err(|_| "the RS256 signature does not verify")?;
+    Ok(statement)
+}
+
+/// Decode `bytes` as a COSE_Sign1 and verify its ES256 signature, the
+/// 64-byte `r || s` of
+/// [RFC 9053 section 2.1](https://www.rfc-editor.org/rfc/rfc9053.html#section-2.1),
+/// with the uncompressed P-256 point `point`.
+fn decode_es256(bytes: &[u8], point: &[u8]) -> Result<Statement, TestError> {
+    let (to_be_signed, signature, statement) = open(bytes)?;
+    ring::signature::UnparsedPublicKey::new(&ring::signature::ECDSA_P256_SHA256_FIXED, point)
+        .verify(&to_be_signed, &signature)
+        .map_err(|_| "the ES256 signature does not verify")?;
+    Ok(statement)
+}
+
+/// A COSE_Sign1's Sig_structure, its signature, and the statement it
+/// carries, not yet verified.
+fn open(bytes: &[u8]) -> Result<(Vec<u8>, Vec<u8>, Statement), TestError> {
     let value: Cbor = ciborium::from_reader(bytes)?;
     let Cbor::Tag(18, inner) = value else {
         return Err(format!("not tag 18 (COSE_Sign1): {value:?}").into());
@@ -372,19 +411,17 @@ fn decode(bytes: &[u8]) -> Result<Statement, TestError> {
         ]),
         &mut to_be_signed,
     )?;
-    ring::signature::UnparsedPublicKey::new(
-        &ring::signature::RSA_PKCS1_2048_8192_SHA256,
-        public_key()?,
-    )
-    .verify(&to_be_signed, signature)
-    .map_err(|_| "the RS256 signature does not verify")?;
     let Cbor::Map(protected) = ciborium::from_reader(protected.as_slice())? else {
         return Err("the protected header is not a map".into());
     };
-    Ok(Statement {
-        protected,
-        payload: serde_json::from_slice(payload)?,
-    })
+    Ok((
+        to_be_signed,
+        signature.clone(),
+        Statement {
+            protected,
+            payload: serde_json::from_slice(payload)?,
+        },
+    ))
 }
 
 /// A delivered container that sipnab wrote once registers `vcon_created` and
@@ -869,6 +906,492 @@ fn the_binary_refuses_an_incomplete_scitt_setup() -> Result<(), TestError> {
         let (err, code) = sipnab(&args)?;
         assert!(code.is_some_and(|c| c != 0), "{needle}: {err}");
         assert!(err.contains(needle), "{needle}: {err}");
+    }
+    Ok(())
+}
+
+/// The URL of `path` on the origin `req` reached: the request's `Host`.
+fn own(req: &Recorded, path: &str) -> String {
+    format!("http://{}{path}", req.header("host").unwrap_or_default())
+}
+
+/// The requests of each registration: a POST and the GETs after it.
+fn by_registration(requests: &[Recorded]) -> Vec<Vec<Recorded>> {
+    let mut out: Vec<Vec<Recorded>> = Vec::new();
+    for req in requests {
+        if req.method == "POST" || out.is_empty() {
+            out.push(Vec::new());
+        }
+        if let Some(last) = out.last_mut() {
+            last.push(req.clone());
+        }
+    }
+    out
+}
+
+/// A 202 is followed by GETs on its `Location`
+/// ([draft-ietf-scitt-scrapi-11 section 2.4](https://datatracker.ietf.org/doc/html/draft-ietf-scitt-scrapi-11#section-2.4)):
+/// a 204 (section 2.4.2) or a 202 means the registration is still running,
+/// and a 200 (section 2.4.1) carries the receipt, which the record keeps as
+/// it keeps a 201's. The wait after a `Retry-After` is at least that long
+/// (section 5.1), and each GET carries the service's credential and
+/// `Accept: application/cose`.
+#[test]
+fn a_202_is_polled_until_the_receipt_arrives() -> Result<(), TestError> {
+    use std::sync::atomic::AtomicUsize;
+    let store = store()?;
+    let gets = Arc::new(AtomicUsize::new(0));
+    let seen = gets.clone();
+    let scrapi = Fake::start(move |req| {
+        if req.method == "POST" {
+            seen.store(0, Ordering::SeqCst);
+            return answer(
+                202,
+                &format!("Location: {}\r\n", own(req, "/scitt/entries/e-1")),
+                b"",
+            );
+        }
+        match seen.fetch_add(1, Ordering::SeqCst) {
+            0 => answer(204, "Retry-After: 1\r\nCache-Control: no-store\r\n", b""),
+            1 => answer(202, "", b""),
+            _ => answer(200, "Content-Type: application/cose\r\n", RECEIPT),
+        }
+    })?;
+    let rig = Rig::new(&store, &scrapi, Some("X-Api-Key: scitt-key-value\n"))?;
+    rig.drop_in("a.vcon.json", &container(UUID, ""))?;
+    let report = Forwarder::new(rig.settings.clone())?.pass(Instant::now(), &never);
+    assert_eq!(report.delivered, ["a.vcon.json"]);
+
+    let registrations = by_registration(&scrapi.requests());
+    assert_eq!(registrations.len(), 2, "vcon_created and vcon_sent");
+    for requests in &registrations {
+        let shape: Vec<(&str, &str)> = requests
+            .iter()
+            .map(|r| (r.method.as_str(), r.target.as_str()))
+            .collect();
+        assert_eq!(
+            shape,
+            [
+                ("POST", "/scitt/entries"),
+                ("GET", "/scitt/entries/e-1"),
+                ("GET", "/scitt/entries/e-1"),
+                ("GET", "/scitt/entries/e-1"),
+            ]
+        );
+        for get in &requests[1..] {
+            assert_eq!(get.header("accept"), Some("application/cose"));
+            assert_eq!(get.header("x-api-key"), Some("scitt-key-value"));
+            assert!(get.body.is_empty());
+        }
+        let waited = requests[2].at.duration_since(requests[1].at);
+        assert!(
+            waited >= Duration::from_secs(1),
+            "Retry-After: 1 is a minimum; waited {waited:?}"
+        );
+    }
+
+    use base64::Engine as _;
+    let record = rig.record("a.vcon.json")?;
+    for s in record["statements"].as_array().ok_or("statements")? {
+        assert_eq!(s["status"], 202);
+        assert_eq!(s["poll_status"], 200);
+        assert_eq!(
+            s["receipt"],
+            base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(RECEIPT)
+        );
+        assert!(
+            s["location"]
+                .as_str()
+                .is_some_and(|l| l.ends_with("/scitt/entries/e-1"))
+        );
+        assert!(s.get("pending").is_none(), "{s}");
+        assert!(s.get("error").is_none(), "{s}");
+        assert!(s.get("poll_error").is_none(), "{s}");
+    }
+    Ok(())
+}
+
+/// Polling ends when the forwarder timeout runs out: the record says the
+/// receipt is pending and keeps the `Location`, and the delivery stands.
+/// A `Retry-After` longer than the time left ends it at once, and without
+/// one the waits grow (section 5.1: "exponential backoff with jitter").
+#[test]
+fn polling_ends_at_the_timeout_and_leaves_the_receipt_pending() -> Result<(), TestError> {
+    let budget = Duration::from_secs(2);
+    let slack = Duration::from_millis(700);
+    let store = store()?;
+    for (case, post_retry, get_retry) in [
+        ("Retry-After: 1 on each 204", "", "Retry-After: 1\r\n"),
+        ("no Retry-After", "", ""),
+        ("Retry-After: 3600 on the 202", "Retry-After: 3600\r\n", ""),
+    ] {
+        let scrapi = Fake::start(move |req| {
+            if req.method == "POST" {
+                answer(
+                    202,
+                    &format!(
+                        "Location: {}\r\n{post_retry}",
+                        own(req, "/scitt/entries/e-1")
+                    ),
+                    b"",
+                )
+            } else {
+                answer(204, get_retry, b"")
+            }
+        })?;
+        let mut rig = Rig::new(&store, &scrapi, None)?;
+        rig.settings.timeout = budget;
+        rig.drop_in("a.vcon.json", &container(UUID, ""))?;
+        let started = Instant::now();
+        let report = Forwarder::new(rig.settings.clone())?.pass(Instant::now(), &never);
+        let took = started.elapsed();
+        assert_eq!(report.delivered, ["a.vcon.json"], "{case}");
+        assert!(took < (budget + slack) * 2, "{case}: took {took:?}");
+
+        let registrations = by_registration(&scrapi.requests());
+        assert_eq!(registrations.len(), 2, "{case}");
+        for requests in &registrations {
+            let last = requests.last().ok_or("no request")?;
+            let window = last.at.duration_since(requests[0].at);
+            // The last GET is sent before the timeout runs out; the fake
+            // records it once it has read the request.
+            assert!(
+                window <= budget + Duration::from_millis(100),
+                "{case}: polled for {window:?}"
+            );
+            let gets = requests.len() - 1;
+            match case {
+                "Retry-After: 3600 on the 202" => assert_eq!(gets, 0, "{case}"),
+                "Retry-After: 1 on each 204" => {
+                    assert!((1..=2).contains(&gets), "{case}: {gets}");
+                }
+                _ => {
+                    assert!(gets >= 3, "{case}: {gets} GETs");
+                    assert!(gets <= 20, "{case}: {gets} GETs is not a backoff");
+                    let first = requests[2].at.duration_since(requests[1].at);
+                    let later = last.at.duration_since(requests[requests.len() - 2].at);
+                    assert!(later > first, "{case}: waits {first:?} then {later:?}");
+                }
+            }
+        }
+        let record = rig.record("a.vcon.json")?;
+        for s in record["statements"].as_array().ok_or("statements")? {
+            assert_eq!(s["status"], 202, "{case}");
+            assert_eq!(s["pending"], true, "{case}: {s}");
+            assert!(
+                s["location"]
+                    .as_str()
+                    .is_some_and(|l| l.ends_with("/scitt/entries/e-1")),
+                "{case}: {s}"
+            );
+            assert!(s.get("receipt").is_none(), "{case}: {s}");
+            assert!(s.get("error").is_none(), "{case}: {s}");
+        }
+    }
+    Ok(())
+}
+
+/// A `Location` on another origin (scheme, host or port) than the service
+/// URL is never fetched: the record says it was refused, and keeps it.
+#[test]
+fn a_location_on_another_origin_is_never_polled() -> Result<(), TestError> {
+    let store = store()?;
+    let elsewhere = Fake::start(|_| answer(200, "", RECEIPT))?;
+    let other_port = format!("http://{}/scitt/entries/e-1", elsewhere.addr);
+    for (case, location) in [
+        ("another port", other_port.clone()),
+        (
+            "another scheme",
+            "https://{host}/scitt/entries/e-1".to_owned(),
+        ),
+        (
+            "another host",
+            "http://localhost:{port}/scitt/entries/e-1".to_owned(),
+        ),
+        (
+            "another host and scheme",
+            "https://ts.example/entries/e-1".to_owned(),
+        ),
+    ] {
+        let template = location.clone();
+        let scrapi = Fake::start(move |req| {
+            let host = req.header("host").unwrap_or_default().to_owned();
+            let port = host.rsplit(':').next().unwrap_or_default().to_owned();
+            let location = template.replace("{host}", &host).replace("{port}", &port);
+            if req.method == "POST" {
+                answer(202, &format!("Location: {location}\r\n"), b"")
+            } else {
+                answer(200, "", RECEIPT)
+            }
+        })?;
+        let rig = Rig::new(&store, &scrapi, Some("X-Api-Key: scitt-key-value\n"))?;
+        rig.drop_in("a.vcon.json", &container(UUID, ""))?;
+        let report = Forwarder::new(rig.settings.clone())?.pass(Instant::now(), &never);
+        assert_eq!(report.delivered, ["a.vcon.json"], "{case}");
+        assert!(
+            scrapi.requests().iter().all(|r| r.method == "POST"),
+            "{case}: the service's own origin got a GET"
+        );
+        let record = rig.record("a.vcon.json")?;
+        for s in record["statements"].as_array().ok_or("statements")? {
+            assert_eq!(s["status"], 202, "{case}");
+            assert!(s["location"].as_str().is_some(), "{case}: {s}");
+            assert!(
+                s["poll_error"]
+                    .as_str()
+                    .is_some_and(|e| e.contains("origin")),
+                "{case}: {s}"
+            );
+            assert!(s.get("receipt").is_none(), "{case}: {s}");
+            assert!(s.get("error").is_none(), "{case}: {s}");
+        }
+    }
+    assert!(
+        elsewhere.requests().is_empty(),
+        "another origin was sent a request"
+    );
+    Ok(())
+}
+
+/// A 404 while polling is a registration that failed
+/// ([section 2.4.3](https://datatracker.ietf.org/doc/html/draft-ietf-scitt-scrapi-11#section-2.4.3)):
+/// the record carries the problem's title and detail as the error, and the
+/// delivery stands.
+#[test]
+fn a_registration_that_fails_while_polled_records_why() -> Result<(), TestError> {
+    let mut problem = Vec::new();
+    ciborium::into_writer(
+        &Cbor::Map(vec![
+            (
+                Cbor::Integer((-1).into()),
+                Cbor::Text("Registration Failed".into()),
+            ),
+            (
+                Cbor::Integer((-2).into()),
+                Cbor::Text("could not be persisted".into()),
+            ),
+        ]),
+        &mut problem,
+    )?;
+    let store = store()?;
+    let scrapi = Fake::start(move |req| {
+        if req.method == "POST" {
+            answer(
+                202,
+                &format!("Location: {}\r\n", own(req, "/scitt/entries/e-1")),
+                b"",
+            )
+        } else {
+            answer(
+                404,
+                "Content-Type: application/concise-problem-details+cbor\r\n",
+                &problem,
+            )
+        }
+    })?;
+    let rig = Rig::new(&store, &scrapi, None)?;
+    rig.drop_in("a.vcon.json", &container(UUID, ""))?;
+    let report = Forwarder::new(rig.settings.clone())?.pass(Instant::now(), &never);
+    assert_eq!(report.delivered, ["a.vcon.json"]);
+    let record = rig.record("a.vcon.json")?;
+    for s in record["statements"].as_array().ok_or("statements")? {
+        assert_eq!(s["poll_status"], 404);
+        assert!(
+            s["error"].as_str().is_some_and(
+                |e| e.contains("Registration Failed") && e.contains("could not be persisted")
+            ),
+            "{s}"
+        );
+        assert!(s.get("pending").is_none(), "{s}");
+        assert!(s.get("receipt").is_none(), "{s}");
+    }
+    Ok(())
+}
+
+/// A stop asked for while a receipt is polled ends the polling at once,
+/// and nothing more is sent: the record says the receipt is pending and
+/// that the next statement was not sent.
+#[test]
+fn a_stop_ends_polling_and_sends_nothing_more() -> Result<(), TestError> {
+    let store = store()?;
+    let stop = Arc::new(AtomicBool::new(false));
+    let asked = stop.clone();
+    let scrapi = Fake::start(move |req| {
+        if req.method == "POST" {
+            answer(
+                202,
+                &format!("Location: {}\r\n", own(req, "/scitt/entries/e-1")),
+                b"",
+            )
+        } else {
+            asked.store(true, Ordering::SeqCst);
+            answer(204, "Retry-After: 20\r\n", b"")
+        }
+    })?;
+    let mut rig = Rig::new(&store, &scrapi, None)?;
+    rig.settings.timeout = Duration::from_secs(60);
+    rig.drop_in("a.vcon.json", &container(UUID, ""))?;
+    let started = Instant::now();
+    let stopped = || stop.load(Ordering::SeqCst);
+    let report = Forwarder::new(rig.settings.clone())?.pass(Instant::now(), &stopped);
+    assert!(
+        started.elapsed() < Duration::from_secs(5),
+        "{:?}",
+        started.elapsed()
+    );
+    assert_eq!(report.delivered, ["a.vcon.json"]);
+    let posts = scrapi
+        .requests()
+        .iter()
+        .filter(|r| r.method == "POST")
+        .count();
+    assert_eq!(posts, 1, "nothing is sent after the stop");
+    let record = rig.record("a.vcon.json")?;
+    let first = &record["statements"][0];
+    assert_eq!(first["pending"], true, "{first}");
+    assert!(
+        first["poll_error"]
+            .as_str()
+            .is_some_and(|e| e.contains("stop")),
+        "{first}"
+    );
+    let second = &record["statements"][1];
+    assert_eq!(second["event"], "vcon_sent");
+    assert!(second.get("status").is_none(), "{second}");
+    assert!(
+        second["error"].as_str().is_some_and(|e| e.contains("stop")),
+        "{second}"
+    );
+    Ok(())
+}
+
+/// A fresh EC P-256 key (PKCS #8 PEM) and its self-signed certificate (PEM).
+fn ec_identity() -> Result<(String, String), TestError> {
+    use rcgen::{CertificateParams, DnType, KeyPair};
+    let key = KeyPair::generate_for(&rcgen::PKCS_ECDSA_P256_SHA256)?;
+    let mut params = CertificateParams::default();
+    params
+        .distinguished_name
+        .push(DnType::CommonName, "scitt ec signer test");
+    let cert = params.self_signed(&key)?;
+    Ok((key.serialize_pem(), cert.pem()))
+}
+
+/// The uncompressed P-256 point in a certificate's SubjectPublicKeyInfo,
+/// found by the fixed DER of an id-ecPublicKey prime256v1 key
+/// ([RFC 5480 section 2](https://www.rfc-editor.org/rfc/rfc5480.html#section-2)):
+/// SEQUENCE { SEQUENCE { id-ecPublicKey, prime256v1 }, BIT STRING 04||x||y }.
+fn p256_point(certificate: &[u8]) -> Result<Vec<u8>, TestError> {
+    const SPKI_HEAD: [u8; 26] = [
+        0x30, 0x59, 0x30, 0x13, 0x06, 0x07, 0x2a, 0x86, 0x48, 0xce, 0x3d, 0x02, 0x01, 0x06, 0x08,
+        0x2a, 0x86, 0x48, 0xce, 0x3d, 0x03, 0x01, 0x07, 0x03, 0x42, 0x00,
+    ];
+    let at = certificate
+        .windows(SPKI_HEAD.len())
+        .position(|w| w == SPKI_HEAD)
+        .ok_or("no P-256 SubjectPublicKeyInfo in the certificate")?;
+    let point = certificate
+        .get(at + SPKI_HEAD.len()..at + SPKI_HEAD.len() + 65)
+        .ok_or("the point is cut short")?;
+    assert_eq!(point.first(), Some(&0x04), "an uncompressed point");
+    Ok(point.to_vec())
+}
+
+/// An EC P-256 signing key signs ES256: `alg` -7
+/// ([RFC 9053 section 2.1](https://www.rfc-editor.org/rfc/rfc9053.html#section-2.1))
+/// in the protected header, and the signature verifies with the public key
+/// of the certificate the statement carries in `x5chain`, which is the
+/// signing certificate. The RSA fixture key keeps RS256 (-257), which
+/// `a_delivery_registers_created_and_sent` checks.
+#[test]
+fn an_ec_signing_key_signs_es256() -> Result<(), TestError> {
+    let store = store()?;
+    let scrapi = scrapi_201()?;
+    let (key, cert) = ec_identity()?;
+    let rig = Rig::signed_by(&store, &scrapi, None, &key, &cert)?;
+    rig.drop_in("a.vcon.json", &container(UUID, ""))?;
+    let report = Forwarder::new(rig.settings.clone())?.pass(Instant::now(), &never);
+    assert_eq!(report.delivered, ["a.vcon.json"]);
+    let posts = scrapi.requests();
+    assert_eq!(posts.len(), 2);
+    let leaf = ders(&cert)?.remove(0);
+    let point = p256_point(&leaf)?;
+    for post in &posts {
+        let statement = decode_es256(&post.body, &point)?;
+        assert_eq!(statement.header(1), Some(&Cbor::Integer((-7).into())));
+        assert_eq!(statement.header(33), Some(&Cbor::Bytes(leaf.clone())));
+    }
+    assert!(decode(&posts[0].body).is_err(), "not an RS256 signature");
+    Ok(())
+}
+
+/// A signing key that its certificate does not match is refused at start,
+/// exit 2, naming both flags: an EC key with an RSA certificate, and an RSA
+/// key with an EC certificate. A matching EC pair runs and signs ES256.
+#[test]
+fn the_binary_refuses_a_key_its_certificate_does_not_match() -> Result<(), TestError> {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = tempfile::tempdir()?;
+    let spool = dir.path().join("spool");
+    std::fs::create_dir(&spool)?;
+    let auth = dir.path().join("auth");
+    std::fs::write(&auth, "Authorization: Bearer store-token-value\n")?;
+    std::fs::set_permissions(&auth, std::fs::Permissions::from_mode(0o600))?;
+    let (rsa_key, rsa_cert) = key_files(dir.path(), 0o600)?;
+    let (ec_key_pem, ec_cert_pem) = ec_identity()?;
+    let ec_key = dir.path().join("ec.key");
+    std::fs::write(&ec_key, ec_key_pem)?;
+    std::fs::set_permissions(&ec_key, std::fs::Permissions::from_mode(0o600))?;
+    let ec_cert = dir.path().join("ec.crt");
+    std::fs::write(&ec_cert, &ec_cert_pem)?;
+    let store = store()?;
+    let scrapi = scrapi_201()?;
+    let s = |p: &Path| p.display().to_string();
+    let args = |key: &Path, cert: &Path| {
+        vec![
+            "--vcon-forward".to_owned(),
+            s(&spool),
+            "--vcon-forward-url".into(),
+            store.url("/v1/vcons"),
+            "--vcon-forward-auth-file".into(),
+            s(&auth),
+            "--vcon-forward-once".into(),
+            "--no-config".into(),
+            "--vcon-forward-scitt-url".into(),
+            scrapi.url("/scitt"),
+            "--vcon-forward-scitt-sign-key".into(),
+            s(key),
+            "--vcon-forward-scitt-sign-cert".into(),
+            s(cert),
+            "--vcon-forward-scitt-issuer".into(),
+            ISSUER.into(),
+        ]
+    };
+    for (case, key, cert) in [
+        ("EC key, RSA certificate", &ec_key, &rsa_cert),
+        ("RSA key, EC certificate", &rsa_key, &ec_cert),
+    ] {
+        let (err, code) = sipnab(&args(key, cert))?;
+        assert_eq!(code, Some(2), "{case}: {err}");
+        for needle in [
+            "--vcon-forward-scitt-sign-key",
+            "--vcon-forward-scitt-sign-cert",
+            "does not match",
+        ] {
+            assert!(err.contains(needle), "{case}: {needle}: {err}");
+        }
+    }
+    assert!(scrapi.requests().is_empty(), "nothing was sent");
+
+    std::fs::write(spool.join("a.vcon.json"), container(UUID, ""))?;
+    let (err, code) = sipnab(&args(&ec_key, &ec_cert))?;
+    assert_eq!(code, Some(0), "{err}");
+    let point = p256_point(&ders(&ec_cert_pem)?.remove(0))?;
+    let posts = scrapi.requests();
+    assert_eq!(posts.len(), 2, "{err}");
+    for post in &posts {
+        let statement = decode_es256(&post.body, &point)?;
+        assert_eq!(statement.header(1), Some(&Cbor::Integer((-7).into())));
     }
     Ok(())
 }

@@ -1011,16 +1011,16 @@ The vCon forwarder's settings (`sipnab --vcon-forward <SPOOL_DIR>`, see
 | `done` | path | `<SPOOL_DIR>/delivered` | Where a delivered container goes. Must be on the spool's file system. `--vcon-forward-done` overrides it |
 | `failed` | path | `<SPOOL_DIR>/failed` | Where a refused container goes, beside `<name>.error.json`. Must be on the spool's file system. `--vcon-forward-failed` overrides it |
 | `interval` | integer | `5` | Seconds between passes over the spool, 1 to 3600. `--vcon-forward-interval` overrides it |
-| `timeout` | integer | `30` | Seconds to wait to connect, and for each read and write, 1 to 600. `--vcon-forward-timeout` overrides it |
+| `timeout` | integer | `30` | Seconds to wait to connect, and for each read and write, 1 to 600. It also bounds each SCITT registration, its POST and its polling for the receipt. `--vcon-forward-timeout` overrides it |
 | `backoff_first` | integer | `2` | Seconds a container waits after its first failed try, 1 to 4294967295; each failed try doubles the wait. No longer than `backoff_cap`. `--vcon-forward-backoff-first` overrides it |
 | `backoff_cap` | integer | `300` | The longest wait between tries, in seconds, 1 to 4294967295. `--vcon-forward-backoff-cap` overrides it |
 | `max_response_head` | integer | `65536` | The most bytes of a store's status line and headers read, 1 to 4294967295. The forwarder treats an answer with more as no answer and retries the container. `--vcon-forward-max-response-head` overrides it |
 | `max_error_body` | integer | `8192` | The most bytes of a refusal's body a `<name>.error.json` record keeps, 1 to 4294967295. `--vcon-forward-max-error-body` overrides it |
-| `scitt_url` | string | -- | The SCITT transparency service the forwarder registers lifecycle statements with, `vcon_created` and `vcon_sent`, by POSTing each to `<scitt_url>/entries`. Unset, it registers nothing. Needs `scitt_sign_key`, `scitt_sign_cert` and `scitt_issuer`. `--vcon-forward-scitt-url` overrides it |
+| `scitt_url` | string | -- | The SCITT transparency service the forwarder registers lifecycle statements with, `vcon_created` and `vcon_sent`, by POSTing each to `<scitt_url>/entries`. After a `202`, sipnab polls its `Location` for the receipt within `timeout`, and only on the scheme, host and port of this URL. Unset, it registers nothing. Needs `scitt_sign_key`, `scitt_sign_cert` and `scitt_issuer`. `--vcon-forward-scitt-url` overrides it |
 | `scitt_auth_file` | path | -- | File holding one `Header-Name: value` line sent with each registration. Refused when other users can read it. `--vcon-forward-scitt-auth-file` overrides it |
 | `scitt_ca` | path | host bundle | The only CA (PEM) trusted for an `https://` transparency service. `--vcon-forward-scitt-ca` overrides it |
-| `scitt_sign_key` | path | -- | The PEM RSA private key that signs the statements (RS256). Refused when other users can read it: a refusal from this key exits `1`, from the flag `2`. `--vcon-forward-scitt-sign-key` overrides it |
-| `scitt_sign_cert` | path | -- | The PEM certificate chain of `scitt_sign_key`, leaf first, carried in each statement's `x5chain`. `--vcon-forward-scitt-sign-cert` overrides it |
+| `scitt_sign_key` | path | -- | The PEM private key that signs the statements: RSA signs RS256, EC P-256 signs ES256. Refused when other users can read it: a refusal from this key exits `1`, from the flag `2`. `--vcon-forward-scitt-sign-key` overrides it |
+| `scitt_sign_cert` | path | -- | The PEM certificate chain of `scitt_sign_key`, leaf first, carried in each statement's `x5chain`. sipnab refuses a first certificate that is not the key's. `--vcon-forward-scitt-sign-cert` overrides it |
 | `scitt_issuer` | string | -- | The issuer each statement names (`iss`): a URI of 1 to 8192 characters. `--vcon-forward-scitt-issuer` overrides it |
 | `content_type` | string | `"application/json"` | The `Content-Type` of a JSON container: `application/json`, `application/vcon+json` or `application/vcon`. A gzip format container always goes as `application/vcon+gzip`. `--vcon-forward-content-type` overrides it |
 

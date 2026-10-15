@@ -4928,7 +4928,8 @@ pub struct VconForwardArgs {
 
     /// Seconds the forwarder waits to connect, and for each read and write,
     /// before it treats the store as unreachable and retries later, 1 to 600.
-    /// Default: 30. Overrides `[vcon_forward] timeout`.
+    /// It also bounds each SCITT registration, its POST and its polling for
+    /// the receipt. Default: 30. Overrides `[vcon_forward] timeout`.
     #[arg(
         help_heading = "vCon forwarder",
         long = "vcon-forward-timeout",
@@ -5030,7 +5031,9 @@ pub struct VconForwardArgs {
     /// Register SCITT lifecycle statements (draft-howe-vcon-lifecycle-01)
     /// with the transparency service at this URL: `vcon_created` and
     /// `vcon_sent` for each container delivered, each a signed statement
-    /// POSTed to `<URL>/entries` (draft-ietf-scitt-scrapi). Needs
+    /// POSTed to `<URL>/entries` (draft-ietf-scitt-scrapi). A 202's
+    /// `Location` is polled for the receipt within --vcon-forward-timeout,
+    /// only on this URL's scheme, host and port. Needs
     /// --vcon-forward-scitt-sign-key, --vcon-forward-scitt-sign-cert and
     /// --vcon-forward-scitt-issuer. Overrides `[vcon_forward] scitt_url`.
     #[arg(
@@ -5063,9 +5066,9 @@ pub struct VconForwardArgs {
     )]
     pub vcon_forward_scitt_ca: Option<std::path::PathBuf>,
 
-    /// The PEM RSA private key the lifecycle statements are signed with
-    /// (RS256). Refused when other users can read it: chmod 600. Overrides
-    /// `[vcon_forward] scitt_sign_key`.
+    /// The PEM private key the lifecycle statements are signed with: RSA
+    /// signs RS256, EC P-256 signs ES256. Refused when other users can read
+    /// it: chmod 600. Overrides `[vcon_forward] scitt_sign_key`.
     #[arg(
         help_heading = "vCon forwarder",
         long = "vcon-forward-scitt-sign-key",
@@ -5075,7 +5078,8 @@ pub struct VconForwardArgs {
     pub vcon_forward_scitt_sign_key: Option<std::path::PathBuf>,
 
     /// The PEM certificate chain of the signing key, leaf first, carried in
-    /// each statement's `x5chain`. Overrides `[vcon_forward] scitt_sign_cert`.
+    /// each statement's `x5chain`. Its first certificate must be the key's.
+    /// Overrides `[vcon_forward] scitt_sign_cert`.
     #[arg(
         help_heading = "vCon forwarder",
         long = "vcon-forward-scitt-sign-cert",

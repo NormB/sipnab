@@ -1632,7 +1632,11 @@ statement format. sipnab follows the SCITT drafts that define one:
 - The protected header carries what
   [section 6 of draft-ietf-scitt-architecture-22](https://datatracker.ietf.org/doc/html/draft-ietf-scitt-architecture-22#section-6)
   requires:
-  - `alg` (1): RS256, `-257`.
+  - `alg` (1): ES256, `-7`
+    ([RFC 9053 section 2.1](https://www.rfc-editor.org/rfc/rfc9053.html#section-2.1)),
+    for an EC P-256 key; RS256, `-257`
+    ([RFC 8812 section 2](https://www.rfc-editor.org/rfc/rfc8812.html#section-2)),
+    for an RSA key.
   - `content type` (3): `application/json`.
   - CWT Claims (15): `iss` (1) is `scitt_issuer`, a URI of at most
     `MAX_ISSUER_LEN` (8192) characters, `sub` (2) is
@@ -1641,8 +1645,12 @@ statement format. sipnab follows the SCITT drafts that define one:
 - The payload is a JSON object: `event`, `vcon_uuid`, `vcon_hash` (the
   `sha512-` hash of the container's bytes as delivered), `at`, and for
   `vcon_sent` the store's URL in `to`. It carries no party data.
-- The key is a PEM RSA key, the same kind an encrypting `[[vcon.rule]]` names
-  in `sign_key`, readable by its owner only.
+- The key is a PEM RSA or EC P-256 key, the same kinds an encrypting
+  `[[vcon.rule]]` names in `sign_key`, readable by its owner only. The first
+  certificate in `scitt_sign_cert` must be the key's own. sipnab refuses a
+  pair that does not match before it sends anything, naming both settings:
+  exit 2 when `--vcon-forward-scitt-sign-key` named the key, 1 when
+  `scitt_sign_key` did.
 
 **What the service answered** goes into `<name>.scitt` beside the delivered
 container, one entry per statement:
@@ -1651,18 +1659,41 @@ container, one entry per statement:
 {"statements": [
   {"event": "vcon_created", "status": 201,
    "location": "https://ts.example.com/entries/67ed...", "receipt": "0oRDoQEm..."},
-  {"event": "vcon_sent", "status": 202,
+  {"event": "vcon_sent", "status": 202, "poll_status": 204, "pending": true,
    "location": "https://ts.example.com/entries/67ee..."}]}
 ```
 
 - `201`: the receipt, base64url, as the service returned it, and its
   `Location`.
-- `202`: the `Location` of the receipt. sipnab does not poll it. Fetch the
-  receipt from that URL later, as
+- `202`: the `Location` of the receipt. sipnab polls it for the receipt, as
   [section 2.4 of the SCRAPI draft](https://datatracker.ietf.org/doc/html/draft-ietf-scitt-scrapi-11#section-2.4)
-  describes.
-- `201` with a receipt longer than `MAX_RECEIPT` (65536) bytes: `error`
-  says so, and sipnab keeps no part of it.
+  describes. `poll_status` is the status of the last poll.
+  - Each poll is a `GET` with `Accept: application/cose` and the
+    `scitt_auth_file` header.
+  - `200`: the answer is the receipt, kept in `receipt` as a `201`'s is.
+  - `204`, or `202`: the registration is still running; sipnab polls again.
+  - `429` or a `5xx`: sipnab polls again; `poll_error` holds the answer
+    until a later poll replaces it.
+  - Any other `4xx`, such as the `404` of a registration that failed
+    ([section 2.4.3](https://datatracker.ietf.org/doc/html/draft-ietf-scitt-scrapi-11#section-2.4.3)):
+    `error` holds its problem, and polling ends.
+- Before each poll sipnab waits for the last answer's `Retry-After`, as a
+  minimum ([section 5.1](https://datatracker.ietf.org/doc/html/draft-ietf-scitt-scrapi-11#section-5.1)).
+  Without one, it waits 125 to 250 milliseconds, then twice as long after
+  each poll ("exponential backoff with jitter"), for at most `MAX_POLLS` (16)
+  polls.
+- **The polling stays within `timeout`** (`--vcon-forward-timeout`), which
+  counts from the statement's `POST`. sipnab starts no poll whose wait would
+  reach it. When the time runs out, `pending` is `true` and `location` is
+  kept: the registration is running, and you can fetch the receipt from
+  that URL later. A stop does the same, and sipnab sends no further
+  statement.
+- **sipnab polls a `Location` only on the service's own origin**: the
+  scheme, host and port of `scitt_url`. A path alone, such as
+  `/entries/67ee...`, is on it. Any other `Location` is not fetched, so
+  the `scitt_auth_file` header goes to no other host; `poll_error` says so.
+- A receipt longer than `MAX_RECEIPT` (65536) bytes: `error` says so, and
+  sipnab keeps no part of it.
 - Any other status: `error` holds the `title` and `detail` of the service's
   Concise Problem Details, or the start of its answer.
 - No answer: `error` says why, and there is no `status`.
@@ -1684,8 +1715,9 @@ delivery stands.
 - The lifecycle draft defines no payload, no subject and no content type.
   sipnab's choices are the ones listed under the statement.
 - The architecture draft lets a transparency service's registration policy
-  refuse an algorithm. A service that admits only ECDSA answers RS256 with
-  `400`, and `<name>.scitt` records it.
+  refuse an algorithm. A service that admits only ECDSA answers an RS256
+  statement with `400`, and `<name>.scitt` records it. Sign with an EC P-256
+  key for ES256.
 - Authentication is out of the SCRAPI draft's scope
   ([section 4.3](https://datatracker.ietf.org/doc/html/draft-ietf-scitt-scrapi-11#section-4.3)).
   `scitt_auth_file` sends one header line, as the store's `auth_file` does.

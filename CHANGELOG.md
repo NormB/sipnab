@@ -47,6 +47,12 @@ entry that carries them.
   - `message_script_refuses_a_planted_message_and_passes_a_clean_one` handed `scripts/check-message-identity.sh` the path from `std::env::current_exe()`. After a build relinks the binary, that path reads `<path> (deleted)`, the script cannot run it, and it exits 2 with "the check failed before it read the message".
   - The tests now pass `/proc/<pid>/exe` on Linux, which runs the binary the process started from even after its file is replaced. A new test replaces the binary's file before the script runs and requires the check to pass.
 
+- **A SCITT statement signed with an EC P-256 key named the wrong
+  algorithm.** In 0.5.219, an EC P-256 `--vcon-forward-scitt-sign-key` loaded
+  and signed ECDSA, but the protected header said RS256 (`-257`), so the
+  signature did not verify under the algorithm it named. It now says ES256
+  (`-7`).
+
 ### Internal
 
 - **The constant-time eviction tests count the work instead of timing it.**
@@ -63,6 +69,36 @@ entry that carries them.
   - `cargo clippy --no-default-features --lib -- -D warnings` failed on main: `impl From<ActionPolicy> for Actions` used `..Self::default()`, which does nothing once the feature-gated `service` field is absent.
   - The struct is now built field by field, each under its declaration's `cfg`.
   - Every clippy gate ran `--all-features` only. CI's new "Clippy with no features" step and a matching pre-push gate run the no-feature build, and `tests/clippy_scope_parity_test.rs` requires both.
+- **The vCon forwarder polls a SCITT `202` for its receipt.** When a
+  transparency service answers a lifecycle statement with `202` and a
+  `Location`, the forwarder GETs that `Location` with
+  `Accept: application/cose`, as
+  [draft-ietf-scitt-scrapi-11 section 2.4](https://datatracker.ietf.org/doc/html/draft-ietf-scitt-scrapi-11#section-2.4)
+  defines, and keeps the receipt of a `200` in `<name>.scitt` as it keeps a
+  `201`'s.
+  - A `204` or a `202` means the registration is still running, and it polls
+    again. A `429` or a `5xx` is polled again too. Another `4xx`, such as the
+    `404` of a registration that failed
+    ([section 2.4.3](https://datatracker.ietf.org/doc/html/draft-ietf-scitt-scrapi-11#section-2.4.3)),
+    is recorded as the error.
+  - Each poll waits for the last answer's `Retry-After`, as a minimum
+    ([section 5.1](https://datatracker.ietf.org/doc/html/draft-ietf-scitt-scrapi-11#section-5.1)).
+    Without one, it waits 125 to 250 milliseconds, doubled after each poll,
+    for at most 16 polls.
+  - Polling ends within `--vcon-forward-timeout`, counted from the
+    statement's POST, and at a stop. The record then says `"pending": true`
+    and keeps the `Location`; the delivery stands.
+  - It polls a `Location` only on the scheme, host and port of
+    `--vcon-forward-scitt-url`, so the `--vcon-forward-scitt-auth-file`
+    header goes to no other host. Any other `Location` is recorded in
+    `poll_error` and not fetched.
+  - New record fields: `poll_status`, `pending` and `poll_error`.
+- **An EC P-256 `--vcon-forward-scitt-sign-key` signs ES256.** The protected
+  header carries `alg` `-7`
+  ([RFC 9053 section 2.1](https://www.rfc-editor.org/rfc/rfc9053.html#section-2.1)).
+  An RSA key keeps RS256 (`-257`). The key loads as an encrypting
+  `[[vcon.rule]]`'s `sign_key` does, and a key whose certificate does not
+  match is refused before anything is sent, with exit `2` from the flags.
 
 ## [0.5.220] - 2026-10-14
 

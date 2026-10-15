@@ -1094,7 +1094,7 @@ Make one pass over the spool and exit: 0 when every container was delivered (or 
 Seconds between passes over the spool, 1 to 3600. Default: 5. Overrides \fB[vcon_forward] interval\fR.
 .TP
 \fB\-\-vcon\-forward\-timeout\fR \fISECS\fR
-Seconds the forwarder waits to connect, and for each read and write, before it treats the store as unreachable and retries later, 1 to 600. Default: 30. Overrides \fB[vcon_forward] timeout\fR.
+Seconds the forwarder waits to connect, and for each read and write, before it treats the store as unreachable and retries later, 1 to 600. It also bounds each SCITT registration, its POST and its polling for the receipt. Default: 30. Overrides \fB[vcon_forward] timeout\fR.
 .TP
 \fB\-\-vcon\-forward\-backoff\-first\fR \fISECS\fR
 Seconds a container waits after its first failed try (a 5xx, a timeout or no connection); each failed try after it doubles the wait, up to \-\-vcon\-forward\-backoff\-cap. 1 to 4294967295, and no longer than the cap. Default: 2. Overrides \fB[vcon_forward] backoff_first\fR.
@@ -1118,7 +1118,7 @@ Trust only the CA certificates in this PEM file for an \fBhttps://\fR store. Wit
 Trust the CA certificates in this PEM file for an \fBhttps://\fR store in addition to the host's CA bundle: the store's certificate is accepted when the host's bundle or this file issued it. Use \-\-vcon\-forward\-ca instead to trust only the named file. Either flag replaces both \fB[vcon_forward] ca\fR and \fB[vcon_forward] extra_ca\fR.
 .TP
 \fB\-\-vcon\-forward\-scitt\-url\fR \fIURL\fR
-Register SCITT lifecycle statements (draft\-howe\-vcon\-lifecycle\-01) with the transparency service at this URL: \fBvcon_created\fR and \fBvcon_sent\fR for each container delivered, each a signed statement POSTed to \fB<URL>/entries\fR (draft\-ietf\-scitt\-scrapi). Needs \-\-vcon\-forward\-scitt\-sign\-key, \-\-vcon\-forward\-scitt\-sign\-cert and \-\-vcon\-forward\-scitt\-issuer. Overrides \fB[vcon_forward] scitt_url\fR.
+Register SCITT lifecycle statements (draft\-howe\-vcon\-lifecycle\-01) with the transparency service at this URL: \fBvcon_created\fR and \fBvcon_sent\fR for each container delivered, each a signed statement POSTed to \fB<URL>/entries\fR (draft\-ietf\-scitt\-scrapi). A 202's \fBLocation\fR is polled for the receipt within \-\-vcon\-forward\-timeout, only on this URL's scheme, host and port. Needs \-\-vcon\-forward\-scitt\-sign\-key, \-\-vcon\-forward\-scitt\-sign\-cert and \-\-vcon\-forward\-scitt\-issuer. Overrides \fB[vcon_forward] scitt_url\fR.
 .TP
 \fB\-\-vcon\-forward\-scitt\-auth\-file\fR \fIFILE\fR
 File holding the one header that authenticates to the transparency service, as \fBHeader\-Name: value\fR on one line. Refused when other users can read it: chmod 600. Overrides \fB[vcon_forward] scitt_auth_file\fR.
@@ -1127,10 +1127,10 @@ File holding the one header that authenticates to the transparency service, as \
 Trust only the CA certificates in this PEM file for an \fBhttps://\fR transparency service. Without it the host's CA bundle. Overrides \fB[vcon_forward] scitt_ca\fR.
 .TP
 \fB\-\-vcon\-forward\-scitt\-sign\-key\fR \fIFILE\fR
-The PEM RSA private key the lifecycle statements are signed with (RS256). Refused when other users can read it: chmod 600. Overrides \fB[vcon_forward] scitt_sign_key\fR.
+The PEM private key the lifecycle statements are signed with: RSA signs RS256, EC P\-256 signs ES256. Refused when other users can read it: chmod 600. Overrides \fB[vcon_forward] scitt_sign_key\fR.
 .TP
 \fB\-\-vcon\-forward\-scitt\-sign\-cert\fR \fIFILE\fR
-The PEM certificate chain of the signing key, leaf first, carried in each statement's \fBx5chain\fR. Overrides \fB[vcon_forward] scitt_sign_cert\fR.
+The PEM certificate chain of the signing key, leaf first, carried in each statement's \fBx5chain\fR. Its first certificate must be the key's. Overrides \fB[vcon_forward] scitt_sign_cert\fR.
 .TP
 \fB\-\-vcon\-forward\-scitt\-issuer\fR \fIURI\fR
 The issuer each lifecycle statement names (CWT claim \fBiss\fR), a URI such as \fBhttps://pbx.example.com/sipnab\fR. Overrides \fB[vcon_forward] scitt_issuer\fR.
