@@ -644,7 +644,54 @@ fn m5_trailers_carrying_real_addresses_are_not_flagged() -> Result<(), TestError
 /// and sanitizer runs change the compiler flags. The cargo line itself is
 /// driven by the commit-msg hook on every commit.
 fn run_message_script(message: &str, tag: &str) -> Result<(i32, String), TestError> {
-    run_message_script_with(message, tag, std::env::current_exe()?.as_os_str())
+    replace_own_binary_when_told()?;
+    run_message_script_with(message, tag, own_binary()?.as_os_str())
+}
+
+/// A path that executes THIS test binary for as long as this process lives.
+///
+/// On Linux that is `/proc/<pid>/exe`: it names the inode this process runs,
+/// so it still executes after a build has renamed a new binary over the file,
+/// where `std::env::current_exe()` returns `<path> (deleted)`, a path that
+/// does not exist (see
+/// [`m6b_the_message_script_runs_after_the_test_binary_is_replaced_on_disk`]).
+/// Elsewhere there is no such link, and the file's path is used.
+fn own_binary() -> Result<PathBuf, TestError> {
+    if cfg!(target_os = "linux") {
+        Ok(PathBuf::from(format!("/proc/{}/exe", std::process::id())))
+    } else {
+        Ok(std::env::current_exe()?)
+    }
+}
+
+/// Set in the environment of a copy of this binary that
+/// [`m6b_the_message_script_runs_after_the_test_binary_is_replaced_on_disk`]
+/// starts: the copy then replaces its own file before running the script.
+const REPLACE_OWN_BINARY: &str = "SIPNAB_IDENTITY_TEST_REPLACE_OWN_BINARY";
+
+/// When [`REPLACE_OWN_BINARY`] is `1`, replace this binary's file on disk with
+/// a copy of itself, as a concurrent `cargo` build into the same target
+/// directory does when it relinks the test binary: a new file is renamed over
+/// the old path, and the running process keeps the old, now unlinked, inode.
+fn replace_own_binary_when_told() -> Result<(), TestError> {
+    static REPLACED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+    if std::env::var(REPLACE_OWN_BINARY).as_deref() != Ok("1")
+        || REPLACED.swap(true, std::sync::atomic::Ordering::SeqCst)
+    {
+        // Once per process: after the first time the file is already gone
+        // from under `current_exe()`, which is the state under test.
+        return Ok(());
+    }
+    let exe = std::env::current_exe()?;
+    let fresh = exe.with_extension("relinked");
+    // `cp` writes the copy, so this process never holds it open for writing
+    // (see tests/support/executable.rs).
+    let status = Command::new("cp").arg(&exe).arg(&fresh).status()?;
+    if !status.success() {
+        return Err(format!("cp {} {}: {status}", exe.display(), fresh.display()).into());
+    }
+    std::fs::rename(&fresh, &exe)?;
+    Ok(())
 }
 
 /// [`run_message_script`] with `bin` run in place of the test binary.
@@ -715,6 +762,51 @@ fn message_script_refuses_a_planted_message_and_passes_a_clean_one() -> Result<(
         run_message_script("Fix the parser\n\nMeasured on the aarch64 host.\n", "clean")?;
     assert_eq!(rc, 0, "a clean message must pass the script:\n{out}");
     assert!(out.is_empty(), "the script is quiet on success:\n{out}");
+    Ok(())
+}
+
+/// M6b. The script still runs this test binary after the file it was started
+/// from has been replaced on disk.
+///
+/// Under the pre-commit hook, M6 exited 2, "the check failed before it read
+/// the message", and passed when run alone. Reproduced by replacing the test
+/// binary on disk while M6 runs: `std::env::current_exe()` then reads
+/// `/proc/self/exe` as `<path> (deleted)`, the script cannot execute that
+/// path, and it reports the check as not run. Any build into the same target
+/// directory that relinks the binary while the suite runs does this.
+///
+/// A copy of this binary is started on M6 alone, told to replace its own file
+/// first ([`REPLACE_OWN_BINARY`]), and M6 must still pass in it.
+#[cfg(target_os = "linux")]
+#[test]
+fn m6b_the_message_script_runs_after_the_test_binary_is_replaced_on_disk() -> Result<(), TestError>
+{
+    let dir = tempfile::tempdir()?;
+    let copy = dir.path().join("private_identity_test");
+    // Copied by `cp`, so no writable descriptor of ours can make the copy
+    // busy when it is executed.
+    let status = Command::new("cp")
+        .arg(std::env::current_exe()?)
+        .arg(&copy)
+        .status()?;
+    assert!(status.success(), "copying the test binary: {status}");
+    let out = Command::new(&copy)
+        .args([
+            "--exact",
+            "message_script_refuses_a_planted_message_and_passes_a_clean_one",
+        ])
+        .env(REPLACE_OWN_BINARY, "1")
+        .current_dir(repo())
+        .output()?;
+    let text = format!(
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        out.status.success() && text.contains("test result: ok. 1 passed"),
+        "M6 must pass in a test binary whose file was replaced while it ran:\n{text}"
+    );
     Ok(())
 }
 
@@ -913,7 +1005,7 @@ fn m13_whole_message_mode_reads_past_the_scissors_line() -> Result<(), TestError
 #[test]
 fn m14_the_message_script_reads_the_whole_message_when_told() -> Result<(), TestError> {
     let message = format!("Fix the parser\n\nBody.\n{SCISSORS}\nMeasured on thor-02\n");
-    let bin = std::env::current_exe()?;
+    let bin = own_binary()?;
     let (rc, out) = run_message_script_env(&message, "cut", bin.as_os_str(), &[])?;
     assert_eq!(rc, 0, "unset, the scan stops at the scissors line:\n{out}");
     let (rc, out) = run_message_script_env(

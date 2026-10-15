@@ -43,6 +43,9 @@ entry that carries them.
   - The check now also reports a literal byte array bound to a name for a key, salt, nonce, IV, secret or password, and a literal passed straight to such a parameter of a crate function or of a library key constructor (`new_from_slice`, `new_from_slices`, ring's `UnboundKey::new`, `hmac::Key::new` and the `Nonce` constructors).
   - Every test site it reported now takes its key material from `test_material` at run time. The [RFC 3711](https://www.rfc-editor.org/rfc/rfc3711.html) and [RFC 2202](https://www.rfc-editor.org/rfc/rfc2202.html) known-answer vectors keep their bytes, each with a named exception.
   - The shapes that need data flow to detect are listed in the test.
+- **The commit-message identity test no longer fails when its test binary is rebuilt while the suite runs.**
+  - `message_script_refuses_a_planted_message_and_passes_a_clean_one` handed `scripts/check-message-identity.sh` the path from `std::env::current_exe()`. After a build relinks the binary, that path reads `<path> (deleted)`, the script cannot run it, and it exits 2 with "the check failed before it read the message".
+  - The tests now pass `/proc/<pid>/exe` on Linux, which runs the binary the process started from even after its file is replaced. A new test replaces the binary's file before the script runs and requires the check to pass.
 
 ## [0.5.220] - 2026-10-14
 
