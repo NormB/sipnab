@@ -792,7 +792,7 @@ fn stdio_mcp_full_tool_set_and_remaining_tools() -> Result<(), TestError> {
     // and they are advertised exactly when they can run, which
     // `mcp_capability_agreement_test` is what gates. `vcon_spool_status`
     // and `analyze_vcon` joined the pair as the third and fourth, and
-    // `vcon_directory_report` as the fifth.
+    // `vcon_directory_report` and `fetch_vcon` as the fifth and sixth.
     if cfg!(feature = "vcon") {
         expected.extend_from_slice(&[
             "analyze_vcon",
@@ -809,7 +809,7 @@ fn stdio_mcp_full_tool_set_and_remaining_tools() -> Result<(), TestError> {
     }
     expected.sort();
     assert_eq!(names, expected, "MCP tool set drifted");
-    let want = 69 + if cfg!(feature = "vcon") { 5 } else { 0 } + usize::from(cfg!(feature = "hep"));
+    let want = 69 + if cfg!(feature = "vcon") { 6 } else { 0 } + usize::from(cfg!(feature = "hep"));
     assert_eq!(names.len(), want, "expected exactly {want} MCP tools");
 
     // Wait for the replay to be read to its end. Until then the store-reading

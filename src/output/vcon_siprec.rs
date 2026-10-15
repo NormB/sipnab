@@ -767,7 +767,9 @@ mod tests {
     fn redaction_rewrites_participant_aors_and_names() -> Result<(), TestError> {
         use crate::output::redact::{Redact as _, RedactionKey, RedactionPolicy};
         let mut v = container(&recording(METADATA)?, ObservedAudio::NotConsidered)?;
-        let policy = RedactionPolicy::new(RedactionKey::from_secret(b"siprec"));
+        let policy = RedactionPolicy::new(RedactionKey::from_secret(
+            crate::test_material::key_bytes("siprec-redaction-test"),
+        ));
         let r = policy.redactor();
         v.redact(&r);
         let alice = &v.parties[2];
