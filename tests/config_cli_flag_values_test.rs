@@ -500,9 +500,13 @@ static SPECS: &[Spec] = &[
     (
         "filter",
         Kind::Text {
-            accept: &["method == \"INVITE\"", "method == \"BYE\""],
+            accept: &[
+                "method == \"INVITE\"",
+                "method == \"BYE\"",
+                "method == INVITE",
+            ],
             reject: &[
-                ("method == INVITE", 2),
+                ("ua == Friendly Scanner", 2),
                 ("mos < 3.5", 2),
                 ("x", 2),
                 ("", 2),
@@ -586,9 +590,9 @@ static SPECS: &[Spec] = &[
     (
         "export-vcon-when",
         Kind::Text {
-            accept: &["method == \"INVITE\""],
+            accept: &["method == \"INVITE\"", "method == INVITE"],
             reject: &[
-                ("method == INVITE", 2),
+                ("ua == Friendly Scanner", 2),
                 ("mos < 3.5", 2),
                 ("x", 2),
                 ("", 2),

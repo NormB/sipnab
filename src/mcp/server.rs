@@ -1456,6 +1456,7 @@ pub struct TimelineBucket {
 pub struct ListDialogsParams {
     /// Optional filter — either a named alias (e.g. "problems",
     /// "codec-asym") or a raw DSL expression.
+    /// Values may be bare or quoted.
     pub filter: Option<String>,
     /// Maximum dialogs to return (default 50, ceiling `--mcp-max-rows`, itself 1000 unless the operator says otherwise).
     pub limit: Option<u32>,
@@ -1507,6 +1508,7 @@ pub struct AggregateDialogsParams {
     pub group_by: String,
     /// Optional filter (alias or DSL) applied before grouping, so an
     /// aggregate can be scoped the same way a listing is.
+    /// Values may be bare or quoted.
     pub filter: Option<String>,
     /// Buckets to return, largest first. Bounded by `--mcp-max-rows`, the same
     /// knob that bounds dialog rows, and defaulted the same way.
@@ -1631,6 +1633,7 @@ pub struct FindProblemsParams {
     /// Extra filter ANDed with the alias match — a named alias or a raw DSL
     /// expression. Narrows "anything problematic" to "problems on this
     /// trunk".
+    /// Values may be bare or quoted.
     pub filter: Option<String>,
     /// Maximum dialogs to return (default 50, ceiling `--mcp-max-rows`, itself 1000 unless the operator says otherwise).
     pub limit: Option<u32>,
@@ -2208,7 +2211,8 @@ pub struct CallIdParams {
 #[serde(deny_unknown_fields)]
 pub struct FindInCapturesParams {
     /// Filter DSL expression, the same vocabulary every other filtering tool
-    /// takes — `call_id == "abc@example.com"`, `state == failed`.
+    /// takes — `call_id == abc@example.com`, `state == Failed`.
+    /// Values may be bare or quoted.
     pub filter: String,
     /// Files to open before stopping. Clamped to the operator's
     /// `--mcp-sweep-max-files` (default 20); `0` or absent means that
@@ -2639,6 +2643,7 @@ pub struct SearchByTimeParams {
     /// Extra filter ANDed with the window — a named alias (e.g. "problems")
     /// or a raw DSL expression, so "failed calls between 14:00 and 14:05" is
     /// one call rather than two.
+    /// Values may be bare or quoted.
     pub filter: Option<String>,
     /// Maximum dialogs to return (default 50, ceiling `--mcp-max-rows`, itself 1000 unless the operator says otherwise).
     pub limit: Option<u32>,
@@ -12940,7 +12945,11 @@ mod tests {
             // full 87_500 -> 88_400: `fetch_vcon`, as the vcon row above says.
             // full 88_400 -> 89_500: `vcon_directory_report`, as the vcon row
             // above says.
-            ("full", 89_500),
+            // full 89_500 -> 90_000: "Values may be bare or quoted." on the ten
+            // `filter` parameters, once bare filter values parse (measured:
+            // full 89,667; core 12,316, signaling 22,474 and security 9,954
+            // stay under theirs).
+            ("full", 90_000),
         ];
         let sizes: std::collections::BTreeMap<String, usize> = empty_server()
             .with_output_schemas(false)

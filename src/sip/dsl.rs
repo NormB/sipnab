@@ -22,7 +22,6 @@ use nom::{
     bytes::complete::{tag, tag_no_case, take_while1},
     character::complete::{char, multispace0, multispace1},
     combinator::{map, opt, recognize},
-    number::complete::double,
     sequence::preceded,
 };
 
@@ -424,6 +423,74 @@ impl Field {
                 | Field::LateMedia
         )
     }
+
+    /// What a literal on the right of this field means.
+    ///
+    /// The parser reads a value by the field's type, so the same text, quoted
+    /// or bare, means the same thing: `to.user == 1001` is the user `1001`,
+    /// and `src.port == '5060'` is the port 5060. Exhaustive, so a new field
+    /// must say what its values are. Keep in step with the compare function
+    /// each arm of `eval_compare` calls.
+    fn value_kind(&self) -> ValueKind {
+        match self {
+            Field::FromUser
+            | Field::ToUser
+            | Field::FromHost
+            | Field::ToHost
+            | Field::FromUri
+            | Field::ToUri
+            | Field::Ruri
+            | Field::PaiUser
+            | Field::RtpCodecs
+            | Field::Side
+            | Field::Endpoint
+            | Field::Method
+            | Field::Ua
+            | Field::CallId
+            | Field::Payload
+            | Field::SrcIp
+            | Field::DstIp
+            | Field::State
+            | Field::ResponseClass
+            | Field::RtpCodec
+            | Field::RtpSsrc
+            | Field::Header(_) => ValueKind::Text,
+            Field::SrcPort
+            | Field::DstPort
+            | Field::Duration
+            | Field::MsgCount
+            | Field::ResponseCode
+            | Field::Pdd
+            | Field::SetupTime
+            | Field::Retransmits
+            | Field::RtpMos
+            | Field::RtpJitter
+            | Field::RtpLoss
+            | Field::RtpPackets => ValueKind::Number,
+            Field::OneWay
+            | Field::NatMismatch
+            | Field::NoMedia
+            | Field::CodecAsymmetry
+            | Field::PtimeAsymmetry
+            | Field::PayloadAsymmetry
+            | Field::DurationAsymmetry
+            | Field::LateMedia => ValueKind::Boolean,
+            Field::Time => ValueKind::Instant,
+        }
+    }
+}
+
+/// The type of the values a [`Field`] compares with.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ValueKind {
+    /// Compared as text: [`Value::Str`].
+    Text,
+    /// Compared as a finite number: [`Value::Num`].
+    Number,
+    /// `true` or `false`, case-insensitive: [`Value::Bool`].
+    Boolean,
+    /// An RFC 3339 instant: [`Value::Instant`].
+    Instant,
 }
 
 /// The PBX's own addresses, declared once at startup from `[pbx] addresses`.
@@ -526,7 +593,7 @@ enum Operator {
 /// A literal value on the right-hand side of a comparison.
 #[derive(Debug, Clone)]
 enum Value {
-    /// Quoted string literal (single or double quotes).
+    /// String literal, quoted (single or double quotes) or bare.
     Str(String),
     /// Numeric literal; all numbers are `f64`.
     Num(f64),
@@ -908,7 +975,10 @@ impl FilterExpr {
     /// not_expr    = "NOT" atom | atom
     /// atom        = comparison | "(" expr ")"
     /// comparison  = field operator value
+    /// value       = quoted string | bare value
     /// ```
+    ///
+    /// A value is read by the type of its field; see `parse_value`.
     ///
     /// # Errors
     ///
@@ -959,7 +1029,7 @@ impl FilterExpr {
             let pos = trimmed.len() - remaining.trim_start().len();
             bail!(
                 "{}",
-                render_parse_error(trimmed, pos, "unexpected trailing input")
+                render_parse_error(trimmed, pos, trailing_input_problem(trimmed, pos))
             );
         }
 
@@ -1554,9 +1624,42 @@ const TIME_OPERATORS: [Operator; 5] = [
 /// [`HEADER_NAME_TOO_LONG`].
 const TIME_OPERATOR_INVALID: nom::error::ErrorKind = nom::error::ErrorKind::Permutation;
 
-/// The nom error kind a `time` comparison raises for a literal that is not a
-/// quoted RFC 3339 instant. Unused by every combinator here.
+/// The nom error kind a `time` comparison raises for a literal that is not an
+/// RFC 3339 instant. Unused by every combinator here.
 const TIME_VALUE_INVALID: nom::error::ErrorKind = nom::error::ErrorKind::Fix;
+
+/// The nom error kind for a value a numeric field cannot hold: a word, or a
+/// non-finite number. Unused by every combinator here.
+const NUMBER_VALUE_INVALID: nom::error::ErrorKind = nom::error::ErrorKind::SeparatedList;
+
+/// The nom error kind for a value a boolean field cannot hold. Unused by every
+/// combinator here.
+const BOOL_VALUE_INVALID: nom::error::ErrorKind = nom::error::ErrorKind::SeparatedNonEmptyList;
+
+/// The nom error kind for a bare value followed by more text that is neither
+/// `AND`, `OR`, `)` nor the end: the value held whitespace, or a combinator is
+/// missing. Unused by every combinator here.
+const BARE_VALUE_SPACE: nom::error::ErrorKind = nom::error::ErrorKind::ManyTill;
+
+/// The nom error kind for a bare value that runs into a quote character.
+/// Unused by every combinator here.
+const BARE_VALUE_QUOTE: nom::error::ErrorKind = nom::error::ErrorKind::OneOf;
+
+/// The nom error kind for a value that begins with a character
+/// [`is_reserved_bare_start`] reserves. Unused by every combinator here.
+const BARE_VALUE_RESERVED: nom::error::ErrorKind = nom::error::ErrorKind::Count;
+
+/// The nom error kind for a quoted value with no closing quote. Unused by every
+/// combinator here.
+const QUOTED_VALUE_UNTERMINATED: nom::error::ErrorKind = nom::error::ErrorKind::Escaped;
+
+/// The nom error kind for `&&` or `||` where `AND` or `OR` belongs. Unused by
+/// every combinator here.
+const SYMBOLIC_COMBINATOR: nom::error::ErrorKind = nom::error::ErrorKind::EscapedTransform;
+
+/// The nom error kind for a regex that does not compile or exceeds
+/// [`REGEX_SIZE_LIMIT`]. Unused by every combinator here.
+const REGEX_INVALID: nom::error::ErrorKind = nom::error::ErrorKind::RegexpMatch;
 
 /// The headline for a parse error of `kind`.
 ///
@@ -1572,9 +1675,27 @@ fn parse_problem(kind: nom::error::ErrorKind) -> String {
              (quote any other name: header.\"Name\")"
             .to_string(),
         TIME_OPERATOR_INVALID => "time compares with <, <=, >, >= or ==".to_string(),
-        TIME_VALUE_INVALID => "time needs a quoted RFC 3339 instant, such as \
-             time >= '2026-10-09T10:00:00Z'"
+        TIME_VALUE_INVALID => "time needs an RFC 3339 instant, such as \
+             time >= 2026-10-09T10:00:00Z"
             .to_string(),
+        NUMBER_VALUE_INVALID => "the field compares with a finite number".to_string(),
+        BOOL_VALUE_INVALID => "the field compares with true or false".to_string(),
+        BARE_VALUE_SPACE => {
+            "a value containing whitespace must be quoted, or AND/OR is missing".to_string()
+        }
+        BARE_VALUE_RESERVED => "a value beginning with = ! < > or @ needs quotes".to_string(),
+        BARE_VALUE_QUOTE => "a value containing ' or \" must be quoted with the other quote \
+             or a backslash"
+            .to_string(),
+        QUOTED_VALUE_UNTERMINATED => "unterminated quoted value (a value beginning with ' \
+             or \" is a quoted string)"
+            .to_string(),
+        SYMBOLIC_COMBINATOR => "join comparisons with AND, OR and NOT; && and || \
+             are not supported"
+            .to_string(),
+        REGEX_INVALID => {
+            format!("the regex does not compile or is larger than {REGEX_SIZE_LIMIT} bytes")
+        }
         _ => "unexpected input".to_string(),
     }
 }
@@ -1629,14 +1750,32 @@ fn parse_header_field(input: &str) -> IResult<&str, Field, NomErr<'_>> {
     Ok((rest, Field::Header(long.into_owned().into_boxed_str())))
 }
 
+/// The headline for input left over after a complete expression, at byte
+/// `pos` of `expr`.
+///
+/// A `)` there has no `(` to close. Text straight after a `)`, with no space
+/// between, is what remains when a value held a `)`: the `)` ended the value
+/// and closed the group. Either way the reason is a `)` in a value, which
+/// only quotes can carry.
+fn trailing_input_problem(expr: &str, pos: usize) -> &'static str {
+    let tail = &expr[pos..];
+    if tail.starts_with(')') {
+        "unmatched ')'; a value containing an unmatched ')' must be quoted"
+    } else if expr[..pos].ends_with(')') {
+        "unexpected input after ')'; a value containing ')' must be quoted"
+    } else {
+        "unexpected trailing input"
+    }
+}
+
 /// Render a filter parse error as a multi-line diagnostic: the (possibly
-/// windowed) expression, a caret under the offending position, a quoting
-/// hint when a bare word follows an operator (the classic mistake:
-/// `method == INVITE`), the operator list, and a docs pointer.
+/// windowed) expression, a caret under the offending position, the operator
+/// list, and a docs pointer. The position printed in the headline is the
+/// 0-based character column the caret marks, not a byte offset.
 ///
 /// An unknown-field hint (with a closest-match suggestion and the valid
-/// field list) is added instead when an identifier-looking token sits in
-/// field position and the quoting hint did not fire.
+/// field list) is added when an identifier-looking token sits in field
+/// position.
 ///
 /// # Arguments
 ///
@@ -1682,7 +1821,7 @@ fn render_parse_error(expr: &str, pos: usize, problem: &str) -> String {
     };
 
     let mut out = format!(
-        "{problem} at position {pos}{}\n  {shown}\n  {caret:>width$}",
+        "{problem} at position {col}{}\n  {shown}\n  {caret:>width$}",
         if offending.is_empty() {
             String::new()
         } else {
@@ -1691,23 +1830,6 @@ fn render_parse_error(expr: &str, pos: usize, problem: &str) -> String {
         caret = '^',
         width = caret_col + 1,
     );
-
-    // Quoting hint: bare word right after a comparison operator.
-    let before = expr[..pos].trim_end();
-    let mut quoting_hinted = false;
-    if let Some(op) = ["=~", "==", "!=", "<=", ">=", "<", ">"]
-        .iter()
-        .find(|op| before.ends_with(**op))
-        && offending.chars().next().is_some_and(|c| c.is_alphabetic())
-        && !["and", "or", "true", "false"]
-            .iter()
-            .any(|kw| offending.eq_ignore_ascii_case(kw))
-    {
-        out.push_str(&format!(
-            "\nhint: string values must be quoted: {op} '{offending}'"
-        ));
-        quoting_hinted = true;
-    }
 
     // Unknown-field hint: an identifier-looking token followed by a
     // comparison operator sits in field position — name it, suggest the
@@ -1742,8 +1864,7 @@ fn render_parse_error(expr: &str, pos: usize, problem: &str) -> String {
     // A `header.` token that failed is a bad header NAME, and its own headline
     // already says so; "unknown field 'header.'" would send the reader looking
     // for a field that does exist.
-    if !quoting_hinted
-        && looks_like_field
+    if looks_like_field
         && in_field_position
         && !FIELD_NAMES.contains(&offending_raw)
         && !offending_raw.starts_with(HEADER_FIELD_PREFIX)
@@ -1860,122 +1981,185 @@ fn scan_quoted_string(body: &str, quote: char) -> Option<(String, &str)> {
     None
 }
 
-/// Parse a value literal (string, number, or boolean).
+/// Whether `c` may not begin a bare value.
 ///
-/// For the `=~` (regex) operator, the string value is compiled into a regex
-/// with a size limit of [`REGEX_SIZE_LIMIT`] bytes. A regex against the
-/// `payload` field is compiled with the byte-oriented [`regex::bytes`]
-/// engine so it can match the raw message without a lossy UTF-8 copy.
+/// `=`, `!`, `<` and `>` begin operators, so `method === 'INVITE'` stays a
+/// typo instead of becoming the value `='INVITE'`; `@` begins a `@name`
+/// filter reference; `)` closes a group, so a value cannot start with it. A
+/// value beginning with any of these is written quoted. The one definition the
+/// parser and its documentation (docs/filter-dsl.md, "Values") describe.
+fn is_reserved_bare_start(c: char) -> bool {
+    matches!(c, '=' | '!' | '<' | '>' | '@' | ')')
+}
+
+/// Split a bare (unquoted) value off the front of `input`.
 ///
-/// Inside a quoted string, a backslash introduces an escape: `\'`, `\"`, and
-/// `\\` yield the literal quote/backslash so the delimiter char is
-/// expressible; any other `\x` sequence is kept verbatim (backslash and all)
-/// so regex metacharacters such as `\d` survive.
+/// The value is the longest run of characters up to whitespace, a quote
+/// character, or a `)` that closes a group of the expression. Its own parentheses must balance: `(`
+/// opens, `)` closes, and a `)` with no `(` to close ends the value. For a
+/// regex (`regex` true) two regex rules apply as well, so a `)` that is regex
+/// text is not read as the end of the value: a backslash escapes the next
+/// non-whitespace character, and inside a `[...]` class parentheses are
+/// literal. Every other character, `|` included, is part of the value.
+///
+/// The one definition of a bare value. Quoting is needed only for what it
+/// cannot express: whitespace, a quote character, an unmatched `)`, an empty
+/// value, and a first character [`is_reserved_bare_start`] reserves.
+///
+/// # Returns
+///
+/// `(value, rest)`; `value` is empty when `input` starts with whitespace, a
+/// `)` or nothing.
+fn scan_bare_value(input: &str, regex: bool) -> (&str, &str) {
+    let mut depth = 0usize;
+    let mut in_class = false;
+    let mut chars = input.char_indices().peekable();
+    while let Some((i, c)) = chars.next() {
+        if c.is_whitespace() || c == '\'' || c == '"' {
+            return (&input[..i], &input[i..]);
+        }
+        match c {
+            '\\' if regex => {
+                if chars.peek().is_some_and(|&(_, n)| !n.is_whitespace()) {
+                    chars.next();
+                }
+            }
+            '[' if regex && !in_class => in_class = true,
+            ']' if regex && in_class => in_class = false,
+            _ if in_class => {}
+            '(' => depth += 1,
+            ')' if depth == 0 => return (&input[..i], &input[i..]),
+            ')' => depth -= 1,
+            _ => {}
+        }
+    }
+    (input, "")
+}
+
+/// Whether the text after a value is something a comparison may be followed
+/// by: the end, a `)`, or the word `AND` or `OR`.
+fn ends_a_comparison(rest: &str) -> bool {
+    let rest = rest.trim_start();
+    if rest.is_empty() || rest.starts_with(')') {
+        return true;
+    }
+    ["AND", "OR"].iter().any(|word| {
+        rest.get(..word.len())
+            .is_some_and(|w| w.eq_ignore_ascii_case(word))
+            && rest[word.len()..]
+                .chars()
+                .next()
+                .is_none_or(char::is_whitespace)
+    })
+}
+
+/// Parse the value of a comparison, quoted or bare, and read it by the type of
+/// `field`.
+///
+/// A value is written in single quotes, double quotes, or bare (see
+/// [`scan_bare_value`]); all three spell the same text and the result does
+/// not depend on which was used. The text is then read by the field's
+/// [`ValueKind`]: text as written, a finite number, `true`/`false` (any case),
+/// or an RFC 3339 instant. For `=~` the text is compiled as a regex, with
+/// the byte-oriented [`regex::bytes`] engine for `payload` so it matches the
+/// raw message without a lossy UTF-8 copy, and a size limit of
+/// [`REGEX_SIZE_LIMIT`] bytes.
+///
+/// Inside a quoted string, a backslash introduces an escape: `\'` and `\"`
+/// yield the quote, and every other `\x` sequence is kept verbatim so regex
+/// metacharacters such as `\d` survive. A bare value is taken verbatim.
 ///
 /// # Arguments
 ///
 /// * `input` — Remaining expression text at the value position.
-/// * `field` — The field already parsed; selects the byte-regex path for
-///   `payload` regex comparisons.
-/// * `op` — The operator already parsed; decides whether a quoted string
-///   is kept verbatim or compiled as a regex.
+/// * `field` — The field already parsed; decides how the text is read.
+/// * `op` — The operator already parsed; `=~` compiles the text as a regex.
 ///
 /// # Returns
 ///
-/// The unconsumed remainder and the parsed `Value`. Boolean literals are
-/// matched case-insensitively and only when not a prefix of a longer
-/// identifier; an unterminated string or an invalid/oversized regex
-/// yields a nom `Failure`; any other token must parse as an `f64`.
+/// The unconsumed remainder and the parsed `Value`, or a nom `Failure`
+/// carrying the kind that names the problem.
 fn parse_value<'a>(
     input: &'a str,
     field: &Field,
     op: Operator,
 ) -> IResult<&'a str, Value, NomErr<'a>> {
     let (input, _) = multispace0(input)?;
+    let fail = |at: &'a str, kind| nom::Err::Failure(nom::error::Error::new(at, kind));
 
-    // A `time` literal is a quoted RFC 3339 instant and nothing else, parsed
-    // here once by the parser every surface reads a time bound with.
-    if *field == Field::Time {
-        let refused = || nom::Err::Failure(nom::error::Error::new(input, TIME_VALUE_INVALID));
-        let quote = match input.chars().next() {
-            Some(q @ ('\'' | '"')) => q,
-            _ => return Err(refused()),
-        };
-        let (text, rest) = scan_quoted_string(&input[1..], quote).ok_or_else(refused)?;
-        let instant = crate::cursor::parse_instant(&text).map_err(|_| refused())?;
-        return Ok((rest, Value::Instant(instant)));
-    }
-
-    // Try boolean literals first
-    if let Ok((rest, _)) = tag_no_case::<&str, &str, NomErr<'_>>("true").parse(input) {
-        // Ensure "true" is not a prefix of a longer identifier
-        if rest.is_empty()
-            || !rest
-                .chars()
-                .next()
-                .is_some_and(|c| c.is_ascii_alphanumeric() || c == '_')
-        {
-            return Ok((rest, Value::Bool(true)));
+    let (text, rest): (std::borrow::Cow<'a, str>, &'a str) = match input.chars().next() {
+        Some(quote @ ('\'' | '"')) => {
+            let (text, rest) = scan_quoted_string(&input[1..], quote)
+                .ok_or_else(|| fail(input, QUOTED_VALUE_UNTERMINATED))?;
+            (std::borrow::Cow::Owned(text), rest)
         }
-    }
-    if let Ok((rest, _)) = tag_no_case::<&str, &str, NomErr<'_>>("false").parse(input)
-        && (rest.is_empty()
-            || !rest
-                .chars()
-                .next()
-                .is_some_and(|c| c.is_ascii_alphanumeric() || c == '_'))
-    {
-        return Ok((rest, Value::Bool(false)));
-    }
-
-    // Try quoted string (single or double quotes)
-    if input.starts_with('\'') || input.starts_with('"') {
-        let quote = input.as_bytes()[0] as char;
-        let after_quote = &input[1..];
-        let (string_val, rest) = scan_quoted_string(after_quote, quote).ok_or_else(|| {
-            nom::Err::Failure(nom::error::Error::new(input, nom::error::ErrorKind::Char))
-        })?;
-
-        if op == Operator::Regex {
-            // `payload` greps the raw message bytes, so its regex is compiled
-            // with the byte engine to match without a lossy UTF-8 copy.
-            if *field == Field::Payload {
-                let re = regex::bytes::RegexBuilder::new(&string_val)
-                    .size_limit(REGEX_SIZE_LIMIT)
-                    .build()
-                    .map_err(|_| {
-                        nom::Err::Failure(nom::error::Error::new(
-                            input,
-                            nom::error::ErrorKind::Verify,
-                        ))
-                    })?;
-                return Ok((rest, Value::ReBytes(re)));
+        Some(c) if is_reserved_bare_start(c) && c != ')' => {
+            return Err(fail(input, BARE_VALUE_RESERVED));
+        }
+        _ => {
+            let (text, rest) = scan_bare_value(input, op == Operator::Regex);
+            if text.is_empty() {
+                // Nothing where a value belongs: the end, or a `)`.
+                return Err(nom::Err::Error(nom::error::Error::new(
+                    input,
+                    nom::error::ErrorKind::Char,
+                )));
             }
-            let re = regex::RegexBuilder::new(&string_val)
+            if !ends_a_comparison(rest) {
+                let next = rest.trim_start();
+                if next.starts_with("&&") || next.starts_with("||") {
+                    return Err(fail(next, SYMBOLIC_COMBINATOR));
+                }
+                if next.starts_with(['\'', '"']) {
+                    return Err(fail(input, BARE_VALUE_QUOTE));
+                }
+                return Err(fail(input, BARE_VALUE_SPACE));
+            }
+            (std::borrow::Cow::Borrowed(text), rest)
+        }
+    };
+
+    if op == Operator::Regex {
+        // `payload` greps the raw message bytes, so its regex is compiled
+        // with the byte engine to match without a lossy UTF-8 copy.
+        if *field == Field::Payload {
+            let re = regex::bytes::RegexBuilder::new(&text)
                 .size_limit(REGEX_SIZE_LIMIT)
                 .build()
-                .map_err(|_| {
-                    nom::Err::Failure(nom::error::Error::new(input, nom::error::ErrorKind::Verify))
-                })?;
-            return Ok((rest, Value::Re(re)));
+                .map_err(|_| fail(input, REGEX_INVALID))?;
+            return Ok((rest, Value::ReBytes(re)));
         }
-
-        return Ok((rest, Value::Str(string_val)));
+        let re = regex::RegexBuilder::new(&text)
+            .size_limit(REGEX_SIZE_LIMIT)
+            .build()
+            .map_err(|_| fail(input, REGEX_INVALID))?;
+        return Ok((rest, Value::Re(re)));
     }
 
-    // Try number
-    let (rest, num) = double(input)?;
-    // `double` accepts `nan`/`inf`/`infinity`. A non-finite literal is a typo,
-    // not a threshold: every comparison against NaN is false (it would silently
-    // match nothing), and an infinity matches everything or nothing depending
-    // on the operator. Reject it at parse rather than mislead the operator.
-    if !num.is_finite() {
-        return Err(nom::Err::Failure(nom::error::Error::new(
-            input,
-            nom::error::ErrorKind::Verify,
-        )));
-    }
-    Ok((rest, Value::Num(num)))
+    let value = match field.value_kind() {
+        ValueKind::Text => Value::Str(text.into_owned()),
+        // `nan` and `inf` parse as `f64` but are typos, not thresholds: every
+        // comparison against NaN is false, and an infinity matches everything
+        // or nothing depending on the operator.
+        ValueKind::Number => match text.parse::<f64>() {
+            Ok(n) if n.is_finite() => Value::Num(n),
+            _ => return Err(fail(input, NUMBER_VALUE_INVALID)),
+        },
+        ValueKind::Boolean => {
+            if text.eq_ignore_ascii_case("true") {
+                Value::Bool(true)
+            } else if text.eq_ignore_ascii_case("false") {
+                Value::Bool(false)
+            } else {
+                return Err(fail(input, BOOL_VALUE_INVALID));
+            }
+        }
+        ValueKind::Instant => match crate::cursor::parse_instant(&text) {
+            Ok(instant) => Value::Instant(instant),
+            Err(_) => return Err(fail(input, TIME_VALUE_INVALID)),
+        },
+    };
+    Ok((rest, value))
 }
 
 // ── Expression evaluator ────────────────────────────────────────────
@@ -3273,15 +3457,15 @@ mod tests {
     /// aligned under the offending token.
     #[test]
     fn parse_error_shows_expression_with_caret_at_position() -> Result<(), TestError> {
-        let err = FilterExpr::parse("method == INVITE")
+        let err = FilterExpr::parse("ua == Friendly Scanner")
             .err()
             .ok_or("expected an error, got Ok")?
             .to_string();
         assert!(
-            err.contains("method == INVITE"),
+            err.contains("ua == Friendly Scanner"),
             "error must echo the expression, got:\n{err}"
         );
-        // Caret under column 10 (0-based) where the unquoted value starts.
+        // Caret under column 6 (0-based) where the value with a space starts.
         let caret_line = err
             .lines()
             .find(|l| l.trim_end().ends_with('^'))
@@ -3289,28 +3473,24 @@ mod tests {
         assert_eq!(
             caret_line.find('^'),
             err.lines()
-                .find(|l| l.contains("method == INVITE"))
-                .and_then(|l| l.find("INVITE")),
+                .find(|l| l.contains("ua == Friendly Scanner"))
+                .and_then(|l| l.find("Friendly")),
             "caret must align under the offending token, got:\n{err}"
         );
         Ok(())
     }
 
-    /// An unquoted string value produces a quoting hint showing the
-    /// corrected form.
+    /// A value containing whitespace cannot be bare, and the error says that
+    /// it must be quoted.
     #[test]
-    fn parse_error_hints_quoting_for_unquoted_value() -> Result<(), TestError> {
-        let err = FilterExpr::parse("method == INVITE")
+    fn parse_error_hints_quoting_for_a_value_with_whitespace() -> Result<(), TestError> {
+        let err = FilterExpr::parse("ua == Friendly Scanner")
             .err()
             .ok_or("expected an error, got Ok")?
             .to_string();
         assert!(
-            err.contains("== 'INVITE'"),
-            "error must show the corrected, quoted form, got:\n{err}"
-        );
-        assert!(
-            err.to_lowercase().contains("quot"),
-            "error must explain that values need quotes, got:\n{err}"
+            err.contains("containing whitespace must be quoted"),
+            "error must explain why the value needs quotes, got:\n{err}"
         );
         Ok(())
     }
@@ -3334,7 +3514,7 @@ mod tests {
     #[test]
     fn parse_error_caret_correct_with_multibyte_prefix() -> Result<(), TestError> {
         // 'é' is 2 bytes / 1 column: caret math must use chars, not bytes.
-        let err = FilterExpr::parse("from.user == 'é' and method == INVITE")
+        let err = FilterExpr::parse("from.user == 'é' and method == =x")
             .err()
             .ok_or("expected an error, got Ok")?
             .to_string();
@@ -3348,9 +3528,9 @@ mod tests {
             .ok_or("caret line present")?;
         let caret_col = caret_line.chars().take_while(|c| *c == ' ').count();
         let invite_col = expr_line
-            .find("INVITE")
+            .find("=x")
             .map(|byte_idx| expr_line[..byte_idx].chars().count())
-            .ok_or("INVITE present in echoed expression")?;
+            .ok_or("the invalid value present in echoed expression")?;
         assert_eq!(
             caret_col, invite_col,
             "caret column must be measured in characters, not bytes, got:\n{err}"
@@ -3362,7 +3542,7 @@ mod tests {
     /// the diagnostic lines stay readable, caret included.
     #[test]
     fn parse_error_long_input_is_windowed_not_panicking() -> Result<(), TestError> {
-        let long = format!("from.user == '{}' and method == INVITE", "x".repeat(200));
+        let long = format!("from.user == '{}' and method == =x", "x".repeat(200));
         let err = FilterExpr::parse(&long)
             .err()
             .ok_or("expected an error, got Ok")?
@@ -4258,25 +4438,15 @@ mod tests {
         Ok(())
     }
 
-    /// Keyword values like `true` after an operator do not trigger the
-    /// quoting hint.
+    /// The renderer adds no blanket "string values must be quoted" hint: a
+    /// bare word after an operator is a value, and every case that still needs
+    /// quotes says why in its own headline.
     #[test]
-    fn render_parse_error_no_quote_hint_for_keyword_value() -> Result<(), TestError> {
-        // "true" after an operator is a valid boolean, so no quoting hint.
-        let out = render_parse_error("one_way == true", 11, "x");
-        assert!(!out.contains("must be quoted"), "got: {out}");
-        Ok(())
-    }
-
-    /// Uppercase keyword values like `TRUE` after an operator do not trigger
-    /// the quoting hint — the parser matches booleans/`AND`/`OR`
-    /// case-insensitively, so the hint exclusion must be case-insensitive too.
-    #[test]
-    fn render_parse_error_no_quote_hint_for_uppercase_keyword() -> Result<(), TestError> {
-        // `TRUE` parses as a boolean literal (tag_no_case), so a "quote this"
-        // hint would be misleading.
-        let out = render_parse_error("method == TRUE", 10, "x");
-        assert!(!out.contains("must be quoted"), "got: {out}");
+    fn render_parse_error_adds_no_blanket_quoting_hint() -> Result<(), TestError> {
+        for (expr, pos) in [("method == INVITE", 10), ("one_way == TRUE", 11)] {
+            let out = render_parse_error(expr, pos, "x");
+            assert!(!out.contains("must be quoted"), "got: {out}");
+        }
         Ok(())
     }
 
@@ -4991,10 +5161,11 @@ mod unknown_field_hint_tests {
         Ok(())
     }
 
-    /// The quoting hint must still win for the classic unquoted-value case.
+    /// The quoting reason for a value with whitespace is not replaced by an
+    /// unknown-field hint about the value's first word.
     #[test]
     fn quoting_hint_not_replaced_by_field_hint() -> Result<(), TestError> {
-        let err = FilterExpr::parse("method == INVITE")
+        let err = FilterExpr::parse("ua == Friendly Scanner")
             .err()
             .ok_or("must fail")?;
         let msg = err.to_string();
@@ -5757,5 +5928,398 @@ mod pbx_field_tests {
         ] {
             assert!(FIELD_NAMES.contains(&f), "{f}");
         }
+    }
+}
+
+/// Bare (unquoted) values. Where a value is expected, a word without quotes
+/// means exactly what the quoted word means, read by the type of the field on
+/// the left; quotes stay required only where the text cannot be told apart
+/// from the expression around it.
+#[cfg(test)]
+mod bare_value_tests {
+    use std::net::{IpAddr, Ipv4Addr};
+
+    type TestError = Box<dyn std::error::Error>;
+
+    use super::*;
+    use crate::net::TransportProto;
+    use crate::sip::parser::parse_sip;
+    use crate::test_utils::build_sip_message as build_sip;
+
+    fn at() -> Result<chrono::DateTime<chrono::Utc>, TestError> {
+        Ok(
+            chrono::TimeZone::with_ymd_and_hms(&chrono::Utc, 2026, 10, 13, 9, 0, 0)
+                .single()
+                .ok_or("invalid fixture timestamp")?,
+        )
+    }
+
+    /// An INVITE from `from_user` to `to_user`, with a request-URI carrying a
+    /// parameter, a P-Asserted-Identity and a custom header.
+    fn call(from_user: &str, to_user: &str) -> Result<SipDialog, TestError> {
+        let raw = build_sip(
+            &format!("INVITE sip:{to_user}@192.0.2.10;user=phone SIP/2.0"),
+            &[
+                "Via: SIP/2.0/UDP 203.0.113.5:5060;branch=z9hG4bKbare",
+                &format!("From: <sip:{from_user}@carrier-a.example>;tag=f1"),
+                &format!("To: <sip:{to_user}@pbx.example>"),
+                "Call-ID: bare-values@example.com",
+                "CSeq: 1 INVITE",
+                "P-Asserted-Identity: <sip:+15559876543@carrier-a.example>",
+                "X-Trunk: north-east",
+                "Content-Length: 0",
+            ],
+            b"",
+        );
+        let msg = parse_sip(
+            &raw,
+            at()?,
+            IpAddr::V4(Ipv4Addr::new(203, 0, 113, 5)),
+            IpAddr::V4(Ipv4Addr::new(192, 0, 2, 10)),
+            5060,
+            5060,
+            TransportProto::Udp,
+        )?;
+        Ok(SipDialog::new(&msg).ok_or("an INVITE opens a dialog")?)
+    }
+
+    fn the_call() -> Result<SipDialog, TestError> {
+        call("+15551230000", "7000")
+    }
+
+    /// Whether `expr` parses and selects `dialog`.
+    fn selects(expr: &str, dialog: &SipDialog) -> Result<bool, TestError> {
+        let f = FilterExpr::parse(expr).map_err(|e| format!("{expr:?} must parse: {e}"))?;
+        Ok(f.matches_dialog(dialog, &[], CaptureMedia::Absent, MosDelay::unknown()))
+    }
+
+    /// The parse error text for `expr`, which must not parse.
+    fn refused(expr: &str) -> Result<String, TestError> {
+        match FilterExpr::parse(expr) {
+            Ok(_) => Err(format!("{expr:?} must be refused").into()),
+            Err(e) => Ok(e.to_string()),
+        }
+    }
+
+    /// `field op value` written bare, single-quoted and double-quoted: all
+    /// three parse and give the same answer on `dialog`. Returns that answer.
+    fn same_three_ways(field_op: &str, value: &str, dialog: &SipDialog) -> Result<bool, TestError> {
+        let bare = selects(&format!("{field_op} {value}"), dialog)?;
+        let single = selects(&format!("{field_op} '{value}'"), dialog)?;
+        let double = selects(&format!("{field_op} \"{value}\""), dialog)?;
+        assert_eq!(
+            (bare, double),
+            (single, single),
+            "{field_op} {value}: bare, '…' and \"…\" must agree"
+        );
+        Ok(bare)
+    }
+
+    /// The headline case, and the one an MCP client hit: `method == INVITE`.
+    #[test]
+    fn a_bare_method_means_the_quoted_method() -> Result<(), TestError> {
+        let d = the_call()?;
+        assert!(same_three_ways("method ==", "INVITE", &d)?);
+        assert!(!same_three_ways("method ==", "BYE", &d)?);
+        assert!(!same_three_ways("method !=", "INVITE", &d)?);
+        assert!(same_three_ways("method !=", "BYE", &d)?);
+        Ok(())
+    }
+
+    /// Case stays significant: [RFC 3261 section 7.1](https://www.rfc-editor.org/rfc/rfc3261.html#section-7.1) makes method names
+    /// case-sensitive, and the quoted comparison never folded case.
+    #[test]
+    fn a_bare_value_keeps_case_sensitivity() -> Result<(), TestError> {
+        let d = the_call()?;
+        assert!(!same_three_ways("method ==", "invite", &d)?);
+        Ok(())
+    }
+
+    /// Every kind of text field takes a bare value, including the characters
+    /// a SIP URI, a Call-ID and an address are made of: `@ . : ; = + - /`.
+    #[test]
+    fn every_text_field_takes_a_bare_value() -> Result<(), TestError> {
+        let d = the_call()?;
+        for (field_op, value) in [
+            ("from.user ==", "+15551230000"),
+            ("to.user ==", "7000"),
+            ("from.host ==", "carrier-a.example"),
+            ("to.host ==", "pbx.example"),
+            ("from.uri ==", "sip:+15551230000@carrier-a.example"),
+            ("ruri ==", "sip:7000@192.0.2.10;user=phone"),
+            ("pai.user ==", "+15559876543"),
+            ("call_id ==", "bare-values@example.com"),
+            ("header.X-Trunk ==", "north-east"),
+            ("header.Call-ID ==", "bare-values@example.com"),
+            ("src.ip ==", "203.0.113.5"),
+            ("src.ip in_subnet", "203.0.113.0/24"),
+            ("dst.ip in_subnet", "192.0.2.0/24"),
+            ("state ==", state_to_str(d.state())),
+        ] {
+            assert!(
+                same_three_ways(field_op, value, &d)?,
+                "{field_op} {value} must select the call"
+            );
+        }
+        assert!(!same_three_ways("call_id ==", "other@example.com", &d)?);
+        assert!(!same_three_ways("src.ip in_subnet", "198.51.100.0/24", &d)?);
+        Ok(())
+    }
+
+    /// A bare value combines with AND, OR, NOT and parentheses, and a `)`
+    /// written straight after it closes the group rather than joining it.
+    #[test]
+    fn bare_values_combine_with_and_or_not_and_groups() -> Result<(), TestError> {
+        let d = the_call()?;
+        assert!(selects("method == INVITE AND to.user == 7000", &d)?);
+        assert!(selects("method == BYE OR to.user == 7000", &d)?);
+        assert!(!selects("method == BYE OR to.user == 7001", &d)?);
+        assert!(selects("NOT method == BYE", &d)?);
+        assert!(selects("(method == INVITE)", &d)?);
+        assert!(selects(
+            "(method == BYE OR (to.user == 7000)) AND src.port == 5060",
+            &d
+        )?);
+        assert!(selects(
+            "method == INVITE and (call_id == bare-values@example.com)",
+            &d
+        )?);
+        Ok(())
+    }
+
+    /// The field decides what a value is. `to.user` is text, so `7000` there
+    /// is the text `7000` and matches a user named `7000`. Before, it was the
+    /// number 7000, which no text field equals, so it silently matched nothing.
+    #[test]
+    fn a_number_shaped_value_is_text_on_a_text_field() -> Result<(), TestError> {
+        let d = the_call()?;
+        assert!(selects("to.user == 7000", &d)?);
+        assert!(!selects("to.user != 7000", &d)?);
+        assert!(selects("from.user == +15551230000", &d)?);
+        // Text keeps its spelling: `7000.0` is not the user `7000`.
+        assert!(!selects("to.user == 7000.0", &d)?);
+        Ok(())
+    }
+
+    /// A numeric field reads a number bare or quoted, with the same meaning,
+    /// and ordering comparisons are unchanged.
+    #[test]
+    fn a_numeric_field_reads_a_number_bare_or_quoted() -> Result<(), TestError> {
+        let d = the_call()?;
+        assert!(same_three_ways("src.port ==", "5060", &d)?);
+        assert!(same_three_ways("src.port >=", "5000", &d)?);
+        assert!(!same_three_ways("src.port <", "5000", &d)?);
+        assert!(!same_three_ways("src.port ==", "5061", &d)?);
+        assert!(same_three_ways("msg_count ==", "1", &d)?);
+        assert!(same_three_ways("duration <", "0.5", &d)?);
+        Ok(())
+    }
+
+    /// A value a numeric field can never equal is an error naming the field
+    /// and what it compares with, not a filter that silently matches nothing.
+    #[test]
+    fn a_word_on_a_numeric_field_is_refused_naming_the_field() -> Result<(), TestError> {
+        for expr in ["src.port == abc", "src.port == 'abc'", "pdd > \"slow\""] {
+            let err = refused(expr)?;
+            assert!(
+                err.contains("compares with a finite number"),
+                "{expr}: {err}"
+            );
+        }
+        Ok(())
+    }
+
+    /// A boolean field reads `true`/`false` bare or quoted, case-insensitive
+    /// as before, and refuses anything else naming why.
+    #[test]
+    fn a_boolean_field_reads_true_or_false_bare_or_quoted() -> Result<(), TestError> {
+        let d = the_call()?;
+        assert!(same_three_ways("one_way ==", "false", &d)?);
+        assert!(same_three_ways("one_way ==", "FALSE", &d)?);
+        assert!(!same_three_ways("one_way ==", "true", &d)?);
+        let err = refused("one_way == maybe")?;
+        assert!(err.contains("compares with true or false"), "{err}");
+        Ok(())
+    }
+
+    /// `time` takes its RFC 3339 instant bare as well as quoted.
+    #[test]
+    fn a_time_bound_may_be_bare() -> Result<(), TestError> {
+        let d = the_call()?;
+        assert!(same_three_ways("time >=", "2026-10-13T08:00:00Z", &d)?);
+        assert!(!same_three_ways("time >", "2026-10-13T09:00:00+00:00", &d)?);
+        Ok(())
+    }
+
+    /// `response_class` takes `5xx` bare, which is not a number.
+    #[test]
+    fn a_response_class_may_be_bare() -> Result<(), TestError> {
+        let d = the_call()?;
+        // A call with no final response is in no class, bare or quoted.
+        assert!(!same_three_ways("response_class ==", "5xx", &d)?);
+        assert!(!same_three_ways("response_class ==", "failure", &d)?);
+        Ok(())
+    }
+
+    /// The right-hand side of a comparison is always a value: the grammar has
+    /// no field-to-field comparison. So a word that is elsewhere a keyword,
+    /// a field name or an alias name is, in value position, that text.
+    #[test]
+    fn a_keyword_field_or_alias_name_in_value_position_is_text() -> Result<(), TestError> {
+        for word in ["true", "AND", "or", "NOT", "to.user", "problems", "one-way"] {
+            let d = call(word, "7000")?;
+            assert!(
+                selects(&format!("from.user == {word}"), &d)?,
+                "from.user == {word} must select the user named {word}"
+            );
+            assert!(selects(&format!("from.user == '{word}'"), &d)?, "{word}");
+            let other = the_call()?;
+            assert!(!selects(&format!("from.user == {word}"), &other)?, "{word}");
+        }
+        Ok(())
+    }
+
+    /// A `@` inside a bare value is part of the value, not a `@name` filter
+    /// reference: `alice@example` cannot be a reference, because a reference
+    /// begins an atom. Resolution leaves the value alone even when a filter
+    /// of that name exists.
+    #[test]
+    fn an_at_sign_inside_a_bare_value_is_not_a_reference() -> Result<(), TestError> {
+        let defs: std::collections::BTreeMap<String, String> =
+            [("example".to_owned(), "method == 'BYE'".to_owned())].into();
+        let t = AliasThresholds::default();
+        let table = super::super::named_filters::NamedFilters::resolve(&defs, &t)?;
+        let text = "call_id == bare-values@example.com";
+        assert_eq!(resolve_references(text, &table, &t), text);
+        assert!(selects(text, &the_call()?)?);
+        // A reference that begins an atom is still a reference.
+        assert_eq!(
+            resolve_references("method == INVITE AND @example", &table, &t),
+            "method == INVITE AND (method == 'BYE')"
+        );
+        Ok(())
+    }
+
+    /// A bare regex is read up to whitespace or a `)` that closes an open
+    /// group of the expression. Its own parentheses balance, `|` is an
+    /// ordinary regex character, and a `)` inside `[...]` or after `\` is
+    /// part of the regex.
+    #[test]
+    fn a_bare_regex_reads_to_whitespace_or_an_unbalanced_paren() -> Result<(), TestError> {
+        let d = the_call()?;
+        assert!(same_three_ways("from.user =~", r"^\+1555", &d)?);
+        assert!(same_three_ways("method =~", "^(INVITE|BYE)$", &d)?);
+        assert!(same_three_ways("method =~", "INV|BYE", &d)?);
+        assert!(same_three_ways(
+            "call_id =~",
+            r"^bare-[a-z]+@example\.com$",
+            &d
+        )?);
+        assert!(!same_three_ways("method =~", "^(BYE|CANCEL)$", &d)?);
+        assert!(selects("(method =~ ^IN(V|X)ITE)", &d)?);
+        assert!(selects(
+            "(method =~ ^(INVITE|BYE)$ AND src.port == 5060)",
+            &d
+        )?);
+        assert!(selects(r"method =~ [)(]|^INVITE$", &d)?);
+        assert!(selects(r"(method =~ \)|INVITE)", &d)?);
+        Ok(())
+    }
+
+    /// Quotes stay required where the value cannot be told apart from the
+    /// expression around it, and the error names the reason.
+    #[test]
+    fn a_value_with_whitespace_needs_quotes_and_the_error_says_so() -> Result<(), TestError> {
+        let d = call("Friendly Scanner", "7000")?;
+        assert!(selects("from.user == 'Friendly Scanner'", &d)?);
+        let err = refused("from.user == Friendly Scanner")?;
+        assert!(err.contains("whitespace must be quoted"), "{err}");
+        assert!(!err.contains("string values must be quoted"), "{err}");
+        let err = refused("ua =~ Friendly Scanner")?;
+        assert!(err.contains("whitespace must be quoted"), "{err}");
+        Ok(())
+    }
+
+    /// A value with an unmatched `)` needs quotes; the error names it.
+    #[test]
+    fn a_value_with_an_unmatched_paren_needs_quotes() -> Result<(), TestError> {
+        let d = call("a)b", "7000")?;
+        assert!(selects("from.user == 'a)b'", &d)?);
+        let err = refused("from.user == a)b")?;
+        assert!(err.contains("unmatched ')'"), "{err}");
+        let err = refused("method =~ IN)VITE")?;
+        assert!(err.contains("unmatched ')'"), "{err}");
+        Ok(())
+    }
+
+    /// A value that begins with a quote character, an operator character or
+    /// `@` cannot be bare. `===` stays a typo rather than becoming the value
+    /// `=INVITE`.
+    #[test]
+    fn a_value_beginning_with_a_reserved_character_needs_quotes() -> Result<(), TestError> {
+        for expr in [
+            "method === 'INVITE'",
+            "method == =x",
+            "method == <x",
+            "method == !x",
+        ] {
+            let err = refused(expr)?;
+            assert!(err.contains("needs quotes"), "{expr}: {err}");
+        }
+        let err = refused("ua == 'unterminated")?;
+        assert!(err.contains("unterminated"), "{err}");
+        // An empty value can only be written quoted.
+        let d = the_call()?;
+        assert!(!selects("pai.user == ''", &d)?);
+        Ok(())
+    }
+
+    /// A quote character ends a bare value, because quotes delimit strings
+    /// everywhere in the expression; a value containing one is quoted with
+    /// the other quote character.
+    #[test]
+    fn a_value_containing_a_quote_needs_quotes() -> Result<(), TestError> {
+        let d = call("O'Brien", "7000")?;
+        assert!(selects("from.user == \"O'Brien\"", &d)?);
+        assert!(selects(r"from.user == 'O\'Brien'", &d)?);
+        let err = refused("from.user == O'Brien")?;
+        assert!(err.contains("containing ' or \""), "{err}");
+        Ok(())
+    }
+
+    /// A combinator that is not part of the grammar is named, not reported as
+    /// a quoting problem: the combinators are the words AND, OR and NOT.
+    #[test]
+    fn a_symbolic_combinator_is_refused_naming_the_words() -> Result<(), TestError> {
+        let err = refused("method == INVITE && to.user == 7000")?;
+        assert!(err.contains("AND, OR"), "{err}");
+        assert!(!err.contains("string values must be quoted"), "{err}");
+        Ok(())
+    }
+
+    /// The printed position is the 0-based CHARACTER column the caret marks,
+    /// not a byte offset: `é` is two bytes and one column.
+    #[test]
+    fn the_printed_position_is_the_caret_column_in_characters() -> Result<(), TestError> {
+        let expr = "from.user == 'José' AND method == =x";
+        let err = refused(expr)?;
+        // The offending value starts after `method == `.
+        let byte_at = expr.rfind("=x").ok_or("value")?;
+        let char_col = expr[..byte_at].chars().count();
+        assert_ne!(
+            byte_at, char_col,
+            "the fixture must put a multibyte char first"
+        );
+        assert!(
+            err.contains(&format!("position {char_col}:")),
+            "position must be the character column {char_col}, not byte {byte_at}:\n{err}"
+        );
+        let caret_line = err
+            .lines()
+            .find(|l| l.trim_end().ends_with('^'))
+            .ok_or("caret line")?;
+        let caret_col = caret_line.chars().count() - 1 - 2;
+        assert_eq!(caret_col, char_col, "caret and position agree:\n{err}");
+        Ok(())
     }
 }

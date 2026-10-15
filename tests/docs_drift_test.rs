@@ -5369,7 +5369,10 @@ fn no_documentation_table_repeats_a_row() -> Result<(), TestError> {
     // tables in docs/mcp-tools-vcon.md and their website mirror, and the
     // "Report a directory of stored vCons" row of
     // docs/design/surface-capability-matrix.md.
-    const EXPECTED_TABLES: usize = 1237;
+    // 1237 -> 1239: docs/filter-dsl.md "Values" replaced its one syntax
+    // table with the field-type table and the "When a value needs quotes"
+    // table, in the page and its website/content/docs/filter-dsl.md mirror.
+    const EXPECTED_TABLES: usize = 1239;
 
     let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     let out = std::process::Command::new("git")

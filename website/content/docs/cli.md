@@ -843,7 +843,7 @@ stop log lines corrupting the alternate screen. So redirect stderr if you do.
 | `--to` | `<PATTERN>` | -- | 0.3.0 | Filter by SIP To header (regex pattern). Config: `[filter] to` |
 | `--contact` | `<PATTERN>` | -- | 0.3.0 | Filter by SIP Contact header (regex pattern) |
 | `--ua` | `<PATTERN>` | -- | 0.3.0 | Filter by User-Agent header (regex pattern) |
-| `--filter` | `<EXPR>` | -- | 0.3.0 | Filter DSL expression OR a diagnostic alias name (`codec-asym`, `late-media`, etc.) — see [filter-dsl.md](@/docs/filter-dsl.md). The expression may use a [named filter](@/docs/filter-dsl.md#named-filters) from `[filters]` as `@name`. Config: `[filter] expression` |
+| `--filter` | `<EXPR>` | -- | 0.3.0 | Filter DSL expression OR a diagnostic alias name (`codec-asym`, `late-media`, etc.) — see [filter-dsl.md](@/docs/filter-dsl.md). A value may be bare or quoted: `method == INVITE` and `method == 'INVITE'` are the same filter. The expression may use a [named filter](@/docs/filter-dsl.md#named-filters) from `[filters]` as `@name`. Config: `[filter] expression` |
 | `--since` | `<RFC3339>` | -- | 0.5.214 | Keep only dialogs whose first message is at or after this instant (`2026-10-09T10:00:00Z`). The window is half-open, `[--since, --until)`: see [Scope a run to a time window](#scope-a-run-to-a-time-window). ANDed with `--filter`. Needs `-N` |
 | `--until` | `<RFC3339>` | -- | 0.5.214 | Keep only dialogs whose first message is before this instant; a dialog at exactly `--until` belongs to the next window. Must be after `--since`. ANDed with `--filter`. Needs `-N` |
 

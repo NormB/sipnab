@@ -115,32 +115,23 @@ resource.
 
 | Bundle | Tools | Bytes (default) | Bytes with output schemas |
 |---|---|---|---|
-| core | 9 | 12,223 | 54,526 |
-| signaling | 20 | 22,349 | 58,494 |
-| captures | 11 | 12,578 | 30,066 |
-| security | 6 | 9,923 | 9,923 |
+| core | 9 | 12,316 | 54,624 |
+| signaling | 20 | 22,474 | 58,619 |
+| captures | 11 | 12,723 | 30,211 |
+| security | 6 | 9,954 | 9,954 |
 | media | 4 | 3,480 | 16,048 |
-| relay | 4 | 4,240 | 20,029 |
+| relay | 4 | 4,199 | 19,988 |
 | tfps | 7 | 5,563 | 15,947 |
-| server | 5 | 5,394 | 27,170 |
-| vcon | 7 | 10,679 | 32,977 |
+| server | 5 | 5,394 | 27,452 |
+| vcon | 7 | 10,714 | 33,024 |
 | tls | 3 | 2,850 | 4,943 |
-| full | 76 | 89,290 | 270,289 |
+| full | 76 | 89,667 | 270,810 |
 
 Bytes are the compact JSON of each tool's `tools/list` entry, summed over the
 bundle.
 
-> **Measured after sipnab 0.5.212** on a build with every feature. These were
-> in place:
->
-> - `max_response_bytes` and the `get_dialog` and `reconcile_orphans` cursors,
-> - output schemas on nine `core` and `signaling` tools,
-> - the response limits and loaded-surface fields of `server_capabilities`,
-> - `vcon_spool_status` and the `cursor` and `media` parameters of
->   `export_vcon`.
->
-> The `vcon` and `full` rows hold a later measurement, taken once
-> `fetch_vcon` and `vcon_directory_report` joined them.
+> **Measured on sipnab 0.5.221** on a build with every feature, after the
+> `filter` parameters gained "Values may be bare or quoted."
 >
 > - Sizes, tool counts and bundle membership may change in later releases.
 > - A build without a feature does not register that feature's tools, so its
@@ -239,7 +230,8 @@ Seven tools select calls, and each answers a different question.
 A filter is one of these:
 
 - an expression in sipnab's filter language (the DSL), such as
-  `state == failed`,
+  `state == Failed`. A value may be bare or quoted: `method == INVITE` and
+  `method == 'INVITE'` are the same filter,
 - the name of a built-in alias such as `problems`.
 
 | The question | The tool | Why this one |

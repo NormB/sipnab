@@ -43,9 +43,14 @@ These are catalogs to pick a line from. They are not blocks to copy whole.
 
 ### Basic field matching
 
-- `method == 'INVITE'`
-- `from.user == '1001'`
+- `method == INVITE`
+- `from.user == 1001`
 - `state == 'InCall'`
+
+A value needs no quotes unless it contains whitespace, a quote character or an
+unmatched `)`, or begins with `=`, `!`, `<`, `>` or `@`. `method == INVITE`,
+`method == 'INVITE'` and `method == "INVITE"` are the same filter. See
+[Values](#values).
 
 ### Regex matching
 
@@ -596,12 +601,12 @@ Auth challenges follow
 
 | Field | Description | Value |
 |-------|-------------|-------|
-| `time` | The instant of the dialog's first message | a quoted [RFC 3339](https://www.rfc-editor.org/rfc/rfc3339.html) instant, such as `'2026-10-09T10:00:00Z'` |
+| `time` | The instant of the dialog's first message | an [RFC 3339](https://www.rfc-editor.org/rfc/rfc3339.html) instant, quoted or bare, such as `2026-10-09T10:00:00Z` |
 
 `time` takes `<`, `<=`, `>`, `>=` and `==`, and nothing else.
 
 - `!=`, `=~` and `in_subnet` are parse errors.
-- So is a literal that is not a quoted RFC 3339 instant.
+- So is a literal that is not an RFC 3339 instant.
 - sipnab converts an offset other than `Z`. So `'2026-10-09T12:00:00+02:00'`
   is the same instant as `'2026-10-09T10:00:00Z'`.
 
@@ -640,6 +645,10 @@ sipnab -N -I capture.pcap --config sipnab.toml --filter "@sales AND method == 'I
 - sipnab replaces `@name` with the named filter's expression in parentheses.
   So each definition keeps the precedence it has as written.
 - An `@` inside a quoted string is text, not a reference.
+- A reference begins an atom: its `@` is the first character of the
+  expression or follows whitespace or `(`. An `@` inside a word is text, so
+  `call_id == a84b4c76@pc33.example.com` compares the Call-ID and does not
+  reference a filter named `pc33`.
 - sipnab resolves every name when it starts. See
   [`[filters]`](config-reference.md#filters) for what it refuses.
 - sipnab refuses a filter given at run time that names something undefined.
@@ -697,13 +706,66 @@ Notes:
 
 ## Values
 
-| Syntax | Type | Examples |
-|--------|------|---------|
-| `'...'` or `"..."` | String | `'INVITE'`, `"alice"` |
-| Number | Numeric (f64) | `3.0`, `100`, `0.5` |
-| `true` / `false` | Boolean (case-insensitive) | `true`, `FALSE` |
-| `'...'` with `=~` | Regex | `'friendly.*scanner'`, `'^1001'` |
-| `'...'` after `time` | RFC 3339 instant | `'2026-10-09T10:00:00Z'`, `'2026-10-09T12:00:00+02:00'` |
+You write the value on the right of a comparison bare, in single quotes, or
+in double quotes. All three spell the same text, and the result does not
+depend on which one you use: `method == INVITE`, `method == 'INVITE'` and
+`method == "INVITE"` select the same dialogs.
+
+The field on the left decides how sipnab reads the text:
+
+| Field type | sipnab reads the text as | Examples |
+|------------|---------------------|----------|
+| String (including `header.<name>`) | The text as written, compared case-sensitively | `INVITE`, `1001`, `'Friendly Scanner'` |
+| Numeric | A finite number (f64) | `3.0`, `100`, `'5060'` |
+| Boolean | `true` or `false`, in any case | `true`, `FALSE` |
+| `time` | An [RFC 3339](https://www.rfc-editor.org/rfc/rfc3339.html) instant | `2026-10-09T10:00:00Z`, `'2026-10-09T12:00:00+02:00'` |
+| Any field, with `=~` | A regex | `^100[0-9]$`, `'friendly.*scanner'` |
+
+- A number-shaped value on a string field is text. `to.user == 1001` selects
+  the user `1001`.
+- A numeric field refuses a value that is not a finite number, and a boolean
+  field refuses anything but `true` and `false`. The error names the reason.
+- The right-hand side is always a value: the grammar has no field-to-field
+  comparison. So a word that is a keyword, a field name or an alias name
+  elsewhere is text in value position. `from.user == AND` compares with the
+  text `AND`, `from.user == to.user` with the text `to.user`, and
+  `side == problems` with the text `problems`.
+
+### Bare values
+
+A bare value is the run of characters up to whitespace, a quote character, or
+a `)` that closes a group of the expression.
+
+- Its own parentheses must balance. A `(` inside the value opens a pair, and a
+  `)` with no `(` to close ends the value. So `(method == INVITE)` reads the
+  value `INVITE`, and `method =~ ^(INVITE|BYE)$` reads the whole regex.
+- For `=~` only, two regex rules also apply. A backslash keeps the next
+  character in the value, so `\)` is regex text. Inside a `[...]` class,
+  parentheses are literal.
+- Every other character is part of the value, including
+  `@ . : ; = + - / | * # %`. `ruri == sip:7000@192.0.2.10;user=phone` and
+  `src.ip in_subnet 203.0.113.0/24` need no quotes.
+- sipnab takes a bare value verbatim. It has no escapes.
+
+### When a value needs quotes
+
+A value needs quotes only where sipnab cannot tell where a bare value ends or
+what it means. Each case has its own error message.
+
+| The value | Why a bare value cannot carry it | Error message |
+|-----------|----------------------------------|---------------|
+| Contains whitespace, such as `'Friendly Scanner'` | Whitespace ends a bare value, and sipnab reads the next word as the rest of the expression | `a value containing whitespace must be quoted, or AND/OR is missing` |
+| Contains `'` or `"`, such as `"O'Brien"` | A quote character begins or ends a quoted string anywhere in the expression | `a value containing ' or " must be quoted with the other quote or a backslash` |
+| Contains an unmatched `)`, such as `'a)b'` | An unmatched `)` closes a group of the expression | `unmatched ')'; a value containing an unmatched ')' must be quoted` |
+| Begins with `=`, `!`, `<` or `>` | These begin an operator, so `method === 'INVITE'` stays an error rather than the value `='INVITE'` | `a value beginning with = ! < > or @ needs quotes` |
+| Begins with `@` | `@name` is a [named filter](#named-filters) reference | the unknown-reference message, or the message above |
+| Is empty | A bare value has at least one character | `pai.user == ''` is the only spelling |
+
+`&&` and `||` are not part of the filter language. sipnab refuses a bare
+value followed by either with `join comparisons with AND, OR and NOT; && and || are
+not supported`.
+
+### Quoted values
 
 Inside a quoted string, a backslash escapes the next character.
 
@@ -807,7 +869,8 @@ an address the SDP never advertised. The boolean-field note above says:
   - `FilterExpr::parse` refuses a longer name and states the limit.
 - Maximum regex pattern size: **1 MB** (1,000,000 bytes)
 - Empty expressions produce a parse error
-- Trailing unparsed input produces a parse error with position
+- Trailing unparsed input produces a parse error with position. The position
+  is the 0-based character column the caret marks, not a byte offset.
 - Unknown field names produce a parse error
 - Invalid regex patterns produce a parse error
 

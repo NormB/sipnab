@@ -6805,7 +6805,7 @@ List all tracked SIP dialogs with optional filtering and pagination.
 | `filter`  | string | --      | A [filter expression](filter-dsl.md) or a [named alias](filter-dsl.md#named-aliases) such as `problems` or `slow-setup`. A value that is neither is a `400`. ANDed with `state` and `from` |
 | `limit`   | int    | 50      | Maximum results. Ceiling is `--api-max-rows` (1000 by default), not a fixed limit |
 | `offset`  | int    | 0       | Pagination offset |
-| `filter`  | string | --      | A [filter DSL](filter-dsl.md) expression, the language `--filter` and the TUI filter dialog use, for example `method == 'INVITE'` or `rtp.loss > 2.0`. URL-encode it. An expression that does not parse is a `400` naming the position, never an unfiltered page |
+| `filter`  | string | --      | A [filter DSL](filter-dsl.md) expression, the language `--filter` and the TUI filter dialog use, for example `method == INVITE` or `rtp.loss > 2.0`. A value may be bare or quoted, so `method == 'INVITE'` is the same filter. URL-encode it. An expression that does not parse is a `400` naming the position, never an unfiltered page |
 | `after`   | string | --      | Only dialogs whose first message is at or after this [RFC 3339](https://www.rfc-editor.org/rfc/rfc3339.html) instant, for example `2026-09-15T12:00:00Z`. An instant that does not parse is a `400` |
 | `before`  | string | --      | Only dialogs whose first message is strictly before this RFC 3339 instant. With `after` it forms the half-open window `[after, before)`, the window the MCP `search_by_time` tool uses, so consecutive windows never count a dialog twice. An instant that does not parse is a `400` |
 
@@ -18188,7 +18188,7 @@ stop log lines corrupting the alternate screen. So redirect stderr if you do.
 | `--to` | `<PATTERN>` | -- | 0.3.0 | Filter by SIP To header (regex pattern). Config: `[filter] to` |
 | `--contact` | `<PATTERN>` | -- | 0.3.0 | Filter by SIP Contact header (regex pattern) |
 | `--ua` | `<PATTERN>` | -- | 0.3.0 | Filter by User-Agent header (regex pattern) |
-| `--filter` | `<EXPR>` | -- | 0.3.0 | Filter DSL expression OR a diagnostic alias name (`codec-asym`, `late-media`, etc.) — see [filter-dsl.md](filter-dsl.md). The expression may use a [named filter](filter-dsl.md#named-filters) from `[filters]` as `@name`. Config: `[filter] expression` |
+| `--filter` | `<EXPR>` | -- | 0.3.0 | Filter DSL expression OR a diagnostic alias name (`codec-asym`, `late-media`, etc.) — see [filter-dsl.md](filter-dsl.md). A value may be bare or quoted: `method == INVITE` and `method == 'INVITE'` are the same filter. The expression may use a [named filter](filter-dsl.md#named-filters) from `[filters]` as `@name`. Config: `[filter] expression` |
 | `--since` | `<RFC3339>` | -- | 0.5.214 | Keep only dialogs whose first message is at or after this instant (`2026-10-09T10:00:00Z`). The window is half-open, `[--since, --until)`: see [Scope a run to a time window](#scope-a-run-to-a-time-window). ANDed with `--filter`. Needs `-N` |
 | `--until` | `<RFC3339>` | -- | 0.5.214 | Keep only dialogs whose first message is before this instant; a dialog at exactly `--until` belongs to the next window. Must be after `--since`. ANDed with `--filter`. Needs `-N` |
 
@@ -24788,9 +24788,14 @@ These are catalogs to pick a line from. They are not blocks to copy whole.
 
 ### Basic field matching
 
-- `method == 'INVITE'`
-- `from.user == '1001'`
+- `method == INVITE`
+- `from.user == 1001`
 - `state == 'InCall'`
+
+A value needs no quotes unless it contains whitespace, a quote character or an
+unmatched `)`, or begins with `=`, `!`, `<`, `>` or `@`. `method == INVITE`,
+`method == 'INVITE'` and `method == "INVITE"` are the same filter. See
+[Values](#values).
 
 ### Regex matching
 
@@ -25341,12 +25346,12 @@ Auth challenges follow
 
 | Field | Description | Value |
 |-------|-------------|-------|
-| `time` | The instant of the dialog's first message | a quoted [RFC 3339](https://www.rfc-editor.org/rfc/rfc3339.html) instant, such as `'2026-10-09T10:00:00Z'` |
+| `time` | The instant of the dialog's first message | an [RFC 3339](https://www.rfc-editor.org/rfc/rfc3339.html) instant, quoted or bare, such as `2026-10-09T10:00:00Z` |
 
 `time` takes `<`, `<=`, `>`, `>=` and `==`, and nothing else.
 
 - `!=`, `=~` and `in_subnet` are parse errors.
-- So is a literal that is not a quoted RFC 3339 instant.
+- So is a literal that is not an RFC 3339 instant.
 - sipnab converts an offset other than `Z`. So `'2026-10-09T12:00:00+02:00'`
   is the same instant as `'2026-10-09T10:00:00Z'`.
 
@@ -25385,6 +25390,10 @@ sipnab -N -I capture.pcap --config sipnab.toml --filter "@sales AND method == 'I
 - sipnab replaces `@name` with the named filter's expression in parentheses.
   So each definition keeps the precedence it has as written.
 - An `@` inside a quoted string is text, not a reference.
+- A reference begins an atom: its `@` is the first character of the
+  expression or follows whitespace or `(`. An `@` inside a word is text, so
+  `call_id == a84b4c76@pc33.example.com` compares the Call-ID and does not
+  reference a filter named `pc33`.
 - sipnab resolves every name when it starts. See
   [`[filters]`](config-reference.md#filters) for what it refuses.
 - sipnab refuses a filter given at run time that names something undefined.
@@ -25442,13 +25451,66 @@ Notes:
 
 ## Values
 
-| Syntax | Type | Examples |
-|--------|------|---------|
-| `'...'` or `"..."` | String | `'INVITE'`, `"alice"` |
-| Number | Numeric (f64) | `3.0`, `100`, `0.5` |
-| `true` / `false` | Boolean (case-insensitive) | `true`, `FALSE` |
-| `'...'` with `=~` | Regex | `'friendly.*scanner'`, `'^1001'` |
-| `'...'` after `time` | RFC 3339 instant | `'2026-10-09T10:00:00Z'`, `'2026-10-09T12:00:00+02:00'` |
+You write the value on the right of a comparison bare, in single quotes, or
+in double quotes. All three spell the same text, and the result does not
+depend on which one you use: `method == INVITE`, `method == 'INVITE'` and
+`method == "INVITE"` select the same dialogs.
+
+The field on the left decides how sipnab reads the text:
+
+| Field type | sipnab reads the text as | Examples |
+|------------|---------------------|----------|
+| String (including `header.<name>`) | The text as written, compared case-sensitively | `INVITE`, `1001`, `'Friendly Scanner'` |
+| Numeric | A finite number (f64) | `3.0`, `100`, `'5060'` |
+| Boolean | `true` or `false`, in any case | `true`, `FALSE` |
+| `time` | An [RFC 3339](https://www.rfc-editor.org/rfc/rfc3339.html) instant | `2026-10-09T10:00:00Z`, `'2026-10-09T12:00:00+02:00'` |
+| Any field, with `=~` | A regex | `^100[0-9]$`, `'friendly.*scanner'` |
+
+- A number-shaped value on a string field is text. `to.user == 1001` selects
+  the user `1001`.
+- A numeric field refuses a value that is not a finite number, and a boolean
+  field refuses anything but `true` and `false`. The error names the reason.
+- The right-hand side is always a value: the grammar has no field-to-field
+  comparison. So a word that is a keyword, a field name or an alias name
+  elsewhere is text in value position. `from.user == AND` compares with the
+  text `AND`, `from.user == to.user` with the text `to.user`, and
+  `side == problems` with the text `problems`.
+
+### Bare values
+
+A bare value is the run of characters up to whitespace, a quote character, or
+a `)` that closes a group of the expression.
+
+- Its own parentheses must balance. A `(` inside the value opens a pair, and a
+  `)` with no `(` to close ends the value. So `(method == INVITE)` reads the
+  value `INVITE`, and `method =~ ^(INVITE|BYE)$` reads the whole regex.
+- For `=~` only, two regex rules also apply. A backslash keeps the next
+  character in the value, so `\)` is regex text. Inside a `[...]` class,
+  parentheses are literal.
+- Every other character is part of the value, including
+  `@ . : ; = + - / | * # %`. `ruri == sip:7000@192.0.2.10;user=phone` and
+  `src.ip in_subnet 203.0.113.0/24` need no quotes.
+- sipnab takes a bare value verbatim. It has no escapes.
+
+### When a value needs quotes
+
+A value needs quotes only where sipnab cannot tell where a bare value ends or
+what it means. Each case has its own error message.
+
+| The value | Why a bare value cannot carry it | Error message |
+|-----------|----------------------------------|---------------|
+| Contains whitespace, such as `'Friendly Scanner'` | Whitespace ends a bare value, and sipnab reads the next word as the rest of the expression | `a value containing whitespace must be quoted, or AND/OR is missing` |
+| Contains `'` or `"`, such as `"O'Brien"` | A quote character begins or ends a quoted string anywhere in the expression | `a value containing ' or " must be quoted with the other quote or a backslash` |
+| Contains an unmatched `)`, such as `'a)b'` | An unmatched `)` closes a group of the expression | `unmatched ')'; a value containing an unmatched ')' must be quoted` |
+| Begins with `=`, `!`, `<` or `>` | These begin an operator, so `method === 'INVITE'` stays an error rather than the value `='INVITE'` | `a value beginning with = ! < > or @ needs quotes` |
+| Begins with `@` | `@name` is a [named filter](#named-filters) reference | the unknown-reference message, or the message above |
+| Is empty | A bare value has at least one character | `pai.user == ''` is the only spelling |
+
+`&&` and `||` are not part of the filter language. sipnab refuses a bare
+value followed by either with `join comparisons with AND, OR and NOT; && and || are
+not supported`.
+
+### Quoted values
 
 Inside a quoted string, a backslash escapes the next character.
 
@@ -25552,7 +25614,8 @@ an address the SDP never advertised. The boolean-field note above says:
   - `FilterExpr::parse` refuses a longer name and states the limit.
 - Maximum regex pattern size: **1 MB** (1,000,000 bytes)
 - Empty expressions produce a parse error
-- Trailing unparsed input produces a parse error with position
+- Trailing unparsed input produces a parse error with position. The position
+  is the 0-based character column the caret marks, not a byte offset.
 - Unknown field names produce a parse error
 - Invalid regex patterns produce a parse error
 
@@ -32899,32 +32962,23 @@ resource.
 
 | Bundle | Tools | Bytes (default) | Bytes with output schemas |
 |---|---|---|---|
-| core | 9 | 12,223 | 54,526 |
-| signaling | 20 | 22,349 | 58,494 |
-| captures | 11 | 12,578 | 30,066 |
-| security | 6 | 9,923 | 9,923 |
+| core | 9 | 12,316 | 54,624 |
+| signaling | 20 | 22,474 | 58,619 |
+| captures | 11 | 12,723 | 30,211 |
+| security | 6 | 9,954 | 9,954 |
 | media | 4 | 3,480 | 16,048 |
-| relay | 4 | 4,240 | 20,029 |
+| relay | 4 | 4,199 | 19,988 |
 | tfps | 7 | 5,563 | 15,947 |
-| server | 5 | 5,394 | 27,170 |
-| vcon | 7 | 10,679 | 32,977 |
+| server | 5 | 5,394 | 27,452 |
+| vcon | 7 | 10,714 | 33,024 |
 | tls | 3 | 2,850 | 4,943 |
-| full | 76 | 89,290 | 270,289 |
+| full | 76 | 89,667 | 270,810 |
 
 Bytes are the compact JSON of each tool's `tools/list` entry, summed over the
 bundle.
 
-> **Measured after sipnab 0.5.212** on a build with every feature. These were
-> in place:
->
-> - `max_response_bytes` and the `get_dialog` and `reconcile_orphans` cursors,
-> - output schemas on nine `core` and `signaling` tools,
-> - the response limits and loaded-surface fields of `server_capabilities`,
-> - `vcon_spool_status` and the `cursor` and `media` parameters of
->   `export_vcon`.
->
-> The `vcon` and `full` rows hold a later measurement, taken once
-> `fetch_vcon` and `vcon_directory_report` joined them.
+> **Measured on sipnab 0.5.221** on a build with every feature, after the
+> `filter` parameters gained "Values may be bare or quoted."
 >
 > - Sizes, tool counts and bundle membership may change in later releases.
 > - A build without a feature does not register that feature's tools, so its
@@ -33023,7 +33077,8 @@ Seven tools select calls, and each answers a different question.
 A filter is one of these:
 
 - an expression in sipnab's filter language (the DSL), such as
-  `state == failed`,
+  `state == Failed`. A value may be bare or quoted: `method == INVITE` and
+  `method == 'INVITE'` are the same filter,
 - the name of a built-in alias such as `problems`.
 
 | The question | The tool | Why this one |
@@ -33912,7 +33967,7 @@ Returns one page of dialog summaries from the live capture store.
 
 | Name | Type | Legal values | If omitted |
 |---|---|---|---|
-| `filter` | string? | A diagnostic alias name — `problems`, `slow-setup`, `short-calls`, `one-way`, `nat-issues`, `codec-asym`, `ptime-asym`, `payload-asym`, `duration-asym`, `late-media` — **or** a raw [filter DSL](filter-dsl.md) expression, which may use a [named filter](filter-dsl.md#named-filters) as `@name`. Anything else fails with `invalid_params` naming the position it stopped parsing at, or, for an undefined `@name`, listing the names the run defines. | Every dialog in the store matches. |
+| `filter` | string? | A diagnostic alias name — `problems`, `slow-setup`, `short-calls`, `one-way`, `nat-issues`, `codec-asym`, `ptime-asym`, `payload-asym`, `duration-asym`, `late-media` — **or** a raw [filter DSL](filter-dsl.md) expression, which may use a [named filter](filter-dsl.md#named-filters) as `@name`. A value may be bare or quoted: `method == INVITE` and `method == 'INVITE'` are the same filter. Anything else fails with `invalid_params` naming the position it stopped parsing at, or, for an undefined `@name`, listing the names the run defines. | Every dialog in the store matches. |
 | `limit` | u32? | Ceiling is `--mcp-max-rows` (1000 unless the operator changed it). Higher clamps to it, `0` means the default. | 50 rows. |
 | `cursor` | string? | The previous response's `next_cursor`, verbatim (`<RFC 3339 created_at>\|<Call-ID>`). A malformed timestamp half fails with `invalid_params`. | Starts at the oldest dialog. |
 | `fields` | string[]? | Field names to keep on each row, plus `call_id`, which survives whether or not you list it. An unknown name fails with `invalid_params` naming both the typo and the fields a row carries. See [Narrowing a row with `fields`](mcp-tools.md#narrowing-a-row-with-fields). | The whole row. |

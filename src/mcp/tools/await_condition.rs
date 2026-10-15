@@ -159,6 +159,7 @@ pub enum StoppedBecause {
 pub struct AwaitConditionParams {
     /// The condition: a named alias (e.g. `problems`) or a raw Filter DSL
     /// expression, exactly as `list_dialogs` and `find_problems` accept it.
+    /// Values may be bare or quoted.
     ///
     /// Required, and deliberately so. The vocabulary is shared rather than
     /// re-invented — a condition language only this tool understood would be

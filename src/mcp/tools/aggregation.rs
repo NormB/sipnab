@@ -71,6 +71,7 @@ pub struct GroupDialogsParams {
     pub metrics: Option<Vec<String>>,
     /// Optional filter (alias or DSL) applied before grouping, so a grouped
     /// answer can be scoped the same way a listing is.
+    /// Values may be bare or quoted.
     #[serde(default)]
     pub filter: Option<String>,
     /// Groups to return, largest first. Bounded by `--mcp-max-rows` and

@@ -66,6 +66,7 @@ pub struct ExportVconParams {
     /// Filter selecting the dialogs to export — a named alias or a raw DSL
     /// expression, the vocabulary `list_dialogs` and `--export-vcon-when`
     /// take.
+    /// Values may be bare or quoted.
     pub filter: Option<String>,
     /// Maximum containers to return (default 50, ceiling `--mcp-max-rows`, itself 1000 unless the operator says otherwise).
     ///

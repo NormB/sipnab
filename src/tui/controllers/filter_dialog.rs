@@ -365,8 +365,12 @@ mod tests {
         app.filter_dialog.sip_from = "alice".to_string();
         app.active_popup = Some(Popup::FilterDialog);
 
-        // Unquoted value — the classic DSL parse error.
-        apply_filter_expression(&mut app, Some("method == INVITE".to_string()), (None, None));
+        // A value with a space, unquoted: a DSL parse error.
+        apply_filter_expression(
+            &mut app,
+            Some("ua == Friendly Scanner".to_string()),
+            (None, None),
+        );
 
         assert!(
             matches!(app.active_popup, Some(Popup::FilterDialog)),

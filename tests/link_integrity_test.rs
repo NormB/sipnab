@@ -1461,7 +1461,10 @@ fn wiki_intra_docs_links_resolve() -> Result<(), TestError> {
     // bundle page), docs/vcon.md +1 (the section links the tool),
     // docs/output-formats.md +1 and docs/cli-reference.md +1 (each links
     // "Read many containers at once").
-    const EXPECTED_WIKI_LINKS: usize = 1807;
+    // 1807 -> 1809: docs/filter-dsl.md +2, bare filter values. "Basic field
+    // matching" links "Values", and the "When a value needs quotes" table
+    // links "Named filters".
+    const EXPECTED_WIKI_LINKS: usize = 1809;
     // Raised 459 -> 460 when SRC1 stage 1 shipped: docs/cli-reference.md's
     // `--hep-listen` row now points at cookbook recipe "Take signaling from HEP and media off the wire, in one process" in docs/examples.md
     // rather than restating how to pair `-L` with `-d`. Attributed per file

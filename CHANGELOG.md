@@ -95,6 +95,19 @@ entry that carries them.
   - It answers the same report for a directory of `--mcp-file-root` (`.` for the root), read in stores of its own, with the rows paged by `limit` and `cursor` and cut whole to `max_response_bytes`. The totals cover the whole directory on every page.
   - The `vcon` bundle's `tools/list` entries now total 10,679 bytes over seven tools with `fetch_vcon`, and `full` totals 89,290 bytes over 76 tools.
 
+### Changed
+
+- **A filter value no longer needs quotes where sipnab can tell where it ends.**
+  - `method == INVITE`, `method == 'INVITE'` and `method == "INVITE"` are one filter on every surface that takes a filter: `--filter`, `--export-vcon-when`, an expectation's `filter:` scope, `[filters]`, every MCP `filter`, the REST `filter` parameter and the TUI filter. The bare form was refused with `unexpected input at position 10`.
+  - A bare value runs to whitespace, a quote character, or a `)` that closes a group. Its own parentheses balance, so `method =~ ^(INVITE|BYE)$` needs no quotes. For `=~`, a backslash escape and a `[...]` class keep a `)` in the regex.
+  - The field decides how a value is read, quoted or bare. `to.user == 1001` is the user `1001`; before, an unquoted `1001` was a number and selected nothing on a text field. `src.port == '5060'` is the port 5060; before, a quoted number selected nothing on a numeric field. `one_way == 'true'` is the boolean.
+  - A numeric field now refuses a value that is not a finite number, and a boolean field refuses anything but `true` and `false`. Both used to parse and select nothing.
+  - A `time` bound may be bare: `time >= 2026-10-09T10:00:00Z`.
+  - Quotes stay required for a value that contains whitespace, `'`, `"` or an unmatched `)`, that begins with `=`, `!`, `<`, `>` or `@`, or that is empty. Each case has its own error message naming the reason. `&&` and `||` are refused with a message naming `AND`, `OR` and `NOT`. [docs/filter-dsl.md](docs/filter-dsl.md#values) lists every case.
+  - An `@` inside a word, as in `call_id == a84b4c76@pc33.example.com`, is part of the value. It was read as a reference to a named filter `pc33`.
+  - A parse error's `position` is the 0-based character column the caret marks. It was a byte offset, which differs from the column after a non-ASCII character.
+  - The ten MCP `filter` parameters say "Values may be bare or quoted." The `full` bundle's `tools/list` entries now total 89,667 bytes over 76 tools.
+
 ### Fixed
 
 - **A relay control message read off a capture interface or a file no longer reports the HEP listener's trust.**
