@@ -351,13 +351,20 @@ fn a_replayed_call_is_one_rtp_stream_per_leg() -> Result<(), TestError> {
         let samples: usize = packets.iter().map(|p| p.samples.len()).sum();
         assert_eq!(leg["samples"], samples, "the stop counts what was sent");
         assert_eq!(leg["packets"], packets.len());
-        // The capture's payload bytes, from the UDP lengths `tshark` reads:
-        // 200.57.7.196:40376 sends 891 packets, 875 with 160 A-law bytes and
-        // 16 with one; 200.57.7.204:8000 sends 548, each with 160. Each byte
-        // is one 8 kHz sample, two at 16 kHz.
+        // The capture's 8 kHz samples, from what `tshark` reads. Both
+        // senders leave gaps in their RTP timestamps, and the time a gap
+        // covers is sent as silence (see `crate::rtp::timeline`), so each
+        // leg is its timestamp span plus its last packet's 160 samples:
+        // - 200.57.7.196:40376 sends 891 PT 8 packets, 875 with 160 A-law
+        //   bytes and 16 with one, timestamps 289878434 to 290089474:
+        //   211040 + 160 = 211200 samples;
+        // - 200.57.7.204:8000 sends 548 packets of 160 bytes, timestamps
+        //   160 to 195680 (the first jump is 960 -> 9440):
+        //   195520 + 160 = 195680 samples.
+        // Each 8 kHz sample is two at 16 kHz.
         let (packets, bytes) = match leg["captured"]["ssrc"].as_u64() {
-            Some(0x58F3_3DEA) => (891, 875 * 160 + 16),
-            Some(0xD2BD_4E3E) => (548, 548 * 160),
+            Some(0x58F3_3DEA) => (891, 211_200),
+            Some(0xD2BD_4E3E) => (548, 195_680),
             other => return Err(format!("an unexpected captured SSRC {other:?}").into()),
         };
         assert_eq!(leg["captured"]["packets"], packets, "{leg}");

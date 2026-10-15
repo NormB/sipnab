@@ -21,62 +21,6 @@ entry that carries them.
   - A signed container that is not encrypted comes back as stored with `signature_verified: true` and its signer once its signature verifies; one that does not verify, or whose signer fails `[vcon_fetch] signer_ca` or `signer_sha256`, is refused, as `-I` refuses it. `sipnab --vcon-fetch` shares the rule: it now verifies a signed container before it writes it, applies `--vcon-fetch-signer-ca` and `--vcon-fetch-signer-sha256` to it, and writes nothing for one that does not verify.
   - `--vcon-fetch-signer-ca` and `--vcon-fetch-signer-sha256` (`[vcon_fetch] signer_ca` and `signer_sha256`) no longer need `--vcon-fetch-decrypt-key`: they apply to a signed container without a key. An encrypted container fetched with a signer check and no key is refused, naming `--vcon-fetch-decrypt-key`. The server doors take the same keys by the same rule.
   - `server_capabilities` reports `runtime.mcp_allow_vcon_fetch` and `GET /v1/capabilities` reports `runtime.api_allow_vcon_fetch`, each `true` only when the door's flag is given and `[vcon_fetch] url` is set.
-
-### Fixed
-
-- **A relay control message read off a capture interface or a file no longer reports the HEP listener's trust.**
-  - Under `--hep-parse`, a HEP datagram sniffed off an interface or read from a file is marked `input_origin: hep`. `explain_attribution` gave every `hep` endpoint the trust the run's listener configured, so on a run with `--hep-auth-mode hmac` or `plain`, a sniffed rtpengine mirror was reported as `hmac-verified` or `plain-secret`. Nothing had checked its secret.
-  - It is now `port-gated-only`. Only a message the `--hep-listen` socket delivered takes the listener's trust.
-  - `decode_ng` re-reads a frame from a capture file and does not verify its secret or token. It reported a HEP-encapsulated frame with the listener's trust too, and now reports `port-gated-only` for every frame. `delivery` still says `hep`.
-- **A vCon `dtmf_events` rule writes RTP key presses sent from a socket no SDP advertised, for the party that pressed them.**
-  - `tests/pcap-samples/SIP_DTMF2.cap` sends seven keys (6 7 8 9 1 2 3) at PT 96 from 192.168.105.172:4376, a socket no SDP named, to 192.168.105.110:4376, the socket the callee's 200 OK advertised. sipnab decoded the keys and wrote no `keydown` or `keyup` for them.
-  - When no party advertised the sending socket, the party whose SDP advertised the destination socket received the event, and the other party of the two sent it. The capture's seven keys are now seven `keydown` and seven `keyup` events for the caller.
-  - An event still adds nothing when no single party advertised its destination socket, such as a socket only a forked response named.
-- **MCP `list_captures` and `find_in_captures` list and sweep stored vCon containers.**
-  - Both tools listed only capture files and archives, so a `*.vcon.json` in `--mcp-file-root` that `open_capture` reads was never offered or searched.
-  - They now take `*.vcon.json` and `*.vcon.json.gz`, the names the TUI's file browser lists, by one shared rule.
-  - Each `list_captures` entry carries `kind`: `capture` or `vcon`.
-  - A `.<name>.partial` file the fetcher or the forwarder is still writing is not listed.
-
-- **The local check for hard-coded cryptographic values now reports byte-array keys, the shape CodeQL reported in tests.**
-  - `tests/hardcoded_crypto_material_test.rs` read string and byte-string literals only. CodeQL alert 465, `let master_key = vec![0x11u8; 16];` in an SRTP test in `src/app/batch.rs`, passed it, as had 35 earlier alerts of the same rule that were dismissed as used in tests.
-  - The check now also reports a literal byte array bound to a name for a key, salt, nonce, IV, secret or password, and a literal passed straight to such a parameter of a crate function or of a library key constructor (`new_from_slice`, `new_from_slices`, ring's `UnboundKey::new`, `hmac::Key::new` and the `Nonce` constructors).
-  - Every test site it reported now takes its key material from `test_material` at run time. The [RFC 3711](https://www.rfc-editor.org/rfc/rfc3711.html) and [RFC 2202](https://www.rfc-editor.org/rfc/rfc2202.html) known-answer vectors keep their bytes, each with a named exception.
-  - The shapes that need data flow to detect are listed in the test.
-- **The commit-message identity test no longer fails when its test binary is rebuilt while the suite runs.**
-  - `message_script_refuses_a_planted_message_and_passes_a_clean_one` handed `scripts/check-message-identity.sh` the path from `std::env::current_exe()`. After a build relinks the binary, that path reads `<path> (deleted)`, the script cannot run it, and it exits 2 with "the check failed before it read the message".
-  - The tests now pass `/proc/<pid>/exe` on Linux, which runs the binary the process started from even after its file is replaced. A new test replaces the binary's file before the script runs and requires the check to pass.
-
-- **A SCITT statement signed with an EC P-256 key named the wrong
-  algorithm.** In 0.5.219, an EC P-256 `--vcon-forward-scitt-sign-key` loaded
-  and signed ECDSA, but the protected header said RS256 (`-257`), so the
-  signature did not verify under the algorithm it named. It now says ES256
-  (`-7`).
-
-- **A lost packet is now silence of its own length in exported and live audio, instead of being skipped.**
-  - The decoders played the retained frames one after another, so each lost packet shortened the WAV by its duration and everything after it played early. In a stereo export the two parties drifted apart by the loss on each side.
-  - Frames are now placed by their RTP timestamps ([RFC 3550 section 5.1](https://www.rfc-editor.org/rfc/rfc3550.html#section-5.1)). Where the timestamps show time passed with no audio received, the export and the live audio route put silence of that length. The timestamps cannot tell a lost packet from a sender pausing, so the export summary and the note inside the file name both: for example "20 ms in 1 gap where the RTP timestamps show no audio arrived (lost packets, or the sender pausing) is silence in this file".
-  - Reordered packets play in timestamp order, and a packet that repeats a timestamp plays once and is counted.
-  - The silence is bounded by how long the stream lasted in capture time. A timestamp jump longer than that is not filled; it is counted and named, and the audio either side is joined. One hostile packet can no longer make an export allocate silence for as long as a 32-bit timestamp reaches.
-  - The dead-air measurement still reads the sender's own samples, with gaps closed up, so packet loss does not register as dead air.
-- **Comfort Noise and DTMF event packets are no longer decoded as speech.** They share the call's SSRC, and `--retain-audio` kept them with the audio: a 4-octet DTMF event became 4 samples of noise, and its repeated timestamp put the audio out of step. Only packets of the stream's own payload type are retained now.
-
-### Internal
-
-- **The constant-time eviction tests count the work instead of timing it.**
-  - Two tests guarded the bounded maps' eviction with wall-clock ratios, one for the registration flood detector's sources and one for `LruMap` itself.
-  - On a hosted CI runner on 2026-10-14 the detector's ratio read 5.5x against a bound of 5.0, with constant-time eviction in place.
-  - `LruMap` now counts, in test builds only, the entries its walks visit. Both tests fill a map to its cap at two sizes, admit 1,000 new keys, and require at most one entry walked per admission and the same count at both sizes.
-  - An eviction that chooses its victim by walking the map fails both tests.
-- **The bencode duplicate-key test counts key comparisons instead of timing the parse.**
-  - It compared the CPU time of decoding 1,024 and 4,096 distinct keys and required a ratio under 8.0.
-  - The duplicate check now holds its keys in a type whose equality counts itself in test builds, and test builds hash them with a fixed key, so the count is the same on every run.
-  - The test requires at most one comparison per key. The set makes 71 for 1,024 keys and 240 for 4,096; a scan of the keys accepted so far makes 523,776 and 8,386,560.
-  - A second test requires `decode_dict` to check duplicates through that set and never to read its entries back, because the scan this replaced compared raw byte slices that the count does not see.
-- **CI and the pre-push hook lint the library with no features enabled.**
-  - `cargo clippy --no-default-features --lib -- -D warnings` failed on main: `impl From<ActionPolicy> for Actions` used `..Self::default()`, which does nothing once the feature-gated `service` field is absent.
-  - The struct is now built field by field, each under its declaration's `cfg`.
-  - Every clippy gate ran `--all-features` only. CI's new "Clippy with no features" step and a matching pre-push gate run the no-feature build, and `tests/clippy_scope_parity_test.rs` requires both.
 - **The vCon forwarder polls a SCITT `202` for its receipt.** When a
   transparency service answers a lifecycle statement with `202` and a
   `Location`, the forwarder GETs that `Location` with
@@ -140,6 +84,59 @@ entry that carries them.
   - sipnab refuses at startup a value that is not a host name of two or more labels, naming the key.
   - Without the key, uuids are unchanged.
   - sipnab does not take the name from `sign_cert`.
+
+### Fixed
+
+- **A relay control message read off a capture interface or a file no longer reports the HEP listener's trust.**
+  - Under `--hep-parse`, a HEP datagram sniffed off an interface or read from a file is marked `input_origin: hep`. `explain_attribution` gave every `hep` endpoint the trust the run's listener configured, so on a run with `--hep-auth-mode hmac` or `plain`, a sniffed rtpengine mirror was reported as `hmac-verified` or `plain-secret`. Nothing had checked its secret.
+  - It is now `port-gated-only`. Only a message the `--hep-listen` socket delivered takes the listener's trust.
+  - `decode_ng` re-reads a frame from a capture file and does not verify its secret or token. It reported a HEP-encapsulated frame with the listener's trust too, and now reports `port-gated-only` for every frame. `delivery` still says `hep`.
+- **A vCon `dtmf_events` rule writes RTP key presses sent from a socket no SDP advertised, for the party that pressed them.**
+  - `tests/pcap-samples/SIP_DTMF2.cap` sends seven keys (6 7 8 9 1 2 3) at PT 96 from 192.168.105.172:4376, a socket no SDP named, to 192.168.105.110:4376, the socket the callee's 200 OK advertised. sipnab decoded the keys and wrote no `keydown` or `keyup` for them.
+  - When no party advertised the sending socket, the party whose SDP advertised the destination socket received the event, and the other party of the two sent it. The capture's seven keys are now seven `keydown` and seven `keyup` events for the caller.
+  - An event still adds nothing when no single party advertised its destination socket, such as a socket only a forked response named.
+- **MCP `list_captures` and `find_in_captures` list and sweep stored vCon containers.**
+  - Both tools listed only capture files and archives, so a `*.vcon.json` in `--mcp-file-root` that `open_capture` reads was never offered or searched.
+  - They now take `*.vcon.json` and `*.vcon.json.gz`, the names the TUI's file browser lists, by one shared rule.
+  - Each `list_captures` entry carries `kind`: `capture` or `vcon`.
+  - A `.<name>.partial` file the fetcher or the forwarder is still writing is not listed.
+- **The local check for hard-coded cryptographic values now reports byte-array keys, the shape CodeQL reported in tests.**
+  - `tests/hardcoded_crypto_material_test.rs` read string and byte-string literals only. CodeQL alert 465, `let master_key = vec![0x11u8; 16];` in an SRTP test in `src/app/batch.rs`, passed it, as had 35 earlier alerts of the same rule that were dismissed as used in tests.
+  - The check now also reports a literal byte array bound to a name for a key, salt, nonce, IV, secret or password, and a literal passed straight to such a parameter of a crate function or of a library key constructor (`new_from_slice`, `new_from_slices`, ring's `UnboundKey::new`, `hmac::Key::new` and the `Nonce` constructors).
+  - Every test site it reported now takes its key material from `test_material` at run time. The [RFC 3711](https://www.rfc-editor.org/rfc/rfc3711.html) and [RFC 2202](https://www.rfc-editor.org/rfc/rfc2202.html) known-answer vectors keep their bytes, each with a named exception.
+  - The shapes that need data flow to detect are listed in the test.
+- **The commit-message identity test no longer fails when its test binary is rebuilt while the suite runs.**
+  - `message_script_refuses_a_planted_message_and_passes_a_clean_one` handed `scripts/check-message-identity.sh` the path from `std::env::current_exe()`. After a build relinks the binary, that path reads `<path> (deleted)`, the script cannot run it, and it exits 2 with "the check failed before it read the message".
+  - The tests now pass `/proc/<pid>/exe` on Linux, which runs the binary the process started from even after its file is replaced. A new test replaces the binary's file before the script runs and requires the check to pass.
+- **A SCITT statement signed with an EC P-256 key named the wrong
+  algorithm.** In 0.5.219, an EC P-256 `--vcon-forward-scitt-sign-key` loaded
+  and signed ECDSA, but the protected header said RS256 (`-257`), so the
+  signature did not verify under the algorithm it named. It now says ES256
+  (`-7`).
+- **A lost packet is now silence of its own length in exported and live audio, instead of being skipped.**
+  - The decoders played the retained frames one after another, so each lost packet shortened the WAV by its duration and everything after it played early. In a stereo export the two parties drifted apart by the loss on each side.
+  - Frames are now placed by their RTP timestamps ([RFC 3550 section 5.1](https://www.rfc-editor.org/rfc/rfc3550.html#section-5.1)). Where the timestamps show time passed with no audio received, the export, the live audio route and the `live_rtp` stream put silence of that length. The timestamps cannot tell a lost packet from a sender pausing, so the export summary and the note inside the file name both: for example "20 ms in 1 gap where the RTP timestamps show no audio arrived (lost packets, or the sender pausing) is silence in this file".
+  - Reordered packets play in timestamp order, and a packet that repeats a timestamp plays once and is counted.
+  - The silence is bounded by how long the stream lasted in capture time. A timestamp jump longer than that is not filled; it is counted and named, and the audio either side is joined. One hostile packet can no longer make an export allocate silence for as long as a 32-bit timestamp reaches.
+  - The dead-air measurement still reads the sender's own samples, with gaps closed up, so packet loss does not register as dead air.
+- **Comfort Noise and DTMF event packets are no longer decoded as speech.** They share the call's SSRC, and `--retain-audio` kept them with the audio: a 4-octet DTMF event became 4 samples of noise, and its repeated timestamp put the audio out of step. Only packets of the stream's own payload type are retained now.
+
+### Internal
+
+- **The constant-time eviction tests count the work instead of timing it.**
+  - Two tests guarded the bounded maps' eviction with wall-clock ratios, one for the registration flood detector's sources and one for `LruMap` itself.
+  - On a hosted CI runner on 2026-10-14 the detector's ratio read 5.5x against a bound of 5.0, with constant-time eviction in place.
+  - `LruMap` now counts, in test builds only, the entries its walks visit. Both tests fill a map to its cap at two sizes, admit 1,000 new keys, and require at most one entry walked per admission and the same count at both sizes.
+  - An eviction that chooses its victim by walking the map fails both tests.
+- **The bencode duplicate-key test counts key comparisons instead of timing the parse.**
+  - It compared the CPU time of decoding 1,024 and 4,096 distinct keys and required a ratio under 8.0.
+  - The duplicate check now holds its keys in a type whose equality counts itself in test builds, and test builds hash them with a fixed key, so the count is the same on every run.
+  - The test requires at most one comparison per key. The set makes 71 for 1,024 keys and 240 for 4,096; a scan of the keys accepted so far makes 523,776 and 8,386,560.
+  - A second test requires `decode_dict` to check duplicates through that set and never to read its entries back, because the scan this replaced compared raw byte slices that the count does not see.
+- **CI and the pre-push hook lint the library with no features enabled.**
+  - `cargo clippy --no-default-features --lib -- -D warnings` failed on main: `impl From<ActionPolicy> for Actions` used `..Self::default()`, which does nothing once the feature-gated `service` field is absent.
+  - The struct is now built field by field, each under its declaration's `cfg`.
+  - Every clippy gate ran `--all-features` only. CI's new "Clippy with no features" step and a matching pre-push gate run the no-feature build, and `tests/clippy_scope_parity_test.rs` requires both.
 
 ## [0.5.220] - 2026-10-14
 

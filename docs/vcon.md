@@ -703,6 +703,9 @@ live_rtp = "127.0.0.1:40000"
     G.722 decodes at 16 kHz.
   - The first packet of each leg carries the marker bit. The sequence
     number steps by one and the timestamp by the samples in the packet before.
+  - Where the captured RTP timestamps show time passed with no audio, a lost
+    packet or the sender pausing, the leg carries silence of that length, as
+    the live audio route does.
 - Control messages arrive at the same address, one JSON object a datagram.
   - A control message starts with `{`. An RTP packet never does: its first
     byte is 0x80 to 0xBF, the range
