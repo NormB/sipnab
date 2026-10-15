@@ -4674,6 +4674,65 @@ fn media_clause(outcome: MediaOutcome) -> &'static str {
     }
 }
 
+/// The host name a `[vcon] uuid_domain` declares, with the 62 bits it puts in
+/// every container uuid.
+///
+/// [Section 4.1.2 of the core draft](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-04#section-4.1.2):
+/// "rand_b/custom_c is generated from the high 62 bits of the SHA-1 hash of
+/// the FQHN string".
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UuidDomain {
+    /// The name in its one spelling, from
+    /// [`normalize_uuid_domain`](crate::config::normalize_uuid_domain).
+    name: String,
+    /// The high 62 bits of SHA-1 over `name`, in the low 62 bits.
+    custom_c: u64,
+}
+
+impl UuidDomain {
+    /// The domain `fqhn` names, in lower case without a trailing dot.
+    ///
+    /// # Errors
+    ///
+    /// The reason [`normalize_uuid_domain`](crate::config::normalize_uuid_domain)
+    /// refuses the name.
+    pub fn new(fqhn: &str) -> Result<Self, &'static str> {
+        let name = crate::config::normalize_uuid_domain(fqhn)?;
+        let digest = <sha1_oaep::Sha1 as sha1_oaep::Digest>::digest(name.as_bytes());
+        let mut top = [0u8; 8];
+        top.copy_from_slice(&digest[..8]);
+        Ok(Self {
+            name,
+            custom_c: u64::from_be_bytes(top) >> 2,
+        })
+    }
+
+    /// The name the uuids are minted under.
+    #[must_use]
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+}
+
+/// The `[vcon] uuid_domain` of this process, when one was declared.
+static UUID_DOMAIN: std::sync::OnceLock<UuidDomain> = std::sync::OnceLock::new();
+
+/// Declare the domain every container uuid of this process is minted under.
+///
+/// Process-wide, as the node name is, so the batch export, `GET
+/// /v1/dialogs/{id}/vcon` and MCP `export_vcon` mint one uuid for one dialog.
+/// Called once at startup, from the validated `[vcon] uuid_domain`; the first
+/// declaration wins.
+pub fn set_uuid_domain(domain: UuidDomain) {
+    let _ = UUID_DOMAIN.set(domain);
+}
+
+/// The declared domain, or `None` for the node-keyed default.
+#[must_use]
+pub fn uuid_domain() -> Option<&'static UuidDomain> {
+    UUID_DOMAIN.get()
+}
+
 /// A UUIDv8 for one dialog out of one capture, per
 /// [section 4.1.2 of the core draft](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-04#section-4.1.2).
 ///
@@ -4704,15 +4763,18 @@ fn media_clause(outcome: MediaOutcome) -> &'static str {
 /// those digests collide; nothing random is mixed in, so the same dialog from
 /// the same capture on the same node always yields the same value.
 ///
-/// # Why SHA-256 and not SHA-1
+/// # The default departs from section 4.1.2; `[vcon] uuid_domain` follows it
 ///
-/// The draft names SHA-1. This tree has no SHA-1 implementation and adding a
-/// broken hash as a dependency to fill 62 bits of a non-security identifier is
-/// a worse trade than using the SHA-256 already here. UUIDv8 is the
-/// custom-layout version: RFC 9562 constrains only the version and variant
-/// bits, both of which are set below, so the value is a well-formed UUIDv8
-/// either way. What changes is which bits land in `rand_b`, and nothing reads
-/// them.
+/// The draft fills `rand_b` with SHA-1 of a host name alone. The default
+/// keys it on the node, the dialog and the capture with SHA-256 instead, so
+/// that `rand_a`'s 12 bits are not all that separates two dialogs in one
+/// millisecond. UUIDv8 is the custom-layout version: RFC 9562 constrains only
+/// the version and variant bits, both of which are set, so the value is a
+/// well-formed UUIDv8 either way.
+///
+/// A declared [`UuidDomain`] switches to the draft's layout: `rand_b` is the
+/// high 62 bits of SHA-1 over the domain, and `rand_a` is seeded as here, with
+/// a per-process table stepping past a value already given in that millisecond.
 #[must_use]
 pub fn dialog_uuid(dialog: &SipDialog, capture_id: &str) -> String {
     uuid_for(dialog.created_at, &dialog.call_id, capture_id)
@@ -4736,8 +4798,168 @@ pub fn call_uuid(legs: &[&SipDialog], capture_id: &str) -> String {
     uuid_for(started, &key, capture_id)
 }
 
-/// [`dialog_uuid`]'s layout, for an identity `key` that opened at `started`.
+/// [`dialog_uuid`]'s layout, for an identity `key` that opened at `started`:
+/// the section 4.1.2 layout under a declared [`uuid_domain`], else the
+/// node-keyed default.
 fn uuid_for(started: DateTime<Utc>, key: &str, capture_id: &str) -> String {
+    match uuid_domain() {
+        Some(domain) => {
+            with_uuid_slots(|slots| domain_uuid(started, key, capture_id, domain, slots))
+        }
+        None => node_uuid(started, key, capture_id, node_name()),
+    }
+}
+
+/// The 48-bit big-endian millisecond timestamp of `started`. `max(0)` rather
+/// than a wrap: a pre-epoch capture timestamp is nonsense, and wrapping it
+/// would spread one absurd input across the whole 48-bit space.
+fn uuid_millis(started: DateTime<Utc>) -> u64 {
+    u64::try_from(started.timestamp_millis().max(0)).unwrap_or(0) & 0x0000_FFFF_FFFF_FFFF
+}
+
+/// SHA-256 over `key`, 0x1e and the normalized capture identity: the seed of
+/// `rand_a` in both modes. The separator keeps `("ab", "c")` and
+/// `("a", "bc")` apart, which a bare concatenation would collide.
+fn dialog_seed(key: &str, capture_id: &str) -> [u8; 32] {
+    let mut seed = Sha256::new();
+    seed.update(key.as_bytes());
+    seed.update([0x1e]);
+    seed.update(capture_identity_key(capture_id).as_bytes());
+    seed.finalize().into()
+}
+
+/// The UUIDv8 octets for a 48-bit timestamp, a 12-bit `rand_a` and a 62-bit
+/// `rand_b`: version 8 in the high nibble of octet 6 ([RFC 9562 section 4.2](https://www.rfc-editor.org/rfc/rfc9562.html#section-4.2))
+/// and variant `10` in the two high bits of octet 8 ([RFC 9562 section 4.1](https://www.rfc-editor.org/rfc/rfc9562.html#section-4.1)).
+fn uuid_v8(millis: u64, rand_a: u16, rand_b: u64) -> String {
+    let mut bytes = [0u8; 16];
+    bytes[..6].copy_from_slice(&(millis & 0x0000_FFFF_FFFF_FFFF).to_be_bytes()[2..]);
+    let rand_a = rand_a & 0x0fff;
+    bytes[6] = 0x80 | u8::try_from(rand_a >> 8).unwrap_or(0);
+    bytes[7] = u8::try_from(rand_a & 0xff).unwrap_or(0);
+    let rand_b = rand_b & 0x3FFF_FFFF_FFFF_FFFF;
+    bytes[8..].copy_from_slice(&(0x8000_0000_0000_0000_u64 | rand_b).to_be_bytes());
+    format_uuid(&bytes)
+}
+
+/// The leading 12 bits of `seed`, and its leading 16 bytes as the identity a
+/// [`UuidSlots`] holds.
+fn seed_parts(seed: &[u8; 32]) -> (u16, [u8; 16]) {
+    let mut identity = [0u8; 16];
+    identity.copy_from_slice(&seed[..16]);
+    (u16::from_be_bytes([seed[0], seed[1]]) >> 4, identity)
+}
+
+/// The section 4.1.2 layout under `domain`: the call's start in the 48-bit
+/// timestamp, the domain's 62 bits in `rand_b`, and in `rand_a` the 12 bits
+/// the dialog's seed picks, or the next one `slots` has free.
+fn domain_uuid(
+    started: DateTime<Utc>,
+    key: &str,
+    capture_id: &str,
+    domain: &UuidDomain,
+    slots: &mut UuidSlots,
+) -> String {
+    let millis = uuid_millis(started);
+    let (preferred, identity) = seed_parts(&dialog_seed(key, capture_id));
+    let rand_a = slots.claim(domain.custom_c, millis, preferred, identity);
+    uuid_v8(millis, rand_a, domain.custom_c)
+}
+
+/// The `rand_a` values this process has given out under a domain, per
+/// millisecond.
+///
+/// Under the section 4.1.2 layout two uuids minted under one domain in one
+/// millisecond differ only in `rand_a`'s 12 bits. Seeded from the dialog
+/// alone, two such dialogs would share a uuid once in 4096 pairs. The table
+/// makes the second one take the next free value instead, so within one
+/// process two identities never share a uuid while the millisecond has a
+/// free value left.
+///
+/// The same identity always gets the value it was first given. The table
+/// holds at most `cap` identities and drops its OLDEST milliseconds past
+/// that; an identity whose millisecond was dropped is seeded afresh.
+#[derive(Debug)]
+struct UuidSlots {
+    /// `(millisecond, domain bits)` to the `(rand_a, identity)` pairs given.
+    by_ms: std::collections::BTreeMap<(u64, u64), Vec<SlotHolder>>,
+    /// Identities held across every millisecond.
+    held: usize,
+    /// The most identities held before the oldest milliseconds are dropped.
+    cap: usize,
+}
+
+/// One `rand_a` value given out, and the 16-byte identity that holds it.
+type SlotHolder = (u16, [u8; 16]);
+
+/// [`UuidSlots`]'s cap for the process: 1,048,576 identities of
+/// `size_of::<SlotHolder>()` (18) bytes, plus the map's own overhead.
+const UUID_SLOT_CAP: usize = 1 << 20;
+
+impl UuidSlots {
+    /// An empty table holding at most `cap` identities.
+    const fn with_cap(cap: usize) -> Self {
+        Self {
+            by_ms: std::collections::BTreeMap::new(),
+            held: 0,
+            cap,
+        }
+    }
+
+    /// Identities held.
+    #[cfg(test)]
+    fn held(&self) -> usize {
+        self.held
+    }
+
+    /// The `rand_a` for `identity` in millisecond `millis` under `domain`:
+    /// the value it already holds, else `preferred` when free, else the next
+    /// free value after it. With all 4096 taken it is `preferred`, and the
+    /// uuid repeats one already given; nothing in the layout can prevent that.
+    fn claim(&mut self, domain: u64, millis: u64, preferred: u16, identity: [u8; 16]) -> u16 {
+        let preferred = preferred & 0x0fff;
+        let bucket = self.by_ms.entry((millis, domain)).or_default();
+        if let Some(&(slot, _)) = bucket.iter().find(|(_, id)| *id == identity) {
+            return slot;
+        }
+        let mut taken = [0u64; 64];
+        for &(slot, _) in bucket.iter() {
+            taken[usize::from(slot >> 6)] |= 1 << (slot & 63);
+        }
+        let Some(slot) = (0..4096_u16)
+            .map(|step| (preferred + step) & 0x0fff)
+            .find(|&s| taken[usize::from(s >> 6)] & (1 << (s & 63)) == 0)
+        else {
+            return preferred;
+        };
+        bucket.push((slot, identity));
+        self.held += 1;
+        while self.held > self.cap {
+            match self.by_ms.pop_first() {
+                Some((_, dropped)) => self.held -= dropped.len(),
+                None => break,
+            }
+        }
+        slot
+    }
+}
+
+/// The process's [`UuidSlots`].
+static UUID_SLOTS: std::sync::Mutex<UuidSlots> =
+    std::sync::Mutex::new(UuidSlots::with_cap(UUID_SLOT_CAP));
+
+/// Run `f` with the process's [`UuidSlots`]. A panic elsewhere while the
+/// lock was held leaves the table usable: it holds no invariant a half-done
+/// claim can break.
+fn with_uuid_slots<T>(f: impl FnOnce(&mut UuidSlots) -> T) -> T {
+    let mut slots = UUID_SLOTS
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    f(&mut slots)
+}
+
+/// The node-keyed default layout, for the node `node`.
+fn node_uuid(started: DateTime<Utc>, key: &str, capture_id: &str, node: &str) -> String {
     let mut bytes = [0u8; 16];
     let capture_id: &str = &capture_identity_key(capture_id);
 
@@ -4780,7 +5002,7 @@ fn uuid_for(started: DateTime<Utc>, key: &str, capture_id: &str) -> String {
     // from one capture still yields one identifier. The same separator as
     // above keeps `("ab", "c")` apart from `("a", "bc")`.
     let mut host = Sha256::new();
-    host.update(node_name().as_bytes());
+    host.update(node.as_bytes());
     host.update([0x1e]);
     host.update(key.as_bytes());
     host.update([0x1e]);
@@ -4820,11 +5042,55 @@ fn uuid_for(started: DateTime<Utc>, key: &str, capture_id: &str) -> String {
 /// same number of times, yields the same chain of uuids on every run, and the
 /// first instance's determinism properties carry over. Two revisions of one
 /// call differ in at least the 74 hashed bits.
+///
+/// # Under a `[vcon] uuid_domain`
+///
+/// The section 4.1.2 layout holds for every instance: the timestamp is
+/// `base`'s, `rand_b` is the domain's 62 bits, and `rand_a` is the leading 12
+/// bits of the same SHA-256, or the next value a per-process table has free
+/// in that millisecond. Two revisions of one call then differ in those 12
+/// bits alone.
 #[must_use]
 pub fn revision_uuid(base: &str, revision: u32) -> String {
     if revision == 0 {
         return base.to_owned();
     }
+    match uuid_domain() {
+        Some(domain) => {
+            with_uuid_slots(|slots| domain_revision_uuid(base, revision, domain, slots))
+        }
+        None => {
+            let seed = revision_seed(base, revision);
+            let mut top = [0u8; 8];
+            top.copy_from_slice(&seed[2..10]);
+            uuid_v8(
+                base_millis(base),
+                u16::from_be_bytes([seed[0], seed[1]]) >> 4,
+                u64::from_be_bytes(top) >> 2,
+            )
+        }
+    }
+}
+
+/// [`revision_uuid`] under `domain`, with `slots` for `rand_a`.
+fn domain_revision_uuid(
+    base: &str,
+    revision: u32,
+    domain: &UuidDomain,
+    slots: &mut UuidSlots,
+) -> String {
+    if revision == 0 {
+        return base.to_owned();
+    }
+    let millis = base_millis(base);
+    let (preferred, identity) = seed_parts(&revision_seed(base, revision));
+    let rand_a = slots.claim(domain.custom_c, millis, preferred, identity);
+    uuid_v8(millis, rand_a, domain.custom_c)
+}
+
+/// The 48-bit timestamp in `base`'s first 12 hex digits. A base that is not a
+/// uuid gives 0; the hashed bits still separate revisions.
+fn base_millis(base: &str) -> u64 {
     let hex: Vec<u8> = base
         .bytes()
         .filter(u8::is_ascii_hexdigit)
@@ -4834,31 +5100,24 @@ pub fn revision_uuid(base: &str, revision: u32) -> String {
             _ => c - b'A' + 10,
         })
         .collect();
-    let mut bytes = [0u8; 16];
-    // The first 12 hex digits are the 48-bit timestamp. A base that is not a
-    // uuid keeps a zero timestamp; the hashed bits still separate revisions.
-    if hex.len() == 32 {
-        for (i, byte) in bytes.iter_mut().take(6).enumerate() {
-            *byte = (hex[2 * i] << 4) | hex[2 * i + 1];
-        }
+    if hex.len() != 32 {
+        return 0;
     }
+    hex[..12]
+        .iter()
+        .fold(0_u64, |acc, nibble| (acc << 4) | u64::from(*nibble))
+}
+
+/// SHA-256 over `amended`, `base` and `revision` as four big-endian bytes,
+/// separated by 0x1e: the seed of a later instance's uuid.
+fn revision_seed(base: &str, revision: u32) -> [u8; 32] {
     let mut seed = Sha256::new();
     seed.update(b"amended");
     seed.update([0x1e]);
     seed.update(base.as_bytes());
     seed.update([0x1e]);
     seed.update(revision.to_be_bytes());
-    let seed = seed.finalize();
-    let rand_a = u16::from_be_bytes([seed[0], seed[1]]) >> 4;
-    // Version 8 in the high nibble of octet 6, per RFC 9562 §4.2.
-    bytes[6] = 0x80 | u8::try_from(rand_a >> 8).unwrap_or(0);
-    bytes[7] = u8::try_from(rand_a & 0xff).unwrap_or(0);
-    let mut top = [0u8; 8];
-    top.copy_from_slice(&seed[2..10]);
-    let rand_b = u64::from_be_bytes(top) >> 2;
-    // Variant `10` in the two high bits of octet 8, per RFC 9562 §4.1.
-    bytes[8..].copy_from_slice(&(0x8000_0000_0000_0000_u64 | rand_b).to_be_bytes());
-    format_uuid(&bytes)
+    seed.finalize().into()
 }
 
 /// The capture identity a uuid is seeded from, with one file spelled one way.
@@ -10439,6 +10698,197 @@ mod tests {
             .ok_or("an interaction_id")?;
         assert_ne!(id, "4155550100-77");
         assert_eq!(id, policy.redactor().opaque("4155550100-77"));
+        Ok(())
+    }
+
+    /// The 16 octets of a canonical uuid.
+    fn octets_of(uuid: &str) -> Result<[u8; 16], TestError> {
+        let hex: String = uuid.chars().filter(|c| *c != '-').collect();
+        let mut out = [0u8; 16];
+        for (i, byte) in out.iter_mut().enumerate() {
+            *byte = u8::from_str_radix(hex.get(2 * i..2 * i + 2).ok_or("short")?, 16)?;
+        }
+        Ok(out)
+    }
+
+    /// The high 62 bits of SHA-1 over `name`, computed here rather than by the
+    /// exporter, as the 64-bit value of octets 8 to 15 with variant `10`.
+    fn sha1_custom_c(name: &str) -> u64 {
+        let digest = <sha1_oaep::Sha1 as sha1_oaep::Digest>::digest(name.as_bytes());
+        let mut top = [0u8; 8];
+        top.copy_from_slice(&digest[..8]);
+        (0b10_u64 << 62) | (u64::from_be_bytes(top) >> 2)
+    }
+
+    /// The default mode is the uuid releases before `uuid_domain` wrote.
+    ///
+    /// The three values were printed by the code on `origin/main` at 3869eb5d,
+    /// with the node name set to `pin-node`, before this mode existed. The
+    /// first was also recomputed from the documented recipe with Python's
+    /// `hashlib`, outside this crate.
+    #[test]
+    fn the_default_uuid_is_byte_identical_to_before() -> Result<(), TestError> {
+        let started = ts()? + chrono::TimeDelta::microseconds(123_456);
+        assert_eq!(
+            node_uuid(started, "vcon-fixture@example.com", "eth0", "pin-node"),
+            "01a033a4-4a7b-8b21-a55e-91426aa29c67"
+        );
+        assert_eq!(
+            node_uuid(
+                started,
+                "call\u{1f}vcon-fixture@example.com",
+                "eth0",
+                "pin-node"
+            ),
+            "01a033a4-4a7b-87c6-b7a0-9062dfcd9486"
+        );
+        assert_eq!(
+            revision_uuid("018bcfe5-6800-8a6b-a667-78f1c5213800", 1),
+            "018bcfe5-6800-8482-9beb-8b3825191ad8"
+        );
+        Ok(())
+    }
+
+    /// Each field of the section 4.1.2 layout, checked on its own.
+    ///
+    /// [Section 4.1.2 of the core draft](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-04#section-4.1.2):
+    /// "rand_b/custom_c is generated from the high 62 bits of the SHA-1 hash
+    /// of the FQHN string".
+    #[test]
+    fn a_domain_uuid_follows_the_section_4_1_2_layout() -> Result<(), TestError> {
+        // The digest the test recomputes is SHA-1: RFC 3174's first vector.
+        assert_eq!(
+            format!(
+                "{:x}",
+                <sha1_oaep::Sha1 as sha1_oaep::Digest>::digest(b"abc")
+            ),
+            "a9993e364706816aba3e25717850c26c9cd0d89d"
+        );
+        let domain = UuidDomain::new("pbx.example.com")?;
+        let started = ts()? + chrono::TimeDelta::microseconds(123_456);
+        let mut slots = UuidSlots::with_cap(64);
+        let id = domain_uuid(started, "a@example.com", "eth0", &domain, &mut slots);
+        let octets = octets_of(&id)?;
+
+        let mut ts_bytes = [0u8; 8];
+        ts_bytes[2..].copy_from_slice(&octets[..6]);
+        assert_eq!(
+            i64::try_from(u64::from_be_bytes(ts_bytes))?,
+            started.timestamp_millis(),
+            "timestamp: {id}"
+        );
+        assert_eq!(octets[6] >> 4, 8, "version: {id}");
+        assert_eq!(octets[8] >> 6, 0b10, "variant: {id}");
+        let mut tail = [0u8; 8];
+        tail.copy_from_slice(&octets[8..]);
+        assert_eq!(
+            u64::from_be_bytes(tail),
+            sha1_custom_c("pbx.example.com"),
+            "custom_c: {id}"
+        );
+        // And the value Python's hashlib gives, outside this crate.
+        assert_eq!(&id[19..], "bee8-9e80be8f9f8f");
+        Ok(())
+    }
+
+    /// Two dialogs that opened in one millisecond under one domain get two
+    /// uuids, even when their seeds pick the same 12 `rand_a` bits.
+    ///
+    /// Under the section 4.1.2 layout only those 12 bits separate them: the
+    /// timestamp and the 62 domain bits are the same. The pair below is
+    /// found by search, so it is a real seed collision.
+    #[test]
+    fn two_dialogs_in_one_millisecond_get_different_domain_uuids() -> Result<(), TestError> {
+        let domain = UuidDomain::new("pbx.example.com")?;
+        let started = ts()?;
+        let alone =
+            |key: &str| domain_uuid(started, key, "eth0", &domain, &mut UuidSlots::with_cap(64));
+        let mut seen: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+        let mut pair = None;
+        for n in 0..20_000 {
+            let key = format!("call-{n}@example.com");
+            let id = alone(&key);
+            if let Some(first) = seen.get(&id) {
+                pair = Some((first.clone(), key));
+                break;
+            }
+            seen.insert(id, key);
+        }
+        let (a, b) = pair.ok_or("no seed collision in 20000 keys")?;
+        assert_eq!(alone(&a), alone(&b), "the pair collides on its seed");
+
+        let mut slots = UuidSlots::with_cap(64);
+        let first = domain_uuid(started, &a, "eth0", &domain, &mut slots);
+        let second = domain_uuid(started, &b, "eth0", &domain, &mut slots);
+        assert_ne!(first, second, "{a} and {b} share a uuid");
+        assert_eq!(&first[..14], &second[..14], "same millisecond and version");
+        assert_eq!(&first[19..], &second[19..], "same domain bits");
+        // Asked again, each keeps the value it was given.
+        assert_eq!(first, domain_uuid(started, &a, "eth0", &domain, &mut slots));
+        assert_eq!(
+            second,
+            domain_uuid(started, &b, "eth0", &domain, &mut slots)
+        );
+        Ok(())
+    }
+
+    /// The slot table: a held slot is never given to a second identity, a
+    /// full millisecond falls back to the seed, and the table drops its
+    /// oldest milliseconds past its cap.
+    #[test]
+    fn the_uuid_slot_table_holds_its_rules() {
+        assert_eq!(std::mem::size_of::<SlotHolder>(), 18, "the cap's doc");
+        let mut slots = UuidSlots::with_cap(10_000);
+        let id = |n: u32| {
+            let mut out = [0u8; 16];
+            out[..4].copy_from_slice(&n.to_be_bytes());
+            out
+        };
+        let mut given = std::collections::HashSet::new();
+        for n in 0..4096 {
+            assert!(given.insert(slots.claim(1, 7, 5, id(n))), "slot reused");
+        }
+        assert_eq!(slots.claim(1, 7, 5, id(4096)), 5, "a full millisecond");
+        assert_eq!(slots.claim(1, 7, 0, id(0)), 5, "the first claim kept");
+        assert_eq!(slots.claim(2, 7, 5, id(9)), 5, "another domain is apart");
+        assert_eq!(
+            slots.claim(1, 8, 5, id(9)),
+            5,
+            "another millisecond is apart"
+        );
+
+        let mut small = UuidSlots::with_cap(2);
+        assert_eq!(small.claim(1, 1, 3, id(1)), 3);
+        assert_eq!(small.claim(1, 1, 3, id(2)), 4);
+        assert_eq!(small.claim(1, 2, 3, id(3)), 3);
+        assert!(small.held() <= 2, "cap: {}", small.held());
+        // Millisecond 1 was dropped, so identity 2 is seeded afresh.
+        assert_eq!(small.claim(1, 1, 3, id(2)), 3);
+    }
+
+    /// A `new-uuid` chain under a domain keeps the first instance's
+    /// timestamp and the domain's bits, and every instance is new.
+    #[test]
+    fn a_domain_revision_chain_keeps_the_layout() -> Result<(), TestError> {
+        let domain = UuidDomain::new("pbx.example.com")?;
+        let mut slots = UuidSlots::with_cap(64);
+        let base = domain_uuid(ts()?, "a@example.com", "eth0", &domain, &mut slots);
+        assert_eq!(domain_revision_uuid(&base, 0, &domain, &mut slots), base);
+        let chain: Vec<String> = (0..5)
+            .map(|n| domain_revision_uuid(&base, n, &domain, &mut slots))
+            .collect();
+        for (i, id) in chain.iter().enumerate() {
+            assert_eq!(&id[..13], &base[..13], "timestamp: {id}");
+            assert_eq!(&id[14..15], "8", "version: {id}");
+            assert_eq!(&id[19..], &base[19..], "domain bits: {id}");
+            for other in &chain[..i] {
+                assert_ne!(id, other);
+            }
+        }
+        let again: Vec<String> = (0..5)
+            .map(|n| domain_revision_uuid(&base, n, &domain, &mut slots))
+            .collect();
+        assert_eq!(chain, again);
         Ok(())
     }
 }

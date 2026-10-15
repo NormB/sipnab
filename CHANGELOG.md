@@ -133,6 +133,13 @@ entry that carries them.
   - sipnab refuses an address other than loopback, with exit code 1, unless the rule sets `live_rtp_allow_remote = true`: RTP has no encryption or authentication.
   - Audio that waits, such as a capture file read with `-I`, goes at up to ten times real time. sipnab warns at startup when a rule sends a capture file's audio.
   - See [Send a call's audio as RTP](docs/vcon.md#send-a-calls-audio-as-rtp).
+- **`[vcon] uuid_domain` writes container uuids in the form of [draft-ietf-vcon-vcon-core-04 section 4.1.2](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-04#section-4.1.2).**
+  - The value is a fully qualified host name. The last 62 bits of every container uuid the process writes are the high 62 bits of SHA-1 over it, and the first 48 are the call's start in milliseconds.
+  - `rand_a` keeps the default's seed, so re-exporting a call writes the same uuid. Within one process, a call whose seed picks a value already given in its millisecond takes the next free one.
+  - Later versions under `sealed_updates = "new-uuid"` keep the same layout.
+  - sipnab refuses at startup a value that is not a host name of two or more labels, naming the key.
+  - Without the key, uuids are unchanged.
+  - sipnab does not take the name from `sign_cert`.
 
 ## [0.5.220] - 2026-10-14
 

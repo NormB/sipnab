@@ -1450,7 +1450,11 @@ fn wiki_intra_docs_links_resolve() -> Result<(), TestError> {
     // `live_rtp_allow_remote` rows link "Send a call's audio as RTP";
     // docs/config-reference.md +1, the `live_rtp` row links it; docs/errors.md
     // +2, the two `live_rtp` entries link it.
-    const EXPECTED_WIKI_LINKS: usize = 1793;
+    // 1793 -> 1800: `[vcon] uuid_domain`. docs/vcon.md +4 (two links to "The
+    // uuid under a domain", one to "What this does not do", one to
+    // errors.md), and docs/config-reference.md, docs/errors.md and
+    // docs/internals/vcon.md +1 each, linking "The uuid under a domain".
+    const EXPECTED_WIKI_LINKS: usize = 1800;
     // Raised 459 -> 460 when SRC1 stage 1 shipped: docs/cli-reference.md's
     // `--hep-listen` row now points at cookbook recipe "Take signaling from HEP and media off the wire, in one process" in docs/examples.md
     // rather than restating how to pair `-L` with `-d`. Attributed per file

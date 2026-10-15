@@ -689,6 +689,18 @@ fn declare_process_globals(cli: &Cli, config: &Config) {
     crate::sip::diagnosis::set_signaling_thresholds(cli.signaling_thresholds(config));
     crate::rtp::diagnosis::set_asymmetry_thresholds(cli.asymmetry_thresholds(config));
 
+    // [vcon] uuid_domain, read by every door that mints a container uuid.
+    // `apply_config` has already refused a value that is not a host name.
+    #[cfg(feature = "vcon")]
+    if let Some(domain) = config
+        .vcon
+        .uuid_domain
+        .as_deref()
+        .and_then(|d| crate::output::vcon::UuidDomain::new(d).ok())
+    {
+        crate::output::vcon::set_uuid_domain(domain);
+    }
+
     // The Prometheus histogram boundaries are COMPOSED from the two sets just
     // declared, never written again. A literal bucket list beside a threshold
     // is a second copy of the same number, and the two had already parted

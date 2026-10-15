@@ -776,7 +776,10 @@ const EXPECTED_UNRESOLVED: usize = 83;
 // 484 -> 486: src/app/bootstrap.rs `[[vcon.rule]] '{}' live_rtp = '{}' sends
 // nothing in this run: ...` and src/app/batch.rs `live_rtp: {} datagram(s)
 // could not be sent to their target`. Nothing removed.
-const EXPECTED_TEMPLATES: usize = 486;
+// 486 -> 487: src/config.rs `[vcon] uuid_domain: {value:?} {why}`, the
+// refusal of a value that is not a fully qualified host name. Nothing
+// removed.
+const EXPECTED_TEMPLATES: usize = 487;
 
 // ---------------------------------------------------------------------------
 // The page gates

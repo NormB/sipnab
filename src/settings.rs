@@ -925,6 +925,7 @@ pub const FILE_ONLY: &[(&str, &str, FileOnly)] = &[
     ("vcon", "sign_key", FileOnly::Table),
     ("vcon", "sign_cert", FileOnly::Table),
     ("vcon", "compress", FileOnly::Table),
+    ("vcon", "uuid_domain", FileOnly::Tuning),
     ("limits", "max_header_line", FileOnly::Tuning),
     ("limits", "max_headers_per_message", FileOnly::Tuning),
     ("limits", "max_messages_per_dialog", FileOnly::Tuning),

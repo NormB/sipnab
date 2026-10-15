@@ -158,6 +158,7 @@ static KNOWN_KEYS: LazyLock<HashMap<&'static str, &'static [&'static str]>> = La
             "sign_key",
             "sign_cert",
             "compress",
+            "uuid_domain",
         ]
         .as_slice(),
     );
@@ -1519,6 +1520,76 @@ pub struct VconConfig {
     pub sign_cert: Option<std::path::PathBuf>,
     /// The `compress` of every encrypting `[[vcon.rule]]` that sets none.
     pub compress: Option<String>,
+    /// A fully qualified host name. When set, every container uuid this
+    /// process mints follows the layout of draft-ietf-vcon-vcon-core-04
+    /// section 4.1.2, with the high 62 bits of SHA-1 over this name in
+    /// `rand_b`. Unset keeps the node-keyed uuid. See
+    /// [`normalize_uuid_domain`] for what is accepted.
+    pub uuid_domain: Option<String>,
+}
+
+/// The longest `[vcon] uuid_domain`, in characters, without a trailing dot
+/// ([RFC 1035 section 2.3.4](https://www.rfc-editor.org/rfc/rfc1035.html#section-2.3.4)
+/// allows 255 octets on the wire, which is 253 characters of text).
+pub const MAX_UUID_DOMAIN_NAME: usize = 253;
+
+/// The longest label of a `[vcon] uuid_domain`, in characters
+/// ([RFC 1035 section 2.3.4](https://www.rfc-editor.org/rfc/rfc1035.html#section-2.3.4)).
+pub const MAX_UUID_DOMAIN_LABEL: usize = 63;
+
+/// The one spelling of a `[vcon] uuid_domain`, or why it is refused.
+///
+/// Accepted: a fully qualified host name, written in ASCII (an
+/// internationalized name in its `xn--` form), of two or more labels. Each
+/// label is 1 to [`MAX_UUID_DOMAIN_LABEL`] letters, digits and hyphens, and
+/// does not start or end with a hyphen
+/// ([RFC 1123 section 2.1](https://www.rfc-editor.org/rfc/rfc1123.html#section-2.1)).
+/// The whole name is at most [`MAX_UUID_DOMAIN_NAME`] characters. The last
+/// label is not all digits, which refuses an IPv4 address.
+///
+/// DNS names compare without regard to case, and a trailing dot names the
+/// same host, so the name is kept in lower case without it: `PBX.Example.COM.`
+/// and `pbx.example.com` seed one set of uuids.
+///
+/// # Errors
+///
+/// The reason, phrased to follow the key and the value.
+pub fn normalize_uuid_domain(value: &str) -> Result<String, &'static str> {
+    let name = value.strip_suffix('.').unwrap_or(value);
+    if name.is_empty() {
+        return Err("is empty");
+    }
+    if name.len() > MAX_UUID_DOMAIN_NAME {
+        return Err("is longer than 253 characters");
+    }
+    let labels: Vec<&str> = name.split('.').collect();
+    if labels.len() < 2 {
+        return Err("is a single label; a fully qualified host name has two or more");
+    }
+    for label in &labels {
+        if label.is_empty() {
+            return Err("has an empty label");
+        }
+        if label.len() > MAX_UUID_DOMAIN_LABEL {
+            return Err("has a label longer than 63 characters");
+        }
+        if !label
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'-')
+        {
+            return Err("has a character other than an ASCII letter, a digit, a hyphen or a dot");
+        }
+        if label.starts_with('-') || label.ends_with('-') {
+            return Err("has a label that starts or ends with a hyphen");
+        }
+    }
+    if labels
+        .last()
+        .is_some_and(|l| l.bytes().all(|b| b.is_ascii_digit()))
+    {
+        return Err("is an address, not a host name");
+    }
+    Ok(name.to_ascii_lowercase())
 }
 
 /// A path, or a list of them: what `encrypt_to` takes in `[vcon]` and
@@ -1548,7 +1619,8 @@ impl PathList {
 pub const VCON_COMPRESSIONS: [&str; 2] = ["none", "gzip"];
 
 impl VconConfig {
-    /// Refuse a section-level `compress` other than [`VCON_COMPRESSIONS`].
+    /// Refuse a section-level `compress` other than [`VCON_COMPRESSIONS`],
+    /// and a `uuid_domain` [`normalize_uuid_domain`] refuses.
     /// The section's paths are checked by [`Config::validate_paths`], and
     /// the keys and certificates when a rule that encrypts loads them.
     ///
@@ -1565,6 +1637,11 @@ impl VconConfig {
                  or remove the key"
                     .into(),
             ));
+        }
+        if let Some(value) = &self.uuid_domain {
+            normalize_uuid_domain(value).map_err(|why| {
+                crate::Error::ConfigInvalid(format!("[vcon] uuid_domain: {value:?} {why}"))
+            })?;
         }
         match &self.compress {
             Some(value) if !VCON_COMPRESSIONS.contains(&value.as_str()) => {
@@ -4245,6 +4322,81 @@ mod tests {
 
     use super::*;
     use std::io::Write;
+
+    // ── [vcon] uuid_domain ─────────────────────────────────────────────
+
+    /// A fully qualified host name is accepted in one spelling: lower case,
+    /// without the root's trailing dot. Anything else is refused with the
+    /// reason.
+    #[test]
+    fn a_uuid_domain_is_a_fully_qualified_host_name() {
+        for (given, kept) in [
+            ("pbx.example.com", "pbx.example.com"),
+            ("PBX.Example.COM.", "pbx.example.com"),
+            ("a-1.b2.example", "a-1.b2.example"),
+            ("xn--bcher-kva.example", "xn--bcher-kva.example"),
+        ] {
+            assert_eq!(normalize_uuid_domain(given).as_deref(), Ok(kept), "{given}");
+        }
+        let long_label = format!("{}.example.com", "a".repeat(64));
+        let long_name = format!(
+            "{}.com",
+            ["a", "b", "c"].map(|c| c.repeat(63)).join(".") + "." + &"d".repeat(58)
+        );
+        assert_eq!(long_name.len(), MAX_UUID_DOMAIN_NAME + 1);
+        // The reasons name the ceilings they enforce.
+        assert!(
+            normalize_uuid_domain(&long_name)
+                .is_err_and(|why| why.contains(&MAX_UUID_DOMAIN_NAME.to_string()))
+        );
+        assert!(
+            normalize_uuid_domain(&long_label)
+                .is_err_and(|why| why.contains(&MAX_UUID_DOMAIN_LABEL.to_string()))
+        );
+        let at_limit = &long_name[..long_name.len() - 5];
+        assert!(normalize_uuid_domain(&format!("{at_limit}.com")).is_ok());
+        for bad in [
+            "",
+            ".",
+            " pbx.example.com",
+            "pbx",
+            "pbx.",
+            "10.0.0.1",
+            "under_score.example.com",
+            "-pbx.example.com",
+            "pbx-.example.com",
+            "pbx..example.com",
+            "pbx.example.com..",
+            "*.example.com",
+            "pbx.example.com/x",
+            "p\u{e9}x.example.com",
+            &long_label,
+            &long_name,
+        ] {
+            assert!(normalize_uuid_domain(bad).is_err(), "{bad:?} accepted");
+        }
+    }
+
+    /// `[vcon] validate` refuses a bad `uuid_domain`, naming the key.
+    #[test]
+    fn vcon_validate_names_a_bad_uuid_domain() {
+        let config = VconConfig {
+            uuid_domain: Some("pbx".into()),
+            ..VconConfig::default()
+        };
+        let message = config.validate().err().map(|e| e.to_string());
+        assert!(
+            message
+                .as_deref()
+                .is_some_and(|m| m.contains("[vcon] uuid_domain")),
+            "{message:?}"
+        );
+        let good = VconConfig {
+            uuid_domain: Some("pbx.example.com".into()),
+            ..VconConfig::default()
+        };
+        assert!(good.validate().is_ok());
+    }
 
     // ── parse_portrange ────────────────────────────────────────────────
 

@@ -1568,6 +1568,18 @@ The `[vcon]` section's `compress` key names a compression sipnab does not write.
 
 **Exit code:** 1.
 
+### `[vcon] uuid_domain: {value:?} {why}`
+
+The `[vcon]` section's `uuid_domain` key is not a fully qualified host name.
+
+- `{value:?}` is the value in the file.
+- `{why}` says which rule it breaks: it is empty, it has one label, a label is empty or longer than `MAX_UUID_DOMAIN_LABEL` (63) characters, the name is longer than `MAX_UUID_DOMAIN_NAME` (253) characters, it has a character other than an ASCII letter, a digit, a hyphen or a dot, a label starts or ends with a hyphen, or it is an IPv4 address.
+- The printed line starts with `invalid config value: `.
+
+**What to do:** Set `uuid_domain` to a host name such as `node1.pbx.example.com`, writing an internationalized name in its `xn--` form, or remove the key. See [The uuid under a domain](@/docs/vcon.md#the-uuid-under-a-domain).
+
+**Exit code:** 1.
+
 ### `[vcon_forward] {}: {e}`
 
 A whole-number `[vcon_forward]` key is out of range.

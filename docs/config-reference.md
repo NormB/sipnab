@@ -278,6 +278,7 @@ rule inherits when it does not set its own.
 | `sign_key` | string | -- | The `sign_key` of every encrypting or `sign_only` `[[vcon.rule]]` that sets none. A rule's own value overrides it |
 | `sign_cert` | string | -- | The `sign_cert` of every encrypting `[[vcon.rule]]` that sets none. A rule's own value overrides it |
 | `compress` | string | `none` | The `compress` of every encrypting `[[vcon.rule]]` that sets none: `none` or `gzip`. A rule's own value overrides it |
+| `uuid_domain` | string | -- | A fully qualified host name, such as `pbx.example.com`. When set, every container uuid this process writes, through every door, follows the layout of [draft-ietf-vcon-vcon-core-04 section 4.1.2](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-04#section-4.1.2): the last 62 bits are the high 62 bits of SHA-1 over the name. sipnab hashes the name in lower case without a trailing dot. Unset, sipnab keys the uuid on the node, the dialog and the capture. sipnab refuses at startup a value that is not a host name of two or more labels (exit 1). See [The uuid under a domain](vcon.md#the-uuid-under-a-domain) |
 
 ### [[vcon.rule]]
 

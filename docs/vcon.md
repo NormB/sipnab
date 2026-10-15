@@ -1050,6 +1050,9 @@ sipnab refuses at startup any other `sealed_updates` value, naming the three.
 - It takes its other 74 bits from SHA-256 over `amended`, the first uuid and *n*.
 - It depends on nothing else. So two runs over the same capture write the same
   chain of uuids.
+- Under `[vcon] uuid_domain`, version *n* keeps the first uuid's timestamp and
+  the domain's 62 bits, and takes `rand_a` from the same SHA-256. See
+  [The uuid under a domain](#the-uuid-under-a-domain).
 
 To read a call's latest version, follow the chain. The latest version is the
 one that no other version names in `amended`.
@@ -3300,6 +3303,89 @@ for that container. The MCP tool and the REST route list it in
 - **sipnab sends nothing anywhere.** The addresses in a container are a record
   of a finished call. So sipnab never transmits a response to them.
 
+## The uuid under a domain
+
+By default sipnab keys a container's uuid on the node, the dialog and the capture
+(see [What this does not do](#what-this-does-not-do)). That departs from
+[draft-ietf-vcon-vcon-core-04 section 4.1.2](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-04#section-4.1.2),
+which says:
+
+<!-- vale Google.Passive = NO -->
+> The value of the string SHOULD be generated using the version 8 UUID
+> defined in [UUID] which is generated identically to a version 7 UUID
+> with the exception that:
+>
+> - rand_b/custom_c is generated from the high 62 bits of the SHA-1
+>   hash of the FQHN string
+> - the variant and version fields are set as described for version 8
+>   UUID
+>
+> The DNS name string used in generating the uuid value SHOULD be the
+> same FQHN, or a subdomain to allow for more distributed generation of
+> UUIDs, as would used in the signing certificate as they are the same
+> domains of uniqueness.
+<!-- vale Google.Passive = YES -->
+
+`[vcon] uuid_domain` writes that form:
+
+```toml
+[vcon]
+uuid_domain = "node1.pbx.example.com"
+```
+
+Every container uuid the process writes then has this layout. That covers the
+batch export, `GET /v1/dialogs/{id}/vcon`, MCP `export_vcon` and the
+related-legs attachment.
+
+| Bits | Field ([RFC 9562 section 5.7](https://www.rfc-editor.org/rfc/rfc9562.html#section-5.7)) | What sipnab puts there |
+|------|-------|------------------------|
+| 0-47 | `unix_ts_ms` | The call's first observed message, in milliseconds since the Unix epoch. The same as the default |
+| 48-51 | `ver` | `8` |
+| 52-63 | `rand_a` | 12 bits seeded from SHA-256 over the Call-ID and the capture identity, the same seed as the default. See below for when it is not |
+| 64-65 | `var` | `10` |
+| 66-127 | `rand_b` | The high 62 bits of SHA-1 over the domain. sipnab hashes the name in lower case, without a trailing dot |
+
+sipnab refuses at startup, with exit code 1 and a message naming
+`[vcon] uuid_domain`, a value that is not a host name of two or more labels.
+Each label must be 1 to 63 ASCII letters, digits or hyphens, and must not start or end
+with a hyphen. The whole name is at most 253 characters. Write an
+internationalized name in its `xn--` form. sipnab also refuses an IPv4
+address. See [the error reference](errors.md).
+
+**What the layout leaves for uniqueness.** Section 4.1.2 also says "The UUID
+value MUST be globally unique". Under one domain, the timestamp and the 62
+domain bits are the same for every call that starts in the same millisecond.
+Only `rand_a`'s 12 bits separate those calls: 4096 values per millisecond per
+domain.
+
+- Seeded from the dialog alone, two calls in one millisecond would share a uuid
+  once in 4096 pairs. So sipnab keeps a table of the values it has given out.
+  A call whose seed picks a value already given in that millisecond takes the
+  next free one.
+- The table is per process. A second sipnab process, or a second node, under
+  the same domain cannot see it. Give each node its own subdomain, as the
+  draft's "or a subdomain to allow for more distributed generation of UUIDs"
+  allows.
+- The table holds at most 1,048,576 uuids. Past that it drops its oldest
+  milliseconds, and sipnab seeds a call from one of them afresh.
+- When calls hold all 4096 values of a millisecond, the next call repeats a
+  uuid. The layout has no room to prevent that.
+
+**What stays deterministic.** The seed is a function of the dialog and the
+capture. So re-exporting one call, or running the same capture again, writes
+the same uuid. The exception is a call that met a seed collision in its
+millisecond: its value depends on which of the two calls sipnab minted first.
+
+**Later versions.** A `sealed_updates = "new-uuid"` rule's version *n* keeps the
+first version's timestamp and the domain's 62 bits. sipnab seeds its `rand_a`
+from SHA-256 over `amended`, the first uuid and *n*, through the same table. So
+two versions of one call differ in those 12 bits alone.
+
+**Not done: the domain from `sign_cert`.** The draft asks for the name "as
+would used in the signing certificate". sipnab does not read it from
+`sign_cert`. Set `uuid_domain` to the DNS name in that certificate, or to a
+subdomain of it.
+
 ## What this does not do
 
 Stated here rather than discovered later.
@@ -3372,6 +3458,9 @@ Stated here rather than discovered later.
     deduplication on `uuid` is safe for re-exports. That is what it exists for.
   - Until 0.5.125 `rand_b` digested the node alone. That left 12 bits to
     separate such dialogs.
+  - `[vcon] uuid_domain` replaces `rand_b` with the high 62 bits of SHA-1 over
+    a host name, the form section 4.1.2 asks for. See
+    [The uuid under a domain](#the-uuid-under-a-domain).
 - **It does not store anything.** sipnab writes a container and forgets it.
   There is no vCon store, no index, no retention.
 
