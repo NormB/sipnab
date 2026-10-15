@@ -557,6 +557,10 @@ pub struct Cli {
     #[command(flatten)]
     pub vcon_resign_args: VconResignArgs,
 
+    // ── vCon audio by url ──
+    #[command(flatten)]
+    pub vcon_audio_fetch_args: VconAudioFetchArgs,
+
     // ── Config ──
     #[command(flatten)]
     pub config_args: ConfigArgs,
@@ -1401,6 +1405,11 @@ pub struct OutputArgs {
     pub plugin: Vec<std::path::PathBuf>,
 
     /// Generate a summary report after capture completes.
+    ///
+    /// When the inputs include stored vCon containers, the report adds one
+    /// row per container, read or skipped with the reason, and their totals;
+    /// with --json or --json-pretty, as one JSON object under the key
+    /// `sipnab_vcon_containers`.
     #[arg(help_heading = "Output", long)]
     pub report: bool,
 
@@ -3176,6 +3185,19 @@ pub struct ListenerArgs {
     #[arg(help_heading = "Network listeners", long = "api-allow-relay-query")]
     pub api_allow_relay_query: bool,
 
+    /// Let REST clients read a vCon from the operator's `[vcon_fetch]`
+    /// store by uuid (`GET /v1/vcon/fetch/{uuid}`), which connects to it.
+    ///
+    /// The REST counterpart of `--mcp-allow-vcon-fetch`, off for the same
+    /// reason: every other REST answer comes from bytes sipnab already
+    /// holds, and this one opens a connection to the store `[vcon_fetch] url`
+    /// names, with the credential and decryption key `[vcon_fetch]` names --
+    /// never a URL or key a client chooses. Without this flag the route
+    /// answers 503 naming it; without `[vcon_fetch] url`, 503 naming the key.
+    /// The container comes back in the answer; no file is written.
+    #[arg(help_heading = "Network listeners", long = "api-allow-vcon-fetch")]
+    pub api_allow_vcon_fetch: bool,
+
     /// Directory of capture files `GET /v1/captures/compare` may diff.
     ///
     /// The REST counterpart of `--mcp-file-root`, and off for the same reason:
@@ -4030,6 +4052,22 @@ pub struct McpArgs {
         long = "mcp-allow-relay-query"
     )]
     pub mcp_allow_relay_query: bool,
+
+    /// Let an agent read a vCon from the operator's `[vcon_fetch]` store by
+    /// uuid (`fetch_vcon`), which connects to it.
+    ///
+    /// Off by default because this tool opens a connection: every other vCon
+    /// tool answers from bytes sipnab already has. The store, its kind, the
+    /// credential and the decryption key come from `[vcon_fetch]` in the
+    /// config file and from nowhere else -- the tool takes a uuid and
+    /// nothing that picks a destination, and never returns a key. Without
+    /// `[vcon_fetch] url` the tool refuses and names the key. The container
+    /// comes back in the answer; no file is written.
+    #[arg(
+        help_heading = "MCP (Model Context Protocol)",
+        long = "mcp-allow-vcon-fetch"
+    )]
+    pub mcp_allow_vcon_fetch: bool,
 
     /// Let an agent install kernel uprobes and read TLS plaintext
     /// (`start_tls_capture`, `stop_tls_capture`).
@@ -4899,7 +4937,8 @@ pub struct VconForwardArgs {
 
     /// Seconds the forwarder waits to connect, and for each read and write,
     /// before it treats the store as unreachable and retries later, 1 to 600.
-    /// Default: 30. Overrides `[vcon_forward] timeout`.
+    /// It also bounds each SCITT registration, its POST and its polling for
+    /// the receipt. Default: 30. Overrides `[vcon_forward] timeout`.
     #[arg(
         help_heading = "vCon forwarder",
         long = "vcon-forward-timeout",
@@ -5001,7 +5040,9 @@ pub struct VconForwardArgs {
     /// Register SCITT lifecycle statements (draft-howe-vcon-lifecycle-01)
     /// with the transparency service at this URL: `vcon_created` and
     /// `vcon_sent` for each container delivered, each a signed statement
-    /// POSTed to `<URL>/entries` (draft-ietf-scitt-scrapi). Needs
+    /// POSTed to `<URL>/entries` (draft-ietf-scitt-scrapi). A 202's
+    /// `Location` is polled for the receipt within --vcon-forward-timeout,
+    /// only on this URL's scheme, host and port. Needs
     /// --vcon-forward-scitt-sign-key, --vcon-forward-scitt-sign-cert and
     /// --vcon-forward-scitt-issuer. Overrides `[vcon_forward] scitt_url`.
     #[arg(
@@ -5034,9 +5075,9 @@ pub struct VconForwardArgs {
     )]
     pub vcon_forward_scitt_ca: Option<std::path::PathBuf>,
 
-    /// The PEM RSA private key the lifecycle statements are signed with
-    /// (RS256). Refused when other users can read it: chmod 600. Overrides
-    /// `[vcon_forward] scitt_sign_key`.
+    /// The PEM private key the lifecycle statements are signed with: RSA
+    /// signs RS256, EC P-256 signs ES256. Refused when other users can read
+    /// it: chmod 600. Overrides `[vcon_forward] scitt_sign_key`.
     #[arg(
         help_heading = "vCon forwarder",
         long = "vcon-forward-scitt-sign-key",
@@ -5046,7 +5087,8 @@ pub struct VconForwardArgs {
     pub vcon_forward_scitt_sign_key: Option<std::path::PathBuf>,
 
     /// The PEM certificate chain of the signing key, leaf first, carried in
-    /// each statement's `x5chain`. Overrides `[vcon_forward] scitt_sign_cert`.
+    /// each statement's `x5chain`. Its first certificate must be the key's.
+    /// Overrides `[vcon_forward] scitt_sign_cert`.
     #[arg(
         help_heading = "vCon forwarder",
         long = "vcon-forward-scitt-sign-cert",
@@ -5124,13 +5166,96 @@ pub struct VconResignArgs {
     pub vcon_resign_out: Option<std::path::PathBuf>,
 }
 
+/// `--vcon-audio-fetch`: read back the audio a vCon names by `url`, as a
+/// `[[vcon.rule]]` with `audio = "url"` writes it. A command of its own: it
+/// reads one container, fetches its recordings, and captures nothing.
+#[derive(clap::Args, Debug, Clone)]
+pub struct VconAudioFetchArgs {
+    /// Read the vCon in this file, in any form `-I` reads, and for each
+    /// recording Dialog Object with a `url`: fetch the file over `https://`,
+    /// check its `content_hash` (draft-ietf-vcon-vcon-core-04 section 2.2),
+    /// decrypt it with --vcon-key when it is a JWE, and write the audio to
+    /// `<uuid>-dialog<N>.wav` or `.ogg` in --vcon-audio-fetch-out. Exit 0
+    /// every recording written, 1 any refused, 2 bad settings. Needs the
+    /// `vcon` feature.
+    #[arg(
+        help_heading = "vCon fetcher",
+        long = "vcon-audio-fetch",
+        value_name = "FILE",
+        requires = "vcon_audio_fetch_out",
+        conflicts_with_all = [
+            "device", "input", "hep_listen", "hep_send", "bpf_filter",
+            "bpf_file", "api", "mcp", "metrics", "export_vcon",
+            "export_vcon_when", "export_vcon_dir", "mint_token", "replay",
+            "vcon_forward", "vcon_fetch", "vcon_spool_status", "vcon_resign",
+        ]
+    )]
+    pub vcon_audio_fetch: Option<std::path::PathBuf>,
+
+    /// The directory each recording's audio is written to, mode 0600.
+    /// Created, mode 0700, when it does not exist. sipnab never replaces a
+    /// file that exists.
+    #[arg(
+        help_heading = "vCon fetcher",
+        long = "vcon-audio-fetch-out",
+        value_name = "DIR",
+        requires = "vcon_audio_fetch"
+    )]
+    pub vcon_audio_fetch_out: Option<std::path::PathBuf>,
+
+    /// Read each recording from the directory that holds the vCon, by the
+    /// last segment of its `url`, instead of fetching it: for an
+    /// `--export-vcon-dir` spool whose files your storage has not served yet.
+    #[arg(
+        help_heading = "vCon fetcher",
+        long = "vcon-audio-fetch-local",
+        requires = "vcon_audio_fetch",
+        conflicts_with_all = ["vcon_audio_fetch_ca", "vcon_audio_fetch_extra_ca"]
+    )]
+    pub vcon_audio_fetch_local: bool,
+
+    /// Trust only the CA certificates in this PEM file for the `https://`
+    /// server that holds the audio. Without it sipnab trusts the host's CA
+    /// bundle.
+    #[arg(
+        help_heading = "vCon fetcher",
+        long = "vcon-audio-fetch-ca",
+        value_name = "FILE",
+        requires = "vcon_audio_fetch"
+    )]
+    pub vcon_audio_fetch_ca: Option<std::path::PathBuf>,
+
+    /// Trust the CA certificates in this PEM file for the `https://` server
+    /// that holds the audio, in addition to the host's CA bundle.
+    #[arg(
+        help_heading = "vCon fetcher",
+        long = "vcon-audio-fetch-extra-ca",
+        value_name = "FILE",
+        requires = "vcon_audio_fetch",
+        conflicts_with = "vcon_audio_fetch_ca"
+    )]
+    pub vcon_audio_fetch_extra_ca: Option<std::path::PathBuf>,
+
+    /// The largest audio file read for one recording, in bytes, 1 to
+    /// 4294967295. A larger one is refused and nothing is written for it.
+    /// Default: 67108864 (64 MiB).
+    #[arg(
+        help_heading = "vCon fetcher",
+        long = "vcon-audio-fetch-max-size",
+        value_name = "BYTES",
+        value_parser = parse_fetch_max_size,
+        requires = "vcon_audio_fetch"
+    )]
+    pub vcon_audio_fetch_max_size: Option<u64>,
+}
+
 /// `vCon fetcher` flags: the mode that reads stored vCons from a store by
 /// uuid and writes each to a file.
 ///
 /// A separate process from any capture, like the forwarder: `--vcon-fetch`
 /// conflicts with every capture source, listener and export flag, so the
 /// capture process keeps making no outbound connection.
-#[derive(clap::Args, Debug, Clone)]
+#[derive(clap::Args, Debug, Clone, Default)]
 pub struct VconFetchArgs {
     /// Run as the vCon fetcher: read the container with each of these uuids
     /// from the store at --vcon-fetch-url and write it to
@@ -5290,11 +5415,12 @@ pub struct VconFetchArgs {
     )]
     pub vcon_fetch_decrypt_key: Option<std::path::PathBuf>,
 
-    /// Write a decrypted container only when its signing certificate chains,
-    /// through the intermediates in its `x5c`, to a CA in this PEM file, each
-    /// certificate within its validity period. `system` uses the host's CA
-    /// bundle instead; write `./system` for a file of that name. Needs
-    /// --vcon-fetch-decrypt-key. Overrides `[vcon_fetch] signer_ca`.
+    /// Write a signed or decrypted container only when its signing certificate
+    /// chains, through the intermediates in its `x5c`, to a CA in this PEM
+    /// file, each certificate within its validity period. `system` uses the
+    /// host's CA bundle instead; write `./system` for a file of that name. An
+    /// encrypted container also needs --vcon-fetch-decrypt-key. Overrides
+    /// `[vcon_fetch] signer_ca`.
     #[arg(
         help_heading = "vCon fetcher",
         long = "vcon-fetch-signer-ca",
@@ -5303,9 +5429,10 @@ pub struct VconFetchArgs {
     )]
     pub vcon_fetch_signer_ca: Option<std::path::PathBuf>,
 
-    /// Write a decrypted container only when its signing certificate has this
-    /// SHA-256 fingerprint: 64 hex digits, plain or colon-separated, either
-    /// case, as `openssl x509 -noout -fingerprint -sha256` prints it. Needs
+    /// Write a signed or decrypted container only when its signing
+    /// certificate has this SHA-256 fingerprint: 64 hex digits, plain or
+    /// colon-separated, either case, as `openssl x509 -noout -fingerprint
+    /// -sha256` prints it. An encrypted container also needs
     /// --vcon-fetch-decrypt-key. Overrides `[vcon_fetch] signer_sha256`.
     #[arg(
         help_heading = "vCon fetcher",
@@ -7855,6 +7982,11 @@ impl Cli {
                 out.vcon_max_inline_media.is_some(),
                 "--vcon-max-inline-media",
             ),
+            (
+                self.listener_args.api_allow_vcon_fetch,
+                "--api-allow-vcon-fetch",
+            ),
+            (self.mcp_args.mcp_allow_vcon_fetch, "--mcp-allow-vcon-fetch"),
         ]
         .into_iter()
         .filter_map(|(set, flag)| set.then_some(flag))
@@ -11058,6 +11190,8 @@ mod tests {
         ],
         &["--vcon-digest"],
         &["--vcon-max-inline-media", "4"],
+        &["--api", "127.0.0.1:0", "--api-allow-vcon-fetch"],
+        &["--mcp", "--mcp-allow-vcon-fetch"],
     ];
 
     /// VCON-NOFEAT-1: a build without the exporter used to refuse only

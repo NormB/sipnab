@@ -55,7 +55,7 @@ A bundle is a named set of tools defined in sipnab's code.
 | [`relay`](mcp-tools-relay.md) | 4 | Questions put to the configured media relay, and decoding the relay control messages sipnab captured. |
 | [`tfps`](mcp-tools-tfps.md) | 7 | The toll-fraud prevention peer (TFPS): what it blocks and logs, and the operator's ban, unban and revert actions. |
 | [`server`](mcp-tools-server.md) | 5 | The sipnab process and its capture path: capture health, HEP senders, resource use, build capabilities, and shutdown. |
-| [`vcon`](mcp-tools-vcon.md) | 5 | vCon conversation containers, exported, validated and analyzed, the vCon export spool's counts, and the SIPREC recording metadata a call carried. |
+| [`vcon`](mcp-tools-vcon.md) | 7 | vCon conversation containers, exported, validated and analyzed, one at a time or a directory at once, read from the operator's store, the vCon export spool's counts, and the SIPREC recording metadata a call carried. |
 | [`tls`](mcp-tools-tls.md) | 3 | Reading SIP inside TLS without keys through kernel uprobes, and which TLS libraries this host runs. |
 
 ### Choosing which tools load
@@ -107,32 +107,23 @@ resource.
 
 | Bundle | Tools | Bytes (default) | Bytes with output schemas |
 |---|---|---|---|
-| core | 9 | 12,223 | 54,526 |
-| signaling | 20 | 22,349 | 58,494 |
-| captures | 11 | 12,578 | 30,066 |
-| security | 6 | 9,923 | 9,923 |
+| core | 9 | 12,316 | 54,624 |
+| signaling | 20 | 22,474 | 58,619 |
+| captures | 11 | 12,723 | 30,211 |
+| security | 6 | 9,954 | 9,954 |
 | media | 4 | 3,480 | 16,048 |
-| relay | 4 | 4,240 | 20,029 |
+| relay | 4 | 4,199 | 19,988 |
 | tfps | 7 | 5,563 | 15,947 |
-| server | 5 | 5,394 | 27,170 |
-| vcon | 5 | 8,369 | 24,354 |
+| server | 5 | 5,394 | 27,452 |
+| vcon | 7 | 10,714 | 33,024 |
 | tls | 3 | 2,850 | 4,943 |
-| full | 74 | 86,969 | 261,500 |
+| full | 76 | 89,667 | 270,810 |
 
 Bytes are the compact JSON of each tool's `tools/list` entry, summed over the
 bundle.
 
-> **Measured after sipnab 0.5.212** on a build with every feature. These were
-> in place:
->
-> - `max_response_bytes` and the `get_dialog` and `reconcile_orphans` cursors,
-> - output schemas on nine `core` and `signaling` tools,
-> - the response limits and loaded-surface fields of `server_capabilities`,
-> - `vcon_spool_status` and the `cursor` and `media` parameters of
->   `export_vcon`.
->
-> The `vcon` and `full` rows hold a second measurement, taken once
-> `analyze_vcon` joined them.
+> **Measured on sipnab 0.5.221** on a build with every feature, after the
+> `filter` parameters gained "Values may be bare or quoted."
 >
 > - Sizes, tool counts and bundle membership may change in later releases.
 > - A build without a feature does not register that feature's tools, so its
@@ -169,6 +160,7 @@ links to its section on the bundle's page.
 | [`export_audio`](mcp-tools-media.md#export_audio) | [media](mcp-tools-media.md) | Writes a call's RTP audio to a WAV in `--mcp-file-root`; needs the server started with `--retain-audio` |
 | [`export_capture`](mcp-tools-captures.md#export_capture) | [captures](mcp-tools-captures.md) | Writes held SIP signaling to a pcap in `--mcp-file-root` (re-synthesized frames, no RTP) |
 | [`export_vcon`](mcp-tools-vcon.md#export_vcon) | [vcon](mcp-tools-vcon.md) | Dialogs as vCon conversation containers, structured JSON, each with its SHA-256. One `call_id` or a whole filtered set, paged with `cursor`. Unsigned, retained audio inline unless `media` is `omit`, and every omission stated in the response |
+| [`fetch_vcon`](mcp-tools-vcon.md#fetch_vcon) | [vcon](mcp-tools-vcon.md) | **Connects, off by default.** One container from the operator's `[vcon_fetch]` store by uuid, returned inline with the checks it passed. Needs `--mcp-allow-vcon-fetch`; the store and its keys come from operator configuration only |
 | [`find_correlated`](mcp-tools-signaling.md#find_correlated) | [signaling](mcp-tools-signaling.md) | The other legs of the same call across a B2BUA, each with a score AND the strategy that matched it |
 | [`find_in_captures`](mcp-tools-captures.md#find_in_captures) | [captures](mcp-tools-captures.md) | Which capture files hold dialogs matching a filter, without opening any of them; a sweep that outlasts its wait returns a job |
 | [`find_in_captures_status`](mcp-tools-captures.md#find_in_captures_status) | [captures](mcp-tools-captures.md) | A `find_in_captures` job's progress, or its result once it finishes |
@@ -185,7 +177,7 @@ links to its section on the bundle's page.
 | [`group_dialogs`](mcp-tools-signaling.md#group_dialogs) | [signaling](mcp-tools-signaling.md) | Carrier metrics per group — ASR, NER, ACD, post-dial delay, MOS, retransmissions — each beside the population it rests on |
 | [`hep_senders`](mcp-tools-server.md#hep_senders) | [server](mcp-tools-server.md) | Who feeds this run's HEP listener: each sender, its count, when it was last heard and whether it went silent, and every address the listener refused, by reason |
 | [`lint_dialog`](mcp-tools-signaling.md#lint_dialog) | [signaling](mcp-tools-signaling.md) | Conformance findings for one call, declaration against observation included, each with its RFC and section |
-| [`list_captures`](mcp-tools-captures.md#list_captures) | [captures](mcp-tools-captures.md) | Capture files in `--mcp-file-root`, with sizes |
+| [`list_captures`](mcp-tools-captures.md#list_captures) | [captures](mcp-tools-captures.md) | Capture files and stored vCon containers in `--mcp-file-root`, with sizes and each one's kind |
 | [`list_dialogs`](mcp-tools-core.md#list_dialogs) | [core](mcp-tools-core.md) | A page of dialog summaries, with the total behind it |
 | [`list_tls_libraries`](mcp-tools-tls.md#list_tls_libraries) | [tls](mcp-tools-tls.md) | which TLS libraries this host runs, and whether sipnab could read their plaintext without keys |
 | [`media_diagnostics`](mcp-tools-media.md#media_diagnostics) | [media](mcp-tools-media.md) | The facts under the MOS: QoS marking, jitter grounding, delay provenance, silence, and what the far end reported |
@@ -220,6 +212,7 @@ links to its section on the bundle's page.
 | [`validate_filter`](mcp-tools-signaling.md#validate_filter) | [signaling](mcp-tools-signaling.md) | Whether a filter DSL expression parses, the parser's message when it does not, and how many dialogs it selects — with no rows |
 | [`validate_message`](mcp-tools-signaling.md#validate_message) | [signaling](mcp-tools-signaling.md) | Conformance findings for one message, read alone |
 | [`validate_vcon`](mcp-tools-vcon.md#validate_vcon) | [vcon](mcp-tools-vcon.md) | Checks a container against the working group's draft-ietf-vcon-vcon-core-04 schema and names every finding |
+| [`vcon_directory_report`](mcp-tools-vcon.md#vcon_directory_report) | [vcon](mcp-tools-vcon.md) | Every stored container in a directory of the file root: per container its status, form, schema finding count, calls, dispositions and duration, or why sipnab skipped it, then the totals. The report `-I <dir> --report` prints |
 | [`vcon_spool_status`](mcp-tools-vcon.md#vcon_spool_status) | [vcon](mcp-tools-vcon.md) | Counts the `--export-vcon-dir` spool: containers pending, delivered and failed, with the store's answer from each failed container's record. A snapshot of files; sends, moves and deletes nothing |
 
 ## Which tool finds calls
@@ -229,7 +222,8 @@ Seven tools select calls, and each answers a different question.
 A filter is one of these:
 
 - an expression in sipnab's filter language (the DSL), such as
-  `state == failed`,
+  `state == Failed`. A value may be bare or quoted: `method == INVITE` and
+  `method == 'INVITE'` are the same filter,
 - the name of a built-in alias such as `problems`.
 
 | The question | The tool | Why this one |
@@ -412,21 +406,24 @@ inside a window a human client never sees. On a 921 MB capture,
 `capture_status` have always carried `source_exhausted`. Now every tool that
 answers from the capture does.
 
-Nineteen tools are the exception, because their answer cannot move with
+Twenty-one tools are the exception, because their answer cannot move with
 the load. How much of the capture sipnab has read says nothing about what
 their sources hold:
-- Eleven read something other than the capture store:
+- Twelve read something other than the capture store:
   - `explain_response_code`, `explain_rule`, `decode_evidence`, `decode_ng`,
     `show_evidence`, `list_captures`, `list_tls_libraries`,
     `server_capabilities`;
   - `vcon_spool_status`, which counts the vCon export spool that the
     forwarder drains;
   - `compare_captures`, which reads two files and never the loaded capture;
-  - `analyze_vcon`, which analyzes a container the caller hands over.
-- The other eight ask another process:
+  - `analyze_vcon`, which analyzes a container the caller hands over;
+  - `vcon_directory_report`, which reads the containers in a directory of the
+    file root.
+- The other nine ask another process:
   - `query_relay` and `relay_stats` put the question to the media relay;
   - `tfps_status`, `tfps_banned`, `tfps_dropped`, `tfps_labels`, `tfps_ban`
-    and `tfps_unban` put it to the toll-fraud prevention peer.
+    and `tfps_unban` put it to the toll-fraud prevention peer;
+  - `fetch_vcon` puts it to the operator's vCon store.
 
 The tools that answer with a rendered document have no object to put a field
 in. These are `render_ladder`, and `get_capture_report` / `get_dialog_report`

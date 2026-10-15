@@ -71,6 +71,15 @@ const FOREIGN_FLAGS: &[(&str, &[&str])] = &[
             "website/content/docs/internals/build-ci-release.md",
         ],
     ),
+    // `cargo clippy --no-default-features --lib -- -D warnings`, the
+    // no-feature lint that CI and pre-push run: cargo's flag, not sipnab's.
+    (
+        "lib",
+        &[
+            "docs/internals/build-ci-release.md",
+            "website/content/docs/internals/build-ci-release.md",
+        ],
+    ),
     // `git commit --amend -S --no-edit` and
     // `git rebase --exec 'git commit --amend --no-edit -S' <base>`: how the
     // contributing guide and the build page say to re-sign a commit the
@@ -3966,9 +3975,18 @@ fn mcp_tool_table_lists_every_registered_tool() -> Result<(), TestError> {
     // analyzes a stored vCon container handed over inline and is read-only,
     // so the split moves to 61 read-only of 74 and the thirteen write-capable
     // tools are unchanged.
+    // 74 -> 75 by `fetch_vcon` (src/mcp/tools/vcon.rs), which reads one
+    // container from the operator's vCon store behind --mcp-allow-vcon-fetch.
+    // It writes no file and changes nothing, so the split moves to 62
+    // read-only of 75 and the thirteen write-capable tools are unchanged.
+    // 75 -> 76 when `vcon_directory_report` (src/mcp/tools/vcon.rs) met it
+    // in the 0.5.221 batch: it reports the stored vCon containers in a
+    // directory of the file root, reads files and changes nothing, so the
+    // split moves to 63 read-only of 76 and the thirteen write-capable
+    // tools are unchanged.
     assert_eq!(
         registered.len(),
-        74,
+        76,
         "found only {} #[tool(name = ...)] entries under src/mcp/ — the \
          attribute shape changed and this test is no longer reading the \
          registry: {registered:?}",
@@ -5336,7 +5354,25 @@ fn no_documentation_table_repeats_a_row() -> Result<(), TestError> {
     // and its website mirror, website/content/docs/config.md.
     // 1213 -> 1215: the "vCon archive" flag table in docs/cli-reference.md
     // and its website/content/docs/cli.md mirror.
-    const EXPECTED_TABLES: usize = 1215;
+    // 1215 -> 1223: `fetch_vcon` in docs/mcp-tools-vcon.md (parameters,
+    // returns and refusals) and `GET /v1/vcon/fetch/:uuid` in
+    // docs/rest-api.md (statuses), four tables, each with its website mirror.
+    // 1223 -> 1224: the "Fetch a stored vCon" capability in
+    // docs/design/surface-capability-matrix.md, which has no mirror.
+    // 1224 -> 1226: the "vCon audio fetch" flag table in
+    // docs/cli-reference.md and its website/content/docs/cli.md mirror.
+    // 1226 -> 1230: the control message table and the leg object table in
+    // docs/vcon.md ("Send a call's audio as RTP") and their site mirror.
+    // 1230 -> 1232: the uuid layout table in docs/vcon.md ("The uuid under a
+    // domain") and its website/content/docs/vcon.md mirror.
+    // 1232 -> 1237: the `vcon_directory_report` parameter and row-field
+    // tables in docs/mcp-tools-vcon.md and their website mirror, and the
+    // "Report a directory of stored vCons" row of
+    // docs/design/surface-capability-matrix.md.
+    // 1237 -> 1239: docs/filter-dsl.md "Values" replaced its one syntax
+    // table with the field-type table and the "When a value needs quotes"
+    // table, in the page and its website/content/docs/filter-dsl.md mirror.
+    const EXPECTED_TABLES: usize = 1239;
 
     let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     let out = std::process::Command::new("git")
@@ -8124,6 +8160,16 @@ fn count_word(n: usize) -> Option<&'static str> {
         "Eighteen",
         "Nineteen",
         "Twenty",
+        "Twenty-one",
+        "Twenty-two",
+        "Twenty-three",
+        "Twenty-four",
+        "Twenty-five",
+        "Twenty-six",
+        "Twenty-seven",
+        "Twenty-eight",
+        "Twenty-nine",
+        "Thirty",
     ]
     .get(n)
     .copied()

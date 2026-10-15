@@ -286,6 +286,7 @@ rule inherits when it does not set its own.
 | `sign_key` | string | -- | The `sign_key` of every encrypting or `sign_only` `[[vcon.rule]]` that sets none. A rule's own value overrides it |
 | `sign_cert` | string | -- | The `sign_cert` of every encrypting `[[vcon.rule]]` that sets none. A rule's own value overrides it |
 | `compress` | string | `none` | The `compress` of every encrypting `[[vcon.rule]]` that sets none: `none` or `gzip`. A rule's own value overrides it |
+| `uuid_domain` | string | -- | A fully qualified host name, such as `pbx.example.com`. When set, every container uuid this process writes, through every door, follows the layout of [draft-ietf-vcon-vcon-core-04 section 4.1.2](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-04#section-4.1.2): the last 62 bits are the high 62 bits of SHA-1 over the name. sipnab hashes the name in lower case without a trailing dot. Unset, sipnab keys the uuid on the node, the dialog and the capture. sipnab refuses at startup a value that is not a host name of two or more labels (exit 1). See [The uuid under a domain](@/docs/vcon.md#the-uuid-under-a-domain) |
 
 ### [[vcon.rule]]
 
@@ -306,6 +307,8 @@ and what they carry.
 | `audio_format` | string | `wav` | The format of the audio an `inline` or `url` rule carries. `wav`: `audio/x-wav`. `opus`: Ogg Opus, `audio/ogg`, at 24 kbit/s per channel; needs a build with the `opus` feature. sipnab refuses any other value, and the key on an `omit` rule, at startup. See [Audio as Ogg Opus](@/docs/vcon.md#audio-as-ogg-opus) |
 | `max_inline_media_mib` | integer | `--vcon-max-inline-media` | The largest audio this rule's containers inline, in MiB; sipnab writes a call above it without its audio, saying so |
 | `live_audio` | boolean | `false` | Serve each matching call's audio while it is in progress on the REST API's `/v1/calls/{call_id}/audio` WebSocket, and list the calls at `/v1/calls/live`. Turns audio retention on. See [Hear a call while it is in progress](@/docs/vcon.md#hear-a-call-while-it-is-in-progress) |
+| `live_rtp` | string | -- | A UDP `host:port`. Send each matching call's audio there while it is in progress, as RTP with an L16 payload at 16 kHz mono, one stream per leg, with JSON `start` and `stop` messages per call. Loopback only, unless the rule sets `live_rtp_allow_remote = true`; sipnab refuses another address, and one that does not resolve, at startup. Turns audio retention on. See [Send a call's audio as RTP](@/docs/vcon.md#send-a-call-s-audio-as-rtp) |
+| `live_rtp_allow_remote` | boolean | `false` | Let `live_rtp` name an address other than loopback. RTP has no encryption or authentication, so anyone on the path can hear the call |
 | `live` | boolean | `false` | On a live capture, write each matching call's container as the call starts and rewrite it in place, with `updated_at`, each time the call changes. No effect with `-I`. See [Follow a call while it is in progress](@/docs/vcon.md#follow-a-call-while-it-is-in-progress) |
 | `encrypt_to` | string or array | -- | A PEM certificate, or a list of them, whose RSA or EC P-256 keys the rule encrypts its containers to: one container with one recipient entry per certificate. Set, the rule writes only the encrypted form of draft-ietf-vcon-vcon-core-04 section 5.3. Needs `sign_key` and `sign_cert`. sipnab refuses an empty list. See [Encrypt what a rule writes](@/docs/vcon.md#encrypt-what-a-rule-writes) |
 | `sign_key` | string | -- | The PEM RSA or EC P-256 private key an encrypting or `sign_only` rule signs with, readable by its owner only. An RSA key signs `RS256`, an EC P-256 key `ES256` |
@@ -1019,16 +1022,16 @@ The vCon forwarder's settings (`sipnab --vcon-forward <SPOOL_DIR>`, see
 | `done` | path | `<SPOOL_DIR>/delivered` | Where a delivered container goes. Must be on the spool's file system. `--vcon-forward-done` overrides it |
 | `failed` | path | `<SPOOL_DIR>/failed` | Where a refused container goes, beside `<name>.error.json`. Must be on the spool's file system. `--vcon-forward-failed` overrides it |
 | `interval` | integer | `5` | Seconds between passes over the spool, 1 to 3600. `--vcon-forward-interval` overrides it |
-| `timeout` | integer | `30` | Seconds to wait to connect, and for each read and write, 1 to 600. `--vcon-forward-timeout` overrides it |
+| `timeout` | integer | `30` | Seconds to wait to connect, and for each read and write, 1 to 600. It also bounds each SCITT registration, its POST and its polling for the receipt. `--vcon-forward-timeout` overrides it |
 | `backoff_first` | integer | `2` | Seconds a container waits after its first failed try, 1 to 4294967295; each failed try doubles the wait. No longer than `backoff_cap`. `--vcon-forward-backoff-first` overrides it |
 | `backoff_cap` | integer | `300` | The longest wait between tries, in seconds, 1 to 4294967295. `--vcon-forward-backoff-cap` overrides it |
 | `max_response_head` | integer | `65536` | The most bytes of a store's status line and headers read, 1 to 4294967295. The forwarder treats an answer with more as no answer and retries the container. `--vcon-forward-max-response-head` overrides it |
 | `max_error_body` | integer | `8192` | The most bytes of a refusal's body a `<name>.error.json` record keeps, 1 to 4294967295. `--vcon-forward-max-error-body` overrides it |
-| `scitt_url` | string | -- | The SCITT transparency service the forwarder registers lifecycle statements with, `vcon_created` and `vcon_sent`, by POSTing each to `<scitt_url>/entries`. Unset, it registers nothing. Needs `scitt_sign_key`, `scitt_sign_cert` and `scitt_issuer`. `--vcon-forward-scitt-url` overrides it |
+| `scitt_url` | string | -- | The SCITT transparency service the forwarder registers lifecycle statements with, `vcon_created` and `vcon_sent`, by POSTing each to `<scitt_url>/entries`. After a `202`, sipnab polls its `Location` for the receipt within `timeout`, and only on the scheme, host and port of this URL. Unset, it registers nothing. Needs `scitt_sign_key`, `scitt_sign_cert` and `scitt_issuer`. `--vcon-forward-scitt-url` overrides it |
 | `scitt_auth_file` | path | -- | File holding one `Header-Name: value` line sent with each registration. Refused when other users can read it. `--vcon-forward-scitt-auth-file` overrides it |
 | `scitt_ca` | path | host bundle | The only CA (PEM) trusted for an `https://` transparency service. `--vcon-forward-scitt-ca` overrides it |
-| `scitt_sign_key` | path | -- | The PEM RSA private key that signs the statements (RS256). Refused when other users can read it: a refusal from this key exits `1`, from the flag `2`. `--vcon-forward-scitt-sign-key` overrides it |
-| `scitt_sign_cert` | path | -- | The PEM certificate chain of `scitt_sign_key`, leaf first, carried in each statement's `x5chain`. `--vcon-forward-scitt-sign-cert` overrides it |
+| `scitt_sign_key` | path | -- | The PEM private key that signs the statements: RSA signs RS256, EC P-256 signs ES256. Refused when other users can read it: a refusal from this key exits `1`, from the flag `2`. `--vcon-forward-scitt-sign-key` overrides it |
+| `scitt_sign_cert` | path | -- | The PEM certificate chain of `scitt_sign_key`, leaf first, carried in each statement's `x5chain`. sipnab refuses a first certificate that is not the key's. `--vcon-forward-scitt-sign-cert` overrides it |
 | `scitt_issuer` | string | -- | The issuer each statement names (`iss`): a URI of 1 to 8192 characters. `--vcon-forward-scitt-issuer` overrides it |
 | `content_type` | string | `"application/json"` | The `Content-Type` of a JSON container: `application/json`, `application/vcon+json` or `application/vcon`. A gzip format container always goes as `application/vcon+gzip`. `--vcon-forward-content-type` overrides it |
 
@@ -1053,6 +1056,10 @@ The vCon fetcher's settings (`sipnab --vcon-fetch <UUID>...`, see
 - A flag replaces its key.
 - With neither, a `kind` other than `generic` supplies the value. Then the
   default applies.
+- A server opted in with `--mcp-allow-vcon-fetch` or `--api-allow-vcon-fetch`
+  reads the same store with these keys alone, for the MCP `fetch_vcon` tool
+  and `GET /v1/vcon/fetch/:uuid`
+  ([Fetch from an agent or a REST client](@/docs/vcon.md#fetch-from-an-agent-or-a-rest-client)).
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
@@ -1062,8 +1069,8 @@ The vCon fetcher's settings (`sipnab --vcon-fetch <UUID>...`, see
 | `ca` | path | host bundle | The only CA (PEM) trusted for an `https://` store. `--vcon-fetch-ca` overrides it |
 | `extra_ca` | path | -- | A CA (PEM) trusted for an `https://` store in addition to the host's CA bundle. Refused beside `ca`. `--vcon-fetch-ca` and `--vcon-fetch-extra-ca` each replace both keys |
 | `decrypt_key` | path | -- | The RSA private key (PEM, readable by its owner only) that decrypts an encrypted container. `--vcon-fetch-decrypt-key` overrides it |
-| `signer_ca` | path | -- | The CA (PEM) a decrypted container's signing certificate must chain to, through the intermediates in its `x5c`, every certificate within its validity period; `system` for the host's CA bundle. Needs `decrypt_key`. `--vcon-fetch-signer-ca` overrides it |
-| `signer_sha256` | string | -- | The SHA-256 fingerprint the signing certificate of a decrypted container must have: 64 hex digits, plain or colon-separated, either case. Needs `decrypt_key`. `--vcon-fetch-signer-sha256` overrides it |
+| `signer_ca` | path | -- | The CA (PEM) a signed or decrypted container's signing certificate must chain to, through the intermediates in its `x5c`, every certificate within its validity period; `system` for the host's CA bundle. Needs no key for a signed container; an encrypted one needs `decrypt_key`. `--vcon-fetch-signer-ca` overrides it |
+| `signer_sha256` | string | -- | The SHA-256 fingerprint the signing certificate of a signed or decrypted container must have: 64 hex digits, plain or colon-separated, either case. Needs no key for a signed container; an encrypted one needs `decrypt_key`. `--vcon-fetch-signer-sha256` overrides it |
 | `timeout` | integer | `30` | Seconds to wait to connect, and for each read and write, 1 to 600. `--vcon-fetch-timeout` overrides it |
 | `max_size` | integer | `67108864` | The largest answer read for one container, in bytes, 1 to 4294967295. `--vcon-fetch-max-size` overrides it |
 | `max_response_head` | integer | `65536` | The most bytes of a store's status line and headers read, 1 to 4294967295. `--vcon-fetch-max-response-head` overrides it |

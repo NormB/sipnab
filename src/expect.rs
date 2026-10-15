@@ -1558,6 +1558,21 @@ mod tests {
         Ok(())
     }
 
+    /// A `filter:` scope takes a bare value: `call_id == b@x` scopes the rule
+    /// to the call the quoted `call_id == 'b@x'` does.
+    #[test]
+    fn a_filter_scope_takes_a_bare_value() -> Result<(), TestError> {
+        let calls = [("a@x", Some(200)), ("b@x", Some(488))];
+        for scope in ["filter:call_id == b@x", "filter:call_id == 'b@x'"] {
+            let mut r = rule("count", Op::Eq, 1.0);
+            r.scope = Some(scope.to_string());
+            let report = run(&calls, &[r])?;
+            assert_eq!(report.results[0].observed, Some(1.0), "{scope}");
+            assert_eq!(report.results[0].verdict, Verdict::Pass, "{scope}");
+        }
+        Ok(())
+    }
+
     /// A count of zero over an empty capture is unevaluable, not a pass.
     ///
     /// The one metric whose value exists whatever the population is, and the

@@ -154,9 +154,15 @@ impl std::fmt::Debug for Actions {
 impl From<ActionPolicy> for Actions {
     /// The policy alone, with no service: nothing it enables can act.
     fn from(policy: ActionPolicy) -> Self {
+        // Every field by name, each under its declaration's cfg. A
+        // `..Self::default()` here is a no-op struct update once the features
+        // that add `service` are off, which clippy denies; a field added
+        // later without one here is a compile error rather than a silent
+        // default.
         Self {
             policy,
-            ..Self::default()
+            #[cfg(all(unix, any(feature = "api", feature = "mcp")))]
+            service: None,
         }
     }
 }

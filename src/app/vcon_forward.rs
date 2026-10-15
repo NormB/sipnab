@@ -1706,7 +1706,7 @@ impl Forwarder {
             if stop() {
                 report.stopped = true;
             } else if self.waiting.get(&name).is_none_or(|b| b.next <= now) {
-                let outcome = self.forward_one(&name);
+                let outcome = self.forward_one(&name, stop);
                 if let Outcome::Halted(why) = outcome {
                     report.halted = Some(why);
                 } else {
@@ -1749,7 +1749,7 @@ impl Forwarder {
     }
 
     /// Send one container and move it by the answer.
-    fn forward_one(&self, name: &str) -> Outcome {
+    fn forward_one(&self, name: &str, stop: &dyn Fn() -> bool) -> Outcome {
         let path = self.settings.spool.join(name);
         let (bytes, before) = match read_container(&path) {
             Ok(read) => read,
@@ -1777,7 +1777,7 @@ impl Forwarder {
             verdict => self.act_on(name, &before, verdict, &answer, "POST", url),
         };
         if outcome == Outcome::Delivered {
-            self.register_lifecycle(name, &bytes);
+            self.register_lifecycle(name, &bytes, stop);
         }
         outcome
     }
@@ -1785,8 +1785,9 @@ impl Forwarder {
     /// Register the delivered container's lifecycle statements, when a
     /// transparency service is set, and write what it answered to
     /// `<name>.scitt` beside the container. A registration that fails is
-    /// logged and recorded; the delivery stands.
-    fn register_lifecycle(&self, name: &str, bytes: &[u8]) {
+    /// logged and recorded; the delivery stands. Once `stop` says so, a
+    /// receipt being polled is left pending and nothing more is sent.
+    fn register_lifecycle(&self, name: &str, bytes: &[u8], stop: &dyn Fn() -> bool) {
         let Some(scitt) = &self.settings.scitt else {
             return;
         };
@@ -1796,6 +1797,7 @@ impl Forwarder {
             self.settings.timeout,
             bytes,
             &self.settings.url.to_string(),
+            stop,
         );
         let record_name = format!("{name}{}", crate::app::vcon_scitt::RECORD_SUFFIX);
         if let Err(e) = write_atomically(
@@ -2421,7 +2423,7 @@ fn pass_outcome(report: &PassReport, once: bool) -> Option<i32> {
 
 /// Sleep for `interval` in short steps. Returns `false` as soon as `stop`
 /// says so.
-fn sleep_unless_stopped(interval: Duration, stop: &dyn Fn() -> bool) -> bool {
+pub(crate) fn sleep_unless_stopped(interval: Duration, stop: &dyn Fn() -> bool) -> bool {
     let until = Instant::now() + interval;
     while Instant::now() < until {
         if stop() {

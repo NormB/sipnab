@@ -254,6 +254,11 @@ capture interface (`input_origin: wire`) never reached the listener: it is
 `port-gated-only` on every run, `--hep-auth-mode hmac` included. A run with
 `-d` and `-L` holds both kinds side by side.
 
+`--hep-parse` does not change this. A HEP datagram it unwraps off a capture
+interface or a file reports `input_origin: hep`, because the HEP sender wrote
+the addresses inside it, but it reached no listener and nothing checked its
+secret. It is `port-gated-only` too.
+
 The endpoints are the call's streams, so the tool answers on a media-relay host
 that never saw the SIP dialog. `dialog_seen` is then `false` and
 `dialog_absent` says why, as described under [`rtp_stats`](mcp-tools-core.md#rtp_stats).

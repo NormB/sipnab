@@ -714,7 +714,9 @@ fn lists() -> Result<Lists, TestError> {
 // e.to_string(), }` 11 -> 12, the `[vcon_input]` validate() call in
 // load_config, and `PlanError::refused(origin, problem)` 3 -> 4, the
 // bootstrap::reader_keys refusal.
-const EXPECTED_UNRESOLVED: usize = 82;
+// 82 -> 83: src/app/bootstrap.rs `warn!("{notice}")` 1 -> 2, the
+// live_rtp file notice in warn_live_rtp.
+const EXPECTED_UNRESOLVED: usize = 83;
 
 /// How many distinct templates the scope prints (informational lines
 /// excluded). Pinned with `==` so a new or removed message is a decision.
@@ -763,7 +765,21 @@ const EXPECTED_UNRESOLVED: usize = 82;
 // `--vcon-resign requires the 'vcon' feature (not compiled in)`, and
 // src/app/vcon_resign.rs `'{}' is {len} bytes, over the {cap}-byte limit
 // for one container`. Nothing removed.
-const EXPECTED_TEMPLATES: usize = 473;
+// 473 -> 484: --vcon-audio-fetch. src/app/bootstrap.rs `--vcon-audio-fetch:
+// {reason}` and `--vcon-audio-fetch requires the 'vcon' feature (not
+// compiled in)`; src/app/vcon_audio_fetch.rs 6 (an output that exists, a
+// non-sha512 content_hash, audio that is not WAV or Ogg, a JWE cty that is
+// not the mediatype, a url with no local file name, a url that is not
+// https); src/app/vcon_fetch.rs get_body 3 (`{url} answered {}`, the size
+// limit, the short body). `--vcon-fetch-out '{}': not a directory` became
+// `{flag} '{}': not a directory`, shared with --vcon-audio-fetch-out.
+// 484 -> 486: src/app/bootstrap.rs `[[vcon.rule]] '{}' live_rtp = '{}' sends
+// nothing in this run: ...` and src/app/batch.rs `live_rtp: {} datagram(s)
+// could not be sent to their target`. Nothing removed.
+// 486 -> 487: src/config.rs `[vcon] uuid_domain: {value:?} {why}`, the
+// refusal of a value that is not a fully qualified host name. Nothing
+// removed.
+const EXPECTED_TEMPLATES: usize = 487;
 
 // ---------------------------------------------------------------------------
 // The page gates

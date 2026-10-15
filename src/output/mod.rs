@@ -34,6 +34,8 @@
 //! - `vcon_jose` — the signed and encrypted forms of a container: JWS then
 //!   JWE, as draft-ietf-vcon-vcon-core-04 section 5.3 requires
 //!   (feature-gated: `vcon`)
+//! - `vcon_siprec` — a SIPREC recording session's RFC 7865 metadata as the
+//!   recorded call's parties and a stream map (feature-gated: `vcon`)
 //! - `vcon_schema` — a container checked against the vendored working-group
 //!   schema, with the one deviation sipnab emits on purpose named rather than
 //!   waved through (feature-gated: `vcon`)
@@ -54,6 +56,16 @@ pub mod fail2ban;
 pub mod group;
 pub mod hexdump;
 pub mod json;
+#[cfg(feature = "vcon")]
+pub mod live_rtp;
+/// A build without the vCon exporter forks no live audio. The type exists so
+/// an export rule has one shape in every build, as `vcon_jose` does.
+#[cfg(not(feature = "vcon"))]
+pub mod live_rtp {
+    /// A rule's live RTP target, which this build cannot have.
+    #[derive(Debug, Clone)]
+    pub enum Target {}
+}
 pub mod model;
 pub mod persistence;
 pub mod prometheus;
@@ -84,6 +96,8 @@ pub mod vcon_jose {
 }
 #[cfg(feature = "vcon")]
 pub mod vcon_schema;
+#[cfg(feature = "vcon")]
+pub mod vcon_siprec;
 #[cfg(feature = "api")]
 pub mod websocket;
 pub mod wireshark;

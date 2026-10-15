@@ -46,6 +46,7 @@ pub mod rtcp;
 pub mod srtp;
 pub mod stream;
 pub mod stream_store;
+pub mod timeline;
 pub mod wav;
 
 /// Quick check whether a UDP payload is likely an RTP packet.

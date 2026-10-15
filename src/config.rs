@@ -158,6 +158,7 @@ static KNOWN_KEYS: LazyLock<HashMap<&'static str, &'static [&'static str]>> = La
             "sign_key",
             "sign_cert",
             "compress",
+            "uuid_domain",
         ]
         .as_slice(),
     );
@@ -643,8 +644,9 @@ pub struct VconForwardConfig {
     /// [`FORWARD_MAX_ERROR_BODY`].
     pub max_error_body: Option<u64>,
     /// The SCITT transparency service that lifecycle statements are
-    /// registered with, by SCRAPI (`<url>/entries`). Unset, nothing is
-    /// registered. `--vcon-forward-scitt-url` overrides it.
+    /// registered with, by SCRAPI (`<url>/entries`); a `202`'s `Location`
+    /// is polled for the receipt within `timeout`, on this URL's origin only.
+    /// Unset, nothing is registered. `--vcon-forward-scitt-url` overrides it.
     pub scitt_url: Option<String>,
     /// The file holding the one `Header-Name: value` line that authenticates
     /// to the transparency service. `--vcon-forward-scitt-auth-file`
@@ -653,8 +655,9 @@ pub struct VconForwardConfig {
     /// The only CA file trusted for an `https://` transparency service.
     /// `--vcon-forward-scitt-ca` overrides it.
     pub scitt_ca: Option<PathBuf>,
-    /// The PEM RSA private key the statements are signed with, readable by
-    /// its owner only. `--vcon-forward-scitt-sign-key` overrides it.
+    /// The PEM private key the statements are signed with, RSA (RS256) or
+    /// EC P-256 (ES256), readable by its owner only.
+    /// `--vcon-forward-scitt-sign-key` overrides it.
     pub scitt_sign_key: Option<PathBuf>,
     /// The PEM certificate chain of `scitt_sign_key`, leaf first.
     /// `--vcon-forward-scitt-sign-cert` overrides it.
@@ -987,8 +990,8 @@ pub struct VconFetchConfig {
     /// The RSA private key that decrypts an encrypted container; readable by
     /// its owner only. `--vcon-fetch-decrypt-key` overrides it.
     pub decrypt_key: Option<PathBuf>,
-    /// The CA (PEM) a decrypted container's signing certificate must chain
-    /// to, or `system` for the host's CA bundle. `--vcon-fetch-signer-ca`
+    /// The CA (PEM) a signed or decrypted container's signing certificate
+    /// must chain to, or `system` for the host's CA bundle. `--vcon-fetch-signer-ca`
     /// overrides it.
     pub signer_ca: Option<PathBuf>,
     /// The SHA-256 fingerprint the signing certificate must have, hex, with
@@ -1517,6 +1520,76 @@ pub struct VconConfig {
     pub sign_cert: Option<std::path::PathBuf>,
     /// The `compress` of every encrypting `[[vcon.rule]]` that sets none.
     pub compress: Option<String>,
+    /// A fully qualified host name. When set, every container uuid this
+    /// process mints follows the layout of draft-ietf-vcon-vcon-core-04
+    /// section 4.1.2, with the high 62 bits of SHA-1 over this name in
+    /// `rand_b`. Unset keeps the node-keyed uuid. See
+    /// [`normalize_uuid_domain`] for what is accepted.
+    pub uuid_domain: Option<String>,
+}
+
+/// The longest `[vcon] uuid_domain`, in characters, without a trailing dot
+/// ([RFC 1035 section 2.3.4](https://www.rfc-editor.org/rfc/rfc1035.html#section-2.3.4)
+/// allows 255 octets on the wire, which is 253 characters of text).
+pub const MAX_UUID_DOMAIN_NAME: usize = 253;
+
+/// The longest label of a `[vcon] uuid_domain`, in characters
+/// ([RFC 1035 section 2.3.4](https://www.rfc-editor.org/rfc/rfc1035.html#section-2.3.4)).
+pub const MAX_UUID_DOMAIN_LABEL: usize = 63;
+
+/// The one spelling of a `[vcon] uuid_domain`, or why it is refused.
+///
+/// Accepted: a fully qualified host name, written in ASCII (an
+/// internationalized name in its `xn--` form), of two or more labels. Each
+/// label is 1 to [`MAX_UUID_DOMAIN_LABEL`] letters, digits and hyphens, and
+/// does not start or end with a hyphen
+/// ([RFC 1123 section 2.1](https://www.rfc-editor.org/rfc/rfc1123.html#section-2.1)).
+/// The whole name is at most [`MAX_UUID_DOMAIN_NAME`] characters. The last
+/// label is not all digits, which refuses an IPv4 address.
+///
+/// DNS names compare without regard to case, and a trailing dot names the
+/// same host, so the name is kept in lower case without it: `PBX.Example.COM.`
+/// and `pbx.example.com` seed one set of uuids.
+///
+/// # Errors
+///
+/// The reason, phrased to follow the key and the value.
+pub fn normalize_uuid_domain(value: &str) -> Result<String, &'static str> {
+    let name = value.strip_suffix('.').unwrap_or(value);
+    if name.is_empty() {
+        return Err("is empty");
+    }
+    if name.len() > MAX_UUID_DOMAIN_NAME {
+        return Err("is longer than 253 characters");
+    }
+    let labels: Vec<&str> = name.split('.').collect();
+    if labels.len() < 2 {
+        return Err("is a single label; a fully qualified host name has two or more");
+    }
+    for label in &labels {
+        if label.is_empty() {
+            return Err("has an empty label");
+        }
+        if label.len() > MAX_UUID_DOMAIN_LABEL {
+            return Err("has a label longer than 63 characters");
+        }
+        if !label
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'-')
+        {
+            return Err("has a character other than an ASCII letter, a digit, a hyphen or a dot");
+        }
+        if label.starts_with('-') || label.ends_with('-') {
+            return Err("has a label that starts or ends with a hyphen");
+        }
+    }
+    if labels
+        .last()
+        .is_some_and(|l| l.bytes().all(|b| b.is_ascii_digit()))
+    {
+        return Err("is an address, not a host name");
+    }
+    Ok(name.to_ascii_lowercase())
 }
 
 /// A path, or a list of them: what `encrypt_to` takes in `[vcon]` and
@@ -1546,7 +1619,8 @@ impl PathList {
 pub const VCON_COMPRESSIONS: [&str; 2] = ["none", "gzip"];
 
 impl VconConfig {
-    /// Refuse a section-level `compress` other than [`VCON_COMPRESSIONS`].
+    /// Refuse a section-level `compress` other than [`VCON_COMPRESSIONS`],
+    /// and a `uuid_domain` [`normalize_uuid_domain`] refuses.
     /// The section's paths are checked by [`Config::validate_paths`], and
     /// the keys and certificates when a rule that encrypts loads them.
     ///
@@ -1563,6 +1637,11 @@ impl VconConfig {
                  or remove the key"
                     .into(),
             ));
+        }
+        if let Some(value) = &self.uuid_domain {
+            normalize_uuid_domain(value).map_err(|why| {
+                crate::Error::ConfigInvalid(format!("[vcon] uuid_domain: {value:?} {why}"))
+            })?;
         }
         match &self.compress {
             Some(value) if !VCON_COMPRESSIONS.contains(&value.as_str()) => {
@@ -1650,6 +1729,17 @@ pub struct VconRuleConfig {
     /// API's `/v1/calls/{call_id}/audio` WebSocket. Default `false`.
     #[serde(default)]
     pub live_audio: Option<bool>,
+    /// A UDP `host:port` that each matching call's decoded audio is sent to
+    /// as it is captured: RTP with an L16 payload, 16 kHz mono, one stream
+    /// per leg, and a JSON start and stop message per call. A loopback
+    /// address unless `live_rtp_allow_remote` is set.
+    #[serde(default)]
+    pub live_rtp: Option<String>,
+    /// Let `live_rtp` name an address other than loopback. Plain RTP is not
+    /// encrypted or authenticated, so the audio crosses the network readable
+    /// by anyone on the path. Default `false`.
+    #[serde(default)]
+    pub live_rtp_allow_remote: Option<bool>,
     /// On a live capture, write each matching call's container as it starts
     /// and rewrite it in place, with `updated_at`, as the call changes.
     /// Default `false`: one write, once the call has ended or gone idle.
@@ -4232,6 +4322,81 @@ mod tests {
 
     use super::*;
     use std::io::Write;
+
+    // ── [vcon] uuid_domain ─────────────────────────────────────────────
+
+    /// A fully qualified host name is accepted in one spelling: lower case,
+    /// without the root's trailing dot. Anything else is refused with the
+    /// reason.
+    #[test]
+    fn a_uuid_domain_is_a_fully_qualified_host_name() {
+        for (given, kept) in [
+            ("pbx.example.com", "pbx.example.com"),
+            ("PBX.Example.COM.", "pbx.example.com"),
+            ("a-1.b2.example", "a-1.b2.example"),
+            ("xn--bcher-kva.example", "xn--bcher-kva.example"),
+        ] {
+            assert_eq!(normalize_uuid_domain(given).as_deref(), Ok(kept), "{given}");
+        }
+        let long_label = format!("{}.example.com", "a".repeat(64));
+        let long_name = format!(
+            "{}.com",
+            ["a", "b", "c"].map(|c| c.repeat(63)).join(".") + "." + &"d".repeat(58)
+        );
+        assert_eq!(long_name.len(), MAX_UUID_DOMAIN_NAME + 1);
+        // The reasons name the ceilings they enforce.
+        assert!(
+            normalize_uuid_domain(&long_name)
+                .is_err_and(|why| why.contains(&MAX_UUID_DOMAIN_NAME.to_string()))
+        );
+        assert!(
+            normalize_uuid_domain(&long_label)
+                .is_err_and(|why| why.contains(&MAX_UUID_DOMAIN_LABEL.to_string()))
+        );
+        let at_limit = &long_name[..long_name.len() - 5];
+        assert!(normalize_uuid_domain(&format!("{at_limit}.com")).is_ok());
+        for bad in [
+            "",
+            ".",
+            " pbx.example.com",
+            "pbx",
+            "pbx.",
+            "10.0.0.1",
+            "under_score.example.com",
+            "-pbx.example.com",
+            "pbx-.example.com",
+            "pbx..example.com",
+            "pbx.example.com..",
+            "*.example.com",
+            "pbx.example.com/x",
+            "p\u{e9}x.example.com",
+            &long_label,
+            &long_name,
+        ] {
+            assert!(normalize_uuid_domain(bad).is_err(), "{bad:?} accepted");
+        }
+    }
+
+    /// `[vcon] validate` refuses a bad `uuid_domain`, naming the key.
+    #[test]
+    fn vcon_validate_names_a_bad_uuid_domain() {
+        let config = VconConfig {
+            uuid_domain: Some("pbx".into()),
+            ..VconConfig::default()
+        };
+        let message = config.validate().err().map(|e| e.to_string());
+        assert!(
+            message
+                .as_deref()
+                .is_some_and(|m| m.contains("[vcon] uuid_domain")),
+            "{message:?}"
+        );
+        let good = VconConfig {
+            uuid_domain: Some("pbx.example.com".into()),
+            ..VconConfig::default()
+        };
+        assert!(good.validate().is_ok());
+    }
 
     // ── parse_portrange ────────────────────────────────────────────────
 

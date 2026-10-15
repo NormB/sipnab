@@ -551,6 +551,19 @@ impl McpSession {
     /// agent can tell "not permitted on this server" from "this build cannot
     /// do it at all".
     pub fn list_tools(&mut self) -> Result<Vec<String>, TestError> {
+        let mut names: Vec<String> = self
+            .tool_definitions()?
+            .iter()
+            .filter_map(|t| t["name"].as_str().map(str::to_string))
+            .collect();
+        names.sort();
+        Ok(names)
+    }
+
+    /// Every tool definition `tools/list` returns, as the server sent it:
+    /// name, description, input schema and, when output schemas are on, the
+    /// output schema.
+    pub fn tool_definitions(&mut self) -> Result<Vec<serde_json::Value>, TestError> {
         let id = self.next_id;
         self.next_id += 1;
         {
@@ -576,14 +589,10 @@ impl McpSession {
                 continue;
             };
             if msg["id"] == serde_json::json!(id) {
-                let mut names: Vec<String> = msg["result"]["tools"]
+                return Ok(msg["result"]["tools"]
                     .as_array()
-                    .unwrap_or(&Vec::new())
-                    .iter()
-                    .filter_map(|t| t["name"].as_str().map(str::to_string))
-                    .collect();
-                names.sort();
-                return Ok(names);
+                    .cloned()
+                    .unwrap_or_default());
             }
         }
     }

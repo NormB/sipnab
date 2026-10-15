@@ -500,9 +500,13 @@ static SPECS: &[Spec] = &[
     (
         "filter",
         Kind::Text {
-            accept: &["method == \"INVITE\"", "method == \"BYE\""],
+            accept: &[
+                "method == \"INVITE\"",
+                "method == \"BYE\"",
+                "method == INVITE",
+            ],
             reject: &[
-                ("method == INVITE", 2),
+                ("ua == Friendly Scanner", 2),
                 ("mos < 3.5", 2),
                 ("x", 2),
                 ("", 2),
@@ -586,9 +590,9 @@ static SPECS: &[Spec] = &[
     (
         "export-vcon-when",
         Kind::Text {
-            accept: &["method == \"INVITE\""],
+            accept: &["method == \"INVITE\"", "method == INVITE"],
             reject: &[
-                ("method == INVITE", 2),
+                ("ua == Friendly Scanner", 2),
                 ("mos < 3.5", 2),
                 ("x", 2),
                 ("", 2),
@@ -1393,6 +1397,7 @@ static SPECS: &[Spec] = &[
         &[],
     ),
     ("api-allow-relay-query", Kind::Switch, &[]),
+    ("api-allow-vcon-fetch", Kind::Switch, &[]),
     (
         "api-file-root",
         Kind::Text {
@@ -1790,6 +1795,7 @@ static SPECS: &[Spec] = &[
     ("retain-audio", Kind::Switch, &[]),
     ("mcp-allow-open-capture", Kind::Switch, &[]),
     ("mcp-allow-relay-query", Kind::Switch, &[]),
+    ("mcp-allow-vcon-fetch", Kind::Switch, &[]),
     ("mcp-allow-tls-capture", Kind::Switch, &[]),
     (
         "node-name",
@@ -2636,6 +2642,71 @@ static SPECS: &[Spec] = &[
             "/nonexistent/key",
             "--vcon-resign-cert",
             "/nonexistent/cert",
+        ],
+    ),
+    (
+        "vcon-audio-fetch",
+        Kind::Text {
+            accept: &["x", " ", "0", "-1"],
+            reject: &[("", 2)],
+        },
+        &["--vcon-audio-fetch-out", "/nonexistent/out"],
+    ),
+    (
+        "vcon-audio-fetch-out",
+        Kind::Text {
+            accept: &["x", " ", "0", "-1"],
+            reject: &[("", 2)],
+        },
+        &["--vcon-audio-fetch", "/nonexistent/in.vcon.json"],
+    ),
+    (
+        "vcon-audio-fetch-local",
+        Kind::Switch,
+        &[
+            "--vcon-audio-fetch",
+            "/nonexistent/in.vcon.json",
+            "--vcon-audio-fetch-out",
+            "/nonexistent/out",
+        ],
+    ),
+    (
+        "vcon-audio-fetch-ca",
+        Kind::Text {
+            accept: &["x", " ", "0", "-1"],
+            reject: &[("", 2)],
+        },
+        &[
+            "--vcon-audio-fetch",
+            "/nonexistent/in.vcon.json",
+            "--vcon-audio-fetch-out",
+            "/nonexistent/out",
+        ],
+    ),
+    (
+        "vcon-audio-fetch-extra-ca",
+        Kind::Text {
+            accept: &["x", " ", "0", "-1"],
+            reject: &[("", 2)],
+        },
+        &[
+            "--vcon-audio-fetch",
+            "/nonexistent/in.vcon.json",
+            "--vcon-audio-fetch-out",
+            "/nonexistent/out",
+        ],
+    ),
+    (
+        "vcon-audio-fetch-max-size",
+        Kind::Int {
+            lo: 1,
+            hi: 4294967295,
+        },
+        &[
+            "--vcon-audio-fetch",
+            "/nonexistent/in.vcon.json",
+            "--vcon-audio-fetch-out",
+            "/nonexistent/out",
         ],
     ),
     (

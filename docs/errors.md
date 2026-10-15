@@ -1560,6 +1560,18 @@ The `[vcon]` section's `compress` key names a compression sipnab does not write.
 
 **Exit code:** 1.
 
+### `[vcon] uuid_domain: {value:?} {why}`
+
+The `[vcon]` section's `uuid_domain` key is not a fully qualified host name.
+
+- `{value:?}` is the value in the file.
+- `{why}` says which rule it breaks: it is empty, it has one label, a label is empty or longer than `MAX_UUID_DOMAIN_LABEL` (63) characters, the name is longer than `MAX_UUID_DOMAIN_NAME` (253) characters, it has a character other than an ASCII letter, a digit, a hyphen or a dot, a label starts or ends with a hyphen, or it is an IPv4 address.
+- The printed line starts with `invalid config value: `.
+
+**What to do:** Set `uuid_domain` to a host name such as `node1.pbx.example.com`, writing an internationalized name in its `xn--` form, or remove the key. See [The uuid under a domain](vcon.md#the-uuid-under-a-domain).
+
+**Exit code:** 1.
+
 ### `[vcon_forward] {}: {e}`
 
 A whole-number `[vcon_forward]` key is out of range.
@@ -1806,6 +1818,29 @@ A rule with `live_audio = true` serves call audio on the REST API. `--api` binds
 **What to do:** Bind `--api` to `127.0.0.1`, or give `--api-tls-cert`, `--api-tls-key` and `--api-signing-key-file`, and mint the transcriber a token with `--token-scope audio`.
 
 **Exit code:** 1.
+
+### `[[vcon.rule]] '{}' live_rtp = '{}' sends nothing in this run: only a headless run (-N) without --cores forks live audio`
+
+A rule names a `live_rtp` target, and the run is a `--cores` run or the terminal UI. Neither sends live audio.
+
+- The first `{}` is the rule's name, the second its target.
+- See [Send a call's audio as RTP](vcon.md#send-a-calls-audio-as-rtp).
+
+**What to do:** Run with `-N` and without `--cores` to send the audio.
+
+**Exit code:** None. The run continues.
+
+### `live_rtp: {} datagram(s) could not be sent to their target`
+
+At the end of the run, the count of RTP packets and control messages a `live_rtp` rule could not send. A send fails when the target's port refuses it, or when the socket stays full for 20 ms.
+
+- `{}` is the count.
+- The receiver sees a gap in the sequence numbers of a leg that lost a packet.
+- See [Send a call's audio as RTP](vcon.md#send-a-calls-audio-as-rtp).
+
+**What to do:** Check that a program is reading the target's port, and that it keeps up with the audio.
+
+**Exit code:** None. The run continues.
 
 ### `[[vcon.enrich]] name '{name}' is not usable: a name is 1 to {} ASCII letters, digits, '-' or '_', starting with a letter or digit`
 
@@ -3895,9 +3930,9 @@ sipnab built the vCon container for `{call_id}` but could not convert it to JSON
 
 **Exit code:** 1.
 
-### `--vcon-fetch-out '{}': not a directory`
+### `{flag} '{}': not a directory`
 
-The path given to `--vcon-fetch-out`, where the fetcher writes the containers it fetches, exists and is not a directory. `{}` is the path.
+The path given to `{flag}` exists and is not a directory. `{flag}` is `--vcon-fetch-out`, where the fetcher writes the containers it fetches, or `--vcon-audio-fetch-out`, where `--vcon-audio-fetch` writes the audio. `{}` is the path.
 
 **What to do:** Name a directory, or a path that does not exist yet. sipnab creates a missing directory with mode 0700.
 
@@ -3994,6 +4029,104 @@ The forwarder delivered the container `{name}`, and the transparency service at 
 `--vcon-resign` names an input over the 64 MiB limit for one vCon container, the limit `-I` applies too. sipnab reads nothing of it. The message follows `--vcon-resign: `.
 
 **What to do:** Check the file is the signed vCon you meant.
+
+**Exit code:** 1.
+
+### `--vcon-audio-fetch requires the 'vcon' feature (not compiled in)`
+
+`--vcon-audio-fetch` reads back the audio a vCon names by `url`. This build does not include the `vcon` feature, so it cannot read a vCon.
+
+**What to do:** Use a sipnab build that includes the `vcon` feature.
+
+**Exit code:** 2.
+
+### `--vcon-audio-fetch: {reason}`
+
+`--vcon-audio-fetch` did not write a recording, or any. `{reason}` is why. sipnab prints one line for each recording it refused, and writes the others. It is one of these:
+
+- `--vcon-key: ...`, a `[vcon_input]` or `--vcon-signer-ca` file that does not read, or `--vcon-audio-fetch-ca: ...` or `--vcon-audio-fetch-extra-ca: ...` for a CA file that does not load. Exit code 2.
+- `--vcon-audio-fetch-out '...': ...`, an output directory sipnab cannot create. Exit code 2.
+- `'FILE': ...`, when the container does not open: it is not a vCon, a signature does not verify, the key does not decrypt it, or the signer checks refuse its signer. Exit code 1.
+- `'FILE': the vCon has no uuid to name a file by`, or `'FILE': no recording in the vCon names a url`. Exit code 1.
+- `dialog N: ...`, naming the recording's index in `dialog`, when sipnab refused that recording. The entries below list the reasons. Exit code 1.
+  - `names no mediatype, so sipnab cannot tell what audio it is`, or `mediatype "..." is not audio sipnab writes (audio/x-wav, audio/ogg)`.
+  - `names no content_hash, so the file cannot be checked`, or `content_hash does not match the file: the file is not the one the vCon names`. sipnab checks the hash before it decrypts the file or writes anything.
+  - `the file is a JWE and did not decrypt: ...`: the file names no recipient that the key that opened the container decrypts.
+  - a connection, TLS or HTTP refusal from the server that holds the file.
+
+**What to do:** Act on the reason. A file whose hash does not match is not the one the vCon names: fetch it again from where your storage keeps it, and do not use it.
+
+**Exit code:** 1 or 2, as listed.
+
+### `'{}' exists; sipnab never replaces it: name a new directory`
+
+`--vcon-audio-fetch` found a file at the path it writes a recording to, `<uuid>-dialog<N>.wav` or `.ogg` in `--vcon-audio-fetch-out`. `{}` is the path. sipnab fetches nothing for that recording and keeps the file. The message follows `--vcon-audio-fetch: dialog N: `.
+
+**What to do:** Name a new `--vcon-audio-fetch-out` directory, or move the file away.
+
+**Exit code:** 1.
+
+### `has content_hash {expected:?}, and sipnab checks sha512 only`
+
+The recording's `content_hash` names a hash algorithm other than SHA-512. sipnab checks every file it fetches before it reads it, and checks SHA-512 only, the algorithm draft-ietf-vcon-vcon-core-04 section 2.2 names. sipnab writes nothing for the recording. The message follows `--vcon-audio-fetch: dialog N: URL: `.
+
+**What to do:** Check the file with a tool that supports the algorithm the vCon names.
+
+**Exit code:** 1.
+
+### `the audio is not {} (it does not start with {:?})`
+
+The file the recording names matched its `content_hash`, and, decrypted when it was a JWE, it is not a WAV file (`RIFF`) or an Ogg file (`OggS`) as its `mediatype` says. sipnab writes nothing for the recording. The message follows `--vcon-audio-fetch: dialog N: URL: `.
+
+**What to do:** Check what the vCon's producer wrote at that URL.
+
+**Exit code:** 1.
+
+### `the file is a JWE whose cty is {cty:?}, not the mediatype {mediatype:?}`
+
+The file the recording names is a JWE, and the media type in its `cty` header is not the recording's `mediatype`. sipnab does not decrypt it. The message follows `--vcon-audio-fetch: dialog N: URL: `.
+
+**What to do:** Check what the vCon's producer wrote at that URL.
+
+**Exit code:** 1.
+
+### `url {url:?} ends in no file name sipnab reads beside the container`
+
+With `--vcon-audio-fetch-local`, sipnab reads the file named by the last segment of the recording's `url` from the directory that holds the vCon. That segment is empty, starts with a dot, or holds a character other than ASCII letters, digits, `-`, `_` and `.`, so it could name a file elsewhere. sipnab reads nothing for the recording.
+
+**What to do:** Fetch the file from the URL, without `--vcon-audio-fetch-local`.
+
+**Exit code:** 1.
+
+### `url {url:?} is not https://, and draft-ietf-vcon-vcon-core-04 section 2.4.1 says "HTTPS MUST be used for retrieval"; nothing was fetched`
+
+The recording's `url` is not an `https://` URL. sipnab does not connect. A `[[vcon.rule]]` with `audio = "url"` refuses an `audio_url_base` that is not `https://`, so sipnab writes no such URL itself.
+
+**What to do:** If the file is beside the container, read it with `--vcon-audio-fetch-local`. Otherwise fetch it from the URL some other way, and check its SHA-512 against the `content_hash`.
+
+**Exit code:** 1.
+
+### `{url} answered {}`
+
+The server that holds a recording's file answered `GET` with a status other than `2xx`. `{}` is the status. sipnab writes nothing for the recording. The message follows `--vcon-audio-fetch: dialog N: `.
+
+**What to do:** Check the file is at that URL, and that the server serves it without a credential.
+
+**Exit code:** 1.
+
+### `{url}: the answer is larger than {} bytes ({max_size_setting})`
+
+The file a recording names is larger than the limit. `{}` is the limit and `{max_size_setting}` the flag that sets it, `--vcon-audio-fetch-max-size`. sipnab writes nothing for the recording.
+
+**What to do:** Raise `--vcon-audio-fetch-max-size`, if the file is the size you expect for the call.
+
+**Exit code:** 1.
+
+### `{url}: {problem}, so the file is not whole`
+
+The server that holds a recording's file closed the connection before it sent the length it declared. `{problem}` gives the two lengths. sipnab writes nothing for the recording.
+
+**What to do:** Run the command again. If it recurs, check the server.
 
 **Exit code:** 1.
 

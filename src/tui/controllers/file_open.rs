@@ -29,16 +29,17 @@ pub(in crate::tui) fn open_file_dialog(app: &mut App) {
 }
 
 /// True if `name` is a capture file the browser should list: a bare
-/// pcap/pcapng/cap file, a gzip-compressed one (`*.pcap.gz`, `*.cap.gz`…), or
-/// an archive of captures (`*.tar`, `*.tgz`, `*.tar.gz`).
+/// pcap/pcapng/cap file, a gzip-compressed one (`*.pcap.gz`, `*.cap.gz`…), an
+/// archive of captures (`*.tar`, `*.tgz`, `*.tar.gz`), or a stored vCon
+/// container (`*.vcon.json`, `*.vcon.json.gz`).
 ///
 /// The loader opens all of these — an archive as the set of captures it holds
 /// — so hiding any of them here would let the browser refuse files the loader
-/// can actually read. One rule, shared with MCP `list_captures`:
-/// [`crate::capture::archive::is_capture_file_name`]. Case-insensitive.
+/// can actually read. One rule, shared with MCP `list_captures` and
+/// `find_in_captures`: [`crate::capture::archive::listed_kind`].
+/// Case-insensitive.
 pub(in crate::tui) fn is_browsable_capture(name: &str) -> bool {
-    crate::capture::archive::is_capture_file_name(name)
-        || crate::capture::vcon_input::is_container_file_name(name)
+    crate::capture::archive::listed_kind(name).is_some()
 }
 
 /// Rebuild `app.file_open.entries` from the current `app.file_open.dir`,

@@ -1084,6 +1084,7 @@ fn start_tui_servers(
             pipeline_options: crate::app::server_pipeline_options(cli, config),
             alias_thresholds: cli.alias_thresholds(config),
             vcon_spools: crate::app::vcon_spool::spools(cli, config),
+            vcon_fetch: config.vcon_fetch.clone(),
             live_audio: crate::app::bootstrap::live_audio_filters(cli, config),
         },
         // No transmit permit: the rtpengine reconciler took this run's, so

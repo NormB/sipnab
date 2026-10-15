@@ -1325,8 +1325,8 @@ mod tests {
     /// Build a valid base64-encoded key||salt for AES_CM_128_HMAC_SHA1_80
     /// (16-byte key + 14-byte salt = 30 bytes).
     fn make_test_key_material() -> (Vec<u8>, Vec<u8>, String) {
-        let key = vec![0x01u8; 16];
-        let salt = vec![0x02u8; 14];
+        let key = crate::test_material::bytes_for("srtp-make-test-key-material-key", 16);
+        let salt = crate::test_material::bytes_for("srtp-make-test-key-material-salt", 14);
         let mut combined = key.clone();
         combined.extend_from_slice(&salt);
         let b64 = BASE64.encode(&combined);
@@ -1506,8 +1506,9 @@ mod tests {
     /// splitting a concatenation.
     #[test]
     fn parse_key_file_with_explicit_salt() -> Result<(), TestError> {
-        let key = vec![0x01u8; 16];
-        let salt = vec![0x02u8; 14];
+        let key = crate::test_material::bytes_for("srtp-parse-key-file-with-explicit-salt-key", 16);
+        let salt =
+            crate::test_material::bytes_for("srtp-parse-key-file-with-explicit-salt-salt", 14);
         let key_b64 = BASE64.encode(&key);
         let salt_b64 = BASE64.encode(&salt);
 
@@ -1548,11 +1549,13 @@ mod tests {
     /// output.
     #[test]
     fn debug_redacts_key_material() -> Result<(), TestError> {
+        let master_key = crate::test_material::bytes_for("srtp-debug-redacts-master-key", 16);
+        let master_salt = crate::test_material::bytes_for("srtp-debug-redacts-master-salt", 14);
         let m = SrtpKeyMaterial {
             tag: 1,
             suite: SrtpSuite::AesCm128HmacSha1_80,
-            master_key: vec![0xAB; 16], // 0xAB == 171 decimal in Vec<u8> Debug
-            master_salt: vec![0xCD; 14], // 0xCD == 205
+            master_key: master_key.clone(),
+            master_salt: master_salt.clone(),
             ssrc: None,
             media_addr: None,
             media_port: None,
@@ -1562,12 +1565,14 @@ mod tests {
             s.contains("redacted"),
             "Debug must mark key material redacted"
         );
+        // A derived Vec<u8> prints as its decimal byte list, the form a
+        // derived Debug would leak.
         assert!(
-            !s.contains("171"),
+            !s.contains(&format!("{master_key:?}")),
             "master key bytes must not appear in Debug"
         );
         assert!(
-            !s.contains("205"),
+            !s.contains(&format!("{master_salt:?}")),
             "master salt bytes must not appear in Debug"
         );
         Ok(())
@@ -1580,10 +1585,12 @@ mod tests {
         // RFC 3711 Appendix B.3 known-answer test for the AES-CM KDF. Matching
         // these proves the derivation interoperates with standard SRTP.
         let master_key = [
+            // material: fixture -- RFC 3711 appendix B.3 known-answer master key
             0xE1, 0xF9, 0x7A, 0x0D, 0x3E, 0x01, 0x8B, 0xE0, 0xD6, 0x4F, 0xA3, 0x2C, 0x06, 0xDE,
             0x41, 0x39,
         ];
         let master_salt = [
+            // material: fixture -- RFC 3711 appendix B.3 known-answer master salt
             0x0E, 0xC6, 0x75, 0xAD, 0x49, 0x8A, 0xFE, 0xEB, 0xB6, 0x96, 0x0B, 0x3A, 0xAB, 0xE6,
         ];
         // label 0x00 → session cipher key (128 bits)
@@ -1616,6 +1623,7 @@ mod tests {
 
     /// RFC 3711 Appendix B.2 session salt (112-bit) for the AES-CM KAT.
     const B2_SESSION_SALT: [u8; 14] = [
+        // material: fixture -- RFC 3711 appendix B.2 known-answer session salt
         0xF0, 0xF1, 0xF2, 0xF3, 0xF4, 0xF5, 0xF6, 0xF7, 0xF8, 0xF9, 0xFA, 0xFB, 0xFC, 0xFD,
     ];
 
@@ -1709,6 +1717,7 @@ mod tests {
         // Session key 2B7E1516…CF4F3C with the B.2 IV must produce this
         // keystream prefix — proving the IV layout and counter increment.
         let session_key = [
+            // material: fixture -- RFC 3711 appendix B.2 known-answer session key
             0x2B, 0x7E, 0x15, 0x16, 0x28, 0xAE, 0xD2, 0xA6, 0xAB, 0xF7, 0x15, 0x88, 0x09, 0xCF,
             0x4F, 0x3C,
         ];
@@ -1727,8 +1736,14 @@ mod tests {
     /// recovers the original plaintext payload.
     #[test]
     fn decrypt_srtp_payload_roundtrip_recovers_plaintext() -> Result<(), TestError> {
-        let master_key = vec![0x11u8; 16];
-        let master_salt = vec![0x22u8; 14];
+        let master_key = crate::test_material::bytes_for(
+            "srtp-decrypt-srtp-payload-roundtrip-recovers-plaintext-master-key",
+            16,
+        );
+        let master_salt = crate::test_material::bytes_for(
+            "srtp-decrypt-srtp-payload-roundtrip-recovers-plaintext-master-salt",
+            14,
+        );
         let material = SrtpKeyMaterial {
             tag: 1,
             suite: SrtpSuite::AesCm128HmacSha1_80,
@@ -1788,7 +1803,8 @@ mod tests {
     #[test]
     fn srtp_context_authenticates_and_decrypts() -> Result<(), TestError> {
         use crate::crypto::RingCryptoBackend;
-        let mk = vec![0x33u8; 16];
+        let mk =
+            crate::test_material::bytes_for("srtp-srtp-context-authenticates-and-decrypts-mk", 16);
         let ms = vec![0x44u8; 14];
         let ssrc = 0xDEAD_BEEFu32;
         let plaintext = b"\x00\x01\x02\x03 decrypted media frame payload".to_vec();
@@ -1821,14 +1837,26 @@ mod tests {
     #[test]
     fn srtp_context_rejects_wrong_key() -> Result<(), TestError> {
         use crate::crypto::RingCryptoBackend;
-        let packet =
-            build_valid_srtp_packet(&[0x33u8; 16], &[0x44u8; 14], 0xCAFE, 7, 0, b"payload")?;
+        let packet = build_valid_srtp_packet(
+            &crate::test_material::array_for::<16>("srtp-srtp-context-rejects-wrong-key-arg"),
+            &crate::test_material::array_for::<14>("srtp-srtp-context-rejects-wrong-key-arg-2"),
+            0xCAFE,
+            7,
+            0,
+            b"payload",
+        )?;
         // Context holds an unrelated key: auth tag must not verify ⇒ no plaintext.
         let wrong = SrtpKeyMaterial {
             tag: 1,
             suite: SrtpSuite::AesCm128HmacSha1_80,
-            master_key: vec![0xFFu8; 16],
-            master_salt: vec![0xEEu8; 14],
+            master_key: crate::test_material::bytes_for(
+                "srtp-srtp-context-rejects-wrong-key-master-key",
+                16,
+            ),
+            master_salt: crate::test_material::bytes_for(
+                "srtp-srtp-context-rejects-wrong-key-master-salt",
+                14,
+            ),
             ssrc: None,
             media_addr: None,
             media_port: None,
@@ -1845,7 +1873,7 @@ mod tests {
     fn srtp_context_add_sdes_then_decrypts() -> Result<(), TestError> {
         use crate::crypto::RingCryptoBackend;
         // SDES inline key||salt for AES_CM_128_HMAC_SHA1_80.
-        let mk = vec![0x01u8; 16];
+        let mk = crate::test_material::bytes_for("srtp-srtp-context-add-sdes-then-decrypts-mk", 16);
         let ms = vec![0x02u8; 14];
         let mut combined = mk.clone();
         combined.extend_from_slice(&ms);
@@ -1873,7 +1901,8 @@ mod tests {
     #[test]
     fn verify_roc_returns_authenticating_roc() -> Result<(), TestError> {
         use crate::crypto::RingCryptoBackend;
-        let mk = vec![0x33u8; 16];
+        let mk =
+            crate::test_material::bytes_for("srtp-verify-roc-returns-authenticating-roc-mk", 16);
         let ms = vec![0x44u8; 14];
         let material = SrtpKeyMaterial {
             tag: 1,
@@ -1906,8 +1935,14 @@ mod tests {
         let material = SrtpKeyMaterial {
             tag: 1,
             suite: SrtpSuite::AesCm128HmacSha1_80, // tag_len = 10
-            master_key: vec![0u8; 16],
-            master_salt: vec![0u8; 14],
+            master_key: crate::test_material::bytes_for(
+                "srtp-decrypt-srtp-payload-rejects-short-packet-master-key",
+                16,
+            ),
+            master_salt: crate::test_material::bytes_for(
+                "srtp-decrypt-srtp-payload-rejects-short-packet-master-salt",
+                14,
+            ),
             ssrc: None,
             media_addr: None,
             media_port: None,
@@ -1925,8 +1960,8 @@ mod tests {
     fn verify_auth_tag_with_known_key() -> Result<(), TestError> {
         use crate::crypto::RingCryptoBackend;
 
-        let key = vec![0x01u8; 16];
-        let salt = vec![0x02u8; 14];
+        let key = crate::test_material::bytes_for("srtp-verify-auth-tag-with-known-key-key", 16);
+        let salt = crate::test_material::bytes_for("srtp-verify-auth-tag-with-known-key-salt", 14);
         let material = SrtpKeyMaterial {
             tag: 1,
             suite: SrtpSuite::AesCm128HmacSha1_80,
@@ -1978,9 +2013,10 @@ mod tests {
     fn verify_auth_tag_wrong_key_fails() -> Result<(), TestError> {
         use crate::crypto::RingCryptoBackend;
 
-        let key = vec![0x01u8; 16];
-        let wrong_key = vec![0xFF; 16];
-        let salt = vec![0x02u8; 14];
+        let key = crate::test_material::bytes_for("srtp-verify-auth-tag-wrong-key-fails-key", 16);
+        let wrong_key =
+            crate::test_material::bytes_for("srtp-verify-auth-tag-wrong-key-fails-wrong-key", 16);
+        let salt = crate::test_material::bytes_for("srtp-verify-auth-tag-wrong-key-fails-salt", 14);
         let material = SrtpKeyMaterial {
             tag: 1,
             suite: SrtpSuite::AesCm128HmacSha1_80,
@@ -2031,8 +2067,10 @@ mod tests {
     fn roc_tracker_follows_sequence_rollover() -> Result<(), TestError> {
         use crate::crypto::RingCryptoBackend;
 
-        let key = vec![0x01u8; 16];
-        let salt = vec![0x02u8; 14];
+        let key =
+            crate::test_material::bytes_for("srtp-roc-tracker-follows-sequence-rollover-key", 16);
+        let salt =
+            crate::test_material::bytes_for("srtp-roc-tracker-follows-sequence-rollover-salt", 14);
         let material = SrtpKeyMaterial {
             tag: 1,
             suite: SrtpSuite::AesCm128HmacSha1_80,
@@ -2079,8 +2117,14 @@ mod tests {
     /// Cipher, auth, and salt labels each derive distinct session keys.
     #[test]
     fn derive_session_key_produces_different_keys_per_label() -> Result<(), TestError> {
-        let master_key = vec![0xAA; 16];
-        let master_salt = vec![0xBB; 14];
+        let master_key = crate::test_material::bytes_for(
+            "srtp-derive-session-key-produces-different-keys-per-label-master-key",
+            16,
+        );
+        let master_salt = crate::test_material::bytes_for(
+            "srtp-derive-session-key-produces-different-keys-per-label-master-salt",
+            14,
+        );
 
         let cipher_key = derive_session_key(&master_key, &master_salt, 0x00, 16)?;
         let auth_key = derive_session_key(&master_key, &master_salt, SRTP_LABEL_AUTH, 20)?;
@@ -2112,8 +2156,14 @@ mod tests {
         let material = SrtpKeyMaterial {
             tag: 1,
             suite: SrtpSuite::AesCm128HmacSha1_80,
-            master_key: vec![0u8; 16],
-            master_salt: vec![0u8; 14],
+            master_key: crate::test_material::bytes_for(
+                "srtp-verify-auth-tag-packet-too-short-master-key",
+                16,
+            ),
+            master_salt: crate::test_material::bytes_for(
+                "srtp-verify-auth-tag-packet-too-short-master-salt",
+                14,
+            ),
             ssrc: None,
             media_addr: None,
             media_port: None,
@@ -2128,8 +2178,14 @@ mod tests {
     /// The derived session auth key differs from the master key itself.
     #[test]
     fn derive_session_key_not_equal_to_master_key() -> Result<(), TestError> {
-        let master_key = vec![0xAA; 16];
-        let master_salt = vec![0xBB; 14];
+        let master_key = crate::test_material::bytes_for(
+            "srtp-derive-session-key-not-equal-to-master-key-master-key",
+            16,
+        );
+        let master_salt = crate::test_material::bytes_for(
+            "srtp-derive-session-key-not-equal-to-master-key-master-salt",
+            14,
+        );
 
         // Derive auth key (label 0x01) and verify it differs from the master key
         let auth_key = derive_session_key(&master_key, &master_salt, SRTP_LABEL_AUTH, 20)?;
@@ -2146,8 +2202,14 @@ mod tests {
     /// distinct.
     #[test]
     fn derive_different_labels_produce_different_keys() -> Result<(), TestError> {
-        let master_key = vec![0xCC; 16];
-        let master_salt = vec![0xDD; 14];
+        let master_key = crate::test_material::bytes_for(
+            "srtp-derive-different-labels-produce-different-keys-master-key",
+            16,
+        );
+        let master_salt = crate::test_material::bytes_for(
+            "srtp-derive-different-labels-produce-different-keys-master-salt",
+            14,
+        );
 
         let cipher_key = derive_session_key(&master_key, &master_salt, 0x00, 20)?;
         let auth_key = derive_session_key(&master_key, &master_salt, 0x01, 20)?;
@@ -2175,8 +2237,9 @@ mod tests {
         use crate::crypto::{CryptoBackend, RingCryptoBackend};
 
         let crypto = RingCryptoBackend;
-        let key = vec![0x55u8; 16];
-        let salt = vec![0x66u8; 14];
+        let key = crate::test_material::bytes_for("srtp-verify-auth-tag-with-derived-key-key", 16);
+        let salt =
+            crate::test_material::bytes_for("srtp-verify-auth-tag-with-derived-key-salt", 14);
         let material = SrtpKeyMaterial {
             tag: 1,
             suite: SrtpSuite::AesCm128HmacSha1_80,
@@ -2218,18 +2281,21 @@ mod tests {
     /// index invalidates the entry so a stale session key is never served.
     #[test]
     fn session_key_cache_reuses_then_invalidates_on_key_change() -> Result<(), TestError> {
-        let km = |mk: u8| SrtpKeyMaterial {
+        let km = |mk_label: &str| SrtpKeyMaterial {
             tag: 1,
             suite: SrtpSuite::AesCm128HmacSha1_80,
-            master_key: vec![mk; 16],
-            master_salt: vec![0x22u8; 14],
+            master_key: crate::test_material::bytes_for(mk_label, 16),
+            master_salt: crate::test_material::bytes_for(
+                "srtp-session-key-cache-reuses-then-invalidates-on-key-change-master-salt",
+                14,
+            ),
             ssrc: None,
             media_addr: None,
             media_port: None,
         };
 
         let mut cache = SessionKeyCache::default();
-        let km_a = km(0x11);
+        let km_a = km("cache-master-key-a");
 
         // First lookup derives and caches.
         let ck_a = cache.get_or_derive(0, &km_a)?.cipher_key.clone();
@@ -2242,7 +2308,7 @@ mod tests {
 
         // Key material changes at the same index → fingerprint mismatch
         // invalidates the entry and forces a fresh derivation.
-        let km_b = km(0x99);
+        let km_b = km("cache-master-key-b");
         let ck_b = cache.get_or_derive(0, &km_b)?.cipher_key.clone();
         assert_eq!(
             cache.derive_count, 2,

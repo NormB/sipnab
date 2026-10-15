@@ -233,6 +233,7 @@ fn relay_media(port: u16) -> sipnab::sip::sdp::SdpMedia {
         ice_candidates: Vec::new(),
         rtcp_mux: false,
         rtcp_port: None,
+        label: None,
     }
 }
 

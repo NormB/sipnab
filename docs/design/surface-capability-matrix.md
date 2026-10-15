@@ -523,6 +523,28 @@ What does this stored vCon container say about its calls?
 | REST | `/v1/vcon/analyze` (POST) |
 | MCP | `analyze_vcon` |
 
+### Fetch a stored vCon
+
+What does the operator's vCon store hold under this uuid?
+
+| Surface | Detail |
+|---|---|
+| CLI | `--vcon-fetch`, which writes each container to a file |
+| TUI | decision: fetching connects to a store, and the TUI reads the capture it was given; a person at a terminal runs `--vcon-fetch` and opens the file |
+| REST | `/v1/vcon/fetch/{uuid}`, behind `--api-allow-vcon-fetch` |
+| MCP | `fetch_vcon`, behind `--mcp-allow-vcon-fetch` |
+
+### Report a directory of stored vCons
+
+Which containers in this directory were read and which were skipped, and why, what did each hold, and what do they add up to?
+
+| Surface | Detail |
+|---|---|
+| CLI | `--input` with a directory of containers, then `--report` |
+| TUI | decision: the call list shows the calls read from the containers, and which files were read or skipped is an end-of-run summary, which `--report` prints |
+| REST | gap: no route reads a directory of `--api-file-root` and answers the report yet |
+| MCP | `vcon_directory_report` |
+
 ### vCon spool status
 
 How many containers are waiting, delivered and refused in the export spool, and what did the store answer for each refusal?

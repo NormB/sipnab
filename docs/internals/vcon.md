@@ -407,15 +407,32 @@ Determinism is the property that had to survive, and it did.
 - It asserts the precondition that they still share the old 12-bit bucket.
 - So it fails loudly rather than passing vacuously if the seed ever changes.
 
-One more substitution to know about: the draft names SHA-1, and this tree has
-none.
+One more substitution to know about: the draft fills `rand_b` with SHA-1 of a
+host name alone, and the default does not.
 
-- Adding a broken hash as a dependency to fill 62 bits of a non-security
-  identifier is the worse trade.
 - UUIDv8 constrains only the version and variant bits.
   - This function writes both.
 - What changes is which bits land in `rand_b`.
-  - Nothing reads them.
+
+**`[vcon] uuid_domain` follows the draft's form.**
+
+- `UuidDomain` holds the name and the high 62 bits of SHA-1 over it, from
+  the `sha1` crate the `vcon` feature already carries for RSA-OAEP.
+- `bootstrap::declare_process_globals` declares it once, so every door mints
+  the same uuid for one dialog.
+- `rand_b` is the domain's 62 bits. `rand_a` keeps the default's seed.
+- That leaves 12 bits per millisecond per domain, so `UuidSlots` records the
+  `rand_a` values given out per millisecond and steps a colliding seed to the
+  next free value.
+  - It is per process and capped at `UUID_SLOT_CAP` identities, oldest
+    milliseconds dropped first.
+- `revision_uuid` takes the same path for a `new-uuid` chain.
+- Tests: `the_default_uuid_is_byte_identical_to_before` pins the default from
+  before the key existed. `a_domain_uuid_follows_the_section_4_1_2_layout`
+  recomputes each field. `two_dialogs_in_one_millisecond_get_different_domain_uuids`
+  holds a seed collision found by search. [`tests/vcon_uuid_domain_test.rs`](../../tests/vcon_uuid_domain_test.rs)
+  covers the shipped binary.
+- See [The uuid under a domain](../vcon.md#the-uuid-under-a-domain).
 
 ## The credential strip, and what it does today
 

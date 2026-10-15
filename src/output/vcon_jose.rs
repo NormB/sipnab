@@ -117,7 +117,13 @@ pub enum Form {
 
 /// The form `value` is in.
 pub fn form_of(value: &serde_json::Value) -> Form {
-    let has = |key: &str| value.get(key).is_some();
+    form_of_members(|key| value.get(key).is_some())
+}
+
+/// The form a container whose top-level members `has` answers for is in:
+/// the rule [`form_of`] applies, for a reader that holds only the member
+/// names, such as [`crate::capture::vcon_input::form_of_bytes`].
+pub fn form_of_members(has: impl Fn(&str) -> bool) -> Form {
     if has("ciphertext") && has("recipients") {
         Form::Encrypted
     } else if has("payload") && has("signatures") {
@@ -1672,8 +1678,16 @@ impl Opener {
         self
     }
 
+    /// Whether this opener holds a decryption key: one built with
+    /// [`Self::without_key`] verifies a signed container and cannot open an
+    /// encrypted one.
+    #[must_use]
+    pub const fn has_key(&self) -> bool {
+        self.key_pem.is_some()
+    }
+
     /// Whether a signer check is configured: a container that is not
-    /// encrypted has no signer to check.
+    /// signed has no signer to check.
     #[must_use]
     pub fn checks_signer(&self) -> bool {
         self.trust.is_active()

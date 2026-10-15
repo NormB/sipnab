@@ -85,6 +85,35 @@ pub fn key_for(label: &str) -> Vec<u8> {
     out
 }
 
+/// Fixture material for `label`, exactly `len` bytes, stable within this
+/// process: [`key_for`]'s 32 bytes, then as many further 32-byte mints
+/// (labeled `label#1`, `label#2`, ...) as the length needs, cut to `len`.
+///
+/// For the places that need a particular size: a 16-byte SRTP master key, a
+/// 14-byte salt, a 48-byte TLS 1.2 master secret, a 12-byte AEAD nonce.
+#[must_use]
+pub fn bytes_for(label: &str, len: usize) -> Vec<u8> {
+    let mut out = key_for(label);
+    let mut round = 1usize;
+    while out.len() < len {
+        out.extend(key_for(&format!("{label}#{round}")));
+        round += 1;
+    }
+    out.truncate(len);
+    out
+}
+
+/// [`bytes_for`] as a fixed-size array, for an API that takes `[u8; N]` or a
+/// test that compares against one.
+#[must_use]
+pub fn array_for<const N: usize>(label: &str) -> [u8; N] {
+    // Built from the derived bytes themselves, not by copying them over a
+    // zeroed buffer: CodeQL traced that literal zero into every nonce, IV
+    // and key this helper fills.
+    let bytes = bytes_for(label, N);
+    std::array::from_fn(|i| bytes[i])
+}
+
 /// [`key_for`] as a borrowed slice that lives for the process.
 ///
 /// The shape a call site wants when it replaces a `const KEY: &[u8] = b"..."`:
@@ -180,6 +209,21 @@ mod tests {
         assert_eq!(key_str("eta"), hex);
         assert_eq!(key_str("eta").as_ptr(), key_str("eta").as_ptr());
         assert_ne!(key_str("eta"), key_str("theta"));
+    }
+
+    /// Material of any length begins with the label's 32-byte key, so a
+    /// 16-byte SRTP master key and a 48-byte TLS secret minted under one
+    /// label agree on their common prefix, and stays stable per label.
+    #[test]
+    fn material_of_any_length_extends_the_key() {
+        let k = key_for("iota");
+        assert_eq!(bytes_for("iota", 16), k[..16]);
+        assert_eq!(bytes_for("iota", 48)[..32], k[..]);
+        assert_eq!(bytes_for("iota", 48), bytes_for("iota", 48));
+        assert_eq!(bytes_for("iota", 0), Vec::<u8>::new());
+        assert_ne!(bytes_for("kappa", 48), bytes_for("lambda", 48));
+        let a: [u8; 14] = array_for("iota");
+        assert_eq!(a[..], k[..14]);
     }
 
     /// Nothing in the output is a literal from this file.

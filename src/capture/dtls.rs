@@ -675,7 +675,10 @@ mod tests {
         let entries = vec![KeyLogEntry {
             label: "CLIENT_RANDOM".to_string(),
             client_random: vec![0x00u8; 32],
-            secret: vec![0x44u8; 48],
+            secret: crate::test_material::bytes_for(
+                "dtls-extractor-without-matching-master-secret-yields-nothing-secret",
+                48,
+            ),
         }];
         let mut ex = DtlsSrtpExtractor::new(entries, backend());
         ex.process_dtls(&dtls_handshake_record(1, &client_hello_body(&cr)));

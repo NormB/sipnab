@@ -1618,8 +1618,11 @@ pub fn peek_host_pair(packet: &Packet) -> Option<(IpAddr, IpAddr)> {
     if let Some(meta) = &packet.pre_parsed {
         return Some((meta.src_addr, meta.dst_addr));
     }
-    let d: &[u8] = &packet.data;
-    let ip_off = outer_ip_offset(packet)?;
+    host_pair_at(&packet.data, outer_ip_offset(packet)?)
+}
+
+/// The two addresses of the IP header at `ip_off` in `d`.
+fn host_pair_at(d: &[u8], ip_off: usize) -> Option<(IpAddr, IpAddr)> {
     match d.get(ip_off)? >> 4 {
         4 => {
             let s: [u8; 4] = d.get(ip_off + 12..ip_off + 16)?.try_into().ok()?;
@@ -1632,6 +1635,37 @@ pub fn peek_host_pair(packet: &Packet) -> Option<(IpAddr, IpAddr)> {
             Some((IpAddr::V6(s.into()), IpAddr::V6(t.into())))
         }
         _ => None,
+    }
+}
+
+/// [`peek_host_pair`] and [`peek_transport`] of one frame.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FramePeek<'a> {
+    /// What [`peek_host_pair`] reads.
+    pub hosts: Option<(IpAddr, IpAddr)>,
+    /// What [`peek_transport`] reads.
+    pub transport: Option<TransportPeek<'a>>,
+}
+
+/// [`peek_host_pair`] and [`peek_transport`] together, walking the link
+/// layer to the outer IP header once rather than once each. The `--cores`
+/// dispatcher reads both of every packet on its one serial thread.
+pub fn peek_frame(packet: &Packet) -> FramePeek<'_> {
+    if let Some(meta) = &packet.pre_parsed {
+        return FramePeek {
+            hosts: Some((meta.src_addr, meta.dst_addr)),
+            transport: None,
+        };
+    }
+    match outer_ip_offset(packet) {
+        Some(ip_off) => FramePeek {
+            hosts: host_pair_at(&packet.data, ip_off),
+            transport: transport_at(&packet.data, ip_off),
+        },
+        None => FramePeek {
+            hosts: None,
+            transport: None,
+        },
     }
 }
 
@@ -1671,11 +1705,14 @@ pub enum TransportPeek<'a> {
 /// than UDP or TCP, a header cut short, and a pre-parsed packet (whose bytes
 /// are already a transport payload; its caller reads that directly).
 pub fn peek_transport(packet: &Packet) -> Option<TransportPeek<'_>> {
+    transport_at(&packet.data, outer_ip_offset(packet)?)
+}
+
+/// The transport after the IP header at `ip_off` in `d`.
+fn transport_at(d: &[u8], ip_off: usize) -> Option<TransportPeek<'_>> {
     const UDP: u8 = 17;
     const TCP: u8 = 6;
     const IPV6_FRAGMENT: u8 = 44;
-    let d: &[u8] = &packet.data;
-    let ip_off = outer_ip_offset(packet)?;
     let (proto, l4) = match d.get(ip_off)? >> 4 {
         4 => {
             let ihl = usize::from(d.get(ip_off)? & 0x0f) * 4;
@@ -3852,6 +3889,62 @@ mod tests {
         assert_eq!(
             peek_transport(&make_packet(v6, DLT_EN10MB)?),
             Some(TransportPeek::Fragment)
+        );
+        Ok(())
+    }
+
+    /// `peek_frame` reads what `peek_host_pair` and `peek_transport` read,
+    /// for every kind of frame those two tell apart: UDP and TCP over IPv4,
+    /// UDP over IPv6, a fragment, a transport neither names, a frame with no
+    /// IP header, and a pre-parsed packet, which has a host pair and no
+    /// transport header.
+    #[test]
+    fn peek_frame_is_the_host_pair_and_transport_peeks_together() -> Result<(), TestError> {
+        let (a, b) = ([192, 0, 2, 10], [198, 51, 100, 20]);
+        let mut fragment = build_eth_ipv4_udp(a, b, 5060, 5060, b"INVITE");
+        fragment[20..22].copy_from_slice(&[0x20, 0x00]); // MF, offset 0
+        let pre_parsed = Packet::with_pre_parsed(
+            chrono::Utc::now(),
+            b"INVITE sip:x SIP/2.0\r\n\r\n".to_vec(),
+            None,
+            crate::capture::packet::PreParsed {
+                src_addr: IpAddr::V4(a.into()),
+                dst_addr: IpAddr::V4(b.into()),
+                src_port: 5060,
+                dst_port: 5060,
+                ip_protocol: 17,
+                hep: None,
+                vcon: None,
+            },
+        );
+        let packets = [
+            make_packet(build_eth_ipv4_udp(a, b, 5060, 5062, b"OPTIONS"), DLT_EN10MB)?,
+            make_packet(
+                build_eth_ipv4_tcp(a, b, 40000, 5060, 7, 0x18, b"INVITE"),
+                DLT_EN10MB,
+            )?,
+            make_packet(
+                build_eth_ipv6_udp([0x20; 16], [0x30; 16], 5061, 5060, b"SIP/2.0"),
+                DLT_EN10MB,
+            )?,
+            make_packet(fragment, DLT_EN10MB)?,
+            make_packet(build_eth_ipv4_igmp(a, [224, 0, 0, 1]), DLT_EN10MB)?,
+            make_packet(vec![0u8; 8], DLT_EN10MB)?,
+            pre_parsed,
+        ];
+        for (i, packet) in packets.iter().enumerate() {
+            assert_eq!(
+                peek_frame(packet),
+                FramePeek {
+                    hosts: peek_host_pair(packet),
+                    transport: peek_transport(packet),
+                },
+                "frame {i}"
+            );
+        }
+        assert!(
+            peek_frame(&packets[0]).hosts.is_some(),
+            "the fixture holds frames with a host pair"
         );
         Ok(())
     }

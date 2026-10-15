@@ -8,6 +8,187 @@ sipnab is pre-1.0: the public API and the CLI surface are not stable, and a
 breaking change may land in any release. Breaking changes are called out in the
 entry that carries them.
 
+## [0.5.221] - 2026-10-15
+
+### Added
+
+- **MCP `fetch_vcon` and `GET /v1/vcon/fetch/{uuid}` read one vCon from the operator's store by uuid and return it in the answer.**
+  - Each is off unless the run has its flag: `--mcp-allow-vcon-fetch` or `--api-allow-vcon-fetch`. Without the flag, or without `[vcon_fetch] url`, the tool and the route refuse and name what is missing.
+  - The store, its kind, the credential and the decryption key come from the `[vcon_fetch]` keys only. The caller gives a uuid and nothing else, and the answer holds no key and no credential.
+  - The request, the credential, the CA, the size limit, the decryption and the signer checks are `sipnab --vcon-fetch`'s, by one shared function. sipnab writes no file.
+  - The answer carries `stored_form`, `decrypted`, `signature_verified`, `signer_sha256`, `schema_findings` and `container`.
+  - The tool is in the `vcon` bundle.
+  - A signed container that is not encrypted comes back as stored with `signature_verified: true` and its signer once its signature verifies; one that does not verify, or whose signer fails `[vcon_fetch] signer_ca` or `signer_sha256`, is refused, as `-I` refuses it. `sipnab --vcon-fetch` shares the rule: it now verifies a signed container before it writes it, applies `--vcon-fetch-signer-ca` and `--vcon-fetch-signer-sha256` to it, and writes nothing for one that does not verify.
+  - `--vcon-fetch-signer-ca` and `--vcon-fetch-signer-sha256` (`[vcon_fetch] signer_ca` and `signer_sha256`) no longer need `--vcon-fetch-decrypt-key`: they apply to a signed container without a key. An encrypted container fetched with a signer check and no key is refused, naming `--vcon-fetch-decrypt-key`. The server doors take the same keys by the same rule.
+  - `server_capabilities` reports `runtime.mcp_allow_vcon_fetch` and `GET /v1/capabilities` reports `runtime.api_allow_vcon_fetch`, each `true` only when the door's flag is given and `[vcon_fetch] url` is set.
+- **The vCon forwarder polls a SCITT `202` for its receipt.** When a
+  transparency service answers a lifecycle statement with `202` and a
+  `Location`, the forwarder GETs that `Location` with
+  `Accept: application/cose`, as
+  [draft-ietf-scitt-scrapi-11 section 2.4](https://datatracker.ietf.org/doc/html/draft-ietf-scitt-scrapi-11#section-2.4)
+  defines, and keeps the receipt of a `200` in `<name>.scitt` as it keeps a
+  `201`'s.
+  - A `204` or a `202` means the registration is still running, and it polls
+    again. A `429` or a `5xx` is polled again too. Another `4xx`, such as the
+    `404` of a registration that failed
+    ([section 2.4.3](https://datatracker.ietf.org/doc/html/draft-ietf-scitt-scrapi-11#section-2.4.3)),
+    is recorded as the error.
+  - Each poll waits for the last answer's `Retry-After`, as a minimum
+    ([section 5.1](https://datatracker.ietf.org/doc/html/draft-ietf-scitt-scrapi-11#section-5.1)).
+    Without one, it waits 125 to 250 milliseconds, doubled after each poll,
+    for at most 16 polls.
+  - Polling ends within `--vcon-forward-timeout`, counted from the
+    statement's POST, and at a stop. The record then says `"pending": true`
+    and keeps the `Location`; the delivery stands.
+  - It polls a `Location` only on the scheme, host and port of
+    `--vcon-forward-scitt-url`, so the `--vcon-forward-scitt-auth-file`
+    header goes to no other host. Any other `Location` is recorded in
+    `poll_error` and not fetched.
+  - New record fields: `poll_status`, `pending` and `poll_error`.
+- **An EC P-256 `--vcon-forward-scitt-sign-key` signs ES256.** The protected
+  header carries `alg` `-7`
+  ([RFC 9053 section 2.1](https://www.rfc-editor.org/rfc/rfc9053.html#section-2.1)).
+  An RSA key keeps RS256 (`-257`). The key loads as an encrypting
+  `[[vcon.rule]]`'s `sign_key` does, and a key whose certificate does not
+  match is refused before anything is sent, with exit `2` from the flags.
+- **The vCon of a SIPREC recording session names the participants of the recorded call.**
+  - Each `<participant>` of the [RFC 7865](https://www.rfc-editor.org/rfc/rfc7865.html) metadata becomes a party, with `sip` or `tel` from its `<nameID>` `aor` and `name` from its `<name>`, per [RFC 7865 section 6.5.1](https://www.rfc-editor.org/rfc/rfc7865.html#section-6.5.1).
+  - The recording session's `From` and `To` stay parties 0 and 1, with `role: "recording-client"` on the party that sent the metadata and `role: "recording-server"` on the other.
+  - A `sipnab-siprec-streams` attachment maps each recorded stream to the participant that sends it, from `<participantstreamassoc>` `<send>`, per [RFC 7865 section 6.8.1](https://www.rfc-editor.org/rfc/rfc7865.html#section-6.8.1).
+  - A container with audio lists the participant on each channel, from the `a=label` of the m-line the channel was sent from, per [RFC 7866 section 7.1.1](https://www.rfc-editor.org/rfc/rfc7866.html#section-7.1.1).
+  - Metadata that is missing or names no participant leaves the parties as before, and the completeness note says why.
+  - `--redact` rewrites the participants' `sip`, `tel` and `name`.
+- **The SDP parser reads `a=label`** ([RFC 4574 section 4](https://www.rfc-editor.org/rfc/rfc4574.html#section-4)) on each media description.
+- **`--vcon-audio-fetch` gets back the audio a vCon names by `url`.**
+  - Since 0.5.219 a `[[vcon.rule]]` with `audio = "url"` writes each recording beside its container, as its own JWE when the rule encrypts, and no sipnab command read it back.
+  - `--vcon-audio-fetch <FILE>` reads the container in any form `-I` reads: unsigned, signed, encrypted or gzip, opened with `--vcon-key` and the `[vcon_input]` keys.
+  - For each recording Dialog Object with a `url`, sipnab:
+    - fetches the file over `https://`, with the fetcher's TLS client, or, with `--vcon-audio-fetch-local`, reads it from the directory that holds the container;
+    - checks it against the recording's `content_hash` ([section 2.2 of draft-ietf-vcon-vcon-core-04](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-04#section-2.2)) before anything else reads it, and refuses a mismatch, naming the dialog;
+    - decrypts a JWE with the key that opens the container, through the same JOSE code;
+    - writes the audio to `<uuid>-dialog<N>.wav` or `.ogg` in `--vcon-audio-fetch-out`, mode 0600, and never replaces a file that exists.
+  - sipnab refuses a `url` that is not `https://` without connecting: section 2.4.1 says "HTTPS MUST be used for retrieval".
+  - `--vcon-audio-fetch-ca`, `--vcon-audio-fetch-extra-ca` and `--vcon-audio-fetch-max-size` (default 64 MiB) set the trust and the size limit.
+  - Exit 0 when sipnab wrote every recording, 1 when the container does not open, names no recording by `url`, or sipnab refused any recording, and 2 when sipnab cannot use a key, CA or output directory.
+- **`[[vcon.rule]] live_rtp = "host:port"` sends each matching call's audio to a UDP address as RTP while the call is in progress.**
+  - Each leg is one RTP stream ([RFC 3550](https://www.rfc-editor.org/rfc/rfc3550.html)) with its own SSRC, carrying L16 ([RFC 3551 section 4.5.11](https://www.rfc-editor.org/rfc/rfc3551.html#section-4.5.11)) at 16 kHz mono in 20 ms packets, payload type 96. sipnab interpolates G.711 up to 16 kHz and Opus down.
+  - JSON control messages go to the same address: `start` before a call's first packet, `leg` for a leg seen later, and `stop` after its last packet. Each names the call, maps each sent SSRC to the captured stream, and gives the codec and rate.
+  - The calls are the ones the `live_audio` WebSocket would serve: the rule's filter, less those `--content-deny-header` withholds. A leg that is SRTP no key decrypted sends nothing, and the control messages say why.
+  - sipnab refuses an address other than loopback, with exit code 1, unless the rule sets `live_rtp_allow_remote = true`: RTP has no encryption or authentication.
+  - Audio that waits, such as a capture file read with `-I`, goes at up to ten times real time. sipnab warns at startup when a rule sends a capture file's audio.
+  - See [Send a call's audio as RTP](docs/vcon.md#send-a-calls-audio-as-rtp).
+- **`[vcon] uuid_domain` writes container uuids in the form of [draft-ietf-vcon-vcon-core-04 section 4.1.2](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-04#section-4.1.2).**
+  - The value is a fully qualified host name. The last 62 bits of every container uuid the process writes are the high 62 bits of SHA-1 over it, and the first 48 are the call's start in milliseconds.
+  - `rand_a` keeps the default's seed, so re-exporting a call writes the same uuid. Within one process, a call whose seed picks a value already given in its millisecond takes the next free one.
+  - Later versions under `sealed_updates = "new-uuid"` keep the same layout.
+  - sipnab refuses at startup a value that is not a host name of two or more labels, naming the key.
+  - Without the key, uuids are unchanged.
+  - sipnab does not take the name from `sign_cert`.
+- **`--report` reports every stored vCon container the run met, read or skipped, with totals.**
+  - After the dialog table, a `vCon containers:` section has one row per container: status, form (`unsigned`, `signed`, `encrypted`, `gzip`), schema finding count, calls rebuilt, the calls counted by state, the calls' total duration, `uuid` and file.
+  - A skipped container's row names the reason in one word (`no_key`, `no_sip_signaling`, `not_json`, `not_a_vcon`, `not_opened`, `unsupported_critical`, `unreadable`) and in full below the table. `no_key` names `--vcon-key`.
+  - The totals count containers read and skipped, skips by reason, containers with a schema finding, distinct calls by state, and their total duration.
+  - With `--json` or `--json-pretty`, the same rows and totals are one JSON object under the key `sipnab_vcon_containers`.
+  - A run that read no container prints the report it printed before.
+  - When every file of `-I` is skipped, for example a directory of encrypted containers and no `--vcon-key`, `--report` prints the `vCon containers:` section (or, with `--json` or `--json-pretty`, the `sipnab_vcon_containers` object) before the run fails. The run still prints `no readable capture files` and exits 1. Without `--report`, or with no vCon container in `-I`, nothing is printed on standard output.
+- **MCP tool `vcon_directory_report`, in the `vcon` bundle.**
+  - It answers the same report for a directory of `--mcp-file-root` (`.` for the root), read in stores of its own, with the rows paged by `limit` and `cursor` and cut whole to `max_response_bytes`. The totals cover the whole directory on every page.
+  - The `vcon` bundle's `tools/list` entries now total 10,679 bytes over seven tools with `fetch_vcon`, and `full` totals 89,290 bytes over 76 tools.
+
+### Changed
+
+- **A filter value no longer needs quotes where sipnab can tell where it ends.**
+  - `method == INVITE`, `method == 'INVITE'` and `method == "INVITE"` are one filter on every surface that takes a filter: `--filter`, `--export-vcon-when`, an expectation's `filter:` scope, `[filters]`, every MCP `filter`, the REST `filter` parameter and the TUI filter. The bare form was refused with `unexpected input at position 10`.
+  - A bare value runs to whitespace, a quote character, or a `)` that closes a group. Its own parentheses balance, so `method =~ ^(INVITE|BYE)$` needs no quotes. For `=~`, a backslash escape and a `[...]` class keep a `)` in the regex.
+  - The field decides how a value is read, quoted or bare. `to.user == 1001` is the user `1001`; before, an unquoted `1001` was a number and selected nothing on a text field. `src.port == '5060'` is the port 5060; before, a quoted number selected nothing on a numeric field. `one_way == 'true'` is the boolean.
+  - A numeric field now refuses a value that is not a finite number, and a boolean field refuses anything but `true` and `false`. Both used to parse and select nothing.
+  - A `time` bound may be bare: `time >= 2026-10-09T10:00:00Z`.
+  - Quotes stay required for a value that contains whitespace, `'`, `"` or an unmatched `)`, that begins with `=`, `!`, `<`, `>` or `@`, or that is empty. Each case has its own error message naming the reason. `&&` and `||` are refused with a message naming `AND`, `OR` and `NOT`. [docs/filter-dsl.md](docs/filter-dsl.md#values) lists every case.
+  - An `@` inside a word, as in `call_id == a84b4c76@pc33.example.com`, is part of the value. It was read as a reference to a named filter `pc33`.
+  - A parse error's `position` is the 0-based character column the caret marks. It was a byte offset, which differs from the column after a non-ASCII character.
+  - The ten MCP `filter` parameters say "Values may be bare or quoted." The `full` bundle's `tools/list` entries now total 89,667 bytes over 76 tools.
+
+### Fixed
+
+- **A relay control message read off a capture interface or a file no longer reports the HEP listener's trust.**
+  - Under `--hep-parse`, a HEP datagram sniffed off an interface or read from a file is marked `input_origin: hep`. `explain_attribution` gave every `hep` endpoint the trust the run's listener configured, so on a run with `--hep-auth-mode hmac` or `plain`, a sniffed rtpengine mirror was reported as `hmac-verified` or `plain-secret`. Nothing had checked its secret.
+  - It is now `port-gated-only`. Only a message the `--hep-listen` socket delivered takes the listener's trust.
+  - `decode_ng` re-reads a frame from a capture file and does not verify its secret or token. It reported a HEP-encapsulated frame with the listener's trust too, and now reports `port-gated-only` for every frame. `delivery` still says `hep`.
+- **A vCon `dtmf_events` rule writes RTP key presses sent from a socket no SDP advertised, for the party that pressed them.**
+  - `tests/pcap-samples/SIP_DTMF2.cap` sends seven keys (6 7 8 9 1 2 3) at PT 96 from 192.168.105.172:4376, a socket no SDP named, to 192.168.105.110:4376, the socket the callee's 200 OK advertised. sipnab decoded the keys and wrote no `keydown` or `keyup` for them.
+  - When no party advertised the sending socket, the party whose SDP advertised the destination socket received the event, and the other party of the two sent it. The capture's seven keys are now seven `keydown` and seven `keyup` events for the caller.
+  - An event still adds nothing when no single party advertised its destination socket, such as a socket only a forked response named.
+- **MCP `list_captures` and `find_in_captures` list and sweep stored vCon containers.**
+  - Both tools listed only capture files and archives, so a `*.vcon.json` in `--mcp-file-root` that `open_capture` reads was never offered or searched.
+  - They now take `*.vcon.json` and `*.vcon.json.gz`, the names the TUI's file browser lists, by one shared rule.
+  - Each `list_captures` entry carries `kind`: `capture` or `vcon`.
+  - A `.<name>.partial` file the fetcher or the forwarder is still writing is not listed.
+- **The local check for hard-coded cryptographic values now reports byte-array keys, the shape CodeQL reported in tests.**
+  - `tests/hardcoded_crypto_material_test.rs` read string and byte-string literals only. CodeQL alert 465, `let master_key = vec![0x11u8; 16];` in an SRTP test in `src/app/batch.rs`, passed it, as had 35 earlier alerts of the same rule that were dismissed as used in tests.
+  - The check now also reports a literal byte array bound to a name for a key, salt, nonce, IV, secret or password, and a literal passed straight to such a parameter of a crate function or of a library key constructor (`new_from_slice`, `new_from_slices`, ring's `UnboundKey::new`, `hmac::Key::new` and the `Nonce` constructors).
+  - Every test site it reported now takes its key material from `test_material` at run time. The [RFC 3711](https://www.rfc-editor.org/rfc/rfc3711.html) and [RFC 2202](https://www.rfc-editor.org/rfc/rfc2202.html) known-answer vectors keep their bytes, each with a named exception.
+  - The shapes that need data flow to detect are listed in the test.
+- **The commit-message identity test no longer fails when its test binary is rebuilt while the suite runs.**
+  - `message_script_refuses_a_planted_message_and_passes_a_clean_one` handed `scripts/check-message-identity.sh` the path from `std::env::current_exe()`. After a build relinks the binary, that path reads `<path> (deleted)`, the script cannot run it, and it exits 2 with "the check failed before it read the message".
+  - The tests now pass `/proc/<pid>/exe` on Linux, which runs the binary the process started from even after its file is replaced. A new test replaces the binary's file before the script runs and requires the check to pass.
+- **A SCITT statement signed with an EC P-256 key named the wrong
+  algorithm.** In 0.5.219, an EC P-256 `--vcon-forward-scitt-sign-key` loaded
+  and signed ECDSA, but the protected header said RS256 (`-257`), so the
+  signature did not verify under the algorithm it named. It now says ES256
+  (`-7`).
+- **A lost packet is now silence of its own length in exported and live audio, instead of being skipped.**
+  - The decoders played the retained frames one after another, so each lost packet shortened the WAV by its duration and everything after it played early. In a stereo export the two parties drifted apart by the loss on each side.
+  - Frames are now placed by their RTP timestamps ([RFC 3550 section 5.1](https://www.rfc-editor.org/rfc/rfc3550.html#section-5.1)). Where the timestamps show time passed with no audio received, the export, the live audio route and the `live_rtp` stream put silence of that length. The timestamps cannot tell a lost packet from a sender pausing, so the export summary and the note inside the file name both: for example "20 ms in 1 gap where the RTP timestamps show no audio arrived (lost packets, or the sender pausing) is silence in this file".
+  - Reordered packets play in timestamp order, and a packet that repeats a timestamp plays once and is counted.
+  - The silence is bounded by how long the stream lasted in capture time. A timestamp jump longer than that is not filled; it is counted and named, and the audio either side is joined. One hostile packet can no longer make an export allocate silence for as long as a 32-bit timestamp reaches.
+  - The dead-air measurement still reads the sender's own samples, with gaps closed up, so packet loss does not register as dead air.
+- **In a stereo export, a party who starts later now starts later in the file.** Each channel began at its own first retained sample, so a party who joined or first spoke 2 seconds into the call was heard 2 seconds early against the other channel. Each channel is now preceded by silence for the time between the first channel's start and its own, measured from capture time. A stream's start is never placed before its first packet arrived, whatever its RTP timestamps claim.
+- **Comfort Noise and DTMF event packets are no longer decoded as speech.** They share the call's SSRC, and `--retain-audio` kept them with the audio: a 4-octet DTMF event became 4 samples of noise, and its repeated timestamp put the audio out of step. Only packets of the stream's own payload type are retained now.
+- **sipnab waits up to 5 seconds, not half a second, for a `tfps_ctl` that is still open for writing.**
+  - `exec` fails with "Text file busy" (`ETXTBSY`) while any process holds the file open for writing, for example the installer that just wrote it. sipnab retries, and gave up after 500 ms.
+  - Nothing but the scheduler bounds how long the writer takes to close. With the load average between 105 and 270, a writer told to let go after 50 ms still left the file busy past 500 ms in 6 to 49 runs of 300 when the writer was the test process, and in 9 to 17 of 300 when it was another process. Against 5 seconds, none of 300 failed either way.
+  - A file that is free is spawned at once, as before. Only the report of a file that stays busy comes later.
+- **A `tfps_ctl` that times out no longer loses the stderr it wrote before sipnab stopped it.**
+  - The timeout path took whatever the stderr reader thread had read by then. On a loaded host the reader had often not been scheduled yet, so the error carried an empty stderr even though the peer had written its diagnosis.
+  - It now waits for the reader to reach the end of the pipe, which happens as soon as the process-group kill closes it. A pipe still held open by a process outside the group is waited on for at most 2 seconds.
+  - With the load average between 130 and 190, `a_peer_that_hangs_is_stopped_and_reported` lost the stderr in 3 runs of 300 before the change and in none of 300 after.
+- **`--cores` reads a copied SIP datagram once instead of once per worker, recovering part of the throughput 0.5.220 lost.**
+  - Since 0.5.220 each worker also reads a copy of every packet that can carry SDP, so that two calls reusing one media socket pair stay two streams. Every worker parsed its own copy of each SIP datagram, and every worker read the headers of every packet it received and hashed its host pair to tell its own packets from the copies.
+  - The dispatcher now marks each packet it hands a worker as owned or as a copy. The copies of a whole UDP datagram or of a HEP message share one read: the first worker to reach one parses it and the others take its media sockets. A TCP segment or an IP fragment is still read through each worker's own reassembly. The dispatcher reads a packet's host pair and transport in one pass over its headers.
+  - Measured on the `bench/carrier.py --calls 5000` capture (535,000 packets) with `-N -I --cores 4 --report --no-cli-print`, 20 interleaved pairs per comparison, load average 16 to 18, medians:
+    - against 0.5.220: 3.27 million packets per second against 3.12 million, faster in 18 of 20 pairs, and 0.550 against 0.565 seconds of user plus system CPU;
+    - against the code before the 0.5.220 change: 3.13 million against 3.45 million, slower in 20 of 20 pairs, and 0.550 against 0.500 seconds. On this capture the copies still cost about 9% of throughput.
+  - Reports are byte-identical to 0.5.220 at `--cores 4` and `--cores 1`, on that capture and on a 20,000-call capture.
+
+### Internal
+
+- **The constant-time eviction tests count the work instead of timing it.**
+  - Two tests guarded the bounded maps' eviction with wall-clock ratios, one for the registration flood detector's sources and one for `LruMap` itself.
+  - On a hosted CI runner on 2026-10-14 the detector's ratio read 5.5x against a bound of 5.0, with constant-time eviction in place.
+  - `LruMap` now counts, in test builds only, the entries its walks visit. Both tests fill a map to its cap at two sizes, admit 1,000 new keys, and require at most one entry walked per admission and the same count at both sizes.
+  - An eviction that chooses its victim by walking the map fails both tests.
+- **The bencode duplicate-key test counts key comparisons instead of timing the parse.**
+  - It compared the CPU time of decoding 1,024 and 4,096 distinct keys and required a ratio under 8.0.
+  - The duplicate check now holds its keys in a type whose equality counts itself in test builds, and test builds hash them with a fixed key, so the count is the same on every run.
+  - The test requires at most one comparison per key. The set makes 71 for 1,024 keys and 240 for 4,096; a scan of the keys accepted so far makes 523,776 and 8,386,560.
+  - A second test requires `decode_dict` to check duplicates through that set and never to read its entries back, because the scan this replaced compared raw byte slices that the count does not see.
+- **CI and the pre-push hook lint the library with no features enabled.**
+  - `cargo clippy --no-default-features --lib -- -D warnings` failed on main: `impl From<ActionPolicy> for Actions` used `..Self::default()`, which does nothing once the feature-gated `service` field is absent.
+  - The struct is now built field by field, each under its declaration's `cfg`.
+  - Every clippy gate ran `--all-features` only. CI's new "Clippy with no features" step and a matching pre-push gate run the no-feature build, and `tests/clippy_scope_parity_test.rs` requires both.
+- **`a_live_sweep_queues_enrichment_and_the_worker_writes` checks that the sweep did not wait by order of events, not by a 900 ms bound.**
+  - The test's service slept 1 second, and the sweep had to return within 900 ms. On a loaded host the sweep alone took longer, and the test reported that the sweep had waited for the service.
+  - The service now answers only once the test creates a release file, so the sweep returning with nothing written proves it did not wait. A sweep that waited would write the container itself, and the test fails on it.
+  - Interleaved with the old test under stress, with the load average between 170 and 370: 14 of 450 runs failed before, 0 of 450 after. Making the sweep enrich in place fails the test.
+- **`a_peer_that_hangs_is_stopped_and_reported` tolerates a host too loaded to start a shell's `sleep` within 3 seconds.**
+  - Its fake must have started a grandchild before the timeout fires. The test repeated a run without one at 300 ms, 1 s and 3 s, and then failed. With the load average at 113 to 185 it failed that way in 20 runs of 300.
+  - The timeout now doubles from 300 ms up to 76.8 s. The timeout's length is not what the test checks; the process-group kill is.
+  - Under the same load, 0 runs of 300 failed, counting the stderr fix above.
+- **The `[limits]` gate no longer reports `mcp_sweep_result_retention_secs` or `mcp_sweep_max_held_results` as dead on a loaded host.**
+  - `every_documented_limits_key_changes_observable_behavior` polled each sweep once, after a fixed wait, and assumed the sweep had finished in time. With a load average of 56 to 82 it failed 31 of 50 runs: 17 because the retention probe's result had finished less than a second before its poll, 14 because the held-results probe's sweep was still running after 30 seconds.
+  - Each probe now polls until its sweep stops, and counts a handed-over result as evidence only when the result's own `elapsed_ms` shows the premise held: the result had outlived the one-second retention, or the second sweep had finished before the first was polled. Otherwise it runs the sweeps again.
+  - 0 of 50 runs failed under the same load. With either bound removed from `src/mcp/sweep.rs`, the gate still fails, naming the key.
+
 ## [0.5.220] - 2026-10-14
 
 ### Fixed

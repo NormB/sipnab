@@ -164,6 +164,29 @@ fn wire_samples(stream: usize, from: usize, to: usize) -> Vec<i16> {
         .collect()
 }
 
+/// Samples of silence in front of the callee's channel.
+///
+/// `pcap_build` captures each callee packet 500 us after the caller's, and a
+/// stereo export starts each channel at its party's capture time, so the
+/// callee's channel begins 0.5 ms (4 samples at 8 kHz) after the caller's.
+const CALLEE_LEAD: usize = 4;
+
+/// Stream `stream`'s frames `from..to` as its channel holds them when both
+/// streams keep the same frames: the callee's after [`CALLEE_LEAD`] samples
+/// of silence, the caller's followed by as many, to the common length.
+fn aligned_samples(stream: usize, from: usize, to: usize) -> Vec<i16> {
+    let wire = wire_samples(stream, from, to);
+    if stream == 1 {
+        let mut out = vec![0; CALLEE_LEAD];
+        out.extend(wire);
+        out
+    } else {
+        let mut out = wire;
+        out.resize(out.len() + CALLEE_LEAD, 0);
+        out
+    }
+}
+
 /// The `capture_completeness.media_note` of the container's analysis.
 fn media_note(vcon: &serde_json::Value) -> Result<String, TestError> {
     let analysis = vcon["analysis"]
@@ -187,14 +210,14 @@ fn assert_whole(vcon: &serde_json::Value, secs: usize) -> Result<(), TestError> 
     let channels = carried_channels(vcon)?;
     assert_eq!(channels.len(), 2, "both directions are carried");
     let frames = secs * FRAMES_PER_SEC;
-    let expected = [wire_samples(0, 0, frames), wire_samples(1, 0, frames)];
+    let expected = [aligned_samples(0, 0, frames), aligned_samples(1, 0, frames)];
     for (n, channel) in channels.iter().enumerate() {
         assert_eq!(
             channel.len(),
-            frames * FRAME_BYTES,
+            frames * FRAME_BYTES + CALLEE_LEAD,
             "channel {n} holds {} of {} samples: {:.1} s of a {secs} s call",
             channel.len(),
-            frames * FRAME_BYTES,
+            frames * FRAME_BYTES + CALLEE_LEAD,
             channel.len() as f64 / 8000.0
         );
         assert!(
@@ -251,11 +274,14 @@ fn an_explicit_frame_cap_still_caps_and_says_partial() -> Result<(), TestError> 
     let pcap = write_call(dir.path(), 60)?;
     let vcon = export(dir.path(), &pcap, Some("max_audio_frames = 1000"))?;
     let channels = carried_channels(&vcon)?;
-    let expected = [wire_samples(0, 2000, 3000), wire_samples(1, 2000, 3000)];
+    let expected = [
+        aligned_samples(0, 2000, 3000),
+        aligned_samples(1, 2000, 3000),
+    ];
     for channel in &channels {
         assert_eq!(
             channel.len(),
-            1000 * FRAME_BYTES,
+            1000 * FRAME_BYTES + CALLEE_LEAD,
             "the cap holds 1000 frames"
         );
         assert!(
@@ -309,9 +335,13 @@ fn a_reached_budget_releases_audio_and_says_partial() -> Result<(), TestError> {
         channels.contains(&whole_newer),
         "the newer stream stays whole while the older one is released first"
     );
-    // A stereo WAV pads its shorter channel with silence at the end, so the
-    // older stream's channel is its last frames followed by zeros.
-    let mut older = wire_samples(0, released, 3000);
+    // Each channel starts at its party's capture time. The older stream's
+    // first `released` frames are gone, so its channel is silence until its
+    // first kept frame was captured (`released` frames of 20 ms, less the
+    // callee's 0.5 ms head start, which makes the callee's channel the
+    // earliest), then its last frames, then zeros to the common length.
+    let mut older = vec![0; released * FRAME_BYTES - CALLEE_LEAD];
+    older.extend(wire_samples(0, released, 3000));
     older.resize(whole_newer.len(), 0);
     assert!(
         channels.contains(&older),

@@ -116,7 +116,7 @@ It exists because nothing else in the suite can see a data race.
 The borrow checker does not help here either.
 
 - It stops at `unsafe`.
-- Most of this crate's 135 `unsafe` blocks are libc FFI.
+- Most of this crate's 134 `unsafe` blocks are libc FFI.
 - They concentrate in privilege dropping ([`privilege.rs`](../../src/privilege.rs)
   and [`process_isolation.rs`](../../src/process_isolation.rs)) and capture setup.
 - Recount with `grep -rc 'unsafe {' src/` rather than trusting that figure.
@@ -709,6 +709,10 @@ The matrix has moved twice.
   - The hook no longer repeats it on every push.
 - The script still runs it by hand.
 - Pre-push keeps the reduced combinations.
+- Pre-push and CI also run clippy on the library with no features:
+  `cargo clippy --no-default-features --lib -- -D warnings`.
+  - The main clippy gate runs `--all-features`, so a lint that fires only with every feature off never reaches it.
+  - On 2026-10-14 main carried one: a `..Self::default()` that does nothing once the feature-gated fields are absent.
 
 The self-hosted jobs keep their builds between runs.
 

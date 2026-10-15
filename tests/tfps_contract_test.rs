@@ -847,6 +847,28 @@ fn a_peer_busy_being_written_is_retried_not_refused() -> Result<(), TestError> {
     Ok(())
 }
 
+/// The same moment, stretched the way a loaded host stretches it. A writer
+/// told to let go after 50 ms left the file busy past the half second
+/// sipnab used to wait, on a loaded host, whether the writer was this
+/// process or another one (see `ETXTBSY_PATIENCE` in `src/security/tfps.rs`
+/// for the counts). Nothing bounds that but the scheduler, so sipnab waits
+/// five seconds; this holds the handle for one, which the old half second
+/// refused every time.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_peer_busy_for_more_than_half_a_second_is_still_waited_for() -> Result<(), TestError> {
+    let fake = FakeCtl::echoing(STATUS)?;
+    let held = std::fs::OpenOptions::new().append(true).open(fake.path())?;
+    let release = std::thread::spawn(move || {
+        std::thread::sleep(Duration::from_secs(1));
+        drop(held);
+    });
+    let reply = fake.explicit().status()?;
+    assert!(matches!(reply, Reply::Answered { .. }), "{reply:?}");
+    release.join().map_err(|_| "thread panicked")?;
+    Ok(())
+}
+
 #[test]
 fn a_zero_exit_is_answered_with_its_stdout() -> Result<(), TestError> {
     let fake = FakeCtl::echoing(STATUS)?;
@@ -1090,17 +1112,24 @@ fn output_that_is_not_the_contract_is_an_error() -> Result<(), TestError> {
 fn a_peer_that_hangs_is_stopped_and_reported() -> Result<(), TestError> {
     let fake = FakeCtl::with_body(
         "echo 'still opening the database' >&2\n\
-         sleep 30 &\n\
+         sleep 300 &\n\
          echo $! > \"$(dirname \"$0\")/sleep.pid\"\n\
          wait",
     )?;
     // The premise is a grandchild holding the pipe. On a loaded host the
     // shell can be stopped before it starts `sleep`, and then there is no
-    // grandchild to check, so a run without one is repeated with a longer
-    // timeout until the premise holds.
+    // grandchild to check, so a run without one is repeated with twice the
+    // timeout until the premise holds. The timeout is not what this test is
+    // about -- any length that lets the shell start `sleep` will do -- so the
+    // ladder only decides how slow a host it tolerates. It used to stop at
+    // 3 s, and with the load average climbing to 146 it failed 3 runs in 200
+    // that way; doubling up to 76.8 s keeps the first rung's 300 ms on an
+    // idle host. The grandchild sleeps 300 s so the longest rung still
+    // ends by the timeout, not by the sleep finishing.
     let pid_file = fake.dir.path().join("sleep.pid");
     let mut outcome = None;
-    for timeout_ms in [300, 1_000, 3_000] {
+    let ladder = std::iter::successors(Some(300u64), |ms| Some(ms * 2)).take(9);
+    for timeout_ms in ladder {
         let _ = std::fs::remove_file(&pid_file);
         let started = std::time::Instant::now();
         let err = fake
@@ -1117,7 +1146,7 @@ fn a_peer_that_hangs_is_stopped_and_reported() -> Result<(), TestError> {
         }
     }
     let (err, elapsed, timeout_ms, text) =
-        outcome.ok_or("the fake never started its grandchild, even with a 3 s timeout")?;
+        outcome.ok_or("the fake never started its grandchild, even with a 76.8 s timeout")?;
     assert!(
         elapsed < Duration::from_millis(timeout_ms) + Duration::from_secs(5),
         "the call took {elapsed:?} against a {timeout_ms} ms timeout: the reader \

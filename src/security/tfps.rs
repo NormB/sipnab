@@ -720,10 +720,7 @@ fn run_bounded(ctl: &Path, argv: &[OsString], timeout: Duration) -> Result<Ran, 
     };
 
     let Some(status) = status else {
-        // Whatever reached stderr before the stop. Not joined: a grandchild
-        // that survived the group kill (a different group, a different user)
-        // would hold the pipe open, and this must return regardless.
-        let err = stderr.map_or_else(String::new, |d| d.snapshot());
+        let err = stderr.map_or_else(String::new, Drained::after_stop);
         return Err(TfpsError::TimedOut {
             ctl: ctl.to_path_buf(),
             after: timeout,
@@ -752,9 +749,21 @@ fn run_bounded(ctl: &Path, argv: &[OsString], timeout: Duration) -> Result<Ran, 
 /// `tfps_ctl` is closing it, or a child forked by another thread of THIS
 /// process inherited the write descriptor and has not exec'd yet -- the
 /// ordinary fork/exec race on Linux, and the one the test suite hits when
-/// two tests write their fakes at once. Half a second covers both; a file
-/// still busy after that is reported as the spawn failure it is.
-const ETXTBSY_PATIENCE: Duration = Duration::from_millis(500);
+/// two tests write their fakes at once. A file still busy after this is
+/// reported as the spawn failure it is.
+///
+/// Neither moment is bounded by anything but the scheduler, and the half
+/// second this used to be ran out on a loaded host. With the load average
+/// between 105 and 270, a write handle let go of after 50 ms still failed
+/// the spawn with `ETXTBSY` in 6 to 49 runs of 300 when this process held
+/// it, and in 9 to 17 of 300 when another process did. Against five
+/// seconds, none of 300 did either way. Five seconds costs nothing when the
+/// file is free, which is every spawn but these, and only delays the report
+/// of a file that really is held open.
+const ETXTBSY_PATIENCE: Duration = Duration::from_secs(5);
+
+/// Longest the timeout path waits for a stopped peer's stderr to close.
+const STOPPED_PIPE_GRACE: Duration = Duration::from_secs(2);
 
 /// Spawn `command`, waiting out a transient `ETXTBSY`.
 fn spawn_waiting_out_etxtbsy(command: &mut Command) -> std::io::Result<std::process::Child> {
@@ -811,6 +820,26 @@ impl Drained {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         String::from_utf8_lossy(&guard.0).into_owned()
+    }
+
+    /// What the peer wrote before it was stopped, lossily decoded.
+    ///
+    /// Waits for the reader to reach the end of the pipe, which it does as
+    /// soon as the group kill has closed every write end: the bytes the peer
+    /// wrote are already in the pipe, but the reader thread may not have been
+    /// scheduled to read them, and a snapshot taken at once lost them (an
+    /// empty stderr in 3 runs of 300 with the load average near 180).
+    ///
+    /// Not joined outright: a grandchild that survived the group kill (a
+    /// different group, a different user) would hold the pipe open, and this
+    /// must return regardless. After [`STOPPED_PIPE_GRACE`] it takes what was
+    /// read.
+    fn after_stop(self) -> String {
+        let started = Instant::now();
+        while !self.reader.is_finished() && started.elapsed() < STOPPED_PIPE_GRACE {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        self.snapshot()
     }
 
     /// Wait for the pipe to close and hand back everything, lossily decoded,
@@ -1189,5 +1218,87 @@ impl From<Reply<TfpsAction>> for TfpsActionAnswer {
                 action: Some(value),
             },
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A pipe whose bytes arrive late and then close, the way a stopped
+    /// peer's stderr does when the reader thread has not yet been scheduled:
+    /// the bytes are in the pipe, and the reader has not read them.
+    struct LateThenClosed {
+        bytes: Option<&'static [u8]>,
+    }
+
+    impl Read for LateThenClosed {
+        fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+            match self.bytes.take() {
+                Some(bytes) => {
+                    std::thread::sleep(Duration::from_millis(200));
+                    buf[..bytes.len()].copy_from_slice(bytes);
+                    Ok(bytes.len())
+                }
+                None => Ok(0),
+            }
+        }
+    }
+
+    /// A pipe that hands over its bytes and then stays open, the way one held
+    /// by a grandchild that survived the group kill does. It closes when the
+    /// test drops the sender.
+    struct HeldOpen {
+        bytes: Option<&'static [u8]>,
+        until: std::sync::mpsc::Receiver<()>,
+    }
+
+    impl Read for HeldOpen {
+        fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+            if let Some(bytes) = self.bytes.take() {
+                buf[..bytes.len()].copy_from_slice(bytes);
+                return Ok(bytes.len());
+            }
+            let _ = self.until.recv();
+            Ok(0)
+        }
+    }
+
+    /// What the peer wrote before the timeout stopped it reaches the error,
+    /// however far behind the reader thread is. With the load average near
+    /// 180, `a_peer_that_hangs_is_stopped_and_reported` got an empty
+    /// stderr back in 3 runs of 300: the peer had written it, the reader had
+    /// not yet read it, and the timeout path took only what had been read.
+    #[test]
+    fn the_stderr_written_before_the_stop_is_kept() {
+        let drained = drain_in_background(LateThenClosed {
+            bytes: Some(b"still opening the database\n"),
+        });
+        assert_eq!(drained.after_stop(), "still opening the database\n");
+    }
+
+    /// A pipe a survivor holds open does not hold the answer: the timeout
+    /// path returns once [`STOPPED_PIPE_GRACE`] has passed, with what was
+    /// read.
+    #[test]
+    fn a_pipe_held_open_by_a_survivor_does_not_hold_the_answer() {
+        let (release, until) = std::sync::mpsc::channel();
+        let drained = drain_in_background(HeldOpen {
+            bytes: Some(b"partial"),
+            until,
+        });
+        let started = Instant::now();
+        let text = drained.after_stop();
+        let waited = started.elapsed();
+        drop(release);
+        assert!(
+            waited >= STOPPED_PIPE_GRACE,
+            "returned after {waited:?}, before the grace ran out, with the pipe still open"
+        );
+        assert!(
+            waited < STOPPED_PIPE_GRACE + Duration::from_secs(30),
+            "waited {waited:?} on a pipe that never closes"
+        );
+        assert_eq!(text, "partial");
     }
 }

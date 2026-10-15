@@ -11,9 +11,9 @@ reachable three ways and not four is visible only once these four are set
 beside one another. [`tests/capability_matrix_test.rs`](https://github.com/NormB/sipnab/blob/main/tests/capability_matrix_test.rs) keeps
 this current and requires the matrix to account for every row here.
 
-Totals: CLI 363, TUI 25, REST 46, MCP 74.
+Totals: CLI 371, TUI 25, REST 47, MCP 76.
 
-## CLI flags (363)
+## CLI flags (371)
 
 - `--ack-timeout`
 - `--active-idle-window`
@@ -27,6 +27,7 @@ Totals: CLI 363, TUI 25, REST 46, MCP 74.
 - `--api`
 - `--api-accept-archive-passwords`
 - `--api-allow-relay-query`
+- `--api-allow-vcon-fetch`
 - `--api-allowed-host`
 - `--api-file-root`
 - `--api-key`
@@ -168,6 +169,7 @@ Totals: CLI 363, TUI 25, REST 46, MCP 74.
 - `--mcp-allow-save-findings`
 - `--mcp-allow-shutdown`
 - `--mcp-allow-tls-capture`
+- `--mcp-allow-vcon-fetch`
 - `--mcp-allowed-host`
 - `--mcp-audit-file`
 - `--mcp-bind`
@@ -322,6 +324,12 @@ Totals: CLI 363, TUI 25, REST 46, MCP 74.
 - `--uprobe-symbol`
 - `--uprobe-tls`
 - `--user`
+- `--vcon-audio-fetch`
+- `--vcon-audio-fetch-ca`
+- `--vcon-audio-fetch-extra-ca`
+- `--vcon-audio-fetch-local`
+- `--vcon-audio-fetch-max-size`
+- `--vcon-audio-fetch-out`
 - `--vcon-digest`
 - `--vcon-fetch`
 - `--vcon-fetch-auth-file`
@@ -407,7 +415,7 @@ Totals: CLI 363, TUI 25, REST 46, MCP 74.
 - `Talkers`
 - `TfpsObserve`
 
-## REST routes (46)
+## REST routes (47)
 
 - `/health`
 - `/metrics`
@@ -453,10 +461,11 @@ Totals: CLI 363, TUI 25, REST 46, MCP 74.
 - `/v1/tfps/unban`
 - `/v1/timeline`
 - `/v1/vcon/analyze`
+- `/v1/vcon/fetch/{uuid}`
 - `/v1/vcon/spool`
 - `/v1/vcon/validate`
 
-## MCP tools (74)
+## MCP tools (76)
 
 - `actions_revert`
 - `aggregate_dialogs`
@@ -480,6 +489,7 @@ Totals: CLI 363, TUI 25, REST 46, MCP 74.
 - `export_audio`
 - `export_capture`
 - `export_vcon`
+- `fetch_vcon`
 - `find_correlated`
 - `find_in_captures`
 - `find_in_captures_status`
@@ -531,4 +541,5 @@ Totals: CLI 363, TUI 25, REST 46, MCP 74.
 - `validate_filter`
 - `validate_message`
 - `validate_vcon`
+- `vcon_directory_report`
 - `vcon_spool_status`

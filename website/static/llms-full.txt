@@ -5106,6 +5106,8 @@ sudo sipnab -N --mcp -d eth0 --rtpengine-control 127.0.0.1:22222 --mcp-allow-rel
     - A tool whose job is telling you what a claim is worth must not round up in the absence of information.
   - The posture is the HEP listener's.
     - A relay datagram read off a capture interface (`input_origin: wire`) is `port-gated-only`, whatever the listener checks.
+    - So is a HEP datagram `--hep-parse` unwraps off an interface or a file, although it reports `input_origin: hep`.
+    - `decode_ng` reads frames from a capture file, so it reports `port-gated-only` for every frame.
 - `reconcile_orphans` has three verdicts. The difference is the point:
   - `relay-asserted-but-no-dialog` means the **signaling** is missing, not the media.
   - `signaled-but-no-dialog` means the capture missed the dialog, or its SDP predates the capture.
@@ -5468,6 +5470,9 @@ The REST API serves them on `GET /v1/dialogs/{call_id}` as a `siprec` block:
 ```
 
 In the TUI, the ladder annotates the recording INVITE in place. So you see it without leaving the call flow.
+
+`--export-vcon` on the same Call-ID writes Alice and Bob as parties, and maps each stream to its sender.
+[A SIPREC recording session](vcon.md#a-siprec-recording-session) describes the container.
 
 **What to look for:**
 
@@ -6800,7 +6805,7 @@ List all tracked SIP dialogs with optional filtering and pagination.
 | `filter`  | string | --      | A [filter expression](filter-dsl.md) or a [named alias](filter-dsl.md#named-aliases) such as `problems` or `slow-setup`. A value that is neither is a `400`. ANDed with `state` and `from` |
 | `limit`   | int    | 50      | Maximum results. Ceiling is `--api-max-rows` (1000 by default), not a fixed limit |
 | `offset`  | int    | 0       | Pagination offset |
-| `filter`  | string | --      | A [filter DSL](filter-dsl.md) expression, the language `--filter` and the TUI filter dialog use, for example `method == 'INVITE'` or `rtp.loss > 2.0`. URL-encode it. An expression that does not parse is a `400` naming the position, never an unfiltered page |
+| `filter`  | string | --      | A [filter DSL](filter-dsl.md) expression, the language `--filter` and the TUI filter dialog use, for example `method == INVITE` or `rtp.loss > 2.0`. A value may be bare or quoted, so `method == 'INVITE'` is the same filter. URL-encode it. An expression that does not parse is a `400` naming the position, never an unfiltered page |
 | `after`   | string | --      | Only dialogs whose first message is at or after this [RFC 3339](https://www.rfc-editor.org/rfc/rfc3339.html) instant, for example `2026-09-15T12:00:00Z`. An instant that does not parse is a `400` |
 | `before`  | string | --      | Only dialogs whose first message is strictly before this RFC 3339 instant. With `after` it forms the half-open window `[after, before)`, the window the MCP `search_by_time` tool uses, so consecutive windows never count a dialog twice. An instant that does not parse is a `400` |
 
@@ -7866,7 +7871,9 @@ build without the `vcon` feature.
 ### GET /v1/dialogs/:call_id/audio
 
 The call's decoded RTP audio as a standalone `audio/wav` file. It is mono for one
-direction, stereo for two.
+direction, stereo for two. In stereo, each channel starts at the capture time of its
+party's first retained packet, with silence before it, so the two parties
+line up as they spoke.
 
 - These are the same bytes the MCP `export_audio` tool writes and
   the vCon exporter inlines, from one decode.
@@ -7903,7 +7910,11 @@ curl -s -H "Authorization: Bearer $SIPNAB_API_KEY" http://127.0.0.1:8080/v1/dial
 - when the file is partial, how:
   - a wrapped payload ring,
   - a stream sipnab could not decode,
-  - a direction the capture never saw.
+  - a direction the capture never saw,
+  - silence where the RTP timestamps show no audio arrived (lost packets, or
+    the sender pausing), with its length in milliseconds,
+  - repeated packets sipnab dropped, and timestamp jumps longer than the
+    stream that sipnab did not fill.
 
 So a `.wav` forwarded and played months later
 still says what it is and what it leaves out.
@@ -7991,7 +8002,7 @@ The server sends:
 | Message | Content |
 |---------|---------|
 | Text `{"type": "stream", ...}` | A stream, before its first packet: `stream` (its index), `ssrc`, `src`, `dst`, `codec`, `rate` (samples per second) and `format` (`s16le`) |
-| Binary | One RTP packet's audio. The first byte is the stream's index; the rest is 16-bit little-endian PCM at the stream's `rate` |
+| Binary | One RTP packet's audio, or silence of the length of audio that did not arrive: where a packet's RTP timestamp is ahead of where the previous packet's audio ended, a message of zero samples covering the difference comes first. The first byte is the stream's index; the rest is 16-bit little-endian PCM at the stream's `rate`. The server sends a packet that repeats a timestamp once |
 | Text `{"type": "skipped", ...}` | A stream whose codec sipnab does not decode: `ssrc`, `codec`, `reason`. The server sends none of its packets |
 | Text `{"type": "gap", ...}` | `packets` of stream `stream` left retention before the server sent them, so the audio has a gap there |
 | Text `{"type": "end", ...}` | The call ended (`reason`); a close with code 1000 follows |
@@ -9326,7 +9337,8 @@ curl -s -H "Authorization: Bearer $SIPNAB_API_KEY" http://127.0.0.1:8080/v1/capa
   "can_hep": true,
   "can_plugins": false,
   "runtime": {
-    "api_allow_relay_query": false
+    "api_allow_relay_query": false,
+    "api_allow_vcon_fetch": false
   },
   "libpcap": {
     "banner": "libpcap version 1.10.5 (with TPACKET_V3)",
@@ -9354,6 +9366,9 @@ curl -s -H "Authorization: Bearer $SIPNAB_API_KEY" http://127.0.0.1:8080/v1/capa
   never work.
 - `api_allow_relay_query` is off unless this run may transmit a relay
   query.
+- `api_allow_vcon_fetch` is off unless
+  [`GET /v1/vcon/fetch/:uuid`](#get-v1vconfetchuuid) can reach a store: the run
+  has `--api-allow-vcon-fetch` and the config file sets `[vcon_fetch] url`.
 
 **`libpcap` names the library this process captures through.** It is
 `pcap_lib_version()` asked at runtime.
@@ -10742,6 +10757,55 @@ feature registers this route.
 
 ---
 
+### GET /v1/vcon/fetch/:uuid
+
+One vCon container from the operator's vCon store, by uuid, returned in the
+answer. sipnab writes no file.
+
+- It connects to the store the `[vcon_fetch]` section of the config file
+  configures, so it is off unless the run has `--api-allow-vcon-fetch`.
+- The store, its kind, the credential and the decryption key come from
+  `[vcon_fetch]` only. The client gives the uuid and nothing else, and the
+  answer never holds a key or the credential.
+- The request, the credential, the CA, the size limit, the decryption and
+  the signer checks are `sipnab --vcon-fetch`'s, by the same function
+  ([Fetch a stored vCon](vcon.md#fetch-a-stored-vcon)).
+- The MCP tool [`fetch_vcon`](mcp-tools-vcon.md#fetch_vcon) gives the same
+  answer. Its section describes every field.
+
+| Status | When |
+|---|---|
+| `200` | The container, with `stored_form`, `decrypted`, `signature_verified`, `signer_sha256` and `schema_findings` |
+| `400` | The uuid is not 1 to 64 characters, each a letter, a digit or `-`. sipnab sends nothing |
+| `404` | The store answered `404` |
+| `502` | Anything else the fetcher refuses: another status, a timeout, an answer over `[vcon_fetch] max_size`, another uuid inside, a key that does not decrypt, a signer that fails a check. `detail` says which, with the credential removed |
+| `503` | No `--api-allow-vcon-fetch`, or no `[vcon_fetch] url`; `detail` names the flag or the keys. Also the rate limit |
+
+**curl:**
+
+```bash
+curl -s -H "Authorization: Bearer $SIPNAB_API_KEY" \
+  http://127.0.0.1:18080/v1/vcon/fetch/0158a120-0392-8751-9a04-9decf1485b22 \
+  | jq -c 'del(.container)'
+```
+
+**Response**, from a run started with `--api-allow-vcon-fetch` and a
+`[vcon_fetch]` conserver store holding that container, `container` left out:
+
+```json
+{"decrypted":false,"schema_findings":[],"schema_version":1,"signature_verified":false,"signer_sha256":null,"stored_form":"unsigned","uuid":"0158a120-0392-8751-9a04-9decf1485b22"}
+```
+
+Without the flag:
+
+```json
+{"detail":"fetching a vCon from the store is off on this server: start sipnab with --api-allow-vcon-fetch, and configure the store in [vcon_fetch]","status":503,"title":"Service Unavailable","type":"https://sipnab.com/problems/unavailable"}
+```
+
+Only a build with the `vcon` feature registers this route.
+
+---
+
 ### GET /v1/relay/stats
 
 The relay's own global counters, tiered `relay_reported`.
@@ -11322,7 +11386,7 @@ it does these things:
 It does for this surface what <https://sipnab.com/api-reference/> does for the
 [REST API](rest-api.md).
 
-sipnab registers 74 MCP tools. That is more than anyone reads in a table. The
+sipnab registers 76 MCP tools. That is more than anyone reads in a table. The
 Tools tab is the fastest way to find the one you want.
 
 Inspector belongs to the protocol rather than to sipnab. So it also
@@ -12485,7 +12549,7 @@ sipnab -D
 line it shows the libpcap it is running, e.g.
 
 ```text
-sipnab 0.5.220 (<hash>) features: native,tui,audio,tls,hep,api,mcp,mcp-http,metrics,plugins,bpf,vcon,archive
+sipnab 0.5.221 (<hash>) features: native,tui,audio,tls,hep,api,mcp,mcp-http,metrics,plugins,bpf,vcon,archive
 libpcap version 1.10.5 (with TPACKET_V3); alternate capture backends named: none
 ```
 
@@ -18124,7 +18188,7 @@ stop log lines corrupting the alternate screen. So redirect stderr if you do.
 | `--to` | `<PATTERN>` | -- | 0.3.0 | Filter by SIP To header (regex pattern). Config: `[filter] to` |
 | `--contact` | `<PATTERN>` | -- | 0.3.0 | Filter by SIP Contact header (regex pattern) |
 | `--ua` | `<PATTERN>` | -- | 0.3.0 | Filter by User-Agent header (regex pattern) |
-| `--filter` | `<EXPR>` | -- | 0.3.0 | Filter DSL expression OR a diagnostic alias name (`codec-asym`, `late-media`, etc.) — see [filter-dsl.md](filter-dsl.md). The expression may use a [named filter](filter-dsl.md#named-filters) from `[filters]` as `@name`. Config: `[filter] expression` |
+| `--filter` | `<EXPR>` | -- | 0.3.0 | Filter DSL expression OR a diagnostic alias name (`codec-asym`, `late-media`, etc.) — see [filter-dsl.md](filter-dsl.md). A value may be bare or quoted: `method == INVITE` and `method == 'INVITE'` are the same filter. The expression may use a [named filter](filter-dsl.md#named-filters) from `[filters]` as `@name`. Config: `[filter] expression` |
 | `--since` | `<RFC3339>` | -- | 0.5.214 | Keep only dialogs whose first message is at or after this instant (`2026-10-09T10:00:00Z`). The window is half-open, `[--since, --until)`: see [Scope a run to a time window](#scope-a-run-to-a-time-window). ANDed with `--filter`. Needs `-N` |
 | `--until` | `<RFC3339>` | -- | 0.5.214 | Keep only dialogs whose first message is before this instant; a dialog at exactly `--until` belongs to the next window. Must be after `--since`. ANDed with `--filter`. Needs `-N` |
 
@@ -18317,7 +18381,7 @@ Multiple diagnostic flags combine with OR.
 | `--json-pretty` | -- | off | 0.3.0 | Output each message as pretty-printed multi-line JSON (use `--json` for line-oriented NDJSON). Requires `-N` |
 | `--json-dialogs` | -- | off | 0.5.68 | NDJSON, one object per **dialog**, emitted after capture (needs `-N`; pair with `--no-cli-print` to get only the objects). `--json` is per message: a dialog filter such as `state == 'Failed'` selects dialogs and then emits every message of them, provisional responses included. This is the per-call shape, carrying `final_status_code` and `final_status_reason` so a failed call says which code failed it — those two are the final answer to the dialog's INVITE, or to the `REGISTER`/`OPTIONS`/`SUBSCRIBE`/`PUBLISH` that opened a dialog without one, and are `null` while it has none. |
 | `--plugin` | `<PATH>` | -- | 0.5.69 | Load a WASM plugin that contributes its own dialog detections; repeatable. Findings appear under `plugin_findings`. Requires the `plugins` Cargo feature (**not** in the default set). A plugin runs with no imports — no filesystem, network or clock — but still sees each message's headers, so loading one is a trust decision. See [wasm-plugin-api.md](design/wasm-plugin-api.md) |
-| `--report` | -- | off | 0.3.0 | Generate summary report after capture completes. Requires `-N` |
+| `--report` | -- | off | 0.3.0 | Generate summary report after capture completes. Requires `-N`. When the inputs include stored vCon containers, the report adds one row per container, read or skipped with the reason, and their totals; with `--json` or `--json-pretty`, as one JSON object under the key `sipnab_vcon_containers`. See [Read many containers at once](vcon.md#read-many-containers-at-once) |
 | `--call-report` | `<CALL-ID>` | -- | 0.3.0 | Generate a detailed report for a specific Call-ID. Implies non-interactive |
 | `--export-vcon` | `<CALL-ID>` | -- | 0.5.125 | Export one dialog as an observer vCon container ([`draft-ietf-vcon-vcon-core`](https://datatracker.ietf.org/doc/draft-ietf-vcon-vcon-core/), syntax `0.4.0`): unsigned, with each party's `name` taken only from a `From` or `To` display name and marked `validation: "none"`, with the audio this run retained inline up to `--vcon-max-inline-media`, and with what the capture missed attached. Goes to stdout unless `--vcon-out` names a file, and then silences the per-message stream so the container stays parseable. Implies non-interactive. On a live capture (`-d` or `--hep-listen`), sipnab writes the container when that call ends, about ten seconds after its last message, while the capture runs. A stopped live run writes nothing, so stopping sipnab leaves no call data behind. With `-I`, sipnab writes it at the end of the run. A live run refuses `--redact` and `--redact-map`, which only write at the end of a run; use them with `-I`. Needs the `vcon` Cargo feature, which `full` has and the default set does not. More: [Export a call as a vCon](vcon.md) |
 | `--export-vcon-when` | `<EXPR>` | -- | 0.5.127 | Emit a vCon for every dialog matching this filter expression, one container per dialog, into `--export-vcon-dir`. `EXPR` is the language `--filter` already speaks ([`docs/filter-dsl.md`](https://github.com/NormB/sipnab/blob/main/docs/filter-dsl.md)), so `state == 'Failed'` and `response_code >= 400 and rtp.codec == 'PCMU'` work without new syntax. Reusing the language rather than growing a flag per policy is deliberate: one flag for failures, another for calls with media, another for a duration threshold, and so on enumerates the cases somebody thought of. The case nobody thought of is the one an operator needs at three in the morning. Parsed before the capture opens, so a malformed expression fails the run instead of leaving an empty directory a reader takes for "nothing matched". Conflicts with `--export-vcon`, which answers the same question for one named call. Implies non-interactive, and unlike `--export-vcon` it leaves stdout alone, because the containers go to a directory. On a live capture (`-d` or `--hep-listen`), sipnab writes each matching call's container while the capture runs, about ten seconds after the call ends. A stopped live run writes nothing more, so stopping sipnab leaves no call data behind. With `-I`, sipnab writes every container at the end of the run. A live run refuses `--redact`, `--redact-map` and `--content-deny-tombstone`, which only write at the end of a run; use them with `-I`. Needs the `vcon` Cargo feature |
@@ -18790,6 +18854,7 @@ Root runs have always behaved this way. Unprivileged runs
 | `--api-max-rows` | `<N>` | `1000` | 0.5.100 | Rows one list-style REST response returns. The REST counterpart of `--mcp-max-rows`, settable for the same reason: the right ceiling belongs to the consumer, not to sipnab. A batch consumer piping `/v1/dialogs` to a file wants every row; a dashboard drawing a table wants far fewer. A caller may always ask for less with `?limit=`, and nothing it sends asks for more than this. Config: `[limits] api_max_rows` Feature: `api` |
 | `--api-rate-limit-per-peer` | `<N>` | `100` | 0.5.100 | REST requests one client IP may make per second; `0` disables the cap, the reading `--mcp-rate-limit-per-peer` and `--hep-rate-limit` also give it. The limiter counts by source address, so a dashboard polling `/v1/streams` on a short timer, or several collectors behind one NAT, share a single allowance. A refusal is `503` rather than `429` because the limiter runs before authentication, so it says nothing about the credential. Config: `[limits] api_rate_limit_per_peer` Feature: `api` |
 | `--api-allow-relay-query` | -- | -- | 0.5.170 | Let REST clients query the relay named by `--rtpengine-control` through the `GET /v1/relay/...` routes, which transmit. The REST counterpart of `--mcp-allow-relay-query`, off for the same reason: every other REST answer comes from bytes sipnab already holds, and these put a packet on the network — at the address that flag names, never one a client chooses. Without this flag those routes answer `not_permitted`; without a relay, or on a file-backed run, `not_configured`. Each response is HTTP 200 carrying an `outcome`, so a refusal is content, not a 4xx. Polling on an interval is not offered over REST at all. Feature: `api` |
+| `--api-allow-vcon-fetch` | -- | off | 0.5.221 | Let REST clients read one vCon by uuid from the store the `[vcon_fetch]` keys configure, through [`GET /v1/vcon/fetch/:uuid`](rest-api.md#get-v1vconfetchuuid), which connects to that store. The REST counterpart of `--mcp-allow-vcon-fetch`, off for the same reason. The store, its kind, the credential and the decryption key come from `[vcon_fetch]` only, never from the request, and the answer holds no key. Without this flag the route answers `503` naming it; with it and no `[vcon_fetch] url`, `503` naming the keys. sipnab stops at startup when it cannot read the store's credential or key file. The container comes back in the answer, and sipnab writes no file. Feature: `api` and `vcon` |
 | `--api-accept-archive-passwords` | -- | off | 0.5.187 | Accept the `Sipnab-Archive-Password` header on `GET /v1/captures/compare` from a client that is not on this host. Without `--api-tls-cert` sipnab serves plain HTTP, so the password crosses the network in the clear unless TLS terminates in front: making sure it does is your job when you pass this. Without it, only a loopback client may send one, and a remote one gets `403`. Feature: `api` |
 | `--api-file-root` | `<DIR>` | -- | 0.5.177 | Directory of capture files `GET /v1/captures/compare` may diff. The REST counterpart of `--mcp-file-root`, off for the same reason: every other REST answer comes from bytes sipnab already holds, while this reads FILES a client names. It takes a bare FILENAME, never a path: sipnab rejects a separator, a `..` or an absolute prefix before touching the filesystem, and refuses a symlink that resolves out of the root at open, by the same check `-O` uses. Without this flag the compare route answers `503`. Naming one directory means the worst a client can do is name files inside it. Feature: `api` |
 | `--metrics-max-conn` | `<N>` | `16` | 0.5.100 | Metrics scrapes served at once before further ones get `503`. The gate stops a burst of slow clients exhausting threads and taking monitoring down, and sixteen suits one Prometheus; an HA pair, a federating parent, a `remote_write` shard, an alertmanager sidecar and one engineer's `curl` reach it without anything unusual happening. A refused scrape leaves a hole in the series that reads as a capture that died rather than as a busy endpoint. Config: `[limits] metrics_max_conn` Feature: `metrics` |
@@ -18829,6 +18894,8 @@ Root runs have always behaved this way. Unprivileged runs
 - `sudo sipnab -N -d eth0 --api 127.0.0.1:8080 --api-key s3cret --api-max-rows 200 --api-rate-limit-per-peer 600` — the opposite, for a dashboard: short pages a browser can render, and six hundred requests a second per address, so a dozen browsers refreshing twice a second behind one office NAT share an allowance that fits them
 - `sudo sipnab -N -d eth0 --api 127.0.0.1:8080 --api-key s3cret --rtpengine-control 127.0.0.1:22222 --api-allow-relay-query` — a live capture whose REST clients may also ask the relay: `GET /v1/relay/stats` returns its counters as one JSON object with an `outcome`, transmitting once per request. Off without this flag, when those routes answer `not_permitted`
 - `sipnab -N -I capture.pcap --api 127.0.0.1:8080 --api-key s3cret --api-allow-relay-query --rtpengine-control 127.0.0.1:22222` — the relay routes still answer on a file run, but with `outcome: not_permitted`: a file-backed run holds no transmit permit, so no packet reaches the relay, and the addresses in a capture belong to third parties
+- `sipnab -N -I capture.pcap --config sipnab.toml --api 127.0.0.1:8080 --api-key s3cret --api-allow-vcon-fetch` — REST clients may read one vCon by uuid with `GET /v1/vcon/fetch/:uuid` from the store `[vcon_fetch]` names; without the flag that route answers `503`
+- `sipnab -N -I capture.pcap --config sipnab.toml --api 127.0.0.1:8080 --api-key s3cret --api-allow-vcon-fetch --mcp --mcp-transport http --mcp-allow-vcon-fetch` — both doors, each opted in by its own flag and reading the one store `[vcon_fetch]` names
 - `sipnab -N -I today.pcap --api 127.0.0.1:8080 --api-key s3cret --api-file-root /srv/pcaps --archive-password-file /etc/sipnab/pcaps.pw` — the compare route opens password-protected ZIPs under `/srv/pcaps` with the operator's passwords, and a local client may add one per request in the `Sipnab-Archive-Password` header
 - `sipnab -N -I today.pcap --api 0.0.0.0:8080 --api-key s3cret --api-file-root /srv/pcaps --api-accept-archive-passwords` — behind a TLS proxy on another host: remote clients may send `Sipnab-Archive-Password`, which without the flag get `403` because the password would cross the network in the clear
 - `sipnab -N -I today.pcap --api 127.0.0.1:8080 --api-key s3cret --api-file-root /srv/pcaps --api-accept-archive-passwords --archive-password-file /etc/sipnab/pcaps.pw` — both at once: configured passwords first, then the request's
@@ -19067,6 +19134,7 @@ Run sipnab as a Model Context Protocol server so an AI agent can drive it.
 | `--mcp-allow-open-capture` | -- | off | 0.5.74 | Permit the `open_capture` MCP tool to load a different capture from `--mcp-file-root`, discarding every dialog and stream held. Off by default, so a stock server keeps the capture the command line named. The tool refuses while the source is live or still filling the stores, loads in the background, and mints a new capture identity every later answer carries. sipnab refuses it with the TUI up, because the tool would replace the capture the operator is reading; add `-N`. Feature: `mcp` |
 | `--mcp-allow-relay-query` | -- | off | 0.5.139 | Permit the `query_relay` MCP tool to ask the configured relay what calls it holds right now. Off by default because this tool **transmits**: every other MCP tool answers from bytes sipnab already has, and this one puts a packet on the network at the address `--rtpengine-control` names. That address comes from the flag and from nowhere else, never from a tool argument — an agent that could name the destination would turn the MCP surface into a way to send packets to a host of its own choosing. Without `--rtpengine-control`, or on a run reading a file, the tool refuses and names which of the two is missing. sipnab refuses it with the TUI up, because the TUI's relay statistics view holds the run's one transmit permit; add `-N`. Feature: `mcp` |
 | `--mcp-allow-tls-capture` | -- | off | 0.5.102 | Let an agent install kernel uprobes and read TLS plaintext ([`start_tls_capture`](mcp-tools-tls.md#start_tls_capture), `stop_tls_capture`). **The most consequential opt-in on this surface**: it lets an agent read the plaintext of TLS sessions belonging to processes it does not own, needs the server to still be root, and creates kernel state that outlives a crash. `list_tls_libraries` stays available without it, so an agent can always report what a capture WOULD see. sipnab refuses it with the TUI up, because the capture would write into the stores the operator is reading; add `-N`. Feature: `mcp` |
+| `--mcp-allow-vcon-fetch` | -- | off | 0.5.221 | Permit the [`fetch_vcon`](mcp-tools-vcon.md#fetch_vcon) MCP tool to read one vCon by uuid from the store the `[vcon_fetch]` keys configure. Off by default because this tool **connects** to that store: every other vCon tool answers from bytes sipnab already has. The store, its kind, the credential and the decryption key come from `[vcon_fetch]` only, never from a tool argument; the tool takes a uuid and nothing else, and its answer holds no key. Without `[vcon_fetch] url` the tool refuses and names the keys. sipnab stops at startup when it cannot read the store's credential or key file. The container comes back in the answer, and sipnab writes no file. Feature: `mcp` and `vcon` |
 | `--mcp-allow-save-findings` | -- | off | 0.5.81 | Permit the `save_findings` MCP tool to record an agent's conclusion. Off by default. A finding goes to sipnab's log and nowhere else: no tool reads it back, it appears in no query result, and no analysis consumes it, so it cannot return as evidence in a later answer. Clipped at 500 characters of summary and bounded at 1000 findings per process, both reported rather than silent. sipnab refuses it with the TUI up, because a TUI run logs only errors and nobody would see the finding; add `-N`. Feature: `mcp` |
 | `--retain-audio` | -- | off | 0.5.84 | Retain RTP audio payload in memory, so sipnab can look at the audio itself. Two things read it back: the `export_audio` MCP tool, which decodes a WAV, and the amplitude measurement in the media diagnosis, which reports dead-air spans and hard-clip runs on `--call-report` and `--json-dialogs`. Off by default: call audio is content, not signaling, and holding it is an operator decision rather than a side effect of running a capture. It used to require `--mcp`, back when the MCP server was the only reader; that would now keep the one finding that needs samples behind a server nobody analyzing a pcap wants to start. Keeps whole calls, from the first frame. Costs a per-packet payload clone, bounded by one budget across every stream, `[limits] max_audio_bytes` (default 1 GiB, which holds 67 concurrent ten-minute G.711 calls; see [Audio retention budget](config-reference.md#audio-retention-budget)). At the budget sipnab releases the oldest stream's earliest frames first, and that call's export and vCon say PARTIAL with the count. `[limits] max_audio_frames` caps each stream as well when set. Without it `export_audio` refuses and names this flag, and the amplitude object is absent — both describe what the run kept, never whether the call carried audio. `--cores` honors this flag: the parallel workers used to discard payload regardless, so a run could accept the flag and keep nothing |
 
@@ -19101,6 +19169,8 @@ Run sipnab as a Model Context Protocol server so an AI agent can drive it.
 - `sudo sipnab -N -d eth0 --mcp --mcp-evidence-ring 256` — a live capture an agent can quote FROM. Without it sipnab refuses every pointer into `eth0`, honestly: it holds parsed messages and not frames, so nothing remains to seek to. 256 MiB buys a window. Outside it the refusal reports that the ring dropped the frame rather than that the frame never existed
 - `sipnab -N -I capture.pcap --mcp --mcp-evidence-ring 64` — harmless and pointless together, which is worth knowing: a reader can open a capture file again, so the ring keeps nothing and never spends the 64 MiB. It holds frames only from a source nothing can read twice
 - `sipnab -N -I capture.pcap --mcp --mcp-file-root /var/spool/sipnab-captures --mcp-allow-open-capture --mcp-allow-shutdown` — the same, plus the ability to end the session. Both opt-ins are separate on purpose
+- `sipnab -N -I capture.pcap --config sipnab.toml --mcp --mcp-allow-vcon-fetch` — let an agent read a vCon by uuid with `fetch_vcon` from the store the config file's `[vcon_fetch]` section names; the agent gives the uuid and never a URL or key
+- `sipnab -N -I capture.pcap --config sipnab.toml --mcp --mcp-transport http --mcp-allow-vcon-fetch --mcp-tools vcon` — the same over HTTP, with only the `vcon` bundle loaded, so the agent can fetch a stored call and run `analyze_vcon` on it
 - `sipnab -N -I capture.pcap --mcp --mcp-allow-save-findings` — let an agent write its conclusions into the log while it works through a capture. Read them back with `journalctl -u sipnab`, never through a tool
 - `sudo sipnab -N -d eth0 --mcp --mcp-transport http --mcp-allow-save-findings` — a live triage session whose findings survive in the journal after the agent disconnects, without granting it any other write
 - `sipnab -N -I capture.pcap --mcp --mcp-file-root /var/spool/sipnab-exports --retain-audio` — hold call audio in memory so an agent can `export_audio` a WAV of a problem call
@@ -19259,18 +19329,18 @@ The platforms also differ.
 | `--vcon-forward-replace-url` | `<TEMPLATE>` | -- | 0.5.205 | When the POST answers `409`, PUT the same bytes to this URL with `{uuid}` replaced by the container's `uuid`. Without it a `409` is a refusal like any other `4xx`. Config: `[vcon_forward] replace_url` |
 | `--vcon-forward-once` | -- | off | 0.5.205 | Make one pass and exit: `0` when the store accepted every container or the spool held none, `1` when the store refused one or one is still waiting, `2` when sipnab refuses the settings, `3` when the store answered `401` or `403`. A config file sipnab cannot read, or one that holds a `[vcon_forward]` number or `kind` outside its range or list, an empty path, or a `url` or `replace_url` sipnab refuses, exits `1` before the pass, as any run does; the same refusal of `--vcon-forward-url` or `--vcon-forward-replace-url` exits `2`. Without it the forwarder passes over the spool every `--vcon-forward-interval` seconds until SIGTERM or SIGINT, and sends nothing after the signal |
 | `--vcon-forward-interval` | `<SECS>` | `5` | 0.5.205 | Seconds between passes, 1 to 3600. Config: `[vcon_forward] interval` |
-| `--vcon-forward-timeout` | `<SECS>` | `30` | 0.5.205 | Seconds to wait to connect, and for each read and write, before the store counts as unreachable and the container waits for a retry, 1 to 600. Config: `[vcon_forward] timeout` |
+| `--vcon-forward-timeout` | `<SECS>` | `30` | 0.5.205 | Seconds to wait to connect, and for each read and write, before the store counts as unreachable and the container waits for a retry, 1 to 600. It also bounds each SCITT registration: polling a `202`'s `Location` for the receipt ends within it. Config: `[vcon_forward] timeout` |
 | `--vcon-forward-ca` | `<FILE>` | host bundle | 0.5.205 | Trust only the CA certificates in this PEM file for an `https://` store. Without it the forwarder trusts the host's CA bundle. Config: `[vcon_forward] ca` |
 | `--vcon-forward-extra-ca` | `<FILE>` | -- | 0.5.219 | Trust the CA certificates in this PEM file for an `https://` store **in addition to** the host's CA bundle: the forwarder accepts the store's certificate when the host's bundle or this file issued it. Use `--vcon-forward-ca` instead to trust only the named file; the forwarder refuses the two together. Either flag replaces both `[vcon_forward] ca` and `[vcon_forward] extra_ca`. Config: `[vcon_forward] extra_ca` |
 | `--vcon-forward-backoff-first` | `<SECS>` | `2` | 0.5.206 | Seconds a container waits after its first failed try (a `5xx`, a timeout or no connection); each failed try doubles the wait, up to `--vcon-forward-backoff-cap`. 1 to 4294967295, and no longer than the cap. Config: `[vcon_forward] backoff_first` |
 | `--vcon-forward-backoff-cap` | `<SECS>` | `300` | 0.5.206 | The longest a container waits between tries, 1 to 4294967295, and no shorter than `--vcon-forward-backoff-first`. Config: `[vcon_forward] backoff_cap` |
 | `--vcon-forward-max-response-head` | `<BYTES>` | `65536` | 0.5.206 | The most bytes of a store's status line and headers read, 1 to 4294967295. The forwarder treats an answer with more as no answer, and the container waits for a retry. Config: `[vcon_forward] max_response_head` |
 | `--vcon-forward-max-error-body` | `<BYTES>` | `8192` | 0.5.206 | The most bytes of a store's answer to a refused container that its `<name>.error.json` record keeps, 1 to 4294967295. Config: `[vcon_forward] max_error_body` |
-| `--vcon-forward-scitt-url` | `<URL>` | -- | 0.5.219 | Register SCITT lifecycle statements (draft-howe-vcon-lifecycle-01) with the transparency service at this base URL. For each delivered container, `vcon_created` when sipnab wrote it once and `vcon_sent` every time, each a COSE_Sign1 Signed Statement POSTed to `<URL>/entries`. What the service answered goes into `<name>.scitt` beside the delivered container. sipnab logs and records a statement that does not register, and does not retry it; the delivery stands. Needs `--vcon-forward-scitt-sign-key`, `--vcon-forward-scitt-sign-cert` and `--vcon-forward-scitt-issuer`, each from its flag or its key; without one sipnab refuses the run with exit `2`, naming it. More: [Register lifecycle statements with a transparency service](vcon.md#register-lifecycle-statements-with-a-transparency-service). Config: `[vcon_forward] scitt_url` |
+| `--vcon-forward-scitt-url` | `<URL>` | -- | 0.5.219 | Register SCITT lifecycle statements (draft-howe-vcon-lifecycle-01) with the transparency service at this base URL. For each delivered container, `vcon_created` when sipnab wrote it once and `vcon_sent` every time, each a COSE_Sign1 Signed Statement POSTed to `<URL>/entries`. After a `202`, sipnab polls its `Location` for the receipt within `--vcon-forward-timeout`, honoring `Retry-After`, and only on the scheme, host and port of this URL (draft-ietf-scitt-scrapi-11 section 2.4); the record marks a receipt still running then as `pending`. What the service answered goes into `<name>.scitt` beside the delivered container. sipnab logs and records a statement that does not register, and does not retry it; the delivery stands. Needs `--vcon-forward-scitt-sign-key`, `--vcon-forward-scitt-sign-cert` and `--vcon-forward-scitt-issuer`, each from its flag or its key; without one sipnab refuses the run with exit `2`, naming it. More: [Register lifecycle statements with a transparency service](vcon.md#register-lifecycle-statements-with-a-transparency-service). Config: `[vcon_forward] scitt_url` |
 | `--vcon-forward-scitt-auth-file` | `<FILE>` | -- | 0.5.219 | File holding one `Header-Name: value` line sent with each registration. Refused when other users can read it (`chmod 600` it). The store's credential never goes to the transparency service, and this one never goes to the store. Config: `[vcon_forward] scitt_auth_file` |
 | `--vcon-forward-scitt-ca` | `<FILE>` | host bundle | 0.5.219 | Trust only the CA certificates in this PEM file for an `https://` transparency service. Config: `[vcon_forward] scitt_ca` |
-| `--vcon-forward-scitt-sign-key` | `<FILE>` | -- | 0.5.219 | The PEM RSA private key that signs the statements (RS256), the same kind of key an encrypting `[[vcon.rule]]` names in `sign_key`. Refused when other users can read it (`chmod 600` it), with exit `2`; the same file named by `[vcon_forward] scitt_sign_key` exits `1`. Config: `[vcon_forward] scitt_sign_key` |
-| `--vcon-forward-scitt-sign-cert` | `<FILE>` | -- | 0.5.219 | The PEM certificate chain of the signing key, leaf first, carried in each statement's `x5chain`. sipnab refuses a chain whose first certificate is not the key's. Config: `[vcon_forward] scitt_sign_cert` |
+| `--vcon-forward-scitt-sign-key` | `<FILE>` | -- | 0.5.219 | The PEM private key that signs the statements: an RSA key signs RS256 (COSE `alg` -257), an EC P-256 key ES256 (`alg` -7). The same kinds of key an encrypting `[[vcon.rule]]` names in `sign_key`. Refused when other users can read it (`chmod 600` it), with exit `2`; the same file named by `[vcon_forward] scitt_sign_key` exits `1`. Config: `[vcon_forward] scitt_sign_key` |
+| `--vcon-forward-scitt-sign-cert` | `<FILE>` | -- | 0.5.219 | The PEM certificate chain of the signing key, leaf first, carried in each statement's `x5chain`. sipnab refuses a chain whose first certificate is not the key's before it sends anything, naming both flags, with exit `2` (`1` when `[vcon_forward] scitt_sign_key` named the key). Config: `[vcon_forward] scitt_sign_cert` |
 | `--vcon-forward-scitt-issuer` | `<URI>` | -- | 0.5.219 | The issuer each statement names in its CWT Claims (`iss`): a URI of 1 to 8192 characters, such as `https://pbx.example.com/sipnab`. Config: `[vcon_forward] scitt_issuer` |
 | `--vcon-forward-content-type` | `<TYPE>` | `application/json` | 0.5.219 | The `Content-Type` of a JSON container: `application/json`, `application/vcon+json` or `application/vcon`. A gzip format container always goes as `application/vcon+gzip`, the type draft-ietf-vcon-vcon-core-04 section 5.4 names, whatever this says. A conserver answered `422` to `application/vcon` and `204` to the other two, so the default stays `application/json`. See [What it does with each container](vcon.md#what-it-does-with-each-container). Config: `[vcon_forward] content_type` |
 | `--vcon-spool-status` | `<SPOOL_DIR>` | -- | 0.5.212 | Print the state of an `--export-vcon-dir` spool as JSON and exit: containers pending, delivered and failed, and the `<name>.error.json` record beside each failed container. Reads the forwarder's default `delivered/` and `failed/` directories beside the spool. A snapshot of the files: it sends, moves, creates and deletes nothing. The MCP tool `vcon_spool_status` and `GET /v1/vcon/spool` give the same answer. Exit `0` after printing, also for a spool directory that does not exist yet, `1` when sipnab cannot read a directory that exists. Refused beside any capture flag, `--vcon-forward` and `--vcon-fetch` |
@@ -19331,8 +19401,8 @@ store by uuid and writes each to a file.
 | `--vcon-fetch-ca` | `<FILE>` | host bundle | 0.5.209 | Trust only the CA certificates in this PEM file for an `https://` store. Without it the fetcher trusts the host's CA bundle. Config: `[vcon_fetch] ca` |
 | `--vcon-fetch-extra-ca` | `<FILE>` | -- | 0.5.219 | Trust the CA certificates in this PEM file for an `https://` store **in addition to** the host's CA bundle: the fetcher accepts the store's certificate when the host's bundle or this file issued it. Use `--vcon-fetch-ca` instead to trust only the named file; the fetcher refuses the two together. Either flag replaces both `[vcon_fetch] ca` and `[vcon_fetch] extra_ca`. Config: `[vcon_fetch] extra_ca` |
 | `--vcon-fetch-decrypt-key` | `<FILE>` | -- | 0.5.218 | Decrypt each encrypted container with the RSA private key in this PEM file, verify its signature, and write the unsigned vCon inside. The file must be readable by its owner only. Without it the fetcher writes an encrypted container as the store holds it. See [Fetch an encrypted vCon](vcon.md#fetch-an-encrypted-vcon). Config: `[vcon_fetch] decrypt_key` |
-| `--vcon-fetch-signer-ca` | `<FILE\|system>` | -- | 0.5.219 | Write a decrypted container only when its signing certificate chains, through the intermediates in its `x5c`, to a CA certificate in this PEM file, with every certificate in the chain within its validity period. `system` uses the host's CA bundle; write `./system` for a file of that name. A container that is not encrypted has no signer to check and the fetcher writes nothing for it. Needs `--vcon-fetch-decrypt-key`. See [Check who signed it](vcon.md#check-who-signed-it). Config: `[vcon_fetch] signer_ca` |
-| `--vcon-fetch-signer-sha256` | `<HEX>` | -- | 0.5.219 | Write a decrypted container only when its signing certificate has this SHA-256 fingerprint: 64 hex digits, plain or in colon-separated pairs, either case, as `openssl x509 -noout -fingerprint -sha256` prints it. A container that is not encrypted has no signer to check and the fetcher writes nothing for it. Needs `--vcon-fetch-decrypt-key`. Config: `[vcon_fetch] signer_sha256` |
+| `--vcon-fetch-signer-ca` | `<FILE\|system>` | -- | 0.5.219 | Write a decrypted or signed container only when its signing certificate chains, through the intermediates in its `x5c`, to a CA certificate in this PEM file, with every certificate in the chain within its validity period. `system` uses the host's CA bundle; write `./system` for a file of that name. A container that is not signed has no signer to check and the fetcher writes nothing for it. Needs no key for a signed container; an encrypted one needs `--vcon-fetch-decrypt-key`, and without it the fetcher writes nothing for an encrypted container. See [Check who signed it](vcon.md#check-who-signed-it). Config: `[vcon_fetch] signer_ca` |
+| `--vcon-fetch-signer-sha256` | `<HEX>` | -- | 0.5.219 | Write a decrypted or signed container only when its signing certificate has this SHA-256 fingerprint: 64 hex digits, plain or in colon-separated pairs, either case, as `openssl x509 -noout -fingerprint -sha256` prints it. A container that is not signed has no signer to check and the fetcher writes nothing for it. Needs no key for a signed container; an encrypted one needs `--vcon-fetch-decrypt-key`, and without it the fetcher writes nothing for an encrypted container. Config: `[vcon_fetch] signer_sha256` |
 
 Examples:
 
@@ -19375,6 +19445,35 @@ describes. It reads one file and writes one, and captures nothing.
 - `sipnab --vcon-resign archived.vcon.json --vcon-resign-key archive-2036.key --vcon-resign-cert archive-2036.crt --vcon-resign-out archived-2036.vcon.json` — re-sign the archive again with the next key: the result nests three signed layers
 - `sipnab --vcon-resign signed.vcon.json --vcon-resign-key archive.key --vcon-resign-cert archive-chain.pem --vcon-resign-out archived.vcon.json --vcon-signer-ca signing-ca.pem` — re-sign only a vCon whose signer the CA in `signing-ca.pem` issued
 - `sipnab --vcon-resign signed.vcon.json --vcon-resign-key archive.key --vcon-resign-cert archive.crt --vcon-resign-out archived.vcon.json --config /etc/sipnab/sipnab.toml` — take the signer checks from the config file's `[vcon_input]` section
+
+## vCon audio fetch
+
+`--vcon-audio-fetch` reads back the audio a `[[vcon.rule]]` with
+`audio = "url"` wrote beside its container. It reads one container, fetches
+each recording the container names by `url`, and captures nothing.
+
+- It reads the container in any form `-I` reads: unsigned, signed, encrypted or gzip. `--vcon-key`, `--vcon-signer-ca` and `--vcon-signer-sha256`, or their `[vcon_input]` keys, open it.
+- sipnab refuses it beside any capture source, listener or export flag, and beside the forwarder, the fetcher, `--vcon-spool-status` and `--vcon-resign`.
+- The other flags in this section need it. None has a config key.
+- Needs the `vcon` Cargo feature.
+- More: [Fetch the audio a vCon names](vcon.md#fetch-the-audio-a-vcon-names).
+
+| Flag | Value | Default | Since | Description |
+|------|-------|---------|-------|-------------|
+| `--vcon-audio-fetch` | `<FILE>` | -- | 0.5.221 | For each recording Dialog Object in this vCon with a `url`: fetch the file over `https://`, check its `content_hash` (draft-ietf-vcon-vcon-core-04 section 2.2) before anything else reads it, decrypt it with `--vcon-key` when it is a JWE, and write the audio to `<uuid>-dialog<N>.wav` or `.ogg` in `--vcon-audio-fetch-out`. sipnab refuses a `url` that is not `https://`, without connecting. Exit `0` when sipnab wrote every recording, `1` when the container does not open, names no recording by `url`, or sipnab refused any recording, `2` when sipnab cannot use a key, CA or output directory. Needs `--vcon-audio-fetch-out` |
+| `--vcon-audio-fetch-out` | `<DIR>` | -- | 0.5.221 | Where sipnab writes each recording's audio, mode `0600`. sipnab creates it, mode `0700`, if missing. sipnab never replaces a file that exists: it fetches nothing for that recording, and exits `1` |
+| `--vcon-audio-fetch-local` | -- | off | 0.5.221 | Read each recording from the directory that holds the vCon, by the last segment of its `url`, instead of fetching it: for an `--export-vcon-dir` spool whose files your storage does not serve yet. The `content_hash` check still applies |
+| `--vcon-audio-fetch-ca` | `<FILE>` | host bundle | 0.5.221 | Trust only the CA certificates in this PEM file for the `https://` server that holds the audio. Without it sipnab trusts the host's CA bundle |
+| `--vcon-audio-fetch-extra-ca` | `<FILE>` | -- | 0.5.221 | Trust the CA certificates in this PEM file for the `https://` server that holds the audio **in addition to** the host's CA bundle. sipnab refuses it beside `--vcon-audio-fetch-ca` |
+| `--vcon-audio-fetch-max-size` | `<BYTES>` | `67108864` | 0.5.221 | The largest file sipnab reads for one recording, 1 to 4294967295. sipnab refuses a larger one and writes nothing for it. The default is 64 MiB |
+
+**Examples**
+- `sipnab --vcon-audio-fetch fetched/0158a120-0392-891a-9455-bc2e6fad94df.vcon.json --vcon-audio-fetch-out audio --vcon-key recipient.key` — fetch, check and decrypt the audio of one encrypted vCon from the storage its `url` names
+- `sipnab --vcon-audio-fetch spool/0158a120-0392-891a-9455-bc2e6fad94df.vcon.json --vcon-audio-fetch-out audio --vcon-audio-fetch-local --vcon-key recipient.key` — read the audio from the spool beside the container instead
+- `sipnab --vcon-audio-fetch call.vcon.json --vcon-audio-fetch-out audio --vcon-audio-fetch-ca media-ca.pem --vcon-audio-fetch-max-size 268435456` — storage whose certificate a private CA issued, holding recordings up to 256 MiB
+- `sipnab --vcon-audio-fetch call.vcon.json --vcon-audio-fetch-out audio --vcon-audio-fetch-extra-ca media-ca.pem` — trust that CA as well as the host's bundle
+- `sipnab --vcon-audio-fetch fetched/0158a120-0392-891a-9455-bc2e6fad94df.vcon.json --vcon-audio-fetch-out audio --vcon-key recipient.key --vcon-audio-fetch-ca media-ca.pem` — decrypt the audio of an encrypted vCon from storage whose certificate only that CA issued
+- `sipnab --vcon-audio-fetch fetched/0158a120-0392-891a-9455-bc2e6fad94df.vcon.json --vcon-audio-fetch-out audio --vcon-key recipient.key --vcon-audio-fetch-extra-ca media-ca.pem --vcon-audio-fetch-max-size 1073741824` — the same, trusting the host's bundle too, for a recording up to 1 GiB
 
 ## Config
 
@@ -21060,6 +21159,18 @@ The `[vcon]` section's `compress` key names a compression sipnab does not write.
 
 **Exit code:** 1.
 
+### `[vcon] uuid_domain: {value:?} {why}`
+
+The `[vcon]` section's `uuid_domain` key is not a fully qualified host name.
+
+- `{value:?}` is the value in the file.
+- `{why}` says which rule it breaks: it is empty, it has one label, a label is empty or longer than `MAX_UUID_DOMAIN_LABEL` (63) characters, the name is longer than `MAX_UUID_DOMAIN_NAME` (253) characters, it has a character other than an ASCII letter, a digit, a hyphen or a dot, a label starts or ends with a hyphen, or it is an IPv4 address.
+- The printed line starts with `invalid config value: `.
+
+**What to do:** Set `uuid_domain` to a host name such as `node1.pbx.example.com`, writing an internationalized name in its `xn--` form, or remove the key. See [The uuid under a domain](vcon.md#the-uuid-under-a-domain).
+
+**Exit code:** 1.
+
 ### `[vcon_forward] {}: {e}`
 
 A whole-number `[vcon_forward]` key is out of range.
@@ -21306,6 +21417,29 @@ A rule with `live_audio = true` serves call audio on the REST API. `--api` binds
 **What to do:** Bind `--api` to `127.0.0.1`, or give `--api-tls-cert`, `--api-tls-key` and `--api-signing-key-file`, and mint the transcriber a token with `--token-scope audio`.
 
 **Exit code:** 1.
+
+### `[[vcon.rule]] '{}' live_rtp = '{}' sends nothing in this run: only a headless run (-N) without --cores forks live audio`
+
+A rule names a `live_rtp` target, and the run is a `--cores` run or the terminal UI. Neither sends live audio.
+
+- The first `{}` is the rule's name, the second its target.
+- See [Send a call's audio as RTP](vcon.md#send-a-calls-audio-as-rtp).
+
+**What to do:** Run with `-N` and without `--cores` to send the audio.
+
+**Exit code:** None. The run continues.
+
+### `live_rtp: {} datagram(s) could not be sent to their target`
+
+At the end of the run, the count of RTP packets and control messages a `live_rtp` rule could not send. A send fails when the target's port refuses it, or when the socket stays full for 20 ms.
+
+- `{}` is the count.
+- The receiver sees a gap in the sequence numbers of a leg that lost a packet.
+- See [Send a call's audio as RTP](vcon.md#send-a-calls-audio-as-rtp).
+
+**What to do:** Check that a program is reading the target's port, and that it keeps up with the audio.
+
+**Exit code:** None. The run continues.
 
 ### `[[vcon.enrich]] name '{name}' is not usable: a name is 1 to {} ASCII letters, digits, '-' or '_', starting with a letter or digit`
 
@@ -23395,9 +23529,9 @@ sipnab built the vCon container for `{call_id}` but could not convert it to JSON
 
 **Exit code:** 1.
 
-### `--vcon-fetch-out '{}': not a directory`
+### `{flag} '{}': not a directory`
 
-The path given to `--vcon-fetch-out`, where the fetcher writes the containers it fetches, exists and is not a directory. `{}` is the path.
+The path given to `{flag}` exists and is not a directory. `{flag}` is `--vcon-fetch-out`, where the fetcher writes the containers it fetches, or `--vcon-audio-fetch-out`, where `--vcon-audio-fetch` writes the audio. `{}` is the path.
 
 **What to do:** Name a directory, or a path that does not exist yet. sipnab creates a missing directory with mode 0700.
 
@@ -23494,6 +23628,104 @@ The forwarder delivered the container `{name}`, and the transparency service at 
 `--vcon-resign` names an input over the 64 MiB limit for one vCon container, the limit `-I` applies too. sipnab reads nothing of it. The message follows `--vcon-resign: `.
 
 **What to do:** Check the file is the signed vCon you meant.
+
+**Exit code:** 1.
+
+### `--vcon-audio-fetch requires the 'vcon' feature (not compiled in)`
+
+`--vcon-audio-fetch` reads back the audio a vCon names by `url`. This build does not include the `vcon` feature, so it cannot read a vCon.
+
+**What to do:** Use a sipnab build that includes the `vcon` feature.
+
+**Exit code:** 2.
+
+### `--vcon-audio-fetch: {reason}`
+
+`--vcon-audio-fetch` did not write a recording, or any. `{reason}` is why. sipnab prints one line for each recording it refused, and writes the others. It is one of these:
+
+- `--vcon-key: ...`, a `[vcon_input]` or `--vcon-signer-ca` file that does not read, or `--vcon-audio-fetch-ca: ...` or `--vcon-audio-fetch-extra-ca: ...` for a CA file that does not load. Exit code 2.
+- `--vcon-audio-fetch-out '...': ...`, an output directory sipnab cannot create. Exit code 2.
+- `'FILE': ...`, when the container does not open: it is not a vCon, a signature does not verify, the key does not decrypt it, or the signer checks refuse its signer. Exit code 1.
+- `'FILE': the vCon has no uuid to name a file by`, or `'FILE': no recording in the vCon names a url`. Exit code 1.
+- `dialog N: ...`, naming the recording's index in `dialog`, when sipnab refused that recording. The entries below list the reasons. Exit code 1.
+  - `names no mediatype, so sipnab cannot tell what audio it is`, or `mediatype "..." is not audio sipnab writes (audio/x-wav, audio/ogg)`.
+  - `names no content_hash, so the file cannot be checked`, or `content_hash does not match the file: the file is not the one the vCon names`. sipnab checks the hash before it decrypts the file or writes anything.
+  - `the file is a JWE and did not decrypt: ...`: the file names no recipient that the key that opened the container decrypts.
+  - a connection, TLS or HTTP refusal from the server that holds the file.
+
+**What to do:** Act on the reason. A file whose hash does not match is not the one the vCon names: fetch it again from where your storage keeps it, and do not use it.
+
+**Exit code:** 1 or 2, as listed.
+
+### `'{}' exists; sipnab never replaces it: name a new directory`
+
+`--vcon-audio-fetch` found a file at the path it writes a recording to, `<uuid>-dialog<N>.wav` or `.ogg` in `--vcon-audio-fetch-out`. `{}` is the path. sipnab fetches nothing for that recording and keeps the file. The message follows `--vcon-audio-fetch: dialog N: `.
+
+**What to do:** Name a new `--vcon-audio-fetch-out` directory, or move the file away.
+
+**Exit code:** 1.
+
+### `has content_hash {expected:?}, and sipnab checks sha512 only`
+
+The recording's `content_hash` names a hash algorithm other than SHA-512. sipnab checks every file it fetches before it reads it, and checks SHA-512 only, the algorithm draft-ietf-vcon-vcon-core-04 section 2.2 names. sipnab writes nothing for the recording. The message follows `--vcon-audio-fetch: dialog N: URL: `.
+
+**What to do:** Check the file with a tool that supports the algorithm the vCon names.
+
+**Exit code:** 1.
+
+### `the audio is not {} (it does not start with {:?})`
+
+The file the recording names matched its `content_hash`, and, decrypted when it was a JWE, it is not a WAV file (`RIFF`) or an Ogg file (`OggS`) as its `mediatype` says. sipnab writes nothing for the recording. The message follows `--vcon-audio-fetch: dialog N: URL: `.
+
+**What to do:** Check what the vCon's producer wrote at that URL.
+
+**Exit code:** 1.
+
+### `the file is a JWE whose cty is {cty:?}, not the mediatype {mediatype:?}`
+
+The file the recording names is a JWE, and the media type in its `cty` header is not the recording's `mediatype`. sipnab does not decrypt it. The message follows `--vcon-audio-fetch: dialog N: URL: `.
+
+**What to do:** Check what the vCon's producer wrote at that URL.
+
+**Exit code:** 1.
+
+### `url {url:?} ends in no file name sipnab reads beside the container`
+
+With `--vcon-audio-fetch-local`, sipnab reads the file named by the last segment of the recording's `url` from the directory that holds the vCon. That segment is empty, starts with a dot, or holds a character other than ASCII letters, digits, `-`, `_` and `.`, so it could name a file elsewhere. sipnab reads nothing for the recording.
+
+**What to do:** Fetch the file from the URL, without `--vcon-audio-fetch-local`.
+
+**Exit code:** 1.
+
+### `url {url:?} is not https://, and draft-ietf-vcon-vcon-core-04 section 2.4.1 says "HTTPS MUST be used for retrieval"; nothing was fetched`
+
+The recording's `url` is not an `https://` URL. sipnab does not connect. A `[[vcon.rule]]` with `audio = "url"` refuses an `audio_url_base` that is not `https://`, so sipnab writes no such URL itself.
+
+**What to do:** If the file is beside the container, read it with `--vcon-audio-fetch-local`. Otherwise fetch it from the URL some other way, and check its SHA-512 against the `content_hash`.
+
+**Exit code:** 1.
+
+### `{url} answered {}`
+
+The server that holds a recording's file answered `GET` with a status other than `2xx`. `{}` is the status. sipnab writes nothing for the recording. The message follows `--vcon-audio-fetch: dialog N: `.
+
+**What to do:** Check the file is at that URL, and that the server serves it without a credential.
+
+**Exit code:** 1.
+
+### `{url}: the answer is larger than {} bytes ({max_size_setting})`
+
+The file a recording names is larger than the limit. `{}` is the limit and `{max_size_setting}` the flag that sets it, `--vcon-audio-fetch-max-size`. sipnab writes nothing for the recording.
+
+**What to do:** Raise `--vcon-audio-fetch-max-size`, if the file is the size you expect for the call.
+
+**Exit code:** 1.
+
+### `{url}: {problem}, so the file is not whole`
+
+The server that holds a recording's file closed the connection before it sent the length it declared. `{problem}` gives the two lengths. sipnab writes nothing for the recording.
+
+**What to do:** Run the command again. If it recurs, check the server.
 
 **Exit code:** 1.
 
@@ -24556,9 +24788,14 @@ These are catalogs to pick a line from. They are not blocks to copy whole.
 
 ### Basic field matching
 
-- `method == 'INVITE'`
-- `from.user == '1001'`
+- `method == INVITE`
+- `from.user == 1001`
 - `state == 'InCall'`
+
+A value needs no quotes unless it contains whitespace, a quote character or an
+unmatched `)`, or begins with `=`, `!`, `<`, `>` or `@`. `method == INVITE`,
+`method == 'INVITE'` and `method == "INVITE"` are the same filter. See
+[Values](#values).
 
 ### Regex matching
 
@@ -25109,12 +25346,12 @@ Auth challenges follow
 
 | Field | Description | Value |
 |-------|-------------|-------|
-| `time` | The instant of the dialog's first message | a quoted [RFC 3339](https://www.rfc-editor.org/rfc/rfc3339.html) instant, such as `'2026-10-09T10:00:00Z'` |
+| `time` | The instant of the dialog's first message | an [RFC 3339](https://www.rfc-editor.org/rfc/rfc3339.html) instant, quoted or bare, such as `2026-10-09T10:00:00Z` |
 
 `time` takes `<`, `<=`, `>`, `>=` and `==`, and nothing else.
 
 - `!=`, `=~` and `in_subnet` are parse errors.
-- So is a literal that is not a quoted RFC 3339 instant.
+- So is a literal that is not an RFC 3339 instant.
 - sipnab converts an offset other than `Z`. So `'2026-10-09T12:00:00+02:00'`
   is the same instant as `'2026-10-09T10:00:00Z'`.
 
@@ -25153,6 +25390,10 @@ sipnab -N -I capture.pcap --config sipnab.toml --filter "@sales AND method == 'I
 - sipnab replaces `@name` with the named filter's expression in parentheses.
   So each definition keeps the precedence it has as written.
 - An `@` inside a quoted string is text, not a reference.
+- A reference begins an atom: its `@` is the first character of the
+  expression or follows whitespace or `(`. An `@` inside a word is text, so
+  `call_id == a84b4c76@pc33.example.com` compares the Call-ID and does not
+  reference a filter named `pc33`.
 - sipnab resolves every name when it starts. See
   [`[filters]`](config-reference.md#filters) for what it refuses.
 - sipnab refuses a filter given at run time that names something undefined.
@@ -25210,13 +25451,66 @@ Notes:
 
 ## Values
 
-| Syntax | Type | Examples |
-|--------|------|---------|
-| `'...'` or `"..."` | String | `'INVITE'`, `"alice"` |
-| Number | Numeric (f64) | `3.0`, `100`, `0.5` |
-| `true` / `false` | Boolean (case-insensitive) | `true`, `FALSE` |
-| `'...'` with `=~` | Regex | `'friendly.*scanner'`, `'^1001'` |
-| `'...'` after `time` | RFC 3339 instant | `'2026-10-09T10:00:00Z'`, `'2026-10-09T12:00:00+02:00'` |
+You write the value on the right of a comparison bare, in single quotes, or
+in double quotes. All three spell the same text, and the result does not
+depend on which one you use: `method == INVITE`, `method == 'INVITE'` and
+`method == "INVITE"` select the same dialogs.
+
+The field on the left decides how sipnab reads the text:
+
+| Field type | sipnab reads the text as | Examples |
+|------------|---------------------|----------|
+| String (including `header.<name>`) | The text as written, compared case-sensitively | `INVITE`, `1001`, `'Friendly Scanner'` |
+| Numeric | A finite number (f64) | `3.0`, `100`, `'5060'` |
+| Boolean | `true` or `false`, in any case | `true`, `FALSE` |
+| `time` | An [RFC 3339](https://www.rfc-editor.org/rfc/rfc3339.html) instant | `2026-10-09T10:00:00Z`, `'2026-10-09T12:00:00+02:00'` |
+| Any field, with `=~` | A regex | `^100[0-9]$`, `'friendly.*scanner'` |
+
+- A number-shaped value on a string field is text. `to.user == 1001` selects
+  the user `1001`.
+- A numeric field refuses a value that is not a finite number, and a boolean
+  field refuses anything but `true` and `false`. The error names the reason.
+- The right-hand side is always a value: the grammar has no field-to-field
+  comparison. So a word that is a keyword, a field name or an alias name
+  elsewhere is text in value position. `from.user == AND` compares with the
+  text `AND`, `from.user == to.user` with the text `to.user`, and
+  `side == problems` with the text `problems`.
+
+### Bare values
+
+A bare value is the run of characters up to whitespace, a quote character, or
+a `)` that closes a group of the expression.
+
+- Its own parentheses must balance. A `(` inside the value opens a pair, and a
+  `)` with no `(` to close ends the value. So `(method == INVITE)` reads the
+  value `INVITE`, and `method =~ ^(INVITE|BYE)$` reads the whole regex.
+- For `=~` only, two regex rules also apply. A backslash keeps the next
+  character in the value, so `\)` is regex text. Inside a `[...]` class,
+  parentheses are literal.
+- Every other character is part of the value, including
+  `@ . : ; = + - / | * # %`. `ruri == sip:7000@192.0.2.10;user=phone` and
+  `src.ip in_subnet 203.0.113.0/24` need no quotes.
+- sipnab takes a bare value verbatim. It has no escapes.
+
+### When a value needs quotes
+
+A value needs quotes only where sipnab cannot tell where a bare value ends or
+what it means. Each case has its own error message.
+
+| The value | Why a bare value cannot carry it | Error message |
+|-----------|----------------------------------|---------------|
+| Contains whitespace, such as `'Friendly Scanner'` | Whitespace ends a bare value, and sipnab reads the next word as the rest of the expression | `a value containing whitespace must be quoted, or AND/OR is missing` |
+| Contains `'` or `"`, such as `"O'Brien"` | A quote character begins or ends a quoted string anywhere in the expression | `a value containing ' or " must be quoted with the other quote or a backslash` |
+| Contains an unmatched `)`, such as `'a)b'` | An unmatched `)` closes a group of the expression | `unmatched ')'; a value containing an unmatched ')' must be quoted` |
+| Begins with `=`, `!`, `<` or `>` | These begin an operator, so `method === 'INVITE'` stays an error rather than the value `='INVITE'` | `a value beginning with = ! < > or @ needs quotes` |
+| Begins with `@` | `@name` is a [named filter](#named-filters) reference | the unknown-reference message, or the message above |
+| Is empty | A bare value has at least one character | `pai.user == ''` is the only spelling |
+
+`&&` and `||` are not part of the filter language. sipnab refuses a bare
+value followed by either with `join comparisons with AND, OR and NOT; && and || are
+not supported`.
+
+### Quoted values
 
 Inside a quoted string, a backslash escapes the next character.
 
@@ -25320,7 +25614,8 @@ an address the SDP never advertised. The boolean-field note above says:
   - `FilterExpr::parse` refuses a longer name and states the limit.
 - Maximum regex pattern size: **1 MB** (1,000,000 bytes)
 - Empty expressions produce a parse error
-- Trailing unparsed input produces a parse error with position
+- Trailing unparsed input produces a parse error with position. The position
+  is the 0-based character column the caret marks, not a byte offset.
 - Unknown field names produce a parse error
 - Invalid regex patterns produce a parse error
 
@@ -26779,6 +27074,18 @@ For the aggregate report over the whole capture, and nothing else:
 sipnab -N -I capture.pcap --report --no-cli-print
 ```
 
+When the inputs include stored vCon containers (`-I` naming a directory of
+them, for example), the report adds a `vCon containers:` section after the
+dialog table:
+
+- one row per container: read, or skipped with the reason;
+- the totals: containers read and skipped, skips by reason, containers that
+  fail the schema, calls by state, and the total duration.
+
+With `--json` or `--json-pretty`, that section is one JSON object under the
+key `sipnab_vcon_containers` instead. [Read many containers at
+once](vcon.md#read-many-containers-at-once) describes every column and field.
+
 For a deep dive into a single call, named by its Call-ID:
 
 ```bash
@@ -27645,6 +27952,7 @@ rule inherits when it does not set its own.
 | `sign_key` | string | -- | The `sign_key` of every encrypting or `sign_only` `[[vcon.rule]]` that sets none. A rule's own value overrides it |
 | `sign_cert` | string | -- | The `sign_cert` of every encrypting `[[vcon.rule]]` that sets none. A rule's own value overrides it |
 | `compress` | string | `none` | The `compress` of every encrypting `[[vcon.rule]]` that sets none: `none` or `gzip`. A rule's own value overrides it |
+| `uuid_domain` | string | -- | A fully qualified host name, such as `pbx.example.com`. When set, every container uuid this process writes, through every door, follows the layout of [draft-ietf-vcon-vcon-core-04 section 4.1.2](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-04#section-4.1.2): the last 62 bits are the high 62 bits of SHA-1 over the name. sipnab hashes the name in lower case without a trailing dot. Unset, sipnab keys the uuid on the node, the dialog and the capture. sipnab refuses at startup a value that is not a host name of two or more labels (exit 1). See [The uuid under a domain](vcon.md#the-uuid-under-a-domain) |
 
 ### [[vcon.rule]]
 
@@ -27665,6 +27973,8 @@ and what they carry.
 | `audio_format` | string | `wav` | The format of the audio an `inline` or `url` rule carries. `wav`: `audio/x-wav`. `opus`: Ogg Opus, `audio/ogg`, at 24 kbit/s per channel; needs a build with the `opus` feature. sipnab refuses any other value, and the key on an `omit` rule, at startup. See [Audio as Ogg Opus](vcon.md#audio-as-ogg-opus) |
 | `max_inline_media_mib` | integer | `--vcon-max-inline-media` | The largest audio this rule's containers inline, in MiB; sipnab writes a call above it without its audio, saying so |
 | `live_audio` | boolean | `false` | Serve each matching call's audio while it is in progress on the REST API's `/v1/calls/{call_id}/audio` WebSocket, and list the calls at `/v1/calls/live`. Turns audio retention on. See [Hear a call while it is in progress](vcon.md#hear-a-call-while-it-is-in-progress) |
+| `live_rtp` | string | -- | A UDP `host:port`. Send each matching call's audio there while it is in progress, as RTP with an L16 payload at 16 kHz mono, one stream per leg, with JSON `start` and `stop` messages per call. Loopback only, unless the rule sets `live_rtp_allow_remote = true`; sipnab refuses another address, and one that does not resolve, at startup. Turns audio retention on. See [Send a call's audio as RTP](vcon.md#send-a-calls-audio-as-rtp) |
+| `live_rtp_allow_remote` | boolean | `false` | Let `live_rtp` name an address other than loopback. RTP has no encryption or authentication, so anyone on the path can hear the call |
 | `live` | boolean | `false` | On a live capture, write each matching call's container as the call starts and rewrite it in place, with `updated_at`, each time the call changes. No effect with `-I`. See [Follow a call while it is in progress](vcon.md#follow-a-call-while-it-is-in-progress) |
 | `encrypt_to` | string or array | -- | A PEM certificate, or a list of them, whose RSA or EC P-256 keys the rule encrypts its containers to: one container with one recipient entry per certificate. Set, the rule writes only the encrypted form of draft-ietf-vcon-vcon-core-04 section 5.3. Needs `sign_key` and `sign_cert`. sipnab refuses an empty list. See [Encrypt what a rule writes](vcon.md#encrypt-what-a-rule-writes) |
 | `sign_key` | string | -- | The PEM RSA or EC P-256 private key an encrypting or `sign_only` rule signs with, readable by its owner only. An RSA key signs `RS256`, an EC P-256 key `ES256` |
@@ -28378,16 +28688,16 @@ The vCon forwarder's settings (`sipnab --vcon-forward <SPOOL_DIR>`, see
 | `done` | path | `<SPOOL_DIR>/delivered` | Where a delivered container goes. Must be on the spool's file system. `--vcon-forward-done` overrides it |
 | `failed` | path | `<SPOOL_DIR>/failed` | Where a refused container goes, beside `<name>.error.json`. Must be on the spool's file system. `--vcon-forward-failed` overrides it |
 | `interval` | integer | `5` | Seconds between passes over the spool, 1 to 3600. `--vcon-forward-interval` overrides it |
-| `timeout` | integer | `30` | Seconds to wait to connect, and for each read and write, 1 to 600. `--vcon-forward-timeout` overrides it |
+| `timeout` | integer | `30` | Seconds to wait to connect, and for each read and write, 1 to 600. It also bounds each SCITT registration, its POST and its polling for the receipt. `--vcon-forward-timeout` overrides it |
 | `backoff_first` | integer | `2` | Seconds a container waits after its first failed try, 1 to 4294967295; each failed try doubles the wait. No longer than `backoff_cap`. `--vcon-forward-backoff-first` overrides it |
 | `backoff_cap` | integer | `300` | The longest wait between tries, in seconds, 1 to 4294967295. `--vcon-forward-backoff-cap` overrides it |
 | `max_response_head` | integer | `65536` | The most bytes of a store's status line and headers read, 1 to 4294967295. The forwarder treats an answer with more as no answer and retries the container. `--vcon-forward-max-response-head` overrides it |
 | `max_error_body` | integer | `8192` | The most bytes of a refusal's body a `<name>.error.json` record keeps, 1 to 4294967295. `--vcon-forward-max-error-body` overrides it |
-| `scitt_url` | string | -- | The SCITT transparency service the forwarder registers lifecycle statements with, `vcon_created` and `vcon_sent`, by POSTing each to `<scitt_url>/entries`. Unset, it registers nothing. Needs `scitt_sign_key`, `scitt_sign_cert` and `scitt_issuer`. `--vcon-forward-scitt-url` overrides it |
+| `scitt_url` | string | -- | The SCITT transparency service the forwarder registers lifecycle statements with, `vcon_created` and `vcon_sent`, by POSTing each to `<scitt_url>/entries`. After a `202`, sipnab polls its `Location` for the receipt within `timeout`, and only on the scheme, host and port of this URL. Unset, it registers nothing. Needs `scitt_sign_key`, `scitt_sign_cert` and `scitt_issuer`. `--vcon-forward-scitt-url` overrides it |
 | `scitt_auth_file` | path | -- | File holding one `Header-Name: value` line sent with each registration. Refused when other users can read it. `--vcon-forward-scitt-auth-file` overrides it |
 | `scitt_ca` | path | host bundle | The only CA (PEM) trusted for an `https://` transparency service. `--vcon-forward-scitt-ca` overrides it |
-| `scitt_sign_key` | path | -- | The PEM RSA private key that signs the statements (RS256). Refused when other users can read it: a refusal from this key exits `1`, from the flag `2`. `--vcon-forward-scitt-sign-key` overrides it |
-| `scitt_sign_cert` | path | -- | The PEM certificate chain of `scitt_sign_key`, leaf first, carried in each statement's `x5chain`. `--vcon-forward-scitt-sign-cert` overrides it |
+| `scitt_sign_key` | path | -- | The PEM private key that signs the statements: RSA signs RS256, EC P-256 signs ES256. Refused when other users can read it: a refusal from this key exits `1`, from the flag `2`. `--vcon-forward-scitt-sign-key` overrides it |
+| `scitt_sign_cert` | path | -- | The PEM certificate chain of `scitt_sign_key`, leaf first, carried in each statement's `x5chain`. sipnab refuses a first certificate that is not the key's. `--vcon-forward-scitt-sign-cert` overrides it |
 | `scitt_issuer` | string | -- | The issuer each statement names (`iss`): a URI of 1 to 8192 characters. `--vcon-forward-scitt-issuer` overrides it |
 | `content_type` | string | `"application/json"` | The `Content-Type` of a JSON container: `application/json`, `application/vcon+json` or `application/vcon`. A gzip format container always goes as `application/vcon+gzip`. `--vcon-forward-content-type` overrides it |
 
@@ -28412,6 +28722,10 @@ The vCon fetcher's settings (`sipnab --vcon-fetch <UUID>...`, see
 - A flag replaces its key.
 - With neither, a `kind` other than `generic` supplies the value. Then the
   default applies.
+- A server opted in with `--mcp-allow-vcon-fetch` or `--api-allow-vcon-fetch`
+  reads the same store with these keys alone, for the MCP `fetch_vcon` tool
+  and `GET /v1/vcon/fetch/:uuid`
+  ([Fetch from an agent or a REST client](vcon.md#fetch-from-an-agent-or-a-rest-client)).
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
@@ -28421,8 +28735,8 @@ The vCon fetcher's settings (`sipnab --vcon-fetch <UUID>...`, see
 | `ca` | path | host bundle | The only CA (PEM) trusted for an `https://` store. `--vcon-fetch-ca` overrides it |
 | `extra_ca` | path | -- | A CA (PEM) trusted for an `https://` store in addition to the host's CA bundle. Refused beside `ca`. `--vcon-fetch-ca` and `--vcon-fetch-extra-ca` each replace both keys |
 | `decrypt_key` | path | -- | The RSA private key (PEM, readable by its owner only) that decrypts an encrypted container. `--vcon-fetch-decrypt-key` overrides it |
-| `signer_ca` | path | -- | The CA (PEM) a decrypted container's signing certificate must chain to, through the intermediates in its `x5c`, every certificate within its validity period; `system` for the host's CA bundle. Needs `decrypt_key`. `--vcon-fetch-signer-ca` overrides it |
-| `signer_sha256` | string | -- | The SHA-256 fingerprint the signing certificate of a decrypted container must have: 64 hex digits, plain or colon-separated, either case. Needs `decrypt_key`. `--vcon-fetch-signer-sha256` overrides it |
+| `signer_ca` | path | -- | The CA (PEM) a signed or decrypted container's signing certificate must chain to, through the intermediates in its `x5c`, every certificate within its validity period; `system` for the host's CA bundle. Needs no key for a signed container; an encrypted one needs `decrypt_key`. `--vcon-fetch-signer-ca` overrides it |
+| `signer_sha256` | string | -- | The SHA-256 fingerprint the signing certificate of a signed or decrypted container must have: 64 hex digits, plain or colon-separated, either case. Needs no key for a signed container; an encrypted one needs `decrypt_key`. `--vcon-fetch-signer-sha256` overrides it |
 | `timeout` | integer | `30` | Seconds to wait to connect, and for each read and write, 1 to 600. `--vcon-fetch-timeout` overrides it |
 | `max_size` | integer | `67108864` | The largest answer read for one container, in bytes, 1 to 4294967295. `--vcon-fetch-max-size` overrides it |
 | `max_response_head` | integer | `65536` | The most bytes of a store's status line and headers read, 1 to 4294967295. `--vcon-fetch-max-response-head` overrides it |
@@ -29296,7 +29610,7 @@ that's the laptop itself):
 
    ```bash
    sipnab --version
-   # sipnab 0.5.220 (...) features: native,tui,audio,tls,hep,api,mcp,mcp-http,metrics,plugins,vcon,bpf
+   # sipnab 0.5.221 (...) features: native,tui,audio,tls,hep,api,mcp,mcp-http,metrics,plugins,vcon,bpf
    # libpcap version 1.10.5 (with TPACKET_V3); alternate capture backends named: none
    ```
 
@@ -30656,7 +30970,7 @@ Then confirm the build can do what you are about to ask of it:
 ```json
 {
   "schema_version": 1,
-  "version": "0.5.220",
+  "version": "0.5.221",
   "features": ["api", "audio", "hep", "mcp", "mcp-http", "metrics",
                "native", "plugins", "tls", "tui"],
   "can_decrypt": true,
@@ -30669,6 +30983,7 @@ Then confirm the build can do what you are about to ask of it:
     "mcp_allow_tls_capture": false,
     "mcp_allow_save_findings": false,
     "mcp_allow_relay_query": false,
+    "mcp_allow_vcon_fetch": false,
     "hep_delivery_trust": "port-gated-only"
   }
 }
@@ -31460,7 +31775,7 @@ client. The whole block is one pipeline.
 Expected first line of response:
 
 ```json
-{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2025-06-18","capabilities":{"tools":{}},"serverInfo":{"name":"sipnab","version": "0.5.220"},"instructions":"sipnab MCP server — queries captured SIP dialogs ..."}}
+{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2025-06-18","capabilities":{"tools":{}},"serverInfo":{"name":"sipnab","version": "0.5.221"},"instructions":"sipnab MCP server — queries captured SIP dialogs ..."}}
 ```
 
 ### Test the HTTP wire by hand
@@ -32595,7 +32910,7 @@ A bundle is a named set of tools defined in sipnab's code.
 | [`relay`](mcp-tools-relay.md) | 4 | Questions put to the configured media relay, and decoding the relay control messages sipnab captured. |
 | [`tfps`](mcp-tools-tfps.md) | 7 | The toll-fraud prevention peer (TFPS): what it blocks and logs, and the operator's ban, unban and revert actions. |
 | [`server`](mcp-tools-server.md) | 5 | The sipnab process and its capture path: capture health, HEP senders, resource use, build capabilities, and shutdown. |
-| [`vcon`](mcp-tools-vcon.md) | 5 | vCon conversation containers, exported, validated and analyzed, the vCon export spool's counts, and the SIPREC recording metadata a call carried. |
+| [`vcon`](mcp-tools-vcon.md) | 7 | vCon conversation containers, exported, validated and analyzed, one at a time or a directory at once, read from the operator's store, the vCon export spool's counts, and the SIPREC recording metadata a call carried. |
 | [`tls`](mcp-tools-tls.md) | 3 | Reading SIP inside TLS without keys through kernel uprobes, and which TLS libraries this host runs. |
 
 ### Choosing which tools load
@@ -32647,32 +32962,23 @@ resource.
 
 | Bundle | Tools | Bytes (default) | Bytes with output schemas |
 |---|---|---|---|
-| core | 9 | 12,223 | 54,526 |
-| signaling | 20 | 22,349 | 58,494 |
-| captures | 11 | 12,578 | 30,066 |
-| security | 6 | 9,923 | 9,923 |
+| core | 9 | 12,316 | 54,624 |
+| signaling | 20 | 22,474 | 58,619 |
+| captures | 11 | 12,723 | 30,211 |
+| security | 6 | 9,954 | 9,954 |
 | media | 4 | 3,480 | 16,048 |
-| relay | 4 | 4,240 | 20,029 |
+| relay | 4 | 4,199 | 19,988 |
 | tfps | 7 | 5,563 | 15,947 |
-| server | 5 | 5,394 | 27,170 |
-| vcon | 5 | 8,369 | 24,354 |
+| server | 5 | 5,394 | 27,452 |
+| vcon | 7 | 10,714 | 33,024 |
 | tls | 3 | 2,850 | 4,943 |
-| full | 74 | 86,969 | 261,500 |
+| full | 76 | 89,667 | 270,810 |
 
 Bytes are the compact JSON of each tool's `tools/list` entry, summed over the
 bundle.
 
-> **Measured after sipnab 0.5.212** on a build with every feature. These were
-> in place:
->
-> - `max_response_bytes` and the `get_dialog` and `reconcile_orphans` cursors,
-> - output schemas on nine `core` and `signaling` tools,
-> - the response limits and loaded-surface fields of `server_capabilities`,
-> - `vcon_spool_status` and the `cursor` and `media` parameters of
->   `export_vcon`.
->
-> The `vcon` and `full` rows hold a second measurement, taken once
-> `analyze_vcon` joined them.
+> **Measured on sipnab 0.5.221** on a build with every feature, after the
+> `filter` parameters gained "Values may be bare or quoted."
 >
 > - Sizes, tool counts and bundle membership may change in later releases.
 > - A build without a feature does not register that feature's tools, so its
@@ -32709,6 +33015,7 @@ links to its section on the bundle's page.
 | [`export_audio`](mcp-tools-media.md#export_audio) | [media](mcp-tools-media.md) | Writes a call's RTP audio to a WAV in `--mcp-file-root`; needs the server started with `--retain-audio` |
 | [`export_capture`](mcp-tools-captures.md#export_capture) | [captures](mcp-tools-captures.md) | Writes held SIP signaling to a pcap in `--mcp-file-root` (re-synthesized frames, no RTP) |
 | [`export_vcon`](mcp-tools-vcon.md#export_vcon) | [vcon](mcp-tools-vcon.md) | Dialogs as vCon conversation containers, structured JSON, each with its SHA-256. One `call_id` or a whole filtered set, paged with `cursor`. Unsigned, retained audio inline unless `media` is `omit`, and every omission stated in the response |
+| [`fetch_vcon`](mcp-tools-vcon.md#fetch_vcon) | [vcon](mcp-tools-vcon.md) | **Connects, off by default.** One container from the operator's `[vcon_fetch]` store by uuid, returned inline with the checks it passed. Needs `--mcp-allow-vcon-fetch`; the store and its keys come from operator configuration only |
 | [`find_correlated`](mcp-tools-signaling.md#find_correlated) | [signaling](mcp-tools-signaling.md) | The other legs of the same call across a B2BUA, each with a score AND the strategy that matched it |
 | [`find_in_captures`](mcp-tools-captures.md#find_in_captures) | [captures](mcp-tools-captures.md) | Which capture files hold dialogs matching a filter, without opening any of them; a sweep that outlasts its wait returns a job |
 | [`find_in_captures_status`](mcp-tools-captures.md#find_in_captures_status) | [captures](mcp-tools-captures.md) | A `find_in_captures` job's progress, or its result once it finishes |
@@ -32725,7 +33032,7 @@ links to its section on the bundle's page.
 | [`group_dialogs`](mcp-tools-signaling.md#group_dialogs) | [signaling](mcp-tools-signaling.md) | Carrier metrics per group — ASR, NER, ACD, post-dial delay, MOS, retransmissions — each beside the population it rests on |
 | [`hep_senders`](mcp-tools-server.md#hep_senders) | [server](mcp-tools-server.md) | Who feeds this run's HEP listener: each sender, its count, when it was last heard and whether it went silent, and every address the listener refused, by reason |
 | [`lint_dialog`](mcp-tools-signaling.md#lint_dialog) | [signaling](mcp-tools-signaling.md) | Conformance findings for one call, declaration against observation included, each with its RFC and section |
-| [`list_captures`](mcp-tools-captures.md#list_captures) | [captures](mcp-tools-captures.md) | Capture files in `--mcp-file-root`, with sizes |
+| [`list_captures`](mcp-tools-captures.md#list_captures) | [captures](mcp-tools-captures.md) | Capture files and stored vCon containers in `--mcp-file-root`, with sizes and each one's kind |
 | [`list_dialogs`](mcp-tools-core.md#list_dialogs) | [core](mcp-tools-core.md) | A page of dialog summaries, with the total behind it |
 | [`list_tls_libraries`](mcp-tools-tls.md#list_tls_libraries) | [tls](mcp-tools-tls.md) | which TLS libraries this host runs, and whether sipnab could read their plaintext without keys |
 | [`media_diagnostics`](mcp-tools-media.md#media_diagnostics) | [media](mcp-tools-media.md) | The facts under the MOS: QoS marking, jitter grounding, delay provenance, silence, and what the far end reported |
@@ -32760,6 +33067,7 @@ links to its section on the bundle's page.
 | [`validate_filter`](mcp-tools-signaling.md#validate_filter) | [signaling](mcp-tools-signaling.md) | Whether a filter DSL expression parses, the parser's message when it does not, and how many dialogs it selects — with no rows |
 | [`validate_message`](mcp-tools-signaling.md#validate_message) | [signaling](mcp-tools-signaling.md) | Conformance findings for one message, read alone |
 | [`validate_vcon`](mcp-tools-vcon.md#validate_vcon) | [vcon](mcp-tools-vcon.md) | Checks a container against the working group's draft-ietf-vcon-vcon-core-04 schema and names every finding |
+| [`vcon_directory_report`](mcp-tools-vcon.md#vcon_directory_report) | [vcon](mcp-tools-vcon.md) | Every stored container in a directory of the file root: per container its status, form, schema finding count, calls, dispositions and duration, or why sipnab skipped it, then the totals. The report `-I <dir> --report` prints |
 | [`vcon_spool_status`](mcp-tools-vcon.md#vcon_spool_status) | [vcon](mcp-tools-vcon.md) | Counts the `--export-vcon-dir` spool: containers pending, delivered and failed, with the store's answer from each failed container's record. A snapshot of files; sends, moves and deletes nothing |
 
 ## Which tool finds calls
@@ -32769,7 +33077,8 @@ Seven tools select calls, and each answers a different question.
 A filter is one of these:
 
 - an expression in sipnab's filter language (the DSL), such as
-  `state == failed`,
+  `state == Failed`. A value may be bare or quoted: `method == INVITE` and
+  `method == 'INVITE'` are the same filter,
 - the name of a built-in alias such as `problems`.
 
 | The question | The tool | Why this one |
@@ -32952,21 +33261,24 @@ inside a window a human client never sees. On a 921 MB capture,
 `capture_status` have always carried `source_exhausted`. Now every tool that
 answers from the capture does.
 
-Nineteen tools are the exception, because their answer cannot move with
+Twenty-one tools are the exception, because their answer cannot move with
 the load. How much of the capture sipnab has read says nothing about what
 their sources hold:
-- Eleven read something other than the capture store:
+- Twelve read something other than the capture store:
   - `explain_response_code`, `explain_rule`, `decode_evidence`, `decode_ng`,
     `show_evidence`, `list_captures`, `list_tls_libraries`,
     `server_capabilities`;
   - `vcon_spool_status`, which counts the vCon export spool that the
     forwarder drains;
   - `compare_captures`, which reads two files and never the loaded capture;
-  - `analyze_vcon`, which analyzes a container the caller hands over.
-- The other eight ask another process:
+  - `analyze_vcon`, which analyzes a container the caller hands over;
+  - `vcon_directory_report`, which reads the containers in a directory of the
+    file root.
+- The other nine ask another process:
   - `query_relay` and `relay_stats` put the question to the media relay;
   - `tfps_status`, `tfps_banned`, `tfps_dropped`, `tfps_labels`, `tfps_ban`
-    and `tfps_unban` put it to the toll-fraud prevention peer.
+    and `tfps_unban` put it to the toll-fraud prevention peer;
+  - `fetch_vcon` puts it to the operator's vCon store.
 
 The tools that answer with a rendered document have no object to put a field
 in. These are `render_ladder`, and `get_capture_report` / `get_dialog_report`
@@ -33655,7 +33967,7 @@ Returns one page of dialog summaries from the live capture store.
 
 | Name | Type | Legal values | If omitted |
 |---|---|---|---|
-| `filter` | string? | A diagnostic alias name — `problems`, `slow-setup`, `short-calls`, `one-way`, `nat-issues`, `codec-asym`, `ptime-asym`, `payload-asym`, `duration-asym`, `late-media` — **or** a raw [filter DSL](filter-dsl.md) expression, which may use a [named filter](filter-dsl.md#named-filters) as `@name`. Anything else fails with `invalid_params` naming the position it stopped parsing at, or, for an undefined `@name`, listing the names the run defines. | Every dialog in the store matches. |
+| `filter` | string? | A diagnostic alias name — `problems`, `slow-setup`, `short-calls`, `one-way`, `nat-issues`, `codec-asym`, `ptime-asym`, `payload-asym`, `duration-asym`, `late-media` — **or** a raw [filter DSL](filter-dsl.md) expression, which may use a [named filter](filter-dsl.md#named-filters) as `@name`. A value may be bare or quoted: `method == INVITE` and `method == 'INVITE'` are the same filter. Anything else fails with `invalid_params` naming the position it stopped parsing at, or, for an undefined `@name`, listing the names the run defines. | Every dialog in the store matches. |
 | `limit` | u32? | Ceiling is `--mcp-max-rows` (1000 unless the operator changed it). Higher clamps to it, `0` means the default. | 50 rows. |
 | `cursor` | string? | The previous response's `next_cursor`, verbatim (`<RFC 3339 created_at>\|<Call-ID>`). A malformed timestamp half fails with `invalid_params`. | Starts at the oldest dialog. |
 | `fields` | string[]? | Field names to keep on each row, plus `call_id`, which survives whether or not you list it. An unknown name fails with `invalid_params` naming both the typo and the fields a row carries. See [Narrowing a row with `fields`](mcp-tools.md#narrowing-a-row-with-fields). | The whole row. |
@@ -36157,7 +36469,7 @@ the other bundles and finds any tool by name.
 
 | Tool | Parameters | Returns |
 |---|---|---|
-| [`list_captures`](#list_captures) | -- | Capture files in `--mcp-file-root`, with sizes |
+| [`list_captures`](#list_captures) | -- | Capture files and stored vCon containers in `--mcp-file-root`, with sizes and each one's kind |
 | [`find_in_captures`](#find_in_captures) | `filter`, `max_files?`, `deadline_ms?`, `wait_seconds?` | Which capture files hold dialogs matching a filter, without opening any of them; a sweep that outlasts its wait returns a job |
 | [`find_in_captures_status`](#find_in_captures_status) | `job_id`, `wait_seconds?` | A `find_in_captures` job's progress, or its result once it finishes |
 | [`cancel_find_in_captures`](#cancel_find_in_captures) | `job_id` | Stops a running `find_in_captures` job |
@@ -36176,17 +36488,28 @@ Start here when you have a capture and no particular suspect. These answer "what
 
 ### `list_captures`
 
-Capture files in the configured root, with their sizes and the instant each
-one's first packet arrived.
+Capture files and stored vCon containers in the configured root, with their
+sizes and the instant each one's first packet arrived.
 
 **Parameters:** none.
 
-**It lists what sipnab can open by name:** `.pcap`, `.pcapng` and `.cap`
-files, their gzip-compressed forms such as `*.pcap.gz`, and archives of captures
-(`.tar`, `.tgz`, `.tar.gz`, and `.zip` in builds with the `archive` feature),
-matched case-insensitively. Each entry carries `encrypted`: `true` for a ZIP
+**It lists what sipnab can open by name**, matched case-insensitively:
+
+- `.pcap`, `.pcapng` and `.cap` files, their gzip-compressed forms such as
+  `*.pcap.gz`, and archives of captures (`.tar`, `.tgz`, `.tar.gz`, and `.zip`
+  in builds with the `archive` feature). Each has `kind: "capture"`.
+- Stored vCon containers: `*.vcon.json`, the name sipnab writes the unsigned,
+  signed and encrypted forms under, and `*.vcon.json.gz`, the name `gzip`
+  gives the gzip format. Each has `kind: "vcon"`.
+  [`open_capture`](#open_capture) and `find_in_captures` read them as
+  [`-I` does](vcon.md#a-signed-encrypted-or-compressed-container).
+  The `.<name>.partial` file the fetcher and the forwarder write before they
+  move a container into place is not listed.
+
+Each entry carries `encrypted`: `true` for a ZIP
 holding an encrypted member, read from the archive's directory alone, so
-listing never tries a password. It skips directories.
+listing never tries a password. It is `false` for a vCon container, encrypted
+or not. It skips directories.
 The TUI's file browser lists by the same rule. [`open_capture`](#open_capture)
 accepts one thing this listing leaves out, a capture with no extension at all,
 so an agent that treats the listing as the whole set it may open misses those.
@@ -36215,11 +36538,11 @@ a capture, and one capture carrying no extension at all:
 {
   "schema_version": 1,
   "captures": [
-    { "filename": "Asterisk_ZFONE_XLITE.pcap", "bytes": 255581,
+    { "filename": "Asterisk_ZFONE_XLITE.pcap", "kind": "capture", "bytes": 255581,
       "first_packet": "2010-09-27T07:12:49+00:00" },
-    { "filename": "DTMFsipinfo.pcap", "bytes": 25429,
+    { "filename": "DTMFsipinfo.pcap", "kind": "capture", "bytes": 25429,
       "first_packet": "2011-04-27T08:14:29+00:00" },
-    { "filename": "b2bua-asterisk.pcapng", "bytes": 114952,
+    { "filename": "b2bua-asterisk.pcapng", "kind": "capture", "bytes": 114952,
       "first_packet": "2016-05-18T18:23:03+00:00" }
     // ... 27 more
   ]
@@ -36238,6 +36561,11 @@ capture that never received one, or a file it could not open — so treat `null`
 as "unknown", not as "empty". An archive always reads `null`: its first packet
 belongs to whichever member holds the earliest traffic, and finding out means
 unpacking it.
+
+For a vCon container, `first_packet` is the time of the earliest SIP message it
+stores. sipnab reads the whole container to find it, as `-I` does. It reads
+`null` for a container sipnab cannot open, such as an encrypted one on a run
+with no `--vcon-key`.
 
 sipnab reports neither a dialog count nor a
 last-packet time here, because both need the whole file parsed and a listing
@@ -36258,7 +36586,9 @@ the only way inside another file is [`open_capture`](#open_capture), documented
 This sweeps instead: a scratch store per file, the filter applied, **the loaded
 capture untouched**. An archive in the root counts as one file: the sweep reads
 every capture inside it into the one scratch store, and a match names the
-archive.
+archive. The sweep opens the files [`list_captures`](#list_captures) lists,
+stored vCon containers included: it reads the SIP messages a container stores,
+as `-I` does.
 
 | Name | Type | Legal values | If omitted |
 |---|---|---|---|
@@ -38124,6 +38454,11 @@ capture interface (`input_origin: wire`) never reached the listener: it is
 `port-gated-only` on every run, `--hep-auth-mode hmac` included. A run with
 `-d` and `-L` holds both kinds side by side.
 
+`--hep-parse` does not change this. A HEP datagram it unwraps off a capture
+interface or a file reports `input_origin: hep`, because the HEP sender wrote
+the addresses inside it, but it reached no listener and nothing checked its
+secret. It is `port-gated-only` too.
+
 The endpoints are the call's streams, so the tool answers on a media-relay host
 that never saw the SIP dialog. `dialog_seen` is then `false` and
 `dialog_absent` says why, as described under [`rtp_stats`](mcp-tools-core.md#rtp_stats).
@@ -38241,7 +38576,10 @@ HMAC-authenticated listener is a different claim entirely. Both decode to the
 same bytes.
 
 `delivery` is `hep` or `sniffed-udp`. `delivery_trust` uses the same scale as
-[`explain_attribution`](mcp-tools-media.md#explain_attribution). `on_believed_mirror_port` stands
+[`explain_attribution`](mcp-tools-media.md#explain_attribution), and here it is
+always `port-gated-only`. `decode_ng` reads the frame back out of a capture file: no HEP
+listener on this run admitted it, and `decode_ng` does not verify a shared
+secret or HMAC token, so `--hep-auth-mode` does not raise it. `on_believed_mirror_port` stands
 apart because it is the ONLY reason anything believes a sniffed message at all,
 and a reader should see the whole of that reason rather than its conclusion.
 
@@ -39211,7 +39549,7 @@ No parameters. Returns:
 ```jsonc
 {
   "schema_version": 1,
-  "version": "0.5.220",
+  "version": "0.5.221",
   "features": ["api", "hep", "mcp", "native", "tls", "tui"],
   "can_decrypt": true,           // tls
   "can_hep": true,               // hep
@@ -39223,6 +39561,7 @@ No parameters. Returns:
     "mcp_allow_tls_capture": false,
     "mcp_allow_save_findings": false,
     "mcp_allow_relay_query": false,  // true only on a live capture with --rtpengine-control
+    "mcp_allow_vcon_fetch": false,   // true with --mcp-allow-vcon-fetch and a [vcon_fetch] url
     "hep_delivery_trust": "port-gated-only",  // hmac-verified, plain-secret or port-gated-only
     "mcp_allow_actions": []          // ["tfps"] with --allow-action tfps:mcp
   },
@@ -39249,6 +39588,10 @@ No parameters. Returns:
 interface, `--rtpengine-control` names the relay, and the operator passed
 `--mcp-allow-relay-query`. A file replay never transmits, so the flag alone
 does not set it.
+`runtime.mcp_allow_vcon_fetch` is true only when
+[`fetch_vcon`](mcp-tools-vcon.md#fetch_vcon) can reach a store: the operator
+passed `--mcp-allow-vcon-fetch` and the config file sets `[vcon_fetch] url`.
+Reporting it contacts no store.
 `runtime.mcp_allow_actions` lists the action targets `--allow-action` enabled
 for MCP callers, by name.
 
@@ -39272,8 +39615,9 @@ this run, decided once at startup by the HEP listener's authentication:
 `hmac-verified` with `--hep-auth-mode hmac` and a secret, `plain-secret` with a
 secret and the default `plain` mode, and `port-gated-only` when sipnab checks no
 secret, which includes every run that does not listen for HEP. An endpoint the
-relay tools report as delivered over HEP carries the same value in its
-`delivery_trust`.
+HEP listener delivered carries the same value in its `delivery_trust`. A HEP
+datagram read off a capture interface or a file, `--hep-parse` included,
+reached no listener and is `port-gated-only`.
 
 `libpcap` is a third question, answered at runtime: `pcap_lib_version()` as
 this process sees it. A gnu build or a package loads the host's libpcap, a
@@ -39370,8 +39714,8 @@ actually stops, so a declined confirmation leaves no file behind. See
 # MCP tool reference: vcon bundle
 
 The `vcon` bundle exports, validates and analyzes vCon conversation
-containers, counts the vCon export spool, and reports the SIPREC recording metadata a call
-carried.
+containers, reports a directory of them, reads one from the operator's vCon store, counts the vCon export
+spool, and reports the SIPREC recording metadata a call carried.
 
 Load only these tools with `--mcp-tools vcon`, or combine bundles as [Choosing
 which tools load](mcp-tools.md#choosing-which-tools-load) describes. Every
@@ -39386,6 +39730,8 @@ the other bundles and finds any tool by name.
 | [`export_vcon`](#export_vcon) | `call_id?`, `filter?`, `limit?`, `cursor?`, `media?` | Dialogs as vCon conversation containers, structured JSON, each with its SHA-256. One `call_id` or a whole filtered set, paged with `cursor`. Unsigned, retained audio inline unless `media` is `omit`, and every omission stated in the response |
 | [`validate_vcon`](#validate_vcon) | `call_id?`, `container?` | Checks a container against the working group's draft-ietf-vcon-vcon-core-04 schema and names every finding |
 | [`analyze_vcon`](#analyze_vcon) | `container` or `container_base64`, `limit?` | Rebuilds the SIP messages a stored container holds and analyzes them apart from the loaded capture: per dialog the `--json-dialogs` object, the signaling diagnosis and the ladder, plus the capture analysis and what a container cannot reproduce |
+| [`fetch_vcon`](#fetch_vcon) | `uuid` | **Connects, off by default.** One container from the operator's `[vcon_fetch]` store by uuid, returned inline with the checks it passed. Needs `--mcp-allow-vcon-fetch`; the store and its keys come from operator configuration only |
+| [`vcon_directory_report`](#vcon_directory_report) | `directory`, `limit?`, `cursor?`, `max_response_bytes?` | Every stored container in a directory of the file root: per container its status, form, schema finding count, calls, dispositions and duration, or why sipnab skipped it, then the totals. The report `-I <dir> --report` prints |
 | [`vcon_spool_status`](#vcon_spool_status) | `limit?`, `cursor?`, `rule?` | Counts the `--export-vcon-dir` spool: containers pending, delivered and failed, with the store's answer from each failed container's record. A snapshot of files; sends, moves and deletes nothing |
 
 
@@ -40098,6 +40444,204 @@ tool error. The call fails with `invalid_params` (-32602) only when
 (`reason: invalid_value`), with `param: container` in both
 [error data](mcp-tools.md#error-data) objects.
 
+### `fetch_vcon`
+
+Reads one container from the operator's vCon store by uuid and returns it in
+the answer. It writes no file. Backed by
+[`app::vcon_fetch`](https://github.com/NormB/sipnab/blob/main/src/app/vcon_fetch.rs):
+the request, the credential, the CA, the size limit, the decryption and the
+signer checks are `sipnab --vcon-fetch`'s, by the same function
+([Fetch a stored vCon](vcon.md#fetch-a-stored-vcon)).
+[`GET /v1/vcon/fetch/{uuid}`](rest-api.md#get-v1vconfetchuuid) gives the same
+answer.
+
+**It connects to the store, so it is off by default.** It needs
+`--mcp-allow-vcon-fetch` and a store in the `[vcon_fetch]` section of the
+config file (`url`, `kind`, `auth_file`, and `decrypt_key` for encrypted
+containers). Every other tool in this bundle answers from bytes sipnab already
+holds. The store, its kind, the credential and the key come from operator
+configuration only: the tool takes a uuid and nothing that picks a
+destination, and the answer never holds a key or the credential.
+`read_only_hint` is `true` and `open_world_hint` is `true`.
+
+| Name | Type | Legal values | If omitted |
+|---|---|---|---|
+| `uuid` | string | The vCon's uuid: 1 to 64 characters, each a letter, a digit or `-`. Anything else fails with `invalid_params` (-32602) before sipnab sends anything. | Required. |
+
+Returns:
+
+| Field | Type | Description |
+|---|---|---|
+| `uuid` | string | The uuid asked for |
+| `stored_form` | string | The form the store held the container in: `unsigned`, `signed` or `encrypted` |
+| `decrypted` | boolean | `true` when sipnab decrypted an encrypted container with `[vcon_fetch] decrypt_key` |
+| `signature_verified` | boolean | `true` when the container's signature verified, and passed `[vcon_fetch] signer_ca` and `signer_sha256` when the operator sets them: the signed form inside a decrypted container, or a signed container that is not encrypted, which needs no key. sipnab refuses a signature that does not verify, as the readers do. `false` for an unsigned container and for one left encrypted |
+| `signer_sha256` | string or null | The SHA-256 fingerprint of the certificate the signature verified against, as `openssl x509 -noout -fingerprint -sha256` prints it |
+| `schema_findings` | array | Where the container fails the draft-ietf-vcon-vcon-core-04 schema, one line each. Empty for a valid container and for one left encrypted |
+| `container` | object | The vCon: the unsigned container when sipnab decrypted it, else as the store holds it, a signed container with its signature, without the store kind's envelope |
+
+A second content block is the untrusted-content note: the container holds
+whatever its producer stored.
+
+Refusals, each `invalid_params` (-32602) unless it says otherwise:
+
+| Cause | Message |
+|---|---|
+| No `--mcp-allow-vcon-fetch` | `fetching a vCon from the store is off on this server: start sipnab with --mcp-allow-vcon-fetch, and configure the store in [vcon_fetch]` |
+| The flag, and no `[vcon_fetch] url` | `--mcp-allow-vcon-fetch is set, but no vCon store is configured: set [vcon_fetch] url and [vcon_fetch] auth_file in the config file` |
+| The store answered `404` | `the store holds no such vCon (404)` |
+| Anything else the fetcher refuses: another status, a timeout, an answer over `[vcon_fetch] max_size`, another uuid inside, a key that does not decrypt, a signer that fails a check | `internal_error` (-32603), the fetcher's reason fenced as untrusted text, with the credential removed |
+
+A `[vcon_fetch]` store whose credential or key file sipnab cannot read stops
+the run at startup, naming the flag.
+
+```jsonc
+// fetch_vcon { "uuid": "0158a120-0392-8751-9a04-9decf1485b22" },
+// on a run started with -N --mcp --mcp-allow-vcon-fetch and a [vcon_fetch]
+// conserver store holding that container
+{
+  "schema_version": 1,
+  "uuid": "0158a120-0392-8751-9a04-9decf1485b22",
+  "stored_form": "unsigned",
+  "decrypted": false,
+  "signature_verified": false,
+  "signer_sha256": null,
+  "schema_findings": [],
+  "container": { "analysis": [ ... ], "attachments": [ ... ], "uuid": "0158a120-0392-8751-9a04-9decf1485b22", ... }
+}
+```
+
+### `vcon_directory_report`
+
+Reports every stored vCon container in one directory of `--mcp-file-root`:
+which ones sipnab read, what each one held, which ones it skipped and why, and
+the totals. It is the report `sipnab -N -I <dir> --report` prints after the
+dialog table: see
+[Read many containers at once](vcon.md#read-many-containers-at-once). One
+function builds both,
+[`output::dialog_report::vcon_containers_report`](https://github.com/NormB/sipnab/blob/main/src/output/dialog_report.rs).
+
+sipnab reads each container with the reader `-I` uses, and rebuilds the calls
+into stores of their own. The tool leaves the loaded capture untouched,
+changes no file, and connects nowhere. It opens a signed, encrypted or gzip
+format container with the server's `--vcon-key`, `--vcon-signer-ca` and
+`--vcon-signer-sha256`.
+
+- It reads the files directly in the directory. It does not descend into
+  subdirectories.
+- It does not follow a symbolic link.
+- A file is a container when its content says so, as for `-I`: the first
+  character other than whitespace is `{`, or the file is gzip that inflates to
+  one. A capture or a README in the directory is not a row.
+
+| Name | Type | Legal values | If omitted |
+|---|---|---|---|
+| `directory` | string | A directory directly inside `--mcp-file-root`, by bare name, or `.` for the root itself. | Required. A path, or a name that leads outside the root, fails with `invalid_params`. |
+| `limit` | integer | The most rows to return. Ceiling `--mcp-max-rows`. | 50. |
+| `cursor` | string | The `next_cursor` of the previous page: the file name it ended at. | The first page. |
+| `max_response_bytes` | integer | The byte budget for this page. Ceiling `--mcp-max-response-bytes`. | The ceiling. The budget cuts rows whole, and `truncated_by` says `bytes`. |
+
+**Rows, then totals.** One row per container file, in file-name order.
+
+| Field | What it holds |
+|---|---|
+| `status` | `read` or `skipped` |
+| `file` | The file name, relative to `directory` |
+| `uuid` | The container's `uuid`, or null when it did not open far enough to show one |
+| `form` | The outermost form the file arrived in: `unsigned`, `signed`, `encrypted`, `gzip`, or `unknown` for bytes that are not a JSON object |
+| `validation_findings` | Places the container disagrees with the vendored draft-ietf-vcon-vcon-core-04 schema. Null when the schema check did not run: the file did not open, or is not JSON |
+| `calls_rebuilt`, `call_ids` | The calls (dialogs, by Call-ID) rebuilt from it |
+| `dispositions` | Those calls counted by state, the word the `--report` dialog table's State column prints |
+| `duration_secs` | Those calls' durations added up, each as the dialog table's Duration column computes it |
+| `skip_reason` | On a skipped row only: `no_key`, `no_sip_signaling`, `not_json`, `not_a_vcon`, `not_opened`, `unsupported_critical` or `unreadable` |
+| `skip_detail` | On a skipped row only: the same reason in full |
+
+`totals` adds up every row of the directory, whichever page this is:
+`containers`, `read`, `skipped`, `skipped_by_reason`, `failed_validation`
+(containers with at least one schema finding), `calls`, `dispositions` and
+`duration_secs`. A call two containers both hold counts once in the totals,
+and once in each of their rows.
+
+`no_key` is an encrypted container on a server without `--vcon-key`. The row
+names the flag. sipnab never reports an encrypted container as one with no SIP.
+
+Real output for a directory `stored` holding two unsigned containers, the gzip
+format of a third, an encrypted container, a container from the
+vcon-supreme-court-arguments dataset (which stores no SIP) and a file cut off
+after 30 bytes. This is the second page of three rows:
+
+```jsonc
+// vcon_directory_report { "directory": "stored", "limit": 3, "cursor": "c-busy.vcon.json.gz" }
+{
+  "containers": [
+    {
+      "call_ids": [],
+      "calls_rebuilt": 0,
+      "dispositions": {},
+      "duration_secs": 0,
+      "file": "d-sealed.vcon.json",
+      "form": "encrypted",
+      "skip_detail": "cannot open the vCon container: the container is encrypted (draft-ietf-vcon-vcon-core-04 section 5.3), and no decryption key was given: give --vcon-key, or [vcon_input] key in the config file",
+      "skip_reason": "no_key",
+      "status": "skipped",
+      "uuid": null,
+      "validation_findings": null
+    },
+    {
+      "call_ids": [],
+      "calls_rebuilt": 0,
+      "dispositions": {},
+      "duration_secs": 0,
+      "file": "e-dataset.vcon.json",
+      "form": "unsigned",
+      "skip_detail": "a vCon container with no SIP signaling sipnab can read: it has no sip-message-trace or message/sip attachment",
+      "skip_reason": "no_sip_signaling",
+      "status": "skipped",
+      "uuid": "01a0be36-e172-8a14-9dd8-dd37220d739c",
+      "validation_findings": 4
+    },
+    {
+      "call_ids": [],
+      "calls_rebuilt": 0,
+      "dispositions": {},
+      "duration_secs": 0,
+      "file": "f-malformed.vcon.json",
+      "form": "unknown",
+      "skip_detail": "not a vCon container: not JSON (EOF while parsing a list at line 1 column 30)",
+      "skip_reason": "not_json",
+      "status": "skipped",
+      "uuid": null,
+      "validation_findings": null
+    }
+  ],
+  "directory": "stored",
+  "next_cursor": null,
+  "returned": 3,
+  "schema_version": 1,
+  "totals": {
+    "calls": 3,
+    "containers": 6,
+    "dispositions": {
+      "Completed": 1,
+      "Failed": 1,
+      "InCall": 1
+    },
+    "duration_secs": 9,
+    "failed_validation": 1,
+    "read": 3,
+    "skipped": 3,
+    "skipped_by_reason": {
+      "no_key": 1,
+      "no_sip_signaling": 1,
+      "not_json": 1
+    }
+  },
+  "truncated": false
+}
+```
+
+A build without the `vcon` Cargo feature does not register this tool.
+
 ### `vcon_spool_status`
 
 Counts the vCon export spool: the directory `--export-vcon-dir` names, which
@@ -40475,8 +41019,8 @@ For the tools themselves, and for the error codes and response bounds, see
 - **No prompt-injection cooperation.** Tool descriptions never
   instruct the LLM to "trust" or "act on" returned content. They
   describe what the tool returns and stop there.
-- **Every tool declares what it does.** All 74 carry MCP annotations, so a host
-  can decide what to call without asking. Sixty are `readOnlyHint: true`.
+- **Every tool declares what it does.** All 76 carry MCP annotations, so a host
+  can decide what to call without asking. Sixty-three are `readOnlyHint: true`.
   [What the write verbs do](#what-the-write-verbs-do) names the thirteen that
   are not.
 
@@ -40903,7 +41447,7 @@ sipnab negotiates the 2025-06-18 and 2025-11-25 revisions. There,
 
 ## What the write verbs do
 
-Sixty-one of the 74 tools are `readOnlyHint: true`. These thirteen are not.
+Sixty-three of the 76 tools are `readOnlyHint: true`. These thirteen are not.
 Each declares what kind of change it makes, so a host can decide which need
 confirmation:
 
@@ -44041,6 +44585,8 @@ dir   = "/var/spool/sipnab-vcon/all"
 | `audio_format` | `wav` (the default): the recording is a WAV, `audio/x-wav`. `opus`: Ogg Opus, `audio/ogg`, about a fifth of the size. Needs `audio = "inline"` or `"url"`. See [Audio as Ogg Opus](#audio-as-ogg-opus) |
 | `max_inline_media_mib` | The largest audio this rule's containers inline, in MiB. sipnab writes a call above it without its audio and the container records `media: "refused-over-budget"`. Unset: `--vcon-max-inline-media` |
 | `live_audio` | `true`: serve each matching call's audio while it is in progress, over the REST API. See [Hear a call while it is in progress](#hear-a-call-while-it-is-in-progress) |
+| `live_rtp` | A UDP `host:port`: send each matching call's audio there as RTP while it is in progress. See [Send a call's audio as RTP](#send-a-calls-audio-as-rtp) |
+| `live_rtp_allow_remote` | `true`: let `live_rtp` name an address other than loopback. See [Send a call's audio as RTP](#send-a-calls-audio-as-rtp) |
 | `live` | `true`: on a live capture, write each matching call's container as the call starts and rewrite it in place each time the call changes. See [Follow a call while it is in progress](#follow-a-call-while-it-is-in-progress) |
 | `encrypt_to` | A PEM certificate, or a list of them. Set, the rule writes only the encrypted form, once, to every certificate's key. Needs `sign_key` and `sign_cert`. See [Encrypt what a rule writes](#encrypt-what-a-rule-writes) |
 | `sign_key`, `sign_cert` | The PEM RSA or EC P-256 private key an encrypting or `sign_only` rule signs with, and its certificate chain, leaf first |
@@ -44540,6 +45086,113 @@ A [`[[vcon.enrich]]`](#enrich-a-call-before-it-is-written) service on the same
 rule can return, at the call's end, what a transcriber produces during the call.
 So the transcript is in the call's container.
 
+### Send a call's audio as RTP
+
+A rule with `live_rtp` sends the audio of the calls it matches, as sipnab
+captures them, to a UDP address as RTP.
+
+- It suits a program that takes audio in on a UDP port, such as a local
+  speech-to-text service.
+- `live_audio` serves the same audio for a client to fetch; `live_rtp` sends
+  it without a client asking.
+
+```toml
+[[vcon.rule]]
+name     = "support"
+when     = "@support"
+dir      = "/var/spool/sipnab-vcon/support"
+live_rtp = "127.0.0.1:40000"
+```
+
+**What arrives at the address.**
+
+- Each leg of the call is one RTP stream ([RFC 3550](https://www.rfc-editor.org/rfc/rfc3550.html)).
+  - A leg is one direction of the call's audio: one captured RTP stream.
+  - Each stream has an SSRC of its own. Every stream goes to the one address,
+    so a receiver opens one port and tells the legs apart by SSRC.
+- The payload is L16 ([RFC 3551 section 4.5.11](https://www.rfc-editor.org/rfc/rfc3551.html#section-4.5.11)):
+  16-bit signed samples in network byte order, 16 kHz, one channel.
+  - Payload type 96, a dynamic type. The static L16 types, 10 and 11, are
+    44.1 kHz.
+  - 320 samples (20 ms) a packet. Only the last packet of a leg can be
+    shorter.
+  - sipnab interpolates G.711 (8 kHz) up to 16 kHz, and Opus (48 kHz) down.
+    G.722 decodes at 16 kHz.
+  - The first packet of each leg carries the marker bit. The sequence
+    number steps by one and the timestamp by the samples in the packet before.
+  - Where the captured RTP timestamps show time passed with no audio, a lost
+    packet or the sender pausing, the leg carries silence of that length, as
+    the live audio route does.
+- Control messages arrive at the same address, one JSON object a datagram.
+  - A control message starts with `{`. An RTP packet never does: its first
+    byte is 0x80 to 0xBF, the range
+    [RFC 7983 section 7](https://www.rfc-editor.org/rfc/rfc7983.html#section-7)
+    gives RTP on a shared port.
+
+| `type` | When | Carries |
+|--------|------|---------|
+| `start` | Once per call, before its first packet | `call_id`, `rule`, and `legs`: each leg sipnab holds so far |
+| `leg` | A leg first seen after the `start`, before its first packet | `call_id`, `rule`, and the `leg` |
+| `stop` | Once per call, after its last packet | `call_id`, `rule`, `reason`, and `legs` with what each one sent |
+
+Each leg is an object:
+
+| Key | Meaning |
+|-----|---------|
+| `index` | The leg's place in the call, from 0, in the order sipnab first saw them |
+| `status` | `sending`, `withheld` (SRTP that no key decrypted) or `skipped` (a codec sipnab does not decode) |
+| `reason` | Why a `withheld` or `skipped` leg sends nothing |
+| `ssrc` | The SSRC of the stream sipnab sends, for a `sending` leg |
+| `payload_type`, `encoding`, `rate`, `channels` | `96`, `"L16"`, `16000`, `1`, for a `sending` leg |
+| `captured` | The captured stream: its `ssrc`, `src` and `dst` addresses, `codec`, `rate` and `packets` so far |
+| `packets`, `samples` | What sipnab has sent of the leg |
+| `missed_frames` | Frames sipnab released from retention before it sent them |
+| `failed_frames` | Frames the decoder refused |
+| `undecrypted_packets` | Captured SRTP packets that no key decrypted |
+
+The `reason` of a `stop` is one of:
+
+- `the call ended`,
+- `the call is no longer held`,
+- `the call carries the --content-deny-header header`,
+- `the capture ended`: the input ended, or a live capture reached `-c` or its
+  duration, with the call still up,
+- `sipnab stopped`: sipnab received a stop request, such as SIGTERM. It sends
+  each call's stop at once, and none of the audio still queued.
+
+A control message is one UDP datagram, and UDP does not resend a lost one. The
+RTP packets still carry their SSRC, and the `stop` repeats every leg.
+
+**When sipnab sends the audio.**
+
+- As sipnab captures it. sipnab looks for new audio every 20 ms.
+- Audio that waits, such as a capture file read faster than real time, goes
+  at up to `MAX_PACKETS_PER_PASS` (10) packets a leg every 20 ms: ten times
+  real time.
+- With `-I`, sipnab sends every queued packet and each call's stop before it
+  exits. The calls that had not ended stop with `the capture ended`.
+- sipnab tells you at startup when a rule sends the audio of a capture file.
+
+**What sipnab never sends.**
+
+- Audio a key could not decrypt. Such a leg is `withheld`, with the reason,
+  and gets no stream.
+- A call that `--content-deny-header` withholds. A call that gains the header
+  while sipnab sends it stops at once.
+
+**Where it may go.**
+
+- sipnab refuses to start, with exit code 1, when `live_rtp` names an address
+  other than loopback, unless the rule also sets `live_rtp_allow_remote = true`.
+  - RTP has no encryption and no authentication. Off loopback, anyone on the
+    path can hear the call.
+  - Set the opt-in only on a network you control.
+- It also refuses a `live_rtp` that does not resolve to an address. sipnab
+  resolves it once, at startup.
+- A `live_rtp` rule turns audio retention on, as `live_audio` does.
+- `live_rtp` runs in a headless run (`-N`). A `--cores` run and the terminal
+  UI send nothing, and say so at startup.
+
 ### Follow a call while it is in progress
 
 By default, a rule writes a call once, after it has ended (or gone quiet for
@@ -44696,7 +45349,7 @@ beside the container as its own JWE:
 - Each write uses a fresh content key, so each write of a call writes a new file.
   - sipnab deletes none of them.
   - Under `sealed_updates = "new-uuid"`, the earlier instances name the earlier files. Under `same-uuid`, nothing names them.
-- To read one: fetch the file from your storage, check its SHA-512 against the container's `content_hash`, and decrypt it with the private key of the `encrypt_to` certificate.
+- To read one, `--vcon-audio-fetch` fetches the file, checks its SHA-512 against the container's `content_hash`, and decrypts it with the private key of the `encrypt_to` certificate. See [Fetch the audio a vCon names](#fetch-the-audio-a-vcon-names).
   - `--vcon-fetch` fetches containers. It does not fetch the URLs inside them.
 
 **What the keys must be.**
@@ -44817,6 +45470,9 @@ sipnab refuses at startup any other `sealed_updates` value, naming the three.
 - It takes its other 74 bits from SHA-256 over `amended`, the first uuid and *n*.
 - It depends on nothing else. So two runs over the same capture write the same
   chain of uuids.
+- Under `[vcon] uuid_domain`, version *n* keeps the first uuid's timestamp and
+  the domain's 62 bits, and takes `rand_a` from the same SHA-256. See
+  [The uuid under a domain](#the-uuid-under-a-domain).
 
 To read a call's latest version, follow the chain. The latest version is the
 one that no other version names in `amended`.
@@ -44955,6 +45611,46 @@ sipnab -N -I archived.vcon.json --json-dialogs --no-cli-print --quiet | jq -c '{
   The section says the inner layers are then "assumed to have valid
   integrity", so an inner certificate that has expired since does not stop
   the read.
+
+### Fetch the audio a vCon names
+
+A rule with `audio = "url"` writes each recording beside its container, and
+the container names it by `url`, `mediatype` and `content_hash`. An
+encrypting rule writes the file as its own JWE.
+`--vcon-audio-fetch` gets the audio back from a container and its key:
+
+```sh
+sipnab --vcon-audio-fetch fetched/0158a120-0392-891a-9455-bc2e6fad94df.vcon.json --vcon-audio-fetch-out audio --vcon-key recipient.key
+```
+
+```text
+INFO sipnab::app::bootstrap: --vcon-audio-fetch: wrote 'audio/0158a120-0392-891a-9455-bc2e6fad94df-dialog0.wav'
+```
+
+The `INFO` line shows with `SIPNAB_LOG=info`. For each recording Dialog
+Object with a `url`, sipnab:
+
+1. Opens the container the way `-I` does: unsigned, signed, encrypted or gzip, with `--vcon-key`, `--vcon-signer-ca` and `--vcon-signer-sha256`, or their `[vcon_input]` keys.
+2. Fetches the file over `https://`, trusting the host's CA bundle, `--vcon-audio-fetch-ca` alone, or `--vcon-audio-fetch-extra-ca` as well.
+   - sipnab refuses a `url` that is not `https://` without connecting. [Section 2.4.1 of draft-ietf-vcon-vcon-core-04](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-04#section-2.4.1) requires HTTPS for retrieval, to protect the privacy of the file's contents.
+   - With `--vcon-audio-fetch-local`, sipnab reads the file from the directory that holds the container instead, by the last segment of the `url`: for a spool whose files your storage does not serve yet.
+3. Checks the file against the `content_hash`, the hash of the file as written ([section 2.2](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-04#section-2.2)), before anything else reads it. sipnab refuses a file that does not match, names the dialog, and writes nothing for it.
+4. Decrypts a JWE with the key that opens the container, through the same code. Its `cty` must be the recording's `mediatype`.
+5. Writes the audio to `<uuid>-dialog<N>.wav`, or `.ogg` for `audio/ogg`, in `--vcon-audio-fetch-out`, mode `0600`. `<N>` is the recording's index in `dialog`. sipnab never replaces a file that exists.
+
+sipnab carries on to the next recording after a refusal. Exit `0` when sipnab
+wrote every recording, `1` when the container does not open, names no
+recording by `url`, or sipnab refused any recording, and `2` when sipnab
+cannot use a key, CA or output directory.
+
+To read the spool on the host that wrote it:
+
+```sh
+sipnab --vcon-audio-fetch spool/0158a120-0392-891a-9455-bc2e6fad94df.vcon.json --vcon-audio-fetch-out audio --vcon-audio-fetch-local --vcon-key recipient.key
+```
+
+An unencrypted rule's WAV goes through the same steps, without the
+decryption.
 
 ## The spool contract, for a bridge that consumes it
 
@@ -45497,7 +46193,11 @@ statement format. sipnab follows the SCITT drafts that define one:
 - The protected header carries what
   [section 6 of draft-ietf-scitt-architecture-22](https://datatracker.ietf.org/doc/html/draft-ietf-scitt-architecture-22#section-6)
   requires:
-  - `alg` (1): RS256, `-257`.
+  - `alg` (1): ES256, `-7`
+    ([RFC 9053 section 2.1](https://www.rfc-editor.org/rfc/rfc9053.html#section-2.1)),
+    for an EC P-256 key; RS256, `-257`
+    ([RFC 8812 section 2](https://www.rfc-editor.org/rfc/rfc8812.html#section-2)),
+    for an RSA key.
   - `content type` (3): `application/json`.
   - CWT Claims (15): `iss` (1) is `scitt_issuer`, a URI of at most
     `MAX_ISSUER_LEN` (8192) characters, `sub` (2) is
@@ -45506,8 +46206,12 @@ statement format. sipnab follows the SCITT drafts that define one:
 - The payload is a JSON object: `event`, `vcon_uuid`, `vcon_hash` (the
   `sha512-` hash of the container's bytes as delivered), `at`, and for
   `vcon_sent` the store's URL in `to`. It carries no party data.
-- The key is a PEM RSA key, the same kind an encrypting `[[vcon.rule]]` names
-  in `sign_key`, readable by its owner only.
+- The key is a PEM RSA or EC P-256 key, the same kinds an encrypting
+  `[[vcon.rule]]` names in `sign_key`, readable by its owner only. The first
+  certificate in `scitt_sign_cert` must be the key's own. sipnab refuses a
+  pair that does not match before it sends anything, naming both settings:
+  exit 2 when `--vcon-forward-scitt-sign-key` named the key, 1 when
+  `scitt_sign_key` did.
 
 **What the service answered** goes into `<name>.scitt` beside the delivered
 container, one entry per statement:
@@ -45516,18 +46220,41 @@ container, one entry per statement:
 {"statements": [
   {"event": "vcon_created", "status": 201,
    "location": "https://ts.example.com/entries/67ed...", "receipt": "0oRDoQEm..."},
-  {"event": "vcon_sent", "status": 202,
+  {"event": "vcon_sent", "status": 202, "poll_status": 204, "pending": true,
    "location": "https://ts.example.com/entries/67ee..."}]}
 ```
 
 - `201`: the receipt, base64url, as the service returned it, and its
   `Location`.
-- `202`: the `Location` of the receipt. sipnab does not poll it. Fetch the
-  receipt from that URL later, as
+- `202`: the `Location` of the receipt. sipnab polls it for the receipt, as
   [section 2.4 of the SCRAPI draft](https://datatracker.ietf.org/doc/html/draft-ietf-scitt-scrapi-11#section-2.4)
-  describes.
-- `201` with a receipt longer than `MAX_RECEIPT` (65536) bytes: `error`
-  says so, and sipnab keeps no part of it.
+  describes. `poll_status` is the status of the last poll.
+  - Each poll is a `GET` with `Accept: application/cose` and the
+    `scitt_auth_file` header.
+  - `200`: the answer is the receipt, kept in `receipt` as a `201`'s is.
+  - `204`, or `202`: the registration is still running; sipnab polls again.
+  - `429` or a `5xx`: sipnab polls again; `poll_error` holds the answer
+    until a later poll replaces it.
+  - Any other `4xx`, such as the `404` of a registration that failed
+    ([section 2.4.3](https://datatracker.ietf.org/doc/html/draft-ietf-scitt-scrapi-11#section-2.4.3)):
+    `error` holds its problem, and polling ends.
+- Before each poll sipnab waits for the last answer's `Retry-After`, as a
+  minimum ([section 5.1](https://datatracker.ietf.org/doc/html/draft-ietf-scitt-scrapi-11#section-5.1)).
+  Without one, it waits 125 to 250 milliseconds, then twice as long after
+  each poll ("exponential backoff with jitter"), for at most `MAX_POLLS` (16)
+  polls.
+- **The polling stays within `timeout`** (`--vcon-forward-timeout`), which
+  counts from the statement's `POST`. sipnab starts no poll whose wait would
+  reach it. When the time runs out, `pending` is `true` and `location` is
+  kept: the registration is running, and you can fetch the receipt from
+  that URL later. A stop does the same, and sipnab sends no further
+  statement.
+- **sipnab polls a `Location` only on the service's own origin**: the
+  scheme, host and port of `scitt_url`. A path alone, such as
+  `/entries/67ee...`, is on it. Any other `Location` is not fetched, so
+  the `scitt_auth_file` header goes to no other host; `poll_error` says so.
+- A receipt longer than `MAX_RECEIPT` (65536) bytes: `error` says so, and
+  sipnab keeps no part of it.
 - Any other status: `error` holds the `title` and `detail` of the service's
   Concise Problem Details, or the start of its answer.
 - No answer: `error` says why, and there is no `status`.
@@ -45549,8 +46276,9 @@ delivery stands.
 - The lifecycle draft defines no payload, no subject and no content type.
   sipnab's choices are the ones listed under the statement.
 - The architecture draft lets a transparency service's registration policy
-  refuse an algorithm. A service that admits only ECDSA answers RS256 with
-  `400`, and `<name>.scitt` records it.
+  refuse an algorithm. A service that admits only ECDSA answers an RS256
+  statement with `400`, and `<name>.scitt` records it. Sign with an EC P-256
+  key for ES256.
 - Authentication is out of the SCRAPI draft's scope
   ([section 4.3](https://datatracker.ietf.org/doc/html/draft-ietf-scitt-scrapi-11#section-4.3)).
   `scitt_auth_file` sends one header line, as the store's `auth_file` does.
@@ -45564,7 +46292,10 @@ delivery stands.
 - It needs the `vcon` feature.
 - Like the forwarder, it captures nothing.
   - sipnab refuses it beside any capture source, listener or export flag.
-  - So the capture process keeps making no outbound connection.
+  - So the capture process keeps making no outbound connection, unless the
+    operator opts a server in as
+    [Fetch from an agent or a REST client](#fetch-from-an-agent-or-a-rest-client)
+    describes.
 
 ### Fetch one
 
@@ -45620,7 +46351,7 @@ A URL that names a path keeps it. The kind's read path follows it.
 
 | The store answers | The fetcher |
 |---|---|
-| `2xx` with the container | writes it to `<uuid>.vcon.json`, mode `0600`, without the kind's envelope, every other byte as the store sent it. With `--vcon-fetch-decrypt-key`, it writes an encrypted container decrypted: see [Fetch an encrypted vCon](#fetch-an-encrypted-vcon) |
+| `2xx` with the container | writes it to `<uuid>.vcon.json`, mode `0600`, without the kind's envelope, every other byte as the store sent it. With `--vcon-fetch-decrypt-key`, it writes an encrypted container decrypted: see [Fetch an encrypted vCon](#fetch-an-encrypted-vcon). It verifies a signed container first: see [A signed container](#a-signed-container) |
 | `2xx` with a body larger than `--vcon-fetch-max-size`, not JSON, without the kind's envelope, or holding another uuid | writes nothing for that uuid |
 | `404` | writes nothing for that uuid, and logs that the store holds none |
 | `401` or `403` | stops: asks for no further uuid, and exits `3` |
@@ -45689,7 +46420,9 @@ holds it, and says so in its log line.
 
 A valid signature shows that the holder of the key in `x5c` signed the
 container. It does not show who that is. Two settings make the fetcher check
-the signer before it writes anything. Each needs `--vcon-fetch-decrypt-key`.
+the signer before it writes anything. Neither needs a key for a signed container.
+An encrypted container needs `--vcon-fetch-decrypt-key` as well: without it, the
+signer is out of reach, and the fetcher writes nothing for it and names the flag.
 
 - `--vcon-fetch-signer-ca <FILE>` (`[vcon_fetch] signer_ca`): the signing
   certificate must chain, through the intermediate certificates the
@@ -45711,11 +46444,33 @@ sipnab --vcon-fetch 0158a120-0392-81a5-a0a3-98c35ae1193c \
   --vcon-fetch-signer-ca /etc/sipnab/vcon-signing-ca.pem
 ```
 
-With both, the fetcher applies both. With either, it writes nothing for a
-container whose signer fails the check, nor for a container that is not
-encrypted, which has no signer to check. The log line says why and the run
+With both, the fetcher applies both, to an encrypted container and to a
+signed one alike. With either, it writes nothing for a container whose signer
+fails the check, nor for a container that is not signed, which has no signer
+to check. The log line says why and the run
 exits `1`. When a container carries more than one signature, the checks
 apply to the first, the one the log line names.
+
+### A signed container
+
+A container in the signed form that is not encrypted
+([draft-ietf-vcon-vcon-core-04 section 5.2](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-04#section-5.2))
+needs no key. The fetcher verifies it as `-I`, `analyze_vcon` and
+`validate_vcon` do, by the same function:
+
+- it verifies the signature of every signed layer against the first
+  certificate in that layer's `x5c`;
+- it checks the outermost signer against `--vcon-fetch-signer-ca` and
+  `--vcon-fetch-signer-sha256` when the operator sets them;
+- it checks that the vCon inside holds the uuid asked for, and checks that
+  vCon against the vendored schema;
+- it writes the container as the store holds it, signature included, to
+  `<uuid>.vcon.json`, mode `0600`, and the log line gives the signer's SHA-256
+  fingerprint.
+
+The fetcher writes nothing for a signed container whose signature does not
+verify, or whose signer fails a check, and the run exits `1`, as `-I` refuses
+to read it.
 
 ### Read what came back
 
@@ -45726,6 +46481,61 @@ Each file is one vCon, as JSON.
   [Analyze a stored vCon](#analyze-a-stored-vcon)).
 - Any JSON tool reads it too.
   For example: `jq '.parties, .dialog[].type' fetched/<uuid>.vcon.json`.
+
+### Fetch from an agent or a REST client
+
+A running sipnab server can read one container from the same store by uuid
+and hand it back in the answer:
+
+- the MCP tool [`fetch_vcon`](mcp-tools-vcon.md#fetch_vcon), with
+  `--mcp-allow-vcon-fetch`;
+- [`GET /v1/vcon/fetch/{uuid}`](rest-api.md#get-v1vconfetchuuid), with
+  `--api-allow-vcon-fetch`.
+
+Each door is off unless the run has its flag, because this is the one way a
+server process connects to a vCon store. The store comes from the
+`[vcon_fetch]` keys in the config file and from nowhere else:
+
+- `url`, `kind` and `auth_file` say where and with which credential;
+- `decrypt_key`, `signer_ca` and `signer_sha256` decrypt an encrypted container
+  and check who signed it, as they do for the fetcher;
+- `timeout`, `max_size`, `max_response_head`, `ca` and `extra_ca` apply as
+  they do for the fetcher.
+
+The caller gives a uuid and nothing else. It never names a URL, a kind or a
+key, and the answer never holds a key or the credential. Each request makes
+the checks the fetcher makes, by the same function, and writes no file. With a
+door's flag and no `[vcon_fetch] url`, that door refuses each request and names
+the keys. A `[vcon_fetch]` store whose credential or key file sipnab cannot
+read stops the run at startup, naming the flag.
+
+```toml
+[vcon_fetch]
+kind = "conserver"
+url = "http://127.0.0.1:8765"
+auth_file = "store.key"
+```
+
+```sh
+sipnab -N -I sip-rtp-g711.pcap --config sipnab.toml --api 127.0.0.1:18080 --api-key "$SIPNAB_API_KEY" --api-allow-vcon-fetch
+```
+
+```sh
+curl -s -H "Authorization: Bearer $SIPNAB_API_KEY" \
+  http://127.0.0.1:18080/v1/vcon/fetch/0158a120-0392-8751-9a04-9decf1485b22 \
+  | jq -c 'del(.container)'
+```
+
+```json
+{"decrypted":false,"schema_findings":[],"schema_version":1,"signature_verified":false,"signer_sha256":null,"stored_form":"unsigned","uuid":"0158a120-0392-8751-9a04-9decf1485b22"}
+```
+
+`container` holds the vCon: decrypted when the store held it encrypted and
+the config sets `decrypt_key`, else as the store holds it. `decrypted`,
+`signature_verified` and `signer_sha256` say which checks it passed. A signed
+container that is not encrypted comes back as stored, signature included,
+with `signature_verified: true` once its signature verifies, as
+[A signed container](#a-signed-container) describes.
 
 ## Walk through one, end to end
 
@@ -46014,10 +46824,13 @@ sipnab fills these fields from what the capture shows, and leaves a field out wh
     - An INFO with `application/dtmf-relay` is a `keydown` at the INFO and a `keyup` after its stated `Duration`.
     - An [RFC 4733](https://www.rfc-editor.org/rfc/rfc4733.html) telephone event is a `keyup` at its end packet and a `keydown` its duration before.
       The event belongs to the party whose own SDP advertised the sending socket.
+      When no SDP advertised the sending socket, the party whose SDP advertised the destination socket received the event, and the other party of the two sent it.
+      This is the same SDP endpoint that links the stream to its dialog.
     - The rule turns telephone-event decoding on for the run.
     - sipnab keeps at most 256 telephone events per RTP stream (`MAX_KEY_PRESSES` (256) in the source). It drops later ones.
   - sipnab writes no `mute` or `unmute`, because SIP carries no signal for either.
-  - A message whose tags match neither party, or an event from a socket neither party advertised, adds nothing.
+  - A message whose tags match neither party adds nothing.
+    An event adds nothing when neither party advertised its sending socket and no single party advertised its destination socket, because then sipnab cannot name a party as the receiver.
   - `--redact` removes `keydown` and `keyup`, because a digit can be a PIN, and keeps the rest.
   - A container that holds several legs moves each entry's `party` with the rest of the party indices.
 
@@ -46059,6 +46872,66 @@ interaction_id_header = "X-Interaction-ID"
 - `--redact` turns `interaction_id` into a token, so two containers of one interaction still match, and sweeps `campaign` and `skill` as free text.
 - The parameter is `interaction_id`, as section 3.2.3 spells it.
   vcon-lib's list of Dialog parameters spells it `interaction`, so a vcon-lib reader that filters on that list drops it.
+
+## A SIPREC recording session
+
+On a tap beside a session recording server (SRS), sipnab sees the recording session that a session recording client (SRC) opens, not the recorded call itself.
+[RFC 7866 section 6.1.1](https://www.rfc-editor.org/rfc/rfc7866.html#section-6.1.1) puts the SRC in the `From` header and the SRS in the `To` header.
+The people on the recorded call appear only in the [RFC 7865](https://www.rfc-editor.org/rfc/rfc7865.html) metadata, the `application/rs-metadata+xml` part that the SRC sends beside its SDP.
+
+When the recording session's INVITE, or a later request from the SRC, carries metadata that names at least one participant, the container shows the recorded call.
+
+- Parties 0 and 1 stay the `From` and `To` of the recording session.
+  - The party that sent the metadata has `role: "recording-client"`, and the other one has `role: "recording-server"`.
+  - The `role` parameter comes from the `CC` extension, which sipnab already uses for `"observer"`.
+    The extension allows values other than the ones it lists.
+- Each `<participant>` becomes one party, in metadata order, after parties 0 and 1 and before the observer.
+  - `sip` is the `aor` of the participant's `<nameID>` when it is a `sip:` or `sips:` URI.
+    `tel` is the `aor` when it is a `tel:` URI, or a global number in the user part of a SIP AOR, by the rule in [`tel`](#one-thing-sipnab-does-supply-narrowly-tel).
+  - `name` is the `<name>` inside the `<nameID>`.
+    [RFC 7865 section 6.5.1](https://www.rfc-editor.org/rfc/rfc7865.html#section-6.5.1) defines the pair: "nameID - This attribute is a list of (Name, AoR) tuples."
+    sipnab reads the first `aor` and the first `<name>`.
+  - An AOR that is a host name or an IP address gives no `sip` or `tel`. RFC 7865 allows both forms.
+  - `validation` is `"none"` and `role` is absent.
+    The SRC asserted these identities, and sipnab cannot check them.
+- The `sipnab-siprec-streams` attachment maps each recorded stream to the party that sends it:
+
+  ```json
+  { "streams": [
+      { "label": "0", "stream_id": "1a2b3c4d", "party": 2 },
+      { "label": "1", "stream_id": "2b3c4d5e", "party": 2 },
+      { "label": "2", "stream_id": "3c4d5e6f", "party": 3 } ] }
+  ```
+
+  - The sender is the participant whose `<participantstreamassoc>` lists the stream under `<send>`.
+    [RFC 7865 section 6.8.1](https://www.rfc-editor.org/rfc/rfc7865.html#section-6.8.1): "The presence of this attribute indicates that a participant is contributing to a stream."
+    A `<recv>` entry does not make a participant the sender.
+  - `party` is absent on a stream that no `<send>` names.
+  - A container that holds several legs moves each `party` with the rest of the party indices.
+- When the container carries audio, the recording's `parties` names the participant on each channel.
+  - Each stream has an `a=label` on the m-line of the SRC's SDP that carries it.
+    [RFC 7866 section 7.1.1](https://www.rfc-editor.org/rfc/rfc7866.html#section-7.1.1) requires the SRC to put an `a=label` ([RFC 4574](https://www.rfc-editor.org/rfc/rfc4574.html)) on each media stream, to tie the recorded stream to the metadata.
+  - The `<label>` in the metadata names that m-line.
+    [RFC 7865 section 6.7.1](https://www.rfc-editor.org/rfc/rfc7865.html#section-6.7.1): "The 'label' attribute within the 'stream' XML element references an SDP "a=label" attribute that identifies an m-line within the RS SDP."
+  - sipnab matches the address and port that sent the RTP to the m-line that names them, then follows the label to the stream and the stream to its sender.
+  - The labels come from the SDP in the same message as the metadata.
+    [RFC 7866 section 7.1.1](https://www.rfc-editor.org/rfc/rfc7866.html#section-7.1.1) limits a label's scope to "the SDP and metadata conveyed in the bodies of the SIP request or response that the label appeared in."
+  - When a channel's address and port match no labeled m-line, the rule for an ordinary call applies, and `parties` is usually absent.
+- The completeness note says that the dialog is a SIPREC recording session, and where the participants came from.
+
+A recording session whose metadata names no participant keeps the container of an ordinary call: three parties, no roles and no stream map.
+The completeness note then says the dialog is a SIPREC recording session and why the participants are missing.
+sipnab treats a dialog as a recording session in this case when its opening INVITE has `Require: siprec` or a `Contact` with `+sip.src`.
+The note names one of two causes:
+
+- no message in the dialog carried an `rs-metadata` part that sipnab could read, or
+- the metadata named no participant, which is what a malformed or truncated XML body gives.
+
+`--redact` rewrites a participant's `sip`, `tel` and `name` as it rewrites every other party's.
+The metadata XML itself leaves the container with the other message bodies (see [The message trace](#the-message-trace)).
+
+A container whose content a deny header withheld carries no participants.
+Its parties are the SRC, the SRS and the observer.
 
 ## The SIP signaling attachments
 
@@ -46646,6 +47519,121 @@ A container named directly with `-I` that sipnab cannot read stops the run
 instead, with the same reason. A file you named is one you expected
 sipnab to read.
 
+### Read many containers at once
+
+`--report` over a directory of containers prints one row per container after
+the dialog table. Each row says whether sipnab read the container or skipped
+it, and then the totals:
+
+```sh
+sipnab -N -I stored --report --no-cli-print --quiet
+```
+
+```text
+Call-ID                          From           To             State        Code   Duration   Msgs   PDD      Tags
+-------------------------------------------------------------------------------------------------------------------------
+1-1966@10.0.2.20                 sipp           test           Completed    200    8s         6      -        -
+1-1968@10.0.2.20                 sipp           test           InCall       200    0s         4      -        -
+
+vCon containers:
+Status                     Form       Findings  Calls  Duration  Disposition              UUID                                  File
+----------------------------------------------------------------------------------------------------------------------------------
+read                       unsigned   0         1      8s        Completed 1              0158a120-0392-8a4b-8522-17eac0c8ec4b  stored/1-1966_10.0.2.20-1cc03f180ff8a774.vcon.json
+read                       unsigned   0         1      0s        InCall 1                 0158a120-253e-8af9-a5b5-76781dbeae49  stored/1-1968_10.0.2.20-cdd887baa4507e9a.vcon.json
+skipped: no_sip_signaling  unsigned   1         0      0s        -                        -                                     stored/broken.vcon.json
+
+Totals: 3 container(s): 2 read, 1 skipped
+Skipped by reason: no_sip_signaling 1
+Failed validation: 1 container(s)
+Calls: 2 (Completed 1, InCall 1)
+Total duration: 8s
+
+Skipped:
+  stored/broken.vcon.json: a vCon container with no SIP signaling sipnab can read: it has no sip-message-trace or message/sip attachment
+```
+
+The `Skipping` warnings print on standard error as before. `--quiet` hides
+them, and the report keeps each reason.
+
+The columns:
+
+- **Status.** `read`, or `skipped:` and the reason in one word:
+  - `no_key`: the container is in the encrypted form and the run has no `--vcon-key`.
+    Give the flag to read it.
+  - `no_sip_signaling`: the container stores no SIP message sipnab can
+    rebuild.
+  - `not_json`: the file starts with `{` and is not JSON.
+  - `not_a_vcon`: the JSON is not a vCon.
+  - `not_opened`: a signed or encrypted layer did not open, for a reason
+    other than a missing key.
+  - `unsupported_critical`: `critical` lists an extension sipnab does not
+    support.
+  - `unreadable`: sipnab cannot read the file, or the file is over 64 MiB.
+- **Form.** The outermost form the file arrived in: `unsigned`, `signed`,
+  `encrypted` or `gzip`, or `unknown` for bytes that are not a JSON object.
+- **Findings.** How many places the container disagrees with the vendored
+  draft-ietf-vcon-vcon-core-04 schema. `-` means the schema check did not
+  run, because the file did not open or is not JSON.
+- **Calls.** The calls rebuilt from the container, by Call-ID.
+- **Duration.** Those calls' durations added up, each as the dialog table's
+  Duration column computes it.
+- **Disposition.** Those calls counted by state, the word the dialog table's
+  State column prints.
+- **UUID** and **File.** The container's `uuid`, and the file.
+
+The totals add up the rows. A call that two containers both hold counts once
+in the totals and once in each of their rows. `Failed validation` counts the
+containers with at least one schema finding, read or skipped.
+
+The section prints only when the run met a container. A report over a
+capture prints what it printed before. `--filter` does not narrow it: a container is an input,
+like a capture file.
+
+When sipnab skips every file in the directory, for example a directory that
+holds only encrypted containers and the run has no `--vcon-key`, the run
+still fails. It prints `no readable capture files` on standard error and
+exits 1, as it does without `--report`. Before it exits, `--report` prints
+the `vCon containers:` section, with no dialog table, so each container
+still has its row, the totals and the reason in full. With `--json` or
+`--json-pretty`, it prints the `sipnab_vcon_containers` object in place of
+the section. Without `--report`, or when the directory holds no vCon
+container, the run prints nothing on standard output.
+
+With `--json` or `--json-pretty`, the same rows and totals come as one JSON
+object under the key `sipnab_vcon_containers`, in place of the text section.
+The dialog table stays text:
+
+```sh
+sipnab -N -I stored --report --json --no-cli-print --quiet | grep sipnab_vcon_containers | jq '.sipnab_vcon_containers.totals'
+```
+
+```json
+{
+  "calls": 2,
+  "containers": 3,
+  "dispositions": {
+    "Completed": 1,
+    "InCall": 1
+  },
+  "duration_secs": 8,
+  "failed_validation": 1,
+  "read": 2,
+  "skipped": 1,
+  "skipped_by_reason": {
+    "no_sip_signaling": 1
+  }
+}
+```
+
+Each row of `containers` carries `status`, `file`, `uuid`, `form`,
+`validation_findings` (null where the text prints `-`), `calls_rebuilt`,
+`call_ids`, `dispositions` and `duration_secs`. A skipped row also carries
+`skip_reason` and `skip_detail`, the reason in full.
+
+The MCP tool [`vcon_directory_report`](mcp-tools-vcon.md#vcon_directory_report)
+answers the same report for a directory of `--mcp-file-root`, with the rows
+paged.
+
 ### A signed, encrypted or compressed container
 
 A vCon arrives in one of three JSON forms, and a producer may compress any of them
@@ -46850,6 +47838,89 @@ for that container. The MCP tool and the REST route list it in
 - **sipnab sends nothing anywhere.** The addresses in a container are a record
   of a finished call. So sipnab never transmits a response to them.
 
+## The uuid under a domain
+
+By default sipnab keys a container's uuid on the node, the dialog and the capture
+(see [What this does not do](#what-this-does-not-do)). That departs from
+[draft-ietf-vcon-vcon-core-04 section 4.1.2](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-04#section-4.1.2),
+which says:
+
+<!-- vale Google.Passive = NO -->
+> The value of the string SHOULD be generated using the version 8 UUID
+> defined in [UUID] which is generated identically to a version 7 UUID
+> with the exception that:
+>
+> - rand_b/custom_c is generated from the high 62 bits of the SHA-1
+>   hash of the FQHN string
+> - the variant and version fields are set as described for version 8
+>   UUID
+>
+> The DNS name string used in generating the uuid value SHOULD be the
+> same FQHN, or a subdomain to allow for more distributed generation of
+> UUIDs, as would used in the signing certificate as they are the same
+> domains of uniqueness.
+<!-- vale Google.Passive = YES -->
+
+`[vcon] uuid_domain` writes that form:
+
+```toml
+[vcon]
+uuid_domain = "node1.pbx.example.com"
+```
+
+Every container uuid the process writes then has this layout. That covers the
+batch export, `GET /v1/dialogs/{id}/vcon`, MCP `export_vcon` and the
+related-legs attachment.
+
+| Bits | Field ([RFC 9562 section 5.7](https://www.rfc-editor.org/rfc/rfc9562.html#section-5.7)) | What sipnab puts there |
+|------|-------|------------------------|
+| 0-47 | `unix_ts_ms` | The call's first observed message, in milliseconds since the Unix epoch. The same as the default |
+| 48-51 | `ver` | `8` |
+| 52-63 | `rand_a` | 12 bits seeded from SHA-256 over the Call-ID and the capture identity, the same seed as the default. See below for when it is not |
+| 64-65 | `var` | `10` |
+| 66-127 | `rand_b` | The high 62 bits of SHA-1 over the domain. sipnab hashes the name in lower case, without a trailing dot |
+
+sipnab refuses at startup, with exit code 1 and a message naming
+`[vcon] uuid_domain`, a value that is not a host name of two or more labels.
+Each label must be 1 to 63 ASCII letters, digits or hyphens, and must not start or end
+with a hyphen. The whole name is at most 253 characters. Write an
+internationalized name in its `xn--` form. sipnab also refuses an IPv4
+address. See [the error reference](errors.md).
+
+**What the layout leaves for uniqueness.** Section 4.1.2 also says "The UUID
+value MUST be globally unique". Under one domain, the timestamp and the 62
+domain bits are the same for every call that starts in the same millisecond.
+Only `rand_a`'s 12 bits separate those calls: 4096 values per millisecond per
+domain.
+
+- Seeded from the dialog alone, two calls in one millisecond would share a uuid
+  once in 4096 pairs. So sipnab keeps a table of the values it has given out.
+  A call whose seed picks a value already given in that millisecond takes the
+  next free one.
+- The table is per process. A second sipnab process, or a second node, under
+  the same domain cannot see it. Give each node its own subdomain, as the
+  draft's "or a subdomain to allow for more distributed generation of UUIDs"
+  allows.
+- The table holds at most 1,048,576 uuids. Past that it drops its oldest
+  milliseconds, and sipnab seeds a call from one of them afresh.
+- When calls hold all 4096 values of a millisecond, the next call repeats a
+  uuid. The layout has no room to prevent that.
+
+**What stays deterministic.** The seed is a function of the dialog and the
+capture. So re-exporting one call, or running the same capture again, writes
+the same uuid. The exception is a call that met a seed collision in its
+millisecond: its value depends on which of the two calls sipnab minted first.
+
+**Later versions.** A `sealed_updates = "new-uuid"` rule's version *n* keeps the
+first version's timestamp and the domain's 62 bits. sipnab seeds its `rand_a`
+from SHA-256 over `amended`, the first uuid and *n*, through the same table. So
+two versions of one call differ in those 12 bits alone.
+
+**Not done: the domain from `sign_cert`.** The draft asks for the name "as
+would used in the signing certificate". sipnab does not read it from
+`sign_cert`. Set `uuid_domain` to the DNS name in that certificate, or to a
+subdomain of it.
+
 ## What this does not do
 
 Stated here rather than discovered later.
@@ -46922,6 +47993,9 @@ Stated here rather than discovered later.
     deduplication on `uuid` is safe for re-exports. That is what it exists for.
   - Until 0.5.125 `rand_b` digested the node alone. That left 12 bits to
     separate such dialogs.
+  - `[vcon] uuid_domain` replaces `rand_b` with the high 62 bits of SHA-1 over
+    a host name, the form section 4.1.2 asks for. See
+    [The uuid under a domain](#the-uuid-under-a-domain).
 - **It does not store anything.** sipnab writes a container and forgets it.
   There is no vCon store, no index, no retention.
 
@@ -61929,9 +63003,10 @@ A skipped frame is not a bug.
 
 Offline reconstruction shards by **host pair**, not by packet or by call.
 
-- The reader peeks only the link and IP headers.
-  - [`peek_host_pair()`](../../src/capture/parse.rs) reads fixed offsets.
-  - It does no transport parse and no allocation.
+- The reader peeks only the link, IP and transport headers.
+  - [`peek_frame()`](../../src/capture/parse.rs) walks to the outer IP header once and reads the host pair and the UDP or TCP ports there.
+  - For a UDP datagram on a `--portrange` port it also checks whether the payload starts a SIP message that names `application/sdp`. That decides whether every worker receives a copy.
+  - It does no SIP parse and no allocation.
 - Then [`shard_for()`](../../src/parallel.rs) maps that pair to a worker.
 - The mapping is direction-independent.
   - So a call's request and response legs land on the same worker.
@@ -63785,7 +64860,7 @@ It exists because nothing else in the suite can see a data race.
 The borrow checker does not help here either.
 
 - It stops at `unsafe`.
-- Most of this crate's 135 `unsafe` blocks are libc FFI.
+- Most of this crate's 134 `unsafe` blocks are libc FFI.
 - They concentrate in privilege dropping ([`privilege.rs`](../../src/privilege.rs)
   and [`process_isolation.rs`](../../src/process_isolation.rs)) and capture setup.
 - Recount with `grep -rc 'unsafe {' src/` rather than trusting that figure.
@@ -64378,6 +65453,10 @@ The matrix has moved twice.
   - The hook no longer repeats it on every push.
 - The script still runs it by hand.
 - Pre-push keeps the reduced combinations.
+- Pre-push and CI also run clippy on the library with no features:
+  `cargo clippy --no-default-features --lib -- -D warnings`.
+  - The main clippy gate runs `--all-features`, so a lint that fires only with every feature off never reaches it.
+  - On 2026-10-14 main carried one: a `..Self::default()` that does nothing once the feature-gated fields are absent.
 
 The self-hosted jobs keep their builds between runs.
 
@@ -68150,15 +69229,32 @@ Determinism is the property that had to survive, and it did.
 - It asserts the precondition that they still share the old 12-bit bucket.
 - So it fails loudly rather than passing vacuously if the seed ever changes.
 
-One more substitution to know about: the draft names SHA-1, and this tree has
-none.
+One more substitution to know about: the draft fills `rand_b` with SHA-1 of a
+host name alone, and the default does not.
 
-- Adding a broken hash as a dependency to fill 62 bits of a non-security
-  identifier is the worse trade.
 - UUIDv8 constrains only the version and variant bits.
   - This function writes both.
 - What changes is which bits land in `rand_b`.
-  - Nothing reads them.
+
+**`[vcon] uuid_domain` follows the draft's form.**
+
+- `UuidDomain` holds the name and the high 62 bits of SHA-1 over it, from
+  the `sha1` crate the `vcon` feature already carries for RSA-OAEP.
+- `bootstrap::declare_process_globals` declares it once, so every door mints
+  the same uuid for one dialog.
+- `rand_b` is the domain's 62 bits. `rand_a` keeps the default's seed.
+- That leaves 12 bits per millisecond per domain, so `UuidSlots` records the
+  `rand_a` values given out per millisecond and steps a colliding seed to the
+  next free value.
+  - It is per process and capped at `UUID_SLOT_CAP` identities, oldest
+    milliseconds dropped first.
+- `revision_uuid` takes the same path for a `new-uuid` chain.
+- Tests: `the_default_uuid_is_byte_identical_to_before` pins the default from
+  before the key existed. `a_domain_uuid_follows_the_section_4_1_2_layout`
+  recomputes each field. `two_dialogs_in_one_millisecond_get_different_domain_uuids`
+  holds a seed collision found by search. [`tests/vcon_uuid_domain_test.rs`](../../tests/vcon_uuid_domain_test.rs)
+  covers the shipped binary.
+- See [The uuid under a domain](../vcon.md#the-uuid-under-a-domain).
 
 ## The credential strip, and what it does today
 

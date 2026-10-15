@@ -233,7 +233,8 @@ pub struct TopTalkersParams {
     #[serde(default)]
     pub limit: Option<u32>,
     /// Filter DSL expression narrowing which dialogs count, e.g.
-    /// `state == failed`. Omitted, every dialog counts.
+    /// `state == Failed`. Omitted, every dialog counts.
+    /// Values may be bare or quoted.
     ///
     /// The same vocabulary every other filtering tool takes, so an agent that
     /// learned it once can ask "who is failing most" without learning a

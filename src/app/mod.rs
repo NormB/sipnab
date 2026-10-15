@@ -17,6 +17,8 @@ pub mod servers;
 #[cfg(feature = "tui")]
 pub mod tui_mode;
 #[cfg(feature = "vcon")]
+pub mod vcon_audio_fetch;
+#[cfg(feature = "vcon")]
 pub mod vcon_enrich;
 #[cfg(feature = "vcon")]
 pub mod vcon_fetch;
@@ -44,6 +46,41 @@ pub mod vcon_spool {
     #[must_use]
     pub fn spools(_cli: &crate::cli::Cli, _config: &crate::config::Config) -> Vec<Spool> {
         Vec::new()
+    }
+}
+
+/// A build without the vCon exporter has no fetcher, so no server door can
+/// fetch. The type exists so the REST state has one shape in every build.
+#[cfg(not(feature = "vcon"))]
+pub mod vcon_fetch {
+    /// Whether a server door may fetch: never, in this build.
+    #[derive(Debug, Clone, Default)]
+    pub enum Access {
+        /// No fetcher is compiled in.
+        #[default]
+        Off,
+    }
+
+    impl Access {
+        /// Never: this build has no fetcher.
+        #[must_use]
+        pub const fn is_ready(&self) -> bool {
+            false
+        }
+
+        /// Always [`Access::Off`]: a build without the `vcon` feature
+        /// refuses the opt-in flags at startup, before this is asked.
+        ///
+        /// # Errors
+        ///
+        /// Never.
+        pub fn resolve(
+            _flag: &str,
+            _allowed: bool,
+            _keys: &crate::config::VconFetchConfig,
+        ) -> Result<Self, String> {
+            Ok(Self::Off)
+        }
     }
 }
 

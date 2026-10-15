@@ -134,6 +134,7 @@ pub const FLAGS: &[(&str, Link)] = &[
     ("api", Link::Pending),
     ("api-accept-archive-passwords", Link::Pending),
     ("api-allow-relay-query", Link::Pending),
+    ("api-allow-vcon-fetch", Link::PerRun),
     (
         "api-allowed-host",
         Link::Key("api", "allowed_hosts", Merge::Override),
@@ -421,6 +422,7 @@ pub const FLAGS: &[(&str, Link)] = &[
     ("mcp", Link::PerRun),
     ("mcp-allow-open-capture", Link::Pending),
     ("mcp-allow-relay-query", Link::Pending),
+    ("mcp-allow-vcon-fetch", Link::PerRun),
     ("mcp-allow-save-findings", Link::Pending),
     ("mcp-allow-shutdown", Link::Pending),
     ("mcp-allow-tls-capture", Link::Pending),
@@ -714,6 +716,15 @@ pub const FLAGS: &[(&str, Link)] = &[
     ("uprobe-symbol", Link::Pending),
     ("uprobe-tls", Link::Pending),
     ("user", Link::Key("privilege", "user", Merge::Override)),
+    // Fetching a vCon's audio by url is a command of its own: it names one
+    // container, the output directory and the trust for this run's fetch,
+    // and its key is the readers' `--vcon-key`.
+    ("vcon-audio-fetch", Link::Action),
+    ("vcon-audio-fetch-ca", Link::Input),
+    ("vcon-audio-fetch-extra-ca", Link::Input),
+    ("vcon-audio-fetch-local", Link::PerRun),
+    ("vcon-audio-fetch-max-size", Link::PerRun),
+    ("vcon-audio-fetch-out", Link::Input),
     ("vcon-digest", Link::Pending),
     // The fetcher is a mode of its own, like the forwarder: it captures
     // nothing. Its standing settings are `[vcon_fetch]` keys; the uuids, the
@@ -914,6 +925,7 @@ pub const FILE_ONLY: &[(&str, &str, FileOnly)] = &[
     ("vcon", "sign_key", FileOnly::Table),
     ("vcon", "sign_cert", FileOnly::Table),
     ("vcon", "compress", FileOnly::Table),
+    ("vcon", "uuid_domain", FileOnly::Tuning),
     ("limits", "max_header_line", FileOnly::Tuning),
     ("limits", "max_headers_per_message", FileOnly::Tuning),
     ("limits", "max_messages_per_dialog", FileOnly::Tuning),

@@ -10,8 +10,25 @@
 //! what is held, and what the reader has not yet decoded is everything past
 //! its own count.
 
-use crate::rtp::audio_export::FrameDecoder;
+use crate::rtp::audio_export::{FrameDecoder, stream_wall_ms};
 use crate::rtp::stream::RtpStream;
+use crate::rtp::timeline::{Step, Timeline, samples_to_ticks, ticks_to_samples};
+
+/// `call_id`'s streams in the order live audio numbers them: first seen
+/// first, SSRC breaking a tie.
+#[must_use]
+pub fn call_streams<'a>(
+    ss: &'a crate::rtp::stream_store::StreamStore,
+    call_id: &'a str,
+) -> Vec<&'a RtpStream> {
+    let mut streams: Vec<&RtpStream> = ss.streams_for(call_id).collect();
+    streams.sort_by(|a, b| {
+        a.first_seen
+            .cmp(&b.first_seen)
+            .then(a.key.ssrc.cmp(&b.key.ssrc))
+    });
+    streams
+}
 
 /// One stream being followed.
 pub struct LiveStream {
@@ -22,6 +39,9 @@ pub struct LiveStream {
     taken: u64,
     /// Frames that were released before this reader took them.
     missed: u64,
+    /// Where the frames fall on the stream's RTP clock, so a lost packet is
+    /// sent as silence of its length (see [`crate::rtp::timeline`]).
+    timeline: Timeline,
 }
 
 /// What one look at a stream found.
@@ -61,6 +81,7 @@ impl LiveStream {
             decoder: FrameDecoder::new(stream.codec.as_deref())?,
             taken: 0,
             missed: 0,
+            timeline: Timeline::new(stream.clock_rate, stream_wall_ms(stream), true),
         })
     }
 
@@ -86,9 +107,25 @@ impl LiveStream {
             self.taken = first_held;
         }
         let skip = usize::try_from(self.taken - first_held).unwrap_or(usize::MAX);
-        for (_ts, payload) in stream.payload_buffer.iter().skip(skip) {
+        let clock = stream.clock_rate;
+        let rate = self.decoder.rate(clock);
+        self.timeline.extend_wall(stream_wall_ms(stream));
+        for (ts, payload) in stream.payload_buffer.iter().skip(skip) {
+            let Step::Play { fill_ticks } = self.timeline.step(*ts) else {
+                continue;
+            };
+            // Bounded by the timeline's budget, the stream's own wall-clock
+            // span, so a hostile timestamp cannot size this allocation.
+            let silence = usize::try_from(ticks_to_samples(fill_ticks, clock, rate)).unwrap_or(0);
+            if silence > 0 {
+                frames.pcm.push(vec![0; silence]);
+            }
             match self.decoder.decode(payload) {
-                Ok(pcm) => frames.pcm.push(pcm),
+                Ok(pcm) => {
+                    self.timeline
+                        .played(samples_to_ticks(pcm.len() as u64, rate, clock));
+                    frames.pcm.push(pcm);
+                }
                 Err(_) => frames.failed = frames.failed.saturating_add(1),
             }
         }
@@ -148,9 +185,11 @@ mod tests {
         let mut live = LiveStream::new(&s)?;
         assert_eq!(live.rate(&s), 16000);
         let mut got: Vec<i16> = Vec::new();
+        let mut ts = 0u32;
         for (i, chunk) in frames.chunks(7).enumerate() {
             for f in chunk {
-                s.payload_buffer.push_back((0, f.clone()));
+                s.payload_buffer.push_back((ts, f.clone()));
+                ts = ts.wrapping_add(160);
             }
             let found = live.next(&s);
             assert_eq!(
@@ -176,11 +215,13 @@ mod tests {
         let mut s = stream("PCMU")?;
         let mut live = LiveStream::new(&s)?;
         for n in 0..10u8 {
-            s.payload_buffer.push_back((0, vec![n; 160]));
+            s.payload_buffer
+                .push_back((u32::from(n) * 160, vec![n; 160]));
         }
         assert_eq!(live.next(&s).pcm.len(), 10);
         for n in 10..20u8 {
-            s.payload_buffer.push_back((0, vec![n; 160]));
+            s.payload_buffer
+                .push_back((u32::from(n) * 160, vec![n; 160]));
         }
         // The first 15 leave the buffer: 10 already read, 5 not.
         s.payload_buffer.drain(..15);
@@ -196,9 +237,39 @@ mod tests {
         // Released after reading: no gap.
         s.payload_buffer.drain(..2);
         s.payload_frames_released_after_export = 2;
-        s.payload_buffer.push_back((0, vec![20; 160]));
+        s.payload_buffer.push_back((20 * 160, vec![20; 160]));
         let found = live.next(&s);
         assert_eq!((found.missed, found.pcm.len()), (0, 1));
+        Ok(())
+    }
+
+    /// A packet lost between two looks is silence of its length, sent in
+    /// its place, so a listener's audio stays on the call's clock.
+    #[test]
+    fn a_lost_packet_between_looks_is_sent_as_silence() -> Result<(), TestError> {
+        let mut s = stream("PCMU")?;
+        let mut live = LiveStream::new(&s)?;
+        s.payload_buffer.push_back((0, vec![0x00; 160]));
+        assert_eq!(live.next(&s).pcm.len(), 1);
+        s.payload_buffer.push_back((480, vec![0x00; 160]));
+        s.last_seen = s.first_seen + chrono::Duration::milliseconds(60);
+        let found = live.next(&s);
+        assert_eq!(found.pcm.len(), 2, "the silence, then the frame");
+        assert_eq!(found.pcm[0], vec![0i16; 320]);
+        assert_eq!(found.pcm[1].len(), 160);
+        Ok(())
+    }
+
+    /// A packet repeated across two looks plays once.
+    #[test]
+    fn a_repeated_packet_plays_once() -> Result<(), TestError> {
+        let mut s = stream("PCMU")?;
+        let mut live = LiveStream::new(&s)?;
+        s.payload_buffer.push_back((0, vec![0x00; 160]));
+        assert_eq!(live.next(&s).pcm.len(), 1);
+        s.payload_buffer.push_back((0, vec![0x00; 160]));
+        s.payload_buffer.push_back((160, vec![0x00; 160]));
+        assert_eq!(live.next(&s).pcm.len(), 1);
         Ok(())
     }
 

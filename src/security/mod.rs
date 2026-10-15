@@ -23,6 +23,9 @@ pub(crate) mod exec_placeholders;
 pub mod findings;
 pub mod fraud_detect;
 pub mod kill_packet;
+// Every originating capability is native: HEP export and the live RTP fork.
+#[cfg(feature = "native")]
+pub mod operator_destination;
 pub mod recommend;
 pub mod reg_flood;
 pub mod scanner_detect;

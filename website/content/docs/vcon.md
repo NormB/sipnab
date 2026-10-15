@@ -176,6 +176,8 @@ dir   = "/var/spool/sipnab-vcon/all"
 | `audio_format` | `wav` (the default): the recording is a WAV, `audio/x-wav`. `opus`: Ogg Opus, `audio/ogg`, about a fifth of the size. Needs `audio = "inline"` or `"url"`. See [Audio as Ogg Opus](#audio-as-ogg-opus) |
 | `max_inline_media_mib` | The largest audio this rule's containers inline, in MiB. sipnab writes a call above it without its audio and the container records `media: "refused-over-budget"`. Unset: `--vcon-max-inline-media` |
 | `live_audio` | `true`: serve each matching call's audio while it is in progress, over the REST API. See [Hear a call while it is in progress](#hear-a-call-while-it-is-in-progress) |
+| `live_rtp` | A UDP `host:port`: send each matching call's audio there as RTP while it is in progress. See [Send a call's audio as RTP](#send-a-call-s-audio-as-rtp) |
+| `live_rtp_allow_remote` | `true`: let `live_rtp` name an address other than loopback. See [Send a call's audio as RTP](#send-a-call-s-audio-as-rtp) |
 | `live` | `true`: on a live capture, write each matching call's container as the call starts and rewrite it in place each time the call changes. See [Follow a call while it is in progress](#follow-a-call-while-it-is-in-progress) |
 | `encrypt_to` | A PEM certificate, or a list of them. Set, the rule writes only the encrypted form, once, to every certificate's key. Needs `sign_key` and `sign_cert`. See [Encrypt what a rule writes](#encrypt-what-a-rule-writes) |
 | `sign_key`, `sign_cert` | The PEM RSA or EC P-256 private key an encrypting or `sign_only` rule signs with, and its certificate chain, leaf first |
@@ -675,6 +677,113 @@ A [`[[vcon.enrich]]`](#enrich-a-call-before-it-is-written) service on the same
 rule can return, at the call's end, what a transcriber produces during the call.
 So the transcript is in the call's container.
 
+### Send a call's audio as RTP
+
+A rule with `live_rtp` sends the audio of the calls it matches, as sipnab
+captures them, to a UDP address as RTP.
+
+- It suits a program that takes audio in on a UDP port, such as a local
+  speech-to-text service.
+- `live_audio` serves the same audio for a client to fetch; `live_rtp` sends
+  it without a client asking.
+
+```toml
+[[vcon.rule]]
+name     = "support"
+when     = "@support"
+dir      = "/var/spool/sipnab-vcon/support"
+live_rtp = "127.0.0.1:40000"
+```
+
+**What arrives at the address.**
+
+- Each leg of the call is one RTP stream ([RFC 3550](https://www.rfc-editor.org/rfc/rfc3550.html)).
+  - A leg is one direction of the call's audio: one captured RTP stream.
+  - Each stream has an SSRC of its own. Every stream goes to the one address,
+    so a receiver opens one port and tells the legs apart by SSRC.
+- The payload is L16 ([RFC 3551 section 4.5.11](https://www.rfc-editor.org/rfc/rfc3551.html#section-4.5.11)):
+  16-bit signed samples in network byte order, 16 kHz, one channel.
+  - Payload type 96, a dynamic type. The static L16 types, 10 and 11, are
+    44.1 kHz.
+  - 320 samples (20 ms) a packet. Only the last packet of a leg can be
+    shorter.
+  - sipnab interpolates G.711 (8 kHz) up to 16 kHz, and Opus (48 kHz) down.
+    G.722 decodes at 16 kHz.
+  - The first packet of each leg carries the marker bit. The sequence
+    number steps by one and the timestamp by the samples in the packet before.
+  - Where the captured RTP timestamps show time passed with no audio, a lost
+    packet or the sender pausing, the leg carries silence of that length, as
+    the live audio route does.
+- Control messages arrive at the same address, one JSON object a datagram.
+  - A control message starts with `{`. An RTP packet never does: its first
+    byte is 0x80 to 0xBF, the range
+    [RFC 7983 section 7](https://www.rfc-editor.org/rfc/rfc7983.html#section-7)
+    gives RTP on a shared port.
+
+| `type` | When | Carries |
+|--------|------|---------|
+| `start` | Once per call, before its first packet | `call_id`, `rule`, and `legs`: each leg sipnab holds so far |
+| `leg` | A leg first seen after the `start`, before its first packet | `call_id`, `rule`, and the `leg` |
+| `stop` | Once per call, after its last packet | `call_id`, `rule`, `reason`, and `legs` with what each one sent |
+
+Each leg is an object:
+
+| Key | Meaning |
+|-----|---------|
+| `index` | The leg's place in the call, from 0, in the order sipnab first saw them |
+| `status` | `sending`, `withheld` (SRTP that no key decrypted) or `skipped` (a codec sipnab does not decode) |
+| `reason` | Why a `withheld` or `skipped` leg sends nothing |
+| `ssrc` | The SSRC of the stream sipnab sends, for a `sending` leg |
+| `payload_type`, `encoding`, `rate`, `channels` | `96`, `"L16"`, `16000`, `1`, for a `sending` leg |
+| `captured` | The captured stream: its `ssrc`, `src` and `dst` addresses, `codec`, `rate` and `packets` so far |
+| `packets`, `samples` | What sipnab has sent of the leg |
+| `missed_frames` | Frames sipnab released from retention before it sent them |
+| `failed_frames` | Frames the decoder refused |
+| `undecrypted_packets` | Captured SRTP packets that no key decrypted |
+
+The `reason` of a `stop` is one of:
+
+- `the call ended`,
+- `the call is no longer held`,
+- `the call carries the --content-deny-header header`,
+- `the capture ended`: the input ended, or a live capture reached `-c` or its
+  duration, with the call still up,
+- `sipnab stopped`: sipnab received a stop request, such as SIGTERM. It sends
+  each call's stop at once, and none of the audio still queued.
+
+A control message is one UDP datagram, and UDP does not resend a lost one. The
+RTP packets still carry their SSRC, and the `stop` repeats every leg.
+
+**When sipnab sends the audio.**
+
+- As sipnab captures it. sipnab looks for new audio every 20 ms.
+- Audio that waits, such as a capture file read faster than real time, goes
+  at up to `MAX_PACKETS_PER_PASS` (10) packets a leg every 20 ms: ten times
+  real time.
+- With `-I`, sipnab sends every queued packet and each call's stop before it
+  exits. The calls that had not ended stop with `the capture ended`.
+- sipnab tells you at startup when a rule sends the audio of a capture file.
+
+**What sipnab never sends.**
+
+- Audio a key could not decrypt. Such a leg is `withheld`, with the reason,
+  and gets no stream.
+- A call that `--content-deny-header` withholds. A call that gains the header
+  while sipnab sends it stops at once.
+
+**Where it may go.**
+
+- sipnab refuses to start, with exit code 1, when `live_rtp` names an address
+  other than loopback, unless the rule also sets `live_rtp_allow_remote = true`.
+  - RTP has no encryption and no authentication. Off loopback, anyone on the
+    path can hear the call.
+  - Set the opt-in only on a network you control.
+- It also refuses a `live_rtp` that does not resolve to an address. sipnab
+  resolves it once, at startup.
+- A `live_rtp` rule turns audio retention on, as `live_audio` does.
+- `live_rtp` runs in a headless run (`-N`). A `--cores` run and the terminal
+  UI send nothing, and say so at startup.
+
 ### Follow a call while it is in progress
 
 By default, a rule writes a call once, after it has ended (or gone quiet for
@@ -831,7 +940,7 @@ beside the container as its own JWE:
 - Each write uses a fresh content key, so each write of a call writes a new file.
   - sipnab deletes none of them.
   - Under `sealed_updates = "new-uuid"`, the earlier instances name the earlier files. Under `same-uuid`, nothing names them.
-- To read one: fetch the file from your storage, check its SHA-512 against the container's `content_hash`, and decrypt it with the private key of the `encrypt_to` certificate.
+- To read one, `--vcon-audio-fetch` fetches the file, checks its SHA-512 against the container's `content_hash`, and decrypts it with the private key of the `encrypt_to` certificate. See [Fetch the audio a vCon names](#fetch-the-audio-a-vcon-names).
   - `--vcon-fetch` fetches containers. It does not fetch the URLs inside them.
 
 **What the keys must be.**
@@ -952,6 +1061,9 @@ sipnab refuses at startup any other `sealed_updates` value, naming the three.
 - It takes its other 74 bits from SHA-256 over `amended`, the first uuid and *n*.
 - It depends on nothing else. So two runs over the same capture write the same
   chain of uuids.
+- Under `[vcon] uuid_domain`, version *n* keeps the first uuid's timestamp and
+  the domain's 62 bits, and takes `rand_a` from the same SHA-256. See
+  [The uuid under a domain](#the-uuid-under-a-domain).
 
 To read a call's latest version, follow the chain. The latest version is the
 one that no other version names in `amended`.
@@ -1090,6 +1202,46 @@ sipnab -N -I archived.vcon.json --json-dialogs --no-cli-print --quiet | jq -c '{
   The section says the inner layers are then "assumed to have valid
   integrity", so an inner certificate that has expired since does not stop
   the read.
+
+### Fetch the audio a vCon names
+
+A rule with `audio = "url"` writes each recording beside its container, and
+the container names it by `url`, `mediatype` and `content_hash`. An
+encrypting rule writes the file as its own JWE.
+`--vcon-audio-fetch` gets the audio back from a container and its key:
+
+```sh
+sipnab --vcon-audio-fetch fetched/0158a120-0392-891a-9455-bc2e6fad94df.vcon.json --vcon-audio-fetch-out audio --vcon-key recipient.key
+```
+
+```text
+INFO sipnab::app::bootstrap: --vcon-audio-fetch: wrote 'audio/0158a120-0392-891a-9455-bc2e6fad94df-dialog0.wav'
+```
+
+The `INFO` line shows with `SIPNAB_LOG=info`. For each recording Dialog
+Object with a `url`, sipnab:
+
+1. Opens the container the way `-I` does: unsigned, signed, encrypted or gzip, with `--vcon-key`, `--vcon-signer-ca` and `--vcon-signer-sha256`, or their `[vcon_input]` keys.
+2. Fetches the file over `https://`, trusting the host's CA bundle, `--vcon-audio-fetch-ca` alone, or `--vcon-audio-fetch-extra-ca` as well.
+   - sipnab refuses a `url` that is not `https://` without connecting. [Section 2.4.1 of draft-ietf-vcon-vcon-core-04](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-04#section-2.4.1) requires HTTPS for retrieval, to protect the privacy of the file's contents.
+   - With `--vcon-audio-fetch-local`, sipnab reads the file from the directory that holds the container instead, by the last segment of the `url`: for a spool whose files your storage does not serve yet.
+3. Checks the file against the `content_hash`, the hash of the file as written ([section 2.2](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-04#section-2.2)), before anything else reads it. sipnab refuses a file that does not match, names the dialog, and writes nothing for it.
+4. Decrypts a JWE with the key that opens the container, through the same code. Its `cty` must be the recording's `mediatype`.
+5. Writes the audio to `<uuid>-dialog<N>.wav`, or `.ogg` for `audio/ogg`, in `--vcon-audio-fetch-out`, mode `0600`. `<N>` is the recording's index in `dialog`. sipnab never replaces a file that exists.
+
+sipnab carries on to the next recording after a refusal. Exit `0` when sipnab
+wrote every recording, `1` when the container does not open, names no
+recording by `url`, or sipnab refused any recording, and `2` when sipnab
+cannot use a key, CA or output directory.
+
+To read the spool on the host that wrote it:
+
+```sh
+sipnab --vcon-audio-fetch spool/0158a120-0392-891a-9455-bc2e6fad94df.vcon.json --vcon-audio-fetch-out audio --vcon-audio-fetch-local --vcon-key recipient.key
+```
+
+An unencrypted rule's WAV goes through the same steps, without the
+decryption.
 
 ## The spool contract, for a bridge that consumes it
 
@@ -1632,7 +1784,11 @@ statement format. sipnab follows the SCITT drafts that define one:
 - The protected header carries what
   [section 6 of draft-ietf-scitt-architecture-22](https://datatracker.ietf.org/doc/html/draft-ietf-scitt-architecture-22#section-6)
   requires:
-  - `alg` (1): RS256, `-257`.
+  - `alg` (1): ES256, `-7`
+    ([RFC 9053 section 2.1](https://www.rfc-editor.org/rfc/rfc9053.html#section-2.1)),
+    for an EC P-256 key; RS256, `-257`
+    ([RFC 8812 section 2](https://www.rfc-editor.org/rfc/rfc8812.html#section-2)),
+    for an RSA key.
   - `content type` (3): `application/json`.
   - CWT Claims (15): `iss` (1) is `scitt_issuer`, a URI of at most
     `MAX_ISSUER_LEN` (8192) characters, `sub` (2) is
@@ -1641,8 +1797,12 @@ statement format. sipnab follows the SCITT drafts that define one:
 - The payload is a JSON object: `event`, `vcon_uuid`, `vcon_hash` (the
   `sha512-` hash of the container's bytes as delivered), `at`, and for
   `vcon_sent` the store's URL in `to`. It carries no party data.
-- The key is a PEM RSA key, the same kind an encrypting `[[vcon.rule]]` names
-  in `sign_key`, readable by its owner only.
+- The key is a PEM RSA or EC P-256 key, the same kinds an encrypting
+  `[[vcon.rule]]` names in `sign_key`, readable by its owner only. The first
+  certificate in `scitt_sign_cert` must be the key's own. sipnab refuses a
+  pair that does not match before it sends anything, naming both settings:
+  exit 2 when `--vcon-forward-scitt-sign-key` named the key, 1 when
+  `scitt_sign_key` did.
 
 **What the service answered** goes into `<name>.scitt` beside the delivered
 container, one entry per statement:
@@ -1651,18 +1811,41 @@ container, one entry per statement:
 {"statements": [
   {"event": "vcon_created", "status": 201,
    "location": "https://ts.example.com/entries/67ed...", "receipt": "0oRDoQEm..."},
-  {"event": "vcon_sent", "status": 202,
+  {"event": "vcon_sent", "status": 202, "poll_status": 204, "pending": true,
    "location": "https://ts.example.com/entries/67ee..."}]}
 ```
 
 - `201`: the receipt, base64url, as the service returned it, and its
   `Location`.
-- `202`: the `Location` of the receipt. sipnab does not poll it. Fetch the
-  receipt from that URL later, as
+- `202`: the `Location` of the receipt. sipnab polls it for the receipt, as
   [section 2.4 of the SCRAPI draft](https://datatracker.ietf.org/doc/html/draft-ietf-scitt-scrapi-11#section-2.4)
-  describes.
-- `201` with a receipt longer than `MAX_RECEIPT` (65536) bytes: `error`
-  says so, and sipnab keeps no part of it.
+  describes. `poll_status` is the status of the last poll.
+  - Each poll is a `GET` with `Accept: application/cose` and the
+    `scitt_auth_file` header.
+  - `200`: the answer is the receipt, kept in `receipt` as a `201`'s is.
+  - `204`, or `202`: the registration is still running; sipnab polls again.
+  - `429` or a `5xx`: sipnab polls again; `poll_error` holds the answer
+    until a later poll replaces it.
+  - Any other `4xx`, such as the `404` of a registration that failed
+    ([section 2.4.3](https://datatracker.ietf.org/doc/html/draft-ietf-scitt-scrapi-11#section-2.4.3)):
+    `error` holds its problem, and polling ends.
+- Before each poll sipnab waits for the last answer's `Retry-After`, as a
+  minimum ([section 5.1](https://datatracker.ietf.org/doc/html/draft-ietf-scitt-scrapi-11#section-5.1)).
+  Without one, it waits 125 to 250 milliseconds, then twice as long after
+  each poll ("exponential backoff with jitter"), for at most `MAX_POLLS` (16)
+  polls.
+- **The polling stays within `timeout`** (`--vcon-forward-timeout`), which
+  counts from the statement's `POST`. sipnab starts no poll whose wait would
+  reach it. When the time runs out, `pending` is `true` and `location` is
+  kept: the registration is running, and you can fetch the receipt from
+  that URL later. A stop does the same, and sipnab sends no further
+  statement.
+- **sipnab polls a `Location` only on the service's own origin**: the
+  scheme, host and port of `scitt_url`. A path alone, such as
+  `/entries/67ee...`, is on it. Any other `Location` is not fetched, so
+  the `scitt_auth_file` header goes to no other host; `poll_error` says so.
+- A receipt longer than `MAX_RECEIPT` (65536) bytes: `error` says so, and
+  sipnab keeps no part of it.
 - Any other status: `error` holds the `title` and `detail` of the service's
   Concise Problem Details, or the start of its answer.
 - No answer: `error` says why, and there is no `status`.
@@ -1684,8 +1867,9 @@ delivery stands.
 - The lifecycle draft defines no payload, no subject and no content type.
   sipnab's choices are the ones listed under the statement.
 - The architecture draft lets a transparency service's registration policy
-  refuse an algorithm. A service that admits only ECDSA answers RS256 with
-  `400`, and `<name>.scitt` records it.
+  refuse an algorithm. A service that admits only ECDSA answers an RS256
+  statement with `400`, and `<name>.scitt` records it. Sign with an EC P-256
+  key for ES256.
 - Authentication is out of the SCRAPI draft's scope
   ([section 4.3](https://datatracker.ietf.org/doc/html/draft-ietf-scitt-scrapi-11#section-4.3)).
   `scitt_auth_file` sends one header line, as the store's `auth_file` does.
@@ -1699,7 +1883,10 @@ delivery stands.
 - It needs the `vcon` feature.
 - Like the forwarder, it captures nothing.
   - sipnab refuses it beside any capture source, listener or export flag.
-  - So the capture process keeps making no outbound connection.
+  - So the capture process keeps making no outbound connection, unless the
+    operator opts a server in as
+    [Fetch from an agent or a REST client](#fetch-from-an-agent-or-a-rest-client)
+    describes.
 
 ### Fetch one
 
@@ -1755,7 +1942,7 @@ A URL that names a path keeps it. The kind's read path follows it.
 
 | The store answers | The fetcher |
 |---|---|
-| `2xx` with the container | writes it to `<uuid>.vcon.json`, mode `0600`, without the kind's envelope, every other byte as the store sent it. With `--vcon-fetch-decrypt-key`, it writes an encrypted container decrypted: see [Fetch an encrypted vCon](#fetch-an-encrypted-vcon) |
+| `2xx` with the container | writes it to `<uuid>.vcon.json`, mode `0600`, without the kind's envelope, every other byte as the store sent it. With `--vcon-fetch-decrypt-key`, it writes an encrypted container decrypted: see [Fetch an encrypted vCon](#fetch-an-encrypted-vcon). It verifies a signed container first: see [A signed container](#a-signed-container) |
 | `2xx` with a body larger than `--vcon-fetch-max-size`, not JSON, without the kind's envelope, or holding another uuid | writes nothing for that uuid |
 | `404` | writes nothing for that uuid, and logs that the store holds none |
 | `401` or `403` | stops: asks for no further uuid, and exits `3` |
@@ -1824,7 +2011,9 @@ holds it, and says so in its log line.
 
 A valid signature shows that the holder of the key in `x5c` signed the
 container. It does not show who that is. Two settings make the fetcher check
-the signer before it writes anything. Each needs `--vcon-fetch-decrypt-key`.
+the signer before it writes anything. Neither needs a key for a signed container.
+An encrypted container needs `--vcon-fetch-decrypt-key` as well: without it, the
+signer is out of reach, and the fetcher writes nothing for it and names the flag.
 
 - `--vcon-fetch-signer-ca <FILE>` (`[vcon_fetch] signer_ca`): the signing
   certificate must chain, through the intermediate certificates the
@@ -1846,11 +2035,33 @@ sipnab --vcon-fetch 0158a120-0392-81a5-a0a3-98c35ae1193c \
   --vcon-fetch-signer-ca /etc/sipnab/vcon-signing-ca.pem
 ```
 
-With both, the fetcher applies both. With either, it writes nothing for a
-container whose signer fails the check, nor for a container that is not
-encrypted, which has no signer to check. The log line says why and the run
+With both, the fetcher applies both, to an encrypted container and to a
+signed one alike. With either, it writes nothing for a container whose signer
+fails the check, nor for a container that is not signed, which has no signer
+to check. The log line says why and the run
 exits `1`. When a container carries more than one signature, the checks
 apply to the first, the one the log line names.
+
+### A signed container
+
+A container in the signed form that is not encrypted
+([draft-ietf-vcon-vcon-core-04 section 5.2](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-04#section-5.2))
+needs no key. The fetcher verifies it as `-I`, `analyze_vcon` and
+`validate_vcon` do, by the same function:
+
+- it verifies the signature of every signed layer against the first
+  certificate in that layer's `x5c`;
+- it checks the outermost signer against `--vcon-fetch-signer-ca` and
+  `--vcon-fetch-signer-sha256` when the operator sets them;
+- it checks that the vCon inside holds the uuid asked for, and checks that
+  vCon against the vendored schema;
+- it writes the container as the store holds it, signature included, to
+  `<uuid>.vcon.json`, mode `0600`, and the log line gives the signer's SHA-256
+  fingerprint.
+
+The fetcher writes nothing for a signed container whose signature does not
+verify, or whose signer fails a check, and the run exits `1`, as `-I` refuses
+to read it.
 
 ### Read what came back
 
@@ -1861,6 +2072,61 @@ Each file is one vCon, as JSON.
   [Analyze a stored vCon](#analyze-a-stored-vcon)).
 - Any JSON tool reads it too.
   For example: `jq '.parties, .dialog[].type' fetched/<uuid>.vcon.json`.
+
+### Fetch from an agent or a REST client
+
+A running sipnab server can read one container from the same store by uuid
+and hand it back in the answer:
+
+- the MCP tool [`fetch_vcon`](@/docs/mcp-tools-vcon.md#fetch-vcon), with
+  `--mcp-allow-vcon-fetch`;
+- [`GET /v1/vcon/fetch/{uuid}`](@/docs/api.md#get-v1-vcon-fetch-uuid), with
+  `--api-allow-vcon-fetch`.
+
+Each door is off unless the run has its flag, because this is the one way a
+server process connects to a vCon store. The store comes from the
+`[vcon_fetch]` keys in the config file and from nowhere else:
+
+- `url`, `kind` and `auth_file` say where and with which credential;
+- `decrypt_key`, `signer_ca` and `signer_sha256` decrypt an encrypted container
+  and check who signed it, as they do for the fetcher;
+- `timeout`, `max_size`, `max_response_head`, `ca` and `extra_ca` apply as
+  they do for the fetcher.
+
+The caller gives a uuid and nothing else. It never names a URL, a kind or a
+key, and the answer never holds a key or the credential. Each request makes
+the checks the fetcher makes, by the same function, and writes no file. With a
+door's flag and no `[vcon_fetch] url`, that door refuses each request and names
+the keys. A `[vcon_fetch]` store whose credential or key file sipnab cannot
+read stops the run at startup, naming the flag.
+
+```toml
+[vcon_fetch]
+kind = "conserver"
+url = "http://127.0.0.1:8765"
+auth_file = "store.key"
+```
+
+```sh
+sipnab -N -I sip-rtp-g711.pcap --config sipnab.toml --api 127.0.0.1:18080 --api-key "$SIPNAB_API_KEY" --api-allow-vcon-fetch
+```
+
+```sh
+curl -s -H "Authorization: Bearer $SIPNAB_API_KEY" \
+  http://127.0.0.1:18080/v1/vcon/fetch/0158a120-0392-8751-9a04-9decf1485b22 \
+  | jq -c 'del(.container)'
+```
+
+```json
+{"decrypted":false,"schema_findings":[],"schema_version":1,"signature_verified":false,"signer_sha256":null,"stored_form":"unsigned","uuid":"0158a120-0392-8751-9a04-9decf1485b22"}
+```
+
+`container` holds the vCon: decrypted when the store held it encrypted and
+the config sets `decrypt_key`, else as the store holds it. `decrypted`,
+`signature_verified` and `signer_sha256` say which checks it passed. A signed
+container that is not encrypted comes back as stored, signature included,
+with `signature_verified: true` once its signature verifies, as
+[A signed container](#a-signed-container) describes.
 
 ## Walk through one, end to end
 
@@ -2149,10 +2415,13 @@ sipnab fills these fields from what the capture shows, and leaves a field out wh
     - An INFO with `application/dtmf-relay` is a `keydown` at the INFO and a `keyup` after its stated `Duration`.
     - An [RFC 4733](https://www.rfc-editor.org/rfc/rfc4733.html) telephone event is a `keyup` at its end packet and a `keydown` its duration before.
       The event belongs to the party whose own SDP advertised the sending socket.
+      When no SDP advertised the sending socket, the party whose SDP advertised the destination socket received the event, and the other party of the two sent it.
+      This is the same SDP endpoint that links the stream to its dialog.
     - The rule turns telephone-event decoding on for the run.
     - sipnab keeps at most 256 telephone events per RTP stream (`MAX_KEY_PRESSES` (256) in the source). It drops later ones.
   - sipnab writes no `mute` or `unmute`, because SIP carries no signal for either.
-  - A message whose tags match neither party, or an event from a socket neither party advertised, adds nothing.
+  - A message whose tags match neither party adds nothing.
+    An event adds nothing when neither party advertised its sending socket and no single party advertised its destination socket, because then sipnab cannot name a party as the receiver.
   - `--redact` removes `keydown` and `keyup`, because a digit can be a PIN, and keeps the rest.
   - A container that holds several legs moves each entry's `party` with the rest of the party indices.
 
@@ -2194,6 +2463,66 @@ interaction_id_header = "X-Interaction-ID"
 - `--redact` turns `interaction_id` into a token, so two containers of one interaction still match, and sweeps `campaign` and `skill` as free text.
 - The parameter is `interaction_id`, as section 3.2.3 spells it.
   vcon-lib's list of Dialog parameters spells it `interaction`, so a vcon-lib reader that filters on that list drops it.
+
+## A SIPREC recording session
+
+On a tap beside a session recording server (SRS), sipnab sees the recording session that a session recording client (SRC) opens, not the recorded call itself.
+[RFC 7866 section 6.1.1](https://www.rfc-editor.org/rfc/rfc7866.html#section-6.1.1) puts the SRC in the `From` header and the SRS in the `To` header.
+The people on the recorded call appear only in the [RFC 7865](https://www.rfc-editor.org/rfc/rfc7865.html) metadata, the `application/rs-metadata+xml` part that the SRC sends beside its SDP.
+
+When the recording session's INVITE, or a later request from the SRC, carries metadata that names at least one participant, the container shows the recorded call.
+
+- Parties 0 and 1 stay the `From` and `To` of the recording session.
+  - The party that sent the metadata has `role: "recording-client"`, and the other one has `role: "recording-server"`.
+  - The `role` parameter comes from the `CC` extension, which sipnab already uses for `"observer"`.
+    The extension allows values other than the ones it lists.
+- Each `<participant>` becomes one party, in metadata order, after parties 0 and 1 and before the observer.
+  - `sip` is the `aor` of the participant's `<nameID>` when it is a `sip:` or `sips:` URI.
+    `tel` is the `aor` when it is a `tel:` URI, or a global number in the user part of a SIP AOR, by the rule in [`tel`](#one-thing-sipnab-does-supply-narrowly-tel).
+  - `name` is the `<name>` inside the `<nameID>`.
+    [RFC 7865 section 6.5.1](https://www.rfc-editor.org/rfc/rfc7865.html#section-6.5.1) defines the pair: "nameID - This attribute is a list of (Name, AoR) tuples."
+    sipnab reads the first `aor` and the first `<name>`.
+  - An AOR that is a host name or an IP address gives no `sip` or `tel`. RFC 7865 allows both forms.
+  - `validation` is `"none"` and `role` is absent.
+    The SRC asserted these identities, and sipnab cannot check them.
+- The `sipnab-siprec-streams` attachment maps each recorded stream to the party that sends it:
+
+  ```json
+  { "streams": [
+      { "label": "0", "stream_id": "1a2b3c4d", "party": 2 },
+      { "label": "1", "stream_id": "2b3c4d5e", "party": 2 },
+      { "label": "2", "stream_id": "3c4d5e6f", "party": 3 } ] }
+  ```
+
+  - The sender is the participant whose `<participantstreamassoc>` lists the stream under `<send>`.
+    [RFC 7865 section 6.8.1](https://www.rfc-editor.org/rfc/rfc7865.html#section-6.8.1): "The presence of this attribute indicates that a participant is contributing to a stream."
+    A `<recv>` entry does not make a participant the sender.
+  - `party` is absent on a stream that no `<send>` names.
+  - A container that holds several legs moves each `party` with the rest of the party indices.
+- When the container carries audio, the recording's `parties` names the participant on each channel.
+  - Each stream has an `a=label` on the m-line of the SRC's SDP that carries it.
+    [RFC 7866 section 7.1.1](https://www.rfc-editor.org/rfc/rfc7866.html#section-7.1.1) requires the SRC to put an `a=label` ([RFC 4574](https://www.rfc-editor.org/rfc/rfc4574.html)) on each media stream, to tie the recorded stream to the metadata.
+  - The `<label>` in the metadata names that m-line.
+    [RFC 7865 section 6.7.1](https://www.rfc-editor.org/rfc/rfc7865.html#section-6.7.1): "The 'label' attribute within the 'stream' XML element references an SDP "a=label" attribute that identifies an m-line within the RS SDP."
+  - sipnab matches the address and port that sent the RTP to the m-line that names them, then follows the label to the stream and the stream to its sender.
+  - The labels come from the SDP in the same message as the metadata.
+    [RFC 7866 section 7.1.1](https://www.rfc-editor.org/rfc/rfc7866.html#section-7.1.1) limits a label's scope to "the SDP and metadata conveyed in the bodies of the SIP request or response that the label appeared in."
+  - When a channel's address and port match no labeled m-line, the rule for an ordinary call applies, and `parties` is usually absent.
+- The completeness note says that the dialog is a SIPREC recording session, and where the participants came from.
+
+A recording session whose metadata names no participant keeps the container of an ordinary call: three parties, no roles and no stream map.
+The completeness note then says the dialog is a SIPREC recording session and why the participants are missing.
+sipnab treats a dialog as a recording session in this case when its opening INVITE has `Require: siprec` or a `Contact` with `+sip.src`.
+The note names one of two causes:
+
+- no message in the dialog carried an `rs-metadata` part that sipnab could read, or
+- the metadata named no participant, which is what a malformed or truncated XML body gives.
+
+`--redact` rewrites a participant's `sip`, `tel` and `name` as it rewrites every other party's.
+The metadata XML itself leaves the container with the other message bodies (see [The message trace](#the-message-trace)).
+
+A container whose content a deny header withheld carries no participants.
+Its parties are the SRC, the SRS and the observer.
 
 ## The SIP signaling attachments
 
@@ -2781,6 +3110,121 @@ A container named directly with `-I` that sipnab cannot read stops the run
 instead, with the same reason. A file you named is one you expected
 sipnab to read.
 
+### Read many containers at once
+
+`--report` over a directory of containers prints one row per container after
+the dialog table. Each row says whether sipnab read the container or skipped
+it, and then the totals:
+
+```sh
+sipnab -N -I stored --report --no-cli-print --quiet
+```
+
+```text
+Call-ID                          From           To             State        Code   Duration   Msgs   PDD      Tags
+-------------------------------------------------------------------------------------------------------------------------
+1-1966@10.0.2.20                 sipp           test           Completed    200    8s         6      -        -
+1-1968@10.0.2.20                 sipp           test           InCall       200    0s         4      -        -
+
+vCon containers:
+Status                     Form       Findings  Calls  Duration  Disposition              UUID                                  File
+----------------------------------------------------------------------------------------------------------------------------------
+read                       unsigned   0         1      8s        Completed 1              0158a120-0392-8a4b-8522-17eac0c8ec4b  stored/1-1966_10.0.2.20-1cc03f180ff8a774.vcon.json
+read                       unsigned   0         1      0s        InCall 1                 0158a120-253e-8af9-a5b5-76781dbeae49  stored/1-1968_10.0.2.20-cdd887baa4507e9a.vcon.json
+skipped: no_sip_signaling  unsigned   1         0      0s        -                        -                                     stored/broken.vcon.json
+
+Totals: 3 container(s): 2 read, 1 skipped
+Skipped by reason: no_sip_signaling 1
+Failed validation: 1 container(s)
+Calls: 2 (Completed 1, InCall 1)
+Total duration: 8s
+
+Skipped:
+  stored/broken.vcon.json: a vCon container with no SIP signaling sipnab can read: it has no sip-message-trace or message/sip attachment
+```
+
+The `Skipping` warnings print on standard error as before. `--quiet` hides
+them, and the report keeps each reason.
+
+The columns:
+
+- **Status.** `read`, or `skipped:` and the reason in one word:
+  - `no_key`: the container is in the encrypted form and the run has no `--vcon-key`.
+    Give the flag to read it.
+  - `no_sip_signaling`: the container stores no SIP message sipnab can
+    rebuild.
+  - `not_json`: the file starts with `{` and is not JSON.
+  - `not_a_vcon`: the JSON is not a vCon.
+  - `not_opened`: a signed or encrypted layer did not open, for a reason
+    other than a missing key.
+  - `unsupported_critical`: `critical` lists an extension sipnab does not
+    support.
+  - `unreadable`: sipnab cannot read the file, or the file is over 64 MiB.
+- **Form.** The outermost form the file arrived in: `unsigned`, `signed`,
+  `encrypted` or `gzip`, or `unknown` for bytes that are not a JSON object.
+- **Findings.** How many places the container disagrees with the vendored
+  draft-ietf-vcon-vcon-core-04 schema. `-` means the schema check did not
+  run, because the file did not open or is not JSON.
+- **Calls.** The calls rebuilt from the container, by Call-ID.
+- **Duration.** Those calls' durations added up, each as the dialog table's
+  Duration column computes it.
+- **Disposition.** Those calls counted by state, the word the dialog table's
+  State column prints.
+- **UUID** and **File.** The container's `uuid`, and the file.
+
+The totals add up the rows. A call that two containers both hold counts once
+in the totals and once in each of their rows. `Failed validation` counts the
+containers with at least one schema finding, read or skipped.
+
+The section prints only when the run met a container. A report over a
+capture prints what it printed before. `--filter` does not narrow it: a container is an input,
+like a capture file.
+
+When sipnab skips every file in the directory, for example a directory that
+holds only encrypted containers and the run has no `--vcon-key`, the run
+still fails. It prints `no readable capture files` on standard error and
+exits 1, as it does without `--report`. Before it exits, `--report` prints
+the `vCon containers:` section, with no dialog table, so each container
+still has its row, the totals and the reason in full. With `--json` or
+`--json-pretty`, it prints the `sipnab_vcon_containers` object in place of
+the section. Without `--report`, or when the directory holds no vCon
+container, the run prints nothing on standard output.
+
+With `--json` or `--json-pretty`, the same rows and totals come as one JSON
+object under the key `sipnab_vcon_containers`, in place of the text section.
+The dialog table stays text:
+
+```sh
+sipnab -N -I stored --report --json --no-cli-print --quiet | grep sipnab_vcon_containers | jq '.sipnab_vcon_containers.totals'
+```
+
+```json
+{
+  "calls": 2,
+  "containers": 3,
+  "dispositions": {
+    "Completed": 1,
+    "InCall": 1
+  },
+  "duration_secs": 8,
+  "failed_validation": 1,
+  "read": 2,
+  "skipped": 1,
+  "skipped_by_reason": {
+    "no_sip_signaling": 1
+  }
+}
+```
+
+Each row of `containers` carries `status`, `file`, `uuid`, `form`,
+`validation_findings` (null where the text prints `-`), `calls_rebuilt`,
+`call_ids`, `dispositions` and `duration_secs`. A skipped row also carries
+`skip_reason` and `skip_detail`, the reason in full.
+
+The MCP tool [`vcon_directory_report`](@/docs/mcp-tools-vcon.md#vcon-directory-report)
+answers the same report for a directory of `--mcp-file-root`, with the rows
+paged.
+
 ### A signed, encrypted or compressed container
 
 A vCon arrives in one of three JSON forms, and a producer may compress any of them
@@ -2985,6 +3429,89 @@ for that container. The MCP tool and the REST route list it in
 - **sipnab sends nothing anywhere.** The addresses in a container are a record
   of a finished call. So sipnab never transmits a response to them.
 
+## The uuid under a domain
+
+By default sipnab keys a container's uuid on the node, the dialog and the capture
+(see [What this does not do](#what-this-does-not-do)). That departs from
+[draft-ietf-vcon-vcon-core-04 section 4.1.2](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-04#section-4.1.2),
+which says:
+
+<!-- vale Google.Passive = NO -->
+> The value of the string SHOULD be generated using the version 8 UUID
+> defined in [UUID] which is generated identically to a version 7 UUID
+> with the exception that:
+>
+> - rand_b/custom_c is generated from the high 62 bits of the SHA-1
+>   hash of the FQHN string
+> - the variant and version fields are set as described for version 8
+>   UUID
+>
+> The DNS name string used in generating the uuid value SHOULD be the
+> same FQHN, or a subdomain to allow for more distributed generation of
+> UUIDs, as would used in the signing certificate as they are the same
+> domains of uniqueness.
+<!-- vale Google.Passive = YES -->
+
+`[vcon] uuid_domain` writes that form:
+
+```toml
+[vcon]
+uuid_domain = "node1.pbx.example.com"
+```
+
+Every container uuid the process writes then has this layout. That covers the
+batch export, `GET /v1/dialogs/{id}/vcon`, MCP `export_vcon` and the
+related-legs attachment.
+
+| Bits | Field ([RFC 9562 section 5.7](https://www.rfc-editor.org/rfc/rfc9562.html#section-5.7)) | What sipnab puts there |
+|------|-------|------------------------|
+| 0-47 | `unix_ts_ms` | The call's first observed message, in milliseconds since the Unix epoch. The same as the default |
+| 48-51 | `ver` | `8` |
+| 52-63 | `rand_a` | 12 bits seeded from SHA-256 over the Call-ID and the capture identity, the same seed as the default. See below for when it is not |
+| 64-65 | `var` | `10` |
+| 66-127 | `rand_b` | The high 62 bits of SHA-1 over the domain. sipnab hashes the name in lower case, without a trailing dot |
+
+sipnab refuses at startup, with exit code 1 and a message naming
+`[vcon] uuid_domain`, a value that is not a host name of two or more labels.
+Each label must be 1 to 63 ASCII letters, digits or hyphens, and must not start or end
+with a hyphen. The whole name is at most 253 characters. Write an
+internationalized name in its `xn--` form. sipnab also refuses an IPv4
+address. See [the error reference](@/docs/errors.md).
+
+**What the layout leaves for uniqueness.** Section 4.1.2 also says "The UUID
+value MUST be globally unique". Under one domain, the timestamp and the 62
+domain bits are the same for every call that starts in the same millisecond.
+Only `rand_a`'s 12 bits separate those calls: 4096 values per millisecond per
+domain.
+
+- Seeded from the dialog alone, two calls in one millisecond would share a uuid
+  once in 4096 pairs. So sipnab keeps a table of the values it has given out.
+  A call whose seed picks a value already given in that millisecond takes the
+  next free one.
+- The table is per process. A second sipnab process, or a second node, under
+  the same domain cannot see it. Give each node its own subdomain, as the
+  draft's "or a subdomain to allow for more distributed generation of UUIDs"
+  allows.
+- The table holds at most 1,048,576 uuids. Past that it drops its oldest
+  milliseconds, and sipnab seeds a call from one of them afresh.
+- When calls hold all 4096 values of a millisecond, the next call repeats a
+  uuid. The layout has no room to prevent that.
+
+**What stays deterministic.** The seed is a function of the dialog and the
+capture. So re-exporting one call, or running the same capture again, writes
+the same uuid. The exception is a call that met a seed collision in its
+millisecond: its value depends on which of the two calls sipnab minted first.
+
+**Later versions.** A `sealed_updates = "new-uuid"` rule's version *n* keeps the
+first version's timestamp and the domain's 62 bits. sipnab seeds its `rand_a`
+from SHA-256 over `amended`, the first uuid and *n*, through the same table. So
+two versions of one call differ in those 12 bits alone.
+
+**Not done: the domain from `sign_cert`.** The draft asks for the name "as
+would used in the signing certificate". sipnab does not read it from
+`sign_cert`. Set `uuid_domain` to the DNS name in that certificate, or to a
+subdomain of it.
+
 ## What this does not do
 
 Stated here rather than discovered later.
@@ -3057,6 +3584,9 @@ Stated here rather than discovered later.
     deduplication on `uuid` is safe for re-exports. That is what it exists for.
   - Until 0.5.125 `rand_b` digested the node alone. That left 12 bits to
     separate such dialogs.
+  - `[vcon] uuid_domain` replaces `rand_b` with the high 62 bits of SHA-1 over
+    a host name, the form section 4.1.2 asks for. See
+    [The uuid under a domain](#the-uuid-under-a-domain).
 - **It does not store anything.** sipnab writes a container and forgets it.
   There is no vCon store, no index, no retention.
 

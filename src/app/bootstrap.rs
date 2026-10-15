@@ -500,6 +500,8 @@ pub fn plan(cli: &Cli, config: &Config) -> Result<RunPlan, PlanError> {
     warn_vcon_rules(&vcon_rules);
 
     let mode = select_run_mode(cli);
+    #[cfg(feature = "vcon")]
+    warn_live_rtp(&vcon_rules, &mode, source.as_ref());
     refuse_unread_detection(cli, config, &mode)?;
 
     // Immediate mode picks the kernel ring format, so it can only be answered
@@ -687,6 +689,18 @@ fn declare_process_globals(cli: &Cli, config: &Config) {
     crate::sip::diagnosis::set_signaling_thresholds(cli.signaling_thresholds(config));
     crate::rtp::diagnosis::set_asymmetry_thresholds(cli.asymmetry_thresholds(config));
 
+    // [vcon] uuid_domain, read by every door that mints a container uuid.
+    // `apply_config` has already refused a value that is not a host name.
+    #[cfg(feature = "vcon")]
+    if let Some(domain) = config
+        .vcon
+        .uuid_domain
+        .as_deref()
+        .and_then(|d| crate::output::vcon::UuidDomain::new(d).ok())
+    {
+        crate::output::vcon::set_uuid_domain(domain);
+    }
+
     // The Prometheus histogram boundaries are COMPOSED from the two sets just
     // declared, never written again. A literal bucket list beside a threshold
     // is a second copy of the same number, and the two had already parted
@@ -839,6 +853,15 @@ fn plan_file_source(cli: &Cli) -> Result<CaptureSource, PlanError> {
     ) {
         Ok(r) => r,
         Err(e) => {
+            // Every file skipped: `--report` still prints the vCon
+            // containers among them, each with its reason, before the run
+            // fails as it does without `--report`.
+            if e.is::<crate::capture::input_set::NoReadableCaptures>() {
+                let report = super::batch::unread_input_report(cli);
+                if !report.is_empty() {
+                    super::batch::write_stdout(&report);
+                }
+            }
             return Err(PlanError {
                 exit_code: 1,
                 message: format!("-I/--input: {e:#}"),
@@ -4226,6 +4249,42 @@ pub fn run_vcon_resign(cli: &Cli, read: &Result<LoadedConfig, PlanError>) -> Opt
     }
 }
 
+/// Handle `--vcon-audio-fetch`: fetch, check, decrypt and write the audio a
+/// vCon names by `url`, and return the exit code, or `None` when the flag is
+/// absent. Applies the configuration `main` read, so `[vcon_input]` opens the
+/// container and decrypts the audio; opens no capture.
+#[must_use]
+pub fn run_vcon_audio_fetch(cli: &Cli, read: &Result<LoadedConfig, PlanError>) -> Option<i32> {
+    cli.vcon_audio_fetch_args.vcon_audio_fetch.as_ref()?;
+    #[cfg(feature = "vcon")]
+    {
+        if let Err(code) = apply_read_config(cli, read) {
+            return Some(code);
+        }
+        let code = match crate::app::vcon_audio_fetch::run(&cli.vcon_audio_fetch_args) {
+            Ok(paths) => {
+                for path in paths {
+                    tracing::info!("--vcon-audio-fetch: wrote '{}'", path.display());
+                }
+                0
+            }
+            Err((code, reasons)) => {
+                for reason in reasons {
+                    tracing::error!("--vcon-audio-fetch: {reason}");
+                }
+                code
+            }
+        };
+        Some(code)
+    }
+    #[cfg(not(feature = "vcon"))]
+    {
+        let _ = read;
+        tracing::error!("--vcon-audio-fetch requires the 'vcon' feature (not compiled in)");
+        Some(2)
+    }
+}
+
 /// [`apply_config`] over the configuration `main` already read, logging the
 /// refusal: the vCon forwarder and fetcher read no config of their own, so
 /// the file is read once per process.
@@ -4920,6 +4979,7 @@ pub(crate) fn vcon_rules(
             grouping: RuleGrouping::Leg,
             enrich: Vec::new(),
             live_audio: false,
+            live_rtp: None,
             live: false,
             sealing: None,
             sealed_updates: crate::app::batch::SealedUpdates::NewUuid,
@@ -5109,6 +5169,18 @@ pub(crate) fn vcon_rules(
             grouping,
             enrich: Vec::new(),
             live_audio: rule.live_audio.unwrap_or(false),
+            live_rtp: rule
+                .live_rtp
+                .as_deref()
+                .map(|value| {
+                    crate::output::live_rtp::Target::resolve(
+                        name,
+                        value,
+                        rule.live_rtp_allow_remote.unwrap_or(false),
+                    )
+                })
+                .transpose()
+                .map_err(refuse)?,
             live: rule.live.unwrap_or(false),
             sealing,
             sealed_updates,
@@ -5155,6 +5227,37 @@ pub(crate) fn vcon_rules(
         }
     }
     Ok(rules)
+}
+
+/// What a run says at startup about its `live_rtp` rules.
+///
+/// Only the headless run forks live audio, so in another mode a rule with a
+/// target says that it sends nothing, rather than looking armed. In the
+/// headless run, a target is the operator's, so a file source is not refused;
+/// what it owes them is a sentence saying the file's audio leaves.
+#[cfg(feature = "vcon")]
+fn warn_live_rtp(
+    rules: &[crate::app::batch::VconRule],
+    mode: &RunMode,
+    source: Option<&CaptureSource>,
+) {
+    for rule in rules {
+        let Some(target) = rule.live_rtp.as_ref() else {
+            continue;
+        };
+        if !matches!(mode, RunMode::Batch) {
+            tracing::warn!(
+                "[[vcon.rule]] '{}' live_rtp = '{}' sends nothing in this run: only a headless \
+                 run (-N) without --cores forks live audio",
+                rule.name,
+                target.as_str()
+            );
+        } else if let Some(CaptureSource::File { paths }) = source
+            && let Some(notice) = crate::output::live_rtp::file_notice(&rule.name, target, paths)
+        {
+            tracing::warn!("{notice}");
+        }
+    }
 }
 
 /// Log, once at startup, each warning a resolved export rule calls for.

@@ -879,7 +879,9 @@ fn linked_code_targets_exist() -> Result<(), TestError> {
     // src/cli.rs and tests/cli_flag_since_test.rs. Attributed by measurement:
     // with HEAD's build-ci-release.md swapped back in, the count is 521.
     // 523 -> 524: domain-primer.md links sip/sdp.rs for the offer/answer rule.
-    const EXPECTED_CODE_LINKS: usize = 524;
+    // 524 -> 525: internals/vcon.md links tests/vcon_uuid_domain_test.rs for
+    // `[vcon] uuid_domain`.
+    const EXPECTED_CODE_LINKS: usize = 525;
     assert_eq!(
         seen, EXPECTED_CODE_LINKS,
         "code-link extraction found {seen} links, expected {EXPECTED_CODE_LINKS}. \

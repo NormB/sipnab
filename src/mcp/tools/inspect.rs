@@ -95,8 +95,9 @@ pub struct CallTreeResponse {
 #[schemars(crate = "rmcp::schemars")]
 pub struct ValidateFilterParams {
     /// The Filter DSL expression to compile and count, e.g.
-    /// `state = Failed and rtp.mos < 3.5`. Diagnostic aliases such as
+    /// `state == Failed and rtp.mos < 3.5`. Diagnostic aliases such as
     /// `problems` expand the same way they do in `list_dialogs`.
+    /// Values may be bare or quoted.
     pub expr: String,
 }
 

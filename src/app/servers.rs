@@ -160,6 +160,10 @@ pub struct Selection {
     /// Every export rule's spool, by rule name, which `GET /v1/vcon/spool`
     /// and `vcon_spool_status` read.
     pub vcon_spools: Vec<crate::app::vcon_spool::Spool>,
+    /// The `[vcon_fetch]` store, which MCP `fetch_vcon` and
+    /// `GET /v1/vcon/fetch/{uuid}` read when `--mcp-allow-vcon-fetch` or
+    /// `--api-allow-vcon-fetch` opts that door in.
+    pub vcon_fetch: crate::config::VconFetchConfig,
     /// The filters of the rules with `live_audio = true`, which the REST
     /// API's `/v1/calls` routes serve.
     pub live_audio: Vec<crate::sip::dsl::FilterExpr>,
@@ -726,6 +730,15 @@ pub fn start_servers(
             // The spool this run's `--export-vcon-when` writes into: the same
             // directory the MCP server's `vcon_spool_status` reads.
             vcon_spools: selection.vcon_spools.clone(),
+            // The operator's store, read only with --api-allow-vcon-fetch.
+            // A store the fetcher's resolver refuses stops the run here,
+            // before anything listens.
+            vcon_fetch: crate::app::vcon_fetch::Access::resolve(
+                "--api-allow-vcon-fetch",
+                cli.listener_args.api_allow_vcon_fetch,
+                &selection.vcon_fetch,
+            )
+            .map_err(anyhow::Error::msg)?,
             live_audio: std::sync::Arc::new(selection.live_audio.clone()),
             pipeline_options: selection.pipeline_options,
             archive: crate::output::api::ArchivePasswordPolicy {
@@ -785,6 +798,16 @@ pub fn start_servers(
             )),
             None => None,
         };
+        // The operator's store, read only with --mcp-allow-vcon-fetch, and
+        // resolved once so a store the fetcher's resolver refuses stops the
+        // run before anything listens.
+        #[cfg(feature = "vcon")]
+        let mcp_vcon_fetch = crate::app::vcon_fetch::Access::resolve(
+            "--mcp-allow-vcon-fetch",
+            cli.mcp_args.mcp_allow_vcon_fetch,
+            &selection.vcon_fetch,
+        )
+        .map_err(anyhow::Error::msg)?;
         let new_server = || {
             let s = crate::mcp::SipnabMcp::new(Arc::clone(dialog_store), Arc::clone(stream_store))
                 .with_source_exhausted(Arc::clone(&exhausted))
@@ -841,6 +864,8 @@ pub fn start_servers(
             // `vcon_spool_status` reads the directory the capture fills.
             #[cfg(feature = "vcon")]
             let s = s.with_vcon_spools(selection.vcon_spools.clone());
+            #[cfg(feature = "vcon")]
+            let s = s.with_vcon_fetch(mcp_vcon_fetch.clone());
             let s = match cli.mcp_args.mcp_sampling_budget {
                 Some(per_hour) => s.with_sampling_budget(per_hour),
                 None => s,
@@ -1187,6 +1212,7 @@ mod tests {
             pipeline_options: Default::default(),
             alias_thresholds: Default::default(),
             vcon_spools: Vec::new(),
+            vcon_fetch: Default::default(),
             live_audio: Vec::new(),
         }
     }

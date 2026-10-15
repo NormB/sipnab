@@ -317,6 +317,75 @@ fn analyze_unsigned(
     })
 }
 
+/// The vCon container report over every container file directly in `dir`:
+/// what the MCP `vcon_directory_report` tool answers.
+///
+/// Each file whose content makes it a container
+/// ([`crate::capture::vcon_input::is_container_file`]) is read by the reader
+/// `-I` uses, and rebuilt into a pair of stores of this call's own, so the
+/// server's capture is never touched. A file the reader refuses is a skipped
+/// row with its reason. Rows name each file relative to `dir`.
+///
+/// Not recursive. A symbolic link is not followed, so a link in the
+/// directory cannot lead the read outside it. A file that is not a
+/// container (a pcap, a README) is not a row.
+///
+/// # Errors
+///
+/// `dir` cannot be listed.
+pub fn report_directory(
+    dir: &std::path::Path,
+) -> std::io::Result<crate::output::dialog_report::VconContainersReport> {
+    use crate::capture::vcon_input::{is_container_file, read_file_reporting};
+    let mut files: Vec<(String, std::path::PathBuf)> = Vec::new();
+    for entry in std::fs::read_dir(dir)? {
+        let entry = entry?;
+        // `file_type` does not follow a link: a link is neither a file nor
+        // read.
+        if !entry.file_type().is_ok_and(|t| t.is_file()) {
+            continue;
+        }
+        let path = entry.path();
+        if is_container_file(&path) {
+            files.push((entry.file_name().to_string_lossy().into_owned(), path));
+        }
+    }
+    files.sort();
+
+    let mut read = Vec::new();
+    let mut skipped = Vec::new();
+    let mut rebuilt_all = Vec::new();
+    for (name, path) in &files {
+        match read_file_reporting(path) {
+            Ok(mut rebuilt) => {
+                rebuilt.provenance.source = name.clone();
+                read.push(rebuilt.provenance.clone());
+                rebuilt_all.push(rebuilt);
+            }
+            Err(refused) => {
+                let mut skip = refused.skip;
+                skip.source = name.clone();
+                skipped.push(skip);
+            }
+        }
+    }
+    let messages: usize = rebuilt_all.iter().map(|r| r.messages.len()).sum();
+    let dialog_store = std::sync::Arc::new(parking_lot::RwLock::new(
+        crate::sip::dialog_store::DialogStore::new(messages.max(1), false),
+    ));
+    let stream_store = std::sync::Arc::new(parking_lot::RwLock::new(
+        crate::rtp::stream_store::StreamStore::new(1),
+    ));
+    let opts = crate::pipeline::PipelineOptions::default();
+    for rebuilt in &rebuilt_all {
+        crate::capture::vcon_input::into_stores(rebuilt, &opts, &dialog_store, &stream_store);
+    }
+    let ds = dialog_store.read();
+    Ok(crate::output::dialog_report::vcon_containers_report(
+        &read, &skipped, &ds,
+    ))
+}
+
 /// One message as a ladder row.
 fn ladder_row(m: &crate::sip::SipMessage) -> LadderRow {
     let label = match (&m.method, m.status_code) {

@@ -2685,17 +2685,28 @@ fn claim_rtpengine_ng(pp: &ParsedPacket) -> Option<PacketAction> {
     // A wrapper `--hep-parse` unwrapped off the wire arrives here too, since
     // the unwrap records what the wrapper said. It was sniffed, not
     // delivered, so it passes the sniffed arm's port gate first.
+    //
+    // The delivery recorded is what decides the trust a reader is shown
+    // (DEF29): only a message the listener delivered is `Encapsulated`, and
+    // takes the posture `--hep-auth-mode` configured. An unwrapped sniffed
+    // wrapper reached no listener, so it is a `BareDatagram`, as the second
+    // arm's are.
     if let Some(hep) = &pp.hep
         && crate::rtpengine::is_ng_over_hep(hep.protocol, &pp.payload)
     {
+        let delivery = if hep.sniffed_on_port.is_none() {
+            crate::relay::ControlDelivery::Encapsulated
+        } else {
+            crate::relay::ControlDelivery::BareDatagram
+        };
         if let Some(port) = hep.sniffed_on_port
             && !crate::rtpengine::sniffed_mirror_port_believed(port)
         {
-            return Some(rtpengine_ng_action(Vec::new()));
+            return Some(rtpengine_ng_action(Vec::new(), delivery));
         }
         let sdp_links =
             crate::rtpengine::sdp_links_from_ng(&pp.payload, hep.correlation_id.as_deref());
-        return Some(rtpengine_ng_action(sdp_links));
+        return Some(rtpengine_ng_action(sdp_links, delivery));
     }
 
     // The second arm is the SNIFFED one: a HEP datagram read off the wire,
@@ -2715,23 +2726,27 @@ fn claim_rtpengine_ng(pp: &ParsedPacket) -> Option<PacketAction> {
     // `ng` is control traffic; that it named no endpoint this time (a
     // `delete`, a `ping`, a reply to one, or a refusal by the port gate)
     // is not a reason to reconsider it as media.
-    crate::rtpengine::sniffed_ng_sdp_links(pp.dst_port, &pp.payload).map(rtpengine_ng_action)
+    crate::rtpengine::sniffed_ng_sdp_links(pp.dst_port, &pp.payload)
+        .map(|links| rtpengine_ng_action(links, crate::relay::ControlDelivery::BareDatagram))
 }
 
 /// The relay-control action for one `ng` message over HEP, delivered or
 /// sniffed.
+///
+/// `delivery` is `Encapsulated` only for a message the `--hep-listen` socket
+/// delivered; everything read off the wire is a `BareDatagram`.
 #[cfg(feature = "hep")]
 #[inline]
 fn rtpengine_ng_action(
     sdp_links: Vec<(std::net::IpAddr, u16, String, sip::sdp::SdpMedia)>,
+    delivery: crate::relay::ControlDelivery,
 ) -> PacketAction {
     PacketAction::RelayControl(RelayControlMessage {
         sdp_links,
         relay_links: Vec::new(),
-        // `ng` over HEP, read off the wire: the decoder names its own
-        // relay and the datagram carried no credential.
+        // The decoder names its own relay.
         implementation: crate::relay::RelayImplementation::Rtpengine,
-        delivery: crate::relay::ControlDelivery::BareDatagram,
+        delivery,
         control: None,
     })
 }
@@ -5249,6 +5264,189 @@ mod sdp_links_of_tests {
             ..opts()
         };
         assert!(sdp_links_of(&invite(5060), &o).is_empty());
+        Ok(())
+    }
+}
+
+/// DEF29: under `--hep-parse`, a relay claim read off a capture interface
+/// must never take the HEP listener's trust.
+///
+/// The listener's posture (`--hep-auth-mode plain|hmac`) describes a check the
+/// listener made on what was SENT to it. A HEP wrapper `--hep-parse` unwraps
+/// off an interface or a pcap was on its way to another collector and reached
+/// no listener on this run, so nothing checked it. The unwrap marks its
+/// addressing `InputOrigin::Hep` (the sender asserted it), and that origin
+/// alone must not decide the trust.
+///
+/// Both tests drive the real path: the sniffed wrapper through
+/// [`apply_hep_parse`], [`classify_packet`] and [`apply_relay_control`] into a
+/// store, and the delivered message through the network parser the listener
+/// hands its packets to. The answer is read with the function
+/// `explain_attribution` reports from.
+#[cfg(all(test, feature = "hep", feature = "mcp"))]
+mod hep_parse_trust_tests {
+    use super::{
+        MediaDecrypt, PacketAction, PipelineOptions, apply_hep_parse, apply_relay_control,
+        classify_packet,
+    };
+    use crate::capture::parse::{InputOrigin, ParsedPacket, TransportProto};
+    use crate::mcp::tools::relay::{DeliveryTrust, classify};
+    use crate::rtp::heuristic::RtpHeuristic;
+    use crate::rtp::stream_store::StreamStore;
+    use std::net::{IpAddr, Ipv4Addr};
+
+    type TestError = Box<dyn std::error::Error>;
+
+    /// The media address the control message names.
+    const MEDIA: IpAddr = IpAddr::V4(Ipv4Addr::new(10, 0, 0, 40));
+    /// The media port the control message names.
+    const MEDIA_PORT: u16 = 38664;
+    /// The correlation id naming the call.
+    const CALL: &str = "def29-call";
+
+    /// A relay control reply naming `MEDIA:MEDIA_PORT` in its SDP.
+    fn control_body() -> Vec<u8> {
+        let sdp = format!("v=0\r\nc=IN IP4 {MEDIA}\r\nm=audio {MEDIA_PORT} RTP/AVP 0");
+        format!("ck d3:sdp{}:{sdp}6:result2:oke", sdp.len()).into_bytes()
+    }
+
+    /// A HEP v3 datagram mirroring `control_body()`, with a correlation id.
+    fn hep_wrapper() -> Result<Vec<u8>, TestError> {
+        let endpoint = crate::capture::hep::HepEndpoint {
+            src_addr: IpAddr::V4(Ipv4Addr::new(192, 0, 2, 11)),
+            dst_addr: IpAddr::V4(Ipv4Addr::new(192, 0, 2, 20)),
+            src_port: 40000,
+            dst_port: 2223,
+            transport: TransportProto::Udp,
+        };
+        let mut bytes = crate::capture::hep::build_hep_v3(
+            &endpoint,
+            chrono::Utc::now(),
+            crate::capture::hep::HepProtocol::Unknown(crate::rtpengine::NG_HEP_CAPTURE_PROTO),
+            2001,
+            None,
+            &control_body(),
+        );
+        // `build_hep_v3` writes no correlation chunk: append chunk 0x0011 and
+        // grow the total-length field at offset 4 with it.
+        let body = CALL.as_bytes();
+        let len = u16::try_from(6 + body.len()).map_err(|e| format!("chunk fits: {e:?}"))?;
+        bytes.extend_from_slice(&0u16.to_be_bytes());
+        bytes.extend_from_slice(&0x0011u16.to_be_bytes());
+        bytes.extend_from_slice(&len.to_be_bytes());
+        bytes.extend_from_slice(body);
+        let total = u16::try_from(bytes.len()).map_err(|e| format!("datagram fits: {e:?}"))?;
+        bytes[4..6].copy_from_slice(&total.to_be_bytes());
+        Ok(bytes)
+    }
+
+    /// Classify `pp`, apply its relay claim to a fresh store, and return what
+    /// `explain_attribution` reports for the named endpoint under a listener
+    /// configured as `configured`.
+    fn trust_of(pp: &ParsedPacket, configured: DeliveryTrust) -> Result<DeliveryTrust, TestError> {
+        let action = classify_packet(
+            pp,
+            &mut RtpHeuristic::new(),
+            &PipelineOptions::default(),
+            &mut MediaDecrypt::default(),
+        );
+        let PacketAction::RelayControl(message) = action else {
+            return Err("positive control: the packet must read as relay control".into());
+        };
+        let mut store = StreamStore::new(64);
+        apply_relay_control(&mut store, &message, pp.input_origin, pp.timestamp);
+        let provenance = store
+            .sdp_endpoint_provenance(MEDIA, MEDIA_PORT)
+            .ok_or("positive control: the relay claim must reach the store")?;
+        Ok(classify(
+            provenance.asserted_by,
+            provenance.origin,
+            configured,
+        ))
+    }
+
+    /// A wrapper sniffed on the HEP mirror port and unwrapped by
+    /// `--hep-parse` is `port-gated-only` under every listener posture.
+    #[test]
+    fn a_relay_claim_hep_parse_unwrapped_off_an_interface_never_takes_the_listeners_trust()
+    -> Result<(), TestError> {
+        let sniffed = ParsedPacket {
+            frame_bytes: None,
+            frame: None,
+            timestamp: chrono::Utc::now(),
+            src_addr: IpAddr::V4(Ipv4Addr::new(192, 0, 2, 11)),
+            dst_addr: IpAddr::V4(Ipv4Addr::new(192, 0, 2, 30)),
+            src_port: 57661,
+            dst_port: 9060,
+            transport: TransportProto::Udp,
+            payload: hep_wrapper()?.into(),
+            ip_id: None,
+            tcp_seq: None,
+            tcp_flags: None,
+            fragment_offset: None,
+            more_fragments: false,
+            ip_protocol: 17,
+            dscp: None,
+            input_origin: InputOrigin::Wire,
+            hep: None,
+        };
+        let inner = apply_hep_parse(&sniffed, true)
+            .ok_or("a HEP wrapper with a UDP IP protocol unwraps")?
+            .into_owned();
+        assert!(
+            inner
+                .hep
+                .as_ref()
+                .is_some_and(|h| h.sniffed_on_port == Some(9060)),
+            "positive control: the unwrap records the wrapper was sniffed"
+        );
+        for configured in [DeliveryTrust::HmacVerified, DeliveryTrust::PlainSecret] {
+            assert_eq!(
+                trust_of(&inner, configured)?,
+                DeliveryTrust::PortGatedOnly,
+                "a wrapper read off an interface under a {configured:?} listener: \
+                 the listener never saw this datagram"
+            );
+        }
+        Ok(())
+    }
+
+    /// The other half: a message the `--hep-listen` socket delivered keeps the
+    /// posture the listener checked. Without it, a fix that downgraded every
+    /// HEP claim would pass the test above.
+    #[test]
+    fn a_relay_claim_the_hep_listener_delivered_takes_its_trust() -> Result<(), TestError> {
+        // The shape the listener hands the network parser (`hep_to_packet`):
+        // the bare control body, the HEP-asserted addressing, and the
+        // wrapper's metadata with no sniffed port.
+        let packet = crate::capture::packet::Packet::with_pre_parsed(
+            chrono::Utc::now(),
+            control_body(),
+            Some("hep:192.0.2.11".to_string()),
+            crate::capture::packet::PreParsed {
+                src_addr: IpAddr::V4(Ipv4Addr::new(192, 0, 2, 11)),
+                dst_addr: IpAddr::V4(Ipv4Addr::new(192, 0, 2, 20)),
+                src_port: 40000,
+                dst_port: 2223,
+                ip_protocol: 17,
+                hep: Some(crate::capture::packet::HepOrigin {
+                    protocol: crate::rtpengine::NG_HEP_CAPTURE_PROTO,
+                    correlation_id: Some(CALL.to_string()),
+                    sniffed_on_port: None,
+                }),
+                vcon: None,
+            },
+        );
+        let delivered = crate::capture::parse::parse_packet(&packet)
+            .map_err(|e| format!("the delivered packet parses: {e:?}"))?;
+        assert_eq!(delivered.input_origin, InputOrigin::Hep, "positive control");
+        for configured in [DeliveryTrust::HmacVerified, DeliveryTrust::PlainSecret] {
+            assert_eq!(
+                trust_of(&delivered, configured)?,
+                configured,
+                "a message the {configured:?} listener admitted is worth what it checked"
+            );
+        }
         Ok(())
     }
 }

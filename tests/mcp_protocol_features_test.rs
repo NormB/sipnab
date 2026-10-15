@@ -400,6 +400,13 @@ fn schema_probes(call_id: &str) -> Vec<(&'static str, Value)> {
         // Over the spool `vcon_spool_with_one_failure` writes, so the failed
         // list carries one record and its schema is exercised.
         ("vcon_spool_status", json!({})),
+        // From the fake store `vcon_spool_args` opts the server in to.
+        ("fetch_vcon", json!({"uuid": FETCH_UUID})),
+        // The file root itself, which holds captures and no container: the
+        // envelope and the totals. The row shape is checked against this
+        // schema over a directory of every kind of row in
+        // tests/vcon_directory_report_test.rs.
+        ("vcon_directory_report", json!({"directory": "."})),
         // The TFPS peer's tools, answered by the fake `fake_tfps_ctl` writes:
         // the `installed: true` arm of each schema, which is the one that
         // carries the contract types. The absent arm is two fields and is
@@ -422,17 +429,83 @@ fn schema_probes(call_id: &str) -> Vec<(&'static str, Value)> {
 /// nor the tool that reads them.
 ///
 /// The filter matches no dialog, so the run adds nothing to the spool.
+///
+/// It also opts `fetch_vcon` in against a fake vCon store on `127.0.0.1`
+/// ([`fake_vcon_store`]), named in the `[vcon_fetch]` section of the config
+/// file [`tfps_action_args`] wrote, which must run first.
 fn vcon_spool_args(fake: &tempfile::TempDir) -> Result<Vec<String>, TestError> {
     if !cfg!(feature = "vcon") {
         return Ok(Vec::new());
     }
     let spool = vcon_spool_with_one_failure(fake)?;
+    let store = fake_vcon_store()?;
+    let key = fake.path().join("store.key");
+    std::fs::write(&key, format!("vcf_test_{}\n", "3e8b6d1f0c27"))
+        .map_err(|e| format!("store key: {e:?}"))?;
+    // sipnab refuses a credential file other users can read.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&key, std::fs::Permissions::from_mode(0o600))
+            .map_err(|e| format!("store key mode: {e:?}"))?;
+    }
+    let config = fake.path().join("sipnab.toml");
+    let mut text = std::fs::read_to_string(&config).map_err(|e| format!("config: {e:?}"))?;
+    text.push_str(&format!(
+        "\n[vcon_fetch]\nkind = \"conserver\"\nurl = \"{store}\"\nauth_file = {:?}\n",
+        key.display().to_string()
+    ));
+    std::fs::write(&config, text).map_err(|e| format!("config: {e:?}"))?;
     Ok(vec![
         "--export-vcon-when".to_string(),
         "response_code >= 700".to_string(),
         "--export-vcon-dir".to_string(),
         spool,
+        "--mcp-allow-vcon-fetch".to_string(),
     ])
+}
+
+/// The uuid the fake vCon store holds. Synthetic.
+const FETCH_UUID: &str = "018bcfe5-6800-8a6b-a667-78f1c5213800";
+
+/// A vCon store on `127.0.0.1` that answers every request with one unsigned
+/// container holding [`FETCH_UUID`]; its URL. It runs until the test process
+/// ends. No test contacts the internet.
+fn fake_vcon_store() -> Result<String, TestError> {
+    use std::io::{Read, Write};
+    let listener =
+        std::net::TcpListener::bind("127.0.0.1:0").map_err(|e| format!("store bind: {e:?}"))?;
+    let url = format!(
+        "http://{}",
+        listener
+            .local_addr()
+            .map_err(|e| format!("store addr: {e:?}"))?
+    );
+    std::thread::spawn(move || {
+        let body = format!(
+            r#"{{"vcon":"0.4.0","uuid":"{FETCH_UUID}","created_at":"2026-10-07T12:00:00+00:00","parties":[{{"tel":"+15550100001"}}],"dialog":[],"attachments":[],"analysis":[]}}"#
+        );
+        for mut sock in listener.incoming().map_while(Result::ok) {
+            let _ = sock.set_read_timeout(Some(std::time::Duration::from_secs(5)));
+            let mut head = Vec::new();
+            let mut byte = [0u8; 1];
+            while !head.ends_with(b"\r\n\r\n") {
+                match sock.read(&mut byte) {
+                    Ok(1) => head.push(byte[0]),
+                    _ => break,
+                }
+            }
+            let _ = sock.write_all(
+                format!(
+                    "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nContent-Type: \
+                     application/json\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                )
+                .as_bytes(),
+            );
+        }
+    });
+    Ok(url)
 }
 
 /// A vCon export spool under `fake` holding one refused container beside the

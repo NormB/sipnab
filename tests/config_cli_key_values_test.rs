@@ -490,6 +490,21 @@ static KEY_SPECS: &[KeySpec] = &[
     ),
     (
         "vcon",
+        "uuid_domain",
+        KeyKind::Literal {
+            accept: &["\"pbx.example.com\"", "\"PBX.Example.COM.\""],
+            reject: &[
+                "\"\"",
+                "\"pbx\"",
+                "\"10.0.0.1\"",
+                "\"a_b.example.com\"",
+                "1",
+            ],
+            ctx: "",
+        },
+    ),
+    (
+        "vcon",
         "enrich",
         KeyKind::Literal {
             accept: &["[]"],

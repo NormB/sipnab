@@ -586,7 +586,7 @@ List all tracked SIP dialogs with optional filtering and pagination.
 | `filter`  | string | --      | A [filter expression](filter-dsl.md) or a [named alias](filter-dsl.md#named-aliases) such as `problems` or `slow-setup`. A value that is neither is a `400`. ANDed with `state` and `from` |
 | `limit`   | int    | 50      | Maximum results. Ceiling is `--api-max-rows` (1000 by default), not a fixed limit |
 | `offset`  | int    | 0       | Pagination offset |
-| `filter`  | string | --      | A [filter DSL](filter-dsl.md) expression, the language `--filter` and the TUI filter dialog use, for example `method == 'INVITE'` or `rtp.loss > 2.0`. URL-encode it. An expression that does not parse is a `400` naming the position, never an unfiltered page |
+| `filter`  | string | --      | A [filter DSL](filter-dsl.md) expression, the language `--filter` and the TUI filter dialog use, for example `method == INVITE` or `rtp.loss > 2.0`. A value may be bare or quoted, so `method == 'INVITE'` is the same filter. URL-encode it. An expression that does not parse is a `400` naming the position, never an unfiltered page |
 | `after`   | string | --      | Only dialogs whose first message is at or after this [RFC 3339](https://www.rfc-editor.org/rfc/rfc3339.html) instant, for example `2026-09-15T12:00:00Z`. An instant that does not parse is a `400` |
 | `before`  | string | --      | Only dialogs whose first message is strictly before this RFC 3339 instant. With `after` it forms the half-open window `[after, before)`, the window the MCP `search_by_time` tool uses, so consecutive windows never count a dialog twice. An instant that does not parse is a `400` |
 
@@ -1652,7 +1652,9 @@ build without the `vcon` feature.
 ### GET /v1/dialogs/:call_id/audio
 
 The call's decoded RTP audio as a standalone `audio/wav` file. It is mono for one
-direction, stereo for two.
+direction, stereo for two. In stereo, each channel starts at the capture time of its
+party's first retained packet, with silence before it, so the two parties
+line up as they spoke.
 
 - These are the same bytes the MCP `export_audio` tool writes and
   the vCon exporter inlines, from one decode.
@@ -1689,7 +1691,11 @@ curl -s -H "Authorization: Bearer $SIPNAB_API_KEY" http://127.0.0.1:8080/v1/dial
 - when the file is partial, how:
   - a wrapped payload ring,
   - a stream sipnab could not decode,
-  - a direction the capture never saw.
+  - a direction the capture never saw,
+  - silence where the RTP timestamps show no audio arrived (lost packets, or
+    the sender pausing), with its length in milliseconds,
+  - repeated packets sipnab dropped, and timestamp jumps longer than the
+    stream that sipnab did not fill.
 
 So a `.wav` forwarded and played months later
 still says what it is and what it leaves out.
@@ -1777,7 +1783,7 @@ The server sends:
 | Message | Content |
 |---------|---------|
 | Text `{"type": "stream", ...}` | A stream, before its first packet: `stream` (its index), `ssrc`, `src`, `dst`, `codec`, `rate` (samples per second) and `format` (`s16le`) |
-| Binary | One RTP packet's audio. The first byte is the stream's index; the rest is 16-bit little-endian PCM at the stream's `rate` |
+| Binary | One RTP packet's audio, or silence of the length of audio that did not arrive: where a packet's RTP timestamp is ahead of where the previous packet's audio ended, a message of zero samples covering the difference comes first. The first byte is the stream's index; the rest is 16-bit little-endian PCM at the stream's `rate`. The server sends a packet that repeats a timestamp once |
 | Text `{"type": "skipped", ...}` | A stream whose codec sipnab does not decode: `ssrc`, `codec`, `reason`. The server sends none of its packets |
 | Text `{"type": "gap", ...}` | `packets` of stream `stream` left retention before the server sent them, so the audio has a gap there |
 | Text `{"type": "end", ...}` | The call ended (`reason`); a close with code 1000 follows |
@@ -3112,7 +3118,8 @@ curl -s -H "Authorization: Bearer $SIPNAB_API_KEY" http://127.0.0.1:8080/v1/capa
   "can_hep": true,
   "can_plugins": false,
   "runtime": {
-    "api_allow_relay_query": false
+    "api_allow_relay_query": false,
+    "api_allow_vcon_fetch": false
   },
   "libpcap": {
     "banner": "libpcap version 1.10.5 (with TPACKET_V3)",
@@ -3140,6 +3147,9 @@ curl -s -H "Authorization: Bearer $SIPNAB_API_KEY" http://127.0.0.1:8080/v1/capa
   never work.
 - `api_allow_relay_query` is off unless this run may transmit a relay
   query.
+- `api_allow_vcon_fetch` is off unless
+  [`GET /v1/vcon/fetch/:uuid`](#get-v1vconfetchuuid) can reach a store: the run
+  has `--api-allow-vcon-fetch` and the config file sets `[vcon_fetch] url`.
 
 **`libpcap` names the library this process captures through.** It is
 `pcap_lib_version()` asked at runtime.
@@ -4525,6 +4535,55 @@ null when a failed container has no readable record beside it.
 
 Only a build with the `vcon`
 feature registers this route.
+
+---
+
+### GET /v1/vcon/fetch/:uuid
+
+One vCon container from the operator's vCon store, by uuid, returned in the
+answer. sipnab writes no file.
+
+- It connects to the store the `[vcon_fetch]` section of the config file
+  configures, so it is off unless the run has `--api-allow-vcon-fetch`.
+- The store, its kind, the credential and the decryption key come from
+  `[vcon_fetch]` only. The client gives the uuid and nothing else, and the
+  answer never holds a key or the credential.
+- The request, the credential, the CA, the size limit, the decryption and
+  the signer checks are `sipnab --vcon-fetch`'s, by the same function
+  ([Fetch a stored vCon](vcon.md#fetch-a-stored-vcon)).
+- The MCP tool [`fetch_vcon`](mcp-tools-vcon.md#fetch_vcon) gives the same
+  answer. Its section describes every field.
+
+| Status | When |
+|---|---|
+| `200` | The container, with `stored_form`, `decrypted`, `signature_verified`, `signer_sha256` and `schema_findings` |
+| `400` | The uuid is not 1 to 64 characters, each a letter, a digit or `-`. sipnab sends nothing |
+| `404` | The store answered `404` |
+| `502` | Anything else the fetcher refuses: another status, a timeout, an answer over `[vcon_fetch] max_size`, another uuid inside, a key that does not decrypt, a signer that fails a check. `detail` says which, with the credential removed |
+| `503` | No `--api-allow-vcon-fetch`, or no `[vcon_fetch] url`; `detail` names the flag or the keys. Also the rate limit |
+
+**curl:**
+
+```bash
+curl -s -H "Authorization: Bearer $SIPNAB_API_KEY" \
+  http://127.0.0.1:18080/v1/vcon/fetch/0158a120-0392-8751-9a04-9decf1485b22 \
+  | jq -c 'del(.container)'
+```
+
+**Response**, from a run started with `--api-allow-vcon-fetch` and a
+`[vcon_fetch]` conserver store holding that container, `container` left out:
+
+```json
+{"decrypted":false,"schema_findings":[],"schema_version":1,"signature_verified":false,"signer_sha256":null,"stored_form":"unsigned","uuid":"0158a120-0392-8751-9a04-9decf1485b22"}
+```
+
+Without the flag:
+
+```json
+{"detail":"fetching a vCon from the store is off on this server: start sipnab with --api-allow-vcon-fetch, and configure the store in [vcon_fetch]","status":503,"title":"Service Unavailable","type":"https://sipnab.com/problems/unavailable"}
+```
+
+Only a build with the `vcon` feature registers this route.
 
 ---
 

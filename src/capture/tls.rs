@@ -1111,7 +1111,10 @@ mod tests {
             let entry = KeyLogEntry {
                 label: "CLIENT_RANDOM".to_string(),
                 client_random: vec![0xAA; 32],
-                secret: vec![0xBB; 48],
+                secret: crate::test_material::bytes_for(
+                    "tls-keylog-entry-zeroizes-on-drop-secret",
+                    48,
+                ),
             };
             // Sanity: values are set before drop
             assert_eq!(entry.secret.len(), 48);
@@ -1131,7 +1134,10 @@ mod tests {
         let mut entry = KeyLogEntry {
             label: "CLIENT_RANDOM".to_string(),
             client_random: vec![0xAA; 32],
-            secret: vec![0xBB; 48],
+            secret: crate::test_material::bytes_for(
+                "tls-keylog-entry-zeroize-material-clears-all-fields-secret",
+                48,
+            ),
         };
         entry.zeroize_material();
         assert!(entry.secret.is_empty(), "secret not zeroized/cleared");

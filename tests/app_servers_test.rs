@@ -81,6 +81,7 @@ fn nothing_enabled_spawns_nothing() -> Result<(), TestError> {
             pipeline_options: Default::default(),
             alias_thresholds: Default::default(),
             vcon_spools: Vec::new(),
+            vcon_fetch: Default::default(),
             live_audio: Vec::new(),
         },
         // No transmit permit: none of these cases opens a live source.
@@ -135,6 +136,7 @@ fn selection_gates_configured_servers() -> Result<(), TestError> {
             pipeline_options: Default::default(),
             alias_thresholds: Default::default(),
             vcon_spools: Vec::new(),
+            vcon_fetch: Default::default(),
             live_audio: Vec::new(),
         },
         // No transmit permit: none of these cases opens a live source.
@@ -190,6 +192,7 @@ fn invalid_api_addr_is_an_error() -> Result<(), TestError> {
             pipeline_options: Default::default(),
             alias_thresholds: Default::default(),
             vcon_spools: Vec::new(),
+            vcon_fetch: Default::default(),
             live_audio: Vec::new(),
         },
         // No transmit permit: none of these cases opens a live source.
@@ -243,6 +246,7 @@ fn api_on_ephemeral_port_starts_servers_thread() -> Result<(), TestError> {
             pipeline_options: Default::default(),
             alias_thresholds: Default::default(),
             vcon_spools: Vec::new(),
+            vcon_fetch: Default::default(),
             live_audio: Vec::new(),
         },
         // No transmit permit: none of these cases opens a live source.
@@ -305,6 +309,7 @@ fn api_port_in_use_is_a_startup_error() -> Result<(), TestError> {
             pipeline_options: Default::default(),
             alias_thresholds: Default::default(),
             vcon_spools: Vec::new(),
+            vcon_fetch: Default::default(),
             live_audio: Vec::new(),
         },
         // No transmit permit: none of these cases opens a live source.
@@ -366,6 +371,7 @@ fn api_non_loopback_without_auth_is_a_startup_error() -> Result<(), TestError> {
             pipeline_options: Default::default(),
             alias_thresholds: Default::default(),
             vcon_spools: Vec::new(),
+            vcon_fetch: Default::default(),
             live_audio: Vec::new(),
         },
         // No transmit permit: none of these cases opens a live source.
@@ -433,6 +439,7 @@ fn an_unreadable_api_tls_file_is_a_startup_error_naming_it() -> Result<(), TestE
             pipeline_options: Default::default(),
             alias_thresholds: Default::default(),
             vcon_spools: Vec::new(),
+            vcon_fetch: Default::default(),
             live_audio: Vec::new(),
         },
         // No transmit permit: none of these cases opens a live source.
@@ -495,6 +502,7 @@ fn mcp_http_transport_without_feature_is_a_startup_error() -> Result<(), TestErr
             pipeline_options: Default::default(),
             alias_thresholds: Default::default(),
             vcon_spools: Vec::new(),
+            vcon_fetch: Default::default(),
             live_audio: Vec::new(),
         },
         // No transmit permit: none of these cases opens a live source.
@@ -556,6 +564,7 @@ fn invalid_mcp_bind_is_a_startup_error() -> Result<(), TestError> {
             pipeline_options: Default::default(),
             alias_thresholds: Default::default(),
             vcon_spools: Vec::new(),
+            vcon_fetch: Default::default(),
             live_audio: Vec::new(),
         },
         // No transmit permit: none of these cases opens a live source.
@@ -677,6 +686,7 @@ fn metrics_non_loopback_without_auth_is_a_startup_error() -> Result<(), TestErro
             pipeline_options: Default::default(),
             alias_thresholds: Default::default(),
             vcon_spools: Vec::new(),
+            vcon_fetch: Default::default(),
             live_audio: Vec::new(),
         },
         // No transmit permit: none of these cases opens a live source.
@@ -737,6 +747,7 @@ fn metrics_on_loopback_ephemeral_port_starts() -> Result<(), TestError> {
             pipeline_options: Default::default(),
             alias_thresholds: Default::default(),
             vcon_spools: Vec::new(),
+            vcon_fetch: Default::default(),
             live_audio: Vec::new(),
         },
         // No transmit permit: none of these cases opens a live source.
@@ -794,6 +805,7 @@ fn start_mcp_http(bind: &str) -> anyhow::Result<Option<servers::ServerHandles>> 
             pipeline_options: Default::default(),
             alias_thresholds: Default::default(),
             vcon_spools: Vec::new(),
+            vcon_fetch: Default::default(),
             live_audio: Vec::new(),
         },
         // No transmit permit: none of these cases opens a live source.

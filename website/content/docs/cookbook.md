@@ -3944,6 +3944,8 @@ sudo sipnab -N --mcp -d eth0 --rtpengine-control 127.0.0.1:22222 --mcp-allow-rel
     - A tool whose job is telling you what a claim is worth must not round up in the absence of information.
   - The posture is the HEP listener's.
     - A relay datagram read off a capture interface (`input_origin: wire`) is `port-gated-only`, whatever the listener checks.
+    - So is a HEP datagram `--hep-parse` unwraps off an interface or a file, although it reports `input_origin: hep`.
+    - `decode_ng` reads frames from a capture file, so it reports `port-gated-only` for every frame.
 - `reconcile_orphans` has three verdicts. The difference is the point:
   - `relay-asserted-but-no-dialog` means the **signaling** is missing, not the media.
   - `signaled-but-no-dialog` means the capture missed the dialog, or its SDP predates the capture.
@@ -4306,6 +4308,9 @@ The REST API serves them on `GET /v1/dialogs/{call_id}` as a `siprec` block:
 ```
 
 In the TUI, the ladder annotates the recording INVITE in place. So you see it without leaving the call flow.
+
+`--export-vcon` on the same Call-ID writes Alice and Bob as parties, and maps each stream to its sender.
+[A SIPREC recording session](@/docs/vcon.md#a-siprec-recording-session) describes the container.
 
 **What to look for:**
 

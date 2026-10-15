@@ -29,8 +29,52 @@
 //! A truncated dictionary is not a dictionary with fewer keys.
 
 use std::collections::HashSet;
+use std::hash::{Hash, Hasher};
 
 use anyhow::{Result, bail, ensure};
+
+/// A dictionary key as the duplicate check in [`decode_dict`] holds it.
+///
+/// The key's bytes, with equality that counts itself in test builds, so a
+/// test can assert how many comparisons the check makes instead of timing
+/// it. Hashing is the bytes' own.
+struct SeenKey<'a>(&'a [u8]);
+
+impl PartialEq for SeenKey<'_> {
+    fn eq(&self, other: &Self) -> bool {
+        #[cfg(test)]
+        KEY_COMPARISONS.with(|c| c.set(c.get() + 1));
+        self.0 == other.0
+    }
+}
+
+impl Eq for SeenKey<'_> {}
+
+impl Hash for SeenKey<'_> {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.0.hash(state);
+    }
+}
+
+/// The hasher of the duplicate check's set. Randomly keyed in a build that
+/// meets hostile input; keyed with zeros in a test build, so the number of
+/// key comparisons a test counts is the same on every run.
+#[cfg(not(test))]
+type SeenHasher = std::collections::hash_map::RandomState;
+#[cfg(test)]
+type SeenHasher = std::hash::BuildHasherDefault<std::collections::hash_map::DefaultHasher>;
+
+#[cfg(test)]
+thread_local! {
+    /// Equality comparisons between [`SeenKey`]s on this thread.
+    static KEY_COMPARISONS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+/// Equality comparisons between [`SeenKey`]s this thread has made.
+#[cfg(test)]
+fn key_comparisons() -> u64 {
+    KEY_COMPARISONS.with(std::cell::Cell::get)
+}
 
 /// Deepest nesting accepted before a message is called malformed.
 ///
@@ -291,7 +335,7 @@ fn decode_list(input: &[u8], depth: usize) -> Result<(Value<'_>, &[u8])> {
 fn decode_dict(input: &[u8], depth: usize) -> Result<(Value<'_>, &[u8])> {
     let mut rest = &input[1..];
     let mut entries: Vec<(&[u8], Value<'_>)> = Vec::new();
-    let mut seen: HashSet<&[u8]> = HashSet::new();
+    let mut seen: HashSet<SeenKey<'_>, SeenHasher> = HashSet::default();
     loop {
         match rest.first() {
             None => bail!("bencode: dictionary has no terminating 'e'"),
@@ -314,7 +358,7 @@ fn decode_dict(input: &[u8], depth: usize) -> Result<(Value<'_>, &[u8])> {
                 // five-key `ng` message pays one small allocation, the same
                 // order as the `entries` vector beside it.
                 ensure!(
-                    seen.insert(key),
+                    seen.insert(SeenKey(key)),
                     "bencode: duplicate dictionary key {:?}",
                     String::from_utf8_lossy(key)
                 );
@@ -554,44 +598,18 @@ mod tests {
         out
     }
 
-    /// CPU time this thread has used, from `CLOCK_THREAD_CPUTIME_ID`.
-    ///
-    /// Not the wall clock (FLAKY-1). Under load the scheduler preempts the
-    /// test thread, and wall time counts every wait: a 1024-key parse fits in
-    /// one time slice while a 4096-key parse spans several and queues behind
-    /// the other runnable threads on each. Pinned beside three busy loops, the
-    /// wall-clock ratio read ~14.3x for a linear decoder in 19 runs of 20. CPU
-    /// time stops while the thread is off the CPU, so the ratio measures the
-    /// work again.
-    fn thread_cpu_time() -> Result<std::time::Duration, TestError> {
-        let mut ts = libc::timespec {
-            tv_sec: 0,
-            tv_nsec: 0,
+    /// Key comparisons the duplicate check made while decoding a dictionary
+    /// of `n` distinct keys.
+    fn key_comparisons_decoding(n: usize) -> Result<u64, TestError> {
+        let buf = dict_of(n);
+        let before = key_comparisons();
+        let v = decode(&buf).map_err(|e| format!("a well-formed dictionary: {e:?}"))?;
+        let compared = key_comparisons() - before;
+        let Value::Dict(entries) = v else {
+            return Err("control: a dictionary decodes as a dictionary".into());
         };
-        // SAFETY: `ts` is a live, writable `timespec` for the duration of the
-        // call, and CLOCK_THREAD_CPUTIME_ID is a clock id this platform
-        // defines; clock_gettime writes only into `ts`.
-        let rc = unsafe { libc::clock_gettime(libc::CLOCK_THREAD_CPUTIME_ID, &mut ts) };
-        assert_eq!(rc, 0, "clock_gettime(CLOCK_THREAD_CPUTIME_ID) failed");
-        Ok(std::time::Duration::new(
-            u64::try_from(ts.tv_sec).map_err(|e| format!("a non-negative CPU time: {e:?}"))?,
-            u32::try_from(ts.tv_nsec).map_err(|e| format!("nanoseconds under a second: {e:?}"))?,
-        ))
-    }
-
-    /// The clock the ratio test below reads must not count time the thread
-    /// spends not running. A thread that sleeps uses almost no CPU, so 50 ms
-    /// asleep has to read as next to nothing.
-    #[test]
-    fn the_cpu_clock_does_not_count_time_spent_not_running() -> Result<(), TestError> {
-        let before = thread_cpu_time()?;
-        std::thread::sleep(std::time::Duration::from_millis(50));
-        let spent = thread_cpu_time()? - before;
-        assert!(
-            spent < std::time::Duration::from_millis(10),
-            "50 ms asleep read as {spent:?} of CPU: this is a wall clock"
-        );
-        Ok(())
+        assert_eq!(entries.len(), n, "control: every key was kept");
+        Ok(compared)
     }
 
     /// Rejecting duplicate keys must not cost the square of the key count.
@@ -604,45 +622,70 @@ mod tests {
     /// do not stand in the way: the allowlist is empty, per-peer rate limiting
     /// is `off`, and the global ceiling is 50 000/s.
     ///
-    /// Asserted as a RATIO rather than a wall-clock bound, deliberately. An
-    /// absolute threshold on a shared runner is the throughput gate
-    /// `docs/internals/build-ci-release.md` refuses to have -- it fails
-    /// randomly, gets muted, and then reports a safety it is not providing.
-    /// A ratio normalizes the machine out: quadratic growth over a 4x key
-    /// count is ~16x, linear is ~4x, and the bound sits between them with a
-    /// factor of two either side.
+    /// Counted, not timed. The duplicate check holds its keys as
+    /// `SeenKey`s, whose equality counts itself in test builds, and test
+    /// builds hash them with a fixed-key hasher, so the count is the same on
+    /// every run. A set compares a new key only against the few that share
+    /// its hash bucket; a scan of the keys accepted so far compares it
+    /// against all of them, n(n-1)/2 in all. The CPU-time ratio this
+    /// replaces measured the same property and could still be moved by the
+    /// machine running it.
     #[test]
-    fn rejecting_duplicate_keys_does_not_cost_the_square_of_the_key_count() -> Result<(), TestError>
-    {
-        /// Best of several runs, in CPU time. Preemption no longer reaches the
-        /// samples (see `thread_cpu_time`); the minimum still trims what does,
-        /// such as a cold cache or a frequency step between runs.
-        fn best(buf: &[u8]) -> Result<std::time::Duration, TestError> {
-            let mut samples = Vec::with_capacity(5);
-            for _ in 0..5 {
-                let start = thread_cpu_time()?;
-                let v = decode(buf).map_err(|e| format!("a well-formed dictionary: {e:?}"))?;
-                debug_assert!(matches!(v, Value::Dict(_)));
-                samples.push(thread_cpu_time()? - start);
-            }
-            Ok(samples.into_iter().min().ok_or("five samples")?)
-        }
-
-        let small = dict_of(1024);
-        let large = dict_of(4096);
-        // Warm the allocator and the branch predictors before timing either.
-        let _ = best(&small)?;
-
-        let t_small = best(&small)?.as_secs_f64();
-        let t_large = best(&large)?.as_secs_f64();
-        let ratio = t_large / t_small;
-
+    fn rejecting_duplicate_keys_compares_each_key_a_bounded_number_of_times()
+    -> Result<(), TestError> {
+        let small = key_comparisons_decoding(1024)?;
+        let large = key_comparisons_decoding(4096)?;
         assert!(
-            ratio < 8.0,
-            "4x the keys cost {ratio:.1}x the time ({t_small:.6}s -> \
-             {t_large:.6}s). Linear is ~4x and quadratic is ~16x, so this is \
-             the duplicate-key check having become a scan again"
+            small <= 1024 && large <= 4096,
+            "the duplicate check made {small} key comparisons for 1,024 keys and \
+             {large} for 4,096, more than one per key: it is comparing each key \
+             against every earlier one again"
         );
+        Ok(())
+    }
+
+    /// The test above counts only comparisons between `SeenKey`s, so it is a
+    /// guard only while the duplicate check goes through them. The scan this
+    /// replaced, `!entries.iter().any(|(k, _)| *k == key)`, compared raw
+    /// byte slices and would pass it uncounted. So `decode_dict` must make
+    /// its check through the `SeenKey` set, and may touch `entries` only to
+    /// declare it, append to it and return it, never to read it back.
+    #[test]
+    fn decode_dict_checks_duplicates_through_the_counted_set_and_never_reads_entries()
+    -> Result<(), TestError> {
+        let source = include_str!("bencode.rs");
+        let start = source
+            .find("\nfn decode_dict(")
+            .ok_or("fixture: decode_dict is in bencode.rs")?;
+        let len = source[start..]
+            .find("\n}\n")
+            .ok_or("fixture: decode_dict has a closing brace")?;
+        let code: Vec<&str> = source[start..start + len]
+            .lines()
+            .map(|line| line.split("//").next().unwrap_or_default())
+            .collect();
+        assert!(
+            code.iter()
+                .any(|line| line.contains("seen.insert(SeenKey(key))")),
+            "decode_dict no longer checks duplicates through the SeenKey set, so \
+             the comparison count no longer sees the check"
+        );
+        const ALLOWED: [&str; 3] = [
+            "let mut entries: Vec<",
+            "Value::Dict(entries)",
+            "entries.push((key, value))",
+        ];
+        for line in &code {
+            if line.contains("entries") {
+                assert!(
+                    ALLOWED.iter().any(|use_of| line.contains(use_of)),
+                    "decode_dict reads `entries` back ({}): a scan of the keys \
+                     accepted so far is the O(n^2) duplicate check this module \
+                     replaced",
+                    line.trim()
+                );
+            }
+        }
         Ok(())
     }
 

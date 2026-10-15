@@ -157,9 +157,21 @@ fn the_commit_gate_and_ci_run_the_same_clippy_scope() -> Result<(), TestError> {
                 "a push"
             }
         );
+        assert!(
+            found.contains(want),
+            "{name} does not run `cargo clippy {want}`, CI's scope; it runs \
+             {found:?}"
+        );
         for scope in found.iter() {
-            assert_eq!(
-                scope, want,
+            // The commit gate runs CI's main scope and nothing else. The push
+            // gate may also run CI's other scopes, never one CI does not.
+            let allowed = if name == "pre-commit" {
+                scope == want
+            } else {
+                ci.contains(scope)
+            };
+            assert!(
+                allowed,
                 "{name} runs `cargo clippy {scope}` and CI runs `cargo clippy \
                  {want}`. Two spellings of one rule drift, and the cheaper \
                  one is the one that stops catching things.\n\nMeasured \
@@ -169,6 +181,29 @@ fn the_commit_gate_and_ci_run_the_same_clippy_scope() -> Result<(), TestError> {
                  third scope, which measured 40,110 ms."
             );
         }
+    }
+    Ok(())
+}
+
+/// CI and the push gate also lint the build with no features at all.
+///
+/// `--all-features` turns every `#[cfg(feature = ...)]` field on, so a lint
+/// that fires only when they are off is invisible to it. `..Self::default()`
+/// in `impl From<ActionPolicy> for Actions` was one: with no features the
+/// struct has only the field the literal already sets, clippy denies the
+/// no-op struct update, and `cargo clippy --no-default-features --lib -- -D
+/// warnings` failed on main while every gate here passed.
+#[test]
+fn ci_and_the_push_gate_lint_the_build_with_no_features() -> Result<(), TestError> {
+    let floor = "--no-default-features";
+    for rel in [".github/workflows/ci.yml", ".githooks/pre-push"] {
+        let scopes = clippy_scopes(&read(rel)?);
+        assert!(
+            scopes.iter().any(|s| s == floor),
+            "{rel} runs no `cargo clippy {floor} --lib -- -D warnings`, so a lint \
+             that fires only with every feature off reaches main unread; it \
+             runs {scopes:?}"
+        );
     }
     Ok(())
 }

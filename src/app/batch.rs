@@ -1346,6 +1346,8 @@ pub(crate) fn audio_retention_wanted(cli: &Cli, config: &Config) -> bool {
         })
         // A live-audio rule serves the retained audio as it arrives.
         || config.vcon.rule.iter().any(|r| r.live_audio == Some(true))
+        // So does a live RTP fork, which sends it.
+        || config.vcon.rule.iter().any(|r| r.live_rtp.is_some())
         // An enrichment that sends audio needs the audio retained to send it.
         || config.vcon.enrich.iter().any(|e| {
             e.send
@@ -3133,6 +3135,7 @@ fn server_selection(
         pipeline_options: crate::app::server_pipeline_options(cli, config),
         alias_thresholds: cli.alias_thresholds(config),
         vcon_spools: crate::app::vcon_spool::spools(cli, config),
+        vcon_fetch: config.vcon_fetch.clone(),
         live_audio: crate::app::bootstrap::live_audio_filters(cli, config),
     }
 }
@@ -3732,6 +3735,8 @@ impl BatchRunner {
         let live_vcon = lp.live_vcon.take();
         #[cfg(feature = "vcon")]
         let vcon_end = vcon_run_end(live_vcon.as_deref(), signals::shutdown_requested());
+        #[cfg(feature = "vcon")]
+        self.finish_live_rtp(&mut lp);
         #[cfg(not(feature = "vcon"))]
         let vcon_end = VconRunEnd::Whole;
 
@@ -3890,6 +3895,8 @@ impl BatchRunner {
         }
 
         self.sweep_if_due(lp);
+        #[cfg(feature = "vcon")]
+        self.fork_live_rtp_if_due(lp);
         #[cfg(feature = "tls")]
         self.poll_keylog_if_due(lp);
 
@@ -3970,6 +3977,62 @@ impl BatchRunner {
             );
         }
         self.engines.sweep(lp.security_max_age);
+    }
+
+    /// `live_rtp`: send what the matching calls retained since the last look,
+    /// every `live_rtp::POLL` of wall time.
+    #[cfg(feature = "vcon")]
+    fn fork_live_rtp_if_due(&mut self, lp: &mut ReceiveLoop) {
+        let Some(fork) = lp.live_rtp.as_mut() else {
+            return;
+        };
+        if fork.due() {
+            self.live_rtp_pass(fork, false);
+        }
+    }
+
+    /// One look of `fork` at the stores, and its datagrams sent.
+    #[cfg(feature = "vcon")]
+    fn live_rtp_pass(&self, fork: &mut crate::output::live_rtp::Forwarder, input_ended: bool) {
+        let out = {
+            let ds = self.dialog_store.read();
+            let ss = self.stream_store.read();
+            fork.pass(
+                &ds,
+                &ss,
+                self.cli.output_args.content_deny_header.as_deref(),
+                input_ended,
+            )
+        };
+        fork.send(&out);
+    }
+
+    /// The end of the run for `live_rtp`: on a stop request, every call's
+    /// stop at once with nothing more of its audio; otherwise what is still
+    /// queued, paced, and then each call's stop.
+    #[cfg(feature = "vcon")]
+    fn finish_live_rtp(&self, lp: &mut ReceiveLoop) {
+        let Some(mut fork) = lp.live_rtp.take() else {
+            return;
+        };
+        loop {
+            if signals::shutdown_requested() {
+                let out = fork.stop_all();
+                fork.send(&out);
+                break;
+            }
+            self.live_rtp_pass(&mut fork, true);
+            if fork.is_idle() {
+                break;
+            }
+            std::thread::sleep(crate::output::live_rtp::POLL);
+        }
+        if fork.unsent() > 0 {
+            tracing::warn!(
+                "live_rtp: {} datagram(s) could not be sent to their target",
+                fork.unsent()
+            );
+        }
     }
 
     /// --keylog-watch: poll for new keys in the keylog source, on its
@@ -4776,6 +4839,9 @@ struct ReceiveLoop {
     /// `Cli::exports_vcon_live`.
     #[cfg(feature = "vcon")]
     live_vcon: Option<Vec<LiveVconTracker>>,
+    /// The live RTP fork of the rules with a `live_rtp` target.
+    #[cfg(feature = "vcon")]
+    live_rtp: Option<crate::output::live_rtp::Forwarder>,
     /// When `--keylog-watch` last read the keylog source; see
     /// [`KEYLOG_POLL_INTERVAL`].
     #[cfg(feature = "tls")]
@@ -4837,6 +4903,8 @@ impl ReceiveLoop {
             sweep_clock: SweepClock::new(cli.has_input()),
             #[cfg(feature = "vcon")]
             live_vcon: start_live_vcon(cli, &runner.config, &runner.vcon_rules),
+            #[cfg(feature = "vcon")]
+            live_rtp: crate::output::live_rtp::Forwarder::new(&runner.vcon_rules),
             #[cfg(feature = "tls")]
             keylog_poll_clock: std::time::Instant::now(),
             security_max_age: cli.security_sweep_max_age(&runner.config),
@@ -6592,6 +6660,49 @@ fn report_tables_print(cli: &Cli) -> bool {
     cli.output_args.report && cli.mode_args.no_tui
 }
 
+/// The vCon container section of `--report`: every stored vCon container
+/// the run met, read or skipped, as rows and totals in the table format, or
+/// as one JSON line under `--json` / `--json-pretty`. Empty when the run met
+/// no container.
+///
+/// Not narrowed by `--filter`: a container is an input, like a capture file,
+/// not a dialog.
+///
+/// # Arguments
+///
+/// * `cli` — the output flags that pick the form.
+/// * `dialogs` — the store the read containers were rebuilt into.
+fn vcon_containers_section(cli: &Cli, dialogs: &DialogStore) -> String {
+    let containers = crate::output::dialog_report::vcon_containers_report(
+        &crate::capture::vcon_input::read_report(),
+        &crate::capture::vcon_input::skipped_report(),
+        dialogs,
+    );
+    if cli.output_args.json || cli.output_args.json_pretty {
+        crate::output::dialog_report::vcon_containers_json_line(
+            &containers,
+            cli.output_args.json_pretty,
+        )
+    } else {
+        crate::output::dialog_report::render_vcon_containers(&containers, table_report_format(cli))
+    }
+}
+
+/// What `--report` prints for a run whose `-I` resolved to no readable
+/// file: the vCon container section, so a directory whose every container
+/// was skipped is still reported with each reason. Empty when `--report`
+/// prints no tables, or when `-I` met no vCon container.
+///
+/// The run still fails afterwards, with the exit code and message it has
+/// without `--report`.
+pub(crate) fn unread_input_report(cli: &Cli) -> String {
+    if !report_tables_print(cli) {
+        return String::new();
+    }
+    // Nothing was read, so no call was rebuilt: the store is empty.
+    vcon_containers_section(cli, &DialogStore::new(0, false))
+}
+
 /// The table format `--markdown` picks for the human-readable reports.
 pub(crate) fn table_report_format(cli: &Cli) -> output::ReportFormat {
     if cli.output_args.markdown {
@@ -6651,6 +6762,7 @@ impl EndOfRunReports<'_> {
             &selection.streams,
             table_report_format(self.cli),
         );
+        report.push_str(&vcon_containers_section(self.cli, self.read.dialogs));
         // A report drawn from a partial read must say so IN the report. The
         // exit status carries the same fact, but a reader looking at this
         // table has no `$?` in front of them, and the table itself looks
@@ -7405,6 +7517,9 @@ pub struct VconRule {
     /// Whether the REST API serves this rule's calls' audio while they are in
     /// progress.
     pub live_audio: bool,
+    /// Where each matching call's audio is sent as RTP while it is captured
+    /// (`live_rtp`); `None` sends nothing.
+    pub live_rtp: Option<crate::output::live_rtp::Target>,
     /// Whether a live capture writes each call as it starts and rewrites it
     /// as it changes.
     pub live: bool,
@@ -8675,6 +8790,7 @@ impl LegWriter<'_> {
                         .iter()
                         .map(|press| crate::output::vcon::RtpKeyPress {
                             src: stream.key.src,
+                            dst: stream.key.dst,
                             digit: press.digit,
                             ended_at: press.timestamp,
                             duration_ms: press.duration_ms,
@@ -9998,6 +10114,7 @@ mod tests {
             grouping: RuleGrouping::Leg,
             enrich: Vec::new(),
             live_audio: false,
+            live_rtp: None,
             live: false,
             sealing: None,
             sealed_updates: SealedUpdates::NewUuid,
@@ -10112,11 +10229,21 @@ mod tests {
 
     /// A live sweep hands an enriching rule's call to the enrichment queue and
     /// goes on; the worker enriches the container and writes it.
+    ///
+    /// The service does not answer until the test releases it, so "the sweep
+    /// did not wait" is observed as an order of events, not a duration: the
+    /// sweep returns while the service is still held, and nothing is written
+    /// until it is let go. A sweep that waited for the service would write
+    /// the container itself, after the service gave up holding (60 s), and
+    /// the file it wrote is what fails the test. A bound of 900 ms against a
+    /// one-second service measured the machine as much as the sweep, and
+    /// failed in 14 of 450 runs with the load average between 170 and 370.
     #[cfg(feature = "vcon")]
     #[test]
     fn a_live_sweep_queues_enrichment_and_the_worker_writes() -> Result<(), TestError> {
         let tmp = tempfile::tempdir().map_err(|e| format!("temp dir: {e:?}"))?;
         let script = tmp.path().join("stt.sh");
+        let release = tmp.path().join("release");
         // Written by a child process, so this one never holds a writable
         // descriptor a sibling test's fork could inherit (ETXTBSY on exec).
         let mut writer = std::process::Command::new("sh")
@@ -10127,9 +10254,14 @@ mod tests {
             .map_err(|e| format!("{e:?}"))?;
         std::io::Write::write_all(
             &mut writer.stdin.take().ok_or("the writer's stdin")?,
-            "#!/bin/sh\ncat > /dev/null\nsleep 1\nprintf '%s' '{\"analysis\":[{\"type\":\
-             \"transcript\",\"vendor\":\"t\",\"encoding\":\"none\",\"body\":\"x\"}]}'\n"
-                .as_bytes(),
+            format!(
+                "#!/bin/sh\ncat > /dev/null\ni=0\n\
+                 while [ ! -e '{}' ] && [ \"$i\" -lt 600 ]; do sleep 0.1; i=$((i+1)); done\n\
+                 printf '%s' '{{\"analysis\":[{{\"type\":\
+                 \"transcript\",\"vendor\":\"t\",\"encoding\":\"none\",\"body\":\"x\"}}]}}'\n",
+                release.display()
+            )
+            .as_bytes(),
         )
         .map_err(|e| format!("{e:?}"))?;
         assert!(writer.wait().map_err(|e| format!("{e:?}"))?.success());
@@ -10154,7 +10286,6 @@ mod tests {
             streams: &streams,
             frames_read: 4,
         };
-        let started = std::time::Instant::now();
         let n = live_rules_sweep(
             &Cli::parse_from_args(["sipnab"]),
             &rules,
@@ -10164,13 +10295,19 @@ mod tests {
             later,
         );
         assert_eq!(n, 1, "the call is counted when it is queued");
-        assert!(
-            started.elapsed() < std::time::Duration::from_millis(900),
-            "the sweep did not wait for the service"
+        let written = std::fs::read_dir(&dir).map_or(0, Iterator::count);
+        assert_eq!(
+            written, 0,
+            "the sweep returned after the container was written, so it waited \
+             for the service it should have queued"
         );
+        std::fs::write(&release, b"").map_err(|e| format!("{e:?}"))?;
+        // A ceiling on a wait that ends as soon as the worker is done, not a
+        // measurement: once the script sees the release file, the worker has
+        // only the service's answer left to attach and write.
         assert!(
             crate::app::vcon_enrich::queue()
-                .drain(std::time::Instant::now() + std::time::Duration::from_secs(10)),
+                .drain(std::time::Instant::now() + std::time::Duration::from_secs(60)),
             "the worker finished"
         );
         let file = std::fs::read_dir(&dir)
@@ -13704,7 +13841,9 @@ mod tests {
     #[cfg(feature = "vcon")]
     fn spool_name_policy() -> crate::output::redact::RedactionPolicy {
         crate::output::redact::RedactionPolicy::new(
-            crate::output::redact::RedactionKey::from_secret(b"spool-name-test"),
+            crate::output::redact::RedactionKey::from_secret(crate::test_material::key_bytes(
+                "spool-name-test",
+            )),
         )
     }
 
@@ -18245,8 +18384,14 @@ mod tests {
         let key = SrtpKeyMaterial {
             tag: 1,
             suite: SrtpSuite::AesCm128HmacSha1_80,
-            master_key: vec![0x01u8; 16],
-            master_salt: vec![0x02u8; 14],
+            master_key: crate::test_material::bytes_for(
+                "batch-srtp-context-never-false-decrypts-plain-rtp-master-key",
+                16,
+            ),
+            master_salt: crate::test_material::bytes_for(
+                "batch-srtp-context-never-false-decrypts-plain-rtp-master-salt",
+                14,
+            ),
             ssrc: None,
             media_addr: None,
             media_port: None,
@@ -18315,8 +18460,14 @@ mod tests {
     #[test]
     fn the_batch_path_keeps_decrypted_srtp_audio_and_no_ciphertext() -> Result<(), TestError> {
         use base64::Engine as _;
-        let master_key = vec![0x11u8; 16];
-        let master_salt = vec![0x22u8; 14];
+        let master_key = crate::test_material::bytes_for(
+            "batch-the-batch-path-keeps-decrypted-srtp-audio-and-no-ciphertext-master-key",
+            16,
+        );
+        let master_salt = crate::test_material::bytes_for(
+            "batch-the-batch-path-keeps-decrypted-srtp-audio-and-no-ciphertext-master-salt",
+            14,
+        );
         let mut inline = master_key.clone();
         inline.extend_from_slice(&master_salt);
         let crypto = format!(

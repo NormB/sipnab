@@ -63,7 +63,7 @@ pub fn run(args: &crate::cli::VconResignArgs) -> Result<PathBuf, (i32, String)> 
 }
 
 /// The file at `path`, refused when it is over `cap` bytes.
-fn read_capped(path: &Path, cap: u64) -> Result<Vec<u8>, String> {
+pub(crate) fn read_capped(path: &Path, cap: u64) -> Result<Vec<u8>, String> {
     let len = std::fs::metadata(path)
         .map_err(|e| format!("cannot read '{}': {e}", path.display()))?
         .len();

@@ -28,7 +28,10 @@
 //!   requires HTTPS, and sipnab hosts nothing. The one `url` a container
 //!   carries is a recording a rule with `audio = "url"` wrote beside it, named
 //!   under the `audio_url_base` the operator's storage serves, with the WAV
-//!   file's `content_hash`; sipnab does not check that the URL serves it.
+//!   file's `content_hash`; sipnab does not check, when it writes the
+//!   container, that the URL serves it. `--vcon-audio-fetch`
+//!   (`crate::app::vcon_audio_fetch`) checks the file against that hash when
+//!   it reads it back.
 //!
 //! # Media: a `recording` Dialog Object is not a recording
 //!
@@ -1762,6 +1765,32 @@ pub fn denied_by_header(dialog: &crate::sip::dialog::SipDialog, header: Option<&
     header.is_some_and(|h| dialog.messages.iter().any(|m| m.header(h).is_some()))
 }
 
+/// The calls live audio goes out for: those one of `filters` selects that
+/// `deny_header` does not withhold, each once, in store order.
+///
+/// The one decision for every live audio surface: the REST API's WebSocket
+/// and list, and the RTP fork of `live_rtp`. A call one of them would send,
+/// the other would too.
+#[must_use]
+pub fn live_calls<'a, 'f>(
+    filters: impl IntoIterator<Item = &'f crate::sip::dsl::FilterExpr>,
+    ds: &'a crate::sip::dialog_store::DialogStore,
+    ss: &'a crate::rtp::stream_store::StreamStore,
+    deny_header: Option<&str>,
+) -> Vec<&'a crate::sip::dialog::SipDialog> {
+    let mut out: Vec<&crate::sip::dialog::SipDialog> = Vec::new();
+    for filter in filters {
+        for (dialog, _) in crate::sip::dsl::select_dialogs(Some(filter), ds, ss).dialogs {
+            if !out.iter().any(|d| d.call_id == dialog.call_id)
+                && !denied_by_header(dialog, deny_header)
+            {
+                out.push(dialog);
+            }
+        }
+    }
+    out
+}
+
 /// The quality of `call_id`'s RTP streams for [`ExportContext::media`], on the
 /// delay basis `GET /v1/streams` uses, so the container and the API report
 /// the same figures.
@@ -2094,6 +2123,13 @@ pub fn export_dialog_and_completeness(
 ) -> ExportedDialog {
     let mut parties = observed_parties(dialog);
 
+    // A SIPREC recording session's recorded participants join right after the
+    // SRC and SRS its From and To name, before anything else is appended, so
+    // every index the session hands out below is final. See
+    // `crate::output::vcon_siprec`.
+    let session = crate::output::vcon_siprec::recording_session(dialog);
+    let recorded = session.place(&mut parties);
+
     // A transfer target joins the party array BEFORE the observer, so the
     // observer stays the final entry. Every attachment's `party` resolves to
     // that index, and appending a participant after it would silently
@@ -2129,7 +2165,13 @@ pub fn export_dialog_and_completeness(
     // audio cannot move the object the analysis describes.
     let started = observed_start(dialog);
     let mut dialog_objects = vec![dialog_object(dialog, started.clone())];
-    let media = media_objects(dialog, audio, &mut dialog_objects, context.media_budget());
+    let media = media_objects(
+        dialog,
+        audio,
+        &mut dialog_objects,
+        context.media_budget(),
+        recorded.as_ref(),
+    );
     name_the_originator(&mut dialog_objects, caller);
     // On index 0 after the media is placed, because a ring-wrapped recording
     // replaces that object with its recording-set.
@@ -2173,13 +2215,23 @@ pub fn export_dialog_and_completeness(
     // object goes after the media: appending never moves an existing index.
     dialog_objects.extend(text_dialogs_of(dialog));
 
-    let completeness = completeness_of(context, &media, dialog.state().is_final());
+    let completeness = completeness_of(
+        context,
+        &media,
+        dialog.state().is_final(),
+        &session.clause(),
+    );
 
     let mut attachments = vec![
         message_trace_attachment(dialog, observer, started.clone()),
         completeness_attachment(&completeness, observer, started.clone()),
     ];
     attachments.extend(stir_verification_report(dialog));
+    attachments.extend(
+        recorded
+            .as_ref()
+            .map(|r| r.attachment(observer, started.clone())),
+    );
     if !context.related_legs.is_empty() {
         attachments.push(Attachment {
             purpose: RELATED_LEGS_PURPOSE,
@@ -2324,7 +2376,10 @@ pub fn merge_call_legs(
             a.party = party(a.party);
             a.dialog = object(a.dialog);
             if a.purpose == MESSAGE_TRACE_PURPOSE {
-                move_trace_parties(&mut a.body, &party);
+                move_body_parties(&mut a.body, "messages", &party);
+            }
+            if a.purpose == crate::output::vcon_siprec::SIPREC_STREAMS_PURPOSE {
+                move_body_parties(&mut a.body, "streams", &party);
             }
             attachments.push(a);
         }
@@ -2385,11 +2440,12 @@ pub fn merge_call_legs(
     })
 }
 
-/// Pass every trace message's `party` through `party`, for
+/// Pass the `party` of every row of `body[list]` through `party`, for
 /// [`merge_call_legs`]: the index lives inside the body, where the
-/// attachment's own remap does not reach.
-fn move_trace_parties(body: &mut serde_json::Value, party: &impl Fn(usize) -> usize) {
-    let Some(messages) = body["messages"].as_array_mut() else {
+/// attachment's own remap does not reach. The rows are the trace's
+/// `messages` and the SIPREC stream map's `streams`.
+fn move_body_parties(body: &mut serde_json::Value, list: &str, party: &impl Fn(usize) -> usize) {
+    let Some(messages) = body[list].as_array_mut() else {
         return;
     };
     for message in messages {
@@ -2501,6 +2557,7 @@ fn media_objects(
     audio: ObservedAudio<'_>,
     objects: &mut Vec<Dialog>,
     budget: usize,
+    recorded: Option<&crate::output::vcon_siprec::Placed>,
 ) -> MediaVerdict {
     let (decoded, encoded) = match audio {
         ObservedAudio::NotConsidered => {
@@ -2531,6 +2588,7 @@ fn media_objects(
                 dialog,
                 decoded,
                 objects,
+                recorded,
                 MediaBody::Url {
                     url: file.url,
                     mediatype: file.mediatype,
@@ -2571,6 +2629,7 @@ fn media_objects(
         dialog,
         decoded,
         objects,
+        recorded,
         MediaBody::Inline {
             body: &body,
             mediatype: encoded.mediatype,
@@ -2643,6 +2702,7 @@ fn place_recording(
     dialog: &SipDialog,
     decoded: &DialogAudio,
     objects: &mut Vec<Dialog>,
+    recorded: Option<&crate::output::vcon_siprec::Placed>,
     media: MediaBody<'_>,
 ) {
     // The media REPLACES the signaling object rather than sitting beside it,
@@ -2664,7 +2724,7 @@ fn place_recording(
         let member = objects.len();
         objects[0] = recording_set_object(dialog, decoded, member);
         // Index 0 is the set: §4.3.7's back-pointer, so the link is two-way.
-        objects.push(recording_object(dialog, decoded, media, 0));
+        objects.push(recording_object(dialog, decoded, recorded, media, 0));
     } else {
         let signaling = &mut objects[0];
         // Enriched in place, and RETYPED: it carries audio now, so it is a
@@ -2678,7 +2738,7 @@ fn place_recording(
         signaling.disposition = None;
         signaling.start = Some(decoded.first_retained.to_rfc3339());
         signaling.duration = Some(decoded.duration_secs);
-        signaling.parties = channel_parties(dialog, decoded);
+        signaling.parties = channel_parties(dialog, decoded, recorded);
         media.fill(signaling);
     }
 }
@@ -2687,6 +2747,7 @@ fn place_recording(
 fn recording_object(
     dialog: &SipDialog,
     audio: &DialogAudio,
+    recorded: Option<&crate::output::vcon_siprec::Placed>,
     media: MediaBody<'_>,
     recording_set: usize,
 ) -> Dialog {
@@ -2696,7 +2757,7 @@ fn recording_object(
         // §4.3.7's SHOULD: the member names the set it belongs to, so a
         // consumer holding the audio can reach the call's clock.
         recording_set: Some(recording_set),
-        parties: channel_parties(dialog, audio),
+        parties: channel_parties(dialog, audio, recorded),
         ..Dialog::bare(RECORDING_TYPE, dialog.call_id.clone())
     };
     media.fill(&mut object);
@@ -2762,7 +2823,20 @@ pub fn content_hash(media: &[u8]) -> String {
 /// Absent is the common answer once a relay is in the media path, which is
 /// correct: the relay's socket is not either party's, and sipnab reconstructed
 /// the audio from a tap rather than receiving it from anyone.
-fn channel_parties(dialog: &SipDialog, audio: &DialogAudio) -> Option<Vec<usize>> {
+///
+/// A SIPREC recording session is asked first. There the sockets are all the
+/// SRC's, and what tells the channels apart is the `a=label` on the m-line
+/// each was sent from, which the metadata ties to a recorded participant (see
+/// [`crate::output::vcon_siprec`]). When that does not resolve every channel,
+/// the rule above applies unchanged.
+fn channel_parties(
+    dialog: &SipDialog,
+    audio: &DialogAudio,
+    recorded: Option<&crate::output::vcon_siprec::Placed>,
+) -> Option<Vec<usize>> {
+    if let Some(parties) = recorded.and_then(|r| r.channel_parties(audio)) {
+        return Some(parties);
+    }
     let advertised = advertised_media_endpoints(dialog);
     if advertised.is_empty() {
         return None;
@@ -2770,13 +2844,51 @@ fn channel_parties(dialog: &SipDialog, audio: &DialogAudio) -> Option<Vec<usize>
     audio
         .sources
         .iter()
-        .map(|key| {
-            advertised
-                .iter()
-                .find(|(socket, _)| *socket == key.src)
-                .map(|(_, party)| *party)
-        })
+        .map(|key| advertised_party(&advertised, key.src))
         .collect()
+}
+
+/// The party that advertised `socket` for itself, the first in message order
+/// when several did; `None` when none did.
+fn advertised_party(
+    advertised: &[(std::net::SocketAddr, usize)],
+    socket: std::net::SocketAddr,
+) -> Option<usize> {
+    advertised
+        .iter()
+        .find(|(advertised, _)| *advertised == socket)
+        .map(|(_, party)| *party)
+}
+
+/// The party that sent an RTP telephone event from `src` to `dst`, in a
+/// dialog of `parties` observed parties, or `None` when the evidence does not
+/// name one.
+///
+/// - The party that advertised `src` for itself sent it, the evidence the
+///   audio channels are attributed by (see [`channel_parties`]).
+/// - Otherwise the destination decides, the same SDP endpoint that links the
+///   stream to its dialog: the party that advertised `dst` received the event,
+///   so in a two-party dialog the other party sent it.
+/// - `None` when the destination was advertised by no party or by both, or
+///   the dialog has other than two parties: no single receiver, so no sender
+///   to infer.
+fn key_press_party(
+    advertised: &[(std::net::SocketAddr, usize)],
+    parties: usize,
+    src: std::net::SocketAddr,
+    dst: std::net::SocketAddr,
+) -> Option<usize> {
+    if let Some(sender) = advertised_party(advertised, src) {
+        return Some(sender);
+    }
+    if parties != 2 {
+        return None;
+    }
+    let receiver = advertised_party(advertised, dst)?;
+    let single = advertised
+        .iter()
+        .all(|(socket, party)| *socket != dst || *party == receiver);
+    (single && receiver < 2).then(|| 1 - receiver)
 }
 
 /// Every media endpoint an observed party advertised for itself, with that
@@ -2810,7 +2922,7 @@ fn sdp_audio_endpoint(msg: &crate::sip::SipMessage) -> Option<std::net::SocketAd
 /// the dialog's is a forked leg, a re-INVITE from a third party, or a parse
 /// sipnab got wrong, and attributing it to the caller would put the caller's
 /// index on somebody else's audio.
-fn sender_party(dialog: &SipDialog, msg: &crate::sip::SipMessage) -> Option<usize> {
+pub(crate) fn sender_party(dialog: &SipDialog, msg: &crate::sip::SipMessage) -> Option<usize> {
     let tag = if msg.is_request {
         msg.from_tag()
     } else {
@@ -2946,7 +3058,7 @@ fn observer_party() -> Party {
 /// digits are extensions — `1001` is not a telephone number, and indexing it
 /// as one would put a wrong answer in a search index rather than no answer.
 /// So: `+` followed by digits, or nothing.
-fn tel_uri(user: Option<&str>) -> Option<String> {
+pub(crate) fn tel_uri(user: Option<&str>) -> Option<String> {
     let user = user?;
     let digits = user.strip_prefix('+')?;
     if digits.is_empty() || !digits.bytes().all(|b| b.is_ascii_digit()) {
@@ -3060,6 +3172,8 @@ fn opened_by_the_caller(dialog: &SipDialog) -> bool {
 pub struct RtpKeyPress {
     /// The socket the event's packets came from.
     pub src: std::net::SocketAddr,
+    /// The socket the event's packets were sent to.
+    pub dst: std::net::SocketAddr,
     /// The digit the event names.
     pub digit: char,
     /// When sipnab captured the packet that ended the event (E bit set).
@@ -3078,11 +3192,13 @@ pub struct RtpKeyPress {
 ///   `Signal` value.
 /// - An RFC 4733 event in `rtp` is a `keyup` at its end packet and a
 ///   `keydown` its duration before, for the party whose own SDP advertised
-///   the event's source socket.
+///   the event's source socket. When no party advertised the source, the
+///   party that advertised the destination socket received the event and the
+///   other party of the two sent it (see `key_press_party`).
 ///
-/// An INFO whose tags match neither party, or an event from a socket no
-/// party advertised, adds nothing. The events join the existing history in
-/// time order.
+/// An INFO whose tags match neither party, or an event whose source no party
+/// advertised and whose destination no single party advertised, adds
+/// nothing. The events join the existing history in time order.
 ///
 /// A rule asks for these with `dtmf_events`, because a digit can be a PIN.
 /// Redaction removes them (see the `Dialog` redaction).
@@ -3118,12 +3234,9 @@ pub fn add_key_events(container: &mut Vcon, dialog: &SipDialog, rtp: &[RtpKeyPre
     }
 
     let advertised = advertised_media_endpoints(dialog);
+    let parties = observed_parties(dialog).len();
     for event in rtp {
-        let Some(party) = advertised
-            .iter()
-            .find(|(socket, _)| *socket == event.src)
-            .map(|(_, party)| *party)
-        else {
+        let Some(party) = key_press_party(&advertised, parties, event.src, event.dst) else {
             continue;
         };
         let down = event.ended_at - chrono::TimeDelta::milliseconds(i64::from(event.duration_ms));
@@ -4318,6 +4431,7 @@ fn completeness_of(
     context: &ExportContext<'_>,
     media: &MediaVerdict,
     call_ended: bool,
+    siprec: &str,
 ) -> CaptureCompleteness {
     let facts = context.facts;
     let blind_spots = context.analysis.map(|analysis| {
@@ -4336,7 +4450,7 @@ fn completeness_of(
     });
 
     CaptureCompleteness {
-        note: completeness_note(facts, blind_spots.as_deref(), media, call_ended),
+        note: completeness_note(facts, blind_spots.as_deref(), media, call_ended, siprec),
         media: media.outcome,
         media_note: media.note.clone(),
         node: node_name().to_string(),
@@ -4366,11 +4480,16 @@ fn completeness_of(
 /// its own clause rather than the clean one — "nobody checked" and "checked
 /// and found nothing" are different facts, and only the second earns a clean
 /// bill.
+///
+/// `siprec` is the sentence [`crate::output::vcon_siprec`] writes about a
+/// SIPREC recording session, or `""`. It follows the sentence about where
+/// the parties came from, because it amends it.
 fn completeness_note(
     facts: &CaptureFacts,
     blind: Option<&[BlindSpot]>,
     media: &MediaVerdict,
     call_ended: bool,
+    siprec: &str,
 ) -> String {
     let mut partial = String::new();
     if let Some(refusal) = media.refusal.as_deref() {
@@ -4495,7 +4614,7 @@ fn completeness_note(
     format!(
         "Produced by sipnab {} on node {}. sipnab OBSERVED this dialog and took no part in it: \
          the parties below are what the From and To headers said, not identities anyone \
-         established, and nothing here is signed.{} sipnab read {} frame(s) for this \
+         established, and nothing here is signed.{siprec}{} sipnab read {} frame(s) for this \
          capture.{running_clause}{verdict}{blind_clause}",
         env!("CARGO_PKG_VERSION"),
         node_name(),
@@ -4555,6 +4674,65 @@ fn media_clause(outcome: MediaOutcome) -> &'static str {
     }
 }
 
+/// The host name a `[vcon] uuid_domain` declares, with the 62 bits it puts in
+/// every container uuid.
+///
+/// [Section 4.1.2 of the core draft](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-04#section-4.1.2):
+/// "rand_b/custom_c is generated from the high 62 bits of the SHA-1 hash of
+/// the FQHN string".
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UuidDomain {
+    /// The name in its one spelling, from
+    /// [`normalize_uuid_domain`](crate::config::normalize_uuid_domain).
+    name: String,
+    /// The high 62 bits of SHA-1 over `name`, in the low 62 bits.
+    custom_c: u64,
+}
+
+impl UuidDomain {
+    /// The domain `fqhn` names, in lower case without a trailing dot.
+    ///
+    /// # Errors
+    ///
+    /// The reason [`normalize_uuid_domain`](crate::config::normalize_uuid_domain)
+    /// refuses the name.
+    pub fn new(fqhn: &str) -> Result<Self, &'static str> {
+        let name = crate::config::normalize_uuid_domain(fqhn)?;
+        let digest = <sha1_oaep::Sha1 as sha1_oaep::Digest>::digest(name.as_bytes());
+        let mut top = [0u8; 8];
+        top.copy_from_slice(&digest[..8]);
+        Ok(Self {
+            name,
+            custom_c: u64::from_be_bytes(top) >> 2,
+        })
+    }
+
+    /// The name the uuids are minted under.
+    #[must_use]
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+}
+
+/// The `[vcon] uuid_domain` of this process, when one was declared.
+static UUID_DOMAIN: std::sync::OnceLock<UuidDomain> = std::sync::OnceLock::new();
+
+/// Declare the domain every container uuid of this process is minted under.
+///
+/// Process-wide, as the node name is, so the batch export, `GET
+/// /v1/dialogs/{id}/vcon` and MCP `export_vcon` mint one uuid for one dialog.
+/// Called once at startup, from the validated `[vcon] uuid_domain`; the first
+/// declaration wins.
+pub fn set_uuid_domain(domain: UuidDomain) {
+    let _ = UUID_DOMAIN.set(domain);
+}
+
+/// The declared domain, or `None` for the node-keyed default.
+#[must_use]
+pub fn uuid_domain() -> Option<&'static UuidDomain> {
+    UUID_DOMAIN.get()
+}
+
 /// A UUIDv8 for one dialog out of one capture, per
 /// [section 4.1.2 of the core draft](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-04#section-4.1.2).
 ///
@@ -4585,15 +4763,18 @@ fn media_clause(outcome: MediaOutcome) -> &'static str {
 /// those digests collide; nothing random is mixed in, so the same dialog from
 /// the same capture on the same node always yields the same value.
 ///
-/// # Why SHA-256 and not SHA-1
+/// # The default departs from section 4.1.2; `[vcon] uuid_domain` follows it
 ///
-/// The draft names SHA-1. This tree has no SHA-1 implementation and adding a
-/// broken hash as a dependency to fill 62 bits of a non-security identifier is
-/// a worse trade than using the SHA-256 already here. UUIDv8 is the
-/// custom-layout version: RFC 9562 constrains only the version and variant
-/// bits, both of which are set below, so the value is a well-formed UUIDv8
-/// either way. What changes is which bits land in `rand_b`, and nothing reads
-/// them.
+/// The draft fills `rand_b` with SHA-1 of a host name alone. The default
+/// keys it on the node, the dialog and the capture with SHA-256 instead, so
+/// that `rand_a`'s 12 bits are not all that separates two dialogs in one
+/// millisecond. UUIDv8 is the custom-layout version: RFC 9562 constrains only
+/// the version and variant bits, both of which are set, so the value is a
+/// well-formed UUIDv8 either way.
+///
+/// A declared [`UuidDomain`] switches to the draft's layout: `rand_b` is the
+/// high 62 bits of SHA-1 over the domain, and `rand_a` is seeded as here, with
+/// a per-process table stepping past a value already given in that millisecond.
 #[must_use]
 pub fn dialog_uuid(dialog: &SipDialog, capture_id: &str) -> String {
     uuid_for(dialog.created_at, &dialog.call_id, capture_id)
@@ -4617,8 +4798,168 @@ pub fn call_uuid(legs: &[&SipDialog], capture_id: &str) -> String {
     uuid_for(started, &key, capture_id)
 }
 
-/// [`dialog_uuid`]'s layout, for an identity `key` that opened at `started`.
+/// [`dialog_uuid`]'s layout, for an identity `key` that opened at `started`:
+/// the section 4.1.2 layout under a declared [`uuid_domain`], else the
+/// node-keyed default.
 fn uuid_for(started: DateTime<Utc>, key: &str, capture_id: &str) -> String {
+    match uuid_domain() {
+        Some(domain) => {
+            with_uuid_slots(|slots| domain_uuid(started, key, capture_id, domain, slots))
+        }
+        None => node_uuid(started, key, capture_id, node_name()),
+    }
+}
+
+/// The 48-bit big-endian millisecond timestamp of `started`. `max(0)` rather
+/// than a wrap: a pre-epoch capture timestamp is nonsense, and wrapping it
+/// would spread one absurd input across the whole 48-bit space.
+fn uuid_millis(started: DateTime<Utc>) -> u64 {
+    u64::try_from(started.timestamp_millis().max(0)).unwrap_or(0) & 0x0000_FFFF_FFFF_FFFF
+}
+
+/// SHA-256 over `key`, 0x1e and the normalized capture identity: the seed of
+/// `rand_a` in both modes. The separator keeps `("ab", "c")` and
+/// `("a", "bc")` apart, which a bare concatenation would collide.
+fn dialog_seed(key: &str, capture_id: &str) -> [u8; 32] {
+    let mut seed = Sha256::new();
+    seed.update(key.as_bytes());
+    seed.update([0x1e]);
+    seed.update(capture_identity_key(capture_id).as_bytes());
+    seed.finalize().into()
+}
+
+/// The UUIDv8 octets for a 48-bit timestamp, a 12-bit `rand_a` and a 62-bit
+/// `rand_b`: version 8 in the high nibble of octet 6 ([RFC 9562 section 4.2](https://www.rfc-editor.org/rfc/rfc9562.html#section-4.2))
+/// and variant `10` in the two high bits of octet 8 ([RFC 9562 section 4.1](https://www.rfc-editor.org/rfc/rfc9562.html#section-4.1)).
+fn uuid_v8(millis: u64, rand_a: u16, rand_b: u64) -> String {
+    let mut bytes = [0u8; 16];
+    bytes[..6].copy_from_slice(&(millis & 0x0000_FFFF_FFFF_FFFF).to_be_bytes()[2..]);
+    let rand_a = rand_a & 0x0fff;
+    bytes[6] = 0x80 | u8::try_from(rand_a >> 8).unwrap_or(0);
+    bytes[7] = u8::try_from(rand_a & 0xff).unwrap_or(0);
+    let rand_b = rand_b & 0x3FFF_FFFF_FFFF_FFFF;
+    bytes[8..].copy_from_slice(&(0x8000_0000_0000_0000_u64 | rand_b).to_be_bytes());
+    format_uuid(&bytes)
+}
+
+/// The leading 12 bits of `seed`, and its leading 16 bytes as the identity a
+/// [`UuidSlots`] holds.
+fn seed_parts(seed: &[u8; 32]) -> (u16, [u8; 16]) {
+    let mut identity = [0u8; 16];
+    identity.copy_from_slice(&seed[..16]);
+    (u16::from_be_bytes([seed[0], seed[1]]) >> 4, identity)
+}
+
+/// The section 4.1.2 layout under `domain`: the call's start in the 48-bit
+/// timestamp, the domain's 62 bits in `rand_b`, and in `rand_a` the 12 bits
+/// the dialog's seed picks, or the next one `slots` has free.
+fn domain_uuid(
+    started: DateTime<Utc>,
+    key: &str,
+    capture_id: &str,
+    domain: &UuidDomain,
+    slots: &mut UuidSlots,
+) -> String {
+    let millis = uuid_millis(started);
+    let (preferred, identity) = seed_parts(&dialog_seed(key, capture_id));
+    let rand_a = slots.claim(domain.custom_c, millis, preferred, identity);
+    uuid_v8(millis, rand_a, domain.custom_c)
+}
+
+/// The `rand_a` values this process has given out under a domain, per
+/// millisecond.
+///
+/// Under the section 4.1.2 layout two uuids minted under one domain in one
+/// millisecond differ only in `rand_a`'s 12 bits. Seeded from the dialog
+/// alone, two such dialogs would share a uuid once in 4096 pairs. The table
+/// makes the second one take the next free value instead, so within one
+/// process two identities never share a uuid while the millisecond has a
+/// free value left.
+///
+/// The same identity always gets the value it was first given. The table
+/// holds at most `cap` identities and drops its OLDEST milliseconds past
+/// that; an identity whose millisecond was dropped is seeded afresh.
+#[derive(Debug)]
+struct UuidSlots {
+    /// `(millisecond, domain bits)` to the `(rand_a, identity)` pairs given.
+    by_ms: std::collections::BTreeMap<(u64, u64), Vec<SlotHolder>>,
+    /// Identities held across every millisecond.
+    held: usize,
+    /// The most identities held before the oldest milliseconds are dropped.
+    cap: usize,
+}
+
+/// One `rand_a` value given out, and the 16-byte identity that holds it.
+type SlotHolder = (u16, [u8; 16]);
+
+/// [`UuidSlots`]'s cap for the process: 1,048,576 identities of
+/// `size_of::<SlotHolder>()` (18) bytes, plus the map's own overhead.
+const UUID_SLOT_CAP: usize = 1 << 20;
+
+impl UuidSlots {
+    /// An empty table holding at most `cap` identities.
+    const fn with_cap(cap: usize) -> Self {
+        Self {
+            by_ms: std::collections::BTreeMap::new(),
+            held: 0,
+            cap,
+        }
+    }
+
+    /// Identities held.
+    #[cfg(test)]
+    fn held(&self) -> usize {
+        self.held
+    }
+
+    /// The `rand_a` for `identity` in millisecond `millis` under `domain`:
+    /// the value it already holds, else `preferred` when free, else the next
+    /// free value after it. With all 4096 taken it is `preferred`, and the
+    /// uuid repeats one already given; nothing in the layout can prevent that.
+    fn claim(&mut self, domain: u64, millis: u64, preferred: u16, identity: [u8; 16]) -> u16 {
+        let preferred = preferred & 0x0fff;
+        let bucket = self.by_ms.entry((millis, domain)).or_default();
+        if let Some(&(slot, _)) = bucket.iter().find(|(_, id)| *id == identity) {
+            return slot;
+        }
+        let mut taken = [0u64; 64];
+        for &(slot, _) in bucket.iter() {
+            taken[usize::from(slot >> 6)] |= 1 << (slot & 63);
+        }
+        let Some(slot) = (0..4096_u16)
+            .map(|step| (preferred + step) & 0x0fff)
+            .find(|&s| taken[usize::from(s >> 6)] & (1 << (s & 63)) == 0)
+        else {
+            return preferred;
+        };
+        bucket.push((slot, identity));
+        self.held += 1;
+        while self.held > self.cap {
+            match self.by_ms.pop_first() {
+                Some((_, dropped)) => self.held -= dropped.len(),
+                None => break,
+            }
+        }
+        slot
+    }
+}
+
+/// The process's [`UuidSlots`].
+static UUID_SLOTS: std::sync::Mutex<UuidSlots> =
+    std::sync::Mutex::new(UuidSlots::with_cap(UUID_SLOT_CAP));
+
+/// Run `f` with the process's [`UuidSlots`]. A panic elsewhere while the
+/// lock was held leaves the table usable: it holds no invariant a half-done
+/// claim can break.
+fn with_uuid_slots<T>(f: impl FnOnce(&mut UuidSlots) -> T) -> T {
+    let mut slots = UUID_SLOTS
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    f(&mut slots)
+}
+
+/// The node-keyed default layout, for the node `node`.
+fn node_uuid(started: DateTime<Utc>, key: &str, capture_id: &str, node: &str) -> String {
     let mut bytes = [0u8; 16];
     let capture_id: &str = &capture_identity_key(capture_id);
 
@@ -4661,7 +5002,7 @@ fn uuid_for(started: DateTime<Utc>, key: &str, capture_id: &str) -> String {
     // from one capture still yields one identifier. The same separator as
     // above keeps `("ab", "c")` apart from `("a", "bc")`.
     let mut host = Sha256::new();
-    host.update(node_name().as_bytes());
+    host.update(node.as_bytes());
     host.update([0x1e]);
     host.update(key.as_bytes());
     host.update([0x1e]);
@@ -4701,11 +5042,55 @@ fn uuid_for(started: DateTime<Utc>, key: &str, capture_id: &str) -> String {
 /// same number of times, yields the same chain of uuids on every run, and the
 /// first instance's determinism properties carry over. Two revisions of one
 /// call differ in at least the 74 hashed bits.
+///
+/// # Under a `[vcon] uuid_domain`
+///
+/// The section 4.1.2 layout holds for every instance: the timestamp is
+/// `base`'s, `rand_b` is the domain's 62 bits, and `rand_a` is the leading 12
+/// bits of the same SHA-256, or the next value a per-process table has free
+/// in that millisecond. Two revisions of one call then differ in those 12
+/// bits alone.
 #[must_use]
 pub fn revision_uuid(base: &str, revision: u32) -> String {
     if revision == 0 {
         return base.to_owned();
     }
+    match uuid_domain() {
+        Some(domain) => {
+            with_uuid_slots(|slots| domain_revision_uuid(base, revision, domain, slots))
+        }
+        None => {
+            let seed = revision_seed(base, revision);
+            let mut top = [0u8; 8];
+            top.copy_from_slice(&seed[2..10]);
+            uuid_v8(
+                base_millis(base),
+                u16::from_be_bytes([seed[0], seed[1]]) >> 4,
+                u64::from_be_bytes(top) >> 2,
+            )
+        }
+    }
+}
+
+/// [`revision_uuid`] under `domain`, with `slots` for `rand_a`.
+fn domain_revision_uuid(
+    base: &str,
+    revision: u32,
+    domain: &UuidDomain,
+    slots: &mut UuidSlots,
+) -> String {
+    if revision == 0 {
+        return base.to_owned();
+    }
+    let millis = base_millis(base);
+    let (preferred, identity) = seed_parts(&revision_seed(base, revision));
+    let rand_a = slots.claim(domain.custom_c, millis, preferred, identity);
+    uuid_v8(millis, rand_a, domain.custom_c)
+}
+
+/// The 48-bit timestamp in `base`'s first 12 hex digits. A base that is not a
+/// uuid gives 0; the hashed bits still separate revisions.
+fn base_millis(base: &str) -> u64 {
     let hex: Vec<u8> = base
         .bytes()
         .filter(u8::is_ascii_hexdigit)
@@ -4715,31 +5100,24 @@ pub fn revision_uuid(base: &str, revision: u32) -> String {
             _ => c - b'A' + 10,
         })
         .collect();
-    let mut bytes = [0u8; 16];
-    // The first 12 hex digits are the 48-bit timestamp. A base that is not a
-    // uuid keeps a zero timestamp; the hashed bits still separate revisions.
-    if hex.len() == 32 {
-        for (i, byte) in bytes.iter_mut().take(6).enumerate() {
-            *byte = (hex[2 * i] << 4) | hex[2 * i + 1];
-        }
+    if hex.len() != 32 {
+        return 0;
     }
+    hex[..12]
+        .iter()
+        .fold(0_u64, |acc, nibble| (acc << 4) | u64::from(*nibble))
+}
+
+/// SHA-256 over `amended`, `base` and `revision` as four big-endian bytes,
+/// separated by 0x1e: the seed of a later instance's uuid.
+fn revision_seed(base: &str, revision: u32) -> [u8; 32] {
     let mut seed = Sha256::new();
     seed.update(b"amended");
     seed.update([0x1e]);
     seed.update(base.as_bytes());
     seed.update([0x1e]);
     seed.update(revision.to_be_bytes());
-    let seed = seed.finalize();
-    let rand_a = u16::from_be_bytes([seed[0], seed[1]]) >> 4;
-    // Version 8 in the high nibble of octet 6, per RFC 9562 §4.2.
-    bytes[6] = 0x80 | u8::try_from(rand_a >> 8).unwrap_or(0);
-    bytes[7] = u8::try_from(rand_a & 0xff).unwrap_or(0);
-    let mut top = [0u8; 8];
-    top.copy_from_slice(&seed[2..10]);
-    let rand_b = u64::from_be_bytes(top) >> 2;
-    // Variant `10` in the two high bits of octet 8, per RFC 9562 §4.1.
-    bytes[8..].copy_from_slice(&(0x8000_0000_0000_0000_u64 | rand_b).to_be_bytes());
-    format_uuid(&bytes)
+    seed.finalize().into()
 }
 
 /// The capture identity a uuid is seeded from, with one file spelled one way.
@@ -7980,7 +8358,9 @@ mod tests {
         let dialog = SipDialog::new(&msg).ok_or("INVITE opens a dialog")?;
         let container = export_with(&dialog, &clean_facts())?;
         let policy = crate::output::redact::RedactionPolicy::new(
-            crate::output::redact::RedactionKey::from_secret(b"vcon-unmodeled-header-test"),
+            crate::output::redact::RedactionKey::from_secret(crate::test_material::key_bytes(
+                "vcon-unmodeled-header-test",
+            )),
         );
         let redactor = policy.redactor();
         let json = sealed_json(&seal(container, Some(&redactor)))?;
@@ -8615,7 +8995,9 @@ mod tests {
         let facts = clean_facts();
         let container = export_with(&dialog, &facts)?;
         let policy = crate::output::redact::RedactionPolicy::new(
-            crate::output::redact::RedactionKey::from_secret(b"vcon-leak-test"),
+            crate::output::redact::RedactionKey::from_secret(crate::test_material::key_bytes(
+                "vcon-leak-test",
+            )),
         );
         let redactor = policy.redactor();
         Ok(sealed_json(&seal(container, Some(&redactor)))?)
@@ -8749,7 +9131,9 @@ mod tests {
             exported_at()?,
         );
         let policy = crate::output::redact::RedactionPolicy::new(
-            crate::output::redact::RedactionKey::from_secret(b"vcon-leak-test"),
+            crate::output::redact::RedactionKey::from_secret(crate::test_material::key_bytes(
+                "vcon-leak-test",
+            )),
         );
         let json = sealed_json(&seal(container, Some(&policy.redactor())))?;
         let value: serde_json::Value = serde_json::from_str(&json)?;
@@ -8801,7 +9185,9 @@ mod tests {
             sip_contact: None,
             sip_user_agent: None,
         };
-        let policy = RedactionPolicy::new(RedactionKey::from_secret(b"stir"));
+        let policy = RedactionPolicy::new(RedactionKey::from_secret(
+            crate::test_material::key_bytes("stir"),
+        ));
         party.redact(&policy.redactor());
         assert!(
             party.stir.is_none(),
@@ -8848,7 +9234,9 @@ mod tests {
         object.content_hash = Some(format!("{CONTENT_HASH_PREFIX}abc"));
         object.duration = Some(4.5);
 
-        let policy = RedactionPolicy::new(RedactionKey::from_secret(b"audio"));
+        let policy = RedactionPolicy::new(RedactionKey::from_secret(
+            crate::test_material::key_bytes("audio"),
+        ));
         object.redact(&policy.redactor());
 
         assert!(object.body.is_none(), "the audio must not survive");
@@ -9182,7 +9570,9 @@ mod tests {
         )?;
         let dialog = timed_dialog(vec![(invite()?, 0), (response(200, "OK")?, 1), (relay, 2)])?;
         let mut v = export_with(&dialog, &clean_facts())?;
-        let policy = RedactionPolicy::new(RedactionKey::from_secret(b"trace"));
+        let policy = RedactionPolicy::new(RedactionKey::from_secret(
+            crate::test_material::key_bytes("trace"),
+        ));
         v.redact(&policy.redactor());
         let body = trace_body(&v)?;
         for m in body["messages"].as_array().ok_or("messages")? {
@@ -9446,7 +9836,9 @@ mod tests {
         let mut v = export_with(&dialog, &clean_facts())?;
         add_sip_message_attachments(&mut v, &dialog, MAX_INLINE_MEDIA_BYTES);
         assert_eq!(with_purpose(&v, SIP_SDP_PURPOSE).len(), 2, "precondition");
-        let policy = RedactionPolicy::new(RedactionKey::from_secret(b"wire"));
+        let policy = RedactionPolicy::new(RedactionKey::from_secret(
+            crate::test_material::key_bytes("wire"),
+        ));
         v.redact(&policy.redactor());
         for purpose in [SIP_INVITE_PURPOSE, SIP_RESPONSE_PURPOSE, SIP_SDP_PURPOSE] {
             assert!(with_purpose(&v, purpose).is_empty(), "{purpose}");
@@ -9620,7 +10012,9 @@ mod tests {
             0,
         )])?;
         let mut v = export_with(&dialog, &clean_facts())?;
-        let policy = RedactionPolicy::new(RedactionKey::from_secret(b"stir"));
+        let policy = RedactionPolicy::new(RedactionKey::from_secret(
+            crate::test_material::key_bytes("stir"),
+        ));
         v.redact(&policy.redactor());
         let report = with_purpose(&v, STIR_REPORT_PURPOSE);
         assert_eq!(report.len(), 1);
@@ -9876,6 +10270,7 @@ mod tests {
         let mut v = export_with(&dialog, &clean_facts())?;
         let pressed = |port: u16, digit: char| RtpKeyPress {
             src: std::net::SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)), port),
+            dst: std::net::SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 9)), 9000),
             digit,
             ended_at: ts().unwrap_or_default() + chrono::TimeDelta::seconds(20),
             duration_ms: 200,
@@ -9890,6 +10285,83 @@ mod tests {
                 (1, 20_000, "keyup".into(), Some("#".into())),
             ],
             "a socket no party advertised yields no event"
+        );
+        Ok(())
+    }
+
+    /// A socket in the [`key_press_party`] tests.
+    fn sock(last: u8, port: u16) -> std::net::SocketAddr {
+        std::net::SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, last)), port)
+    }
+
+    /// A telephone event from a socket no party advertised is the other
+    /// party's when exactly one party of the two advertised its destination:
+    /// that party received it. A source a party advertised still wins.
+    #[test]
+    fn a_key_press_from_an_unadvertised_socket_is_the_other_party_of_its_destination() {
+        let advertised = [(sock(1, 4000), 0), (sock(2, 5000), 1)];
+        assert_eq!(
+            key_press_party(&advertised, 2, sock(9, 7000), sock(2, 5000)),
+            Some(0),
+            "sent to the callee's socket: the caller pressed it"
+        );
+        assert_eq!(
+            key_press_party(&advertised, 2, sock(9, 7000), sock(1, 4000)),
+            Some(1),
+            "sent to the caller's socket: the callee pressed it"
+        );
+        assert_eq!(
+            key_press_party(&advertised, 2, sock(2, 5000), sock(2, 5000)),
+            Some(1),
+            "an advertised source names the sender"
+        );
+    }
+
+    /// Without a single receiver among exactly two parties there is no
+    /// sender to infer, and the event names no party.
+    #[test]
+    fn a_key_press_with_an_ambiguous_destination_names_no_party() {
+        let advertised = [(sock(1, 4000), 0), (sock(2, 5000), 1)];
+        assert_eq!(
+            key_press_party(&advertised, 2, sock(9, 7000), sock(8, 8000)),
+            None,
+            "a destination no party advertised"
+        );
+        let both = [(sock(1, 4000), 0), (sock(1, 4000), 1)];
+        assert_eq!(
+            key_press_party(&both, 2, sock(9, 7000), sock(1, 4000)),
+            None,
+            "a destination both parties advertised"
+        );
+        assert_eq!(
+            key_press_party(&advertised, 3, sock(9, 7000), sock(2, 5000)),
+            None,
+            "more than two parties: the receiver does not name the sender"
+        );
+    }
+
+    /// `add_key_events` writes an event from an unadvertised socket to Bob's
+    /// advertised socket (10.0.0.1:5000) for Alice.
+    #[test]
+    fn an_rtp_telephone_event_to_an_advertised_socket_is_the_senders() -> Result<(), TestError> {
+        let dialog = answered_with_media(Vec::new())?;
+        let mut v = export_with(&dialog, &clean_facts())?;
+        let pressed = RtpKeyPress {
+            src: sock(9, 7000),
+            dst: sock(1, 5000),
+            digit: '7',
+            ended_at: ts()? + chrono::TimeDelta::seconds(20),
+            duration_ms: 120,
+        };
+        add_key_events(&mut v, &dialog, &[pressed]);
+        assert_eq!(
+            key_history(&v)?,
+            vec![
+                (0, 1000, "join".into(), None),
+                (1, 1000, "join".into(), None),
+                (0, 19_880, "keydown".into(), Some("7".into())),
+                (0, 20_000, "keyup".into(), Some("7".into())),
+            ]
         );
         Ok(())
     }
@@ -9909,7 +10381,9 @@ mod tests {
         let dialog = answered_with_media(vec![(info, 10)])?;
         let mut v = export_with(&dialog, &clean_facts())?;
         add_key_events(&mut v, &dialog, &[]);
-        let policy = RedactionPolicy::new(RedactionKey::from_secret(b"keys"));
+        let policy = RedactionPolicy::new(RedactionKey::from_secret(
+            crate::test_material::key_bytes("keys"),
+        ));
         v.redact(&policy.redactor());
         let events: Vec<String> = key_history(&v)?.into_iter().map(|e| e.2).collect();
         assert_eq!(events, vec!["join".to_string(), "join".to_string()]);
@@ -10070,7 +10544,9 @@ mod tests {
             0,
         )])?;
         let mut v = export_with(&dialog, &clean_facts())?;
-        let policy = RedactionPolicy::new(RedactionKey::from_secret(b"text"));
+        let policy = RedactionPolicy::new(RedactionKey::from_secret(
+            crate::test_material::key_bytes("text"),
+        ));
         v.redact(&policy.redactor());
         let texts = text_dialogs(&v)?;
         assert_eq!(texts.len(), 1);
@@ -10212,7 +10688,9 @@ mod tests {
                 ..CcHeaders::default()
             },
         );
-        let policy = RedactionPolicy::new(RedactionKey::from_secret(b"cc"));
+        let policy = RedactionPolicy::new(RedactionKey::from_secret(
+            crate::test_material::key_bytes("cc"),
+        ));
         v.redact(&policy.redactor());
         let id = v.dialog[0]
             .interaction_id
@@ -10220,6 +10698,197 @@ mod tests {
             .ok_or("an interaction_id")?;
         assert_ne!(id, "4155550100-77");
         assert_eq!(id, policy.redactor().opaque("4155550100-77"));
+        Ok(())
+    }
+
+    /// The 16 octets of a canonical uuid.
+    fn octets_of(uuid: &str) -> Result<[u8; 16], TestError> {
+        let hex: String = uuid.chars().filter(|c| *c != '-').collect();
+        let mut out = [0u8; 16];
+        for (i, byte) in out.iter_mut().enumerate() {
+            *byte = u8::from_str_radix(hex.get(2 * i..2 * i + 2).ok_or("short")?, 16)?;
+        }
+        Ok(out)
+    }
+
+    /// The high 62 bits of SHA-1 over `name`, computed here rather than by the
+    /// exporter, as the 64-bit value of octets 8 to 15 with variant `10`.
+    fn sha1_custom_c(name: &str) -> u64 {
+        let digest = <sha1_oaep::Sha1 as sha1_oaep::Digest>::digest(name.as_bytes());
+        let mut top = [0u8; 8];
+        top.copy_from_slice(&digest[..8]);
+        (0b10_u64 << 62) | (u64::from_be_bytes(top) >> 2)
+    }
+
+    /// The default mode is the uuid releases before `uuid_domain` wrote.
+    ///
+    /// The three values were printed by the code on `origin/main` at 3869eb5d,
+    /// with the node name set to `pin-node`, before this mode existed. The
+    /// first was also recomputed from the documented recipe with Python's
+    /// `hashlib`, outside this crate.
+    #[test]
+    fn the_default_uuid_is_byte_identical_to_before() -> Result<(), TestError> {
+        let started = ts()? + chrono::TimeDelta::microseconds(123_456);
+        assert_eq!(
+            node_uuid(started, "vcon-fixture@example.com", "eth0", "pin-node"),
+            "01a033a4-4a7b-8b21-a55e-91426aa29c67"
+        );
+        assert_eq!(
+            node_uuid(
+                started,
+                "call\u{1f}vcon-fixture@example.com",
+                "eth0",
+                "pin-node"
+            ),
+            "01a033a4-4a7b-87c6-b7a0-9062dfcd9486"
+        );
+        assert_eq!(
+            revision_uuid("018bcfe5-6800-8a6b-a667-78f1c5213800", 1),
+            "018bcfe5-6800-8482-9beb-8b3825191ad8"
+        );
+        Ok(())
+    }
+
+    /// Each field of the section 4.1.2 layout, checked on its own.
+    ///
+    /// [Section 4.1.2 of the core draft](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-04#section-4.1.2):
+    /// "rand_b/custom_c is generated from the high 62 bits of the SHA-1 hash
+    /// of the FQHN string".
+    #[test]
+    fn a_domain_uuid_follows_the_section_4_1_2_layout() -> Result<(), TestError> {
+        // The digest the test recomputes is SHA-1: RFC 3174's first vector.
+        assert_eq!(
+            format!(
+                "{:x}",
+                <sha1_oaep::Sha1 as sha1_oaep::Digest>::digest(b"abc")
+            ),
+            "a9993e364706816aba3e25717850c26c9cd0d89d"
+        );
+        let domain = UuidDomain::new("pbx.example.com")?;
+        let started = ts()? + chrono::TimeDelta::microseconds(123_456);
+        let mut slots = UuidSlots::with_cap(64);
+        let id = domain_uuid(started, "a@example.com", "eth0", &domain, &mut slots);
+        let octets = octets_of(&id)?;
+
+        let mut ts_bytes = [0u8; 8];
+        ts_bytes[2..].copy_from_slice(&octets[..6]);
+        assert_eq!(
+            i64::try_from(u64::from_be_bytes(ts_bytes))?,
+            started.timestamp_millis(),
+            "the uuid carries the start time"
+        );
+        assert_eq!(octets[6] >> 4, 8, "version 8");
+        assert_eq!(octets[8] >> 6, 0b10, "the RFC 9562 variant");
+        let mut tail = [0u8; 8];
+        tail.copy_from_slice(&octets[8..]);
+        assert_eq!(
+            u64::from_be_bytes(tail),
+            sha1_custom_c("pbx.example.com"),
+            "custom_c is the high 62 bits of SHA-1 of the domain"
+        );
+        // And the value Python's hashlib gives, outside this crate.
+        assert_eq!(&id[19..], "bee8-9e80be8f9f8f");
+        Ok(())
+    }
+
+    /// Two dialogs that opened in one millisecond under one domain get two
+    /// uuids, even when their seeds pick the same 12 `rand_a` bits.
+    ///
+    /// Under the section 4.1.2 layout only those 12 bits separate them: the
+    /// timestamp and the 62 domain bits are the same. The pair below is
+    /// found by search, so it is a real seed collision.
+    #[test]
+    fn two_dialogs_in_one_millisecond_get_different_domain_uuids() -> Result<(), TestError> {
+        let domain = UuidDomain::new("pbx.example.com")?;
+        let started = ts()?;
+        let alone =
+            |key: &str| domain_uuid(started, key, "eth0", &domain, &mut UuidSlots::with_cap(64));
+        let mut seen: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+        let mut pair = None;
+        for n in 0..20_000 {
+            let key = format!("call-{n}@example.com");
+            let id = alone(&key);
+            if let Some(first) = seen.get(&id) {
+                pair = Some((first.clone(), key));
+                break;
+            }
+            seen.insert(id, key);
+        }
+        let (a, b) = pair.ok_or("no seed collision in 20000 keys")?;
+        assert_eq!(alone(&a), alone(&b), "the pair collides on its seed");
+
+        let mut slots = UuidSlots::with_cap(64);
+        let first = domain_uuid(started, &a, "eth0", &domain, &mut slots);
+        let second = domain_uuid(started, &b, "eth0", &domain, &mut slots);
+        assert_ne!(first, second, "{a} and {b} share a uuid");
+        assert_eq!(&first[..14], &second[..14], "same millisecond and version");
+        assert_eq!(&first[19..], &second[19..], "same domain bits");
+        // Asked again, each keeps the value it was given.
+        assert_eq!(first, domain_uuid(started, &a, "eth0", &domain, &mut slots));
+        assert_eq!(
+            second,
+            domain_uuid(started, &b, "eth0", &domain, &mut slots)
+        );
+        Ok(())
+    }
+
+    /// The slot table: a held slot is never given to a second identity, a
+    /// full millisecond falls back to the seed, and the table drops its
+    /// oldest milliseconds past its cap.
+    #[test]
+    fn the_uuid_slot_table_holds_its_rules() {
+        assert_eq!(std::mem::size_of::<SlotHolder>(), 18, "the cap's doc");
+        let mut slots = UuidSlots::with_cap(10_000);
+        let id = |n: u32| {
+            let mut out = [0u8; 16];
+            out[..4].copy_from_slice(&n.to_be_bytes());
+            out
+        };
+        let mut given = std::collections::HashSet::new();
+        for n in 0..4096 {
+            assert!(given.insert(slots.claim(1, 7, 5, id(n))), "slot reused");
+        }
+        assert_eq!(slots.claim(1, 7, 5, id(4096)), 5, "a full millisecond");
+        assert_eq!(slots.claim(1, 7, 0, id(0)), 5, "the first claim kept");
+        assert_eq!(slots.claim(2, 7, 5, id(9)), 5, "another domain is apart");
+        assert_eq!(
+            slots.claim(1, 8, 5, id(9)),
+            5,
+            "another millisecond is apart"
+        );
+
+        let mut small = UuidSlots::with_cap(2);
+        assert_eq!(small.claim(1, 1, 3, id(1)), 3);
+        assert_eq!(small.claim(1, 1, 3, id(2)), 4);
+        assert_eq!(small.claim(1, 2, 3, id(3)), 3);
+        assert!(small.held() <= 2, "cap: {}", small.held());
+        // Millisecond 1 was dropped, so identity 2 is seeded afresh.
+        assert_eq!(small.claim(1, 1, 3, id(2)), 3);
+    }
+
+    /// A `new-uuid` chain under a domain keeps the first instance's
+    /// timestamp and the domain's bits, and every instance is new.
+    #[test]
+    fn a_domain_revision_chain_keeps_the_layout() -> Result<(), TestError> {
+        let domain = UuidDomain::new("pbx.example.com")?;
+        let mut slots = UuidSlots::with_cap(64);
+        let base = domain_uuid(ts()?, "a@example.com", "eth0", &domain, &mut slots);
+        assert_eq!(domain_revision_uuid(&base, 0, &domain, &mut slots), base);
+        let chain: Vec<String> = (0..5)
+            .map(|n| domain_revision_uuid(&base, n, &domain, &mut slots))
+            .collect();
+        for (i, id) in chain.iter().enumerate() {
+            assert_eq!(&id[..13], &base[..13], "timestamp: {id}");
+            assert_eq!(&id[14..15], "8", "version: {id}");
+            assert_eq!(&id[19..], &base[19..], "domain bits: {id}");
+            for other in &chain[..i] {
+                assert_ne!(id, other);
+            }
+        }
+        let again: Vec<String> = (0..5)
+            .map(|n| domain_revision_uuid(&base, n, &domain, &mut slots))
+            .collect();
+        assert_eq!(chain, again);
         Ok(())
     }
 }

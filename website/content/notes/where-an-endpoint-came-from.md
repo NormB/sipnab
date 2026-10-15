@@ -81,6 +81,10 @@ comes from how the run's HEP listener (`--hep-listen`) checks its senders:
 - `port-gated-only` when sipnab checks no secret.
   - This includes every run that does not listen for HEP.
 
+That posture covers only what the listener delivered. A HEP datagram read off
+a capture interface or a file, including one `--hep-parse` unwraps, reached no
+listener, and nothing checked its secret. It is `port-gated-only` on every run.
+
 The listener drops a packet that fails its check.
 
 - So every stored assertion passed the configured check.
@@ -97,6 +101,8 @@ Give it a pointer to one frame of a capture (`<file>#<ordinal>`, counting from
     Protocol rtpengine uses to mirror its control traffic.
   - `sniffed-udp` for a bare control message read off the network.
 - `delivery_trust` and `delivery_note`, on the same scale as above.
+  - `delivery_trust` is always `port-gated-only` here. The frame comes from a
+    capture file, so no listener on this run checked it.
 - `on_believed_mirror_port`: for a HEP-wrapped message, whether it arrived on
   UDP port 9060.
   - sipnab reads a relay mirror it picks up from the network only on that

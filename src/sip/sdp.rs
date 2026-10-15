@@ -73,6 +73,13 @@ pub struct SdpMedia {
     /// Without it RTCP goes to the RTP port plus one ([RFC 3264 section 6.1](https://www.rfc-editor.org/rfc/rfc3264.html#section-6.1)), which is
     /// what makes "RTCP arrived somewhere else" a decidable observation.
     pub rtcp_port: Option<u16>,
+    /// The `a=label` pointer of this media description
+    /// ([RFC 4574 section 4](https://www.rfc-editor.org/rfc/rfc4574.html#section-4)), when present.
+    ///
+    /// SIPREC is the reader: [RFC 7866 section 7.1.1](https://www.rfc-editor.org/rfc/rfc7866.html#section-7.1.1)
+    /// makes an SRC put one on every recorded stream, and the RFC 7865
+    /// metadata names each stream by it.
+    pub label: Option<String>,
 }
 
 /// Stream directionality attribute.
@@ -491,6 +498,7 @@ fn parse_media_line(value: &str) -> Option<SdpMedia> {
         ice_candidates: Vec::new(),
         rtcp_mux: false,
         rtcp_port: None,
+        label: None,
     })
 }
 
@@ -563,6 +571,11 @@ fn parse_attribute(value: &str, media: &mut SdpMedia) {
         if let Some(crypto) = parse_crypto(rest) {
             media.crypto.push(crypto);
         }
+    } else if let Some(rest) = value.strip_prefix("label:") {
+        // RFC 4574 section 4: `a=label:<pointer>`, one token per media
+        // description. An empty pointer names nothing.
+        let pointer = rest.trim();
+        media.label = (!pointer.is_empty()).then(|| pointer.to_string());
     } else if let Some(rest) = value.strip_prefix("candidate:") {
         media.ice_candidates.push(rest.to_string());
     } else if let Some(rest) = value.strip_prefix("rtcp:") {
@@ -981,6 +994,35 @@ mod tests {
         .map_err(|e| format!("plain SDP must parse: {e:?}"))?;
         assert!(!plain.media[0].rtcp_mux);
         assert_eq!(plain.media[0].rtcp_port, None);
+        Ok(())
+    }
+
+    /// `a=label` is read per media description, and its absence stays absent.
+    ///
+    /// The SDP of [RFC 7866 section 7.1.1](https://www.rfc-editor.org/rfc/rfc7866.html#section-7.1.1),
+    /// Figure 5, cut to two of its four m-lines: each recorded stream carries
+    /// its own label, and the label is what the SIPREC metadata names the
+    /// stream by. A label applied to the wrong section would hand one
+    /// participant's stream to another.
+    #[test]
+    fn a_label_attribute_is_read_per_media_description() -> Result<(), TestError> {
+        let sdp = parse_sdp(
+            b"v=0\r\n\
+              o=SRC 2890844526 2890844526 IN IP4 198.51.100.1\r\n\
+              s=-\r\n\
+              c=IN IP4 198.51.100.1\r\n\
+              t=0 0\r\n\
+              m=audio 12240 RTP/AVP 0 4 8\r\n\
+              a=sendonly\r\n\
+              a=label:1\r\n\
+              m=audio 12242 RTP/AVP 0 4 8\r\n\
+              a=sendonly\r\n\
+              a=label:3\r\n\
+              m=audio 12244 RTP/AVP 0\r\n",
+        )
+        .map_err(|e| format!("the SIPREC offer must parse: {e:?}"))?;
+        let labels: Vec<Option<&str>> = sdp.media.iter().map(|m| m.label.as_deref()).collect();
+        assert_eq!(labels, [Some("1"), Some("3"), None]);
         Ok(())
     }
 

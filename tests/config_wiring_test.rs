@@ -2489,6 +2489,71 @@ fn probe_mcp_sweep_max_running() -> Result<(String, String), TestError> {
     Ok((String::new(), String::new()))
 }
 
+/// What polling a sweep job until it stops running produced.
+#[cfg(feature = "mcp")]
+enum Settled {
+    /// The poll was refused, with the server's message.
+    Refused(String),
+    /// The result was handed over, with the instant the poll that got it was
+    /// sent.
+    HandedOver(serde_json::Value, std::time::Instant),
+}
+
+/// Poll job `id` until the server either hands its result over or refuses
+/// the poll.
+///
+/// A poll that finds the job running hands nothing over and drops nothing
+/// (only finished results are reaped), so repeating it changes no state the
+/// probes observe. The 600 s ceiling is a liveness bound for a sweep that
+/// never ends, not a measurement.
+#[cfg(feature = "mcp")]
+fn poll_until_settled(
+    session: &mut McpSession,
+    id: &str,
+    wait_seconds: u64,
+) -> Result<Settled, TestError> {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(600);
+    loop {
+        let sent = std::time::Instant::now();
+        let response = session.call(
+            "find_in_captures_status",
+            serde_json::json!({"job_id":id,"wait_seconds":wait_seconds}),
+        )?;
+        if let Some(m) = response["error"]["message"].as_str() {
+            return Ok(Settled::Refused(m.to_string()));
+        }
+        let answer = tool_answer(&response);
+        if answer["status"] != "running" {
+            return Ok(Settled::HandedOver(answer, sent));
+        }
+        if std::time::Instant::now() > deadline {
+            return Err(format!("sweep {id} still ran after 600 s: {answer}").into());
+        }
+        if wait_seconds == 0 {
+            std::thread::sleep(std::time::Duration::from_millis(250));
+        }
+    }
+}
+
+/// The latest instant a handed-over result can have been ready at, given an
+/// instant no earlier than its sweep's start.
+///
+/// The server stamps a job's start before it replies to the call that
+/// started it, so `start_bound`, read when that reply arrives, is no earlier
+/// than the start. The result's `elapsed_ms` is truncated to the
+/// millisecond, hence the one added.
+#[cfg(feature = "mcp")]
+fn ready_no_later_than(
+    start_bound: std::time::Instant,
+    answer: &serde_json::Value,
+) -> Result<std::time::Instant, TestError> {
+    let ran = answer["progress"]["elapsed_ms"]
+        .as_u64()
+        .ok_or("the result's elapsed_ms")?
+        .saturating_add(1);
+    Ok(start_bound + std::time::Duration::from_millis(ran))
+}
+
 /// `mcp_sweep_max_held_results`: two finished results against a held bound
 /// of one.
 ///
@@ -2496,6 +2561,15 @@ fn probe_mcp_sweep_max_running() -> Result<(String, String), TestError> {
 /// waiting. A poll that waits for A then finds B finished too, so with a
 /// bound of one the reap drops A, the older result, and the poll is refused;
 /// without the key A's result is handed over.
+///
+/// Both halves of that assume something about timing, and both are checked. A
+/// single poll waiting 30 s for A found it still running on a host with a
+/// load average near 90, and both runs then reported `running`, which reads
+/// as a dead key; so A is polled until it stops. Each poll waits for nothing
+/// (`wait_seconds` 0), so the instant it is sent is within one poll of the
+/// reap it triggers. A's result handed over is evidence only when B had
+/// finished before that poll was sent, which B's own `elapsed_ms` shows; when
+/// it had not, the pair is run again.
 #[cfg(feature = "mcp")]
 fn probe_mcp_sweep_max_held_results() -> Result<(String, String), TestError> {
     let dir = tempfile::tempdir()?;
@@ -2504,26 +2578,40 @@ fn probe_mcp_sweep_max_held_results() -> Result<(String, String), TestError> {
     let cfg = write_config(&dir, "[limits]\nmcp_sweep_max_held_results = 1\n")?;
     let poll_a = |cfg: Option<&std::path::Path>| -> Result<String, TestError> {
         let mut session = McpSession::start(cfg, &pcap, &root)?;
-        let a = tool_answer(&session.call(
-            "find_in_captures",
-            serde_json::json!({"filter":"method == 'INVITE'","wait_seconds":0}),
-        )?);
-        assert_eq!(a["status"], "running", "premise: A is still reading: {a}");
-        let b = tool_answer(&session.call(
-            "find_in_captures",
-            serde_json::json!({"filter":"method == 'INVITE'","wait_seconds":0,"max_files":1}),
-        )?);
-        assert_eq!(b["status"], "running", "premise: B started as a job: {b}");
-        let id = a["job_id"].as_str().ok_or("A's job id")?;
-        let response = session.call(
-            "find_in_captures_status",
-            serde_json::json!({"job_id":id,"wait_seconds":30}),
-        )?;
-        Ok(match response["error"]["message"].as_str() {
-            Some(m) if m.contains("unknown sweep job") => "a=dropped".to_string(),
-            Some(m) => format!("a=error:{m}"),
-            None => format!("a={}", tool_answer(&response)["status"]),
-        })
+        for _ in 0..5 {
+            let a = tool_answer(&session.call(
+                "find_in_captures",
+                serde_json::json!({"filter":"method == 'INVITE'","wait_seconds":0}),
+            )?);
+            assert_eq!(a["status"], "running", "premise: A is still reading: {a}");
+            let b = tool_answer(&session.call(
+                "find_in_captures",
+                serde_json::json!({"filter":"method == 'INVITE'","wait_seconds":0,"max_files":1}),
+            )?);
+            let b_start_bound = std::time::Instant::now();
+            assert_eq!(b["status"], "running", "premise: B started as a job: {b}");
+            let a_id = a["job_id"].as_str().ok_or("A's job id")?;
+            let b_id = b["job_id"].as_str().ok_or("B's job id")?;
+            let (a_answer, a_sent) = match poll_until_settled(&mut session, a_id, 0)? {
+                Settled::Refused(m) if m.contains("unknown sweep job") => {
+                    return Ok("a=dropped".to_string());
+                }
+                Settled::Refused(m) => return Ok(format!("a=error:{m}")),
+                Settled::HandedOver(answer, sent) => (answer, sent),
+            };
+            let Settled::HandedOver(b_answer, _) = poll_until_settled(&mut session, b_id, 30)?
+            else {
+                return Err("B's result was refused after A's was handed over".into());
+            };
+            if ready_no_later_than(b_start_bound, &b_answer)? < a_sent {
+                return Ok(format!("a={}", a_answer["status"]));
+            }
+        }
+        Err(
+            "five times in a row sweep B had not finished when sweep A was \
+             polled, so the held bound was never reached"
+                .into(),
+        )
     };
     Ok((poll_a(None)?, poll_a(Some(&cfg))?))
 }
@@ -2535,40 +2623,68 @@ fn probe_mcp_sweep_max_held_results() -> Result<(String, String), TestError> {
     Ok((String::new(), String::new()))
 }
 
-/// `mcp_sweep_result_retention_secs`: a finished result polled three
-/// seconds after its sweep started, against a retention of one second.
+/// `mcp_sweep_result_retention_secs`: a finished result polled more than
+/// one second after it finished, against a retention of one second.
 ///
 /// The sweep reads one large file, so it is still running when the call
-/// that started it returns, and finishes well inside the three seconds.
-/// With the key the result has expired and the poll is refused; without it
-/// the result is handed over.
+/// that started it returns. With the key the result has expired and the poll
+/// is refused; without it the result is handed over.
+///
+/// The premise is that the result finished more than the retention before
+/// the poll, and it is checked rather than assumed. A fixed three-second
+/// sleep made it a guess about the machine: on a loaded host the sweep was
+/// still running at the poll, or had finished less than a second before it,
+/// and both runs then reported the same thing, which reads as a dead key. A
+/// poll that finds the sweep running hands nothing over, so it is repeated.
+/// A result that is handed over counts as evidence only when its own
+/// `elapsed_ms` shows it finished more than the retention before the poll
+/// was sent; one handed over sooner says nothing about the key, so the sweep
+/// is run again with the first poll moved past its measured duration.
 #[cfg(feature = "mcp")]
 fn probe_mcp_sweep_result_retention_secs() -> Result<(String, String), TestError> {
     let dir = tempfile::tempdir()?;
     let pcap = write_multi_call_pcap(&dir, 1)?;
     let root = slow_sweep_root(&dir, 1)?;
+    let retention = std::time::Duration::from_secs(1);
     let cfg = write_config(&dir, "[limits]\nmcp_sweep_result_retention_secs = 1\n")?;
     let poll_late = |cfg: Option<&std::path::Path>| -> Result<String, TestError> {
         let mut session = McpSession::start(cfg, &pcap, &root)?;
-        let started = tool_answer(&session.call(
-            "find_in_captures",
-            serde_json::json!({"filter":"method == 'INVITE'","wait_seconds":0}),
-        )?);
-        assert_eq!(
-            started["status"], "running",
-            "premise: the sweep is a job: {started}"
-        );
-        let id = started["job_id"].as_str().ok_or("a job id")?;
-        std::thread::sleep(std::time::Duration::from_secs(3));
-        let response = session.call(
-            "find_in_captures_status",
-            serde_json::json!({"job_id":id,"wait_seconds":0}),
-        )?;
-        Ok(match response["error"]["message"].as_str() {
-            Some(m) if m.contains("unknown sweep job") => "result=expired".to_string(),
-            Some(m) => format!("result=error:{m}"),
-            None => format!("result={}", tool_answer(&response)["status"]),
-        })
+        let mut first_poll = std::time::Duration::from_secs(3);
+        for _ in 0..5 {
+            let started = tool_answer(&session.call(
+                "find_in_captures",
+                serde_json::json!({"filter":"method == 'INVITE'","wait_seconds":0}),
+            )?);
+            let start_bound = std::time::Instant::now();
+            assert_eq!(
+                started["status"], "running",
+                "premise: the sweep is a job: {started}"
+            );
+            let id = started["job_id"].as_str().ok_or("a job id")?;
+            std::thread::sleep(first_poll);
+            let (answer, sent) = match poll_until_settled(&mut session, id, 0)? {
+                Settled::Refused(m) if m.contains("unknown sweep job") => {
+                    return Ok("result=expired".to_string());
+                }
+                Settled::Refused(m) => return Ok(format!("result=error:{m}")),
+                Settled::HandedOver(answer, sent) => (answer, sent),
+            };
+            // The server reads its clock after the poll is sent, which only
+            // adds age, so this is the least age the result had at the reap.
+            // The 50 ms keeps the comparison off the boundary.
+            let ready = ready_no_later_than(start_bound, &answer)?;
+            if sent.saturating_duration_since(ready)
+                > retention + std::time::Duration::from_millis(50)
+            {
+                return Ok(format!("result={}", answer["status"]));
+            }
+            first_poll = ready.saturating_duration_since(start_bound) + retention * 3;
+        }
+        Err(
+            "five sweeps in a row finished too close to their poll to say \
+             anything about the retention"
+                .into(),
+        )
     };
     Ok((poll_late(None)?, poll_late(Some(&cfg))?))
 }

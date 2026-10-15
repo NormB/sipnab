@@ -227,6 +227,10 @@ fn expand_definition(
 
 /// The byte spans of each `@name` outside a quoted string, `@` included.
 ///
+/// A reference begins an atom, so its `@` is the first character of the
+/// expression or follows whitespace or `(`. A `@` inside a word, as in the
+/// bare value `call_id == a1b2@example.com`, is part of that value.
+///
 /// Quotes follow the DSL's string literals: `'…'` or `"…"`, with a backslash
 /// escaping the next character. The one scanner both [`substitute_refs`] and
 /// [`first_reference`] use, so the two cannot disagree about what is quoted.
@@ -248,7 +252,9 @@ fn reference_spans(input: &str) -> Vec<(usize, usize)> {
                 }
             }
             None if b == b'\'' || b == b'"' => quote = Some(b),
-            None if b == b'@' => {
+            None if b == b'@'
+                && (i == 0 || bytes[i - 1].is_ascii_whitespace() || bytes[i - 1] == b'(') =>
+            {
                 let mut end = i + 1;
                 while end < bytes.len() && is_name_byte(bytes[end]) {
                     end += 1;

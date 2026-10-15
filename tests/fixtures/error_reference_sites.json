@@ -566,9 +566,9 @@
     {
       "file": "src/app/bootstrap.rs",
       "call": "warn!(\"{notice}\")",
-      "count": 1,
+      "count": 2,
       "carries": [],
-      "why": "src/capture/hep.rs::file_export_notice, out of scope."
+      "why": "One prints src/capture/hep.rs::file_export_notice, and one, in warn_live_rtp, prints src/output/live_rtp.rs::file_notice; both out of scope."
     },
     {
       "file": "src/app/journal_cli.rs",

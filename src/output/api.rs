@@ -335,6 +335,11 @@ pub struct ApiState {
     /// test here, and any run started without the flag) makes that route
     /// answer 503 naming the flag.
     pub vcon_spools: Vec<crate::app::vcon_spool::Spool>,
+    /// The operator's `[vcon_fetch]` store, which `GET /v1/vcon/fetch/{uuid}`
+    /// reads: off (every test here that does not set it, and any run started
+    /// without `--api-allow-vcon-fetch`) makes that route answer 503 naming
+    /// the flag. Nothing a client sends picks the store.
+    pub vcon_fetch: crate::app::vcon_fetch::Access,
     /// The filters of the `[[vcon.rule]]`s with `live_audio = true`: the
     /// calls the `/v1/calls` routes serve. Empty, those routes answer 404.
     pub live_audio: std::sync::Arc<Vec<crate::sip::dsl::FilterExpr>>,
@@ -1050,6 +1055,12 @@ pub fn build_router(state: ApiState) -> Router {
     // which is part of the vcon feature.
     #[cfg(feature = "vcon")]
     let router = router.route("/v1/vcon/spool", get(get_vcon_spool));
+    // Reads the operator's store with the fetcher, which is part of the vcon
+    // feature. Registered in every vcon build and refused with 503 without
+    // --api-allow-vcon-fetch, so "not permitted here" never reads as "no
+    // such route".
+    #[cfg(feature = "vcon")]
+    let router = router.route("/v1/vcon/fetch/{uuid}", get(get_vcon_fetch));
     // Only where a HEP listener can exist, for the reason the vCon routes
     // above are gated: "this sipnab cannot" must not read as "nobody sends".
     #[cfg(feature = "hep")]
@@ -1797,6 +1808,7 @@ async fn get_capabilities(
         can_plugins: cfg!(feature = "plugins"),
         runtime: schema::CapabilitiesRuntime {
             api_allow_relay_query: state.relay_query.permit.is_some(),
+            api_allow_vcon_fetch: state.vcon_fetch.is_ready(),
         },
         // The one report `--version`, the TUI help and MCP give, so no two
         // surfaces can describe different libraries.
@@ -3275,20 +3287,12 @@ fn live_audio_calls<'a>(
     ds: &'a DialogStore,
     ss: &'a crate::rtp::stream_store::StreamStore,
 ) -> Vec<&'a crate::sip::dialog::SipDialog> {
-    let mut out: Vec<&crate::sip::dialog::SipDialog> = Vec::new();
-    for filter in state.live_audio.iter() {
-        for (dialog, _) in crate::sip::dsl::select_dialogs(Some(filter), ds, ss).dialogs {
-            if !out.iter().any(|d| d.call_id == dialog.call_id)
-                && !crate::output::vcon::denied_by_header(
-                    dialog,
-                    state.content_deny_header.as_deref(),
-                )
-            {
-                out.push(dialog);
-            }
-        }
-    }
-    out
+    crate::output::vcon::live_calls(
+        state.live_audio.iter(),
+        ds,
+        ss,
+        state.content_deny_header.as_deref(),
+    )
 }
 
 /// One call in progress, as `GET /v1/calls/live` and its events give it.
@@ -3586,13 +3590,7 @@ fn audio_pass(
         Some(d) if d.state().is_final() => Some("the call ended"),
         Some(_) => None,
     };
-    let mut streams: Vec<&crate::rtp::stream::RtpStream> = ss.streams_for(call_id).collect();
-    streams.sort_by(|a, b| {
-        a.first_seen
-            .cmp(&b.first_seen)
-            .then(a.key.ssrc.cmp(&b.key.ssrc))
-    });
-    for stream in streams {
+    for stream in crate::rtp::live_audio::call_streams(&ss, call_id) {
         if !followed.iter().any(|(k, _)| *k == stream.key) {
             let index = u8::try_from(followed.len()).unwrap_or(u8::MAX);
             let entry = match crate::rtp::live_audio::LiveStream::new(stream) {
@@ -4081,6 +4079,78 @@ async fn get_vcon_spool(
         .map_err(|e| Problem::detailed(StatusCode::INTERNAL_SERVER_ERROR, e))?;
     status.rule = Some(spool.rule.clone());
     Ok(Json(status))
+}
+
+/// `GET /v1/vcon/fetch/{uuid}` — one container from the operator's
+/// `[vcon_fetch]` store, returned inline.
+///
+/// # Arguments
+///
+/// * `state` — Shared application state (carries the store access).
+/// * `uuid` — the vCon's uuid, from the path.
+/// * `addr` — Client socket address used for rate limiting.
+/// * `headers` — Request headers (auth).
+///
+/// # Returns
+///
+/// 200 with the container and what was checked; 400 for a uuid that is not
+/// one; 404 when the store holds no such vCon; 502 for anything else the
+/// fetcher refuses; 503 without `--api-allow-vcon-fetch` or a
+/// `[vcon_fetch] url`; 401/503 from the guard.
+///
+/// # Side effects
+///
+/// Connects to the store on a blocking task; mutates the rate limiter.
+/// Writes no file.
+#[cfg(feature = "vcon")]
+#[utoipa::path(
+    get,
+    path = "/v1/vcon/fetch/{uuid}",
+    tag = "operations",
+    summary = "One vCon from the operator's store",
+    description = "Reads one vCon container by uuid from the store `[vcon_fetch]` configures and returns it inline, with the checks `sipnab --vcon-fetch` makes: the size limit, the store kind's envelope, the uuid inside, and for an encrypted container with `[vcon_fetch] decrypt_key`, the decryption, the signature and the signer checks. This CONNECTS to the store, so it is off unless `--api-allow-vcon-fetch` is set, and answers 503 naming the flag otherwise. The store, its credential and the key come from the config file only; the answer holds no key and no credential, and no file is written. The same answer as the MCP `fetch_vcon` tool, from the same function.",
+    params(
+        ("uuid" = String, Path, description = "The vCon's uuid: 1 to 64 characters, each a letter, a digit or '-'."),
+    ),
+    security(("bearer" = [])),
+    responses(
+        (status = 200, description = "The container, `stored_form`, `decrypted`, `signature_verified`, `signer_sha256` and `schema_findings`.", body = crate::app::vcon_fetch::InlineVcon),
+        (status = 400, description = "The uuid is not one.", body = schema::ProblemJson, content_type = "application/problem+json"),
+        (status = 401, description = "No bearer credential, or one this server does not accept.", body = schema::ProblemJson, content_type = "application/problem+json"),
+        (status = 404, description = "The store holds no vCon with this uuid.", body = schema::ProblemJson, content_type = "application/problem+json"),
+        (status = 502, description = "The store refused, failed or answered something the fetcher refuses; the detail says which.", body = schema::ProblemJson, content_type = "application/problem+json"),
+        (status = 503, description = "Over the per-source-IP rate limit, or the server was started without `--api-allow-vcon-fetch` or a `[vcon_fetch] url`.", body = schema::ProblemJson, content_type = "application/problem+json"),
+    )
+)]
+async fn get_vcon_fetch(
+    State(state): State<ApiState>,
+    axum::extract::Path(uuid): axum::extract::Path<String>,
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+) -> Result<impl IntoResponse, Problem> {
+    use crate::app::vcon_fetch::{InlineRefusal, fetch_inline};
+    const FLAG: &str = "--api-allow-vcon-fetch";
+    guard(&state, &headers, addr.ip())?;
+    let access = state.vcon_fetch.clone();
+    // The fetcher's connection blocks, so it runs off the runtime threads.
+    let fetched = tokio::task::spawn_blocking(move || fetch_inline(&access, &uuid))
+        .await
+        .map_err(|e| {
+            Problem::detailed(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("the fetch stopped: {e}"),
+            )
+        })?;
+    let value = fetched.map_err(|refusal| {
+        let status = match refusal {
+            InlineRefusal::Off | InlineRefusal::NotConfigured => StatusCode::SERVICE_UNAVAILABLE,
+            InlineRefusal::NotAUuid => StatusCode::BAD_REQUEST,
+            InlineRefusal::NotFound => StatusCode::NOT_FOUND,
+            InlineRefusal::Store(_) => StatusCode::BAD_GATEWAY,
+        };
+        Problem::detailed(status, refusal.message(FLAG))
+    })?;
+    Ok(Json(value))
 }
 
 /// `GET /v1/dialogs` — list dialogs with optional filtering and pagination.
@@ -6526,6 +6596,10 @@ pub mod schema {
         /// on a live source. Off means the `/v1/relay/...` routes answer
         /// `not_configured` or `not_permitted` rather than reaching the relay.
         pub api_allow_relay_query: bool,
+        /// Whether `GET /v1/vcon/fetch/{uuid}` can read the operator's vCon
+        /// store: `--api-allow-vcon-fetch` with a `[vcon_fetch] url`. Off
+        /// means that route answers 503 naming what is missing.
+        pub api_allow_vcon_fetch: bool,
     }
 
     /// One other leg of a call, and the strategy that matched it. The fields
@@ -8062,6 +8136,7 @@ pub fn openapi_json() -> String {
         post_vcon_validate,
         post_vcon_analyze,
         get_vcon_spool,
+        get_vcon_fetch,
         get_live_calls,
         get_live_call_events,
         get_call_audio
@@ -8075,6 +8150,7 @@ pub fn openapi_json() -> String {
         schema::VconFinding,
         crate::output::vcon_analysis::VconAnalysis,
         crate::output::vcon_analysis::AnalyzedDialog,
+        crate::app::vcon_fetch::InlineVcon,
         crate::output::vcon_analysis::LadderRow,
         crate::output::vcon_analysis::ContainerFinding,
         crate::app::vcon_spool::SpoolStatus,
@@ -9390,6 +9466,7 @@ mod tests {
         ApiState {
             file_root: Some(pcap_samples_root()),
             vcon_spools: Vec::new(),
+            vcon_fetch: Default::default(),
             live_audio: std::sync::Arc::default(),
             ..make_state()
         }
@@ -9462,6 +9539,7 @@ mod tests {
         let state = ApiState {
             file_root: Some(root.path().to_path_buf()),
             vcon_spools: Vec::new(),
+            vcon_fetch: Default::default(),
             live_audio: std::sync::Arc::default(),
             ..make_state()
         };
@@ -9532,6 +9610,7 @@ mod tests {
             let state = ApiState {
                 file_root: Some(root.path().to_path_buf()),
                 vcon_spools: Vec::new(),
+                vcon_fetch: Default::default(),
                 live_audio: std::sync::Arc::default(),
                 pipeline_options: crate::pipeline::PipelineOptions {
                     hep_parse,
@@ -9697,6 +9776,90 @@ mod tests {
         assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
         let body = body_to_string(resp.into_body()).await?;
         assert!(body.contains("--export-vcon-dir"), "{body}");
+        Ok(())
+    }
+
+    /// `GET /v1/vcon/fetch/{uuid}` on `state`: the status and the body.
+    #[cfg(feature = "vcon")]
+    async fn fetch_route(state: ApiState, uuid: &str) -> Result<(StatusCode, String), TestError> {
+        let resp = build_router(state)
+            .oneshot(test_request(&format!("/v1/vcon/fetch/{uuid}"))?)
+            .await
+            .map_err(|e| format!("oneshot: {e:?}"))?;
+        let status = resp.status();
+        Ok((status, body_to_string(resp.into_body()).await?))
+    }
+
+    /// Without `--api-allow-vcon-fetch` the route answers 503 naming the
+    /// flag, and nothing reaches the store.
+    #[cfg(feature = "vcon")]
+    #[tokio::test]
+    async fn vcon_fetch_without_the_opt_in_is_503() -> Result<(), TestError> {
+        use crate::app::vcon_fetch::stub_store;
+        let stub = stub_store::start(200, stub_store::container(stub_store::UUID))?;
+        let (status, body) = fetch_route(make_state(), stub_store::UUID).await?;
+        assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "{body}");
+        assert!(body.contains("--api-allow-vcon-fetch"), "{body}");
+        assert_eq!(stub.hits(), 0);
+        Ok(())
+    }
+
+    /// `GET /v1/capabilities` reports the vCon fetch opt-in as on exactly when
+    /// the fetch route can reach a store: off without the flag, off with the
+    /// flag and no `[vcon_fetch] url`, on with both.
+    #[cfg(feature = "vcon")]
+    #[tokio::test]
+    async fn capabilities_reports_the_vcon_fetch_opt_in() -> Result<(), TestError> {
+        use crate::app::vcon_fetch::{Access, stub_store};
+        let stub = stub_store::start(200, stub_store::container(stub_store::UUID))?;
+        let (_dir, ready) = stub_store::ready(&stub, false)?;
+        for (access, want) in [
+            (Access::Off, false),
+            (Access::NotConfigured, false),
+            (ready, true),
+        ] {
+            let mut state = make_state();
+            state.vcon_fetch = access;
+            let resp = build_router(state)
+                .oneshot(test_request("/v1/capabilities")?)
+                .await
+                .map_err(|e| format!("oneshot: {e:?}"))?;
+            let body = body_to_string(resp.into_body()).await?;
+            let v: Value = serde_json::from_str(&body).map_err(|e| format!("JSON: {e:?}"))?;
+            assert_eq!(v["runtime"]["api_allow_vcon_fetch"], want, "{v}");
+        }
+        assert_eq!(stub.hits(), 0, "reporting the opt-in contacts no store");
+        Ok(())
+    }
+
+    /// With the opt-in, the route returns the container inline; a `404`
+    /// from the store is a 404, and a uuid that is not one is a 400 sent
+    /// nowhere.
+    #[cfg(feature = "vcon")]
+    #[tokio::test]
+    async fn vcon_fetch_returns_the_container_or_says_why_not() -> Result<(), TestError> {
+        use crate::app::vcon_fetch::stub_store;
+        let stored = stub_store::container(stub_store::UUID);
+        let stub = stub_store::start(200, stored.clone())?;
+        let (_dir, access) = stub_store::ready(&stub, false)?;
+        let mut state = make_state();
+        state.vcon_fetch = access;
+        let (status, body) = fetch_route(state.clone(), stub_store::UUID).await?;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        let v: Value = serde_json::from_str(&body).map_err(|e| format!("JSON: {e:?}"))?;
+        assert_eq!(v["stored_form"], "unsigned", "{v}");
+        let want: Value = serde_json::from_str(&stored).map_err(|e| format!("JSON: {e:?}"))?;
+        assert_eq!(v["container"], want, "{v}");
+
+        let (status, body) = fetch_route(state.clone(), "not%20a%20uuid").await?;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+        assert_eq!(stub.hits(), 1, "the bad uuid was sent nowhere");
+
+        let missing = stub_store::start(404, "{}".to_string())?;
+        let (_dir2, access) = stub_store::ready(&missing, false)?;
+        state.vcon_fetch = access;
+        let (status, body) = fetch_route(state, stub_store::UUID).await?;
+        assert_eq!(status, StatusCode::NOT_FOUND, "{body}");
         Ok(())
     }
 
@@ -9928,6 +10091,7 @@ mod tests {
             armed_detections: Vec::new(),
             file_root: None,
             vcon_spools: Vec::new(),
+            vcon_fetch: Default::default(),
             live_audio: std::sync::Arc::default(),
             pipeline_options: Default::default(),
             archive: ArchivePasswordPolicy::default(),
@@ -10807,6 +10971,7 @@ mod tests {
             armed_detections: Vec::new(),
             file_root: None,
             vcon_spools: Vec::new(),
+            vcon_fetch: Default::default(),
             live_audio: std::sync::Arc::default(),
             pipeline_options: Default::default(),
             archive: ArchivePasswordPolicy::default(),
@@ -12210,6 +12375,7 @@ mod tests {
             armed_detections: Vec::new(),
             file_root: None,
             vcon_spools: Vec::new(),
+            vcon_fetch: Default::default(),
             live_audio: std::sync::Arc::default(),
             pipeline_options: Default::default(),
             archive: ArchivePasswordPolicy::default(),
@@ -13174,6 +13340,7 @@ mod tests {
             armed_detections: Vec::new(),
             file_root: None,
             vcon_spools: Vec::new(),
+            vcon_fetch: Default::default(),
             live_audio: std::sync::Arc::default(),
             pipeline_options: Default::default(),
             archive: ArchivePasswordPolicy::default(),
@@ -15543,6 +15710,7 @@ mod archive_password_tests {
         ApiState {
             file_root: Some(root.to_path_buf()),
             vcon_spools: Vec::new(),
+            vcon_fetch: Default::default(),
             live_audio: std::sync::Arc::default(),
             verifier: Arc::new(crate::auth::TokenVerifier::new(
                 crate::auth::VerifierConfig {
@@ -15579,6 +15747,7 @@ mod archive_password_tests {
             armed_detections: Vec::new(),
             file_root: None,
             vcon_spools: Vec::new(),
+            vcon_fetch: Default::default(),
             live_audio: std::sync::Arc::default(),
             pipeline_options: Default::default(),
             archive: ArchivePasswordPolicy::default(),

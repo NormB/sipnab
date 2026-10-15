@@ -1197,9 +1197,14 @@ impl StreamStore {
             }
             let keep = note_protection(stream, decrypted);
             // Capture G.711 payload for audio export, inside the per-stream
-            // cap and the budget (see `retain_payload`).
-            let capturable =
-                keep && self.audio_capture && is_audio_capturable(stream.codec.as_deref());
+            // cap and the budget (see `retain_payload`). Only packets of the
+            // stream's own payload type: Comfort Noise (RFC 3389) and DTMF
+            // events (RFC 4733) share the SSRC, and decoded as speech they put
+            // noise in the file and repeated timestamps on its timeline.
+            let capturable = keep
+                && self.audio_capture
+                && rtp.payload_type == stream.payload_type
+                && is_audio_capturable(stream.codec.as_deref());
             let audio_slice = rtp.payload(&parsed.payload);
             if capturable
                 && !audio_slice.is_empty()
@@ -4976,6 +4981,39 @@ a=rtpmap:96 H264/90000\r\n";
         let stream = srtp_fixture_stream(&store, 0x5D)?;
         assert_eq!(stream.payload_buffer.len(), 1);
         assert_eq!(stream.srtp_undecrypted_packets, 0);
+        Ok(())
+    }
+
+    /// Comfort Noise (RFC 3389, PT 13) and DTMF events (RFC 4733) ride the
+    /// call's SSRC but are not its audio. Kept, they decoded as speech
+    /// samples: a 4-octet event became 4 samples of noise, and its repeated
+    /// timestamp put the audio out of step with the RTP clock.
+    #[test]
+    fn only_the_streams_own_payload_type_is_kept_as_audio() -> Result<(), TestError> {
+        let mut store = StreamStore::new(16);
+        store.link_to_dialog_with_sdp_from(
+            IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2)),
+            30000,
+            "cn-dtmf@test",
+            &pcmu_media("RTP/AVP")?,
+            SdpProvenance::unknown(),
+        );
+        let audio = make_parsed(20000, 30000, 160);
+        store.process_rtp(&audio, &make_rtp_header(0x61, 1), ts(0));
+        let mut cn = make_rtp_header(0x61, 2);
+        cn.payload_type = 13;
+        store.process_rtp(&make_parsed(20000, 30000, 1), &cn, ts(0));
+        let mut event = make_rtp_header(0x61, 3);
+        event.payload_type = 101;
+        store.process_rtp(&make_parsed(20000, 30000, 4), &event, ts(0));
+        store.process_rtp(&audio, &make_rtp_header(0x61, 4), ts(0));
+        let stream = srtp_fixture_stream(&store, 0x61)?;
+        let kept: Vec<u32> = stream.payload_buffer.iter().map(|(t, _)| *t).collect();
+        assert_eq!(
+            kept,
+            vec![160, 640],
+            "the two PCMU frames, and nothing else"
+        );
         Ok(())
     }
 

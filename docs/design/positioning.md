@@ -50,7 +50,7 @@ to leave the box and Homer never tried to avoid the database.
 | Single binary, no database | — | ships |
 | Receives HEP from Kamailio/OpenSIPS/Asterisk | `-L`/`--hep-listen`, [`hep.rs`](../../src/capture/hep.rs) | ships — **nothing need be installed on production** |
 | Sender-side HEP | `--hep-send`, [`batch.rs:3281`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs#L3281) (SIP) and [`batch.rs:3297`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs#L3297) (RTCP) | ships — SIP as protocol type 1 and RTCP as type 5 since 0.5.92; RTP is never forwarded |
-| RTCP understood on the wire | `CHUNK_PROTO_TYPE` ([`hep.rs:61`](https://github.com/NormB/sipnab/blob/main/src/capture/hep.rs#L61)) — `1=SIP, 5=RTCP, 32=RTP` | ships — the receiver decodes type 5 and `HepSender::send_rtcp` ([`hep.rs:4289`](https://github.com/NormB/sipnab/blob/main/src/capture/hep.rs#L4289)) emits it, pinned by `send_rtcp_puts_protocol_type_5_on_the_wire` ([`hep.rs:6658`](https://github.com/NormB/sipnab/blob/main/src/capture/hep.rs#L6658)) |
+| RTCP understood on the wire | `CHUNK_PROTO_TYPE` ([`hep.rs:61`](https://github.com/NormB/sipnab/blob/main/src/capture/hep.rs#L61)) — `1=SIP, 5=RTCP, 32=RTP` | ships — the receiver decodes type 5 and `HepSender::send_rtcp` ([`hep.rs:4201`](https://github.com/NormB/sipnab/blob/main/src/capture/hep.rs#L4201)) emits it, pinned by `send_rtcp_puts_protocol_type_5_on_the_wire` ([`hep.rs:6606`](https://github.com/NormB/sipnab/blob/main/src/capture/hep.rs#L6606)) |
 | Bounded memory | `--limit` (100k dialogs, oldest-first), `--max-streams` (50k) | ships |
 | Conformance lint with RFC citations, triage, MOS diagnosis | — | ships |
 | Frame pointers with verifiable digests | `--show-frame` | ships |
@@ -74,7 +74,7 @@ open, and it is what decides whether the remote viewer shows a MOS at all.
 ([`stream_store.rs:1331`](https://github.com/NormB/sipnab/blob/main/src/rtp/stream_store.rs#L1331)) files a report only
 against a stream whose SSRC it has already seen from the media itself — a
 report for an unknown SSRC records nothing, which `rtcp_unknown_ssrc_is_noop`
-([`stream_store.rs:5337`](https://github.com/NormB/sipnab/blob/main/src/rtp/stream_store.rs#L5337)) pins. So a
+([`stream_store.rs:5375`](https://github.com/NormB/sipnab/blob/main/src/rtp/stream_store.rs#L5375)) pins. So a
 viewer fed by HEP alone decodes every RTCP report and can show no quality figure
 for any of them. Received RTCP reaches the MOS delay term (`MosDelay::resolve`,
 [`quality.rs:605`](https://github.com/NormB/sipnab/blob/main/src/rtp/quality.rs#L605)) only when the same

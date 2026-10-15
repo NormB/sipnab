@@ -169,6 +169,7 @@ fn make_sdp(addr: &str, port: u16) -> SdpSession {
             ice_candidates: Vec::new(),
             rtcp_mux: false,
             rtcp_port: None,
+            label: None,
         }],
     }
 }

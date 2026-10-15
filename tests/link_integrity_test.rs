@@ -1429,7 +1429,42 @@ fn wiki_intra_docs_links_resolve() -> Result<(), TestError> {
     // links "Name the chain by URL".
     // 1762 -> 1763: docs/keybindings.md +1, the F6 / Ctrl+R row links
     // "Follow each RTP stream in the call flow" in docs/tui-walkthrough.md.
-    const EXPECTED_WIKI_LINKS: usize = 1763;
+    // 1763 -> 1766: docs/mcp-tools-captures.md +3, `list_captures` links
+    // `open_capture` and the vCon reader's forms in docs/vcon.md, and
+    // `find_in_captures` links `list_captures`.
+    // 1766 -> 1779: `fetch_vcon` and `GET /v1/vcon/fetch/:uuid`, +13 links
+    // across docs/cli-reference.md, docs/config-reference.md, docs/vcon.md,
+    // docs/mcp-tools.md, docs/mcp-tools-vcon.md and docs/rest-api.md, which
+    // link the tool, the route and "Fetch a stored vCon" to each other.
+    // 1779 -> 1781: the capabilities sections of docs/mcp-tools-server.md
+    // and docs/rest-api.md link the fetch tool and route they report on.
+    // 1781 -> 1783: docs/vcon.md links "A signed container" from the
+    // fetcher's answer table and from the inline-fetch section.
+    // 1783 -> 1786: docs/vcon.md +2, the SIPREC section links the `tel`
+    // rule and "The message trace"; docs/examples.md +1, the SIPREC recipe
+    // links "A SIPREC recording session".
+    // 1786 -> 1788: docs/cli-reference.md +1, the "vCon audio fetch"
+    // section links "Fetch the audio a vCon names"; docs/vcon.md +1,
+    // the "Audio by URL" list links the same section.
+    // 1788 -> 1793: docs/vcon.md +2, the `live_rtp` and
+    // `live_rtp_allow_remote` rows link "Send a call's audio as RTP";
+    // docs/config-reference.md +1, the `live_rtp` row links it; docs/errors.md
+    // +2, the two `live_rtp` entries link it.
+    // 1793 -> 1800: `[vcon] uuid_domain`. docs/vcon.md +4 (two links to "The
+    // uuid under a domain", one to "What this does not do", one to
+    // errors.md), and docs/config-reference.md, docs/errors.md and
+    // docs/internals/vcon.md +1 each, linking "The uuid under a domain".
+    // 1800 -> 1807 for `vcon_directory_report` and the `--report` vCon
+    // section: docs/mcp-tools-vcon.md +2 (its table row links the section,
+    // and the section links "Read many containers at once"),
+    // docs/mcp-tools.md +2 (the tool's index row links the section and the
+    // bundle page), docs/vcon.md +1 (the section links the tool),
+    // docs/output-formats.md +1 and docs/cli-reference.md +1 (each links
+    // "Read many containers at once").
+    // 1807 -> 1809: docs/filter-dsl.md +2, bare filter values. "Basic field
+    // matching" links "Values", and the "When a value needs quotes" table
+    // links "Named filters".
+    const EXPECTED_WIKI_LINKS: usize = 1809;
     // Raised 459 -> 460 when SRC1 stage 1 shipped: docs/cli-reference.md's
     // `--hep-listen` row now points at cookbook recipe "Take signaling from HEP and media off the wire, in one process" in docs/examples.md
     // rather than restating how to pair `-L` with `-d`. Attributed per file

@@ -241,6 +241,13 @@ fn run_validation_steps(cli: &Cli) -> Result<sipnab::config::LoadedConfig, boots
     if let Some(code) = bootstrap::run_vcon_resign(cli, &read) {
         sipnab::capture::archive::release_run_and_exit(code);
     }
+
+    // 4f. --vcon-audio-fetch: fetch, check and decrypt the audio a vCon
+    //     names by url and exit. It applies the config read in step 3a, for
+    //     [vcon_input], and opens no capture.
+    if let Some(code) = bootstrap::run_vcon_audio_fetch(cli, &read) {
+        sipnab::capture::archive::release_run_and_exit(code);
+    }
     read
 }
 
