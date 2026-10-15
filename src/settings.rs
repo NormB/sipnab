@@ -716,6 +716,15 @@ pub const FLAGS: &[(&str, Link)] = &[
     ("uprobe-symbol", Link::Pending),
     ("uprobe-tls", Link::Pending),
     ("user", Link::Key("privilege", "user", Merge::Override)),
+    // Fetching a vCon's audio by url is a command of its own: it names one
+    // container, the output directory and the trust for this run's fetch,
+    // and its key is the readers' `--vcon-key`.
+    ("vcon-audio-fetch", Link::Action),
+    ("vcon-audio-fetch-ca", Link::Input),
+    ("vcon-audio-fetch-extra-ca", Link::Input),
+    ("vcon-audio-fetch-local", Link::PerRun),
+    ("vcon-audio-fetch-max-size", Link::PerRun),
+    ("vcon-audio-fetch-out", Link::Input),
     ("vcon-digest", Link::Pending),
     // The fetcher is a mode of its own, like the forwarder: it captures
     // nothing. Its standing settings are `[vcon_fetch]` keys; the uuids, the

@@ -763,7 +763,15 @@ const EXPECTED_UNRESOLVED: usize = 82;
 // `--vcon-resign requires the 'vcon' feature (not compiled in)`, and
 // src/app/vcon_resign.rs `'{}' is {len} bytes, over the {cap}-byte limit
 // for one container`. Nothing removed.
-const EXPECTED_TEMPLATES: usize = 473;
+// 473 -> 484: --vcon-audio-fetch. src/app/bootstrap.rs `--vcon-audio-fetch:
+// {reason}` and `--vcon-audio-fetch requires the 'vcon' feature (not
+// compiled in)`; src/app/vcon_audio_fetch.rs 6 (an output that exists, a
+// non-sha512 content_hash, audio that is not WAV or Ogg, a JWE cty that is
+// not the mediatype, a url with no local file name, a url that is not
+// https); src/app/vcon_fetch.rs get_body 3 (`{url} answered {}`, the size
+// limit, the short body). `--vcon-fetch-out '{}': not a directory` became
+// `{flag} '{}': not a directory`, shared with --vcon-audio-fetch-out.
+const EXPECTED_TEMPLATES: usize = 484;
 
 // ---------------------------------------------------------------------------
 // The page gates

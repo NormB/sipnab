@@ -557,6 +557,10 @@ pub struct Cli {
     #[command(flatten)]
     pub vcon_resign_args: VconResignArgs,
 
+    // ── vCon audio by url ──
+    #[command(flatten)]
+    pub vcon_audio_fetch_args: VconAudioFetchArgs,
+
     // ── Config ──
     #[command(flatten)]
     pub config_args: ConfigArgs,
@@ -5155,6 +5159,89 @@ pub struct VconResignArgs {
         requires = "vcon_resign"
     )]
     pub vcon_resign_out: Option<std::path::PathBuf>,
+}
+
+/// `--vcon-audio-fetch`: read back the audio a vCon names by `url`, as a
+/// `[[vcon.rule]]` with `audio = "url"` writes it. A command of its own: it
+/// reads one container, fetches its recordings, and captures nothing.
+#[derive(clap::Args, Debug, Clone)]
+pub struct VconAudioFetchArgs {
+    /// Read the vCon in this file, in any form `-I` reads, and for each
+    /// recording Dialog Object with a `url`: fetch the file over `https://`,
+    /// check its `content_hash` (draft-ietf-vcon-vcon-core-04 section 2.2),
+    /// decrypt it with --vcon-key when it is a JWE, and write the audio to
+    /// `<uuid>-dialog<N>.wav` or `.ogg` in --vcon-audio-fetch-out. Exit 0
+    /// every recording written, 1 any refused, 2 bad settings. Needs the
+    /// `vcon` feature.
+    #[arg(
+        help_heading = "vCon fetcher",
+        long = "vcon-audio-fetch",
+        value_name = "FILE",
+        requires = "vcon_audio_fetch_out",
+        conflicts_with_all = [
+            "device", "input", "hep_listen", "hep_send", "bpf_filter",
+            "bpf_file", "api", "mcp", "metrics", "export_vcon",
+            "export_vcon_when", "export_vcon_dir", "mint_token", "replay",
+            "vcon_forward", "vcon_fetch", "vcon_spool_status", "vcon_resign",
+        ]
+    )]
+    pub vcon_audio_fetch: Option<std::path::PathBuf>,
+
+    /// The directory each recording's audio is written to, mode 0600.
+    /// Created, mode 0700, when it does not exist. sipnab never replaces a
+    /// file that exists.
+    #[arg(
+        help_heading = "vCon fetcher",
+        long = "vcon-audio-fetch-out",
+        value_name = "DIR",
+        requires = "vcon_audio_fetch"
+    )]
+    pub vcon_audio_fetch_out: Option<std::path::PathBuf>,
+
+    /// Read each recording from the directory that holds the vCon, by the
+    /// last segment of its `url`, instead of fetching it: for an
+    /// `--export-vcon-dir` spool whose files your storage has not served yet.
+    #[arg(
+        help_heading = "vCon fetcher",
+        long = "vcon-audio-fetch-local",
+        requires = "vcon_audio_fetch",
+        conflicts_with_all = ["vcon_audio_fetch_ca", "vcon_audio_fetch_extra_ca"]
+    )]
+    pub vcon_audio_fetch_local: bool,
+
+    /// Trust only the CA certificates in this PEM file for the `https://`
+    /// server that holds the audio. Without it sipnab trusts the host's CA
+    /// bundle.
+    #[arg(
+        help_heading = "vCon fetcher",
+        long = "vcon-audio-fetch-ca",
+        value_name = "FILE",
+        requires = "vcon_audio_fetch"
+    )]
+    pub vcon_audio_fetch_ca: Option<std::path::PathBuf>,
+
+    /// Trust the CA certificates in this PEM file for the `https://` server
+    /// that holds the audio, in addition to the host's CA bundle.
+    #[arg(
+        help_heading = "vCon fetcher",
+        long = "vcon-audio-fetch-extra-ca",
+        value_name = "FILE",
+        requires = "vcon_audio_fetch",
+        conflicts_with = "vcon_audio_fetch_ca"
+    )]
+    pub vcon_audio_fetch_extra_ca: Option<std::path::PathBuf>,
+
+    /// The largest audio file read for one recording, in bytes, 1 to
+    /// 4294967295. A larger one is refused and nothing is written for it.
+    /// Default: 67108864 (64 MiB).
+    #[arg(
+        help_heading = "vCon fetcher",
+        long = "vcon-audio-fetch-max-size",
+        value_name = "BYTES",
+        value_parser = parse_fetch_max_size,
+        requires = "vcon_audio_fetch"
+    )]
+    pub vcon_audio_fetch_max_size: Option<u64>,
 }
 
 /// `vCon fetcher` flags: the mode that reads stored vCons from a store by

@@ -107,6 +107,17 @@ entry that carries them.
   - Metadata that is missing or names no participant leaves the parties as before, and the completeness note says why.
   - `--redact` rewrites the participants' `sip`, `tel` and `name`.
 - **The SDP parser reads `a=label`** ([RFC 4574 section 4](https://www.rfc-editor.org/rfc/rfc4574.html#section-4)) on each media description.
+- **`--vcon-audio-fetch` gets back the audio a vCon names by `url`.**
+  - Since 0.5.219 a `[[vcon.rule]]` with `audio = "url"` writes each recording beside its container, as its own JWE when the rule encrypts, and no sipnab command read it back.
+  - `--vcon-audio-fetch <FILE>` reads the container in any form `-I` reads: unsigned, signed, encrypted or gzip, opened with `--vcon-key` and the `[vcon_input]` keys.
+  - For each recording Dialog Object with a `url`, sipnab:
+    - fetches the file over `https://`, with the fetcher's TLS client, or, with `--vcon-audio-fetch-local`, reads it from the directory that holds the container;
+    - checks it against the recording's `content_hash` ([section 2.2 of draft-ietf-vcon-vcon-core-04](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-04#section-2.2)) before anything else reads it, and refuses a mismatch, naming the dialog;
+    - decrypts a JWE with the key that opens the container, through the same JOSE code;
+    - writes the audio to `<uuid>-dialog<N>.wav` or `.ogg` in `--vcon-audio-fetch-out`, mode 0600, and never replaces a file that exists.
+  - sipnab refuses a `url` that is not `https://` without connecting: section 2.4.1 says "HTTPS MUST be used for retrieval".
+  - `--vcon-audio-fetch-ca`, `--vcon-audio-fetch-extra-ca` and `--vcon-audio-fetch-max-size` (default 64 MiB) set the trust and the size limit.
+  - Exit 0 when sipnab wrote every recording, 1 when the container does not open, names no recording by `url`, or sipnab refused any recording, and 2 when sipnab cannot use a key, CA or output directory.
 
 ## [0.5.220] - 2026-10-14
 

@@ -1178,6 +1178,24 @@ Write a signed or decrypted container only when its signing certificate chains, 
 .TP
 \fB\-\-vcon\-fetch\-signer\-sha256\fR \fIHEX\fR
 Write a signed or decrypted container only when its signing certificate has this SHA\-256 fingerprint: 64 hex digits, plain or colon\-separated, either case, as \fBopenssl x509 \-noout \-fingerprint \-sha256\fR prints it. An encrypted container also needs \-\-vcon\-fetch\-decrypt\-key. Overrides \fB[vcon_fetch] signer_sha256\fR.
+.TP
+\fB\-\-vcon\-audio\-fetch\fR \fIFILE\fR
+Read the vCon in this file, in any form \fB\-I\fR reads, and for each recording Dialog Object with a \fBurl\fR: fetch the file over \fBhttps://\fR, check its \fBcontent_hash\fR (draft\-ietf\-vcon\-vcon\-core\-04 section 2.2), decrypt it with \-\-vcon\-key when it is a JWE, and write the audio to \fB<uuid>\-dialog<N>.wav\fR or \fB.ogg\fR in \-\-vcon\-audio\-fetch\-out. Exit 0 every recording written, 1 any refused, 2 bad settings. Needs the \fBvcon\fR feature.
+.TP
+\fB\-\-vcon\-audio\-fetch\-out\fR \fIDIR\fR
+The directory each recording's audio is written to, mode 0600. Created, mode 0700, when it does not exist. sipnab never replaces a file that exists.
+.TP
+\fB\-\-vcon\-audio\-fetch\-local\fR
+Read each recording from the directory that holds the vCon, by the last segment of its \fBurl\fR, instead of fetching it: for an \fB\-\-export\-vcon\-dir\fR spool whose files your storage has not served yet.
+.TP
+\fB\-\-vcon\-audio\-fetch\-ca\fR \fIFILE\fR
+Trust only the CA certificates in this PEM file for the \fBhttps://\fR server that holds the audio. Without it sipnab trusts the host's CA bundle.
+.TP
+\fB\-\-vcon\-audio\-fetch\-extra\-ca\fR \fIFILE\fR
+Trust the CA certificates in this PEM file for the \fBhttps://\fR server that holds the audio, in addition to the host's CA bundle.
+.TP
+\fB\-\-vcon\-audio\-fetch\-max\-size\fR \fIBYTES\fR
+The largest audio file read for one recording, in bytes, 1 to 4294967295. A larger one is refused and nothing is written for it. Default: 67108864 (64 MiB).
 .SS vCon archive
 .TP
 \fB\-\-vcon\-resign\fR \fIFILE\fR

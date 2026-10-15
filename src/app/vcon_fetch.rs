@@ -674,7 +674,7 @@ impl Fetcher {
     /// output directory is not one or cannot be created.
     pub fn new(settings: FetchSettings) -> Result<Self, String> {
         let fetcher = Self::reader(settings)?;
-        prepare_out_dir(&fetcher.settings.out_dir)?;
+        prepare_out_dir(&fetcher.settings.out_dir, "--vcon-fetch-out")?;
         Ok(fetcher)
     }
 
@@ -777,7 +777,7 @@ impl Fetcher {
             self.settings.timeout,
             self.tls.as_ref(),
             &request,
-            |r| read_answer(r, limits),
+            |r| read_answer(r, limits, "--vcon-fetch-max-response-head"),
         ) {
             Ok(answer) => answer,
             Err(e) => return Retrieved::Failed(format!("{url}: {e}")),
@@ -1191,14 +1191,15 @@ struct Answer {
 
 /// Read the answer: the head, at most `limits.response_head` bytes; for a
 /// `2xx`, the body, at most `limits.max_size` bytes; for any other, the start
-/// of the body, for the message.
-fn read_answer(reader: &mut dyn BufRead, limits: FetchLimits) -> Result<Answer, String> {
+/// of the body, for the message. `head_setting` names the setting a head
+/// over its limit is refused by.
+fn read_answer(
+    reader: &mut dyn BufRead,
+    limits: FetchLimits,
+    head_setting: &str,
+) -> Result<Answer, String> {
     loop {
-        let head = read_head(
-            reader,
-            limits.response_head,
-            "--vcon-fetch-max-response-head",
-        )?;
+        let head = read_head(reader, limits.response_head, head_setting)?;
         let status = status_of(&head)?;
         if (100..200).contains(&status) {
             continue;
@@ -1246,7 +1247,7 @@ fn read_answer(reader: &mut dyn BufRead, limits: FetchLimits) -> Result<Answer, 
 /// Without `overwrite` the move is a hard link, which fails when `path`
 /// exists, whatever is there; with it, a rename, which replaces a symbolic
 /// link rather than following it. Neither writes through a link.
-fn write_private(path: &Path, bytes: &[u8], overwrite: bool) -> std::io::Result<()> {
+pub(crate) fn write_private(path: &Path, bytes: &[u8], overwrite: bool) -> std::io::Result<()> {
     use std::os::unix::fs::OpenOptionsExt;
     let name = path
         .file_name()
@@ -1271,21 +1272,60 @@ fn write_private(path: &Path, bytes: &[u8], overwrite: bool) -> std::io::Result<
     result
 }
 
-/// Create `dir`, mode 0700, when it does not exist.
-fn prepare_out_dir(dir: &Path) -> Result<(), String> {
+/// Create `dir`, mode 0700, when it does not exist. `flag` names the
+/// setting that named it, for the refusal.
+pub(crate) fn prepare_out_dir(dir: &Path, flag: &str) -> Result<(), String> {
     use std::os::unix::fs::DirBuilderExt;
     match std::fs::metadata(dir) {
         Ok(meta) if meta.is_dir() => Ok(()),
-        Ok(_) => Err(format!(
-            "--vcon-fetch-out '{}': not a directory",
-            dir.display()
-        )),
+        Ok(_) => Err(format!("{flag} '{}': not a directory", dir.display())),
         Err(_) => std::fs::DirBuilder::new()
             .recursive(true)
             .mode(0o700)
             .create(dir)
-            .map_err(|e| format!("--vcon-fetch-out '{}': {e}", dir.display())),
+            .map_err(|e| format!("{flag} '{}': {e}", dir.display())),
     }
+}
+
+/// One `GET` of `url` with no credential, read within `limits` by the
+/// fetcher's own answer reader: the body of a `2xx` answer. What
+/// `--vcon-audio-fetch` reads a recording's `url` with. `max_size_setting`
+/// names the setting an answer over `limits.max_size` is refused by.
+///
+/// # Errors
+///
+/// No connection, a TLS refusal, a status other than `2xx`, an answer over
+/// the size limit, or one that ended before its declared length.
+pub(crate) fn get_body(
+    url: &Endpoint,
+    timeout: Duration,
+    tls: &Arc<rustls::ClientConfig>,
+    limits: FetchLimits,
+    max_size_setting: &str,
+) -> Result<Vec<u8>, String> {
+    let request = format!(
+        "GET {} HTTP/1.1\r\nHost: {}\r\nUser-Agent: {}\r\nAccept: */*\r\nConnection: close\r\n\r\n",
+        url.target,
+        url.host_header(),
+        crate::app::vcon_forward::USER_AGENT
+    );
+    let answer = exchange(url, timeout, Some(tls), request.as_bytes(), |r| {
+        read_answer(r, limits, "the response head limit")
+    })
+    .map_err(|e| format!("{url}: {e}"))?;
+    if !(200..300).contains(&answer.status) {
+        return Err(format!("{url} answered {}", answer.status));
+    }
+    if answer.oversized {
+        return Err(format!(
+            "{url}: the answer is larger than {} bytes ({max_size_setting})",
+            limits.max_size
+        ));
+    }
+    if let Some(problem) = answer.short {
+        return Err(format!("{url}: {problem}, so the file is not whole"));
+    }
+    Ok(answer.body)
 }
 
 /// The exit code for what became of each uuid: 3 when the store refused

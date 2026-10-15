@@ -89,7 +89,7 @@ behind them.
 | `--input` | `-I` |  | Capture | e2e | `src/app/tui_mode.rs`, `tests/accused_sources_test.rs` +122 |  |  |
 | `--recursive` |  |  | Capture | e2e | `tests/input_set_accounting_test.rs`, `tests/multi_input_test.rs` |  |  |
 | `--input-name` |  | `GLOB` | Capture | e2e | `tests/multi_input_test.rs` |  |  |
-| `--vcon-key` |  | `FILE` | Capture | e2e | `tests/vcon_reader_forms_test.rs`, `tests/vcon_recipients_test.rs` |  |  |
+| `--vcon-key` |  | `FILE` | Capture | e2e | `tests/vcon_audio_fetch_test.rs`, `tests/vcon_reader_forms_test.rs` +1 |  |  |
 | `--vcon-signer-ca` |  |  | Capture | e2e | `tests/vcon_reader_forms_test.rs`, `tests/vcon_resign_test.rs` |  |  |
 | `--vcon-signer-sha256` |  | `HEX` | Capture | e2e | `tests/vcon_reader_forms_test.rs` |  |  |
 | `--vcon-x5u-ca` |  |  | Capture | e2e | `tests/vcon_x5u_test.rs` |  |  |
@@ -190,7 +190,7 @@ behind them.
 | `--color` |  | `WHEN` | Output | e2e | `tests/cli_options_test.rs`, `tests/config_wiring_test.rs` |  |  |
 | `--payload-limit` |  | `BYTES` | Output | e2e | `tests/cli_options_test.rs` | **behavior** | payload_limit_truncates_raw_dump: [truncated] appears, User-Agent disappears, against a no-flag baseline |
 | `--text-dump` | `-T` |  | Output | e2e | `tests/cli_flag_behavior_test.rs`, `tests/cli_options_test.rs` +1 |  |  |
-| `--no-cli-print` |  |  | Output | e2e | `tests/analyze_test.rs`, `tests/archive_input_test.rs` +59 |  |  |
+| `--no-cli-print` |  |  | Output | e2e | `tests/analyze_test.rs`, `tests/archive_input_test.rs` +60 |  |  |
 | `--wireshark` |  |  | Output | e2e | `tests/batch_run_paths_test.rs` | **behavior** | golden tests/cli/out/wireshark.trycmd adds two lines absent from the flagless golden |
 | `--lint` |  |  | Output | e2e | `tests/cli_options_test.rs`, `tests/config_cli_flag_values_test.rs` +3 |  |  |
 | `--lint-fail-on` |  | `SEVERITY` | Output | e2e | `tests/cli_options_test.rs` | **parse-only** | EXIT 3 IS NEVER OBSERVED. The assertion is guarded behind `if findings > 0` and no checked-in capture produces a lint finding |
@@ -439,6 +439,12 @@ behind them.
 | `--vcon-fetch-decrypt-key` |  | `FILE` | vCon fetcher | e2e | `tests/config_cli_flag_values_test.rs`, `tests/vcon_fetch_test.rs` |  |  |
 | `--vcon-fetch-signer-ca` |  |  | vCon fetcher | e2e | `tests/vcon_fetch_test.rs` |  |  |
 | `--vcon-fetch-signer-sha256` |  | `HEX` | vCon fetcher | e2e | `tests/vcon_fetch_test.rs` |  |  |
+| `--vcon-audio-fetch` |  | `FILE` | vCon fetcher | e2e | `tests/config_cli_flag_values_test.rs`, `tests/vcon_audio_fetch_test.rs` |  |  |
+| `--vcon-audio-fetch-out` |  | `DIR` | vCon fetcher | e2e | `tests/config_cli_flag_values_test.rs`, `tests/vcon_audio_fetch_test.rs` |  |  |
+| `--vcon-audio-fetch-local` |  |  | vCon fetcher | e2e | `tests/vcon_audio_fetch_test.rs` |  |  |
+| `--vcon-audio-fetch-ca` |  | `FILE` | vCon fetcher | e2e | `tests/vcon_audio_fetch_test.rs` |  |  |
+| `--vcon-audio-fetch-extra-ca` |  | `FILE` | vCon fetcher | e2e | `tests/vcon_audio_fetch_test.rs` |  |  |
+| `--vcon-audio-fetch-max-size` |  | `BYTES` | vCon fetcher | e2e | `tests/vcon_audio_fetch_test.rs` |  |  |
 | `--vcon-resign` |  | `FILE` | vCon archive | e2e | `tests/config_cli_flag_values_test.rs`, `tests/vcon_resign_test.rs` |  |  |
 | `--vcon-resign-key` |  | `FILE` | vCon archive | e2e | `tests/config_cli_flag_values_test.rs`, `tests/vcon_resign_test.rs` |  |  |
 | `--vcon-resign-cert` |  | `FILE` | vCon archive | e2e | `tests/config_cli_flag_values_test.rs`, `tests/vcon_resign_test.rs` |  |  |

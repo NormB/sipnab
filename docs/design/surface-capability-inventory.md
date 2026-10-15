@@ -324,6 +324,12 @@ Totals: CLI 365, TUI 25, REST 47, MCP 75.
 - `--uprobe-symbol`
 - `--uprobe-tls`
 - `--user`
+- `--vcon-audio-fetch`
+- `--vcon-audio-fetch-ca`
+- `--vcon-audio-fetch-extra-ca`
+- `--vcon-audio-fetch-local`
+- `--vcon-audio-fetch-max-size`
+- `--vcon-audio-fetch-out`
 - `--vcon-digest`
 - `--vcon-fetch`
 - `--vcon-fetch-auth-file`

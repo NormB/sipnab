@@ -17,6 +17,8 @@ pub mod servers;
 #[cfg(feature = "tui")]
 pub mod tui_mode;
 #[cfg(feature = "vcon")]
+pub mod vcon_audio_fetch;
+#[cfg(feature = "vcon")]
 pub mod vcon_enrich;
 #[cfg(feature = "vcon")]
 pub mod vcon_fetch;

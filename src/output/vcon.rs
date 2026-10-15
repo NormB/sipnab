@@ -28,7 +28,10 @@
 //!   requires HTTPS, and sipnab hosts nothing. The one `url` a container
 //!   carries is a recording a rule with `audio = "url"` wrote beside it, named
 //!   under the `audio_url_base` the operator's storage serves, with the WAV
-//!   file's `content_hash`; sipnab does not check that the URL serves it.
+//!   file's `content_hash`; sipnab does not check, when it writes the
+//!   container, that the URL serves it. `--vcon-audio-fetch`
+//!   (`crate::app::vcon_audio_fetch`) checks the file against that hash when
+//!   it reads it back.
 //!
 //! # Media: a `recording` Dialog Object is not a recording
 //!

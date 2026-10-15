@@ -831,7 +831,7 @@ beside the container as its own JWE:
 - Each write uses a fresh content key, so each write of a call writes a new file.
   - sipnab deletes none of them.
   - Under `sealed_updates = "new-uuid"`, the earlier instances name the earlier files. Under `same-uuid`, nothing names them.
-- To read one: fetch the file from your storage, check its SHA-512 against the container's `content_hash`, and decrypt it with the private key of the `encrypt_to` certificate.
+- To read one, `--vcon-audio-fetch` fetches the file, checks its SHA-512 against the container's `content_hash`, and decrypts it with the private key of the `encrypt_to` certificate. See [Fetch the audio a vCon names](#fetch-the-audio-a-vcon-names).
   - `--vcon-fetch` fetches containers. It does not fetch the URLs inside them.
 
 **What the keys must be.**
@@ -1090,6 +1090,46 @@ sipnab -N -I archived.vcon.json --json-dialogs --no-cli-print --quiet | jq -c '{
   The section says the inner layers are then "assumed to have valid
   integrity", so an inner certificate that has expired since does not stop
   the read.
+
+### Fetch the audio a vCon names
+
+A rule with `audio = "url"` writes each recording beside its container, and
+the container names it by `url`, `mediatype` and `content_hash`. An
+encrypting rule writes the file as its own JWE.
+`--vcon-audio-fetch` gets the audio back from a container and its key:
+
+```sh
+sipnab --vcon-audio-fetch fetched/0158a120-0392-891a-9455-bc2e6fad94df.vcon.json --vcon-audio-fetch-out audio --vcon-key recipient.key
+```
+
+```text
+INFO sipnab::app::bootstrap: --vcon-audio-fetch: wrote 'audio/0158a120-0392-891a-9455-bc2e6fad94df-dialog0.wav'
+```
+
+The `INFO` line shows with `SIPNAB_LOG=info`. For each recording Dialog
+Object with a `url`, sipnab:
+
+1. Opens the container the way `-I` does: unsigned, signed, encrypted or gzip, with `--vcon-key`, `--vcon-signer-ca` and `--vcon-signer-sha256`, or their `[vcon_input]` keys.
+2. Fetches the file over `https://`, trusting the host's CA bundle, `--vcon-audio-fetch-ca` alone, or `--vcon-audio-fetch-extra-ca` as well.
+   - sipnab refuses a `url` that is not `https://` without connecting. [Section 2.4.1 of draft-ietf-vcon-vcon-core-04](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-04#section-2.4.1) requires HTTPS for retrieval, to protect the privacy of the file's contents.
+   - With `--vcon-audio-fetch-local`, sipnab reads the file from the directory that holds the container instead, by the last segment of the `url`: for a spool whose files your storage does not serve yet.
+3. Checks the file against the `content_hash`, the hash of the file as written ([section 2.2](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-04#section-2.2)), before anything else reads it. sipnab refuses a file that does not match, names the dialog, and writes nothing for it.
+4. Decrypts a JWE with the key that opens the container, through the same code. Its `cty` must be the recording's `mediatype`.
+5. Writes the audio to `<uuid>-dialog<N>.wav`, or `.ogg` for `audio/ogg`, in `--vcon-audio-fetch-out`, mode `0600`. `<N>` is the recording's index in `dialog`. sipnab never replaces a file that exists.
+
+sipnab carries on to the next recording after a refusal. Exit `0` when sipnab
+wrote every recording, `1` when the container does not open, names no
+recording by `url`, or sipnab refused any recording, and `2` when sipnab
+cannot use a key, CA or output directory.
+
+To read the spool on the host that wrote it:
+
+```sh
+sipnab --vcon-audio-fetch spool/0158a120-0392-891a-9455-bc2e6fad94df.vcon.json --vcon-audio-fetch-out audio --vcon-audio-fetch-local --vcon-key recipient.key
+```
+
+An unencrypted rule's WAV goes through the same steps, without the
+decryption.
 
 ## The spool contract, for a bridge that consumes it
 

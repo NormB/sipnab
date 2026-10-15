@@ -4226,6 +4226,42 @@ pub fn run_vcon_resign(cli: &Cli, read: &Result<LoadedConfig, PlanError>) -> Opt
     }
 }
 
+/// Handle `--vcon-audio-fetch`: fetch, check, decrypt and write the audio a
+/// vCon names by `url`, and return the exit code, or `None` when the flag is
+/// absent. Applies the configuration `main` read, so `[vcon_input]` opens the
+/// container and decrypts the audio; opens no capture.
+#[must_use]
+pub fn run_vcon_audio_fetch(cli: &Cli, read: &Result<LoadedConfig, PlanError>) -> Option<i32> {
+    cli.vcon_audio_fetch_args.vcon_audio_fetch.as_ref()?;
+    #[cfg(feature = "vcon")]
+    {
+        if let Err(code) = apply_read_config(cli, read) {
+            return Some(code);
+        }
+        let code = match crate::app::vcon_audio_fetch::run(&cli.vcon_audio_fetch_args) {
+            Ok(paths) => {
+                for path in paths {
+                    tracing::info!("--vcon-audio-fetch: wrote '{}'", path.display());
+                }
+                0
+            }
+            Err((code, reasons)) => {
+                for reason in reasons {
+                    tracing::error!("--vcon-audio-fetch: {reason}");
+                }
+                code
+            }
+        };
+        Some(code)
+    }
+    #[cfg(not(feature = "vcon"))]
+    {
+        let _ = read;
+        tracing::error!("--vcon-audio-fetch requires the 'vcon' feature (not compiled in)");
+        Some(2)
+    }
+}
+
 /// [`apply_config`] over the configuration `main` already read, logging the
 /// refusal: the vCon forwarder and fetcher read no config of their own, so
 /// the file is read once per process.

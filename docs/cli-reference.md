@@ -2093,6 +2093,35 @@ describes. It reads one file and writes one, and captures nothing.
 - `sipnab --vcon-resign signed.vcon.json --vcon-resign-key archive.key --vcon-resign-cert archive-chain.pem --vcon-resign-out archived.vcon.json --vcon-signer-ca signing-ca.pem` — re-sign only a vCon whose signer the CA in `signing-ca.pem` issued
 - `sipnab --vcon-resign signed.vcon.json --vcon-resign-key archive.key --vcon-resign-cert archive.crt --vcon-resign-out archived.vcon.json --config /etc/sipnab/sipnab.toml` — take the signer checks from the config file's `[vcon_input]` section
 
+## vCon audio fetch
+
+`--vcon-audio-fetch` reads back the audio a `[[vcon.rule]]` with
+`audio = "url"` wrote beside its container. It reads one container, fetches
+each recording the container names by `url`, and captures nothing.
+
+- It reads the container in any form `-I` reads: unsigned, signed, encrypted or gzip. `--vcon-key`, `--vcon-signer-ca` and `--vcon-signer-sha256`, or their `[vcon_input]` keys, open it.
+- sipnab refuses it beside any capture source, listener or export flag, and beside the forwarder, the fetcher, `--vcon-spool-status` and `--vcon-resign`.
+- The other flags in this section need it. None has a config key.
+- Needs the `vcon` Cargo feature.
+- More: [Fetch the audio a vCon names](vcon.md#fetch-the-audio-a-vcon-names).
+
+| Flag | Value | Default | Since | Description |
+|------|-------|---------|-------|-------------|
+| `--vcon-audio-fetch` | `<FILE>` | -- | Unreleased | For each recording Dialog Object in this vCon with a `url`: fetch the file over `https://`, check its `content_hash` (draft-ietf-vcon-vcon-core-04 section 2.2) before anything else reads it, decrypt it with `--vcon-key` when it is a JWE, and write the audio to `<uuid>-dialog<N>.wav` or `.ogg` in `--vcon-audio-fetch-out`. sipnab refuses a `url` that is not `https://`, without connecting. Exit `0` when sipnab wrote every recording, `1` when the container does not open, names no recording by `url`, or sipnab refused any recording, `2` when sipnab cannot use a key, CA or output directory. Needs `--vcon-audio-fetch-out` |
+| `--vcon-audio-fetch-out` | `<DIR>` | -- | Unreleased | Where sipnab writes each recording's audio, mode `0600`. sipnab creates it, mode `0700`, if missing. sipnab never replaces a file that exists: it fetches nothing for that recording, and exits `1` |
+| `--vcon-audio-fetch-local` | -- | off | Unreleased | Read each recording from the directory that holds the vCon, by the last segment of its `url`, instead of fetching it: for an `--export-vcon-dir` spool whose files your storage does not serve yet. The `content_hash` check still applies |
+| `--vcon-audio-fetch-ca` | `<FILE>` | host bundle | Unreleased | Trust only the CA certificates in this PEM file for the `https://` server that holds the audio. Without it sipnab trusts the host's CA bundle |
+| `--vcon-audio-fetch-extra-ca` | `<FILE>` | -- | Unreleased | Trust the CA certificates in this PEM file for the `https://` server that holds the audio **in addition to** the host's CA bundle. sipnab refuses it beside `--vcon-audio-fetch-ca` |
+| `--vcon-audio-fetch-max-size` | `<BYTES>` | `67108864` | Unreleased | The largest file sipnab reads for one recording, 1 to 4294967295. sipnab refuses a larger one and writes nothing for it. The default is 64 MiB |
+
+**Examples**
+- `sipnab --vcon-audio-fetch fetched/0158a120-0392-891a-9455-bc2e6fad94df.vcon.json --vcon-audio-fetch-out audio --vcon-key recipient.key` — fetch, check and decrypt the audio of one encrypted vCon from the storage its `url` names
+- `sipnab --vcon-audio-fetch spool/0158a120-0392-891a-9455-bc2e6fad94df.vcon.json --vcon-audio-fetch-out audio --vcon-audio-fetch-local --vcon-key recipient.key` — read the audio from the spool beside the container instead
+- `sipnab --vcon-audio-fetch call.vcon.json --vcon-audio-fetch-out audio --vcon-audio-fetch-ca media-ca.pem --vcon-audio-fetch-max-size 268435456` — storage whose certificate a private CA issued, holding recordings up to 256 MiB
+- `sipnab --vcon-audio-fetch call.vcon.json --vcon-audio-fetch-out audio --vcon-audio-fetch-extra-ca media-ca.pem` — trust that CA as well as the host's bundle
+- `sipnab --vcon-audio-fetch fetched/0158a120-0392-891a-9455-bc2e6fad94df.vcon.json --vcon-audio-fetch-out audio --vcon-key recipient.key --vcon-audio-fetch-ca media-ca.pem` — decrypt the audio of an encrypted vCon from storage whose certificate only that CA issued
+- `sipnab --vcon-audio-fetch fetched/0158a120-0392-891a-9455-bc2e6fad94df.vcon.json --vcon-audio-fetch-out audio --vcon-key recipient.key --vcon-audio-fetch-extra-ca media-ca.pem --vcon-audio-fetch-max-size 1073741824` — the same, trusting the host's bundle too, for a recording up to 1 GiB
+
 ## Config
 
 | Flag | Value | Default | Since | Description |

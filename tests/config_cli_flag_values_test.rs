@@ -2641,6 +2641,71 @@ static SPECS: &[Spec] = &[
         ],
     ),
     (
+        "vcon-audio-fetch",
+        Kind::Text {
+            accept: &["x", " ", "0", "-1"],
+            reject: &[("", 2)],
+        },
+        &["--vcon-audio-fetch-out", "/nonexistent/out"],
+    ),
+    (
+        "vcon-audio-fetch-out",
+        Kind::Text {
+            accept: &["x", " ", "0", "-1"],
+            reject: &[("", 2)],
+        },
+        &["--vcon-audio-fetch", "/nonexistent/in.vcon.json"],
+    ),
+    (
+        "vcon-audio-fetch-local",
+        Kind::Switch,
+        &[
+            "--vcon-audio-fetch",
+            "/nonexistent/in.vcon.json",
+            "--vcon-audio-fetch-out",
+            "/nonexistent/out",
+        ],
+    ),
+    (
+        "vcon-audio-fetch-ca",
+        Kind::Text {
+            accept: &["x", " ", "0", "-1"],
+            reject: &[("", 2)],
+        },
+        &[
+            "--vcon-audio-fetch",
+            "/nonexistent/in.vcon.json",
+            "--vcon-audio-fetch-out",
+            "/nonexistent/out",
+        ],
+    ),
+    (
+        "vcon-audio-fetch-extra-ca",
+        Kind::Text {
+            accept: &["x", " ", "0", "-1"],
+            reject: &[("", 2)],
+        },
+        &[
+            "--vcon-audio-fetch",
+            "/nonexistent/in.vcon.json",
+            "--vcon-audio-fetch-out",
+            "/nonexistent/out",
+        ],
+    ),
+    (
+        "vcon-audio-fetch-max-size",
+        Kind::Int {
+            lo: 1,
+            hi: 4294967295,
+        },
+        &[
+            "--vcon-audio-fetch",
+            "/nonexistent/in.vcon.json",
+            "--vcon-audio-fetch-out",
+            "/nonexistent/out",
+        ],
+    ),
+    (
         "vcon-fetch",
         Kind::Text {
             accept: &["x", "0", "-1", "-", "018bcfe5-6800-8a6b-a667-78f1c5213800"],

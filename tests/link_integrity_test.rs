@@ -1443,7 +1443,10 @@ fn wiki_intra_docs_links_resolve() -> Result<(), TestError> {
     // 1783 -> 1786: docs/vcon.md +2, the SIPREC section links the `tel`
     // rule and "The message trace"; docs/examples.md +1, the SIPREC recipe
     // links "A SIPREC recording session".
-    const EXPECTED_WIKI_LINKS: usize = 1786;
+    // 1786 -> 1788: docs/cli-reference.md +1, the "vCon audio fetch"
+    // section links "Fetch the audio a vCon names"; docs/vcon.md +1,
+    // the "Audio by URL" list links the same section.
+    const EXPECTED_WIKI_LINKS: usize = 1788;
     // Raised 459 -> 460 when SRC1 stage 1 shipped: docs/cli-reference.md's
     // `--hep-listen` row now points at cookbook recipe "Take signaling from HEP and media off the wire, in one process" in docs/examples.md
     // rather than restating how to pair `-L` with `-d`. Attributed per file
