@@ -45,7 +45,10 @@ HMAC-authenticated listener is a different claim entirely. Both decode to the
 same bytes.
 
 `delivery` is `hep` or `sniffed-udp`. `delivery_trust` uses the same scale as
-[`explain_attribution`](@/docs/mcp-tools-media.md#explain-attribution). `on_believed_mirror_port` stands
+[`explain_attribution`](@/docs/mcp-tools-media.md#explain-attribution), and here it is
+always `port-gated-only`. `decode_ng` reads the frame back out of a capture file: no HEP
+listener on this run admitted it, and `decode_ng` does not verify a shared
+secret or HMAC token, so `--hep-auth-mode` does not raise it. `on_believed_mirror_port` stands
 apart because it is the ONLY reason anything believes a sniffed message at all,
 and a reader should see the whole of that reason rather than its conclusion.
 

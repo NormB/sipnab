@@ -8,6 +8,15 @@ sipnab is pre-1.0: the public API and the CLI surface are not stable, and a
 breaking change may land in any release. Breaking changes are called out in the
 entry that carries them.
 
+## [Unreleased]
+
+### Fixed
+
+- **A relay control message read off a capture interface or a file no longer reports the HEP listener's trust.**
+  - Under `--hep-parse`, a HEP datagram sniffed off an interface or read from a file is marked `input_origin: hep`. `explain_attribution` gave every `hep` endpoint the trust the run's listener configured, so on a run with `--hep-auth-mode hmac` or `plain`, a sniffed rtpengine mirror was reported as `hmac-verified` or `plain-secret`. Nothing had checked its secret.
+  - It is now `port-gated-only`. Only a message the `--hep-listen` socket delivered takes the listener's trust.
+  - `decode_ng` re-reads a frame from a capture file and does not verify its secret or token. It reported a HEP-encapsulated frame with the listener's trust too, and now reports `port-gated-only` for every frame. `delivery` still says `hep`.
+
 ## [0.5.220] - 2026-10-14
 
 ### Fixed

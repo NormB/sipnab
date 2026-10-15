@@ -652,11 +652,11 @@ impl SipnabMcp {
                        control message and decodes it: the command, the \
                        call it names, whether it carries SDP, and -- the part \
                        no other surface reports -- which delivery path carried \
-                       it and whether that path authenticated its sender. A \
-                       message mirrored to the HEP port is believed because of \
-                       the port and nothing else, so its sender is \
-                       unauthenticated; one delivered over an HMAC-authenticated \
-                       HEP listener is not. Status is `verified`, `unverified` \
+                       it. The frame comes from a capture file no HEP \
+                       listener on this run checked, so every decoded \
+                       message, HEP or bare, is `port-gated-only`: believed \
+                       for the port it landed on and nothing else. Status is \
+                       `verified`, `unverified` \
                        or `unresolvable`, as in decode_evidence. Sources are \
                        confined to --mcp-file-root.",
         output_schema = schema_for_output::<NgDecode>(),
@@ -982,7 +982,10 @@ impl SipnabMcp {
 ///
 /// `configured` is the HEP listener's posture, so only an assertion whose
 /// origin is [`InputOrigin::Hep`](crate::capture::parse::InputOrigin::Hep)
-/// takes it. One sniffed off a capture interface is `PortGatedOnly` whatever
+/// AND whose delivery is `Encapsulated` (the listener delivered it) takes it.
+/// The delivery kind is read from `asserted`, the one place the pipeline
+/// records it. One sniffed off a capture interface, `--hep-parse` unwraps
+/// included, is `PortGatedOnly` whatever
 /// the listener checks: on a `-d <iface> -L <addr>` run the two arrive side by
 /// side, and only the listener's half was authenticated.
 #[must_use]
@@ -997,9 +1000,17 @@ pub fn classify(
     match origin {
         // No capture source: sipnab asked for this rather than observing it.
         None => DeliveryTrust::Asked,
-        // It arrived over HEP, so the posture the run configured for HEP is
-        // what it was worth -- a datagram that failed was never stored.
-        Some(crate::capture::parse::InputOrigin::Hep) => configured,
+        // The HEP listener delivered it, so the posture the run configured
+        // for HEP is what it was worth -- a datagram that failed was never
+        // stored. HEP origin alone is not enough: a wrapper `--hep-parse`
+        // unwrapped off a capture interface is `Hep` too, reached no
+        // listener, and is recorded as a bare datagram (DEF29).
+        Some(crate::capture::parse::InputOrigin::Hep)
+            if asserted.delivery() == Some(crate::relay::ControlDelivery::Encapsulated) =>
+        {
+            configured
+        }
+        Some(crate::capture::parse::InputOrigin::Hep) => DeliveryTrust::PortGatedOnly,
         // Read off a capture interface (or out of a process): no listener
         // checked it, whatever the HEP listener checks on this run. It is
         // believed because of the port it was sent to and for no other
@@ -1269,14 +1280,13 @@ fn decode_ng_one(server: &SipnabMcp, pointer: &str) -> NgDecode {
         );
     };
 
-    // An encapsulated message can have been authenticated on delivery, and what
-    // that is worth is a property of this RUN's configuration. A bare datagram
-    // cannot have been: it is believed because of where it landed and for no
-    // other reason, which is what `PortGatedOnly` says.
-    let trust = match control.delivery {
-        crate::relay::ControlDelivery::Encapsulated => server.relay_delivery_trust(),
-        crate::relay::ControlDelivery::BareDatagram => DeliveryTrust::PortGatedOnly,
-    };
+    // Every frame decoded here was re-read from a capture file: a pointer from
+    // a HEP listener cannot be followed (refused above). No listener on this
+    // run admitted it and nothing here verifies its shared secret or HMAC
+    // token, so an encapsulated frame is believed because of where it landed,
+    // as a bare one is -- `PortGatedOnly`, whatever this run's
+    // `--hep-auth-mode` (DEF29). The delivery path is still reported as found.
+    let trust = DeliveryTrust::PortGatedOnly;
     describe_control_message(
         pointer,
         status,
@@ -1802,37 +1812,51 @@ mod query_relay_view_tests {
     /// because of the port it was sent to and for no other reason, which is
     /// `port-gated-only` whatever the listener checks. An assertion with no
     /// path that the listener checked (`Uprobe`) is the same.
+    ///
+    /// HEP origin alone is not delivery (DEF29): `--hep-parse` marks the
+    /// addressing of a wrapper it unwrapped off an interface `Hep` too, and
+    /// records the message as a `BareDatagram`. Only `Hep` delivered as
+    /// `Encapsulated` -- the listener's own -- takes the listener's posture.
     #[test]
     fn only_a_hep_delivered_assertion_takes_the_listeners_trust() -> Result<(), TestError> {
         use crate::capture::parse::InputOrigin;
         use crate::rtp::stream_store::EndpointAssertion;
-        let relay = EndpointAssertion::media_relay(
-            crate::relay::RelayImplementation::default(),
-            crate::relay::ControlDelivery::BareDatagram,
-        );
+        let relay = |delivery| {
+            EndpointAssertion::media_relay(crate::relay::RelayImplementation::default(), delivery)
+        };
+        let delivered = relay(crate::relay::ControlDelivery::Encapsulated);
+        let sniffed_hep = relay(crate::relay::ControlDelivery::BareDatagram);
         for configured in [
             DeliveryTrust::HmacVerified,
             DeliveryTrust::PlainSecret,
             DeliveryTrust::PortGatedOnly,
         ] {
             assert_eq!(
-                classify(relay, Some(InputOrigin::Hep), configured),
+                classify(delivered, Some(InputOrigin::Hep), configured),
                 configured,
                 "an assertion the HEP listener delivered is worth what the \
                  listener checked"
             );
+            assert_eq!(
+                classify(sniffed_hep, Some(InputOrigin::Hep), configured),
+                DeliveryTrust::PortGatedOnly,
+                "a HEP wrapper --hep-parse unwrapped off an interface under a \
+                 {configured:?} listener: the listener never saw it"
+            );
             // A message rebuilt from a stored vCon reached no listener on
             // this run either, so it takes the lowest relay tier too.
-            for sniffed in [InputOrigin::Wire, InputOrigin::Uprobe, InputOrigin::Vcon] {
-                assert_eq!(
-                    classify(relay, Some(sniffed), configured),
-                    DeliveryTrust::PortGatedOnly,
-                    "{sniffed:?} under a {configured:?} listener: the listener \
-                     never saw this datagram"
-                );
+            for origin in [InputOrigin::Wire, InputOrigin::Uprobe, InputOrigin::Vcon] {
+                for assertion in [delivered, sniffed_hep] {
+                    assert_eq!(
+                        classify(assertion, Some(origin), configured),
+                        DeliveryTrust::PortGatedOnly,
+                        "{origin:?} under a {configured:?} listener: the \
+                         listener never saw this datagram"
+                    );
+                }
             }
             assert_eq!(
-                classify(relay, None, configured),
+                classify(sniffed_hep, None, configured),
                 DeliveryTrust::Asked,
                 "no capture source means sipnab asked"
             );
@@ -4081,19 +4105,26 @@ mod relay_handler_tests {
         Ok(())
     }
 
-    /// An encapsulated message is worth what the run's posture says, and says
+    /// An encapsulated message re-read from a capture file is `port-gated-only`
+    /// under every `--hep-auth-mode`, and still says it arrived as HEP and
     /// where it landed.
+    ///
+    /// `decode_ng` reads the frame back out of a file. No listener on this run
+    /// admitted it and nothing here verifies its shared secret or HMAC token,
+    /// so the listener's posture describes a check this frame never passed
+    /// (DEF29).
     #[tokio::test]
-    async fn an_encapsulated_message_takes_the_runs_configured_trust() -> Result<(), TestError> {
+    async fn an_encapsulated_message_from_a_capture_file_is_port_gated_under_every_posture()
+    -> Result<(), TestError> {
         let dir = tempfile::tempdir().map_err(|e| format!("tempdir: {e:?}"))?;
         write_pcap(
             &dir.path().join("hep.pcap"),
             &[udp_frame(MIRROR_PORT, &encapsulated("c1@example.invalid"))?],
         )?;
-        for (mode, want) in [
-            (None, "port-gated-only"),
-            (Some(crate::cli::HepAuthMode::Plain), "plain-secret"),
-            (Some(crate::cli::HepAuthMode::Hmac), "hmac-verified"),
+        for mode in [
+            None,
+            Some(crate::cli::HepAuthMode::Plain),
+            Some(crate::cli::HepAuthMode::Hmac),
         ] {
             let mut server = decoding(dir.path());
             if let Some(mode) = mode {
@@ -4101,7 +4132,11 @@ mod relay_handler_tests {
             }
             let v = decode(&server, "hep.pcap#0").await?;
             assert_eq!(v["delivery"], "hep", "under {mode:?}: {v}");
-            assert_eq!(v["delivery_trust"], want, "under {mode:?}: {v}");
+            assert_eq!(
+                v["delivery_trust"], "port-gated-only",
+                "under {mode:?}: no listener on this run checked a frame read \
+                 from a file: {v}"
+            );
             assert_eq!(v["on_believed_mirror_port"], true);
             assert_eq!(v["correlation_id"], "corr-c1@example.invalid");
             assert_eq!(v["command"], "offer");

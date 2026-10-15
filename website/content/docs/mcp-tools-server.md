@@ -492,8 +492,9 @@ this run, decided once at startup by the HEP listener's authentication:
 `hmac-verified` with `--hep-auth-mode hmac` and a secret, `plain-secret` with a
 secret and the default `plain` mode, and `port-gated-only` when sipnab checks no
 secret, which includes every run that does not listen for HEP. An endpoint the
-relay tools report as delivered over HEP carries the same value in its
-`delivery_trust`.
+HEP listener delivered carries the same value in its `delivery_trust`. A HEP
+datagram read off a capture interface or a file, `--hep-parse` included,
+reached no listener and is `port-gated-only`.
 
 `libpcap` is a third question, answered at runtime: `pcap_lib_version()` as
 this process sees it. A gnu build or a package loads the host's libpcap, a
