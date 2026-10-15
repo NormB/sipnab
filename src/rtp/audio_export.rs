@@ -343,7 +343,23 @@ pub fn decode_dialog_audio(streams: &[&RtpStream]) -> Result<DialogAudio> {
         .map(|d| d.1)
         .max()
         .unwrap_or(DEFAULT_WAV_RATE);
-    let (samples, channels, frames_per_channel) = interleave_channels(&mut decoded, output_rate);
+    // Each channel starts where its party started, so a party who began
+    // talking later is preceded by silence rather than pulled to the front.
+    let starts: Vec<DateTime<Utc>> = carried.iter().map(|s| aligned_start(s)).collect();
+    let earliest = starts.iter().min().copied().unwrap_or_else(Utc::now);
+    // Microseconds, not milliseconds: two directions captured 0.5 ms apart
+    // are 4 samples apart at 8 kHz, and whole milliseconds would drop that.
+    let lead_in_us: Vec<u64> = starts
+        .iter()
+        .map(|s| {
+            (*s - earliest)
+                .num_microseconds()
+                .and_then(|us| u64::try_from(us).ok())
+                .unwrap_or(0)
+        })
+        .collect();
+    let (samples, channels, frames_per_channel) =
+        interleave_channels(&mut decoded, output_rate, &lead_in_us);
 
     let loss = RetentionLoss::of(&carried);
     let failures: u64 = decoded.iter().map(|d| d.3).fold(0u64, u64::saturating_add);
@@ -429,6 +445,7 @@ const DEFAULT_WAV_RATE: u32 = 8000;
 fn interleave_channels(
     decoded: &mut [(Vec<i16>, u32, &'static str, u64)],
     output_rate: u32,
+    lead_in_us: &[u64],
 ) -> (Vec<i16>, u16, usize) {
     if decoded.len() < 2 {
         let samples = decoded.first().map(|d| d.0.clone()).unwrap_or_default();
@@ -439,6 +456,20 @@ fn interleave_channels(
     for channel in decoded.iter_mut() {
         if channel.1 < output_rate {
             channel.0 = resample_linear(&channel.0, channel.1, output_rate);
+        }
+    }
+
+    // Silence in front of a channel whose party started later, at the output
+    // rate. Bounded by the capture's own span: see `aligned_start`.
+    for (channel, us) in decoded.iter_mut().zip(lead_in_us) {
+        let lead = usize::try_from(crate::rtp::timeline::ticks_to_samples(
+            *us,
+            1_000_000,
+            output_rate,
+        ))
+        .unwrap_or(0);
+        if lead > 0 {
+            channel.0.splice(0..0, std::iter::repeat_n(0, lead));
         }
     }
 
@@ -488,6 +519,18 @@ fn retained_window_start(stream: &RtpStream) -> DateTime<Utc> {
     chrono::TimeDelta::try_milliseconds(millis)
         .and_then(|span| stream.last_seen.checked_sub_signed(span))
         .unwrap_or(stream.first_seen)
+}
+
+/// When `stream`'s first retained sample was captured, for lining up the two
+/// channels of a stereo file.
+///
+/// [`retained_window_start`] measures it from the RTP timestamp span, which
+/// the sender controls: a span of a day would put the start a day before the
+/// stream's first packet and fill the other channel with a day of silence.
+/// It is clamped to the first packet's capture time, which the sender does
+/// not control.
+fn aligned_start(stream: &RtpStream) -> DateTime<Utc> {
+    retained_window_start(stream).max(stream.first_seen)
 }
 
 /// How the audio in an artefact was obtained.
@@ -2439,6 +2482,94 @@ mod tests {
         let d = decode_stream_pcm(&s, true)?;
         assert_eq!(d.pcm.len(), 960);
         assert!(d.pcm[320..640].iter().all(|&x| x == 0));
+        Ok(())
+    }
+
+    /// A PCMU stream from `ssrc` whose frames of `byte` start `start_ms` into
+    /// the capture and run back to back for `frames` frames.
+    fn party(ssrc: u32, byte: u8, start_ms: i64, frames: u32) -> Result<RtpStream, TestError> {
+        let payloads = (0..frames).map(|i| (i * 160, vec![byte; 160])).collect();
+        let mut s = make_stream_ssrc(Some("PCMU"), payloads, ssrc)?;
+        s.clock_rate = 8000;
+        let t0 = s.first_seen;
+        s.first_seen = t0 + chrono::Duration::milliseconds(start_ms);
+        s.last_seen =
+            s.first_seen + chrono::Duration::milliseconds(i64::from(frames.saturating_sub(1)) * 20);
+        Ok(s)
+    }
+
+    /// One channel of an interleaved stereo buffer.
+    fn channel(samples: &[i16], index: usize) -> Vec<i16> {
+        samples.iter().skip(index).step_by(2).copied().collect()
+    }
+
+    /// The samples of a WAV the export wrote, past its header chunks.
+    fn wav_samples(audio: &DialogAudio) -> Result<Vec<i16>, TestError> {
+        let wav = &audio.wav;
+        let at = wav
+            .windows(4)
+            .position(|w| w == b"data")
+            .ok_or("a data chunk")?;
+        let len = u32::from_le_bytes(wav[at + 4..at + 8].try_into()?) as usize;
+        Ok(wav[at + 8..at + 8 + len]
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .map(|b| i16::from_le_bytes(*b))
+            .collect())
+    }
+
+    /// A party who starts talking 100 ms after the other starts 100 ms later
+    /// in the stereo file, instead of at its first sample.
+    #[test]
+    fn a_party_who_starts_later_starts_later_in_the_stereo_file() -> Result<(), TestError> {
+        let a = party(1, 0x00, 0, 6)?;
+        let b = party(2, 0x10, 100, 4)?;
+        let audio = decode_dialog_audio(&[&a, &b])?;
+        assert_eq!(audio.channels, 2);
+        let samples = wav_samples(&audio)?;
+        let (left, right) = (channel(&samples, 0), channel(&samples, 1));
+        assert_eq!(right.len(), 800 + 640, "100 ms of lead-in, then 4 frames");
+        assert!(
+            right[..800].iter().all(|&x| x == 0),
+            "silence before B starts"
+        );
+        assert_eq!(right[800], ulaw(0x10));
+        assert!(
+            left[..960].iter().all(|&x| x == ulaw(0x00)),
+            "A is not moved"
+        );
+        Ok(())
+    }
+
+    /// The lead-in follows the party, not the channel order.
+    #[test]
+    fn the_lead_in_goes_to_whichever_channel_starts_later() -> Result<(), TestError> {
+        let a = party(1, 0x00, 0, 6)?;
+        let b = party(2, 0x10, 100, 4)?;
+        let audio = decode_dialog_audio(&[&b, &a])?;
+        let samples = wav_samples(&audio)?;
+        let first = channel(&samples, 0);
+        assert!(first[..800].iter().all(|&x| x == 0));
+        assert_eq!(first[800], ulaw(0x10));
+        assert_eq!(channel(&samples, 1)[0], ulaw(0x00));
+        Ok(())
+    }
+
+    /// A stream's start is never placed before its first packet arrived: an
+    /// RTP timestamp span of a day must not become a day of lead-in silence.
+    #[test]
+    fn a_hostile_timestamp_span_cannot_move_a_start_before_the_first_packet()
+    -> Result<(), TestError> {
+        let a = party(1, 0x00, 0, 6)?;
+        let mut b = party(2, 0x10, 100, 2)?;
+        b.payload_buffer[1].0 = 0x4000_0000;
+        let audio = decode_dialog_audio(&[&a, &b])?;
+        let samples = wav_samples(&audio)?;
+        let right = channel(&samples, 1);
+        assert!(right.len() < 2_000, "{} samples per channel", right.len());
+        assert!(right[..800].iter().all(|&x| x == 0));
+        assert_eq!(right[800], ulaw(0x10));
         Ok(())
     }
 }

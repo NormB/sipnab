@@ -1660,7 +1660,9 @@ build without the `vcon` feature.
 ### GET /v1/dialogs/:call_id/audio
 
 The call's decoded RTP audio as a standalone `audio/wav` file. It is mono for one
-direction, stereo for two.
+direction, stereo for two. In stereo, each channel starts at the capture time of its
+party's first retained packet, with silence before it, so the two parties
+line up as they spoke.
 
 - These are the same bytes the MCP `export_audio` tool writes and
   the vCon exporter inlines, from one decode.

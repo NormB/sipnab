@@ -89,14 +89,20 @@ fn each_call_reusing_an_ssrc_keeps_exactly_its_own_audio() -> Result<(), TestErr
     let pcap = dir.path().join("reused-media.pcap");
     write_pcap_at(&pcap, &calls_reusing_media(&CALLS, 8_000), 1)?;
 
-    let want = usize::from(REUSED_MEDIA_AUDIO_PACKETS) * SAMPLES_PER_PACKET;
+    // `calls_reusing_media` captures each B-to-A packet 1 ms after its A-to-B
+    // packet, and a stereo export starts each channel at its party's capture
+    // time, so the B channel opens with 1 ms (8 samples at 8 kHz) of silence
+    // and the A channel is padded at the end to the same length.
+    let want = usize::from(REUSED_MEDIA_AUDIO_PACKETS) * SAMPLES_PER_PACKET + 8;
     for call in CALLS {
         let lengths = channel_lengths(&export(&pcap, call)?)?;
         assert_eq!(
             lengths,
             vec![want, want],
-            "{call}: each direction carries {want} samples on the wire; the \
-             container must hold exactly those, not the other call's as well"
+            "{call}: each direction carries {} samples on the wire, plus 8 of \
+             alignment; the container must hold exactly those, not the other \
+             call's as well",
+            want - 8
         );
     }
     Ok(())
