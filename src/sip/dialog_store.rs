@@ -2003,10 +2003,7 @@ fn apply_message_derived(dialog: &mut SipDialog, msg: &SipMessage) {
         track_transfer(&mut dialog.sdp_timeline, msg);
     }
 
-    if let Some(ct) = msg.content_type()
-        && ct.contains("multipart/mixed")
-        && let Ok(metadata) = crate::sip::siprec::parse_siprec_body(ct, &msg.body)
-    {
+    if let Some(metadata) = crate::sip::siprec::metadata_of(msg) {
         dialog.siprec_metadata = Some(metadata);
     }
 }

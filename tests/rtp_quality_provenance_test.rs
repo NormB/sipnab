@@ -662,6 +662,7 @@ fn the_sdp_ptime_reaches_the_stream_in_both_orderings() -> Result<(), TestError>
         ice_candidates: Vec::new(),
         rtcp_mux: false,
         rtcp_port: None,
+        label: None,
     };
     let key = StreamKey {
         ssrc: hdr.ssrc,

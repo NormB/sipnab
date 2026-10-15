@@ -432,6 +432,79 @@ pub fn parse_siprec_body(content_type: &str, body: &[u8]) -> Result<SirecMetadat
     bail!("no rs-metadata+xml part found in multipart body")
 }
 
+/// The recording metadata a SIP message carries, when it carries any.
+///
+/// The one rule for "this message describes a recording": a `multipart/mixed`
+/// body with an `rs-metadata` part that [`parse_siprec_body`] reads. The
+/// dialog store keeps the newest such message's metadata, and the vCon export
+/// finds that message again with the same rule, so the two cannot disagree
+/// about which message described the recording.
+#[must_use]
+pub fn metadata_of(msg: &crate::sip::SipMessage) -> Option<SirecMetadata> {
+    let ct = msg.content_type()?;
+    if !ct.contains("multipart/mixed") {
+        return None;
+    }
+    parse_siprec_body(ct, &msg.body).ok()
+}
+
+/// One media description of a SIPREC message's SDP that carries an `a=label`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LabeledStream {
+    /// The `a=label` pointer, which the metadata's `<stream><label>` names.
+    pub label: String,
+    /// The address and port the media description names, when both parse.
+    ///
+    /// `None` for port 0, which [RFC 7866 section 7.1.1.1](https://www.rfc-editor.org/rfc/rfc7866.html#section-7.1.1.1)
+    /// uses to remove a recorded stream: nothing is sent from it.
+    pub socket: Option<std::net::SocketAddr>,
+}
+
+/// Every labeled media description in the `application/sdp` part of a SIPREC
+/// multipart body, in `m=` line order.
+///
+/// Read from the SAME body as the metadata on purpose.
+/// [RFC 7866 section 7.1.1](https://www.rfc-editor.org/rfc/rfc7866.html#section-7.1.1):
+/// "The scope of the "a=label" attribute only applies to the SDP and metadata
+/// conveyed in the bodies of the SIP request or response that the label
+/// appeared in." A label from another message's SDP may name another stream.
+///
+/// Empty when the body has no boundary, no SDP part, or an SDP part that does
+/// not parse.
+#[must_use]
+pub fn labeled_streams(content_type: &str, body: &[u8]) -> Vec<LabeledStream> {
+    let Some(boundary) = extract_boundary(content_type) else {
+        return Vec::new();
+    };
+    let Ok(text) = std::str::from_utf8(body) else {
+        return Vec::new();
+    };
+    let Some(session) = split_multipart(text, &boundary)
+        .into_iter()
+        .filter(|part| {
+            part.content_type
+                .as_deref()
+                .is_some_and(|ct| ct.to_ascii_lowercase().contains("application/sdp"))
+        })
+        .find_map(|part| crate::sip::sdp::parse_sdp(part.body.as_bytes()).ok())
+    else {
+        return Vec::new();
+    };
+    session
+        .media
+        .iter()
+        .filter_map(|media| {
+            let label = media.label.clone()?;
+            let socket = (media.port != 0)
+                .then(|| crate::sip::sdp::effective_address(media, &session))
+                .flatten()
+                .and_then(|addr| addr.parse().ok())
+                .map(|ip| std::net::SocketAddr::new(ip, media.port));
+            Some(LabeledStream { label, socket })
+        })
+        .collect()
+}
+
 /// Tests for boundary extraction, multipart splitting, and SIPREC metadata
 /// parsing including truncated and malformed bodies.
 #[cfg(test)]
@@ -886,6 +959,66 @@ Content-Type: application/rs-metadata+xml\r\n\r\n\
             owner("s2").as_deref(),
             Some("p1"),
             "both streams are p1's; an empty <send> must not orphan them"
+        );
+        Ok(())
+    }
+
+    /// The SDP part of [RFC 7866 section 7.1.1](https://www.rfc-editor.org/rfc/rfc7866.html#section-7.1.1)'s
+    /// Figure 5, audio lines only, with a removed stream added.
+    fn labeled_body() -> Vec<u8> {
+        format!(
+            "--OSS\r\nContent-Type: application/sdp\r\n\r\n\
+             v=0\r\no=SRC 2890844526 2890844526 IN IP4 198.51.100.1\r\ns=-\r\n\
+             c=IN IP4 198.51.100.1\r\nt=0 0\r\n\
+             m=audio 12240 RTP/AVP 0 4 8\r\na=sendonly\r\na=label:1\r\n\
+             m=audio 12242 RTP/AVP 0 4 8\r\na=sendonly\r\na=label:3\r\n\
+             m=audio 0 RTP/AVP 0\r\na=label:5\r\n\
+             m=audio 12246 RTP/AVP 0\r\n\
+             --OSS\r\nContent-Type: application/rs-metadata+xml\r\n\r\n{}\r\n--OSS--",
+            opensips_metadata()
+        )
+        .into_bytes()
+    }
+
+    /// Each labeled m-line of the SDP part yields its label and the socket it
+    /// names, in m-line order. An unlabeled line yields nothing, and a removed
+    /// one (port 0) keeps its label with no socket.
+    #[test]
+    fn the_sdp_part_yields_each_label_with_its_socket() -> Result<(), TestError> {
+        let streams = labeled_streams("multipart/mixed; boundary=OSS", &labeled_body());
+        assert_eq!(
+            streams,
+            [
+                LabeledStream {
+                    label: "1".into(),
+                    socket: Some("198.51.100.1:12240".parse()?),
+                },
+                LabeledStream {
+                    label: "3".into(),
+                    socket: Some("198.51.100.1:12242".parse()?),
+                },
+                LabeledStream {
+                    label: "5".into(),
+                    socket: None,
+                },
+            ]
+        );
+        Ok(())
+    }
+
+    /// A body with no SDP part, or none that parses, yields no labels.
+    #[test]
+    fn no_sdp_part_yields_no_labels() -> Result<(), TestError> {
+        let only_metadata = format!(
+            "--OSS\r\nContent-Type: application/rs-metadata+xml\r\n\r\n{}\r\n--OSS--",
+            opensips_metadata()
+        );
+        assert!(
+            labeled_streams("multipart/mixed; boundary=OSS", only_metadata.as_bytes()).is_empty()
+        );
+        assert!(
+            labeled_streams("multipart/mixed", &labeled_body()).is_empty(),
+            "no boundary, no parts"
         );
         Ok(())
     }

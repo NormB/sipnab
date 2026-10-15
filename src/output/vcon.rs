@@ -2094,6 +2094,13 @@ pub fn export_dialog_and_completeness(
 ) -> ExportedDialog {
     let mut parties = observed_parties(dialog);
 
+    // A SIPREC recording session's recorded participants join right after the
+    // SRC and SRS its From and To name, before anything else is appended, so
+    // every index the session hands out below is final. See
+    // `crate::output::vcon_siprec`.
+    let session = crate::output::vcon_siprec::recording_session(dialog);
+    let recorded = session.place(&mut parties);
+
     // A transfer target joins the party array BEFORE the observer, so the
     // observer stays the final entry. Every attachment's `party` resolves to
     // that index, and appending a participant after it would silently
@@ -2129,7 +2136,13 @@ pub fn export_dialog_and_completeness(
     // audio cannot move the object the analysis describes.
     let started = observed_start(dialog);
     let mut dialog_objects = vec![dialog_object(dialog, started.clone())];
-    let media = media_objects(dialog, audio, &mut dialog_objects, context.media_budget());
+    let media = media_objects(
+        dialog,
+        audio,
+        &mut dialog_objects,
+        context.media_budget(),
+        recorded.as_ref(),
+    );
     name_the_originator(&mut dialog_objects, caller);
     // On index 0 after the media is placed, because a ring-wrapped recording
     // replaces that object with its recording-set.
@@ -2173,13 +2186,23 @@ pub fn export_dialog_and_completeness(
     // object goes after the media: appending never moves an existing index.
     dialog_objects.extend(text_dialogs_of(dialog));
 
-    let completeness = completeness_of(context, &media, dialog.state().is_final());
+    let completeness = completeness_of(
+        context,
+        &media,
+        dialog.state().is_final(),
+        &session.clause(),
+    );
 
     let mut attachments = vec![
         message_trace_attachment(dialog, observer, started.clone()),
         completeness_attachment(&completeness, observer, started.clone()),
     ];
     attachments.extend(stir_verification_report(dialog));
+    attachments.extend(
+        recorded
+            .as_ref()
+            .map(|r| r.attachment(observer, started.clone())),
+    );
     if !context.related_legs.is_empty() {
         attachments.push(Attachment {
             purpose: RELATED_LEGS_PURPOSE,
@@ -2324,7 +2347,10 @@ pub fn merge_call_legs(
             a.party = party(a.party);
             a.dialog = object(a.dialog);
             if a.purpose == MESSAGE_TRACE_PURPOSE {
-                move_trace_parties(&mut a.body, &party);
+                move_body_parties(&mut a.body, "messages", &party);
+            }
+            if a.purpose == crate::output::vcon_siprec::SIPREC_STREAMS_PURPOSE {
+                move_body_parties(&mut a.body, "streams", &party);
             }
             attachments.push(a);
         }
@@ -2385,11 +2411,12 @@ pub fn merge_call_legs(
     })
 }
 
-/// Pass every trace message's `party` through `party`, for
+/// Pass the `party` of every row of `body[list]` through `party`, for
 /// [`merge_call_legs`]: the index lives inside the body, where the
-/// attachment's own remap does not reach.
-fn move_trace_parties(body: &mut serde_json::Value, party: &impl Fn(usize) -> usize) {
-    let Some(messages) = body["messages"].as_array_mut() else {
+/// attachment's own remap does not reach. The rows are the trace's
+/// `messages` and the SIPREC stream map's `streams`.
+fn move_body_parties(body: &mut serde_json::Value, list: &str, party: &impl Fn(usize) -> usize) {
+    let Some(messages) = body[list].as_array_mut() else {
         return;
     };
     for message in messages {
@@ -2501,6 +2528,7 @@ fn media_objects(
     audio: ObservedAudio<'_>,
     objects: &mut Vec<Dialog>,
     budget: usize,
+    recorded: Option<&crate::output::vcon_siprec::Placed>,
 ) -> MediaVerdict {
     let (decoded, encoded) = match audio {
         ObservedAudio::NotConsidered => {
@@ -2531,6 +2559,7 @@ fn media_objects(
                 dialog,
                 decoded,
                 objects,
+                recorded,
                 MediaBody::Url {
                     url: file.url,
                     mediatype: file.mediatype,
@@ -2571,6 +2600,7 @@ fn media_objects(
         dialog,
         decoded,
         objects,
+        recorded,
         MediaBody::Inline {
             body: &body,
             mediatype: encoded.mediatype,
@@ -2643,6 +2673,7 @@ fn place_recording(
     dialog: &SipDialog,
     decoded: &DialogAudio,
     objects: &mut Vec<Dialog>,
+    recorded: Option<&crate::output::vcon_siprec::Placed>,
     media: MediaBody<'_>,
 ) {
     // The media REPLACES the signaling object rather than sitting beside it,
@@ -2664,7 +2695,7 @@ fn place_recording(
         let member = objects.len();
         objects[0] = recording_set_object(dialog, decoded, member);
         // Index 0 is the set: §4.3.7's back-pointer, so the link is two-way.
-        objects.push(recording_object(dialog, decoded, media, 0));
+        objects.push(recording_object(dialog, decoded, recorded, media, 0));
     } else {
         let signaling = &mut objects[0];
         // Enriched in place, and RETYPED: it carries audio now, so it is a
@@ -2678,7 +2709,7 @@ fn place_recording(
         signaling.disposition = None;
         signaling.start = Some(decoded.first_retained.to_rfc3339());
         signaling.duration = Some(decoded.duration_secs);
-        signaling.parties = channel_parties(dialog, decoded);
+        signaling.parties = channel_parties(dialog, decoded, recorded);
         media.fill(signaling);
     }
 }
@@ -2687,6 +2718,7 @@ fn place_recording(
 fn recording_object(
     dialog: &SipDialog,
     audio: &DialogAudio,
+    recorded: Option<&crate::output::vcon_siprec::Placed>,
     media: MediaBody<'_>,
     recording_set: usize,
 ) -> Dialog {
@@ -2696,7 +2728,7 @@ fn recording_object(
         // §4.3.7's SHOULD: the member names the set it belongs to, so a
         // consumer holding the audio can reach the call's clock.
         recording_set: Some(recording_set),
-        parties: channel_parties(dialog, audio),
+        parties: channel_parties(dialog, audio, recorded),
         ..Dialog::bare(RECORDING_TYPE, dialog.call_id.clone())
     };
     media.fill(&mut object);
@@ -2762,7 +2794,20 @@ pub fn content_hash(media: &[u8]) -> String {
 /// Absent is the common answer once a relay is in the media path, which is
 /// correct: the relay's socket is not either party's, and sipnab reconstructed
 /// the audio from a tap rather than receiving it from anyone.
-fn channel_parties(dialog: &SipDialog, audio: &DialogAudio) -> Option<Vec<usize>> {
+///
+/// A SIPREC recording session is asked first. There the sockets are all the
+/// SRC's, and what tells the channels apart is the `a=label` on the m-line
+/// each was sent from, which the metadata ties to a recorded participant (see
+/// [`crate::output::vcon_siprec`]). When that does not resolve every channel,
+/// the rule above applies unchanged.
+fn channel_parties(
+    dialog: &SipDialog,
+    audio: &DialogAudio,
+    recorded: Option<&crate::output::vcon_siprec::Placed>,
+) -> Option<Vec<usize>> {
+    if let Some(parties) = recorded.and_then(|r| r.channel_parties(audio)) {
+        return Some(parties);
+    }
     let advertised = advertised_media_endpoints(dialog);
     if advertised.is_empty() {
         return None;
@@ -2848,7 +2893,7 @@ fn sdp_audio_endpoint(msg: &crate::sip::SipMessage) -> Option<std::net::SocketAd
 /// the dialog's is a forked leg, a re-INVITE from a third party, or a parse
 /// sipnab got wrong, and attributing it to the caller would put the caller's
 /// index on somebody else's audio.
-fn sender_party(dialog: &SipDialog, msg: &crate::sip::SipMessage) -> Option<usize> {
+pub(crate) fn sender_party(dialog: &SipDialog, msg: &crate::sip::SipMessage) -> Option<usize> {
     let tag = if msg.is_request {
         msg.from_tag()
     } else {
@@ -2984,7 +3029,7 @@ fn observer_party() -> Party {
 /// digits are extensions — `1001` is not a telephone number, and indexing it
 /// as one would put a wrong answer in a search index rather than no answer.
 /// So: `+` followed by digits, or nothing.
-fn tel_uri(user: Option<&str>) -> Option<String> {
+pub(crate) fn tel_uri(user: Option<&str>) -> Option<String> {
     let user = user?;
     let digits = user.strip_prefix('+')?;
     if digits.is_empty() || !digits.bytes().all(|b| b.is_ascii_digit()) {
@@ -4357,6 +4402,7 @@ fn completeness_of(
     context: &ExportContext<'_>,
     media: &MediaVerdict,
     call_ended: bool,
+    siprec: &str,
 ) -> CaptureCompleteness {
     let facts = context.facts;
     let blind_spots = context.analysis.map(|analysis| {
@@ -4375,7 +4421,7 @@ fn completeness_of(
     });
 
     CaptureCompleteness {
-        note: completeness_note(facts, blind_spots.as_deref(), media, call_ended),
+        note: completeness_note(facts, blind_spots.as_deref(), media, call_ended, siprec),
         media: media.outcome,
         media_note: media.note.clone(),
         node: node_name().to_string(),
@@ -4405,11 +4451,16 @@ fn completeness_of(
 /// its own clause rather than the clean one — "nobody checked" and "checked
 /// and found nothing" are different facts, and only the second earns a clean
 /// bill.
+///
+/// `siprec` is the sentence [`crate::output::vcon_siprec`] writes about a
+/// SIPREC recording session, or `""`. It follows the sentence about where
+/// the parties came from, because it amends it.
 fn completeness_note(
     facts: &CaptureFacts,
     blind: Option<&[BlindSpot]>,
     media: &MediaVerdict,
     call_ended: bool,
+    siprec: &str,
 ) -> String {
     let mut partial = String::new();
     if let Some(refusal) = media.refusal.as_deref() {
@@ -4534,7 +4585,7 @@ fn completeness_note(
     format!(
         "Produced by sipnab {} on node {}. sipnab OBSERVED this dialog and took no part in it: \
          the parties below are what the From and To headers said, not identities anyone \
-         established, and nothing here is signed.{} sipnab read {} frame(s) for this \
+         established, and nothing here is signed.{siprec}{} sipnab read {} frame(s) for this \
          capture.{running_clause}{verdict}{blind_clause}",
         env!("CARGO_PKG_VERSION"),
         node_name(),

@@ -1440,7 +1440,10 @@ fn wiki_intra_docs_links_resolve() -> Result<(), TestError> {
     // and docs/rest-api.md link the fetch tool and route they report on.
     // 1781 -> 1783: docs/vcon.md links "A signed container" from the
     // fetcher's answer table and from the inline-fetch section.
-    const EXPECTED_WIKI_LINKS: usize = 1783;
+    // 1783 -> 1786: docs/vcon.md +2, the SIPREC section links the `tel`
+    // rule and "The message trace"; docs/examples.md +1, the SIPREC recipe
+    // links "A SIPREC recording session".
+    const EXPECTED_WIKI_LINKS: usize = 1786;
     // Raised 459 -> 460 when SRC1 stage 1 shipped: docs/cli-reference.md's
     // `--hep-listen` row now points at cookbook recipe "Take signaling from HEP and media off the wire, in one process" in docs/examples.md
     // rather than restating how to pair `-L` with `-d`. Attributed per file

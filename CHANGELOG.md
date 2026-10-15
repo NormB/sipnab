@@ -99,6 +99,14 @@ entry that carries them.
   An RSA key keeps RS256 (`-257`). The key loads as an encrypting
   `[[vcon.rule]]`'s `sign_key` does, and a key whose certificate does not
   match is refused before anything is sent, with exit `2` from the flags.
+- **The vCon of a SIPREC recording session names the participants of the recorded call.**
+  - Each `<participant>` of the [RFC 7865](https://www.rfc-editor.org/rfc/rfc7865.html) metadata becomes a party, with `sip` or `tel` from its `<nameID>` `aor` and `name` from its `<name>`, per [RFC 7865 section 6.5.1](https://www.rfc-editor.org/rfc/rfc7865.html#section-6.5.1).
+  - The recording session's `From` and `To` stay parties 0 and 1, with `role: "recording-client"` on the party that sent the metadata and `role: "recording-server"` on the other.
+  - A `sipnab-siprec-streams` attachment maps each recorded stream to the participant that sends it, from `<participantstreamassoc>` `<send>`, per [RFC 7865 section 6.8.1](https://www.rfc-editor.org/rfc/rfc7865.html#section-6.8.1).
+  - A container with audio lists the participant on each channel, from the `a=label` of the m-line the channel was sent from, per [RFC 7866 section 7.1.1](https://www.rfc-editor.org/rfc/rfc7866.html#section-7.1.1).
+  - Metadata that is missing or names no participant leaves the parties as before, and the completeness note says why.
+  - `--redact` rewrites the participants' `sip`, `tel` and `name`.
+- **The SDP parser reads `a=label`** ([RFC 4574 section 4](https://www.rfc-editor.org/rfc/rfc4574.html#section-4)) on each media description.
 
 ## [0.5.220] - 2026-10-14
 

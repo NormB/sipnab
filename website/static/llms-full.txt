@@ -5471,6 +5471,9 @@ The REST API serves them on `GET /v1/dialogs/{call_id}` as a `siprec` block:
 
 In the TUI, the ladder annotates the recording INVITE in place. So you see it without leaving the call flow.
 
+`--export-vcon` on the same Call-ID writes Alice and Bob as parties, and maps each stream to its sender.
+[A SIPREC recording session](vcon.md#a-siprec-recording-session) describes the container.
+
 **What to look for:**
 
 - **`label` is the `m=` line.**
@@ -46344,6 +46347,66 @@ interaction_id_header = "X-Interaction-ID"
 - `--redact` turns `interaction_id` into a token, so two containers of one interaction still match, and sweeps `campaign` and `skill` as free text.
 - The parameter is `interaction_id`, as section 3.2.3 spells it.
   vcon-lib's list of Dialog parameters spells it `interaction`, so a vcon-lib reader that filters on that list drops it.
+
+## A SIPREC recording session
+
+On a tap beside a session recording server (SRS), sipnab sees the recording session that a session recording client (SRC) opens, not the recorded call itself.
+[RFC 7866 section 6.1.1](https://www.rfc-editor.org/rfc/rfc7866.html#section-6.1.1) puts the SRC in the `From` header and the SRS in the `To` header.
+The people on the recorded call appear only in the [RFC 7865](https://www.rfc-editor.org/rfc/rfc7865.html) metadata, the `application/rs-metadata+xml` part that the SRC sends beside its SDP.
+
+When the recording session's INVITE, or a later request from the SRC, carries metadata that names at least one participant, the container shows the recorded call.
+
+- Parties 0 and 1 stay the `From` and `To` of the recording session.
+  - The party that sent the metadata has `role: "recording-client"`, and the other one has `role: "recording-server"`.
+  - The `role` parameter comes from the `CC` extension, which sipnab already uses for `"observer"`.
+    The extension allows values other than the ones it lists.
+- Each `<participant>` becomes one party, in metadata order, after parties 0 and 1 and before the observer.
+  - `sip` is the `aor` of the participant's `<nameID>` when it is a `sip:` or `sips:` URI.
+    `tel` is the `aor` when it is a `tel:` URI, or a global number in the user part of a SIP AOR, by the rule in [`tel`](#one-thing-sipnab-does-supply-narrowly-tel).
+  - `name` is the `<name>` inside the `<nameID>`.
+    [RFC 7865 section 6.5.1](https://www.rfc-editor.org/rfc/rfc7865.html#section-6.5.1) defines the pair: "nameID - This attribute is a list of (Name, AoR) tuples."
+    sipnab reads the first `aor` and the first `<name>`.
+  - An AOR that is a host name or an IP address gives no `sip` or `tel`. RFC 7865 allows both forms.
+  - `validation` is `"none"` and `role` is absent.
+    The SRC asserted these identities, and sipnab cannot check them.
+- The `sipnab-siprec-streams` attachment maps each recorded stream to the party that sends it:
+
+  ```json
+  { "streams": [
+      { "label": "0", "stream_id": "1a2b3c4d", "party": 2 },
+      { "label": "1", "stream_id": "2b3c4d5e", "party": 2 },
+      { "label": "2", "stream_id": "3c4d5e6f", "party": 3 } ] }
+  ```
+
+  - The sender is the participant whose `<participantstreamassoc>` lists the stream under `<send>`.
+    [RFC 7865 section 6.8.1](https://www.rfc-editor.org/rfc/rfc7865.html#section-6.8.1): "The presence of this attribute indicates that a participant is contributing to a stream."
+    A `<recv>` entry does not make a participant the sender.
+  - `party` is absent on a stream that no `<send>` names.
+  - A container that holds several legs moves each `party` with the rest of the party indices.
+- When the container carries audio, the recording's `parties` names the participant on each channel.
+  - Each stream has an `a=label` on the m-line of the SRC's SDP that carries it.
+    [RFC 7866 section 7.1.1](https://www.rfc-editor.org/rfc/rfc7866.html#section-7.1.1) requires the SRC to put an `a=label` ([RFC 4574](https://www.rfc-editor.org/rfc/rfc4574.html)) on each media stream, to tie the recorded stream to the metadata.
+  - The `<label>` in the metadata names that m-line.
+    [RFC 7865 section 6.7.1](https://www.rfc-editor.org/rfc/rfc7865.html#section-6.7.1): "The 'label' attribute within the 'stream' XML element references an SDP "a=label" attribute that identifies an m-line within the RS SDP."
+  - sipnab matches the address and port that sent the RTP to the m-line that names them, then follows the label to the stream and the stream to its sender.
+  - The labels come from the SDP in the same message as the metadata.
+    [RFC 7866 section 7.1.1](https://www.rfc-editor.org/rfc/rfc7866.html#section-7.1.1) limits a label's scope to "the SDP and metadata conveyed in the bodies of the SIP request or response that the label appeared in."
+  - When a channel's address and port match no labeled m-line, the rule for an ordinary call applies, and `parties` is usually absent.
+- The completeness note says that the dialog is a SIPREC recording session, and where the participants came from.
+
+A recording session whose metadata names no participant keeps the container of an ordinary call: three parties, no roles and no stream map.
+The completeness note then says the dialog is a SIPREC recording session and why the participants are missing.
+sipnab treats a dialog as a recording session in this case when its opening INVITE has `Require: siprec` or a `Contact` with `+sip.src`.
+The note names one of two causes:
+
+- no message in the dialog carried an `rs-metadata` part that sipnab could read, or
+- the metadata named no participant, which is what a malformed or truncated XML body gives.
+
+`--redact` rewrites a participant's `sip`, `tel` and `name` as it rewrites every other party's.
+The metadata XML itself leaves the container with the other message bodies (see [The message trace](#the-message-trace)).
+
+A container whose content a deny header withheld carries no participants.
+Its parties are the SRC, the SRS and the observer.
 
 ## The SIP signaling attachments
 

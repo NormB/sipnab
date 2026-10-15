@@ -34,6 +34,8 @@
 //! - `vcon_jose` — the signed and encrypted forms of a container: JWS then
 //!   JWE, as draft-ietf-vcon-vcon-core-04 section 5.3 requires
 //!   (feature-gated: `vcon`)
+//! - `vcon_siprec` — a SIPREC recording session's RFC 7865 metadata as the
+//!   recorded call's parties and a stream map (feature-gated: `vcon`)
 //! - `vcon_schema` — a container checked against the vendored working-group
 //!   schema, with the one deviation sipnab emits on purpose named rather than
 //!   waved through (feature-gated: `vcon`)
@@ -84,6 +86,8 @@ pub mod vcon_jose {
 }
 #[cfg(feature = "vcon")]
 pub mod vcon_schema;
+#[cfg(feature = "vcon")]
+pub mod vcon_siprec;
 #[cfg(feature = "api")]
 pub mod websocket;
 pub mod wireshark;

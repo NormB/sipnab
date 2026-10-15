@@ -1557,6 +1557,7 @@ mod tests {
                 ice_candidates: Vec::new(),
                 rtcp_mux: false,
                 rtcp_port: None,
+                label: None,
             }],
         }
     }
@@ -1582,6 +1583,7 @@ mod tests {
             ice_candidates: Vec::new(),
             rtcp_mux: false,
             rtcp_port: None,
+            label: None,
         };
         SdpSession {
             origin: None,
@@ -2729,6 +2731,7 @@ mod stun_sdp_mismatch_tests {
                 ice_candidates: Vec::new(),
                 rtcp_mux: false,
                 rtcp_port: None,
+                label: None,
             }],
         }
     }

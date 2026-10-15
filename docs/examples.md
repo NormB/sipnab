@@ -4300,6 +4300,9 @@ The REST API serves them on `GET /v1/dialogs/{call_id}` as a `siprec` block:
 
 In the TUI, the ladder annotates the recording INVITE in place. So you see it without leaving the call flow.
 
+`--export-vcon` on the same Call-ID writes Alice and Bob as parties, and maps each stream to its sender.
+[A SIPREC recording session](vcon.md#a-siprec-recording-session) describes the container.
+
 **What to look for:**
 
 - **`label` is the `m=` line.**
