@@ -6660,6 +6660,49 @@ fn report_tables_print(cli: &Cli) -> bool {
     cli.output_args.report && cli.mode_args.no_tui
 }
 
+/// The vCon container section of `--report`: every stored vCon container
+/// the run met, read or skipped, as rows and totals in the table format, or
+/// as one JSON line under `--json` / `--json-pretty`. Empty when the run met
+/// no container.
+///
+/// Not narrowed by `--filter`: a container is an input, like a capture file,
+/// not a dialog.
+///
+/// # Arguments
+///
+/// * `cli` — the output flags that pick the form.
+/// * `dialogs` — the store the read containers were rebuilt into.
+fn vcon_containers_section(cli: &Cli, dialogs: &DialogStore) -> String {
+    let containers = crate::output::dialog_report::vcon_containers_report(
+        &crate::capture::vcon_input::read_report(),
+        &crate::capture::vcon_input::skipped_report(),
+        dialogs,
+    );
+    if cli.output_args.json || cli.output_args.json_pretty {
+        crate::output::dialog_report::vcon_containers_json_line(
+            &containers,
+            cli.output_args.json_pretty,
+        )
+    } else {
+        crate::output::dialog_report::render_vcon_containers(&containers, table_report_format(cli))
+    }
+}
+
+/// What `--report` prints for a run whose `-I` resolved to no readable
+/// file: the vCon container section, so a directory whose every container
+/// was skipped is still reported with each reason. Empty when `--report`
+/// prints no tables, or when `-I` met no vCon container.
+///
+/// The run still fails afterwards, with the exit code and message it has
+/// without `--report`.
+pub(crate) fn unread_input_report(cli: &Cli) -> String {
+    if !report_tables_print(cli) {
+        return String::new();
+    }
+    // Nothing was read, so no call was rebuilt: the store is empty.
+    vcon_containers_section(cli, &DialogStore::new(0, false))
+}
+
 /// The table format `--markdown` picks for the human-readable reports.
 pub(crate) fn table_report_format(cli: &Cli) -> output::ReportFormat {
     if cli.output_args.markdown {
@@ -6719,26 +6762,7 @@ impl EndOfRunReports<'_> {
             &selection.streams,
             table_report_format(self.cli),
         );
-        // Every stored vCon container the run met, read or skipped: rows and
-        // totals after the dialog table, or one JSON line under `--json` /
-        // `--json-pretty`. Not narrowed by `--filter`: a container is an
-        // input, like a capture file, not a dialog.
-        let containers = crate::output::dialog_report::vcon_containers_report(
-            &crate::capture::vcon_input::read_report(),
-            &crate::capture::vcon_input::skipped_report(),
-            self.read.dialogs,
-        );
-        if self.cli.output_args.json || self.cli.output_args.json_pretty {
-            report.push_str(&crate::output::dialog_report::vcon_containers_json_line(
-                &containers,
-                self.cli.output_args.json_pretty,
-            ));
-        } else {
-            report.push_str(&crate::output::dialog_report::render_vcon_containers(
-                &containers,
-                table_report_format(self.cli),
-            ));
-        }
+        report.push_str(&vcon_containers_section(self.cli, self.read.dialogs));
         // A report drawn from a partial read must say so IN the report. The
         // exit status carries the same fact, but a reader looking at this
         // table has no `$?` in front of them, and the table itself looks

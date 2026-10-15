@@ -325,6 +325,26 @@ impl ResolveTally {
     }
 }
 
+/// Why `-I` resolved to no file: every file it found was skipped.
+///
+/// A type of its own, not only a message, so a caller can tell this failure
+/// from a path that names nothing or a named file that will not open: a run
+/// with `--report` still reports the vCon containers it skipped before it
+/// exits with this error.
+#[derive(Debug)]
+pub struct NoReadableCaptures {
+    /// The `-I` arguments, each quoted, comma-separated.
+    specs: String,
+}
+
+impl std::fmt::Display for NoReadableCaptures {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "no readable capture files in {}", self.specs)
+    }
+}
+
+impl std::error::Error for NoReadableCaptures {}
+
 /// Expand and order `-I` arguments into the files to read.
 ///
 /// # Errors
@@ -507,14 +527,14 @@ fn resolve_counting(
     }
 
     if resolved.is_empty() {
-        bail!(
-            "no readable capture files in {}",
-            specs
+        return Err(NoReadableCaptures {
+            specs: specs
                 .iter()
                 .map(|s| format!("'{s}'"))
                 .collect::<Vec<_>>()
-                .join(", ")
-        );
+                .join(", "),
+        }
+        .into());
     }
 
     // Chronological, with the path as a tie-break so a set of files sharing a

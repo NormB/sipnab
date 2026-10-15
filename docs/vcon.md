@@ -3172,6 +3172,16 @@ The section prints only when the run met a container. A report over a
 capture prints what it printed before. `--filter` does not narrow it: a container is an input,
 like a capture file.
 
+When sipnab skips every file in the directory, for example a directory that
+holds only encrypted containers and the run has no `--vcon-key`, the run
+still fails. It prints `no readable capture files` on standard error and
+exits 1, as it does without `--report`. Before it exits, `--report` prints
+the `vCon containers:` section, with no dialog table, so each container
+still has its row, the totals and the reason in full. With `--json` or
+`--json-pretty`, it prints the `sipnab_vcon_containers` object in place of
+the section. Without `--report`, or when the directory holds no vCon
+container, the run prints nothing on standard output.
+
 With `--json` or `--json-pretty`, the same rows and totals come as one JSON
 object under the key `sipnab_vcon_containers`, in place of the text section.
 The dialog table stays text:

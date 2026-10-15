@@ -90,6 +90,7 @@ entry that carries them.
   - The totals count containers read and skipped, skips by reason, containers with a schema finding, distinct calls by state, and their total duration.
   - With `--json` or `--json-pretty`, the same rows and totals are one JSON object under the key `sipnab_vcon_containers`.
   - A run that read no container prints the report it printed before.
+  - When every file of `-I` is skipped, for example a directory of encrypted containers and no `--vcon-key`, `--report` prints the `vCon containers:` section (or, with `--json` or `--json-pretty`, the `sipnab_vcon_containers` object) before the run fails. The run still prints `no readable capture files` and exits 1. Without `--report`, or with no vCon container in `-I`, nothing is printed on standard output.
 - **MCP tool `vcon_directory_report`, in the `vcon` bundle.**
   - It answers the same report for a directory of `--mcp-file-root` (`.` for the root), read in stores of its own, with the rows paged by `limit` and `cursor` and cut whole to `max_response_bytes`. The totals cover the whole directory on every page.
   - The `vcon` bundle's `tools/list` entries now total 10,679 bytes over seven tools with `fetch_vcon`, and `full` totals 89,290 bytes over 76 tools.

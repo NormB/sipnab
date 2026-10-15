@@ -78,7 +78,7 @@ together and one of them evaporates.
 
 ### 2.2 What `launch` does with the answer
 
-`launch` ([`src/app/bootstrap.rs:2321`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L2321)) takes the same singular `Option`. Four
+`launch` ([`src/app/bootstrap.rs:2374`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L2374)) takes the same singular `Option`. Four
 decisions downstream read the source as a scalar:
 
 - **Auto-detection.** [`src/app/bootstrap.rs:880`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L880) substitutes a default interface

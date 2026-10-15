@@ -853,6 +853,15 @@ fn plan_file_source(cli: &Cli) -> Result<CaptureSource, PlanError> {
     ) {
         Ok(r) => r,
         Err(e) => {
+            // Every file skipped: `--report` still prints the vCon
+            // containers among them, each with its reason, before the run
+            // fails as it does without `--report`.
+            if e.is::<crate::capture::input_set::NoReadableCaptures>() {
+                let report = super::batch::unread_input_report(cli);
+                if !report.is_empty() {
+                    super::batch::write_stdout(&report);
+                }
+            }
             return Err(PlanError {
                 exit_code: 1,
                 message: format!("-I/--input: {e:#}"),

@@ -425,6 +425,127 @@ fn a_pcap_report_has_no_vcon_section() -> Result<(), TestError> {
     Ok(())
 }
 
+/// A directory in which every container is skipped, under `home/skipped`:
+/// the encrypted container with no key, the dataset container with no SIP,
+/// and the malformed one. `-I` reads none of them.
+fn only_skipped_directory(home: &Path) -> Result<PathBuf, TestError> {
+    let dir = home.join("skipped");
+    std::fs::create_dir_all(&dir)?;
+    export_sealed(home, &dir.join("d-sealed.vcon.json"))?;
+    std::fs::copy(DATASET, dir.join("e-dataset.vcon.json"))?;
+    std::fs::write(
+        dir.join("f-malformed.vcon.json"),
+        b"{\"vcon\": \"0.4.0\", \"parties\": [",
+    )?;
+    Ok(dir)
+}
+
+/// The exit code and message of a run that read no file of `-I`: the run
+/// still fails, as it does without `--report`.
+const NO_READABLE_EXIT: i32 = 1;
+const NO_READABLE_MESSAGE: &str = "no readable capture files";
+
+/// Run `-I dir` with `extra` flags, and assert it failed as a run that read
+/// no file fails. Returns standard output.
+fn run_unreadable(home: &Path, dir: &Path, extra: &[&str]) -> Result<String, TestError> {
+    let mut args = vec!["-N", "-I", utf8(dir)?, "--no-cli-print", "--quiet"];
+    args.extend_from_slice(extra);
+    let out = run(home, &args)?;
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(out.status.code(), Some(NO_READABLE_EXIT), "{stderr}");
+    assert!(stderr.contains(NO_READABLE_MESSAGE), "{stderr}");
+    assert!(!stderr.contains("panicked"), "{stderr}");
+    Ok(String::from_utf8(out.stdout)?)
+}
+
+/// `--report` over a directory whose every container is skipped prints the
+/// vCon section, each skip with its reason in full, and still exits 1 with
+/// the message a run that read nothing prints.
+#[test]
+fn a_directory_of_only_skipped_containers_is_still_reported() -> Result<(), TestError> {
+    let home = tempfile::tempdir()?;
+    let dir = only_skipped_directory(home.path())?;
+    let stdout = run_unreadable(home.path(), &dir, &["--report"])?;
+    let sec = section(&stdout)?;
+    let sealed = text_row(sec, "d-sealed.vcon.json")?;
+    assert!(sealed.starts_with("skipped: no_key"), "{sealed}");
+    let dataset = text_row(sec, "e-dataset.vcon.json")?;
+    assert!(
+        dataset.starts_with("skipped: no_sip_signaling"),
+        "{dataset}"
+    );
+    let malformed = text_row(sec, "f-malformed.vcon.json")?;
+    assert!(malformed.starts_with("skipped: not_json"), "{malformed}");
+    assert!(sec.contains("3 container(s): 0 read, 3 skipped"), "{sec}");
+    assert!(
+        sec.contains("Skipped by reason: no_key 1, no_sip_signaling 1, not_json 1"),
+        "{sec}"
+    );
+    assert!(sec.contains("Calls: 0 (none)"), "{sec}");
+    assert!(sec.contains("--vcon-key"), "{sec}");
+    assert!(sec.contains("no SIP signaling"), "{sec}");
+    assert!(sec.contains("not JSON"), "{sec}");
+    Ok(())
+}
+
+/// The same directory under `--report --json` and `--report --json-pretty`:
+/// the `sipnab_vcon_containers` object, with the same rows and totals, and
+/// the same exit.
+#[test]
+fn a_directory_of_only_skipped_containers_is_reported_as_json() -> Result<(), TestError> {
+    let home = tempfile::tempdir()?;
+    let dir = only_skipped_directory(home.path())?;
+    let compact = run_unreadable(home.path(), &dir, &["--report", "--json"])?;
+    let pretty = run_unreadable(home.path(), &dir, &["--report", "--json-pretty"])?;
+    let pretty: serde_json::Value = serde_json::from_str(&pretty)?;
+    let pretty = pretty
+        .get("sipnab_vcon_containers")
+        .cloned()
+        .ok_or("--json-pretty writes the sipnab_vcon_containers object")?;
+    let compact = json_report(&compact)?;
+    assert_eq!(compact, pretty);
+    let t = &compact["totals"];
+    assert_eq!(t["containers"], 3);
+    assert_eq!(t["read"], 0);
+    assert_eq!(t["skipped"], 3);
+    assert_eq!(
+        t["skipped_by_reason"],
+        serde_json::json!({"no_key": 1, "no_sip_signaling": 1, "not_json": 1})
+    );
+    assert_eq!(t["calls"], 0);
+    assert_skipped_rows(&compact)?;
+    Ok(())
+}
+
+/// Without `--report` the same directory prints nothing on standard output:
+/// the run that reads nothing is unchanged.
+#[test]
+fn without_report_a_directory_of_skipped_containers_prints_nothing() -> Result<(), TestError> {
+    let home = tempfile::tempdir()?;
+    let dir = only_skipped_directory(home.path())?;
+    let stdout = run_unreadable(home.path(), &dir, &[])?;
+    assert_eq!(stdout, "");
+    let json = run_unreadable(home.path(), &dir, &["--json"])?;
+    assert_eq!(json, "");
+    Ok(())
+}
+
+/// A directory of unreadable files that are not vCon containers prints no
+/// section under `--report`: there is no container to report.
+#[test]
+fn a_directory_of_unreadable_non_vcon_files_prints_no_section() -> Result<(), TestError> {
+    let home = tempfile::tempdir()?;
+    let dir = home.path().join("junk");
+    std::fs::create_dir_all(&dir)?;
+    std::fs::write(dir.join("notes.pcap"), b"not a capture\n")?;
+    std::fs::write(dir.join("other.pcapng"), b"\x00\x01\x02\x03")?;
+    let text = run_unreadable(home.path(), &dir, &["--report"])?;
+    assert_eq!(text, "");
+    let json = run_unreadable(home.path(), &dir, &["--report", "--json"])?;
+    assert_eq!(json, "");
+    Ok(())
+}
+
 #[cfg(feature = "mcp")]
 mod mcp_tool {
     use super::{TestError, mcp, mixed_directory, utf8};
