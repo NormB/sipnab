@@ -59,6 +59,10 @@ entry that carries them.
   - The duplicate check now holds its keys in a type whose equality counts itself in test builds, and test builds hash them with a fixed key, so the count is the same on every run.
   - The test requires at most one comparison per key. The set makes 71 for 1,024 keys and 240 for 4,096; a scan of the keys accepted so far makes 523,776 and 8,386,560.
   - A second test requires `decode_dict` to check duplicates through that set and never to read its entries back, because the scan this replaced compared raw byte slices that the count does not see.
+- **CI and the pre-push hook lint the library with no features enabled.**
+  - `cargo clippy --no-default-features --lib -- -D warnings` failed on main: `impl From<ActionPolicy> for Actions` used `..Self::default()`, which does nothing once the feature-gated `service` field is absent.
+  - The struct is now built field by field, each under its declaration's `cfg`.
+  - Every clippy gate ran `--all-features` only. CI's new "Clippy with no features" step and a matching pre-push gate run the no-feature build, and `tests/clippy_scope_parity_test.rs` requires both.
 
 ## [0.5.220] - 2026-10-14
 

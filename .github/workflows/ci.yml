@@ -328,6 +328,16 @@ jobs:
         # stayed green.
         run: cargo clippy --workspace --all-features --all-targets -- -D warnings
 
+      - name: Clippy with no features
+        # `--all-features` turns every feature-gated field and branch on, so a
+        # lint that fires only with them off is invisible to the step above.
+        # One went unread on main: `..Self::default()` on a struct whose
+        # other fields are all feature-gated. The library only, to bound the
+        # time; the features job compiles the rest of the matrix.
+        # tests/clippy_scope_parity_test.rs requires this step and its
+        # pre-push copy.
+        run: cargo clippy --no-default-features --lib -- -D warnings
+
       - name: Format
         # `--check` alone covers this workspace. `fuzz/` and `bpf/` are
         # excluded from it deliberately, so they need naming: bpf/src/main.rs

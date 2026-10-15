@@ -274,6 +274,32 @@ for combo in tls api; do
 	fi
 done
 
+# The same blind spot, for lints rather than builds. The clippy gate above runs
+# --all-features, so a lint that fires only with every feature OFF passes it:
+# `..Self::default()` on a struct whose other fields are all feature-gated is a
+# no-op struct update clippy denies, and it sat on main with every gate green.
+# The library only, as ci.yml's "Clippy with no features" step runs it;
+# tests/clippy_scope_parity_test.rs requires both. Skipped for a crate with no
+# library target, as the throwaway fixtures in scripts/test-pre-push.sh mostly
+# are.
+if [ -f src/lib.rs ]; then
+	printf '  cargo clippy --no-default-features --lib -- -D warnings ... '
+	if cargo clippy --no-default-features --lib -- -D warnings; then
+		printf '%bOK%b\n' "$GREEN" "$NC"
+	else
+		printf '%bFAIL%b\n' "$RED" "$NC"
+		printf '\n'
+		printf '%bPush blocked: clippy reported warnings with no features enabled.%b\n' "$RED" "$NC"
+		printf 'Reproduce with:\n'
+		printf '    cargo clippy --no-default-features --lib -- -D warnings\n'
+		printf 'Usually code that is only right while a feature adds the items\n'
+		printf 'around it -- gate it on the same features as those items.\n'
+		printf '\n'
+		printf 'Emergency bypass (discouraged): SKIP_FMT_HOOK=1 git push\n'
+		exit 1
+	fi
+fi
+
 # --target is LOAD-BEARING, and this hook shipped without it. Without a target
 # cargo compiles for the HOST, where every `#[cfg(not(target_arch = "wasm32"))]`
 # is inert -- so the check proved the `wasm` feature compiles for Linux and

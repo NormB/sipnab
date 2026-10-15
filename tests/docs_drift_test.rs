@@ -71,6 +71,15 @@ const FOREIGN_FLAGS: &[(&str, &[&str])] = &[
             "website/content/docs/internals/build-ci-release.md",
         ],
     ),
+    // `cargo clippy --no-default-features --lib -- -D warnings`, the
+    // no-feature lint that CI and pre-push run: cargo's flag, not sipnab's.
+    (
+        "lib",
+        &[
+            "docs/internals/build-ci-release.md",
+            "website/content/docs/internals/build-ci-release.md",
+        ],
+    ),
     // `git commit --amend -S --no-edit` and
     // `git rebase --exec 'git commit --amend --no-edit -S' <base>`: how the
     // contributing guide and the build page say to re-sign a commit the

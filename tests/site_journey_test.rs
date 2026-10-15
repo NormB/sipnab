@@ -6330,7 +6330,10 @@ fn packaging_scripts_reference_existing_paths() -> Result<(), TestError> {
     // .github/workflows/pages.yml +4, its four references to
     // scripts/doc-history.py. Attributed by measurement: with the batch's
     // pages.yml swapped back in, the scan reads 197.
-    const EXPECTED_REFERENCES: usize = 201;
+    // 201 -> 202: ci.yml's "Clippy with no features" step names
+    // tests/clippy_scope_parity_test.rs in its comment. Attributed by
+    // measurement: with HEAD's ci.yml swapped back in, the scan reads 201.
+    const EXPECTED_REFERENCES: usize = 202;
     assert_eq!(
         checked, EXPECTED_REFERENCES,
         "packaging path scan saw {checked} references, expected \
