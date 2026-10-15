@@ -54,6 +54,11 @@ entry that carries them.
   - On a hosted CI runner on 2026-10-14 the detector's ratio read 5.5x against a bound of 5.0, with constant-time eviction in place.
   - `LruMap` now counts, in test builds only, the entries its walks visit. Both tests fill a map to its cap at two sizes, admit 1,000 new keys, and require at most one entry walked per admission and the same count at both sizes.
   - An eviction that chooses its victim by walking the map fails both tests.
+- **The bencode duplicate-key test counts key comparisons instead of timing the parse.**
+  - It compared the CPU time of decoding 1,024 and 4,096 distinct keys and required a ratio under 8.0.
+  - The duplicate check now holds its keys in a type whose equality counts itself in test builds, and test builds hash them with a fixed key, so the count is the same on every run.
+  - The test requires at most one comparison per key. The set makes 71 for 1,024 keys and 240 for 4,096; a scan of the keys accepted so far makes 523,776 and 8,386,560.
+  - A second test requires `decode_dict` to check duplicates through that set and never to read its entries back, because the scan this replaced compared raw byte slices that the count does not see.
 
 ## [0.5.220] - 2026-10-14
 
