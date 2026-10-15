@@ -10,7 +10,7 @@
 //! accept, and for each recording with a `url`:
 //!
 //! 1. reads the file: an `https://` GET through the fetcher's client
-//!    ([`crate::app::vcon_fetch::get_body`]), or, with
+//!    (`crate::app::vcon_fetch::get_body`), or, with
 //!    `--vcon-audio-fetch-local`, the file of that name beside the container;
 //! 2. checks the `content_hash`
 //!    ([draft-ietf-vcon-vcon-core-04 section 2.2](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-04#section-2.2))
