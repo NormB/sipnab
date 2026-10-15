@@ -13706,7 +13706,9 @@ mod tests {
     #[cfg(feature = "vcon")]
     fn spool_name_policy() -> crate::output::redact::RedactionPolicy {
         crate::output::redact::RedactionPolicy::new(
-            crate::output::redact::RedactionKey::from_secret(b"spool-name-test"),
+            crate::output::redact::RedactionKey::from_secret(crate::test_material::key_bytes(
+                "spool-name-test",
+            )),
         )
     }
 
@@ -18247,8 +18249,14 @@ mod tests {
         let key = SrtpKeyMaterial {
             tag: 1,
             suite: SrtpSuite::AesCm128HmacSha1_80,
-            master_key: vec![0x01u8; 16],
-            master_salt: vec![0x02u8; 14],
+            master_key: crate::test_material::bytes_for(
+                "batch-srtp-context-never-false-decrypts-plain-rtp-master-key",
+                16,
+            ),
+            master_salt: crate::test_material::bytes_for(
+                "batch-srtp-context-never-false-decrypts-plain-rtp-master-salt",
+                14,
+            ),
             ssrc: None,
             media_addr: None,
             media_port: None,
@@ -18317,8 +18325,14 @@ mod tests {
     #[test]
     fn the_batch_path_keeps_decrypted_srtp_audio_and_no_ciphertext() -> Result<(), TestError> {
         use base64::Engine as _;
-        let master_key = vec![0x11u8; 16];
-        let master_salt = vec![0x22u8; 14];
+        let master_key = crate::test_material::bytes_for(
+            "batch-the-batch-path-keeps-decrypted-srtp-audio-and-no-ciphertext-master-key",
+            16,
+        );
+        let master_salt = crate::test_material::bytes_for(
+            "batch-the-batch-path-keeps-decrypted-srtp-audio-and-no-ciphertext-master-salt",
+            14,
+        );
         let mut inline = master_key.clone();
         inline.extend_from_slice(&master_salt);
         let crypto = format!(

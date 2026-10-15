@@ -2673,12 +2673,12 @@ mod tests {
             KeyLogEntry {
                 label: "CLIENT_TRAFFIC_SECRET_0".to_string(),
                 client_random: cr.to_vec(),
-                secret: vec![0x11u8; 32], // 32 bytes -> AES-128-GCM
+                secret: crate::test_material::bytes_for("decrypt-client-traffic-secret", 32), // 32 bytes -> AES-128-GCM
             },
             KeyLogEntry {
                 label: "SERVER_TRAFFIC_SECRET_0".to_string(),
                 client_random: cr.to_vec(),
-                secret: vec![0x22u8; 32],
+                secret: crate::test_material::bytes_for("decrypt-server-traffic-secret", 32),
             },
         ]
     }
@@ -3191,7 +3191,9 @@ mod tests {
         // Encrypt a SIP message as a TLS 1.2 AES-128-GCM ApplicationData record
         // (client→server, seq 0): payload = explicit_nonce(8) ‖ ciphertext ‖ tag.
         let sip = b"REGISTER sip:example.com SIP/2.0\r\nVia: SIP/2.0/TLS\r\n\r\n".to_vec();
-        let explicit_nonce = [0x11u8; 8];
+        let explicit_nonce = crate::test_material::array_for::<8>(
+            "decrypt-tls-key-rsa-handshake-decrypts-tls12-gcm-appdata-explicit-nonce",
+        );
         let mut nonce = [0u8; 12];
         nonce[..4].copy_from_slice(&client_write_iv);
         nonce[4..].copy_from_slice(&explicit_nonce);
@@ -3319,7 +3321,11 @@ mod tests {
     fn tls13_decryptor_and_client_keys() -> Result<(TlsDecryptor, Vec<u8>, Vec<u8>), TestError> {
         use crate::crypto::RingCryptoBackend;
 
-        let (key, iv) = derive_key_iv(&RingCryptoBackend, &[0x11u8; 32], CipherSuite::Aes128Gcm)?;
+        let (key, iv) = derive_key_iv(
+            &RingCryptoBackend,
+            &crate::test_material::bytes_for("decrypt-client-traffic-secret", 32),
+            CipherSuite::Aes128Gcm,
+        )?;
         let mut d = decryptor_with(Box::new(RingCryptoBackend));
         // These tests describe a WATCHED keylog: keys arrive after the
         // record does. Without saying so the hold is disabled, exactly as
@@ -3472,10 +3478,10 @@ mod tests {
             Ok(logs)
         }
 
-        let entry = |label: &str, cr: &[u8], secret: u8| KeyLogEntry {
+        let entry = |label: &str, cr: &[u8], secret_label: &str| KeyLogEntry {
             label: label.to_string(),
             client_random: cr.to_vec(),
-            secret: vec![secret; 48],
+            secret: crate::test_material::bytes_for(secret_label, 48),
         };
         let cr = [0xC1u8; 32];
 
@@ -3483,9 +3489,9 @@ mod tests {
         let logged = capture(|| {
             let mut d = TlsDecryptor::new(None, crate::crypto::default_backend())?;
             d.keylog_entries = vec![
-                entry("CLIENT_TRAFFIC_SECRET_0", &cr, 0x11),
-                entry("SERVER_TRAFFIC_SECRET_0", &cr, 0x22),
-                entry("CLIENT_TRAFFIC_SECRET_0", &cr, 0x33),
+                entry("CLIENT_TRAFFIC_SECRET_0", &cr, "keylog-generation-one"),
+                entry("SERVER_TRAFFIC_SECRET_0", &cr, "keylog-server-generation"),
+                entry("CLIENT_TRAFFIC_SECRET_0", &cr, "keylog-generation-two"),
             ];
             d.ensure_sessions_populated();
             Ok(())
@@ -3500,8 +3506,8 @@ mod tests {
         let quiet = capture(|| {
             let mut d = TlsDecryptor::new(None, crate::crypto::default_backend())?;
             d.keylog_entries = vec![
-                entry("CLIENT_TRAFFIC_SECRET_0", &cr, 0x11),
-                entry("SERVER_TRAFFIC_SECRET_0", &cr, 0x22),
+                entry("CLIENT_TRAFFIC_SECRET_0", &cr, "keylog-generation-one"),
+                entry("SERVER_TRAFFIC_SECRET_0", &cr, "keylog-server-generation"),
             ];
             d.ensure_sessions_populated();
             Ok(())
@@ -3568,8 +3574,12 @@ mod tests {
         use std::io::Write;
 
         // Secrets an extractor would have logged for a live connection.
-        let client_secret = [0x11u8; 32];
-        let server_secret = [0x22u8; 32];
+        let client_secret = crate::test_material::array_for::<32>(
+            "decrypt-a-keylog-on-disk-opens-a-connection-that-predates-the-capture-client-secret",
+        );
+        let server_secret = crate::test_material::array_for::<32>(
+            "decrypt-a-keylog-on-disk-opens-a-connection-that-predates-the-capture-server-secret",
+        );
         let client_random = [0xABu8; 32];
         let hex = |b: &[u8]| b.iter().map(|x| format!("{x:02x}")).collect::<String>();
 
@@ -3739,7 +3749,12 @@ mod tests {
         let next_secret = {
             let info = hkdf_expand_label_info(b"traffic upd", &[], 32);
             RingCryptoBackend
-                .hkdf_expand(&[0x11u8; 32], &info, 32, HashAlg::Sha256)
+                .hkdf_expand(
+                    &crate::test_material::bytes_for("decrypt-client-traffic-secret", 32),
+                    &info,
+                    32,
+                    HashAlg::Sha256,
+                )
                 .map_err(|e| format!("ratchet must derive: {e:?}"))?
         };
         let (nk, niv) = derive_key_iv(&RingCryptoBackend, &next_secret, CipherSuite::Aes128Gcm)?;
@@ -3900,8 +3915,11 @@ mod tests {
         use crate::crypto::RingCryptoBackend;
 
         let (mut d, client_key, client_iv) = tls13_decryptor_and_client_keys()?;
-        let (server_key, server_iv) =
-            derive_key_iv(&RingCryptoBackend, &[0x22u8; 32], CipherSuite::Aes128Gcm)?;
+        let (server_key, server_iv) = derive_key_iv(
+            &RingCryptoBackend,
+            &crate::test_material::bytes_for("decrypt-server-traffic-secret", 32),
+            CipherSuite::Aes128Gcm,
+        )?;
 
         let lo: IpAddr = "127.0.0.1".parse()?;
         let request = seal_tls13_record(
@@ -3951,7 +3969,11 @@ mod tests {
     {
         use crate::crypto::RingCryptoBackend;
 
-        let (key, iv) = derive_key_iv(&RingCryptoBackend, &[0x11u8; 32], CipherSuite::Aes128Gcm)?;
+        let (key, iv) = derive_key_iv(
+            &RingCryptoBackend,
+            &crate::test_material::bytes_for("decrypt-client-traffic-secret", 32),
+            CipherSuite::Aes128Gcm,
+        )?;
         let mut d = decryptor_with(Box::new(RingCryptoBackend));
         // These tests describe a WATCHED keylog: keys arrive after the
         // record does. Without saying so the hold is disabled, exactly as
@@ -3998,7 +4020,11 @@ mod tests {
     {
         use crate::crypto::RingCryptoBackend;
 
-        let (key, iv) = derive_key_iv(&RingCryptoBackend, &[0x11u8; 32], CipherSuite::Aes128Gcm)?;
+        let (key, iv) = derive_key_iv(
+            &RingCryptoBackend,
+            &crate::test_material::bytes_for("decrypt-client-traffic-secret", 32),
+            CipherSuite::Aes128Gcm,
+        )?;
         let mut d = decryptor_with(Box::new(RingCryptoBackend));
         // These tests describe a WATCHED keylog: keys arrive after the
         // record does. Without saying so the hold is disabled, exactly as
@@ -4058,7 +4084,11 @@ mod tests {
     -> Result<(), TestError> {
         use crate::crypto::RingCryptoBackend;
 
-        let (key, iv) = derive_key_iv(&RingCryptoBackend, &[0x11u8; 32], CipherSuite::Aes128Gcm)?;
+        let (key, iv) = derive_key_iv(
+            &RingCryptoBackend,
+            &crate::test_material::bytes_for("decrypt-client-traffic-secret", 32),
+            CipherSuite::Aes128Gcm,
+        )?;
         let mut d = decryptor_with(Box::new(RingCryptoBackend));
         // These tests describe a WATCHED keylog: keys arrive after the
         // record does. Without saying so the hold is disabled, exactly as
@@ -4125,7 +4155,11 @@ mod tests {
     -> Result<(), TestError> {
         use crate::crypto::RingCryptoBackend;
 
-        let (key, iv) = derive_key_iv(&RingCryptoBackend, &[0x11u8; 32], CipherSuite::Aes128Gcm)?;
+        let (key, iv) = derive_key_iv(
+            &RingCryptoBackend,
+            &crate::test_material::bytes_for("decrypt-client-traffic-secret", 32),
+            CipherSuite::Aes128Gcm,
+        )?;
         let (mut d, _k, _v) = tls13_decryptor_and_client_keys()?;
         let client: IpAddr = "10.0.0.1".parse()?;
         let server: IpAddr = "10.0.0.2".parse()?;
@@ -4222,7 +4256,9 @@ mod tests {
 
         let (key, iv) = derive_key_iv(
             &RingCryptoBackend,
-            &[0x99u8; 32], // a secret the decryptor does NOT hold
+            &crate::test_material::array_for::<32>(
+                "decrypt-undecryptable-application-data-is-counted-not-silently-dropped-arg",
+            ), // a secret the decryptor does NOT hold
             CipherSuite::Aes128Gcm,
         )?;
         let (mut d, _k, _i) = tls13_decryptor_and_client_keys()?;
@@ -4382,12 +4418,18 @@ mod tests {
         d.keylog_entries.push(KeyLogEntry {
             label: "CLIENT_TRAFFIC_SECRET_0".to_string(),
             client_random: cr2.to_vec(),
-            secret: vec![0x33u8; 32],
+            secret: crate::test_material::bytes_for(
+                "decrypt-ensure-sessions-populated-processes-incremental-entries-secret",
+                32,
+            ),
         });
         d.keylog_entries.push(KeyLogEntry {
             label: "SERVER_TRAFFIC_SECRET_0".to_string(),
             client_random: cr2.to_vec(),
-            secret: vec![0x44u8; 32],
+            secret: crate::test_material::bytes_for(
+                "decrypt-ensure-sessions-populated-processes-incremental-entries-server-secret",
+                32,
+            ),
         });
 
         // Now keylog_entries.len() (4) != keylog_processed_count (2),
@@ -4835,7 +4877,10 @@ mod tests {
         d.keylog_entries.push(KeyLogEntry {
             label: "CLIENT_RANDOM".to_string(),
             client_random: cr.to_vec(),
-            secret: vec![0x01u8; 48], // 48-byte master secret
+            secret: crate::test_material::bytes_for(
+                "decrypt-tls12-client-random-derives-session-secret",
+                48,
+            ), // 48-byte master secret
         });
 
         // Observe a ServerHello negotiating an AES-128-GCM TLS 1.2 suite.
@@ -4907,7 +4952,10 @@ mod tests {
         }
 
         // Keylog entry for the SECOND connection only.
-        let master_secret = vec![0x0Bu8; 48];
+        let master_secret = crate::test_material::bytes_for(
+            "decrypt-tls12-client-random-binds-to-matching-handshake-master-secret",
+            48,
+        );
         d.keylog_entries.push(KeyLogEntry {
             label: "CLIENT_RANDOM".to_string(),
             client_random: cr2.to_vec(),
@@ -5080,7 +5128,10 @@ mod tests {
         d.keylog_entries.push(KeyLogEntry {
             label: "CLIENT_RANDOM".to_string(),
             client_random: cr.to_vec(),
-            secret: vec![0x02u8; 48],
+            secret: crate::test_material::bytes_for(
+                "decrypt-tls12-client-random-derives-cbc-session-secret",
+                48,
+            ),
         });
         // CBC suite: TLS_RSA_WITH_AES_128_CBC_SHA (0x002F).
         d.process_record(
@@ -5113,7 +5164,10 @@ mod tests {
         d.keylog_entries.push(KeyLogEntry {
             label: "CLIENT_RANDOM".to_string(),
             client_random: cr.to_vec(),
-            secret: vec![0x03u8; 48],
+            secret: crate::test_material::bytes_for(
+                "decrypt-tls12-unsupported-cipher-yields-no-session-secret",
+                48,
+            ),
         });
         // 0x0000 is not a supported suite -> from_code_point returns None.
         d.process_record(
@@ -5162,10 +5216,22 @@ mod tests {
                 client_secret: Vec::new(),
                 server_secret: Vec::new(),
                 version: SessionVersion::Tls12,
-                client_write_key: vec![0u8; 16],
-                server_write_key: vec![0u8; 16],
-                client_write_iv: vec![0u8; 16],
-                server_write_iv: vec![0u8; 16],
+                client_write_key: crate::test_material::bytes_for(
+                    "decrypt-insert-cbc-session-client-write-key",
+                    16,
+                ),
+                server_write_key: crate::test_material::bytes_for(
+                    "decrypt-insert-cbc-session-server-write-key",
+                    16,
+                ),
+                client_write_iv: crate::test_material::bytes_for(
+                    "decrypt-insert-cbc-session-client-write-iv",
+                    16,
+                ),
+                server_write_iv: crate::test_material::bytes_for(
+                    "decrypt-insert-cbc-session-server-write-iv",
+                    16,
+                ),
                 cipher_suite: CipherSuite::Aes128CbcSha,
                 sequence_client: 0,
                 sequence_server: 0,
@@ -5589,7 +5655,7 @@ mod tests {
             d.keylog_entries.push(KeyLogEntry {
                 label: label.to_string(),
                 client_random: cr.to_vec(),
-                secret: vec![0x0B; len],
+                secret: crate::test_material::bytes_for("decrypt-a-client-random-with-an-unsupported-secret-length-is-skipped-whole-secret", len),
             });
         }
 
@@ -5617,7 +5683,7 @@ mod tests {
                 d.keylog_entries.push(KeyLogEntry {
                     label: label.to_string(),
                     client_random: cr.to_vec(),
-                    secret: vec![0x11; 32],
+                    secret: crate::test_material::bytes_for("decrypt-a-keylog-session-knows-whether-its-own-handshake-was-watched-secret", 32),
                 });
             }
         }
@@ -5649,7 +5715,10 @@ mod tests {
         d.keylog_entries.push(KeyLogEntry {
             label: "CLIENT_RANDOM".to_string(),
             client_random: cr.to_vec(),
-            secret: vec![0x0B; 48],
+            secret: crate::test_material::bytes_for(
+                "decrypt-a-tls12-entry-tries-each-candidate-handshake-until-one-yields-keys-secret",
+                48,
+            ),
         });
 
         d.ensure_sessions_populated();

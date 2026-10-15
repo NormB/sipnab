@@ -8019,7 +8019,9 @@ mod tests {
         let dialog = SipDialog::new(&msg).ok_or("INVITE opens a dialog")?;
         let container = export_with(&dialog, &clean_facts())?;
         let policy = crate::output::redact::RedactionPolicy::new(
-            crate::output::redact::RedactionKey::from_secret(b"vcon-unmodeled-header-test"),
+            crate::output::redact::RedactionKey::from_secret(crate::test_material::key_bytes(
+                "vcon-unmodeled-header-test",
+            )),
         );
         let redactor = policy.redactor();
         let json = sealed_json(&seal(container, Some(&redactor)))?;
@@ -8654,7 +8656,9 @@ mod tests {
         let facts = clean_facts();
         let container = export_with(&dialog, &facts)?;
         let policy = crate::output::redact::RedactionPolicy::new(
-            crate::output::redact::RedactionKey::from_secret(b"vcon-leak-test"),
+            crate::output::redact::RedactionKey::from_secret(crate::test_material::key_bytes(
+                "vcon-leak-test",
+            )),
         );
         let redactor = policy.redactor();
         Ok(sealed_json(&seal(container, Some(&redactor)))?)
@@ -8788,7 +8792,9 @@ mod tests {
             exported_at()?,
         );
         let policy = crate::output::redact::RedactionPolicy::new(
-            crate::output::redact::RedactionKey::from_secret(b"vcon-leak-test"),
+            crate::output::redact::RedactionKey::from_secret(crate::test_material::key_bytes(
+                "vcon-leak-test",
+            )),
         );
         let json = sealed_json(&seal(container, Some(&policy.redactor())))?;
         let value: serde_json::Value = serde_json::from_str(&json)?;
@@ -8840,7 +8846,9 @@ mod tests {
             sip_contact: None,
             sip_user_agent: None,
         };
-        let policy = RedactionPolicy::new(RedactionKey::from_secret(b"stir"));
+        let policy = RedactionPolicy::new(RedactionKey::from_secret(
+            crate::test_material::key_bytes("stir"),
+        ));
         party.redact(&policy.redactor());
         assert!(
             party.stir.is_none(),
@@ -8887,7 +8895,9 @@ mod tests {
         object.content_hash = Some(format!("{CONTENT_HASH_PREFIX}abc"));
         object.duration = Some(4.5);
 
-        let policy = RedactionPolicy::new(RedactionKey::from_secret(b"audio"));
+        let policy = RedactionPolicy::new(RedactionKey::from_secret(
+            crate::test_material::key_bytes("audio"),
+        ));
         object.redact(&policy.redactor());
 
         assert!(object.body.is_none(), "the audio must not survive");
@@ -9221,7 +9231,9 @@ mod tests {
         )?;
         let dialog = timed_dialog(vec![(invite()?, 0), (response(200, "OK")?, 1), (relay, 2)])?;
         let mut v = export_with(&dialog, &clean_facts())?;
-        let policy = RedactionPolicy::new(RedactionKey::from_secret(b"trace"));
+        let policy = RedactionPolicy::new(RedactionKey::from_secret(
+            crate::test_material::key_bytes("trace"),
+        ));
         v.redact(&policy.redactor());
         let body = trace_body(&v)?;
         for m in body["messages"].as_array().ok_or("messages")? {
@@ -9485,7 +9497,9 @@ mod tests {
         let mut v = export_with(&dialog, &clean_facts())?;
         add_sip_message_attachments(&mut v, &dialog, MAX_INLINE_MEDIA_BYTES);
         assert_eq!(with_purpose(&v, SIP_SDP_PURPOSE).len(), 2, "precondition");
-        let policy = RedactionPolicy::new(RedactionKey::from_secret(b"wire"));
+        let policy = RedactionPolicy::new(RedactionKey::from_secret(
+            crate::test_material::key_bytes("wire"),
+        ));
         v.redact(&policy.redactor());
         for purpose in [SIP_INVITE_PURPOSE, SIP_RESPONSE_PURPOSE, SIP_SDP_PURPOSE] {
             assert!(with_purpose(&v, purpose).is_empty(), "{purpose}");
@@ -9659,7 +9673,9 @@ mod tests {
             0,
         )])?;
         let mut v = export_with(&dialog, &clean_facts())?;
-        let policy = RedactionPolicy::new(RedactionKey::from_secret(b"stir"));
+        let policy = RedactionPolicy::new(RedactionKey::from_secret(
+            crate::test_material::key_bytes("stir"),
+        ));
         v.redact(&policy.redactor());
         let report = with_purpose(&v, STIR_REPORT_PURPOSE);
         assert_eq!(report.len(), 1);
@@ -10026,7 +10042,9 @@ mod tests {
         let dialog = answered_with_media(vec![(info, 10)])?;
         let mut v = export_with(&dialog, &clean_facts())?;
         add_key_events(&mut v, &dialog, &[]);
-        let policy = RedactionPolicy::new(RedactionKey::from_secret(b"keys"));
+        let policy = RedactionPolicy::new(RedactionKey::from_secret(
+            crate::test_material::key_bytes("keys"),
+        ));
         v.redact(&policy.redactor());
         let events: Vec<String> = key_history(&v)?.into_iter().map(|e| e.2).collect();
         assert_eq!(events, vec!["join".to_string(), "join".to_string()]);
@@ -10187,7 +10205,9 @@ mod tests {
             0,
         )])?;
         let mut v = export_with(&dialog, &clean_facts())?;
-        let policy = RedactionPolicy::new(RedactionKey::from_secret(b"text"));
+        let policy = RedactionPolicy::new(RedactionKey::from_secret(
+            crate::test_material::key_bytes("text"),
+        ));
         v.redact(&policy.redactor());
         let texts = text_dialogs(&v)?;
         assert_eq!(texts.len(), 1);
@@ -10329,7 +10349,9 @@ mod tests {
                 ..CcHeaders::default()
             },
         );
-        let policy = RedactionPolicy::new(RedactionKey::from_secret(b"cc"));
+        let policy = RedactionPolicy::new(RedactionKey::from_secret(
+            crate::test_material::key_bytes("cc"),
+        ));
         v.redact(&policy.redactor());
         let id = v.dialog[0]
             .interaction_id

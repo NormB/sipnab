@@ -1483,7 +1483,9 @@ mod tests {
 
     /// A fixed key, so every expectation below is reproducible.
     fn policy() -> RedactionPolicy {
-        RedactionPolicy::new(RedactionKey::from_secret(b"sipnab-test-key"))
+        RedactionPolicy::new(RedactionKey::from_secret(crate::test_material::key_bytes(
+            "sipnab-test-key",
+        )))
     }
 
     /// The same input maps to the same token, which is the whole feature.
@@ -1503,8 +1505,12 @@ mod tests {
     /// A different key produces a different token for the same input.
     #[test]
     fn the_key_changes_the_token() -> Result<(), TestError> {
-        let a = RedactionPolicy::new(RedactionKey::from_secret(b"key-a"));
-        let b = RedactionPolicy::new(RedactionKey::from_secret(b"key-b"));
+        let a = RedactionPolicy::new(RedactionKey::from_secret(crate::test_material::key_bytes(
+            "key-a",
+        )));
+        let b = RedactionPolicy::new(RedactionKey::from_secret(crate::test_material::key_bytes(
+            "key-b",
+        )));
         assert_ne!(
             a.redactor().identity("+15551234567"),
             b.redactor().identity("+15551234567")
@@ -2201,7 +2207,7 @@ mod tests {
     /// The key never appears in a debug rendering.
     #[test]
     fn the_key_is_not_printable() -> Result<(), TestError> {
-        let key = RedactionKey::from_secret(b"secret");
+        let key = RedactionKey::from_secret(crate::test_material::key_bytes("secret"));
         let shown = format!("{key:?}");
         assert!(shown.contains("Supplied"), "{shown}");
         assert!(!shown.contains("bytes"), "{shown}");

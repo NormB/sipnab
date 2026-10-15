@@ -1634,7 +1634,9 @@ mod tests {
             body: "s".into(),
             provenance: Some(serde_json::json!({"output_hash": "sha512-x"})),
         };
-        let policy = RedactionPolicy::new(RedactionKey::from_secret(b"k"));
+        let policy = RedactionPolicy::new(RedactionKey::from_secret(
+            crate::test_material::key_bytes("k"),
+        ));
         analysis.redact(&policy.redactor());
         assert_eq!(analysis.provenance, None);
     }

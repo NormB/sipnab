@@ -38,6 +38,12 @@ entry that carries them.
   - Each `list_captures` entry carries `kind`: `capture` or `vcon`.
   - A `.<name>.partial` file the fetcher or the forwarder is still writing is not listed.
 
+- **The local check for hard-coded cryptographic values now reports byte-array keys, the shape CodeQL reported in tests.**
+  - `tests/hardcoded_crypto_material_test.rs` read string and byte-string literals only. CodeQL alert 465, `let master_key = vec![0x11u8; 16];` in an SRTP test in `src/app/batch.rs`, passed it, as had 35 earlier alerts of the same rule that were dismissed as used in tests.
+  - The check now also reports a literal byte array bound to a name for a key, salt, nonce, IV, secret or password, and a literal passed straight to such a parameter of a crate function or of a library key constructor (`new_from_slice`, `new_from_slices`, ring's `UnboundKey::new`, `hmac::Key::new` and the `Nonce` constructors).
+  - Every test site it reported now takes its key material from `test_material` at run time. The [RFC 3711](https://www.rfc-editor.org/rfc/rfc3711.html) and [RFC 2202](https://www.rfc-editor.org/rfc/rfc2202.html) known-answer vectors keep their bytes, each with a named exception.
+  - The shapes that need data flow to detect are listed in the test.
+
 ## [0.5.220] - 2026-10-14
 
 ### Fixed

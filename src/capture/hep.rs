@@ -8253,8 +8253,11 @@ mod tests {
         fn key() -> &'static [u8] {
             crate::test_material::key_bytes("hep-hmac-shared")
         }
-        /// Fixed 16-byte nonce used across tests (uniqueness not needed here).
-        const NONCE: [u8; 16] = [7u8; 16];
+        /// One 16-byte nonce shared by these tests (uniqueness not needed here),
+        /// minted at runtime like [`key`].
+        fn fixture_nonce() -> [u8; 16] {
+            crate::test_material::array_for("hep-hmac-nonce")
+        }
         /// Fixed "current time" (epoch seconds) the tests verify against.
         const NOW: u64 = 1_700_000_000;
 
@@ -8302,7 +8305,7 @@ mod tests {
         #[test]
         fn token_round_trips_and_verifies() -> Result<(), TestError> {
             let payload = b"REGISTER sip:example.com SIP/2.0\r\n";
-            let pkt = signed(payload, NOW, &NONCE);
+            let pkt = signed(payload, NOW, &fixture_nonce());
             let (start, end) = span(&pkt);
             assert_eq!(end - start, HMAC_TOKEN_LEN, "token is 57 bytes");
             assert_eq!(
@@ -8328,7 +8331,7 @@ mod tests {
         /// are both refused as malformed.
         #[test]
         fn verify_rejects_bad_length_and_version() -> Result<(), TestError> {
-            let pkt = signed(b"p", NOW, &NONCE);
+            let pkt = signed(b"p", NOW, &fixture_nonce());
             let (start, end) = span(&pkt);
             let mut cache = HmacNonceCache::new();
             assert_eq!(
@@ -8366,7 +8369,7 @@ mod tests {
         /// to the payload-only scheme.
         #[test]
         fn verify_refuses_the_superseded_version_one_token() -> Result<(), TestError> {
-            let pkt = signed(b"p", NOW, &NONCE);
+            let pkt = signed(b"p", NOW, &fixture_nonce());
             let (start, end) = span(&pkt);
             let mut downgraded = pkt.clone();
             downgraded[start] = 1;
@@ -8391,14 +8394,14 @@ mod tests {
         fn verify_rejects_stale_and_future_timestamps() -> Result<(), TestError> {
             let payload = b"INVITE sip:x SIP/2.0\r\n";
             let mut cache = HmacNonceCache::new();
-            let stale = signed(payload, NOW - 100, &NONCE);
+            let stale = signed(payload, NOW - 100, &fixture_nonce());
             let sp = span(&stale);
             assert_eq!(
                 verify_hmac_datagram(key(), &stale, sp, NOW, 30, &mut cache),
                 Err(HmacAuthError::TimestampOutOfWindow),
                 "100s in the past is outside a 30s window"
             );
-            let future = signed(payload, NOW + 100, &NONCE);
+            let future = signed(payload, NOW + 100, &fixture_nonce());
             let fp = span(&future);
             assert_eq!(
                 verify_hmac_datagram(key(), &future, fp, NOW, 30, &mut cache),
@@ -8412,7 +8415,7 @@ mod tests {
         /// fails the MAC.
         #[test]
         fn verify_rejects_tampered_payload_and_wrong_key() -> Result<(), TestError> {
-            let pkt = signed(b"original-payload", NOW, &NONCE);
+            let pkt = signed(b"original-payload", NOW, &fixture_nonce());
             let (start, end) = span(&pkt);
             let mut cache = HmacNonceCache::new();
             // Flip one payload byte in place: same length, so every offset in
@@ -8464,8 +8467,16 @@ mod tests {
         /// says nothing about whether tomorrow is guarded.
         #[test]
         fn two_packets_with_different_nonces_are_both_accepted() -> Result<(), TestError> {
-            let a = signed(b"INVITE sip:a SIP/2.0\r\n", NOW, &[1u8; 16]);
-            let b = signed(b"INVITE sip:b SIP/2.0\r\n", NOW, &[2u8; 16]);
+            let a = signed(
+                b"INVITE sip:a SIP/2.0\r\n",
+                NOW,
+                &crate::test_material::array_for::<16>("hep-two-nonces-a"),
+            );
+            let b = signed(
+                b"INVITE sip:b SIP/2.0\r\n",
+                NOW,
+                &crate::test_material::array_for::<16>("hep-two-nonces-b"),
+            );
             let mut cache = HmacNonceCache::new();
             assert_eq!(
                 verify_hmac_datagram(
@@ -8500,7 +8511,7 @@ mod tests {
         /// The same nonce twice inside the window is a replay.
         #[test]
         fn verify_rejects_replayed_nonce() -> Result<(), TestError> {
-            let pkt = signed(b"BYE sip:x SIP/2.0\r\n", NOW, &NONCE);
+            let pkt = signed(b"BYE sip:x SIP/2.0\r\n", NOW, &fixture_nonce());
             let sp = span(&pkt);
             let mut cache = HmacNonceCache::new();
             assert_eq!(
@@ -8521,7 +8532,7 @@ mod tests {
         #[test]
         fn hep_v3_round_trips_through_build_parse_verify() -> Result<(), TestError> {
             let payload = b"OPTIONS sip:probe SIP/2.0\r\n";
-            let pkt = signed(payload, NOW, &NONCE);
+            let pkt = signed(payload, NOW, &fixture_nonce());
             let parsed = parse_hep(&pkt).map_err(|e| format!("valid HEP v3: {e:?}"))?;
             assert_eq!(parsed.payload, payload);
             assert_eq!(
@@ -8571,7 +8582,7 @@ mod tests {
         /// what makes the amortized prune safe.
         #[test]
         fn expired_unpruned_nonce_still_rejected_by_window() -> Result<(), TestError> {
-            let pkt = signed(b"p", NOW, &NONCE);
+            let pkt = signed(b"p", NOW, &fixture_nonce());
             let sp = span(&pkt);
             let mut cache = HmacNonceCache::new();
             assert_eq!(
@@ -8601,7 +8612,7 @@ mod tests {
                 &HepHmacSigning {
                     key: crate::test_material::key_bytes("hep-hmac-wrong"),
                     token_ts: NOW,
-                    nonce: &NONCE,
+                    nonce: &fixture_nonce(),
                 },
                 payload,
             );
@@ -8618,7 +8629,7 @@ mod tests {
                 Err(HmacAuthError::BadMac),
                 "forged token rejected"
             );
-            let authentic = signed(payload, NOW, &NONCE);
+            let authentic = signed(payload, NOW, &fixture_nonce());
             let ap = span(&authentic);
             assert_eq!(
                 verify_hmac_datagram(
