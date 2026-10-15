@@ -8675,6 +8675,7 @@ impl LegWriter<'_> {
                         .iter()
                         .map(|press| crate::output::vcon::RtpKeyPress {
                             src: stream.key.src,
+                            dst: stream.key.dst,
                             digit: press.digit,
                             ended_at: press.timestamp,
                             duration_ms: press.duration_ms,

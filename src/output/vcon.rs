@@ -2770,13 +2770,51 @@ fn channel_parties(dialog: &SipDialog, audio: &DialogAudio) -> Option<Vec<usize>
     audio
         .sources
         .iter()
-        .map(|key| {
-            advertised
-                .iter()
-                .find(|(socket, _)| *socket == key.src)
-                .map(|(_, party)| *party)
-        })
+        .map(|key| advertised_party(&advertised, key.src))
         .collect()
+}
+
+/// The party that advertised `socket` for itself, the first in message order
+/// when several did; `None` when none did.
+fn advertised_party(
+    advertised: &[(std::net::SocketAddr, usize)],
+    socket: std::net::SocketAddr,
+) -> Option<usize> {
+    advertised
+        .iter()
+        .find(|(advertised, _)| *advertised == socket)
+        .map(|(_, party)| *party)
+}
+
+/// The party that sent an RTP telephone event from `src` to `dst`, in a
+/// dialog of `parties` observed parties, or `None` when the evidence does not
+/// name one.
+///
+/// - The party that advertised `src` for itself sent it, the evidence the
+///   audio channels are attributed by (see [`channel_parties`]).
+/// - Otherwise the destination decides, the same SDP endpoint that links the
+///   stream to its dialog: the party that advertised `dst` received the event,
+///   so in a two-party dialog the other party sent it.
+/// - `None` when the destination was advertised by no party or by both, or
+///   the dialog has other than two parties: no single receiver, so no sender
+///   to infer.
+fn key_press_party(
+    advertised: &[(std::net::SocketAddr, usize)],
+    parties: usize,
+    src: std::net::SocketAddr,
+    dst: std::net::SocketAddr,
+) -> Option<usize> {
+    if let Some(sender) = advertised_party(advertised, src) {
+        return Some(sender);
+    }
+    if parties != 2 {
+        return None;
+    }
+    let receiver = advertised_party(advertised, dst)?;
+    let single = advertised
+        .iter()
+        .all(|(socket, party)| *socket != dst || *party == receiver);
+    (single && receiver < 2).then(|| 1 - receiver)
 }
 
 /// Every media endpoint an observed party advertised for itself, with that
@@ -3060,6 +3098,8 @@ fn opened_by_the_caller(dialog: &SipDialog) -> bool {
 pub struct RtpKeyPress {
     /// The socket the event's packets came from.
     pub src: std::net::SocketAddr,
+    /// The socket the event's packets were sent to.
+    pub dst: std::net::SocketAddr,
     /// The digit the event names.
     pub digit: char,
     /// When sipnab captured the packet that ended the event (E bit set).
@@ -3078,11 +3118,13 @@ pub struct RtpKeyPress {
 ///   `Signal` value.
 /// - An RFC 4733 event in `rtp` is a `keyup` at its end packet and a
 ///   `keydown` its duration before, for the party whose own SDP advertised
-///   the event's source socket.
+///   the event's source socket. When no party advertised the source, the
+///   party that advertised the destination socket received the event and the
+///   other party of the two sent it (see `key_press_party`).
 ///
-/// An INFO whose tags match neither party, or an event from a socket no
-/// party advertised, adds nothing. The events join the existing history in
-/// time order.
+/// An INFO whose tags match neither party, or an event whose source no party
+/// advertised and whose destination no single party advertised, adds
+/// nothing. The events join the existing history in time order.
 ///
 /// A rule asks for these with `dtmf_events`, because a digit can be a PIN.
 /// Redaction removes them (see the `Dialog` redaction).
@@ -3118,12 +3160,9 @@ pub fn add_key_events(container: &mut Vcon, dialog: &SipDialog, rtp: &[RtpKeyPre
     }
 
     let advertised = advertised_media_endpoints(dialog);
+    let parties = observed_parties(dialog).len();
     for event in rtp {
-        let Some(party) = advertised
-            .iter()
-            .find(|(socket, _)| *socket == event.src)
-            .map(|(_, party)| *party)
-        else {
+        let Some(party) = key_press_party(&advertised, parties, event.src, event.dst) else {
             continue;
         };
         let down = event.ended_at - chrono::TimeDelta::milliseconds(i64::from(event.duration_ms));
@@ -9876,6 +9915,7 @@ mod tests {
         let mut v = export_with(&dialog, &clean_facts())?;
         let pressed = |port: u16, digit: char| RtpKeyPress {
             src: std::net::SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)), port),
+            dst: std::net::SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 9)), 9000),
             digit,
             ended_at: ts().unwrap_or_default() + chrono::TimeDelta::seconds(20),
             duration_ms: 200,
@@ -9890,6 +9930,83 @@ mod tests {
                 (1, 20_000, "keyup".into(), Some("#".into())),
             ],
             "a socket no party advertised yields no event"
+        );
+        Ok(())
+    }
+
+    /// A socket in the [`key_press_party`] tests.
+    fn sock(last: u8, port: u16) -> std::net::SocketAddr {
+        std::net::SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, last)), port)
+    }
+
+    /// A telephone event from a socket no party advertised is the other
+    /// party's when exactly one party of the two advertised its destination:
+    /// that party received it. A source a party advertised still wins.
+    #[test]
+    fn a_key_press_from_an_unadvertised_socket_is_the_other_party_of_its_destination() {
+        let advertised = [(sock(1, 4000), 0), (sock(2, 5000), 1)];
+        assert_eq!(
+            key_press_party(&advertised, 2, sock(9, 7000), sock(2, 5000)),
+            Some(0),
+            "sent to the callee's socket: the caller pressed it"
+        );
+        assert_eq!(
+            key_press_party(&advertised, 2, sock(9, 7000), sock(1, 4000)),
+            Some(1),
+            "sent to the caller's socket: the callee pressed it"
+        );
+        assert_eq!(
+            key_press_party(&advertised, 2, sock(2, 5000), sock(2, 5000)),
+            Some(1),
+            "an advertised source names the sender"
+        );
+    }
+
+    /// Without a single receiver among exactly two parties there is no
+    /// sender to infer, and the event names no party.
+    #[test]
+    fn a_key_press_with_an_ambiguous_destination_names_no_party() {
+        let advertised = [(sock(1, 4000), 0), (sock(2, 5000), 1)];
+        assert_eq!(
+            key_press_party(&advertised, 2, sock(9, 7000), sock(8, 8000)),
+            None,
+            "a destination no party advertised"
+        );
+        let both = [(sock(1, 4000), 0), (sock(1, 4000), 1)];
+        assert_eq!(
+            key_press_party(&both, 2, sock(9, 7000), sock(1, 4000)),
+            None,
+            "a destination both parties advertised"
+        );
+        assert_eq!(
+            key_press_party(&advertised, 3, sock(9, 7000), sock(2, 5000)),
+            None,
+            "more than two parties: the receiver does not name the sender"
+        );
+    }
+
+    /// `add_key_events` writes an event from an unadvertised socket to Bob's
+    /// advertised socket (10.0.0.1:5000) for Alice.
+    #[test]
+    fn an_rtp_telephone_event_to_an_advertised_socket_is_the_senders() -> Result<(), TestError> {
+        let dialog = answered_with_media(Vec::new())?;
+        let mut v = export_with(&dialog, &clean_facts())?;
+        let pressed = RtpKeyPress {
+            src: sock(9, 7000),
+            dst: sock(1, 5000),
+            digit: '7',
+            ended_at: ts()? + chrono::TimeDelta::seconds(20),
+            duration_ms: 120,
+        };
+        add_key_events(&mut v, &dialog, &[pressed]);
+        assert_eq!(
+            key_history(&v)?,
+            vec![
+                (0, 1000, "join".into(), None),
+                (1, 1000, "join".into(), None),
+                (0, 19_880, "keydown".into(), Some("7".into())),
+                (0, 20_000, "keyup".into(), Some("7".into())),
+            ]
         );
         Ok(())
     }

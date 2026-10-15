@@ -640,14 +640,28 @@ fn a_rule_with_dtmf_events_writes_the_rtp_key_presses() -> Result<(), TestError>
     Ok(())
 }
 
-/// RTP key presses whose sending socket no party advertised are decoded and
-/// not written: `SIP_DTMF2.cap` carries seven keys at PT 96, sent from
-/// 192.168.105.172:4376, a socket neither party's SDP named. The party is the
-/// one whose own advertised endpoint sent the stream, the evidence the audio
-/// channels are attributed by, and here there is none, so `party_history`
-/// gets no `keydown` rather than one with a guessed party.
+/// `SIP_DTMF2.cap` carries seven keys at PT 96, sent from
+/// 192.168.105.172:4376, a socket neither party's SDP named, to
+/// 192.168.105.110:4376, the socket the callee's 200 OK advertised. The
+/// callee received them, so the caller (party 0) pressed them.
+///
+/// The expected digits and times were read from the capture with tshark,
+/// independently of sipnab: `tshark -r tests/pcap-samples/SIP_DTMF2.cap
+/// -d udp.port==4376,rtp -o rtpevent.event_payload_type_value:96
+/// -Y "rtpevent && rtpevent.end_of_event==1" -T fields -e frame.time_epoch
+/// -e rtpevent.event_id -e rtpevent.duration`. Each end packet states a
+/// duration of 960 timestamp units, 120 ms at 8000 Hz.
 #[test]
-fn rtp_key_presses_from_a_socket_no_party_advertised_are_not_attributed() -> Result<(), TestError> {
+fn rtp_keys_from_an_unadvertised_socket_go_by_their_destination() -> Result<(), TestError> {
+    const END_PACKETS: [(&str, i64); 7] = [
+        ("6", 1_126_267_426_979_545),
+        ("7", 1_126_267_428_509_604),
+        ("8", 1_126_267_428_989_630),
+        ("9", 1_126_267_429_439_658),
+        ("1", 1_126_267_430_039_692),
+        ("2", 1_126_267_430_549_702),
+        ("3", 1_126_267_431_119_725),
+    ];
     let home = tempfile::tempdir()?;
     let dir = home.path().join("dtmf2");
     let config = rule("dtmf2", "call_id == '25672@192.168.105.110'", &dir, "omit").replace(
@@ -657,13 +671,95 @@ fn rtp_key_presses_from_a_socket_no_party_advertised_are_not_attributed() -> Res
     let out = run_on("tests/pcap-samples/SIP_DTMF2.cap", &config, home.path())?;
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(out.status.success(), "{stderr}");
+    let written = containers(&dir)?;
+    assert_eq!(written.len(), 1, "{stderr}");
+    let history = &written[0]["dialog"][0]["party_history"];
+    let mut found: Vec<(String, String, Option<u64>, i64)> = Vec::new();
+    for e in history.as_array().map(Vec::as_slice).unwrap_or_default() {
+        if matches!(e["event"].as_str(), Some("keydown" | "keyup")) {
+            let time = chrono::DateTime::parse_from_rfc3339(e["time"].as_str().ok_or("time")?)?;
+            found.push((
+                e["event"].as_str().unwrap_or_default().to_owned(),
+                e["button"].as_str().unwrap_or_default().to_owned(),
+                e["party"].as_u64(),
+                time.timestamp_micros(),
+            ));
+        }
+    }
+    let expected: Vec<(String, String, Option<u64>, i64)> = END_PACKETS
+        .iter()
+        .flat_map(|(digit, up)| {
+            [
+                (
+                    "keydown".to_owned(),
+                    (*digit).to_owned(),
+                    Some(0),
+                    up - 120_000,
+                ),
+                ("keyup".to_owned(), (*digit).to_owned(), Some(0), *up),
+            ]
+        })
+        .collect();
+    assert_eq!(found, expected, "{history:#}");
+    Ok(())
+}
+
+/// RTP key presses are not written when neither socket names a party: the
+/// sender's socket is no party's advertised endpoint, and the destination was
+/// advertised only by a forked `183` whose `To` tag is neither party's. The
+/// stream still belongs to the call through that SDP, so its key is decoded;
+/// the receiver is unknown, so `party_history` gets no `keydown` rather than
+/// one with a guessed party.
+#[test]
+fn rtp_key_presses_from_a_socket_no_party_advertised_are_not_attributed() -> Result<(), TestError> {
+    let home = tempfile::tempdir()?;
+    let capture = home.path().join("rtp-dtmf-fork.pcap");
+    let mut frames = pcap_build::g711_call_both_ways("rtp-dtmf-fork@test", 1, |_, _, _| 0xff);
+    let sdp = "v=0\r\no=- 1 1 IN IP4 10.0.0.7\r\ns=-\r\nc=IN IP4 10.0.0.7\r\nt=0 0\r\n\
+               m=audio 32000 RTP/AVP 0\r\na=rtpmap:0 PCMU/8000\r\n";
+    let fork = format!(
+        "SIP/2.0 183 Session Progress\r\nVia: SIP/2.0/UDP 10.0.0.1:5060;branch=z9hG4bKwhole\r\n\
+         From: <sip:a@10.0.0.1>;tag=t1\r\nTo: <sip:b@10.0.0.2>;tag=fork\r\n\
+         Call-ID: rtp-dtmf-fork@test\r\nCSeq: 1 INVITE\r\nContact: <sip:b@10.0.0.7:5060>\r\n\
+         Content-Type: application/sdp\r\nContent-Length: {}\r\n\r\n{sdp}",
+        sdp.len()
+    );
+    frames.push((
+        pcap_build::udp_frame([10, 0, 0, 7], [10, 0, 0, 1], 5060, 5060, fork.as_bytes()),
+        500,
+    ));
+    // Event 11 (`#`), E bit set, duration 800 timestamp units, from a socket
+    // no SDP named to the socket only the forked 183 named.
+    for repeat in 0..3u16 {
+        let mut packet = vec![0x80, 101];
+        packet.extend_from_slice(&(100 + repeat).to_be_bytes());
+        packet.extend_from_slice(&8_000u32.to_be_bytes());
+        packet.extend_from_slice(&0x4444_4444u32.to_be_bytes());
+        packet.extend_from_slice(&[11, 0x80 | 10, 0x03, 0x20]);
+        frames.push((
+            pcap_build::udp_frame([10, 0, 0, 9], [10, 0, 0, 7], 41000, 32000, &packet),
+            510_000 + u64::from(repeat) * 1_000,
+        ));
+    }
+    frames.sort_by_key(|(_, at)| *at);
+    pcap_build::write_pcap_at(&capture, &frames, 1)?;
+
+    let dir = home.path().join("fork");
+    let config = rule("fork", "call_id == 'rtp-dtmf-fork@test'", &dir, "omit").replace(
+        "audio = \"omit\"\n",
+        "audio = \"omit\"\ndtmf_events = true\n",
+    );
+    let out = run_on(&capture.to_string_lossy(), &config, home.path())?;
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(out.status.success(), "{stderr}");
     let decoded = stderr.lines().filter(|l| l.contains("DTMF digit=")).count();
-    assert_eq!(decoded, 7, "the seven keys are decoded\n{stderr}");
+    assert_eq!(decoded, 1, "the key is decoded\n{stderr}");
     let written = containers(&dir)?;
     assert_eq!(written.len(), 1, "{stderr}");
     assert!(
         key_events(&written[0]).is_empty(),
-        "no party to attribute to"
+        "no party to attribute to: {:#}",
+        written[0]["dialog"][0]["party_history"]
     );
     Ok(())
 }

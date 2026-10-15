@@ -2149,10 +2149,13 @@ sipnab fills these fields from what the capture shows, and leaves a field out wh
     - An INFO with `application/dtmf-relay` is a `keydown` at the INFO and a `keyup` after its stated `Duration`.
     - An [RFC 4733](https://www.rfc-editor.org/rfc/rfc4733.html) telephone event is a `keyup` at its end packet and a `keydown` its duration before.
       The event belongs to the party whose own SDP advertised the sending socket.
+      When no SDP advertised the sending socket, the party whose SDP advertised the destination socket received the event, and the other party of the two sent it.
+      This is the same SDP endpoint that links the stream to its dialog.
     - The rule turns telephone-event decoding on for the run.
     - sipnab keeps at most 256 telephone events per RTP stream (`MAX_KEY_PRESSES` (256) in the source). It drops later ones.
   - sipnab writes no `mute` or `unmute`, because SIP carries no signal for either.
-  - A message whose tags match neither party, or an event from a socket neither party advertised, adds nothing.
+  - A message whose tags match neither party adds nothing.
+    An event adds nothing when neither party advertised its sending socket and no single party advertised its destination socket, because then sipnab cannot name a party as the receiver.
   - `--redact` removes `keydown` and `keyup`, because a digit can be a PIN, and keeps the rest.
   - A container that holds several legs moves each entry's `party` with the rest of the party indices.
 

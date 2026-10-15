@@ -16,6 +16,10 @@ entry that carries them.
   - Under `--hep-parse`, a HEP datagram sniffed off an interface or read from a file is marked `input_origin: hep`. `explain_attribution` gave every `hep` endpoint the trust the run's listener configured, so on a run with `--hep-auth-mode hmac` or `plain`, a sniffed rtpengine mirror was reported as `hmac-verified` or `plain-secret`. Nothing had checked its secret.
   - It is now `port-gated-only`. Only a message the `--hep-listen` socket delivered takes the listener's trust.
   - `decode_ng` re-reads a frame from a capture file and does not verify its secret or token. It reported a HEP-encapsulated frame with the listener's trust too, and now reports `port-gated-only` for every frame. `delivery` still says `hep`.
+- **A vCon `dtmf_events` rule writes RTP key presses sent from a socket no SDP advertised, for the party that pressed them.**
+  - `tests/pcap-samples/SIP_DTMF2.cap` sends seven keys (6 7 8 9 1 2 3) at PT 96 from 192.168.105.172:4376, a socket no SDP named, to 192.168.105.110:4376, the socket the callee's 200 OK advertised. sipnab decoded the keys and wrote no `keydown` or `keyup` for them.
+  - When no party advertised the sending socket, the party whose SDP advertised the destination socket received the event, and the other party of the two sent it. The capture's seven keys are now seven `keydown` and seven `keyup` events for the caller.
+  - An event still adds nothing when no single party advertised its destination socket, such as a socket only a forked response named.
 
 ## [0.5.220] - 2026-10-14
 
