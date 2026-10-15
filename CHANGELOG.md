@@ -148,6 +148,11 @@ entry that carries them.
   - The struct is now built field by field, each under its declaration's `cfg`.
   - Every clippy gate ran `--all-features` only. CI's new "Clippy with no features" step and a matching pre-push gate run the no-feature build, and `tests/clippy_scope_parity_test.rs` requires both.
 
+- **The `[limits]` gate no longer reports `mcp_sweep_result_retention_secs` or `mcp_sweep_max_held_results` as dead on a loaded host.**
+  - `every_documented_limits_key_changes_observable_behavior` polled each sweep once, after a fixed wait, and assumed the sweep had finished in time. With a load average of 56 to 82 it failed 31 of 50 runs: 17 because the retention probe's result had finished less than a second before its poll, 14 because the held-results probe's sweep was still running after 30 seconds.
+  - Each probe now polls until its sweep stops, and counts a handed-over result as evidence only when the result's own `elapsed_ms` shows the premise held: the result had outlived the one-second retention, or the second sweep had finished before the first was polled. Otherwise it runs the sweeps again.
+  - 0 of 50 runs failed under the same load. With either bound removed from `src/mcp/sweep.rs`, the gate still fails, naming the key.
+
 ## [0.5.220] - 2026-10-14
 
 ### Fixed
