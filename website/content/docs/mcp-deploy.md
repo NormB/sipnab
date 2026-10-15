@@ -1529,6 +1529,7 @@ Then confirm the build can do what you are about to ask of it:
     "mcp_allow_tls_capture": false,
     "mcp_allow_save_findings": false,
     "mcp_allow_relay_query": false,
+    "mcp_allow_vcon_fetch": false,
     "hep_delivery_trust": "port-gated-only"
   }
 }

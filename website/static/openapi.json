@@ -1633,10 +1633,15 @@
           "api_allow_relay_query": {
             "description": "Whether this run may transmit a relay query — `--api-allow-relay-query`\non a live source. Off means the `/v1/relay/...` routes answer\n`not_configured` or `not_permitted` rather than reaching the relay.",
             "type": "boolean"
+          },
+          "api_allow_vcon_fetch": {
+            "description": "Whether `GET /v1/vcon/fetch/{uuid}` can read the operator's vCon\nstore: `--api-allow-vcon-fetch` with a `[vcon_fetch] url`. Off\nmeans that route answers 503 naming what is missing.",
+            "type": "boolean"
           }
         },
         "required": [
-          "api_allow_relay_query"
+          "api_allow_relay_query",
+          "api_allow_vcon_fetch"
         ],
         "type": "object"
       },

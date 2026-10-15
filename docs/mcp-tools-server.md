@@ -434,6 +434,7 @@ No parameters. Returns:
     "mcp_allow_tls_capture": false,
     "mcp_allow_save_findings": false,
     "mcp_allow_relay_query": false,  // true only on a live capture with --rtpengine-control
+    "mcp_allow_vcon_fetch": false,   // true with --mcp-allow-vcon-fetch and a [vcon_fetch] url
     "hep_delivery_trust": "port-gated-only",  // hmac-verified, plain-secret or port-gated-only
     "mcp_allow_actions": []          // ["tfps"] with --allow-action tfps:mcp
   },
@@ -460,6 +461,10 @@ No parameters. Returns:
 interface, `--rtpengine-control` names the relay, and the operator passed
 `--mcp-allow-relay-query`. A file replay never transmits, so the flag alone
 does not set it.
+`runtime.mcp_allow_vcon_fetch` is true only when
+[`fetch_vcon`](mcp-tools-vcon.md#fetch_vcon) can reach a store: the operator
+passed `--mcp-allow-vcon-fetch` and the config file sets `[vcon_fetch] url`.
+Reporting it contacts no store.
 `runtime.mcp_allow_actions` lists the action targets `--allow-action` enabled
 for MCP callers, by name.
 

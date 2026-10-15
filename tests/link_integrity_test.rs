@@ -1436,7 +1436,9 @@ fn wiki_intra_docs_links_resolve() -> Result<(), TestError> {
     // across docs/cli-reference.md, docs/config-reference.md, docs/vcon.md,
     // docs/mcp-tools.md, docs/mcp-tools-vcon.md and docs/rest-api.md, which
     // link the tool, the route and "Fetch a stored vCon" to each other.
-    const EXPECTED_WIKI_LINKS: usize = 1779;
+    // 1779 -> 1781: the capabilities sections of docs/mcp-tools-server.md
+    // and docs/rest-api.md link the fetch tool and route they report on.
+    const EXPECTED_WIKI_LINKS: usize = 1781;
     // Raised 459 -> 460 when SRC1 stage 1 shipped: docs/cli-reference.md's
     // `--hep-listen` row now points at cookbook recipe "Take signaling from HEP and media off the wire, in one process" in docs/examples.md
     // rather than restating how to pair `-L` with `-d`. Attributed per file

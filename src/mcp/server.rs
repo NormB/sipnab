@@ -3041,6 +3041,10 @@ pub struct RuntimeFlags {
     /// live capture with `--rtpengine-control` set: a file replay can never
     /// transmit, whatever the flag says.
     pub mcp_allow_relay_query: bool,
+    /// Whether `fetch_vcon` can read the operator's vCon store. True only
+    /// when `--mcp-allow-vcon-fetch` was given and a `[vcon_fetch] url` is
+    /// configured; always false in a build without the `vcon` feature.
+    pub mcp_allow_vcon_fetch: bool,
     /// What an endpoint a relay asserted over HEP is worth on this run,
     /// decided at startup by the HEP listener's authentication:
     /// `hmac-verified`, `plain-secret`, or `port-gated-only` when sipnab
@@ -6733,6 +6737,10 @@ impl SipnabMcp {
                 mcp_allow_tls_capture: self.allow_tls_capture,
                 mcp_allow_save_findings: self.allow_save_findings,
                 mcp_allow_relay_query: self.relay_query.is_some(),
+                #[cfg(feature = "vcon")]
+                mcp_allow_vcon_fetch: self.vcon_fetch.is_ready(),
+                #[cfg(not(feature = "vcon"))]
+                mcp_allow_vcon_fetch: false,
                 hep_delivery_trust: self.relay_delivery_trust(),
                 mcp_allow_actions: self
                     .actions

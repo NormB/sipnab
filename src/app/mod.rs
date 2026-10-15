@@ -60,6 +60,12 @@ pub mod vcon_fetch {
     }
 
     impl Access {
+        /// Never: this build has no fetcher.
+        #[must_use]
+        pub const fn is_ready(&self) -> bool {
+            false
+        }
+
         /// Always [`Access::Off`]: a build without the `vcon` feature
         /// refuses the opt-in flags at startup, before this is asked.
         ///

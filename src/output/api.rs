@@ -1808,6 +1808,7 @@ async fn get_capabilities(
         can_plugins: cfg!(feature = "plugins"),
         runtime: schema::CapabilitiesRuntime {
             api_allow_relay_query: state.relay_query.permit.is_some(),
+            api_allow_vcon_fetch: state.vcon_fetch.is_ready(),
         },
         // The one report `--version`, the TUI help and MCP give, so no two
         // surfaces can describe different libraries.
@@ -6609,6 +6610,10 @@ pub mod schema {
         /// on a live source. Off means the `/v1/relay/...` routes answer
         /// `not_configured` or `not_permitted` rather than reaching the relay.
         pub api_allow_relay_query: bool,
+        /// Whether `GET /v1/vcon/fetch/{uuid}` can read the operator's vCon
+        /// store: `--api-allow-vcon-fetch` with a `[vcon_fetch] url`. Off
+        /// means that route answers 503 naming what is missing.
+        pub api_allow_vcon_fetch: bool,
     }
 
     /// One other leg of a call, and the strategy that matched it. The fields
@@ -9810,6 +9815,34 @@ mod tests {
         assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "{body}");
         assert!(body.contains("--api-allow-vcon-fetch"), "{body}");
         assert_eq!(stub.hits(), 0);
+        Ok(())
+    }
+
+    /// `GET /v1/capabilities` reports the vCon fetch opt-in as on exactly when
+    /// the fetch route can reach a store: off without the flag, off with the
+    /// flag and no `[vcon_fetch] url`, on with both.
+    #[cfg(feature = "vcon")]
+    #[tokio::test]
+    async fn capabilities_reports_the_vcon_fetch_opt_in() -> Result<(), TestError> {
+        use crate::app::vcon_fetch::{Access, stub_store};
+        let stub = stub_store::start(200, stub_store::container(stub_store::UUID))?;
+        let (_dir, ready) = stub_store::ready(&stub, false)?;
+        for (access, want) in [
+            (Access::Off, false),
+            (Access::NotConfigured, false),
+            (ready, true),
+        ] {
+            let mut state = make_state();
+            state.vcon_fetch = access;
+            let resp = build_router(state)
+                .oneshot(test_request("/v1/capabilities")?)
+                .await
+                .map_err(|e| format!("oneshot: {e:?}"))?;
+            let body = body_to_string(resp.into_body()).await?;
+            let v: Value = serde_json::from_str(&body).map_err(|e| format!("JSON: {e:?}"))?;
+            assert_eq!(v["runtime"]["api_allow_vcon_fetch"], want, "{v}");
+        }
+        assert_eq!(stub.hits(), 0, "reporting the opt-in contacts no store");
         Ok(())
     }
 

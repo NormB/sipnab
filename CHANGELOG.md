@@ -18,6 +18,7 @@ entry that carries them.
   - The request, the credential, the CA, the size limit, the decryption and the signer checks are `sipnab --vcon-fetch`'s, by one shared function. sipnab writes no file.
   - The answer carries `stored_form`, `decrypted`, `signature_verified`, `signer_sha256`, `schema_findings` and `container`.
   - The tool is in the `vcon` bundle.
+  - `server_capabilities` reports `runtime.mcp_allow_vcon_fetch` and `GET /v1/capabilities` reports `runtime.api_allow_vcon_fetch`, each `true` only when the door's flag is given and `[vcon_fetch] url` is set.
 
 ### Fixed
 

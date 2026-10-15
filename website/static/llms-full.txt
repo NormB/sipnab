@@ -9328,7 +9328,8 @@ curl -s -H "Authorization: Bearer $SIPNAB_API_KEY" http://127.0.0.1:8080/v1/capa
   "can_hep": true,
   "can_plugins": false,
   "runtime": {
-    "api_allow_relay_query": false
+    "api_allow_relay_query": false,
+    "api_allow_vcon_fetch": false
   },
   "libpcap": {
     "banner": "libpcap version 1.10.5 (with TPACKET_V3)",
@@ -9356,6 +9357,9 @@ curl -s -H "Authorization: Bearer $SIPNAB_API_KEY" http://127.0.0.1:8080/v1/capa
   never work.
 - `api_allow_relay_query` is off unless this run may transmit a relay
   query.
+- `api_allow_vcon_fetch` is off unless
+  [`GET /v1/vcon/fetch/:uuid`](#get-v1vconfetchuuid) can reach a store: the run
+  has `--api-allow-vcon-fetch` and the config file sets `[vcon_fetch] url`.
 
 **`libpcap` names the library this process captures through.** It is
 `pcap_lib_version()` asked at runtime.
@@ -30730,6 +30734,7 @@ Then confirm the build can do what you are about to ask of it:
     "mcp_allow_tls_capture": false,
     "mcp_allow_save_findings": false,
     "mcp_allow_relay_query": false,
+    "mcp_allow_vcon_fetch": false,
     "hep_delivery_trust": "port-gated-only"
   }
 }
@@ -39312,6 +39317,7 @@ No parameters. Returns:
     "mcp_allow_tls_capture": false,
     "mcp_allow_save_findings": false,
     "mcp_allow_relay_query": false,  // true only on a live capture with --rtpengine-control
+    "mcp_allow_vcon_fetch": false,   // true with --mcp-allow-vcon-fetch and a [vcon_fetch] url
     "hep_delivery_trust": "port-gated-only",  // hmac-verified, plain-secret or port-gated-only
     "mcp_allow_actions": []          // ["tfps"] with --allow-action tfps:mcp
   },
@@ -39338,6 +39344,10 @@ No parameters. Returns:
 interface, `--rtpengine-control` names the relay, and the operator passed
 `--mcp-allow-relay-query`. A file replay never transmits, so the flag alone
 does not set it.
+`runtime.mcp_allow_vcon_fetch` is true only when
+[`fetch_vcon`](mcp-tools-vcon.md#fetch_vcon) can reach a store: the operator
+passed `--mcp-allow-vcon-fetch` and the config file sets `[vcon_fetch] url`.
+Reporting it contacts no store.
 `runtime.mcp_allow_actions` lists the action targets `--allow-action` enabled
 for MCP callers, by name.
 

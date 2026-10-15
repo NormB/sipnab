@@ -2968,4 +2968,37 @@ mod tests {
         assert_eq!(stub.hits(), 1, "only the 404 request reached the store");
         Ok(())
     }
+
+    /// `server_capabilities` reports the vCon fetch opt-in as on exactly when
+    /// `fetch_vcon` can reach a store: off without the flag, off with the
+    /// flag and no `[vcon_fetch] url`, on with both.
+    #[tokio::test]
+    async fn capabilities_report_the_vcon_fetch_opt_in() -> Result<(), TestError> {
+        let stub = stub_store::start(200, stub_store::container(stub_store::UUID))?;
+        let (_dir, ready) = stub_store::ready(&stub, false)?;
+        for (server, want) in [
+            (empty_server(), false),
+            (
+                empty_server().with_vcon_fetch(crate::app::vcon_fetch::Access::NotConfigured),
+                false,
+            ),
+            (empty_server().with_vcon_fetch(ready), true),
+        ] {
+            let result = server
+                .server_capabilities()
+                .await
+                .map_err(|e| format!("capabilities answered: {e:?}"))?;
+            let text = result
+                .content
+                .iter()
+                .filter_map(rmcp::model::ContentBlock::as_text)
+                .map(|t| t.text.clone())
+                .next()
+                .ok_or("a payload")?;
+            let v: serde_json::Value = serde_json::from_str(&text)?;
+            assert_eq!(v["runtime"]["mcp_allow_vcon_fetch"], want, "{v}");
+        }
+        assert_eq!(stub.hits(), 0, "reporting the opt-in contacts no store");
+        Ok(())
+    }
 }

@@ -958,6 +958,14 @@ pub enum Access {
 }
 
 impl Access {
+    /// Whether a fetch can reach a store: the door's flag was given and a
+    /// `[vcon_fetch]` store is configured. What the capabilities answers
+    /// report as the door's opt-in.
+    #[must_use]
+    pub const fn is_ready(&self) -> bool {
+        matches!(self, Self::Ready(_))
+    }
+
     /// The access a door opted in with `flag` (`allowed`) has to the store
     /// `keys` configure. Reads the credential and the decryption key, and
     /// loads the CA, as `sipnab --vcon-fetch` does.

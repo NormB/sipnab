@@ -3120,7 +3120,8 @@ curl -s -H "Authorization: Bearer $SIPNAB_API_KEY" http://127.0.0.1:8080/v1/capa
   "can_hep": true,
   "can_plugins": false,
   "runtime": {
-    "api_allow_relay_query": false
+    "api_allow_relay_query": false,
+    "api_allow_vcon_fetch": false
   },
   "libpcap": {
     "banner": "libpcap version 1.10.5 (with TPACKET_V3)",
@@ -3148,6 +3149,9 @@ curl -s -H "Authorization: Bearer $SIPNAB_API_KEY" http://127.0.0.1:8080/v1/capa
   never work.
 - `api_allow_relay_query` is off unless this run may transmit a relay
   query.
+- `api_allow_vcon_fetch` is off unless
+  [`GET /v1/vcon/fetch/:uuid`](#get-v1-vcon-fetch-uuid) can reach a store: the run
+  has `--api-allow-vcon-fetch` and the config file sets `[vcon_fetch] url`.
 
 **`libpcap` names the library this process captures through.** It is
 `pcap_lib_version()` asked at runtime.
