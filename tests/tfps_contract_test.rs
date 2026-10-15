@@ -847,6 +847,28 @@ fn a_peer_busy_being_written_is_retried_not_refused() -> Result<(), TestError> {
     Ok(())
 }
 
+/// The same moment, stretched the way a loaded host stretches it. A writer
+/// told to let go after 50 ms left the file busy past the half second
+/// sipnab used to wait, on a loaded host, whether the writer was this
+/// process or another one (see `ETXTBSY_PATIENCE` in `src/security/tfps.rs`
+/// for the counts). Nothing bounds that but the scheduler, so sipnab waits
+/// five seconds; this holds the handle for one, which the old half second
+/// refused every time.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_peer_busy_for_more_than_half_a_second_is_still_waited_for() -> Result<(), TestError> {
+    let fake = FakeCtl::echoing(STATUS)?;
+    let held = std::fs::OpenOptions::new().append(true).open(fake.path())?;
+    let release = std::thread::spawn(move || {
+        std::thread::sleep(Duration::from_secs(1));
+        drop(held);
+    });
+    let reply = fake.explicit().status()?;
+    assert!(matches!(reply, Reply::Answered { .. }), "{reply:?}");
+    release.join().map_err(|_| "thread panicked")?;
+    Ok(())
+}
+
 #[test]
 fn a_zero_exit_is_answered_with_its_stdout() -> Result<(), TestError> {
     let fake = FakeCtl::echoing(STATUS)?;

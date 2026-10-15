@@ -749,9 +749,18 @@ fn run_bounded(ctl: &Path, argv: &[OsString], timeout: Duration) -> Result<Ran, 
 /// `tfps_ctl` is closing it, or a child forked by another thread of THIS
 /// process inherited the write descriptor and has not exec'd yet -- the
 /// ordinary fork/exec race on Linux, and the one the test suite hits when
-/// two tests write their fakes at once. Half a second covers both; a file
-/// still busy after that is reported as the spawn failure it is.
-const ETXTBSY_PATIENCE: Duration = Duration::from_millis(500);
+/// two tests write their fakes at once. A file still busy after this is
+/// reported as the spawn failure it is.
+///
+/// Neither moment is bounded by anything but the scheduler, and the half
+/// second this used to be ran out on a loaded host. With the load average
+/// between 105 and 270, a write handle let go of after 50 ms still failed
+/// the spawn with `ETXTBSY` in 6 to 49 runs of 300 when this process held
+/// it, and in 9 to 17 of 300 when another process did. Against five
+/// seconds, none of 300 did either way. Five seconds costs nothing when the
+/// file is free, which is every spawn but these, and only delays the report
+/// of a file that really is held open.
+const ETXTBSY_PATIENCE: Duration = Duration::from_secs(5);
 
 /// Longest the timeout path waits for a stopped peer's stderr to close.
 const STOPPED_PIPE_GRACE: Duration = Duration::from_secs(2);

@@ -131,6 +131,10 @@ entry that carries them.
   - The dead-air measurement still reads the sender's own samples, with gaps closed up, so packet loss does not register as dead air.
 - **Comfort Noise and DTMF event packets are no longer decoded as speech.** They share the call's SSRC, and `--retain-audio` kept them with the audio: a 4-octet DTMF event became 4 samples of noise, and its repeated timestamp put the audio out of step. Only packets of the stream's own payload type are retained now.
 
+- **sipnab waits up to 5 seconds, not half a second, for a `tfps_ctl` that is still open for writing.**
+  - `exec` fails with "Text file busy" (`ETXTBSY`) while any process holds the file open for writing, for example the installer that just wrote it. sipnab retries, and gave up after 500 ms.
+  - Nothing but the scheduler bounds how long the writer takes to close. With the load average between 105 and 270, a writer told to let go after 50 ms still left the file busy past 500 ms in 6 to 49 runs of 300 when the writer was the test process, and in 9 to 17 of 300 when it was another process. Against 5 seconds, none of 300 failed either way.
+  - A file that is free is spawned at once, as before. Only the report of a file that stays busy comes later.
 - **A `tfps_ctl` that times out no longer loses the stderr it wrote before sipnab stopped it.**
   - The timeout path took whatever the stderr reader thread had read by then. On a loaded host the reader had often not been scheduled yet, so the error carried an empty stderr even though the peer had written its diagnosis.
   - It now waits for the reader to reach the end of the pipe, which happens as soon as the process-group kill closes it. A pipe still held open by a process outside the group is waited on for at most 2 seconds.
