@@ -1234,10 +1234,10 @@ fn only_the_pinned_signer_is_written() -> Result<(), TestError> {
     Ok(())
 }
 
-/// With a signer check, a container that is not encrypted has no signer to
+/// With a signer check, a container that is not signed has no signer to
 /// check: nothing is written.
 #[test]
-fn a_signer_check_writes_no_unencrypted_container() -> Result<(), TestError> {
+fn a_signer_check_writes_no_unsigned_container() -> Result<(), TestError> {
     use sipnab::output::vcon_jose::SignerTrust;
     let ours = signer_pki::signer_pki("ours")?;
     let answer = container(UUID);
@@ -1245,10 +1245,97 @@ fn a_signer_check_writes_no_unencrypted_container() -> Result<(), TestError> {
     let rig = Rig::new(&store.url(""), StoreKind::Conserver)?
         .trusting(SignerTrust::from_ca_pem(&ours.ca, true)?)?;
     match rig.fetch(UUID)? {
-        Fetched::Failed(why) => assert!(why.contains("not encrypted"), "{why}"),
+        Fetched::Failed(why) => assert!(why.contains("not signed"), "{why}"),
         other => return Err(format!("{other:?}").into()),
     }
     assert!(!rig.out(UUID).exists());
+    Ok(())
+}
+
+/// `container(uuid)` signed with the fixture key under `chain`, not
+/// encrypted: the signed form of core-04 section 5.2.
+fn signed_with(chain: &str, uuid: &str) -> Result<String, TestError> {
+    use sipnab::output::vcon_jose::{Signer, sign};
+    let key = std::fs::read_to_string(format!("{JOSE}/fake_grp.key"))?;
+    let bytes = sign(
+        container(uuid).as_bytes(),
+        uuid,
+        &Signer::from_pem(&key, chain)?,
+    )?;
+    Ok(String::from_utf8(bytes)?)
+}
+
+/// A signed container that is not encrypted is verified, as `-I` verifies
+/// it, and written as the store holds it, signature included. The outcome
+/// names the signer. No key is needed.
+#[test]
+fn a_signed_container_is_verified_and_written_as_stored() -> Result<(), TestError> {
+    let cert = std::fs::read_to_string(format!("{JOSE}/fake_grp.crt"))?;
+    let answer = signed_with(&cert, UUID)?;
+    let stored = answer.clone();
+    let store = FakeStore::start(move |_| Reply::Json(200, answer.clone()))?;
+    let rig = Rig::new(&store.url(""), StoreKind::Conserver)?;
+    match rig.fetch(UUID)? {
+        Fetched::Signed {
+            path,
+            findings,
+            signer,
+        } => {
+            assert_eq!(path, rig.out(UUID));
+            assert!(findings.is_empty(), "{findings:?}");
+            assert_eq!(signer, fixture_fingerprint()?);
+        }
+        other => return Err(format!("{other:?}").into()),
+    }
+    assert_eq!(std::fs::read_to_string(rig.out(UUID))?, stored);
+    Ok(())
+}
+
+/// A signed container whose signature does not verify is not written, as
+/// `-I` does not read it.
+#[test]
+fn a_signed_container_whose_signature_fails_writes_nothing() -> Result<(), TestError> {
+    let cert = std::fs::read_to_string(format!("{JOSE}/fake_grp.crt"))?;
+    let mut jws: serde_json::Value = serde_json::from_str(&signed_with(&cert, UUID)?)?;
+    let sig = jws["signatures"][0]["signature"]
+        .as_str()
+        .ok_or("signature")?
+        .to_string();
+    let flipped = if sig.starts_with('A') { "B" } else { "A" };
+    jws["signatures"][0]["signature"] = format!("{flipped}{}", &sig[1..]).into();
+    let answer = jws.to_string();
+    let store = FakeStore::start(move |_| Reply::Json(200, answer.clone()))?;
+    let rig = Rig::new(&store.url(""), StoreKind::Conserver)?;
+    match rig.fetch(UUID)? {
+        Fetched::Failed(why) => assert!(why.contains("signature"), "{why}"),
+        other => return Err(format!("{other:?}").into()),
+    }
+    assert!(!rig.out(UUID).exists());
+    Ok(())
+}
+
+/// The signer checks apply to a signed container that is not encrypted: a
+/// pinned fingerprint admits that signer only.
+#[test]
+fn the_pinned_signer_check_applies_to_a_signed_container() -> Result<(), TestError> {
+    use sipnab::output::vcon_jose::SignerTrust;
+    let (ours, theirs) = (
+        signer_pki::signer_pki("ours")?,
+        signer_pki::signer_pki("theirs")?,
+    );
+    let pin = sipnab::config::parse_sha256_fingerprint(&colon_sha256(&ours.leaf_der))?;
+    for (pki, written) in [(&ours, true), (&theirs, false)] {
+        let answer = signed_with(&pki.chain, UUID)?;
+        let store = FakeStore::start(move |_| Reply::Json(200, answer.clone()))?;
+        let rig = Rig::new(&store.url(""), StoreKind::Conserver)?
+            .trusting(SignerTrust::default().pinned(pin))?;
+        match (rig.fetch(UUID)?, written) {
+            (Fetched::Signed { .. }, true) => {}
+            (Fetched::Failed(why), false) => assert!(why.contains("fingerprint"), "{why}"),
+            (other, _) => return Err(format!("{other:?}").into()),
+        }
+        assert_eq!(rig.out(UUID).exists(), written);
+    }
     Ok(())
 }
 

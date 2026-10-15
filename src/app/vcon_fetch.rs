@@ -81,6 +81,19 @@ pub enum Fetched {
         /// The signer certificate's SHA-256 fingerprint.
         signer: String,
     },
+    /// A signed container that is not encrypted, its signature verified and
+    /// its signer checked, written to this file as the store holds it.
+    /// `findings`: what the schema check found in the vCon it signs.
+    /// `signer`: the SHA-256 fingerprint of the certificate the signature
+    /// verified against.
+    Signed {
+        /// The file written.
+        path: PathBuf,
+        /// The schema findings, one line each.
+        findings: Vec<String>,
+        /// The signer certificate's SHA-256 fingerprint.
+        signer: String,
+    },
     /// An encrypted container, written to this file as the store holds it:
     /// no decryption key was given.
     Encrypted(PathBuf),
@@ -752,7 +765,12 @@ impl Fetcher {
                 signer,
             },
             (crate::output::vcon_jose::Form::Encrypted, None) => Fetched::Encrypted(path),
-            _ => Fetched::Saved {
+            (_, Some(signer)) => Fetched::Signed {
+                path,
+                findings: held.findings,
+                signer,
+            },
+            (_, None) => Fetched::Saved {
                 path,
                 findings: held.findings,
             },
@@ -761,9 +779,10 @@ impl Fetcher {
 
     /// Read the container with `uuid` from the store into memory, with every
     /// check [`Self::fetch_one`] makes before it writes: the status, the size
-    /// limit, the kind's envelope, the uuid inside, and for an encrypted
-    /// container with a key, the decryption, the signature and the signer
-    /// checks. Writes nothing.
+    /// limit, the kind's envelope, the uuid inside, and for a signed
+    /// container, or an encrypted one with a key, the readers' rule
+    /// ([`crate::output::vcon_jose::Opener::unwrap`]): the decryption, every
+    /// signature and the signer checks. Writes nothing.
     ///
     /// The one rule for both the fetcher and the server doors that return a
     /// container inline ([`fetch_inline`]).
@@ -841,62 +860,95 @@ impl Fetcher {
             ));
         }
         let stored_form = crate::output::vcon_jose::form_of(&doc);
-        let encrypted = stored_form == crate::output::vcon_jose::Form::Encrypted;
-        if !encrypted
+        let signed_or_encrypted = matches!(
+            stored_form,
+            crate::output::vcon_jose::Form::Signed | crate::output::vcon_jose::Form::Encrypted
+        );
+        if !signed_or_encrypted
             && let Some(opener) = &self.settings.decrypt
             && opener.checks_signer()
         {
             return Retrieved::Failed(format!(
-                "{url}: the container is not encrypted, so it has no signer for \
+                "{url}: the container is not signed, so it has no signer for \
                  {SIGNER_CA_FLAG} or {SIGNER_SHA256_FLAG} to check; nothing was written"
             ));
         }
-        if encrypted {
-            let Some(opener) = &self.settings.decrypt else {
+        if !signed_or_encrypted {
+            return Retrieved::Container(Held {
+                findings: schema_findings(&doc),
+                bytes: container,
+                stored_form,
+                signer: None,
+            });
+        }
+        let encrypted = stored_form == crate::output::vcon_jose::Form::Encrypted;
+        // An encrypted container with no key is kept as the store holds it.
+        let keyless;
+        let opener: &crate::output::vcon_jose::Opener = match &self.settings.decrypt {
+            Some(opener) => opener,
+            None if encrypted => {
                 return Retrieved::Container(Held {
                     bytes: container,
                     stored_form,
                     signer: None,
                     findings: Vec::new(),
                 });
-            };
-            let opened = match opener.open(&container, self.settings.limits.max_size) {
-                Ok(o) => o,
-                Err(e) => {
-                    return Retrieved::Failed(format!(
-                        "{url}: the container is encrypted and did not decrypt with \
-                         --vcon-fetch-decrypt-key ({e}); nothing was written"
-                    ));
-                }
-            };
-            let inner: serde_json::Value = match serde_json::from_slice(&opened.unsigned) {
-                Ok(v) => v,
-                Err(e) => {
-                    return Retrieved::Failed(format!(
-                        "{url}: the decrypted container is not JSON: {e}; nothing was written"
-                    ));
-                }
-            };
-            let inner_uuid = inner.get("uuid").and_then(serde_json::Value::as_str);
-            if !inner_uuid.is_some_and(|h| h.eq_ignore_ascii_case(uuid)) {
+            }
+            None => {
+                keyless = crate::output::vcon_jose::Opener::without_key();
+                &keyless
+            }
+        };
+        // The readers' rule (`-I`, `analyze_vcon`, `validate_vcon`): decrypt
+        // the encrypted form, verify every signed layer, and check the
+        // outermost signer against the configured trust.
+        let unwrapped = match opener.unwrap(&container, self.settings.limits.max_size) {
+            Ok(u) => u,
+            Err(e) if encrypted => {
                 return Retrieved::Failed(format!(
-                    "{url}: the decrypted container's uuid is {}, not the one asked for; \
-                     nothing was written",
-                    inner_uuid.map_or_else(|| "missing".to_string(), |h| format!("{h:?}"))
+                    "{url}: the container is encrypted and did not decrypt with \
+                     --vcon-fetch-decrypt-key ({e}); nothing was written"
                 ));
             }
-            return Retrieved::Container(Held {
-                findings: schema_findings(&inner),
-                bytes: opened.unsigned,
-                stored_form,
-                signer: Some(opened.signer_sha256),
-            });
+            Err(e) => {
+                return Retrieved::Failed(format!(
+                    "{url}: the container is signed and did not verify ({e}); nothing was \
+                     written"
+                ));
+            }
+        };
+        let signer = unwrapped.layers.iter().find_map(|layer| match layer {
+            crate::output::vcon_jose::Layer::Signed(fingerprint) => Some(fingerprint.clone()),
+            _ => None,
+        });
+        let inner: serde_json::Value = match serde_json::from_slice(&unwrapped.unsigned) {
+            Ok(v) => v,
+            Err(e) => {
+                return Retrieved::Failed(format!(
+                    "{url}: the vCon inside the container is not JSON: {e}; nothing was written"
+                ));
+            }
+        };
+        let inner_uuid = inner.get("uuid").and_then(serde_json::Value::as_str);
+        if !inner_uuid.is_some_and(|h| h.eq_ignore_ascii_case(uuid)) {
+            return Retrieved::Failed(format!(
+                "{url}: the {} container's uuid is {}, not the one asked for; nothing was \
+                 written",
+                if encrypted { "decrypted" } else { "signed" },
+                inner_uuid.map_or_else(|| "missing".to_string(), |h| format!("{h:?}"))
+            ));
         }
         Retrieved::Container(Held {
-            findings: schema_findings(&doc),
-            bytes: container,
+            findings: schema_findings(&inner),
+            // A decrypted container is kept as the vCon inside; a signed one
+            // as the store holds it, its signature with it.
+            bytes: if encrypted {
+                unwrapped.unsigned
+            } else {
+                container
+            },
             stored_form,
-            signer: None,
+            signer,
         })
     }
 
@@ -920,10 +972,12 @@ pub struct Held {
     pub bytes: Vec<u8>,
     /// The form the store held it in.
     pub stored_form: crate::output::vcon_jose::Form,
-    /// The SHA-256 fingerprint of the certificate the signature verified
-    /// against: present only when an encrypted container was decrypted.
+    /// The SHA-256 fingerprint of the certificate the outermost signature
+    /// verified against: present when a signed container verified, or an
+    /// encrypted one was decrypted and its signature verified.
     pub signer: Option<String>,
-    /// What the core-04 schema found in [`Self::bytes`], one line each.
+    /// What the core-04 schema found in the vCon, one line each: in
+    /// [`Self::bytes`], or for a signed container in the vCon it signs.
     /// Empty for a container left encrypted, which the schema cannot read.
     pub findings: Vec<String>,
 }
@@ -1078,7 +1132,7 @@ pub fn fetch_inline(access: &Access, uuid: &str) -> Result<InlineVcon, InlineRef
     let verified = held.signer.is_some();
     Ok(InlineVcon {
         container,
-        decrypted: verified,
+        decrypted: verified && held.stored_form == crate::output::vcon_jose::Form::Encrypted,
         schema_findings: held.findings,
         schema_version: 1,
         signature_verified: verified,
@@ -1110,9 +1164,11 @@ pub struct InlineVcon {
     pub schema_findings: Vec<String>,
     /// The version of this answer's shape.
     pub schema_version: u32,
-    /// Whether the signed form inside a decrypted container verified and
-    /// passed `[vcon_fetch] signer_ca` and `signer_sha256` when the operator
-    /// sets them. Always `false` for a container that was not encrypted.
+    /// Whether the container's signature verified and passed
+    /// `[vcon_fetch] signer_ca` and `signer_sha256` when the operator sets
+    /// them: the signed form inside a decrypted container, or a signed
+    /// container that is not encrypted. `false` for an unsigned container
+    /// and for one left encrypted.
     pub signature_verified: bool,
     /// The SHA-256 fingerprint of the certificate the signature verified
     /// against, as `openssl x509 -noout -fingerprint -sha256` prints it.
@@ -1257,9 +1313,9 @@ pub fn exit_code(outcomes: &[Fetched]) -> i32 {
         return 3;
     }
     let clean = outcomes.iter().all(|o| match o {
-        Fetched::Saved { findings, .. } | Fetched::Decrypted { findings, .. } => {
-            findings.is_empty()
-        }
+        Fetched::Saved { findings, .. }
+        | Fetched::Decrypted { findings, .. }
+        | Fetched::Signed { findings, .. } => findings.is_empty(),
         Fetched::Encrypted(_) => true,
         _ => false,
     });
@@ -1320,6 +1376,32 @@ pub fn describe(uuid: &str, outcome: &Fetched) -> (tracing::Level, String) {
             format!(
                 "{uuid}: decrypted and written to {} (signed by the certificate with SHA-256 \
                  fingerprint {signer}), but the schema refuses it ({} finding(s)): {}",
+                path.display(),
+                findings.len(),
+                findings.join("; ")
+            ),
+        ),
+        Fetched::Signed {
+            path,
+            findings,
+            signer,
+        } if findings.is_empty() => (
+            tracing::Level::INFO,
+            format!(
+                "{uuid}: written to {} as the store holds it; the signature verifies against \
+                 the certificate with SHA-256 fingerprint {signer}",
+                path.display()
+            ),
+        ),
+        Fetched::Signed {
+            path,
+            findings,
+            signer,
+        } => (
+            tracing::Level::WARN,
+            format!(
+                "{uuid}: written to {} (signed by the certificate with SHA-256 fingerprint \
+                 {signer}), but the schema refuses the vCon it signs ({} finding(s)): {}",
                 path.display(),
                 findings.len(),
                 findings.join("; ")
@@ -1974,6 +2056,44 @@ mod tests {
         assert_eq!(stub.hits(), 0, "nothing was sent");
         Ok(())
     }
+
+    /// A signed container that is not encrypted is verified, as the readers
+    /// verify it, and comes back as the store holds it with its signer. No
+    /// key is needed; the schema is checked on the vCon it signs.
+    #[test]
+    fn a_signed_container_comes_back_verified() -> TestResult {
+        let signed = stub_store::signed(INLINE_UUID, false)?;
+        let stub = stub_store::start(200, signed.clone())?;
+        let (_dir, access) = ready(&stub, false)?;
+        let v = serde_json::to_value(
+            fetch_inline(&access, INLINE_UUID).map_err(|e| e.message("--x"))?,
+        )?;
+        assert_eq!(v["stored_form"], "signed", "{v}");
+        assert_eq!(v["decrypted"], false, "{v}");
+        assert_eq!(v["signature_verified"], true, "{v}");
+        assert_eq!(
+            v["signer_sha256"],
+            stub_store::fixture_fingerprint()?,
+            "{v}"
+        );
+        assert_eq!(v["schema_findings"], serde_json::json!([]), "{v}");
+        let want: serde_json::Value = serde_json::from_str(&signed)?;
+        assert_eq!(v["container"], want, "{v}");
+        Ok(())
+    }
+
+    /// A signed container whose signature does not verify is refused, as
+    /// the readers refuse it.
+    #[test]
+    fn a_signed_container_whose_signature_fails_is_refused() -> TestResult {
+        let stub = stub_store::start(200, stub_store::signed(INLINE_UUID, true)?)?;
+        let (_dir, access) = ready(&stub, false)?;
+        match fetch_inline(&access, INLINE_UUID) {
+            Err(InlineRefusal::Store(why)) => assert!(why.contains("signature"), "{why}"),
+            other => return Err(format!("{other:?}").into()),
+        }
+        Ok(())
+    }
 }
 
 /// A vCon store on `127.0.0.1` for the in-crate tests of every door that
@@ -2142,6 +2262,31 @@ pub(crate) mod stub_store {
             &Recipient::from_cert_pem(&cert)?,
         )?;
         Ok(String::from_utf8(bytes)?)
+    }
+
+    /// [`container`] signed with the fixture key and certificate, not
+    /// encrypted. With `tamper`, the signature's first character is changed,
+    /// so it does not verify.
+    pub(crate) fn signed(uuid: &str, tamper: bool) -> Result<String, Box<dyn std::error::Error>> {
+        use crate::output::vcon_jose::{Signer, sign};
+        let key = std::fs::read_to_string(format!("{JOSE}/fake_grp.key"))?;
+        let cert = std::fs::read_to_string(format!("{JOSE}/fake_grp.crt"))?;
+        let bytes = sign(
+            container(uuid).as_bytes(),
+            uuid,
+            &Signer::from_pem(&key, &cert)?,
+        )?;
+        if !tamper {
+            return Ok(String::from_utf8(bytes)?);
+        }
+        let mut jws: serde_json::Value = serde_json::from_slice(&bytes)?;
+        let sig = jws["signatures"][0]["signature"]
+            .as_str()
+            .ok_or("signature")?
+            .to_string();
+        let flipped = if sig.starts_with('A') { "B" } else { "A" };
+        jws["signatures"][0]["signature"] = format!("{flipped}{}", &sig[1..]).into();
+        Ok(jws.to_string())
     }
 
     /// The fixture certificate's SHA-256 fingerprint, as openssl prints it.

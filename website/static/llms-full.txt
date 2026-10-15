@@ -19392,8 +19392,8 @@ store by uuid and writes each to a file.
 | `--vcon-fetch-ca` | `<FILE>` | host bundle | 0.5.209 | Trust only the CA certificates in this PEM file for an `https://` store. Without it the fetcher trusts the host's CA bundle. Config: `[vcon_fetch] ca` |
 | `--vcon-fetch-extra-ca` | `<FILE>` | -- | 0.5.219 | Trust the CA certificates in this PEM file for an `https://` store **in addition to** the host's CA bundle: the fetcher accepts the store's certificate when the host's bundle or this file issued it. Use `--vcon-fetch-ca` instead to trust only the named file; the fetcher refuses the two together. Either flag replaces both `[vcon_fetch] ca` and `[vcon_fetch] extra_ca`. Config: `[vcon_fetch] extra_ca` |
 | `--vcon-fetch-decrypt-key` | `<FILE>` | -- | 0.5.218 | Decrypt each encrypted container with the RSA private key in this PEM file, verify its signature, and write the unsigned vCon inside. The file must be readable by its owner only. Without it the fetcher writes an encrypted container as the store holds it. See [Fetch an encrypted vCon](vcon.md#fetch-an-encrypted-vcon). Config: `[vcon_fetch] decrypt_key` |
-| `--vcon-fetch-signer-ca` | `<FILE\|system>` | -- | 0.5.219 | Write a decrypted container only when its signing certificate chains, through the intermediates in its `x5c`, to a CA certificate in this PEM file, with every certificate in the chain within its validity period. `system` uses the host's CA bundle; write `./system` for a file of that name. A container that is not encrypted has no signer to check and the fetcher writes nothing for it. Needs `--vcon-fetch-decrypt-key`. See [Check who signed it](vcon.md#check-who-signed-it). Config: `[vcon_fetch] signer_ca` |
-| `--vcon-fetch-signer-sha256` | `<HEX>` | -- | 0.5.219 | Write a decrypted container only when its signing certificate has this SHA-256 fingerprint: 64 hex digits, plain or in colon-separated pairs, either case, as `openssl x509 -noout -fingerprint -sha256` prints it. A container that is not encrypted has no signer to check and the fetcher writes nothing for it. Needs `--vcon-fetch-decrypt-key`. Config: `[vcon_fetch] signer_sha256` |
+| `--vcon-fetch-signer-ca` | `<FILE\|system>` | -- | 0.5.219 | Write a decrypted or signed container only when its signing certificate chains, through the intermediates in its `x5c`, to a CA certificate in this PEM file, with every certificate in the chain within its validity period. `system` uses the host's CA bundle; write `./system` for a file of that name. A container that is not signed has no signer to check and the fetcher writes nothing for it. Needs `--vcon-fetch-decrypt-key`. See [Check who signed it](vcon.md#check-who-signed-it). Config: `[vcon_fetch] signer_ca` |
+| `--vcon-fetch-signer-sha256` | `<HEX>` | -- | 0.5.219 | Write a decrypted or signed container only when its signing certificate has this SHA-256 fingerprint: 64 hex digits, plain or in colon-separated pairs, either case, as `openssl x509 -noout -fingerprint -sha256` prints it. A container that is not signed has no signer to check and the fetcher writes nothing for it. Needs `--vcon-fetch-decrypt-key`. Config: `[vcon_fetch] signer_sha256` |
 
 Examples:
 
@@ -40230,10 +40230,10 @@ Returns:
 | `uuid` | string | The uuid asked for |
 | `stored_form` | string | The form the store held the container in: `unsigned`, `signed` or `encrypted` |
 | `decrypted` | boolean | `true` when sipnab decrypted an encrypted container with `[vcon_fetch] decrypt_key` |
-| `signature_verified` | boolean | `true` when the signed form inside a decrypted container verified, and passed `[vcon_fetch] signer_ca` and `signer_sha256` when the operator sets them. A signed container that is not encrypted comes back as stored with `false`: the fetcher verifies a signature only inside an encrypted container |
+| `signature_verified` | boolean | `true` when the container's signature verified, and passed `[vcon_fetch] signer_ca` and `signer_sha256` when the operator sets them: the signed form inside a decrypted container, or a signed container that is not encrypted, which needs no key. sipnab refuses a signature that does not verify, as the readers do. `false` for an unsigned container and for one left encrypted |
 | `signer_sha256` | string or null | The SHA-256 fingerprint of the certificate the signature verified against, as `openssl x509 -noout -fingerprint -sha256` prints it |
 | `schema_findings` | array | Where the container fails the draft-ietf-vcon-vcon-core-04 schema, one line each. Empty for a valid container and for one left encrypted |
-| `container` | object | The vCon: the unsigned container when sipnab decrypted it, else as the store holds it, without the store kind's envelope |
+| `container` | object | The vCon: the unsigned container when sipnab decrypted it, else as the store holds it, a signed container with its signature, without the store kind's envelope |
 
 A second content block is the untrusted-content note: the container holds
 whatever its producer stored.
@@ -45791,7 +45791,7 @@ A URL that names a path keeps it. The kind's read path follows it.
 
 | The store answers | The fetcher |
 |---|---|
-| `2xx` with the container | writes it to `<uuid>.vcon.json`, mode `0600`, without the kind's envelope, every other byte as the store sent it. With `--vcon-fetch-decrypt-key`, it writes an encrypted container decrypted: see [Fetch an encrypted vCon](#fetch-an-encrypted-vcon) |
+| `2xx` with the container | writes it to `<uuid>.vcon.json`, mode `0600`, without the kind's envelope, every other byte as the store sent it. With `--vcon-fetch-decrypt-key`, it writes an encrypted container decrypted: see [Fetch an encrypted vCon](#fetch-an-encrypted-vcon). It verifies a signed container first: see [A signed container](#a-signed-container) |
 | `2xx` with a body larger than `--vcon-fetch-max-size`, not JSON, without the kind's envelope, or holding another uuid | writes nothing for that uuid |
 | `404` | writes nothing for that uuid, and logs that the store holds none |
 | `401` or `403` | stops: asks for no further uuid, and exits `3` |
@@ -45882,11 +45882,33 @@ sipnab --vcon-fetch 0158a120-0392-81a5-a0a3-98c35ae1193c \
   --vcon-fetch-signer-ca /etc/sipnab/vcon-signing-ca.pem
 ```
 
-With both, the fetcher applies both. With either, it writes nothing for a
-container whose signer fails the check, nor for a container that is not
-encrypted, which has no signer to check. The log line says why and the run
+With both, the fetcher applies both, to an encrypted container and to a
+signed one alike. With either, it writes nothing for a container whose signer
+fails the check, nor for a container that is not signed, which has no signer
+to check. The log line says why and the run
 exits `1`. When a container carries more than one signature, the checks
 apply to the first, the one the log line names.
+
+### A signed container
+
+A container in the signed form that is not encrypted
+([draft-ietf-vcon-vcon-core-04 section 5.2](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-04#section-5.2))
+needs no key. The fetcher verifies it as `-I`, `analyze_vcon` and
+`validate_vcon` do, by the same function:
+
+- it verifies the signature of every signed layer against the first
+  certificate in that layer's `x5c`;
+- it checks the outermost signer against `--vcon-fetch-signer-ca` and
+  `--vcon-fetch-signer-sha256` when the operator sets them;
+- it checks that the vCon inside holds the uuid asked for, and checks that
+  vCon against the vendored schema;
+- it writes the container as the store holds it, signature included, to
+  `<uuid>.vcon.json`, mode `0600`, and the log line gives the signer's SHA-256
+  fingerprint.
+
+The fetcher writes nothing for a signed container whose signature does not
+verify, or whose signer fails a check, and the run exits `1`, as `-I` refuses
+to read it.
 
 ### Read what came back
 
@@ -45949,9 +45971,9 @@ curl -s -H "Authorization: Bearer $SIPNAB_API_KEY" \
 `container` holds the vCon: decrypted when the store held it encrypted and
 the config sets `decrypt_key`, else as the store holds it. `decrypted`,
 `signature_verified` and `signer_sha256` say which checks it passed. A signed
-container that is not encrypted comes back as stored, with
-`signature_verified: false`: the fetcher verifies a signature only inside an
-encrypted container.
+container that is not encrypted comes back as stored, signature included,
+with `signature_verified: true` once its signature verifies, as
+[A signed container](#a-signed-container) describes.
 
 ## Walk through one, end to end
 

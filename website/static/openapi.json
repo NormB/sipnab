@@ -3144,7 +3144,7 @@
             "type": "integer"
           },
           "signature_verified": {
-            "description": "Whether the signed form inside a decrypted container verified and\npassed `[vcon_fetch] signer_ca` and `signer_sha256` when the operator\nsets them. Always `false` for a container that was not encrypted.",
+            "description": "Whether the container's signature verified and passed\n`[vcon_fetch] signer_ca` and `signer_sha256` when the operator sets\nthem: the signed form inside a decrypted container, or a signed\ncontainer that is not encrypted. `false` for an unsigned container\nand for one left encrypted.",
             "type": "boolean"
           },
           "signer_sha256": {

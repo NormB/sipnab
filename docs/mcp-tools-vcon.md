@@ -761,10 +761,10 @@ Returns:
 | `uuid` | string | The uuid asked for |
 | `stored_form` | string | The form the store held the container in: `unsigned`, `signed` or `encrypted` |
 | `decrypted` | boolean | `true` when sipnab decrypted an encrypted container with `[vcon_fetch] decrypt_key` |
-| `signature_verified` | boolean | `true` when the signed form inside a decrypted container verified, and passed `[vcon_fetch] signer_ca` and `signer_sha256` when the operator sets them. A signed container that is not encrypted comes back as stored with `false`: the fetcher verifies a signature only inside an encrypted container |
+| `signature_verified` | boolean | `true` when the container's signature verified, and passed `[vcon_fetch] signer_ca` and `signer_sha256` when the operator sets them: the signed form inside a decrypted container, or a signed container that is not encrypted, which needs no key. sipnab refuses a signature that does not verify, as the readers do. `false` for an unsigned container and for one left encrypted |
 | `signer_sha256` | string or null | The SHA-256 fingerprint of the certificate the signature verified against, as `openssl x509 -noout -fingerprint -sha256` prints it |
 | `schema_findings` | array | Where the container fails the draft-ietf-vcon-vcon-core-04 schema, one line each. Empty for a valid container and for one left encrypted |
-| `container` | object | The vCon: the unsigned container when sipnab decrypted it, else as the store holds it, without the store kind's envelope |
+| `container` | object | The vCon: the unsigned container when sipnab decrypted it, else as the store holds it, a signed container with its signature, without the store kind's envelope |
 
 A second content block is the untrusted-content note: the container holds
 whatever its producer stored.
