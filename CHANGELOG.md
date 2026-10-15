@@ -53,6 +53,14 @@ entry that carries them.
   signature did not verify under the algorithm it named. It now says ES256
   (`-7`).
 
+- **A lost packet is now silence of its own length in exported and live audio, instead of being skipped.**
+  - The decoders played the retained frames one after another, so each lost packet shortened the WAV by its duration and everything after it played early. In a stereo export the two parties drifted apart by the loss on each side.
+  - Frames are now placed by their RTP timestamps ([RFC 3550 section 5.1](https://www.rfc-editor.org/rfc/rfc3550.html#section-5.1)). Where the timestamps show time passed with no audio received, the export and the live audio route put silence of that length. The timestamps cannot tell a lost packet from a sender pausing, so the export summary and the note inside the file name both: for example "20 ms in 1 gap where the RTP timestamps show no audio arrived (lost packets, or the sender pausing) is silence in this file".
+  - Reordered packets play in timestamp order, and a packet that repeats a timestamp plays once and is counted.
+  - The silence is bounded by how long the stream lasted in capture time. A timestamp jump longer than that is not filled; it is counted and named, and the audio either side is joined. One hostile packet can no longer make an export allocate silence for as long as a 32-bit timestamp reaches.
+  - The dead-air measurement still reads the sender's own samples, with gaps closed up, so packet loss does not register as dead air.
+- **Comfort Noise and DTMF event packets are no longer decoded as speech.** They share the call's SSRC, and `--retain-audio` kept them with the audio: a 4-octet DTMF event became 4 samples of noise, and its repeated timestamp put the audio out of step. Only packets of the stream's own payload type are retained now.
+
 ### Internal
 
 - **The constant-time eviction tests count the work instead of timing it.**

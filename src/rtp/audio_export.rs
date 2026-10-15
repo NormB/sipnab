@@ -37,14 +37,21 @@ pub fn export_stream_to_wav(stream: &RtpStream, path: &Path) -> Result<String> {
         bail!("{}", nothing_to_decode(&[stream]));
     }
 
-    let (pcm_samples, sample_rate, codec_label, decode_failures) = decode_stream_pcm(stream)?;
+    let DecodedStream {
+        pcm: pcm_samples,
+        rate: sample_rate,
+        label: codec_label,
+        failures: decode_failures,
+        timeline,
+    } = decode_stream_pcm(stream, true)?;
     let duration_secs = pcm_samples.len() as f64 / sample_rate as f64;
     // Built once and used twice: the note inside the file and the summary
     // printed beside it say the same thing, because they are the same string.
     let partial = format!(
-        "{}{}",
+        "{}{}{}",
         retention_clauses(&RetentionLoss::of(&[stream])),
-        decode_failure_clause(decode_failures)
+        decode_failure_clause(decode_failures),
+        timeline_clause(&TimelineTotals::of(&timeline, stream.clock_rate))
     );
     write_wav_with_provenance(
         path,
@@ -322,8 +329,11 @@ pub fn decode_dialog_audio(streams: &[&RtpStream]) -> Result<DialogAudio> {
         .copied()
         .collect();
     let mut decoded: Vec<(Vec<i16>, u32, &'static str, u64)> = Vec::with_capacity(carried.len());
+    let mut placed = TimelineTotals::default();
     for stream in &carried {
-        decoded.push(decode_stream_pcm(stream)?);
+        let d = decode_stream_pcm(stream, true)?;
+        placed.add(&TimelineTotals::of(&d.timeline, stream.clock_rate));
+        decoded.push((d.pcm, d.rate, d.label, d.failures));
     }
 
     // The higher rate wins and the lower channel is resampled up, so a G.711
@@ -339,10 +349,11 @@ pub fn decode_dialog_audio(streams: &[&RtpStream]) -> Result<DialogAudio> {
     let failures: u64 = decoded.iter().map(|d| d.3).fold(0u64, u64::saturating_add);
 
     let partial = format!(
-        "{}{}{}{}",
+        "{}{}{}{}{}",
         retention_clauses(&loss),
         omitted_clause(distinct_sources, carried.len(), &skipped_codecs),
         decode_failure_clause(failures),
+        timeline_clause(&placed),
         direction_clause(streams)
     ) + &undecrypted_clause(&carried);
     let note = provenance_note(AudioMechanism::SipnabCapture, &partial);
@@ -589,6 +600,79 @@ fn decode_failure_clause(failures: u64) -> String {
     )
 }
 
+/// What the carried streams' timelines did, summed across streams whose RTP
+/// clocks may differ, in milliseconds.
+#[derive(Debug, Default, Clone, Copy)]
+struct TimelineTotals {
+    /// Gaps filled with silence.
+    gaps: u64,
+    /// Their total length, in milliseconds.
+    filled_ms: u64,
+    /// Repeated packets dropped.
+    duplicates: u64,
+    /// Timestamp jumps left unfilled.
+    jumps: u64,
+}
+
+impl TimelineTotals {
+    /// One stream's report, its fill converted from its own clock.
+    fn of(report: &crate::rtp::timeline::TimelineReport, clock_rate: u32) -> Self {
+        Self {
+            gaps: report.gaps,
+            filled_ms: report.filled_ms(clock_rate),
+            duplicates: report.duplicates,
+            jumps: report.jumps,
+        }
+    }
+
+    /// Add another stream's totals.
+    fn add(&mut self, other: &Self) {
+        self.gaps = self.gaps.saturating_add(other.gaps);
+        self.filled_ms = self.filled_ms.saturating_add(other.filled_ms);
+        self.duplicates = self.duplicates.saturating_add(other.duplicates);
+        self.jumps = self.jumps.saturating_add(other.jumps);
+    }
+}
+
+/// Clauses naming the time filled with silence, the repeated packets
+/// dropped, and the timestamp jumps left unfilled, or nothing when the frames
+/// lay end to end.
+///
+/// The file is longer than the frames it holds wherever silence was put in,
+/// and the timestamps cannot say whether a packet was lost or the sender
+/// paused, so the clause names both causes rather than guessing one.
+fn timeline_clause(t: &TimelineTotals) -> String {
+    let mut out = String::new();
+    if t.gaps > 0 {
+        let noun = if t.gaps == 1 { "gap" } else { "gaps" };
+        out.push_str(&format!(
+            " — {} ms in {} {noun} where the RTP timestamps show no audio arrived \
+             (lost packets, or the sender pausing) is silence in this file.",
+            t.filled_ms, t.gaps
+        ));
+    }
+    if t.duplicates > 0 {
+        let noun = if t.duplicates == 1 {
+            "packet"
+        } else {
+            "packets"
+        };
+        out.push_str(&format!(
+            " — {} duplicate {noun} (a repeated RTP timestamp) dropped.",
+            t.duplicates
+        ));
+    }
+    if t.jumps > 0 {
+        let noun = if t.jumps == 1 { "jump" } else { "jumps" };
+        out.push_str(&format!(
+            " — {} RTP timestamp {noun} longer than the stream itself not filled; \
+             the audio either side is joined.",
+            t.jumps
+        ));
+    }
+    out
+}
+
 /// A clause counting SRTP packets on the carried streams that were not
 /// decrypted, or nothing when there were none.
 ///
@@ -832,7 +916,7 @@ pub fn stream_pcm(stream: &RtpStream) -> Option<(Vec<i16>, u32)> {
     if stream.payload_buffer.is_empty() {
         return None;
     }
-    let (pcm, rate, _, _) = decode_stream_pcm(stream).ok()?;
+    let DecodedStream { pcm, rate, .. } = decode_stream_pcm(stream, false).ok()?;
     if pcm.is_empty() {
         None
     } else {
@@ -843,8 +927,43 @@ pub fn stream_pcm(stream: &RtpStream) -> Option<(Vec<i16>, u32)> {
 /// Decode all captured payloads in a stream to PCM i16 samples.
 ///
 /// Returns `(samples, sample_rate, codec_label)`.
-fn decode_stream_pcm(stream: &RtpStream) -> Result<(Vec<i16>, u32, &'static str, u64)> {
+/// How long `stream` has lasted in capture time, in milliseconds: the
+/// budget for the silence its timeline may put in (see
+/// [`crate::rtp::timeline`]).
+pub(crate) fn stream_wall_ms(stream: &RtpStream) -> u64 {
+    u64::try_from((stream.last_seen - stream.first_seen).num_milliseconds()).unwrap_or(0)
+}
+
+/// One stream's retained audio, decoded.
+pub(crate) struct DecodedStream {
+    /// The samples.
+    pub(crate) pcm: Vec<i16>,
+    /// Their rate.
+    pub(crate) rate: u32,
+    /// The codec's name in a summary.
+    pub(crate) label: &'static str,
+    /// Frames the decoder refused.
+    pub(crate) failures: u64,
+    /// Where the frames were placed on the stream's RTP clock.
+    pub(crate) timeline: crate::rtp::timeline::TimelineReport,
+}
+
+/// Decode `stream`'s retained frames in RTP timestamp order.
+///
+/// `fill` puts silence wherever the timestamps show time passed with no audio
+/// received (see [`crate::rtp::timeline`]), which is what a file someone
+/// listens to needs. Without it the gaps close up, which is what a
+/// measurement of the sender's own samples needs: a lost packet is not dead
+/// air. Both drop repeated packets and undo reordering.
+fn decode_stream_pcm(stream: &RtpStream, fill: bool) -> Result<DecodedStream> {
+    use crate::rtp::timeline::{
+        Step, Timeline, samples_to_ticks, ticks_to_samples, timestamp_order,
+    };
     let mut decoder = FrameDecoder::new(stream.codec.as_deref())?;
+    let rate = decoder.rate(stream.clock_rate);
+    let clock = stream.clock_rate;
+    let mut timeline = Timeline::new(clock, stream_wall_ms(stream), fill);
+    let stamps: Vec<u32> = stream.payload_buffer.iter().map(|(ts, _)| *ts).collect();
     let mut pcm: Vec<i16> = Vec::new();
     // Counted, not just logged. A skipped frame shortens the audio while the
     // summary went on reporting `payload_buffer.len()` as the frame count, so
@@ -852,21 +971,35 @@ fn decode_stream_pcm(stream: &RtpStream) -> Result<(Vec<i16>, u32, &'static str,
     // otherwise. `debug!` is off by default, which made the only record of it
     // invisible on the runs that mattered.
     let mut decode_failures: u64 = 0;
-    for (_ts, payload) in &stream.payload_buffer {
+    for index in timestamp_order(&stamps) {
+        let Some((ts, payload)) = stream.payload_buffer.get(index) else {
+            continue;
+        };
+        let Step::Play { fill_ticks } = timeline.step(*ts) else {
+            continue;
+        };
+        // Bounded by the timeline's budget, the stream's own wall-clock span,
+        // so a hostile timestamp cannot size this allocation.
+        let silence = usize::try_from(ticks_to_samples(fill_ticks, clock, rate)).unwrap_or(0);
+        pcm.resize(pcm.len().saturating_add(silence), 0);
         match decoder.decode(payload) {
-            Ok(samples) => pcm.extend_from_slice(&samples),
+            Ok(samples) => {
+                timeline.played(samples_to_ticks(samples.len() as u64, rate, clock));
+                pcm.extend_from_slice(&samples);
+            }
             Err(e) => {
                 decode_failures = decode_failures.saturating_add(1);
                 tracing::debug!("{} decode error (skipping frame): {e}", decoder.label());
             }
         }
     }
-    Ok((
+    Ok(DecodedStream {
         pcm,
-        decoder.rate(stream.clock_rate),
-        decoder.label(),
-        decode_failures,
-    ))
+        rate,
+        label: decoder.label(),
+        failures: decode_failures,
+        timeline: timeline.report(),
+    })
 }
 
 /// One stream's decoder, frame by frame, carrying whatever state the codec
@@ -2018,7 +2151,13 @@ mod tests {
             .collect();
         let mut stream = make_stream(Some("G722"), frames)?;
         stream.clock_rate = 8000;
-        let (pcm, rate, label, failures) = decode_stream_pcm(&stream)?;
+        let DecodedStream {
+            pcm,
+            rate,
+            label,
+            failures,
+            ..
+        } = decode_stream_pcm(&stream, true)?;
         assert_eq!(rate, 16000);
         assert_eq!(failures, 0);
         assert!(label.contains("G.722"), "{label}");
@@ -2182,6 +2321,124 @@ mod tests {
             msg.contains("retain") || msg.contains("retention"),
             "the error must say the payload was not retained: {msg}"
         );
+        Ok(())
+    }
+
+    /// PCMU frames of one byte value each, 160 bytes per 20 ms, on a stream
+    /// that lasted `wall_ms` of capture time.
+    fn pcmu_at(stamps: &[(u32, u8)], wall_ms: i64) -> Result<RtpStream, TestError> {
+        let frames = stamps.iter().map(|&(ts, b)| (ts, vec![b; 160])).collect();
+        let mut s = make_stream(Some("PCMU"), frames)?;
+        s.clock_rate = 8000;
+        s.last_seen = s.first_seen + chrono::Duration::milliseconds(wall_ms);
+        Ok(s)
+    }
+
+    /// The sample a whole frame of `byte` decodes to.
+    fn ulaw(byte: u8) -> i16 {
+        decode_frame(G711Codec::Ulaw, &[byte])[0]
+    }
+
+    /// A lost packet is silence of its own length in the export, so the audio
+    /// after it plays at the time it was spoken rather than 20 ms early.
+    #[test]
+    fn a_lost_packet_is_silence_of_its_length_in_the_export() -> Result<(), TestError> {
+        let s = pcmu_at(&[(0, 0x00), (160, 0x00), (480, 0x00)], 60)?;
+        let d = decode_stream_pcm(&s, true)?;
+        assert_eq!(d.pcm.len(), 640, "four 20 ms slots, one of them silence");
+        assert!(d.pcm[..320].iter().all(|&x| x == ulaw(0x00)));
+        assert!(d.pcm[320..480].iter().all(|&x| x == 0), "the lost packet");
+        assert!(d.pcm[480..].iter().all(|&x| x == ulaw(0x00)));
+        assert_eq!((d.timeline.gaps, d.timeline.filled_ticks), (1, 160));
+        let audio = decode_dialog_audio(&[&s])?;
+        assert!(
+            (audio.duration_secs - 0.08).abs() < 1e-9,
+            "{}",
+            audio.duration_secs
+        );
+        assert!(audio.partial.contains("20 ms"), "{}", audio.partial);
+        Ok(())
+    }
+
+    /// The single-stream export says what it filled, in the summary and in
+    /// the file's own note.
+    #[test]
+    fn the_stream_export_names_the_filled_time() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("gap.wav");
+        let s = pcmu_at(&[(0, 0x00), (480, 0x00)], 60)?;
+        let summary = export_stream_to_wav(&s, &path)?;
+        assert!(summary.contains("Exported 0.1s"), "{summary}");
+        assert!(summary.contains("40 ms in 1 gap"), "{summary}");
+        let bytes = std::fs::read(&path)?;
+        let text = String::from_utf8_lossy(&bytes);
+        assert!(
+            text.contains("40 ms in 1 gap"),
+            "the note in the file says it too"
+        );
+        Ok(())
+    }
+
+    /// Reordered packets play in timestamp order and a duplicate plays once.
+    #[test]
+    fn reordered_and_duplicate_packets_play_once_in_order() -> Result<(), TestError> {
+        let s = pcmu_at(&[(0, 0x00), (320, 0x20), (160, 0x10), (160, 0x30)], 60)?;
+        let d = decode_stream_pcm(&s, true)?;
+        let firsts: Vec<i16> = d.pcm.chunks(160).map(|c| c[0]).collect();
+        assert_eq!(firsts, vec![ulaw(0x00), ulaw(0x10), ulaw(0x20)]);
+        assert_eq!(d.timeline.duplicates, 1);
+        assert_eq!(d.timeline.gaps, 0);
+        let audio = decode_dialog_audio(&[&s])?;
+        assert!(audio.partial.contains("1 duplicate"), "{}", audio.partial);
+        Ok(())
+    }
+
+    /// A timestamp jump longer than the stream lasted is not filled: one
+    /// packet must not be able to make the export allocate hours of silence.
+    #[test]
+    fn a_timestamp_jump_beyond_the_stream_is_joined_not_filled() -> Result<(), TestError> {
+        let s = pcmu_at(&[(0, 0x00), (0x4000_0000, 0x00)], 40)?;
+        let d = decode_stream_pcm(&s, true)?;
+        assert_eq!(d.pcm.len(), 320);
+        assert_eq!(d.timeline.jumps, 1);
+        let audio = decode_dialog_audio(&[&s])?;
+        assert!(
+            audio.partial.contains("timestamp jump"),
+            "{}",
+            audio.partial
+        );
+        Ok(())
+    }
+
+    /// The amplitude measurement reads what the sender's samples did, so a
+    /// lost packet must not become dead air there.
+    #[test]
+    fn the_amplitude_samples_close_gaps_instead_of_filling_them() -> Result<(), TestError> {
+        let s = pcmu_at(&[(0, 0x00), (160, 0x00), (480, 0x00)], 60)?;
+        let (pcm, _) = stream_pcm(&s).ok_or("decoded")?;
+        assert_eq!(pcm.len(), 480);
+        assert!(pcm.iter().all(|&x| x == ulaw(0x00)));
+        Ok(())
+    }
+
+    /// G.722 runs an 8 kHz RTP clock under 16 kHz samples, so a lost 20 ms
+    /// packet is 160 ticks and 320 samples of silence.
+    #[test]
+    fn a_lost_g722_packet_fills_at_the_decoder_rate() -> Result<(), TestError> {
+        let encoded = std::fs::read("tests/fixtures/g722/tone440.g722")?;
+        let frames: Vec<(u32, Vec<u8>)> = encoded
+            .chunks(160)
+            .take(3)
+            .enumerate()
+            .filter(|(i, _)| *i != 1)
+            .map(|(i, f)| (u32::try_from(i).unwrap_or(0) * 160, f.to_vec()))
+            .collect();
+        let mut s = make_stream(Some("G722"), frames)?;
+        s.clock_rate = 8000;
+        s.last_seen = s.first_seen + chrono::Duration::milliseconds(60);
+        let d = decode_stream_pcm(&s, true)?;
+        assert_eq!(d.pcm.len(), 960);
+        assert!(d.pcm[320..640].iter().all(|&x| x == 0));
         Ok(())
     }
 }

@@ -7908,7 +7908,11 @@ curl -s -H "Authorization: Bearer $SIPNAB_API_KEY" http://127.0.0.1:8080/v1/dial
 - when the file is partial, how:
   - a wrapped payload ring,
   - a stream sipnab could not decode,
-  - a direction the capture never saw.
+  - a direction the capture never saw,
+  - silence where the RTP timestamps show no audio arrived (lost packets, or
+    the sender pausing), with its length in milliseconds,
+  - repeated packets sipnab dropped, and timestamp jumps longer than the
+    stream that sipnab did not fill.
 
 So a `.wav` forwarded and played months later
 still says what it is and what it leaves out.
@@ -7996,7 +8000,7 @@ The server sends:
 | Message | Content |
 |---------|---------|
 | Text `{"type": "stream", ...}` | A stream, before its first packet: `stream` (its index), `ssrc`, `src`, `dst`, `codec`, `rate` (samples per second) and `format` (`s16le`) |
-| Binary | One RTP packet's audio. The first byte is the stream's index; the rest is 16-bit little-endian PCM at the stream's `rate` |
+| Binary | One RTP packet's audio, or silence of the length of audio that did not arrive: where a packet's RTP timestamp is ahead of where the previous packet's audio ended, a message of zero samples covering the difference comes first. The first byte is the stream's index; the rest is 16-bit little-endian PCM at the stream's `rate`. The server sends a packet that repeats a timestamp once |
 | Text `{"type": "skipped", ...}` | A stream whose codec sipnab does not decode: `ssrc`, `codec`, `reason`. The server sends none of its packets |
 | Text `{"type": "gap", ...}` | `packets` of stream `stream` left retention before the server sent them, so the audio has a gap there |
 | Text `{"type": "end", ...}` | The call ended (`reason`); a close with code 1000 follows |
