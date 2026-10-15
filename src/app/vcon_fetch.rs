@@ -419,39 +419,7 @@ impl FetchPlan {
                 (None, None) => None,
             },
         };
-        plan.signer_check_refusal(args)?;
         Ok(plan)
-    }
-
-    /// A signer check with no decryption key: only a decrypted container has
-    /// a signer to check. Refused from the flag (exit 2) when a signer flag
-    /// was given, else from the key (exit 1).
-    fn signer_check_refusal(
-        &self,
-        args: &crate::cli::VconFetchArgs,
-    ) -> Result<(), (crate::settings::Origin, String)> {
-        use crate::settings::Origin;
-        if self.decrypt_key.is_some() || (self.signer_ca.is_none() && self.signer_sha256.is_none())
-        {
-            return Ok(());
-        }
-        let from_flag =
-            args.vcon_fetch_signer_ca.is_some() || args.vcon_fetch_signer_sha256.is_some();
-        let (origin, named) = if from_flag {
-            (
-                Origin::CommandLine,
-                format!("{SIGNER_CA_FLAG} and {SIGNER_SHA256_FLAG} need {DECRYPT_FLAG}"),
-            )
-        } else {
-            (
-                Origin::ConfigFile,
-                format!("{SIGNER_CA_KEY} and {SIGNER_SHA256_KEY} need {DECRYPT_KEY}"),
-            )
-        };
-        Err((
-            origin,
-            format!("{named}: only a decrypted container has a signer to check"),
-        ))
     }
 
     /// Every uuid to fetch: the ones on the command line, then, when `-` was
@@ -494,13 +462,22 @@ impl FetchPlan {
             limits: self.limits,
             out_dir: self.out_dir,
             overwrite: self.overwrite,
-            decrypt: match self.decrypt_key {
-                Some(key) => Some(Arc::new(
+            // A signer check needs no key: it applies to a signed container
+            // as it is, and to the signed form inside an encrypted one.
+            decrypt: match (
+                self.decrypt_key,
+                self.signer_ca.is_some() || self.signer_sha256.is_some(),
+            ) {
+                (Some(key), _) => Some(Arc::new(
                     crate::output::vcon_jose::Opener::load(&key.path)
                         .map_err(|e| (key.origin, format!("{}: {e}", key.from)))?
                         .trusting(signer_trust(self.signer_ca.as_ref(), self.signer_sha256)?),
                 )),
-                None => None,
+                (None, true) => Some(Arc::new(
+                    crate::output::vcon_jose::Opener::without_key()
+                        .trusting(signer_trust(self.signer_ca.as_ref(), self.signer_sha256)?),
+                )),
+                (None, false) => None,
             },
         })
     }
@@ -885,6 +862,16 @@ impl Fetcher {
         // An encrypted container with no key is kept as the store holds it.
         let keyless;
         let opener: &crate::output::vcon_jose::Opener = match &self.settings.decrypt {
+            // A signer check without a key: the signer of an encrypted
+            // container is inside the encryption, so it cannot be checked,
+            // and writing the container as stored would skip the check.
+            Some(opener) if encrypted && !opener.has_key() => {
+                return Retrieved::Failed(format!(
+                    "{url}: the container is encrypted, so {SIGNER_CA_FLAG} or \
+                     {SIGNER_SHA256_FLAG} cannot check its signer without the key: give \
+                     {DECRYPT_FLAG}, or {DECRYPT_KEY} in the config file; nothing was written"
+                ));
+            }
             Some(opener) => opener,
             None if encrypted => {
                 return Retrieved::Container(Held {
@@ -2079,6 +2066,34 @@ mod tests {
         assert_eq!(v["schema_findings"], serde_json::json!([]), "{v}");
         let want: serde_json::Value = serde_json::from_str(&signed)?;
         assert_eq!(v["container"], want, "{v}");
+        Ok(())
+    }
+
+    /// A server door takes `[vcon_fetch] signer_sha256` without a
+    /// decryption key, and applies it to a signed container: the pinned
+    /// signer comes back verified, another is refused naming the
+    /// fingerprint.
+    #[test]
+    fn a_door_checks_the_signer_of_a_signed_container_without_a_key() -> TestResult {
+        let dir = tempfile::tempdir()?;
+        let auth = stub_store::private_file(dir.path(), "auth", &stub_store::secret())?;
+        let stub = stub_store::start(200, stub_store::signed(INLINE_UUID, false)?)?;
+        let pin = stub_store::fixture_fingerprint()?;
+        for (pinned, verified) in [(pin.as_str(), true), (&"ab".repeat(32)[..], false)] {
+            let store = keys(&format!(
+                "kind = \"conserver\"\nurl = \"{}\"\nauth_file = {:?}\nsigner_sha256 = \"{pinned}\"",
+                stub.url,
+                auth.display().to_string()
+            ))?;
+            let access = Access::resolve("--mcp-allow-vcon-fetch", true, &store)?;
+            match (fetch_inline(&access, INLINE_UUID), verified) {
+                (Ok(inline), true) => assert!(inline.signature_verified, "{inline:?}"),
+                (Err(InlineRefusal::Store(why)), false) => {
+                    assert!(why.contains("fingerprint"), "{why}");
+                }
+                (other, _) => return Err(format!("{other:?}").into()),
+            }
+        }
         Ok(())
     }
 

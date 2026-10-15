@@ -1399,51 +1399,104 @@ fn the_binary_checks_the_signer_flags() -> Result<(), TestError> {
     Ok(())
 }
 
-/// A signer check without a decryption key, from a flag (exit 2) or a key
-/// (exit 1), is refused before anything is fetched; so is a fingerprint
-/// that is not 64 hex digits.
+/// A fingerprint that is not 64 hex digits is refused before anything is
+/// fetched: from the flag with exit 2, from the key with exit 1.
 #[test]
-fn the_binary_refuses_a_signer_check_it_cannot_apply() -> Result<(), TestError> {
+fn a_malformed_signer_fingerprint_is_refused_unfetched() -> Result<(), TestError> {
     let store = holding_store()?;
     let rig = Rig::new(&store.url(""), StoreKind::Conserver)?;
-    let hex = "ab".repeat(32);
-    for (flag, value, wants) in [
-        (
-            "--vcon-fetch-signer-ca",
-            "ca.pem",
-            "--vcon-fetch-decrypt-key",
-        ),
-        (
-            "--vcon-fetch-signer-sha256",
-            hex.as_str(),
-            "--vcon-fetch-decrypt-key",
-        ),
-        ("--vcon-fetch-signer-sha256", "ab:cd", "64 hex digits"),
-    ] {
-        let mut args = fetch_args(&rig, &store.url(""), &[H1]);
-        args.splice(0..0, [flag.to_string(), value.to_string()]);
-        let (err, code) = sipnab(&args, "")?;
-        assert_eq!(code, Some(2), "{flag} {value}: {err}");
-        assert!(err.contains(wants), "{flag} {value}: {err}");
-    }
-    for (line, wants) in [
-        ("signer_ca = \"ca.pem\"", "[vcon_fetch] decrypt_key"),
-        (
-            &format!("signer_sha256 = \"{hex}\"")[..],
-            "[vcon_fetch] decrypt_key",
-        ),
-        ("signer_sha256 = \"ab:cd\"", "64 hex digits"),
-    ] {
-        let config = rig.dir.path().join("fetch.toml");
-        std::fs::write(&config, format!("[vcon_fetch]\n{line}\n"))?;
-        let mut args = fetch_args(&rig, &store.url(""), &[H1]);
-        args.retain(|a| a != "--no-config");
-        args.splice(0..0, ["--config".to_string(), config.display().to_string()]);
-        let (err, code) = sipnab(&args, "")?;
-        assert_eq!(code, Some(1), "{line}: {err}");
-        assert!(err.contains(wants), "{line}: {err}");
-    }
+    let mut args = fetch_args(&rig, &store.url(""), &[H1]);
+    args.splice(
+        0..0,
+        [
+            "--vcon-fetch-signer-sha256".to_string(),
+            "ab:cd".to_string(),
+        ],
+    );
+    let (err, code) = sipnab(&args, "")?;
+    assert_eq!(code, Some(2), "{err}");
+    assert!(err.contains("64 hex digits"), "{err}");
+    let config = rig.dir.path().join("fetch.toml");
+    std::fs::write(&config, "[vcon_fetch]\nsigner_sha256 = \"ab:cd\"\n")?;
+    let mut args = fetch_args(&rig, &store.url(""), &[H1]);
+    args.retain(|a| a != "--no-config");
+    args.splice(0..0, ["--config".to_string(), config.display().to_string()]);
+    let (err, code) = sipnab(&args, "")?;
+    assert_eq!(code, Some(1), "{err}");
+    assert!(err.contains("64 hex digits"), "{err}");
     assert!(store.requests().is_empty());
+    Ok(())
+}
+
+/// A signer check needs no decryption key for a signed container that is
+/// not encrypted: the pinned signer is verified and written, another signer
+/// writes nothing. From the flag and from the key alike.
+#[test]
+fn a_signer_check_needs_no_decryption_key_for_a_signed_container() -> Result<(), TestError> {
+    let (ours, theirs) = (
+        signer_pki::signer_pki("ours")?,
+        signer_pki::signer_pki("theirs")?,
+    );
+    let pin = colon_sha256(&ours.leaf_der);
+    for (pki, from_key, code) in [
+        (&ours, false, 0),
+        (&theirs, false, 1),
+        (&ours, true, 0),
+        (&theirs, true, 1),
+    ] {
+        let answer = signed_with(&pki.chain, UUID)?;
+        let store = FakeStore::start(move |_| Reply::Json(200, answer.clone()))?;
+        let rig = Rig::new(&store.url(""), StoreKind::Conserver)?;
+        let mut args = fetch_args(&rig, &store.url(""), &[UUID]);
+        if from_key {
+            let config = rig.dir.path().join("fetch.toml");
+            std::fs::write(
+                &config,
+                format!("[vcon_fetch]\nsigner_sha256 = \"{pin}\"\n"),
+            )?;
+            args.retain(|a| a != "--no-config");
+            args.splice(0..0, ["--config".to_string(), config.display().to_string()]);
+        } else {
+            args.splice(
+                0..0,
+                ["--vcon-fetch-signer-sha256".to_string(), pin.clone()],
+            );
+        }
+        let (err, got) = sipnab(&args, "")?;
+        assert_eq!(got, Some(code), "from_key={from_key}: {err}");
+        assert_eq!(rig.out(UUID).exists(), code == 0, "{err}");
+        if code == 1 {
+            assert!(err.contains("fingerprint"), "{err}");
+        }
+    }
+    Ok(())
+}
+
+/// An encrypted container fetched with a signer check and no decryption
+/// key is refused, naming the key flag: its signer is inside the
+/// encryption, so it cannot be checked, and writing it as stored would
+/// skip the check that was asked for.
+#[test]
+fn an_encrypted_container_with_a_signer_check_and_no_key_names_the_key() -> Result<(), TestError> {
+    let ours = signer_pki::signer_pki("ours")?;
+    let answer = sealed_by(&ours, UUID)?;
+    let store = FakeStore::start(move |_| Reply::Json(200, answer.clone()))?;
+    let rig = Rig::new(&store.url(""), StoreKind::Conserver)?;
+    let mut args = fetch_args(&rig, &store.url(""), &[UUID]);
+    args.splice(
+        0..0,
+        [
+            "--vcon-fetch-signer-sha256".to_string(),
+            colon_sha256(&ours.leaf_der),
+        ],
+    );
+    let (err, code) = sipnab(&args, "")?;
+    assert_eq!(code, Some(1), "{err}");
+    assert!(err.contains("--vcon-fetch-decrypt-key"), "{err}");
+    // The fetcher's flag, not the `-I` reader's: the reader's refusal names
+    // `--vcon-key`, which does nothing for `--vcon-fetch`.
+    assert!(!err.contains("--vcon-key"), "{err}");
+    assert!(!rig.out(UUID).exists());
     Ok(())
 }
 

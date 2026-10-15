@@ -5319,11 +5319,12 @@ pub struct VconFetchArgs {
     )]
     pub vcon_fetch_decrypt_key: Option<std::path::PathBuf>,
 
-    /// Write a decrypted container only when its signing certificate chains,
-    /// through the intermediates in its `x5c`, to a CA in this PEM file, each
-    /// certificate within its validity period. `system` uses the host's CA
-    /// bundle instead; write `./system` for a file of that name. Needs
-    /// --vcon-fetch-decrypt-key. Overrides `[vcon_fetch] signer_ca`.
+    /// Write a signed or decrypted container only when its signing certificate
+    /// chains, through the intermediates in its `x5c`, to a CA in this PEM
+    /// file, each certificate within its validity period. `system` uses the
+    /// host's CA bundle instead; write `./system` for a file of that name. An
+    /// encrypted container also needs --vcon-fetch-decrypt-key. Overrides
+    /// `[vcon_fetch] signer_ca`.
     #[arg(
         help_heading = "vCon fetcher",
         long = "vcon-fetch-signer-ca",
@@ -5332,9 +5333,10 @@ pub struct VconFetchArgs {
     )]
     pub vcon_fetch_signer_ca: Option<std::path::PathBuf>,
 
-    /// Write a decrypted container only when its signing certificate has this
-    /// SHA-256 fingerprint: 64 hex digits, plain or colon-separated, either
-    /// case, as `openssl x509 -noout -fingerprint -sha256` prints it. Needs
+    /// Write a signed or decrypted container only when its signing
+    /// certificate has this SHA-256 fingerprint: 64 hex digits, plain or
+    /// colon-separated, either case, as `openssl x509 -noout -fingerprint
+    /// -sha256` prints it. An encrypted container also needs
     /// --vcon-fetch-decrypt-key. Overrides `[vcon_fetch] signer_sha256`.
     #[arg(
         help_heading = "vCon fetcher",

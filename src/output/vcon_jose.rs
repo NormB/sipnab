@@ -1672,8 +1672,16 @@ impl Opener {
         self
     }
 
+    /// Whether this opener holds a decryption key: one built with
+    /// [`Self::without_key`] verifies a signed container and cannot open an
+    /// encrypted one.
+    #[must_use]
+    pub const fn has_key(&self) -> bool {
+        self.key_pem.is_some()
+    }
+
     /// Whether a signer check is configured: a container that is not
-    /// encrypted has no signer to check.
+    /// signed has no signer to check.
     #[must_use]
     pub fn checks_signer(&self) -> bool {
         self.trust.is_active()

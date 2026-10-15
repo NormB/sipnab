@@ -987,8 +987,8 @@ pub struct VconFetchConfig {
     /// The RSA private key that decrypts an encrypted container; readable by
     /// its owner only. `--vcon-fetch-decrypt-key` overrides it.
     pub decrypt_key: Option<PathBuf>,
-    /// The CA (PEM) a decrypted container's signing certificate must chain
-    /// to, or `system` for the host's CA bundle. `--vcon-fetch-signer-ca`
+    /// The CA (PEM) a signed or decrypted container's signing certificate
+    /// must chain to, or `system` for the host's CA bundle. `--vcon-fetch-signer-ca`
     /// overrides it.
     pub signer_ca: Option<PathBuf>,
     /// The SHA-256 fingerprint the signing certificate must have, hex, with

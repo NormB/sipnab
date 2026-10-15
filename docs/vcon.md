@@ -1819,7 +1819,9 @@ holds it, and says so in its log line.
 
 A valid signature shows that the holder of the key in `x5c` signed the
 container. It does not show who that is. Two settings make the fetcher check
-the signer before it writes anything. Each needs `--vcon-fetch-decrypt-key`.
+the signer before it writes anything. Neither needs a key for a signed container.
+An encrypted container needs `--vcon-fetch-decrypt-key` as well: without it, the
+signer is out of reach, and the fetcher writes nothing for it and names the flag.
 
 - `--vcon-fetch-signer-ca <FILE>` (`[vcon_fetch] signer_ca`): the signing
   certificate must chain, through the intermediate certificates the

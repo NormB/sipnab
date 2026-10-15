@@ -1066,8 +1066,8 @@ The vCon fetcher's settings (`sipnab --vcon-fetch <UUID>...`, see
 | `ca` | path | host bundle | The only CA (PEM) trusted for an `https://` store. `--vcon-fetch-ca` overrides it |
 | `extra_ca` | path | -- | A CA (PEM) trusted for an `https://` store in addition to the host's CA bundle. Refused beside `ca`. `--vcon-fetch-ca` and `--vcon-fetch-extra-ca` each replace both keys |
 | `decrypt_key` | path | -- | The RSA private key (PEM, readable by its owner only) that decrypts an encrypted container. `--vcon-fetch-decrypt-key` overrides it |
-| `signer_ca` | path | -- | The CA (PEM) a decrypted container's signing certificate must chain to, through the intermediates in its `x5c`, every certificate within its validity period; `system` for the host's CA bundle. Needs `decrypt_key`. `--vcon-fetch-signer-ca` overrides it |
-| `signer_sha256` | string | -- | The SHA-256 fingerprint the signing certificate of a decrypted container must have: 64 hex digits, plain or colon-separated, either case. Needs `decrypt_key`. `--vcon-fetch-signer-sha256` overrides it |
+| `signer_ca` | path | -- | The CA (PEM) a signed or decrypted container's signing certificate must chain to, through the intermediates in its `x5c`, every certificate within its validity period; `system` for the host's CA bundle. Needs no key for a signed container; an encrypted one needs `decrypt_key`. `--vcon-fetch-signer-ca` overrides it |
+| `signer_sha256` | string | -- | The SHA-256 fingerprint the signing certificate of a signed or decrypted container must have: 64 hex digits, plain or colon-separated, either case. Needs no key for a signed container; an encrypted one needs `decrypt_key`. `--vcon-fetch-signer-sha256` overrides it |
 | `timeout` | integer | `30` | Seconds to wait to connect, and for each read and write, 1 to 600. `--vcon-fetch-timeout` overrides it |
 | `max_size` | integer | `67108864` | The largest answer read for one container, in bytes, 1 to 4294967295. `--vcon-fetch-max-size` overrides it |
 | `max_response_head` | integer | `65536` | The most bytes of a store's status line and headers read, 1 to 4294967295. `--vcon-fetch-max-response-head` overrides it |
