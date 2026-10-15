@@ -185,7 +185,7 @@ links to its section on the bundle's page.
 | [`group_dialogs`](mcp-tools-signaling.md#group_dialogs) | [signaling](mcp-tools-signaling.md) | Carrier metrics per group — ASR, NER, ACD, post-dial delay, MOS, retransmissions — each beside the population it rests on |
 | [`hep_senders`](mcp-tools-server.md#hep_senders) | [server](mcp-tools-server.md) | Who feeds this run's HEP listener: each sender, its count, when it was last heard and whether it went silent, and every address the listener refused, by reason |
 | [`lint_dialog`](mcp-tools-signaling.md#lint_dialog) | [signaling](mcp-tools-signaling.md) | Conformance findings for one call, declaration against observation included, each with its RFC and section |
-| [`list_captures`](mcp-tools-captures.md#list_captures) | [captures](mcp-tools-captures.md) | Capture files in `--mcp-file-root`, with sizes |
+| [`list_captures`](mcp-tools-captures.md#list_captures) | [captures](mcp-tools-captures.md) | Capture files and stored vCon containers in `--mcp-file-root`, with sizes and each one's kind |
 | [`list_dialogs`](mcp-tools-core.md#list_dialogs) | [core](mcp-tools-core.md) | A page of dialog summaries, with the total behind it |
 | [`list_tls_libraries`](mcp-tools-tls.md#list_tls_libraries) | [tls](mcp-tools-tls.md) | which TLS libraries this host runs, and whether sipnab could read their plaintext without keys |
 | [`media_diagnostics`](mcp-tools-media.md#media_diagnostics) | [media](mcp-tools-media.md) | The facts under the MOS: QoS marking, jitter grounding, delay provenance, silence, and what the far end reported |

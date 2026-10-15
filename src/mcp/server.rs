@@ -8113,8 +8113,10 @@ impl SipnabMcp {
     /// List capture files in the configured root.
     #[tool(
         name = "list_captures",
-        description = "Lists capture files (.pcap/.pcapng) in the server's \
-                       configured file root, with sizes. Requires \
+        description = "Lists the capture files (.pcap/.pcapng, compressed, \
+                       archives) and stored vCon containers (.vcon.json, \
+                       .vcon.json.gz) in the server's configured file root, \
+                       with sizes; kind says which. Requires \
                        --mcp-file-root.",
         annotations(read_only_hint = true, open_world_hint = false)
     )]
@@ -8131,14 +8133,18 @@ impl SipnabMcp {
         })?;
         for entry in entries.flatten() {
             let path = entry.path();
-            // The same rule the TUI's file browser lists by, so an archive
-            // or a compressed capture sipnab reads is offered here too.
-            let is_capture = path
+            // The same rule the TUI's file browser lists by, so an archive,
+            // a compressed capture or a stored vCon container sipnab reads is
+            // offered here too.
+            let Some(kind) = path
                 .file_name()
                 .and_then(|n| n.to_str())
-                .is_some_and(crate::capture::archive::is_capture_file_name);
+                .and_then(crate::capture::archive::listed_kind)
+            else {
+                continue;
+            };
             // Files only: a directory here would tempt a caller into a path.
-            if !is_capture || !path.is_file() {
+            if !path.is_file() {
                 continue;
             }
             let size = entry.metadata().map(|m| m.len()).unwrap_or(0);
@@ -8168,6 +8174,7 @@ impl SipnabMcp {
             let encrypted = false;
             files.push(serde_json::json!({
                 "filename": path.file_name().and_then(|n| n.to_str()).unwrap_or_default(),
+                "kind": kind.as_str(),
                 "bytes": size,
                 "first_packet": first_packet,
                 "encrypted": encrypted,
@@ -8184,7 +8191,8 @@ impl SipnabMcp {
     /// Which of the capture files holds a call, without opening any of them.
     #[tool(
         name = "find_in_captures",
-        description = "Sweeps the capture files in --mcp-file-root for dialogs \
+        description = "Sweeps the capture files and vCon containers in \
+                       --mcp-file-root for dialogs \
                        matching a filter and names the files that hold them, \
                        WITHOUT touching the loaded capture. Answers 'which of \
                        these 40 rotated files holds Call-ID X', which \
@@ -8238,7 +8246,8 @@ impl SipnabMcp {
                 p.is_file()
                     && p.file_name()
                         .and_then(|n| n.to_str())
-                        .is_some_and(crate::capture::archive::is_capture_file_name)
+                        .and_then(crate::capture::archive::listed_kind)
+                        .is_some()
             })
             .collect();
         candidates.sort();
@@ -10765,6 +10774,100 @@ mod tests {
         Ok(())
     }
 
+    /// The stored vCon container sipnab's own tests read with `-I`.
+    const VCON_FIXTURE: &str = "tests/fixtures/vcon/sip-rtp-g711-1966.vcon.json";
+
+    /// A stored vCon container is listed beside a capture, each row saying
+    /// which kind it is: `open_capture` reads both, so hiding the container
+    /// left an agent unable to name a file sipnab can open. The gzip format
+    /// is listed under the name `gzip -k` gives it. A spool's
+    /// `.<name>.partial` temp file and a JSON file that is not named as a
+    /// container are not.
+    #[tokio::test]
+    async fn list_captures_lists_a_vcon_container_beside_a_capture() -> Result<(), TestError> {
+        let root = sweep_root(
+            "list-vcon",
+            &[
+                ("a.pcap", "tests/pcap-samples/sip-rtp-g711.pcap"),
+                ("call.vcon.json", VCON_FIXTURE),
+            ],
+            &[(".late.vcon.json.partial", b"{"), ("notes.json", b"{}")],
+        )?;
+        {
+            use std::io::Write;
+            let json =
+                std::fs::read(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(VCON_FIXTURE))
+                    .map_err(|e| format!("fixture: {e:?}"))?;
+            let mut enc = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::fast());
+            enc.write_all(&json).map_err(|e| format!("gzip: {e:?}"))?;
+            std::fs::write(
+                root.join("packed.vcon.json.gz"),
+                enc.finish().map_err(|e| format!("gzip: {e:?}"))?,
+            )
+            .map_err(|e| format!("write gz: {e:?}"))?;
+        }
+        let srv = server_with_dialog("caps@x")?.with_file_root(&root);
+        let result = srv
+            .list_captures()
+            .await
+            .map_err(|e| format!("list_captures: {e:?}"))?;
+        let v: serde_json::Value =
+            serde_json::from_str(&text_of(&result)?).map_err(|e| format!("json: {e:?}"))?;
+        let rows: Vec<(&str, &str)> = v["captures"]
+            .as_array()
+            .ok_or("captures")?
+            .iter()
+            .map(|c| {
+                (
+                    c["filename"].as_str().unwrap_or("?"),
+                    c["kind"].as_str().unwrap_or("?"),
+                )
+            })
+            .collect();
+        assert_eq!(
+            rows,
+            vec![
+                ("a.pcap", "capture"),
+                ("call.vcon.json", "vcon"),
+                ("packed.vcon.json.gz", "vcon"),
+            ],
+            "{v}"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+        Ok(())
+    }
+
+    /// The sweep reads a stored vCon container and names it as the file
+    /// holding the call, as `open_capture` would read it.
+    #[cfg(feature = "vcon")]
+    #[tokio::test]
+    async fn find_in_captures_reads_a_vcon_container() -> Result<(), TestError> {
+        let root = sweep_root(
+            "vcon-hit",
+            &[
+                ("register.pcap", "tests/pcap-samples/sip-register.pcap"),
+                ("call.vcon.json", VCON_FIXTURE),
+            ],
+            &[],
+        )?;
+        let srv = server_with_dialog("loaded@test")?.with_file_root(&root);
+        let r = srv
+            .find_in_captures(Parameters(FindInCapturesParams {
+                filter: "call_id == \"1-1966@10.0.2.20\"".to_string(),
+                ..Default::default()
+            }))
+            .await
+            .map_err(|e| format!("the sweep succeeds: {e:?}"))?;
+        let v: serde_json::Value =
+            serde_json::from_str(&text_of(&r)?).map_err(|e| format!("json: {e:?}"))?;
+        let sweep = &v["sweep"];
+        assert_eq!(sweep["matches"][0]["filename"], "call.vcon.json", "{sweep}");
+        assert_eq!(sweep["files_total"], 2, "{sweep}");
+        assert_eq!(sweep["complete"], true, "{sweep}");
+        let _ = std::fs::remove_dir_all(&root);
+        Ok(())
+    }
+
     /// The sweep names the file holding the call, and leaves the loaded
     /// capture exactly as it was.
     ///
@@ -12769,7 +12872,10 @@ mod tests {
             // says, measured 86,969 on the merged tree.
             // full 87_000 -> 87_300: the `rule` parameter, as the vcon row
             // above says.
-            ("full", 87_300),
+            // full 87_300 -> 87_500: `list_captures` and `find_in_captures`
+            // name the vCon containers they list and sweep; captures measured
+            // 12,696 and full 87,395.
+            ("full", 87_500),
         ];
         let sizes: std::collections::BTreeMap<String, usize> = empty_server()
             .with_output_schemas(false)

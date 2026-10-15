@@ -86,8 +86,9 @@ pub fn sniffs_as_container(prefix: &[u8]) -> bool {
     rest.iter().find(|b| !b.is_ascii_whitespace()) == Some(&b'{')
 }
 
-/// Whether a file NAME is one sipnab writes containers under: `*.vcon.json`,
-/// any case.
+/// Whether a file NAME is one a stored container goes under: `*.vcon.json`,
+/// which sipnab writes the unsigned, signed and encrypted forms under, or
+/// `*.vcon.json.gz`, the name `gzip` gives the gzip format of one. Any case.
 ///
 /// A listing hint for a file browser, which cannot open every file it shows
 /// to decide. It is not the detection rule: a container under any name is
@@ -95,7 +96,8 @@ pub fn sniffs_as_container(prefix: &[u8]) -> bool {
 #[must_use]
 pub fn is_container_file_name(name: &str) -> bool {
     let lower = name.to_ascii_lowercase();
-    lower.len() > ".vcon.json".len() && lower.ends_with(".vcon.json")
+    let stem = lower.strip_suffix(".gz").unwrap_or(lower.as_str());
+    stem.len() > ".vcon.json".len() && stem.ends_with(".vcon.json")
 }
 
 /// The first two bytes of every gzip member, ID1 and ID2

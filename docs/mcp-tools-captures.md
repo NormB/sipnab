@@ -13,7 +13,7 @@ the other bundles and finds any tool by name.
 
 | Tool | Parameters | Returns |
 |---|---|---|
-| [`list_captures`](#list_captures) | -- | Capture files in `--mcp-file-root`, with sizes |
+| [`list_captures`](#list_captures) | -- | Capture files and stored vCon containers in `--mcp-file-root`, with sizes and each one's kind |
 | [`find_in_captures`](#find_in_captures) | `filter`, `max_files?`, `deadline_ms?`, `wait_seconds?` | Which capture files hold dialogs matching a filter, without opening any of them; a sweep that outlasts its wait returns a job |
 | [`find_in_captures_status`](#find_in_captures_status) | `job_id`, `wait_seconds?` | A `find_in_captures` job's progress, or its result once it finishes |
 | [`cancel_find_in_captures`](#cancel_find_in_captures) | `job_id` | Stops a running `find_in_captures` job |
@@ -32,17 +32,28 @@ Start here when you have a capture and no particular suspect. These answer "what
 
 ### `list_captures`
 
-Capture files in the configured root, with their sizes and the instant each
-one's first packet arrived.
+Capture files and stored vCon containers in the configured root, with their
+sizes and the instant each one's first packet arrived.
 
 **Parameters:** none.
 
-**It lists what sipnab can open by name:** `.pcap`, `.pcapng` and `.cap`
-files, their gzip-compressed forms such as `*.pcap.gz`, and archives of captures
-(`.tar`, `.tgz`, `.tar.gz`, and `.zip` in builds with the `archive` feature),
-matched case-insensitively. Each entry carries `encrypted`: `true` for a ZIP
+**It lists what sipnab can open by name**, matched case-insensitively:
+
+- `.pcap`, `.pcapng` and `.cap` files, their gzip-compressed forms such as
+  `*.pcap.gz`, and archives of captures (`.tar`, `.tgz`, `.tar.gz`, and `.zip`
+  in builds with the `archive` feature). Each has `kind: "capture"`.
+- Stored vCon containers: `*.vcon.json`, the name sipnab writes the unsigned,
+  signed and encrypted forms under, and `*.vcon.json.gz`, the name `gzip`
+  gives the gzip format. Each has `kind: "vcon"`.
+  [`open_capture`](#open_capture) and `find_in_captures` read them as
+  [`-I` does](vcon.md#a-signed-encrypted-or-compressed-container).
+  The `.<name>.partial` file the fetcher and the forwarder write before they
+  move a container into place is not listed.
+
+Each entry carries `encrypted`: `true` for a ZIP
 holding an encrypted member, read from the archive's directory alone, so
-listing never tries a password. It skips directories.
+listing never tries a password. It is `false` for a vCon container, encrypted
+or not. It skips directories.
 The TUI's file browser lists by the same rule. [`open_capture`](#open_capture)
 accepts one thing this listing leaves out, a capture with no extension at all,
 so an agent that treats the listing as the whole set it may open misses those.
@@ -71,11 +82,11 @@ a capture, and one capture carrying no extension at all:
 {
   "schema_version": 1,
   "captures": [
-    { "filename": "Asterisk_ZFONE_XLITE.pcap", "bytes": 255581,
+    { "filename": "Asterisk_ZFONE_XLITE.pcap", "kind": "capture", "bytes": 255581,
       "first_packet": "2010-09-27T07:12:49+00:00" },
-    { "filename": "DTMFsipinfo.pcap", "bytes": 25429,
+    { "filename": "DTMFsipinfo.pcap", "kind": "capture", "bytes": 25429,
       "first_packet": "2011-04-27T08:14:29+00:00" },
-    { "filename": "b2bua-asterisk.pcapng", "bytes": 114952,
+    { "filename": "b2bua-asterisk.pcapng", "kind": "capture", "bytes": 114952,
       "first_packet": "2016-05-18T18:23:03+00:00" }
     // ... 27 more
   ]
@@ -94,6 +105,11 @@ capture that never received one, or a file it could not open — so treat `null`
 as "unknown", not as "empty". An archive always reads `null`: its first packet
 belongs to whichever member holds the earliest traffic, and finding out means
 unpacking it.
+
+For a vCon container, `first_packet` is the time of the earliest SIP message it
+stores. sipnab reads the whole container to find it, as `-I` does. It reads
+`null` for a container sipnab cannot open, such as an encrypted one on a run
+with no `--vcon-key`.
 
 sipnab reports neither a dialog count nor a
 last-packet time here, because both need the whole file parsed and a listing
@@ -114,7 +130,9 @@ the only way inside another file is [`open_capture`](#open_capture), documented
 This sweeps instead: a scratch store per file, the filter applied, **the loaded
 capture untouched**. An archive in the root counts as one file: the sweep reads
 every capture inside it into the one scratch store, and a match names the
-archive.
+archive. The sweep opens the files [`list_captures`](#list_captures) lists,
+stored vCon containers included: it reads the SIP messages a container stores,
+as `-I` does.
 
 | Name | Type | Legal values | If omitted |
 |---|---|---|---|

@@ -663,9 +663,8 @@ pub fn container_format(path: &Path) -> io::Result<Option<Format>> {
 /// `.cap`, optionally gzip-compressed, or a tar archive (`.tar`, `.tgz`,
 /// `.tar.gz`). Case-insensitive.
 ///
-/// For listings only — the TUI's file browser and MCP `list_captures` —
-/// where opening every file in a directory to sniff it would be the wrong
-/// cost. Reading a file never consults this: [`sniff`] decides that.
+/// For listings only, through [`listed_kind`], where opening every file in a
+/// directory to sniff it would be the wrong cost. Reading a file never consults this: [`sniff`] decides that.
 #[must_use]
 pub fn is_capture_file_name(name: &str) -> bool {
     let lower = name.to_ascii_lowercase();
@@ -682,6 +681,47 @@ pub fn is_capture_file_name(name: &str) -> bool {
         .extension()
         .and_then(|e| e.to_str())
         .is_some_and(|e| matches!(e, "pcap" | "pcapng" | "cap"))
+}
+
+/// What a listing shows a file NAME as: a capture or an archive of captures
+/// ([`is_capture_file_name`]), or a stored vCon container
+/// ([`crate::capture::vcon_input::is_container_file_name`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ListedKind {
+    /// A pcap, pcapng or `.cap` file, compressed or not, or an archive of
+    /// them.
+    Capture,
+    /// A stored vCon container, in any of its forms.
+    Vcon,
+}
+
+impl ListedKind {
+    /// The name a listing row carries: `capture` or `vcon`.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Capture => "capture",
+            Self::Vcon => "vcon",
+        }
+    }
+}
+
+/// Which kind of input a file NAME is listed as, or `None` for a name no
+/// listing offers.
+///
+/// The one listing rule: the TUI's file browser, MCP `list_captures` and MCP
+/// `find_in_captures` all list by it, so each offers every file
+/// `open_capture` and `-I` read by name, stored vCon containers included.
+/// Reading a file never consults it.
+#[must_use]
+pub fn listed_kind(name: &str) -> Option<ListedKind> {
+    if is_capture_file_name(name) {
+        Some(ListedKind::Capture)
+    } else if crate::capture::vcon_input::is_container_file_name(name) {
+        Some(ListedKind::Vcon)
+    } else {
+        None
+    }
 }
 
 /// Whether `path` holds several members to choose between — a tar, possibly
@@ -2431,6 +2471,28 @@ mod tests {
             assert!(!is_capture_file_name(no), "{no}");
         }
         Ok(())
+    }
+
+    /// The listing rule names a capture as a capture and a stored vCon
+    /// container, gzip format included, as a vCon. A spool's
+    /// `.<name>.partial` temp file, other JSON and a bare suffix are not
+    /// listed.
+    #[test]
+    fn listed_kinds() {
+        for (name, want) in [
+            ("a.pcap", Some(ListedKind::Capture)),
+            ("s.tgz", Some(ListedKind::Capture)),
+            ("call.vcon.json", Some(ListedKind::Vcon)),
+            ("CALL.VCON.JSON", Some(ListedKind::Vcon)),
+            ("call.vcon.json.gz", Some(ListedKind::Vcon)),
+            (".call.vcon.json.partial", None),
+            ("notes.json", None),
+            (".vcon.json", None),
+            (".vcon.json.gz", None),
+            ("call.vcon.json.error.json", None),
+        ] {
+            assert_eq!(listed_kind(name), want, "{name}");
+        }
     }
 
     #[test]
