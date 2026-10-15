@@ -20,6 +20,13 @@ entry that carries them.
   - Time with no G.729 packet is divided by the RTP sequence numbers. The frames of packets whose sequence numbers are missing are lost frames, which the decoder conceals; the rest of the time is untransmitted frames (Annex B discontinuous transmission), so the decoder's comfort noise runs. One missing packet stands for as many 10 ms frames as the stream's speech packets usually carry (the most frequent size received), and after speech, when the lost packets would not fill the gap, a pause began inside it and the last lost packet counts as the one-frame SID that starts it; when they fill the gap or more, the whole gap is lost frames (docs/g729.md gives the two layouts this does not tell apart). After speech the lost frames come first; after a SID frame they come last, right before the packet that resumed. A gap with no sequence number missing is untransmitted, after speech as well. Where the sequence numbers cannot count the loss (more missing than the gap has frames), the last frame received decides the whole gap, as before: lost after speech, untransmitted after a SID. Retained frames now carry their RTP sequence number. The export and vCon note names that time as the G.729 decoder's loss concealment or comfort noise, not as silence.
   - New feature `g729`, in `full` and in every release binary, the static musl ones included. Every one of them can download the package; the HTTPS client the vCon forwarder used now lives in a module that `g729` builds too.
 
+### Internal
+
+- **The MCP relay-trust test listens on a port its run holds from the start.**
+  - Its helper bound a UDP port, read the number, released the port and started sipnab on the number. Under the full suite a parallel test could take the port first, sipnab exited, and `hmac_authentication_is_reported_as_hmac_verified` failed with "sipnab closed stdout while waiting for server_capabilities".
+  - The run now listens on `127.0.0.1:0`.
+  - The released-port gate (`tests/released_port_scan_test.rs`) did not see that helper: it recognized a temporary socket and a socket passed to `drop(..)`, not a socket whose number is returned from its block. It now recognizes that shape too, with a case for the tail expression and one for `return`, and a negative case for a socket held while its number is used.
+
 ## [0.5.221] - 2026-10-15
 
 ### Added

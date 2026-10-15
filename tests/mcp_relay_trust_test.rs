@@ -21,17 +21,13 @@ use support::{McpSession, ok_payload};
 /// Any error a test can return; `?` converts into it.
 type TestError = Box<dyn std::error::Error>;
 
-/// A loopback UDP port nothing holds right now.
-fn free_udp_port() -> Result<u16, TestError> {
-    let socket = std::net::UdpSocket::bind("127.0.0.1:0")?;
-    Ok(socket.local_addr()?.port())
-}
-
 /// `server_capabilities.runtime` of a `sipnab --mcp` run listening for HEP
 /// with `extra` flags.
 fn runtime_listening(extra: &[&str]) -> Result<serde_json::Value, TestError> {
-    let listen = format!("127.0.0.1:{}", free_udp_port()?);
-    let mut argv = vec!["--mcp", "-N", "--quiet", "-L", listen.as_str()];
+    // Port 0: the kernel picks a port the run holds from the moment it
+    // exists. A number reserved and released first could be taken by a
+    // parallel test, and sipnab then exited before answering.
+    let mut argv = vec!["--mcp", "-N", "--quiet", "-L", "127.0.0.1:0"];
     argv.extend_from_slice(extra);
     let payload = ok_payload(
         &McpSession::start_live(&argv)?.call("server_capabilities", serde_json::json!({}))?,
