@@ -131,6 +131,11 @@ entry that carries them.
   - The dead-air measurement still reads the sender's own samples, with gaps closed up, so packet loss does not register as dead air.
 - **Comfort Noise and DTMF event packets are no longer decoded as speech.** They share the call's SSRC, and `--retain-audio` kept them with the audio: a 4-octet DTMF event became 4 samples of noise, and its repeated timestamp put the audio out of step. Only packets of the stream's own payload type are retained now.
 
+- **A `tfps_ctl` that times out no longer loses the stderr it wrote before sipnab stopped it.**
+  - The timeout path took whatever the stderr reader thread had read by then. On a loaded host the reader had often not been scheduled yet, so the error carried an empty stderr even though the peer had written its diagnosis.
+  - It now waits for the reader to reach the end of the pipe, which happens as soon as the process-group kill closes it. A pipe still held open by a process outside the group is waited on for at most 2 seconds.
+  - With the load average between 130 and 190, `a_peer_that_hangs_is_stopped_and_reported` lost the stderr in 3 runs of 300 before the change and in none of 300 after.
+
 ### Internal
 
 - **The constant-time eviction tests count the work instead of timing it.**
@@ -147,6 +152,11 @@ entry that carries them.
   - `cargo clippy --no-default-features --lib -- -D warnings` failed on main: `impl From<ActionPolicy> for Actions` used `..Self::default()`, which does nothing once the feature-gated `service` field is absent.
   - The struct is now built field by field, each under its declaration's `cfg`.
   - Every clippy gate ran `--all-features` only. CI's new "Clippy with no features" step and a matching pre-push gate run the no-feature build, and `tests/clippy_scope_parity_test.rs` requires both.
+
+- **`a_peer_that_hangs_is_stopped_and_reported` tolerates a host too loaded to start a shell's `sleep` within 3 seconds.**
+  - Its fake must have started a grandchild before the timeout fires. The test repeated a run without one at 300 ms, 1 s and 3 s, and then failed. With the load average at 113 to 185 it failed that way in 20 runs of 300.
+  - The timeout now doubles from 300 ms up to 76.8 s. The timeout's length is not what the test checks; the process-group kill is.
+  - Under the same load, 0 runs of 300 failed, counting the stderr fix above.
 
 - **The `[limits]` gate no longer reports `mcp_sweep_result_retention_secs` or `mcp_sweep_max_held_results` as dead on a loaded host.**
   - `every_documented_limits_key_changes_observable_behavior` polled each sweep once, after a fixed wait, and assumed the sweep had finished in time. With a load average of 56 to 82 it failed 31 of 50 runs: 17 because the retention probe's result had finished less than a second before its poll, 14 because the held-results probe's sweep was still running after 30 seconds.
