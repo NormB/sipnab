@@ -69,6 +69,15 @@ fn main() {
         sipnab::capture::archive::release_run_and_exit(code);
     }
 
+    // 0b. `sipnab g729 install|status`: the G.729 codebook tables. A command
+    //     of its own, dispatched on the first argument before the capture
+    //     command line is parsed, because it shares none of its flags and the
+    //     trailing capture-filter positional would otherwise read `g729` as a
+    //     filter. It opens no capture and exits.
+    if std::env::args_os().nth(1).is_some_and(|a| a == "g729") {
+        std::process::exit(run_g729_command());
+    }
+
     // 1. Parse CLI arguments and set up logging.
     let cli = Cli::parse_args();
     bootstrap::init_logging(&cli);
@@ -123,6 +132,24 @@ fn main() {
     // A run that ends by returning, rather than through
     // `release_run_and_exit`, releases what `-I` extracted here.
     sipnab::capture::archive::release_run();
+}
+
+/// Step 0b of [`main`]: `sipnab g729 ...`, with `sipnab g729` as the
+/// command's own name in its help and errors.
+fn run_g729_command() -> i32 {
+    #[cfg(feature = "g729")]
+    {
+        let args = std::iter::once(std::ffi::OsString::from("sipnab g729"))
+            .chain(std::env::args_os().skip(2));
+        sipnab::app::g729_install::main(args)
+    }
+    #[cfg(not(feature = "g729"))]
+    {
+        use std::io::Write as _;
+        // `writeln!`, not `eprintln!`: a closed stderr must not panic.
+        let _ = writeln!(std::io::stderr(), "{}", sipnab::rtp::g729_tables::NOT_BUILT);
+        1
+    }
 }
 
 /// Steps 1b to 2b of [`main`]: archive passwords, the immediate commands,
@@ -265,6 +292,17 @@ fn run_config_steps(cli: &Cli, loaded: &sipnab::config::LoadedConfig) {
         // hook installed just above; the panic is the feature.
         panic!("panic-selftest: intentional panic to verify crash handling");
     }
+
+    // 5c. Where this run finds the G.729 codebook tables: --g729-tables,
+    //     [g729] tables, or the default file. Nothing is read until a G.729
+    //     stream is decoded.
+    sipnab::rtp::g729_tables::configure(
+        cli.g729_table_location(
+            &loaded.config,
+            sipnab::rtp::g729_tables::default_table_file_here(),
+        ),
+        loaded.config.g729.auto_install.unwrap_or(false),
+    );
 
     // 6. --dump-config: print the effective config and exit.
     if cli.config_args.dump_config {

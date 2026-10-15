@@ -12,6 +12,7 @@ use clap::Parser;
 mod aggregate_args;
 mod call_query_args;
 mod file_job_args;
+pub mod g729_args;
 mod gate_args;
 pub mod one_shot;
 
@@ -343,6 +344,9 @@ pub fn compiled_features() -> Vec<&'static str> {
     }
     if cfg!(feature = "archive") {
         out.push("archive");
+    }
+    if cfg!(feature = "g729") {
+        out.push("g729");
     }
     out
 }
@@ -2241,6 +2245,18 @@ pub struct RtpArgs {
         value_parser = parse_quality_threshold
     )]
     pub quality_threshold: f64,
+
+    /// The G.729 codebook table file, for decoding G.729 audio.
+    ///
+    /// sipnab ships no ITU-T table values; `sipnab g729 install` builds this
+    /// file from the ITU-T G.729 software package. Absent, sipnab reads
+    /// `[g729] tables`, else `g729-tables.bin` in the directory of the user
+    /// config file (`$XDG_CONFIG_HOME/sipnab`, else `~/.config/sipnab`). A
+    /// path given here is used as given: when no file is there, G.729 streams
+    /// are left out of exported audio and the export names the command that
+    /// installs the tables. See docs/g729.md.
+    #[arg(help_heading = "RTP", long = "g729-tables", value_name = "PATH")]
+    pub g729_tables: Option<std::path::PathBuf>,
 }
 
 /// `Security` flags.
@@ -7250,6 +7266,21 @@ impl Cli {
         )
     }
 
+    /// Where the G.729 table file is: `--g729-tables`, else `[g729] tables`,
+    /// else `default` (see [`crate::rtp::g729_tables`]). Nothing is read here.
+    #[must_use]
+    pub fn g729_table_location(
+        &self,
+        config: &crate::config::Config,
+        default: Option<std::path::PathBuf>,
+    ) -> crate::rtp::g729_tables::TableLocation {
+        crate::rtp::g729_tables::TableLocation {
+            flag: self.rtp_args.g729_tables.clone(),
+            key: config.g729.tables.clone(),
+            default,
+        }
+    }
+
     /// Where `tfps_ctl` is: the flag, else `[tfps] ctl`, else `PATH` at call
     /// time; `[tfps] db` rides along. Nothing is probed here.
     #[must_use]
@@ -8705,6 +8736,28 @@ mod tests {
     use super::*;
 
     type TestError = Box<dyn std::error::Error>;
+
+    // ── --g729-tables: where the G.729 codebook tables are ──────────────
+
+    /// The flag wins over `[g729] tables`, the key over the default file, and
+    /// the default is passed through untouched.
+    #[test]
+    fn g729_tables_flag_then_key_then_default() -> Result<(), TestError> {
+        let config: crate::config::Config =
+            toml::from_str("[g729]\ntables = \"/k/t.bin\"\nauto_install = true\n")?;
+        let default = Some(std::path::PathBuf::from("/d/t.bin"));
+        let with_flag = Cli::try_parse_from(["sipnab", "--g729-tables", "/f/t.bin"])?;
+        let loc = with_flag.g729_table_location(&config, default.clone());
+        assert_eq!(loc.path(), Some(std::path::Path::new("/f/t.bin")));
+        let without = Cli::try_parse_from(["sipnab"])?;
+        let loc = without.g729_table_location(&config, default.clone());
+        assert_eq!(loc.path(), Some(std::path::Path::new("/k/t.bin")));
+        let loc = without.g729_table_location(&crate::config::Config::default(), default);
+        assert_eq!(loc.path(), Some(std::path::Path::new("/d/t.bin")));
+        assert_eq!(config.g729.auto_install, Some(true));
+        assert_eq!(crate::config::Config::default().g729.auto_install, None);
+        Ok(())
+    }
 
     // ── --vcon-forward: a separate process that captures nothing ────────
 

@@ -32,10 +32,10 @@ Two harnesses exercise every parser reachable from packet or file bytes
 layers:
 
 - **Coverage-guided fuzzing**: [`fuzz/fuzz_targets/`](https://github.com/NormB/sipnab/tree/main/fuzz/fuzz_targets) (cargo-fuzz /
-  libFuzzer) — 19 targets: sip, sdp, rtp, rtcp, hep, websocket,
+  libFuzzer) — 20 targets: sip, sdp, rtp, rtcp, hep, websocket,
   filter-dsl, stir-shaken, tls-records, srtp-keys, keylog-line,
   pcap-reader, dtls, tcp-reassembly, siprec, rtpengine-ng, stun, llmnr,
-  archive-password.
+  archive-password, g729-decode.
   - They run weekly (and on demand) via [`.github/workflows/fuzz.yml`](https://github.com/NormB/sipnab/blob/main/.github/workflows/fuzz.yml).
   - Crash reproducers upload as artifacts.
 - **Continuous fuzzing**: the same targets run under ClusterFuzzLite from

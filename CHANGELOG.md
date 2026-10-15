@@ -8,6 +8,18 @@ sipnab is pre-1.0: the public API and the CLI surface are not stable, and a
 breaking change may land in any release. Breaking changes are called out in the
 entry that carries them.
 
+## [Unreleased]
+
+### Added
+
+- **G.729 audio decodes, once each host installs the codebook tables with `sipnab g729 install`.**
+  - G.729 Annex A streams, with Annex B comfort noise, now decode into WAV exports, vCon recordings, the live audio route and the dead-air and clipping measurement, at 8 kHz under the label "G.729". The decoder is the new `sipnab-g729` crate in this repository, written from the text of ITU-T G.729 by a clean-room process and bit-exact on all 16 ITU-T decoder test vectors ([`crates/g729/PROVENANCE.md`](https://github.com/NormB/sipnab/blob/main/crates/g729/PROVENANCE.md)).
+  - sipnab ships no ITU-T table values. `sipnab g729 install` downloads the ITU-T G.729 package from itu.int after asking, checks its pinned sha256, keeps only the codebook values, checks their pinned sha256, writes `g729-tables.bin` with mode 0644 and deletes the download. `--yes` answers for scripts; `--from` installs from the package zip, an extracted directory or another host's table file without a connection. `sipnab g729 status` prints whether the tables are installed, where, and their values hash ([G.729 decoding](docs/g729.md)).
+  - `--g729-tables PATH` and `[g729] tables` name the table file; the default is `g729-tables.bin` beside the user config file.
+  - Without the tables a G.729 stream is left out of the audio, and the export and the vCon caveat say `G.729 not decoded: codebook tables not installed; run sipnab g729 install`. The run prints the same line once on standard error, `-q` included, and still exits 0. The command line, REST, MCP and vCon export never download on their own. The terminal UI offers the download once, the first time it shows a G.729 stream, and `[g729] auto_install = true` lets it download without asking.
+  - Time with no G.729 packet is divided by the RTP sequence numbers. The frames of packets whose sequence numbers are missing are lost frames, which the decoder conceals; the rest of the time is untransmitted frames (Annex B discontinuous transmission), so the decoder's comfort noise runs. One missing packet stands for as many 10 ms frames as the stream's speech packets usually carry (the most frequent size received), and after speech, when the lost packets would not fill the gap, a pause began inside it and the last lost packet counts as the one-frame SID that starts it; when they fill the gap or more, the whole gap is lost frames (docs/g729.md gives the two layouts this does not tell apart). After speech the lost frames come first; after a SID frame they come last, right before the packet that resumed. A gap with no sequence number missing is untransmitted, after speech as well. Where the sequence numbers cannot count the loss (more missing than the gap has frames), the last frame received decides the whole gap, as before: lost after speech, untransmitted after a SID. Retained frames now carry their RTP sequence number. The export and vCon note names that time as the G.729 decoder's loss concealment or comfort noise, not as silence.
+  - New feature `g729`, in `full` and in every release binary, the static musl ones included. Every one of them can download the package; the HTTPS client the vCon forwarder used now lives in a module that `g729` builds too.
+
 ## [0.5.221] - 2026-10-15
 
 ### Added

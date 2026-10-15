@@ -102,3 +102,7 @@ website/data/test-count.toml
 website/data/github.toml
 # Generated at deploy time by scripts/doc-history.py; never committed.
 website/data/doc-history.toml
+
+# ITU-T G.729 test vectors, fetched by scripts/fetch-g729-vectors.py and
+# sha256-pinned there. Never committed (G.729 spec decision D4).
+/crates/g729/test-vectors/

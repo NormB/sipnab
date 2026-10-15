@@ -1719,7 +1719,9 @@ Otherwise there is nothing to decode.
   stream carries is a `404`. Its body names both searches (`no SIP dialog and no
   RTP stream associated with call_id '…' in this capture`).
 - A call this capture holds is a `422` when:
-  - it carries only undecodable codecs, or
+  - it carries only codecs sipnab does not decode, or
+    G.729 without its tables (sipnab decodes PCMU, PCMA, G.722, Opus, and
+    G.729 once [`sipnab g729 install`](@/docs/g729.md) has run), or
   - this run did not keep its payload.
 
   The body names which. It is never a silent empty file.

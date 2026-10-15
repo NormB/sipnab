@@ -7,6 +7,10 @@
 
 pub mod batch;
 pub mod bootstrap;
+#[cfg(feature = "g729")]
+pub mod g729_install;
+#[cfg(any(feature = "vcon", feature = "g729"))]
+pub mod https_client;
 #[cfg(all(unix, any(feature = "api", feature = "mcp")))]
 pub mod journal_cli;
 pub mod queries;

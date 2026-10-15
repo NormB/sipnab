@@ -83,6 +83,8 @@ Each answers "how do I …?" and assumes you already know what you want.
 - **[Build a vCon capture stack](vcon-harness.md)**: OpenSIPS, rtpengine,
   sipnab and a conserver on one node or two, and the failures that look like
   success.
+- **[Decode G.729 audio](g729.md)**: install the codebook tables sipnab does
+  not ship, on a host with or without internet access.
 - **[Use OpenSIPS as your voice stack's SIP server](opensips.md)**: install
   OpenSIPS 4.0 from its packages or build it from source, as a proxy the
   guides below build on. No sipnab involved.

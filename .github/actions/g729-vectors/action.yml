@@ -1,0 +1,27 @@
+name: G.729 test vectors
+description: >-
+  Fetch the ITU-T G.729 package's decoder test vectors and the source files
+  the sipnab-g729 crate's table importer reads, into crates/g729/test-vectors.
+
+# The sipnab-g729 crate's conformance tests and every sipnab test that decodes G.729
+# build their tables through `g729::import_from_itu`, from this fetched
+# package: sipnab commits no ITU-T table values and no test vectors
+# (docs/g729.md). A missing package fails those tests, naming the script.
+#
+# Cached on the fetch script's hash. The script pins the package's sha256 and
+# every extracted file's, so a change to what is fetched is a change to the
+# script, and a new key.
+runs:
+  using: composite
+  steps:
+    - name: Restore the G.729 test vectors
+      id: cache
+      uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+      with:
+        path: crates/g729/test-vectors
+        key: g729-vectors-${{ hashFiles('scripts/fetch-g729-vectors.py') }}
+
+    - name: Fetch the G.729 test vectors
+      if: steps.cache.outputs.cache-hit != 'true'
+      shell: bash
+      run: python3 scripts/fetch-g729-vectors.py

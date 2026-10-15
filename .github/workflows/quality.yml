@@ -208,6 +208,10 @@ jobs:
         with:
           tool: cargo-llvm-cov
 
+      # The sipnab-g729 crate's conformance tests and the sipnab tests that decode
+      # G.729 read the fetched ITU-T package; a missing one fails them.
+      - uses: ./.github/actions/g729-vectors
+
       - name: Collect coverage
         # The skips are the workflow-level COVERAGE_TEST_SKIPS; the comment
         # there says why each one exists.
@@ -325,6 +329,10 @@ jobs:
         uses: taiki-e/install-action@f7e5d7c961414b23f5b25b2da9294395d08513ad # v2
         with:
           tool: cargo-llvm-cov
+
+      # The sipnab-g729 crate's conformance tests and the sipnab tests that decode
+      # G.729 read the fetched ITU-T package; a missing one fails them.
+      - uses: ./.github/actions/g729-vectors
 
       - name: Collect branch coverage
         run: |

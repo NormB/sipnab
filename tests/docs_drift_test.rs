@@ -1779,6 +1779,16 @@ fn cli_long_flags() -> BTreeSet<String> {
             }
         }
     }
+    // `sipnab g729 install|status` is a command of its own, with its own
+    // clap definition; the pages that document it name its flags.
+    let g729 = sipnab::cli::g729_args::G729Cli::command();
+    for sub in std::iter::once(&g729).chain(g729.get_subcommands()) {
+        for arg in sub.get_arguments() {
+            if let Some(long) = arg.get_long() {
+                flags.insert(long.to_string());
+            }
+        }
+    }
     // clap provides these automatically; get_arguments() doesn't list them.
     flags.insert("help".to_string());
     flags.insert("version".to_string());
@@ -3160,9 +3170,10 @@ fn feature_tables_cover_every_cargo_feature() -> Result<(), TestError> {
 
     // 14 -> 15: `archive`, password-protected ZIP input.
     // 15 -> 16: `opus`, Ogg Opus recordings in vCon containers.
+    // 16 -> 17: `g729`, G.729 decoding with user-installed tables.
     assert_eq!(
-        seen, 16,
-        "feature extraction found {seen} features, expected 16. Bump when a \
+        seen, 17,
+        "feature extraction found {seen} features, expected 17. Bump when a \
          feature is added; a drop means the parser stopped reading Cargo.toml's \
          table and the comparison below narrowed."
     );
@@ -4714,7 +4725,12 @@ fn no_documentation_table_repeats_a_row() -> Result<(), TestError> {
     // fixtures were generated. A fixture README has no site mirror.
     // 308 -> 309: tests/fixtures/vcon-jose/README.md, where each encrypted
     // vCon fixture came from. A fixture README has no site mirror.
-    const EXPECTED_MARKDOWN_FILES: usize = 309;
+    // 309 -> 310: crates/g729/PROVENANCE.md, the G.729 decoder's
+    // clean-room record. A crate's own record has no site mirror.
+    // 310 -> 312: docs/g729.md and its website mirror.
+    // 312 -> 313: crates/g729/README.md, the decoder crate's crates.io page.
+    // 313 -> 314: crates/g729/CHANGELOG.md, the decoder crate's own changelog.
+    const EXPECTED_MARKDOWN_FILES: usize = 314;
     /// How many tables this gate expects to walk.
     ///
     /// Named rather than written twice. The count and the failure message
@@ -5372,7 +5388,13 @@ fn no_documentation_table_repeats_a_row() -> Result<(), TestError> {
     // 1237 -> 1239: docs/filter-dsl.md "Values" replaced its one syntax
     // table with the field-type table and the "When a value needs quotes"
     // table, in the page and its website/content/docs/filter-dsl.md mirror.
-    const EXPECTED_TABLES: usize = 1239;
+    // 1239 -> 1241: the two file-and-sha256 tables in
+    // crates/g729/PROVENANCE.md ("Files read"), which has no site mirror.
+    // 1241 -> 1243: the `[g729]` key table in docs/config-reference.md and
+    // its website mirror.
+    // 1243 -> 1245: the TableError and ImportError refusal tables in
+    // crates/g729/README.md ("Getting the tables"), which has no site mirror.
+    const EXPECTED_TABLES: usize = 1245;
 
     let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     let out = std::process::Command::new("git")

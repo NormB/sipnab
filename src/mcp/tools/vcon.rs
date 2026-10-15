@@ -2222,7 +2222,11 @@ mod tests {
             let mut stream = RtpStream::new(key, &hdr, ts()?);
             stream.codec = Some("PCMU".to_string());
             stream.associated_dialog = Some(call_id.to_string());
-            stream.payload_buffer = (0..10_u32).map(|i| (i * 160, vec![0xFF; 160])).collect();
+            stream.payload_buffer = (0..10_u16)
+                .map(|i| {
+                    crate::rtp::stream::RetainedFrame::new(u32::from(i) * 160, i, vec![0xFF; 160])
+                })
+                .collect();
             ss.insert_for_test(stream);
         }
         Ok(SipnabMcp::new(

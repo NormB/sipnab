@@ -1,0 +1,14 @@
+# Sample input for the decode_rtp_payloads example: one RTP payload per line,
+# in hexadecimal, in sequence-number order. The frame bits are arbitrary test
+# patterns, not speech; every 80-bit pattern is a decodable G.729 frame.
+#
+# Two 10-octet frames per packet (20 ms):
+0123456789abcdef01231032547698badcfe1032
+fedcba98765432100123456789abcdef01234567
+# A packet that did not arrive: concealed as two frames, like the packet before.
+LOST
+00112233445566778899aabbccddeeff00112233
+# One frame and a trailing 2-octet SID frame (10n + 2 octets):
+8899aabbccddeeff00118a52
+# A SID frame alone:
+8a52

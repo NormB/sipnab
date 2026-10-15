@@ -516,6 +516,16 @@ static KEY_SPECS: &[KeySpec] = &[
             ctx: "",
         },
     ),
+    ("g729", "auto_install", KeyKind::Bool),
+    (
+        "g729",
+        "tables",
+        KeyKind::Literal {
+            accept: &["\"x\"", "\" \"", "\"0\"", "\"5060-5061\""],
+            reject: &["\"\""],
+            ctx: "",
+        },
+    ),
     (
         "hep",
         "tls_ca",

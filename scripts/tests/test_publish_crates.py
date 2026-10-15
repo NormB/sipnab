@@ -43,13 +43,16 @@ def write(path: pathlib.Path, text: str) -> None:
 # -- which crates, in which order -------------------------------------------
 
 
-def test_the_repository_publishes_its_two_crates_dependency_first():
-    """sipnab depends on sipnab-bpf-types by path, so a sipnab upload whose
-    dependency version is not on crates.io yet is refused. The two crates
-    marked `publish = false` never go up."""
+def test_the_repository_publishes_its_three_crates_dependency_first():
+    """sipnab depends on sipnab-bpf-types and sipnab-g729 by path, so a sipnab upload
+    whose dependency versions are not on crates.io yet is refused. The two
+    crates marked `publish = false` never go up. sipnab-g729 holds no ITU-T table
+    values (docs/g729.md), and the `g729` feature cannot be packaged without
+    it."""
     crates = publish.publishable(REPO)
     assert [(c.name, c.version) for c in crates] == [
         ("sipnab-bpf-types", manifest_version("crates/sipnab-bpf-types/Cargo.toml")),
+        ("sipnab-g729", manifest_version("crates/g729/Cargo.toml")),
         ("sipnab", manifest_version("Cargo.toml")),
     ]
 
@@ -188,10 +191,14 @@ def uploads(log: pathlib.Path):
 
 SIPNAB = manifest_version("Cargo.toml")
 BPF_TYPES = manifest_version("crates/sipnab-bpf-types/Cargo.toml")
+G729 = manifest_version("crates/g729/Cargo.toml")
 
 
 def test_the_release_uploads_only_what_crates_io_lacks(crates_io, tmp_path):
-    FakeCratesIo.status = {("sipnab-bpf-types", BPF_TYPES): 200}
+    FakeCratesIo.status = {
+        ("sipnab-bpf-types", BPF_TYPES): 200,
+        ("sipnab-g729", G729): 200,
+    }
     cargo, log = fake_cargo(tmp_path)
     out = run(crates_io, cargo, f"v{SIPNAB}")
     assert out.returncode == 0, out.stderr
@@ -206,6 +213,7 @@ def test_a_new_dependency_version_goes_up_before_the_crate_that_needs_it(crates_
     assert out.returncode == 0, out.stderr
     assert uploads(log) == [
         "publish --locked -p sipnab-bpf-types",
+        "publish --locked -p sipnab-g729",
         "publish --locked -p sipnab",
     ]
 

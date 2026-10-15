@@ -7930,7 +7930,9 @@ Otherwise there is nothing to decode.
   stream carries is a `404`. Its body names both searches (`no SIP dialog and no
   RTP stream associated with call_id '…' in this capture`).
 - A call this capture holds is a `422` when:
-  - it carries only undecodable codecs, or
+  - it carries only codecs sipnab does not decode, or
+    G.729 without its tables (sipnab decodes PCMU, PCMA, G.722, Opus, and
+    G.729 once [`sipnab g729 install`](g729.md) has run), or
   - this run did not keep its payload.
 
   The body names which. It is never a silent empty file.
@@ -12341,7 +12343,7 @@ sipnab uses Cargo feature flags to control optional capability. The default buil
 
 | Feature | Description | Dependencies |
 |---------|-------------|--------------|
-| `native` | Live capture, file capture, output writers, signal handling, CLI parser. **Required (directly or transitively) by `tui`, `hep`, `metrics`, `api`, `mcp`, `mcp-http`, `plugins`, `bpf`, `vcon` and `archive`. Not required by `tls`, `audio`, or `wasm`.** Included by default. | `pcap`, `clap`, `clap_complete`, `env_logger`, `crossbeam-channel`, `libc`, `pcap-file`, `memmap2`, `tracing-subscriber`, `tracing-log`, `tempfile` |
+| `native` | Live capture, file capture, output writers, signal handling, CLI parser. **Required (directly or transitively) by `tui`, `hep`, `metrics`, `api`, `mcp`, `mcp-http`, `plugins`, `bpf`, `vcon`, `archive` and `g729`. Not required by `tls`, `audio`, or `wasm`.** Included by default. | `pcap`, `clap`, `clap_complete`, `env_logger`, `crossbeam-channel`, `libc`, `pcap-file`, `memmap2`, `tracing-subscriber`, `tracing-log`, `tempfile` |
 | `tui` | Interactive terminal UI (ratatui + crossterm). Included by default. | `native`, `ratatui`, `crossterm`, `unicode-width`, `base64` |
 | `audio` | RTP audio playback in the TUI + WAV export. Included by default. Builds the separate `sipnab-audio` plugin (`libsipnab_audio.so`) that the binary `dlopen`s lazily; the binary itself does **not** link `libasound.so.2`. | `libloading`, `libc` (plugin: `rodio`) |
 | `tls` | TLS/DTLS decryption and SRTP key extraction (pure Rust) | `ring`, `rustls`, `rsa`, `aes`, `cbc`, `zeroize`, `base64`, `libc` |
@@ -12355,7 +12357,8 @@ sipnab uses Cargo feature flags to control optional capability. The default buil
 | `vcon` | vCon export: one observed dialog as an IETF conversation container, with the audio inline when the run retained it, or signed and encrypted when a `[[vcon.rule]]` sets `encrypt_to`. Non-default, because a container that leaves the machine is a publication surface and a capture tool should not grow one unless an operator asks. Adds `--export-vcon`/`--vcon-out`, the `export_vcon` MCP tool and `GET /v1/dialogs/{call_id}/vcon`. | `native`, `sha2`, `hmac`, `base64`, `rustls`, `rsa`, `ring`, `aes`, `cbc`, `sha1_oaep`, `webpki`, `p256` |
 | `opus` | Ogg Opus recordings in vCon containers (`audio_format = "opus"` on a `[[vcon.rule]]`). Compiles libopus from the source `opusic-sys` vendors and links it statically, so building it needs `cmake` and a C compiler; the binary needs no system libopus. In `full`; not in the static musl builds, which have no vCon export. | `vcon`, `opus` |
 | `archive` | Password-protected ZIP and 7z input: `-I evidence.zip` reads the captures inside, stored, deflated, WinZip AES or ZipCrypto, and `-I evidence.7z` reads LZMA or LZMA2, AES-256 or not, without leaving a decrypted copy on disk. Adds `--archive-password-file`, `--archive-password-command`, `--archive-password-stdin`, `--archive-password` and `--archive-password-encoding`, and reads `SIPNAB_ARCHIVE_PASSWORD` and the systemd credential `archive-password`. | `native`, `zip`, `sevenz-rust2`, `zeroize`, `unicode-normalization` |
-| `full` | Everything: `native` + `tui` + `audio` + `tls` + `hep` + `api` + `mcp` + `mcp-http` + `metrics` + `plugins` + `vcon` + `opus` + `archive` | all |
+| `g729` | G.729 Annex A decoding, with Annex B comfort noise, for WAV export, vCon recordings, the live audio route and the dead-air measurement. Adds `--g729-tables`, `[g729]`, and the `sipnab g729 install` and `sipnab g729 status` commands. sipnab ships no ITU-T table values: each host installs them with `sipnab g729 install`, described on the G.729 decoding page. Pure Rust, so in `full` and in the static musl builds. | `native`, `g729` (crates/g729), `sha2`, `rustls`, `base64` |
+| `full` | Everything: `native` + `tui` + `audio` + `tls` + `hep` + `api` + `mcp` + `mcp-http` + `metrics` + `plugins` + `vcon` + `opus` + `archive` + `g729` | all |
 | `wasm` | WebAssembly target for in-browser pcap analysis | `wasm-bindgen`, `js-sys`, `web-sys`, `console_error_panic_hook` |
 
 Build with specific features. For the TUI plus TLS decryption and nothing else:
@@ -18528,6 +18531,7 @@ Multiple diagnostic flags combine with OR.
 | `--max-lost-sequences` | `<N>` | `1000` | 0.5.97 | Lost RTP sequence numbers retained per stream, for the Packet Loss Map and the burst/gap analysis. The default is about a minute of a call losing 1 % at 50 packets a second, so on a half-hour call the map shows the tail and marks itself truncated. The burst/gap window widens with it, and each retained loss costs two bytes per stream. Config: `[limits] max_lost_sequences` |
 | `--quality-interval` | `<SECONDS>` | `5` | 0.5.160 | Seconds between RTP quality snapshots — the resolution of the per-stream quality trend, which carries a MOS, an R-factor and an `acceptable`/`degraded`/`not_scorable` verdict per interval. The shipped five seconds averages away any burst shorter than itself, so three half-second dropouts read as a mild five-second average. The trend still covers an hour of call time whatever this is, so one second retains 3600 snapshots per stream instead of 720: resolution costs memory, never history. Accepts 1 to 300. Config: `[limits] quality_interval_secs` |
 | `--quality-threshold` | `<MOS>` | `3.0` | 0.3.0 | MOS quality threshold for alerts (1.0-5.0 scale) |
+| `--g729-tables` | `<PATH>` | -- | Unreleased | The G.729 codebook table file, for decoding G.729 audio in WAV exports, vCon recordings, the live audio route and the dead-air measurement. sipnab ships no ITU-T table values: [`sipnab g729 install`](g729.md) builds this file from the ITU-T G.729 software package. Absent, sipnab reads `[g729] tables`, else `g729-tables.bin` in the directory of the user config file (`$XDG_CONFIG_HOME/sipnab`, else `~/.config/sipnab`). sipnab reads a path given here as it is: when no file is there, sipnab leaves G.729 streams out of the audio and the export says `G.729 not decoded: codebook tables not installed; run sipnab g729 install`. Feature: `g729`. Config: `[g729] tables` |
 | `--rtpengine-control` | `<ADDR>` | -- | 0.5.124 | Ask an rtpengine relay which calls it currently has up, so a capture that started mid-call can still name the dialog behind a stream. **Off unless you give an address**, and the address is never inferred from captured traffic. Only rtpengine's read-only `list` and `query` are reachable from this path — there is no value in the code that means `delete` or `start recording`, so sipnab cannot change a relay's behavior through it. **Not a poller**: it asks at startup, before the capture opens, and again only when a stream turns up that nothing explains — never on a timer. sipnab asks about each relay-side socket at most once for the run, under a per-run ceiling on control transactions that does not grow with the traffic. **Refused on `-I <file>`**: a live relay would answer about calls that are up TODAY, which are not the calls in the capture. Feature: `native` |
 | `--rtpproxy-control` | `<ADDR:PORT>` | -- | 0.5.196 | Read rtpproxy's control traffic on this UDP socket and name the call each relayed stream belongs to, even on the relay's own machine where no SIP passes. The SIP proxy's command names the call and rtpproxy's reply names the port it opened; sipnab pairs the two by the cookie they share. Recording streams (`R`, `C`) are never named as the call's media. **Name the socket; sipnab assumes none**: rtpproxy's default control socket is a UNIX socket, which a capture cannot see, so give it a UDP one with `-s udp:ADDR:PORT` (22222 when you leave out the port) and pass the same address and port here. sipnab reads only datagrams to and from exactly that socket, because they carry no credential. **Passive**: sipnab never sends rtpproxy anything, and rtpproxy has no command that lists its sessions, so sipnab names a call already up when the capture starts from its next command. Works on live captures and on files, and applies to a capture opened inside the TUI. Feature: `native` |
 | `--relay-stats` | -- | -- | 0.5.169 | Ask the relay named by `--rtpengine-control` for its OWN statistics -- packets relayed, sessions, its own loss and jitter -- and print them. They are `relay_reported`: a claim from the box, not a measurement sipnab made, and the header says so. **Same live source `--rtpengine-control` needs**, because asking transmits; on `-I <file>` it prints why it declines to ask rather than asking, and with no `--rtpengine-control` it says to name one. Feature: `native` |
@@ -18542,6 +18546,7 @@ Multiple diagnostic flags combine with OR.
 - `sipnab -N -I capture.pcap --max-streams 100000` — batch-analyze RTP streams with a raised stream cap. The statistics arrive once, when the capture ends
 - `sipnab -N -I long-call.pcap --max-lost-sequences 100000 --json-dialogs --no-cli-print` — keep every loss from a half-hour call that an operator escalated, so the Packet Loss Map covers the whole call and the burst count is the real one rather than the tail's
 - `sudo sipnab -d eth0 --max-lost-sequences 200` — watch a busy trunk on a small box, holding a fifth of the shipped loss history per stream. The map still shows where loss is landing right now and marks itself truncated
+- `sipnab -N -I g729-call.pcap --retain-audio --g729-tables /srv/sipnab/g729-tables.bin --export-vcon 'a84b4c76e66710@pc33.example.com' > call.vcon` — export a G.729 call's audio into a vCon, reading the tables from a file copied in from another host
 - `sipnab -N -I dead-air.pcap --quality-interval 1 --json-dialogs --no-cli-print` — one snapshot a second on the call somebody complained about, so a half-second dropout appears as its own degraded interval instead of disappearing into a five-second mean
 - `sudo sipnab -d eth0 --quality-interval 30 --max-streams 20000` — the other direction, on a busy trunk where twenty thousand streams each holding 720 snapshots is memory better spent elsewhere. Thirty seconds still covers the retained hour, in 120 entries per stream
 - `sudo sipnab -N -d eth0 --rtpengine-control 127.0.0.1:22222` — start capturing on a proxy that shares a host with rtpengine, and ask the relay once, at startup, which calls are already up. Streams whose offer happened before sipnab started get a Call-ID, where otherwise sipnab would report them as orphans
@@ -23940,6 +23945,154 @@ Part of the `detail` of a `malformed` outcome, after `attachment {i}`: the body 
 
 **Exit code:** None. sipnab writes the call without the service's analysis.
 
+## G.729 tables (`sipnab g729`)
+
+`sipnab g729 install` and `sipnab g729 status` print these messages.
+[G.729 decoding](g729.md) describes the command. Each one stops the command
+with exit code 1 and installs nothing. A table file already in place stays as
+it was.
+
+### `No place to install {TABLE_FILE_NAME}: give --g729-tables PATH, set [g729] tables, or set HOME`
+
+`sipnab g729 install` has nowhere to write the table file. The command line
+has no `--g729-tables`, the config file has no `[g729] tables`, and
+neither `HOME` nor `XDG_CONFIG_HOME` names a directory, which is usual for a
+service account. `{TABLE_FILE_NAME}` is `g729-tables.bin`.
+
+**What to do:** Give the path: `sipnab g729 install --g729-tables /srv/sipnab/g729-tables.bin`,
+and give the same path to the capture runs, or set `[g729] tables`.
+
+**Exit code:** 1.
+
+### `Refused {what}: its sha256 is {actual}, expected {PACKAGE_SHA256} (the ITU-T G.729 (06/2012) Release 3 package). Nothing was installed.`
+
+The package is not the one sipnab pins. `{what}` is the zip `--from` named,
+or "the download from" and the itu.int URL. `{actual}` is the sha256 of what
+sipnab read, and `{PACKAGE_SHA256}` is the pinned one,
+`979680ff3b52b13a5701453178efd32b53e340114638fd330fdb6669eec86620`. A
+download that stopped part way, a proxy's error page, or another release of
+the package each give another hash.
+
+**What to do:** Download the package again from the URL `sipnab g729 install`
+prints, check that `sha256sum` prints the pinned hash, and run the command
+again. To install from a copy, give `--from` the zip itself.
+
+**Exit code:** 1.
+
+### `Refused the table file {}: its values sha256 is {}, expected {}. Nothing was installed.`
+
+`--from` named a table file whose layout is right but whose values differ
+from the ones sipnab pins. The placeholders are the file, the sha256 of its
+values, and the pinned one. Someone changed the file, or built it from a
+different package.
+
+**What to do:** Copy the table file again from a host where
+`sipnab g729 status` reports the pinned values hash, or install from the ITU-T
+package instead.
+
+**Exit code:** 1.
+
+### `Refused the table file {}: {other}. Nothing was installed.`
+
+`--from` named a file that starts like a table file but is not one: the
+wrong version, the wrong length, or an entry of the wrong size. `{other}` says
+which.
+
+**What to do:** Copy the file again. A copy cut short is the usual cause.
+
+**Exit code:** 1.
+
+### `Refused {}: {e}. Nothing was installed.`
+
+The importer could not build the tables from the package. `{}` is the zip or
+directory, and `{e}` is the reason: a pinned source file is not in it (the
+directory does not hold the extracted package, or holds part of it), or the
+imported values do not hash to the pinned value, and the message names both
+hashes.
+
+**What to do:** Give `--from` the whole package zip, or the directory
+`python3 scripts/fetch-g729-vectors.py` fills (`crates/g729/test-vectors/itu-source`).
+
+**Exit code:** 1.
+
+### `Cannot read {}: {e}`
+
+`--from` names a file sipnab cannot read. `{e}` is the operating system's
+reason.
+
+**What to do:** Check the path and its permissions.
+
+**Exit code:** 1.
+
+### `Cannot create {}: {e}`
+
+sipnab cannot make the directory the table file goes in. `{e}` is the
+operating system's reason.
+
+**What to do:** Create the directory, or give `--g729-tables` a path in a
+directory you can write.
+
+**Exit code:** 1.
+
+### `Cannot write the download in {}: {e}`
+
+sipnab cannot write the downloaded package to a temporary file in the table
+file's directory, where the importer reads it. `{e}` is the operating
+system's reason, often a full disk.
+
+**What to do:** Free about 19 MB in that directory, or choose another with
+`--g729-tables`.
+
+**Exit code:** 1.
+
+### `Cannot write {}: {e}`
+
+sipnab cannot write the table file. `{e}` is the operating system's reason.
+
+**What to do:** Check the directory's permissions and free space.
+
+**Exit code:** 1.
+
+### `Cannot set the mode of {}: {e}`
+
+sipnab wrote the table file but could not set its mode to 0644, so other
+accounts, such as a service's, may not read it.
+
+**What to do:** Set it yourself with `chmod 644`.
+
+**Exit code:** 1.
+
+### `Downloading {url} failed: {e}`
+
+The download from itu.int did not complete. `{e}` is the reason: no route,
+a refused certificate, or one of the two answers below.
+
+**What to do:** Check that the host reaches `www.itu.int` over HTTPS. A host
+that cannot: download the package elsewhere and run
+`sipnab g729 install --from <the zip>`.
+
+**Exit code:** 1.
+
+### `itu.int answered {status}`
+
+itu.int answered the download with an HTTP status other than 200. It is
+part of the `Downloading {url} failed` message.
+
+**What to do:** Try again later, or download the package with a browser and
+install it with `--from`.
+
+**Exit code:** 1.
+
+### `itu.int answered more than {PACKAGE_BYTES} bytes, more than the package`
+
+The answer is larger than the package (18,476,968 bytes), so it is not the
+package. It is part of the `Downloading {url} failed` message.
+
+**What to do:** Download the package with a browser, check its sha256, and
+install it with `--from`.
+
+**Exit code:** 1.
+
 ## Startup, privileges and the process
 
 ### `--allow-coredump: a core dump would contain the archive password this run holds`
@@ -28837,6 +28990,23 @@ reports = true
 backtrace = true
 report_dir = "/var/log/sipnab"
 core = false
+```
+
+### `[g729]`
+
+Where the G.729 codebook tables are. sipnab ships no ITU-T table values, so a
+host decodes G.729 only after `sipnab g729 install` has built the table file
+from the ITU-T G.729 software package ([G.729 decoding](g729.md)).
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `tables` | string | `g729-tables.bin` beside the user config file | The table file. An empty string fails validation and names the key. Flag: `--g729-tables` |
+| `auto_install` | boolean | `false` | `true`: the terminal UI downloads the tables from itu.int without asking, the first time a G.729 stream needs them. The command line, REST, MCP and vCon export never download, whatever this says |
+
+```toml
+[g729]
+tables = "/srv/sipnab/g729-tables.bin"
+auto_install = false
 ```
 
 ### [theme]
@@ -44439,6 +44609,9 @@ sipnab fills that shape from signaling it watched go past a tap. Each container 
 
 When the run retained the RTP payload, the container also carries the audio, inline.
 
+- sipnab decodes PCMU, PCMA, G.722 and Opus, and G.729 on a host where `sipnab g729 install` has installed its tables (see [G.729 decoding](g729.md)).
+- sipnab leaves a stream in any other codec out, and the container's caveat names its codec. For a G.729 stream without the tables, the caveat says `G.729 not decoded: codebook tables not installed; run sipnab g729 install`.
+
 - It is the whole call, from its first frame, unless a retention limit cut it.
 - If a limit cut it, the container says so (see [Audio retention budget](config-reference.md#audio-retention-budget)).
 - sipnab writes no claim that somebody consented to anything.
@@ -48007,6 +48180,209 @@ Stated here rather than discovered later.
 - [Output formats](output-formats.md) — the NDJSON and report surfaces the
   message trace shares its projection with
 - [Library API](library.md) — filling a `DialogStore` from a capture
+
+---
+
+<!-- source: docs/g729.md -->
+
+# G.729 decoding
+
+sipnab decodes G.729 audio (Annex A, with Annex B comfort noise) into the
+same outputs as G.711, G.722 and Opus:
+
+- WAV exports;
+- the recording in a vCon;
+- the live audio route;
+- the dead-air and clipping measurement.
+
+It needs one file per host first: the decoder's codebook tables. sipnab
+builds that file from the ITU-T G.729 software package on your host. This page
+says how to install it, and why sipnab does not ship it.
+
+## Install the tables
+
+Run this once on each host that decodes G.729:
+
+```sh
+sipnab g729 install
+```
+
+The command:
+
+1. prints where the tables come from, the package's sha256 and its copyright
+   statements, then asks `Install the G.729 tables? [y/N]`;
+2. downloads the ITU-T G.729 (06/2012) software package, Release 3, from
+   itu.int (about 18 MB);
+3. checks the package's sha256 against the pinned value
+   `979680ff3b52b13a5701453178efd32b53e340114638fd330fdb6669eec86620`;
+4. reads the numeric codebook values out of it in memory, and checks their
+   sha256 against a second pinned value;
+5. writes them to `g729-tables.bin`, mode 0644, by an atomic rename;
+6. deletes the download.
+
+`--yes` answers the question, for scripts and Dockerfiles:
+
+```sh
+sipnab g729 install --yes
+```
+
+The file goes in the directory of the user config file:
+`$XDG_CONFIG_HOME/sipnab/g729-tables.bin`, else
+`~/.config/sipnab/g729-tables.bin`. To put it elsewhere, give the path with
+`--g729-tables`, and give the same path to the runs that decode, or set it
+once in the config file:
+
+```toml
+[g729]
+tables = "/srv/sipnab/g729-tables.bin"
+```
+
+A service account usually has no home directory, so a server install names
+the path:
+
+```sh
+sudo sipnab g729 install --yes --g729-tables /srv/sipnab/g729-tables.bin
+```
+
+## Check the installed tables
+
+```sh
+sipnab g729 status
+```
+
+It prints `G.729 tables: installed` or `not installed`, the file it read, and
+the sha256 of the values. It exits 0 when the file holds the tables and 1 when
+it does not. `--g729-tables`, `-f` and `--no-config` work as they do for a
+run, so the command reports on the file a run with the same options reads.
+
+## Hosts without internet access
+
+`--from` installs from a copy and opens no connection. It takes any of:
+
+- the package zip, downloaded elsewhere. The same sha256 check applies:
+  ```sh
+  sipnab g729 install --from 'T-REC-G.729-201206-I!!SOFT-ZST-E.zip'
+  ```
+- a directory extracted from the package;
+- the `g729-tables.bin` of another host. sipnab checks its values against
+  the same pinned hash:
+  ```sh
+  sipnab g729 install --yes --from /mnt/usb/g729-tables.bin
+  ```
+
+Copying `g729-tables.bin` to the path a run reads works as well. `--from`
+adds the check.
+
+Every release binary that decodes G.729, the static musl tarballs and the
+`-noaudio` packages included, can download the package. `--from` is the
+offline method in each of them.
+
+## When the tables are missing
+
+sipnab leaves a G.729 stream out of the audio, never puts silence in its
+place, and says why and what to run:
+
+```text
+G.729 not decoded: codebook tables not installed; run sipnab g729 install
+```
+
+A WAV export, the REST and MCP audio exports and a vCon's capture caveat all
+carry that sentence. sipnab exports the audio of the call's other streams as
+usual.
+
+The command line, the REST API, MCP and vCon export never download the
+tables on their own: a capture tool on a server does not open a network
+connection nobody asked for. The terminal UI asks once, the first time it
+shows a G.729 stream:
+
+```text
+This call uses G.729. Download the decoder tables from itu.int now? [y/N]
+```
+
+With `[g729] auto_install = true`, the terminal UI downloads without asking.
+Nothing else reads that key.
+
+A run reads tables installed while it is going when it next decodes a G.729
+stream. sipnab keeps G.729 payload whenever the build has the `g729`
+feature, so `--retain-audio` audio held before the install decodes too.
+
+## Lost, late and repeated packets
+
+sipnab places each G.729 packet by its RTP timestamp and fills time in which
+no packet arrived with the decoder's own output:
+
+- A missing RTP sequence number marks a packet the sender sent and the
+  capture did not see. sipnab hands the decoder its frames as lost frames,
+  and the decoder conceals them.
+- In the rest of the time the sender sent nothing (Annex B discontinuous
+  transmission). sipnab hands the decoder those frames as frames the sender
+  did not transmit, and the decoder carries the comfort noise on.
+- sipnab sizes a lost packet by the stream's usual speech packet: the most
+  frequent number of 10 ms frames among the speech packets received.
+- After speech, if the lost packets at that size fill the gap or more,
+  sipnab decodes the whole gap as lost frames. If they fill less of it, a
+  pause began inside the gap. sipnab then decodes the lost frames first,
+  counts the last lost packet as the one-frame SID that starts a pause, and
+  decodes the rest of the gap as pause.
+- After a SID frame, sipnab decodes the pause first and the lost frames
+  last, right before the packet that resumed.
+- With no sequence number missing, sipnab decodes the whole gap as pause.
+
+When a loss sits next to a pause, the timestamps and sequence numbers can fit
+two layouts of the same call, and sipnab decodes the layout the rules above
+give. Two examples, each four or three frames long:
+
+- In a stream of two-frame speech packets, the capture misses both the SID
+  before a pause and the first speech packet after it, in a four-frame gap. Two lost
+  packets of two frames fill the gap, so sipnab decodes four lost frames.
+  The call had one lost frame, two frames of pause, and one lost frame.
+- In a stream of three-frame speech packets, the capture misses the SID
+  after speech, in a three-frame gap. One lost packet of three frames fills the gap, so
+  sipnab decodes three lost frames. The call had one lost frame and two
+  frames of pause.
+
+In both, two lost speech packets (the first example) or one lost
+three-frame speech packet (the second) fit the same timestamps and sequence
+numbers, and for those calls the frames sipnab decodes are the call's. Where the call had the other layout, the decoded audio differs only
+in the frames of that gap.
+
+An export decodes packets that arrived out of order in timestamp order, and
+decodes a packet that repeats a timestamp once. The live audio route sends
+each packet as it reads it, so it skips a packet that arrives
+after it has sent later audio.
+
+## Why sipnab does not ship the tables
+
+<!-- The paragraph below is the wording every G.729 page shares (the crate
+README and docs, and `sipnab g729 install`), kept identical across them, so
+its passive first sentence is exempt here rather than reworded on one page. -->
+<!-- vale Google.Passive = NO -->
+The trained codebook values of G.729 are published in the reference C code
+of the ITU-T G.729 software package, and that code's notice keeps its
+authors' rights. So sipnab reads them from your own copy of the package
+instead of shipping them. sipnab's own code is MIT OR Apache-2.0. sipnab's
+code generates the tables that the Recommendation defines by a formula. See
+[`crates/g729/PROVENANCE.md`](https://github.com/NormB/sipnab/blob/main/crates/g729/PROVENANCE.md)
+for the verbatim notices, the holders, the package hash and the clean-room
+record.
+<!-- vale Google.Passive = YES -->
+
+- No file in the sipnab repository, crate, binary or package holds an
+  ITU-T table value. A test scans every file in the repository for any run
+  of six or more integers that matches the tables, and the release workflow
+  runs the same scan over the built binaries and packages.
+- `sipnab g729 install` takes the values from the ITU-T package on your
+  host. sipnab never hosts or mirrors that package.
+
+## Provenance
+
+The decoder is the `sipnab-g729` crate in this repository, written in Rust from the
+text of ITU-T G.729 and its Annexes A and B by a clean-room process: the
+author of the Rust never read the ITU-T C code. It decodes all 16 ITU-T
+decoder test vectors bit-exactly.
+[`crates/g729/PROVENANCE.md`](https://github.com/NormB/sipnab/blob/main/crates/g729/PROVENANCE.md)
+records who read what, the hashes of every file involved, and the package's
+copyright statements in full.
 
 ---
 
@@ -65226,7 +65602,7 @@ Branch protection sets `required_status_checks.strict: true`.
 - This paragraph used to say the opposite.
   It dates from before `ci_success_gates_every_job` added them.
 
-**`crate-package`** runs `cargo package -p sipnab-bpf-types -p sipnab`.
+**`crate-package`** runs `cargo package --locked -p sipnab-bpf-types -p sipnab-g729 -p sipnab`.
 
 - That builds each crate from its own `.crate` file.
 - So a file the build reads but the `include` allowlist in `Cargo.toml` does not ship

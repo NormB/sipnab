@@ -30,6 +30,9 @@ sipnab fills that shape from signaling it watched go past a tap. Each container 
 
 When the run retained the RTP payload, the container also carries the audio, inline.
 
+- sipnab decodes PCMU, PCMA, G.722 and Opus, and G.729 on a host where `sipnab g729 install` has installed its tables (see [G.729 decoding](@/docs/g729.md)).
+- sipnab leaves a stream in any other codec out, and the container's caveat names its codec. For a G.729 stream without the tables, the caveat says `G.729 not decoded: codebook tables not installed; run sipnab g729 install`.
+
 - It is the whole call, from its first frame, unless a retention limit cut it.
 - If a limit cut it, the container says so (see [Audio retention budget](@/docs/config.md#audio-retention-budget)).
 - sipnab writes no claim that somebody consented to anything.

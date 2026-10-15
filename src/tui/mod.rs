@@ -468,6 +468,9 @@ pub struct App {
     /// when the session ends.
     #[cfg(feature = "archive")]
     archive_keyring: SessionKeyring,
+    /// The offer to install the G.729 tables: made once, where a G.729
+    /// stream first appears without them.
+    g729_offer: controllers::g729_offer::G729Offer,
 }
 
 /// A TUI session's archive keyring, shared with the load thread that borrows
@@ -629,6 +632,7 @@ impl App {
             archive_entry: None,
             #[cfg(feature = "archive")]
             archive_keyring: Arc::new(parking_lot::Mutex::new(None)),
+            g729_offer: Default::default(),
         }
     }
 
@@ -2229,6 +2233,7 @@ pub fn run_tui_with_pause(
         // mutates `app` while sync_caches holds a store read guard.
         app.drive_relay_stats();
         app.drive_tfps();
+        controllers::g729_offer::offer_if_due(&mut app);
         let drew = draw_frame(&mut terminal, &mut app)?;
 
         // Deferred work runs here, AFTER the frame that painted its
@@ -2239,6 +2244,7 @@ pub fn run_tui_with_pause(
         if drew {
             app.run_pending_save();
             app.run_pending_audio();
+            controllers::g729_offer::run_pending_install(&mut app);
         }
 
         // Poll with adaptive timeout, then drain every queued event before

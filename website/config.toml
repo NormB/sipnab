@@ -377,6 +377,7 @@ pages = [
   { path = "docs/mcp-estate.md", menu = false },
   { path = "docs/mcp-protocol.md", menu = false },
   { path = "docs/vcon-harness.md", menu = false },
+  { path = "docs/g729.md", menu = false },
   { path = "docs/plugins.md", menu = false },
   { path = "docs/library.md", menu = false },
   { path = "docs/examples.md", menu = false },

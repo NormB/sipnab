@@ -109,6 +109,8 @@ Clippy
 clock_rate
 cnonce
 codebase
+codebook
+codebooks
 codec
 Codec
 Codecov

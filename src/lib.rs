@@ -413,7 +413,8 @@ pub mod host_allowlist;
     feature = "hep",
     feature = "api",
     feature = "metrics",
-    feature = "vcon"
+    feature = "vcon",
+    feature = "g729"
 ))]
 pub(crate) mod tls_files;
 // The HTTPS accept loop the axum servers share: the REST API and MCP over

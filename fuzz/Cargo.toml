@@ -12,11 +12,17 @@ edition = "2024"
 [package.metadata]
 cargo-fuzz = true
 
+# cargo-fuzz sets `--cfg fuzzing`; a plain `cargo check` of this package (the
+# pre-push hook's) does not. Declared so the check accepts the name.
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ["cfg(fuzzing)"] }
+
 [dependencies]
 libfuzzer-sys = "0.4"
 sipnab = { path = "..", default-features = false, features = ["native", "hep", "tls", "archive"] }
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
 bytes = "1"
+g729 = { package = "sipnab-g729", path = "../crates/g729", features = ["std"] }
 
 [[bin]]
 name = "fuzz_sip_parser"
@@ -93,3 +99,7 @@ path = "fuzz_targets/llmnr.rs"
 [[bin]]
 name = "fuzz_archive_password"
 path = "fuzz_targets/archive_password.rs"
+
+[[bin]]
+name = "fuzz_g729_decode"
+path = "fuzz_targets/g729_decode.rs"

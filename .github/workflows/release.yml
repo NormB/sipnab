@@ -276,7 +276,7 @@ jobs:
           # plugin, but only runs on musl hosts, so it is not what these
           # portable tarballs are for. The gnu `variant: noaudio` matrix entries
           # build the no-audio set with a "-noaudio" artifact suffix.
-          noaudio_set="native,tui,tls,hep,api,mcp,mcp-http,metrics,archive"
+          noaudio_set="native,tui,tls,hep,api,mcp,mcp-http,metrics,archive,g729"
 
           case "${{ matrix.target }}" in
             *-linux-musl)
@@ -879,6 +879,39 @@ jobs:
         with:
           path: artifacts/
           merge-multiple: true
+
+      # sipnab ships no ITU-T G.729 table values (docs/g729.md). The scan
+      # crates/g729/tests/no_itu_values.rs runs over the repository runs here
+      # over what is published: every binary, tarball, .deb and .rpm. One rule,
+      # in scripts/no-itu-values.py; the values it looks for are imported from
+      # the fetched ITU-T package by the sipnab-g729 crate's own importer.
+      - uses: ./.github/actions/g729-vectors
+      - uses: dtolnay/rust-toolchain@70dec6087f2cb6bab9fbac4da23160afbe848e91 # 1.99.0
+      - name: Install the package extractors
+        uses: ./.github/actions/system-deps
+        with:
+          packages: rpm2cpio cpio
+      - name: Scan the release for ITU-T G.729 table values
+        shell: bash
+        run: |
+          set -euo pipefail
+          tables="$RUNNER_TEMP/g729-tables.bin"
+          cargo run --locked -p sipnab-g729 --features std --example import_tables -- \
+            crates/g729/test-vectors/itu-source "$tables"
+          unpacked="$RUNNER_TEMP/unpacked"
+          mkdir -p "$unpacked"
+          for deb in artifacts/*.deb; do
+            [ -e "$deb" ] || continue
+            dpkg-deb -x "$deb" "$unpacked/$(basename "$deb")"
+          done
+          for rpm in artifacts/*.rpm; do
+            [ -e "$rpm" ] || continue
+            dest="$unpacked/$(basename "$rpm")"
+            mkdir -p "$dest"
+            ( cd "$dest" && rpm2cpio "$GITHUB_WORKSPACE/$rpm" | cpio -idm --quiet )
+          done
+          python3 scripts/no-itu-values.py --tables "$tables" artifacts "$unpacked"
+          rm -rf "$unpacked" "$tables"
 
       # ---------------------------------------------------------------------
       # CycloneDX SBOMs. Two, because sipnab ships as two binaries.

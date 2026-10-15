@@ -1501,6 +1501,15 @@ dependencies = [
  "chrono",
  "libfuzzer-sys",
  "sipnab",
+ "sipnab-g729",
+]
+
+[[package]]
+name = "sipnab-g729"
+version = "0.1.0"
+dependencies = [
+ "sha2",
+ "zip",
 ]
 
 [[package]]

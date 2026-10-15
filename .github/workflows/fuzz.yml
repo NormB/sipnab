@@ -50,6 +50,7 @@ jobs:
           - fuzz_stun
           - fuzz_llmnr
           - fuzz_archive_password
+          - fuzz_g729_decode
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:

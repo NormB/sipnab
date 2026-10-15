@@ -4355,6 +4355,7 @@ dependencies = [
  "sha1 0.10.7",
  "sha2 0.11.0",
  "sipnab-bpf-types",
+ "sipnab-g729",
  "smallvec",
  "socket2",
  "tempfile",
@@ -4402,6 +4403,17 @@ dependencies = [
  "anyhow",
  "reqwest",
  "serde",
+]
+
+[[package]]
+name = "sipnab-g729"
+version = "0.1.0"
+dependencies = [
+ "flate2",
+ "serde_json",
+ "sha2 0.11.0",
+ "sipnab-g729",
+ "zip",
 ]
 
 [[package]]

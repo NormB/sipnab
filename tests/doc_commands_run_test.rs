@@ -304,6 +304,14 @@ fn classify(cmd: &str) -> Result<Plan, TestError> {
     if side_effects.is_match(cmd) {
         return Ok(Plan::SideEffects);
     }
+    // `sipnab g729 install` downloads from itu.int and writes the table file
+    // into the user's config directory; `sipnab g729 status` reports on this
+    // host's installed file. Both are about the host, not a capture, and
+    // `tests/g729_e2e_test.rs` runs them against a data directory of its own.
+    let g729_command = regex::Regex::new(r"(^|\s)sipnab\s+g729(\s|$)")?;
+    if g729_command.is_match(cmd) {
+        return Ok(Plan::SideEffects);
+    }
     // `$(…)`, `$VAR`, or a line that opens a loop: the shell is doing the work.
     let shell_var = regex::Regex::new(r"\$[A-Za-z_(]")?;
     // Process substitution, `<(…)`, and a numbered redirection, `3< file`, are
