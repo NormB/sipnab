@@ -8157,6 +8157,16 @@ fn count_word(n: usize) -> Option<&'static str> {
         "Eighteen",
         "Nineteen",
         "Twenty",
+        "Twenty-one",
+        "Twenty-two",
+        "Twenty-three",
+        "Twenty-four",
+        "Twenty-five",
+        "Twenty-six",
+        "Twenty-seven",
+        "Twenty-eight",
+        "Twenty-nine",
+        "Thirty",
     ]
     .get(n)
     .copied()
