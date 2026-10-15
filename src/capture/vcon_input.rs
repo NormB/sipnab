@@ -163,6 +163,65 @@ pub struct VconProvenance {
     /// outermost first: the gzip format, the encrypted form, the signed form
     /// and its signer. Empty for an unsigned container.
     pub opened: Vec<String>,
+    /// The form the file arrived in, outermost first: what the vCon
+    /// container report's `form` column prints.
+    pub form: ContainerForm,
+    /// The Call-IDs of the messages rebuilt from it, sorted, each once: which
+    /// of the run's calls this container contributed.
+    pub call_ids: Vec<String>,
+}
+
+/// The form a container file arrived in, by its outermost layer
+/// ([draft-ietf-vcon-vcon-core-04 section 5.4](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-04#section-5.4)):
+/// the gzip format wraps any of the other three, so a gzip file is `gzip`
+/// whatever is inside it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ContainerForm {
+    /// The unsigned form: the vCon itself.
+    #[default]
+    Unsigned,
+    /// The signed form (section 5.2).
+    Signed,
+    /// The encrypted form (section 5.3).
+    Encrypted,
+    /// The gzip format (section 6.2).
+    Gzip,
+    /// Not a form sipnab can name: the bytes are not JSON, or the JSON is not
+    /// an object.
+    Unknown,
+}
+
+impl ContainerForm {
+    /// The word the report prints.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Unsigned => "unsigned",
+            Self::Signed => "signed",
+            Self::Encrypted => "encrypted",
+            Self::Gzip => "gzip",
+            Self::Unknown => "unknown",
+        }
+    }
+}
+
+/// A container file a directory or glob held that the run did not read, and
+/// why: the skipped rows of the vCon container report.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct VconSkip {
+    /// The file, named as [`VconProvenance::source`] names a read one.
+    pub source: String,
+    /// The container's `uuid`, when the file opened far enough to have one.
+    pub uuid: Option<String>,
+    /// The form the file arrived in.
+    pub form: ContainerForm,
+    /// Why, as one stable word: see `ContainerError::kind`.
+    pub reason: String,
+    /// Why, in full: the sentence the `Skipping` warning prints.
+    pub detail: String,
+    /// Schema findings against the unsigned vCon, when the file opened to
+    /// one and the schema check ran; `None` when it did not get that far.
+    pub validation_findings: Option<usize>,
 }
 
 impl VconProvenance {
@@ -300,15 +359,33 @@ pub fn read_report() -> Vec<VconProvenance> {
     READ.lock().clone()
 }
 
-/// Forget every recorded container: the stores they filled were replaced.
+/// Container files this process found in a directory or glob and skipped,
+/// in the order they were found.
+static SKIPPED: LazyLock<parking_lot::Mutex<Vec<VconSkip>>> =
+    LazyLock::new(|| parking_lot::Mutex::new(Vec::new()));
+
+/// Record a container file the run skipped.
+pub fn record_skipped(skip: VconSkip) {
+    SKIPPED.lock().push(skip);
+}
+
+/// Every skipped container recorded so far.
+#[must_use]
+pub fn skipped_report() -> Vec<VconSkip> {
+    SKIPPED.lock().clone()
+}
+
+/// Forget every recorded container, read or skipped: the stores they filled
+/// were replaced.
 pub fn reset_read_report() {
     READ.lock().clear();
+    SKIPPED.lock().clear();
 }
 
 #[cfg(feature = "vcon")]
 pub use reader::{
-    ContainerError, ReaderKeys, Rebuilt, RebuiltMessage, into_stores, open_bytes, opener, packets,
-    read_file, rebuild, set_reader_keys,
+    ContainerError, ReaderKeys, Rebuilt, RebuiltMessage, Refused, form_of_bytes, into_stores,
+    open_bytes, opener, packets, read_file, read_file_reporting, rebuild, set_reader_keys,
 };
 
 #[cfg(all(feature = "native", not(feature = "vcon")))]
@@ -421,6 +498,73 @@ mod reader {
 
     impl std::error::Error for ContainerError {}
 
+    impl ContainerError {
+        /// Why the container was not read, as one stable word: the
+        /// `skip_reason` of the vCon container report, which totals skipped
+        /// containers by it.
+        ///
+        /// An encrypted container refused for want of a key is `no_key`, apart
+        /// from every other layer that did not open (`not_opened`), because the
+        /// operator's remedy is a flag, `--vcon-key`, and not a different file.
+        #[must_use]
+        pub fn kind(&self) -> &'static str {
+            match self {
+                Self::Unreadable(_) => "unreadable",
+                Self::NotJson(_) => "not_json",
+                Self::NotObject | Self::NotAVcon => "not_a_vcon",
+                Self::NoSignaling(_) => "no_sip_signaling",
+                Self::UnsupportedCritical(_) => "unsupported_critical",
+                Self::Unopened(why) if why == crate::output::vcon_jose::NO_KEY => "no_key",
+                Self::Unopened(_) => "not_opened",
+            }
+        }
+    }
+
+    /// The form the file whose bytes are `bytes` arrived in, by its outermost
+    /// layer: the gzip magic, else the top-level members of the JSON object
+    /// as [`crate::output::vcon_jose::form_of_members`] reads them.
+    ///
+    /// Reads the member names only, so it costs one scan of the bytes and
+    /// keeps no value. A JSON object with none of the members a form has is
+    /// `unsigned`: the reader judges it as an unsigned vCon.
+    #[must_use]
+    pub fn form_of_bytes(bytes: &[u8]) -> super::ContainerForm {
+        use super::ContainerForm;
+        use crate::output::vcon_jose::Form;
+        if bytes.starts_with(&super::GZIP_MAGIC) {
+            return ContainerForm::Gzip;
+        }
+        let Ok(members) = serde_json::from_slice::<
+            std::collections::BTreeMap<String, serde::de::IgnoredAny>,
+        >(bytes) else {
+            return ContainerForm::Unknown;
+        };
+        match crate::output::vcon_jose::form_of_members(|k| members.contains_key(k)) {
+            Form::Encrypted => ContainerForm::Encrypted,
+            Form::Signed => ContainerForm::Signed,
+            Form::Unsigned | Form::Unknown => ContainerForm::Unsigned,
+        }
+    }
+
+    /// A container file the reader refused: why, and the skipped row of the
+    /// vCon container report, both from the one read of the file.
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    pub struct Refused {
+        /// Why the reader refused it.
+        pub error: ContainerError,
+        /// The skipped row: the form, and, when the file opened to a JSON
+        /// object, its `uuid` and its schema finding count.
+        pub skip: super::VconSkip,
+    }
+
+    impl std::fmt::Display for Refused {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            self.error.fmt(f)
+        }
+    }
+
+    impl std::error::Error for Refused {}
+
     /// One stored SIP message, rebuilt.
     #[derive(Debug, Clone, PartialEq, Eq)]
     pub struct RebuiltMessage {
@@ -460,19 +604,77 @@ mod reader {
     ///
     /// A [`ContainerError`] naming why the file holds no SIP sipnab can read.
     pub fn read_file(path: &std::path::Path) -> Result<Rebuilt, ContainerError> {
+        read_file_reporting(path).map_err(|refused| refused.error)
+    }
+
+    /// [`read_file`], and on a refusal the skipped row of the vCon container
+    /// report, taken from the same read: the file is read, opened and
+    /// schema-checked once whichever way it goes.
+    ///
+    /// The schema check does not run on a container whose `critical` lists
+    /// an unsupported extension (core-04 section 4.1.4), so that row has no
+    /// finding count; nor on a file that did not open to a JSON object.
+    ///
+    /// # Errors
+    ///
+    /// A [`Refused`] naming why the file holds no SIP sipnab can read, boxed:
+    /// it carries the whole skipped row, and the read path returns it rarely.
+    pub fn read_file_reporting(path: &std::path::Path) -> Result<Rebuilt, Box<Refused>> {
+        let source = crate::capture::archive::source_name(path);
+        let refuse = |error: ContainerError,
+                      form: super::ContainerForm,
+                      uuid: Option<String>,
+                      validation_findings: Option<usize>| {
+            Box::new(Refused {
+                skip: super::VconSkip {
+                    source: source.clone(),
+                    uuid,
+                    form,
+                    reason: error.kind().to_string(),
+                    detail: error.to_string(),
+                    validation_findings,
+                },
+                error,
+            })
+        };
+        let unknown = super::ContainerForm::Unknown;
         let len = std::fs::metadata(path)
-            .map_err(|e| ContainerError::Unreadable(e.to_string()))?
+            .map_err(|e| {
+                refuse(
+                    ContainerError::Unreadable(e.to_string()),
+                    unknown,
+                    None,
+                    None,
+                )
+            })?
             .len();
         if len > MAX_CONTAINER_BYTES {
-            return Err(ContainerError::Unreadable(format!(
+            let why = format!(
                 "{len} bytes is over the {MAX_CONTAINER_BYTES}-byte limit for one container"
-            )));
+            );
+            return Err(refuse(ContainerError::Unreadable(why), unknown, None, None));
         }
-        let bytes = std::fs::read(path).map_err(|e| ContainerError::Unreadable(e.to_string()))?;
-        let (value, opened) = open_bytes(&bytes)?;
-        let mut rebuilt = rebuild(&value, &crate::capture::archive::source_name(path))?;
-        rebuilt.provenance.opened = opened;
-        Ok(rebuilt)
+        let bytes = std::fs::read(path).map_err(|e| {
+            refuse(
+                ContainerError::Unreadable(e.to_string()),
+                unknown,
+                None,
+                None,
+            )
+        })?;
+        let form = form_of_bytes(&bytes);
+        let (value, opened) = open_bytes(&bytes).map_err(|e| refuse(e, form, None, None))?;
+        match rebuild_counted(&value, &source) {
+            Ok(mut rebuilt) => {
+                rebuilt.provenance.opened = opened;
+                rebuilt.provenance.form = form;
+                Ok(rebuilt)
+            }
+            Err((error, findings)) => {
+                let uuid = value["uuid"].as_str().map(str::to_string);
+                Err(refuse(error, form, uuid, findings))
+            }
+        }
     }
 
     /// How the readers open a signed or encrypted container: the decryption
@@ -654,17 +856,27 @@ mod reader {
     /// rebuilt beside others that can is skipped and named in the
     /// provenance.
     pub fn rebuild(container: &Value, source: &str) -> Result<Rebuilt, ContainerError> {
+        rebuild_counted(container, source).map_err(|(error, _)| error)
+    }
+
+    /// [`rebuild`], and on a refusal the schema finding count when the
+    /// schema check ran: the count the vCon container report gives a
+    /// skipped container, from the one check `rebuild` makes.
+    fn rebuild_counted(
+        container: &Value,
+        source: &str,
+    ) -> Result<Rebuilt, (ContainerError, Option<usize>)> {
         let Some(members) = container.as_object() else {
-            return Err(ContainerError::NotObject);
+            return Err((ContainerError::NotObject, None));
         };
         if !super::CONTAINER_MEMBERS
             .iter()
             .any(|m| members.contains_key(*m))
         {
-            return Err(ContainerError::NotAVcon);
+            return Err((ContainerError::NotAVcon, None));
         }
         if let Some(why) = super::critical_refusal(container) {
-            return Err(ContainerError::UnsupportedCritical(why));
+            return Err((ContainerError::UnsupportedCritical(why), None));
         }
         let schema_findings = schema_finding_lines(container);
 
@@ -706,9 +918,10 @@ mod reader {
             }
         }
         if messages.is_empty() {
-            return Err(ContainerError::NoSignaling(no_signaling_reason(
-                container, &gaps,
-            )));
+            return Err((
+                ContainerError::NoSignaling(no_signaling_reason(container, &gaps)),
+                Some(schema_findings.len()),
+            ));
         }
         // Stable: equal times keep the order the container stored them in.
         messages.sort_by_key(|m| m.timestamp);
@@ -722,6 +935,8 @@ mod reader {
             producer_note: producer_note(container),
             schema_findings,
             opened: Vec::new(),
+            form: super::ContainerForm::Unsigned,
+            call_ids: call_ids_of(&messages),
         };
         Ok(Rebuilt {
             first_message: messages.first().map(|m| m.timestamp),
@@ -729,6 +944,29 @@ mod reader {
             provenance,
             stored_media_quality,
         })
+    }
+
+    /// The Call-IDs of `messages`, sorted, each once, as the parser that
+    /// fills the dialog store reads them: so each names a dialog the run's
+    /// store holds under that key.
+    fn call_ids_of(messages: &[RebuiltMessage]) -> Vec<String> {
+        let ids: std::collections::BTreeSet<String> = messages
+            .iter()
+            .filter_map(|m| {
+                crate::sip::parser::parse_sip(
+                    &m.text,
+                    m.timestamp,
+                    m.src_addr,
+                    m.dst_addr,
+                    m.src_port,
+                    m.dst_port,
+                    m.transport,
+                )
+                .ok()
+                .and_then(|parsed| parsed.call_id().map(str::to_string))
+            })
+            .collect();
+        ids.into_iter().collect()
     }
 
     /// Every schema finding against `container`, one line each:
@@ -1192,6 +1430,45 @@ mod tests {
 
     type TestError = Box<dyn std::error::Error>;
 
+    /// A missing key is `no_key`, apart from every other layer that did not
+    /// open, because its remedy is the `--vcon-key` flag.
+    #[cfg(feature = "vcon")]
+    #[test]
+    fn a_missing_key_is_its_own_skip_reason() {
+        let no_key = ContainerError::Unopened(crate::output::vcon_jose::NO_KEY.to_string());
+        assert_eq!(no_key.kind(), "no_key");
+        assert_eq!(
+            ContainerError::Unopened("the signature does not verify".into()).kind(),
+            "not_opened"
+        );
+        assert_eq!(
+            ContainerError::NoSignaling(String::new()).kind(),
+            "no_sip_signaling"
+        );
+        assert_eq!(ContainerError::NotJson(String::new()).kind(), "not_json");
+        assert_eq!(ContainerError::NotAVcon.kind(), "not_a_vcon");
+    }
+
+    /// The form is the outermost layer: gzip by its magic, else the members.
+    #[cfg(feature = "vcon")]
+    #[test]
+    fn the_form_is_read_off_the_outermost_layer() {
+        assert_eq!(form_of_bytes(&[0x1f, 0x8b, 8, 0]), ContainerForm::Gzip);
+        assert_eq!(
+            form_of_bytes(br#"{"ciphertext":"x","recipients":[]}"#),
+            ContainerForm::Encrypted
+        );
+        assert_eq!(
+            form_of_bytes(br#"{"payload":"x","signatures":[]}"#),
+            ContainerForm::Signed
+        );
+        assert_eq!(
+            form_of_bytes(br#"{"vcon":"0.4.0"}"#),
+            ContainerForm::Unsigned
+        );
+        assert_eq!(form_of_bytes(br#"{"vcon": "#), ContainerForm::Unknown);
+    }
+
     /// A file over `MAX_CONTAINER_BYTES` is refused by its size, before any
     /// of it is read, and the reason names the size and the limit. The file
     /// is sparse, so the test writes almost nothing to disk.
@@ -1249,6 +1526,7 @@ mod tests {
             producer_note: Some("Produced by sipnab.".to_string()),
             schema_findings: vec!["/extensions (type): expected an array".to_string()],
             opened: Vec::new(),
+            ..VconProvenance::default()
         };
         let note = p.note();
         assert!(note.starts_with("3 SIP message(s)"), "{note}");

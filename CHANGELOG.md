@@ -84,6 +84,15 @@ entry that carries them.
   - sipnab refuses at startup a value that is not a host name of two or more labels, naming the key.
   - Without the key, uuids are unchanged.
   - sipnab does not take the name from `sign_cert`.
+- **`--report` reports every stored vCon container the run met, read or skipped, with totals.**
+  - After the dialog table, a `vCon containers:` section has one row per container: status, form (`unsigned`, `signed`, `encrypted`, `gzip`), schema finding count, calls rebuilt, the calls counted by state, the calls' total duration, `uuid` and file.
+  - A skipped container's row names the reason in one word (`no_key`, `no_sip_signaling`, `not_json`, `not_a_vcon`, `not_opened`, `unsupported_critical`, `unreadable`) and in full below the table. `no_key` names `--vcon-key`.
+  - The totals count containers read and skipped, skips by reason, containers with a schema finding, distinct calls by state, and their total duration.
+  - With `--json` or `--json-pretty`, the same rows and totals are one JSON object under the key `sipnab_vcon_containers`.
+  - A run that read no container prints the report it printed before.
+- **MCP tool `vcon_directory_report`, in the `vcon` bundle.**
+  - It answers the same report for a directory of `--mcp-file-root` (`.` for the root), read in stores of its own, with the rows paged by `limit` and `cursor` and cut whole to `max_response_bytes`. The totals cover the whole directory on every page.
+  - The `vcon` bundle's `tools/list` entries now total 10,679 bytes over seven tools with `fetch_vcon`, and `full` totals 89,290 bytes over 76 tools.
 
 ### Fixed
 

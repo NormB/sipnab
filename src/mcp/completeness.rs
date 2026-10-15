@@ -110,7 +110,8 @@ const COMPLETE_KEY: &str = "complete";
 ///   handed over, from the IANA registry, from the rule catalog, or from the
 ///   host's linker.
 /// - `analyze_vcon` analyzes a container the caller handed over, in stores
-///   of its own.
+///   of its own, and `vcon_directory_report` the containers in a directory
+///   of the file root, likewise.
 /// - `list_captures` lists files on disk, and `vcon_spool_status` counts
 ///   the files in the vCon export spool.
 /// - `server_capabilities` describes the binary.
@@ -160,6 +161,10 @@ pub const SOURCE_INDEPENDENT_TOOLS: &[&str] = &[
     // drains. Its answer moves with the forwarder, not with how much of the
     // capture has been read.
     "vcon_spool_status",
+    // Reads the containers in a directory of the file root into stores of
+    // its own, as `analyze_vcon` does with one: the server's capture is not
+    // what it answers about.
+    "vcon_directory_report",
 ];
 
 /// Tools whose `truncated` names something other than a withheld population.

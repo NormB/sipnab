@@ -360,6 +360,46 @@ impl ExportRequest {
     }
 }
 
+/// Parameters for `vcon_directory_report`.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
+#[schemars(crate = "rmcp::schemars")]
+pub struct VconDirectoryReportParams {
+    /// A directory directly inside --mcp-file-root, by bare name, or `.` for
+    /// the root itself.
+    pub directory: String,
+    /// Most rows in this page.
+    pub limit: Option<u32>,
+    /// The file name the previous page ended at.
+    pub cursor: Option<String>,
+    /// Byte budget for this page; rows are cut whole.
+    pub max_response_bytes: Option<u64>,
+}
+
+/// The answer of `vcon_directory_report`: the vCon container report
+/// `--report` prints, with the rows paged and the totals always over the
+/// whole directory.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
+#[schemars(crate = "rmcp::schemars")]
+pub struct VconDirectoryReportResponse {
+    /// Version of the report's shape.
+    pub schema_version: u32,
+    /// The directory, as asked for.
+    pub directory: String,
+    /// This page's rows, in file-name order.
+    pub containers: Vec<crate::output::dialog_report::VconContainerRow>,
+    /// Every row of the directory added up, whatever this page holds.
+    pub totals: crate::output::dialog_report::VconContainerTotals,
+    /// Rows in this page.
+    pub returned: usize,
+    /// Whether rows after this page remain.
+    pub truncated: bool,
+    /// `rows` or `bytes`: which bound cut the page, when one did.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub truncated_by: Option<String>,
+    /// The cursor that resumes after this page, when rows remain.
+    pub next_cursor: Option<String>,
+}
+
 #[tool_router(router = vcon_router, vis = "pub(crate)")]
 impl SipnabMcp {
     /// Rebuild and analyze a stored container the caller holds.
@@ -433,6 +473,93 @@ impl SipnabMcp {
         // The rebuilt dialogs carry whatever the container's producer stored:
         // header values, display names, SDP. The note says so, as it does
         // for an exported container.
+        Ok(CallToolResult::success(vec![
+            ContentBlock::json(value)?,
+            ContentBlock::text(crate::mcp::shape::untrusted_note()),
+        ]))
+    }
+
+    /// Report every stored vCon container in a directory of the file root.
+    ///
+    /// # Errors
+    ///
+    /// `invalid_params` (-32602) when file tools are off (no
+    /// `--mcp-file-root`), or `directory` is not a bare name of a directory
+    /// in the root; `internal_error` (-32603) when it cannot be listed.
+    #[tool(
+        name = "vcon_directory_report",
+        description = "Reports every stored vCon container in one directory \
+                       of --mcp-file-root (a bare name, or . for the root), \
+                       the report sipnab -I <dir> --report prints: per \
+                       container its status (read or skipped), \
+                       form (unsigned, signed, encrypted, gzip), schema \
+                       finding count, calls rebuilt, dispositions and \
+                       duration, or the reason it was skipped (no_key names \
+                       --vcon-key); then totals over the whole directory. \
+                       Read-only; rebuilt apart from this server's capture. \
+                       Rows are paged by limit and cursor and cut whole to \
+                       max_response_bytes.",
+        output_schema = schema_for_output::<VconDirectoryReportResponse>(),
+        annotations(read_only_hint = true, open_world_hint = false)
+    )]
+    pub async fn vcon_directory_report(
+        &self,
+        Parameters(params): Parameters<VconDirectoryReportParams>,
+    ) -> Result<CallToolResult, rmcp::ErrorData> {
+        let dir = self.resolve_dir_in_root(&params.directory)?;
+        if !dir.is_dir() {
+            return Err(errors::refuse_param(
+                Reason::InvalidValue,
+                "directory",
+                format!(
+                    "'{}' is not a directory in --mcp-file-root",
+                    params.directory
+                ),
+            ));
+        }
+        let report = tokio::task::spawn_blocking(move || {
+            crate::output::vcon_analysis::report_directory(&dir)
+        })
+        .await
+        .map_err(|e| rmcp::ErrorData::internal_error(format!("report task failed: {e}"), None))?
+        .map_err(|e| {
+            rmcp::ErrorData::internal_error(format!("cannot list the directory: {e}"), None)
+        })?;
+        let limit = resolve_limit_with_cap(params.limit, self.row_cap);
+        let after: Vec<_> = report
+            .containers
+            .into_iter()
+            .filter(|r| params.cursor.as_deref().is_none_or(|c| r.file.as_str() > c))
+            .collect();
+        let truncated = after.len() > limit;
+        let page: Vec<_> = after.into_iter().take(limit).collect();
+        let row_cursors: Vec<String> = page.iter().map(|r| r.file.clone()).collect();
+        let response = VconDirectoryReportResponse {
+            schema_version: report.schema_version,
+            directory: params.directory,
+            returned: page.len(),
+            next_cursor: if truncated {
+                row_cursors.last().cloned()
+            } else {
+                None
+            },
+            containers: page,
+            totals: report.totals,
+            truncated,
+            truncated_by: truncated.then(|| crate::mcp::budget::TRUNCATED_BY_ROWS.to_string()),
+        };
+        let mut value = serde_json::to_value(&response).map_err(|e| {
+            rmcp::ErrorData::internal_error(format!("report serialization failed: {e}"), None)
+        })?;
+        self.fit_to_budget(
+            &mut value,
+            "containers",
+            &row_cursors,
+            params.max_response_bytes,
+            true,
+        )?;
+        // File names and a container's uuid are text whoever wrote the
+        // directory chose.
         Ok(CallToolResult::success(vec![
             ContentBlock::json(value)?,
             ContentBlock::text(crate::mcp::shape::untrusted_note()),

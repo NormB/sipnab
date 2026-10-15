@@ -55,7 +55,7 @@ A bundle is a named set of tools defined in sipnab's code.
 | [`relay`](mcp-tools-relay.md) | 4 | Questions put to the configured media relay, and decoding the relay control messages sipnab captured. |
 | [`tfps`](mcp-tools-tfps.md) | 7 | The toll-fraud prevention peer (TFPS): what it blocks and logs, and the operator's ban, unban and revert actions. |
 | [`server`](mcp-tools-server.md) | 5 | The sipnab process and its capture path: capture health, HEP senders, resource use, build capabilities, and shutdown. |
-| [`vcon`](mcp-tools-vcon.md) | 6 | vCon conversation containers, exported, validated, analyzed and read from the operator's store, the vCon export spool's counts, and the SIPREC recording metadata a call carried. |
+| [`vcon`](mcp-tools-vcon.md) | 7 | vCon conversation containers, exported, validated and analyzed, one at a time or a directory at once, read from the operator's store, the vCon export spool's counts, and the SIPREC recording metadata a call carried. |
 | [`tls`](mcp-tools-tls.md) | 3 | Reading SIP inside TLS without keys through kernel uprobes, and which TLS libraries this host runs. |
 
 ### Choosing which tools load
@@ -115,9 +115,9 @@ resource.
 | relay | 4 | 4,240 | 20,029 |
 | tfps | 7 | 5,563 | 15,947 |
 | server | 5 | 5,394 | 27,170 |
-| vcon | 6 | 9,516 | 27,544 |
+| vcon | 7 | 10,679 | 32,977 |
 | tls | 3 | 2,850 | 4,943 |
-| full | 75 | 88,234 | 264,813 |
+| full | 76 | 89,290 | 270,289 |
 
 Bytes are the compact JSON of each tool's `tools/list` entry, summed over the
 bundle.
@@ -132,7 +132,7 @@ bundle.
 >   `export_vcon`.
 >
 > The `vcon` and `full` rows hold a later measurement, taken once
-> `fetch_vcon` joined them.
+> `fetch_vcon` and `vcon_directory_report` joined them.
 >
 > - Sizes, tool counts and bundle membership may change in later releases.
 > - A build without a feature does not register that feature's tools, so its
@@ -221,6 +221,7 @@ links to its section on the bundle's page.
 | [`validate_filter`](mcp-tools-signaling.md#validate_filter) | [signaling](mcp-tools-signaling.md) | Whether a filter DSL expression parses, the parser's message when it does not, and how many dialogs it selects — with no rows |
 | [`validate_message`](mcp-tools-signaling.md#validate_message) | [signaling](mcp-tools-signaling.md) | Conformance findings for one message, read alone |
 | [`validate_vcon`](mcp-tools-vcon.md#validate_vcon) | [vcon](mcp-tools-vcon.md) | Checks a container against the working group's draft-ietf-vcon-vcon-core-04 schema and names every finding |
+| [`vcon_directory_report`](mcp-tools-vcon.md#vcon_directory_report) | [vcon](mcp-tools-vcon.md) | Every stored container in a directory of the file root: per container its status, form, schema finding count, calls, dispositions and duration, or why sipnab skipped it, then the totals. The report `-I <dir> --report` prints |
 | [`vcon_spool_status`](mcp-tools-vcon.md#vcon_spool_status) | [vcon](mcp-tools-vcon.md) | Counts the `--export-vcon-dir` spool: containers pending, delivered and failed, with the store's answer from each failed container's record. A snapshot of files; sends, moves and deletes nothing |
 
 ## Which tool finds calls
@@ -413,17 +414,19 @@ inside a window a human client never sees. On a 921 MB capture,
 `capture_status` have always carried `source_exhausted`. Now every tool that
 answers from the capture does.
 
-Twenty tools are the exception, because their answer cannot move with
+Twenty-one tools are the exception, because their answer cannot move with
 the load. How much of the capture sipnab has read says nothing about what
 their sources hold:
-- Eleven read something other than the capture store:
+- Thirteen read something other than the capture store:
   - `explain_response_code`, `explain_rule`, `decode_evidence`, `decode_ng`,
     `show_evidence`, `list_captures`, `list_tls_libraries`,
     `server_capabilities`;
   - `vcon_spool_status`, which counts the vCon export spool that the
     forwarder drains;
   - `compare_captures`, which reads two files and never the loaded capture;
-  - `analyze_vcon`, which analyzes a container the caller hands over.
+  - `analyze_vcon`, which analyzes a container the caller hands over;
+  - `vcon_directory_report`, which reads the containers in a directory of the
+    file root.
 - The other nine ask another process:
   - `query_relay` and `relay_stats` put the question to the media relay;
   - `tfps_status`, `tfps_banned`, `tfps_dropped`, `tfps_labels`, `tfps_ban`

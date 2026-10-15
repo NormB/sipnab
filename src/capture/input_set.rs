@@ -496,6 +496,12 @@ fn resolve_counting(
                     "Skipping '{}': not a readable capture ({e:#})",
                     path.display()
                 );
+                // A container file the reader refused is a skipped row of the
+                // vCon container report, with the reason the line above gives.
+                #[cfg(feature = "vcon")]
+                if let Some(refused) = e.downcast_ref::<super::vcon_input::Refused>() {
+                    super::vcon_input::record_skipped(refused.skip.clone());
+                }
             }
         }
     }
@@ -1042,15 +1048,19 @@ pub(crate) fn first_packet_time(path: &Path) -> Result<Option<f64>> {
 ///
 /// The container is unreadable or invalid, or this build cannot read one.
 fn container_first_message(path: &Path) -> Result<Option<f64>> {
-    let rebuilt = super::vcon_input::read_file(path).map_err(|e| anyhow::anyhow!("{e}"))?;
     #[cfg(feature = "vcon")]
     {
+        // The refusal keeps its type, and carries the skipped row of the vCon
+        // container report from this one read; its text is the reader's.
+        let rebuilt =
+            super::vcon_input::read_file_reporting(path).map_err(|r| anyhow::Error::new(*r))?;
         Ok(rebuilt
             .first_message
             .map(|t| t.timestamp() as f64 + f64::from(t.timestamp_subsec_micros()) / 1_000_000.0))
     }
     #[cfg(not(feature = "vcon"))]
     {
+        let rebuilt = super::vcon_input::read_file(path).map_err(anyhow::Error::new)?;
         let _ = rebuilt;
         Ok(None)
     }

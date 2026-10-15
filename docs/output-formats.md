@@ -259,6 +259,18 @@ For the aggregate report over the whole capture, and nothing else:
 sipnab -N -I capture.pcap --report --no-cli-print
 ```
 
+When the inputs include stored vCon containers (`-I` naming a directory of
+them, for example), the report adds a `vCon containers:` section after the
+dialog table:
+
+- one row per container: read, or skipped with the reason;
+- the totals: containers read and skipped, skips by reason, containers that
+  fail the schema, calls by state, and the total duration.
+
+With `--json` or `--json-pretty`, that section is one JSON object under the
+key `sipnab_vcon_containers` instead. [Read many containers at
+once](vcon.md#read-many-containers-at-once) describes every column and field.
+
 For a deep dive into a single call, named by its Call-ID:
 
 ```bash

@@ -11,7 +11,7 @@ reachable three ways and not four is visible only once these four are set
 beside one another. [`tests/capability_matrix_test.rs`](https://github.com/NormB/sipnab/blob/main/tests/capability_matrix_test.rs) keeps
 this current and requires the matrix to account for every row here.
 
-Totals: CLI 371, TUI 25, REST 47, MCP 75.
+Totals: CLI 371, TUI 25, REST 47, MCP 76.
 
 ## CLI flags (371)
 
@@ -465,7 +465,7 @@ Totals: CLI 371, TUI 25, REST 47, MCP 75.
 - `/v1/vcon/spool`
 - `/v1/vcon/validate`
 
-## MCP tools (75)
+## MCP tools (76)
 
 - `actions_revert`
 - `aggregate_dialogs`
@@ -541,4 +541,5 @@ Totals: CLI 371, TUI 25, REST 47, MCP 75.
 - `validate_filter`
 - `validate_message`
 - `validate_vcon`
+- `vcon_directory_report`
 - `vcon_spool_status`

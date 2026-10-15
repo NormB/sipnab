@@ -1255,6 +1255,35 @@ impl SipnabMcp {
         Ok(resolved)
     }
 
+    /// A directory a read-only tool reads: `.` for `--mcp-file-root` itself,
+    /// or a bare name inside it, resolved by [`Self::resolve_in_root`].
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::resolve_in_root`]: file tools off, or a name that is not
+    /// bare or leads outside the root.
+    ///
+    /// Only `vcon_directory_report` reads a directory, so a build without the
+    /// `vcon` feature does not carry it.
+    #[cfg(feature = "vcon")]
+    pub(crate) fn resolve_dir_in_root(
+        &self,
+        name: &str,
+    ) -> Result<std::path::PathBuf, rmcp::ErrorData> {
+        if name == "." {
+            let root = self.file_root.as_ref().ok_or_else(|| {
+                errors::refuse(
+                    Reason::NotEnabled,
+                    "file tools are disabled: start sipnab with --mcp-file-root <DIR> \
+                     to enable them"
+                        .to_string(),
+                )
+            })?;
+            return Ok(root.canonicalize().unwrap_or_else(|_| root.clone()));
+        }
+        self.resolve_in_root(name)
+    }
+
     /// [`Self::resolve_in_root`] for a tool that WRITES.
     ///
     /// Adds the overwrite guard: refuse before the caller opens anything,
@@ -12891,7 +12920,12 @@ mod tests {
             // 8_700 -> 9_700 and full 87_500 -> 88_400: `fetch_vcon`, the
             // opt-in read of the operator's vCon store; vcon measured 9,516
             // and full 88,234.
-            ("vcon", 9_700),
+            // 9_700 -> 11_000 and full 88_400 -> 89_500 when
+            // `vcon_directory_report` (8_700 -> 10_000 on its own branch, vcon
+            // 9,844) met `fetch_vcon` in the 0.5.221 batch: vcon measured
+            // 10,683 over seven tools and full 89,360 over 76, on the merged
+            // tree.
+            ("vcon", 11_000),
             ("tls", 3_000),
             // full 83_500 -> 85_500: the three changes above together, the
             // paged-tool byte budget, the response schemas and the vCon
@@ -12904,7 +12938,9 @@ mod tests {
             // name the vCon containers they list and sweep; captures measured
             // 12,696 and full 87,395.
             // full 87_500 -> 88_400: `fetch_vcon`, as the vcon row above says.
-            ("full", 88_400),
+            // full 88_400 -> 89_500: `vcon_directory_report`, as the vcon row
+            // above says.
+            ("full", 89_500),
         ];
         let sizes: std::collections::BTreeMap<String, usize> = empty_server()
             .with_output_schemas(false)

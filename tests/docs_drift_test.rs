@@ -3979,9 +3979,14 @@ fn mcp_tool_table_lists_every_registered_tool() -> Result<(), TestError> {
     // container from the operator's vCon store behind --mcp-allow-vcon-fetch.
     // It writes no file and changes nothing, so the split moves to 62
     // read-only of 75 and the thirteen write-capable tools are unchanged.
+    // 75 -> 76 when `vcon_directory_report` (src/mcp/tools/vcon.rs) met it
+    // in the 0.5.221 batch: it reports the stored vCon containers in a
+    // directory of the file root, reads files and changes nothing, so the
+    // split moves to 63 read-only of 76 and the thirteen write-capable
+    // tools are unchanged.
     assert_eq!(
         registered.len(),
-        75,
+        76,
         "found only {} #[tool(name = ...)] entries under src/mcp/ — the \
          attribute shape changed and this test is no longer reading the \
          registry: {registered:?}",
@@ -5360,7 +5365,11 @@ fn no_documentation_table_repeats_a_row() -> Result<(), TestError> {
     // docs/vcon.md ("Send a call's audio as RTP") and their site mirror.
     // 1230 -> 1232: the uuid layout table in docs/vcon.md ("The uuid under a
     // domain") and its website/content/docs/vcon.md mirror.
-    const EXPECTED_TABLES: usize = 1232;
+    // 1232 -> 1237: the `vcon_directory_report` parameter and row-field
+    // tables in docs/mcp-tools-vcon.md and their website mirror, and the
+    // "Report a directory of stored vCons" row of
+    // docs/design/surface-capability-matrix.md.
+    const EXPECTED_TABLES: usize = 1237;
 
     let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     let out = std::process::Command::new("git")

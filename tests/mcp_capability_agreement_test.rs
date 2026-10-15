@@ -253,6 +253,7 @@ const VCON_TOOLS: &[&str] = &[
     "analyze_vcon",
     "export_vcon",
     "validate_vcon",
+    "vcon_directory_report",
     "vcon_spool_status",
 ];
 

@@ -11384,7 +11384,7 @@ it does these things:
 It does for this surface what <https://sipnab.com/api-reference/> does for the
 [REST API](rest-api.md).
 
-sipnab registers 75 MCP tools. That is more than anyone reads in a table. The
+sipnab registers 76 MCP tools. That is more than anyone reads in a table. The
 Tools tab is the fastest way to find the one you want.
 
 Inspector belongs to the protocol rather than to sipnab. So it also
@@ -18379,7 +18379,7 @@ Multiple diagnostic flags combine with OR.
 | `--json-pretty` | -- | off | 0.3.0 | Output each message as pretty-printed multi-line JSON (use `--json` for line-oriented NDJSON). Requires `-N` |
 | `--json-dialogs` | -- | off | 0.5.68 | NDJSON, one object per **dialog**, emitted after capture (needs `-N`; pair with `--no-cli-print` to get only the objects). `--json` is per message: a dialog filter such as `state == 'Failed'` selects dialogs and then emits every message of them, provisional responses included. This is the per-call shape, carrying `final_status_code` and `final_status_reason` so a failed call says which code failed it — those two are the final answer to the dialog's INVITE, or to the `REGISTER`/`OPTIONS`/`SUBSCRIBE`/`PUBLISH` that opened a dialog without one, and are `null` while it has none. |
 | `--plugin` | `<PATH>` | -- | 0.5.69 | Load a WASM plugin that contributes its own dialog detections; repeatable. Findings appear under `plugin_findings`. Requires the `plugins` Cargo feature (**not** in the default set). A plugin runs with no imports — no filesystem, network or clock — but still sees each message's headers, so loading one is a trust decision. See [wasm-plugin-api.md](design/wasm-plugin-api.md) |
-| `--report` | -- | off | 0.3.0 | Generate summary report after capture completes. Requires `-N` |
+| `--report` | -- | off | 0.3.0 | Generate summary report after capture completes. Requires `-N`. When the inputs include stored vCon containers, the report adds one row per container, read or skipped with the reason, and their totals; with `--json` or `--json-pretty`, as one JSON object under the key `sipnab_vcon_containers`. See [Read many containers at once](vcon.md#read-many-containers-at-once) |
 | `--call-report` | `<CALL-ID>` | -- | 0.3.0 | Generate a detailed report for a specific Call-ID. Implies non-interactive |
 | `--export-vcon` | `<CALL-ID>` | -- | 0.5.125 | Export one dialog as an observer vCon container ([`draft-ietf-vcon-vcon-core`](https://datatracker.ietf.org/doc/draft-ietf-vcon-vcon-core/), syntax `0.4.0`): unsigned, with each party's `name` taken only from a `From` or `To` display name and marked `validation: "none"`, with the audio this run retained inline up to `--vcon-max-inline-media`, and with what the capture missed attached. Goes to stdout unless `--vcon-out` names a file, and then silences the per-message stream so the container stays parseable. Implies non-interactive. On a live capture (`-d` or `--hep-listen`), sipnab writes the container when that call ends, about ten seconds after its last message, while the capture runs. A stopped live run writes nothing, so stopping sipnab leaves no call data behind. With `-I`, sipnab writes it at the end of the run. A live run refuses `--redact` and `--redact-map`, which only write at the end of a run; use them with `-I`. Needs the `vcon` Cargo feature, which `full` has and the default set does not. More: [Export a call as a vCon](vcon.md) |
 | `--export-vcon-when` | `<EXPR>` | -- | 0.5.127 | Emit a vCon for every dialog matching this filter expression, one container per dialog, into `--export-vcon-dir`. `EXPR` is the language `--filter` already speaks ([`docs/filter-dsl.md`](https://github.com/NormB/sipnab/blob/main/docs/filter-dsl.md)), so `state == 'Failed'` and `response_code >= 400 and rtp.codec == 'PCMU'` work without new syntax. Reusing the language rather than growing a flag per policy is deliberate: one flag for failures, another for calls with media, another for a duration threshold, and so on enumerates the cases somebody thought of. The case nobody thought of is the one an operator needs at three in the morning. Parsed before the capture opens, so a malformed expression fails the run instead of leaving an empty directory a reader takes for "nothing matched". Conflicts with `--export-vcon`, which answers the same question for one named call. Implies non-interactive, and unlike `--export-vcon` it leaves stdout alone, because the containers go to a directory. On a live capture (`-d` or `--hep-listen`), sipnab writes each matching call's container while the capture runs, about ten seconds after the call ends. A stopped live run writes nothing more, so stopping sipnab leaves no call data behind. With `-I`, sipnab writes every container at the end of the run. A live run refuses `--redact`, `--redact-map` and `--content-deny-tombstone`, which only write at the end of a run; use them with `-I`. Needs the `vcon` Cargo feature |
@@ -27009,6 +27009,18 @@ For the aggregate report over the whole capture, and nothing else:
 sipnab -N -I capture.pcap --report --no-cli-print
 ```
 
+When the inputs include stored vCon containers (`-I` naming a directory of
+them, for example), the report adds a `vCon containers:` section after the
+dialog table:
+
+- one row per container: read, or skipped with the reason;
+- the totals: containers read and skipped, skips by reason, containers that
+  fail the schema, calls by state, and the total duration.
+
+With `--json` or `--json-pretty`, that section is one JSON object under the
+key `sipnab_vcon_containers` instead. [Read many containers at
+once](vcon.md#read-many-containers-at-once) describes every column and field.
+
 For a deep dive into a single call, named by its Call-ID:
 
 ```bash
@@ -32833,7 +32845,7 @@ A bundle is a named set of tools defined in sipnab's code.
 | [`relay`](mcp-tools-relay.md) | 4 | Questions put to the configured media relay, and decoding the relay control messages sipnab captured. |
 | [`tfps`](mcp-tools-tfps.md) | 7 | The toll-fraud prevention peer (TFPS): what it blocks and logs, and the operator's ban, unban and revert actions. |
 | [`server`](mcp-tools-server.md) | 5 | The sipnab process and its capture path: capture health, HEP senders, resource use, build capabilities, and shutdown. |
-| [`vcon`](mcp-tools-vcon.md) | 6 | vCon conversation containers, exported, validated, analyzed and read from the operator's store, the vCon export spool's counts, and the SIPREC recording metadata a call carried. |
+| [`vcon`](mcp-tools-vcon.md) | 7 | vCon conversation containers, exported, validated and analyzed, one at a time or a directory at once, read from the operator's store, the vCon export spool's counts, and the SIPREC recording metadata a call carried. |
 | [`tls`](mcp-tools-tls.md) | 3 | Reading SIP inside TLS without keys through kernel uprobes, and which TLS libraries this host runs. |
 
 ### Choosing which tools load
@@ -32893,9 +32905,9 @@ resource.
 | relay | 4 | 4,240 | 20,029 |
 | tfps | 7 | 5,563 | 15,947 |
 | server | 5 | 5,394 | 27,170 |
-| vcon | 6 | 9,516 | 27,544 |
+| vcon | 7 | 10,679 | 32,977 |
 | tls | 3 | 2,850 | 4,943 |
-| full | 75 | 88,234 | 264,813 |
+| full | 76 | 89,290 | 270,289 |
 
 Bytes are the compact JSON of each tool's `tools/list` entry, summed over the
 bundle.
@@ -32910,7 +32922,7 @@ bundle.
 >   `export_vcon`.
 >
 > The `vcon` and `full` rows hold a later measurement, taken once
-> `fetch_vcon` joined them.
+> `fetch_vcon` and `vcon_directory_report` joined them.
 >
 > - Sizes, tool counts and bundle membership may change in later releases.
 > - A build without a feature does not register that feature's tools, so its
@@ -32999,6 +33011,7 @@ links to its section on the bundle's page.
 | [`validate_filter`](mcp-tools-signaling.md#validate_filter) | [signaling](mcp-tools-signaling.md) | Whether a filter DSL expression parses, the parser's message when it does not, and how many dialogs it selects — with no rows |
 | [`validate_message`](mcp-tools-signaling.md#validate_message) | [signaling](mcp-tools-signaling.md) | Conformance findings for one message, read alone |
 | [`validate_vcon`](mcp-tools-vcon.md#validate_vcon) | [vcon](mcp-tools-vcon.md) | Checks a container against the working group's draft-ietf-vcon-vcon-core-04 schema and names every finding |
+| [`vcon_directory_report`](mcp-tools-vcon.md#vcon_directory_report) | [vcon](mcp-tools-vcon.md) | Every stored container in a directory of the file root: per container its status, form, schema finding count, calls, dispositions and duration, or why sipnab skipped it, then the totals. The report `-I <dir> --report` prints |
 | [`vcon_spool_status`](mcp-tools-vcon.md#vcon_spool_status) | [vcon](mcp-tools-vcon.md) | Counts the `--export-vcon-dir` spool: containers pending, delivered and failed, with the store's answer from each failed container's record. A snapshot of files; sends, moves and deletes nothing |
 
 ## Which tool finds calls
@@ -33191,17 +33204,19 @@ inside a window a human client never sees. On a 921 MB capture,
 `capture_status` have always carried `source_exhausted`. Now every tool that
 answers from the capture does.
 
-Twenty tools are the exception, because their answer cannot move with
+Twenty-one tools are the exception, because their answer cannot move with
 the load. How much of the capture sipnab has read says nothing about what
 their sources hold:
-- Eleven read something other than the capture store:
+- Thirteen read something other than the capture store:
   - `explain_response_code`, `explain_rule`, `decode_evidence`, `decode_ng`,
     `show_evidence`, `list_captures`, `list_tls_libraries`,
     `server_capabilities`;
   - `vcon_spool_status`, which counts the vCon export spool that the
     forwarder drains;
   - `compare_captures`, which reads two files and never the loaded capture;
-  - `analyze_vcon`, which analyzes a container the caller hands over.
+  - `analyze_vcon`, which analyzes a container the caller hands over;
+  - `vcon_directory_report`, which reads the containers in a directory of the
+    file root.
 - The other nine ask another process:
   - `query_relay` and `relay_stats` put the question to the media relay;
   - `tfps_status`, `tfps_banned`, `tfps_dropped`, `tfps_labels`, `tfps_ban`
@@ -39642,7 +39657,7 @@ actually stops, so a declined confirmation leaves no file behind. See
 # MCP tool reference: vcon bundle
 
 The `vcon` bundle exports, validates and analyzes vCon conversation
-containers, reads one from the operator's vCon store, counts the vCon export
+containers, reports a directory of them, reads one from the operator's vCon store, counts the vCon export
 spool, and reports the SIPREC recording metadata a call carried.
 
 Load only these tools with `--mcp-tools vcon`, or combine bundles as [Choosing
@@ -39659,6 +39674,7 @@ the other bundles and finds any tool by name.
 | [`validate_vcon`](#validate_vcon) | `call_id?`, `container?` | Checks a container against the working group's draft-ietf-vcon-vcon-core-04 schema and names every finding |
 | [`analyze_vcon`](#analyze_vcon) | `container` or `container_base64`, `limit?` | Rebuilds the SIP messages a stored container holds and analyzes them apart from the loaded capture: per dialog the `--json-dialogs` object, the signaling diagnosis and the ladder, plus the capture analysis and what a container cannot reproduce |
 | [`fetch_vcon`](#fetch_vcon) | `uuid` | **Connects, off by default.** One container from the operator's `[vcon_fetch]` store by uuid, returned inline with the checks it passed. Needs `--mcp-allow-vcon-fetch`; the store and its keys come from operator configuration only |
+| [`vcon_directory_report`](#vcon_directory_report) | `directory`, `limit?`, `cursor?`, `max_response_bytes?` | Every stored container in a directory of the file root: per container its status, form, schema finding count, calls, dispositions and duration, or why sipnab skipped it, then the totals. The report `-I <dir> --report` prints |
 | [`vcon_spool_status`](#vcon_spool_status) | `limit?`, `cursor?`, `rule?` | Counts the `--export-vcon-dir` spool: containers pending, delivered and failed, with the store's answer from each failed container's record. A snapshot of files; sends, moves and deletes nothing |
 
 
@@ -40438,6 +40454,137 @@ the run at startup, naming the flag.
 }
 ```
 
+### `vcon_directory_report`
+
+Reports every stored vCon container in one directory of `--mcp-file-root`:
+which ones sipnab read, what each one held, which ones it skipped and why, and
+the totals. It is the report `sipnab -N -I <dir> --report` prints after the
+dialog table: see
+[Read many containers at once](vcon.md#read-many-containers-at-once). One
+function builds both,
+[`output::dialog_report::vcon_containers_report`](https://github.com/NormB/sipnab/blob/main/src/output/dialog_report.rs).
+
+sipnab reads each container with the reader `-I` uses, and rebuilds the calls
+into stores of their own. The tool leaves the loaded capture untouched,
+changes no file, and connects nowhere. It opens a signed, encrypted or gzip
+format container with the server's `--vcon-key`, `--vcon-signer-ca` and
+`--vcon-signer-sha256`.
+
+- It reads the files directly in the directory. It does not descend into
+  subdirectories.
+- It does not follow a symbolic link.
+- A file is a container when its content says so, as for `-I`: the first
+  character other than whitespace is `{`, or the file is gzip that inflates to
+  one. A capture or a README in the directory is not a row.
+
+| Name | Type | Legal values | If omitted |
+|---|---|---|---|
+| `directory` | string | A directory directly inside `--mcp-file-root`, by bare name, or `.` for the root itself. | Required. A path, or a name that leads outside the root, fails with `invalid_params`. |
+| `limit` | integer | The most rows to return. Ceiling `--mcp-max-rows`. | 50. |
+| `cursor` | string | The `next_cursor` of the previous page: the file name it ended at. | The first page. |
+| `max_response_bytes` | integer | The byte budget for this page. Ceiling `--mcp-max-response-bytes`. | The ceiling. The budget cuts rows whole, and `truncated_by` says `bytes`. |
+
+**Rows, then totals.** One row per container file, in file-name order.
+
+| Field | What it holds |
+|---|---|
+| `status` | `read` or `skipped` |
+| `file` | The file name, relative to `directory` |
+| `uuid` | The container's `uuid`, or null when it did not open far enough to show one |
+| `form` | The outermost form the file arrived in: `unsigned`, `signed`, `encrypted`, `gzip`, or `unknown` for bytes that are not a JSON object |
+| `validation_findings` | Places the container disagrees with the vendored draft-ietf-vcon-vcon-core-04 schema. Null when the schema check did not run: the file did not open, or is not JSON |
+| `calls_rebuilt`, `call_ids` | The calls (dialogs, by Call-ID) rebuilt from it |
+| `dispositions` | Those calls counted by state, the word the `--report` dialog table's State column prints |
+| `duration_secs` | Those calls' durations added up, each as the dialog table's Duration column computes it |
+| `skip_reason` | On a skipped row only: `no_key`, `no_sip_signaling`, `not_json`, `not_a_vcon`, `not_opened`, `unsupported_critical` or `unreadable` |
+| `skip_detail` | On a skipped row only: the same reason in full |
+
+`totals` adds up every row of the directory, whichever page this is:
+`containers`, `read`, `skipped`, `skipped_by_reason`, `failed_validation`
+(containers with at least one schema finding), `calls`, `dispositions` and
+`duration_secs`. A call two containers both hold counts once in the totals,
+and once in each of their rows.
+
+`no_key` is an encrypted container on a server without `--vcon-key`. The row
+names the flag. sipnab never reports an encrypted container as one with no SIP.
+
+Real output for a directory `stored` holding two unsigned containers, the gzip
+format of a third, an encrypted container, a container from the
+vcon-supreme-court-arguments dataset (which stores no SIP) and a file cut off
+after 30 bytes. This is the second page of three rows:
+
+```jsonc
+// vcon_directory_report { "directory": "stored", "limit": 3, "cursor": "c-busy.vcon.json.gz" }
+{
+  "containers": [
+    {
+      "call_ids": [],
+      "calls_rebuilt": 0,
+      "dispositions": {},
+      "duration_secs": 0,
+      "file": "d-sealed.vcon.json",
+      "form": "encrypted",
+      "skip_detail": "cannot open the vCon container: the container is encrypted (draft-ietf-vcon-vcon-core-04 section 5.3), and no decryption key was given: give --vcon-key, or [vcon_input] key in the config file",
+      "skip_reason": "no_key",
+      "status": "skipped",
+      "uuid": null,
+      "validation_findings": null
+    },
+    {
+      "call_ids": [],
+      "calls_rebuilt": 0,
+      "dispositions": {},
+      "duration_secs": 0,
+      "file": "e-dataset.vcon.json",
+      "form": "unsigned",
+      "skip_detail": "a vCon container with no SIP signaling sipnab can read: it has no sip-message-trace or message/sip attachment",
+      "skip_reason": "no_sip_signaling",
+      "status": "skipped",
+      "uuid": "01a0be36-e172-8a14-9dd8-dd37220d739c",
+      "validation_findings": 4
+    },
+    {
+      "call_ids": [],
+      "calls_rebuilt": 0,
+      "dispositions": {},
+      "duration_secs": 0,
+      "file": "f-malformed.vcon.json",
+      "form": "unknown",
+      "skip_detail": "not a vCon container: not JSON (EOF while parsing a list at line 1 column 30)",
+      "skip_reason": "not_json",
+      "status": "skipped",
+      "uuid": null,
+      "validation_findings": null
+    }
+  ],
+  "directory": "stored",
+  "next_cursor": null,
+  "returned": 3,
+  "schema_version": 1,
+  "totals": {
+    "calls": 3,
+    "containers": 6,
+    "dispositions": {
+      "Completed": 1,
+      "Failed": 1,
+      "InCall": 1
+    },
+    "duration_secs": 9,
+    "failed_validation": 1,
+    "read": 3,
+    "skipped": 3,
+    "skipped_by_reason": {
+      "no_key": 1,
+      "no_sip_signaling": 1,
+      "not_json": 1
+    }
+  },
+  "truncated": false
+}
+```
+
+A build without the `vcon` Cargo feature does not register this tool.
+
 ### `vcon_spool_status`
 
 Counts the vCon export spool: the directory `--export-vcon-dir` names, which
@@ -40815,8 +40962,8 @@ For the tools themselves, and for the error codes and response bounds, see
 - **No prompt-injection cooperation.** Tool descriptions never
   instruct the LLM to "trust" or "act on" returned content. They
   describe what the tool returns and stop there.
-- **Every tool declares what it does.** All 75 carry MCP annotations, so a host
-  can decide what to call without asking. Sixty are `readOnlyHint: true`.
+- **Every tool declares what it does.** All 76 carry MCP annotations, so a host
+  can decide what to call without asking. Sixty-three are `readOnlyHint: true`.
   [What the write verbs do](#what-the-write-verbs-do) names the thirteen that
   are not.
 
@@ -41243,7 +41390,7 @@ sipnab negotiates the 2025-06-18 and 2025-11-25 revisions. There,
 
 ## What the write verbs do
 
-Sixty-two of the 75 tools are `readOnlyHint: true`. These thirteen are not.
+Sixty-three of the 76 tools are `readOnlyHint: true`. These thirteen are not.
 Each declares what kind of change it makes, so a host can decide which need
 confirmation:
 
@@ -47314,6 +47461,111 @@ sipnab -N -I stored --json-dialogs --no-cli-print --quiet | jq -c '{call_id, msg
 A container named directly with `-I` that sipnab cannot read stops the run
 instead, with the same reason. A file you named is one you expected
 sipnab to read.
+
+### Read many containers at once
+
+`--report` over a directory of containers prints one row per container after
+the dialog table. Each row says whether sipnab read the container or skipped
+it, and then the totals:
+
+```sh
+sipnab -N -I stored --report --no-cli-print --quiet
+```
+
+```text
+Call-ID                          From           To             State        Code   Duration   Msgs   PDD      Tags
+-------------------------------------------------------------------------------------------------------------------------
+1-1966@10.0.2.20                 sipp           test           Completed    200    8s         6      -        -
+1-1968@10.0.2.20                 sipp           test           InCall       200    0s         4      -        -
+
+vCon containers:
+Status                     Form       Findings  Calls  Duration  Disposition              UUID                                  File
+----------------------------------------------------------------------------------------------------------------------------------
+read                       unsigned   0         1      8s        Completed 1              0158a120-0392-8a4b-8522-17eac0c8ec4b  stored/1-1966_10.0.2.20-1cc03f180ff8a774.vcon.json
+read                       unsigned   0         1      0s        InCall 1                 0158a120-253e-8af9-a5b5-76781dbeae49  stored/1-1968_10.0.2.20-cdd887baa4507e9a.vcon.json
+skipped: no_sip_signaling  unsigned   1         0      0s        -                        -                                     stored/broken.vcon.json
+
+Totals: 3 container(s): 2 read, 1 skipped
+Skipped by reason: no_sip_signaling 1
+Failed validation: 1 container(s)
+Calls: 2 (Completed 1, InCall 1)
+Total duration: 8s
+
+Skipped:
+  stored/broken.vcon.json: a vCon container with no SIP signaling sipnab can read: it has no sip-message-trace or message/sip attachment
+```
+
+The `Skipping` warnings print on standard error as before. `--quiet` hides
+them, and the report keeps each reason.
+
+The columns:
+
+- **Status.** `read`, or `skipped:` and the reason in one word:
+  - `no_key`: the container is in the encrypted form and the run has no `--vcon-key`.
+    Give the flag to read it.
+  - `no_sip_signaling`: the container stores no SIP message sipnab can
+    rebuild.
+  - `not_json`: the file starts with `{` and is not JSON.
+  - `not_a_vcon`: the JSON is not a vCon.
+  - `not_opened`: a signed or encrypted layer did not open, for a reason
+    other than a missing key.
+  - `unsupported_critical`: `critical` lists an extension sipnab does not
+    support.
+  - `unreadable`: sipnab cannot read the file, or the file is over 64 MiB.
+- **Form.** The outermost form the file arrived in: `unsigned`, `signed`,
+  `encrypted` or `gzip`, or `unknown` for bytes that are not a JSON object.
+- **Findings.** How many places the container disagrees with the vendored
+  draft-ietf-vcon-vcon-core-04 schema. `-` means the schema check did not
+  run, because the file did not open or is not JSON.
+- **Calls.** The calls rebuilt from the container, by Call-ID.
+- **Duration.** Those calls' durations added up, each as the dialog table's
+  Duration column computes it.
+- **Disposition.** Those calls counted by state, the word the dialog table's
+  State column prints.
+- **UUID** and **File.** The container's `uuid`, and the file.
+
+The totals add up the rows. A call that two containers both hold counts once
+in the totals and once in each of their rows. `Failed validation` counts the
+containers with at least one schema finding, read or skipped.
+
+The section prints only when the run met a container. A report over a
+capture prints what it printed before. `--filter` does not narrow it: a container is an input,
+like a capture file.
+
+With `--json` or `--json-pretty`, the same rows and totals come as one JSON
+object under the key `sipnab_vcon_containers`, in place of the text section.
+The dialog table stays text:
+
+```sh
+sipnab -N -I stored --report --json --no-cli-print --quiet | grep sipnab_vcon_containers | jq '.sipnab_vcon_containers.totals'
+```
+
+```json
+{
+  "calls": 2,
+  "containers": 3,
+  "dispositions": {
+    "Completed": 1,
+    "InCall": 1
+  },
+  "duration_secs": 8,
+  "failed_validation": 1,
+  "read": 2,
+  "skipped": 1,
+  "skipped_by_reason": {
+    "no_sip_signaling": 1
+  }
+}
+```
+
+Each row of `containers` carries `status`, `file`, `uuid`, `form`,
+`validation_findings` (null where the text prints `-`), `calls_rebuilt`,
+`call_ids`, `dispositions` and `duration_secs`. A skipped row also carries
+`skip_reason` and `skip_detail`, the reason in full.
+
+The MCP tool [`vcon_directory_report`](mcp-tools-vcon.md#vcon_directory_report)
+answers the same report for a directory of `--mcp-file-root`, with the rows
+paged.
 
 ### A signed, encrypted or compressed container
 

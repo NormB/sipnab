@@ -791,13 +791,15 @@ fn stdio_mcp_full_tool_set_and_remaining_tools() -> Result<(), TestError> {
     // unconditionally asserts a tool set no `mcp`-without-`vcon` build has --
     // and they are advertised exactly when they can run, which
     // `mcp_capability_agreement_test` is what gates. `vcon_spool_status`
-    // and `analyze_vcon` joined the pair as the third and fourth.
+    // and `analyze_vcon` joined the pair as the third and fourth, and
+    // `vcon_directory_report` as the fifth.
     if cfg!(feature = "vcon") {
         expected.extend_from_slice(&[
             "analyze_vcon",
             "export_vcon",
             "fetch_vcon",
             "validate_vcon",
+            "vcon_directory_report",
             "vcon_spool_status",
         ]);
     }

@@ -117,7 +117,13 @@ pub enum Form {
 
 /// The form `value` is in.
 pub fn form_of(value: &serde_json::Value) -> Form {
-    let has = |key: &str| value.get(key).is_some();
+    form_of_members(|key| value.get(key).is_some())
+}
+
+/// The form a container whose top-level members `has` answers for is in:
+/// the rule [`form_of`] applies, for a reader that holds only the member
+/// names, such as [`crate::capture::vcon_input::form_of_bytes`].
+pub fn form_of_members(has: impl Fn(&str) -> bool) -> Form {
     if has("ciphertext") && has("recipients") {
         Form::Encrypted
     } else if has("payload") && has("signatures") {

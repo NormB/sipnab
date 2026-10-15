@@ -3102,6 +3102,111 @@ A container named directly with `-I` that sipnab cannot read stops the run
 instead, with the same reason. A file you named is one you expected
 sipnab to read.
 
+### Read many containers at once
+
+`--report` over a directory of containers prints one row per container after
+the dialog table. Each row says whether sipnab read the container or skipped
+it, and then the totals:
+
+```sh
+sipnab -N -I stored --report --no-cli-print --quiet
+```
+
+```text
+Call-ID                          From           To             State        Code   Duration   Msgs   PDD      Tags
+-------------------------------------------------------------------------------------------------------------------------
+1-1966@10.0.2.20                 sipp           test           Completed    200    8s         6      -        -
+1-1968@10.0.2.20                 sipp           test           InCall       200    0s         4      -        -
+
+vCon containers:
+Status                     Form       Findings  Calls  Duration  Disposition              UUID                                  File
+----------------------------------------------------------------------------------------------------------------------------------
+read                       unsigned   0         1      8s        Completed 1              0158a120-0392-8a4b-8522-17eac0c8ec4b  stored/1-1966_10.0.2.20-1cc03f180ff8a774.vcon.json
+read                       unsigned   0         1      0s        InCall 1                 0158a120-253e-8af9-a5b5-76781dbeae49  stored/1-1968_10.0.2.20-cdd887baa4507e9a.vcon.json
+skipped: no_sip_signaling  unsigned   1         0      0s        -                        -                                     stored/broken.vcon.json
+
+Totals: 3 container(s): 2 read, 1 skipped
+Skipped by reason: no_sip_signaling 1
+Failed validation: 1 container(s)
+Calls: 2 (Completed 1, InCall 1)
+Total duration: 8s
+
+Skipped:
+  stored/broken.vcon.json: a vCon container with no SIP signaling sipnab can read: it has no sip-message-trace or message/sip attachment
+```
+
+The `Skipping` warnings print on standard error as before. `--quiet` hides
+them, and the report keeps each reason.
+
+The columns:
+
+- **Status.** `read`, or `skipped:` and the reason in one word:
+  - `no_key`: the container is in the encrypted form and the run has no `--vcon-key`.
+    Give the flag to read it.
+  - `no_sip_signaling`: the container stores no SIP message sipnab can
+    rebuild.
+  - `not_json`: the file starts with `{` and is not JSON.
+  - `not_a_vcon`: the JSON is not a vCon.
+  - `not_opened`: a signed or encrypted layer did not open, for a reason
+    other than a missing key.
+  - `unsupported_critical`: `critical` lists an extension sipnab does not
+    support.
+  - `unreadable`: sipnab cannot read the file, or the file is over 64 MiB.
+- **Form.** The outermost form the file arrived in: `unsigned`, `signed`,
+  `encrypted` or `gzip`, or `unknown` for bytes that are not a JSON object.
+- **Findings.** How many places the container disagrees with the vendored
+  draft-ietf-vcon-vcon-core-04 schema. `-` means the schema check did not
+  run, because the file did not open or is not JSON.
+- **Calls.** The calls rebuilt from the container, by Call-ID.
+- **Duration.** Those calls' durations added up, each as the dialog table's
+  Duration column computes it.
+- **Disposition.** Those calls counted by state, the word the dialog table's
+  State column prints.
+- **UUID** and **File.** The container's `uuid`, and the file.
+
+The totals add up the rows. A call that two containers both hold counts once
+in the totals and once in each of their rows. `Failed validation` counts the
+containers with at least one schema finding, read or skipped.
+
+The section prints only when the run met a container. A report over a
+capture prints what it printed before. `--filter` does not narrow it: a container is an input,
+like a capture file.
+
+With `--json` or `--json-pretty`, the same rows and totals come as one JSON
+object under the key `sipnab_vcon_containers`, in place of the text section.
+The dialog table stays text:
+
+```sh
+sipnab -N -I stored --report --json --no-cli-print --quiet | grep sipnab_vcon_containers | jq '.sipnab_vcon_containers.totals'
+```
+
+```json
+{
+  "calls": 2,
+  "containers": 3,
+  "dispositions": {
+    "Completed": 1,
+    "InCall": 1
+  },
+  "duration_secs": 8,
+  "failed_validation": 1,
+  "read": 2,
+  "skipped": 1,
+  "skipped_by_reason": {
+    "no_sip_signaling": 1
+  }
+}
+```
+
+Each row of `containers` carries `status`, `file`, `uuid`, `form`,
+`validation_findings` (null where the text prints `-`), `calls_rebuilt`,
+`call_ids`, `dispositions` and `duration_secs`. A skipped row also carries
+`skip_reason` and `skip_detail`, the reason in full.
+
+The MCP tool [`vcon_directory_report`](mcp-tools-vcon.md#vcon_directory_report)
+answers the same report for a directory of `--mcp-file-root`, with the rows
+paged.
+
 ### A signed, encrypted or compressed container
 
 A vCon arrives in one of three JSON forms, and a producer may compress any of them

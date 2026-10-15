@@ -244,6 +244,14 @@ const NOT_PROBED: &[(&str, &str)] = &[
      without a spool. `a_page_size_never_moves_the_spool_counts` in \
      src/mcp/tools/vcon.rs drives the same property over a real spool.",
     ),
+    (
+        "vcon_directory_report",
+        "pages over the container files in a directory of `--mcp-file-root`, \
+     which is files on disk rather than the loaded capture, and the session here \
+     starts without a file root. `the_tool_reports_a_directory_in_the_file_root` \
+     in tests/vcon_directory_report_test.rs drives the same property: a page of \
+     one row carries the totals of the whole directory.",
+    ),
 ];
 
 /// Every tool that takes a page-size argument, with the smallest call that

@@ -1454,7 +1454,14 @@ fn wiki_intra_docs_links_resolve() -> Result<(), TestError> {
     // uuid under a domain", one to "What this does not do", one to
     // errors.md), and docs/config-reference.md, docs/errors.md and
     // docs/internals/vcon.md +1 each, linking "The uuid under a domain".
-    const EXPECTED_WIKI_LINKS: usize = 1800;
+    // 1800 -> 1807 for `vcon_directory_report` and the `--report` vCon
+    // section: docs/mcp-tools-vcon.md +2 (its table row links the section,
+    // and the section links "Read many containers at once"),
+    // docs/mcp-tools.md +2 (the tool's index row links the section and the
+    // bundle page), docs/vcon.md +1 (the section links the tool),
+    // docs/output-formats.md +1 and docs/cli-reference.md +1 (each links
+    // "Read many containers at once").
+    const EXPECTED_WIKI_LINKS: usize = 1807;
     // Raised 459 -> 460 when SRC1 stage 1 shipped: docs/cli-reference.md's
     // `--hep-listen` row now points at cookbook recipe "Take signaling from HEP and media off the wire, in one process" in docs/examples.md
     // rather than restating how to pair `-L` with `-d`. Attributed per file

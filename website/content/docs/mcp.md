@@ -314,7 +314,7 @@ it does these things:
 It does for this surface what <https://sipnab.com/api-reference/> does for the
 [REST API](@/docs/api.md).
 
-sipnab registers 75 MCP tools. That is more than anyone reads in a table. The
+sipnab registers 76 MCP tools. That is more than anyone reads in a table. The
 Tools tab is the fastest way to find the one you want.
 
 Inspector belongs to the protocol rather than to sipnab. So it also

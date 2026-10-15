@@ -612,14 +612,21 @@ fn state_str(state: &DialogState) -> &'static str {
 /// Format the dialog duration (`created_at` to `updated_at`) as a
 /// human-readable string; `"0s"` for dialogs with fewer than 2 messages.
 fn format_duration(dialog: &SipDialog) -> String {
+    format_seconds(dialog_duration_secs(dialog))
+}
+
+/// A dialog's duration in whole seconds, `created_at` to `updated_at`; `0`
+/// for a dialog with fewer than 2 messages. The one rule the dialog table's
+/// Duration column and the vCon container report's durations both read.
+#[must_use]
+pub fn dialog_duration_secs(dialog: &SipDialog) -> i64 {
     if dialog.messages.len() < 2 {
-        return "0s".to_string();
+        return 0;
     }
-    let secs = dialog
+    dialog
         .updated_at
         .signed_duration_since(dialog.created_at)
-        .num_seconds();
-    format_seconds(secs)
+        .num_seconds()
 }
 
 /// Format seconds into a compact human-readable string
@@ -656,6 +663,335 @@ fn truncate_str(s: &str, max_len: usize) -> String {
         end -= 1;
     }
     format!("{}...", &s[..end])
+}
+
+// ── vCon containers ──────────────────────────────────────────────────
+
+/// Version of [`VconContainersReport`]'s shape.
+pub const VCON_CONTAINERS_SCHEMA_VERSION: u32 = 1;
+
+/// The top-level key of the JSON line `--report --json` writes the vCon
+/// container report under. No dialog or message object has it, so a reader
+/// of the line stream tells the report from the rest by looking at the line.
+pub const VCON_CONTAINERS_JSON_KEY: &str = "sipnab_vcon_containers";
+
+/// `status` of a container the run read.
+pub const VCON_READ: &str = "read";
+
+/// `status` of a container the run skipped.
+pub const VCON_SKIPPED: &str = "skipped";
+
+/// One stored vCon container a run met: read, with what it contributed, or
+/// skipped, with why.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, Default)]
+#[cfg_attr(feature = "mcp", derive(rmcp::schemars::JsonSchema))]
+#[cfg_attr(feature = "mcp", schemars(crate = "rmcp::schemars"))]
+pub struct VconContainerRow {
+    /// `read` or `skipped`.
+    pub status: String,
+    /// The file. `-I` names it as it named the input; the MCP tool names it
+    /// relative to the directory it was asked for.
+    pub file: String,
+    /// The container's `uuid`; null when it has none, or did not open far
+    /// enough to show one.
+    pub uuid: Option<String>,
+    /// The form the file arrived in, by its outermost layer: `unsigned`,
+    /// `signed`, `encrypted`, `gzip`, or `unknown` for bytes that are not a
+    /// JSON object.
+    pub form: String,
+    /// Places the unsigned vCon disagrees with the vendored
+    /// draft-ietf-vcon-vcon-core-04 schema. Null when the schema check did
+    /// not run: the file did not open, or is not JSON.
+    pub validation_findings: Option<usize>,
+    /// Calls (dialogs, by Call-ID) rebuilt from the container.
+    pub calls_rebuilt: usize,
+    /// Their Call-IDs, sorted.
+    pub call_ids: Vec<String>,
+    /// Those calls counted by state, the word the dialog table's State
+    /// column prints.
+    pub dispositions: std::collections::BTreeMap<String, u64>,
+    /// Those calls' durations added up, in whole seconds, each as the dialog
+    /// table's Duration column computes it.
+    pub duration_secs: i64,
+    /// Why a skipped container was not read, as one word: `no_key`,
+    /// `no_sip_signaling`, `not_json`, `not_a_vcon`, `not_opened`,
+    /// `unsupported_critical` or `unreadable`. Absent on a read row.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub skip_reason: Option<String>,
+    /// The same reason in full, as the `Skipping` warning prints it. Absent
+    /// on a read row.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub skip_detail: Option<String>,
+}
+
+/// What the rows add up to.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, Default)]
+#[cfg_attr(feature = "mcp", derive(rmcp::schemars::JsonSchema))]
+#[cfg_attr(feature = "mcp", schemars(crate = "rmcp::schemars"))]
+pub struct VconContainerTotals {
+    /// Container files met: `read` plus `skipped`.
+    pub containers: usize,
+    /// Containers read.
+    pub read: usize,
+    /// Containers skipped.
+    pub skipped: usize,
+    /// Skipped containers counted by `skip_reason`.
+    pub skipped_by_reason: std::collections::BTreeMap<String, u64>,
+    /// Containers, read or skipped, with at least one schema finding.
+    pub failed_validation: usize,
+    /// Distinct calls rebuilt across the read containers. A call two
+    /// containers both hold counts once here, and in each of their rows.
+    pub calls: usize,
+    /// Those distinct calls counted by state.
+    pub dispositions: std::collections::BTreeMap<String, u64>,
+    /// Those distinct calls' durations added up, in whole seconds.
+    pub duration_secs: i64,
+}
+
+/// One report over every stored vCon container a run met: `--report`'s vCon
+/// section, the `sipnab_vcon_containers` line of `--report --json`, and the
+/// MCP `vcon_directory_report` answer. One builder,
+/// [`vcon_containers_report`], feeds all three.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, Default)]
+#[cfg_attr(feature = "mcp", derive(rmcp::schemars::JsonSchema))]
+#[cfg_attr(feature = "mcp", schemars(crate = "rmcp::schemars"))]
+pub struct VconContainersReport {
+    /// [`VCON_CONTAINERS_SCHEMA_VERSION`].
+    pub schema_version: u32,
+    /// One row per container file, in file-name order.
+    pub containers: Vec<VconContainerRow>,
+    /// The rows added up.
+    pub totals: VconContainerTotals,
+}
+
+impl VconContainersReport {
+    /// Whether the run met no container at all, so there is nothing to print.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.containers.is_empty()
+    }
+}
+
+/// Build the vCon container report.
+///
+/// # Arguments
+///
+/// * `read` — the containers read, as [`crate::capture::vcon_input::read_report`]
+///   holds them.
+/// * `skipped` — the containers skipped, as
+///   [`crate::capture::vcon_input::skipped_report`] holds them.
+/// * `dialogs` — the store the read containers were rebuilt into: each row's
+///   states and durations are read from the dialogs its Call-IDs name.
+#[must_use]
+pub fn vcon_containers_report(
+    read: &[crate::capture::vcon_input::VconProvenance],
+    skipped: &[crate::capture::vcon_input::VconSkip],
+    dialogs: &crate::sip::dialog_store::DialogStore,
+) -> VconContainersReport {
+    use std::collections::BTreeMap;
+    // The state word and duration of one call; a call the store no longer
+    // holds (a cap evicted it) is counted under its own word, not dropped.
+    let call = |id: &str| -> (String, i64) {
+        dialogs.get(id).map_or_else(
+            || ("NotRetained".to_string(), 0),
+            |d| (state_str(d.state()).to_string(), dialog_duration_secs(d)),
+        )
+    };
+    let mut rows: Vec<VconContainerRow> = Vec::with_capacity(read.len() + skipped.len());
+    let mut distinct: BTreeMap<&str, (String, i64)> = BTreeMap::new();
+    for p in read {
+        let mut dispositions: BTreeMap<String, u64> = BTreeMap::new();
+        let mut duration_secs = 0i64;
+        for id in &p.call_ids {
+            let (state, secs) = call(id);
+            *dispositions.entry(state.clone()).or_insert(0) += 1;
+            duration_secs = duration_secs.saturating_add(secs);
+            distinct.insert(id.as_str(), (state, secs));
+        }
+        rows.push(VconContainerRow {
+            status: VCON_READ.to_string(),
+            file: p.source.clone(),
+            uuid: p.uuid.clone(),
+            form: p.form.as_str().to_string(),
+            validation_findings: Some(p.schema_findings.len()),
+            calls_rebuilt: p.call_ids.len(),
+            call_ids: p.call_ids.clone(),
+            dispositions,
+            duration_secs,
+            skip_reason: None,
+            skip_detail: None,
+        });
+    }
+    let mut skipped_by_reason: BTreeMap<String, u64> = BTreeMap::new();
+    for s in skipped {
+        *skipped_by_reason.entry(s.reason.clone()).or_insert(0) += 1;
+        rows.push(VconContainerRow {
+            status: VCON_SKIPPED.to_string(),
+            file: s.source.clone(),
+            uuid: s.uuid.clone(),
+            form: s.form.as_str().to_string(),
+            validation_findings: s.validation_findings,
+            skip_reason: Some(s.reason.clone()),
+            skip_detail: Some(s.detail.clone()),
+            ..VconContainerRow::default()
+        });
+    }
+    rows.sort_by(|a, b| a.file.cmp(&b.file));
+    let mut dispositions: BTreeMap<String, u64> = BTreeMap::new();
+    let mut duration_secs = 0i64;
+    for (state, secs) in distinct.values() {
+        *dispositions.entry(state.clone()).or_insert(0) += 1;
+        duration_secs = duration_secs.saturating_add(*secs);
+    }
+    let totals = VconContainerTotals {
+        containers: rows.len(),
+        read: read.len(),
+        skipped: skipped.len(),
+        skipped_by_reason,
+        failed_validation: rows
+            .iter()
+            .filter(|r| r.validation_findings.is_some_and(|n| n > 0))
+            .count(),
+        calls: distinct.len(),
+        dispositions,
+        duration_secs,
+    };
+    VconContainersReport {
+        schema_version: VCON_CONTAINERS_SCHEMA_VERSION,
+        containers: rows,
+        totals,
+    }
+}
+
+/// `word count, word count` for a histogram, or `none` for an empty one.
+fn histogram(counts: &std::collections::BTreeMap<String, u64>) -> String {
+    if counts.is_empty() {
+        return "none".to_string();
+    }
+    counts
+        .iter()
+        .map(|(k, v)| format!("{k} {v}"))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+/// The vCon container section of `--report`, in text or Markdown: one row
+/// per container, the totals, and each skipped container's reason in full.
+/// Empty when the run met no container, so a capture's report is unchanged.
+#[must_use]
+pub fn render_vcon_containers(
+    report: &VconContainersReport,
+    format: crate::output::ReportFormat,
+) -> String {
+    if report.is_empty() {
+        return String::new();
+    }
+    let md = matches!(format, crate::output::ReportFormat::Markdown);
+    // The file last: a long path then runs past the table's right edge
+    // instead of pushing every column after it out of line.
+    const W: [usize; 8] = [26, 10, 9, 6, 9, 24, 37, 0];
+    let headers = [
+        "Status",
+        "Form",
+        "Findings",
+        "Calls",
+        "Duration",
+        "Disposition",
+        "UUID",
+        "File",
+    ];
+    let mut out = String::from("\nvCon containers:\n");
+    out.push_str(&row(
+        md,
+        &W,
+        &headers.iter().map(|h| (*h).to_string()).collect::<Vec<_>>(),
+    ));
+    if md {
+        out.push_str(&md_rule(headers.len()));
+    } else {
+        let _ = writeln!(out, "{}", "-".repeat(130));
+    }
+    for r in &report.containers {
+        let status = r
+            .skip_reason
+            .as_deref()
+            .map_or_else(|| r.status.clone(), |why| format!("{}: {why}", r.status));
+        let disposition = if r.dispositions.is_empty() {
+            "-".to_string()
+        } else {
+            histogram(&r.dispositions)
+        };
+        let line = row(
+            md,
+            &W,
+            &[
+                status,
+                r.form.clone(),
+                r.validation_findings
+                    .map_or_else(|| "-".to_string(), |n| n.to_string()),
+                r.calls_rebuilt.to_string(),
+                format_seconds(r.duration_secs),
+                disposition,
+                r.uuid.clone().unwrap_or_else(|| "-".to_string()),
+                r.file.clone(),
+            ],
+        );
+        // `row` pads the last cell too; the file ends the line.
+        let _ = writeln!(out, "{}", line.trim_end());
+    }
+    let t = &report.totals;
+    let _ = writeln!(out);
+    let _ = writeln!(
+        out,
+        "Totals: {} container(s): {} read, {} skipped",
+        t.containers, t.read, t.skipped
+    );
+    let _ = writeln!(
+        out,
+        "Skipped by reason: {}",
+        histogram(&t.skipped_by_reason)
+    );
+    let _ = writeln!(
+        out,
+        "Failed validation: {} container(s)",
+        t.failed_validation
+    );
+    let _ = writeln!(out, "Calls: {} ({})", t.calls, histogram(&t.dispositions));
+    let _ = writeln!(out, "Total duration: {}", format_seconds(t.duration_secs));
+    let skips: Vec<&VconContainerRow> = report
+        .containers
+        .iter()
+        .filter(|r| r.skip_detail.is_some())
+        .collect();
+    if !skips.is_empty() {
+        let _ = writeln!(out, "\nSkipped:");
+        for r in skips {
+            let _ = writeln!(
+                out,
+                "  {}: {}",
+                r.file,
+                r.skip_detail.as_deref().unwrap_or_default()
+            );
+        }
+    }
+    out
+}
+
+/// The vCon container report as the line `--report --json` writes:
+/// `{"sipnab_vcon_containers": {...}}`, compact and newline-terminated, or
+/// pretty-printed for `--json-pretty`. Empty when the run met no container.
+#[must_use]
+pub fn vcon_containers_json_line(report: &VconContainersReport, pretty: bool) -> String {
+    if report.is_empty() {
+        return String::new();
+    }
+    let value = serde_json::json!({ VCON_CONTAINERS_JSON_KEY: report });
+    let text = if pretty {
+        serde_json::to_string_pretty(&value)
+    } else {
+        serde_json::to_string(&value)
+    };
+    text.map(|t| t + "\n").unwrap_or_default()
 }
 
 // ── Tests ────────────────────────────────────────────────────────────
@@ -740,6 +1076,83 @@ mod tests {
         dialog.messages.push(bye.clone());
         dialog.updated_at = bye.timestamp;
         Ok(dialog)
+    }
+
+    /// The vCon container report counts a call two containers both hold once
+    /// in the totals and in each row, counts a call the store no longer holds
+    /// under its own word, and totals skips by reason and schema failures
+    /// across read and skipped rows alike.
+    #[test]
+    fn the_vcon_container_totals_count_each_call_once() -> Result<(), TestError> {
+        use crate::capture::vcon_input::{ContainerForm, VconProvenance, VconSkip};
+        let dialog = make_completed_dialog()?;
+        let mut store = crate::sip::dialog_store::DialogStore::new(16, false);
+        for m in &dialog.messages {
+            store.process_message(m.clone());
+        }
+        let held = store.get("report-test@example.com").ok_or("dialog held")?;
+        let state = held.state().as_str().to_string();
+        let secs = dialog_duration_secs(held);
+        assert_eq!(secs, 153);
+        let both = vec!["report-test@example.com".to_string()];
+        let read = [
+            VconProvenance {
+                source: "b.vcon.json".into(),
+                call_ids: both.clone(),
+                schema_findings: vec!["/x (type): y".into()],
+                ..VconProvenance::default()
+            },
+            VconProvenance {
+                source: "a.vcon.json".into(),
+                call_ids: vec![both[0].clone(), "gone@example.com".into()],
+                form: ContainerForm::Gzip,
+                ..VconProvenance::default()
+            },
+        ];
+        let skipped = [VconSkip {
+            source: "c.vcon.json".into(),
+            reason: "no_sip_signaling".into(),
+            detail: "a vCon container with no SIP signaling".into(),
+            validation_findings: Some(2),
+            ..VconSkip::default()
+        }];
+        let r = vcon_containers_report(&read, &skipped, &store);
+        let files: Vec<&str> = r.containers.iter().map(|c| c.file.as_str()).collect();
+        assert_eq!(files, ["a.vcon.json", "b.vcon.json", "c.vcon.json"]);
+        let a = &r.containers[0];
+        assert_eq!(a.form, "gzip");
+        assert_eq!(a.calls_rebuilt, 2);
+        assert_eq!(a.duration_secs, secs);
+        assert_eq!(a.dispositions.get("NotRetained"), Some(&1));
+        assert_eq!(r.containers[1].dispositions.get(&state), Some(&1));
+        assert_eq!(r.containers[1].duration_secs, secs);
+        let t = &r.totals;
+        assert_eq!((t.containers, t.read, t.skipped), (3, 2, 1));
+        assert_eq!(t.calls, 2, "one call held by two containers counts once");
+        assert_eq!(t.duration_secs, secs, "and its duration once");
+        assert_eq!(t.dispositions.get(&state), Some(&1));
+        assert_eq!(t.skipped_by_reason.get("no_sip_signaling"), Some(&1));
+        assert_eq!(t.failed_validation, 2);
+
+        let text = render_vcon_containers(&r, crate::output::ReportFormat::Text);
+        assert!(
+            text.contains("Totals: 3 container(s): 2 read, 1 skipped"),
+            "{text}"
+        );
+        assert!(text.contains("Total duration: 2m 33s"), "{text}");
+        let line = vcon_containers_json_line(&r, false);
+        let v: serde_json::Value = serde_json::from_str(&line)?;
+        assert_eq!(v[VCON_CONTAINERS_JSON_KEY]["totals"]["calls"], 2);
+        Ok(())
+    }
+
+    /// A run that met no container prints nothing, in either form.
+    #[test]
+    fn no_container_no_vcon_section() {
+        let store = crate::sip::dialog_store::DialogStore::new(1, false);
+        let r = vcon_containers_report(&[], &[], &store);
+        assert!(render_vcon_containers(&r, crate::output::ReportFormat::Text).is_empty());
+        assert!(vcon_containers_json_line(&r, false).is_empty());
     }
 
     /// A single completed dialog renders Call-ID, users, state, duration,

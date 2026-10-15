@@ -79,6 +79,12 @@ const NESTED_OR_DERIVED: &[&str] = &[
     // the harvester cannot learn it from a sample however deep it walks. The
     // field is real; verified in the source, and observed on real traffic.
     "burst_gap",
+    // A line of `--report --json`, not of the per-message `--json` stream
+    // this gate harvests, and only on a run that read a stored vCon
+    // container (src/output/dialog_report.rs `VCON_CONTAINERS_JSON_KEY`).
+    // tests/vcon_directory_report_test.rs runs the documented command shape
+    // and reads the key from the real output.
+    "sipnab_vcon_containers",
 ];
 
 /// Pull `sipnab ... --json* ... | jq '...'` pairs out of fenced blocks.

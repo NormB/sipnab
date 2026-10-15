@@ -402,6 +402,11 @@ fn schema_probes(call_id: &str) -> Vec<(&'static str, Value)> {
         ("vcon_spool_status", json!({})),
         // From the fake store `vcon_spool_args` opts the server in to.
         ("fetch_vcon", json!({"uuid": FETCH_UUID})),
+        // The file root itself, which holds captures and no container: the
+        // envelope and the totals. The row shape is checked against this
+        // schema over a directory of every kind of row in
+        // tests/vcon_directory_report_test.rs.
+        ("vcon_directory_report", json!({"directory": "."})),
         // The TFPS peer's tools, answered by the fake `fake_tfps_ctl` writes:
         // the `installed: true` arm of each schema, which is the one that
         // carries the contract types. The absent arm is two fields and is

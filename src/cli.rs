@@ -1405,6 +1405,11 @@ pub struct OutputArgs {
     pub plugin: Vec<std::path::PathBuf>,
 
     /// Generate a summary report after capture completes.
+    ///
+    /// When the inputs include stored vCon containers, the report adds one
+    /// row per container, read or skipped with the reason, and their totals;
+    /// with --json or --json-pretty, as one JSON object under the key
+    /// `sipnab_vcon_containers`.
     #[arg(help_heading = "Output", long)]
     pub report: bool,
 

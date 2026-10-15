@@ -72,6 +72,9 @@ const GAP_LEDGER: &[(&str, &str)] = &[
     ("Relay holdings", "CLI"),
     // TUI (PAR4).
     ("Whole-capture report", "TUI"),
+    // REST: the vCon directory report arrived on the CLI (`--report`) and
+    // MCP (`vcon_directory_report`) first.
+    ("Report a directory of stored vCons", "REST"),
 ];
 
 fn root() -> PathBuf {
