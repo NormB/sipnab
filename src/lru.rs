@@ -499,40 +499,44 @@ mod tests {
         assert_eq!(order(&map), vec![2]);
     }
 
-    /// The cost of admitting a key to a full map does not grow with the
-    /// map. The same insertions at a cap of 16 and at a cap of 65,536, the
-    /// minimum of five rounds each: constant-time eviction makes the two
-    /// alike (measured at 1.0x), and a scan of the map to choose a victim
-    /// makes the large one hundreds of times dearer.
+    /// The work of admitting a key to a full map does not grow with the map.
+    ///
+    /// Counted, not timed: the same insertions at a cap of 16 and at a cap
+    /// of 4,096, and the entries the map's walks visited meanwhile. Choosing
+    /// a victim by walking the map visits `cap` entries per insertion; the
+    /// linked list visits none. The wall-clock ratio this replaces could be
+    /// inflated by a loaded machine with the constant-time eviction in place.
     #[test]
-    fn admitting_at_cap_costs_the_same_at_any_cap() {
-        use std::time::{Duration, Instant};
-        const INSERTS: u32 = 20_000;
-        let cost_at = |capacity: usize| {
+    fn admitting_at_cap_walks_no_more_of_the_map_at_any_cap() {
+        const INSERTS: u32 = 1_000;
+        let walked_at = |capacity: usize| {
             let mut map: LruMap<u32, u32> = LruMap::new(capacity);
             for k in 0..capacity as u32 {
                 map.insert(k, k);
             }
-            let started = Instant::now();
+            let before = map.entries_walked();
             for k in 0..INSERTS {
                 map.insert(1_000_000 + k, k);
             }
-            let cost = started.elapsed();
+            let walked = map.entries_walked() - before;
             assert_eq!(map.len(), capacity, "control: the cap holds");
-            cost
+            assert!(
+                map.contains_key(&(1_000_000 + INSERTS - 1)) && !map.contains_key(&0),
+                "control: the newest key is admitted and the oldest evicted"
+            );
+            walked
         };
-        let mut small = Duration::MAX;
-        let mut large = Duration::MAX;
-        for _ in 0..5 {
-            small = small.min(cost_at(16));
-            large = large.min(cost_at(65_536));
-        }
-        let ratio = large.as_nanos() as f64 / small.as_nanos().max(1) as f64;
+        let small = walked_at(16);
+        let large = walked_at(4_096);
         assert!(
-            ratio < 8.0,
-            "admitting at a cap of 65,536 cost {ratio:.1}x admitting at a cap of 16 \
-             ({large:?} against {small:?} for {INSERTS} inserts): eviction is \
-             scanning the map"
+            small <= u64::from(INSERTS) && large <= u64::from(INSERTS),
+            "admitting {INSERTS} keys walked {small} entries at a cap of 16 and {large} \
+             at a cap of 4,096, more than one per insertion: eviction is scanning the map"
+        );
+        assert_eq!(
+            small, large,
+            "the entries walked while admitting {INSERTS} keys grew with the map ({small} \
+             at a cap of 16, {large} at a cap of 4,096): eviction is scanning the map"
         );
     }
 }

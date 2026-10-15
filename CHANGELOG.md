@@ -47,6 +47,14 @@ entry that carries them.
   - `message_script_refuses_a_planted_message_and_passes_a_clean_one` handed `scripts/check-message-identity.sh` the path from `std::env::current_exe()`. After a build relinks the binary, that path reads `<path> (deleted)`, the script cannot run it, and it exits 2 with "the check failed before it read the message".
   - The tests now pass `/proc/<pid>/exe` on Linux, which runs the binary the process started from even after its file is replaced. A new test replaces the binary's file before the script runs and requires the check to pass.
 
+### Internal
+
+- **The constant-time eviction tests count the work instead of timing it.**
+  - Two tests guarded the bounded maps' eviction with wall-clock ratios, one for the registration flood detector's sources and one for `LruMap` itself.
+  - On a hosted CI runner on 2026-10-14 the detector's ratio read 5.5x against a bound of 5.0, with constant-time eviction in place.
+  - `LruMap` now counts, in test builds only, the entries its walks visit. Both tests fill a map to its cap at two sizes, admit 1,000 new keys, and require at most one entry walked per admission and the same count at both sizes.
+  - An eviction that chooses its victim by walking the map fails both tests.
+
 ## [0.5.220] - 2026-10-14
 
 ### Fixed
