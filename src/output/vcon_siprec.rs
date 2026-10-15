@@ -779,10 +779,10 @@ mod tests {
         );
         assert_eq!(alice.name.as_deref(), Some(r.identity("Alice").as_str()));
         let json = serde_json::to_string(&v)?;
-        for secret in ["alice@", "Alice", "15550100"] {
+        for original in ["alice@", "Alice", "15550100"] {
             assert!(
-                !json.contains(secret),
-                "{secret} survived redaction: {json}"
+                !json.contains(original),
+                "a participant's original identity survived redaction"
             );
         }
         Ok(())

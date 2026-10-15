@@ -10775,16 +10775,16 @@ mod tests {
         assert_eq!(
             i64::try_from(u64::from_be_bytes(ts_bytes))?,
             started.timestamp_millis(),
-            "timestamp: {id}"
+            "the uuid carries the start time"
         );
-        assert_eq!(octets[6] >> 4, 8, "version: {id}");
-        assert_eq!(octets[8] >> 6, 0b10, "variant: {id}");
+        assert_eq!(octets[6] >> 4, 8, "version 8");
+        assert_eq!(octets[8] >> 6, 0b10, "the RFC 9562 variant");
         let mut tail = [0u8; 8];
         tail.copy_from_slice(&octets[8..]);
         assert_eq!(
             u64::from_be_bytes(tail),
             sha1_custom_c("pbx.example.com"),
-            "custom_c: {id}"
+            "custom_c is the high 62 bits of SHA-1 of the domain"
         );
         // And the value Python's hashlib gives, outside this crate.
         assert_eq!(&id[19..], "bee8-9e80be8f9f8f");

@@ -1525,6 +1525,16 @@ mod tests {
 
     type TestResult = Result<(), Box<dyn std::error::Error>>;
 
+    /// Which way an inline fetch came out, for a test's error: never the
+    /// container or the refusal text, which hold the stored uuid.
+    fn other_outcome<T, E>(outcome: &Result<T, E>) -> &'static str {
+        if outcome.is_ok() {
+            "the fetch returned a container where the test expected a refusal"
+        } else {
+            "the fetch refused for a reason the test did not expect"
+        }
+    }
+
     /// The fetcher flags after `--vcon-fetch <uuid>`, parsed.
     fn flags(extra: &[&str]) -> Result<crate::cli::VconFetchArgs, Box<dyn std::error::Error>> {
         use clap::Parser as _;
@@ -2127,11 +2137,14 @@ mod tests {
             ))?;
             let access = Access::resolve("--mcp-allow-vcon-fetch", true, &store)?;
             match (fetch_inline(&access, INLINE_UUID), verified) {
-                (Ok(inline), true) => assert!(inline.signature_verified, "{inline:?}"),
+                (Ok(inline), true) => assert!(inline.signature_verified),
                 (Err(InlineRefusal::Store(why)), false) => {
-                    assert!(why.contains("fingerprint"), "{why}");
+                    assert!(
+                        why.contains("fingerprint"),
+                        "the refusal names the fingerprint"
+                    );
                 }
-                (other, _) => return Err(format!("{other:?}").into()),
+                (other, _) => return Err(other_outcome(&other).into()),
             }
         }
         Ok(())
@@ -2144,8 +2157,10 @@ mod tests {
         let stub = stub_store::start(200, stub_store::signed(INLINE_UUID, true)?)?;
         let (_dir, access) = ready(&stub, false)?;
         match fetch_inline(&access, INLINE_UUID) {
-            Err(InlineRefusal::Store(why)) => assert!(why.contains("signature"), "{why}"),
-            other => return Err(format!("{other:?}").into()),
+            Err(InlineRefusal::Store(why)) => {
+                assert!(why.contains("signature"), "the refusal names the signature");
+            }
+            other => return Err(other_outcome(&other).into()),
         }
         Ok(())
     }

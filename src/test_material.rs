@@ -107,9 +107,11 @@ pub fn bytes_for(label: &str, len: usize) -> Vec<u8> {
 /// test that compares against one.
 #[must_use]
 pub fn array_for<const N: usize>(label: &str) -> [u8; N] {
-    let mut out = [0u8; N];
-    out.copy_from_slice(&bytes_for(label, N));
-    out
+    // Built from the derived bytes themselves, not by copying them over a
+    // zeroed buffer: CodeQL traced that literal zero into every nonce, IV
+    // and key this helper fills.
+    let bytes = bytes_for(label, N);
+    std::array::from_fn(|i| bytes[i])
 }
 
 /// [`key_for`] as a borrowed slice that lives for the process.
