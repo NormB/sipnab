@@ -60,6 +60,7 @@ by sipnab, so the agent does not fetch and bucket every dialog itself.
 | `buckets` | object[] | One row per interval, oldest first. Each carries `start` (inclusive, RFC 3339), `bucket_seconds` and `dialogs`. |
 | `returned` | u64 | Rows in `buckets`, so counting the array is never necessary. |
 | `bucket_seconds` | u64 | The width actually used, echoed because you may have omitted it. |
+| `capture_identity` | object | Which capture answered — see [`capture_status`](mcp-tools-core.md#capture_status). |
 | `source_exhausted` | bool | `true` once sipnab has read the capture source to its end. |
 | `source_stopped_early` | bool | `true` when a source's read ended before the source did. |
 | `schema_version` | u32 | `1` for this shape. |
@@ -82,6 +83,10 @@ which holds five calls over about fifteen seconds:
   ],
   "returned": 3,
   "bucket_seconds": 5,
+  "capture_identity": {
+    "node": "capture-01", "instance": "12de3118df112f1a869f03-2",
+    "dialog_generation": 26, "stream_generation": 0
+  },
   "source_exhausted": true,
   "source_stopped_early": false
 }

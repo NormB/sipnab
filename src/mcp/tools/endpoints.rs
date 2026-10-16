@@ -214,6 +214,8 @@ pub struct DescribeEndpointResponse {
     pub recent_dialogs: Vec<DialogSummary>,
     /// True when `dialogs` exceeds what `recent_dialogs` carries.
     pub truncated: bool,
+    /// Which capture this answer came from, and which revision of its stores.
+    pub capture_identity: crate::provenance::CaptureEtag,
 }
 
 /// Parameters for `top_talkers`.
@@ -372,9 +374,14 @@ impl SipnabMcp {
         // ring for.
         let findings = self.endpoint_findings(&selector, limit);
         let payload = {
+            // Capture lock first, stores second, all three held together — see
+            // `CaptureState`. The description and the identity stamped on it
+            // must describe one capture.
+            let state = self.capture.read();
             let ds = self.dialog_store.read();
             let ss = self.stream_store.read();
             let report = crate::sip::endpoint::describe(&ds, &ss, &selector, limit);
+            let capture_identity = state.identity.etag(ds.generation(), ss.generation());
 
             let user_agents: Vec<EndpointBanner> = report
                 .banners
@@ -437,6 +444,7 @@ impl SipnabMcp {
                 findings,
                 truncated,
                 recent_dialogs,
+                capture_identity,
             }
         };
 

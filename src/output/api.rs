@@ -2144,11 +2144,14 @@ async fn get_timeline(
         ));
     }
 
+    // Capture lock, then dialogs, then streams -- the order `CaptureState`
+    // documents -- held until the answer and its identity are both built.
+    let capture = state.capture.as_ref().map(|c| c.read());
+    let ds = state.dialog_store.read();
+    let ss = state.stream_store.read();
     // The shared bucketing rule, so this route and the MCP `timeline` tool
     // agree; this surface renders the interval start as RFC 3339.
-    let buckets: Vec<schema::TimelineBucket> = state
-        .dialog_store
-        .read()
+    let buckets: Vec<schema::TimelineBucket> = ds
         .timeline_buckets(width)
         .into_iter()
         .map(|(start, dialogs)| schema::TimelineBucket {
@@ -2157,12 +2160,17 @@ async fn get_timeline(
             dialogs,
         })
         .collect();
+    let capture_identity = capture_etag(capture.as_deref(), &ds, &ss);
+    drop(ss);
+    drop(ds);
+    drop(capture);
 
     Ok(Json(schema::Timeline {
         schema_version: 1,
         returned: buckets.len(),
         bucket_seconds: width,
         buckets,
+        capture_identity,
     }))
 }
 
@@ -2722,6 +2730,9 @@ async fn get_endpoints(
             .map_err(|e| Problem::detailed(StatusCode::BAD_REQUEST, e))?;
     let limit = resolve_page_limit(params.limit, state.max_rows);
 
+    // Capture lock, then dialogs, then streams -- the order `CaptureState`
+    // documents -- held until the answer and its identity are both built.
+    let capture = state.capture.as_ref().map(|c| c.read());
     let ds = state.dialog_store.read();
     let ss = state.stream_store.read();
     // The scan is shared with the MCP `describe_endpoint` tool. This surface
@@ -2739,8 +2750,10 @@ async fn get_endpoints(
         .filter_map(|id| ds.get(id))
         .map(dialog_summary)
         .collect();
+    let capture_identity = capture_etag(capture.as_deref(), &ds, &ss);
     drop(ss);
     drop(ds);
+    drop(capture);
 
     let calls = json!({
         "invites": report.calls.invites,
@@ -2783,6 +2796,8 @@ async fn get_endpoints(
         "streams": streams,
         "recent_dialogs": recent_dialogs,
         "truncated": report.truncated,
+        // Which capture this description came from; see `/v1/dialogs`.
+        "capture_identity": capture_identity,
     })))
 }
 
@@ -5673,6 +5688,10 @@ async fn get_runtime(
         None => None,
     };
 
+    // Capture lock, then dialogs, then streams: `dialogs.used` and
+    // `streams.used` count this capture's stores, so the occupancy and the
+    // identity stamped on it must describe one capture.
+    let capture = state.capture.as_ref().map(|c| c.read());
     let ds = state.dialog_store.read();
     let ss = state.stream_store.read();
     // One collector, shared with the MCP tool, so the two surfaces cannot
@@ -5686,8 +5705,10 @@ async fn get_runtime(
         crate::output::runtime::SIGNIFICANT_MEMORY_PCT,
     );
     stats.rates = sampled;
+    stats.capture_identity = capture_etag(capture.as_deref(), &ds, &ss);
     drop(ss);
     drop(ds);
+    drop(capture);
     Ok(Json(serde_json::to_value(stats).unwrap_or_else(
         |e| json!({"error": format!("serialization failed: {e}")}),
     )))
@@ -7031,6 +7052,13 @@ pub mod schema {
         /// The bucket width actually used, echoed because the caller may have
         /// omitted it.
         pub bucket_seconds: u64,
+        /// WHICH capture this answer came from, and which revision of its
+        /// stores, stamped under the locks the answer was built with. A
+        /// different `instance` from an earlier answer means a different
+        /// capture. The same identity the MCP tool answering this question
+        /// carries. `null` when nobody told this server what it is attached to.
+        #[schema(value_type = Option<CaptureIdentity>)]
+        pub capture_identity: Option<crate::provenance::CaptureEtag>,
     }
 
     /// One call summarized for a side-by-side comparison: the fields
@@ -7325,6 +7353,12 @@ pub mod schema {
         pub recent_dialogs: Vec<DialogSummary>,
         /// True when `dialogs` exceeds what `recent_dialogs` carries.
         pub truncated: bool,
+        /// WHICH capture this answer came from, and which revision of its
+        /// stores, stamped under the locks the answer was built with. A
+        /// different `instance` from an earlier answer means a different
+        /// capture. The same identity the MCP tool answering this question
+        /// carries. `null` when nobody told this server what it is attached to.
+        pub capture_identity: Option<CaptureIdentity>,
     }
 
     /// One security finding an armed detector recorded. The `detail` is raw.
@@ -7714,6 +7748,12 @@ pub mod schema {
         /// The `--hep-send` exporter's deliveries and failures. Present only on
         /// a run that exports.
         pub hep_export: Option<RuntimeHepExport>,
+        /// WHICH capture this answer came from, and which revision of its
+        /// stores, stamped under the locks the answer was built with. A
+        /// different `instance` from an earlier answer means a different
+        /// capture. The same identity the MCP tool answering this question
+        /// carries. `null` when nobody told this server what it is attached to.
+        pub capture_identity: Option<CaptureIdentity>,
     }
 
     /// What a `--hep-send` exporter reports about its own deliveries.

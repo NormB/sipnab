@@ -2764,6 +2764,17 @@
             "$ref": "#/components/schemas/EndpointCalls",
             "description": "Call outcomes."
           },
+          "capture_identity": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/CaptureIdentity",
+                "description": "WHICH capture this answer came from, and which revision of its\nstores, stamped under the locks the answer was built with. A\ndifferent `instance` from an earlier answer means a different\ncapture. The same identity the MCP tool answering this question\ncarries. `null` when nobody told this server what it is attached to."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "contact_rewrite": {
             "description": "Whether a private `Contact` this endpoint registered was rewritten.\nNull when the endpoint sent no REGISTER.",
             "type": [
@@ -4255,6 +4266,17 @@
             "type": [
               "integer",
               "null"
+            ]
+          },
+          "capture_identity": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/CaptureIdentity",
+                "description": "WHICH capture this answer came from, and which revision of its\nstores, stamped under the locks the answer was built with. A\ndifferent `instance` from an earlier answer means a different\ncapture. The same identity the MCP tool answering this question\ncarries. `null` when nobody told this server what it is attached to."
+              },
+              {
+                "type": "null"
+              }
             ]
           },
           "capture_packets_total": {
@@ -6336,6 +6358,17 @@
               "$ref": "#/components/schemas/TimelineBucket"
             },
             "type": "array"
+          },
+          "capture_identity": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/CaptureIdentity",
+                "description": "WHICH capture this answer came from, and which revision of its\nstores, stamped under the locks the answer was built with. A\ndifferent `instance` from an earlier answer means a different\ncapture. The same identity the MCP tool answering this question\ncarries. `null` when nobody told this server what it is attached to."
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "returned": {
             "description": "Rows in `buckets`.",

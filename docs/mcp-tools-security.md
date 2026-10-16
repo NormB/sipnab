@@ -173,6 +173,10 @@ The example runs against
   },
   "recent_dialogs": [ /* one fenced dialog summary */ ],
   "truncated": true,
+  "capture_identity": {
+    "node": "capture-01", "instance": "12e06a18df11300d36b025-2",
+    "dialog_generation": 13, "stream_generation": 2
+  },
   "source_exhausted": true,
   "source_stopped_early": false
 }

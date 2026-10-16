@@ -9212,7 +9212,13 @@ curl -s -H "Authorization: Bearer $SIPNAB_API_KEY" http://127.0.0.1:8080/v1/runt
   "capture_packets_total": 852,
   "capture_queue_depth_packets": 0,
   "capture_backpressure_blocks_total": 0,
-  "uptime_seconds": 41
+  "uptime_seconds": 41,
+  "capture_identity": {
+    "node": "capture-01",
+    "instance": "117b0818df1033d4fd2a28-2",
+    "dialog_generation": 13,
+    "stream_generation": 2
+  }
 }
 ```
 
@@ -9754,7 +9760,8 @@ sipnab reads the instance and both generations at the same moment.
 `/v1/dialogs/{call_id}/correlated`, `/v1/dialogs/{call_id}/tree`,
 `/v1/dialogs/{call_id}/lint`, `/v1/dialogs/compare`, `/v1/dialogs/tail`,
 `/v1/dialogs/rates`, `/v1/streams`, `/v1/streams/{id}`, `/v1/report`,
-`/v1/stats`, `/v1/aggregate`, `/v1/talkers` and `/v1/security/findings`.
+`/v1/stats`, `/v1/aggregate`, `/v1/timeline`, `/v1/talkers`, `/v1/endpoints`,
+`/v1/runtime` and `/v1/security/findings`.
 Each one carries the identity the MCP tool answering the same question
 carries, read under the same locks as the answer. These answers do not carry it:
 
@@ -9762,7 +9769,7 @@ carries, read under the same locks as the answer. These answers do not carry it:
 |---|---|
 | `/v1/report?format=yang-json` | RFC 7951 allows no member at the top of the document that its YANG module does not declare. Request `format=json` for the identity. |
 | `/v1/dialogs/{call_id}/vcon` | The body is the vCon container itself. MCP `export_vcon` puts the identity on the envelope around its containers. |
-| `/v1/timeline`, `/v1/endpoints`, `/v1/runtime`, `/v1/hep/senders` | The MCP tools `timeline`, `describe_endpoint`, `runtime_stats` and `hep_senders` do not carry it either. |
+| `/v1/hep/senders` | The MCP `hep_senders` tool does not carry it either: the answer is the HEP listener's sender roster, not the capture's contents. |
 | `/v1/capabilities`, `/v1/captures/compare`, `/v1/vcon/spool`, `/v1/vcon/fetch/{uuid}`, `/v1/tfps/*`, `/v1/relay/*` | The answer is not about the loaded capture: it describes the build, two files on the file root, the spool, the vCon store, the TFPS peer, or the media relay. |
 | `/v1/persistence`, `/v1/calls/live` | No MCP tool answers the same question. |
 | `/health`, `/metrics`, the audio routes | They answer text or audio, not a JSON object. |
@@ -10020,7 +10027,13 @@ curl -s -H "Authorization: Bearer $SIPNAB_API_KEY" "http://127.0.0.1:8080/v1/tim
     { "start": "2026-09-15T12:10:00+00:00", "bucket_seconds": 300, "dialogs": 51 }
   ],
   "returned": 3,
-  "bucket_seconds": 300
+  "bucket_seconds": 300,
+  "capture_identity": {
+    "node": "capture-01",
+    "instance": "117b0818df1033d4fd2a28-2",
+    "dialog_generation": 13,
+    "stream_generation": 2
+  }
 }
 ```
 
@@ -10381,7 +10394,13 @@ curl -s -H "Authorization: Bearer $SIPNAB_API_KEY" "http://127.0.0.1:8080/v1/end
   "recent_dialogs": [
     { "call_id": "a1b2@203.0.113.9", "method": "INVITE", "state": "Completed" }
   ],
-  "truncated": true
+  "truncated": true,
+  "capture_identity": {
+    "node": "capture-01",
+    "instance": "117b0818df1033d4fd2a28-2",
+    "dialog_generation": 13,
+    "stream_generation": 2
+  }
 }
 ```
 
@@ -18347,7 +18366,7 @@ Multiple diagnostic flags combine with OR.
 | `--group-by` | `<FIELD>` | -- | 0.3.0 | Group output by field (e.g., `call-id`, `from`, `method`) |
 | `--max-groups` | `<N>` | `100000` | 0.5.97 | Distinct `--group-by` keys one run retains. Past it sipnab refuses new keys and warns that the output is incomplete. `-l`/`--limit` bounds tracked dialogs, not this buffer. Requires `--group-by`. Config: `[limits] max_groups` |
 | `--max-grouped-messages` | `<N>` | `200000` | 0.5.97 | Messages `--group-by` buffers across every group. sipnab holds them in memory until the capture ends, because the last packet may belong to the first group. Requires `--group-by`. Config: `[limits] max_grouped_messages` |
-| `--node-name` | `<NAME>` | hostname | 0.5.81 | Name this box reports as, in `capture_identity.node` on every MCP and REST answer about the loaded capture. The exceptions are MCP `capture_health`, the `timeline`, `describe_endpoint`, `runtime_stats` and `hep_senders` tools and their REST routes, a `yang-json` report body, and a vCon container served as the body of `GET /v1/dialogs/{call_id}/vcon`; [MCP across an estate](mcp-estate.md#check-what-federation-cannot-prove) and [the REST reference](rest-api.md#which-capture-these-counts-came-from) list each answer. Lets an agent querying several servers at once tell which one saw a given fact. Distinct from the capture instance, which changes when a different capture loads; the node name stays the same. **The default puts your hostname on the wire.** Clipped to 64 characters. sipnab refuses an empty value (exit 2). Config: `[capture] node_name` |
+| `--node-name` | `<NAME>` | hostname | 0.5.81 | Name this box reports as, in `capture_identity.node` on every MCP and REST answer about the loaded capture. The exceptions are MCP `capture_health`, the `hep_senders` tool and its REST route, a `yang-json` report body, and a vCon container served as the body of `GET /v1/dialogs/{call_id}/vcon`; [MCP across an estate](mcp-estate.md#check-what-federation-cannot-prove) and [the REST reference](rest-api.md#which-capture-these-counts-came-from) list each answer. Lets an agent querying several servers at once tell which one saw a given fact. Distinct from the capture instance, which changes when a different capture loads; the node name stays the same. **The default puts your hostname on the wire.** Clipped to 64 characters. sipnab refuses an empty value (exit 2). Config: `[capture] node_name` |
 
 **Examples**
 - `sipnab -N -I capture.pcap --no-delta-time` — print absolute times when your config file sets `[display] delta_time = true`
@@ -32927,7 +32946,8 @@ SDP. Then **nothing in the signaling proves the two legs are one call**.
 
 **These answers carry `capture_identity`:** `list_dialogs`, `find_problems`,
 `search_messages`, `search_by_time`, `rtp_stats`, `aggregate_dialogs`,
-`group_dialogs`, `top_talkers`, `get_capture_report`, `capture_status`,
+`group_dialogs`, `top_talkers`, `timeline`, `describe_endpoint`,
+`runtime_stats`, `get_capture_report`, `capture_status`,
 `tail_dialogs`, `await_condition`, `security_findings`, `get_dialog`,
 `get_dialog_report`, `get_message`, `get_call_tree`, `get_sdp_timeline`,
 `triage_call`, `lint_dialog`, `validate_message`, `find_correlated`,
@@ -35123,6 +35143,7 @@ by sipnab, so the agent does not fetch and bucket every dialog itself.
 | `buckets` | object[] | One row per interval, oldest first. Each carries `start` (inclusive, RFC 3339), `bucket_seconds` and `dialogs`. |
 | `returned` | u64 | Rows in `buckets`, so counting the array is never necessary. |
 | `bucket_seconds` | u64 | The width actually used, echoed because you may have omitted it. |
+| `capture_identity` | object | Which capture answered — see [`capture_status`](mcp-tools-core.md#capture_status). |
 | `source_exhausted` | bool | `true` once sipnab has read the capture source to its end. |
 | `source_stopped_early` | bool | `true` when a source's read ended before the source did. |
 | `schema_version` | u32 | `1` for this shape. |
@@ -35145,6 +35166,10 @@ which holds five calls over about fifteen seconds:
   ],
   "returned": 3,
   "bucket_seconds": 5,
+  "capture_identity": {
+    "node": "capture-01", "instance": "12de3118df112f1a869f03-2",
+    "dialog_generation": 26, "stream_generation": 0
+  },
   "source_exhausted": true,
   "source_stopped_early": false
 }
@@ -37871,6 +37896,10 @@ The example runs against
   },
   "recent_dialogs": [ /* one fenced dialog summary */ ],
   "truncated": true,
+  "capture_identity": {
+    "node": "capture-01", "instance": "12e06a18df11300d36b025-2",
+    "dialog_generation": 13, "stream_generation": 2
+  },
   "source_exhausted": true,
   "source_stopped_early": false
 }
@@ -39433,6 +39462,10 @@ The example runs against
   "capture_queue_depth_packets": 0,
   "capture_backpressure_blocks_total": 0,
   "uptime_seconds": 0,
+  "capture_identity": {
+    "node": "capture-01", "instance": "12e28118df11310000ef0c-2",
+    "dialog_generation": 13, "stream_generation": 2
+  },
   "source_exhausted": true,
   "source_stopped_early": false
 }
@@ -39465,6 +39498,9 @@ How to read it:
   `capture_backpressure_blocks_total`, rather than reporting `0`.
 - **Read occupancy against capacity.** `dialogs.pct` and `streams.pct` near
   100 mean the store is about to evict calls.
+- **`capture_identity` names the capture `dialogs.used` and `streams.used`
+  count.** It is the identity [`capture_status`](mcp-tools-core.md#capture_status)
+  reports, read at the same moment as the occupancy.
 
 **To get rates, pass `sample_seconds`.** Every counter above is cumulative.
 With `sample_seconds`, sipnab reads the counters twice across that window and

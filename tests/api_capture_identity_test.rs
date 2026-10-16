@@ -135,6 +135,17 @@ const WITH_IDENTITY: &[(&str, &str, &str, &str)] = &[
         "security_findings",
         r#"{}"#,
     ),
+    ("/v1/timeline", "/v1/timeline", "timeline", r#"{}"#),
+    // The fixture's caller, so the answer describes a real endpoint.
+    (
+        "/v1/endpoints",
+        "/v1/endpoints?ip=10.0.2.15",
+        "describe_endpoint",
+        r#"{"ip":"10.0.2.15"}"#,
+    ),
+    // Occupancy: `dialogs.used` and `streams.used` count this capture's
+    // stores, so the answer is about the capture.
+    ("/v1/runtime", "/v1/runtime", "runtime_stats", r#"{}"#),
 ];
 
 /// GET routes that do not carry `capture_identity`, each with the reason.
@@ -146,22 +157,10 @@ const WITHOUT_IDENTITY: &[(&str, &str)] = &[
     ("/health", "answers text/plain, not a JSON object"),
     ("/metrics", "answers the Prometheus text format"),
     (
-        "/v1/timeline",
-        "the MCP `timeline` tool carries none; checked below",
-    ),
-    (
-        "/v1/endpoints",
-        "the MCP `describe_endpoint` tool carries none; checked below",
-    ),
-    (
-        "/v1/runtime",
-        "the MCP `runtime_stats` tool carries none; checked below: it reports \
-         store occupancy against the caps and the host's resource use",
-    ),
-    (
         "/v1/hep/senders",
         "the MCP `hep_senders` tool carries none, and the two answer the same \
-         bytes: the listener's roster, not the capture's contents",
+         bytes: the listener's roster, not the capture's contents; checked \
+         below",
     ),
     (
         "/v1/capabilities",
@@ -257,12 +256,9 @@ const WITHOUT_IDENTITY: &[(&str, &str)] = &[
 ];
 
 /// The MCP counterparts [`WITHOUT_IDENTITY`] cites as carrying no identity,
-/// with arguments that make each answer. The address is the fixture's caller.
-const COUNTERPARTS_WITHOUT: &[(&str, &str)] = &[
-    ("timeline", r#"{}"#),
-    ("describe_endpoint", r#"{"ip":"10.0.2.15"}"#),
-    ("runtime_stats", r#"{}"#),
-];
+/// with arguments that make each answer.
+#[cfg(feature = "hep")]
+const COUNTERPARTS_WITHOUT: &[(&str, &str)] = &[("hep_senders", r#"{}"#)];
 
 /// Every GET path the published document declares, as the router serves it.
 fn documented_gets() -> Result<BTreeSet<String>, TestError> {
@@ -422,6 +418,7 @@ fn every_rest_answer_about_the_capture_names_it() -> Result<(), TestError> {
 
 /// The MCP tools [`WITHOUT_IDENTITY`] cites as carrying no identity still
 /// carry none. If one gains it, its REST route must too, and this says which.
+#[cfg(feature = "hep")]
 #[test]
 fn the_exempt_routes_counterparts_carry_no_identity() -> Result<(), TestError> {
     let mut session = mcp::McpSession::start(G711, &[])?;

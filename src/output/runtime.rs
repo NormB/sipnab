@@ -385,6 +385,15 @@ pub struct RuntimeStats {
     /// would describe an exporter that does not exist.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub hep_export: Option<HepExportStats>,
+    /// Which capture `dialogs.used` and `streams.used` count, and at which
+    /// revision of its stores.
+    ///
+    /// [`collect`] leaves it `None`: the identity must be read under the
+    /// capture lock the caller takes before the store guards, and `collect`
+    /// sees only the stores. Each door sets it under the same guards it passed
+    /// in. Serialized as `null` rather than omitted when no capture is known,
+    /// the same admission `GET /v1/stats` makes.
+    pub capture_identity: Option<crate::provenance::CaptureEtag>,
 }
 
 /// What a `--hep-send` exporter reports about its own deliveries.
@@ -711,6 +720,7 @@ pub fn collect(
         hep_export: meter
             .and_then(crate::capture::channel::CaptureMeter::hep_export)
             .map(HepExportStats::of),
+        capture_identity: None,
     }
 }
 

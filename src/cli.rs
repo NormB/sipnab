@@ -4110,11 +4110,10 @@ pub struct McpArgs {
     ///
     /// Defaults to the system hostname. It appears in `capture_identity.node`
     /// on every MCP and REST answer about the loaded capture (MCP
-    /// `capture_health`, `timeline`, `describe_endpoint`, `runtime_stats` and
-    /// `hep_senders` and their REST routes are the exceptions), so an agent
-    /// querying an SBC and two PBXes at once can tell WHICH of them saw a
-    /// given fact — "answered with 407" is an incomplete finding until you
-    /// know where.
+    /// `capture_health` and `hep_senders`, and the REST route of the latter,
+    /// are the exceptions), so an agent querying an SBC and two PBXes at once
+    /// can tell WHICH of them saw a given fact — "answered with 407" is an
+    /// incomplete finding until you know where.
     ///
     /// Distinct from the capture instance, which rotates when a different
     /// capture is loaded. The node is the box and stays put, so a capture

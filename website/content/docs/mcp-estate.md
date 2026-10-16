@@ -585,7 +585,8 @@ SDP. Then **nothing in the signaling proves the two legs are one call**.
 
 **These answers carry `capture_identity`:** `list_dialogs`, `find_problems`,
 `search_messages`, `search_by_time`, `rtp_stats`, `aggregate_dialogs`,
-`group_dialogs`, `top_talkers`, `get_capture_report`, `capture_status`,
+`group_dialogs`, `top_talkers`, `timeline`, `describe_endpoint`,
+`runtime_stats`, `get_capture_report`, `capture_status`,
 `tail_dialogs`, `await_condition`, `security_findings`, `get_dialog`,
 `get_dialog_report`, `get_message`, `get_call_tree`, `get_sdp_timeline`,
 `triage_call`, `lint_dialog`, `validate_message`, `find_correlated`,

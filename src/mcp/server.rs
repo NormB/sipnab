@@ -1450,6 +1450,36 @@ pub struct TimelineBucket {
     pub dialogs: u64,
 }
 
+/// Dialog starts bucketed into fixed-width intervals.
+///
+/// Buckets are aligned to the epoch rather than to the first dialog, so two
+/// captures of the same window produce the same bucket boundaries and can
+/// be laid side by side. Aligning to the earliest dialog would shift every
+/// boundary whenever the first call changed, which makes two runs of the
+/// same traffic incomparable.
+///
+/// Empty buckets are EMITTED. A gap is a finding -- it is what a trunk
+/// outage looks like -- and a series that silently skips it renders as
+/// continuous traffic with a shorter x-axis.
+///
+/// The shared bucketing rule, so the `timeline` tool and the REST
+/// `/v1/timeline` route cannot disagree; this surface names the interval
+/// width on each row. Takes the store rather than locking it, so the tool can
+/// build the rows under the same guards it stamps the capture identity under.
+pub(crate) fn timeline_rows(
+    ds: &crate::sip::dialog_store::DialogStore,
+    width_seconds: u64,
+) -> Vec<TimelineBucket> {
+    ds.timeline_buckets(width_seconds)
+        .into_iter()
+        .map(|(start, dialogs)| TimelineBucket {
+            start,
+            bucket_seconds: width_seconds,
+            dialogs,
+        })
+        .collect()
+}
+
 /// Filter and pagination parameters for `list_dialogs`.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
 #[schemars(crate = "rmcp::schemars")]
@@ -4886,33 +4916,6 @@ impl SipnabMcp {
             }
         }
         Ok(())
-    }
-
-    /// Dialog starts bucketed into fixed-width intervals.
-    ///
-    /// Buckets are aligned to the epoch rather than to the first dialog, so two
-    /// captures of the same window produce the same bucket boundaries and can
-    /// be laid side by side. Aligning to the earliest dialog would shift every
-    /// boundary whenever the first call changed, which makes two runs of the
-    /// same traffic incomparable.
-    ///
-    /// Empty buckets are EMITTED. A gap is a finding -- it is what a trunk
-    /// outage looks like -- and a series that silently skips it renders as
-    /// continuous traffic with a shorter x-axis.
-    pub(crate) fn timeline_buckets(&self, width_seconds: u64) -> Vec<TimelineBucket> {
-        // The shared bucketing rule, so this tool and the REST `/v1/timeline`
-        // route cannot disagree; this surface just names the interval width on
-        // each row.
-        self.dialog_store
-            .read()
-            .timeline_buckets(width_seconds)
-            .into_iter()
-            .map(|(start, dialogs)| TimelineBucket {
-                start,
-                bucket_seconds: width_seconds,
-                dialogs,
-            })
-            .collect()
     }
 
     /// Build one bounded page of dialogs from a predicate over the store.
@@ -9324,6 +9327,11 @@ impl SipnabMcp {
             None => None,
         };
 
+        // Capture lock first, stores second, all three held together — see
+        // `CaptureState`. `dialogs.used` and `streams.used` count this
+        // capture's stores, so the occupancy and the identity stamped on it
+        // must describe one capture.
+        let state = self.capture.read();
         let ds = self.dialog_store.read();
         let ss = self.stream_store.read();
         // The same collector `GET /v1/runtime` calls, so the two surfaces
@@ -9336,9 +9344,11 @@ impl SipnabMcp {
             self.started_at.elapsed().as_secs(),
             crate::output::runtime::SIGNIFICANT_MEMORY_PCT,
         );
+        let mut stats = stats;
+        stats.capture_identity = Some(state.identity.etag(ds.generation(), ss.generation()));
         drop(ss);
         drop(ds);
-        let mut stats = stats;
+        drop(state);
         stats.rates = sampled;
         let value = serde_json::to_value(stats).map_err(|e| {
             rmcp::ErrorData::internal_error(format!("runtime stats did not serialize: {e}"), None)

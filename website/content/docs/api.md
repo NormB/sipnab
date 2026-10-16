@@ -2877,7 +2877,13 @@ curl -s -H "Authorization: Bearer $SIPNAB_API_KEY" http://127.0.0.1:8080/v1/runt
   "capture_packets_total": 852,
   "capture_queue_depth_packets": 0,
   "capture_backpressure_blocks_total": 0,
-  "uptime_seconds": 41
+  "uptime_seconds": 41,
+  "capture_identity": {
+    "node": "capture-01",
+    "instance": "117b0818df1033d4fd2a28-2",
+    "dialog_generation": 13,
+    "stream_generation": 2
+  }
 }
 ```
 
@@ -3419,7 +3425,8 @@ sipnab reads the instance and both generations at the same moment.
 `/v1/dialogs/{call_id}/correlated`, `/v1/dialogs/{call_id}/tree`,
 `/v1/dialogs/{call_id}/lint`, `/v1/dialogs/compare`, `/v1/dialogs/tail`,
 `/v1/dialogs/rates`, `/v1/streams`, `/v1/streams/{id}`, `/v1/report`,
-`/v1/stats`, `/v1/aggregate`, `/v1/talkers` and `/v1/security/findings`.
+`/v1/stats`, `/v1/aggregate`, `/v1/timeline`, `/v1/talkers`, `/v1/endpoints`,
+`/v1/runtime` and `/v1/security/findings`.
 Each one carries the identity the MCP tool answering the same question
 carries, read under the same locks as the answer. These answers do not carry it:
 
@@ -3427,7 +3434,7 @@ carries, read under the same locks as the answer. These answers do not carry it:
 |---|---|
 | `/v1/report?format=yang-json` | RFC 7951 allows no member at the top of the document that its YANG module does not declare. Request `format=json` for the identity. |
 | `/v1/dialogs/{call_id}/vcon` | The body is the vCon container itself. MCP `export_vcon` puts the identity on the envelope around its containers. |
-| `/v1/timeline`, `/v1/endpoints`, `/v1/runtime`, `/v1/hep/senders` | The MCP tools `timeline`, `describe_endpoint`, `runtime_stats` and `hep_senders` do not carry it either. |
+| `/v1/hep/senders` | The MCP `hep_senders` tool does not carry it either: the answer is the HEP listener's sender roster, not the capture's contents. |
 | `/v1/capabilities`, `/v1/captures/compare`, `/v1/vcon/spool`, `/v1/vcon/fetch/{uuid}`, `/v1/tfps/*`, `/v1/relay/*` | The answer is not about the loaded capture: it describes the build, two files on the file root, the spool, the vCon store, the TFPS peer, or the media relay. |
 | `/v1/persistence`, `/v1/calls/live` | No MCP tool answers the same question. |
 | `/health`, `/metrics`, the audio routes | They answer text or audio, not a JSON object. |
@@ -3685,7 +3692,13 @@ curl -s -H "Authorization: Bearer $SIPNAB_API_KEY" "http://127.0.0.1:8080/v1/tim
     { "start": "2026-09-15T12:10:00+00:00", "bucket_seconds": 300, "dialogs": 51 }
   ],
   "returned": 3,
-  "bucket_seconds": 300
+  "bucket_seconds": 300,
+  "capture_identity": {
+    "node": "capture-01",
+    "instance": "117b0818df1033d4fd2a28-2",
+    "dialog_generation": 13,
+    "stream_generation": 2
+  }
 }
 ```
 
@@ -4046,7 +4059,13 @@ curl -s -H "Authorization: Bearer $SIPNAB_API_KEY" "http://127.0.0.1:8080/v1/end
   "recent_dialogs": [
     { "call_id": "a1b2@203.0.113.9", "method": "INVITE", "state": "Completed" }
   ],
-  "truncated": true
+  "truncated": true,
+  "capture_identity": {
+    "node": "capture-01",
+    "instance": "117b0818df1033d4fd2a28-2",
+    "dialog_generation": 13,
+    "stream_generation": 2
+  }
 }
 ```
 
