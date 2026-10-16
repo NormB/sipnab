@@ -1,7 +1,7 @@
 +++
 title = "Decrypting SIP over TLS from session key logs"
 date = 2026-09-01
-updated = 2026-10-11
+updated = 2026-10-16
 description = "How sipnab decrypts encrypted SIP signaling from TLS session keys, where those keys can come from, and which traffic it cannot decrypt."
 
 [extra]
@@ -70,10 +70,8 @@ The keys can come from two places:
   - eCapture is an open-source tool that uses eBPF. eBPF is a Linux kernel
     facility for attaching small programs to running code.
   - eCapture reads the keys out of a running process with no restart.
-  - sipnab cannot start eCapture itself:
-    - sipnab sets `PR_SET_NO_NEW_PRIVS` at startup.
-    - Every program it starts inherits that setting.
-    - So a child of sipnab can never gain the `CAP_BPF` privilege eBPF needs.
+  - sipnab cannot start eCapture itself. A program that sipnab starts can
+    never gain the `CAP_BPF` privilege that eBPF needs.
   - Start eCapture from a shell or a service manager. Pass its output to
     sipnab.
 
@@ -94,7 +92,7 @@ sipnab --version
 ```
 
 ```text
-sipnab 0.5.211 (15e5e7bd) features: native,tui,audio,tls,hep,api,mcp,mcp-http,metrics,plugins,vcon,archive
+sipnab 0.5.222 (16f7b0ea) features: native,tui,audio,tls,hep,api,mcp,mcp-http,metrics,wasm,plugins,bpf,vcon,opus,archive,g729
 libpcap version 1.10.4 (with TPACKET_V3); alternate capture backends named: none
 ```
 
@@ -102,24 +100,20 @@ libpcap version 1.10.4 (with TPACKET_V3); alternate capture backends named: none
 
 ## Example runs
 
-These runs were not repeated for this note:
+No TLS capture with matching keys ships with sipnab, and eCapture needs root.
+So this section shows the commands without their full output.
 
-- No TLS capture with matching keys ships in the repository.
-- eCapture needs root and eBPF.
-
-The commands come from the guides. This note shows output only where a guide
-records it.
-
-- Decrypt a recorded capture with a key log file written by an endpoint. This
-  is from the TLS capture guide, section "The endpoint writes a key log". The
-  guide records no output.
+- Decrypt a recorded capture with a key log file written by an endpoint. The
+  TLS capture guide, section "The endpoint writes a key log", covers how to
+  get the key log.
 
 ```bash
 sipnab -I tls-capture.pcap --keylog /tmp/sip-keys.log
 ```
 
 - Pass keys from eCapture to a live capture through a pipe. Then they are never
-  written to disk. This is cookbook recipe "Decrypt without writing the keys to disk". The recipe records no output.
+  written to disk. Cookbook recipe "Decrypt without writing the keys to disk"
+  covers this setup.
   - Name the TLS library the SIP daemon uses with eCapture's `--libssl`
     option.
   - Otherwise eCapture chooses the library `curl` uses, which can differ.
@@ -139,16 +133,15 @@ sudo sh -c 'ecapture tls -m keylog --libssl=/usr/lib/x86_64-linux-gnu/libssl.so.
 sipnab -N -I sip-tls.pcapng --portrange 1-65535 --report
 ```
 
-   Cookbook recipe "One file, taken off the host, that decrypts itself" records this run. It was on 2026-09-09, with eCapture
-   v2.5.2, on a TLS 1.3 session using `TLS_AES_256_GCM_SHA384`. Its first
-   output line was:
+   The first output line says how many secrets sipnab found in the file. `N`
+   stands for that count:
 
 ```text
-TLS decryption active: 6 secret(s) from embedded DSB in sip-tls.pcapng
+TLS decryption active: N secret(s) from embedded DSB in sip-tls.pcapng
 ```
 
-   The report listed one completed dialog, `tls-split-invite-1@127.0.0.1`,
-   with 7 messages. The line format matches `src/app/batch.rs` line 3338.
+   If the line is missing, the file holds no keys. Cookbook recipe "One file,
+   taken off the host, that decrypts itself" shows how to make such a file.
 
 ## Starting a capture on a connection that is already open
 
@@ -158,9 +151,8 @@ version:
 - **TLS 1.3** numbers each record with a counter that is not sent on the wire.
   - sipnab searches for the counter, up to `--tls-lockon-window` records into
     the connection.
-  - The default is 1,048,576 records (`TLS_SEQ_LOCKON_WINDOW` in
-    `src/capture/mod.rs`). That is about 29 hours of a connection carrying ten
-    records a second.
+  - The default is 1,048,576 records. That is about 29 hours of a connection
+    carrying ten records a second.
   - Past that point the keys are correct, and the records still do not
     decrypt.
   - The search grows only while records fail to decrypt. So a larger window
@@ -192,11 +184,10 @@ encrypted records of a new call can reach sipnab before their key does.
 sipnab holds records it cannot decrypt yet. It retries them when a key for that
 session arrives. This needs no option.
 
-A run that recovered records logs a line such as this one. The TLS capture
-guide records the line. It matches `src/capture/decrypt.rs` line 1574:
+A run that recovered records logs this line, where `N` is the count:
 
 ```text
-TLS late decrypt: recovered 3 record(s) that arrived before their keys
+TLS late decrypt: recovered N record(s) that arrived before their keys
 ```
 
 The hold has these limits:
@@ -208,10 +199,9 @@ The hold has these limits:
 
 At the end of the run, sipnab reports:
 
-- the records it discarded at those limits, with their count and the limits
-  (`src/app/batch.rs` line 2042),
+- the records it discarded at those limits, with their count and the limits,
 - separately, records whose keys never arrived, as records "still waiting when
-  the run ended" (`src/app/batch.rs` line 2054).
+  the run ended".
 
 Start the key source before the capture wherever possible.
 
@@ -234,7 +224,7 @@ Start the key source before the capture wherever possible.
   - sipnab recognizes CBC suites and refuses to output their plaintext.
   - It does not verify the CBC record MAC (message authentication code). So it
     could not detect forged records.
-  - ChaCha20-Poly1305 suites are not supported (`src/capture/decrypt.rs`).
+  - ChaCha20-Poly1305 suites are not supported.
 
 ## Terms used here
 

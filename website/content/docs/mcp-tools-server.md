@@ -37,40 +37,50 @@ Start here when you have a capture and no particular suspect. These answer "what
 
 What sipnab is doing, and what it is costing the host it runs on.
 
-sipnab exports 40 Prometheus metrics, and the listener that serves them is off
-by default — so on most deployments those numbers exist inside the process and
-nothing can read them. An agent asked "is this server healthy" could not enable
-a listener to find out. This answers without one.
+Use it to answer "is this server healthy" without a metrics listener. sipnab
+exports 40 Prometheus metrics, and the listener that serves them is off by
+default. This tool reports process, host and store state over MCP without
+that listener.
 
-Starts no capture. Every field below answers instantly. The one optional
-parameter, `sample_seconds`, buys a rate at the cost of a wait that long.
+Starts no capture. Every field below answers at once. The one optional
+parameter, `sample_seconds`, adds rates and makes the call wait that long.
+
+**Parameters:** `sample_seconds?` (u32, optional) — 1 to 30. sipnab clamps a
+larger value to 30, and `rates.window_seconds` reports the window applied. `0`
+fails with `invalid_params`. Omitted, the response has no `rates` block and
+the call does not wait.
+
+The example runs against
+[`tests/pcap-samples/sip-rtp-g711.pcap`](https://github.com/NormB/sipnab/raw/main/tests/pcap-samples/sip-rtp-g711.pcap):
 
 ```jsonc
 // runtime_stats {}
 {
   "schema_version": 1,
   "process": {
-    "rss_bytes": 36831232, "virtual_bytes": 1276391424,
+    "rss_bytes": 23654400, "virtual_bytes": 1258172416,
     "threads": 3, "open_fds": 10, "cpu_seconds": 0.01
   },
   "host": {
-    "memory_total_bytes": 131881889792,
-    "memory_available_bytes": 121499242496,
+    "memory_total_bytes": 131881897984,
+    "memory_available_bytes": 55933124608,
     "cpus": 14, "basis": "host"
   },
   "impact": {
-    "memory_pct": 0.0279, "significant": false,
+    "memory_pct": 0.01793604760136965, "significant": false,
     "note": "sipnab holds 0.0% of the host memory total; the threshold for load-bearing is 10.0%"
   },
   "interfaces": [],
-  "dialogs": { "used": 1, "capacity": 100000, "pct": 0.001 },
-  "streams": { "used": 2, "capacity": 10000, "pct": 0.02 },
-  "capture_sources": { "used": 1, "capacity": 65536, "pct": 0.0015 },
+  "dialogs": { "used": 2, "capacity": 100000, "pct": 0.002 },
+  "streams": { "used": 2, "capacity": 50000, "pct": 0.004 },
+  "capture_sources": { "used": 1, "capacity": 65536, "pct": 0.00152587890625 },
   "capture_sources_refused_total": 0,
   "capture_packets_total": 852,
   "capture_queue_depth_packets": 0,
   "capture_backpressure_blocks_total": 0,
-  "uptime_seconds": 41
+  "uptime_seconds": 0,
+  "source_exhausted": true,
+  "source_stopped_early": false
 }
 ```
 
@@ -80,71 +90,59 @@ A `--hep-send` run also carries `hep_export`: the transport, `packets_sent`,
 Over UDP it means handed to the kernel: a collector that is down produces no
 failure. The shape is the same as `GET /v1/runtime`'s, from the same collector.
 
-**An absent field means "not readable here", never zero.** Every value under
-`process` and `host` is optional, because the sources are platform-specific. A
-field reported as `0` on a platform where it was never read is worse than one
-that says it does not know.
+How to read it:
 
-**`host.basis` names the denominator.** Inside a container the real limits are
-the control group's limits rather than the machine's, so the basis reads
-`cgroup` and the
-totals come from `memory.max`. A percentage against the wrong total is worse
-than no percentage, because a reader believes it.
+- **An absent field means "not readable here", never zero.** Every value
+  under `process` and `host` is optional, because the sources are
+  platform-specific.
+- **`host.basis` names the denominator.** Inside a container the basis reads
+  `cgroup` and the totals come from the control group's `memory.max`, not the
+  machine's memory.
+- **`impact.significant: true` means sipnab's own memory use is load-bearing
+  on this host**, at or above the threshold `note` states (10% of the host
+  memory total).
+- **`interfaces` reads the network interface, not the capture handle.**
+  Compare the two to choose a remedy: `ps_ifdrop` climbing with
+  `rx_missed_errors` means the NIC cannot keep up (adjust ring size,
+  coalescing or RSS); `ps_drop` climbing alone means sipnab's read loop is
+  falling behind (raise `--buffer` or tighten the capture filter).
+- **The capture-queue fields are absent without a capture meter.** A run
+  replaying a file through the API omits `capture_queue_depth_packets` and
+  `capture_backpressure_blocks_total`, rather than reporting `0`.
+- **Read occupancy against capacity.** `dialogs.pct` and `streams.pct` near
+  100 mean the store is about to evict calls.
 
-**`impact.significant` is a verdict.** A capture that is itself the reason a
-proxy started dropping calls is the worst failure this tool can have, and it
-used to be invisible. `note` carries the threshold, so you can disagree with the setting rather
-than with the finding.
-
-**`interfaces` reads the interface, not the capture handle.** sipnab's own
-counters describe what reached sipnab. These describe what reached the NIC. The
-pair separates the two remedies — `ps_ifdrop` climbing with `rx_missed_errors`
-is hardware that cannot keep up, and the fix is ring size, coalescing or RSS.
-`ps_drop` climbing alone is sipnab's read loop falling behind, and the fix is
-`--buffer` or a tighter filter. The handle counter alone cannot tell you
-which.
-
-**The capture-queue fields are absent without a capture.** A run replaying a
-file through the API owns no capture meter, so `capture_queue_depth_packets`
-and `capture_backpressure_blocks_total` do not appear at all, rather than
-appearing as `0`.
-Zero there would read as "the queue is clear", which is the one thing a
-saturated pipeline must never say.
-
-**Occupancy, not just counts.** `dialogs.used` alone is a number. Beside
-`capacity` it is a decision. An operator who cannot see occupancy learns about
-eviction by noticing that calls have gone missing.
-
-**Rates cost a wait, so ask for one explicitly.** Every counter above is
-cumulative, and "1,284,301 messages" answers a different question from "312
-messages/second, of which 190 are OPTIONS". Send `sample_seconds` to read the
-counters twice across that window:
+**To get rates, pass `sample_seconds`.** Every counter above is cumulative.
+With `sample_seconds`, sipnab reads the counters twice across that window and
+adds a `rates` block, with calls broken down by method so that OPTIONS
+keepalives and INVITEs appear apart:
 
 ```jsonc
-runtime_stats { "sample_seconds": 5 }
-// ... the same envelope, plus:
+// runtime_stats { "sample_seconds": 2 }
+// … the same envelope, plus:
 {
   "rates": {
-    "window_seconds": 5,
-    "packets_per_second": 412.6,
-    "calls_per_second": 3.4,
-    "calls_per_second_by_method": [["OPTIONS", 2.8], ["INVITE", 0.6]]
+    "window_seconds": 2,
+    "packets_per_second": 0.0,
+    "calls_per_second": 0.0,
+    "calls_per_second_by_method": [["INVITE", 0.0]]
   }
 }
 ```
 
-The breakdown is the point: a rate that does not separate INVITE from OPTIONS
-describes whatever the deployment does most, which in the field is the
-keepalive plane rather than the calls.
+The rates in that example are zero because the file had finished loading
+before the window opened. On a live capture they carry the traffic seen during
+the window.
 
-`window_seconds` is the window sipnab **applied**. sipnab caps a long window at
-30 seconds so one tool call cannot outlive the client's own deadline, and
-rejects `sample_seconds: 0` rather than answering it — an empty window returns
-zero deltas, and zero deltas is exactly what a healthy quiet capture reports.
+`window_seconds` is the window sipnab **applied**: sipnab clamps a longer
+request to 30 seconds. `sample_seconds: 0` fails with `invalid_params`:
 
-The REST endpoint `GET /v1/runtime` returns the same envelope from the same
-derivation — including the same refusal and the same cap — so the two surfaces
-cannot disagree about one process.
+```text
+sample_seconds must be at least 1. A zero-second window observes nothing, and a response of zero deltas reads as a quiet capture.
+```
+
+The REST endpoint `GET /v1/runtime` returns the same envelope, with the same
+refusal and the same 30-second cap.
 
 ### `capture_health`
 
@@ -152,24 +150,19 @@ Reads the capture counters, waits, and reads them again. The response carries
 the run totals **and** the change across that window, which turns a pile of
 monotonic counters into a rate.
 
-`sample_seconds` is **required** — this tool has no default window, because a
-rate without a stated interval is not a rate. The call blocks for that long:
+You must pass `sample_seconds`: this tool has no default window. The call
+blocks for that long.
 
-```jsonc
-capture_health { "sample_seconds": 1 }
-```
-
-`capture_status` tells you what the counters say right now. `capture_health` tells you
-what they did over a window you chose, which is the difference between "this
-process has dropped 4 million packets since Tuesday" and "this process is
-dropping packets **now**".
+Use [`capture_status`](@/docs/mcp-tools-core.md#capture-status) for what the counters
+say right now, and `capture_health` for what they did over a window you chose:
+whether the process is dropping packets **now**, not only since it started.
 
 Three questions it answers on a busy production server:
 
 - **Does the capture path drop packets under load?** Read
-  `in_window.kernel_dropped` and `in_window.interface_dropped`. They stay
-  apart because their fixes disagree — a bigger ring buffer cures the first
-  and does nothing for the second.
+  `in_window.kernel_dropped` and `in_window.interface_dropped`. They are
+  reported separately because their fixes differ: a bigger ring buffer
+  (`--buffer`) cures the first and does nothing for the second.
 - **What is on this wire that sipnab cannot decode?** Read
   `undecodable_by_reason`. Each entry names the reason as a code and carries
   the number that identifies it: the link type, the EtherType, or the IP
@@ -180,52 +173,54 @@ Three questions it answers on a busy production server:
 
 | Name | Type | Legal values | If omitted |
 |---|---|---|---|
-| `sample_seconds` | u32 | 1 to 30. A larger value clamps to 30, and `window.requested_seconds` beside `window.applied_seconds` reports both. Zero fails with `sample_seconds must be at least 1`. | Required — the call fails. This tool is the one place with no default, because a rate without a stated interval is not a rate. |
+| `sample_seconds` | u32 | 1 to 30. A larger value clamps to 30, and `window.requested_seconds` beside `window.applied_seconds` reports both. Zero fails with `sample_seconds must be at least 1`. | Required — the call fails with `missing field \`sample_seconds\``. |
 
 **The call blocks for the whole window**, so a client with a short request
 timeout should ask for a few seconds rather than 30.
 
-Returns:
+The example runs against
+[`tests/pcap-samples/SIP_CALL_RTP_G711`](https://github.com/NormB/sipnab/raw/main/tests/pcap-samples/SIP_CALL_RTP_G711),
+a capture file, so the totals hold the whole file and the window is empty:
 
 ```jsonc
+// capture_health { "sample_seconds": 2 }
 {
   "schema_version": 1,
-  "attachment": 2,
+  "attachment": 3,
   "window": {
-    "requested_seconds": 10,
-    "applied_seconds": 10,
-    "observed_ms": 10003
+    "requested_seconds": 2,
+    "applied_seconds": 2,
+    "observed_ms": 2001
   },
   "totals": {
-    "packets": 8412990,
-    "kernel_dropped": 1204,
+    "packets": 4269,
+    "kernel_dropped": 0,
     "interface_dropped": 0,
     "invalid_timestamps": 0,
-    "undecodable_frames": 2103247
+    "undecodable_frames": 164
   },
   "in_window": {
-    "packets": 94318,
-    "kernel_dropped": 17,
+    "packets": 0,
+    "kernel_dropped": 0,
     "interface_dropped": 0,
     "invalid_timestamps": 0,
-    "undecodable_frames": 23610
+    "undecodable_frames": 0
   },
-  "undecoded_fraction": 0.24999999,
-  "undecoded_fraction_in_window": 0.2503,
+  "undecoded_fraction": 0.038416490981494494,
+  "undecoded_fraction_in_window": 0.0,
   "undecodable_by_reason": [
-    { "reason": 2, "number": 34887, "frames": 2061109, "frames_in_window": 23140 },
-    { "reason": 3, "number": 47,    "frames": 41022,   "frames_in_window": 465 },
-    { "reason": 4, "number": null,  "frames": 1116,    "frames_in_window": 5 }
+    { "reason": 2, "number": null, "frames": 164, "frames_in_window": 0 }
   ],
   "undecodable_reasons_dropped": 0,
-  "dialogs_tracked": 2411,
-  "streams_tracked": 4802,
+  "dialogs_tracked": 4,
+  "streams_tracked": 5,
   "clock": {
     "synchronized": true,
-    "max_error_us": 238000,
+    "max_error_us": 918000,
     "est_error_us": 0,
     "available": true
   },
+  "capture_sources": { "held": 1, "limit": 65536, "refused": 0 },
   "source_exhausted": true,
   "source_stopped_early": false
 }
@@ -235,50 +230,34 @@ Every response carries `capture_sources`: how many capture sources the source
 table holds, its limit (`[limits] max_capture_sources`), and packets from a new
 source it refused because it was full. Counts only, never the names.
 
-```jsonc
-  "capture_sources": { "held": 1, "limit": 65536, "refused": 0 }
-```
-
 On a run with a HEP listener (`-L`), the response also carries `hep`: the
 listener's counts, and nothing else.
 
 ```jsonc
   "hep": {
-    "senders_tracked": 20, "senders_silent": 1, "packets_received": 900410,
-    "packets_admitted": 899396, "packets_refused": 1014, "untracked_packets": 0
+    "senders_tracked": 1, "senders_silent": 0, "packets_received": 33,
+    "packets_admitted": 10, "packets_refused": 23, "untracked_packets": 0
   }
 ```
 
-Integers only, like the rest of the response. Which senders, their addresses
-and the ids they claim are [`hep_senders`](#hep-senders)' answer. Without a
-listener the key is absent, because a zero would claim a listener that heard
-nothing.
+Integers only, like the rest of the response. For which senders, their
+addresses and the ids they claim, ask [`hep_senders`](#hep-senders). Without
+a listener the `hep` key is absent.
 
-`source_stopped_early` answers the question this tool usually gets: **did the
-whole capture arrive?** It reads `true` when a file's read ended before the file
-did — `libpcap error: truncated dump file`, a file that would not open, a read
-that hit an error part-way through — which is the normal state of a ring
-buffer's newest member and otherwise stays invisible here.
-
-Until this field
-landed, that condition reached stderr as `0 of 1 file(s) read in full, 1 stopped
-early` and reached this response not at all, so an agent asking whether a
-capture was sound got no answer either way. Both fields are booleans, so the response type stays
-free of strings.
+**To check whether the whole capture arrived, read `source_stopped_early`.**
+It is `true` when a file's read ended before the file did: `libpcap error:
+truncated dump file`, a file that would not open, or a read that hit an error
+part-way through. The newest file of a ring buffer that sipnab or another
+program is still writing commonly reads this way.
 
 > **This tool starts no capture.** With `--mcp` attached to a live interface,
-> the counters already accumulate, so a rate costs two reads and a wait. That
-> is not only the cheap design, it is the safe one: the handler opens no
-> device, names no interface, and writes no file, so no path leads from an MCP
-> call to a capture that transmits or records anything.
+> the counters already accumulate, so a rate costs two reads and a wait. The
+> handler opens no device, names no interface, and writes no file.
 
-> **No value in this response is a string.** The response type holds integers,
-> codes, two proportions and the clock's booleans, and it has no string field
-> anywhere in it or in anything nested inside it. A type that cannot represent packet
-> content cannot leak packet content, which is why the reasons below travel as
-> codes and their labels live on this page instead of on the wire. The test
-> `a_populated_capture_health_response_carries_no_string_value_anywhere`
-> serializes a full response and fails on any string value at any depth.
+> **No value in this response is a string.** The response holds integers,
+> codes, two proportions and the clock's booleans, so it carries no packet
+> content. The reasons travel as codes, and their meanings are in the tables
+> below.
 
 #### `attachment` — what this server has packets from
 
@@ -288,10 +267,8 @@ free of strings.
 | `2` | A live interface. |
 | `3` | A capture file replaying. |
 
-Code `1` exists so that a server with nothing to read says so. A row of zeros
-from a tool that never had a capture looks exactly like a healthy quiet wire,
-and no code is `0`, so a defaulted or truncated response can never pass for a
-real answer.
+With code `1`, every counter is zero because there is nothing to count, not
+because the wire is quiet. No code is `0`.
 
 #### `undecodable_by_reason` — the reason codes
 
@@ -303,63 +280,63 @@ real answer.
 | `4` | The frame is shorter than a header it claims | `null` | Raise `--snaplen`. A cut frame is a capture setting, not a parser gap |
 | `5` | A decoder rejected the bytes | `null` | Save a sample and open an issue |
 
-The number is the whole point of the entry. "Unsupported link type" names no
-action, and "unsupported link type 0" names three. `frames` counts the whole
-run, `frames_in_window` counts the sample, and an entry whose `frames_in_window`
-is `0` describes a problem that has already stopped.
+Use `number` to find the action: reason `1` with number `0` means a
+`DLT_NULL` file to convert, where reason `1` alone would not say which. In the
+example above, reason `2` with `number: null` means the link layer named a
+non-IP payload and recorded no EtherType. `frames` counts the whole run and
+`frames_in_window` the sample. An entry whose `frames_in_window` is `0`
+describes a problem that has already stopped.
 
 `undecodable_reasons_dropped` counts frames whose specific number did not fit
-the fixed-slot tables behind these counters. A non-zero value means the
-breakdown adds up to less than `totals.undecodable_frames`, and the field
-exists so that nobody has to discover the shortfall by subtracting.
+the per-reason tables behind these counters. When it is non-zero, the
+breakdown adds up to less than `totals.undecodable_frames`.
 
-#### Why 30 seconds is the ceiling
+#### Choose a sampling window
 
-An MCP tool call blocks the agent that made it. The handler holds a request
-slot for the whole window, and clients cancel a call that has not answered —
-60 seconds is the common default. A window that can run for minutes turns a
-diagnostic into a denial of service against the agent that asked for it.
+sipnab caps the window at 30 seconds, because the call blocks the agent that
+made it for the whole window, and many MCP clients cancel a call that has not
+answered within 60 seconds. At 10,000 packets per second, 30 seconds samples
+300,000 packets. For a longer view, call the tool repeatedly and read
+`totals`.
 
-Thirty seconds keeps the whole call inside half of that budget and still buys
-a window worth having. A trunk at 10,000 packets per second puts 300,000
-packets through it, which is enough for a drop rate to mean something. For a
-longer view, call the tool repeatedly and read `totals`.
+To compute a rate, divide by `window.observed_ms`, not by `sample_seconds`:
+the handler can wake late on a loaded host, and `observed_ms` is the measured
+wall-clock window.
 
-Divide by `window.observed_ms`, never by `sample_seconds`. A loaded runtime
-wakes the handler late, and the response reports the wall clock precisely so
-that a rate does not inherit that error.
+#### Check the clock before matching calls across servers
 
-**Clock discipline.** The response carries a `clock` object — `synchronized`,
-`max_error_us`, `est_error_us`, `available` — read from `adjtimex(2)` at report
-time rather than cached at startup, since a host can lose its time source while
-sipnab runs.
+The `clock` object (`synchronized`, `max_error_us`, `est_error_us`,
+`available`) comes from `adjtimex(2)` at report time, so it reflects a host
+that lost its time source after sipnab started.
 
-It is irrelevant to a single capture, where one clock stamped every packet and a
-constant offset cancels out of every interval.
+Within one capture the clock does not matter: one clock stamped every packet.
+It matters when you correlate calls across servers.
+[`find_correlated`](@/docs/mcp-tools-signaling.md#find-correlated)'s
+`timing_heuristic` matches dialogs that started within the leg-correlation
+window of each other, two seconds unless `--leg-correlation-window` says
+otherwise. A clock three seconds fast fails to correlate legs that belong
+together, and a slow one pulls unrelated legs inside the window. Widening the
+window widens this exposure.
 
-It matters the moment you
-correlate across NODES: `find_correlated`'s `timing_heuristic` matches dialogs
-that started within the leg-correlation window of each other — two seconds
-unless `--leg-correlation-window` says otherwise — and that is smaller than the
-skew an undisciplined host accumulates in a day. A clock three seconds fast
-fails to correlate legs that belong together, and a slow one pulls unrelated
-legs inside the window. Widening the window to reach a B2BUA that dips a
-database before placing the outbound leg widens this exposure with it.
+Before trusting a time-based match across servers, read `clock` from both, and
+prefer any of the six identifier strategies — `session_id`, `x_call_id`,
+`charging_vector_related_icid`, `sdp_origin`, `charging_vector_icid` or
+`via_branch` — which do not depend on the clock.
 
-Read `clock` from both servers before trusting a time-based
-match, and prefer any of the six identifier strategies — `session_id`,
-`x_call_id`, `charging_vector_related_icid`, `sdp_origin`,
-`charging_vector_icid` or `via_branch` — none of which care what time anyone
-thinks it is.
-
-`available: false` means the platform gave no answer — NOT that the clock is
-bad. The two are different facts and only one of them is a problem.
+`available: false` means the platform gave no answer. It does not mean the
+clock lost synchronization.
 
 ### `hep_senders`
 
 Who is feeding this run's HEP listener, who went silent, and who it is turning
 away. Exists in a build with the `hep` feature. Starts nothing and waits for
 nothing: it reads the roster the listener keeps.
+
+The example comes from one host: a listener started with
+`sipnab --mcp -N -L 127.0.0.1:8070 --hep-auth s3cret`, one sender started with
+`sipnab -N -I tests/pcap-samples/sip-rtp-g711.pcap -H 127.0.0.1:8070 --hep-id 7 --hep-auth s3cret`,
+and a second sender with the wrong secret (`--hep-id 9 --hep-auth wrong`).
+Both senders share the address `127.0.0.1`:
 
 ```jsonc
 // hep_senders {}
@@ -368,25 +345,23 @@ nothing: it reads the roster the listener keeps.
   "listening": true,
   "trust": "shared_secret_plain",
   "silence_threshold_seconds": 30,
-  "packets_received": 1843, "packets_admitted": 1829, "packets_refused": 14,
-  "refused_by_reason": { "auth_mismatch": 14, "allowlist": 0, "malformed": 0, "...": 0 },
-  "senders_tracked": 2, "senders_limit": 4096, "senders_silent": 1,
+  "packets_received": 33, "packets_admitted": 10, "packets_refused": 23,
+  "refused_by_reason": { "auth_mismatch": 23, "allowlist": 0, "malformed": 0, "…": 0 },
+  "senders_tracked": 1, "senders_limit": 4096, "senders_silent": 0,
   "untracked_packets": 0,
   "senders": [
-    { "source": "hep:7@192.0.2.7", "capture_id": 7, "peer": "192.0.2.7",
+    { "source": "hep:7@127.0.0.1", "capture_id": 7, "peer": "127.0.0.1",
       "identity": "claimed_by_sender", "trust": "shared_secret_plain",
-      "packets": 1604, "first_seen": "2026-09-21T12:00:00.412Z",
-      "last_seen": "2026-09-21T12:14:59.880Z", "idle_seconds": 0, "silent": false },
-    { "source": "hep:9@192.0.2.9", "capture_id": 9, "peer": "192.0.2.9",
-      "identity": "claimed_by_sender", "trust": "shared_secret_plain",
-      "packets": 225, "first_seen": "2026-09-21T12:00:01.020Z",
-      "last_seen": "2026-09-21T12:09:12.334Z", "idle_seconds": 348, "silent": true }
+      "packets": 10, "first_seen": "2026-10-16T11:57:07.282Z",
+      "last_seen": "2026-10-16T11:57:07.284Z", "idle_seconds": 2, "silent": false }
   ],
   "refused_sources_tracked": 1, "refused_sources_limit": 256, "refused_sources_evicted": 0,
   "refused_sources": [
-    { "peer": "203.0.113.66", "packets": 14, "by_reason": { "auth_mismatch": 14 },
-      "first_seen": "2026-09-21T12:03:40.101Z", "last_seen": "2026-09-21T12:14:58.007Z" }
-  ]
+    { "peer": "127.0.0.1", "packets": 23, "by_reason": { "auth_mismatch": 23 },
+      "first_seen": "2026-10-16T11:57:07.293Z", "last_seen": "2026-10-16T11:57:07.293Z" }
+  ],
+  "source_exhausted": false,
+  "source_stopped_early": false
 }
 ```
 
@@ -394,7 +369,7 @@ nothing: it reads the roster the listener keeps.
 
 | Name | Type | Legal values | If omitted |
 |---|---|---|---|
-| `limit` | u32 | The most rows `senders` and `refused_sources` each carry, up to the server's row cap (`--mcp-max-rows`). The totals beside each list always count everything. | 50 rows per list |
+| `limit?` | u32? | The most rows `senders` and `refused_sources` each carry, up to the server's row cap (`--mcp-max-rows`). `0` means the default. The totals beside each list always count everything. | 50 rows per list |
 
 **The questions it answers.** Is proxy seven still sending? Read its row's
 `silent` and `idle_seconds`. Why does the new PBX not show up? Look for its
@@ -412,34 +387,41 @@ nothing from it for `silence_threshold_seconds` (`--hep-silence-warn`). A PBX wi
 calls at night may send nothing at all.
 
 **No listener, no roster.** A server with no `-L` returns `listening: false`
-and a `note`, never an empty roster that would read as "nobody is sending".
+and a `note`:
+
+```text
+this run has no HEP listener (-L/--hep-listen), so there are no senders to report
+```
 
 Every value is sipnab's own count, a claimed id, an address or a time, and no
-byte of any packet, so the response goes out without the untrusted-content
-note. `GET /v1/hep/senders` returns the same bytes for the same roster, and
+byte of any packet, so the response carries no untrusted-content note. `GET /v1/hep/senders` returns the same bytes for the same roster, and
 `--hep-senders` prints it at the end of a headless run.
 
 ### `server_capabilities`
 
 What this binary can do, what this server permits and loaded, the limits it
-answers under, and which libpcap it captures through. Ask before requesting decryption, HEP, a file export or a
-capture swap: a build without the feature, or a server without the flag, fails
-confusingly otherwise.
+answers under, and which libpcap it captures through. Ask it before requesting
+decryption, HEP, a file export or a capture swap, to learn whether the build
+carries the feature and the operator enabled the flag, instead of learning it
+from a refusal.
 
-No parameters. Returns:
+No parameters. The example is a full-feature build replaying a file with no
+opt-in flags:
 
 ```jsonc
+// server_capabilities {}
 {
   "schema_version": 1,
   "version": "0.5.222",
-  "features": ["api", "hep", "mcp", "native", "tls", "tui"],
+  "features": ["api", "archive", "audio", "bpf", "g729", "hep", "mcp", "mcp-http",
+               "metrics", "native", "opus", "plugins", "tls", "tui", "vcon", "wasm"],
   "can_decrypt": true,           // tls
   "can_hep": true,               // hep
-  "can_plugins": false,          // plugins
+  "can_plugins": true,           // plugins
   "runtime": {
-    "mcp_file_root": "/var/spool/sipnab-captures",  // null when unset
+    "mcp_file_root": null,         // the --mcp-file-root directory when set
     "mcp_allow_shutdown": false,
-    "mcp_allow_open_capture": true,
+    "mcp_allow_open_capture": false,
     "mcp_allow_tls_capture": false,
     "mcp_allow_save_findings": false,
     "mcp_allow_relay_query": false,  // true only on a live capture with --rtpengine-control
@@ -448,9 +430,9 @@ No parameters. Returns:
     "mcp_allow_actions": []          // ["tfps"] with --allow-action tfps:mcp
   },
   "libpcap": {
-    "banner": "libpcap version 1.10.6 (64-bit time_t, with TPACKET_V3 and netmap)",
-    "version": "1.10.6",             // null when the banner carries none
-    "named_backends": ["netmap"]     // [] on a distribution libpcap
+    "banner": "libpcap version 1.10.4 (with TPACKET_V3)",
+    "version": "1.10.4",             // null when the banner carries none
+    "named_backends": []             // ["netmap"] when the banner names netmap
   },
   "limits": {
     "max_rows": 1000,                // --mcp-max-rows
@@ -458,10 +440,10 @@ No parameters. Returns:
     "max_inline_media_bytes": 5242880, // --vcon-max-inline-media; null without vcon
     "max_wait_seconds": 60           // --mcp-max-wait-seconds
   },
-  "tools": ["actions_revert", "aggregate_dialogs", "..."],  // what tools/list returns
-  "bundles": ["core", "signaling", "..."],                  // bundles loaded whole
-  "prompts": ["triage-outage", "carrier-escalation", "..."], // what prompts/list returns
-  "resource_templates": ["sipnab://live/dialogs/{call_id}", "..."]
+  "tools": ["actions_revert", "aggregate_dialogs", "analyze_vcon", "…"],  // what tools/list returns
+  "bundles": ["core", "signaling", "captures", "…"],                      // bundles loaded whole
+  "prompts": ["triage-outage", "carrier-escalation", "codec-interop-audit", "…"], // what prompts/list returns
+  "resource_templates": ["sipnab://live/dialogs/{call_id}", "sipnab://lint/{rule_id}", "…"]
 }
 ```
 
@@ -485,12 +467,8 @@ this build carries, so a selection of single tool names lists no bundle those
 tools only partly fill. `prompts` and `resource_templates` are the names `prompts/list` and
 `resources/templates/list` return, in the same order.
 
-`features` comes from `cfg!` at compile time, so it cannot claim a feature the
-binary does not have. `runtime` is a different question — what the **operator**
-turned on — and no compile-time check can answer it. Without it an agent
-discovers the setup by calling a tool and collecting a refusal, and a refusal
-mid-investigation reads as a dead end rather than as a server it was never
-allowed to use that way.
+`features` lists the features compiled into this binary. `runtime` reports
+what the **operator** enabled on this server.
 
 `hep_delivery_trust` says what an endpoint a relay asserted over HEP is worth on
 this run, decided once at startup by the HEP listener's authentication:
@@ -501,20 +479,17 @@ HEP listener delivered carries the same value in its `delivery_trust`. A HEP
 datagram read off a capture interface or a file, `--hep-parse` included,
 reached no listener and is `port-gated-only`.
 
-`libpcap` is a third question, answered at runtime: `pcap_lib_version()` as
-this process sees it. A gnu build or a package loads the host's libpcap, a
-static musl build carries its own, and a macOS build loads the one macOS
-ships, so the same sipnab version reports different libraries on different
-hosts.
+`libpcap` reports the libpcap this process loaded, as `pcap_lib_version()`
+returns it. A gnu build or a package loads the host's libpcap, a static musl
+build carries its own, and a macOS build loads the one macOS ships, so the
+same sipnab version can report different libraries on different hosts.
 
-`named_backends` lists the alternate capture backends (`netmap`,
-`dpdk`, `dag`, `snf`) that the banner names. It is the report the second line
-of `sipnab --version` prints and the `libpcap` block of REST
-`GET /v1/capabilities` carries, from one function.
+`named_backends` lists the alternate capture backends (`netmap`, `dpdk`,
+`dag`, `snf`) that the banner names. It matches the second line of
+`sipnab --version` and the `libpcap` block of REST `GET /v1/capabilities`.
 
-A backend missing from it
-remains unconfirmed rather than absent: libpcap names netmap in its banner
-only from 1.10.6, and DPDK only in a DPDK-only build. [Which capture backends
+A backend missing from it may still be present: libpcap names netmap in
+its banner only from 1.10.6, and DPDK only in a DPDK-only build. [Which capture backends
 an artifact can reach](@/docs/install.md#which-capture-backends-an-artifact-can-reach)
 has the per-artifact table.
 
@@ -529,18 +504,20 @@ The tools that change server state rather than read it. Every one stays off unti
 Without it every call fails, whatever the arguments say:
 
 ```text
-shutdown is disabled: start sipnab with --mcp-allow-shutdown to permit it.
-A stock server cannot be stopped by an agent.
+shutdown is disabled: start sipnab with --mcp-allow-shutdown to permit it. A stock server cannot be stopped by an agent.
 ```
+
+It arrives as `invalid_params` (-32602) with `data.reason: "not_enabled"`.
 
 | Name | Type | Legal values | If omitted |
 |---|---|---|---|
-| `dry_run` | bool? | `true` reports what would happen. `false` stops the process. | **`true`** — the safe value is the default, so stopping takes a deliberate second call. |
-| `save_to` | string? | A bare filename inside `--mcp-file-root` to write the capture to before stopping. | sipnab writes nothing. On a live capture holding unsaved packets, the call then refuses unless `discard_unsaved` is `true`. |
-| `discard_unsaved` | bool? | `true` accepts losing the packets a live capture holds in memory. | `false` — a live capture with unsaved packets refuses to stop. |
+| `dry_run?` | bool? | `true` reports what would happen. `false` stops the process. | **`true`** — the safe value is the default, so stopping takes a deliberate second call. |
+| `save_to?` | string? | A bare filename inside `--mcp-file-root` to write the capture to before stopping. | sipnab writes nothing. On a live capture holding unsaved packets, the call then refuses unless `discard_unsaved` is `true`. |
+| `discard_unsaved?` | bool? | `true` accepts losing the packets a live capture holds in memory. | `false` — a live capture with unsaved packets refuses to stop. |
 
 Returns `dry_run`, `would_stop`, `live`, `unsaved`, `dialogs`, `streams`,
-`saved_to`, `confirmed_by_operator`, `note` and `schema_version`. Read
+`saved_to`, `confirmed_by_operator`, `note`, `source_exhausted`,
+`source_stopped_early` and `schema_version`. Read
 `would_stop` rather than assuming: it is `false` on a dry run, on a refusal and
 on a declined confirmation alike, and `note` says which.
 
@@ -552,20 +529,22 @@ on a declined confirmation alike, and `note` says which.
   "would_stop": false,
   "live": false,
   "unsaved": false,
-  "dialogs": 13,
+  "dialogs": 2,
   "streams": 2,
   "saved_to": null,
   "confirmed_by_operator": null,
-  "note": "dry run — nothing stopped. Call again with dry_run=false to stop."
+  "note": "dry run — nothing stopped. Call again with dry_run=false to stop.",
+  "source_exhausted": true,
+  "source_stopped_early": false
 }
 ```
 
-Stopping takes a deliberate second call with `dry_run: false`. On a **live**
-capture holding packets written nowhere, it refuses outright unless you pass
-`save_to` or `discard_unsaved: true` — losing a capture to a misread sentence
-is the failure worth engineering against.
+Stopping takes a second call with `dry_run: false`, which answers
+`"would_stop": true` and `"note": "shutdown requested"`, and the process
+exits. On a **live** capture holding packets written nowhere, it refuses
+unless you pass `save_to` or `discard_unsaved: true`.
 
-**And, where the client can carry the question, sipnab asks a person.** If your
+**Where the client can carry the question, sipnab asks a person.** If your
 client declared MCP's `elicitation` capability, a `dry_run: false` call sends a
 real `elicitation/create` request and waits for the answer. Only `accept`
 carrying `confirm: true` stops the process:
@@ -583,8 +562,8 @@ carrying `confirm: true` stops the process:
 ```
 
 `confirmed_by_operator` is `null` where sipnab asked nobody — a dry run, or a
-client that declared no elicitation capability. That case is **not** a refusal:
-`dry_run` remains the guard it always was, so the tool behaves exactly as it
-did on any client that cannot answer. `save_to` writes only on the path that
+client that declared no elicitation capability. That case is **not** a
+refusal: `dry_run: false` alone then stops the process. `save_to` writes only
+on the path that
 actually stops, so a declined confirmation leaves no file behind. See
 [the protocol page](@/docs/mcp-protocol.md#confirming-the-two-irreversible-ones).

@@ -2,7 +2,7 @@
 
 One packet's journey, from the wire to the screen.
 
-- Read [`../architecture.md`](../architecture.md) first for the one-screen map of the tree.
+- Read [the code map](code-map.md) first for the one-screen map of the tree.
 - This page is the function-level trace through it.
 
 ## The program spine

@@ -32,8 +32,8 @@ This page walks a **first-time sipnab user** through each deployment scenario.
   - This is the same-machine setup.
 - The remote scenarios (SSH, the HTTP service, systemd) were last run end to
   end at 0.5.20.
-  - Their commands still parse, because `docs_drift_test` checks every flag
-    name here against the current CLI.
+  - Their commands still parse: the documentation test suite checks every
+    flag name here against the current CLI.
   - But their transcripts come from that run.
 - [Drive it from a script](#drive-it-from-a-script) and
   [Follow one call across an SBC and its PBXes](@/docs/mcp-estate.md#follow-one-call-across-an-sbc-and-its-pbxes)
@@ -74,7 +74,7 @@ MCP-capable agent.
 | Run diagnostics on a schedule, no human involved | [Run diagnostics on a schedule, with no agent attached](#run-diagnostics-on-a-schedule-with-no-agent-attached) |
 | Use Codex, Cursor, VS Code, Gemini CLI or Windsurf instead | [Use an agent other than Claude Code](#use-an-agent-other-than-claude-code) |
 | Work out why it does not connect | [Fix it when it does not connect](#fix-it-when-it-does-not-connect) |
-| **Actually diagnose something, now that sipnab answers** | [Diagnose a real problem with the tools](#diagnose-a-real-problem-with-the-tools) |
+| **Diagnose a problem, now that sipnab answers** | [Diagnose a real problem with the tools](#diagnose-a-real-problem-with-the-tools) |
 | Find out why one call failed | [Find out why a single call failed](#find-out-why-a-single-call-failed) |
 | Work out whether codecs caused a 488 | [Confirm whether a codec mismatch caused a 488](#confirm-whether-a-codec-mismatch-caused-a-488) |
 | Work out why a phone cannot register | [Find out why an endpoint cannot register](#find-out-why-an-endpoint-cannot-register) |
@@ -108,7 +108,7 @@ of that one arrangement:
 | Shape | What it costs you | Where to read it |
 |---|---|---|
 | **Same machine** | Nothing. No network, no credentials; the agent starts sipnab. | [Run sipnab and your agent on the same machine](#run-sipnab-and-your-agent-on-the-same-machine) |
-| **Remote, nothing listening** | An SSH key you almost certainly already have. The agent starts sipnab *through SSH*, so the server needs no configuration at all. **Most people want this one.** | [Connect Claude Code on your laptop to sipnab on a server](#connect-claude-code-on-your-laptop-to-sipnab-on-a-server) |
+| **Remote, nothing listening** | An SSH key. The agent starts sipnab *through SSH*, so the server needs no configuration beyond the install. **The shortest setup for a remote server.** | [Connect Claude Code on your laptop to sipnab on a server](#connect-claude-code-on-your-laptop-to-sipnab-on-a-server) |
 | **Remote, always on** | A token, a port, and usually a unit file. Buys you a capture that survives between agent sessions. | [Keep a capture running between agent sessions](#keep-a-capture-running-between-agent-sessions) |
 
 Two invariants that apply everywhere:
@@ -298,7 +298,8 @@ State is per-session.
 
 ## Use Claude Code on your laptop against a remote server
 
-This is a designed-for use case, not a workaround:
+sipnab supports this arrangement. Three properties make it safe to point at a
+production server:
 
 - **no tool sends SIP**,
 - every response has a ceiling,
@@ -626,7 +627,8 @@ whenever they ask.
 
 *SSH tunnel to loopback HTTP. Persistent, nothing exposed.*
 
-This is the best of both.
+This combines the persistent capture of the token service with the
+no-open-port property of SSH stdio.
 
 - The service runs continuously but binds only loopback.
 - So there's no token to manage and no port to firewall.
@@ -763,12 +765,13 @@ ok
 
 **A loopback bind needs no authentication at all.**
 
-- This is worth stating. It is easy to read the token machinery as mandatory
-  and then distrust a request that succeeds without one.
-- It is deliberate. A non-loopback bind *refuses to start* without a token.
-- So the only way to reach a sipnab that authenticates nobody is from the box
-  it runs on.
-- Try it and the refusal is explicit:
+- A request to `127.0.0.1` that succeeds without a token is working as
+  intended.
+- A non-loopback bind *refuses to start* without a token or signing key.
+- So a sipnab that authenticates nobody is reachable only from the box it
+  runs on.
+- Try a non-loopback bind with no credential. sipnab names the refusal and
+  exits with status 2:
 
 ```bash
 ./target/debug/sipnab -N --mcp --mcp-transport http --mcp-bind 0.0.0.0:8812 \
@@ -776,10 +779,10 @@ ok
 ```
 
 ```text
-ERROR sipnab::app::servers: MCP HTTP server error: MCP HTTP refuses to start:
---mcp-bind 0.0.0.0:8812 is non-loopback but no --mcp-token / --mcp-token-file /
+ERROR sipnab::app::bootstrap: MCP HTTP refuses to start: --mcp-bind
+0.0.0.0:8812 is non-loopback but no --mcp-token / --mcp-token-file /
 SIPNAB_MCP_TOKEN / --mcp-signing-key / --mcp-signing-key-file /
-SIPNAB_MCP_SIGNING_KEY was supplied.
+SIPNAB_MCP_SIGNING_KEY was supplied. See D18 in the v6 plan.
 ```
 
 Now run the script.
@@ -796,14 +799,14 @@ python3 contrib/mcp/trace-call.py \
 ```
 
 ```text
-[sbc] sipnab 0.5.97 node=sbc-edge-1
-[proxy] sipnab 0.5.97 node=proxy-1
-[pbx] sipnab 0.5.97 node=pbx-1
+[sbc] sipnab 0.5.222 node=sbc-edge-1
+[proxy] sipnab 0.5.222 node=proxy-1
+[pbx] sipnab 0.5.222 node=pbx-1
 [sbc] 1 leg(s) correlated to b2bua-leg-synth@203.0.113.101:5060
   b2bua-caller-synth@203.0.113.1
       via timing_heuristic [GUESS] score 50, gap 3ms
   !! every leg was a timing guess, not an identifier match.
-     clock on sbc: synchronized=True max_error_us=295000
+     clock on sbc: synchronized=True max_error_us=574000
      The window is 2s. Skew larger than that invents legs and hides legs.
 ```
 
@@ -812,18 +815,18 @@ python3 contrib/mcp/trace-call.py \
 - Add `--token-file ~/.config/sipnab/prod01.token` for
   [the token service](#keep-a-capture-running-between-agent-sessions).
 
-### Get the transport right, because three details are not obvious
+### Send the headers and session id every HTTP request needs
 
-Running a client turned up each of these. Reading the spec did not. Each one
-fails in a way that does not look like its cause.
+A client of the HTTP transport has to handle three details. Each one, when
+missed, fails with an error that does not name its cause.
 
 **The response is `text/event-stream`, not JSON.**
 
 - A single reply still arrives as Server-Sent Events.
 - So `requests.post(...).json()` raises on the first character.
 - The JSON-RPC message sits on a `data:` line.
-- The first frame carries an empty `data:` keepalive. A naive parser tries to
-  parse it and dies on it.
+- The first frame carries an empty `data:` keepalive. A parser that tries to
+  parse it as JSON fails.
 - Skip empty payloads, then parse.
 
 This is the loop
@@ -889,12 +892,9 @@ Then send `notifications/initialized` before calling tools.
 - It is a notification: no `id`.
 - The server answers `202` with an empty body.
 
-The protocol version is `2025-06-18`.
-
-- On 0.5.87 a `tools/list` sent *before* the notification was still answered.
-- But that is leniency in one build, not a promise.
-- A client that skips the notification is relying on behavior no server owes
-  it.
+The protocol version is `2025-06-18`, and it requires the notification
+before any other request. sipnab currently answers a `tools/list` sent before
+it, but the protocol does not promise that, so send the notification first.
 
 The full sequence, which is what the script does:
 
@@ -918,7 +918,9 @@ block.
 - So your client parses JSON **twice**:
   - once out of the SSE frame,
   - once out of `result.content[0].text`.
-- That is protocol, not a sipnab quirk. It catches everyone once.
+- MCP defines this envelope; every MCP server uses it.
+- `result.structuredContent` carries the same payload already parsed, as
+  "Test the HTTP wire by hand" below shows.
 
 ### Know which errors mean what
 
@@ -1145,7 +1147,7 @@ Use `httpUrl` for sipnab:
 }
 ```
 
-Two universal gotchas, regardless of client:
+Two rules apply to every client:
 
 - The `Host:` your client sends must be in sipnab's `--mcp-allowed-host`
   allowlist (403 otherwise).
@@ -1172,14 +1174,12 @@ flowchart TD
     M1 --&gt; L
 </pre>
 
-`triage_call` first, always.
-
-- It answers the one question that decides which half of the stack to look at.
-- Getting it wrong costs an hour.
+Call `triage_call` first. It says whether the fault is in signaling or in
+media, which decides which tools to call next.
 
 Each recipe below holds:
 
-- a question an operator actually arrives with,
+- a question an operator arrives with,
 - the tool calls that answer it,
 - **real output**.
   - Every block comes from running the tool against a capture in
@@ -1221,6 +1221,13 @@ You have a Call-ID from a complaint or a billing record. Start with the split:
     "no_media": false,
     "stream_count": 1,
     "hints": ["RTP flowed 10.0.2.15:27942 -> 10.0.2.20:6000 only (SSRC 0x343da99b). No reverse media flow detected."]
+  },
+  "termination": {
+    "protocol": "Q.850",
+    "cause_code": 16,
+    "cause_text": "NORMAL_CLEARING",
+    "source_header": "Reason",
+    "frame_ref": 4
   },
   "source_exhausted": true,
   "source_stopped_early": false
@@ -1322,6 +1329,7 @@ The blocks below run against
       "to_user": "⟦untrusted-capture-data⟧alice⟦/untrusted-capture-data⟧",
       "msg_count": 4,
       "duration_sec": 0.001,
+      "final_status_code": 403,
       "created_at": "2016-05-17T08:01:35.431471+00:00",
       "updated_at": "2016-05-17T08:01:35.433107+00:00",
       "timing": { "pdd_ms": null, "setup_ms": null, "retransmits": 0, "duration_ms": null },
@@ -1332,6 +1340,12 @@ The blocks below run against
   "returned": 1,
   "total_matched": 1,
   "by_method": [{ "method": "REGISTER", "count": 1 }],
+  "capture_identity": {
+    "node": "capture-01",
+    "instance": "128e0d18df006188e00bc3-2",
+    "dialog_generation": 8,
+    "stream_generation": 0
+  },
   "truncated": false,
   "next_cursor": null,
   "source_exhausted": true,
@@ -1371,7 +1385,13 @@ REGISTER exchange:
   "call_id": "auth-fail-register-synth@203.0.113.1",
   "applicable": true,
   "auth_loop": null,
-  "final_status_code": null,
+  "contact_rewrite": {
+    "contact_host": "203.0.113.1:42952",
+    "contact_host_private": false,
+    "rewrite_required": false,
+    "source_public": true
+  },
+  "final_status_code": 403,
   "hints": [
     "Call failed: 403 Forbidden.",
     "Registration rejected: 403 Forbidden. The endpoint answered an authentication challenge and the registrar refused the credentials it offered, so the fault is in the account, its password or its permission to register — none of which is a reachability problem."
@@ -1437,6 +1457,7 @@ When `triage_call` returns `verdict: media`, go to the streams:
     "actual_media": null,
     "hints": ["RTP flowed 10.0.2.15:27942 -> 10.0.2.20:6000 only (SSRC 0x343da99b). No reverse media flow detected."]
   },
+  "dialog_seen": true,
   "source_exhausted": true,
   "source_stopped_early": false
 }
@@ -1468,7 +1489,7 @@ Here jitter is sub-millisecond and loss is zero.
 
 ### Check what sipnab holds before trusting an answer
 
-This is worth doing first when you join a session someone else started. It
+Do this first when you join a session someone else started. It
 is the only way to tell a live capture from a replayed file:
 
 ```json
@@ -1480,7 +1501,7 @@ is the only way to tell a live capture from a replayed file:
   "schema_version": 2,
   "source": "file",
   "name": "tests/pcap-samples/sip-rtp-g711.pcap",
-  "uptime_sec": 1,
+  "uptime_sec": 0,
   "dialog_count": 2,
   "stream_count": 2,
   "source_exhausted": true,
@@ -1493,8 +1514,8 @@ is the only way to tell a live capture from a replayed file:
 That is the subset this recipe reads.
 
 - A real answer also carries `active_dialog_count`, `active_call_count`,
-  `orphaned_stream_count`, `capture_quality`, `caveats`, `capture_identity`,
-  `load` and the `unanalysed_*` counters.
+  `orphaned_stream_count`, `ami_cleartext`, `capture_quality`, `caveats`,
+  `capture_identity`, `load` and the `unanalysed_*` counters.
 - [`capture_status`](@/docs/mcp-tools-core.md#capture-status) walks through each of
   them.
 
@@ -1517,30 +1538,36 @@ Then confirm the build can do what you are about to ask of it:
 {
   "schema_version": 1,
   "version": "0.5.222",
-  "features": ["api", "audio", "hep", "mcp", "mcp-http", "metrics",
-               "native", "plugins", "tls", "tui"],
+  "features": ["api", "archive", "audio", "bpf", "g729", "hep", "mcp",
+               "mcp-http", "metrics", "native", "opus", "plugins", "tls",
+               "tui", "vcon", "wasm"],
   "can_decrypt": true,
   "can_hep": true,
   "can_plugins": true,
   "runtime": {
+    "hep_delivery_trust": "port-gated-only",
+    "mcp_allow_actions": [],
     "mcp_file_root": null,
     "mcp_allow_shutdown": false,
     "mcp_allow_open_capture": false,
     "mcp_allow_tls_capture": false,
     "mcp_allow_save_findings": false,
     "mcp_allow_relay_query": false,
-    "mcp_allow_vcon_fetch": false,
-    "hep_delivery_trust": "port-gated-only"
+    "mcp_allow_vcon_fetch": false
   }
 }
 ```
 
-A real answer also carries a `libpcap` block.
+That is the subset this recipe reads. A real answer also carries:
 
-- It names the libpcap this server captures through.
-- It names the alternate capture backends its banner names.
-- [`server_capabilities`](@/docs/mcp-tools-server.md#server-capabilities) walks
-  through it.
+- a `libpcap` block naming the libpcap this server captures through and the
+  alternate capture backends its banner names,
+- `bundles`, `tools`, `prompts` and `resource_templates`: what this server
+  registered,
+- `limits`: the response bounds it applies.
+
+[`server_capabilities`](@/docs/mcp-tools-server.md#server-capabilities) walks
+through each field.
 
 Without this check, asking for TLS decryption on a build without `tls` fails
 in a way that reads like a key problem.
@@ -1551,7 +1578,9 @@ in a way that reads like a key problem.
 **`runtime` answers the second question, which is not "can this build" but "may
 this server".**
 
-- The four booleans are the opt-in flags an operator either passed or did not.
+- The `mcp_allow_*` fields are the opt-in flags an operator either passed or
+  did not. `mcp_allow_actions` lists the action targets `--allow-action`
+  enabled for MCP: `["tfps"]` after `--allow-action tfps:mcp`.
 - `mcp_file_root` is `null` when the file tools are off entirely.
 - Every tool that needs one of them refuses by name when it is missing.
 - So what this block reports is exactly what the refusal would have said.
@@ -1588,37 +1617,30 @@ It reports what would happen and changes nothing.
 - It refuses to discard unsaved live data unless you either:
   - name a `save_to` target,
   - or pass `discard_unsaved: true`.
-- An agent can misread "we can stop looking at this now" as an instruction.
-  That agent should not be able to end an afternoon of capture.
 
 Your client may have declared MCP's `elicitation` capability.
 
 - Then that second call also asks a PERSON, over a real `elicitation/create`
   round trip.
 - A declined confirmation stops nothing.
-- The two guards stack rather than replace each other.
-  - The deliberate second call is still made by the same agent that made the
-    first.
-  - That is why the confirmation is worth having.
+- The confirmation is in addition to the second call, not instead of it.
 - A client that cannot answer is never asked. It is not treated as having
   refused. See
   [the protocol page](@/docs/mcp-protocol.md#confirming-the-two-irreversible-ones).
 
 ## Understand the load on a busy server
 
-Two distinct costs. Both are small, and you can cap both.
+sipnab has two costs: the capture path and the MCP query path. You can cap
+both.
 
-**The capture path** dwarfs the MCP path and is the one to size.
+**Size the capture path.** It costs far more than the MCP path.
 
-- Reference numbers ([benchmarks](@/docs/benchmarks.md), modest 14-core aarch64
-  host):
-  - 1.28M pkts/s single-core offline reconstruction on a 93.5%-RTP corpus,
-  - 2.17M at two cores.
-- For scale: a proxy doing 100 CPS with ~10 SIP messages per call generates
-  ~1k signaling packets/s.
-  - That is three orders of magnitude below one core's budget.
+- [Benchmarks](@/docs/benchmarks.md) gives measured packets per second per core.
+- Compare that with your signaling rate. A proxy doing 100 calls per second
+  with about 10 SIP messages per call sends about 1,000 signaling packets per
+  second.
 
-What actually costs:
+What sets the capture cost:
 
 - **Live `-d` capture of media**: RTP dominates packet counts.
   - If you only need signaling analysis, don't capture media.
@@ -1633,14 +1655,16 @@ What actually costs:
   - RTP streams (50k),
   - messages per dialog (500),
   - TCP reassembly (10k).
-  - Tighten these on a shared box. A `dialog_limit = 20000`-class config
-    keeps sipnab a well-behaved tenant.
+  - Lower these on a shared host, for example `dialog_limit = 20000`.
 
-**The MCP query path** is noise by comparison.
+**The MCP query path** is small next to the capture path.
 
 - It does read-only lookups against in-memory stores.
-- Every response has a bound (`limit` ≤ 1000, snippets ≤ 4 KB, ≤ 1000
-  messages per page).
+- Every response has a bound:
+  - rows per list response, and messages per `get_dialog` page:
+    `--mcp-max-rows`, default 1000,
+  - bytes of one SIP body or matched snippet: `--mcp-max-body-bytes`,
+    default 4096.
 - An agent conversation makes a handful of tool calls.
 - There is no polling loop unless you build one.
 - You may want *zero* load on the SIP server itself. For that, see
@@ -1669,10 +1693,8 @@ What the design already gives you (details in
   - `start_tls_capture` installs uprobes on a running process's TLS library
     and reads its plaintext. These are sessions belonging to processes the
     agent does not own.
-  - It needs `--mcp-allow-tls-capture`. That flag is deliberately separate
-    from `--mcp-allow-open-capture`.
-    - Reading a file an operator placed in a directory is one act.
-    - Attaching probes to a live daemon is not the same act.
+  - It needs `--mcp-allow-tls-capture`. `--mcp-allow-open-capture` does not
+    enable it.
   - It also needs the server to still be root.
   - It refuses if a live source is already running.
   - `list_tls_libraries` only *reports* what a capture would see. It needs no
@@ -1769,8 +1791,9 @@ Expect something like `/usr/local/bin/sipnab`. Write it down. "Register the serv
 
 Do not skip this.
 
-- If SSH would prompt for anything, the MCP client hangs forever with no error.
-- That is the single most common failure of this setup:
+- If SSH would prompt for anything, the MCP client hangs forever with no
+  error.
+- This command fails instead of prompting:
 
 ```bash
 ssh -o BatchMode=yes prod01.example.net true && echo SSH OK
@@ -1887,7 +1910,7 @@ The agent then connects to `https://your-host/mcp` with a `Bearer
   - or a signing key for self-describing signed bearer tokens
     (`--mcp-signing-key` / `--mcp-signing-key-file` /
     `SIPNAB_MCP_SIGNING_KEY`).
-  - Otherwise sipnab refuses to start (D18).
+  - Otherwise sipnab refuses to start.
 - Prefer `--mcp-token-file` to `--mcp-token`/`SIPNAB_MCP_TOKEN`
   (no token in `ps` output or unit files).
 - For TLS, do one of these:
@@ -1995,7 +2018,7 @@ Handshake limits:
 - Each gets 10 seconds to finish.
 - At most 256 run at once.
 - So a client that connects and sends nothing does not hold up anyone else.
-- These are the REST API's limits, from the same code.
+- The REST API's TLS listener has the same limits.
 
 A non-loopback bind still needs a token or signing key, with or without TLS.
 Without TLS, sipnab also warns that the bind is plain HTTP. With TLS it does
@@ -2052,12 +2075,8 @@ of MCP.
 WWW-Authenticate: Bearer realm="sipnab", error="invalid_token", error_description="The access token is invalid or has expired"
 ```
 
-Every rejection reads the same.
-
-- Which of the four reasons applied is deliberately not in the header.
-- An attacker gets the challenge for free.
-- A challenge that told them apart would answer "is this token id known?" for
-  anyone who asked.
+Every rejection reads the same: the header does not say which of the four
+reasons applied.
 
 Name the public URL, and sipnab also:
 
@@ -2095,7 +2114,7 @@ curl -s https://capture.example.com/.well-known/oauth-protected-resource/mcp
   "resource": "https://capture.example.com/mcp",
   "resource_documentation": "https://sipnab.com/docs/mcp-deploy/",
   "resource_name": "sipnab MCP server",
-  "scopes_supported": ["full", "read"]
+  "scopes_supported": ["full", "read", "actions"]
 }
 ```
 
@@ -2109,19 +2128,18 @@ curl -s https://capture.example.com/.well-known/oauth-protected-resource/mcp
   tells a conformant client to discard a document whose `resource` does not
   match the URL it used.
 
-sipnab does not read `X-Forwarded-Proto` here. The reason is the same as why
-it ignores `X-Forwarded-For` when rate limiting: a header the client sets is
-not evidence. A malformed value is a startup error, not a wrong document.
+sipnab does not read `X-Forwarded-Proto` to build the URL. A malformed
+`--mcp-resource-url` value stops sipnab at startup with an error.
 
 **This is discovery, not OAuth.**
 
-- sipnab neither issues nor validates OAuth access tokens. It verifies its own
-  tokens exactly as it always has.
+- sipnab neither issues nor validates OAuth access tokens. It verifies only
+  its own tokens.
 - So the document advertises no `authorization_servers`.
 - A client that follows this still needs a token from
   [Issue a token the client can present](#issue-a-token-the-client-can-present).
-- What discovery buys today is a machine-readable answer to "what does this
-  endpoint want, and where is it documented". That replaces a bodyless `401`.
+- The document tells a client which scopes the endpoint accepts and where
+  its documentation lives.
 
 The document is public by design. So it names nothing that is not public:
 
@@ -2207,14 +2225,14 @@ sudo setcap cap_net_raw+ep /usr/local/bin/sipnab
 ## Build a binary with MCP support
 
 ```text
-mcp       # stdio transport (rmcp dep, ~3 MB binary cost)
-mcp-http  # HTTP transport (mcp + api; rmcp/transport-streamable-http-server)
+mcp       # stdio transport
+mcp-http  # HTTP transport (also enables mcp and api)
 full      # native + tui + tls + hep + api + audio + mcp + mcp-http
-          #   + metrics + plugins + vcon + archive
+          #   + metrics + plugins + vcon + opus + archive + g729
 ```
 
-The default build does not include `mcp`. Operators who'll never
-expose the MCP surface pay zero binary size for it.
+The default build does not include `mcp`. `sipnab --version` lists the
+features of the binary you have.
 
 ## Troubleshooting
 
@@ -2227,7 +2245,7 @@ expose the MCP surface pay zero binary size for it.
 
 ## Connect a specific client
 
-Concrete examples for the MCP clients people actually use.
+Registration examples for Claude Desktop, Claude Code, a hand-written client over stdio or HTTP, Python and TypeScript.
 
 ### Connect Claude Desktop
 
@@ -2321,7 +2339,7 @@ client. The whole block is one pipeline.
 Expected first line of response:
 
 ```json
-{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2025-06-18","capabilities":{"tools":{}},"serverInfo":{"name":"sipnab","version": "0.5.222"},"instructions":"sipnab MCP server — queries captured SIP dialogs ..."}}
+{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2025-06-18","capabilities":{"completions":{},"prompts":{},"resources":{"subscribe":true},"tools":{}},"serverInfo":{"name":"sipnab","version":"0.5.222"},"instructions":"sipnab MCP server — queries captured SIP dialogs, RTP streams, diagnostics and security findings. …"}}
 ```
 
 ### Test the HTTP wire by hand
@@ -2401,8 +2419,7 @@ carries the same document **twice**:
 - `result.structuredContent`: the same payload as JSON, no second parse
   needed.
   - This is the one to read.
-  - sipnab parses it out of the text block rather than serializing it again.
-    So the two views cannot disagree.
+  - It always holds the same document as the text block.
 
 Tools that return capture text also append a **provenance note** as a further
 text block.
@@ -2418,7 +2435,7 @@ text block.
     "content": [
       {
         "type": "text",
-        "text": "{\"by_method\":[{\"count\":1,\"method\":\"REGISTER\"}],\"capture_identity\":{\"dialog_generation\":8,\"instance\":\"f58a118d2c05a8c8d16e6-2\",\"node\":\"capture-01\",\"stream_generation\":0},\"dialogs\":[{\"call_id\":\"auth-fail-register-synth@203.0.113.1\",\"created_at\":\"2016-05-17T08:01:35.431471+00:00\",\"duration_sec\":0.001,\"frame\":\"tests/pcap-samples/sip-auth-failure.pcapng#0@416505cbe7efbd8e\",\"from_user\":\"⟦untrusted-capture-data⟧alice⟦/untrusted-capture-data⟧\",\"input_origin\":\"wire\",\"method\":\"REGISTER\",\"msg_count\":4,\"state\":\"Failed\",\"timing\":{\"duration_ms\":null,\"pdd_ms\":null,\"retransmits\":0,\"setup_ms\":null},\"to_user\":\"⟦untrusted-capture-data⟧alice⟦/untrusted-capture-data⟧\",\"updated_at\":\"2016-05-17T08:01:35.433107+00:00\"}],\"next_cursor\":null,\"returned\":1,\"schema_version\":1,\"source_exhausted\":true,\"source_stopped_early\":false,\"total_matched\":1,\"truncated\":false}"
+        "text": "{\"by_method\":[{\"count\":1,\"method\":\"REGISTER\"}],\"capture_identity\":{\"dialog_generation\":8,\"instance\":\"f58a118d2c05a8c8d16e6-2\",\"node\":\"capture-01\",\"stream_generation\":0},\"dialogs\":[{\"call_id\":\"auth-fail-register-synth@203.0.113.1\",\"created_at\":\"2016-05-17T08:01:35.431471+00:00\",\"duration_sec\":0.001,\"final_status_code\":403,\"frame\":\"tests/pcap-samples/sip-auth-failure.pcapng#0@416505cbe7efbd8e\",\"from_user\":\"⟦untrusted-capture-data⟧alice⟦/untrusted-capture-data⟧\",\"input_origin\":\"wire\",\"method\":\"REGISTER\",\"msg_count\":4,\"state\":\"Failed\",\"timing\":{\"duration_ms\":null,\"pdd_ms\":null,\"retransmits\":0,\"setup_ms\":null},\"to_user\":\"⟦untrusted-capture-data⟧alice⟦/untrusted-capture-data⟧\",\"updated_at\":\"2016-05-17T08:01:35.433107+00:00\"}],\"next_cursor\":null,\"returned\":1,\"schema_version\":1,\"source_exhausted\":true,\"source_stopped_early\":false,\"total_matched\":1,\"truncated\":false}"
       },
       {
         "type": "text",
@@ -2443,6 +2460,7 @@ text block.
           "call_id": "auth-fail-register-synth@203.0.113.1",
           "created_at": "2016-05-17T08:01:35.431471+00:00",
           "duration_sec": 0.001,
+          "final_status_code": 403,
           "frame": "tests/pcap-samples/sip-auth-failure.pcapng#0@416505cbe7efbd8e",
           "from_user": "⟦untrusted-capture-data⟧alice⟦/untrusted-capture-data⟧",
           "input_origin": "wire",
@@ -2533,7 +2551,7 @@ Common failure modes:
 |---|---|
 | `401` | Missing or wrong `Authorization: Bearer ...` |
 | `403 Forbidden: Host header is not allowed` | Your `Host:` doesn't match the allowlist. Either send `Host: localhost` explicitly, or start sipnab with `--mcp-allowed-host <your-host>` |
-| `404` | Wrong path — must be exactly `/mcp` |
+| `404` | Wrong path: the endpoint is `/mcp` (`/mcp/` also answers) |
 | `406 Not Acceptable` | Missing `Accept: application/json, text/event-stream` |
 
 ### Drive it from Python

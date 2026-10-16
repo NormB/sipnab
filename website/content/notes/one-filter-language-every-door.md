@@ -1,7 +1,7 @@
 +++
 title = "One filter language for the command line, the config file, vCon export and MCP tools"
 date = 2026-09-01
-updated = 2026-10-11
+updated = 2026-10-16
 description = "Where sipnab accepts a filter expression, how to try one before you rely on it, and what a value the capture could not measure matches."
 
 [extra]
@@ -66,7 +66,7 @@ Ten names stand for preset expressions: `problems`, `slow-setup`,
   `--short-calls`, `--one-way`, `--nat-issues`).
 - The MCP tool `find_problems` takes them in its `kinds` list.
 
-## How to turn it on
+## What a build needs
 
 Nothing needs enabling. The filter language is part of every sipnab build.
 
@@ -74,7 +74,7 @@ Nothing needs enabling. The filter language is part of every sipnab build.
   features.
 - `sipnab --version` lists the features a binary carries.
 
-## Example run
+## Select calls with a filter
 
 These commands use `tests/pcap-samples/sip-488-codec-reject.pcapng`. It is a
 recording (pcap file) that ships in the sipnab repository. It holds four

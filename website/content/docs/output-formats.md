@@ -37,9 +37,10 @@ documents the machine-readable formats the command line writes.
 
 > **Prerequisites:**
 >
-> - `--json` requires non-interactive mode (`-N` / `--no-tui`). sipnab refuses
->   to start otherwise. Exception: `--call-report` implies non-interactive
->   output.
+> - `--json` requires non-interactive mode (`-N` / `--no-tui`). Without it,
+>   sipnab exits with code 2 and prints `Output flags (--json) require
+>   -N/--no-tui mode (or --call-report, or --export-vcon)`. `--call-report`
+>   and `--export-vcon` imply non-interactive output.
 > - NDJSON needs no extra build feature. It is part of the default build.
 > - Full flag reference: [CLI reference](@/docs/cli.md#output).
 
@@ -55,49 +56,80 @@ newline-delimited:
 sipnab -N -I capture.pcap --json | jq .
 ```
 
-Message record (fields with no value drop out rather than reading null):
+Print the records of a capture, one per line:
+
+```bash
+sipnab -N -I tests/pcap-samples/sip-sdp-example.pcap --json
+```
+
+The first line is the INVITE, shown here indented with `jq .`. Fields with no
+value drop out rather than reading `null`:
 
 ```json
 {
   "schema_version": 1,
-  "timestamp": "2026-06-12T14:03:21.412345+00:00",
-  "src": "192.0.2.1",
+  "timestamp": "2011-08-09T06:32:56.583165+00:00",
+  "src": "192.0.2.101",
   "src_port": 5060,
-  "dst": "192.0.2.2",
+  "dst": "192.0.2.100",
   "dst_port": 5060,
   "transport": "UDP",
   "is_request": true,
   "method": "INVITE",
-  "call_id": "abc123@192.0.2.1",
-  "from": "\"Alice\" <sip:1001@192.0.2.1>;tag=1c145053",
-  "to": "<sip:1002@192.0.2.2>",
-  "contact": "<sip:1001@192.0.2.1:5060>",
-  "ua": "FreePBX-16",
-  "sdp": "v=0\r\no=- 1 1 IN IP4 192.0.2.1\r\ns=-\r\nc=IN IP4 192.0.2.1\r\nt=0 0\r\nm=audio 40000 RTP/AVP 0 96\r\na=rtpmap:0 PCMU/8000\r\na=rtpmap:96 telephone-event/8000\r\n",
-  "cseq": { "number": 1, "method": "INVITE" }
+  "call_id": "sdp-example-synth@192.0.2.101",
+  "from": "Caller <sip:caller@atlanta.example.com>;tag=tag-caller-sdp",
+  "to": "Callee <sip:callee@biloxi.example.com>",
+  "contact": "<sip:caller@192.0.2.101:5060>",
+  "ua": "SynthPhone/1.0",
+  "sdp": "v=0\r\no=caller 10003 1 IN IP4 192.0.2.101\r\ns=synthetic session\r\nc=IN IP4 192.0.2.101\r\nt=0 0\r\nm=audio 6010 RTP/AVP 8 96\r\na=rtpmap:8 PCMA/8000\r\na=rtpmap:96 telephone-event/8000\r\na=sendrecv\r\n",
+  "cseq": {
+    "number": 1,
+    "method": "INVITE"
+  },
+  "extension_headers": [
+    "Via: SIP/2.0/UDP 192.0.2.101:5060;branch=z9hG4bK-synth-sdp-example",
+    "Max-Forwards: 70",
+    "Content-Type: application/sdp",
+    "Content-Length: 187"
+  ],
+  "frame": "tests/pcap-samples/sip-sdp-example.pcap#0@b4a34b7613500735",
+  "dscp": 0,
+  "input_origin": "wire"
 }
 ```
 
 A response record carries `is_request: false` plus `status_code`,
-`reason`, and `response_context` instead of `method`:
+`reason`, and `response_context` instead of `method`. The third line of the
+same output:
 
 ```json
 {
   "schema_version": 1,
-  "timestamp": "2026-06-12T14:03:21.598204+00:00",
-  "src": "192.0.2.2",
+  "timestamp": "2011-08-09T06:32:56.625190+00:00",
+  "src": "192.0.2.100",
   "src_port": 5060,
-  "dst": "192.0.2.1",
+  "dst": "192.0.2.101",
   "dst_port": 5060,
   "transport": "UDP",
   "is_request": false,
   "status_code": 180,
   "reason": "Ringing",
-  "call_id": "abc123@192.0.2.1",
-  "from": "\"Alice\" <sip:1001@192.0.2.1>;tag=1c145053",
-  "to": "<sip:1002@192.0.2.2>;tag=782609",
-  "cseq": { "number": 1, "method": "INVITE" },
-  "response_context": "1 INVITE"
+  "call_id": "sdp-example-synth@192.0.2.101",
+  "from": "Caller <sip:caller@atlanta.example.com>;tag=tag-caller-sdp",
+  "to": "Callee <sip:callee@biloxi.example.com>;tag=tag-callee-sdp",
+  "contact": "<sip:callee@192.0.2.100:5060>",
+  "cseq": {
+    "number": 1,
+    "method": "INVITE"
+  },
+  "response_context": "1 INVITE",
+  "extension_headers": [
+    "Via: SIP/2.0/UDP 192.0.2.101:5060;branch=z9hG4bK-synth-sdp-example",
+    "Content-Length: 0"
+  ],
+  "frame": "tests/pcap-samples/sip-sdp-example.pcap#2@a19501d31dc3f1c8",
+  "dscp": 0,
+  "input_origin": "wire"
 }
 ```
 
@@ -153,8 +185,18 @@ The list keeps duplicates and wire order. Three `Via` lines are three entries
 in the order they arrived. A message whose every header is already a field
 omits the key rather than sending an empty array.
 
+`frame` is a frame pointer: the capture file, the frame's index in it, and a
+digest of the frame's bytes. `--show-frame` takes it and prints that frame. It
+drops out when the message has no frame.
+
+`dscp` is the [RFC 2474](https://www.rfc-editor.org/rfc/rfc2474.html)
+Differentiated Services Code Point on the frame that carried the message, 0 to
+63. `0` means sipnab observed the marking and it is best effort. The field
+drops out when sipnab observed no IP header, as for a message received over
+HEP.
+
 `input_origin` names the capture source that delivered the message: `wire`,
-`hep` or `uprobe`. It is what keeps `frame` honest.
+`hep` or `uprobe`. Read it before you pass `frame` to `--show-frame`.
 
 A uprobe read carries a pointer of the same shape as a capture offset
 (`uprobe:opensips/954#3` beside `capture.pcap#4212`). Only one of the two leads
@@ -395,25 +437,20 @@ Two fields repay attention:
 
 - `errors` is the exact number of ICMP errors the dialog drew. It is not the
   number of quotes sipnab retained.
-  - A cap bounds retention. On a real capture 720 of 3,232 errors fell past it.
-  - Reporting the retained count would have said "8 times" for a peer that
-    failed thirty.
+  - A cap bounds retention.
   - `evidence` draws on the retained quotes only. So on a heavily hit dialog it
     names fewer messages than `errors` counts.
 - `unreachable_endpoint` is the socket to go and look at.
   - `reported_by` is the device that noticed and said so. That is usually a
-    working router in the path.
-  - Sending an engineer to the reporter wastes the finding.
+    working router in the path, not the fault.
 
 `truncated` is `true` in the ordinary case.
 [RFC 792](https://www.rfc-editor.org/rfc/rfc792.html) guarantees only 8 bytes
-past the quoted IP header, so most quotes are a prefix. The field exists so a
-reader knows the quote was partial. Otherwise a reader might assume the fields
-came from a whole datagram.
+past the quoted IP header, so most quotes are a prefix of the original
+datagram.
 
-The ICMP description is the network's wording, not an instruction. The
-commonest codes send you to different devices. sipnab spells that out in the
-hint:
+The ICMP description is the network's wording. The hint says where each of the
+commonest codes sends you:
 
 - `port unreachable` means the host answered and no service holds that port.
   So the fault is the service.
@@ -421,10 +458,6 @@ hint:
   packet. The peer may be perfectly healthy, and the fix is the filter.
 - `host unreachable` means nothing reached the host at all. So the capture says
   nothing about its ports.
-
-On one real corpus a single capture held 433 host-unreachable, 262
-administratively prohibited and 63 port-unreachable errors. So one sentence for
-all three would have been wrong for most of them.
 
 ### STUN evidence inside the media diagnosis
 
@@ -435,39 +468,35 @@ all three would have been wrong for most of them.
 - and the peer is not itself private,
 - so the far end cannot route back to it.
 
-It is correct inside one LAN. It is also correct behind an SBC, ALG or media
-proxy that rewrites the SDP downstream. That is why the hint asks the reader to
-check which of those they are in.
+The SDP is correct inside one LAN, and behind an SBC, ALG or media proxy that
+rewrites the SDP downstream. The hint asks you to check which of those
+applies.
 
 `diagnosis.stun_sdp_mismatch` is the evidence that settles it.
 
-- sipnab **omits** it on any capture with no STUN in it. So a consumer written
-  before it existed sees no change.
-- It is never present without `private_media_address` also being `true`.
-  - One address, one problem.
-  - STUN is the corroboration rather than a second finding.
+- sipnab **omits** it on any capture with no STUN in it.
+- It is never present without `private_media_address` also being `true`. It
+  corroborates that finding rather than adding a second one.
 
 | Field | Meaning |
 |---|---|
 | `reason` | `ignored` — STUN told the client a public address and the SDP advertised the private one anyway. `relay_ignored` — a TURN server allocated the client a relayed address and the SDP advertised the private one anyway. `unanswered` — the client's request drew nothing, so it never learned a public address to advertise. |
 | `client` | The socket the STUN request left from, `ip:port`. |
 | `server` | The STUN or TURN server it went to. The box to check when the reason is `unanswered`. |
-| `mapped_address` / `relayed_address` | The reachable address the server returned and the client did not use. Absent on `unanswered`, where there is none — that is the point of it. |
+| `mapped_address` / `relayed_address` | The reachable address the server returned and the client did not use. Absent on `unanswered`, where there is none. |
 | `advertised` | The unroutable address the SDP named instead. |
-| `request_count` | Requests sent for that transaction. Above one is a retransmission, which [RFC 5389 section 7.2.1](https://www.rfc-editor.org/rfc/rfc5389.html#section-7.2.1) sends only on timeout — so it is itself proof the earlier attempts drew silence. |
+| `request_count` | Requests sent for that transaction. Above one is a retransmission, which [RFC 5389 section 7.2.1](https://www.rfc-editor.org/rfc/rfc5389.html#section-7.2.1) sends only on timeout, so the earlier attempts drew no answer. |
 | `observed_offset_secs` | Seconds from the start of this dialog to the STUN evidence; negative when the probe came first, which is the ordinary case. Absent when either time is unknown. |
 
-`observed_offset_secs` exists because the correlation is by **client IP
-alone**. Nothing in a Binding Request names a Call-ID. So a probe from the
-right address matches this dialog whether it happened during setup or an hour
-earlier.
+sipnab matches STUN evidence to a dialog by **client IP alone**, because
+nothing in a Binding Request names a Call-ID. A probe from the right address
+matches this dialog whether it happened during setup or an hour earlier. Read
+`observed_offset_secs` to tell which:
 
-- Inside a two-minute window the finding is an observation of this call.
-- Well outside it, the same finding is an inference that the client's
-  NAT-discovery failure persisted. That is usually true, and not the same claim.
-- Past that window the hint appends a note saying so.
-- Inside it the hint says nothing, because a caveat printed every time is one
-  nobody reads.
+- Within two minutes of the dialog, the finding is an observation of this
+  call, and the hint adds nothing.
+- Further away, the finding is an inference that the client's NAT-discovery
+  failure persisted, and the hint appends a note saying so.
 
 `diagnosis.media_relay` is context rather than a finding. It is likewise
 **omitted** on any capture with no TURN relay in it.
@@ -483,17 +512,15 @@ nothing else in the capture answers that. Its fields:
 - `lapsed`.
 
 `lapsed: true` is the capture-level `turn_allocation_lapsed` finding narrowed
-to **this** call's media. It is the only shape that also adds a hint. A relay
-doing its job needs no sentence in a list an operator reads for problems.
+to **this** call's media. It is the only `media_relay` value that adds a
+hint.
 
 A `relay_ignored` or `ignored` finding raises `private_media_address` on its
 own, with no observed stream needed. A public mapped or relayed address is
 proof the client's traffic reaches the internet.
 
-`unanswered` does so only when the server it asked is itself public.
-
-- Silence from a STUN server on the same LAN proves nothing.
-- Flagging it would fire on every LAN-only capture.
+`unanswered` does so only when the server it asked is itself public. Silence
+from a STUN server on the same LAN raises nothing.
 
 ### When ICMP and retransmissions both fire
 
@@ -507,13 +534,12 @@ So the ICMP fact **annotates** the retransmission finding rather than replacing
 it.
 
 - sipnab sets `retransmissions.icmp_cause` to the ICMP description.
-- The hint stops guessing at "a one-way path or an unreachable peer".
-- The `count` and `span_sec` stay as they were. Suppressing the finding would
-  delete a measurement to remove a sentence.
+- The hint names that cause instead of "a one-way path or an unreachable
+  peer".
+- The `count` and `span_sec` stay as they were.
 
-With no ICMP in the capture, `icmp_cause` is absent. The retransmission hint
-then offers the inference on its own. That is the honest answer when nothing
-better is available.
+With no ICMP in the capture, `icmp_cause` is absent, and the retransmission
+hint names both possible causes.
 
 The same document is what you get from:
 
@@ -539,8 +565,8 @@ NDJSON, emitted after capture:
 - one object per STUN or TURN transaction,
 - then one per TURN allocation.
 
-Every line carries a `record` field naming its kind. So a consumer never has
-to infer the shape from which keys happen to be present.
+Every line carries a `record` field naming its kind: `transaction`,
+`turn_allocation` or `ice`.
 
 ```bash
 sipnab -N -I capture.pcap --json-stun --no-cli-print \
@@ -566,11 +592,10 @@ A `transaction` carries:
   earlier attempts drew silence.
 - `auth_challenge: true` says the opposite. The server was reachable and asked
   for credentials, so nothing in the network path is at fault.
-- `fingerprint_valid` is three-valued on purpose:
-  - `true` verified,
-  - `false` present and WRONG,
-  - `null` absent — sipnab did not check. Reporting that as `false` would
-    accuse a message nobody examined.
+- `fingerprint_valid` has three values:
+  - `true`: present and verified,
+  - `false`: present and wrong,
+  - `null`: absent, so sipnab did not check.
 
 A `turn_allocation` carries `client`, `server`, `relayed_address`,
 `lifetime_secs`, `allocated_at`, `refreshed_at`, `refreshes`, `last_activity`,
@@ -600,14 +625,10 @@ A deliberate release (a Refresh with `LIFETIME` 0) sets `released` and is never
 - `bound`, `frames`, `bytes`, `first_seen` / `last_seen`,
 - and the `ssrcs` observed inside the frames.
 
-Those SSRCs are the join to the stream list.
-
-- sipnab unwraps ChannelData. The RTP inside reaches the stream store as an
-  ordinary stream.
-- But that stream carries **phone-to-relay** addresses.
-- So without this, nothing said the relay had carried it at all.
-- And a lapsed allocation could say it lapsed while naming not one packet that
-  died with it.
+Those SSRCs are the join to the stream list. sipnab unwraps ChannelData, and
+the RTP inside appears in the stream list as an ordinary stream with
+**phone-to-relay** addresses. Match its SSRC against `ssrcs` to see which
+allocation carried it.
 
 ```bash
 sipnab -N -I relay.pcap --json-stun --no-cli-print \
@@ -615,8 +636,7 @@ sipnab -N -I relay.pcap --json-stun --no-cli-print \
 ```
 
 `ssrcs` counts media only. RTCP relayed on the same channel raises `frames`
-and `bytes` and contributes no SSRC. Its bytes 8..12 are not a stream in the
-sense the stream list means.
+and `bytes` and contributes no SSRC.
 
 `unattributed_frames` counts relayed frames whose channel fell outside the
 per-allocation cap.
@@ -633,7 +653,7 @@ STUN server:
 
 | Field | Meaning |
 |---|---|
-| `checks` / `checks_answered` | Connectivity checks seen, and how many drew an answer of either kind. `checks_answered: 0` with `checks` above zero means ICE never completed and the call has no media path — the individual transactions are already in the `transaction` records above, which is why this is a count and not a second finding. |
+| `checks` / `checks_answered` | Connectivity checks seen, and how many drew an answer of either kind. `checks_answered: 0` with `checks` above zero means ICE never completed and the call has no media path. The individual checks are in the `transaction` records. |
 | `nominated` | Candidate pairs a `USE-CANDIDATE` check nominated **and** the peer confirmed. Each carries `local`, `remote`, `role`, `priority`, `nominated_at` and `rtt_ms`. This is the ICE analogue of `mapped_address`: it names the path the media actually took. |
 | `role_conflicts` | Pairs where both agents claimed one role, or where one answered `487 Role Conflict`. Each carries `a`, `b`, the `role` both claimed, `role_conflict_responses`, and `resolved`. |
 | `nominated_total` / `role_conflicts_total` | Exact counts, which stay right past the retention cap that bounds the two lists above. |
@@ -646,11 +666,9 @@ STUN server:
 
 ## Capture analysis (`--json-analyze`)
 
-One JSON object for the whole run, not a line per finding.
-
-- `frames_read`, `dialogs_examined` and `streams_examined` are properties of
-  the run rather than of any finding.
-- A clean capture must still serialize to something that states them.
+One JSON object for the whole run, not a line per finding. A clean capture
+still produces the object, with `frames_read`, `dialogs_examined` and
+`streams_examined`.
 
 The object opens with `schema_version` (currently `1`).
 [`tests/schemas/capture_analysis.schema.json`](https://github.com/NormB/sipnab/blob/main/tests/schemas/capture_analysis.schema.json)
@@ -692,8 +710,8 @@ decode everything it received:
 - SIP a port gate discarded,
 - records a retention cap dropped.
 
-Then every count below it is a **floor**. The analysis refuses a clean verdict
-over a capture it could not fully read:
+Then every count below it is a **floor**, and the analysis gives no clean
+verdict. Read it first:
 
 ```bash
 sipnab -N -I capture.pcap --json-analyze --no-cli-print | jq '.complete'
@@ -758,8 +776,7 @@ control character in a reason phrase. sipnab then writes U+FFFD in its place.
 That substitution is the only change to the text itself.
 
 The module does not model the per-dialog `diagnosis` and
-`signaling_diagnosis`. Their "`null` means checked, absent means not run"
-distinction has no RFC 7951 equivalent. So they need their own modeling pass.
+`signaling_diagnosis` objects. Read those from `--json-dialogs`.
 
 The REST API serves the same document at `GET /v1/report?format=yang-json` as
 `application/yang-data+json`. The MCP tool `get_capture_report` answers it for
@@ -789,11 +806,19 @@ OBSERVER:
 - it carries the audio inline when the run retained the RTP payload,
 - it states in two places what the capture missed.
 
-It signs nothing.
+`--export-vcon` writes the container unsigned. A `[[vcon.rule]]` can sign it,
+with or without encryption. See [Sign without encrypting](@/docs/vcon.md#sign-without-encrypting)
+and [Encrypt what a rule writes](@/docs/vcon.md#encrypt-what-a-rule-writes).
 
-It sits behind the non-default `vcon` feature. So a stock build refuses the
-flag and says so. The [vCon page](@/docs/vcon.md) covers what a consumer may and may
-not conclude from one. That matters more here than the field list.
+It needs the non-default `vcon` feature, which `full` includes. A build
+without it exits with code 2:
+
+```text
+--export-vcon needs the 'vcon' Cargo feature, which this build does not carry. Rebuild with --features vcon (or --features full); `sipnab --version` lists the features a binary was built with
+```
+
+The [vCon page](@/docs/vcon.md) covers what a consumer may and may not conclude from
+one.
 
 ## pcap / pcapng
 
@@ -810,15 +835,35 @@ With TLS decryption, `--pcap-export-mode` controls whether decryption secrets
 [Examples](@/docs/cookbook.md) shows it. Rotation: `--split filesize:N` /
 `--split duration:N`, or SIGUSR1 on demand.
 
-pcapng timestamps are nanosecond-resolution. sipnab declares this via
+pcapng timestamps are nanosecond-resolution. sipnab declares this with
 `if_tsresol=9` in the Interface Description Block.
 
-- Files written by sipnab <= 0.5.0 stored nanosecond ticks but omitted that
-  declaration.
-- So other readers inflated every time value ×1000 (`capinfos` reporting year
-  58484).
-- [`scripts/repair_pcapng_tsresol.py`](https://github.com/NormB/sipnab/blob/main/scripts/repair_pcapng_tsresol.py)
-  repairs such old captures in place without touching packet data.
+### Repair a pcapng written by sipnab 0.5.0 or earlier
+
+Files written by sipnab 0.5.0 and earlier store nanosecond timestamps without
+that declaration, so other readers show every time 1000 times too large.
+[`scripts/repair_pcapng_tsresol.py`](https://github.com/NormB/sipnab/blob/main/scripts/repair_pcapng_tsresol.py)
+adds the declaration in place and does not change packet data. It repairs
+only sections that identify as written by sipnab, unless you pass `--force`,
+and keeps the original as `<file>.bak` unless you pass `--no-backup`.
+
+Check first, changing nothing:
+
+```bash
+python3 scripts/repair_pcapng_tsresol.py --dry-run calls.pcapng
+```
+
+A file that already declares the resolution reports:
+
+```text
+calls.pcapng: already correct, nothing to do
+```
+
+Then repair it:
+
+```bash
+python3 scripts/repair_pcapng_tsresol.py calls.pcapng
+```
 
 ## Operator notes file
 

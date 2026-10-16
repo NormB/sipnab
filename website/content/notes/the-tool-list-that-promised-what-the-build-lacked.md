@@ -1,8 +1,8 @@
 +++
-title = "MCP tool list and capability report match the features a build has"
+title = "Check which features and MCP tools a sipnab build has"
 date = 2026-09-01
-updated = 2026-10-11
-description = "Since 0.5.142, an MCP client sees only the tools a sipnab build can run, and the capability report names every optional feature the build contains. This note shows how to check both."
+updated = 2026-10-16
+description = "How to list the optional features a sipnab binary contains, and how that list decides which MCP tools the binary offers to an AI agent."
 
 [extra]
 kind = "feature"
@@ -12,19 +12,20 @@ kind = "feature"
 
 A sipnab binary may include or leave out optional parts, called features.
 
-- One of them, `vcon`, provides the tools that export and check call records
-  in the vCon format.
-- Before version 0.5.142, a sipnab binary without `vcon` still offered those
-  two tools to AI agents.
-  - It then refused every request to use them.
-- Since 0.5.142, such a build does not offer them at all.
-- sipnab's capability report names every optional feature the build contains.
-  - So an agent or an operator can see why a tool is absent.
+- `sipnab --version`, the MCP tool `server_capabilities` and the REST endpoint
+  `GET /v1/capabilities` each list the features a binary contains. The three
+  lists come from the same source, so they agree.
+- sipnab's MCP server offers only the tools the binary can run. A build
+  without the `vcon` feature does not offer `export_vcon` or `validate_vcon`.
+- A build without a feature refuses the command-line flags that need it, and
+  the message names the feature.
+
+This holds from sipnab 0.5.142.
 
 ## Who this is for
 
-- Anyone who runs sipnab as an MCP server for an AI agent.
-  - This applies especially to a build with a reduced feature set.
+- Anyone who runs sipnab as an MCP server for an AI agent, especially from a
+  build with a reduced feature set.
 - Anyone who needs to know which features a given sipnab binary has.
 
 ## What it does
@@ -33,87 +34,97 @@ An MCP client is the AI agent's side of the connection. It asks a server for
 its tools with a `tools/list` request. The answer is the whole of what the
 agent knows about what the server can do.
 
-Since 0.5.142:
-
 - **Tools follow the build.**
   - sipnab registers `export_vcon` and `validate_vcon` only when the binary
     includes the `vcon` feature.
-  - A build without it leaves both out of `tools/list`.
-- **`server_capabilities` names every feature.**
-  - The MCP tool `server_capabilities` returns a `features` list.
-  - sipnab reads the list from the same function that produces:
-    - the `--version` line,
-    - the REST `GET /v1/capabilities` answer.
-  - So all three agree.
-  - Before 0.5.142 that list could name only ten features. It never named
-    `vcon`, `bpf` or `wasm`.
+  - A build without it leaves both out of `tools/list`. A call to either one
+    gets the MCP error `tool not found`.
+- **Every surface names the same features.**
+  - `--version` prints them in build order.
+  - `server_capabilities` returns them, in alphabetical order, in its
+    `features` field.
+  - `GET /v1/capabilities` on the REST API serves the same list.
 
-### What users saw before 0.5.142
+## Check the features of a binary
 
-Take a build with the features `native,hep,api,mcp,mcp-http`. That is one of
-the reduced feature sets sipnab's CI builds.
-
-- It listed `export_vcon` and `validate_vcon` in `tools/list`, with their
-  input and output schemas.
-- It refused every call to either tool with this message:
-
-```text
-this sipnab was built without the 'vcon' Cargo feature, so it has no vCon exporter. Rebuild with --features vcon (or --features full); server_capabilities lists what this binary carries
-```
-
-The message pointed to `server_capabilities`.
-
-- But that report did not name `vcon` in any build.
-- So it could not confirm whether the feature was present.
-
-The cause: two different places in the code decided the list of tools and the
-code behind them.
-
-- Every build assembled the same tool list.
-- Only the code that would do the work changed with the feature.
-- Now the tool definitions themselves exist only in a build with the feature.
-- So a build that lists the tools without being able to run them no longer
-  compiles.
-
-## How to check a build
-
-It needs no setting. To see which features a binary contains, run:
+Run:
 
 ```bash
 sipnab --version
 ```
 
 ```text
-sipnab 0.5.211 (15e5e7bd) features: native,tui,audio,tls,hep,api,mcp,mcp-http,metrics,plugins,vcon,archive
+sipnab 0.5.222 (16f7b0ea) features: native,tui,audio,tls,hep,api,mcp,mcp-http,metrics,wasm,plugins,bpf,vcon,opus,archive,g729
 libpcap version 1.10.4 (with TPACKET_V3); alternate capture backends named: none
 ```
 
-- An agent connected over MCP gets the same list, in alphabetical order, from
-  `server_capabilities`.
-- The REST API serves it on `GET /v1/capabilities`.
+## Check the features over MCP
 
-On the binary above, the `features` field of the `server_capabilities` answer
-was:
+This command runs from the root of a sipnab checkout. It sends the MCP
+handshake and one `server_capabilities` call on standard input, and uses `jq`
+to print the `features` field:
 
-```text
-"features":["api","archive","audio","hep","mcp","mcp-http","metrics","native","plugins","tls","tui","vcon"]
+```bash
+printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"demo","version":"1"}}}' '{"jsonrpc":"2.0","method":"notifications/initialized"}' '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"server_capabilities","arguments":{}}}' | sipnab --mcp -N --quiet -I tests/pcap-samples/sip-488-codec-reject.pcapng 2>/dev/null | jq -c 'select(.id==2) | .result.structuredContent.features'
 ```
 
-- When `vcon` is in that list, `tools/list` includes `export_vcon` and
-  `validate_vcon`.
-- When it is not, the server offers neither tool.
+```text
+["api","archive","audio","bpf","g729","hep","mcp","mcp-http","metrics","native","opus","plugins","tls","tui","vcon","wasm"]
+```
+
+`vcon` is in the list, so `tools/list` on this binary includes the two vCon
+tools:
+
+```bash
+printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"demo","version":"1"}}}' '{"jsonrpc":"2.0","method":"notifications/initialized"}' '{"jsonrpc":"2.0","id":2,"method":"tools/list"}' | sipnab --mcp -N --quiet -I tests/pcap-samples/sip-488-codec-reject.pcapng 2>/dev/null | jq -r 'select(.id==2) | .result.tools[].name | select(. == "export_vcon" or . == "validate_vcon")'
+```
+
+```text
+export_vcon
+validate_vcon
+```
+
+On a build without `vcon`, the same command prints nothing.
+
+## Read the refusal from a build without a feature
+
+A build made with the default features has no `vcon`, `mcp`, `hep`, `tls` or
+`api`. Its `--version` line reads:
+
+```text
+sipnab 0.5.222 (16f7b0ea) features: native,tui,audio,metrics
+```
+
+On that build, a vCon export flag stops the run with exit status 2:
+
+```bash
+sipnab -N -q -I tests/pcap-samples/sip-488-codec-reject.pcapng --export-vcon-when "response_code == 488" --export-vcon-dir vcons --no-cli-print
+```
+
+```text
+2026-10-16T11:48:08.362440Z ERROR sipnab: --export-vcon-when, --export-vcon-dir need the 'vcon' Cargo feature, which this build does not carry. Rebuild with --features vcon (or --features full); `sipnab --version` lists the features a binary was built with
+```
+
+`--mcp` on the same build stops with:
+
+```text
+2026-10-16T11:49:14.538075Z ERROR sipnab::app::bootstrap: --mcp requires the 'mcp' feature (not compiled in)
+```
+
+To get the feature, install a build that carries it, or build sipnab with
+`--features full`. The [Feature flags](@/docs/build.md#feature-flags) table
+lists what each feature adds.
 
 ## Limits
 
 - Build features and the `--mcp-tools` option are separate.
   - `--mcp-tools` selects which registered tools the server offers. An example
     is only the `vcon` bundle.
-  - It does not change which features the binary contains.
-- The tests that hold this rule in place are in
-  `tests/mcp_capability_agreement_test.rs`. They require that:
-  - every tool module tied to a feature registers all of its tools or none of
-    them;
-  - `server_capabilities` can name every feature that `Cargo.toml` declares.
+  - It does not change which features the binary contains, and it cannot add
+    a tool whose feature the build lacks.
+- Before sipnab 0.5.142, a build without `vcon` listed `export_vcon` and
+  `validate_vcon` and refused every call to them, and `server_capabilities`
+  did not name `vcon`, `bpf` or `wasm`. Upgrade to get an accurate list.
 
 ## Terms used here
 
@@ -124,8 +135,8 @@ was:
 - **Feature**: an optional part of sipnab that a build includes or leaves out.
 - **Build**: one compiled sipnab binary with a particular set of features.
 - **vCon**: a standard JSON format for a record of a conversation.
-- **CI**: continuous integration, the automated jobs that build and test
-  sipnab, including builds with reduced feature sets.
+- **Exit status**: the number a program returns when it ends. 0 means success.
+- **jq**: a command-line program that reads JSON and prints selected fields.
 
 ## Related guides
 

@@ -53,29 +53,24 @@ sizes and the instant each one's first packet arrived.
 Each entry carries `encrypted`: `true` for a ZIP
 holding an encrypted member, read from the archive's directory alone, so
 listing never tries a password. It is `false` for a vCon container, encrypted
-or not. It skips directories.
+or not. The listing skips directories.
 The TUI's file browser lists by the same rule. [`open_capture`](#open_capture)
-accepts one thing this listing leaves out, a capture with no extension at all,
-so an agent that treats the listing as the whole set it may open misses those.
-Ask the operator, or try the name.
-
-```jsonc
-list_captures {}
-```
+also accepts a capture with no extension at all, which this listing leaves
+out. To open one, ask the operator for its name.
 
 Without `--mcp-file-root` the whole file-tool group is off, and this answers
-with a refusal rather than an empty list — "no directory configured" and "the
-directory is empty" are different facts:
+with a refusal, not an empty list:
 
 ```jsonc
 { "code": -32602,
-  "message": "file tools are disabled: start sipnab with --mcp-file-root <DIR>" }
+  "message": "file tools are disabled: start sipnab with --mcp-file-root <DIR>",
+  "data": { "reason": "not_enabled" } }
 ```
 
-Otherwise it answers with `captures` sorted by filename, plus
-`schema_version`. Running it against `tests/pcap-samples` returns 36 of the
-directory's 38 entries. The two it leaves out are `PROVENANCE.md`, which is not
-a capture, and one capture carrying no extension at all:
+Otherwise it answers with `captures` sorted by filename (upper case first),
+plus `schema_version`. With `--mcp-file-root tests/pcap-samples` it returns 36
+of the directory's 38 entries. The two it leaves out are `PROVENANCE.md`,
+which is not a capture, and `SIP_CALL_RTP_G711`, a capture with no extension:
 
 ```jsonc
 // list_captures {}
@@ -83,21 +78,22 @@ a capture, and one capture carrying no extension at all:
   "schema_version": 1,
   "captures": [
     { "filename": "Asterisk_ZFONE_XLITE.pcap", "kind": "capture", "bytes": 255581,
-      "first_packet": "2010-09-27T07:12:49+00:00" },
+      "encrypted": false, "first_packet": "2010-09-27T07:12:49+00:00" },
     { "filename": "DTMFsipinfo.pcap", "kind": "capture", "bytes": 25429,
-      "first_packet": "2011-04-27T08:14:29+00:00" },
-    { "filename": "b2bua-asterisk.pcapng", "kind": "capture", "bytes": 114952,
-      "first_packet": "2016-05-18T18:23:03+00:00" }
-    // ... 27 more
+      "encrypted": false, "first_packet": "2011-04-27T08:14:29+00:00" },
+    { "filename": "SIP_DTMF2.cap", "kind": "capture", "bytes": 420411,
+      "encrypted": false, "first_packet": "2005-09-09T12:02:25+00:00" },
+    …
   ]
 }
 ```
 
-**`first_packet` is what turns a listing into a choice.** It is the timestamp
-on the first record of the file, read whole seconds, so forty rotated captures
-narrow to the two that could hold a call from 14:02 without opening each one in
-turn. Opening one is not free: [`open_capture`](#open_capture) replaces the
-loaded capture and voids every cursor and Call-ID an agent is holding.
+**Use `first_packet` to choose a file before opening it.** It is the
+timestamp of the file's first record, in whole seconds. Among forty rotated
+captures, it narrows the search for a call from 14:02 to the two files that
+could hold it, without opening any. [`open_capture`](#open_capture) replaces
+the loaded capture, and [`find_in_captures`](#find_in_captures) searches files
+without doing so.
 
 The key
 reads `null` whenever sipnab got no first packet out of the file — a rotated
@@ -111,23 +107,19 @@ stores. sipnab reads the whole container to find it, as `-I` does. It reads
 `null` for a container sipnab cannot open, such as an encrypted one on a run
 with no `--vcon-key`.
 
-sipnab reports neither a dialog count nor a
-last-packet time here, because both need the whole file parsed and a listing
-that costs a full read of every capture in the root is a listing nobody runs.
+The listing carries no dialog count and no last-packet time, because both
+need the whole file parsed. To learn which file holds a call, use
+[`find_in_captures`](#find_in_captures).
 
 ### `find_in_captures`
 
 **Which of these files holds the call**, asked without giving up the one you
 are working in.
 
-[`list_captures`](#list_captures) narrows forty rotated files to the two that
-could hold a call, by time. That is a filter, not an answer. The question an
-operator actually has — "which of these holds Call-ID X" — had no tool at all:
-the only way inside another file is [`open_capture`](#open_capture), documented
-**Destructive**, which replaces every dialog and stream and mints a new
-`capture_identity` that voids every cursor you hold.
-
-This sweeps instead: a scratch store per file, the filter applied, **the loaded
+Use it to find which file in `--mcp-file-root` holds a call, for example a
+Call-ID across rotated captures. [`open_capture`](#open_capture) would replace
+the loaded capture and void every cursor you hold. `find_in_captures` reads
+each file into a scratch store, applies the filter, and leaves **the loaded
 capture untouched**. An archive in the root counts as one file: the sweep reads
 every capture inside it into the one scratch store, and a match names the
 archive. The sweep opens the files [`list_captures`](#list_captures) lists,
@@ -137,9 +129,17 @@ as `-I` does.
 | Name | Type | Legal values | If omitted |
 |---|---|---|---|
 | `filter` | string | A [filter DSL](filter-dsl.md) expression, the same vocabulary every other filtering tool takes. Unparseable fails with `invalid_params` before the sweep opens anything | Required |
-| `max_files` | u32? | Files to open before stopping. Clamped to the operator's `--mcp-sweep-max-files` (`[limits] mcp_sweep_max_files`, default 20); `0` means that ceiling | The ceiling |
-| `deadline_ms` | u64? | Wall-clock the sweep may spend. Clamped to the operator's `--mcp-sweep-deadline-ms` (`[limits] mcp_sweep_deadline_ms`, default 30000); `0` means that ceiling | The ceiling |
-| `wait_seconds` | u32? | Seconds this call waits for the sweep to finish before it returns the running job. Clamped to `--mcp-max-wait-seconds` (default 60); `0` returns at once | 30 |
+| `max_files?` | u32? | Files to open before stopping. Clamped to the operator's `--mcp-sweep-max-files` (`[limits] mcp_sweep_max_files`, default 20); `0` means that ceiling | The ceiling |
+| `deadline_ms?` | u64? | Wall-clock the sweep may spend. Clamped to the operator's `--mcp-sweep-deadline-ms` (`[limits] mcp_sweep_deadline_ms`, default 30000); `0` means that ceiling | The ceiling |
+| `wait_seconds?` | u32? | Seconds this call waits for the sweep to finish before it returns the running job. Clamped to `--mcp-max-wait-seconds` (default 60); `0` returns at once | 30 |
+
+The examples run against a file root holding three captures from
+`tests/pcap-samples`: `SIP_DTMF2.cap`, `sip-problem-call.pcap` and
+`sip-rtp-g711.pcap`:
+
+```bash
+sipnab --mcp -N -I tests/pcap-samples/sip-rtp-g711.pcap --mcp-file-root /var/spool/sipnab-captures
+```
 
 ```jsonc
 // find_in_captures { "filter": "call_id == \"1-1966@10.0.2.20\"" }
@@ -148,20 +148,25 @@ as `-I` does.
   "job_id": "sweep-1",
   "status": "done",
   "limits": { "max_files": 20, "deadline_ms": 30000 },
-  "progress": { "files_examined": 12, "files_total": 12, "elapsed_ms": 840,
+  "progress": { "files_examined": 3, "files_total": 3, "elapsed_ms": 8,
                 "cancel_requested": false },
   "sweep": {
     "matches": [
-      { "filename": "rotated-03.pcap", "dialogs_matched": 1,
+      { "filename": "sip-rtp-g711.pcap", "dialogs_matched": 1,
         "first_call_id": "1-1966@10.0.2.20" }
     ],
-    "files_examined": 12,
-    "files_total": 12,
+    "files_examined": 3,
+    "files_total": 3,
     "unreadable": [],
     "complete": true
-  }
+  },
+  "source_exhausted": true,
+  "source_stopped_early": false
 }
 ```
+
+A filter that does not parse fails with `invalid_params` and
+`data.reason: "invalid_filter"` before the sweep opens any file.
 
 #### The sweep is a background job
 
@@ -178,11 +183,13 @@ sweep finishes in that time, the same call returns `status: "done"` and the
 // find_in_captures { "filter": "call_id == \"1-1966@10.0.2.20\"", "wait_seconds": 0 }
 {
   "schema_version": 2,
-  "job_id": "sweep-2",
+  "job_id": "sweep-1",
   "status": "running",
-  "limits": { "max_files": 40, "deadline_ms": 3600000 },
-  "progress": { "files_examined": 3, "files_total": 40, "elapsed_ms": 112,
-                "cancel_requested": false }
+  "limits": { "max_files": 20, "deadline_ms": 30000 },
+  "progress": { "files_examined": 0, "files_total": 3, "elapsed_ms": 1,
+                "cancel_requested": false },
+  "source_exhausted": true,
+  "source_stopped_early": false
 }
 ```
 
@@ -211,27 +218,11 @@ results wait, the job id is unknown and sipnab refuses a poll of it with
 and names both flags. Past the held bound, sipnab drops the result of the
 earliest-started sweep first. The flag overrides the key.
 
-The maxima, and why each is where it is:
-
-- `--mcp-sweep-max-running` accepts at most 64. Each running sweep is one
-  operating system thread reading capture files, with its own scratch dialog
-  and stream stores, so the bound caps the threads and stores that agents can
-  hold at once. 64 is sixteen times the default.
-- `--mcp-sweep-max-held-results` accepts at most 256. A held result keeps one
-  entry per file the sweep matched and one per file it could not read, so the
-  memory results hold is this bound times the largest result. 256 is four held
-  results per running sweep at the running maximum, the ratio the defaults
-  carry.
-- `--mcp-sweep-result-retention-secs` accepts at most 43200, twelve hours, the
-  same span as the `--mcp-sweep-deadline-ms` maximum: a finished result waits
-  at most as long as the longest sweep may run.
-
-sipnab refuses `0` and any value above the maximum from the flag and from the
-key. In the source, the defaults are `DEFAULT_MCP_SWEEP_MAX_RUNNING` (4),
-`DEFAULT_MCP_SWEEP_MAX_HELD_RESULTS` (16) and
-`DEFAULT_MCP_SWEEP_RESULT_RETENTION_SECS` (600), and the maxima are
-`MAX_MCP_SWEEP_MAX_RUNNING` (64), `MAX_MCP_SWEEP_MAX_HELD_RESULTS` (256) and
-`MAX_MCP_SWEEP_RESULT_RETENTION_SECS` (43200).
+Each running sweep is one operating system thread with its own scratch
+dialog and stream stores, so `--mcp-sweep-max-running` bounds the threads and
+stores agents can hold at once. A held result keeps one entry per file the
+sweep matched and one per file it could not read. sipnab refuses `0` and any
+value above the accepted range, from the flag and from the key.
 
 A sweep stops before its next packet, not only before its next file, when the
 deadline passes, when `cancel_find_in_captures` stops it, and when sipnab
@@ -240,21 +231,38 @@ the file it was reading is not counted in `files_examined`.
 
 #### Read `complete` before believing an empty result
 
-A sweep runs under bounds, and one that reports no matches has **not**
-shown the call is absent — only that it did not find it in what it managed to
-read. `complete` is true in exactly one case: every candidate examined, and
-every one of them readable.
+A sweep that reports no matches has shown only that the call is not in the
+files it read. `complete` is true in exactly one case: every candidate file
+examined, and every one of them readable.
 
 It is false when the sweep stopped early — `stopped_because` says
-`max-files`, `deadline`, `canceled` or `shutdown` — and false when the sweep could not open some
-file. `unreadable` names each of those, with its reason, and **never skips one
-silently**: the file nobody could look in is exactly the one that might hold
-the call. A reason comes from the OS and from libpcap, so sipnab strips control
-characters and keeps the first `MAX_REASON_CHARS` (200).
+`max-files`, `deadline`, `canceled` or `shutdown` — and false when the sweep
+could not open some file. `unreadable` names each such file with its reason.
+A reason comes from the operating system and from libpcap. sipnab strips
+control characters and keeps the first 200 characters.
 
-**A match does not excuse an incomplete sweep either.** On a rotated spool a
-call that spans a rotation is in two files, so finding it in one says nothing
-about the other.
+With one unreadable file in the root and a Call-ID that is in none of them:
+
+```jsonc
+// find_in_captures { "filter": "call_id == \"zzz\"" }
+{
+  …
+  "sweep": {
+    "matches": [],
+    "files_examined": 3,
+    "files_total": 4,
+    "unreadable": [
+      { "filename": "broken.pcap",
+        "reason": "Failed to open pcap file '/var/spool/sipnab-captures/broken.pcap': libpcap error: unknown file format" }
+    ],
+    "complete": false
+  }
+}
+```
+
+**Check `complete` after a match too.** On a rotated spool a call that spans a
+rotation is in two files, and a sweep that stopped early may have found only
+one of them.
 
 `limits` is what this sweep ran under: the caller's `max_files` and
 `deadline_ms` after sipnab clamped them to the operator's ceilings.
@@ -270,26 +278,35 @@ The operator sets both ceilings, and a caller can only ask for less:
 
 A spool that rotates forty files needs `--mcp-sweep-max-files 40` before one
 sweep can reach the oldest file. With the default, the sweep stops after 20
-files with `stopped_because: "max-files"` and `complete: false`. The flag
-overrides the key.
+files with `stopped_because: "max-files"` and `complete: false`. A call with
+`"max_files": 1` shows the same thing on a smaller root:
 
-The defaults are `DEFAULT_MCP_SWEEP_MAX_FILES` (20) and
-`DEFAULT_MCP_SWEEP_DEADLINE_MS` (30000), which `find_in_captures` reads as
-`DEFAULT_MAX_FILES` (20) and `DEFAULT_DEADLINE_MS` (30000). The maxima are
-`MAX_MCP_SWEEP_MAX_FILES` (4294967295), the largest value of the per-call
-`max_files`, a 32-bit unsigned integer, and `MAX_MCP_SWEEP_DEADLINE_MS`
-(43200000), twelve hours. A sweep runs as a background job and holds no MCP
-slot, so the deadline maximum bounds how long one sweep may keep a thread and a
-disk busy. sipnab refuses `0` and any value above the maximum from the flag
-and from the key.
+```jsonc
+// find_in_captures { "filter": "call_id == \"zzz\"", "max_files": 1 }
+{
+  …
+  "limits": { "max_files": 1, "deadline_ms": 30000 },
+  "sweep": {
+    "matches": [],
+    "files_examined": 1,
+    "files_total": 4,
+    "unreadable": [],
+    "complete": false,
+    "stopped_because": "max-files"
+  }
+}
+```
 
-#### Why two bounds and not one
+The flag overrides the key. sipnab refuses `0` and any value above the
+accepted range, from the flag and from the key.
 
-`max_files` makes the cost predictable. `deadline_ms` is the one that matters:
-a file's cost is its size, which the caller cannot see, so twenty small files
-and twenty 2 GB files are the same `max_files` and a very different wait. The
-sweep tests the deadline before each file and before each packet, so no file
-overruns it by more than one packet.
+#### Choose `max_files` and `deadline_ms`
+
+`max_files` bounds how many files a sweep opens. `deadline_ms` bounds how long
+it runs, which is what limits a sweep over large files: twenty small files and
+twenty 2 GB files are the same `max_files`. The sweep checks the deadline
+before each file and before each packet, so it overruns the deadline by at
+most one packet.
 
 ### `find_in_captures_status`
 
@@ -302,31 +319,43 @@ refuses the next poll of that id.
 | Name | Type | Legal values | If omitted |
 |---|---|---|---|
 | `job_id` | string | The `job_id` a `find_in_captures` call returned. An id the server does not hold fails with `invalid_params`, naming the id | Required |
-| `wait_seconds` | u32? | Seconds to wait for the job to finish before answering. Clamped to `--mcp-max-wait-seconds`; `0` answers at once | 30 |
+| `wait_seconds?` | u32? | Seconds to wait for the job to finish before answering. Clamped to `--mcp-max-wait-seconds`; `0` answers at once | 30 |
 
 The wait does not block the server: sipnab answers other calls and REST
 requests while it lasts.
 
+Polling the job that the `"wait_seconds": 0` call above started:
+
 ```jsonc
-// find_in_captures_status { "job_id": "sweep-2" }
+// find_in_captures_status { "job_id": "sweep-1" }
 {
   "schema_version": 2,
-  "job_id": "sweep-2",
+  "job_id": "sweep-1",
   "status": "done",
-  "limits": { "max_files": 40, "deadline_ms": 3600000 },
-  "progress": { "files_examined": 40, "files_total": 40, "elapsed_ms": 95210,
+  "limits": { "max_files": 20, "deadline_ms": 30000 },
+  "progress": { "files_examined": 3, "files_total": 3, "elapsed_ms": 3,
                 "cancel_requested": false },
   "sweep": {
     "matches": [
-      { "filename": "rotated-39.pcap", "dialogs_matched": 1,
+      { "filename": "sip-rtp-g711.pcap", "dialogs_matched": 1,
         "first_call_id": "1-1966@10.0.2.20" }
     ],
-    "files_examined": 40,
-    "files_total": 40,
+    "files_examined": 3,
+    "files_total": 3,
     "unreadable": [],
     "complete": true
-  }
+  },
+  "source_exhausted": true,
+  "source_stopped_early": false
 }
+```
+
+A second poll of the same id fails, because the first poll took the result:
+
+```jsonc
+{ "code": -32602,
+  "message": "unknown sweep job 'sweep-1': it was never started, its result was already handed over, it finished more than 600 seconds ago (--mcp-sweep-result-retention-secs), or 16 newer results were waiting (--mcp-sweep-max-held-results)",
+  "data": { "param": "job_id", "reason": "not_found" } }
 ```
 
 ### `cancel_find_in_captures`
@@ -342,15 +371,33 @@ finished, this call returns its result and hands it over.
 |---|---|---|---|
 | `job_id` | string | The `job_id` a `find_in_captures` call returned. An id the server does not hold fails with `invalid_params`, naming the id | Required |
 
+The example cancels a sweep over 63 files, started with `"wait_seconds": 0`
+on a server run with `--mcp-sweep-max-files 100`:
+
 ```jsonc
-// cancel_find_in_captures { "job_id": "sweep-3" }
+// cancel_find_in_captures { "job_id": "sweep-1" }
 {
   "schema_version": 2,
-  "job_id": "sweep-3",
+  "job_id": "sweep-1",
   "status": "running",
-  "limits": { "max_files": 40, "deadline_ms": 3600000 },
-  "progress": { "files_examined": 7, "files_total": 40, "elapsed_ms": 18044,
-                "cancel_requested": true }
+  "limits": { "max_files": 100, "deadline_ms": 30000 },
+  "progress": { "files_examined": 13, "files_total": 63, "elapsed_ms": 303,
+                "cancel_requested": true },
+  "source_exhausted": true,
+  "source_stopped_early": false
+}
+```
+
+The next `find_in_captures_status` poll returns `"status": "canceled"` with:
+
+```jsonc
+"sweep": {
+  "matches": [],
+  "files_examined": 13,
+  "files_total": 63,
+  "unreadable": [],
+  "complete": false,
+  "stopped_because": "canceled"
 }
 ```
 
@@ -366,22 +413,21 @@ You know something is wrong but not which call. These cut a capture down to the 
 
 Is today worse than yesterday, and where.
 
-Baseline comparison is what turns a capture tool into an operations tool, and
-nothing else on this surface reaches past the loaded capture. The answer has to
-be a diff of AGGREGATES rather than of dialog lists — two captures never share a
-Call-ID, so comparing rows finds every dialog different and says nothing. This
-tool reads both files, groups each one the way
-[`aggregate_dialogs`](mcp-tools-core.md#aggregate_dialogs) groups, and ranks the buckets by how
-far they MOVED.
+Use it to compare a capture against a baseline, for example today's traffic
+against yesterday's. Two captures share no Call-IDs, so the tool compares
+aggregates, not dialogs: it reads both files, groups each one the way
+[`aggregate_dialogs`](mcp-tools-core.md#aggregate_dialogs) groups, and ranks
+the buckets by how far they moved.
 
 | Name | Type | Legal values | If omitted |
 |---|---|---|---|
 | `a` | string | The baseline: a bare filename inside `--mcp-file-root`. | Required — the call fails. |
 | `b` | string | The capture to hold against it, in the same root. | Required — the call fails. |
-| `dimensions` | string[]? | From the `aggregate_dialogs` vocabulary: `state`, `response_code`, `method`, `from.user`, `to.user`, `ua`, `src.ip`, `dst.ip`, `rtp.codec`. A repeated name de-duplicates rather than failing. Anything else fails naming the nine. | `["state", "response_code"]` — how many calls reached each state, and which codes they ended on. |
-| `top_n` | integer? | Rows per dimension. Everything past it sums into `other`. Ceiling is `--mcp-max-rows`. | 50. |
+| `dimensions?` | string[]? | From the `aggregate_dialogs` vocabulary: `state`, `response_code`, `method`, `from.user`, `to.user`, `ua`, `src.ip`, `dst.ip`, `rtp.codec`. A repeated name de-duplicates rather than failing. Anything else fails naming the nine. | `["state", "response_code"]` — how many calls reached each state, and which codes they ended on. |
+| `top_n?` | integer? | Rows per dimension. Everything past it sums into `other`. Ceiling is `--mcp-max-rows`. | 50. |
 
-The example diffs two files in `tests/pcap-samples`:
+The example diffs two files in `tests/pcap-samples`, with
+`--mcp-file-root tests/pcap-samples`:
 
 ```jsonc
 // compare_captures { "a": "sip-rtp-g711.pcap", "b": "sip-auth-failure.pcapng",
@@ -405,60 +451,51 @@ The example diffs two files in `tests/pcap-samples`:
       "distinct_values": 4
     }
   ],
-  "summary": "'sip-rtp-g711.pcap' (2 dialogs) is the baseline; 'sip-auth-failure.pcapng' (2 dialogs) is held against it, so delta is b minus a. Neither is the capture this server has loaded."
+  "summary": "'sip-rtp-g711.pcap' (2 dialogs) is the baseline; 'sip-auth-failure.pcapng' (2 dialogs) is held against it, so delta is b minus a. Neither is the capture this server holds."
 }
 ```
 
-**Buckets rank by absolute movement, not by size.** The question is what
-changed, and the largest bucket is usually the one that changed least, so "today
-is worse than yesterday, and here is where" reads off the first row. `delta` is
-`b - a` throughout. A value absent from one side counts as zero there rather
-than as missing, because a response code appearing only in `b` IS the finding.
+**Buckets rank by absolute movement, not by size**, so the first row is the
+largest change. `delta` is `b - a` throughout. A value absent from one side
+counts as zero there, so a response code that appears only in `b` shows as a
+positive delta.
 
-**Neither file becomes the loaded capture.** Both reads land in private stores
-that the call drops before it builds the answer, so what an agent asked a minute
-ago stays true afterwards. The read runs on a blocking thread, since two whole
-captures inside a tool handler would otherwise hold the single runtime thread
-the MCP server and the REST API share.
+**Neither file becomes the loaded capture.** The tool reads both into private stores
+that the call discards, so answers about the loaded capture do not change. The
+read runs on a separate thread, so sipnab keeps answering other MCP and REST
+requests while it runs.
 
-One thing does escape that isolation, which is why this tool carries
-`readOnlyHint: false`: reading a file through the shared pipeline bumps the
-PROCESS-WIDE undecodable-frame tallies and the ICMP evidence store that
-[`get_capture_report`](mcp-tools-core.md#get_capture_report) reports. It destroys nothing, and
-something observable moves. This reuses
-[`open_capture`](#open_capture)'s existing behavior rather than inventing a new
-one.
+The tool is `readOnlyHint: false` for one reason: reading the files adds to
+the process-wide undecodable-frame counts and the ICMP evidence that
+[`get_capture_report`](mcp-tools-core.md#get_capture_report) reports.
+[`open_capture`](#open_capture) does the same.
 
-**Read the two `CaptureSide` blocks before the deltas.** `dialogs_dropped` above
-zero means that side hit the dialog ceiling and every count under it is a FLOOR
-rather than a total, and `read_error` names a read that stopped early. A
-truncated pcap is the normal state of a rotating capture's newest member, so a
-partial read reports rather than fails — and `summary` restates both conditions
-in words, because a comparison against a partial population is a wrong answer
-wearing the shape of a right one.
+**Read the `a` and `b` blocks before the deltas.** `dialogs_dropped` above
+zero means that side reached the per-file dialog ceiling (100000 dialogs, the
+default of `--limit`, which this tool does not read), so its counts are
+lower bounds, not totals. `read_error` names a read that stopped early, as on
+the newest file of a rotating capture that sipnab or another tool still
+writes to. The tool reports a partial read instead of refusing it, and
+`summary` states both conditions in words.
 
-Four refusals, each cheaper than the mistake it prevents:
+The tool refuses four requests:
 
 | Situation | Answer |
 |---|---|
 | No `--mcp-file-root` | `file tools are disabled: start sipnab with --mcp-file-root <DIR> to enable them` |
 | A path rather than a bare name | `'../../etc/passwd' is not a bare filename. These tools take a name, not a path, ...` |
-| `a` and `b` resolving to one file | `'x.pcap' and 'x.pcap' are the same file (...); a capture compared with itself differs from itself nowhere` |
+| `a` and `b` resolving to one file | `'x.pcap' and 'x.pcap' are the same file; a capture compared with itself differs from itself nowhere` |
 | A dimension outside the vocabulary | `cannot compare on 'hour'; one of: state, response_code, ...` |
 
-The vocabulary check runs BEFORE either file opens, because reading two captures
-is the most expensive thing this surface does and a mistyped dimension must not
-cost it. The same-file check runs after the resolver fully resolves both names,
-so it catches two spellings of one file as well as the same name twice. And a
-capture that yielded no dialogs AND reported a read error fails with
-`internal_error` rather than diffing: every bucket would appear to collapse to
-zero, which is a finding that is not there.
+The dimension check runs before the tool opens either file. The same-file check
+runs after both names are fully resolved, so it also catches two spellings of
+one file. A capture that yielded no dialogs and reported a read error fails
+with `internal_error` instead of producing a diff.
 
-Note the dimension list here is the plain
-[`aggregate_dialogs`](mcp-tools-core.md#aggregate_dialogs) nine.
-[`group_dialogs`](mcp-tools-signaling.md#group_dialogs)'s three extras — `to_domain`, `hour`,
-`next_hop` — do not apply, and `hour` in particular would compare two captures
-of different days bucket by bucket.
+The dimensions are the nine
+[`aggregate_dialogs`](mcp-tools-core.md#aggregate_dialogs) accepts.
+[`group_dialogs`](mcp-tools-signaling.md#group_dialogs)'s `to_domain`,
+`hour` and `next_hop` are not accepted.
 
 
 ## Evidence and provenance
@@ -472,20 +509,19 @@ into something a reader can check without reopening the capture.
 
 | Name | Type | Legal values | If omitted |
 |---|---|---|---|
-| `refs` | string[] | At least one pointer in `<source>#<ordinal>@<digest>` form. An empty array fails with `refs must name at least one frame pointer`, because an empty result would read as "nothing resolved". | Required — the call fails. |
-| `max_bytes` | u32? | 1 to 4096 bytes of hex per frame. Higher clamps to 4096, and to the frame length when the frame is shorter. **`0` means zero bytes here**, not the default — this is the one parameter on the surface that does not read `0` as "unset". | 256 bytes, enough for a SIP start line and its headers. |
+| `refs` | string[] | At least one pointer in `<source>#<ordinal>@<digest>` form. An empty array fails with `invalid_params` (`refs must name at least one frame pointer; …`). | Required — the call fails. |
+| `max_bytes?` | u32? | 1 to 4096 bytes of hex per frame. Higher clamps to 4096, and to the frame length when the frame is shorter. **`0` means zero bytes here**, not the default — this is the one parameter on the surface that does not read `0` as "unset". | 256 bytes, enough for a SIP start line and its headers. |
 
 A pointer whose `@digest` half is missing still resolves, and comes back
 `unverified` rather than `verified`. Batching is the normal use — one bad
 pointer never discards the rest, so each entry reports its own `status`.
 
-**Not every tool returns a pointer, and the two that do use different key
-names.** A caller planning around "every tool returns `frame_ref`" would look
-for a key most responses do not carry:
+**Where pointers come from.** Not every tool returns one, and two key names
+are in use:
 
 - **`frame_ref`** — the findings `lint_dialog` and `validate_message` return.
-  Named apart because a finding cites a message *index*, and the pointer is
-  what makes it checkable without the list that index counts within.
+  A finding also cites a message *index*; the pointer identifies the frame
+  without that list.
 - **`frame`** — `list_dialogs`, `find_problems`, `tail_dialogs`, `get_dialog`
   (its dialog and its messages), `get_message`, the JSON `get_dialog_report`,
   and the streams in `rtp_stats`.
@@ -494,13 +530,13 @@ for a key most responses do not carry:
   `diagnose_registration`, `compare_dialogs`, `get_sdp_timeline`, the RTCP
   remote reports, and the capture-level counters.
 
-A fact with no pointer omits the key entirely — never `""`, never frame 0, both
-of which read as a real pointer.
+A fact with no pointer omits the key entirely. It is never `""` or frame 0.
 
 The example follows the `frame` pointer that
 [`list_dialogs`](mcp-tools-core.md#list_dialogs) returned for the first call in
 [`tests/pcap-samples/sip-rtp-g711.pcap`](https://github.com/NormB/sipnab/raw/main/tests/pcap-samples/sip-rtp-g711.pcap),
-with `max_bytes` cut to 64 to keep the hex short:
+on a server started with `--mcp-file-root tests/pcap-samples`, with
+`max_bytes` cut to 64 to keep the hex short:
 
 ```jsonc
 // show_evidence { "refs": ["tests/pcap-samples/sip-rtp-g711.pcap#0@db88659b94678546"],
@@ -543,13 +579,13 @@ the byte fields:
     {
       "pointer": "bogus#1@deadbeef",
       "status": "unresolvable",
-      "reason": "cannot open '<file-root>/bogus': Failed to open pcap file ..."
+      "reason": "cannot open '<file-root>/bogus': Failed to open pcap file '<file-root>/bogus': libpcap error: <file-root>/bogus: No such file or directory"
     }
   ]
 }
 ```
 
-`status` has three values and they are deliberately not interchangeable:
+`status` has three values:
 
 | Status | Means |
 |---|---|
@@ -557,14 +593,13 @@ the byte fields:
 | `unverified` | The frame is there, the pointer carried no `@digest`, so this checked **nothing**. The bytes could come from a rotated capture. |
 | `unresolvable` | No bytes. `reason` says why — a malformed pointer, a source outside the file root, a frame past the end, or a digest mismatch. |
 
-A digest mismatch is `unresolvable`, not a resolved frame with a warning.
-Returning bytes from a capture that changed after someone made the pointer
-would manufacture exactly the confidence this feature exists to provide.
+A digest mismatch is `unresolvable`: the tool returns no bytes from a capture
+that changed after a run recorded the pointer.
 
-The file root confines every source. A pointer carries whatever path the
-producing run read, which usually sits outside the server's reach. The tool
-therefore takes only the final component and pushes it through the same guard
-the file tools use.
+The file root confines every source. The tool takes only the final path
+component of the pointer's source and resolves it inside `--mcp-file-root`
+under the same rule the file tools use, so copy the capture into the file
+root before following its pointers.
 A pointer naming a live device or a HEP listener is `unresolvable`: sipnab
 retains parsed messages, not frames, so there is nothing on disk to seek to.
 
@@ -576,23 +611,18 @@ a caller can tell which one failed. `max_bytes` caps the hex per frame (default
 
 Follows one frame pointer down to the byte range of a single header.
 
-[`show_evidence`](#show_evidence) answers half the provenance question — are
-these the bytes behind the claim — and hands back a hexdump. That
-leaves a reader holding 500 bytes of Ethernet, IP, UDP and SIP when one header
-line provoked the finding. This tool follows the same pointer through the same
-resolver and reports what the frame CONTAINS: the link type, the innermost
-addressing, and one row per SIP header with where that header sits.
+[`show_evidence`](#show_evidence) returns a frame's bytes as hex. This tool
+follows the same pointer and reports what the frame contains: the link type,
+the innermost addressing, and one row per SIP header with the byte range where
+that header sits. Use it to quote the exact header a finding is about.
 
 | Name | Type | Legal values | If omitted |
 |---|---|---|---|
 | `frame_ref` | string | ONE pointer in `<source>#<ordinal>@<digest>` form — the `frame` key on a dialog, message or stream, or the `frame_ref` key on a `lint_dialog` or `validate_message` finding. Both names carry the same text. A blank string fails with `invalid_params`. | Required — the call fails. |
-| `field` | string? | Keep only headers with this name, matched case-insensitively against the canonical long form (`Contact`, never `m`). | Every header in the message. |
+| `field?` | string? | Keep only headers with this name, matched case-insensitively against the canonical long form (`Contact`, never `m`). | Every header in the message. |
 
-One pointer rather than a batch, unlike `show_evidence`: a status line per
-pointer is small, and a whole packet's structure per pointer fills a context
-window with frames nobody asked to read. `field` is the compact form and the one
-an agent chasing a finding wants — a REGISTER carries a dozen headers and the
-malformed one is a single line.
+It takes one pointer per call, unlike `show_evidence`. Pass `field` to return
+only the header you need.
 
 The example follows the pointer
 [`list_dialogs`](mcp-tools-core.md#list_dialogs) returns for the first call in
@@ -615,63 +645,52 @@ The example follows the pointer
     "header_count": 9,
     "headers_returned": 1,
     "headers": [
-      { "name": "Contact", "value": "sip:sipp@10.0.2.20:5060", "index": 5,
+      { "name": "⟦untrusted-capture-data⟧Contact⟦/untrusted-capture-data⟧",
+        "value": "⟦untrusted-capture-data⟧sip:sipp@10.0.2.20:5060⟦/untrusted-capture-data⟧",
+        "index": 5,
         "message_byte_start": 227, "message_byte_end": 259,
         "frame_byte_start": 269, "frame_byte_end": 301 }
     ],
     "is_request": true,
     "method": "INVITE",
-    "start_line": "INVITE sip:test@10.0.2.15:5060 SIP/2.0"
+    "start_line": "⟦untrusted-capture-data⟧INVITE sip:test@10.0.2.15:5060 SIP/2.0⟦/untrusted-capture-data⟧"
   },
   "source": "sip-rtp-g711.pcap",
   "status": "verified"
 }
 ```
 
-`header_count` counts the message and `headers_returned` counts this answer, so
-`field` never hides how much it filtered out. `index` is the ordinal a lint
-finding cites, so a caller holding one pairs the two without matching on header
-names. The message-relative pair locates the header inside the SIP bytes and the
-frame-relative pair locates it inside the whole frame, which is what turns
-`show_evidence`'s hexdump into a quotation.
+sipnab fences the header names, values and start line, because the sender wrote
+them. `header_count` counts the headers in the message and `headers_returned`
+counts this answer. `index` is the header ordinal a lint finding cites. The
+`message_byte_*` pair locates the header inside the SIP message, and the
+`frame_byte_*` pair locates it inside the whole frame, so
+`frame_byte_start` to `frame_byte_end` in `show_evidence`'s hex is the header
+itself.
 
-**The ranges come from the parse itself.** `SipHeader` carries the byte range
-of its own logical line, recorded by the parser as it walks, so a range cannot
-disagree with the header beside it. A folded header spans every continuation
-line the parser unfolded into it, so the range covers bytes the unfolded value
-does not reproduce verbatim.
-
-This replaced a second walk of the header grammar, paired with the parse
-positionally. Two walks of one grammar part company — over a line with no colon,
-a non-UTF-8 line, an over-long one, or the per-message header cap — and a range
-pinned one header early still resolves, so it reads as evidence.
-
-The old design
-handled that by dropping the WHOLE set on any disagreement, which meant one junk
-line cost every other header its range. There is one walk now, so a line the
-parser drops costs nothing.
+**The ranges come from the parser**, which records each header's byte range
+as it reads the message. A folded header's range spans every continuation line
+the parser unfolded into it, so the range covers bytes the unfolded value does
+not reproduce verbatim. A line the parser drops (no colon, not UTF-8, too
+long, or past the per-message header cap) does not affect the other headers'
+ranges.
 
 **A header that came from no bytes carries no range, and `ranges_unavailable`
-counts them.** Headers are also built by hand — synthesized in a test, or
-rewritten by a transform — and a plausible range invented for one of those would
-point at bytes that never said it:
+counts them.** That happens to a header synthesized or rewritten after the
+parse:
 
 ```jsonc
 { "sip": { "header_count": 7, "headers_returned": 7, "headers": [ /* one row with no byte keys */ ],
            "ranges_unavailable": "1 header(s) carry no byte range, because they came from no bytes in this message -- synthesized, or rewritten after the parse. A plausible range for one of those would point at bytes that never said it." } }
 ```
 
-Citing bytes that never carried the value would be worse than citing none,
-precisely because it resolves. The frame-relative pair also drops on its own when the transport
-payload does not sit at exactly one place in the frame — a decapsulated or
-reassembled payload need not be a contiguous slice at all, and two candidate
-offsets make `frame[start..end]` a coin toss. Keys stay absent rather than
-empty throughout, the rule `frame_ref` already follows: `0` and `""` both read
-as real values.
+The frame-relative pair is also omitted when the transport payload does not
+sit at exactly one place in the frame, as with a decapsulated or reassembled
+payload. Omitted keys are absent, never `0` or `""`.
 
-`status` carries the same three words `show_evidence` uses, with the same
-meanings. An unresolvable pointer keeps its own compact shape — no addressing,
-no headers, no byte counts — so a thin decode can never pass for a partial one:
+`status` carries the same three values `show_evidence` uses, with the same
+meanings. An unresolvable pointer returns only `pointer`, `status`, `reason`
+and `schema_version`:
 
 ```jsonc
 // decode_evidence { "frame_ref": "uprobe:opensips/1234#7" }
@@ -683,43 +702,31 @@ no headers, no byte counts — so a thin decode can never pass for a partial one
 }
 ```
 
-Two more refusals sit between "resolved" and "decoded", and each keeps its own
-key rather than pretending to a decode. `decode_unavailable` appears when the
-frame resolves and the capture does not reopen for its link-layer type —
-decoding an SLL or PPPoE capture as Ethernet produces addressing that looks
-decoded and is wrong — and when the frame carries no SIP-bearing transport.
+Two more keys report a frame that resolved but did not decode.
+`decode_unavailable` appears when the capture does not reopen for its
+link-layer type, and when the frame carries no SIP-bearing transport.
 `not_sip` appears when the transport payload does not parse as SIP.
 
-**The file root confines every source.** A pointer carries whatever path the
-producing run read, usually an absolute path far outside this server's reach.
-This tool never opens that path: it keeps the final component and pushes it
-through `resolve_in_root`, the same guard the file tools use, which is why
-`source` above reads `sip-rtp-g711.pcap` and not the path in the pointer.
-
-Without
-that step, a tool taking a caller-supplied path and returning the decoded
-contents of the file there is an arbitrary-file-read primitive wearing a
-`readOnlyHint`. A pointer naming a file outside the root comes back
+**The file root confines every source.** As with `show_evidence`, the tool
+never opens the path in the pointer: it keeps the final component and resolves
+it inside `--mcp-file-root`, which is why `source` above reads
+`sip-rtp-g711.pcap`. A pointer naming a file outside the root comes back
 `unresolvable` with the confined path in its reason.
 
-**No timestamp, deliberately.** The resolver returns the frame's bytes without
-the capture record that framed them, so any time here would be an invention —
-and a manufactured capture time on an evidence surface is the exact failure this
-mechanism exists to prevent. [`get_message`](mcp-tools-signaling.md#get_message) carries the message's
-time alongside the same pointer. For the same honesty, a frame carrying two
-SIP messages packed into one TCP segment decodes as the FIRST one: the
-pointer is frame-granular, so it cannot name the second.
+**The answer carries no timestamp.** For the message's time, call
+[`get_message`](mcp-tools-signaling.md#get_message), which returns it beside
+the same pointer. A frame carrying two SIP messages in one TCP segment decodes
+as the first one, because a pointer names a frame, not a message.
 
 ### `build_evidence_package`
 
 One directory holding everything an escalation needs for a set of calls.
 
-Analysis ending in a paragraph creates work: somebody has to translate it into
-an attachment, a ticket or a message to a carrier. This tool ends the analysis
-in an artifact instead — a pcapng of the signaling, a ladder and an RTP-stats
-file per call, a manifest, and a README carrying the rebuilt-frames disclaimer.
-The disclaimer lives INSIDE the directory on purpose. The directory is what gets
-forwarded, and whoever opens it at the carrier never saw the tool that made it.
+Use it to hand a set of calls to someone else, such as a carrier or another
+team. It writes one directory: a pcapng of the signaling, a ladder and an
+RTP-stats file per call, a manifest, and a README stating that the pcapng
+frames were rebuilt from parsed messages. Forward the whole directory, so the
+recipient gets the README with the files.
 
 | Name | Type | Legal values | If omitted |
 |---|---|---|---|
@@ -729,6 +736,7 @@ forwarded, and whoever opens it at the carrier never saw the tool that made it.
 ```jsonc
 // build_evidence_package { "call_ids": ["1-1966@10.0.2.20", "1-1968@10.0.2.20"],
 //                          "filename": "escalation-4417" }
+// against tests/pcap-samples/sip-rtp-g711.pcap
 {
   "schema_version": 1,
   "path": "/var/spool/sipnab-exports/escalation-4417",
@@ -740,7 +748,9 @@ forwarded, and whoever opens it at the carrier never saw the tool that made it.
     "call-02-ladder.md", "call-02-rtp.json",
     "signaling.pcapng"
   ],
-  "summary": "2 call(s) packaged in /var/spool/sipnab-exports/escalation-4417. README.md inside it states that the frames in signaling.pcapng were rebuilt from parsed messages rather than copied, which is the claim the recipient has to see."
+  "summary": "2 call(s) packaged in /var/spool/sipnab-exports/escalation-4417. README.md inside it states that the frames in signaling.pcapng were rebuilt from parsed messages rather than copied, which is the claim the recipient has to see.",
+  "source_exhausted": true,
+  "source_stopped_early": false
 }
 ```
 
@@ -750,7 +760,7 @@ disclaimer as a field:
 ```jsonc
 {
   "schema_version": 1,
-  "sipnab_version": "0.5.129",
+  "sipnab_version": "0.5.222",
   "package": "escalation-4417",
   "signaling": "signaling.pcapng",
   "signaling_frames_rebuilt": true,
@@ -763,33 +773,27 @@ disclaimer as a field:
 }
 ```
 
-**Filenames are ordinals, never the Call-ID.** A Call-ID is arbitrary text a
-peer chose: it can hold a separator, a leading dash, four hundred characters, or
-bytes no filesystem wants. None of that belongs in a name this tool constructs,
-so the manifest carries the correlation and `call-01-ladder.md` carries the
-content.
+**File names use an ordinal, never the Call-ID.** `manifest.json` maps each
+ordinal to its Call-ID.
 
 **The pcapng holds every named call's messages in one chronological run**, not
-grouped by leg. A multi-leg escalation reads as one timeline, and splitting it
-by leg hides the interleaving that is usually the finding. Its frames come from
-[`export_capture`](#export_capture)'s writer and carry that tool's whole
-asterisk: the SIP layer is faithful, everything under it comes rebuilt from
-recorded addresses and ports, a SIP-over-TCP message writes as UDP, and RTP,
-RTCP, DNS and ICMP are absent.
+grouped by leg, so a multi-leg call reads as one timeline. Its frames come from
+[`export_capture`](#export_capture)'s writer, with the same limits: the SIP
+layer is faithful, everything under it is rebuilt from recorded addresses and
+ports, sipnab writes a SIP-over-TCP message as UDP, and RTP, RTCP, DNS and ICMP
+are absent.
 
-The RTP measurements in `call-NN-rtp.json` come
-from the ORIGINAL capture and nobody can reproduce them from the pcapng alone,
-which is exactly why the README says so.
+The RTP measurements in `call-NN-rtp.json` come from the original capture,
+and nobody can reproduce them from the pcapng alone. The README says so.
 
-The ladder and the stats come from [`render_ladder`](mcp-tools-signaling.md#render_ladder) and
-[`rtp_stats`](mcp-tools-core.md#rtp_stats) rather than from a second rendering path, so a package
-can never disagree with what the same agent saw over the wire.
+The ladder and the stats are the output of
+[`render_ladder`](mcp-tools-signaling.md#render_ladder) and
+[`rtp_stats`](mcp-tools-core.md#rtp_stats) for the same calls.
 
-**Nothing gets created until every Call-ID checks out.** The tool collects the
-messages first, so an unknown id in the middle of the list fails with
-`invalid_params` and leaves no directory and no claimed name behind. Any write
-that fails afterwards removes the part-built directory too: a half-written
-package would hold the name against a retry and read as complete evidence.
+**The tool creates nothing until every Call-ID checks out.** An unknown id anywhere
+in the list fails with `invalid_params` (`call_id 'nope' not found`) and
+leaves no directory behind. A write that fails afterwards removes the
+part-built directory.
 
 The [shared file rule](mcp-tools.md#file-tools--the-shared-rule) applies in full — bare
 names only, no symlink out of the root, and the tool declines a name already
@@ -800,8 +804,8 @@ taken, including by a directory:
   "message": "the requested filename '/var/spool/sipnab-exports/escalation-4417' already exists. sipnab will not write over it, because that file may be the only copy of a capture — choose a name that is not taken." }
 ```
 
-An empty `call_ids` array fails too, with `an empty package is a directory of
-disclaimers`.
+An empty `call_ids` array fails with `call_ids must name at least one call:
+an empty package is a directory of disclaimers`.
 
 ### `save_findings`
 
@@ -811,15 +815,15 @@ disclaimers`.
 | Name | Type | Legal values | If omitted |
 |---|---|---|---|
 | `summary` | string | A one-line conclusion. sipnab clips it at 500 characters and reports the original length. | Required — the call fails. |
-| `call_id` | string? | Any string. **Not checked against the store**, deliberately: a note about a call the store has since dropped is still the note that mattered. | The finding records no call. |
-| `detail` | string? | Supporting text, clipped at 4096 characters. | The finding carries a summary alone. |
+| `call_id?` | string? | Any string. **Not checked against the store**, so a finding can name a call the store no longer holds. | The finding records no call. |
+| `detail?` | string? | Supporting text, clipped at 4096 characters. | The finding carries a summary alone. |
 
 ```jsonc
 // save_findings { "summary": "audit probe", "call_id": "1-1966@10.0.2.20", "detail": "x" }
 {
   "schema_version": 1,
   "seq": 0,
-  "written_at": "2026-08-13T12:12:17.976455577+00:00",
+  "written_at": "2026-10-16T11:57:35.132789476+00:00",
   "summary_chars_submitted": 11,
   "detail_chars_submitted": 1,
   "truncated": false,
@@ -829,40 +833,36 @@ disclaimers`.
   "delivered_to": "sipnab log (tracing/journald/stderr)",
   "capture_identity": {
     "node": "capture-01",
-    "instance": "1d1a718cb5c33b7c52754-1",
+    "instance": "134b7818df009db9a44c86-2",
     "dialog_generation": 13,
     "stream_generation": 2
-  }
+  },
+  "source_exhausted": true,
+  "source_stopped_early": false
 }
 ```
 
-`readable_over_mcp: false` is a constant, not a state. It appears on every
-response so a client never has to infer the dead end from the absence of a
-reader.
+**The finding goes to sipnab's log and nowhere else.** No tool reads it back,
+it appears in no query result, and no analysis uses it. `readable_over_mcp` is
+always `false`. Read findings in the log: `journalctl -u sipnab`, syslog, or
+stderr. sipnab logs the line at `info` as the agent's claim, so `--quiet` hides
+it:
 
-It records what the agent concluded, and that is all it does. **The finding goes
-to sipnab's log and nowhere else**: no tool reads it back, it appears in no query
-result, and no analysis consumes it. There is no `list_findings`, deliberately.
+```text
+INFO serve_inner: sipnab::mcp::findings: MCP agent recorded a finding: audit probe seq=0 written_at=2026-10-16T11:57:59.714713194+00:00 call_id="1-1966@10.0.2.20" capture_instance="1363cc18df00a3adb2f107-2" dialog_generation=13 stream_generation=2 detail="x"
+```
 
-That dead end is the entire safety argument. Every response on this surface
-carries attacker-controlled text — `From` display names, `User-Agent` strings,
-raw message snippets — so a write verb reachable from that text must not be able
-to change what an operator is reading, or to come back later as evidence the
-agent then cites. The compiler enforces this rather than convention: the
-annotation types stay private to the MCP module, so no analysis code can name
-them.
+On a server started without `--mcp-allow-save-findings` the call fails with
+`saving findings is disabled: start sipnab with --mcp-allow-save-findings to
+permit it. A stock server accepts no writes at all.`
 
-Read your findings where operational facts already live — `journalctl -u sipnab`,
-syslog, or stderr. Each line records the agent's claim as the agent's claim,
-never as a measurement of sipnab's own.
+Two bounds apply, and the response reports both:
 
-Two bounds, both reported rather than silent. sipnab clips text at 500
-characters of `summary` and 4096 of `detail`, setting `truncated` and
-`*_chars_submitted` giving the original length. And one process accepts 1000
-findings, after which writes are **refused** with an error naming the limit —
-never accepted and discarded, because an agent told "recorded" about something
-the server threw away is worse off than one told plainly that it was not.
-`remaining` counts down so the bound is visible before it bites.
+- sipnab clips `summary` at 500 characters and `detail` at 4096, sets
+  `truncated`, and reports the original lengths in `*_chars_submitted`.
+- One process accepts 1000 findings by default (`--mcp-max-findings`,
+  `[limits] mcp_max_findings`). Past that, sipnab refuses writes with an error
+  naming the limit. `remaining` counts down to it.
 
 
 ## Export and handoff
@@ -880,22 +880,24 @@ the process.
 > around each message. The SIP layer is faithful. Everything under it is
 > reconstructed from the addresses and ports sipnab recorded.
 >
-> Concretely, the file holds **no RTP, no RTCP and no non-SIP traffic**, and
-> writes a SIP-over-TCP message as UDP. On one measured export, 4,875 of the
-> 5,000 packets that had been on the wire were absent.
+> The file holds **no RTP, no RTCP and no non-SIP traffic**, and writes a
+> SIP-over-TCP message as UDP. Exporting
+> [`tests/pcap-samples/sip-rtp-g711.pcap`](https://github.com/NormB/sipnab/raw/main/tests/pcap-samples/sip-rtp-g711.pcap), which holds 852 packets, writes 10.
 >
-> That matters beyond the analysis, because the output is a pcap and people
-> forward pcaps. If the file is going to a carrier, a regulator or a court, say
-> what it is — nothing inside it announces that the frames were rebuilt.
+> Nothing inside the file says that the frames were rebuilt. When you forward
+> it, say so. [`build_evidence_package`](#build_evidence_package) includes a
+> README that does.
 
 **Parameters:** `filename` (string, required) — a bare filename inside
 `--mcp-file-root`. A path component of any kind fails with `'../escape.pcap' is
-not a bare filename`. sipnab does **not** require a `.pcap` extension and does
+not a bare filename. These tools take a name, not a path, and write only inside
+the configured --mcp-file-root.` sipnab does **not** require a `.pcap` extension and does
 not add one, so `notes.txt` writes a pcap under that name, which
 [`list_captures`](#list_captures) then never lists. No optional parameters.
 
 Returns `path` (the resolved absolute path, so you learn where the bytes went),
-`messages`, `bytes` and `schema_version`:
+`messages`, `bytes` and `schema_version`. Against
+[`tests/pcap-samples/sip-rtp-g711.pcap`](https://github.com/NormB/sipnab/raw/main/tests/pcap-samples/sip-rtp-g711.pcap):
 
 ```jsonc
 // export_capture { "filename": "sig.pcap" }
@@ -903,7 +905,9 @@ Returns `path` (the resolved absolute path, so you learn where the bytes went),
   "schema_version": 1,
   "path": "/var/spool/sipnab-exports/sig.pcap",
   "messages": 10,
-  "bytes": 5673
+  "bytes": 5673,
+  "source_exhausted": true,
+  "source_stopped_early": false
 }
 ```
 
@@ -918,10 +922,9 @@ The tools that change server state rather than read it. Every one stays off unti
 It loads another capture from `--mcp-file-root` and throws away every dialog and
 stream the server holds.
 
-Use it on a long-lived HTTP server working through a corpus, where a restart
-costs an operator their session. In either stdio shape, starting sipnab again
-with a different `-I` does the same job and leaves a clean store behind, so
-prefer that.
+Use it on a long-lived HTTP server working through several captures, where
+restarting the server would end the clients' sessions. Over stdio, start
+sipnab again with a different `-I` instead, which leaves a clean store.
 
 **Parameters:** `filename` (string, required) — a bare filename inside
 `--mcp-file-root`, under the rule every file tool applies. Any capture format
@@ -930,12 +933,19 @@ set of captures it holds, in first-packet order, into the one store. No optional
 parameters, and no way to ask for a merge: this replaces the stores rather than
 adding to them.
 
-**No password argument, on this tool or any other.** An argument passes
-through the model's context, the client's transcript and the provider's logs.
-OWASP LLM02:2025 says to keep such data out of model inputs, and the MCP
-specification says credentials never pass through the client. sipnab refuses a
-call carrying any argument named like a password before the tool runs, and its
-audit record shows the value as `[REDACTED]`. The file-opening tools
+**No password argument, on this tool or any other.** sipnab refuses a call
+carrying any argument named like a password before the tool runs, and its
+audit record shows the value as `[REDACTED]`:
+
+```text
+argument `password` refused: sipnab never takes an archive password in an MCP
+tool call, because an argument passes through the model's context, the
+client's transcript and the provider's logs. Treat the password you sent as
+exposed. The operator configures one when starting sipnab:
+--archive-password-file, --archive-password-command, --archive-password-stdin,
+the systemd credential archive-password, or SIPNAB_ARCHIVE_PASSWORD.
+```
+ The file-opening tools
 (`open_capture`, `find_in_captures`, `compare_captures`, `show_evidence`) also
 refuse any argument they do not take, rather than ignoring it. An encrypted
 ZIP opens with the passwords the operator configured when starting sipnab, as
@@ -946,63 +956,86 @@ operator must supply the password. It never invites the agent to send one.
 Returns `status` (`"loading"`), `filename`, `path`, the **new**
 `capture_identity`, `discarded_dialogs`, `note` and `schema_version`.
 
+The example starts from [`tests/pcap-samples/sip-rtp-g711.pcap`](https://github.com/NormB/sipnab/raw/main/tests/pcap-samples/sip-rtp-g711.pcap), with
+`--mcp-allow-open-capture` and a file root holding `sip-problem-call.pcap`:
+
 ```jsonc
-// open_capture { "filename": "outage-0722.pcap" }
+// open_capture { "filename": "sip-problem-call.pcap" }
 {
   "schema_version": 1,
   "status": "loading",
-  "filename": "outage-0722.pcap",
-  "path": "/var/spool/sipnab-captures/outage-0722.pcap",
+  "filename": "sip-problem-call.pcap",
+  "path": "/var/spool/sipnab-captures/sip-problem-call.pcap",
   "capture_identity": {
-    "node": "capture01",
-    "instance": "1f4a17c8e2b91d40-2",
-    "dialog_generation": 1,
-    "stream_generation": 1
+    "node": "capture-01",
+    "instance": "13650418df00a4d0f42050-4",
+    "dialog_generation": 14,
+    "stream_generation": 3
   },
-  "discarded_dialogs": 128,
-  "note": "the previous capture is gone; poll capture_status until load.done is true, and treat every answer carrying a different capture_identity.instance as a different capture"
+  "discarded_dialogs": 2,
+  "note": "the previous capture is gone; poll capture_status until load.done is true, and treat every answer carrying a different capture_identity.instance as a different capture",
+  "source_exhausted": false,
+  "source_stopped_early": false
 }
 ```
 
-The call returns as soon as the background read starts, not when it finishes.
-That is deliberate: the REST API and the MCP server share one runtime thread, so
-a multi-gigabyte read inside the handler stops every other client for its
-duration. Poll `capture_status` and watch `load.packets` climb until
-`load.done` turns true.
+The call returns as soon as the background read starts, not when it finishes,
+and sipnab keeps answering other MCP and REST requests while the read runs. Poll
+`capture_status` and watch `load.packets` climb until `load.done` turns true.
+A second later the same session's `capture_status` shows:
+
+```jsonc
+"load": {
+  "filename": "sip-problem-call.pcap",
+  "instance": "13650418df00a4d0f42050-4",
+  "packets": 23,
+  "elapsed_sec": 1,
+  "done": true,
+  "error": null
+},
+"dialog_count": 5,
+"source_exhausted": true
+```
 
 **Every answer afterwards carries a new `capture_identity.instance`.** Treat any
-cursor, message index or Call-ID from before the swap as void — they addressed a
-different capture. `discarded_dialogs` says how much analysis the call threw
-away, so an agent can report the cost rather than discover it.
+cursor, message index or Call-ID from before the swap as void: they addressed a
+different capture. `discarded_dialogs` says how many dialogs the swap
+discarded.
 
-Four refusals, each naming what to do instead:
+The tool refuses in four situations, and each refusal names what to do instead:
 
 | Refusal | Why |
 |---|---|
-| `--mcp-allow-open-capture` missing | The operator did not enable it. The tool is still listed, because "not permitted here" and "this build cannot" are different answers |
-| The source is a live interface | A live capture's writer never stops, so a second writer would race it for the life of the process. No opt-out |
+| `--mcp-allow-open-capture` missing | The operator did not enable it. The tool is still listed, so an agent can tell "not permitted here" from "this build cannot" |
+| The source is a live interface | A live capture never finishes writing to the stores. There is no opt-out |
 | The source has not drained | The original reader is still filling the stores. Poll `capture_status` until `source_exhausted` is true |
 | A load is already running | Poll `capture_status` until `load.done` is true |
+
+Without the flag, the refusal reads `opening a capture is disabled: start
+sipnab with --mcp-allow-open-capture to permit it. A stock server holds the
+capture it was started on.` Called before sipnab has read the startup capture
+to the end, it reads `refusing to open 'sip-problem-call.pcap': the current source
+has not finished reading. Poll capture_status until source_exhausted is true,
+then call again.`
 
 **A fifth, where the client can carry the question.** If your client declared
 MCP's `elicitation` capability, a swap that would discard dialogs asks the
 person driving it to confirm first, and a decline refuses the call:
 
 ```text
-refusing to open 'outage-0722.pcap': the confirmation was declined; nothing
-was done. The loaded capture is untouched and its 13 dialog(s) are still
-addressable.
+refusing to open 'sip-problem-call.pcap': the confirmation was declined;
+nothing was done. The loaded capture is untouched and its 2 dialog(s) are
+still addressable.
 ```
 
-The four refusals above resolve *before* the question, so sipnab asks nobody
-to approve a swap sipnab was going to refuse anyway. A swap that would discard
-nothing does not ask, and a client that declared no elicitation capability is
-not asked and is not treated as having refused — `--mcp-allow-open-capture`
-remains the guard it always was. See
+The refusal is `invalid_params` (-32602) with `data.reason: "declined"`.
+
+sipnab checks the four refusals above *before* the question, so it asks nobody
+to approve a swap it would refuse. A swap that would discard nothing does
+not ask. A client that declared no elicitation capability is not asked and is
+not treated as having refused. `--mcp-allow-open-capture` is then the only
+guard. See
 [the protocol page](mcp-protocol.md#confirming-the-two-irreversible-ones).
 
 A filename must be a bare name inside the root, under the same rule every file
-tool applies. sipnab also refuses a capture that belongs to this run's own `-I`
-set, with the output guard's wording about overwriting — that file is already
-loaded, and reading it again under a new identity would duplicate what the store
-holds.
+tool applies.

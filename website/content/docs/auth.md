@@ -28,8 +28,8 @@ sipnab supports two token kinds, checked with a constant-time comparison:
 > On a non-loopback bind, sipnab **requires** a token (static or signed).
 > The server refuses to start otherwise.
 >
-> On loopback with no token configured, requests pass (unchanged legacy behavior).
-> This holds as long as their `Host` header names this server.
+> On loopback with no token configured, requests pass without a credential,
+> as long as their `Host` header names this server.
 > A web page that rebinds its own name to `127.0.0.1` is
 > refused with `403`. See
 > [Which `Host` names the API answers](@/docs/api.md#which-host-names-the-api-answers).
@@ -91,31 +91,37 @@ Distribute the printed token to clients.
 
 ### Scope: what a token may reach
 
-`--token-scope` narrows a token to part of its surface. It takes `full` (the
-default), `metrics`, or `read`:
+`--token-scope` sets what a token may reach. It takes `full` (the default),
+`metrics`, `read`, `actions` or `audio`:
 
 | Scope | Surface | What it reaches |
 |---|---|---|
-| `full` | either | Everything on the token's audience. |
+| `full` | either | Every read route or tool on the token's audience. Not the actions, and not the live-audio routes. |
 | `metrics` | REST API | `GET /metrics`, and nothing else. Every `/v1/` route answers `401`. |
 | `read` | MCP | Only the tools `tools/list` marks read-only. Calling any other tool gets a JSON-RPC error refusal, not a `401`. |
+| `actions` | either | Everything `full` reaches, plus the actions that change another system, such as a TFPS ban, where the server enables them with `--allow-action`. |
+| `audio` | REST API | The live-audio routes under `/v1/calls/`, and nothing else. No other scope reaches them. |
 
-Why bother:
+Give each client the narrowest scope that does its job:
 
-- sipnab decrypts TLS. So `/v1/dialogs` and `/v1/streams` hand back
-  message bodies — the call content itself.
-- A metrics scrape needs one counter, not that.
-- The same argument covers `read` on the MCP side. There, a `full` token can also:
-  - stop the server,
-  - export files,
-  - aim the capture elsewhere.
+- A `full` REST token reads call content, including SIP messages that sipnab
+  decrypted from TLS. A metrics scrape needs only `metrics`.
+- On MCP, a `full` token can also stop the server, export files, and point
+  the capture elsewhere. A diagnostic agent needs only `read`.
 
-Each narrow scope names something that lives on exactly one surface.
-So sipnab refuses a cross-surface mint. It does not print a token that could never
-authorize what its scope names.
+`metrics` and `audio` exist only on the REST API, and `read` only on MCP. A
+mint that pairs one with the other surface's signing key fails and prints no
+token:
 
-- `--token-scope metrics` with `--mcp-signing-key` fails at mint time.
-- So does `--token-scope read` with `--api-signing-key`.
+```bash
+sipnab --mint-token --token-scope metrics --mcp-signing-key "$KEY"
+```
+
+```text
+2026-10-16T12:00:16.370935Z ERROR sipnab::app::bootstrap: --token-scope metrics applies to the REST API only; the MCP surface has no /metrics endpoint
+```
+
+It exits with status `2`.
 
 Mint a scrape-only token for the REST API:
 
@@ -123,9 +129,8 @@ Mint a scrape-only token for the REST API:
 TOKEN="$(sipnab --mint-token --token-scope metrics --api-signing-key "$KEY")"
 ```
 
-Then **confirm the scope took effect**. A token that quietly stayed `full`
-looks identical from the outside. The payload is the only record of what
-you minted:
+Then confirm the scope took effect. A `full` token and a `metrics` token look
+alike until you decode the payload, the part between the two dots:
 
 ```bash
 python3 - "$TOKEN" <<'PY'
@@ -136,14 +141,12 @@ PY
 ```
 
 ```json
-{"id":"tok-1770000000000000","exp":1770003600,"aud":"api","scope":"metrics"}
+{"id":"tok-1792151388671087","exp":1792154988,"aud":"api","scope":"metrics"}
 ```
 
-`"scope":"metrics"` is the claim doing the work.
-
-- A decoded payload with **no** `scope` field is a `full` credential.
-  It reads dialogs and the message bodies underneath.
-- So mint it again rather than shipping it.
+- `"scope":"metrics"` is the claim that narrows the token.
+- A decoded payload with **no** `scope` field is a `full` credential. If you
+  meant to mint a narrower one, mint it again.
 
 The signature covers the claim.
 
@@ -251,7 +254,7 @@ s2.<base64url(payload)>.<base64url(HMAC-SHA256)>
 ```
 
 - `payload` is compact JSON
-  `{"id":"<jti>","exp":<unix_seconds>,"aud":"<api|mcp>","scope":"<metrics|read>"}`.
+  `{"id":"<jti>","exp":<unix_seconds>,"aud":"<api|mcp>","scope":"<metrics|read|actions|audio>"}`.
 - The signature is `HMAC-SHA256(signing_key, "s2." + base64url(payload))`.
 - base64url is URL-safe, no padding.
 
@@ -284,26 +287,14 @@ A malformed token loses (fail-closed).
 - This holds **even when both surfaces carry the same signing
   key**.
 
-The two surfaces read separate flags and separate environment variables.
-So reusing one secret across them is an easy mistake.
-Before audience binding it silently granted cross-surface access.
+The version prefix is part of the signed input. So an `s2` token cannot be
+rewritten as another version to remove its audience.
 
-The version prefix is part of the signed input.
-So an `s2` token cannot be rewritten as `s1` to shed its binding.
-The signature no longer matches.
+### Replace an `s1` token
 
-### Why the server refuses legacy `s1` tokens
-
-The pre-`aud` `s1` format is **no longer accepted**.
-
-- It carried no audience. So an `s1` token authenticated against both surfaces.
-- Honoring it would have left the binding above best-effort rather than absolute.
-
-If you are still holding an `s1` token, it now returns `401`.
-
-- Re-mint with `--mint-token`.
-- The default TTL is one hour. So most callers have rotated naturally already.
-- Long-TTL tokens are the ones to check.
+sipnab accepts only `s2` tokens. A token that begins `s1.` carries no
+audience and gets `401` on both surfaces. Mint a replacement with
+`--mint-token` against the signing key of the surface the client uses.
 
 ## Security notes
 

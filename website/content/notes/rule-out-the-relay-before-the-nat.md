@@ -1,7 +1,7 @@
 +++
 title = "Diagnose one-way audio in the order sipnab ranks the causes"
 date = 2026-09-01
-updated = 2026-10-11
+updated = 2026-10-16
 description = "Steps to work through a one-way audio complaint with sipnab: what the capture missed, network error reports, NAT, STUN and TURN relays, and finally a call set up to send audio one way."
 
 [extra]
@@ -27,33 +27,33 @@ order of the troubleshooting guide.
 Anyone handling a one-way audio complaint who has a packet capture (pcap file)
 of the call.
 
-## The order, and where it comes from
+## Know the order of the checks
+
+Work through the causes in this order:
 
 - **What sipnab could not read.**
-  - `--analyze` lists these "blind" findings above every other finding.
-  - See `Severity::Blind` in `src/analysis.rs`.
+  - `--analyze` lists these `BLIND` findings above every other finding.
 - **ICMP errors against the audio.**
   - An ICMP error is a message a router or host sends back when it cannot
     deliver a packet.
-  - The troubleshooting guide says to act on these first.
-  - `--analyze` rates them critical.
+  - `--analyze` rates `ICMP: media undeliverable` as critical.
 - **NAT.**
-  - The troubleshooting guide checks NAT next.
   - NAT (network address translation) is the router function that rewrites
     private addresses into public ones.
+  - `--analyze` rates `RTP source no SDP advertised` as major.
 - **STUN and TURN.**
   - STUN lets a phone learn its public address.
   - TURN relays audio through a server.
-  - The guide's NAT section points to these checks.
-  - `--analyze` rates NAT, STUN and TURN findings at the same level, major.
-  - Within one level, it orders them by how many times each occurred.
+  - `--analyze` rates an unanswered STUN request and a lapsed TURN allocation
+    as major. It rates an SDP address that STUN contradicts as critical.
 - **The call's own setup, comfort noise and codecs.**
-  - These are the guide's "if NAT is clean" checks.
   - The one-way finding rests only on the audio packets seen in each
     direction.
-  - It does not read the call's requested audio direction
-    (`src/rtp/diagnosis.rs`).
+  - It does not read the audio direction the call's SDP asked for.
   - So a call set up to send audio one way is also reported as one-way audio.
+
+Within one severity level, `--analyze` lists first the finding that occurred
+most often.
 
 The captures used below ship in the sipnab repository.
 

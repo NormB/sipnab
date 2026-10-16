@@ -1,0 +1,121 @@
+# Metrics and output formats: design notes
+
+These notes explain why the Prometheus families and the machine-readable
+output formats behave as they do. They moved here from
+[Prometheus metrics](../prometheus-metrics.md) and
+[Output formats](../output-formats.md) when those pages became task-first.
+The user pages state the behavior. This page records the reasons.
+
+## Prometheus families
+
+### Counters that appear at zero
+
+`sipnab_responses_total`, `sipnab_hep_datagrams_refused_total`,
+`sipnab_hep_export_failures_total` and the first three labels of
+`sipnab_diagnosis_total` emit every label on every scrape, at `0` where
+nothing happened. An alert rule watching for the first `5xx`, the first
+`auth_mismatch` or the first `one_way_audio` then reads zero rather than
+no-data.
+
+`sipnab_security_alerts_total` is the exception: `AlertEngine::fire` records
+each alert under its rule name, so the family carries only types that have
+fired. `firing_an_alert_moves_the_metric` in
+[`tests/metrics_alert_wiring_test.rs`](../../tests/metrics_alert_wiring_test.rs)
+holds the recording call to that behavior. A rule name can come from packet
+data, so sipnab caps the family at 128 names and folds the rest into
+`type="other"`.
+
+### `sipnab_messages_total` labels by the dialog's method
+
+The collector in [`src/output/prometheus.rs`](../../src/output/prometheus.rs) adds each tracked dialog's message
+count under the dialog's opening method (`d.method`), so responses, `ACK` and
+`BYE` of an INVITE dialog count under `INVITE`. A scrape of
+[`tests/pcap-samples/sip-sdp-example.pcap`](../../tests/pcap-samples/sip-sdp-example.pcap) (INVITE, 100, 180, 200, ACK, BYE,
+200) reports `sipnab_messages_total{method="INVITE"} 7`.
+
+### Why the capture-quality series stay separate
+
+- `sipnab_capture_packets_total` counts before parsing, so a capture on a link
+  type with no decoder climbs it exactly like a clean one. So a reader needs
+  `sipnab_capture_undecoded_fraction` beside it.
+- Kernel drops (`ps_drop`) and interface drops (`ps_ifdrop`) have different
+  remedies: a larger `-B` recovers the first and not the second. A sum of the
+  two points the operator at the wrong remedy for one of them.
+- `sipnab_capture_undecodable_frames_total{reason}` carries the number in the
+  label because the number is what an operator acts on:
+  `unsupported_link_type_0` names `DLT_NULL`, where a bare "unsupported link
+  type" names no format.
+- `sipnab_capture_snapped_frames_total` exists because the `--snaplen`
+  warnings fire once per run and cannot say how much of a capture `--snaplen` cut: a
+  run that decoded every packet and snapped 94% of them is not a clean
+  capture, and no other series says so.
+- `sipnab_capture_quality_degraded` leaves undecodable frames out because ARP
+  makes them non-zero on nearly every Ethernet capture; a flag including them
+  would always be `1`.
+- `sipnab_capture_undecoded_fraction` is a proportion and not a flag for the
+  same reason.
+
+### Why the NAT series are gauges
+
+`sipnab_nat_unanswered_requests`, `sipnab_nat_lapsed_turn_allocations`,
+`sipnab_nat_lapsed_turn_allocation_streams` and `sipnab_nat_ice_role_conflicts`
+describe the network rather than the capture, and later packets can undo
+them: a late answer, a Refresh that moves an expiry, a nomination on the same
+pair. A monotonic counter could not record that. The lapsed-allocation
+wording is "no Refresh seen" rather than "none sent", because a capture that
+started late or lost a packet cannot tell those apart. The stream count beside
+the allocation count separates an allocation that lapsed with nothing on it
+from one that cut off several calls.
+
+### HEP sender aggregates
+
+`sipnab_hep_senders` is a total with no per-sender series. Sender addresses
+describe the estate, and a `metrics`-scoped token must not read what the
+full-scope `GET /v1/hep/senders` withholds from it. A spoofed flood would also
+set the label cardinality.
+
+### MCP families
+
+The tool name in `sipnab_mcp_tool_calls_total` comes from the client, so a
+name no tool answers to still counts. Probing is what the series is for. sipnab
+caps the distinct names at 256 (`MAX_TOOLS`), well above the tool surface,
+with the rest folded into `tool="other"`, so a peer looping over invented
+names cannot grow the series set. sipnab increments the counter at the same point
+that writes the `mcp_audit` log line. The duration histogram has fixed
+boundaries, unlike the four capture histograms, because it measures sipnab
+answering rather than the calls it observed and has no operator threshold to
+derive from.
+
+## Output formats
+
+### ICMP evidence counts
+
+`signaling_diagnosis.icmp_unreachable.errors` is the exact count rather than
+the number of retained quotes. Found by running against the corpus: 720 of
+3,232 real ICMP errors fell past the retention cap, and reporting the retained
+count would have said "8 times" for a peer that failed thirty
+([`tests/icmp_quote_test.rs`](../../tests/icmp_quote_test.rs)). On the same corpus a single capture held 433
+host-unreachable, 262 administratively prohibited and 63 port-unreachable
+errors, which is why the hint has one sentence per code.
+
+The ICMP fact annotates `retransmissions` (`icmp_cause`) rather than replacing
+it: suppressing the finding would delete the `count` and `span_sec`
+measurement to remove a sentence.
+
+### STUN evidence
+
+sipnab omits `diagnosis.stun_sdp_mismatch` on captures with no STUN so that a
+consumer written before the field existed sees no change. The hint appends a
+note past the two-minute window only, because readers stop reading a caveat
+printed on every finding. `unanswered` raises `private_media_address` only
+when the STUN server is public, because silence from a server on the same LAN
+would otherwise fire on every LAN-only capture. `fingerprint_valid` is `null`
+when absent rather than `false`, so that a message nobody checked is not
+reported as wrong.
+
+### YANG module scope
+
+The `sipnab-diagnosis` module does not model the per-dialog `diagnosis` and
+`signaling_diagnosis` objects: their "`null` means checked, absent means not
+run" distinction has no [RFC 7951](https://www.rfc-editor.org/rfc/rfc7951.html) equivalent, so they need their own modeling
+pass.

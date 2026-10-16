@@ -4,8 +4,9 @@ Whether sipnab can read the SIP in your capture when something wraps it: a
 VLAN tag, an MPLS label, a tunnel. The first table answers that. The sections
 after it give:
 
-- the exact link types, EtherTypes and tunnels,
-- what sipnab reports when a frame does not decode.
+- how to check that sipnab decoded a capture,
+- what sipnab reports when a frame does not decode,
+- the exact link types, EtherTypes and tunnels.
 
 ## Can sipnab read my capture?
 
@@ -30,6 +31,27 @@ Whenever the answer is no, sipnab says so.
   it cannot read a frame](#what-sipnab-says-when-it-cannot-read-a-frame) shows
   that line.
 
+## Check that sipnab decoded your capture
+
+Read the capture in batch mode and look at the summary line at the end:
+
+```sh
+sipnab -N -I tests/pcap-samples/linux-sll2-pppoe.pcap --no-cli-print
+```
+
+This capture carries SIP and RTP inside PPPoE, on a Linux cooked v2 link.
+Output:
+
+```text
+… INFO sipnab::capture::file: Reading from 'tests/pcap-samples/linux-sll2-pppoe.pcap'
+… INFO sipnab::capture::file: File reader finished: 27 packets total, through 'tests/pcap-samples/linux-sll2-pppoe.pcap'
+… INFO sipnab::capture::file: Read 27 packets: 1 of 1 file(s) read in full
+… INFO sipnab::app::batch: sipnab: 27 packets captured, 7 SIP messages, 20 RTP packets across 2 streams
+```
+
+The 7 SIP messages and 20 RTP packets account for all 27 packets, and no
+`NOT DECODED` line follows. sipnab read every frame.
+
 ## What sipnab says when it cannot read a frame
 
 sipnab drops nothing on this page silently. A frame it does not decode still
@@ -43,11 +65,22 @@ reaches:
 - MCP `capture_status`,
 - the Prometheus capture family.
 
+The output below comes from a copy of [`tests/pcap-samples/sip-register.pcap`](https://github.com/NormB/sipnab/raw/main/tests/pcap-samples/sip-register.pcap)
+with its file header set to link type 147, a private-use value sipnab has
+no decoder for:
+
+```sh
+sipnab -N -I link147.pcap --no-cli-print
+```
+
 ```text
-NOT DECODED: 3 of 3 frame(s) (100.0%) produced nothing and are in none of the
-counts above. Reasons: unsupported link type 147 (3). NOTHING IN THIS CAPTURE
-WAS READ — every frame failed to decode, so the totals above describe no
-traffic whatsoever and a zero among them is not evidence of absence.
+… WARN sipnab::capture::file: 'link147.pcap' has link type 147, which sipnab does not decode; its frames are counted as not decoded
+…
+… INFO sipnab::app::batch: sipnab: 2 packets captured, 0 SIP messages, 0 RTP packets across 0 streams
+NOT DECODED: 2 of 2 frame(s) (100.0%) produced nothing and are in none of the counts above. Reasons: unsupported link type 147 (2). NOTHING IN THIS CAPTURE WAS READ — every frame failed to decode, so the totals above describe no traffic whatsoever and a zero among them is not evidence of absence.
+…
+No SIP traffic was decoded — but 2 of 2 frame(s) (100.0%) could not be decoded at all, so this is not a finding that the capture contains no SIP. Undecodable: unsupported link type 147 (2).
+Fix the decode before reading anything into the zero above: convert the capture (editcap -T ether) or open an issue naming the number(s) reported.
 ```
 
 - A capture with no SIP *and* no undecodable frames is a finding: the SIP is not
@@ -58,31 +91,13 @@ traffic whatsoever and a zero among them is not evidence of absence.
 [Troubleshooting](troubleshooting.md#start-here-one-pass-over-everything) says
 what each reason means and what to do about it.
 
-## The rule that governs decapsulation
+## sipnab declines a frame rather than guess
 
-Over-eager decapsulation is worse than the silence it replaces.
-
-- A silent drop loses a call.
-- A false decapsulation **invents** one: inner addresses, inner ports, an inner dialog.
-  - It builds them from bytes that never described any of it.
-  - Nothing marks the flow fictional.
-
-This bites hardest on port-keyed tunnels.
-
-- A UDP port is not a protocol identity.
-  2152, 4789 and 6081 all occur as the *ephemeral source* port of
-  ordinary RTP media.
-- So every decapsulator validates structurally:
-  - reserved bits,
-  - version fields,
-  - length self-consistency,
-  - the shape of the first inner header.
-- It declines the moment anything disagrees.
-- Each port-keyed decoder
-  has a test proving it rejects a realistic RTP packet arriving on its own port.
-
-When the choice is between missing a tunnel and fabricating a flow, sipnab
-misses the tunnel. A miss stays visible. A fabrication does not.
+Every decoder checks the structure of a frame (reserved bits, version fields,
+lengths, the shape of the first inner header) before it decapsulates, and
+leaves a frame that fails any check as it is. If no other decoder reads that
+frame, it joins the `NOT DECODED` count. For example, sipnab does not decapsulate an RTP packet as VXLAN because it
+happens to use UDP port 4789.
 
 ## Link types
 
@@ -104,11 +119,6 @@ misses the tunnel. A miss stays visible. A fabrication does not.
 Loopback is `DLT_EN10MB` on Linux but `DLT_NULL` on macOS and BSD.
 That is why 0 and 108 matter for the common "SIP server listening on loopback" case.
 
-- The parser dispatches on that closed set rather than on the raw number.
-- The cheap `--cores` shard key dispatches on the same one.
-- Adding a link type is a compile error in both until each has an arm.
-  So the two walks cannot come to know different sets.
-
 ## EtherTypes
 
 | EtherType | Protocol | Reference | Status |
@@ -127,12 +137,8 @@ That is why 0 and 108 matter for the common "SIP server listening on loopback" c
 | `0x88E5` | MACsec | IEEE 802.1AE | see below |
 | any other | — | — | **counted and named** with its hex value |
 
-`0x9100` is genuinely absent from the IEEE RA listing.
-
-- It has no assignee and no protocol text. Every neighbor has both.
-- No standards body ever registered it. It is legacy vendor usage, still common on older carrier gear.
-- Supporting it concedes to deployed equipment rather than to any specification.
-- Do not "correct" it away after checking a registry and finding nothing.
+`0x9100` has no IEEE registration. sipnab reads it because older carrier
+equipment still sends it.
 
 sipnab deliberately never decapsulates PPPoE Discovery.
 Its payload is TLV tags.
@@ -144,12 +150,7 @@ The SecTAG's `E` and `C` bits distinguish confidentiality from integrity.
 
 - sipnab decodes an integrity-protected frame that carries **no** encryption as
   the ordinary readable plaintext it is.
-- Only a genuinely encrypted payload gets reported as encrypted.
-- Treating all of `0x88E5` as opaque would write off recoverable calls.
-
-IEEE 802.1AE's own Annex C conformance vectors settled those bit positions.
-Figure 9-4 of the 2018 standard is defective.
-It labels two bits with names appearing nowhere else in the document.
+- sipnab reports only an encrypted payload as encrypted.
 
 ### A cooked capture reaches fewer of them
 
@@ -163,7 +164,7 @@ The table above describes the **Ethernet** walk.
   - `SLL2` is what the `any` pseudo-device produces.
   - `any` is what sipnab opens on Linux when no `-d` names an interface.
 
-| EtherType | Ethernet (`-d eth0`) | Cooked (`any`, `-i any` files) |
+| EtherType | Ethernet (`-d eth0`) | Cooked (`any`, or a file from `tcpdump -i any`) |
 |---|---|---|
 | `0x8100` / `0x88A8` / `0x9100` VLAN | skipped to reach IP | skipped to reach IP |
 | `0x0800` / `0x86DD` IP | decoded | decoded |
@@ -204,16 +205,9 @@ The same asymmetry applies to a saved file.
 | L2TPv2 | UDP 1701 | [RFC 2661](https://www.rfc-editor.org/rfc/rfc2661.html) | data messages only |
 | L2TPv3 over UDP | UDP 1701 | [RFC 3931](https://www.rfc-editor.org/rfc/rfc3931.html) | **refused** — see below |
 
-**L2TPv3 over UDP is deliberately not decoded.** [RFC 3931 section 4.1](https://www.rfc-editor.org/rfc/rfc3931.html#section-4.1) says:
-
-<!-- vale off -->
-> The Session ID alone provides the necessary context for all further packet
-> processing, including the presence, size, and value of the Cookie.
-<!-- vale on -->
-
-- The cookie runs to 0, 4 or 8 octets.
-- Only the control channel carries that length, along with the pseudowire type.
-- Guessing between those is precisely how a decapsulator invents a flow.
+**sipnab does not decode L2TPv3 over UDP.** The size of its cookie field
+travels only in the L2TPv3 control channel, so a data packet on its own does
+not say where the inner frame starts.
 
 **sipnab reads ESP only when the payload proves NULL encryption.**
 
@@ -275,12 +269,6 @@ Writing your own expression replaces the generated one whole.
   - one naming `--capture-tunnels` as ignored when you passed it
     alongside a filter of your own.
 
-One limit worth knowing before you rely on a live capture:
-
-- On the encapsulated arm, an IPv4 header carrying **options** stays unmatched.
-- A BPF index has to be constant, and the arm cannot multiply the IHL nibble.
-- The untagged arm handles those.
-
 ### How the generated filter reaches encapsulated SIP
 
 On a live capture with no filter of your own, sipnab installs one built from
@@ -309,49 +297,19 @@ The arm still demands a signaling port.
 **It covers cooked captures too.** So omitting `-d` costs the filter nothing.
 The cooked walk still skips MPLS, though, as [A cooked capture reaches fewer of them](#a-cooked-capture-reaches-fewer-of-them) says.
 
-The arm asks "does this frame carry an encapsulation?" through libpcap's
-`ether proto`. That resolves to the right byte offset for whatever link type
-the filter compiles against:
-
-- offset 12 on Ethernet,
-- 14 on Linux cooked v1,
-- 0 on Linux cooked v2,
-- a constant false on raw IP and the two loopback link types, which carry no protocol field at all.
-
-The offsets come from measuring a capture of each type with `tcpdump -d`.
-
-Asking the same question with a fixed `ether[12:2]` is the trap this avoids.
-
-- That offset holds the EtherType on Ethernet.
-- It holds part of the link-layer address on a cooked capture.
-- So an arm written that way compiles, runs and matches nothing there:
-  1 of 11 encapsulated SIP frames on cooked v1 and
-  cooked v2, against 11 of 11 on Ethernet.
-- Cooked is what Linux gives you when you name no interface.
-  So that shape would have left the default invocation blind.
-
-Two limits worth knowing.
+Two limits:
 
 - On the encapsulated arm an IPv4 header carrying **options** stays unmatched.
-  - A BPF byte offset has to be a constant.
-  - So the arm cannot multiply the IHL nibble into the port offset the way libpcap's own
-    `portrange` does.
-  - The untagged `portrange` handles those.
-    So this costs you only IPv4-options traffic that is *also* encapsulated.
-- One filter string serving three link types has to carry all three sets of
-  inner offsets.
-  - BPF offers no way to ask which link type it compiled against.
-  - Seven offsets get probed on every link type. Four of them belong to
-    a different link header.
+  The untagged `portrange` matches those, so this costs only IPv4-options
+  traffic that is *also* encapsulated.
+- The one filter string carries inner offsets for Ethernet and both cooked
+  link types. On a frame that already carries an encapsulation, an offset
+  meant for another link type can occasionally pass a stray packet up to
+  sipnab, whose parser then rejects it. Traffic without an encapsulation is
+  not affected.
 
-Those four can fire only when both of these hold:
-
-- the frame already carries one of the six encapsulating protocols,
-- its bytes at the wrong offset spell a complete IPv4-or-IPv6 header with a signaling port.
-
-So the worst case is a stray tagged packet reaching userspace, where the
-parser rejects it. Ordinary traffic never reaches those probes, because the
-outer `ether proto` test is exact.
+[Encapsulation decoding](internals/encapsulation-decoding.md#how-the-generated-filter-reaches-encapsulated-sip)
+records the byte offsets the filter probes and why.
 
 ## SIP over WebSocket, IP fragments and TCP segments
 
@@ -409,111 +367,13 @@ sipnab tracks transactions.
 - A retransmission is one unanswered question, not several.
 - An error response counts as ANSWERED.
 
-### What is deliberately not read
+### What sipnab does not read
 
-`MESSAGE-INTEGRITY` and `MESSAGE-INTEGRITY-SHA256` decide whether a message is
-**authentic**.
-
-- A passive observer has no credentials to check them with.
-- Reading them and reporting anything about them would be claiming a verification
-  that did not happen.
-- That is the same confident-wrong-answer this codebase refuses elsewhere.
-
-sipnab reads `USERNAME`, `REALM` and `NONCE` for what they SAY.
-
-- An authentication challenge is a different fault from a blocked path.
-- sipnab never reads them as evidence that authentication succeeded.
-
-sipnab is not an ICE agent. It does not:
-
-- evaluate candidate pairs,
-- compute priorities,
-- decide nominations.
-
-It reports what it saw on the wire.
-
-## How this page stays true
-
-An end-to-end test backs every "decoded" row for a tunnel, in
-[`tests/tunnel_integration_test.rs`](https://github.com/NormB/sipnab/blob/main/tests/tunnel_integration_test.rs).
-
-- Each test carries a real INVITE through `parse_packet` into the SIP parser.
-- It asserts the method and Call-ID.
-- MPLS, MPLS-in-IP, NSH, PBB, MACsec (integrity-only), VXLAN, GTP-U, GRE-TEB and
-  AH each have one.
-- PPPoE and the loopback link types have their own suites.
-
-GENEVE, Teredo and L2TP rely on unit tests over crafted frames rather than an
-end-to-end INVITE.
-
-- That is a weaker proof.
-- This page says so rather than letting the table imply otherwise.
-
-No measurement on this page comes from a live NIC.
-
-## Sources
-
-The **IEEE Registration Authority** assigns EtherTypes, not IANA.
-[RFC 9542](https://www.rfc-editor.org/rfc/rfc9542.html) states it plainly:
-
-<!-- vale off -->
-> Neither EtherTypes nor LSAPs are assigned by IANA; they are assigned by the
-> IEEE Registration Authority.
-<!-- vale on -->
-
-The EtherType values on this page come from:
-
-- the IEEE RA public
-  listing at <https://standards-oui.ieee.org/ethertype/eth.txt>, retrieved
-  2026-08-04,
-- cross-checked against IANA's *informational* mirror at
-  <https://www.iana.org/assignments/ieee-802-numbers/ieee-802-numbers.xhtml>.
-  That mirror's own header reads *"Not assigned by IANA."*
-
-This is the one place the project's "when in doubt, use the RFC" rule does not
-resolve on its own.
-
-- For EtherTypes the RFC hands the question to a different standards body.
-- Use the IEEE RA listing for the *value*.
-- Use the current RFC for the *semantics*.
-
-### Two errors in the IEEE listing
-
-Registries are no more infallible than RFCs, and both of these would mislead
-someone implementing from the listing alone.
-
-- **`0x8848` carries the wrong protocol text.**
-  - The listing gives it
-    `"8847: MPLS (multiprotocol label switching) label stack - unicast"`.
-  - That is the `0x8847` entry duplicated, wrong identifier and wrong cast.
-  - [RFC 5332](https://www.rfc-editor.org/rfc/rfc5332.html) assigns `0x8848` to
-    MPLS with an **upstream-assigned** label.
-- **`0x894F` cites a superseded draft**, `draft-ietf-sfc-nsh-18`.
-  - That draft became
-    [RFC 8300](https://www.rfc-editor.org/rfc/rfc8300.html) in January 2018.
-  - That one is *stale rather than wrong*. The draft and the RFC define the same header.
-  - The two cases do not belong in the same bucket.
-
-<details>
-<summary>Why / how we know</summary>
-
-sipnab used to answer a question it had not understood. Given a capture whose
-frames it could not decode, it reported:
-
-```text
-sipnab: 49 packets captured, 0 SIP messages, 0 RTP packets across 0 streams
-No SIP traffic found. Check that the capture contains SIP packets (typically UDP port 5060-5061).
-```
-
-That output was identical in two cases:
-
-- sipnab had read every frame and found no SIP,
-- or sipnab had failed to read a single frame of a capture full of INVITEs.
-
-Two such captures were in this repository's own test corpus.
-
-A missed encapsulation is now **counted and named**, with the number that
-identifies it: the link type, the EtherType, the IP protocol. See
-[Troubleshooting](troubleshooting.md#start-here-one-pass-over-everything) for what each reason means.
-
-</details>
+- sipnab does not check `MESSAGE-INTEGRITY` or `MESSAGE-INTEGRITY-SHA256`. A
+  passive observer has no credentials to verify them, so sipnab reports
+  nothing about whether a message is authentic.
+- sipnab reads `USERNAME`, `REALM` and `NONCE` to tell an authentication
+  challenge from a blocked path, never as evidence that authentication
+  succeeded.
+- sipnab is not an ICE agent. It does not evaluate candidate pairs, compute
+  priorities or decide nominations. It reports what it saw on the wire.

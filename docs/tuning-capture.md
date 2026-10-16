@@ -19,7 +19,10 @@ sipnab polls libpcap's kernel counters once a second and reports two numbers.
 ```text
 PACKETS ARE BEING DROPPED on 'eth0' (kernel buffer: 18432, interface/driver: 0).
 The analysis for this run is INCOMPLETE — dialogs may be missing messages and
-RTP loss figures will overstate what was on the wire.
+RTP loss figures will overstate what was on the wire. This run's kernel capture
+buffer is 64 MiB: raise it with -B/--buffer, narrow the capture with a BPF
+filter, or reduce --snaplen. Interface drops are not fixed by a bigger buffer;
+they point at the NIC or driver.
 ```
 
 You get that warning the moment the first drop happens. You also get a summary
@@ -30,7 +33,7 @@ Live capture on 'eth0' finished: 4821003 packets captured, but 18432 dropped by
 the kernel buffer and 0 by the interface — THIS ANALYSIS IS INCOMPLETE
 ```
 
-A clean run says so explicitly, so silence is never ambiguous:
+A run with no drops ends with this line:
 
 ```text
 Live capture on 'eth0' finished: 4821003 packets, no drops
@@ -43,16 +46,13 @@ Live capture on 'eth0' finished: 4821003 packets, no drops
 | **kernel buffer** | `ps_drop` | The ring was full when the packet arrived. sipnab was not draining fast enough. | [The kernel capture buffer](#the-kernel-capture-buffer--b----buffer) (`-B`), [Capture less: BPF filters](#capture-less-bpf-filters) (BPF), [Snapshot length](#snapshot-length---snaplen--and-why-it-decides-your-ring-capacity) (`--snaplen`), [Which interfaces](#which-interfaces-any-versus-named) (device) |
 | **interface/driver** | `ps_ifdrop` | The NIC or its driver discarded the packet before libpcap ever saw it. | ["Interface and driver drops"](#interface-and-driver-drops) — **a bigger buffer cannot fix this** |
 
-That distinction is the single most useful thing on this page.
-
-- Operators routinely respond to *any* drop by raising `-B`.
-- That does nothing at all for interface drops.
-- It wastes memory while the real problem goes unaddressed.
+Read the two counters before you change anything. A larger `-B` reduces
+`kernel buffer` drops only. It has no effect on `interface/driver` drops.
 
 ### Both numbers describe a capture handle, not an interface
 
-sipnab polls `pcap_stats` on each open capture handle — the socket this run
-opened. libpcap keeps those counters per handle.
+sipnab reads libpcap's counters for each capture handle this run opened.
+libpcap keeps those counters per handle.
 
 - A *handle* is one capture socket.
 - An *interface* is the NIC every process on the host shares.
@@ -89,12 +89,8 @@ this?"
 | `--report` | one sentence each, and each names only the fixes that apply to it |
 | `--metrics` (Prometheus) | `sipnab_capture_kernel_dropped_packets_total` and `sipnab_capture_interface_dropped_packets_total`, as separate counters |
 
-Two separate Prometheus counters rather than one `sipnab_capture_dropped_total`
-with a label is deliberate:
-
-- A dashboard that sums them produces a number whose remedy is ambiguous.
-- An alert on that sum pages someone to raise a buffer that cannot help.
-- Alert on them separately, or the alert cannot say what to do.
+Alert on each Prometheus counter separately. Each one has its own fix, and a
+sum of the two does not say which fix applies.
 
 The REST API and MCP report the same pair on the capture-quality object:
 
@@ -103,15 +99,13 @@ The REST API and MCP report the same pair on the capture-quality object:
   snapped-frame counts. Those make up the rest of a capture's quality.
 - See [`GET /v1/stats`](rest-api.md#get-v1stats).
 
-> **Why a drop is not just "missing packets".**
+> **What a drop does to the analysis.**
 >
 > - A dropped SIP message means a dialog reconstructs wrong.
 >   - A missing `BYE` leaves a call that never ends.
 >   - A missing `200 OK` leaves one that never answered.
-> - A dropped RTP packet counts as **network loss that never happened**.
->   So MOS and loss figures read worse than the call actually was.
-> - A lossy capture does not produce a smaller answer. It produces a *wrong*
->   one.
+> - A dropped RTP packet counts as network loss that did not happen on the
+>   wire. MOS and loss figures read worse than the call was.
 
 ---
 
@@ -125,7 +119,7 @@ between two times:
 - when packets arrive (bursty, driven by your traffic);
 - when sipnab gets scheduled to read them (jittery, driven by your kernel).
 
-It is the setting that matters most.
+Change it first.
 
 Busy trunk — give it room for a bigger burst:
 
@@ -139,16 +133,15 @@ Small or embedded host — cap the memory instead:
 sudo sipnab -N -d eth0 -B 8
 ```
 
-> **`-B` alone may buy less than you think.**
+> **The packet count a buffer holds depends on other settings.**
 >
-> - libpcap divides the ring into fixed-size slots. Their size comes from
->   `--snaplen`.
+> - On the TUI's ring, libpcap divides the buffer into fixed-size slots. Their
+>   size comes from `--snaplen`.
 > - So how many *packets* 64 MiB holds depends on:
 >   - the snapshot length;
 >   - whether NIC offloads are on — anywhere from ~1,000 to ~41,000;
 >   - whether you named an interface at all.
 > - Read [Snapshot length](#snapshot-length---snaplen--and-why-it-decides-your-ring-capacity) and [Which interfaces: `any` versus named](#which-interfaces-any-versus-named) before concluding that a bigger `-B` did not help.
-> - The three settings multiply.
 
 Rules of thumb:
 
@@ -180,19 +173,20 @@ drop counters, and set -B/--buffer explicitly to pin a size.
 sipnab honors an explicit small `-B` exactly and never promotes it upward.
 `-B 1` on a constrained box means 1 MiB.
 
-### And it caps at 2047 MiB
+### Request a buffer larger than 2047 MiB
 
-`pcap_set_buffer_size` takes a C `int`. So 2047 MiB is the last whole MiB whose
-byte count fits. sipnab clamps anything larger and says so:
+The largest buffer sipnab can request is 2047 MiB. sipnab reduces a larger `-B`
+to 2047 MiB and logs a warning before it opens the device:
 
 ```text
 -B/--buffer 5000 MiB exceeds the 2047 MiB ceiling (pcap_set_buffer_size takes a
 C int); capturing with 2047 MiB instead.
 ```
 
-The clamp matters because the arithmetic underneath used to wrap.
-`--buffer 2148` once handed libpcap a negative byte count. Read the warning as
-a real limit rather than as advice. No `-B` above 2047 buys anything.
+The run continues with 2047 MiB. To use more memory for capture, open more
+than one ring: name several interfaces with `--multi-device`, or spread one
+interface across sockets with
+[`--cores`](#on-a-live-device-it-means-capture-sockets-not-workers).
 
 ### `--buffer-budget` is a different buffer
 
@@ -213,7 +207,7 @@ packets before this queue ever sees them.
 
 ## Capture less: BPF filters
 
-The cheapest packet is the one the kernel never gives you.
+A BPF (Berkeley Packet Filter) expression selects packets in the kernel.
 
 - A BPF filter runs **in the kernel**, before the ring.
 - So filtered traffic costs no buffer space, no copy, and no parse.
@@ -265,8 +259,9 @@ One customer's traffic:
 sudo sipnab -N -d eth0 "host 203.0.113.10"
 ```
 
-This is the correct first response to sustained drops with a busy CPU. Halving
-the traffic that reaches userspace is worth more than any buffer size.
+Use a narrower filter first when drops persist while a core is at 100%. A
+larger buffer does not raise the rate at which sipnab reads packets. A filter
+lowers the number it has to read.
 
 > **Careful with RTP.**
 >
@@ -281,98 +276,49 @@ the traffic that reaches userspace is worth more than any buffer size.
 
 **Default: 65535** — the whole frame.
 
-The obvious reading of `--snaplen` is "how many bytes of each packet get
-copied".
+`--snaplen` sets how many bytes of each packet sipnab captures. On Linux it
+also sets how many packets the TUI's capture ring holds.
 
-- On that reading it looks unimportant. A 1500-byte frame costs 1500 bytes
-  whether the cap is 1600 or 65535.
-- That reading is incomplete. On a busy server it is the expensive kind of
-  incomplete.
+- The TUI uses libpcap's TPACKET_V2 ring. Every slot in that ring has the same
+  size, set from the snapshot length. A buffer holds `buffer size ÷ slot size`
+  packets, however small the packets are.
+- libpcap reduces the slot to the interface MTU plus 18 bytes only on an
+  Ethernet device (link type `EN10MB`) with NIC offloads off.
+- `any`, sipnab's default device on Linux, has link type `LINUX_SLL2`. Its slot
+  stays at the full snapshot length whatever the offload settings.
+- Headless runs use a different ring. See
+  "Which ring you get", below.
 
-**On Linux, snaplen also determines how many packets your ring can hold — on
-the TPACKET_V2 ring.**
-
-- Which ring you get depends on the run mode.
-- The subsection at the end of this section is the rule. Read it before
-  applying the arithmetic here to a headless capture.
-- libpcap's `create_ring()` sizes each slot in the V2 ring from the snapshot
-  length:
-
-```c
-frame_size = handle->snapshot;
-/* ... clamped for Ethernet ... */
-req.tp_frame_size = TPACKET_ALIGN(macoff + frame_size);
-req.tp_frame_nr   = (handle->opt.buffer_size + req.tp_frame_size - 1)
-                    / req.tp_frame_size;
-```
-
-The slots have a **fixed size**. So `-B` buys you `buffer_size / frame_size`
-*packets*, not bytes of useful queue. There is a clamp that can rescue you. But
-read its guard carefully:
-
-```c
-if (handle->linktype == DLT_EN10MB) {
-        ...
-        if (offload)
-                max_frame_len = MAX(mtu, 65535);
-        else
-                max_frame_len = mtu;
-        max_frame_len += 18;
-        if (frame_size > max_frame_len)
-                frame_size = max_frame_len;
-}
-```
-
-**The clamp only applies to `DLT_EN10MB` — real Ethernet.**
-
-- sipnab's default capture device on Linux is `any` ([`src/capture/device.rs:38-40`](https://github.com/NormB/sipnab/blob/main/src/capture/device.rs#L38-L40)).
-  The reason for that choice: SIP servers often listen on loopback.
-- `any` is `DLT_LINUX_SLL2`, not `DLT_EN10MB`.
-- So on the default configuration **no clamp runs at all**. The slot stays at
-  the full snaplen:
+Slot size and capacity of the default 64 MiB buffer on the TUI's ring:
 
 | Device | Link type | Offloads | Effective slot | 64 MiB ring holds |
 |---|---|---|---|---|
-| **`any` (sipnab's default)** | `LINUX_SLL2` | irrelevant — **clamp never runs** | ~65 KB | **~1,000 packets** |
+| **`any` (sipnab's default)** | `LINUX_SLL2` | no effect | ~65 KB | **~1,000 packets** |
 | `eth0` | `EN10MB` | on (common default) | ~65 KB | **~1,000 packets** |
 | `eth0` | `EN10MB` | off | MTU+18 ≈ 1518 B | **~41,000 packets** |
 
-So out of the box — default device, default snaplen — a 64 MiB ring holds about
-a thousand packets.
+With the default device and default snaplen, a 64 MiB TUI ring holds about a
+thousand packets.
 
-- That is **milliseconds of slack.**
-- It is **roughly forty times less than the same memory would buy at a smaller
-  snaplen.**
-- Before this raised the default from 2 MiB, that same arithmetic gave
-  **31 slots**.
+### Fit more packets in the ring
 
-Note what this means:
+Three changes raise the packet count. Each one helps alone, and they combine.
 
-- Naming an interface explicitly *and* disabling offloads is worth far more
-  than either alone.
-- Only that combination reaches the clamp.
-- **[Which interfaces: `any` versus named](#which-interfaces-any-versus-named) is the decision guide for the device half of that.** It covers:
-  - what leaving `any` gains you;
-  - what it costs;
-  - how to check you did not drop a call leg on the way.
+- **Cap the snaplen.** A 1600-byte snaplen gives slots a little over 1.6 KB,
+  so 64 MiB holds tens of thousands of packets:
 
-```bash
-# Signaling-focused capture: ~36,000 slots in the same 64 MiB
-sudo sipnab -N -d eth0 --snaplen 1600
-```
+  ```bash
+  sudo sipnab -d eth0 --snaplen 1600
+  ```
 
-Three ways out, and they compose:
-
-- **Cap the snaplen** (above).
-  - Immediate, no root beyond capture.
-- **Name the interface** ([Which interfaces: `any` versus named](#which-interfaces-any-versus-named)).
-  - It is the only way to reach `DLT_EN10MB` at all.
-  - It is the prerequisite for the clamp below.
-  - It is a coverage trade. So read [Which interfaces: `any` versus named](#which-interfaces-any-versus-named)
-    before making it.
+- **Name the interface.** Only a named Ethernet interface can use the
+  MTU-sized slot. Read
+  [Which interfaces: `any` versus named](#which-interfaces-any-versus-named)
+  before you make that change, because a named device can miss call legs that
+  `any` sees.
 - **Turn the offloads off** ([Interface and driver drops](#interface-and-driver-drops)).
-  - This is independently correct for capture fidelity.
-  - GRO/LRO hand you reassembled super-frames that were never on the wire.
+  With offloads on, the kernel delivers merged frames that were not on the
+  wire, and the Ethernet slot stays at 65 KB.
 
 **`--capture-profile` picks the number for you.**
 
@@ -381,20 +327,12 @@ Three ways out, and they compose:
     encapsulation or a fat SDP offer.
   - It drops the bulk of every RTP packet.
 - `full` is 65535, the default.
-- An explicit `--snaplen` wins over the profile. Someone who typed a number has
-  already answered the question the profile asks.
+- An explicit `--snaplen` takes precedence over the profile.
 
-About that profile:
-
-- It is a named profile rather than a smaller default because truncation is not
-  free, as the note below says.
-- It stops at 1500 rather than a tighter 200 to 400 bytes. One INVITE with a
-  full `Record-Route` set, a long `Contact`, ISUP encapsulation or a fat SDP
-  offer passes 400 bytes routinely.
-
-A snaplen that cuts a header stops the message parsing. That reports the peer
-that sent a valid message as broken. `sipnab_capture_snapped_frames_total`
-counts how many frames arrived truncated.
+A snaplen shorter than a SIP message cuts the message, and sipnab cannot parse
+the cut message. A single INVITE with a long `Record-Route` set, a long
+`Contact`, ISUP encapsulation or a large SDP offer often exceeds 400 bytes.
+`sipnab_capture_snapped_frames_total` counts how many frames arrived truncated.
 
 ```bash
 sudo sipnab -N -d eth0 --capture-profile signaling
@@ -406,9 +344,8 @@ sudo sipnab -N -d eth0 --capture-profile signaling
 >   - `--retain-audio`, Opus decode, the TUI's WAV save and the MCP
 >     `export_audio` tool all need whole RTP payloads.
 > - It degrades `-O` capture re-emit to truncated frames.
-> - sipnab tracks captured versus original length per packet. So truncation is
->   visible rather than inferred.
-> - But choose the value deliberately, not reflexively.
+> - sipnab records the captured and original length of each packet, so the
+>   metrics count the truncated frames.
 
 To limit only how much sipnab *parses* without truncating what it *captures*,
 use `-S`/`--limitlen` instead. That is a parser bound, not a capture bound.
@@ -417,66 +354,33 @@ use `-S`/`--limitlen` instead. That is a parser bound, not a capture bound.
 
 ### Which ring you get: TPACKET_V2 for the TUI, V3 for everything else
 
-Modern libpcap on Linux can use the block-based **TPACKET_V3** ring.
+sipnab picks the capture mode from the run mode:
 
-- It sizes its blocks independently of the snapshot length.
-- So it does not have the capacity cliff described above.
-- One flag decides whether you get it, and sipnab decides that flag for you.
+| Run mode | Immediate mode | Ring libpcap uses |
+|---|---|---|
+| TUI | on | TPACKET_V2: fixed-size slots, sized from `--snaplen` |
+| Every run without the TUI (`-N`) | off | TPACKET_V3: blocks sized independently of `--snaplen` |
 
-The rule is in libpcap's `prepare_tpacket_socket()`:
+- In the TUI, each packet reaches the screen as soon as it arrives.
+- A headless run lets libpcap batch packets into blocks. sipnab sets the block
+  timeout to 5 ms, so libpcap delivers a block that does not fill after that
+  timeout.
+- libpcap uses TPACKET_V3 only when its build includes it. Check the second line
+  of `sipnab --version`:
 
-```c
-/*
- * The only mode in which buffering is done on PF_PACKET
- * sockets, so that packets might not be delivered
- * immediately, is TPACKET_V3 mode.
- *
- * The buffering cannot be disabled in that mode, so
- * if the user has requested immediate mode, we don't
- * use TPACKET_V3.
- */
-if (!handle->opt.immediate) {
-        ret = init_tpacket(handle, TPACKET_V3, "TPACKET_V3");
+```bash
+sipnab --version
 ```
 
-So immediate mode reads like a latency preference. It is really a ring-format
-choice. sipnab answers it by asking who consumes the packets
-(`immediate_mode_for()` in [`src/app/bootstrap.rs`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs)):
+```text
+…
+libpcap version 1.10.4 (with TPACKET_V3); alternate capture backends named: none
+```
 
-| Run mode | Immediate | Ring | Why |
-|---|---|---|---|
-| TUI | yes | TPACKET_V2 | A person is watching messages appear. A message showing up a block late is exactly what makes an interactive tool feel wrong. |
-| Batch, `--json`, `-O`, MCP, API | no | TPACKET_V3 | Throughput-bound with nobody watching. The buffering V3 does is precisely what keeps a burst off the floor. |
-
-V3 is not free of its own trap. sipnab pays for it explicitly rather than
-inheriting it.
-
-- libpcap copies the read timeout into `req.tp_retire_blk_tov`.
-- It then polls with `-1`.
-- So the timeout becomes **added delivery latency** rather than a poll bound.
-
-The interactive 100 ms would have meant up to 100 ms before a block retires.
-The batched path therefore uses its own `BATCHED_READ_TIMEOUT_MS = 5` ([`src/capture/live.rs`](https://github.com/NormB/sipnab/blob/main/src/capture/live.rs)).
-
-Shutdown responsiveness (`--duration`, Ctrl-C) never depended on either:
-
-- the handle is non-blocking;
-- an empty ring returns `TimeoutExpired`;
-- the wait is sipnab's own bounded `wait_readable()`.
-
-**So the snaplen arithmetic above binds the TUI, not a headless capture.**
-
-- On a headless run, `--snaplen` and the offload settings still matter for
-  capture fidelity and for copy cost.
-- But they are not what decides how many packets the ring holds.
-
-**Unverified on hardware.**
-
-- Whether the kernel selects V3, and what that is worth, rest on reasoned from
-  libpcap's source and not measured.
-- Two checks would settle it:
-  - `strace -e trace=setsockopt` for `PACKET_VERSION`;
-  - `KERNEL_DROPPED` under load against a V2 baseline.
+On a headless run, `--snaplen` and the offload settings still decide how many
+bytes of each packet sipnab copies. The slot arithmetic in
+[Snapshot length](#snapshot-length---snaplen--and-why-it-decides-your-ring-capacity)
+applies to the TUI.
 
 ---
 
@@ -484,66 +388,40 @@ Shutdown responsiveness (`--duration`, Ctrl-C) never depended on either:
 
 **Default on Linux: `any` — every interface at once, loopback included.**
 
-That default is deliberate. It is a **correctness** choice, not a performance
-one. `find_default_device()` returns `"any"` on Linux
-([`src/capture/device.rs:35-40`](https://github.com/NormB/sipnab/blob/main/src/capture/device.rs#L35-L40)), for the reason written beside it:
-
-```text
-// On Linux, "any" captures all interfaces, which is what we want.
-// SIP servers often listen on loopback, so capturing only eth0 misses traffic.
-```
-
-That is a real hazard, not a hypothetical one. Capture `eth0` alone and these
-legs are simply absent:
+sipnab defaults to `any` so that it captures every call leg. SIP servers often send
+signaling over loopback or a container bridge. Capture `eth0` alone and these
+legs are absent:
 
 - a B2BUA talking to a registrar over `127.0.0.1`;
 - a containerized stack bridging SIP across `docker0`;
 - a proxy handing calls to a media server over a veth pair.
 
-A dialog missing one leg does not come back smaller. It comes back **wrong**,
-exactly as [Are you dropping packets?](#are-you-dropping-packets) describes for
-dropped packets. `any` is the setting that does not lose calls.
+A dialog missing one leg reconstructs wrong, in the same way as
+[Are you dropping packets?](#are-you-dropping-packets) describes for dropped
+packets.
 
-It is also the slowest and least capable device sipnab can open, on four
-counts.
-
-- Three are performance.
-- One is a second correctness cost that runs the other way.
+`any` has four costs: three in performance and one in coverage.
 
 ### What `any` costs you
 
-- **It forfeits about 40x of your ring capacity — on the V2 ring, so on the
-  TUI.**
-  - [Snapshot length](#snapshot-length---snaplen--and-why-it-decides-your-ring-capacity) has the mechanism and the run-mode rule that scopes it.
-  - libpcap's `create_ring()` sizes each TPACKET_V2 slot from the snaplen.
-  - The clamp that cuts a slot down to MTU+18 sits behind
-    `if (handle->linktype == DLT_EN10MB)`.
-  - **`any` reports `DLT_LINUX_SLL2`, so that clamp never runs.**
-  - Every slot is the full 65535-byte snaplen regardless of interface MTU.
-  - No `ethtool` setting can reach it. The guard tests the link type, not the
-    offloads.
-  - At the 64 MiB default that is ~1,000 slots against ~41,000 for a named
-    Ethernet interface with offloads off.
-  - Before the default buffer still defaulted to 2 MiB, the same arithmetic
-    gave `any` just **31 slots**.
-- **It cannot go promiscuous.**
-  - The capture loop in [`src/capture/live.rs`](https://github.com/NormB/sipnab/blob/main/src/capture/live.rs)
-    computes `let use_promisc = config.promisc && device != "any"`.
-  - The pseudo-device does not support promiscuous mode. So sipnab does not
-    ask for it.
-  - Promisc is on by default for a named device, and `--no-promisc` turns it
-    off. On `any` there is nothing to turn off.
-  - The consequence is that **`any` misses traffic not addressed to the
-    host**.
-  - That matters on precisely the deployment where you would want it: a SPAN
-    port or tap feeding mirrored calls the capture host is not a party to.
-  - That is a correctness cost. It points the opposite way from the loopback
-    argument. `any` sees every interface but only the host's own traffic on
-    them.
+- **The TUI's ring holds about 40 times fewer packets.**
+  - Every slot stays at the full snapshot length, 65535 bytes by default,
+    whatever the interface MTU or `ethtool` settings.
+  - At the 64 MiB default that is about 1,000 slots, against about 41,000 for
+    a named Ethernet interface with offloads off.
+  - [Snapshot length](#snapshot-length---snaplen--and-why-it-decides-your-ring-capacity) explains the slot size.
+- **It cannot capture in promiscuous mode.**
+  - sipnab does not request promiscuous mode on `any`, because the
+    pseudo-device does not support it.
+  - Promiscuous mode is on by default for a named device, and `--no-promisc`
+    turns it off.
+  - So **`any` misses traffic not addressed to the host**. On a SPAN port or
+    tap that mirrors calls the capture host is not a party to, name the
+    interface.
 - **It runs one capture thread.**
-  - Naming devices unlocks `--multi-device`.
-  - That spawns one coordinator thread plus **one capture thread per
-    interface** (`start_multi_capture()` in [`src/capture/native.rs`](https://github.com/NormB/sipnab/blob/main/src/capture/native.rs)).
+  - Naming devices allows `--multi-device`.
+  - That starts one coordinator thread plus **one capture thread per
+    interface**.
   - Each has its own ring and its own drain loop.
   - `any` is one device. So it is one thread and one ring no matter how many
     interfaces the traffic actually arrives on.
@@ -554,16 +432,16 @@ counts.
   - `any` also picks up loopback, `docker0`, veth pairs, tunnels and
     management interfaces.
   - Every one of those packets costs a BPF evaluation.
-  - If it passes, it also costs a copy into the same ring the traffic you *do*
-    want is competing for.
+  - Each packet the filter passes also takes a slot in the same ring as the
+    traffic you want.
 
 ### Side by side
 
 | | `any` (the default) | Named — `-d eth0` / `-d eth0,eth1 --multi-device` |
 |---|---|---|
 | **Loopback / container legs** | Captured | **Missed unless you name those interfaces too** |
-| **Link type** | `DLT_LINUX_SLL2` | `DLT_EN10MB` |
-| **Snaplen slot clamp ([Snapshot length](#snapshot-length---snaplen--and-why-it-decides-your-ring-capacity))** | **Never runs** | Runs once offloads are off |
+| **Link type** | `LINUX_SLL2` | `EN10MB` |
+| **MTU-sized TUI ring slot ([Snapshot length](#snapshot-length---snaplen--and-why-it-decides-your-ring-capacity))** | **Never** | Once offloads are off |
 | **64 MiB ring holds** | ~1,000 packets | ~41,000 with offloads off (~1,000 with them on) |
 | **Promiscuous mode** | **Unavailable** | On by default; `--no-promisc` to disable |
 | **Capture threads** | 1 | 1 per named device under `--multi-device` |
@@ -578,8 +456,7 @@ counts.
 - SIP genuinely crosses loopback or container bridges and you have not
   enumerated those interfaces.
 - The drop counters from [Are you dropping packets?](#are-you-dropping-packets)
-  read `no drops`. If it is not dropping, it is not costing you anything worth
-  this trade.
+  read `no drops`.
 
 **Name your interfaces** when any of these hold:
 
@@ -607,7 +484,7 @@ Then name those interfaces and open them in parallel:
 sudo sipnab -N -d eth0,eth1 --multi-device -B 256 "port 5060 or port 5061"
 ```
 
-Naming the devices buys all four counts at once:
+Naming the devices addresses all four costs:
 
 - The slots are now clamped to MTU+18. So the same 64 MiB holds tens of
   thousands of packets instead of ~1,000.
@@ -615,18 +492,16 @@ Naming the devices buys all four counts at once:
 - There is one capture thread per interface.
 - Nothing goes to `docker0`.
 
-Neither half works alone:
+The smaller slot needs both steps:
 
-- `any` cannot reach the clamp however you set `ethtool`.
-- A named device with offloads on is still stuck at ~65 KB slots
+- On `any`, the slot stays at the full snapshot length whatever the `ethtool`
+  settings.
+- A named device with offloads on still has slots of about 65 KB
   ([Snapshot length](#snapshot-length---snaplen--and-why-it-decides-your-ring-capacity)).
 
-**Verify you did not lose a leg.**
-
-- This is a deliberate trade of coverage for throughput.
-- And the failure mode is silent — calls do not error, they just stop being
-  complete.
-- Before you keep it, confirm the interface list is right:
+**Check that no call leg is missing.** A leg on an interface you did not name
+is not captured, and sipnab reports no error for it. List the interfaces and
+their addresses:
 
 ```bash
 ip -brief address
@@ -644,7 +519,8 @@ If any SIP endpoint answers on `127.0.0.1` or a container bridge, add `lo` or
 ## Give sipnab less work
 
 - `--no-rtp` — skip RTP/RTCP entirely when you only care about signaling.
-  - RTP is ~93% of carrier traffic by packet count.
+  - A call with media carries far more RTP packets than SIP messages. In
+    `sip-rtp-g711.pcap` from the test samples, 839 of the 852 packets are RTP.
   - So this is the largest single reduction available short of a BPF filter.
 - `--no-dialog` — skip dialog reconstruction.
 - `-N` / `--no-tui` — do not render a TUI you are not watching.
@@ -691,28 +567,13 @@ Where to check:
 - The second line of `sipnab --version` names the libpcap your binary runs and
   the alternate backends its banner names.
 
-Version notes:
-
-- On 0.5.183 and earlier, the musl tarballs' netmap module speaks only netmap
-  API 13. Current netmap kernel modules refuse it.
-- 0.5.184 moves to API 14.
-- That page has the details. They include a crash on 0.5.188 and earlier when a
-  `netmap:` capture that has captured traffic sees a frame its filter drops.
+That page also lists which sipnab versions support netmap on each artifact.
 
 > **Warning:** use a `netmap:` device only on an interface dedicated to
 > capture, such as a SPAN or mirror port. Never use it on one the host needs.
 > netmap takes the interface's rings away from the kernel. So the host stops
-> receiving that interface's traffic for as long as the capture runs.
->
-> Measured on a veth pair:
->
-> - a UDP socket on the host received 0 of 5 datagrams during a `netmap:`
->   capture;
-> - it received 5 of 5 during an ordinary capture on the same interface.
->
-> On the interface carrying your SIP service, that is an outage.
-
-No other measurement on this page went through netmap.
+> receiving that interface's traffic for as long as the capture runs. On the
+> interface that carries your SIP service, that stops the service.
 
 ---
 
@@ -723,36 +584,27 @@ matches your run.
 
 Reading files (`-I`), it is N parallel reconstruction workers.
 
-- They are sharded by host pair.
-- Each has its own dialog and RTP-stream stores.
-- That is the case this section measures.
+- sipnab assigns packets to workers by host pair.
+- Each worker has its own dialog and RTP-stream stores.
 
 ```bash
-sipnab -N -I /var/captures/ --cores 4 --report
+sipnab -N -I capture.pcap --cores 4 --report
 ```
 
-Measured on the reference corpus ([benchmarks](benchmarks.md)):
+```text
+… INFO sipnab::parallel: Reading from 'capture.pcap'
+… INFO sipnab::capture::file: Read 852 packets: 1 of 1 file(s) read in full
+Call-ID                          From           To             State        Code   Duration   Msgs   PDD      Tags
+-------------------------------------------------------------------------------------------------------------------------
+1-1966@10.0.2.20                 sipp           test           Completed    200    8s         6      -        -
+1-1968@10.0.2.20                 sipp           test           InCall       200    0s         4      -        -
+…
+… INFO sipnab::app::batch: sipnab: 852 packets, 10 SIP messages, 839 RTP packets across 2 streams (4 cores)
+```
 
-- 1.13M pkts/s at one core;
-- 2.17M at two;
-- 3.23M at four;
-- 3.24M at eight.
-
-The curve flattens after four rather than declining.
-
-- So **four cores buys nearly all of it and eight buys almost nothing more**.
-- The gap between them is inside the noise of a single sweep.
-
-Read the flattening as the shape it is.
-
-- Four cores is where the returns stop, not a ceiling the eighth core falls
-  off.
-- Asking for eight costs the extra workers' memory for a throughput figure that
-  does not move.
-
-The workers compute the frame-provenance digest rather than the sequential
-reader. So that cost scales with the core count instead of capping every count
-at once.
+The closing line names the worker count. On the reference corpus, throughput
+stops rising beyond four workers. Extra workers add memory without adding
+speed. [Benchmarks](benchmarks.md) has the measured figures.
 
 ### On a live device it means capture sockets, not workers
 
@@ -760,11 +612,10 @@ at once.
 `AF_PACKET` sockets through `PACKET_FANOUT`.
 
 - Each socket gets its own ring and its own drain loop.
-- That is the thing a ring that keeps overflowing actually needs.
-- A bigger `-B` buys a deeper ring and still leaves one thread emptying it.
+- A bigger `-B` gives a deeper ring that one thread still empties alone.
 - Linux only. Elsewhere sipnab captures on one socket and logs the reason.
 
-Three things to know before reaching for it.
+Before you use it:
 
 - **It widens capture, not analysis.**
   - Every socket feeds the same channel and the same processing loop.
@@ -773,11 +624,9 @@ Three things to know before reaching for it.
   - N sockets ask the kernel for N rings of that size.
   - So `--cores 8` at the 64 MiB default reserves half a gigabyte.
   - sipnab states the total out loud when it opens the group.
-- **sipnab probes first, then commits.**
-  - A kernel that refuses `PACKET_FANOUT` refuses it for every socket.
-  - So sipnab tests one throwaway handle, warns, and falls back to a single
-    socket.
-  - It does not let N threads each discover it.
+- **A kernel that refuses `PACKET_FANOUT` gets one socket.**
+  - sipnab tests `PACKET_FANOUT` on one socket first. If the kernel refuses it, sipnab
+    logs a warning and captures on a single socket.
 
 ```bash
 sudo sipnab -N -d eth0 --cores 4 -B 32 "port 5060 or port 5061"
@@ -811,8 +660,9 @@ Note that this already makes the interface choice from [Which interfaces: `any` 
 
 Then read the drop line at the end.
 
-- If it says `no drops`, stop there. You can walk the settings *back* to
-  recover fidelity.
+- If it says `no drops`, stop there. You can then undo settings one at a
+  time, for example the snaplen, while the line still says `no drops`.
+
 - If it does not, work down these in that order:
   - [The kernel capture buffer](#the-kernel-capture-buffer--b----buffer)
   - [Capture less: BPF filters](#capture-less-bpf-filters)

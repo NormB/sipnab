@@ -10,7 +10,7 @@ source = "CONTRIBUTING.md"
 
 ## Orientation
 
-Start with [docs/architecture.md](https://github.com/NormB/sipnab/blob/main/docs/architecture.md). It has the module
+Start with [docs/internals/code-map.md](https://github.com/NormB/sipnab/blob/main/docs/internals/code-map.md). It has the module
 map, the data flow, and the "where to add things" table.
 
 Then read the **[developer index](https://github.com/NormB/sipnab/blob/main/docs/internals/README.md)**. It is the

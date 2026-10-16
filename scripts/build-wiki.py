@@ -128,6 +128,13 @@ PAGES: dict[str, str] = {
     "internals/rtpengine-control-plane.md": "Internals-Rtpengine-Control-Plane",
     "internals/relay-control-decoding.md": "Internals-Relay-Control-Decoding",
     "internals/vcon.md": "Internals-vCon-Exporter",
+    "internals/operator-guide-notes.md": "Internals-Operator-Guide-Notes",
+    "internals/postmortems.md": "Internals-Postmortems",
+    "internals/code-map.md": "Internals-Code-Map",
+    "internals/lint-rules.md": "Internals-Lint-Rules",
+    "internals/encapsulation-decoding.md": "Internals-Encapsulation-Decoding",
+    "internals/mcp.md": "Internals-MCP-Design-Notes",
+    "internals/metrics-and-output-notes.md": "Internals-Metrics-And-Output-Notes",
 }
 
 # Sidebar grouping: (section title, [source paths]), ordered by user journey —
@@ -182,7 +189,14 @@ GROUPS: list[tuple[str, list[str]]] = [
                                  "internals/uprobe-capture.md",
                                  "internals/rtpengine-control-plane.md",
                                  "internals/relay-control-decoding.md",
-                                 "internals/vcon.md"]),
+                                 "internals/vcon.md",
+                                 "internals/operator-guide-notes.md",
+                                 "internals/postmortems.md",
+                                 "internals/code-map.md",
+                                 "internals/lint-rules.md",
+                                 "internals/encapsulation-decoding.md",
+                                 "internals/mcp.md",
+                                 "internals/metrics-and-output-notes.md"]),
 ]
 
 LINK_RE = re.compile(r"\]\(\s*([^)\s]+?\.md)(#[^)\s]*)?\s*\)")

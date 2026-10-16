@@ -1,7 +1,7 @@
 +++
 title = "Decrypt SIP over TLS when the keys arrive after the call starts"
 date = 2026-08-21
-updated = 2026-10-11
+updated = 2026-10-16
 description = "Run sipnab so that it holds encrypted SIP records captured before their keys and decrypts them when the keys arrive, read what it reports about them, and recover the rest from a saved capture."
 
 [extra]
@@ -33,12 +33,12 @@ adding to during the capture. Examples:
 
 ## Before you start
 
-No TLS capture with late keys ships in the sipnab repository. So this page
-shows the commands without output.
-
-- The messages quoted in the step about held records come from the sipnab
-  source.
-- The number in each is a count that depends on the run.
+- Holding records until their keys arrive needs sipnab 0.5.120 or later, built
+  with the `tls` feature. `sipnab --version` lists the features of your build.
+- No TLS capture with late keys ships with sipnab. So this page shows the
+  commands without output.
+  - The messages quoted in the step about held records show `N` where sipnab
+    prints a count for the run.
 - [Capture SIP over TLS](@/docs/tls-capture.md#which-method-can-you-use)
   covers choosing a key source.
 
@@ -53,8 +53,7 @@ sipnab after it.
   completes.
 - So the first application record is on the network before any key for it
   exists.
-- sipnab's 0.5.120 release notes record a gap of 56 ms measured in the field.
-- Holding records (the next step) covers a gap of that size.
+- Holding records (the next step) covers a gap of up to 5 seconds per record.
 - It does not cover:
   - traffic that passed before the capture started,
   - keys the writer never produced.
@@ -145,53 +144,28 @@ In this read sipnab loads every key before the first packet.
 - sipnab holds nothing.
 - `--portrange 1-65535` makes sure that sipnab reads SIP on any port.
 
-## What changed in sipnab 0.5.120 and 0.5.121
+### Check the call in the decrypted result
 
-Dan Jenkins ([@danjenkins](https://github.com/danjenkins)) reported a
-problem.
+After the run, or after the re-read, check that the call starts with its
+INVITE and that its audio offer is present.
 
-- sipnab decrypted his SIP over TLS traffic except for the INVITE.
-- Then it reported a NAT problem on a trunk that did not have one.
+- sipnab reassembles a SIP message that spans two TLS records, as it does for
+  SIP over plain TCP.
+- sipnab skips TLS 1.3 session tickets (`NewSessionTicket` messages). They do
+  not take the place of the next SIP message.
+- A call still reported with a media or NAT problem after the re-read has
+  that problem in the capture. The cause is not a missing INVITE.
 
-The 0.5.120 release (2026-08-21) fixed three causes:
+## Use a HEP feed and the network together
 
-- **Records that arrived before their keys**: sipnab dropped them.
-  - It now holds and retries them as described above.
-  - A retry tries the record sequence number sipnab already has.
-  - It never advances its search for the number. That rule is Dan Jenkins's.
-  - Without it, failed retries moved the search past sequence 0, where the
-    INVITE is.
-  - sipnab computed a related flag when it created the session. The flag
-    marks a session's handshake as seen.
-  - With a complete key log, sipnab creates sessions before it reads the
-    first packet. So the flag was always false.
-  - sipnab now sets it when the handshake arrives.
-- **A SIP message split across two TLS records** lost everything after the
-  first record.
-  - Decrypted bytes now go through the same stream framing as SIP over plain
-    TCP.
-- **TLS 1.3 session tickets** (`NewSessionTicket` messages): sipnab passed them
-  to the SIP parser.
-  - That cost the next message.
-  - sipnab now checks each record's inner content type
-    ([RFC 8446 section 5.2](https://www.rfc-editor.org/rfc/rfc8446.html#section-5.2)).
-
-The release notes record the result on the reproduction capture Dan Jenkins
-supplied:
-
-- Before: 0 of 17 application-data records decrypted in 32.9 seconds.
-- After: all 8 messages of the call, the INVITE with its SDP offer, in 0.55
-  seconds.
-
-The 0.5.121 release (2026-08-21) added a report for a run that takes SIP from
-a HEP mirror and from the network at the same time. Per call, it shows:
+A SIP server can send copies of its messages to sipnab over HEP while sipnab
+also captures the network. sipnab then reports, per call:
 
 - messages both sources saw,
 - messages only one of them saw,
 - messages present in both with different SDP.
 
-Dan Jenkins used the two sources together. He then proposed that the two
-sources count as complementary rather than as copies of each other. See
+This needs sipnab 0.5.121 or later. See
 [cookbook recipe "Take signaling from HEP and media off the wire, in one process"](@/docs/cookbook.md#take-signaling-from-hep-and-media-off-the-wire-in-one-process).
 
 ## Terms used here

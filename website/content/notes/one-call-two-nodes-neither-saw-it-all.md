@@ -1,7 +1,7 @@
 +++
 title = "Join the two legs of a call that crossed a B2BUA"
 date = 2026-09-01
-updated = 2026-10-11
+updated = 2026-10-16
 description = "How to find the second Call-ID of a call that a back-to-back user agent re-originated, and how to tell an identifier match from a timing guess."
 
 [extra]
@@ -57,13 +57,13 @@ call from one box to the next, either by hand or through an AI agent.
    printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"cli","version":"1"}}}' '{"jsonrpc":"2.0","method":"notifications/initialized"}' '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"find_correlated","arguments":{"call_id":"b2bua-caller-synth@203.0.113.1"}}}' | sipnab --mcp -N --quiet --node-name sbc-edge-1 -I tests/pcap-samples/b2bua-asterisk.pcapng | jq 'select(.id==2) | .result.structuredContent'
    ```
 
-   Output on sipnab 0.5.211:
+   Output on sipnab 0.5.222:
 
    ```text
    {
      "capture_identity": {
        "dialog_generation": 64,
-       "instance": "6388918dda16675c34b4e-2",
+       "instance": "11a27d18df00183004ae34-2",
        "node": "sbc-edge-1",
        "stream_generation": 2
      },
@@ -84,7 +84,7 @@ call from one box to the next, either by hand or through an AI agent.
      "timing_clock": {
        "available": true,
        "est_error_us": 0,
-       "max_error_us": 36000,
+       "max_error_us": 523500,
        "synchronized": true
      },
      "total_matched": 1
@@ -119,7 +119,7 @@ call from one box to the next, either by hand or through an AI agent.
    {
      "capture_identity": {
        "dialog_generation": 13,
-       "instance": "63aff18dda16824bb76ea-2",
+       "instance": "11a4c818df00195f1a1a56-2",
        "node": "sbc-edge-1",
        "stream_generation": 2
      },
@@ -135,7 +135,7 @@ call from one box to the next, either by hand or through an AI agent.
      ],
      "schema_version": 1,
      "source_call_id": "1-1966@10.0.2.20",
-     "source_exhausted": true,
+     "source_exhausted": false,
      "source_stopped_early": false,
      "timing_clock": null,
      "total_matched": 1
@@ -147,6 +147,9 @@ call from one box to the next, either by hand or through an AI agent.
    - An identifier matched (`identifier_match: true`).
    - `observed_gap_ms` is `null` because sipnab used no timing.
    - `timing_clock` is `null` because no leg needed it.
+   - `source_exhausted` is `false`: the call arrived before sipnab finished
+     reading the file. The answer is a lower bound. More legs can match once
+     sipnab has read the whole capture.
 
    sipnab has seven strategies.
 
@@ -175,8 +178,7 @@ call from one box to the next, either by hand or through an AI agent.
      reads.
    - `max_error_us` is the kernel's upper bound on that clock's error, in
      microseconds.
-   - It changes from reading to reading. Three runs on one host on 2026-10-11
-     reported 1017000, 36000 and 16500.
+   - It changes from reading to reading on the same host.
    - The time window for a timing match is 2000 ms, unless
      `--leg-correlation-window <MS>` sets another value.
    - A `max_error_us` near that window means a timing match across hosts proves
@@ -212,15 +214,22 @@ call from one box to the next, either by hand or through an AI agent.
    sipnab --mcp -N --mcp-transport http --mcp-bind 127.0.0.1:8731 --node-name sbc-edge-1 -d eth0
    ```
 
-   This form needs capture privileges on `eth0`. So it was not run for this
-   note.
+   Capturing on `eth0` needs capture privileges: root, or the capabilities
+   that `--setup-caps` grants. To try the server against a file first, replace
+   `-d eth0` with `-I` and a capture. This example also uses another port:
 
-   A second run used the same arguments with two changes:
+   ```bash
+   sipnab --mcp -N --mcp-transport http --mcp-bind 127.0.0.1:28731 --node-name sbc-edge-1 -I tests/pcap-samples/b2bua-asterisk.pcapng
+   ```
 
-   - `-I tests/pcap-samples/b2bua-asterisk.pcapng` in place of `-d eth0`,
-   - port 28731.
+   It logs this line when it is ready, and runs until you press Ctrl-C:
 
-   It started and logged `MCP HTTP server listening on 127.0.0.1:28731`.
+   ```text
+   2026-10-16T11:48:31.121350Z  INFO sipnab::mcp::transport::http: MCP HTTP server listening on 127.0.0.1:28731
+   ```
+
+   If another program holds the port, sipnab logs `MCP HTTP cannot bind` with the address
+   and the operating system's reason, and exits with status 2.
 
 ## Limits
 

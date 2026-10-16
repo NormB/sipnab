@@ -53,16 +53,36 @@ Already written, and narrower:
   - the one thing tracefs cannot do without eBPF.
 - [TUI testing](tui-testing.md) — snapshot and state testing for the terminal
   UI.
+- [Code map](code-map.md) — what lives where in the source tree, the design
+  decisions behind its shape, and where to add things.
+- [Conformance linter design notes](lint-rules.md) — why each SIP conformance
+  rule cites the section it cites, and what the validation corpus measured.
+- [Encapsulation decoding](encapsulation-decoding.md) — the rule every
+  decapsulator follows, the EtherType sources, and the byte offsets the
+  generated capture filter probes.
 - [The vCon exporter](vcon.md) — writing one observed dialog as a vCon
   container. It covers:
   - which sipnab type feeds each section;
   - the completeness caveat carried in two surfaces from one value, and the test that fails if they diverge;
   - the deterministic UUIDv8 and its collision window;
   - a credential filter that removes nothing today on purpose.
+- [Operator guide engineering notes](operator-guide-notes.md) — the record
+  behind the operator guides: why each limit exists, the release that changed
+  it, and the measurements behind it.
+- [Incident record](postmortems.md) — what went wrong in sipnab
+  and in its build, test and release tooling, why, what changed, and how to
+  check it. It also holds the source locations, version history and
+  measurements that the website's how-to and feature notes no longer carry.
+- [MCP server design notes](mcp.md) — why the MCP server behaves as it does:
+  the reasons, history and internal names behind the limits, refusals and
+  response shapes the operator pages under `docs/mcp*.md` describe.
+- [Metrics and output notes](metrics-and-output-notes.md) — the record behind
+  the Prometheus metrics and output format pages: why each series and field is
+  shaped as it is, and its history.
 
 Other starting points:
 
-- The one-screen map of the tree is [`../architecture.md`](../architecture.md).
+- The one-screen map of the tree is [the code map](code-map.md).
 - Contributor mechanics (setup, hooks, PR expectations) are in
   [`CONTRIBUTING.md`](../../CONTRIBUTING.md).
 - Failure behavior — what sipnab does when something goes wrong — is [the fault model](../fault-model.md).
@@ -70,7 +90,7 @@ Other starting points:
 ## The corpus: Live vs archaeological
 
 The long design documents live in `docs/design/` and `docs/research/`.
-The codemap is one level up in `docs/` itself.
+The codemap is [`code-map.md`](code-map.md), on this level.
 
 - They are not all current.
 - Reading the wrong one as current is the main trap here.
@@ -79,7 +99,7 @@ The codemap is one level up in `docs/` itself.
 
 | Document | What it is |
 |---|---|
-| [`../architecture.md`](../architecture.md) | The codemap: module layout, data flow, and the design decisions that still hold. Maintained; a phantom flag in it fails `docs_drift_test`. |
+| [`code-map.md`](code-map.md) | The codemap: module layout, data flow, and the design decisions that still hold. Maintained; a phantom flag in it fails `docs_drift_test`. |
 | [`../design/maintainability-perf-spec.md`](../design/maintainability-perf-spec.md) | The rationale behind the current shape of the code — why one pipeline replaced four, why `main.rs` broke up into [`src/app/`](../../src/app/). Sections 0–9 are the 2026-07-03 review of v0.4.18 and read as history; the unnumbered section at the end, ["WS8 — 0.5.16 benchmark re-validation follow-ups"](../design/maintainability-perf-spec.md#ws8--0516-benchmark-re-validation-follow-ups-2026-07-20-aarch64), is the only live section — read it before any performance work. |
 | [`docs/design/backlog.md`](../design/backlog.md) | How the backlog works, and the four states an item can be in. The working list itself is local and uncommitted (`docs/design/backlog.local.md`), so this page carries the convention rather than the items. |
 | [`../design/lessons.md`](../design/lessons.md) | Four defects that reached a release, each with the rule derived from it: TUI state no renderer read, feature flags gating nothing, config parsed and never used, and the 2026-05-05 audit that found four blocking and ~17 major doc drifts accumulated since 0.3.1. Its cheap-regression greps still hold, though one of them carries a field count that has drifted: it calls 30 current, while `FIELD_NAMES` in [`../../src/sip/dsl.rs`](../../src/sip/dsl.rs) lists 33 and `parse_field` accepts every one of them. Count the constant, not the comment. |

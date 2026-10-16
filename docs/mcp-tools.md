@@ -17,19 +17,17 @@ This is lookup material, not reading material.
 - [MCP protocol](mcp-protocol.md) — the wire contract, security model and error semantics.
 
 
-The v0.5 sipnab MCP tool surface. No tool edits the analysis in place, and
-every response carries a ceiling.
+No tool edits the analysis in place, and every response carries a row
+ceiling.
 
-That ceiling defaults to 1000 rows. It is an operator setting, not a
-build-time fact.
+That ceiling defaults to 1000 rows and is an operator setting:
 
 - Set it with `--mcp-max-rows N`, or `[limits]
   mcp_max_rows` in the config file. The flag wins.
-- The right value belongs to the consumer.
-  - A model with a small context window wants far fewer.
-  - A batch client piping to a file wants far more.
-- Note this is a DIFFERENT limit from `dialog_limit`. That one bounds dialogs
-  tracked over the whole run, and defaults 100x higher.
+- Lower it for a model with a small context window; raise it for a batch
+  client that writes answers to a file.
+- It is a different limit from `dialog_limit` (`--limit`, default 100000),
+  which bounds the dialogs tracked over the whole run.
 
 One tool replaces the analysis outright: `open_capture`, off unless you enable
 it. It mints a new capture identity. So the replacement cannot reach a
@@ -78,12 +76,20 @@ takes a comma-separated list of:
 - **your own bundles**, defined under `[mcp.bundles]` in the config file.
 - **`full`**, every tool. This is the default.
 
-sipnab refuses to start, exit 2, when a name is unknown or empty. It then lists
-the valid bundles. Names are case-sensitive.
+sipnab refuses to start, exit 2, when a name is unknown or empty, and lists
+the valid bundles. Names are case-sensitive. With `--mcp-tools core,bogus`:
+
+```text
+--mcp-tools: unknown tool or bundle 'bogus'; bundles: core, signaling, captures, security, media, relay, tfps, server, vcon, tls, or full; tool names are listed in the MCP tool reference
+```
 
 The handshake's `instructions` string names the tools sipnab loaded and the
-bundles it left out. So an agent that misses a tool can tell the operator
-which bundle holds it.
+bundles it left out, so an agent that misses a tool can tell the operator
+which bundle to add. Under `--mcp-tools core` it ends:
+
+```text
+Tools loaded: core. Other bundles, which the operator can add with --mcp-tools or [mcp] tools: signaling, captures, security, media, relay, tfps, server, vcon, tls.
+```
 
 Output schemas are **off by default**.
 
@@ -122,14 +128,11 @@ resource.
 Bytes are the compact JSON of each tool's `tools/list` entry, summed over the
 bundle.
 
-> **Measured on sipnab 0.5.221** on a build with every feature, after the
-> `filter` parameters gained "Values may be bare or quoted."
+> **Measured on sipnab 0.5.222** on a build with every feature.
 >
 > - Sizes, tool counts and bundle membership may change in later releases.
 > - A build without a feature does not register that feature's tools, so its
 >   bundles are smaller.
-> - The test `each_bundle_stays_within_its_byte_budget` fails when a bundle
->   grows past its recorded ceiling. Update this table in the same change.
 
 ## Find a tool by name
 
@@ -293,13 +296,14 @@ calls.**
 - Under `--mcp-tools core`, `prompts/list` returns no prompt. Each one calls
   at least one tool outside `core`.
 - `prompts/get` refuses a prompt it does not serve with error -32602. The
-  message names the tools the server does not register and the bundles that
-  hold them.
-- sipnab hides the prompt rather than serving it with a note. A step that
-  names a tool the client cannot call fails with "tool not found" in the
-  middle of the workflow.
-- A tool counts as loaded when the server registers it. So a tool the build
-  does not carry also hides the prompts that call it.
+  message names the tools the server does not load and the bundles that
+  hold them:
+
+  ```json
+  {"code":-32602,"message":"prompt 'triage-outage' is not served: it calls show_evidence, which this server does not load. Add the bundle(s) captures with --mcp-tools or [mcp] tools. Served: ","data":{"param":"name","reason":"not_enabled"}}
+  ```
+
+- A tool the build does not carry also hides the prompts that call it.
 
 ## Rules every tool follows
 
@@ -404,11 +408,35 @@ Until then the response omits `truncated: false` entirely.
 - `complete`, where a tool has one, likewise never reads `true` over a partial
   read.
 
-A file source loads on a background thread. So an agent's first call lands
-inside a window a human client never sees. On a 921 MB capture,
-`list_dialogs` answered with 6 of 18,241 dialogs. `tail_dialogs` and
-`capture_status` have always carried `source_exhausted`. Now every tool that
-answers from the capture does.
+A file source loads on a background thread, so a call made right after the
+server starts can answer from part of the file. This sends `list_dialogs` with
+no pause, against a sample capture that holds 1334 dialogs:
+
+```bash
+printf '%s\n' \
+  '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"shell","version":"0"}}}' \
+  '{"jsonrpc":"2.0","method":"notifications/initialized"}' \
+  '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"list_dialogs","arguments":{}}}' \
+  | sipnab --mcp -N -I tests/pcap-samples/sipp-branch-scenario.pcapng --quiet \
+  | jq -c 'select(.id == 2) | .result.content[0].text | fromjson | {returned, total_matched, truncated_by, source_exhausted}'
+```
+
+```json
+{"returned":33,"total_matched":33,"truncated_by":null,"source_exhausted":false}
+```
+
+`jq` prints `null` for `truncated_by` because the response leaves that field
+out. The counts vary from run to run with how far the load had got. The same
+call
+sent two seconds after `notifications/initialized`:
+
+```json
+{"returned":50,"total_matched":1334,"truncated_by":"rows","source_exhausted":true}
+```
+
+When `source_exhausted` is `false`, `total_matched` counts only what had
+loaded. Repeat the call, or poll `capture_status` until `source_exhausted`
+reads `true`, before treating a count as final.
 
 Twenty-one tools are the exception, because their answer cannot move with
 the load. How much of the capture sipnab has read says nothing about what
@@ -439,10 +467,10 @@ in `markdown` and `text`. So they say it in prose instead.
 - A document drawn over a capture read in full says nothing extra. A caveat on
   every answer is a caveat nobody reads.
 
-Every other tool answers with a JSON object. So the two booleans sit in the
+Every other tool answers with a JSON object, and the two booleans sit in the
 object beside the tool's own fields.
-[`timeline`](mcp-tools-signaling.md#timeline) was the last one returning a
-bare array. It now wraps its rows in an object for exactly this reason.
+[`timeline`](mcp-tools-signaling.md#timeline), for example, returns its
+`buckets` inside an object that carries both.
 
 **Capture text arrives fenced, and identifiers do not.**
 
@@ -460,35 +488,38 @@ where the server really emits them.
 ### Narrowing a row with `fields`
 
 `list_dialogs`, `find_problems`, `tail_dialogs` and `search_by_time` take an
-optional `fields` array.
+optional `fields` array. Each row then carries only the fields you name, which
+makes a large page smaller. `limit`, `--mcp-max-rows` and cursors bound the
+number of rows, and `fields` bounds what each row carries.
 
-- This surface already bounds rows three ways: `limit`, `--mcp-max-rows`, and
-  cursors.
-- It bounded columns not at all.
-- So asking for a page to read two values off it still paid for every other
-  value on every row.
+Ask for two fields on each dialog in the paging sample capture from
+Reproduce the examples below:
 
-```jsonc
-// list_dialogs { "limit": 200, "fields": ["state", "final_status_code"] }
-{ "call_id": "1-1966@10.0.2.20", "state": "Completed", "final_status_code": 200 }
+```json
+{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"list_dialogs","arguments":{"limit":2,"fields":["state","final_status_code"]}}}
 ```
 
-Three rules, each there for a reason:
+The `dialogs` array in the answer:
 
-- **`call_id` always survives**, listed or not. Every follow-up tool here takes
-  a Call-ID. A row an agent cannot address is a row it can do nothing with.
-- **An unknown name fails.** The error names both the typo and the fields the
-  row actually carries. Silently returning rows without the field asked for
-  reads as "no such data". That is a wrong answer rather than an error.
-- **The envelope is never projected.**
-  - `total_matched`, `truncated`, `next_cursor` and `capture_identity` are how
-    a caller knows what it did NOT get.
-  - Dropping them to save bytes would trade away the very thing the bounds
-    exist to report.
+```json
+[{"call_id":"call-1-synth@192.0.2.10","final_status_code":403,"state":"Registered"},{"call_id":"call-2-synth@192.0.2.10","final_status_code":403,"state":"Registered"}]
+```
 
-A field already absent from a row stays absent rather than reappearing as
-null. The projection runs on the serialized page. So `skip_serializing_if`
-still decides what exists.
+The rules:
+
+- **`call_id` is always kept**, listed or not, so you can pass every row to a
+  follow-up tool.
+- **An unknown name fails** with `invalid_params` (-32602). The message and
+  `data.valid_values` list the fields the row carries:
+
+  ```json
+  {"code":-32602,"message":"unknown field 'stat'; this row carries: call_id, created_at, duration_sec, final_status_code, frame, from_user, input_origin, method, msg_count, state, timing, to_user, updated_at","data":{"param":"fields","reason":"invalid_choice","valid_values":["call_id","created_at","duration_sec","final_status_code","frame","from_user","input_origin","method","msg_count","state","timing","to_user","updated_at"]}}
+  ```
+
+- **The page fields are always kept.** `total_matched`, `truncated`,
+  `next_cursor` and `capture_identity` stay on the response whatever `fields`
+  names.
+- A field a row does not carry stays absent. It does not appear as `null`.
 
 ### File tools — the shared rule
 
@@ -506,24 +537,25 @@ They take a **bare filename, never a path**.
   half of a frame pointer through the same guard.
 
 sipnab refuses `../x`, `/etc/passwd` and `sub/dir.pcap` before any filesystem
-call. That is the whole security model, and it is deliberately absolute. A
-tool accepting an agent-supplied path is an arbitrary file write, not an
-export.
+call, with `invalid_params` and `data.reason` `path_refused`:
 
-Name checking alone does not finish the job, so sipnab does one more thing.
+```json
+{"code":-32602,"message":"'../x' is not a bare filename. These tools take a name, not a path, and write only inside the configured --mcp-file-root.","data":{"reason":"path_refused"}}
+```
 
-- A symlink already sitting in the root is a single bare component.
-  - It passes every check above.
-  - The kernel follows it when the file opens.
-- sipnab therefore compares the resolved path against the root in its fully
-  resolved form.
-- It refuses a name by where it points rather than by how someone spelled it.
-- Each tool returns the resolved path. So a caller learns where the bytes
-  actually went.
+sipnab also refuses a symbolic link inside the root that resolves outside the
+root. It checks where the name points, not how the caller wrote it:
 
-That escape needed prior write access inside the root. So it never amounted
-to a remote break. sipnab closes it because this reference calls the boundary
-absolute, and a boundary described that way ought to be.
+```json
+{"code":-32602,"message":"'link' resolves outside the configured --mcp-file-root. The name is a link to '/tmp', and these tools write only inside the root.","data":{"reason":"path_refused"}}
+```
+
+Each tool returns the resolved path of the file it wrote. Without
+`--mcp-file-root`, every file tool answers `not_enabled`:
+
+```json
+{"code":-32602,"message":"file tools are disabled: start sipnab with --mcp-file-root <DIR> to enable them","data":{"reason":"not_enabled"}}
+```
 
 > **The boundary stops an escape, and an overwrite.** Inside the root, these
 > refuse a filename that already exists:
@@ -532,20 +564,15 @@ absolute, and a boundary described that way ought to be.
 > - `generate_repro`'s `filename`,
 > - `shutdown_server`'s `save_to`.
 >
-> They name the file and ask for one that is free. sipnab declines to write
-> over a file it did not create, because that file may hold the only copy of a
-> capture. Call
+> They name the file and ask for one that is free (`data.reason`
+> `already_exists`). Choose another name, or call
 > [`list_captures`](mcp-tools-captures.md#list_captures) to see which names a
 > directory already uses.
 >
-> The guard covers every capture in the root, not only the one the run is
-> reading. Narrowed to the current capture, it would miss these:
->
-> - the others staged there for
->   [`open_capture`](mcp-tools-captures.md#open_capture),
-> - every earlier export.
->
-> Those would then fall to a name collision on a call that reports success.
+> The guard covers every file in the root, not only the capture the run is
+> reading: the captures staged there for
+> [`open_capture`](mcp-tools-captures.md#open_capture) and every earlier
+> export keep their contents too.
 
 ### Tool argument enums
 
@@ -556,25 +583,28 @@ Defaults to `["problems"]`. The full vocabulary:
 `codec-asym` · `ptime-asym` · `payload-asym` · `duration-asym` ·
 `late-media`
 
-An unknown alias returns a JSON-RPC *invalid params* error naming the
-bad alias. The same names work as the `list_dialogs` `filter` aliases
-(and as `sipnab --filter` aliases on the CLI).
+An unknown alias returns `invalid_params` (-32602) naming the alias, with
+the vocabulary in `data.valid_values`:
+
+```json
+{"code":-32602,"message":"unknown alias 'bogus'","data":{"param":"kinds","reason":"invalid_choice","valid_values":["problems","slow-setup","short-calls","one-way","nat-issues","codec-asym","ptime-asym","payload-asym","duration-asym","late-media"]}}
+```
+
+The same names work as the `list_dialogs` `filter` aliases (and as
+`sipnab --filter` aliases on the CLI).
 
 **`security_findings.kinds`** matches the rule names sipnab records findings
 under: `scanner`, `fraud`, `digest`, `reg_flood`.
 
-- Note the underscore. The `--alert` rule grammar spells it `reg-flood`, but
-  sipnab records and filters findings as `reg_flood`.
+- Write `reg_flood` with an underscore. The `--alert` rule grammar spells it
+  `reg-flood`, but sipnab records and filters findings as `reg_flood`.
 - Omitted or empty `kinds` returns findings of every kind.
+- sipnab refuses an unknown name and lists the four names. For `reg-flood`
+  the refusal also suggests the underscore spelling:
 
-Both enums **refuse** a name they do not know, and name the vocabulary in the
-refusal.
-
-- `security_findings.kinds` used to accept anything and match nothing.
-- So a name outside those four answered `[]`. Those are the same bytes a
-  quiet capture returns.
-- `reg-flood` was the case that bit. Its refusal now suggests the underscore
-  spelling by name.
+  ```json
+  {"code":-32602,"message":"unknown kind 'reg-flood', expected one of: digest, fraud, reg_flood, scanner (did you mean 'reg_flood'?)","data":{"reason":"invalid_value"}}
+  ```
 
 ### Error model
 
@@ -657,14 +687,9 @@ and the parse error as its text. So that answer carries no `data`.
 | Messages per `get_dialog` page | 100 | the per-call `max_messages`, up to `--mcp-max-rows` |
 | Bytes of one whole paged response | 1048576 | the per-call `max_response_bytes`, up to `--mcp-max-response-bytes` |
 
-**These are defaults, not laws.** The right ceiling belongs to the CONSUMER
-rather than to sipnab.
-
-- An agent with a small context window wants far fewer than a thousand rows.
-- A batch consumer piping to a file wants far more.
-- So no single number serves both.
-
-Raise or lower them with `--mcp-max-rows`, `--mcp-max-body-bytes` and
+Set the ceilings for the client that reads the answers: lower for an agent
+with a small context window, higher for a batch client that writes answers to
+a file. Raise or lower them with `--mcp-max-rows`, `--mcp-max-body-bytes` and
 `--mcp-max-response-bytes`, or the matching `[limits]` keys in the config
 file. The per-call `limit` and `max_response_bytes` narrow an answer below the
 ceiling, and cannot exceed it.
@@ -674,14 +699,9 @@ bounds the response as a whole.
 
 - Fifty `get_dialog` messages that each carry a long SDP body are within both.
   They can still exceed what a small model can read.
-- The byte budget covers that case.
-- Its default of 1048576 bytes (1 MiB) is under twice the largest response
-  measured over the sample captures in `tests/pcap-samples`.
-  - That largest response was 561,420 bytes, `list_dialogs` with
-    `limit: 1000` on `sipp-branch-scenario.pcapng`.
-  - So with the default, no answer on those captures changes.
-- The largest at the default `limit` was 52,809 bytes, a `get_dialog` page on
-  `DTMFsipinfo.pcap`.
+- The byte budget covers that case. Its default is 1048576 bytes (1 MiB).
+  Lower it per call with `max_response_bytes`, or for every call with
+  `--mcp-max-response-bytes`.
 
 A bound is not a loss. These tools each report `total_matched` beside their
 page:
@@ -744,7 +764,7 @@ sipnab -N --mcp --mcp-transport http --mcp-bind 127.0.0.1:8731 \
 ```
 
 ```bash
-# The media examples: one completed call, two RTP streams.
+# The media examples: two calls (one completed, one still in progress at the end of the file) and two RTP streams.
 sipnab -N --mcp --mcp-transport http --mcp-bind 127.0.0.1:8731 \
        --mcp-file-root tests/pcap-samples \
        -I tests/pcap-samples/sip-rtp-g711.pcap
@@ -753,9 +773,7 @@ sipnab -N --mcp --mcp-transport http --mcp-bind 127.0.0.1:8731 \
 Drive either one with the [raw HTTP test](mcp-deploy.md#test-the-http-wire-by-hand) on the deployment page, or point
 a client at `http://127.0.0.1:8731/mcp`. A loopback bind needs no token.
 
-Numbers in the samples are what those captures produce.
-
-- Jitter and MOS come out byte-identical run to run.
-- A file replay reads packet timestamps rather than arrival times.
-- So a value that fails to match points at a real change rather than at
-  timing noise.
+Numbers in the samples are what those captures produce. A file replay reads
+packet timestamps rather than arrival times, so jitter and MOS come out
+identical on every run. A value that does not match points at a change in the
+binary or the capture.

@@ -7,7 +7,7 @@ an estimate from 1.0 to 4.5 of how the call sounded. This page says:
 
 - where that number comes from,
 - which codecs have a published basis for it,
-- and — the part that matters during an incident — **which ones do not**.
+- **which codecs do not**, and how to tell from the output.
 
 The short version:
 
@@ -37,17 +37,44 @@ words:
 | TUI stream detail | the score renders muted rather than in a quality band, annotated `no published Ie` |
 | The in-browser analyzer on sipnab.com | the score renders dimmed and italic, outside the good/fair/poor scale entirely, and the summary counts what it could not score |
 
-The filters are the part that matters most.
+A placeholder is a number in the normal range that means "unknown". A MOS
+bound applied without the grounding test would select streams sipnab could
+not score, so the MOS filters never select an ungrounded stream.
 
-- A placeholder is a *high-looking* number that means nothing.
-- So a MOS bound applied without the grounding test returns every stream
-  sipnab could not score, dressed as a bad call.
-- And an operator working a bad-call list goes down it top to bottom.
+## Tell a scored MOS from a placeholder
 
-## Declaring an impairment factor sipnab does not have
+Read the stream rows of `--json-dialogs`. This capture carries one G.722
+stream:
 
-If you know the `Ie` for a codec on your own network, declare it and sipnab
-scores with it:
+```sh
+sipnab -N -I tests/pcap-samples/sip-rtp-g722.pcap --no-cli-print --json-dialogs | jq -c '.streams[] | {codec, mos, mos_grounded, mos_grounding, mos_note}'
+```
+
+```text
+{"codec":"G722","mos":4.223031873799741,"mos_grounded":false,"mos_grounding":"unpublished","mos_note":"No published ITU-T G.113 impairment value for this codec, and none declared in [media.codec_ie]. The MOS is a placeholder meaning 'unknown', not an estimate."}
+```
+
+`mos_grounded: false` means the `mos` value is the placeholder. Disregard it,
+or declare an impairment factor for the codec as the next section shows.
+
+`--call-report` prints the same verdict in words. For a stream without a
+grounded score its RTP line reads `mos=unknown (unpublished)`:
+
+```sh
+sipnab -N -I tests/pcap-samples/sip-rtp-g722.pcap --call-report 1-2161@10.0.2.20
+```
+
+```text
+…
+  RTP 10.0.2.15->10.0.2.20 G722 SSRC=0x043daaba pkts=425 jitter=0ms loss=0.0% mos=unknown (unpublished)
+…
+```
+
+## Declare an impairment factor for a codec
+
+If you know the `Ie` (equipment impairment factor) for a codec on your own
+network, declare it in the config file and sipnab scores with it. Put this in
+`ie.toml`:
 
 ```toml
 [media.codec_ie]
@@ -55,69 +82,73 @@ G722 = 12.0
 iLBC = 11.0
 ```
 
-Keys match case-insensitively. A declared value must be `>= 0` and `< 95`.
+Keys match case-insensitively. Run with the file:
 
-- At 95 the E-model's loss term vanishes.
-- Above it, more packet loss would *raise* the score.
-- So sipnab refuses the value and names the codec.
+```sh
+sipnab -N -f ie.toml -I tests/pcap-samples/sip-rtp-g722.pcap --no-cli-print --json-dialogs | jq -c '.streams[] | {codec, mos, mos_grounded, mos_grounding, mos_note}'
+```
 
-**A declaration is never reported as a citation.** A declared codec comes back
-as `mos_grounded: true` with `mos_grounding: "operator_declared"`. It also
-carries a note. The note says the figure came from this deployment rather than
-from ITU-T G.113.
+```text
+{"codec":"G722","mos":3.9778406565751645,"mos_grounded":true,"mos_grounding":"operator_declared","mos_note":"ITU-T G.113 publishes no impairment value for this codec; this deployment declared the one used, in [media.codec_ie]. The MOS is an estimate on the operator's figure, not on a published one."}
+```
 
-The distinction is worth keeping because the remedies differ:
+A declared codec reports `mos_grounding: "operator_declared"`, never
+`published`. When a declared score looks wrong, check the value in your
+config file. When a `published` score looks wrong, check where the capture
+point sits on the media path.
 
-- A `published` score that looks wrong means suspecting sipnab's vantage point.
-- A declared one means suspecting a file on your own disk.
+A declared value must be `>= 0` and `< 95`. sipnab refuses any other value,
+names the codec, and exits 1:
 
-A codec nobody declared keeps its old answer. It still scores as the
-placeholder and still says so. That is the point: `[media.codec_ie]` makes
-*some* unknown codecs knowable. It must not make the rest look confident.
+```text
+invalid config value: [media.codec_ie] G722 must be >= 0 and < 95 (at or above that the E-model's loss term goes negative and MORE packet loss would RAISE the score), got 95
+```
+
+A codec nobody declared still scores as the placeholder and still says so.
 
 Declaring one does not rescue AMR-WB. Its published values are on the wideband
 scale. The narrowband model cannot carry them. See [AMR-WB — published, and
 mode-dependent](#amr-wb-published-and-mode-dependent) below.
 
-## MOS comes from what sipnab measured, never from what the far end claimed
+## What sipnab computes the score from
 
-The jitter and loss behind the score come from sipnab's own observation of the
-captured media. sipnab keeps what RTCP asserted separately. It never feeds any
-of it to the score. Two side-tables hold it:
+The loss and jitter behind the score are sipnab's own measurements of the
+captured media. The one-way delay comes from the first of these that exists:
 
-| What the far end sent | Read it via | Carries |
+1. the delay you declare, with `--one-way-delay` or `[media] one_way_delay_ms`;
+2. half the round trip the far end reported in RTCP;
+3. half the round trip sipnab derives from an RTCP receiver report's
+   sender-report echo, which reads as a lower bound;
+4. otherwise 100 ms, labeled `assumed`.
+
+MCP `rtp_stats` names the delay's source in each row's `delay` member.
+
+What the far end reported about loss, jitter and its own quality score never
+moves sipnab's MOS. MCP `rtp_stats` returns it separately, under
+`endpoint_reported`, omitted when no RTCP arrived:
+
+| What the far end sent | Key under `endpoint_reported` | Carries |
 |---|---|---|
-| Reception report (SR/RR, [RFC 3550](https://www.rfc-editor.org/rfc/rfc3550.html)) | `StreamStore::remote_report` | Loss fraction, cumulative loss, interarrival jitter |
-| VoIP Metrics (RTCP XR, [RFC 3611](https://www.rfc-editor.org/rfc/rfc3611.html) Section 4.7) | `StreamStore::remote_voip_metrics` | The endpoint's own R-factor, MOS-LQ and MOS-CQ, burst and gap densities, round-trip and end-system delay, discard rate |
+| Reception report (SR/RR, [RFC 3550](https://www.rfc-editor.org/rfc/rfc3550.html)) | `reception_report` | Loss fraction, cumulative loss, interarrival jitter, round trip |
+| VoIP Metrics (RTCP XR, [RFC 3611](https://www.rfc-editor.org/rfc/rfc3611.html) Section 4.7) | `voip_metrics` | The endpoint's own R-factor, MOS-LQ and MOS-CQ, burst and gap durations, round-trip and end-system delay, loss and discard rates |
 
-The XR block is the stronger evidence of the two, for two reasons:
+The XR discard rate counts packets that arrived at the endpoint and that its
+jitter buffer dropped. Those packets appear in the capture and never reached
+the listener, so no capture can measure them.
 
-- It carries the endpoint's own quality score rather than raw counters.
-- Its discard rate names an impairment no capture can see.
-  - A discarded packet arrived at the endpoint, and the jitter buffer threw it
-    away.
-  - So the packet appears in the file and still never reached the listener.
+sipnab keeps these apart for two reasons:
 
-That makes an XR-reported MOS a third kind of number. The other two are a
-grounded sipnab estimate and a placeholder. `rtp::quality::MosProvenance` names
-all three, so no surface has to guess which one it holds.
-
-Two reasons:
-
-- Nothing authenticates RTCP.
-  - Anything that can reach the port can assert a loss figure.
-  - If that figure moved the MOS, an attacker would control the quality number.
+- Nothing authenticates RTCP. Anything that can reach the port can assert a
+  loss figure.
 - A reception report describes the path *from the sender to that reporter*.
-  - On a mid-path capture, that is a different segment from the one in front of
-    sipnab.
-  - The report may be perfectly true and still not describe the traffic in the
-    file.
+  On a mid-path capture, that is a different segment from the one in front of
+  sipnab.
 
-So a stream's MOS may disagree with the far end's reported MOS. **That
-disagreement is information, not an error** — it localizes the fault.
+So a stream's MOS may disagree with the far end's reported figures, and the
+difference locates the fault:
 
-- If the reporter sees loss and sipnab does not, the loss happened downstream of
-  the capture point.
+- If the reporter sees loss and sipnab does not, the loss happened downstream
+  of the capture point.
 - If sipnab measures loss and the reporter does not, it happened upstream.
 
 ## Why there is more than one scale
@@ -134,11 +165,9 @@ them, and they are **not interchangeable**:
 A wideband 4.42 and a narrowband 4.35 describe different things. **Do not
 average them, plot them on one axis, or compare them against one threshold.**
 
-Feeding a wideband `Ie,WB` into the narrowband equation is not a rough
-approximation. It is a 35.8-point scale error. It produces a plausible,
-confidently wrong number.
-
-This is why AMR-WB is not simply added to the narrowband table alongside G.729.
+A wideband `Ie,WB` in the narrowband equation is a 35.8-point scale error.
+So sipnab scores AMR-WB on the wideband scale, not in the narrowband table
+beside G.729.
 
 ## AMR-WB — published, and mode-dependent
 
@@ -175,19 +204,19 @@ G.113 (09/2024) Table IV.3.
 | 6.6 | 56 | 2.92 |
 
 Three modes — 19.85, 18.25 and 14.25 — have **no published diotic value**.
-sipnab returns nothing for them rather than interpolating. The reason: the
-series they sit in is not monotonic, and neighbors do not bound them.
+sipnab returns no score for them and does not interpolate: the series they
+sit in is not monotonic, so their neighbors do not bound them.
 
-Two things about these tables surprise people, and both are real:
+Two properties of these tables to keep in mind:
 
 - **23.85 kbit/s scores worse than the slower 23.05.** `Ie,WB` is 8 against 1.
-  - The inversion recurs across Tables IV.1, IV.3 and IV.4. So it reflects
-    published intent.
+  - The inversion recurs across Tables IV.1, IV.3 and IV.4.
   - Do not rank AMR-WB modes by bitrate and expect quality to follow.
 - **Listening context is worth up to 15 R-points** — about 0.59 MOS at
   6.6 kbit/s.
-  - It is an explicit input with no default.
-  - Assuming one would be a bigger error than most impairments in the model.
+  - sipnab reads wideband scores as monotic (a handset) unless
+    `[media] listening_context = "diotic"` says otherwise.
+  - Every wideband score names the context sipnab read it in.
 
 ### Under packet loss, most of it is not computable
 
@@ -196,8 +225,7 @@ modes, diotic only, uniform loss only** — 23.85, 23.05 and 12.65. G.113 states
 that no values exist for non-uniform loss or for monotic presentation.
 
 So **sipnab cannot score AMR-WB with packet loss on a handset** from published
-data. It reports that rather than borrowing the diotic figure. Borrowing it
-would silently mix two listening contexts inside one equation.
+data. It reports that, and does not borrow the diotic figure.
 
 ### sipnab needs the mode, and the codec name does not carry it
 
@@ -221,16 +249,19 @@ Without one of those, sipnab flags the stream rather than guessing.
 | MCP `rtp_stats` | the same three fields |
 | TUI stream detail | a `MOS_CQEW` row naming the scale, the mode and the listening context |
 
-The terminal row carries no quality band and no color, on purpose.
+The terminal row carries no quality band and no color, because the bands
+follow the narrowband scale.
 
-- The bands calibrate against the narrowband scale.
-- Painting a `MOS_CQEW` with them would repeat the scale error this page spends
-  a section refusing.
-- A stream nobody attempted to score wideband gets no row at all.
-- A stream sipnab cannot score says why in words rather than showing a blank.
+- A stream sipnab did not score on the wideband scale gets no row.
+- A stream sipnab cannot score says why in words.
 
-The call report and the vCon export carry no MOS of any kind, wideband or
-narrowband. So there is nothing on them to disagree with.
+The call report and the vCon export carry the narrowband score:
+
+- `--call-report` prints `mos=<value> R=<value>` on each RTP line, or
+  `mos=unknown (<grounding>)` when the score is not grounded.
+- A vCon's `report` analysis lists each stream under `media_quality`, with
+  `mos`, `mos_grounded` and `mos_grounding`, and the wideband fields when a
+  wideband score exists.
 
 ## AMR narrowband — no published value
 
@@ -249,9 +280,9 @@ Both are close algorithmic relatives of AMR-NB modes. **sipnab does not
 substitute them.**
 
 - They are different codecs with different references.
-- G.113 does not license transferring their values.
-- A narrowband AMR call cannot be E-model scored from published ITU data.
-  Saying so is the honest answer.
+- G.113 does not provide for transferring their values.
+- sipnab does not E-model score a narrowband AMR call: no published ITU data
+  supports one.
 
 ## EVS — fullband only
 
@@ -271,15 +302,11 @@ There is **no EVS `Ie,WB` and no EVS narrowband `Ie`**.
 
 - EVS in NB, WB and AMR-WB-IO modes has no published value on any scale.
 - G.113's bridge `Ie,fb ≈ Σ Ie,wb + 19` runs in one direction only.
-- Running it backwards to manufacture a wideband EVS value counts as prohibited
-  interpolation.
-- It also drags the diotic assumption across with it.
+- sipnab does not run it backwards to derive a wideband EVS value, which
+  would also carry the diotic assumption across.
 
-> **If you are transcribing this table yourself:** the G.113 (09/2024) PDF
-> prints the second row as **2 kbit/s**. That is a typo. ITU-T G.113 (2024)
-> Erratum 1 (January 12, 2026) corrects it to **32 kbit/s**. A pipeline built
-> from the base PDF alone ships a mode that does not exist. It also omits one
-> that does.
+The second row is 32 kbit/s as ITU-T G.113 (2024) Erratum 1 (January 12,
+2026) corrects it. The G.113 (09/2024) PDF prints it as 2 kbit/s.
 
 ## Provenance
 
@@ -292,7 +319,7 @@ There is **no EVS `Ie,WB` and no EVS narrowband `Ie`**.
 - **ITU-T G.107.2 (03/2023)** for the fullband scale.
 - **[RFC 4867 section 8.1](https://www.rfc-editor.org/rfc/rfc4867.html#section-8.1)** for AMR / AMR-WB payload format and `mode-set`.
 
-One caveat that belongs in any operator-facing report built on these numbers:
+Any report built on these numbers carries this caveat:
 <!-- The two phrases below quote G.113 verbatim; rewording them to satisfy the
      passive-voice rule would misquote a standard. -->
 <!-- vale Google.Passive = NO -->
@@ -317,8 +344,6 @@ use sipnab::rtp::emodel_wb::{amr_wb_mos, amr_wb_kbps_from_fmtp, ListeningContext
 let kbps = amr_wb_kbps_from_fmtp("octet-align=1; mode-set=2").unwrap(); // 12.65
 let mos = amr_wb_mos(kbps, ListeningContext::Monotic, 0.0);
 // A computed MOS is a float: compare with a tolerance, never `==`.
-// This is the crate's own `close()` bound from emodel_wb.rs — half a
-// thousandth of a MOS point. The exact value here is 4.33709615132886.
 assert!((mos.unwrap() - 4.3371).abs() < 5e-4);
 
 // Same mode, monotic, with loss: not computable, and it says so.

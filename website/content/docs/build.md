@@ -109,10 +109,10 @@ sipnab uses Cargo feature flags to control optional capability. The default buil
 | `api` | REST API + Prometheus metrics endpoint, over HTTP or HTTPS. Runs on a background thread in the sipnab process, sharing its address space — not a separate OS process, so treat the bind address and API key accordingly. | `native`, `axum`, `tokio`, `base64`, `hmac`, `sha2`, `utoipa`, `rustls`, `tokio-rustls`, `ring`, `hyper`, `hyper-util`, `futures-core` |
 | `mcp` | Model Context Protocol server, stdio transport. Lets an AI agent (Claude Code, Claude Desktop, …) drive sipnab. | `native`, `tokio`, `rmcp`, `base64`, `hmac`, `sha2` |
 | `mcp-http` | MCP server over HTTP (Streamable-HTTP). Adds the `--mcp-transport http` option. | `mcp`, `api`, `rmcp/transport-streamable-http-server` |
-| `metrics` | Standalone Prometheus `/metrics` server: a raw TCP listener and plain threads, no axum/tokio, so scraping does not drag in the `api` feature or its async runtime. Included by default. | `native`, `base64`, `rustls` |
-| `plugins` | WASM plugin host (`--plugin`): runs sandboxed third-party dialog detections, so a detection nobody here wrote cannot reach the process it inspects. | `native`, `wasmi` |
-| `bpf` | eBPF TLS capture (`--uprobe-backend bpf`): reads SIP plaintext **and the peer addresses** with no key material. Needs a nightly toolchain and `bpf-linker` to build, and a kernel with `CONFIG_DEBUG_INFO_BTF` to run — without the linker the binary still builds and the backend refuses at runtime rather than capturing nothing silently. | `native`, `aya`, `sipnab-bpf-types/pod` |
-| `vcon` | vCon export: one observed dialog as an IETF conversation container, with the audio inline when the run retained it, or signed and encrypted when a `[[vcon.rule]]` sets `encrypt_to`. Non-default, because a container that leaves the machine is a publication surface and a capture tool should not grow one unless an operator asks. Adds `--export-vcon`/`--vcon-out`, the `export_vcon` MCP tool and `GET /v1/dialogs/{call_id}/vcon`. | `native`, `sha2`, `hmac`, `base64`, `rustls`, `rsa`, `ring`, `aes`, `cbc`, `sha1_oaep`, `webpki`, `p256` |
+| `metrics` | Standalone Prometheus `/metrics` server on a plain TCP listener and threads. Needs neither the `api` feature nor an async runtime. Included by default. | `native`, `base64`, `rustls` |
+| `plugins` | WASM plugin host (`--plugin`): runs third-party dialog detections in a sandbox that has no access to the sipnab process. | `native`, `wasmi` |
+| `bpf` | eBPF TLS capture (`--uprobe-backend bpf`): reads SIP plaintext **and the peer addresses** with no key material. Needs a nightly toolchain and `bpf-linker` to build, and a kernel with `CONFIG_DEBUG_INFO_BTF` to run — without the linker the binary still builds, and `--uprobe-backend bpf` refuses at run time. | `native`, `aya`, `sipnab-bpf-types/pod` |
+| `vcon` | vCon export: one observed dialog as an IETF conversation container, with the audio inline when the run retained it, or signed and encrypted when a `[[vcon.rule]]` sets `encrypt_to`. Not in the default build. Adds `--export-vcon`/`--vcon-out`, the `export_vcon` MCP tool and `GET /v1/dialogs/{call_id}/vcon`. | `native`, `sha2`, `hmac`, `base64`, `rustls`, `rsa`, `ring`, `aes`, `cbc`, `sha1_oaep`, `webpki`, `p256` |
 | `opus` | Ogg Opus recordings in vCon containers (`audio_format = "opus"` on a `[[vcon.rule]]`). Compiles libopus from the source `opusic-sys` vendors and links it statically, so building it needs `cmake` and a C compiler; the binary needs no system libopus. In `full`; not in the static musl builds, which have no vCon export. | `vcon`, `opus` |
 | `archive` | Password-protected ZIP and 7z input: `-I evidence.zip` reads the captures inside, stored, deflated, WinZip AES or ZipCrypto, and `-I evidence.7z` reads LZMA or LZMA2, AES-256 or not, without leaving a decrypted copy on disk. Adds `--archive-password-file`, `--archive-password-command`, `--archive-password-stdin`, `--archive-password` and `--archive-password-encoding`, and reads `SIPNAB_ARCHIVE_PASSWORD` and the systemd credential `archive-password`. | `native`, `zip`, `sevenz-rust2`, `zeroize`, `unicode-normalization` |
 | `g729` | G.729 Annex A decoding, with Annex B comfort noise, for WAV export, vCon recordings, the live audio route and the dead-air measurement. Adds `--g729-tables`, `[g729]`, and the `sipnab g729 install` and `sipnab g729 status` commands. sipnab ships no ITU-T table values: each host installs them with `sipnab g729 install`, described on the G.729 decoding page. Pure Rust, so in `full` and in the static musl builds. | `native`, `g729` (crates/g729), `sha2`, `rustls`, `base64` |
@@ -139,16 +139,14 @@ Everything. This is the feature set the official macOS releases ship:
 cargo build --release --features full
 ```
 
-The published `*-linux-gnu` binaries add one more.
+The published `*-linux-gnu` binaries add one more feature, `bpf`.
 
-- `bpf` is outside `full`. Its kernel half needs a nightly toolchain and
-  `bpf-linker`.
-- This project cannot demand either of a contributor.
-- But the release runner installs both.
-- So the Linux glibc tarballs, `.deb` and `.rpm` all ship it.
-- `--uprobe-tls --uprobe-backend bpf` works on them out of the box:
+- `bpf` is outside `full`, because its kernel half needs a nightly toolchain
+  and `bpf-linker`.
+- The Linux glibc tarballs, `.deb` and `.rpm` all ship it, so
+  `--uprobe-tls --uprobe-backend bpf` works on them with no extra build.
 
-Building it needs two things a stock toolchain does not have:
+To build `bpf` yourself, install two things a stock toolchain does not have:
 
 - a nightly toolchain carrying the `rust-src` component, installed with
   `rustup`,
@@ -158,22 +156,21 @@ Building it needs two things a stock toolchain does not have:
   - 0.9.13 pairs with LLVM 19,
   - 0.11 pairs with LLVM 23.1.
 
-Without either, the build still succeeds and prints a warning.
-
-- The resulting binary refuses `--uprobe-backend bpf` at run time. It does not
-  capture nothing.
-- Set `SIPNAB_BPF_REQUIRED=1` to turn that warning into a build failure.
-- The release workflow does that.
+Then build with the feature:
 
 ```bash
 cargo build --release --features full,bpf
 ```
 
-The musl tarballs and the macOS builds do **not** carry it.
+Without either tool, the build still succeeds and prints a warning.
 
-- `bpf` costs about 576 KiB. The static musl binary has no room for that under
-  the published size ceiling.
-- `aya` is a Linux-only dependency. It would compile to nothing on macOS.
+- The resulting binary refuses `--uprobe-backend bpf` at run time.
+- Set `SIPNAB_BPF_REQUIRED=1` to turn that warning into a build failure. The
+  release workflow sets it.
+
+The musl tarballs and the macOS builds do **not** carry `bpf`. On macOS the
+feature cannot work: `aya`, the eBPF library it uses, is a Linux-only
+dependency.
 
 `sipnab --version` lists every compiled feature. So it is how you tell which
 build you are holding.
@@ -339,9 +336,8 @@ Every block carries a `// SAFETY:` comment that states its soundness argument.
 - CI runs clippy with `-D warnings`.
 - So a block without one fails the build.
 
-The release workflow also enforces a size ceiling. It refuses a static musl
-binary larger than `binary_size_ceiling_mb` in
-[`website/config.toml`](https://github.com/NormB/sipnab/blob/main/website/config.toml).
+The release workflow also enforces a size ceiling on the static musl binary.
+See [Release profile](#release-profile).
 
 ## Release profile
 
@@ -356,8 +352,10 @@ panic = "abort"
 debug = "line-tables-only"
 ```
 
-Target binary size (musl, stripped): <= 19 MB.
-The "Enforce published binary size" step in release.yml enforces it against the real artifact.
+Target binary size (musl, stripped): <= 19 MB. The release workflow measures
+each published musl binary and refuses to publish one larger than the
+`binary_size_ceiling_mb` value in
+[`website/config.toml`](https://github.com/NormB/sipnab/blob/main/website/config.toml).
 
 ## Cross-compilation
 

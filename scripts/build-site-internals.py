@@ -156,6 +156,63 @@ PAGES: list[tuple[str, str, int, str, str]] = [
         "Where each vCon section comes from, the completeness caveat carried "
         "in two surfaces from one value, and the deterministic uuid.",
     ),
+    (
+        "operator-guide-notes.md",
+        "operator-guide-notes.md",
+        15,
+        "Operator Guide Engineering Notes",
+        "The engineering record behind the operator guides: why each limit "
+        "exists, the release that changed it, and the measurements behind it.",
+    ),
+    (
+        "postmortems.md",
+        "postmortems.md",
+        16,
+        "Incident Record",
+        "What went wrong in sipnab and in its build, why, what changed and how "
+        "to check it, and the engineering detail the notes no longer carry.",
+    ),
+    (
+        "code-map.md",
+        "code-map.md",
+        17,
+        "Code Map",
+        "What lives where in the source tree, how data flows through it, the "
+        "design decisions behind its shape, and where to add things.",
+    ),
+    (
+        "lint-rules.md",
+        "lint-rules.md",
+        18,
+        "Conformance Linter Design Notes",
+        "Why each SIP conformance rule cites the section it cites, why some "
+        "rules are narrower than the sentence they implement, and what the "
+        "validation corpus measured.",
+    ),
+    (
+        "encapsulation-decoding.md",
+        "encapsulation-decoding.md",
+        19,
+        "Encapsulation Decoding",
+        "The rule every decapsulator follows, where the EtherType values came "
+        "from, and the byte offsets the generated capture filter probes.",
+    ),
+    (
+        "mcp.md",
+        "mcp.md",
+        20,
+        "MCP Server Design Notes",
+        "Why the MCP server behaves as it does: the reasons, history and "
+        "internal names behind its limits, refusals and response shapes.",
+    ),
+    (
+        "metrics-and-output-notes.md",
+        "metrics-and-output-notes.md",
+        21,
+        "Metrics and Output Notes",
+        "The engineering record behind the Prometheus metrics and output format "
+        "pages: the reasons behind each series and field, and their history.",
+    ),
 ]
 
 # The developer index becomes the Zola section landing page.

@@ -135,10 +135,11 @@ sudo sipnab --mcp -N -d eth0
 With the stdio transport, **stdout is the JSON-RPC wire**. So `--mcp` implies
 `-N`/`--no-tui`.
 
-- sipnab also refuses every stdout-writing flag (`--json`, `--report`, …) at
-  startup.
-  - The alternative is corrupting the wire with report text.
-  - That would leave the client to fail on malformed JSON-RPC later.
+- sipnab refuses every stdout-writing flag (`--json`, `--report`, …) at
+  startup and exits 2, for example with `--mcp uses stdout for the JSON-RPC
+  wire and cannot be combined with stdout-writing flags (--json)`.
+
+  Write the report from a separate run without `--mcp`.
 - The `-N` in these examples states what `--mcp` already does.
 
 Over HTTP the wire is a socket, so the TUI can stay up beside the server: see
@@ -159,8 +160,7 @@ transport:
 cargo build --release --no-default-features --features native,hep,api,mcp,mcp-http
 ```
 
-The default build excludes `mcp`. So an operator who never exposes the MCP
-surface pays no binary size for it. `sipnab --version` prints the features of
+The default build excludes `mcp`. `sipnab --version` prints the features of
 the binary.
 
 </details>
@@ -309,8 +309,9 @@ It does for this surface what <https://sipnab.com/api-reference/> does for the
 sipnab registers 76 MCP tools. That is more than anyone reads in a table. The
 Tools tab is the fastest way to find the one you want.
 
-Inspector belongs to the protocol rather than to sipnab. So it also
-settles whose bug you are looking at.
+The MCP project maintains Inspector, not sipnab. When a tool
+misbehaves in your own client, call it from Inspector to see whether the
+fault is in sipnab or in the client.
 
 Inspector needs Node 22.19 or newer. `npx` fetches it on demand. So there is
 nothing to install first.
@@ -323,8 +324,8 @@ This spawns the same stdio server your agent would spawn:
 npx @modelcontextprotocol/inspector sipnab -- --mcp -N -I capture.pcap
 ```
 
-The `--` is load-bearing. Everything after it becomes sipnab's own command
-line. Leave it out and Inspector does this:
+Keep the `--`. Everything after it becomes sipnab's own command line. Leave it
+out and Inspector does this:
 
 - it reads `--mcp` as one of its own flags,
 - it spawns a bare `sipnab`,
@@ -359,8 +360,7 @@ it. Each run performs one request and exits:
 npx @modelcontextprotocol/inspector --cli sipnab --mcp -N -I capture.pcap -- --method tools/list --format json
 ```
 
-**The `--` separator means the opposite thing in the two clients.** This is
-the one detail that catches people out.
+**The `--` separator works the opposite way in the two clients:**
 
 - The browser client takes sipnab's flags after `--`.
 - The `--cli` client takes the server command first and its own flags after
@@ -374,37 +374,25 @@ Calling a tool by hand works the same way:
 npx @modelcontextprotocol/inspector --cli sipnab --mcp -N -I capture.pcap -- --method tools/call --tool-name triage_call --tool-arg call_id=busy-3a2b1c@192.0.2.30 --format json
 ```
 
-### Linting the advertised schemas
+### Check the advertised schemas with `--strict`
 
 `--strict` reports schema spellings a client may not read. It exits non-zero
-only on error severity. So a clean exit and a clean report are different
-things -- read the summary line:
+only on error severity, so a zero exit status does not mean the report is
+clean. Read the summary line:
 
 ```bash
 npx @modelcontextprotocol/inspector --cli sipnab --mcp -N -I capture.pcap -- --method tools/list --strict
 ```
 
-sipnab waives one class of warning there on purpose:
+Expect warnings about type unions only from output schemas:
 
-`schemars` renders an optional field as `"type": ["string","null"]`.
-
-- That is legal JSON Schema, and several clients cannot read it.
-  - They take `type` as a single string.
-  - They either drop the constraint or refuse the whole tool.
-- sipnab collapses those unions on **input** schemas.
-  - There, a client validates arguments before calling.
-  - There, a refusal costs you the tool.
-
-Output schemas keep theirs, because sipnab writes an explicit `null` for an
-absent optional field. Collapsing there would advertise a schema its own
-responses violate. That is a worse problem than the spelling.
-
-There is no CI job running this.
-
-- `no_input_schema_advertises_a_spelling_a_strict_client_may_refuse` checks
-  the same property offline.
-- It checks against the live wire, with no network and no package manager.
-- Run the command above by hand when the Inspector's rules move.
+- No **input** schema writes `type` as an array such as
+  `"type": ["string","null"]`, so a client that reads `type` as one string
+  can read every tool's arguments.
+- **Output** schemas, which sipnab sends only with `--mcp-output-schemas`,
+  keep unions such as `"type": ["string","null"]`, because a response carries
+  an explicit `null` for an absent optional field. `--strict` may warn about
+  them.
 
 [`scripts/mcp-schema-dump.sh`](https://github.com/NormB/sipnab/blob/main/scripts/mcp-schema-dump.sh)
 wraps the `tools/list` form and accepts either a capture file or an HTTP URL:
@@ -418,31 +406,24 @@ project.
 
 - A feature-reduced build registers fewer tools than the tree defines.
 - An older binary registers fewer still.
-- The [MCP tool reference](mcp-tools.md) remains the page that says what each
-  tool means.
-- `mcp_tool_table_lists_every_registered_tool` in
-  [`tests/docs_drift_test.rs`](https://github.com/NormB/sipnab/blob/main/tests/docs_drift_test.rs)
-  already fails the build when that page stops naming every registered tool.
+- The [MCP tool reference](mcp-tools.md) documents every tool the full build
+  registers, and what each one means.
 
-## Operator notes are not an MCP surface
+## Read and write operator notes outside MCP
 
-An operator can put a note on a SIP message in the TUI. An operator can also
-write notes into a pcapng copy with `--write-annotated`. See
+No MCP tool reads or writes an operator note. To add notes to SIP messages,
+use the TUI, then write them into a pcapng copy with `--write-annotated`. See
 [keybindings](keybindings.md#operator-notes) and the
 [CLI reference](cli-reference.md#operator-notes).
 
-No MCP tool reads a note or writes one. That is a decision, not a missing tool.
+- sipnab never reads a packet comment back, so a note in a capture an MCP
+  server opens is not visible to any tool.
+- The only text an agent can record is a finding, written to the log with
+  `save_findings`.
 
-- An agent that could read a note would cite a person's conclusion as though
-  the capture said it.
-- An agent that could write one would be putting its own text into a file that
-  leaves the machine.
-- `save_findings` stays the only thing an agent writes, and it goes to the log.
-
-sipnab never reads a packet comment back. So a note in a capture an MCP
-server opens is invisible to every tool. Invariant "Operator notes are output, never input" in
+Invariant "Operator notes are output, never input" in
 [the invariants page](internals/invariants.md#operator-notes-are-output-never-input)
-states the rule and what enforces it.
+states the rule and why it holds.
 
 ## Where to go next
 

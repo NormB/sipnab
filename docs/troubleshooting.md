@@ -184,11 +184,11 @@ sipnab -N -I capture.pcap --call-report "abc123@host" --markdown --no-cli-print 
 
 - The response code may be 408, or you may see high `retransmits`. Then the problem is network-level.
   - Check connectivity and firewall rules before touching SIP config.
-  - [Nothing came back](#nothing-came-back-408-or-silence----ask-the-network) turns that "network-level" guess into evidence.
+  - [Nothing came back](#nothing-came-back-408-or-silence-ask-the-network) turns that "network-level" guess into evidence.
 
 ---
 
-## Nothing came back (408, or silence) -- ask the network
+## Nothing came back (408, or silence): Ask the network
 
 A 408 and a call that simply stops both look like "the far end did not answer". Usually that is an inference from silence. Sometimes it is not.
 
@@ -251,8 +251,8 @@ Signaling Issues:
   - The peer may be perfectly healthy and answering everyone else.
   - The fix is on the filtering device.
   - That is a different team from the one you call about an unreachable host.
-
-  On one real corpus a single capture held 433 host-unreachable and 262 administratively prohibited errors. Treating them the same would have sent an engineer to the wrong device 262 times.
+  - Count the two kinds separately before you dispatch anyone. One capture can
+    hold both.
 - No ICMP at all does **not** clear the network.
   - Most firewalls drop ICMP errors outright.
   - The summary can only report what the capture holds.
@@ -395,19 +395,20 @@ ICMP: 27 error(s) quoting non-SIP traffic, 27 of them media, across 6 flow(s). A
   ICMP port unreachable: RTP (payload type 0) from 192.0.2.5:42180 to 198.51.100.9:21750 could not be delivered (11 times), reported by 198.51.100.9. This is one of the media streams in this capture (1 call(s) affected). Audio sent that way is discarded before it arrives, which is heard as one-way or missing audio. The host answered, so it is reachable -- nothing was listening on that port. Check the service and the address it binds, not the network.
 ```
 
-A media ICMP error has no `Call-ID` to file itself under. So sipnab matches it in this order:
+sipnab ties each media ICMP error to a call by trying these matches in order,
+and each line names the one that succeeded:
 
-- the quoted datagram's own 5-tuple against the streams it tracked
-- then the SSRC inside the quote
-- then either socket against a tracked stream endpoint
-- then against an SDP-advertised media address (or the RTCP port one above it, per [RFC 3550](https://www.rfc-editor.org/rfc/rfc3550.html) Section 11)
+- the quoted datagram's own 5-tuple against a tracked stream
+- the SSRC inside the quote
+- either socket against a tracked stream endpoint
+- an SDP-advertised media address, or the RTCP port one above it ([RFC 3550](https://www.rfc-editor.org/rfc/rfc3550.html) Section 11)
 
-Each line says which rule matched, because they are not equally strong.
+The first two identify the stream itself. The last two identify an address the
+stream used, or one the SDP offered.
 
-A quote that matches nothing is still counted and still printed.
-
-- The endpoint it names is real, whether or not this capture holds the stream.
-- "matched nothing this capture holds" is a prompt to widen the capture. It is not a reason to hide the evidence.
+A quote that matches nothing is still counted and printed, under `matched
+nothing this capture holds`. The endpoint it names is real. Widen the capture
+to include that endpoint's traffic, then read the run again.
 
 **What to look for:**
 
@@ -444,7 +445,7 @@ packets.
 - It puts every packet on the wire, in sequence, at the right rate, in both
   directions.
 - Loss is zero and jitter is zero.
-- The MOS is 4.36 and grounded.
+- The MOS is 4.36.
 - No other check on this page fires.
 
 Counting comfort-noise frames does not find it either. Those frames say "I am
@@ -458,36 +459,56 @@ CALL_ID='a84b4c76e66710@pc33.atlanta.example.com'
 ```
 
 ```bash
-sipnab -N -I capture.pcap --retain-audio --call-report "$CALL_ID" --json
+sipnab -N -I capture.pcap --retain-audio --call-report "$CALL_ID" --json --no-cli-print
+```
+
+For a clean call, here the first call in the repository sample
+[`tests/pcap-samples/sip-rtp-g711.pcap`](https://github.com/NormB/sipnab/raw/main/tests/pcap-samples/sip-rtp-g711.pcap), the report's `diagnosis.amplitude`
+object reads:
+
+```json
+{
+  "streams_measured": 1,
+  "dead_air": false,
+  "clipping": false,
+  "streams": [
+    {
+      "ssrc": "0x343da99b",
+      "src": "10.0.2.15:27942",
+      "dst": "10.0.2.20:6000",
+      "codec": "PCMU",
+      "report": {
+        "sample_rate": 8000,
+        "duration_ms": 8500,
+        "full_scale": 32124,
+        "floor_dbfs": -60.0,
+        "window_ms": 100,
+        "min_dead_air_ms": 1000,
+        "clip_threshold": 31802,
+        "min_clip_run": 3,
+        "dead_air": [],
+        "dead_air_ms": 0,
+        "clipping": [],
+        "clipped_samples": 0
+      }
+    }
+  ]
+}
 ```
 
 The `diagnosis.amplitude` object appears only on a run that kept the samples.
-**Absent means not measured, never "clean"**.
-
-- There is nothing to look at on a run without `--retain-audio`.
-- Reading absence as a pass is how a silent call gets signed off.
+**Absent means not measured, never "clean"**. The same command without
+`--retain-audio` prints `null`.
 
 There are two measurements. Each has the threshold that produced it beside the number:
 
 | Finding | What it measures | Threshold |
 |---|---|---|
-| `dead_air` | Windows whose RMS sits below a floor relative to the codec's own full scale, for at least `MIN_DEAD_AIR_MS` (1,000) milliseconds in a row | -60 dBFS, measured over 100 ms windows |
-| `clipping` | Runs of at least `MIN_CLIP_RUN` (3) consecutive samples at 99% of the codec's full scale or beyond | The codec's ceiling, not the container's |
+| `dead_air` | Windows whose RMS sits below a floor relative to the codec's own full scale, for at least 1,000 milliseconds in a row | -60 dBFS, measured over 100 ms windows |
+| `clipping` | Runs of at least 3 consecutive samples at 99% of the codec's full scale or beyond | The codec's ceiling, not the 16-bit container's: 32,124 for G.711 mu-law, 32,256 for A-law |
 
-Both are **amplitude measurements and neither is a quality score.** They say
-what the samples did.
-
-- Converting that into a MOS would need a corpus of listener scores.
-- That corpus does not exist here.
-- You could not reproduce it from the pcap to check.
-
-The clipping threshold is the codec's own ceiling on purpose.
-
-- G.711 decodes into a 16-bit container it never fills.
-  - mu-law tops out at 32,124.
-  - A-law tops out at 32,256.
-- So a test written against 32,767 never fires on the two codecs most telephony
-  runs on.
+Both are **amplitude measurements, not quality scores.** They report what the
+samples did, and they do not change the MOS.
 
 **Reading the result.**
 
@@ -699,10 +720,8 @@ Without more to go on, sipnab cannot tell those apart from one capture. So it
 reports the evidence rather than a verdict.
 
 Carrier-grade NAT space ([RFC 6598](https://www.rfc-editor.org/rfc/rfc6598.html),
-`100.64.0.0/10`) is deliberately NOT flagged.
-
-- It is routable inside the carrier that assigned it.
-- Flagging it would fire on a large share of working mobile calls.
+`100.64.0.0/10`) is NOT flagged. It is routable inside the carrier that
+assigned it, so a mobile call that offers it can work.
 
 **Unless STUN settles it.** The capture may also hold the client's STUN or
 TURN exchange. Then:
@@ -717,11 +736,8 @@ TURN exchange. Then:
 | The probe drew no reply, but the STUN server is on the LAN | This proves nothing — a LAN-only exchange says nothing about internet reachability, and sipnab stays quiet. |
 
 The first two raise `private_media_address` **on their own**, with no observed
-stream needed. That matters for the worst case.
-
-- A call whose media never arrived at all has no peer to examine.
-- So the stream-based test could not fire exactly when the finding was most
-  needed.
+stream needed. So a call whose media never arrived at all still gets the
+finding.
 
 The correlation is by the client's IP address. The STUN exchange and the
 dialog share nothing.
@@ -743,8 +759,8 @@ no reply. An endpoint that cannot learn its reflexive address falls back to
 advertising its PRIVATE address in SDP ...
 ```
 
-**Why a SIP tool reports this.** It is the first link in the one-way-audio
-chain above.
+**How this leads to one-way audio.** It is the first link in the
+one-way-audio chain above.
 
 - The phone asks the network what address the outside world sees it as.
 - It gets nothing.
@@ -758,7 +774,7 @@ is a different fault from a reply that says no:
 | What you see | What it means |
 |---|---|
 | No reply at all | Something in the path is discarding the packets. On school, campus and corporate networks that is most often a security appliance -- web filter, secure web gateway, firewall or IPS -- dropping UDP it does not recognize. Check whether one sits in this path and whether it permits UDP to the STUN/TURN port **before** suspecting the server. |
-| An error response | The server was reachable and refused. sipnab counts this as ANSWERED, because chasing a blocked path here would waste the effort. Look at the code: `401`/`438` are authentication, not connectivity. |
+| An error response | The server was reachable and refused. sipnab counts this as answered, not as unanswered. Look at the code: `401`/`438` are authentication, not connectivity. |
 | A reply arrives, media still one-way | STUN worked. The fault is downstream -- check the SDP the far end actually received, and see [The SDP offered a private address](#the-sdp-offered-a-private-address). |
 
 A retransmission counts as **one** unanswered question with N attempts, not N
@@ -803,7 +819,7 @@ sipnab flags it wherever the run reports anything:
 - as `sipnab_nat_lapsed_turn_allocations` for a dashboard, `/v1/stats` and the
   MCP `capture_status` tool
 
-Two things it deliberately does **not** claim:
+Two things it does **not** claim:
 
 - It says no Refresh was *seen*,
   never that none was *sent*. A capture that
@@ -811,14 +827,10 @@ Two things it deliberately does **not** claim:
 - A Refresh carrying `LIFETIME` 0 is a deliberate release. It is never
   reported, because the client asked for the teardown.
 
-**And it names the audio that died with the relay.**
-
-- sipnab unwraps ChannelData.
-- The RTP inside it reaches the stream list as ordinary media.
-- But that media carries phone-to-relay addresses. So nothing in the stream
-  list said the relay had carried it.
-
-Every surface now carries the join:
+**Find the audio that stopped with the relay.** sipnab unwraps TURN
+ChannelData, so the RTP inside it appears in the stream list as ordinary media
+with phone-to-relay addresses. These surfaces name which streams the relay
+carried:
 
 - The `--stun` allocations section says which channel carried which SSRC.
 - The lapsed-allocation lines say `media on it:`.
@@ -861,11 +873,13 @@ sipnab reports it:
   `capture_status` tool
 
 Each report says whether the conflict **resolved**. Resolved means the agents
-nominated a pair between them anyway.
+nominated a pair between them anyway, and the conflict cost one round trip.
+`UNRESOLVED` means no pair was ever nominated: that conflict is a candidate
+cause of media that never started, and is the one to act on.
 
-- Some warnings are about a conflict the agents fixed in one round trip.
-- Warning about those at full weight is how a reader learns to skip the warning
-  that matters.
+```text
+ICE:   192.0.2.11:50006 <-> 203.0.113.11:16002: 2 487 response(s), UNRESOLVED -- no pair between them was ever nominated, so this is a candidate cause of media that never started
+```
 
 The same section answers the question ICE otherwise leaves unanswered: which
 candidate pair won.
@@ -873,8 +887,6 @@ candidate pair won.
 - `nominated 192.0.2.10:50004 -> 203.0.113.9:16000` is the ICE analogue of the
   mapped address.
 - It names the path the media actually took.
-- Without it, a capture of an exchange that converged and one that never did
-  read the same.
 
 **Nothing** may have answered a single check. Then the ICE section says so
 outright: ICE never completed, so the call has no media path.
@@ -1127,28 +1139,24 @@ Check what sipnab asked the kernel for.
   a capture from it:
 
 ```bash
-tcpdump -r sample.pcap -nn 'portrange 5060-5061' | wc -l
+tcpdump -r capture.pcap -nn 'portrange 5060-5061' | wc -l
 ```
 
-Zero there means the filter never matched. This is the failure mode with
-no other symptom.
-
-- The **kernel** drops the frames before sipnab sees them.
-- So no counter, metric, `NOT DECODED` line or report can show them missing.
-- An empty result reads as "there were no calls".
+Zero there means the filter never matched. The **kernel** drops those frames
+before sipnab sees them, so no counter, metric, `NOT DECODED` line or report
+shows them missing.
 
 The usual cause is encapsulation.
 
 - A port filter matches the outer headers only.
 - So SIP inside a VLAN tag, QinQ, PPPoE or MPLS never matches one.
 
-Confirm by comparing. Take the repository's 32-frame PPPoE sample:
-
-- The plain filter above counts `0`.
-- The same filter behind the PPPoE keyword counts all 32:
+Confirm by comparing. Against the repository's 32-frame PPPoE sample,
+[`tests/pcap-samples/DTMFsipinfo.pcap`](https://github.com/NormB/sipnab/raw/main/tests/pcap-samples/DTMFsipinfo.pcap), the plain filter above counts `0`. The
+same filter behind the PPPoE keyword counts all 32:
 
 ```bash
-tcpdump -r sample.pcap -nn 'pppoes and portrange 5060-5061' | wc -l
+tcpdump -r tests/pcap-samples/DTMFsipinfo.pcap -nn 'pppoes and portrange 5060-5061' | wc -l
 ```
 
 **If you passed your own filter (a positional expression or `--bpf-file`),
@@ -1162,9 +1170,8 @@ Drop it and let sipnab generate one.
 - That arm fires on Ethernet and on both Linux cooked headers alike.
 - Omitting `-d` on Linux therefore costs no encapsulation coverage.
 
-On raw IP from a tun device and on the two loopback headers, the arm compiles
-away to nothing. That costs you nothing either: none of those link types carries
-a tag to begin with.
+On raw IP from a tun device and on the two loopback headers, sipnab leaves the
+arm out. None of those link types carries a tag.
 
 Two cases the generated filter still does not cover:
 
@@ -1183,25 +1190,12 @@ The generated filter also admits RTP on any port.
 - It does so untagged only, over IPv4 and IPv6 without extension headers.
 - Media inside a VLAN tag or a tunnel needs a filter of your own that names it.
 
-There is one more thing the encapsulated arm cannot reach: an IPv4 header
-carrying **options**.
+The generated filter also misses SIP inside an encapsulation **and** in an
+IPv4 header with options. Untagged IPv4 with options matches.
 
-- A BPF byte offset has to be a constant.
-- The arm cannot multiply the IHL nibble into the port offset.
-- The untagged `portrange` handles those.
-- So the gap needs IPv4 options *and* an encapsulation together.
-
-To confirm which of these you are looking at:
-
-- Run the generated filter and a plain `portrange` over the same capture.
-- Compare the counts.
-
-Against the repository's PPPoE-over-Ethernet sample:
-
-- The plain filter matches 0 of 32 frames.
-- The generated one matches all 32.
-- Wrap the same SIP in a Linux cooked header, and the numbers hold: 11
-  encapsulations, 11 matched, on Ethernet, cooked v1 and cooked v2 alike.
+To confirm which of these you are looking at, run the generated filter and a
+plain `portrange` over the same capture with `tcpdump -r`, and compare the
+counts.
 
 ## An archive of captures
 
@@ -1286,9 +1280,18 @@ two agents on one host stay apart.
 
 The sender may itself be a sipnab (`--hep-send`). Then ask it too.
 
+- Over TCP or TLS, a first connect that fails stops the sender's run at
+  startup with exit status `2`:
+
+  ```text
+  Failed to create HEP sender: Failed to connect HEP sender to '127.0.0.1:19301' over TCP: Connection refused (os error 111)
+  ```
+
+  Start the collector, or correct the address, then start the sender again.
 - Its `runtime_stats` or `GET /v1/runtime` carries `hep_export`.
 - A headless run ends with a `HEP export to ...` line.
-  - `connect` failures are a collector that is down or unreachable.
+  - `connect` failures are reconnects to a collector that went down or became
+    unreachable.
   - `tls_handshake` failures are a collector whose certificate the sender does
     not accept.
 
@@ -1300,13 +1303,13 @@ Over UDP the sender cannot tell.
 The plaintext legs may show while the proxy's TLS or WebSocket legs do not.
 Then look at the NOT DECODED line.
 
-- Up to 0.5.187, OpenSIPS and Kamailio tracer messages for those legs landed
-  there as `no transport (IP protocol 22)` and `ESP not NULL-encrypted (IP protocol 50)`.
-- Both numbers are the proxies' way of naming TLS and WebSocket over HEP.
-- sipnab now decodes them. See
+- OpenSIPS and Kamailio tracers name TLS and WebSocket legs over HEP with IP
+  protocol numbers 22 and 50. sipnab 0.5.188 and later decode both. See
   [How `--hep-listen` reads the transport](cli-reference.md#how---hep-listen-reads-the-transport).
-- Another number there is one no tracer convention covers. The sender's
-  configuration is the place to look.
+- The collector may report `no transport (IP protocol 22)` or `ESP not
+  NULL-encrypted (IP protocol 50)`. Then it is older than 0.5.188: upgrade it.
+- Any other number is one no tracer convention covers. Check the sender's
+  configuration.
 
 ## Encrypted SIP that does not decrypt
 
@@ -1374,52 +1377,39 @@ Rebuild with `--features tls`, or install a build that has it.
 
 ### A FIFO keylog, and capture appears to hang
 
-`--keylog` accepts a named pipe. That is the point of 7f in the
-[cookbook](examples.md): the keys never touch a disk.
+`--keylog` accepts a named pipe, so the keys never touch a disk (recipe 7f in
+the [cookbook](examples.md)). sipnab opens the pipe without waiting for a
+writer and reads it as a stream. Check that it recognized the pipe:
 
-Two failure modes used to live here, and both were silent. That is why this
-page keeps them, even though the current code no longer has them:
+```bash
+SIPNAB_LOG=info sipnab -N -I capture.pcap --keylog kl.fifo --report 2>&1 | grep FIFO
+```
 
-- **Capture stalled outright.**
-  - Opening a FIFO read-only blocks until a writer appears.
-  - That open sat in the same sweep loop that drives dialog expiry and output
-    flushing.
-  - The whole capture stopped, rather than the keylog degrading.
-  - Reproduce the underlying behavior with `mkfifo kl.fifo && timeout
-    2 cat kl.fifo`, which exits 124.
-- **Zero keys, no complaint.**
-  - The freshness check compared file sizes.
-  - A FIFO stats as zero length however much data waits in it (`stat -c %s kl.fifo`
-    returns `0`).
-  - Every pipe-based producer therefore loaded nothing while reporting nothing
-    wrong.
-  - That was indistinguishable from a capture with no encrypted traffic in it.
+```text
+2026-10-16T11:52:15.421081Z  INFO sipnab::app::bootstrap: TLS decryption: kl.fifo is a FIFO, reading it as a live stream
+```
 
-[`src/capture/keylog_source.rs`](https://github.com/NormB/sipnab/blob/main/src/capture/keylog_source.rs) closes both:
+That line means the capture does not wait for the producer. If it is present
+and no keys arrive, the producer is not writing to that pipe: check the path
+you gave the producer.
 
-- A FIFO opens non-blocking.
-- Stream mode never consults the file's length.
-
-If you are seeing either symptom, you are on a build that predates the fix.
-Check `sipnab --version` against the current release before debugging your
-pipe.
+If the line is absent and the run stalls until something writes to the pipe,
+or loads no keys from a pipe that has them, the binary is older than the
+FIFO support. Install the current release, then run the command again.
 
 ### Keys loaded at first, then stopped
 
-The producer rotated or truncated the file. A reader that resumes from a
-remembered byte offset does one of two things:
+The producer rotated or truncated the file. sipnab detects both and reloads
+the file from the beginning, with one warning that names the file and ends in
+one of these:
 
-- It gives up permanently once the file shrinks.
-- Or it seeks into the middle of a line in new content.
+```text
+was truncated by its producer — reloading it from the beginning
+was replaced by its producer — reloading it from the beginning
+```
 
-Current builds:
-
-- resume by file identity and offset
-- reset on a shrink or an inode change
-- emit one `warn` naming the cause and the path when they do
-
-So look for that warning first. There may be no warning and no new keys. Then
-the producer is not writing where you think it is.
+Look for that warning first. If there is no warning and no new keys, the
+producer is not writing to the path you passed: check its configuration.
 
 ### eCapture refuses to start in `-m pcap` mode
 
@@ -1436,7 +1426,6 @@ zcat /proc/config.gz | grep NET_CLS_BPF
 ```
 
 `# CONFIG_NET_CLS_BPF is not set` means this mode cannot run on that kernel.
-The measurement is from Linux 6.8.12-rt-tegra.
 
 - Use `-m keylog` instead ([cookbook 7e](examples.md)).
 - It needs only the uprobes, and runs there.
@@ -1456,11 +1445,11 @@ loaded.
 ### sipnab refuses `--export-vcon`
 
 ```text
---export-vcon needs a build with the `vcon` feature
+--export-vcon needs the 'vcon' Cargo feature, which this build does not carry. Rebuild with --features vcon (or --features full); `sipnab --version` lists the features a binary was built with
 ```
 
-The exporter is behind a non-default Cargo feature. So a stock build does not
-carry it. Check what you have:
+The run stops with exit status `2`. The exporter is behind a non-default Cargo
+feature, so a default build does not carry it. Check what you have:
 
 ```sh
 sipnab --version        # the feature list is on the version line
@@ -1472,19 +1461,14 @@ If `vcon` is absent, build one that has it:
 cargo build --release --features vcon
 ```
 
-The feature is non-default on purpose.
-
-- A container that leaves the machine is a publication surface.
-- A capture tool should not grow one unless an operator asks for it.
-
 ### `--export-vcon` says the Call-ID is not there
 
 ```text
-Call-ID 'x@y' not found in tracked dialogs, so there is no dialog to export.
+Call-ID 'x@y' not found in tracked dialogs, so there is no dialog to export. --report lists the Call-IDs this run holds.
 ```
 
-The run holds no dialog under that Call-ID. `--report` lists the ones it does
-hold.
+The run exits with status `1`. It holds no dialog under that Call-ID.
+`--report` lists the ones it does hold.
 
 - The usual cause is a Call-ID copied with surrounding quotes, or a truncated
   one.
@@ -1495,19 +1479,38 @@ your shell would otherwise interpret.
 
 ### The container came out with no audio in it
 
-The dialog object carries no `body`, and the caveat says media was not decoded.
+The `recording` dialog object carries no `body`. Read the `media_note` in the
+container. It states what the run kept, and is never a finding that the call
+was silent:
 
-- That is a statement about what the RUN kept.
-- It is never a finding that the call was silent.
-- The container is careful to say so. A consumer should read the `media_note`
-  beside it.
+```bash
+grep -o '"media_note": "[^"]*"' call.vcon.json
+```
 
-The usual cause is that the run did not retain the RTP payload.
+```text
+"media_note": "No audio payload retained: sipnab measured 425 RTP packet(s) of PCMU on 1 decodable stream, but kept none of their payload, so there is nothing to decode. This is a statement about what this run kept, not a finding that the call was silent. Most often audio payload retention was off — start the server with --retain-audio to hold payload for export. With retention already on, the other causes are a --snaplen that truncated the payload away before sipnab saw it, or packets that carried no payload at all."
+```
 
-Audio also has an inline budget.
+Export again with `--retain-audio`:
 
-- A recording over it draws an out-loud refusal, not a silent truncation.
-- The caveat names the size it turned down.
+```bash
+sipnab -N -I capture.pcap --retain-audio --export-vcon 'abc123@host' --vcon-out call.vcon.json --no-cli-print
+```
+
+Then check that the recording now has a body:
+
+```bash
+jq -c '.dialog[] | {type, has_body: has("body"), mediatype}' call.vcon.json
+```
+
+```json
+{"type":"recording","has_body":true,"mediatype":"audio/x-wav"}
+```
+
+Audio also has an inline size budget, `--vcon-max-inline-media` (default
+5 MiB). sipnab refuses a recording over it rather than truncating it, and the
+caveat names the size it turned down. Raise the budget only if the system that
+receives the container accepts larger bodies.
 
 ---
 
@@ -1603,7 +1606,7 @@ ls -t ~/.local/state/sipnab/sipnab-crash-*.log | head -1
   - the version
   - the build ID of the executable
   - its load address
-  - one raw address per stack frame, up to `MAX_FRAMES` (256) frames
+  - one raw address per stack frame, up to 256 frames
 
   It contains no capture data and no packets. But:
 
@@ -1719,7 +1722,7 @@ as the `sipnab` binary.
 
 Build custom queries with the [Filter DSL](filter-dsl.md). It offers:
 
-- 42 fields plus any header by name
+- 43 fields plus any header by name
 - named filters
 - regex support
 - boolean logic

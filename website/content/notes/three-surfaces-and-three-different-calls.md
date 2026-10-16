@@ -1,116 +1,50 @@
 +++
-title = "The sipnab.com homepage demos and the /analyze sample showed different calls"
+title = "Open the sipnab.com sample call in the browser and in the terminal"
 date = 2026-09-01
-updated = 2026-10-11
-description = "Why the homepage picture, the homepage animation and the sample call on the /analyze page did not all come from one capture until 0.5.142, and the test that now keeps them on one capture."
+updated = 2026-10-16
+description = "Load the sample call on the sipnab.com analyze page, then open the same capture with sipnab on your own machine: list its dialogs, open it in the terminal interface, and print the report for its one call."
 
 [extra]
-kind = "postmortem"
+kind = "howto"
 +++
 
 ## In short
 
-The sipnab.com homepage shows a still picture of sipnab. It changes to an
-animation once the animation has loaded. The site's `/analyze` page offers a
-sample call to try.
+sipnab.com offers one sample capture so you can try sipnab without a capture
+of your own. The site uses the same file in three places:
 
-- Until 2026-08-31 these three came from three different captured calls.
-  - So a visitor saw the picture change to a different call.
-  - The visitor was then offered a third.
-- All three now use one capture.
-- A test fails if they ever differ again.
+- the still picture and the animation on the homepage;
+- the "Load a sample call" button on the analyze page;
+- the first-steps guide.
 
-## What happened
+This page opens it in the browser, then in sipnab on your machine, and shows
+what each step prints.
 
-A visitor's path through the site is:
+## Who this is for
 
-- open the homepage,
-- watch the animation,
-- go to `/analyze`,
-- press "No capture handy? Load a sample call".
+Anyone trying sipnab for the first time, or anyone who wants to compare the
+browser analyzer's answer with the command-line answer for the same capture.
 
-Each of these comes from a capture file (a recording of network traffic):
+## Open it in the browser
 
-- `demos/hero.tape` records the homepage still picture;
-- `demos/01-intro.tape` records the animation that replaces it;
-- the `/analyze` sample is the file `website/static/demos/sample-call.pcap`.
-  `website/static/js/analyze.js` downloads it.
+- Go to the [analyze page](https://sipnab.com/analyze/).
+- Press **No capture handy? Load a sample call**.
 
-The `.tape` files are scripts for VHS. VHS is a program that runs terminal
-commands and records the screen. Each script runs `sipnab -I <capture>`.
+The page downloads `/demos/sample-call.pcap` and analyzes it in the browser.
+The capture does not leave your machine.
 
-Before 2026-08-31:
+## Use the same file in a terminal
 
-- `hero.tape` ran sipnab on
-  `tests/pcap-samples/register-invite-reinvite-bye.pcap`;
-- `01-intro.tape` ran it on `tests/pcap-samples/sip-rtp-g711.pcap`;
-- `/analyze` offered `sample-call.pcap`.
+The file is in the sipnab repository at
+`website/static/demos/sample-call.pcap`. The site serves it at
+`https://sipnab.com/demos/sample-call.pcap`. The
+[first-steps guide](@/docs/first-cli-triage.md#download-a-capture) shows how
+to download it with `curl`.
 
-The picture and the animation showed two different calls. The sample was a
-third.
+The commands below run from the root of a sipnab checkout. If you downloaded
+the file instead, replace the path with `sample-call.pcap`.
 
-On 2026-08-31 commit 70ec075d (first included in v0.5.140) moved the still
-picture to `sample-call.pcap`.
-
-- It did not change the animation. A different file sets the animation.
-- So from then until 2026-09-01 the picture and the sample agreed.
-- The animation did not.
-
-On 2026-09-01 commit a9aaf57a (first included in v0.5.142) moved the animation
-to `sample-call.pcap` as well.
-
-## Why it happened
-
-No test compared the three capture names. The requirement that all three
-show the same call was not written down anywhere a test could read.
-
-The facts live in separate files:
-
-- the two `.tape` scripts name the captures they record;
-- the `index.html` template chooses which recordings the homepage shows;
-- `analyze.js` names the sample.
-
-A change to one of these files does not show the others.
-
-## What changed
-
-All three now use `website/static/demos/sample-call.pcap`. Both `.tape` files
-contain this line:
-
-```text
-Type "sipnab -I website/static/demos/sample-call.pcap"
-```
-
-Commit a9aaf57a added `tests/demo_capture_agreement_test.rs`. It reads:
-
-- the homepage template,
-- every `.tape` file under `demos/`,
-- `analyze.js`.
-
-It fails when:
-
-- the animation's capture differs from the `/analyze` sample
-  (`the_homepage_animation_and_the_analyze_sample_use_one_capture`);
-- the still picture's capture differs from the animation's
-  (`the_hero_still_and_the_hero_animation_use_one_capture`);
-- a `.tape` file names a capture that does not exist, or one that is not
-  committed to the repository
-  (`every_demo_tape_drives_a_capture_that_exists`,
-  `no_demo_tape_drives_an_uncommitted_capture`).
-  - Given a capture that does not exist, sipnab prints an error such as
-    `-I/--input: 'tests/pcap-samples/does-not-exist.pcap' does not exist`.
-    Then it exits.
-  - So a script that names a missing capture records that error instead of a
-    call.
-
-The test reads the capture name only from the argument after `-I`. So a path
-mentioned in a comment in a `.tape` file is not mistaken for the capture.
-
-## What you can check yourself
-
-The sample call the site offers is in the repository. This lists what it
-contains. It holds seven SIP dialogs. One of them is a call with two RTP
-streams:
+## List what it contains
 
 ```bash
 sipnab -N -I website/static/demos/sample-call.pcap --report --no-cli-print
@@ -134,24 +68,69 @@ SSRC         PT   Codec    Clock  Source                Destination           Pk
 0x5e6f7a8b   0    PCMU     8000   192.0.2.20:10002      192.0.2.10:10000      300     0      0.0%    0ms      6s     64     
 ```
 
-The site serves the same file at `https://sipnab.com/demos/sample-call.pcap`.
-The first-steps guide uses it.
+The capture holds seven dialogs: two registrations, three subscriptions, one
+OPTIONS exchange and one call. The call has two RTP streams, one in each
+direction.
+
+## Open it in the terminal interface
+
+```bash
+sipnab -I website/static/demos/sample-call.pcap
+```
+
+The call list opens with the same seven dialogs. Select a row and press Enter
+to see its message flow. Press F1 for the keys, and Esc to quit.
+
+## Print the report for the call
+
+```bash
+sipnab -N -I website/static/demos/sample-call.pcap --call-report call-2c9d47@192.0.2.10 --no-cli-print
+```
+
+```text
+Call Report: call-2c9d47@192.0.2.10
+════════════════════════════════════════
+Time:       2023-11-14 22:13:25 -> 22:13:33 (8s)
+From:       "Alice" <sip:alice@...>
+To:         <sip:bob@...>
+Result:     Completed (BYE)
+Frame:      website/static/demos/sample-call.pcap#19@db3d2ea0ae5df067
+
+Timing:
+  PDD:        0.18s
+  Setup:      2.42s
+  Ring:       2.24s
+  Teardown:   0.01s
+  Retransmits: 0
+
+SIP Transactions:
+  INVITE -> 100 (6ms) -> 180 (180ms) -> 200 (2420ms)
+  ACK
+  BYE -> 200 (8468ms)
+
+Media Streams:
+  RTP 192.0.2.10->192.0.2.20 PCMU SSRC=0x1a2b3c4d pkts=300 jitter=0ms loss=0.0% mos=4.36 R=90.8
+  RTP 192.0.2.20->192.0.2.10 PCMU SSRC=0x5e6f7a8b pkts=300 jitter=0ms loss=0.0% mos=4.36 R=90.8
+
+Issues Detected: None
+```
+
+The callee answered after 2.42 seconds and ended with a BYE. Both audio
+streams lost no packets.
 
 ## Terms used here
 
 - **Capture (pcap)**: a file holding recorded network packets.
 - **SIP**: the signaling protocol that sets up and ends phone calls.
-- **Dialog**: sipnab's record of one SIP conversation, such as a call or a
-  registration.
+- **Dialog**: sipnab's record of one SIP conversation, such as a call, a
+  registration or a subscription.
 - **RTP**: the protocol that carries the audio of a call.
-- **VHS**: a program that runs a script of terminal commands and records the
-  screen as an image or animation.
-- **`.tape` file**: a VHS script.
-- **Template**: the file the site generator turns into a web page.
-- **Test**: an automated check that runs on every build and fails when the
-  rule it describes stops holding.
+- **PDD**: post-dial delay, the time from the INVITE to the first ringing
+  response.
+- **BYE**: the SIP request that ends a call.
 
 ## Related guides
 
-- [Download a capture (uses the same sample call)](@/docs/first-cli-triage.md#download-a-capture)
+- [Triage a capture from the command line](@/docs/first-cli-triage.md)
 - [List the calls](@/docs/first-cli-triage.md#list-the-calls)
+- [Explain one call](@/docs/first-cli-triage.md#explain-one-call)

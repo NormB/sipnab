@@ -142,8 +142,8 @@ sees calls from the whole estate. The HEP listener is a plain UDP socket:
 
 ### Coexisting with Homer (or any observability host)
 
-A Homer / heplify-server box is a natural home for sipnab. The HEP
-plumbing from the proxies already exists there. Two things to arrange:
+A Homer / heplify-server host already receives HEP from the proxies, so
+sipnab can run there. Arrange two things:
 
 - **Port**: heplify-server owns udp/9060. So sipnab takes its own
   (udp/9063 above), and each proxy mirrors to **both** destinations.
@@ -154,9 +154,8 @@ plumbing from the proxies already exists there. Two things to arrange:
   [Understand the load on a busy server](mcp-deploy.md#understand-the-load-on-a-busy-server)).
   Then the box's primary tenant keeps its headroom.
 
-Anything else on the host is simply a neighbor process. Examples are an
-OpenTelemetry collector, Prometheus, etc. sipnab neither speaks OTLP nor
-conflicts with it.
+Other services on the host, such as an OpenTelemetry collector or Prometheus,
+need no change. sipnab does not speak OTLP and does not use their ports.
 
 ---
 
@@ -219,8 +218,8 @@ option. Keep sipnab on loopback and let nginx own the public endpoint.
    }
    ```
 
-   `proxy_buffering off` is load-bearing. The streamable-HTTP transport
-   answers with `text/event-stream`, and buffering proxies stall it.
+   Set `proxy_buffering off`. The streamable-HTTP transport
+   answers with `text/event-stream`, and a buffering proxy stalls it.
 
 - **[server]** Firewall: open tcp/443 only. Port 8731 stays closed to the
    outside.
@@ -400,23 +399,15 @@ Host sbc-edge-1.example.net proxy-1.example.net pbx-1.example.net
 For [the SSH stdio shape](mcp-deploy.md#connect-claude-code-on-your-laptop-to-sipnab-on-a-server), `ssh -J bastion.example.net sbc-edge-1.example.net
 /usr/local/bin/sipnab --mcp -N …` does the same thing inline.
 
-> **Not measured.** Everything in this subsection above the `--node-name` line
-> is the same wiring that
-> [the SSH stdio shape](mcp-deploy.md#connect-claude-code-on-your-laptop-to-sipnab-on-a-server),
-> [the token service](mcp-deploy.md#keep-a-capture-running-between-agent-sessions)
-> and [the SSH tunnel](mcp-deploy.md#keep-a-capture-running-without-exposing-a-port)
-> document, applied three times.
->
-> - The tunnel, NAT and `ProxyJump` commands were **not** run against three
->   real hosts for this page.
-> - There was one machine available.
->
-> The behavior that
-> *was* measured is everything below.
->
-> - The measurement used three sipnab servers on one host.
-> - Each had its own `--node-name` and its own capture.
-> - The transcripts say which build produced them.
+The tunnel, NAT and `ProxyJump` steps are the wiring that
+[the SSH stdio shape](mcp-deploy.md#connect-claude-code-on-your-laptop-to-sipnab-on-a-server),
+[the token service](mcp-deploy.md#keep-a-capture-running-between-agent-sessions)
+and [the SSH tunnel](mcp-deploy.md#keep-a-capture-running-without-exposing-a-port)
+describe, applied once per node. To try the tracing steps below before you
+have three hosts, run three sipnab servers on one machine, each with its own
+`--node-name` and capture, as
+[Run it against a local server first](mcp-deploy.md#run-it-against-a-local-server-first)
+shows.
 
 ### Ask the SBC first
 
@@ -426,11 +417,8 @@ The SBC is the only box that saw **both** sides of the call. So its
 - Querying the PBXes first means guessing which one took the call.
 - It usually means asking all of them.
 
-That ordering also matters for cost.
-
-- Answering a query is cheap for the server.
-- But every agent round trip spends seconds of model time.
-- Following one pointer beats fanning out.
+Following the pointer the SBC returns takes one query per hop. Asking every
+PBX takes one query per PBX, and each agent round trip costs model time.
 
 Ask it first even when you expect the box to stay a proxy on this call.
 
@@ -443,21 +431,12 @@ is about telling those two apart.
 
 ### Read what matched, because the topology is not fixed
 
-Here is the thing that makes this hard, and it is not a corner case: **an SBC or
-proxy may run back-to-back on one call and stay a proxy on the next.**
-
-- Whether it re-originates depends on:
-  - the call type,
-  - which endpoints take part,
-  - configuration that can change while you are watching.
-- So you cannot pick a correlation strategy in advance.
-- Any procedure that says "our SBC is a B2BUA, therefore look for X" is right
-  until the day it quietly is not.
-
-The way out is to stop predicting and start reading.
-
-- You ask the same question every time: `find_correlated` on the leg you have.
-- The answer tells you which topology you were in:
+**An SBC or proxy may act as a back-to-back user agent (B2BUA) on one call
+and as a proxy on the next.** Whether it re-originates a call depends on the
+call type, the endpoints and its configuration, which can change. Do not choose
+a correlation strategy in advance. Ask the same question every time,
+`find_correlated` on the leg you have, and read which topology the answer
+shows:
 
 - **A call that stayed in proxy mode keeps its Call-ID across the hop.**
   - Nothing correlates, because there is nothing to correlate *to*.
@@ -480,10 +459,8 @@ degrees of one thing:
 | `via_branch` | **No** — a B2BUA opens a new transaction | Same transaction, so: same hop, not across one | `true` |
 | `timing_heuristic` | No | A guess from endpoint overlap and elapsed time | `false` |
 
-Listed in evaluation order, which is descending score.
-
-- The loop stops at the first match, then sorts by score.
-- So a leg that satisfies two strategies comes back as the stronger one.
+The rows are in descending score. sipnab reports a leg that satisfies two
+strategies under the higher-scoring one.
 
 Four fields decide how much of that tree you should act on:
 
@@ -494,12 +471,8 @@ Four fields decide how much of that tree you should act on:
 | `heuristic_only` | `true`: **every** returned leg rests on a guess, so the whole tree is a hypothesis |
 | `timing_clock` | Present only when the answer contains a time-based match. Absent means no leg needed one |
 
-sipnab omits `timing_clock` when every leg matched on an identifier. It does
-not send a healthy-looking default.
-
-- A clock reading beside an identifier match invites you to weigh one against
-  the other.
-- They do not trade off.
+sipnab omits `timing_clock` when every leg matched on an identifier, because
+the clock does not affect an identifier match.
 
 **Check the clock before believing a `timing_heuristic` match across nodes.**
 The window is two seconds unless `--leg-correlation-window` says otherwise.
@@ -522,83 +495,87 @@ without running a correlation.
 
 #### Compare the two answers to the same question
 
-Both transcripts below are real output from sipnab 0.5.97.
+Both transcripts below come from the script in
+[Drive it from a script](mcp-deploy.md#drive-it-from-a-script), run against
+sipnab servers on one host reading
+[`tests/pcap-samples/`](https://github.com/NormB/sipnab/tree/main/tests/pcap-samples).
 
-- They come from the script in
-  [Drive it from a script](mcp-deploy.md#drive-it-from-a-script).
-- They ran against sipnab servers reading
-  [`tests/pcap-samples/`](https://github.com/NormB/sipnab/tree/main/tests/pcap-samples).
+**The hop stayed a proxy.** This run adds a fourth server, a PBX node that
+holds the same call as the proxy node:
 
-Same command shape, opposite evidence.
+```bash
+./target/debug/sipnab -N --mcp --mcp-transport http --mcp-bind 127.0.0.1:8824 \
+    --node-name pbx-2 -I tests/pcap-samples/sip-proxy.pcap &
+```
 
-**The hop stayed a proxy.** Zero legs, and the Call-ID turns up unchanged one
-node in. That is what proxy mode looks like, not what a lost call looks like:
+Then query the proxy node and that PBX node for the same Call-ID:
+
+```bash
+python3 contrib/mcp/trace-call.py \
+    --node proxy=http://127.0.0.1:8822 \
+    --node pbx=http://127.0.0.1:8824 \
+    --call-id proxied-call-synth@192.0.2.101
+```
+
+Zero legs come back, and the Call-ID is present unchanged on the next node.
+That is proxy mode, not a lost call:
 
 ```text
-[proxy] sipnab 0.5.97 node=proxy-1
-[pbx] sipnab 0.5.97 node=pbx-2
+[proxy] sipnab 0.5.222 node=proxy-1
+[pbx] sipnab 0.5.222 node=pbx-2
 [proxy] 0 leg(s) correlated to proxied-call-synth@192.0.2.101
   (nothing correlated: a call that stayed in proxy mode keeps its
    Call-ID, so ask the other nodes for the SAME id.)
 [pbx] holds proxied-call-synth@192.0.2.101  (node=pbx-2, state=Completed, 11 msgs)
 ```
 
-**The hop went back-to-back.** A leg comes back. The strategy names a guess
-from a 3 ms gap and a shared endpoint. No identifier crossed the box:
+**The hop went back-to-back.** The SBC node reads `b2bua-asterisk.pcapng`:
+
+```bash
+python3 contrib/mcp/trace-call.py \
+    --node sbc=http://127.0.0.1:8811 \
+    --node proxy=http://127.0.0.1:8822 \
+    --node pbx=http://127.0.0.1:8823
+```
+
+A leg comes back. The strategy names a guess from a 3 ms gap and a shared
+endpoint. No identifier crossed the box:
 
 ```text
-[sbc] sipnab 0.5.97 node=sbc-edge-1
+[sbc] sipnab 0.5.222 node=sbc-edge-1
+[proxy] sipnab 0.5.222 node=proxy-1
+[pbx] sipnab 0.5.222 node=pbx-1
 [sbc] 1 leg(s) correlated to b2bua-leg-synth@203.0.113.101:5060
   b2bua-caller-synth@203.0.113.1
       via timing_heuristic [GUESS] score 50, gap 3ms
   !! every leg was a timing guess, not an identifier match.
-     clock on sbc: synchronized=True max_error_us=295000
+     clock on sbc: synchronized=True max_error_us=724500
      The window is 2s. Skew larger than that invents legs and hides legs.
 ```
 
-Read the second one carefully. It is the case operators act on wrongly.
+Do not act on the second result as proof. The leg has a Call-ID, a score and a
+3 ms gap, but `identifier_match` is `false` and `heuristic_only` is `true`. Two
+unrelated calls through the same SBC inside the same window produce the same
+output.
 
-- A leg came back. It has a Call-ID, a score, and a plausible-looking 3 ms gap.
-- It is still a guess: `identifier_match` is `false` and `heuristic_only` is
-  `true`.
-- Two unrelated calls through the same SBC inside the same window produce
-  output that looks exactly like this.
-
-Now read `max_error_us`, and do not read it once. It is a live reading, not a
-constant.
-
-- On this one host it has reported **0.295 s** (the run above),
-  **1.944 s** and **2.38 s**.
-- That is an order of magnitude apart.
-- All three came while saying `synchronized=True`.
-- The last of them is past the 2 s correlation window entirely.
-
-- At the high end the clock could account for the entire match on its own.
-- At the low end it could not.
-- Nothing in the output tells you which run you are looking at except the
-  number itself. So read yours each time.
-- A figure quoted from another run says nothing about your box. That includes
-  the ones on this page.
+Read `max_error_us` on every run. It is the clock's current error bound, and
+it changes between runs while `synchronized` stays `True`. When it approaches
+or exceeds the 2 s correlation window, the clock error alone can explain the
+match.
 
 ### Check what federation cannot prove
 
 Take a box that emits no `Session-ID` and no `X-Call-ID`, and re-originates
 SDP. Then **nothing in the signaling proves the two legs are one call**.
 
-- The honest answer is that they may be.
-- sipnab says so rather than drawing a tree on a timing guess.
+- sipnab reports such a match as a timing guess, never as an identifier match.
 - Configuring the box to insert a correlation identifier is the fix.
   [Choose a correlation identifier](#choose-a-correlation-identifier) covers the
   options.
-- sipnab watches a wire and cannot add one. The SBC forwards its own message
-  to the far side regardless of what sipnab saw.
+- sipnab only observes traffic and cannot add a header.
 
-Attribution needs one more step than you might expect. **Not every response
-carries `capture_identity`.** Read the table rather than a rule of thumb.
-
-- The rule "whole-store answers carry it, per-dialog ones do not" is close but
-  wrong.
-- `media_diagnostics` is per-dialog and carries it:
+**Not every response carries `capture_identity`.** `media_diagnostics`
+answers for one dialog and still carries it:
 
 | Carries `capture_identity.node` | Does not |
 |---|---|
@@ -607,20 +584,16 @@ carries `capture_identity`.** Read the table rather than a rule of thumb.
 So call `capture_status` once per node and hold the name. Do not expect
 every answer to carry it.
 
-It matters.
-
-- "answered 407" is incomplete until you know which box answered.
-- With three servers registered, the agent has three places that sentence
-  could have come from.
-- Per-message answers carry a `frame` pointer instead
-  (`tests/pcap-samples/sip-proxy.pcap#0@a57665bcdb62f03a`).
-  - It names the capture the message came out of rather than the node.
+With three servers registered, a fact such as "answered 407" needs the node
+that reported it. Per-message answers carry a `frame` pointer instead
+(`tests/pcap-samples/sip-proxy.pcap#0@a57665bcdb62f03a`), which names the
+capture the message came from rather than the node.
 
 ### Choose a correlation identifier
 
-The transcript above ends in a guess. The durable fix is not a better guess. It
-is an identifier that survives the hop. Three options get raised, and they are
-not equally good.
+The back-to-back transcript above ends in a guess. To get an identifier match
+instead, give the call an identifier that survives the hop. There are three
+options.
 
 **1. Configure the SBC, proxy and PBX to insert one. Do this.** RFC 7989
 `Session-ID` exists for exactly this problem.
@@ -629,19 +602,12 @@ not equally good.
 - Each side reports the pair from its own point of view.
 - So it survives a box that rewrites Call-ID, From tag and Via.
 
-sipnab already reads it.
+sipnab already reads it. It matches the two halves in either order, because
+they swap direction across a B2BUA, and reports `strategy: session_id` with
+`identifier_match: true`.
 
-- [`src/sip/session_id.rs`](https://github.com/NormB/sipnab/blob/main/src/sip/session_id.rs)
-  parses the header.
-- It intersects the non-nil halves rather than comparing strings.
-  - The halves swap direction across a B2BUA.
-  - So string equality would find nothing and look exactly like "unrelated
-    calls".
-- Correlation on it reports `strategy: session_id` with
-  `identifier_match: true`.
-
-Nothing on the sipnab side needs changing. The work is one config line per
-box. It converts every future trace from a guess into evidence.
+Nothing on the sipnab side needs changing. Enable `Session-ID` on each box,
+and later traces return identifier matches.
 
 **2. Use an identifier the network already carries.** This is what `x_call_id`,
 `sdp_origin` and the two `P-Charging-Vector` strategies are. sipnab is already
@@ -657,7 +623,7 @@ all if any of these is true:
 Check before you plan work. Run `find_correlated` on a known B2BUA call and see
 what `strategy` comes back.
 
-Three caveats worth knowing:
+Three limits:
 
 - `sdp_origin` identifies the *media session* rather than the dialog.
   So it goes away the moment anything re-originates SDP.
@@ -669,38 +635,12 @@ Three caveats worth knowing:
   - So plain equality across one is a vendor behavior rather than something
     the RFC promises.
 
-**3. Have sipnab compute its own identical id on each node. Do not.** The
-appeal is obvious: no config change on any SIP box. But it is the wrong trade.
-
-- sipnab is a passive wire observer. It cannot inject a header.
-- So "the same id on both nodes" would have to be *computed* from what each
-  node independently sees.
-
-Across a re-originating B2BUA there is no guaranteed invariant to compute it
-from.
-
-- Call-ID, From tag, Via branch, Contact and usually the SDP are all
-  legitimately new on the far side.
-- That is what re-origination *means*. It is not a defect to work around.
-
-Any id derived from the remainder is a heuristic dressed as an identifier. That
-is worse than the labeled heuristic already in the output.
-
-- `timing_heuristic` announces itself as a guess and sets `heuristic_only`.
-- A computed id would arrive looking like proof.
-- It would correlate two unrelated calls with no field left to catch it.
-
-That is the same judgement this codebase makes elsewhere.
-
-- sipnab records the
-  [RFC 7329](https://www.rfc-editor.org/rfc/rfc7329.html) legacy `Session-ID`
-  form as an interop **notice**, not a violation.
-  - A single message cannot distinguish a legacy implementation from a broken
-    one.
-  - So the finding states what arrived on the wire and declines to assert
-    which.
-- A computed cross-node id would be the opposite move. It would assert an
-  identity the wire never established.
+**3. A sipnab-computed identifier on each node is not available.** sipnab only
+observes traffic and cannot insert a header. Across a re-originating B2BUA,
+Call-ID, From tag, Via branch, Contact and usually the SDP are all new on the
+far side, so a value computed from what each node sees can differ between
+nodes. sipnab reports such cases as `timing_heuristic` with `heuristic_only`
+set, rather than as an identifier match.
 
 > **For IMS and carrier readers: sipnab reads `P-Charging-Vector` in two
 > strategies, and the difference between them decides whether it helps you.**
@@ -725,7 +665,7 @@ That is the same judgement this codebase makes elsewhere.
 >   Useful where it happens, and it means some intermediary copied a per-dialog
 >   identifier onto a second dialog. No RFC grants that.
 >
-> Two further limits, both from the RFC rather than from the implementation:
+> Two further limits come from the RFC:
 >
 > - The first proxy generates the icid
 >   ([RFC 7315 section 5.6](https://www.rfc-editor.org/rfc/rfc7315.html#section-5.6)).
@@ -743,8 +683,7 @@ That is the same judgement this codebase makes elsewhere.
 
 ### Choose between federated and centralized
 
-Both work. The choice is about where packet data lives rather than which is
-newer.
+Both work. Choose by where packet data may live.
 
 | | Federated (this section) | Centralized (HEP) |
 |---|---|---|
@@ -753,7 +692,8 @@ newer.
 | Correlation | Agent joins the answers | One store, `find_correlated` runs unchanged |
 | Cost | More round trips, one per node | Bandwidth, and a PII decision |
 
-Centralizing needs no new code. See
+To centralize, see
 [Collect captures from several SIP servers in one place](#collect-captures-from-several-sip-servers-in-one-place).
-It is also what Homer does, at the scale of a whole enterprise system. sipnab is
-one binary. It can feed Homer rather than replace it.
+sipnab can run beside a Homer installation, as
+[Coexisting with Homer](#coexisting-with-homer-or-any-observability-host)
+describes.

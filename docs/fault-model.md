@@ -1,186 +1,151 @@
-# sipnab — fault model and failure-path test coverage
+# sipnab — fault model
 
-How sipnab behaves under hostile and degraded conditions. This page covers:
+How sipnab behaves when its input is hostile or its environment fails, and
+how to tell from a run whether something went wrong. This page covers:
 
 - the fault classes a SIP/RTP capture tool faces,
-- the invariants each surface guarantees,
-- the tests that pin them.
+- what sipnab guarantees for each,
+- what you see when one happens, and what to do.
 
-A capture tool ingests bytes from an untrusted network. The governing
-rule is: **no sequence of bytes an attacker can put on the wire (or in a
-capture file) may panic, hang, or grow memory without bound.** A panic
-in a parser is a remote DoS on the capture process.
+A capture tool reads bytes from an untrusted network. The governing rule is:
+**no sequence of bytes an attacker can put on the wire (or in a capture file)
+may crash sipnab, hang it, or grow its memory without bound.** A crash in a
+parser would be a remote denial of service against the capture process.
 
-Date: 2026-06-12.
-
----
+[Testing: Failure-path coverage](internals/testing.md#failure-path-coverage)
+lists the tests that pin each guarantee.
 
 ## Fault classes
 
-| # | Class | Surface | Invariant |
+| # | Class | Surface | Guarantee |
 |---|-------|---------|-----------|
-| 1 | **Hostile packet bytes** | every parser reachable from raw frames | parse returns `Result`/`Option`, never panics; bounded work + allocation |
-| 2 | **Hostile capture file** | pcap/pcapng reader | malformed/truncated file → clean error or `None`, never panic |
-| 3 | **Resource exhaustion** | dialog table, RTP stream table, reassembly, audio buffers | every attacker-keyed store has a ceiling + evicts; memory bounded under unique-key floods |
-| 4 | **Capture-source faults** | live capture loop | iface down / perms / transient recv error → clean error, no hang |
-| 5 | **Output-sink faults** | json / prometheus / fail2ban / event_exec / api | write failure propagates via `?`; packet data is shell-escaped (env-var exec) and log-sanitized |
-| 6 | **Concurrency / shutdown** | channels, signals, locks | Ctrl-C drains cleanly; `parking_lot` locks (no poison cascade); closed-peer sends handled |
+| 1 | **Hostile packet bytes** | every parser reachable from raw frames | A malformed frame produces a parse error, never a crash. Each frame gets a bounded amount of work and memory. |
+| 2 | **Hostile capture file** | pcap/pcapng reader | A malformed or truncated file produces a clean error, never a crash. |
+| 3 | **Resource exhaustion** | dialog table, RTP stream table, reassembly, audio buffers | Every table keyed by attacker-chosen values has a ceiling and evicts. Memory stays bounded under a flood of unique keys. |
+| 4 | **Capture-source faults** | live capture loop | An interface going down, a permission failure or a receive error ends the capture with a clean error, never a hang. |
+| 5 | **Output-sink faults** | JSON, Prometheus, fail2ban, `--on-dialog-exec` and `--on-quality-exec` hooks, REST API | sipnab reports a write failure. Packet data reaches hook commands only as environment variables, and sipnab strips line breaks from alert log values. |
+| 6 | **Concurrency and shutdown** | channels, signals, locks | Ctrl-C stops the run cleanly. sipnab checks every send to a thread that has already exited, so it causes no crash. |
 
-## Parser panic surface (class 1 & 2)
+## Malformed packets and capture files (classes 1 and 2)
 
-Two harnesses exercise every parser reachable from packet or file bytes
-layers:
+A malformed SIP message, SDP body or RTP header does not stop the run. sipnab
+marks the message as a parse error and continues with the next packet.
 
-- **Coverage-guided fuzzing**: [`fuzz/fuzz_targets/`](https://github.com/NormB/sipnab/tree/main/fuzz/fuzz_targets) (cargo-fuzz /
-  libFuzzer) — 20 targets: sip, sdp, rtp, rtcp, hep, websocket,
-  filter-dsl, stir-shaken, tls-records, srtp-keys, keylog-line,
-  pcap-reader, dtls, tcp-reassembly, siprec, rtpengine-ng, stun, llmnr,
-  archive-password, g729-decode.
-  - They run weekly (and on demand) via [`.github/workflows/fuzz.yml`](https://github.com/NormB/sipnab/blob/main/.github/workflows/fuzz.yml).
-  - Crash reproducers upload as artifacts.
-- **Continuous fuzzing**: the same targets run under ClusterFuzzLite from
-  [`.clusterfuzzlite/`](https://github.com/NormB/sipnab/tree/main/.clusterfuzzlite).
-  - Batch fuzzing and corpus pruning run daily. A coverage report runs weekly.
-  - The difference from the weekly run above is the corpus.
-    It persists between runs instead of restarting from the tracked seeds.
-    So what libFuzzer learns accumulates instead of starting over.
-- **Always-on smoke fuzz**: [`tests/smoke_fuzz_test.rs`](https://github.com/NormB/sipnab/blob/main/tests/smoke_fuzz_test.rs) runs in
-  `cargo test` (no nightly needed).
-  - It runs ~40k random + structurally mutated inputs per entry point under `catch_unwind`.
-  - It covers the same parser set **plus**:
-    - the full link-layer decap chain (`parse_packet` across several link types),
-    - the pcap file reader.
-  - A caught panic fails the test. The offending input is hex-dumped for a repro seed.
-  - Calling every fuzz entry point also compile-checks their signatures.
-    So a target that drifts out of step with its parser breaks the test build.
-    It does not drop out of the fuzz suite unnoticed.
-  - Example: [`fuzz/fuzz_targets/sip_parser.rs`](https://github.com/NormB/sipnab/blob/main/fuzz/fuzz_targets/sip_parser.rs) had passed a `&str` transport
-    argument where `parse_sip` takes `TransportProto`.
-    The whole suite stopped compiling, with nothing in `cargo test` to say so.
+The project fuzzes every parser reachable from packet or file bytes, with 20 targets: sip, sdp, rtp, rtcp, hep, websocket,
+filter-dsl, stir-shaken, tls-records, srtp-keys, keylog-line,
+pcap-reader, dtls, tcp-reassembly, siprec, rtpengine-ng, stun, llmnr,
+archive-password, g729-decode.
 
-The smoke layer is the regression floor. It found a UTF-8 char-boundary
-panic in the TLS keylog hex decoder
-([`src/capture/tls.rs`](https://github.com/NormB/sipnab/blob/main/src/capture/tls.rs)).
-Nobody had ever run the committed fuzz target against that decoder.
+Each parser has fixed upper bounds on what it reads:
 
-- The decoder checked **byte**-length parity, then sliced `&hex[i..i+2]` as a `str`.
-- So a multi-byte UTF-8 char (e.g. `€`, 3 bytes) split by the 2-char window panicked.
-  The message was "byte index is not a char boundary".
-- That was a remote DoS via a crafted `SSLKEYLOGFILE` line.
-- The decoder now works on raw bytes with explicit nibble validation instead.
-  Any non-ASCII or non-hex byte gives a clean parse error naming its offset.
-- The regression test `decode_hex_multibyte_utf8_does_not_panic` and the corpus seeds in
-  [`fuzz/corpus/keylog_line/`](https://github.com/NormB/sipnab/tree/main/fuzz/corpus/keylog_line) pin it there.
+| Input | Bound |
+|---|---|
+| SIP header fields per message | 200 |
+| One folded SIP header | 8 KB |
+| WebSocket payload | 64 KB |
+| TLS record length | 18432 octets |
+| Nested IP or GRE encapsulation | 5 layers |
 
-- **Property tests**: [`tests/property_test.rs`](https://github.com/NormB/sipnab/blob/main/tests/property_test.rs) (proptest) asserts the
-  *semantic* invariants the fuzzers cannot:
-  - a SIP message built from generated fields parses back to those fields,
-  - SDP survives a build→parse→rebuild round trip,
-  - the filter DSL is a total function on arbitrary text (parse then evaluate never panic).
+### Check that a run read the whole capture
 
-**Verified bounded already in code** (confirmed by audit, exercised by
-<!-- A list whose items carry their own parentheses and units. Semicolons are the
-separator that keeps it readable -- the super-comma use Google's own guidance
-keeps. Splitting on periods would turn one list into eight fragments. -->
-<!-- vale Google.Semicolons = NO -->
+sipnab reads a capture file that ends in the middle of a packet up to the
+break. It then reports the partial read in three places, so a script and a
+person both see it.
 
-fuzz): SIP header count (≤200) and fold size (≤8 KB); websocket payload
-(≤64 KB); TLS record length (≤18432); IP/GRE encapsulation depth (≤5);
-RTP CSRC / RTCP report counts (5-bit fields); all length-driven
-<!-- vale Google.Semicolons = YES -->
+The log, on standard error:
 
-`Vec::with_capacity` sites bounded by the actual slice.
+```text
+… ERROR sipnab::capture::file: Error reading pcap file 'truncated.pcap': truncated dump file; tried to read 296 captured bytes, only got 182
+… ERROR sipnab::capture::file: Stopped reading 'truncated.pcap' early: Error reading pcap file: truncated dump file; tried to read 296 captured bytes, only got 182. Continuing with the rest of the set.
+… WARN sipnab::capture::file: Read 4 packets: 0 of 1 file(s) read in full, 1 stopped early
+```
 
-- RTP/RTCP length-field arithmetic (`u16 * 4`) cannot overflow `usize`.
-- Each multiply carries a bounds `ensure!` after it.
+The exit status is `1` instead of `0`.
 
-## Resource bounds (class 3)
+The end of `--report`:
 
-The #1 memory-DoS surface is the attacker-keyed store. An attacker invents unlimited unique values to exhaust RAM:
+```sh
+sipnab -N -I truncated.pcap --report --no-cli-print
+```
 
-- Call-IDs (dialog table),
-- SSRCs (RTP stream table).
+```text
+…
+INCOMPLETE RUN — this report does not describe the whole capture:
+  - 1 of 1 capture file(s) was not read to the end; every report from this run rests on a partial read
+```
 
-| Store | Cap | Policy | Bound proven by |
-|-------|-----|--------|-----------------|
-| `DialogStore` | `--limit` | LRU evict oldest at cap (default); `--no-rotate` → drop-new at cap | [`tests/resource_bounds_test.rs`](https://github.com/NormB/sipnab/blob/main/tests/resource_bounds_test.rs) (50k unique Call-IDs, both modes, `len() ≤ cap` at every step) |
-| `StreamStore` | `--max-streams` | always evict oldest | same test (50k unique SSRCs) |
-| per-dialog messages | 500 | drop past cap | `dialog_store.rs` unit tests |
-| per-stream audio frames | 1500 | ring buffer | `stream_store.rs` |
-| IP/TCP reassembly | 10k entries / 30 s TTL | evict | `reassembly.rs` |
+The last line of `--json-dialogs`, which a script can test with
+`input_complete`:
 
-Both eviction policies are memory-safe.
+```sh
+sipnab -N -q -I truncated.pcap --json-dialogs --no-cli-print
+```
 
-- `rotate=true` is the default and is LRU.
-- `rotate=false`, which `--no-rotate` selects, trades availability for never evicting a tracked dialog.
-  Under a flood, sipnab drops new calls.
+```text
+…
+{"sipnab_run":{"archives":{"cut_short":false},"files":{"given":1,"not_reached":0,"read_in_full":0,"skipped":0,"stopped_early":1},"input_complete":false,"plugins":{"failed":0,"loaded":0,"requested":0},"port_gate":{"sip_outside_portrange":0,"sip_outside_ws_ports":0},"reasons":["1 of 1 capture file(s) was not read to the end; every report from this run rests on a partial read"],"retention":{"messages_dropped":0}}}
+```
 
-## Capture, sink, concurrency (classes 4–6)
+These outputs came from the first 1,500 bytes of
+[`tests/fixtures/sip_call.pcap`](https://github.com/NormB/sipnab/raw/main/tests/fixtures/sip_call.pcap). To fix the input, copy the capture again from
+its source.
 
-Audited, found sound (true-positive findings: none):
+A `--plugin` that fails to load produces the same exit status `1` and sets
+`plugins.failed` in the same record.
 
-- **Capture file** (`pcap_reader.rs`):
-  - Magic/length/block-truncation all return clean errors.
-  - Tests cover them (`too_short_file`, `invalid_magic`, `truncated_epb_block_no_panic`). The smoke fuzz also exercises them.
-  - The FILE path now implements the same exit-status rule the live path below states. It did not before.
-    - Reading a set deliberately continues past a truncated member and returns `Ok`.
-    - So the join never saw it, and a truncated pcap exited 0 with a whole-looking report.
-  - `ReadTally::report` is the one place both the single-threaded and `--cores` readers converge on.
-    - It now records the same `lost` predicate that decides its log severity into `output::run_integrity`.
-    - The exit-code sites and the `--json-dialogs`/`--report` markers read that record.
-    - One place emits both the human sentence on stderr and the machine record. So they cannot disagree.
-  - A `--plugin` that would not load is the same class and lands the same way
-    (exit `1`, `plugins.failed` in the record).
-  - The same record also carries idle compaction. Idle compaction deliberately does NOT move the exit status.
-    A retention policy doing what you configured it to do is not a failed run.
-- **Live loop** (`capture/live.rs`):
-  - Device-open and BPF-compile failures return clean errors via the ready channel.
-  - Receiver-dropped breaks cleanly.
-  - A transient `recv()` error is currently fatal to the capture thread.
-    That is acceptable, but untested (see the gaps in
-    [the section "Known gaps (deliberate / lower priority)"](#known-gaps-deliberate--lower-priority)).
-  - The thread ends by returning the error rather than panicking.
-  - The run that joins it then logs at error level and exits non-zero.
-    A capture that stopped early leaves every report above it resting on a partial read.
-  - The exit status is the only place that distinction survives.
-    Downgrade that join to a warning and exit 0, and an incomplete run reads exactly
-    like a whole one to anything checking `$?`.
-- **event_exec**:
-  - Packet-derived fields travel as `$SIPNAB_*` env vars, never shell-interpolated (no command injection).
-  - A cap of 100 bounds the spawn queue.
-  - sipnab reaps children.
-  - Tested.
-- **Log/JSON sinks**:
-  - `serde` escaping.
-  - `\r\n` stripped from alert log values (log-injection guard, tested).
-  - Writes use `?`, no `unwrap`.
-- **HTTP sinks** (api, prometheus):
-  - Read/write timeouts set (slow-loris).
-  - Connection cap via semaphore (503 over limit).
-- **Shutdown**:
-  - Atomic-flag signal handlers (`signals.rs`, tested).
-  - `parking_lot` locks cannot poison.
-  - Closed-channel sends checked.
-- **`unsafe`** (112 blocks outside `#[cfg(test)]`, across 29 files, the
-  largest groups in [`src/privilege.rs`](https://github.com/NormB/sipnab/blob/main/src/privilege.rs) (17), [`src/rtp/playback.rs`](https://github.com/NormB/sipnab/blob/main/src/rtp/playback.rs) (10) and
-  [`src/capture/uprobe/perf.rs`](https://github.com/NormB/sipnab/blob/main/src/capture/uprobe/perf.rs) (9)):
-  - libc and other FFI calls, with RAII/Drop-guarded fd ops.
-  - Every block states its own soundness argument.
-  - [`Cargo.toml`](https://github.com/NormB/sipnab/blob/main/Cargo.toml) sets clippy's `undocumented_unsafe_blocks` to `warn`.
-  - Both the pre-push hook and CI run clippy with `-D warnings`.
-    So a block with no adjacent `// SAFETY:` comment fails the build.
+## Memory bounds (class 3)
 
-## Known gaps (deliberate / lower priority)
+An attacker can invent unlimited unique Call-IDs or SSRCs. Each table keyed by
+them has a ceiling:
 
-- Live-capture **transient recv error** is fatal to the capture thread
-  (clean exit, logged).
-  - A retry-N-times policy could be more resilient.
-  - Untested (needs a fault-injecting capture source).
-- **Interface-down mid-capture** funnels into the same fatal recv path.
-  Untested.
-- **Opus decode** (`rtp/opus_decode.rs`) delegates to the external `libopus`.
-  - Its FFI input is length-checked.
-  - The codec itself is not fuzzed here.
-- No disk-full test for the pcap/wav writers.
-  - Writes propagate `?`, so there is no panic.
-  - No test covers the error path.
+| Table | Setting | Default | At the ceiling |
+|-------|---------|---------|----------------|
+| Dialogs | `--limit` | 100000 | Evicts the oldest dialog. With `--no-rotate`, drops new dialogs instead. |
+| RTP streams | `--max-streams` | 50000 | Evicts the oldest stream. |
+| Messages per dialog | none | 500 | Drops messages past the cap. |
+| Audio frames per stream | none | 1500 | Keeps the most recent frames. |
+| IP fragment and TCP reassembly | none | 10,000 entries, 30 s | Evicts entries past the cap or older than 30 seconds. |
+
+Both dialog policies keep memory bounded.
+
+- The default evicts the oldest dialog, so new calls keep arriving.
+- `--no-rotate` never evicts a tracked dialog. Under a flood, sipnab drops new
+  calls instead.
+
+## Capture, output and shutdown (classes 4 to 6)
+
+- **Live capture.** A device that fails to open, or a capture filter that fails
+  to compile, stops sipnab at startup with an error. A receive error during
+  the capture ends the capture: sipnab logs it at error level and exits
+  non-zero, because every report from the run rests on a partial read.
+- **Hook commands.** `--on-dialog-exec` and `--on-quality-exec` pass packet
+  data as `$SIPNAB_*` environment variables, never interpolated into a shell
+  command line. At most 100 hook commands wait to run at once.
+- **Logs and JSON.** JSON output escapes every value. Alert log values have
+  carriage returns and line feeds removed, so packet data cannot forge a log
+  line.
+- **HTTP servers.** The REST API and the Prometheus endpoint set read and
+  write timeouts and cap concurrent connections. A request over the cap gets
+  `503`.
+- **Shutdown.** Ctrl-C stops the run cleanly.
+
+## Known gaps
+
+- A transient receive error on a live capture ends the capture. sipnab does
+  not retry.
+- An interface going down during a live capture ends the capture the same way.
+- Opus decoding uses the system `libopus`. sipnab checks the length of what it
+  passes in, and does not fuzz the codec itself.
+- A full disk while writing a pcap or WAV file produces an error. No test
+  covers that path.
+
+## Memory-safety boundary
+
+sipnab is a Rust program. Rust marks code that the compiler cannot check for
+memory safety as `unsafe`. The tree holds 112 blocks outside `#[cfg(test)]`, across 29 files, the
+largest groups in [`src/privilege.rs`](https://github.com/NormB/sipnab/blob/main/src/privilege.rs) (17), [`src/rtp/playback.rs`](https://github.com/NormB/sipnab/blob/main/src/rtp/playback.rs) (10) and
+[`src/capture/uprobe/perf.rs`](https://github.com/NormB/sipnab/blob/main/src/capture/uprobe/perf.rs) (9).
+
+- Every block is a call into the operating system or another foreign library.
+- Every block carries a `// SAFETY:` comment stating why it is sound, and the
+  build fails on a block without one.

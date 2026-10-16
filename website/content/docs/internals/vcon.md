@@ -561,6 +561,136 @@ did not build: the public vCon datasets.
 - All 17,443 containers run on request.
 - [Testing](@/docs/internals/testing.md#the-public-vcon-datasets) says how to fetch them and what they get.
 
+## Decisions and history behind the operator page
+
+The operator page, [Export one observed call as a vCon](@/docs/vcon.md), says what
+each setting does. The reasons, the release history and the measurements
+behind it live here.
+
+### Why the export is behind a feature
+
+- `vcon` is a non-default Cargo feature, as every capture-side publication
+  feature is. A container that leaves the machine is a publication surface,
+  and a capture tool grows one only when an operator asks for it.
+- The TUI has no export key binding. The binding would do nothing in a build
+  without the feature, so the TUI help names the REST route and the feature
+  flag instead.
+- sipnab refuses `--vcon-out` without `--export-vcon` because a path with nothing
+  to write to it is a mistake, and naming it beats ignoring it.
+- sipnab refuses a `--vcon-out` that names the capture it reads because an export that
+  overwrites its own evidence destroys the input.
+
+### Why `grouping = "leg"` is the default
+
+- A PBX that copies no identifier between legs leaves one tie: the timing
+  guess from shared addresses and close start times.
+- Grouping on a wrong guess puts two unrelated calls in one container.
+- A per-call container states every tie sipnab built it on, so a reader can see
+  when that happened; the per-leg default never merges on a guess.
+
+### Ceilings the operator page states as numbers
+
+Each of these is a bound an operator can meet. The operator page gives the
+number, and this table names the constant.
+
+| Constant | What it bounds |
+|---|---|
+| `MAX_PACKET` (1275) | The largest Opus packet the Ogg Opus writer emits, in bytes: the largest [RFC 6716 section 3.4](https://www.rfc-editor.org/rfc/rfc6716.html#section-3.4) allows |
+| `MAX_PACKETS_PER_PASS` (10) | RTP packets a `live_rtp` leg sends per 20 ms pass when audio waits in the queue: ten times real time |
+| `MAX_SIGNED_LAYERS` (16) | Nested JWS layers a reader walks before it refuses a container |
+| `MAX_ISSUER_LEN` (8192) | Characters in the SCITT `scitt_issuer` URI |
+| `MAX_POLLS` (16) | Polls of a SCITT `202` receipt location |
+| `MAX_RECEIPT` (65536) | Bytes of a SCITT receipt sipnab keeps |
+| `MAX_FINDING_TAGS` (5) | `finding:` tags in a rule's `tags` attachment |
+| `MAX_KEY_PRESSES` (256) | Telephone events kept per RTP stream for `party_history` |
+| `MAX_CONTAINER_BYTES` (67,108,864) | The size of one container a reader accepts, 64 MiB |
+
+### The encrypted form before 0.5.219
+
+sipnab 0.5.217 and 0.5.218 wrote `alg` and `enc` in a JWE `protected` member,
+and `x5c` in the signature's protected header. Core-04 section 5.2 places
+`x5c` in the unprotected `header`, and later releases write it there, with no
+JWE `protected` member. The readers and the fetcher still open the older
+layout.
+
+### Conformance against the draft's own example
+
+The JOSE tests check sipnab against the encrypted example of
+draft-ietf-vcon-vcon-core-04 Appendix A.7: sipnab decrypts that example and
+verifies its signature, and signs the same bytes with the same key to the
+same signature.
+
+### Why the spool stages in the destination directory
+
+`rename` is atomic only within one filesystem. Across a mount boundary it
+fails or degrades into a copy, and a copy puts a partial file back in view.
+So sipnab stages a container as `.<container>.partial` in the destination
+directory, flushes it, and renames it into place. For the same reason the
+forwarder's delivered and failed directories must be on the spool's
+filesystem.
+
+### Why `--vcon-digest` is not a signature
+
+The digest is a SHA-256 of the bytes sipnab wrote, kept outside the container.
+A store adds fields on ingest, so a signature over sipnab's bytes would fail
+against the object the store holds and tell an operator nothing. The opt-in
+JWS of a signing rule is a separate mechanism, over the container the rule
+writes.
+
+### Store behavior the forwarder and fetcher kinds encode
+
+The per-kind values come from these observations and sources.
+
+- vcon.store, 2026-10-09 and 2026-10-11: the measurements in
+  [vCon delivery pages: measurements and history](https://github.com/NormB/sipnab/blob/main/docs/design/vcon-store-and-harness-notes.md#the-measurements).
+  It answered `500` to a uuid it already held on 2026-10-09 and `409` by
+  2026-10-11. Its read path and
+  `_meta` envelope come from its OpenAPI document and a `GET` that returned
+  the container's members and `_meta`.
+- A self-hosted conserver, 2026-10-07, sent a synthetic container from the
+  test fixtures:
+  - `204` for a new container; `GET /vcon/{uuid}` then returned it with an
+    `amended` member added.
+  - `204` for the same uuid sent again; the read-back showed the second copy.
+  - `422` for a body that is not JSON, and for one without `uuid`.
+  - `403` with no key or a wrong one.
+- The conserver kind's read path is from `api/api.py` of `vcon-dev/vcon-server`;
+  the vcon-mcp kind's from `src/api/routes/vcons.ts`, `src/api/rest-router.ts`
+  and `src/api/auth.ts` of `vcon-dev/vcon-mcp`.
+- The forwarder's default `Content-Type` stays `application/json` because on
+  2026-10-14 a self-hosted conserver answered `422` to a container sent as
+  `application/vcon`, and `204` to the same container as `application/json`
+  or `application/vcon+json`.
+- On 2026-10-14 the same conserver answered `500` to a gzip format body sent
+  as `application/vcon+gzip`, and `400` (`There was an error parsing the
+  body`) to the same body as `application/json` with `Content-Encoding: gzip`.
+- On 2026-10-13 that conserver answered `204` to an encrypted container. It
+  ran a vcon-server branch that adds encrypted vCon ingest; how an unmodified
+  vcon-server answers a signed or encrypted container was not measured.
+- No kind sets a `--vcon-forward-replace-url`. The operator page recorded that
+  nobody had measured a `PUT` to vcon.store.
+- A self-hosted conserver once answered `204` for a container it then failed
+  to write, with nothing in the answer saying so. That is why the forwarder
+  logs `delivered`, never `stored`.
+- The 5 MiB default of `--vcon-max-inline-media` comes from the store
+  measurement recorded in [the vCon design decision](https://github.com/NormB/sipnab/blob/main/docs/design/vcon.md): a
+  store answered `204` for a container of roughly 12 MB, wrote it to its
+  database, had its own file spool refuse the payload, and neither side
+  reported the partial write.
+
+### Format changes the operator page used to narrate
+
+- The message trace's `version` member became the string `"1.0"`, the trace
+  format version draft-howe-vcon-sip-signaling-00 defines. Before that it was
+  the number `1`. `schema_version` stays the number `1`.
+- Before draft-ietf-vcon-vcon-core-04 support, a Dialog Object with no content
+  carried no `type`, as core-03 allowed. Core-04 requires `type`, so such an
+  object is now `"type": "recording"` with no `body` or `url`.
+- `Party::name` carries the display name from `From` or `To`, beside
+  `sip_display_name`. An earlier version of the operator page said the type
+  had no `name` field, which was wrong, and would have led a reader to redact
+  only `sip_display_name`.
+
 ## See also
 
 - [Export one observed call as a vCon](@/docs/vcon.md) — the operator page

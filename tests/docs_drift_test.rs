@@ -53,6 +53,71 @@ const FOREIGN_FLAGS: &[(&str, &[&str])] = &[
         &["docs/errors.md", "website/content/docs/errors.md"],
     ),
     ("pid", &["docs/errors.md", "website/content/docs/errors.md"]),
+    // The output-formats page shows the pcapng repair script's own options
+    // and quotes sipnab's "rebuild with --features vcon" message (cargo's).
+    (
+        "dry-run",
+        &[
+            "docs/output-formats.md",
+            "website/content/docs/output-formats.md",
+        ],
+    ),
+    (
+        "force",
+        &[
+            "docs/output-formats.md",
+            "website/content/docs/output-formats.md",
+        ],
+    ),
+    (
+        "no-backup",
+        &[
+            "docs/output-formats.md",
+            "website/content/docs/output-formats.md",
+        ],
+    ),
+    (
+        "features",
+        &[
+            "docs/output-formats.md",
+            "website/content/docs/output-formats.md",
+        ],
+    ),
+    // The estate guide runs its example client, whose options are `--node`
+    // and `--call-id`.
+    (
+        "node",
+        &["docs/mcp-estate.md", "website/content/docs/mcp-estate.md"],
+    ),
+    (
+        "call-id",
+        &["docs/mcp-estate.md", "website/content/docs/mcp-estate.md"],
+    ),
+    // The MCP design notes say why no CI job runs the MCP Inspector's
+    // `inspector --cli ... --strict` check: the Inspector's flags.
+    (
+        "cli",
+        &[
+            "docs/internals/mcp.md",
+            "website/content/docs/internals/mcp.md",
+        ],
+    ),
+    (
+        "strict",
+        &[
+            "docs/internals/mcp.md",
+            "website/content/docs/internals/mcp.md",
+        ],
+    ),
+    // The operator guide notes name the SBOM build, `cargo cyclonedx`
+    // with `--features full,bpf`: cargo's flag.
+    (
+        "features",
+        &[
+            "docs/internals/operator-guide-notes.md",
+            "website/content/docs/internals/operator-guide-notes.md",
+        ],
+    ),
     // The release section's note on the CLI reference's Since column:
     // `scripts/flag-since.py --write` rewrites the column after a release is
     // tagged, and `git fetch --tags` brings the tags the script reads. The
@@ -113,40 +178,51 @@ const FOREIGN_FLAGS: &[(&str, &[&str])] = &[
     ),
     // `scripts/clean-stale.py --apply --root <DIR> --min-age-days <N>
     // --reclaim-build-cache --disk-floor-gb <N>`, named by the stray-files
-    // note: the cleaner's flags, not sipnab's.
+    // post-mortem: the cleaner's flags, not sipnab's.
     (
         "apply",
-        &["website/content/notes/an-instruction-with-no-gate.md"],
+        &[
+            "docs/internals/postmortems.md",
+            "website/content/docs/internals/postmortems.md",
+        ],
     ),
     (
         "root",
-        &["website/content/notes/an-instruction-with-no-gate.md"],
+        &[
+            "docs/internals/postmortems.md",
+            "website/content/docs/internals/postmortems.md",
+        ],
     ),
     (
         "min-age-days",
-        &["website/content/notes/an-instruction-with-no-gate.md"],
+        &[
+            "docs/internals/postmortems.md",
+            "website/content/docs/internals/postmortems.md",
+        ],
     ),
     (
         "reclaim-build-cache",
-        &["website/content/notes/an-instruction-with-no-gate.md"],
+        &[
+            "docs/internals/postmortems.md",
+            "website/content/docs/internals/postmortems.md",
+        ],
     ),
     (
         "disk-floor-gb",
-        &["website/content/notes/an-instruction-with-no-gate.md"],
+        &[
+            "docs/internals/postmortems.md",
+            "website/content/docs/internals/postmortems.md",
+        ],
     ),
     // `cargo test --features full --test <NAME> -- --test-threads=1`, named
-    // by the MCP field-cap note. cargo's and the test harness's flags.
-    (
-        "features",
-        &["website/content/notes/measure-the-field-not-the-container.md"],
-    ),
-    (
-        "test",
-        &["website/content/notes/measure-the-field-not-the-container.md"],
-    ),
+    // by the MCP field-cap post-mortem. The test harness's flag; `--features`
+    // and `--test` are scoped to the same page in their entries below.
     (
         "test-threads",
-        &["website/content/notes/measure-the-field-not-the-container.md"],
+        &[
+            "docs/internals/postmortems.md",
+            "website/content/docs/internals/postmortems.md",
+        ],
     ),
     // `cargo install sipnab --features full`, the features page's
     // packaging list. cargo's flag.
@@ -349,15 +425,16 @@ const FOREIGN_FLAGS: &[(&str, &[&str])] = &[
         "db",
         &["docs/config-reference.md", "website/content/docs/config.md"],
     ),
-    // cargo's, quoted by the engineering notes that describe a gate or a
-    // build. `--all-features`, `--all-targets`, `--workspace`, `--features`,
-    // `--fix` and `--test` are cargo's; `--preserve` is `cp`'s, named while
-    // explaining which spellings are GNU-only. Scoped per note, so the same
-    // name written as if it were a sipnab flag anywhere else still fails.
+    // cargo's, quoted by the post-mortems that describe a gate or a build.
+    // `--all-features`, `--all-targets`, `--workspace`, `--features`, `--fix`
+    // and `--test` are cargo's; `--preserve` is `cp`'s, named while explaining
+    // which spellings are GNU-only. Scoped per page, so the same name written
+    // as if it were a sipnab flag anywhere else still fails.
     (
         "all-features",
         &[
-            "website/content/notes/the-assumption-nobody-timed.md",
+            "docs/internals/postmortems.md",
+            "website/content/docs/internals/postmortems.md",
             "docs/uprobe-walkthrough.md",
             "website/content/docs/uprobe-walkthrough.md",
             "docs/client-examples.md",
@@ -406,6 +483,38 @@ const FOREIGN_FLAGS: &[(&str, &[&str])] = &[
             "website/content/docs/examples.md",
         ],
     ),
+    // More of the example programs' own options, which the runnable-examples
+    // page shows in the commands that try each program: `leg_correlate.py`
+    // takes `--key-file`, `--proxy` and `--relay`, and `customer_export.py`
+    // takes `--out`. None is a sipnab flag.
+    (
+        "key-file",
+        &[
+            "docs/client-examples.md",
+            "website/content/docs/examples.md",
+        ],
+    ),
+    (
+        "proxy",
+        &[
+            "docs/client-examples.md",
+            "website/content/docs/examples.md",
+        ],
+    ),
+    (
+        "relay",
+        &[
+            "docs/client-examples.md",
+            "website/content/docs/examples.md",
+        ],
+    ),
+    (
+        "out",
+        &[
+            "docs/client-examples.md",
+            "website/content/docs/examples.md",
+        ],
+    ),
     // The AI-task programs' own options (EX7): `--url` and `--token-file`
     // point `agent_triage.py` at a sipnab serving MCP over HTTP and at the
     // token it presents, `--file-root` and `--name` are where
@@ -449,15 +558,24 @@ const FOREIGN_FLAGS: &[(&str, &[&str])] = &[
     ),
     (
         "all-targets",
-        &["website/content/notes/the-assumption-nobody-timed.md"],
+        &[
+            "docs/internals/postmortems.md",
+            "website/content/docs/internals/postmortems.md",
+        ],
     ),
     (
         "workspace",
-        &["website/content/notes/the-assumption-nobody-timed.md"],
+        &[
+            "docs/internals/postmortems.md",
+            "website/content/docs/internals/postmortems.md",
+        ],
     ),
     (
         "fix",
-        &["website/content/notes/the-assumption-nobody-timed.md"],
+        &[
+            "docs/internals/postmortems.md",
+            "website/content/docs/internals/postmortems.md",
+        ],
     ),
     // `--features` and `--test` are cargo's in the contributor walkthroughs
     // too: `SIPNAB_BLESS_YANG=1 cargo test --features full --test
@@ -466,23 +584,22 @@ const FOREIGN_FLAGS: &[(&str, &[&str])] = &[
     (
         "features",
         &[
-            "website/content/notes/the-assumption-nobody-timed.md",
+            "docs/internals/postmortems.md",
+            "website/content/docs/internals/postmortems.md",
             "website/content/notes/the-tool-list-that-promised-what-the-build-lacked.md",
             "docs/internals/walkthroughs.md",
             "website/content/docs/internals/walkthroughs.md",
         ],
     ),
-    // `--test` is cargo's, named twice more by the REST reference and its
-    // mirror: `SIPNAB_BLESS_OPENAPI=1 cargo test --features full --test
-    // openapi_contract_test` is the one command that regenerates
-    // `website/static/openapi.json`, so the page cannot state the rule without
-    // naming cargo's flag.
+    // `--test` is cargo's: `SIPNAB_BLESS_OPENAPI=1 cargo test --features full
+    // --test openapi_contract_test` is the one command that regenerates
+    // `website/static/openapi.json`, and the walkthrough that adds a REST
+    // route names it.
     (
         "test",
         &[
-            "website/content/notes/seventy-five-percent-of-a-test-binary.md",
-            "docs/rest-api.md",
-            "website/content/docs/api.md",
+            "docs/internals/postmortems.md",
+            "website/content/docs/internals/postmortems.md",
             "docs/internals/walkthroughs.md",
             "website/content/docs/internals/walkthroughs.md",
         ],
@@ -519,7 +636,10 @@ const FOREIGN_FLAGS: &[(&str, &[&str])] = &[
     ("yes", &["docs/rest-api.md", "website/content/docs/api.md"]),
     (
         "preserve",
-        &["website/content/notes/the-fixture-was-what-broke.md"],
+        &[
+            "docs/internals/postmortems.md",
+            "website/content/docs/internals/postmortems.md",
+        ],
     ),
     // `--release` is cargo's. The uprobe walkthrough shows
     // `SIPNAB_BPF_REQUIRED=1 cargo build --release --features bpf`, which is
@@ -820,7 +940,8 @@ const FOREIGN_FLAGS: &[(&str, &[&str])] = &[
     // `--undefined-only` is binutils' `nm`, not sipnab's. The cookbook names it
     // because a reader whose daemon calls `SSL_write_ex` rather than
     // `SSL_write` needs a way to find that out before choosing
-    // `--uprobe-symbol`. Scoped to the cookbook and its mirror.
+    // `--uprobe-symbol`. Scoped to the cookbook, the uprobe walkthrough, their
+    // mirrors, and the uprobe how-to note, which shows the same check.
     (
         "undefined-only",
         &[
@@ -828,6 +949,7 @@ const FOREIGN_FLAGS: &[(&str, &[&str])] = &[
             "website/content/docs/uprobe-walkthrough.md",
             "docs/examples.md",
             "website/content/docs/cookbook.md",
+            "website/content/notes/read-tls-without-a-key-or-a-restart.md",
         ],
     ),
     (
@@ -1281,11 +1403,6 @@ const FOREIGN_FLAGS: &[(&str, &[&str])] = &[
             "docs/internals/tui-testing.md",
             "website/content/docs/internals/testing.md",
             "website/content/docs/internals/tui-testing.md",
-            // The vCon page names the test binary that proves the export, so a
-            // reader can run the same check the repository runs rather than
-            // taking the page's word for it.
-            "docs/vcon.md",
-            "website/content/docs/vcon.md",
             // CONTRIBUTING names the test binary that regenerates the man
             // page's generated regions.
             "CONTRIBUTING.md",
@@ -4730,7 +4847,19 @@ fn no_documentation_table_repeats_a_row() -> Result<(), TestError> {
     // 310 -> 312: docs/g729.md and its website mirror.
     // 312 -> 313: crates/g729/README.md, the decoder crate's crates.io page.
     // 313 -> 314: crates/g729/CHANGELOG.md, the decoder crate's own changelog.
-    const EXPECTED_MARKDOWN_FILES: usize = 314;
+    // 314 -> 304: eleven post-mortem notes with no reader task removed from
+    // website/content/notes/, and their record added as one page,
+    // docs/internals/postmortems.md (its site mirror is generated separately
+    // and counts when it is committed). Attributed against the staged diff:
+    // `--diff-filter=D` lists those eleven notes and `--diff-filter=A` that one
+    // page. FEWER here is the notes leaving, not the sweep narrowing.
+    // 313 -> 320: the site mirrors of the seven new internals pages
+    // (code-map, encapsulation-decoding, lint-rules, mcp,
+    // metrics-and-output-notes, operator-guide-notes, postmortems) under
+    // website/content/docs/internals/, generated by
+    // scripts/build-site-internals.py. Attributed with
+    // `git ls-files -o --exclude-standard` before they were staged.
+    const EXPECTED_MARKDOWN_FILES: usize = 320;
     /// How many tables this gate expects to walk.
     ///
     /// Named rather than written twice. The count and the failure message
@@ -5394,7 +5523,31 @@ fn no_documentation_table_repeats_a_row() -> Result<(), TestError> {
     // its website mirror.
     // 1243 -> 1245: the TableError and ImportError refusal tables in
     // crates/g729/README.md ("Getting the tables"), which has no site mirror.
-    const EXPECTED_TABLES: usize = 1245;
+    // 1245 -> 1248: the notes rewrite of 2026-10-16, per file against HEAD.
+    // Removed notes -5: a-regression-behind-a-passing-gate 1,
+    // measure-the-field-not-the-container 2, seventy-five-percent-of-a-test-
+    // binary 1, the-assumption-nobody-timed 1. Added +8:
+    // docs/internals/postmortems.md 6 (the five moved from those notes and the
+    // earlier MCP tool-size table), the-container-that-said-every-call-failed
+    // 1 (type and disposition) and the-popup-that-truncated-its-own-exit 1
+    // (each popup's closing key). No other page's count moved.
+    // 1248 -> 1271: the rest of the documentation rewrite. Counted with this
+    // gate's rule (blocks of three or more `|` lines, fences blanked), which
+    // reproduces 1245 at 16f7b0ea and 1271 on the staged tree. The six rewrite
+    // commits take 1245 to 1256 (+11; the +3 entry above recorded part of
+    // it): internals/postmortems.md 6, internals/profiling.md 3,
+    // design/vcon-store-and-harness-notes.md 3, internals/code-map.md 2, and
+    // one each in design/rtpengine-multi-hop-goal.md, fault-model.md,
+    // filter-dsl.md, install.md, internals/lint-rules.md,
+    // internals/operator-guide-notes.md, internals/testing.md,
+    // internals/vcon.md, internals/walkthroughs.md and sip-lint-rules.md (+24);
+    // benchmarks.md -3 and its site mirror -3, vcon-store.md -3,
+    // rtpengine.md -1, and the notes -3 (five removed, two added) (-13).
+    // Regenerating the site mirrors adds the other 15: internals/postmortems 6, profiling 3,
+    // code-map 2, and one each for filter-dsl, install, internals/lint-rules,
+    // operator-guide-notes, testing, vcon, walkthroughs and sip-lint-rules
+    // (+19); rtpengine -1 and vcon-store -3 (-4).
+    const EXPECTED_TABLES: usize = 1271;
 
     let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     let out = std::process::Command::new("git")

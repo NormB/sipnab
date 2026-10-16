@@ -123,22 +123,12 @@ Filter-DSL recipes, one per real-world task. Each one is a complete command line
 sipnab -N -I capture.pcap --filter "rtp.mos < 3.0 AND rtp.packets > 0 AND state == 'Completed'" --json
 ```
 
-An unmeasured `rtp.mos` is unknown. An unknown value matches no threshold in
-either direction.
+An unmeasured `rtp.mos` is unknown, and an unknown value matches no threshold
+in either direction. A dialog that carried no RTP never matches
+`rtp.mos < 3.0`.
 
-- A dialog that carried no RTP never matches `rtp.mos < 3.0`.
-- So `rtp.packets > 0` no longer guards against a `0.0`.
-
-This page used to say the clause was mandatory. A signaling-only dialog
-reported `0.0` and satisfied the threshold. That was true before the fix and
-is not true now.
-
-The clause is still worth keeping for a different reason.
-
-- It excludes calls that carried too few packets for the E-model to mean
-  anything.
-- That is a judgment about sample size. It is not a guard against a phantom
-  zero.
+- The `rtp.packets > 0` clause is optional. Raise its number, for example
+  `rtp.packets > 500`, to leave out calls that carried only a few packets.
 - To select the calls that carry no media, write `rtp.packets == 0` or
   `no_media == true` instead.
 
@@ -306,7 +296,7 @@ When a capture carries RTCP XR (PT=207), sipnab decodes the VoIP Metrics block
   - A mid-path capture watches a different path segment than the endpoint
     reports on.
 - This is the same rule the reception-report figures follow. See
-  [mos-and-codecs.md](@/docs/mos-and-codecs.md#mos-comes-from-what-sipnab-measured-never-from-what-the-far-end-claimed).
+  [mos-and-codecs.md](@/docs/mos-and-codecs.md#what-sipnab-computes-the-score-from).
 
 RFC 3611 reserves the value 127 for "this parameter is unavailable". It does
 this on all seven of its single-byte quality fields:
@@ -399,7 +389,7 @@ All 42 addressable fields, organized by type.
 | `duration` | Dialog duration | seconds (float) |
 | `msg_count` | Number of SIP messages in dialog | count |
 | `response_code` | Final response code of the dialog's INVITE, or of the request that opened a dialog without one (`REGISTER`, `PUBLISH`, `SUBSCRIBE` …). Also spelled `final_status_code`, which is the name the JSON, the schema and the MCP answers return. Unknown while the call is in progress, so a ringing dialog matches no comparison at all | 100-699 |
-| `pdd` | Post-dial delay (time to first ringing/response) | seconds (float) |
+| `pdd` | Post-dial delay: from the INVITE to the first 180 or 183 response | seconds (float) |
 | `setup_time` | Call setup time (INVITE to 200 OK) | seconds (float) |
 | `retransmits` | Total retransmit count in dialog | count |
 | `rtp.mos` | Mean Opinion Score (worst across streams, E-model R-factor approximation) | 1.0 - 5.0, unknown with no RTP |
@@ -413,26 +403,43 @@ All 42 addressable fields, organized by type.
 >   when the capture holds nothing to measure them from:
 >   - no RTP for the media fields,
 >   - no captured INVITE or 200 OK for the timing ones.
-> - An unknown matches no numeric operator, including `!=`. It is not
->   "different from 3.0". It is unknown.
-> - This is the rule SQL uses for `NULL`, for the same reason.
->
-> Reading them as `0` instead would put them below every threshold anyone
-> would type.
->
-> - Then `rtp.mos < 3.0` would select every call carrying no media at all.
-> - On one real trunk capture, that is 2292 of 2311 dialogs, rather than the 2
->   genuine ones.
-> - A saved filter carrying an `AND rtp.packets > 0` guard is redundant rather
->   than wrong.
->
-> To select the calls that carry no media, ask for that directly:
->
-> - `rtp.packets == 0` is a real count of zero.
-> - `no_media` is the diagnosis itself.
->
-> **Pair any `rtp.*` threshold with `rtp.packets > 0`** to ask about calls that
-> actually had media.
+> - An unknown matches no numeric operator, including `!=`. SQL treats `NULL`
+>   the same way.
+> - A saved filter carrying an `AND rtp.packets > 0` clause still works. The
+>   clause no longer changes which signaling-only dialogs match.
+
+#### Find the calls that carried no media
+
+A threshold on an `rtp.*` field never selects a call without RTP. Ask for
+those calls directly. On a capture that holds only signaling, the threshold
+matches nothing:
+
+```bash
+sipnab -N -I capture.pcap --filter "rtp.mos < 3.0" --report
+```
+
+```text
+Call-ID                          From           To             State        Code   Duration   Msgs   PDD      Tags
+-------------------------------------------------------------------------------------------------------------------------
+```
+
+`rtp.packets == 0` is a real count of zero, so it selects every dialog in the
+same capture:
+
+```bash
+sipnab -N -I capture.pcap --filter "rtp.packets == 0" --report
+```
+
+```text
+…
+Call-ID                          From           To             State        Code   Duration   Msgs   PDD      Tags
+-------------------------------------------------------------------------------------------------------------------------
+auth-fail-register-synth@20...   alice          alice          Failed       403    0s         4      -        -
+auth-fail-subscribe-synth@2...   alice          alice          Terminated   403    0s         4      -        -
+```
+
+`no_media == true` is narrower: it selects answered calls whose negotiated
+media never arrived. See [Boolean fields](#boolean-fields).
 
 
 ### Asking by class
@@ -456,39 +463,37 @@ sipnab -N -I capture.pcap --filter "response_class == 'server failure'"
 
 **`failure` means all three failure classes**: 4xx, 5xx and 6xx together.
 
-- That is what the word means at a console.
-- `failures` and `failed` are the same question.
-- Naming one class is how you ask for one class:
+- `failures` and `failed` mean the same.
+- To select one class, name that class:
 
 ```bash
 sipnab -N -I capture.pcap --filter "response_class == 'failure'"
 ```
 
-Matching is membership, not string equality, so `!=` stays honest.
+Matching tests class membership, not string equality.
 
 - A 503 is a server failure by every spelling.
 - So `response_class != 'Server Failure'` is false for it.
-- Case, hyphens and underscores are typing variants, not different questions.
+- Case, hyphens and underscores do not change the match.
 
-`response_code >= 500 AND response_code < 600` says the same as `'5xx'`. It
-says it as arithmetic. A bound wrong by one is silent.
+`response_code >= 500 AND response_code < 600` selects the same dialogs as
+`'5xx'`.
 
-**A dialog is never `1xx`, and that is not an omission.**
+**A dialog never matches `1xx`.**
 
-- This is the class of the FINAL response.
-- A provisional one is by definition not final.
-- A call sitting on 183 has no outcome yet. So it has no class at all, the
-  same as a call that has heard nothing.
-- Reach for `state` there instead.
+- `response_class` is the class of the final response.
+- A call that has received only a provisional response, such as 183, has no
+  final response and so no class. The same holds for a call that has received
+  no response.
+- Use `state` to select those calls.
 
 **This is not the classification on the
 [response-code reference](@/docs/sip-response-codes.md).**
 
-- That page groups codes by what they mean for a CALL, and it is narrower.
+- That page groups codes by what they mean for a call, and it is narrower.
 - There, a challenge, a cancellation and a decline are each *not* failures.
-  Each tells the operator to do something different.
-- `response_class` is the numeric registry and nothing else.
-- Neither one borrows the other's name, deliberately.
+  Each one calls for a different action.
+- `response_class` follows the numeric registry only.
 
 ### Why `response_code` and not just `state`
 
@@ -519,20 +524,17 @@ The one cause you suspect, on the carrier you suspect:
 sipnab -N -I capture.pcap --filter "response_code == 503 AND dst.ip == '198.51.100.7'"
 ```
 
-A call still in progress has no final response. It matches NOTHING:
+A call still in progress has no final response. It matches no comparison:
 
 - not `response_code < 400`,
 - not `>= 400`,
 - not `== 0`.
 
-A zero default would sweep every ringing call into the success bucket.
+Authentication challenges follow the same rule as `final_status_code` in
+`--json-dialogs` output:
 
-Auth challenges follow
-[`final_status_code`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog.rs).
-
-- A call challenged and then answered reports 200, not the 407. The challenge
-  was intermediate.
-- A call only ever challenged reports the challenge. Then it was the outcome.
+- A call challenged and then answered reports 200, not the 407.
+- A call that was only ever challenged reports the challenge code.
 
 ### Boolean fields
 
@@ -597,10 +599,10 @@ Auth challenges follow
 > - A stream counts as an orphan exactly when no dialog claims it. So the two
 >   halves exclude each other.
 > - The field would match nothing on any capture, while `NOT rtp.orphaned`
->   would match everything.
-> - Rejecting it at the parser beats a silent falsehood.
+>   would match everything. sipnab refuses it with `unknown field
+>   'rtp.orphaned'`.
 >
-> Orphaned media is real and still reachable. Both of these model streams
+> To find orphaned media, use one of these. Both list streams
 > rather than dialogs:
 >
 > - the "Orphaned Streams" section of `--report`,
@@ -811,8 +813,8 @@ These preset expressions are available as:
 - `kinds` entries for the MCP
   [`find_problems`](@/docs/mcp-tools-core.md#find-problems) tool.
 
-They expand to DSL expressions internally, through one function. They use the
-thresholds the run's flags and config set.
+Each alias expands to a DSL expression. The expansion uses the thresholds the
+run's flags and config set.
 
 | Alias | Dedicated CLI Flag | Expansion |
 |-------|--------------------|-----------|
@@ -856,32 +858,63 @@ Combining flags:
 an address the SDP never advertised. The boolean-field note above says:
 
 - what that means,
-- what it deliberately ignores.
+- what it ignores.
 
 ## Parser constraints
 
+sipnab refuses a filter that breaks one of these limits. The run exits with
+status 2 before it reads any packet, and the error names the limit. The same
+limits apply to every flag, config key, REST parameter and MCP argument that
+takes a filter.
 
-- **Expression nodes: 1024** (`MAX_EXPRESSION_NODES`).
-  - This is the bound a caller is most likely to reach.
-  - The reason it exists is not tidiness. Without it, a deeply repetitive
-    expression drove the parser into a stack overflow. That aborts the process
-    rather than returning an error.
-  - `validate_filter` refuses a filter over the cap, and so does every flag
-    that takes one.
-- Maximum parenthesis nesting depth: **50 levels** (`MAX_NESTING_DEPTH`).
-  - It bounds recursion in the parser itself.
-  - How large the resulting tree may grow is the separate node bound above.
-- **Header name length: 256 bytes** (`MAX_HEADER_NAME_LEN`), for the
-  `header.<name>` field.
-  - Whoever sent the message chose the header name. So sipnab bounds the field
-    that names one, like every other input.
-  - `FilterExpr::parse` refuses a longer name and states the limit.
-- Maximum regex pattern size: **1 MB** (1,000,000 bytes)
-- Empty expressions produce a parse error
-- Trailing unparsed input produces a parse error with position. The position
-  is the 0-based character column the caret marks, not a byte offset.
-- Unknown field names produce a parse error
-- Invalid regex patterns produce a parse error
+| Limit | Value | Error |
+|---|---|---|
+| Expression size | 1024 nodes | `expression exceeds maximum size of 1024 nodes (this one has 1199); split it into several filters` |
+| Parenthesis nesting | 50 levels | `expression exceeds maximum nesting depth of 50` |
+| `header.<name>` name length | 256 bytes | `header name longer than 256 bytes` |
+| Regex pattern size | 1,000,000 bytes | `the regex does not compile or is larger than 1000000 bytes` |
+| Empty expression | not allowed | `filter expression is empty` |
+
+Each comparison, `AND`, `OR` and `NOT` counts toward the node limit. A chain
+of 600 comparisons joined with `OR` has 1199 nodes. A [named
+filter](#named-filters) expands in place, so its nodes count too. To stay under
+the limit, replace a chain of `OR` comparisons on one field with one regex,
+such as `from.user =~ '^(1001|1002|1003)$'`, or split the question across
+several runs.
+
+Errors that point into the expression print its text with a caret under the
+position, a 0-based character column:
+
+```bash
+sipnab -N -I capture.pcap --filter 'method == INVITE extra'
+```
+
+```text
+… ERROR sipnab::app::bootstrap: Invalid --filter expression: a value containing whitespace must be quoted, or AND/OR is missing at position 10: 'INVITE'
+  method == INVITE extra
+            ^
+valid operators: ==, !=, <, <=, >, >=, =~ (regex)
+see docs/filter-dsl.md for fields, values, and diagnostic aliases
+```
+
+An unknown field name adds the list of valid fields:
+
+```bash
+sipnab -N -I capture.pcap --filter 'nosuch == 1'
+```
+
+```text
+… ERROR sipnab::app::bootstrap: Invalid --filter expression: unexpected input at position 0: 'nosuch'
+  nosuch == 1
+  ^
+hint: unknown field 'nosuch'
+valid fields: from.user, to.user, from.host, to.host, from.uri, to.uri, ruri, pai.user, method, ua, call_id, payload, …
+…
+```
+
+sipnab refuses a regex that does not compile with the regex-size message above.
+Check the pattern against the Rust `regex` crate syntax.
+
 
 ## See also
 

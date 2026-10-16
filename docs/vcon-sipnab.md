@@ -124,9 +124,7 @@ three things to what it does:
 
 For the audio to be there at all, sipnab has to capture it.
 
-- Up to 0.5.192 it captured only the SIP ports by default.
-- Later versions capture the media too.
-- Either way, give it a capture filter that names the media ports.
+- Give it a capture filter that names the media ports.
 - rtpengine relays media on 30000-39999 in the vCon server guide:
 
 ```bash
@@ -170,8 +168,9 @@ within about ten seconds of the call ending.
 - It checks every five seconds.
 - It waits until the call has been quiet for five.
 - If you stop sipnab, it writes nothing more.
-  - Calls that ended in the last few seconds before the stop are not written.
-- Stopping means stopping, and sipnab keeps no call data behind.
+  - sipnab does not write the calls that ended in the last few seconds before
+    the stop.
+- sipnab keeps no call data after it stops.
 
 ## Install the forwarder
 
@@ -181,8 +180,8 @@ The capture process never sends a vCon anywhere itself.
   - posts each file in the directory to vcon-server's `sipnab` ingress list,
   - deletes the file once the server has taken it.
   - It needs only Python's standard library.
-- sipnab releases after 0.5.204 also include a forwarder,
-  `sipnab --vcon-forward`.
+- sipnab also includes a forwarder, `sipnab --vcon-forward`, in builds with
+  the `vcon` feature.
   - [Or deliver them with sipnab's own forwarder](#or-deliver-them-with-sipnabs-own-forwarder)
     runs it against the same ingress list.
 - This guide's tested steps use the Python forwarder.

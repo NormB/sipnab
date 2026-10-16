@@ -12,7 +12,6 @@ These Python clients demonstrate multi-step operator tasks.
 
 - Run commands from the repository root with Python 3.
 - The programs use its standard library.
-- Their parsing and analysis tests run in CI without a lab.
 - A complete live run requires the services described in the
   [capture harness](@/docs/vcon-harness.md).
 
@@ -28,7 +27,7 @@ Inspect each program's options before a live run:
 - `python3 clients/python/mcp_probe.py --help`
 - `python3 clients/python/vcon_view.py --help`
 
-Run the local regression suite:
+Run the programs' own tests, which need no running sipnab:
 
 ```bash
 # Run all of these, in order.
@@ -60,10 +59,8 @@ program per step:
 - **process**: turns what it read into an answer an operator acts on.
 - **stop**: stops a running sipnab through its own interface.
 
-"Not yet" marks a step that language has no program for.
-
-- A test holds this table to the programs in `clients/`.
-- So a program listed here exists, and makes the call its step needs.
+"Not yet" marks a step that language has no program for. Every program
+listed exists in `clients/` and makes the call its step needs.
 
 | Language | configure | capture | read | command | process | stop |
 |---|---|---|---|---|---|---|
@@ -83,11 +80,7 @@ of one of these programs:
 - [Prometheus metrics](@/docs/metrics.md),
 - [MCP deployment](@/docs/mcp-deploy.md).
 
-How they stay true:
-
-- A test holds each page's example to its program byte for byte.
-- CI builds every program and runs it against a sipnab replaying committed
-  captures.
+Each page's example is the program's code, unchanged.
 
 | Program | What it does | Go | JavaScript | Python |
 |---|---|---|---|---|
@@ -116,6 +109,16 @@ python3 clients/python/list_dialogs.py
 node clients/javascript/list-dialogs.mjs
 ```
 
+Against a sipnab replaying [`tests/pcap-samples/sip-problem-call.pcap`](https://github.com/NormB/sipnab/raw/main/tests/pcap-samples/sip-problem-call.pcap), the
+Python program prints:
+
+```text
+busy-3a2b1c@192.0.2.30: Failed (4 msgs)
+decline-7c6d5e@198.51.100.30: Failed (4 msgs)
+notfound-1b2c3d@203.0.113.30: Failed (4 msgs)
+unavail-4e5f60@192.0.2.50: Failed (4 msgs)
+```
+
 The MCP stdio clients start sipnab themselves. Both take a capture path.
 
 - [`sipnab_mcp.py`](https://github.com/NormB/sipnab/blob/main/clients/python/sipnab_mcp.py) needs the SDK from
@@ -137,15 +140,14 @@ Rust one with `cargo run -p sipnab-client`.
 ## Capability examples
 
 These four programs show what sipnab does that a single-capture SIP tool
-does not. CI runs each one end to end, on loopback, against committed
-captures.
+does not. Each runs on loopback against captures in the repository.
 
-| Example | What it shows | How CI runs it |
+| Example | What it shows | Example input |
 |---|---|---|
 | [leg_correlate.py](https://github.com/NormB/sipnab/blob/main/clients/python/leg_correlate.py) | One call joined across a proxy's capture and a media relay's | Two sipnabs replaying the proxy's and the relay's view of one call |
-| [vcon_validate.py](https://github.com/NormB/sipnab/blob/main/clients/python/vcon_validate.py) | A vCon export checked against the working group's own schema file | Exports from committed captures, checked by `jsonschema` |
+| [vcon_validate.py](https://github.com/NormB/sipnab/blob/main/clients/python/vcon_validate.py) | A vCon export checked against the working group's own schema file | A vCon file sipnab exported, checked by `jsonschema` |
 | [hep_senders.py](https://github.com/NormB/sipnab/blob/main/clients/python/hep_senders.py) | Who is feeding a HEP collector, and what it refused | One sipnab collecting, two more sending it HEP |
-| [tls_plaintext_records.rs](https://github.com/NormB/sipnab/blob/main/examples/tls_plaintext_records.rs) | What sipnab makes of the records its BPF TLS probe publishes | The decode alone, with no kernel |
+| [tls_plaintext_records.rs](https://github.com/NormB/sipnab/blob/main/examples/tls_plaintext_records.rs) | What sipnab makes of the records its BPF TLS probe publishes | None: the program builds the records itself and needs no kernel |
 
 ### Join one call seen at two nodes
 
@@ -179,13 +181,50 @@ for s in relay["streams"]:
   rather than dropping them.
 - It refuses two URLs that reach the same sipnab.
 
-CI replays one call from its two capture points, and expects this row:
+To try it, replay one call's two capture points into two sipnab servers:
+[`tests/fixtures/opensips-proxy-signaling.pcap`](https://github.com/NormB/sipnab/raw/main/tests/fixtures/opensips-proxy-signaling.pcap)
+is the proxy's view and
+[`tests/fixtures/rtpengine-opensips-ng.pcap`](https://github.com/NormB/sipnab/raw/main/tests/fixtures/rtpengine-opensips-ng.pcap)
+the relay's. Each server runs until you stop it, so start each in its own
+terminal, with the same `SIPNAB_API_KEY` exported in each.
 
-- [`tests/fixtures/opensips-proxy-signaling.pcap`](https://github.com/NormB/sipnab/raw/main/tests/fixtures/opensips-proxy-signaling.pcap) on one sipnab,
-- [`tests/fixtures/rtpengine-opensips-ng.pcap`](https://github.com/NormB/sipnab/raw/main/tests/fixtures/rtpengine-opensips-ng.pcap) on another.
+Start the proxy's sipnab:
+
+```bash
+sipnab -N --node-name proxy -I tests/fixtures/opensips-proxy-signaling.pcap --api 127.0.0.1:8083
+```
+
+Start the relay's sipnab:
+
+```bash
+sipnab -N --node-name relay -I tests/fixtures/rtpengine-opensips-ng.pcap --api 127.0.0.1:8084
+```
+
+Then write the key to a file and join the two:
+
+```bash
+# Run all of these, in order.
+printf '%s\n' "$SIPNAB_API_KEY" > api.key
+python3 clients/python/leg_correlate.py --key-file api.key --proxy http://127.0.0.1:8083 --relay http://127.0.0.1:8084
+```
 
 ```text
+proxy  proxy            http://127.0.0.1:8083
+       dialogs=1     streams=0
+relay  relay            http://127.0.0.1:8084
+       dialogs=0     streams=2
+
+Call-ID                  State       Code  Strm  Pkts    Codec      MOS   2-way
+-------------------------------------------------------------------------------
 1-4062@198.51.100.21     Completed   200   2     40      G722,PCMU  4.22  yes
+
+  1 call(s) correlated across both nodes
+```
+
+Pointing both URLs at one sipnab exits `1`:
+
+```text
+proxy and relay report the same capture instance (…) -- both URLs point at one sipnab, so there is nothing to correlate
 ```
 
 The caller sent G.722 and the relay forwarded PCMU. So transcoding shows as
@@ -231,8 +270,13 @@ Export a container and check it:
 
 ```bash
 # Run all of these, in order.
-sipnab -N -I capture.pcap --export-vcon 'a84b4c76e66710@pc33.atlanta.example.com' --vcon-out call.vcon
+sipnab -N -I tests/pcap-samples/sip-problem-call.pcap --export-vcon 'completed-9f8e7d@192.0.2.10' --vcon-out call.vcon
 python3 clients/python/vcon_validate.py call.vcon
+```
+
+```text
+checked against https://ietf.org/vcon/schemas/unsigned-vcon.json (…/tests/schemas/publisher/vcon_json_schema.json)
+valid    call.vcon
 ```
 
 A failed call passes. So does a call that completed without exported media.
@@ -243,15 +287,10 @@ A failed call passes. So does a call that completed without exported media.
 
 sipnab's own copy of the schema,
 [`tests/schemas/vcon.schema.json`](https://github.com/NormB/sipnab/blob/main/tests/schemas/vcon.schema.json),
-has the same bytes as the publisher's file:
+has the same bytes as the publisher's file.
 
-```text
-checked against https://ietf.org/vcon/schemas/unsigned-vcon.json (tests/schemas/publisher/vcon_json_schema.json)
-valid    completed.vcon
-```
-
-A container sipnab wrote before it followed core-04 carries a Dialog Object
-with no `type`. The publisher's file refuses it:
+A container from a sipnab release that wrote no Dialog Object `type` fails
+the publisher's schema. Export the call again with the current sipnab:
 
 ```text
 invalid  completed.vcon
@@ -290,19 +329,43 @@ lines.append(
 return lines
 ```
 
-CI starts a collector on loopback and two agents.
+To try it on one machine, start a collector, then replay two captures into
+it under two capture IDs.
 
-- Each agent replays a committed capture to the collector under its own
-  capture ID.
-- CI checks the roster and the collector's dialogs only after the collector's
-  counters show every packet admitted.
-- The reason: sipnab discards unprocessed input when it stops.
+Start the collector in its own terminal, with `SIPNAB_API_KEY` exported. It
+runs until you stop it:
+
+```bash
+sipnab -N --node-name collector --hep-listen 127.0.0.1:9061 --api 127.0.0.1:8085
+```
+
+Replay the first capture as capture ID 101:
+
+```bash
+sipnab -N -I tests/pcap-samples/sip-problem-call.pcap --hep-send 127.0.0.1:9061 --hep-id 101
+```
+
+Replay the second as capture ID 102:
+
+```bash
+sipnab -N -I tests/fixtures/sip_call.pcap --hep-send 127.0.0.1:9061 --hep-id 102
+```
+
+Read the roster:
+
+```bash
+SIPNAB_URL=http://127.0.0.1:8085 python3 clients/python/hep_senders.py
+```
 
 ```text
 hep:101@127.0.0.1  capture id 101  23 packets
 hep:102@127.0.0.1  capture id 102  7 packets
 2 sender(s), 30 packet(s) admitted, 0 refused
 ```
+
+The roster counts what the collector has admitted so far. If a count is lower
+than the capture holds, read it again a moment later: `packets_admitted` in
+`GET /v1/hep/senders` reaches 30 for these two captures.
 
 The capture ID is the sender's claim. Nothing proves it without `--hep-auth`.
 
@@ -315,7 +378,7 @@ listener's flags.
 each write with the socket that sent it
 ([cookbook recipe "Read TLS *and* who the peer was"](@/docs/cookbook.md#read-tls-and-who-the-peer-was)).
 
-- The live half needs root and a kernel with BTF. So no CI runner can run it.
+- The live half needs root and a kernel with BTF.
 - [`tls_plaintext_records.rs`](https://github.com/NormB/sipnab/blob/main/examples/tls_plaintext_records.rs) runs the
   other half:
   - It lays out records exactly as the BPF program publishes them.
@@ -346,15 +409,10 @@ Each of these programs carries out one multi-step recipe from the
 - It ends with the answer the recipe is for.
 - Single-command recipes stay recipes.
 
-CI runs each program against committed captures. It checks the exact lines it
-prints, plus a failure case:
+Each program exits non-zero and says why on a wrong token, a missing call or
+customer, a capture with nothing to judge, or no TFPS.
 
-- a wrong token,
-- a missing call or customer,
-- a capture with nothing to judge,
-- no TFPS.
-
-| Program | Recipes | How CI runs it |
+| Program | Recipes | Example input |
 |---|---|---|
 | [triage.py](https://github.com/NormB/sipnab/blob/main/clients/python/triage.py) | [1](@/docs/cookbook.md#triage-a-pcap-fast), [16](@/docs/cookbook.md#analyze-a-capture-into-one-machine-readable-verdict) | Four failed calls, one clean call, and a capture with no dialog to judge |
 | [failed_calls.py](https://github.com/NormB/sipnab/blob/main/clients/python/failed_calls.py) | [3](@/docs/cookbook.md#find-every-failed-call-grouped-by-response-code), [30](@/docs/cookbook.md#find-calls-that-answered-and-were-never-acknowledged) | A sipnab serving four failed calls and one answer nobody acknowledged |
@@ -460,9 +518,20 @@ report = get("/v1/report")
 sipnab reports a missing `ACK` only once the answer has waited
 `--ack-timeout`. That defaults to [RFC 3261](https://www.rfc-editor.org/rfc/rfc3261.html) Timer H, 32 seconds.
 
-CI starts sipnab with `--ack-timeout 5` against
+To try it, serve the four failed calls and
 [`tests/fixtures/sip-answered-never-acked.pcap`](https://github.com/NormB/sipnab/raw/main/tests/fixtures/sip-answered-never-acked.pcap),
-beside the four failed calls. The answer in that capture waited 31.5 seconds:
+whose answer waited 31.5 seconds. `--ack-timeout 5` makes that call count.
+Start the server in its own terminal, with `SIPNAB_API_KEY` exported:
+
+```bash
+sipnab -N --ack-timeout 5 -I tests/pcap-samples/sip-problem-call.pcap -I tests/fixtures/sip-answered-never-acked.pcap --api 127.0.0.1:8086
+```
+
+Then run the program:
+
+```bash
+SIPNAB_URL=http://127.0.0.1:8086 python3 clients/python/failed_calls.py
+```
 
 ```text
 4 failed call(s), by final response code:
@@ -603,17 +672,37 @@ withheld 192.0.2.10 (reg_flood): it also completed a registration or a call in t
 verified 2 of 2 ban(s) in TFPS's banned list
 ```
 
-TFPS's `ban` writes a pinned BPF map as root. So CI cannot run the real peer.
+To try the program without TFPS, which needs root to ban, point sipnab at
+[`clients/python/tests/fake_tfps_ctl.py`](https://github.com/NormB/sipnab/blob/main/clients/python/tests/fake_tfps_ctl.py).
+It answers as `tfps_ctl --json` does and keeps its block list in the file
+`FAKE_TFPS_STATE` names. Start the server in its own terminal, with
+`SIPNAB_API_KEY` exported and a signing key in `signing.key`:
 
-- CI starts sipnab with `--tfps-ctl` naming
-  [`clients/python/tests/fake_tfps_ctl.py`](https://github.com/NormB/sipnab/blob/main/clients/python/tests/fake_tfps_ctl.py).
-- That program answers in the documents `tfps_ctl --json` prints. A test holds
-  every line to the fixtures pinned against the real binary.
-- It keeps its block list in a file. CI checks that the file holds the two
-  banned addresses.
+```bash
+FAKE_TFPS_STATE=tfps-block-list.json sipnab -N -I tests/fixtures/sip-scanner-and-register-flood.pcap --api 127.0.0.1:8087 --api-signing-key-file signing.key --allow-action tfps:rest --journal-dir journal --tfps-ctl clients/python/tests/fake_tfps_ctl.py
+```
 
-Run the program against a real TFPS before trusting it with a production
-block list.
+Mint the actions token from the same key and run the program:
+
+```bash
+# Run all of these, in order.
+export SIPNAB_ACTION_TOKEN=$(sipnab --mint-token --token-scope actions --token-id scanner-ban --api-signing-key-file signing.key)
+SIPNAB_URL=http://127.0.0.1:8087 python3 clients/python/scanner_ban.py tests/fixtures/sip-scanner-and-register-flood.pcap --ttl 600 --reg-flood-threshold 10
+```
+
+It prints the same four lines as above, and the stand-in's block list holds
+the two banned addresses:
+
+```bash
+cat tfps-block-list.json
+```
+
+```json
+{"198.51.100.77": 1792152463, "203.0.113.42": 1792152463}
+```
+
+The numbers are the Unix times each ban expires. Run the program against a
+real TFPS before you rely on it for a production block list.
 
 ### Export the calls of one customer from rotated captures
 
@@ -650,12 +739,14 @@ When another customer's call shares an address:
 - the program removes the export rather than handing it over,
 - recipe "Export one customer's calls as a smaller capture"'s vCon export is the way to go.
 
-What CI does:
+Run it on a directory of rotated captures. Here `rotated/` holds
+`sip-problem-call.pcap` cut into three files, `tg.pcap2`, `tg.pcap0` and
+`tg.pcap1`, the way a wrapped `tcpdump -C -W` ring leaves them. The call
+placed by `alice` crosses all three:
 
-- It cuts `sip-problem-call.pcap` into three files, the way a wrapped
-  `tcpdump -C -W` ring leaves them.
-- It exports the call placed by `alice`, which crosses all three.
-- It has `capinfos` and `tshark` read the result:
+```bash
+python3 clients/python/customer_export.py rotated --user alice --out alice.pcap
+```
 
 ```text
 alice: 1 call(s)
@@ -681,14 +772,11 @@ over either:
 Before asking anything else, each waits for `capture_status` to report the
 file read to its end. An answer given earlier describes part of the capture.
 
-CI runs every program against committed captures. It checks the exact lines
-it prints, plus a failure case.
-
-| Program | What it does | How CI runs it |
+| Program | What it does | Input |
 |---|---|---|
-| [agent_triage.py](https://github.com/NormB/sipnab/blob/main/clients/python/agent_triage.py) | `list_dialogs` and `get_capture_report` to one verdict, and the calls to look at next | Over stdio on four captures, then over HTTP with signed tokens |
-| [evidence_handoff.py](https://github.com/NormB/sipnab/blob/main/clients/python/evidence_handoff.py) | An evidence package and a SIPp scenario per call, read back and checked | Twice over one capture; the two runs must match byte for byte |
-| [aggregate_for_model.py](https://github.com/NormB/sipnab/blob/main/clients/python/aggregate_for_model.py) | A filter, `aggregate_dialogs`, and JSON cut to a byte budget | Three budgets, an unknown filter field, and a budget nothing fits |
+| [agent_triage.py](https://github.com/NormB/sipnab/blob/main/clients/python/agent_triage.py) | `list_dialogs` and `get_capture_report` to one verdict, and the calls to look at next | A capture path (stdio), or a server URL and a token file (HTTP) |
+| [evidence_handoff.py](https://github.com/NormB/sipnab/blob/main/clients/python/evidence_handoff.py) | An evidence package and a SIPp scenario per call, read back and checked | A capture path, a file root and a package name |
+| [aggregate_for_model.py](https://github.com/NormB/sipnab/blob/main/clients/python/aggregate_for_model.py) | A filter, `aggregate_dialogs`, and JSON cut to a byte budget | A capture path, a field to group by, a filter and a byte budget |
 
 ### Triage a capture over MCP, as an agent
 
@@ -796,16 +884,12 @@ sipnab --mint-token --token-scope read --token-id agent-a --mcp-signing-key-file
 python3 clients/python/agent_triage.py --url http://127.0.0.1:8731 --token-file agent.token
 ```
 
-CI generates a signing key at run time. It starts sipnab on loopback port 0,
-reading the port it logs.
-
-- The signed token must print the same lines as the stdio run.
-- Each of these must get a `401`:
-  - a token signed with another key,
-  - a token minted from the same key for the REST API,
-  - a request with no token.
-- The server runs `--mcp-tools core`, as recipe "Set up the MCP server for a hosted agent" deploys it. So the check
-  also proves the core set can answer this triage.
+- Over HTTP the program prints the same lines as over stdio.
+- The server answers `401`, and the program exits naming that status, for a
+  token signed with another key, a token minted from the same key for the
+  REST API, or no token.
+- A server started with `--mcp-tools core`, as recipe "Set up the MCP server
+  for a hosted agent" deploys it, serves every tool this triage calls.
 
 ### Hand an agent an evidence package and a repro script
 
@@ -857,17 +941,14 @@ repro failed-calls.call-03.xml  busy-3a2b1c@192.0.2.30  asserts 486  pinned requ
 repro failed-calls.call-04.xml  notfound-1b2c3d@203.0.113.30  asserts 404  pinned request_uri
 ```
 
-CI runs it twice over one capture, into two file roots. It requires the same
-output and byte-identical files.
+Two runs over one capture into two file roots print the same lines and write
+byte-identical files.
 
-- The one difference between the two runs is the absolute path each answer
-  carries. The program prints it relative to its root.
-- Nothing else needs normalizing. The package holds no clock time, host name
-  or random value.
-- The package files and scenario files match across time zones and capture
-  file paths.
-- The README and manifest name the sipnab version. So the hashes change with
-  a release, and CI compares two runs rather than pinning them.
+- The package holds no clock time, host name or random value, so its files
+  match across time zones and capture file paths.
+- The program prints each path relative to its file root.
+- The README and manifest name the sipnab version, so the hashes change
+  between sipnab releases.
 
 ### Aggregate dialogs into bounded JSON for a model
 
@@ -934,11 +1015,11 @@ python3 clients/python/aggregate_for_model.py capture.pcap --group-by response_c
 {"group_by":"response_code","filter":"state == 'Failed'","total_matched":4,"distinct_values":4,"buckets":[{"value":"404","count":1},{"value":"486","count":1}],"other_count":2,"omitted_buckets":2}
 ```
 
-## Run everything CI runs
+## Run every example locally
 
-Build sipnab with every feature and its examples. Then run the smoke script.
-The operator tasks also need `tshark` and `capinfos`, from Ubuntu's `tshark`
-package:
+Build sipnab with every feature and its examples. Then run the smoke script,
+which starts the servers each program needs on loopback. The operator tasks
+also need `tshark` and `capinfos`, from Ubuntu's `tshark` package:
 
 ```bash
 # Run all of these, in order.
@@ -948,6 +1029,6 @@ scripts/smoke-clients.sh target/debug/sipnab
 
 - For Rust, see the [library API](@/docs/library.md) and its executable rustdoc examples.
 - For individual CLI commands, use the [cookbook](@/docs/cookbook.md).
-- C and C++ have no client examples. So no C or C++ bar applies yet.
+- C and C++ have no client examples yet.
 - The `c` blocks in [capture tuning](@/docs/tuning-capture.md) quote libpcap's source.
   They are citations, not examples.

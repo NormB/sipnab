@@ -142,13 +142,13 @@ Packet capture defaults.
 | `device` | string | -- | Default network interface. `--device` overrides it |
 | `node_name` | string | hostname | Name this box reports as, in the `capture_identity.node` field of MCP answers such as `list_dialogs`, `rtp_stats` and `capture_status`, and of `GET /v1/stats`. Lets an agent querying several servers tell WHICH one saw a given fact. `--node-name` overrides it, so a deployed config can name the box while a one-off command relabels it. The default puts the hostname on the wire. Clipped to 64 characters. sipnab refuses an empty value (exit 1) |
 | `portrange` | string | `"5060-5061"` | SIP **signaling** port range; media is never gated by it. sipnab skips any SIP message with both ports outside the range, and a skipped message reaches no count, no dialog and no output — so this key decides how much of a capture you analyze at all. Widen it (`"1-65535"`) unless you know every port in play. `--portrange` overrides it |
-| `ws_ports` | string | unset: ports 80, 443, 8080 and 8443 | Ports carrying SIP-over-WebSocket ([RFC 7118](https://www.rfc-editor.org/rfc/rfc7118.html)), as one inclusive `"START-END"` range in the same grammar as `portrange`. The shipped set is the browser's view of the web, not a deployment's: Kamailio, OpenSIPS and Janus each default to WSS outside it, and behind a reverse proxy sipnab sees whichever port the proxy forwards to — on such a capture the entire WebRTC signaling leg stays invisible. A range **replaces** the shipped set, exactly as `portrange` replaces the default signaling ports. sipnab counts the SIP-over-WebSocket it declines to unwrap and names the ports it arrived on. `--ws-portrange` overrides it |
+| `ws_ports` | string | unset: ports 80, 443, 8080 and 8443 | Ports carrying SIP-over-WebSocket ([RFC 7118](https://www.rfc-editor.org/rfc/rfc7118.html)), as one inclusive `"START-END"` range in the same grammar as `portrange`. Kamailio, OpenSIPS and Janus each default to WSS on a port outside the shipped set, and behind a reverse proxy sipnab sees whichever port the proxy forwards to; set the range to cover those ports, or sipnab does not see the WebRTC signaling leg. A range **replaces** the shipped set, exactly as `portrange` replaces the default signaling ports. sipnab counts the SIP-over-WebSocket it declines to unwrap and names the ports it arrived on. `--ws-portrange` overrides it |
 | `snaplen` | integer | `65535` | Snapshot length in bytes. sipnab refuses `0`, which keeps no byte of any packet, as `--snaplen` does. `--capture-profile` overrides it; `--snaplen` overrides it |
 | `buffer` | integer | `64` | Kernel capture buffer size in MiB (per device). sipnab refuses `0`, which asks the kernel for no ring, as `--buffer` does. `--buffer` overrides it |
 | `buffer_budget_mb` | integer | `64` | Memory budget for the in-flight capture→processing queue. Grows under load up to this budget (capped, never OOM) and shrinks when idle. `--buffer-budget` overrides it |
 | `no_rtp` | boolean | `false` | Disable RTP capture by default. `--no-rtp` turns it on. `--rtp` forces it off |
 | `promisc` | boolean | `true` | Put a named interface into promiscuous mode (the `any` device is never promiscuous). `--no-promisc` overrides this to `false` |
-| `hep_parse` | boolean | `false` | Unwrap HEP-encapsulated SIP found in the capture, as `-E` / `--hep-parse` does: each message takes the addresses and the time the HEP packet carries, or the time sipnab captured the wrapper when the HEP packet carries none. For a proxy that mirrors HEP to a loopback port that sipnab sniffs (`device = "lo"`), so that several readers can see the same copies. Keep a receiver bound to that port: with no process bound to it, some senders lose messages, as the note below this table describes. `--no-hep-parse` turns it off for one run. Feature: `hep` |
+| `hep_parse` | boolean | `false` | Unwrap HEP-encapsulated SIP found in the capture, as `-E` / `--hep-parse` does: each message takes the addresses and the time the HEP packet carries, or the time sipnab captured the wrapper when the HEP packet carries none. For a proxy that mirrors HEP to a loopback port that sipnab sniffs (`device = "lo"`), so that several readers can see the same copies. Keep a receiver bound to that port: with no process bound to it, some senders lose messages, as the section below this table describes. `--no-hep-parse` turns it off for one run. Feature: `hep` |
 | `bpf_filter` | string | -- | Capture (BPF) filter, as the trailing positional filter on the command line takes, handed to libpcap as typed. Not the display filter, which is `[filter] expression`. While it holds a filter, sipnab generates none from `portrange`. The trailing positional filter (`<BPF_FILTER>`) or `--bpf-file` replaces it. It applies to capture files too, and a run that reads a file through it says so on stderr |
 
 ```toml
@@ -163,8 +163,10 @@ no_rtp = false
 promisc = true
 ```
 
-The loopback HEP deployment, from the file alone. A proxy mirrors HEP to
-UDP/9063 on `lo`, and any number of readers sniff it at once:
+#### Read a proxy's HEP mirror on loopback
+
+Use this when a proxy mirrors HEP to a UDP port on `lo` and you want several
+readers to see the same copies. This file reads the copies sent to UDP/9063:
 
 ```toml
 [capture]
@@ -175,28 +177,41 @@ hep_parse = true
 bpf_filter = "udp dst port 9063"
 ```
 
-sipnab reads the copies without any process listening on UDP/9063. But a port
-with no listener costs messages with some senders.
+Keep a process bound to UDP/9063 while you sniff it.
 
-- The kernel answers each datagram sent to a closed port with an ICMP
+- With no listener on the port, the kernel answers each datagram with an ICMP
   port-unreachable message.
-- A sender that uses a connected UDP socket then fails its next send.
-- Measured on 2026-10-07 with sipnab's own sender before it changed:
-  - `sipnab -H
-    127.0.0.1:19063` sent a 7-message call to a port with no listener;
-  - 3 of the 7 sends failed;
-  - a reader on `lo` saw 4 messages.
-- sipnab's `-H` now sends UDP from an unconnected socket.
-  - The kernel does not report the ICMP message to that socket.
-  - So it loses no message this way.
-  - On 2026-10-08 the same run to a port with no listener reported 7 sent and
-    none failed.
-- Other senders, such as a proxy's HEP module, still may.
-  - Whether a proxy loses copies this way depends on whether its HEP sender
-    uses a connected socket.
+- A sender that uses a connected UDP socket then fails its next send, and the
+  readers see fewer messages than the proxy sent.
+- sipnab's own HEP sender (`-H`) uses an unconnected socket and loses no
+  message this way. Whether a proxy's HEP module does depends on its sender.
 
-Keep a receiver bound to the port while you sniff it. `sipnab -L 127.0.0.1:9063`
-is one, and it reads the copies itself.
+A sipnab HEP listener binds the port and reads the copies itself:
+
+```sh
+sipnab -L 127.0.0.1:9063 -N
+```
+
+It prints each message it receives with `origin=hep`:
+
+```text
+18:35:36.817 127.0.0.1:5082 -> 127.0.0.1:5080 INVITE UDP origin=hep
+18:35:36.817 127.0.0.1:5080 -> 127.0.0.1:5082 100 Trying UDP origin=hep
+18:35:36.818 127.0.0.1:5080 -> 127.0.0.1:5082 180 Ringing UDP origin=hep
+18:35:36.819 127.0.0.1:5080 -> 127.0.0.1:5082 200 OK UDP origin=hep
+```
+
+To test the path without the proxy, replay a capture to the port with `-H`:
+
+```sh
+sipnab -I call.pcap -N --portrange 1-65535 -H 127.0.0.1:9063
+```
+
+The last lines on stderr report what it sent:
+
+```text
+INFO sipnab::app::batch: HEP export to 127.0.0.1:9063 over udp: 7 packet(s) sent, none failed, 0 reconnect(s); sent means handed to the kernel: UDP reports no delivery, so a collector that is down produces no failure here
+```
 
 ### [display]
 
@@ -205,7 +220,7 @@ Output and TUI display settings.
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
 | `color` | string | `"auto"` | Color mode: `"auto"`, `"always"`, `"never"`. sipnab refuses any other value, naming the key. `--color` overrides it |
-| `payload_limit` | integer | -- | Maximum payload bytes to display. `--payload-limit` overrides it |
+| `payload_limit` | integer | -- | Maximum payload bytes the `-N` text output prints for each message; a longer payload ends with `[truncated]`. Does not change `--json` or `--json-pretty` output. `--payload-limit` overrides it |
 | `delta_time` | boolean | `false` | Show delta time between messages by default. `--delta-time` turns it on. `--no-delta-time` forces it off |
 | `from_to` | string | `"default"` | From/To column display: `"default"` (user else host:port), `"host-port"`, `"user"`, `"user-host-port"`. Cycle at runtime with `u`; `--from-to-mode` overrides this |
 | `mouse_capture` | boolean | `true` | Whether the TUI captures the mouse when it starts. `false` opens it with capture off, so the terminal's own drag-to-select works; `F12` toggles capture at runtime. With capture on, the mouse wheel scrolls |
@@ -356,7 +371,7 @@ See [Enrich a call before it is written](vcon.md#enrich-a-call-before-it-is-writ
 | `url` | string | -- | Where sipnab POSTs the request: `https://`, or `http://` to a loopback address only. One of `url` and `command` |
 | `command` | string | -- | A program run per call, reading the request on stdin and answering on stdout. One of `url` and `command` |
 | `auth_file` | string | -- | A file holding one `Header-Name: value` line sent with each request, such as `Authorization: Bearer ...`. Never written to a container |
-| `timeout_secs` | integer | `120` | How long sipnab waits for the answer, 1 to 3600: the default is `DEFAULT_TIMEOUT_SECS` (120) and the largest `MAX_TIMEOUT_SECS` (3600) in [`src/app/vcon_enrich.rs`](https://github.com/NormB/sipnab/blob/main/src/app/vcon_enrich.rs) |
+| `timeout_secs` | integer | `120` | How long sipnab waits for the answer, in seconds, 1 to 3600. sipnab refuses any other value at startup, exit 1, naming the service |
 | `send` | array of strings | `["audio", "signaling"]` | What sipnab sends the service: `audio` (each leg's WAV), `signaling` (the container), or both. Sending audio turns audio retention on for the run |
 | `lawful_basis` | bool | `false` | Carry a `lawful_basis` attachment the service answers with, checked for the shape of draft-howe-vcon-lawful-basis-02 and recorded as the service's. With `false`, an answer holding any attachment is `malformed` |
 
@@ -380,8 +395,8 @@ SIP protocol handling.
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
 | `xcid_headers` | array | `[]` | Header names used to correlate B2BUA call legs (`sip.xcid`). A dialog whose message carries one of these headers pointing at another dialog's Call-ID joins that dialog. Add your estate's headers here. Empty by default: sipnab picks no `X-` name for you ([RFC 6648](https://www.rfc-editor.org/rfc/rfc6648.html)), and the identifier that crosses a B2BUA by design is [RFC 7989](https://www.rfc-editor.org/rfc/rfc7989.html) `Session-ID`, which correlates with no configuration. An empty list turns the header strategy off |
-| `leg_correlation_window_ms` | integer | `2000` | How far apart, in milliseconds, one call's two legs may start and still correlate on TIMING alone. This is the B2BUA timing heuristic's whole content, and the only strategy left once a B2BUA has rewritten every identifier the other six compare. The shipped two seconds describes a PBX placing the outbound leg immediately, not one doing an LNP or ENUM dip, or walking an LCR cascade, before it places one. Widen it on such a hop; every correlation still reports the strategy that matched, so a guess stays labeled as one. `--leg-correlation-window` overrides it |
-| `active_idle_window_secs` | integer | `3600` | Seconds a dialog may go untouched and still count toward the active-dialog and active-call gauges every surface publishes. The shipped hour is twice [RFC 4028](https://www.rfc-editor.org/rfc/rfc4028.html)'s default `Session-Expires`, which grounds it for a trunk carrying session timers and not for a contact center, where a caller parked on hold past an hour is a channel in use the gauge stops counting. Widening it widens the opposite error -- a call that never sent its BYE keeps counting for longer, and that one never recovers on its own -- so raise it for traffic that genuinely goes quiet. `--active-idle-window` overrides it. `0` fails validation and names the key |
+| `leg_correlation_window_ms` | integer | `2000` | How far apart, in milliseconds, one call's two legs may start and still correlate on TIMING alone. Timing is the strategy sipnab falls back on when a B2BUA has rewritten every identifier the other strategies compare. Widen it for a PBX that does an LNP or ENUM dip, or walks an LCR cascade, before it places the outbound leg. Every correlation reports the strategy that matched. `--leg-correlation-window` overrides it |
+| `active_idle_window_secs` | integer | `3600` | Seconds a dialog may go untouched and still count toward the active-dialog and active-call gauges every surface publishes. The default is twice [RFC 4028](https://www.rfc-editor.org/rfc/rfc4028.html)'s default `Session-Expires`. Raise it where calls stay quiet for longer, such as a caller on hold for over an hour; a call that never sent its BYE then also keeps counting for longer. `--active-idle-window` overrides it. `0` fails validation and names the key |
 
 ```toml
 [sip]
@@ -404,9 +419,9 @@ Security detection defaults.
 | `reg_flood_threshold` | integer | `50` | Challenged failures from one source inside one `reg_flood_window_secs` window before `--reg-flood` reports a flood: REGISTERs that carried credentials and drew a `401` or `407` on the same transaction. The default is a carrier-registrar figure: it never sees the ten-a-second brute force a small PBX gets. Counted in capture time, so a file replays as the traffic it recorded. `--reg-flood-threshold` overrides it. `0` fails validation and names the key |
 | `reg_flood_window_secs` | integer | `1` | How much capture time one registration-flood counting window spans, in seconds. `reg_flood_threshold` counts failures per window, so this decides how concentrated a credential-guessing run has to be: one refusal every two seconds never puts two inside the default one-second window. Range 1-3600. sipnab refuses `0`, which would reset the count on every packet, and anything past an hour, where the count is a daily tally rather than a rate, and names the key. `--reg-flood-window` overrides it |
 | `reg_flood_transaction_timeout_ms` | integer | `32000` | How long a credentialed REGISTER stays open to the `401`/`407` that answers it, in milliseconds. The default is [RFC 3261 Timer F](https://www.rfc-editor.org/rfc/rfc3261.html#section-17.1.2.2), 64 times T1 at the [default T1 of 500 ms](https://www.rfc-editor.org/rfc/rfc3261.html#section-17.1.1.1). sipnab never counts a challenge that arrives later as a failure. Set it to 64 times your network's T1, or to your registrar-side proxy's final-response timer when that is longer (see [Registration-flood timers](troubleshooting.md#registration-flood-timers)). Range 1000-600000. Below one second every challenge arrives after its transaction ends and the detector counts nothing, so sipnab refuses the value and names the key. `--reg-flood-transaction-timeout` overrides it |
-| `kill_rate_limit` | integer | `10` | Scanner-kill responses per second sipnab may put on the wire. This bounds the one feature that answers an address out of the capture, and whoever forged the source address chose where each response goes, so there is no unlimited setting and `0` fails validation. A per-destination cap of 3 per minute applies underneath, so raising this widens how many distinct hosts sipnab answers, never how hard it hits one. `--kill-rate-limit` overrides it |
+| `kill_rate_limit` | integer | `10` | Scanner-kill responses per second sipnab may put on the wire. There is no unlimited setting: `0` fails validation and names the key. A per-destination cap of 3 per minute applies underneath, so raising this widens how many distinct hosts sipnab answers, never how hard it hits one. `--kill-rate-limit` overrides it |
 | `business_hours` | string | -- | Business hours as `"START-END"` in whole UTC hours, for example `"8-18"`. A wrapping range such as `"22-6"` is the overnight window. This is what makes the off-hours fraud detection reachable: with no window declared there is no outside for a call to fall in. `--business-hours` overrides it |
-| `fraud_short_call_secs` | integer | `3` | Measured call duration below which `--fraud-detect` counts a completed call as short for wangiri detection. Three seconds is under a normal ring-no-answer on some carriers, which reports ordinary unanswered calls as lures. `--fraud-short-call` overrides it |
+| `fraud_short_call_secs` | integer | `3` | Measured call duration below which `--fraud-detect` counts a completed call as short for wangiri detection. Lower it where a normal ring-no-answer on your carriers lasts under three seconds, or sipnab reports ordinary unanswered calls as lures. `--fraud-short-call` overrides it |
 | `fraud_wangiri_calls` | integer | `3` | Short calls to one destination prefix before `--fraud-detect` reports wangiri. `--fraud-wangiri-calls` overrides it |
 | `fraud_destination` | string | -- | Destination countries `--fraud-detect` reports an INVITE to, as comma-separated ISO 3166-1 alpha-2 codes (`DO,VG,MA`). sipnab reads numbers through the common international prefixes (`+`, `00`, `011`) and resolves them by longest calling code, so `+1 809` is `DO`, not `US`; a number with no prefix is domestic and never matches. `--fraud-destination` overrides it |
 | `fraud_sequential_calls` | integer | `3` | Consecutive refused numbers before `--fraud-detect` reports sequential scanning. `--fraud-sequential-calls` overrides it |
@@ -414,54 +429,64 @@ Security detection defaults.
 | `fraud_volume_min_calls` | integer | `6` | Calls a source must place inside the volume window before `--fraud-detect` reports a spike at all. `--fraud-volume-min-calls` overrides it |
 | `fraud_volume_window_secs` | integer | `60` | How much capture time one volume-spike window spans, in seconds. The count and the source's own baseline are both measured over this window, so a steady source reads the same at any width; what the width alone decides is how CONCENTRATED a burst has to be, since a burst shorter than the window averages into the ordinary traffic beside it. `--fraud-volume-window` overrides it |
 | `fraud_wangiri_window_secs` | integer | `60` | How much capture time one wangiri window spans, in seconds. The detector drops short calls older than this, so it decides how slowly a lure may arrive and still count as one pattern. No setting of `fraud_wangiri_calls` reaches a lure paced wider than the window: the only count that reports anything is one, which reports every ordinary short call as a lure too. `--fraud-wangiri-window` overrides it |
-| `scanner_behavioral_probes` | integer | `10` | Probes from one source inside the scanner window, above which `--kill-scanner` reports a rate detection. Behind an SBC every source collapses to one address, so ordinary aggregated traffic clears ten in five seconds and the whole site reads as one scanner. `--scanner-behavioral-probes` overrides it |
+| `scanner_behavioral_probes` | integer | `10` | Probes from one source inside the scanner window, above which `--kill-scanner` reports a rate detection. Raise it where an SBC puts every source behind one address, or sipnab reports that site's ordinary traffic as one scanner. `--scanner-behavioral-probes` overrides it |
 | `scanner_enumeration_targets` | integer | `5` | Distinct target extensions from one source inside the scanner window, above which `--kill-scanner` reports extension enumeration. `--scanner-enumeration-targets` overrides it |
-| `scanner_rejected_probes` | integer | `5` | Rejected probes inside the scanner window at which a source reads as probing rather than operating. This is the evidence gate: neither behavioral signal reports anything until a source clears this or `scanner_unanswered_probes`, which is what separates an enumeration sweep from a trunk running keepalives at the same rate. `--scanner-rejected-probes` overrides it |
+| `scanner_rejected_probes` | integer | `5` | Rejected probes inside the scanner window at which a source reads as probing rather than operating. Neither the rate nor the enumeration detection reports a source until it reaches this or `scanner_unanswered_probes`. `--scanner-rejected-probes` overrides it |
 | `scanner_unanswered_probes` | integer | `5` | Probes inside the scanner window that drew no response, at which a source reads as sweeping, provided they also outnumber the rest of what it sent. `--scanner-unanswered-probes` overrides it |
 | `scanner_window_secs` | integer | `5` | How much capture time one scanner window spans, in seconds. Every scanner count above is per window, so this is the binding constraint on a paced sweep rather than the counts: one probe every ten seconds never puts two inside the shipped five-second window, so the rate and the spread both stay at one however low the counts go. `--scanner-window` overrides it |
-| `scanner_established_factor` | integer | `4` | How much more evidence `--kill-scanner` needs from a source that has completed a registration or a call. A registered endpoint that starts probing is a compromised phone worth reporting, but it is also the peer whose ordinary working traffic looks most like probing, and the peer a false positive costs most. `--scanner-established-factor` overrides it |
+| `scanner_established_factor` | integer | `4` | How much more evidence `--kill-scanner` needs from a source that has completed a registration or a call. For such a source, sipnab multiplies `scanner_rejected_probes` and `scanner_unanswered_probes` by this value, so sipnab still reports a registered phone that starts probing, on more evidence. `--scanner-established-factor` overrides it |
 | `scanner_answer_grace_ms` | integer | `500` | How long a probe may go without a response before `--kill-scanner` counts it as unanswered, in milliseconds. The default is [RFC 3261](https://www.rfc-editor.org/rfc/rfc3261.html)'s Timer T1, the round-trip estimate at which SIP itself gives up waiting and retransmits. Raise it on a link whose round trip runs longer than that, where the default reports every probe still in flight as one nobody answered. `--scanner-answer-grace` overrides it |
 | `findings_history` | integer | `1000` | Security findings kept in memory for later retrieval. `0` keeps none, which is a real setting rather than a mistake. `--findings-history` overrides it |
-| `hep_hmac_window_secs` | integer | `30` | Seconds either side of now within which sipnab still honors a `--hep-auth-mode hmac` token's timestamp. On an agent/collector pair with poor NTP sipnab turns every packet away as out-of-window, and what the operator sees is a collector receiving NOTHING -- a symptom they attribute to routing, a firewall, or a dead agent long before a clock. Widening it is a security trade rather than a convenience: the window is exactly how long a packet an on-path attacker captured stays acceptable, and it is how far back the receiver's nonce cache must remember. Range 1-300. Past 300 the sender has no working time daemon, which is what to repair, so sipnab refuses the value and names the key. On a run without `--hep-listen` it does nothing, and sipnab says so in a startup warning naming the key. `--hep-hmac-window` overrides it |
+| `hep_hmac_window_secs` | integer | `30` | Seconds either side of now within which sipnab still honors a `--hep-auth-mode hmac` token's timestamp. When the sender's and the collector's clocks differ by more than the window, sipnab refuses every packet and the collector receives nothing; fix the clocks first. A wider window keeps a captured packet replayable for longer and makes the receiver remember more of the one-time values it has accepted. Range 1-300; sipnab refuses any other value and names the key (exit 1). On a run without `--hep-listen` it does nothing, and sipnab says so in a startup warning naming the key. `--hep-hmac-window` overrides it |
 
-**HEP HMAC token version 2, and what a mixed fleet sees.** sipnab 0.5.131
-moved `HMAC_TOKEN_VERSION` from 1 to 2 and refuses v1 by name. Two things
-follow.
+#### Upgrade a fleet that uses HMAC authentication
 
-- A sender still on 0.5.130 or earlier against a newer collector has **every
-  packet refused**.
-  - The symptom is a collector receiving nothing.
-  - Operators reliably attribute that to routing, a firewall, or a dead agent
-    long before they suspect a token version.
-  - Upgrade the collector last, or upgrade both together.
-- The second thing is the reason it is not a compatible change.
-  - v1's MAC did not cover the addressing chunks.
-  - So an attacker who captured a v1 token from one sender could replay it
-    against a third party.
-  - The attacker could also point a published `--hep-allow-kill` control
-    somewhere nobody issued it for.
-  - v2 covers them.
-  - There is no flag to accept v1 again, deliberately.
+sipnab 0.5.131 and later sign HEP packets with version 2 of the
+`--hep-auth-mode hmac` token. Releases up to 0.5.130 use version 1. Neither
+accepts the other's token, and no setting makes them.
 
-sipnab bounds `reg_flood_window_secs` and `reg_flood_transaction_timeout_ms`
-at both ends.
+- A collector on 0.5.131 or later drops every packet from a version-1 sender.
+- A collector on 0.5.130 or earlier drops every packet from a version-2 sender.
 
-- A value outside the range fails validation. The message holds the key, the
-  range and the value.
+In both cases the collector receives nothing from that sender. A newer
+collector also logs this warning once:
+
+```text
+WARN sipnab::capture::hep: HEP HMAC auth is REFUSING version-1 tokens: that scheme signed only the payload, so the source and destination chunks a sender asserts were not authenticated and could be appended to a captured packet by anyone. There is no compatibility switch — upgrade the sending sipnab to a build that emits version 2 tokens. Every packet from a version-1 sender is dropped, so this looks like a collector that receives nothing.
+```
+
+To upgrade without losing packets, upgrade each sender and the collectors it
+sends to in the same maintenance window. Check every host with:
+
+```sh
+sipnab --version
+```
+
+#### Registration-flood ranges
+
+sipnab refuses a `reg_flood_window_secs` outside 1 to 3600 and a
+`reg_flood_transaction_timeout_ms` outside 1000 to 600000.
+
+- In the config file, the run stops with exit 1. The message names the key,
+  the range and the value:
+
+  ```text
+  ERROR sipnab::app::bootstrap: invalid config value: [security] reg_flood_window_secs must be 1-3600 (seconds of capture time one failure count spans), got 3601
+  ```
+
 - The `--reg-flood-window` and `--reg-flood-transaction-timeout` flags refuse
-  the same values.
-- That is because both doors read the same constants in [`src/security/reg_flood.rs`](https://github.com/NormB/sipnab/blob/main/src/security/reg_flood.rs):
-  - `MAX_WINDOW_SECS` (3,600);
-  - `MIN_TRANSACTION_TIMEOUT_MS` (1,000);
-  - `MAX_TRANSACTION_TIMEOUT_MS` (600,000).
+  the same values with exit 2:
+
+  ```text
+  error: invalid value '3601' for '--reg-flood-window <SECS>': 3601 is not in 1..=3600
+  ```
 
 Every `scanner_*` key above rejects `0` and names the key.
 
 - A zero count reports the first probe of any kind as a scanner.
 - A zero window resets the counters on every packet, so nothing ever
   accumulates.
-- A zero grace restores the very defect `scanner_answer_grace_ms` exists to
-  prevent.
+- A zero grace counts every probe still in flight as unanswered.
 
 ```toml
 [security]
@@ -488,8 +513,7 @@ alert_exec = "/usr/local/bin/sipnab-alert.sh"
 > **The peer this needs.** These read [TFPS](https://github.com/sippulse/tfps)
 > through its `tfps_ctl` program in JSON mode, the `--json` flag.
 >
-> - TFPS gained that mode in [sippulse/tfps#6](https://github.com/sippulse/tfps/pull/6),
->   merged on 2026-09-18.
+> - TFPS gained that mode in [sippulse/tfps#6](https://github.com/sippulse/tfps/pull/6).
 > - No tagged release carries it yet. v0.2.1, the newest, rejects `--json`.
 >
 > Until the next release, build TFPS from its `master` branch.
@@ -624,9 +648,8 @@ Thresholds the signaling and media checks compare against.
 
 - A number here decides whether a call that is working gets reported as
   broken.
-- So the defaults are standards figures.
-- A network that knows its own numbers beats a recommendation written for the
-  general case.
+- The defaults are standards figures.
+- Where you know your network's own figures, set them here.
 
 Every value must be a finite number greater than zero.
 
@@ -644,7 +667,7 @@ Every value must be a finite number greater than zero.
 | `duration_asymmetry_pct` | float | `5.0` | Percentage difference between the two legs' durations that counts as asymmetric. Must be 100 or less. `--duration-asymmetry-pct` overrides it |
 | `duration_asymmetry_secs` | float | `2.0` | Absolute difference between the two legs' durations that counts as asymmetric, in seconds. A call has to clear both this and the percentage, so raising either one alone quiets the detection. `--duration-asymmetry-secs` overrides it |
 | `late_media_ms` | integer | `500` | Milliseconds after the `200 OK` that media may start before it gets reported as late. `--late-media-ms` overrides it |
-| `cn_suppression_ratio` | float | `0.3` | Share of a call's packets, as a fraction of 1, that must be comfort noise before sipnab accepts comfort noise as the explanation for one-directional media. **The one threshold here that withholds a finding instead of raising one**, so it fails as silence: a VoLTE or mobile trunk running aggressive voice-activity detection routinely passes 30 percent comfort noise, and above the ratio sipnab never reports one-way audio on that trunk — the most-reported VoIP fault there is. Raise it toward 1 on such a trunk; lower it where a call carrying any comfort noise at all still has to be bidirectional. Must be greater than 0 and 1 or less, and a value that is not fails validation and names the key. `--cn-suppression-ratio` overrides it |
+| `cn_suppression_ratio` | float | `0.3` | Share of a call's packets, as a fraction of 1, that must be comfort noise before sipnab accepts comfort noise as the explanation for one-directional media. Above the ratio, sipnab does not report one-way audio for the call. A VoLTE or mobile trunk running aggressive voice-activity detection can pass 30 percent comfort noise: raise it toward 1 on such a trunk; lower it where a call carrying any comfort noise at all still has to be bidirectional. Must be greater than 0 and 1 or less, and a value that is not fails validation and names the key. `--cn-suppression-ratio` overrides it |
 
 ```toml
 [diagnosis]
@@ -664,8 +687,8 @@ itself.
 
 | Key | Type | Default | Description |
 |---|---|---|---|
-| `one_way_delay_ms` | float | -- | One-way network path delay in milliseconds, feeding the delay term of every MOS. The single MOS input no observer can measure from the wire directly: only the endpoints and you have it. A declared value beats an RTCP-reported round trip, because no packet can rewrite a config file; that beats the round trip sipnab derives from a sender-report echo carried in a receiver report, which anchors on the capture point and so reads as a lower bound; with none of the three, sipnab assumes 100 ms and labels the figure `assumed` rather than presenting it as measured. `--one-way-delay` overrides it |
-| `codec_ie` | table | -- | Equipment impairment factors (ITU-T G.107 `Ie`) for codecs sipnab has no published value for, written as a `[media.codec_ie]` sub-table of `"CODEC" = <Ie>` pairs. sipnab knows G.711, G.729 and Opus; every other codec -- G.722, G.726, iLBC, AMR, EVS -- falls to a placeholder and scores identically to a stream whose codec was never identified. A declared codec comes back as `mos_grounding = "operator_declared"` rather than as published, so a figure from this file is never presented as an ITU-T citation, and a codec nobody declared still says its MOS is a placeholder. Keys match case-insensitively. Values must sit in `0.0` to just under `95.0`: at 95 the E-model's loss term vanishes, and above it more packet loss would RAISE the score, so sipnab fails validation on such a value and names the codec |
+| `one_way_delay_ms` | float | -- | One-way network path delay in milliseconds, feeding the delay term of every MOS. sipnab uses, in order: this value; an RTCP-reported round trip; the round trip it derives from a sender-report echo in a receiver report, which is a lower bound; and otherwise 100 ms, labeled `assumed`. `--one-way-delay` overrides it |
+| `codec_ie` | table | -- | Equipment impairment factors (ITU-T G.107 `Ie`) for codecs sipnab has no published value for, written as a `[media.codec_ie]` sub-table of `"CODEC" = <Ie>` pairs. sipnab knows G.711, G.729 and Opus; every other codec, such as G.722, G.726, iLBC, AMR and EVS, scores with a placeholder. A declared codec's MOS carries `mos_grounding = "operator_declared"`; a codec nobody declared still says its MOS is a placeholder. Keys match case-insensitively. Values must be at least `0.0` and below `95.0`; sipnab fails validation on any other value and names the codec |
 | `listening_context` | string | `"monotic"` | How the far end listens, for wideband (AMR-WB) MOS: `"monotic"` (a handset or one-ear headset, ITU-T G.113 Table IV.1) or `"diotic"` (a stereo headset or speakerphone, Table IV.3). At 6.6 kbit/s the two differ by about 0.59 MOS, and a capture cannot tell which one was in use, so you declare it. Every wideband score names the context sipnab read it in. Case and surrounding spaces do not matter; any other value stops the run with an error naming the key |
 
 ```toml
@@ -742,7 +765,7 @@ Resource limits to prevent unbounded memory growth.
 | `mcp_max_rows` | integer | `1000` | Maximum rows in ONE list-style MCP response. Distinct from `dialog_limit` above, which bounds the whole run; these differ by 100x and bound different things. `0` fails validation and names the key. `--mcp-max-rows` overrides it |
 | `max_streams` | integer | `50000` | Maximum RTP streams. `0` fails validation and names the key. `--max-streams` overrides it |
 | `max_reassembly` | integer | `10000` | Maximum TCP reassembly sessions. `0` fails validation and names the key. `--max-reassembly` overrides it |
-| `reassembly_ttl_secs` | integer | `30` | Seconds sipnab holds an incomplete IP datagram or half-read TCP stream before a sweep drops it. `max_reassembly` bounds how MANY entries sipnab holds and says nothing about how long. Thirty seconds describes IP fragments in flight, and the TCP reassembler inherited it: a persistent SIP/TCP or SIP/TLS trunk to a carrier goes quiet for far longer on any ordinary night, and sweeping its half-read stream means the next segment re-initializes mid-message, so the peer that sent a valid message is the one reported broken. Raise it on such a trunk; `max_reassembly` caps the extra state either way. `--reassembly-ttl` overrides it. `0` fails validation and names the key |
+| `reassembly_ttl_secs` | integer | `30` | Seconds sipnab holds an incomplete IP datagram or half-read TCP stream before a sweep drops it. `max_reassembly` bounds how MANY entries sipnab holds and says nothing about how long. A persistent SIP/TCP or SIP/TLS trunk can go quiet for longer than that; when sipnab drops its half-read stream, the next segment starts mid-message and sipnab reports the message as malformed. Raise it on such a trunk; `max_reassembly` caps the extra state either way. `--reassembly-ttl` overrides it. `0` fails validation and names the key |
 | `hep_rate_limit` | integer | `50000` | Maximum HEP packets per second. On a run without `--hep-listen` it does nothing, and sipnab says so in a startup warning naming the key. `--hep-rate-limit` overrides it |
 | `max_header_line` | integer | `8192` | Maximum bytes in a single SIP header (defense-in-depth) |
 | `max_headers_per_message` | integer | `200` | Maximum SIP headers per message (defense-in-depth) |
@@ -754,9 +777,9 @@ Resource limits to prevent unbounded memory growth.
 | `lint_max_per_rule` | integer | `25` | Findings one lint rule may report for one dialog. A dialog that retransmits an `INVITE` eleven times trips a message rule eleven times and every one of them is true, so this decides whether the other rules stay readable underneath. `--lint-max-per-rule` overrides it. `0` fails validation and names the key |
 | `exec_queue_depth` | integer | `100` | Hook commands allowed to be running at once before sipnab drops `--on-dialog-exec` and `--on-quality-exec` events. The second ceiling above `--exec-rate-limit`, and the binding one for any hook that takes longer than a second: its slot is still occupied when the next second's budget arrives, so on a busy trunk this is what events actually meet. `--exec-queue-depth` overrides it. `0` fails validation and names the key |
 | `mcp_max_body_bytes` | integer | `4096` | Bytes of SIP body or matched snippet in ONE MCP response. `mcp_max_rows` bounds how many rows an answer carries; this bounds how wide one row may be, and a caller can ask for fewer rows but cannot widen one. `--mcp-max-body-bytes` overrides it. `0` fails validation and names the key |
-| `mcp_max_response_bytes` | integer | `1048576` | Bytes of ONE whole paged MCP response: the JSON page, the provenance note and the completeness fields. `mcp_max_rows` bounds how many rows a page carries and `mcp_max_body_bytes` how wide one body in a row can be; this bounds the page as a whole. Past it the tool drops whole rows from the end of the page, never part of one, and answers `truncated: true`, `truncated_by: "bytes"` and a `next_cursor` to the rest. A page always keeps at least one row, so following the cursor always moves forward. A caller narrows it per call with `max_response_bytes` and cannot exceed it. The default, 1 MiB, is under twice the largest response measured on the sample captures in `tests/pcap-samples` (561,420 bytes, `list_dialogs` with `limit: 1000`), so it changes no answer on those. `--mcp-max-response-bytes` overrides it. `0` fails validation and names the key |
+| `mcp_max_response_bytes` | integer | `1048576` | Bytes of ONE whole paged MCP response: the JSON page, the provenance note and the completeness fields. `mcp_max_rows` bounds how many rows a page carries and `mcp_max_body_bytes` how wide one body in a row can be; this bounds the page as a whole. Past it the tool drops whole rows from the end of the page, never part of one, and answers `truncated: true`, `truncated_by: "bytes"` and a `next_cursor` to the rest. A page always keeps at least one row, so following the cursor always moves forward. A caller narrows it per call with `max_response_bytes` and cannot exceed it. `--mcp-max-response-bytes` overrides it. `0` fails validation and names the key |
 | `mcp_max_wait_seconds` | integer | `60` | Longest ONE `await_condition` MCP call may wait, in seconds. `mcp_max_rows` and `mcp_max_body_bytes` bound what an answer carries; this bounds how long a caller may hold one of `--mcp-max-concurrent` slots while carrying nothing. sipnab clamps a larger request to it and says so in the response. It also bounds `wait_seconds` on `find_in_captures` and `find_in_captures_status`. `--mcp-max-wait-seconds` overrides it. `0` fails validation and names the key |
-| `mcp_max_findings` | integer | `1000` | Findings the MCP `save_findings` tool accepts before refusing further writes. The one WRITE budget on that surface: `mcp_max_rows` and `mcp_max_body_bytes` bound what an agent may READ, this bounds what it puts into the operator's journal. Past it sipnab refuses the write and says so, and drops nothing to make room -- a finding is a log line the journal already holds, so sipnab keeps no copy a newer one could displace. Raise it for a long agent session on a large capture, where a thousand annotations is a session doing its job. `--mcp-max-findings` overrides it. `0` fails validation and names the key |
+| `mcp_max_findings` | integer | `1000` | Findings the MCP `save_findings` tool accepts before refusing further writes. Past it sipnab refuses the write and says so, and drops nothing to make room. Raise it for a long agent session on a large capture. `--mcp-max-findings` overrides it. `0` fails validation and names the key |
 | `mcp_sweep_max_files` | integer | `20` | Files one MCP `find_in_captures` sweep may open. It is the ceiling on the tool's per-call `max_files`: sipnab clamps a larger request to it, and `0` or no request means this value. A rotated spool of forty files needs `40` here before one sweep can reach the oldest file. The response reports the limits applied and `files_examined`, `files_total` and `complete`, so a sweep that stopped early says so. `--mcp-sweep-max-files` overrides it. `0` and values above `4294967295` (the largest per-call `max_files`, a 32-bit unsigned integer) fail validation and name the key |
 | `mcp_sweep_deadline_ms` | integer | `30000` | Milliseconds one MCP `find_in_captures` sweep may spend. It is the ceiling on the tool's per-call `deadline_ms`, applied the same way as `mcp_sweep_max_files`. The sweep runs as a background job and checks it before each file and before each packet. `--mcp-sweep-deadline-ms` overrides it. `0` and values above `43200000` (twelve hours, the longest one background sweep may run) fail validation and name the key |
 | `mcp_sweep_max_running` | integer | `4` | MCP `find_in_captures` sweeps one server runs at once. Each running sweep is an operating system thread reading capture files. sipnab refuses a start past this many with a message that reports the bound and names this key and `--mcp-sweep-max-running`, rather than queueing it. `--mcp-sweep-max-running` overrides it. `0` and values above `64` (each sweep holds a thread and its own scratch stores) fail validation and name the key |
@@ -768,10 +791,10 @@ Resource limits to prevent unbounded memory growth.
 | `max_grouped_messages` | integer | `200000` | Messages `--group-by` buffers across every group. Grouping cannot stream — the last packet may belong to the first group — so this is memory held until the capture ends. `--max-grouped-messages` overrides it |
 | `max_metadata_file_bytes` | integer | `2147483648` | Bytes of pcapng sipnab reads into memory for embedded names and TLS secrets. **A memory-exhaustion guard on untrusted input.** Raising it to N lets ONE file claim N bytes of this host's RAM — roughly 2N while `--strip-secrets` writes its copy — on nothing but a file size, before sipnab can tell the file is a capture at all. Raise it for captures you produced; leave it for captures someone sent you. `--max-metadata-file-bytes` overrides it |
 | `max_gunzip_bytes` | integer | `1073741824` | Bytes a gzip-compressed capture may inflate to where sipnab does the inflating: the embedded names and TLS secrets read out of a `.pcapng.gz`, the copy `--strip-secrets` rewrites, a `-I capture.pcap.gz` input, and the whole capture in the browser build. sipnab refuses an `-I` file that inflates past the limit: `decompressing reached the <N>-byte ceiling`, exit 1. **A gzip-bomb guard.** Inflation stops one byte past the ceiling, so raising it to N lets a few kilobytes claim N bytes of RAM. Raise it for archives you compressed yourself. `--max-gunzip-bytes` overrides it |
-| `max_tcp_buffer` | integer | `65536` | Bytes one SIP/TCP direction may buffer before sipnab flushes it. **The only limit here that destroys data rather than truncating a report.** TCP sets no such ceiling and neither does RFC 3261: on a carrier trunk a message carrying ISUP encapsulation, a long `Record-Route` set or a fat SDP offer passes 64 KiB legitimately, and sipnab then flushes the buffer mid-message so both halves parse as malformed — the peer that sent a valid message is the one reported broken. Raise it on such a trunk. The floor is one SIP header line (8192); below that no message survives, and sipnab refuses the value by name. `--max-tcp-buffer` overrides it |
+| `max_tcp_buffer` | integer | `65536` | Bytes one SIP/TCP direction may buffer before sipnab flushes it. A message larger than this, such as one carrying ISUP encapsulation, a long `Record-Route` set or a large SDP offer, makes sipnab flush the buffer mid-message and report both halves as malformed. Raise it on such a trunk. The minimum is 8192, one SIP header line; sipnab refuses a smaller value and names the key. `--max-tcp-buffer` overrides it |
 | `api_max_rows` | integer | `1000` | Rows one list-style REST response returns. The REST counterpart of `mcp_max_rows`, settable for the same reason: the right ceiling belongs to the consumer, not to sipnab. A batch consumer piping `/v1/dialogs` to a file wants every row; a dashboard drawing a table wants far fewer. `--api-max-rows` overrides it. `0` fails validation and names the key |
 | `api_rate_limit_per_peer` | integer | `100` | REST requests one client IP may make per second. The limiter counts by source address, so a dashboard polling `/v1/streams` on a short timer, or several collectors behind one NAT, share a single allowance and see `503` (`503` rather than `429` because the limiter runs before authentication, so the refusal says nothing about the credential). `0` disables the cap, the reading `hep_rate_limit` and `mcp_rate_limit_per_peer` also give it. At most 4294967295; a larger value fails validation and names the key. `--api-rate-limit-per-peer` overrides it |
-| `metrics_max_conn` | integer | `16` | Metrics scrapes served at once before further ones get `503`. The gate stops a burst of slow clients exhausting threads and taking monitoring down, and sixteen suits one Prometheus; an HA pair, a federating parent, a `remote_write` shard, an alertmanager sidecar and one engineer's `curl` reach it without anything unusual happening. A refused scrape leaves a hole in the series that reads as a capture that died rather than as a busy endpoint, so raise it where several collectors share one sipnab. `--metrics-max-conn` overrides it. `0` fails validation and names the key: the gate would then refuse every scrape |
+| `metrics_max_conn` | integer | `16` | Metrics scrapes served at once before further ones get `503`. A refused scrape leaves a gap in the series. Raise it where several collectors scrape one sipnab. `--metrics-max-conn` overrides it. `0` fails validation and names the key |
 | `max_tracked_peers` | integer | `4096` | Distinct peers one rate-limit window holds, across every surface sipnab meters: HEP source addresses and MCP callers. Past it sipnab REFUSES a peer it has not already seen this second rather than waving it through, so on a collector aggregating from more agents than this the surplus never enters the capture. Raise it there. The floor is 2, and sipnab refuses a smaller value by name: at 1 the first peer to send in a window takes the only slot and sipnab turns every other peer away for the rest of it |
 | `max_capture_sources` | integer | `65536` | Distinct capture sources sipnab remembers by name: each input file, the device, every HEP sender (`capture_id@address`) and every traced process. The table holds a name so a packet can point back at the bytes it came from: the `frame` field of `--json`, which `--show-frame` follows and `--mcp-evidence-ring` keys on. Past the limit a packet from a NEW source is still analyzed, but carries no `frame` pointer, and sipnab counts it in `sipnab_capture_sources_refused_total` and warns once. sipnab refuses to start when the limit cannot hold every source the run can have: the input files, or the device, plus `max_tracked_peers` senders on a HEP listener. Raise it, or lower `max_tracked_peers`. The floor is 1. Flag: `--max-capture-sources` |
 
@@ -844,13 +867,9 @@ call-seconds, which is:
 | 67 | 10 minutes |
 | 225 | 3 minutes |
 
-The charge is an upper bound.
-
-- Measured on aarch64 Linux with the allocator the sipnab binary ships with
-  (mimalloc), a 20 ms G.711 frame used 192.6 bytes.
-- So at the budget, the heap the audio really holds is about 0.73 GiB.
-- With `--cores N`, each worker gets 1/N of the budget. So the run as a whole
-  stays inside it.
+The charge is an upper bound, so the memory the audio really holds stays below
+the budget. With `--cores N`, each worker gets 1/N of the budget, so the run as
+a whole stays inside it.
 
 When retained audio reaches the budget, sipnab releases frames:
 
@@ -876,8 +895,13 @@ says how many frames sipnab released and why.
 Raise `max_audio_bytes` for a host that keeps more or longer calls in memory at
 once.
 
-- In the source, the default is `DEFAULT_MAX_AUDIO_BYTES` (1073741824).
-- The minimum is `MIN_MAX_AUDIO_BYTES` (1048576).
+- The default is 1073741824 (1 GiB).
+- The minimum is 1048576 (1 MiB). A smaller value stops the run with exit 1:
+
+  ```text
+  ERROR sipnab::app::bootstrap: invalid config value: [limits] max_audio_bytes must be >= 1048576 (1 MiB), got 1048575; to keep no audio at all, leave --retain-audio off
+  ```
+
 - Set `max_audio_frames` to cap each stream as well. For example, 1500 frames
   is the last 30 seconds of a 20 ms stream.
 
@@ -1299,7 +1323,7 @@ no_rtp = false                     # RTP analysis enabled
 # -- Display settings --
 [display]
 color = "always"                   # Force color even when piped
-payload_limit = 8192               # Show up to 8K of SIP body (large SDP)
+payload_limit = 8192               # -N prints up to 8 KiB of each message
 delta_time = true                  # Show timing between messages by default
 from_to = "host-port"              # From/To columns show host:port
 # visible_columns = ["method", "from", "to", "state", "msgs", "pdd"]  # Persistent column prefs

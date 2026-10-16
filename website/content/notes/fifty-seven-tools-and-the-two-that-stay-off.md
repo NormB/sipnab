@@ -1,7 +1,7 @@
 +++
 title = "MCP tool bundles: choose which tools sipnab's MCP server loads"
 date = 2026-09-01
-updated = 2026-10-11
+updated = 2026-10-16
 description = "How --mcp-tools limits the tools sipnab's MCP server offers to an AI agent, what each bundle costs the agent's context, and which tools refuse until the operator enables them."
 
 [extra]
@@ -67,7 +67,7 @@ The MCP server needs the `mcp` Cargo feature (a compile-time option).
 - A build without a feature does not register that feature's tools. So its
   bundles are smaller.
 
-## How to turn it on
+## Choose the tools the server loads
 
 Every example below runs from the root of the sipnab repository. It reads a
 capture in it.
@@ -95,8 +95,8 @@ search_messages
 triage_call
 ```
 
-The same command with `--mcp-tools full`, or with no `--mcp-tools`, lists 72
-tools. This is on sipnab 0.5.211 built with every feature.
+The same command with `--mcp-tools full`, or with no `--mcp-tools`, lists 76
+tools on sipnab 0.5.222 built with every feature.
 
 - Combine bundles and single tools.
   - The server's handshake reply answers the MCP `initialize` request.
@@ -138,7 +138,7 @@ voice = ["media", "get_sdp_timeline", "check_codec_negotiation"]
 
 `--mcp-tools` on the command line replaces `[mcp] tools`.
 
-## What a bundle costs
+## Measure what a bundle costs
 
 The size of the `tools/list` answer is what the client keeps in context. This
 command prints it in bytes for `core`. It is the sum of each tool entry's
@@ -149,15 +149,15 @@ printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocol
 ```
 
 ```text
-10981
+12316
 ```
 
-The same command, run on sipnab 0.5.211 built with every feature, measured:
+On sipnab 0.5.222 built with every feature, the same command gives:
 
 | `--mcp-tools` | Tools | Bytes | Bytes with `--mcp-output-schemas` |
 |---|---|---|---|
-| `core` | 9 | 10,981 | 30,909 |
-| `full` | 72 | 80,612 | 198,008 |
+| `core` | 9 | 12,316 | 54,624 |
+| `full` | 76 | 89,667 | 270,810 |
 
 Output schemas are a declared shape for each tool's answer.
 
@@ -166,10 +166,11 @@ Output schemas are a declared shape for each tool's answer.
 - Turn them on with `--mcp-output-schemas` only for a client that checks
   answers against a declared shape.
 
-The per-bundle table in the tool reference comes from a measurement on an
-earlier release. Sizes change as tools change.
+Sizes change between releases as tools change. Run the command above against
+your own binary to get its figures, and change `core` to the list you plan to
+use.
 
-## Tools that refuse until the operator enables them
+## Enable the tools that refuse by default
 
 Registering a tool does not permit it. With the default `full` list, the tools
 below appear in `tools/list`. But they answer each call with an error that
@@ -193,13 +194,15 @@ an agent:
 
 ## Limits
 
-- The counts and byte sizes above hold for sipnab 0.5.211 with every feature.
+- The counts and byte sizes above are for sipnab 0.5.222 with every feature.
   Another release or a build with fewer features gives other numbers.
 - A custom bundle has three rules:
   - It cannot reuse a built-in bundle or tool name.
   - It cannot be empty.
   - It cannot hold `full` or another custom bundle.
-  - sipnab refuses to start when one breaks a rule, even if nothing uses it.
+- sipnab refuses to start when a custom bundle breaks a rule, even if nothing
+  uses it. The error names the bundle, for example
+  `[mcp.bundles] voice is empty`.
 - `core` does not include `server_capabilities`, the tool that reports a
   binary's features and settings. Add it by name if the agent needs it.
 

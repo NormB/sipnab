@@ -1466,7 +1466,16 @@ fn wiki_intra_docs_links_resolve() -> Result<(), TestError> {
     // links "Named filters".
     // 1809 -> 1815: docs/g729.md's links, and the G.729 links added to
     // docs/README.md, docs/vcon.md, docs/rest-api.md and docs/cli-reference.md.
-    const EXPECTED_WIKI_LINKS: usize = 1815;
+    // 1815 -> 1949: the documentation rewrite that replaced the engineering
+    // notes with how-tos. Attributed per file against 16f7b0ea: the new
+    // internals pages carry most of it (operator-guide-notes +15, mcp +14,
+    // code-map +10, postmortems +10, internals/README.md +8, profiling +4,
+    // vcon +3, rtpengine-control-plane +3), with smaller moves on
+    // sip-lint-rules.md +6, the docs/design notes pages, and the MCP tool
+    // pages; benchmarks.md and architecture.md lost 3 each. Two in-page links
+    // whose targets were renamed (tuning-capture.md "Which ring you get" and
+    // the rest-api /tree link) became plain text.
+    const EXPECTED_WIKI_LINKS: usize = 1949;
     // Raised 459 -> 460 when SRC1 stage 1 shipped: docs/cli-reference.md's
     // `--hep-listen` row now points at cookbook recipe "Take signaling from HEP and media off the wire, in one process" in docs/examples.md
     // rather than restating how to pair `-L` with `-d`. Attributed per file
@@ -2710,7 +2719,13 @@ fn every_docs_page_is_linked_from_the_index() -> Result<(), TestError> {
     // 80 -> 91: the merge of docs/doc-improvements with the 0.5.213 batch.
     // The ten docs/mcp-tools-<bundle>.md pages and docs/errors.md.
     // 91 -> 92: docs/g729.md.
-    const EXPECTED_DOCS_PAGES: usize = 92;
+    // 92 -> 93: docs/internals/postmortems.md, the record the post-mortem
+    // notes moved to, reached through docs/internals/README.md.
+    // 93 -> 99: six internals pages from the notes rewrite, each reached
+    // through docs/internals/README.md: code-map.md, encapsulation-decoding.md,
+    // lint-rules.md, mcp.md, metrics-and-output-notes.md and
+    // operator-guide-notes.md.
+    const EXPECTED_DOCS_PAGES: usize = 99;
     // Links are extracted from PROSE, not from the file's bytes. A raw
     // `contains("](backers.md")` counted a link that had been wrapped in an
     // HTML comment: the substring was still there, the page was reachable from

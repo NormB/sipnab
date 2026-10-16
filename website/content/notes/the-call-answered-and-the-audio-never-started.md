@@ -1,7 +1,7 @@
 +++
 title = "Find out why an answered call carried no audio"
 date = 2026-09-01
-updated = 2026-10-11
+updated = 2026-10-16
 description = "A sequence of sipnab checks for a call answered and then silent: confirm the capture can see audio, rule out discarded signaling, explain unattached media, check for late media, and look for findings that name a cause."
 
 [extra]
@@ -166,7 +166,13 @@ SSRC         Source                   Destination              Pkts     Duration
 0x0e330af3   127.0.0.1:5084           127.0.0.1:5094           151      2s
 0x2d374e76   127.0.0.1:5094           127.0.0.1:5084           151      2s
 0x2d374e76   127.0.0.1:5084           127.0.0.1:5094           151      2s
+
+INCOMPLETE RUN — this report does not describe the whole capture:
+  - 10 SIP message(s) were seen on ports outside --portrange and were not analyzed; re-run with --portrange 1-65535 to include them
 ```
+
+The `INCOMPLETE RUN` block at the end names the SIP that the port range
+discarded, as the `[BLIND]` finding does in `--analyze`.
 
 sipnab can run as an MCP server (`sipnab --mcp -N`). That is the interface an
 AI agent uses. Two tools answer the same questions:

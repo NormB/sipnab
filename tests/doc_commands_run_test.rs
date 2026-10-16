@@ -158,14 +158,14 @@ fn walked_pages() -> Result<Vec<(String, PathBuf)>, TestError> {
     // The front page too: see `the_readme_commands_are_walked_and_all_run`.
     pages.push(("README.md".to_owned(), repo().join("README.md")));
     let site = hand_written_site_pages()?;
-    // The engineering notes are among them, and show commands as how-tos do:
+    // The notes are among them, and show commands as how-tos do:
     // the 2026-10-11 audit found notes whose commands had stopped matching
     // the binary, and nothing ran them.
     let notes = site
         .iter()
         .filter(|p| p.starts_with(repo().join("website/content/notes")))
         .count();
-    assert!(notes >= 30, "only {notes} notes found");
+    assert!(notes >= 20, "only {notes} notes found");
     for page in site {
         let name = page
             .strip_prefix(repo())

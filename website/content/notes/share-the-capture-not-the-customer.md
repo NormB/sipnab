@@ -1,7 +1,7 @@
 +++
 title = "Share a SIP capture with a vendor without sending subscriber data"
 date = 2026-09-01
-updated = 2026-10-11
+updated = 2026-10-16
 description = "Export redacted vCon records for the calls in question, or a packet file narrowed by a capture filter with its TLS secrets removed, and know which sipnab options narrow what sipnab writes."
 
 [extra]
@@ -51,8 +51,8 @@ sipnab -N -I tests/pcap-samples/sip-488-codec-reject.pcapng --export-vcon-when "
 ```
 
 ```text
-Redaction: 6 classes, key ephemeral, 0 leading digit(s) retained.
 Wrote 1 vCon container(s) to './out/'.
+Redaction: 6 classes, key ephemeral, 0 leading digit(s) retained.
 ```
 
 `--export-vcon-when` takes a filter expression. It writes one container per
@@ -80,7 +80,7 @@ matching call into `--export-vcon-dir`.
   - An export of `tests/pcap-samples/sip-auth-failure.pcapng` without
     `--redact` contains none of them.
 
-The six classes in the first output line are `identity`, `network`,
+The six classes in the second output line are `identity`, `network`,
 `credential`, `correlation-id`, `charging` and `media`.
 
 `key ephemeral` means the run drew a fresh secret key from the operating
@@ -119,8 +119,8 @@ sipnab -N -I tests/pcap-samples/sip-488-codec-reject.pcapng --export-vcon-when "
 ```
 
 ```text
-Redaction: 6 classes, key supplied, 0 leading digit(s) retained.
 Wrote 1 vCon container(s) to './out-keyed/'.
+Redaction: 6 classes, key supplied, 0 leading digit(s) retained.
 ```
 
 - Two runs of this command produced containers that differed only in
@@ -136,9 +136,9 @@ sipnab -N -I tests/pcap-samples/sip-488-codec-reject.pcapng --export-vcon-when "
 ```
 
 ```text
+Wrote 1 vCon container(s) to './out-mapped/'.
 Redaction: 6 classes, key ephemeral, 0 leading digit(s) retained.
 Wrote 7 token mapping(s) to './map.tsv' (mode 0600). It reverses every pseudonym in these containers, so it is as sensitive as the capture.
-Wrote 1 vCon container(s) to './out-mapped/'.
 ```
 
 The map has one tab-separated line per token. The token comes first, then the
@@ -158,11 +158,15 @@ sipnab -N -I tests/pcap-samples/sip-488-codec-reject.pcapng --export-vcon-when "
 ```
 
 ```text
+Wrote 1 vCon container(s) to './out-again/'.
 Redaction: 6 classes, key ephemeral, 0 leading digit(s) retained.
 --redact-map './map.tsv' already exists and sipnab will not write over it. That file may be the only way back from tokens already sent somewhere
 ```
 
-The command exits with status 1 and writes no container.
+The command exits with status 1. It still writes the container into
+`--export-vcon-dir`, and no map records that container's tokens. Delete that
+container, choose a map path that does not exist yet, and run the export
+again.
 
 `--redact-keep-prefix <N>` keeps the first N digits of each number unchanged.
 This allows analysis by country code or number range.

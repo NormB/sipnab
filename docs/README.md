@@ -166,8 +166,9 @@ Complete and dry. Consult them rather than reading them through.
   registry, the RFC section defining it, and whether it means the call failed.
 - [SIP parameters](sip-parameters.md): every URI parameter, header-field
   parameter and option tag in the IANA registry, and which sipnab parses.
-- [SIP conformance rules](sip-lint-rules.md): every linter rule, the RFC
-  section behind it, and how to suppress it in CI.
+- [SIP conformance rules](sip-lint-rules.md): run the linter, fail CI on
+  it, fix or suppress each finding, and every rule with the RFC section
+  behind it.
 - [REST API](rest-api.md): every endpoint and its response shape, status
   codes, authentication, and curl recipes.
 - [Prometheus metrics](prometheus-metrics.md): every metric family, whether
@@ -197,8 +198,8 @@ Complete and dry. Consult them rather than reading them through.
 
 Read these when you want to know *why*, not *how*.
 
-- [Architecture](architecture.md): the module layout, data flow, and the
-  design decisions that still hold.
+- [Architecture](architecture.md): how a packet becomes a call, a media
+  stream and a finding, and where each answer surface reads them from.
 - [Fault model](fault-model.md): what sipnab does when things go wrong, and
   what it deliberately does not do.
 - [Threat model](threat-model.md): the security assessment, covering what an
@@ -207,8 +208,8 @@ Read these when you want to know *why*, not *how*.
 - [Assurance case](assurance-case.md): the argument that sipnab applies
   secure design principles and that each of the CWE Top 25 weaknesses is
   countered, with the ones that are only partly countered named.
-- [Benchmarks](benchmarks.md): measured throughput and memory, where the
-  numbers came from, and how to reproduce them.
+- [Benchmarks](benchmarks.md): measure throughput and memory on your own
+  capture, and the reference results with how to reproduce them.
 
 ## Contributing
 
