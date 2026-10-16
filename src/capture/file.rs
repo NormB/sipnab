@@ -501,7 +501,7 @@ static REFUSED_AT_STARTUP: std::sync::atomic::AtomicBool =
 ///
 /// # Side effects
 ///
-/// Sets a process-global flag that [`ReadTally::report`] reads.
+/// Sets a process-global flag that `ReadTally::report` reads.
 pub fn mark_refused_at_startup() {
     REFUSED_AT_STARTUP.store(true, std::sync::atomic::Ordering::SeqCst);
 }
