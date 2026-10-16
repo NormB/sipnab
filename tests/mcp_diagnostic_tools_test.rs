@@ -1365,3 +1365,34 @@ fn the_method_breakdown_is_empty_when_the_filter_matches_nothing() -> Result<(),
     );
     Ok(())
 }
+
+/// Arguments that do not match a tool's input schema are a JSON-RPC
+/// `invalid_params` error (-32602) with `reason: invalid_arguments`, as the MCP
+/// specification lists invalid arguments among protocol errors, and as every
+/// other refusal this server makes is shaped. The SDK's message is kept.
+#[test]
+fn arguments_that_do_not_match_the_schema_are_an_invalid_params_error() -> Result<(), TestError> {
+    for (args, says) in [
+        (
+            serde_json::json!({"call_id": "1-1966@10.0.2.20", "cursor": 5}),
+            "invalid type: integer",
+        ),
+        (serde_json::json!({}), "missing field `call_id`"),
+    ] {
+        let msg = call_tool_with_args(
+            "tests/pcap-samples/sip-rtp-g711.pcap",
+            &[],
+            "get_dialog",
+            args.clone(),
+        )?;
+        assert_eq!(msg["error"]["code"], -32602, "{args}: {msg}");
+        assert_eq!(
+            msg["error"]["data"]["reason"], "invalid_arguments",
+            "{args}: {msg}"
+        );
+        let text = msg["error"]["message"].as_str().unwrap_or_default();
+        assert!(text.contains(says), "{args}: {msg}");
+        assert!(msg["result"].is_null(), "{args}: {msg}");
+    }
+    Ok(())
+}

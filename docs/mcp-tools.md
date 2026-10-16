@@ -314,8 +314,9 @@ afterwards.
 **A required parameter has no default.**
 
 - Leave one out, or send the wrong JSON type, and the tool does not run. The
-  call returns a result with `isError: true` whose text names the field, for
-  example `failed to deserialize parameters: missing field `call_id``.
+  call fails with `invalid_params` (-32602), `data.reason`
+  `"invalid_arguments"`, and a message that names the field, for example
+  ``failed to deserialize parameters: missing field `call_id` ``.
 - A value of the right type that the tool cannot use (an unknown choice, a
   range it does not accept) fails with `invalid_params` (-32602), and
   `data.reason` says which; see [Error data](#error-data).
@@ -668,14 +669,17 @@ sipnab omits a member that does not apply, rather than sending it as `null`.
 | `declined` | -32602 | The person asked to confirm the request (MCP elicitation) declined it. |
 | `no_data` | -32602 | The named call holds nothing of the kind asked for: no messages, no RTP streams, no request to replay. |
 | `unknown_tool` | -32602 | The tool name is not loaded on this server; `valid_values` lists the loaded names. |
-| `invalid_arguments` | -32602 | An argument this server refuses whatever its value (a password-like argument name), or a refusal the MCP SDK built without naming the argument. |
+| `invalid_arguments` | -32602 | Arguments that do not match the tool's input schema (a wrong JSON type, a missing required key), an argument this server refuses whatever its value (a password-like argument name), or a refusal the MCP SDK built without naming the argument. |
 | `at_capacity` | -32000 | `--mcp-max-concurrent` calls are already running. There is no `retry_after_ms`, because a slot frees when some running call ends and the server cannot know when that happens. |
 | `rate_limited` | -32000 | This peer used its `--mcp-rate-limit-per-peer` allowance for the current one-second window. `retry_after_ms` says when the window ends. |
 
-The MCP SDK answers some arguments with a tool result, not with a JSON-RPC
-error. These are arguments that do not match a tool's input schema at all
-(a wrong JSON type, a missing required key). The result has `isError: true`
-and the parse error as its text. So that answer carries no `data`.
+Arguments that do not match a tool's input schema at all (a wrong JSON type,
+a missing required key) fail the same way, with `invalid_arguments` and the
+parse error as the message:
+
+```json
+{"jsonrpc": "2.0", "id": 3, "error": {"code": -32602, "message": "failed to deserialize parameters: missing field `call_id`", "data": {"reason": "invalid_arguments"}}}
+```
 
 ### Response bounding
 

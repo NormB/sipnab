@@ -903,8 +903,8 @@ original bytes.
 with `cursor` set to that `next_cursor` to continue, and stop when `complete`
 turns `true`.
 
-`cursor` is a string, passed back unchanged. An integer cursor fails with a
-tool error,
+`cursor` is a string, passed back unchanged. An integer cursor fails with
+`invalid_params` (-32602) and `data.reason` `"invalid_arguments"`:
 `` failed to deserialize parameters: invalid type: integer `1`, expected a string ``. To address one message by position, use `first_index` with
 [`get_message`](@/docs/mcp-tools-signaling.md#get-message).
 

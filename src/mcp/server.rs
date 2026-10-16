@@ -10348,6 +10348,15 @@ impl ServerHandler for SipnabMcp {
             super::structured::attach(complete);
         }
 
+        // Arguments that do not deserialize come back from the SDK as a tool
+        // result marked `isError`; they are an `invalid_params` error here,
+        // like every other refusal. See `errors::sdk_argument_refusal`.
+        if let Ok(rmcp::model::CallToolResponse::Complete(complete)) = &result
+            && let Some(refusal) = errors::sdk_argument_refusal(complete)
+        {
+            result = Err(refusal);
+        }
+
         // Two refusals are built inside the SDK rather than by a tool: an
         // unknown tool name and arguments that do not deserialize. They get
         // the same `data` shape every other refusal carries (see

@@ -247,8 +247,9 @@ pub fn at_capacity(
 /// SDK-built `invalid_params` error gets `invalid_arguments`, so no
 /// `invalid_params` error leaves this server without a `reason`.
 ///
-/// Arguments that do not deserialize do NOT arrive here: `rmcp` answers those
-/// with a tool result carrying `isError: true`, not a JSON-RPC error.
+/// Arguments that do not deserialize do not arrive here: `rmcp` answers those
+/// with a tool result carrying `isError: true`, which `call_tool` turns into
+/// an error with [`sdk_argument_refusal`] first.
 ///
 /// An error that already has `data`, or is not `invalid_params`, is returned
 /// unchanged.
@@ -274,6 +275,34 @@ pub fn describe_sdk_refusal(
     error
 }
 
+/// The text `rmcp` puts in the tool result it returns for arguments that do
+/// not match a tool's input schema: a wrong JSON type, a missing required key.
+const SDK_ARGUMENT_PREFIX: &str = "failed to deserialize parameters: ";
+
+/// The `invalid_params` error for a tool result `rmcp` built because the
+/// arguments did not deserialize, or `None` for any other result.
+///
+/// The SDK answers those arguments with `isError: true`, where the MCP
+/// specification lists invalid arguments among protocol errors and where every
+/// other refusal of this server is an `invalid_params` error with a `reason`.
+/// The message is kept as the SDK wrote it, because it names the field.
+#[must_use]
+pub fn sdk_argument_refusal(result: &rmcp::model::CallToolResult) -> Option<ErrorData> {
+    if result.is_error != Some(true) {
+        return None;
+    }
+    let [only] = result.content.as_slice() else {
+        return None;
+    };
+    let text = &only.as_text()?.text;
+    text.starts_with(SDK_ARGUMENT_PREFIX).then(|| {
+        ErrorData::invalid_params(
+            text.clone(),
+            Some(data(Reason::InvalidArguments, None, None, None)),
+        )
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -285,6 +314,46 @@ mod tests {
         e.data
             .as_ref()
             .ok_or_else(|| format!("no data on {e:?}").into())
+    }
+
+    /// A tool result holding one text block, marked as an error or not.
+    fn tool_result(text: &str, is_error: bool) -> rmcp::model::CallToolResult {
+        let content = vec![rmcp::model::ContentBlock::text(text)];
+        if is_error {
+            rmcp::model::CallToolResult::error(content)
+        } else {
+            rmcp::model::CallToolResult::success(content)
+        }
+    }
+
+    /// The SDK's answer to arguments that do not deserialize becomes an
+    /// `invalid_params` error with `reason: invalid_arguments` and its text.
+    #[test]
+    fn the_sdk_argument_result_becomes_an_invalid_params_error() -> Result<(), TestError> {
+        let text = "failed to deserialize parameters: missing field `call_id`";
+        let e = sdk_argument_refusal(&tool_result(text, true)).ok_or("must convert")?;
+        assert_eq!(e.code, ErrorCode::INVALID_PARAMS);
+        assert_eq!(e.message, text);
+        assert_eq!(
+            *data_of(&e)?,
+            serde_json::json!({"reason": "invalid_arguments"})
+        );
+        Ok(())
+    }
+
+    /// A tool's own refusal, marked `isError` with its JSON body, is left as
+    /// the tool wrote it.
+    #[test]
+    fn a_tool_s_own_error_result_is_left_alone() {
+        let body = r#"{"refused":"not_enabled"}"#;
+        assert!(sdk_argument_refusal(&tool_result(body, true)).is_none());
+    }
+
+    /// A successful result is never converted, whatever its text says.
+    #[test]
+    fn a_successful_result_is_left_alone() {
+        let text = "failed to deserialize parameters: but this call succeeded";
+        assert!(sdk_argument_refusal(&tool_result(text, false)).is_none());
     }
 
     #[test]
