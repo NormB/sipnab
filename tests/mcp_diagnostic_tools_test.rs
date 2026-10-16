@@ -1396,3 +1396,35 @@ fn arguments_that_do_not_match_the_schema_are_an_invalid_params_error() -> Resul
     }
     Ok(())
 }
+
+/// `--tag` labels reach the MCP dialog answers, as they reach `--json-dialogs`
+/// and `GET /v1/dialogs/{call_id}`: every `list_dialogs` row and the `dialog`
+/// of `get_dialog`.
+#[test]
+fn tag_labels_reach_list_dialogs_and_get_dialog() -> Result<(), TestError> {
+    let pcap = "tests/pcap-samples/sip-rtp-g711.pcap";
+    let tag = ["--tag", "incident-42"];
+    let list = ok_payload(&call_tool_with_args(
+        pcap,
+        &tag,
+        "list_dialogs",
+        serde_json::json!({}),
+    )?)?;
+    let rows = list["dialogs"].as_array().ok_or("no dialogs")?;
+    assert!(!rows.is_empty(), "{list}");
+    for row in rows {
+        assert_eq!(row["tags"], serde_json::json!(["incident-42"]), "{row}");
+    }
+    let one = ok_payload(&call_tool_with_args(
+        pcap,
+        &tag,
+        "get_dialog",
+        serde_json::json!({"call_id": "1-1966@10.0.2.20"}),
+    )?)?;
+    assert_eq!(
+        one["dialog"]["tags"],
+        serde_json::json!(["incident-42"]),
+        "{one}"
+    );
+    Ok(())
+}

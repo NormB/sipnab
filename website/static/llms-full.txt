@@ -7212,7 +7212,7 @@ That inverts a page down.
 - So the same idea reads as `null` here and as an absent key
   there.
 
-Three list-row keys drop out rather than reading null:
+Four list-row keys drop out rather than reading null:
 
 - `frame` (above).
 - `final_status_code`. It is absent, never a zero, while the dialog's INVITE, or the
@@ -7221,6 +7221,8 @@ Three list-row keys drop out rather than reading null:
   source that delivered the message that OPENED the dialog.
   - It is the source of the first message, as `frame` is, even when one
     process captures from an interface and a HEP mirror at once.
+- `tags`: the labels `--tag` gave this run's dialogs, absent when the run set
+  none.
 
 The list rows carry `from_user`/`to_user`. The single-dialog and report
 endpoints below carry `from`/`to` instead. A client that walks the list and
@@ -18320,7 +18322,7 @@ Multiple diagnostic flags combine with OR.
 | `--leg-correlation-window` | `<MS>` | `2000` | 0.5.100 | How far apart one call's two legs may start and still correlate on TIMING alone. sipnab falls back to this timing match when a B2BUA has rewritten every identifier the other correlation strategies compare. Two seconds suits a PBX that places the outbound leg at once; widen it for one that does an LNP or ENUM lookup, or walks an LCR list, first. Each correlation reports the strategy that matched. Config: `[sip] leg_correlation_window_ms` |
 | `--active-idle-window` | `<SECS>` | `3600` | 0.5.100 | Seconds a dialog may go untouched and still count toward the active-dialog and active-call gauges every surface publishes. One hour is twice the default `Session-Expires` of [RFC 4028](https://www.rfc-editor.org/rfc/rfc4028.html). Raise it where calls stay on hold longer than that, such as a contact center; a call whose BYE never arrived then also keeps counting for longer. Config: `[sip] active_idle_window_secs` |
 | `--no-dialog` | -- | off | 0.3.0 | Disable dialog tracking entirely (message-only mode) |
-| `--tag` | `<TAG>` | -- | 0.3.0 | Add this label to every dialog the run records, in the dialog's `tags` (`--json-dialogs`, `GET /v1/dialogs/:call_id`). It labels; it does not filter. |
+| `--tag` | `<TAG>` | -- | 0.3.0 | Add this label to every dialog the run records, in the dialog's `tags` (`--json-dialogs`, `GET /v1/dialogs`, `GET /v1/dialogs/:call_id`, and MCP `list_dialogs` and `get_dialog`). It labels; it does not filter. |
 
 > **`branch` counts transactions, not calls.**
 >
@@ -34135,6 +34137,8 @@ as null** when it does not, so an absent key means "not known here":
   dialog: `wire`, `hep` or `uprobe`. Read it before you follow `frame`: a
   uprobe pointer (`uprobe:opensips/954#3`) has the same shape as a capture
   offset, and only a `wire` pointer leads to bytes in a capture file.
+- `tags` — the labels `--tag` gave this run's dialogs. Absent when the run set
+  none. `get_dialog`'s `dialog` carries it too.
 
 The example below runs against [`tests/pcap-samples/sipp-branch-scenario.pcapng`](https://github.com/NormB/sipnab/raw/main/tests/pcap-samples/sipp-branch-scenario.pcapng),
 which holds 1334 dialogs. `limit: 2` therefore reports 2 of 1334 — and says so:

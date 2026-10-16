@@ -442,7 +442,7 @@ How to group messages into tracked units: \fBcall\-id\fR (default, one unit per 
 Disable dialog tracking entirely (message\-only mode).
 .TP
 \fB\-\-tag\fR \fITAG\fR
-Add this label to every dialog the run records, in the dialog's \fBtags\fR (\fB\-\-json\-dialogs\fR, \fBGET /v1/dialogs/:call_id\fR). It labels; it does not filter.
+Add this label to every dialog the run records, in the dialog's \fBtags\fR (\fB\-\-json\-dialogs\fR, \fBGET /v1/dialogs\fR, \fBGET /v1/dialogs/:call_id\fR, and MCP \fBlist_dialogs\fR and \fBget_dialog\fR). It labels; it does not filter.
 .TP
 \fB\-\-leg\-correlation\-window\fR \fIMS\fR
 How far apart, in milliseconds, two legs of one call may be created and still correlate on timing alone.

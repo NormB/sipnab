@@ -2036,8 +2036,8 @@ pub struct DialogArgs {
     pub no_dialog: bool,
 
     /// Add this label to every dialog the run records, in the dialog's `tags`
-    /// (`--json-dialogs`, `GET /v1/dialogs/:call_id`). It labels; it does not
-    /// filter.
+    /// (`--json-dialogs`, `GET /v1/dialogs`, `GET /v1/dialogs/:call_id`, and
+    /// MCP `list_dialogs` and `get_dialog`). It labels; it does not filter.
     #[arg(help_heading = "Dialog", long, value_name = "TAG")]
     pub tag: Option<String>,
 }

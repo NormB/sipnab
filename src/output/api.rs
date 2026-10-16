@@ -7285,6 +7285,8 @@ pub mod schema {
         /// Which capture source delivered the opening message — `wire`, `hep`
         /// or `uprobe`.
         pub input_origin: Option<String>,
+        /// The labels `--tag` gave this run's dialogs. Absent when none.
+        pub tags: Option<Vec<String>>,
     }
 
     /// One row of `GET /v1/streams`.

@@ -2468,6 +2468,16 @@
             "description": "Current dialog state, e.g. `InCall`, `Completed`.",
             "type": "string"
           },
+          "tags": {
+            "description": "The labels `--tag` gave this run's dialogs. Absent when none.",
+            "items": {
+              "type": "string"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
           "timing": {
             "$ref": "#/components/schemas/TimingSummary",
             "description": "Transaction timing metrics."

@@ -1143,7 +1143,7 @@ Multiple diagnostic flags combine with OR.
 | `--leg-correlation-window` | `<MS>` | `2000` | 0.5.100 | How far apart one call's two legs may start and still correlate on TIMING alone. sipnab falls back to this timing match when a B2BUA has rewritten every identifier the other correlation strategies compare. Two seconds suits a PBX that places the outbound leg at once; widen it for one that does an LNP or ENUM lookup, or walks an LCR list, first. Each correlation reports the strategy that matched. Config: `[sip] leg_correlation_window_ms` |
 | `--active-idle-window` | `<SECS>` | `3600` | 0.5.100 | Seconds a dialog may go untouched and still count toward the active-dialog and active-call gauges every surface publishes. One hour is twice the default `Session-Expires` of [RFC 4028](https://www.rfc-editor.org/rfc/rfc4028.html). Raise it where calls stay on hold longer than that, such as a contact center; a call whose BYE never arrived then also keeps counting for longer. Config: `[sip] active_idle_window_secs` |
 | `--no-dialog` | -- | off | 0.3.0 | Disable dialog tracking entirely (message-only mode) |
-| `--tag` | `<TAG>` | -- | 0.3.0 | Add this label to every dialog the run records, in the dialog's `tags` (`--json-dialogs`, `GET /v1/dialogs/:call_id`). It labels; it does not filter. |
+| `--tag` | `<TAG>` | -- | 0.3.0 | Add this label to every dialog the run records, in the dialog's `tags` (`--json-dialogs`, `GET /v1/dialogs`, `GET /v1/dialogs/:call_id`, and MCP `list_dialogs` and `get_dialog`). It labels; it does not filter. |
 
 > **`branch` counts transactions, not calls.**
 >

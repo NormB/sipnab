@@ -870,7 +870,7 @@ That inverts a page down.
 - So the same idea reads as `null` here and as an absent key
   there.
 
-Three list-row keys drop out rather than reading null:
+Four list-row keys drop out rather than reading null:
 
 - `frame` (above).
 - `final_status_code`. It is absent, never a zero, while the dialog's INVITE, or the
@@ -879,6 +879,8 @@ Three list-row keys drop out rather than reading null:
   source that delivered the message that OPENED the dialog.
   - It is the source of the first message, as `frame` is, even when one
     process captures from an interface and a HEP mirror at once.
+- `tags`: the labels `--tag` gave this run's dialogs, absent when the run set
+  none.
 
 The list rows carry `from_user`/`to_user`. The single-dialog and report
 endpoints below carry `from`/`to` instead. A client that walks the list and

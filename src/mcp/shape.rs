@@ -463,6 +463,9 @@ pub const DIALOG_VERBATIM_FIELDS: &[&str] = &[
     "timing",
     "frame",
     "input_origin",
+    // The operator's own `--tag` labels: text from the command line, never
+    // from a packet.
+    "tags",
 ];
 
 /// Project a dialog into the summary the MCP surface returns, with its

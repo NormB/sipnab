@@ -391,6 +391,8 @@ as null** when it does not, so an absent key means "not known here":
   dialog: `wire`, `hep` or `uprobe`. Read it before you follow `frame`: a
   uprobe pointer (`uprobe:opensips/954#3`) has the same shape as a capture
   offset, and only a `wire` pointer leads to bytes in a capture file.
+- `tags` — the labels `--tag` gave this run's dialogs. Absent when the run set
+  none. `get_dialog`'s `dialog` carries it too.
 
 The example below runs against [`tests/pcap-samples/sipp-branch-scenario.pcapng`](https://github.com/NormB/sipnab/raw/main/tests/pcap-samples/sipp-branch-scenario.pcapng),
 which holds 1334 dialogs. `limit: 2` therefore reports 2 of 1334 — and says so:
