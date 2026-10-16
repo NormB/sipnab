@@ -543,15 +543,20 @@ impl SipnabMcp {
         &self,
         Parameters(params): Parameters<GenerateFail2banRuleParams>,
     ) -> Result<CallToolResult, rmcp::ErrorData> {
-        let Some(engine) = self.alert_engine.as_ref() else {
-            return Err(errors::refuse(
-                Reason::NotEnabled,
-                "this server holds no findings: no detection rule was armed, so \
+        // A normal run attaches an engine whether or not a detector is armed,
+        // so the armed detectors, not the engine, decide this refusal.
+        let engine = match self.alert_engine.as_ref() {
+            Some(engine) if !self.armed_detections.is_empty() => engine,
+            _ => {
+                return Err(errors::refuse(
+                    Reason::NotEnabled,
+                    "this server holds no findings: no detection rule was armed, so \
                  nothing could have been recorded. Arm one with --kill-scanner, \
                  --fraud-detect, --digest-leak or --reg-flood and re-run the \
                  capture."
-                    .to_string(),
-            ));
+                        .to_string(),
+                ));
+            }
         };
 
         let (found, available) = {
@@ -2006,6 +2011,26 @@ mod tests {
         Ok(())
     }
 
+    /// A normal run attaches an alert engine whether or not a detector is
+    /// armed, so the refusal follows the armed detectors, not the engine: with
+    /// none armed the caller is told to arm one, not that an id is unknown.
+    #[tokio::test]
+    async fn a_fail2ban_rule_with_an_engine_and_no_detector_is_refused() -> Result<(), TestError> {
+        let engine = crate::security::alerting::AlertEngine::new(vec![], None);
+        let err = empty_server()
+            .with_alert_engine(Arc::new(RwLock::new(engine)))
+            .generate_fail2ban_rule(Parameters(GenerateFail2banRuleParams {
+                finding_id: "scanner@192.0.2.1@2026-01-01T00:00:00+00:00".to_string(),
+            }))
+            .await
+            .err()
+            .ok_or("a server with no detector armed must refuse")?;
+        let msg = message_of(err);
+        assert!(msg.contains("no detection rule was armed"), "{msg}");
+        assert!(msg.contains("--kill-scanner"), "{msg}");
+        Ok(())
+    }
+
     /// A server holding one scanner finding, and that finding's id.
     fn server_with_finding() -> Result<(SipnabMcp, String), TestError> {
         let mut engine = crate::security::alerting::AlertEngine::new(vec![], None);
@@ -2572,9 +2597,11 @@ mod tests {
             let findings = engine.iter_findings(&[], None, usize::MAX);
             finding_id(findings.first().ok_or("the fire was recorded")?)
         };
+        // `scanner` keeps the server armed when `rule` is not a known kind,
+        // which `with_armed_detections` drops.
         let server = empty_server()
             .with_alert_engine(Arc::new(RwLock::new(engine)))
-            .with_armed_detections([rule]);
+            .with_armed_detections([rule, "scanner"]);
         Ok((server, id))
     }
 

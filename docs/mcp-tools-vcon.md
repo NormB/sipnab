@@ -745,7 +745,7 @@ writes from [`tests/pcap-samples/sip-rtp-g711.pcap`](https://github.com/NormB/si
     "request-URI: not stored for 3 request(s), which carry sip:request-uri-not-stored.invalid",
     "header order: the trace keys headers by name, so their order across names is the container's, not the wire's, and headers the producer did not store (credential headers, when sipnab produced it) are absent"
   ],
-  "producer_note": "Produced by sipnab 0.5.222 on node tap-a. sipnab OBSERVED this dialog and took no part in it: the parties below are what the From and To headers said, not identities anyone established, and nothing here is signed. No media is in this container because this run decoded none for the dialog; the capture_completeness media_note says what was measured. That is a statement about what this run kept, not a finding that the call was silent. sipnab read 852 frame(s) for this capture. No omissions recorded: every message sipnab held for this dialog is in this container. A capture-level analysis ran and ranked no blind spots.",
+  "producer_note": "Produced by sipnab 0.5.222 on node tap-a. sipnab OBSERVED this dialog and took no part in it: the parties below are what the From and To headers said, not identities anyone established. No media is in this container because this run decoded none for the dialog; the capture_completeness media_note says what was measured. That is a statement about what this run kept, not a finding that the call was silent. sipnab read 852 frame(s) for this capture. No omissions recorded: every message sipnab held for this dialog is in this container. A capture-level analysis ran and ranked no blind spots.",
   "schema_findings": [],
   "schema_version": 1,
   "stored_media_quality": [

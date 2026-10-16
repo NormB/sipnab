@@ -32,3 +32,60 @@ fn dump_config_warns_about_a_key_it_does_not_know() -> Result<(), TestError> {
     );
     Ok(())
 }
+
+/// `-D` refuses every config file a run refuses, with the run's exit status
+/// and the run's message, rather than printing it as though it were accepted.
+///
+/// These keys are checked when the run is planned, which is after `-D` used
+/// to exit, so `-D` exited 0 on each of them while a run exited 1.
+#[test]
+fn dump_config_refuses_what_a_run_refuses() -> Result<(), TestError> {
+    let mut cases: Vec<(&str, &str, &str)> = vec![
+        (
+            "pbx",
+            "[pbx]\naddresses = [\"not-an-ip\"]\n",
+            "[pbx] addresses",
+        ),
+        (
+            "portrange",
+            "[capture]\nportrange = \"9-1\"\n",
+            "[capture] portrange",
+        ),
+        ("mcp-tools", "[mcp]\ntools = [\"nope\"]\n", "[mcp] tools"),
+        ("filters", "[filters]\nbad = \"method ==\"\n", "bad"),
+    ];
+    // A build without `vcon` reads no `[[vcon.rule]]`, so a run does not refuse
+    // a malformed one and `-D` must not either.
+    if cfg!(feature = "vcon") {
+        cases.push((
+            "vcon-rule",
+            "[[vcon.rule]]\nname = \"r\"\nwhen = \"method ==\"\ndir = \"vcons\"\n",
+            "r",
+        ));
+    }
+    for (label, toml, names) in cases {
+        let dir = tempfile::tempdir()?;
+        let config = dir.path().join("sipnab.toml");
+        std::fs::write(&config, toml)?;
+        let out = Command::new(env!("CARGO_BIN_EXE_sipnab"))
+            .arg("-f")
+            .arg(&config)
+            .arg("-D")
+            .current_dir(dir.path())
+            .env_remove("SIPNAB_LOG")
+            .env("XDG_STATE_HOME", dir.path())
+            .env("HOME", dir.path())
+            .output()?;
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert_eq!(
+            out.status.code(),
+            Some(1),
+            "{label}: -D accepted it:\n{stderr}"
+        );
+        assert!(
+            stderr.contains(names),
+            "{label}: the refusal must name {names:?}:\n{stderr}"
+        );
+    }
+    Ok(())
+}

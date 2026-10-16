@@ -544,6 +544,88 @@ fn the_stream_detail_view_shows_the_derived_delay_and_a_different_mos() -> Resul
     Ok(())
 }
 
+/// The MOS of every stream in a headless run's `--json-dialogs`, in order.
+fn headless_mos(one_way_delay_ms: &str) -> Result<Vec<f64>, TestError> {
+    let out = std::process::Command::new(env!("CARGO_BIN_EXE_sipnab"))
+        .args([
+            "-N",
+            "-I",
+            "tests/pcap-samples/SIP_CALL_RTP_G711",
+            "--one-way-delay",
+            one_way_delay_ms,
+            "--json-dialogs",
+        ])
+        .output()?;
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let mut mos = Vec::new();
+    for line in String::from_utf8(out.stdout)?.lines() {
+        let Ok(dialog) = serde_json::from_str::<serde_json::Value>(line) else {
+            continue;
+        };
+        for stream in dialog["streams"].as_array().into_iter().flatten() {
+            if let Some(m) = stream["mos"].as_f64() {
+                mos.push(m);
+            }
+        }
+    }
+    Ok(mos)
+}
+
+/// `--one-way-delay` moves the MOS of a headless run, not only the TUI's.
+///
+/// The cli-reference example `sipnab -N -I sat-trunk.pcap --one-way-delay 280`
+/// is a headless run; a declaration that only the TUI consulted left it
+/// printing the same score at 5 ms and at 500 ms.
+#[test]
+fn a_declared_delay_moves_the_headless_json_mos() -> Result<(), TestError> {
+    let lan = headless_mos("5")?;
+    let satellite = headless_mos("500")?;
+    assert!(!lan.is_empty(), "the capture must carry a scored stream");
+    assert_eq!(lan.len(), satellite.len());
+    for (near, far) in lan.iter().zip(&satellite) {
+        assert!(far + 0.5 < *near, "500 ms scored {far}, 5 ms scored {near}");
+    }
+    Ok(())
+}
+
+/// The filter language scores MOS with the declared delay too: at 500 ms the
+/// call falls under `rtp.mos < 4`, at 5 ms it does not.
+#[test]
+fn a_declared_delay_moves_what_a_mos_filter_selects() -> Result<(), TestError> {
+    let selected = |delay: &str| -> Result<usize, TestError> {
+        let out = std::process::Command::new(env!("CARGO_BIN_EXE_sipnab"))
+            .args([
+                "-N",
+                "-I",
+                "tests/pcap-samples/SIP_CALL_RTP_G711",
+                "--one-way-delay",
+                delay,
+                "--filter",
+                "rtp.mos < 4",
+                "--json-dialogs",
+            ])
+            .output()?;
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        Ok(String::from_utf8(out.stdout)?
+            .lines()
+            .filter(|l| {
+                serde_json::from_str::<serde_json::Value>(l).is_ok_and(|v| v["call_id"].is_string())
+            })
+            .count())
+    };
+    assert_eq!(selected("5")?, 0, "a LAN path keeps the call above 4");
+    assert!(selected("500")? >= 1, "a 500 ms path puts the call under 4");
+    Ok(())
+}
+
 /// The FLAG reaches the resolver, and config fills in when it is absent.
 ///
 /// `--one-way-delay` is the operator's half of the contract, so it is tested

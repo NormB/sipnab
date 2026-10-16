@@ -750,7 +750,7 @@ fn vcon_route_is_served_by_the_shipping_binary() -> Result<(), TestError> {
     // media instead of a fixed claim that the container carries none. The two
     // clauses below are the ones that must never soften: they are what stops a
     // reader taking an observation for a recording of the call.
-    for clause in ["OBSERVED", "nothing here is signed"] {
+    for clause in ["OBSERVED", "not identities anyone established"] {
         assert!(
             note.contains(clause),
             "the caveat must say `{clause}` — without it the container reads \

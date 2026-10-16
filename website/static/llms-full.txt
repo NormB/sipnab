@@ -6058,7 +6058,7 @@ The scrape begins:
 # TYPE sipnab_dialogs_total counter
 sipnab_dialogs_total{state="completed"} 1
 
-# HELP sipnab_messages_total Total SIP messages by method
+# HELP sipnab_messages_total SIP messages in tracked dialogs, labeled by the method that opened each dialog
 # TYPE sipnab_messages_total counter
 sipnab_messages_total{method="INVITE"} 7
 
@@ -7878,7 +7878,7 @@ The batch export does not write that dialog either. See
       "mediatype": "application/json",
       "encoding": "json",
       "body": {
-        "note": "Produced by sipnab 0.5.127 on node capture-01. sipnab OBSERVED this dialog and took no part in it: the parties below are what the From and To headers said, not identities anyone established, and nothing here is signed. This container carries SIGNALING ONLY — no media, and no reference to media held elsewhere. sipnab read 7 frame(s) for this capture. No omissions recorded: every message sipnab held for this dialog is in this container. A capture-level analysis ran and ranked no blind spots.",
+        "note": "Produced by sipnab 0.5.127 on node capture-01. sipnab OBSERVED this dialog and took no part in it: the parties below are what the From and To headers said, not identities anyone established. This container carries SIGNALING ONLY — no media, and no reference to media held elsewhere. sipnab read 7 frame(s) for this capture. No omissions recorded: every message sipnab held for this dialog is in this container. A capture-level analysis ran and ranked no blind spots.",
         "node": "capture-01",
         "sipnab_version": "0.5.124",
         "frames_read": 7,
@@ -12611,7 +12611,7 @@ sipnab -D
 line it shows the libpcap it is running, e.g.
 
 ```text
-sipnab 0.5.222 (<hash>) features: native,tui,audio,tls,hep,api,mcp,mcp-http,metrics,plugins,bpf,vcon,opus,archive,g729
+sipnab 0.5.223 (<hash>) features: native,tui,audio,tls,hep,api,mcp,mcp-http,metrics,plugins,bpf,vcon,opus,archive,g729
 libpcap version 1.10.5 (with TPACKET_V3); alternate capture backends named: none
 ```
 
@@ -25006,7 +25006,10 @@ When a capture carries RTCP XR (PT=207), sipnab decodes the VoIP Metrics block
 
 - The TUI Stream Detail view shows them in a **Reported by Far End (RTCP XR)**
   section of their own, below everything sipnab measured.
-- Nothing there feeds the MOS, jitter or loss sipnab computes.
+- One figure feeds sipnab's MOS: the round-trip delay. Halved, it is the
+  one-way delay behind the MOS when the run declares no `--one-way-delay`. See
+  [mos-and-codecs.md](mos-and-codecs.md#what-sipnab-computes-the-score-from).
+- Nothing else there feeds the MOS, jitter or loss sipnab computes.
 - If the two disagree, that is the finding. It is not a conflict to resolve.
   The reasons:
   - RTCP carries no authentication.
@@ -25035,9 +25038,9 @@ No surface reads any other XR block type yet.
 - It records Packet Receipt Times, DLRR and Statistics Summary by block-type
   number alone.
 
-`--json`, `--report`, the REST API and the Prometheus exporter carry sipnab's own
-measurements only.
-No filter DSL field matches an XR value.
+`--json`, `--report`, the REST API and the Prometheus exporter carry no XR
+field. Their MOS can rest on the XR round-trip delay, as above.
+No filter DSL field reads an XR value directly.
 
 ## Grammar
 
@@ -27788,10 +27791,16 @@ effect. It warns on stderr about each key it does not know:
 WARN sipnab::config: Unknown config key: capture.devise
 ```
 
-`-D` does not check every value a run checks. A malformed `[pbx] addresses`,
+`-D` refuses a file a run would refuse for its values, with the same message
+and exit status, and prints nothing else. A run's checks of `[pbx] addresses`,
 `[capture] portrange`, `[mcp] tools`, `[actions] tfps`, `[security] alert`,
-`[filters]` entry or `[[vcon.rule]] when` passes `-D` and stops the run that
-reads it, with exit 1 naming the key.
+`[filters]` and `[[vcon.rule]]` all apply. A port range written backwards:
+
+```text
+ERROR sipnab::app::bootstrap: Invalid [capture] portrange: Port range start (9) > end (1)
+```
+
+sipnab exits with status 1.
 
 ## File Locations
 
@@ -29744,7 +29753,7 @@ that's the laptop itself):
 
    ```bash
    sipnab --version
-   # sipnab 0.5.222 (...) features: native,tui,audio,tls,hep,api,mcp,mcp-http,metrics,plugins,vcon,bpf
+   # sipnab 0.5.223 (...) features: native,tui,audio,tls,hep,api,mcp,mcp-http,metrics,plugins,vcon,bpf
    # libpcap version 1.10.5 (with TPACKET_V3); alternate capture backends named: none
    ```
 
@@ -31125,7 +31134,7 @@ Then confirm the build can do what you are about to ask of it:
 ```json
 {
   "schema_version": 1,
-  "version": "0.5.222",
+  "version": "0.5.223",
   "features": ["api", "archive", "audio", "bpf", "g729", "hep", "mcp",
                "mcp-http", "metrics", "native", "opus", "plugins", "tls",
                "tui", "vcon", "wasm"],
@@ -31927,7 +31936,7 @@ client. The whole block is one pipeline.
 Expected first line of response:
 
 ```json
-{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2025-06-18","capabilities":{"completions":{},"prompts":{},"resources":{"subscribe":true},"tools":{}},"serverInfo":{"name":"sipnab","version":"0.5.222"},"instructions":"sipnab MCP server — queries captured SIP dialogs, RTP streams, diagnostics and security findings. …"}}
+{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2025-06-18","capabilities":{"completions":{},"prompts":{},"resources":{"subscribe":true},"tools":{}},"serverInfo":{"name":"sipnab","version":"0.5.223"},"instructions":"sipnab MCP server — queries captured SIP dialogs, RTP streams, diagnostics and security findings. …"}}
 ```
 
 ### Test the HTTP wire by hand
@@ -38235,9 +38244,12 @@ call to [`security_findings`](#security_findings):
 no finding with id 'digest@1.2.3.4@x'. An id is <rule_name>@<src_ip>@<timestamp>, built from the three fields security_findings returns. This server holds: digest@203.0.113.101@2016-05-17T08:01:35.432231+00:00
 ```
 
-On a server with no detector armed the list ends `This server holds: none`.
-Start the server with `--kill-scanner`, `--fraud-detect`, `--digest-leak` or
-`--reg-flood` and re-run the capture.
+On a server with no detector armed the tool fails with `invalid_params` and
+`data.reason: "not_enabled"`, before it looks for the id:
+
+```text
+this server holds no findings: no detection rule was armed, so nothing could have been recorded. Arm one with --kill-scanner, --fraud-detect, --digest-leak or --reg-flood and re-run the capture.
+```
 
 `detail` arrives fenced: it quotes headers a sender wrote. `rule_name` does
 not, because sipnab chose it, and the tool checks that it is a bare identifier
@@ -39606,7 +39618,7 @@ opt-in flags:
 // server_capabilities {}
 {
   "schema_version": 1,
-  "version": "0.5.222",
+  "version": "0.5.223",
   "features": ["api", "archive", "audio", "bpf", "g729", "hep", "mcp", "mcp-http",
                "metrics", "native", "opus", "plugins", "tls", "tui", "vcon", "wasm"],
   "can_decrypt": true,           // tls
@@ -40513,7 +40525,7 @@ writes from [`tests/pcap-samples/sip-rtp-g711.pcap`](https://github.com/NormB/si
     "request-URI: not stored for 3 request(s), which carry sip:request-uri-not-stored.invalid",
     "header order: the trace keys headers by name, so their order across names is the container's, not the wire's, and headers the producer did not store (credential headers, when sipnab produced it) are absent"
   ],
-  "producer_note": "Produced by sipnab 0.5.222 on node tap-a. sipnab OBSERVED this dialog and took no part in it: the parties below are what the From and To headers said, not identities anyone established, and nothing here is signed. No media is in this container because this run decoded none for the dialog; the capture_completeness media_note says what was measured. That is a statement about what this run kept, not a finding that the call was silent. sipnab read 852 frame(s) for this capture. No omissions recorded: every message sipnab held for this dialog is in this container. A capture-level analysis ran and ranked no blind spots.",
+  "producer_note": "Produced by sipnab 0.5.222 on node tap-a. sipnab OBSERVED this dialog and took no part in it: the parties below are what the From and To headers said, not identities anyone established. No media is in this container because this run decoded none for the dialog; the capture_completeness media_note says what was measured. That is a statement about what this run kept, not a finding that the call was silent. sipnab read 852 frame(s) for this capture. No omissions recorded: every message sipnab held for this dialog is in this container. A capture-level analysis ran and ranked no blind spots.",
   "schema_findings": [],
   "schema_version": 1,
   "stored_media_quality": [
@@ -46437,7 +46449,7 @@ below declares `"encoding": "json"`.
         "media_note": "No RTP streams to export",
         "messages_evicted": 0,
         "node": "capture-01",
-        "note": "Produced by sipnab 0.5.222 on node capture-01. sipnab OBSERVED this dialog and took no part in it: the parties below are what the From and To headers said, not identities anyone established, and nothing here is signed. No media is in this container because this run decoded none for the dialog; the capture_completeness media_note says what was measured. That is a statement about what this run kept, not a finding that the call was silent. sipnab read 7 frame(s) for this capture. No omissions recorded: every message sipnab held for this dialog is in this container. A capture-level analysis ran and ranked no blind spots.",
+        "note": "Produced by sipnab 0.5.222 on node capture-01. sipnab OBSERVED this dialog and took no part in it: the parties below are what the From and To headers said, not identities anyone established. No media is in this container because this run decoded none for the dialog; the capture_completeness media_note says what was measured. That is a statement about what this run kept, not a finding that the call was silent. sipnab read 7 frame(s) for this capture. No omissions recorded: every message sipnab held for this dialog is in this container. A capture-level analysis ran and ranked no blind spots.",
         "sip_discarded_by_port_gate": 0,
         "sip_discarded_by_websocket_gate": 0,
         "sipnab_version": "0.5.222",
@@ -46858,7 +46870,7 @@ jq '.attachments[] | select(.purpose == "sipnab-capture-completeness")' lost.jso
     "media_note": "No RTP streams to export",
     "messages_evicted": 0,
     "node": "capture-01",
-    "note": "Produced by sipnab 0.5.222 on node capture-01. sipnab OBSERVED this dialog and took no part in it: the parties below are what the From and To headers said, not identities anyone established, and nothing here is signed. No media is in this container because this run decoded none for the dialog; the capture_completeness media_note says what was measured. That is a statement about what this run kept, not a finding that the call was silent. sipnab read 4269 frame(s) for this capture. The call had not ended when this container was written: sipnab had seen no BYE, CANCEL or final failure for it, so the trace and any media end where this container was written, not where the call ended. — INCOMPLETE: 164 frame(s) reached the parser and produced nothing (not IP (EtherType not recorded) (164)), so any count in this container is a floor. — INCOMPLETE: the capture analysis ranked 1 blind spot(s): undecodable_frames (164 frame).",
+    "note": "Produced by sipnab 0.5.222 on node capture-01. sipnab OBSERVED this dialog and took no part in it: the parties below are what the From and To headers said, not identities anyone established. No media is in this container because this run decoded none for the dialog; the capture_completeness media_note says what was measured. That is a statement about what this run kept, not a finding that the call was silent. sipnab read 4269 frame(s) for this capture. The call had not ended when this container was written: sipnab had seen no BYE, CANCEL or final failure for it, so the trace and any media end where this container was written, not where the call ended. — INCOMPLETE: 164 frame(s) reached the parser and produced nothing (not IP (EtherType not recorded) (164)), so any count in this container is a floor. — INCOMPLETE: the capture analysis ranked 1 blind spot(s): undecodable_frames (164 frame).",
     "sip_discarded_by_port_gate": 0,
     "sip_discarded_by_websocket_gate": 0,
     "sipnab_version": "0.5.222",
@@ -47121,7 +47133,7 @@ THIS ANALYSIS IS INCOMPLETE — sipnab did not read all of this capture. The fin
 1. [BLIND] Rebuilt from a stored vCon — 1 container(s)
    These dialogs were rebuilt from stored vCon containers, not read from packets. A vCon holds no RTP, so no media statistic here was computed, and whatever its producer did not store is absent. The evidence names each container, what it lacks, and the producer's own caveat.
    Evidence:
-     - call.vcon.json, vcon 0158a120-0392-8c69-93aa-0ad4f722aed4 | messages=6 | 6 SIP message(s) rebuilt from this container. Not recomputed or not stored: media: a vCon carries no RTP, so no stream, MOS, jitter or loss was computed from it; the producer's analysis holds 1 media_quality row(s), its own numbers, not recomputed; request-URI: not stored for 3 request(s), which carry sip:request-uri-not-stored.invalid; header order: the trace keys headers by name, so their order across names is the container's, not the wire's, and headers the producer did not store (credential headers, when sipnab produced it) are absent. The producer's caveat: Produced by sipnab 0.5.222 on node tap-a. sipnab OBSERVED this dialog and took no part in it: the parties below are what the From and To headers said, not identities anyone established, and nothing here is signed. No media is in this container because this run decoded none for the dialog; the capture_completeness media_note says what was measured. That is a statement about what this run kept, not a finding that the call was silent. sipnab read 852 frame(s) for this capture. No omissions recorded: every message sipnab held for this dialog is in this container. A capture-level analysis ran and ranked no blind spots.
+     - call.vcon.json, vcon 0158a120-0392-8c69-93aa-0ad4f722aed4 | messages=6 | 6 SIP message(s) rebuilt from this container. Not recomputed or not stored: media: a vCon carries no RTP, so no stream, MOS, jitter or loss was computed from it; the producer's analysis holds 1 media_quality row(s), its own numbers, not recomputed; request-URI: not stored for 3 request(s), which carry sip:request-uri-not-stored.invalid; header order: the trace keys headers by name, so their order across names is the container's, not the wire's, and headers the producer did not store (credential headers, when sipnab produced it) are absent. The producer's caveat: Produced by sipnab 0.5.222 on node tap-a. sipnab OBSERVED this dialog and took no part in it: the parties below are what the From and To headers said, not identities anyone established. No media is in this container because this run decoded none for the dialog; the capture_completeness media_note says what was measured. That is a statement about what this run kept, not a finding that the call was silent. sipnab read 852 frame(s) for this capture. No omissions recorded: every message sipnab held for this dialog is in this container. A capture-level analysis ran and ranked no blind spots.
 ```
 
 The first finding is `rebuilt_from_vcon`. It is a `blind` finding.
@@ -73944,12 +73956,13 @@ not-found message lists the held ids from a scan of the whole ring buffer,
 because a truncated scan cannot report what it truncated. The tool checks that
 `rule_name` is a bare identifier before writing it into a regular expression.
 
-The tool returns the `NotEnabled` refusal text in
+The tool returns the `NotEnabled` refusal in
 [`src/mcp/tools/expectations.rs`](../../src/mcp/tools/expectations.rs)
-(`this server holds no findings: no detection rule was armed`) only when the
-server has no alert engine at all. A normal server run always attaches one (see
-the comment at [`src/mcp/server.rs`](../../src/mcp/server.rs) around line 90), so with no detector armed
-the observed answer is the `not_found` refusal ending "This server holds: none".
+(`this server holds no findings: no detection rule was armed`) when the server
+has no alert engine or no armed detector. The armed detectors decide it, not
+the engine, because a normal server run attaches an engine whether or not it
+arms a detector (see the `armed_detections` field in
+[`src/mcp/server.rs`](../../src/mcp/server.rs)).
 
 ## Notes for [server bundle](../mcp-tools-server.md)
 

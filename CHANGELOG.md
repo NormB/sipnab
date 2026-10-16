@@ -8,7 +8,7 @@ sipnab is pre-1.0: the public API and the CLI surface are not stable, and a
 breaking change may land in any release. Breaking changes are called out in the
 entry that carries them.
 
-## [Unreleased]
+## [0.5.223] - 2026-10-16
 
 ### Added
 
@@ -40,6 +40,18 @@ entry that carries them.
   - `--wireshark` and `--tshark-filter` without `-N` started the TUI and never printed their answer. They are refused with the `-N` hint, like the other output flags.
 - **`--lint-fail-on` refuses a level it does not know.** A level it does not know, such as `critical` or a misspelling, was accepted and turned the gate off. It now exits 2 and names `info`, `notice`, `warning` (or `warn`) and `error`.
 - **A filter refuses `<`, `<=`, `>` and `>=` against a true/false field.** `one_way > true` parsed and matched nothing. It now fails to parse with "the field compares with == or !=".
+- **`--one-way-delay` and `[media] one_way_delay_ms` apply on every surface, not only the TUI.**
+  - The reports, `--json-dialogs`, the filter language, the REST API, the MCP tools, Prometheus and the vCon analysis scored MOS on the capture alone, so `sipnab -N -I sat-trunk.pcap --one-way-delay 280` printed the same MOS at any declared delay.
+  - Measured on a G.711 capture: `--json-dialogs` and `GET /v1/streams` now move from about 4.4 at 5 ms to 1.0 at 500 ms, and `rtp.mos < 4` selects the call only at 500 ms.
+- **`-D` refuses a config file a run would refuse.** A malformed `[pbx] addresses`, `[capture] portrange`, `[mcp] tools`, `[filters]` entry or `[[vcon.rule]] when` passed `-D` with exit 0 and stopped the run with exit 1. `-D` now prints the run's message and exits 1.
+- **With `--export-vcon-dir`, an existing `--redact-map` is refused before anything is written.** The run wrote every container and then refused the map, leaving pseudonyms nothing could reverse. It now exits 1 at startup and writes nothing.
+- **The vCon caveat no longer says "nothing here is signed"**, which was false inside a container a `sign_only` or encrypting rule signs. It says the parties are what the From and To headers said, which is true of both forms.
+- **`generate_fail2ban_rule` says no detector is armed when none is**, instead of reporting an unknown id with "This server holds: none".
+- **`--help` states the real thresholds and no maintainer notes.**
+  - `--slow-setup` said 3 s and `--short-calls` 5 s; the defaults are 11 s and 3 s, and each now names the flag and key that change it.
+  - Twenty flags printed rustdoc paths and notes on how clap fills the field; they no longer do.
+- **The MCP public-bind refusal names its remedies** (bind `127.0.0.1`, or supply a token or signing key) instead of a planning document.
+- **Wording that described a different behavior is corrected:** the `sipnab_messages_total` HELP line (its label is the method that opened the dialog), the `hep_senders` tool description (a row carries the capture id the sender claims), the AMI `username` schema text (always null in the aggregated findings), the filter-language page on RTCP XR (its round-trip delay does feed the MOS), and the filter field count, which is 42 (43 spellings, one an alias).
 - **Documentation that had drifted from the program is corrected**, each claim checked against 0.5.222. Among the corrections:
   - the REST token scopes (`actions` and `audio` exist; a `full` token cannot ban a source or open live audio),
   - which MCP tools reach the network (seven, `fetch_vcon` included),

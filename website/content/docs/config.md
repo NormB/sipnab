@@ -38,10 +38,16 @@ effect. It warns on stderr about each key it does not know:
 WARN sipnab::config: Unknown config key: capture.devise
 ```
 
-`-D` does not check every value a run checks. A malformed `[pbx] addresses`,
+`-D` refuses a file a run would refuse for its values, with the same message
+and exit status, and prints nothing else. A run's checks of `[pbx] addresses`,
 `[capture] portrange`, `[mcp] tools`, `[actions] tfps`, `[security] alert`,
-`[filters]` entry or `[[vcon.rule]] when` passes `-D` and stops the run that
-reads it, with exit 1 naming the key.
+`[filters]` and `[[vcon.rule]]` all apply. A port range written backwards:
+
+```text
+ERROR sipnab::app::bootstrap: Invalid [capture] portrange: Port range start (9) > end (1)
+```
+
+sipnab exits with status 1.
 
 ## File Locations
 

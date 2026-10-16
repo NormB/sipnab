@@ -58,7 +58,7 @@ The scrape begins:
 # TYPE sipnab_dialogs_total counter
 sipnab_dialogs_total{state="completed"} 1
 
-# HELP sipnab_messages_total Total SIP messages by method
+# HELP sipnab_messages_total SIP messages in tracked dialogs, labeled by the method that opened each dialog
 # TYPE sipnab_messages_total counter
 sipnab_messages_total{method="INVITE"} 7
 

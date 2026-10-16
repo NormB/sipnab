@@ -67,9 +67,9 @@ impl SipnabMcp {
                        the sender's \
                        claim, never proven, and each row says so in identity. \
                        A run with no HEP listener returns listening false and \
-                       a note. Every value is sipnab's own count; nothing in \
-                       it is packet content. Same bytes as GET \
-                       /v1/hep/senders.",
+                       a note. Every value is sipnab's own count, a claimed \
+                       id, an address or a time; no packet payload is in it. \
+                       Same bytes as GET /v1/hep/senders.",
         output_schema = schema_for_output::<crate::output::model::HepSendersReport>(),
         annotations(read_only_hint = true, open_world_hint = false)
     )]

@@ -687,9 +687,12 @@ call to [`security_findings`](#security_findings):
 no finding with id 'digest@1.2.3.4@x'. An id is <rule_name>@<src_ip>@<timestamp>, built from the three fields security_findings returns. This server holds: digest@203.0.113.101@2016-05-17T08:01:35.432231+00:00
 ```
 
-On a server with no detector armed the list ends `This server holds: none`.
-Start the server with `--kill-scanner`, `--fraud-detect`, `--digest-leak` or
-`--reg-flood` and re-run the capture.
+On a server with no detector armed the tool fails with `invalid_params` and
+`data.reason: "not_enabled"`, before it looks for the id:
+
+```text
+this server holds no findings: no detection rule was armed, so nothing could have been recorded. Arm one with --kill-scanner, --fraud-detect, --digest-leak or --reg-flood and re-run the capture.
+```
 
 `detail` arrives fenced: it quotes headers a sender wrote. `rule_name` does
 not, because sipnab chose it, and the tool checks that it is a bare identifier
