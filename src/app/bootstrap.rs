@@ -436,21 +436,7 @@ pub fn plan(cli: &Cli, config: &Config) -> Result<RunPlan, PlanError> {
     // Capture config from CLI + config file.
     let mut capture_config = build_capture_config(cli, config)?;
 
-    // Portrange: CLI > config file > default "5060-5061".
-    let (portrange_str, portrange_source) = match (
-        cli.capture_args.portrange.as_deref(),
-        config.capture.portrange.as_deref(),
-    ) {
-        (Some(flag), _) => (flag, "--portrange"),
-        (None, Some(key)) => (key, "[capture] portrange"),
-        (None, None) => ("5060-5061", "the default port range"),
-    };
-    let portrange = crate::config::parse_portrange(portrange_str).map_err(|e| {
-        PlanError::refused(
-            crate::settings::Origin::of(cli.capture_args.portrange.is_some()),
-            format!("Invalid {portrange_source}: {e}"),
-        )
-    })?;
+    let portrange = portrange(cli, config)?;
 
     apply_capture_filter(cli, config, source.as_ref(), portrange, &mut capture_config)?;
 
@@ -520,12 +506,7 @@ pub fn plan(cli: &Cli, config: &Config) -> Result<RunPlan, PlanError> {
 
     // An unknown MCP tool or bundle name refuses the run here, in every
     // build, rather than when the MCP server starts.
-    cli.mcp_tool_selection(config).map_err(|e| {
-        PlanError::refused(
-            crate::settings::Origin::of(cli.mcp_args.mcp_tools.is_some()),
-            e,
-        )
-    })?;
+    mcp_tool_selection(cli, config)?;
 
     let max_capture_sources = cli.max_capture_sources(config);
     let hep_senders = if cli.hep_args.hep_listen.is_some() {
@@ -563,6 +544,64 @@ pub fn plan(cli: &Cli, config: &Config) -> Result<RunPlan, PlanError> {
         mode,
         metrics_bind,
         max_capture_sources,
+    })
+}
+
+/// The checks a run makes on its configuration alone, without opening a
+/// capture, a device or a socket: the `[filters]` table, `[pbx] addresses`,
+/// the port range, the MCP tool selection and the `[[vcon.rule]]` table.
+///
+/// `plan` makes each of these through the same functions. `-D` calls this
+/// before it prints the configuration, so it refuses every file a run would
+/// refuse at these steps, with the same message and exit status.
+///
+/// # Errors
+///
+/// The first `PlanError` any of them returns.
+pub fn refuse_invalid_config(cli: &Cli, config: &Config) -> Result<(), PlanError> {
+    named_filters(cli, config)?;
+    pbx_addresses(config)?;
+    portrange(cli, config)?;
+    mcp_tool_selection(cli, config)?;
+    #[cfg(feature = "vcon")]
+    vcon_rules(cli, config)?;
+    Ok(())
+}
+
+/// The SIP port range: `--portrange`, else `[capture] portrange`, else
+/// `5060-5061`.
+///
+/// # Errors
+///
+/// A `PlanError` naming where an unparseable range came from.
+fn portrange(cli: &Cli, config: &Config) -> Result<(u16, u16), PlanError> {
+    let (portrange_str, portrange_source) = match (
+        cli.capture_args.portrange.as_deref(),
+        config.capture.portrange.as_deref(),
+    ) {
+        (Some(flag), _) => (flag, "--portrange"),
+        (None, Some(key)) => (key, "[capture] portrange"),
+        (None, None) => ("5060-5061", "the default port range"),
+    };
+    crate::config::parse_portrange(portrange_str).map_err(|e| {
+        PlanError::refused(
+            crate::settings::Origin::of(cli.capture_args.portrange.is_some()),
+            format!("Invalid {portrange_source}: {e}"),
+        )
+    })
+}
+
+/// The MCP tool selection, refused for an unknown tool or bundle name.
+///
+/// # Errors
+///
+/// A `PlanError` with the resolver's message, which names the flag or key.
+fn mcp_tool_selection(cli: &Cli, config: &Config) -> Result<(), PlanError> {
+    cli.mcp_tool_selection(config).map(|_| ()).map_err(|e| {
+        PlanError::refused(
+            crate::settings::Origin::of(cli.mcp_args.mcp_tools.is_some()),
+            e,
+        )
     })
 }
 

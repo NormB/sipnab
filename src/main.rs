@@ -304,8 +304,13 @@ fn run_config_steps(cli: &Cli, loaded: &sipnab::config::LoadedConfig) {
         loaded.config.g729.auto_install.unwrap_or(false),
     );
 
-    // 6. --dump-config: print the effective config and exit.
+    // 6. --dump-config: print the effective config and exit. A file a run
+    //    would refuse when it plans is refused here too, so `-D` answers
+    //    "would a run accept this file".
     if cli.config_args.dump_config {
+        if let Err(e) = bootstrap::refuse_invalid_config(cli, &loaded.config) {
+            e.exit();
+        }
         sipnab::capture::archive::release_run_and_exit(bootstrap::dump_config(loaded));
     }
 
