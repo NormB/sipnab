@@ -1346,11 +1346,13 @@ pub struct DiagnosticAliasArgs {
     #[arg(help_heading = "Diagnostic aliases", long)]
     pub problems: bool,
 
-    /// Show calls with slow setup time (>3s by default).
+    /// Show calls whose post-dial delay is over 11 seconds by default. Change
+    /// it with --pdd-threshold or `[diagnosis] post_dial_delay_secs`.
     #[arg(help_heading = "Diagnostic aliases", long)]
     pub slow_setup: bool,
 
-    /// Show calls shorter than 5 seconds.
+    /// Show completed calls shorter than 3 seconds by default. Change it with
+    /// --fraud-short-call or `[security] fraud_short_call_secs`.
     #[arg(help_heading = "Diagnostic aliases", long)]
     pub short_calls: bool,
 
@@ -8842,6 +8844,40 @@ mod tests {
         assert_eq!(f.vcon_forward_interval, Some(7));
         assert_eq!(f.vcon_forward_timeout, Some(9));
         Ok(())
+    }
+
+    /// `--slow-setup` and `--short-calls` state the threshold they select on,
+    /// taken from the alias thresholds' own default, and name the flag and
+    /// config key that change it.
+    #[test]
+    fn each_threshold_alias_states_its_default_and_where_to_change_it() {
+        use clap::CommandFactory;
+        let shipped = crate::sip::dsl::AliasThresholds::default();
+        let cmd = Cli::command();
+        for (long, secs, flag, key) in [
+            (
+                "slow-setup",
+                shipped.pdd_secs,
+                "--pdd-threshold",
+                "[diagnosis] post_dial_delay_secs",
+            ),
+            (
+                "short-calls",
+                shipped.short_call_secs,
+                "--fraud-short-call",
+                "[security] fraud_short_call_secs",
+            ),
+        ] {
+            let help = cmd
+                .get_arguments()
+                .find(|a| a.get_long() == Some(long))
+                .and_then(|a| a.get_help())
+                .map(ToString::to_string)
+                .unwrap_or_default();
+            assert!(help.contains(&format!("{secs} seconds")), "{long}: {help}");
+            assert!(help.contains(flag), "{long}: {help}");
+            assert!(help.contains(key), "{long}: {help}");
+        }
     }
 
     /// Each whole-number forwarder flag's help states the range its parser

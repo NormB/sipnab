@@ -268,10 +268,10 @@ Keep only dialogs whose first message is BEFORE this RFC 3339 instant; a dialog 
 Show calls with detected problems (retransmits, timeouts, errors).
 .TP
 \fB\-\-slow\-setup\fR
-Show calls with slow setup time (>3s by default).
+Show calls whose post\-dial delay is over 11 seconds by default. Change it with \-\-pdd\-threshold or \fB[diagnosis] post_dial_delay_secs\fR.
 .TP
 \fB\-\-short\-calls\fR
-Show calls shorter than 5 seconds.
+Show completed calls shorter than 3 seconds by default. Change it with \-\-fraud\-short\-call or \fB[security] fraud_short_call_secs\fR.
 .TP
 \fB\-\-one\-way\fR
 Show calls with potential one\-way audio issues.
