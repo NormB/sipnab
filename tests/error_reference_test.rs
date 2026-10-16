@@ -788,7 +788,9 @@ const EXPECTED_UNRESOLVED: usize = 83;
 // `g729` downloads with the shared client in src/app/https_client.rs.
 // 500 -> 501: src/cli.rs, `--lint-fail-on` refuses a severity it does not
 // know instead of reading it as no threshold. Nothing removed.
-const EXPECTED_TEMPLATES: usize = 501;
+// 501 -> 502: src/app/bootstrap.rs, an offline --cores run started as root
+// is refused (cores_as_root_refusal). Nothing removed.
+const EXPECTED_TEMPLATES: usize = 502;
 
 // ---------------------------------------------------------------------------
 // The page gates

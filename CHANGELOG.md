@@ -12,6 +12,10 @@ entry that carries them.
 
 ### Fixed
 
+- **An offline `--cores` run started as root exits 2 instead of reading the capture as root.** The single-core read drops privileges after opening its input; the parallel reader never did. Run it as an ordinary user, or pass `--no-priv-drop` to stay root on purpose.
+- **`reconcile_orphans` reads `limit: 0` as the default page, as every other MCP list tool does.** It returned one row.
+- **`sipnab -D` shows the warnings about config keys it does not know.** Without `-N` it logged at the TUI's level, errors only, so a misspelled key printed nothing.
+- **`--help` no longer says there is no interval flag for relay statistics** (`--relay-stats-interval` exists), and no longer prints internal work-item numbers.
 - **`--cores N` lists calls and RTP streams in capture order, as `--cores 1` does.**
   - The merged report listed them in the order the workers were joined, so the same capture gave a different row order at different core counts: `--report`, `--json-dialogs`, `--analyze` and `--lint` findings all followed it.
   - The merged stores are now sorted by where each call's and stream's first frame was read: the file's place in the `-I` set, then the frame's position in that file.

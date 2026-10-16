@@ -193,9 +193,11 @@
     {
       "file": "src/app/bootstrap.rs",
       "call": "error!(\"{refusal}\")",
-      "count": 1,
-      "carries": [],
-      "why": "relay_side_of_comparison in bootstrap.rs returns only Err(format!(...)) sites."
+      "count": 2,
+      "carries": [
+        "--cores reads the capture without dropping root privileges, which the single-core read drops after opening its input. Run it as an ordinary user (reading a capture file needs no root), drop --cores, or pass --no-priv-drop to stay root on purpose."
+      ],
+      "why": "relay_side_of_comparison in bootstrap.rs returns only Err(format!(...)) sites; cores_as_root_refusal returns the one literal it carries."
     },
     {
       "file": "src/app/bootstrap.rs",

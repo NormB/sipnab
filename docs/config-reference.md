@@ -23,8 +23,17 @@ portrange = "5060-5080"
 post_dial_delay_secs = 6.0
 ```
 
-`sipnab -D` prints the configuration it loaded. So you can check the file took
-effect.
+`sipnab -D` prints the configuration it loaded, so you can check the file took
+effect. It warns on stderr about each key it does not know:
+
+```text
+WARN sipnab::config: Unknown config key: capture.devise
+```
+
+`-D` does not check every value a run checks. A malformed `[pbx] addresses`,
+`[capture] portrange`, `[mcp] tools`, `[actions] tfps`, `[security] alert`,
+`[filters]` entry or `[[vcon.rule]] when` passes `-D` and stops the run that
+reads it, with exit 1 naming the key.
 
 ## File Locations
 
@@ -1402,6 +1411,6 @@ column_selector = "F10"
 > - **There is no environment-variable override layer.** `SIPNAB_CONFIG` only
 >   selects which file to read.
 >
-> So `-D` answers "did sipnab read the file I meant, and did it accept my
-> keys?". That is the question behind most configuration surprises. It does not
-> answer "what value is this setting running with?".
+> So `-D` answers "did sipnab read the file I meant, and does it know my
+> keys?". It does not answer "what value is this setting running with?", and it
+> does not check every value. See the top of this page.

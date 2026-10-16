@@ -522,7 +522,7 @@ impl SipnabMcp {
         // 0 is read as one row rather than the default, so a page always makes
         // progress; the operator's row cap bounds it as it bounds every other
         // list tool.
-        let limit = (params.limit.unwrap_or(50).max(1) as usize).min(self.row_cap.max(1));
+        let limit = crate::mcp::shape::resolve_limit_with_cap(params.limit, self.row_cap);
         let cursor = match params.cursor.as_deref() {
             Some(raw) => Some(
                 crate::mcp::shape::parse_cursor(raw)
@@ -3183,16 +3183,17 @@ mod relay_handler_tests {
         Ok(())
     }
 
-    /// A limit of zero is read as one, and an omitted limit as fifty.
+    /// A limit of zero is read as the default, as on every other list tool, and
+    /// an omitted limit as fifty.
     ///
     /// Zero rows with `truncated: true` would be a page that can never make
     /// progress; and the default is what an agent that passes nothing gets, so
     /// it is pinned rather than left to whatever `unwrap_or` happens to say.
     #[tokio::test]
-    async fn a_zero_limit_returns_one_row_and_no_limit_returns_fifty() -> Result<(), TestError> {
+    async fn a_zero_limit_and_no_limit_both_return_the_default() -> Result<(), TestError> {
         let zero = orphans(store_with_three_kinds_of_orphan(), Some(0)).await?;
-        assert_eq!(zero["orphans"].as_array().map(Vec::len), Some(1), "{zero}");
-        assert_eq!(zero["truncated"], true);
+        assert_eq!(zero["orphans"].as_array().map(Vec::len), Some(3), "{zero}");
+        assert_eq!(zero["truncated"], false);
 
         let mut ss = StreamStore::new(128);
         for i in 0..51u16 {
@@ -3292,6 +3293,18 @@ mod relay_handler_tests {
         assert_eq!(pages[2]["truncated"], false);
         assert!(pages[2]["next_cursor"].is_null());
         assert!(pages.iter().all(|p| p["total_orphans"] == 5));
+        Ok(())
+    }
+
+    /// `limit: 0` means the default page, as on every other list tool, not
+    /// one row.
+    #[tokio::test]
+    async fn reconcile_orphans_limit_zero_means_the_default() -> Result<(), TestError> {
+        let srv = server(DialogStore::new(16, false), store_with_orphans(5));
+        let (v, _) = orphan_page(&srv, Some(0), None, None)
+            .await
+            .map_err(|e| format!("page: {e:?}"))?;
+        assert_eq!(v["orphans"].as_array().map(Vec::len), Some(5), "{v}");
         Ok(())
     }
 

@@ -2069,11 +2069,10 @@ pub struct RtpArgs {
     /// `start recording`: each of them changes a production relay, and none is
     /// representable here.
     ///
-    /// **Not a poller.** sipnab asks at two moments and no others: once at
-    /// startup, before the capture opens, and again when a stream turns up
-    /// that nothing explains. There is no interval flag because there is no
-    /// timer — a service that talks to a production relay is something an
-    /// operator opts into, not something a capture tool becomes by default.
+    /// **Not a poller by default.** sipnab asks for its call list at two
+    /// moments: once at startup, before the capture opens, and again when a
+    /// stream turns up that nothing explains. To poll the relay's statistics
+    /// on a timer as well, add `--relay-stats-interval SECONDS`.
     ///
     /// Each relay-side socket is asked about at most once for the whole run,
     /// and a per-run ceiling caps the total number of control transactions
@@ -2117,7 +2116,7 @@ pub struct RtpArgs {
     pub rtpproxy_control: Option<std::net::SocketAddr>,
 
     /// Ask the relay named by `--rtpengine-control` for its own statistics and
-    /// print them (ST1/C1).
+    /// print them.
     ///
     /// The counters the relay keeps about ITSELF -- packets relayed, sessions,
     /// its own loss and jitter. They are `relay_reported`: a claim from the
@@ -2128,7 +2127,7 @@ pub struct RtpArgs {
     pub relay_stats: bool,
 
     /// Ask the relay named by `--rtpengine-control` for its own counters about
-    /// ONE call, by Call-ID (ST7/C2).
+    /// ONE call, by Call-ID.
     ///
     /// The relay's per-call view -- per-stream and per-SSRC packet and byte
     /// counts, RTP and RTCP totals -- as the relay counts them, `relay_reported`.
@@ -2143,7 +2142,7 @@ pub struct RtpArgs {
     pub relay_stats_call: Option<String>,
 
     /// List which statistics the relay named by `--rtpengine-control` knows,
-    /// rather than their values (ST7/C3).
+    /// rather than their values.
     ///
     /// The key set is version-specific, so "what can I ask for?" is a real
     /// question: without it a caller learns a name is absent only by asking for
@@ -2155,7 +2154,7 @@ pub struct RtpArgs {
     pub relay_stats_list: bool,
 
     /// Compare the relay's own RTP packet count for ONE call against what
-    /// sipnab measured on the wire (ST7/C4).
+    /// sipnab measured on the wire.
     ///
     /// The one place two tiers meet in one answer, and it is a comparison,
     /// never a sum: the relay's `totals.RTP.packets` for the call
@@ -2169,7 +2168,7 @@ pub struct RtpArgs {
     pub relay_compare: Option<String>,
 
     /// Poll the relay named by `--rtpengine-control` for its statistics every
-    /// SECONDS, for as long as the capture runs (ST4/C5).
+    /// SECONDS, for as long as the capture runs.
     ///
     /// Nothing polls by default: every other answer sipnab gives comes from
     /// bytes it already holds, and this one puts a packet on the network on a
@@ -3192,7 +3191,7 @@ pub struct ListenerArgs {
     pub api_max_rows: Option<u64>,
 
     /// Let REST clients query the relay named by `--rtpengine-control`
-    /// (`GET /v1/relay/...`), which transmits (ST5).
+    /// (`GET /v1/relay/...`), which transmits.
     ///
     /// The REST counterpart of `--mcp-allow-relay-query`, off for the same
     /// reason: every other REST answer comes from bytes sipnab already holds,

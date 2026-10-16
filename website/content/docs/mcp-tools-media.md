@@ -40,7 +40,7 @@ needs.
 
 | Name | Type | Legal values | If omitted |
 |---|---|---|---|
-| `limit` | u32? | Ceiling is `--mcp-max-rows` (1000 by default), and higher clamps to it. `0` returns one row. | 50 rows. |
+| `limit` | u32? | Ceiling is `--mcp-max-rows` (1000 by default), and higher clamps to it. `0` means the default. | 50 rows. |
 | `cursor` | string? | The previous response's `next_cursor`, verbatim (`<RFC 3339>\|0xSSRC@src>dst`, the shape the [`rtp_stats`](@/docs/mcp-tools-core.md#rtp-stats) sweep uses). A malformed timestamp half fails with `invalid_params`. | Starts at the earliest orphan. |
 | `max_response_bytes` | u64? | Bytes for the whole response. Ceiling is `--mcp-max-response-bytes` (1048576 unless the operator changed it). Higher clamps to it, `0` means the ceiling. Past it the page ends early at a whole row with `truncated_by: "bytes"`. | The ceiling. |
 
