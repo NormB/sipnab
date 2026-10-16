@@ -2315,6 +2315,29 @@ impl StreamStore {
         self.generation += 1;
     }
 
+    /// Reorder the streams by `key`, keeping equal keys in their current order.
+    ///
+    /// For a merged `--cores` store, whose order is the workers' rather than
+    /// the capture's (see `crate::parallel`). The SSRC and endpoint indexes
+    /// list keys in insertion order, so they are rebuilt in the new order;
+    /// the audio release cursor is a position, so it starts again at the
+    /// front.
+    pub fn sort_streams_by_key<K: Ord>(&mut self, mut key: impl FnMut(&RtpStream) -> K) {
+        self.streams.sort_by_cached_key(|_, stream| key(stream));
+        let keys: Vec<StreamKey> = self.streams.keys().cloned().collect();
+        self.ssrc_index.clear();
+        self.endpoint_index.clear();
+        for key in &keys {
+            self.ssrc_index
+                .entry(key.ssrc)
+                .or_default()
+                .push(key.clone());
+            self.index_endpoints(key);
+        }
+        self.audio_release_cursor = 0;
+        self.generation += 1;
+    }
+
     /// Register a stream key under both its src and dst endpoints (SNB-0015).
     fn index_endpoints(&mut self, key: &StreamKey) {
         let src_ep = (key.src.ip(), key.src.port());
@@ -3597,6 +3620,42 @@ a=rtpmap:96 H264/90000\r\n";
     // single-threaded result where association happens at stream creation.
     /// merge + reassociate_all links a stream whose SDP was processed on a
     /// different worker, matching the single-threaded result.
+    /// A sort reorders the streams and leaves both indexes pointing at them:
+    /// the SSRC index lists keys in the new order, and the endpoint index
+    /// still links a stream to the call whose SDP names its port.
+    #[test]
+    fn sorting_the_streams_keeps_the_ssrc_and_endpoint_indexes_whole() -> Result<(), TestError> {
+        let addr = IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)); // make_parsed src ip
+        let mut store = StreamStore::new(1000);
+        for (port, ssrc) in [(20000u16, 0xA1u32), (20002, 0xA2), (20004, 0xA3)] {
+            let parsed = make_parsed(port, 30000, 160);
+            store.process_rtp(&parsed, &make_rtp_header(ssrc, 1), ts(0));
+        }
+        // Reverse the insertion order.
+        store.sort_streams_by_key(|s| std::cmp::Reverse(s.key.ssrc));
+        let order: Vec<u32> = store.iter().map(|s| s.key.ssrc).collect();
+        assert_eq!(order, [0xA3, 0xA2, 0xA1]);
+        for ssrc in [0xA1u32, 0xA2, 0xA3] {
+            let keys = store
+                .ssrc_index
+                .get(&ssrc)
+                .ok_or("SSRC lost from the index")?;
+            assert_eq!(keys.len(), 1, "SSRC {ssrc:#x} indexed {} times", keys.len());
+            assert!(
+                store.get(&keys[0]).is_some(),
+                "SSRC {ssrc:#x} points at no stream"
+            );
+        }
+        store.link_endpoint(addr, 20002, "call-2", &[]);
+        store.reassociate_all();
+        let linked: Vec<Option<&str>> = store
+            .iter()
+            .map(|s| s.associated_dialog.as_deref())
+            .collect();
+        assert_eq!(linked, [None, Some("call-2"), None]);
+        Ok(())
+    }
+
     #[test]
     fn merge_reassociates_streams_whose_sdp_was_on_another_worker() -> Result<(), TestError> {
         let addr = IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)); // make_parsed src ip

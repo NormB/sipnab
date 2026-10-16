@@ -2697,3 +2697,140 @@ pub fn scanner_and_register_flood() -> Vec<u8> {
     }
     pcap(65535, &records)
 }
+
+// ── interleaved calls, for --cores parity ───────────────────────────
+
+/// Six calls, each on its own host pair, set up one after another and then
+/// sending RTP in rounds, so every call's media overlaps every other's.
+///
+/// `--cores N` shards packets by host pair, so the calls land on different
+/// workers. A report built from the merged stores has to list them in the
+/// order the capture shows them, as `--cores 1` does.
+pub fn interleaved_calls() -> Vec<u8> {
+    const CALLS: u8 = 6;
+    let caller = |i: u8| [192, 0, 2, 10 + i];
+    let callee = |i: u8| [198, 51, 100, 10 + i];
+    let frame = |src: [u8; 4], dst: [u8; 4], sport: u16, dport: u16, payload: &[u8]| {
+        let ip = Ip {
+            src,
+            dst,
+            tos: 0,
+            ident: 0,
+            flags: DF,
+            checksum: true,
+        };
+        ethernet(
+            doc_mac(2),
+            doc_mac(1),
+            &ipv4_udp(&ip, &udp(&ip, sport, dport, payload, true)),
+        )
+    };
+    let sdp = |addr: [u8; 4], port: u16| {
+        let a = format!("{}.{}.{}.{}", addr[0], addr[1], addr[2], addr[3]);
+        format!(
+            "v=0\r\no=- 1 1 IN IP4 {a}\r\ns=-\r\nc=IN IP4 {a}\r\nt=0 0\r\n\
+             m=audio {port} RTP/AVP 0\r\na=rtpmap:0 PCMU/8000\r\n"
+        )
+    };
+    let sip = |first: &str, i: u8, to_tag: bool, cseq: &str, body: &str| {
+        let to_tag = if to_tag { ";tag=callee" } else { "" };
+        let ct = if body.is_empty() {
+            String::new()
+        } else {
+            "Content-Type: application/sdp\r\n".to_string()
+        };
+        format!(
+            "{first}\r\n\
+             Via: SIP/2.0/UDP 192.0.2.{h}:5060;branch=z9hG4bK-call{i}-{cseq_tag}\r\n\
+             From: <sip:caller{i}@192.0.2.{h}>;tag=caller{i}\r\n\
+             To: <sip:callee{i}@198.51.100.{h}>{to_tag}\r\n\
+             Call-ID: interleaved-{i}@192.0.2.{h}\r\n\
+             CSeq: {cseq}\r\n\
+             {ct}Content-Length: {len}\r\n\r\n{body}",
+            h = 10 + i,
+            cseq_tag = cseq.replace(' ', "-"),
+            len = body.len(),
+        )
+    };
+    let mut records = Vec::new();
+    let mut at_ms: u32 = 0;
+    let push = |records: &mut Vec<Record>, at_ms: &mut u32, data: Vec<u8>| {
+        records.push(Record::whole(
+            LEGACY_EPOCH + *at_ms / 1000,
+            (*at_ms % 1000) * 1000,
+            data,
+        ));
+        *at_ms += 10;
+    };
+    for i in 0..CALLS {
+        let (a, b) = (caller(i), callee(i));
+        let rtp_a = 20_000 + 2 * u16::from(i);
+        let rtp_b = 30_000 + 2 * u16::from(i);
+        let invite = sip(
+            &format!("INVITE sip:callee{i}@198.51.100.{} SIP/2.0", 10 + i),
+            i,
+            false,
+            "1 INVITE",
+            &sdp(a, rtp_a),
+        );
+        let ok = sip("SIP/2.0 200 OK", i, true, "1 INVITE", &sdp(b, rtp_b));
+        let ack = sip(
+            &format!("ACK sip:callee{i}@198.51.100.{} SIP/2.0", 10 + i),
+            i,
+            true,
+            "1 ACK",
+            "",
+        );
+        push(
+            &mut records,
+            &mut at_ms,
+            frame(a, b, 5060, 5060, invite.as_bytes()),
+        );
+        push(
+            &mut records,
+            &mut at_ms,
+            frame(b, a, 5060, 5060, ok.as_bytes()),
+        );
+        push(
+            &mut records,
+            &mut at_ms,
+            frame(a, b, 5060, 5060, ack.as_bytes()),
+        );
+    }
+    let payload = [0xffu8; 160];
+    for seq in 0..10u16 {
+        for i in 0..CALLS {
+            let (a, b) = (caller(i), callee(i));
+            let rtp_a = 20_000 + 2 * u16::from(i);
+            let rtp_b = 30_000 + 2 * u16::from(i);
+            let ts = u32::from(seq) * 160;
+            let ssrc = 0x1000 + u32::from(i);
+            let fwd = rtp(seq == 0, 0, seq, ts, ssrc, &payload);
+            let back = rtp(seq == 0, 0, seq, ts, ssrc + 0x100, &payload);
+            push(&mut records, &mut at_ms, frame(a, b, rtp_a, rtp_b, &fwd));
+            push(&mut records, &mut at_ms, frame(b, a, rtp_b, rtp_a, &back));
+        }
+    }
+    for i in 0..CALLS {
+        let (a, b) = (caller(i), callee(i));
+        let bye = sip(
+            &format!("BYE sip:callee{i}@198.51.100.{} SIP/2.0", 10 + i),
+            i,
+            true,
+            "2 BYE",
+            "",
+        );
+        let ok = sip("SIP/2.0 200 OK", i, true, "2 BYE", "");
+        push(
+            &mut records,
+            &mut at_ms,
+            frame(a, b, 5060, 5060, bye.as_bytes()),
+        );
+        push(
+            &mut records,
+            &mut at_ms,
+            frame(b, a, 5060, 5060, ok.as_bytes()),
+        );
+    }
+    pcap(65535, &records)
+}

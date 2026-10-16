@@ -8,6 +8,14 @@ sipnab is pre-1.0: the public API and the CLI surface are not stable, and a
 breaking change may land in any release. Breaking changes are called out in the
 entry that carries them.
 
+## [Unreleased]
+
+### Fixed
+
+- **`--cores N` lists calls and RTP streams in capture order, as `--cores 1` does.**
+  - The merged report listed them in the order the workers were joined, so the same capture gave a different row order at different core counts: `--report`, `--json-dialogs`, `--analyze` and `--lint` findings all followed it.
+  - The merged stores are now sorted by where each call's and stream's first frame was read: the file's place in the `-I` set, then the frame's position in that file.
+
 ## [0.5.222] - 2026-10-15
 
 ### Added
