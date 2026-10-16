@@ -88,6 +88,8 @@ pub struct CallTreeResponse {
     pub first_activity: Option<String>,
     /// Latest leg update time in the tree, RFC 3339.
     pub last_activity: Option<String>,
+    /// Which capture this answer came from, and which revision of its stores.
+    pub capture_identity: crate::provenance::CaptureEtag,
 }
 
 /// Parameters for `validate_filter`.
@@ -123,6 +125,8 @@ pub struct ValidateFilterResponse {
     /// expression that selects nothing, and no single number distinguishes
     /// them.
     pub total_dialogs: usize,
+    /// Which capture this answer came from, and which revision of its stores.
+    pub capture_identity: crate::provenance::CaptureEtag,
 }
 
 #[tool_router(router = inspect_router, vis = "pub(crate)")]
@@ -180,7 +184,12 @@ impl SipnabMcp {
         let limit = resolve_limit_with_cap(params.limit, self.row_cap);
 
         let payload = {
+            // Capture lock first, stores second, all three held together — see
+            // `CaptureState`. The tree and the identity stamped on it must
+            // describe one capture.
+            let state = self.capture.read();
             let ds = self.dialog_store.read();
+            let ss = self.stream_store.read();
             // The one walk, shared with the REST tree route so they cannot
             // disagree about the shape of a call. This tool attaches the fenced
             // dialog projection to each leg the walk found.
@@ -212,7 +221,10 @@ impl SipnabMcp {
                     })
                 })
                 .collect();
+            let capture_identity = state.identity.etag(ds.generation(), ss.generation());
+            drop(ss);
             drop(ds);
+            drop(state);
 
             CallTreeResponse {
                 schema_version: 1,
@@ -225,6 +237,7 @@ impl SipnabMcp {
                 total_messages: tree.total_messages,
                 first_activity: tree.first_activity.map(|t| t.to_rfc3339()),
                 last_activity: tree.last_activity.map(|t| t.to_rfc3339()),
+                capture_identity,
             }
         };
 
@@ -276,23 +289,30 @@ impl SipnabMcp {
         let compiled = self.compile_filter(Some(&params.expr));
 
         let payload = match compiled {
-            Err(e) => ValidateFilterResponse {
-                schema_version: 1,
-                expr: params.expr.clone(),
-                valid: false,
-                error: Some(e.message.to_string()),
-                total_matched: None,
-                total_dialogs: self.dialog_store.read().len(),
-            },
+            Err(e) => {
+                // Counted with no expression, which is the denominator alone,
+                // so even a parse failure names the capture it was read against.
+                let count = self.count_matching_dialogs(None);
+                ValidateFilterResponse {
+                    schema_version: 1,
+                    expr: params.expr.clone(),
+                    valid: false,
+                    error: Some(e.message.to_string()),
+                    total_matched: None,
+                    total_dialogs: count.total,
+                    capture_identity: count.capture_identity,
+                }
+            }
             Ok(expr) => {
-                let (matched, total) = self.count_matching_dialogs(expr.as_ref());
+                let count = self.count_matching_dialogs(expr.as_ref());
                 ValidateFilterResponse {
                     schema_version: 1,
                     expr: params.expr.clone(),
                     valid: true,
                     error: None,
-                    total_matched: Some(matched),
-                    total_dialogs: total,
+                    total_matched: Some(count.matched),
+                    total_dialogs: count.total,
+                    capture_identity: count.capture_identity,
                 }
             }
         };
@@ -320,15 +340,24 @@ impl SipnabMcp {
     ///
     /// # Returns
     ///
-    /// `(matched, total)` over the whole store; no cursor, no truncation.
+    /// A [`FilterCount`] over the whole store; no cursor, no truncation.
     ///
     /// [`FilterExpr::matches_dialog`]: crate::sip::dsl::FilterExpr::matches_dialog
-    fn count_matching_dialogs(&self, expr: Option<&crate::sip::dsl::FilterExpr>) -> (usize, usize) {
+    fn count_matching_dialogs(&self, expr: Option<&crate::sip::dsl::FilterExpr>) -> FilterCount {
+        // Capture lock first, stores second, all three held together — see
+        // `CaptureState`. The counts and the identity stamped on them must
+        // describe one capture.
+        let state = self.capture.read();
         let ds = self.dialog_store.read();
         let ss = self.stream_store.read();
         let total = ds.len();
+        let capture_identity = state.identity.etag(ds.generation(), ss.generation());
         let Some(expr) = expr else {
-            return (total, total);
+            return FilterCount {
+                matched: total,
+                total,
+                capture_identity,
+            };
         };
 
         // Grouped once. `streams_for` walks the whole stream store per call, so
@@ -353,8 +382,22 @@ impl SipnabMcp {
                 expr.matches_dialog(d, streams, capture, delay)
             })
             .count();
-        (matched, total)
+        FilterCount {
+            matched,
+            total,
+            capture_identity,
+        }
     }
+}
+
+/// What [`SipnabMcp::count_matching_dialogs`] counted, and over which capture.
+struct FilterCount {
+    /// Dialogs the expression selects.
+    matched: usize,
+    /// Dialogs in the store.
+    total: usize,
+    /// The capture both counts were read from.
+    capture_identity: crate::provenance::CaptureEtag,
 }
 
 #[cfg(test)]

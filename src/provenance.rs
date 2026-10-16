@@ -43,7 +43,7 @@ use std::str::FromStr;
 use std::sync::OnceLock;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 /// Capture instances minted by this process, so each rotation gets a new id.
 static MINTED: AtomicU64 = AtomicU64::new(0);
@@ -250,7 +250,7 @@ pub fn run_identity() -> CaptureIdentity {
 /// different capture and every cursor, index and Call-ID from the earlier
 /// answer is meaningless; the same instance with a higher generation means the
 /// same capture grew.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "mcp", derive(rmcp::schemars::JsonSchema))]
 #[cfg_attr(feature = "mcp", schemars(crate = "rmcp::schemars"))]
 pub struct CaptureEtag {

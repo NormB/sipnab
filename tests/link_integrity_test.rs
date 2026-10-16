@@ -1481,7 +1481,11 @@ fn wiki_intra_docs_links_resolve() -> Result<(), TestError> {
     // streams").
     // 1953 -> 1954: docs/filter-dsl.md, the RTCP XR section's link to
     // "What sipnab computes the score from" in docs/mos-and-codecs.md.
-    const EXPECTED_WIKI_LINKS: usize = 1954;
+    // 1954 -> 1957: capture_identity on every MCP answer about the capture.
+    // docs/config-reference.md links mcp-estate.md for the list of answers,
+    // and the get_dialog and security_findings return tables each link
+    // capture_status.
+    const EXPECTED_WIKI_LINKS: usize = 1957;
     // Raised 459 -> 460 when SRC1 stage 1 shipped: docs/cli-reference.md's
     // `--hep-listen` row now points at cookbook recipe "Take signaling from HEP and media off the wire, in one process" in docs/examples.md
     // rather than restating how to pair `-L` with `-d`. Attributed per file

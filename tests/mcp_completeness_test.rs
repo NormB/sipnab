@@ -1359,3 +1359,34 @@ fn the_mcp_tools_page_names_exactly_the_source_independent_tools() -> Result<(),
     );
     Ok(())
 }
+
+/// Tools that read the capture and still carry no `capture_identity`, each with
+/// the reason. `capture_health`'s response is structurally free of strings, so
+/// that it cannot carry packet content, and the identity names an instance and
+/// a node.
+const WITHOUT_IDENTITY: &[(&str, &str)] = &[(
+    "capture_health",
+    "string-free by construction; see a_populated_capture_health_response_carries_no_string_value_anywhere",
+)];
+
+/// Every probed tool says WHICH capture its answer describes, so an agent can
+/// tell two answers about two different captures apart without a second call.
+#[test]
+fn every_probed_tool_names_the_capture_it_describes() -> Result<(), TestError> {
+    let mut wire = Wire::start(&sample(INTACT), &[])?;
+    wire.drain()?;
+    let call_id = wire.a_call_id()?;
+    let mut missing = Vec::new();
+    for (tool, template) in PROBES {
+        if WITHOUT_IDENTITY.iter().any(|(t, _)| t == tool) {
+            continue;
+        }
+        let args: Value = serde_json::from_str(&template.replace("{CALL}", &call_id))?;
+        let body = payload(&wire.call(tool, args)?)?;
+        if !body["capture_identity"]["instance"].is_string() {
+            missing.push(*tool);
+        }
+    }
+    assert!(missing.is_empty(), "no capture_identity on: {missing:?}");
+    Ok(())
+}

@@ -27909,7 +27909,7 @@ Packet capture defaults.
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
 | `device` | string | -- | Default network interface. `--device` overrides it |
-| `node_name` | string | hostname | Name this box reports as, in the `capture_identity.node` field of MCP answers such as `list_dialogs`, `rtp_stats` and `capture_status`, and of `GET /v1/stats`. Lets an agent querying several servers tell WHICH one saw a given fact. `--node-name` overrides it, so a deployed config can name the box while a one-off command relabels it. The default puts the hostname on the wire. Clipped to 64 characters. sipnab refuses an empty value (exit 1) |
+| `node_name` | string | hostname | Name this box reports as, in the `capture_identity.node` field of MCP answers such as `list_dialogs`, `get_dialog`, `triage_call` and `capture_status` ([MCP across an estate](mcp-estate.md) lists them), and of `GET /v1/stats`. Lets an agent querying several servers tell WHICH one saw a given fact. `--node-name` overrides it, so a deployed config can name the box while a one-off command relabels it. The default puts the hostname on the wire. Clipped to 64 characters. sipnab refuses an empty value (exit 1) |
 | `portrange` | string | `"5060-5061"` | SIP **signaling** port range; media is never gated by it. sipnab skips any SIP message with both ports outside the range, and a skipped message reaches no count, no dialog and no output — so this key decides how much of a capture you analyze at all. Widen it (`"1-65535"`) unless you know every port in play. `--portrange` overrides it |
 | `ws_ports` | string | unset: ports 80, 443, 8080 and 8443 | Ports carrying SIP-over-WebSocket ([RFC 7118](https://www.rfc-editor.org/rfc/rfc7118.html)), as one inclusive `"START-END"` range in the same grammar as `portrange`. Kamailio, OpenSIPS and Janus each default to WSS on a port outside the shipped set, and behind a reverse proxy sipnab sees whichever port the proxy forwards to; set the range to cover those ports, or sipnab does not see the WebRTC signaling leg. A range **replaces** the shipped set, exactly as `portrange` replaces the default signaling ports. sipnab counts the SIP-over-WebSocket it declines to unwrap and names the ports it arrived on. `--ws-portrange` overrides it |
 | `snaplen` | integer | `65535` | Snapshot length in bytes. sipnab refuses `0`, which keeps no byte of any packet, as `--snaplen` does. `--capture-profile` overrides it; `--snaplen` overrides it |
@@ -32828,20 +32828,28 @@ SDP. Then **nothing in the signaling proves the two legs are one call**.
   options.
 - sipnab only observes traffic and cannot add a header.
 
-**Not every response carries `capture_identity`.** `media_diagnostics`
-answers for one dialog and still carries it:
+**These answers carry `capture_identity`:** `list_dialogs`, `find_problems`,
+`search_messages`, `search_by_time`, `rtp_stats`, `aggregate_dialogs`,
+`group_dialogs`, `top_talkers`, `get_capture_report`, `capture_status`,
+`tail_dialogs`, `await_condition`, `security_findings`, `get_dialog`,
+`get_dialog_report`, `get_message`, `get_call_tree`, `get_sdp_timeline`,
+`triage_call`, `lint_dialog`, `validate_message`, `find_correlated`,
+`check_codec_negotiation`, `diagnose_registration`, `media_diagnostics`,
+`siprec_metadata`, `compare_dialogs`, `validate_filter`, `export_vcon`,
+`validate_vcon`, `generate_wireshark_filter`, `explain_attribution`,
+`reconcile_orphans` and `evaluate_expectations`. Some cases differ:
 
-| Carries `capture_identity.node` | Does not |
+| Answer | Where the identity is |
 |---|---|
-| `capture_status`, `list_dialogs`, `tail_dialogs`, `find_correlated`, `search_messages`, `search_by_time` | `get_dialog`, `get_dialog_report`, `triage_call`, `capture_health` |
-
-So call `capture_status` once per node and hold the name. Do not expect
-every answer to carry it.
+| `capture_health` | Nowhere. Its response holds no strings, so that it cannot carry packet content. |
+| `get_capture_report` with `format: "yang-json"` | In the second content block, beside the document. RFC 7951 allows no other member at the top of the document. |
+| `get_capture_report` or `get_dialog_report` with `format: "markdown"` or `"text"`, and `render_ladder` | Nowhere. These answer with text, not a JSON object. |
+| `validate_vcon` with `container` | Nowhere. A container you supply did not come from this capture. With `call_id` the answer carries it. |
 
 With three servers registered, a fact such as "answered 407" needs the node
-that reported it. Per-message answers carry a `frame` pointer instead
+that reported it. Per-message answers also carry a `frame` pointer
 (`tests/pcap-samples/sip-proxy.pcap#0@a57665bcdb62f03a`), which names the
-capture the message came from rather than the node.
+capture file the message came from rather than the node.
 
 ### Choose a correlation identifier
 
@@ -34009,8 +34017,8 @@ and what the retention caps discarded.
 `sipnab-diagnosis`, which `sipnab --print-yang-module` prints. The document is
 the first content block, and its one top-level member is
 `sipnab-diagnosis:capture-analysis`. RFC 7951 allows no other member there, so
-`source_exhausted` and `source_stopped_early` arrive in a second block instead
-of inside the document. `complete` inside the document still reads `false`
+`capture_identity`, `source_exhausted` and `source_stopped_early` arrive in a
+second block instead of inside the document. `complete` inside the document still reads `false`
 while the capture loads, as it does in `json`.
 The YANG section of [Output formats](output-formats.md) lists every difference
 between the two encodings.
@@ -34031,8 +34039,9 @@ No problems found in 1 dialog(s) and 0 stream(s) across 7 frame(s). Every frame 
 
 **`json` is the default and returns an OBJECT**, serialized from the analysis
 itself — `schema_version`, `findings`, `dialogs_examined`, `streams_examined`,
-`frames_read` and `complete`. It is the object `--json-analyze` prints and
-`GET /v1/report` answers, described by
+`frames_read` and `complete` — plus `capture_identity`, which names the capture
+the analysis came from. Apart from `capture_identity` it is the object
+`--json-analyze` prints and `GET /v1/report` answers, described by
 [`tests/schemas/capture_analysis.schema.json`](https://github.com/NormB/sipnab/blob/main/tests/schemas/capture_analysis.schema.json).
 It never carries `filter`, because this tool analyzes every dialog in the
 store.
@@ -34482,6 +34491,8 @@ returned by [`list_dialogs`](#list_dialogs). An unknown one fails with
     "protocol": "Q.850",
     "source_header": "Reason"
   },
+  "capture_identity": { "node": "capture-01", "instance": "cc2cb18df0ea68adfb9c9-2",
+                        "dialog_generation": 13, "stream_generation": 2 },
   "source_exhausted": true,
   "source_stopped_early": false
 }
@@ -34548,6 +34559,7 @@ Paginated dialog with full SIP messages.
 | `next_cursor` | string? | Pass back to continue. `null` on the final page. |
 | `complete` | bool | `true` when this page reaches the end of the dialog. Never `true` over a partial read of the capture. |
 | `schema_version` | u32 | `2` for this shape. |
+| `capture_identity` | object | Which capture answered — see [`capture_status`](#capture_status). |
 
 Every `messages` row carries `call_id`, `is_request`, `cseq` (`method` and
 `number`), `from`, `to`, `src`, `src_port`, `dst`, `dst_port`, `transport`,
@@ -34592,6 +34604,8 @@ The example runs against [`tests/pcap-samples/sip-rtp-g711.pcap`](https://github
   "truncated": true,
   "truncated_by": "rows",
   "next_cursor": "2016-11-26T14:52:59.666393Z|1-1966@10.0.2.20#0000000000",
+  "capture_identity": { "node": "capture-01", "instance": "cc2cb18df0ea68adfb9c9-2",
+                        "dialog_generation": 13, "stream_generation": 2 },
   "dialog": {
     "call_id": "1-1966@10.0.2.20",
     "state": "Completed",
@@ -35294,6 +35308,8 @@ error only for an internal failure.
   "error": "invalid filter 'state = Failed': unexpected input at position 6: '='\n  state = Failed\n        ^\nvalid operators: ==, !=, <, <=, >, >=, =~ (regex)\nsee docs/filter-dsl.md for fields, values, and diagnostic aliases",
   "total_matched": null,
   "total_dialogs": 2,
+  "capture_identity": { "node": "capture-01", "instance": "cc2cb18df0ea68adfb9c9-2",
+                        "dialog_generation": 13, "stream_generation": 2 },
   "source_exhausted": true,
   "source_stopped_early": false
 }
@@ -35313,6 +35329,8 @@ cursor and no truncation. The example runs against
   "error": null,
   "total_matched": 1,
   "total_dialogs": 2,
+  "capture_identity": { "node": "capture-01", "instance": "cc2cb18df0ea68adfb9c9-2",
+                        "dialog_generation": 13, "stream_generation": 2 },
   "source_exhausted": true,
   "source_stopped_early": false
 }
@@ -35670,7 +35688,9 @@ its first three keys:
   "heuristic_edges": 0,
   "total_messages": 10,
   "first_activity": "2016-11-26T14:52:59.666393+00:00",
-  "last_activity": "2016-11-26T14:53:08.290927+00:00"
+  "last_activity": "2016-11-26T14:53:08.290927+00:00",
+  "capture_identity": { "node": "capture-01", "instance": "cc2cb18df0ea68adfb9c9-2",
+                        "dialog_generation": 13, "stream_generation": 2 }
 }
 ```
 
@@ -35723,7 +35743,9 @@ you are not diffing two objects by eye. The example compares the two calls in
          "msg_count": 6, "methods": ["ACK", "BYE", "INVITE"], "hints": [] },
   "b": { "call_id": "1-1968@10.0.2.20", "state": "InCall", "final_status_code": 200,
          "msg_count": 4, "methods": ["ACK", "INVITE"], "hints": [] },
-  "differences": ["state", "msg_count", "methods"]
+  "differences": ["state", "msg_count", "methods"],
+  "capture_identity": { "node": "capture-01", "instance": "cc2cb18df0ea68adfb9c9-2",
+                        "dialog_generation": 13, "stream_generation": 2 }
 }
 ```
 
@@ -35752,7 +35774,7 @@ the provenance note as a second content block. The two rendered formats also
 carry the `INCOMPLETE RUN` block described under
 [`get_capture_report`](mcp-tools-core.md#get_capture_report) when the capture was not read in
 full. `"json"` carries `source_exhausted` and `source_stopped_early` as fields
-instead.
+instead, and `capture_identity`, which names the capture the report came from.
 
 The example runs against [`tests/pcap-samples/sip-rtp-g711.pcap`](https://github.com/NormB/sipnab/raw/main/tests/pcap-samples/sip-rtp-g711.pcap):
 
@@ -35797,6 +35819,8 @@ The example runs against [`tests/pcap-samples/sip-rtp-g711.pcap`](https://github
   },
   "sdp_timeline": [ /* the same rows get_sdp_timeline returns */ ],
   "streams": [ /* the same rows rtp_stats returns, without mos */ ],
+  "capture_identity": { "node": "capture-01", "instance": "cc2cb18df0ea68adfb9c9-2",
+                        "dialog_generation": 13, "stream_generation": 2 },
   "source_exhausted": true,
   "source_stopped_early": false
 }
@@ -35871,6 +35895,8 @@ the next call.
     "⟦untrusted-capture-data⟧Content-Type: application/sdp⟦/untrusted-capture-data⟧",
     "⟦untrusted-capture-data⟧Content-Length: 123⟦/untrusted-capture-data⟧"
   ],
+  "capture_identity": { "node": "capture-01", "instance": "cc2cb18df0ea68adfb9c9-2",
+                        "dialog_generation": 13, "stream_generation": 2 },
   "source_exhausted": true,
   "source_stopped_early": false
 }
@@ -35996,6 +36022,8 @@ with an empty `exchanges` array rather than an error.
 // get_sdp_timeline { "call_id": "1-1966@10.0.2.20" }
 {
   "call_id": "1-1966@10.0.2.20",
+  "capture_identity": { "node": "capture-01", "instance": "cc2cb18df0ea68adfb9c9-2",
+                        "dialog_generation": 13, "stream_generation": 2 },
   "exchanges": [
     {
       "codecs": [
@@ -36039,8 +36067,8 @@ codec it accepts.
 optional parameters.
 
 Returns `offered`, `answered`, `common`, `result`, `sdp_exchange_count`,
-`final_status_code`, `call_id`, `source_exhausted`, `source_stopped_early`
-and `schema_version`. Each codec name in `offered`, `answered` and `common`
+`final_status_code`, `call_id`, `capture_identity`, `source_exhausted`,
+`source_stopped_early` and `schema_version`. Each codec name in `offered`, `answered` and `common`
 arrives fenced, because the sender wrote it in the SDP.
 
 ```jsonc
@@ -36055,6 +36083,8 @@ arrives fenced, because the sender wrote it in the SDP.
   "result": "ok",
   "final_status_code": 200,
   "sdp_exchange_count": 2,
+  "capture_identity": { "node": "capture-01", "instance": "cc2cb18df0ea68adfb9c9-2",
+                        "dialog_generation": 13, "stream_generation": 2 },
   "source_exhausted": true,
   "source_stopped_early": false
 }
@@ -36161,6 +36191,8 @@ packets in one:
   "findings_withheld": { "suppressed": 0, "below_severity": 0, "capped": 0 },
   "suppressions": { "file": null, "patterns": [], "findings_suppressed": 0 },
   "rule_catalog": "docs/sip-lint-rules.md",
+  "capture_identity": { "node": "capture-01", "instance": "cc2e118df0ea7891c207f-2",
+                        "dialog_generation": 64, "stream_generation": 2 },
   "source_exhausted": true,
   "source_stopped_early": false
 }
@@ -36278,6 +36310,8 @@ message runs, and the response reports the rest under `rules_not_evaluated`.
       "rule_ids": ["OBS-5761-5.1.1-RTCP-MUX-UNANSWERED"] }
   ],
   "rule_catalog": "docs/sip-lint-rules.md",
+  "capture_identity": { "node": "capture-01", "instance": "cc30318df0ea8053c6910-2",
+                        "dialog_generation": 14, "stream_generation": 0 },
   "source_exhausted": true,
   "source_stopped_early": false
 }
@@ -36488,6 +36522,8 @@ it to hand a call to someone who reads the capture in Wireshark.
   "notes": [
     "rtp.ssrc matches only once Wireshark is decoding those packets as RTP. Enable 'Try to decode RTP outside of conversations', or use Decode As on the media ports, if the SSRC terms select nothing."
   ],
+  "capture_identity": { "node": "capture-01", "instance": "cc2cb18df0ea68adfb9c9-2",
+                        "dialog_generation": 13, "stream_generation": 2 },
   "source_exhausted": true,
   "source_stopped_early": false
 }
@@ -37885,6 +37921,8 @@ the source flags — no `hints`, no `registration_failure`:
   "call_id": "1-1966@10.0.2.20",
   "applicable": false,
   "reason": "this dialog carries no REGISTER request",
+  "capture_identity": { "node": "capture-01", "instance": "cc2cb18df0ea68adfb9c9-2",
+                        "dialog_generation": 13, "stream_generation": 2 },
   "source_exhausted": true,
   "source_stopped_early": false
 }
@@ -37922,6 +37960,8 @@ against
     "Call failed: 403 Forbidden.",
     "Registration rejected: 403 Forbidden. The endpoint answered an authentication challenge and the registrar refused the credentials it offered, so the fault is in the account, its password or its permission to register — none of which is a reachability problem."
   ],
+  "capture_identity": { "node": "capture-01", "instance": "cc2d618df0ea70d0788a2-2",
+                        "dialog_generation": 8, "stream_generation": 0 },
   "source_exhausted": true,
   "source_stopped_early": false
 }
@@ -38112,6 +38152,7 @@ entries by default.
 | `note` | string? | Present **only** when no detector runs, saying so in words. |
 | `observation_gaps` | object[] | What an armed detector says it **cannot establish** from this capture: `{ rule_name, reason, seen, unestablished, detail }`, narrowed by `kinds`. Always present, empty when there is nothing to say. See below. |
 | `schema_version` | u32 | `1` for this shape. |
+| `capture_identity` | object | Which capture answered — see [`capture_status`](mcp-tools-core.md#capture_status). |
 
 > **Read `armed_kinds` before you read `findings`.** An empty findings list
 > means "nothing tripped" only on a server that armed something. On any other
@@ -38159,6 +38200,8 @@ on a server started with `--digest-leak`:
   "armed_kinds": ["digest"],
   "detection_armed": true,
   "observation_gaps": [],
+  "capture_identity": { "node": "capture-01", "instance": "cc2d618df0ea70d0788a2-2",
+                        "dialog_generation": 8, "stream_generation": 0 },
   "source_exhausted": true,
   "source_stopped_early": false
 }
@@ -40256,7 +40299,10 @@ Give one, never both.
 
 Each finding names the JSON Pointer of the offending value
 (`instance_path`), the schema keyword that refused it (`keyword`) and what was
-wrong (`detail`). The response is `schema_version` 2. An empty Dialog Object
+wrong (`detail`). The response is `schema_version` 2. With `call_id` it also
+carries `capture_identity`, naming the capture the container was exported
+from. With `container` it does not, because that container did not come from
+this capture. An empty Dialog Object
 `{}` is an ordinary error:
 [section 4.3 of core-04](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-04#section-4.3)
 requires a placeholder that names its type.
@@ -40270,6 +40316,8 @@ requires a placeholder that names its type.
   "schema_id": "https://ietf.org/vcon/schemas/unsigned-vcon.json",
   "errors": [],
   "call_id": "1-1966@10.0.2.20",
+  "capture_identity": { "node": "capture-01", "instance": "cc2cb18df0ea68adfb9c9-2",
+                        "dialog_generation": 13, "stream_generation": 2 },
   "source_exhausted": true,
   "source_stopped_early": false
 }

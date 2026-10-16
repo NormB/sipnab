@@ -440,12 +440,13 @@ impl SipnabMcp {
     ) -> Result<CallToolResult, rmcp::ErrorData> {
         let include_media = params.include_media.unwrap_or(true);
 
-        let (ssrcs, source) = {
+        let (ssrcs, source, capture_identity) = {
             // Capture lock first, then the stores — see `CaptureState`. The
             // source name is part of the answer (it becomes `tshark -r`), so it
             // must describe the same capture the SSRCs came from.
             let state = self.capture.read();
             let ds = self.dialog_store.read();
+            let ss = self.stream_store.read();
             ds.get(&params.call_id).ok_or_else(|| {
                 errors::refuse_param(
                     Reason::NotFound,
@@ -453,7 +454,6 @@ impl SipnabMcp {
                     format!("call_id '{}' not found", params.call_id),
                 )
             })?;
-            let ss = self.stream_store.read();
             let ssrcs: Vec<u32> = if include_media {
                 let mut v: Vec<u32> = ss
                     .streams_for(&params.call_id)
@@ -470,10 +470,11 @@ impl SipnabMcp {
                 .as_ref()
                 .filter(|c| !c.live)
                 .map(|c| c.name.clone());
+            let capture_identity = state.identity.etag(ds.generation(), ss.generation());
             drop(ss);
             drop(ds);
             drop(state);
-            (ssrcs, source)
+            (ssrcs, source, capture_identity)
         };
 
         let mut filter = format!(
@@ -514,6 +515,7 @@ impl SipnabMcp {
                 ),
                 "streams_included": ssrcs.len(),
                 "notes": notes,
+                "capture_identity": capture_identity,
             }),
         )?]))
     }

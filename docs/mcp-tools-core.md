@@ -263,8 +263,8 @@ and what the retention caps discarded.
 `sipnab-diagnosis`, which `sipnab --print-yang-module` prints. The document is
 the first content block, and its one top-level member is
 `sipnab-diagnosis:capture-analysis`. RFC 7951 allows no other member there, so
-`source_exhausted` and `source_stopped_early` arrive in a second block instead
-of inside the document. `complete` inside the document still reads `false`
+`capture_identity`, `source_exhausted` and `source_stopped_early` arrive in a
+second block instead of inside the document. `complete` inside the document still reads `false`
 while the capture loads, as it does in `json`.
 The YANG section of [Output formats](output-formats.md) lists every difference
 between the two encodings.
@@ -285,8 +285,9 @@ No problems found in 1 dialog(s) and 0 stream(s) across 7 frame(s). Every frame 
 
 **`json` is the default and returns an OBJECT**, serialized from the analysis
 itself — `schema_version`, `findings`, `dialogs_examined`, `streams_examined`,
-`frames_read` and `complete`. It is the object `--json-analyze` prints and
-`GET /v1/report` answers, described by
+`frames_read` and `complete` — plus `capture_identity`, which names the capture
+the analysis came from. Apart from `capture_identity` it is the object
+`--json-analyze` prints and `GET /v1/report` answers, described by
 [`tests/schemas/capture_analysis.schema.json`](https://github.com/NormB/sipnab/blob/main/tests/schemas/capture_analysis.schema.json).
 It never carries `filter`, because this tool analyzes every dialog in the
 store.
@@ -736,6 +737,8 @@ returned by [`list_dialogs`](#list_dialogs). An unknown one fails with
     "protocol": "Q.850",
     "source_header": "Reason"
   },
+  "capture_identity": { "node": "capture-01", "instance": "cc2cb18df0ea68adfb9c9-2",
+                        "dialog_generation": 13, "stream_generation": 2 },
   "source_exhausted": true,
   "source_stopped_early": false
 }
@@ -802,6 +805,7 @@ Paginated dialog with full SIP messages.
 | `next_cursor` | string? | Pass back to continue. `null` on the final page. |
 | `complete` | bool | `true` when this page reaches the end of the dialog. Never `true` over a partial read of the capture. |
 | `schema_version` | u32 | `2` for this shape. |
+| `capture_identity` | object | Which capture answered — see [`capture_status`](#capture_status). |
 
 Every `messages` row carries `call_id`, `is_request`, `cseq` (`method` and
 `number`), `from`, `to`, `src`, `src_port`, `dst`, `dst_port`, `transport`,
@@ -846,6 +850,8 @@ The example runs against [`tests/pcap-samples/sip-rtp-g711.pcap`](https://github
   "truncated": true,
   "truncated_by": "rows",
   "next_cursor": "2016-11-26T14:52:59.666393Z|1-1966@10.0.2.20#0000000000",
+  "capture_identity": { "node": "capture-01", "instance": "cc2cb18df0ea68adfb9c9-2",
+                        "dialog_generation": 13, "stream_generation": 2 },
   "dialog": {
     "call_id": "1-1966@10.0.2.20",
     "state": "Completed",

@@ -342,6 +342,8 @@ error only for an internal failure.
   "error": "invalid filter 'state = Failed': unexpected input at position 6: '='\n  state = Failed\n        ^\nvalid operators: ==, !=, <, <=, >, >=, =~ (regex)\nsee docs/filter-dsl.md for fields, values, and diagnostic aliases",
   "total_matched": null,
   "total_dialogs": 2,
+  "capture_identity": { "node": "capture-01", "instance": "cc2cb18df0ea68adfb9c9-2",
+                        "dialog_generation": 13, "stream_generation": 2 },
   "source_exhausted": true,
   "source_stopped_early": false
 }
@@ -361,6 +363,8 @@ cursor and no truncation. The example runs against
   "error": null,
   "total_matched": 1,
   "total_dialogs": 2,
+  "capture_identity": { "node": "capture-01", "instance": "cc2cb18df0ea68adfb9c9-2",
+                        "dialog_generation": 13, "stream_generation": 2 },
   "source_exhausted": true,
   "source_stopped_early": false
 }
@@ -718,7 +722,9 @@ its first three keys:
   "heuristic_edges": 0,
   "total_messages": 10,
   "first_activity": "2016-11-26T14:52:59.666393+00:00",
-  "last_activity": "2016-11-26T14:53:08.290927+00:00"
+  "last_activity": "2016-11-26T14:53:08.290927+00:00",
+  "capture_identity": { "node": "capture-01", "instance": "cc2cb18df0ea68adfb9c9-2",
+                        "dialog_generation": 13, "stream_generation": 2 }
 }
 ```
 
@@ -771,7 +777,9 @@ you are not diffing two objects by eye. The example compares the two calls in
          "msg_count": 6, "methods": ["ACK", "BYE", "INVITE"], "hints": [] },
   "b": { "call_id": "1-1968@10.0.2.20", "state": "InCall", "final_status_code": 200,
          "msg_count": 4, "methods": ["ACK", "INVITE"], "hints": [] },
-  "differences": ["state", "msg_count", "methods"]
+  "differences": ["state", "msg_count", "methods"],
+  "capture_identity": { "node": "capture-01", "instance": "cc2cb18df0ea68adfb9c9-2",
+                        "dialog_generation": 13, "stream_generation": 2 }
 }
 ```
 
@@ -800,7 +808,7 @@ the provenance note as a second content block. The two rendered formats also
 carry the `INCOMPLETE RUN` block described under
 [`get_capture_report`](mcp-tools-core.md#get_capture_report) when the capture was not read in
 full. `"json"` carries `source_exhausted` and `source_stopped_early` as fields
-instead.
+instead, and `capture_identity`, which names the capture the report came from.
 
 The example runs against [`tests/pcap-samples/sip-rtp-g711.pcap`](https://github.com/NormB/sipnab/raw/main/tests/pcap-samples/sip-rtp-g711.pcap):
 
@@ -845,6 +853,8 @@ The example runs against [`tests/pcap-samples/sip-rtp-g711.pcap`](https://github
   },
   "sdp_timeline": [ /* the same rows get_sdp_timeline returns */ ],
   "streams": [ /* the same rows rtp_stats returns, without mos */ ],
+  "capture_identity": { "node": "capture-01", "instance": "cc2cb18df0ea68adfb9c9-2",
+                        "dialog_generation": 13, "stream_generation": 2 },
   "source_exhausted": true,
   "source_stopped_early": false
 }
@@ -919,6 +929,8 @@ the next call.
     "⟦untrusted-capture-data⟧Content-Type: application/sdp⟦/untrusted-capture-data⟧",
     "⟦untrusted-capture-data⟧Content-Length: 123⟦/untrusted-capture-data⟧"
   ],
+  "capture_identity": { "node": "capture-01", "instance": "cc2cb18df0ea68adfb9c9-2",
+                        "dialog_generation": 13, "stream_generation": 2 },
   "source_exhausted": true,
   "source_stopped_early": false
 }
@@ -1044,6 +1056,8 @@ with an empty `exchanges` array rather than an error.
 // get_sdp_timeline { "call_id": "1-1966@10.0.2.20" }
 {
   "call_id": "1-1966@10.0.2.20",
+  "capture_identity": { "node": "capture-01", "instance": "cc2cb18df0ea68adfb9c9-2",
+                        "dialog_generation": 13, "stream_generation": 2 },
   "exchanges": [
     {
       "codecs": [
@@ -1087,8 +1101,8 @@ codec it accepts.
 optional parameters.
 
 Returns `offered`, `answered`, `common`, `result`, `sdp_exchange_count`,
-`final_status_code`, `call_id`, `source_exhausted`, `source_stopped_early`
-and `schema_version`. Each codec name in `offered`, `answered` and `common`
+`final_status_code`, `call_id`, `capture_identity`, `source_exhausted`,
+`source_stopped_early` and `schema_version`. Each codec name in `offered`, `answered` and `common`
 arrives fenced, because the sender wrote it in the SDP.
 
 ```jsonc
@@ -1103,6 +1117,8 @@ arrives fenced, because the sender wrote it in the SDP.
   "result": "ok",
   "final_status_code": 200,
   "sdp_exchange_count": 2,
+  "capture_identity": { "node": "capture-01", "instance": "cc2cb18df0ea68adfb9c9-2",
+                        "dialog_generation": 13, "stream_generation": 2 },
   "source_exhausted": true,
   "source_stopped_early": false
 }
@@ -1209,6 +1225,8 @@ packets in one:
   "findings_withheld": { "suppressed": 0, "below_severity": 0, "capped": 0 },
   "suppressions": { "file": null, "patterns": [], "findings_suppressed": 0 },
   "rule_catalog": "docs/sip-lint-rules.md",
+  "capture_identity": { "node": "capture-01", "instance": "cc2e118df0ea7891c207f-2",
+                        "dialog_generation": 64, "stream_generation": 2 },
   "source_exhausted": true,
   "source_stopped_early": false
 }
@@ -1326,6 +1344,8 @@ message runs, and the response reports the rest under `rules_not_evaluated`.
       "rule_ids": ["OBS-5761-5.1.1-RTCP-MUX-UNANSWERED"] }
   ],
   "rule_catalog": "docs/sip-lint-rules.md",
+  "capture_identity": { "node": "capture-01", "instance": "cc30318df0ea8053c6910-2",
+                        "dialog_generation": 14, "stream_generation": 0 },
   "source_exhausted": true,
   "source_stopped_early": false
 }
@@ -1536,6 +1556,8 @@ it to hand a call to someone who reads the capture in Wireshark.
   "notes": [
     "rtp.ssrc matches only once Wireshark is decoding those packets as RTP. Enable 'Try to decode RTP outside of conversations', or use Decode As on the media ports, if the SSRC terms select nothing."
   ],
+  "capture_identity": { "node": "capture-01", "instance": "cc2cb18df0ea68adfb9c9-2",
+                        "dialog_generation": 13, "stream_generation": 2 },
   "source_exhausted": true,
   "source_stopped_early": false
 }
