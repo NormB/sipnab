@@ -102,7 +102,9 @@ pub struct DialogSummary {
     pub input_origin: Option<String>,
     /// The labels `--tag` gave this run's dialogs, as `--json-dialogs`
     /// carries them. Omitted, never empty, when the run set none.
-    #[serde(skip_serializing_if = "Vec::is_empty")]
+    /// `default` keeps it out of the derived schema's `required`, as the
+    /// serializer leaves it out when empty.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub tags: Vec<String>,
 }
 
