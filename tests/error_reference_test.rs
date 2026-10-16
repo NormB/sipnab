@@ -786,7 +786,9 @@ const EXPECTED_UNRESOLVED: usize = 83;
 // Nothing removed.
 // 501 -> 500: the build without an HTTPS client is gone: every build with
 // `g729` downloads with the shared client in src/app/https_client.rs.
-const EXPECTED_TEMPLATES: usize = 500;
+// 500 -> 501: src/cli.rs, `--lint-fail-on` refuses a severity it does not
+// know instead of reading it as no threshold. Nothing removed.
+const EXPECTED_TEMPLATES: usize = 501;
 
 // ---------------------------------------------------------------------------
 // The page gates

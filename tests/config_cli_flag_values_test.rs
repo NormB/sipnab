@@ -702,8 +702,8 @@ static SPECS: &[Spec] = &[
     (
         "lint-fail-on",
         Kind::Text {
-            accept: &["x", "", " ", "0"],
-            reject: &[],
+            accept: &["info", "notice", "warning", "warn", "error", "ERROR"],
+            reject: &[("x", 2), ("", 2), (" ", 2), ("0", 2)],
         },
         &["--lint"],
     ),

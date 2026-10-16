@@ -381,8 +381,12 @@ sipnab asks at two moments and no others:
 - once at startup, before the capture opens,
 - again when a stream turns up that nothing else explains.
 
-There is no interval flag because there is no timer. A tool that talks to a
-production relay on a schedule is a service, and this is a diagnostic.
+Nothing else polls the relay unless you ask. To have sipnab poll the relay's
+statistics on a timer for as long as the capture runs, name the interval:
+
+```bash
+sudo sipnab -N -d eth0 --rtpengine-control 127.0.0.1:22222 --relay-stats-interval 30
+```
 
 ### What you see when it works
 

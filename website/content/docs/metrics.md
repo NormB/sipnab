@@ -127,13 +127,13 @@ Metric names emitted by [`src/output/prometheus.rs`](https://github.com/NormB/si
 
 | Metric | Type | Notes |
 |---|---|---|
-| `sipnab_dialogs_total{state}` | counter | Tracked dialogs grouped by `DialogState` (`Trying`, `Ringing`, `InCall`, `Completed`, `Canceled`, `Failed`, `Redirected`, `Registered`, `Expired`, `Pending`, `Active`, `Terminated`, `Transferring`). The `--api` server emits state values lowercased; the standalone `--metrics` server emits them as-cased — pick the right form for your queries. |
-| `sipnab_dialogs_active` | gauge | Dialogs in one of six active states: `Trying`, `Ringing`, `InCall`, `Transferring`, `Pending`, `Active`. Two of those six are SUBSCRIBE dialogs carrying no media, so **this is not a count of calls** — a box serving presence traffic reports a non-zero value here with nothing on the phone. Graph it to see load on the dialog store, and alert on `sipnab_calls_active` instead. **Only the standalone `--metrics` server counts it** — see [Which server fills which series](#which-server-fills-which-series). |
-| `sipnab_calls_active` | gauge | Calls that are up right now: dialogs in `InCall`, and nothing else. A dialog enters `InCall` on the 200 OK to its INVITE and leaves on the BYE, so this is the concurrent-call figure — channels in use, and the number to compare against a carrier's simultaneous-call limit. By construction never greater than `sipnab_dialogs_active`, and the gap is calls still in setup plus subscriptions. **Only the standalone `--metrics` server counts it**, so an alert rule aimed at an `--api` scrape target reads a flat `0` and never fires. |
+| `sipnab_dialogs_total{state}` | counter | Tracked dialogs grouped by `DialogState` (`Trying`, `Ringing`, `InCall`, `Completed`, `Canceled`, `Failed`, `Redirected`, `Registered`, `Expired`, `Pending`, `Active`, `Terminated`, `Transferring`). State values are lowercase: `state="completed"`. |
+| `sipnab_dialogs_active` | gauge | Dialogs in one of six active states: `Trying`, `Ringing`, `InCall`, `Transferring`, `Pending`, `Active`. Two of those six are SUBSCRIBE dialogs carrying no media, so **this is not a count of calls** — a box serving presence traffic reports a non-zero value here with nothing on the phone. Graph it to see load on the dialog store, and alert on `sipnab_calls_active` instead. |
+| `sipnab_calls_active` | gauge | Calls that are up right now: dialogs in `InCall`, and nothing else. A dialog enters `InCall` on the 200 OK to its INVITE and leaves on the BYE, so this is the concurrent-call figure — channels in use, and the number to compare against a carrier's simultaneous-call limit. By construction never greater than `sipnab_dialogs_active`, and the gap is calls still in setup plus subscriptions. |
 | `sipnab_messages_total{method}` | counter | SIP messages by method (`INVITE`, `REGISTER`, …). |
 | `sipnab_responses_total{code}` | counter | SIP responses in the tracked dialogs, grouped by class: `1xx`, `2xx`, `3xx`, `4xx`, `5xx`, `6xx`. Every class appears on every scrape, at `0` where the capture saw none, so a rule watching for the first `5xx` reads zero instead of no-data. |
-| `sipnab_rtp_streams_active` | gauge | The two servers count different things under this one name. The `--api` server counts streams a dialog claims, however long ago the last packet arrived; the standalone `--metrics` server counts streams whose last packet arrived within the previous 30 seconds, whatever their dialog association. A call whose media died five minutes ago is still counted by `--api` and is not counted by `--metrics` — an alert threshold tuned on one scrape target does not carry over to the other. |
-| `sipnab_rtp_streams_total{status}` | counter | RTP streams by status: `orphaned` when no dialog claims the stream, `established` when one does. The stream's dialog association decides the label on every scrape, with no age threshold in front of it, so a stream unclaimed for two seconds counts as `orphaned` exactly as one unclaimed for an hour does. `--api` only. The standalone `--metrics` server never populates the map, and an empty family drops out rather than reporting zero, so on `--metrics` the series does not exist at all — a panel built on it stays permanently blank. |
+| `sipnab_rtp_streams_active` | gauge | RTP streams a dialog claims, however long ago their last packet arrived: the same population as `sipnab_rtp_streams_total{status="established"}`. A call whose media stopped five minutes ago still counts until sipnab drops its dialog. |
+| `sipnab_rtp_streams_total{status}` | counter | RTP streams by status: `orphaned` when no dialog claims the stream, `established` when one does. The stream's dialog association decides the label on every scrape, with no age threshold in front of it, so a stream unclaimed for two seconds counts as `orphaned` exactly as one unclaimed for an hour does. |
 | `sipnab_kill_responses_sent_total{mode}` | counter | Scanner-kill responses sent, by source mode: `raw` (source-spoofed via a raw socket) or `ephemeral` (sipnab's own port). Alert on unexpected `ephemeral` to catch a silent spoof fallback. |
 | `sipnab_capture_packets_total` | counter | Packets the capture handed to the processing pipeline since the process started. Counted before parsing, so a frame sipnab cannot parse still counts — it arrived. **This series says nothing about whether sipnab understood any of it**; a capture on a link type with no decoder climbs this counter exactly like a clean one. Pair it with `sipnab_capture_undecoded_fraction` before reading any zero elsewhere in the scrape as a finding. One process-wide total covering every input (`-I` files, live devices, HEP) and every worker of the parallel pipeline, identical on both servers. A line that stops climbing means packets stopped arriving. |
 | `sipnab_reassembly_timeouts_total` | counter | IP fragments whose datagram never completed, plus TCP streams that went idle, dropped once older than the 30-second reassembly TTL. Capacity evictions stay out of this number: those say the entry cap is too small, not that a peer stopped sending. |
@@ -148,8 +148,8 @@ Metric names emitted by [`src/output/prometheus.rs`](https://github.com/NormB/si
 | `sipnab_nat_ice_role_conflicts` | gauge | Candidate pairs where both ICE agents claimed the same role, or where one answered `487 Role Conflict` ([RFC 8445 section 7.3.1.1](https://www.rfc-editor.org/rfc/rfc8445.html#section-7.3.1.1)). The third capture-quality series about the NETWORK rather than about the capture. ICE resolves this itself — the losing agent switches role and repeats every check it had already sent — so a single conflict is not always fatal, which is exactly why it belongs on a dashboard rather than only in an alert: a fleet where it happens constantly is misconfigured whether or not any individual call survived it. Where no pair between the two was ever nominated, the conflict is a candidate cause of media that never started. The usual source is two endpoints configured with the same role, or a B2BUA relaying one side's role attribute to the other. A gauge because a later nomination on the same pair unsays the severity of it. |
 | `sipnab_capture_undecoded_fraction` | gauge | Share of captured frames sipnab could not decode, `0`–`1`, emitted on **every** scrape including clean ones. This is the series that separates "this capture holds no SIP" from "sipnab could not read this capture" — both of which otherwise show `sipnab_messages_total` at zero and look identical. At `1` nothing in the rest of the scrape describes traffic sipnab read. A non-zero but small value is normal: ARP and other non-IP background is undecodable by definition on any Ethernet link, which is exactly why this is a proportion and not a flag. |
 | `sipnab_capture_quality_degraded` | gauge | `1` when any of the three *loss* counters above exceeds zero, `0` otherwise. Undecodable frames are deliberately **not** folded in: ARP makes them non-zero on nearly every capture, so a flag including them would always be `1` and carry no information — use `sipnab_capture_undecoded_fraction` with a threshold instead. The one series to put on a dashboard or an alert rule to know whether the rest of the scrape describes the whole capture. `0` means nothing **surfaced** as wrong, not that the capture provably saw every packet: loss upstream of the capture point — an oversubscribed SPAN port, a tap mirroring one direction, a filter that excluded the traffic — is invisible to all three counters. |
-| `sipnab_capture_queue_depth_packets` | gauge | Packets currently queued between the capture reader and the processing thread (standalone `--metrics` server). |
-| `sipnab_capture_backpressure_blocks_total` | counter | Times the capture reader blocked on a full queue (standalone `--metrics` server). |
+| `sipnab_capture_queue_depth_packets` | gauge | Packets currently queued between the capture reader and the processing thread. |
+| `sipnab_capture_backpressure_blocks_total` | counter | Times the capture reader blocked on a full queue. |
 | `sipnab_capture_sources` | gauge | Capture sources held in the source table: input files, the device, HEP senders, traced processes. Both servers fill it. |
 | `sipnab_capture_sources_max` | gauge | The source table's limit, `[limits] max_capture_sources` / `--max-capture-sources`. |
 | `sipnab_capture_sources_refused_total` | counter | Packets whose new capture source the full table refused. They are still analyzed, but carry no `frame` pointer for `--show-frame`. Nonzero means raise `max_capture_sources`. |
@@ -163,10 +163,10 @@ Metric names emitted by [`src/output/prometheus.rs`](https://github.com/NormB/si
 | `sipnab_mcp_tool_calls_total{tool,outcome}` | counter | MCP tool calls, by the tool asked for and how the call ended: `ok`, `tool_error` (the tool answered and said the answer is an error), or `refused` (the rate limit, the concurrency cap, a scope check, unknown arguments, or a name no tool answers to). The name comes from the CLIENT, so a name no tool answers to still counts — probing is what this series is for — and sipnab caps the distinct names at 256 (`MAX_TOOLS`), well above the tool surface, folding everything past the cap into `tool="other"` so a peer looping over invented names cannot grow the series set. Absent until the first tool call, like `sipnab_security_alerts_total`. sipnab counts at the same point it writes the `mcp_audit` log line, so the two always agree. |
 | `sipnab_mcp_tool_duration_seconds{tool}` | histogram | How long each MCP tool takes to answer, in seconds, from the same instant the audit line's `elapsed_ms` measures. Fixed boundaries at 1/5/10/25/50/100/250/500ms and 1/2.5/5/10s — unlike the four capture histograms these have no operator threshold to derive from, because they measure sipnab answering rather than the calls it observed. Emits `_bucket{tool,le}`, `_count{tool}`, `_sum{tool}`. |
 | `sipnab_mcp_tool_response_bytes_total{tool}` | counter | Text content bytes each MCP tool has returned. The payload an agent reads, not the framed wire size: the JSON-RPC envelope and its escaping are outside this figure. Divide by `sipnab_mcp_tool_duration_seconds_count{tool}` for the average answer size, which is the number to look at when a client's context window is the constraint — see `--mcp-max-rows` and `--mcp-max-body-bytes`. A refused call returns no content, so it moves the call counter and leaves this one where it was. |
-| `sipnab_pdd_seconds` | histogram | Post-dial delay distribution. Boundaries come from `[diagnosis] post_dial_delay_secs` rather than a fixed list: a resolution ladder at 0.5/1/2/3/5s, then the threshold itself and twice it (11s and 22s at the shipped setting), so a query here reproduces the finding sipnab raises. Emits `sipnab_pdd_seconds_bucket{le}`, `_count`, `_sum`. **`--api` only**, as with the three quality histograms below it — see [Which server fills which series](#which-server-fills-which-series). |
-| `sipnab_mos` | histogram | RTP MOS distribution. Half-steps up the 1-5 scale, plus `[quality] mos_warn` and `mos_bad` (4 and 3 at the shipped settings). **`--api` only.** |
-| `sipnab_jitter_ms` | histogram | RTP jitter distribution. A ladder at 5/10/20ms, plus `[quality] jitter_warn_ms` and `jitter_bad_ms` and multiples above them (30/50/100/200ms at the shipped settings). **`--api` only.** |
-| `sipnab_loss_percent` | histogram | RTP packet-loss distribution. A ladder at 0.1/0.5%, plus `[quality] loss_warn_pct` and `loss_bad_pct` and multiples above them (1/2/5/10/20% at the shipped settings). **`--api` only.** |
+| `sipnab_pdd_seconds` | histogram | Post-dial delay distribution. Boundaries come from `[diagnosis] post_dial_delay_secs` rather than a fixed list: a resolution ladder at 0.5/1/2/3/5s, then the threshold itself and twice it (11s and 22s at the shipped setting), so a query here reproduces the finding sipnab raises. Emits `sipnab_pdd_seconds_bucket{le}`, `_count`, `_sum`. |
+| `sipnab_mos` | histogram | RTP MOS distribution. Half-steps up the 1-5 scale, plus `[quality] mos_warn` and `mos_bad` (4 and 3 at the shipped settings). |
+| `sipnab_jitter_ms` | histogram | RTP jitter distribution. A ladder at 5/10/20ms, plus `[quality] jitter_warn_ms` and `jitter_bad_ms` and multiples above them (30/50/100/200ms at the shipped settings). |
+| `sipnab_loss_percent` | histogram | RTP packet-loss distribution. A ladder at 0.1/0.5%, plus `[quality] loss_warn_pct` and `loss_bad_pct` and multiples above them (1/2/5/10/20% at the shipped settings). |
 
 Two shapes of counter share that table. An alert rule has to know which one it
 reads.
@@ -212,39 +212,20 @@ difference matters to an alert rule.
 `firing_an_alert_moves_the_metric` in [`tests/metrics_alert_wiring_test.rs`](https://github.com/NormB/sipnab/blob/main/tests/metrics_alert_wiring_test.rs) holds the recording call to that behavior.
 
 
-### Which server fills which series
+### Choose a scrape target
 
-sipnab publishes these numbers two ways. The two do not carry the same
-series.
+sipnab serves the same metrics on two ports. Scrape whichever one the run
+already has:
 
-- The `api` feature serves `/metrics` on the REST API's port.
-- The `metrics` feature runs a standalone server on `--metrics`.
+- `/metrics` on the REST API's port, when the run has `--api`. It takes the
+  API's bearer token.
+- The standalone metrics server, when the run has `--metrics`. It takes
+  `--metrics-auth-file` credentials, and can serve HTTPS (see
+  [Metrics TLS](#metrics-tls)).
 
-A scalar gauge or counter always prints. It prints `0` where the server behind
-it never fills the value. So a panel aimed at the wrong target renders a flat
-line rather than an error.
-
-**Both targets publish the same series.** Scrape either one. A rule tuned
-against `--api` holds against `--metrics`. A dashboard needs only one of
-them.
-
-That is new as of 0.5.158. The two doors each assembled the scrape themselves.
-That produced six differences. They are worth naming, because a reader who
-tuned a rule against the old behavior needs to know what moved:
-
-| Series | What changed |
-|---|---|
-| `sipnab_dialogs_total{state}` | The standalone server published `Completed`, the REST door `completed`. Both now publish lowercase, which is what the dashboards in `contrib/` query — that panel read empty against `--metrics`, which looks exactly like an idle switch. |
-| `sipnab_rtp_streams_active` | Two populations under one name: streams a dialog claims, or streams whose last packet arrived inside 30 seconds. Both now count streams a dialog claims, matching the `established` label on the counter beside it. |
-| `sipnab_rtp_streams_total{status}` | The standalone server never filled it, and an empty family drops out rather than reading zero, so a panel built on it stayed blank. Both fill it now. |
-| `sipnab_dialogs_active`, `sipnab_calls_active` | The REST door published a flat `0`. Both read the store's own accessors now. |
-| `sipnab_pdd_seconds`, `sipnab_mos`, `sipnab_jitter_ms`, `sipnab_loss_percent` | The standalone server published empty buckets. Both fill them now. |
-| `sipnab_capture_queue_depth_packets`, `sipnab_capture_backpressure_blocks_total` | The REST door published a flat `0` — "the queue is clear" on a box whose queue was full. Both read the capture meter now. |
-
-`both_scrape_doors_publish_identical_exposition` compares the formatted text
-the two produce for one capture. So a future difference fails the build rather
-than reaching a dashboard.
-
+Both publish the same series with the same values, so a rule or dashboard
+built against one works against the other. Every series in the table above is
+on both.
 
 ### Prometheus scrape config
 

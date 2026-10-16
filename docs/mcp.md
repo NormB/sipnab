@@ -384,8 +384,7 @@ things -- read the summary line:
 npx @modelcontextprotocol/inspector --cli sipnab --mcp -N -I capture.pcap -- --method tools/list --strict
 ```
 
-Measured against 0.5.160: **0 errors and 83 warnings across 47 tools**, down
-from 172. Every remaining warning is one class. sipnab waives it on purpose.
+sipnab waives one class of warning there on purpose:
 
 `schemars` renders an optional field as `"type": ["string","null"]`.
 

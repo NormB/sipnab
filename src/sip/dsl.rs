@@ -1423,6 +1423,12 @@ fn parse_comparison(input: &str) -> IResult<&str, Expr, NomErr<'_>> {
             TIME_OPERATOR_INVALID,
         )));
     }
+    if field.value_kind() == ValueKind::Boolean && !matches!(op, Operator::Eq | Operator::Ne) {
+        return Err(nom::Err::Failure(nom::error::Error::new(
+            op_at,
+            BOOL_OPERATOR_INVALID,
+        )));
+    }
     let (input, _) = multispace0(input)?;
     let (input, value) = parse_value(input, &field, op)?;
 
@@ -1636,6 +1642,10 @@ const NUMBER_VALUE_INVALID: nom::error::ErrorKind = nom::error::ErrorKind::Separ
 /// combinator here.
 const BOOL_VALUE_INVALID: nom::error::ErrorKind = nom::error::ErrorKind::SeparatedNonEmptyList;
 
+/// The nom error kind for `<`, `<=`, `>` or `>=` against a boolean field, which
+/// has no order. Unused by every combinator here.
+const BOOL_OPERATOR_INVALID: nom::error::ErrorKind = nom::error::ErrorKind::LengthValueFn;
+
 /// The nom error kind for a bare value followed by more text that is neither
 /// `AND`, `OR`, `)` nor the end: the value held whitespace, or a combinator is
 /// missing. Unused by every combinator here.
@@ -1680,6 +1690,7 @@ fn parse_problem(kind: nom::error::ErrorKind) -> String {
             .to_string(),
         NUMBER_VALUE_INVALID => "the field compares with a finite number".to_string(),
         BOOL_VALUE_INVALID => "the field compares with true or false".to_string(),
+        BOOL_OPERATOR_INVALID => "the field compares with == or !=".to_string(),
         BARE_VALUE_SPACE => {
             "a value containing whitespace must be quoted, or AND/OR is missing".to_string()
         }
@@ -6139,6 +6150,20 @@ mod bare_value_tests {
         assert!(!same_three_ways("one_way ==", "true", &d)?);
         let err = refused("one_way == maybe")?;
         assert!(err.contains("compares with true or false"), "{err}");
+        Ok(())
+    }
+
+    /// A boolean field has no order, so `<`, `<=`, `>` and `>=` against one
+    /// are refused at parse time, naming the two operators it takes, instead
+    /// of parsing and matching nothing.
+    #[test]
+    fn a_boolean_field_refuses_an_ordering_operator() -> Result<(), TestError> {
+        for op in ["<", "<=", ">", ">="] {
+            let err = refused(&format!("one_way {op} true"))?;
+            assert!(err.contains("compares with == or !="), "{op}: {err}");
+        }
+        let d = the_call()?;
+        assert!(same_three_ways("one_way !=", "true", &d)?);
         Ok(())
     }
 

@@ -479,8 +479,8 @@ One rule is a metric, a comparison, a threshold, and what it applies to:
       "observed": 4.358100156401542, "sample": 2, "ungrounded_excluded": 0,
       "verdict": "pass", "reason": "4.3581 is >= 4 over 2 scored stream(s)" },
     { "index": 2, "name": "answer rate", "metric": "asr",
-      "unit": "ratio (0.0-1.0)", "op": ">=", "threshold": 0.99,
-      "observed": 1.0, "sample": 2, "min_sample": 50,
+      "unit": "percent", "op": ">=", "threshold": 99.0,
+      "observed": 100.0, "sample": 2, "min_sample": 50,
       "verdict": "skipped",
       "reason": "skipped: 2 seizure(s) is below the declared min_sample of 50" }
   ],
@@ -489,11 +489,11 @@ One rule is a metric, a comparison, a threshold, and what it applies to:
 }
 ```
 
-**`unit` rides on every outcome, and reading it is not optional.** `asr` here is
-a RATIO from 0.0 to 1.0, and the same name in
-[`group_dialogs`](mcp-tools-signaling.md#group_dialogs) is a PERCENT. A threshold of `0.99` means 99%
-under one reading and 1% under the other, so the answer names its unit rather
-than leaving it to this page.
+**Read `unit` on every outcome.** It names the scale the `observed` value and
+the threshold are on: `percent` for `asr` (0 to 100, as
+[`group_dialogs`](mcp-tools-signaling.md#group_dialogs) reports it), `dialogs`
+for `count`, and the MOS range for a `mos_p<N>` metric. Write `value` on that
+scale: `99`, not `0.99`, for a 99% answer rate.
 
 **An empty population FAILS, and the message says why.** Three failure modes get
 a gate deleted rather than fixed, and each one has an answer here:

@@ -1772,8 +1772,9 @@ fn lint_reports_from_the_cli_and_fail_on_exits_three() -> Result<(), TestError> 
         assert_eq!(c2, Some(0), "no findings must not trip the gate:\n{e2}");
     }
 
-    // A threshold nothing can reach must not fail the build. Guards against a
-    // gate wired to "any findings at all" regardless of severity.
+    // A level sipnab does not know is a wrong invocation (exit 2), never a
+    // gate wired to "any findings at all" (exit 3) and never a gate silently
+    // turned off (exit 0).
     let (_o3, _e3, c3) = run_support::run(
         &[
             "-N",
@@ -1788,8 +1789,8 @@ fn lint_reports_from_the_cli_and_fail_on_exits_three() -> Result<(), TestError> 
     )?;
     assert_eq!(
         c3,
-        Some(0),
-        "an unparseable severity must not silently become 'fail on everything'"
+        Some(2),
+        "an unknown severity is refused, neither 'fail on everything' nor 'gate off'"
     );
     Ok(())
 }

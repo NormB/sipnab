@@ -378,7 +378,7 @@ Next:
   - It can confine itself with a Landlock sandbox (`--sandbox`) and a seccomp
     allowlist (`--seccomp`).
 - **MCP server.** 76 tools over stdio or HTTP.
-  - 61 only read.
+  - 63 only read.
   - The 13 that write each say what they change.
   - File writes stay inside `--mcp-file-root`.
   - These stay off until you enable them:

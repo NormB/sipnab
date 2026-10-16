@@ -2075,6 +2075,14 @@ The pointer given to `--show-frame` names data that sipnab read through a uprobe
 
 **Exit code:** 2.
 
+### `unknown severity {s:?}: expected info, notice, warning (or warn) or error`
+
+`--lint-fail-on` names the lowest lint severity that fails the run with exit 3. `{s:?}` is the value you gave. sipnab accepts `info`, `notice`, `warning` (or `warn`) and `error`, in any case.
+
+**What to do:** Give one of the four. `--lint-fail-on error` is the usual CI gate.
+
+**Exit code:** 2.
+
 ## Output files and exports
 
 ### `{flag}: the answer did not serialize: {e}`

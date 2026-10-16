@@ -27,7 +27,7 @@ tasks = [
   { title = "Capture live SIP traffic", cmd = "sudo sipnab -d eth0", href = "/docs/cookbook/#live-capture-narrow-to-a-single-user" },
   { title = "Diagnose one-way audio", cmd = "sipnab -I dump.pcap --one-way", href = "/docs/troubleshooting/#one-way-audio" },
   { title = "Find failed calls", cmd = "sipnab -N -I dump.pcap --problems", href = "/docs/troubleshooting/#failed-calls" },
-  { title = "Set up a HEP capture server", cmd = "sipnab --hep-listen 0.0.0.0:9060", href = "/docs/cookbook/#wire-hep-from-your-sip-stack-to-a-central-sipnab" },
+  { title = "Set up a HEP capture server", cmd = "sipnab -N --hep-listen 0.0.0.0:9060 --hep-allow 192.0.2.0/24", href = "/docs/cookbook/#wire-hep-from-your-sip-stack-to-a-central-sipnab" },
   { title = "Decrypt TLS / SRTP", cmd = "sipnab -I tls.pcap --keylog keys.log", href = "/docs/cookbook/#decrypt-sip-over-tls-when-you-can-restart-the-phone-or-server-key-log-file-sslkeylogfile" },
   { title = "Detect scanners & fraud", cmd = "sudo sipnab -N -d eth0 --fraud-detect", href = "/docs/cookbook/#detect-sip-scanners-and-auto-block-via-fail2ban" },
   { title = "Drive sipnab from an AI agent", cmd = "sipnab --mcp", href = "/docs/mcp/" },

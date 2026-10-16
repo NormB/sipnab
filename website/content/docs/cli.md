@@ -122,14 +122,15 @@ Detect SIP scanning and append it in fail2ban's format to the log its jail reads
 - `--kill-scanner` is what detects.
 - `--fail2ban` only chooses the format, so leaving it out leaves the log empty.
 
-Every example below passes `-N`, and that is not a style choice.
+Every example below passes `-N`:
 
-- Only the headless single-capture path builds the detectors.
-- Two paths run without them:
-  - the interactive TUI (the default when you leave `-N` off),
-  - the `--cores N` parallel reader.
-- Ask for detection on either and sipnab warns at startup. The warning says it accepts the flag and ignores it.
-- Without that warning, an empty finding list reads as an all-clear.
+- `-N` runs the detectors and writes `--fail2ban` lines. The fail2ban output
+  needs `-N`.
+- The interactive TUI (the default when you leave `-N` off) runs the same
+  detectors and shows their findings, but never sends a response to a
+  scanner.
+- `--cores N` refuses the detection flags with exit 2: the parallel reader
+  runs no detectors. Drop `--cores` to detect.
 
 ```bash
 sudo sipnab -N -d eth0 --kill-scanner --fail2ban >> /var/log/sipnab/scanners.log
@@ -166,10 +167,16 @@ Print a display filter to paste into Wireshark after opening the capture.
 sipnab -N -I capture.pcap --wireshark
 ```
 
-Or print a tshark-compatible filter string. Use this when the next step is a shell pipeline rather than the Wireshark GUI.
+Or print a `tshark` command that applies a display filter to the capture. Use this when the next step is a shell pipeline rather than the Wireshark GUI.
 
 ```bash
-sipnab -I capture.pcap --tshark-filter 'sip.from.user == "1001"'
+sipnab -N -I capture.pcap --tshark-filter 'sip.from.user == "1001"'
+```
+
+After the per-message lines it prints the command to run:
+
+```text
+tshark -r 'capture.pcap' -Y 'sip.from.user == "1001"' -V
 ```
 
 ### Export call audio as WAV
@@ -429,22 +436,24 @@ sipnab -d eth0,eth1 --multi-device --delta-time
 >   signaling outside the default.
 >
 > Reading a file, sipnab skips any SIP message whose source **and**
-> destination ports both fall outside the range.
+> destination ports both fall outside the range. A skipped message is in no
+> count, dialog or output, so check for skips before you trust a total.
 >
-> - A skipped message reaches no message count, no dialog, and no output
->   format.
-> - So every total you read describes the range and not the capture. So does
->   every ratio you compute from one.
-> - sipnab counts what it skipped. It says so on stderr and at the end of the
->   run.
-> - It names the busiest ports, so there is something to widen to.
-> - `--report` names the count in its `INCOMPLETE RUN` block:
+> The run says how many it skipped on stderr, with the busiest port:
 >
 > ```text
-> NOT ANALYZED: 1 further SIP message(s) were seen on ports outside --portrange
-> and are in none of the totals above. Busiest: 8090 (1). Re-run with
-> --portrange 1-65535 to include them.
+> NOT ANALYZED: 7 further SIP message(s) were seen on ports outside --portrange and are in none of the totals above. Busiest: 5060 (7). Re-run with --portrange 1-65535 to include them.
 > ```
+>
+> `--report` includes the same fact:
+>
+> ```text
+> INCOMPLETE RUN — this report does not describe the whole capture:
+>   - 7 SIP message(s) were seen on ports outside --portrange and were not analyzed; re-run with --portrange 1-65535 to include them
+> ```
+>
+> Both came from `sipnab -N -I sip_call.pcap --portrange 1-2 --report`, a
+> capture whose SIP is all on port 5060.
 >
 > `--portrange 1-65535` analyzes everything the capture holds. Reach for it
 > first on an unfamiliar capture. Narrow it once you know what is in there.
@@ -472,8 +481,8 @@ sipnab -d eth0,eth1 --multi-device --delta-time
 >   capture held no SIP, or sipnab understood none of it:
 >
 > ```text
-> NOT DECODED: 49 of 49 frame(s) (100.0%) produced nothing and are in none of
-> the counts above. Reasons: unsupported link type 0 (49). NOTHING IN THIS
+> NOT DECODED: 3 of 3 frame(s) (100.0%) produced nothing and are in none of
+> the counts above. Reasons: unsupported link type 147 (3). NOTHING IN THIS
 > CAPTURE WAS READ — every frame failed to decode, so the totals above describe
 > no traffic whatsoever and a zero among them is not evidence of absence.
 > ```
@@ -481,8 +490,10 @@ sipnab -d eth0,eth1 --multi-device --delta-time
 > Every reason carries the number that identifies it. That number is what you
 > act on.
 >
-> - `unsupported link type 0` says the file is `DLT_NULL`.
-> - `editcap -T ether in.pcap out.pcap` converts it.
+> - `unsupported link type 147` names the file's pcap link type, here
+>   `LINKTYPE_USER0`, which sipnab does not decode.
+> - Convert the capture with `editcap -T ether in.pcap out.pcap` when its
+>   frames are Ethernet underneath, or open an issue naming the number.
 >
 > A small count is normal. ARP is undecodable by definition and appears on any
 > Ethernet capture. So read the share, not the count.
@@ -510,6 +521,7 @@ sipnab -d eth0,eth1 --multi-device --delta-time
 - `sipnab --mcp -N -I capture.pcap --vcon-key /etc/sipnab/vcon-recipient.key` — serve the MCP tools with a key, so `analyze_vcon` and `validate_vcon` read encrypted containers an agent hands over
 - `sipnab -N -I signed.vcon.json --vcon-signer-ca signing-ca.pem --report` — analyze a signed vCon only when the CA in `signing-ca.pem` issued its signing certificate
 - `sipnab -N -I sealed/ --vcon-key recipient.key --vcon-signer-ca system --json-dialogs` — read a directory of encrypted vCons, each only when a CA in the host's CA bundle issued its signer
+- `openssl x509 -in signer.pem -noout -fingerprint -sha256` — print the fingerprint `--vcon-signer-sha256` takes, from the signing certificate. It prints `sha256 Fingerprint=86:51:67:…`; pass the part after `=`. `sha256sum signer.pem` hashes the PEM text and gives a different value
 - `sipnab -N -I signed.vcon.json --vcon-signer-sha256 40:97:43:61:0C:C7:47:BD:40:82:E2:28:1C:53:A6:54:88:74:EB:E7:A7:2B:E4:A3:C8:CB:1B:CA:C8:97:BC:D6 --json-dialogs` — analyze a signed vCon only when one known certificate signed it
 - `sipnab -N -I sealed.vcon.json --vcon-key recipient.key --vcon-signer-ca signing-ca.pem --vcon-signer-sha256 409743610cc747bd4082e2281c53a6548874ebe7a72be4a3c8cb1bcac897bcd6 --report` — require both: the signing certificate chains to `signing-ca.pem` and has this fingerprint
 - `sipnab -N -I signed.vcon.json --vcon-x5u-ca system --json-dialogs` — analyze a signed vCon whose signature names its certificate chain only by an `x5u` URL: fetch the chain over HTTPS from a server the host's CA bundle trusts
@@ -1071,9 +1083,9 @@ Multiple diagnostic flags combine with OR.
 | `--no-cli-print` | -- | off | 0.3.2 | Suppress per-message CLI output (useful with `--report` / `--call-report` so only the post-capture summary reaches stdout) |
 | `--wireshark` | -- | off | 0.3.0 | Print a display filter for the current capture to paste into Wireshark; use with `-N` |
 | `--tshark-filter` | `<EXPR>` | -- | 0.3.0 | Generate a tshark-compatible display filter string |
-| `--fail2ban` | -- | off | 0.3.0 | Switch the per-message stream to fail2ban-readable log lines. Requires `-N`. It selects a **format**, not a detection: only two events ever reach it, and each needs its own detector armed beside it — `--kill-scanner` (or `--kill-ua`) produces `scanner_detected`, `--reg-flood` produces `reg_flood`. On its own it emits nothing, and warns on stderr about the coming silence, because an empty jail log reads as "nothing attacked me". Detections carried by HEP input (`--hep-listen`, `--hep-parse`) never reach it without `--hep-allow-kill`: the inner addresses are the sender's claim, a jail line would ban whatever address the sender chose, and the run says so once at startup |
+| `--fail2ban` | -- | off | 0.3.0 | Switch the per-message stream to fail2ban-readable log lines. Requires `-N`. It selects a **format**, not a detection: only two events ever reach it, and each needs its own detector armed beside it — `--kill-scanner` (with `--kill-ua` to add User-Agents it matches) produces `scanner_detected`, `--reg-flood` produces `reg_flood`. On its own it emits nothing, and warns on stderr about the coming silence, because an empty jail log reads as "nothing attacked me". Detections carried by HEP input (`--hep-listen`, `--hep-parse`) never reach it without `--hep-allow-kill`: the inner addresses are the sender's claim, a jail line would ban whatever address the sender chose, and the run says so once at startup |
 | `--lint` | -- | off | 0.5.84 | Run the RFC conformance linter over every dialog and print each finding with its rule identifier and the RFC section it reads from. The linter compares what the capture holds against what the cited section calls for, so a finding names a section rather than an opinion. Informational on its own: it changes what gets printed and never the exit code. Pair it with `--lint-fail-on` to make a pipeline stop. The rule catalog is in [sip-lint-rules.md](@/docs/sip-lint-rules.md), and over MCP as `explain_rule` |
-| `--lint-fail-on` | `<SEVERITY>` | -- | 0.5.84 | Exit `3` when the linter reports a finding at or above this severity: `info`, `warning` (or `warn`), or `error`. Needs `--lint`. Exit 3 is deliberately not 1 or 2, so a pipeline can tell a broken sipnab (1) and a wrong invocation (2) apart from a non-conformant CAPTURE (3). `info` parses and buys nothing, because that severity exists for findings that are never a reason to fail a build |
+| `--lint-fail-on` | `<SEVERITY>` | -- | 0.5.84 | Exit `3` when the linter reports a finding at or above this severity: `info`, `notice`, `warning` (or `warn`), or `error`. Any other value exits `2` and names the four. Needs `--lint`. Exit 3 is deliberately not 1 or 2, so a pipeline can tell a broken sipnab (1) and a wrong invocation (2) apart from a non-conformant CAPTURE (3). `info` parses and buys nothing, because that severity exists for findings that are never a reason to fail a build |
 | `--group-by` | `<FIELD>` | -- | 0.3.0 | Group output by field (e.g., `call-id`, `from`, `method`) |
 | `--max-groups` | `<N>` | `100000` | 0.5.97 | Distinct `--group-by` keys one run retains, the same figure `-l`/`--limit` ships so a grouped run cannot outgrow an ordinary capture. Past it sipnab refuses new keys and warns that the output is incomplete; `-l`/`--limit` bounds tracked dialogs and never reached this buffer. Requires `--group-by`. Config: `[limits] max_groups` |
 | `--max-grouped-messages` | `<N>` | `200000` | 0.5.97 | Messages `--group-by` buffers across every group. Grouping cannot stream — the last packet may belong to the first group — so this is memory sipnab holds until the capture ends. Requires `--group-by`. Config: `[limits] max_grouped_messages` |
@@ -1375,8 +1387,11 @@ A boundary that is not a finite, non-negative number fails for a worse reason.
 > - An unknown rule name exits 2 at startup.
 > - A rule counts detector findings, not raw packets.
 >
-> An unrecognized bare word draws a warning naming the valid channels. It used
-> to fail silently. So a documented `--alert syslog` enabled nothing at all.
+> An unknown channel exits 2 and names the valid ones:
+>
+> ```text
+> --alert: Unknown alert channel 'bogus': expected one of syslog, json, exec, or a rule written name:threshold/window
+> ```
 
 **Examples**
 - `sipnab -N -I capture.pcap --no-fraud-detect --report` — skip fraud detection for one run when your config file sets `[security] fraud_detect = true`
@@ -1443,10 +1458,11 @@ variables.
 
 - `--on-dialog-exec` sets `SIPNAB_CALL_ID`, `SIPNAB_FROM`, `SIPNAB_TO`,
   `SIPNAB_STATE`, `SIPNAB_METHOD` and `SIPNAB_JSON` (the whole dialog).
-- `--on-quality-exec` sets `SIPNAB_SSRC`, `SIPNAB_SRC`, `SIPNAB_MOS`,
-  `SIPNAB_JITTER`, `SIPNAB_LOSS` and `SIPNAB_STREAM_JSON`. That last one is the
-  stream object under its own name, never `SIPNAB_JSON`.
-- Rule hooks add `SIPNAB_RULE`, `SIPNAB_DETAIL` and `SIPNAB_VARIABLE`.
+- `--on-quality-exec` sets `SIPNAB_SSRC`, `SIPNAB_MOS`, `SIPNAB_JITTER`,
+  `SIPNAB_LOSS` and `SIPNAB_STREAM_JSON`. That last one is the stream object
+  under its own name, never `SIPNAB_JSON`.
+- `--alert-exec` hooks set `SIPNAB_SRC` (the source address), `SIPNAB_RULE` and
+  `SIPNAB_DETAIL`.
 
 **A hook inherits sipnab's whole environment, credentials included.**
 
@@ -2153,11 +2169,10 @@ each recording the container names by `url`, and captures nothing.
 
 ## Validation rules
 
-- Output flags (`--json`, `--json-pretty`, `--report`, `--hexdump`, `--fail2ban`) require `-N` / `--no-tui` mode, unless `--call-report` is also specified.
+- Flags that print their answer to stdout require `-N` / `--no-tui` mode, unless `--call-report` or `--export-vcon` is also given: `--json`, `--json-pretty`, `--json-dialogs`, `--report`, `--stun`, `--json-stun`, `--analyze`, `--json-analyze`, `--yang-analyze`, `--hexdump`, `--fail2ban`, `--group-by`, `--wireshark`, `--tshark-filter` and `--recommend-block`.
 - `--kill-response` accepts values 100-699 only.
 - Feature-gated flags (`tls`, `hep`, `api`, `mcp`, `mcp-http`) produce startup errors when the required feature is not compiled in.
-- `--mcp` is incompatible with stdout-writing flags. sipnab refuses to start.
-  - The flags are `--json`, `--json-pretty`, `--report`, `--call-report`, `--hexdump`, `--wireshark` and `--tshark-filter`.
+- `--mcp` refuses every flag in that list, `--call-report`, and `--export-vcon` without `--vcon-out`, because on stdio those would write into the JSON-RPC wire.
   - This holds on every transport, not just stdio.
   - Combine `--mcp` with `--quiet` to suppress text-mode capture output.
 - HTTP MCP transport (`--mcp --mcp-transport http`) on a non-loopback `--mcp-bind` requires `--mcp-token` / `--mcp-token-file` / `SIPNAB_MCP_TOKEN`. Loopback binds need no token.
@@ -2170,7 +2185,7 @@ each recording the container names by `url`, and captures nothing.
 - `sipnab --problems` — show problematic calls
 - `sipnab --kill-scanner -d eth0` — detect SIP scanners
 - `sipnab --from alice --to bob` — filter by From/To headers
-- `sipnab 'host 192.0.2.1 and port 5060'` — BPF display filter
+- `sipnab 'host 192.0.2.1 and port 5060'` — capture filter (BPF): frames that do not match are never read
 - `sipnab --filter "method == 'INVITE' AND rtp.mos < 3.0"` — advanced filter DSL
 - `sipnab -N -I capture.pcap --call-report "abc123@host" --markdown --no-cli-print` — generate detailed report for a call (drop `--no-cli-print` and the whole capture's message dump precedes it)
 - `sipnab -d eth0 -H 192.0.2.50:9060` — capture with HEP mirror

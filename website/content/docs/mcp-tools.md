@@ -317,8 +317,12 @@ afterwards.
 
 **A required parameter has no default.**
 
-- Leave one out, or send the wrong JSON type, and the call fails with
-  `invalid_params` (-32602) before the tool runs.
+- Leave one out, or send the wrong JSON type, and the tool does not run. The
+  call returns a result with `isError: true` whose text names the field, for
+  example `failed to deserialize parameters: missing field `call_id``.
+- A value of the right type that the tool cannot use (an unknown choice, a
+  range it does not accept) fails with `invalid_params` (-32602), and
+  `data.reason` says which; see [Error data](#error-data).
 - Optional parameters carry a `?` in every parameter table.
 - Each row says what the tool does when you omit that one.
 
@@ -658,7 +662,7 @@ and the parse error as its text. So that answer carries no `data`.
 | Default `limit` for list-style tools | 50 | the per-call `limit` |
 | Ceiling on `limit` (clamps higher requests) | 1000 | `--mcp-max-rows` |
 | SIP body / snippet bytes | 4096 | `--mcp-max-body-bytes` |
-| Messages per `get_dialog` page | 1000 | `--mcp-max-rows` |
+| Messages per `get_dialog` page | 100 | the per-call `max_messages`, up to `--mcp-max-rows` |
 | Bytes of one whole paged response | 1048576 | the per-call `max_response_bytes`, up to `--mcp-max-response-bytes` |
 
 **These are defaults, not laws.** The right ceiling belongs to the CONSUMER

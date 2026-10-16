@@ -189,28 +189,30 @@ only.
 | `--api-token-ttl <SECS>` | Lifetime of a minted token. Default `3600`. |
 | `--mint-token` | Sign a token with the first configured key, print it, and exit. Starts no capture and no server. |
 | `--token-id <ID>` | The token's `id` (`jti`), used later for revocation. Defaults to a generated id. |
-| `--token-scope <SCOPE>` | `full` (default) or `metrics`. See **Scope** below. |
+| `--token-scope <SCOPE>` | `full` (default), `metrics`, `actions` or `audio` for the REST API. See **Scope** below. |
 | `--api-revoked-file <FILE>` | Denylist of revoked token ids, one per line (blanks and `#` comments ignored). |
 
-**Scope.** `--token-scope metrics` mints a token that reaches `GET /metrics`
-and nothing else. Every other route returns `401`. Mint one for a scrape job.
+**Scope.** Mint each client a token for the routes it needs:
 
-The reason to bother:
+| Scope | Reaches | Mint it for |
+|---|---|---|
+| `full` (default) | Every read route and `/metrics`. Not the action routes (`/v1/tfps/ban`, `/v1/tfps/unban`, `/v1/actions/revert`) and not the live-audio routes (`/v1/calls/live`). | A dashboard or script that reads calls and streams. |
+| `metrics` | `GET /metrics` only. Every other route returns `401`. | A Prometheus scrape job. |
+| `actions` | Everything `full` reaches, plus the action routes that ask TFPS to ban or unban a source. The run must also enable them with `--allow-action tfps:rest`. | The system that decides to block a source. |
+| `audio` | The live-audio routes a `live_audio` vCon rule serves, and nothing else. | A speech-to-text consumer. |
 
-- This is a TLS-decrypting capture tool.
-- So `/v1/dialogs` and `/v1/streams` return message bodies. That is the call content itself.
-- Without a scope split, a monitoring system that needs one counter must hold the keys to
-  all of it.
+The `read` scope is for MCP tokens. Minting it with `--api-signing-key`
+refuses.
+
+Mint a scrape-only credential for Prometheus:
 
 ```bash
-# scrape-only credential for Prometheus
 sipnab --api-signing-key "$KEY" --mint-token --token-scope metrics
 ```
 
-Three properties worth knowing:
+A `metrics` token cannot read who called whom, and a `full` token cannot ban a
+source or listen to a call. Two properties worth knowing:
 
-- **`full` is the default, and satisfies everything.** A `full` token still
-  reaches `/metrics`. So adding this claim narrowed no existing deployment.
 - **A token minted before the claim existed is `full`.**
   - Absent `scope` means `full`.
   - That is the opposite of `aud`, which fails closed when missing.

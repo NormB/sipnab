@@ -254,7 +254,7 @@ cargo build --release --no-default-features \
 This matters because it fails quietly. `cargo build --release --features full` on Alpine succeeds. The binary then reports:
 
 ```text
-sipnab <version> features: native,tui,audio,tls,hep,api,mcp,mcp-http,metrics,plugins,vcon,opus,archive
+sipnab <version> features: native,tui,audio,tls,hep,api,mcp,mcp-http,metrics,plugins,vcon,opus,archive,g729
 ```
 
 It advertises `audio` it cannot deliver. Nothing errors until you try to play a stream.
@@ -305,11 +305,6 @@ Alpine-only, with audio.
    RUSTFLAGS="-C target-feature=-crt-static" cargo build --release -p sipnab-audio
    ```
 
-A CI job checks both paths on `rust:1.97-alpine`:
-
-- The full test suite passes on Alpine with zero failures.
-- It has the same test count as the glibc host.
-- In the dynamic build, the plugin links `libasound.so.2` and `dlopen`s successfully.
 - The `sipnab` binary itself still links only libpcap, libgcc and libc.
 
 ### Cross-glibc compatibility
@@ -350,13 +345,15 @@ binary larger than `binary_size_ceiling_mb` in
 
 ## Release profile
 
-The release build uses LTO, single codegen unit, and symbol stripping for a small binary:
+The release build uses LTO, a single codegen unit and symbol stripping for a small binary, aborts on panic, and keeps line tables for crash reports:
 
 ```toml
 [profile.release]
 lto = true
 codegen-units = 1
 strip = true
+panic = "abort"
+debug = "line-tables-only"
 ```
 
 Target binary size (musl, stripped): <= 19 MB.

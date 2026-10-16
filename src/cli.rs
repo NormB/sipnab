@@ -1866,7 +1866,8 @@ pub struct OutputArgs {
         help_heading = "Output",
         long = "lint-fail-on",
         value_name = "SEVERITY",
-        requires = "lint"
+        requires = "lint",
+        value_parser = parse_lint_severity
     )]
     pub lint_fail_on: Option<String>,
 
@@ -7918,6 +7919,42 @@ impl Cli {
         shots
     }
 
+    /// The flags on this command line that write their answer to standard
+    /// output.
+    ///
+    /// One list for both rules that depend on it: each needs `-N` (under the
+    /// TUI the answer would be written over the terminal, or never printed),
+    /// and each is refused beside `--mcp` on stdio (it would write into the
+    /// JSON-RPC wire). `--call-report` and `--export-vcon` also write to
+    /// stdout but run headless on their own, so the `--mcp` check adds them.
+    fn stdout_answer_flags(&self) -> Vec<&'static str> {
+        [
+            (self.output_args.json, "--json"),
+            (self.output_args.json_dialogs, "--json-dialogs"),
+            (self.output_args.json_pretty, "--json-pretty"),
+            (self.output_args.report, "--report"),
+            (self.output_args.stun, "--stun"),
+            (self.output_args.json_stun, "--json-stun"),
+            (self.output_args.analyze, "--analyze"),
+            (self.output_args.json_analyze, "--json-analyze"),
+            (self.output_args.yang_analyze, "--yang-analyze"),
+            (self.output_args.hexdump, "--hexdump"),
+            (self.output_args.fail2ban, "--fail2ban"),
+            (self.output_args.group_by.is_some(), "--group-by"),
+            (self.output_args.wireshark, "--wireshark"),
+            (self.output_args.tshark_filter.is_some(), "--tshark-filter"),
+            // A block of root-shell commands, printed once the capture ends.
+            (
+                self.security_args.recommend_block.is_some(),
+                "--recommend-block",
+            ),
+        ]
+        .iter()
+        .filter(|(active, _)| *active)
+        .map(|(_, name)| *name)
+        .collect()
+    }
+
     /// Whether this run serves MCP on stdout: `--mcp` with any transport but
     /// `http`. Such a run cannot draw the TUI, because stdout is the JSON-RPC
     /// wire.
@@ -8190,32 +8227,7 @@ impl Cli {
             return Err(crate::Error::CliValidation(refusal));
         }
 
-        let mut output_flags_used: Vec<&str> = [
-            (self.output_args.json, "--json"),
-            (self.output_args.json_dialogs, "--json-dialogs"),
-            (self.output_args.json_pretty, "--json-pretty"),
-            (self.output_args.report, "--report"),
-            (self.output_args.stun, "--stun"),
-            (self.output_args.json_stun, "--json-stun"),
-            (self.output_args.analyze, "--analyze"),
-            (self.output_args.json_analyze, "--json-analyze"),
-            (self.output_args.yang_analyze, "--yang-analyze"),
-            (self.output_args.hexdump, "--hexdump"),
-            (self.output_args.fail2ban, "--fail2ban"),
-            (self.output_args.group_by.is_some(), "--group-by"),
-            // A block of root-shell commands on stdout, printed once the
-            // capture has ended. Same shape as the rest of this list, and the
-            // same reason: under the TUI it would be written over the terminal
-            // the operator is reading.
-            (
-                self.security_args.recommend_block.is_some(),
-                "--recommend-block",
-            ),
-        ]
-        .iter()
-        .filter(|(active, _)| *active)
-        .map(|(_, name)| *name)
-        .collect();
+        let mut output_flags_used = self.stdout_answer_flags();
         // Every one-shot query flag that does not imply -N, from the registry
         // rather than a line here per flag: see `cli::one_shot`.
         output_flags_used.extend(one_shot::needing_no_tui(&self.one_shots()));
@@ -8282,32 +8294,24 @@ impl Cli {
             // "Implies --no-tui" means. The stdout conflicts below are a
             // different question -- those flags would write to the wire MCP
             // owns, and the operator asked for them explicitly.
-            let mut stdout_flags: Vec<&str> = [
-                (self.output_args.json, "--json"),
-                (self.output_args.json_pretty, "--json-pretty"),
-                (self.output_args.report, "--report"),
-                (self.output_args.stun, "--stun"),
-                (self.output_args.json_stun, "--json-stun"),
-                (self.output_args.analyze, "--analyze"),
-                (self.output_args.json_analyze, "--json-analyze"),
-                (self.output_args.yang_analyze, "--yang-analyze"),
-                (self.output_args.hexdump, "--hexdump"),
-                (self.output_args.wireshark, "--wireshark"),
-                (self.output_args.call_report.is_some(), "--call-report"),
-                (self.output_args.tshark_filter.is_some(), "--tshark-filter"),
-                // Only when it lands on stdout: `--export-vcon --vcon-out
-                // file.vcon` writes to a path and never touches the JSON-RPC
-                // wire, so refusing that combination would deny an agent the
-                // one spelling that is safe.
-                (
-                    self.output_args.export_vcon.is_some() && self.output_args.vcon_out.is_none(),
-                    "--export-vcon",
-                ),
-            ]
-            .iter()
-            .filter(|(active, _)| *active)
-            .map(|(_, name)| *name)
-            .collect();
+            let mut stdout_flags = self.stdout_answer_flags();
+            stdout_flags.extend(
+                [
+                    (self.output_args.call_report.is_some(), "--call-report"),
+                    // Only when it lands on stdout: `--export-vcon --vcon-out
+                    // file.vcon` writes to a path and never touches the
+                    // JSON-RPC wire, so refusing that combination would deny an
+                    // agent the one spelling that is safe.
+                    (
+                        self.output_args.export_vcon.is_some()
+                            && self.output_args.vcon_out.is_none(),
+                        "--export-vcon",
+                    ),
+                ]
+                .iter()
+                .filter(|(active, _)| *active)
+                .map(|(_, name)| *name),
+            );
             // Every one-shot query flag whose answer goes to stdout, from the
             // registry: see `cli::one_shot`.
             stdout_flags.extend(one_shot::writing_stdout(&self.one_shots()));
@@ -8587,6 +8591,18 @@ fn parse_fetch_max_size(s: &str) -> Result<u64, String> {
 /// rule.
 fn parse_forward_content_type(s: &str) -> Result<String, String> {
     crate::config::forward_content_type(s).map(str::to_owned)
+}
+
+/// `--lint-fail-on`: a name [`crate::sip::lint::Severity::from_name`]
+/// knows. A misspelling would otherwise read as "no threshold" and turn the
+/// gate off without a word.
+fn parse_lint_severity(s: &str) -> Result<String, String> {
+    match crate::sip::lint::Severity::from_name(s) {
+        Some(_) => Ok(s.to_owned()),
+        None => Err(format!(
+            "unknown severity {s:?}: expected info, notice, warning (or warn) or error"
+        )),
+    }
 }
 
 fn parse_signer_sha256(s: &str) -> Result<String, String> {
@@ -13579,6 +13595,97 @@ mod one_shot_plumbing_tests {
             ..writes
         };
         with_shot(&["--mcp", "-I", "x.pcap"], elsewhere)?.validate()?;
+        Ok(())
+    }
+
+    /// Every flag that writes its answer to standard output, with the
+    /// arguments it needs to parse.
+    const STDOUT_FLAGS: &[&[&str]] = &[
+        &["--json"],
+        &["--json-pretty"],
+        &["--json-dialogs"],
+        &["--report"],
+        &["--stun"],
+        &["--json-stun"],
+        &["--analyze"],
+        &["--json-analyze"],
+        &["--yang-analyze"],
+        &["--hexdump"],
+        &["--fail2ban"],
+        &["--group-by", "call-id"],
+        &["--recommend-block", "all"],
+        &["--wireshark"],
+        &["--tshark-filter", "sip"],
+    ];
+
+    /// `--mcp` on stdio owns stdout for the JSON-RPC wire, so every flag that
+    /// writes its answer there is refused beside it, by name.
+    #[test]
+    fn every_stdout_flag_is_refused_beside_mcp() -> Result<(), TestError> {
+        let mut missed = Vec::new();
+        for flag in STDOUT_FLAGS {
+            let mut argv = vec!["sipnab", "--mcp", "-I", "x.pcap"];
+            argv.extend_from_slice(flag);
+            let mut cli = Cli::try_parse_from(&argv)?;
+            cli.normalize();
+            let refused = cli
+                .validate()
+                .err()
+                .map(|e| e.to_string())
+                .is_some_and(|e| e.contains("JSON-RPC") && e.contains(flag[0]));
+            if !refused {
+                missed.push(flag[0]);
+            }
+        }
+        assert!(missed.is_empty(), "accepted beside --mcp: {missed:?}");
+        Ok(())
+    }
+
+    /// Without `-N` the TUI would own the terminal and the answer would never
+    /// be printed, so every flag that writes its answer to stdout needs `-N`.
+    #[test]
+    fn every_stdout_flag_needs_no_tui() -> Result<(), TestError> {
+        let mut missed = Vec::new();
+        for flag in STDOUT_FLAGS {
+            let mut argv = vec!["sipnab", "-I", "x.pcap"];
+            argv.extend_from_slice(flag);
+            let mut cli = Cli::try_parse_from(&argv)?;
+            cli.normalize();
+            let refused = cli
+                .validate()
+                .err()
+                .map(|e| e.to_string())
+                .is_some_and(|e| e.contains("-N/--no-tui") && e.contains(flag[0]));
+            if !refused {
+                missed.push(flag[0]);
+            }
+        }
+        assert!(missed.is_empty(), "accepted without -N: {missed:?}");
+        Ok(())
+    }
+
+    /// A misspelled `--lint-fail-on` level is refused at parse time, exit 2,
+    /// instead of reading as "no threshold" and turning the gate off.
+    #[test]
+    fn lint_fail_on_takes_only_a_known_severity() -> Result<(), TestError> {
+        let parse = |level: &str| {
+            Cli::try_parse_from([
+                "sipnab",
+                "-N",
+                "-I",
+                "x.pcap",
+                "--lint",
+                "--lint-fail-on",
+                level,
+            ])
+        };
+        for level in ["info", "notice", "warning", "warn", "error", "ERROR"] {
+            parse(level)?;
+        }
+        for typo in ["critical", "warnings", ""] {
+            let err = parse(typo).err().ok_or(format!("{typo:?} was accepted"))?;
+            assert_eq!(err.exit_code(), 2, "{err}");
+        }
         Ok(())
     }
 

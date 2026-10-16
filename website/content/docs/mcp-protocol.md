@@ -131,12 +131,14 @@ For the tools themselves, and for the error codes and response bounds, see
   [What the write verbs do](#what-the-write-verbs-do) names the thirteen that
   are not.
 
-  Every tool but five sets `openWorldHint` to `false`. sipnab answers from the
-  loaded capture and contacts no external service. The five that reach past
+  Every tool but seven sets `openWorldHint` to `false`. sipnab answers from the
+  loaded capture and contacts no external service. The seven that reach past
   this process say so:
 
   - `query_relay`, `relay_stats` and `relay_compare`, which transmit,
-  - `tfps_ban` / `tfps_unban`, which change a firewall on this host.
+  - `fetch_vcon`, which reads a vCon from the operator's store,
+  - `tfps_ban`, `tfps_unban` and `actions_revert`, which change a firewall on
+    this host.
 - **sipnab fences capture-derived free text.** See
   [Untrusted capture text](#untrusted-capture-text) below. sipnab's input is
   written by whoever sent the packets. So sipnab marks the text it hands back.
@@ -575,16 +577,18 @@ confirmation:
 | `actions_revert` | false | true | Lifts the bans sipnab placed: one by its action id, or every one it still holds. Restores rather than destroys; reverting what is already reverted changes nothing. |
 
 Every tool sets `openWorldHint` explicitly rather than by omission. All but
-six set it to `false`.
+seven set it to `false`.
 
 - sipnab answers from the capture it has loaded and contacts no external
   service.
 - So an agent cannot use a tool here to reach the network.
 
-The six exceptions say so, because each reaches past this process:
+The seven exceptions say so, because each reaches past this process:
 
 - `query_relay`, `relay_stats` and `relay_compare` put questions to the
   configured media relay.
+- `fetch_vcon` reads one vCon by uuid from the store the operator configured.
+  It is off unless the server starts with `--mcp-allow-vcon-fetch`.
 - `tfps_ban`, `tfps_unban` and `actions_revert` change what a firewall on this
   host does to a third party. Those three are also off unless the operator
   enables them with `--allow-action tfps:mcp`.
