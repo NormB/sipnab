@@ -164,6 +164,11 @@ pub fn full_scale_for(codec: Option<&str>) -> Option<i16> {
         // Opus decodes to the full container. Its own limiter, not a companding
         // table, decides the ceiling.
         c if c.eq_ignore_ascii_case("opus") => Some(i16::MAX),
+        // G.729's synthesis saturates at the 16-bit limits, so its ceiling is
+        // the container -- when this run decodes it at all.
+        c if c.eq_ignore_ascii_case("G729") && crate::rtp::g729_tables::available() => {
+            Some(i16::MAX)
+        }
         _ => None,
     }
 }
@@ -614,9 +619,22 @@ mod tests {
     fn a_codec_without_a_decoder_has_no_full_scale() -> Result<(), TestError> {
         assert!(full_scale_for(None).is_none());
         assert!(full_scale_for(Some("AMR-WB")).is_none());
-        assert!(full_scale_for(Some("G729")).is_none());
+        assert!(full_scale_for(Some("GSM")).is_none());
         assert_eq!(full_scale_for(Some("opus")), Some(i16::MAX));
         assert_eq!(full_scale_for(Some("Opus")), Some(i16::MAX));
+        Ok(())
+    }
+
+    /// G.729 decodes to the full 16-bit container when this run decodes it,
+    /// and has no ceiling when its tables are not installed.
+    #[cfg(feature = "g729")]
+    #[test]
+    fn g729_has_a_full_scale_only_with_its_tables() -> Result<(), TestError> {
+        crate::rtp::g729_tables::test_support::use_no_tables();
+        assert!(full_scale_for(Some("G729")).is_none());
+        crate::rtp::g729_tables::test_support::use_tables()?;
+        assert_eq!(full_scale_for(Some("G729")), Some(i16::MAX));
+        assert_eq!(full_scale_for(Some("g729")), Some(i16::MAX));
         Ok(())
     }
 }

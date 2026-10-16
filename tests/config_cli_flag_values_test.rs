@@ -903,6 +903,14 @@ static SPECS: &[Spec] = &[
         },
         &[],
     ),
+    (
+        "g729-tables",
+        Kind::Text {
+            accept: &["x", " ", "0", "-1"],
+            reject: &[("", 2)],
+        },
+        &[],
+    ),
     ("kill-spoof", Kind::Choice, &[]),
     ("hep-allow-kill", Kind::Switch, &[]),
     (
@@ -3663,6 +3671,7 @@ fn fingerprint(cli: &sipnab::cli::Cli, config: &sipnab::config::Config) -> Strin
         format!("{:?}", cli.action_policy(config)),
         format!("{:?}", cli.action_limits(config)),
         format!("{:?}", cli.tfps_locator(config)),
+        format!("{:?}", cli.g729_table_location(config, None).path()),
         format!("{:?}", cli.fraud_thresholds(config)),
         format!("{:?}", cli.scanner_thresholds(config)),
         format!("{:?}", cli.signaling_thresholds(config)),

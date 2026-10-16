@@ -492,6 +492,18 @@ PAGES: list[tuple[str, str, str, str, int, str]] = [
         "let a consumer conclude.",
     ),
     (
+        "docs/g729.md",
+        "g729.md",
+        "G.729 decoding",
+        "Decode G.729 audio",
+        # 65, the first weight free on the site side, which
+        # `docs_page_weights_are_unique_and_descriptions_present` reads.
+        65,
+        "Install the G.729 codebook tables sipnab does not ship, on a host "
+        "with internet access or without it, check the installed tables, and "
+        "what a G.729 stream looks like in an export when they are missing.",
+    ),
+    (
         "docs/encapsulations.md",
         "encapsulations.md",
         "Encapsulations",

@@ -1,5 +1,5 @@
 [workspace]
-members = [".", "crates/sipnab-audio", "crates/sipnab-plugin-example", "crates/sipnab-bpf-types", "clients/rust"]
+members = [".", "crates/sipnab-audio", "crates/sipnab-plugin-example", "crates/sipnab-bpf-types", "crates/g729", "clients/rust"]
 # `fuzz/` is a standalone cargo-fuzz package (its own build via `cargo fuzz`);
 # it depends on this crate by path and must NOT be pulled into the workspace.
 # `bpf/` is the kernel half of the BPF capture backend: a `bpfel-unknown-none`
@@ -40,7 +40,7 @@ workspace = true
 
 [package]
 name = "sipnab"
-version = "0.5.221"
+version = "0.5.222"
 edition = "2024"
 rust-version = "1.99"
 authors = ["Norm Brandinger"]
@@ -217,6 +217,13 @@ opus-decoder = "0.1"
 # itself, built from the source opusic-sys vendors (libopus 1.6.1) with cmake
 # and linked statically, so a release binary needs no system libopus.
 opus = { version = "0.4.0", optional = true }
+
+# G.729 Annex A decoder with Annex B comfort noise (feature `g729`), written
+# in this repository as a clean-room crate. It holds no ITU table values: the
+# user installs them with `sipnab g729 install` (docs/g729.md), and the crate's
+# `std` feature is its table loader and the importer that builds the table
+# file from the ITU-T package.
+g729 = { package = "sipnab-g729", version = "0.1.0", path = "crates/g729", features = ["std"], optional = true }
 
 # Phase 5: Metrics & API
 axum = { version = "0.8", optional = true }
@@ -411,7 +418,13 @@ archive = ["native", "dep:zip", "dep:zeroize", "dep:unicode-normalization", "dep
 # carry it; NOT in the static musl builds, which keep WAV (release.yml's
 # noaudio_set leaves out `vcon`, and so this).
 opus = ["vcon", "dep:opus"]
-full = ["native", "tui", "tls", "hep", "api", "audio", "mcp", "mcp-http", "metrics", "plugins", "vcon", "opus", "archive"]
+# G.729 decoding for audio export, the live audio route and amplitude
+# measurement. The codebook tables are not compiled in; `sipnab g729 install`
+# installs them on each host (docs/g729.md). Pure Rust, so IN `full` and in the
+# release no-audio set: every release binary, musl included, decodes G.729.
+# `sha2` checks the downloaded package's pinned hash.
+g729 = ["native", "dep:g729", "dep:sha2", "dep:rustls", "dep:base64"]
+full = ["native", "tui", "tls", "hep", "api", "audio", "mcp", "mcp-http", "metrics", "plugins", "vcon", "opus", "archive", "g729"]
 
 # Userspace half of the eBPF backend. Stable Rust; only the KERNEL half needs
 # nightly.

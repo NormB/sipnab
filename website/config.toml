@@ -34,7 +34,7 @@ theme = "ayu-dark"
 # download links came from here. They did once — `download.html` was moved to
 # `published_version` and the claim was never revisited, which is also how the
 # same sentence ended up in site_journey_test.rs and pages.yml.
-version = "0.5.221"
+version = "0.5.222"
 # The last version that actually EXISTS as a published GitHub release, which is
 # what every download link must point at.
 #
@@ -377,6 +377,7 @@ pages = [
   { path = "docs/mcp-estate.md", menu = false },
   { path = "docs/mcp-protocol.md", menu = false },
   { path = "docs/vcon-harness.md", menu = false },
+  { path = "docs/g729.md", menu = false },
   { path = "docs/plugins.md", menu = false },
   { path = "docs/library.md", menu = false },
   { path = "docs/examples.md", menu = false },

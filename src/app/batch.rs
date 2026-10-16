@@ -18512,7 +18512,7 @@ mod tests {
             stream
                 .payload_buffer
                 .iter()
-                .all(|(_, p)| p == &vec![0xFFu8; 160]),
+                .all(|f| f.payload == vec![0xFFu8; 160]),
             "the kept payload is the plaintext, not the ciphertext"
         );
 

@@ -4341,6 +4341,154 @@ Part of the `detail` of a `malformed` outcome, after `attachment {i}`: the body 
 
 **Exit code:** None. sipnab writes the call without the service's analysis.
 
+## G.729 tables (`sipnab g729`)
+
+`sipnab g729 install` and `sipnab g729 status` print these messages.
+[G.729 decoding](g729.md) describes the command. Each one stops the command
+with exit code 1 and installs nothing. A table file already in place stays as
+it was.
+
+### `No place to install {TABLE_FILE_NAME}: give --g729-tables PATH, set [g729] tables, or set HOME`
+
+`sipnab g729 install` has nowhere to write the table file. The command line
+has no `--g729-tables`, the config file has no `[g729] tables`, and
+neither `HOME` nor `XDG_CONFIG_HOME` names a directory, which is usual for a
+service account. `{TABLE_FILE_NAME}` is `g729-tables.bin`.
+
+**What to do:** Give the path: `sipnab g729 install --g729-tables /srv/sipnab/g729-tables.bin`,
+and give the same path to the capture runs, or set `[g729] tables`.
+
+**Exit code:** 1.
+
+### `Refused {what}: its sha256 is {actual}, expected {PACKAGE_SHA256} (the ITU-T G.729 (06/2012) Release 3 package). Nothing was installed.`
+
+The package is not the one sipnab pins. `{what}` is the zip `--from` named,
+or "the download from" and the itu.int URL. `{actual}` is the sha256 of what
+sipnab read, and `{PACKAGE_SHA256}` is the pinned one,
+`979680ff3b52b13a5701453178efd32b53e340114638fd330fdb6669eec86620`. A
+download that stopped part way, a proxy's error page, or another release of
+the package each give another hash.
+
+**What to do:** Download the package again from the URL `sipnab g729 install`
+prints, check that `sha256sum` prints the pinned hash, and run the command
+again. To install from a copy, give `--from` the zip itself.
+
+**Exit code:** 1.
+
+### `Refused the table file {}: its values sha256 is {}, expected {}. Nothing was installed.`
+
+`--from` named a table file whose layout is right but whose values differ
+from the ones sipnab pins. The placeholders are the file, the sha256 of its
+values, and the pinned one. Someone changed the file, or built it from a
+different package.
+
+**What to do:** Copy the table file again from a host where
+`sipnab g729 status` reports the pinned values hash, or install from the ITU-T
+package instead.
+
+**Exit code:** 1.
+
+### `Refused the table file {}: {other}. Nothing was installed.`
+
+`--from` named a file that starts like a table file but is not one: the
+wrong version, the wrong length, or an entry of the wrong size. `{other}` says
+which.
+
+**What to do:** Copy the file again. A copy cut short is the usual cause.
+
+**Exit code:** 1.
+
+### `Refused {}: {e}. Nothing was installed.`
+
+The importer could not build the tables from the package. `{}` is the zip or
+directory, and `{e}` is the reason: a pinned source file is not in it (the
+directory does not hold the extracted package, or holds part of it), or the
+imported values do not hash to the pinned value, and the message names both
+hashes.
+
+**What to do:** Give `--from` the whole package zip, or the directory
+`python3 scripts/fetch-g729-vectors.py` fills (`crates/g729/test-vectors/itu-source`).
+
+**Exit code:** 1.
+
+### `Cannot read {}: {e}`
+
+`--from` names a file sipnab cannot read. `{e}` is the operating system's
+reason.
+
+**What to do:** Check the path and its permissions.
+
+**Exit code:** 1.
+
+### `Cannot create {}: {e}`
+
+sipnab cannot make the directory the table file goes in. `{e}` is the
+operating system's reason.
+
+**What to do:** Create the directory, or give `--g729-tables` a path in a
+directory you can write.
+
+**Exit code:** 1.
+
+### `Cannot write the download in {}: {e}`
+
+sipnab cannot write the downloaded package to a temporary file in the table
+file's directory, where the importer reads it. `{e}` is the operating
+system's reason, often a full disk.
+
+**What to do:** Free about 19 MB in that directory, or choose another with
+`--g729-tables`.
+
+**Exit code:** 1.
+
+### `Cannot write {}: {e}`
+
+sipnab cannot write the table file. `{e}` is the operating system's reason.
+
+**What to do:** Check the directory's permissions and free space.
+
+**Exit code:** 1.
+
+### `Cannot set the mode of {}: {e}`
+
+sipnab wrote the table file but could not set its mode to 0644, so other
+accounts, such as a service's, may not read it.
+
+**What to do:** Set it yourself with `chmod 644`.
+
+**Exit code:** 1.
+
+### `Downloading {url} failed: {e}`
+
+The download from itu.int did not complete. `{e}` is the reason: no route,
+a refused certificate, or one of the two answers below.
+
+**What to do:** Check that the host reaches `www.itu.int` over HTTPS. A host
+that cannot: download the package elsewhere and run
+`sipnab g729 install --from <the zip>`.
+
+**Exit code:** 1.
+
+### `itu.int answered {status}`
+
+itu.int answered the download with an HTTP status other than 200. It is
+part of the `Downloading {url} failed` message.
+
+**What to do:** Try again later, or download the package with a browser and
+install it with `--from`.
+
+**Exit code:** 1.
+
+### `itu.int answered more than {PACKAGE_BYTES} bytes, more than the package`
+
+The answer is larger than the package (18,476,968 bytes), so it is not the
+package. It is part of the `Downloading {url} failed` message.
+
+**What to do:** Download the package with a browser, check its sha256, and
+install it with `--from`.
+
+**Exit code:** 1.
+
 ## Startup, privileges and the process
 
 ### `--allow-coredump: a core dump would contain the archive password this run holds`

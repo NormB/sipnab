@@ -53,6 +53,19 @@ fn clap_long_flags() -> BTreeSet<String> {
     // but `--help` prints them and prose legitimately names them.
     flags.insert("--help".into());
     flags.insert("--version".into());
+    // `sipnab g729 ...` is a command of its own with its own flags, read from
+    // its own clap definition and keyed with the command's name, so a
+    // capture-run flag named after `sipnab g729` is still a claim about the
+    // command it follows.
+    let g729 = sipnab::cli::g729_args::G729Cli::command();
+    for cmd in std::iter::once(&g729).chain(g729.get_subcommands()) {
+        for a in cmd.get_arguments() {
+            if let Some(l) = a.get_long() {
+                flags.insert(format!("g729 --{l}"));
+            }
+        }
+    }
+    flags.insert("g729 --help".into());
     flags
 }
 
@@ -94,6 +107,12 @@ fn flags_in(text: &str) -> BTreeSet<String> {
             if !is_sipnab {
                 continue;
             }
+            let command = if tokens.peek() == Some(&"g729") {
+                tokens.next();
+                "g729 "
+            } else {
+                ""
+            };
             for tok in tokens {
                 let tok = tok.trim_end_matches([',', '.', ';', ':', ')', ']', '\'', '"']);
                 let Some(rest) = tok.strip_prefix("--") else {
@@ -107,7 +126,7 @@ fn flags_in(text: &str) -> BTreeSet<String> {
                     .chars()
                     .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
                 {
-                    out.insert(format!("--{name}"));
+                    out.insert(format!("{command}--{name}"));
                 }
             }
         }

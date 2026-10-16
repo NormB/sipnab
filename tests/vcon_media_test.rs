@@ -183,7 +183,15 @@ fn stream(
     s.codec = Some("PCMU".to_string());
     s.clock_rate = 8000;
     s.payload_buffer = (0..frames)
-        .map(|i| (u32::try_from(i).unwrap_or(0) * 160, vec![fill; 160]))
+        .map(|i| {
+            // Consecutive sequence numbers: nothing in this stream was lost.
+            let sequence = u16::try_from(i % 65_536).unwrap_or(0);
+            sipnab::rtp::stream::RetainedFrame::new(
+                u32::try_from(i).unwrap_or(0) * 160,
+                sequence,
+                vec![fill; 160],
+            )
+        })
         .collect::<VecDeque<_>>();
     s.payload_frames_dropped = dropped;
     s.packet_count = frames as u64 + dropped;

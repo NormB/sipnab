@@ -1409,10 +1409,14 @@ mod tests {
         // Thirty seconds of mu-law 0xFF, which decodes to 0. Full-rate frames
         // of digital silence: every packet present, in sequence, at the right
         // rate, and the call is silent.
-        for i in 0..1500u32 {
+        for i in 0..1500u16 {
             stream
                 .payload_buffer
-                .push_back((i * 160, vec![0xFFu8; 160]));
+                .push_back(crate::rtp::stream::RetainedFrame::new(
+                    u32::from(i) * 160,
+                    i,
+                    vec![0xFFu8; 160],
+                ));
         }
         let streams: Vec<&RtpStream> = vec![&stream];
 

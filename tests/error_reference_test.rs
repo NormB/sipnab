@@ -779,7 +779,14 @@ const EXPECTED_UNRESOLVED: usize = 83;
 // 486 -> 487: src/config.rs `[vcon] uuid_domain: {value:?} {why}`, the
 // refusal of a value that is not a fully qualified host name. Nothing
 // removed.
-const EXPECTED_TEMPLATES: usize = 487;
+// 487 -> 501: src/app/g729_install.rs, the fourteen refusals of
+// `sipnab g729 install`: no place to install, the package and table-file
+// hash refusals, the importer's refusal, the four file errors, the download
+// failure and its two answers, and the build without an HTTPS client.
+// Nothing removed.
+// 501 -> 500: the build without an HTTPS client is gone: every build with
+// `g729` downloads with the shared client in src/app/https_client.rs.
+const EXPECTED_TEMPLATES: usize = 500;
 
 // ---------------------------------------------------------------------------
 // The page gates

@@ -14,7 +14,7 @@ use chrono::{DateTime, Utc};
 
 use super::parser::RtpHeader;
 use super::rtcp::{ExtendedReport, ReceptionReport, RtcpPacket, RttSource, VoipMetrics, XrBlock};
-use super::stream::{RtpStream, StreamKey};
+use super::stream::{RetainedFrame, RtpStream, StreamKey};
 use crate::capture::ParsedPacket;
 use crate::sip::sdp::SdpMedia;
 
@@ -598,12 +598,13 @@ fn rfc3551_clock_rate(payload_type: u8) -> Option<u32> {
     })
 }
 
-/// Bytes one slot of a stream's retained-audio buffer occupies: the RTP
-/// timestamp and the `Vec` that owns the payload, 32 on a 64-bit target.
+/// Bytes one slot of a stream's retained-audio buffer occupies: one
+/// [`RetainedFrame`], whose RTP timestamp, sequence number and the `Vec` that
+/// owns the payload take 32 on a 64-bit target.
 ///
 /// Charged per slot of the buffer's CAPACITY rather than per frame held, so
 /// the spare room a `VecDeque` keeps after it doubles is charged too.
-pub const AUDIO_SLOT_BYTES: usize = std::mem::size_of::<(u32, Vec<u8>)>();
+pub const AUDIO_SLOT_BYTES: usize = std::mem::size_of::<RetainedFrame>();
 
 /// The fixed part of what one retained payload allocation is charged beyond
 /// its length. See [`audio_payload_charge`].
@@ -1049,26 +1050,26 @@ impl StreamStore {
     /// earliest frames of the OLDEST stream that holds any, which is normally
     /// an ended call, until the total is back inside it. Both are counted on
     /// the stream that lost the frames, so its export says PARTIAL and why.
-    fn retain_payload(&mut self, index: usize, timestamp: u32, audio: Vec<u8>) {
+    fn retain_payload(&mut self, index: usize, frame: RetainedFrame) {
         let Some((_, stream)) = self.streams.get_index_mut(index) else {
             return;
         };
         let buffer = &mut stream.payload_buffer;
         if let Some(cap) = self.max_audio_frames
             && buffer.len() >= cap
-            && let Some((_, old)) = buffer.pop_front()
+            && let Some(old) = buffer.pop_front()
         {
             self.audio_bytes_retained = self
                 .audio_bytes_retained
-                .saturating_sub(audio_payload_charge(old.len()));
+                .saturating_sub(audio_payload_charge(old.payload.len()));
             // Counted, so the export can say the ring wrapped rather than
             // reporting the buffer's duration as the call's.
             stream.payload_frames_dropped = stream.payload_frames_dropped.saturating_add(1);
         }
         let buffer = &mut stream.payload_buffer;
         let capacity_before = buffer.capacity();
-        let charge = audio_payload_charge(audio.len());
-        buffer.push_back((timestamp, audio));
+        let charge = audio_payload_charge(frame.payload.len());
+        buffer.push_back(frame);
         let grown = buffer.capacity().saturating_sub(capacity_before);
         self.audio_bytes_retained = self
             .audio_bytes_retained
@@ -1093,8 +1094,8 @@ impl StreamStore {
             let Some((_, stream)) = self.streams.get_index_mut(self.audio_release_cursor) else {
                 return false;
             };
-            if let Some((_, old)) = stream.payload_buffer.pop_front() {
-                let mut freed = audio_payload_charge(old.len());
+            if let Some(old) = stream.payload_buffer.pop_front() {
+                let mut freed = audio_payload_charge(old.payload.len());
                 if stream.payload_buffer.is_empty() {
                     freed += stream.payload_buffer.capacity() * AUDIO_SLOT_BYTES;
                     stream.payload_buffer = std::collections::VecDeque::new();
@@ -1210,7 +1211,10 @@ impl StreamStore {
                 && !audio_slice.is_empty()
                 && let Some(index) = self.streams.get_index_of(&key)
             {
-                self.retain_payload(index, rtp.timestamp, audio_slice.to_vec());
+                self.retain_payload(
+                    index,
+                    RetainedFrame::new(rtp.timestamp, rtp.sequence, audio_slice.to_vec()),
+                );
             }
         } else {
             self.ensure_capacity();
@@ -1290,7 +1294,10 @@ impl StreamStore {
             self.generation += 1;
             let audio_slice = rtp.payload(&parsed.payload);
             if capturable && !audio_slice.is_empty() {
-                self.retain_payload(index, rtp.timestamp, audio_slice.to_vec());
+                self.retain_payload(
+                    index,
+                    RetainedFrame::new(rtp.timestamp, rtp.sequence, audio_slice.to_vec()),
+                );
             }
         }
     }
@@ -2497,11 +2504,11 @@ pub fn call_not_carried(call_id: &str) -> String {
 
 /// What a stream's retained-audio buffer is charged against the budget: its
 /// capacity in slots and every payload it holds.
-fn buffer_charge(buffer: &std::collections::VecDeque<(u32, Vec<u8>)>) -> usize {
+fn buffer_charge(buffer: &std::collections::VecDeque<RetainedFrame>) -> usize {
     buffer.capacity() * AUDIO_SLOT_BYTES
         + buffer
             .iter()
-            .map(|(_, payload)| audio_payload_charge(payload.len()))
+            .map(|frame| audio_payload_charge(frame.payload.len()))
             .sum::<usize>()
 }
 
@@ -5008,12 +5015,32 @@ a=rtpmap:96 H264/90000\r\n";
         store.process_rtp(&make_parsed(20000, 30000, 4), &event, ts(0));
         store.process_rtp(&audio, &make_rtp_header(0x61, 4), ts(0));
         let stream = srtp_fixture_stream(&store, 0x61)?;
-        let kept: Vec<u32> = stream.payload_buffer.iter().map(|(t, _)| *t).collect();
+        let kept: Vec<u32> = stream.payload_buffer.iter().map(|f| f.timestamp).collect();
         assert_eq!(
             kept,
             vec![160, 640],
             "the two PCMU frames, and nothing else"
         );
+        Ok(())
+    }
+
+    /// Each retained frame carries its packet's RTP sequence number, from
+    /// the first packet (which creates the stream) and every later one, so a
+    /// decoder can tell a lost packet from time the sender did not transmit.
+    #[test]
+    fn retained_frames_carry_the_rtp_sequence_number() -> Result<(), TestError> {
+        let mut store = StreamStore::new(16);
+        let audio = make_parsed(20000, 30000, 160);
+        for seq in [7u16, 8, 10] {
+            store.process_rtp(&audio, &make_rtp_header(0x62, seq), ts(0));
+        }
+        let stream = srtp_fixture_stream(&store, 0x62)?;
+        let kept: Vec<(u32, u16)> = stream
+            .payload_buffer
+            .iter()
+            .map(|f| (f.timestamp, f.sequence))
+            .collect();
+        assert_eq!(kept, vec![(7 * 160, 7), (8 * 160, 8), (10 * 160, 10)]);
         Ok(())
     }
 
@@ -5093,7 +5120,7 @@ a=rtpmap:96 H264/90000\r\n";
                 s.payload_buffer.capacity() * AUDIO_SLOT_BYTES
                     + s.payload_buffer
                         .iter()
-                        .map(|(_, p)| audio_payload_charge(p.len()))
+                        .map(|f| audio_payload_charge(f.payload.len()))
                         .sum::<usize>()
             })
             .sum()
@@ -5130,7 +5157,12 @@ a=rtpmap:96 H264/90000\r\n";
     /// glibc. The charge is the length plus a quarter plus 32.
     #[test]
     fn the_payload_charge_covers_the_measured_allocator_cost() {
-        assert_eq!(AUDIO_SLOT_BYTES, std::mem::size_of::<(u32, Vec<u8>)>());
+        assert_eq!(AUDIO_SLOT_BYTES, std::mem::size_of::<RetainedFrame>());
+        // The sequence number fits in the padding the timestamp leaves, so a
+        // slot costs what it did before it carried one, and the budget's
+        // arithmetic (see `DEFAULT_MAX_AUDIO_BYTES`) still holds.
+        #[cfg(target_pointer_width = "64")]
+        assert_eq!(AUDIO_SLOT_BYTES, 32);
         // (payload length, most measured bytes for its allocation)
         for (len, measured) in [
             (1, 33),
@@ -5214,7 +5246,7 @@ a=rtpmap:96 H264/90000\r\n";
         );
         assert_eq!(older.payload_buffer.len(), 40);
         assert_eq!(
-            older.payload_buffer.front().map(|(ts, _)| *ts),
+            older.payload_buffer.front().map(|f| f.timestamp),
             Some(20 * 160),
             "what was released is the START of the older stream"
         );

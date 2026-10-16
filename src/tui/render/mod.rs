@@ -658,6 +658,7 @@ pub(in crate::tui) fn render_app(
             Popup::NoteEditor => render_note_editor_popup(frame, area, app),
             Popup::UnsavedNotes => render_unsaved_notes_popup(frame, area, app),
             Popup::ArchivePassword => render_archive_password_popup(frame, area, app),
+            Popup::G729Install => render_g729_install_popup(frame, area, app),
         }
     }
 

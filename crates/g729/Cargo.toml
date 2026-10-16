@@ -1,0 +1,70 @@
+[package]
+name = "sipnab-g729"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.99"
+authors = ["Norm Brandinger"]
+description = "Clean-room ITU-T G.729 Annex A decoder with Annex B comfort noise"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/NormB/sipnab"
+documentation = "https://docs.rs/sipnab-g729"
+readme = "README.md"
+keywords = ["g729", "codec", "speech", "voip", "decoder"]
+categories = ["multimedia::audio", "multimedia::encoding", "no-std"]
+build = "build.rs"
+# What the published package holds. Never test-vectors/: the fetched ITU-T
+# package and test vectors are not redistributed (PROVENANCE.md).
+include = [
+    "/src/**/*.rs",
+    "/examples/**/*.rs",
+    "/examples/payloads.txt",
+    "/tests/**/*.rs",
+    "/build.rs",
+    "/README.md",
+    "/CHANGELOG.md",
+    "/PROVENANCE.md",
+    "/LICENSE-MIT",
+    "/LICENSE-APACHE",
+]
+
+[package.metadata.docs.rs]
+# The table loader and the importer are behind `std`; document them too.
+all-features = true
+
+# The package is published as sipnab-g729; the library keeps the name `g729`,
+# so code reads `use g729::...`.
+[lib]
+name = "g729"
+
+[lints]
+workspace = true
+
+[features]
+default = ["annex-b"]
+# Annex B: SID frames and comfort-noise generation.
+annex-b = []
+# The table loader (`Tables::from_bytes`) and the importer that builds the
+# table file from the ITU-T package (`import_from_itu`). The decoder itself
+# is `no_std` and allocation-free; only these two need `std`.
+std = ["dep:sha2", "dep:zip"]
+
+[[example]]
+name = "import_tables"
+required-features = ["std"]
+
+[[example]]
+name = "decode_bitstream"
+required-features = ["std"]
+
+[[example]]
+name = "decode_rtp_payloads"
+required-features = ["std"]
+
+[dependencies]
+sha2 = { version = "0.11", optional = true }
+zip = { version = "8.6", default-features = false, features = ["deflate-flate2-zlib-rs"], optional = true }
+
+[dev-dependencies]
+g729 = { package = "sipnab-g729", path = ".", default-features = false, features = ["std"] }
+flate2 = "1"
+serde_json = "1"

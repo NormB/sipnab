@@ -441,6 +441,66 @@ pub(in crate::tui) fn render_quit_confirm_popup(frame: &mut ratatui::Frame, area
     frame.render_widget(Paragraph::new(lines), inner);
 }
 
+/// The offer to install the G.729 tables: the question, where the tables
+/// come from, and the two answers.
+///
+/// # Side effects
+/// Draws to `frame` (clearing the cells behind the popup); no state is
+/// mutated.
+pub(in crate::tui) fn render_g729_install_popup(frame: &mut ratatui::Frame, area: Rect, app: &App) {
+    let muted = Style::default().fg(app.theme.muted);
+    let lines: Vec<Line<'_>> = vec![
+        Line::from(""),
+        Line::from(Span::styled(
+            format!("  {}", crate::tui::controllers::g729_offer::QUESTION),
+            Style::default().fg(app.theme.header),
+        )),
+        Line::from(""),
+        Line::from(Span::styled(
+            "  sipnab ships no ITU-T table values. Yes downloads the ITU-T G.729",
+            muted,
+        )),
+        Line::from(Span::styled(
+            "  package, checks its sha256, keeps only the codebook values, and",
+            muted,
+        )),
+        Line::from(Span::styled(
+            "  deletes the download, as `sipnab g729 install` does.",
+            muted,
+        )),
+        Line::from(""),
+        Line::from(vec![
+            Span::styled("  Y", Style::default().add_modifier(Modifier::BOLD)),
+            Span::styled(" download", muted),
+            Span::styled("    N/Esc", Style::default().add_modifier(Modifier::BOLD)),
+            Span::styled(" not now", muted),
+        ]),
+    ];
+    let title = " G.729 decoder tables ";
+    let content = lines
+        .iter()
+        .map(ratatui::text::Line::width)
+        .max()
+        .unwrap_or(0);
+    let desired = u16::try_from(content.max(title.len()).saturating_add(3)).unwrap_or(u16::MAX);
+    let popup_width = desired.clamp(20, area.width.saturating_sub(4).max(20));
+    let rows = u16::try_from(lines.len()).unwrap_or(u16::MAX);
+    let popup_height = rows
+        .saturating_add(2)
+        .min(area.height.saturating_sub(2))
+        .max(3);
+    let popup_area = centered_popup(area, popup_width, popup_height);
+
+    frame.render_widget(Clear, popup_area);
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title(title)
+        .style(Style::default().bg(app.theme.background));
+    let inner = block.inner(popup_area);
+    frame.render_widget(block, popup_area);
+    frame.render_widget(Paragraph::new(lines), inner);
+}
+
 /// The two lines that say operator notes are not saved, shared by the quit
 /// confirmation and the capture-swap question.
 fn unsaved_notes_lines(app: &App) -> [Line<'static>; 2] {
@@ -1561,6 +1621,10 @@ mod tests {
             }),
             ("quit_confirm", |f, a, app| {
                 render_quit_confirm_popup(f, a, app);
+                Ok(())
+            }),
+            ("g729_install", |f, a, app| {
+                render_g729_install_popup(f, a, app);
                 Ok(())
             }),
             // The editor draws only while a note is being typed, so it is

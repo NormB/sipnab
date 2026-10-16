@@ -8,14 +8,17 @@
 //! where a connection is refused holds one with
 //! `support/ports.rs::refused_tcp_port` instead.
 //!
-//! Two shapes are recognized, both on a loopback or unspecified address with
+//! Three shapes are recognized, all on a loopback or unspecified address with
 //! port 0 written as a literal (`"127.0.0.1:0"`, `("127.0.0.1", 0)`,
 //! `(Ipv4Addr::LOCALHOST, 0)` and the like):
 //!
 //! * the socket is a temporary: `bind(..)?.local_addr()` in one statement, so
 //!   it is closed as soon as the statement ends;
 //! * the socket is named, its address is read, and it is then passed to
-//!   `drop(..)`.
+//!   `drop(..)`;
+//! * the socket is named and its address is read in the block's tail
+//!   expression or a `return`, so the number leaves the block and the socket
+//!   closes as the block ends.
 //!
 //! A test that keeps its socket bound and uses it matches neither.
 
@@ -62,7 +65,16 @@ fn released_port_sites(src: &str) -> Result<Vec<usize>, TestError> {
         let Some(read) = Regex::new(&format!(r"\b{name}\s*\.local_addr\(\)"))?.find(rest) else {
             continue;
         };
-        if Regex::new(&format!(r"\bdrop\(\s*{name}\s*\)"))?.is_match(&rest[read.end()..]) {
+        // The read's statement, from the end of the one before it.
+        let before = &rest[..read.start()];
+        let statement = &before[before.rfind([';', '{', '}']).map_or(0, |i| i + 1)..];
+        // No `;` after the read: it is in the block's tail expression, so the
+        // number leaves the block and the socket closes as the block ends.
+        let returned =
+            !rest[read.end()..].contains(';') || statement.trim_start().starts_with("return");
+        if returned
+            || Regex::new(&format!(r"\bdrop\(\s*{name}\s*\)"))?.is_match(&rest[read.end()..])
+        {
             lines.push(line_of(whole.start()));
         }
     }
@@ -121,6 +133,31 @@ fn a_named_socket_dropped_after_its_port_is_read_is_found() -> Result<(), TestEr
     let src = "fn t() {\n    let closed = std::net::TcpListener::bind(\"127.0.0.1:0\")?;\n    \
                let port = closed.local_addr()?.port();\n    drop(closed);\n}\n";
     assert_eq!(released_port_sites(src)?, [2]);
+    Ok(())
+}
+
+/// A helper that returns the number of a socket it then closes: the socket
+/// is released as its block ends, and the caller holds only the number.
+#[test]
+fn a_named_socket_whose_port_is_returned_from_its_block_is_found() -> Result<(), TestError> {
+    let src = "fn free_udp_port() -> Result<u16, TestError> {\n    \
+               let socket = std::net::UdpSocket::bind(\"127.0.0.1:0\")?;\n    \
+               Ok(socket.local_addr()?.port())\n}\n\
+               fn free_tcp_port() -> Result<u16, TestError> {\n    \
+               let l = TcpListener::bind((\"127.0.0.1\", 0))?;\n    \
+               return Ok(l.local_addr()?.port());\n}\n";
+    assert_eq!(released_port_sites(src)?, [2, 6]);
+    Ok(())
+}
+
+/// A socket still bound while its number is used, and dropped only when the
+/// block ends, holds its port the whole time: that is not the defect, even
+/// though nothing names the socket after the read.
+#[test]
+fn a_named_socket_held_while_its_port_is_used_is_not_found() -> Result<(), TestError> {
+    let src = "fn t() {\n    let l = TcpListener::bind(\"127.0.0.1:0\")?;\n    \
+               let port = l.local_addr()?.port();\n    run_client(port);\n}\n";
+    assert_eq!(released_port_sites(src)?, Vec::<usize>::new());
     Ok(())
 }
 

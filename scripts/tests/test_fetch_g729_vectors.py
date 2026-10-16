@@ -1,0 +1,138 @@
+"""fetch-g729-vectors.py: the ITU-T G.729 test vectors, sha256-pinned.
+
+The ITU package is fetched, never committed (spec decision D4). The fetcher
+must hand the conformance tests exactly the bytes the pins name: it refuses a
+package whose sha256 differs from the pinned one, extracts only the two
+test_vectors directories, and refuses an extracted file whose sha256 differs
+from its pin.
+
+The network is not reachable from a test, so each "package" here is a zip
+built in a temporary directory and given with --zip.
+"""
+
+import hashlib
+import pathlib
+import subprocess
+import sys
+import zipfile
+
+from conftest import load
+
+REPO = pathlib.Path(__file__).resolve().parent.parent.parent
+SCRIPT = REPO / "scripts/fetch-g729-vectors.py"
+
+fetch = load("fetch-g729-vectors")
+
+A = "Software/G729_Release3/g729AnnexA/test_vectors/"
+B = "Software/G729_Release3/g729AnnexB/test_vectors/"
+
+
+def _zip(path, entries):
+    with zipfile.ZipFile(path, "w") as z:
+        for name, data in entries.items():
+            z.writestr(name, data)
+    return path
+
+
+def _run(*args):
+    return subprocess.run(
+        [sys.executable, str(SCRIPT), *args], capture_output=True, text=True
+    )
+
+
+def test_refuses_a_package_with_the_wrong_hash(tmp_path):
+    pkg = _zip(tmp_path / "pkg.zip", {A + "ALGTHM.BIT": b"not the ITU bytes"})
+    dest = tmp_path / "vectors"
+    out = _run("--zip", str(pkg), str(dest))
+    assert out.returncode == 1, out.stderr
+    assert "sha256" in out.stderr
+    assert fetch.PACKAGE_SHA256 in out.stderr
+    # Nothing was extracted from the refused package.
+    assert not any(dest.rglob("*.BIT")) if dest.exists() else True
+    # A package given with --zip belongs to the caller and is left in place.
+    assert pkg.exists()
+
+
+def test_extracts_only_test_vector_entries(tmp_path):
+    vector = b"\x21\x6b\x50\x00"
+    pins = {A + "ALGTHM.BIT": hashlib.sha256(vector).hexdigest()}
+    pkg = _zip(
+        tmp_path / "pkg.zip",
+        {
+            A + "ALGTHM.BIT": vector,
+            "Software/G729_Release3/g729AnnexA/c_code/OTHER.TXT": b"x",
+        },
+    )
+    dest = tmp_path / "vectors"
+    fetch.extract(pkg, dest, pins)
+    written = sorted(p.relative_to(dest).as_posix() for p in dest.rglob("*") if p.is_file())
+    assert written == ["annex-a/ALGTHM.BIT"]
+    assert (dest / "annex-a/ALGTHM.BIT").read_bytes() == vector
+
+
+def test_extracts_pinned_source_files_and_nothing_else(tmp_path):
+    source = b"/* table source */"
+    entry = "Software/G729_Release3/g729AnnexA/c_code/TAB_LD8A.C"
+    pins = {entry: hashlib.sha256(source).hexdigest()}
+    pkg = _zip(
+        tmp_path / "pkg.zip",
+        {entry: source, "Software/G729_Release3/g729AnnexA/c_code/CODER.C": b"y"},
+    )
+    dest = tmp_path / "vectors"
+    fetch.extract(pkg, dest, pins)
+    written = sorted(p.relative_to(dest).as_posix() for p in dest.rglob("*") if p.is_file())
+    assert written == ["itu-source/g729AnnexA/c_code/TAB_LD8A.C"]
+
+
+def test_source_pins_are_the_sixteen_table_sources():
+    assert len(fetch.SOURCES) == 16
+    for path, digest in fetch.SOURCES.items():
+        assert path.startswith("Software/G729_Release3/g729Annex")
+        assert path.rsplit(".", 1)[1] in ("C", "c", "H", "h")
+        assert len(digest) == 64 and int(digest, 16) >= 0
+    # Everything the script extracts is a test vector or one of these sources.
+    assert set(fetch.ALL_PINS) == set(fetch.PINS) | set(fetch.SOURCES)
+
+
+def test_refuses_an_extracted_file_with_the_wrong_hash(tmp_path):
+    pins = {B + "tstseq1a.bit": "0" * 64}
+    pkg = _zip(tmp_path / "pkg.zip", {B + "tstseq1a.bit": b"tampered"})
+    dest = tmp_path / "vectors"
+    try:
+        fetch.extract(pkg, dest, pins)
+    except fetch.FetchError as err:
+        assert "tstseq1a.bit" in str(err)
+    else:
+        raise AssertionError("a file with the wrong sha256 was accepted")
+    assert not (dest / "annex-b/tstseq1a.bit").exists()
+
+
+def test_refuses_a_package_missing_a_pinned_file(tmp_path):
+    pins = {A + "TEST.BIT": "0" * 64}
+    pkg = _zip(tmp_path / "pkg.zip", {})
+    try:
+        fetch.extract(pkg, tmp_path / "vectors", pins)
+    except fetch.FetchError as err:
+        assert "TEST.BIT" in str(err)
+    else:
+        raise AssertionError("a package without a pinned file was accepted")
+
+
+def test_pins_cover_the_sixteen_conformance_pairs():
+    names = {p.rsplit("/", 1)[1] for p in fetch.PINS}
+    for stem in "ALGTHM ERASURE FIXED LSP OVERFLOW PARITY PITCH SPEECH TAME".split():
+        assert f"{stem}.BIT" in names and f"{stem}.PST" in names
+    assert "TEST.BIT" in names and "TEST.pst" in names
+    for bit, out in [
+        ("tstseq1a.bit", "tstseq1a.out"),
+        ("tstseq2a.bit", "tstseq2a.out"),
+        ("tstseq3a.bit", "tstseq3a.out"),
+        ("tstseq4a.bit", "tstseq4a.out"),
+        ("tstseq5.bit", "tstseq5a.out"),
+        ("tstseq6.bit", "tstseq6a.out"),
+    ]:
+        assert bit in names and out in names
+    # Every pin is a full sha256 and every pinned path is a test-vector entry.
+    for path, digest in fetch.PINS.items():
+        assert path.startswith((A, B))
+        assert len(digest) == 64 and int(digest, 16) >= 0

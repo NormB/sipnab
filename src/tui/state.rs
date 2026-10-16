@@ -1743,6 +1743,10 @@ pub enum Popup {
     /// A capture load waits on a password for an encrypted archive member.
     /// Masked, with Ctrl-R to reveal until the next attempt.
     ArchivePassword,
+    /// "This call uses G.729. Download the decoder tables from itu.int
+    /// now?" -- the first time a G.729 stream appears on a host without the
+    /// tables. See `controllers::g729_offer`.
+    G729Install,
 }
 
 /// The note being typed, and the frame it is about.

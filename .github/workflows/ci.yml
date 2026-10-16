@@ -226,6 +226,17 @@ jobs:
           .venv-mcp/bin/python -m pip install --require-hashes -r clients/python/requirements-examples.txt
           PYTHON="$PWD/.venv-mcp/bin/python" scripts/smoke-clients.sh target/debug/sipnab
 
+      # The sipnab-g729 crate's conformance tests and the sipnab tests that decode
+      # G.729 read the fetched ITU-T package; a missing one fails them.
+      - uses: ./.github/actions/g729-vectors
+
+      # The sipnab-g729 crate's three examples (import_tables,
+      # decode_bitstream, decode_rtp_payloads), run with `cargo run` as a user
+      # runs them, with their output checked against the ITU-T test vectors.
+      # The Test step below covers the root package only.
+      - name: Run and check the G.729 examples
+        run: cargo test -p sipnab-g729 --features std --test examples
+
       - name: Test
         env:
           # tests/yang_export_test.rs writes every RFC 7951 document it checks
@@ -841,12 +852,16 @@ jobs:
           # without tui, tls, api or mcp, the only company it keeps being
           # `native`.
           - archive
+          # G.729 decoding. In `full`; this leg proves it builds with only
+          # `native` beside it, without the `vcon` HTTPS client that the
+          # online `sipnab g729 install` uses.
+          - g729
           # The sets release.yml publishes: the static musl tarballs, and the
           # gnu `-noaudio` .deb/.rpm with `bpf` added.
           # ci_compiles_every_reduced_feature_set_the_release_publishes keeps
           # these equal to what release.yml computes.
-          - "native,tui,tls,hep,api,mcp,mcp-http,metrics,archive"
-          - "native,tui,tls,hep,api,mcp,mcp-http,metrics,archive,bpf"
+          - "native,tui,tls,hep,api,mcp,mcp-http,metrics,archive,g729"
+          - "native,tui,tls,hep,api,mcp,mcp-http,metrics,archive,g729,bpf"
           - wasm
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -971,9 +986,9 @@ jobs:
   # `include`, and a second binary. This job runs the VERIFYING package, which
   # unpacks each .crate and builds it with default features. So anything the
   # build reads that the allowlist does not ship fails here, not at
-  # `cargo publish`. Both crates in one command, so the path dependency is
-  # resolved against the freshly packaged sipnab-bpf-types rather than
-  # crates.io.
+  # `cargo publish`. All three crates in one command, so sipnab's path
+  # dependencies are resolved against the freshly packaged sipnab-bpf-types
+  # and sipnab-g729 rather than crates.io, which may not have them yet.
   crate-package:
     # Bounds how long this job can hold the main-branch concurrency
     # group, which never supersedes. A cold default-feature build.
@@ -996,8 +1011,8 @@ jobs:
           packages: libpcap-dev libasound2-dev
 
       - uses: dtolnay/rust-toolchain@70dec6087f2cb6bab9fbac4da23160afbe848e91 # 1.99.0
-      - name: Package and verify both crates
-        run: cargo package --locked -p sipnab-bpf-types -p sipnab
+      - name: Package and verify the three crates
+        run: cargo package --locked -p sipnab-bpf-types -p sipnab-g729 -p sipnab
 
   audit:
     # Bounds how long this job can hold the main-branch concurrency

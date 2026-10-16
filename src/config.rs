@@ -60,9 +60,13 @@ static KNOWN_KEYS: LazyLock<HashMap<&'static str, &'static [&'static str]>> = La
             "vcon_forward",
             "vcon_fetch",
             "vcon_input",
+            "g729",
         ]
         .as_slice(),
     );
+    // [g729] says where the G.729 codebook tables are and whether a run may
+    // download them on first need. docs/g729.md.
+    m.insert("g729", ["tables", "auto_install"].as_slice());
     // [actions] enables what changes another system, one key per target, each
     // a list of surfaces. `the_actions_keys_are_the_action_targets` pins these
     // to `ActionTarget::ALL`, so a new target cannot miss this list.
@@ -536,6 +540,23 @@ pub struct Config {
     /// [`VconInputConfig`].
     #[serde(default)]
     pub vcon_input: VconInputConfig,
+    /// Where the G.729 codebook tables are -- see [`G729Config`].
+    #[serde(default)]
+    pub g729: G729Config,
+}
+
+/// `[g729]`: the G.729 decoder's codebook tables, which sipnab does not ship
+/// and `sipnab g729 install` installs on each host (docs/g729.md).
+#[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq)]
+#[serde(default)]
+pub struct G729Config {
+    /// The table file. `--g729-tables` overrides it. Unset, the file is
+    /// `g729-tables.bin` beside the user's config file.
+    pub tables: Option<PathBuf>,
+    /// Allow the terminal UI to download the tables from itu.int, without
+    /// asking, the first time a G.729 stream needs them (default: false).
+    /// The CLI, REST, MCP and vCon paths never download.
+    pub auto_install: Option<bool>,
 }
 
 /// `[api]`: settings for the REST API that belong in a file rather than on
@@ -3641,7 +3662,7 @@ impl Config {
     /// # Errors
     /// `crate::Error::ConfigInvalid`, naming the first such key.
     pub fn validate_paths(&self) -> Result<(), crate::Error> {
-        let keys: [(&str, Option<&Path>); 34] = [
+        let keys: [(&str, Option<&Path>); 35] = [
             ("[hep] tls_ca", self.hep.tls_ca.as_deref()),
             ("[hep] tls_extra_ca", self.hep.tls_extra_ca.as_deref()),
             ("[hep] tls_cert", self.hep.tls_cert.as_deref()),
@@ -3668,6 +3689,7 @@ impl Config {
             ("[tfps] ctl", self.tfps.ctl.as_deref()),
             ("[tfps] db", self.tfps.db.as_deref()),
             ("[crash] report_dir", self.crash.report_dir.as_deref()),
+            ("[g729] tables", self.g729.tables.as_deref()),
             (
                 "[vcon_forward] auth_file",
                 self.vcon_forward.auth_file.as_deref(),

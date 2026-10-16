@@ -20,7 +20,7 @@ use libloading::{Library, Symbol};
 
 use super::g711::{G711Codec, decode_frame};
 use super::opus_decode::OpusStreamDecoder;
-use super::stream::RtpStream;
+use super::stream::{RetainedFrame, RtpStream};
 
 // C ABI of the sipnab-audio plugin (see crates/sipnab-audio/src/lib.rs).
 
@@ -497,7 +497,7 @@ fn load_plugin() -> Result<Library> {
 /// Decode G.711 frames to f32 PCM in [-1.0, 1.0] range.
 fn decode_g711_to_f32(codec: G711Codec, stream: &RtpStream) -> Vec<f32> {
     let mut pcm = Vec::new();
-    for (_ts, payload) in &stream.payload_buffer {
+    for RetainedFrame { payload, .. } in &stream.payload_buffer {
         let decoded = decode_frame(codec, payload);
         for sample in decoded {
             pcm.push(sample as f32 / 32768.0);
@@ -510,7 +510,7 @@ fn decode_g711_to_f32(codec: G711Codec, stream: &RtpStream) -> Vec<f32> {
 fn decode_opus_to_f32(stream: &RtpStream) -> Result<Vec<f32>> {
     let mut decoder = OpusStreamDecoder::new(48000, 1)?;
     let mut pcm = Vec::new();
-    for (_ts, payload) in &stream.payload_buffer {
+    for RetainedFrame { payload, .. } in &stream.payload_buffer {
         match decoder.decode_frame(payload) {
             Ok(samples) => {
                 for sample in samples {
@@ -608,8 +608,10 @@ mod tests {
     #[test]
     fn decode_g711_normalizes_to_unit_range() -> Result<(), TestError> {
         let mut s = stream(0); // PCMU
-        s.payload_buffer.push_back((0, vec![0xFFu8; 160]));
-        s.payload_buffer.push_back((160, vec![0x00u8; 160]));
+        s.payload_buffer
+            .push_back(RetainedFrame::new(0, 0, vec![0xFFu8; 160]));
+        s.payload_buffer
+            .push_back(RetainedFrame::new(160, 1, vec![0x00u8; 160]));
 
         let ulaw = decode_g711_to_f32(G711Codec::Ulaw, &s);
         // One f32 sample per input byte across both frames.
@@ -625,7 +627,8 @@ mod tests {
     /// A PCMA stream carrying a single 160-byte A-law frame.
     fn stream_with_frame() -> RtpStream {
         let mut s = stream(8); // PCMA
-        s.payload_buffer.push_back((0, vec![0x55u8; 160]));
+        s.payload_buffer
+            .push_back(RetainedFrame::new(0, 0, vec![0x55u8; 160]));
         s
     }
 
@@ -649,8 +652,9 @@ mod tests {
         // function still returns Ok (the error-skip branch).
         let mut s = stream(111);
         s.payload_buffer
-            .push_back((0, vec![0xDE, 0xAD, 0xBE, 0xEF]));
-        s.payload_buffer.push_back((20, vec![0xFF; 8]));
+            .push_back(RetainedFrame::new(0, 0, vec![0xDE, 0xAD, 0xBE, 0xEF]));
+        s.payload_buffer
+            .push_back(RetainedFrame::new(20, 1, vec![0xFF; 8]));
         let pcm = decode_opus_to_f32(&s)
             .map_err(|e| format!("opus decode ok despite bad frames: {e:?}"))?;
         // Undecodable frames produce no samples.
@@ -1095,7 +1099,10 @@ mod tests {
         let mut s = stream(payload_type);
         s.codec = codec.map(str::to_string);
         for i in 0..frames {
-            s.payload_buffer.push_back((i * 160, vec![byte; 160]));
+            // Consecutive sequence numbers, wrapping as RTP's do.
+            let sequence = u16::try_from(i % 65_536).unwrap_or(0);
+            s.payload_buffer
+                .push_back(RetainedFrame::new(i * 160, sequence, vec![byte; 160]));
         }
         s
     }
@@ -1154,10 +1161,10 @@ mod tests {
     fn a_codec_playback_cannot_decode_is_refused_before_the_plugin() -> Result<(), TestError> {
         let player = stand_in_player();
         let err = player
-            .play_stream(&buffered(18, Some("G729"), 1, 0x00))
+            .play_stream(&buffered(3, Some("GSM"), 1, 0x00))
             .err()
-            .ok_or("G.729 is not decoded here")?;
-        assert_eq!(err.to_string(), "Unsupported codec for playback: G729");
+            .ok_or("GSM is not decoded here")?;
+        assert_eq!(err.to_string(), "Unsupported codec for playback: GSM");
 
         let err = player
             .play_stream(&buffered(96, None, 1, 0x00))
@@ -1242,8 +1249,10 @@ mod tests {
     fn a_decodable_opus_frame_contributes_its_samples_in_range() -> Result<(), TestError> {
         let mut s = stream(111);
         // Config 31: CELT-only, fullband, 20 ms; mono; one frame (code 0).
-        s.payload_buffer.push_back((0, vec![0xF8]));
-        s.payload_buffer.push_back((960, vec![0xF8]));
+        s.payload_buffer
+            .push_back(RetainedFrame::new(0, 0, vec![0xF8]));
+        s.payload_buffer
+            .push_back(RetainedFrame::new(960, 1, vec![0xF8]));
         let pcm = decode_opus_to_f32(&s).map_err(|e| format!("opus decode ok: {e:?}"))?;
         assert_eq!(pcm.len(), 2 * 960, "two 20 ms frames at 48 kHz");
         assert!(pcm.iter().all(|v| (-1.0..=1.0).contains(v)));

@@ -38,7 +38,7 @@ pub(crate) fn provider() -> std::sync::Arc<rustls::crypto::CryptoProvider> {
 /// issuer to the system store does not also have to name it here, and a host
 /// whose bundle sipnab cannot find is told to pass a CA file rather than
 /// silently trusting nothing.
-#[cfg(any(feature = "hep", feature = "vcon"))]
+#[cfg(any(feature = "hep", feature = "vcon", feature = "g729"))]
 const SYSTEM_CA_BUNDLES: &[&str] = &[
     // Debian, Ubuntu, Arch
     "/etc/ssl/certs/ca-certificates.crt",
@@ -54,7 +54,7 @@ const SYSTEM_CA_BUNDLES: &[&str] = &[
 
 /// The host's CA bundle: `$SSL_CERT_FILE` if it names a file, else the first
 /// of [`SYSTEM_CA_BUNDLES`] that exists, else `None`.
-#[cfg(any(feature = "hep", feature = "vcon"))]
+#[cfg(any(feature = "hep", feature = "vcon", feature = "g729"))]
 pub(crate) fn host_ca_bundle() -> Option<std::path::PathBuf> {
     std::env::var_os("SSL_CERT_FILE")
         .map(std::path::PathBuf::from)
@@ -69,7 +69,7 @@ pub(crate) fn host_ca_bundle() -> Option<std::path::PathBuf> {
 
 /// What a trust rule's refusals call its two settings and the certificate
 /// the operator is told to name.
-#[cfg(any(feature = "hep", feature = "vcon"))]
+#[cfg(any(feature = "hep", feature = "vcon", feature = "g729"))]
 pub(crate) struct TrustNames<'a> {
     /// The setting whose CA file replaces the trust store (`--hep-tls-ca`).
     pub ca: &'a str,
@@ -99,7 +99,7 @@ pub(crate) struct TrustNames<'a> {
 /// Both files named; a named file that cannot be read, holds no
 /// certificate, or holds one rustls refuses; or no host bundle where one is
 /// needed, the message naming `names.ca` as the way out.
-#[cfg(any(feature = "hep", feature = "vcon"))]
+#[cfg(any(feature = "hep", feature = "vcon", feature = "g729"))]
 pub(crate) fn trust_roots(
     ca: Option<&std::path::Path>,
     extra: Option<&std::path::Path>,

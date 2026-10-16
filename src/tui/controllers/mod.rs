@@ -15,6 +15,7 @@ mod call_list;
 mod dashboard;
 mod file_open;
 mod filter_dialog;
+pub(crate) mod g729_offer;
 pub(crate) mod loss_map;
 mod name_dialog;
 mod note_editor;
@@ -471,6 +472,7 @@ pub(in crate::tui) fn handle_popup_key(app: &mut App, key: KeyEvent) {
         Popup::NoteEditor => handle_note_editor_key(app, key),
         Popup::UnsavedNotes => handle_unsaved_notes_key(app, key),
         Popup::ArchivePassword => handle_archive_password_key(app, key),
+        Popup::G729Install => g729_offer::handle_g729_install_key(app, key),
     }
 }
 

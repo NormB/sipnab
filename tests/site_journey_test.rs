@@ -6333,7 +6333,9 @@ fn packaging_scripts_reference_existing_paths() -> Result<(), TestError> {
     // 201 -> 202: ci.yml's "Clippy with no features" step names
     // tests/clippy_scope_parity_test.rs in its comment. Attributed by
     // measurement: with HEAD's ci.yml swapped back in, the scan reads 201.
-    const EXPECTED_REFERENCES: usize = 202;
+    // 202 -> 204: release.yml's scan for ITU-T G.729 table values names
+    // scripts/no-itu-values.py and crates/g729/test-vectors/itu-source.
+    const EXPECTED_REFERENCES: usize = 204;
     assert_eq!(
         checked, EXPECTED_REFERENCES,
         "packaging path scan saw {checked} references, expected \

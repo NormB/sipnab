@@ -415,6 +415,34 @@ pub struct SilencePeriod {
     pub duration_ms: u32,
 }
 
+/// One RTP payload retained for audio export, with the header fields its
+/// decode needs.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RetainedFrame {
+    /// The packet's RTP timestamp: where the payload falls on the stream's
+    /// clock.
+    pub timestamp: u32,
+    /// The packet's RTP sequence number. Missing sequence numbers between
+    /// two retained frames are packets the capture did not see, which tells
+    /// a lost packet from time the sender did not transmit.
+    pub sequence: u16,
+    /// The payload bytes, after any SRTP decryption.
+    pub payload: Vec<u8>,
+}
+
+impl RetainedFrame {
+    /// The frame of the packet with RTP `timestamp` and `sequence` that
+    /// carried `payload`.
+    #[must_use]
+    pub fn new(timestamp: u32, sequence: u16, payload: Vec<u8>) -> Self {
+        Self {
+            timestamp,
+            sequence,
+            payload,
+        }
+    }
+}
+
 /// An RTP media stream tracked as a first-class entity.
 ///
 /// Streams are top-level objects that peer with SIP dialogs via
@@ -531,8 +559,9 @@ pub struct RtpStream {
     /// Raw RTP payloads retained for audio export (G.711 and Opus), oldest
     /// first: the whole stream unless `[limits] max_audio_frames` caps it or
     /// the `[limits] max_audio_bytes` budget released its start.
-    /// Each entry: (RTP timestamp, raw payload bytes).
-    pub payload_buffer: std::collections::VecDeque<(u32, Vec<u8>)>,
+    /// Each entry is one packet's [`RetainedFrame`]: its RTP timestamp,
+    /// sequence number and payload bytes.
+    pub payload_buffer: std::collections::VecDeque<RetainedFrame>,
     /// Payload frames the ring dropped to stay inside its cap.
     ///
     /// Only an explicit `[limits] max_audio_frames` makes the buffer a ring.

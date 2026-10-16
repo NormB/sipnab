@@ -491,7 +491,7 @@ Branch protection sets `required_status_checks.strict: true`.
 - This paragraph used to say the opposite.
   It dates from before `ci_success_gates_every_job` added them.
 
-**`crate-package`** runs `cargo package -p sipnab-bpf-types -p sipnab`.
+**`crate-package`** runs `cargo package --locked -p sipnab-bpf-types -p sipnab-g729 -p sipnab`.
 
 - That builds each crate from its own `.crate` file.
 - So a file the build reads but the `include` allowlist in `Cargo.toml` does not ship

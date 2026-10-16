@@ -1464,7 +1464,9 @@ fn wiki_intra_docs_links_resolve() -> Result<(), TestError> {
     // 1807 -> 1809: docs/filter-dsl.md +2, bare filter values. "Basic field
     // matching" links "Values", and the "When a value needs quotes" table
     // links "Named filters".
-    const EXPECTED_WIKI_LINKS: usize = 1809;
+    // 1809 -> 1815: docs/g729.md's links, and the G.729 links added to
+    // docs/README.md, docs/vcon.md, docs/rest-api.md and docs/cli-reference.md.
+    const EXPECTED_WIKI_LINKS: usize = 1815;
     // Raised 459 -> 460 when SRC1 stage 1 shipped: docs/cli-reference.md's
     // `--hep-listen` row now points at cookbook recipe "Take signaling from HEP and media off the wire, in one process" in docs/examples.md
     // rather than restating how to pair `-L` with `-d`. Attributed per file
@@ -1602,7 +1604,8 @@ fn root_community_file_links_resolve() -> Result<(), TestError> {
     // docs/asterisk-sipnab.md, docs/freeswitch.md and
     // docs/freeswitch-sipnab.md.
     // 140 -> 141: README.md's tunnels bullet links docs/encapsulations.md.
-    const EXPECTED_COMMUNITY_LINKS: usize = 141;
+    // 141 -> 142: README.md's `g729` feature row links docs/g729.md.
+    const EXPECTED_COMMUNITY_LINKS: usize = 142;
     const ROOT_FILES: &[&str] = &[
         "README.md",
         "SUPPORT.md",
@@ -2706,7 +2709,8 @@ fn every_docs_page_is_linked_from_the_index() -> Result<(), TestError> {
     // 86 -> 87: docs/errors.md, the error-message reference.
     // 80 -> 91: the merge of docs/doc-improvements with the 0.5.213 batch.
     // The ten docs/mcp-tools-<bundle>.md pages and docs/errors.md.
-    const EXPECTED_DOCS_PAGES: usize = 91;
+    // 91 -> 92: docs/g729.md.
+    const EXPECTED_DOCS_PAGES: usize = 92;
     // Links are extracted from PROSE, not from the file's bytes. A raw
     // `contains("](backers.md")` counted a link that had been wrapped in an
     // HTML comment: the substring was still there, the page was reachable from

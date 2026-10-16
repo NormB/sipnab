@@ -1173,6 +1173,23 @@ report_dir = "/var/log/sipnab"
 core = false
 ```
 
+### `[g729]`
+
+Where the G.729 codebook tables are. sipnab ships no ITU-T table values, so a
+host decodes G.729 only after `sipnab g729 install` has built the table file
+from the ITU-T G.729 software package ([G.729 decoding](@/docs/g729.md)).
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `tables` | string | `g729-tables.bin` beside the user config file | The table file. An empty string fails validation and names the key. Flag: `--g729-tables` |
+| `auto_install` | boolean | `false` | `true`: the terminal UI downloads the tables from itu.int without asking, the first time a G.729 stream needs them. The command line, REST, MCP and vCon export never download, whatever this says |
+
+```toml
+[g729]
+tables = "/srv/sipnab/g729-tables.bin"
+auto_install = false
+```
+
 ### [theme]
 
 TUI color theme with 11 semantic color slots (plus `highlight`, a legacy alias for `selected`).

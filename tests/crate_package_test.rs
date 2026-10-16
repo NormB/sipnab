@@ -38,8 +38,13 @@ fn bpf_types_version() -> Result<String, TestError> {
         .ok_or("sipnab-bpf-types declares a version")?)
 }
 
-/// Package both publishable crates, once per test run, into a directory of
+/// Package the publishable crates, once per test run, into a directory of
 /// this test's own and return where the `.crate` files landed.
+///
+/// `sipnab-g729` is packaged with them because the `g729` feature depends on it by
+/// path and version: cargo resolves a packaged crate's path dependencies
+/// against the other crates of the same `cargo package` run, and offline it
+/// has nowhere else to look.
 ///
 /// A separate target directory, because `cargo test` holds the lock on the
 /// normal one while this runs. The git hook's variables are removed so a run
@@ -60,6 +65,8 @@ fn package_now() -> Result<PathBuf, TestError> {
             "-p",
             "sipnab-bpf-types",
             "-p",
+            "sipnab-g729",
+            "-p",
             "sipnab",
             "--no-verify",
             "--allow-dirty",
@@ -73,7 +80,7 @@ fn package_now() -> Result<PathBuf, TestError> {
         .output()?;
     assert!(
         out.status.success(),
-        "`cargo package -p sipnab-bpf-types -p sipnab` fails, so `cargo publish` \
+        "`cargo package -p sipnab-bpf-types -p sipnab-g729 -p sipnab` fails, so `cargo publish` \
          would too:\n{}",
         String::from_utf8_lossy(&out.stderr)
     );

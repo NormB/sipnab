@@ -472,6 +472,7 @@ pub(in crate::tui) fn fkey_bar_items(
     if let Some(p) = popup {
         match p {
             Popup::QuitConfirm => vec![("Y", "Quit"), ("N/Esc", "Cancel")],
+            Popup::G729Install => vec![("Y", "Download"), ("N/Esc", "Not now")],
             Popup::NoteEditor => vec![("Enter", "Keep"), ("Esc", "Cancel")],
             Popup::UnsavedNotes => vec![("Y", "Open"), ("N/Esc", "Keep")],
             Popup::ArchivePassword => vec![
