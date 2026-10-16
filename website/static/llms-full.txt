@@ -25006,7 +25006,10 @@ When a capture carries RTCP XR (PT=207), sipnab decodes the VoIP Metrics block
 
 - The TUI Stream Detail view shows them in a **Reported by Far End (RTCP XR)**
   section of their own, below everything sipnab measured.
-- Nothing there feeds the MOS, jitter or loss sipnab computes.
+- One figure feeds sipnab's MOS: the round-trip delay. Halved, it is the
+  one-way delay behind the MOS when the run declares no `--one-way-delay`. See
+  [mos-and-codecs.md](mos-and-codecs.md#what-sipnab-computes-the-score-from).
+- Nothing else there feeds the MOS, jitter or loss sipnab computes.
 - If the two disagree, that is the finding. It is not a conflict to resolve.
   The reasons:
   - RTCP carries no authentication.
@@ -25035,9 +25038,9 @@ No surface reads any other XR block type yet.
 - It records Packet Receipt Times, DLRR and Statistics Summary by block-type
   number alone.
 
-`--json`, `--report`, the REST API and the Prometheus exporter carry sipnab's own
-measurements only.
-No filter DSL field matches an XR value.
+`--json`, `--report`, the REST API and the Prometheus exporter carry no XR
+field. Their MOS can rest on the XR round-trip delay, as above.
+No filter DSL field reads an XR value directly.
 
 ## Grammar
 
