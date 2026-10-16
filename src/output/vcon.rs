@@ -4614,7 +4614,7 @@ fn completeness_note(
     format!(
         "Produced by sipnab {} on node {}. sipnab OBSERVED this dialog and took no part in it: \
          the parties below are what the From and To headers said, not identities anyone \
-         established, and nothing here is signed.{siprec}{} sipnab read {} frame(s) for this \
+         established.{siprec}{} sipnab read {} frame(s) for this \
          capture.{running_clause}{verdict}{blind_clause}",
         env!("CARGO_PKG_VERSION"),
         node_name(),

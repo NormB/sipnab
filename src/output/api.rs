@@ -13131,8 +13131,8 @@ mod tests {
              part in it: {from_attachment}"
         );
         assert!(
-            from_attachment.contains("nothing here is signed"),
-            "the caveat must say sipnab signed nothing: {from_attachment}"
+            from_attachment.contains("not identities anyone established"),
+            "the caveat must say the parties are what the headers said: {from_attachment}"
         );
         assert!(
             analysis_body["capture_completeness"]["media"].is_string(),

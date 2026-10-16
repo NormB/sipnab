@@ -147,6 +147,45 @@ fn a_sign_only_rule_writes_the_signed_form() -> Result<(), TestError> {
     Ok(())
 }
 
+/// The caveat inside a signed container does not deny that it is signed. The
+/// payload is the plain container, so its caveat has to be true of both forms:
+/// it says what the parties are, and leaves the signing to the JWS.
+#[test]
+fn a_signed_container_s_caveat_does_not_say_it_is_unsigned() -> Result<(), TestError> {
+    let home = tempfile::tempdir()?;
+    let signed = home.path().join("signed");
+    let config = rule(
+        "signed",
+        &signed,
+        &format!("{}sign_only = true\n", signing(home.path())?),
+    );
+    let out = run(&config, home.path())?;
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let inner: serde_json::Value =
+        serde_json::from_slice(&vcon_jose::verify(&std::fs::read(only_file(&signed)?)?)?)?;
+    let notes: Vec<&str> = inner["attachments"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .chain(inner["analysis"].as_array().into_iter().flatten())
+        .filter_map(|a| {
+            a["body"]["note"]
+                .as_str()
+                .or_else(|| a["body"]["capture_completeness"]["note"].as_str())
+        })
+        .collect();
+    assert_eq!(notes.len(), 2, "the caveat is embedded twice: {inner}");
+    for note in notes {
+        assert!(note.contains("not identities anyone established"), "{note}");
+        assert!(!note.contains("signed"), "{note}");
+    }
+    Ok(())
+}
+
 /// `compress = "gzip"` on a signing rule signs the gzip of the vCon (core-04
 /// section 5.2).
 #[test]
