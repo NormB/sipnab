@@ -469,7 +469,7 @@ Give one, never both.
 Each finding names the JSON Pointer of the offending value
 (`instance_path`), the schema keyword that refused it (`keyword`) and what was
 wrong (`detail`). The response is `schema_version` 2. With `call_id` it also
-carries `capture_identity`, naming the capture the container was exported
+carries `capture_identity`, naming the capture sipnab exported the container
 from. With `container` it does not, because that container did not come from
 this capture. An empty Dialog Object
 `{}` is an ordinary error:
