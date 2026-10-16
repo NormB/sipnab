@@ -768,7 +768,7 @@ pub fn format_metrics(metrics: &PrometheusMetrics) -> String {
     format_labeled_counter(
         &mut out,
         "sipnab_messages_total",
-        "Total SIP messages by method",
+        "SIP messages in tracked dialogs, labeled by the method that opened each dialog",
         "method",
         &metrics.messages_total,
     );
@@ -1799,6 +1799,25 @@ mod tests {
         assert!(
             out.contains(r#"sipnab_mcp_tool_duration_seconds_bucket{tool="slow",le="+Inf"} 1"#),
             "+Inf must:\n{out}"
+        );
+        Ok(())
+    }
+
+    /// The `method` label of `sipnab_messages_total` is the method that
+    /// opened the dialog, so every response, `ACK` and `BYE` of a call counts
+    /// under `INVITE`. The HELP line says so, rather than promising a count of
+    /// messages by their own method.
+    #[test]
+    fn the_messages_family_help_names_the_dialog_opening_method() -> Result<(), TestError> {
+        let mut m = sample_metrics();
+        m.messages_total.insert("INVITE".to_string(), 7);
+        let out = format_metrics(&m);
+        assert!(
+            out.contains(
+                "# HELP sipnab_messages_total SIP messages in tracked dialogs, \
+                 labeled by the method that opened each dialog\n"
+            ),
+            "{out}"
         );
         Ok(())
     }
