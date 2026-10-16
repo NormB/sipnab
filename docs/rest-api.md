@@ -5,23 +5,22 @@ sipnab includes an optional REST API and Prometheus metrics endpoint. The `api` 
 - The API runs as a thread inside the sipnab process.
 - It reads the same in-memory dialog/stream stores as the capture pipeline.
 
-Reads never alter the capture, with one deliberate exception:
+Most routes only read. These change state:
 
 - `POST /v1/persistence` sets the persistence gate. So a bearer token can stop and start recording to disk.
-- Every other route only reads.
+- `POST /v1/tfps/ban`, `POST /v1/tfps/unban` and `POST /v1/actions/revert`
+  ask TFPS to change its block list. They are off unless the server runs with
+  `--allow-action tfps:rest`.
 
 [CLI Reference](cli-reference.md#network-listeners) catalogs every API flag.
 
 > **Looking for AI-agent access?** sipnab also serves the dialog / RTP / diagnostic stores over the Model Context Protocol. See [MCP Server](mcp.md).
 >
-> - Both doors read the same in-memory stores in the same process.
+> - Both read the same in-memory stores in the same process.
 > - So one running instance can serve both at once.
 >
-> The two response *shapes* are converging deliberately. They are not yet identical.
->
-> - Sometimes a metric is reachable through one door and not the other. That is drift rather than design.
-> - [`tests/surface_parity_test.rs`](https://github.com/NormB/sipnab/blob/main/tests/surface_parity_test.rs) fails the build on it.
-> - The fix is always to add the metric to the missing surface.
+> The REST and MCP response shapes are not identical. A metric that one
+> surface reports and the other does not is a defect: report it as an issue.
 
 ## Getting started
 
@@ -204,21 +203,48 @@ only.
 The `read` scope is for MCP tokens. Minting it with `--api-signing-key`
 refuses.
 
-Mint a scrape-only credential for Prometheus:
+Mint a scrape-only credential for Prometheus, from the signing key in `$KEY`
+(see **Mint a token** below):
 
 ```bash
-sipnab --api-signing-key "$KEY" --mint-token --token-scope metrics
+TOKEN="$(sipnab --api-signing-key "$KEY" --mint-token --token-scope metrics)"
 ```
 
 A `metrics` token cannot read who called whom, and a `full` token cannot ban a
-source or listen to a call. Two properties worth knowing:
+source or listen to a call.
 
-- **A token minted before the claim existed is `full`.**
-  - Absent `scope` means `full`.
-  - That is the opposite of `aud`, which fails closed when missing.
-  - Upgrading does not revoke credentials already in the field.
+- **A payload with no `scope` claim is `full`.** A missing `aud`, by
+  contrast, fails verification.
 - **The signature covers the claim.** Stripping or editing `scope` invalidates
   the signature. So a holder cannot widen their own token.
+
+To check the scope of a token you minted, decode its payload, the part between
+the two dots:
+
+```bash
+python3 - "$TOKEN" <<'PY'
+import base64, sys
+p = sys.argv[1].split(".")[1]
+print(base64.urlsafe_b64decode(p + "=" * (-len(p) % 4)).decode())
+PY
+```
+
+A token minted with `--token-scope metrics` prints:
+
+```json
+{"id":"tok-1792151388671087","exp":1792154988,"aud":"api","scope":"metrics"}
+```
+
+Against a server holding the same signing key, that token gets `200` on
+`/metrics` and `401` on every `/v1/` route:
+
+```bash
+curl -s -H "Authorization: Bearer $TOKEN" http://127.0.0.1:8080/v1/dialogs
+```
+
+```json
+{"status":401,"title":"Unauthorized","type":"https://sipnab.com/problems/unauthorized"}
+```
 
 Static `--api-key` secrets carry no claims at all. They are therefore `full`.
 Scoping requires a signed token.
@@ -345,7 +371,7 @@ front of sipnab already checks `Host`.
 
 ### Metrics endpoints use two different schemes
 
-This catches people out. So it is worth stating plainly:
+The two metrics endpoints take different credentials:
 
 | Endpoint | Scheme |
 |---|---|
@@ -446,9 +472,10 @@ The base URL is whatever you pass to `--api` (e.g., `http://127.0.0.1:8080`).
   - a reverse proxy.
 - Data endpoints use a `/v1/` prefix. Utility endpoints (`/health`, `/metrics`) have none.
 
-`--api-max-conn` (default `100`) caps concurrent API connections to prevent resource exhaustion.
+`--api-max-conn` (default `100`) caps the API requests handled at once. A
+request past it gets `503`. `0` removes the cap.
 
-The API refuses a request body larger than 1 MiB (`MAX_REQUEST_BODY_BYTES`) with HTTP 413. This applies on every route that reads one:
+The API refuses a request body larger than 1 MiB with HTTP 413. This applies on every route that reads one:
 
 - `POST /v1/persistence`
 - `POST /v1/tfps/ban`
@@ -457,9 +484,16 @@ The API refuses a request body larger than 1 MiB (`MAX_REQUEST_BODY_BYTES`) with
 - `POST /v1/vcon/validate`
 - `POST /v1/vcon/analyze`
 
-A body that is merely malformed is a 400. So the two answers stay distinct.
+A body over the limit, here 1.1 MB sent to `POST /v1/persistence`, answers:
 
-Requests are additionally rate-limited to 100 per second per source IP. Requests rejected by the rate limiter or connection cap return **`503 Service Unavailable`** (not 429).
+```json
+{"status":413,"title":"Payload Too Large","type":"https://sipnab.com/problems/payload-too-large"}
+```
+
+A body under the limit that does not parse is a `400` instead.
+
+Requests are additionally rate-limited to 100 per second per source IP
+(`--api-rate-limit-per-peer`, `0` for no limit). Requests rejected by the rate limiter or connection cap return **`503 Service Unavailable`** (not 429).
 
 ## OpenAPI specification
 
@@ -468,32 +502,17 @@ sipnab publishes an OpenAPI 3.1 document covering every endpoint on this page:
 - The machine-readable document, at <https://sipnab.com/openapi.json>. This repository carries the same file at [`website/static/openapi.json`](https://github.com/NormB/sipnab/blob/main/website/static/openapi.json).
 - An interactive rendering of it, at <https://sipnab.com/api-reference/>.
 
-Nobody writes that document by hand.
-
-- A test step derives it from the `#[utoipa::path]` annotations on the request handlers in [`src/output/api.rs`](https://github.com/NormB/sipnab/blob/main/src/output/api.rs).
-- So the routes the server serves and the routes the document describes are one list by construction.
-- The same step splices in the shared JSON Schemas under [`tests/schemas/`](https://github.com/NormB/sipnab/tree/main/tests/schemas). It does not describe those response bodies a second time.
-
-[`tests/openapi_contract_test.rs`](https://github.com/NormB/sipnab/blob/main/tests/openapi_contract_test.rs) then compares three things:
-
-- the document,
-- the live router,
-- the `### METHOD /path` headings below.
-
-It fails the build when any of them disagree. Regenerate the document after changing a handler:
-
-```bash
-SIPNAB_BLESS_OPENAPI=1 cargo test --features full --test openapi_contract_test
-```
-
-Two things to know before you point a tool at it.
+Before you point a tool at it:
 
 - The document describes a **full build**. A route appears only when the feature behind it compiles.
-- So a build without the vCon exporter serves no `/v1/dialogs/{call_id}/vcon`. It generates a document listing none.
-- Read the published file as the ceiling. It is not a promise about the binary you are running.
-- `info.version` is `1`. This is the version in the `/v1` path prefix, which moves when the wire contract does.
-  - It is not the sipnab release version.
-  - The reason: a patch release that changes no endpoint must not invalidate a contract a client already cached.
+  - A build without the `vcon` feature serves no `/v1/dialogs/{call_id}/vcon`.
+  - `sipnab --version` lists the features your binary has.
+- `info.version` is `1`, the version in the `/v1` path prefix. It is not the
+  sipnab release version, and a release that changes no endpoint leaves it
+  unchanged.
+
+[Contributor walkthroughs](internals/walkthroughs.md#regenerate-the-openapi-document)
+describes how to regenerate and check the document.
 
 ### Reading the document locally
 
@@ -517,7 +536,6 @@ Each Python, Go and JavaScript example below is the core of a complete program i
 [`clients/python/`](../clients/python/), [`clients/go/`](../clients/go/) or
 [`clients/javascript/`](../clients/javascript/).
 
-- CI compiles every one. It runs each against a sipnab replaying a committed capture.
 - The full programs add the imports and the error reporting.
 - They read the base URL (`BASE`, `baseURL`,
   `base`) from `SIPNAB_URL`, default `http://127.0.0.1:8080`.
@@ -793,12 +811,10 @@ console.log(`${dialogs.length} dialogs (${total} total)`);
 **`by_method` splits `total` by the method that opened each dialog.**
 
 - It covers the filtered set rather than the page.
-- It leads with the dominant class.
-- Whatever the deployment does most dominates a dialog list. In the field that
-  is usually the keepalive plane rather than the calls. On one real capture, 98 of
-  110 rows carried OPTIONS.
-- Read it before you read the rows. Otherwise the page's
-  composition passes for the deployment's.
+- It leads with the most frequent method.
+- On a capture with OPTIONS keepalives, OPTIONS dialogs can outnumber the
+  calls. Read `by_method` before the rows, then narrow with
+  `filter=method == 'INVITE'` if you want the calls only.
 
 The MCP `list_dialogs` and
 `find_problems` tools return the same breakdown beside their own
@@ -861,20 +877,12 @@ Three list-row keys drop out rather than reading null:
   request that opened a dialog without one, has no final response.
 - `input_origin`: `wire`, `hep` or `uprobe`. It names the capture
   source that delivered the message that OPENED the dialog.
-  - First and never latest, matching `frame`.
-  - One process can capture from an interface and a HEP
-    mirror at once. So a field reassigned per message would report whichever spoke
-    last.
+  - It is the source of the first message, as `frame` is, even when one
+    process captures from an interface and a HEP mirror at once.
 
-The list rows carry `from_user`/`to_user`. They do not carry the `from`/`to` used by the
-single-dialog and report endpoints below.
-
-- The two shapes come from different
-  serializers.
-  - List rows are the compact `DialogSummary` projection shared with
-    MCP and TUI save.
-  - The single-dialog document is the full-fidelity one.
-- So a client that walks the list and then fetches a dialog has to read both spellings.
+The list rows carry `from_user`/`to_user`. The single-dialog and report
+endpoints below carry `from`/`to` instead. A client that walks the list and
+then fetches a dialog reads both spellings.
 
 ---
 
@@ -1263,15 +1271,9 @@ console.log(JSON.stringify(report, null, 2));
 
 **Response:**
 
-In JSON format this endpoint returns **exactly the same document shape as
-`GET /v1/dialogs/{call_id}`**.
-
-- Both serialize through the same internal
-  dialog projection.
-- `generate_call_report(..., Json)` delegates to the one
-  dialog-to-JSON serializer.
-- The text and Markdown report layouts are only
-  available via the MCP `get_dialog_report` tool and the CLI `--call-report`.
+This endpoint returns **exactly the same document shape as
+`GET /v1/dialogs/{call_id}`**. For the text and Markdown report layouts, use
+the MCP `get_dialog_report` tool or the CLI `--call-report`.
 
 ```json
 {
@@ -1360,12 +1362,9 @@ trust it.**
 
 **One hop.** This route answers the legs one step from the Call-ID asked about.
 
-- To walk a whole tree, follow each leg's `call_id` back into this route.
-- The MCP
-  tool `find_correlated` returns the same shape from the same
-  `CorrelationResult::strategy_and_gap` derivation.
-- So the two surfaces cannot
-  disagree about whether a strategy is an identifier match.
+- To walk a whole tree, use [`/tree`](#get-v1dialogscall_idtree), or follow
+  each leg's `call_id` back into this route.
+- The MCP tool `find_correlated` returns the same shape.
 
 Returns `404` if the Call-ID is not found.
 
@@ -1417,9 +1416,8 @@ curl -s -H "Authorization: Bearer $SIPNAB_API_KEY" http://127.0.0.1:8080/v1/dial
 **The walk is symmetric.** Naming any leg returns the same tree, rooted at what
 you named.
 
-- The MCP tool `get_call_tree` renders the same walk (the shared
-  `DialogStore::correlation_tree`).
-- It embeds each leg's dialog summary. It does not leave that to a follow-up fetch.
+- The MCP tool `get_call_tree` returns the same walk, with each leg's dialog
+  summary embedded.
 
 Returns `404` if the Call-ID is not found.
 
@@ -1466,9 +1464,8 @@ curl -s -H "Authorization: Bearer $SIPNAB_API_KEY" http://127.0.0.1:8080/v1/dial
 - `interop` is a wart deployed equipment mishandles.
 - `observation` is a promise the wire contradicts.
 
-Reporting them under one word
-teaches a reader to discount the breach. So the field keeps them apart. The
-media-derived rules run too, from the dialog's RTP streams.
+Act on `must` findings first. The media-derived rules run too, from the
+dialog's RTP streams.
 
 The MCP tool `lint_dialog` reports the same findings from the same linter. It adds
 the frame pointers and suppression accounting an agent uses.
@@ -1604,10 +1601,8 @@ Four absences follow from that:
     carried a display name, beside `sip_display_name`.
   - Every party carries `validation: "none"`. That is a claim by whoever sent the request, not an identity
     anyone checked.
-  - This entry used to read "No party `name`, ever". That was
-    wrong in the direction that matters.
-  - A display name is personal data. So a
-    redaction step must cover `name` as well as `sip_display_name`.
+  - A display name is personal data. A redaction step must cover `name` as
+    well as `sip_display_name`.
 - **No consent record.** Nobody gave sipnab permission for anything. An
   empty consent field would read as "none recorded" rather than "never asked".
 
@@ -1659,9 +1654,8 @@ party's first retained packet, with silence before it, so the two parties
 line up as they spoke.
 
 - These are the same bytes the MCP `export_audio` tool writes and
-  the vCon exporter inlines, from one decode.
+  the vCon exporter inlines.
 - So a `.wav` saved here verifies against a container's `content_hash`.
-- Before this route, audio reached REST only inline inside a vCon.
 
 **curl:**
 
@@ -1805,7 +1799,7 @@ The server answers:
 - a close with a close,
 - a frame that breaks RFC 6455 with a close
   carrying code 1002.
-  - It does the same for a client frame longer than `MAX_CLIENT_FRAME` (4096) bytes.
+  - It does the same for a client frame longer than 4096 bytes.
   - A client sends only control
     frames, which RFC 6455 caps at 125 bytes.
 
@@ -1912,28 +1906,23 @@ Both routes sit behind the same authentication as every other `/v1/` route.
 
 ---
 
-> **The peer this needs.** These read [TFPS](https://github.com/sippulse/tfps)
+> **The peer this needs.** These routes read [TFPS](https://github.com/sippulse/tfps)
 > through its `tfps_ctl` program in JSON mode, the `--json` flag.
+> TFPS v0.2.1 does not have that mode. Build TFPS from its `master` branch
+> ([sippulse/tfps#6](https://github.com/sippulse/tfps/pull/6) added it).
 >
-> - TFPS gained that mode in [sippulse/tfps#6](https://github.com/sippulse/tfps/pull/6),
->   merged on 2026-09-18.
-> - No tagged release carries it yet. v0.2.1, the
->   newest, rejects `--json`.
+> Check the `tfps_ctl` you have:
 >
-> Until the next release, build TFPS from its `master` branch. To check the `tfps_ctl` you have, run
-> `tfps_ctl status --json`.
+> ```bash
+> tfps_ctl status --json
+> ```
 >
 > - One line of JSON means it is ready.
-> - `unknown option: --json` means it predates the mode.
-> - Against an older
->   `tfps_ctl`, these routes answer with that error and name what to install.
+> - `unknown option: --json` means it has no JSON mode. Against that
+>   `tfps_ctl`, these routes answer with the same error and name what to install.
 >
-> `GET /v1/tfps/dropped` is the exception.
->
-> - It needs a `dropped` subcommand
->   that no TFPS build has, released or on `master`.
-> - So it answers with
->   TFPS's own `unknown command: dropped` and says so.
+> `GET /v1/tfps/dropped` needs a `dropped` subcommand that TFPS does not
+> provide. It answers with TFPS's own `unknown command: dropped` and says so.
 
 ### GET /v1/tfps/status
 
@@ -2112,9 +2101,7 @@ curl -s -H "Authorization: Bearer $SIPNAB_API_KEY" \
 
 ### GET /v1/tfps/labels
 
-Read the TFPS verdict log: one row per decision it reached about a source. The
-label corpus harness scores sipnab's scanner detector
-against this export.
+Read the TFPS verdict log: one row per decision it reached about a source.
 
 | Query parameter | Meaning |
 |---|---|
@@ -2158,10 +2145,9 @@ sipnab never asks TFPS for more than a page: the page and one row more.
 
 TFPS's audit log records only the blocks it enforced.
 
-- So today every row has
-  `disposition` `block` and `enforced` `true`.
-- The log has no columns for a ban's
-  end yet. So `expires` and `unbanned_at` are always `null`.
+- So every row has `disposition` `block` and `enforced` `true`.
+- The log has no columns for a ban's end. So `expires` and `unbanned_at` are
+  always `null`.
 - `first_seen` is Unix seconds.
 
 ---
@@ -2508,12 +2494,9 @@ differ:
 
 #### AMR-WB gets a second MOS, on its own scale
 
-`mos` is the narrowband E-model. It cannot score a wideband codec.
-
-- Feeding it a wideband impairment is not an approximation. It is a 35.8-point scale error.
-- The reason: the two models anchor at different points.
-- So an AMR-WB stream whose
-  mode sipnab could read gets a second figure instead:
+`mos` is the narrowband E-model. It cannot score a wideband codec, because the
+narrowband and wideband models use different scales. An AMR-WB stream whose
+mode sipnab could read gets a second figure instead:
 
 | Key | Type | Meaning |
 |-----|------|---------|
@@ -2595,11 +2578,10 @@ Comfort noise carries no mode, and sipnab does not count it.
 Act on `mos_grounded` before acting on `mos`. Otherwise a dashboard that sorts
 by MOS and shows the worst ten fills with streams nobody ever scored.
 
-> **`schema_version` 2.** Version 1 served `mos` with no grounding beside it.
-> Its `mos_below` filter selected placeholders.
->
-> - A client that reads only the fields it knows sees no change.
-> - A client asserting on the exact key set does.
+> **`schema_version` 2.** A version 1 response has no `mos_grounded`,
+> `mos_grounding` or `mos_note`, and its `mos_below` filter also selected
+> placeholder scores. A client that asserts on the exact key set must accept
+> the three keys.
 
 The MCP `rtp_stats` tool carries the same three keys. The TUI's stream
 detail view draws the same distinction. An ungrounded score renders muted and
@@ -2746,12 +2728,8 @@ total**. A reader who takes the list at face value concludes the capture is
 clean when it is merely partial.
 
 `dialogs_examined` and `streams_examined` are the denominators behind the
-findings.
-
-- `frames_read` comes from the same process-global counter the
-  Prometheus scrape reports.
-- So every other figure in the run shares that
-  denominator.
+findings. `frames_read` is the count `/metrics` reports as
+`sipnab_capture_packets_total`.
 
 The body is the capture analysis itself, the object `--json-analyze` prints.
 It opens with `schema_version`.
@@ -2805,10 +2783,8 @@ What sipnab is doing, and what it is costing the host it runs on.
 sipnab exports 40 Prometheus metrics. The listener that serves them is off
 by default.
 
-- So on most deployments those numbers exist inside the process and
-  nothing can read them.
-- This endpoint answers the same questions without one.
-- It adds two things that did not exist anywhere:
+- This endpoint answers the same questions without that listener.
+- It also reports:
   - sipnab's own resource use,
   - its share of the machine.
 
@@ -2896,13 +2872,9 @@ this in words. The key is absent on a run that exports nothing.
 - A percentage computed against the wrong total is worse
   than no percentage, because a reader believes it.
 
-**`impact.significant` is a verdict, not arithmetic.**
-
-- Sometimes a capture is itself
-  the reason a proxy started dropping calls. That is the worst failure this tool can
-  have, and it used to be invisible.
-- `note` carries the threshold. So you can disagree with the setting rather
-  than with the finding.
+**`impact.significant` says whether sipnab's memory use is large enough to
+affect the host.** It is `true` when sipnab holds at least the threshold share
+of host memory. `note` states the share and the threshold.
 
 **`interfaces` reads the interface, not the capture handle.**
 
@@ -2954,12 +2926,8 @@ curl -s -H "Authorization: Bearer $SIPNAB_API_KEY" \
 }
 ```
 
-The breakdown is the point.
-
-- A message rate that does not separate INVITE from
-  OPTIONS describes whatever the deployment does most.
-- In the field, that is the
-  keepalive plane rather than the calls.
+`calls_per_second_by_method` separates INVITE from OPTIONS, so keepalive
+traffic does not hide the call rate.
 
 `window_seconds` is the window sipnab **applied**, not the one you asked for.
 
@@ -2975,9 +2943,8 @@ rather than answering it.
 - Zero deltas
   is exactly what a healthy quiet capture looks like.
 
-The MCP tool `runtime_stats` returns the same envelope from the same
-derivation. That includes the same refusal and the same clamp. So the two
-surfaces cannot disagree about one process.
+The MCP tool `runtime_stats` returns the same envelope, with the same refusal
+and the same clamp.
 
 ### GET /v1/hep/senders
 
@@ -3137,8 +3104,7 @@ curl -s -H "Authorization: Bearer $SIPNAB_API_KEY" http://127.0.0.1:8080/v1/capa
 
 - It is the same set `--version` prints and
   the MCP `server_capabilities` tool returns.
-- sipnab reads it from `cfg!`, so it cannot name a
-  feature the binary lacks.
+- It names only features compiled into the running binary.
 - A capability absent here is one this build cannot do.
   That is a different fact from one this run did not turn on.
 
@@ -3155,10 +3121,10 @@ curl -s -H "Authorization: Bearer $SIPNAB_API_KEY" http://127.0.0.1:8080/v1/capa
   [`GET /v1/vcon/fetch/:uuid`](#get-v1vconfetchuuid) can reach a store: the run
   has `--api-allow-vcon-fetch` and the config file sets `[vcon_fetch] url`.
 
-**`libpcap` names the library this process captures through.** It is
-`pcap_lib_version()` asked at runtime.
+**`libpcap` names the library this process captures through**, as the
+library reports itself at runtime.
 
-- So a gnu build or a package reports the
+- A gnu build or a package reports the
   host's libpcap. The sample above is Debian 13's.
 - A static musl build
   reports the 1.10.6 it carries.
@@ -3175,15 +3141,9 @@ See [which
 capture backends an artifact can
 reach](install.md#which-capture-backends-an-artifact-can-reach).
 
-The MCP tool `server_capabilities` returns:
-
-- the same feature set from the same
-  `compiled_features` list,
-- the same `libpcap` block from the same report
-  the second line of `sipnab --version` prints.
-
-So the surfaces cannot claim
-different builds of one binary or different libraries behind it.
+The MCP tool `server_capabilities` returns the same feature set and the same
+`libpcap` block. The second line of `sipnab --version` prints the same
+library banner.
 
 ### GET /v1/stats
 
@@ -3323,22 +3283,13 @@ sipnab **declined**.
 | `media_creating_commands` | rtpengine `subscribe`, `publish` and `start recording` commands seen and deliberately not attributed |
 | `tls` | TLS decryption state — **absent** unless a decryptor ran |
 
-Declining is the right call.
+Those commands create media for a call without being one of its two legs.
+sipnab does not attribute that media to the call, so a two-party call keeps
+two streams and its one-way-audio and asymmetry checks stay valid. A non-zero
+`media_creating_commands` means such media existed and is not in the call's
+streams.
 
-- Those commands create media belonging to a call
-  without being one of its two legs.
-- Decoding one as an ordinary leg makes a
-  two-party call report three streams.
-- After that, the analysis that judges
-  one-way audio and asymmetry answers a question nobody asked.
-
-That makes the count the disclosure.
-
-- A run that saw `start recording` and said
-  nothing would be a tool that cannot say what it did not attribute.
-- **The key is always present and zero is a real answer.**
-- A field that appears only once
-  something has happened is a field no client learns exists.
+**`media_creating_commands` is always present, and `0` is a real answer.**
 
 #### `caveats.tls` — is decryption working?
 
@@ -3407,8 +3358,7 @@ with, read from the same object.
   process can therefore tell they are describing one capture.
 - Both see a swap the moment it happens.
 
-sipnab reads the instance and both generations under one set of locks. So the
-identity names a single moment rather than three.
+sipnab reads the instance and both generations at the same moment.
 
 `null` when nobody told this server what capture it holds.
 
@@ -3421,38 +3371,22 @@ identity names a single moment rather than three.
 | `writing_to` | path sipnab saves packets to, if any |
 | `unsaved` | `true` only for a **live** capture with no output file — packets held in memory and nowhere else |
 
-**`unknown` is a real answer, not a default.**
+**`unknown` is a real answer, not a default.** sipnab reports `unknown`
+rather than guess `live` or `file`.
 
-- You consult it before
-  deciding whether stopping a capture is destructive.
-- A wrong `"live"` would
-  be worse than an admission of ignorance.
-
-`unsaved` is the field that matters for that decision.
+Read `unsaved` before you stop a capture.
 
 - A file replay is already
   on disk, so it is never unsaved.
 - A live capture with an output file is safe to
   stop.
 
-### SIP the port gate never analyzed
+### Find SIP that `--portrange` excluded
 
-`unanalysed_sip_messages` is the largest loss this project has measured. It
-is the one `capture_quality` cannot see.
-
-- No packet went missing and no decoder gave up.
-- sipnab read the
-  bytes and recognized them as SIP.
-- It set them aside because both ports fell
-  outside `--portrange`.
-
-On the corpus that was **2,311 dialogs against 3,712 real: 37.7% gone**.
-
-- The reason: a third of the SIP never touches 5060/5061.
-- `dialogs.total` alone reads as "how
-  much was there".
-- A capture missing a third of its calls renders identically
-  to one that only had two-thirds.
+sipnab reads SIP only on the ports `--portrange` names (default `5060-5061`).
+When it reads a file, it counts the SIP it skipped on other ports and names
+those ports. `capture_quality` does not include this count: sipnab lost no packet, and
+it recognized the bytes as SIP.
 
 | Key | Meaning |
 |-----|---------|
@@ -3461,21 +3395,40 @@ On the corpus that was **2,311 dialogs against 3,712 real: 37.7% gone**.
 | `unanalysed_websocket_messages` | SIP-over-WebSocket ([RFC 7118](https://www.rfc-editor.org/rfc/rfc7118.html)) outside the WebSocket port set |
 | `unanalysed_websocket_ports` | the top five ports carrying that |
 
-The ports travel with the counts because the answer has to name its own remedy.
-They are what you write into `--portrange`. A bare number says something is
-wrong without saying where to look.
+To check a server, read the four keys from `/v1/stats`. This server replays
+`tests/pcap-samples/sip-problem-call.pcap` with `--portrange 5070-5080`, a range
+that excludes the capture's SIP port:
 
-**The two counts stay apart because the remedies differ.**
+```bash
+curl -s -H "Authorization: Bearer $SIPNAB_API_KEY" http://127.0.0.1:8080/v1/stats \
+  | jq '{dialogs: .dialogs.total, unanalysed_sip_messages, unanalysed_busiest_ports}'
+```
 
-- Widening
-  `--portrange` recovers none of the WebSocket half. That needs `--ws-portrange`.
-- This is the common case behind a WSS listener on a reverse proxy.
-- It is also the common case on
-  Kamailio, OpenSIPS and Janus. They all default outside sipnab's shipped
-  80/443/8080/8443.
+```json
+{
+  "dialogs": 0,
+  "unanalysed_sip_messages": 23,
+  "unanalysed_busiest_ports": [
+    {
+      "messages": 23,
+      "port": 5060
+    }
+  ]
+}
+```
 
-Both are zero on a live capture. There, BPF filtered before the pipeline saw
-anything, and there is nothing to under-report.
+`dialogs` is `0` because every SIP message was on port 5060. To analyze them,
+restart sipnab with a range that covers the listed ports, for example
+`--portrange 5060-5061`, or `--portrange 1-65535` for every port.
+
+For SIP over WebSocket, widening `--portrange` does not help. Set
+`--ws-portrange` to the ports `unanalysed_websocket_ports` lists. This is
+common behind a reverse proxy that terminates WSS, and with Kamailio, OpenSIPS
+and Janus, whose WebSocket ports are outside sipnab's default
+80/443/8080/8443.
+
+Both counts are `0` on a live capture. There, the port range becomes the BPF
+filter, and the kernel drops other ports before sipnab sees them.
 
 MCP `capture_status` carries all four under the same names.
 
@@ -3498,9 +3451,6 @@ The three counters stay apart because their remedies disagree:
   carries the wall clock instead. Nothing went missing. But treat post-dial delay,
   jitter, MOS and duration for this run as unreliable.
 
-Summing them would name one problem where there are three. "Raise the
-buffer" is the wrong answer to two of them.
-
 `undecodable_frames` is a fourth channel. It is the only one that is about sipnab
 rather than the host.
 
@@ -3516,13 +3466,8 @@ Which link types, EtherTypes and IP protocols this covers appears in
 `sipnab_capture_undecodable_frames_total{reason}` on `/metrics`. The
 proportion is `sipnab_capture_undecoded_fraction`.
 
-It is **not** part of `degraded`, on purpose.
-
-- ARP is an undecodable frame by
-  definition.
-- It is present on nearly every Ethernet capture.
-- So a flag that
-  included it would be true always and useful never.
+It is **not** part of `degraded`. ARP frames count as undecodable, and nearly
+every Ethernet capture holds some.
 
 `snapped_frames` is a fifth channel. It is neither loss nor a decode failure.
 
@@ -4036,8 +3981,6 @@ What sipnab's own armed detectors recorded, newest first. The detectors are
 `scanner`, `fraud`, `digest` and `reg_flood`.
 
 - This is the poll a SOC dashboard makes.
-- Before this route,
-  sipnab's detections went only to syslog and stderr. So nothing could query them.
 - It is the same ring the MCP `security_findings` tool reads.
 
 **Query parameters:**
@@ -4133,7 +4076,6 @@ than yesterday, and here is where" is the first row.
 - This is the query a monitoring
   system polls.
 - It is the same diff the MCP `compare_captures` tool answers.
-- Before this, no capture-vs-capture view existed on REST.
 
 **Query parameters:**
 
@@ -4293,12 +4235,9 @@ curl -s -X POST -H "Authorization: Bearer $SIPNAB_API_KEY" -H "Content-Type: app
 The schema is the working group's
 [draft-ietf-vcon-vcon-core-04 schema](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-04#appendix-B), vendored unchanged.
 
-The response is `schema_version` 2. Version 1 also had:
-
-- `deviations`,
-- `explanations`,
-- a `valid-except-documented-deviation` verdict for the empty
-  Dialog Object core-03 allowed. core-04 no longer allows it.
+The response is `schema_version` 2. A version 1 response also carried
+`deviations`, `explanations` and a `valid-except-documented-deviation`
+verdict. Version 2 has none of them.
 
 The body must be the JSON object itself, not a string holding it. A non-object
 is a `400`.
@@ -4321,7 +4260,7 @@ A container whose `critical` lists an extension sipnab does not support is a `42
 - sipnab supports `sip-signaling` and `CC`.
 - [Section 4.1.4 of draft-ietf-vcon-vcon-core-04](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-04#section-4.1.4) forbids operating on such a container.
 
-The MCP tool `validate_vcon` runs the same `vcon_schema::validate`.
+The MCP tool `validate_vcon` runs the same validation.
 
 ---
 
@@ -4439,8 +4378,8 @@ is a `400`. A container whose `critical` lists an extension sipnab does not
 support answers `verdict: unreadable`, with a reason naming each one.
 
 The MCP tool [`analyze_vcon`](mcp-tools-vcon.md#analyze_vcon) runs the
-same `vcon_analysis::analyze_container` and answers with the same body. Its
-section describes every field.
+same analysis and answers with the same body. Its section describes every
+field.
 
 ---
 
@@ -4464,7 +4403,7 @@ The answer is a snapshot of files on disk, taken when `as_of` says.
 - This route sends, fetches, moves and deletes nothing.
 - The MCP
   tool `vcon_spool_status` and `sipnab --vcon-spool-status` give the same
-  answer, from the same function.
+  answer.
 - The MCP tool also fences the store's answer as
   untrusted text and cuts it to `--mcp-max-body-bytes`.
 - This route returns it as
@@ -4553,7 +4492,7 @@ answer. sipnab writes no file.
   `[vcon_fetch]` only. The client gives the uuid and nothing else, and the
   answer never holds a key or the credential.
 - The request, the credential, the CA, the size limit, the decryption and
-  the signer checks are `sipnab --vcon-fetch`'s, by the same function
+  the signer checks are the same as `sipnab --vcon-fetch`
   ([Fetch a stored vCon](vcon.md#fetch-a-stored-vcon)).
 - The MCP tool [`fetch_vcon`](mcp-tools-vcon.md#fetch_vcon) gives the same
   answer. Its section describes every field.
@@ -4724,19 +4663,12 @@ values a program keys on.
 
 ---
 
-## Operator notes are not a REST resource
+## Add operator notes to a capture
 
-Operator notes, typed in the TUI or written with `--write-annotated`, have no
-route.
-
-- Writing a capture on the server is a control action REST here does not
-  take.
-- Consider a note store every client could write, read beside the analysis by the
-  same dashboards. That is the store section 2 of the
-  [deferred-and-declined record](design/deferred-and-declined.md#2-write-back-mcp-tools)
-  declined to build.
-- sipnab never reads a packet comment back. So no route shows a
-  note from a capture either.
+The REST API has no route that reads or writes operator notes. Add notes in
+the TUI, or write a pcapng copy of the capture that carries them with
+`--notes <FILE> --write-annotated <OUTPUT>`. sipnab does not read packet
+comments back from a capture, so no route shows them.
 
 ## Status codes
 
@@ -4754,12 +4686,9 @@ route.
 
 ## Recipes (curl + jq)
 
-Every recipe here reads `$API`. Every one but the health check also reads
-`$H`. So set them once first.
-
-The two lines are one unit. `$H` interpolates
-`$KEY`. So running the second on its own builds an `Authorization` header with
-no token in it. Every authenticated recipe then returns `401`:
+Every recipe reads the server address from `$API` and the key from `$KEY`.
+Set both in the shell you run the recipes in. Without `$KEY`, every recipe
+except the health check returns `401`.
 
 - Set the API address:
 
@@ -4773,43 +4702,102 @@ no token in it. Every authenticated recipe then returns `401`:
    KEY="my-secret-token"
    ```
 
-- Build the header from the key:
+Each recipe below is a complete command. Run the one that answers your
+question.
 
-   ```bash
-   H="-H 'Authorization: Bearer $KEY'"
-   ```
-
-Each recipe below is a complete command in its own right. They are
-alternatives rather than a sequence. Run the one that answers your question:
-
-- `curl -fsS $API/health` — health check. `/health` is the one endpoint that takes no credential
-- `curl -fsS "$API/v1/dialogs?state=Failed&limit=20" $H | jq` — the most recent failed dialogs
-- `curl -fsS "$API/v1/dialogs?from=alice&limit=20"   $H | jq` — dialogs from one user (`from=` is a regex)
-- `curl -fsS "$API/v1/dialogs/abc123@host"        $H | jq` — one aggregated dialog by Call-ID
-- `curl -fsS "$API/v1/dialogs/abc123@host/report" $H | jq` — the same dialog as a JSON call report
-- `curl -fsS "$API/v1/streams?orphaned=false" $H | jq` — only streams already linked to a dialog
-- `curl -fsS "$API/v1/streams?mos_below=3.5"  $H | jq` — only streams below a MOS threshold
-- `curl -fsS "$API/v1/stats" $H | jq` — the aggregate counters and PDD percentiles
-
-Two recipes are pipelines rather than one-liners.
-
-Export every dialog to CSV,
-for a spreadsheet or a diff against the switch's own CDR:
+Check that the server is up. `/health` is the one endpoint that takes no
+credential:
 
 ```bash
-curl -fsS "$API/v1/dialogs?limit=1000" $H \
+curl -fsS "$API/health"
+```
+
+List the failed dialogs:
+
+```bash
+curl -fsS "$API/v1/dialogs?state=Failed&limit=20" -H "Authorization: Bearer $KEY" | jq
+```
+
+List the dialogs from one user (`from=` is a regular expression):
+
+```bash
+curl -fsS "$API/v1/dialogs?from=alice&limit=20" -H "Authorization: Bearer $KEY" | jq
+```
+
+Get one dialog by Call-ID:
+
+```bash
+curl -fsS "$API/v1/dialogs/abc123@host" -H "Authorization: Bearer $KEY" | jq
+```
+
+Get the same dialog as a JSON call report:
+
+```bash
+curl -fsS "$API/v1/dialogs/abc123@host/report" -H "Authorization: Bearer $KEY" | jq
+```
+
+List only the streams already linked to a dialog:
+
+```bash
+curl -fsS "$API/v1/streams?orphaned=false" -H "Authorization: Bearer $KEY" | jq
+```
+
+List only the streams below a MOS threshold:
+
+```bash
+curl -fsS "$API/v1/streams?mos_below=3.5" -H "Authorization: Bearer $KEY" | jq
+```
+
+Read the aggregate counters and post-dial delay percentiles:
+
+```bash
+curl -fsS "$API/v1/stats" -H "Authorization: Bearer $KEY" | jq
+```
+
+Export every dialog to CSV, for a spreadsheet or a comparison with the
+switch's own call records:
+
+```bash
+curl -fsS "$API/v1/dialogs?limit=1000" -H "Authorization: Bearer $KEY" \
   | jq -r '.dialogs[] | [.call_id, .method, .state, .from_user, .to_user, .duration_sec] | @csv'
 ```
 
-Or print one line per poor-MOS stream. This is the shape to feed an alerting
-hook. It stays silent while every stream is healthy:
+Against `tests/pcap-samples/sip-problem-call.pcap` it prints:
+
+```text
+"completed-9f8e7d@192.0.2.10","INVITE","Completed","alice","bob",20.01
+"busy-3a2b1c@192.0.2.30","INVITE","Failed","carol","dave",1.81
+"decline-7c6d5e@198.51.100.30","INVITE","Failed","erin","frank",1.81
+"notfound-1b2c3d@203.0.113.30","INVITE","Failed","grace","heidi",1.81
+"unavail-4e5f60@192.0.2.50","INVITE","Failed","ivan","judy",1.81
+```
+
+Print one line per stream with a poor MOS, for an alerting hook. It prints
+nothing while every stream is healthy:
 
 ```bash
-curl -fsS "$API/v1/streams?mos_below=3.0" $H \
+curl -fsS "$API/v1/streams?mos_below=3.0" -H "Authorization: Bearer $KEY" \
   | jq -r '.streams[] | "LOW MOS: SSRC=\(.ssrc) MOS=\(.mos) call=\(.associated_dialog)"'
 ```
 
-For per-call response-code histograms (not exposed over REST), use the CLI NDJSON mode. `sipnab -N --json` emits one record per message. See [Output Formats](output-formats.md).
+Count the dialogs by final response code, one count per call:
+
+```bash
+curl -fsS "$API/v1/aggregate?by=response_code" -H "Authorization: Bearer $KEY" \
+  | jq -r '.buckets[] | "\(.count)  \(.value)"'
+```
+
+```text
+1  200
+1  404
+1  486
+1  503
+1  603
+```
+
+The REST API does not return individual SIP messages. For per-message data,
+use the CLI NDJSON mode: `sipnab -N --json` emits one record per message. See
+[Output Formats](output-formats.md).
 
 ## Client examples
 
@@ -4820,41 +4808,36 @@ The website's API Client Examples page has full end-to-end clients: <https://sip
 
 ## Security model
 
-- The API thread only reads dialog/stream metadata: no capture fd access, no key material exposure
-- All network listeners bind to localhost by default
-- Rate limiting on every guarded endpoint (100 RPS per source IP by default). Two exceptions worth knowing:
-  - `/health` sits outside the guard entirely: no auth, no rate limit.
-  - `--api-rate-limit-per-peer 0` turns the cap off altogether.
-- Bearer token authentication required on every REST endpoint except `/health`.
-  - `/metrics` on the `--api` server sits on the same guarded router and takes the same credential.
-  - The *standalone* `--metrics` server is the one that uses HTTP Basic instead.
-- Constant-time key comparison prevents timing attacks
-- HTTPS in-process with `--api-tls-cert` and `--api-tls-key`, or behind a reverse proxy (see [API TLS](#api-tls))
-- Connection limits prevent resource exhaustion
+- Every network listener binds to loopback by default.
+- When you configure a key or a signing key, every route except `/health`
+  requires a bearer credential.
+  - `/metrics` on the `--api` server takes the same credential.
+  - The standalone `--metrics` server uses HTTP Basic instead.
+  - Action routes need an `actions` token, and live-audio routes an `audio`
+    token.
+- Rate limiting applies to every route except `/health`: 100 requests per
+  second per source IP by default. `--api-rate-limit-per-peer 0` removes it.
+- `--api-max-conn` caps the requests handled at once.
+- Key and token comparison runs in constant time.
+- Serve HTTPS with `--api-tls-cert` and `--api-tls-key`, or put a reverse
+  proxy in front (see [API TLS](#api-tls)).
 
-> **Note:** The API runs as a thread in the sipnab process. It shares the in-memory dialog/stream stores read-only.
+> **Note:** The API runs as a thread in the sipnab process, not as a separate
+> OS process. It does not expose TLS key material. It does expose call
+> content: SIP messages inside vCon exports, and decoded audio when the run
+> retains it (`--retain-audio`). Two routes change state:
+> `POST /v1/persistence`, and the TFPS action routes when `--allow-action`
+> enables them.
 >
-> - It never touches capture file descriptors or TLS key material.
-> - It exposes only dialog/stream metadata.
-> - But it is not a separate OS process.
->
-> Treat the API bind address and key accordingly.
+> Choose the API bind address and protect the key accordingly.
 
 ### GET /metrics
 
 Prometheus-compatible metrics endpoint, documented on its own page:
 [Prometheus Metrics](prometheus-metrics.md).
 
-It lives apart from the endpoints above because it answers a different
-question for a different reader.
-
-- Everything else here returns what sipnab
-  SAW: dialogs, streams, messages.
-- `/metrics` returns numbers ABOUT sipnab,
-  in a format a scraper polls on a timer.
-- It authenticates differently from
-  the rest of the API.
-- Someone wiring a scrape target needs none of the endpoint
-  schemas above.
-- This page was 1,195 lines before the split, with the metric
-  table 86% of the way down it.
+- The endpoints above return what sipnab saw: dialogs, streams, messages.
+- `/metrics` returns counters about sipnab itself, in the Prometheus text
+  format, for a scraper to poll.
+- On the `--api` server it takes the same bearer credential as every other
+  route. A `metrics`-scoped token reaches it and nothing else.

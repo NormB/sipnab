@@ -406,6 +406,38 @@ const FOREIGN_FLAGS: &[(&str, &[&str])] = &[
             "website/content/docs/examples.md",
         ],
     ),
+    // More of the example programs' own options, which the runnable-examples
+    // page shows in the commands that try each program: `leg_correlate.py`
+    // takes `--key-file`, `--proxy` and `--relay`, and `customer_export.py`
+    // takes `--out`. None is a sipnab flag.
+    (
+        "key-file",
+        &[
+            "docs/client-examples.md",
+            "website/content/docs/examples.md",
+        ],
+    ),
+    (
+        "proxy",
+        &[
+            "docs/client-examples.md",
+            "website/content/docs/examples.md",
+        ],
+    ),
+    (
+        "relay",
+        &[
+            "docs/client-examples.md",
+            "website/content/docs/examples.md",
+        ],
+    ),
+    (
+        "out",
+        &[
+            "docs/client-examples.md",
+            "website/content/docs/examples.md",
+        ],
+    ),
     // The AI-task programs' own options (EX7): `--url` and `--token-file`
     // point `agent_triage.py` at a sipnab serving MCP over HTTP and at the
     // token it presents, `--file-root` and `--name` are where

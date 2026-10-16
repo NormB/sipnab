@@ -248,7 +248,7 @@ sipnab -N -q -I tests/pcap-samples/sip-register.pcap --analyze --no-cli-print --
 - [Interface and driver drops](@/docs/tuning-capture.md#interface-and-driver-drops)
 - [When the answer is partial](@/docs/cli.md#when-the-answer-is-partial)
 - [`--run-provenance-file` in the Security flags](@/docs/cli.md#security)
-- [SIP the port gate never analyzed](@/docs/api.md#sip-the-port-gate-never-analyzed)
+- [Find SIP that `--portrange` excluded](@/docs/api.md#find-sip-that-portrange-excluded)
 - [Rules every tool follows](@/docs/mcp-tools.md#rules-every-tool-follows)
 - [`capture_status`](@/docs/mcp-tools-core.md#capture-status) and
   [`capture_health`](@/docs/mcp-tools-server.md#capture-health)

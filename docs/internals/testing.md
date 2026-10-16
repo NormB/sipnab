@@ -261,6 +261,54 @@ The rule for all of them: **the gate is not the problem**.
 - Adding an exemption is the last resort.
 - Every exemption list in this repo works as a ratchet, so it cannot quietly grow.
 
+## The client example programs
+
+Three checks cover the programs under `clients/` that the user pages quote.
+
+- `client_snippets_test` holds every `<!-- snippet: clients/... -->` block
+  on `docs/rest-api.md`, `docs/client-examples.md`, the metrics and MCP pages
+  and the hand-written `website/content/docs/api-clients.md` to the marked
+  region of its program, byte for byte. It also requires
+  `scripts/smoke-clients.sh` to run the site's whole clients, the capability
+  examples and the operator tasks.
+- `example_parity_test` holds the lifecycle table on
+  `docs/client-examples.md` to the programs in `clients/`.
+- `scripts/smoke-clients.sh` runs every program end to end on loopback,
+  against sipnab servers replaying captures in the repository. CI runs it
+  after the build step that builds the binaries and examples. Each program
+  must print its exact output lines and must fail on a failure case: a wrong
+  token, a missing call or customer, a capture with nothing to judge, or no
+  TFPS.
+
+What the script does that a reader of the user page does not need to:
+
+- It waits for evidence, never a fixed sleep: `source_exhausted` in
+  `/v1/stats` before it queries a replaying server, and `packets_admitted`
+  in `/v1/hep/senders` before it reads the HEP roster. sipnab discards input
+  it has not processed when it stops.
+- TFPS bans by writing a pinned BPF map as root, which no CI runner allows.
+  The ops server runs with `--tfps-ctl` naming
+  `clients/python/tests/fake_tfps_ctl.py`, which answers in the documents
+  `tfps_ctl --json` prints. `clients/python/tests/test_fake_tfps_ctl.py`
+  holds it to the fixtures pinned against the real binary. The script checks
+  that the stand-in's block list holds the two banned addresses.
+- `evidence_handoff.py` runs twice over one capture into two file roots, and
+  the script requires the same output and byte-identical files. The absolute
+  path each answer carries is the one difference, and the program prints it
+  relative to its root. The README and manifest name the sipnab version, so
+  the script compares two runs rather than pinning hashes.
+- `agent_triage.py` runs over stdio and then over HTTP, against a server
+  started on loopback port 0 with a signing key generated at run time and
+  `--mcp-tools core`. The signed token must print the same lines as the stdio
+  run. A token signed with another key, a token minted from the same key for
+  the REST API, and a request with no token must each get `401`.
+- `customer_export.py` reads three files cut from `sip-problem-call.pcap` the
+  way a wrapped `tcpdump -C -W` ring leaves them, and `capinfos` and `tshark`
+  read the export.
+- The BPF half of `--uprobe-tls` needs root and a kernel with BTF, so no CI
+  runner can run it. `examples/tls_plaintext_records.rs` runs the decode half
+  on records laid out as the BPF program publishes them.
+
 ## The development loop
 
 **Logging.** `SIPNAB_LOG` is a `tracing` `EnvFilter`.

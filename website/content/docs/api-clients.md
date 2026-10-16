@@ -15,22 +15,18 @@ End-to-end examples in five languages for the [REST API](@/docs/api.md). Each fu
 
 The Python one also scrapes `/metrics`. Adapt to your environment.
 
-The Go, TypeScript and Rust clients are complete programs in the repository, under [`clients/`](https://github.com/NormB/sipnab/tree/main/clients).
+The Go, TypeScript and Rust clients are complete programs in the repository, under [`clients/`](https://github.com/NormB/sipnab/tree/main/clients). The code on this page is the code of those programs.
 
-- CI compiles each one. It runs each against a sipnab replaying a committed capture.
-- A test holds the code on this page to those programs byte for byte.
 - Each reads the base URL from `SIPNAB_URL` (default `http://localhost:8080`).
 - Each reads the bearer token from `SIPNAB_API_KEY`.
 
-> **Filter parameters:** the REST API accepts these query parameters:
+> **Filter parameters:** `/v1/dialogs` accepts:
 >
-> - `state` (e.g. `Failed`, `Completed`, `InCall`) and `from` (regex on the From header) on `/v1/dialogs`,
-> - plus `orphaned` and `mos_below` on `/v1/streams`.
+> - `state` (e.g. `Failed`, `Completed`, `InCall`) and `from` (a regular expression on the From user),
+> - `filter`, a [filter expression](@/docs/filter-dsl.md) such as `method == 'INVITE'`, the same language `sipnab --filter` takes, or a named alias such as `problems`,
+> - `after` and `before`, RFC 3339 instants that bound when the dialog opened.
 >
-> Full DSL filtering is **not** available over REST. That means anything more complex than a single state/from match.
->
-> For arbitrary DSL queries, use the [MCP server](@/docs/mcp.md)'s `list_dialogs` tool.
-> It accepts a `filter` argument. That argument runs through the same evaluator as `sipnab --filter`.
+> `/v1/streams` accepts `orphaned` and `mos_below`. The [REST API reference](@/docs/api.md) lists every parameter of every route.
 
 > **Status codes:** the REST API returns **503 Service Unavailable**, not 429, in two cases:
 >
@@ -39,10 +35,11 @@ The Go, TypeScript and Rust clients are complete programs in the repository, und
 >
 > A missing or wrong token gets 401. An unknown `call_id` gets 404.
 
-> **Per-call response code / per-message data is not on REST.**
+> **Per-message data is not on REST.**
 >
-> - The REST API aggregates each dialog into a summary (`call_id`, `state`, `from_user`, `to_user`, `duration_sec`, `msg_count`, `timing`, `diagnosis`, `sdp_timeline`, `streams`).
-> - Individual SIP messages and per-response status codes are **not** exposed by `/v1/dialogs` or `/v1/dialogs/{id}`.
+> - The REST API returns each dialog as a summary. A list row carries `call_id`, `state`, `method`, `from_user`, `to_user`, `final_status_code`, `duration_sec`, `msg_count` and `timing`.
+> - `/v1/aggregate?by=response_code` counts the dialogs by final response code.
+> - Individual SIP messages, and responses other than the final one, are **not** exposed by `/v1/dialogs` or `/v1/dialogs/{id}`.
 >
 > To work with per-message data programmatically, use either:
 >
@@ -128,8 +125,14 @@ Then run whichever of these you need:
   curl -fsS "$API/metrics" -H "Authorization: Bearer $KEY" | grep '^sipnab_'
   ```
 
-For per-call response-code histograms, use the CLI NDJSON mode instead.
-`sipnab -N --json` emits one record per message (see
+- Count the dialogs by final response code:
+
+  ```bash
+  curl -fsS "$API/v1/aggregate?by=response_code" -H "Authorization: Bearer $KEY" | jq -r '.buckets[] | "\(.count)  \(.value)"'
+  ```
+
+To count every response message rather than one final code per call, use the
+CLI NDJSON mode. `sipnab -N --json` emits one record per message (see
 [Output Formats](@/docs/output-formats.md)):
 
 ```bash
@@ -167,8 +170,8 @@ The Python examples on this page use `requests` and `httpx`:
 pip install requests httpx
 ```
 
-CI runs each one against a live sipnab, with the versions pinned in
-[`clients/python/requirements-examples.txt`](https://github.com/NormB/sipnab/blob/main/clients/python/requirements-examples.txt).
+[`clients/python/requirements-examples.txt`](https://github.com/NormB/sipnab/blob/main/clients/python/requirements-examples.txt)
+pins the versions the repository tests the examples with.
 
 <!-- snippet: clients/python/sipnab_client.py#sipnab-client -->
 ```python
