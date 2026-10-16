@@ -689,6 +689,9 @@ fn declare_process_globals(cli: &Cli, config: &Config) {
     // on one surface and ignored on another.
     crate::sip::diagnosis::set_signaling_thresholds(cli.signaling_thresholds(config));
     crate::rtp::diagnosis::set_asymmetry_thresholds(cli.asymmetry_thresholds(config));
+    // The declared one-way delay, for the same reason: every surface that
+    // scores MOS reads it through `MosDelay::from_capture`.
+    crate::rtp::quality::set_declared_one_way_delay_ms(cli.declared_one_way_delay_ms(config));
 
     // [vcon] uuid_domain, read by every door that mints a container uuid.
     // `apply_config` has already refused a value that is not a host name.

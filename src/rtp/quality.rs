@@ -521,6 +521,34 @@ pub fn resolve_one_way_delay(
     (DEFAULT_ONE_WAY_DELAY_MS, DelaySource::Assumed)
 }
 
+/// The one-way delay this run declared, once startup has read it.
+///
+/// Process-global and written once, the same shape as
+/// [`crate::rtp::diagnosis::set_asymmetry_thresholds`] and for the same
+/// reason: the REST layer, the MCP tools, the reports, `--json-dialogs` and
+/// the filter language all score MOS, and a declaration threaded to each of
+/// them leaves a chance for one to keep scoring on the capture alone.
+static DECLARED_ONE_WAY_DELAY_MS: std::sync::OnceLock<f64> = std::sync::OnceLock::new();
+
+/// Declare this run's one-way delay. Call once, at startup; `None` declares
+/// nothing.
+///
+/// # Side effects
+///
+/// Writes a process-global `OnceLock`; the first writer wins, so a later call
+/// is ignored rather than moving the score mid-run.
+pub fn set_declared_one_way_delay_ms(ms: Option<f64>) {
+    if let Some(ms) = ms {
+        let _ = DECLARED_ONE_WAY_DELAY_MS.set(ms);
+    }
+}
+
+/// The one-way delay this run declared, if it declared one.
+#[must_use]
+pub fn declared_one_way_delay_ms() -> Option<f64> {
+    DECLARED_ONE_WAY_DELAY_MS.get().copied()
+}
+
 /// What one surface can see about the one-way delay behind a stream's MOS.
 ///
 /// [`resolve_one_way_delay`] is the RANKING; this is what carries its three
@@ -564,19 +592,17 @@ impl<'a> MosDelay<'a> {
         }
     }
 
-    /// The capture's own evidence, on a surface that cannot see a declaration.
+    /// The capture's own evidence, plus the delay this run declared.
     ///
-    /// `declared_ms` is `None` here as a FACT about the surface, not a default:
-    /// the browser build has no config file and no command line, so the
-    /// [`Declared`](DelaySource::Declared) rank is structurally unreachable
-    /// there. A capture opened in a browser can still carry RTCP, and it is
-    /// scored on it — the alternative, stating the assumption, would make the
-    /// same capture read one MOS in the browser and another in the CLI, which
-    /// is the "one tool, two numbers" defect wearing a different build target.
+    /// The declaration is the run's `--one-way-delay` or `[media]
+    /// one_way_delay_ms`, read from [`declared_one_way_delay_ms`]. The browser
+    /// build has no config file and no command line and never declares one, so
+    /// there the [`Declared`](DelaySource::Declared) rank is structurally
+    /// unreachable and a capture is scored on its own RTCP, as in the CLI.
     #[must_use]
     pub fn from_capture(store: &'a crate::rtp::stream_store::StreamStore) -> Self {
         Self {
-            declared_ms: None,
+            declared_ms: declared_one_way_delay_ms(),
             store: Some(store),
         }
     }
