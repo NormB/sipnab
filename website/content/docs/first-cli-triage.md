@@ -50,12 +50,12 @@ The table comes first, then the RTP streams:
 ```text
 Call-ID                          From           To             State        Code   Duration   Msgs   PDD      Tags
 -------------------------------------------------------------------------------------------------------------------------
-reg-alice-4f2a19@192.0.2.10      alice          alice          Registered   -      0s         4      -        -
-reg-bob-7c3d02@192.0.2.30        bob            bob            Expired      -      14s        8      -        -
-sub-alice-mwi-2b81@192.0.2.10    alice          alice          Active       -      0s         3      -        -
-sub-bob-blf-9e42@192.0.2.30      bob            bob            Pending      -      0s         3      -        -
-sub-alice-pres-5c07@192.0.2.10   alice          alice          Terminated   -      14s        6      -        -
-opt-8b7c02@192.0.2.20            pbx            alice          Completed    -      0s         2      -        -
+reg-alice-4f2a19@192.0.2.10      alice          alice          Registered   200    0s         4      -        -
+reg-bob-7c3d02@192.0.2.30        bob            bob            Expired      200    14s        8      -        -
+sub-alice-mwi-2b81@192.0.2.10    alice          alice          Active       200    0s         3      -        -
+sub-bob-blf-9e42@192.0.2.30      bob            bob            Pending      202    0s         3      -        -
+sub-alice-pres-5c07@192.0.2.10   alice          alice          Terminated   200    14s        6      -        -
+opt-8b7c02@192.0.2.20            pbx            alice          Completed    200    0s         2      -        -
 call-2c9d47@192.0.2.10           alice          bob            Completed    200    8s         7      0.2s     -
 
 RTP Streams:
@@ -81,7 +81,9 @@ The rows above it are not calls. sipnab tracks these as dialogs too:
 - subscriptions (`sub-`),
 - an OPTIONS keepalive (`opt-`).
 
-The `Code` column reads INVITE answers only, so those rows show `-`.
+The `Code` column is the final response to the request that opened each
+dialog. For these rows that is the REGISTER, SUBSCRIBE or OPTIONS answer:
+`200`, or `202` for the subscription Bob's phone opened.
 
 ## Find the calls that went wrong
 

@@ -77,7 +77,7 @@ steps = [
   { title = "Install sipnab", href = "/docs/install/" },
   { title = "Turn on the detectors", href = "/docs/cli/#security" },
   { title = "Read signaling that is encrypted", href = "/docs/tls-capture/" },
-  { title = "Lint a capture for conformance", href = "/docs/sip-lint-rules/" },
+  { title = "Lint a capture for conformance", href = "/docs/sip-lint-rules/#fail-a-ci-job-on-a-non-conformant-capture" },
   { title = "Ban a source with fail2ban", href = "/docs/integrations/#block-scanners-with-fail2ban" },
   { title = "Write a detection of your own", href = "/docs/plugins/" },
 ]

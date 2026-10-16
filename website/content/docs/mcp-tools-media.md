@@ -22,7 +22,7 @@ the other bundles and finds any tool by name.
 
 | Tool | Parameters | Returns |
 |---|---|---|
-| [`reconcile_orphans`](#reconcile-orphans) | `limit?` | Why each RTP stream with no dialog lacks one: a relay named the endpoint but no signaling arrived, SDP named it but no dialog claims it, or nothing named it at all |
+| [`reconcile_orphans`](#reconcile-orphans) | `limit?`, `cursor?`, `max_response_bytes?` | Why each RTP stream with no dialog lacks one: a relay named the endpoint but no signaling arrived, SDP named it but no dialog claims it, or nothing named it at all |
 | [`media_diagnostics`](#media-diagnostics) | `call_id` | The facts under the MOS: QoS marking, jitter grounding, delay provenance, silence, and what the far end reported |
 | [`explain_attribution`](#explain-attribution) | `call_id` | Where each of a call's media endpoints came from and how much that path is worth — asked directly, HMAC-verified, plain secret, port-gated only, or the parties' own SDP |
 | [`export_audio`](#export-audio) | `call_id`, `filename` | Writes a call's RTP audio to a WAV in `--mcp-file-root`; needs the server started with `--retain-audio` |
@@ -40,9 +40,9 @@ needs.
 
 | Name | Type | Legal values | If omitted |
 |---|---|---|---|
-| `limit` | u32? | Ceiling is `--mcp-max-rows` (1000 by default), and higher clamps to it. `0` means the default. | 50 rows. |
-| `cursor` | string? | The previous response's `next_cursor`, verbatim (`<RFC 3339>\|0xSSRC@src>dst`, the shape the [`rtp_stats`](@/docs/mcp-tools-core.md#rtp-stats) sweep uses). A malformed timestamp half fails with `invalid_params`. | Starts at the earliest orphan. |
-| `max_response_bytes` | u64? | Bytes for the whole response. Ceiling is `--mcp-max-response-bytes` (1048576 unless the operator changed it). Higher clamps to it, `0` means the ceiling. Past it the page ends early at a whole row with `truncated_by: "bytes"`. | The ceiling. |
+| `limit?` | u32? | Ceiling is `--mcp-max-rows` (1000 by default), and higher clamps to it. `0` means the default. | 50 rows. |
+| `cursor?` | string? | The previous response's `next_cursor`, verbatim (`<RFC 3339>\|0xSSRC@src>dst`, the shape the [`rtp_stats`](@/docs/mcp-tools-core.md#rtp-stats) sweep uses). A malformed timestamp half fails with `invalid_params`. | Starts at the earliest orphan. |
+| `max_response_bytes?` | u64? | Bytes for the whole response. Ceiling is `--mcp-max-response-bytes` (1048576 unless the operator changed it). Higher clamps to it, `0` means the ceiling. Past it the page ends early at a whole row with `truncated_by: "bytes"`. | The ceiling. |
 
 **Returns** `orphans`, `returned`, `total_orphans` (every orphan in the store,
 whatever `limit` and `cursor` say), `truncated`, `truncated_by` (present only
@@ -56,9 +56,9 @@ when a bound cut the page), `next_cursor` (`null` on the final page),
 relay assertion on a later page still counts.
 
 `relay_control` has one row per relay control socket this capture read
-(`--rtpproxy-control`), and is empty when the capture read none. It counts retried
-commands, because a control channel that loses answers shows on the SIP side
-only as a proxy that is sometimes slow:
+(`--rtpproxy-control`), and is empty when the capture read none. Read it when
+the proxy is intermittently slow to answer SIP: retried commands mean the
+proxy did not hear the relay's answer in time.
 
 | Field | Meaning |
 |---|---|
@@ -72,7 +72,8 @@ sipnab remembers the 4,096 most recent cookies per socket, so a retry of an
 older one does not count. A headless run prints the same counts as a warning
 at the end when the proxy retried any command.
 
-Three verdicts, and the difference between them is the point:
+Each orphan carries one of three verdicts in `reason`, and each points at a
+different missing piece:
 
 | verdict | what it means |
 |---|---|
@@ -80,15 +81,15 @@ Three verdicts, and the difference between them is the point:
 | `signaled-but-no-dialog` | SDP named it and no dialog holds it — either the capture missed the dialog, or its SDP arrived before capture started |
 | `never-named` | nothing in this capture named this endpoint at all |
 
-`relay_was_consulted` rides alongside the verdict and matters more than it looks. A
-`never-named` verdict with `relay_was_consulted: false` means **nobody asked** —
-an absence of evidence, not evidence of absence. It is deliberately not
-reported using the `Unattributed` vocabulary, which answers "sipnab asked the
-relay and it said X": this server holds no live reconciler, and claiming an answer
-nobody received is the failure that vocabulary exists to prevent.
+Read `never-named` together with `relay_was_consulted`. With
+`relay_was_consulted: false`, sipnab asked no relay about the endpoint, so the
+verdict is an absence of evidence, not evidence that no relay allocated it. To
+get a relay's answer, query the relay itself (see the [relay
+bundle](@/docs/mcp-tools-relay.md)).
 
-The example runs against [`tests/pcap-samples/codec-negotiation.pcap`](https://github.com/NormB/sipnab/raw/main/tests/pcap-samples/codec-negotiation.pcap),
-which carries four streams and no dialogs at all:
+The example runs against [`tests/pcap-samples/codec-negotiation.pcap`](https://github.com/NormB/sipnab/raw/main/tests/pcap-samples/codec-negotiation.pcap).
+Its SIP is on port 5080, outside the default `--portrange 5060-5061`, so with
+default settings the capture yields four streams and no dialogs:
 
 ```jsonc
 // reconcile_orphans { "limit": 2 }
@@ -123,10 +124,12 @@ which carries four streams and no dialogs at all:
   "relay_control": [],
   "capture_identity": {
     "node": "capture-01",
-    "instance": "ece9518d2bf67680750b4-2",
+    "instance": "11b7ec18df002796634285-2",
     "dialog_generation": 1,
     "stream_generation": 4
-  }
+  },
+  "source_exhausted": true,
+  "source_stopped_early": false
 }
 ```
 
@@ -146,9 +149,8 @@ underneath it, and each one says what kind of number it is.
 
 **Read `applicable` first.** It is `false` when no RTP stream belongs to the
 dialog, and the response then holds only `call_id`, `reason`,
-`capture_identity` and `schema_version`. An empty `streams` array would read as
-"sipnab checked the media and it was fine", which is a different claim from "no
-media reached the capture point".
+`capture_identity` and `schema_version`. `applicable: false` means no media
+for this call reached the capture point. It does not mean the media was healthy.
 
 `dialog_seen` says whether the capture holds the call's SIP dialog. On a
 media-relay host it is `false` and `dialog_absent` says why, as described
@@ -164,17 +166,15 @@ Otherwise `streams` carries one entry per stream, each with five blocks:
 | `silence` | Comfort-noise frames and detected silence periods | -- (counts, not estimates) |
 | `endpoint_reported` | What the far end said over RTCP | The whole block is the flag. Omitted entirely when no RTCP arrived |
 
-`endpoint_reported` sits apart from everything beside it on purpose. Nobody
-authenticates RTCP and anyone can forge it, and a report describes the path
-from the sender to *the reporter* — on a mid-path capture, a different segment
-from the one sipnab watches. The two disagreeing is normal and informative, and
-merging them would destroy exactly that signal. Nothing under this key feeds the
-MOS.
+Read `endpoint_reported` separately from the other blocks. RTCP is not
+authenticated, and a report describes the path from the sender to *the
+reporter*. On a mid-path capture that is a different segment from the one
+sipnab watches, so the far end's figures and sipnab's can differ on a healthy
+call. Nothing under this key feeds the MOS.
 
 `qos.remarked_to` appears only when the stream's last packet carries a different
-code point from its first — an SBC or a policy boundary rewriting the marking in
-flight. Its presence is the finding, and a steady stream omits it rather than
-repeating the same number.
+code point from its first, which means a device on the path (an SBC or a policy
+boundary) rewrote the marking. A stream whose marking did not change omits it.
 
 The example runs against
 [`tests/pcap-samples/sip-rtp-g711.pcap`](https://github.com/NormB/sipnab/raw/main/tests/pcap-samples/sip-rtp-g711.pcap):
@@ -209,20 +209,27 @@ The example runs against
     }
   ],
   "capture_identity": {
-    "instance": "6dac718cb96d767d0f490-1",
+    "instance": "11c00618df002918a6c463-2",
     "node": "sbc-1",
     "dialog_generation": 13,
     "stream_generation": 2
-  }
+  },
+  "dialog_seen": true,
+  "source_exhausted": true,
+  "source_stopped_early": false
 }
 ```
 
-Three things in that answer are worth reading together. The media is in the
-default queue, so it competes with bulk traffic — the most common cause of
-jitter that adding bandwidth does not fix. The jitter figure IS a measurement,
-because payload type 0 has a clock rate [RFC 3551](https://www.rfc-editor.org/rfc/rfc3551.html)
-Table 4 fixes. And the delay behind the MOS is a default, not anything this
-capture showed, so a MOS built on it is only as good as that assumption.
+To read that answer:
+
+- `qos.dscp: 0` means the sender marked the media best effort, so the network queues
+  it with bulk traffic.
+- `jitter.grounded: true` means the jitter figure is a measurement: payload
+  type 0 has the clock rate that
+  [RFC 3551](https://www.rfc-editor.org/rfc/rfc3551.html) Table 4 fixes.
+- `delay.assumed: true` means the delay behind the MOS is the default
+  100 ms, not a value this capture showed, because the capture carries no
+  RTCP that reports a round trip.
 
 `clock_basis` has three values: `rfc3551` (a static payload type), `rtpmap` (a
 dynamic one an SDP named), and `assumed` (neither, and the reason `grounded` is
@@ -250,12 +257,11 @@ weight in an incident review and every other surface renders them identically.
 | `port-gated-only` | accepted because it arrived on the expected port and for no other reason — **the source is not authenticated** |
 | `not-relay-asserted` | the parties' own claim in SDP |
 
-The authentication answer comes from the run's configuration rather than a
-per-packet record, and that is correct rather than a shortcut: ingest rejects any datagram
-that fails authentication, so everything still in the store arrived under
-whatever posture the run configured. With no posture configured it
-reports the **weakest** reading — a tool whose job is telling you what a claim
-is worth must not round up in the absence of information.
+The authentication answer comes from the run's HEP authentication
+configuration, not from a per-packet record. Ingest drops any datagram that
+fails authentication, so every relay datagram in the store arrived under that
+configuration. With no authentication configured, the tool reports the
+weakest reading.
 
 The configured posture is the HEP listener's, so it covers only what the
 listener delivered (`input_origin: hep`). A relay datagram sipnab read off a
@@ -272,24 +278,29 @@ The endpoints are the call's streams, so the tool answers on a media-relay host
 that never saw the SIP dialog. `dialog_seen` is then `false` and
 `dialog_absent` says why, as described under [`rtp_stats`](@/docs/mcp-tools-core.md#rtp-stats).
 
+The example runs against
+[`tests/pcap-samples/sip-rtp-g711.pcap`](https://github.com/NormB/sipnab/raw/main/tests/pcap-samples/sip-rtp-g711.pcap):
+
 ```jsonc
-// explain_attribution { "call_id": "call-2c9d47@192.0.2.10" }
+// explain_attribution { "call_id": "1-1966@10.0.2.20" }
 {
-  "call_id": "call-2c9d47@192.0.2.10",
+  "call_id": "1-1966@10.0.2.20",
   "endpoints": [
     {
-      "address": "192.0.2.10",
-      "port": 10000,
+      "address": "10.0.2.15",
+      "port": 27942,
       "asserted_by": "signaled",
       "input_origin": "wire",
-      "observed_at": "2023-11-14T22:13:25+00:00",
+      "observed_at": "2016-11-26T14:52:59.670743+00:00",
       "delivery_trust": "not-relay-asserted",
       "delivery_note": "the parties' own claim in SDP, not a relay's statement about its allocation"
-    }
+    },
+    …
   ],
   "unauthenticated_endpoints": 0,
   "dialog_seen": true,
-  "schema_version": 1
+  "schema_version": 1,
+  …
 }
 ```
 
@@ -303,9 +314,8 @@ Getting the result out of sipnab and into the next tool, the next team, or a bug
 Writes one call's RTP audio to a WAV in the configured root. Fails when the
 call carries no audio it can decode, rather than writing an empty file.
 
-Requires `--retain-audio` on the server command line: call audio is
-content, not signaling, so holding it in memory is an operator decision
-rather than a side effect of enabling MCP. The run keeps whole calls, inside
+Requires `--retain-audio` on the server command line. Without it sipnab
+holds no audio payload in memory. The run keeps whole calls, inside
 the `[limits] max_audio_bytes` budget
 ([Audio retention budget](@/docs/config.md#audio-retention-budget)). A
 file missing the start of a call says PARTIAL in its `summary` with the count
@@ -321,24 +331,40 @@ setting, not a finding that the call was silent.
 Returns `path`, `summary`, `dialog_seen` and `schema_version`, plus
 `dialog_absent` when `dialog_seen` is `false` (see [`rtp_stats`](@/docs/mcp-tools-core.md#rtp-stats)):
 
+The example runs against [`tests/pcap-samples/sip-rtp-g711.pcap`](https://github.com/NormB/sipnab/raw/main/tests/pcap-samples/sip-rtp-g711.pcap), whose capture
+holds only one direction of the call's media:
+
+```bash
+sipnab --mcp -N -I tests/pcap-samples/sip-rtp-g711.pcap --retain-audio --mcp-file-root /var/spool/sipnab-exports
+```
+
 ```jsonc
 // export_audio { "call_id": "1-1966@10.0.2.20", "filename": "call.wav" }
 {
   "schema_version": 1,
   "path": "/var/spool/sipnab-exports/call.wav",
-  "summary": "Exported 8.5s of mu-law audio (425 frames, PCMU/8000Hz) to /var/spool/sipnab-exports/call.wav",
-  "dialog_seen": true
+  "summary": "Exported 8.5s of mu-law audio (425 frames, PCMU/8000Hz) to /var/spool/sipnab-exports/call.wav — PARTIAL: media in only ONE direction reached this capture; no stream going the other way was observed. That may be a one-way call, or a capture point that only sees one leg -- this file cannot tell you which.",
+  "dialog_seen": true,
+  "source_exhausted": true,
+  "source_stopped_early": false
 }
 ```
 
-Without `--retain-audio` the refusal arrives as `internal_error` (-32603) rather
-than `invalid_params`, and it reports what sipnab measured so the answer cannot
-read as a silent call:
+sipnab never writes over an existing file. A `filename` that is already taken
+fails with `invalid_params` (-32602) and `data.reason: "already_exists"`.
+Choose another name.
+
+Without `--retain-audio` the refusal arrives as `internal_error` (-32603). It
+reports what sipnab measured, so it does not read as a silent call, and names
+the remedy:
 
 ```text
-No audio payload retained: sipnab measured 425 RTP packet(s) of PCMU on 1
-decodable stream, but kept none of their payload, so there is nothing to
-decode. Audio payload retention was off for this run — that is a capture
-setting, not a finding that the call was silent. Start the server with
---retain-audio to hold payload for export.
+writing /var/spool/sipnab-exports/call2.wav: No audio payload retained:
+sipnab measured 425 RTP packet(s) of PCMU on 1 decodable stream, but kept none
+of their payload, so there is nothing to decode. This is a statement about
+what this run kept, not a finding that the call was silent. Most often audio
+payload retention was off — start the server with --retain-audio to hold
+payload for export. With retention already on, the other causes are a
+--snaplen that truncated the payload away before sipnab saw it, or packets
+that carried no payload at all.
 ```

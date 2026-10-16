@@ -47,7 +47,7 @@ capture files by each file's first packet timestamp, never by name.
   neither lexicographic nor natural-numeric name order reconstructs it.
 - Out-of-order replay corrupts every timing derivation that assumes time moves
   forward: post-dial delay, setup time, retransmission detection, and the
-  RFC 3261 Timer B, C and H bounds.
+  [RFC 3261](https://www.rfc-editor.org/rfc/rfc3261.html) Timer B, C and H bounds.
 - On that 10-file, 921 MB set, 2271 of 20512 calls (11%) spanned a file
   boundary. [`tests/multi_input_test.rs`](../../tests/multi_input_test.rs)
   records the same figure.
@@ -120,7 +120,7 @@ for `offer`, `answer`, `delete` or `start recording`, so sipnab can send only
 
 `HEP_SEND_CONNECT_TIMEOUT` in [`src/capture/hep.rs`](../../src/capture/hep.rs)
 is 3 seconds. A TCP sender's first retransmission timeout is one second and
-doubles on each expiry (RFC 6298, sections 2.1 and 5.5), so 3 seconds lets the
+doubles on each expiry ([RFC 6298](https://www.rfc-editor.org/rfc/rfc6298.html), sections 2.1 and 5.5), so 3 seconds lets the
 SYN and one retransmission go unanswered. Without it, a collector whose host or
 firewall drops the SYN held forwarding, and the shutdown waiting on it, for the
 operating system's limit, about 127 seconds on Linux. sipnab makes the first
@@ -284,7 +284,7 @@ its transaction ends and the detector counts nothing.
   those.
 - `mcp_max_findings` is the one write budget on the MCP surface;
   `mcp_max_rows` and `mcp_max_body_bytes` bound reads.
-- `[sip] active_idle_window_secs` (3600) is twice RFC 4028's default
+- `[sip] active_idle_window_secs` (3600) is twice [RFC 4028](https://www.rfc-editor.org/rfc/rfc4028.html)'s default
   `Session-Expires`. That grounds it for trunks with session timers, not for a
   contact center where a caller on hold past an hour is a channel in use.
 - `[diagnosis] cn_suppression_ratio` (0.3) is the one diagnosis threshold that
@@ -338,7 +338,7 @@ order:
 1. the quoted datagram's own 5-tuple against the tracked streams;
 2. the SSRC inside the quote;
 3. either socket against a tracked stream endpoint;
-4. an SDP-advertised media address, or the RTCP port one above it (RFC 3550
+4. an SDP-advertised media address, or the RTCP port one above it ([RFC 3550](https://www.rfc-editor.org/rfc/rfc3550.html)
    Section 11).
 
 The rules are not equally strong, which is why each printed line names the one
@@ -382,7 +382,7 @@ The other arms do not. The untagged arm is a real libpcap `portrange`, which han
 options. The gap therefore needs IPv4 options and an encapsulation together.
 
 Measured against the repository's PPPoE-over-Ethernet sample
-(`tests/pcap-samples/DTMFsipinfo.pcap`): a plain `portrange 5060-5061` matched
+([`tests/pcap-samples/DTMFsipinfo.pcap`](../../tests/pcap-samples/DTMFsipinfo.pcap)): a plain `portrange 5060-5061` matched
 0 of 32 frames and the generated filter matched all 32. With the same SIP
 wrapped in Linux cooked headers, the filter matched 11 of 11 encapsulations on
 Ethernet, cooked v1 and cooked v2 alike.
@@ -418,7 +418,7 @@ stream because the stream-based test needs a peer to examine, and a call whose
 media never arrived has none: the test could not fire exactly when the finding
 was most needed.
 
-Carrier-grade NAT space (RFC 6598, `100.64.0.0/10`) is not flagged: it is
+Carrier-grade NAT space ([RFC 6598](https://www.rfc-editor.org/rfc/rfc6598.html), `100.64.0.0/10`) is not flagged: it is
 routable inside the carrier that assigned it, and flagging it would fire on a
 large share of working mobile calls.
 
@@ -638,7 +638,7 @@ symptom table. This section records the mechanism behind each.
 pair under Debian 13: a UDP socket bound on the host received 0 of 5 datagrams
 while sipnab captured on `netmap:<iface>`, and 5 of 5 during an ordinary
 capture on the same interface. The install page's warning states the
-consequence, and `tests/capture_backend_claim_test.rs` pins it.
+consequence, and [`tests/capture_backend_claim_test.rs`](../../tests/capture_backend_claim_test.rs) pins it.
 
 ### Release artifact naming
 
@@ -671,7 +671,7 @@ The installer serves the static musl build only to hosts below the floor the
 release gate enforces on every gnu binary, or with no glibc at all. The
 installer and the release gate use one number, glibc 2.36. A host that the gnu
 build runs on therefore never takes the musl build, which would cost it TUI
-audio playback. `tests/site_journey_test.rs` holds the installer's
+audio playback. [`tests/site_journey_test.rs`](../../tests/site_journey_test.rs) holds the installer's
 `SIPNAB_GLIBC_FLOOR` to the floor `release.yml` enforces.
 
 ### The published binary size ceiling
@@ -680,7 +680,7 @@ The "Enforce published binary size (musl targets)" step in `release.yml` reads
 `binary_size_ceiling_mb` from
 [`website/config.toml`](../../website/config.toml) and fails the release when a
 musl binary exceeds it. The install page, the build page and the homepage all
-quote the same value, and `tests/site_journey_test.rs` holds each quote to the
+quote the same value, and [`tests/site_journey_test.rs`](../../tests/site_journey_test.rs) holds each quote to the
 config key.
 
 ## Capture tuning and the filter language
@@ -717,7 +717,7 @@ TUI filter dialog) inherits them.
   and one over the limit.
 - The error position is the 0-based character column the caret marks, not a
   byte offset.
-- `tests/filter_depth_bounds_test.rs` harvests every `--filter "…"` and
+- [`tests/filter_depth_bounds_test.rs`](../../tests/filter_depth_bounds_test.rs) harvests every `--filter "…"` and
   `expression = "…"` string from `docs/` and requires it to parse, so a page
   that shows a refused expression must quote it with single quotes.
 
@@ -853,7 +853,7 @@ Relocated from `docs/tuning-capture.md`.
   netmap.
 - The tuning page previously stated that RTP is about 93% of carrier traffic
   by packet count. The page now cites the test fixture
-  `tests/pcap-samples/sip-rtp-g711.pcap` (839 of 852 packets are RTP).
+  [`tests/pcap-samples/sip-rtp-g711.pcap`](../../tests/pcap-samples/sip-rtp-g711.pcap) (839 of 852 packets are RTP).
 - Offline `--cores` scaling on the reference corpus, as the tuning page
   stated it: 1.13M packets/s at one core, 2.17M at two, 3.23M at four, 3.24M
   at eight. The curve flattens after four; the gap between four and eight is

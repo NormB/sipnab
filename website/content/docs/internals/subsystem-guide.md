@@ -11,7 +11,7 @@ source = "docs/internals/subsystem-guide.md"
 
 One packet's journey, from the wire to the screen.
 
-- Read [`../architecture.md`](https://github.com/NormB/sipnab/blob/main/docs/architecture.md) first for the one-screen map of the tree.
+- Read [the code map](@/docs/internals/code-map.md) first for the one-screen map of the tree.
 - This page is the function-level trace through it.
 
 ## The program spine

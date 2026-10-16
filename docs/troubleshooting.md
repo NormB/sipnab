@@ -459,12 +459,12 @@ CALL_ID='a84b4c76e66710@pc33.atlanta.example.com'
 ```
 
 ```bash
-sipnab -N -I capture.pcap --retain-audio --call-report "$CALL_ID" --json --no-cli-print \
-  | jq '.diagnosis.amplitude'
+sipnab -N -I capture.pcap --retain-audio --call-report "$CALL_ID" --json --no-cli-print
 ```
 
-A clean call, here the first call in the repository sample
-`tests/pcap-samples/sip-rtp-g711.pcap`, reads:
+For a clean call, here the first call in the repository sample
+[`tests/pcap-samples/sip-rtp-g711.pcap`](https://github.com/NormB/sipnab/raw/main/tests/pcap-samples/sip-rtp-g711.pcap), the report's `diagnosis.amplitude`
+object reads:
 
 ```json
 {
@@ -1152,7 +1152,7 @@ The usual cause is encapsulation.
 - So SIP inside a VLAN tag, QinQ, PPPoE or MPLS never matches one.
 
 Confirm by comparing. Against the repository's 32-frame PPPoE sample,
-`tests/pcap-samples/DTMFsipinfo.pcap`, the plain filter above counts `0`. The
+[`tests/pcap-samples/DTMFsipinfo.pcap`](https://github.com/NormB/sipnab/raw/main/tests/pcap-samples/DTMFsipinfo.pcap), the plain filter above counts `0`. The
 same filter behind the PPPoE keyword counts all 32:
 
 ```bash

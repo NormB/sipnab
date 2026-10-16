@@ -205,6 +205,14 @@ PAGES: list[tuple[str, str, int, str, str]] = [
         "Why the MCP server behaves as it does: the reasons, history and "
         "internal names behind its limits, refusals and response shapes.",
     ),
+    (
+        "metrics-and-output-notes.md",
+        "metrics-and-output-notes.md",
+        21,
+        "Metrics and Output Notes",
+        "The engineering record behind the Prometheus metrics and output format "
+        "pages: the reasons behind each series and field, and their history.",
+    ),
 ]
 
 # The developer index becomes the Zola section landing page.

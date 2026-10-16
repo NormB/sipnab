@@ -336,6 +336,9 @@ Every block carries a `// SAFETY:` comment that states its soundness argument.
 - CI runs clippy with `-D warnings`.
 - So a block without one fails the build.
 
+The release workflow also enforces a size ceiling on the static musl binary.
+See [Release profile](#release-profile).
+
 ## Release profile
 
 The release build uses LTO, a single codegen unit and symbol stripping for a small binary, aborts on panic, and keeps line tables for crash reports:

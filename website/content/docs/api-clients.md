@@ -24,7 +24,7 @@ The Go, TypeScript and Rust clients are complete programs in the repository, und
 >
 > - `state` (e.g. `Failed`, `Completed`, `InCall`) and `from` (a regular expression on the From user),
 > - `filter`, a [filter expression](@/docs/filter-dsl.md) such as `method == 'INVITE'`, the same language `sipnab --filter` takes, or a named alias such as `problems`,
-> - `after` and `before`, RFC 3339 instants that bound when the dialog opened.
+> - `after` and `before`, [RFC 3339](https://www.rfc-editor.org/rfc/rfc3339.html) instants that bound when the dialog opened.
 >
 > `/v1/streams` accepts `orphaned` and `mos_below`. The [REST API reference](@/docs/api.md) lists every parameter of every route.
 

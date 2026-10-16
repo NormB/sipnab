@@ -33,7 +33,7 @@ Start here when you have a capture and no particular suspect. These answer "what
 **Ask this first.** It says what the server reads: a live interface
 or a capture file. No other tool reports that.
 
-No parameters. Against `tests/pcap-samples/sip-rtp-g711.pcap` it returns:
+No parameters. Against [`tests/pcap-samples/sip-rtp-g711.pcap`](https://github.com/NormB/sipnab/raw/main/tests/pcap-samples/sip-rtp-g711.pcap) it returns:
 
 ```jsonc
 // capture_status { }
@@ -270,14 +270,14 @@ The YANG section of [Output formats](output-formats.md) lists every difference
 between the two encodings.
 
 The `text` rendering opens with a summary line. Against
-`tests/pcap-samples/sip-rtp-g711.pcap`:
+[`tests/pcap-samples/sip-rtp-g711.pcap`](https://github.com/NormB/sipnab/raw/main/tests/pcap-samples/sip-rtp-g711.pcap):
 
 ```text
 Capture analysis: 1 finding(s) across 2 dialog(s), 2 stream(s), 852 frame(s) read.
 ```
 
 A capture with no findings returns a statement that sipnab found nothing, not an
-empty body. Against `tests/fixtures/sip_call.pcap`:
+empty body. Against [`tests/fixtures/sip_call.pcap`](https://github.com/NormB/sipnab/raw/main/tests/fixtures/sip_call.pcap):
 
 ```text
 No problems found in 1 dialog(s) and 0 stream(s) across 7 frame(s). Every frame decoded, no port gate discarded SIP, and no retention cap was reached — so this is a statement about the capture, not only about what sipnab could read of it.

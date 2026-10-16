@@ -885,7 +885,10 @@ fn linked_code_targets_exist() -> Result<(), TestError> {
     // notes and the notes' engineering detail moved to. All 78 links are on
     // that page; every other developer page is unchanged. Attributed by
     // measurement: with that page removed the count is 525.
-    const EXPECTED_CODE_LINKS: usize = 603;
+    // 603 -> 724: the engineering notes the user pages no longer carry moved to
+    // new internals pages (code-map, lint-rules, encapsulation-decoding, mcp,
+    // operator-guide-notes, metrics-and-output-notes) with their code links.
+    const EXPECTED_CODE_LINKS: usize = 724;
     assert_eq!(
         seen, EXPECTED_CODE_LINKS,
         "code-link extraction found {seen} links, expected {EXPECTED_CODE_LINKS}. \

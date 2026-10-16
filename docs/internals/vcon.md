@@ -587,7 +587,7 @@ number, and this table names the constant.
 
 | Constant | What it bounds |
 |---|---|
-| `MAX_PACKET` (1275) | The largest Opus packet the Ogg Opus writer emits, in bytes: the largest RFC 6716 section 3.4 allows |
+| `MAX_PACKET` (1275) | The largest Opus packet the Ogg Opus writer emits, in bytes: the largest [RFC 6716 section 3.4](https://www.rfc-editor.org/rfc/rfc6716.html#section-3.4) allows |
 | `MAX_PACKETS_PER_PASS` (10) | RTP packets a `live_rtp` leg sends per 20 ms pass when audio waits in the queue: ten times real time |
 | `MAX_SIGNED_LAYERS` (16) | Nested JWS layers a reader walks before it refuses a container |
 | `MAX_ISSUER_LEN` (8192) | Characters in the SCITT `scitt_issuer` URI |

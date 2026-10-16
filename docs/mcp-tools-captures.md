@@ -882,7 +882,7 @@ the process.
 >
 > The file holds **no RTP, no RTCP and no non-SIP traffic**, and writes a
 > SIP-over-TCP message as UDP. Exporting
-> `tests/pcap-samples/sip-rtp-g711.pcap`, which holds 852 packets, writes 10.
+> [`tests/pcap-samples/sip-rtp-g711.pcap`](https://github.com/NormB/sipnab/raw/main/tests/pcap-samples/sip-rtp-g711.pcap), which holds 852 packets, writes 10.
 >
 > Nothing inside the file says that the frames were rebuilt. When you forward
 > it, say so. [`build_evidence_package`](#build_evidence_package) includes a
@@ -897,7 +897,7 @@ not add one, so `notes.txt` writes a pcap under that name, which
 
 Returns `path` (the resolved absolute path, so you learn where the bytes went),
 `messages`, `bytes` and `schema_version`. Against
-`tests/pcap-samples/sip-rtp-g711.pcap`:
+[`tests/pcap-samples/sip-rtp-g711.pcap`](https://github.com/NormB/sipnab/raw/main/tests/pcap-samples/sip-rtp-g711.pcap):
 
 ```jsonc
 // export_capture { "filename": "sig.pcap" }
@@ -956,7 +956,7 @@ operator must supply the password. It never invites the agent to send one.
 Returns `status` (`"loading"`), `filename`, `path`, the **new**
 `capture_identity`, `discarded_dialogs`, `note` and `schema_version`.
 
-The example starts from `tests/pcap-samples/sip-rtp-g711.pcap`, with
+The example starts from [`tests/pcap-samples/sip-rtp-g711.pcap`](https://github.com/NormB/sipnab/raw/main/tests/pcap-samples/sip-rtp-g711.pcap), with
 `--mcp-allow-open-capture` and a file root holding `sip-problem-call.pcap`:
 
 ```jsonc

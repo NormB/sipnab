@@ -89,7 +89,7 @@ The example runs against
 ```
 
 Against a call with no SIPREC body, such as `1-1966@10.0.2.20` in
-`tests/pcap-samples/sip-rtp-g711.pcap`, the answer is:
+[`tests/pcap-samples/sip-rtp-g711.pcap`](https://github.com/NormB/sipnab/raw/main/tests/pcap-samples/sip-rtp-g711.pcap), the answer is:
 
 ```jsonc
 // siprec_metadata { "call_id": "1-1966@10.0.2.20" }
@@ -283,7 +283,7 @@ which holds four failed calls:
 
 A container that lost something fills the same block differently. With
 `--retain-audio --vcon-max-inline-media 0`, `export_vcon { "call_id":
-"1-1966@10.0.2.20" }` against `tests/pcap-samples/sip-rtp-g711.pcap` returns:
+"1-1966@10.0.2.20" }` against [`tests/pcap-samples/sip-rtp-g711.pcap`](https://github.com/NormB/sipnab/raw/main/tests/pcap-samples/sip-rtp-g711.pcap) returns:
 
 ```jsonc
 "completeness": {
@@ -908,9 +908,9 @@ names the flag. sipnab never reports an encrypted container as one with no SIP.
 
 The example reads a directory `stored` holding six files: two unsigned
 containers (`--export-vcon` of the two calls in
-`tests/pcap-samples/sip-rtp-g711.pcap`), the gzip format of a third (the busy
-call in `tests/pcap-samples/sip-problem-call.pcap`), the encrypted container
-`tests/fixtures/vcon-jose/ab_call_ext_rec_encrypted.vcon`, a container from
+[`tests/pcap-samples/sip-rtp-g711.pcap`](https://github.com/NormB/sipnab/raw/main/tests/pcap-samples/sip-rtp-g711.pcap)), the gzip format of a third (the busy
+call in [`tests/pcap-samples/sip-problem-call.pcap`](https://github.com/NormB/sipnab/raw/main/tests/pcap-samples/sip-problem-call.pcap)), the encrypted container
+[`tests/fixtures/vcon-jose/ab_call_ext_rec_encrypted.vcon`](https://github.com/NormB/sipnab/blob/main/tests/fixtures/vcon-jose/ab_call_ext_rec_encrypted.vcon), a container from
 the `tests/fixtures/vcon-datasets/vcon-supreme-court-arguments` dataset (which
 stores no SIP), and the first 30 bytes of the first container. This is the
 second page of three rows:
@@ -1046,7 +1046,7 @@ has a null `record` and a `record_problem` saying which.
 The example runs in a directory whose `vcons/` spool holds one pending
 container, `delivered/sent.vcon.json` and `failed/refused.vcon.json` with its
 `refused.vcon.json.error.json` record. The run itself writes the four failed
-calls of `tests/pcap-samples/sip-problem-call.pcap` into the spool, so five
+calls of [`tests/pcap-samples/sip-problem-call.pcap`](https://github.com/NormB/sipnab/raw/main/tests/pcap-samples/sip-problem-call.pcap) into the spool, so five
 are pending:
 
 ```bash

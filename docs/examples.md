@@ -2428,7 +2428,7 @@ A `488 Not Acceptable Here` after an INVITE is the signature.
 
 DTMF travels three different ways. The failure is nearly always that the two ends chose differently:
 
-- as `telephone-event` packets inside the RTP stream ([RFC 4733](https://www.rfc-editor.org/rfc/rfc4733.html), formerly RFC 2833),
+- as `telephone-event` packets inside the RTP stream ([RFC 4733](https://www.rfc-editor.org/rfc/rfc4733.html), formerly [RFC 2833](https://www.rfc-editor.org/rfc/rfc2833.html)),
 - as SIP `INFO` requests,
 - as audio tones inside the voice stream (in-band).
 
@@ -3378,9 +3378,11 @@ Then every restart appends rather than replaces.
  …
  "pid":1233081,"record":"run","seq":1,
  "started":"2026-10-16T11:54:46.422350839+00:00","ts":"2026-10-16T11:54:46.422377376+00:00",
- "uid":1000,"user":"gator",
+ "uid":1000,"user":"operator",
  "version":"0.5.222 (16f7b0ea) features: native,tui,audio,tls,hep,api,mcp,mcp-http,metrics,wasm,plugins,bpf,vcon,opus,archive,g729"}
 ```
+
+`uid` and `user` name the account that ran sipnab. This sample shows a placeholder account name.
 
 sipnab records a secret given on the command line as `[redacted]`. That covers:
 

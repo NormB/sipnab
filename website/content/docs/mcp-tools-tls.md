@@ -21,31 +21,33 @@ the other bundles and finds any tool by name.
 
 | Tool | Parameters | Returns |
 |---|---|---|
-| [`start_tls_capture`](#start-tls-capture) | `flavors`, `libraries` | installs kernel uprobes and reads SIP plaintext with no key; needs `--mcp-allow-tls-capture` |
+| [`start_tls_capture`](#start-tls-capture) | `flavors?`, `libraries?` | installs kernel uprobes and reads SIP plaintext with no key; needs `--mcp-allow-tls-capture` |
 | [`stop_tls_capture`](#stop-tls-capture) | -- | stops that capture and removes its kernel probes |
 | [`list_tls_libraries`](#list-tls-libraries) | -- | which TLS libraries this host runs, and whether sipnab could read their plaintext without keys |
 
 
 ## Capture control (opt-in, off by default)
 
-The tools that change server state rather than read it. Every one stays off until you turn it on server-side.
+The tools that change server state rather than read it. `start_tls_capture` stays off until you enable it on the server. `stop_tls_capture` needs no flag.
 
 ### `start_tls_capture`
 
 Installs kernel uprobes on this host's TLS libraries and reads SIP plaintext
 from them — no key, no certificate, and no restart of the process observed.
 
-**Needs `--mcp-allow-tls-capture`.** It is off by default and separate from
-`--mcp-allow-open-capture`, because it is a different act: that one reads a
-file an operator placed in a directory, this one attaches probes to a running
-process's TLS library and reads its plaintext.
+**Needs `--mcp-allow-tls-capture` and root.** The flag is off by default and
+separate from `--mcp-allow-open-capture`: that flag lets an agent read a file
+from the file root, and this one lets it attach probes to a running process's
+TLS library and read its plaintext. The server must also be reading a file
+that it has finished loading, not a live interface.
 
-Call [`list_tls_libraries`](#list-tls-libraries) first.
+Call [`list_tls_libraries`](#list-tls-libraries) first to see what it would
+probe.
 
-| Parameter | Type | Default | Meaning |
+| Name | Type | Legal values | If omitted |
 |---|---|---|---|
-| `flavors` | array of string | every one found | `openssl`, `wolfssl` |
-| `libraries` | array of string | discover | probe these paths instead of discovering |
+| `flavors?` | array of string | `openssl`, `wolfssl` | every flavor found |
+| `libraries?` | array of string | paths this server can open; for a containerized process, the `/proc/<pid>/root/...` form that `list_tls_libraries` returns as `probe_path` | the libraries discovered on this host |
 
 ```jsonc
 // start_tls_capture { }                                  // every library found
@@ -63,19 +65,43 @@ Call [`list_tls_libraries`](#list-tls-libraries) first.
 }
 ```
 
-**Three refusals, each before any kernel state exists**, and each says which
-one it is rather than a bare failure:
+Dialogs from this source carry no addresses and port 0, because a uprobe
+reads the library's buffers and sees no socket.
 
-- **not root** — sipnab drops privileges after opening its capture devices, so
-  a server started with `--user` cannot attach probes later.
-- **a live source is already running** — sipnab's stores have one writer, so a
-  uprobe capture cannot run beside one.
-- **a capture is still loading** — poll `capture_status` until `load.done`.
+**Each refusal happens before sipnab installs any kernel probe**, and the error
+message names the cause and the fix:
 
-**An attach failure arrives later, not here.** A background thread installs
-the probes, so the call returns as soon as that thread starts. Poll
-[`stop_tls_capture`](#stop-tls-capture) or `capture_status` to see whether
-messages actually arrive.
+- **Not enabled** (`reason: not_enabled`). Restart the server with
+  `--mcp-allow-tls-capture`.
+- **Not root** (`reason: unsupported`). sipnab drops privileges after opening
+  its capture devices, so a server started with `--user` cannot attach probes
+  later. Start it without dropping privileges, or run `sipnab --uprobe-tls` on
+  the command line instead.
+- **An unknown flavor or an unusable library path** (`reason: invalid_value`).
+  Use `openssl` or `wolfssl`, and a `probe_path` from `list_tls_libraries`.
+- **A TLS capture is already running** (`reason: not_ready`). Call
+  `stop_tls_capture` first.
+- **The server is reading a live interface** (`reason: not_ready`). A uprobe
+  capture cannot run beside a live capture. Start a server that reads a file.
+- **A capture is still loading** (`reason: not_ready`). Poll `capture_status`
+  until `load.done` is `true`.
+
+Without the flag, the call returns:
+
+```json
+{
+  "code": -32602,
+  "message": "starting a TLS capture is disabled: start sipnab with --mcp-allow-tls-capture to permit it. This is off by default because it attaches kernel probes to a running process's TLS library and reads its plaintext",
+  "data": {
+    "reason": "not_enabled"
+  }
+}
+```
+
+**sipnab reports an attach failure later, not in this answer.** A background
+thread installs the probes, so the call returns as soon as that thread starts.
+Call [`stop_tls_capture`](#stop-tls-capture) or `capture_status` to see whether
+messages arrive.
 
 ### `stop_tls_capture`
 
@@ -98,15 +124,32 @@ No parameters. Returns:
 }
 ```
 
-**Keep calling until `running` is false.** The stop is a request: the worker
-owns the probes and removes them on its way out, which is a kernel round trip
-per probe. Probes left installed cost every process that maps the library, and
-they outlive sipnab.
+**Call it again until `running` is `false`.** The stop is a request: the
+capture thread removes the probes on its way out, one kernel call per probe.
+Probes left installed slow every process that maps the library, and they stay
+installed after sipnab exits.
 
-`lost` is worth reading. It counts records the kernel dropped because the
-reader fell behind — messages that existed and are missing, which is a
-different fact from a quiet trunk and the only one you cannot discover any
-other way. The dialogs already collected stay in the store after the stop.
+Read `lost`. It counts records the kernel dropped because sipnab read them
+too slowly: messages that existed and are missing from the capture. A quiet
+trunk shows `0`. The dialogs already collected stay in the store after the
+stop.
+
+With nothing running, the answer is:
+
+```json
+{
+  "error": null,
+  "lost": null,
+  "messages": 0,
+  "running": false,
+  "schema_version": 1,
+  "source_exhausted": true,
+  "source_stopped_early": false,
+  "summary": "No TLS capture is running on this server.",
+  "targets": [],
+  "uptime_sec": 0
+}
+```
 
 ### `list_tls_libraries`
 
@@ -151,12 +194,11 @@ list is evidence about privilege rather than about the host. `summary` says
 which of the two situations produced the answer, so a relayed conclusion does
 not lose it.
 
-**`probe_path: null` is a finding, not a blank.** That library is carrying
-traffic sipnab cannot capture — usually a containerized process whose
-`/proc/<pid>/root` this server cannot read. sipnab reports it rather than
-dropping it, because the alternative is a capture that looks complete and is
-not.
+**`probe_path: null` means sipnab cannot capture that library's traffic.**
+Usually the library belongs to a containerized process whose
+`/proc/<pid>/root` this server cannot read. `unreachable_count` counts these
+libraries, and `summary` says a capture would miss them.
 
-`inode` is there because `path` is **not** unique: the same string names
-different files in different mount namespaces, and on an ordinary host with
-containers several distinct `libssl.so.3` files coexist.
+Use `inode`, not `path`, to tell libraries apart: the same path names
+different files in different mount namespaces, so a host with containers can
+list several distinct `libssl.so.3` files.

@@ -117,5 +117,5 @@ reported as wrong.
 
 The `sipnab-diagnosis` module does not model the per-dialog `diagnosis` and
 `signaling_diagnosis` objects: their "`null` means checked, absent means not
-run" distinction has no RFC 7951 equivalent, so they need their own modeling
+run" distinction has no [RFC 7951](https://www.rfc-editor.org/rfc/rfc7951.html) equivalent, so they need their own modeling
 pass.

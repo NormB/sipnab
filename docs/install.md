@@ -1011,7 +1011,7 @@ The musl tarballs also
 omit `audio` (static musl has no `dlopen`).
 
 A first non-interactive run looks like this. The capture is
-`tests/pcap-samples/Asterisk_ZFONE_XLITE.pcap` from the source repository: a
+[`tests/pcap-samples/Asterisk_ZFONE_XLITE.pcap`](https://github.com/NormB/sipnab/raw/main/tests/pcap-samples/Asterisk_ZFONE_XLITE.pcap) from the source repository: a
 registration, an OPTIONS exchange, two refused subscriptions and one call. Each SIP message gets one line:
 timestamp, source, destination, method or status line, transport:
 

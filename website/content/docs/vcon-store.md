@@ -14,23 +14,8 @@ It uses `sipnab --vcon-forward`, the forwarder that
 [Deliver the spool to a store](@/docs/vcon.md#deliver-the-spool-to-a-store)
 describes.
 
-**Status on 2026-10-11: vcon.store accepts the two forms it refused on
-2026-10-07**:
-
-- `extensions` as the array of strings both vCon drafts define.
-- the `recording` Dialog Object without `parties` that sipnab writes for a call
-  whose container carries no audio.
-
-More about the store:
-
-- It answers `409` for a uuid it already holds.
-- `PUT /v1/vcons/{uuid}` replaces the held copy.
-- The forwarder sends each container byte for byte.
-- Not measured: a `recording` that carries audio but no `parties`.
-  - sipnab writes that form when an audio channel came from an address no
-    party advertised in its SDP, such as a media relay's.
-
-[The measurements](#the-measurements) are the evidence.
+The forwarder sends each container byte for byte: it does not change what
+sipnab wrote.
 
 ## Before you send anything
 
@@ -46,9 +31,8 @@ vcon.store is another party's system. Decide what may leave the machine first:
 - `--redact` replaces identities, addresses and correlation identifiers with
   keyed tokens. It also withholds the audio.
   - It works on a capture file (`-I`), not on a live capture.
-- A redacted container carries no audio.
-  - So its `recording` Dialog Object has no `parties` and no content.
-  - vcon.store accepted that form when measured on 2026-10-09.
+- A redacted container carries no audio. Its `recording` Dialog Object names
+  the parties and has no `body`.
 - A container exported without `--redact` and with `--retain-audio` carries
   the call audio and the identifiers the signaling carried, as captured.
 - [What may you conclude](@/docs/vcon.md#someone-handed-you-a-sipnab-vcon-what-may-you-conclude)
@@ -62,7 +46,8 @@ Export the calls from a capture file with their audio.
 - It makes sipnab put the audio in its `recording` Dialog Object.
 - The object names the parties when each audio channel came from the media
   address and port that one party advertised in its own SDP.
-  - Otherwise the object has no `parties`.
+  - Otherwise the object has no `parties`. That is the usual case when a media
+    relay carries the audio.
 - This container is not redacted. It carries the audio and the identifiers as
   captured.
 
@@ -71,10 +56,14 @@ sipnab -N --no-cli-print -I calls.pcap --retain-audio \
   --export-vcon-when "state == 'Completed'" --export-vcon-dir spool
 ```
 
+sipnab prints one line for the directory:
+
+```text
+Wrote 1 vCon container(s) to 'spool'.
+```
+
 Add `--redact` and remove `--retain-audio`. The same command then writes
 redacted containers without audio.
-
-sipnab prints `Wrote N vCon container(s) to 'spool'.`
 
 ## Put the token in a file
 
@@ -82,7 +71,6 @@ vcon.store authenticates with a bearer token.
 
 - Put the token alone in a file only you can read.
 - The `vcon-store` kind sends it as `Authorization: Bearer <token>`.
-- The forwarder refuses a file that other users can read:
 
 ```sh
 # Run all of these, in order.
@@ -96,6 +84,15 @@ printf '%s\n' "$VCON_STORE_TOKEN" > vcon-store.key
 - The forwarder removes it from any answer it keeps.
 - Instead of a file, the `SIPNAB_VCON_FORWARD_AUTH` environment variable can
   hold the token.
+
+The forwarder refuses a file that other users can read or write, and exits
+`2`:
+
+```text
+--vcon-forward-auth-file 'vcon-store.key' can be read or written by other users (mode 0644); chmod 600 it
+```
+
+Run `chmod 600 vcon-store.key` and start the forwarder again.
 
 ## Send them
 
@@ -122,125 +119,110 @@ url = "https://api.vcon.store"
 auth_file = "/etc/sipnab/vcon-store.key"
 ```
 
-For each container the forwarder:
+For each container the forwarder logs a `delivered` line with the store's
+status and moves the file to `spool/delivered`. The log line has this form
+(here from a run against a store on `127.0.0.1:18777`):
 
-- logs a `delivered` line with the store's status,
-- moves the file to `spool/delivered`.
+```text
+INFO sipnab::app::vcon_forward: vCon forwarder watching 'spool', delivering to http://127.0.0.1:18777/v1/vcons
+INFO sipnab::app::vcon_forward: delivered 1-1966_10.0.2.20-1cc03f180ff8a774.vcon.json: POST http://127.0.0.1:18777/v1/vcons answered 201; moved to 'spool/delivered'
+```
 
-The exit status is `0` when the store accepted every container.
+With `--vcon-forward-once`, the exit status is:
 
-- A container the store refused is in `spool/failed`.
-  - Beside it is a `.error.json` record that says why.
-- `sipnab --vcon-spool-status spool` prints:
-  - the pending, delivered and failed counts,
-  - the store's answer from each `.error.json` record.
-  - It reads these from the files without sending anything.
-- A capture run with `--mcp` or `--api` answers the same through:
-  - the MCP tool [`vcon_spool_status`](@/docs/mcp-tools-vcon.md#vcon-spool-status),
-  - [`GET /v1/vcon/spool`](@/docs/api.md#get-v1-vcon-spool).
+- `0` when the store accepted every container, or there was none;
+- `1` when the store refused any container, or any is still waiting;
+- `3` when the store answered `401` or `403`.
 
-A `401` or `403` is different. It refuses the token or the client for every
-container. So the forwarder:
+Without `--vcon-forward-once`, the forwarder polls the spool until you stop it.
 
-- stops,
-- moves nothing,
-- logs the status and the start of the answer,
-- exits `3`.
+## Check what the store accepted and refused
 
-sipnab's tests run the `vcon-store` kind against two stand-ins, not
-against vcon.store itself:
+A container the store refused is in `spool/failed`, with a `.error.json`
+record beside it that holds the store's answer. To read the counts and those
+answers without sending anything:
 
-- one that answers as the maintainer measured vcon.store answering on
-  2026-10-11,
-- one that answers as it did on 2026-10-07.
+```sh
+sipnab --vcon-spool-status spool
+```
 
-The tests are in
-[`tests/vcon_forward_test.rs`](https://github.com/NormB/sipnab/blob/main/tests/vcon_forward_test.rs).
+It prints one JSON document. Trimmed:
 
-## The measurements
+```text
+{
+  …
+  "pending": 0,
+  "delivered": 1,
+  "failed": 1,
+  "failures": [
+    {
+      "file": "1-1966_10.0.2.20-1cc03f180ff8a774.vcon.json",
+      "record": {
+        "at": "2026-10-16T11:47:53Z",
+        "body": "{\"error\": \"vCon already exists\"}",
+        "body_truncated": false,
+        "file": "1-1966_10.0.2.20-1cc03f180ff8a774.vcon.json",
+        "method": "POST",
+        "reason": null,
+        "status": 409,
+        "url": "http://127.0.0.1:18777/v1/vcons"
+      }
+    }
+  ],
+  …
+}
+```
 
-The maintainer measured these against vcon.store's API. This page's commands
-did not contact the store.
+A capture run with `--mcp` or `--api` answers the same through:
 
-On 2026-10-09, the maintainer used the sipnab 0.5.209 release binary and a
-container exported from
-[`tests/pcap-samples/sip-rtp-g711.pcap`](https://github.com/NormB/sipnab/raw/main/tests/pcap-samples/sip-rtp-g711.pcap):
+- the MCP tool [`vcon_spool_status`](@/docs/mcp-tools-vcon.md#vcon-spool-status),
+- [`GET /v1/vcon/spool`](@/docs/api.md#get-v1-vcon-spool).
 
-| Sent | vcon.store answered |
-|---|---|
-| `POST /v1/vcons`, the container with audio, `"extensions": ["sip-signaling", "CC"]`, sent unchanged | `201`; a `GET` returned `extensions` as the same array |
-| the `recording` Dialog Object sipnab writes for a call without audio (no `parties`, no content) | `201`, stored as sent |
-| a `POST` of a uuid the store already held | `500`, a problem document of type `https://vcon.store/errors/internal-error`, `An unexpected error occurred`, twice. Changed by 2026-10-11; see below |
-| a `GET` with Python's default HTTP `User-Agent`, with Go's, with none, and with `sipnab/0.5.209` | `200` for each |
-| a `GET` of a stored vCon | the content, with a top-level `_meta` member added |
-| `DELETE /v1/vcons/{uuid}` | `200`, `{"deleted":true,...}`; a `GET` after it `404`, `{"error":"vCon not found"}` |
+## Replace a container the store already holds
 
-On 2026-10-11, with a container exported from the same capture, sent with curl:
-
-| Sent | vcon.store answered |
-|---|---|
-| `POST /v1/vcons`, a new uuid | `201`, `{"uuid":...,"stored_at":...}` |
-| a second `POST` of the same uuid | `409`, `{"error":"vCon already exists","details":[{"path":["uuid"],"message":"a vCon with uuid ... already exists; use PUT to replace it"}]}` |
-| `PUT /v1/vcons/{uuid}` with a changed `subject`, same uuid | `200`; a `GET` returned the changed `subject` |
-| the `recording` Dialog Object without `parties` and content | `201` |
-| `DELETE /v1/vcons/{uuid}` | `200`; a `GET` after it `404` |
-
-On 2026-10-07, kept as history:
-
-| Sent | vcon.store answered |
-|---|---|
-| `POST /v1/vcons` with `"extensions": ["sip-signaling", "CC"]` | `400`, `extensions: Expected object, received array` |
-| the same with `extensions` as an object of names mapped to `true` | `201`, stored as sent |
-| a vCon with no audio, whose Dialog Object is `{}` | `400`: the store required `type` and `parties` |
-| the same with `extensions` removed | `201` |
-| a request with Python's default HTTP `User-Agent` | `403`, `error code: 1010`, from the Cloudflare front. The front accepted a curl `User-Agent` |
-
-A `409` for a held uuid is a refusal:
+vcon.store answers `409` to a `POST` of a uuid it already holds. By default
+the forwarder treats that as a refusal:
 
 - The container goes to `spool/failed`.
 - The store's answer is in its `.error.json` record.
 - `--vcon-forward-once` exits `1`.
 
-To replace the held copy instead, name the `PUT` endpoint with
+The log line reads:
+
+```text
+WARN sipnab::app::vcon_forward: refused 1-1966_10.0.2.20-1cc03f180ff8a774.vcon.json: POST http://127.0.0.1:18777/v1/vcons answered 409; moved to 'spool/failed' beside 1-1966_10.0.2.20-1cc03f180ff8a774.vcon.json.error.json
+```
+
+To replace the held copy instead, name the store's `PUT` endpoint with
 `--vcon-forward-replace-url`. The forwarder then sends the container there
-after the `409`:
+after the `409`. `{uuid}` in the template becomes the container's uuid:
 
 ```sh
 sipnab --vcon-forward spool --vcon-forward-kind vcon-store --vcon-forward-url https://api.vcon.store --vcon-forward-auth-file vcon-store.key --vcon-forward-replace-url 'https://api.vcon.store/v1/vcons/{uuid}'
 ```
 
-Replacing is off by default.
+Replacing is off by default, because it overwrites what the store holds.
 
-- It overwrites what the store holds.
-- That is the operator's decision.
+To send a container that is already in `spool/failed` again, move it back into
+`spool` and run the forwarder with `--vcon-forward-replace-url`.
 
-The forwarder retries a `500` after a back-off, as it retries every `5xx`.
+The forwarder retries every `5xx` answer after a back-off and keeps the
+container in `spool` meanwhile.
 
-## What the store adds, and what it does not mean
+## Signatures
 
-On each create the store wrote one entry to its transparency log (SCITT). The
-entry holds:
+sipnab signs a container only when a `[[vcon.rule]]` asks it to:
 
-- the event `vcon_created`,
-- a SHA-256 hash of the payload,
-- a COSE signed statement,
-- a receipt.
+- `sign_only = true` writes the signed form alone, a JWS with no encryption.
+  See [Sign without encrypting](@/docs/vcon.md#sign-without-encrypting).
+- `encrypt_to` writes a signed container, encrypted. See
+  [Encrypt what a rule writes](@/docs/vcon.md#encrypt-what-a-rule-writes).
 
-Each stored vCon also comes back with a `_meta` envelope. It says:
+The containers `--export-vcon-dir` writes, as on this page, carry no
+signature. A signature that the store adds covers what the store received. It
+is not sipnab's, and it does not make an observation from a tap a recording.
 
-- `form: unsigned`,
-- `consentStatus: unknown`,
-- `retentionAction: redact`.
-
-What these mean:
-
-- **The signature is the store's, not sipnab's.** It says what vcon.store
-  received.
-  - The container it covers is an observation from a tap.
-  - sipnab never signs that.
-  - So the signature does not make the container a recording.
-- **`consentStatus: unknown` is accurate.** sipnab records no consent, and a
-  container carries none.
+sipnab records no consent, and a container carries none.
 
 ## Read a stored vCon back
 
@@ -257,45 +239,40 @@ So the file holds the container alone:
 sipnab --vcon-fetch 018bcfe5-6800-8a6b-a667-78f1c5213800 --vcon-fetch-kind vcon-store --vcon-fetch-url https://api.vcon.store --vcon-fetch-auth-file vcon-store.key --vcon-fetch-out fetched
 ```
 
-The container is the copy the store accepted, as sipnab sent it.
-
-Measured on 2026-10-09:
-
-- sipnab exported a container from
-  [`tests/pcap-samples/sip-rtp-g711.pcap`](https://github.com/NormB/sipnab/raw/main/tests/pcap-samples/sip-rtp-g711.pcap).
-- `--vcon-forward-kind
-  vcon-store` sent it (`201`).
-- `--vcon-fetch` read it back.
-  - The file held `extensions` as the array and no `_meta`.
-- A delete then removed it (`200`).
-- A read after the delete answered `404`.
+The fetcher writes `fetched/<uuid>.vcon.json`, mode 0600. When a file of that
+name already exists, the fetcher skips that uuid and the run exits `1`. Add
+`--vcon-fetch-overwrite` to replace the file.
 
 More:
 [Fetch a stored vCon](@/docs/vcon.md#fetch-a-stored-vcon).
 
 ## When something does not work
 
-- **Every container lands in `spool/failed` with status `400` and
-  `extensions: Expected object, received array`.**
-  - The store refuses the form the drafts define, as vcon.store did on
-    2026-10-07.
-  - sipnab no longer changes the copy it sends.
-  - So such a store does not accept sipnab's containers.
+- **The forwarder exits `3` and logs `answered 401`.**
+  - The token in `vcon-store.key` is wrong or expired.
+  - The forwarder moved no file. Every container is still in `spool`.
+  - Fix the token and run it again. The log line reads:
+
+    ```text
+    ERROR sipnab::app::vcon_forward: vCon forwarder stopped: POST http://127.0.0.1:18777/v1/vcons answered 401 for 1-1966_10.0.2.20-1cc03f180ff8a774.vcon.json: "{"error":"unauthorized"}". A 401 refuses the credentials or the client for every container alike, so nothing more is sent and every container stays in the spool. Check the credential, and that nothing replaces the User-Agent: a Cloudflare front refuses some clients with a 403 whose body names error code 1010
+    ```
+
+- **The forwarder exits `3` and logs `403` with `error code: 1010`.**
+  - The Cloudflare front of the store refused the request's client.
+  - The forwarder sends `User-Agent: sipnab/<version>`. Check that nothing
+    between it and the store replaces that header.
+  - It moved no file, so run it again once you fix that.
 - **A container lands in `spool/failed` with status `409` and `vCon already
   exists`.**
   - The store already holds that uuid (`--vcon-fetch` reads it back).
-  - To replace the held copy, move the file back into `spool`.
-  - Then run the forwarder with
-    `--vcon-forward-replace-url 'https://api.vcon.store/v1/vcons/{uuid}'`.
+  - Follow [Replace a container the store already holds](#replace-a-container-the-store-already-holds).
+- **Every container lands in `spool/failed` with status `400` and
+  `extensions: Expected object, received array`.**
+  - The store refuses `extensions` as the array of strings both vCon drafts
+    define.
+  - sipnab writes the array and the forwarder does not change it, so such a
+    store does not accept sipnab's containers.
 - **A container stays in `spool`, and the log says `answered 500; will
   retry`.**
-  - The store is in trouble.
+  - The store failed to process the request.
   - The forwarder tries again after its back-off.
-- **The forwarder exits `3` and logs `403` with `error code: 1010`.**
-  - The Cloudflare front refused the request's client.
-  - It refused Python's default `User-Agent` the same way on 2026-10-07.
-  - The forwarder sends `User-Agent: sipnab/<version>`.
-  - Check that nothing between it and the store replaces that header.
-  - It moved no file, so run it again once you fix that.
-- **The forwarder exits `3` and logs `401`.** The token in `vcon-store.key` is
-  wrong or expired. Every container is still in `spool`.

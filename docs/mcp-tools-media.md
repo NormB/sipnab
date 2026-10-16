@@ -322,7 +322,7 @@ setting, not a finding that the call was silent.
 Returns `path`, `summary`, `dialog_seen` and `schema_version`, plus
 `dialog_absent` when `dialog_seen` is `false` (see [`rtp_stats`](mcp-tools-core.md#rtp_stats)):
 
-The example runs against `tests/pcap-samples/sip-rtp-g711.pcap`, whose capture
+The example runs against [`tests/pcap-samples/sip-rtp-g711.pcap`](https://github.com/NormB/sipnab/raw/main/tests/pcap-samples/sip-rtp-g711.pcap), whose capture
 holds only one direction of the call's media:
 
 ```bash

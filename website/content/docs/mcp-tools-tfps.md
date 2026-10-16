@@ -20,11 +20,9 @@ what its tool does differently. The [MCP tool reference](@/docs/mcp-tools.md) li
 the other bundles and finds any tool by name.
 
 > **The peer this needs.** The tools on this page read [TFPS](https://github.com/sippulse/tfps)
-> through its `tfps_ctl` program in JSON mode, the `--json` flag. TFPS gained
-> that mode in [sippulse/tfps#6](https://github.com/sippulse/tfps/pull/6),
-> merged on 2026-09-18, and no tagged release carries it yet: v0.2.1, the
-> newest, rejects `--json`. Until the next release, build TFPS from its
-> `master` branch.
+> through its `tfps_ctl` program in JSON mode, the `--json` flag. TFPS v0.2.1
+> rejects `--json`; the mode is on TFPS's `master` branch. Until a tagged
+> release carries it, build TFPS from `master`.
 >
 > To check the `tfps_ctl` you have, run
 > `tfps_ctl status --json`. One line of JSON means it is ready, and
@@ -40,7 +38,7 @@ the other bundles and finds any tool by name.
 | [`tfps_status`](#tfps-status) | -- | Whether the toll-fraud prevention peer (TFPS) runs on this host, and what it reports: enforcement, mode, interface, sources blocked now, database, version |
 | [`tfps_banned`](#tfps-banned) | -- | Every source TFPS holds condemned right now, with the rule, what it saw, and when the ban began and lapses |
 | [`tfps_dropped`](#tfps-dropped) | -- | Per condemned source, what the enforcement dropped and the last request line the source sent |
-| [`tfps_labels`](#tfps-labels) | `limit?` | The TFPS verdict log -- blocked, would-block, exempt -- the export the label corpus harness scores the scanner detector against |
+| [`tfps_labels`](#tfps-labels) | `limit?` | The TFPS verdict log -- blocked, would-block, exempt -- one row per decision TFPS made about a source |
 | [`tfps_ban`](#tfps-ban) | `ip`, `ttl_secs?` | **Write, off by default.** Relays an OPERATOR's decision to condemn a source, recorded in the journal and rate limited, and reports the TFPS answer as given, refusal included |
 | [`tfps_unban`](#tfps-unban) | `ip` | **Write, off by default.** Releases a source sipnab banned |
 | [`actions_revert`](#actions-revert) | `id?`, `all?` | **Write, off by default.** Backs out one ban sipnab placed, or every one it still holds |
@@ -52,15 +50,16 @@ the other bundles and finds any tool by name.
 
 TFPS is the toll-fraud prevention system an operator may run on the same host
 as sipnab: it condemns sources and enforces that decision in the firewall.
-sipnab never decides a ban itself, so the question an agent reading
-`security_findings` asks next is what TFPS did with the evidence. This tool
-answers whether TFPS is there at all, and what it reports about itself.
+sipnab does not decide bans itself. Ask this tool first, to learn whether TFPS
+runs on this host and what it reports about itself, before asking what TFPS
+did with a source that [`security_findings`](@/docs/mcp-tools-security.md#security-findings)
+reported.
 
 **No parameters.**
 
 TFPS is optional peer software. On a machine without it every `tfps_*` tool
-answers the same two fields and nothing else, and that is a result rather than
-an error, because a bare machine is the ordinary case:
+answers the same two fields and nothing else, as a successful result, not an
+error:
 
 ```jsonc
 // tfps_status {}
@@ -186,13 +185,13 @@ last request line the source sent.
 
 ### `tfps_labels`
 
-The TFPS verdict log: one row per decision about a source. This is the export
-the label corpus harness scores sipnab's scanner detector against, reachable
-without a shell on the box.
+The TFPS verdict log: one row per decision about a source, read without a
+shell on the TFPS host. Use it to compare TFPS's decisions with the sources
+sipnab's scanner detector reported.
 
 | Parameter | Type | Legal values | If omitted |
 |---|---|---|---|
-| `limit` | integer | a positive count of rows, newest first. `0` means the default | one page of `--mcp-max-rows` |
+| `limit?` | integer? | a positive count of rows, newest first. `0` means the default | one page of `--mcp-max-rows` |
 
 A `limit` that fits in a page passes through to TFPS as `--limit N`. `0`,
 absent or more than a page asks TFPS for the page and one row more, which is
@@ -238,11 +237,13 @@ minted with `--token-scope actions`. Without that, the tool answers
 
 **An operator action relayed through sipnab, not a decision sipnab makes**:
 nothing sipnab detects ever comes through this tool. Before it asks TFPS,
-sipnab applies fixed rules and rate limits and records the request in its
-actions journal:
+sipnab applies these rules and rate limits and records the request in its
+actions journal. The durations and rates below are the defaults, which the
+[`[action_limits]`](@/docs/config.md#action-limits) section of the config
+file changes:
 
 - sipnab never bans `0.0.0.0`, the broadcast address, or a loopback or
-  multicast address;
+  multicast address, whatever the configuration says;
 - every ban expires: `ttl_secs`, or an hour, and 7 days at most. sipnab
   refuses `0`, TFPS's "forever", and anything longer;
 - at most 10 actions a minute for the server, 5 for one caller, and one per
@@ -251,7 +252,7 @@ actions journal:
 | Parameter | Type | Legal values | If omitted |
 |---|---|---|---|
 | `ip` | string | an IPv4 address that is not `0.0.0.0`, broadcast, loopback or multicast. The TFPS block map is IPv4, and `tfps_ctl` fails outright on an IPv6 address, so sipnab refuses one itself | required. Anything else is `invalid_params` (-32602) before sipnab asks TFPS |
-| `ttl_secs` | integer | seconds the ban lasts: 1 to 604800 (7 days) | an hour |
+| `ttl_secs?` | integer? | seconds the ban lasts: 1 to `[action_limits] max_ban_secs` (604800, 7 days, by default) | `[action_limits] default_ban_secs` (3600, an hour, by default) |
 
 The TFPS `ban` command records no free-text reason, so this tool takes none. The
 address and the duration reach `tfps_ctl` as arguments and never through a
@@ -339,8 +340,8 @@ enabling as `tfps_ban`, and each unban counts against the same rate limits.
 
 | Parameter | Type | Legal values | If omitted |
 |---|---|---|---|
-| `id` | string | an action id from `tfps_ban`'s answer | give exactly one of `id` or `all` |
-| `all` | boolean | `true` | give exactly one of `id` or `all`; anything else is `invalid_params` (-32602) |
+| `id?` | string? | an action id from `tfps_ban`'s answer | give exactly one of `id` or `all` |
+| `all?` | boolean? | `true` | give exactly one of `id` or `all`; anything else is `invalid_params` (-32602) |
 
 ```jsonc
 // actions_revert { "all": true }

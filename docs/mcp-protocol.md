@@ -876,15 +876,9 @@ In stdio mode, **stdout is the JSON-RPC wire**.
 
 `--mcp` refuses stdout-writing flags such as `--json`, `--json-pretty`,
 `--report`, `--call-report`, `--hexdump`, `--wireshark`, and
-`--tshark-filter`, and exits 2:
-
-```bash
-sipnab --mcp -N -I sip-problem-call.pcap --json
-```
-
-```text
-2026-10-16T11:49:32.726826Z ERROR sipnab: --mcp uses stdout for the JSON-RPC wire and cannot be combined with stdout-writing flags (--json)
-```
+`--tshark-filter`, and exits 2. Adding `--json` to an MCP run, for example,
+stops it with `--mcp uses stdout for the JSON-RPC wire and cannot be combined
+with stdout-writing flags (--json)`.
 
 Remove the flag, or run that analysis in a separate sipnab process. Combine
 `--mcp` with `--quiet` if you want the surrounding text-mode capture output

@@ -568,7 +568,7 @@ else — stopping the process discards them.
 
 `timestamp` is the capture time of the packet that triggered the finding, so
 on a replayed pcap it is in the capture's own time range. Against
-`tests/pcap-samples/sip-auth-failure.pcapng`, `since: "2016-05-17T00:00:00Z"`
+[`tests/pcap-samples/sip-auth-failure.pcapng`](https://github.com/NormB/sipnab/raw/main/tests/pcap-samples/sip-auth-failure.pcapng), `since: "2016-05-17T00:00:00Z"`
 keeps the finding below, and `since: "2026-01-01T00:00:00Z"` returns
 `total_matched: 0`.
 
@@ -639,7 +639,7 @@ before installing it.
 sipnab builds the id from the finding's own fields, so the same finding has the
 same id on a restart or on a second server reading the same capture.
 
-The example runs against `tests/pcap-samples/sip-auth-failure.pcapng` on a
+The example runs against [`tests/pcap-samples/sip-auth-failure.pcapng`](https://github.com/NormB/sipnab/raw/main/tests/pcap-samples/sip-auth-failure.pcapng) on a
 server started with `--digest-leak`:
 
 ```jsonc

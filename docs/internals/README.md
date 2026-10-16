@@ -76,6 +76,9 @@ Already written, and narrower:
 - [MCP server design notes](mcp.md) — why the MCP server behaves as it does:
   the reasons, history and internal names behind the limits, refusals and
   response shapes the operator pages under `docs/mcp*.md` describe.
+- [Metrics and output notes](metrics-and-output-notes.md) — the record behind
+  the Prometheus metrics and output format pages: why each series and field is
+  shaped as it is, and its history.
 
 Other starting points:
 

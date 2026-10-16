@@ -287,7 +287,7 @@ also sets how many packets the TUI's capture ring holds.
 - `any`, sipnab's default device on Linux, has link type `LINUX_SLL2`. Its slot
   stays at the full snapshot length whatever the offload settings.
 - Headless runs use a different ring. See
-  [Which ring you get](#which-ring-you-get-tpacket_v2-for-the-tui-v3-for-everything-else).
+  "Which ring you get", below.
 
 Slot size and capacity of the default 64 MiB buffer on the TUI's ring:
 

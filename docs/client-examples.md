@@ -101,7 +101,7 @@ python3 clients/python/list_dialogs.py
 node clients/javascript/list-dialogs.mjs
 ```
 
-Against a sipnab replaying `tests/pcap-samples/sip-problem-call.pcap`, the
+Against a sipnab replaying [`tests/pcap-samples/sip-problem-call.pcap`](https://github.com/NormB/sipnab/raw/main/tests/pcap-samples/sip-problem-call.pcap), the
 Python program prints:
 
 ```text

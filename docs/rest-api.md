@@ -1362,7 +1362,7 @@ trust it.**
 
 **One hop.** This route answers the legs one step from the Call-ID asked about.
 
-- To walk a whole tree, use [`/tree`](#get-v1dialogscall_idtree), or follow
+- To walk a whole tree, use `GET /v1/dialogs/:call_id/tree` (below), or follow
   each leg's `call_id` back into this route.
 - The MCP tool `find_correlated` returns the same shape.
 
@@ -3396,7 +3396,7 @@ it recognized the bytes as SIP.
 | `unanalysed_websocket_ports` | the top five ports carrying that |
 
 To check a server, read the four keys from `/v1/stats`. This server replays
-`tests/pcap-samples/sip-problem-call.pcap` with `--portrange 5070-5080`, a range
+[`tests/pcap-samples/sip-problem-call.pcap`](https://github.com/NormB/sipnab/raw/main/tests/pcap-samples/sip-problem-call.pcap) with `--portrange 5070-5080`, a range
 that excludes the capture's SIP port:
 
 ```bash
@@ -4762,7 +4762,7 @@ curl -fsS "$API/v1/dialogs?limit=1000" -H "Authorization: Bearer $KEY" \
   | jq -r '.dialogs[] | [.call_id, .method, .state, .from_user, .to_user, .duration_sec] | @csv'
 ```
 
-Against `tests/pcap-samples/sip-problem-call.pcap` it prints:
+Against [`tests/pcap-samples/sip-problem-call.pcap`](https://github.com/NormB/sipnab/raw/main/tests/pcap-samples/sip-problem-call.pcap) it prints:
 
 ```text
 "completed-9f8e7d@192.0.2.10","INVITE","Completed","alice","bob",20.01

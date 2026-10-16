@@ -565,7 +565,7 @@ which holds four failed calls:
 }
 ```
 
-Against `tests/pcap-samples/sip-rtp-g711.pcap`, whose one call completed, the
+Against [`tests/pcap-samples/sip-rtp-g711.pcap`](https://github.com/NormB/sipnab/raw/main/tests/pcap-samples/sip-rtp-g711.pcap), whose one call completed, the
 same filter returns at once with `"matched": false` and
 `"stopped_because": "source_exhausted"`.
 

@@ -24,7 +24,7 @@ manager. Run the Inspector command by hand when Inspector's rules change.
 
 ### Tool table completeness gate
 
-`mcp_tool_table_lists_every_registered_tool` in `tests/docs_drift_test.rs`
+`mcp_tool_table_lists_every_registered_tool` in [`tests/docs_drift_test.rs`](../../tests/docs_drift_test.rs)
 fails the build when `docs/mcp-tools.md` stops naming every registered tool.
 
 ### Why `mcp` is not a default feature
@@ -46,7 +46,7 @@ The "Bytes (default)" and "Bytes with output schemas" table in
 `docs/mcp-tools.md#choosing-which-tools-load` is the compact JSON of each
 tool's `tools/list` entry, summed per bundle, on a build with every feature.
 The unit test `each_bundle_stays_within_its_byte_budget` in
-`src/mcp/server.rs` fails when a bundle grows past its recorded ceiling.
+[`src/mcp/server.rs`](../../src/mcp/server.rs) fails when a bundle grows past its recorded ceiling.
 Update the table in the same change that moves a ceiling. The 0.5.221
 measurement came after the `filter` parameters gained "Values may be bare or
 quoted." The 0.5.222 figures are byte-identical.
@@ -93,7 +93,7 @@ access inside the root, so it was never a remote break. The fix shipped
 because the reference describes the boundary as absolute.
 
 The overwrite refusal covers any name already taken in the root
-(`resolve_in_root_for_write` in `src/mcp/server.rs`, using
+(`resolve_in_root_for_write` in [`src/mcp/server.rs`](../../src/mcp/server.rs), using
 `symlink_metadata` so a dangling link still counts as taken).
 `protected_inputs` alone knew only the files the server opened, so a capture
 staged in the root for `open_capture`, or an earlier export, could disappear
@@ -135,14 +135,14 @@ fails with "tool not found" in the middle of the workflow.
   same code path as the REST API.
 - **One challenge for every rejected credential.** Telling expired from revoked
   from forged in the `WWW-Authenticate` header would make the header an oracle.
-  A request that presented nothing carries no error code, as RFC 6750 section
+  A request that presented nothing carries no error code, as [RFC 6750](https://www.rfc-editor.org/rfc/rfc6750.html) section
   3.1 asks, which lets an operator tell a misconfigured client from a wrong
   token.
-- **No `authorization_servers` in the RFC 9728 document.** sipnab issues and
+- **No `authorization_servers` in the [RFC 9728](https://www.rfc-editor.org/rfc/rfc9728.html) document.** sipnab issues and
   validates no OAuth tokens. A client sent to fetch one elsewhere would return
   holding a credential this server rejects. The operator names the URL because
   behind a TLS-terminating proxy sipnab cannot see the scheme a client used,
-  and RFC 9728 section 3.3 makes a client discard a document whose `resource`
+  and [RFC 9728 section 3.3](https://www.rfc-editor.org/rfc/rfc9728.html#section-3.3) makes a client discard a document whose `resource`
   does not match the URL it requested.
 - **Two caps, refused rather than queued.** `--mcp-max-concurrent` and
   `--mcp-rate-limit-per-peer` are different bounds. An agent that never exceeds
@@ -155,7 +155,7 @@ fails with "tool not found" in the middle of the workflow.
   the caller claims. The per-peer accounting is the same code that meters HEP
   senders for `--hep-rate-limit-per-peer`.
 - **Privilege drop.** The MCP listener binds after
-  `privilege::drop_privileges` (called from `src/app/bootstrap.rs`). The default
+  `privilege::drop_privileges` (called from [`src/app/bootstrap.rs`](../../src/app/bootstrap.rs)). The default
   port 8731 is at or above 1024 to permit this.
 
 ### Audit record: the design reasons
@@ -168,7 +168,7 @@ fails with "tool not found" in the middle of the workflow.
   and the socket alone does not tell them apart. sipnab percent-encodes the id
   so an id carrying a space, a quote or a newline cannot forge a field or a
   line. It cuts an id over 64 characters and marks it `…(truncated)` (`CAP` in
-  `src/mcp/server.rs`) so a prefix never reads as a whole id.
+  [`src/mcp/server.rs`](../../src/mcp/server.rs)) so a prefix never reads as a whole id.
 - **Why a file as well as a log line.** The log line is a console view:
   `SIPNAB_LOG` filters it, `--quiet` suppresses it, and it interleaves with
   everything else. Those are the right properties for something a person
@@ -181,7 +181,7 @@ fails with "tool not found" in the middle of the workflow.
   the two can never disagree. `error` is always present so a reader never has
   to tell `.error` apart from an absent key. `seq` exists because nothing else
   makes a missing record detectable.
-- **Write path (`src/mcp/audit.rs`).** Opened `O_APPEND`, created `0600` when
+- **Write path ([`src/mcp/audit.rs`](../../src/mcp/audit.rs)).** Opened `O_APPEND`, created `0600` when
   absent (the record carries tool arguments). One `write_all` per record with
   the newline attached, under a mutex, to an unbuffered file, so concurrent
   calls interleave whole records.
@@ -207,7 +207,7 @@ fails with "tool not found" in the middle of the workflow.
 - **One sandbox.** The resource URI goes through the same single-component
   check and symlink resolution as the file tools, so there is one sandbox, not
   two that can drift apart.
-- **8 MiB per read** (`MAX_RESOURCE_BYTES` in `src/mcp/server.rs`). JSON-RPC
+- **8 MiB per read** (`MAX_RESOURCE_BYTES` in [`src/mcp/server.rs`](../../src/mcp/server.rs)). JSON-RPC
   carrying base64 is not a bulk transfer channel: a 128 MB capture becomes
   roughly 170 MB of one JSON string. Non-UTF-8 files come back as base64
   because a lossy conversion would hand the model something the file does not
@@ -232,7 +232,7 @@ fails with "tool not found" in the middle of the workflow.
   Answering an unknown argument name with another argument's vocabulary would
   make a client fill that argument with it.
 - **Completion ceiling.** 100 values (`MAX_VALUES` in
-  `src/mcp/completion.rs`), lowered by `--mcp-max-rows`. A completion reaches
+  [`src/mcp/completion.rs`](../../src/mcp/completion.rs)), lowered by `--mcp-max-rows`. A completion reaches
   the store without the audit line, scope check or rate limit `tools/call`
   applies, and a Call-ID is the most identifying row sipnab holds, so one
   ceiling serves both doors.
@@ -249,7 +249,7 @@ fails with "tool not found" in the middle of the workflow.
   the rendered content. RTP moves the stream store, so audio never wakes a
   dialog-list subscriber. A revision bump that leaves the rendering identical
   sends nothing.
-- **One-second debounce** (`DEBOUNCE` in `src/mcp/subscribe.rs`). The
+- **One-second debounce** (`DEBOUNCE` in [`src/mcp/subscribe.rs`](../../src/mcp/subscribe.rs)). The
   notification carries no data. Its whole value is one `resources/read` round
   trip through a model on the client side. A shorter interval would send the
   second notification before the client could act on the first. A capture
@@ -265,7 +265,7 @@ fails with "tool not found" in the middle of the workflow.
 - **Annotation gate.** A test walks the registered router and fails if any
   tool carries no `readOnlyHint`, or if the set of non-read-only tools stops
   matching the write-verb table in docs/mcp-protocol.md
-  (`tests/docs_drift_test.rs` also pins the counts in that page).
+  ([`tests/docs_drift_test.rs`](../../tests/docs_drift_test.rs) also pins the counts in that page).
 - **`compare_captures` is not read-only.** It changes no state a later answer
   depends on, but reading through the shared pipeline bumps the process-wide
   undecodable tallies `get_capture_report` reports, and a tool whose effects
@@ -300,13 +300,13 @@ fails with "tool not found" in the middle of the workflow.
   the agent to distrust sipnab's own analysis too.
 - **Fence code points.** U+27E6 and U+27E7 carry no meaning in SIP, which makes
   rewriting them to ASCII `[` `]` before wrapping affordable.
-- **Bidi controls** (`BIDI_CONTROLS` in `src/mcp/shape.rs`) are Unicode category
+- **Bidi controls** (`BIDI_CONTROLS` in [`src/mcp/shape.rs`](../../src/mcp/shape.rs)) are Unicode category
   `Cf`, not `Cc`, so a control-only strip misses them. They are the "Trojan
   Source" shape aimed at an audit transcript.
 - **Bodies keep `\n` and `\t`.** An agent diagnosing one-way audio reads `a=`
   lines. Destroying that to harden a boundary that already holds is the wrong
-  trade. A field is single-line by construction after RFC 3261 unfolding.
-- **256-byte field cap** (`MAX_FIELD_BYTES` in `src/mcp/shape.rs`). No RFC
+  trade. A field is single-line by construction after [RFC 3261](https://www.rfc-editor.org/rfc/rfc3261.html) unfolding.
+- **256-byte field cap** (`MAX_FIELD_BYTES` in [`src/mcp/shape.rs`](../../src/mcp/shape.rs)). No RFC
   bounds a display name or `User-Agent`, so uncapped, one header is as much room
   to write instructions as the sender cares to spend, in a context window the
   operator pays for. 256 clears every honest value: the longest `User-Agent` in
@@ -329,7 +329,7 @@ fails with "tool not found" in the middle of the workflow.
   object. Wrapping a document in an invented key would put a shape in
   `structuredContent` that the text block does not have.
 - **stdio.** All logging goes through `tracing-subscriber` to stderr (Phase
-  8.0b). `tests/parse_path_test.rs` verifies no log line leaks to stdout.
+  8.0b). [`tests/parse_path_test.rs`](../../tests/parse_path_test.rs) verifies no log line leaks to stdout.
 
 ## Notes for [MCP deployment](../mcp-deploy.md)
 
@@ -367,7 +367,7 @@ protected-resource metadata, for the same reason it ignores
 `X-Forwarded-For` when rate limiting: a header the client sets is not
 evidence. Behind a TLS-terminating proxy sipnab sees a cleartext request, so a
 URL derived from its own socket would say `http://` for a resource the client
-reached over `https://`, and RFC 9728 section 3.3 makes a conformant client
+reached over `https://`, and [RFC 9728 section 3.3](https://www.rfc-editor.org/rfc/rfc9728.html#section-3.3) makes a conformant client
 discard such a document. The operator names the URL. A malformed value is a
 startup error rather than a wrong document.
 
@@ -417,7 +417,7 @@ The tunnel, NAT and `ProxyJump` commands in docs/mcp-estate.md were not run
 against three real hosts, because one machine was available. The measured
 behavior used three (and, for the proxy-mode case, four) sipnab servers on one
 host, each with its own `--node-name` and capture, driven by
-`contrib/mcp/trace-call.py`. The transcripts were first taken on 0.5.97 and
+[`contrib/mcp/trace-call.py`](../../contrib/mcp/trace-call.py). The transcripts were first taken on 0.5.97 and
 re-run on 0.5.222 (7f9ffaa7) on 2026-10-16.
 
 `max_error_us` is a live reading. On the original host it reported 0.295 s,
@@ -441,11 +441,11 @@ branch, Contact and usually the SDP are all new on the far side, which is what
 re-origination means. Any id derived from the remainder is a heuristic that
 would arrive looking like proof and correlate two unrelated calls with no field
 left to catch it, while `timing_heuristic` announces itself as a guess. The same
-judgement records the RFC 7329 legacy `Session-ID` form as an interop notice
+judgement records the [RFC 7329](https://www.rfc-editor.org/rfc/rfc7329.html) legacy `Session-ID` form as an interop notice
 rather than a violation, because a single message cannot distinguish a legacy
 implementation from a broken one.
 
-`Session-ID` correlation (`src/sip/session_id.rs`) intersects the non-nil halves
+`Session-ID` correlation ([`src/sip/session_id.rs`](../../src/sip/session_id.rs)) intersects the non-nil halves
 rather than comparing strings, because the halves swap direction across a B2BUA
 and string equality would find nothing.
 
@@ -703,7 +703,7 @@ the store and reports the population beside it.
   correlated legs as a capture problem rather than a paging one.
 - `charging_vector_icid` matching across a B2BUA means some intermediary copied
   a per-dialog identifier onto a second dialog, which no RFC grants. The tool
-  does not return the matched ICID because RFC 7315's suggested construction
+  does not return the matched ICID because [RFC 7315](https://www.rfc-editor.org/rfc/rfc7315.html)'s suggested construction
   embeds the generating proxy's hostname or address, making it
   operator-internal rather than opaque.
 - `heuristic_only` exists because a call tree built only from timing is a
@@ -1028,10 +1028,10 @@ because a truncated scan cannot report what it truncated. The tool checks that
 `rule_name` is a bare identifier before writing it into a regular expression.
 
 The tool returns the `NotEnabled` refusal text in
-`src/mcp/tools/expectations.rs`
+[`src/mcp/tools/expectations.rs`](../../src/mcp/tools/expectations.rs)
 (`this server holds no findings: no detection rule was armed`) only when the
 server has no alert engine at all. A normal server run always attaches one (see
-the comment at `src/mcp/server.rs` around line 90), so with no detector armed
+the comment at [`src/mcp/server.rs`](../../src/mcp/server.rs) around line 90), so with no detector armed
 the observed answer is the `not_found` refusal ending "This server holds: none".
 
 ## Notes for [server bundle](../mcp-tools-server.md)
@@ -1076,8 +1076,8 @@ the second line of `sipnab --version` and REST `GET /v1/capabilities`.
 
 `tfps_ctl --json` arrived in sippulse/tfps#6, merged into `master` on
 2026-09-18 (commit `984577dc`). v0.2.1, the newest tag at that date, rejects
-`--json`. `tests/peer_release_honesty_test.rs` and
-`tests/tfps_contract_test.rs` record the same facts.
+`--json`. [`tests/peer_release_honesty_test.rs`](../../tests/peer_release_honesty_test.rs) and
+[`tests/tfps_contract_test.rs`](../../tests/tfps_contract_test.rs) record the same facts.
 
 ## Notes for [tls bundle](../mcp-tools-tls.md)
 
@@ -1091,7 +1091,7 @@ attach because the attach happens on a background thread and its failure would
 otherwise reach the agent minutes later as an empty capture. The one-writer
 check runs under the same lock that records the new capture.
 
-The `flavors` parameter keeps the serde alias `flavours` (the spelling through
+The `flavors` parameter keeps the serde alias `flavors` (the spelling through
 0.5.104). The `--uprobe-flavor` flag dropped its alias in 0.5.157. The
 parameter keeps it because clap refuses an unknown flag while serde ignores an
 unknown key. Dropping it would silently widen the probe to every library.

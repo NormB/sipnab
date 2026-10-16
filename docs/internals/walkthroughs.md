@@ -215,7 +215,7 @@ sequenceDiagram
 
 ## Add a REST route
 
-- Add the handler to `src/output/api.rs`, register it in `build_router`, and
+- Add the handler to [`src/output/api.rs`](../../src/output/api.rs), register it in `build_router`, and
   give it a `#[utoipa::path]` annotation.
 - Give the route a `### METHOD /path` heading in `docs/rest-api.md`, and
   document every query parameter the annotation declares.
@@ -225,7 +225,7 @@ sequenceDiagram
     reference never mentions a parameter the document declares.
 - Regenerate the published document (next section).
   - **(Enforced by `openapi_contract_test`, which fails on a stale
-    `website/static/openapi.json`.)**
+    [`website/static/openapi.json`](../../website/static/openapi.json).)**
 - If the route answers a question an MCP tool also answers, return the same
   shape from the same code. The REST reference states which tool matches each
   route.
@@ -244,26 +244,26 @@ shared code, not a copy:
 
 | REST route | Shared with | Code |
 |---|---|---|
-| `GET /v1/dialogs/{call_id}/report` | `GET /v1/dialogs/{call_id}` | `generate_call_report` in `src/output/call_report.rs` delegates JSON to the one dialog serializer |
-| `GET /v1/dialogs/{call_id}/correlated` | MCP `find_correlated` | `CorrelationResult::strategy_and_gap` in `src/sip/dialog_store.rs` |
-| `GET /v1/dialogs/{call_id}/tree` | MCP `get_call_tree` | `DialogStore::correlation_tree` in `src/sip/dialog_store.rs` |
-| `POST /v1/vcon/validate` | MCP `validate_vcon` | `vcon_schema::validate` in `src/output/vcon_schema.rs` |
-| `POST /v1/vcon/analyze` | MCP `analyze_vcon` | `vcon_analysis::analyze_container` in `src/output/vcon_analysis.rs` |
-| `GET /v1/capabilities` | MCP `server_capabilities`, `--version` | `compiled_features` in `src/cli.rs`, read from `cfg!`; the `libpcap` block is `pcap_lib_version` asked at runtime |
+| `GET /v1/dialogs/{call_id}/report` | `GET /v1/dialogs/{call_id}` | `generate_call_report` in [`src/output/call_report.rs`](../../src/output/call_report.rs) delegates JSON to the one dialog serializer |
+| `GET /v1/dialogs/{call_id}/correlated` | MCP `find_correlated` | `CorrelationResult::strategy_and_gap` in [`src/sip/dialog_store.rs`](../../src/sip/dialog_store.rs) |
+| `GET /v1/dialogs/{call_id}/tree` | MCP `get_call_tree` | `DialogStore::correlation_tree` in [`src/sip/dialog_store.rs`](../../src/sip/dialog_store.rs) |
+| `POST /v1/vcon/validate` | MCP `validate_vcon` | `vcon_schema::validate` in [`src/output/vcon_schema.rs`](../../src/output/vcon_schema.rs) |
+| `POST /v1/vcon/analyze` | MCP `analyze_vcon` | `vcon_analysis::analyze_container` in [`src/output/vcon_analysis.rs`](../../src/output/vcon_analysis.rs) |
+| `GET /v1/capabilities` | MCP `server_capabilities`, `--version` | `compiled_features` in [`src/cli.rs`](../../src/cli.rs), read from `cfg!`; the `libpcap` block is `pcap_lib_version` asked at runtime |
 
 The `/v1/dialogs` list rows are the compact `DialogSummary` projection shared
 with MCP and TUI save. That is why they carry `from_user`/`to_user` while the
 single-dialog document carries `from`/`to`.
 
 The live-audio WebSocket closes with code 1002 on a client frame longer than
-`MAX_CLIENT_FRAME` (4096 bytes) in `src/output/websocket.rs`. A client sends
-only control frames, which RFC 6455 caps at 125 bytes.
+`MAX_CLIENT_FRAME` (4096 bytes) in [`src/output/websocket.rs`](../../src/output/websocket.rs). A client sends
+only control frames, which [RFC 6455](https://www.rfc-editor.org/rfc/rfc6455.html) caps at 125 bytes.
 
 ### Regenerate the OpenAPI document
 
-A test step generates `website/static/openapi.json`. Nobody writes it by hand.
+A test step generates [`website/static/openapi.json`](../../website/static/openapi.json). Nobody writes it by hand.
 `openapi_contract_test` derives it from the `#[utoipa::path]` annotations on
-the handlers in `src/output/api.rs`, and splices in the shared JSON Schemas
+the handlers in [`src/output/api.rs`](../../src/output/api.rs), and splices in the shared JSON Schemas
 under `tests/schemas/` rather than describing those response bodies twice.
 Regenerate it after changing a handler:
 
@@ -275,7 +275,7 @@ SIPNAB_BLESS_OPENAPI=1 cargo test --features full --test openapi_contract_test
   A build without `vcon` registers no `/v1/dialogs/{call_id}/vcon` and would
   generate a different document, so the published document describes the full
   build.
-- `scripts/check-generated-inputs-staged.py`, run by the pre-commit hook,
+- [`scripts/check-generated-inputs-staged.py`](../../scripts/check-generated-inputs-staged.py), run by the pre-commit hook,
   refuses a commit that stages the document while one of its inputs has
   changes that are not staged.
 - `info.version` is `1`, the `/v1` path version, not the release version. A

@@ -218,7 +218,7 @@ Short version:
     WS4.1) — 3→1 allocations per header on the hot path.
 - **D10 — Feature gates keep the binary small.**
   - `native`, `tui`, `tls`, `hep`, `api`, `mcp`, `mcp-http`, `audio`, `wasm`.
-  - Check [`Cargo.toml`](https://github.com/NormB/sipnab/blob/main/Cargo.toml)
+  - Check `Cargo.toml`
     before assuming a build includes a module.
 - **D11 — Key material is toxic waste.**
   - `zeroize` on key types.
@@ -237,7 +237,7 @@ Short version:
   - `--chroot` is available for daemon deployments.
 - **D16 — Process isolation: scanner-kill yes, the REST API no.**
   - D16
-    ([`docs/design/implementation-plan-v6.md:624`](https://github.com/NormB/sipnab/blob/main/docs/design/implementation-plan-v6.md#L624)) called for scanner-kill and the
+    ([`docs/design/implementation-plan-v6.md`](../design/implementation-plan-v6.md) line 624) called for scanner-kill and the
     REST API to run in forked children.
   - **Scanner-kill does.**
     - Its worker is a process of its own ([`src/process_isolation.rs`](../../src/process_isolation.rs)).
@@ -251,7 +251,7 @@ Short version:
     - They share one address space with the parsers, the stores, TLS key material and bearer tokens.
     - Treat the API bind address and key accordingly.
     - Note that `panic = "abort"`
-      ([`Cargo.toml:480`](https://github.com/NormB/sipnab/blob/main/Cargo.toml#L480)) means a panic on any thread ends the whole process.
+      (`Cargo.toml:480`) means a panic on any thread ends the whole process.
       So threads buy no fault containment either.
   - [`docs/design/process-isolation-and-hot-path-cost.md`](../design/process-isolation-and-hot-path-cost.md)
     analyzes whether to close the rest of this gap, and why most of it should stay open.

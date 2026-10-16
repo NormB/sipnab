@@ -650,3 +650,55 @@ Reaching further also moves the binding constraint from the enumeration to the t
   - A reviewer asking "does sipnab ever tell a relay to do something" reads one enum instead of auditing every call site.
   - An edit that wants to send one has to add a variant.
     That shows up in a diff rather than passing as an oversight.
+
+## Engineering notes moved from the user guide
+
+These notes were on [the user page](@/docs/rtpengine.md) and moved here when that
+page became task-first.
+
+### `--hep-parse` once switched relay attribution off
+
+`--hep-parse` unwraps a HEP datagram and hands the payload to the parser.
+sipnab recognizes mirrored `ng` two ways: by the metadata a HEP listener
+recorded before stripping the wrapper, and by parsing the wrapper off a
+sniffed datagram that still has one. Before 0.5.128 the unwrap discarded the
+wrapper without recording what it said, so neither route had anything to
+match on. The control plane reached the capture and sipnab dropped it, no counter
+moved, and every relay stream stayed orphaned, with the feature built, the
+filter admitting the ports and the datagrams on the wire. From 0.5.128 the
+unwrap carries the wrapper's capture protocol and correlation id forward, and
+the sniffed-mirror port check (`sniffed_mirror_port_believed`) is the one gate
+for both paths.
+
+Two related version boundaries the user page used to state:
+
+- `--hep-listen` decoded delivered `ng` from 0.5.125. Earlier builds accepted
+  the traffic and decoded none of it.
+- Through 0.5.192 the default capture filter admitted no media, so a relay
+  capture needed a filter of its own that named the relay's port range.
+
+### "Authoritative about the port"
+
+The user page once called a `media-relay` assertion "authoritative about the
+port". That was true of rtpengine, which cannot be wrong about which socket it
+opened, and false of the assertion, because nothing authenticates a sniffed
+mirror. [`tests/rtpengine_sniffed_ng_gate_test.rs`](https://github.com/NormB/sipnab/blob/main/tests/rtpengine_sniffed_ng_gate_test.rs) pins the
+current wording's claim: sipnab believes a mirror from any source on the HEP port
+and refuses it elsewhere.
+
+### What the multi-node procedure rests on
+
+[`tests/multi_node_relay_fanout_test.rs`](https://github.com/NormB/sipnab/blob/main/tests/multi_node_relay_fanout_test.rs)
+pins the three properties the per-host procedure on the user page depends on:
+
+- The proxy holds signaling and no media.
+- Exactly one relay claims a call.
+- The proxy's SDP names which one.
+
+sipnab does not aggregate across nodes: there is no cluster mode, central
+index, or node that answers for another. An aggregator is infrastructure, and
+[positioning](https://github.com/NormB/sipnab/blob/main/docs/design/positioning.md) rules it out.
+
+The longer-term goal that relay attribution serves, a call assembled across
+every hop, is in
+[rtpengine: the multi-hop goal](https://github.com/NormB/sipnab/blob/main/docs/design/rtpengine-multi-hop-goal.md).

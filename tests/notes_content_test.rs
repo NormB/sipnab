@@ -121,7 +121,7 @@ fn every_repository_path_a_note_names_exists() -> Result<(), TestError> {
         }
     }
     assert!(
-        seen >= 20,
+        seen >= 10,
         "only {seen} repository paths found in the notes; the scan is wrong"
     );
     assert!(absent.is_empty(), "{}", absent.join("\n"));

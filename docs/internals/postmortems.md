@@ -32,7 +32,7 @@ and feature notes no longer carry.
 
 ## Offline throughput regression missed by a stale benchmark baseline
 
-### What happened
+**What happened**
 
 sipnab 0.5.118 (2026-08-20) to 0.5.121 (2026-08-21) read capture files more
 slowly than 0.5.117. 0.5.122 fixed it the same day. The 0.5.122 entry in
@@ -49,7 +49,7 @@ with `--cores 4`:
 0.5.108 to 0.5.117 measured about 3.26M. [`bench/regression-gate.sh`](../../bench/regression-gate.sh) ran on
 each of the four slow releases and passed each time.
 
-### Why
+**Why**
 
 **Reading the whole file.** Before sipnab reads a capture file it checks
 whether the file is a merged pcapng (a pcapng whose recorded interfaces
@@ -70,7 +70,7 @@ benchmarks page changed to the new figure, the baseline file did not. The
 check compared 2.40M against 2.28M (105%) and passed. With that baseline it
 would have passed anything above 1.82M, a drop of up to about 45%.
 
-### What changed
+**What changed**
 
 - `is_merged` opens the file and reads four bytes first, and returns without
   reading further when they are not the pcapng marker. A real pcapng file is
@@ -85,7 +85,7 @@ would have passed anything above 1.82M, a drop of up to about 45%.
   [`tests/site_journey_test.rs`](../../tests/site_journey_test.rs) fails if the benchmarks page's headline figure
   and the baseline differ.
 
-### How to check
+**How to check**
 
 ```bash
 git show v0.5.121:bench/baseline.json | jq '.cores_4_pkts_per_s, .floor_pct'
@@ -102,7 +102,7 @@ The user-facing page for this is the how-to note "Tell an answered call from a
 failed one in a sipnab vCon export". The current rule is in
 [the vCon guide](../vcon.md).
 
-### What happened
+**What happened**
 
 sipnab added vCon export (`--export-vcon` and the `export_vcon` MCP tool) in
 0.5.125 (2026-08-25). In 0.5.125, 0.5.126 and 0.5.127 the Dialog Object of
@@ -113,7 +113,7 @@ record of an answered call stated that the call never reached a conversation,
 and a consumer reading it beside a switch's call detail record that showed a
 connected call received two contradicting accounts.
 
-### Why
+**Why**
 
 The vCon core draft (`draft-ietf-vcon-vcon-core-03` at the time) defines five
 Dialog Object types: `recording`, `recording-set`, `text`, `transfer` and
@@ -123,7 +123,7 @@ defines `incomplete` by what happened to the call, a call that "failed to be
 setup" (section 4.3.1, quoted in the 0.5.128 release notes), not by what the
 object holds. The draft also requires `disposition` on an `incomplete` object.
 
-### What changed
+**What changed**
 
 - **0.5.128 (2026-08-27).** sipnab decides `type` and `disposition` together.
   A final failure sipnab saw produces `"type": "incomplete"` with a
@@ -144,7 +144,7 @@ The vCon guide records a consumer case at vcon-server commit `8ffbfcf`: the
 `deepgram_link` transcription link reads `dialog["url"]` without checking for
 it, and raises on a `recording` object with no content.
 
-### How to check
+**How to check**
 
 The how-to note runs the two exports (an answered call from
 [`tests/pcap-samples/sip-rtp-g711.pcap`](../../tests/pcap-samples/sip-rtp-g711.pcap), a `488` from
@@ -154,7 +154,7 @@ the second.
 
 ## The website kept offering the previous release after the new release files existed
 
-### What happened
+**What happened**
 
 The tag `v0.5.128` dates from 2026-08-27 at 15:58:57 (UTC-4). Tagging starts
 the release workflow, which builds the release files and publishes them on
@@ -167,7 +167,7 @@ message records that the release had published twenty-three files while the
 download page, its checksum column and its `SHA256SUMS.txt` link still pointed
 at 0.5.127.
 
-### Why
+**Why**
 
 [`website/config.toml`](../../website/config.toml) has two version fields. `version` is the source version,
 copied from `Cargo.toml` by the site build, so it changes as soon as a release
@@ -188,7 +188,7 @@ publishing. On
 2026-08-27 the field was exactly one behind, so the test passed whether or not
 the newer release's files existed. Nothing else checked for them.
 
-### What changed
+**What changed**
 
 [`tests/release_completeness_test.rs`](../../tests/release_completeness_test.rs) adds
 `the_site_advertises_the_newest_release_whose_assets_exist` beside the
@@ -202,7 +202,7 @@ changelog entry and a tag, every dated changelog entry names a real tag, and
 the install page and its website copy name the same version. On 2026-10-11
 `grep -c '^#\[test\]' tests/release_completeness_test.rs` printed `11`.
 
-### How to check
+**How to check**
 
 ```bash
 git show ddb05f3a -- website/config.toml | grep '^[-+]published'
@@ -213,7 +213,7 @@ prints `-published_version = "0.5.127"` and `+published_version = "0.5.128"`.
 
 ## Documentation scripts misread nested code blocks
 
-### What happened
+**What happened**
 
 A fenced code block in Markdown opens with three or more backticks or tildes,
 indented at most three spaces, and closes only on a run of the same character
@@ -238,12 +238,12 @@ When the fix landed, `docs/examples.md` contained no line starting with four
 backticks or three tildes, so the script had skipped no cookbook command. The fix
 commit names no published page it changed.
 
-### Why
+**Why**
 
 The shared module existed. The four scripts did not call it, and no test fed
 any of them a nested block.
 
-### What changed
+**What changed**
 
 Commit `e2045af9` made `rfc-links.py`, `link-repo-paths.py` and
 `fix-line-anchors.py` import `fence_mask`, and `check-cookbook.py` import
@@ -263,7 +263,7 @@ checks that:
 The file holds eight test functions that run as 16 cases. CI runs
 `python3 -m pytest scripts/tests -q` on Linux.
 
-### How to check
+**How to check**
 
 `python3 -m pytest -q scripts/tests/test_fenced_content_survives.py` passes
 16 cases. To see the defect, restore the old scripts with
@@ -273,7 +273,7 @@ written inside the block), then `git checkout HEAD -- scripts`.
 
 ## A size test for the MCP field cap measured the whole message
 
-### What happened
+**What happened**
 
 sipnab caps each header value it hands to an MCP client at `MAX_FIELD_BYTES`,
 256 bytes ([`src/mcp/shape.rs`](../../src/mcp/shape.rs)). A capped value ends with `…[truncated]`, and
@@ -288,7 +288,7 @@ passed. The test builds a capture with one INVITE whose `User-Agent` is 4096
 bytes, asks `get_message` for it, and checks that the value in the answer is
 short. The fix is commit `1ccf1f8a` (2026-08-28), first released in 0.5.130.
 
-### Why
+**Why**
 
 The answer to `get_message` carries the long text in two strings: the fenced
 header value (327 bytes with the markers) and an unfenced record of the whole
@@ -305,7 +305,7 @@ temporary directory:
 The header value was 327 bytes on both. The cap was never what the test
 measured.
 
-### What changed
+**What changed**
 
 The test selects the string that starts with `UNTRUSTED_OPEN`, which is a
 single fenced value, and computes its ceiling as `MAX_FIELD_BYTES + 128`. The
@@ -334,21 +334,21 @@ five check how sipnab selects values, not the cap's size. In the same run the
 whole-message record measured 1444 bytes on Linux, so a fixed 1024-byte
 ceiling would now fail there too.
 
-### How to check
+**How to check**
 
 `cargo test --features full --test mcp_output_injection_test -- --test-threads=1`
 ran 13 tests, all passing, at `6e2cbab2` (0.5.211).
 
 ## CI test binaries ran out of disk space because of full debug information
 
-### What happened
+**What happened**
 
 On 2026-08-29 the Linux CI job failed while linking with
 `ld: final link failed: No space left on device`. The previous commit had
 passed. The failing one added two test files, and each test binary links the
 whole dependency tree.
 
-### Why
+**Why**
 
 A measurement of one debug test binary from 0.5.133, recorded in the
 `Cargo.toml` comment, the 0.5.133 CHANGELOG entry and commit `4499cb79`:
@@ -373,7 +373,7 @@ Building its profiling profile with
 failure the linker named disk space directly, and the measurement came before
 the choice of fix.
 
-### What changed
+**What changed**
 
 Commit `4499cb79` (released in 0.5.133) set `debug = "line-tables-only"` under
 `[profile.dev]` in `Cargo.toml`. A panic still prints the file and line of each
@@ -382,7 +382,7 @@ interactive debugger reads. For a
 debugging session, override it for one command, for example
 `CARGO_PROFILE_DEV_DEBUG=full cargo test --test us_spelling_test`.
 
-### How to check
+**How to check**
 
 `grep -A1 '^\[profile.dev\]' Cargo.toml` prints the setting. The CHANGELOG
 entry is under `## [0.5.133] - 2026-08-29`, "Fixed": "CI ran out of disk
@@ -390,7 +390,7 @@ linking test binaries."
 
 ## A CI job ran out of disk space and left no readable log
 
-### What happened
+**What happened**
 
 On 2026-09-01 a CI job stopped with the error recorded at the top of
 [`.github/actions/free-disk/action.yml`](../../.github/actions/free-disk/action.yml):
@@ -406,7 +406,7 @@ records that the project found the cause in a check annotation after the job log
 expired, and that the Coverage job had warned about low disk space in the two
 runs before. Released versions were not affected.
 
-### Why
+**Why**
 
 `ci.yml` and `quality.yml` each held two copies of a step named "Free disk
 space". The `ci.yml` copies removed .NET, Android, GHC, CodeQL and Boost, and the
@@ -414,7 +414,7 @@ space". The `ci.yml` copies removed .NET, Android, GHC, CodeQL and Boost, and th
 Docker image, a list extended after an earlier time the Coverage job ran out of
 space. The `ci.yml` copies were never updated, and a `ci.yml` job ran out.
 
-### What changed
+**What changed**
 
 From 0.5.142 the cleanup is one shared action,
 [`.github/actions/free-disk/action.yml`](../../.github/actions/free-disk/action.yml), used by every "Free disk space" step
@@ -434,7 +434,7 @@ inline script, the action still removes every path the old copies removed, it
 prints both figures, and each of the two files uses it at least once.
 These tests do not read `release.yml`.
 
-### How to check
+**How to check**
 
 Any CI job that frees disk space prints the action's line with that run's
 figures.
@@ -444,7 +444,7 @@ figures.
 The user-facing page for this is the how-to note "Open the sipnab.com sample
 call in the browser and in the terminal".
 
-### What happened
+**What happened**
 
 The homepage shows a still picture ([`demos/hero.tape`](../../demos/hero.tape)) that changes to an
 animation ([`demos/01-intro.tape`](../../demos/01-intro.tape), and the `/analyze` page's "Load a sample call"
@@ -456,13 +456,13 @@ read [`tests/pcap-samples/sip-rtp-g711.pcap`](../../tests/pcap-samples/sip-rtp-g
 calls. Commit `70ec075d` (first in v0.5.140) moved the still picture to
 `sample-call.pcap`, and commit `a9aaf57a` (first in v0.5.142) moved the animation.
 
-### Why
+**Why**
 
 No test compared the three capture names, and no file a test could read stated
 the requirement that they agree. The facts live in separate files: the
 two `.tape` scripts, the `index.html` template, and `analyze.js`.
 
-### What changed
+**What changed**
 
 Both `.tape` files type `sipnab -I website/static/demos/sample-call.pcap`.
 Commit `a9aaf57a` added [`tests/demo_capture_agreement_test.rs`](../../tests/demo_capture_agreement_test.rs), which reads the
@@ -476,14 +476,14 @@ a capture that does not exist or is not committed
 `no_demo_tape_drives_an_uncommitted_capture`). It reads the capture only from
 the argument after `-I`, so a path in a tape comment is not mistaken for it.
 
-### How to check
+**How to check**
 
 `grep -n 'sample-call' demos/hero.tape demos/01-intro.tape` shows both tapes
 reading the same file.
 
 ## Three hygiene tests failed on macOS because their setup did not run
 
-### What happened
+**What happened**
 
 [`scripts/clean-stale.py`](../../scripts/clean-stale.py) deletes stray logs and other leftovers from a
 checkout, but only files older than an age floor. [`tests/repo_hygiene_test.rs`](../../tests/repo_hygiene_test.rs)
@@ -492,7 +492,7 @@ failed on the macOS runner and passed on Linux. Each said the script had not
 removed a file it should have. The script was correct: nothing had made the
 files old.
 
-### Why
+**Why**
 
 The setup code, `Fixture::age`, ran `touch -d @<epoch>`, a GNU extension that
 failed on the macOS runner. The setup did not check the exit status, the file
@@ -500,7 +500,7 @@ kept its current time, the age floor correctly kept it, and three assertions
 about the script failed. Local runs are on Linux, so the failure appeared only
 in CI.
 
-### What changed
+**What changed**
 
 Commit `6efa9937`, released in 0.5.142: `Fixture::age` sets the time with
 Rust's `set_modified`, reads it back, and fails with "backdating {} did not
@@ -525,14 +525,14 @@ The commit message records three mutations, all detected. The first did not
 apply on the first attempt, and the mutation's guard reported that rather
 than a result.
 
-### How to check
+**How to check**
 
 `grep -n 'set_modified' tests/repo_hygiene_test.rs` and
 `grep -n 'CORPUS_REAL_BYTES=' bench/live-capture.sh`.
 
 ## The commit check did not lint test files
 
-### What happened
+**What happened**
 
 From commit `e294c880` (2026-04-15) the `pre-commit` hook ran
 `cargo clippy --features full -- -D warnings`, while CI and `pre-push` ran
@@ -542,7 +542,7 @@ errors passed the commit check and failed CI: a `needless_splitn` in a test
 file and an `items_after_test_module` in [`src/sip/mod.rs`](../../src/sip/mod.rs) on 2026-08-30
 (0.5.135), and two more in test files on 2026-09-01.
 
-### Why
+**Why**
 
 The backlog item `GATE1` tracked the difference and left the fix open on the
 assumption that widening the commit check would "roughly double its wall
@@ -559,7 +559,7 @@ CI's command took 2.1 times as long, 272 ms more, because `pre-push` and CI
 already keep its build output cached. The narrower alternative builds a
 feature combination no other step builds, so the cache held nothing for it.
 
-### What changed
+**What changed**
 
 In 0.5.143 (2026-09-02) the `pre-commit` hook runs CI's command with
 `--color never`. [`tests/clippy_scope_parity_test.rs`](../../tests/clippy_scope_parity_test.rs) reads
@@ -571,7 +571,7 @@ counts only commands a file runs, skipping comments, printed suggestions
 `pre-push` run for the other Linux architecture. The first version counted a
 printed `--fix` suggestion as a run, and the skip list exists for that reason.
 
-### How to check
+**How to check**
 
 `grep -n 'clippy --workspace' .github/workflows/ci.yml .githooks/pre-commit .githooks/pre-push`
 lists the three run lines among comments and hints.
@@ -581,7 +581,7 @@ lists the three run lines among comments and hints.
 The user-facing page for this is the how-to note "Name the addresses of a call
 in the terminal interface".
 
-### What happened
+**What happened**
 
 Up to 0.5.141 the Name Address popup (`N`) had a fixed width of 60 columns.
 With two endpoints its last line,
@@ -595,7 +595,7 @@ than six rows. In the running program a terminal below 40 by 6 shows
 `Terminal too small` instead, so 66 by 12 was the case a user could reach. A
 crash closes the whole interface, including a live capture.
 
-### Why
+**Why**
 
 The popup did not size itself to its text, and the text widget cuts long
 lines without error. No test required a popup to name its exit. The Filter
@@ -603,7 +603,7 @@ and Settings popups placed rows from a fixed height, so on a short terminal
 they asked `Buffer::set_string` to write outside the screen, which stops the
 program.
 
-### What changed
+**What changed**
 
 In 0.5.142 (2026-09-01): the Name Address popup takes the width of its longest
 line plus three columns and still shrinks to fit. The Filter, Settings and
@@ -628,7 +628,7 @@ shortens lines at the right edge. Tests in [`src/tui/render/popups.rs`](../../sr
 
 ## The US-spelling check missed words inside identifiers and its own file
 
-### What happened
+**What happened**
 
 While building [`tests/us_spelling_test.rs`](../../tests/us_spelling_test.rs) on 2026-09-01, the work twice
 reported "nothing found" when something was there. A one-off regular
@@ -638,14 +638,14 @@ test now named `etag_serializes_with_named_fields` in [`src/provenance.rs`](../.
 Later, the new file's 20 tests passed while the file was untracked. Once it
 was in git, the check reported British spellings in the file itself.
 
-### Why
+**Why**
 
 `\b` marks a boundary between a word character (letter, digit, underscore)
 and anything else, so inside a `snake_case` name there is no boundary around
 the word. `camelCase` and upper-case joined names behave the same. The check
 reads `git ls-files`, so an untracked file is not read.
 
-### What changed
+**What changed**
 
 The rule splits text into tokens at non-word characters, each token into runs
 of letters, and each run where an upper-case letter follows a lower-case one
@@ -663,7 +663,7 @@ kind of floor exists in `every_free_disk_step_uses_the_shared_action`
 `no_executable_line_uses_a_gnu_only_spelling` ([`tests/repo_hygiene_test.rs`](../../tests/repo_hygiene_test.rs), at
 least 20 scripts). On 2026-10-11 the file held 30 tests.
 
-### How to check
+**How to check**
 
 `echo 'etag_serializes_with_named_fields' | grep -c -E '\bserializes\b'`
 prints `0`. With spaces in place of the underscores it prints `1`.
@@ -671,7 +671,7 @@ prints `0`. With spaces in place of the underscores it prints `1`.
 
 ## The US-spelling check missed British spellings not on its word list
 
-### What happened
+**What happened**
 
 0.5.105 (2026-08-17) converted the repository to US English in 2,904
 replacements across 274 files, with no check to keep it. By 0.5.122 it held
@@ -683,14 +683,14 @@ forms across 95 files that the list did not contain (186 occurrences by the
 `containerized`, `synthesized`, `unrecognized`, `sanitized`, `materializing`,
 `pseudonymizing` and `uninitialized`.
 
-### Why
+**Why**
 
 The list held 70 words (`BRITISH` at commit `95e0d2bb`), and a list catches only
 words someone added. The comment at the top of [`tests/us_spelling_test.rs`](../../tests/us_spelling_test.rs) and
 the 0.5.142 CHANGELOG entry say the list check existed "since 0.5.105". The
 0.5.123 entry and commit `1291fb4b` show it arrived in 0.5.123.
 
-### What changed
+**What changed**
 
 Commit `95e0d2bb` (released in 0.5.142) corrected the spellings and added
 [`tests/us_spelling_test.rs`](../../tests/us_spelling_test.rs), which checks ten suffix pairs (`SUFFIXES`:
@@ -716,13 +716,13 @@ are not suffix cases, so the list test stayed. On 2026-09-08 (commit
 `8f692afd`, 0.5.159) it began splitting identifiers before comparing, after
 four British test names had passed it. The list held 126 words on 2026-10-11.
 
-### How to check
+**How to check**
 
 `grep -n -A11 '^const SUFFIXES' tests/us_spelling_test.rs` prints the rule.
 
 ## Stray files filled the development checkout
 
-### What happened
+**What happened**
 
 The project's development instructions had said to delete every temporary
 file in the same turn for months, and nothing checked it. The comment at the
@@ -731,12 +731,12 @@ top of [`scripts/clean-stale.py`](../../scripts/clean-stale.py) records the deve
 136 GB, and a `target/` directory of 1.6 TB (551 GB incremental cache, 961 GB
 `deps/`), together 44% of a 3.6 TB disk that was 76% full.
 
-### Why
+**Why**
 
 The instruction was text only. A file inside `.git/` never appears in
 `git status`, and an abandoned worktree appears only in `git worktree list`.
 
-### What changed
+**What changed**
 
 [`tests/repo_hygiene_test.rs`](../../tests/repo_hygiene_test.rs) fails when `.git/` holds a `.log`, `.out` or
 `.err` file the hooks did not write (`the_git_directory_holds_no_stray_logs`,
@@ -762,7 +762,7 @@ script share the hook-log prefix `sipnab-pre-` (`HOOK_LOG_PREFIX`), and
 `the_gate_and_the_cleaner_share_one_definition_of_a_hook_log` keeps them
 equal.
 
-### How to check
+**How to check**
 
 `python3 scripts/clean-stale.py` lists what it would remove and removes
 nothing. `python3 scripts/clean-stale.py --root /` refuses with "/ is not a git
@@ -773,7 +773,7 @@ checkout." and exits 2.
 The user-facing page for this is the how-to note "Send SIP to a HEP collector
 over TCP and accept only known senders".
 
-### What happened
+**What happened**
 
 0.5.150 added HEP over TCP and TLS. During that work two tests in
 [`src/capture/hep.rs`](../../src/capture/hep.rs) passed on Linux and failed on the macOS runner
@@ -788,7 +788,7 @@ correct, and the project fixed both before it released 0.5.150.
   the collector side, had the sender send exactly three packets, and waited
   for a new connection. On macOS none arrived within ten seconds.
 
-### Why
+**Why**
 
 macOS returns `EINVAL` from `setsockopt(SO_RCVTIMEO)` on a connection the peer
 has already reset, and Linux accepts the call. The listener's refusal and the
@@ -798,7 +798,7 @@ collector's reset: on Linux that arrives before the second packet, so three
 were enough. On macOS it does not. In both tests the count or order matched
 Linux timing rather than the behavior under test.
 
-### What changed
+**What changed**
 
 In 0.5.150 (2026-09-04) the allowlist test sets the read timeout before
 sending and accepts either end-of-stream or a reset. The reconnect test sends
@@ -807,7 +807,7 @@ failing with "the rebuilt connection: the sender offered packets for 10s and
 never reconnected". The sender did not change: a failed send drops the
 connection, the next packet opens a new one, one reconnect attempt per packet.
 
-### How to check
+**How to check**
 
 Both tests run on every change on the Linux and macOS CI jobs. The behavior
 they protect is in the CLI reference rows for `--hep-send-transport` and
@@ -867,7 +867,7 @@ From the note "Hand over call evidence that another party can check"
 From the note "Join the two legs of a call that crossed a B2BUA"
 (`one-call-two-nodes-neither-saw-it-all.md`).
 
-- `timing_clock.max_error_us` on thor-02: three runs on 2026-10-11 reported
+- `timing_clock.max_error_us` on the development host: three runs on 2026-10-11 reported
   1017000, 36000 and 16500; one run on 2026-10-16 reported 523500.
 - On 0.5.222, `find_correlated` for `1-1966@10.0.2.20` over standard input
   against [`tests/pcap-samples/sip-rtp-g711.pcap`](../../tests/pcap-samples/sip-rtp-g711.pcap) returned
@@ -876,7 +876,7 @@ From the note "Join the two legs of a call that crossed a B2BUA"
   background file reader is still loading the 852-frame capture. The leg found
   (`sdp_origin`, score 90) was the same in every run.
 - The HTTP server example `--mcp-bind 127.0.0.1:8731` does not start on
-  thor-02: port 8731 is in use there (`Address already in use (os error 98)`,
+  the development host: port 8731 is in use there (`Address already in use (os error 98)`,
   exit 2). The note shows the file-backed variant on port 28731. That run
   logged `MCP HTTP server listening on 127.0.0.1:28731`.
 
@@ -1008,7 +1008,7 @@ From [`website/content/notes/what-0-5-128-added-to-the-vcon-exporter.md`](../../
 
 0.5.128 added `subject`, `parties[].name`, `parties[].stir`,
 `dialog[].session_id`, transfer records, `--vcon-max-inline-media`,
-`--content-deny-tombstone`, `--vcon-digest`, RFC 9457 problem documents on the
+`--content-deny-tombstone`, `--vcon-digest`, [RFC 9457](https://www.rfc-editor.org/rfc/rfc9457.html) problem documents on the
 REST API, and atomic spool writes. 0.5.208 revised two of them to follow
 draft-ietf-vcon-vcon-core-04:
 
@@ -1030,7 +1030,7 @@ appeared. Three faults caused it. Version 0.5.151 (2026-09-05) fixed all
 three.
 
 - **Recording mode read from the wrong element.** The reader looked for
-  `<mode>`. RFC 7866 and the OpenSIPS `siprec` module both write
+  `<mode>`. [RFC 7866](https://www.rfc-editor.org/rfc/rfc7866.html) and the OpenSIPS `siprec` module both write
   `<datamode>`, so the mode was empty for every call OpenSIPS recorded. The
   reader now reads `<datamode>` and keeps `<mode>` as a fallback.
 - **Stream ownership read from the wrong place.** The reader looked for the
