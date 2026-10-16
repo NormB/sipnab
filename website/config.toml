@@ -49,7 +49,7 @@ version = "0.5.222"
 # Bumped after a release finishes publishing, not while cutting it.
 # `site_advertises_only_a_released_version` requires a matching `v<x.y.z>` tag,
 # so advertising something unreleased fails the suite rather than the visitor.
-published_version = "0.5.221"
+published_version = "0.5.222"
 # Release date of `published_version` above -- NOT of `version`, further up.
 # `download.html` renders this beside `published_version` in a single sentence,
 # so the date belongs to the release a reader can actually download.
@@ -173,6 +173,7 @@ macos_floor_intel = "10.12"
 #   0.5.219  19,195,072 bytes   (+159,808, leaving 727,872 bytes of headroom under 19 MB)
 #   0.5.220  19,199,168 bytes   (+4,096, leaving 723,776 bytes of headroom under 19 MB)
 #   0.5.221  19,277,376 bytes   (+78,208, leaving 645,568 bytes of headroom under 19 MB)
+#   0.5.222  19,531,456 bytes   (+254,080, leaving 391,488 bytes of headroom under 19 MB)
 #
 # So 0.5.159 shipped one ordinary release away from tipping and nothing said
 # so. The 118,784 bytes are `find_in_captures` -- a 66th MCP tool with derived
