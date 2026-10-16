@@ -73,6 +73,9 @@ Already written, and narrower:
   and in its build, test and release tooling, why, what changed, and how to
   check it. It also holds the source locations, version history and
   measurements that the website's how-to and feature notes no longer carry.
+- [MCP server design notes](mcp.md) — why the MCP server behaves as it does:
+  the reasons, history and internal names behind the limits, refusals and
+  response shapes the operator pages under `docs/mcp*.md` describe.
 
 Other starting points:
 

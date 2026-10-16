@@ -197,6 +197,14 @@ PAGES: list[tuple[str, str, int, str, str]] = [
         "The rule every decapsulator follows, where the EtherType values came "
         "from, and the byte offsets the generated capture filter probes.",
     ),
+    (
+        "mcp.md",
+        "mcp.md",
+        20,
+        "MCP Server Design Notes",
+        "Why the MCP server behaves as it does: the reasons, history and "
+        "internal names behind its limits, refusals and response shapes.",
+    ),
 ]
 
 # The developer index becomes the Zola section landing page.
