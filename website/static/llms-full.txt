@@ -32959,7 +32959,7 @@ SDP. Then **nothing in the signaling proves the two legs are one call**.
 | Answer | Where the identity is |
 |---|---|
 | `capture_health` | Nowhere. Its response holds no strings, so that it cannot carry packet content. |
-| `get_capture_report` with `format: "yang-json"` | In the second content block, beside the document. RFC 7951 allows no other member at the top of the document. |
+| `get_capture_report` with `format: "yang-json"` | In the second content block, beside the document. [RFC 7951](https://www.rfc-editor.org/rfc/rfc7951.html) allows no other member at the top of the document. |
 | `get_capture_report` or `get_dialog_report` with `format: "markdown"` or `"text"`, and `render_ladder` | Nowhere. These answer with text, not a JSON object. |
 | `validate_vcon` with `container` | Nowhere. A container you supply did not come from this capture. With `call_id` the answer carries it. |
 
