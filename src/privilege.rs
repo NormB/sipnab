@@ -104,7 +104,7 @@ pub fn drop_privileges(target_user: Option<&str>, no_priv_drop: bool) -> Result<
 /// frameworks the moment they are invoked (e.g., pressing P to play RTP audio
 /// in the TUI). macOS's security model relies on TCC and the app sandbox
 /// rather than uid-based privilege separation, so the drop buys little there.
-fn drop_is_skipped(target_user: Option<&str>, no_priv_drop: bool, root: bool) -> bool {
+pub fn drop_is_skipped(target_user: Option<&str>, no_priv_drop: bool, root: bool) -> bool {
     if no_priv_drop {
         tracing::info!("Privilege drop disabled (--no-priv-drop)");
         return true;

@@ -192,12 +192,19 @@
     },
     {
       "file": "src/app/bootstrap.rs",
-      "call": "error!(\"{refusal}\")",
-      "count": 2,
+      "call": "PlanError::arg(refusal)",
+      "count": 1,
       "carries": [
-        "--cores reads the capture without dropping root privileges, which the single-core read drops after opening its input. Run it as an ordinary user (reading a capture file needs no root), drop --cores, or pass --no-priv-drop to stay root on purpose."
+        "--cores opens all {files} input file(s) before dropping root privileges, and this process may hold {soft_limit} open files. Raise the limit (ulimit -n), read fewer files per run, or run as an ordinary user, which opens each file when it is read."
       ],
-      "why": "relay_side_of_comparison in bootstrap.rs returns only Err(format!(...)) sites; cores_as_root_refusal returns the one literal it carries."
+      "why": "prepare_cores_inputs returns cores_fd_budget_refusal's one format! literal."
+    },
+    {
+      "file": "src/app/bootstrap.rs",
+      "call": "error!(\"{refusal}\")",
+      "count": 1,
+      "carries": [],
+      "why": "relay_side_of_comparison in bootstrap.rs returns only Err(format!(...)) sites."
     },
     {
       "file": "src/app/bootstrap.rs",

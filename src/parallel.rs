@@ -1102,7 +1102,7 @@ impl ReadProgress {
 /// NORMAL state of a ring buffer's newest member and the packets before the
 /// break are real ones that a caller must still count.
 fn shard_opened<S: ShardSink>(
-    cap: &mut pcap::Capture<pcap::Offline>,
+    opened: OpenedCapture<'_>,
     path: &std::path::Path,
     capture_config: &crate::capture::CaptureConfig,
     n: usize,
@@ -1115,7 +1115,9 @@ fn shard_opened<S: ShardSink>(
     // cannot. A BPF filter is libpcap's to apply, so a filtered read never
     // maps: bypassing the filter would silently widen the capture, which is a
     // wrong answer rather than a slow one.
-    let mut frames = Frames::open(cap, path, capture_config.bpf_filter.is_none());
+    let OpenedCapture { cap, premapped } = opened;
+    let mut frames =
+        Frames::open_premapped(cap, premapped, path, capture_config.bpf_filter.is_none());
     let link_type = frames.link_type();
     // Stamp provenance exactly as the single-threaded reader does (see
     // `crate::capture::file`): the file is the source, the ordinal is this
@@ -1381,6 +1383,7 @@ impl ShardSink for DirectSink<'_> {
 /// progress and per-file failures.
 fn shard_set(
     paths: &[std::path::PathBuf],
+    inputs: &Inputs<'_>,
     capture_config: &crate::capture::CaptureConfig,
     txs: &[crossbeam_channel::Sender<Vec<Delivery>>],
     progress: &mut ReadProgress,
@@ -1388,7 +1391,8 @@ fn shard_set(
     fanout: Fanout,
 ) -> anyhow::Result<()> {
     for (i, path) in paths.iter().enumerate() {
-        let Some((mut cap, _gz_guard)) = open_member(path, i == 0, tally)? else {
+        let Some(((mut cap, _gz_guard), premapped)) = open_member(inputs, i, path, i == 0, tally)?
+        else {
             continue;
         };
         if let Err(refusal) = apply_filter(&mut cap, path, capture_config) {
@@ -1411,7 +1415,10 @@ fn shard_set(
             .count
             .map(|max| max.saturating_sub(progress.count));
         let read = shard_opened(
-            &mut cap,
+            OpenedCapture {
+                cap: &mut cap,
+                premapped,
+            },
             path,
             capture_config,
             txs.len(),
@@ -1434,6 +1441,102 @@ type OpenedMember = (
     Option<crate::capture::file::OfflineGuard>,
 );
 
+/// One file of a set opened before the run reads it: the capture, what owns a
+/// decompressed copy of it, and its mapping when the file maps.
+pub struct PreOpened {
+    /// The capture, and what owns a decompressed copy of it.
+    member: OpenedMember,
+    /// The file's mapping, when it maps and the run may map it.
+    mapped: Option<crate::capture::mapped::MappedPcap>,
+}
+
+/// Every file of a set, opened before the run reads any of it.
+///
+/// A run started as root opens its input while privileged and then drops to
+/// an ordinary user. The readers take these handles, so a capture only root
+/// may read is still read in full after the drop. Each slot is taken once, by
+/// the reader of that file.
+pub struct PreOpenedSet {
+    /// One slot per file, in set order, emptied when its reader takes it.
+    members: Vec<std::sync::Mutex<Option<anyhow::Result<PreOpened>>>>,
+}
+
+/// The files of a set and how the readers open them.
+struct InputSet<'a> {
+    /// The set, in read order.
+    paths: &'a [std::path::PathBuf],
+    /// By path, or from handles opened before the run.
+    inputs: &'a Inputs<'a>,
+}
+
+/// An opened capture as a reader hands it on: the libpcap handle, and the
+/// mapping of the same file when one was made in advance.
+struct OpenedCapture<'c> {
+    /// The libpcap handle.
+    cap: &'c mut pcap::Capture<pcap::Offline>,
+    /// The mapping made before the run, if any.
+    premapped: Option<crate::capture::mapped::MappedPcap>,
+}
+
+/// Open every file of `paths` now. A file that fails to open keeps its error,
+/// which the reader reports when it reaches that file, exactly as it would
+/// have reported opening it then.
+///
+/// `may_map` is false when a BPF filter is set: applying it is libpcap's job,
+/// so the file is not mapped.
+pub fn pre_open_set(paths: &[std::path::PathBuf], may_map: bool) -> PreOpenedSet {
+    let members = paths
+        .iter()
+        .map(|path| {
+            let opened = crate::capture::file::open_offline(path).map(|member| PreOpened {
+                member,
+                mapped: if may_map {
+                    crate::capture::mapped::MappedPcap::open(path)
+                        .ok()
+                        .flatten()
+                } else {
+                    None
+                },
+            });
+            std::sync::Mutex::new(Some(opened))
+        })
+        .collect();
+    PreOpenedSet { members }
+}
+
+/// Where the readers get each file of a set.
+pub enum Inputs<'a> {
+    /// Open each file by its path when its turn comes.
+    ByPath,
+    /// Take each file from a set opened before the run.
+    PreOpened(&'a PreOpenedSet),
+}
+
+impl Inputs<'_> {
+    /// Open file `index` of the set, found at `path`, with its mapping when
+    /// one was made in advance.
+    fn open(
+        &self,
+        index: usize,
+        path: &std::path::Path,
+    ) -> anyhow::Result<(OpenedMember, Option<crate::capture::mapped::MappedPcap>)> {
+        match self {
+            Inputs::ByPath => crate::capture::file::open_offline(path).map(|m| (m, None)),
+            Inputs::PreOpened(set) => set
+                .members
+                .get(index)
+                .and_then(|slot| slot.lock().ok()?.take())
+                .unwrap_or_else(|| {
+                    Err(anyhow::anyhow!(
+                        "'{}' was not opened before the run",
+                        crate::capture::archive::source_name(path)
+                    ))
+                })
+                .map(|pre| (pre.member, pre.mapped)),
+        }
+    }
+}
+
 /// Open one file of a set read in this thread.
 ///
 /// `Ok(None)` means the file could not be opened and was tallied as a lost
@@ -1443,11 +1546,13 @@ type OpenedMember = (
 ///
 /// The FIRST file (`is_first`) cannot be opened.
 fn open_member(
+    inputs: &Inputs<'_>,
+    index: usize,
     path: &std::path::Path,
     is_first: bool,
     tally: &mut crate::capture::file::ReadTally,
-) -> anyhow::Result<Option<OpenedMember>> {
-    match crate::capture::file::open_offline(path) {
+) -> anyhow::Result<Option<(OpenedMember, Option<crate::capture::mapped::MappedPcap>)>> {
+    match inputs.open(index, path) {
         Ok(opened) => Ok(Some(opened)),
         // The first file owns the "is this set usable at all" verdict. A
         // later one that vanished mid-run — a rotating capture directory
@@ -1964,26 +2069,27 @@ impl ShardSink for QueueSink<'_> {
 ///
 /// Sends this file's batches into `sink`'s queue, blocking on the run-ahead.
 fn read_one_file(
-    file: usize,
+    mut sink: QueueSink<'_>,
     path: &std::path::Path,
+    inputs: &Inputs<'_>,
     capture_config: &crate::capture::CaptureConfig,
     shards: usize,
     fanout: Fanout,
-    tx: &crossbeam_channel::Sender<ReaderMsg>,
-    runway: &Runway,
 ) -> FileOutcome {
-    let (mut cap, _gz_guard) = match crate::capture::file::open_offline(path) {
+    let ((mut cap, _gz_guard), premapped) = match inputs.open(sink.file, path) {
         Ok(opened) => opened,
         Err(e) => return FileOutcome::OpenFailed(e),
     };
     if let Err(refusal) = apply_filter(&mut cap, path, capture_config) {
         return refusal.into();
     }
-    let mut sink = QueueSink { file, tx, runway };
     // No `--count` budget: a set read in parallel never has one. See
     // `shard_set_parallel` for why.
     FileOutcome::Read(shard_opened(
-        &mut cap,
+        OpenedCapture {
+            cap: &mut cap,
+            premapped,
+        },
         path,
         capture_config,
         shards,
@@ -2073,7 +2179,7 @@ fn read_one_file(
 /// `txs`, advances `progress` and `tally`, and logs per-file progress and
 /// per-file failures.
 fn shard_set_parallel(
-    paths: &[std::path::PathBuf],
+    set: InputSet<'_>,
     capture_config: &crate::capture::CaptureConfig,
     txs: &[crossbeam_channel::Sender<Vec<Delivery>>],
     progress: &mut ReadProgress,
@@ -2081,6 +2187,7 @@ fn shard_set_parallel(
     readers: usize,
     fanout: Fanout,
 ) -> anyhow::Result<()> {
+    let InputSet { paths, inputs } = set;
     debug_assert!(paths.len() > 1 && readers > 1 && capture_config.count.is_none());
     let shards = txs.len();
     let runway = Runway::new(paths.len(), READ_AHEAD_BYTES);
@@ -2105,13 +2212,16 @@ fn shard_set_parallel(
                         return;
                     }
                     let outcome = read_one_file(
-                        file,
+                        QueueSink {
+                            file,
+                            tx: &tx,
+                            runway,
+                        },
                         &paths[file],
+                        inputs,
                         capture_config,
                         shards,
                         fanout,
-                        &tx,
-                        runway,
                     );
                     // Retired BEFORE the verdict is queued: the `Done` message
                     // sits behind every batch this file produced and the
@@ -2329,8 +2439,9 @@ fn dispatch_in_file_order(
 ///
 /// The tally is reported before the error is propagated, so a refused run still
 /// states how much of the set it managed to read.
-pub fn run_offline_parallel_file(
+pub fn run_offline_parallel_set(
     paths: &[std::path::PathBuf],
+    inputs: &Inputs<'_>,
     capture_config: &crate::capture::CaptureConfig,
     cfg: ParallelConfig,
 ) -> anyhow::Result<ReconResult> {
@@ -2383,7 +2494,7 @@ pub fn run_offline_parallel_file(
     let fanout = Fanout::of(&cfg);
     let read = if readers > 1 && capture_config.count.is_none() {
         shard_set_parallel(
-            paths,
+            InputSet { paths, inputs },
             capture_config,
             &txs,
             &mut progress,
@@ -2394,6 +2505,7 @@ pub fn run_offline_parallel_file(
     } else {
         shard_set(
             paths,
+            inputs,
             capture_config,
             &txs,
             &mut progress,
@@ -2457,6 +2569,20 @@ pub fn run_offline_parallel_file(
     };
     report_shard_fallback(&result);
     Ok(result)
+}
+
+/// [`run_offline_parallel_set`] opening each file by its path when the reader
+/// reaches it.
+///
+/// # Errors
+///
+/// As [`run_offline_parallel_set`].
+pub fn run_offline_parallel_file(
+    paths: &[std::path::PathBuf],
+    capture_config: &crate::capture::CaptureConfig,
+    cfg: ParallelConfig,
+) -> anyhow::Result<ReconResult> {
+    run_offline_parallel_set(paths, &Inputs::ByPath, capture_config, cfg)
 }
 
 #[cfg(test)]
@@ -3099,6 +3225,49 @@ mod tests {
         Ok(())
     }
 
+    /// A set opened before the run loses access to its files still reads in
+    /// full: the readers take the handles opened then, not the paths. This is
+    /// what a privilege drop does to a root-only capture, done here without
+    /// root by removing every permission bit after the open.
+    #[test]
+    #[cfg(unix)]
+    fn a_pre_opened_set_reads_after_its_files_become_unreadable() -> Result<(), TestError> {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir()?;
+        let fixtures = env!("CARGO_MANIFEST_DIR");
+        let mut paths = Vec::new();
+        for name in ["sip_call.pcap", "opensips-proxy-signaling.pcap"] {
+            let path = dir.path().join(name);
+            std::fs::copy(format!("{fixtures}/tests/fixtures/{name}"), &path)?;
+            paths.push(path);
+        }
+        let set = pre_open_set(&paths, true);
+        for path in &paths {
+            std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o000))?;
+        }
+        let cc = crate::capture::CaptureConfig::default();
+        let r = run_offline_parallel_set(&paths, &Inputs::PreOpened(&set), &cc, pcfg(4));
+        for path in &paths {
+            std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))?;
+        }
+        let r = r.map_err(|e| format!("the pre-opened set reads: {e:?}"))?;
+        assert_eq!(r.dialog_store.len(), 2, "both files' calls were read");
+        if !crate::privilege::is_root() {
+            for path in &paths {
+                std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o000))?;
+            }
+            let lazy = run_offline_parallel_file(&paths, &cc, pcfg(4));
+            for path in &paths {
+                std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))?;
+            }
+            assert!(
+                lazy.is_err(),
+                "reading by path must fail on an unreadable file"
+            );
+        }
+        Ok(())
+    }
+
     /// A permissive `ParallelConfig` for tests: large capacities, reassembly
     /// on, full port range, all protocols enabled.
     #[cfg(feature = "native")]
@@ -3435,6 +3604,7 @@ mod tests {
         let fanout = Fanout::of(&pcfg(2));
         let read = shard_set(
             paths,
+            &Inputs::ByPath,
             capture_config,
             &txs,
             &mut progress,

@@ -1205,7 +1205,20 @@ pub fn run_cores_file(
     }
     let no_rtp = cli.no_rtp(config);
     let pcfg = parallel_config(cli, config, portrange, no_rtp);
-    match crate::parallel::run_offline_parallel_file(paths, capture_config, pcfg) {
+    let pre_opened = match crate::app::bootstrap::prepare_cores_inputs(
+        cli,
+        config,
+        paths,
+        capture_config.bpf_filter.is_none(),
+    ) {
+        Ok(set) => set,
+        Err(e) => e.exit(),
+    };
+    let inputs = match &pre_opened {
+        Some(set) => crate::parallel::Inputs::PreOpened(set),
+        None => crate::parallel::Inputs::ByPath,
+    };
+    match crate::parallel::run_offline_parallel_set(paths, &inputs, capture_config, pcfg) {
         Ok(r) => {
             // The return value is the "report could not be produced" signal and
             // was dropped here, so an unknown --call-report id or an unwritable

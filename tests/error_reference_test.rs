@@ -789,7 +789,8 @@ const EXPECTED_UNRESOLVED: usize = 83;
 // 500 -> 501: src/cli.rs, `--lint-fail-on` refuses a severity it does not
 // know instead of reading it as no threshold. Nothing removed.
 // 501 -> 502: src/app/bootstrap.rs, an offline --cores run started as root
-// is refused (cores_as_root_refusal). Nothing removed.
+// opens its whole set before dropping privileges and refuses a set that would
+// not fit under the open-file limit (cores_fd_budget_refusal).
 const EXPECTED_TEMPLATES: usize = 502;
 
 // ---------------------------------------------------------------------------
