@@ -254,7 +254,7 @@ sha256sum -c ../SHA256SUMS
 - [Produce one](@/docs/vcon.md#produce-one) and
   [The spool contract, for a bridge that consumes it](@/docs/vcon.md#the-spool-contract-for-a-bridge-that-consumes-it)
   in the vCon guide.
-- [The container cannot say "this is an incomplete record", so sipnab says it twice](@/docs/vcon.md#the-container-cannot-say-this-is-an-incomplete-record-so-sipnab-says-it-twice),
+- [Read what a container says the capture missed](@/docs/vcon.md#read-what-a-container-says-the-capture-missed),
   for how sipnab chooses a Dialog Object's `type`.
 - [When a container is missing on purpose](@/docs/vcon.md#when-a-container-is-missing-on-purpose),
   for `--content-deny-header` and `--content-deny-tombstone`.

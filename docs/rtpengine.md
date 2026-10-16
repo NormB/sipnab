@@ -39,12 +39,12 @@ the control plane carries the SDP too:
 
 ```text
 RTP Streams:
-SSRC         PT   Codec    Clock  Source                Destination           Pkts
-----------------------------------------------------------------------------------
-0x0a0a0a0a   0    PCMU     8000   192.0.2.60:40001      192.0.2.40:38156      10
-0x0b0b0b0b   0    PCMU     8000   192.0.2.60:40002      192.0.2.40:38664      10
-0x0a0a0a0a   0    PCMU     8000   192.0.2.40:38664      192.0.2.60:40002      10
-0x0b0b0b0b   0    PCMU     8000   192.0.2.40:38156      192.0.2.60:40001      10
+SSRC         PT   Codec    Clock  Source                Destination           Pkts    Lost   Loss%   Jitter   Dur    Kbps
+--------------------------------------------------------------------------------------------------------------------------
+0x0a0a0a0a   0    PCMU     8000   192.0.2.60:40001      192.0.2.40:38156      10      0      0.0%    2ms      0s     99
+0x0b0b0b0b   0    PCMU     8000   192.0.2.60:40002      192.0.2.40:38664      10      0      0.0%    2ms      0s     99
+0x0a0a0a0a   0    PCMU     8000   192.0.2.40:38664      192.0.2.60:40002      10      0      0.0%    2ms      0s     99
+0x0b0b0b0b   0    PCMU     8000   192.0.2.40:38156      192.0.2.60:40001      10      0      0.0%    2ms      0s     99
 
 Calls named by a media relay (no SIP for them in this capture):
 Call-ID                                                      Streams
@@ -66,6 +66,10 @@ With it, the same media resolves to one call:
 sipnab -N -I tests/fixtures/rtpengine-ng-hep.pcap --report
 ```
 
+Decoding the mirrored control plane needs a build with the `hep` feature,
+which `full` includes. A build without it prints the orphaned table for both
+files. `sipnab --version` lists `hep` when the binary carries it.
+
 There are four streams and not two.
 
 - The relay holds its own socket per leg.
@@ -80,7 +84,7 @@ Read down the first column and stop at the first row you can satisfy.
 |---|---|---|---|
 | rtpengine already reports to a Homer collector | Capture on the relay host | **No** | sipnab reads the copy already on the wire. Nothing about your Homer pipeline changes. sipnab cannot authenticate that copy, and reads it only on UDP port 9060 — see [How much a `media-relay` assertion is worth](#how-much-a-media-relay-assertion-is-worth). |
 | rtpengine reports nowhere yet | Turn on `--homer-enable-ng`, point it anywhere sipnab can see | Yes, once | The destination can be a collector, or a host that discards the traffic |
-| You need it delivered rather than sniffed | `--hep-listen` on sipnab, point rtpengine at it | Yes | Costs you the collector — see the warning below. Requires 0.5.125 or later: earlier builds accepted the traffic and decoded none of it |
+| You need it delivered rather than sniffed | `--hep-listen` on sipnab, point rtpengine at it | Yes | Costs you the collector — see the warning below |
 
 Every row here covers control messages that cross the wire while sipnab
 runs. None of them reaches a call the relay set up before the capture
@@ -120,11 +124,10 @@ one of them. Run **one sipnab per host**:
 Each relay host runs sipnab against its **own local** relay:
 
 ```bash
-# On relay-a, relay-b, relay-c — identical, and each asks only its own relay.
-# The API binds to the host's own address, not loopback: the whole point of the
-# procedure below is that ANOTHER machine queries this one. A non-loopback bind
-# is refused without authentication, which is why --api-key is not optional
-# here.
+# The same command on relay-a, relay-b and relay-c. Each asks only its own relay.
+# The API binds to a non-loopback address so that another machine can query it.
+# sipnab refuses a non-loopback API bind without authentication, so --api-key
+# is required.
 sudo sipnab -d eth0 --rtpengine-control 127.0.0.1:22222 \
   --api 0.0.0.0:8080 --api-key "$SIPNAB_API_KEY"
 ```
@@ -152,8 +155,7 @@ Then the call you are chasing:
 CALL_ID="1-1966@10.0.2.20"
 ```
 
-`--rtpengine-control` takes one address. In this topology that is correct
-rather than a limitation.
+`--rtpengine-control` takes one address.
 
 - A relay can only answer for calls it is carrying.
 - So a sipnab asking a relay on another host would get `RelayDoesNotHoldIt`
@@ -161,9 +163,9 @@ rather than a limitation.
 
 ### Finding a call without asking every relay
 
-The naive procedure is a broadcast: ask all ten relays, discard nine misses.
-You do not have to. **The proxy's own SDP names the relay.** The `c=` address
-the proxy negotiated IS the rtpengine it steered the call to.
+You do not have to ask every relay. **The proxy's own SDP names the relay.**
+The `c=` address the proxy negotiated is the address of the rtpengine it
+steered the call to.
 
 **First, ask the proxy which relay has it.**
 
@@ -179,13 +181,8 @@ curl -fsS "http://proxy:8080/v1/dialogs/$CALL_ID" $H \
 curl -fsS "http://192.0.2.40:8080/v1/dialogs/$CALL_ID" $H | jq '.streams'
 ```
 
-A relay that never carried the call answers **404**, not an empty success.
-That distinction is load-bearing.
-
-- "I do not have this call" and "this call had no media" are different
-  findings.
-- A relay that answered `200` with an empty list would report the second when
-  it meant the first.
+A relay that never carried the call answers **404**. A relay that carried the
+call answers `200`, with an empty `streams` list when the call had no media.
 
 ### Knowing whose answer you are holding
 
@@ -197,9 +194,8 @@ curl -fsS "http://192.0.2.40:8080/v1/stats" $H | jq '.capture_identity'
 # { "node": "relay-a", "instance": "1f4a…", "dialog_generation": 412, … }
 ```
 
-When you collect replies from several hosts, that field keeps them
-attributable to the host that gave them. Without it, two JSON documents from
-two relays are indistinguishable once they are side by side in a terminal.
+When you collect replies from several hosts, read `capture_identity.node` to
+tell which host gave each one.
 
 ### What a multi-node deployment does not do
 
@@ -209,18 +205,8 @@ sipnab does **not** aggregate across nodes. There is:
 - no central index,
 - no node that answers for another.
 
-Each instance answers for what it captured. The correlation above is something
-you (or an agent holding several endpoints) perform.
-
-That is a deliberate limit, not a missing feature. An aggregator is
-infrastructure, and [positioning](design/positioning.md) rules it out.
-
-[`tests/multi_node_relay_fanout_test.rs`](https://github.com/NormB/sipnab/blob/main/tests/multi_node_relay_fanout_test.rs) pins the three properties this
-procedure rests on:
-
-- The proxy holds signaling and no media.
-- Exactly one relay claims a call.
-- The proxy's SDP names which one.
+Each instance answers for what it captured. You, or an agent holding several
+endpoints, perform the correlation above.
 
 ## Set it up
 
@@ -283,53 +269,40 @@ does not, work down this list:
 | No relay-named calls, streams still orphaned | rtpengine sends RTCP stats only | Set `homer-enable-ng = true` and restart |
 | Nothing at all on the wire | rtpengine has no `homer` destination | Set one |
 | Configured, but still nothing on the wire | The destination refuses the datagrams | See below |
-| Control traffic visible, streams still orphaned | Capture missed the HEP, or a filter excluded it | Widen the filter. A filter of your own must admit the relay's media ports; sipnab 0.5.192 and earlier admitted no media by default |
-| Control traffic visible and in the filter, still orphaned | `--hep-parse` on a build before 0.5.128 | Leave `--hep-parse` off, or upgrade. See below |
+| Control traffic visible, streams still orphaned | Capture missed the HEP, or a filter excluded it | Widen the filter. A filter of your own must admit the relay's media ports |
+| Control traffic visible and in the filter, still orphaned | The mirror goes to a UDP port other than 9060, or the build has no `hep` feature | Mirror to port 9060, or use a build that lists `hep` in `sipnab --version`. See [How much a `media-relay` assertion is worth](#how-much-a-media-relay-assertion-is-worth) |
 | Relay-named calls appear but media does not | The media is on ports your filter drops | Include the `port-min`–`port-max` range |
 
-### `--hep-parse` is for HEP-encapsulated SIP, not for this
+### Use `--hep-parse` on a relay capture
 
-`--hep-parse` unwraps a HEP datagram and hands the payload inside it to the
-parser.
+`--hep-parse` unwraps HEP datagrams so that the SIP inside them reaches the
+parser. It does not stop sipnab reading a mirrored control plane. A relay
+capture names the same call with the flag on:
 
-- That is what you want when a collector feeds you SIP over HEP.
-- Until 0.5.128, it quietly switched this feature off.
+```sh
+sipnab -N -I tests/fixtures/rtpengine-ng-hep.pcap --hep-parse --report
+```
 
-sipnab spots mirrored `ng` two ways:
+```text
+Calls named by a media relay (no SIP for them in this capture):
+Call-ID                                                      Streams
+---------------------------------------------------------------------
+km-670bd208@sipnab                                           4
+```
 
-- by the metadata a HEP listener recorded before stripping the wrapper,
-- by parsing the wrapper off a sniffed datagram that still has one.
+The UDP port 9060 rule applies with or without the flag. See
+[How much a `media-relay` assertion is worth](#how-much-a-media-relay-assertion-is-worth).
 
-Unwrapping used to discard the wrapper without recording what it said. So
-neither route had anything left to match on.
+### Give the Homer destination a listener
 
-- The control plane reached the capture and went straight in the bin.
-- No counter moved.
-- Every relay stream stayed orphaned.
-
-Nothing reported it, and that is the part worth remembering:
-
-- The build carried the feature.
-- The filter carried the ports.
-- The datagrams sat plainly on the wire.
-
-Every setting was correct, and the answer was still empty.
-
-From 0.5.128, the unwrap carries the wrapper's capture protocol and correlation
-id forward. So the two features coexist, and the flag is safe to leave on. On
-an older build, turn it off for a relay capture.
-
-### The destination has to accept the traffic
-
-rtpengine CONNECTS its Homer socket. So a destination that answers with ICMP
+rtpengine connects its Homer socket. A destination that answers with ICMP
 port-unreachable makes it drop the socket and log this:
 
 ```text
 ERR: [core] Connection error from Homer at 192.0.2.1:9060: Connection refused
 ```
 
-rtpengine loses the copy it was sending. That looks exactly like the feature
-not working.
+rtpengine then sends no copy, and sipnab has no control plane to read.
 
 - rtpengine 26.3 (the build
   [Add rtpengine to your voice stack](rtpengine-relay.md) makes) reconnects at
@@ -337,13 +310,11 @@ not working.
 - While nothing listens, it logs `Write error to Homer at
   192.0.2.1:9060: Connection refused` for each call it tries to mirror.
 
-Pointing `--homer` at an address nobody listens on is therefore not a way to
-"just put it on the wire". Something has to absorb it.
+So point `--homer` at an address where something receives UDP:
 
-- In the deployment this targets, that something is your real Homer
-  collector, which is already there.
-- If you are testing without one, run any UDP sink at the address. The
-  harness ships one for exactly this reason. See `harness/hep-sink`.
+- In production, your Homer collector.
+- In a test without a collector, any UDP sink. The repository ships one in
+  `harness/hep-sink`.
 
 ## Name a call that was already up when you started
 
@@ -401,8 +372,8 @@ Read it in three parts:
 
 - **Enumerated, complete** means the relay listed everything it held, rather
   than capping the answer.
-- **Queried 2 of them** is one `query` per call. That is the only command
-  that says which relay-side port belongs to which call.
+- **Queried 2 of them** is one `query` per call. `query` is the command that
+  says which relay-side port belongs to which call.
 - **8 relay ports now attributable** is the index sipnab keeps for the rest of
   the run.
   - Media on any of those eight sockets takes its Call-ID from memory.
@@ -427,27 +398,19 @@ Every stream says who named its dialog, on every door:
 - The MCP `rtp_stats` tool carries the same key with the same two spellings.
 - The TUI's stream detail prints `(via media-relay)` beside the Call-ID.
 
-The distinction changes what the address means. That is why it is not folded
-away.
+The value changes what the address means:
 
 - A relay's answer is **not an endpoint**. It names the box the media passed
   through, not where either party sits.
-- An operator may trace a one-way-audio fault to `192.0.2.40:38664`. That
-  operator needs to know whether that is the far end or the box in the middle.
-  Those lead to opposite next steps.
+- When you trace a one-way-audio fault to `192.0.2.40:38664`, check the
+  value first: `signaled` points at the far end, `media-relay` at the relay
+  in the middle.
 
-It is also **only as trustworthy as the path it arrived on**. This page used
-to say it was "authoritative about the port".
-
-- That was true of rtpengine and false of the assertion.
-- rtpengine cannot be wrong about which socket it opened.
-- But sipnab is not always hearing from rtpengine.
-
-Read the next section before you act on a `media-relay` address.
+A `media-relay` assertion is only as trustworthy as the path it arrived on.
+Read the next section before you act on one.
 
 An absent key means nobody recorded who asserted the binding. It does not mean
-`signaled`. That is a claim, and keeping the two apart is the entire reason
-the field exists.
+`signaled`.
 
 #### How much a `media-relay` assertion is worth
 
@@ -469,8 +432,7 @@ to a socket of the sender's choosing.
 sipnab therefore believes a sniffed mirror **only on UDP port 9060**, the HEP
 port.
 
-- That narrows the input without authenticating anybody. This page says so
-  plainly, so nobody reads it as more.
+- That narrows the input. It authenticates nobody.
 - It stops every datagram on the segment being a candidate.
 - It stops nothing sent to 9060.
 - sipnab logs one refusal, naming the port it saw.
@@ -496,8 +458,7 @@ Then point rtpengine's `homer =` at sipnab.
 - That is the trade the table at the top of this page is about.
 
 If your collector sits on a port other than 9060, sipnab does not read the
-sniffed copy at all. That is deliberate. The alternative is believing every
-port.
+sniffed copy at all.
 
 `dialog_assertion` is a different question from `dialog_origin`. That second
 key says which **capture source** delivered the assertion.
@@ -517,9 +478,9 @@ rtpengine at 127.0.0.1:22222: 2 unexplained stream(s) offered, 0 attributed, 4 c
 - Neither of them gained a Call-ID.
 - The run spent four control transactions of the 66 it may spend.
 
-A count of zero with no reason line beside it is the honest answer, rather
-than a failure. The relay answered and holds neither port. So that media
-belongs to something else on the host.
+A count of zero with no reason line beside it is not a failure. The relay
+answered and holds neither port, so that media belongs to something else on
+the host.
 
 ### What it refuses
 
@@ -529,52 +490,33 @@ Reading a file, sipnab refuses to ask, and says why:
 sipnab -N -I capture.pcap --rtpengine-control 127.0.0.1:22222
 ```
 
+sipnab prints this warning on stderr before it opens the file:
+
 ```text
---rtpengine-control 127.0.0.1:22222 asks a live relay which calls are up
-right now, but this run is reading a capture FILE — offline analysis never
-transmits. The calls in a file ended in the past; the relay's answer would
-describe whatever is up TODAY, which is other people's traffic. Passive
-decoding of any relay control plane already in the capture still runs;
-capture live with -d <device> to ask.
+WARN sipnab::app::bootstrap: --rtpengine-control 127.0.0.1:22222 asks a live relay which calls are up right now, but this run is reading a capture FILE — offline analysis never transmits. The calls in a file ended in the past; the relay's answer would describe whatever is up TODAY, which is other people's traffic. Passive decoding of any relay control plane already in the capture still runs; capture live with -d <device> to ask.
 ```
 
-The analysis still runs and still exits 0. What the run loses is the ask. It
-says so before the capture opens, rather than looking like a run that asked
-and learned nothing.
+The analysis still runs and exits 0. sipnab skips only the question to the
+relay.
 
-The two questions sipnab can put to a relay are `list` and `query`.
+sipnab sends a relay two commands only: `list` and `query`. It never sends
+`offer`, `answer`, `delete` or `start recording`, the `ng` commands that
+change a relay.
 
-- That is a property of the type reaching the relay, rather than a
-  convention.
-- ng also carries `offer`, `answer`, `delete` and `start recording`. Each of
-  them changes a production relay.
-- None of them has a representation on this path. So no call site reaches
-  one by accident.
+Three limits bound the asking, whatever the traffic:
 
-Three bounds hold the asking down. None of them grows with how much traffic
-the capture carries:
+- sipnab asks about each relay-side socket at most once per run.
+- A run spends at most 66 control transactions.
+- At most 4096 relay-side sockets (2048 streams) wait in the queue for a
+  question. sipnab counts the ones it turns away.
 
-- sipnab asks about each relay-side socket at most once for the whole run.
-  So a stream that stays unexplained does not re-ask on every packet.
-- A per-run ceiling caps control transactions at 66.
-  - That is one `list` plus a `query` per call at rtpengine's own list limit
-    of 32, twice over.
-  - It is enough for a full startup snapshot and one comparable refresh, and
-    no more.
-- The queue handing sockets from the capture path to the asking thread stops
-  at 4096 entries.
-  - That is two per stream, so 2048 unexplained streams.
-  - It counts what it turned away, rather than letting a slow relay grow it
-    without end.
-
-When a bound bites, sipnab counts it and says so. The asking runs on its own
-thread. So the packet path offers a socket and moves on, rather than waiting
-out a round trip to a relay that may be down.
+When sipnab reaches a limit, the end-of-run summary says so. The asking runs on
+its own thread, so a relay that does not answer does not slow the capture.
 
 ### Read a run that attributed nothing
 
-"Nothing came back" has five meanings. sipnab keeps them apart rather than
-collapsing them into one shrug:
+"Nothing came back" has five meanings, and the summary names which one
+applies:
 
 - **The relay did not answer, or refused the question.** sipnab knows
   nothing about the port.
@@ -590,9 +532,8 @@ collapsing them into one shrug:
 - **The relay does not hold the port.** This one, and only this one, says
   something about the relay: the stream is not its media.
 
-The first four are gaps in what sipnab learned. Reporting any of them as the
-fifth would turn a run that never reached the relay into a run that asked and
-heard the stream belongs to nobody.
+The first four are gaps in what sipnab learned. Only the fifth says the stream
+is not the relay's media.
 
 ## Relay statistics
 
@@ -615,8 +556,6 @@ Every figure names the relay as its source.
 - The header marks it `relay_reported`.
 - That is a claim the relay makes about itself, not a measurement sipnab took
   from the wire.
-- Reading it as "sipnab saw this" is the one mistake this whole view exists to
-  stop.
 
 To watch a counter move rather than reading one snapshot, poll on a timer:
 
@@ -629,9 +568,8 @@ timer's output rather than a one-shot answer.
 
 ### Three numbers for one call, and none of them wins
 
-The tier is the whole point here, not a footnote. One call carries three
-different "loss" figures. Each one describes a different socket at a different
-point on the path:
+One call carries three different "loss" figures. Each one describes a
+different socket at a different point on the path:
 
 - **The relay's own count** (`relay_reported`).
   - This is what the relay counted on its own sockets since its last restart.
@@ -651,8 +589,6 @@ sipnab never subtracts one tier from another.
   describes nothing.
 - Name the tier when you quote the number: "the relay reports 40 lost, our
   capture measured 3 gaps".
-- Then the disagreement stops being a contradiction. It becomes three facts
-  about three points on the path.
 
 The cookbook works each question end to end.
 [The relay-statistics recipes](examples.md#ask-a-relay-whether-it-is-dropping-packets)
@@ -677,13 +613,10 @@ sipnab -N -I capture.pcap --relay-stats --rtpengine-control 127.0.0.1:22222
 ```
 
 ```text
---relay-stats will not ask a relay on a run that reads a file: asking
-transmits, and a file's addresses are historical and belong to third
-parties. Ask from a live capture (-d <device>).
+ERROR sipnab::app::bootstrap: --relay-stats will not ask a relay on a run that reads a file: asking transmits, and a file's addresses are historical and belong to third parties. Ask from a live capture (-d <device>).
 ```
 
-The rest of the analysis still runs and still exits 0. What the run loses is the
-ask.
+The rest of the analysis still runs and exits 0.
 
 ## Let an agent ask the relay
 
@@ -692,79 +625,47 @@ Everything above is a person at a terminal.
 - `query_relay` gives an AI agent the same reach.
 - `decode_ng` lets it read a control message it finds in the capture.
 
-`query_relay` transmits. So it stays off until you say otherwise. It needs
-three things. It refuses with a message naming whichever one is missing:
+`query_relay` transmits, so it is off by default. It needs three things:
+
+- `--mcp-allow-relay-query`,
+- `--rtpengine-control <addr:port>`, the only relay it asks. No tool argument
+  changes the destination.
+- a live source (`-d`). A run reading a capture file never transmits.
+
+Start an MCP server that an agent can use to ask the local relay:
 
 ```bash
-# Off by default: this server has the relay address but no opt-in, so
-# query_relay refuses and every other tool works as usual.
-sudo sipnab --mcp -N -d eth0 --rtpengine-control 127.0.0.1:22222
+sudo sipnab --mcp -N -d eth0 --rtpengine-control 127.0.0.1:22222 --mcp-allow-relay-query
 ```
 
-Add the opt-in to enable it:
+Without any one of the three, every other tool works and `query_relay`
+answers with an error. On a capture file, with the opt-in given:
 
 ```bash
-# Now an agent can ask the relay directly. The destination is THIS address --
-# there is no tool argument that can change it.
-sudo sipnab --mcp -N -d eth0 --rtpengine-control 127.0.0.1:22222 \
-  --mcp-allow-relay-query
+sipnab --mcp -N -I tests/fixtures/rtpengine-ng-hep.pcap --rtpengine-control 127.0.0.1:22222 --mcp-allow-relay-query
 ```
 
-The third requirement is a live source. It is structural rather than a policy
-check. A run reading a capture file cannot obtain a transmit permit. So
-`--mcp-allow-relay-query` on an offline run leaves the tool refusing:
+A `tools/call` for `query_relay` returns this JSON-RPC error:
 
-```bash
-# Refuses: -I is a file, so no transmit permit exists to send with.
-sipnab --mcp -N -I capture.pcap --rtpengine-control 127.0.0.1:22222 \
-  --mcp-allow-relay-query
+```json
+{"jsonrpc":"2.0","id":2,"error":{"code":-32602,"message":"query_relay is not available on this server. It transmits, so it needs three things: --mcp-allow-relay-query to enable it, --rtpengine-control <addr:port> to say which relay to ask, and a live source. A run reading a capture file can obtain no transmit permit, so an analyst opening somebody else's pcap cannot make sipnab talk to the addresses inside it.","data":{"reason":"not_enabled"}}}
 ```
-
-That matters more than it looks.
-
-- An analyst may open a capture from another organization. That analyst must
-  not be able to make sipnab talk to the addresses inside it.
-- A host that served as a relay during the capture may be somebody's laptop
-  now.
 
 `decode_ng` needs none of this.
 
 - It reads a control message already in the capture.
 - It reports which path delivered it.
-- So an agent can tell "the relay told us" from "something claiming to be the
-  relay told us". Those are the same bytes and very different claims.
+- So an agent can tell a message the relay delivered to sipnab from one
+  sipnab read off the wire.
 
 ## What rtpengine's forwarding mode changes
 
-Nothing, and a measurement says so rather than an assumption.
-
-rtpengine forwards in one of two places:
-
-- in userspace,
-- or, with `table = N` and the `xt_RTPENGINE` kernel module, inside
-  netfilter.
-
-If kernel-forwarded media were invisible to a capture, attributing it would be
-pointless. So this run checked it against rtpengine 12.5.1. The run confirmed
-that the module was active and accounting the packets itself:
-
-```text
-/proc/rtpengine/0/list   local 192.0.2.40:34232  250 packets   [kernel-forwarded]
-                         output → 192.0.2.60:40001             250 packets
-capture on the relay     ingress 500/500         egress 500/500
-```
-
-Both directions stay fully visible in both modes. The reason is structural:
-
-- A capture's receive tap runs before netfilter.
-- The module re-injects through the normal transmit path. That path passes
-  the transmit tap.
-
-You do not have to know or care which mode a relay runs in.
+Nothing. rtpengine forwards media either in userspace or, with `table = N`
+and the `xt_RTPENGINE` kernel module, inside netfilter. A capture on the relay
+host sees both directions of the media in both modes, so you do not need to
+know which mode a relay runs in.
 
 ## What this does not do
-
-Stated here rather than discovered later.
 
 - **It does not tie the two halves of a B2BUA call together.** A B2BUA gives
   one call two Call-IDs. The control plane names each leg's media and ties
@@ -788,117 +689,6 @@ Stated here rather than discovered later.
     the gap on a live run.
   - Their media stays in the orphan list in two cases: without the flag, or
     on an `-I <file>` run where sipnab refuses to ask.
-
-## Where this is going: the next phase
-
-**None of this section describes what sipnab does today.**
-
-- What this page documents above is one hop naming its own media.
-- The proof ran against a recorded capture and against a live relay.
-- This section states what that foundation exists FOR. So the next phase aims
-  at a goal rather than at whatever comes next.
-
-The goal is a call that crosses an SBC, a proxy, an rtpengine and a PBX,
-assembled end to end.
-
-- Then an operator can ask a question in their own words.
-- An agent answers with evidence from every hop the call touched.
-
-Naming media on the relay is the hop that was missing. It is the only hop that
-carries no SIP of its own. Once each hop can name a call, an agent can:
-
-- filter to a customer, by caller, callee, trunk, address, or time window,
-- pull the whole call rather than one machine's view of it.
-
-These are the questions that arrive, and what answering each one takes.
-
-| The customer says | The question really is | What the answer needs |
-|---|---|---|
-| "Our calls sound bad" | Where in the path did the media degrade? | Per-hop loss, jitter and MOS on the SAME call, so a good leg and a bad leg separate cleanly |
-| "Calls are not completing" | Which hop rejected it, and what did it say? | The final response and its origin hop, plus whether media was ever negotiated |
-| "Calls drop after a while" | Who tore it down, and on what clock? | The BYE or the timeout, and which side sent it |
-| "We hear them, they can't hear us" | Which direction is missing, and from where? | Both directions of media at each hop, not just a packet count |
-| "It only fails for one carrier" | What is different about that path? | The same call shape across two trunks, compared |
-
-### "Our calls sound bad"
-
-The hard part is not measuring quality. It is locating it.
-
-- A relay reporting 2% loss tells you nothing on its own.
-- The question is whether the loss was already there when the media arrived,
-  or appeared on the way out.
-
-That needs the same call measured on both sides of each hop. That needs each
-hop to agree on the call's name. On the relay, that agreement is what this
-page adds.
-
-The analysis then reads as a chain:
-
-- clean into the SBC,
-- clean into the relay,
-- lossy out of the relay.
-
-Now the fault has an address rather than a symptom.
-
-Watch for the answer being "neither hop":
-
-- Identical loss at every hop points at the access network.
-- A codec that changes between hops points at transcoding rather than at the
-  network.
-
-### "Calls are not completing"
-
-Same filter, different evidence. Here the media is usually absent rather than
-degraded. So the question moves to signaling, and to the gap between them.
-
-The failure modes separate cleanly once you can see every hop at once:
-
-- **A final response from an upstream hop**, which names the rejecter. The
-  response class matters, and the classes lead to different owners:
-  - A 4xx is the far end declining.
-  - A 5xx is a server failing.
-  - A 6xx is a global refusal.
-- **No response at all**, which is a timeout. The hop that stopped answering
-  is the one to look at.
-- **A call answered with no media**, which is a negotiation failure rather
-  than a routing one. The signaling succeeded and the SDP did not.
-- **A relay with no ports left**. This looks like a random failure from the
-  proxy's side. It is obvious from the relay's.
-
-The last two are exactly the cases a signaling-only view gets wrong. From the
-proxy, the call looks answered.
-
-### "Calls drop after a while"
-
-A drop has a clock attached, and the clock identifies the cause.
-
-- A tear-down at a round number is a timer: a session timer, a NAT binding, a
-  relay's own media timeout.
-- A tear-down when media stopped is the media stopping.
-- Reading the relay's teardown against the proxy's BYE says which came first.
-  That is the whole question.
-
-### "We hear them, they can't hear us"
-
-One-way audio is a direction problem. A relay is where directions become
-visible.
-
-- It holds both parties' sockets.
-- So a leg with media arriving and nothing leaving is plainly asymmetric.
-
-The value of naming the call is being able to say WHICH call is asymmetric on
-a box carrying hundreds.
-
-### "It only fails for one carrier"
-
-The comparison case.
-
-- Two calls of the same shape go down two trunks.
-- Their assembly is the same.
-- They differ in one hop's behavior.
-
-This is hard to do by hand across machines. It is straightforward once every
-hop names its calls the same way.
 
 ## See also
 

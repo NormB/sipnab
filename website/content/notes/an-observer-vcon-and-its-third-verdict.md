@@ -302,7 +302,7 @@ needs a `type`:
 
 - [What a vCon is, and what sipnab is to it](@/docs/vcon.md#what-a-vcon-is-and-what-sipnab-is-to-it)
 - [Produce one](@/docs/vcon.md#produce-one)
-- [The container cannot say "this is an incomplete record", so sipnab says it twice](@/docs/vcon.md#the-container-cannot-say-this-is-an-incomplete-record-so-sipnab-says-it-twice)
+- [Read what a container says the capture missed](@/docs/vcon.md#read-what-a-container-says-the-capture-missed)
 - [Someone handed you a sipnab vCon: what may you conclude?](@/docs/vcon.md#someone-handed-you-a-sipnab-vcon-what-may-you-conclude)
 - [What sipnab refuses to put in a container](@/docs/vcon.md#what-sipnab-refuses-to-put-in-a-container)
 - [One thing sipnab does supply, narrowly: `tel`](@/docs/vcon.md#one-thing-sipnab-does-supply-narrowly-tel)

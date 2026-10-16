@@ -36,22 +36,10 @@ Neither can answer *“was this call healthy?”* alone.
 - It only works because rtpengine mirrors its `ng` control plane where the
   relay can read it.
 
-> **Why separate namespaces, and why that is a workaround**
->
-> Two sipnabs on one interface read the same packets and return the same answers.
->
-> - They are two copies of one capture point.
-> - They cannot show that a leg seen at the proxy is the leg seen at the relay.
-> - Giving rtpengine its own namespace makes them genuinely different.
->
-> It should not have to.
->
-> - sipnab has `--no-rtp` for a signaling-only capture and no counterpart for media.
-> - So nothing expresses "watch only the relay half".
-> - The topology has to carry what a flag should.
-> - Two instances in one namespace would be a perfectly good arrangement if each could learn what it is for.
->
-> Treat the split as the current answer, not the right one.
+The harness gives rtpengine a network namespace of its own. Two sipnab
+instances on one interface read the same packets, so they could not show that
+a leg seen at the proxy is the leg seen at the relay. In separate namespaces
+each instance captures only its own half.
 
 ## Choosing one node or two
 
@@ -235,7 +223,7 @@ sipnab -N -d eth0 --api 127.0.0.1:8080 \
   --portrange 5060-5061
 ```
 
-## The three switches people miss
+## Check the three settings relay naming needs
 
 > **`--hep-parse` does not name relay media**
 >
@@ -266,15 +254,11 @@ sipnab -N -d eth0 --api 127.0.0.1:8080 \
 > - It is a run that kept no audio, not a call that was silent.
 > - The completeness caveat is the only thing that says which.
 > - Read it before concluding anything about the media.
->
-> Before 0.5.128 sipnab typed that object `incomplete`.
->
-> - The vCon draft defines that as a call that failed to reach conversation.
-> - A signaling-only container therefore reported every answered call as a failure.
 
 ## Store a call
 
-The step that decides whether the vCon still exists tomorrow.
+Post the container through an ingress list, then confirm that the durable
+table holds it.
 
 ```mermaid
 sequenceDiagram
@@ -606,10 +590,9 @@ make api-key
 The caller and callee must play *different* media. Otherwise the two legs are
 indistinguishable.
 
-- Use real speech rather than a tone.
-  - Nobody can tell a well-recorded sine from a badly recorded one.
-  - A male caller counting up and a female callee counting down make a
-    captured call audible as a call.
+- Use real speech rather than a tone, so a listener can judge the captured
+  audio. A male caller counting up and a female callee counting down make
+  each leg recognizable.
 - The script defaults to:
   - `en_US-ryan-medium` with SSRC `0x0CA11E12` for the caller,
   - `en_US-amy-medium` with SSRC `0x5AFE1234` for the callee.
@@ -736,9 +719,9 @@ The two capture clients refuse to report on one node reached twice.
   agreeing with itself as corroboration.
 - `vcon_view.py` reads the conserver instead. So the check does not apply to it.
 
-## Traps
+## Troubleshoot the harness
 
-Each of these fails silently or reports something misleading. None announces itself in a log.
+Each of these fails without an error in a log, or reports something misleading.
 
 **HEP support requires --features hep**
 
@@ -767,7 +750,8 @@ The symptoms:
 - datagrams on the wire,
 - no stream ever gets a Call-ID.
 
-Before 0.5.128, `--hep-parse` unwrapped the HEP datagram. It discarded the wrapper that identifies mirrored ng.
+A sipnab older than 0.5.128 with `--hep-parse` on does not name relay media.
+Run a current release.
 
 **Correlation empty after a container restart**
 
@@ -805,32 +789,6 @@ Both ends replayed the same pcap, SSRC included. So the legs carried byte-identi
 **Counts far higher than the calls placed**
 
 A background call loop keeps dialing during a measurement. So every figure is the calls under test plus whatever the loop fit in the same window.
-
-## The stereo trap, and where it now stands
-
-A relay capture makes it easy to export one leg twice.
-
-- The relay sees each direction arriving and leaving.
-- So four stream records exist for two audio streams.
-- An exporter that simply takes the first two it finds picks the same voice twice.
-- The result is a stereo file whose channels are byte-identical.
-  - It claims a conversation and carries one side of it.
-
-sipnab closed that in its own exporter. It:
-
-- walks the exportable streams in first-seen order,
-- keeps one per SSRC,
-- takes two,
-- falls back to mono when only one source is present.
-
-So a two-source call exports as two voices. A one-source capture says so by being mono rather than by faking a second channel.
-
-The omission caveat counts SOURCES rather than records for the same reason. Counting records would report two of four streams missing on a call where sipnab captured both parties.
-
-The trap still applies to anything building containers by another route. Apply the same rule there.
-
-- To check a file you already hold, compare the channels.
-- Identical RMS across a whole recording means one leg, not a quiet line.
 
 ## Reference
 
@@ -870,7 +828,7 @@ Everything the rest of the page refers to, in one place.
 
 ### Real output
 
-Captured from a running stack, not written by hand. A synthetic sample teaches you the shape you expected. It does not teach the one you get.
+A running harness answered `/v1/stats` with this.
 
 ```json
 {
@@ -897,13 +855,10 @@ Captured from a running stack, not written by hand. A synthetic sample teaches y
 - Compare it before trusting any answer that claims to join them.
 - Two clients pointed at one sipnab otherwise agree with each other perfectly.
 
-Read that `capture_quality` block as the keys this page uses, not as the whole object. Current builds also report these there:
-
-- `invalid_timestamps`,
-- the unanswered STUN/TURN counters,
-- `ice_role_conflicts`.
-
-The REST reference carries the full list.
+The `capture_quality` block above shows the keys this page uses. The block
+also carries `invalid_timestamps`, `unanswered_nat_requests`,
+`lapsed_turn_allocations`, `lapsed_turn_allocation_streams` and
+`ice_role_conflicts`. The [REST API reference](rest-api.md) describes each.
 
 ```
 1-141@172.28.0.21  172.28.0.20:6000  -> 172.28.0.11:30006  PCMA  4500p  jitter=0.00ms  mos=4.36
@@ -918,32 +873,47 @@ Four rows, two audio streams.
 - All four carry a Call-ID. That is what the mirrored control plane bought.
 - Without it every row reads `associated_dialog: null`.
 
+A container, trimmed to its parties and its recording. sipnab exported this
+one from [`tests/pcap-samples/sip-rtp-g711.pcap`](https://github.com/NormB/sipnab/raw/main/tests/pcap-samples/sip-rtp-g711.pcap) with `--retain-audio`. The
+call's audio flowed one way. `<host>` stands for the capturing host's name:
+
 ```json
 {
   "vcon": "0.4.0",
-  "uuid": "01a04347-5cdf-8d9a-a321-110075df1ef6",
+  "uuid": "0158a120-0392-864f-994e-dce45c3575ca",
   "parties": [
-    { "sip": "sip:sipp@172.28.0.21:5060",
-      "sip_display_name": "sipp",
-      "validation": "none" },
-    { "sip": "sip:service@172.28.0.10:5060",
-      "sip_display_name": "sut",
-      "validation": "none" },
-    { "role": "observer",
-      "sip_user_agent": "sipnab/0.5.127 (observer; node 5f65193f0712)",
-      "validation": "none" }
+    {
+      "sip": "sip:sipp@10.0.2.20:5060",
+      "validation": "none",
+      "name": "PCMU/8000",
+      "sip_display_name": "PCMU/8000",
+      "sip_contact": "sip:sipp@10.0.2.20:5060"
+    },
+    {
+      "sip": "sip:test@10.0.2.15:5060",
+      "validation": "none",
+      "name": "test",
+      "sip_display_name": "test",
+      "sip_contact": "<sip:test@10.0.2.15:5060;transport=udp>",
+      "sip_user_agent": "FreeSWITCH-mod_sofia/1.6.12-20-b91a0a6~64bit"
+    },
+    {
+      "validation": "none",
+      "role": "observer",
+      "sip_user_agent": "sipnab/0.5.222 (observer; node <host>)"
+    }
   ],
   "dialog": [
-    { "type": "recording-set",
-      "sip_call_id": "1-141@172.28.0.21",
-      "duration": 89.988,
-      "recordings": [1] },
-    { "type": "recording",
+    {
+      "type": "recording",
+      "sip_call_id": "1-1966@10.0.2.20",
+      "duration": 8.5,
+      "parties": [1],
       "mediatype": "audio/x-wav",
       "encoding": "base64url",
-      "duration": 30.0,
-      "content_hash": "sha512-ofYp0T-fqTjwjfX0hqYI3Rp0OB7c5X_6PbQRZBMizxsKEpU25ATg5mJzVN_2j0_uIvr952TIO7FbOrTsav9Ryg",
-      "body": "<1280638 base64url chars>" }
+      "content_hash": "sha512-GVphUEyrsE9TSwxDIUBOUWDh1xEmmbHbpT5SqrtTVVVOQWy9JUPWgvOtxlFy1Rr-p8gcpy8pRosgohjHBa6uQg",
+      "body": "<182022 base64url chars>"
+    }
   ]
 }
 ```
@@ -954,8 +924,10 @@ Three things to read here:
   - The wire carried these names, and sipnab identified nobody.
 - The third party is sipnab itself, declared as an `observer`.
   - So a consumer can see that something which never took part produced the container.
-- The recording is 30.0 s of an 89.988 s call.
-  - The container states this rather than leaves you to notice.
+- The recording's `parties` is `[1]`: its one channel came from the media
+  address party 1 advertised in its SDP.
+  - On a relay capture, where the audio comes from the relay's addresses,
+    the recording has no `parties`.
 
 ### Build features
 
@@ -966,9 +938,10 @@ cargo build --release \
 
 Drop `hep` and the relay cannot decode the control plane at all. sipnab refuses `--hep-parse` outright.
 
-## Two behaviors that surprise people
+## What a stereo recording and a 201 do not prove
 
-Neither is a bug. Both produce output that passes inspection. But the output means something other than it appears to.
+Both of these produce output that passes inspection and means something other
+than it appears to.
 
 ### A stereo recording is not proof of two speakers
 
@@ -985,17 +958,15 @@ An exporter that takes the first two streams it finds therefore selects the same
 
 sipnab selects one stream per SSRC. It falls back to mono when only one source is present.
 
-- The reason: duplicating a leg across two channels reads as a two-party recording to anyone who opens it.
 - If you build containers by another route, apply the same rule.
 - To check an existing file, compare the channels.
   - Identical RMS across a whole recording means one leg, not a quiet line.
 
 The same reasoning governs the omission caveat. It counts *sources*, not records.
 
-- Counting records reports two of four streams missing on a call where sipnab captured both parties.
-- A caveat naming a loss that never happened trains a reader to disregard caveats.
+- Counting records would report two of four streams missing on a call where sipnab captured both parties.
 
-### A create response is not a retention guarantee
+### A 201 from the conserver does not prove it kept the container
 
 A conserver can do all of these while never having written a container to durable storage:
 
@@ -1026,7 +997,7 @@ The listing route deserves the same suspicion.
 
 ## Before this carries real calls
 
-- **Recording law is not a deployment detail.**
+- **Check the recording law that applies.**
   - Consent requirements differ by jurisdiction and by who is on the call.
   - Decide what the law lets you keep before building something that keeps it.
 - **Give each producer its own scoped key.**

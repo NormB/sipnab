@@ -17,21 +17,57 @@ This is a different surface from the [REST API](rest-api.md).
 They also authenticate differently. See
 [Authentication](rest-api.md#authentication).
 
-It is also easy to confuse with HEP, the Homer Encapsulation Protocol,
-because both are how sipnab fits into a monitoring estate. They answer
-opposite questions.
+It is also different from HEP, the Homer Encapsulation Protocol:
 
-- HEP is a TRANSPORT FOR SIP MESSAGES.
-  - sipnab receives them with
-    [`--hep-listen`](cli-reference.md#network-listeners) or forwards them with
-    `--hep-send`.
-  - Homer stores the signaling itself.
+- HEP carries SIP messages. sipnab receives them with
+  [`--hep-listen`](cli-reference.md#network-listeners) or forwards them with
+  `--hep-send`, and Homer stores the signaling itself.
+- Prometheus carries no SIP. A scrape says how many packets sipnab dropped,
+  not which calls they belonged to.
 
-- Prometheus carries no SIP at all.
-  - A scrape tells you sipnab dropped 4,000 packets.
-  - It never tells you which call.
+A deployment can use both.
 
-Wire both. They are complements, not alternatives.
+### Scrape the metrics of a capture file
+
+With `--api`, sipnab keeps serving after it has read a file, until you stop
+it. On a loopback address with no API key, `/metrics` needs no token. Start
+it:
+
+```bash
+sipnab -N -I tests/pcap-samples/sip-sdp-example.pcap --api 127.0.0.1:19392 --no-cli-print
+```
+
+From a second terminal, read it:
+
+```bash
+curl -s http://127.0.0.1:19392/metrics
+```
+
+The scrape begins:
+
+```text
+# HELP sipnab_dialogs_total Total SIP dialogs by state
+# TYPE sipnab_dialogs_total counter
+sipnab_dialogs_total{state="completed"} 1
+
+# HELP sipnab_messages_total Total SIP messages by method
+# TYPE sipnab_messages_total counter
+sipnab_messages_total{method="INVITE"} 7
+
+# HELP sipnab_responses_total Total SIP responses by code class
+# TYPE sipnab_responses_total counter
+sipnab_responses_total{code="1xx"} 2
+sipnab_responses_total{code="2xx"} 2
+sipnab_responses_total{code="3xx"} 0
+sipnab_responses_total{code="4xx"} 0
+sipnab_responses_total{code="5xx"} 0
+sipnab_responses_total{code="6xx"} 0
+…
+```
+
+Stop sipnab with Ctrl-C when you have finished. The standalone `--metrics` server
+exits with the run, so on a file run it is reachable only while sipnab reads
+the file.
 
 
 ### GET /metrics
@@ -100,62 +136,49 @@ if (!resp.ok) throw new Error(`GET /metrics: ${resp.status} ${resp.statusText}`)
 process.stdout.write(await resp.text()); // Prometheus text format
 ```
 
-**Response** (text/plain):
+**Response** (text/plain): the same text as the scrape above.
 
-```text
-# HELP sipnab_dialogs_total Total dialogs by state
-# TYPE sipnab_dialogs_total counter
-sipnab_dialogs_total{state="completed"} 1180
-sipnab_dialogs_total{state="failed"} 32
-sipnab_dialogs_total{state="incall"} 23
-# HELP sipnab_rtp_streams_total RTP streams by status
-# TYPE sipnab_rtp_streams_total counter
-sipnab_rtp_streams_total{status="established"} 43
-sipnab_rtp_streams_total{status="orphaned"} 3
-...
-```
-
-Metric names emitted by [`src/output/prometheus.rs`](https://github.com/NormB/sipnab/blob/main/src/output/prometheus.rs):
+The metric families:
 
 | Metric | Type | Notes |
 |---|---|---|
 | `sipnab_dialogs_total{state}` | counter | Tracked dialogs grouped by `DialogState` (`Trying`, `Ringing`, `InCall`, `Completed`, `Canceled`, `Failed`, `Redirected`, `Registered`, `Expired`, `Pending`, `Active`, `Terminated`, `Transferring`). State values are lowercase: `state="completed"`. |
-| `sipnab_dialogs_active` | gauge | Dialogs in one of six active states: `Trying`, `Ringing`, `InCall`, `Transferring`, `Pending`, `Active`. Two of those six are SUBSCRIBE dialogs carrying no media, so **this is not a count of calls** — a box serving presence traffic reports a non-zero value here with nothing on the phone. Graph it to see load on the dialog store, and alert on `sipnab_calls_active` instead. |
-| `sipnab_calls_active` | gauge | Calls that are up right now: dialogs in `InCall`, and nothing else. A dialog enters `InCall` on the 200 OK to its INVITE and leaves on the BYE, so this is the concurrent-call figure — channels in use, and the number to compare against a carrier's simultaneous-call limit. By construction never greater than `sipnab_dialogs_active`, and the gap is calls still in setup plus subscriptions. |
-| `sipnab_messages_total{method}` | counter | SIP messages by method (`INVITE`, `REGISTER`, …). |
-| `sipnab_responses_total{code}` | counter | SIP responses in the tracked dialogs, grouped by class: `1xx`, `2xx`, `3xx`, `4xx`, `5xx`, `6xx`. Every class appears on every scrape, at `0` where the capture saw none, so a rule watching for the first `5xx` reads zero instead of no-data. |
+| `sipnab_dialogs_active` | gauge | Dialogs in one of six active states: `Trying`, `Ringing`, `InCall`, `Transferring`, `Pending`, `Active`. `Pending` and `Active` are SUBSCRIBE dialogs, which carry no media, so **this is not a count of calls**: a host serving presence traffic reports a non-zero value with no call up. For calls, use `sipnab_calls_active`. |
+| `sipnab_calls_active` | gauge | Calls that are up right now: dialogs in `InCall`, and nothing else. A dialog enters `InCall` on the 200 OK to its INVITE and leaves on the BYE. Compare it against a carrier's simultaneous-call limit. Never greater than `sipnab_dialogs_active`; the difference is calls still in setup plus subscriptions. |
+| `sipnab_messages_total{method}` | counter | SIP messages in the tracked dialogs, labeled by the method that opened each dialog. Every message of an INVITE dialog, its responses, `ACK` and `BYE` included, counts under `method="INVITE"`. |
+| `sipnab_responses_total{code}` | counter | SIP responses in the tracked dialogs, grouped by class: `1xx`, `2xx`, `3xx`, `4xx`, `5xx`, `6xx`. Every class appears on every scrape, at `0` where the capture saw none. |
 | `sipnab_rtp_streams_active` | gauge | RTP streams a dialog claims, however long ago their last packet arrived: the same population as `sipnab_rtp_streams_total{status="established"}`. A call whose media stopped five minutes ago still counts until sipnab drops its dialog. |
-| `sipnab_rtp_streams_total{status}` | counter | RTP streams by status: `orphaned` when no dialog claims the stream, `established` when one does. The stream's dialog association decides the label on every scrape, with no age threshold in front of it, so a stream unclaimed for two seconds counts as `orphaned` exactly as one unclaimed for an hour does. |
+| `sipnab_rtp_streams_total{status}` | counter | RTP streams by status: `orphaned` when no dialog claims the stream, `established` when one does. No age threshold applies: a stream unclaimed for two seconds counts as `orphaned`. |
 | `sipnab_kill_responses_sent_total{mode}` | counter | Scanner-kill responses sent, by source mode: `raw` (source-spoofed via a raw socket) or `ephemeral` (sipnab's own port). Alert on unexpected `ephemeral` to catch a silent spoof fallback. |
-| `sipnab_capture_packets_total` | counter | Packets the capture handed to the processing pipeline since the process started. Counted before parsing, so a frame sipnab cannot parse still counts — it arrived. **This series says nothing about whether sipnab understood any of it**; a capture on a link type with no decoder climbs this counter exactly like a clean one. Pair it with `sipnab_capture_undecoded_fraction` before reading any zero elsewhere in the scrape as a finding. One process-wide total covering every input (`-I` files, live devices, HEP) and every worker of the parallel pipeline, identical on both servers. A line that stops climbing means packets stopped arriving. |
-| `sipnab_reassembly_timeouts_total` | counter | IP fragments whose datagram never completed, plus TCP streams that went idle, dropped once older than the 30-second reassembly TTL. Capacity evictions stay out of this number: those say the entry cap is too small, not that a peer stopped sending. |
+| `sipnab_capture_packets_total` | counter | Packets the capture handed to the processing pipeline since the process started, counted before parsing. A frame sipnab cannot parse still counts, so read it with `sipnab_capture_undecoded_fraction`. One process-wide total covering every input (`-I` files, live devices, HEP) and every worker of the parallel pipeline. A line that stops climbing means packets stopped arriving. |
+| `sipnab_reassembly_timeouts_total` | counter | IP fragments whose datagram never completed, plus TCP streams that went idle, dropped once older than the 30-second reassembly TTL. Entries evicted because the reassembly table was full are not counted here. |
 | `sipnab_capture_kernel_dropped_packets_total` | counter | Packets the kernel discarded because the capture ring buffer was full when they arrived (`ps_drop`). Non-zero means the analysis is incomplete: dialogs may be missing messages, and RTP loss figures overstate what was on the wire. The remedy is a larger `-B`/`--buffer`, a narrower BPF filter, or a smaller `--snaplen`. Always zero for a `-I` file replay, which has no ring. |
-| `sipnab_capture_interface_dropped_packets_total` | counter | Packets the interface or its driver discarded before libpcap ever saw them (`ps_ifdrop`). Counted apart from the kernel drops because **a larger `-B` cannot recover these** — the link is delivering faster than the host accepts, so the answer is at the NIC, the driver, or the mirror. Alerting on a sum of the two drop counters points the operator at the wrong remedy half the time. |
-| `sipnab_capture_invalid_timestamps_total` | counter | Packets whose pcap timestamp did not parse, which stamped with the wall clock instead. No packet goes missing, so the counts elsewhere in the scrape stay right — but every timing figure derived from the run is not: post-dial delay, [RFC 3550](https://www.rfc-editor.org/rfc/rfc3550.html) jitter, MOS and call duration all read from a substituted clock. |
-| `sipnab_capture_undecodable_frames_total{reason}` | counter | Frames that reached the parser and produced no packet at all, grouped by why. **The reason label carries the number**, because the number is the whole deliverable: `unsupported_link_type_0` says the file is `DLT_NULL` and `editcap -T ether` converts it, where a bare "unsupported link type" names no format an operator can act on. Labels are `unsupported_link_type_<dlt>`, `not_ip_ethertype_0x<hhhh>`, `no_transport_ip_protocol_<n>`, `truncated_frame`, `decode_error`, the `_unrecorded` variants of the two numbered EtherType/protocol labels (the decoder did not hand the number out), and `reason_not_retained` for frames beyond the tally's slot cap — that last one exists so `sum()` over the family always equals the true total. Emitted by both the `--api` `/metrics` route and the standalone `--metrics` server. Absent entirely on a capture that decoded cleanly, so alert on the fraction below, not on this. |
-| `sipnab_capture_snapped_frames_total` | counter | Frames the capture's own `--snaplen` cut short (`caplen < origlen`). Neither loss nor a decode failure: the frames arrived, most of them decoded, and what is missing is payload — which is exactly what a signaling-only capture sets out to discard. It matters because the `--snaplen` warnings fire once per run and cannot say how MUCH of a capture came in truncated: a run that decoded every packet and snapped 94% of them is not a clean capture, and no other series says so. Raise `--snaplen` if you need RTP payload, audio export, or a faithful `-O` re-emit. |
-| `sipnab_nat_unanswered_requests` | gauge | STUN and TURN transactions that went out and never came back — the signal behind a one-way-audio complaint. **The only capture-quality series about the network rather than about the capture:** these frames arrived perfectly, and the reply to them did not. A gauge and not a counter because a late answer removes one, which a monotonic counter could never record. An endpoint that cannot learn its reflexive address advertises its private address in SDP, and the far end then sends media to an address the internet cannot route, while signaling looks healthy. Silence rather than a refusal points at something in the path discarding the packets — on school, campus and corporate networks most often a security appliance (web filter, secure web gateway, firewall or IPS) dropping UDP it does not recognize. A refusal counts as answered: the server was reachable and said no, which is a different fault. |
-| `sipnab_nat_lapsed_turn_allocations` | gauge | TURN allocations still carrying traffic past the lifetime the server last granted them, with no Refresh seen in between. The second capture-quality series about the NETWORK rather than about the capture, and the only condition sipnab reports that has **no other symptom anywhere**: a relay tears an allocation down the moment its lifetime lapses, the relayed media stops with it mid-call, and no SIP message says why — the signaling shows a healthy call that went quiet. A gauge and not a counter because a Refresh seen later moves the expiry and unsays it, which a monotonic counter could never record. The wording is "no Refresh SEEN" rather than "none sent", because a capture that started late or lost a packet cannot tell those apart. A deliberate release (a Refresh with `LIFETIME` 0) is never counted — the client asked for the teardown. |
-| `sipnab_nat_lapsed_turn_allocation_streams` | gauge | Media streams observed crossing a TURN allocation that had already lapsed. The scale beside `sipnab_nat_lapsed_turn_allocations`, and the reason that series is worth paging on: an allocation that lapsed with nothing on it cost nobody a call, while one carrying four streams cut off four conversations mid-sentence — and without relayed media attributable to the allocation that carried it, the two render identically. Counted by distinct SSRC seen inside the ChannelData frames on the allocation's channels, so RTCP does not inflate it. A gauge for the same reason the series above is: a Refresh seen later moves the expiry and takes the streams back out of this number. |
-| `sipnab_nat_ice_role_conflicts` | gauge | Candidate pairs where both ICE agents claimed the same role, or where one answered `487 Role Conflict` ([RFC 8445 section 7.3.1.1](https://www.rfc-editor.org/rfc/rfc8445.html#section-7.3.1.1)). The third capture-quality series about the NETWORK rather than about the capture. ICE resolves this itself — the losing agent switches role and repeats every check it had already sent — so a single conflict is not always fatal, which is exactly why it belongs on a dashboard rather than only in an alert: a fleet where it happens constantly is misconfigured whether or not any individual call survived it. Where no pair between the two was ever nominated, the conflict is a candidate cause of media that never started. The usual source is two endpoints configured with the same role, or a B2BUA relaying one side's role attribute to the other. A gauge because a later nomination on the same pair unsays the severity of it. |
-| `sipnab_capture_undecoded_fraction` | gauge | Share of captured frames sipnab could not decode, `0`–`1`, emitted on **every** scrape including clean ones. This is the series that separates "this capture holds no SIP" from "sipnab could not read this capture" — both of which otherwise show `sipnab_messages_total` at zero and look identical. At `1` nothing in the rest of the scrape describes traffic sipnab read. A non-zero but small value is normal: ARP and other non-IP background is undecodable by definition on any Ethernet link, which is exactly why this is a proportion and not a flag. |
-| `sipnab_capture_quality_degraded` | gauge | `1` when any of the three *loss* counters above exceeds zero, `0` otherwise. Undecodable frames are deliberately **not** folded in: ARP makes them non-zero on nearly every capture, so a flag including them would always be `1` and carry no information — use `sipnab_capture_undecoded_fraction` with a threshold instead. The one series to put on a dashboard or an alert rule to know whether the rest of the scrape describes the whole capture. `0` means nothing **surfaced** as wrong, not that the capture provably saw every packet: loss upstream of the capture point — an oversubscribed SPAN port, a tap mirroring one direction, a filter that excluded the traffic — is invisible to all three counters. |
+| `sipnab_capture_interface_dropped_packets_total` | counter | Packets the interface or its driver discarded before libpcap saw them (`ps_ifdrop`). A larger `-B` does not recover these; look at the NIC, the driver, or the mirror. Alert on it separately from the kernel drops, because the remedies differ. |
+| `sipnab_capture_invalid_timestamps_total` | counter | Packets whose pcap timestamp did not parse, which sipnab stamped with the wall clock instead. sipnab loses no packet, but every timing figure from the run reads a substituted clock: post-dial delay, [RFC 3550](https://www.rfc-editor.org/rfc/rfc3550.html) jitter, MOS and call duration. |
+| `sipnab_capture_undecodable_frames_total{reason}` | counter | Frames that reached the parser and produced no packet, grouped by reason. Labels are `unsupported_link_type_<dlt>`, `not_ip_ethertype_0x<hhhh>`, `no_transport_ip_protocol_<n>`, `truncated_frame`, `decode_error`, the `_unrecorded` variants of the EtherType and protocol labels (the decoder did not report the number), and `reason_not_retained` for frames past the tally's slot limit, so that `sum()` over the family equals the true total. `unsupported_link_type_0` is a `DLT_NULL` file, which `editcap -T ether` converts. Absent on a capture that decoded cleanly, so alert on `sipnab_capture_undecoded_fraction` instead. Both servers emit it. |
+| `sipnab_capture_snapped_frames_total` | counter | Frames the capture's own `--snaplen` cut short (`caplen < origlen`). The frames arrived and most decoded; what is missing is payload. Raise `--snaplen` if you need RTP payload, audio export, or a faithful `-O` re-emit. |
+| `sipnab_nat_unanswered_requests` | gauge | STUN and TURN transactions that went out and never drew a reply. A refusal counts as answered. An endpoint that cannot learn its reflexive address advertises its private address in SDP, and the call then has one-way or no audio while signaling looks healthy. A common cause is a security appliance (web filter, secure web gateway, firewall or IPS) dropping UDP it does not recognize. A gauge: a late answer lowers it. |
+| `sipnab_nat_lapsed_turn_allocations` | gauge | TURN allocations still carrying traffic past the lifetime the server last granted, with no Refresh seen in between. A relay tears an allocation down when its lifetime lapses, and the relayed media stops mid-call with no SIP message to explain it. A capture that started late or lost a packet can miss a Refresh the client sent. A deliberate release (a Refresh with `LIFETIME` 0) is never counted. A gauge: a Refresh seen later lowers it. |
+| `sipnab_nat_lapsed_turn_allocation_streams` | gauge | Media streams observed crossing a TURN allocation that had already lapsed: the number of calls a lapse affected. Counted by distinct SSRC inside the ChannelData frames on the allocation's channels, so RTCP does not inflate it. A gauge: a Refresh seen later lowers it. |
+| `sipnab_nat_ice_role_conflicts` | gauge | Candidate pairs where both ICE agents claimed the same role, or where one answered `487 Role Conflict` ([RFC 8445 section 7.3.1.1](https://www.rfc-editor.org/rfc/rfc8445.html#section-7.3.1.1)). ICE usually resolves a conflict itself, at the cost of repeated checks; a steady rate points at two endpoints configured with the same role, or a B2BUA relaying one side's role attribute to the other. Where no pair between the two was ever nominated, the conflict is a candidate cause of media that never started. A gauge: a later nomination on the same pair lowers it. |
+| `sipnab_capture_undecoded_fraction` | gauge | Share of captured frames sipnab could not decode, `0` to `1`, on every scrape. It separates "this capture holds no SIP" from "sipnab could not read this capture", which otherwise both show `sipnab_messages_total` at zero. At `1`, nothing else in the scrape describes traffic sipnab read. A small non-zero value is normal on Ethernet, where ARP and other non-IP traffic is undecodable. |
+| `sipnab_capture_quality_degraded` | gauge | `1` when any of the three loss counters (kernel drops, interface drops, invalid timestamps) is above zero, `0` otherwise. Undecodable frames are not included; use `sipnab_capture_undecoded_fraction` with a threshold for those. `0` means nothing surfaced as wrong. Loss upstream of the capture point, such as an oversubscribed SPAN port, a tap mirroring one direction, or a filter that excluded the traffic, does not appear in any of the three counters. |
 | `sipnab_capture_queue_depth_packets` | gauge | Packets currently queued between the capture reader and the processing thread. |
 | `sipnab_capture_backpressure_blocks_total` | counter | Times the capture reader blocked on a full queue. |
 | `sipnab_capture_sources` | gauge | Capture sources held in the source table: input files, the device, HEP senders, traced processes. Both servers fill it. |
 | `sipnab_capture_sources_max` | gauge | The source table's limit, `[limits] max_capture_sources` / `--max-capture-sources`. |
 | `sipnab_capture_sources_refused_total` | counter | Packets whose new capture source the full table refused. They are still analyzed, but carry no `frame` pointer for `--show-frame`. Nonzero means raise `max_capture_sources`. |
-| `sipnab_hep_senders` | gauge | Senders the `--hep-listen` listener is tracking, each keyed by the capture id it claims and the address it sent from. Present only on a run with a HEP listener: a zero would claim a listener that heard nothing. **Aggregates only, never a series per sender** — sender addresses describe the estate, and a `metrics`-scoped token must not read what the full-scope [`GET /v1/hep/senders`](rest-api.md#get-v1hepsenders) withholds from it; a spoofed flood would also set the label cardinality. For which sender stopped, ask that route, the MCP `hep_senders` tool, or `--hep-senders`. Both servers fill it. |
+| `sipnab_hep_senders` | gauge | Senders the `--hep-listen` listener is tracking, each keyed by the capture id it claims and the address it sent from. Present only on a run with a HEP listener. A total only, with no series per sender: to see which sender stopped, use [`GET /v1/hep/senders`](rest-api.md#get-v1hepsenders) (full scope), the MCP `hep_senders` tool, or `--hep-senders`. Both servers fill it. |
 | `sipnab_hep_datagrams_received_total` | counter | HEP packets the listener received, admitted or refused. With the refused family below, `received - sum(refused)` is what reached the capture. |
-| `sipnab_hep_datagrams_refused_total{reason}` | counter | HEP packets the listener refused, by why: `allowlist`, `rate_limit_global`, `rate_limit_per_peer`, `peer_tracking_full`, `malformed`, `auth_missing`, `auth_mismatch`, and the five `hmac_*` reasons (`hmac_bad_format`, `hmac_unsupported_version`, `hmac_timestamp_out_of_window`, `hmac_bad_mac`, `hmac_replay`). Every reason appears on every scrape of a run with a listener, at `0` where the listener refused nothing for it, so a rule on `auth_mismatch` reads zero rather than no-data. A climbing `auth_mismatch` or `hmac_bad_mac` is a sender with the wrong key; `hmac_timestamp_out_of_window` is a sender with a drifting clock. Both servers fill it. |
-| `sipnab_hep_export_packets_total` | counter | Packets the `--hep-send` exporter delivered as far as its transport can tell. Over TCP and TLS the exporter wrote it to the connection. **Over UDP the exporter handed it to the kernel**, and a collector that is down produces no error, so on UDP this series climbs just the same with nobody listening — pair it with the collector's own `sipnab_hep_senders` or its roster rather than reading it as delivery. Present only on a run that exports. |
-| `sipnab_hep_export_failures_total{kind}` | counter | Packets the exporter failed to deliver, by the step that failed: `connect` (the collector refused, or the sender could not reach it, when the sender dialled again), `tls_handshake` (it connected and the certificate was not one the sender accepts, or the session broke), `write` (an established connection or the socket refused the packet). Every kind appears, at `0` where nothing failed. A climbing `tls_handshake` after a collector rebuild is a certificate the sender does not trust. Present only on a run that exports. |
-| `sipnab_diagnosis_total{type}` | counter | Tracked dialogs whose media diagnosis raises each finding. A dialog with two findings counts under both. **Seven label values, in three groups an alert rule has to keep apart.** `one_way_audio`, `nat_mismatch` and `no_media` appear on every scrape, at `0` where nothing raises them, so a rule watching for the first one reads zero rather than no-data. `private_media_address` — the SDP `c=` line offered an address the far end cannot route back to — and `private_media_address_confirmed` — the subset where STUN evidence also shows nothing rewrote that address — appear only once a dialog raises them, so both series stay absent until the first one does. The ratio of the second to the first is how much of the fleet's warning the capture confirms. `dead_air` and `clipping` are the third group: they are amplitude measurements on the decoded audio, so they tick only on a run started with `--retain-audio` and stay absent otherwise. Absent means the run kept no samples, never that the calls were fine — an alert rule that treats a missing `dead_air` series as a healthy fleet is reading a capture setting as a finding. Both servers run the diagnosis during the scrape, so scrape cost grows with the number of tracked dialogs (capped by `-l`/`--limit`). |
-| `sipnab_security_alerts_total{type}` | counter | Security alerts by the detector that fired: `scanner`, `fraud`, `digest`, `reg_flood`. Only types that have fired appear, so the family is absent before the first alert. A rule name can come from packet data, so sipnab caps the family at 128 distinct names and folds everything past the cap into `type="other"` — the total stays right even where the breakdown cannot. |
-| `sipnab_mcp_tool_calls_total{tool,outcome}` | counter | MCP tool calls, by the tool asked for and how the call ended: `ok`, `tool_error` (the tool answered and said the answer is an error), or `refused` (the rate limit, the concurrency cap, a scope check, unknown arguments, or a name no tool answers to). The name comes from the CLIENT, so a name no tool answers to still counts — probing is what this series is for — and sipnab caps the distinct names at 256 (`MAX_TOOLS`), well above the tool surface, folding everything past the cap into `tool="other"` so a peer looping over invented names cannot grow the series set. Absent until the first tool call, like `sipnab_security_alerts_total`. sipnab counts at the same point it writes the `mcp_audit` log line, so the two always agree. |
-| `sipnab_mcp_tool_duration_seconds{tool}` | histogram | How long each MCP tool takes to answer, in seconds, from the same instant the audit line's `elapsed_ms` measures. Fixed boundaries at 1/5/10/25/50/100/250/500ms and 1/2.5/5/10s — unlike the four capture histograms these have no operator threshold to derive from, because they measure sipnab answering rather than the calls it observed. Emits `_bucket{tool,le}`, `_count{tool}`, `_sum{tool}`. |
-| `sipnab_mcp_tool_response_bytes_total{tool}` | counter | Text content bytes each MCP tool has returned. The payload an agent reads, not the framed wire size: the JSON-RPC envelope and its escaping are outside this figure. Divide by `sipnab_mcp_tool_duration_seconds_count{tool}` for the average answer size, which is the number to look at when a client's context window is the constraint — see `--mcp-max-rows` and `--mcp-max-body-bytes`. A refused call returns no content, so it moves the call counter and leaves this one where it was. |
-| `sipnab_pdd_seconds` | histogram | Post-dial delay distribution. Boundaries come from `[diagnosis] post_dial_delay_secs` rather than a fixed list: a resolution ladder at 0.5/1/2/3/5s, then the threshold itself and twice it (11s and 22s at the shipped setting), so a query here reproduces the finding sipnab raises. Emits `sipnab_pdd_seconds_bucket{le}`, `_count`, `_sum`. |
+| `sipnab_hep_datagrams_refused_total{reason}` | counter | HEP packets the listener refused, by reason: `allowlist`, `rate_limit_global`, `rate_limit_per_peer`, `peer_tracking_full`, `malformed`, `auth_missing`, `auth_mismatch`, and the five `hmac_*` reasons (`hmac_bad_format`, `hmac_unsupported_version`, `hmac_timestamp_out_of_window`, `hmac_bad_mac`, `hmac_replay`). Every reason appears on every scrape of a run with a listener, at `0` where the listener refused none. A climbing `auth_mismatch` or `hmac_bad_mac` is a sender with the wrong key; `hmac_timestamp_out_of_window` is a sender with a drifting clock. Both servers fill it. |
+| `sipnab_hep_export_packets_total` | counter | Packets the `--hep-send` exporter delivered as far as its transport can tell. Over TCP and TLS, the exporter wrote it to the connection. **Over UDP, the exporter handed it to the kernel**, and the series climbs whether or not a collector is listening; check the collector's own `sipnab_hep_senders` or its roster for delivery. Present only on a run that exports. |
+| `sipnab_hep_export_failures_total{kind}` | counter | Packets the exporter failed to deliver, by the step that failed: `connect` (the collector refused, or the sender could not reach it, when the sender dialed again), `tls_handshake` (it connected and the certificate was not one the sender accepts, or the session broke), `write` (an established connection or the socket refused the packet). Every kind appears, at `0` where nothing failed. A climbing `tls_handshake` after a collector rebuild is a certificate the sender does not trust. Present only on a run that exports. |
+| `sipnab_diagnosis_total{type}` | counter | Tracked dialogs whose media diagnosis raises each finding. A dialog with two findings counts under both. Three groups of labels: `one_way_audio`, `nat_mismatch` and `no_media` appear on every scrape, at `0` where nothing raises them. `private_media_address` (the SDP `c=` line offered an address the far end cannot route back to) and `private_media_address_confirmed` (the subset where STUN evidence shows nothing rewrote that address) appear once a dialog raises them. `dead_air` and `clipping` measure the decoded audio, so they appear only on a run started with `--retain-audio`; their absence means the run kept no samples, not that the calls were fine. Both servers run the diagnosis during the scrape, so scrape cost grows with the number of tracked dialogs (capped by `-l`/`--limit`). |
+| `sipnab_security_alerts_total{type}` | counter | Security alerts by the detector that fired: `scanner`, `fraud`, `digest`, `reg_flood`. Only types that have fired appear, so the family is absent before the first alert. At most 128 distinct names; any beyond that count under `type="other"`, so the total stays right. |
+| `sipnab_mcp_tool_calls_total{tool,outcome}` | counter | MCP tool calls, by the tool asked for and how the call ended: `ok`, `tool_error` (the tool answered with an error), or `refused` (the rate limit, the concurrency limit, a scope check, unknown arguments, or a name no tool answers to). A name no tool answers to still counts. At most 256 distinct tool names; any beyond that count under `tool="other"`. Absent until the first tool call. It always agrees with the `mcp_audit` log lines. |
+| `sipnab_mcp_tool_duration_seconds{tool}` | histogram | How long each MCP tool takes to answer, in seconds, measured from the same instant as the audit line's `elapsed_ms`. Fixed boundaries at 1/5/10/25/50/100/250/500ms and 1/2.5/5/10s. Emits `_bucket{tool,le}`, `_count{tool}`, `_sum{tool}`. |
+| `sipnab_mcp_tool_response_bytes_total{tool}` | counter | Text content bytes each MCP tool has returned: the payload an agent reads, without the JSON-RPC envelope and its escaping. Divide by `sipnab_mcp_tool_duration_seconds_count{tool}` for the average answer size, and see `--mcp-max-rows` and `--mcp-max-body-bytes` to bound it. A refused call returns no content and does not move this counter. |
+| `sipnab_pdd_seconds` | histogram | Post-dial delay distribution. Boundaries at 0.5/1/2/3/5s, then `[diagnosis] post_dial_delay_secs` and twice it (11s and 22s at the default), so a query reproduces the finding sipnab raises. Emits `sipnab_pdd_seconds_bucket{le}`, `_count`, `_sum`. |
 | `sipnab_mos` | histogram | RTP MOS distribution. Half-steps up the 1-5 scale, plus `[quality] mos_warn` and `mos_bad` (4 and 3 at the shipped settings). |
 | `sipnab_jitter_ms` | histogram | RTP jitter distribution. A ladder at 5/10/20ms, plus `[quality] jitter_warn_ms` and `jitter_bad_ms` and multiples above them (30/50/100/200ms at the shipped settings). |
 | `sipnab_loss_percent` | histogram | RTP packet-loss distribution. A ladder at 0.1/0.5%, plus `[quality] loss_warn_pct` and `loss_bad_pct` and multiples above them (1/2/5/10/20% at the shipped settings). |
@@ -192,16 +215,9 @@ as well as rises:
 
 Alert on the current value or on a ratio there, never on `increase()`.
 
-`sipnab_security_alerts_total{type}` reads differently from the rest. The
-difference matters to an alert rule.
-
-- `AlertEngine::fire` records each alert under its rule name.
-- So the family carries only the types that have actually fired.
-- It stays absent from the scrape entirely until the first one does.
-- An absent series therefore means "no alert of that type has fired since this
-  process started". It does not mean "the metric is unavailable".
-
-`firing_an_alert_moves_the_metric` in [`tests/metrics_alert_wiring_test.rs`](https://github.com/NormB/sipnab/blob/main/tests/metrics_alert_wiring_test.rs) holds the recording call to that behavior.
+`sipnab_security_alerts_total{type}` carries only the types that have fired,
+and is absent from the scrape until the first alert. An absent series means
+no alert of that type has fired since the process started.
 
 
 ### Choose a scrape target
@@ -231,7 +247,8 @@ scrape_configs:
     scrape_interval: 15s
 ```
 
-The metrics endpoint is lightweight and suitable for 5–15 second scrape intervals.
+A scrape interval of 5 to 15 seconds suits the endpoint. Scrape cost grows
+with the number of tracked dialogs (see `sipnab_diagnosis_total`).
 
 ## Metrics TLS
 

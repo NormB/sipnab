@@ -192,7 +192,7 @@ container without audio is never read as a call that had none.
 The note
 [Set the largest audio a vCon container may carry inline](@/notes/keep-the-audio-your-store-will-not-take.md)
 covers the audio budget behind `refused-over-budget`. The
-[vCon guide](@/docs/vcon.md#the-container-cannot-say-this-is-an-incomplete-record-so-sipnab-says-it-twice)
+[vCon guide](@/docs/vcon.md#read-what-a-container-says-the-capture-missed)
 describes every field.
 
 - Check what the container claims about the people on the call.
@@ -319,7 +319,7 @@ as described in
 ## Related guides
 
 - [The spool contract, for a bridge that consumes it](@/docs/vcon.md#the-spool-contract-for-a-bridge-that-consumes-it): the write order and `--vcon-digest`.
-- [The container cannot say "this is an incomplete record", so sipnab says it twice](@/docs/vcon.md#the-container-cannot-say-this-is-an-incomplete-record-so-sipnab-says-it-twice): every `capture_completeness` field.
+- [Read what a container says the capture missed](@/docs/vcon.md#read-what-a-container-says-the-capture-missed): every `capture_completeness` field.
 - [Someone handed you a sipnab vCon — what may you conclude?](@/docs/vcon.md#someone-handed-you-a-sipnab-vcon-what-may-you-conclude): what the receiver can conclude.
 - [What sipnab refuses to put in a container](@/docs/vcon.md#what-sipnab-refuses-to-put-in-a-container)
 - [`validate_vcon`](@/docs/mcp-tools-vcon.md#validate-vcon): the tool's arguments and answers.

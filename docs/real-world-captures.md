@@ -756,7 +756,7 @@ aggregate on any stream whose headline figure looks impossible.
 
 The schema for both blocks is in
 [Output formats](output-formats.md#one-object-per-dialog).
-[MOS and codecs](mos-and-codecs.md#mos-comes-from-what-sipnab-measured-never-from-what-the-far-end-claimed)
+[MOS and codecs](mos-and-codecs.md#what-sipnab-computes-the-score-from)
 covers what the quality score does with them.
 
 ---

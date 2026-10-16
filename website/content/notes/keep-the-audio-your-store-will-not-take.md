@@ -219,7 +219,7 @@ at the 10,485,760-byte limit where the spool refused.
 
 - [Produce one](@/docs/vcon.md#produce-one): the export options, including
   `--retain-audio`.
-- [The container cannot say "this is an incomplete record", so sipnab says it twice](@/docs/vcon.md#the-container-cannot-say-this-is-an-incomplete-record-so-sipnab-says-it-twice):
+- [Read what a container says the capture missed](@/docs/vcon.md#read-what-a-container-says-the-capture-missed):
   how to read `capture_completeness`.
 - [What this does not do](@/docs/vcon.md#what-this-does-not-do): the inline
   budget among the exporter's other limits.

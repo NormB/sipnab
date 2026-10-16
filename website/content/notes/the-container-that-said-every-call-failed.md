@@ -87,7 +87,7 @@ call. It does not define it by what the object holds.
   group's `-04` file unchanged.
 - The local deviation no longer exists.
 
-The current rule, as the [vCon guide](@/docs/vcon.md#the-container-cannot-say-this-is-an-incomplete-record-so-sipnab-says-it-twice)
+The current rule, as the [vCon guide](@/docs/vcon.md#read-what-a-container-says-the-capture-missed)
 states it:
 
 - An object with audio is `recording`.
@@ -107,7 +107,7 @@ An absent `disposition` does not mean the call succeeded.
 A consumer that selects `type == "recording"` must check that `body` or `url`
 is present before reading the audio.
 
-- The [vCon guide](@/docs/vcon.md#the-container-cannot-say-this-is-an-incomplete-record-so-sipnab-says-it-twice)
+- The [vCon guide](@/docs/vcon.md#read-what-a-container-says-the-capture-missed)
   records a case at vcon-server commit `8ffbfcf`.
 - There, the `deepgram_link` transcription link reads `dialog["url"]` without
   that check.
@@ -179,6 +179,6 @@ The failed call has the type `incomplete`, with `"disposition": "failed"`.
 
 ## Related guides
 
-- [vCon: The container cannot say "this is an incomplete record", so sipnab says it twice](@/docs/vcon.md#the-container-cannot-say-this-is-an-incomplete-record-so-sipnab-says-it-twice)
+- [vCon: Read what a container says the capture missed](@/docs/vcon.md#read-what-a-container-says-the-capture-missed)
 - [vCon: Read what came out](@/docs/vcon.md#read-what-came-out)
 - [vCon: Someone handed you a sipnab vCon, what may you conclude?](@/docs/vcon.md#someone-handed-you-a-sipnab-vcon-what-may-you-conclude)

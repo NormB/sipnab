@@ -297,7 +297,7 @@ When a capture carries RTCP XR (PT=207), sipnab decodes the VoIP Metrics block
   - A mid-path capture watches a different path segment than the endpoint
     reports on.
 - This is the same rule the reception-report figures follow. See
-  [mos-and-codecs.md](mos-and-codecs.md#mos-comes-from-what-sipnab-measured-never-from-what-the-far-end-claimed).
+  [mos-and-codecs.md](mos-and-codecs.md#what-sipnab-computes-the-score-from).
 
 RFC 3611 reserves the value 127 for "this parameter is unavailable". It does
 this on all seven of its single-byte quality fields:
