@@ -1370,6 +1370,22 @@ fn cores_unsupported_flags(cli: &Cli, config: &Config) -> Vec<&'static str> {
     .collect()
 }
 
+/// The refusal for a `--cores` file run started as root, or `None`.
+///
+/// The parallel reader opens its files from worker threads and never reaches
+/// the privilege drop the single-core read makes after opening its input, so
+/// as root it would read the whole capture as root. Offline analysis needs no
+/// root; `--no-priv-drop` is how an operator says to stay root on purpose.
+fn cores_as_root_refusal(cores_file: bool, root: bool, no_priv_drop: bool) -> Option<String> {
+    (cores_file && root && !no_priv_drop).then(|| {
+        "--cores reads the capture without dropping root privileges, which the \
+         single-core read drops after opening its input. Run it as an ordinary \
+         user (reading a capture file needs no root), drop --cores, or pass \
+         --no-priv-drop to stay root on purpose."
+            .to_string()
+    })
+}
+
 /// Refuse `--cores N` beside an output the parallel reader cannot produce.
 ///
 /// The multi-core offline file path outranks the TUI/batch choice; MCP forces
@@ -1397,6 +1413,15 @@ fn cores_unsupported_flags(cli: &Cli, config: &Config) -> Vec<&'static str> {
 ///
 /// Exits the process with code 2 when refused.
 fn refuse_cores_without_their_outputs(cli: &Cli, config: &Config) {
+    let cores_file = cli.limits_args.cores > 1 && cli.has_input() && !cli.capture_args.multi_device;
+    if let Some(refusal) = cores_as_root_refusal(
+        cores_file,
+        crate::privilege::is_root(),
+        cli.privilege_args.no_priv_drop,
+    ) {
+        tracing::error!("{refusal}");
+        crate::capture::archive::release_run_and_exit(2);
+    }
     let unsupported = cores_unsupported_flags(cli, config);
     if !unsupported.is_empty() {
         tracing::error!(
@@ -3308,8 +3333,10 @@ fn default_log_level(cli: &Cli) -> &'static str {
     // TUI mode: suppress log output to avoid corruption of the alternate screen.
     // Logs are only visible in CLI mode (-N) or when SIPNAB_LOG is explicitly set.
     // The vCon forwarder draws no TUI either: it is a headless process whose
-    // log lines are its whole report.
+    // log lines are its whole report. Neither does `-D`, whose warnings about
+    // keys it did not accept are half of its answer.
     let tui_active = !cli.mode_args.no_tui
+        && !cli.config_args.dump_config
         && cli.vcon_forward_args.vcon_forward.is_none()
         && cli.vcon_forward_args.vcon_spool_status.is_none()
         && cli.vcon_resign_args.vcon_resign.is_none()
@@ -10844,6 +10871,30 @@ mod decision_tests {
     }
 
     /// The `--cores` refusal lists every per-message output asked for.
+    /// A `--cores` run reads its files without dropping root, so as root it is
+    /// refused unless the operator asked to stay root with `--no-priv-drop`;
+    /// every other combination runs.
+    #[test]
+    fn cores_as_root_is_refused_unless_staying_root_was_asked_for() {
+        for cores_file in [false, true] {
+            for root in [false, true] {
+                for no_priv_drop in [false, true] {
+                    let refused = cores_as_root_refusal(cores_file, root, no_priv_drop).is_some();
+                    assert_eq!(
+                        refused,
+                        cores_file && root && !no_priv_drop,
+                        "cores_file={cores_file} root={root} no_priv_drop={no_priv_drop}"
+                    );
+                }
+            }
+        }
+        let msg = cores_as_root_refusal(true, true, false).unwrap_or_default();
+        assert!(
+            msg.contains("--no-priv-drop") && msg.contains("--cores"),
+            "{msg}"
+        );
+    }
+
     #[test]
     fn cores_lists_each_output_it_cannot_produce() -> Result<(), TestError> {
         let cli = cli_from(&[

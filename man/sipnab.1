@@ -458,19 +458,19 @@ Ask an rtpengine relay about calls that were already up.
 Read rtpproxy's control traffic on this UDP socket and name the calls its media belongs to.
 .TP
 \fB\-\-relay\-stats\fR
-Ask the relay named by \fB\-\-rtpengine\-control\fR for its own statistics and print them (ST1/C1).
+Ask the relay named by \fB\-\-rtpengine\-control\fR for its own statistics and print them.
 .TP
 \fB\-\-relay\-stats\-call\fR \fICALL\-ID\fR
-Ask the relay named by \fB\-\-rtpengine\-control\fR for its own counters about ONE call, by Call\-ID (ST7/C2).
+Ask the relay named by \fB\-\-rtpengine\-control\fR for its own counters about ONE call, by Call\-ID.
 .TP
 \fB\-\-relay\-stats\-list\fR
-List which statistics the relay named by \fB\-\-rtpengine\-control\fR knows, rather than their values (ST7/C3).
+List which statistics the relay named by \fB\-\-rtpengine\-control\fR knows, rather than their values.
 .TP
 \fB\-\-relay\-compare\fR \fICALL\-ID\fR
-Compare the relay's own RTP packet count for ONE call against what sipnab measured on the wire (ST7/C4).
+Compare the relay's own RTP packet count for ONE call against what sipnab measured on the wire.
 .TP
 \fB\-\-relay\-stats\-interval\fR \fISECONDS\fR
-Poll the relay named by \fB\-\-rtpengine\-control\fR for its statistics every SECONDS, for as long as the capture runs (ST4/C5).
+Poll the relay named by \fB\-\-rtpengine\-control\fR for its statistics every SECONDS, for as long as the capture runs.
 .TP
 \fB\-\-max\-streams\fR \fIN\fR
 Maximum number of RTP streams to track simultaneously.
@@ -709,7 +709,7 @@ Metrics scrapes served at once before further ones get \fB503\fR (default 16). C
 Rows one list\-style REST response may return (default 1000). Config: \fB[limits] api_max_rows\fR.
 .TP
 \fB\-\-api\-allow\-relay\-query\fR
-Let REST clients query the relay named by \fB\-\-rtpengine\-control\fR (\fBGET /v1/relay/...\fR), which transmits (ST5).
+Let REST clients query the relay named by \fB\-\-rtpengine\-control\fR (\fBGET /v1/relay/...\fR), which transmits.
 .TP
 \fB\-\-api\-allow\-vcon\-fetch\fR
 Let REST clients read a vCon from the operator's \fB[vcon_fetch]\fR store by uuid (\fBGET /v1/vcon/fetch/{uuid}\fR), which connects to it.

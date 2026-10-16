@@ -178,6 +178,14 @@ You gave `--lint` with a suppression file (`{name}`, from `--lint-suppress-file`
 
 **Exit code:** 2.
 
+### `--cores reads the capture without dropping root privileges, which the single-core read drops after opening its input. Run it as an ordinary user (reading a capture file needs no root), drop --cores, or pass --no-priv-drop to stay root on purpose.`
+
+You started an offline `--cores` run (above 1, with `-I`) as root. The single-core read drops to `--user` (or `nobody`) after opening its input. The parallel reader does not, so it would read the whole capture as root.
+
+**What to do:** Run the command as an ordinary user. Reading a capture file needs no root. If the file is root-only, copy it or change its group first. Or drop `--cores`, or pass `--no-priv-drop` if staying root is what you mean.
+
+**Exit code:** 2.
+
 ### `Expected format 'duration:N' or 'filesize:N', got '{s}'`
 
 The `--autostop` value has no `:`. `{s}` is the value given. It must be a condition and a number separated by a colon. Printed after the prefix `Invalid --autostop: `.
