@@ -449,7 +449,7 @@ mod tests {
     use std::vec;
     use std::vec::Vec;
 
-    type TestResult = Result<(), PayloadError>;
+    type TestResult = Result<(), std::boxed::Box<dyn core::error::Error>>;
 
     /// One G.729.1 payload: the header octet `mbs << 4 | ft`, then `body`.
     fn payload(mbs: u8, ft: u8, body: &[u8]) -> Vec<u8> {
@@ -470,7 +470,7 @@ mod tests {
     fn assert_rate(ft: u8, kbps: u8, octets: usize) -> TestResult {
         let header = Header::from_octet(0xf0 | ft);
         let FrameType::Speech(rate) = header.frame_type else {
-            panic!("FT {ft} is {:?}, not a rate", header.frame_type);
+            return Err(std::format!("FT {ft} is {:?}, not a rate", header.frame_type).into());
         };
         assert_eq!(rate.ft(), ft);
         assert_eq!(rate.kbps(), kbps, "FT {ft}");
@@ -739,31 +739,33 @@ mod tests {
     // ── Core extraction ──────────────────────────────────────────────────
 
     /// The core of one frame of `octets` octets is its first 20.
-    fn assert_core_of(octets: usize) {
+    fn assert_core_of(octets: usize) -> TestResult {
         let frame = numbered(octets, 1);
-        let [first, second] = core_frames(&frame).unwrap_or_else(|| panic!("{octets}: a core"));
+        let [first, second] =
+            core_frames(&frame).ok_or_else(|| std::format!("{octets}: no core"))?;
         assert_eq!(&first[..], &frame[..10], "{octets}");
         assert_eq!(&second[..], &frame[10..20], "{octets}");
+        Ok(())
     }
 
     #[test]
-    fn the_core_of_an_8_kbit_s_frame_is_the_whole_frame() {
-        assert_core_of(20);
+    fn the_core_of_an_8_kbit_s_frame_is_the_whole_frame() -> TestResult {
+        assert_core_of(20)
     }
 
     #[test]
-    fn the_core_of_a_12_kbit_s_frame_is_its_first_20_octets() {
-        assert_core_of(30);
+    fn the_core_of_a_12_kbit_s_frame_is_its_first_20_octets() -> TestResult {
+        assert_core_of(30)
     }
 
     #[test]
-    fn the_core_of_a_20_kbit_s_frame_is_its_first_20_octets() {
-        assert_core_of(50);
+    fn the_core_of_a_20_kbit_s_frame_is_its_first_20_octets() -> TestResult {
+        assert_core_of(50)
     }
 
     #[test]
-    fn the_core_of_a_32_kbit_s_frame_is_its_first_20_octets() {
-        assert_core_of(80);
+    fn the_core_of_a_32_kbit_s_frame_is_its_first_20_octets() -> TestResult {
+        assert_core_of(80)
     }
 
     #[test]

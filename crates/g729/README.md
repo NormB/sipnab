@@ -6,7 +6,7 @@ comfort-noise frames, written in Rust. It decodes only. There is no encoder.
 - It decodes G.729 Annex A streams, with or without Annex B. It also decodes
   main-body G.729 streams, which are interoperable with Annex A
   ([RFC 3551 section 4.5.6](https://www.rfc-editor.org/rfc/rfc3551.html#section-4.5.6)).
-- It decodes the core layer of G.729.1 streams (RFC 4749): the first
+- It decodes the core layer of G.729.1 streams ([RFC 4749](https://www.rfc-editor.org/rfc/rfc4749.html)): the first
   20 octets of each 20 ms frame are two G.729 frames, decoded to 8 kHz. The
   higher G.729.1 layers are not decoded (see
   [G.729.1 core layer](#g7291-core-layer)).

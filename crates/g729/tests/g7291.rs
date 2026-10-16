@@ -266,7 +266,7 @@ impl Random {
 
 /// What `payload` must decode to: 160 samples per whole frame and 160 for a
 /// SID, and nothing at all for an empty payload or a reserved frame type.
-fn assert_whole_cores_only(decoder: &mut Decoder<'_>, payload: &[u8]) {
+fn assert_whole_cores_only(decoder: &mut Decoder<'_>, payload: &[u8]) -> common::TestResult {
     let mut pcm: Vec<i16> = Vec::new();
     let result = decoder.decode_g7291_rtp(payload, &mut pcm);
     match g7291::split_rtp(payload) {
@@ -283,7 +283,7 @@ fn assert_whole_cores_only(decoder: &mut Decoder<'_>, payload: &[u8]) {
                 ignored,
             }) = result
             else {
-                panic!("{payload:02x?}: {result:?}");
+                return Err(format!("{payload:02x?}: {result:?}").into());
             };
             let sid_decodes = split.sid.is_some();
             assert_eq!(frame_type, split.header.frame_type);
@@ -299,6 +299,7 @@ fn assert_whole_cores_only(decoder: &mut Decoder<'_>, payload: &[u8]) {
             }
         }
     }
+    Ok(())
 }
 
 #[test]
@@ -308,7 +309,7 @@ fn random_payloads_never_panic_and_decode_only_whole_cores() -> common::TestResu
     for _ in 0..20_000 {
         let len = random.below(400);
         let payload = random.bytes(len);
-        assert_whole_cores_only(&mut decoder, &payload);
+        assert_whole_cores_only(&mut decoder, &payload)?;
     }
     Ok(())
 }
@@ -321,7 +322,7 @@ fn every_header_octet_at_every_length_decodes_only_whole_cores() -> common::Test
         for len in 0..=170 {
             let mut payload = vec![header];
             payload.extend(random.bytes(len));
-            assert_whole_cores_only(&mut decoder, &payload);
+            assert_whole_cores_only(&mut decoder, &payload)?;
         }
     }
     Ok(())
@@ -336,7 +337,7 @@ fn every_truncation_of_a_packet_decodes_only_whole_cores() -> common::TestResult
         let mut packet = vec![0x70 | ft];
         packet.extend(random.bytes(3 * octets + 6));
         for cut in 0..=packet.len() {
-            assert_whole_cores_only(&mut decoder, &packet[..cut]);
+            assert_whole_cores_only(&mut decoder, &packet[..cut])?;
             let body = cut.saturating_sub(1);
             let expected_frames = body / octets;
             let mut pcm: Vec<i16> = Vec::new();
@@ -365,7 +366,7 @@ fn a_packet_of_the_largest_udp_payload_decodes_only_whole_cores() -> common::Tes
     for ft in 0..=15u8 {
         let mut payload = vec![ft];
         payload.extend(random.bytes(65_506));
-        assert_whole_cores_only(&mut decoder, &payload);
+        assert_whole_cores_only(&mut decoder, &payload)?;
     }
     // FT 0: 3,275 frames of 20 octets and a 6-octet SID.
     let mut pcm: Vec<i16> = Vec::new();

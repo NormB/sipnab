@@ -475,7 +475,7 @@ two RFCs or from a measurement on the vectors.
 ### What is assumed
 
 - RTP carries the G.729.1 bits in their bitstream order, most significant
-  bit of each octet first, the packing RFC 3551 section 4.5.6 gives G.729.
+  bit of each octet first, the packing [RFC 3551 section 4.5.6](https://www.rfc-editor.org/rfc/rfc3551.html#section-4.5.6) gives G.729.
   RFC 4749 calls the core layer "bitstream compatible" with G.729 and
   defines the frame sizes in octets; the measurements above are on G.192
   bits packed that way. No RTP capture of G.729.1 was available to check

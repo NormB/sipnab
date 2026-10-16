@@ -1239,7 +1239,7 @@ pub struct G729Stream {
 
 #[cfg(feature = "g729")]
 impl G729Stream {
-    /// One payload, decoded: RFC 3551 section 4.5.6 frames for G.729, the
+    /// One payload, decoded: [RFC 3551 section 4.5.6](https://www.rfc-editor.org/rfc/rfc3551.html#section-4.5.6) frames for G.729, the
     /// core layer of RFC 4749 frames for G.729.1.
     fn decode(&mut self, payload: &[u8]) -> Result<Vec<i16>> {
         let mut pcm = Vec::new();

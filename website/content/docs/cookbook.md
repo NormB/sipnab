@@ -431,7 +431,7 @@ The first command should print a diagnosis object like:
 
 ## Filter for the five things you look for most
 
-The filter DSL has 43 fields and 8 operators. These five cover most operational triage:
+The filter DSL has 42 fields and 8 operators. These five cover most operational triage:
 
 Slow setup. This is every dialog whose post-dial delay (PDD) exceeded 3 seconds.
 PDD is the time from the INVITE to the first `180 Ringing` or `183 Session Progress`:

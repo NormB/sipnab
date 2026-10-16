@@ -2,7 +2,7 @@
 //! The G.729 family: which member a codec name is, and what sipnab says about
 //! the audio it decodes from each.
 //!
-//! - **G.729** (`G729`, static payload type 18, RFC 3551 section 4.5.6), with
+//! - **G.729** (`G729`, static payload type 18, [RFC 3551 section 4.5.6](https://www.rfc-editor.org/rfc/rfc3551.html#section-4.5.6)), with
 //!   its Annexes A and B, decodes in full with the `g729` crate.
 //! - **G.729.1** (`G7291`, a dynamic payload type, RFC 4749 and RFC 5459)
 //!   decodes its core layer only: the first 20 octets of each 20 ms frame are
@@ -125,27 +125,30 @@ mod tests {
         use super::super::*;
         use g729::g7291::Rate;
 
-        fn rate(ft: u8) -> Rate {
-            Rate::from_ft(ft).unwrap_or_else(|| panic!("FT {ft} is a rate"))
+        type TestResult = Result<(), Box<dyn std::error::Error>>;
+
+        fn rate(ft: u8) -> Result<Rate, String> {
+            Rate::from_ft(ft).ok_or_else(|| format!("FT {ft} is not a rate"))
         }
 
         /// The rates come back once each, lowest first, in kbit/s.
         #[test]
-        fn the_rates_seen_are_listed_once_lowest_first() {
+        fn the_rates_seen_are_listed_once_lowest_first() -> TestResult {
             let mut rates = G7291Rates::default();
             assert!(rates.kbps().is_empty());
             for ft in [11, 0, 11, 1, 0] {
-                rates.record(rate(ft));
+                rates.record(rate(ft)?);
             }
             assert_eq!(rates.kbps(), [8, 12, 32]);
+            Ok(())
         }
 
         /// The caveat says what the audio is, names the bit rates, and says
         /// what is not decoded.
         #[test]
-        fn the_caveat_names_the_core_layer_and_the_bit_rates() {
+        fn the_caveat_names_the_core_layer_and_the_bit_rates() -> TestResult {
             let mut rates = G7291Rates::default();
-            rates.record(rate(11));
+            rates.record(rate(11)?);
             let one = g7291_caveat(&rates);
             assert_eq!(
                 one,
@@ -154,8 +157,8 @@ mod tests {
                  8 kbit/s (narrowband enhancement and wideband) are not decoded, so this is \
                  not the audio a G.729.1 decoder produces"
             );
-            rates.record(rate(0));
-            rates.record(rate(5));
+            rates.record(rate(0)?);
+            rates.record(rate(5)?);
             assert!(
                 g7291_caveat(&rates).contains("sent at 8, 20 and 32 kbit/s;"),
                 "{}",
@@ -166,6 +169,7 @@ mod tests {
                 "{}",
                 g7291_caveat(&G7291Rates::default())
             );
+            Ok(())
         }
     }
 }
