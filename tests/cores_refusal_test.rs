@@ -65,7 +65,6 @@ const IGNORED: &[&[&str]] = &[
     &["--sandbox", "best-effort"],
     &["--seccomp", "log"],
     &["--chroot", "/nonexistent"],
-    &["--user", "nobody"],
 ];
 
 #[test]

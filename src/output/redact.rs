@@ -2083,7 +2083,9 @@ mod tests {
         let out = p.redactor().host("[2001:db8::1]:5060");
         assert!(out.starts_with('['), "{out}");
         assert!(out.ends_with("]:5060"), "{out}");
-        assert!(!out.contains("db8"), "{out}");
+        // The original prefix, not the bare `db8`: the pseudonym is random hex
+        // under a per-process test key and contains `db8` in about 1 run in 140.
+        assert!(!out.contains("2001:db8"), "{out}");
         Ok(())
     }
 

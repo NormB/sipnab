@@ -1363,27 +1363,78 @@ fn cores_unsupported_flags(cli: &Cli, config: &Config) -> Vec<&'static str> {
             "--seccomp",
         ),
         (effective_chroot(cli, config).is_some(), "--chroot"),
-        (effective_user(cli, config).is_some(), "--user"),
     ]
     .into_iter()
     .filter_map(|(asked, flag)| asked.then_some(flag))
     .collect()
 }
 
-/// The refusal for a `--cores` file run started as root, or `None`.
-///
-/// The parallel reader opens its files from worker threads and never reaches
-/// the privilege drop the single-core read makes after opening its input, so
-/// as root it would read the whole capture as root. Offline analysis needs no
-/// root; `--no-priv-drop` is how an operator says to stay root on purpose.
-fn cores_as_root_refusal(cores_file: bool, root: bool, no_priv_drop: bool) -> Option<String> {
-    (cores_file && root && !no_priv_drop).then(|| {
-        "--cores reads the capture without dropping root privileges, which the \
-         single-core read drops after opening its input. Run it as an ordinary \
-         user (reading a capture file needs no root), drop --cores, or pass \
-         --no-priv-drop to stay root on purpose."
-            .to_string()
+/// Descriptors a `--cores` run keeps free beside the files it opens up front:
+/// the standard streams, the log, the workers' channels and the outputs.
+const CORES_FD_RESERVE: usize = 64;
+
+/// The refusal for a set of `files` that will not fit under the descriptor
+/// limit `soft_limit` once opened up front, or `None`.
+fn cores_fd_budget_refusal(files: usize, soft_limit: u64) -> Option<String> {
+    let room = usize::try_from(soft_limit)
+        .unwrap_or(usize::MAX)
+        .saturating_sub(CORES_FD_RESERVE);
+    (files > room).then(|| {
+        format!(
+            "--cores opens all {files} input file(s) before dropping root privileges, \
+             and this process may hold {soft_limit} open files. Raise the limit \
+             (ulimit -n), read fewer files per run, or run as an ordinary user, \
+             which opens each file when it is read."
+        )
     })
+}
+
+/// The soft limit on open files for this process.
+fn open_file_soft_limit() -> u64 {
+    let mut limit = libc::rlimit {
+        rlim_cur: 0,
+        rlim_max: 0,
+    };
+    // SAFETY: getrlimit writes only the struct it is given and has no other
+    // effect; the struct is a valid, initialized local.
+    if unsafe { libc::getrlimit(libc::RLIMIT_NOFILE, &mut limit) } == 0 {
+        limit.rlim_cur
+    } else {
+        u64::MAX
+    }
+}
+
+/// Open a `--cores` run's input and drop root privileges, in that order.
+///
+/// The single-core read opens its input while privileged and then drops to
+/// `--user` (or `nobody`). The parallel reader opens its files from reader
+/// threads, so a run that will drop opens the whole set first, drops, and
+/// reads from those handles. A run that will not drop (not root, or
+/// `--no-priv-drop`) returns `None` and reads each file by path, as before.
+///
+/// # Errors
+///
+/// The set does not fit under the open-file limit (exit 2), the drop failed
+/// (exit 1), or an output is not writable by the user the run dropped to.
+pub fn prepare_cores_inputs(
+    cli: &Cli,
+    config: &Config,
+    paths: &[std::path::PathBuf],
+    may_map: bool,
+) -> Result<Option<crate::parallel::PreOpenedSet>, PlanError> {
+    let user = effective_user(cli, config);
+    let no_priv_drop = cli.no_priv_drop(config);
+    if privilege::drop_is_skipped(user, no_priv_drop, privilege::is_root()) {
+        return Ok(None);
+    }
+    if let Some(refusal) = cores_fd_budget_refusal(paths.len(), open_file_soft_limit()) {
+        return Err(PlanError::arg(refusal));
+    }
+    let set = crate::parallel::pre_open_set(paths, may_map);
+    privilege::drop_privileges(user, no_priv_drop)
+        .map_err(|e| PlanError::new(1, format!("Failed to drop privileges: {e}")))?;
+    unwritable_output_refusal(cli)?;
+    Ok(Some(set))
 }
 
 /// Refuse `--cores N` beside an output the parallel reader cannot produce.
@@ -1413,15 +1464,6 @@ fn cores_as_root_refusal(cores_file: bool, root: bool, no_priv_drop: bool) -> Op
 ///
 /// Exits the process with code 2 when refused.
 fn refuse_cores_without_their_outputs(cli: &Cli, config: &Config) {
-    let cores_file = cli.limits_args.cores > 1 && cli.has_input() && !cli.capture_args.multi_device;
-    if let Some(refusal) = cores_as_root_refusal(
-        cores_file,
-        crate::privilege::is_root(),
-        cli.privilege_args.no_priv_drop,
-    ) {
-        tracing::error!("{refusal}");
-        crate::capture::archive::release_run_and_exit(2);
-    }
     let unsupported = cores_unsupported_flags(cli, config);
     if !unsupported.is_empty() {
         tracing::error!(
@@ -10871,28 +10913,16 @@ mod decision_tests {
     }
 
     /// The `--cores` refusal lists every per-message output asked for.
-    /// A `--cores` run reads its files without dropping root, so as root it is
-    /// refused unless the operator asked to stay root with `--no-priv-drop`;
-    /// every other combination runs.
+    /// A root `--cores` run opens its whole set before dropping privileges, one
+    /// descriptor per file, so a set that would not fit under the soft limit
+    /// (with room for the run's own descriptors) is refused before anything is
+    /// opened; one that fits runs.
     #[test]
-    fn cores_as_root_is_refused_unless_staying_root_was_asked_for() {
-        for cores_file in [false, true] {
-            for root in [false, true] {
-                for no_priv_drop in [false, true] {
-                    let refused = cores_as_root_refusal(cores_file, root, no_priv_drop).is_some();
-                    assert_eq!(
-                        refused,
-                        cores_file && root && !no_priv_drop,
-                        "cores_file={cores_file} root={root} no_priv_drop={no_priv_drop}"
-                    );
-                }
-            }
-        }
-        let msg = cores_as_root_refusal(true, true, false).unwrap_or_default();
-        assert!(
-            msg.contains("--no-priv-drop") && msg.contains("--cores"),
-            "{msg}"
-        );
+    fn a_pre_opened_set_must_fit_the_descriptor_limit() {
+        assert!(cores_fd_budget_refusal(10, 1024).is_none());
+        assert!(cores_fd_budget_refusal(1024 - CORES_FD_RESERVE, 1024).is_none());
+        let msg = cores_fd_budget_refusal(1024 - CORES_FD_RESERVE + 1, 1024).unwrap_or_default();
+        assert!(msg.contains("1024") && msg.contains("ulimit -n"), "{msg}");
     }
 
     #[test]

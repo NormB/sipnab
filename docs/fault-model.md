@@ -161,7 +161,7 @@ Audited, found sound (true-positive findings: none):
   - Atomic-flag signal handlers (`signals.rs`, tested).
   - `parking_lot` locks cannot poison.
   - Closed-channel sends checked.
-- **`unsafe`** (111 blocks outside `#[cfg(test)]`, across 28 files, the
+- **`unsafe`** (112 blocks outside `#[cfg(test)]`, across 29 files, the
   largest groups in [`src/privilege.rs`](https://github.com/NormB/sipnab/blob/main/src/privilege.rs) (17), [`src/rtp/playback.rs`](https://github.com/NormB/sipnab/blob/main/src/rtp/playback.rs) (10) and
   [`src/capture/uprobe/perf.rs`](https://github.com/NormB/sipnab/blob/main/src/capture/uprobe/perf.rs) (9)):
   - libc and other FFI calls, with RAII/Drop-guarded fd ops.

@@ -12,7 +12,9 @@ entry that carries them.
 
 ### Fixed
 
-- **An offline `--cores` run started as root exits 2 instead of reading the capture as root.** The single-core read drops privileges after opening its input; the parallel reader never did. Run it as an ordinary user, or pass `--no-priv-drop` to stay root on purpose.
+- **An offline `--cores` run started as root drops privileges, as the single-core read does.**
+  - The parallel reader opened its files from reader threads and never dropped root. A root run now opens every input file first, drops to `--user` (or `nobody`), and reads from the files it opened, so a capture only root may read still reads in full.
+  - `--user` and `[privilege] user` therefore work with `--cores`. A set larger than the open-file limit allows exits 2 and says to raise `ulimit -n`.
 - **`reconcile_orphans` reads `limit: 0` as the default page, as every other MCP list tool does.** It returned one row.
 - **`sipnab -D` shows the warnings about config keys it does not know.** Without `-N` it logged at the TUI's level, errors only, so a misspelled key printed nothing.
 - **`--help` no longer says there is no interval flag for relay statistics** (`--relay-stats-interval` exists), and no longer prints internal work-item numbers.

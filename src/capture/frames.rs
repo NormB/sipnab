@@ -82,6 +82,23 @@ impl<'a> Frames<'a> {
         }
     }
 
+    /// [`Self::open`], with a mapping of the file made in advance.
+    ///
+    /// A run that drops privileges maps its input while still privileged and
+    /// hands the mapping here, so the read does not depend on opening the path
+    /// again as the user it dropped to.
+    pub(crate) fn open_premapped(
+        cap: &'a mut pcap::Capture<pcap::Offline>,
+        premapped: Option<crate::capture::mapped::MappedPcap>,
+        path: &std::path::Path,
+        may_map: bool,
+    ) -> Self {
+        match premapped {
+            Some(mapped) if may_map => Frames::Mapped(Box::new(mapped)),
+            _ => Self::open(cap, path, may_map),
+        }
+    }
+
     /// The mapped arm for `path`, or `None` when the file will not map and
     /// libpcap must read it.
     fn try_map(path: &std::path::Path) -> Option<Self> {

@@ -176,7 +176,7 @@ You gave `--lint` with a suppression file (`{name}`, from `--lint-suppress-file`
   - transmission and servers: `--hep-send`, `--api`, `--mcp`, `--relay-compare`, `--allow-action`, `--syslog`;
   - decryption: `--srtp-keys`, `--dtls-keylog`, `--keylog` (and `--keylog-fd`, `--keylog-watch`), `--tls-key`;
   - `--replay`;
-  - confinement: `--sandbox`, `--seccomp`, and `--chroot` or `--user` whether set by the flag or by `[privilege]`.
+  - confinement: `--sandbox`, `--seccomp`, and `--chroot` whether set by the flag or by `[privilege]`.
 - sipnab refuses rather than skip them and exit 0.
 
 **What to do:** Do one of these:
@@ -186,11 +186,11 @@ You gave `--lint` with a suppression file (`{name}`, from `--lint-suppress-file`
 
 **Exit code:** 2.
 
-### `--cores reads the capture without dropping root privileges, which the single-core read drops after opening its input. Run it as an ordinary user (reading a capture file needs no root), drop --cores, or pass --no-priv-drop to stay root on purpose.`
+### `--cores opens all {files} input file(s) before dropping root privileges, and this process may hold {soft_limit} open files. Raise the limit (ulimit -n), read fewer files per run, or run as an ordinary user, which opens each file when it is read.`
 
-You started an offline `--cores` run (above 1, with `-I`) as root. The single-core read drops to `--user` (or `nobody`) after opening its input. The parallel reader does not, so it would read the whole capture as root.
+A `--cores` run started as root opens every input file before it drops to `--user` (or `nobody`), so it can still read files only root may read. That holds one open file per input, and `{files}` inputs do not fit under the process limit `{soft_limit}` with room for the run's own files.
 
-**What to do:** Run the command as an ordinary user. Reading a capture file needs no root. If the file is root-only, copy it or change its group first. Or drop `--cores`, or pass `--no-priv-drop` if staying root is what you mean.
+**What to do:** Raise the limit for the shell that starts sipnab (`ulimit -n 65536`), split the set across runs, or run as an ordinary user: then sipnab opens each file when it reads it.
 
 **Exit code:** 2.
 
