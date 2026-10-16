@@ -1450,6 +1450,36 @@ pub struct TimelineBucket {
     pub dialogs: u64,
 }
 
+/// Dialog starts bucketed into fixed-width intervals.
+///
+/// Buckets are aligned to the epoch rather than to the first dialog, so two
+/// captures of the same window produce the same bucket boundaries and can
+/// be laid side by side. Aligning to the earliest dialog would shift every
+/// boundary whenever the first call changed, which makes two runs of the
+/// same traffic incomparable.
+///
+/// Empty buckets are EMITTED. A gap is a finding -- it is what a trunk
+/// outage looks like -- and a series that silently skips it renders as
+/// continuous traffic with a shorter x-axis.
+///
+/// The shared bucketing rule, so the `timeline` tool and the REST
+/// `/v1/timeline` route cannot disagree; this surface names the interval
+/// width on each row. Takes the store rather than locking it, so the tool can
+/// build the rows under the same guards it stamps the capture identity under.
+pub(crate) fn timeline_rows(
+    ds: &crate::sip::dialog_store::DialogStore,
+    width_seconds: u64,
+) -> Vec<TimelineBucket> {
+    ds.timeline_buckets(width_seconds)
+        .into_iter()
+        .map(|(start, dialogs)| TimelineBucket {
+            start,
+            bucket_seconds: width_seconds,
+            dialogs,
+        })
+        .collect()
+}
+
 /// Filter and pagination parameters for `list_dialogs`.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
 #[schemars(crate = "rmcp::schemars")]
@@ -1908,6 +1938,8 @@ pub struct TriageResponse {
     /// a vendor equivalent). Omitted, never null, when none did.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub termination: Option<crate::sip::termination::Termination>,
+    /// Which capture this answer came from, and which revision of its stores.
+    pub capture_identity: crate::provenance::CaptureEtag,
 }
 
 #[derive(Debug, Clone, Serialize, JsonSchema)]
@@ -3273,6 +3305,8 @@ pub struct FindingsPage {
     /// say. An empty `findings` beside an entry here means "could not tell",
     /// not "nothing tripped".
     pub observation_gaps: Vec<ObservationGapJson>,
+    /// Which capture this answer came from, and which revision of its stores.
+    pub capture_identity: crate::provenance::CaptureEtag,
 }
 
 #[derive(Debug, Clone, Serialize, JsonSchema)]
@@ -4884,33 +4918,6 @@ impl SipnabMcp {
         Ok(())
     }
 
-    /// Dialog starts bucketed into fixed-width intervals.
-    ///
-    /// Buckets are aligned to the epoch rather than to the first dialog, so two
-    /// captures of the same window produce the same bucket boundaries and can
-    /// be laid side by side. Aligning to the earliest dialog would shift every
-    /// boundary whenever the first call changed, which makes two runs of the
-    /// same traffic incomparable.
-    ///
-    /// Empty buckets are EMITTED. A gap is a finding -- it is what a trunk
-    /// outage looks like -- and a series that silently skips it renders as
-    /// continuous traffic with a shorter x-axis.
-    pub(crate) fn timeline_buckets(&self, width_seconds: u64) -> Vec<TimelineBucket> {
-        // The shared bucketing rule, so this tool and the REST `/v1/timeline`
-        // route cannot disagree; this surface just names the interval width on
-        // each row.
-        self.dialog_store
-            .read()
-            .timeline_buckets(width_seconds)
-            .into_iter()
-            .map(|(start, dialogs)| TimelineBucket {
-                start,
-                bucket_seconds: width_seconds,
-                dialogs,
-            })
-            .collect()
-    }
-
     /// Build one bounded page of dialogs from a predicate over the store.
     ///
     /// The single implementation behind `list_dialogs` and `find_problems`,
@@ -5416,33 +5423,49 @@ impl SipnabMcp {
         // The loader already counts its own packets; this just asks it rather
         // than the process. With no load in flight -- the startup capture, or a
         // live interface -- the process-wide counter IS the right answer.
-        let frames_read = {
+        let (analysis, capture_identity) = {
+            // Capture lock first, stores second, all three held together — see
+            // `CaptureState`. The frame count, the two halves of the analysis
+            // and the identity stamped on it must describe one capture.
             let state = self.capture.read();
-            state
+            let frames_read = state
                 .load
                 .as_ref()
                 .map_or_else(crate::capture::captured_packets, |l| {
                     l.packets.load(std::sync::atomic::Ordering::Relaxed)
-                })
-        };
-
-        let analysis = {
-            // Dialogs then streams, the order `CaptureState` documents, so the
-            // two halves of the analysis describe one store revision.
+                });
             let ds = self.dialog_store.read();
             let ss = self.stream_store.read();
-            crate::analysis::analyze(&ds, &ss, None, frames_read)
+            let analysis = crate::analysis::analyze(&ds, &ss, None, frames_read);
+            let capture_identity = state.identity.etag(ds.generation(), ss.generation());
+            drop(ss);
+            drop(ds);
+            drop(state);
+            (analysis, capture_identity)
         };
+        let identity_value = serde_json::to_value(&capture_identity).map_err(|e| {
+            rmcp::ErrorData::internal_error(
+                format!("capture identity serialization failed: {e}"),
+                None,
+            )
+        })?;
 
         let content = if yang {
             // The same analysis, RFC 7951-encoded. The completeness envelope
             // every JSON answer carries cannot sit inside it -- RFC 7951
             // section 4 admits only module-qualified members at the top of an
             // instance document -- so `crate::mcp::completeness::stamp` puts it
-            // in a block of its own beside this one.
-            ContentBlock::json(crate::analysis::yang::to_rfc7951(&analysis).map_err(|e| {
-                rmcp::ErrorData::internal_error(format!("RFC 7951 encoding failed: {e}"), None)
-            })?)?
+            // in a block of its own beside this one. The identity cannot sit
+            // inside it either, so it opens that block and the stamp adds the
+            // envelope's two facts to it.
+            let document =
+                ContentBlock::json(crate::analysis::yang::to_rfc7951(&analysis).map_err(|e| {
+                    rmcp::ErrorData::internal_error(format!("RFC 7951 encoding failed: {e}"), None)
+                })?)?;
+            return Ok(CallToolResult::success(vec![
+                document,
+                ContentBlock::json(serde_json::json!({ "capture_identity": identity_value }))?,
+            ]));
         } else if format == ReportFormat::Json {
             // Serialized from the ANALYSIS, not re-parsed out of a rendered
             // report. `print_analysis_report_as` looks like it has a JSON arm
@@ -5455,9 +5478,13 @@ impl SipnabMcp {
             // a text blob and no indication that the structure it asked for was
             // never there. The fallback is gone with it: a serialization
             // failure here is a bug, and swallowing it is what hid this one.
-            ContentBlock::json(serde_json::to_value(&analysis).map_err(|e| {
+            let mut value = serde_json::to_value(&analysis).map_err(|e| {
                 rmcp::ErrorData::internal_error(format!("report serialization failed: {e}"), None)
-            })?)?
+            })?;
+            if let Some(obj) = value.as_object_mut() {
+                obj.insert("capture_identity".to_string(), identity_value);
+            }
+            ContentBlock::json(value)?
         } else {
             ContentBlock::text(crate::output::analysis_report::print_analysis_report_as(
                 &analysis, format,
@@ -5503,20 +5530,21 @@ impl SipnabMcp {
         // Acquire both stores, build the report fully inside the locks (the
         // report generator is sync), then drop the guards before constructing
         // the response.
-        let report: String = {
+        //
+        // Capture lock first, stores second, all three held together — see
+        // `CaptureState`. The report and the identity stamped on it must
+        // describe one capture.
+        let (report, capture_identity) = {
+            let state = self.capture.read();
             let ds = self.dialog_store.read();
-            let dialog = match ds.get(&params.call_id) {
-                Some(d) => d,
-                None => {
-                    drop(ds);
-                    return Err(errors::refuse_param(
-                        Reason::NotFound,
-                        "call_id",
-                        format!("call_id '{}' not found", params.call_id),
-                    ));
-                }
-            };
             let ss = self.stream_store.read();
+            let Some(dialog) = ds.get(&params.call_id) else {
+                return Err(errors::refuse_param(
+                    Reason::NotFound,
+                    "call_id",
+                    format!("call_id '{}' not found", params.call_id),
+                ));
+            };
             let dialog_streams: Vec<&crate::rtp::stream::RtpStream> =
                 ss.streams_for(&params.call_id).collect();
 
@@ -5535,15 +5563,24 @@ impl SipnabMcp {
                 format,
                 crate::rtp::quality::MosDelay::from_capture(&ss),
             );
+            let capture_identity = state.identity.etag(ds.generation(), ss.generation());
             drop(ss);
             drop(ds);
-            report
+            drop(state);
+            (report, capture_identity)
         };
 
         let content = if format == ReportFormat::Json {
             // Re-parse so the response is structured JSON, not a stringified blob.
             match serde_json::from_str::<serde_json::Value>(&report) {
-                Ok(v) => ContentBlock::json(v)?,
+                Ok(mut v) => {
+                    if let Some(obj) = v.as_object_mut() {
+                        let id = serde_json::to_value(&capture_identity)
+                            .map_err(|e| rmcp::ErrorData::internal_error(e.to_string(), None))?;
+                        obj.insert("capture_identity".to_string(), id);
+                    }
+                    ContentBlock::json(v)?
+                }
                 Err(_) => ContentBlock::text(report),
             }
         } else {
@@ -5705,17 +5742,18 @@ impl SipnabMcp {
         };
 
         let (mut payload, row_cursors) = {
+            // Capture lock first, stores second, all three held together — see
+            // `CaptureState`. A page and the identity stamped on it must
+            // describe one capture.
+            let state = self.capture.read();
             let ds = self.dialog_store.read();
-            let dialog = match ds.get(&params.call_id) {
-                Some(d) => d,
-                None => {
-                    drop(ds);
-                    return Err(errors::refuse_param(
-                        Reason::NotFound,
-                        "call_id",
-                        format!("call_id '{}' not found", params.call_id),
-                    ));
-                }
+            let ss = self.stream_store.read();
+            let Some(dialog) = ds.get(&params.call_id) else {
+                return Err(errors::refuse_param(
+                    Reason::NotFound,
+                    "call_id",
+                    format!("call_id '{}' not found", params.call_id),
+                ));
             };
             let total = dialog.messages.len();
             let first = start.min(total);
@@ -5745,7 +5783,10 @@ impl SipnabMcp {
                 })
                 .collect();
             let summary = super::shape::fenced_dialog_summary(dialog);
+            let capture_identity = state.identity.etag(ds.generation(), ss.generation());
+            drop(ss);
             drop(ds);
+            drop(state);
             let truncated = end < total;
             let mut payload = serde_json::json!({
                 // 2: `cursor` and `next_cursor` became the opaque string the
@@ -5763,6 +5804,7 @@ impl SipnabMcp {
                 "truncated": truncated,
                 "next_cursor": truncated.then(|| row_cursors.last().cloned()).flatten(),
                 "complete": !truncated,
+                "capture_identity": capture_identity,
             });
             if truncated && let Some(obj) = payload.as_object_mut() {
                 obj.insert(
@@ -5817,7 +5859,12 @@ impl SipnabMcp {
         Parameters(params): Parameters<GetMessageParams>,
     ) -> Result<CallToolResult, rmcp::ErrorData> {
         let parsed: serde_json::Value = {
+            // Capture lock first, stores second, all three held together — see
+            // `CaptureState`. The message and the identity stamped on it must
+            // describe one capture.
+            let state = self.capture.read();
             let ds = self.dialog_store.read();
+            let ss = self.stream_store.read();
             let dialog = ds.get(&params.call_id).ok_or_else(|| {
                 errors::refuse_param(
                     Reason::NotFound,
@@ -5840,6 +5887,15 @@ impl SipnabMcp {
             // Free-text headers fenced here, at the boundary — not in the
             // shared serializer, which also feeds `--json` on the CLI.
             super::shape::fence_message_json(&mut v, self.body_cap);
+            let capture_identity = state.identity.etag(ds.generation(), ss.generation());
+            drop(ss);
+            drop(ds);
+            drop(state);
+            if let Some(obj) = v.as_object_mut() {
+                let id = serde_json::to_value(&capture_identity)
+                    .map_err(|e| rmcp::ErrorData::internal_error(e.to_string(), None))?;
+                obj.insert("capture_identity".to_string(), id);
+            }
             v
         };
         Ok(CallToolResult::success(vec![
@@ -6540,15 +6596,29 @@ impl SipnabMcp {
             crate::security::findings::parse_query(&kinds_owned, params.since.as_deref())
                 .map_err(|e| errors::refuse(Reason::InvalidValue, e))?;
 
-        let report = {
+        let (report, capture_identity) = {
+            // Capture lock first, stores second, all three held together — see
+            // `CaptureState` — and the alert engine's read lock inside them.
+            // Nothing takes the engine's lock and then a store's, so the order
+            // cannot deadlock, and the findings and the identity stamped on
+            // them describe one capture.
+            let state = self.capture.read();
+            let ds = self.dialog_store.read();
+            let ss = self.stream_store.read();
             let guard = self.alert_engine.as_ref().map(|e| e.read());
-            crate::security::findings::build_report(
+            let report = crate::security::findings::build_report(
                 guard.as_deref(),
                 &self.armed_detections,
                 &kinds,
                 since,
                 limit,
-            )
+            );
+            let capture_identity = state.identity.etag(ds.generation(), ss.generation());
+            drop(guard);
+            drop(ss);
+            drop(ds);
+            drop(state);
+            (report, capture_identity)
         };
 
         let findings: Vec<FindingJson> = report
@@ -6591,6 +6661,7 @@ impl SipnabMcp {
                     detail: g.detail,
                 })
                 .collect(),
+            capture_identity,
         };
         Ok(CallToolResult::success(vec![
             ContentBlock::json(page)?,
@@ -7111,7 +7182,12 @@ impl SipnabMcp {
         Parameters(params): Parameters<CompareDialogsParams>,
     ) -> Result<CallToolResult, rmcp::ErrorData> {
         let payload = {
+            // Capture lock first, stores second, all three held together — see
+            // `CaptureState`. The answer and the identity stamped on it must
+            // describe one capture.
+            let state = self.capture.read();
             let ds = self.dialog_store.read();
+            let ss = self.stream_store.read();
             let a = ds.get(&params.call_id_a).ok_or_else(|| {
                 errors::refuse_param(
                     Reason::NotFound,
@@ -7148,6 +7224,7 @@ impl SipnabMcp {
                 "a": side(&cmp.a),
                 "b": side(&cmp.b),
                 "differences": cmp.differences,
+                "capture_identity": state.identity.etag(ds.generation(), ss.generation()),
             })
         };
         Ok(CallToolResult::success(vec![ContentBlock::json(payload)?]))
@@ -7167,7 +7244,12 @@ impl SipnabMcp {
         Parameters(params): Parameters<SdpTimelineParams>,
     ) -> Result<CallToolResult, rmcp::ErrorData> {
         let payload = {
+            // Capture lock first, stores second, all three held together — see
+            // `CaptureState`. The answer and the identity stamped on it must
+            // describe one capture.
+            let state = self.capture.read();
             let ds = self.dialog_store.read();
+            let ss = self.stream_store.read();
             let dialog = ds.get(&params.call_id).ok_or_else(|| {
                 errors::refuse_param(
                     Reason::NotFound,
@@ -7214,6 +7296,7 @@ impl SipnabMcp {
                 "schema_version": 1,
                 "call_id": dialog.call_id,
                 "exchanges": exchanges,
+                "capture_identity": state.identity.etag(ds.generation(), ss.generation()),
             })
         };
         Ok(CallToolResult::success(vec![
@@ -7387,7 +7470,12 @@ impl SipnabMcp {
         Parameters(params): Parameters<CallIdParams>,
     ) -> Result<CallToolResult, rmcp::ErrorData> {
         let payload = {
+            // Capture lock first, stores second, all three held together — see
+            // `CaptureState`. The answer and the identity stamped on it must
+            // describe one capture.
+            let state = self.capture.read();
             let ds = self.dialog_store.read();
+            let ss = self.stream_store.read();
             let dialog = ds.get(&params.call_id).ok_or_else(|| {
                 errors::refuse_param(
                     Reason::NotFound,
@@ -7397,7 +7485,6 @@ impl SipnabMcp {
             })?;
             let sig = crate::sip::diagnosis::diagnose_signaling(&dialog.messages);
 
-            let ss = self.stream_store.read();
             let streams: Vec<&crate::rtp::stream::RtpStream> =
                 ss.streams_for(&dialog.call_id).collect();
             let ctx = MediaContext::for_dialog(dialog, CaptureMedia::of_store(&ss));
@@ -7452,6 +7539,7 @@ impl SipnabMcp {
                     hints: media.hints,
                 },
                 termination,
+                capture_identity: state.identity.etag(ds.generation(), ss.generation()),
             }
         };
         // Through a `Value`, so the keys are written in the same (sorted)
@@ -7475,7 +7563,12 @@ impl SipnabMcp {
         Parameters(params): Parameters<CallIdParams>,
     ) -> Result<CallToolResult, rmcp::ErrorData> {
         let payload = {
+            // Capture lock first, stores second, all three held together — see
+            // `CaptureState`. The answer and the identity stamped on it must
+            // describe one capture.
+            let state = self.capture.read();
             let ds = self.dialog_store.read();
+            let ss = self.stream_store.read();
             let dialog = ds.get(&params.call_id).ok_or_else(|| {
                 errors::refuse_param(
                     Reason::NotFound,
@@ -7553,6 +7646,7 @@ impl SipnabMcp {
                 "result": negotiated,
                 "sdp_exchange_count": dialog.sdp_timeline.len(),
                 "final_status_code": dialog.final_status_code(),
+                "capture_identity": state.identity.etag(ds.generation(), ss.generation()),
             })
         };
         Ok(CallToolResult::success(vec![
@@ -7576,7 +7670,12 @@ impl SipnabMcp {
         Parameters(params): Parameters<CallIdParams>,
     ) -> Result<CallToolResult, rmcp::ErrorData> {
         let payload = {
+            // Capture lock first, stores second, all three held together — see
+            // `CaptureState`. The answer and the identity stamped on it must
+            // describe one capture.
+            let state = self.capture.read();
             let ds = self.dialog_store.read();
+            let ss = self.stream_store.read();
             let dialog = ds.get(&params.call_id).ok_or_else(|| {
                 errors::refuse_param(
                     Reason::NotFound,
@@ -7598,6 +7697,7 @@ impl SipnabMcp {
                         "call_id": dialog.call_id,
                         "applicable": false,
                         "reason": "this dialog carries no REGISTER request",
+                        "capture_identity": state.identity.etag(ds.generation(), ss.generation()),
                     }),
                 )?]));
             }
@@ -7630,6 +7730,7 @@ impl SipnabMcp {
                 "final_status_code": dialog.final_status_code(),
                 "contact_rewrite": contact_rewrite,
                 "hints": diag.hints,
+                "capture_identity": state.identity.etag(ds.generation(), ss.generation()),
             })
         };
         Ok(CallToolResult::success(vec![ContentBlock::json(payload)?]))
@@ -7692,7 +7793,12 @@ impl SipnabMcp {
         let suppressions = self.resolve_suppressions(params.suppression_file.as_ref())?;
 
         let payload = {
+            // Capture lock first, stores second, all three held together — see
+            // `CaptureState`. The answer and the identity stamped on it must
+            // describe one capture.
+            let state = self.capture.read();
             let ds = self.dialog_store.read();
+            let ss = self.stream_store.read();
             let dialog = ds.get(&params.call_id).ok_or_else(|| {
                 errors::refuse_param(
                     Reason::NotFound,
@@ -7701,7 +7807,6 @@ impl SipnabMcp {
                 )
             })?;
 
-            let ss = self.stream_store.read();
             // The projection the linter reads, built from the same
             // `streams_for` view every other per-call tool uses, so a stream
             // this server attributes to the call is a stream the linter sees.
@@ -7758,6 +7863,7 @@ impl SipnabMcp {
                     media: stream_count > 0,
                 }),
                 "rule_catalog": "docs/sip-lint-rules.md",
+                "capture_identity": state.identity.etag(ds.generation(), ss.generation()),
             })
         };
         Ok(CallToolResult::success(vec![ContentBlock::json(payload)?]))
@@ -7788,7 +7894,12 @@ impl SipnabMcp {
     ) -> Result<CallToolResult, rmcp::ErrorData> {
         let suppressions = self.resolve_suppressions(params.suppression_file.as_ref())?;
         let payload = {
+            // Capture lock first, stores second, all three held together — see
+            // `CaptureState`. The answer and the identity stamped on it must
+            // describe one capture.
+            let state = self.capture.read();
             let ds = self.dialog_store.read();
+            let ss = self.stream_store.read();
             let dialog = ds.get(&params.call_id).ok_or_else(|| {
                 errors::refuse_param(
                     Reason::NotFound,
@@ -7836,6 +7947,7 @@ impl SipnabMcp {
                 "findings_withheld": withheld_json(withheld),
                 "rules_not_evaluated": skipped_rules(LintRun::OneMessage),
                 "rule_catalog": "docs/sip-lint-rules.md",
+                "capture_identity": state.identity.etag(ds.generation(), ss.generation()),
             })
         };
         Ok(CallToolResult::success(vec![ContentBlock::json(payload)?]))
@@ -9215,6 +9327,11 @@ impl SipnabMcp {
             None => None,
         };
 
+        // Capture lock first, stores second, all three held together — see
+        // `CaptureState`. `dialogs.used` and `streams.used` count this
+        // capture's stores, so the occupancy and the identity stamped on it
+        // must describe one capture.
+        let state = self.capture.read();
         let ds = self.dialog_store.read();
         let ss = self.stream_store.read();
         // The same collector `GET /v1/runtime` calls, so the two surfaces
@@ -9227,9 +9344,11 @@ impl SipnabMcp {
             self.started_at.elapsed().as_secs(),
             crate::output::runtime::SIGNIFICANT_MEMORY_PCT,
         );
+        let mut stats = stats;
+        stats.capture_identity = Some(state.identity.etag(ds.generation(), ss.generation()));
         drop(ss);
         drop(ds);
-        let mut stats = stats;
+        drop(state);
         stats.rates = sampled;
         let value = serde_json::to_value(stats).map_err(|e| {
             rmcp::ErrorData::internal_error(format!("runtime stats did not serialize: {e}"), None)
@@ -10346,6 +10465,15 @@ impl ServerHandler for SipnabMcp {
         // point that cannot be forgotten by the next one registered.
         if let Ok(rmcp::model::CallToolResponse::Complete(complete)) = &mut result {
             super::structured::attach(complete);
+        }
+
+        // Arguments that do not deserialize come back from the SDK as a tool
+        // result marked `isError`; they are an `invalid_params` error here,
+        // like every other refusal. See `errors::sdk_argument_refusal`.
+        if let Ok(rmcp::model::CallToolResponse::Complete(complete)) = &result
+            && let Some(refusal) = errors::sdk_argument_refusal(complete)
+        {
+            result = Err(refusal);
         }
 
         // Two refusals are built inside the SDK rather than by a tool: an

@@ -658,6 +658,37 @@ fn an_existing_redaction_map_stops_a_directory_export_before_it_writes() -> Resu
     Ok(())
 }
 
+/// A run refused at startup reports the refusal, not a read that stopped early.
+///
+/// The capture opens before the privilege drop, so the reader has started
+/// when the post-drop checks refuse the run. It used to log "Read 0 packets:
+/// 0 of 1 file(s) read in full, 1 stopped early" after the refusal, which
+/// reads as a capture problem in a run that never read anything.
+#[test]
+fn a_run_refused_at_startup_prints_no_reading_summary() -> Result<(), TestError> {
+    let dir = tempfile::tempdir()?;
+    let map = dir.path().join("tokens.map");
+    std::fs::write(&map, "earlier export's table\n")?;
+    let run = sipnab(&[
+        "-N",
+        "-I",
+        SIP_CALL,
+        "--export-vcon-when",
+        "duration >= 0",
+        "--export-vcon-dir",
+        s(&dir.path().join("vcons"))?,
+        "--redact",
+        "--redact-map",
+        s(&map)?,
+    ])?;
+    assert_eq!(run.code, Some(1), "{}", run.dump());
+    assert!(run.stderr.contains("already exists"), "{}", run.dump());
+    // A small file can be read to its end before the refusal lands; that
+    // summary is true and may print. A stop the run did not have must not.
+    assert!(!run.stderr.contains("stopped early"), "{}", run.dump());
+    Ok(())
+}
+
 /// A `--redact-key-file` that cannot be read is fatal: a fresh key would make
 /// tokens that join against nothing, silently.
 #[test]

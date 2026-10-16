@@ -79,6 +79,10 @@ The example runs against
   "capture_queue_depth_packets": 0,
   "capture_backpressure_blocks_total": 0,
   "uptime_seconds": 0,
+  "capture_identity": {
+    "node": "capture-01", "instance": "12e28118df11310000ef0c-2",
+    "dialog_generation": 13, "stream_generation": 2
+  },
   "source_exhausted": true,
   "source_stopped_early": false
 }
@@ -111,6 +115,9 @@ How to read it:
   `capture_backpressure_blocks_total`, rather than reporting `0`.
 - **Read occupancy against capacity.** `dialogs.pct` and `streams.pct` near
   100 mean the store is about to evict calls.
+- **`capture_identity` names the capture `dialogs.used` and `streams.used`
+  count.** It is the identity [`capture_status`](@/docs/mcp-tools-core.md#capture-status)
+  reports, read at the same moment as the occupancy.
 
 **To get rates, pass `sample_seconds`.** Every counter above is cumulative.
 With `sample_seconds`, sipnab reads the counters twice across that window and
@@ -412,7 +419,7 @@ opt-in flags:
 // server_capabilities {}
 {
   "schema_version": 1,
-  "version": "0.5.223",
+  "version": "0.5.224",
   "features": ["api", "archive", "audio", "bpf", "g729", "hep", "mcp", "mcp-http",
                "metrics", "native", "opus", "plugins", "tls", "tui", "vcon", "wasm"],
   "can_decrypt": true,           // tls

@@ -542,6 +542,32 @@ fn schema_properties(schema: &str) -> Result<Vec<String>, TestError> {
         .collect())
 }
 
+/// Members a server door adds to a shared projection, by schema.
+///
+/// `capture_identity` names the capture a REST or MCP answer came from. The
+/// builders every door calls (`DialogJson`, `StreamJson`, `CaptureAnalysis`)
+/// do not carry it: the CLI writes them from one run and has no other capture
+/// to tell it apart from. The server adds it to its answer under the locks the
+/// answer was built with (`with_capture_identity` in `src/output/api.rs`). The
+/// census finds it in the schema and not in the struct, which is the truth,
+/// and `tests/api_capture_identity_test.rs` proves the server emits it.
+///
+/// Per schema rather than one list for all, so a `capture_identity` written
+/// into a schema whose answers never carry one is still a phantom.
+const DOOR_ADDED: &[(&str, &str)] = &[
+    ("call_report.schema.json", "capture_identity"),
+    ("stream.schema.json", "capture_identity"),
+    ("capture_analysis.schema.json", "capture_identity"),
+];
+
+/// `phantom` without the members a server door adds to `schema`'s answers.
+fn emitted_by_no_door(schema: &str, phantom: Vec<String>) -> Vec<String> {
+    phantom
+        .into_iter()
+        .filter(|p| !DOOR_ADDED.contains(&(schema, p.as_str())))
+        .collect()
+}
+
 /// The two sides of one census, as `(in code only, in schema only)`.
 fn census(fields: &[String], properties: &[String]) -> (Vec<String>, Vec<String>) {
     let code: std::collections::BTreeSet<&String> = fields.iter().collect();
@@ -604,6 +630,7 @@ fn no_schema_promises_a_field_the_code_does_not_emit() -> Result<(), TestError> 
         ),
     ] {
         let (_, phantom) = census(&struct_fields(file, name)?, &schema_properties(schema)?);
+        let phantom = emitted_by_no_door(schema, phantom);
         assert!(
             phantom.is_empty(),
             "{schema} promises {phantom:?}, which `{name}` cannot emit. A \
@@ -772,6 +799,7 @@ fn every_remaining_schema_agrees_with_the_projection_it_describes() -> Result<()
         ("src/output/json.rs", "StreamJson", "stream.schema.json"),
     ] {
         let (missing, phantom) = census(&struct_fields(file, name)?, &schema_properties(schema)?);
+        let phantom = emitted_by_no_door(schema, phantom);
         assert!(
             missing.is_empty(),
             "{schema} declares no {missing:?}, and `{name}` emits them. Every \
@@ -1078,7 +1106,11 @@ fn schema_def_properties(schema: &str, def: &str) -> Result<Vec<String>, TestErr
 /// the first day this one exists rather than after a field slips past it.
 #[test]
 fn every_capture_analysis_field_is_declared_and_nothing_else_is() -> Result<(), TestError> {
-    let root = schema_properties("capture_analysis.schema.json")?;
+    // The root only: `Finding` and `Evidence` are never stamped.
+    let root = schema_properties("capture_analysis.schema.json")?
+        .into_iter()
+        .filter(|p| !DOOR_ADDED.contains(&("capture_analysis.schema.json", p.as_str())))
+        .collect();
     for (name, declared) in [
         ("CaptureAnalysis", root),
         (

@@ -1860,7 +1860,11 @@ async fn get_correlated(
 ) -> Result<impl IntoResponse, Problem> {
     guard(&state, &headers, addr.ip())?;
 
+    // Capture lock, then dialogs, then streams -- the order `CaptureState`
+    // documents -- held until the answer and its identity are both built.
+    let capture = state.capture.as_ref().map(|c| c.read());
     let ds = state.dialog_store.read();
+    let ss = state.stream_store.read();
     // 404 an unknown Call-ID, the same answer `/v1/dialogs/{call_id}` gives, so
     // an empty-legs 200 always means "this call stands alone" and never "this
     // call is not here" — two facts a caller acts on differently.
@@ -1886,6 +1890,10 @@ async fn get_correlated(
         })
         .collect();
     let heuristic_only = !legs.is_empty() && legs.iter().all(|l| !l.identifier_match);
+    let capture_identity = capture_etag(capture.as_deref(), &ds, &ss);
+    drop(ss);
+    drop(ds);
+    drop(capture);
 
     Ok(Json(schema::Correlated {
         schema_version: 1,
@@ -1893,6 +1901,7 @@ async fn get_correlated(
         legs,
         total_matched,
         heuristic_only,
+        capture_identity,
     }))
 }
 
@@ -1940,7 +1949,11 @@ async fn get_tree(
 ) -> Result<impl IntoResponse, Problem> {
     guard(&state, &headers, addr.ip())?;
 
+    // Capture lock, then dialogs, then streams -- the order `CaptureState`
+    // documents -- held until the answer and its identity are both built.
+    let capture = state.capture.as_ref().map(|c| c.read());
     let ds = state.dialog_store.read();
+    let ss = state.stream_store.read();
     // The one walk, shared with the MCP `get_call_tree` tool. 404 an unknown
     // Call-ID, the same answer the sibling routes give.
     let tree = ds
@@ -1959,6 +1972,10 @@ async fn get_tree(
             followed: leg.followed,
         })
         .collect();
+    let capture_identity = capture_etag(capture.as_deref(), &ds, &ss);
+    drop(ss);
+    drop(ds);
+    drop(capture);
 
     Ok(Json(schema::CallTree {
         schema_version: 1,
@@ -1971,6 +1988,7 @@ async fn get_tree(
         total_messages: tree.total_messages,
         first_activity: tree.first_activity.map(|t| t.to_rfc3339()),
         last_activity: tree.last_activity.map(|t| t.to_rfc3339()),
+        capture_identity,
     }))
 }
 
@@ -2032,6 +2050,9 @@ async fn get_aggregate(
     let dsl = compile_query_filter(&state.alias_thresholds, params.filter.as_deref())?;
     let top_n = resolve_page_limit(params.top_n, state.max_rows);
 
+    // Capture lock, then dialogs, then streams -- the order `CaptureState`
+    // documents -- held until the answer and its identity are both built.
+    let capture = state.capture.as_ref().map(|c| c.read());
     let ds = state.dialog_store.read();
     let ss = state.stream_store.read();
     // `select_dialogs` applies the filter and pairs each dialog with its
@@ -2045,8 +2066,10 @@ async fn get_aggregate(
             *tally.entry(value).or_insert(0) += 1;
         }
     }
+    let capture_identity = capture_etag(capture.as_deref(), &ds, &ss);
     drop(ss);
     drop(ds);
+    drop(capture);
 
     let distinct_values = tally.len();
     let mut ordered: Vec<(String, usize)> = tally.into_iter().collect();
@@ -2067,6 +2090,7 @@ async fn get_aggregate(
         other_count,
         distinct_values,
         total_matched,
+        capture_identity,
     }))
 }
 
@@ -2120,11 +2144,14 @@ async fn get_timeline(
         ));
     }
 
+    // Capture lock, then dialogs, then streams -- the order `CaptureState`
+    // documents -- held until the answer and its identity are both built.
+    let capture = state.capture.as_ref().map(|c| c.read());
+    let ds = state.dialog_store.read();
+    let ss = state.stream_store.read();
     // The shared bucketing rule, so this route and the MCP `timeline` tool
     // agree; this surface renders the interval start as RFC 3339.
-    let buckets: Vec<schema::TimelineBucket> = state
-        .dialog_store
-        .read()
+    let buckets: Vec<schema::TimelineBucket> = ds
         .timeline_buckets(width)
         .into_iter()
         .map(|(start, dialogs)| schema::TimelineBucket {
@@ -2133,12 +2160,17 @@ async fn get_timeline(
             dialogs,
         })
         .collect();
+    let capture_identity = capture_etag(capture.as_deref(), &ds, &ss);
+    drop(ss);
+    drop(ds);
+    drop(capture);
 
     Ok(Json(schema::Timeline {
         schema_version: 1,
         returned: buckets.len(),
         bucket_seconds: width,
         buckets,
+        capture_identity,
     }))
 }
 
@@ -2208,7 +2240,11 @@ async fn get_compare(
             )
         })?;
 
+    // Capture lock, then dialogs, then streams -- the order `CaptureState`
+    // documents -- held until the answer and its identity are both built.
+    let capture = state.capture.as_ref().map(|c| c.read());
     let ds = state.dialog_store.read();
+    let ss = state.stream_store.read();
     let a = ds.get(a_id).ok_or_else(|| {
         Problem::detailed(
             StatusCode::NOT_FOUND,
@@ -2233,11 +2269,16 @@ async fn get_compare(
         methods: s.methods,
         hints: s.hints,
     };
+    let capture_identity = capture_etag(capture.as_deref(), &ds, &ss);
+    drop(ss);
+    drop(ds);
+    drop(capture);
     Ok(Json(schema::Comparison {
         schema_version: 1,
         a: side(cmp.a),
         b: side(cmp.b),
         differences: cmp.differences,
+        capture_identity,
     }))
 }
 
@@ -2296,10 +2337,17 @@ async fn get_dialogs_tail(
     // `tail_dialogs` tool, so the two surfaces page the same store the same
     // way. This surface renders each row with the same `dialog_summary` the
     // `/v1/dialogs` list uses.
+    // Capture lock, then dialogs, then streams -- the order `CaptureState`
+    // documents -- held until the answer and its identity are both built.
+    let capture = state.capture.as_ref().map(|c| c.read());
     let ds = state.dialog_store.read();
+    let ss = state.stream_store.read();
     let (page, next_cursor) = ds.tail_page(cursor.as_ref(), limit);
     let dialogs: Vec<Value> = page.iter().map(|&d| dialog_summary(d)).collect();
+    let capture_identity = capture_etag(capture.as_deref(), &ds, &ss);
+    drop(ss);
     drop(ds);
+    drop(capture);
     let returned = dialogs.len();
 
     Ok(Json(json!({
@@ -2307,6 +2355,9 @@ async fn get_dialogs_tail(
         "dialogs": dialogs,
         "next_cursor": next_cursor,
         "returned": returned,
+        // A cursor is meaningful only within one `instance`: a different one
+        // means the file was swapped and the cursor no longer indexes it.
+        "capture_identity": capture_identity,
     })))
 }
 
@@ -2406,6 +2457,9 @@ async fn get_rates(
     let dsl = compile_query_filter(&state.alias_thresholds, params.filter.as_deref())?;
     let top_n = resolve_page_limit(params.top_n, state.max_rows);
 
+    // Capture lock, then dialogs, then streams -- the order `CaptureState`
+    // documents -- held until the answer and its identity are both built.
+    let capture = state.capture.as_ref().map(|c| c.read());
     let ds = state.dialog_store.read();
     let ss = state.stream_store.read();
     let delay = crate::rtp::quality::MosDelay::from_capture(&ss);
@@ -2422,8 +2476,10 @@ async fn get_rates(
             tally.entry(value).or_default().add(item.0, &item.1, delay);
         }
     }
+    let capture_identity = capture_etag(capture.as_deref(), &ds, &ss);
     drop(ss);
     drop(ds);
+    drop(capture);
 
     let distinct_values = tally.len();
     let mut ordered: Vec<(String, crate::sip::group_metrics::GroupAccumulator)> =
@@ -2510,6 +2566,7 @@ async fn get_rates(
         other_count,
         distinct_values,
         total_matched,
+        capture_identity,
     }))
 }
 
@@ -2566,6 +2623,9 @@ async fn get_talkers(
     let dsl = compile_query_filter(&state.alias_thresholds, params.filter.as_deref())?;
     let limit = resolve_page_limit(params.limit, state.max_rows);
 
+    // Capture lock, then dialogs, then streams -- the order `CaptureState`
+    // documents -- held until the answer and its identity are both built.
+    let capture = state.capture.as_ref().map(|c| c.read());
     let ds = state.dialog_store.read();
     let ss = state.stream_store.read();
     // Same filter + selection path `/v1/aggregate` and `/v1/dialogs/rates` take.
@@ -2577,8 +2637,10 @@ async fn get_talkers(
     for item in &selection.dialogs {
         dimension.credit(item.0, &mut tally);
     }
+    let capture_identity = capture_etag(capture.as_deref(), &ds, &ss);
     drop(ss);
     drop(ds);
+    drop(capture);
 
     let distinct_talkers = tally.len();
     let mut ordered: Vec<(String, crate::sip::talkers::TalkerAccumulator)> =
@@ -2617,6 +2679,7 @@ async fn get_talkers(
         talkers,
         distinct_talkers,
         total_matched,
+        capture_identity,
     }))
 }
 
@@ -2667,6 +2730,9 @@ async fn get_endpoints(
             .map_err(|e| Problem::detailed(StatusCode::BAD_REQUEST, e))?;
     let limit = resolve_page_limit(params.limit, state.max_rows);
 
+    // Capture lock, then dialogs, then streams -- the order `CaptureState`
+    // documents -- held until the answer and its identity are both built.
+    let capture = state.capture.as_ref().map(|c| c.read());
     let ds = state.dialog_store.read();
     let ss = state.stream_store.read();
     // The scan is shared with the MCP `describe_endpoint` tool. This surface
@@ -2684,8 +2750,10 @@ async fn get_endpoints(
         .filter_map(|id| ds.get(id))
         .map(dialog_summary)
         .collect();
+    let capture_identity = capture_etag(capture.as_deref(), &ds, &ss);
     drop(ss);
     drop(ds);
+    drop(capture);
 
     let calls = json!({
         "invites": report.calls.invites,
@@ -2728,6 +2796,8 @@ async fn get_endpoints(
         "streams": streams,
         "recent_dialogs": recent_dialogs,
         "truncated": report.truncated,
+        // Which capture this description came from; see `/v1/dialogs`.
+        "capture_identity": capture_identity,
     })))
 }
 
@@ -2794,15 +2864,24 @@ async fn get_security_findings(
         .map_err(|e| Problem::detailed(StatusCode::BAD_REQUEST, e))?;
     let limit = resolve_page_limit(params.limit, state.max_rows);
 
-    let report = {
+    let (report, capture_identity) = {
+        // Capture lock first, stores second, all three held together, and the
+        // alert engine's read lock inside them -- the order MCP's
+        // `security_findings` takes. Nothing takes the engine's lock and then a
+        // store's, so the order cannot deadlock, and the findings and the
+        // identity stamped on them describe one capture.
+        let capture = state.capture.as_ref().map(|c| c.read());
+        let ds = state.dialog_store.read();
+        let ss = state.stream_store.read();
         let guard = state.alert_engine.as_ref().map(|e| e.read());
-        crate::security::findings::build_report(
+        let report = crate::security::findings::build_report(
             guard.as_deref(),
             &state.armed_detections,
             &kinds,
             since,
             limit,
-        )
+        );
+        (report, capture_etag(capture.as_deref(), &ds, &ss))
     };
 
     let findings: Vec<schema::SecurityFinding> = report
@@ -2838,6 +2917,7 @@ async fn get_security_findings(
                 detail: g.detail,
             })
             .collect(),
+        capture_identity,
     }))
 }
 
@@ -3786,15 +3866,15 @@ async fn get_lint(
 ) -> Result<impl IntoResponse, Problem> {
     guard(&state, &headers, addr.ip())?;
 
-    // DialogStore before StreamStore, the lock order the stores document.
+    // Capture lock, then dialogs, then streams -- the order `CaptureState`
+    // documents -- held until the answer and its identity are both built.
+    let capture = state.capture.as_ref().map(|c| c.read());
     let ds = state.dialog_store.read();
+    let ss = state.stream_store.read();
     let dialog = ds
         .get(&call_id)
         .ok_or_else(|| Problem::new(StatusCode::NOT_FOUND))?;
-    let media = {
-        let ss = state.stream_store.read();
-        crate::sip::lint::ObservedMedia::from_streams(ss.streams_for(&call_id))
-    };
+    let media = crate::sip::lint::ObservedMedia::from_streams(ss.streams_for(&call_id));
     // The same linter the CLI `--lint` and the MCP tool run. Media-derived rules
     // read `media`; the rest read the dialog's messages.
     let outcome = crate::sip::lint::Linter::new(crate::sip::lint::LintConfig::new())
@@ -3814,13 +3894,17 @@ async fn get_lint(
             explanation: f.explanation.clone(),
         })
         .collect();
+    let capture_identity = capture_etag(capture.as_deref(), &ds, &ss);
+    drop(ss);
     drop(ds);
+    drop(capture);
 
     Ok(Json(schema::Lint {
         schema_version: 1,
         call_id,
         finding_count: findings.len(),
         findings,
+        capture_identity,
     }))
 }
 
@@ -4257,13 +4341,17 @@ async fn list_dialogs(
     let after = parse_ts("after", params.after.as_deref())?;
     let before = parse_ts("before", params.before.as_deref())?;
 
+    // Capture lock, then dialogs, then streams -- the order `CaptureState`
+    // documents -- all held until the page and its identity are both built, so
+    // the two describe one capture at one revision.
+    let capture = state.capture.as_ref().map(|c| c.read());
     let ds = state.dialog_store.read();
+    let ss = state.stream_store.read();
     // The DSL reads media/asymmetry fields, so it is evaluated against the
     // streams too. `select_dialogs` groups streams by Call-ID once (the same
     // path `--report` and `--json-dialogs` take, so the surfaces agree), and
     // the selected Call-IDs are ANDed with `state`/`from` below.
     let dsl_selected: Option<std::collections::HashSet<String>> = dsl.as_ref().map(|expr| {
-        let ss = state.stream_store.read();
         crate::sip::dsl::select_dialogs(Some(expr), &ds, &ss)
             .dialogs
             .iter()
@@ -4321,7 +4409,10 @@ async fn list_dialogs(
         .take(limit)
         .map(|&d| dialog_summary(d))
         .collect();
+    let capture_identity = capture_etag(capture.as_deref(), &ds, &ss);
+    drop(ss);
     drop(ds);
+    drop(capture);
 
     Ok(Json(json!({
         "schema_version": 1,
@@ -4330,6 +4421,10 @@ async fn list_dialogs(
         "offset": offset,
         "limit": limit,
         "dialogs": dialogs,
+        // Which capture this page was drawn from, and at which revision. A
+        // different `instance` on the next page means the file was swapped and
+        // `offset` now indexes a different set. `null` without capture context.
+        "capture_identity": capture_identity,
     })))
 }
 
@@ -4380,12 +4475,14 @@ async fn get_dialog(
 ) -> Result<impl IntoResponse, Problem> {
     guard(&state, &headers, addr.ip())?;
 
+    // Capture lock, then dialogs, then streams, held together: the dialog and
+    // the identity stamped on it describe one capture.
+    let capture = state.capture.as_ref().map(|c| c.read());
     let ds = state.dialog_store.read();
+    let ss = state.stream_store.read();
     let dialog = ds
         .get(&call_id)
         .ok_or(Problem::new(StatusCode::NOT_FOUND))?;
-
-    let ss = state.stream_store.read();
     let streams: Vec<&crate::rtp::stream::RtpStream> = ss.streams_for(&call_id).collect();
 
     let media = MediaContext::for_dialog(dialog, CaptureMedia::of_store(&ss));
@@ -4402,12 +4499,14 @@ async fn get_dialog(
         &diagnosis,
         quality::MosDelay::from_capture(&ss),
     );
+    let capture_identity = capture_etag(capture.as_deref(), &ds, &ss);
     drop(ss);
     drop(ds);
+    drop(capture);
 
     let parsed: Value =
         serde_json::from_str(&json_str).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    Ok(Json(parsed))
+    Ok(Json(with_capture_identity(parsed, capture_identity)))
 }
 
 /// `GET /v1/dialogs/:call_id/report` — get a call report in JSON format.
@@ -4434,12 +4533,13 @@ async fn get_dialog(
     path = "/v1/dialogs/{call_id}/report",
     tag = "dialogs",
     summary = "Get a call report",
-    description = "The per-call analysis report — byte for byte the object `--call-report --json` writes, so a report fetched here and one produced offline are comparable.",
+    description = "The per-call analysis report — the object `--call-report --json` writes, so a report fetched here and one produced offline are comparable, plus the `capture_identity` naming the capture this server answered from.",
     params(("call_id" = String, Path, description = "Call-ID of the dialog, percent-encoded.")),
     security(("bearer" = [])),
     responses(
-        (status = 200, description = "The per-call analysis report — the same object \
-                                      `--call-report --json` writes.", body = schema::CallReport),
+        (status = 200, description = "The per-call analysis report — the object \
+                                      `--call-report --json` writes, plus \
+                                      `capture_identity`.", body = schema::CallReport),
         (status = 401, description = "No bearer credential, or one this server does not accept.", body = schema::ProblemJson, content_type = "application/problem+json"),
         (status = 404, description = "No dialog carries that Call-ID in this capture.", body = schema::ProblemJson, content_type = "application/problem+json"),
         (status = 500, description = "The report would not serialize.", body = schema::ProblemJson, content_type = "application/problem+json"),
@@ -4454,12 +4554,14 @@ async fn get_dialog_report(
 ) -> Result<impl IntoResponse, Problem> {
     guard(&state, &headers, addr.ip())?;
 
+    // Capture lock, then dialogs, then streams, held together: the report and
+    // the identity stamped on it describe one capture.
+    let capture = state.capture.as_ref().map(|c| c.read());
     let ds = state.dialog_store.read();
+    let ss = state.stream_store.read();
     let dialog = ds
         .get(&call_id)
         .ok_or(Problem::new(StatusCode::NOT_FOUND))?;
-
-    let ss = state.stream_store.read();
     let streams: Vec<&crate::rtp::stream::RtpStream> = ss.streams_for(&call_id).collect();
 
     let media = MediaContext::for_dialog(dialog, CaptureMedia::of_store(&ss));
@@ -4477,12 +4579,14 @@ async fn get_dialog_report(
         output::ReportFormat::Json,
         quality::MosDelay::from_capture(&ss),
     );
+    let capture_identity = capture_etag(capture.as_deref(), &ds, &ss);
     drop(ss);
     drop(ds);
+    drop(capture);
 
     let parsed: Value =
         serde_json::from_str(&report).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    Ok(Json(parsed))
+    Ok(Json(with_capture_identity(parsed, capture_identity)))
 }
 
 /// `GET /v1/dialogs/:call_id/vcon` — one observed dialog as a vCon container.
@@ -5214,7 +5318,12 @@ async fn list_streams(
     let orphaned_filter = params.orphaned;
     let mos_threshold = params.mos_below;
 
+    // Capture lock, then dialogs, then streams -- the order `CaptureState`
+    // documents -- held until the answer and its identity are both built.
+    let capture = state.capture.as_ref().map(|c| c.read());
+    let ds = state.dialog_store.read();
     let ss = state.stream_store.read();
+
     // The delay every MOS on this response is scored with — the `mos_below`
     // test below and the `mos` field of each row it admits.
     let delay = quality::MosDelay::from_capture(&ss);
@@ -5262,7 +5371,10 @@ async fn list_streams(
         .take(limit)
         .map(|&s| stream_summary(s, &ss))
         .collect();
+    let capture_identity = capture_etag(capture.as_deref(), &ds, &ss);
     drop(ss);
+    drop(ds);
+    drop(capture);
 
     Ok(Json(json!({
         "schema_version": 2,
@@ -5271,6 +5383,8 @@ async fn list_streams(
         "limit": limit,
         "ungrounded_excluded": ungrounded_excluded,
         "streams": streams,
+        // Which capture this page was drawn from; see `/v1/dialogs`.
+        "capture_identity": capture_identity,
     })))
 }
 
@@ -5322,6 +5436,10 @@ async fn get_stream(
 ) -> Result<impl IntoResponse, Problem> {
     guard(&state, &headers, addr.ip())?;
 
+    // Capture lock, then dialogs, then streams -- the order `CaptureState`
+    // documents -- held until the answer and its identity are both built.
+    let capture = state.capture.as_ref().map(|c| c.read());
+    let ds = state.dialog_store.read();
     let ss = state.stream_store.read();
     // Find stream by SSRC hex string (e.g., "0x12345678" or "12345678")
     let needle = id.strip_prefix("0x").unwrap_or(&id);
@@ -5338,11 +5456,14 @@ async fn get_stream(
         .ok_or(Problem::new(StatusCode::NOT_FOUND))?;
 
     let json_str = output::json::stream_to_json(stream, quality::MosDelay::from_capture(&ss));
+    let capture_identity = capture_etag(capture.as_deref(), &ds, &ss);
     drop(ss);
+    drop(ds);
+    drop(capture);
 
     let parsed: Value =
         serde_json::from_str(&json_str).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    Ok(Json(parsed))
+    Ok(Json(with_capture_identity(parsed, capture_identity)))
 }
 
 /// `GET /v1/report` — the whole-capture analysis report.
@@ -5417,14 +5538,17 @@ async fn get_capture_report(
         }
     };
 
-    let analysis = {
-        // Dialogs then streams, the order `CaptureState` documents and the
-        // order MCP's `get_capture_report` takes them in, so the two halves of
-        // one analysis describe one store revision -- and so the two doors can
-        // never deadlock against each other.
+    let (analysis, capture_identity) = {
+        // Capture lock, then dialogs, then streams, the order `CaptureState`
+        // documents and the order MCP's `get_capture_report` takes them in, so
+        // the two halves of one analysis and the identity stamped on it
+        // describe one store revision -- and so the two doors can never
+        // deadlock against each other.
+        let capture = state.capture.as_ref().map(|c| c.read());
         let ds = state.dialog_store.read();
         let ss = state.stream_store.read();
-        crate::analysis::analyze(&ds, &ss, None, crate::capture::captured_packets())
+        let analysis = crate::analysis::analyze(&ds, &ss, None, crate::capture::captured_packets());
+        (analysis, capture_etag(capture.as_deref(), &ds, &ss))
     };
 
     // Serialized from the ANALYSIS, not re-parsed out of a rendered report.
@@ -5450,8 +5574,12 @@ async fn get_capture_report(
         )
             .into_response());
     }
+    // `capture_identity` in sipnab's own encoding only. The RFC 7951 document
+    // above is validated by its YANG module, which declares no such leaf, so
+    // the identity there would make it invalid; MCP carries it in a separate
+    // envelope block for the same reason, and an HTTP body has no second block.
     let parsed = serde_json::to_value(&analysis).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    Ok(Json(parsed).into_response())
+    Ok(Json(with_capture_identity(parsed, capture_identity)).into_response())
 }
 
 /// Resolve a REST caller's rate window: the shared rule, narrowed to what this
@@ -5560,6 +5688,10 @@ async fn get_runtime(
         None => None,
     };
 
+    // Capture lock, then dialogs, then streams: `dialogs.used` and
+    // `streams.used` count this capture's stores, so the occupancy and the
+    // identity stamped on it must describe one capture.
+    let capture = state.capture.as_ref().map(|c| c.read());
     let ds = state.dialog_store.read();
     let ss = state.stream_store.read();
     // One collector, shared with the MCP tool, so the two surfaces cannot
@@ -5573,11 +5705,66 @@ async fn get_runtime(
         crate::output::runtime::SIGNIFICANT_MEMORY_PCT,
     );
     stats.rates = sampled;
+    stats.capture_identity = capture_etag(capture.as_deref(), &ds, &ss);
     drop(ss);
     drop(ds);
+    drop(capture);
     Ok(Json(serde_json::to_value(stats).unwrap_or_else(
         |e| json!({"error": format!("serialization failed: {e}")}),
     )))
+}
+
+/// Which capture an answer describes, at which revision of its two stores.
+///
+/// Every route that answers about the loaded capture calls this while it holds
+/// the capture lock and both store read guards its answer is built from, taken
+/// in the order `CaptureState` documents: capture, then dialogs, then streams.
+/// The answer and the identity stamped on it then describe one capture at one
+/// revision. Stamped after the guards are released, a swap or a write in
+/// between would give a page an identity it does not belong to.
+///
+/// The SAME identity MCP stamps on the tool that answers the same question, so
+/// an agent and an HTTP client polling one process can tell they are describing
+/// one capture.
+///
+/// # Arguments
+///
+/// * `capture` — the capture guard's target, `None` when this server was
+///   started without capture context.
+/// * `ds` — the dialog store, read under the guard the answer was built from.
+/// * `ss` — the stream store, likewise.
+///
+/// # Returns
+///
+/// `None` when nobody supplied a capture: the same admission `capture_status`
+/// makes, rather than an identity for a capture this server cannot describe.
+fn capture_etag(
+    capture: Option<&crate::capture::session::CaptureState>,
+    ds: &DialogStore,
+    ss: &StreamStore,
+) -> Option<crate::provenance::CaptureEtag> {
+    capture.map(|c| c.identity.etag(ds.generation(), ss.generation()))
+}
+
+/// Add `capture_identity` to an answer serialized from a shared builder.
+///
+/// For the routes whose body is the object another door also writes
+/// (`--call-report --json`, `--json-analyze`, a `--json-dialogs` dialog, a
+/// stream): the builder stays the one every door calls, and only this door
+/// adds the member that names the capture it answered from.
+///
+/// # Arguments
+///
+/// * `body` — the serialized answer; left unchanged when it is not an object.
+/// * `identity` — from [`capture_etag`], computed under the answer's guards.
+fn with_capture_identity(
+    mut body: Value,
+    identity: Option<crate::provenance::CaptureEtag>,
+) -> Value {
+    if let Some(obj) = body.as_object_mut() {
+        obj.insert("capture_identity".to_string(), json!(identity));
+    }
+    body
 }
 
 /// `GET /v1/stats` — aggregate statistics across dialogs and streams.
@@ -5676,9 +5863,7 @@ async fn get_stats(
     // generations name one moment. `None` when nobody supplied a capture --
     // the same admission `capture_status` makes, rather than an identity for a
     // capture this server cannot describe.
-    let capture_identity = capture
-        .as_ref()
-        .map(|c| c.identity.etag(ds.generation(), ss.generation()));
+    let capture_identity = capture_etag(capture.as_deref(), &ds, &ss);
     let source = crate::capture::session::CaptureContext::source_label(
         capture.as_ref().and_then(|c| c.context.as_ref()),
     );
@@ -6663,6 +6848,13 @@ pub mod schema {
         /// True when every matched leg is a timing guess rather than an
         /// identifier match, so a reader weighs the whole answer accordingly.
         pub heuristic_only: bool,
+        /// WHICH capture this answer came from, and which revision of its
+        /// stores, stamped under the locks the answer was built with. A
+        /// different `instance` from an earlier answer means a different
+        /// capture. The same identity the MCP tool answering this question
+        /// carries. `null` when nobody told this server what it is attached to.
+        #[schema(value_type = Option<CaptureIdentity>)]
+        pub capture_identity: Option<crate::provenance::CaptureEtag>,
     }
 
     /// One leg of a call tree: a dialog, and how the walk reached it. Follow
@@ -6712,6 +6904,13 @@ pub mod schema {
         pub first_activity: Option<String>,
         /// Latest leg update time in the tree, RFC 3339.
         pub last_activity: Option<String>,
+        /// WHICH capture this answer came from, and which revision of its
+        /// stores, stamped under the locks the answer was built with. A
+        /// different `instance` from an earlier answer means a different
+        /// capture. The same identity the MCP tool answering this question
+        /// carries. `null` when nobody told this server what it is attached to.
+        #[schema(value_type = Option<CaptureIdentity>)]
+        pub capture_identity: Option<crate::provenance::CaptureEtag>,
     }
 
     /// One bucket of an aggregate: a grouped value and how many dialogs fell in
@@ -6742,6 +6941,13 @@ pub mod schema {
         pub distinct_values: usize,
         /// How many dialogs the filter admitted, across all buckets.
         pub total_matched: usize,
+        /// WHICH capture this answer came from, and which revision of its
+        /// stores, stamped under the locks the answer was built with. A
+        /// different `instance` from an earlier answer means a different
+        /// capture. The same identity the MCP tool answering this question
+        /// carries. `null` when nobody told this server what it is attached to.
+        #[schema(value_type = Option<CaptureIdentity>)]
+        pub capture_identity: Option<crate::provenance::CaptureEtag>,
     }
 
     /// One RFC-conformance finding: the rule, its severity and basis, the RFC
@@ -6784,6 +6990,13 @@ pub mod schema {
         pub finding_count: usize,
         /// The findings, in the linter's own order.
         pub findings: Vec<LintFinding>,
+        /// WHICH capture this answer came from, and which revision of its
+        /// stores, stamped under the locks the answer was built with. A
+        /// different `instance` from an earlier answer means a different
+        /// capture. The same identity the MCP tool answering this question
+        /// carries. `null` when nobody told this server what it is attached to.
+        #[schema(value_type = Option<CaptureIdentity>)]
+        pub capture_identity: Option<crate::provenance::CaptureEtag>,
     }
 
     /// One place a vCon container disagrees with the vendored schema.
@@ -6839,6 +7052,13 @@ pub mod schema {
         /// The bucket width actually used, echoed because the caller may have
         /// omitted it.
         pub bucket_seconds: u64,
+        /// WHICH capture this answer came from, and which revision of its
+        /// stores, stamped under the locks the answer was built with. A
+        /// different `instance` from an earlier answer means a different
+        /// capture. The same identity the MCP tool answering this question
+        /// carries. `null` when nobody told this server what it is attached to.
+        #[schema(value_type = Option<CaptureIdentity>)]
+        pub capture_identity: Option<crate::provenance::CaptureEtag>,
     }
 
     /// One call summarized for a side-by-side comparison: the fields
@@ -6876,6 +7096,13 @@ pub mod schema {
         /// when the two calls match on all four. `hints` is reported per side
         /// but not diffed.
         pub differences: Vec<String>,
+        /// WHICH capture this answer came from, and which revision of its
+        /// stores, stamped under the locks the answer was built with. A
+        /// different `instance` from an earlier answer means a different
+        /// capture. The same identity the MCP tool answering this question
+        /// carries. `null` when nobody told this server what it is attached to.
+        #[schema(value_type = Option<CaptureIdentity>)]
+        pub capture_identity: Option<crate::provenance::CaptureEtag>,
     }
 
     /// A page of dialogs updated since a cursor, for change-tracking pollers.
@@ -6895,6 +7122,12 @@ pub mod schema {
         pub next_cursor: Option<String>,
         /// Rows in `dialogs`.
         pub returned: usize,
+        /// WHICH capture this answer came from, and which revision of its
+        /// stores, stamped under the locks the answer was built with. A
+        /// different `instance` from an earlier answer means a different
+        /// capture. The same identity the MCP tool answering this question
+        /// carries. `null` when nobody told this server what it is attached to.
+        pub capture_identity: Option<CaptureIdentity>,
     }
 
     /// The populations one rate group's figures were computed over, published so
@@ -6959,6 +7192,13 @@ pub mod schema {
         pub distinct_values: usize,
         /// How many dialogs the filter admitted, across all groups.
         pub total_matched: usize,
+        /// WHICH capture this answer came from, and which revision of its
+        /// stores, stamped under the locks the answer was built with. A
+        /// different `instance` from an earlier answer means a different
+        /// capture. The same identity the MCP tool answering this question
+        /// carries. `null` when nobody told this server what it is attached to.
+        #[schema(value_type = Option<CaptureIdentity>)]
+        pub capture_identity: Option<crate::provenance::CaptureEtag>,
     }
 
     /// One ranked talker: a participant and what it did across the dialogs it
@@ -7001,6 +7241,13 @@ pub mod schema {
         pub distinct_talkers: usize,
         /// How many dialogs the filter admitted, the share denominator.
         pub total_matched: usize,
+        /// WHICH capture this answer came from, and which revision of its
+        /// stores, stamped under the locks the answer was built with. A
+        /// different `instance` from an earlier answer means a different
+        /// capture. The same identity the MCP tool answering this question
+        /// carries. `null` when nobody told this server what it is attached to.
+        #[schema(value_type = Option<CaptureIdentity>)]
+        pub capture_identity: Option<crate::provenance::CaptureEtag>,
     }
 
     /// A `User-Agent` or `Server` banner an endpoint sent, and how often.
@@ -7106,6 +7353,12 @@ pub mod schema {
         pub recent_dialogs: Vec<DialogSummary>,
         /// True when `dialogs` exceeds what `recent_dialogs` carries.
         pub truncated: bool,
+        /// WHICH capture this answer came from, and which revision of its
+        /// stores, stamped under the locks the answer was built with. A
+        /// different `instance` from an earlier answer means a different
+        /// capture. The same identity the MCP tool answering this question
+        /// carries. `null` when nobody told this server what it is attached to.
+        pub capture_identity: Option<CaptureIdentity>,
     }
 
     /// One security finding an armed detector recorded. The `detail` is raw.
@@ -7151,6 +7404,13 @@ pub mod schema {
         /// say. An empty `findings` beside an entry here means the detector
         /// could not tell, NOT that traffic was clean.
         pub observation_gaps: Vec<SecurityObservationGap>,
+        /// WHICH capture this answer came from, and which revision of its
+        /// stores, stamped under the locks the answer was built with. A
+        /// different `instance` from an earlier answer means a different
+        /// capture. The same identity the MCP tool answering this question
+        /// carries. `null` when nobody told this server what it is attached to.
+        #[schema(value_type = Option<CaptureIdentity>)]
+        pub capture_identity: Option<crate::provenance::CaptureEtag>,
     }
 
     /// A standing statement that an armed detector cannot establish, from
@@ -7285,6 +7545,8 @@ pub mod schema {
         /// Which capture source delivered the opening message — `wire`, `hep`
         /// or `uprobe`.
         pub input_origin: Option<String>,
+        /// The labels `--tag` gave this run's dialogs. Absent when none.
+        pub tags: Option<Vec<String>>,
     }
 
     /// One row of `GET /v1/streams`.
@@ -7486,6 +7748,12 @@ pub mod schema {
         /// The `--hep-send` exporter's deliveries and failures. Present only on
         /// a run that exports.
         pub hep_export: Option<RuntimeHepExport>,
+        /// WHICH capture this answer came from, and which revision of its
+        /// stores, stamped under the locks the answer was built with. A
+        /// different `instance` from an earlier answer means a different
+        /// capture. The same identity the MCP tool answering this question
+        /// carries. `null` when nobody told this server what it is attached to.
+        pub capture_identity: Option<CaptureIdentity>,
     }
 
     /// What a `--hep-send` exporter reports about its own deliveries.
@@ -7545,6 +7813,12 @@ pub mod schema {
         pub limit: usize,
         /// The page.
         pub dialogs: Vec<DialogSummary>,
+        /// WHICH capture this answer came from, and which revision of its
+        /// stores, stamped under the locks the answer was built with. A
+        /// different `instance` from an earlier answer means a different
+        /// capture. The same identity the MCP tool answering this question
+        /// carries. `null` when nobody told this server what it is attached to.
+        pub capture_identity: Option<CaptureIdentity>,
     }
 
     /// `GET /v1/streams` — one page of stream summaries.
@@ -7564,6 +7838,12 @@ pub mod schema {
         pub ungrounded_excluded: usize,
         /// The page.
         pub streams: Vec<StreamSummary>,
+        /// WHICH capture this answer came from, and which revision of its
+        /// stores, stamped under the locks the answer was built with. A
+        /// different `instance` from an earlier answer means a different
+        /// capture. The same identity the MCP tool answering this question
+        /// carries. `null` when nobody told this server what it is attached to.
+        pub capture_identity: Option<CaptureIdentity>,
     }
 
     /// The body both doors of `/v1/persistence` answer with.
@@ -7832,6 +8112,12 @@ pub mod schema {
         pub input_origin: Option<String>,
         /// The RTP streams this dialog claims.
         pub streams: Vec<serde_json::Value>,
+        /// WHICH capture this answer came from, and which revision of its
+        /// stores, stamped under the locks the answer was built with. A
+        /// different `instance` from an earlier answer means a different
+        /// capture. The same identity the MCP tool answering this question
+        /// carries. `null` when nobody told this server what it is attached to.
+        pub capture_identity: Option<CaptureIdentity>,
     }
 
     /// `GET /v1/dialogs/{call_id}/report` — the per-call analysis report.

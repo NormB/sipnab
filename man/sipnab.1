@@ -1,7 +1,7 @@
 .\" sipnab.1 -- man page for sipnab
 .\" Copyright 2024-2026 Norm Brandinger
 .\" License: MIT OR Apache-2.0
-.TH SIPNAB 1 "2026-10-13" "sipnab 0.5.223" "User Commands"
+.TH SIPNAB 1 "2026-10-13" "sipnab 0.5.224" "User Commands"
 .SH NAME
 sipnab \- SIP & RTP capture, analysis, and security tool
 .SH SYNOPSIS
@@ -423,7 +423,7 @@ Distinct \fB\-\-group\-by\fR keys one run may retain (default 100000, the same f
 Messages \fB\-\-group\-by\fR may buffer across every group (default 200000). Config: \fB[limits] max_grouped_messages\fR.
 .TP
 \fB\-\-node\-name\fR \fINAME\fR
-Name this box reports as, on every answer it gives.
+Name this box reports as, on the answers it gives about the capture.
 .SS Dialog
 .TP
 \fB\-l\fR, \fB\-\-limit\fR \fIN\fR
@@ -442,7 +442,7 @@ How to group messages into tracked units: \fBcall\-id\fR (default, one unit per 
 Disable dialog tracking entirely (message\-only mode).
 .TP
 \fB\-\-tag\fR \fITAG\fR
-Add this label to every dialog the run records, in the dialog's \fBtags\fR (\fB\-\-json\-dialogs\fR, \fBGET /v1/dialogs/:call_id\fR). It labels; it does not filter.
+Add this label to every dialog the run records, in the dialog's \fBtags\fR (\fB\-\-json\-dialogs\fR, \fBGET /v1/dialogs\fR, \fBGET /v1/dialogs/:call_id\fR, and MCP \fBlist_dialogs\fR and \fBget_dialog\fR). It labels; it does not filter.
 .TP
 \fB\-\-leg\-correlation\-window\fR \fIMS\fR
 How far apart, in milliseconds, two legs of one call may be created and still correlate on timing alone.

@@ -1331,7 +1331,8 @@ impl SipConfig {
 pub struct CaptureConfig {
     /// Default network interface.
     pub device: Option<String>,
-    /// Name this box reports as, in `capture_identity.node` on every answer.
+    /// Name this box reports as, in `capture_identity.node` on every MCP and
+    /// REST answer about the loaded capture.
     ///
     /// Defaults to the system hostname. `--node-name` overrides this, so a
     /// deployed config can name the box while a one-off command relabels it.

@@ -48,6 +48,8 @@ pub struct TimelinePage {
     pub returned: usize,
     /// The width actually used, echoed because the caller may have omitted it.
     pub bucket_seconds: u64,
+    /// Which capture this answer came from, and which revision of its stores.
+    pub capture_identity: crate::provenance::CaptureEtag,
 }
 
 /// Parameters for `group_dialogs`.
@@ -240,12 +242,26 @@ impl SipnabMcp {
                  them at once",
             ));
         }
-        let buckets = self.timeline_buckets(width);
+        // Capture lock first, stores second, all three held together — see
+        // `CaptureState`. The series and the identity stamped on it must
+        // describe one capture.
+        let (buckets, capture_identity) = {
+            let state = self.capture.read();
+            let ds = self.dialog_store.read();
+            let ss = self.stream_store.read();
+            let buckets = crate::mcp::server::timeline_rows(&ds, width);
+            let capture_identity = state.identity.etag(ds.generation(), ss.generation());
+            drop(ss);
+            drop(ds);
+            drop(state);
+            (buckets, capture_identity)
+        };
         let page = TimelinePage {
             schema_version: 1,
             returned: buckets.len(),
             bucket_seconds: width,
             buckets,
+            capture_identity,
         };
         Ok(CallToolResult::success(vec![ContentBlock::json(page)?]))
     }
@@ -1306,7 +1322,7 @@ mod tests {
             invite_to("a", "sip:bob@example.com", at(0)?, 20000)?,
             invite_to("b", "sip:bob@example.com", at(180)?, 20002)?,
         ])?;
-        let rows = server.timeline_buckets(60);
+        let rows = crate::mcp::server::timeline_rows(&server.dialog_store.read(), 60);
         assert_eq!(
             rows.len(),
             4,
@@ -1337,7 +1353,7 @@ mod tests {
             at(offset)?,
             20000,
         )?])?;
-        let rows = server.timeline_buckets(60);
+        let rows = crate::mcp::server::timeline_rows(&server.dialog_store.read(), 60);
         assert_eq!(rows.len(), 1, "one call is one bucket: {rows:?}");
         assert_eq!(
             rows[0].start.timestamp() % 60,
@@ -1360,7 +1376,7 @@ mod tests {
     fn timeline_of_an_empty_store_is_empty() -> Result<(), TestError> {
         let server = server_of(vec![])?;
         assert!(
-            server.timeline_buckets(60).is_empty(),
+            crate::mcp::server::timeline_rows(&server.dialog_store.read(), 60).is_empty(),
             "no dialogs means no intervals to report"
         );
         Ok(())
@@ -1373,7 +1389,7 @@ mod tests {
             invite_to("a", "sip:bob@example.com", at(0)?, 20000)?,
             invite_to("b", "sip:bob@example.com", at(700)?, 20002)?,
         ])?;
-        let rows = server.timeline_buckets(300);
+        let rows = crate::mcp::server::timeline_rows(&server.dialog_store.read(), 300);
         assert!(
             rows.iter().all(|r| r.bucket_seconds == 300),
             "each row must carry the width it was built at, so a row is \

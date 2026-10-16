@@ -51,6 +51,13 @@
         "vcon"
       ],
       "description": "Which capture source delivered the message that OPENED this dialog. First, never latest: one process can capture from an interface and a HEP mirror at once, and with no BPF filter excluding the mirrored signaling ports the same message arrives from both, so a field reassigned per message would report whichever spoke last. Absent rather than null when the opening message came from no captured packet."
+    },
+    "tags": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "description": "The labels `--tag` gave this run's dialogs. Absent when the run set none."
     }
   }
 }

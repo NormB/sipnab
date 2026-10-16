@@ -1365,3 +1365,66 @@ fn the_method_breakdown_is_empty_when_the_filter_matches_nothing() -> Result<(),
     );
     Ok(())
 }
+
+/// Arguments that do not match a tool's input schema are a JSON-RPC
+/// `invalid_params` error (-32602) with `reason: invalid_arguments`, as the MCP
+/// specification lists invalid arguments among protocol errors, and as every
+/// other refusal this server makes is shaped. The SDK's message is kept.
+#[test]
+fn arguments_that_do_not_match_the_schema_are_an_invalid_params_error() -> Result<(), TestError> {
+    for (args, says) in [
+        (
+            serde_json::json!({"call_id": "1-1966@10.0.2.20", "cursor": 5}),
+            "invalid type: integer",
+        ),
+        (serde_json::json!({}), "missing field `call_id`"),
+    ] {
+        let msg = call_tool_with_args(
+            "tests/pcap-samples/sip-rtp-g711.pcap",
+            &[],
+            "get_dialog",
+            args.clone(),
+        )?;
+        assert_eq!(msg["error"]["code"], -32602, "{args}: {msg}");
+        assert_eq!(
+            msg["error"]["data"]["reason"], "invalid_arguments",
+            "{args}: {msg}"
+        );
+        let text = msg["error"]["message"].as_str().unwrap_or_default();
+        assert!(text.contains(says), "{args}: {msg}");
+        assert!(msg["result"].is_null(), "{args}: {msg}");
+    }
+    Ok(())
+}
+
+/// `--tag` labels reach the MCP dialog answers, as they reach `--json-dialogs`
+/// and `GET /v1/dialogs/{call_id}`: every `list_dialogs` row and the `dialog`
+/// of `get_dialog`.
+#[test]
+fn tag_labels_reach_list_dialogs_and_get_dialog() -> Result<(), TestError> {
+    let pcap = "tests/pcap-samples/sip-rtp-g711.pcap";
+    let tag = ["--tag", "incident-42"];
+    let list = ok_payload(&call_tool_with_args(
+        pcap,
+        &tag,
+        "list_dialogs",
+        serde_json::json!({}),
+    )?)?;
+    let rows = list["dialogs"].as_array().ok_or("no dialogs")?;
+    assert!(!rows.is_empty(), "{list}");
+    for row in rows {
+        assert_eq!(row["tags"], serde_json::json!(["incident-42"]), "{row}");
+    }
+    let one = ok_payload(&call_tool_with_args(
+        pcap,
+        &tag,
+        "get_dialog",
+        serde_json::json!({"call_id": "1-1966@10.0.2.20"}),
+    )?)?;
+    assert_eq!(
+        one["dialog"]["tags"],
+        serde_json::json!(["incident-42"]),
+        "{one}"
+    );
+    Ok(())
+}

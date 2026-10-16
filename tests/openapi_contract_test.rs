@@ -1093,6 +1093,7 @@ fn the_dialog_summary_component_declares_exactly_what_the_projection_emits() -> 
         },
         frame: Some("capture.pcap#41@6f3a1c02b8d4e795".to_string()),
         input_origin: Some("wire".to_string()),
+        tags: vec!["incident-42".to_string()],
     };
     let emitted: BTreeSet<String> = serde_json::to_value(&every_field_present)?
         .as_object()

@@ -166,9 +166,22 @@ fn rest_serves_one_analysis_in_both_encodings() -> Result<(), TestError> {
             "{case}: the RFC 7951 body must say what it is"
         );
         let doc: Value = serde_json::from_str(&yang_resp.body)?;
+        // The plain answer names the capture it describes; the RFC 7951
+        // document cannot, because RFC 7951 section 4 admits no unqualified
+        // member at its top and the module declares no such leaf. Everything
+        // else is one analysis.
+        let mut plain_analysis = plain.json()?;
+        assert!(
+            plain_analysis["capture_identity"]["instance"].is_string(),
+            "{case}: the plain answer must name the capture it describes"
+        );
+        plain_analysis
+            .as_object_mut()
+            .ok_or("the analysis is an object")?
+            .remove("capture_identity");
         assert_eq!(
             decoded("rest", case, &doc)?,
-            plain.json()?,
+            plain_analysis,
             "{case}: the two encodings disagree"
         );
         // `json` is the default spelled out, and answers exactly as the default.
@@ -196,8 +209,9 @@ fn rest_refuses_a_format_it_does_not_serve() -> Result<(), TestError> {
 
 /// `get_capture_report {"format": "yang-json"}` is the same analysis as the
 /// default `json` answer, and the completeness envelope MCP stamps on every
-/// JSON answer arrives beside the document rather than inside it: RFC 7951
-/// section 4 admits no unqualified member at the top of an instance document.
+/// JSON answer, with the `capture_identity` naming the capture, arrives beside
+/// the document rather than inside it: RFC 7951 section 4 admits no
+/// unqualified member at the top of an instance document.
 #[test]
 fn mcp_answers_one_analysis_in_both_encodings() -> Result<(), TestError> {
     for (case, path, extra) in CASES {
@@ -219,7 +233,15 @@ fn mcp_answers_one_analysis_in_both_encodings() -> Result<(), TestError> {
                 .ok_or_else(|| format!("{case}: no envelope block beside the document: {msg}"))?,
         )?;
         assert_eq!(envelope["source_exhausted"], true, "{case}: {envelope}");
-        for key in ["source_exhausted", "source_stopped_early"] {
+        assert!(
+            envelope["capture_identity"]["instance"].is_string(),
+            "{case}: the envelope must name the capture the document describes: {envelope}"
+        );
+        for key in [
+            "source_exhausted",
+            "source_stopped_early",
+            "capture_identity",
+        ] {
             assert_eq!(
                 plain[key], envelope[key],
                 "{case}: the two answers disagree about `{key}`"

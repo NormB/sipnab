@@ -468,7 +468,10 @@ Give one, never both.
 
 Each finding names the JSON Pointer of the offending value
 (`instance_path`), the schema keyword that refused it (`keyword`) and what was
-wrong (`detail`). The response is `schema_version` 2. An empty Dialog Object
+wrong (`detail`). The response is `schema_version` 2. With `call_id` it also
+carries `capture_identity`, naming the capture sipnab exported the container
+from. With `container` it does not, because that container did not come from
+this capture. An empty Dialog Object
 `{}` is an ordinary error:
 [section 4.3 of core-04](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-04#section-4.3)
 requires a placeholder that names its type.
@@ -482,6 +485,8 @@ requires a placeholder that names its type.
   "schema_id": "https://ietf.org/vcon/schemas/unsigned-vcon.json",
   "errors": [],
   "call_id": "1-1966@10.0.2.20",
+  "capture_identity": { "node": "capture-01", "instance": "cc2cb18df0ea68adfb9c9-2",
+                        "dialog_generation": 13, "stream_generation": 2 },
   "source_exhausted": true,
   "source_stopped_early": false
 }

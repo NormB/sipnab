@@ -290,6 +290,11 @@ pub struct ValidateVconResponse {
     /// caller named one rather than supplying a document.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub call_id: Option<String>,
+    /// Which capture the exported container came from, and which revision of
+    /// its stores. Present with `call_id`; absent when the caller supplied the
+    /// container, which describes no capture this server holds.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub capture_identity: Option<crate::provenance::CaptureEtag>,
 }
 
 /// Parameters for `vcon_spool_status`.
@@ -846,6 +851,9 @@ impl SipnabMcp {
                     })?;
                 let mut response = self.validate_container(&container)?;
                 response.call_id = Some(call_id);
+                // The identity the export stamped under its own locks, so it
+                // names the capture this container was built from.
+                response.capture_identity = Some(exported.capture_identity.clone());
                 response
             }
             (None, Some(container)) => {
@@ -1190,6 +1198,7 @@ impl SipnabMcp {
             schema_id: report.schema_id,
             errors: report.errors.iter().map(finding_row).collect(),
             call_id: None,
+            capture_identity: None,
         })
     }
 }

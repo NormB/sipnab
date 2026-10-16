@@ -944,6 +944,10 @@ const PROBES: &[(&str, &str)] = &[
     ("aggregate_dialogs", r#"{"group_by":"state"}"#),
     ("group_dialogs", r#"{"by":"ua"}"#),
     ("top_talkers", r#"{"by":"ip"}"#),
+    ("timeline", r#"{}"#),
+    // The fixture's caller, so the answer describes a real endpoint rather
+    // than an empty selection.
+    ("describe_endpoint", r#"{"ip":"10.0.2.15"}"#),
     ("get_capture_report", r#"{}"#),
     ("capture_status", r#"{}"#),
     ("capture_health", r#"{"sample_seconds":1}"#),
@@ -1009,14 +1013,6 @@ const NOT_PROBED: &[(&str, &str)] = &[
         "render_ladder",
         "answers with a drawn document, not an envelope; the prose it carries \
          instead is driven by RENDERED above",
-    ),
-    (
-        "timeline",
-        "answers with an array; covered by its own test above",
-    ),
-    (
-        "describe_endpoint",
-        "needs an address the fixture happens to carry",
     ),
     (
         "open_capture",
@@ -1357,5 +1353,45 @@ fn the_mcp_tools_page_names_exactly_the_source_independent_tools() -> Result<(),
         "the paragraph says {count_word:?} tools; the code lists {}",
         code.len()
     );
+    Ok(())
+}
+
+/// Tools that read the capture and still carry no `capture_identity`, each with
+/// the reason. `capture_health`'s response is structurally free of strings, so
+/// that it cannot carry packet content, and the identity names an instance and
+/// a node.
+const WITHOUT_IDENTITY: &[(&str, &str)] = &[(
+    "capture_health",
+    "string-free by construction; see a_populated_capture_health_response_carries_no_string_value_anywhere",
+)];
+
+/// Tools excused from [`PROBES`] whose answers are still about the loaded
+/// capture, so they name it, with the arguments that make each answer.
+///
+/// `runtime_stats` is excused from the completeness stamp because its store
+/// figures are occupancy gauges rather than a population it could have read
+/// more of; but `dialogs.used` and `streams.used` count THIS capture's stores,
+/// and a reader comparing two of them must know they describe one capture.
+const IDENTITY_ONLY_PROBES: &[(&str, &str)] = &[("runtime_stats", r#"{}"#)];
+
+/// Every probed tool says WHICH capture its answer describes, so an agent can
+/// tell two answers about two different captures apart without a second call.
+#[test]
+fn every_probed_tool_names_the_capture_it_describes() -> Result<(), TestError> {
+    let mut wire = Wire::start(&sample(INTACT), &[])?;
+    wire.drain()?;
+    let call_id = wire.a_call_id()?;
+    let mut missing = Vec::new();
+    for (tool, template) in PROBES.iter().chain(IDENTITY_ONLY_PROBES) {
+        if WITHOUT_IDENTITY.iter().any(|(t, _)| t == tool) {
+            continue;
+        }
+        let args: Value = serde_json::from_str(&template.replace("{CALL}", &call_id))?;
+        let body = payload(&wire.call(tool, args)?)?;
+        if !body["capture_identity"]["instance"].is_string() {
+            missing.push(*tool);
+        }
+    }
+    assert!(missing.is_empty(), "no capture_identity on: {missing:?}");
     Ok(())
 }

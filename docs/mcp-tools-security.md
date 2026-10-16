@@ -173,6 +173,10 @@ The example runs against
   },
   "recent_dialogs": [ /* one fenced dialog summary */ ],
   "truncated": true,
+  "capture_identity": {
+    "node": "capture-01", "instance": "12e06a18df11300d36b025-2",
+    "dialog_generation": 13, "stream_generation": 2
+  },
   "source_exhausted": true,
   "source_stopped_early": false
 }
@@ -320,6 +324,8 @@ the source flags — no `hints`, no `registration_failure`:
   "call_id": "1-1966@10.0.2.20",
   "applicable": false,
   "reason": "this dialog carries no REGISTER request",
+  "capture_identity": { "node": "capture-01", "instance": "cc2cb18df0ea68adfb9c9-2",
+                        "dialog_generation": 13, "stream_generation": 2 },
   "source_exhausted": true,
   "source_stopped_early": false
 }
@@ -357,6 +363,8 @@ against
     "Call failed: 403 Forbidden.",
     "Registration rejected: 403 Forbidden. The endpoint answered an authentication challenge and the registrar refused the credentials it offered, so the fault is in the account, its password or its permission to register — none of which is a reachability problem."
   ],
+  "capture_identity": { "node": "capture-01", "instance": "cc2d618df0ea70d0788a2-2",
+                        "dialog_generation": 8, "stream_generation": 0 },
   "source_exhausted": true,
   "source_stopped_early": false
 }
@@ -547,6 +555,7 @@ entries by default.
 | `note` | string? | Present **only** when no detector runs, saying so in words. |
 | `observation_gaps` | object[] | What an armed detector says it **cannot establish** from this capture: `{ rule_name, reason, seen, unestablished, detail }`, narrowed by `kinds`. Always present, empty when there is nothing to say. See below. |
 | `schema_version` | u32 | `1` for this shape. |
+| `capture_identity` | object | Which capture answered — see [`capture_status`](mcp-tools-core.md#capture_status). |
 
 > **Read `armed_kinds` before you read `findings`.** An empty findings list
 > means "nothing tripped" only on a server that armed something. On any other
@@ -594,6 +603,8 @@ on a server started with `--digest-leak`:
   "armed_kinds": ["digest"],
   "detection_armed": true,
   "observation_gaps": [],
+  "capture_identity": { "node": "capture-01", "instance": "cc2d618df0ea70d0788a2-2",
+                        "dialog_generation": 8, "stream_generation": 0 },
   "source_exhausted": true,
   "source_stopped_early": false
 }

@@ -583,20 +583,29 @@ SDP. Then **nothing in the signaling proves the two legs are one call**.
   options.
 - sipnab only observes traffic and cannot add a header.
 
-**Not every response carries `capture_identity`.** `media_diagnostics`
-answers for one dialog and still carries it:
+**These answers carry `capture_identity`:** `list_dialogs`, `find_problems`,
+`search_messages`, `search_by_time`, `rtp_stats`, `aggregate_dialogs`,
+`group_dialogs`, `top_talkers`, `timeline`, `describe_endpoint`,
+`runtime_stats`, `get_capture_report`, `capture_status`,
+`tail_dialogs`, `await_condition`, `security_findings`, `get_dialog`,
+`get_dialog_report`, `get_message`, `get_call_tree`, `get_sdp_timeline`,
+`triage_call`, `lint_dialog`, `validate_message`, `find_correlated`,
+`check_codec_negotiation`, `diagnose_registration`, `media_diagnostics`,
+`siprec_metadata`, `compare_dialogs`, `validate_filter`, `export_vcon`,
+`validate_vcon`, `generate_wireshark_filter`, `explain_attribution`,
+`reconcile_orphans` and `evaluate_expectations`. Some cases differ:
 
-| Carries `capture_identity.node` | Does not |
+| Answer | Where the identity is |
 |---|---|
-| `capture_status`, `list_dialogs`, `tail_dialogs`, `find_correlated`, `search_messages`, `search_by_time` | `get_dialog`, `get_dialog_report`, `triage_call`, `capture_health` |
-
-So call `capture_status` once per node and hold the name. Do not expect
-every answer to carry it.
+| `capture_health` | Nowhere. Its response holds no strings, so that it cannot carry packet content. |
+| `get_capture_report` with `format: "yang-json"` | In the second content block, beside the document. [RFC 7951](https://www.rfc-editor.org/rfc/rfc7951.html) allows no other member at the top of the document. |
+| `get_capture_report` or `get_dialog_report` with `format: "markdown"` or `"text"`, and `render_ladder` | Nowhere. These answer with text, not a JSON object. |
+| `validate_vcon` with `container` | Nowhere. A container you supply did not come from this capture. With `call_id` the answer carries it. |
 
 With three servers registered, a fact such as "answered 407" needs the node
-that reported it. Per-message answers carry a `frame` pointer instead
+that reported it. Per-message answers also carry a `frame` pointer
 (`tests/pcap-samples/sip-proxy.pcap#0@a57665bcdb62f03a`), which names the
-capture the message came from rather than the node.
+capture file the message came from rather than the node.
 
 ### Choose a correlation identifier
 

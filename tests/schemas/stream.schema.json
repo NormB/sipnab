@@ -25,6 +25,18 @@
     "quality_intervals"
   ],
   "properties": {
+    "capture_identity": {
+      "type": ["object", "null"],
+      "description": "Which capture this answer came from and which revision of its stores. Present on the GET /v1/streams/{id} answer only; a stream embedded in a dialog, and the CLI output, do not carry it. null when the server was started without capture context.",
+      "additionalProperties": false,
+      "required": ["node", "instance", "dialog_generation", "stream_generation"],
+      "properties": {
+        "node": { "type": "string" },
+        "instance": { "type": "string" },
+        "dialog_generation": { "type": "integer", "minimum": 0 },
+        "stream_generation": { "type": "integer", "minimum": 0 }
+      }
+    },
     "schema_version": { "const": 1 },
     "ssrc": { "type": "string" },
     "codec": { "type": "string" },

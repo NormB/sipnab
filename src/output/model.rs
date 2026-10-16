@@ -100,6 +100,12 @@ pub struct DialogSummary {
     /// last. Omitted, never null, when the opening message carried no origin.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub input_origin: Option<String>,
+    /// The labels `--tag` gave this run's dialogs, as `--json-dialogs`
+    /// carries them. Omitted, never empty, when the run set none.
+    /// `default` keeps it out of the derived schema's `required`, as the
+    /// serializer leaves it out when empty.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tags: Vec<String>,
 }
 
 impl From<&SipDialog> for DialogSummary {
@@ -143,6 +149,7 @@ impl From<&SipDialog> for DialogSummary {
             // From the same message `frame` came from, so the two cannot name
             // different packets.
             input_origin: d.input_origin.map(|o| o.as_str().to_string()),
+            tags: d.tags.clone(),
         }
     }
 }

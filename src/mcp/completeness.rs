@@ -361,12 +361,28 @@ pub fn stamp(tool: &str, source_exhausted: bool, stopped_early: bool, result: &m
                 return;
             };
             result.content[0] = ContentBlock::text(text);
-            let mut envelope = Map::new();
+            // The tool may already have written an envelope beside the
+            // document -- `get_capture_report` puts its `capture_identity`
+            // there for the same RFC 7951 reason. The facts join it, so the
+            // answer keeps one envelope rather than two.
+            let tool_envelope = match result.content.get(1) {
+                Some(ContentBlock::Text(b)) => match serde_json::from_str::<Value>(&b.text) {
+                    Ok(Value::Object(map)) => Some(map),
+                    _ => None,
+                },
+                _ => None,
+            };
+            let joined = tool_envelope.is_some();
+            let mut envelope = tool_envelope.unwrap_or_default();
             insert_facts(&mut envelope, source_exhausted, stopped_early);
             let Ok(text) = serde_json::to_string(&Value::Object(envelope)) else {
                 return;
             };
-            result.content.push(ContentBlock::text(text));
+            if joined {
+                result.content[1] = ContentBlock::text(text);
+            } else {
+                result.content.push(ContentBlock::text(text));
+            }
         }
         Value::Object(mut map) => {
             apply(&mut map, tool, source_exhausted, stopped_early);
@@ -689,6 +705,31 @@ mod tests {
         let envelope: Value =
             serde_json::from_str(&envelope.text).map_err(|e| format!("JSON: {e:?}"))?;
         assert_eq!(envelope["source_exhausted"], Value::Bool(false));
+        assert_eq!(envelope["source_stopped_early"], Value::Bool(false));
+        Ok(())
+    }
+
+    /// When the tool already wrote an envelope beside the document (the
+    /// `capture_identity` that `get_capture_report` cannot put inside it), the
+    /// two facts join that envelope rather than following in a third block.
+    /// One envelope per answer is what a reader takes from `content[1]`.
+    #[test]
+    fn an_instance_document_envelope_written_by_the_tool_receives_the_facts()
+    -> Result<(), TestError> {
+        let mut result = CallToolResult::success(vec![
+            ContentBlock::text(r#"{"sipnab-diagnosis:capture-analysis":{"complete":true}}"#),
+            ContentBlock::text(r#"{"capture_identity":{"instance":"i"}}"#),
+        ]);
+        stamp("get_capture_report", true, false, &mut result);
+
+        assert_eq!(result.content.len(), 2, "a third block was added");
+        let ContentBlock::Text(envelope) = &result.content[1] else {
+            return Err("the envelope must stay the second block".into());
+        };
+        let envelope: Value =
+            serde_json::from_str(&envelope.text).map_err(|e| format!("JSON: {e:?}"))?;
+        assert_eq!(envelope["capture_identity"]["instance"], "i");
+        assert_eq!(envelope["source_exhausted"], Value::Bool(true));
         assert_eq!(envelope["source_stopped_early"], Value::Bool(false));
         Ok(())
     }

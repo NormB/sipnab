@@ -8,6 +8,18 @@ sipnab is pre-1.0: the public API and the CLI surface are not stable, and a
 breaking change may land in any release. Breaking changes are called out in the
 entry that carries them.
 
+## [0.5.224] - 2026-10-16
+
+### Fixed
+
+- **Every MCP and REST answer about the loaded capture names it in `capture_identity`.**
+  - 19 MCP tools and 18 REST routes that read the capture carried no identity, so an agent comparing two answers could not tell whether they described the same capture. Among them: `get_dialog`, `security_findings`, `get_capture_report`, `triage_call`, `timeline`, `describe_endpoint`, `runtime_stats`, `GET /v1/dialogs`, `GET /v1/streams` and `GET /v1/report`.
+  - Each computes the identity under the same locks as its answer, so a live capture's identity and its page describe one state. The exceptions are `capture_health`, whose answer carries no strings by design, and `hep_senders`, which reports the HEP listener rather than the capture.
+- **`--tag` labels appear on every dialog surface.** They reached `--json-dialogs` and `GET /v1/dialogs/{call_id}` but not the `GET /v1/dialogs` list rows or MCP `list_dialogs` and `get_dialog`.
+- **MCP answers arguments that do not match a tool's input schema with `invalid_params` (-32602)** and `data.reason` `"invalid_arguments"`, keeping the message that names the field. A wrong JSON type or a missing required argument returned a tool result marked `isError`.
+- **`sipnab-g729` 0.1.2: the crates.io description names the G.729.1 core layer**, which 0.1.1 added.
+- **A run refused at startup prints no reading summary.** A refusal after the capture opened, such as an existing `--redact-map`, was followed by "Read 0 packets: 0 of 1 file(s) read in full, 1 stopped early", which reads as a capture problem in a run that read nothing.
+
 ## [0.5.223] - 2026-10-16
 
 ### Added

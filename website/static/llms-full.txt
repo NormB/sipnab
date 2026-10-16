@@ -4644,7 +4644,8 @@ sipnab records a secret given on the command line as `[redacted]`. That covers:
 
 **What to look for:**
 
-- `capture.instance` is the identifier every MCP and REST answer carries.
+- `capture.instance` is the identifier every MCP and REST answer about the loaded capture carries, in `capture_identity.instance`.
+  - [MCP across an estate](mcp-estate.md#check-what-federation-cannot-prove) and [the REST reference](rest-api.md#which-capture-these-counts-came-from) list the few answers that do not carry it.
   - So it joins an artifact back to the command that made it.
 - `features` is the build, not the flags.
   - A report can miss a section because the binary lacked the Cargo feature.
@@ -7146,7 +7147,13 @@ console.log(`${dialogs.length} dialogs (${total} total)`);
       "updated_at": "2026-04-13T10:30:03Z",
       "frame": "capture.pcap#41@6f3a1c02b8d4e795"
     }
-  ]
+  ],
+  "capture_identity": {
+    "node": "capture-01",
+    "instance": "117b0818df1033d4fd2a28-2",
+    "dialog_generation": 13,
+    "stream_generation": 2
+  }
 }
 ```
 
@@ -7212,7 +7219,7 @@ That inverts a page down.
 - So the same idea reads as `null` here and as an absent key
   there.
 
-Three list-row keys drop out rather than reading null:
+Four list-row keys drop out rather than reading null:
 
 - `frame` (above).
 - `final_status_code`. It is absent, never a zero, while the dialog's INVITE, or the
@@ -7221,6 +7228,8 @@ Three list-row keys drop out rather than reading null:
   source that delivered the message that OPENED the dialog.
   - It is the source of the first message, as `frame` is, even when one
     process captures from an interface and a HEP mirror at once.
+- `tags`: the labels `--tag` gave this run's dialogs, absent when the run set
+  none.
 
 The list rows carry `from_user`/`to_user`. The single-dialog and report
 endpoints below carry `from`/`to` instead. A client that walks the list and
@@ -7366,7 +7375,13 @@ console.log(`State: ${dialog.state}, Messages: ${dialog.msg_count}`);
       "round_trip_source": "xr_voip_metrics",
       "quality_intervals": []
     }
-  ]
+  ],
+  "capture_identity": {
+    "node": "capture-01",
+    "instance": "117b0818df1033d4fd2a28-2",
+    "dialog_generation": 13,
+    "stream_generation": 2
+  }
 }
 ```
 
@@ -7643,7 +7658,13 @@ the MCP `get_dialog_report` tool or the CLI `--call-report`.
     "private_media_address": false,
     "hints": []
   },
-  "streams": []
+  "streams": [],
+  "capture_identity": {
+    "node": "capture-01",
+    "instance": "117b0818df1033d4fd2a28-2",
+    "dialog_generation": 13,
+    "stream_generation": 2
+  }
 }
 ```
 
@@ -7684,7 +7705,13 @@ curl -s -H "Authorization: Bearer $SIPNAB_API_KEY" http://127.0.0.1:8080/v1/dial
     }
   ],
   "total_matched": 1,
-  "heuristic_only": false
+  "heuristic_only": false,
+  "capture_identity": {
+    "node": "capture-01",
+    "instance": "117b0818df1033d4fd2a28-2",
+    "dialog_generation": 13,
+    "stream_generation": 2
+  }
 }
 ```
 
@@ -7740,7 +7767,13 @@ curl -s -H "Authorization: Bearer $SIPNAB_API_KEY" http://127.0.0.1:8080/v1/dial
   "heuristic_edges": 0,
   "total_messages": 12,
   "first_activity": "2026-09-15T12:00:00+00:00",
-  "last_activity": "2026-09-15T12:00:41+00:00"
+  "last_activity": "2026-09-15T12:00:41+00:00",
+  "capture_identity": {
+    "node": "capture-01",
+    "instance": "117b0818df1033d4fd2a28-2",
+    "dialog_generation": 13,
+    "stream_generation": 2
+  }
 }
 ```
 
@@ -7795,7 +7828,13 @@ curl -s -H "Authorization: Bearer $SIPNAB_API_KEY" http://127.0.0.1:8080/v1/dial
       "expected": "a Max-Forwards header on the request",
       "explanation": "A request with no Max-Forwards can loop indefinitely across proxies."
     }
-  ]
+  ],
+  "capture_identity": {
+    "node": "capture-01",
+    "instance": "117b0818df1033d4fd2a28-2",
+    "dialog_generation": 13,
+    "stream_generation": 2
+  }
 }
 ```
 
@@ -8799,7 +8838,13 @@ streams.forEach(s =>
       "mos_grounded": true,
       "mos_grounding": "published"
     }
-  ]
+  ],
+  "capture_identity": {
+    "node": "capture-01",
+    "instance": "117b0818df1033d4fd2a28-2",
+    "dialog_generation": 13,
+    "stream_generation": 2
+  }
 }
 ```
 
@@ -9167,7 +9212,13 @@ curl -s -H "Authorization: Bearer $SIPNAB_API_KEY" http://127.0.0.1:8080/v1/runt
   "capture_packets_total": 852,
   "capture_queue_depth_packets": 0,
   "capture_backpressure_blocks_total": 0,
-  "uptime_seconds": 41
+  "uptime_seconds": 41,
+  "capture_identity": {
+    "node": "capture-01",
+    "instance": "117b0818df1033d4fd2a28-2",
+    "dialog_generation": 13,
+    "stream_generation": 2
+  }
 }
 ```
 
@@ -9704,6 +9755,25 @@ sipnab reads the instance and both generations at the same moment.
 
 `null` when nobody told this server what capture it holds.
 
+**These answers carry `capture_identity`:** `GET /v1/dialogs`,
+`/v1/dialogs/{call_id}`, `/v1/dialogs/{call_id}/report`,
+`/v1/dialogs/{call_id}/correlated`, `/v1/dialogs/{call_id}/tree`,
+`/v1/dialogs/{call_id}/lint`, `/v1/dialogs/compare`, `/v1/dialogs/tail`,
+`/v1/dialogs/rates`, `/v1/streams`, `/v1/streams/{id}`, `/v1/report`,
+`/v1/stats`, `/v1/aggregate`, `/v1/timeline`, `/v1/talkers`, `/v1/endpoints`,
+`/v1/runtime` and `/v1/security/findings`.
+Each one carries the identity the MCP tool answering the same question
+carries, read under the same locks as the answer. These answers do not carry it:
+
+| Answer | Why |
+|---|---|
+| `/v1/report?format=yang-json` | RFC 7951 allows no member at the top of the document that its YANG module does not declare. Request `format=json` for the identity. |
+| `/v1/dialogs/{call_id}/vcon` | The body is the vCon container itself. MCP `export_vcon` puts the identity on the envelope around its containers. |
+| `/v1/hep/senders` | The MCP `hep_senders` tool does not carry it either: the answer is the HEP listener's sender roster, not the capture's contents. |
+| `/v1/capabilities`, `/v1/captures/compare`, `/v1/vcon/spool`, `/v1/vcon/fetch/{uuid}`, `/v1/tfps/*`, `/v1/relay/*` | The answer is not about the loaded capture: it describes the build, two files on the file root, the spool, the vCon store, the TFPS peer, or the media relay. |
+| `/v1/persistence`, `/v1/calls/live` | No MCP tool answers the same question. |
+| `/health`, `/metrics`, the audio routes | They answer text or audio, not a JSON object. |
+
 | Key | Meaning |
 |-----|---------|
 | `source` | `live`, `file`, or `unknown` |
@@ -9898,7 +9968,13 @@ curl -s -H "Authorization: Bearer $SIPNAB_API_KEY" "http://127.0.0.1:8080/v1/agg
   ],
   "other_count": 0,
   "distinct_values": 3,
-  "total_matched": 438
+  "total_matched": 438,
+  "capture_identity": {
+    "node": "capture-01",
+    "instance": "117b0818df1033d4fd2a28-2",
+    "dialog_generation": 13,
+    "stream_generation": 2
+  }
 }
 ```
 
@@ -9951,7 +10027,13 @@ curl -s -H "Authorization: Bearer $SIPNAB_API_KEY" "http://127.0.0.1:8080/v1/tim
     { "start": "2026-09-15T12:10:00+00:00", "bucket_seconds": 300, "dialogs": 51 }
   ],
   "returned": 3,
-  "bucket_seconds": 300
+  "bucket_seconds": 300,
+  "capture_identity": {
+    "node": "capture-01",
+    "instance": "117b0818df1033d4fd2a28-2",
+    "dialog_generation": 13,
+    "stream_generation": 2
+  }
 }
 ```
 
@@ -10004,7 +10086,13 @@ curl -s -H "Authorization: Bearer $SIPNAB_API_KEY" "http://127.0.0.1:8080/v1/dia
     "methods": ["INVITE"],
     "hints": ["the callee was busy"]
   },
-  "differences": ["state", "final_status_code", "msg_count", "methods"]
+  "differences": ["state", "final_status_code", "msg_count", "methods"],
+  "capture_identity": {
+    "node": "capture-01",
+    "instance": "117b0818df1033d4fd2a28-2",
+    "dialog_generation": 13,
+    "stream_generation": 2
+  }
 }
 ```
 
@@ -10053,7 +10141,13 @@ curl -s -H "Authorization: Bearer $SIPNAB_API_KEY" "http://127.0.0.1:8080/v1/dia
     { "call_id": "a@example.com", "state": "InCall", "updated_at": "2026-09-15T12:00:03Z" }
   ],
   "returned": 1,
-  "next_cursor": "2026-09-15T12:00:03Z|a@example.com"
+  "next_cursor": "2026-09-15T12:00:03Z|a@example.com",
+  "capture_identity": {
+    "node": "capture-01",
+    "instance": "117b0818df1033d4fd2a28-2",
+    "dialog_generation": 13,
+    "stream_generation": 2
+  }
 }
 ```
 
@@ -10128,7 +10222,13 @@ curl -s -H "Authorization: Bearer $SIPNAB_API_KEY" "http://127.0.0.1:8080/v1/dia
   ],
   "other_count": 0,
   "distinct_values": 1,
-  "total_matched": 120
+  "total_matched": 120,
+  "capture_identity": {
+    "node": "capture-01",
+    "instance": "117b0818df1033d4fd2a28-2",
+    "dialog_generation": 13,
+    "stream_generation": 2
+  }
 }
 ```
 
@@ -10185,7 +10285,13 @@ curl -s -H "Authorization: Bearer $SIPNAB_API_KEY" "http://127.0.0.1:8080/v1/tal
   ],
   "truncated": true,
   "distinct_talkers": 47,
-  "total_matched": 1200
+  "total_matched": 1200,
+  "capture_identity": {
+    "node": "capture-01",
+    "instance": "117b0818df1033d4fd2a28-2",
+    "dialog_generation": 13,
+    "stream_generation": 2
+  }
 }
 ```
 
@@ -10288,7 +10394,13 @@ curl -s -H "Authorization: Bearer $SIPNAB_API_KEY" "http://127.0.0.1:8080/v1/end
   "recent_dialogs": [
     { "call_id": "a1b2@203.0.113.9", "method": "INVITE", "state": "Completed" }
   ],
-  "truncated": true
+  "truncated": true,
+  "capture_identity": {
+    "node": "capture-01",
+    "instance": "117b0818df1033d4fd2a28-2",
+    "dialog_generation": 13,
+    "stream_generation": 2
+  }
 }
 ```
 
@@ -10358,7 +10470,13 @@ curl -s -H "Authorization: Bearer $SIPNAB_API_KEY" "http://127.0.0.1:8080/v1/sec
   "truncated": false,
   "armed_kinds": ["scanner"],
   "detection_armed": true,
-  "observation_gaps": []
+  "observation_gaps": [],
+  "capture_identity": {
+    "node": "capture-01",
+    "instance": "117b0818df1033d4fd2a28-2",
+    "dialog_generation": 13,
+    "stream_generation": 2
+  }
 }
 ```
 
@@ -12611,7 +12729,7 @@ sipnab -D
 line it shows the libpcap it is running, e.g.
 
 ```text
-sipnab 0.5.223 (<hash>) features: native,tui,audio,tls,hep,api,mcp,mcp-http,metrics,plugins,bpf,vcon,opus,archive,g729
+sipnab 0.5.224 (<hash>) features: native,tui,audio,tls,hep,api,mcp,mcp-http,metrics,plugins,bpf,vcon,opus,archive,g729
 libpcap version 1.10.5 (with TPACKET_V3); alternate capture backends named: none
 ```
 
@@ -18248,7 +18366,7 @@ Multiple diagnostic flags combine with OR.
 | `--group-by` | `<FIELD>` | -- | 0.3.0 | Group output by field (e.g., `call-id`, `from`, `method`) |
 | `--max-groups` | `<N>` | `100000` | 0.5.97 | Distinct `--group-by` keys one run retains. Past it sipnab refuses new keys and warns that the output is incomplete. `-l`/`--limit` bounds tracked dialogs, not this buffer. Requires `--group-by`. Config: `[limits] max_groups` |
 | `--max-grouped-messages` | `<N>` | `200000` | 0.5.97 | Messages `--group-by` buffers across every group. sipnab holds them in memory until the capture ends, because the last packet may belong to the first group. Requires `--group-by`. Config: `[limits] max_grouped_messages` |
-| `--node-name` | `<NAME>` | hostname | 0.5.81 | Name this box reports as, in `capture_identity.node` on every MCP and REST answer. Lets an agent querying several servers at once tell which one saw a given fact. Distinct from the capture instance, which changes when a different capture loads; the node name stays the same. **The default puts your hostname on the wire.** Clipped to 64 characters. sipnab refuses an empty value (exit 2). Config: `[capture] node_name` |
+| `--node-name` | `<NAME>` | hostname | 0.5.81 | Name this box reports as, in `capture_identity.node` on every MCP and REST answer about the loaded capture. The exceptions are MCP `capture_health`, the `hep_senders` tool and its REST route, a `yang-json` report body, and a vCon container served as the body of `GET /v1/dialogs/{call_id}/vcon`; [MCP across an estate](mcp-estate.md#check-what-federation-cannot-prove) and [the REST reference](rest-api.md#which-capture-these-counts-came-from) list each answer. Lets an agent querying several servers at once tell which one saw a given fact. Distinct from the capture instance, which changes when a different capture loads; the node name stays the same. **The default puts your hostname on the wire.** Clipped to 64 characters. sipnab refuses an empty value (exit 2). Config: `[capture] node_name` |
 
 **Examples**
 - `sipnab -N -I capture.pcap --no-delta-time` — print absolute times when your config file sets `[display] delta_time = true`
@@ -18320,7 +18438,7 @@ Multiple diagnostic flags combine with OR.
 | `--leg-correlation-window` | `<MS>` | `2000` | 0.5.100 | How far apart one call's two legs may start and still correlate on TIMING alone. sipnab falls back to this timing match when a B2BUA has rewritten every identifier the other correlation strategies compare. Two seconds suits a PBX that places the outbound leg at once; widen it for one that does an LNP or ENUM lookup, or walks an LCR list, first. Each correlation reports the strategy that matched. Config: `[sip] leg_correlation_window_ms` |
 | `--active-idle-window` | `<SECS>` | `3600` | 0.5.100 | Seconds a dialog may go untouched and still count toward the active-dialog and active-call gauges every surface publishes. One hour is twice the default `Session-Expires` of [RFC 4028](https://www.rfc-editor.org/rfc/rfc4028.html). Raise it where calls stay on hold longer than that, such as a contact center; a call whose BYE never arrived then also keeps counting for longer. Config: `[sip] active_idle_window_secs` |
 | `--no-dialog` | -- | off | 0.3.0 | Disable dialog tracking entirely (message-only mode) |
-| `--tag` | `<TAG>` | -- | 0.3.0 | Add this label to every dialog the run records, in the dialog's `tags` (`--json-dialogs`, `GET /v1/dialogs/:call_id`). It labels; it does not filter. |
+| `--tag` | `<TAG>` | -- | 0.3.0 | Add this label to every dialog the run records, in the dialog's `tags` (`--json-dialogs`, `GET /v1/dialogs`, `GET /v1/dialogs/:call_id`, and MCP `list_dialogs` and `get_dialog`). It labels; it does not filter. |
 
 > **`branch` counts transactions, not calls.**
 >
@@ -27907,7 +28025,7 @@ Packet capture defaults.
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
 | `device` | string | -- | Default network interface. `--device` overrides it |
-| `node_name` | string | hostname | Name this box reports as, in the `capture_identity.node` field of MCP answers such as `list_dialogs`, `rtp_stats` and `capture_status`, and of `GET /v1/stats`. Lets an agent querying several servers tell WHICH one saw a given fact. `--node-name` overrides it, so a deployed config can name the box while a one-off command relabels it. The default puts the hostname on the wire. Clipped to 64 characters. sipnab refuses an empty value (exit 1) |
+| `node_name` | string | hostname | Name this box reports as, in the `capture_identity.node` field of MCP answers such as `list_dialogs`, `get_dialog`, `triage_call` and `capture_status` ([MCP across an estate](mcp-estate.md) lists them), and of the REST answers about the loaded capture, such as `GET /v1/dialogs` and `GET /v1/stats` ([the REST reference](rest-api.md#which-capture-these-counts-came-from) lists them). Lets an agent querying several servers tell WHICH one saw a given fact. `--node-name` overrides it, so a deployed config can name the box while a one-off command relabels it. The default puts the hostname on the wire. Clipped to 64 characters. sipnab refuses an empty value (exit 1) |
 | `portrange` | string | `"5060-5061"` | SIP **signaling** port range; media is never gated by it. sipnab skips any SIP message with both ports outside the range, and a skipped message reaches no count, no dialog and no output — so this key decides how much of a capture you analyze at all. Widen it (`"1-65535"`) unless you know every port in play. `--portrange` overrides it |
 | `ws_ports` | string | unset: ports 80, 443, 8080 and 8443 | Ports carrying SIP-over-WebSocket ([RFC 7118](https://www.rfc-editor.org/rfc/rfc7118.html)), as one inclusive `"START-END"` range in the same grammar as `portrange`. Kamailio, OpenSIPS and Janus each default to WSS on a port outside the shipped set, and behind a reverse proxy sipnab sees whichever port the proxy forwards to; set the range to cover those ports, or sipnab does not see the WebRTC signaling leg. A range **replaces** the shipped set, exactly as `portrange` replaces the default signaling ports. sipnab counts the SIP-over-WebSocket it declines to unwrap and names the ports it arrived on. `--ws-portrange` overrides it |
 | `snaplen` | integer | `65535` | Snapshot length in bytes. sipnab refuses `0`, which keeps no byte of any packet, as `--snaplen` does. `--capture-profile` overrides it; `--snaplen` overrides it |
@@ -29753,7 +29871,7 @@ that's the laptop itself):
 
    ```bash
    sipnab --version
-   # sipnab 0.5.223 (...) features: native,tui,audio,tls,hep,api,mcp,mcp-http,metrics,plugins,vcon,bpf
+   # sipnab 0.5.224 (...) features: native,tui,audio,tls,hep,api,mcp,mcp-http,metrics,plugins,vcon,bpf
    # libpcap version 1.10.5 (with TPACKET_V3); alternate capture backends named: none
    ```
 
@@ -31134,7 +31252,7 @@ Then confirm the build can do what you are about to ask of it:
 ```json
 {
   "schema_version": 1,
-  "version": "0.5.223",
+  "version": "0.5.224",
   "features": ["api", "archive", "audio", "bpf", "g729", "hep", "mcp",
                "mcp-http", "metrics", "native", "opus", "plugins", "tls",
                "tui", "vcon", "wasm"],
@@ -31936,7 +32054,7 @@ client. The whole block is one pipeline.
 Expected first line of response:
 
 ```json
-{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2025-06-18","capabilities":{"completions":{},"prompts":{},"resources":{"subscribe":true},"tools":{}},"serverInfo":{"name":"sipnab","version":"0.5.223"},"instructions":"sipnab MCP server — queries captured SIP dialogs, RTP streams, diagnostics and security findings. …"}}
+{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2025-06-18","capabilities":{"completions":{},"prompts":{},"resources":{"subscribe":true},"tools":{}},"serverInfo":{"name":"sipnab","version":"0.5.224"},"instructions":"sipnab MCP server — queries captured SIP dialogs, RTP streams, diagnostics and security findings. …"}}
 ```
 
 ### Test the HTTP wire by hand
@@ -32826,20 +32944,29 @@ SDP. Then **nothing in the signaling proves the two legs are one call**.
   options.
 - sipnab only observes traffic and cannot add a header.
 
-**Not every response carries `capture_identity`.** `media_diagnostics`
-answers for one dialog and still carries it:
+**These answers carry `capture_identity`:** `list_dialogs`, `find_problems`,
+`search_messages`, `search_by_time`, `rtp_stats`, `aggregate_dialogs`,
+`group_dialogs`, `top_talkers`, `timeline`, `describe_endpoint`,
+`runtime_stats`, `get_capture_report`, `capture_status`,
+`tail_dialogs`, `await_condition`, `security_findings`, `get_dialog`,
+`get_dialog_report`, `get_message`, `get_call_tree`, `get_sdp_timeline`,
+`triage_call`, `lint_dialog`, `validate_message`, `find_correlated`,
+`check_codec_negotiation`, `diagnose_registration`, `media_diagnostics`,
+`siprec_metadata`, `compare_dialogs`, `validate_filter`, `export_vcon`,
+`validate_vcon`, `generate_wireshark_filter`, `explain_attribution`,
+`reconcile_orphans` and `evaluate_expectations`. Some cases differ:
 
-| Carries `capture_identity.node` | Does not |
+| Answer | Where the identity is |
 |---|---|
-| `capture_status`, `list_dialogs`, `tail_dialogs`, `find_correlated`, `search_messages`, `search_by_time` | `get_dialog`, `get_dialog_report`, `triage_call`, `capture_health` |
-
-So call `capture_status` once per node and hold the name. Do not expect
-every answer to carry it.
+| `capture_health` | Nowhere. Its response holds no strings, so that it cannot carry packet content. |
+| `get_capture_report` with `format: "yang-json"` | In the second content block, beside the document. [RFC 7951](https://www.rfc-editor.org/rfc/rfc7951.html) allows no other member at the top of the document. |
+| `get_capture_report` or `get_dialog_report` with `format: "markdown"` or `"text"`, and `render_ladder` | Nowhere. These answer with text, not a JSON object. |
+| `validate_vcon` with `container` | Nowhere. A container you supply did not come from this capture. With `call_id` the answer carries it. |
 
 With three servers registered, a fact such as "answered 407" needs the node
-that reported it. Per-message answers carry a `frame` pointer instead
+that reported it. Per-message answers also carry a `frame` pointer
 (`tests/pcap-samples/sip-proxy.pcap#0@a57665bcdb62f03a`), which names the
-capture the message came from rather than the node.
+capture file the message came from rather than the node.
 
 ### Choose a correlation identifier
 
@@ -33270,8 +33397,9 @@ afterwards.
 **A required parameter has no default.**
 
 - Leave one out, or send the wrong JSON type, and the tool does not run. The
-  call returns a result with `isError: true` whose text names the field, for
-  example `failed to deserialize parameters: missing field `call_id``.
+  call fails with `invalid_params` (-32602), `data.reason`
+  `"invalid_arguments"`, and a message that names the field, for example
+  ``failed to deserialize parameters: missing field `call_id` ``.
 - A value of the right type that the tool cannot use (an unknown choice, a
   range it does not accept) fails with `invalid_params` (-32602), and
   `data.reason` says which; see [Error data](#error-data).
@@ -33624,14 +33752,17 @@ sipnab omits a member that does not apply, rather than sending it as `null`.
 | `declined` | -32602 | The person asked to confirm the request (MCP elicitation) declined it. |
 | `no_data` | -32602 | The named call holds nothing of the kind asked for: no messages, no RTP streams, no request to replay. |
 | `unknown_tool` | -32602 | The tool name is not loaded on this server; `valid_values` lists the loaded names. |
-| `invalid_arguments` | -32602 | An argument this server refuses whatever its value (a password-like argument name), or a refusal the MCP SDK built without naming the argument. |
+| `invalid_arguments` | -32602 | Arguments that do not match the tool's input schema (a wrong JSON type, a missing required key), an argument this server refuses whatever its value (a password-like argument name), or a refusal the MCP SDK built without naming the argument. |
 | `at_capacity` | -32000 | `--mcp-max-concurrent` calls are already running. There is no `retry_after_ms`, because a slot frees when some running call ends and the server cannot know when that happens. |
 | `rate_limited` | -32000 | This peer used its `--mcp-rate-limit-per-peer` allowance for the current one-second window. `retry_after_ms` says when the window ends. |
 
-The MCP SDK answers some arguments with a tool result, not with a JSON-RPC
-error. These are arguments that do not match a tool's input schema at all
-(a wrong JSON type, a missing required key). The result has `isError: true`
-and the parse error as its text. So that answer carries no `data`.
+Arguments that do not match a tool's input schema at all (a wrong JSON type,
+a missing required key) fail the same way, with `invalid_arguments` and the
+parse error as the message:
+
+```json
+{"jsonrpc": "2.0", "id": 3, "error": {"code": -32602, "message": "failed to deserialize parameters: missing field `call_id`", "data": {"reason": "invalid_arguments"}}}
+```
 
 ### Response bounding
 
@@ -34003,8 +34134,8 @@ and what the retention caps discarded.
 `sipnab-diagnosis`, which `sipnab --print-yang-module` prints. The document is
 the first content block, and its one top-level member is
 `sipnab-diagnosis:capture-analysis`. RFC 7951 allows no other member there, so
-`source_exhausted` and `source_stopped_early` arrive in a second block instead
-of inside the document. `complete` inside the document still reads `false`
+`capture_identity`, `source_exhausted` and `source_stopped_early` arrive in a
+second block instead of inside the document. `complete` inside the document still reads `false`
 while the capture loads, as it does in `json`.
 The YANG section of [Output formats](output-formats.md) lists every difference
 between the two encodings.
@@ -34025,8 +34156,9 @@ No problems found in 1 dialog(s) and 0 stream(s) across 7 frame(s). Every frame 
 
 **`json` is the default and returns an OBJECT**, serialized from the analysis
 itself — `schema_version`, `findings`, `dialogs_examined`, `streams_examined`,
-`frames_read` and `complete`. It is the object `--json-analyze` prints and
-`GET /v1/report` answers, described by
+`frames_read` and `complete` — plus `capture_identity`, which names the capture
+the analysis came from. Apart from `capture_identity` it is the object
+`--json-analyze` prints and `GET /v1/report` answers, described by
 [`tests/schemas/capture_analysis.schema.json`](https://github.com/NormB/sipnab/blob/main/tests/schemas/capture_analysis.schema.json).
 It never carries `filter`, because this tool analyzes every dialog in the
 store.
@@ -34131,6 +34263,8 @@ as null** when it does not, so an absent key means "not known here":
   dialog: `wire`, `hep` or `uprobe`. Read it before you follow `frame`: a
   uprobe pointer (`uprobe:opensips/954#3`) has the same shape as a capture
   offset, and only a `wire` pointer leads to bytes in a capture file.
+- `tags` — the labels `--tag` gave this run's dialogs. Absent when the run set
+  none. `get_dialog`'s `dialog` carries it too.
 
 The example below runs against [`tests/pcap-samples/sipp-branch-scenario.pcapng`](https://github.com/NormB/sipnab/raw/main/tests/pcap-samples/sipp-branch-scenario.pcapng),
 which holds 1334 dialogs. `limit: 2` therefore reports 2 of 1334 — and says so:
@@ -34474,6 +34608,8 @@ returned by [`list_dialogs`](#list_dialogs). An unknown one fails with
     "protocol": "Q.850",
     "source_header": "Reason"
   },
+  "capture_identity": { "node": "capture-01", "instance": "cc2cb18df0ea68adfb9c9-2",
+                        "dialog_generation": 13, "stream_generation": 2 },
   "source_exhausted": true,
   "source_stopped_early": false
 }
@@ -34540,6 +34676,7 @@ Paginated dialog with full SIP messages.
 | `next_cursor` | string? | Pass back to continue. `null` on the final page. |
 | `complete` | bool | `true` when this page reaches the end of the dialog. Never `true` over a partial read of the capture. |
 | `schema_version` | u32 | `2` for this shape. |
+| `capture_identity` | object | Which capture answered — see [`capture_status`](#capture_status). |
 
 Every `messages` row carries `call_id`, `is_request`, `cseq` (`method` and
 `number`), `from`, `to`, `src`, `src_port`, `dst`, `dst_port`, `transport`,
@@ -34584,6 +34721,8 @@ The example runs against [`tests/pcap-samples/sip-rtp-g711.pcap`](https://github
   "truncated": true,
   "truncated_by": "rows",
   "next_cursor": "2016-11-26T14:52:59.666393Z|1-1966@10.0.2.20#0000000000",
+  "capture_identity": { "node": "capture-01", "instance": "cc2cb18df0ea68adfb9c9-2",
+                        "dialog_generation": 13, "stream_generation": 2 },
   "dialog": {
     "call_id": "1-1966@10.0.2.20",
     "state": "Completed",
@@ -34634,8 +34773,8 @@ original bytes.
 with `cursor` set to that `next_cursor` to continue, and stop when `complete`
 turns `true`.
 
-`cursor` is a string, passed back unchanged. An integer cursor fails with a
-tool error,
+`cursor` is a string, passed back unchanged. An integer cursor fails with
+`invalid_params` (-32602) and `data.reason` `"invalid_arguments"`:
 `` failed to deserialize parameters: invalid type: integer `1`, expected a string ``. To address one message by position, use `first_index` with
 [`get_message`](mcp-tools-signaling.md#get_message).
 
@@ -35004,6 +35143,7 @@ by sipnab, so the agent does not fetch and bucket every dialog itself.
 | `buckets` | object[] | One row per interval, oldest first. Each carries `start` (inclusive, RFC 3339), `bucket_seconds` and `dialogs`. |
 | `returned` | u64 | Rows in `buckets`, so counting the array is never necessary. |
 | `bucket_seconds` | u64 | The width actually used, echoed because you may have omitted it. |
+| `capture_identity` | object | Which capture answered — see [`capture_status`](mcp-tools-core.md#capture_status). |
 | `source_exhausted` | bool | `true` once sipnab has read the capture source to its end. |
 | `source_stopped_early` | bool | `true` when a source's read ended before the source did. |
 | `schema_version` | u32 | `1` for this shape. |
@@ -35026,6 +35166,10 @@ which holds five calls over about fifteen seconds:
   ],
   "returned": 3,
   "bucket_seconds": 5,
+  "capture_identity": {
+    "node": "capture-01", "instance": "12de3118df112f1a869f03-2",
+    "dialog_generation": 26, "stream_generation": 0
+  },
   "source_exhausted": true,
   "source_stopped_early": false
 }
@@ -35286,6 +35430,8 @@ error only for an internal failure.
   "error": "invalid filter 'state = Failed': unexpected input at position 6: '='\n  state = Failed\n        ^\nvalid operators: ==, !=, <, <=, >, >=, =~ (regex)\nsee docs/filter-dsl.md for fields, values, and diagnostic aliases",
   "total_matched": null,
   "total_dialogs": 2,
+  "capture_identity": { "node": "capture-01", "instance": "cc2cb18df0ea68adfb9c9-2",
+                        "dialog_generation": 13, "stream_generation": 2 },
   "source_exhausted": true,
   "source_stopped_early": false
 }
@@ -35305,6 +35451,8 @@ cursor and no truncation. The example runs against
   "error": null,
   "total_matched": 1,
   "total_dialogs": 2,
+  "capture_identity": { "node": "capture-01", "instance": "cc2cb18df0ea68adfb9c9-2",
+                        "dialog_generation": 13, "stream_generation": 2 },
   "source_exhausted": true,
   "source_stopped_early": false
 }
@@ -35662,7 +35810,9 @@ its first three keys:
   "heuristic_edges": 0,
   "total_messages": 10,
   "first_activity": "2016-11-26T14:52:59.666393+00:00",
-  "last_activity": "2016-11-26T14:53:08.290927+00:00"
+  "last_activity": "2016-11-26T14:53:08.290927+00:00",
+  "capture_identity": { "node": "capture-01", "instance": "cc2cb18df0ea68adfb9c9-2",
+                        "dialog_generation": 13, "stream_generation": 2 }
 }
 ```
 
@@ -35715,7 +35865,9 @@ you are not diffing two objects by eye. The example compares the two calls in
          "msg_count": 6, "methods": ["ACK", "BYE", "INVITE"], "hints": [] },
   "b": { "call_id": "1-1968@10.0.2.20", "state": "InCall", "final_status_code": 200,
          "msg_count": 4, "methods": ["ACK", "INVITE"], "hints": [] },
-  "differences": ["state", "msg_count", "methods"]
+  "differences": ["state", "msg_count", "methods"],
+  "capture_identity": { "node": "capture-01", "instance": "cc2cb18df0ea68adfb9c9-2",
+                        "dialog_generation": 13, "stream_generation": 2 }
 }
 ```
 
@@ -35744,7 +35896,7 @@ the provenance note as a second content block. The two rendered formats also
 carry the `INCOMPLETE RUN` block described under
 [`get_capture_report`](mcp-tools-core.md#get_capture_report) when the capture was not read in
 full. `"json"` carries `source_exhausted` and `source_stopped_early` as fields
-instead.
+instead, and `capture_identity`, which names the capture the report came from.
 
 The example runs against [`tests/pcap-samples/sip-rtp-g711.pcap`](https://github.com/NormB/sipnab/raw/main/tests/pcap-samples/sip-rtp-g711.pcap):
 
@@ -35789,6 +35941,8 @@ The example runs against [`tests/pcap-samples/sip-rtp-g711.pcap`](https://github
   },
   "sdp_timeline": [ /* the same rows get_sdp_timeline returns */ ],
   "streams": [ /* the same rows rtp_stats returns, without mos */ ],
+  "capture_identity": { "node": "capture-01", "instance": "cc2cb18df0ea68adfb9c9-2",
+                        "dialog_generation": 13, "stream_generation": 2 },
   "source_exhausted": true,
   "source_stopped_early": false
 }
@@ -35863,6 +36017,8 @@ the next call.
     "⟦untrusted-capture-data⟧Content-Type: application/sdp⟦/untrusted-capture-data⟧",
     "⟦untrusted-capture-data⟧Content-Length: 123⟦/untrusted-capture-data⟧"
   ],
+  "capture_identity": { "node": "capture-01", "instance": "cc2cb18df0ea68adfb9c9-2",
+                        "dialog_generation": 13, "stream_generation": 2 },
   "source_exhausted": true,
   "source_stopped_early": false
 }
@@ -35988,6 +36144,8 @@ with an empty `exchanges` array rather than an error.
 // get_sdp_timeline { "call_id": "1-1966@10.0.2.20" }
 {
   "call_id": "1-1966@10.0.2.20",
+  "capture_identity": { "node": "capture-01", "instance": "cc2cb18df0ea68adfb9c9-2",
+                        "dialog_generation": 13, "stream_generation": 2 },
   "exchanges": [
     {
       "codecs": [
@@ -36031,8 +36189,8 @@ codec it accepts.
 optional parameters.
 
 Returns `offered`, `answered`, `common`, `result`, `sdp_exchange_count`,
-`final_status_code`, `call_id`, `source_exhausted`, `source_stopped_early`
-and `schema_version`. Each codec name in `offered`, `answered` and `common`
+`final_status_code`, `call_id`, `capture_identity`, `source_exhausted`,
+`source_stopped_early` and `schema_version`. Each codec name in `offered`, `answered` and `common`
 arrives fenced, because the sender wrote it in the SDP.
 
 ```jsonc
@@ -36047,6 +36205,8 @@ arrives fenced, because the sender wrote it in the SDP.
   "result": "ok",
   "final_status_code": 200,
   "sdp_exchange_count": 2,
+  "capture_identity": { "node": "capture-01", "instance": "cc2cb18df0ea68adfb9c9-2",
+                        "dialog_generation": 13, "stream_generation": 2 },
   "source_exhausted": true,
   "source_stopped_early": false
 }
@@ -36153,6 +36313,8 @@ packets in one:
   "findings_withheld": { "suppressed": 0, "below_severity": 0, "capped": 0 },
   "suppressions": { "file": null, "patterns": [], "findings_suppressed": 0 },
   "rule_catalog": "docs/sip-lint-rules.md",
+  "capture_identity": { "node": "capture-01", "instance": "cc2e118df0ea7891c207f-2",
+                        "dialog_generation": 64, "stream_generation": 2 },
   "source_exhausted": true,
   "source_stopped_early": false
 }
@@ -36270,6 +36432,8 @@ message runs, and the response reports the rest under `rules_not_evaluated`.
       "rule_ids": ["OBS-5761-5.1.1-RTCP-MUX-UNANSWERED"] }
   ],
   "rule_catalog": "docs/sip-lint-rules.md",
+  "capture_identity": { "node": "capture-01", "instance": "cc30318df0ea8053c6910-2",
+                        "dialog_generation": 14, "stream_generation": 0 },
   "source_exhausted": true,
   "source_stopped_early": false
 }
@@ -36480,6 +36644,8 @@ it to hand a call to someone who reads the capture in Wireshark.
   "notes": [
     "rtp.ssrc matches only once Wireshark is decoding those packets as RTP. Enable 'Try to decode RTP outside of conversations', or use Decode As on the media ports, if the SSRC terms select nothing."
   ],
+  "capture_identity": { "node": "capture-01", "instance": "cc2cb18df0ea68adfb9c9-2",
+                        "dialog_generation": 13, "stream_generation": 2 },
   "source_exhausted": true,
   "source_stopped_early": false
 }
@@ -37730,6 +37896,10 @@ The example runs against
   },
   "recent_dialogs": [ /* one fenced dialog summary */ ],
   "truncated": true,
+  "capture_identity": {
+    "node": "capture-01", "instance": "12e06a18df11300d36b025-2",
+    "dialog_generation": 13, "stream_generation": 2
+  },
   "source_exhausted": true,
   "source_stopped_early": false
 }
@@ -37877,6 +38047,8 @@ the source flags — no `hints`, no `registration_failure`:
   "call_id": "1-1966@10.0.2.20",
   "applicable": false,
   "reason": "this dialog carries no REGISTER request",
+  "capture_identity": { "node": "capture-01", "instance": "cc2cb18df0ea68adfb9c9-2",
+                        "dialog_generation": 13, "stream_generation": 2 },
   "source_exhausted": true,
   "source_stopped_early": false
 }
@@ -37914,6 +38086,8 @@ against
     "Call failed: 403 Forbidden.",
     "Registration rejected: 403 Forbidden. The endpoint answered an authentication challenge and the registrar refused the credentials it offered, so the fault is in the account, its password or its permission to register — none of which is a reachability problem."
   ],
+  "capture_identity": { "node": "capture-01", "instance": "cc2d618df0ea70d0788a2-2",
+                        "dialog_generation": 8, "stream_generation": 0 },
   "source_exhausted": true,
   "source_stopped_early": false
 }
@@ -38104,6 +38278,7 @@ entries by default.
 | `note` | string? | Present **only** when no detector runs, saying so in words. |
 | `observation_gaps` | object[] | What an armed detector says it **cannot establish** from this capture: `{ rule_name, reason, seen, unestablished, detail }`, narrowed by `kinds`. Always present, empty when there is nothing to say. See below. |
 | `schema_version` | u32 | `1` for this shape. |
+| `capture_identity` | object | Which capture answered — see [`capture_status`](mcp-tools-core.md#capture_status). |
 
 > **Read `armed_kinds` before you read `findings`.** An empty findings list
 > means "nothing tripped" only on a server that armed something. On any other
@@ -38151,6 +38326,8 @@ on a server started with `--digest-leak`:
   "armed_kinds": ["digest"],
   "detection_armed": true,
   "observation_gaps": [],
+  "capture_identity": { "node": "capture-01", "instance": "cc2d618df0ea70d0788a2-2",
+                        "dialog_generation": 8, "stream_generation": 0 },
   "source_exhausted": true,
   "source_stopped_early": false
 }
@@ -39285,6 +39462,10 @@ The example runs against
   "capture_queue_depth_packets": 0,
   "capture_backpressure_blocks_total": 0,
   "uptime_seconds": 0,
+  "capture_identity": {
+    "node": "capture-01", "instance": "12e28118df11310000ef0c-2",
+    "dialog_generation": 13, "stream_generation": 2
+  },
   "source_exhausted": true,
   "source_stopped_early": false
 }
@@ -39317,6 +39498,9 @@ How to read it:
   `capture_backpressure_blocks_total`, rather than reporting `0`.
 - **Read occupancy against capacity.** `dialogs.pct` and `streams.pct` near
   100 mean the store is about to evict calls.
+- **`capture_identity` names the capture `dialogs.used` and `streams.used`
+  count.** It is the identity [`capture_status`](mcp-tools-core.md#capture_status)
+  reports, read at the same moment as the occupancy.
 
 **To get rates, pass `sample_seconds`.** Every counter above is cumulative.
 With `sample_seconds`, sipnab reads the counters twice across that window and
@@ -39618,7 +39802,7 @@ opt-in flags:
 // server_capabilities {}
 {
   "schema_version": 1,
-  "version": "0.5.223",
+  "version": "0.5.224",
   "features": ["api", "archive", "audio", "bpf", "g729", "hep", "mcp", "mcp-http",
                "metrics", "native", "opus", "plugins", "tls", "tui", "vcon", "wasm"],
   "can_decrypt": true,           // tls
@@ -40248,7 +40432,10 @@ Give one, never both.
 
 Each finding names the JSON Pointer of the offending value
 (`instance_path`), the schema keyword that refused it (`keyword`) and what was
-wrong (`detail`). The response is `schema_version` 2. An empty Dialog Object
+wrong (`detail`). The response is `schema_version` 2. With `call_id` it also
+carries `capture_identity`, naming the capture sipnab exported the container
+from. With `container` it does not, because that container did not come from
+this capture. An empty Dialog Object
 `{}` is an ordinary error:
 [section 4.3 of core-04](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-04#section-4.3)
 requires a placeholder that names its type.
@@ -40262,6 +40449,8 @@ requires a placeholder that names its type.
   "schema_id": "https://ietf.org/vcon/schemas/unsigned-vcon.json",
   "errors": [],
   "call_id": "1-1966@10.0.2.20",
+  "capture_identity": { "node": "capture-01", "instance": "cc2cb18df0ea68adfb9c9-2",
+                        "dialog_generation": 13, "stream_generation": 2 },
   "source_exhausted": true,
   "source_stopped_early": false
 }

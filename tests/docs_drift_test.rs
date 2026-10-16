@@ -5547,7 +5547,10 @@ fn no_documentation_table_repeats_a_row() -> Result<(), TestError> {
     // code-map 2, and one each for filter-dsl, install, internals/lint-rules,
     // operator-guide-notes, testing, vcon, walkthroughs and sip-lint-rules
     // (+19); rtpengine -1 and vcon-store -3 (-4).
-    const EXPECTED_TABLES: usize = 1271;
+    // 1271 -> 1273: docs/rest-api.md +1, the table of REST answers that do
+    // not carry capture_identity, and its site mirror
+    // website/content/docs/api.md +1.
+    const EXPECTED_TABLES: usize = 1273;
 
     let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     let out = std::process::Command::new("git")
