@@ -1,10 +1,10 @@
 [package]
 name = "sipnab-g729"
-version = "0.1.1"
+version = "0.1.2"
 edition = "2024"
 rust-version = "1.99"
 authors = ["Norm Brandinger"]
-description = "Clean-room ITU-T G.729 Annex A decoder with Annex B comfort noise"
+description = "Clean-room ITU-T G.729 Annex A decoder with Annex B comfort noise and the G.729.1 core layer"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/NormB/sipnab"
 documentation = "https://docs.rs/sipnab-g729"

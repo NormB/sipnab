@@ -17,6 +17,7 @@ entry that carries them.
   - Each computes the identity under the same locks as its answer, so a live capture's identity and its page describe one state. The exceptions are `capture_health`, whose answer carries no strings by design, and `hep_senders`, which reports the HEP listener rather than the capture.
 - **`--tag` labels appear on every dialog surface.** They reached `--json-dialogs` and `GET /v1/dialogs/{call_id}` but not the `GET /v1/dialogs` list rows or MCP `list_dialogs` and `get_dialog`.
 - **MCP answers arguments that do not match a tool's input schema with `invalid_params` (-32602)** and `data.reason` `"invalid_arguments"`, keeping the message that names the field. A wrong JSON type or a missing required argument returned a tool result marked `isError`.
+- **`sipnab-g729` 0.1.2: the crates.io description names the G.729.1 core layer**, which 0.1.1 added.
 - **A run refused at startup prints no reading summary.** A refusal after the capture opened, such as an existing `--redact-map`, was followed by "Read 0 packets: 0 of 1 file(s) read in full, 1 stopped early", which reads as a capture problem in a run that read nothing.
 
 ## [0.5.223] - 2026-10-16

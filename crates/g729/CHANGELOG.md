@@ -4,6 +4,12 @@ This file lists all notable changes to the `sipnab-g729` crate. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the
 crate follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.2] - 2026-10-16
+
+### Changed
+
+- The crate description names the G.729.1 core layer that 0.1.1 added.
+
 ## [0.1.1] - 2026-10-16
 
 ### Added

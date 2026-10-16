@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-//! Clean-room ITU-T G.729 Annex A decoder with Annex B comfort noise.
+//! Clean-room ITU-T G.729 Annex A decoder with Annex B comfort noise and the G.729.1 core layer.
 //!
 //! Implements the decoder of Recommendation ITU-T G.729 (06/2012) as reduced
 //! by Annex A (clause A.4), with the Annex B (clause B.4) SID decoding and
