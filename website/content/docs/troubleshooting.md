@@ -1730,7 +1730,7 @@ as the `sipnab` binary.
 
 Build custom queries with the [Filter DSL](@/docs/filter-dsl.md). It offers:
 
-- 43 fields plus any header by name
+- 42 fields plus any header by name
 - named filters
 - regex support
 - boolean logic

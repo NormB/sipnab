@@ -31,6 +31,7 @@ pub mod dtmf;
 pub mod emodel_wb;
 pub mod g711;
 pub mod g722;
+pub mod g729_family;
 pub mod g729_tables;
 pub mod heuristic;
 pub mod live_audio;

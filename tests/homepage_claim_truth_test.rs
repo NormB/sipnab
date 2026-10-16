@@ -746,6 +746,50 @@ fn filter_dsl_shape() -> Result<(usize, usize, usize), TestError> {
     Ok((fields, spellings, operators))
 }
 
+/// The README, the troubleshooting page and the cookbook state the same field and operator
+/// counts the parser defines, by the rule the homepage tests below apply: an
+/// alias is a second spelling of a field, not another field.
+#[test]
+fn readme_and_troubleshooting_filter_counts_match_the_parser() -> Result<(), TestError> {
+    let (fields, _, operators) = filter_dsl_shape()?;
+    let claims =
+        regex::Regex::new(r"(\d+) fields(?:,? (?:and )?(\d+) operators| plus any header by name)")?;
+    let mut seen = 0usize;
+    let mut wrong = Vec::new();
+    for page in [
+        "README.md",
+        "docs/troubleshooting.md",
+        "website/content/docs/troubleshooting.md",
+        "docs/examples.md",
+        "website/content/docs/cookbook.md",
+    ] {
+        let text = std::fs::read_to_string(page)?.replace('\n', " ");
+        for cap in claims.captures_iter(&text) {
+            seen += 1;
+            if cap[1].parse::<usize>()? != fields {
+                wrong.push(format!(
+                    "{page}: {} fields, the parser defines {fields}",
+                    &cap[1]
+                ));
+            }
+            if let Some(ops) = cap.get(2)
+                && ops.as_str().parse::<usize>()? != operators
+            {
+                wrong.push(format!(
+                    "{page}: {} operators, the parser accepts {operators}",
+                    ops.as_str()
+                ));
+            }
+        }
+    }
+    assert!(
+        seen >= 5,
+        "found {seen} count claims; the pattern stopped matching"
+    );
+    assert!(wrong.is_empty(), "{}", wrong.join("\n"));
+    Ok(())
+}
+
 /// The homepage's operator count equals the operators the parser accepts.
 #[test]
 fn homepage_filter_operator_count_matches_the_parser() -> Result<(), TestError> {

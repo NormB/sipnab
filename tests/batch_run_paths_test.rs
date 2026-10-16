@@ -625,6 +625,39 @@ fn an_existing_redaction_map_is_refused_and_nothing_is_exported() -> Result<(), 
     Ok(())
 }
 
+/// The same refusal on the `--export-vcon-dir` route, before the run: that
+/// route used to write every container and only then refuse the map, leaving
+/// containers whose tokens nothing can reverse.
+#[test]
+fn an_existing_redaction_map_stops_a_directory_export_before_it_writes() -> Result<(), TestError> {
+    let dir = tempfile::tempdir()?;
+    let vcons = dir.path().join("vcons");
+    let map = dir.path().join("tokens.map");
+    std::fs::write(&map, "earlier export's table\n")?;
+    let run = sipnab(&[
+        "-N",
+        "-I",
+        SIP_CALL,
+        "--export-vcon-when",
+        "duration >= 0",
+        "--export-vcon-dir",
+        s(&vcons)?,
+        "--redact",
+        "--redact-map",
+        s(&map)?,
+    ])?;
+    assert_eq!(run.code, Some(1), "{}", run.dump());
+    assert!(run.stderr.contains("already exists"), "{}", run.dump());
+    assert_eq!(
+        std::fs::read_to_string(&map)?,
+        "earlier export's table\n",
+        "the earlier table is untouched"
+    );
+    let written = std::fs::read_dir(&vcons).map_or(0, Iterator::count);
+    assert_eq!(written, 0, "no container is written: {}", run.dump());
+    Ok(())
+}
+
 /// A `--redact-key-file` that cannot be read is fatal: a fresh key would make
 /// tokens that join against nothing, silently.
 #[test]

@@ -89,11 +89,11 @@ pub(in crate::tui) fn offer_if_due(app: &mut App) {
         return;
     }
     app.g729_offer.last_check = Some(now);
-    let has_g729 = app.stream_store.read().iter().any(|s| {
-        s.codec
-            .as_deref()
-            .is_some_and(|c| c.eq_ignore_ascii_case("G729"))
-    });
+    let has_g729 = app
+        .stream_store
+        .read()
+        .iter()
+        .any(|s| needs_the_tables(s.codec.as_deref()));
     let next = decide(
         true,
         false,
@@ -102,6 +102,11 @@ pub(in crate::tui) fn offer_if_due(app: &mut App) {
         crate::rtp::g729_tables::auto_install_allowed(),
     );
     apply(app, next);
+}
+
+/// Whether a stream of `codec` needs the G.729 tables to decode.
+fn needs_the_tables(codec: Option<&str>) -> bool {
+    codec.is_some_and(|c| crate::rtp::g729_family::g729_variant(c).is_some())
 }
 
 /// Act on a decision.
@@ -181,6 +186,17 @@ mod tests {
     /// The offer is made only by a `g729` build, once, when a G.729 stream
     /// is present and the tables are not; `auto_install` downloads instead
     /// of asking.
+    /// G.729 and G.729.1 streams need the tables; no other codec does.
+    #[test]
+    fn g729_and_g7291_streams_need_the_tables() {
+        for codec in ["G729", "g729", "G7291", "g7291"] {
+            assert!(needs_the_tables(Some(codec)), "{codec}");
+        }
+        for codec in [None, Some("PCMU"), Some("G722"), Some("opus")] {
+            assert!(!needs_the_tables(codec), "{codec:?}");
+        }
+    }
+
     #[test]
     fn the_offer_is_made_once_where_the_need_appears() {
         assert_eq!(decide(true, false, false, true, false), Next::Ask);

@@ -479,6 +479,13 @@ impl Leg {
         };
         if let (Some(v), serde_json::Value::Object(f)) = (v.as_object_mut(), fields) {
             v.extend(f);
+            // G.729.1 is decoded to its core layer: say so, with the bit
+            // rates of the frames decoded so far.
+            if let Status::Sending(s) = &self.status
+                && let Some(caveat) = s.live.caveat()
+            {
+                v.insert("decoded_as".to_owned(), caveat.into());
+            }
         }
         v
     }

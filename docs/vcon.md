@@ -766,6 +766,7 @@ Each leg is an object:
 | `packets`, `samples` | What sipnab has sent of the leg |
 | `missed_frames` | Frames sipnab released from retention before it sent them |
 | `failed_frames` | Frames the decoder refused |
+| `decoded_as` | For a `sending` G.729.1 leg only: that the audio is the G.729.1 core layer decoded as G.729 at 8 kHz, with the bit rates of the frames decoded so far (every frame sent, in the `stop`); see [The core layer of G.729.1](g729.md#the-core-layer-of-g7291) |
 | `undecrypted_packets` | Captured SRTP packets that no key decrypted |
 
 The `reason` of a `stop` is one of:

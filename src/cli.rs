@@ -920,9 +920,9 @@ pub struct CaptureArgs {
     /// Live capture also turns this into the BPF filter when no explicit
     /// filter is given, so there the kernel drops the traffic and nothing
     /// downstream — this counter included — can see it was there.
-    ///
-    /// An `Option` (not a clap default) so an explicit `--portrange 5060-5061`
-    /// still overrides a config-file range.
+    //
+    // An `Option` (not a clap default) so an explicit `--portrange 5060-5061`
+    // still overrides a config-file range.
     #[arg(help_heading = "Capture", long, value_name = "RANGE")]
     pub portrange: Option<String>,
 
@@ -1346,11 +1346,13 @@ pub struct DiagnosticAliasArgs {
     #[arg(help_heading = "Diagnostic aliases", long)]
     pub problems: bool,
 
-    /// Show calls with slow setup time (>3s by default).
+    /// Show calls whose post-dial delay is over 11 seconds by default. Change
+    /// it with --pdd-threshold or `[diagnosis] post_dial_delay_secs`.
     #[arg(help_heading = "Diagnostic aliases", long)]
     pub slow_setup: bool,
 
-    /// Show calls shorter than 5 seconds.
+    /// Show completed calls shorter than 3 seconds by default. Change it with
+    /// --fraud-short-call or `[security] fraud_short_call_secs`.
     #[arg(help_heading = "Diagnostic aliases", long)]
     pub short_calls: bool,
 
@@ -1803,13 +1805,13 @@ pub struct OutputArgs {
     ///
     /// Accepts only `auto`, `always`, or `never`; any other value is rejected
     /// at parse time (rather than silently falling back to `auto` downstream).
-    ///
-    /// Deliberately has NO clap `default_value`, for the reason given on
-    /// `--mcp-max-rows`: a default fills this field whether or not the operator
-    /// typed the flag, so "not given" and "given the default" become
-    /// indistinguishable and `[display] color` has nothing to override. That is
-    /// exactly why that key was silently ignored. The default lives in
-    /// [`Cli::DEFAULT_COLOR`] and is applied by [`Cli::color_mode`].
+    //
+    // Deliberately has NO clap `default_value`, for the reason given on
+    // `--mcp-max-rows`: a default fills this field whether or not the operator
+    // typed the flag, so "not given" and "given the default" become
+    // indistinguishable and `[display] color` has nothing to override. That is
+    // exactly why that key was silently ignored. The default lives in
+    // [`Cli::DEFAULT_COLOR`] and is applied by [`Cli::color_mode`].
     #[arg(
         help_heading = "Output",
         long,
@@ -2204,11 +2206,11 @@ pub struct RtpArgs {
     /// second, so on the half-hour call an operator actually escalates the map
     /// shows the tail and says so. Raising it costs two bytes per retained
     /// loss per stream, and widens the burst/gap window in step.
-    ///
-    /// No clap `default_value`, for the reason given on
-    /// [`McpArgs::mcp_max_rows`]: a populated field cannot tell "not typed" from
-    /// "typed the default". The default lives in
-    /// [`crate::rtp::stream::DEFAULT_LOST_SEQ_LOG_CAP`].
+    //
+    // No clap `default_value`, for the reason given on
+    // [`McpArgs::mcp_max_rows`]: a populated field cannot tell "not typed" from
+    // "typed the default". The default lives in
+    // [`crate::rtp::stream::DEFAULT_LOST_SEQ_LOG_CAP`].
     #[arg(
         help_heading = "RTP",
         long = "max-lost-sequences",
@@ -2225,11 +2227,11 @@ pub struct RtpArgs {
     /// project has already had to explain. The trend still covers an hour of
     /// call time whatever the period is, so a finer setting buys resolution
     /// with memory and not with history.
-    ///
-    /// No clap `default_value`, for the reason given on
-    /// [`McpArgs::mcp_max_rows`]: a populated field cannot tell "not typed"
-    /// from "typed the default". The default lives in
-    /// [`crate::rtp::stream::DEFAULT_QUALITY_INTERVAL_SECS`].
+    //
+    // No clap `default_value`, for the reason given on
+    // [`McpArgs::mcp_max_rows`]: a populated field cannot tell "not typed"
+    // from "typed the default". The default lives in
+    // [`crate::rtp::stream::DEFAULT_QUALITY_INTERVAL_SECS`].
     #[arg(
         help_heading = "RTP",
         long = "quality-interval",
@@ -2358,11 +2360,11 @@ pub struct SecurityArgs {
     pub kill_ua: Option<String>,
 
     /// SIP response code to use in scanner kill reports.
-    ///
-    /// No clap `default_value`, for the reason given on `--color`: it made
-    /// `[security] kill_response` unreachable. The range check stays — dropping
-    /// the default must not drop the validation. Default in
-    /// [`Cli::DEFAULT_KILL_RESPONSE`], applied by [`Cli::kill_response_code`].
+    //
+    // No clap `default_value`, for the reason given on `--color`: it made
+    // `[security] kill_response` unreachable. The range check stays — dropping
+    // the default must not drop the validation. Default in
+    // [`Cli::DEFAULT_KILL_RESPONSE`], applied by [`Cli::kill_response_code`].
     #[arg(help_heading = "Security", long, value_name = "CODE", value_parser = clap::value_parser!(u16).range(100..=699))]
     pub kill_response: Option<u16>,
 
@@ -2534,10 +2536,10 @@ pub struct SecurityArgs {
     /// Challenged failures from one source inside one `--reg-flood-window`
     /// (one second unless set) before `--reg-flood` reports a flood:
     /// REGISTERs that carried credentials and drew a `401` or `407`.
-    ///
-    /// No clap `default_value`, so `[security] reg_flood_threshold` can take
-    /// effect; the default lives in [`Cli::DEFAULT_REG_FLOOD_THRESHOLD`] and
-    /// is applied by [`Self::reg_flood_threshold`].
+    //
+    // No clap `default_value`, so `[security] reg_flood_threshold` can take
+    // effect; the default lives in [`Cli::DEFAULT_REG_FLOOD_THRESHOLD`] and
+    // is applied by [`Self::reg_flood_threshold`].
     ///
     /// The shipped 50/s is a carrier-registrar figure: it never sees the
     /// ten-a-second brute force a small PBX gets. The right value is a
@@ -3429,8 +3431,9 @@ pub struct McpArgs {
     /// `tools/list` and then carried in the model's context for the session,
     /// before the agent has asked anything. On a client with a small context
     /// window that fixed cost is worth cutting; on a batch client it is not.
-    /// An unknown name refuses the run. What each bundle holds is
-    /// [`crate::mcp_profile::BUNDLES`].
+    /// An unknown name refuses the run.
+    //
+    // What each bundle holds is [`crate::mcp_profile::BUNDLES`].
     #[arg(
         help_heading = "MCP (Model Context Protocol)",
         long = "mcp-tools",
@@ -3457,9 +3460,10 @@ pub struct McpArgs {
     /// One-way network delay of the observed path, in milliseconds.
     ///
     /// The one MOS input a passive tap cannot measure. Declaring it beats an
-    /// RTCP-reported round trip, which an unauthenticated packet can move; see
-    /// [`crate::rtp::quality::DelaySource`]. No clap `default_value`, for the
-    /// reason given on `--mcp-max-rows`.
+    /// RTCP-reported round trip, which an unauthenticated packet can move.
+    //
+    // See [`crate::rtp::quality::DelaySource`]. No clap `default_value`, for
+    // the reason given on `--mcp-max-rows`.
     #[arg(
         help_heading = "Analysis",
         long = "one-way-delay",
@@ -3550,10 +3554,11 @@ pub struct McpArgs {
     /// Raise it toward 1 on such a trunk; lower it where a call carrying any
     /// comfort noise at all is still expected to be bidirectional.
     ///
-    /// Refused at 0 and above 1 by name, in clap and in
-    /// `crate::config::DiagnosisConfig::validate`, so the file is not the
-    /// lenient way in. The default lives in
-    /// [`crate::rtp::diagnosis::AsymmetryThresholds::BUILT_IN`].
+    /// Refused at 0 and above 1, on the command line and in the config file.
+    //
+    // Refused in clap and in `crate::config::DiagnosisConfig::validate`, so
+    // the file is not the lenient way in. The default lives in
+    // [`crate::rtp::diagnosis::AsymmetryThresholds::BUILT_IN`].
     #[arg(
         help_heading = "Analysis",
         long = "cn-suppression-ratio",
@@ -3564,11 +3569,11 @@ pub struct McpArgs {
 
     /// Jitter, in milliseconds, at or above which the color column turns
     /// yellow. Config: `[quality] jitter_warn_ms`.
-    ///
-    /// None of the eight quality flags carries a clap `default_value`, for the
-    /// reason spelled out on [`Self::mcp_max_rows`]: a populated field cannot
-    /// tell "not typed" from "typed the default", and its config key would
-    /// have nothing left to override.
+    //
+    // None of the eight quality flags carries a clap `default_value`, for the
+    // reason spelled out on [`Self::mcp_max_rows`]: a populated field cannot
+    // tell "not typed" from "typed the default", and its config key would
+    // have nothing left to override.
     #[arg(
         help_heading = "Analysis",
         long = "jitter-warn-ms",
@@ -3648,14 +3653,14 @@ pub struct McpArgs {
     pub rtt_bad_ms: Option<f64>,
 
     /// Maximum rows in one list-style MCP response.
-    ///
-    /// Deliberately has NO clap `default_value`: that is what made
-    /// `[display] color` and `[security] kill_response` unreachable from
-    /// config — clap fills the field whether or not the operator typed the
-    /// flag, so "not given" and "given the default" become indistinguishable
-    /// and the config key has nothing to override. The default lives in
-    /// [`Cli::DEFAULT_MCP_MAX_ROWS`] and is applied by
-    /// [`Cli::mcp_row_cap`].
+    //
+    // Deliberately has NO clap `default_value`: that is what made
+    // `[display] color` and `[security] kill_response` unreachable from
+    // config — clap fills the field whether or not the operator typed the
+    // flag, so "not given" and "given the default" become indistinguishable
+    // and the config key has nothing to override. The default lives in
+    // [`Cli::DEFAULT_MCP_MAX_ROWS`] and is applied by
+    // [`Cli::mcp_row_cap`].
     ///
     /// The right ceiling belongs to the CONSUMER, not to sipnab: an agent with
     /// a small context window wants far fewer than 1000 rows and a batch
@@ -3676,10 +3681,10 @@ pub struct McpArgs {
     /// carrying a dozen codecs and ICE candidates passes the 4096-byte
     /// default, and the agent reading the clipped half cannot tell a truncated
     /// answer from a short one.
-    ///
-    /// No clap `default_value`, for the reason given on
-    /// [`Self::mcp_max_rows`]. The default lives in
-    /// [`crate::mcp::shape::DEFAULT_MAX_BODY_BYTES`].
+    //
+    // No clap `default_value`, for the reason given on
+    // [`Self::mcp_max_rows`]. The default lives in
+    // [`crate::mcp::shape::DEFAULT_MAX_BODY_BYTES`].
     #[arg(
         help_heading = "MCP (Model Context Protocol)",
         long = "mcp-max-body-bytes",
@@ -3696,10 +3701,10 @@ pub struct McpArgs {
     /// a paged tool drops whole rows from the end of the page and answers
     /// `truncated_by: "bytes"` with a `next_cursor` to the rest. A caller
     /// narrows it per call with `max_response_bytes`, and cannot exceed it.
-    ///
-    /// No clap `default_value`, for the reason given on
-    /// [`Self::mcp_max_rows`]. The default lives in
-    /// [`Cli::DEFAULT_MCP_MAX_RESPONSE_BYTES`].
+    //
+    // No clap `default_value`, for the reason given on
+    // [`Self::mcp_max_rows`]. The default lives in
+    // [`Cli::DEFAULT_MCP_MAX_RESPONSE_BYTES`].
     #[arg(
         help_heading = "MCP (Model Context Protocol)",
         long = "mcp-max-response-bytes",
@@ -3722,10 +3727,10 @@ pub struct McpArgs {
     /// It also bounds `wait_seconds` on `find_in_captures` and
     /// `find_in_captures_status`: how long one of those calls waits for a
     /// background sweep before it answers with the running job.
-    ///
-    /// No clap `default_value`, for the reason given on
-    /// [`Self::mcp_max_rows`]. The default lives in
-    /// [`Cli::DEFAULT_MCP_MAX_WAIT_SECONDS`].
+    //
+    // No clap `default_value`, for the reason given on
+    // [`Self::mcp_max_rows`]. The default lives in
+    // [`Cli::DEFAULT_MCP_MAX_WAIT_SECONDS`].
     #[arg(
         help_heading = "MCP (Model Context Protocol)",
         long = "mcp-max-wait-seconds",
@@ -3761,11 +3766,11 @@ pub struct McpArgs {
     /// of forty files needs 40 here before one sweep can reach the oldest
     /// file. The response reports `files_examined`, `files_total` and
     /// `complete`, so a sweep this stopped early says so.
-    ///
-    /// No clap `default_value`, for the reason given on
-    /// [`Self::mcp_max_rows`]. The default lives in
-    /// [`Cli::DEFAULT_MCP_SWEEP_MAX_FILES`] and the maximum in
-    /// [`crate::config::MAX_MCP_SWEEP_MAX_FILES`].
+    //
+    // No clap `default_value`, for the reason given on
+    // [`Self::mcp_max_rows`]. The default lives in
+    // [`Cli::DEFAULT_MCP_SWEEP_MAX_FILES`] and the maximum in
+    // [`crate::config::MAX_MCP_SWEEP_MAX_FILES`].
     #[arg(
         help_heading = "MCP (Model Context Protocol)",
         long = "mcp-sweep-max-files",
@@ -3781,11 +3786,11 @@ pub struct McpArgs {
     /// as `--mcp-sweep-max-files`. The sweep runs on its own thread and checks
     /// it before each file and before each packet; the tool call returns a job
     /// to poll when the sweep outlasts its wait.
-    ///
-    /// No clap `default_value`, for the reason given on
-    /// [`Self::mcp_max_rows`]. The default lives in
-    /// [`Cli::DEFAULT_MCP_SWEEP_DEADLINE_MS`] and the maximum in
-    /// [`crate::config::MAX_MCP_SWEEP_DEADLINE_MS`].
+    //
+    // No clap `default_value`, for the reason given on
+    // [`Self::mcp_max_rows`]. The default lives in
+    // [`Cli::DEFAULT_MCP_SWEEP_DEADLINE_MS`] and the maximum in
+    // [`crate::config::MAX_MCP_SWEEP_DEADLINE_MS`].
     #[arg(
         help_heading = "MCP (Model Context Protocol)",
         long = "mcp-sweep-deadline-ms",
@@ -3800,11 +3805,11 @@ pub struct McpArgs {
     /// Each running sweep is an OS thread reading capture files. A start past
     /// this many is refused, naming `find_in_captures_status` and
     /// `cancel_find_in_captures`, rather than queued.
-    ///
-    /// No clap `default_value`, for the reason given on
-    /// [`Self::mcp_max_rows`]. The default lives in
-    /// [`Cli::DEFAULT_MCP_SWEEP_MAX_RUNNING`] and the maximum in
-    /// [`crate::config::MAX_MCP_SWEEP_MAX_RUNNING`].
+    //
+    // No clap `default_value`, for the reason given on
+    // [`Self::mcp_max_rows`]. The default lives in
+    // [`Cli::DEFAULT_MCP_SWEEP_MAX_RUNNING`] and the maximum in
+    // [`crate::config::MAX_MCP_SWEEP_MAX_RUNNING`].
     #[arg(
         help_heading = "MCP (Model Context Protocol)",
         long = "mcp-sweep-max-running",
@@ -3819,11 +3824,11 @@ pub struct McpArgs {
     ///
     /// A result waits for its poll. Past this many finished results, the
     /// result of the earliest-started sweep is dropped first.
-    ///
-    /// No clap `default_value`, for the reason given on
-    /// [`Self::mcp_max_rows`]. The default lives in
-    /// [`Cli::DEFAULT_MCP_SWEEP_MAX_HELD_RESULTS`] and the maximum in
-    /// [`crate::config::MAX_MCP_SWEEP_MAX_HELD_RESULTS`].
+    //
+    // No clap `default_value`, for the reason given on
+    // [`Self::mcp_max_rows`]. The default lives in
+    // [`Cli::DEFAULT_MCP_SWEEP_MAX_HELD_RESULTS`] and the maximum in
+    // [`crate::config::MAX_MCP_SWEEP_MAX_HELD_RESULTS`].
     #[arg(
         help_heading = "MCP (Model Context Protocol)",
         long = "mcp-sweep-max-held-results",
@@ -3838,11 +3843,11 @@ pub struct McpArgs {
     ///
     /// Counted from the moment the sweep finished. After it, the job id is
     /// unknown and a poll of it is refused.
-    ///
-    /// No clap `default_value`, for the reason given on
-    /// [`Self::mcp_max_rows`]. The default lives in
-    /// [`Cli::DEFAULT_MCP_SWEEP_RESULT_RETENTION_SECS`] and the maximum in
-    /// [`crate::config::MAX_MCP_SWEEP_RESULT_RETENTION_SECS`].
+    //
+    // No clap `default_value`, for the reason given on
+    // [`Self::mcp_max_rows`]. The default lives in
+    // [`Cli::DEFAULT_MCP_SWEEP_RESULT_RETENTION_SECS`] and the maximum in
+    // [`crate::config::MAX_MCP_SWEEP_RESULT_RETENTION_SECS`].
     #[arg(
         help_heading = "MCP (Model Context Protocol)",
         long = "mcp-sweep-result-retention-secs",
@@ -4660,10 +4665,10 @@ pub struct LimitsArgs {
     /// Raising it to N lets one TCP direction hold N bytes, so it is the
     /// operator's statement about the trunk they are watching. The floor is
     /// one SIP header line, below which no message could survive.
-    ///
-    /// No clap `default_value`, for the reason given on
-    /// [`McpArgs::mcp_max_rows`]. The default lives in
-    /// [`crate::capture::reassembly::DEFAULT_MAX_TCP_BUFFER`].
+    //
+    // No clap `default_value`, for the reason given on
+    // [`McpArgs::mcp_max_rows`]. The default lives in
+    // [`crate::capture::reassembly::DEFAULT_MAX_TCP_BUFFER`].
     #[arg(
         help_heading = "Resource limits",
         long = "max-tcp-buffer",
@@ -8842,6 +8847,73 @@ mod tests {
         assert_eq!(f.vcon_forward_interval, Some(7));
         assert_eq!(f.vcon_forward_timeout, Some(9));
         Ok(())
+    }
+
+    /// `--help` is for the operator: no flag's help carries a rustdoc link
+    /// (`[`Cli::...`]`) or explains how clap fills the field. That reasoning
+    /// belongs in a `//` comment beside the field, which `--help` never prints.
+    #[test]
+    fn no_flag_help_prints_maintainer_notes() {
+        use clap::CommandFactory;
+        fn walk(cmd: &clap::Command, path: &str, out: &mut Vec<String>) {
+            for arg in cmd.get_arguments() {
+                for help in [arg.get_help(), arg.get_long_help()].into_iter().flatten() {
+                    let text = help.to_string();
+                    for marker in ["[`", "`]", "clap", "default_value"] {
+                        if text.contains(marker) {
+                            out.push(format!("{path} --{}: {marker:?}", arg.get_id()));
+                        }
+                    }
+                }
+            }
+            for sub in cmd.get_subcommands() {
+                walk(sub, &format!("{path} {}", sub.get_name()), out);
+            }
+        }
+        let mut found = Vec::new();
+        walk(&Cli::command(), "sipnab", &mut found);
+        found.sort();
+        found.dedup();
+        assert!(
+            found.is_empty(),
+            "{} help notes:\n{}",
+            found.len(),
+            found.join("\n")
+        );
+    }
+
+    /// `--slow-setup` and `--short-calls` state the threshold they select on,
+    /// taken from the alias thresholds' own default, and name the flag and
+    /// config key that change it.
+    #[test]
+    fn each_threshold_alias_states_its_default_and_where_to_change_it() {
+        use clap::CommandFactory;
+        let shipped = crate::sip::dsl::AliasThresholds::default();
+        let cmd = Cli::command();
+        for (long, secs, flag, key) in [
+            (
+                "slow-setup",
+                shipped.pdd_secs,
+                "--pdd-threshold",
+                "[diagnosis] post_dial_delay_secs",
+            ),
+            (
+                "short-calls",
+                shipped.short_call_secs,
+                "--fraud-short-call",
+                "[security] fraud_short_call_secs",
+            ),
+        ] {
+            let help = cmd
+                .get_arguments()
+                .find(|a| a.get_long() == Some(long))
+                .and_then(|a| a.get_help())
+                .map(ToString::to_string)
+                .unwrap_or_default();
+            assert!(help.contains(&format!("{secs} seconds")), "{long}: {help}");
+            assert!(help.contains(flag), "{long}: {help}");
+            assert!(help.contains(key), "{long}: {help}");
+        }
     }
 
     /// Each whole-number forwarder flag's help states the range its parser

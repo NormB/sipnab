@@ -414,3 +414,69 @@ Mutations of the restructured code turned the stage and conformance tests
 red (the postfilter's first-maximum rule, the LP top coefficient, the
 high-pass feedback order, the spacing direction, the B.19 rounding), and each
 restore was proven identical with `cmp -s`.
+
+## G.729.1 core layer (implementer)
+
+Date: 2026-10-16. The `g7291` module and sipnab's G.729.1 decoding were
+written by the implementer role alone. No oracle data was needed: the core
+layer reuses the G.729 decoder above, and no table was added.
+
+### What the implementer read
+
+- [RFC 4749](https://www.rfc-editor.org/rfc/rfc4749.html) (sections 1 to 6:
+  the payload header, the FT and MBS tables, the frame sizes, the 16 kHz RTP
+  clock) and [RFC 5459](https://www.rfc-editor.org/rfc/rfc5459.html)
+  (sections 1 to 5: the SID sizes, FT 14, the remainder rule), from
+  rfc-editor.org.
+- From the ITU-T G.729.1 (2006) Corrigendum 1 (08/2009) software package
+  (`https://www.itu.int/rec/dologin_pub.asp?lang=e&id=T-REC-G.729.1-200908-I!Cor1!SOFT-ZST-E&type=items`,
+  9,217,472 bytes, sha256
+  `6fe1c9db88a6cc3431ae97450e7811536b25afeb66477254e757763c43642675`): the
+  list of entry names and sizes; the Annex C readme
+  (`Software/G.729.1_V1.5_Part3_dtxcng_fixed-point_AnnexC/Readme-G.729.1-Annex-C-v1.5.txt`,
+  the G.192 file format and the encoder and decoder options); the test
+  batch file beside the vectors (`TV.bat`, which vectors were encoded from
+  the same input with which options); the title and summary of the
+  Corrigendum 1 text (`G729-1C1E.pdf`); and the test vectors, as data.
+- Nothing under any `src/` directory of the package, no `.c` or `.h` file,
+  no executable, makefile or workspace file, and no other G.729.1
+  implementation.
+
+The G.729.1 Recommendation text (clauses 5 and 8, Annex C) was not read:
+itu.int lists no downloadable text for G.729.1 (05/2006), and the download
+link of that form returned an HTTP 500 page. Every fact below comes from the
+two RFCs or from a measurement on the vectors.
+
+### Facts measured on the vectors
+
+`scripts/fetch-g729-vectors.py` extracts seven vectors by pinned sha256 into
+`crates/g729/test-vectors/g7291/`. The measurements are tests in
+`tests/g7291.rs`:
+
+- Core layer (open item O2): the first 160 bits of each of the 629 frames
+  of `test1_16k.b32` (32 kbit/s) are the two frames, in order, of
+  `test1_16k.b8`, the G.729-format bitstream `TV.bat` encodes from the same
+  input (629 of 629). Decoding the first by `Decoder::decode_g7291_rtp` and
+  the second frame by frame gives the same 100,640 samples.
+- Core SID (open item O1): the first 15 bits of each of the 20 SIDs of
+  `test2_8k.b8` (15-bit SIDs) and of `test2_8k.b12` (24-bit SIDs) are the
+  same, and are the SID of `test2_8k.b729b` (the G.729B-format bitstream of
+  the same input) in the first 10 ms of the same 20 ms, followed there by an
+  untransmitted frame (20 of 20). The first 43-bit SID of `test3_16k.b32`
+  carries the SID of `test3_16k.b729b` in the same place. Over the first 30
+  frames of `test2_8k`, where the two encodings agree, decoding the G.729.1
+  bitstream gives the same samples as decoding the G.729B one.
+- After the first pause of `test2_8k` the two encodings differ in 174 of
+  the 180 speech frames of 20 ms, always at or after bit 19 of a 10 ms
+  G.729 frame; the first 19 bits, which include the 18 bits of LSF indices,
+  still agree. The encoder's state differs between its two output modes. The tests compare those
+  vectors only where the encodings agree.
+
+### What is assumed
+
+- RTP carries the G.729.1 bits in their bitstream order, most significant
+  bit of each octet first, the packing [RFC 3551 section 4.5.6](https://www.rfc-editor.org/rfc/rfc3551.html#section-4.5.6) gives G.729.
+  RFC 4749 calls the core layer "bitstream compatible" with G.729 and
+  defines the frame sizes in octets; the measurements above are on G.192
+  bits packed that way. No RTP capture of G.729.1 was available to check
+  the packing on the wire.

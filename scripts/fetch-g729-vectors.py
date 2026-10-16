@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: MIT OR Apache-2.0
-"""Fetch the ITU-T G.729 Annex A and Annex A+B decoder test vectors.
+"""Fetch the ITU-T G.729 and G.729.1 decoder test vectors.
 
 The vectors ship inside the ITU-T G.729 (06/2012) Release 3 software package,
 which also holds the reference C code. The clean-room build of crates/g729
@@ -17,6 +17,16 @@ tests build their tables from these files. Nothing here reads those files
 beyond hashing them. The vectors and sources are fetched, never committed
 (spec decision D4).
 
+The G.729.1 core-layer tests read seven bitstreams of a second package, the
+ITU-T G.729.1 (2006) Corrigendum 1 (08/2009) software package: G.729.1
+bitstreams and the G.729-format bitstreams encoded from the same inputs. This
+script extracts ONLY those seven entries, each by path and pinned sha256,
+from
+
+    Software/G.729.1_V1.5_Part3_dtxcng_fixed-point_AnnexC/test_vectors_Annex_C_090727/
+
+and never lists, prints or opens any other entry of that package.
+
 What a fetch guarantees:
 
 * The package is the pinned one: its size and sha256 are checked before any
@@ -26,13 +36,15 @@ What a fetch guarantees:
 * The downloaded package is deleted once the vectors are extracted.
 
 Usage:
-    fetch-g729-vectors.py [--zip FILE] [DEST]
+    fetch-g729-vectors.py [--zip FILE] [--g7291-zip FILE] [--g7291-only] [DEST]
 
 DEST defaults to $G729_VECTORS, else crates/g729/test-vectors (gitignored).
 The Annex A vectors land in DEST/annex-a, the Annex B ones in DEST/annex-b,
-and the sources in DEST/itu-source/<path below Software/G729_Release3/>.
-With --zip, a local copy of the package is used instead of downloading, and
-it is left in place. Exit codes: 0 fetched and verified, 1 failed.
+the sources in DEST/itu-source/<path below Software/G729_Release3/>, and the
+G.729.1 vectors in DEST/g7291. With --zip or --g7291-zip, a local copy of
+that package is used instead of downloading, and it is left in place. With
+--g7291-only, only the G.729.1 package is fetched. Exit codes: 0 fetched and
+verified, 1 failed.
 """
 
 import argparse
@@ -145,6 +157,30 @@ SOURCES = {
 
 ALL_PINS = {**PINS, **SOURCES}
 
+G7291_PACKAGE_URL = (
+    "https://www.itu.int/rec/dologin_pub.asp?lang=e"
+    "&id=T-REC-G.729.1-200908-I!Cor1!SOFT-ZST-E&type=items"
+)
+G7291_PACKAGE_SIZE = 9_217_472
+G7291_PACKAGE_SHA256 = "6fe1c9db88a6cc3431ae97450e7811536b25afeb66477254e757763c43642675"
+
+C = "Software/G.729.1_V1.5_Part3_dtxcng_fixed-point_AnnexC/test_vectors_Annex_C_090727/"
+SUBDIR[C] = "g7291"
+
+# sha256 of each G.729.1 vector the core-layer tests read. test1_16k.b32 is a
+# 32 kbit/s G.729.1 bitstream and test1_16k.b8 the G.729-format bitstream of
+# the same input; test2_8k.* and test3_16k.* are the same with discontinuous
+# transmission (SID frames).
+G7291_PINS = {
+    C + "test1_16k.b32": "bf407d7b33f1106bd8b91635854861927ed1e8e21d001cd76a5803318ff6199f",
+    C + "test1_16k.b8": "e1344bad777465358ab060054d29581ed5641bd34306af327af0e615d77cd4fb",
+    C + "test2_8k.b8": "a56f3323d5fc845b89da30f2e22b930fac36174bd3841646a5140436c26c40f1",
+    C + "test2_8k.b12": "4f8aeaeea112d8e61f87b397c2c1d3305c08c01205754fb97a5120620f5273ab",
+    C + "test2_8k.b729b": "6e00f816f4f0c4b98c422a32d624eba424d9d4e37d76f3eab3cdfcf94e68e6ba",
+    C + "test3_16k.b32": "e3c1d5a9023fe687a9a9107390342d23cee344fee9201d131c552cfe21025e2e",
+    C + "test3_16k.b729b": "0fada1ac457e89fcb2eaeafce4393b434d33cad905bd80c0d180368c320939b0",
+}
+
 
 class FetchError(Exception):
     """The package or one of its vectors could not be fetched or verified."""
@@ -158,14 +194,14 @@ def sha256_file(path):
     return digest.hexdigest()
 
 
-def verify_package(path):
+def verify_package(path, expected_size=PACKAGE_SIZE, expected_sha256=PACKAGE_SHA256):
     """Refuse a package whose size or sha256 is not the pinned one."""
     size = os.path.getsize(path)
     actual = sha256_file(path)
-    if size != PACKAGE_SIZE or actual != PACKAGE_SHA256:
+    if size != expected_size or actual != expected_sha256:
         raise FetchError(
-            f"package sha256 mismatch: expected {PACKAGE_SHA256} "
-            f"({PACKAGE_SIZE} bytes), got {actual} ({size} bytes)"
+            f"package sha256 mismatch: expected {expected_sha256} "
+            f"({expected_size} bytes), got {actual} ({size} bytes)"
         )
 
 
@@ -206,11 +242,11 @@ def extract(package, dest, pins=None):
             partial.replace(target)
 
 
-def download(dest):
-    """Download the package into DEST (never /tmp) and return its path."""
+def download(dest, url=PACKAGE_URL, name=".g729-package.zip.part"):
+    """Download a package into DEST (never /tmp) and return its path."""
     pathlib.Path(dest).mkdir(parents=True, exist_ok=True)
-    target = pathlib.Path(dest) / ".g729-package.zip.part"
-    request = urllib.request.Request(PACKAGE_URL, headers={"User-Agent": "sipnab-fetch"})
+    target = pathlib.Path(dest) / name
+    request = urllib.request.Request(url, headers={"User-Agent": "sipnab-fetch"})
     with urllib.request.urlopen(request, timeout=120) as response, open(target, "wb") as out:
         while True:
             block = response.read(1 << 20)
@@ -223,25 +259,39 @@ def download(dest):
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument("--zip", type=pathlib.Path, help="use this local copy of the package")
+    parser.add_argument(
+        "--g7291-zip", type=pathlib.Path, help="use this local copy of the G.729.1 package"
+    )
+    parser.add_argument(
+        "--g7291-only", action="store_true", help="fetch only the G.729.1 package"
+    )
     parser.add_argument("dest", nargs="?", type=pathlib.Path)
     args = parser.parse_args(argv)
     dest = args.dest or pathlib.Path(os.environ.get(ENV_VAR) or DEFAULT_DEST)
 
-    downloaded = None
-    try:
-        if args.zip is not None:
-            package = args.zip
-        else:
-            downloaded = package = download(dest)
-        verify_package(package)
-        extract(package, dest)
-    except (FetchError, OSError, zipfile.BadZipFile) as err:
-        print(f"fetch-g729-vectors: {err}", file=sys.stderr)
-        return 1
-    finally:
-        if downloaded is not None and downloaded.exists():
-            downloaded.unlink()
-    print(f"fetch-g729-vectors: {len(ALL_PINS)} files verified in {dest}")
+    packages = [
+        (args.g7291_zip, G7291_PACKAGE_URL, G7291_PACKAGE_SIZE, G7291_PACKAGE_SHA256, G7291_PINS)
+    ]
+    if not args.g7291_only:
+        packages.insert(0, (args.zip, PACKAGE_URL, PACKAGE_SIZE, PACKAGE_SHA256, ALL_PINS))
+    verified = 0
+    for local, url, size, sha256, pins in packages:
+        downloaded = None
+        try:
+            if local is not None:
+                package = local
+            else:
+                downloaded = package = download(dest, url, ".itu-package.zip.part")
+            verify_package(package, size, sha256)
+            extract(package, dest, pins)
+            verified += len(pins)
+        except (FetchError, OSError, zipfile.BadZipFile) as err:
+            print(f"fetch-g729-vectors: {err}", file=sys.stderr)
+            return 1
+        finally:
+            if downloaded is not None and downloaded.exists():
+                downloaded.unlink()
+    print(f"fetch-g729-vectors: {verified} files verified in {dest}")
     return 0
 
 

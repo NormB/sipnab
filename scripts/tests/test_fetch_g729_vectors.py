@@ -136,3 +136,53 @@ def test_pins_cover_the_sixteen_conformance_pairs():
     for path, digest in fetch.PINS.items():
         assert path.startswith((A, B))
         assert len(digest) == 64 and int(digest, 16) >= 0
+
+
+C = "Software/G.729.1_V1.5_Part3_dtxcng_fixed-point_AnnexC/test_vectors_Annex_C_090727/"
+
+
+def test_g7291_pins_cover_the_core_layer_vectors():
+    names = {p.rsplit("/", 1)[1] for p in fetch.G7291_PINS}
+    # The G.729.1 bitstreams and the G.729-format bitstreams encoded from the
+    # same inputs, which the core-layer conformance tests compare.
+    assert names == {
+        "test1_16k.b32",
+        "test1_16k.b8",
+        "test2_8k.b8",
+        "test2_8k.b12",
+        "test2_8k.b729b",
+        "test3_16k.b32",
+        "test3_16k.b729b",
+    }
+    for path, digest in fetch.G7291_PINS.items():
+        assert path.startswith(C)
+        assert len(digest) == 64 and int(digest, 16) >= 0
+    assert len(fetch.G7291_PACKAGE_SHA256) == 64
+    assert "T-REC-G.729.1-200908-I!Cor1!SOFT-ZST-E" in fetch.G7291_PACKAGE_URL
+
+
+def test_extracts_g7291_vectors_into_their_own_directory(tmp_path):
+    vector = b"\x21\x6b\xa0\x00"
+    pins = {C + "test1_16k.b32": hashlib.sha256(vector).hexdigest()}
+    pkg = _zip(
+        tmp_path / "pkg.zip",
+        {
+            C + "test1_16k.b32": vector,
+            "Software/G.729.1_V1.5_Part3_dtxcng_fixed-point_AnnexC/src/main/X.c": b"x",
+        },
+    )
+    dest = tmp_path / "vectors"
+    fetch.extract(pkg, dest, pins)
+    written = sorted(p.relative_to(dest).as_posix() for p in dest.rglob("*") if p.is_file())
+    assert written == ["g7291/test1_16k.b32"]
+
+
+def test_refuses_a_g7291_package_with_the_wrong_hash(tmp_path):
+    g729 = _zip(tmp_path / "g729.zip", {A + "ALGTHM.BIT": b"x"})
+    g7291 = _zip(tmp_path / "g7291.zip", {C + "test1_16k.b32": b"not the ITU bytes"})
+    dest = tmp_path / "vectors"
+    out = _run("--g7291-zip", str(g7291), "--g7291-only", str(dest))
+    assert out.returncode == 1, out.stderr
+    assert fetch.G7291_PACKAGE_SHA256 in out.stderr
+    assert not (dest / "g7291").exists()
+    assert g729.exists() and g7291.exists()

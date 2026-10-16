@@ -1475,7 +1475,11 @@ fn wiki_intra_docs_links_resolve() -> Result<(), TestError> {
     // pages; benchmarks.md and architecture.md lost 3 each. Two in-page links
     // whose targets were renamed (tuning-capture.md "Which ring you get" and
     // the rest-api /tree link) became plain text.
-    const EXPECTED_WIKI_LINKS: usize = 1949;
+    // 1949 -> 1953: G.729.1. docs/g729.md +2 (the intro links "G.729.1
+    // streams", which links "Lost, late and repeated packets"),
+    // docs/vcon.md +1 and docs/rest-api.md +1 (`decoded_as` links "G.729.1
+    // streams").
+    const EXPECTED_WIKI_LINKS: usize = 1953;
     // Raised 459 -> 460 when SRC1 stage 1 shipped: docs/cli-reference.md's
     // `--hep-listen` row now points at cookbook recipe "Take signaling from HEP and media off the wire, in one process" in docs/examples.md
     // rather than restating how to pair `-L` with `-d`. Attributed per file

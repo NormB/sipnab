@@ -1780,7 +1780,7 @@ The server sends:
 
 | Message | Content |
 |---------|---------|
-| Text `{"type": "stream", ...}` | A stream, before its first packet: `stream` (its index), `ssrc`, `src`, `dst`, `codec`, `rate` (samples per second) and `format` (`s16le`) |
+| Text `{"type": "stream", ...}` | A stream, before its first packet: `stream` (its index), `ssrc`, `src`, `dst`, `codec`, `rate` (samples per second) and `format` (`s16le`); for a G.729.1 stream also `decoded_as`, saying the audio is the G.729.1 core layer decoded as G.729 at 8 kHz and naming the bit rates of the frames decoded before the announcement (see [The core layer of G.729.1](g729.md#the-core-layer-of-g7291)) |
 | Binary | One RTP packet's audio, or silence of the length of audio that did not arrive: where a packet's RTP timestamp is ahead of where the previous packet's audio ended, a message of zero samples covering the difference comes first. The first byte is the stream's index; the rest is 16-bit little-endian PCM at the stream's `rate`. The server sends a packet that repeats a timestamp once |
 | Text `{"type": "skipped", ...}` | A stream whose codec sipnab does not decode: `ssrc`, `codec`, `reason`. The server sends none of its packets |
 | Text `{"type": "gap", ...}` | `packets` of stream `stream` left retention before the server sent them, so the audio has a gap there |

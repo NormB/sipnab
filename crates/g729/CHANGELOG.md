@@ -8,6 +8,17 @@ crate follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- `g7291`: G.729.1 RTP payloads ([RFC 4749](https://www.rfc-editor.org/rfc/rfc4749.html),
+  [RFC 5459](https://www.rfc-editor.org/rfc/rfc5459.html)) read for their
+  core layer. `split_rtp` splits a payload into its header (`Header`,
+  `FrameType`, `Rate`), its whole frames, its SID and the octets it ignores;
+  `core_frames` gives a frame's first 20 octets as two G.729 frames, and
+  `core_sid` a SID's first 15 bits as a G.729 Annex B SID frame.
+  `Decoder::decode_g7291_rtp` decodes a payload's core layer to 8 kHz (160
+  samples per 20 ms frame) and `Decoder::decode_superframe` one 20 ms frame.
+  The higher layers are not decoded. Tested against the ITU-T G.729.1
+  test vectors.
+
 - A G.729 Annex A decoder with Annex B comfort noise: `Decoder::decode` for
   one frame, `Decoder::decode_rtp` for an RTP payload of 10-octet frames and
   an optional trailing 2-octet SID frame ([RFC 3551 section 4.5.6](https://www.rfc-editor.org/rfc/rfc3551.html#section-4.5.6)).
