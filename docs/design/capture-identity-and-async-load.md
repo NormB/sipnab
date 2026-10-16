@@ -194,13 +194,13 @@ one. `start_servers` takes the CLI without the config file, so plumbing the
 resolved range would change a public signature for a difference that only ever
 finds *more* SIP.
 
-**A capture inside the `-I` set is refused.** `open_capture` reuses
-`resolve_in_root` unchanged, and that resolver is also the output guard: it
-refuses a name that is, or sits inside, something this run reads. The message
-says "would overwrite", which reads oddly for a read. The outcome is right for a
-different reason — that file is already loaded, and re-reading it under a new
-identity would duplicate what the store holds — but an operator who points both
-`-I` and `--mcp-file-root` at one directory will find every name refused. The
-alternative is a second path resolver with different rules, and two
-implementations of one confinement rule is a defect pattern this tree has
-already been bitten by (issue #105, the symlink escape).
+**A capture inside the `-I` set is opened, not refused.** `open_capture` reads
+through `resolve_in_root`, which confines a name to `--mcp-file-root` and
+does not apply the overwrite guard. Only the tools that write go through
+`resolve_in_root_for_write`, which refuses every existing name, the run's own
+inputs included. Opening an `-I` file replaces the store with a fresh read
+under a new `capture_identity.instance`, so nothing is held twice: measured on
+2026-10-16, `open_capture` on the run's own `-I` file answered with
+`discarded_dialogs: 2` and loaded it again. The guard was once folded into
+the shared resolver and refused this case; it moved to the write path because
+it also refused `show_evidence`, which has to read the capture being analyzed.
