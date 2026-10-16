@@ -40,7 +40,7 @@ fn dump_config_warns_about_a_key_it_does_not_know() -> Result<(), TestError> {
 /// to exit, so `-D` exited 0 on each of them while a run exited 1.
 #[test]
 fn dump_config_refuses_what_a_run_refuses() -> Result<(), TestError> {
-    let cases: &[(&str, &str, &str)] = &[
+    let mut cases: Vec<(&str, &str, &str)> = vec![
         (
             "pbx",
             "[pbx]\naddresses = [\"not-an-ip\"]\n",
@@ -53,12 +53,16 @@ fn dump_config_refuses_what_a_run_refuses() -> Result<(), TestError> {
         ),
         ("mcp-tools", "[mcp]\ntools = [\"nope\"]\n", "[mcp] tools"),
         ("filters", "[filters]\nbad = \"method ==\"\n", "bad"),
-        (
+    ];
+    // A build without `vcon` reads no `[[vcon.rule]]`, so a run does not refuse
+    // a malformed one and `-D` must not either.
+    if cfg!(feature = "vcon") {
+        cases.push((
             "vcon-rule",
             "[[vcon.rule]]\nname = \"r\"\nwhen = \"method ==\"\ndir = \"vcons\"\n",
             "r",
-        ),
-    ];
+        ));
+    }
     for (label, toml, names) in cases {
         let dir = tempfile::tempdir()?;
         let config = dir.path().join("sipnab.toml");
