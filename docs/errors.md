@@ -156,19 +156,25 @@ You gave `--lint` with a suppression file (`{name}`, from `--lint-suppress-file`
 
 **Exit code:** 2.
 
-### `--cores {} cannot produce {}: the parallel reader rebuilds dialogs per shard and has no per-message stream or capture writer, so it would emit nothing and still exit 0. Drop --cores for these, or keep --cores and ask for a whole-capture view instead (--json-dialogs, --report, --call-report), which the parallel path does produce.`
+### `--cores {} does not do what {} asks for: the parallel reader rebuilds dialogs per shard and prints only whole-capture views, so it would skip them and still exit 0. Drop --cores for these, or keep --cores and ask for a whole-capture view instead (--json-dialogs, --report, --analyze, --call-report).`
 
-`--cores` above 1 with `-I` (and without `--multi-device`) uses the parallel file reader.
+`--cores` above 1 with `-I` (and without `--multi-device`) uses the parallel file reader. It prints the whole-capture views and nothing per message.
 
-- That reader rebuilds dialogs per shard. It has no per-message output or capture writer.
 - The first placeholder is the `--cores` value.
-- The second lists the requested outputs it cannot produce: `--json`/`--json-pretty`, `--text-dump`, `--fail2ban` and `-O/--output`.
-- sipnab refuses rather than write nothing and exit 0.
+- The second lists the flags on the command line, or the keys in the config file, that the parallel reader does not carry out:
+  - output: `--json`/`--json-pretty`, `--text-dump`, `--fail2ban`, `-O/--output`, `--hexdump`, `--group-by`, `--wireshark`, `--tshark-filter`, `--recommend-block`, `--evidence-out`;
+  - matching: `--match`, `--from`, `--to`, `--contact`, `--ua`, `--tag`;
+  - DTMF and hooks: `--telephone-event`, `--on-dialog-exec`, `--on-quality-exec`;
+  - transmission and servers: `--hep-send`, `--api`, `--mcp`, `--relay-compare`, `--allow-action`, `--syslog`;
+  - decryption: `--srtp-keys`, `--dtls-keylog`, `--keylog` (and `--keylog-fd`, `--keylog-watch`), `--tls-key`;
+  - `--replay`;
+  - confinement: `--sandbox`, `--seccomp`, and `--chroot` or `--user` whether set by the flag or by `[privilege]`.
+- sipnab refuses rather than skip them and exit 0.
 
 **What to do:** Do one of these:
 
-- Remove `--cores` (or set it to 1) to get those outputs.
-- Keep `--cores` and ask for `--json-dialogs`, `--report` or `--call-report` instead.
+- Remove `--cores` (or set it to 1) to keep those flags.
+- Keep `--cores` and drop them, asking for `--json-dialogs`, `--report`, `--analyze` or `--call-report` instead.
 
 **Exit code:** 2.
 

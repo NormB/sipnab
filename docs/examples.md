@@ -2227,12 +2227,15 @@ Offline, `--cores N` runs N reconstruction workers.
 
 **Pitfalls:**
 
-- It covers reconstruction and `--report`/`--json`.
-  - These stay on the single-threaded path regardless:
-    - per-message output ordering,
-    - the security detectors,
-    - SRTP decryption.
-  - So a run that needs those gains nothing.
+- It prints the whole-capture views: `--report`, `--json-dialogs`, `--analyze`
+  and `--call-report`. It prints no per-message lines.
+- It refuses, with exit 2, a flag it does not carry out: per-message output and
+  matching, the security detectors, decryption keys, DTMF, exec hooks, servers,
+  HEP forwarding, `--replay` and confinement. Drop `--cores` for those:
+
+  ```text
+  --cores 8 does not do what --hexdump asks for: the parallel reader rebuilds dialogs per shard and prints only whole-capture views, so it would skip them and still exit 0. Drop --cores for these, or keep --cores and ask for a whole-capture view instead (--json-dialogs, --report, --analyze, --call-report).
+  ```
 - On a **live** device, `--cores` means something different: N capture sockets.
   - That widens capture, not analysis.
   - Processing stays on one thread either way.

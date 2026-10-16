@@ -2033,7 +2033,9 @@ pub struct DialogArgs {
     #[arg(help_heading = "Dialog", long)]
     pub no_dialog: bool,
 
-    /// Filter dialogs by tag value.
+    /// Add this label to every dialog the run records, in the dialog's `tags`
+    /// (`--json-dialogs`, `GET /v1/dialogs/:call_id`). It labels; it does not
+    /// filter.
     #[arg(help_heading = "Dialog", long, value_name = "TAG")]
     pub tag: Option<String>,
 }
@@ -4716,9 +4718,11 @@ pub struct LimitsArgs {
     ///
     /// With `-I <file>`: N parallel OFFLINE reconstruction workers, sharding
     /// packets by host pair, each with private dialog and RTP-stream stores.
-    /// Covers reconstruction and `--report`/`--json`. Per-message output
-    /// ordering, security detectors and SRTP decrypt use the single-threaded
-    /// path regardless.
+    /// It prints the whole-capture views (`--report`, `--json-dialogs`,
+    /// `--analyze`, `--call-report`) and no per-message lines. A flag it does
+    /// not carry out (per-message output and matching, detectors, decryption,
+    /// DTMF, exec hooks, servers, HEP forwarding, `--replay`, confinement) is
+    /// refused with exit 2, naming it: drop `--cores` for those.
     ///
     /// With a live device: N capture SOCKETS, which the kernel hash-distributes
     /// the interface across (`PACKET_FANOUT`, Linux only; one socket elsewhere,

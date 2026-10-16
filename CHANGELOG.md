@@ -15,6 +15,9 @@ entry that carries them.
 - **`--cores N` lists calls and RTP streams in capture order, as `--cores 1` does.**
   - The merged report listed them in the order the workers were joined, so the same capture gave a different row order at different core counts: `--report`, `--json-dialogs`, `--analyze` and `--lint` findings all followed it.
   - The merged stores are now sorted by where each call's and stream's first frame was read: the file's place in the `-I` set, then the frame's position in that file.
+- **`--cores N` refuses the flags its parallel reader does not carry out, instead of skipping them.**
+  - An offline `--cores N` run printed no per-message lines, ran no detectors, decrypted nothing, decoded no DTMF, ran no exec hook, served no REST or MCP, forwarded no HEP, ignored `--replay`, and did not apply `--sandbox`, `--seccomp`, `--chroot` or `--user`. It exited 0 without a word, while `--help` said those stayed on the single-threaded path.
+  - Each such flag, and `[privilege] chroot` or `user` in the config file, now exits 2 and is named. The whole-capture views (`--report`, `--json-dialogs`, `--analyze`, `--call-report`) run as before.
 - **A reader that closes stdout no longer crashes sipnab.**
   - `sipnab ... | head` panicked with "failed printing to stdout: Broken pipe", exited 101 and wrote a crash report when the run printed after the reader had gone: `--wireshark`, `--tshark-filter`, `--recommend-block`, `-D`, the journal commands and the other end-of-run answers.
   - They now stop writing quietly when the reader has gone, and exit 1 with a message on any other write error, such as a full disk.

@@ -60,9 +60,7 @@ const KNOWN_UNTESTED: &[&str] = &[
     // root at all, and that is the path worth testing: it is one of the fatal
     // exits that used to abandon the running capture thread. See
     // cli_flag_behavior_test::startup_failures_after_the_capture_thread_starts_exit_cleanly.
-    "syslog", // requires a syslog daemon to observe alerts
     // ── Need crafted fixtures / hard-to-trigger events ──────────────────────
-    "telephone-event", // DTMF RTP display — needs a DTMF pcap + RTP-output check
     // `on-quality-exec` left this list on 2026-09-12, and the reference that
     // retired it is NARROWER than behavior coverage, so it is named here rather
     // than left to be assumed. `doc_commands_run_test` asserts that a

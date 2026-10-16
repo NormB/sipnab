@@ -2821,7 +2821,7 @@ fn cores_refuses_the_outputs_it_cannot_produce() -> Result<(), TestError> {
         );
         let stderr = String::from_utf8_lossy(&out.stderr);
         assert!(
-            stderr.contains(flag) && stderr.contains("cannot produce"),
+            stderr.contains(flag) && stderr.contains("does not do what"),
             "the refusal must name the flag it cannot honor, so the operator \
              knows which one to drop; got:\n{stderr}"
         );

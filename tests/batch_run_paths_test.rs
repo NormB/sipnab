@@ -927,7 +927,8 @@ fn cores_with_an_output_file_is_refused_and_names_the_flag() -> Result<(), TestE
     let run = sipnab(&["-N", "-I", SIP_CALL, "--cores", "2", "-O", s(&out)?])?;
     assert_eq!(run.code, Some(2), "{}", run.dump());
     assert!(
-        run.stderr.contains("--cores 2 cannot produce -O/--output"),
+        run.stderr
+            .contains("--cores 2 does not do what -O/--output asks for"),
         "{}",
         run.dump()
     );
