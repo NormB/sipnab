@@ -142,12 +142,8 @@ name through.
 > capture, such as a SPAN or mirror port, never on one the host needs.
 > libpcap's netmap module takes the interface's rings away from the kernel, so
 > the host stops receiving that interface's traffic for as long as the capture
-> runs.
->
-> Measured on a veth pair: a UDP socket on the host received 0 of 5
-> datagrams during a `netmap:` capture, and 5 of 5 during an ordinary capture
-> on the same interface. Point it at the interface carrying your SIP service
-> and the service goes dark until sipnab exits.
+> runs. A `netmap:` capture on the interface that carries your SIP service
+> stops that service from receiving traffic until sipnab exits.
 
 Debian and Ubuntu build libpcap without netmap.
 
@@ -157,53 +153,6 @@ Debian and Ubuntu build libpcap without netmap.
   instead. This is a different error, and the difference is the whole point:
   - the first says the module is absent,
   - the second says the module tried and your kernel has no netmap device.
-
-**On 0.5.183 and earlier, the musl tarballs' netmap module does not work
-with a current netmap kernel module.**
-
-- Those builds compiled libpcap against netmap's `v13.0` headers, which speak
-  netmap API 13.
-- A netmap module built from current netmap sources accepts API 14 and later.
-- On Debian 13 (kernel 6.12) the open fails with
-  `nm_open [948] NIOCREGIF failed: Invalid argument netmap:<iface>`.
-- The kernel log says `Minimum supported API is 14 (requested 13)`.
-
-netmap `v13.0`
-itself no longer compiles against that kernel, so there is no older module to
-pair it with.
-
-The same libpcap 1.10.6 built against current netmap headers
-captures through `netmap:` on that host. The 0.5.184 build uses them.
-Its published x86_64-musl binary captured 5 of 5 SIP messages through
-`netmap:` there. On 0.5.183 and earlier, treat the musl netmap column as not
-usable.
-
-**On 0.5.188 and earlier, a `netmap:` capture crashes on the first frame its
-filter drops after it has captured a packet.**
-
-- libpcap's netmap module reports a frame its BPF filter rejects as a
-  successful read that delivers no data.
-- Those builds then copied the previous packet's length from address 0.
-- The kernel log names the capture thread:
-  `capture-netmap:[...]: segfault at 0`.
-- It looked like a crash at shutdown. The dropped frame is usually link
-  chatter, such as an IPv6 router solicitation, that arrives while the
-  capture sits idle.
-- An idle capture survived only because no packet had yet set a length to
-  copy.
-- Later builds check that a read delivered a packet before they copy it.
-
-A `netmap:` capture on a link that carries no traffic at all used not to stop
-on SIGTERM until a frame arrived. `--duration` could not end it either.
-
-- libpcap's netmap module waits for a frame inside its own read. It never
-  hands control back while the link is silent.
-- Later builds break that read with `pcap_breakloop` when a stop is due.
-- Measured on the same host, on a veth pair with IPv6 turned off:
-  - the older build was still running 15 seconds after SIGTERM in 10 runs
-    of 10,
-  - the fixed build exited in 30 to 71 ms, and at 3.0 seconds under
-    `--duration 3s`.
 
 macOS builds libpcap on BPF alone, with netmap and DPDK both left out.
 Homebrew on macOS installs the same darwin tarball rather than bringing a
@@ -255,6 +204,18 @@ embedding one. Ask that library instead:
 strings /usr/lib/*/libpcap.so.* | grep 'libpcap version'
 ```
 
+#### Fix a netmap capture that fails on an older release
+
+Later releases fix three `netmap:` failures. Check your release with
+`sipnab --version`, find the symptom below, and
+[upgrade](#upgrade-sipnab) to the release in the last column or later.
+
+| Symptom | Affected releases | Fixed in |
+|---|---|---|
+| On a musl tarball, a `netmap:` open fails with `nm_open [948] NIOCREGIF failed: Invalid argument netmap:<iface>`, and the kernel log says `Minimum supported API is 14 (requested 13)` | 0.5.183 and earlier, musl tarballs | 0.5.184 |
+| The capture stops, often while idle, and the kernel log shows `capture-netmap:[...]: segfault at 0` | 0.5.188 and earlier | 0.5.189 |
+| A `netmap:` capture on a link with no traffic does not stop on SIGTERM or at the end of `--duration` | 0.5.189 and earlier | 0.5.190 |
+
 ### Architecture naming
 
 `x86_64` = `amd64` (Intel/AMD) and `aarch64` = `arm64` (ARM) are the same chips
@@ -270,10 +231,8 @@ target triple (`arch-vendor-os-abi`).
 - It is the canonical value meaning "no specific vendor". That is why the
   macOS files say `apple` in that position.
 - It is part of the platform name, not a failed detection or a broken build.
-- The names stay canonical triples deliberately:
-  - they match `rustc -vV`,
-  - they are what `SHA256SUMS.txt` and the build-provenance attestation cover,
-  - the install script constructs them.
+- `SHA256SUMS.txt`, the build-provenance attestation and the install script
+  all use the same names.
 
 Every command below reads the release number from a `VERSION` variable. Set
 it first, in the same shell, to the release you want, e.g. 0.5.222 for the
@@ -668,12 +627,9 @@ matching checksum file.
 | `sipnab-<version>.cdx.json` | the `sipnab` binary |
 | `sipnab-audio-<version>.cdx.json` | `libsipnab_audio.so`, the playback plugin |
 
-There are two because the plugin is a separate crate loaded at runtime with
-`dlopen`.
-
-- It brings in dependencies, `alsa`, `cpal`, `rodio` among them.
-- Those appear nowhere in the binary's own graph.
-- Scanning only the first would quietly miss them.
+Scan both files. The playback plugin is a separate library that the binary
+loads at run time with `dlopen`. Its dependencies, `rodio`, `cpal` and `alsa`
+among them, appear only in `sipnab-audio-<version>.cdx.json`.
 
 Feed either to any CycloneDX-aware scanner:
 
@@ -681,8 +637,9 @@ Feed either to any CycloneDX-aware scanner:
 grype "sbom:sipnab-$VERSION.cdx.json"      # or trivy sbom, osv-scanner, ...
 ```
 
-The binary SBOM covers all features. So it is a superset of what any single
-published binary contains. It never under-reports.
+The release generates the binary SBOM for the `full,bpf` feature set, the
+largest any published binary carries. It lists every dependency of every published binary,
+and can list some that the binary you downloaded does not contain.
 
 ### Rebuild a release and compare it
 
@@ -692,10 +649,8 @@ what it contains.
 - The `sipnab` binary in each Linux gnu tarball is reproducible. Building the
   release's tag yourself gives the same bytes.
 - Compare the binary, not the tarball or a package. Those carry file times.
-- The audio plugin beside the binary is not covered yet.
-- This applies to releases built after reproducible builds landed.
-  [`CHANGELOG.md`](https://github.com/NormB/sipnab/blob/main/CHANGELOG.md)
-  names the first one.
+- The audio plugin beside the binary is not covered.
+- This applies to 0.5.198 and later.
 
 You need a git checkout of the tag, not a source tarball. The binary embeds
 the commit hash and the tag, and a tarball has neither.
@@ -809,10 +764,10 @@ sipnab uses Cargo feature flags to control optional capability. The default buil
 | `api` | REST API + Prometheus metrics endpoint, over HTTP or HTTPS. Runs on a background thread in the sipnab process, sharing its address space — not a separate OS process, so treat the bind address and API key accordingly. | `native`, `axum`, `tokio`, `base64`, `hmac`, `sha2`, `utoipa`, `rustls`, `tokio-rustls`, `ring`, `hyper`, `hyper-util`, `futures-core` |
 | `mcp` | Model Context Protocol server, stdio transport. Lets an AI agent (Claude Code, Claude Desktop, …) drive sipnab. | `native`, `tokio`, `rmcp`, `base64`, `hmac`, `sha2` |
 | `mcp-http` | MCP server over HTTP (Streamable-HTTP). Adds the `--mcp-transport http` option. | `mcp`, `api`, `rmcp/transport-streamable-http-server` |
-| `metrics` | Standalone Prometheus `/metrics` server: a raw TCP listener and plain threads, no axum/tokio, so scraping does not drag in the `api` feature or its async runtime. Included by default. | `native`, `base64`, `rustls` |
-| `plugins` | WASM plugin host (`--plugin`): runs sandboxed third-party dialog detections, so a detection nobody here wrote cannot reach the process it inspects. | `native`, `wasmi` |
-| `bpf` | eBPF TLS capture (`--uprobe-backend bpf`): reads SIP plaintext **and the peer addresses** with no key material. Needs a nightly toolchain and `bpf-linker` to build, and a kernel with `CONFIG_DEBUG_INFO_BTF` to run — without the linker the binary still builds and the backend refuses at runtime rather than capturing nothing silently. | `native`, `aya`, `sipnab-bpf-types/pod` |
-| `vcon` | vCon export: one observed dialog as an IETF conversation container, with the audio inline when the run retained it, or signed and encrypted when a `[[vcon.rule]]` sets `encrypt_to`. Non-default, because a container that leaves the machine is a publication surface and a capture tool should not grow one unless an operator asks. Adds `--export-vcon`/`--vcon-out`, the `export_vcon` MCP tool and `GET /v1/dialogs/{call_id}/vcon`. | `native`, `sha2`, `hmac`, `base64`, `rustls`, `rsa`, `ring`, `aes`, `cbc`, `sha1_oaep`, `webpki`, `p256` |
+| `metrics` | Standalone Prometheus `/metrics` server on a plain TCP listener and threads. Needs neither the `api` feature nor an async runtime. Included by default. | `native`, `base64`, `rustls` |
+| `plugins` | WASM plugin host (`--plugin`): runs third-party dialog detections in a sandbox that has no access to the sipnab process. | `native`, `wasmi` |
+| `bpf` | eBPF TLS capture (`--uprobe-backend bpf`): reads SIP plaintext **and the peer addresses** with no key material. Needs a nightly toolchain and `bpf-linker` to build, and a kernel with `CONFIG_DEBUG_INFO_BTF` to run — without the linker the binary still builds, and `--uprobe-backend bpf` refuses at run time. | `native`, `aya`, `sipnab-bpf-types/pod` |
+| `vcon` | vCon export: one observed dialog as an IETF conversation container, with the audio inline when the run retained it, or signed and encrypted when a `[[vcon.rule]]` sets `encrypt_to`. Not in the default build. Adds `--export-vcon`/`--vcon-out`, the `export_vcon` MCP tool and `GET /v1/dialogs/{call_id}/vcon`. | `native`, `sha2`, `hmac`, `base64`, `rustls`, `rsa`, `ring`, `aes`, `cbc`, `sha1_oaep`, `webpki`, `p256` |
 | `opus` | Ogg Opus recordings in vCon containers (`audio_format = "opus"` on a `[[vcon.rule]]`). Compiles libopus from the source `opusic-sys` vendors and links it statically, so building it needs `cmake` and a C compiler; the binary needs no system libopus. In `full`; not in the static musl builds, which have no vCon export. | `vcon`, `opus` |
 | `archive` | Password-protected ZIP and 7z input: `-I evidence.zip` reads the captures inside, stored, deflated, WinZip AES or ZipCrypto, and `-I evidence.7z` reads LZMA or LZMA2, AES-256 or not, without leaving a decrypted copy on disk. Adds `--archive-password-file`, `--archive-password-command`, `--archive-password-stdin`, `--archive-password` and `--archive-password-encoding`, and reads `SIPNAB_ARCHIVE_PASSWORD` and the systemd credential `archive-password`. | `native`, `zip`, `sevenz-rust2`, `zeroize`, `unicode-normalization` |
 | `g729` | G.729 Annex A decoding, with Annex B comfort noise, for WAV export, vCon recordings, the live audio route and the dead-air measurement. Adds `--g729-tables`, `[g729]`, and the `sipnab g729 install` and `sipnab g729 status` commands. sipnab ships no ITU-T table values: each host installs them with `sipnab g729 install`, described on the G.729 decoding page. Pure Rust, so in `full` and in the static musl builds. | `native`, `g729` (crates/g729), `sha2`, `rustls`, `base64` |
@@ -878,21 +833,15 @@ panic = "abort"
 debug = "line-tables-only"
 ```
 
-Target binary size (musl, stripped): <= 19 MB.
+Target binary size (musl, stripped): <= 19 MB. The release workflow checks the 19 MB ceiling
+against each published musl binary and refuses to publish a larger one.
 
-A local `cargo build --release` strips at link time. So the line tables never
-reach the binary.
-
-- The release workflow appends `-C strip=none` to `RUSTFLAGS` for the same
-  profile instead.
-- [`scripts/split-debuginfo.sh`](https://github.com/NormB/sipnab/blob/main/scripts/split-debuginfo.sh)
-  moves the symbols into the `.debug` file each release publishes. It does
-  this before it strips the binary.
-- The published binary carries the same code either way. It is within 100
-  bytes of the same size (the split drops `.comment` and adds a
-  `.gnu_debuglink`).
-- The symbol file resolves the addresses in a
-  [crash report](troubleshooting.md#send-us-a-crash-report) or a core dump.
+A local `cargo build --release` strips the line tables at link time, so your
+own build carries no symbols. A release keeps them in a separate file instead:
+download the `.debug` file (Linux) or `.dSYM.zip` (macOS) that matches your
+binary from the [release artifacts](#release-artifacts) to resolve the
+addresses in a [crash report](troubleshooting.md#send-us-a-crash-report) or a
+core dump.
 
 ## Cross-compilation
 
@@ -960,9 +909,31 @@ TUI and pcap file analysis work fully.
 - Live capture requires root or BPF device access.
 - Install libpcap headers via Xcode Command Line Tools (included by default) or Homebrew.
 
+Check the oldest macOS version a build supports. The release builds use the
+Rust compiler's default for each target. For an Intel build:
+
+```bash
+rustc --print deployment-target --target x86_64-apple-darwin
+```
+
+```text
+MACOSX_DEPLOYMENT_TARGET=10.12
+```
+
+For an Apple Silicon build:
+
+```bash
+rustc --print deployment-target --target aarch64-apple-darwin
+```
+
+```text
+MACOSX_DEPLOYMENT_TARGET=11.0
+```
+
 ### FreeBSD / other
 
-Should build and run. Live capture support depends on platform pcap implementation. Not regularly tested.
+The project does not build, test or publish sipnab for FreeBSD or other
+platforms. Live capture there depends on the platform's libpcap.
 
 ## Check it worked
 
@@ -1023,46 +994,52 @@ you expected (e.g. that `mcp-http` is present on a server build).
   reach](#which-capture-backends-an-artifact-can-reach).
 - `-V` prints only the first line.
 
-The list differs by artifact, and deliberately. The example above is a
-`*-linux-gnu` release binary on a Debian 13 host. That host's libpcap names no
-alternate backend.
+The feature list differs by artifact. The example above is a `*-linux-gnu`
+release binary on a Debian 13 host. That host's libpcap names no alternate
+backend.
 
-Those binaries carry `bpf`, the uprobe backend that can report the peer
-address a TLS session went out to.
+The `*-linux-gnu` binaries carry `bpf`, the uprobe backend that can report the
+peer address a TLS session went out to.
 
-- The static musl tarballs and the macOS builds do not carry it:
-  - musl has no room under the published size ceiling,
-  - `aya` is Linux-only.
-- So on those, `--uprobe-tls` falls back to the `tracefs` backend. Its dialogs
-  name a process rather than a peer.
-- `--uprobe-backend bpf` refuses rather than pretending.
+- The static musl tarballs and the macOS builds do not carry it.
+- On those, `--uprobe-tls` uses the `tracefs` backend. Its dialogs name a
+  process rather than a peer.
+- `--uprobe-backend bpf` exits with an error that names the missing `bpf`
+  feature.
 
 The musl tarballs also
 omit `audio` (static musl has no `dlopen`).
 
-A first non-interactive run against a capture looks like this. Each SIP
-message gets one line: timestamp, source, destination, method or status line,
-transport:
+A first non-interactive run looks like this. The capture is
+`tests/pcap-samples/Asterisk_ZFONE_XLITE.pcap` from the source repository: a
+registration, an OPTIONS exchange, two refused subscriptions and one call. Each SIP message gets one line:
+timestamp, source, destination, method or status line, transport:
+
+```bash
+sipnab -N -I Asterisk_ZFONE_XLITE.pcap | head -4
+```
 
 ```text
-$ sipnab -N -I demo.pcap | head -4
-09:14:22.881 192.0.2.5:44285 -> 192.0.2.1:5060 REGISTER UDP
-09:14:22.883 192.0.2.1:5060 -> 192.0.2.5:44285 401 Unauthorized UDP
-09:14:22.901 192.0.2.5:44285 -> 192.0.2.1:5060 REGISTER UDP
-09:14:22.904 192.0.2.1:5060 -> 192.0.2.5:44285 200 OK UDP
+07:12:49.978 192.168.10.41:13434 -> 192.168.10.2:5060 REGISTER UDP
+07:12:49.978 192.168.10.2:5060 -> 192.168.10.41:13434 401 Unauthorized UDP
+07:12:49.984 192.168.10.41:13434 -> 192.168.10.2:5060 REGISTER UDP
+07:12:49.987 192.168.10.2:5060 -> 192.168.10.41:13434 OPTIONS UDP
 ```
 
 `--report --no-cli-print` gives the per-call view of the same file instead:
 
-```text
-$ sipnab -N -I demo.pcap --report --no-cli-print | head -4
-Call-ID                          From           To             State        Code   Duration   Msgs   PDD      Tags
--------------------------------------------------------------------------------------------------------------------------
-a84b4c76e66710@192.0.2.5         alice          alice          Registered   200    0s         4      -        -
-3848276298220188511@192.0.2.6    alice          bob            Completed    200    14s        15     0.7s     -
+```bash
+sipnab -N -I Asterisk_ZFONE_XLITE.pcap --report --no-cli-print | head -4
 ```
 
-Two things surprise people here.
+```text
+Call-ID                          From           To             State        Code   Duration   Msgs   PDD      Tags
+-------------------------------------------------------------------------------------------------------------------------
+M2NhZDAwZmYwZGNkYmZjYzQzYmY...   10009          10009          Registered   200    0s         4      -        -
+6255692e34af33dd022daf7f531...   asterisk       10009          Completed    200    0s         2      -        -
+```
+
+Read two columns with care.
 
 - The `Code` column is the final answer to the dialog's INVITE, or to the
   request that opened a dialog without one.
@@ -1327,48 +1304,3 @@ sudo rm -rf /etc/sipnab
 - [examples.md](examples.md) — copy-paste recipes for the most common tasks
 - [keybindings.md](keybindings.md) — driving the interactive TUI
 - [cli-reference.md](cli-reference.md) — every flag, for headless use
-
-<details>
-<summary>Why / how we know</summary>
-
-**The glibc cutover.** 2.36 is the floor the release workflow enforces on
-every gnu binary.
-
-- The installer uses the same cutover. It serves musl only to hosts below
-  glibc 2.36 or with no glibc at all.
-- One number in both places stops a host the gnu build runs on from taking
-  the static build. That host would lose TUI audio for nothing.
-
-**The two macOS floors.** They differ because they are the pinned compiler's
-own defaults, one per target.
-
-- `release.yml` pins `MACOSX_DEPLOYMENT_TARGET` to exactly those two values.
-  So a toolchain bump cannot move a published floor without someone deciding
-  to.
-- `published_macos_floors_match_the_toolchain` holds
-  [`website/config.toml`](https://github.com/NormB/sipnab/blob/main/website/config.toml)
-  to what the workflow pins.
-  - It refuses a floor below the compiler's own default.
-  - Such a floor would agree on paper and still name an OS the binary cannot
-    run on.
-
-Read them from the toolchain rather than trusting a copy:
-
-```bash
-rustc --print deployment-target --target x86_64-apple-darwin
-```
-
-```bash
-rustc --print deployment-target --target aarch64-apple-darwin
-```
-
-**How the release keeps the glibc floor.** The gnu targets build inside a
-Debian bookworm container. A release-workflow gate rejects any binary linking
-a `GLIBC_` symbol newer than 2.36. A gate enforces the floor rather than
-estimating it.
-
-**The size ceiling.** The "Enforce published binary size" step in
-`release.yml` checks the 19 MB ceiling against the real musl artifact on every
-release.
-
-</details>

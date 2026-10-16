@@ -59,6 +59,9 @@ Already written, and narrower:
   - the completeness caveat carried in two surfaces from one value, and the test that fails if they diverge;
   - the deterministic UUIDv8 and its collision window;
   - a credential filter that removes nothing today on purpose.
+- [Operator guide engineering notes](operator-guide-notes.md) — the record
+  behind the operator guides: why each limit exists, the release that changed
+  it, and the measurements behind it.
 
 Other starting points:
 

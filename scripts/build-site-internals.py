@@ -156,6 +156,14 @@ PAGES: list[tuple[str, str, int, str, str]] = [
         "Where each vCon section comes from, the completeness caveat carried "
         "in two surfaces from one value, and the deterministic uuid.",
     ),
+    (
+        "operator-guide-notes.md",
+        "operator-guide-notes.md",
+        15,
+        "Operator Guide Engineering Notes",
+        "The engineering record behind the operator guides: why each limit "
+        "exists, the release that changed it, and the measurements behind it.",
+    ),
 ]
 
 # The developer index becomes the Zola section landing page.
