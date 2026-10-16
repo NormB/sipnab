@@ -1036,12 +1036,13 @@ not-found message lists the held ids from a scan of the whole ring buffer,
 because a truncated scan cannot report what it truncated. The tool checks that
 `rule_name` is a bare identifier before writing it into a regular expression.
 
-The tool returns the `NotEnabled` refusal text in
+The tool returns the `NotEnabled` refusal in
 [`src/mcp/tools/expectations.rs`](https://github.com/NormB/sipnab/blob/main/src/mcp/tools/expectations.rs)
-(`this server holds no findings: no detection rule was armed`) only when the
-server has no alert engine at all. A normal server run always attaches one (see
-the comment at [`src/mcp/server.rs`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs) around line 90), so with no detector armed
-the observed answer is the `not_found` refusal ending "This server holds: none".
+(`this server holds no findings: no detection rule was armed`) when the server
+has no alert engine or no armed detector. The armed detectors decide it, not
+the engine, because a normal server run attaches an engine whether or not it
+arms a detector (see the `armed_detections` field in
+[`src/mcp/server.rs`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs)).
 
 ## Notes for [server bundle](@/docs/mcp-tools-server.md)
 
