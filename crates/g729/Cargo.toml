@@ -62,7 +62,7 @@ required-features = ["std"]
 
 [dependencies]
 sha2 = { version = "0.11", optional = true }
-zip = { version = "8.6", default-features = false, features = ["deflate-flate2-zlib-rs"], optional = true }
+zip = { version = "9.0.4", default-features = false, features = ["deflate-flate2-zlib-rs"], optional = true }
 
 [dev-dependencies]
 g729 = { package = "sipnab-g729", path = ".", default-features = false, features = ["std"] }

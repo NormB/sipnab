@@ -8,6 +8,12 @@ sipnab is pre-1.0: the public API and the CLI surface are not stable, and a
 breaking change may land in any release. Breaking changes are called out in the
 entry that carries them.
 
+## [Unreleased]
+
+### Security
+
+- **`zip` 9.0.4 replaces 8.6.0** in sipnab and `sipnab-g729`, clearing RUSTSEC-2026-0367, RUSTSEC-2026-0368 and RUSTSEC-2026-0369. All three concern `zip`'s `extract()` functions (SUID/SGID bits, symlink targets and permissions applied through symlinks), which sipnab does not call: it reads archive members into memory by name. The upgrade keeps `cargo audit` clean.
+
 ## [0.5.224] - 2026-10-16
 
 ### Fixed
