@@ -643,8 +643,7 @@ mod http {
     ///
     /// # Errors
     ///
-    /// The bind is non-loopback and no authentication is configured (D18 +
-    /// 8.2 rule).
+    /// The bind is non-loopback and no authentication is configured.
     ///
     /// # Side effects
     ///
@@ -654,13 +653,14 @@ mod http {
         auth_config: &VerifierConfig,
         serves_tls: bool,
     ) -> anyhow::Result<()> {
-        // Refuse non-loopback bind without auth (D18 + 8.2 rule).
+        // Refuse a non-loopback bind without authentication.
         if !bind.ip().is_loopback() && auth_config.is_unconfigured() {
             anyhow::bail!(
                 "MCP HTTP refuses to start: --mcp-bind {bind} is non-loopback \
                  but no --mcp-token / --mcp-token-file / SIPNAB_MCP_TOKEN / \
                  --mcp-signing-key / --mcp-signing-key-file / \
-                 SIPNAB_MCP_SIGNING_KEY was supplied. See D18 in the v6 plan."
+                 SIPNAB_MCP_SIGNING_KEY was supplied. Bind 127.0.0.1, or supply \
+                 one of them."
             );
         }
         if !serves_tls && !bind.ip().is_loopback() {
@@ -974,6 +974,30 @@ mod http {
                 "a static secret carries no claims, so it stamps no id — the \
                  absence is the record, not a blank one"
             );
+            Ok(())
+        }
+
+        /// A non-loopback bind with no authentication is refused with the two
+        /// ways out — a loopback bind, or a token or signing key — and no
+        /// reference to an internal planning document.
+        #[test]
+        fn an_unauthenticated_public_bind_is_refused_with_its_remedies() -> Result<(), TestError> {
+            let bind: SocketAddr = "0.0.0.0:8812".parse()?;
+            let Err(refusal) = refuse_unsafe_bind(bind, &VerifierConfig::default(), false) else {
+                return Err("an unauthenticated 0.0.0.0 bind was accepted".into());
+            };
+            let text = refusal.to_string();
+            for wanted in [
+                "--mcp-bind 0.0.0.0:8812",
+                "127.0.0.1",
+                "--mcp-token",
+                "--mcp-signing-key",
+            ] {
+                assert!(text.contains(wanted), "missing {wanted:?}: {text}");
+            }
+            for internal in ["D18", "plan"] {
+                assert!(!text.contains(internal), "names {internal:?}: {text}");
+            }
             Ok(())
         }
 
