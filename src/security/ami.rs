@@ -75,10 +75,10 @@ pub enum AmiObservation {
     },
     /// A login was attempted in the clear.
     CleartextLogin {
-        /// The account named, when the payload carried one. Bounded.
-        ///
-        /// Echoed on purpose: a finding that names the exposed account can be
-        /// acted on, and one that says "an account" cannot. The SECRET is
+        /// The account the payload named, bounded, on the observation an alert
+        /// reports for that payload. It is always null in the aggregated
+        /// findings, which count per address pair and never per account,
+        /// because the name is chosen by whoever sent the login. The secret is
         /// never echoed.
         username: Option<String>,
         /// Whether a `Secret:` line was present.
@@ -329,12 +329,23 @@ mod tests {
     /// Any error a test can return; `?` converts into it.
     type TestError = Box<dyn std::error::Error>;
 
-    /// Recording aggregates by pair, and never by the account named.
-    ///
-    /// One AMI session reconnecting in a loop is one finding with a count, not
-    /// a thousand findings. The username is deliberately outside the key: this
-    /// path runs before authentication, so the field is attacker-chosen, and
-    /// keying on it would let a sender grow the map without limit.
+    /// The schema an MCP client reads says the username is null in the
+    /// aggregated findings, which is what `findings_from` returns; it does
+    /// not promise an account it never carries.
+    #[cfg(feature = "mcp")]
+    #[test]
+    fn the_schema_says_the_aggregate_carries_no_username() -> Result<(), TestError> {
+        let schema = serde_json::to_value(rmcp::schemars::schema_for!(AmiObservation))?;
+        // The description keeps the doc comment's line breaks; compare words.
+        let text = schema.to_string().replace("\\n", " ");
+        assert!(
+            text.contains("always null in the aggregated findings"),
+            "{text}"
+        );
+        assert!(!text.contains("Echoed on purpose"), "{text}");
+        Ok(())
+    }
+
     /// Recording aggregates by pair, and never by the account named.
     ///
     /// One AMI session reconnecting in a loop is one finding with a count, not
