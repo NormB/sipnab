@@ -2896,8 +2896,8 @@ pub struct SecurityArgs {
     /// produced it -- which capture, which filter, which port range. The
     /// record carries the argv, the working directory, the effective user,
     /// the wall-clock start, the version and feature set, and the capture
-    /// instance every MCP and REST answer is stamped with, so an artefact can
-    /// be joined back to the command that made it.
+    /// instance every MCP and REST answer about the capture is stamped with,
+    /// so an artefact can be joined back to the command that made it.
     ///
     /// Written once, at startup, before the config takes effect and before
     /// any capture device is opened. sipnab reads the config file first, so
@@ -4106,12 +4106,15 @@ pub struct McpArgs {
     )]
     pub mcp_allow_tls_capture: bool,
 
-    /// Name this box reports as, on every answer it gives.
+    /// Name this box reports as, on the answers it gives about the capture.
     ///
     /// Defaults to the system hostname. It appears in `capture_identity.node`
-    /// on every MCP and REST response, so an agent querying an SBC and two
-    /// PBXes at once can tell WHICH of them saw a given fact — "answered with
-    /// 407" is an incomplete finding until you know where.
+    /// on every MCP and REST answer about the loaded capture (MCP
+    /// `capture_health`, `timeline`, `describe_endpoint`, `runtime_stats` and
+    /// `hep_senders` and their REST routes are the exceptions), so an agent
+    /// querying an SBC and two PBXes at once can tell WHICH of them saw a
+    /// given fact — "answered with 407" is an incomplete finding until you
+    /// know where.
     ///
     /// Distinct from the capture instance, which rotates when a different
     /// capture is loaded. The node is the box and stays put, so a capture

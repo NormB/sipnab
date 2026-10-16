@@ -3401,7 +3401,8 @@ sipnab records a secret given on the command line as `[redacted]`. That covers:
 
 **What to look for:**
 
-- `capture.instance` is the identifier every MCP and REST answer carries.
+- `capture.instance` is the identifier every MCP and REST answer about the loaded capture carries, in `capture_identity.instance`.
+  - [MCP across an estate](@/docs/mcp-estate.md#check-what-federation-cannot-prove) and [the REST reference](@/docs/api.md#which-capture-these-counts-came-from) list the few answers that do not carry it.
   - So it joins an artifact back to the command that made it.
 - `features` is the build, not the flags.
   - A report can miss a section because the binary lacked the Cargo feature.

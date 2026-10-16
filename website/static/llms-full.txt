@@ -4644,7 +4644,8 @@ sipnab records a secret given on the command line as `[redacted]`. That covers:
 
 **What to look for:**
 
-- `capture.instance` is the identifier every MCP and REST answer carries.
+- `capture.instance` is the identifier every MCP and REST answer about the loaded capture carries, in `capture_identity.instance`.
+  - [MCP across an estate](mcp-estate.md#check-what-federation-cannot-prove) and [the REST reference](rest-api.md#which-capture-these-counts-came-from) list the few answers that do not carry it.
   - So it joins an artifact back to the command that made it.
 - `features` is the build, not the flags.
   - A report can miss a section because the binary lacked the Cargo feature.
@@ -7146,7 +7147,13 @@ console.log(`${dialogs.length} dialogs (${total} total)`);
       "updated_at": "2026-04-13T10:30:03Z",
       "frame": "capture.pcap#41@6f3a1c02b8d4e795"
     }
-  ]
+  ],
+  "capture_identity": {
+    "node": "capture-01",
+    "instance": "117b0818df1033d4fd2a28-2",
+    "dialog_generation": 13,
+    "stream_generation": 2
+  }
 }
 ```
 
@@ -7368,7 +7375,13 @@ console.log(`State: ${dialog.state}, Messages: ${dialog.msg_count}`);
       "round_trip_source": "xr_voip_metrics",
       "quality_intervals": []
     }
-  ]
+  ],
+  "capture_identity": {
+    "node": "capture-01",
+    "instance": "117b0818df1033d4fd2a28-2",
+    "dialog_generation": 13,
+    "stream_generation": 2
+  }
 }
 ```
 
@@ -7645,7 +7658,13 @@ the MCP `get_dialog_report` tool or the CLI `--call-report`.
     "private_media_address": false,
     "hints": []
   },
-  "streams": []
+  "streams": [],
+  "capture_identity": {
+    "node": "capture-01",
+    "instance": "117b0818df1033d4fd2a28-2",
+    "dialog_generation": 13,
+    "stream_generation": 2
+  }
 }
 ```
 
@@ -7686,7 +7705,13 @@ curl -s -H "Authorization: Bearer $SIPNAB_API_KEY" http://127.0.0.1:8080/v1/dial
     }
   ],
   "total_matched": 1,
-  "heuristic_only": false
+  "heuristic_only": false,
+  "capture_identity": {
+    "node": "capture-01",
+    "instance": "117b0818df1033d4fd2a28-2",
+    "dialog_generation": 13,
+    "stream_generation": 2
+  }
 }
 ```
 
@@ -7742,7 +7767,13 @@ curl -s -H "Authorization: Bearer $SIPNAB_API_KEY" http://127.0.0.1:8080/v1/dial
   "heuristic_edges": 0,
   "total_messages": 12,
   "first_activity": "2026-09-15T12:00:00+00:00",
-  "last_activity": "2026-09-15T12:00:41+00:00"
+  "last_activity": "2026-09-15T12:00:41+00:00",
+  "capture_identity": {
+    "node": "capture-01",
+    "instance": "117b0818df1033d4fd2a28-2",
+    "dialog_generation": 13,
+    "stream_generation": 2
+  }
 }
 ```
 
@@ -7797,7 +7828,13 @@ curl -s -H "Authorization: Bearer $SIPNAB_API_KEY" http://127.0.0.1:8080/v1/dial
       "expected": "a Max-Forwards header on the request",
       "explanation": "A request with no Max-Forwards can loop indefinitely across proxies."
     }
-  ]
+  ],
+  "capture_identity": {
+    "node": "capture-01",
+    "instance": "117b0818df1033d4fd2a28-2",
+    "dialog_generation": 13,
+    "stream_generation": 2
+  }
 }
 ```
 
@@ -8801,7 +8838,13 @@ streams.forEach(s =>
       "mos_grounded": true,
       "mos_grounding": "published"
     }
-  ]
+  ],
+  "capture_identity": {
+    "node": "capture-01",
+    "instance": "117b0818df1033d4fd2a28-2",
+    "dialog_generation": 13,
+    "stream_generation": 2
+  }
 }
 ```
 
@@ -9706,6 +9749,24 @@ sipnab reads the instance and both generations at the same moment.
 
 `null` when nobody told this server what capture it holds.
 
+**These answers carry `capture_identity`:** `GET /v1/dialogs`,
+`/v1/dialogs/{call_id}`, `/v1/dialogs/{call_id}/report`,
+`/v1/dialogs/{call_id}/correlated`, `/v1/dialogs/{call_id}/tree`,
+`/v1/dialogs/{call_id}/lint`, `/v1/dialogs/compare`, `/v1/dialogs/tail`,
+`/v1/dialogs/rates`, `/v1/streams`, `/v1/streams/{id}`, `/v1/report`,
+`/v1/stats`, `/v1/aggregate`, `/v1/talkers` and `/v1/security/findings`.
+Each one carries the identity the MCP tool answering the same question
+carries, read under the same locks as the answer. These answers do not carry it:
+
+| Answer | Why |
+|---|---|
+| `/v1/report?format=yang-json` | RFC 7951 allows no member at the top of the document that its YANG module does not declare. Request `format=json` for the identity. |
+| `/v1/dialogs/{call_id}/vcon` | The body is the vCon container itself. MCP `export_vcon` puts the identity on the envelope around its containers. |
+| `/v1/timeline`, `/v1/endpoints`, `/v1/runtime`, `/v1/hep/senders` | The MCP tools `timeline`, `describe_endpoint`, `runtime_stats` and `hep_senders` do not carry it either. |
+| `/v1/capabilities`, `/v1/captures/compare`, `/v1/vcon/spool`, `/v1/vcon/fetch/{uuid}`, `/v1/tfps/*`, `/v1/relay/*` | The answer is not about the loaded capture: it describes the build, two files on the file root, the spool, the vCon store, the TFPS peer, or the media relay. |
+| `/v1/persistence`, `/v1/calls/live` | No MCP tool answers the same question. |
+| `/health`, `/metrics`, the audio routes | They answer text or audio, not a JSON object. |
+
 | Key | Meaning |
 |-----|---------|
 | `source` | `live`, `file`, or `unknown` |
@@ -9900,7 +9961,13 @@ curl -s -H "Authorization: Bearer $SIPNAB_API_KEY" "http://127.0.0.1:8080/v1/agg
   ],
   "other_count": 0,
   "distinct_values": 3,
-  "total_matched": 438
+  "total_matched": 438,
+  "capture_identity": {
+    "node": "capture-01",
+    "instance": "117b0818df1033d4fd2a28-2",
+    "dialog_generation": 13,
+    "stream_generation": 2
+  }
 }
 ```
 
@@ -10006,7 +10073,13 @@ curl -s -H "Authorization: Bearer $SIPNAB_API_KEY" "http://127.0.0.1:8080/v1/dia
     "methods": ["INVITE"],
     "hints": ["the callee was busy"]
   },
-  "differences": ["state", "final_status_code", "msg_count", "methods"]
+  "differences": ["state", "final_status_code", "msg_count", "methods"],
+  "capture_identity": {
+    "node": "capture-01",
+    "instance": "117b0818df1033d4fd2a28-2",
+    "dialog_generation": 13,
+    "stream_generation": 2
+  }
 }
 ```
 
@@ -10055,7 +10128,13 @@ curl -s -H "Authorization: Bearer $SIPNAB_API_KEY" "http://127.0.0.1:8080/v1/dia
     { "call_id": "a@example.com", "state": "InCall", "updated_at": "2026-09-15T12:00:03Z" }
   ],
   "returned": 1,
-  "next_cursor": "2026-09-15T12:00:03Z|a@example.com"
+  "next_cursor": "2026-09-15T12:00:03Z|a@example.com",
+  "capture_identity": {
+    "node": "capture-01",
+    "instance": "117b0818df1033d4fd2a28-2",
+    "dialog_generation": 13,
+    "stream_generation": 2
+  }
 }
 ```
 
@@ -10130,7 +10209,13 @@ curl -s -H "Authorization: Bearer $SIPNAB_API_KEY" "http://127.0.0.1:8080/v1/dia
   ],
   "other_count": 0,
   "distinct_values": 1,
-  "total_matched": 120
+  "total_matched": 120,
+  "capture_identity": {
+    "node": "capture-01",
+    "instance": "117b0818df1033d4fd2a28-2",
+    "dialog_generation": 13,
+    "stream_generation": 2
+  }
 }
 ```
 
@@ -10187,7 +10272,13 @@ curl -s -H "Authorization: Bearer $SIPNAB_API_KEY" "http://127.0.0.1:8080/v1/tal
   ],
   "truncated": true,
   "distinct_talkers": 47,
-  "total_matched": 1200
+  "total_matched": 1200,
+  "capture_identity": {
+    "node": "capture-01",
+    "instance": "117b0818df1033d4fd2a28-2",
+    "dialog_generation": 13,
+    "stream_generation": 2
+  }
 }
 ```
 
@@ -10360,7 +10451,13 @@ curl -s -H "Authorization: Bearer $SIPNAB_API_KEY" "http://127.0.0.1:8080/v1/sec
   "truncated": false,
   "armed_kinds": ["scanner"],
   "detection_armed": true,
-  "observation_gaps": []
+  "observation_gaps": [],
+  "capture_identity": {
+    "node": "capture-01",
+    "instance": "117b0818df1033d4fd2a28-2",
+    "dialog_generation": 13,
+    "stream_generation": 2
+  }
 }
 ```
 
@@ -18250,7 +18347,7 @@ Multiple diagnostic flags combine with OR.
 | `--group-by` | `<FIELD>` | -- | 0.3.0 | Group output by field (e.g., `call-id`, `from`, `method`) |
 | `--max-groups` | `<N>` | `100000` | 0.5.97 | Distinct `--group-by` keys one run retains. Past it sipnab refuses new keys and warns that the output is incomplete. `-l`/`--limit` bounds tracked dialogs, not this buffer. Requires `--group-by`. Config: `[limits] max_groups` |
 | `--max-grouped-messages` | `<N>` | `200000` | 0.5.97 | Messages `--group-by` buffers across every group. sipnab holds them in memory until the capture ends, because the last packet may belong to the first group. Requires `--group-by`. Config: `[limits] max_grouped_messages` |
-| `--node-name` | `<NAME>` | hostname | 0.5.81 | Name this box reports as, in `capture_identity.node` on every MCP and REST answer. Lets an agent querying several servers at once tell which one saw a given fact. Distinct from the capture instance, which changes when a different capture loads; the node name stays the same. **The default puts your hostname on the wire.** Clipped to 64 characters. sipnab refuses an empty value (exit 2). Config: `[capture] node_name` |
+| `--node-name` | `<NAME>` | hostname | 0.5.81 | Name this box reports as, in `capture_identity.node` on every MCP and REST answer about the loaded capture. The exceptions are MCP `capture_health`, the `timeline`, `describe_endpoint`, `runtime_stats` and `hep_senders` tools and their REST routes, a `yang-json` report body, and a vCon container served as the body of `GET /v1/dialogs/{call_id}/vcon`; [MCP across an estate](mcp-estate.md#check-what-federation-cannot-prove) and [the REST reference](rest-api.md#which-capture-these-counts-came-from) list each answer. Lets an agent querying several servers at once tell which one saw a given fact. Distinct from the capture instance, which changes when a different capture loads; the node name stays the same. **The default puts your hostname on the wire.** Clipped to 64 characters. sipnab refuses an empty value (exit 2). Config: `[capture] node_name` |
 
 **Examples**
 - `sipnab -N -I capture.pcap --no-delta-time` — print absolute times when your config file sets `[display] delta_time = true`
@@ -27909,7 +28006,7 @@ Packet capture defaults.
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
 | `device` | string | -- | Default network interface. `--device` overrides it |
-| `node_name` | string | hostname | Name this box reports as, in the `capture_identity.node` field of MCP answers such as `list_dialogs`, `get_dialog`, `triage_call` and `capture_status` ([MCP across an estate](mcp-estate.md) lists them), and of `GET /v1/stats`. Lets an agent querying several servers tell WHICH one saw a given fact. `--node-name` overrides it, so a deployed config can name the box while a one-off command relabels it. The default puts the hostname on the wire. Clipped to 64 characters. sipnab refuses an empty value (exit 1) |
+| `node_name` | string | hostname | Name this box reports as, in the `capture_identity.node` field of MCP answers such as `list_dialogs`, `get_dialog`, `triage_call` and `capture_status` ([MCP across an estate](mcp-estate.md) lists them), and of the REST answers about the loaded capture, such as `GET /v1/dialogs` and `GET /v1/stats` ([the REST reference](rest-api.md#which-capture-these-counts-came-from) lists them). Lets an agent querying several servers tell WHICH one saw a given fact. `--node-name` overrides it, so a deployed config can name the box while a one-off command relabels it. The default puts the hostname on the wire. Clipped to 64 characters. sipnab refuses an empty value (exit 1) |
 | `portrange` | string | `"5060-5061"` | SIP **signaling** port range; media is never gated by it. sipnab skips any SIP message with both ports outside the range, and a skipped message reaches no count, no dialog and no output — so this key decides how much of a capture you analyze at all. Widen it (`"1-65535"`) unless you know every port in play. `--portrange` overrides it |
 | `ws_ports` | string | unset: ports 80, 443, 8080 and 8443 | Ports carrying SIP-over-WebSocket ([RFC 7118](https://www.rfc-editor.org/rfc/rfc7118.html)), as one inclusive `"START-END"` range in the same grammar as `portrange`. Kamailio, OpenSIPS and Janus each default to WSS on a port outside the shipped set, and behind a reverse proxy sipnab sees whichever port the proxy forwards to; set the range to cover those ports, or sipnab does not see the WebRTC signaling leg. A range **replaces** the shipped set, exactly as `portrange` replaces the default signaling ports. sipnab counts the SIP-over-WebSocket it declines to unwrap and names the ports it arrived on. `--ws-portrange` overrides it |
 | `snaplen` | integer | `65535` | Snapshot length in bytes. sipnab refuses `0`, which keeps no byte of any packet, as `--snaplen` does. `--capture-profile` overrides it; `--snaplen` overrides it |

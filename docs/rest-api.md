@@ -804,7 +804,13 @@ console.log(`${dialogs.length} dialogs (${total} total)`);
       "updated_at": "2026-04-13T10:30:03Z",
       "frame": "capture.pcap#41@6f3a1c02b8d4e795"
     }
-  ]
+  ],
+  "capture_identity": {
+    "node": "capture-01",
+    "instance": "117b0818df1033d4fd2a28-2",
+    "dialog_generation": 13,
+    "stream_generation": 2
+  }
 }
 ```
 
@@ -1026,7 +1032,13 @@ console.log(`State: ${dialog.state}, Messages: ${dialog.msg_count}`);
       "round_trip_source": "xr_voip_metrics",
       "quality_intervals": []
     }
-  ]
+  ],
+  "capture_identity": {
+    "node": "capture-01",
+    "instance": "117b0818df1033d4fd2a28-2",
+    "dialog_generation": 13,
+    "stream_generation": 2
+  }
 }
 ```
 
@@ -1303,7 +1315,13 @@ the MCP `get_dialog_report` tool or the CLI `--call-report`.
     "private_media_address": false,
     "hints": []
   },
-  "streams": []
+  "streams": [],
+  "capture_identity": {
+    "node": "capture-01",
+    "instance": "117b0818df1033d4fd2a28-2",
+    "dialog_generation": 13,
+    "stream_generation": 2
+  }
 }
 ```
 
@@ -1344,7 +1362,13 @@ curl -s -H "Authorization: Bearer $SIPNAB_API_KEY" http://127.0.0.1:8080/v1/dial
     }
   ],
   "total_matched": 1,
-  "heuristic_only": false
+  "heuristic_only": false,
+  "capture_identity": {
+    "node": "capture-01",
+    "instance": "117b0818df1033d4fd2a28-2",
+    "dialog_generation": 13,
+    "stream_generation": 2
+  }
 }
 ```
 
@@ -1400,7 +1424,13 @@ curl -s -H "Authorization: Bearer $SIPNAB_API_KEY" http://127.0.0.1:8080/v1/dial
   "heuristic_edges": 0,
   "total_messages": 12,
   "first_activity": "2026-09-15T12:00:00+00:00",
-  "last_activity": "2026-09-15T12:00:41+00:00"
+  "last_activity": "2026-09-15T12:00:41+00:00",
+  "capture_identity": {
+    "node": "capture-01",
+    "instance": "117b0818df1033d4fd2a28-2",
+    "dialog_generation": 13,
+    "stream_generation": 2
+  }
 }
 ```
 
@@ -1455,7 +1485,13 @@ curl -s -H "Authorization: Bearer $SIPNAB_API_KEY" http://127.0.0.1:8080/v1/dial
       "expected": "a Max-Forwards header on the request",
       "explanation": "A request with no Max-Forwards can loop indefinitely across proxies."
     }
-  ]
+  ],
+  "capture_identity": {
+    "node": "capture-01",
+    "instance": "117b0818df1033d4fd2a28-2",
+    "dialog_generation": 13,
+    "stream_generation": 2
+  }
 }
 ```
 
@@ -2459,7 +2495,13 @@ streams.forEach(s =>
       "mos_grounded": true,
       "mos_grounding": "published"
     }
-  ]
+  ],
+  "capture_identity": {
+    "node": "capture-01",
+    "instance": "117b0818df1033d4fd2a28-2",
+    "dialog_generation": 13,
+    "stream_generation": 2
+  }
 }
 ```
 
@@ -3364,6 +3406,24 @@ sipnab reads the instance and both generations at the same moment.
 
 `null` when nobody told this server what capture it holds.
 
+**These answers carry `capture_identity`:** `GET /v1/dialogs`,
+`/v1/dialogs/{call_id}`, `/v1/dialogs/{call_id}/report`,
+`/v1/dialogs/{call_id}/correlated`, `/v1/dialogs/{call_id}/tree`,
+`/v1/dialogs/{call_id}/lint`, `/v1/dialogs/compare`, `/v1/dialogs/tail`,
+`/v1/dialogs/rates`, `/v1/streams`, `/v1/streams/{id}`, `/v1/report`,
+`/v1/stats`, `/v1/aggregate`, `/v1/talkers` and `/v1/security/findings`.
+Each one carries the identity the MCP tool answering the same question
+carries, read under the same locks as the answer. These answers do not carry it:
+
+| Answer | Why |
+|---|---|
+| `/v1/report?format=yang-json` | RFC 7951 allows no member at the top of the document that its YANG module does not declare. Request `format=json` for the identity. |
+| `/v1/dialogs/{call_id}/vcon` | The body is the vCon container itself. MCP `export_vcon` puts the identity on the envelope around its containers. |
+| `/v1/timeline`, `/v1/endpoints`, `/v1/runtime`, `/v1/hep/senders` | The MCP tools `timeline`, `describe_endpoint`, `runtime_stats` and `hep_senders` do not carry it either. |
+| `/v1/capabilities`, `/v1/captures/compare`, `/v1/vcon/spool`, `/v1/vcon/fetch/{uuid}`, `/v1/tfps/*`, `/v1/relay/*` | The answer is not about the loaded capture: it describes the build, two files on the file root, the spool, the vCon store, the TFPS peer, or the media relay. |
+| `/v1/persistence`, `/v1/calls/live` | No MCP tool answers the same question. |
+| `/health`, `/metrics`, the audio routes | They answer text or audio, not a JSON object. |
+
 | Key | Meaning |
 |-----|---------|
 | `source` | `live`, `file`, or `unknown` |
@@ -3558,7 +3618,13 @@ curl -s -H "Authorization: Bearer $SIPNAB_API_KEY" "http://127.0.0.1:8080/v1/agg
   ],
   "other_count": 0,
   "distinct_values": 3,
-  "total_matched": 438
+  "total_matched": 438,
+  "capture_identity": {
+    "node": "capture-01",
+    "instance": "117b0818df1033d4fd2a28-2",
+    "dialog_generation": 13,
+    "stream_generation": 2
+  }
 }
 ```
 
@@ -3664,7 +3730,13 @@ curl -s -H "Authorization: Bearer $SIPNAB_API_KEY" "http://127.0.0.1:8080/v1/dia
     "methods": ["INVITE"],
     "hints": ["the callee was busy"]
   },
-  "differences": ["state", "final_status_code", "msg_count", "methods"]
+  "differences": ["state", "final_status_code", "msg_count", "methods"],
+  "capture_identity": {
+    "node": "capture-01",
+    "instance": "117b0818df1033d4fd2a28-2",
+    "dialog_generation": 13,
+    "stream_generation": 2
+  }
 }
 ```
 
@@ -3713,7 +3785,13 @@ curl -s -H "Authorization: Bearer $SIPNAB_API_KEY" "http://127.0.0.1:8080/v1/dia
     { "call_id": "a@example.com", "state": "InCall", "updated_at": "2026-09-15T12:00:03Z" }
   ],
   "returned": 1,
-  "next_cursor": "2026-09-15T12:00:03Z|a@example.com"
+  "next_cursor": "2026-09-15T12:00:03Z|a@example.com",
+  "capture_identity": {
+    "node": "capture-01",
+    "instance": "117b0818df1033d4fd2a28-2",
+    "dialog_generation": 13,
+    "stream_generation": 2
+  }
 }
 ```
 
@@ -3788,7 +3866,13 @@ curl -s -H "Authorization: Bearer $SIPNAB_API_KEY" "http://127.0.0.1:8080/v1/dia
   ],
   "other_count": 0,
   "distinct_values": 1,
-  "total_matched": 120
+  "total_matched": 120,
+  "capture_identity": {
+    "node": "capture-01",
+    "instance": "117b0818df1033d4fd2a28-2",
+    "dialog_generation": 13,
+    "stream_generation": 2
+  }
 }
 ```
 
@@ -3845,7 +3929,13 @@ curl -s -H "Authorization: Bearer $SIPNAB_API_KEY" "http://127.0.0.1:8080/v1/tal
   ],
   "truncated": true,
   "distinct_talkers": 47,
-  "total_matched": 1200
+  "total_matched": 1200,
+  "capture_identity": {
+    "node": "capture-01",
+    "instance": "117b0818df1033d4fd2a28-2",
+    "dialog_generation": 13,
+    "stream_generation": 2
+  }
 }
 ```
 
@@ -4018,7 +4108,13 @@ curl -s -H "Authorization: Bearer $SIPNAB_API_KEY" "http://127.0.0.1:8080/v1/sec
   "truncated": false,
   "armed_kinds": ["scanner"],
   "detection_armed": true,
-  "observation_gaps": []
+  "observation_gaps": [],
+  "capture_identity": {
+    "node": "capture-01",
+    "instance": "117b0818df1033d4fd2a28-2",
+    "dialog_generation": 13,
+    "stream_generation": 2
+  }
 }
 ```
 

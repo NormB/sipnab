@@ -57,6 +57,17 @@
             },
             "type": "array"
           },
+          "capture_identity": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/CaptureIdentity",
+                "description": "WHICH capture this answer came from, and which revision of its\nstores, stamped under the locks the answer was built with. A\ndifferent `instance` from an earlier answer means a different\ncapture. The same identity the MCP tool answering this question\ncarries. `null` when nobody told this server what it is attached to."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "distinct_values": {
             "description": "How many distinct values the dimension took, before the cut.",
             "minimum": 0,
@@ -181,6 +192,36 @@
         "properties": {
           "call_id": {
             "type": "string"
+          },
+          "capture_identity": {
+            "additionalProperties": false,
+            "description": "Which capture this answer came from and which revision of its stores. Present on the REST answer (GET /v1/dialogs/{id} and GET /v1/dialogs/{id}/report) and the MCP get_dialog_report `json` answer; `--call-report --json`, which shares this schema, does not carry it. null when the server was started without capture context.",
+            "properties": {
+              "dialog_generation": {
+                "minimum": 0,
+                "type": "integer"
+              },
+              "instance": {
+                "type": "string"
+              },
+              "node": {
+                "type": "string"
+              },
+              "stream_generation": {
+                "minimum": 0,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "node",
+              "instance",
+              "dialog_generation",
+              "stream_generation"
+            ],
+            "type": [
+              "object",
+              "null"
+            ]
           },
           "diagnosis": {
             "$ref": "#/components/schemas/CallReport_diagnosis"
@@ -1447,6 +1488,17 @@
       "CallTree": {
         "description": "The tree of legs reachable from one call across a B2BUA, SBC or PBX.",
         "properties": {
+          "capture_identity": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/CaptureIdentity",
+                "description": "WHICH capture this answer came from, and which revision of its\nstores, stamped under the locks the answer was built with. A\ndifferent `instance` from an earlier answer means a different\ncapture. The same identity the MCP tool answering this question\ncarries. `null` when nobody told this server what it is attached to."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "first_activity": {
             "description": "Earliest leg creation time in the tree, RFC 3339.",
             "type": [
@@ -1720,6 +1772,36 @@
         "additionalProperties": false,
         "description": "Serialized form of CaptureAnalysis (src/analysis.rs): the `--json-analyze` object, the GET /v1/report body and the MCP get_capture_report `json` answer. Every finding sipnab already diagnosed, aggregated by kind and ranked worst first, with the denominators it was found in. The same analysis is exported RFC 7951-encoded against the YANG module sipnab-diagnosis; this schema describes the plain JSON encoding only.",
         "properties": {
+          "capture_identity": {
+            "additionalProperties": false,
+            "description": "Which capture this answer came from and which revision of its stores. Present on the GET /v1/report answer and the MCP get_capture_report `json` answer; `--json-analyze` does not carry it. null when the server was started without capture context.",
+            "properties": {
+              "dialog_generation": {
+                "minimum": 0,
+                "type": "integer"
+              },
+              "instance": {
+                "type": "string"
+              },
+              "node": {
+                "type": "string"
+              },
+              "stream_generation": {
+                "minimum": 0,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "node",
+              "instance",
+              "dialog_generation",
+              "stream_generation"
+            ],
+            "type": [
+              "object",
+              "null"
+            ]
+          },
           "complete": {
             "description": "Whether sipnab read all of its input. False whenever any `blind` finding is present, and then every count is a floor.",
             "type": "boolean"
@@ -2048,6 +2130,17 @@
             "$ref": "#/components/schemas/ComparisonSide",
             "description": "The second call's summary."
           },
+          "capture_identity": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/CaptureIdentity",
+                "description": "WHICH capture this answer came from, and which revision of its\nstores, stamped under the locks the answer was built with. A\ndifferent `instance` from an earlier answer means a different\ncapture. The same identity the MCP tool answering this question\ncarries. `null` when nobody told this server what it is attached to."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "differences": {
             "description": "The field names that differ — a subset of `state`,\n`final_status_code`, `msg_count`, `methods`, in that order. Empty\nwhen the two calls match on all four. `hints` is reported per side\nbut not diffed.",
             "items": {
@@ -2146,6 +2239,17 @@
       "Correlated": {
         "description": "The other legs of one call, with the source it was asked about.",
         "properties": {
+          "capture_identity": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/CaptureIdentity",
+                "description": "WHICH capture this answer came from, and which revision of its\nstores, stamped under the locks the answer was built with. A\ndifferent `instance` from an earlier answer means a different\ncapture. The same identity the MCP tool answering this question\ncarries. `null` when nobody told this server what it is attached to."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "heuristic_only": {
             "description": "True when every matched leg is a timing guess rather than an\nidentifier match, so a reader weighs the whole answer accordingly.",
             "type": "boolean"
@@ -2228,6 +2332,17 @@
           "call_id": {
             "description": "Call-ID identifying the dialog.",
             "type": "string"
+          },
+          "capture_identity": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/CaptureIdentity",
+                "description": "WHICH capture this answer came from, and which revision of its\nstores, stamped under the locks the answer was built with. A\ndifferent `instance` from an earlier answer means a different\ncapture. The same identity the MCP tool answering this question\ncarries. `null` when nobody told this server what it is attached to."
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "diagnosis": {
             "description": "The media diagnosis: three booleans plus `hints`. There is no\n`summary` member."
@@ -2367,6 +2482,17 @@
               "$ref": "#/components/schemas/MethodCount"
             },
             "type": "array"
+          },
+          "capture_identity": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/CaptureIdentity",
+                "description": "WHICH capture this answer came from, and which revision of its\nstores, stamped under the locks the answer was built with. A\ndifferent `instance` from an earlier answer means a different\ncapture. The same identity the MCP tool answering this question\ncarries. `null` when nobody told this server what it is attached to."
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "dialogs": {
             "description": "The page.",
@@ -3254,6 +3380,17 @@
             "description": "The Call-ID the findings are for.",
             "type": "string"
           },
+          "capture_identity": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/CaptureIdentity",
+                "description": "WHICH capture this answer came from, and which revision of its\nstores, stamped under the locks the answer was built with. A\ndifferent `instance` from an earlier answer means a different\ncapture. The same identity the MCP tool answering this question\ncarries. `null` when nobody told this server what it is attached to."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "finding_count": {
             "description": "How many findings the dialog tripped.",
             "minimum": 0,
@@ -3586,6 +3723,17 @@
       "Rates": {
         "description": "Carrier metrics per group over the dialog store, one dimension.",
         "properties": {
+          "capture_identity": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/CaptureIdentity",
+                "description": "WHICH capture this answer came from, and which revision of its\nstores, stamped under the locks the answer was built with. A\ndifferent `instance` from an earlier answer means a different\ncapture. The same identity the MCP tool answering this question\ncarries. `null` when nobody told this server what it is attached to."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "distinct_values": {
             "description": "How many distinct values the dimension took, before the cut.",
             "minimum": 0,
@@ -3823,6 +3971,36 @@
           },
           "burst_gap": {
             "$ref": "#/components/schemas/RtpStream_burst_gap"
+          },
+          "capture_identity": {
+            "additionalProperties": false,
+            "description": "Which capture this answer came from and which revision of its stores. Present on the GET /v1/streams/{id} answer only; a stream embedded in a dialog, and the CLI output, do not carry it. null when the server was started without capture context.",
+            "properties": {
+              "dialog_generation": {
+                "minimum": 0,
+                "type": "integer"
+              },
+              "instance": {
+                "type": "string"
+              },
+              "node": {
+                "type": "string"
+              },
+              "stream_generation": {
+                "minimum": 0,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "node",
+              "instance",
+              "dialog_generation",
+              "stream_generation"
+            ],
+            "type": [
+              "object",
+              "null"
+            ]
           },
           "codec": {
             "type": "string"
@@ -4543,6 +4721,17 @@
             },
             "type": "array"
           },
+          "capture_identity": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/CaptureIdentity",
+                "description": "WHICH capture this answer came from, and which revision of its\nstores, stamped under the locks the answer was built with. A\ndifferent `instance` from an earlier answer means a different\ncapture. The same identity the MCP tool answering this question\ncarries. `null` when nobody told this server what it is attached to."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "detection_armed": {
             "description": "True when at least one detector is armed. An empty `findings` with\nthis false means nothing was watching, NOT that traffic was clean.",
             "type": "boolean"
@@ -5093,6 +5282,17 @@
       "StreamList": {
         "description": "`GET /v1/streams` — one page of stream summaries.",
         "properties": {
+          "capture_identity": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/CaptureIdentity",
+                "description": "WHICH capture this answer came from, and which revision of its\nstores, stamped under the locks the answer was built with. A\ndifferent `instance` from an earlier answer means a different\ncapture. The same identity the MCP tool answering this question\ncarries. `null` when nobody told this server what it is attached to."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "limit": {
             "description": "The `limit` actually applied.",
             "minimum": 0,
@@ -5292,6 +5492,17 @@
       "TailPage": {
         "description": "A page of dialogs updated since a cursor, for change-tracking pollers.\nDoc-only, like [`DialogList`]: the route answers with the same untyped\nsummaries `/v1/dialogs` builds, so this mirrors the shape for the\ncontract test rather than being serialized directly.",
         "properties": {
+          "capture_identity": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/CaptureIdentity",
+                "description": "WHICH capture this answer came from, and which revision of its\nstores, stamped under the locks the answer was built with. A\ndifferent `instance` from an earlier answer means a different\ncapture. The same identity the MCP tool answering this question\ncarries. `null` when nobody told this server what it is attached to."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "dialogs": {
             "description": "The dialogs updated strictly after the request cursor, oldest update\nfirst, ties broken by Call-ID.",
             "items": {
@@ -5383,6 +5594,17 @@
           "by": {
             "description": "The dimension ranked by (`ip`, `ua` or `prefix`), echoed verbatim.",
             "type": "string"
+          },
+          "capture_identity": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/CaptureIdentity",
+                "description": "WHICH capture this answer came from, and which revision of its\nstores, stamped under the locks the answer was built with. A\ndifferent `instance` from an earlier answer means a different\ncapture. The same identity the MCP tool answering this question\ncarries. `null` when nobody told this server what it is attached to."
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "distinct_talkers": {
             "description": "How many distinct talkers the filter admitted, before the page cut.",
@@ -7763,7 +7985,7 @@
     },
     "/v1/dialogs/{call_id}/report": {
       "get": {
-        "description": "The per-call analysis report — byte for byte the object `--call-report --json` writes, so a report fetched here and one produced offline are comparable.",
+        "description": "The per-call analysis report — the object `--call-report --json` writes, so a report fetched here and one produced offline are comparable, plus the `capture_identity` naming the capture this server answered from.",
         "operationId": "get_dialog_report",
         "parameters": [
           {
@@ -7785,7 +8007,7 @@
                 }
               }
             },
-            "description": "The per-call analysis report — the same object `--call-report --json` writes."
+            "description": "The per-call analysis report — the object `--call-report --json` writes, plus `capture_identity`."
           },
           "401": {
             "content": {

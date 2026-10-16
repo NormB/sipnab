@@ -166,9 +166,22 @@ fn rest_serves_one_analysis_in_both_encodings() -> Result<(), TestError> {
             "{case}: the RFC 7951 body must say what it is"
         );
         let doc: Value = serde_json::from_str(&yang_resp.body)?;
+        // The plain answer names the capture it describes; the RFC 7951
+        // document cannot, because RFC 7951 section 4 admits no unqualified
+        // member at its top and the module declares no such leaf. Everything
+        // else is one analysis.
+        let mut plain_analysis = plain.json()?;
+        assert!(
+            plain_analysis["capture_identity"]["instance"].is_string(),
+            "{case}: the plain answer must name the capture it describes"
+        );
+        plain_analysis
+            .as_object_mut()
+            .ok_or("the analysis is an object")?
+            .remove("capture_identity");
         assert_eq!(
             decoded("rest", case, &doc)?,
-            plain.json()?,
+            plain_analysis,
             "{case}: the two encodings disagree"
         );
         // `json` is the default spelled out, and answers exactly as the default.

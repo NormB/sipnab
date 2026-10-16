@@ -18,6 +18,18 @@
     "streams"
   ],
   "properties": {
+    "capture_identity": {
+      "type": ["object", "null"],
+      "description": "Which capture this answer came from and which revision of its stores. Present on the REST answer (GET /v1/dialogs/{id} and GET /v1/dialogs/{id}/report) and the MCP get_dialog_report `json` answer; `--call-report --json`, which shares this schema, does not carry it. null when the server was started without capture context.",
+      "additionalProperties": false,
+      "required": ["node", "instance", "dialog_generation", "stream_generation"],
+      "properties": {
+        "node": { "type": "string" },
+        "instance": { "type": "string" },
+        "dialog_generation": { "type": "integer", "minimum": 0 },
+        "stream_generation": { "type": "integer", "minimum": 0 }
+      }
+    },
     "schema_version": {
       "const": 1
     },
