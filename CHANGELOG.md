@@ -10,6 +10,14 @@ entry that carries them.
 
 ## [Unreleased]
 
+### Added
+
+- **G.729.1 streams decode to 8 kHz audio: their core layer, decoded as G.729.**
+  - A stream whose SDP binds a payload type to `G7291/16000` ([RFC 4749](https://www.rfc-editor.org/rfc/rfc4749.html)) is named `G7291`, runs on the 16 kHz RTP clock, and is decoded wherever G.729 is: WAV and vCon exports, the live audio routes, and the dead-air and clipping measurement. It needs the same `sipnab g729 install` tables, and without them it is left out with the same sentence and command.
+  - Each 20 ms frame's first 20 octets, its 8 kbit/s core layer, are two G.729 frames, and the G.729 decoder turns them into 160 samples. The layers above 8 kbit/s are not decoded, at any bit rate the call used. A SID ([RFC 5459](https://www.rfc-editor.org/rfc/rfc5459.html)) drives the Annex B comfort noise from its first 15 bits.
+  - The WAV's note, the export summary, the vCon's caveat, the live RTP `leg` object and the audio socket's `stream` message all say so, and name the bit rates of the frames decoded, as `decoded_as`. A reserved frame type is ignored and counted as a frame that failed to decode; a no-data packet is no loss.
+  - `scripts/fetch-g729-vectors.py` also fetches seven test vectors from the ITU-T G.729.1 Corrigendum 1 (08/2009) software package, pinned by sha256, into `crates/g729/test-vectors/g7291/`. The decoding of their core layer equals the decoding of their G.729-format twins sample for sample.
+
 ### Fixed
 
 - **An offline `--cores` run started as root drops privileges, as the single-core read does.**

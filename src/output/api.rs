@@ -3571,6 +3571,28 @@ struct AudioPass {
 }
 
 #[cfg(feature = "vcon")]
+/// The `stream` message announcing `stream` as `index` on the audio socket,
+/// after `live` decoded its first frames.
+fn stream_announcement(
+    index: u8,
+    stream: &crate::rtp::stream::RtpStream,
+    live: &crate::rtp::live_audio::LiveStream,
+) -> serde_json::Value {
+    let mut text = serde_json::json!({
+        "type": "stream", "stream": index,
+        "ssrc": format!("0x{:08X}", stream.key.ssrc),
+        "src": stream.key.src.to_string(), "dst": stream.key.dst.to_string(),
+        "codec": stream.codec, "rate": live.rate(stream), "format": "s16le",
+    });
+    // G.729.1 is decoded to its core layer: say so, with the bit rates of
+    // the frames decoded so far.
+    if let (Some(map), Some(caveat)) = (text.as_object_mut(), live.caveat()) {
+        map.insert("decoded_as".to_owned(), caveat.into());
+    }
+    text
+}
+
+#[cfg(feature = "vcon")]
 /// Look at `call_id`'s streams once: announce new ones, and decode what each
 /// retained since the last look.
 fn audio_pass(
@@ -3591,18 +3613,14 @@ fn audio_pass(
         Some(_) => None,
     };
     for stream in crate::rtp::live_audio::call_streams(&ss, call_id) {
+        let mut announce = false;
         if !followed.iter().any(|(k, _)| *k == stream.key) {
             let index = u8::try_from(followed.len()).unwrap_or(u8::MAX);
             let entry = match crate::rtp::live_audio::LiveStream::new(stream) {
+                // Announced below, after its first frames are decoded, so the
+                // announcement can say what they are.
                 Ok(live) => {
-                    let text = serde_json::json!({
-                        "type": "stream", "stream": index,
-                        "ssrc": format!("0x{:08X}", stream.key.ssrc),
-                        "src": stream.key.src.to_string(), "dst": stream.key.dst.to_string(),
-                        "codec": stream.codec, "rate": live.rate(stream), "format": "s16le",
-                    });
-                    pass.frames
-                        .push(frame(Opcode::Text, text.to_string().as_bytes()));
+                    announce = true;
                     Some(Followed { index, live })
                 }
                 Err(e) => {
@@ -3621,6 +3639,11 @@ fn audio_pass(
             continue;
         };
         let found = follow.live.next(stream);
+        if announce {
+            let text = stream_announcement(follow.index, stream, &follow.live);
+            pass.frames
+                .push(frame(Opcode::Text, text.to_string().as_bytes()));
+        }
         if found.missed > 0 {
             let text = serde_json::json!({
                 "type": "gap", "stream": follow.index, "packets": found.missed,
@@ -8185,6 +8208,68 @@ struct HepDoc;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The audio socket announces a G.729.1 stream with what its audio is:
+    /// the core layer decoded as G.729, at the bit rates of the frames
+    /// decoded before the announcement. A G.711 stream says nothing more.
+    #[cfg(all(feature = "vcon", feature = "g729"))]
+    #[test]
+    fn a_g7291_stream_is_announced_as_its_core_layer() -> Result<(), TestError> {
+        crate::rtp::g729_tables::test_support::use_tables()?;
+        let key = crate::rtp::stream::StreamKey {
+            ssrc: 0x7291,
+            src: "10.0.0.1:20000".parse()?,
+            dst: "10.0.0.2:30000".parse()?,
+            session: 0,
+        };
+        let hdr = crate::rtp::parser::RtpHeader {
+            version: 2,
+            padding: false,
+            extension: false,
+            csrc_count: 0,
+            marker: false,
+            payload_type: 96,
+            sequence: 0,
+            timestamp: 0,
+            ssrc: 0x7291,
+            payload_offset: 12,
+        };
+        let at = chrono::DateTime::from_timestamp(1_700_000_000, 0).ok_or("a time")?;
+        let mut g7291 = crate::rtp::stream::RtpStream::new(key.clone(), &hdr, at);
+        g7291.codec = Some("G7291".into());
+        g7291.clock_rate = 16000;
+        g7291.last_seen = at + chrono::Duration::milliseconds(40);
+        let mut payload = vec![0xfb];
+        payload.extend([0x5a; 80]);
+        g7291.payload_buffer = vec![
+            crate::rtp::stream::RetainedFrame::new(0, 0, payload.clone()),
+            crate::rtp::stream::RetainedFrame::new(320, 1, payload),
+        ]
+        .into();
+        let mut live = crate::rtp::live_audio::LiveStream::new(&g7291)?;
+        assert_eq!(live.next(&g7291).pcm.len(), 2);
+        let announced = stream_announcement(0, &g7291, &live);
+        assert_eq!(
+            (announced["codec"].as_str(), announced["rate"].as_u64()),
+            (Some("G7291"), Some(8000))
+        );
+        let said = announced["decoded_as"].as_str().unwrap_or_default();
+        assert!(
+            said.contains("the G.729.1 core layer (8 kbit/s) decoded as G.729 at 8 kHz"),
+            "{announced}"
+        );
+        assert!(said.contains("sent at 32 kbit/s"), "{announced}");
+
+        let mut pcmu = crate::rtp::stream::RtpStream::new(key, &hdr, at);
+        pcmu.codec = Some("PCMU".into());
+        let live = crate::rtp::live_audio::LiveStream::new(&pcmu)?;
+        assert!(
+            stream_announcement(0, &pcmu, &live)
+                .get("decoded_as")
+                .is_none()
+        );
+        Ok(())
+    }
     use crate::capture::parse::TransportProto;
     use axum::body::Body;
     use axum::http::Request;

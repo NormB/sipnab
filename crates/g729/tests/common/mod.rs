@@ -144,3 +144,75 @@ pub const PAIRS: [(&str, &str); 16] = [
     ("annex-b/tstseq5.bit", "annex-b/tstseq5a.out"),
     ("annex-b/tstseq6.bit", "annex-b/tstseq6a.out"),
 ];
+
+/// One frame of a G.729.1 ITU-T G.192 file (the format the G.729.1 package's
+/// readme gives: a synchronization word, a size word, then one word per bit,
+/// 0x0081 for 1 and 0x007F for 0).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct G7291Serial {
+    /// Whether the synchronization word is 0x6B21 (a good frame).
+    pub good: bool,
+    /// The frame's bit count: 0 untransmitted, 15, 24 or 43 a SID, 160 to
+    /// 640 a frame at 8 to 32 kbit/s.
+    pub bits: usize,
+    /// The bits packed most significant first, zero-padded to whole octets:
+    /// the frame as RFC 4749 carries it.
+    pub octets: Vec<u8>,
+}
+
+/// Every frame of a G.729.1 G.192 file.
+pub fn g7291_g192(bytes: &[u8], name: &str) -> Result<Vec<G7291Serial>, String> {
+    let words: Vec<u16> = bytes
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .map(|w| u16::from_le_bytes(*w))
+        .collect();
+    let mut frames = Vec::new();
+    let mut at = 0;
+    while at < words.len() {
+        let (Some(&sync), Some(&size)) = (words.get(at), words.get(at + 1)) else {
+            return Err(format!("{name}: truncated header at word {at}"));
+        };
+        let bits = usize::from(size);
+        let body = words
+            .get(at + 2..at + 2 + bits)
+            .ok_or_else(|| format!("{name}: truncated frame at word {at}"))?;
+        let mut octets = vec![0u8; bits.div_ceil(8)];
+        for (k, word) in body.iter().enumerate() {
+            match word {
+                0x0081 => octets[k / 8] |= 0x80 >> (k % 8),
+                0x007f | 0 => {}
+                other => return Err(format!("{name}: bit word {other:#06x} at word {at}")),
+            }
+        }
+        frames.push(G7291Serial {
+            good: sync == g729::bitstream::SYNC_GOOD,
+            bits,
+            octets,
+        });
+        at += 2 + bits;
+    }
+    Ok(frames)
+}
+
+/// The frames of a G.729-format G.192 file of the G.729.1 package, whose
+/// SID frames are 15 bits (the G.729 package's are 16, the last a pad bit).
+pub fn g729_serial(bytes: &[u8], name: &str) -> Result<Vec<g729::bitstream::SerialFrame>, String> {
+    use g729::bitstream::SerialFrame;
+    g7291_g192(bytes, name)?
+        .into_iter()
+        .map(
+            |frame| match (frame.good, frame.bits, frame.octets.as_slice()) {
+                (false, _, _) => Ok(SerialFrame::Erased),
+                (true, 0, _) => Ok(SerialFrame::NoTx),
+                (true, 15 | 16, &[first, second]) => Ok(SerialFrame::Sid([first, second & 0xfe])),
+                (true, 80, octets) => octets
+                    .try_into()
+                    .map(SerialFrame::Speech)
+                    .map_err(|_| format!("{name}: an 80-bit frame")),
+                (true, bits, _) => Err(format!("{name}: a G.729 frame of {bits} bits")),
+            },
+        )
+        .collect()
+}

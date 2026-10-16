@@ -6,7 +6,11 @@ comfort-noise frames, written in Rust. It decodes only. There is no encoder.
 - It decodes G.729 Annex A streams, with or without Annex B. It also decodes
   main-body G.729 streams, which are interoperable with Annex A
   ([RFC 3551 section 4.5.6](https://www.rfc-editor.org/rfc/rfc3551.html#section-4.5.6)).
-- Annex D, Annex E and G.729.1 are not supported.
+- It decodes the core layer of G.729.1 streams (RFC 4749): the first
+  20 octets of each 20 ms frame are two G.729 frames, decoded to 8 kHz. The
+  higher G.729.1 layers are not decoded (see
+  [G.729.1 core layer](#g7291-core-layer)).
+- Annex D and Annex E are not supported.
 - Audio is 8000 Hz, 16-bit, mono: 80 samples per 10 ms frame. A speech
   frame is 10 octets; a SID (comfort-noise) frame is 2 octets.
 - It is bit-exact with the ITU-T reference decoder on all 16 ITU-T decoder
@@ -282,6 +286,66 @@ assert_eq!(wav.len(), 44 + 320);
 ```
 
 Then `std::fs::write("speech.wav", wav_bytes(&pcm)?)?` writes the file.
+
+## G.729.1 core layer
+
+A G.729.1 RTP payload ([RFC 4749](https://www.rfc-editor.org/rfc/rfc4749.html),
+[RFC 5459](https://www.rfc-editor.org/rfc/rfc5459.html)) is one header octet
+(MBS in the high 4 bits, the frame type FT in the low 4), then zero or more
+20 ms frames at the bit rate FT names (FT 0 to 11: 8 to 32 kbit/s, 20 to 80
+octets a frame), then an optional SID of 2, 3 or 6 octets. FT 14 is a SID
+alone, FT 15 no data, and FT 12 and 13 are reserved.
+
+The first 20 octets of every frame are its core layer: two G.729 frames.
+The first 15 bits of every SID are its core SID: a G.729 Annex B SID frame.
+`g7291::split_rtp`, `g7291::core_frames` and `g7291::core_sid` read them:
+
+```rust
+use g729::g7291::{FrameType, core_frames, core_sid, split_rtp};
+
+// FT 11 (32 kbit/s): one 80-octet frame, then a 3-octet SID.
+let mut payload = vec![0xfb];
+payload.extend_from_slice(&[0x11; 80]);
+payload.extend_from_slice(&[0x4c, 0x91, 0xff]);
+let split = split_rtp(&payload)?;
+assert!(matches!(split.header.frame_type, FrameType::Speech(rate) if rate.kbps() == 32));
+let frame = split.frames().next().ok_or("one frame")?;
+let [first, second] = core_frames(frame).ok_or("a whole core")?;
+assert_eq!((first, second), (&[0x11; 10], &[0x11; 10]));
+assert_eq!(split.sid.and_then(core_sid), Some([0x4c, 0x90]));
+# Ok::<(), Box<dyn std::error::Error>>(())
+```
+
+`Decoder::decode_g7291_rtp` decodes a payload's core layer: 160 samples at
+8 kHz per frame, and 160 for a SID, which decodes as a SID frame and then an
+untransmitted frame. FT 15 decodes nothing. Octets that are neither a whole
+frame nor a SID are skipped, so no sample comes from a partial core. An empty
+payload or a reserved FT is refused with `g7291::PayloadError` and decodes
+nothing. `Decoder::decode_superframe` decodes one 20 ms frame, including a
+lost (`Superframe::Erased`) or untransmitted (`Superframe::NoTx`) one, as two
+G.729 frames of that kind. The G.729.1 RTP clock is 16 kHz, so a frame is
+320 timestamp units.
+
+```rust,no_run
+use g729::g7291::SUPERFRAME_SAMPLES;
+use g729::{Decoder, Tables};
+
+let tables = Tables::from_bytes(&std::fs::read("g729-tables.bin")?)?;
+let mut decoder = Decoder::new(&tables);
+let mut pcm: Vec<i16> = Vec::new();
+let mut payload = vec![0xf0]; // FT 0, 8 kbit/s
+payload.extend_from_slice(&[0x5a; 40]); // two 20-octet frames
+let decoded = decoder.decode_g7291_rtp(&payload, &mut pcm)?;
+assert_eq!(decoded.samples, 2 * SUPERFRAME_SAMPLES);
+# Ok::<(), Box<dyn std::error::Error>>(())
+```
+
+This is not G.729.1's own decoder output: the narrowband enhancement layer
+(12 kbit/s) and the wideband layers (14 to 32 kbit/s) are skipped, and the
+core is decoded by this crate's Annex A decoder at 8 kHz. Its tests check,
+on the ITU-T G.729.1 test vectors, that the core layer of every frame is the
+G.729 bitstream the same encoder wrote from the same input, that the two
+decode to the same samples, and that the SIDs carry the same core SID.
 
 ## Examples
 

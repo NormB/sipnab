@@ -22,6 +22,9 @@ use super::g711::{G711Codec, decode_frame};
 use super::opus_decode::OpusStreamDecoder;
 use super::stream::{RetainedFrame, RtpStream, StreamKey};
 use super::wav::write_wav_with_provenance;
+#[cfg(feature = "g729")]
+use crate::rtp::g729_family::G7291Rates;
+use crate::rtp::g729_family::{G729Variant, g729_variant};
 
 /// Export a single RTP stream to a mono WAV file.
 ///
@@ -47,12 +50,14 @@ pub fn export_stream_to_wav(stream: &RtpStream, path: &Path) -> Result<String> {
         failures: decode_failures,
         timeline,
         codec_fill,
+        caveat,
     } = decode_stream_pcm(stream, true)?;
     let duration_secs = pcm_samples.len() as f64 / sample_rate as f64;
     // Built once and used twice: the note inside the file and the summary
     // printed beside it say the same thing, because they are the same string.
     let partial = format!(
-        "{}{}{}",
+        "{}{}{}{}",
+        caveat_clause(caveat.as_slice()),
         retention_clauses(&RetentionLoss::of(&[stream])),
         decode_failure_clause(decode_failures),
         timeline_clause(&TimelineTotals::of(
@@ -80,6 +85,18 @@ pub fn export_stream_to_wav(stream: &RtpStream, path: &Path) -> Result<String> {
         sample_rate,
         path.display(),
     ))
+}
+
+/// The clauses saying what decoded audio is when it is not simply its codec's
+/// audio (G.729.1 decoded to its core layer), each once, or nothing.
+fn caveat_clause(caveats: &[String]) -> String {
+    let mut once: Vec<&String> = Vec::new();
+    for caveat in caveats {
+        if !once.contains(&caveat) {
+            once.push(caveat);
+        }
+    }
+    once.iter().map(|c| format!(" — {c}.")).collect()
 }
 
 /// A clause naming the ring wrap, or nothing when the buffer held everything.
@@ -338,8 +355,10 @@ pub fn decode_dialog_audio(streams: &[&RtpStream]) -> Result<DialogAudio> {
         .collect();
     let mut decoded: Vec<(Vec<i16>, u32, &'static str, u64)> = Vec::with_capacity(carried.len());
     let mut placed = TimelineTotals::default();
+    let mut caveats: Vec<String> = Vec::new();
     for stream in &carried {
         let d = decode_stream_pcm(stream, true)?;
+        caveats.extend(d.caveat);
         placed.add(&TimelineTotals::of(
             &d.timeline,
             stream.clock_rate,
@@ -377,7 +396,8 @@ pub fn decode_dialog_audio(streams: &[&RtpStream]) -> Result<DialogAudio> {
     let failures: u64 = decoded.iter().map(|d| d.3).fold(0u64, u64::saturating_add);
 
     let partial = format!(
-        "{}{}{}{}{}{}",
+        "{}{}{}{}{}{}{}",
+        caveat_clause(&caveats),
         retention_clauses(&loss),
         omitted_clause(distinct_sources, carried.len(), &skipped_codecs),
         not_decoded_clause(&skipped_codecs),
@@ -842,7 +862,7 @@ fn omitted_clause(total: usize, written: usize, skipped_codecs: &[&str]) -> Stri
 /// host, and a build may leave the feature out.
 fn not_decoded_reason(codec: Option<&str>) -> Option<String> {
     match codec {
-        Some(c) if is_g729_codec(c) => {
+        Some(c) if g729_variant(c).is_some() => {
             let why = crate::rtp::g729_tables::unavailable_reason();
             if let Some(why) = &why {
                 crate::rtp::g729_tables::say_once_not_decoded(why);
@@ -868,7 +888,8 @@ fn not_decoded_clause(codecs: &[&str]) -> String {
 /// The codecs a WAV export decodes in this build, for a refusal to list.
 fn supported_codecs() -> &'static str {
     if cfg!(feature = "g729") {
-        "PCMU, PCMA, G.722, Opus, G.729 (with its tables installed)"
+        "PCMU, PCMA, G.722, Opus, G.729 and the G.729.1 core layer (with the G.729 tables \
+         installed)"
     } else {
         "PCMU, PCMA, G.722, Opus"
     }
@@ -1028,7 +1049,9 @@ fn is_exportable_codec(codec: Option<&str>) -> bool {
 pub(crate) fn is_capturable_audio_codec(codec: Option<&str>) -> bool {
     matches!(codec, Some("PCMU") | Some("PCMA"))
         || codec.is_some_and(|c| {
-            is_opus_codec(c) || is_g722_codec(c) || (cfg!(feature = "g729") && is_g729_codec(c))
+            is_opus_codec(c)
+                || is_g722_codec(c)
+                || (cfg!(feature = "g729") && g729_variant(c).is_some())
         })
 }
 
@@ -1095,6 +1118,9 @@ pub(crate) struct DecodedStream {
     pub(crate) timeline: crate::rtp::timeline::TimelineReport,
     /// The codec whose own decoder filled the gaps, or `None` for silence.
     pub(crate) codec_fill: Option<&'static str>,
+    /// What the audio is when it is not simply the codec's audio (see
+    /// [`FrameDecoder::caveat`]).
+    pub(crate) caveat: Option<String>,
 }
 
 /// Decode `stream`'s retained frames in RTP timestamp order.
@@ -1160,6 +1186,7 @@ fn decode_stream_pcm(stream: &RtpStream, fill: bool) -> Result<DecodedStream> {
         failures: decode_failures,
         timeline: timeline.report(),
         codec_fill: decoder.fills_with_codec().then(|| decoder.label()),
+        caveat: decoder.caveat(),
     })
 }
 
@@ -1193,8 +1220,8 @@ pub enum FrameDecoder {
     G729(Box<G729Stream>),
 }
 
-/// One G.729 stream's decoder and whether the sender was talking when the
-/// last frame arrived.
+/// One G.729-family stream's decoder and whether the sender was talking when
+/// the last frame arrived.
 #[cfg(feature = "g729")]
 pub struct G729Stream {
     /// The decoder, on the tables this run loaded.
@@ -1204,6 +1231,63 @@ pub struct G729Stream {
     /// How many 10 ms frames this stream's speech packets carry: how much
     /// time one lost packet stands for.
     speech_packets: SpeechPacketSizes,
+    /// G.729, or G.729.1 decoded to its core layer.
+    variant: G729Variant,
+    /// The G.729.1 bit rates of the frames decoded.
+    rates: G7291Rates,
+}
+
+#[cfg(feature = "g729")]
+impl G729Stream {
+    /// One payload, decoded: RFC 3551 section 4.5.6 frames for G.729, the
+    /// core layer of RFC 4749 frames for G.729.1.
+    fn decode(&mut self, payload: &[u8]) -> Result<Vec<i16>> {
+        let mut pcm = Vec::new();
+        match self.variant {
+            G729Variant::G729 => {
+                self.last = g729_last_after(payload.len(), self.last);
+                // A payload of 10n octets is n speech frames; one ending in
+                // a SID is not the size of the stream's speech packets.
+                if payload.len() >= 10 && payload.len().is_multiple_of(10) {
+                    self.speech_packets.record(payload.len() / 10);
+                }
+                self.decoder
+                    .decode_rtp(payload, &mut pcm)
+                    .map_err(anyhow::Error::msg)?;
+            }
+            G729Variant::G7291 => {
+                let split = g729::g7291::split_rtp(payload).map_err(anyhow::Error::msg)?;
+                self.last = g7291_last_after(&split, self.last);
+                // Each 20 ms frame is two 10 ms G.729 frames.
+                if split.sid.is_none() && split.frame_count() > 0 {
+                    self.speech_packets.record(2 * split.frame_count());
+                }
+                if let g729::g7291::FrameType::Speech(rate) = split.header.frame_type
+                    && split.frame_count() > 0
+                {
+                    self.rates.record(rate);
+                }
+                self.decoder
+                    .decode_g7291_rtp(payload, &mut pcm)
+                    .map_err(anyhow::Error::msg)?;
+            }
+        }
+        Ok(pcm)
+    }
+}
+
+/// What a G.729.1 payload leaves the stream in, after `last`: a SID ends in
+/// discontinuous transmission, frames alone end in speech, and a payload
+/// with neither (FT 15, or no whole frame) changes nothing.
+#[cfg(feature = "g729")]
+pub(crate) fn g7291_last_after(payload: &g729::g7291::Payload<'_>, last: G729Last) -> G729Last {
+    if payload.sid.is_some() {
+        G729Last::Inactive
+    } else if payload.frame_count() > 0 {
+        G729Last::Active
+    } else {
+        last
+    }
 }
 
 /// The sizes of a G.729 stream's speech packets (payloads of speech frames
@@ -1403,15 +1487,9 @@ fn g729_fill(decoder: &mut g729::Decoder<'static>, gap: G729Gap, samples: usize)
     out
 }
 
-/// Whether `codec` names G.729 (case-insensitive per SDP convention; static
-/// payload type 18 is named `G729` by [`crate::rtp::stream::codec_from_pt`]).
-fn is_g729_codec(codec: &str) -> bool {
-    codec.eq_ignore_ascii_case("G729")
-}
-
-/// The decoder for a G.729 stream, or why there is none: the build has no
-/// `g729` feature, or the tables are not installed.
-fn g729_decoder() -> Result<FrameDecoder> {
+/// The decoder for a stream of `variant` of the G.729 family, or why there is
+/// none: the build has no `g729` feature, or the tables are not installed.
+fn g729_decoder(variant: G729Variant) -> Result<FrameDecoder> {
     #[cfg(feature = "g729")]
     {
         let tables = crate::rtp::g729_tables::tables().map_err(|why| {
@@ -1422,10 +1500,13 @@ fn g729_decoder() -> Result<FrameDecoder> {
             decoder: g729::Decoder::new(tables),
             last: G729Last::Active,
             speech_packets: SpeechPacketSizes::default(),
+            variant,
+            rates: G7291Rates::default(),
         })))
     }
     #[cfg(not(feature = "g729"))]
     {
+        let _ = variant;
         crate::rtp::g729_tables::say_once_not_decoded(crate::rtp::g729_tables::NOT_BUILT);
         bail!("{}", crate::rtp::g729_tables::NOT_BUILT)
     }
@@ -1448,13 +1529,13 @@ impl FrameDecoder {
             Some(name) if is_opus_codec(name) => {
                 Ok(Self::Opus(Box::new(OpusStreamDecoder::new(48000, 1)?)))
             }
-            Some(name) if is_g729_codec(name) => g729_decoder(),
-            Some(other) => {
-                bail!(
+            Some(other) => match g729_variant(other) {
+                Some(variant) => g729_decoder(variant),
+                None => bail!(
                     "Unsupported codec for WAV export: {other}. Supported: {}.",
                     supported_codecs()
-                )
-            }
+                ),
+            },
             None => bail!("Unknown codec — cannot decode to WAV"),
         }
     }
@@ -1486,7 +1567,21 @@ impl FrameDecoder {
             Self::G722(_) => "G.722",
             Self::Opus(_) => "Opus",
             #[cfg(feature = "g729")]
-            Self::G729(_) => "G.729",
+            Self::G729(stream) => stream.variant.label(),
+        }
+    }
+
+    /// What the decoded audio is, when it is not simply the codec's audio:
+    /// for G.729.1, the core layer decoded as G.729, at the bit rates of the
+    /// frames decoded so far (see [`crate::rtp::g729_family::g7291_caveat`]).
+    #[must_use]
+    pub fn caveat(&self) -> Option<String> {
+        match self {
+            #[cfg(feature = "g729")]
+            Self::G729(stream) if stream.variant == G729Variant::G7291 => {
+                Some(crate::rtp::g729_family::g7291_caveat(&stream.rates))
+            }
+            _ => None,
         }
     }
 
@@ -1503,20 +1598,7 @@ impl FrameDecoder {
             Self::G722(decoder) => Ok(decoder.decode(payload)),
             Self::Opus(decoder) => decoder.decode_frame(payload),
             #[cfg(feature = "g729")]
-            Self::G729(stream) => {
-                stream.last = g729_last_after(payload.len(), stream.last);
-                // A payload of 10n octets is n speech frames; one ending in
-                // a SID is not the size of the stream's speech packets.
-                if payload.len() >= 10 && payload.len().is_multiple_of(10) {
-                    stream.speech_packets.record(payload.len() / 10);
-                }
-                let decoder = &mut stream.decoder;
-                let mut pcm = Vec::with_capacity(payload.len() / 10 * g729::FRAME_SAMPLES + 80);
-                decoder
-                    .decode_rtp(payload, &mut pcm)
-                    .map_err(anyhow::Error::msg)?;
-                Ok(pcm)
-            }
+            Self::G729(stream) => stream.decode(payload),
         }
     }
 
@@ -3701,5 +3783,398 @@ mod g729_tests {
             assert!((audio.duration_secs - 0.02).abs() < 1e-9);
             Ok(())
         }
+    }
+}
+
+/// G.729.1 through [`FrameDecoder`]: its core layer on the 16 kHz RTP clock,
+/// and the decoder's own concealment and comfort noise in the gaps.
+#[cfg(all(test, feature = "g729"))]
+mod g7291_tests {
+    use super::*;
+    use crate::rtp::g729_tables::test_support;
+    use crate::rtp::stream::{RtpStream, StreamKey};
+
+    type TestError = Box<dyn std::error::Error>;
+
+    /// Ten octets that decode as one active G.729 frame.
+    const VOICE: [u8; 10] = [0x7a, 0x13, 0xc4, 0x58, 0x2e, 0x91, 0x6b, 0x0f, 0xd2, 0x37];
+    /// A second, different active frame.
+    const VOICE2: [u8; 10] = [0x35, 0xe8, 0x0b, 0x9c, 0x71, 0x4a, 0xd6, 0x23, 0x88, 0x5f];
+    /// A core SID: an Annex B SID frame.
+    const SID: [u8; 2] = [0x4c, 0x90];
+
+    /// One G.729.1 frame at frame type `ft` whose core is `VOICE` then
+    /// `VOICE2`, the rest of the frame (the higher layers) 0xA5.
+    fn frame(ft: u8) -> Vec<u8> {
+        let octets = g729::g7291::Rate::from_ft(ft).map_or(20, g729::g7291::Rate::frame_octets);
+        let mut f = [VOICE, VOICE2].concat();
+        f.resize(octets, 0xa5);
+        f
+    }
+
+    /// A payload: header `0xF0 | ft`, then `frames` frames at that rate.
+    fn speech(ft: u8, frames: usize) -> Vec<u8> {
+        let mut p = vec![0xf0 | ft];
+        for _ in 0..frames {
+            p.extend(frame(ft));
+        }
+        p
+    }
+
+    /// A payload holding a 3-octet SID alone (FT 14) whose core is `SID`.
+    fn sid() -> Vec<u8> {
+        vec![0xfe, SID[0], SID[1] | 1, 0x77]
+    }
+
+    /// A G.729.1 stream on the 16 kHz RTP clock holding `payloads`, lasting
+    /// `wall_ms` of capture time.
+    fn g7291_stream(payloads: Vec<RetainedFrame>, wall_ms: i64) -> Result<RtpStream, TestError> {
+        let key = StreamKey {
+            ssrc: 0x7291_7291,
+            src: "10.0.0.1:20000".parse()?,
+            dst: "10.0.0.2:30000".parse()?,
+            session: 0,
+        };
+        let hdr = crate::rtp::parser::RtpHeader {
+            version: 2,
+            padding: false,
+            extension: false,
+            csrc_count: 0,
+            marker: false,
+            payload_type: 96,
+            sequence: 1,
+            timestamp: 0,
+            ssrc: 0x7291_7291,
+            payload_offset: 12,
+        };
+        let ts = chrono::DateTime::from_timestamp(1_700_000_000, 0).ok_or("a time")?;
+        let mut s = RtpStream::new(key, &hdr, ts);
+        s.codec = Some("G7291".into());
+        s.clock_rate = 16000;
+        s.last_seen = s.first_seen + chrono::Duration::milliseconds(wall_ms);
+        s.payload_buffer = payloads.into();
+        Ok(s)
+    }
+
+    /// The 10 ms frames the crate's decoder is given, from a fresh state.
+    enum Expect {
+        /// One G.729.1 frame's core: `VOICE` then `VOICE2`.
+        Core,
+        /// The core SID then an untransmitted frame.
+        Sid,
+        /// `n` erased frames.
+        Erased(usize),
+        /// `n` untransmitted frames.
+        NoTx(usize),
+    }
+
+    /// What the crate's decoder produces for `script`.
+    fn reference(tables: &g729::Tables, script: &[Expect]) -> Vec<i16> {
+        let mut frames: Vec<g729::Frame<'_>> = Vec::new();
+        for step in script {
+            match step {
+                Expect::Core => {
+                    frames.extend([g729::Frame::Voice(&VOICE), g729::Frame::Voice(&VOICE2)])
+                }
+                Expect::Sid => frames.extend([g729::Frame::Sid(&SID), g729::Frame::NoTx]),
+                Expect::Erased(n) => frames.extend(std::iter::repeat_n(g729::Frame::Erased, *n)),
+                Expect::NoTx(n) => frames.extend(std::iter::repeat_n(g729::Frame::NoTx, *n)),
+            }
+        }
+        let mut d = g729::Decoder::new(tables);
+        let mut out = Vec::new();
+        let mut pcm = [0i16; g729::FRAME_SAMPLES];
+        for f in frames {
+            d.decode(f, &mut pcm);
+            out.extend_from_slice(&pcm);
+        }
+        out
+    }
+
+    /// The rule itself: frames alone leave the stream talking, a SID (alone
+    /// or after frames) leaves it paused, and a payload with neither leaves
+    /// it as it was. After a SID an erased and an untransmitted frame decode
+    /// alike, so the decoded audio alone cannot show this.
+    #[test]
+    fn the_g7291_gap_rule_follows_the_last_frame_type() -> Result<(), TestError> {
+        let after = |payload: &[u8], last| -> Result<G729Last, TestError> {
+            Ok(g7291_last_after(&g729::g7291::split_rtp(payload)?, last))
+        };
+        let mut speech_then_sid = speech(0, 1);
+        speech_then_sid.extend_from_slice(&SID);
+        for last in [G729Last::Active, G729Last::Inactive] {
+            assert_eq!(after(&speech(0, 1), last)?, G729Last::Active);
+            assert_eq!(after(&speech(11, 2), last)?, G729Last::Active);
+            assert_eq!(after(&sid(), last)?, G729Last::Inactive);
+            assert_eq!(after(&speech_then_sid, last)?, G729Last::Inactive);
+            assert_eq!(after(&[0xff], last)?, last, "no data");
+            assert_eq!(after(&[0xf0], last)?, last, "a header alone");
+        }
+        Ok(())
+    }
+
+    /// A lost packet stands for the stream's usual speech packet, counted
+    /// from packets of frames alone: a packet ending in a SID is not a
+    /// speech packet's size. Here one packet of three frames (six 10 ms
+    /// frames) and one of a frame alone tie, the larger wins, and the two
+    /// one-frame packets that end in a SID do not count.
+    #[test]
+    fn a_packet_ending_in_a_sid_does_not_size_a_lost_packet() -> Result<(), TestError> {
+        let tables = test_support::use_tables()?;
+        let mut d = FrameDecoder::new(Some("G7291"))?;
+        let mut speech_then_sid = speech(0, 1);
+        speech_then_sid.extend_from_slice(&SID);
+        for payload in [
+            speech(0, 3),
+            speech_then_sid.clone(),
+            speech_then_sid,
+            speech(0, 1),
+        ] {
+            d.decode(&payload)?;
+        }
+        // One packet missing in 60 ms after speech: six erased frames.
+        let fill = d.fill(480, Some(1));
+        let whole = reference(
+            tables,
+            &[
+                Expect::Core,
+                Expect::Core,
+                Expect::Core,
+                Expect::Core,
+                Expect::Sid,
+                Expect::Core,
+                Expect::Sid,
+                Expect::Core,
+                Expect::Erased(6),
+            ],
+        );
+        assert_eq!(fill, whole[whole.len() - 480..]);
+        Ok(())
+    }
+
+    /// Each caveat is said once, in the order first met, whatever number of
+    /// streams carry it.
+    #[test]
+    fn each_caveat_is_said_once() {
+        let a = "G.729.1: one".to_owned();
+        let b = "G.729.1: two".to_owned();
+        assert_eq!(caveat_clause(&[]), "");
+        assert_eq!(
+            caveat_clause(&[a.clone(), a.clone(), b.clone(), a]),
+            " — G.729.1: one. — G.729.1: two."
+        );
+    }
+
+    /// One frame a packet at 8 kbit/s: 320 ticks of the 16 kHz clock each,
+    /// 160 samples at 8 kHz each, end to end with no gap.
+    #[test]
+    fn g7291_runs_on_the_16_khz_clock_and_decodes_to_8_khz() -> Result<(), TestError> {
+        let tables = test_support::use_tables()?;
+        let s = g7291_stream(
+            (0..3u16)
+                .map(|i| RetainedFrame::new(u32::from(i) * 320, i, speech(0, 1)))
+                .collect(),
+            60,
+        )?;
+        let d = decode_stream_pcm(&s, true)?;
+        assert_eq!((d.rate, d.label), (8000, "G.729.1 core layer"));
+        assert_eq!((d.timeline.gaps, d.failures), (0, 0));
+        assert_eq!(
+            d.pcm,
+            reference(tables, &[Expect::Core, Expect::Core, Expect::Core])
+        );
+        Ok(())
+    }
+
+    /// Two 32 kbit/s frames a packet advance the clock by 640 ticks, and
+    /// only their cores are decoded.
+    #[test]
+    fn two_frames_a_packet_advance_640_ticks() -> Result<(), TestError> {
+        let tables = test_support::use_tables()?;
+        let s = g7291_stream(
+            (0..3u16)
+                .map(|i| RetainedFrame::new(u32::from(i) * 640, i, speech(11, 2)))
+                .collect(),
+            120,
+        )?;
+        let d = decode_stream_pcm(&s, true)?;
+        assert_eq!(d.timeline.gaps, 0);
+        let six = [
+            Expect::Core,
+            Expect::Core,
+            Expect::Core,
+            Expect::Core,
+            Expect::Core,
+            Expect::Core,
+        ];
+        assert_eq!(d.pcm, reference(tables, &six));
+        Ok(())
+    }
+
+    /// A sequence number missing from the stream is a packet lost: its 20 ms
+    /// are erased frames, which the decoder conceals.
+    #[test]
+    fn a_missing_sequence_number_is_a_lost_packet_concealed() -> Result<(), TestError> {
+        let tables = test_support::use_tables()?;
+        let s = g7291_stream(
+            vec![
+                RetainedFrame::new(0, 0, speech(3, 1)),
+                RetainedFrame::new(320, 1, speech(3, 1)),
+                // Sequence 2, timestamps 640 to 959, lost.
+                RetainedFrame::new(960, 3, speech(3, 1)),
+            ],
+            80,
+        )?;
+        let d = decode_stream_pcm(&s, true)?;
+        assert_eq!((d.timeline.gaps, d.timeline.filled_ticks), (1, 320));
+        assert_eq!(
+            d.pcm,
+            reference(
+                tables,
+                &[Expect::Core, Expect::Core, Expect::Erased(2), Expect::Core]
+            )
+        );
+        Ok(())
+    }
+
+    /// After a SID the sender stops; a timestamp jump with consecutive
+    /// sequence numbers is untransmitted frames, and the comfort noise the
+    /// core SID started carries on.
+    #[test]
+    fn a_timestamp_jump_after_a_sid_is_untransmitted() -> Result<(), TestError> {
+        let tables = test_support::use_tables()?;
+        let s = g7291_stream(
+            vec![
+                RetainedFrame::new(0, 0, speech(0, 1)),
+                RetainedFrame::new(320, 1, sid()),
+                // Five 20 ms frames not sent: 640 to 2239.
+                RetainedFrame::new(2240, 2, speech(0, 1)),
+            ],
+            160,
+        )?;
+        let d = decode_stream_pcm(&s, true)?;
+        assert_eq!((d.timeline.gaps, d.timeline.filled_ticks), (1, 1600));
+        assert_eq!(
+            d.pcm,
+            reference(
+                tables,
+                &[Expect::Core, Expect::Sid, Expect::NoTx(10), Expect::Core]
+            )
+        );
+        Ok(())
+    }
+
+    /// The 16-bit sequence number wraps from 65535 to 0 without a loss, and a
+    /// packet missing across the wrap is one lost packet.
+    #[test]
+    fn the_sequence_number_wraps_at_65535() -> Result<(), TestError> {
+        let tables = test_support::use_tables()?;
+        let whole = g7291_stream(
+            vec![
+                RetainedFrame::new(0, 65534, speech(0, 1)),
+                RetainedFrame::new(320, 65535, speech(0, 1)),
+                RetainedFrame::new(640, 0, speech(0, 1)),
+            ],
+            60,
+        )?;
+        let d = decode_stream_pcm(&whole, true)?;
+        assert_eq!(d.timeline.gaps, 0);
+        assert_eq!(
+            d.pcm,
+            reference(tables, &[Expect::Core, Expect::Core, Expect::Core])
+        );
+        let lost = g7291_stream(
+            vec![
+                RetainedFrame::new(0, 65535, speech(0, 1)),
+                // Sequence 0 lost.
+                RetainedFrame::new(640, 1, speech(0, 1)),
+            ],
+            60,
+        )?;
+        let d = decode_stream_pcm(&lost, true)?;
+        assert_eq!(
+            d.pcm,
+            reference(tables, &[Expect::Core, Expect::Erased(2), Expect::Core])
+        );
+        Ok(())
+    }
+
+    /// A packet lost in a pause after a SID is the one that ended the pause:
+    /// its frames are erased right before the next packet, and the rest of
+    /// the pause is untransmitted.
+    #[test]
+    fn a_packet_lost_next_to_a_sid_is_erased_before_the_next_packet() -> Result<(), TestError> {
+        let tables = test_support::use_tables()?;
+        let s = g7291_stream(
+            vec![
+                RetainedFrame::new(0, 0, speech(0, 1)),
+                RetainedFrame::new(320, 1, sid()),
+                // Sequence 2 lost; 640 to 1919 is four 20 ms frames.
+                RetainedFrame::new(1920, 3, speech(0, 1)),
+            ],
+            160,
+        )?;
+        let d = decode_stream_pcm(&s, true)?;
+        assert_eq!(
+            d.pcm,
+            reference(
+                tables,
+                &[
+                    Expect::Core,
+                    Expect::Sid,
+                    Expect::NoTx(6),
+                    Expect::Erased(2),
+                    Expect::Core
+                ]
+            )
+        );
+        Ok(())
+    }
+
+    /// FT 15 (no data) decodes nothing and is no loss: the time it stands
+    /// for is untransmitted frames, not erased ones.
+    #[test]
+    fn no_data_packets_count_as_no_loss() -> Result<(), TestError> {
+        let tables = test_support::use_tables()?;
+        let s = g7291_stream(
+            vec![
+                RetainedFrame::new(0, 0, speech(0, 1)),
+                RetainedFrame::new(320, 1, vec![0xff]),
+                RetainedFrame::new(640, 2, vec![0xff]),
+                RetainedFrame::new(960, 3, speech(0, 1)),
+            ],
+            80,
+        )?;
+        let d = decode_stream_pcm(&s, true)?;
+        assert_eq!(d.failures, 0);
+        assert_eq!(
+            d.pcm,
+            reference(tables, &[Expect::Core, Expect::NoTx(4), Expect::Core])
+        );
+        Ok(())
+    }
+
+    /// FT 12 is reserved: the payload is ignored and counted as a frame that
+    /// failed to decode, and its time is concealed as a lost packet.
+    #[test]
+    fn a_reserved_frame_type_is_one_failure_and_its_time_is_concealed() -> Result<(), TestError> {
+        let tables = test_support::use_tables()?;
+        let mut reserved = speech(0, 1);
+        reserved[0] = 0xfc;
+        let s = g7291_stream(
+            vec![
+                RetainedFrame::new(0, 0, speech(0, 1)),
+                RetainedFrame::new(320, 1, reserved),
+                RetainedFrame::new(640, 2, speech(0, 1)),
+            ],
+            60,
+        )?;
+        let d = decode_stream_pcm(&s, true)?;
+        assert_eq!(d.failures, 1);
+        assert_eq!(
+            d.pcm,
+            reference(tables, &[Expect::Core, Expect::Erased(2), Expect::Core])
+        );
+        Ok(())
     }
 }

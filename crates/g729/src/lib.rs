@@ -7,8 +7,11 @@
 //! comfort-noise generation behind the `annex-b` feature (on by default). It
 //! decodes only; there is no encoder. It also decodes main-body G.729
 //! streams, which are interoperable with Annex A (RFC 3551 section 4.5.6).
-//! Annex D, Annex E and G.729.1 are not supported. It is bit-exact with the
-//! ITU-T reference decoder on the 16 ITU-T decoder test vectors.
+//! It also decodes the core layer of G.729.1 streams ([`g7291`]): two G.729
+//! frames at the start of each 20 ms frame, decoded to 8 kHz; the higher
+//! G.729.1 layers are not decoded. Annex D and Annex E are not supported. It
+//! is bit-exact with the ITU-T reference decoder on the 16 ITU-T decoder test
+//! vectors.
 //!
 //! # Frames and samples
 //!
@@ -140,6 +143,7 @@ pub mod bitstream;
 #[cfg(feature = "annex-b")]
 pub mod cng;
 pub mod fixed;
+pub mod g7291;
 pub mod gain;
 pub mod lpc;
 pub mod lsp;

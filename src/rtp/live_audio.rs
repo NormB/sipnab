@@ -96,6 +96,13 @@ impl LiveStream {
         self.decoder.rate(stream.clock_rate)
     }
 
+    /// What the decoded audio is when it is not simply the codec's audio,
+    /// from the frames decoded so far (see [`FrameDecoder::caveat`]).
+    #[must_use]
+    pub fn caveat(&self) -> Option<String> {
+        self.decoder.caveat()
+    }
+
     /// Frames released before this reader took them, over its whole life.
     #[must_use]
     pub fn missed(&self) -> u64 {
