@@ -8,6 +8,7 @@
 //! handles — built once in `BatchRunner::new` and consumed by the receive
 //! loop. `run` is the single entry point the binary dispatches to (WS2).
 
+use crate::output::stdout::{out, outln};
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -918,7 +919,7 @@ impl RelayStatsPoll {
             every_secs: self.secs,
         };
         if self.json || self.json_pretty {
-            println!(
+            outln!(
                 "{}",
                 maybe_pretty(
                     format_relay_statistics_json(wire, &self.label, chrono::Utc::now(), origin),
@@ -926,7 +927,7 @@ impl RelayStatsPoll {
                 )
             );
         } else {
-            print!(
+            out!(
                 "{}",
                 format_relay_statistics(wire, &self.label, chrono::Utc::now(), origin)
             );
@@ -1069,7 +1070,7 @@ fn run_lint_stage(cli: &Cli, config: &Config, ds: &crate::sip::dialog_store::Dia
             if threshold.is_some_and(|t| f.severity >= t) {
                 tripped = true;
             }
-            println!(
+            outln!(
                 "{}: {} [{}] {} (RFC {} §{}) observed={} expected={}",
                 f.severity.as_str(),
                 f.rule_id,
@@ -4639,7 +4640,7 @@ impl BatchRunner {
             // Escape each Call-ID before it lands inside the display
             // filter's quoted string — a raw Call-ID could close the string
             // and OR in a catch-all that silently matches almost everything.
-            println!(
+            outln!(
                 "{}",
                 crate::output::wireshark::call_id_display_filter(&call_ids)
             );
@@ -4664,7 +4665,7 @@ impl BatchRunner {
                 // Shell-quote the file name and the filter: an operator
                 // pastes this command, so a name or expression carrying a
                 // single quote must not break out of the `-Y '…'` word.
-                Ok(file) => println!(
+                Ok(file) => outln!(
                     "{}",
                     crate::output::wireshark::generate_tshark_command(
                         None,
@@ -4685,7 +4686,7 @@ impl BatchRunner {
                 // breaks the filter nor injects a shell command a copy-paste
                 // would run.
                 let filter = crate::output::wireshark::call_id_display_filter(&call_ids);
-                println!(
+                outln!(
                     "{}",
                     crate::output::wireshark::generate_tshark_command(
                         None,
@@ -5075,10 +5076,10 @@ fn print_block_recommendations(
     dialect: crate::security::recommend::BlockDialect,
 ) {
     if accused.is_empty() {
-        print!("{}", crate::security::recommend::nothing_to_recommend());
+        out!("{}", crate::security::recommend::nothing_to_recommend());
     } else {
         for a in accused {
-            print!("{}", crate::security::recommend::recommend(a, dialect));
+            out!("{}", crate::security::recommend::recommend(a, dialect));
         }
     }
 }
@@ -6924,7 +6925,7 @@ impl EndOfRunReports<'_> {
             call_report_format(self.cli),
             crate::rtp::quality::MosDelay::from_capture(stream_store),
         );
-        print!("{report}");
+        out!("{report}");
         true
     }
 }
@@ -8371,7 +8372,7 @@ fn write_vcon_containers(
             // an operator redirects to a file, and mixing them with progress
             // text would put a "Wrote N containers" line inside their
             // SHA256SUMS.
-            println!("{}", digest_line(&path, &bytes));
+            outln!("{}", digest_line(&path, &bytes));
         }
         written += 1;
     }
@@ -8513,7 +8514,7 @@ fn queue_enrichment(
                     .map_err(|e| e.to_string())
             });
         match written {
-            Ok(bytes) if digest => println!("{}", digest_line(&path, &bytes)),
+            Ok(bytes) if digest => outln!("{}", digest_line(&path, &bytes)),
             Ok(_) => {}
             Err(e) => stderr_line!(
                 "{label}Could not write '{}' after enrichment: {e}",

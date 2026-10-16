@@ -15,6 +15,7 @@
 use crate::capture::{self, CaptureConfig, CaptureSource};
 use crate::cli::{self, Cli};
 use crate::config::{Config, LoadedConfig};
+use crate::output::stdout::{out, outln};
 use crate::output::{ColorMode, EventExecEngine, OutputOptions};
 use crate::privilege;
 use crate::relay::reconcile::Reconciler;
@@ -234,10 +235,10 @@ pub fn uprobe_list(cli: &Cli) -> i32 {
         }
         // Padding baked into the literal rather than applied to literal
         // arguments: the columns match the row format below by construction.
-        println!("FLAVOR        INODE  PIDS  LIBRARY");
+        outln!("FLAVOR        INODE  PIDS  LIBRARY");
         for lib in &found {
             let reachable = lib.probe_path();
-            println!(
+            outln!(
                 "{:<9} {:>10} {:>5}  {}",
                 lib.flavor.label(),
                 lib.inode,
@@ -492,7 +493,7 @@ pub fn plan(cli: &Cli, config: &Config) -> Result<RunPlan, PlanError> {
 
     let metrics_bind = parse_metrics_bind(cli)?;
 
-    refuse_cores_without_their_outputs(cli);
+    refuse_cores_without_their_outputs(cli, config);
     warn_degraded_run_shape(cli, config);
     for msg in cli.inert_key_warnings(config) {
         tracing::warn!("{msg}");
@@ -1300,22 +1301,69 @@ fn parse_metrics_bind(_cli: &Cli) -> Result<Option<std::net::SocketAddr>, PlanEr
     Ok(None)
 }
 
-/// The per-message outputs a `--cores N` run was asked for and cannot produce.
+/// The flags a `--cores N` run was given that its parallel reader does not
+/// carry out.
+///
+/// The parallel reader rebuilds dialogs and streams per shard and prints the
+/// whole-capture views. It writes no per-message stream or capture file,
+/// decodes no DTMF, runs no exec hook, serves no REST or MCP, forwards no HEP,
+/// decrypts nothing, does not replay, and does not confine itself. Each flag
+/// below asks for one of those, and each used to be skipped without a word.
 ///
 /// Empty unless `--cores` above 1 takes the parallel reader: `-I` without
 /// `--multi-device`.
-fn cores_unsupported_outputs(cli: &Cli) -> Vec<&'static str> {
+fn cores_unsupported_flags(cli: &Cli, config: &Config) -> Vec<&'static str> {
     if !(cli.limits_args.cores > 1 && cli.has_input() && !cli.capture_args.multi_device) {
         return Vec::new();
     }
+    let out = &cli.output_args;
+    let matching = &cli.matching_args;
+    let tls = &cli.tls_args;
+    let security = &cli.security_args;
     [
-        (
-            cli.output_args.json || cli.output_args.json_pretty,
-            "--json",
-        ),
-        (cli.output_args.text_dump, "--text-dump"),
-        (cli.output_args.fail2ban, "--fail2ban"),
+        (out.json || out.json_pretty, "--json"),
+        (out.text_dump, "--text-dump"),
+        (out.fail2ban, "--fail2ban"),
         (cli.capture_args.output.is_some(), "-O/--output"),
+        (out.hexdump, "--hexdump"),
+        (out.group_by.is_some(), "--group-by"),
+        (out.wireshark, "--wireshark"),
+        (out.tshark_filter.is_some(), "--tshark-filter"),
+        (matching.match_expr.is_some(), "--match"),
+        (matching.from.is_some(), "--from"),
+        (matching.to.is_some(), "--to"),
+        (matching.contact.is_some(), "--contact"),
+        (matching.ua.is_some(), "--ua"),
+        (cli.dialog_args.tag.is_some(), "--tag"),
+        (cli.mode_args.telephone_event, "--telephone-event"),
+        (cli.exec_args.on_dialog_exec.is_some(), "--on-dialog-exec"),
+        (cli.exec_args.on_quality_exec.is_some(), "--on-quality-exec"),
+        (security.recommend_block.is_some(), "--recommend-block"),
+        (security.evidence_out.is_some(), "--evidence-out"),
+        (security.syslog, "--syslog"),
+        (!security.allow_action.is_empty(), "--allow-action"),
+        (cli.rtp_args.relay_compare.is_some(), "--relay-compare"),
+        (cli.hep_args.hep_send.is_some(), "--hep-send"),
+        (cli.listener_args.api.is_some(), "--api"),
+        (cli.mcp_args.mcp, "--mcp"),
+        (tls.srtp_keys.is_some(), "--srtp-keys"),
+        (tls.dtls_keylog.is_some(), "--dtls-keylog"),
+        (
+            tls.keylog.is_some() || tls.keylog_fd.is_some() || tls.keylog_watch,
+            "--keylog",
+        ),
+        (tls.tls_key.is_some(), "--tls-key"),
+        (cli.capture_args.replay, "--replay"),
+        (
+            sandbox_mode(cli) != crate::sandbox::SandboxMode::Off,
+            "--sandbox",
+        ),
+        (
+            seccomp_mode(cli) != crate::seccomp::SeccompMode::Off,
+            "--seccomp",
+        ),
+        (effective_chroot(cli, config).is_some(), "--chroot"),
+        (effective_user(cli, config).is_some(), "--user"),
     ]
     .into_iter()
     .filter_map(|(asked, flag)| asked.then_some(flag))
@@ -1348,16 +1396,15 @@ fn cores_unsupported_outputs(cli: &Cli) -> Vec<&'static str> {
 /// # Side effects
 ///
 /// Exits the process with code 2 when refused.
-fn refuse_cores_without_their_outputs(cli: &Cli) {
-    let unsupported = cores_unsupported_outputs(cli);
+fn refuse_cores_without_their_outputs(cli: &Cli, config: &Config) {
+    let unsupported = cores_unsupported_flags(cli, config);
     if !unsupported.is_empty() {
         tracing::error!(
-            "--cores {} cannot produce {}: the parallel reader rebuilds \
-             dialogs per shard and has no per-message stream or capture \
-             writer, so it would emit nothing and still exit 0. Drop \
-             --cores for these, or keep --cores and ask for a whole-capture \
-             view instead (--json-dialogs, --report, --call-report), which \
-             the parallel path does produce.",
+            "--cores {} does not do what {} asks for: the parallel reader \
+             rebuilds dialogs per shard and prints only whole-capture views, \
+             so it would skip them and still exit 0. Drop --cores for these, \
+             or keep --cores and ask for a whole-capture view instead \
+             (--json-dialogs, --report, --analyze, --call-report).",
             cli.limits_args.cores,
             unsupported.join(", ")
         );
@@ -1986,7 +2033,7 @@ fn print_relay_stat_names(
     let names = crate::stats_vocab::known_names(tiered);
     let src = crate::stats_vocab::NameSource::Listed;
     if r.json || r.json_pretty {
-        println!(
+        outln!(
             "{}",
             fmt::maybe_pretty(
                 fmt::format_relay_stat_names_json(&names, src, r.label, r.obtained_at),
@@ -1994,7 +2041,7 @@ fn print_relay_stat_names(
             )
         );
     } else {
-        print!(
+        out!(
             "{}",
             fmt::format_relay_stat_names(&names, src, r.label, r.obtained_at)
         );
@@ -2009,7 +2056,7 @@ fn print_relay_stat_values(
     use crate::output::relay_statistics as fmt;
     let wire = crate::stats_vocab::resolve_for_wire(tiered);
     if r.json || r.json_pretty {
-        println!(
+        outln!(
             "{}",
             fmt::maybe_pretty(
                 fmt::format_relay_statistics_json(
@@ -2022,7 +2069,7 @@ fn print_relay_stat_values(
             )
         );
     } else {
-        print!(
+        out!(
             "{}",
             fmt::format_relay_statistics(&wire, r.label, r.obtained_at, fmt::FetchOrigin::Asked,)
         );
@@ -2253,7 +2300,7 @@ fn print_relay_comparison(
 ) {
     use crate::output::relay_statistics as fmt;
     if r.json || r.json_pretty {
-        println!(
+        outln!(
             "{}",
             fmt::maybe_pretty(
                 fmt::format_relay_comparison_json(comparison, r.call_id, r.label, r.obtained_at,),
@@ -2261,7 +2308,7 @@ fn print_relay_comparison(
             )
         );
     } else {
-        print!(
+        out!(
             "{}",
             fmt::format_relay_comparison(comparison, r.call_id, r.label, r.obtained_at)
         );
@@ -3925,25 +3972,25 @@ fn print_found_frame(
     verified: bool,
 ) {
     if verified {
-        println!("VERIFIED  {pointer}");
+        outln!("VERIFIED  {pointer}");
     } else {
-        println!("UNVERIFIED  {pointer}");
+        outln!("UNVERIFIED  {pointer}");
     }
-    println!(
+    outln!(
         "{} bytes, frame {} of {}",
         bytes.len(),
         parsed.origin.ordinal,
         parsed.source
     );
     if !verified {
-        println!(
+        outln!(
             "The pointer carried no digest, so these bytes were not checked \
              against anything. If the capture changed since the pointer was \
              made, this is the wrong frame and nothing here can tell."
         );
     }
-    println!();
-    print!("{}", crate::output::hexdump::hexdump(bytes));
+    outln!();
+    out!("{}", crate::output::hexdump::hexdump(bytes));
 }
 
 /// Why `--show-frame` will not print a frame, with its exit code: `1` when
@@ -4029,7 +4076,7 @@ pub fn run_mint_token(cli: &Cli) -> Option<i32> {
     {
         match mint_token(cli) {
             Ok(token) => {
-                println!("{token}");
+                outln!("{token}");
                 Some(0)
             }
             Err(msg) => {
@@ -4747,19 +4794,19 @@ pub fn apply_config(cli: &Cli, loaded: LoadedConfig) -> Result<LoadedConfig, Pla
 /// to stdout. Returns the process exit code (0 on success, 1 when the
 /// config fails to serialize).
 pub fn dump_config(loaded: &LoadedConfig) -> i32 {
-    println!("sipnab v{}", cli::build_version());
-    println!();
+    outln!("sipnab v{}", cli::build_version());
+    outln!();
     if let Some(ref source) = loaded.source {
-        println!("# Loaded from: {}", source.display());
+        outln!("# Loaded from: {}", source.display());
         for p in &loaded.shadowed {
-            println!("# Also present and NOT read: {}", p.display());
+            outln!("# Also present and NOT read: {}", p.display());
         }
     } else {
-        println!("# No config file loaded (defaults only)");
+        outln!("# No config file loaded (defaults only)");
     }
     match loaded.config.dump() {
         Ok(toml_str) => {
-            println!("{toml_str}");
+            outln!("{toml_str}");
             0
         }
         Err(e) => {
@@ -10809,12 +10856,13 @@ mod decision_tests {
             "-O",
             "o.pcap",
         ]);
+        let config = Config::default();
         assert_eq!(
-            cores_unsupported_outputs(&cli),
+            cores_unsupported_flags(&cli, &config),
             vec!["--json", "--text-dump", "-O/--output"]
         );
         let single = cli_from(&["--cores", "1", "-I", FIXTURE_FILE, "--json"]);
-        assert!(cores_unsupported_outputs(&single).is_empty());
+        assert!(cores_unsupported_flags(&single, &config).is_empty());
         Ok(())
     }
 

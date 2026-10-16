@@ -77,6 +77,7 @@ pub mod relay_statistics;
 pub mod run_integrity;
 pub mod runtime;
 pub mod sink;
+pub mod stdout;
 pub mod stun_report;
 pub mod synthetic;
 #[cfg(feature = "vcon")]

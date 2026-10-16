@@ -43,7 +43,11 @@ default stays readable on both dark and light terminals.
 - `dark_gray` (or `dark_grey`, `darkgray`, `darkgrey`)
 - `reset` (or `default`)
 
-Names are case-insensitive. An unrecognized name draws a warning. It leaves that slot at its built-in default.
+Names are case-insensitive. sipnab refuses an unrecognized name at startup and names the slot:
+
+```text
+invalid config value: [theme] background = "bogus" is not a color: give a name (red, dark_gray, reset, ...) or #rrggbb
+```
 
 ### Hex RGB
 

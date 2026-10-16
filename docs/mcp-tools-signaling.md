@@ -490,9 +490,10 @@ loop in which every turn that finds nothing still costs a model call.
 | `timeout_seconds` | u32? | Ceiling is `--mcp-max-wait-seconds` (60 by default). Higher clamps to it and sets `timeout_clamped`. `0` means "look once and answer". | 30 seconds. |
 | `poll_interval_ms` | u32? | Floor is 100 ms. sipnab raises anything smaller and returns the effective value. | 500 ms. |
 
-Returns `{ matched, stopped_because, dialogs, returned, total_matched,
-truncated, elapsed_ms, timeout_seconds, timeout_clamped, poll_interval_ms,
-polls, scans, source_exhausted, capture_identity }`, where `dialogs` holds the
+Returns `{ schema_version, filter, matched, stopped_because, dialogs, returned,
+total_matched, truncated, elapsed_ms, timeout_seconds, timeout_clamped,
+poll_interval_ms, polls, scans, source_exhausted, source_stopped_early,
+capture_identity }`, where `dialogs` holds the
 same summary rows [`list_dialogs`](mcp-tools-core.md#list_dialogs) returns, fencing included,
 and is empty unless `matched` is `true`.
 
@@ -503,8 +504,8 @@ rows, cut to `--mcp-max-rows` when the operator set that lower.
 
 [`list_dialogs`](mcp-tools-core.md#list_dialogs) with the same `filter` is the paging surface,
 with the cursors and field projection that belong there. The response carries
-reported either way, so a bounded page never reads as a smaller event than it
-was.
+`total_matched` and `truncated` either way, so a bounded page never reads as a
+smaller event than it was.
 
 **A deadline that passes is an answer, not an error.** It comes back as a
 successful call carrying `matched: false` — because "the fault has not

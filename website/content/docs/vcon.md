@@ -886,13 +886,6 @@ The file holds the JWE: `unprotected`, `recipients`, `iv`, `ciphertext` and
 - sipnab names each file `<uuid>.vcon.json` rather than after the Call-ID.
   - A Call-ID can carry host names and addresses, and the file name is not encrypted.
 
-- Its `unprotected` header carries the container's
-  `uuid` and `cty: "application/vcon+json"`.
-  - So a store and the forwarder's replace URL can use the uuid without the key.
-- sipnab names each file `<uuid>.vcon.json` rather than after the Call-ID.
-  - A Call-ID can carry host names and addresses.
-  - The file name is not encrypted.
-
 **Decrypt one.**
 
 - The recipient opens the container with the private key of
@@ -3310,7 +3303,9 @@ Two settings check who signed it, as the fetcher's do
   certificate must chain to a CA in the file, every certificate within its
   validity period.
 - `--vcon-signer-sha256 <HEX>` (`[vcon_input] signer_sha256`): the signing
-  certificate must have this fingerprint.
+  certificate must have this fingerprint. Get it from the certificate with
+  `openssl x509 -in signer.pem -noout -fingerprint -sha256` and pass the part
+  after `=`.
 - With either set, sipnab refuses an unsigned container: it has no signer to
   check.
 

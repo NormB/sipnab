@@ -13,8 +13,9 @@ Add your own detection to sipnab's diagnosis, without forking it.
 A plugin is a small WebAssembly module. It receives one reconstructed dialog
 and returns findings.
 
-- Those findings appear beside sipnab's built-in ones, in the same shape.
-- So every surface that renders a finding renders yours with no extra work.
+- Its findings appear in `--json-dialogs` output, in a `plugin_findings`
+  array on the dialog they describe.
+- The other surfaces (the report, REST, MCP, the TUI) do not show them yet.
 
 ## When you want one
 

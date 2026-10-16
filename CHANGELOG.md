@@ -8,6 +8,34 @@ sipnab is pre-1.0: the public API and the CLI surface are not stable, and a
 breaking change may land in any release. Breaking changes are called out in the
 entry that carries them.
 
+## [Unreleased]
+
+### Fixed
+
+- **`--cores N` lists calls and RTP streams in capture order, as `--cores 1` does.**
+  - The merged report listed them in the order the workers were joined, so the same capture gave a different row order at different core counts: `--report`, `--json-dialogs`, `--analyze` and `--lint` findings all followed it.
+  - The merged stores are now sorted by where each call's and stream's first frame was read: the file's place in the `-I` set, then the frame's position in that file.
+- **`--cores N` refuses the flags its parallel reader does not carry out, instead of skipping them.**
+  - An offline `--cores N` run printed no per-message lines, ran no detectors, decrypted nothing, decoded no DTMF, ran no exec hook, served no REST or MCP, forwarded no HEP, ignored `--replay`, and did not apply `--sandbox`, `--seccomp`, `--chroot` or `--user`. It exited 0 without a word, while `--help` said those stayed on the single-threaded path.
+  - Each such flag, and `[privilege] chroot` or `user` in the config file, now exits 2 and is named. The whole-capture views (`--report`, `--json-dialogs`, `--analyze`, `--call-report`) run as before.
+- **A reader that closes stdout no longer crashes sipnab.**
+  - `sipnab ... | head` panicked with "failed printing to stdout: Broken pipe", exited 101 and wrote a crash report when the run printed after the reader had gone: `--wireshark`, `--tshark-filter`, `--recommend-block`, `-D`, the journal commands and the other end-of-run answers.
+  - They now stop writing quietly when the reader has gone, and exit 1 with a message on any other write error, such as a full disk.
+- **`--mcp` refuses every flag that writes its answer to stdout, and those flags need `-N`.**
+  - `--mcp --json-dialogs` and `--mcp --recommend-block` wrote their output into the JSON-RPC stream; `--fail2ban` and `--group-by` could too.
+  - `--wireshark` and `--tshark-filter` without `-N` started the TUI and never printed their answer. They are refused with the `-N` hint, like the other output flags.
+- **`--lint-fail-on` refuses a level it does not know.** A level it does not know, such as `critical` or a misspelling, was accepted and turned the gate off. It now exits 2 and names `info`, `notice`, `warning` (or `warn`) and `error`.
+- **A filter refuses `<`, `<=`, `>` and `>=` against a true/false field.** `one_way > true` parsed and matched nothing. It now fails to parse with "the field compares with == or !=".
+- **Documentation that had drifted from the program is corrected**, each claim checked against 0.5.222. Among the corrections:
+  - the REST token scopes (`actions` and `audio` exist; a `full` token cannot ban a source or open live audio),
+  - which MCP tools reach the network (seven, `fetch_vcon` included),
+  - the `asr` unit in `evaluate_expectations` (a percent),
+  - the two metrics endpoints, which publish identical series,
+  - the REST `Host` check and TLS on every listener in the assurance case,
+  - `max_gunzip_bytes`, which does bound a gzipped `-I` file,
+  - HEP version 1, which sipnab receives,
+  - and examples that now run as written (`--tshark-filter`, the `--hep-listen` task card, the certificate fingerprint).
+
 ## [0.5.222] - 2026-10-15
 
 ### Added

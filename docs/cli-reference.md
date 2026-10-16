@@ -114,14 +114,15 @@ Detect SIP scanning and append it in fail2ban's format to the log its jail reads
 - `--kill-scanner` is what detects.
 - `--fail2ban` only chooses the format, so leaving it out leaves the log empty.
 
-Every example below passes `-N`, and that is not a style choice.
+Every example below passes `-N`:
 
-- Only the headless single-capture path builds the detectors.
-- Two paths run without them:
-  - the interactive TUI (the default when you leave `-N` off),
-  - the `--cores N` parallel reader.
-- Ask for detection on either and sipnab warns at startup. The warning says it accepts the flag and ignores it.
-- Without that warning, an empty finding list reads as an all-clear.
+- `-N` runs the detectors and writes `--fail2ban` lines. The fail2ban output
+  needs `-N`.
+- The interactive TUI (the default when you leave `-N` off) runs the same
+  detectors and shows their findings, but never sends a response to a
+  scanner.
+- `--cores N` refuses the detection flags with exit 2: the parallel reader
+  runs no detectors. Drop `--cores` to detect.
 
 ```bash
 sudo sipnab -N -d eth0 --kill-scanner --fail2ban >> /var/log/sipnab/scanners.log
@@ -158,10 +159,16 @@ Print a display filter to paste into Wireshark after opening the capture.
 sipnab -N -I capture.pcap --wireshark
 ```
 
-Or print a tshark-compatible filter string. Use this when the next step is a shell pipeline rather than the Wireshark GUI.
+Or print a `tshark` command that applies a display filter to the capture. Use this when the next step is a shell pipeline rather than the Wireshark GUI.
 
 ```bash
-sipnab -I capture.pcap --tshark-filter 'sip.from.user == "1001"'
+sipnab -N -I capture.pcap --tshark-filter 'sip.from.user == "1001"'
+```
+
+After the per-message lines it prints the command to run:
+
+```text
+tshark -r 'capture.pcap' -Y 'sip.from.user == "1001"' -V
 ```
 
 ### Export call audio as WAV
@@ -421,22 +428,24 @@ sipnab -d eth0,eth1 --multi-device --delta-time
 >   signaling outside the default.
 >
 > Reading a file, sipnab skips any SIP message whose source **and**
-> destination ports both fall outside the range.
+> destination ports both fall outside the range. A skipped message is in no
+> count, dialog or output, so check for skips before you trust a total.
 >
-> - A skipped message reaches no message count, no dialog, and no output
->   format.
-> - So every total you read describes the range and not the capture. So does
->   every ratio you compute from one.
-> - sipnab counts what it skipped. It says so on stderr and at the end of the
->   run.
-> - It names the busiest ports, so there is something to widen to.
-> - `--report` names the count in its `INCOMPLETE RUN` block:
+> The run says how many it skipped on stderr, with the busiest port:
 >
 > ```text
-> NOT ANALYZED: 1 further SIP message(s) were seen on ports outside --portrange
-> and are in none of the totals above. Busiest: 8090 (1). Re-run with
-> --portrange 1-65535 to include them.
+> NOT ANALYZED: 7 further SIP message(s) were seen on ports outside --portrange and are in none of the totals above. Busiest: 5060 (7). Re-run with --portrange 1-65535 to include them.
 > ```
+>
+> `--report` includes the same fact:
+>
+> ```text
+> INCOMPLETE RUN — this report does not describe the whole capture:
+>   - 7 SIP message(s) were seen on ports outside --portrange and were not analyzed; re-run with --portrange 1-65535 to include them
+> ```
+>
+> Both came from `sipnab -N -I sip_call.pcap --portrange 1-2 --report`, a
+> capture whose SIP is all on port 5060.
 >
 > `--portrange 1-65535` analyzes everything the capture holds. Reach for it
 > first on an unfamiliar capture. Narrow it once you know what is in there.
@@ -464,8 +473,8 @@ sipnab -d eth0,eth1 --multi-device --delta-time
 >   capture held no SIP, or sipnab understood none of it:
 >
 > ```text
-> NOT DECODED: 49 of 49 frame(s) (100.0%) produced nothing and are in none of
-> the counts above. Reasons: unsupported link type 0 (49). NOTHING IN THIS
+> NOT DECODED: 3 of 3 frame(s) (100.0%) produced nothing and are in none of
+> the counts above. Reasons: unsupported link type 147 (3). NOTHING IN THIS
 > CAPTURE WAS READ — every frame failed to decode, so the totals above describe
 > no traffic whatsoever and a zero among them is not evidence of absence.
 > ```
@@ -473,8 +482,10 @@ sipnab -d eth0,eth1 --multi-device --delta-time
 > Every reason carries the number that identifies it. That number is what you
 > act on.
 >
-> - `unsupported link type 0` says the file is `DLT_NULL`.
-> - `editcap -T ether in.pcap out.pcap` converts it.
+> - `unsupported link type 147` names the file's pcap link type, here
+>   `LINKTYPE_USER0`, which sipnab does not decode.
+> - Convert the capture with `editcap -T ether in.pcap out.pcap` when its
+>   frames are Ethernet underneath, or open an issue naming the number.
 >
 > A small count is normal. ARP is undecodable by definition and appears on any
 > Ethernet capture. So read the share, not the count.
@@ -502,6 +513,7 @@ sipnab -d eth0,eth1 --multi-device --delta-time
 - `sipnab --mcp -N -I capture.pcap --vcon-key /etc/sipnab/vcon-recipient.key` — serve the MCP tools with a key, so `analyze_vcon` and `validate_vcon` read encrypted containers an agent hands over
 - `sipnab -N -I signed.vcon.json --vcon-signer-ca signing-ca.pem --report` — analyze a signed vCon only when the CA in `signing-ca.pem` issued its signing certificate
 - `sipnab -N -I sealed/ --vcon-key recipient.key --vcon-signer-ca system --json-dialogs` — read a directory of encrypted vCons, each only when a CA in the host's CA bundle issued its signer
+- `openssl x509 -in signer.pem -noout -fingerprint -sha256` — print the fingerprint `--vcon-signer-sha256` takes, from the signing certificate. It prints `sha256 Fingerprint=86:51:67:…`; pass the part after `=`. `sha256sum signer.pem` hashes the PEM text and gives a different value
 - `sipnab -N -I signed.vcon.json --vcon-signer-sha256 40:97:43:61:0C:C7:47:BD:40:82:E2:28:1C:53:A6:54:88:74:EB:E7:A7:2B:E4:A3:C8:CB:1B:CA:C8:97:BC:D6 --json-dialogs` — analyze a signed vCon only when one known certificate signed it
 - `sipnab -N -I sealed.vcon.json --vcon-key recipient.key --vcon-signer-ca signing-ca.pem --vcon-signer-sha256 409743610cc747bd4082e2281c53a6548874ebe7a72be4a3c8cb1bcac897bcd6 --report` — require both: the signing certificate chains to `signing-ca.pem` and has this fingerprint
 - `sipnab -N -I signed.vcon.json --vcon-x5u-ca system --json-dialogs` — analyze a signed vCon whose signature names its certificate chain only by an `x5u` URL: fetch the chain over HTTPS from a server the host's CA bundle trusts
@@ -1063,9 +1075,9 @@ Multiple diagnostic flags combine with OR.
 | `--no-cli-print` | -- | off | 0.3.2 | Suppress per-message CLI output (useful with `--report` / `--call-report` so only the post-capture summary reaches stdout) |
 | `--wireshark` | -- | off | 0.3.0 | Print a display filter for the current capture to paste into Wireshark; use with `-N` |
 | `--tshark-filter` | `<EXPR>` | -- | 0.3.0 | Generate a tshark-compatible display filter string |
-| `--fail2ban` | -- | off | 0.3.0 | Switch the per-message stream to fail2ban-readable log lines. Requires `-N`. It selects a **format**, not a detection: only two events ever reach it, and each needs its own detector armed beside it — `--kill-scanner` (or `--kill-ua`) produces `scanner_detected`, `--reg-flood` produces `reg_flood`. On its own it emits nothing, and warns on stderr about the coming silence, because an empty jail log reads as "nothing attacked me". Detections carried by HEP input (`--hep-listen`, `--hep-parse`) never reach it without `--hep-allow-kill`: the inner addresses are the sender's claim, a jail line would ban whatever address the sender chose, and the run says so once at startup |
+| `--fail2ban` | -- | off | 0.3.0 | Switch the per-message stream to fail2ban-readable log lines. Requires `-N`. It selects a **format**, not a detection: only two events ever reach it, and each needs its own detector armed beside it — `--kill-scanner` (with `--kill-ua` to add User-Agents it matches) produces `scanner_detected`, `--reg-flood` produces `reg_flood`. On its own it emits nothing, and warns on stderr about the coming silence, because an empty jail log reads as "nothing attacked me". Detections carried by HEP input (`--hep-listen`, `--hep-parse`) never reach it without `--hep-allow-kill`: the inner addresses are the sender's claim, a jail line would ban whatever address the sender chose, and the run says so once at startup |
 | `--lint` | -- | off | 0.5.84 | Run the RFC conformance linter over every dialog and print each finding with its rule identifier and the RFC section it reads from. The linter compares what the capture holds against what the cited section calls for, so a finding names a section rather than an opinion. Informational on its own: it changes what gets printed and never the exit code. Pair it with `--lint-fail-on` to make a pipeline stop. The rule catalog is in [sip-lint-rules.md](sip-lint-rules.md), and over MCP as `explain_rule` |
-| `--lint-fail-on` | `<SEVERITY>` | -- | 0.5.84 | Exit `3` when the linter reports a finding at or above this severity: `info`, `warning` (or `warn`), or `error`. Needs `--lint`. Exit 3 is deliberately not 1 or 2, so a pipeline can tell a broken sipnab (1) and a wrong invocation (2) apart from a non-conformant CAPTURE (3). `info` parses and buys nothing, because that severity exists for findings that are never a reason to fail a build |
+| `--lint-fail-on` | `<SEVERITY>` | -- | 0.5.84 | Exit `3` when the linter reports a finding at or above this severity: `info`, `notice`, `warning` (or `warn`), or `error`. Any other value exits `2` and names the four. Needs `--lint`. Exit 3 is deliberately not 1 or 2, so a pipeline can tell a broken sipnab (1) and a wrong invocation (2) apart from a non-conformant CAPTURE (3). `info` parses and buys nothing, because that severity exists for findings that are never a reason to fail a build |
 | `--group-by` | `<FIELD>` | -- | 0.3.0 | Group output by field (e.g., `call-id`, `from`, `method`) |
 | `--max-groups` | `<N>` | `100000` | 0.5.97 | Distinct `--group-by` keys one run retains, the same figure `-l`/`--limit` ships so a grouped run cannot outgrow an ordinary capture. Past it sipnab refuses new keys and warns that the output is incomplete; `-l`/`--limit` bounds tracked dialogs and never reached this buffer. Requires `--group-by`. Config: `[limits] max_groups` |
 | `--max-grouped-messages` | `<N>` | `200000` | 0.5.97 | Messages `--group-by` buffers across every group. Grouping cannot stream — the last packet may belong to the first group — so this is memory sipnab holds until the capture ends. Requires `--group-by`. Config: `[limits] max_grouped_messages` |
@@ -1140,7 +1152,7 @@ Multiple diagnostic flags combine with OR.
 | `--leg-correlation-window` | `<MS>` | `2000` | 0.5.100 | How far apart one call's two legs may start and still correlate on TIMING alone. The B2BUA timing heuristic's whole content, and the only strategy left once a B2BUA has rewritten every identifier the other six strategies compare. The shipped two seconds describes a PBX placing the outbound leg immediately, not one doing an LNP or ENUM dip, or walking an LCR cascade, before it places one. Every correlation still reports the strategy that matched, so a widened window does not turn a guess into a claim. Config: `[sip] leg_correlation_window_ms` |
 | `--active-idle-window` | `<SECS>` | `3600` | 0.5.100 | Seconds a dialog may go untouched and still count toward the active-dialog and active-call gauges every surface publishes. The shipped hour is twice [RFC 4028](https://www.rfc-editor.org/rfc/rfc4028.html)'s default `Session-Expires`, which grounds it for a trunk carrying session timers and not for a contact center, where a caller parked on hold past an hour is a channel in use the gauge stops counting. Widening it widens the opposite error -- a call that never sent its BYE keeps counting for longer, and that one never recovers on its own. Config: `[sip] active_idle_window_secs` |
 | `--no-dialog` | -- | off | 0.3.0 | Disable dialog tracking entirely (message-only mode) |
-| `--tag` | `<TAG>` | -- | 0.3.0 | Filter dialogs by tag value |
+| `--tag` | `<TAG>` | -- | 0.3.0 | Add this label to every dialog the run records, in the dialog's `tags` (`--json-dialogs`, `GET /v1/dialogs/:call_id`). It labels; it does not filter. |
 
 > **`branch` counts transactions, not calls.**
 >
@@ -1156,9 +1168,11 @@ Multiple diagnostic flags combine with OR.
 - `sipnab -N -I loadtest.pcapng --dialog-track branch --report` — per-transaction view of a load-generator capture that reuses one Call-ID
 - `sipnab -N -I loadtest.pcapng --dialog-track call-id --report` — same capture as dialogs (the default), for a per-call view
 - `sudo sipnab -d eth0 --limit 5000 --rotate` — monitor a busy proxy with a tight 5000-dialog memory bound, explicitly evicting the oldest dialog at capacity
-- `sipnab -N -I capture.pcap --limit 20000 --no-rotate` — analyze a capture keyed by Via branch, dropping new dialogs (instead of evicting old ones) past 20000 tracked
-- `sipnab -N -I capture.pcap --tag 1928301774 --rotate` — show only dialogs carrying a specific From/To tag, with explicit LRU rotation
-- `sudo sipnab -d eth0 --tag as7d60e14a --no-rotate` — live-follow dialogs matching a tag while refusing new dialogs once the tracker is full
+- `sipnab -N -I capture.pcap --limit 20000 --no-rotate` — analyze a capture, dropping new dialogs (instead of evicting old ones) past 20000 tracked
+- `sipnab -N -I day.pcap --limit 1000 --rotate --report` — report on the last 1000 calls of a long capture: each new call past 1000 evicts the oldest
+- `sipnab -N -I day.pcap --limit 1000 --no-rotate --report` — report on the first 1000 calls of a long capture: sipnab drops the calls past 1000 and counts them
+- `sipnab -N -I capture.pcap --tag site-a --json-dialogs` — label every dialog from this capture `site-a`, so a store that merges several captures can tell them apart: each dialog line carries `"tags":["site-a"]`
+- `sipnab -N -I capture.pcap --tag site-a --api 127.0.0.1:8080` — serve the capture over REST with every dialog labeled `site-a`, so `GET /v1/dialogs/:call_id` shows which site the call came from
 - `sipnab -N -I capture.pcap --no-dialog` — scan a capture message-by-message with dialog tracking disabled entirely
 - `sudo sipnab -d eth0 -N --no-dialog` — watch raw live SIP messages on an interface without keeping any per-dialog state
 - `sipnab -N -I sbc.pcap --leg-correlation-window 8000 --mcp` — correlate the two legs of a call across a B2BUA that dips an ENUM or LNP database before placing the outbound leg, which the shipped two seconds cannot reach
@@ -1367,8 +1381,11 @@ A boundary that is not a finite, non-negative number fails for a worse reason.
 > - An unknown rule name exits 2 at startup.
 > - A rule counts detector findings, not raw packets.
 >
-> An unrecognized bare word draws a warning naming the valid channels. It used
-> to fail silently. So a documented `--alert syslog` enabled nothing at all.
+> An unknown channel exits 2 and names the valid ones:
+>
+> ```text
+> --alert: Unknown alert channel 'bogus': expected one of syslog, json, exec, or a rule written name:threshold/window
+> ```
 
 **Examples**
 - `sipnab -N -I capture.pcap --no-fraud-detect --report` — skip fraud detection for one run when your config file sets `[security] fraud_detect = true`
@@ -1435,10 +1452,11 @@ variables.
 
 - `--on-dialog-exec` sets `SIPNAB_CALL_ID`, `SIPNAB_FROM`, `SIPNAB_TO`,
   `SIPNAB_STATE`, `SIPNAB_METHOD` and `SIPNAB_JSON` (the whole dialog).
-- `--on-quality-exec` sets `SIPNAB_SSRC`, `SIPNAB_SRC`, `SIPNAB_MOS`,
-  `SIPNAB_JITTER`, `SIPNAB_LOSS` and `SIPNAB_STREAM_JSON`. That last one is the
-  stream object under its own name, never `SIPNAB_JSON`.
-- Rule hooks add `SIPNAB_RULE`, `SIPNAB_DETAIL` and `SIPNAB_VARIABLE`.
+- `--on-quality-exec` sets `SIPNAB_SSRC`, `SIPNAB_MOS`, `SIPNAB_JITTER`,
+  `SIPNAB_LOSS` and `SIPNAB_STREAM_JSON`. That last one is the stream object
+  under its own name, never `SIPNAB_JSON`.
+- `--alert-exec` hooks set `SIPNAB_SRC` (the source address), `SIPNAB_RULE` and
+  `SIPNAB_DETAIL`.
 
 **A hook inherits sipnab's whole environment, credentials included.**
 
@@ -1923,7 +1941,7 @@ The platforms also differ.
 | `--lint-max-per-rule` | `<N>` | `25` | 0.5.96 | Findings one lint rule may report for one dialog. A dialog that retransmits an `INVITE` eleven times trips a message rule eleven times and every one of them is true, so this decides whether the other rules stay readable underneath. Needs `--lint`. Config: `[limits] lint_max_per_rule` |
 | `--lint-suppress-file` | `<FILE>` | discovered | 0.5.130 | Read lint suppressions from this file instead of discovering one. Without it the binary looks for a `.sipnablint` beside the capture and climbs toward the project root — the nearest ancestor holding a `.git` — which is exactly what the MCP lint tools already do. Until this shipped the two surfaces disagreed about the same file on disk: the MCP tools honored a `.sipnablint` checked in beside a capture while the binary silently ignored it, so the CI user was on the side that could not see it. A named file sipnab cannot open fails hard rather than falling back to a full-catalog run. sipnab names whatever applies on stderr, with a count of what it silenced. Needs `--lint` |
 | `--lint-no-suppress` | -- | off | 0.5.130 | Ignore any `.sipnablint`, including one named by `--lint-suppress-file`. The "show me everything, including what we have agreed to live with" switch; it wins over both the explicit file and discovery, so a wrapper script that always passes a suppression file can still be overridden from the command line. Needs `--lint` |
-| `--cores` | `<N>` | `1` | 0.4.14 | CPU cores for offline pcap reconstruction (`-I`). At least 1: sipnab refuses `0`. 1 = single-threaded; >1 shards by host pair for multi-core throughput (dialog+RTP reconstruction, `--report`/`--json`). At any core count sipnab reads a plain uncompressed `.pcap` by mapping it, which is where most of the multi-core gain comes from; pcapng, gzip, a non-regular file, or any run with a BPF filter reads through libpcap instead. Set `SIPNAB_NO_MMAP=1` to force the libpcap path everywhere — an escape hatch for a filesystem where mapping misbehaves, such as some network or FUSE mounts. Results are identical either way, except that libpcap reads a nanosecond-resolution pcap's timestamps to the microsecond. With `--retain-audio` each worker gets an equal share of `[limits] max_audio_bytes`, so the run as a whole stays inside the budget |
+| `--cores` | `<N>` | `1` | 0.4.14 | CPU cores for offline pcap reconstruction (`-I`). At least 1: sipnab refuses `0`. 1 = single-threaded; >1 shards by host pair for multi-core throughput and prints the whole-capture views (`--report`, `--json-dialogs`, `--analyze`, `--call-report`). A flag it does not carry out, such as `--json`, `--hexdump`, a matcher, a key file, an exec hook, a server or `--sandbox`, exits 2 naming it. At any core count sipnab reads a plain uncompressed `.pcap` by mapping it, which is where most of the multi-core gain comes from; pcapng, gzip, a non-regular file, or any run with a BPF filter reads through libpcap instead. Set `SIPNAB_NO_MMAP=1` to force the libpcap path everywhere — an escape hatch for a filesystem where mapping misbehaves, such as some network or FUSE mounts. Results are identical either way, except that libpcap reads a nanosecond-resolution pcap's timestamps to the microsecond. With `--retain-audio` each worker gets an equal share of `[limits] max_audio_bytes`, so the run as a whole stays inside the budget |
 | `--max-metadata-file-bytes` | `<BYTES>` | `2147483648` | 0.5.97 | Bytes of pcapng sipnab reads into memory for embedded names and TLS secrets. A `tcpdump -C` or `dumpcap -b` ring member passes 2 GiB on a host with the RAM to spare, and the refusal is fatal. **A memory-exhaustion guard on untrusted input:** raising it to N lets ONE file claim N bytes of this host's RAM, roughly 2N while `--strip-secrets` writes its copy, on nothing but a file size and before sipnab can tell the file is a capture at all. Raise it for captures you produced. Config: `[limits] max_metadata_file_bytes` |
 | `--max-gunzip-bytes` | `<BYTES>` | `1073741824` | 0.5.97 | Bytes sipnab may inflate out of one gzip-compressed input: a `-I capture.pcap.gz`, every gzip layer of an archive summed across the layers of one input, the embedded names and TLS secrets it reads out of a `.pcapng.gz`, the copy `--strip-secrets` rewrites, and the whole capture in the browser build. The documented alternative — gunzip the file and open the plain one — costs the disk the compression was saving. **A gzip-bomb guard:** inflation stops one byte past the ceiling, so raising it to N lets a few kilobytes of input claim N bytes of RAM or disk. Raise it for archives you compressed yourself. Config: `[limits] max_gunzip_bytes` |
 | `--max-tcp-buffer` | `<BYTES>` | `65536` | 0.5.99 | Bytes one SIP/TCP direction may buffer before sipnab flushes it. **The only limit here that destroys data rather than truncating a report.** TCP sets no such ceiling and neither does RFC 3261: on a carrier trunk a message carrying ISUP encapsulation, a long `Record-Route` set or a fat SDP offer passes 64 KiB legitimately, and sipnab then flushes the buffer mid-message — both halves parse as malformed, the cut destroys the framing for every message behind it, and the peer that sent a valid message is the one sipnab reports as broken. Raising it to N lets one TCP direction hold N bytes. The floor is one SIP header line (8192), below which no message survives, and sipnab refuses a smaller value by name. Config: `[limits] max_tcp_buffer` |
@@ -2145,11 +2163,10 @@ each recording the container names by `url`, and captures nothing.
 
 ## Validation rules
 
-- Output flags (`--json`, `--json-pretty`, `--report`, `--hexdump`, `--fail2ban`) require `-N` / `--no-tui` mode, unless `--call-report` is also specified.
+- Flags that print their answer to stdout require `-N` / `--no-tui` mode, unless `--call-report` or `--export-vcon` is also given: `--json`, `--json-pretty`, `--json-dialogs`, `--report`, `--stun`, `--json-stun`, `--analyze`, `--json-analyze`, `--yang-analyze`, `--hexdump`, `--fail2ban`, `--group-by`, `--wireshark`, `--tshark-filter` and `--recommend-block`.
 - `--kill-response` accepts values 100-699 only.
 - Feature-gated flags (`tls`, `hep`, `api`, `mcp`, `mcp-http`) produce startup errors when the required feature is not compiled in.
-- `--mcp` is incompatible with stdout-writing flags. sipnab refuses to start.
-  - The flags are `--json`, `--json-pretty`, `--report`, `--call-report`, `--hexdump`, `--wireshark` and `--tshark-filter`.
+- `--mcp` refuses every flag in that list, `--call-report`, and `--export-vcon` without `--vcon-out`, because on stdio those would write into the JSON-RPC wire.
   - This holds on every transport, not just stdio.
   - Combine `--mcp` with `--quiet` to suppress text-mode capture output.
 - HTTP MCP transport (`--mcp --mcp-transport http`) on a non-loopback `--mcp-bind` requires `--mcp-token` / `--mcp-token-file` / `SIPNAB_MCP_TOKEN`. Loopback binds need no token.
@@ -2162,7 +2179,7 @@ each recording the container names by `url`, and captures nothing.
 - `sipnab --problems` — show problematic calls
 - `sipnab --kill-scanner -d eth0` — detect SIP scanners
 - `sipnab --from alice --to bob` — filter by From/To headers
-- `sipnab 'host 192.0.2.1 and port 5060'` — BPF display filter
+- `sipnab 'host 192.0.2.1 and port 5060'` — capture filter (BPF): frames that do not match are never read
 - `sipnab --filter "method == 'INVITE' AND rtp.mos < 3.0"` — advanced filter DSL
 - `sipnab -N -I capture.pcap --call-report "abc123@host" --markdown --no-cli-print` — generate detailed report for a call (drop `--no-cli-print` and the whole capture's message dump precedes it)
 - `sipnab -d eth0 -H 192.0.2.50:9060` — capture with HEP mirror

@@ -1223,6 +1223,17 @@ impl DialogStore {
         self.capacity_dialogs_evicted += other.capacity_dialogs_evicted;
     }
 
+    /// Reorder the dialogs by `key`, keeping equal keys in their current order.
+    ///
+    /// For a merged `--cores` store, whose order is the workers' rather than
+    /// the capture's (see `crate::parallel`). Eviction removes the dialog at
+    /// the front, so after a sort by capture order the oldest is still the
+    /// one evicted.
+    pub fn sort_dialogs_by_key<K: Ord>(&mut self, mut key: impl FnMut(&SipDialog) -> K) {
+        self.dialogs.sort_by_cached_key(|_, dialog| key(dialog));
+        self.generation += 1;
+    }
+
     /// Return the total number of tracked dialogs.
     /// The cap this store evicts against.
     ///

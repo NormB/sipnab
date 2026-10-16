@@ -9,6 +9,7 @@
 //! actions switched off: after abuse, switching them off is the first thing
 //! an operator does, and recovery must not need them switched back on.
 
+use crate::output::stdout::outln;
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
 use std::path::Path;
@@ -32,13 +33,13 @@ pub fn run(cli: &Cli, config: &Config) -> Option<i32> {
     let now_unix = now_unix();
     if cli.security_args.journal_show {
         let dir = cli.journal_dir(config);
-        println!("{}", show(&dir, &Journal::read(&dir), now_unix));
+        outln!("{}", show(&dir, &Journal::read(&dir), now_unix));
         return Some(0);
     }
     let target = cli.security_args.revert_actions.as_deref()?;
     let (text, code) = revert(cli, config, target, now_unix);
     if code == 0 {
-        println!("{text}");
+        outln!("{text}");
     } else {
         stderr_line!("{text}");
     }

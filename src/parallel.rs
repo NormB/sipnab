@@ -986,6 +986,51 @@ fn report_shard_fallback(result: &ReconResult) {
 /// (~8192) identical to the old per-packet bound.
 const BATCH: usize = 128;
 
+/// The order a run read its sources in.
+///
+/// Each worker's store lists what it built in the order it saw it, and the
+/// merge appends the workers one after another, so the merged store's order
+/// depends on how many workers there were. The single-threaded path lists
+/// dialogs and streams in the order it read their first packet. Sorting the
+/// merged stores by (the source's place here, the frame's ordinal in that
+/// source) gives the same order, so a report does not depend on `--cores`.
+#[derive(Debug, Default)]
+struct ReadOrder {
+    /// Each source once, in the order its first packet was read.
+    sources: Vec<std::sync::Arc<str>>,
+}
+
+impl ReadOrder {
+    /// Note the source of a packet or file, in read order.
+    fn observe(&mut self, source: Option<&std::sync::Arc<str>>) {
+        let Some(source) = source else {
+            return;
+        };
+        if self.sources.last() == Some(source) || self.sources.contains(source) {
+            return;
+        }
+        self.sources.push(std::sync::Arc::clone(source));
+    }
+
+    /// Where a frame sits in the run's read order. A fact with no frame
+    /// pointer, or one from a source this run never read, sorts after every
+    /// one that has one, in the order the merge left it.
+    fn position(&self, frame: Option<&crate::capture::packet::FrameRef>) -> (usize, u64) {
+        frame
+            .and_then(|f| {
+                let source = self.sources.iter().position(|s| *s == f.source)?;
+                Some((source, f.origin.ordinal))
+            })
+            .unwrap_or((usize::MAX, u64::MAX))
+    }
+
+    /// Put both merged stores in read order.
+    fn restore(&self, ds: &mut DialogStore, ss: &mut StreamStore) {
+        ds.sort_dialogs_by_key(|d| self.position(d.first_frame.as_ref()));
+        ss.sort_streams_by_key(|st| self.position(st.first_frame.as_ref()));
+    }
+}
+
 /// Reader state that spans the WHOLE `-I` set rather than one member of it.
 ///
 /// Bundled because all three are shared for the same reason: `--count 100`
@@ -1004,6 +1049,8 @@ struct ReadProgress {
     unshardable: u64,
     /// Capture clock, fed every packet, read once by [`final_sweep`].
     clock: SweepClock,
+    /// The order the set's files were read in, for the merged stores.
+    read_order: ReadOrder,
 }
 
 impl ReadProgress {
@@ -1026,6 +1073,7 @@ impl ReadProgress {
         if let Some(latest) = read.latest {
             self.clock.observe(latest);
         }
+        self.read_order.observe(read.source.as_ref());
         read.stopped
     }
 }
@@ -1084,7 +1132,10 @@ fn shard_opened<S: ShardSink>(
 
     // One partial batch per shard, this FILE's own; see the doc comment.
     let mut batches: Vec<Vec<Delivery>> = (0..n).map(|_| Vec::with_capacity(BATCH)).collect();
-    let mut read = FileRead::default();
+    let mut read = FileRead {
+        source: Some(std::sync::Arc::clone(&source)),
+        ..FileRead::default()
+    };
 
     // Frames are cut from a shared block rather than allocated one at a time.
     //
@@ -1249,6 +1300,8 @@ struct FileRead {
     budget_spent: bool,
     /// The error that stopped this file short of its end, if one did.
     stopped: Option<anyhow::Error>,
+    /// The source this file's frames name, for the run's [`ReadOrder`].
+    source: Option<std::sync::Arc<str>>,
 }
 
 /// Where a finished batch goes once the reader has filled it.
@@ -2314,6 +2367,7 @@ pub fn run_offline_parallel_file(
         dropped: 0,
         unshardable: 0,
         clock: SweepClock::new(true),
+        read_order: ReadOrder::default(),
     };
     let mut tally = crate::capture::file::ReadTally {
         given: paths.len(),
@@ -2388,6 +2442,7 @@ pub fn run_offline_parallel_file(
         }
     }
     ss.reassociate_all();
+    progress.read_order.restore(&mut ds, &mut ss);
     final_sweep(&progress.clock, &mut ds);
     let result = ReconResult {
         dialog_store: ds,
@@ -2410,6 +2465,55 @@ mod tests {
     //! (heuristic RTP, core-count invariance, codec negotiation, dynamic codec).
 
     use super::*;
+
+    /// A frame pointer for the read-order tests.
+    fn frame_at(source: &'static str, ordinal: u64) -> crate::capture::packet::FrameRef {
+        crate::capture::packet::FrameLocator {
+            source,
+            origin: crate::capture::packet::FrameOrigin {
+                ordinal,
+                digest: None,
+                verifiable: true,
+            },
+        }
+        .to_frame_ref()
+    }
+
+    /// Read order is the source's place first and the ordinal within it
+    /// second: frame 900 of the first file comes before frame 1 of the
+    /// second, as the single-threaded reader met them.
+    #[test]
+    fn read_order_ranks_by_source_then_ordinal() {
+        let mut order = ReadOrder::default();
+        let (a, b): (std::sync::Arc<str>, std::sync::Arc<str>) = ("a.pcap".into(), "b.pcap".into());
+        for source in [&a, &a, &b, &a, &b] {
+            order.observe(Some(source));
+        }
+        assert_eq!(
+            order.sources,
+            [a, b],
+            "each source once, in first-read order"
+        );
+        let mut keys = [
+            order.position(Some(&frame_at("b.pcap", 1))),
+            order.position(Some(&frame_at("a.pcap", 900))),
+            order.position(Some(&frame_at("a.pcap", 3))),
+        ];
+        keys.sort();
+        assert_eq!(keys, [(0, 3), (0, 900), (1, 1)]);
+    }
+
+    /// A fact with no frame pointer, or from a source this run never read,
+    /// sorts after every placed one instead of being guessed into a place.
+    #[test]
+    fn a_frame_the_run_did_not_read_sorts_last() {
+        let mut order = ReadOrder::default();
+        order.observe(Some(&std::sync::Arc::from("a.pcap")));
+        let last = (usize::MAX, u64::MAX);
+        assert_eq!(order.position(None), last);
+        assert_eq!(order.position(Some(&frame_at("other.pcap", 0))), last);
+        assert!(order.position(Some(&frame_at("a.pcap", u64::MAX - 1))) < last);
+    }
     use std::net::Ipv4Addr;
 
     /// Any error a test can return; `?` converts into it.
@@ -3322,6 +3426,7 @@ mod tests {
             dropped: 0,
             unshardable: 0,
             clock: SweepClock::new(true),
+            read_order: ReadOrder::default(),
         };
         let mut tally = crate::capture::file::ReadTally {
             given: paths.len(),
