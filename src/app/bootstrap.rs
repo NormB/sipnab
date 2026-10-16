@@ -2984,6 +2984,7 @@ impl StartedCapture {
     /// Report `failure`, stop and join the capture thread, then exit the
     /// process with the failure's code.
     fn abort(self, failure: PlanError) -> ! {
+        crate::capture::file::mark_refused_at_startup();
         failure.exit_after(|| capture::stop_and_join(self.handle, self.rx))
     }
 }

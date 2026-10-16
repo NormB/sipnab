@@ -487,6 +487,25 @@ pub fn capture_files(
     result
 }
 
+/// Set once a run is refused at startup, so the reader stopped by that
+/// refusal does not report a reading summary.
+///
+/// The capture opens before the privilege drop, and the checks after the drop
+/// can still refuse the run; the reader is then stopped by request, and its
+/// "Read 0 packets: 0 of 1 file(s) read in full, 1 stopped early" line read as
+/// a capture problem in a run that never read anything.
+static REFUSED_AT_STARTUP: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+/// Mark this run as refused at startup. Call before stopping the reader.
+///
+/// # Side effects
+///
+/// Sets a process-global flag that [`ReadTally::report`] reads.
+pub fn mark_refused_at_startup() {
+    REFUSED_AT_STARTUP.store(true, std::sync::atomic::Ordering::SeqCst);
+}
+
 /// What became of each file of one `-I` set.
 ///
 /// The old summary was `"Read {count} packets from {} file(s)", paths.len()` —
@@ -566,6 +585,9 @@ impl ReadTally {
     /// requested stop) line via tracing, and adds this set's outcome to the
     /// process-global run-integrity record.
     pub(crate) fn report(&self, packets: u64) {
+        if REFUSED_AT_STARTUP.load(std::sync::atomic::Ordering::SeqCst) {
+            return;
+        }
         let line = self.summary(packets);
         if self.lossy() {
             tracing::warn!("{line}");
