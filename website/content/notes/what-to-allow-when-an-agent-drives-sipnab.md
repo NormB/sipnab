@@ -1,7 +1,7 @@
 +++
 title = "Choose which actions an AI agent may take through sipnab's MCP server"
 date = 2026-09-01
-updated = 2026-10-11
+updated = 2026-10-16
 description = "Which sipnab flags let an AI agent change state, write files, transmit or act on another system, which tools each flag unlocks, and how to keep a record of every call the agent makes."
 
 [extra]
@@ -20,7 +20,7 @@ refuses:
 - write a file,
 - load a different capture,
 - read encrypted traffic,
-- contact a media relay,
+- contact a media relay or a vCon store,
 - ban an address.
 
 The refusal names the setting that would allow it. This page lists:
@@ -100,6 +100,7 @@ Each command:
 
    ```text
    actions_revert
+   fetch_vcon
    query_relay
    relay_compare
    relay_stats
@@ -107,14 +108,16 @@ Each command:
    tfps_unban
    ```
 
-  `query_relay`, `relay_stats` and `relay_compare` carry `readOnlyHint: true`.
+  `fetch_vcon`, `query_relay`, `relay_stats` and `relay_compare` carry
+  `readOnlyHint: true`.
 
   - They change nothing.
-  - But they send packets to a media relay.
+  - But they open a connection to a vCon store or send packets to a media
+    relay.
 
 - Decide which flags the job needs, using the table below.
-  - Each row's check called the tools on a server started without the flag.
-  - Every one refused and named the flag.
+  - On a server started without the flag, each tool in the row refuses the
+    call and names the flag.
 
    | Flag | Tools it unlocks | What the agent can then do |
    |---|---|---|
@@ -123,6 +126,7 @@ Each command:
    | `--mcp-allow-save-findings` | `save_findings` | Write a conclusion to sipnab's log. No tool reads a finding back. `--mcp-max-findings` sets how many sipnab accepts (default 1000). Past that, sipnab refuses the write. |
    | `--mcp-allow-open-capture` | `open_capture` | Replace the loaded capture with another file from `--mcp-file-root`. It refuses while the source is a live interface or while sipnab is still reading it. |
    | `--mcp-allow-relay-query` | `query_relay`, `relay_stats`, `relay_compare` | Send control queries to the relay that `--rtpengine-control` names. The tools also need that flag and a live source; on a run reading a file they refuse. The agent cannot choose the destination. |
+   | `--mcp-allow-vcon-fetch` | `fetch_vcon` | Read one container by uuid from the vCon store that the `[vcon_fetch]` section of the config file names. The tool also refuses until that section sets `url`. The agent cannot choose the store or the credential. |
    | `--mcp-allow-tls-capture` | `start_tls_capture` | Attach kernel probes to a running process's TLS library and read the decrypted traffic. The server must still be running as root. `stop_tls_capture` answers without the flag and stops nothing unless a capture is running. |
    | `--mcp-allow-shutdown` | `shutdown_server` | Stop the server. The tool defaults to a dry run, and refuses to discard an unsaved live capture unless the call sets `discard_unsaved`. |
    | `--allow-action tfps:mcp` | `tfps_ban`, `tfps_unban`, `actions_revert` | Ask TFPS (a separate toll-fraud prevention program) to ban or release a source address. sipnab records each action in its actions journal first and refuses to start if it cannot use `--journal-dir`. Over HTTP the client also needs a token with the `actions` scope. |
@@ -152,7 +156,7 @@ Each command:
    ```
 
    ```text
-   {"args":"{\"summary\":\"Call proxied-call-synth@192.0.2.101 completed normally.\"}","caller":"stdio","elapsed_ms":0,"error":null,"id":"2","outcome":"ok","seq":1,"tool":"save_findings","ts":"2026-10-12T00:52:40.594048333+00:00"}
+   {"args":"{\"summary\":\"Call proxied-call-synth@192.0.2.101 completed normally.\"}","caller":"stdio","elapsed_ms":0,"error":null,"id":"2","outcome":"ok","seq":1,"tool":"save_findings","ts":"2026-10-16T11:47:38.229333618+00:00"}
    ```
 
   `ts` is the time of the call. So it differs on every run.
@@ -188,6 +192,8 @@ Each command:
 - **Capture**: a recording of network packets, here a pcap file.
 - **Media relay**: a server, such as rtpengine, that carries a call's audio
   between the two parties.
+- **vCon store**: a server that keeps vCon files. A vCon is a JSON file that
+  records one conversation.
 - **TLS**: the encryption used for SIP over TLS and HTTPS.
 - **Kernel probe (uprobe)**: a hook the Linux kernel places in a running
   program so another program can read data as it passes.

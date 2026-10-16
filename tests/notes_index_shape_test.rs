@@ -1,19 +1,18 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-//! The notes index leads with what a reader came for.
+//! The notes index lists what a reader came for, and only that.
 //!
-//! `website/content/notes/` holds three kinds. How-tos say how to do a job and
-//! feature notes say what a capability does. Post-mortems record what went
-//! wrong, why, and what changed. How-tos and features render open; the
-//! post-mortems render inside a closed disclosure.
+//! `website/content/notes/` holds two kinds. How-tos say how to do a job and
+//! feature notes say what a capability does. The index and the notes sidebar
+//! render one group for each, how-tos first. The engineering record of what
+//! went wrong in sipnab is not a note: it lives in
+//! `docs/internals/postmortems.md`.
 //!
-//! So the post-mortems collapse behind a `<details>` the reader opens
-//! deliberately, and the other two stay expanded. This file holds that
-//! arrangement, and holds the failure the arrangement introduces: filtering
-//! the list by kind means a note whose kind is not one of the three renders
-//! NOWHERE. It would not 404 and it would not warn — it would simply be
-//! missing from the index while its own page still built, which is the kind of
-//! absence nobody notices.
+//! This file holds that arrangement, and holds the failure it introduces:
+//! filtering the list by kind means a note whose kind is not one of the two
+//! renders NOWHERE. It would not 404 and it would not warn — it would simply
+//! be missing from the index while its own page still built, which is the kind
+//! of absence nobody notices.
 
 use std::path::{Path, PathBuf};
 
@@ -31,16 +30,9 @@ fn read(rel: &str) -> Result<String, TestError> {
 
 const TEMPLATE: &str = "website/templates/notes.html";
 
-/// The opening tag of the post-mortem disclosure.
-///
-/// The class is part of the anchor on purpose: a bare `<details` also matches
-/// the Tera comment above it that explains why the disclosure exists, and two
-/// gates here read that comment instead of the markup — one of them passing
-/// because a sentence contains no `open` attribute.
-const DISCLOSURE_TAG: &str = "<details class=\"note-archive\"";
-
-/// The kinds the index template renders a group for.
-const RENDERED_KINDS: &[&str] = &["howto", "feature", "postmortem"];
+/// The kinds the index template renders a group for, in the order it renders
+/// them.
+const RENDERED_KINDS: &[&str] = &["howto", "feature"];
 
 /// Every note's `kind`, with the file it came from.
 fn note_kinds() -> Result<Vec<(String, String)>, TestError> {
@@ -73,62 +65,45 @@ fn note_kinds() -> Result<Vec<(String, String)>, TestError> {
     Ok(out)
 }
 
-/// Post-mortems are behind a disclosure, and it starts closed.
+/// The index renders one open group per kind, how-tos first, and no archive.
 ///
-/// `<details>` without `open` is the whole mechanism: the titles are reachable
-/// and the page does not open onto them.
+/// The section once carried a third kind, post-mortems, collapsed behind a
+/// `<details>`. That record moved to `docs/internals/postmortems.md`. A
+/// disclosure left in the template would render an empty archive heading, or
+/// collapse whatever kind was next put inside it.
 #[test]
-fn the_postmortems_sit_behind_a_closed_disclosure() -> Result<(), TestError> {
+fn the_index_renders_each_kind_open_and_in_order() -> Result<(), TestError> {
     let tpl = read(TEMPLATE)?;
-    // The real tag, not the word `<details>` inside the Tera comment that
-    // explains the design. Matching the prose made this gate read a comment
-    // and pass for a reason unrelated to the markup.
-    let at = tpl
-        .find(DISCLOSURE_TAG)
-        .ok_or("the notes index no longer has a disclosure at all")?;
-    let tag_end = tpl[at..].find('>').ok_or("unterminated <details")? + at;
-    let tag = &tpl[at..=tag_end];
-
+    let markup = strip_tera_comments(&tpl)?;
     assert!(
-        !tag.contains("open"),
-        "the post-mortem disclosure is marked `open`, so the page opens onto \
-         every post-mortem: {tag}"
+        !markup.contains("<details"),
+        "{TEMPLATE} still has a disclosure; every group on the notes index \
+         renders open"
     );
-    let after = &tpl[at..];
     assert!(
-        after.contains("value=\"postmortem\"") || after.contains("postmortems"),
-        "the disclosure does not contain the post-mortem list; it is \
-         collapsing something else"
+        !markup.contains("postmortem"),
+        "{TEMPLATE} still selects post-mortems, a kind no note uses"
     );
+    let mut last = 0usize;
+    for kind in RENDERED_KINDS {
+        let at = markup
+            .find(&format!("value=\"{kind}\""))
+            .ok_or_else(|| format!("{TEMPLATE} renders no group for {kind:?}"))?;
+        assert!(
+            at >= last,
+            "the {kind} group renders before the group listed ahead of it in \
+             RENDERED_KINDS; how-tos come first"
+        );
+        last = at;
+    }
     Ok(())
 }
 
-/// How-tos and features are NOT behind it.
-///
-/// The other half, and the one that would rot silently: moving a group inside
-/// the disclosure hides it while every page still builds and every link still
-/// resolves.
-#[test]
-fn howtos_and_features_render_outside_the_disclosure() -> Result<(), TestError> {
-    let tpl = read(TEMPLATE)?;
-    let details_at = tpl.find(DISCLOSURE_TAG).ok_or("no disclosure")?;
-    let before = &tpl[..details_at];
-
-    for kind in ["howto", "feature"] {
-        assert!(
-            before.contains(&format!("value=\"{kind}\"")),
-            "the {kind} group is not rendered before the disclosure, so it is \
-             either inside it or gone. Those are what a reader came for."
-        );
-    }
-    let after = &tpl[details_at..];
-    for kind in ["howto", "feature"] {
-        assert!(
-            !after.contains(&format!("value=\"{kind}\"")),
-            "a {kind} group is rendered INSIDE the post-mortem disclosure"
-        );
-    }
-    Ok(())
+/// The template with every Tera comment removed, so a gate reads markup and
+/// not the prose that explains it.
+fn strip_tera_comments(tpl: &str) -> Result<String, TestError> {
+    let comment = regex::Regex::new(r"(?s)\{#.*?#\}")?;
+    Ok(comment.replace_all(tpl, "").into_owned())
 }
 
 /// Every note has a kind the index actually renders.
@@ -186,39 +161,15 @@ fn every_rendered_kind_is_a_kind_some_note_uses() -> Result<(), TestError> {
     Ok(())
 }
 
-/// The disclosure says how many it holds.
-///
-/// A closed `details` labeled only "Post-mortems" gives no reason to open it
-/// and no sense of what is behind it. The count is the difference between a
-/// heading and an affordance.
-#[test]
-fn the_disclosure_states_how_many_it_holds() -> Result<(), TestError> {
-    let tpl = read(TEMPLATE)?;
-    let at = tpl.find(DISCLOSURE_TAG).ok_or("no disclosure")?;
-    let summary_end = tpl[at..]
-        .find("</summary>")
-        .ok_or("the disclosure has no summary")?
-        + at;
-    let summary = &tpl[at..summary_end];
-    assert!(
-        summary.contains("| length"),
-        "the disclosure's summary does not render a count, so a reader cannot \
-         tell whether it hides two notes or forty:\n{summary}"
-    );
-    Ok(())
-}
-
 /// One row renderer, not two.
 ///
-/// The open groups and the collapsed archive show the same thing. Two copies
-/// of that markup drift, and the one that drifts is whichever nobody looks at
-/// — which, by construction, is the collapsed one.
+/// Both groups show the same thing. Two copies of that markup drift.
 #[test]
-fn the_open_groups_and_the_archive_share_one_row_renderer() -> Result<(), TestError> {
+fn every_group_shares_one_row_renderer() -> Result<(), TestError> {
     let tpl = read(TEMPLATE)?;
     let rows = tpl.matches("macros::note_row").count();
     assert!(
-        rows >= 3,
+        rows >= RENDERED_KINDS.len(),
         "expected every group to call the shared row macro; found {rows} \
          call(s). A second copy of the row markup drifts from the first."
     );
@@ -273,12 +224,11 @@ fn span_between<'a>(html: &'a str, open: &str, close: &str) -> Result<&'a str, T
 
 /// The homepage's notes teaser shows how-tos and features, never post-mortems.
 ///
-/// The index collapses the post-mortems because they are a poor front page.
-/// The homepage is the front page of the front page, and it took the three
-/// newest notes of ANY kind, so the week a post-mortem was written it
-/// advertised an account of what broke to every first-time visitor. The
-/// teaser must iterate a list selected by kind, and the selection must name
-/// both kinds a reader came for and not the one they did not.
+/// The teaser took the three newest notes of ANY kind, so the week a
+/// post-mortem was written it advertised an account of what broke to every
+/// first-time visitor. Post-mortems are no longer notes, but the teaser still
+/// iterates a list selected by kind, so a kind added to the section later
+/// reaches the homepage only by being named here.
 #[test]
 fn the_homepage_notes_teaser_leaves_out_the_postmortems() -> Result<(), TestError> {
     let page = read("website/templates/index.html")?;
@@ -327,87 +277,56 @@ fn the_homepage_notes_teaser_leaves_out_the_postmortems() -> Result<(), TestErro
     Ok(())
 }
 
-/// The notes sidebar collapses its post-mortem group, as the index does.
+/// The notes sidebar lists both kinds open, how-tos first, and no archive.
 ///
-/// Every note page carries the sidebar, and it listed every post-mortem
-/// uncollapsed under the how-tos and features, so the arrangement the index
-/// makes was undone on every page a reader opened from it.
+/// Every note page carries the sidebar. It once held the post-mortems behind a
+/// disclosure; a disclosure left behind would render an empty group heading
+/// on every note page.
 #[test]
-fn the_notes_sidebar_collapses_the_postmortems() -> Result<(), TestError> {
+fn the_notes_sidebar_lists_each_kind_open_and_in_order() -> Result<(), TestError> {
     let macros = read("website/templates/macros.html")?;
     let nav = span_between(&macros, "macro notes_nav(", "endmacro")?;
-
-    let details_at = nav
-        .find("<details")
-        .ok_or_else(|| format!("the notes sidebar has no disclosure:\n{nav}"))?;
-    // The tag ends at the first `>` outside a Tera tag: the condition that
-    // opens it is itself `... | length > 0`.
-    let mut in_tera = false;
-    let mut tag_end = None;
-    let bytes = nav.as_bytes();
-    for i in details_at..bytes.len() {
-        if bytes[i..].starts_with(b"{%") {
-            in_tera = true;
-        } else if in_tera && bytes[i..].starts_with(b"%}") {
-            in_tera = false;
-        } else if !in_tera && bytes[i] == b'>' {
-            tag_end = Some(i);
-            break;
-        }
-    }
-    let tag_end = tag_end.ok_or("unterminated <details")?;
-    let tag = &nav[details_at..=tag_end];
-    // Open only for a reader already on a post-mortem, so the page they are
-    // on stays visible in its own sidebar. Never unconditionally.
-    let unconditional = tag.replace(" open{% endif %}", "");
     assert!(
-        !unconditional.contains(" open"),
-        "the sidebar's post-mortem disclosure ships open: {tag}"
+        !nav.contains("<details"),
+        "the notes sidebar still has a disclosure:\n{nav}"
     );
     assert!(
-        tag.contains("value=current") && tag.contains(" open{% endif %}"),
-        "the sidebar's post-mortem disclosure does not open for a reader who \
-         is ON a post-mortem, so the page they are reading is hidden in its \
-         own sidebar: {tag}"
+        !nav.contains("postmortem"),
+        "the notes sidebar still selects post-mortems, a kind no note uses"
     );
-
-    let inside = &nav[details_at..];
-    assert!(
-        inside.contains("\"postmortem\""),
-        "the sidebar disclosure does not hold the post-mortem group"
-    );
-    for kind in ["howto", "feature"] {
+    let mut last = 0usize;
+    for kind in RENDERED_KINDS {
+        let at = nav
+            .find(&format!("\"{kind}\""))
+            .ok_or_else(|| format!("the notes sidebar has no {kind:?} group"))?;
         assert!(
-            nav[..details_at].contains(&format!("\"{kind}\"")),
-            "the {kind} group is not rendered before the sidebar disclosure"
+            at >= last,
+            "the sidebar's {kind} group renders out of order; how-tos come first"
         );
-        assert!(
-            !inside.contains(&format!("\"{kind}\"")),
-            "the {kind} group is inside the sidebar's post-mortem disclosure"
-        );
+        last = at;
     }
     Ok(())
 }
 
-/// A kind chip reads "How-to", "Feature" or "Post-mortem", never the slug.
+/// A kind chip reads "How-to" or "Feature", never the slug.
 ///
-/// The chip printed the front-matter value, so a reader saw `howto` and
-/// `postmortem`: identifiers, not words. The label comes from one macro so the
-/// index rows and a note's own header cannot spell it two ways.
+/// The chip printed the front-matter value, so a reader saw `howto`: an
+/// identifier, not a word. The label comes from one macro so the index rows
+/// and a note's own header cannot spell it two ways.
 #[test]
 fn a_kind_chip_shows_a_word_not_a_slug() -> Result<(), TestError> {
     let macros = read("website/templates/macros.html")?;
     let label = span_between(&macros, "macro kind_label", "endmacro")?;
-    for (kind, word) in [
-        ("howto", "How-to"),
-        ("feature", "Feature"),
-        ("postmortem", "Post-mortem"),
-    ] {
+    for (kind, word) in [("howto", "How-to"), ("feature", "Feature")] {
         assert!(
             label.contains(&format!("\"{kind}\"")) && label.contains(word),
             "kind_label does not map {kind:?} to {word:?}:\n{label}"
         );
     }
+    assert!(
+        !label.contains("postmortem"),
+        "kind_label still maps post-mortems, a kind no note uses:\n{label}"
+    );
 
     let chip = regex::Regex::new(r#"(?s)<span class="note-kind[^>]*>(.*?)</span>"#)?;
     let mut seen = 0;

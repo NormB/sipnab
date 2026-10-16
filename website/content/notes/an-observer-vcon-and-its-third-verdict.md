@@ -1,7 +1,7 @@
 +++
 title = "Observer vCon export and validation"
 date = 2026-09-01
-updated = 2026-10-11
+updated = 2026-10-16
 description = "What a vCon that sipnab writes says and does not say about a call, how to export one from a capture, and how to check it against the vCon schema before you send it to a store."
 
 [extra]
@@ -63,7 +63,9 @@ What the container says:
   - The run may keep the audio payload (`--retain-audio`). Then the dialog
     object carries it in its body with a `sha512-` content hash.
   - When it did not, the container carries no audio and says why.
-  - sipnab never writes a `url` pointing at a file elsewhere.
+  - sipnab writes a `url` only when a `[[vcon.rule]]` in the config file sets
+    `audio = "url"`. That rule writes the audio to a file beside the container
+    and names it under an address the operator serves.
   - It does not embed audio larger than `--vcon-max-inline-media` (default
     5 MiB). The completeness value then reads `media: "refused-over-budget"`.
     Its note names both sizes.
@@ -119,21 +121,22 @@ jq -c '.parties[]' out.json
 
 ```json
 {"sip":"sip:sipp@10.0.2.20:5060","validation":"none","name":"PCMU/8000","sip_display_name":"PCMU/8000","sip_contact":"sip:sipp@10.0.2.20:5060"}
-{"sip":"sip:test@10.0.2.15:5060","validation":"none","name":"test","sip_display_name":"test","sip_user_agent":"FreeSWITCH-mod_sofia/1.6.12-20-b91a0a6~64bit"}
-{"validation":"none","role":"observer","sip_user_agent":"sipnab/0.5.211 (observer; node lab)"}
+{"sip":"sip:test@10.0.2.15:5060","validation":"none","name":"test","sip_display_name":"test","sip_contact":"<sip:test@10.0.2.15:5060;transport=udp>","sip_user_agent":"FreeSWITCH-mod_sofia/1.6.12-20-b91a0a6~64bit"}
+{"validation":"none","role":"observer","sip_user_agent":"sipnab/0.5.222 (observer; node lab)"}
 ```
 
 The caller's `name` is `PCMU/8000`. The test tool that made this capture put
 the codec name in its display name. The name is whatever the header said.
 
-The dialog object, from a run without `--retain-audio`:
+The dialog object, from a run without `--retain-audio`. The `jq` filter
+leaves out `party_history`, the list of times each party joined and left:
 
 ```bash
-jq -c '.dialog' out.json
+jq -c '.dialog[] | del(.party_history)' out.json
 ```
 
 ```json
-[{"type":"recording","sip_call_id":"1-1966@10.0.2.20","sip_from_tag":"1","sip_to_tag":"QvN92t713vSZK","start":"2016-11-26T14:52:59.666393+00:00"}]
+{"type":"recording","sip_call_id":"1-1966@10.0.2.20","sip_from_tag":"1","sip_to_tag":"QvN92t713vSZK","sip_cseq":1,"start":"2016-11-26T14:52:59.666393+00:00","duration":8.499,"parties":[0,1]}
 ```
 
 It holds no audio. The completeness value says why:
@@ -145,6 +148,7 @@ jq '.analysis[0].body.capture_completeness' out.json
 ```json
 {
   "blind_spots": [],
+  "call_ended": true,
   "dialogs_refused": 0,
   "dialogs_rotated": 0,
   "dialogs_suppressed_by_deny": 0,
@@ -155,10 +159,10 @@ jq '.analysis[0].body.capture_completeness' out.json
   "media_note": "No audio payload retained: sipnab measured 425 RTP packet(s) of PCMU on 1 decodable stream, but kept none of their payload, so there is nothing to decode. This is a statement about what this run kept, not a finding that the call was silent. Most often audio payload retention was off — start the server with --retain-audio to hold payload for export. With retention already on, the other causes are a --snaplen that truncated the payload away before sipnab saw it, or packets that carried no payload at all.",
   "messages_evicted": 0,
   "node": "lab",
-  "note": "Produced by sipnab 0.5.211 on node lab. sipnab OBSERVED this dialog and took no part in it: the parties below are what the From and To headers said, not identities anyone established, and nothing here is signed. No media is in this container because this run decoded none for the dialog; the capture_completeness media_note says what was measured. That is a statement about what this run kept, not a finding that the call was silent. sipnab read 852 frame(s) for this capture. No omissions recorded: every message sipnab held for this dialog is in this container. A capture-level analysis ran and ranked no blind spots.",
+  "note": "Produced by sipnab 0.5.222 on node lab. sipnab OBSERVED this dialog and took no part in it: the parties below are what the From and To headers said, not identities anyone established, and nothing here is signed. No media is in this container because this run decoded none for the dialog; the capture_completeness media_note says what was measured. That is a statement about what this run kept, not a finding that the call was silent. sipnab read 852 frame(s) for this capture. No omissions recorded: every message sipnab held for this dialog is in this container. A capture-level analysis ran and ranked no blind spots.",
   "sip_discarded_by_port_gate": 0,
   "sip_discarded_by_websocket_gate": 0,
-  "sipnab_version": "0.5.211",
+  "sipnab_version": "0.5.222",
   "undecodable_frames": 0
 }
 ```
@@ -185,14 +189,15 @@ sipnab -N -q --node-name lab -I tests/pcap-samples/sip-rtp-g711.pcap --retain-au
 ```
 
 ```bash
-jq -c '.dialog[] | del(.body)' audio.json
+jq -c '.dialog[] | del(.body, .party_history)' audio.json
 ```
 
 ```json
-{"type":"recording","sip_call_id":"1-1966@10.0.2.20","sip_from_tag":"1","sip_to_tag":"QvN92t713vSZK","start":"2016-11-26T14:52:59.689060+00:00","duration":8.5,"parties":[1],"mediatype":"audio/x-wav","encoding":"base64url","content_hash":"sha512-lmhlQq1iLhg2VqL42ZyvwF-88wIZeO24m3o1Xegdycd82_3IGm_K4Qe_zhSdjXkPzoWxLZfAh698aG3gilBTJQ"}
+{"type":"recording","sip_call_id":"1-1966@10.0.2.20","sip_from_tag":"1","sip_to_tag":"QvN92t713vSZK","sip_cseq":1,"start":"2016-11-26T14:52:59.689060+00:00","duration":8.5,"parties":[1],"originator":0,"mediatype":"audio/x-wav","encoding":"base64url","content_hash":"sha512-GVphUEyrsE9TSwxDIUBOUWDh1xEmmbHbpT5SqrtTVVVOQWy9JUPWgvOtxlFy1Rr-p8gcpy8pRosgohjHBa6uQg"}
 ```
 
-The `jq` filter removes `body`, which holds the encoded audio.
+The `jq` filter removes `body`, which holds the encoded audio, and
+`party_history`.
 
 ## Check a container before you send it
 
@@ -261,20 +266,9 @@ an error only when the request itself is wrong:
   handed it to you.
 - Two taps that each saw one leg of a call write two containers. sipnab does not
   merge them.
-
-## Changes since this note was first published
-
-The first version of this note described two things that changed:
-
-- a third verdict, `valid-except-documented-deviation`,
-- an empty dialog object (`{}`) for the consultation call of an attended
-  transfer.
-
-Both followed the earlier draft core-03. Under core-04 every dialog object
-needs a `type`:
-
-- sipnab now writes `{"type": "recording"}` for that placeholder.
-- `validate_vcon` reports an empty dialog object as `invalid`.
+- Every dialog object needs a `type` under core-04. `validate_vcon` reports an
+  empty dialog object (`{}`) as `invalid`. A placeholder for a call sipnab did
+  not see is `{"type": "recording"}`.
 
 ## Terms used here
 

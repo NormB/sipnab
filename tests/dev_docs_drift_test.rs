@@ -881,7 +881,11 @@ fn linked_code_targets_exist() -> Result<(), TestError> {
     // 523 -> 524: domain-primer.md links sip/sdp.rs for the offer/answer rule.
     // 524 -> 525: internals/vcon.md links tests/vcon_uuid_domain_test.rs for
     // `[vcon] uuid_domain`.
-    const EXPECTED_CODE_LINKS: usize = 525;
+    // 525 -> 603: docs/internals/postmortems.md, the record the post-mortem
+    // notes and the notes' engineering detail moved to. All 78 links are on
+    // that page; every other developer page is unchanged. Attributed by
+    // measurement: with that page removed the count is 525.
+    const EXPECTED_CODE_LINKS: usize = 603;
     assert_eq!(
         seen, EXPECTED_CODE_LINKS,
         "code-link extraction found {seen} links, expected {EXPECTED_CODE_LINKS}. \

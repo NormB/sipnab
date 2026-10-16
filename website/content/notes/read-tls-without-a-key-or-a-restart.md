@@ -1,7 +1,7 @@
 +++
 title = "Read SIP over TLS on a server you cannot restart, using eBPF uprobes"
 date = 2026-09-01
-updated = 2026-10-11
+updated = 2026-10-16
 description = "Steps to read the unencrypted SIP inside a running TLS server process with sipnab's uprobe capture, with no key, no certificate and no restart, and what each backend can and cannot show."
 
 [extra]
@@ -55,14 +55,10 @@ walkthrough before using it on a production host.
 
 ## Steps
 
-The commands below need root and a TLS server. These were not available for
-this note.
-
-- Their output comes from the guides where they record it, with the source
-  named.
-- This note invents nothing below.
-
-The steps:
+Most commands below need root and a running TLS server. The example output of
+those commands comes from the
+[uprobe walkthrough](@/docs/uprobe-walkthrough.md), recorded on other hosts.
+Your library paths, process IDs and addresses differ from these.
 
 - Confirm that the host is Linux with tracefs (the kernel's tracing file
   system) mounted:
@@ -83,7 +79,7 @@ ls -d /sys/kernel/tracing
 sudo sipnab --uprobe-list
 ```
 
-   The uprobe walkthrough records this output from one host:
+   Example output from one host:
 
 ```text
 FLAVOR        INODE  PIDS  LIBRARY
@@ -104,8 +100,7 @@ wolfSSL     17433084     1  /proc/982702/root/usr/lib/libwolfssl.so.42.2.0
    read it. For example, a server statically linked with its TLS library maps no
    `libssl` file. `--uprobe-library <PATH>` names a library directly instead.
 
-   When sipnab finds nothing, it prints this and exits with code 1. The uprobe
-   walkthrough and `src/app/bootstrap.rs` record the text:
+   When sipnab finds nothing, it prints this and exits with code 1:
 
 ```text
 No TLS library is mapped by any process sipnab can see.
@@ -122,7 +117,7 @@ Either nothing here uses OpenSSL or wolfSSL, or sipnab cannot read
 sudo sipnab -N --uprobe-tls
 ```
 
-   The uprobe walkthrough records this line from such a run:
+   Example line from such a run:
 
 ```text
 12:57:47.360 0.0.0.0:0 -> 0.0.0.0:0 REGISTER TCP origin=uprobe
@@ -140,10 +135,14 @@ sudo sipnab -N --uprobe-tls
 - The capture may attach but report no messages. Then the server may call a
   different write function.
   - Some OpenSSL 3 programs call `SSL_write_ex` instead of `SSL_write`.
-  - The uprobe walkthrough section "The symbol may not be the one you
-    expect" shows how to list the write functions the server binary imports.
-  - Then probe the function it names. The guides record no output for this
-    command:
+  - List the write functions the server binary imports. Replace
+    `/usr/sbin/opensips` with your server's binary:
+
+```bash
+nm -D --undefined-only /usr/sbin/opensips | grep -i ssl_write
+```
+
+  - Then probe the function it names, for example `SSL_write_ex`:
 
 ```bash
 sudo sipnab -N --uprobe-tls --uprobe-symbol SSL_write_ex
@@ -165,25 +164,27 @@ sudo sipnab -N --uprobe-tls --uprobe-symbol SSL_write_ex
 sipnab --version
 ```
 
-   On the binary used for this note, the output was:
+   Example output from a build that carries the `bpf` feature:
 
 ```text
-sipnab 0.5.211 (15e5e7bd) features: native,tui,audio,tls,hep,api,mcp,mcp-http,metrics,plugins,vcon,archive
+sipnab 0.5.222 (16f7b0ea) features: native,tui,audio,tls,hep,api,mcp,mcp-http,metrics,wasm,plugins,bpf,vcon,opus,archive,g729
 libpcap version 1.10.4 (with TPACKET_V3); alternate capture backends named: none
 ```
 
-   `bpf` is not in that list. So this binary refuses the backend. Running
-   `sipnab -N --uprobe-tls --uprobe-backend bpf` with it logged this error and
-   exited with code 1. The message text is from `src/capture/native.rs`
-   line 47:
+   Look for `bpf` in the `features:` list.
+
+   - When `bpf` is missing, `--uprobe-backend bpf` logs this error and exits
+     with code 1:
 
 ```text
 --uprobe-backend bpf needs a sipnab built with the `bpf` feature; this binary does not carry it
 ```
 
-   A binary may list `bpf` but come from a build without `bpf-linker`. It
-   refuses with the "no kernel programs" message quoted in the uprobe
-   walkthrough. sipnab never falls back to `tracefs` on its own.
+   - When the list includes `bpf` but the build host had no `bpf-linker`, sipnab
+     refuses with an error that says the binary carries "no kernel programs".
+     Rebuild where `cargo install bpf-linker` has run, or use the `tracefs`
+     backend.
+   - sipnab never falls back to `tracefs` on its own.
 
    With all three in place, widen `--portrange`. The ports a uprobe reports are
    the connection's actual ports, often not 5061:
@@ -192,7 +193,7 @@ libpcap version 1.10.4 (with TPACKET_V3); alternate capture backends named: none
 sudo sipnab -N --uprobe-tls --uprobe-backend bpf --portrange 0-65535
 ```
 
-   The uprobe walkthrough records this output:
+   Example output:
 
 ```text
 200 OK     127.0.0.1:15061 -> 127.0.0.1:36160  TCP  uprobe:python3/349147#0
@@ -206,7 +207,7 @@ REGISTER   127.0.0.1:36160 -> 127.0.0.1:15061  TCP  uprobe:python3/349147#1
 - After the capture, confirm that sipnab removed its probes.
   - This is for the tracefs backend only. The kernel frees the programs of the
     `bpf` backend on exit.
-  - The walkthrough states that this prints nothing:
+  - This prints nothing when no sipnab probe remains:
 
 ```bash
 sudo grep sipnab_ /sys/kernel/tracing/uprobe_events

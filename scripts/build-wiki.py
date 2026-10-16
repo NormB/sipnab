@@ -129,6 +129,7 @@ PAGES: dict[str, str] = {
     "internals/relay-control-decoding.md": "Internals-Relay-Control-Decoding",
     "internals/vcon.md": "Internals-vCon-Exporter",
     "internals/operator-guide-notes.md": "Internals-Operator-Guide-Notes",
+    "internals/postmortems.md": "Internals-Postmortems",
 }
 
 # Sidebar grouping: (section title, [source paths]), ordered by user journey —
@@ -184,7 +185,8 @@ GROUPS: list[tuple[str, list[str]]] = [
                                  "internals/rtpengine-control-plane.md",
                                  "internals/relay-control-decoding.md",
                                  "internals/vcon.md",
-                                 "internals/operator-guide-notes.md"]),
+                                 "internals/operator-guide-notes.md",
+                                 "internals/postmortems.md"]),
 ]
 
 LINK_RE = re.compile(r"\]\(\s*([^)\s]+?\.md)(#[^)\s]*)?\s*\)")

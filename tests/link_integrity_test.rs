@@ -2710,7 +2710,9 @@ fn every_docs_page_is_linked_from_the_index() -> Result<(), TestError> {
     // 80 -> 91: the merge of docs/doc-improvements with the 0.5.213 batch.
     // The ten docs/mcp-tools-<bundle>.md pages and docs/errors.md.
     // 91 -> 92: docs/g729.md.
-    const EXPECTED_DOCS_PAGES: usize = 92;
+    // 92 -> 93: docs/internals/postmortems.md, the record the post-mortem
+    // notes moved to, reached through docs/internals/README.md.
+    const EXPECTED_DOCS_PAGES: usize = 93;
     // Links are extracted from PROSE, not from the file's bytes. A raw
     // `contains("](backers.md")` counted a link that had been wrapped in an
     // HTML comment: the substring was still there, the page was reachable from

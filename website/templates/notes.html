@@ -14,7 +14,7 @@
 
   <article class="doc-content">
     <header class="doc-header">
-      <p class="doc-kicker">Engineering notes</p>
+      <p class="doc-kicker">Notes</p>
       <h1>{{ section.title }}</h1>
       {% if section.description %}
       <p class="doc-lead">{{ section.description }}</p>
@@ -23,9 +23,9 @@
 
     {{ section.content | safe }}
 
-    {# How-tos and features render open. The post-mortems render inside a
-       closed disclosure, a native <details>, so the list works with
-       JavaScript off and a screen reader announces its state. #}
+    {# Two groups, how-tos then features. A note whose kind is neither renders
+       in no group, so tests/notes_index_shape_test.rs holds every note to one
+       of the two. #}
     {% set howtos = section.pages | filter(attribute="extra.kind", value="howto") %}
     {% if howtos | length > 0 %}
     <section class="note-group">
@@ -48,22 +48,6 @@
         {% endfor %}
       </ul>
     </section>
-    {% endif %}
-
-    {% set postmortems = section.pages | filter(attribute="extra.kind", value="postmortem") %}
-    {% if postmortems | length > 0 %}
-    <details class="note-archive">
-      <summary>
-        <span class="note-archive-title">Post-mortems</span>
-        <span class="note-archive-count">{{ postmortems | length }}</span>
-        <span class="note-archive-hint">what went wrong, why, and what changed</span>
-      </summary>
-      <ul class="note-list">
-        {% for p in postmortems %}
-        {{ macros::note_row(p=p, kind="postmortem") }}
-        {% endfor %}
-      </ul>
-    </details>
     {% endif %}
   </article>
 </div>

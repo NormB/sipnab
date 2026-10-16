@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-//! What every engineering note under `website/content/notes/` must carry so
+//! What every note under `website/content/notes/` must carry so
 //! both an engineer and a reader who is not one can use it, and so it stays in
 //! step with the repository.
 //!
@@ -38,8 +38,11 @@ fn notes() -> Result<Vec<PathBuf>, TestError> {
         .filter(|p| p.file_name().is_some_and(|n| n != "_index.md"))
         .collect();
     out.sort();
+    // 23 notes on 2026-10-16, when the eleven post-mortems with no reader
+    // task moved to docs/internals/postmortems.md. The floor is below that
+    // with room for one more removal, and far above what a broken walk finds.
     assert!(
-        out.len() >= 30,
+        out.len() >= 20,
         "only {} notes found; the walk is wrong",
         out.len()
     );
@@ -183,7 +186,7 @@ fn an_updated_note_says_so_and_its_dates_are_in_order() -> Result<(), TestError>
             }
         }
     }
-    assert!(seen >= 30, "only {seen} notes carry both dates");
+    assert!(seen >= 20, "only {seen} notes carry both dates");
     assert!(out_of_order.is_empty(), "{}", out_of_order.join("\n"));
     Ok(())
 }

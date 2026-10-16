@@ -1,8 +1,8 @@
 +++
-title = "vCon exporter additions in sipnab 0.5.128"
+title = "Caller details, transfer records and checksums in sipnab's vCon export"
 date = 2026-08-27
-updated = 2026-10-11
-description = "The fields, transfer records, flags and error format that sipnab 0.5.128 added to its vCon export and REST API, what each one is for, and the two that 0.5.208 changed."
+updated = 2026-10-16
+description = "What the caller and call fields, transfer records, inline-media and checksum options, REST error format and spool writes in sipnab's vCon export mean, and how to check a written container against its checksum."
 
 [extra]
 kind = "feature"
@@ -16,16 +16,17 @@ A vCon is a standard file format for describing one conversation. It says:
 - what they said or what a recorder captured,
 - what analysis found.
 
-sipnab can write one vCon file per call it captured. Release 0.5.128 added:
+sipnab can write one vCon file per call it captured. This page describes:
 
-- more caller and call details to those files,
-- a record of call transfers,
-- three new options,
-- a structured error format for sipnab's REST API,
-- a safer way of writing files for another program to pick up.
+- the caller and call details in those files,
+- the record of a call transfer,
+- three flags: the inline audio limit, the withheld-call record and the
+  checksum list,
+- the error format of sipnab's REST API,
+- how sipnab writes files for another program to pick up.
 
-Release 0.5.208 revised two of those changes. It follows a newer version of
-the vCon draft standard. This page describes the current behavior.
+Everything here needs sipnab 0.5.128 or later, built with the `vcon` feature.
+The Dialog Object types described here need 0.5.208 or later.
 
 ## Who this is for
 
@@ -34,9 +35,9 @@ They need to know what each field means.
 
 ## What it does
 
-### New fields in each container
+### Fields in each container
 
-A container is one vCon file. 0.5.128 added these fields:
+A container is one vCon file. It carries these fields:
 
 - **`subject`** names the call as `SIP call <Call-ID>`.
   - The Call-ID is the identifier SIP gives the call.
@@ -84,25 +85,20 @@ transfer.
   - This capture did not see that call.
 - A blind transfer has no `consultation`.
 
-In 0.5.128 that placeholder was an empty object, `{}`.
-
-- Since 0.5.208 it is `{"type": "recording"}`.
-- draft-ietf-vcon-vcon-core-04 requires a `type` on every Dialog Object.
+That placeholder is `{"type": "recording"}`. draft-ietf-vcon-vcon-core-04
+requires a `type` on every Dialog Object.
 
 ### The `type` of a call with no audio
 
-Before 0.5.128, sipnab gave a Dialog Object with no audio the type
-`incomplete`.
+A Dialog Object for a call whose audio the container does not carry is
+`"type": "recording"` with no `body` or `url`.
 
-- The draft reserves that value for a call whose setup failed.
-- So every container for an answered call captured without audio reported a
-  setup failure.
-- In 0.5.128 such an object named no `type` at all.
-- Since 0.5.208 it is `"type": "recording"` with no `body` or `url`.
 - `incomplete` appears only when sipnab saw a final failure response.
   - Then `disposition` gives the reason.
+- The draft reserves `incomplete` for a call whose setup failed. So an
+  answered call captured without audio is never reported as a setup failure.
 
-### New flags
+### Flags that change the export
 
 - **`--vcon-max-inline-media <MIB>`** sets the largest audio file a container
   may carry inline, in MiB (default 5).
@@ -125,16 +121,15 @@ sipnab's REST API answers an error with an
 
 - Its content type is `application/problem+json`.
 - It holds `type`, `title`, `status` and sometimes `detail`.
-- Before 0.5.128 an error was a status code with no body.
 - sipnab builds the `type` URI from the status code alone.
   - An example is `https://sipnab.com/problems/not-found` for 404.
   - So the same kind of error has the same `type` on every route.
 - `detail`, when present, says what happened.
 
-### Safer spool writes
+### Spool writes
 
 `--export-vcon-dir` writes containers to a directory (the spool) that another
-program reads. Each file is now:
+program reads. Each file is:
 
 - written under a temporary name beginning with a dot,
 - flushed to disk,

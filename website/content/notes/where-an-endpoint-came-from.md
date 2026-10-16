@@ -1,7 +1,7 @@
 +++
 title = "Trace where sipnab learned a media endpoint, with three MCP tools"
 date = 2026-09-01
-updated = 2026-10-11
+updated = 2026-10-16
 description = "Three MCP tools report how sipnab learned the address of a call's audio, whether anything authenticated the path that delivered it, and why an audio stream has no call attached."
 
 [extra]
@@ -143,7 +143,7 @@ You can let sipnab ask a relay directly. That is the only way to reach
 - The [rtpengine guide](@/docs/rtpengine.md#name-a-call-that-was-already-up-when-you-started)
   covers that setup.
 
-## Example run
+## Example: trace the endpoints of one call
 
 The examples send two things to sipnab over standard input:
 
@@ -158,6 +158,8 @@ This capture holds:
 - rtpengine control messages mirrored over HEP to UDP port 9060,
 - then the call's audio,
 - no SIP messages.
+
+### Ask where each endpoint of a call came from
 
 Ask where the endpoints of the call `km-670bd208@sipnab` came from:
 
@@ -177,6 +179,8 @@ unauthenticated_endpoints: 4
 - sipnab read them from the network (`wire`).
 - So the only check was the port they arrived on.
 
+### Decode one relay control message
+
 Decode the first frame of the same capture. `decode_ng` opens the file again.
 So `--mcp-file-root` must name the directory that holds it:
 
@@ -187,6 +191,8 @@ printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocol
 ```text
 {"command":"offer","call_id":"km-670bd208@sipnab","delivery":"hep","delivery_trust":"port-gated-only","on_believed_mirror_port":true}
 ```
+
+### Find out why a stream has no call
 
 This capture holds the same audio with no control messages and no SIP. Ask
 why each stream has no call:
@@ -205,8 +211,7 @@ printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocol
   - It decides from the HEP listener's settings, not per packet.
   - A run may both read an interface (`-d`) and listen for HEP with a secret.
     Then an assertion sniffed from the interface reports the listener's value.
-- According to its `--help` text, only another sipnab understands
-  `--hep-auth-mode hmac`.
+- `--hep-auth-mode hmac` works only between two sipnab instances.
   - A stock Homer or Kamailio peer uses the `plain` form.
 - `--hep-allow` restricts the senders the HEP listener accepts.
   - It does not apply to a relay mirror sipnab reads from the network.

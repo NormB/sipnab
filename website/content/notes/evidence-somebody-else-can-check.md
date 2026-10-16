@@ -1,7 +1,7 @@
 +++
 title = "Hand over call evidence that another party can check"
 date = 2026-09-01
-updated = 2026-10-11
+updated = 2026-10-16
 description = "Export the disputed calls as vCon containers, add a checksum file and a record of the command, and check each piece before you send it."
 
 [extra]
@@ -33,7 +33,7 @@ The steps run from the root of a sipnab checkout.
 - They read `tests/pcap-samples/sip-488-codec-reject.pcapng`, a capture with
   one failed call.
 - The last three steps use `jq`, a command-line JSON reader.
-- The output below came from sipnab 0.5.211.
+- The output below came from sipnab 0.5.222.
 
 ## Steps
 
@@ -74,10 +74,9 @@ What each part does:
     spaces, the file name.
   - The `>` sends those lines to `SHA256SUMS`.
 - `--no-cli-print` stops the per-message listing.
-  - On 0.5.211 that listing also goes to standard output.
-  - So without this flag it lands in `SHA256SUMS`.
-  - `sha256sum -c` then reports `WARNING: 54 lines are improperly formatted`
-    for this capture.
+  - `--vcon-digest` turns it on as well.
+  - So the checksum lines are the only output on standard output, and
+    `SHA256SUMS` holds nothing else.
 - `--run-provenance-file ./evidence/runs.jsonl` appends one JSON line saying
   how this run started (see the last step).
 - `-q` hides the timestamped log lines. So only the summary line above is
@@ -98,7 +97,7 @@ printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocol
 ```
 
 ```text
-{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2025-06-18","capabilities":{"completions":{},"prompts":{},"resources":{"subscribe":true},"tools":{}},"serverInfo":{"name":"sipnab","version":"0.5.211"},"instructions":"sipnab MCP server — queries captured SIP dialogs, RTP streams, diagnostics and security findings. No tool edits a capture's contents. `open_capture` can change WHICH capture is loaded and stays off unless enabled server-side; every response carries `capture_identity`, so a swap is visible rather than silent. File exports write only under the configured file root, and stopping the server requires an explicit server-side opt-in. This server changes no external system: the tools that would (tfps_ban, tfps_unban) refuse unless the operator enables them with --allow-action. Tools loaded: full."}}
+{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2025-06-18","capabilities":{"completions":{},"prompts":{},"resources":{"subscribe":true},"tools":{}},"serverInfo":{"name":"sipnab","version":"0.5.222"},"instructions":"sipnab MCP server — queries captured SIP dialogs, RTP streams, diagnostics and security findings. No tool edits a capture's contents. `open_capture` can change WHICH capture is loaded and stays off unless enabled server-side; every response carries `capture_identity`, so a swap is visible rather than silent. File exports write only under the configured file root, and stopping the server requires an explicit server-side opt-in. This server changes no external system: the tools that would (tfps_ban, tfps_unban) refuse unless the operator enables them with --allow-action. Tools loaded: full."}}
 {"jsonrpc":"2.0","id":2,"result":{"content":[{"type":"text","text":"{\"call_id\":\"codec-reject-synth\",\"errors\":[],\"schema_id\":\"https://ietf.org/vcon/schemas/unsigned-vcon.json\",\"schema_path\":\"tests/schemas/vcon.schema.json\",\"schema_version\":2,\"source_exhausted\":true,\"source_stopped_early\":false,\"verdict\":\"valid\"}"}],"structuredContent":{"call_id":"codec-reject-synth","errors":[],"schema_id":"https://ietf.org/vcon/schemas/unsigned-vcon.json","schema_path":"tests/schemas/vcon.schema.json","schema_version":2,"source_exhausted":true,"source_stopped_early":false,"verdict":"valid"},"isError":false}}
 ```
 
@@ -156,6 +155,7 @@ jq '.analysis[0].body.capture_completeness | del(.node, .note)' codec-reject-syn
 ```text
 {
   "blind_spots": [],
+  "call_ended": true,
   "dialogs_refused": 0,
   "dialogs_rotated": 0,
   "dialogs_suppressed_by_deny": 0,
@@ -167,7 +167,7 @@ jq '.analysis[0].body.capture_completeness | del(.node, .note)' codec-reject-syn
   "messages_evicted": 0,
   "sip_discarded_by_port_gate": 0,
   "sip_discarded_by_websocket_gate": 0,
-  "sipnab_version": "0.5.211",
+  "sipnab_version": "0.5.222",
   "undecodable_frames": 0
 }
 ```
@@ -236,8 +236,8 @@ jq '{record, seq, argv, version, instance: .capture.instance}' runs.jsonl
     "--run-provenance-file",
     "./evidence/runs.jsonl"
   ],
-  "version": "0.5.211 (15e5e7bd) features: native,tui,audio,tls,hep,api,mcp,mcp-http,metrics,plugins,vcon,archive",
-  "instance": "63cd118dda1693a8a6dc1-1"
+  "version": "0.5.222 (16f7b0ea) features: native,tui,audio,tls,hep,api,mcp,mcp-http,metrics,wasm,plugins,bpf,vcon,opus,archive,g729",
+  "instance": "11b18b18df002253d62562-1"
 }
 ```
 
@@ -288,9 +288,9 @@ as described in
   - The
     [vCon guide](@/docs/vcon.md#what-sipnab-refuses-to-put-in-a-container)
     lists what sipnab leaves out of a container.
-- On 0.5.211, the command may include `--run-provenance-file`. Then the record
-  and the containers carry the system host name as the node. This happens even
-  when `--node-name` sets a different one.
+- The record and the containers name the machine that ran sipnab as the
+  node. `--node-name` sets that name. Without it, sipnab uses the system host
+  name.
 
 ## Terms used here
 

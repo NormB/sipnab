@@ -1,8 +1,8 @@
 +++
 title = "Set the largest audio a vCon container may carry inline"
 date = 2026-08-27
-updated = 2026-10-11
-description = "How to raise, keep or turn off the 5 MiB limit on audio sipnab writes inside a vCon container, and how to read the record sipnab leaves when it refuses the audio."
+updated = 2026-10-16
+description = "How to raise, keep or turn off the 5 MiB limit on audio sipnab writes inside a vCon container, how to read the record sipnab leaves when it refuses the audio, and how to keep the audio in a file beside the container."
 
 [extra]
 kind = "howto"
@@ -14,12 +14,14 @@ A vCon is a file format for keeping a record of a phone call. sipnab can write
 one per call, with the call's audio stored inside the file.
 
 - Audio makes these files large.
-- A measurement showed one storage system that receives vCon files accepting a
-  large file while silently discarding its audio.
+- A vCon store can accept a large file and drop its audio without reporting an
+  error.
 - So by default sipnab refuses to put more than 5 MiB of encoded audio into one
   file. It says so inside the file.
 - The `--vcon-max-inline-media` option changes that limit, or turns inline
   audio off.
+- A `[[vcon.rule]]` with `audio = "url"` writes the audio to a WAV file beside
+  the container instead, whatever its size.
 
 ## Who this is for
 
@@ -48,9 +50,8 @@ store or program that reads them.
   - The default is 1500. That is about 30 seconds of G.711 at 50 packets per
     second.
   - To carry calls longer than that, raise that setting as well as this limit.
-- The option has existed since sipnab 0.5.128.
-  - The commands below ran with sipnab 0.5.211 from the root of a sipnab
-    checkout.
+- The option needs sipnab 0.5.128 or later, built with the `vcon` feature.
+  - The commands below run from the root of a sipnab checkout.
   - They read `tests/pcap-samples/sip-rtp-g711.pcap`. That capture holds two
     calls.
   - The condition `duration > 1` selects the one that lasts 8.5 seconds. It has
@@ -149,32 +150,69 @@ store or program that reads them.
    sipnab REFUSED to inline it: it decoded audio and the encoded body was over
    the budget below. The audio exists and was not truncated."
 
-- To get the audio as a separate WAV file, use the `export_audio` tool of
-  sipnab's MCP server.
+- To get the audio of one call as a separate WAV file on request, use the
+  `export_audio` tool of sipnab's MCP server.
   - MCP is the interface an AI agent uses to query sipnab.
   - Start the server with `--retain-audio`.
-  - There is no command-line option that writes the WAV file.
+  - To write the audio of every matching call as a file, use a rule, as the
+    next section shows.
 
-## Where the 5 MiB default comes from
+## Keep the audio in a file beside the container
 
-On 2026-08-24 a test sent synthetic containers to a running vCon store. The
-store was reachable over HTTP and NATS.
+A `[[vcon.rule]]` in the config file can write each call's audio to a WAV file
+next to the container. The container then names that file by URL instead of
+carrying the audio. The limit does not apply to it.
 
-- A container with about 12 MB of inline base64 received HTTP status 204
-  (success, no content).
-- The store wrote it to its PostgreSQL database.
-- The store's file spool (its on-disk storage) refused it with the message
-  `16777749 > 10485760`.
-- Neither interface reported that the file spool had refused it.
-- Both backends stored containers of about 1 MB and about 5 MB.
+- Write the rule into a config file, here `vcon-url.toml`.
+  - `audio_url_base` is the HTTPS address under which your own storage
+    serves the files. sipnab writes the files and serves nothing.
+  - `when` takes the same condition as `--export-vcon-when`.
 
-The default sits at 5 MiB, the size that both backends stored. It does not sit
-at the 10,485,760-byte limit where the spool refused.
+   ```toml
+   [[vcon.rule]]
+   name           = "audio-beside"
+   when           = "duration > 1"
+   dir            = "./calls-url/"
+   audio          = "url"
+   audio_url_base = "https://media.example.com/calls/"
+   ```
 
-- The rest of the container has to fit under the store's limit as well. That
-  is the parties, the message trace and the completeness statement.
-- The figure describes that one store, not the vCon format.
-- That store publishes no per-container limit.
+- Run sipnab with that config file. A rule with `audio = "url"` keeps the
+  audio by itself, so `--retain-audio` is not needed.
+
+   ```bash
+   sipnab -N -q -I tests/pcap-samples/sip-rtp-g711.pcap --config vcon-url.toml --no-cli-print
+   ```
+
+   ```text
+   [[vcon.rule]] 'audio-beside': Wrote 1 vCon container(s) to './calls-url/'.
+   ```
+
+- List the directory. Each container has a WAV file of the same name.
+
+   ```bash
+   ls calls-url/
+   ```
+
+   ```text
+   1-1966_10.0.2.20-1cc03f180ff8a774.vcon.json
+   1-1966_10.0.2.20-1cc03f180ff8a774.wav
+   ```
+
+- Read the recording entry. It names the file under `audio_url_base` and
+  carries the file's hash, so a reader can check the file it fetches.
+
+   ```bash
+   jq -c '.dialog[] | {type, url, mediatype, content_hash}' calls-url/*.vcon.json
+   ```
+
+   ```text
+   {"type":"recording","url":"https://media.example.com/calls/1-1966_10.0.2.20-1cc03f180ff8a774.wav","mediatype":"audio/x-wav","content_hash":"sha512-GVphUEyrsE9TSwxDIUBOUWDh1xEmmbHbpT5SqrtTVVVOQWy9JUPWgvOtxlFy1Rr-p8gcpy8pRosgohjHBa6uQg"}
+   ```
+
+   The container's `capture_completeness.media` reads `referenced`.
+
+- Copy the WAV files to the storage that serves `audio_url_base`.
 
 ## Limits
 
@@ -183,7 +221,12 @@ at the 10,485,760-byte limit where the spool refused.
   - the REST server,
   - the MCP server.
   - The same call exported two ways gets the same decision.
-- The limit counts the encoded audio only, not the whole container.
+- A `[[vcon.rule]]` with `audio = "inline"` can set its own limit with
+  `max_inline_media_mib`. A rule that does not set it uses
+  `--vcon-max-inline-media`.
+- The limit counts the encoded audio only, not the whole container. The rest
+  of the container (parties, message trace, completeness statement) has to fit
+  under your store's own size limit as well.
 - sipnab does not cut audio to fit.
   - sipnab leaves audio over the limit out whole. The container says so.
   - Audio that `--retain-audio` did not keep (over
@@ -210,10 +253,10 @@ at the 10,485,760-byte limit where the spool refused.
 - **MCP**: Model Context Protocol, the interface an AI agent uses to call
   sipnab's tools.
 - **REST server**: sipnab's HTTP interface for programs.
-- **HTTP 204**: a web server's reply meaning "success, no content returned".
-- **File spool**: a directory where a store writes incoming files.
-- **Backend**: one of the places a store writes data, such as a database or a
-  file spool.
+- **Config file**: the TOML file `--config` names. `[[vcon.rule]]` entries in
+  it choose which calls sipnab writes as vCon files, and how.
+- **URL**: a web address. With `audio = "url"` the container holds the address
+  of the audio file rather than the audio.
 
 ## Related guides
 
@@ -226,5 +269,7 @@ at the 10,485,760-byte limit where the spool refused.
 - [`[limits]`](@/docs/config.md#limits): `max_audio_frames`.
 - [`export_audio`](@/docs/mcp-tools-media.md#export-audio): the MCP tool that writes
   a call's audio to a WAV file.
-- [Measured against a real consumer, section 4a.1](https://github.com/NormB/sipnab/blob/main/docs/design/vcon.md#4a1-a-204-does-not-mean-the-container-was-stored):
-  the design record of the store measurement.
+- [Write calls by rule](@/docs/vcon.md#write-calls-by-rule): every
+  `[[vcon.rule]]` key, including `audio = "url"` and `max_inline_media_mib`.
+- [Fetch the audio a vCon names](@/docs/vcon.md#fetch-the-audio-a-vcon-names):
+  reading back audio a container references by URL.

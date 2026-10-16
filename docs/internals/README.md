@@ -62,6 +62,10 @@ Already written, and narrower:
 - [Operator guide engineering notes](operator-guide-notes.md) — the record
   behind the operator guides: why each limit exists, the release that changed
   it, and the measurements behind it.
+- [Incident record](postmortems.md) — what went wrong in sipnab
+  and in its build, test and release tooling, why, what changed, and how to
+  check it. It also holds the source locations, version history and
+  measurements that the website's how-to and feature notes no longer carry.
 
 Other starting points:
 

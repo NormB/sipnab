@@ -2186,74 +2186,6 @@ input:focus-visible,
     + .note-list { margin-top: 0; }
   }
 
-  // The post-mortem archive: a record worth keeping and a poor front page.
-  // Sixteen accounts of what broke bury the pages that tell somebody how to do
-  // their job, so they collapse behind a disclosure the reader opens on
-  // purpose. `details` is native: it works with JavaScript off and announces
-  // its own expanded state without an aria attribute to keep in sync.
-  .note-archive {
-    margin: 3rem 0 0;
-    border-top: 1px solid $border;
-
-    > summary {
-      display: flex;
-      align-items: baseline;
-      gap: 0.6rem;
-      padding: 1rem 0;
-      cursor: pointer;
-      list-style: none;
-      color: $text-dim;
-
-      // The default triangle sits at a different offset in every engine, so
-      // it is replaced with one that lines up with the text on all of them.
-      &::-webkit-details-marker { display: none; }
-
-      &::before {
-        content: "\25b8";
-        display: inline-block;
-        color: $ayu-orange;
-        transition: transform 120ms ease;
-      }
-
-      &:hover .note-archive-title { color: $text; }
-
-      &:focus-visible {
-        outline: 2px solid $link;
-        outline-offset: 3px;
-        border-radius: 3px;
-      }
-    }
-
-    &[open] > summary::before { transform: rotate(90deg); }
-
-    // Reduced motion: the rotation is decoration, and the marker still says
-    // which way it points without animating there.
-    @media (prefers-reduced-motion: reduce) {
-      > summary::before { transition: none; }
-    }
-
-    .note-archive-title {
-      font-family: $font-mono;
-      font-size: 0.8rem;
-    }
-
-    .note-archive-count {
-      font-family: $font-mono;
-      font-size: 0.75rem;
-      padding: 0.1rem 0.45rem;
-      border: 1px solid rgba($ayu-orange, 0.45);
-      border-radius: 99px;
-      color: $ayu-orange;
-    }
-
-    .note-archive-hint {
-      font-size: 0.85rem;
-      color: $text-dim;
-    }
-
-    .note-list { margin-top: 0; }
-  }
-
   .note-kind {
     font-family: $font-mono;
     font-size: 0.75rem;
@@ -2267,7 +2199,6 @@ input:focus-visible,
     // legible at a glance in a long list rather than only on reading it.
     &.note-kind-howto { color: $link; border-color: rgba($link, 0.45); }
     &.note-kind-feature { color: $good; border-color: rgba($good, 0.45); }
-    &.note-kind-postmortem { color: $ayu-orange; border-color: rgba($ayu-orange, 0.45); }
     &.note-kind-reference { color: $text-dim; }
   }
 
@@ -2646,43 +2577,6 @@ input:focus-visible,
     border-left-color: transparent;
     &::before { background: $accent; border-color: $accent; }
   }
-}
-
-// The post-mortem group collapses, as it does on the notes index. The summary
-// keeps the look of a group title and gains a marker that shows its state.
-.notes-nav-archive {
-  > summary {
-    cursor: pointer;
-    list-style: none;
-    display: flex;
-    align-items: baseline;
-    gap: 0.45rem;
-
-    &::-webkit-details-marker { display: none; }
-    &::before {
-      content: "\25b8";
-      color: $ayu-orange;
-      transition: transform 120ms ease;
-    }
-    &:focus-visible {
-      outline: 2px solid $link;
-      outline-offset: 3px;
-      border-radius: 3px;
-    }
-  }
-  &[open] > summary::before { transform: rotate(90deg); }
-  @media (prefers-reduced-motion: reduce) {
-    > summary::before { transition: none; }
-  }
-}
-
-.notes-nav-count {
-  font-family: $font-mono;
-  font-size: 0.75rem;
-  padding: 0 0.4rem;
-  border: 1px solid rgba($ayu-orange, 0.45);
-  border-radius: 99px;
-  color: $ayu-orange;
 }
 
 .notes-nav-title {

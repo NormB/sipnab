@@ -1,8 +1,8 @@
 +++
 title = "SIPREC recording metadata: who is on a recorded call"
 date = 2026-09-05
-updated = 2026-10-11
-description = "How sipnab reads the participant and stream list a call recorder sends, where it shows that list, and why it was empty on real captures before 0.5.151."
+updated = 2026-10-16
+description = "How sipnab reads the participant and stream list a call recorder sends, where it shows that list, and what a capture must contain for it to appear."
 
 [extra]
 kind = "feature"
@@ -24,9 +24,7 @@ sipnab reads that description from a capture. It shows it in:
 - its MCP server,
 - the call-flow view of its terminal interface.
 
-Before version 0.5.151 sipnab stored nothing from that description on real
-captures. It displayed it nowhere. This note says what it shows now and what
-was wrong before.
+This needs sipnab 0.5.151 or later.
 
 ## Who this is for
 
@@ -81,7 +79,7 @@ recording INVITE is in the capture. It appears in:
 - the call-flow ladder in the terminal interface, as lines under the recording
   INVITE.
 
-## Example
+## Example: list the participants of a recording
 
 The repository holds one recording INVITE as written by OpenSIPS:
 `tests/pcap-samples/siprec-opensips-invite.pcap`. The report shows:
@@ -90,7 +88,7 @@ The repository holds one recording INVITE as written by OpenSIPS:
 - which of them sends each stream.
 
 ```bash
-sipnab -N -I tests/pcap-samples/siprec-opensips-invite.pcap --report --no-cli-print
+sipnab -N -q -I tests/pcap-samples/siprec-opensips-invite.pcap --report --no-cli-print
 ```
 
 ```text
@@ -114,11 +112,11 @@ SIPREC recording (4f1c0a2e-siprec@172.28.0.31): session 4f1c0a2e, complete
 The same data as JSON:
 
 ```bash
-sipnab -N -I tests/pcap-samples/siprec-opensips-invite.pcap --json-dialogs --no-cli-print
+sipnab -N -q -I tests/pcap-samples/siprec-opensips-invite.pcap --json-dialogs --no-cli-print
 ```
 
 ```text
-{"call_id":"4f1c0a2e-siprec@172.28.0.31","diagnosis":{"hints":[],"nat_mismatch":false,"no_media":false,"one_way_audio":false,"private_media_address":false},"duration_sec":0.0,"frame":"tests/pcap-samples/siprec-opensips-invite.pcap#0@c7428c303b29281f","input_origin":"wire","method":"INVITE","msg_count":1,"schema_version":1,"sdp_timeline":[],"siprec":{"mode":"complete","participants":[{"aor":"sip:alice@example.invalid","name":"Alice","participant_id":"9b2d1f00"},{"aor":"sip:bob@example.invalid","participant_id":"c7e40a13"}],"session_id":"4f1c0a2e","streams":[{"label":"0","participant_id":"9b2d1f00","stream_id":"1a2b3c4d"},{"label":"1","participant_id":"9b2d1f00","stream_id":"2b3c4d5e"},{"label":"2","participant_id":"c7e40a13","stream_id":"3c4d5e6f"}]},"state":"Trying","streams":[],"timing":{"retransmits":0}}
+{"call_id":"4f1c0a2e-siprec@172.28.0.31","diagnosis":{"hints":[],"nat_mismatch":false,"no_media":false,"one_way_audio":false,"private_media_address":false},"duration_sec":0.0,"frame":"tests/pcap-samples/siprec-opensips-invite.pcap#0@c7428c303b29281f","input_origin":"wire","method":"INVITE","msg_count":1,"schema_version":1,"sdp_timeline":[],"siprec":{"mode":"complete","participants":[{"aor":"sip:alice@example.invalid","name":"Alice","participant_id":"9b2d1f00"},{"aor":"sip:bob@example.invalid","participant_id":"c7e40a13"}],"session_id":"4f1c0a2e","streams":[{"label":"0","participant_id":"9b2d1f00","stream_id":"1a2b3c4d"},{"label":"1","participant_id":"9b2d1f00","stream_id":"2b3c4d5e"},{"label":"2","participant_id":"c7e40a13","stream_id":"3c4d5e6f"}]},"state":"Trying","streams":[],"timing":{"retransmits":0},"to":"srs"}
 ```
 
 ## Limits
@@ -131,54 +129,13 @@ sipnab -N -I tests/pcap-samples/siprec-opensips-invite.pcap --json-dialogs --no-
   - It does not mean the call was not recorded.
   - A recorder signaling on a path the capture cannot see looks the same.
 - sipnab reads SIPREC. It is not an SRC or an SRS.
-
-## What was wrong before 0.5.151
-
-sipnab has had a SIPREC reader since April 2026. Its unit tests passed. Unit
-tests are small automated tests of one function.
-
-- On real captures the participant and stream data never appeared.
-- Three faults caused that.
-- Version 0.5.151 (2026-09-05) fixed all three:
-  - **sipnab read the recording mode from the wrong element.**
-    - It looked for `<mode>`.
-    - RFC 7866 and OpenSIPS both use `<datamode>`.
-    - So the mode was empty for every call OpenSIPS recorded.
-    - sipnab now reads `<datamode>`. It keeps `<mode>` as a fallback.
-  - **sipnab read stream ownership from the wrong place.**
-    - It looked for the owner inside each `<stream>` element.
-    - OpenSIPS writes it only in `<participantstreamassoc>`.
-    - So every stream showed no owner.
-    - sipnab now reads the `<send>` entries there.
-  - **The INVITE that creates a call skipped the reader.**
-    - sipnab's call store has three code paths that apply what a message adds
-      to a call:
-      - one for a call it already holds,
-      - one that creates a new call,
-      - one that re-applies messages after sipnab merges two records of the
-        same call.
-    - Two of them ran the SIPREC reader. The path that creates a call did
-      not.
-    - The recording INVITE is the first message of the recording call.
-    - So it is the message that creates the call record. The reader never ran
-      on it.
-    - All three paths now call one shared function.
-
-The first two faults were not caught because of the unit tests' sample.
-
-- The tests used a sample document written by hand.
-- Its layout differed from the one OpenSIPS writes.
-- New tests use the layout from OpenSIPS's source file
-  `modules/siprec/siprec_body.c`.
-
-The third fault was outside the reader.
-
-- So no test of the reader alone could find it.
-- Reading a capture through the full program found it.
-
-Before 0.5.151 no report, API or tool displayed the stored metadata. So the
-empty field was not visible to users. The same release added the report,
-REST, MCP and ladder output listed above.
+- sipnab reads the recording mode from `<datamode>`, the element RFC 7866 and
+  OpenSIPS use. It also accepts `<mode>`.
+- sipnab takes the sender of each stream from the `<send>` entries of
+  `<participantstreamassoc>`. A participant listed only under `<recv>` is not
+  shown as the sender of any stream.
+- Versions before 0.5.151 show no participant or stream data on real
+  captures. Upgrade to read it.
 
 ## Terms used here
 
@@ -199,7 +156,6 @@ REST, MCP and ladder output listed above.
 - **MCP**: Model Context Protocol, the interface sipnab offers to AI agents.
 - **Ladder**: the call-flow diagram in sipnab's terminal interface.
 - **pcap**: a file of captured network packets.
-- **Unit test**: an automated test that checks one function on its own.
 
 ## Related guides
 

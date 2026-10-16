@@ -1,10 +1,10 @@
 {# One row on the notes index: the kind chip, the date, the title and the
-   one-line description. Shared so the open sections and the collapsed
-   post-mortem archive cannot drift into rendering the same thing two ways. #}
+   one-line description. Shared so the how-to and feature groups cannot drift
+   into rendering the same thing two ways. #}
 {# The word a reader sees for a note's kind. The front matter carries a slug
-   (`howto`, `postmortem`), which is an identifier, not a word. One mapping,
+   (`howto`, `feature`), which is an identifier, not a word. One mapping,
    so the index rows and a note's own header cannot spell a kind two ways. #}
-{% macro kind_label(kind) %}{% if kind == "howto" %}How-to{% elif kind == "feature" %}Feature{% elif kind == "postmortem" %}Post-mortem{% else %}{{ kind }}{% endif %}{% endmacro %}
+{% macro kind_label(kind) %}{% if kind == "howto" %}How-to{% elif kind == "feature" %}Feature{% else %}{{ kind }}{% endif %}{% endmacro %}
 
 {% macro note_row(p, kind) %}
 <li class="note-list-item">
@@ -82,11 +82,7 @@
    into a wall of text where only the hover highlight tells you where one ends
    and the next begins. Each entry therefore gets a marker, a date, and a rule
    between it and the next, and the list is grouped under the kind of note it
-   is so a reader looking for a how-to is not reading post-mortems to find one.
-
-   The post-mortems collapse behind a disclosure, as they do on the index. It
-   opens by itself only when the reader is already on a post-mortem, so the
-   page they are on stays visible in its own sidebar. #}
+   is, how-tos first and features second, as on the index. #}
 {% macro notes_nav_item(p, current) %}
 <li class="notes-nav-item">
   <a class="doc-nav-link notes-nav-link{% if p.permalink == current %} active{% endif %}" href="{{ p.permalink }}"{% if p.permalink == current %} aria-current="page"{% endif %}>
@@ -112,12 +108,5 @@
       {% for p in features %}{{ self::notes_nav_item(p=p, current=current) }}{% endfor %}
     </ul>
   </div>
-  <details class="doc-nav-group notes-nav-archive"{% if section.pages | filter(attribute="extra.kind", value="postmortem") | filter(attribute="permalink", value=current) | length > 0 %} open{% endif %}>
-    {% set postmortems = section.pages | filter(attribute="extra.kind", value="postmortem") %}
-    <summary class="doc-nav-group-title">Post-mortems <span class="notes-nav-count">{{ postmortems | length }}</span></summary>
-    <ul class="doc-nav-list notes-nav-list">
-      {% for p in postmortems %}{{ self::notes_nav_item(p=p, current=current) }}{% endfor %}
-    </ul>
-  </details>
 </nav>
 {% endmacro %}

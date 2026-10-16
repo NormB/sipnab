@@ -164,6 +164,14 @@ PAGES: list[tuple[str, str, int, str, str]] = [
         "The engineering record behind the operator guides: why each limit "
         "exists, the release that changed it, and the measurements behind it.",
     ),
+    (
+        "postmortems.md",
+        "postmortems.md",
+        16,
+        "Incident Record",
+        "What went wrong in sipnab and in its build, why, what changed and how "
+        "to check it, and the engineering detail the notes no longer carry.",
+    ),
 ]
 
 # The developer index becomes the Zola section landing page.

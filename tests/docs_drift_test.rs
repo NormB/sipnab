@@ -113,41 +113,16 @@ const FOREIGN_FLAGS: &[(&str, &[&str])] = &[
     ),
     // `scripts/clean-stale.py --apply --root <DIR> --min-age-days <N>
     // --reclaim-build-cache --disk-floor-gb <N>`, named by the stray-files
-    // note: the cleaner's flags, not sipnab's.
-    (
-        "apply",
-        &["website/content/notes/an-instruction-with-no-gate.md"],
-    ),
-    (
-        "root",
-        &["website/content/notes/an-instruction-with-no-gate.md"],
-    ),
-    (
-        "min-age-days",
-        &["website/content/notes/an-instruction-with-no-gate.md"],
-    ),
-    (
-        "reclaim-build-cache",
-        &["website/content/notes/an-instruction-with-no-gate.md"],
-    ),
-    (
-        "disk-floor-gb",
-        &["website/content/notes/an-instruction-with-no-gate.md"],
-    ),
+    // post-mortem: the cleaner's flags, not sipnab's.
+    ("apply", &["docs/internals/postmortems.md"]),
+    ("root", &["docs/internals/postmortems.md"]),
+    ("min-age-days", &["docs/internals/postmortems.md"]),
+    ("reclaim-build-cache", &["docs/internals/postmortems.md"]),
+    ("disk-floor-gb", &["docs/internals/postmortems.md"]),
     // `cargo test --features full --test <NAME> -- --test-threads=1`, named
-    // by the MCP field-cap note. cargo's and the test harness's flags.
-    (
-        "features",
-        &["website/content/notes/measure-the-field-not-the-container.md"],
-    ),
-    (
-        "test",
-        &["website/content/notes/measure-the-field-not-the-container.md"],
-    ),
-    (
-        "test-threads",
-        &["website/content/notes/measure-the-field-not-the-container.md"],
-    ),
+    // by the MCP field-cap post-mortem. The test harness's flag; `--features`
+    // and `--test` are scoped to the same page in their entries below.
+    ("test-threads", &["docs/internals/postmortems.md"]),
     // `cargo install sipnab --features full`, the features page's
     // packaging list. cargo's flag.
     ("features", &["website/content/features.md"]),
@@ -349,15 +324,15 @@ const FOREIGN_FLAGS: &[(&str, &[&str])] = &[
         "db",
         &["docs/config-reference.md", "website/content/docs/config.md"],
     ),
-    // cargo's, quoted by the engineering notes that describe a gate or a
-    // build. `--all-features`, `--all-targets`, `--workspace`, `--features`,
-    // `--fix` and `--test` are cargo's; `--preserve` is `cp`'s, named while
-    // explaining which spellings are GNU-only. Scoped per note, so the same
-    // name written as if it were a sipnab flag anywhere else still fails.
+    // cargo's, quoted by the post-mortems that describe a gate or a build.
+    // `--all-features`, `--all-targets`, `--workspace`, `--features`, `--fix`
+    // and `--test` are cargo's; `--preserve` is `cp`'s, named while explaining
+    // which spellings are GNU-only. Scoped per page, so the same name written
+    // as if it were a sipnab flag anywhere else still fails.
     (
         "all-features",
         &[
-            "website/content/notes/the-assumption-nobody-timed.md",
+            "docs/internals/postmortems.md",
             "docs/uprobe-walkthrough.md",
             "website/content/docs/uprobe-walkthrough.md",
             "docs/client-examples.md",
@@ -479,18 +454,9 @@ const FOREIGN_FLAGS: &[(&str, &[&str])] = &[
             "website/content/docs/examples.md",
         ],
     ),
-    (
-        "all-targets",
-        &["website/content/notes/the-assumption-nobody-timed.md"],
-    ),
-    (
-        "workspace",
-        &["website/content/notes/the-assumption-nobody-timed.md"],
-    ),
-    (
-        "fix",
-        &["website/content/notes/the-assumption-nobody-timed.md"],
-    ),
+    ("all-targets", &["docs/internals/postmortems.md"]),
+    ("workspace", &["docs/internals/postmortems.md"]),
+    ("fix", &["docs/internals/postmortems.md"]),
     // `--features` and `--test` are cargo's in the contributor walkthroughs
     // too: `SIPNAB_BLESS_YANG=1 cargo test --features full --test
     // yang_module_test` is the one command that regenerates the YANG module,
@@ -498,7 +464,7 @@ const FOREIGN_FLAGS: &[(&str, &[&str])] = &[
     (
         "features",
         &[
-            "website/content/notes/the-assumption-nobody-timed.md",
+            "docs/internals/postmortems.md",
             "website/content/notes/the-tool-list-that-promised-what-the-build-lacked.md",
             "docs/internals/walkthroughs.md",
             "website/content/docs/internals/walkthroughs.md",
@@ -512,7 +478,7 @@ const FOREIGN_FLAGS: &[(&str, &[&str])] = &[
     (
         "test",
         &[
-            "website/content/notes/seventy-five-percent-of-a-test-binary.md",
+            "docs/internals/postmortems.md",
             "docs/rest-api.md",
             "website/content/docs/api.md",
             "docs/internals/walkthroughs.md",
@@ -549,10 +515,7 @@ const FOREIGN_FLAGS: &[(&str, &[&str])] = &[
     // the command stops on an interactive install prompt, so dropping it to
     // satisfy this gate would leave a fence that does not run unattended.
     ("yes", &["docs/rest-api.md", "website/content/docs/api.md"]),
-    (
-        "preserve",
-        &["website/content/notes/the-fixture-was-what-broke.md"],
-    ),
+    ("preserve", &["docs/internals/postmortems.md"]),
     // `--release` is cargo's. The uprobe walkthrough shows
     // `SIPNAB_BPF_REQUIRED=1 cargo build --release --features bpf`, which is
     // the build that carries the kernel programs rather than the placeholder,
@@ -852,7 +815,8 @@ const FOREIGN_FLAGS: &[(&str, &[&str])] = &[
     // `--undefined-only` is binutils' `nm`, not sipnab's. The cookbook names it
     // because a reader whose daemon calls `SSL_write_ex` rather than
     // `SSL_write` needs a way to find that out before choosing
-    // `--uprobe-symbol`. Scoped to the cookbook and its mirror.
+    // `--uprobe-symbol`. Scoped to the cookbook, the uprobe walkthrough, their
+    // mirrors, and the uprobe how-to note, which shows the same check.
     (
         "undefined-only",
         &[
@@ -860,6 +824,7 @@ const FOREIGN_FLAGS: &[(&str, &[&str])] = &[
             "website/content/docs/uprobe-walkthrough.md",
             "docs/examples.md",
             "website/content/docs/cookbook.md",
+            "website/content/notes/read-tls-without-a-key-or-a-restart.md",
         ],
     ),
     (
@@ -4762,7 +4727,13 @@ fn no_documentation_table_repeats_a_row() -> Result<(), TestError> {
     // 310 -> 312: docs/g729.md and its website mirror.
     // 312 -> 313: crates/g729/README.md, the decoder crate's crates.io page.
     // 313 -> 314: crates/g729/CHANGELOG.md, the decoder crate's own changelog.
-    const EXPECTED_MARKDOWN_FILES: usize = 314;
+    // 314 -> 304: eleven post-mortem notes with no reader task removed from
+    // website/content/notes/, and their record added as one page,
+    // docs/internals/postmortems.md (its site mirror is generated separately
+    // and counts when it is committed). Attributed against the staged diff:
+    // `--diff-filter=D` lists those eleven notes and `--diff-filter=A` that one
+    // page. FEWER here is the notes leaving, not the sweep narrowing.
+    const EXPECTED_MARKDOWN_FILES: usize = 304;
     /// How many tables this gate expects to walk.
     ///
     /// Named rather than written twice. The count and the failure message
@@ -5426,7 +5397,15 @@ fn no_documentation_table_repeats_a_row() -> Result<(), TestError> {
     // its website mirror.
     // 1243 -> 1245: the TableError and ImportError refusal tables in
     // crates/g729/README.md ("Getting the tables"), which has no site mirror.
-    const EXPECTED_TABLES: usize = 1245;
+    // 1245 -> 1248: the notes rewrite of 2026-10-16, per file against HEAD.
+    // Removed notes -5: a-regression-behind-a-passing-gate 1,
+    // measure-the-field-not-the-container 2, seventy-five-percent-of-a-test-
+    // binary 1, the-assumption-nobody-timed 1. Added +8:
+    // docs/internals/postmortems.md 6 (the five moved from those notes and the
+    // earlier MCP tool-size table), the-container-that-said-every-call-failed
+    // 1 (type and disposition) and the-popup-that-truncated-its-own-exit 1
+    // (each popup's closing key). No other page's count moved.
+    const EXPECTED_TABLES: usize = 1248;
 
     let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     let out = std::process::Command::new("git")

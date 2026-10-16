@@ -1,7 +1,7 @@
 +++
 title = "How sipnab reports what a capture missed"
 date = 2026-09-01
-updated = 2026-10-11
+updated = 2026-10-16
 description = "The counters that say which packets a capture lost or could not use, the markers a partial run adds to its output, and the record that ties an output back to the command that produced it."
 
 [extra]
@@ -85,6 +85,9 @@ status 1. It also says so in its output. A program reading the output through a
 pipe does not see the exit status.
 
 - `--report` ends with an `INCOMPLETE RUN` block that names each reason.
+  The block also appears when sipnab read the whole input but `--portrange`
+  or `--ws-portrange` set SIP aside, or idle compaction dropped stored
+  messages.
 - `--json-dialogs` writes one extra line after the dialogs.
   - The line sits under a top-level `sipnab_run` key that no dialog object has.
   - Its `input_complete` field comes from the same test as the exit status.
@@ -127,7 +130,7 @@ How sipnab handles the file:
   on.
 - The command record is off until you pass `--run-provenance-file`.
 
-## Example: read a capture file that ends early
+## Detect a capture file that ends early
 
 These commands run from the root of a sipnab checkout. The first copies the
 first 30,000 bytes of a repository capture. The copy ends part-way through a
@@ -143,7 +146,7 @@ sipnab -N -q -I cut.pcap --json-dialogs --no-cli-print 2>/dev/null
 
 ```json
 {"call_id":"1-1966@10.0.2.20","diagnosis":{"hints":["RTP flowed 10.0.2.15:27942 -> 10.0.2.20:6000 only (SSRC 0x343da99b). No reverse media flow detected."],"nat_mismatch":false,"no_media":false,"one_way_audio":true,"private_media_address":false},"duration_sec":0.004,"final_status_code":200,"final_status_reason":"OK","frame":"cut.pcap#0@db88659b94678546","from":"sipp","from_display":"PCMU/8000","input_origin":"wire","method":"INVITE","msg_count":4,"schema_version":1,"sdp_timeline":[{"codecs":["PCMU"],"direction":"offer","media_addr":"10.0.2.20","media_port":6000,"mode":"recvonly","timestamp":"2016-11-26T14:52:59.666393+00:00"},{"codecs":["PCMU","telephone-event"],"direction":"answer","event":"MediaAnchorChange","media_addr":"10.0.2.15","media_port":27942,"mode":"sendonly","timestamp":"2016-11-26T14:52:59.670743+00:00"}],"state":"InCall","streams":[{"associated_dialog":"1-1966@10.0.2.20","codec":"PCMU","dialog_assertion":"signaled","dscp":0,"dst":"10.0.2.20:6000","first_seen":"2016-11-26T14:52:59.689083+00:00","frame":"cut.pcap#5@ae02f78d2d48b4f0","input_origin":"wire","jitter_ms":0.0065016585598163595,"last_seen":"2016-11-26T14:53:02.049070+00:00","loss_pct":0.0,"mos":4.3580999873438255,"mos_grounded":true,"mos_grounding":"published","octets":19040,"orphaned":false,"packets":119,"payload_type":0,"quality_intervals":[],"r_factor":90.79984396019456,"schema_version":1,"src":"10.0.2.15:27942","ssrc":"0x343da99b"}],"timing":{"retransmits":0,"setup_ms":4,"trying_delay_ms":0},"to":"test","to_display":"test"}
-{"sipnab_run":{"archives":{"cut_short":false},"files":{"given":1,"not_reached":0,"read_in_full":0,"skipped":0,"stopped_early":1},"input_complete":false,"plugins":{"failed":0,"loaded":0,"requested":0},"reasons":["1 of 1 capture file(s) was not read to the end; every report from this run rests on a partial read"],"retention":{"messages_dropped":0}}}
+{"sipnab_run":{"archives":{"cut_short":false},"files":{"given":1,"not_reached":0,"read_in_full":0,"skipped":0,"stopped_early":1},"input_complete":false,"plugins":{"failed":0,"loaded":0,"requested":0},"port_gate":{"sip_outside_portrange":0,"sip_outside_ws_ports":0},"reasons":["1 of 1 capture file(s) was not read to the end; every report from this run rests on a partial read"],"retention":{"messages_dropped":0}}}
 ```
 
 - The first line is the one dialog sipnab read before the file ended.
@@ -157,9 +160,9 @@ sipnab -N -q -I cut.pcap --report --no-cli-print
 ```
 
 ```text
-2026-10-12T00:44:15.224169Z ERROR sipnab::capture::file: Error reading pcap file 'cut.pcap': truncated dump file; tried to read 214 captured bytes, only got 178
-2026-10-12T00:44:15.224209Z ERROR sipnab::capture::file: Stopped reading 'cut.pcap' early: Error reading pcap file: truncated dump file; tried to read 214 captured bytes, only got 178. Continuing with the rest of the set.
-2026-10-12T00:44:15.224220Z  WARN sipnab::capture::file: Read 124 packets: 0 of 1 file(s) read in full, 1 stopped early
+2026-10-16T11:50:34.866269Z ERROR sipnab::capture::file: Error reading pcap file 'cut.pcap': truncated dump file; tried to read 214 captured bytes, only got 178
+2026-10-16T11:50:34.866304Z ERROR sipnab::capture::file: Stopped reading 'cut.pcap' early: Error reading pcap file: truncated dump file; tried to read 214 captured bytes, only got 178. Continuing with the rest of the set.
+2026-10-16T11:50:34.866317Z  WARN sipnab::capture::file: Read 124 packets: 0 of 1 file(s) read in full, 1 stopped early
 Call-ID                          From           To             State        Code   Duration   Msgs   PDD      Tags            
 -------------------------------------------------------------------------------------------------------------------------
 1-1966@10.0.2.20                 sipp           test           InCall       200    0s         4      -        -               
@@ -175,7 +178,7 @@ INCOMPLETE RUN — this report does not describe the whole capture:
 
 The first three lines go to standard error.
 
-## Example: record which command produced a result
+## Record which command produced a result
 
 ```bash
 sipnab -N -q --node-name lab -I tests/pcap-samples/sip-register.pcap --analyze --no-cli-print --run-provenance-file runs.jsonl
@@ -186,7 +189,7 @@ jq -c '{seq, record, argv, version, instance: .capture.instance}' runs.jsonl
 ```
 
 ```json
-{"seq":1,"record":"run","argv":["sipnab","-N","-q","--node-name","lab","-I","tests/pcap-samples/sip-register.pcap","--analyze","--no-cli-print","--run-provenance-file","runs.jsonl"],"version":"0.5.211 (15e5e7bd) features: native,tui,audio,tls,hep,api,mcp,mcp-http,metrics,plugins,vcon,archive","instance":"8ae0418dda191727a687d-1"}
+{"seq":1,"record":"run","argv":["sipnab","-N","-q","--node-name","lab","-I","tests/pcap-samples/sip-register.pcap","--analyze","--no-cli-print","--run-provenance-file","runs.jsonl"],"version":"0.5.222 (16f7b0ea) features: native,tui,audio,tls,hep,api,mcp,mcp-http,metrics,wasm,plugins,bpf,vcon,opus,archive,g729","instance":"11ad5f18df001f28e1fb07-1"}
 ```
 
 The record also carries `ts`, `started`, `cwd`, `uid`, `user`, `pid` and
@@ -199,7 +202,7 @@ sipnab -N -q -I tests/pcap-samples/sip-register.pcap --analyze --no-cli-print --
 ```
 
 ```text
-2026-10-12T00:44:28.947736Z ERROR sipnab: --run-provenance-file missing-dir/runs.jsonl: No such file or directory (os error 2). sipnab refuses to run without the provenance record it was asked for -- a missing record would otherwise be indistinguishable from a run nobody asked to record
+2026-10-16T11:47:59.219735Z ERROR sipnab: --run-provenance-file missing-dir/runs.jsonl: No such file or directory (os error 2). sipnab refuses to run without the provenance record it was asked for -- a missing record would otherwise be indistinguishable from a run nobody asked to record
 ```
 
 ## Limits
@@ -209,10 +212,11 @@ sipnab -N -q -I tests/pcap-samples/sip-register.pcap --analyze --no-cli-print --
   - Loss before the capture point is invisible to all three counters.
   - Examples are an overloaded mirror port, a tap that copies one direction
     only, or a filter that excluded the traffic.
-- SIP set aside by `--portrange` does not change the exit status.
-  - It does not add a `sipnab_run` line or an `INCOMPLETE RUN` block.
-  - sipnab reports it in three places: the `BLIND` finding of `--analyze`,
-    messages on standard error, and the `unanalysed_*` keys over MCP.
+- SIP set aside by `--portrange` does not change the exit status, and it does
+  not add a `sipnab_run` line to `--json-dialogs`.
+  - sipnab reports it in four places: the `BLIND` finding of `--analyze`, the
+    `INCOMPLETE RUN` block of `--report`, messages on standard error, and the
+    `unanalysed_*` keys over MCP.
 - With `-q`, sipnab does not print the summary line that names port-range
   losses at the end of a run. It still prints the warnings on standard error.
 
@@ -234,6 +238,8 @@ sipnab -N -q -I tests/pcap-samples/sip-register.pcap --analyze --no-cli-print --
 - **Mirror port** (also SPAN port) and **tap**: switch features or devices that
   copy traffic to the machine running the capture.
 - **Jitter**: variation in the arrival time of audio packets.
+- **Idle compaction**: sipnab removing stored SIP messages from calls that
+  have been idle, to limit memory use.
 - **WebSocket**: a protocol that browsers use. It can carry SIP.
 - **MCP**: Model Context Protocol, the interface an AI agent uses to call
   sipnab's tools.
