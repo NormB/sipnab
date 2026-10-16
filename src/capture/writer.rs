@@ -1248,6 +1248,10 @@ pub enum OutputKind {
     /// place, so the parent directory must be writable whether or not the
     /// file exists.
     ReplacedFile,
+    /// A file created only if it does not exist (`O_EXCL`): an existing path
+    /// is refused, and a new one needs its parent directory, which must
+    /// already exist.
+    NewFile,
     /// A directory created with its missing parents and then filled, so the
     /// nearest existing ancestor (or the directory itself) must be a writable
     /// directory.
@@ -1291,10 +1295,14 @@ pub fn check_output_creatable(path: &Path, kind: OutputKind) -> std::io::Result<
             Error::new(ErrorKind::IsADirectory, "the output path is a directory"),
         ),
         (Ok(_), OutputKind::File) => effective_access(path, AccessWanted::Write),
+        (Ok(_), OutputKind::NewFile) => Err(Error::new(
+            ErrorKind::AlreadyExists,
+            "it already exists and sipnab will not write over it",
+        )),
         (Ok(_) | Err(_), OutputKind::ReplacedFile) => writable_dir(&parent_of(path)),
         (Ok(_), OutputKind::Dir) => writable_dir(path),
         (Err(e), _) if e.kind() != ErrorKind::NotFound => Err(e),
-        (Err(_), OutputKind::File) => writable_dir(&parent_of(path)),
+        (Err(_), OutputKind::File | OutputKind::NewFile) => writable_dir(&parent_of(path)),
         (Err(_), OutputKind::Dir) => {
             // `create_dir_all` makes every missing level, so the nearest
             // ancestor that exists is the directory that has to admit it.
@@ -1432,7 +1440,12 @@ mod tests {
     fn a_writable_directory_passes_the_output_check_and_is_left_untouched() -> Result<(), TestError>
     {
         let dir = tempfile::tempdir()?;
-        for kind in [OutputKind::File, OutputKind::ReplacedFile, OutputKind::Dir] {
+        for kind in [
+            OutputKind::File,
+            OutputKind::ReplacedFile,
+            OutputKind::NewFile,
+            OutputKind::Dir,
+        ] {
             check_output_creatable(&dir.path().join("out"), kind)?;
             check_output_creatable(&dir.path().join("a/b/c"), OutputKind::Dir)?;
         }
@@ -1451,12 +1464,38 @@ mod tests {
     fn a_file_under_a_missing_directory_is_refused() -> Result<(), TestError> {
         let dir = tempfile::tempdir()?;
         let path = dir.path().join("missing").join("out.pcap");
-        for kind in [OutputKind::File, OutputKind::ReplacedFile] {
+        for kind in [
+            OutputKind::File,
+            OutputKind::ReplacedFile,
+            OutputKind::NewFile,
+        ] {
             let err = check_output_creatable(&path, kind)
                 .err()
                 .ok_or("a missing parent must be refused")?;
             assert_eq!(err.kind(), std::io::ErrorKind::NotFound, "{kind:?}: {err}");
         }
+        Ok(())
+    }
+
+    /// A file sipnab must create fresh is refused when anything is already
+    /// at its path, and the existing file is left as it was.
+    #[test]
+    fn a_new_file_output_refuses_an_existing_path() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
+        let file = dir.path().join("map.tsv");
+        std::fs::write(&file, b"earlier")?;
+        for path in [file.as_path(), dir.path()] {
+            let err = check_output_creatable(path, OutputKind::NewFile)
+                .err()
+                .ok_or("an existing path must be refused")?;
+            assert_eq!(
+                err.kind(),
+                std::io::ErrorKind::AlreadyExists,
+                "{}: {err}",
+                path.display()
+            );
+        }
+        assert_eq!(std::fs::read(&file)?, b"earlier");
         Ok(())
     }
 

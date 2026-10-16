@@ -2777,7 +2777,7 @@ fn unwritable_output_refusal(cli: &Cli) -> Result<(), PlanError> {
         ),
         (
             o.redact_map.clone(),
-            OutputKind::File,
+            OutputKind::NewFile,
             "Could not create --redact-map",
         ),
     ];
