@@ -1046,7 +1046,7 @@ requires `opus/48000/2`. The whole ring holds 24 of them.
 - Read the rules that move between one scope and the next as questions about
   the capture rather than as defects.
 - The
-  [conformance rule reference](sip-lint-rules.md#why-the-ack-branch-rule-covers-only-non-2xx)
+  [design note on the ACK branch rule](internals/lint-rules.md#why-the-ack-branch-rule-covers-only-non-2xx)
   explains what each transaction rule compares.
 - [Cookbook recipe "Check a capture against the RFCs"](examples.md#check-a-capture-against-the-rfcs) covers
   running the linter in CI.

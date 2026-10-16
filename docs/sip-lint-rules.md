@@ -1,9 +1,8 @@
 # SIP conformance rules
 
-This page lists every rule that the conformance linter runs. For each rule it gives:
-
-- the RFC section behind it,
-- how to turn it off.
+The conformance linter checks the SIP and SDP in a capture against the RFC
+sections they must obey. This page shows how to run it, how to read and fix
+what it reports, how to suppress a rule, and lists every rule.
 
 Each rule carries a stable identifier such as
 `SIP-3261-8.1.1.7-BRANCH-COOKIE`.
@@ -13,56 +12,198 @@ Each rule carries a stable identifier such as
 - Identifiers never change meaning.
 - Nothing reuses a retired one.
 
-## What makes these rules different
+The linter answers "does this traffic obey the specification". It does not
+answer "why did this call fail": a call can complete over non-conformant
+messages, and a conformant call can fail. For failed calls, start at
+[Troubleshooting](troubleshooting.md).
 
-Most SIP linters read messages against a grammar. They catch a malformed
-`Contact` header. They cannot catch the far end sending payload type 8 when the
-SDP declared payload type 0, because they never see the RTP.
+The design reasoning behind each rule, and what the rules measured on a
+validation corpus, are in
+[Conformance linter design notes](internals/lint-rules.md).
 
-sipnab holds the signaling and the media in one process.
+## Lint a capture
 
-- The `OBS-` rules compare what the SDP declared against what the wire carried.
-- That class of defect stays invisible to any tool that reads only text.
+Add `--lint` to an offline run. `--no-cli-print` hides the per-message lines,
+and `-q` hides the log lines, so only the findings print.
 
-## Conformance is not the same question as outcome
+```sh
+sipnab -N -q -I tests/pcap-samples/sip-lint-findings.pcap --lint --no-cli-print
+```
 
-- [`src/sip/diagnosis.rs`](../src/sip/diagnosis.rs) answers "why did this call
-  fail".
-- This linter answers "does this traffic obey the specification".
+The capture ships with the repository. Output:
 
-A call can complete over messages that break four MUSTs. A fully conformant call
-can hit a busy signal. Keep the two questions apart.
+```text
+warning: SIP-3261-8.1.1.6-MAX-FORWARDS-MISSING [lint-maxfwd@192.0.2.10] §8.1.1.6 makes a UAC insert one into every request it originates. Without it a routing loop has nothing to stop it, and RFC 3261 §16.6 leaves each proxy to invent its own starting value. (RFC 3261 §8.1.1.6) observed=no Max-Forwards header field expected=Max-Forwards: 70
+error: SIP-3261-12.1.1-CONTACT-MISSING-IN-2XX [lint-maxfwd@192.0.2.10] §12.1.1 makes the UAS add a Contact to the response. It is the remote target for the dialog the 2xx creates, so without it the caller has nowhere to send the ACK and nowhere to send the BYE. The call answers and then cannot be hung up cleanly. (RFC 3261 §12.1.1) observed=2xx to INVITE with no Contact header field expected=Contact: <sip:user@host>
+error: SIP-3261-20.14-CONTENT-LENGTH-MISMATCH [lint-clen@198.51.100.10] Over a stream transport the receiver frames the next message at the declared offset, so an overstated length consumes the message that follows it. Over a datagram transport the body is simply truncated. (RFC 3261 §20.14) observed=Content-Length 900, body 95 octets expected=Content-Length 95
+warning: SIP-3261-19.1.1-URI-PARAM-DEMOTED [lint-brackets@203.0.113.10] §19.1.1 defines user as a URI parameter. Outside the brackets the receiver reads it as a header parameter and routes to the bare URI instead, which is how a call reaches the right host over the wrong transport or leaves the proxy loose-routing. (RFC 3261 §19.1.1) observed=To carries user outside angle brackets expected=To: <uri;user>
+Lint: 4 finding(s) across 3 dialog(s)
+```
 
-## Reading a finding
+`--lint` on its own never changes the exit status. This run exits `0`.
 
-A finding carries:
+### Read a finding
 
-- the rule identifier,
-- a severity,
-- a basis,
-- the RFC number and section, as separate fields,
-- the index of the message it came from,
-- what the capture held,
-- what the section calls for,
-- why the difference matters.
+Each line holds, in order:
 
-The RFC number and the section are data, not prose inside a sentence.
-That choice caught a mistake while this module was still new:
+| Part | Example | Meaning |
+|---|---|---|
+| Severity | `error` | How much attention the finding deserves. See [Severity and basis](#severity-and-basis). |
+| Rule identifier | `SIP-3261-20.14-CONTENT-LENGTH-MISMATCH` | The rule. Look it up in the [rule catalog](#rule-catalog). |
+| Call-ID | `[lint-clen@198.51.100.10]` | The dialog the finding came from. |
+| Why it matters | `Over a stream transport …` | The effect of the defect on the equipment receiving it. |
+| Citation | `(RFC 3261 §20.14)` | The RFC and section the rule reads. |
+| `observed=` | `Content-Length 900, body 95 octets` | What the capture held. |
+| `expected=` | `Content-Length 95` | What the cited section calls for. This is usually the fix. |
 
-- Three sources place the angle-bracket rule for a `Contact` URI in
-  [RFC 3261 section 20.10](https://www.rfc-editor.org/rfc/rfc3261.html#section-20.10).
-- The sentence actually sits in the preamble of [RFC 3261 section 20](https://www.rfc-editor.org/rfc/rfc3261.html#section-20),
-  above [section 20.1](https://www.rfc-editor.org/rfc/rfc3261.html#section-20.1).
+The last line counts the findings and the dialogs the linter read. The
+summary lines print on standard error and the findings on standard output.
 
-A citation that nothing can read is a citation that nothing can check.
+Over MCP, the [`lint_dialog`](mcp-tools-signaling.md#lint_dialog) and
+[`validate_message`](mcp-tools-signaling.md#validate_message) tools return
+the same findings as structured fields, and
+[`explain_rule`](mcp-tools-signaling.md#explain_rule) returns one rule's
+entry.
 
-## Severity and basis are separate axes
+## Fail a CI job on a non-conformant capture
+
+Add `--lint-fail-on` with the lowest severity that should fail the job.
+It requires `--lint`.
+
+```sh
+sipnab -N -q -I tests/pcap-samples/sip-lint-findings.pcap --lint --no-cli-print --lint-fail-on error
+```
+
+The output is the same as above. The capture holds two `error` findings, so
+the run exits `3`.
+
+| Exit status | Meaning |
+|---|---|
+| `0` | No finding at or above the named severity. |
+| `1` | sipnab failed, for example it could not read the capture. |
+| `2` | sipnab refused the command line, or could not read the suppression file named with `--lint-suppress-file`. |
+| `3` | At least one finding at or above the named severity. |
+
+`--lint-fail-on` takes `info`, `notice`, `warning` (or `warn`) or `error`.
+
+The [cookbook recipe "Check a capture against the RFCs"](examples.md#check-a-capture-against-the-rfcs)
+shows the same gate in a CI job.
+
+## Suppress a rule
+
+List the rules to suppress in a file named `.sipnablint`. A pattern is an
+exact rule identifier, or a prefix ending in `*`:
+
+```text
+# Our carrier omits Max-Forwards
+SIP-3261-8.1.1.6-MAX-FORWARDS-MISSING
+
+# No media in these captures, so the observation rules have nothing to read
+OBS-*
+```
+
+Patterns separate on commas, spaces or newlines. `#` starts a comment.
+
+Put the file beside the capture, or in any directory above it up to the
+project root (the nearest directory holding `.git`). sipnab uses the first
+`.sipnablint` it finds. A capture outside any project uses only a
+`.sipnablint` in its own directory.
+
+With the file above saved beside a copy of `sip-lint-findings.pcap` named
+`calls.pcap`:
+
+```sh
+sipnab -N -q -I calls.pcap --lint --no-cli-print
+```
+
+Output, trimmed to the summary lines:
+
+```text
+…
+Lint: 3 finding(s) across 3 dialog(s)
+Lint: suppressions from ./.sipnablint (2 pattern(s)), 1 finding(s) silenced
+```
+
+The last line names the file applied and counts what it silenced.
+
+To use a different file, for a CI job whose suppressions differ from the tree's:
+
+```sh
+sipnab -N -q -I calls.pcap --lint --no-cli-print --lint-suppress-file ci.sipnablint
+```
+
+If sipnab cannot read the named file, it stops and exits `2`:
+
+```text
+cannot read suppression file 'ci.sipnablint': No such file or directory (os error 2)
+```
+
+Create the file, or correct the path. sipnab does not fall back to linting
+with every rule on.
+
+To see every finding, including suppressed ones:
+
+```sh
+sipnab -N -q -I calls.pcap --lint --no-cli-print --lint-no-suppress
+```
+
+`--lint-no-suppress` overrides both `--lint-suppress-file` and a discovered
+`.sipnablint`.
+
+Over MCP, the lint tools take a `suppression_file` parameter and follow the
+same discovery rule. Every response names the file it applied and how many
+findings it silenced. The
+[MCP tool reference](mcp-tools-signaling.md#lint_dialog) names the fields.
+
+## Limit repeated findings
+
+By default, one rule reports at most 25 findings per dialog. A dialog that
+retransmits an `INVITE` eleven times trips a message rule eleven times, and
+the cap keeps the other rules readable.
+
+Set the cap with `--lint-max-per-rule N`, or with `[limits] lint_max_per_rule`
+in the config file:
+
+```sh
+sipnab -N -q -I tests/pcap-samples/DTMFsipinfo.pcap --lint --no-cli-print --lint-max-per-rule 1
+```
+
+Output, trimmed:
+
+```text
+warning: SIP-4028-4-SESSION-EXPIRES-TOO-SMALL [2091060b-146f-e011-809a-0019cb53db77@admind-desktop] …
+warning: SIP-4028-5-MIN-SE-TOO-SMALL [2091060b-146f-e011-809a-0019cb53db77@admind-desktop] …
+warning: SIP-3261-8.1.1.7-BRANCH-COOKIE [2091060b-146f-e011-809a-0019cb53db77@admind-desktop] …
+Lint: 3 finding(s) across 1 dialog(s)
+Lint: 6 finding(s) dropped by the per-rule cap of 1
+```
+
+The last line counts what the cap dropped.
+
+## Run a subset of the rules
+
+The MCP [`lint_dialog`](mcp-tools-signaling.md#lint_dialog) tool takes a
+`rulesets` parameter, and the Rust API takes `LintConfig::with_ruleset`. The
+command line always runs every rule.
+
+| Name | Contents |
+|---|---|
+| `all` | Every rule. The default. |
+| `must` | Only MUST violations. |
+| `rfc` | MUST and SHOULD. Excludes the interop rules and the observation rules. |
+| `interop` | Only the rules for behavior that deployed equipment mishandles. |
+| `observation` | Only the rules that compare SDP with captured media. `obs` is the same name, shortened. |
+| `syntax` | Only the rules that read a single message with no dialog context. |
+
+Over MCP, `rulesets` also accepts an RFC number such as `rfc3264`, which
+selects every rule citing that RFC.
+
+## Severity and basis
 
 Severity says how much attention a finding deserves: `error`, `warning`,
 `notice`, `info`.
 
-Basis says what kind of claim the rule makes. The four values do not
-overlap:
+Basis says what kind of claim the rule makes:
 
 | Basis | Meaning |
 |---|---|
@@ -71,143 +212,136 @@ overlap:
 | `interop` | No specification forbids this. Deployed equipment mishandles it anyway. |
 | `observation` | The declaration and the observed media disagree. |
 
-Keeping `must` apart from `interop` matters more than it looks.
+A `must` finding is a specification violation you can cite in a ticket. An
+`interop` finding is legal SIP that some equipment handles badly.
 
-- Some readers cannot tell a broken MUST from a vendor-compatibility hint.
-  Those readers learn to discount both.
-- The MUST is the one worth acting on.
+## Fix the findings in the sample captures
 
-## Rulesets
+Each example below runs on a capture that ships with the repository.
 
-Run a named subset instead of the whole catalog. Name it in one of these places:
+### Fix a missing Max-Forwards, a missing Contact, a wrong Content-Length and a demoted URI parameter
 
-- the `rulesets` parameter of the MCP [`lint_dialog`](mcp-tools-signaling.md#lint_dialog) tool,
-- `LintConfig::with_ruleset`, when you drive the linter from Rust:
+[`tests/pcap-samples/sip-lint-findings.pcap`](https://github.com/NormB/sipnab/raw/main/tests/pcap-samples/sip-lint-findings.pcap) produces the four findings shown
+in [Lint a capture](#lint-a-capture). To fix each one at the element that sent
+the message:
 
-| Name | Contents |
-|---|---|
-| `all` | Every rule. The default. |
-| `must` | Only MUST violations. Defensible in a carrier ticket without argument. |
-| `rfc` | MUST and SHOULD. Excludes the vendor heuristics and the media rules. |
-| `interop` | Only the "this breaks real equipment" heuristics. |
-| `observation` | Only the declaration-versus-observation rules. `obs` is the same name, shortened. |
-| `syntax` | Only the rules that read a single message with no dialog context. |
+- `SIP-3261-8.1.1.6-MAX-FORWARDS-MISSING`: add `Max-Forwards: 70` to every
+  request the user agent originates.
+- `SIP-3261-12.1.1-CONTACT-MISSING-IN-2XX`: add a `Contact` header field to the
+  2xx response to `INVITE`, naming the URI where the UAS receives in-dialog
+  requests.
+- `SIP-3261-20.14-CONTENT-LENGTH-MISMATCH`: set `Content-Length` to the body's
+  size in octets. The finding gives the value in `expected=`.
+- `SIP-3261-19.1.1-URI-PARAM-DEMOTED`: put the URI in angle brackets so its
+  parameters stay with the URI.
 
-## Suppression
-
-A suppression pattern is an exact rule identifier, or a prefix ending in `*`:
+The capture's `To` header field, corrected so `user=phone` stays with the URI:
 
 ```text
-# Our carrier rewrites Contact and we have stopped arguing about it
-SIP-3261-19.1.1-URI-PARAM-DEMOTED
-
-# No media in these captures, so the observation rules have nothing to read
-OBS-*
+To: <sip:erin@203.0.113.20;user=phone>
 ```
 
-Patterns separate on commas, spaces or newlines. `#` starts a comment.
-
-Put them in a `.sipnablint`. Check it in beside the config it belongs to.
-
-- Both surfaces read the same file:
-  - the MCP lint tools take a `suppression_file` parameter,
-  - the binary takes `--lint-suppress-file`.
-- In the ordinary case you need not tell either one where the file is.
-  See the discovery rule below.
-
-Discovery honors the `.sipnablint` beside `calls.pcap`. It reports:
-
-- which file it applied,
-- how many findings it silenced:
+### Fix session timers below 90 seconds and a branch without the magic cookie
 
 ```sh
-sipnab -N -I calls.pcap --lint --lint-fail-on error
+sipnab -N -q -I tests/pcap-samples/DTMFsipinfo.pcap --lint --no-cli-print
 ```
 
-sipnab exits `3` when a finding reaches the severity `--lint-fail-on` names.
-So a CI job that runs this command fails on it.
+Output, trimmed to one finding per rule:
 
-An explicit list, for a CI job whose suppressions differ from the tree's:
+```text
+warning: SIP-4028-4-SESSION-EXPIRES-TOO-SMALL [2091060b-146f-e011-809a-0019cb53db77@admind-desktop] §4 puts the absolute minimum for Session-Expires at 90 seconds. Below it the refresh traffic costs more than the state it keeps alive, and equipment that enforces the floor answers 422 rather than accepting the session. (RFC 4028 §4) observed=Session-Expires: 60 expected=Session-Expires at least 90
+…
+warning: SIP-4028-5-MIN-SE-TOO-SMALL [2091060b-146f-e011-809a-0019cb53db77@admind-desktop] §5 makes the value MUST NOT be less than 90 seconds wherever it appears. A lower floor advertises a willingness the specification does not permit, and the far end may hold you to it. (RFC 4028 §5) observed=Min-SE: 5 expected=Min-SE at least 90
+warning: SIP-3261-8.1.1.7-BRANCH-COOKIE [2091060b-146f-e011-809a-0019cb53db77@admind-desktop] §8.1.1.7 makes every compliant branch begin with z9hG4bK, so its absence identifies a stack predating RFC 3261 in one field. Transaction matching then falls back to the RFC 2543 rules, and CANCEL and ACK correlation stop being reliable. (RFC 3261 §8.1.1.7) observed=top Via branch without the z9hG4bK prefix expected=branch=z9hG4bK...
+…
+Lint: 9 finding(s) across 1 dialog(s)
+```
+
+To fix them:
+
+- `SIP-4028-4-SESSION-EXPIRES-TOO-SMALL` and `SIP-4028-5-MIN-SE-TOO-SMALL`: raise
+  the session-timer setting on the sending element to 90 seconds or more.
+- `SIP-3261-8.1.1.7-BRANCH-COOKIE`: configure the element to generate `Via`
+  branches that start with `z9hG4bK`. A stack that cannot do this predates
+  [RFC 3261](https://www.rfc-editor.org/rfc/rfc3261.html).
+
+### Answer telephone-event when the offer carries it
 
 ```sh
-sipnab -N -I calls.pcap --lint --lint-suppress-file ci.sipnablint
+sipnab -N -q -I tests/pcap-samples/h263-over-rtp.pcap --lint --no-cli-print
 ```
 
-Everything, including what the project has agreed to live with:
+Output:
+
+```text
+warning: SDP-3264-7-TELEPHONE-EVENT-ONE-WAY [NmNhYWNhMjY0Y2M0OTc4YTI2MzgzZTNlYTRhZTMxNTE.] §7 lets the offerer stop listening for a format the answer left out, so RFC 4733 DTMF is not negotiated on this stream. What makes it a one-way fault rather than no DTMF at all is that equipment routinely sends the event anyway on the payload type it offered: the far end receives a payload type it never agreed to and either drops it or decodes it as audio, while DTMF in the other direction works. That asymmetry is the whole of every "the IVR cannot hear our digits" ticket. (RFC 3264 §7) observed=m=audio line 0 offered telephone-event, the answer omits it expected=a=rtpmap:<pt> telephone-event/8000 in the answer, or in-band DTMF on both sides
+Lint: 1 finding(s) across 1 dialog(s)
+```
+
+To fix it, enable [RFC 4733](https://www.rfc-editor.org/rfc/rfc4733.html) DTMF on the answering element so its answer
+carries `a=rtpmap:<pt> telephone-event/8000`, or configure both ends for
+in-band DTMF.
+
+### Read an answer that lists a format the offer did not
 
 ```sh
-sipnab -N -I calls.pcap --lint --lint-no-suppress
+sipnab -N -q -I tests/pcap-samples/sip-rtp-g711.pcap --lint --no-cli-print
 ```
 
-A file named with `--lint-suppress-file` that sipnab cannot open is a hard error.
-It is not a full-catalog run.
+Output:
 
-- Pointing at a suppression list states an intent.
-- Linting with every rule on would read as "my suppressions matched nothing".
+```text
+info: SDP-3264-6.1-ANSWER-EXTRA-FORMAT [1-1966@10.0.2.20] §6.1 permits this and says why it rarely helps: the answerer cannot send with a format the offer never listed. Equipment that reads the answer as the negotiated set picks one of these and sends media the far end drops. (RFC 3264 §6.1) observed=m=audio line 0 answers with ["101"], absent from the offer expected=formats drawn from ["0"]
+info: SDP-3264-6.1-ANSWER-EXTRA-FORMAT [1-1968@10.0.2.20] §6.1 permits this and says why it rarely helps: the answerer cannot send with a format the offer never listed. Equipment that reads the answer as the negotiated set picks one of these and sends media the far end drops. (RFC 3264 §6.1) observed=m=audio line 0 answers with ["101"], absent from the offer expected=formats drawn from ["8"]
+Lint: 2 finding(s) across 2 dialog(s)
+```
 
-sipnab looks for one in this order:
+This is legal SIP. Act on it only if the far end sends media in a format the
+offer never listed. Otherwise suppress `SDP-3264-6.1-ANSWER-EXTRA-FORMAT`.
 
-- next to the capture,
-- then climbing toward the project root, the nearest ancestor holding a `.git`.
-  It stops there.
+### Fix an answer with no format in common with the offer
 
-A capture living outside any project picks up nothing from above itself.
-A corpus mount or a shared drop are examples.
+```sh
+sipnab -N -q -I tests/fixtures/opensips-proxy-signaling.pcap --lint --no-cli-print
+```
 
-- Adopting a stranger's suppression list would switch off
-  rules that nobody on this project turned off.
-- The run would then come back clean for a reason four directories away.
+Output:
 
-Suppression never hides itself.
+```text
+error: SDP-3264-6.1-ANSWER-NO-COMMON-FORMAT [1-4062@198.51.100.21] §6.1 makes the answer list at least one format from the offer. With no format in common neither end can send anything the other decodes, and the correct answer was to decline the stream with port 0. (RFC 3264 §6.1) observed=m=audio line 0 answers ["9", "101"] with ["0"] expected=at least one of ["9", "101"]
+Lint: 1 finding(s) across 1 dialog(s)
+```
 
-- Every `lint_dialog` and `validate_message` response names the file it applied.
-- It counts what that file silenced.
-- Next to that, it gives separate counts for the severity floor and the per-rule cap.
-- A short finding list always says why it is short.
-  The [MCP tool reference](mcp-tools-signaling.md#lint_dialog) names the exact fields.
+To fix it, give the two ends a codec in common, or have the answerer decline
+the stream with port `0`.
 
-One further guard rail keeps CI readable. By default, a single rule reports at most 25
-findings per dialog.
+## Rule catalog
 
-- A dialog retransmitting an `INVITE` eleven times trips a message rule eleven times.
-- Every one of them is true. But printing all eleven buries the other rules.
-- Change the cap in one of two ways:
-  - with `--lint-max-per-rule N`,
-  - with `[limits] lint_max_per_rule` in the config file.
+The "How to fix" column says what to change on the element that sent the
+message. To accept a rule's findings instead, [suppress the rule](#suppress-a-rule).
 
-## Observation rules
+### Observation rules
 
-These read the media against the declaration. Every one of them needs RTP or
-RTCP. sipnab must have attributed that RTP or RTCP to the dialog.
+These compare the SDP with the RTP and RTCP that sipnab attributed to the
+dialog. A dialog with no attributed media produces no observation findings.
 
-| Rule | Severity | Cites | Fires when |
-|---|---|---|---|
-| `OBS-3264-6.1-PT-UNDECLARED` | error | [RFC 3264 section 6.1](https://www.rfc-editor.org/rfc/rfc3264.html#section-6.1) | The wire carries an RTP payload type that no offer or answer in the dialog declared. Comfort noise stays exempt on payload type 13 ([RFC 3389](https://www.rfc-editor.org/rfc/rfc3389.html)) and on the reserved payload type 19 that earlier profiles used for it, because equipment sends both without ever listing them. |
-| `OBS-4566-5.14-MEDIA-PORT-MISMATCH` | warning | [RFC 4566 section 5.14](https://www.rfc-editor.org/rfc/rfc4566.html#section-5.14) | RTP arrives at a declared media address on a port nobody advertised. The RTCP port one higher stays exempt. |
-| `OBS-3264-6.1-DIRECTION-UNMET` | warning | [RFC 3264 section 6.1](https://www.rfc-editor.org/rfc/rfc3264.html#section-6.1) | Both ends negotiated `sendrecv`, media flowed, and one negotiated endpoint received none of it. |
-| `OBS-4566-6-PTIME-MISMATCH` | notice | [RFC 4566 section 6](https://www.rfc-editor.org/rfc/rfc4566.html#section-6) | The packetization on the wire differs from `a=ptime` by more than half. |
-| `OBS-5761-5.1.1-RTCP-MUX-UNANSWERED` | error | [RFC 5761 section 5.1.1](https://www.rfc-editor.org/rfc/rfc5761.html#section-5.1.1) | An offer asked for `a=rtcp-mux`, the answer stayed silent, and RTCP arrived on the RTP port regardless. |
-| `OBS-3551-4.2-FRAME-SIZE-IMPOSSIBLE` | warning | [RFC 3551 section 4.2](https://www.rfc-editor.org/rfc/rfc3551.html#section-4.2) | The payload size implies more media per packet than [RFC 3551 section 4.2](https://www.rfc-editor.org/rfc/rfc3551.html#section-4.2) asks a receiver to accept, or more media than the elapsed time between packets. |
+| Rule | Severity | Cites | Fires when | How to fix |
+|---|---|---|---|---|
+| `OBS-3264-6.1-PT-UNDECLARED` | error | [RFC 3264 section 6.1](https://www.rfc-editor.org/rfc/rfc3264.html#section-6.1) | The wire carries an RTP payload type that no offer or answer in the dialog declared. Comfort noise on payload type 13 ([RFC 3389](https://www.rfc-editor.org/rfc/rfc3389.html)) and on the reserved payload type 19 is exempt. | Send only payload types the offer/answer negotiated, or declare the payload type in use. |
+| `OBS-4566-5.14-MEDIA-PORT-MISMATCH` | warning | [RFC 4566 section 5.14](https://www.rfc-editor.org/rfc/rfc4566.html#section-5.14) | RTP arrives at a declared media address on a port nobody advertised. The RTCP port one higher is exempt. | Send media to the port in the `m=` line, or correct the SDP to name the port in use. |
+| `OBS-3264-6.1-DIRECTION-UNMET` | warning | [RFC 3264 section 6.1](https://www.rfc-editor.org/rfc/rfc3264.html#section-6.1) | Both ends negotiated `sendrecv`, media flowed, and one negotiated endpoint received none of it. | Check NAT and firewall rules on the path to the endpoint that received nothing. |
+| `OBS-4566-6-PTIME-MISMATCH` | notice | [RFC 4566 section 6](https://www.rfc-editor.org/rfc/rfc4566.html#section-6) | The packetization on the wire differs from `a=ptime` by more than half. | Send packets at the declared `a=ptime` interval, or declare the interval in use. |
+| `OBS-5761-5.1.1-RTCP-MUX-UNANSWERED` | error | [RFC 5761 section 5.1.1](https://www.rfc-editor.org/rfc/rfc5761.html#section-5.1.1) | An offer asked for `a=rtcp-mux`, the answer stayed silent, and RTCP arrived on the RTP port regardless. | Send RTCP on the separate RTCP port unless the answer accepts `a=rtcp-mux`. |
+| `OBS-3551-4.2-FRAME-SIZE-IMPOSSIBLE` | warning | [RFC 3551 section 4.2](https://www.rfc-editor.org/rfc/rfc3551.html#section-4.2) | The payload size implies more media per packet than [RFC 3551 section 4.2](https://www.rfc-editor.org/rfc/rfc3551.html#section-4.2) asks a receiver to accept, or more media than the elapsed time between packets. | Reduce the media per packet to what the codec and `a=ptime` allow. |
 
-### One-sided thresholds
+The duration comparisons fire only in one direction: on packets that carry
+more media than the declared or elapsed time. Packets that arrive late, or
+gaps from silence suppression, do not trigger them.
 
-Three of these rules compare one duration against another. Every comparison
-runs in one direction only.
-
-- Silence suppression, comfort noise and a congested path all stretch the gap
-  between packets. None of them compresses it.
-- So a rule that fires on "slower than declared" fires on a large share of ordinary traffic.
-- A rule that fires on "carrying more media than time elapsed" fires only on the impossible.
-
-The packetization measurement reads payload size rather than arrival times
-wherever the codec has a fixed octet rate. The reason is the same:
-20 ms packets stay 20 ms packets however far apart they arrive.
-
-### Codec shapes
-
-Deriving a duration from a payload size needs a codec with a fixed octet rate.
-[RFC 3551](https://www.rfc-editor.org/rfc/rfc3551.html) Table 1 supplies five.
-Only those five participate:
+`OBS-4566-6-PTIME-MISMATCH` and `OBS-3551-4.2-FRAME-SIZE-IMPOSSIBLE` read the
+payload size, so they apply only to codecs with a fixed octet rate. These are
+the five codecs they cover:
 
 | Codec | Octets per millisecond | Frame |
 |---|---|---|
@@ -217,499 +351,58 @@ Only those five participate:
 | G729 | 1 | 10 octets per 10 ms |
 | GSM | 1.65 | 33 octets per 20 ms |
 
-Opus, AMR and the other variable-rate codecs have no such number. So the two
-size rules skip them rather than invent a threshold.
+Both rules skip Opus, AMR and the other variable-rate codecs.
 
-## Syntactic rules
+### Syntactic rules
 
 These read one message on its own.
 
-| Rule | Severity | Basis | Cites | Fires when |
-|---|---|---|---|---|
-| `SIP-3261-8.1.1-MANDATORY-HEADER-MISSING` | error | must | [RFC 3261 section 8.1.1](https://www.rfc-editor.org/rfc/rfc3261.html#section-8.1.1) | One of `Call-ID`, `CSeq`, `From`, `To` or `Via` is absent. |
-| `SIP-3261-20.16-CSEQ-MALFORMED` | error | must | [RFC 3261 section 20.16](https://www.rfc-editor.org/rfc/rfc3261.html#section-20.16) | A `CSeq` arrives that nothing can read as a number and a method. |
-| `SIP-3261-20.14-CONTENT-LENGTH-MISMATCH` | error | must | [RFC 3261 section 20.14](https://www.rfc-editor.org/rfc/rfc3261.html#section-20.14) | `Content-Length` exceeds the body that arrived. |
-| `SIP-3261-25.1-HEADER-CONTROL-BYTE` | error | must | [RFC 3261 section 25.1](https://www.rfc-editor.org/rfc/rfc3261.html#section-25.1) | A header name or value holds a control byte other than tab. |
-| `SIP-3261-20-URI-BRACKETS` | error | must | [RFC 3261 section 20](https://www.rfc-editor.org/rfc/rfc3261.html#section-20) | A `Contact`, `From` or `To` URI holds a comma or a question mark outside angle brackets. |
-| `SIP-3261-19.1.1-URI-PARAM-DEMOTED` | warning | interop | [RFC 3261 section 19.1.1](https://www.rfc-editor.org/rfc/rfc3261.html#section-19.1.1) | A URI parameter — `transport`, `user`, `method`, `ttl`, `maddr` or `lr` — sits outside the angle brackets, where the receiver reads it as a header parameter. |
-| `SIP-3261-8.1.1.6-MAX-FORWARDS-MISSING` | warning | must | [RFC 3261 section 8.1.1.6](https://www.rfc-editor.org/rfc/rfc3261.html#section-8.1.1.6) | A request carries no `Max-Forwards`. |
-| `SIP-3261-20.22-MAX-FORWARDS-RANGE` | notice | should | [RFC 3261 section 20.22](https://www.rfc-editor.org/rfc/rfc3261.html#section-20.22) | `Max-Forwards` reads zero, exceeds the recommended 70, or holds no integer. |
-| `SIP-3261-8.1.1.7-BRANCH-COOKIE` | warning | must | [RFC 3261 section 8.1.1.7](https://www.rfc-editor.org/rfc/rfc3261.html#section-8.1.1.7) | A request's top `Via` branch lacks the `z9hG4bK` magic cookie, or carries no branch at all. |
-| `SIP-3261-8.1.1.5-CSEQ-METHOD-MISMATCH` | error | must | [RFC 3261 section 8.1.1.5](https://www.rfc-editor.org/rfc/rfc3261.html#section-8.1.1.5) | The `CSeq` method disagrees with the request line. |
-| `SIP-3261-12.1.1-CONTACT-MISSING-IN-2XX` | error | must | [RFC 3261 section 12.1.1](https://www.rfc-editor.org/rfc/rfc3261.html#section-12.1.1) | A 2xx answer to `INVITE` carries no `Contact`, so the dialog it creates has no remote target for the `ACK` or the `BYE`. |
-| `SIP-3262-3-RELIABLE-PROVISIONAL-WITHOUT-RSEQ` | error | must | [RFC 3262 section 3](https://www.rfc-editor.org/rfc/rfc3262.html#section-3) | A provisional demands `100rel` and carries no `RSeq`, so the receiver has to acknowledge a response it cannot name. |
-| `SIP-4028-7.1-SESSION-EXPIRES-BELOW-MIN-SE` | error | must | [RFC 4028 section 7.1](https://www.rfc-editor.org/rfc/rfc4028.html#section-7.1) | One message carries a `Session-Expires` smaller than the `Min-SE` beside it, so it asks for a refresh interval it has already declared too short. |
-| `SIP-4028-4-SESSION-EXPIRES-TOO-SMALL` | warning | must | [RFC 4028 section 4](https://www.rfc-editor.org/rfc/rfc4028.html#section-4) | `Session-Expires` sits below the 90-second absolute minimum. |
-| `SIP-4028-5-MIN-SE-TOO-SMALL` | warning | must | [RFC 4028 section 5](https://www.rfc-editor.org/rfc/rfc4028.html#section-5) | `Min-SE` sits below 90 seconds, wherever it appears. |
-| `SIP-4028-9-REFRESHER-MISSING` | warning | must | [RFC 4028 section 9](https://www.rfc-editor.org/rfc/rfc4028.html#section-9) | A 2xx answer to `INVITE` negotiates `Session-Expires` and names no `refresher`. |
-| `SIP-7989-5-SESSION-ID-MALFORMED` | error | must | [RFC 7989 section 5](https://www.rfc-editor.org/rfc/rfc7989.html#section-5) | A `Session-ID` half is not 32 characters of `[0-9a-f]`, so it is not a `sess-uuid` at all. Correlation drops the half, and across a B2BUA there may be nothing well formed left to match one leg to the other. |
-| `SIP-7989-5-SESSION-ID-UPPERCASE` | warning | must | [RFC 7989 section 5](https://www.rfc-editor.org/rfc/rfc7989.html#section-5) | A `Session-ID` UUID arrives in uppercase hexadecimal. sipnab compares case-insensitively and still correlates on it; any peer, SBC or log pipeline comparing the header byte for byte sees two identifiers for one session. |
-| `SIP-7989-11-SESSION-ID-LEGACY-FORM` | notice | interop | [RFC 7989 section 11](https://www.rfc-editor.org/rfc/rfc7989.html#section-11) | A `Session-ID` carries no `remote` parameter, the obsoleted [RFC 7329](https://www.rfc-editor.org/rfc/rfc7329.html) single-UUID form. [RFC 7989 section 5](https://www.rfc-editor.org/rfc/rfc7989.html#section-5) makes `remote` a MUST with a [section 11](https://www.rfc-editor.org/rfc/rfc7989.html#section-11) exception for interworking with that older form, which one message cannot confirm — so this names the peer as an interop observation rather than asserting a violation. Correlation then works in one direction only. |
-| `SIP-3261-7.3.1-SINGULAR-HEADER-REPEATED` | error | must | [RFC 3261 section 7.3.1](https://www.rfc-editor.org/rfc/rfc3261.html#section-7.3.1) | A header field whose value is not defined as a comma-separated list arrives on more than one row. [RFC 3261 section 7.3.1](https://www.rfc-editor.org/rfc/rfc3261.html#section-7.3.1) names `WWW-Authenticate`, `Authorization`, `Proxy-Authenticate` and `Proxy-Authorization` as its own exception, so the rule skips those four. |
-| `SIP-3261-16.6-RECORD-ROUTE-NOT-LOOSE` | error | must | [RFC 3261 section 16.6](https://www.rfc-editor.org/rfc/rfc3261.html#section-16.6) | A `Record-Route` URI carries no `lr` parameter, so the hop it records is a strict route. |
-| `SIP-3261-8.1.1.7-VIA-BRANCH-DUPLICATE` | error | must | [RFC 3261 section 8.1.1.7](https://www.rfc-editor.org/rfc/rfc3261.html#section-8.1.1.7) | Two `Via` header field values in one request carry the same `branch`. Requests only: a response copies the request's stack verbatim ([RFC 3261 section 8.2.6.2](https://www.rfc-editor.org/rfc/rfc3261.html#section-8.2.6.2)). |
+| Rule | Severity | Basis | Cites | Fires when | How to fix |
+|---|---|---|---|---|---|
+| `SIP-3261-8.1.1-MANDATORY-HEADER-MISSING` | error | must | [RFC 3261 section 8.1.1](https://www.rfc-editor.org/rfc/rfc3261.html#section-8.1.1) | One of `Call-ID`, `CSeq`, `From`, `To` or `Via` is absent. | Add the missing header field. |
+| `SIP-3261-20.16-CSEQ-MALFORMED` | error | must | [RFC 3261 section 20.16](https://www.rfc-editor.org/rfc/rfc3261.html#section-20.16) | A `CSeq` arrives that nothing can read as a number and a method. | Send `CSeq: <number> <method>`. |
+| `SIP-3261-20.14-CONTENT-LENGTH-MISMATCH` | error | must | [RFC 3261 section 20.14](https://www.rfc-editor.org/rfc/rfc3261.html#section-20.14) | `Content-Length` exceeds the body that arrived. | Set `Content-Length` to the body size in octets. |
+| `SIP-3261-25.1-HEADER-CONTROL-BYTE` | error | must | [RFC 3261 section 25.1](https://www.rfc-editor.org/rfc/rfc3261.html#section-25.1) | A header name or value holds a control byte other than tab. | Remove the control byte at the element that inserts it. |
+| `SIP-3261-20-URI-BRACKETS` | error | must | [RFC 3261 section 20](https://www.rfc-editor.org/rfc/rfc3261.html#section-20) | A `Contact`, `From` or `To` URI holds a comma or a question mark outside angle brackets. | Enclose the URI in angle brackets. |
+| `SIP-3261-19.1.1-URI-PARAM-DEMOTED` | warning | interop | [RFC 3261 section 19.1.1](https://www.rfc-editor.org/rfc/rfc3261.html#section-19.1.1) | A URI parameter (`transport`, `user`, `method`, `ttl`, `maddr` or `lr`) sits outside the angle brackets, where the receiver reads it as a header parameter. | Enclose the URI and its parameters in angle brackets. A bare URI followed by `;tag=` does not fire this rule. |
+| `SIP-3261-8.1.1.6-MAX-FORWARDS-MISSING` | warning | must | [RFC 3261 section 8.1.1.6](https://www.rfc-editor.org/rfc/rfc3261.html#section-8.1.1.6) | A request carries no `Max-Forwards`. | Add `Max-Forwards: 70`. |
+| `SIP-3261-20.22-MAX-FORWARDS-RANGE` | notice | should | [RFC 3261 section 20.22](https://www.rfc-editor.org/rfc/rfc3261.html#section-20.22) | `Max-Forwards` reads zero, exceeds the recommended 70, or holds no integer. | Start requests at `Max-Forwards: 70`. |
+| `SIP-3261-8.1.1.7-BRANCH-COOKIE` | warning | must | [RFC 3261 section 8.1.1.7](https://www.rfc-editor.org/rfc/rfc3261.html#section-8.1.1.7) | A request's top `Via` branch lacks the `z9hG4bK` magic cookie, or carries no branch at all. | Generate branches that start with `z9hG4bK`. |
+| `SIP-3261-8.1.1.5-CSEQ-METHOD-MISMATCH` | error | must | [RFC 3261 section 8.1.1.5](https://www.rfc-editor.org/rfc/rfc3261.html#section-8.1.1.5) | The `CSeq` method disagrees with the request line. | Make the `CSeq` method match the request method. |
+| `SIP-3261-12.1.1-CONTACT-MISSING-IN-2XX` | error | must | [RFC 3261 section 12.1.1](https://www.rfc-editor.org/rfc/rfc3261.html#section-12.1.1) | A 2xx answer to `INVITE` carries no `Contact`, so the dialog it creates has no remote target for the `ACK` or the `BYE`. | Add a `Contact` to the 2xx. |
+| `SIP-3262-3-RELIABLE-PROVISIONAL-WITHOUT-RSEQ` | error | must | [RFC 3262 section 3](https://www.rfc-editor.org/rfc/rfc3262.html#section-3) | A provisional demands `100rel` and carries no `RSeq`, so the receiver has to acknowledge a response it cannot name. | Add `RSeq` to every reliable provisional response. |
+| `SIP-4028-7.1-SESSION-EXPIRES-BELOW-MIN-SE` | error | must | [RFC 4028 section 7.1](https://www.rfc-editor.org/rfc/rfc4028.html#section-7.1) | One message carries a `Session-Expires` smaller than the `Min-SE` beside it. | Set `Session-Expires` at or above `Min-SE`. |
+| `SIP-4028-4-SESSION-EXPIRES-TOO-SMALL` | warning | must | [RFC 4028 section 4](https://www.rfc-editor.org/rfc/rfc4028.html#section-4) | `Session-Expires` sits below the 90-second absolute minimum. | Set the session timer to 90 seconds or more. |
+| `SIP-4028-5-MIN-SE-TOO-SMALL` | warning | must | [RFC 4028 section 5](https://www.rfc-editor.org/rfc/rfc4028.html#section-5) | `Min-SE` sits below 90 seconds, wherever it appears. | Set `Min-SE` to 90 seconds or more. |
+| `SIP-4028-9-REFRESHER-MISSING` | warning | must | [RFC 4028 section 9](https://www.rfc-editor.org/rfc/rfc4028.html#section-9) | A 2xx answer to `INVITE` negotiates `Session-Expires` and names no `refresher`. Requests are not checked. | Add `refresher=uac` or `refresher=uas` to `Session-Expires` in the 2xx. |
+| `SIP-7989-5-SESSION-ID-MALFORMED` | error | must | [RFC 7989 section 5](https://www.rfc-editor.org/rfc/rfc7989.html#section-5) | A `Session-ID` half is not 32 characters of `[0-9a-f]`. sipnab drops that half from correlation. | Generate `Session-ID` values as 32 lowercase hexadecimal characters. |
+| `SIP-7989-5-SESSION-ID-UPPERCASE` | warning | must | [RFC 7989 section 5](https://www.rfc-editor.org/rfc/rfc7989.html#section-5) | A `Session-ID` UUID arrives in uppercase hexadecimal. sipnab still correlates on it. Elements comparing the header byte for byte see two identifiers for one session. | Send the UUID in lowercase. |
+| `SIP-7989-11-SESSION-ID-LEGACY-FORM` | notice | interop | [RFC 7989 section 11](https://www.rfc-editor.org/rfc/rfc7989.html#section-11) | A `Session-ID` carries no `remote` parameter, the [RFC 7329](https://www.rfc-editor.org/rfc/rfc7329.html) single-UUID form. Correlation then works in one direction only. | Upgrade the element to send the RFC 7989 form with `remote`. |
+| `SIP-3261-7.3.1-SINGULAR-HEADER-REPEATED` | error | must | [RFC 3261 section 7.3.1](https://www.rfc-editor.org/rfc/rfc3261.html#section-7.3.1) | A header field whose value is not defined as a comma-separated list arrives on more than one row. Compact forms count, so `i:` beside `Call-ID:` fires. `WWW-Authenticate`, `Authorization`, `Proxy-Authenticate` and `Proxy-Authorization` are exempt. | Send the header field once. |
+| `SIP-3261-16.6-RECORD-ROUTE-NOT-LOOSE` | error | must | [RFC 3261 section 16.6](https://www.rfc-editor.org/rfc/rfc3261.html#section-16.6) | A `Record-Route` URI carries no `lr` parameter, so the hop it records is a strict route. | Configure the proxy to add `;lr` to its `Record-Route` URI. |
+| `SIP-3261-8.1.1.7-VIA-BRANCH-DUPLICATE` | error | must | [RFC 3261 section 8.1.1.7](https://www.rfc-editor.org/rfc/rfc3261.html#section-8.1.1.7) | Two `Via` header field values in one request carry the same `branch`, which indicates a request loop. Requests only. A repeated value reports once. | Find the proxy that forwards the request back to itself, and fix its routing. |
 
-### What the corpus can and cannot vouch for
-
-Three of these rules report zero against the local corpus. The zeros do not
-all mean the same thing.
-
-`SIP-3261-12.1.1-CONTACT-MISSING-IN-2XX` is well exercised.
-
-- The corpus holds 1,989 2xx answers to `INVITE`. Every one of them carries a `Contact`.
-- The rule reaches its own code path 1,989 times and declines each time.
-- That is the strongest evidence available short of a positive hit.
-
-The two RFC 3262 rules are not exercised.
-
-- The corpus contains exactly one reliable provisional and one `PRACK`.
-- So their silence rests on their unit tests rather than on real traffic.
-- Both fire on crafted input. Both stay quiet under their guards.
-- But nobody should read their zero as a measurement.
-
-Saying so is the point.
-An unexercised rule and a rule with nothing to find produce the same row.
-Only this note tells them apart.
-
-### Session timers, and the section number that is easy to get wrong
-
-RFC 4028 numbers its behavior sections 7 UAC, **8 Proxy, 9 UAS**.
-
-- The refresher obligation belongs to the UAS.
-  So the rule cites [RFC 4028 section 9](https://www.rfc-editor.org/rfc/rfc4028.html#section-9).
-- Recalling it as [section 8](https://www.rfc-editor.org/rfc/rfc4028.html#section-8)
-  sends a reader to the proxy's rules.
-  Those rules say something different about the same header field.
-
-The citation here came from the table of contents in RFC
-4028, not from memory.
-The angle-bracket rule cites the
-[RFC 3261 section 20](https://www.rfc-editor.org/rfc/rfc3261.html#section-20) preamble instead of [section 20.10](https://www.rfc-editor.org/rfc/rfc3261.html#section-20.10)
-for the same reason.
-
-All four session-timer rules read one message on its own.
-
-- Two header fields that contradict each other sit in the same request.
-- A floor is a fixed number.
-- A 2xx either names a refresher or does not.
-- None of it needs the dialog.
-
-The refresher rule is the one with false-positive potential. So three guards
-fence it:
-
-- the message has to be a response,
-- its status has to be 2xx,
-- its `CSeq` method has to be `INVITE`.
-
-Measured against the local corpus, all four rules report zero.
-
-- That number means nothing on its own.
-  A rule that never fires and a rule with nothing to find produce the same row.
-- So a probe took it apart.
-
-The corpus holds
-1,849 messages carrying `Session-Expires`.
-
-- 471 of them are 2xx answers to `INVITE`.
-- Every one of those 471 names a refresher.
-- The rule reaches its own code path 471 times and declines each time.
-- That is silence with evidence behind it. It is not a rule that cannot fire.
-
-The 358 values in the corpus that carry no refresher are all requests.
-
-- In a request, a UAC proposes a timer. [RFC 4028 section 9](https://www.rfc-editor.org/rfc/rfc4028.html#section-9)
-  places no obligation there.
-- A request offering a timer is the UAC proposing rather than answering.
-- [RFC 4028 section 9](https://www.rfc-editor.org/rfc/rfc4028.html#section-9) puts the obligation on the answer.
-
-No `Session-Expires` anywhere in the corpus sits below 90.
-So both floor rules are quiet for the same checkable reason.
-
-### Why the bracket rules split in two
-
-[RFC 3261 section 20](https://www.rfc-editor.org/rfc/rfc3261.html#section-20) gives one sentence for three characters. The three do not
-behave alike.
-
-A comma or a question mark in a bare URI breaks the MUST outright.
-
-- The receiver splits the value there.
-- It reads a different URI than the one sent.
-- That is `SIP-3261-20-URI-BRACKETS`. It goes in the `must` ruleset.
-
-A semicolon is different.
-
-- `Contact: sip:a@b;transport=tcp` parses as perfectly legal SIP.
-  But it means something the sender did not intend.
-  - `transport` is a URI parameter.
-  - Outside the brackets it lands on the header.
-- Nothing on the wire breaks a MUST.
-  So `SIP-3261-19.1.1-URI-PARAM-DEMOTED` reports as interop.
-  It stays out of the `must` ruleset.
-- It remains the defect most often found at the bottom of a
-  "calls reach the wrong trunk" ticket.
-
-A bare `From: sip:alice@example.com;tag=1928301774` trips neither.
-RFC 3261 uses that form in its own examples.
-`tag` is a header parameter, so it belongs where it sits.
-
-## Dialog rules
+### Dialog rules
 
 These read a dialog's messages against each other.
 
-| Rule | Severity | Basis | Cites | Fires when |
-|---|---|---|---|---|
-| `SIP-3261-8.1.1.2-TO-TAG-IN-INITIAL-REQUEST` | warning | must | [RFC 3261 section 8.1.1.2](https://www.rfc-editor.org/rfc/rfc3261.html#section-8.1.1.2) | A `REGISTER` carries a `To` tag, or the dialog's first request carries one and its own transaction answers with a different tag. |
-| `SIP-3261-17.1.1.3-ACK-CSEQ-MISMATCH` | error | must | [RFC 3261 section 17.1.1.3](https://www.rfc-editor.org/rfc/rfc3261.html#section-17.1.1.3) | An `ACK` carries a sequence number belonging to no `INVITE` in the dialog. |
-| `SDP-3264-6.1-ANSWER-NO-COMMON-FORMAT` | error | must | [RFC 3264 section 6.1](https://www.rfc-editor.org/rfc/rfc3264.html#section-6.1) | An answer shares no media format with the offer, on a stream it did not decline. |
-| `SDP-3264-6.1-ANSWER-EXTRA-FORMAT` | info | interop | [RFC 3264 section 6.1](https://www.rfc-editor.org/rfc/rfc3264.html#section-6.1) | An answer lists a format the offer never carried. |
-| `SDP-3264-6.1-ANSWER-DIRECTION-ILLEGAL` | error | must | [RFC 3264 section 6.1](https://www.rfc-editor.org/rfc/rfc3264.html#section-6.1) | The answer's direction attribute contradicts what the offer's admits. |
-| `SIP-3262-4-PRACK-MISSING` | warning | must | [RFC 3262 section 4](https://www.rfc-editor.org/rfc/rfc3262.html#section-4) | A reliable provisional went unacknowledged in a dialog whose `INVITE` reached a final response, so the `PRACK` is absent rather than merely off the end of the capture. |
-| `SDP-3264-8.4-HOLD-CONNECTION-ZERO` | warning | should | [RFC 3264 section 8.4](https://www.rfc-editor.org/rfc/rfc3264.html#section-8.4) | A re-offer blanks the connection address to signal hold. |
-| `SIP-3261-17.1.1.3-ACK-BRANCH-MISMATCH` | error | must | [RFC 3261 section 17.1.1.3](https://www.rfc-editor.org/rfc/rfc3261.html#section-17.1.1.3) | An `ACK` to a **non-2xx** carries a `branch` other than its `INVITE`'s. A 2xx `ACK` is exempt and must be — see below. |
-| `SIP-3261-12.1.1-RECORD-ROUTE-NOT-COPIED` | error | must | [RFC 3261 section 12.1.1](https://www.rfc-editor.org/rfc/rfc3261.html#section-12.1.1) | A 2xx to the dialog-forming request drops or reorders a `Record-Route` value the request carried. |
-| `SDP-3264-8.3.2-DYNAMIC-PT-REBOUND` | error | must | [RFC 3264 section 8.3.2](https://www.rfc-editor.org/rfc/rfc3264.html#section-8.3.2) | A dynamic payload type (96-127) means one codec in one body and a different codec in a later body of the same `m=` line. |
-| `SDP-3264-7-TELEPHONE-EVENT-ONE-WAY` | warning | interop | [RFC 3264 section 7](https://www.rfc-editor.org/rfc/rfc3264.html#section-7) | An offer declares `telephone-event` on an audio stream the answer accepted and shares a codec with, and the answer omits it. |
-| `SDP-3264-8.2-REJECTED-STREAM-ATTRIBUTES` | notice | interop | [RFC 3264 section 8.2](https://www.rfc-editor.org/rfc/rfc3264.html#section-8.2) | A stream the answer declined with port zero still carries `a=rtpmap`, `a=fmtp`, `a=crypto`, `a=candidate`, `a=ptime`, `a=rtcp-mux` or `a=rtcp`. |
-| `SDP-7587-7-OPUS-RTPMAP-RATE` | error | must | [RFC 7587 section 7](https://www.rfc-editor.org/rfc/rfc7587.html#section-7) | An `a=rtpmap` names `opus` at a clock rate other than 48000, or with a channel count other than 2. |
-
-### An answer listing an extra codec stays legal
-
-A widely repeated claim holds that an answer containing a codec absent from the
-offer breaks RFC 3264. It does not.
-
-- [RFC 3264 section 6.1](https://www.rfc-editor.org/rfc/rfc3264.html#section-6.1) permits the extra listing in as many
-  words.
-- It also explains why it rarely helps.
-  The answerer cannot send with a format that the offer never listed.
-
-So the MUST violation is the *absence* of any shared format.
-
-- `SDP-3264-6.1-ANSWER-NO-COMMON-FORMAT` reports that as an error.
-- The extra listing reports separately, as info, under `interop`.
-- Some equipment reads the answer as the negotiated set.
-  - It picks one of the extras.
-  - It sends media that the far end drops.
-  - That is worth knowing. It is not a broken MUST.
-
-### Hold by blanking the address
-
-sipnab has always found hold through `a=sendonly` and `a=inactive`.
-
-- [RFC 3264 section 8.4](https://www.rfc-editor.org/rfc/rfc3264.html#section-8.4) describes a third mechanism:
-  setting the connection address to `0.0.0.0`.
-  - [RFC 2543](https://www.rfc-editor.org/rfc/rfc2543.html) defined it.
-  - Section 8.4 discourages it.
-- Until this rule, a call held that way looked to sipnab like a call that simply stopped.
-
-[RFC 3264 section 8.4](https://www.rfc-editor.org/rfc/rfc3264.html#section-8.4) keeps one legitimate use.
-That use is an *initial* offer from an agent that does not yet know its own address.
-
-- So the first SDP body in a dialog stays exempt.
-- A later one does not.
-- A stream declined with port zero stays exempt as well.
-
-### Why the `To` tag rule is hard to trigger
-
-One message cannot say whether a request sits inside a dialog.
-
-- A message-scoped version of this rule fires on every re-`INVITE` in every capture that starts
-  mid-call.
-- That is most captures.
-
-Two shapes settle it:
-
-- A `REGISTER` never sits inside a dialog.
-  So a `To` tag there is wrong wherever the capture started.
-- Otherwise the rule needs the answer to that same transaction to carry a *different* tag.
-  - The rule matches the answer on the `Via` branch that [RFC 3261 section 8.1.1.7](https://www.rfc-editor.org/rfc/rfc3261.html#section-8.1.1.7) defines.
-  - A different tag is proof that the responder treated the request as new and chose
-    its own.
-
-An earlier form of this rule compared against every response in the dialog.
-It fired on 2,182 dialogs of the validation corpus. 2,160 of them were `SUBSCRIBE`.
-
-- The cause was not subscriptions.
-- A `SUBSCRIBE` dialog carries `NOTIFY` requests in the reverse direction.
-- A response to a `NOTIFY` correctly carries the subscriber's tag.
-  That is not the tag the `SUBSCRIBE` addressed.
-- Matching on the transaction took the count to zero.
-
-### What the corpus says about the nine newest rules
-
-Measured against the local validation corpus:
-
-- 62 readable captures,
-- 39,239 dialogs,
-- 3,371 of them carrying SDP,
-- 272 with RTP linked to them.
-
-| Rule | Dialogs | Reading |
-|---|---|---|
-| `SIP-3261-17.1.1.3-ACK-BRANCH-MISMATCH` | 129 (0.3%) | Real hits, and the rate is the one that matters: a rule that read every `ACK` rather than only the non-2xx ones would have fired on a large share of the 39,239. |
-| `SIP-3261-12.1.1-RECORD-ROUTE-NOT-COPIED` | 55 (0.1%) | Real hits. |
-| `SDP-7587-7-OPUS-RTPMAP-RATE` | 16 | Real hits. |
-| `SDP-3264-8.3.2-DYNAMIC-PT-REBOUND` | 2 | Real hits, and rare, which is what a rule about a re-`INVITE` changing a codec binding should be. |
-| `SIP-3261-16.6-RECORD-ROUTE-NOT-LOOSE` | 0 | **Exercised and declined.** `RECORD-ROUTE-NOT-COPIED` fires 55 times on the same corpus, and it only reaches its own body when a request carries a bracketed `Record-Route` — the exact values this rule reads. So the corpus does hold recorded routes, and every one of them carries `lr`. |
-| `SIP-3261-7.3.1-SINGULAR-HEADER-REPEATED` | 0 | Not exercised. Its silence rests on its unit tests, not on this traffic. |
-| `SIP-3261-8.1.1.7-VIA-BRANCH-DUPLICATE` | 0 | Not exercised, and a corpus with no looping request is the expected shape of one. |
-| `SDP-3264-7-TELEPHONE-EVENT-ONE-WAY` | 0 | Not exercised. |
-| `SDP-3264-8.2-REJECTED-STREAM-ATTRIBUTES` | 0 | Not exercised. |
-
-The distinction in that last column is the point.
-
-- An unexercised rule and a rule with nothing to find produce the same row.
-- Only this note tells them apart.
-- See the same caveat for the RFC 3262 rules above.
-
-### Why the ACK branch rule covers only non-2xx
-
-[RFC 3261 section 17.1.1.3](https://www.rfc-editor.org/rfc/rfc3261.html#section-17.1.1.3) says an `ACK` "MUST contain a single Via header field,
-and this MUST be equal to the top Via header field of the original request".
-
-- Reused verbatim, that sentence would report the correct behavior on every
-  answered call in every capture ever taken.
-- The reason is that the same section opens by sending the 2xx case somewhere else:
-  "A UAC core that generates an ACK for 2xx
-  MUST instead follow the rules described in Section 13."
-
-An `ACK` to a 2xx is a **new transaction**.
-
-- [RFC 3261 section 13.2.2.4](https://www.rfc-editor.org/rfc/rfc3261.html#section-13.2.2.4) builds it from the dialog's
-  route set.
-- [section 8.1.1.7](https://www.rfc-editor.org/rfc/rfc3261.html#section-8.1.1.7) requires a new branch for it.
-
-An `ACK` to a non-2xx is different:
-
-- It is hop-by-hop.
-- The same INVITE server transaction absorbs it.
-- It shares that transaction's branch.
-  [RFC 3261 section 8.1.1.7](https://www.rfc-editor.org/rfc/rfc3261.html#section-8.1.1.7) names this as one of exactly two exceptions to
-  branch uniqueness. The other is `CANCEL`.
-
-So the rule reports only where the capture has already shown a final response
-between 300 and 699 for that `CSeq`.
-An `ACK` whose `INVITE` the capture never carried settles nothing. sipnab skips it.
-
-### Why the Record-Route rule compares a suffix and not a list
-
-[RFC 3261 section 12.1.1](https://www.rfc-editor.org/rfc/rfc3261.html#section-12.1.1) makes the UAS:
-
-- "copy all Record-Route header field values from
-  the request into the response",
-- and "MUST maintain the order of those values".
-
-[section 12.1.2](https://www.rfc-editor.org/rfc/rfc3261.html#section-12.1.2) has the caller build its route set from the *response*, in
-reverse.
-
-- A value the response dropped is a proxy removed from a path it recorded
-  itself into.
-- A value reordered sends every in-dialog request through the hops
-  backwards.
-- Both fail after the call is up.
-  That is why they arrive as a network ticket rather than a signaling one.
-
-The rule does **not** report a response carrying *more* values than the request.
-
-- A capture taken anywhere but at the UAS sees the request before the last
-  recording proxy inserted its value. It sees the response after.
-- So "the response has one extra" is the ordinary shape of a proxy-side capture.
-- An equality comparison would fire on most of them.
-- The rule reports only the request's own list going missing from the tail of the response's.
-
-### The telephone-event rule is not in [RFC 4733](https://www.rfc-editor.org/rfc/rfc4733.html)
-
-The widely held belief is that [RFC 4733](https://www.rfc-editor.org/rfc/rfc4733.html) requires both ends to agree a
-`telephone-event` payload type. It does not.
-
-- RFC 4733 contains no offer/answer rule at all.
-- [section 2.5.1.1](https://www.rfc-editor.org/rfc/rfc4733.html#section-2.5.1.1) says negotiation happens "by out-of-band means, using SDP,
-  for example".
-- It never says what an omitted `telephone-event` means.
-- This rule's author read the document end to end.
-  The only sender-side obligation in it is about the `events` parameter.
-
-<!-- The paragraph below quotes [RFC 3264 section 7](https://www.rfc-editor.org/rfc/rfc3264.html#section-7) verbatim. Rewording "that were
-     listed in the initial offer" to satisfy the passive-voice rule would
-     misquote the standard this rule cites. -->
-<!-- vale Google.Passive = NO -->
-
-The binding text is [RFC 3264 section 7](https://www.rfc-editor.org/rfc/rfc3264.html#section-7): "The offerer MAY immediately cease listening
-for media formats that were listed in the initial offer, but not present in the
-answer."
-
-- That is a **MAY**, so nothing here breaks.
-- That is why the rule reports as `interop` and not as a MUST violation.
-- It is also why the rule cites RFC 3264.
-
-<!-- vale Google.Passive = YES -->
-
-This is a *one-way* fault, not simply no DTMF. The reason:
-
-- Equipment sends the event anyway on the payload type it offered.
-- The far end receives a payload type it never agreed to.
-  It either drops it or decodes it as audio.
-- DTMF in the other direction works.
-- That is the whole of every "the IVR cannot hear our digits" ticket.
-
-The rule needs two things:
-
-- the stream accepted (port non-zero),
-- the stream sharing at least one audio format.
-
-A declined stream negotiated nothing.
-A stream with no common format is already `SDP-3264-6.1-ANSWER-NO-COMMON-FORMAT`.
-
-### A declined stream that kept its attributes cites section 8.2 of RFC 3264, not section 6
-
-<!-- The paragraph below reproduces [RFC 3264 section 6](https://www.rfc-editor.org/rfc/rfc3264.html#section-6)'s whole statement about a rejected
-     stream verbatim, which is the point being made about it. Rewording "MUST be
-     set to zero" or "are ignored" would misquote the standard. -->
-<!-- vale Google.Passive = NO -->
-
-[RFC 3264 section 6](https://www.rfc-editor.org/rfc/rfc3264.html#section-6) is where this is usually attributed. Section 6 does not say it. Its
-whole statement about a rejected stream is: "To reject an offered stream, the
-port number in the corresponding stream in the answer MUST be set to zero. Any
-media formats listed are ignored. At least one MUST be present, as specified by
-SDP." Nothing about attributes.
-
-<!-- vale Google.Passive = YES -->
-
-The attribute sentence is in [RFC 3264 section 8.2](https://www.rfc-editor.org/rfc/rfc3264.html#section-8.2): "the answer MAY omit all attributes present
-previously, and MAY list just a single media format."
-
-- That is a **MAY**, so keeping them is legal.
-- The rule reports at `notice` under `interop`.
-
-It is still worth a line. The finding names two reasons in its `observed`
-field:
-
-- An `a=crypto` on a declined stream is SRTP key material published for a
-  stream that never carries a packet.
-- Some equipment reads attributes before it reads the port.
-  That equipment allocates a relay leg and a transcoder for a stream nobody
-  answered.
-
-A stream that the *offer* already removed at port zero is exempt.
-
-- That is [RFC 3264 section 8.2](https://www.rfc-editor.org/rfc/rfc3264.html#section-8.2)'s own
-  mechanism for tearing a stream down.
-- The answer marking it zero too is what section 8.2 requires.
-
-### Opus: the decidable half, and the half that is not
-
-[RFC 7587 section 7](https://www.rfc-editor.org/rfc/rfc7587.html#section-7) is unambiguous: "The RTP clock rate in `a=rtpmap` MUST be 48000,
-and the number of channels MUST be 2."
-
-- Every example in the RFC writes `opus/48000/2`.
-  That includes the one titled "16000 Hz clock rate".
-- An endpoint signals the narrower band with `maxplaybackrate` in `a=fmtp`, never in the
-  rtpmap.
-- An `a=rtpmap` carrying no channel count is `opus/48000/1` by [RFC 4566 section 6](https://www.rfc-editor.org/rfc/rfc4566.html#section-6)'s default.
-- [RFC 7587 section 7](https://www.rfc-editor.org/rfc/rfc7587.html#section-7) admits neither.
-
-<!-- The paragraph below quotes [RFC 7587 section 4.1](https://www.rfc-editor.org/rfc/rfc7587.html#section-4.1) verbatim, and the exact wording is
-     the argument: [RFC 7587 section 4.1](https://www.rfc-editor.org/rfc/rfc7587.html#section-4.1) is a statement of fact, not [RFC 2119](https://www.rfc-editor.org/rfc/rfc2119.html) language. Rewording
-     it would destroy the distinction the rule turns on. -->
-<!-- vale Google.Passive = NO -->
-
-The rule cites [RFC 7587 section 7](https://www.rfc-editor.org/rfc/rfc7587.html#section-7) and not [section 4.1](https://www.rfc-editor.org/rfc/rfc7587.html#section-4.1).
-
-- Section 4.1 states the same 48 kHz clock as a fact
-  about the wire: "The RTP timestamp is incremented with a 48000 Hz clock rate
-  for all modes of Opus and all sampling rates".
-- That is not RFC 2119 language.
-- The SDP bullet in [RFC 7587 section 7](https://www.rfc-editor.org/rfc/rfc7587.html#section-7) is the only place the requirement is a MUST.
-
-<!-- vale Google.Passive = YES -->
-
-**The observation half is deliberately absent.**
-
-- "Opus negotiated, and the wire
-  carries 160-octet packets at an 8 kHz cadence" is not decidable from what a
-  stream records.
-- 160 octets per 20 ms is 64 kbit/s.
-  That is exactly G.711. It is also a legal Opus CBR configuration.
-- Separating the two needs the RTP timestamp cadence.
-- The stream store keeps a last timestamp and no first one.
-  So nothing in it yields a clock rate.
-
-A rule that reported legal Opus CBR as a
-defect would not survive week one. This one is decidable from the SDP alone.
-
-### The four header fields that section 7.3.1 of RFC 3261 exempts
-
-<!-- The paragraph below quotes [RFC 3261 section 7.3.1](https://www.rfc-editor.org/rfc/rfc3261.html#section-7.3.1) verbatim; the rule is named for
-     that sentence, so rewording "is defined as a comma-separated list" would
-     misquote the clause the rule implements. -->
-<!-- vale Google.Passive = NO -->
-
-`SIP-3261-7.3.1-SINGULAR-HEADER-REPEATED` reads the rule the section actually
-states: "Multiple header field rows with the same field-name MAY be present in a
-message **if and only if** the entire field-value for that header field is
-defined as a comma-separated list."
-
-<!-- vale Google.Passive = YES -->
-
-The same paragraph writes down its own exception:
-
-- `WWW-Authenticate`, `Authorization`, `Proxy-Authenticate` and `Proxy-Authorization` may appear on
-  several rows.
-- No sender may combine them with commas.
-- A `407` carrying two challenges is ordinary traffic.
-  So the rule's list omits all four.
-
-The compact forms count.
-
-- The parser expands them at parse ([RFC 3261 section 7.3.3](https://www.rfc-editor.org/rfc/rfc3261.html#section-7.3.3)).
-- So `i:` beside `Call-ID:` is two rows of one field.
-- That is exactly the shape a header-smuggling attempt takes.
-  A parser that reads only one spelling sees a message with one `Call-ID`.
-
-### Two branches, one stack
-
-<!-- The paragraph below quotes [RFC 3261 section 16.6](https://www.rfc-editor.org/rfc/rfc3261.html#section-16.6) item 8 verbatim; "will be
-     different" is the standard's own wording, not a future tense this file
-     chose. -->
-<!-- vale Google.Will = NO -->
-
-[RFC 3261 section 8.1.1.7](https://www.rfc-editor.org/rfc/rfc3261.html#section-8.1.1.7) makes a branch "unique across space and time".
-[section 16.6](https://www.rfc-editor.org/rfc/rfc3261.html#section-16.6)
-item 8 spells out what that means for a proxy: "the branch parameter will be
-different for different instances of a spiraled or looped request through a
-proxy."
-
-- So two identical branches in one `Via` stack say the request
-  returned to an element that failed to re-derive its own value.
-- That is the loop that
-  [RFC 3261 section 16.3](https://www.rfc-editor.org/rfc/rfc3261.html#section-16.3)'s loop-detection step exists to catch.
-- The loop runs unbounded until `Max-Forwards` stops it.
-
-<!-- vale Google.Will = YES -->
-
-The rule reports a repeated value once, however many times it repeats.
-It reads requests only.
-
-## Validating a rule against real traffic
-
-A rule that fires on nearly every dialog is a bug in the rule. It is not a discovery
-about the traffic.
-
-[`tests/corpus_lint_test.rs`](https://github.com/NormB/sipnab/blob/main/tests/corpus_lint_test.rs):
-
-- runs the whole catalog over a directory of captures named by `SIPNAB_CORPUS`,
-- prints a hit count per rule,
-- fails when any rule trips more than 95% of dialogs.
-
-That test also reports how many dialogs carried media that the observation rules
-could read.
-
-- A zero hit rate on an `OBS-` rule means one of two very different
-  things:
-  - the traffic is clean,
-  - or the rule saw nothing.
-- The rule table alone cannot tell them apart.
-
-## Using the linter from Rust
+| Rule | Severity | Basis | Cites | Fires when | How to fix |
+|---|---|---|---|---|---|
+| `SIP-3261-8.1.1.2-TO-TAG-IN-INITIAL-REQUEST` | warning | must | [RFC 3261 section 8.1.1.2](https://www.rfc-editor.org/rfc/rfc3261.html#section-8.1.1.2) | A `REGISTER` carries a `To` tag, or the dialog's first request carries one and the response to that same transaction carries a different tag. | Send out-of-dialog requests without a `To` tag. |
+| `SIP-3261-17.1.1.3-ACK-CSEQ-MISMATCH` | error | must | [RFC 3261 section 17.1.1.3](https://www.rfc-editor.org/rfc/rfc3261.html#section-17.1.1.3) | An `ACK` carries a sequence number belonging to no `INVITE` in the dialog. | Copy the `INVITE`'s `CSeq` number into the `ACK`. |
+| `SDP-3264-6.1-ANSWER-NO-COMMON-FORMAT` | error | must | [RFC 3264 section 6.1](https://www.rfc-editor.org/rfc/rfc3264.html#section-6.1) | An answer shares no media format with the offer, on a stream it did not decline. | Give both ends a codec in common, or decline the stream with port `0`. |
+| `SDP-3264-6.1-ANSWER-EXTRA-FORMAT` | info | interop | [RFC 3264 section 6.1](https://www.rfc-editor.org/rfc/rfc3264.html#section-6.1) | An answer lists a format the offer never carried. This is legal. | No change needed. Answer only with offered formats if the far end sends media in an extra one. |
+| `SDP-3264-6.1-ANSWER-DIRECTION-ILLEGAL` | error | must | [RFC 3264 section 6.1](https://www.rfc-editor.org/rfc/rfc3264.html#section-6.1) | The answer's direction attribute contradicts what the offer's admits. | Answer `sendonly` with `recvonly` or `inactive`, `recvonly` with `sendonly` or `inactive`, and `inactive` with `inactive`. |
+| `SIP-3262-4-PRACK-MISSING` | warning | must | [RFC 3262 section 4](https://www.rfc-editor.org/rfc/rfc3262.html#section-4) | A reliable provisional went unacknowledged in a dialog whose `INVITE` reached a final response. | Send a `PRACK` for every reliable provisional response. |
+| `SDP-3264-8.4-HOLD-CONNECTION-ZERO` | warning | should | [RFC 3264 section 8.4](https://www.rfc-editor.org/rfc/rfc3264.html#section-8.4) | A re-offer sets the connection address to `0.0.0.0` to signal hold. The first SDP body in a dialog, and streams declined with port zero, are exempt. | Signal hold with `a=sendonly` or `a=inactive`. |
+| `SIP-3261-17.1.1.3-ACK-BRANCH-MISMATCH` | error | must | [RFC 3261 section 17.1.1.3](https://www.rfc-editor.org/rfc/rfc3261.html#section-17.1.1.3) | An `ACK` to a final response between 300 and 699 carries a `branch` other than its `INVITE`'s. An `ACK` to a 2xx is a new transaction and is not checked. | Send the `ACK` for a non-2xx with the `INVITE`'s top `Via`. |
+| `SIP-3261-12.1.1-RECORD-ROUTE-NOT-COPIED` | error | must | [RFC 3261 section 12.1.1](https://www.rfc-editor.org/rfc/rfc3261.html#section-12.1.1) | A 2xx to the dialog-forming request drops or reorders a `Record-Route` value the request carried. A response carrying additional values does not fire it. | Copy every `Record-Route` value from the request into the response, in order. |
+| `SDP-3264-8.3.2-DYNAMIC-PT-REBOUND` | error | must | [RFC 3264 section 8.3.2](https://www.rfc-editor.org/rfc/rfc3264.html#section-8.3.2) | A dynamic payload type (96-127) means one codec in one body and a different codec in a later body of the same `m=` line. | Keep each dynamic payload type bound to one codec for the life of the session. |
+| `SDP-3264-7-TELEPHONE-EVENT-ONE-WAY` | warning | interop | [RFC 3264 section 7](https://www.rfc-editor.org/rfc/rfc3264.html#section-7) | An offer declares `telephone-event` on an audio stream the answer accepted and shares a codec with, and the answer omits it. | Enable RFC 4733 DTMF on the answerer, or use in-band DTMF on both ends. |
+| `SDP-3264-8.2-REJECTED-STREAM-ATTRIBUTES` | notice | interop | [RFC 3264 section 8.2](https://www.rfc-editor.org/rfc/rfc3264.html#section-8.2) | A stream the answer declined with port zero still carries `a=rtpmap`, `a=fmtp`, `a=crypto`, `a=candidate`, `a=ptime`, `a=rtcp-mux` or `a=rtcp`. Streams the offer already set to port zero are exempt. | Omit the attributes from declined streams. An `a=crypto` there publishes key material for a stream that carries no media. |
+| `SDP-7587-7-OPUS-RTPMAP-RATE` | error | must | [RFC 7587 section 7](https://www.rfc-editor.org/rfc/rfc7587.html#section-7) | An `a=rtpmap` names `opus` at a clock rate other than 48000, or with a channel count other than 2. | Write `a=rtpmap:<pt> opus/48000/2`, and signal a narrower band with `maxplaybackrate` in `a=fmtp`. |
+
+## Use the linter from Rust
 
 ```rust
 use sipnab::sip::lint::{LintConfig, Linter, ObservedMedia, Ruleset};
@@ -727,12 +420,7 @@ let linter = Linter::new(config);
 // let findings = linter.lint_dialog_with_media(&dialog, &media);
 ```
 
-`ObservedMedia::from_streams` projects the RTP that the stream store attributed to
-the dialog.
-
-- RTCP arrives separately through `with_rtcp`.
-- The reason is that the stream store folds reception reports into the stream they describe.
-- It keeps no record of which port they landed on.
-- That port is the question [RFC 5761 section 5.1.1](https://www.rfc-editor.org/rfc/rfc5761.html#section-5.1.1) asks.
+`ObservedMedia::from_streams` projects the RTP that the stream store attributed
+to the dialog. Pass RTCP separately with `ObservedMedia::with_rtcp`.
 
 See [Library API](library.md) for the wider crate surface.

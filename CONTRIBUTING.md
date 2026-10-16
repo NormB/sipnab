@@ -2,7 +2,7 @@
 
 ## Orientation
 
-Start with [docs/architecture.md](docs/architecture.md). It has the module
+Start with [docs/internals/code-map.md](docs/internals/code-map.md). It has the module
 map, the data flow, and the "where to add things" table.
 
 Then read the **[developer index](docs/internals/README.md)**. It is the

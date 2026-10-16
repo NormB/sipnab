@@ -315,7 +315,7 @@ sipnab -d eth0,eth1 --multi-device --delta-time
 > - A bare `portrange` would match none of that traffic.
 > - See
 >   [How the generated filter reaches encapsulated SIP](encapsulations.md#how-the-generated-filter-reaches-encapsulated-sip)
->   for the offsets it probes and its two limits.
+>   for what it covers and its two limits.
 >
 > **The auto-generated filter admits the media too.** RTP travels on whatever
 > ports SDP negotiated.

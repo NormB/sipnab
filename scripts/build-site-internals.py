@@ -172,6 +172,31 @@ PAGES: list[tuple[str, str, int, str, str]] = [
         "What went wrong in sipnab and in its build, why, what changed and how "
         "to check it, and the engineering detail the notes no longer carry.",
     ),
+    (
+        "code-map.md",
+        "code-map.md",
+        17,
+        "Code Map",
+        "What lives where in the source tree, how data flows through it, the "
+        "design decisions behind its shape, and where to add things.",
+    ),
+    (
+        "lint-rules.md",
+        "lint-rules.md",
+        18,
+        "Conformance Linter Design Notes",
+        "Why each SIP conformance rule cites the section it cites, why some "
+        "rules are narrower than the sentence they implement, and what the "
+        "validation corpus measured.",
+    ),
+    (
+        "encapsulation-decoding.md",
+        "encapsulation-decoding.md",
+        19,
+        "Encapsulation Decoding",
+        "The rule every decapsulator follows, where the EtherType values came "
+        "from, and the byte offsets the generated capture filter probes.",
+    ),
 ]
 
 # The developer index becomes the Zola section landing page.

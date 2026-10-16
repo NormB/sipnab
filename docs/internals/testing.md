@@ -374,3 +374,134 @@ A second gate once demanded a freshly built bundle alongside any staged
 - For exactly this reason, the pre-push hook runs two checks before pushing:
   - `cargo clippy --workspace --all-features --all-targets -- -D warnings`.
   - The `fuzz` workspace check.
+
+## Failure-path coverage
+
+The tests and audits behind the operator [fault model](../fault-model.md). That
+page says how sipnab behaves under each fault class. This section records what
+pins each behavior.
+
+### Parser panic surface
+
+Two harnesses exercise every parser reachable from packet or file bytes:
+
+- **Coverage-guided fuzzing**: [`fuzz/fuzz_targets/`](../../fuzz/fuzz_targets) (cargo-fuzz /
+  libFuzzer).
+  - The targets run weekly (and on demand) via [`.github/workflows/fuzz.yml`](../../.github/workflows/fuzz.yml).
+  - Crash reproducers upload as artifacts.
+- **Continuous fuzzing**: the same targets run under ClusterFuzzLite from
+  [`.clusterfuzzlite/`](../../.clusterfuzzlite).
+  - Batch fuzzing and corpus pruning run daily. A coverage report runs weekly.
+  - The difference from the weekly run above is the corpus.
+    It persists between runs instead of restarting from the tracked seeds.
+    So what libFuzzer learns accumulates instead of starting over.
+- **Always-on smoke fuzz**: [`tests/smoke_fuzz_test.rs`](../../tests/smoke_fuzz_test.rs) runs in
+  `cargo test` (no nightly needed).
+  - It runs ~40k random + structurally mutated inputs per entry point under `catch_unwind`.
+  - It covers the same parser set **plus**:
+    - the full link-layer decap chain (`parse_packet` across several link types),
+    - the pcap file reader.
+  - A caught panic fails the test. The offending input is hex-dumped for a repro seed.
+  - Calling every fuzz entry point also compile-checks their signatures.
+    So a target that drifts out of step with its parser breaks the test build.
+    It does not drop out of the fuzz suite unnoticed.
+  - Example: [`fuzz/fuzz_targets/sip_parser.rs`](../../fuzz/fuzz_targets/sip_parser.rs) had passed a `&str` transport
+    argument where `parse_sip` takes `TransportProto`.
+    The whole suite stopped compiling, with nothing in `cargo test` to say so.
+
+The smoke layer is the regression floor. It found a UTF-8 char-boundary
+panic in the TLS keylog hex decoder
+([`src/capture/tls.rs`](../../src/capture/tls.rs)).
+Nobody had ever run the committed fuzz target against that decoder.
+
+- The decoder checked **byte**-length parity, then sliced `&hex[i..i+2]` as a `str`.
+- So a multi-byte UTF-8 char (for example `€`, 3 bytes) split by the 2-char window panicked.
+  The message was "byte index is not a char boundary".
+- That was a remote DoS via a crafted `SSLKEYLOGFILE` line.
+- The decoder now works on raw bytes with explicit nibble validation instead.
+  Any non-ASCII or non-hex byte gives a clean parse error naming its offset.
+- The regression test `decode_hex_multibyte_utf8_does_not_panic` and the corpus seeds in
+  [`fuzz/corpus/keylog_line/`](../../fuzz/corpus/keylog_line) pin it there.
+
+**Property tests**: [`tests/property_test.rs`](../../tests/property_test.rs) (proptest) asserts the
+*semantic* invariants the fuzzers cannot:
+
+- a SIP message built from generated fields parses back to those fields,
+- SDP survives a build→parse→rebuild round trip,
+- the filter DSL is a total function on arbitrary text (parse then evaluate never panic).
+
+**Verified bounded in code** (confirmed by audit, exercised by
+<!-- A list whose items carry their own parentheses and units. Semicolons are the
+separator that keeps it readable -- the super-comma use Google's own guidance
+keeps. Splitting on periods would turn one list into eight fragments. -->
+<!-- vale Google.Semicolons = NO -->
+
+fuzz): SIP header count (≤200) and fold size (≤8 KB); websocket payload
+(≤64 KB); TLS record length (≤18432); IP/GRE encapsulation depth (≤5);
+RTP CSRC / RTCP report counts (5-bit fields); all length-driven
+<!-- vale Google.Semicolons = YES -->
+
+`Vec::with_capacity` sites bounded by the actual slice.
+
+- RTP/RTCP length-field arithmetic (`u16 * 4`) cannot overflow `usize`.
+- Each multiply carries a bounds `ensure!` after it.
+
+### Resource bounds
+
+| Store | Bound proven by |
+|-------|-----------------|
+| `DialogStore` | [`tests/resource_bounds_test.rs`](../../tests/resource_bounds_test.rs) (50k unique Call-IDs, both modes, `len() ≤ cap` at every step) |
+| `StreamStore` | same test (50k unique SSRCs) |
+| per-dialog messages | `dialog_store.rs` unit tests |
+| per-stream audio frames | `stream_store.rs` |
+| IP/TCP reassembly | `reassembly.rs` |
+
+### Capture, sink and concurrency audit
+
+Audited, found sound (true-positive findings: none):
+
+- **Capture file** ([`pcap_reader.rs`](../../src/capture/pcap_reader.rs)):
+  - Magic/length/block-truncation all return clean errors.
+  - Tests cover them (`too_short_file`, `invalid_magic`, `truncated_epb_block_no_panic`). The smoke fuzz also exercises them.
+  - The FILE path implements the same exit-status rule as the live path. It did not always.
+    - Reading a set deliberately continues past a truncated member and returns `Ok`.
+    - So the join never saw it, and a truncated pcap exited 0 with a whole-looking report.
+  - `ReadTally::report` in [`src/capture/file.rs`](../../src/capture/file.rs) is the one place both the single-threaded and `--cores` readers converge on.
+    - It records the same `lost` predicate that decides its log severity into the run-integrity record in [`src/output/run_integrity.rs`](../../src/output/run_integrity.rs).
+    - The exit-code sites and the `--json-dialogs`/`--report` markers read that record.
+    - One place emits both the human sentence on stderr and the machine record. So they cannot disagree.
+  - A `--plugin` that would not load is the same class and lands the same way
+    (exit `1`, `plugins.failed` in the record).
+  - The same record also carries idle compaction. Idle compaction deliberately does NOT move the exit status.
+    A retention policy doing what you configured it to do is not a failed run.
+- **Live loop** ([`capture/live.rs`](../../src/capture/live.rs)):
+  - Device-open and BPF-compile failures return clean errors via the ready channel.
+  - Receiver-dropped breaks cleanly.
+  - A transient `recv()` error is fatal to the capture thread, and untested.
+  - The thread ends by returning the error rather than panicking.
+  - The exit status is the only place the partial-read distinction survives.
+    Downgrade that join to a warning and exit 0, and an incomplete run reads exactly
+    like a whole one to anything checking `$?`.
+- **event_exec**: sipnab reaps every child, and a test covers the escaping.
+- **Log/JSON sinks**:
+  - `serde` escaping.
+  - `\r\n` stripped from alert log values (log-injection guard, tested).
+  - Writes use `?`, no `unwrap`.
+- **Shutdown**:
+  - Atomic-flag signal handlers ([`signals.rs`](../../src/signals.rs), tested).
+  - `parking_lot` locks cannot poison.
+  - Closed-channel sends checked.
+- **`unsafe`**: libc and other FFI calls, with RAII/Drop-guarded fd ops.
+  - Every block states its own soundness argument.
+  - [`Cargo.toml`](https://github.com/NormB/sipnab/blob/main/Cargo.toml) sets clippy's `undocumented_unsafe_blocks` to `warn`.
+  - Both the pre-push hook and CI run clippy with `-D warnings`.
+    So a block with no adjacent `// SAFETY:` comment fails the build.
+
+### Untested failure paths
+
+- Live-capture **transient recv error**: needs a fault-injecting capture source.
+- **Interface-down mid-capture**: funnels into the same fatal recv path.
+- **Opus decode** ([`rtp/opus_decode.rs`](../../src/rtp/opus_decode.rs)) delegates to the external `libopus`.
+  Its FFI input is length-checked. The codec itself is not fuzzed here.
+- No disk-full test for the pcap/wav writers. Writes propagate `?`, so there is
+  no panic, but no test covers the error path.

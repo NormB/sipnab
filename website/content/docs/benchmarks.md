@@ -1,7 +1,7 @@
 +++
 title = "Check how fast sipnab is"
 weight = 19
-description = "Reproducible throughput and memory benchmarks, and what the headroom buys: how much of an estate one sipnab can take at once, multi-core scaling, a controlled version A/B, and the cost of full SIP + RTP reconstruction at carrier scale."
+description = "Reproducible throughput and memory benchmarks, and what the headroom buys: how much of an estate one sipnab can take at once, multi-core scaling, and the cost of full SIP + RTP reconstruction at carrier scale."
 +++
 
 How fast sipnab is, measured honestly — and what that speed is for. The number
@@ -123,8 +123,9 @@ That moves where the curve stops, and the mechanism is why one and two cores
 did not move with it: until the change after 0.5.211, `--cores 1` and a run
 with no `--cores` used the single-threaded reader through libpcap, and on two
 cores nothing needs unblocking until enough workers pile up behind the reader.
-The single-threaded reader now maps the file too, and the 2026-10-11
-continuation below measures what that did on one core.
+The single-threaded reader now maps the file too, and
+[Throughput history](@/docs/internals/profiling.md#throughput-history)
+records what that did on one core.
 
 **The A/B that measured this is not on this page**, and this page drops the
 sentences that used to quote its spread and its per-core gaps rather than
@@ -142,124 +143,11 @@ Before v0.4.16 a per-packet cross-core hand-off collapsed this to 0.84M @ 4
 cores and 0.50M @ 8. Batching the hand-off removed that one, and 0.5.104 extends
 the same cure to the single-core path.
 
-## Is the packet path still what it was at 0.5.47?
+## Throughput history
 
-No — it is **faster**. Throughput fell 40% in 0.5.84 and held that loss for four
-releases. 0.5.89 recovered part of it, and 0.5.91 went past where it started.
-
-Both release artifacts checksum-verified, identical corpus, same idle host, same
-session, with interleaved replicates so host drift cannot pass for a difference
-between versions:
-
-| cores | 0.5.47 | 0.5.88 | 0.5.89 | 0.5.91 | 0.5.91 vs 0.5.47 |
-|------:|-------:|-------:|-------:|-------:|-----------------:|
-| 1 | 1.06M | 0.91M | 0.96M | 1.07M | +1% |
-| 2 | 2.27M | 1.39M | 1.69M | 2.21M | −3% |
-| 4 | 2.02M | 1.33M | 1.90M | **2.32M** | **+15%** |
-| 8 | 1.91M | 1.29M | 1.73M | 2.13M | +12% |
-
-Within-version spread is about 2% and the 0.5.47 → 0.5.88 gap is about 39%, so
-that gap is roughly eighteen times the noise floor. An unrelated third-party binary
-measured identically in both arms — a different program, same corpus, same
-afternoon, that did not move. That is what rules out the host.
-
-**The cause.** 0.5.84 began stamping a frame-provenance digest on the serial
-reader, the one stage `--cores` waits on: a single thread reads, copies and
-host-pair-peeks every packet while the workers idle. That charged it about 240
-bytes of dependent multiplies per packet — over this corpus that is arithmetic
-rather than a measurement: 535,000 packets × ~240 bytes ≈ 128 MB hashed a byte
-at a time.
-
-0.5.89 moves the hash to the workers, computing the same FNV-1a
-over the same bytes, so pointers already written down still resolve. Because
-the work now spreads across workers, the recovery scales with them: about 81%
-of the loss at four cores, about 34% at two.
-
-**Why 0.5.91 overshot.** Two further changes, both from the same profile.
-`parse_packet` stopped building a `FrameRef` per packet — a `FrameRef` owns an
-`Arc<str>`, so each one cost an atomic pair for a pointer that ~93% of frames
-never keep.
-
-The reader also stopped allocating each frame separately: it now
-cuts them from a shared 64 KiB block, so the allocator's cross-thread free path
-runs once per ~270 frames instead of once per frame. Together those put
-four-core throughput **above** where it was before the regression — 2.32M
-against 0.5.47's 2.02M.
-
-The second change beat its own predicted ceiling,
-because frames sharing a block are also sequential in memory, which a
-diagnostic that scattered them into an arena could not show.
-
-**Still outstanding**, rather than left for the next re-run to discover:
-sipnab hashes every frame when only a retained pointer needs a digest (~35,000
-of 535,000 here), and a further ~12% of the original regression comes from
-something other than the digest that nobody has identified yet. PERF1 tracks
-both.
-
-**CI measures throughput now, nightly rather than per push.** When that
-regression shipped four times, nothing here measured speed. The `Throughput`
-workflow now runs a regression gate at 03:29 UTC daily against a committed
-baseline and fails below a stated floor. It is nightly on purpose: the reference
-host is one self-hosted runner that also serves CI, so two jobs on it would
-measure their own contention. It does not catch slow erosion inside the floor —
-a deliberate trade.
-
-**Continued, 2026-08-17: 0.5.103 → 0.5.104.** The table above dates from
-2026-08-10 and its columns say nothing about anything released after. This
-continuation is a separate session with its own control, both released
-artifacts, checksum-verified, same idle host:
-
-| cores | 0.5.103 | 0.5.104 | change |
-|------:|--------:|--------:|-------:|
-| 1 | 1.01M | 1.28M | **+27%** |
-| 2 | 2.21M | 2.17M | −2% |
-| 4 | 2.29M | **2.31M** | +1% |
-| 8 | 2.13M | 2.16M | +1% |
-
-The single-core gain is 0.5.104's batched file read. The 0.5.103 single-core
-figure also records what happened between 0.5.91 and 0.5.103: a ~4%-of-figure
-erosion, diffuse across two hundred commits of added analysis, that a profiler
-could not pin to any single function — found, bounded, and overtaken by the
-batching change rather than chased line by line.
-
-**Continued, 2026-10-11: 0.5.160, 0.5.211 and main after 0.5.211.** Local
-release builds of the v0.5.160 tag (`6df351b8`), the v0.5.211 tag
-(`1d81503a`) and main at `15e5e7bd`, same idle host, same session, the three
-interleaved in every replicate. Each cell is the three replicates, lowest
-first:
-
-| cores | 0.5.160 | 0.5.211 | `15e5e7bd` |
-|------:|--------:|--------:|-----------:|
-| 1 | 1.06 / 1.06 / 1.07M | 0.97 / 0.97 / 0.98M | **1.16 / 1.19 / 1.19M** |
-| 2 | 2.63 / 2.68 / 2.69M | 2.58 / 2.59 / 2.59M | 2.59 / 2.61 / 2.64M |
-| 4 | 3.50 / 3.55 / 3.55M | 3.41 / 3.48 / 3.55M | 3.45 / 3.49 / 3.56M |
-| 8 | 3.07 / 3.12 / 3.18M | 3.05 / 3.05 / 3.17M | 3.11 / 3.12 / 3.18M |
-
-`vmstat` idle fell to 90-91% during the second replicate of 0.5.211 and of
-`15e5e7bd`, below the 96% this page requires. The conclusions below hold with
-or without those two replicates.
-
-**One core lost about 8% between 0.5.160 and 0.5.211, and the change after
-0.5.211 more than recovered it.** `perf` on main after 0.5.210 put 9.6% of
-cycles in glibc's `fread` lock on the libpcap reader thread and 7.6% in
-`clock_gettime`, called once per packet by the keylog poll even with no
-keylog watch. `15e5e7bd` reads the file through the same mapping
-`--cores` uses, cutting frames from shared 64 KiB blocks, and reads the clock
-only for `--keylog-watch` or `--keylog-fd`. One core is now about 20%
-above 0.5.211 and about 10% above 0.5.160. Two, four and eight cores are the
-same within the spread of each version's replicates.
-
-The single-core runs of `15e5e7bd` produce byte-identical `--json-dialogs`
-output to 0.5.211's on this corpus. Peak RSS on one core rose from 160.9 to
-168.4 MiB, and 0.5.160 measured 167.9-168.2 MiB.
-
-The same A/B settles what the pre-0.5.47 tables mean: they measure an
-unpublished corpus nobody can rebuild, so nothing below them compares to them
-and this page does not restate them. This paragraph used to carry a
-single-core figure for 0.5.18 against a figure "this page published", and
-neither resolved to a committed record. The claim they supported still holds
-and is the useful part: the gap between the old tables and these is the corpus,
-not a regression.
+The A/B sessions that measured past regressions and their repairs, from 0.5.47
+onward, are in
+[Profiling: Throughput history](@/docs/internals/profiling.md#throughput-history).
 
 ## What the throughput includes
 
