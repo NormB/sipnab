@@ -4,6 +4,12 @@ This file lists all notable changes to the `sipnab-g729` crate. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the
 crate follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.3] - 2026-10-17
+
+### Security
+
+- `zip` 9.0.4 replaces 8.6.0 for the `std` table importer, clearing RUSTSEC-2026-0367, RUSTSEC-2026-0368 and RUSTSEC-2026-0369. The importer reads archive members into memory by name and never calls `zip`'s `extract()` functions, which the advisories concern.
+
 ## [0.1.2] - 2026-10-16
 
 ### Changed
