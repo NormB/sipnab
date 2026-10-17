@@ -178,6 +178,7 @@ fn the_parallel_reader_reports_the_same_retries() -> Result<(), TestError> {
             "--no-config",
             "--cores",
             "2",
+            "--report",
             "--rtpproxy-control",
             "192.0.2.40:7722",
         ])

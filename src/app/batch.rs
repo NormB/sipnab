@@ -1203,6 +1203,7 @@ pub fn run_cores_file(
         tracing::error!("--cores: no capture files to read");
         crate::capture::archive::release_run_and_exit(1);
     }
+    crate::app::bootstrap::refuse_cores_without_a_view(cli, !vcon_rules.is_empty());
     let no_rtp = cli.no_rtp(config);
     let pcfg = parallel_config(cli, config, portrange, no_rtp);
     let pre_opened = match crate::app::bootstrap::prepare_cores_inputs(

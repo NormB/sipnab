@@ -178,6 +178,17 @@ You gave `--lint` with a suppression file (`{name}`, from `--lint-suppress-file`
 
 **Exit code:** 2.
 
+### `--cores {} asks for no view: the parallel reader prints no per-message lines, so this run would read the capture, print nothing and still exit 0. Ask for a whole-capture view (--report, --json-dialogs, --analyze, --call-report), or drop --cores for per-message output.`
+
+`--cores` above 1 with `-I` (and without `--multi-device`) uses the parallel file reader, which prints only the whole-capture views you ask for. The command line asks for none of them, and the config file holds no `[[vcon.rule]]`. The placeholder is the `--cores` value. sipnab refuses before reading the capture.
+
+**What to do:** Do one of these:
+
+- Add a view, for example `sipnab -N -I capture.pcap --cores 4 --report`. The views are `--report`, `--json-dialogs`, `--stun`, `--json-stun`, `--analyze`, `--json-analyze`, `--yang-analyze`, `--call-report`, `--export-vcon`, `--export-vcon-when` and `--lint`.
+- Remove `--cores` (or set it to 1) to print one line per SIP message.
+
+**Exit code:** 2.
+
 ### `--cores opens all {files} input file(s) before dropping root privileges, and this process may hold {soft_limit} open files. Raise the limit (ulimit -n), read fewer files per run, or run as an ordinary user, which opens each file when it is read.`
 
 A `--cores` run started as root opens every input file before it drops to `--user` (or `nobody`), so it can still read files only root may read. That holds one open file per input, and `{files}` inputs do not fit under the process limit `{soft_limit}` with room for the run's own files.

@@ -1668,6 +1668,55 @@ fn refuse_cores_without_their_outputs(cli: &Cli, config: &Config) {
     }
 }
 
+/// Whether a `--cores N` run asks for a whole-capture view, or is not a
+/// `--cores N` file run at all.
+///
+/// The parallel reader prints no per-message lines, so a run naming none of
+/// the views below read the whole capture, wrote nothing to stdout and exited
+/// 0, which reads as "nothing to report". `has_export_rules` is whether the
+/// config holds a `[[vcon.rule]]`, which writes containers on its own.
+///
+/// The list is every producer `batch::generate_reports` and the lint stage
+/// run after a `--cores` read; a new one adds its flag here.
+fn cores_asks_for_a_view(cli: &Cli, has_export_rules: bool) -> bool {
+    if !(cli.limits_args.cores > 1 && cli.has_input() && !cli.capture_args.multi_device) {
+        return true;
+    }
+    let out = &cli.output_args;
+    out.report
+        || out.json_dialogs
+        || out.stun
+        || out.json_stun
+        || out.analyze
+        || out.json_analyze
+        || out.yang_analyze
+        || out.call_report.is_some()
+        || out.export_vcon.is_some()
+        || out.export_vcon_when.is_some()
+        || out.lint
+        || has_export_rules
+        || cli.one_shots().iter().any(|s| s.active)
+}
+
+/// Refuse a `--cores N` run that asks for no whole-capture view: see
+/// `cores_asks_for_a_view`.
+///
+/// # Side effects
+///
+/// Exits the process with code 2 when refused.
+pub fn refuse_cores_without_a_view(cli: &Cli, has_export_rules: bool) {
+    if !cores_asks_for_a_view(cli, has_export_rules) {
+        tracing::error!(
+            "--cores {} asks for no view: the parallel reader prints no per-message \
+             lines, so this run would read the capture, print nothing and still exit 0. \
+             Ask for a whole-capture view (--report, --json-dialogs, --analyze, \
+             --call-report), or drop --cores for per-message output.",
+            cli.limits_args.cores
+        );
+        crate::capture::archive::release_run_and_exit(2);
+    }
+}
+
 /// Warn about a run that is correct but less than was asked for.
 fn warn_degraded_run_shape(cli: &Cli, config: &Config) {
     for msg in degraded_run_warnings(cli, config) {
@@ -11240,6 +11289,50 @@ mod decision_tests {
         let single = cli_from(&["--cores", "1", "-I", FIXTURE_FILE, "--json"]);
         assert!(cores_unsupported_flags(&single, &config).is_empty());
         Ok(())
+    }
+
+    /// Every whole-capture view counts as asking for one; a run naming none,
+    /// with no export rule and no active query flag, is refused.
+    #[test]
+    fn a_cores_run_must_ask_for_a_view() {
+        let base = ["--cores", "2", "-I", FIXTURE_FILE];
+        let with = |extra: &[&str]| {
+            let mut argv = base.to_vec();
+            argv.extend_from_slice(extra);
+            cli_from(&argv)
+        };
+        assert!(!cores_asks_for_a_view(&with(&[]), false), "no view");
+        for view in [
+            &["--report"][..],
+            &["--json-dialogs"],
+            &["--stun"],
+            &["--json-stun"],
+            &["--analyze"],
+            &["--json-analyze"],
+            &["--yang-analyze"],
+            &["--call-report", "x"],
+            &["--export-vcon", "x"],
+            &[
+                "--export-vcon-when",
+                "method == INVITE",
+                "--export-vcon-dir",
+                "v",
+            ],
+            &["--lint"],
+        ] {
+            assert!(cores_asks_for_a_view(&with(view), false), "{view:?}");
+        }
+        assert!(cores_asks_for_a_view(&with(&[]), true), "export rule");
+        let mut query = with(&[]);
+        query.test_one_shots.push(crate::cli::OneShot {
+            name: "--test-query",
+            active: true,
+            implies_no_tui: true,
+            owns_stdout: true,
+        });
+        assert!(cores_asks_for_a_view(&query, false), "active query flag");
+        let single = cli_from(&["--cores", "1", "-I", FIXTURE_FILE]);
+        assert!(cores_asks_for_a_view(&single, false), "--cores 1");
     }
 
     /// The capacity check accepts exactly enough slots and names HEP senders

@@ -8,6 +8,16 @@ sipnab is pre-1.0: the public API and the CLI surface are not stable, and a
 breaking change may land in any release. Breaking changes are called out in the
 entry that carries them.
 
+## [Unreleased]
+
+### Changed
+
+- **Breaking:** `sipnab -N -I <file> --cores N` (N above 1) with no
+  whole-capture view now exits 2 before reading, naming the views. It used to
+  read the whole capture, print nothing to stdout and exit 0, because the
+  parallel reader prints no per-message lines. Add `--report` (or another
+  view), or drop `--cores`. A `[[vcon.rule]]` in the config counts as a view.
+
 ## [0.5.225] - 2026-10-17
 
 ### Security

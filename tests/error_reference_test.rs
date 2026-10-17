@@ -796,7 +796,9 @@ const EXPECTED_UNRESOLVED: usize = 83;
 // `{client} speaks ...` and `put credentials in {setting} ...`, and a URL read
 // without credentials has its own refusal (+1). src/app/bootstrap.rs,
 // `--uprobe-list --uprobe-library` names each path that is not a file (+1).
-const EXPECTED_TEMPLATES: usize = 504;
+// 504 -> 505: src/app/bootstrap.rs, an offline --cores run that asks for no
+// whole-capture view is refused (refuse_cores_without_a_view). Nothing removed.
+const EXPECTED_TEMPLATES: usize = 505;
 
 // ---------------------------------------------------------------------------
 // The page gates

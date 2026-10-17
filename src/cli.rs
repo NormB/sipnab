@@ -4743,7 +4743,8 @@ pub struct LimitsArgs {
     /// `--analyze`, `--call-report`) and no per-message lines. A flag it does
     /// not carry out (per-message output and matching, detectors, decryption,
     /// DTMF, exec hooks, servers, HEP forwarding, `--replay`, confinement) is
-    /// refused with exit 2, naming it: drop `--cores` for those.
+    /// refused with exit 2, naming it: drop `--cores` for those. A run that
+    /// asks for no whole-capture view is refused with exit 2 as well.
     ///
     /// With a live device: N capture SOCKETS, which the kernel hash-distributes
     /// the interface across (`PACKET_FANOUT`, Linux only; one socket elsewhere,

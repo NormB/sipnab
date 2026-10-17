@@ -105,7 +105,7 @@ fn skipped_holes_are_reported_as_capture_loss_by_both_readers() -> Result<(), Te
         let out = Command::new(env!("CARGO_BIN_EXE_sipnab"))
             .args(["-N", "-I"])
             .arg(&path)
-            .args(["--no-cli-print", "--cores", cores])
+            .args(["--no-cli-print", "--report", "--cores", cores])
             .env("NO_COLOR", "1")
             .output()
             .map_err(|e| format!("spawn sipnab: {e}"))?;
