@@ -1472,5 +1472,6 @@ column_selector = "F10"
 >   selects which file to read.
 >
 > So `-D` answers "did sipnab read the file I meant, and does it know my
-> keys?". It does not answer "what value is this setting running with?", and it
-> does not check every value. See the top of this page.
+> keys?". It does not answer "what value is this setting running with?". It
+> refuses the values a run refuses from the file alone. See the top of this
+> page.
