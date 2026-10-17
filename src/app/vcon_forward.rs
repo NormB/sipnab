@@ -1064,6 +1064,8 @@ enum ResolveStep {
     Url,
     /// The replace URL did not parse.
     ReplaceUrl,
+    /// The transparency service's URL did not parse.
+    ScittUrl,
     /// Anything else, each of which involves a flag.
     Other,
     /// A refusal of the config file's keys alone.
@@ -1146,9 +1148,11 @@ impl ForwardPlan {
         let flag = |message: String| (Origin::CommandLine, message);
         let url_origin = Origin::of(args.vcon_forward_url.is_some());
         let replace_origin = Origin::of(args.vcon_forward_replace_url.is_some());
+        let scitt_url_origin = Origin::of(args.vcon_forward_scitt_url.is_some());
         Self::resolve_inner(args, keys).map_err(|(step, message)| match step {
             ResolveStep::Url => (url_origin, message),
             ResolveStep::ReplaceUrl => (replace_origin, message),
+            ResolveStep::ScittUrl => (scitt_url_origin, message),
             ResolveStep::Other => flag(message),
             ResolveStep::Keys => (Origin::ConfigFile, message),
         })
@@ -1212,6 +1216,17 @@ impl ForwardPlan {
                 .map_err(|e| (ResolveStep::ReplaceUrl, format!("{from} {e}")))?;
         }
         let credential = credential(args, keys, kind).map_err(other)?;
+        // The SCITT URL is parsed first on its own, so its refusal carries
+        // the origin of the URL (flag or key) rather than a flag's exit code.
+        if let Some((text, from)) = pick_text(
+            args.vcon_forward_scitt_url.as_deref(),
+            "--vcon-forward-scitt-url",
+            keys.scitt_url.as_deref(),
+            "[vcon_forward] scitt_url",
+        ) {
+            Endpoint::parse(text, UrlUse::FORWARDER_SCITT)
+                .map_err(|e| (ResolveStep::ScittUrl, format!("{from} {e}")))?;
+        }
         let scitt = scitt_plan(args, keys).map_err(other)?;
         let interval = pick_number(FORWARD_INTERVAL, args.vcon_forward_interval, keys.interval)
             .map_err(other)?;

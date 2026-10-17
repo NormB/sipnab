@@ -3759,9 +3759,8 @@ The URL holds a user name or password before an `@` (`https://user:secret@host/.
 
 **Exit code:**
 
-- 2 when the URL came from a flag (`--vcon-forward-url`, `--vcon-forward-replace-url` or `--vcon-fetch-url`);
-- 1 when it came from the config file (`[vcon_forward] url`, `[vcon_forward] replace_url`, `[vcon_fetch] url` or `[[vcon.enrich]] url`);
-- 2 for the transparency service URL, from `--vcon-forward-scitt-url` or `[vcon_forward] scitt_url` alike.
+- 2 when the URL came from a flag (`--vcon-forward-url`, `--vcon-forward-replace-url`, `--vcon-forward-scitt-url` or `--vcon-fetch-url`);
+- 1 when it came from the config file (`[vcon_forward] url`, `[vcon_forward] replace_url`, `[vcon_forward] scitt_url`, `[vcon_fetch] url` or `[[vcon.enrich]] url`).
 
 ### `'{shown}': a URL {client} reads cannot hold credentials`
 
@@ -3930,9 +3929,8 @@ The URL does not start with `http://` or `https://`, the only two schemes sipnab
 
 **Exit code:**
 
-- 2 when the URL came from a flag (`--vcon-forward-url`, `--vcon-forward-replace-url` or `--vcon-fetch-url`);
-- 1 when it came from the config file (`[vcon_forward] url`, `[vcon_forward] replace_url`, `[vcon_fetch] url` or `[[vcon.enrich]] url`);
-- 2 for the transparency service URL, from `--vcon-forward-scitt-url` or `[vcon_forward] scitt_url` alike.
+- 2 when the URL came from a flag (`--vcon-forward-url`, `--vcon-forward-replace-url`, `--vcon-forward-scitt-url` or `--vcon-fetch-url`);
+- 1 when it came from the config file (`[vcon_forward] url`, `[vcon_forward] replace_url`, `[vcon_forward] scitt_url`, `[vcon_fetch] url` or `[[vcon.enrich]] url`).
 
 ### `'{url}': the {} kind reads at a URL template; write {{uuid}} where the uuid goes`
 
