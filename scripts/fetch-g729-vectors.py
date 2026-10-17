@@ -52,6 +52,8 @@ import hashlib
 import os
 import pathlib
 import sys
+import time
+import urllib.error
 import urllib.request
 import zipfile
 
@@ -242,18 +244,46 @@ def extract(package, dest, pins=None):
             partial.replace(target)
 
 
-def download(dest, url=PACKAGE_URL, name=".g729-package.zip.part"):
-    """Download a package into DEST (never /tmp) and return its path."""
+# Seconds to wait before each retry of a failed download. The ITU server
+# answers 404, 500 and 503 for minutes at a time and then serves the same URL
+# again, and CI must not fail on that; the package's pinned sha256 still
+# decides whether what arrives is accepted.
+RETRY_WAITS = (5, 15, 30, 60, 120)
+
+
+def download(
+    dest,
+    url=PACKAGE_URL,
+    name=".g729-package.zip.part",
+    opener=urllib.request.urlopen,
+    sleep=time.sleep,
+):
+    """Download a package into DEST (never /tmp) and return its path.
+
+    Retries an HTTP error, a connection error or a timeout after each wait in
+    RETRY_WAITS, and raises the last error when every attempt failed.
+    """
     pathlib.Path(dest).mkdir(parents=True, exist_ok=True)
     target = pathlib.Path(dest) / name
     request = urllib.request.Request(url, headers={"User-Agent": "sipnab-fetch"})
-    with urllib.request.urlopen(request, timeout=120) as response, open(target, "wb") as out:
-        while True:
-            block = response.read(1 << 20)
-            if not block:
-                break
-            out.write(block)
-    return target
+    for attempt, wait in enumerate((*RETRY_WAITS, None)):
+        try:
+            with opener(request, timeout=120) as response, open(target, "wb") as out:
+                while True:
+                    block = response.read(1 << 20)
+                    if not block:
+                        break
+                    out.write(block)
+            return target
+        except (urllib.error.URLError, TimeoutError, ConnectionError) as err:
+            if wait is None:
+                raise
+            print(
+                f"fetch-g729-vectors: attempt {attempt + 1} failed ({err}); "
+                f"retrying in {wait} s",
+                file=sys.stderr,
+            )
+            sleep(wait)
 
 
 def main(argv=None):
