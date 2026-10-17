@@ -1147,7 +1147,9 @@ fn parse_hep_v3(data: &[u8]) -> Result<HepPacket> {
         if let Some(bit) = known_chunk_bit(chunk_type) {
             ensure!(
                 seen_types & bit == 0,
-                "HEP v3 chunk type {chunk_type:#06x} appears more than once;                  a repeated chunk lets an appended copy overwrite what the                  first one asserted",
+                "HEP v3 chunk type {chunk_type:#06x} appears more than once; \
+                  a repeated chunk lets an appended copy overwrite what the \
+                  first one asserted",
             );
             seen_types |= bit;
         }

@@ -47,6 +47,9 @@ pub struct LoadOutcome {
     pub dialogs: usize,
     /// RTP streams the stores hold now.
     pub streams: usize,
+    /// How long the load ran, from its start to the worker finishing. A
+    /// finished load reports this, not the time since it started.
+    pub took: std::time::Duration,
     /// Why the load stopped early, when it did.
     ///
     /// A partial load is still reported as done with whatever it managed to
@@ -97,6 +100,16 @@ impl CaptureLoad {
     #[must_use]
     pub fn finished(&self) -> bool {
         self.done.load(Ordering::Acquire)
+    }
+
+    /// How long this load has run: until now while it runs, and its fixed
+    /// duration once it has finished, so polls after `done` agree.
+    #[must_use]
+    pub fn elapsed(&self) -> std::time::Duration {
+        self.outcome
+            .lock()
+            .as_ref()
+            .map_or_else(|| self.started.elapsed(), |o| o.took)
     }
 }
 
@@ -200,6 +213,7 @@ pub fn spawn(
                 packets,
                 dialogs,
                 streams,
+                took: worker.started.elapsed(),
                 error,
                 archive_note: archive_note(locked),
             });

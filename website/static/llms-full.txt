@@ -9453,7 +9453,9 @@ nothing, including the capture id it claimed.
 counts and a `note`. It never answers with an empty roster that would read as "nobody is
 sending".
 
-The MCP tool `hep_senders` returns the same bytes for the same roster.
+The MCP tool `hep_senders` returns the same fields and values for the same
+roster, with its keys in alphabetical order and `source_exhausted` and
+`source_stopped_early` added.
 `--hep-senders` prints it at the end of a headless run. Prometheus carries only
 the aggregate counts, with no per-sender label. See
 [Metrics](prometheus-metrics.md).
@@ -33225,6 +33227,19 @@ which bundle to add. Under `--mcp-tools core` it ends:
 Tools loaded: core. Other bundles, which the operator can add with --mcp-tools or [mcp] tools: signaling, captures, security, media, relay, tfps, server, vcon, tls.
 ```
 
+The same string names every loaded tool that changes another system. Without
+`--allow-action` it says:
+
+```text
+This server changes no external system: the tools that would (actions_revert, tfps_ban, tfps_unban) refuse unless the operator enables them with --allow-action.
+```
+
+With `--allow-action tfps:mcp` it says:
+
+```text
+The operator enabled actions that change another system from MCP (--allow-action tfps:mcp): actions_revert, tfps_ban, tfps_unban. Over HTTP they also need an "actions"-scope token.
+```
+
 Output schemas are **off by default**.
 
 - MCP makes them optional, and they are more than half the bytes.
@@ -33738,7 +33753,7 @@ under: `scanner`, `fraud`, `digest`, `reg_flood`.
   the refusal also suggests the underscore spelling:
 
   ```json
-  {"code":-32602,"message":"unknown kind 'reg-flood', expected one of: digest, fraud, reg_flood, scanner (did you mean 'reg_flood'?)","data":{"reason":"invalid_value"}}
+  {"code":-32602,"message":"unknown kind 'reg-flood', expected one of: digest, fraud, reg_flood, scanner (did you mean 'reg_flood'?)","data":{"param":"kinds","reason":"invalid_choice","valid_values":["digest","fraud","reg_flood","scanner"]}}
   ```
 
 ### Error model
@@ -33874,7 +33889,7 @@ which:**
 | `get_call_tree` | No, `truncated` only | A breadth-first walk outward from one call, stopped at `limit` legs | Raise `limit` |
 | `top_talkers` | Yes, `distinct_talkers` | A ranking by dialog count | Raise `limit` |
 | `describe_endpoint` | Yes, `dialogs` | `recent_dialogs` is newest first by `updated_at`, which moves each time a call gains a message, so a cursor on it would skip rows | [`list_dialogs`](mcp-tools-core.md#list_dialogs) with a filter such as `src.ip == '192.0.2.10'` or `from.user == 'alice'` pages that endpoint's dialogs |
-| `hep_senders` | Yes, `senders_tracked` and `refused_sources_tracked` | Two lists in one answer, the refused sources ranked by count, and the same bytes `GET /v1/hep/senders` returns | Raise `limit`, and raise `--mcp-max-rows` as well when the listener tracks more than 1000 senders |
+| `hep_senders` | Yes, `senders_tracked` and `refused_sources_tracked` | Two lists in one answer, the refused sources ranked by count, and the same fields and values `GET /v1/hep/senders` returns | Raise `limit`, and raise `--mcp-max-rows` as well when the listener tracks more than 1000 senders |
 | `tfps_labels` | No: `total` counts the rows TFPS returned, and `truncated` says it held more | TFPS's `log` command takes a row count and no offset, so there is no position to resume from | Raise `limit`, or run `tfps_ctl log --json --limit N` on the TFPS host |
 | `tail_dialogs` | No | It has a cursor. The table names it because it has no total | Follow `next_cursor` until the page comes back empty |
 
@@ -34033,6 +34048,9 @@ read ends, with `done: true`. During a read:
   "error": null                  // set when a load stopped early
 }
 ```
+
+`elapsed_sec` counts while the read runs. Once `done` is true it is how long
+the read took, and later calls report the same value.
 
 The stores fill as the read goes, so dialogs appear before `done`. Wait for
 `done` before concluding anything about how many calls the capture holds — a
@@ -37727,6 +37745,9 @@ A second later the same session's `capture_status` shows:
 "source_exhausted": true
 ```
 
+`elapsed_sec` stops counting when `done` turns true: it is how long the read
+took, and every later `capture_status` reports the same value.
+
 **Every answer afterwards carries a new `capture_identity.instance`.** Treat any
 cursor, message index or Call-ID from before the swap as void: they addressed a
 different capture. `discarded_dialogs` says how many dialogs the swap
@@ -37811,10 +37832,10 @@ credits both ends of a dialog.
 
 | Name | Type | Legal values | If omitted |
 |---|---|---|---|
-| `by` | string | `ip`, `ua` or `prefix`. Anything else fails with `invalid_params` naming the legal set. | Required. |
+| `by` | string | `ip`, `ua` or `prefix`. Anything else fails with `invalid_params`, `reason: invalid_choice`, and the legal set in `valid_values`. | Required. |
 | `limit?` | integer? | Bounded by `--mcp-max-rows`. | The usual row default. |
 | `filter?` | string? | Alias or DSL, the same vocabulary every other tool takes. | The whole store. |
-| `prefix_digits?` | integer? | How many leading digits make a prefix bucket. | 4. |
+| `prefix_digits?` | integer? | How many leading digits make a prefix bucket. `0` fails with `reason: invalid_value`, `param: prefix_digits`. | 4. |
 
 **Returns:**
 
@@ -37902,12 +37923,16 @@ participant has been doing, from every dialog the store holds.
 | `limit?` | u32? | Bounds `recent_dialogs`, `problem_call_ids` and `findings` only. Ceiling is `--mcp-max-rows` (1000 by default), `0` means the default. | 50. |
 
 **Give exactly one selector.** Passing both `ip` and `user` fails with
-`invalid_params`:
+`invalid_params` and `reason: conflicting_params`:
 
 ```jsonc
 { "code": -32602,
-  "message": "give exactly one of ip or user, not both: the two select different sets, and whether you meant their intersection or their union changes the answer" }
+  "message": "give exactly one of ip or user, not both: the two select different sets, and whether you meant their intersection or their union changes the answer",
+  "data": { "reason": "conflicting_params" } }
 ```
+
+Passing neither fails with `reason: missing_param`. An `ip` that does not
+parse fails with `reason: invalid_value` and `param: ip`.
 
 The example runs against
 [`tests/pcap-samples/sip-rtp-g711.pcap`](https://github.com/NormB/sipnab/raw/main/tests/pcap-samples/sip-rtp-g711.pcap):
@@ -39447,7 +39472,7 @@ enabling as `tfps_ban`, and each unban counts against the same rate limits.
 | Parameter | Type | Legal values | If omitted |
 |---|---|---|---|
 | `id?` | string? | an action id from `tfps_ban`'s answer | give exactly one of `id` or `all` |
-| `all?` | boolean? | `true` | give exactly one of `id` or `all`; anything else is `invalid_params` (-32602) |
+| `all?` | boolean? | `true` | give exactly one of `id` or `all`. Neither is `invalid_params` (-32602) with `reason: missing_param`; both is `reason: conflicting_params` |
 
 ```jsonc
 // actions_revert { "all": true }
@@ -39869,8 +39894,10 @@ this run has no HEP listener (-L/--hep-listen), so there are no senders to repor
 ```
 
 Every value is sipnab's own count, a claimed id, an address or a time, and no
-byte of any packet, so the response carries no untrusted-content note. `GET /v1/hep/senders` returns the same bytes for the same roster, and
-`--hep-senders` prints it at the end of a headless run.
+byte of any packet, so the response carries no untrusted-content note. `GET /v1/hep/senders` returns the same fields and values for the same
+roster. The MCP answer differs in two ways: its keys are in alphabetical order,
+and it adds `source_exhausted` and `source_stopped_early`. `--hep-senders`
+prints the roster at the end of a headless run.
 
 ### `server_capabilities`
 
@@ -41217,8 +41244,11 @@ message names the cause and the fix:
   its capture devices, so a server started with `--user` cannot attach probes
   later. Start it without dropping privileges, or run `sipnab --uprobe-tls` on
   the command line instead.
-- **An unknown flavor or an unusable library path** (`reason: invalid_value`).
-  Use `openssl` or `wolfssl`, and a `probe_path` from `list_tls_libraries`.
+- **An unknown flavor** (`reason: invalid_choice`, `param: flavors`,
+  `valid_values: ["openssl", "wolfssl"]`). sipnab checks the flavor names
+  before it checks for root.
+- **An unusable library path** (`reason: invalid_value`). Use a `probe_path`
+  from `list_tls_libraries`.
 - **A TLS capture is already running** (`reason: not_ready`). Call
   `stop_tls_capture` first.
 - **The server is reading a live interface** (`reason: not_ready`). A uprobe

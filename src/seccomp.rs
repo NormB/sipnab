@@ -764,7 +764,8 @@ pub fn install(mode: SeccompMode) -> SeccompStatus {
     // and merely reassuring for a filter that denies.
     if !in_filter_mode() {
         return SeccompStatus::Failed(
-            "the kernel accepted the filter and then reported no filter mode;              nothing is being recorded"
+            "the kernel accepted the filter and then reported no filter mode; \
+              nothing is being recorded"
                 .to_string(),
         );
     }

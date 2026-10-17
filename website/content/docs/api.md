@@ -3118,7 +3118,9 @@ nothing, including the capture id it claimed.
 counts and a `note`. It never answers with an empty roster that would read as "nobody is
 sending".
 
-The MCP tool `hep_senders` returns the same bytes for the same roster.
+The MCP tool `hep_senders` returns the same fields and values for the same
+roster, with its keys in alphabetical order and `source_exhausted` and
+`source_stopped_early` added.
 `--hep-senders` prints it at the end of a headless run. Prometheus carries only
 the aggregate counts, with no per-sender label. See
 [Metrics](@/docs/metrics.md).

@@ -400,7 +400,8 @@ fn the_wiki_link_scan_reads_a_plausible_tree() -> Result<(), TestError> {
             files
                 .iter()
                 .any(|p| p.to_string_lossy().replace('\\', "/") == expected),
-            "the walk did not reach {expected}, which is one of the pages the              ratchet's own attribution names"
+            "the walk did not reach {expected}, which is one of the pages the \
+              ratchet's own attribution names"
         );
     }
     Ok(())

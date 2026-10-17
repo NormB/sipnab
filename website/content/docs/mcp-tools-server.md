@@ -401,8 +401,10 @@ this run has no HEP listener (-L/--hep-listen), so there are no senders to repor
 ```
 
 Every value is sipnab's own count, a claimed id, an address or a time, and no
-byte of any packet, so the response carries no untrusted-content note. `GET /v1/hep/senders` returns the same bytes for the same roster, and
-`--hep-senders` prints it at the end of a headless run.
+byte of any packet, so the response carries no untrusted-content note. `GET /v1/hep/senders` returns the same fields and values for the same
+roster. The MCP answer differs in two ways: its keys are in alphabetical order,
+and it adds `source_exhausted` and `source_stopped_early`. `--hep-senders`
+prints the roster at the end of a headless run.
 
 ### `server_capabilities`
 

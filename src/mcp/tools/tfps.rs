@@ -471,6 +471,13 @@ impl SipnabMcp {
         let target = match (params.id, params.all) {
             (Some(id), None) if !id.trim().is_empty() => RevertTarget::One(id),
             (None, Some(true)) => RevertTarget::All,
+            (Some(_), Some(true)) => {
+                return Err(errors::refuse(
+                    Reason::ConflictingParams,
+                    "name one action, not both: {\"id\": \"a-...\"} backs out one \
+                     action and {\"all\": true} every ban sipnab holds",
+                ));
+            }
             _ => {
                 return Err(errors::refuse(
                     Reason::MissingParam,

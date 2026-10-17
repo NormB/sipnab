@@ -5492,7 +5492,8 @@ mod tests {
         let json = serde_json::to_string(&v)?;
         assert!(
             json.contains("closed the persistence gate"),
-            "a run that stopped writing mid-capture does not reproduce from              the capture alone, and the container has to say so: {json}"
+            "a run that stopped writing mid-capture does not reproduce from \
+              the capture alone, and the container has to say so: {json}"
         );
         Ok(())
     }
@@ -5506,7 +5507,8 @@ mod tests {
         let json = serde_json::to_string(&v)?;
         assert!(
             json.contains("3 dialog(s) carried a deny flag"),
-            "absence reading as 'nothing happened' is the failure this module              exists to refuse: {json}"
+            "absence reading as 'nothing happened' is the failure this module \
+              exists to refuse: {json}"
         );
         Ok(())
     }

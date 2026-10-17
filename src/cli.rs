@@ -10930,11 +10930,13 @@ mod tests {
         ]);
         assert!(
             cli.mode_args.no_tui,
-            "--export-vcon-when must imply -N, or the containers are written              during a TUI session and the run still exits 0"
+            "--export-vcon-when must imply -N, or the containers are written \
+              during a TUI session and the run still exits 0"
         );
         assert!(
             !cli.output_args.no_cli_print,
-            "the containers go to a directory, so stdout is still the              operator's -- suppressing it would discard output they asked for"
+            "the containers go to a directory, so stdout is still the \
+              operator's -- suppressing it would discard output they asked for"
         );
         Ok(())
     }

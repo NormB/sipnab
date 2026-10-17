@@ -39,9 +39,9 @@ use serde::Deserialize;
 #[derive(Debug, Deserialize, JsonSchema)]
 #[schemars(crate = "rmcp::schemars")]
 pub struct HepSendersParams {
-    /// The most rows each list (senders, refused sources) may carry. Omitted
-    /// or 0, the server's row cap. The totals beside each list always count
-    /// everything.
+    /// The most rows each list (senders, refused sources) may carry.
+    /// Omitted or 0, 50: the default page. At most --mcp-max-rows. The totals
+    /// always count everything.
     #[serde(default)]
     pub limit: Option<u32>,
 }
@@ -69,7 +69,8 @@ impl SipnabMcp {
                        A run with no HEP listener returns listening false and \
                        a note. Every value is sipnab's own count, a claimed \
                        id, an address or a time; no packet payload is in it. \
-                       Same bytes as GET /v1/hep/senders.",
+                       Same fields and values as GET /v1/hep/senders, plus \
+                       source_exhausted and source_stopped_early.",
         output_schema = schema_for_output::<crate::output::model::HepSendersReport>(),
         annotations(read_only_hint = true, open_world_hint = false)
     )]
@@ -81,8 +82,9 @@ impl SipnabMcp {
         // The one builder `GET /v1/hep/senders` and `--hep-senders` call, over
         // the roster the listener hung on the capture meter. The report is
         // handed to the content block as the struct, as REST hands it to
-        // `Json`, so both serialize it the same way and one roster is one
-        // byte sequence on both doors.
+        // `Json`, so both carry the same fields and values. The bytes differ:
+        // the MCP block is sorted by key and dispatch adds the completeness
+        // stamp (`hep_senders_carries_the_rest_fields_plus_the_stamp`).
         let report = crate::capture::hep_roster::senders_report(
             self.capture_meter.as_ref().and_then(|m| m.hep_roster()),
             limit,
@@ -235,6 +237,102 @@ mod tests {
         assert_eq!(
             small, large,
             "a roster-wide figure moved with the page size"
+        );
+        Ok(())
+    }
+
+    /// The tool's description and its `limit` schema text, as `tools/list`
+    /// sends them.
+    fn wire_text() -> Result<(String, String), TestError> {
+        let router = SipnabMcp::hep_router();
+        let tool = router.get("hep_senders").ok_or("registered")?;
+        let limit = tool.input_schema["properties"]["limit"]["description"]
+            .as_str()
+            .ok_or("limit has a description")?
+            .to_string();
+        Ok((
+            tool.description.clone().unwrap_or_default().to_string(),
+            limit,
+        ))
+    }
+
+    /// MCP-A4(a): `limit` 0 (or omitted) is the default page of
+    /// `DEFAULT_LIMIT` rows, as on every list tool, and the schema text says
+    /// so. It said "the server's row cap", which a roster past 50 senders
+    /// shows to be false.
+    #[tokio::test]
+    async fn hep_senders_limit_zero_is_the_default_page_its_text_names() -> Result<(), TestError> {
+        use crate::mcp::shape::DEFAULT_LIMIT;
+        let t = std::time::Instant::now();
+        let mut state = RosterState::new(
+            SenderTrust::Unauthenticated,
+            DEFAULT_LIMIT + 20,
+            std::time::Duration::from_secs(30),
+            t,
+            chrono::Utc::now(),
+        );
+        for id in 0..u32::try_from(DEFAULT_LIMIT + 10)? {
+            let peer = std::net::IpAddr::from([192, 0, 2, u8::try_from(id)?]);
+            state.admitted(Some(id), peer, &hep_source_label(Some(id), peer), t);
+        }
+        let (_tx, rx) = crate::capture::channel::packet_channel(8);
+        let meter = rx.meter();
+        assert!(meter.attach_hep_roster(HepRoster::with_clock(state, Arc::new(move || t))));
+        let srv = server().with_capture_meter(Some(meter));
+        for limit in [None, Some(0)] {
+            let body = json_of(
+                &srv.hep_senders(Parameters(HepSendersParams { limit }))
+                    .await
+                    .map_err(|e| format!("the tool answers: {e:?}"))?,
+            )?;
+            assert_eq!(body["senders_tracked"], DEFAULT_LIMIT + 10, "{limit:?}");
+            assert_eq!(
+                body["senders"].as_array().map(Vec::len),
+                Some(DEFAULT_LIMIT),
+                "{limit:?}: the default page, not the row cap"
+            );
+        }
+        let (_, limit_text) = wire_text()?;
+        assert!(
+            limit_text.contains(&format!("Omitted or 0, {DEFAULT_LIMIT}: the default page")),
+            "the schema names the default page: {limit_text}"
+        );
+        Ok(())
+    }
+
+    /// MCP-A4(b): the answer carries the fields and values `GET
+    /// /v1/hep/senders` returns for the same roster, plus this server's
+    /// completeness stamp, and the description says exactly that. It said
+    /// "same bytes", which the stamp and the key order make false.
+    #[tokio::test]
+    async fn hep_senders_carries_the_rest_fields_plus_the_stamp() -> Result<(), TestError> {
+        use crate::mcp::completeness::{SOURCE_EXHAUSTED_KEY, SOURCE_STOPPED_EARLY_KEY};
+        let (_tx, rx) = crate::capture::channel::packet_channel(8);
+        let meter = rx.meter();
+        assert!(meter.attach_hep_roster(roster()?));
+        let rest = serde_json::to_value(crate::capture::hep_roster::senders_report(
+            meter.hep_roster(),
+            crate::mcp::shape::DEFAULT_LIMIT,
+        ))?;
+        let srv = server().with_capture_meter(Some(meter));
+        let mut result = srv
+            .hep_senders(Parameters(HepSendersParams { limit: None }))
+            .await
+            .map_err(|e| format!("the tool answers: {e:?}"))?;
+        crate::mcp::completeness::stamp("hep_senders", true, false, &mut result);
+        let mut mcp = json_of(&result)?;
+        let object = mcp.as_object_mut().ok_or("an object")?;
+        for key in [SOURCE_EXHAUSTED_KEY, SOURCE_STOPPED_EARLY_KEY] {
+            assert!(object.remove(key).is_some(), "the stamp carries {key}");
+        }
+        assert_eq!(mcp, rest, "the same fields and values as REST");
+        let (description, _) = wire_text()?;
+        assert!(
+            description.contains(
+                "Same fields and values as GET /v1/hep/senders, plus \
+                 source_exhausted and source_stopped_early"
+            ) && !description.contains("Same bytes"),
+            "{description}"
         );
         Ok(())
     }

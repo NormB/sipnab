@@ -248,6 +248,33 @@ fn an_agent_can_revert_what_it_banned() -> Result<(), TestError> {
     Ok(())
 }
 
+/// MCP-07: `actions_revert` with both `id` and `all: true` is
+/// `conflicting_params`, and with neither is `missing_param`, as the error
+/// table in docs/mcp-tools.md defines them. Both used to answer
+/// `missing_param`. TFPS is not asked either way.
+#[test]
+fn a_revert_naming_both_or_neither_target_gets_the_documented_reason() -> Result<(), TestError> {
+    let fake = Fake::new()?;
+    let journal = tempfile::tempdir()?;
+    let mut s = session(&fake, journal.path())?;
+    let both = s.call(
+        "actions_revert",
+        serde_json::json!({"id": "a-1", "all": true}),
+    )?;
+    assert_eq!(both["error"]["code"], -32602, "{both}");
+    assert_eq!(
+        both["error"]["data"]["reason"], "conflicting_params",
+        "{both}"
+    );
+    let neither = s.call("actions_revert", serde_json::json!({}))?;
+    assert_eq!(
+        neither["error"]["data"]["reason"], "missing_param",
+        "{neither}"
+    );
+    assert_eq!(fake.count("unban"), 0, "{}", fake.calls());
+    Ok(())
+}
+
 #[test]
 fn with_actions_off_an_agent_cannot_revert() -> Result<(), TestError> {
     let fake = Fake::new()?;

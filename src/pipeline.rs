@@ -3450,7 +3450,8 @@ mod quiet_bad_parse_tests {
         dns.extend_from_slice(&[0x03, b'w', b'w', b'w', 0x00, 0x00, 0x01, 0x00, 0x01]);
         assert!(
             crate::rtp::is_rtp_packet(&dns),
-            "precondition: this payload does fool the payload-only check,              which is the whole reason the port guard exists"
+            "precondition: this payload does fool the payload-only check, \
+              which is the whole reason the port guard exists"
         );
 
         let mut pp = packet(&dns);

@@ -38,6 +38,19 @@ pub enum Flavor {
 }
 
 impl Flavor {
+    /// Every flavor sipnab probes.
+    pub const ALL: [Flavor; 2] = [Flavor::OpenSsl, Flavor::WolfSsl];
+
+    /// The name an operator gives for this flavor (`--uprobe-flavor`, MCP
+    /// `flavors`), which [`parse_flavor`] accepts in any case.
+    #[must_use]
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::OpenSsl => "openssl",
+            Self::WolfSsl => "wolfssl",
+        }
+    }
+
     /// The write symbol to probe for this flavor.
     ///
     /// Both take `(ssl, buf, len)`, which is why one banded probe shape serves
@@ -345,13 +358,17 @@ pub fn plan_targets(
 ///
 /// The name, when it is not one sipnab probes.
 pub fn parse_flavor(name: &str) -> Result<Flavor, String> {
-    match name.to_ascii_lowercase().as_str() {
-        "openssl" => Ok(Flavor::OpenSsl),
-        "wolfssl" => Ok(Flavor::WolfSsl),
-        other => Err(format!(
-            "unknown TLS flavor '{other}'. sipnab probes openssl and wolfssl"
-        )),
-    }
+    let lower = name.to_ascii_lowercase();
+    Flavor::ALL
+        .into_iter()
+        .find(|f| f.name() == lower)
+        .ok_or_else(|| {
+            let names: Vec<&str> = Flavor::ALL.map(Flavor::name).to_vec();
+            format!(
+                "unknown TLS flavor '{lower}'. sipnab probes {}",
+                names.join(" and ")
+            )
+        })
 }
 
 /// Narrow a discovered set to the flavors an operator asked for.

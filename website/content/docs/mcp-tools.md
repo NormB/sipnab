@@ -99,6 +99,19 @@ which bundle to add. Under `--mcp-tools core` it ends:
 Tools loaded: core. Other bundles, which the operator can add with --mcp-tools or [mcp] tools: signaling, captures, security, media, relay, tfps, server, vcon, tls.
 ```
 
+The same string names every loaded tool that changes another system. Without
+`--allow-action` it says:
+
+```text
+This server changes no external system: the tools that would (actions_revert, tfps_ban, tfps_unban) refuse unless the operator enables them with --allow-action.
+```
+
+With `--allow-action tfps:mcp` it says:
+
+```text
+The operator enabled actions that change another system from MCP (--allow-action tfps:mcp): actions_revert, tfps_ban, tfps_unban. Over HTTP they also need an "actions"-scope token.
+```
+
 Output schemas are **off by default**.
 
 - MCP makes them optional, and they are more than half the bytes.
@@ -612,7 +625,7 @@ under: `scanner`, `fraud`, `digest`, `reg_flood`.
   the refusal also suggests the underscore spelling:
 
   ```json
-  {"code":-32602,"message":"unknown kind 'reg-flood', expected one of: digest, fraud, reg_flood, scanner (did you mean 'reg_flood'?)","data":{"reason":"invalid_value"}}
+  {"code":-32602,"message":"unknown kind 'reg-flood', expected one of: digest, fraud, reg_flood, scanner (did you mean 'reg_flood'?)","data":{"param":"kinds","reason":"invalid_choice","valid_values":["digest","fraud","reg_flood","scanner"]}}
   ```
 
 ### Error model
@@ -748,7 +761,7 @@ which:**
 | `get_call_tree` | No, `truncated` only | A breadth-first walk outward from one call, stopped at `limit` legs | Raise `limit` |
 | `top_talkers` | Yes, `distinct_talkers` | A ranking by dialog count | Raise `limit` |
 | `describe_endpoint` | Yes, `dialogs` | `recent_dialogs` is newest first by `updated_at`, which moves each time a call gains a message, so a cursor on it would skip rows | [`list_dialogs`](@/docs/mcp-tools-core.md#list-dialogs) with a filter such as `src.ip == '192.0.2.10'` or `from.user == 'alice'` pages that endpoint's dialogs |
-| `hep_senders` | Yes, `senders_tracked` and `refused_sources_tracked` | Two lists in one answer, the refused sources ranked by count, and the same bytes `GET /v1/hep/senders` returns | Raise `limit`, and raise `--mcp-max-rows` as well when the listener tracks more than 1000 senders |
+| `hep_senders` | Yes, `senders_tracked` and `refused_sources_tracked` | Two lists in one answer, the refused sources ranked by count, and the same fields and values `GET /v1/hep/senders` returns | Raise `limit`, and raise `--mcp-max-rows` as well when the listener tracks more than 1000 senders |
 | `tfps_labels` | No: `total` counts the rows TFPS returned, and `truncated` says it held more | TFPS's `log` command takes a row count and no offset, so there is no position to resume from | Raise `limit`, or run `tfps_ctl log --json --limit N` on the TFPS host |
 | `tail_dialogs` | No | It has a cursor. The table names it because it has no total | Follow `next_cursor` until the page comes back empty |
 

@@ -4204,7 +4204,8 @@ a=rtpmap:96 H264/90000\r\n";
         };
         assert!(
             store.remote_report(&key).is_none(),
-            "a report about another SSRC must not attach its frame to this              stream, which would hand a reader bytes that say nothing about it"
+            "a report about another SSRC must not attach its frame to this \
+              stream, which would hand a reader bytes that say nothing about it"
         );
         Ok(())
     }

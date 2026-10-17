@@ -68,8 +68,11 @@ message names the cause and the fix:
   its capture devices, so a server started with `--user` cannot attach probes
   later. Start it without dropping privileges, or run `sipnab --uprobe-tls` on
   the command line instead.
-- **An unknown flavor or an unusable library path** (`reason: invalid_value`).
-  Use `openssl` or `wolfssl`, and a `probe_path` from `list_tls_libraries`.
+- **An unknown flavor** (`reason: invalid_choice`, `param: flavors`,
+  `valid_values: ["openssl", "wolfssl"]`). sipnab checks the flavor names
+  before it checks for root.
+- **An unusable library path** (`reason: invalid_value`). Use a `probe_path`
+  from `list_tls_libraries`.
 - **A TLS capture is already running** (`reason: not_ready`). Call
   `stop_tls_capture` first.
 - **The server is reading a live interface** (`reason: not_ready`). A uprobe

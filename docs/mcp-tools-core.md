@@ -112,6 +112,9 @@ read ends, with `done: true`. During a read:
 }
 ```
 
+`elapsed_sec` counts while the read runs. Once `done` is true it is how long
+the read took, and later calls report the same value.
+
 The stores fill as the read goes, so dialogs appear before `done`. Wait for
 `done` before concluding anything about how many calls the capture holds — a
 partial answer looks exactly like a complete one.
