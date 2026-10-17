@@ -861,7 +861,8 @@ pub fn receipt_endpoint(service: &Endpoint, location: &str) -> Result<Endpoint, 
              {origin}{why}"
         )
     };
-    let at = Endpoint::parse(&absolute).map_err(|e| refuse(&format!(" ({e})")))?;
+    let at = Endpoint::parse(&absolute, crate::app::https_client::UrlUse::DOWNLOAD)
+        .map_err(|e| refuse(&format!(" ({e})")))?;
     if at.tls != service.tls
         || !at.host.eq_ignore_ascii_case(&service.host)
         || at.port != service.port
@@ -1045,7 +1046,15 @@ mod tests {
             ("http://127.0.0.1:1/scitt/", "/scitt/entries"),
             ("http://127.0.0.1:1/s?tenant=a", "/s/entries?tenant=a"),
         ] {
-            assert_eq!(entries(&Endpoint::parse(base)?).target, target, "{base}");
+            assert_eq!(
+                entries(&Endpoint::parse(
+                    base,
+                    crate::app::https_client::UrlUse::FORWARDER_SCITT
+                )?)
+                .target,
+                target,
+                "{base}"
+            );
         }
         Ok(())
     }
@@ -1130,7 +1139,10 @@ mod tests {
     /// host and port. A path alone is on it.
     #[test]
     fn a_location_is_polled_only_on_the_services_origin() -> Result<(), String> {
-        let service = Endpoint::parse("https://ts.example:8443/scitt")?;
+        let service = Endpoint::parse(
+            "https://ts.example:8443/scitt",
+            crate::app::https_client::UrlUse::FORWARDER_SCITT,
+        )?;
         for good in [
             "https://ts.example:8443/scitt/entries/1",
             "https://TS.example:8443/entries/1?x=1",
@@ -1140,7 +1152,10 @@ mod tests {
             assert!(got.tls && got.port == 8443, "{good}");
             assert!(got.target.ends_with("entries/1") || got.target.ends_with("x=1"));
         }
-        let plain = Endpoint::parse("http://ts.example/scitt")?;
+        let plain = Endpoint::parse(
+            "http://ts.example/scitt",
+            crate::app::https_client::UrlUse::FORWARDER_SCITT,
+        )?;
         assert_eq!(
             receipt_endpoint(&plain, "http://ts.example:80/e/1")?.target,
             "/e/1"

@@ -35,9 +35,10 @@ WARN sipnab::config: Unknown config key: capture.devise
 ```
 
 `-D` refuses a file a run would refuse for its values, with the same message
-and exit status, and prints nothing else. A run's checks of `[pbx] addresses`,
-`[capture] portrange`, `[mcp] tools`, `[actions] tfps`, `[security] alert`,
-`[filters]` and `[[vcon.rule]]` all apply. A port range written backwards:
+and exit status, and prints nothing else. A run's checks of `[actions] tfps`,
+`[action_limits]`, `[security] alert`, `[filters]`, `[pbx] addresses`,
+`[capture] portrange`, `[filter] expression`, `[mcp] tools` and
+`[[vcon.rule]]` all apply. A port range written backwards:
 
 ```text
 ERROR sipnab::app::bootstrap: Invalid [capture] portrange: Port range start (9) > end (1)
@@ -618,6 +619,12 @@ Rules for the keys:
 - None can be `0` while `[actions]` enables an action. That would turn the
   limit off, so sipnab refuses to start instead. With no action enabled,
   sipnab does not use the limits and does not check them.
+- sipnab checks them before the capture opens. A refused value exits `1`, and
+  the message names the key:
+
+  ```text
+  ERROR sipnab::app::bootstrap: [action_limits] per_minute: action rate limits cannot be turned off: every limit must be at least 1
+  ```
 - The limits survive a restart. sipnab rebuilds them from the journal, so
   crashing it does not reset them.
 

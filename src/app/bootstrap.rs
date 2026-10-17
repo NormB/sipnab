@@ -79,7 +79,14 @@ impl PlanError {
     /// noise the teardown emits, and `std::process::exit` is called only after
     /// the cleanup returns — it runs no destructors, so anything not done here
     /// does not happen at all.
+    ///
+    /// Every caller passes the teardown of a capture that has already started,
+    /// so the run is marked refused here, before that teardown stops the
+    /// reader: one rule for every refusal after the capture opened, so none
+    /// of them logs a "stopped early" reading summary for a run that was
+    /// refused rather than cut short.
     pub fn exit_after(self, cleanup: impl FnOnce()) -> ! {
+        crate::capture::file::mark_refused_at_startup();
         tracing::error!("{}", self.message);
         cleanup();
         crate::capture::archive::release_run_and_exit(self.exit_code);
@@ -188,6 +195,125 @@ pub struct RunPlan {
     pub metrics_bind: Option<std::net::SocketAddr>,
 }
 
+/// What `--uprobe-list` found, before it is printed.
+#[cfg(all(target_os = "linux", feature = "native"))]
+#[derive(Debug, PartialEq, Eq)]
+enum UprobeListing {
+    /// A `--uprobe-flavor`, or a `--uprobe-library` with no `--uprobe-symbol`
+    /// whose flavor its name does not tell: the refusal to print.
+    Refused(String),
+    /// Discovery found no TLS library sipnab can see.
+    NothingVisible,
+    /// The discovered libraries, one table row each, and how many of them
+    /// sipnab's mount namespace cannot reach.
+    Discovered {
+        /// Table rows, the header first.
+        rows: Vec<String>,
+        /// Libraries in use that a capture could not probe.
+        unreachable: usize,
+    },
+    /// The `--uprobe-library` paths, one table row each, and those that name
+    /// no file.
+    Named {
+        /// Table rows, the header first.
+        rows: Vec<String>,
+        /// Paths that name no file.
+        missing: Vec<String>,
+    },
+}
+
+#[cfg(all(target_os = "linux", feature = "native"))]
+impl UprobeListing {
+    /// The process exit code: 2 for a refused flag, 1 when the listing
+    /// leaves nothing a capture could probe as asked, 0 otherwise.
+    fn exit_code(&self) -> i32 {
+        match self {
+            Self::Refused(_) => 2,
+            Self::NothingVisible => 1,
+            Self::Named { missing, .. } if !missing.is_empty() => 1,
+            Self::Discovered { .. } | Self::Named { .. } => 0,
+        }
+    }
+}
+
+/// Build the `--uprobe-list` answer. Discovery and the filesystem are passed
+/// in, so both sides of each rule can be driven by a test.
+///
+/// # Arguments
+///
+/// * `cli` — the parsed flags: `--uprobe-flavor`, `--uprobe-library` and
+///   `--uprobe-symbol`.
+/// * `discover` — returns the TLS libraries mapped on this host.
+/// * `exists` — whether a path names a file.
+#[cfg(all(target_os = "linux", feature = "native"))]
+fn uprobe_listing(
+    cli: &Cli,
+    discover: &dyn Fn() -> Vec<crate::capture::uprobe::discover::TlsLibrary>,
+    exists: &dyn Fn(&std::path::Path) -> bool,
+) -> UprobeListing {
+    use crate::capture::uprobe::discover as d;
+
+    // Narrowed the same way the capture would be, so the listing answers
+    // "what will this command probe" rather than "what exists".
+    let mut flavors = Vec::new();
+    for name in &cli.tls_args.uprobe_flavor {
+        match d::parse_flavor(name) {
+            Ok(f) => flavors.push(f),
+            Err(e) => return UprobeListing::Refused(e),
+        }
+    }
+    // `--uprobe-library` replaces discovery in the capture, so it replaces it
+    // here, through the capture's own planning rule.
+    if !cli.tls_args.uprobe_library.is_empty() {
+        let planned = match d::plan_targets(
+            &cli.tls_args.uprobe_library,
+            cli.tls_args.uprobe_symbol.as_deref(),
+            &flavors,
+            Vec::new(),
+        ) {
+            Ok(planned) => planned,
+            Err(e) => return UprobeListing::Refused(e),
+        };
+        let mut rows = vec!["SYMBOL         LIBRARY".to_string()];
+        let mut missing = Vec::new();
+        for t in &planned {
+            let shown = t.library.display().to_string();
+            if exists(&t.library) {
+                rows.push(format!("{:<14} {shown}", t.symbol));
+            } else {
+                rows.push(format!("{:<14} {shown} (MISSING)", t.symbol));
+                missing.push(shown);
+            }
+        }
+        return UprobeListing::Named { rows, missing };
+    }
+    let found = d::select(discover(), &flavors);
+    if found.is_empty() {
+        return UprobeListing::NothingVisible;
+    }
+    // Padding baked into the literal rather than applied to literal
+    // arguments: the columns match the row format below by construction.
+    let mut rows = vec!["FLAVOR        INODE  PIDS  LIBRARY".to_string()];
+    let mut unreachable = 0;
+    for lib in &found {
+        let reachable = lib.probe_path();
+        if reachable.is_none() {
+            unreachable += 1;
+        }
+        rows.push(format!(
+            "{:<9} {:>10} {:>5}  {}",
+            lib.flavor.label(),
+            lib.inode,
+            lib.pids.len(),
+            match &reachable {
+                Some(p) => p.display().to_string(),
+                None => format!("{} (UNREACHABLE)", lib.path.display()),
+            }
+        ));
+    }
+    UprobeListing::Discovered { rows, unreachable }
+}
+
 /// Decide everything: capture source precedence, capture config, portrange
 /// (CLI > config > default), BPF auto-generation for live captures,
 /// autostop/split policy, matcher/filter/output/event-exec construction,
@@ -210,53 +336,41 @@ pub struct RunPlan {
 pub fn uprobe_list(cli: &Cli) -> i32 {
     #[cfg(all(target_os = "linux", feature = "native"))]
     {
-        use crate::capture::uprobe::discover;
-
-        // Narrowed the same way the capture would be, so the listing answers
-        // "what will this command probe" rather than "what exists".
-        let mut flavors = Vec::new();
-        for name in &cli.tls_args.uprobe_flavor {
-            match discover::parse_flavor(name) {
-                Ok(f) => flavors.push(f),
-                Err(e) => {
-                    stderr_line!("{e}");
-                    return 2;
-                }
-            }
-        }
-        let found = discover::select(discover::discover(), &flavors);
-        if found.is_empty() {
-            stderr_line!(
+        let listing = uprobe_listing(
+            cli,
+            &crate::capture::uprobe::discover::discover,
+            &|p: &std::path::Path| p.exists(),
+        );
+        match &listing {
+            UprobeListing::Refused(e) => stderr_line!("{e}"),
+            UprobeListing::NothingVisible => stderr_line!(
                 "No TLS library is mapped by any process sipnab can see.\n\
                  Either nothing here uses OpenSSL or wolfSSL, or sipnab cannot read\n\
                  /proc/<pid>/maps — try again as root."
-            );
-            return 1;
-        }
-        // Padding baked into the literal rather than applied to literal
-        // arguments: the columns match the row format below by construction.
-        outln!("FLAVOR        INODE  PIDS  LIBRARY");
-        for lib in &found {
-            let reachable = lib.probe_path();
-            outln!(
-                "{:<9} {:>10} {:>5}  {}",
-                lib.flavor.label(),
-                lib.inode,
-                lib.pids.len(),
-                match &reachable {
-                    Some(p) => p.display().to_string(),
-                    None => format!("{} (UNREACHABLE)", lib.path.display()),
+            ),
+            UprobeListing::Discovered { rows, unreachable } => {
+                for row in rows {
+                    outln!("{row}");
                 }
-            );
+                if *unreachable > 0 {
+                    stderr_line!(
+                        "\n{unreachable} of these cannot be reached from sipnab's mount namespace \
+                         and would NOT be captured. They are most likely inside containers; run as root."
+                    );
+                }
+            }
+            UprobeListing::Named { rows, missing } => {
+                for row in rows {
+                    outln!("{row}");
+                }
+                for path in missing {
+                    stderr_line!(
+                        "--uprobe-library {path}: no such file, so a capture could not probe it"
+                    );
+                }
+            }
         }
-        let unreachable = found.iter().filter(|l| l.probe_path().is_none()).count();
-        if unreachable > 0 {
-            stderr_line!(
-                "\n{unreachable} of these cannot be reached from sipnab's mount namespace \
-                 and would NOT be captured. They are most likely inside containers; run as root."
-            );
-        }
-        0
+        listing.exit_code()
     }
     #[cfg(not(all(target_os = "linux", feature = "native")))]
     {
@@ -548,23 +662,63 @@ pub fn plan(cli: &Cli, config: &Config) -> Result<RunPlan, PlanError> {
 }
 
 /// The checks a run makes on its configuration alone, without opening a
-/// capture, a device or a socket: the `[filters]` table, `[pbx] addresses`,
-/// the port range, the MCP tool selection and the `[[vcon.rule]]` table.
+/// capture, a device or a socket: the `[actions]` entries and their
+/// `[action_limits]`, the `[security] alert` rules, the `[filters]` table,
+/// `[pbx] addresses`, the port range, the `[filter] expression`, the MCP tool
+/// selection and the `[[vcon.rule]]` table.
 ///
-/// `plan` makes each of these through the same functions. `-D` calls this
-/// before it prints the configuration, so it refuses every file a run would
-/// refuse at these steps, with the same message and exit status.
+/// `plan` calls this before anything else it checks in the file, so a run and
+/// `-D` refuse the same file with the same first message and exit status.
+/// Each check is the function `plan` reads its value from; none is a copy.
 ///
 /// # Errors
 ///
 /// The first `PlanError` any of them returns.
 pub fn refuse_invalid_config(cli: &Cli, config: &Config) -> Result<(), PlanError> {
+    action_settings(cli, config)?;
+    alert_rules(cli, config)?;
     named_filters(cli, config)?;
     pbx_addresses(config)?;
     portrange(cli, config)?;
+    build_filter_expr(cli, config)?;
     mcp_tool_selection(cli, config)?;
     #[cfg(feature = "vcon")]
     vcon_rules(cli, config)?;
+    Ok(())
+}
+
+/// The `[actions]` entries, and the `[action_limits]` every action passes
+/// when any action is enabled. `--allow-action` values were checked when
+/// parsed, and `[action_limits]` has no flags, so what is refused here came
+/// from the file (exit 1).
+///
+/// Checked here rather than when the actions start, which is after the
+/// capture opened: the limits are read only from the file, so a run that
+/// cannot use them is refused before anything opens.
+///
+/// # Errors
+///
+/// A `PlanError` naming the key.
+fn action_settings(cli: &Cli, config: &Config) -> Result<(), PlanError> {
+    let refused = |e| PlanError::refused(crate::settings::Origin::ConfigFile, e);
+    if !cli.action_policy(config).map_err(refused)?.is_empty() {
+        cli.action_limits(config).map_err(refused)?;
+    }
+    Ok(())
+}
+
+/// Every `--alert` / `[security] alert` rule, by [`check_alert_rule`].
+///
+/// # Errors
+///
+/// A `PlanError` with the exit code of where the rules came from.
+fn alert_rules(cli: &Cli, config: &Config) -> Result<(), PlanError> {
+    let alerts = cli.alert_settings(config);
+    let origin = crate::settings::Origin::of(!cli.security_args.alert.is_empty());
+    for source in &alerts.sources {
+        check_alert_rule(source.trim(), alerts.from)
+            .map_err(|message| PlanError::refused(origin, message))?;
+    }
     Ok(())
 }
 
@@ -606,12 +760,13 @@ fn mcp_tool_selection(cli: &Cli, config: &Config) -> Result<(), PlanError> {
 }
 
 /// Refuse a request sipnab cannot act on, before anything runs: a capture
-/// file typed where a filter belongs, an `[actions]` entry naming nothing
-/// sipnab knows, or an alert rule no detector fires under.
+/// file typed where a filter belongs, any value [`refuse_invalid_config`]
+/// refuses, or a `--names` file that cannot be read.
 ///
 /// # Errors
 ///
-/// A `PlanError` (exit code 2) naming the problem.
+/// A `PlanError` naming the problem: exit code 2 for a flag, 1 for a
+/// config-file value or an unreadable file.
 fn refuse_unusable_requests(cli: &Cli, config: &Config) -> Result<(), PlanError> {
     // `sipnab call.pcap`, typed the sngrep way, would read the file name as a
     // capture filter. Refused before any capture opens, naming the fix.
@@ -621,18 +776,10 @@ fn refuse_unusable_requests(cli: &Cli, config: &Config) -> Result<(), PlanError>
         return Err(PlanError::arg(msg));
     }
 
-    // An `[actions]` entry naming nothing sipnab knows is refused here, before
-    // anything runs, rather than read as "nothing enabled". `--allow-action`
-    // values were checked when parsed, so what is refused here came from the
-    // file.
-    cli.action_policy(config)
-        .map_err(|e| PlanError::refused(crate::settings::Origin::ConfigFile, e))?;
-    let alerts = cli.alert_settings(config);
-    let origin = crate::settings::Origin::of(!cli.security_args.alert.is_empty());
-    for source in &alerts.sources {
-        check_alert_rule(source.trim(), alerts.from)
-            .map_err(|message| PlanError::refused(origin, message))?;
-    }
+    // Everything a run checks in the configuration alone, in the order `-D`
+    // checks it: an `[actions]` entry naming nothing sipnab knows is refused
+    // here, before anything runs, rather than read as "nothing enabled".
+    refuse_invalid_config(cli, config)?;
     // A names file that cannot be read used to be warned about when names
     // were loaded, and the run went on without the names it asked for.
     for f in &cli.name_args.names {
@@ -2984,7 +3131,6 @@ impl StartedCapture {
     /// Report `failure`, stop and join the capture thread, then exit the
     /// process with the failure's code.
     fn abort(self, failure: PlanError) -> ! {
-        crate::capture::file::mark_refused_at_startup();
         failure.exit_after(|| capture::stop_and_join(self.handle, self.rx))
     }
 }
@@ -6551,6 +6697,9 @@ fn security_detection_unarmed_refusal(
         (cli.fraud_detect(config), "--fraud-detect"),
         (cli.security_args.digest_leak, "--digest-leak"),
         (cli.security_args.reg_flood, "--reg-flood"),
+        // Logged per message by `batch::run`, which the parallel reader never
+        // reaches, so it is dropped there like the four detectors above.
+        (cli.security_args.stir_shaken, "--stir-shaken"),
     ]
     .iter()
     .filter(|(asked_for, _)| *asked_for)
@@ -8263,6 +8412,35 @@ mod tests {
         let msg = security_detection_unarmed_refusal(&cli, &config, &RunMode::CoresFile)
             .ok_or("a config-armed detector must be reported like a flag-armed one")?;
         assert!(msg.contains("--kill-scanner"), "{msg}");
+        Ok(())
+    }
+
+    /// `--stir-shaken` is a detection flag like the others, and `--cores`
+    /// drops it the same way: `batch::run` logs each Identity claim per
+    /// message, and the parallel reader never reaches that code. Measured on
+    /// 0.5.224: a one-INVITE capture with an `Identity:` header logged its
+    /// attestation without `--cores` and printed nothing, exit 0, with
+    /// `--cores 2`. It is refused by the same rule, through `plan`, exit 2.
+    #[test]
+    fn stir_shaken_is_refused_on_the_parallel_reader_like_the_other_detectors()
+    -> Result<(), TestError> {
+        let mut cli = base_cli();
+        cli.capture_args.input = vec!["tests/fixtures/sip_call.pcap".to_string()];
+        cli.mode_args.no_tui = true;
+        cli.security_args.stir_shaken = true;
+        cli.limits_args.cores = 2;
+        let err = plan(&cli, &Config::default())
+            .err()
+            .ok_or("--stir-shaken under --cores reports nothing, so it must be refused")?;
+        assert_eq!(err.exit_code, 2, "{err:?}");
+        assert!(
+            err.message.contains("--stir-shaken"),
+            "the refusal must name the flag: {}",
+            err.message
+        );
+        // Anti-vacuity: without --cores the same request plans.
+        cli.limits_args.cores = 1;
+        assert!(plan(&cli, &Config::default()).is_ok());
         Ok(())
     }
 
@@ -10444,6 +10622,80 @@ mod startup_refusal_tests {
                 .contains("Invalid --hep-allow CIDR 'not-a-cidr'"),
             "{}",
             err.message
+        );
+        Ok(())
+    }
+
+    /// `--uprobe-list` answers "what would this command probe", and
+    /// `--uprobe-library` replaces discovery in the capture, so the listing
+    /// lists the named libraries and not what discovery found. On 0.5.224 it
+    /// ignored the flag: `--uprobe-list --uprobe-library /nonexistent/...`
+    /// printed the discovered table and exited 0. A named library that does
+    /// not exist is listed as MISSING and exits 1, as a listing that finds
+    /// nothing does; one sipnab cannot classify without `--uprobe-symbol` is
+    /// refused with the capture's own message, exit 2.
+    #[cfg(all(target_os = "linux", feature = "native"))]
+    #[test]
+    fn uprobe_list_lists_the_named_libraries_instead_of_discovering() -> Result<(), TestError> {
+        use crate::capture::uprobe::discover::{Flavor, TlsLibrary};
+        let discovered = || {
+            vec![TlsLibrary {
+                path: std::path::PathBuf::from("/usr/lib/discovered/libssl.so.3"),
+                inode: 7,
+                flavor: Flavor::OpenSsl,
+                pids: vec![1],
+            }]
+        };
+        let present = "/srv/named/libssl.so.3";
+        let absent = "/nonexistent/libwolfssl.so.42";
+        let exists = |p: &std::path::Path| p == std::path::Path::new(present);
+
+        let mut cli = cli_from(&["--uprobe-list"]);
+        cli.tls_args.uprobe_library = vec![present.to_string()];
+        let l = uprobe_listing(&cli, &discovered, &exists);
+        assert_eq!(l.exit_code(), 0, "{l:?}");
+        let UprobeListing::Named { rows, missing } = l else {
+            return Err(format!("a named library replaces discovery: {l:?}").into());
+        };
+        let table = rows.join("\n");
+        assert!(
+            table.contains(present) && table.contains("SSL_write"),
+            "the named library and the symbol the capture would probe: {table}"
+        );
+        assert!(
+            !table.contains("/usr/lib/discovered"),
+            "the discovered library is not probed: {table}"
+        );
+        assert!(missing.is_empty(), "{missing:?}");
+
+        cli.tls_args.uprobe_library = vec![present.to_string(), absent.to_string()];
+        let l = uprobe_listing(&cli, &discovered, &exists);
+        assert_eq!(
+            l.exit_code(),
+            1,
+            "a named library that does not exist: {l:?}"
+        );
+        let UprobeListing::Named { rows, missing } = l else {
+            return Err(format!("{l:?}").into());
+        };
+        assert!(rows.join("\n").contains(&format!("{absent} (MISSING)")));
+        assert_eq!(missing, [absent]);
+
+        cli.tls_args.uprobe_library = vec!["/srv/named/libcustom.so".to_string()];
+        let l = uprobe_listing(&cli, &discovered, &exists);
+        assert_eq!(l.exit_code(), 2, "{l:?}");
+        assert!(
+            matches!(&l, UprobeListing::Refused(e) if e.contains("--uprobe-symbol")),
+            "{l:?}"
+        );
+
+        // Anti-vacuity: without the flag the discovered library is listed.
+        cli.tls_args.uprobe_library.clear();
+        let l = uprobe_listing(&cli, &discovered, &exists);
+        assert!(
+            matches!(&l, UprobeListing::Discovered { rows, .. }
+                if rows.join("\n").contains("/usr/lib/discovered")),
+            "{l:?}"
         );
         Ok(())
     }

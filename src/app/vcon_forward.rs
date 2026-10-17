@@ -38,7 +38,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 // The HTTP client lives in `https_client`, shared with `sipnab g729 install`.
-pub use crate::app::https_client::Endpoint;
+pub use crate::app::https_client::{Endpoint, UrlUse};
 pub(crate) use crate::app::https_client::{
     client_config, exchange, header_value, read_body, read_head, status_of,
 };
@@ -971,7 +971,8 @@ fn scitt_plan(
             None => Ok(None),
         };
     };
-    let url = Endpoint::parse(url_text).map_err(|e| format!("{url_from} {e}"))?;
+    let url = Endpoint::parse(url_text, UrlUse::FORWARDER_SCITT)
+        .map_err(|e| format!("{url_from} {e}"))?;
     let need = |what: &str, flag: &str| {
         format!(
             "{url_from} needs {flag} ([vcon_forward] {what}): the lifecycle statements are \
@@ -1193,8 +1194,8 @@ impl ForwardPlan {
                     .to_string(),
             )
         })?;
-        let mut url =
-            Endpoint::parse(url_text).map_err(|e| (ResolveStep::Url, format!("{url_from} {e}")))?;
+        let mut url = Endpoint::parse(url_text, UrlUse::FORWARDER)
+            .map_err(|e| (ResolveStep::Url, format!("{url_from} {e}")))?;
         if let Some(path) = facts.ingest_path
             && url.target == "/"
         {
@@ -1966,7 +1967,7 @@ fn replace_endpoint(template: &str, uuid: &str) -> Result<Endpoint, String> {
             crate::app::run_provenance::redact_url_userinfo(template)
         ));
     }
-    Endpoint::parse(&template.replace("{uuid}", uuid))
+    Endpoint::parse(&template.replace("{uuid}", uuid), UrlUse::FORWARDER)
 }
 
 /// Read a container without following a symbolic link, with the identity of
@@ -2158,7 +2159,10 @@ mod tests {
     /// port, an IPv6 literal, and the path with its query intact.
     #[test]
     fn endpoints_parse_scheme_host_port_and_target() -> TestResult {
-        let e = Endpoint::parse("http://127.0.0.1:8000/vcon/external-ingress?ingress_list=sipnab")?;
+        let e = Endpoint::parse(
+            "http://127.0.0.1:8000/vcon/external-ingress?ingress_list=sipnab",
+            UrlUse::FORWARDER,
+        )?;
         assert_eq!(
             e,
             Endpoint {
@@ -2168,13 +2172,13 @@ mod tests {
                 target: "/vcon/external-ingress?ingress_list=sipnab".into(),
             }
         );
-        let e = Endpoint::parse("https://api.vcon.store/v1/vcons")?;
+        let e = Endpoint::parse("https://api.vcon.store/v1/vcons", UrlUse::FORWARDER)?;
         assert_eq!((e.tls, e.port, e.target.as_str()), (true, 443, "/v1/vcons"));
-        let e = Endpoint::parse("https://store.example.com/v1?mail=a@b")?;
+        let e = Endpoint::parse("https://store.example.com/v1?mail=a@b", UrlUse::FORWARDER)?;
         assert_eq!(e.target, "/v1?mail=a@b");
-        let e = Endpoint::parse("http://store.example.com")?;
+        let e = Endpoint::parse("http://store.example.com", UrlUse::FORWARDER)?;
         assert_eq!((e.port, e.target.as_str()), (80, "/"));
-        let e = Endpoint::parse("https://[2001:db8::1]:8443/x")?;
+        let e = Endpoint::parse("https://[2001:db8::1]:8443/x", UrlUse::FORWARDER)?;
         assert_eq!((e.host.as_str(), e.port), ("2001:db8::1", 8443));
         assert_eq!(e.to_string(), "https://[2001:db8::1]:8443/x");
         Ok(())
@@ -2196,8 +2200,45 @@ mod tests {
             "https://store.example.com/v1#frag",
             "https://store.example.com /v1",
         ] {
-            assert!(Endpoint::parse(bad).is_err(), "{bad} accepted");
+            assert!(
+                Endpoint::parse(bad, UrlUse::FORWARDER).is_err(),
+                "{bad} accepted"
+            );
         }
+    }
+
+    /// The scheme and credential refusals name the surface the caller says
+    /// it is: the forwarder's own credential flag for the forwarder, the
+    /// SCITT one for the transparency service URL, and no setting at all for
+    /// a URL read without credentials.
+    #[test]
+    fn url_refusals_name_the_surface_that_reads_the_url() {
+        let cred = "https://user:pw@store.example.com/v1";
+        for (user, want) in [
+            (
+                UrlUse::FORWARDER,
+                "put credentials in --vcon-forward-auth-file",
+            ),
+            (
+                UrlUse::FORWARDER_SCITT,
+                "put credentials in --vcon-forward-scitt-auth-file",
+            ),
+            (
+                UrlUse::ENRICHER,
+                "put credentials in [[vcon.enrich]] auth_file",
+            ),
+            (
+                UrlUse::DOWNLOAD,
+                "a URL sipnab reads cannot hold credentials",
+            ),
+        ] {
+            let e = Endpoint::parse(cred, user).err().unwrap_or_default();
+            assert!(e.contains(want), "{user:?}: {e}");
+        }
+        let e = Endpoint::parse("ftp://store.example.com/", UrlUse::DOWNLOAD)
+            .err()
+            .unwrap_or_default();
+        assert!(e.contains("sipnab speaks http:// and https:// only"), "{e}");
     }
 
     /// A refused URL is quoted in the message with its userinfo replaced by
@@ -2216,7 +2257,9 @@ mod tests {
             "https://user:planted-pw#x@store.example.com/v1",
             "https://user:planted-pw?x@store.example.com/v1",
         ] {
-            let message = Endpoint::parse(bad).err().unwrap_or_default();
+            let message = Endpoint::parse(bad, UrlUse::FORWARDER)
+                .err()
+                .unwrap_or_default();
             assert!(!message.is_empty(), "{bad} accepted");
             assert!(!message.contains("planted-pw"), "{bad}: {message}");
             assert!(!message.contains("user:"), "{bad}: {message}");
@@ -2762,12 +2805,42 @@ mod tests {
     /// warning; HTTPS, and plain HTTP on loopback, do not.
     #[test]
     fn plain_http_off_loopback_is_warned_about() -> TestResult {
-        assert!(plaintext_warning(&Endpoint::parse("http://192.0.2.10:8000/x")?).is_some());
-        assert!(plaintext_warning(&Endpoint::parse("http://store.example.com/x")?).is_some());
-        assert!(plaintext_warning(&Endpoint::parse("http://127.0.0.1:8000/x")?).is_none());
-        assert!(plaintext_warning(&Endpoint::parse("http://localhost:8000/x")?).is_none());
-        assert!(plaintext_warning(&Endpoint::parse("http://[::1]:8000/x")?).is_none());
-        assert!(plaintext_warning(&Endpoint::parse("https://192.0.2.10/x")?).is_none());
+        assert!(
+            plaintext_warning(&Endpoint::parse(
+                "http://192.0.2.10:8000/x",
+                UrlUse::FORWARDER
+            )?)
+            .is_some()
+        );
+        assert!(
+            plaintext_warning(&Endpoint::parse(
+                "http://store.example.com/x",
+                UrlUse::FORWARDER
+            )?)
+            .is_some()
+        );
+        assert!(
+            plaintext_warning(&Endpoint::parse(
+                "http://127.0.0.1:8000/x",
+                UrlUse::FORWARDER
+            )?)
+            .is_none()
+        );
+        assert!(
+            plaintext_warning(&Endpoint::parse(
+                "http://localhost:8000/x",
+                UrlUse::FORWARDER
+            )?)
+            .is_none()
+        );
+        assert!(
+            plaintext_warning(&Endpoint::parse("http://[::1]:8000/x", UrlUse::FORWARDER)?)
+                .is_none()
+        );
+        assert!(
+            plaintext_warning(&Endpoint::parse("https://192.0.2.10/x", UrlUse::FORWARDER)?)
+                .is_none()
+        );
         Ok(())
     }
 

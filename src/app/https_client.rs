@@ -25,14 +25,56 @@ pub struct Endpoint {
     pub target: String,
 }
 
+/// Which part of sipnab reads a URL, so that a refusal of the URL names that
+/// part and the setting it takes credentials from. One parser serves every
+/// surface; each caller says which one it is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct UrlUse {
+    /// The part that sends the request, as a refusal names it.
+    pub client: &'static str,
+    /// The setting this surface reads credentials from, or `None` when it
+    /// takes none.
+    pub credentials: Option<&'static str>,
+}
+
+impl UrlUse {
+    /// The vCon forwarder's store URL and replace URL.
+    pub const FORWARDER: Self = Self {
+        client: "the forwarder",
+        credentials: Some("--vcon-forward-auth-file"),
+    };
+    /// The forwarder's transparency service URL.
+    pub const FORWARDER_SCITT: Self = Self {
+        client: "the forwarder",
+        credentials: Some("--vcon-forward-scitt-auth-file"),
+    };
+    /// The vCon fetcher's store URL.
+    pub const FETCHER: Self = Self {
+        client: "the fetcher",
+        credentials: Some("--vcon-fetch-auth-file"),
+    };
+    /// A `[[vcon.enrich]]` service URL.
+    pub const ENRICHER: Self = Self {
+        client: "the enricher",
+        credentials: Some("[[vcon.enrich]] auth_file"),
+    };
+    /// A URL sipnab reads without credentials: one named inside a vCon, a
+    /// transparency service's `Location`, or the G.729 package download.
+    pub const DOWNLOAD: Self = Self {
+        client: "sipnab",
+        credentials: None,
+    };
+}
+
 impl Endpoint {
-    /// Parse an `http://` or `https://` URL.
+    /// Parse an `http://` or `https://` URL read by `user`.
     ///
     /// # Errors
     ///
     /// Any other scheme, whitespace, an empty host, a bad port, credentials
-    /// in the URL (they would reach the log) or a fragment.
-    pub fn parse(url: &str) -> Result<Self, String> {
+    /// in the URL (they would reach the log) or a fragment. The scheme and
+    /// credential refusals name `user`.
+    pub fn parse(url: &str, user: UrlUse) -> Result<Self, String> {
         // Every refusal below quotes the URL; none may quote its userinfo.
         let shown = crate::app::run_provenance::redact_url_userinfo(url);
         let (tls, rest) = if let Some(rest) = url.strip_prefix("https://") {
@@ -40,8 +82,9 @@ impl Endpoint {
         } else if let Some(rest) = url.strip_prefix("http://") {
             (false, rest)
         } else {
+            let client = user.client;
             return Err(format!(
-                "'{shown}': the forwarder speaks http:// and https:// only"
+                "'{shown}': {client} speaks http:// and https:// only"
             ));
         };
         if url.chars().any(|c| c.is_whitespace() || c.is_control()) {
@@ -58,9 +101,15 @@ impl Endpoint {
         // typed with an unescaped `?` ends `authority` early, and its tail
         // would otherwise be read, and quoted, as the port.
         if shown != url {
-            return Err(format!(
-                "'{shown}': put credentials in --vcon-forward-auth-file, not in the URL"
-            ));
+            let client = user.client;
+            return match user.credentials {
+                Some(setting) => Err(format!(
+                    "'{shown}': put credentials in {setting}, not in the URL"
+                )),
+                None => Err(format!(
+                    "'{shown}': a URL {client} reads cannot hold credentials"
+                )),
+            };
         }
         let (host, port) = split_authority(authority).map_err(|e| format!("'{shown}': {e}"))?;
         let port = match port {

@@ -54,7 +54,7 @@ the file.
 
 ### 2.1 The chain in `plan`
 
-`plan` ([`src/app/bootstrap.rs:407`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L407)) resolves the source once, into a single
+`plan` ([`src/app/bootstrap.rs:522`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L522)) resolves the source once, into a single
 `Option<CaptureSource>`, through an if/else chain that starts at
 [`src/app/bootstrap.rs:323`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L323) and ends at [`src/app/bootstrap.rs:419`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L419). In order:
 
@@ -78,7 +78,7 @@ together and one of them evaporates.
 
 ### 2.2 What `launch` does with the answer
 
-`launch` ([`src/app/bootstrap.rs:2530`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L2530)) takes the same singular `Option`. Four
+`launch` ([`src/app/bootstrap.rs:2677`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L2677)) takes the same singular `Option`. Four
 decisions downstream read the source as a scalar:
 
 - **Auto-detection.** [`src/app/bootstrap.rs:880`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L880) substitutes a default interface

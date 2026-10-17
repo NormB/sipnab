@@ -384,7 +384,7 @@ pub fn fetch_round_trip(
     items: &[(String, Vec<u8>)],
 ) -> Result<Vec<(String, RoundTrip)>, TestError> {
     use sipnab::app::vcon_fetch::{FetchLimits, FetchSettings, Fetched, Fetcher, read_url};
-    use sipnab::app::vcon_forward::{AuthHeader, Endpoint, StoreKind};
+    use sipnab::app::vcon_forward::{AuthHeader, Endpoint, StoreKind, UrlUse};
     use std::os::unix::fs::PermissionsExt;
 
     let store = FileStore::start(items.iter().cloned().collect())?;
@@ -395,7 +395,7 @@ pub fn fetch_round_trip(
     std::fs::set_permissions(&auth_file, std::fs::Permissions::from_mode(0o600))?;
     let settings = FetchSettings {
         url: read_url(
-            &Endpoint::parse(&format!("{}/{{uuid}}", store.base))?,
+            &Endpoint::parse(&format!("{}/{{uuid}}", store.base), UrlUse::FETCHER)?,
             StoreKind::Generic,
         )?,
         kind: StoreKind::Generic,

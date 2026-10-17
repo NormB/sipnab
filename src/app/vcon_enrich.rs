@@ -161,7 +161,11 @@ pub fn services(
         }
         let (target, shown) = match (&entry.url, &entry.command) {
             (Some(url), None) => {
-                let endpoint = crate::app::vcon_forward::Endpoint::parse(url).map_err(say)?;
+                let endpoint = crate::app::vcon_forward::Endpoint::parse(
+                    url,
+                    crate::app::https_client::UrlUse::ENRICHER,
+                )
+                .map_err(say)?;
                 if !endpoint.tls && !is_loopback_host(&endpoint.host) {
                     return Err(say(format!(
                         "'{url}' sends call content in the clear to another host; use https:// \

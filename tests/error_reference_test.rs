@@ -791,7 +791,12 @@ const EXPECTED_UNRESOLVED: usize = 83;
 // 501 -> 502: src/app/bootstrap.rs, an offline --cores run started as root
 // opens its whole set before dropping privileges and refuses a set that would
 // not fit under the open-file limit (cores_fd_budget_refusal).
-const EXPECTED_TEMPLATES: usize = 502;
+// 502 -> 504: src/app/https_client.rs, the URL refusals name the part of
+// sipnab that reads the URL: the scheme and credential refusals became
+// `{client} speaks ...` and `put credentials in {setting} ...`, and a URL read
+// without credentials has its own refusal (+1). src/app/bootstrap.rs,
+// `--uprobe-list --uprobe-library` names each path that is not a file (+1).
+const EXPECTED_TEMPLATES: usize = 504;
 
 // ---------------------------------------------------------------------------
 // The page gates

@@ -25,7 +25,7 @@ use std::time::Duration;
 
 use parking_lot::Mutex;
 use sipnab::app::vcon_fetch::{FetchLimits, FetchSettings, Fetched, Fetcher, read_url};
-use sipnab::app::vcon_forward::{AuthHeader, Endpoint, StoreKind};
+use sipnab::app::vcon_forward::{AuthHeader, Endpoint, StoreKind, UrlUse};
 
 #[path = "support/tls_pki.rs"]
 mod tls_pki;
@@ -242,7 +242,7 @@ impl Rig {
         std::fs::write(&auth_file, line)?;
         std::fs::set_permissions(&auth_file, std::fs::Permissions::from_mode(0o600))?;
         let settings = FetchSettings {
-            url: read_url(&Endpoint::parse(base)?, kind)?,
+            url: read_url(&Endpoint::parse(base, UrlUse::FETCHER)?, kind)?,
             kind,
             auth: AuthHeader::read_file_for(&auth_file, "--vcon-fetch-auth-file", kind)?,
             ca: None,

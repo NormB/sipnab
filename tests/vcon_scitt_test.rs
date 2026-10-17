@@ -280,7 +280,10 @@ impl Rig {
             done_dir: spool.join("delivered"),
             failed_dir: spool.join("failed"),
             spool,
-            url: Endpoint::parse(&store.url("/v1/vcons"))?,
+            url: Endpoint::parse(
+                &store.url("/v1/vcons"),
+                sipnab::app::https_client::UrlUse::FORWARDER,
+            )?,
             replace_url: None,
             auth: AuthHeader::read_file(&auth_file)?,
             timeout: Duration::from_secs(5),
@@ -291,7 +294,10 @@ impl Rig {
             limits: ReadLimits::default(),
             content_type: "application/json".into(),
             scitt: Some(ScittSettings {
-                url: Endpoint::parse(&scrapi.url("/scitt"))?,
+                url: Endpoint::parse(
+                    &scrapi.url("/scitt"),
+                    sipnab::app::https_client::UrlUse::FORWARDER_SCITT,
+                )?,
                 auth,
                 ca: None,
                 signer: Arc::new(ScittSigner::from_pem(key, chain)?),
@@ -603,7 +609,10 @@ fn a_registration_that_does_not_complete_is_recorded_and_delivery_stands() -> Re
     let gone = Fake::start(|_| Vec::new())?;
     let mut rig = Rig::new(&store, &gone, None)?;
     if let Some(scitt) = rig.settings.scitt.as_mut() {
-        scitt.url = Endpoint::parse("http://127.0.0.1:9/scitt")?;
+        scitt.url = Endpoint::parse(
+            "http://127.0.0.1:9/scitt",
+            sipnab::app::https_client::UrlUse::FORWARDER_SCITT,
+        )?;
     }
     rig.drop_in("c.vcon.json", &container(UUID, ""))?;
     let report = Forwarder::new(rig.settings.clone())?.pass(Instant::now(), &never);
@@ -640,7 +649,10 @@ fn an_https_service_is_trusted_by_its_own_ca() -> Result<(), TestError> {
     let store = store()?;
     let mut rig = Rig::new(&store, &scrapi, None)?;
     if let Some(scitt) = rig.settings.scitt.as_mut() {
-        scitt.url = Endpoint::parse(&format!("https://{}/scitt", scrapi.addr))?;
+        scitt.url = Endpoint::parse(
+            &format!("https://{}/scitt", scrapi.addr),
+            sipnab::app::https_client::UrlUse::FORWARDER_SCITT,
+        )?;
         scitt.ca = Some(PathBuf::from(&pki.ca_file));
     }
     rig.drop_in("a.vcon.json", &container(UUID, ""))?;
