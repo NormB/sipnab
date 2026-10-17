@@ -17,5 +17,5 @@ name = "sipnab_audio"
 crate-type = ["cdylib"]
 
 [dependencies]
-rodio = { version = "0.22", default-features = false, features = ["playback"] }
+rodio = { version = "0.23", default-features = false, features = ["playback"] }
 libc = "0.2"
