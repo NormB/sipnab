@@ -434,6 +434,32 @@ One rule is a metric, a comparison, a threshold, and what it applies to:
 | `min_sample` | Observations below which the rule reports `skipped` rather than a verdict. |
 | `grounded_only` | MOS metrics only. Defaults to `true`. |
 
+The text in `rules_toml` holds the same fields as TOML, one `[[rules]]` table
+per rule:
+
+```toml
+[[rules]]
+name = "answer rate"
+metric = "asr"
+op = ">="
+value = 10
+
+[[rules]]
+metric = "lint_errors"
+op = "<="
+value = 0
+scope = "severity:error"
+```
+
+The table name is `rules`, plural. Rules under another name, such as
+`[[rule]]`, or written at the top level of the text, are not read. The suite
+is then empty, and the call fails with `invalid_params` (-32602) and this
+message:
+
+```text
+an expectation suite must contain at least one rule; an empty suite passes every capture and reports nothing
+```
+
 ```jsonc
 // evaluate_expectations { "rules": [
 //   { "name": "no codec rejections", "metric": "count", "op": "==", "value": 0,

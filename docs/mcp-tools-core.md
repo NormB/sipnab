@@ -97,7 +97,9 @@ different file and every cursor you hold is void. The same object appears on
 the box that answered, which decides whose capture a fact came from once an agent
 holds several servers at once.
 
-`load` is null except while an `open_capture` read runs. During one:
+`load` is null until this server's first `open_capture`. From then on it
+describes the most recent `open_capture` read, and it stays set after that
+read ends, with `done: true`. During a read:
 
 ```jsonc
 "load": {

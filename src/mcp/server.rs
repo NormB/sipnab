@@ -2823,8 +2823,9 @@ pub struct CaptureStatusResponse {
     /// These are the values to pass to `--ws-portrange`, so the answer names
     /// its own remedy — `--portrange` will not recover them.
     pub unanalysed_websocket_ports: Vec<UnanalyzedPort>,
-    /// The background load filling this capture, while one runs. Null
-    /// otherwise, including before any `open_capture` call.
+    /// The most recent `open_capture` background load. Null before the
+    /// first `open_capture` call; after a load ends it stays set, with
+    /// `done: true`.
     pub load: Option<LoadStatus>,
 }
 

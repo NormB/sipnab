@@ -954,7 +954,7 @@ sipnab -N -I capture.pcap --filter "ua =~ 'friendly-scanner|sipcli|sipvicious'"
      - The fail2ban dialect arrives with an `ignoreip` line already filled in.
 - Then point fail2ban at the log file.
   - `--fail2ban` chooses the **format** and detects nothing on its own.
-  - `--kill-scanner` (or `--kill-ua`) produces `scanner_detected` lines.
+  - `--kill-scanner` produces `scanner_detected` lines. Add `--kill-ua` to it to match another User-Agent; sipnab refuses `--kill-ua` alone.
   - `--reg-flood` produces `reg_flood` lines.
   - Without one of those, the log stays empty while looking like an all-clear.
   - sipnab warns on stderr when you ask for the format with no scanner detector armed.

@@ -115,6 +115,11 @@ const FOREIGN_TOML: &[(&str, &str, &str)] = &[
         "mcp_servers",
         "Codex CLI: its MCP server table",
     ),
+    (
+        "docs/mcp-tools-security.md",
+        "rules",
+        "an expectation suite: the text `evaluate_expectations` takes in `rules_toml`",
+    ),
 ];
 
 /// Every ```` ```toml ```` fence in `docs/*.md` that is a sipnab config loads

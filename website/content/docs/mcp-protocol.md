@@ -367,7 +367,7 @@ sipnab exposes the files under `--mcp-file-root` as MCP **resources**.
 
 - `resources/list` enumerates them.
 - `resources/read` fetches one at `sipnab:///<filename>`.
-- Five further URI spaces answer from the binary and from the loaded capture
+- Six further URI spaces answer from the binary and from the loaded capture
   rather than from disk. See
   [Live views](#live-views-of-the-loaded-capture) below.
 
@@ -388,15 +388,16 @@ a base64 blob.
 
 ### Live views of the loaded capture
 
-Five URI spaces exist alongside the capture files:
+Six URI spaces exist alongside the capture files:
 
 - `sipnab://reference/`,
 - `sipnab://live/`,
 - `sipnab://lint/`,
 - `sipnab://filter/`,
-- `sipnab://schema/`.
+- `sipnab://schema/`,
+- `sipnab://vcon/` (builds with the `vcon` feature).
 
-All five answer with no `--mcp-file-root` at all. That flag gates access to
+All six answer with no `--mcp-file-root` at all. That flag gates access to
 other captures on disk, not to the one this run has loaded:
 
 | URI | What it returns |
@@ -407,6 +408,7 @@ other captures on disk, not to the one this run has loaded:
 | `sipnab://lint/<rule-id>` | one conformance rule's catalog entry |
 | `sipnab://filter/<alias>` | one diagnostic alias, expanded against this run's thresholds |
 | `sipnab://schema/<tool>` | one loaded tool's output JSON Schema and an example payload |
+| `sipnab://vcon/<Call-ID>` | one dialog as the vCon container `export_vcon` builds, with retained audio inline |
 
 The two live views render exactly as `list_dialogs` does, with the same
 `--mcp-max-rows` ceiling and the same fencing of untrusted text.

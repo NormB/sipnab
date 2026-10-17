@@ -233,6 +233,9 @@ Every finding a tool reports points back at captured bytes. These retrieve those
 
 ### `explain_attribution`
 
+**Parameters:** `call_id` (string, required) — a Call-ID, as `list_dialogs`
+returns it.
+
 An agent that reports "media anchored at `<addr>`" cannot otherwise say whether
 that came from SDP the two parties exchanged, from a relay sipnab asked, or
 from a mirrored datagram anybody could have sent. Those carry very different

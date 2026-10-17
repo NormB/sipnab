@@ -24,6 +24,9 @@ Every finding a tool reports points back at captured bytes. These retrieve those
 
 ### `decode_ng`
 
+**Parameters:** `frame_ref` (string, required) — one frame pointer, in the
+`<source>#<ordinal>@<digest>` form the query tools emit.
+
 `decode_evidence` decodes a SIP frame. This decodes a relay control message,
 and adds the question no other surface answers: **which path carried it, and did
 that path authenticate whoever sent it.**
@@ -99,8 +102,8 @@ may be somebody's laptop now.
 
 | Name | Type | Legal values | If omitted |
 |---|---|---|---|
-| `call_id` | string? | One Call-ID to ask the relay about. | **Switches modes** — the tool enumerates what the relay holds. |
-| `max_calls` | u32? | Enumeration only. A cap on the Call-IDs the relay returns. | The relay's own default. |
+| `call_id?` | string? | One Call-ID to ask the relay about. | **Switches modes** — the tool enumerates what the relay holds. |
+| `max_calls?` | u32? | Enumeration only. A cap on the Call-IDs the relay returns. | The relay's own default. |
 
 `max_calls` takes its name from what it bounds rather than from `limit`,
 because it is the relay's own `list` argument traveling to another process
@@ -151,8 +154,8 @@ Three modes from two parameters:
 
 | Name | Type | Legal values | If omitted |
 |---|---|---|---|
-| `call_id` | string? | One Call-ID, to scope the counters to that call. | The relay's own global counters. |
-| `names_only` | bool? | `true` returns the NAMES the relay knows, not their values -- "what can I even ask for", since the key set is version-specific. | `false`. A `call_id` overrides it. |
+| `call_id?` | string? | One Call-ID, to scope the counters to that call. | The relay's own global counters. |
+| `names_only?` | bool? | `true` returns the NAMES the relay knows, not their values -- "what can I even ask for", since the key set is version-specific. | `false`. A `call_id` overrides it. |
 
 It needs the same three things `query_relay` does, and refuses identically when
 one is missing: `--mcp-allow-relay-query`, a configured relay control address,
