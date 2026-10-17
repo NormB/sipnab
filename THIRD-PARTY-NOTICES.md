@@ -51,7 +51,7 @@ Files copied into the repository unmodified from another project's release. None
 | `tests/schemas/publisher/vcon_json_schema.json` | vCon JSON schema: `vcon_json_schema.json` of the IETF vCon working group's draft-ietf-vcon-vcon-core repository, unmodified. Test fixture only; it is in no release artifact. | commit 99589dd0b474d95c2feed52165fc2c95b1191d3d, tag draft-ietf-vcon-vcon-core-04 (2026-09-07) | <https://github.com/ietf-wg-vcon/draft-ietf-vcon-vcon-core> | IETF Trust Legal Provisions; code components under the Simplified BSD License, as the repository's CONTRIBUTING.md states | `b3c1ae28041dea304c978a0e9e04da18253fa58517ad3472a6adf1167c01a8d9` |
 | `tests/schemas/vcon.schema.json` | vCon JSON schema: the same file as tests/schemas/publisher/vcon_json_schema.json, byte for byte, under the name sipnab's validator reads. Compiled into the binary as the schema the validate_vcon tool and the REST validate route check against. | commit 99589dd0b474d95c2feed52165fc2c95b1191d3d, tag draft-ietf-vcon-vcon-core-04 (2026-09-07) | <https://github.com/ietf-wg-vcon/draft-ietf-vcon-vcon-core> | IETF Trust Legal Provisions; code components under the Simplified BSD License, as the repository's CONTRIBUTING.md states | `b3c1ae28041dea304c978a0e9e04da18253fa58517ad3472a6adf1167c01a8d9` |
 
-## Rust crates (426)
+## Rust crates (427)
 
 | Crate | Version | License |
 |---|---|---|
@@ -116,7 +116,7 @@ Files copied into the repository unmodified from another project's release. None
 | compact_str | 0.9.0 | MIT |
 | const-oid | 0.10.2 | Apache-2.0 OR MIT |
 | const-oid | 0.9.6 | Apache-2.0 OR MIT |
-| constant_time_eq | 0.4.2 | CC0-1.0 OR MIT-0 OR Apache-2.0 |
+| constant_time_eq | 0.6.1 | CC0-1.0 OR MIT-0 OR Apache-2.0 |
 | convert_case | 0.10.0 | MIT |
 | core-foundation-sys | 0.8.7 | MIT OR Apache-2.0 |
 | cpubits | 0.1.1 | MIT OR Apache-2.0 |
@@ -251,6 +251,7 @@ Files copied into the repository unmodified from another project's release. None
 | miniz_oxide | 0.9.1 | MIT OR Zlib OR Apache-2.0 |
 | mio | 1.2.0 | MIT |
 | nix | 0.29.0 | MIT |
+| nix | 0.31.3 | MIT |
 | nom | 7.1.3 | MIT |
 | nom | 8.0.0 | MIT |
 | nu-ansi-term | 0.50.3 | MIT |
@@ -478,6 +479,6 @@ Files copied into the repository unmodified from another project's release. None
 | zerocopy-derive | 0.8.48 | BSD-2-Clause OR Apache-2.0 OR MIT |
 | zeroize | 1.9.1 | Apache-2.0 OR MIT |
 | zeroize_derive | 1.5.0 | Apache-2.0 OR MIT |
-| zip | 8.6.0 | MIT |
+| zip | 9.0.4 | MIT |
 | zlib-rs | 0.6.7 | Zlib |
 | zmij | 1.0.23 | MIT |

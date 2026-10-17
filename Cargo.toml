@@ -257,7 +257,7 @@ utoipa = { version = "6", optional = true }
 # "insecure" for new archives, which is about ZipCrypto and about writing;
 # reading a legacy format is what this is for. Default features off: no zstd,
 # bzip2, xz or zopfli C code, only inflate through the flate2 already here.
-zip = { version = "8.6", default-features = false, features = ["aes-crypto", "deflate-flate2"], optional = true }
+zip = { version = "9.0.4", default-features = false, features = ["aes-crypto", "deflate-flate2"], optional = true }
 unicode-normalization = { version = "0.1", optional = true }
 # 7-Zip members, AES-256 included (feature `archive`). READ only; default
 # features off, so no encoder, bzip2 or PPMd: LZMA and LZMA2 decode plus the

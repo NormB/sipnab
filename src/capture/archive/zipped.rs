@@ -329,12 +329,11 @@ fn entry_infos(
     for index in 0..archive.len() {
         let (name, is_dir, is_symlink, encrypted) = {
             let raw = archive.by_index_raw(index)?;
-            (
-                member_name(raw.name().as_bytes()),
-                raw.is_dir(),
-                raw.is_symlink(),
-                raw.encrypted(),
-            )
+            // zip 9 returns the decoded name (UTF-8, else CP437) as a Result.
+            // Only all-ASCII bytes reach its fallible branch, and those are
+            // valid UTF-8, so the error does not occur in practice.
+            let name = member_name(raw.name()?.as_bytes());
+            (name, raw.is_dir(), raw.is_symlink(), raw.encrypted())
         };
         let encryption = if !encrypted {
             Encryption::None
