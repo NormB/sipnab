@@ -301,7 +301,8 @@ fn the_sample_reaches_every_state_its_dialogs_can_have() -> Result<(), TestError
         ),
         (
             "Subscription-State: pending",
-            "RFC 6665 §4.1.3 pending -- a subscription taken but not authorized.              This state was unreachable before 0.5.135 and reported as active.",
+            "RFC 6665 §4.1.3 pending -- a subscription taken but not authorized. \
+              This state was unreachable before 0.5.135 and reported as active.",
         ),
         (
             "Subscription-State: terminated",

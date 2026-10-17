@@ -2042,7 +2042,7 @@ static SPECS: &[Spec] = &[
     (
         "tls-lockon-window",
         Kind::Int {
-            lo: 0,
+            lo: 1,
             hi: 18446744073709551615,
         },
         &[],

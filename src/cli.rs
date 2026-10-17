@@ -843,9 +843,11 @@ pub struct CaptureArgs {
     )]
     pub buffer: Option<u32>,
 
-    /// Memory budget in MiB for the in-flight packet queue between capture and
-    /// processing (default 64). The queue grows under load up to this budget and
-    /// shrinks when idle; overrides `[capture] buffer_budget_mb`.
+    /// Size, in MiB, of the in-flight packet queue between capture and
+    /// processing (default 64). sipnab converts it to a packet count at an
+    /// assumed 2048 bytes per packet, kept between 10000 and 5000000 packets;
+    /// a queued packet can be as large as the snapshot length. Overrides
+    /// `[capture] buffer_budget_mb`.
     #[arg(help_heading = "Capture", long = "buffer-budget", value_name = "MIB")]
     pub buffer_budget: Option<u32>,
 
@@ -1801,7 +1803,7 @@ pub struct OutputArgs {
     #[arg(help_heading = "Output", long)]
     pub line_buffer: bool,
 
-    /// Color output mode.
+    /// Color output mode (default `auto`).
     ///
     /// Accepts only `auto`, `always`, or `never`; any other value is rejected
     /// at parse time (rather than silently falling back to `auto` downstream).
@@ -1932,7 +1934,7 @@ pub struct OutputArgs {
     /// together: one of `call-id`, `from`, `to`, `method`, `src`, `dst`.
     /// Messages are reordered, not reformatted, so `--json` output stays one
     /// valid object per line. Requires `-N`/`--no-tui`, and buffers until the
-    /// capture ends (bounded — see `output::group`).
+    /// capture ends, within `--max-groups` and `--max-grouped-messages`.
     #[arg(help_heading = "Output", long, value_name = "FIELD")]
     pub group_by: Option<String>,
 
@@ -1941,8 +1943,7 @@ pub struct OutputArgs {
     /// `[limits] max_groups`.
     ///
     /// Past it the buffer refuses new keys and warns that the output is
-    /// incomplete — honest, and until now unfixable: `-l`/`--limit` bounds
-    /// tracked dialogs and never reached this map.
+    /// incomplete. `-l`/`--limit` bounds tracked dialogs, not groups.
     #[arg(
         help_heading = "Output",
         long = "max-groups",
@@ -2359,7 +2360,7 @@ pub struct SecurityArgs {
     )]
     pub kill_ua: Option<String>,
 
-    /// SIP response code to use in scanner kill reports.
+    /// SIP response code to use in scanner kill reports (default 200; 100-699).
     //
     // No clap `default_value`, for the reason given on `--color`: it made
     // `[security] kill_response` unreachable. The range check stays — dropping
@@ -2601,12 +2602,10 @@ pub struct SecurityArgs {
     /// tunable, so raising this widens how many DISTINCT hosts may be answered
     /// per second, never how hard any one of them is hit.
     ///
-    /// The `range(1..)` is what makes the sentence above true of THIS flag.
-    /// `[security] kill_rate_limit` refuses 0 in `SecurityConfig::validate`,
-    /// but that guards the config FILE; without this the flag accepted 0 while
-    /// its own doc comment said it was refused. Two spellings of one policy
-    /// that disagree, with the documentation describing whichever one the
-    /// reader is not using.
+    // The `range(1..)` is what makes the sentence above true of THIS flag.
+    // `[security] kill_rate_limit` refuses 0 in `SecurityConfig::validate`,
+    // but that guards the config FILE; without this the flag accepted 0 while
+    // its own doc comment said it was refused.
     #[arg(
         help_heading = "Security",
         long = "kill-rate-limit",
@@ -2747,9 +2746,8 @@ pub struct SecurityArgs {
     /// aggregated traffic clears the shipped ten in five seconds and the whole
     /// site is reported as one scanner.
     ///
-    /// `range(1..)` because `0` reports the first probe of any kind; the
-    /// matching `[security] scanner_behavioral_probes` refuses `0` too, so the
-    /// file cannot be the lenient way in.
+    /// `0` is refused: it would report the first probe of any kind. The
+    /// matching `[security] scanner_behavioral_probes` refuses `0` too.
     #[arg(
         help_heading = "Security",
         long = "scanner-behavioral-probes",
@@ -3236,11 +3234,12 @@ pub struct ListenerArgs {
     pub api_file_root: Option<String>,
 
     /// Accept the `Sipnab-Archive-Password` request header from a client that
-    /// is not on this host. sipnab serves plain HTTP, so a password from a
-    /// remote client crosses the network in the clear unless a TLS proxy in
-    /// front terminates the connection: that is your job when you pass this.
-    /// Without it, only a loopback client (a local tool, or a proxy on this
-    /// host) may send one, and a remote one is answered 403.
+    /// is not on this host. Without `--api-tls-cert` sipnab serves plain HTTP,
+    /// so a password from a remote client crosses the network in the clear
+    /// unless a TLS proxy in front terminates the connection: that is your job
+    /// when you pass this. Without it, only a loopback client (a local tool,
+    /// or a proxy on this host) may send one, and a remote one is answered
+    /// 403, also over HTTPS.
     #[arg(
         help_heading = "Network listeners",
         long = "api-accept-archive-passwords"
@@ -3303,7 +3302,8 @@ pub struct McpArgs {
     pub mcp_bind: Option<String>,
 
     /// Bearer token for HTTP MCP transport. Reads from env SIPNAB_MCP_TOKEN
-    /// when not given via the flag; required for non-loopback binds.
+    /// when not given via the flag. A non-loopback bind needs this or a
+    /// signing key (--mcp-signing-key).
     #[arg(
         help_heading = "MCP (Model Context Protocol)",
         long = "mcp-token",
@@ -3461,6 +3461,8 @@ pub struct McpArgs {
     ///
     /// The one MOS input a passive tap cannot measure. Declaring it beats an
     /// RTCP-reported round trip, which an unauthenticated packet can move.
+    /// With no declared delay and no round trip from RTCP, sipnab assumes
+    /// 100 ms and marks the figure as assumed.
     //
     // See [`crate::rtp::quality::DelaySource`]. No clap `default_value`, for
     // the reason given on `--mcp-max-rows`.
@@ -3568,7 +3570,7 @@ pub struct McpArgs {
     pub cn_suppression_ratio: Option<f64>,
 
     /// Jitter, in milliseconds, at or above which the color column turns
-    /// yellow. Config: `[quality] jitter_warn_ms`.
+    /// yellow (default 30.0). Config: `[quality] jitter_warn_ms`.
     //
     // None of the eight quality flags carries a clap `default_value`, for the
     // reason spelled out on [`Self::mcp_max_rows`]: a populated field cannot
@@ -3582,8 +3584,8 @@ pub struct McpArgs {
     )]
     pub jitter_warn_ms: Option<f64>,
 
-    /// Jitter, in milliseconds, at or above which the color column turns red.
-    /// Config: `[quality] jitter_bad_ms`.
+    /// Jitter, in milliseconds, at or above which the color column turns red
+    /// (default 50.0). Config: `[quality] jitter_bad_ms`.
     #[arg(
         help_heading = "Analysis",
         long = "jitter-bad-ms",
@@ -3593,7 +3595,7 @@ pub struct McpArgs {
     pub jitter_bad_ms: Option<f64>,
 
     /// Packet loss, in percent, at or above which the color column turns
-    /// yellow. Config: `[quality] loss_warn_pct`.
+    /// yellow (default 1.0). Config: `[quality] loss_warn_pct`.
     #[arg(
         help_heading = "Analysis",
         long = "loss-warn-pct",
@@ -3602,8 +3604,8 @@ pub struct McpArgs {
     )]
     pub loss_warn_pct: Option<f64>,
 
-    /// Packet loss, in percent, at or above which the color column turns red.
-    /// Config: `[quality] loss_bad_pct`.
+    /// Packet loss, in percent, at or above which the color column turns red
+    /// (default 5.0). Config: `[quality] loss_bad_pct`.
     #[arg(
         help_heading = "Analysis",
         long = "loss-bad-pct",
@@ -3612,8 +3614,9 @@ pub struct McpArgs {
     )]
     pub loss_bad_pct: Option<f64>,
 
-    /// MOS below which the color column turns yellow. MOS bands run downward,
-    /// so this must sit at or above `--mos-bad`. Config: `[quality] mos_warn`.
+    /// MOS below which the color column turns yellow (default 4.0). MOS bands
+    /// run downward, so this must sit at or above `--mos-bad`. Config:
+    /// `[quality] mos_warn`.
     #[arg(
         help_heading = "Analysis",
         long = "mos-warn",
@@ -3622,7 +3625,7 @@ pub struct McpArgs {
     )]
     pub mos_warn: Option<f64>,
 
-    /// MOS below which the color column turns red.
+    /// MOS below which the color column turns red (default 3.0).
     /// Config: `[quality] mos_bad`.
     #[arg(
         help_heading = "Analysis",
@@ -3633,7 +3636,7 @@ pub struct McpArgs {
     pub mos_bad: Option<f64>,
 
     /// Round trip, in milliseconds, at or above which the color column turns
-    /// yellow. Config: `[quality] rtt_warn_ms`.
+    /// yellow (default 300.0). Config: `[quality] rtt_warn_ms`.
     #[arg(
         help_heading = "Analysis",
         long = "rtt-warn-ms",
@@ -3643,7 +3646,7 @@ pub struct McpArgs {
     pub rtt_warn_ms: Option<f64>,
 
     /// Round trip, in milliseconds, at or above which the color column turns
-    /// red. Config: `[quality] rtt_bad_ms`.
+    /// red (default 800.0). Config: `[quality] rtt_bad_ms`.
     #[arg(
         help_heading = "Analysis",
         long = "rtt-bad-ms",
@@ -3652,7 +3655,7 @@ pub struct McpArgs {
     )]
     pub rtt_bad_ms: Option<f64>,
 
-    /// Maximum rows in one list-style MCP response.
+    /// Maximum rows in one list-style MCP response (default 1000).
     //
     // Deliberately has NO clap `default_value`: that is what made
     // `[display] color` and `[security] kill_response` unreachable from
@@ -3673,7 +3676,8 @@ pub struct McpArgs {
     )]
     pub mcp_max_rows: Option<u64>,
 
-    /// Maximum bytes of SIP body or matched snippet in one MCP response.
+    /// Maximum bytes of SIP body or matched snippet in one MCP response
+    /// (default 4096).
     ///
     /// `--mcp-max-rows` for the WIDTH of a row rather than their number, and
     /// the tighter of the two on a body question: a caller may ask for one
@@ -3692,7 +3696,7 @@ pub struct McpArgs {
         value_parser = clap::value_parser!(u64).range(1..)
     )]
     pub mcp_max_body_bytes: Option<u64>,
-    /// Maximum bytes of ONE whole paged MCP response.
+    /// Maximum bytes of ONE whole paged MCP response (default 1048576).
     ///
     /// `--mcp-max-rows` bounds how many rows a page carries and
     /// `--mcp-max-body-bytes` how wide one body in a row can be; neither
@@ -3712,7 +3716,8 @@ pub struct McpArgs {
         value_parser = clap::value_parser!(u64).range(1..)
     )]
     pub mcp_max_response_bytes: Option<u64>,
-    /// Longest wait ONE `await_condition` MCP call may take, in seconds.
+    /// Longest wait ONE `await_condition` MCP call may take, in seconds
+    /// (default 60).
     ///
     /// `--mcp-max-rows` bounds how much an answer carries; this bounds how
     /// long a caller may occupy a `--mcp-max-concurrent` permit while
@@ -4465,7 +4470,15 @@ pub struct TlsArgs {
     /// does. Raise it for a carrier trunk held open for days; lower it on a
     /// host where key material for other connections is common and the search
     /// is wasted effort.
-    #[arg(help_heading = "TLS / Decryption", long, value_name = "RECORDS")]
+    ///
+    /// At least 1: 0 would turn the search off, so a capture that joined a
+    /// running connection would never decrypt, and it is refused.
+    #[arg(
+        help_heading = "TLS / Decryption",
+        long,
+        value_name = "RECORDS",
+        value_parser = clap::value_parser!(u64).range(1..)
+    )]
     pub tls_lockon_window: Option<u64>,
 
     /// DTLS key log (NSS SSLKEYLOGFILE): extracts SRTP keys from DTLS-SRTP
@@ -4573,6 +4586,8 @@ pub struct TlsArgs {
     /// Run this first. It needs the same privileges as the capture and answers
     /// the question that decides whether the capture is worth starting: is the
     /// process you care about actually mapping a library sipnab can read?
+    /// With `--uprobe-library` it lists the named libraries instead of
+    /// discovering them, and exits 1 when a named path is not a file.
     #[arg(help_heading = "TLS / Decryption", long = "uprobe-list")]
     pub uprobe_list: bool,
 }
@@ -7264,17 +7279,30 @@ impl Cli {
     ) -> Result<crate::security::actions::ActionLimits, String> {
         let shipped = crate::security::actions::ActionLimits::default();
         let c = &config.action_limits;
+        // `[action_limits]` has no flags, so every refused value came from
+        // the file; the message names the key that holds it.
+        let rates = [
+            ("per_minute", c.per_minute),
+            ("per_caller_per_minute", c.per_caller_per_minute),
+            ("address_cooldown_secs", c.address_cooldown_secs),
+        ];
+        let bans = [
+            ("default_ban_secs", c.default_ban_secs),
+            ("max_ban_secs", c.max_ban_secs),
+        ];
         crate::security::actions::ActionLimits::new(
             c.per_minute.unwrap_or(shipped.per_minute()),
             c.per_caller_per_minute
                 .unwrap_or(shipped.per_caller_per_minute()),
             c.address_cooldown_secs
                 .map_or(shipped.address_cooldown(), std::time::Duration::from_secs),
-        )?
+        )
+        .map_err(|e| action_limits_refusal(&rates, &e))?
         .with_ban_lifetimes(
             c.default_ban_secs.unwrap_or(shipped.default_ban_secs()),
             c.max_ban_secs.unwrap_or(shipped.max_ban_secs()),
         )
+        .map_err(|e| action_limits_refusal(&bans, &e))
     }
 
     /// Where the G.729 table file is: `--g729-tables`, else `[g729] tables`,
@@ -7936,7 +7964,9 @@ impl Cli {
     /// TUI the answer would be written over the terminal, or never printed),
     /// and each is refused beside `--mcp` on stdio (it would write into the
     /// JSON-RPC wire). `--call-report` and `--export-vcon` also write to
-    /// stdout but run headless on their own, so the `--mcp` check adds them.
+    /// stdout but run headless on their own, so the `--mcp` check adds them,
+    /// with `--evidence-out -` and a headless `--relay-stats-interval`, which
+    /// write to stdout only in those forms.
     fn stdout_answer_flags(&self) -> Vec<&'static str> {
         [
             (self.output_args.json, "--json"),
@@ -7953,6 +7983,10 @@ impl Cli {
             (self.output_args.group_by.is_some(), "--group-by"),
             (self.output_args.wireshark, "--wireshark"),
             (self.output_args.tshark_filter.is_some(), "--tshark-filter"),
+            // The RFC conformance findings, printed once the capture ends.
+            (self.output_args.lint, "--lint"),
+            // `sha256sum` lines for the containers `--export-vcon-dir` wrote.
+            (self.output_args.vcon_digest, "--vcon-digest"),
             // A block of root-shell commands, printed once the capture ends.
             (
                 self.security_args.recommend_block.is_some(),
@@ -8316,6 +8350,19 @@ impl Cli {
                         self.output_args.export_vcon.is_some()
                             && self.output_args.vcon_out.is_none(),
                         "--export-vcon",
+                    ),
+                    // Evidence lines go to stdout only for `-`; a path is a
+                    // file and never touches the wire.
+                    (
+                        self.security_args.evidence_out.as_deref() == Some("-"),
+                        "--evidence-out -",
+                    ),
+                    // A headless run prints each polled reading to stdout.
+                    // The TUI shows them in its own view instead, so this is
+                    // not in the `-N` list above.
+                    (
+                        self.rtp_args.relay_stats_interval.is_some() && self.mode_args.no_tui,
+                        "--relay-stats-interval",
                     ),
                 ]
                 .iter()
@@ -8694,6 +8741,27 @@ fn parse_loss_boundary(s: &str) -> Result<f64, String> {
     Ok(v)
 }
 
+/// An `[action_limits]` refusal, naming the keys that hold the refused
+/// values: the first of `keys` set to 0 when one is (every check refuses 0
+/// first), else every one of `keys` the file sets, which for the two ordering
+/// checks are the pair being compared.
+fn action_limits_refusal(keys: &[(&str, Option<u64>)], reason: &str) -> String {
+    let named: Vec<&str> = match keys.iter().find(|(_, v)| *v == Some(0)) {
+        Some((k, _)) => vec![*k],
+        None => keys
+            .iter()
+            .filter(|(_, v)| v.is_some())
+            .map(|(k, _)| *k)
+            .collect(),
+    };
+    let named = if named.is_empty() {
+        String::new()
+    } else {
+        format!(" {}", named.join(", "))
+    };
+    format!("[action_limits]{named}: {reason}")
+}
+
 /// Parse a count where 0 would make the run do nothing: `--limitlen 0`
 /// parsed no byte of any packet and `--cores 0` ran as `--cores 1`.
 fn parse_nonzero_usize(s: &str) -> Result<usize, String> {
@@ -8945,6 +9013,115 @@ mod tests {
             argv.push(format!("{}=0", number.flag));
             assert!(Cli::try_parse_from(&argv).is_err(), "{long} accepted 0");
         }
+    }
+
+    /// Every flag that writes its answer to standard output is refused beside
+    /// `--mcp`, because on stdio that output lands in the JSON-RPC wire.
+    /// Measured on 0.5.224: `--lint`, `--vcon-digest` and `--evidence-out -`
+    /// each put non-JSON-RPC lines on the wire of a stdio `--mcp` run, and
+    /// `--relay-stats-interval` on a headless run prints each polled reading
+    /// to stdout the same way. Each case also checks that the same command
+    /// line without `--mcp` validates, so the refusal is about `--mcp`.
+    #[test]
+    fn every_stdout_writing_flag_is_refused_beside_mcp() -> Result<(), Box<dyn std::error::Error>> {
+        let mut cases: Vec<(&[&str], &str)> = vec![
+            (&["--lint"], "--lint"),
+            (&["--evidence-out", "-"], "--evidence-out -"),
+            (
+                &[
+                    "--rtpengine-control",
+                    "127.0.0.1:22222",
+                    "--relay-stats-interval",
+                    "5",
+                ],
+                "--relay-stats-interval",
+            ),
+        ];
+        // A build without the vCon exporter refuses every vCon flag on its
+        // own, `--mcp` or not.
+        if cfg!(feature = "vcon") {
+            cases.push((
+                &[
+                    "--export-vcon-when",
+                    "duration>0",
+                    "--export-vcon-dir",
+                    "out",
+                    "--vcon-digest",
+                ],
+                "--vcon-digest",
+            ));
+        }
+        for (extra, flag) in cases {
+            let mut argv = vec!["sipnab", "-N", "-I", "capture.pcap"];
+            argv.extend_from_slice(extra);
+            let plain = Cli::try_parse_from_args(&argv)?;
+            plain
+                .validate()
+                .map_err(|e| format!("{flag} without --mcp must validate: {e}"))?;
+            argv.push("--mcp");
+            let e = Cli::try_parse_from_args(&argv)?
+                .validate()
+                .err()
+                .map(|e| e.to_string())
+                .ok_or_else(|| format!("{flag} beside --mcp writes into the JSON-RPC wire"))?;
+            assert!(
+                e.contains("JSON-RPC wire") && e.contains(flag),
+                "the refusal must name {flag}: {e}"
+            );
+        }
+        Ok(())
+    }
+
+    /// Every `[action_limits]` refusal names the section and the key that
+    /// holds the refused value. On 0.5.224 none did: `per_minute = 0` printed
+    /// only "action rate limits cannot be turned off".
+    #[test]
+    fn each_action_limits_refusal_names_its_key() -> Result<(), Box<dyn std::error::Error>> {
+        for (body, key) in [
+            ("per_minute = 0", "per_minute:"),
+            ("per_caller_per_minute = 0", "per_caller_per_minute:"),
+            ("address_cooldown_secs = 0", "address_cooldown_secs:"),
+            (
+                "per_minute = 5\nper_caller_per_minute = 9",
+                "per_minute, per_caller_per_minute:",
+            ),
+            ("per_minute = 2", "per_minute:"),
+            ("default_ban_secs = 0", "default_ban_secs:"),
+            ("max_ban_secs = 0", "max_ban_secs:"),
+            (
+                "default_ban_secs = 90\nmax_ban_secs = 60",
+                "default_ban_secs, max_ban_secs:",
+            ),
+        ] {
+            let config: crate::config::Config =
+                toml::from_str(&format!("[action_limits]\n{body}\n"))?;
+            let e = Cli::parse_from_args(["sipnab"])
+                .action_limits(&config)
+                .err()
+                .ok_or_else(|| format!("{body:?} was accepted"))?;
+            assert!(
+                e.starts_with(&format!("[action_limits] {key} ")),
+                "{body:?}: {e}"
+            );
+        }
+        Ok(())
+    }
+
+    /// `--tls-lockon-window 0` would turn the record-number search off, so a
+    /// capture that joined an established connection would never decrypt.
+    /// `TlsDecryptor::set_lockon_window` ignores 0 and keeps the default, and
+    /// on 0.5.224 the flag accepted 0 with no message (exit 0). It is refused
+    /// when parsed, naming the flag, with clap's exit status 2.
+    #[test]
+    fn tls_lockon_window_zero_is_refused_naming_the_flag() -> Result<(), String> {
+        let e = Cli::try_parse_from(["sipnab", "--tls-lockon-window", "0"])
+            .err()
+            .ok_or("--tls-lockon-window 0 must be refused")?;
+        let text = e.to_string();
+        assert_eq!(e.exit_code(), 2, "{text}");
+        assert!(text.contains("--tls-lockon-window"), "{text}");
+        assert!(Cli::try_parse_from(["sipnab", "--tls-lockon-window", "1"]).is_ok());
+        Ok(())
     }
 
     /// `--vcon-forward-auth` and `--vcon-forward-auth-file` both name the
@@ -10925,11 +11102,13 @@ mod tests {
         ]);
         assert!(
             cli.mode_args.no_tui,
-            "--export-vcon-when must imply -N, or the containers are written              during a TUI session and the run still exits 0"
+            "--export-vcon-when must imply -N, or the containers are written \
+              during a TUI session and the run still exits 0"
         );
         assert!(
             !cli.output_args.no_cli_print,
-            "the containers go to a directory, so stdout is still the              operator's -- suppressing it would discard output they asked for"
+            "the containers go to a directory, so stdout is still the \
+              operator's -- suppressing it would discard output they asked for"
         );
         Ok(())
     }

@@ -1674,7 +1674,8 @@ mod tests {
             let b = elide_middle("203.0.113.101", Some(width));
             assert_ne!(
                 a, b,
-                "at {width} cells the two hosts render identically as {a:?} —                  the distinguishing octet was truncated away"
+                "at {width} cells the two hosts render identically as {a:?} — \
+                  the distinguishing octet was truncated away"
             );
             assert!(
                 a.chars().count() <= width,

@@ -85,7 +85,7 @@ wrong at once, and one of them is a test that pins the *complement*:
   FILE by host pair, which needs the whole capture up front. This run continues
   on ONE core"*.
 - `cores_warning_is_the_exact_complement_of_the_paths_that_honor_it`
-  ([`bootstrap.rs:7967`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L7967)), which asserts the warning
+  ([`bootstrap.rs:8116`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L8116)), which asserts the warning
   fires for exactly the four input combinations the parallel path does not take.
 
 And the two meanings really are different resources. Offline, `--cores N` buys N
@@ -240,7 +240,7 @@ from a headless run — `start_servers` is called with `metrics: true` and the
 real meter from [`batch.rs:1861-1879`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs#L1861-L1879).
 
 **One gap worth fixing before the experiment.** `CaptureCounters`, the
-`capture_health` MCP response ([`server.rs:9370`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L9370)),
+`capture_health` MCP response ([`server.rs:9416`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L9416)),
 carries `packets`, `kernel_dropped`, `interface_dropped`, `invalid_timestamps`
 and `undecodable_frames` — and **no queue depth and no backpressure count**. So
 the surface built for production field reports
@@ -579,6 +579,6 @@ not mistake them for settled.
   catch it and fall back — the open question is whether the most common
   invocation silently gets no benefit.
 - **Is `immediate_mode` right for N sockets?** `immediate_mode_for`
-  ([`bootstrap.rs:5800`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L5800)) returns true only for the
+  ([`bootstrap.rs:5946`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L5946)) returns true only for the
   TUI. Whether the batched setting interacts with rollover or with N drainers is
   unexamined.

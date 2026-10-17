@@ -997,6 +997,9 @@ A second later the same session's `capture_status` shows:
 "source_exhausted": true
 ```
 
+`elapsed_sec` stops counting when `done` turns true: it is how long the read
+took, and every later `capture_status` reports the same value.
+
 **Every answer afterwards carries a new `capture_identity.instance`.** Treat any
 cursor, message index or Call-ID from before the swap as void: they addressed a
 different capture. `discarded_dialogs` says how many dialogs the swap

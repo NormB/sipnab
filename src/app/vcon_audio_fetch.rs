@@ -327,8 +327,11 @@ fn fetch_one(
             crate::app::vcon_resign::read_capped(&file, max_size as u64)?
         }
         Source::Https(tls) => {
-            let endpoint =
-                crate::app::vcon_forward::Endpoint::parse(url).map_err(|e| format!("url {e}"))?;
+            let endpoint = crate::app::vcon_forward::Endpoint::parse(
+                url,
+                crate::app::https_client::UrlUse::DOWNLOAD,
+            )
+            .map_err(|e| format!("url {e}"))?;
             if !endpoint.tls {
                 return Err(format!(
                     "url {url:?} is not https://, and draft-ietf-vcon-vcon-core-04 section \

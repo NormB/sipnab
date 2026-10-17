@@ -689,6 +689,59 @@ fn a_run_refused_at_startup_prints_no_reading_summary() -> Result<(), TestError>
     Ok(())
 }
 
+/// Every refusal that lands after the capture opened stops the reader without
+/// a "stopped early" summary, not only the `--redact-map` one above.
+///
+/// Measured on 0.5.224 with this 3.8 MB capture, which the reader cannot
+/// finish before the refusal: `--evidence-out` naming a directory that does
+/// not exist (refused while the batch runner is built) and `[action_limits]
+/// per_minute = 0` (refused when the actions start) each logged "Read N
+/// packets: 0 of 1 file(s) read in full, 1 stopped early" after the refusal.
+/// The `[action_limits]` value is a config-file value, so it is refused with
+/// exit 1 naming the key, before any capture opens.
+#[test]
+fn every_refusal_after_the_capture_opened_prints_no_stopped_early_summary() -> Result<(), TestError>
+{
+    const BIG: &str = "tests/pcap-samples/sipp-branch-scenario.pcapng";
+    let dir = tempfile::tempdir()?;
+    let evidence = dir.path().join("absent").join("evidence.jsonl");
+    let run = sipnab(&[
+        "-N",
+        "-I",
+        BIG,
+        "--no-cli-print",
+        "--evidence-out",
+        s(&evidence)?,
+    ])?;
+    assert_eq!(run.code, Some(2), "{}", run.dump());
+    assert!(run.stderr.contains("--evidence-out"), "{}", run.dump());
+    assert!(!run.stderr.contains("stopped early"), "{}", run.dump());
+
+    let config = dir.path().join("limits.toml");
+    std::fs::write(
+        &config,
+        format!(
+            "[actions]\ntfps = [\"rest\"]\n[journal]\ndir = \"{}\"\n\
+             [action_limits]\nper_minute = 0\n",
+            dir.path().join("journal").display()
+        ),
+    )?;
+    let run = sipnab(&["--config", s(&config)?, "-N", "-I", BIG, "--no-cli-print"])?;
+    assert_eq!(
+        run.code,
+        Some(1),
+        "a config-file value exits 1: {}",
+        run.dump()
+    );
+    assert!(
+        run.stderr.contains("[action_limits] per_minute"),
+        "the refusal names the key: {}",
+        run.dump()
+    );
+    assert!(!run.stderr.contains("stopped early"), "{}", run.dump());
+    Ok(())
+}
+
 /// A `--redact-key-file` that cannot be read is fatal: a fresh key would make
 /// tokens that join against nothing, silently.
 #[test]

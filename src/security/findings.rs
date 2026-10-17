@@ -74,6 +74,16 @@ pub struct FindingsReport {
     pub observation_gaps: Vec<ObservationGap>,
 }
 
+/// The first of `kinds` outside [`SECURITY_FINDING_KINDS`], if any: the one
+/// rule [`parse_query`] refuses a kind by, so a surface can tell a refused
+/// kind from a refused `since` without matching the message.
+#[must_use]
+pub fn unknown_kind(kinds: &[String]) -> Option<&String> {
+    kinds
+        .iter()
+        .find(|k| !SECURITY_FINDING_KINDS.contains(&k.as_str()))
+}
+
 /// Validate a `kinds` filter and parse a `since` cursor.
 ///
 /// Returns the owned inputs [`build_report`] takes. The error is a message each
@@ -87,21 +97,19 @@ pub fn parse_query(
     kinds: &[String],
     since: Option<&str>,
 ) -> Result<(Vec<String>, Option<DateTime<Utc>>), String> {
-    for k in kinds {
-        if !SECURITY_FINDING_KINDS.contains(&k.as_str()) {
-            // Name the near miss. `reg-flood` is the spelling the `--alert`
-            // grammar uses for the same detector, so an operator who wrote one
-            // reaches for it here first.
-            let suggestion = SECURITY_FINDING_KINDS
-                .iter()
-                .find(|known| known.replace('_', "-") == k.replace('_', "-").to_lowercase())
-                .map(|known| format!(" (did you mean '{known}'?)"))
-                .unwrap_or_default();
-            return Err(format!(
-                "unknown kind '{k}', expected one of: {}{suggestion}",
-                SECURITY_FINDING_KINDS.join(", ")
-            ));
-        }
+    if let Some(k) = unknown_kind(kinds) {
+        // Name the near miss. `reg-flood` is the spelling the `--alert`
+        // grammar uses for the same detector, so an operator who wrote one
+        // reaches for it here first.
+        let suggestion = SECURITY_FINDING_KINDS
+            .iter()
+            .find(|known| known.replace('_', "-") == k.replace('_', "-").to_lowercase())
+            .map(|known| format!(" (did you mean '{known}'?)"))
+            .unwrap_or_default();
+        return Err(format!(
+            "unknown kind '{k}', expected one of: {}{suggestion}",
+            SECURITY_FINDING_KINDS.join(", ")
+        ));
     }
     let since = match since {
         Some(s) => Some(

@@ -8,11 +8,32 @@ sipnab is pre-1.0: the public API and the CLI surface are not stable, and a
 breaking change may land in any release. Breaking changes are called out in the
 entry that carries them.
 
-## [Unreleased]
+## [0.5.225] - 2026-10-17
 
 ### Security
 
 - **`zip` 9.0.4 replaces 8.6.0** in sipnab and `sipnab-g729`, clearing RUSTSEC-2026-0367, RUSTSEC-2026-0368 and RUSTSEC-2026-0369. All three concern `zip`'s `extract()` functions (SUID/SGID bits, symlink targets and permissions applied through symlinks), which sipnab does not call: it reads archive members into memory by name. The upgrade keeps `cargo audit` clean.
+
+### Fixed
+
+- **A run refused after its capture opened never prints "stopped early".** The mark moved into the one path that stops a started capture, so every such refusal is covered: an existing `--redact-map`, `[action_limits]` values, an `--evidence-out` path that cannot be opened.
+- **`-D` refuses every config file a run refuses from the file alone**, now including `[actions] tfps`, `[action_limits]`, `[security] alert` and `[filter] expression`, with the run's message and exit status.
+- **`[action_limits]` refusals name their key and exit 1**, and are checked before the capture opens.
+- **A refused `[vcon_forward] scitt_url` exits 1 when it comes from the config file**, as every other config-file URL refusal does; `--vcon-forward-scitt-url` still exits 2.
+- **URL refusals name the setting of the surface that reads the URL**: `--vcon-fetch-url` refusals point at the fetcher's credential setting, not the forwarder's.
+- **`--mcp` refuses every flag that writes to stdout**, now including `--lint`, `--vcon-digest` and `--evidence-out -`, which wrote lines into the JSON-RPC stream.
+- **`--stir-shaken` with `--cores` is refused** (exit 2), like the other detection flags the parallel reader does not run.
+- **`--uprobe-list` lists the libraries `--uprobe-library` names** instead of ignoring them.
+- **`--tls-lockon-window 0` is refused**, naming the flag; it was accepted silently.
+- **`sipnab g729 status` checks the config file as a run does**: it refuses an empty `[g729] tables` by name and warns on unknown keys.
+- **MCP:**
+  - The `initialize` instructions name every registered action tool, `actions_revert` included.
+  - Refusals carry the documented `data.reason`: `invalid_choice` for an unknown choice (`top_talkers` `by`, `security_findings` `kinds`, TLS flavors), `missing_param` and `conflicting_params` for `describe_endpoint` and `actions_revert`, and the parameter actually at fault.
+  - `capture_status` stops counting `load.elapsed_sec` once `load.done` is true.
+  - The `hep_senders` description states its real `limit: 0` behavior and how its answer relates to `GET /v1/hep/senders`.
+  - Three messages printed runs of spaces where a line-continuation backslash was missing: a `get_dialog` refusal, a HEP v3 parse error and a seccomp status line. A source scan now refuses the pattern.
+- **Documentation:** 29 statements that disagreed with measured behavior are corrected, among them the REST status-code table, the signer-fingerprint examples, `[security] alert` and `[pbx] side` rows, and defaults shown in `--help`.
+- **CI:** the G.729 test-vector download retries transient ITU server errors after 5, 15, 30, 60 and 120 seconds.
 
 ## [0.5.224] - 2026-10-16
 

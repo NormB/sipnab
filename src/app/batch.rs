@@ -13282,7 +13282,8 @@ mod tests {
 
         assert!(
             ok,
-            "an operator who closed the gate got what they asked for; that is              not a failure and must not become a non-zero exit code"
+            "an operator who closed the gate got what they asked for; that is \
+              not a failure and must not become a non-zero exit code"
         );
         let written: Vec<_> = std::fs::read_dir(tmp.path())
             .map_err(|e| format!("readable: {e:?}"))?
@@ -13409,7 +13410,8 @@ mod tests {
         let ungated_names = names(ungated.path())?;
         assert!(
             !ungated_names.is_empty(),
-            "the fixture must write something, or this test compares two              empty directories and proves nothing"
+            "the fixture must write something, or this test compares two \
+              empty directories and proves nothing"
         );
         assert_eq!(
             ungated_names,

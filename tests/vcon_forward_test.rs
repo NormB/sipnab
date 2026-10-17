@@ -25,7 +25,7 @@ use std::time::{Duration, Instant};
 
 use parking_lot::Mutex;
 use sipnab::app::vcon_forward::{
-    AuthHeader, BackoffPolicy, Endpoint, ForwardSettings, Forwarder, ReadLimits, StoreKind,
+    AuthHeader, BackoffPolicy, Endpoint, ForwardSettings, Forwarder, ReadLimits, StoreKind, UrlUse,
     backoff_delay,
 };
 use sipnab::config::{FORWARD_BACKOFF_CAP, FORWARD_BACKOFF_FIRST, FORWARD_MAX_ERROR_BODY};
@@ -253,7 +253,7 @@ impl Rig {
             done_dir: spool.join("delivered"),
             failed_dir: spool.join("failed"),
             spool,
-            url: Endpoint::parse(url)?,
+            url: Endpoint::parse(url, UrlUse::FORWARDER)?,
             replace_url: None,
             auth: AuthHeader::read_file(&auth_file)?,
             timeout: Duration::from_secs(5),

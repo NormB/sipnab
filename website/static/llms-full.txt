@@ -6945,11 +6945,10 @@ List all tracked SIP dialogs with optional filtering and pagination.
 | Parameter | Type   | Default | Description |
 |-----------|--------|---------|-------------|
 | `state`   | string | --      | Filter by dialog state (`Trying`, `Ringing`, `InCall`, `Completed`, `Failed`, `Canceled`, `Redirected`, `Registered`, `Expired`, `Pending`, `Active`, `Terminated`, `Transferring`) |
-| `from`    | string | --      | Filter by From user (regex pattern) |
-| `filter`  | string | --      | A [filter expression](filter-dsl.md) or a [named alias](filter-dsl.md#named-aliases) such as `problems` or `slow-setup`. A value that is neither is a `400`. ANDed with `state` and `from` |
+| `from`    | string | --      | Filter by From user (regex pattern). sipnab ignores a pattern that is not a valid regular expression: the page is the one you get without `from`. Check the `total` against a run without it |
+| `filter`  | string | --      | A [filter DSL](filter-dsl.md) expression, the language `--filter` and the TUI filter dialog use, for example `method == INVITE` or `rtp.loss > 2.0`, or a [named alias](filter-dsl.md#named-aliases) such as `problems` or `slow-setup`. A value may be bare or quoted, so `method == 'INVITE'` is the same filter. URL-encode it. A value that is neither is a `400` naming the position, never an unfiltered page. ANDed with `state` and `from` |
 | `limit`   | int    | 50      | Maximum results. Ceiling is `--api-max-rows` (1000 by default), not a fixed limit |
 | `offset`  | int    | 0       | Pagination offset |
-| `filter`  | string | --      | A [filter DSL](filter-dsl.md) expression, the language `--filter` and the TUI filter dialog use, for example `method == INVITE` or `rtp.loss > 2.0`. A value may be bare or quoted, so `method == 'INVITE'` is the same filter. URL-encode it. An expression that does not parse is a `400` naming the position, never an unfiltered page |
 | `after`   | string | --      | Only dialogs whose first message is at or after this [RFC 3339](https://www.rfc-editor.org/rfc/rfc3339.html) instant, for example `2026-09-15T12:00:00Z`. An instant that does not parse is a `400` |
 | `before`  | string | --      | Only dialogs whose first message is strictly before this RFC 3339 instant. With `after` it forms the half-open window `[after, before)`, the window the MCP `search_by_time` tool uses, so consecutive windows never count a dialog twice. An instant that does not parse is a `400` |
 
@@ -9454,7 +9453,9 @@ nothing, including the capture id it claimed.
 counts and a `note`. It never answers with an empty roster that would read as "nobody is
 sending".
 
-The MCP tool `hep_senders` returns the same bytes for the same roster.
+The MCP tool `hep_senders` returns the same fields and values for the same
+roster, with its keys in alphabetical order and `source_exhausted` and
+`source_stopped_early` added.
 `--hep-senders` prints it at the end of a headless run. Prometheus carries only
 the aggregate counts, with no per-sender label. See
 [Metrics](prometheus-metrics.md).
@@ -9504,7 +9505,7 @@ curl -s -H "Authorization: Bearer $SIPNAB_API_KEY" http://127.0.0.1:8080/v1/capa
 **`runtime` names what the operator turned on.**
 
 - Some routes answer
-  `not_configured` because `--api-allow-relay-query` was not passed. That is not a
+  `not_permitted` because `--api-allow-relay-query` was not passed. That is not a
   missing feature.
 - A program that blurs the two retries something that can
   never work.
@@ -10559,11 +10560,14 @@ than yesterday, and here is where" is the first row.
 
 The rules for the header:
 
-- **Only from this host.** sipnab serves plain HTTP.
-  - So it accepts the header
-    from a loopback client. That means a local tool or a TLS proxy on the same host.
-  - A remote client gets `403` unless the operator started sipnab with
-    `--api-accept-archive-passwords`. That flag makes TLS in front their job.
+- **Only from this host, unless the operator allows more.**
+  - sipnab accepts the header from a loopback client: a local tool or a TLS
+    proxy on the same host.
+  - A remote client gets `403`. That holds when sipnab serves HTTPS itself
+    with `--api-tls-cert` too.
+  - `--api-accept-archive-passwords` lets remote clients send it. Pass it only
+    when TLS encrypts the connection, through `--api-tls-cert` or a TLS proxy
+    in front, so the password does not cross the network in the clear.
 - **Never in the URL.** A query parameter named like a password gets `400`,
   on every route.
   - The answer advises you to treat that password as exposed.
@@ -11137,12 +11141,16 @@ comments back from a capture, so no route shows them.
 | `200` | Success |
 | `400` | Malformed request (e.g. invalid SSRC on `/v1/streams/{id}`) |
 | `401` | Missing/invalid/expired/revoked bearer token |
-| `403` | `/v1/dialogs/{call_id}/vcon` for a dialog that carries the run's `--content-deny-header` |
+| `403` | A refused request. The causes: a `Host` header the server does not accept (see [Which `Host` names the API answers](#which-host-names-the-api-answers)); `/v1/dialogs/{call_id}/vcon` for a dialog that carries the run's `--content-deny-header`; a [`/v1/tfps/` action](#post-v1tfpsban) or [`/v1/actions/revert`](#post-v1actionsrevert) when the operator has not enabled actions for REST; an archive password sent from another host to [`/v1/captures/compare`](#get-v1capturescompare) |
 | `404` | Unknown `call_id` or stream id — and every `call_id` on `/v1/dialogs/{call_id}/vcon` in a build without the `vcon` feature, which registers no route at that path |
 | `408` | The handler ran past the 30-second per-request cap. Every route sits behind it, so no slow client holds a connection slot open |
+| `409` | [`POST /v1/tfps/unban`](#post-v1tfpsunban) or [`/v1/actions/revert`](#post-v1actionsrevert) for a ban sipnab did not place |
+| `413` | A request body larger than 1 MiB (see [Bind address & connection limits](#bind-address--connection-limits)) |
+| `422` | The request is well formed but sipnab does not act on it. The causes: a ban address or lifetime the rules do not allow; a vCon container that does not open, or whose `critical` list names an extension sipnab does not support ([`POST /v1/vcon/validate`](#post-v1vconvalidate)); an audio route for a call with nothing sipnab can decode; a locked or unreadable archive on [`/v1/captures/compare`](#get-v1capturescompare). `detail` names the reason |
+| `429` | An action rate limit, or too many wrong archive passwords from one client on [`/v1/captures/compare`](#get-v1capturescompare). The answer carries `Retry-After` |
 | `500` | The answer would not serialize. Documented on `/v1/dialogs/{call_id}`, its `/report` and `/vcon` variants, `/v1/streams/{id}` and `/v1/report` |
 | `502` | The toll-fraud prevention peer a `/v1/tfps/` route asked exited non-zero, hung, or answered off the contract; `detail` carries its standard error |
-| `503` | Rejected by the rate limiter or the connection cap (**not** 429) |
+| `503` | Rejected by the rate limiter or the connection cap (these never answer `429`), or a route this server was not started to serve: [`/v1/captures/compare`](#get-v1capturescompare) without `--api-file-root`, [`/v1/vcon/fetch/:uuid`](#get-v1vconfetchuuid) without `--api-allow-vcon-fetch` and `[vcon_fetch]`, an action while sipnab cannot use the actions journal. `detail` names the flag to add |
 
 ## Recipes (curl + jq)
 
@@ -12729,7 +12737,7 @@ sipnab -D
 line it shows the libpcap it is running, e.g.
 
 ```text
-sipnab 0.5.224 (<hash>) features: native,tui,audio,tls,hep,api,mcp,mcp-http,metrics,plugins,bpf,vcon,opus,archive,g729
+sipnab 0.5.225 (<hash>) features: native,tui,audio,tls,hep,api,mcp,mcp-http,metrics,plugins,bpf,vcon,opus,archive,g729
 libpcap version 1.10.5 (with TPACKET_V3); alternate capture backends named: none
 ```
 
@@ -14715,7 +14723,7 @@ sipnab -N -I capture.pcap --filter "ua =~ 'friendly-scanner|sipcli|sipvicious'"
      - The fail2ban dialect arrives with an `ignoreip` line already filled in.
 - Then point fail2ban at the log file.
   - `--fail2ban` chooses the **format** and detects nothing on its own.
-  - `--kill-scanner` (or `--kill-ua`) produces `scanner_detected` lines.
+  - `--kill-scanner` produces `scanner_detected` lines. Add `--kill-ua` to it to match another User-Agent; sipnab refuses `--kill-ua` alone.
   - `--reg-flood` produces `reg_flood` lines.
   - Without one of those, the log stays empty while looking like an all-clear.
   - sipnab warns on stderr when you ask for the format with no scanner detector armed.
@@ -17411,7 +17419,7 @@ Every example below passes `-N`:
   detectors and shows their findings, but never sends a response to a
   scanner.
 - `--cores N` refuses the detection flags with exit 2: the parallel reader
-  runs no detectors. Drop `--cores` to detect.
+  runs no detectors. sipnab refuses `--stir-shaken` with them. Drop `--cores` to detect.
 
 ```bash
 sudo sipnab -N -d eth0 --kill-scanner --fail2ban >> /var/log/sipnab/scanners.log
@@ -17575,7 +17583,7 @@ sipnab -d eth0,eth1 --multi-device --delta-time
 | `--vcon-x5u-ca` | `<FILE\|system>` | -- | 0.5.219 | Fetch the certificate chain of a signed vCon container that names it only by an `x5u` URL (draft-ietf-vcon-vcon-core-04 section 5.2.2), over HTTPS, trusting the server only when it chains to a CA certificate in this PEM file; `system` uses the host's CA bundle. sipnab reads at most 256 KiB of the answer, waits at most 10 seconds, fetches each URL once per run, and refuses an `x5u` that is not `https://`. Without this flag sipnab fetches nothing, and refuses such a container naming this flag. sipnab verifies a signature that carries `x5c` with it, and does not fetch its `x5u`. Config: `[vcon_input] x5u_ca` |
 | `-O`, `--output` | `<FILE>` | -- | 0.3.0 | Write captured packets to a pcap file. `--filter` chooses what sipnab shows and analyzes, not what this file holds: a BPF filter (the positional argument, such as `"udp port 5060"`) narrows the file. Run as root, sipnab creates this file, and every `--split` file, after it drops privileges, so the drop user (`nobody` unless `--user` names another) must be able to write the directory. sipnab checks this before it reads the first packet and exits `1` when the drop user cannot. See [the note above](#bound-split-and-multi-interface-captures) |
 | `-B`, `--buffer` | `<MIB>` | `64` | 0.3.0 | Kernel capture buffer size in MiB (per device). See [Tuning capture](tuning-capture.md). sipnab refuses `0` (no ring at all) with exit `2`, and `[capture] buffer = 0` with exit `1`. Config: `[capture] buffer` |
-| `--buffer-budget` | `<MIB>` | `64` | 0.4.4 | Memory budget for the in-flight capture→processing queue. The queue grows under load up to this budget (capped, never OOM) and shrinks when idle; overrides `[capture] buffer_budget_mb`. Config: `[capture] buffer_budget_mb` |
+| `--buffer-budget` | `<MIB>` | `64` | 0.4.4 | Sets the size of the in-flight capture→processing queue. sipnab converts the budget to a packet count at an assumed 2048 bytes per packet, so `64` holds 32768 packets, and keeps the count between 10000 and 5000000: `0` and any value up to `19` give the 10000-packet floor. The limit counts packets, not bytes. A queued packet can be as large as the snapshot length, so with full 65535-byte packets the 64 MiB default can hold about 2 GiB; overrides `[capture] buffer_budget_mb`. Config: `[capture] buffer_budget_mb` |
 | `--snaplen` | `<BYTES>` | `65535` | 0.3.0 | Snapshot length for packet capture (bytes). sipnab refuses `0` (no byte of any packet) with exit `2`, and `[capture] snaplen = 0` with exit `1`. Config: `[capture] snaplen` |
 | `--capture-profile` | `signaling\|full` | -- | 0.5.109 | Picks a `--snaplen` for you: `signaling` is 1500 bytes, which keeps every SIP header whole and drops most of each RTP payload, and `full` is 65535. An explicit `--snaplen` overrides it. More: [Tuning capture](tuning-capture.md#snapshot-length---snaplen--and-why-it-decides-your-ring-capacity). Config: `[capture] snaplen` |
 | `-S`, `--limitlen` | `<BYTES>` | -- | 0.5.9 | Parse only the first N bytes of each packet. Caps what the SIP parser and matchers inspect, independent of `--snaplen` (capture length) and `--payload-limit` (display truncation). At least 1: sipnab refuses `0` |
@@ -17761,8 +17769,8 @@ sipnab -d eth0,eth1 --multi-device --delta-time
 - `sipnab -N -I signed.vcon.json --vcon-signer-ca signing-ca.pem --report` — analyze a signed vCon only when the CA in `signing-ca.pem` issued its signing certificate
 - `sipnab -N -I sealed/ --vcon-key recipient.key --vcon-signer-ca system --json-dialogs` — read a directory of encrypted vCons, each only when a CA in the host's CA bundle issued its signer
 - `openssl x509 -in signer.pem -noout -fingerprint -sha256` — print the fingerprint `--vcon-signer-sha256` takes, from the signing certificate. It prints `sha256 Fingerprint=86:51:67:…`; pass the part after `=`. `sha256sum signer.pem` hashes the PEM text and gives a different value
-- `sipnab -N -I signed.vcon.json --vcon-signer-sha256 40:97:43:61:0C:C7:47:BD:40:82:E2:28:1C:53:A6:54:88:74:EB:E7:A7:2B:E4:A3:C8:CB:1B:CA:C8:97:BC:D6 --json-dialogs` — analyze a signed vCon only when one known certificate signed it
-- `sipnab -N -I sealed.vcon.json --vcon-key recipient.key --vcon-signer-ca signing-ca.pem --vcon-signer-sha256 409743610cc747bd4082e2281c53a6548874ebe7a72be4a3c8cb1bcac897bcd6 --report` — require both: the signing certificate chains to `signing-ca.pem` and has this fingerprint
+- `sipnab -N -I signed.vcon.json --vcon-signer-sha256 4A:27:CF:DC:D8:87:A5:E5:A9:B5:DE:7E:27:37:C2:48:28:2B:86:44:8A:B3:60:6F:42:99:B2:E2:26:FC:0F:19 --json-dialogs` — analyze a signed vCon only when one known certificate signed it
+- `sipnab -N -I sealed.vcon.json --vcon-key recipient.key --vcon-signer-ca signing-ca.pem --vcon-signer-sha256 4a27cfdcd887a5e5a9b5de7e2737c248282b86448ab3606f4299b2e226fc0f19 --report` — require both: the signing certificate chains to `signing-ca.pem` and has this fingerprint
 - `sipnab -N -I signed.vcon.json --vcon-x5u-ca system --json-dialogs` — analyze a signed vCon whose signature names its certificate chain only by an `x5u` URL: fetch the chain over HTTPS from a server the host's CA bundle trusts
 - `sipnab -N -I signed.vcon.json --vcon-x5u-ca pki-ca.pem --vcon-signer-ca signing-ca.pem --report` — fetch the `x5u` chain from a server the CA in `pki-ca.pem` issued, and read the vCon only when its signer chains to `signing-ca.pem`
 
@@ -18234,11 +18242,11 @@ See the [Name Resolution](keybindings.md#name-resolution) keys for in-TUI naming
 - `sipnab -N -I capture.pcap --resolve --no-resolve` — the last of the pair wins, so addresses print as addresses
 
 - `sudo sipnab -d eth0 --resolve --names /etc/sipnab/hosts.map` — live capture with name resolution from a static hosts-format mapping file
-- `sipnab -N -I capture.pcap --resolve --names /etc/sipnab/hosts.map --names ~/.config/sipnab/lab-names` — annotate an offline pcap with names, preloading two mapping files on top of /etc/hosts
+- `sipnab -N -I capture.pcap --resolve --names /etc/sipnab/hosts.map --names ~/.config/sipnab/lab-names -O named.pcapng --pcapng --no-cli-print` — write a copy of an offline pcap whose Name Resolution Block carries the names from two mapping files and `/etc/hosts`; Wireshark and `tshark -q -z hosts` show them. When both files name one address, the later file wins. A headless run prints addresses, not names: the names go only into the pcapng file
 - `sudo sipnab -d eth0 --reverse-dns` — live capture that also resolves captured IPs via reverse DNS (PTR) lookups
-- `sipnab -N -I capture.pcap --reverse-dns --names ~/.config/sipnab/lab-names` — replay an offline pcap and resolve its addresses with reverse DNS, supplemented by a local mapping file
+- `sipnab -N -I capture.pcap --reverse-dns --names ~/.config/sipnab/lab-names -O named.pcapng --pcapng --no-cli-print` — write a copy of an offline pcap whose Name Resolution Block carries names from reverse DNS and a local mapping file
 - `sudo sipnab -N -d eth0 --reverse-dns --dns-cache-entries 65536` — a peering point or carrier edge, where a capture touches far more than four thousand hosts: the wider cache stops sipnab re-resolving addresses it already knows, and the worker queue widens with it
-- `sipnab -N -I lab.pcap --reverse-dns --dns-cache-entries 256` — the opposite, for a small lab capture on a memory-tight box, where a few hundred entries cover every host in the file
+- `sipnab -N -I lab.pcap --reverse-dns --dns-cache-entries 256 -O lab-named.pcapng --pcapng --no-cli-print` — the opposite, for a small lab capture on a memory-tight box, where a few hundred entries cover every host in the file
 
 
 ## pcapng metadata
@@ -18334,7 +18342,7 @@ Multiple diagnostic flags combine with OR.
 | `--content-deny-header` | `<NAME>` | -- | 0.5.127 | Suppress content for any dialog carrying this header. No default: sipnab suppresses nothing until you name a header. The header's PRESENCE suppresses and its value plays no part, so `Privacy: none` suppresses exactly as `Privacy: id` does. Matched case-insensitively, as SIP header names are ([RFC 3261](https://www.rfc-editor.org/rfc/rfc3261.html) 7.3.1). **Deny only**: no header makes sipnab keep content it would otherwise leave out. Needs the `vcon` Cargo feature |
 | `--content-deny-tombstone` | -- | off | 0.5.128 | Write an identity-only container for each dialog `--content-deny-header` suppressed, instead of nothing. Requires `--content-deny-header`. The container carries the dialog's identity and a `redacted` object declaring `type` alone, because no fuller version of the container exists anywhere to point at. It carries no message trace, no media and no bodies. Off by default. A tombstone reveals that the call EXISTED, so leave it off when the header means "this call must leave no trace". Needs the `vcon` Cargo feature |
 | `--vcon-out` | `<PATH>` | stdout | 0.5.125 | Write the `--export-vcon` container to this path instead of stdout. Requires `--export-vcon`. Refuses a path that names a capture this run reads, or that lies inside a directory this run reads, before opening any writer. A write that fails exits non-zero. Leaves the per-message stream alone, since the container no longer shares stdout with it. Pair with `--no-cli-print` for a silent run |
-| `--vcon-digest` | -- | off | 0.5.128 | Print a SHA-256 of every container `--export-vcon-when` writes into `--export-vcon-dir`, in `sha256sum` format, on stdout while the progress summary stays on stderr. Each line names the bare file name, so `sha256sum -c` run inside that directory verifies it. It prints nothing for `--export-vcon`, with or without `--vcon-out`. Implies `--no-cli-print`, so no message line shares stdout with the digests. Needs the `vcon` Cargo feature |
+| `--vcon-digest` | -- | off | 0.5.128 | Print a SHA-256 of every container `--export-vcon-when` writes into `--export-vcon-dir`, in `sha256sum` format, on stdout while the progress summary stays on stderr. Each line names the bare file name, so `sha256sum -c` run inside that directory verifies it. It prints nothing for `--export-vcon`, with or without `--vcon-out`. Implies `--no-cli-print`, so no message line shares stdout with the digests. Prints to stdout, so it needs `-N` and `--mcp` refuses it. Needs the `vcon` Cargo feature |
 | `--redact` | -- | off | 0.5.130 | Replace identities, addresses, hostnames and correlation identifiers in an exported vCon with keyed pseudonyms. Every identity becomes a keyed token that is equal exactly when the original was equal, and every address goes through a prefix-preserving map, so a reader can still tell that forty failures came from one subscriber, or that media went to a subnet the SDP never advertised. sipnab deletes digest credentials and inline audio rather than tokenizing them. Rewrites the serialized container only: the TUI, the reports and every in-process analysis keep the real values. Refused when the run exports no container. Needs the `vcon` Cargo feature |
 | `--redact-key-file` | `<FILE>` | fresh key | 0.5.130 | Read the redaction secret from this file instead of drawing a fresh one from the operating system. Without it no token joins against any other export and nothing can reverse them; supply a file when the same subscriber must carry the same token across exports. The whole file is the secret, trailing newline included. Requires `--redact` |
 | `--redact-keep-prefix` | `<N>` | `0` | 0.5.130 | Keep this many leading digits of a number verbatim, so route and NPA analysis survives. Every retained digit is a digit of a real subscriber number in the clear. A country code is one to three digits and an NANP area code is three, so choose the count for your numbering plan. Requires `--redact` |
@@ -18361,7 +18369,7 @@ Multiple diagnostic flags combine with OR.
 | `--wireshark` | -- | off | 0.3.0 | Print a display filter for the current capture to paste into Wireshark; use with `-N` |
 | `--tshark-filter` | `<EXPR>` | -- | 0.3.0 | Generate a tshark-compatible display filter string |
 | `--fail2ban` | -- | off | 0.3.0 | Switch the per-message stream to fail2ban-readable log lines. Requires `-N`. It selects a **format**, not a detection: only two events ever reach it, and each needs its own detector armed beside it — `--kill-scanner` (with `--kill-ua` to add User-Agents it matches) produces `scanner_detected`, `--reg-flood` produces `reg_flood`. On its own it emits nothing, and warns on stderr about the coming silence, because an empty jail log reads as "nothing attacked me". Detections carried by HEP input (`--hep-listen`, `--hep-parse`) never reach it without `--hep-allow-kill`: the inner addresses are the sender's claim, a jail line would ban whatever address the sender chose, and the run says so once at startup |
-| `--lint` | -- | off | 0.5.84 | Run the RFC conformance linter over every dialog and print each finding with its rule identifier and the RFC section it reads from. The linter compares what the capture holds against what the cited section calls for, so a finding names a section rather than an opinion. Informational on its own: it changes what gets printed and never the exit code. Pair it with `--lint-fail-on` to make a pipeline stop. The rule catalog is in [sip-lint-rules.md](sip-lint-rules.md), and over MCP as `explain_rule` |
+| `--lint` | -- | off | 0.5.84 | Run the RFC conformance linter over every dialog and print each finding with its rule identifier and the RFC section it reads from. The linter compares what the capture holds against what the cited section calls for, so a finding names a section rather than an opinion. Informational on its own: it changes what gets printed and never the exit code. Pair it with `--lint-fail-on` to make a pipeline stop. Prints to stdout, so it needs `-N` and `--mcp` refuses it. The rule catalog is in [sip-lint-rules.md](sip-lint-rules.md), and over MCP as `explain_rule` |
 | `--lint-fail-on` | `<SEVERITY>` | -- | 0.5.84 | Exit `3` when the linter reports a finding at or above this severity: `info`, `notice`, `warning` (or `warn`), or `error`. Any other value exits `2` and names the four. Needs `--lint`. A pipeline can tell a runtime failure (1) and a wrong invocation (2) apart from a non-conformant capture (3). `info`, the lowest severity, trips on any finding |
 | `--group-by` | `<FIELD>` | -- | 0.3.0 | Group output by field (e.g., `call-id`, `from`, `method`) |
 | `--max-groups` | `<N>` | `100000` | 0.5.97 | Distinct `--group-by` keys one run retains. Past it sipnab refuses new keys and warns that the output is incomplete. `-l`/`--limit` bounds tracked dialogs, not this buffer. Requires `--group-by`. Config: `[limits] max_groups` |
@@ -18481,7 +18489,7 @@ Multiple diagnostic flags combine with OR.
 | `--relay-stats` | -- | -- | 0.5.169 | Ask the relay named by `--rtpengine-control` for its OWN statistics -- packets relayed, sessions, its own loss and jitter -- and print them. They are `relay_reported`: a claim from the box, not a measurement sipnab made, and the header says so. **Same live source `--rtpengine-control` needs**, because asking transmits; on `-I <file>` it prints why it declines to ask rather than asking, and with no `--rtpengine-control` it says to name one. Feature: `native` |
 | `--relay-stats-call` | `<CALL-ID>` | -- | 0.5.169 | Ask the relay named by `--rtpengine-control` for its own counters about ONE call, by Call-ID: per-stream and per-SSRC packet and byte counts, RTP and RTCP totals, as the relay counts them (`relay_reported`). A relay not holding the call answers in its own words, which sipnab reports rather than inventing a not-found. Same live-source gate as `--relay-stats`. Feature: `native` |
 | `--relay-stats-list` | -- | -- | 0.5.169 | List which statistics the relay named by `--rtpengine-control` knows, rather than their values. The key set is version-specific, so "what can I ask for?" is a real question; sipnab asks the relay rather than reading a built-in table, and the header names how it got the set (for rtpengine, the relay listed them in a `statistics` reply). Same live-source gate as `--relay-stats`, because listing asks the relay and asking transmits. Feature: `native` |
-| `--relay-stats-interval` | `<SECONDS>` | -- | 0.5.170 | Poll the relay named by `--rtpengine-control` for its statistics every SECONDS, for as long as the capture runs. Nothing polls by default. One transaction per interval, the next beginning only once the previous returns, so a slow relay slows the cadence rather than stacking requests. Each polled reading says it was `polled` and names the interval. CLI only (a poll is a standing instruction to transmit; the REST/MCP caller does not own the host). Same live-source gate as `--relay-stats`. Range 1--3600. Feature: `native` |
+| `--relay-stats-interval` | `<SECONDS>` | -- | 0.5.170 | Poll the relay named by `--rtpengine-control` for its statistics every SECONDS, for as long as the capture runs. Nothing polls by default. One transaction per interval, the next beginning only once the previous returns, so a slow relay slows the cadence rather than stacking requests. Each polled reading says it was `polled` and names the interval. CLI only (a poll is a standing instruction to transmit; the REST/MCP caller does not own the host). Same live-source gate as `--relay-stats`. Range 1--3600. A headless run prints each reading to stdout, so `-N` with `--mcp` refuses it. Feature: `native` |
 | `--relay-compare` | `<CALL-ID>` | -- | 0.5.169 | Compare the relay's own RTP packet count for one call against what sipnab measured on the wire. It shows the relay's `totals.RTP.packets` for the call (`relay_reported`) beside sipnab's own count of the RTP packets it captured for it (`sipnab_measured`), both labeled, with a word verdict (`match` or `differ`) and a direction-aware note. The two count different sockets over different windows, so an ordinary gap is not a relay fault: if sipnab counted fewer the note names the undercount causes (a mirror-port drop, a mid-call restart) and points at `capture_health`; if sipnab counted more it names the usual cause -- a capture that sees both sides of the relay hairpin counts each packet twice, so a point upstream and downstream reads about twice the relay's count. It never sums the counts. Runs after capture, when sipnab's tally is final; sipnab reports a call the relay does not hold, or one it captured no RTP for, distinctly rather than comparing it against a made-up zero. Same live-source gate as `--relay-stats`. Feature: `native` |
 
 **Examples**
@@ -18614,7 +18622,7 @@ It also refuses a boundary that is not a finite number of 0 or more, such as
 | `--seccomp` | `<MODE>` | `off` | 0.5.165 | Record every system call (`log`), or refuse the ones outside a host-derived allowlist (`enforce`). `log` installs a seccomp filter whose only action is `SECCOMP_RET_LOG`. **It denies nothing and protects nothing**: use it to record which calls a run makes, as the input to an allowlist. `enforce` kills the process on a call outside the allowlist `SIPNAB_SECCOMP_ALLOWLIST` names, derived on the capture host with [`scripts/derive-seccomp-allowlist.sh`](https://github.com/NormB/sipnab/blob/main/scripts/derive-seccomp-allowlist.sh); when sipnab cannot install an enforcing filter (no list named, a list it cannot read, a kernel that refuses), it refuses to start, exit status 1. Where the records land depends on the host: `auditctl -s` prints a connected audit daemon's pid and the records are then in `ausearch -m SECCOMP`; a pid of 0 means no daemon and they are in `dmesg \| grep 'type=1326'`. Point it at a bounded offline run — a live capture emits one record per received packet and floods the log |
 | `--fraud-detect` | -- | off | 0.3.0 | Enable fraud detection heuristics. Config: `[security] fraud_detect` |
 | `--no-fraud-detect` | -- | off | 0.5.204 | Do not run fraud detection even when `[security] fraud_detect = true`. The last of `--fraud-detect` / `--no-fraud-detect` typed wins. Config: `[security] fraud_detect` |
-| `--evidence-out` | `<PATH\|->` | off | 0.5.148 | Publish every security finding that names a source as JSON Lines, for a system that decides what to do with it. `-` is standard output, for a pipe; a path receives one appended line per finding, and sipnab opens it at startup, so a path it cannot write is an error before the first packet. sipnab takes no action on these lines: the system reading them decides. A finding carried by HEP publishes nothing without `--hep-allow-kill`, for the reason `--fail2ban` gives: the inner address is the sender's claim |
+| `--evidence-out` | `<PATH\|->` | off | 0.5.148 | Publish every security finding that names a source as JSON Lines, for a system that decides what to do with it. `-` is standard output, for a pipe, and `--mcp` refuses it; a path receives one appended line per finding, and sipnab opens it at startup, so a path it cannot write is an error before the first packet. sipnab takes no action on these lines: the system reading them decides. A finding carried by HEP publishes nothing without `--hep-allow-kill`, for the reason `--fail2ban` gives: the inner address is the sender's claim |
 | `--fraud-destination` | `<ISO,...>` | off | 0.5.147 | Destination countries `--fraud-detect` reports an INVITE to, as ISO 3166-1 alpha-2 codes (`DO,VG,MA`). sipnab reads numbers through the common international prefixes (`+`, `00`, `011`) and resolves them by longest calling code, so `+1 809` is `DO`, not `US`; a number with no prefix is domestic and never matches. Every fraud finding also names the resolved destination. Absent: nothing changes. Config: `[security] fraud_destination` |
 | `--business-hours` | `<START-END>` | -- | 0.5.96 | Business hours in whole UTC hours, for example `8-18`, or `22-6` for an overnight window. The off-hours fraud detection reports nothing until you set a window. Needs `--fraud-detect`. Config: `[security] business_hours` |
 | `--fraud-short-call` | `<SECS>` | `3` | 0.5.96 | Measured duration below which `--fraud-detect` counts a completed call as short for wangiri detection. Three seconds is under a normal ring-no-answer on some carriers. Config: `[security] fraud_short_call_secs` |
@@ -18646,7 +18654,7 @@ It also refuses a boundary that is not a finite number of 0 or more, such as
 | `--alert` | `<CHANNEL>` | -- | 0.3.0 | Repeatable alert channel (`syslog`, `json`, `exec`) or rule (`<name>:<threshold>/<window>[:<cooldown>]`). sipnab refuses a channel other than these three, and a rule naming a finding kind no detector reports, with exit `2`; the same value in `[security] alert` exits `1`, naming the key. Config: `[security] alert` |
 | `--alert-exec` | `<CMD>` | -- | 0.3.0 | Execute this command when an alert fires. Config: `[security] alert_exec` |
 | `--alert-json` | -- | off | 0.4.11 | Emit each security alert as a structured JSON line on stderr (in addition to the human `[ALERT]` line). Config: `[security] alert` |
-| `--stir-shaken` | -- | off | 0.3.0 | Report STIR/SHAKEN Identity claims — decodes the PASSporT, does NOT verify the signature |
+| `--stir-shaken` | -- | off | 0.3.0 | Report STIR/SHAKEN Identity claims — decodes the PASSporT, does NOT verify the signature. With `--cores N` sipnab refuses it with exit 2, as it refuses the detection flags, because the parallel reader does not report them |
 | `--run-provenance-file` | `<FILE>` | -- | 0.5.131 | Record the command that started this run, as one JSON line appended to FILE (`seq`, `ts`, `record`, `argv`, `cwd`, `uid`, `user`, `pid`, `started`, `version`, `features`, `capture`). Use it to trace a report, vCon container or exported pcap back to the capture, filter, port range and retention caps that produced it. `capture` is the same instance token the MCP and REST surfaces stamp on their answers, so a record joins to what that run produced. sipnab writes it once, at startup, before the config takes effect and before it opens any capture device; it reads the config file first, so `capture.node` is the node `--node-name` or `[capture] node_name` sets. Opened `O_APPEND` and never truncated, so successive runs accumulate; created mode `0600` when absent. The record replaces the value of a flag that takes a secret inline, such as `--hep-auth` or `--api-key`, with `[redacted]`. **A record sipnab cannot write stops the run.** Leave it off and nothing changes |
 | `--tui-audit-file` | `<FILE>` | -- | 0.5.131 | Record what the operator did in the TUI, one JSON line per action appended to FILE (`seq`, `ts`, `record`, `action`, `target`, `format`, `caller`, `outcome`, `error`). Actions, not keystrokes: the capture opened, the capture swapped, a filter applied or cleared, an export and its destination, including one sipnab refused. **The search field is never recorded**, neither the query nor the fact that the operator typed one. Same writer and same file shape as `--mcp-audit-file`: append-only, never truncated, one sequence number per record so a gap is a lost record, created mode `0600`. A path sipnab cannot open stops the run before sipnab takes the terminal, and sipnab refuses `-N` rather than accepting it with nothing to record. **A write that fails mid-session does NOT stop the TUI**: the lost record leaves a permanent gap in the numbering, the status line says the trail is incomplete, and the closing `session_end` record and the exit message on standard error name the count. Leave it off and nothing changes. Feature: `tui` |
 
@@ -18677,7 +18685,7 @@ It also refuses a boundary that is not a finite number of 0 or more, such as
 - `sipnab -N -I capture.pcap --kill-scanner --no-kill-scanner --report` — the last of the pair wins, so sipnab arms no response
 
 - `sudo sipnab -d eth0 --kill-scanner --kill-ua 'friendly-scanner' --kill-response 486 --kill-spoof auto` — detect SIP scanners (plus a custom UA pattern) and reply 486 with the victim's spoofed source
-- `sudo sipnab -d eth0 --kill-target 192.0.2.66:5060-5090 --kill-ua 'sipvicious' --kill-response 480 --kill-spoof raw` — targeted kill of a scanning host across a port range, plus a second scanner UA, replying 480 via raw-socket spoof
+- `sudo sipnab -d eth0 --kill-scanner --kill-target 192.0.2.66:5060-5090 --kill-ua 'sipvicious' --kill-response 480 --kill-spoof raw` — targeted kill of a scanning host across a port range, plus a second scanner UA, replying 480 via raw-socket spoof
 - `sudo sipnab -d eth0 --kill-target 198.51.100.77:5060 --kill-spoof ephemeral` — kill requests from one more source port using a non-spoofed ephemeral reply
 - `sudo sipnab -N -d eth0 --reg-flood --digest-leak --fraud-detect --stir-shaken --alert json --alert-json --alert-exec '/usr/local/bin/notify.sh'` — live security monitoring: registration floods, digest leaks, fraud, STIR/SHAKEN, with JSON alerts and an exec hook
 - `sipnab -N -I capture.pcap --stir-shaken --digest-leak --alert-json` — offline audit of a pcap for digest leaks and STIR/SHAKEN attestation claims (as the originator presented them — sipnab checks no signature), emitting structured JSON alerts
@@ -18800,9 +18808,9 @@ This applies to root runs and to unprivileged runs set up with
 | `--api-token-ttl` | `<SECS>` | `3600` | 0.4.3 | Default TTL (seconds) when minting API tokens with `--mint-token`. Feature: `api` |
 | `--api-max-rows` | `<N>` | `1000` | 0.5.100 | Rows one list-style REST response returns. The REST counterpart of `--mcp-max-rows`. Raise it for a batch consumer that reads every row of `/v1/dialogs`; lower it for a dashboard. A caller may always ask for less with `?limit=`, and nothing it sends asks for more than this. Config: `[limits] api_max_rows` Feature: `api` |
 | `--api-rate-limit-per-peer` | `<N>` | `100` | 0.5.100 | REST requests one client IP may make per second; `0` disables the cap, the reading `--mcp-rate-limit-per-peer` and `--hep-rate-limit` also give it. The limiter counts by source address, so a dashboard polling `/v1/streams` on a short timer, or several collectors behind one NAT, share a single allowance. A refused request gets `503`, not `429`: the limiter runs before authentication and says nothing about the credential. Config: `[limits] api_rate_limit_per_peer` Feature: `api` |
-| `--api-allow-relay-query` | -- | -- | 0.5.170 | Let REST clients query the relay named by `--rtpengine-control` through the `GET /v1/relay/...` routes, which transmit. The REST counterpart of `--mcp-allow-relay-query`, off for the same reason: every other REST answer comes from bytes sipnab already holds, and these put a packet on the network — at the address that flag names, never one a client chooses. Without this flag those routes answer `not_permitted`; without a relay, or on a file-backed run, `not_configured`. Each response is HTTP 200 carrying an `outcome`, so a refusal is content, not a 4xx. Polling on an interval is not offered over REST at all. Feature: `api` |
+| `--api-allow-relay-query` | -- | -- | 0.5.170 | Let REST clients query the relay named by `--rtpengine-control` through the `GET /v1/relay/...` routes, which transmit. The REST counterpart of `--mcp-allow-relay-query`, off for the same reason: every other REST answer comes from bytes sipnab already holds, and these put a packet on the network — at the address that flag names, never one a client chooses. Without a relay address (no `--rtpengine-control`), those routes answer `not_configured`. With one, they answer `not_permitted` when this flag is absent, and on a file-backed run even with the flag. Each response is HTTP 200 carrying an `outcome`, so a refusal is content, not a 4xx. Polling on an interval is not offered over REST at all. Feature: `api` |
 | `--api-allow-vcon-fetch` | -- | off | 0.5.221 | Let REST clients read one vCon by uuid from the store the `[vcon_fetch]` keys configure, through [`GET /v1/vcon/fetch/:uuid`](rest-api.md#get-v1vconfetchuuid), which connects to that store. The REST counterpart of `--mcp-allow-vcon-fetch`, off for the same reason. The store, its kind, the credential and the decryption key come from `[vcon_fetch]` only, never from the request, and the answer holds no key. Without this flag the route answers `503` naming it; with it and no `[vcon_fetch] url`, `503` naming the keys. sipnab stops at startup when it cannot read the store's credential or key file. The container comes back in the answer, and sipnab writes no file. Feature: `api` and `vcon` |
-| `--api-accept-archive-passwords` | -- | off | 0.5.187 | Accept the `Sipnab-Archive-Password` header on `GET /v1/captures/compare` from a client that is not on this host. Without `--api-tls-cert` sipnab serves plain HTTP, so the password crosses the network in the clear unless TLS terminates in front: making sure it does is your job when you pass this. Without it, only a loopback client may send one, and a remote one gets `403`. Feature: `api` |
+| `--api-accept-archive-passwords` | -- | off | 0.5.187 | Accept the `Sipnab-Archive-Password` header on `GET /v1/captures/compare` from a client that is not on this host. Without `--api-tls-cert` sipnab serves plain HTTP, so the password crosses the network in the clear unless TLS terminates in front: making sure it does is your job when you pass this. Without it, only a loopback client may send one, and a remote one gets `403`, also when `--api-tls-cert` serves HTTPS. Feature: `api` |
 | `--api-file-root` | `<DIR>` | -- | 0.5.177 | Directory of capture files `GET /v1/captures/compare` may diff. The REST counterpart of `--mcp-file-root`, off for the same reason: every other REST answer comes from bytes sipnab already holds, while this reads FILES a client names. It takes a bare FILENAME, never a path: sipnab rejects a separator, a `..` or an absolute prefix before touching the filesystem, and refuses a symlink that resolves out of the root at open, by the same check `-O` uses. Without this flag the compare route answers `503`. Naming one directory means the worst a client can do is name files inside it. Feature: `api` |
 | `--metrics-max-conn` | `<N>` | `16` | 0.5.100 | Metrics scrapes served at once before further ones get `503`. Sixteen suits one Prometheus server; raise it when an HA pair, a federating parent, `remote_write` shards or sidecars scrape the same endpoint. A refused scrape leaves a gap in the series. Config: `[limits] metrics_max_conn` Feature: `metrics` |
 | `-L`, `--hep-listen` | `<ADDR>` | -- | 0.3.0 | Listen for HEP (Homer Encapsulation Protocol) packets. **Combines with `-d <iface>`**: HEP then supplies signaling while the interface supplies the RTP a HEP feed cannot carry, and streams bind to dialogs by SDP media endpoint. With no BPF expression of your own, the interface gets a media-only default, since the mirror carries the signaling; an explicit expression such as `sipnab -N -d eth0 -L 127.0.0.1:9060 "udp portrange 10000-20000"` narrows it to your media ports. One interface and one listener only: `--multi-device` with `-L`, `-I` with `-L`, and `-O` alongside the pair are each refused with the reason. See [cookbook recipe "Take signaling from HEP and media off the wire, in one process"](examples.md#take-signaling-from-hep-and-media-off-the-wire-in-one-process). The decrypted TLS and WebSocket legs OpenSIPS and Kamailio trace arrive with IP protocol 22, 50 or 6 and decode as TLS, WS or WSS, see [How `--hep-listen` reads the transport](#how---hep-listen-reads-the-transport). `--portrange` does not apply to HEP messages, so a proxy tracing SIP on 7060 needs no `--portrange 1-65535`. Each message takes the time its HEP packet carries; a HEP v3 packet without a `TS_SEC` chunk, and a HEP v1 packet, take the time sipnab received them. sipnab reads HEP v1 and v2 packets in the layout the `captagent` capture agent writes and Kamailio's `sipcapture` module reads: IPv4 or IPv6 addresses by the family byte, the transport by the IP protocol byte, and for v2 the time and capture ID in its time header. Feature: `hep` |
@@ -19035,8 +19043,8 @@ Run sipnab as a Model Context Protocol server so an AI agent can drive it.
 |------|-------|---------|-------|-------------|
 | `--mcp` | -- | off | 0.3.2 | Run sipnab as an MCP server. With the default stdio transport, stdout carries the JSON-RPC wire, so `--mcp` implies `-N`/`--no-tui` and rejects stdout-writing flags (`--json`, `--report`, …). With `--mcp-transport http` the TUI stays up and the server answers beside it, reading the capture the TUI shows; add `-N` for a headless server. See [Query a capture over MCP while the TUI is open](mcp.md#query-a-capture-over-mcp-while-the-tui-is-open). Feature: `mcp` (or `mcp-http` for HTTP transport). See [`mcp.md`](./mcp.md). |
 | `--mcp-transport` | `stdio\|http` | `stdio` | 0.3.2 | MCP transport: `stdio` (default) or `http` (requires the `mcp-http` feature). Feature: `mcp` |
-| `--mcp-bind` | `<ADDR>` | -- (defaults to `127.0.0.1:8731` at runtime when `--mcp-transport http` appears without an explicit bind) | 0.3.2 | HTTP MCP bind address. Non-loopback requires `--mcp-token`. Feature: `mcp-http` |
-| `--mcp-token` | `<TOKEN>` | -- | 0.3.2 | Bearer token for HTTP MCP; required for non-loopback binds. Precedence: explicit flag, token file, then `$SIPNAB_MCP_TOKEN`. Feature: `mcp-http` |
+| `--mcp-bind` | `<ADDR>` | -- (defaults to `127.0.0.1:8731` at runtime when `--mcp-transport http` appears without an explicit bind) | 0.3.2 | HTTP MCP bind address. A non-loopback address needs a credential: a bearer token (`--mcp-token`, `--mcp-token-file` or `$SIPNAB_MCP_TOKEN`) or a signing key (`--mcp-signing-key`, `--mcp-signing-key-file` or `$SIPNAB_MCP_SIGNING_KEY`). Without one, sipnab refuses to start, with exit `2`. Feature: `mcp-http` |
+| `--mcp-token` | `<TOKEN>` | -- | 0.3.2 | Bearer token for HTTP MCP. A non-loopback bind needs this or a signing key (`--mcp-signing-key`). Precedence: explicit flag, token file, then `$SIPNAB_MCP_TOKEN`. Feature: `mcp-http` |
 | `--mcp-token-file` | `<FILE>` | -- | 0.3.2 | Read bearer token from file (preferred over env in systemd units). Feature: `mcp-http` |
 | `--mcp-tls-cert` | `<FILE>` | -- | 0.5.203 | Serve MCP over HTTP with HTTPS, using this PEM certificate chain, the server's certificate first. Needs `--mcp-tls-key`; either alone stops sipnab at startup rather than serving plain HTTP on a port meant for HTTPS. The port then speaks HTTPS only: TLS 1.2 and 1.3, ALPN `http/1.1`, no client certificates; clients still authenticate with the bearer token. A file sipnab cannot read, or that holds no certificate, stops it at startup naming the file. sipnab refuses it without `--mcp --mcp-transport http`. See [MCP TLS](mcp-deploy.md#mcp-tls). sipnab refuses an empty path with exit `2`, and an empty `[mcp] tls_cert` with exit `1`. Feature: `mcp-http`. Config: `[mcp] tls_cert` |
 | `--mcp-tls-key` | `<FILE>` | -- | 0.5.203 | PEM private key for `--mcp-tls-cert`. sipnab **refuses a key any other user on the host can read** (`chmod 600` it; group-readable stays allowed), a file with no private key, and a key that does not belong to the certificate, each at startup and naming the file. sipnab refuses an empty path with exit `2`, and an empty `[mcp] tls_key` with exit `1`. Feature: `mcp-http`. Config: `[mcp] tls_key` |
@@ -19081,7 +19089,7 @@ Run sipnab as a Model Context Protocol server so an AI agent can drive it.
 | `--keylog` | `<FILE>` | -- | 0.3.0 | TLS key log file (NSS `SSLKEYLOGFILE` format). Accepts a **FIFO** here and reads it as a live stream, so a producer can feed secrets in without writing them to disk. sipnab opens the file **before** it drops privileges, so a keylog only the proxy's user can read still loads when sipnab runs as root and drops to `nobody`, and `--keylog-watch` keeps reading what the producer appends through that open file. A producer that replaces the file after the drop needs it reachable by the user sipnab dropped to. When sipnab cannot read the keylog it refuses the run with exit `1`, as it does for `--tls-key` and `--dtls-keylog`, and the error names the reason, such as `Failed to load --keylog /run/keys.log: ... No such file or directory`. Feature: `tls` |
 | `--keylog-fd` | `<N>` | -- | 0.5.101 | Read NSS keylog lines from an already-open descriptor, for a privileged producer that hands secrets over a pipe rather than a file. **Implies `--keylog-watch`**, and conflicts with `--keylog` — pass one, never both. sipnab **cannot start that producer itself**: it sets `PR_SET_NO_NEW_PRIVS` at startup and every child inherits it, so a child can never acquire the `CAP_BPF` an eBPF extractor needs. Start it from a supervisor and pass the read end here. Feature: `tls` |
 | `--keylog-watch` | -- | off | 0.3.0 | Watch the key log for new entries (live decryption). Feature: `tls` |
-| `--tls-lockon-window` | `<RECORDS>` | 1048576 | 0.5.115 | How far into an established TLS connection a capture may start and still be readable. No TLS version puts the record number on the wire, so a capture that joined a running connection searches for it, widening only as records fail to open — raising this costs nothing on a connection captured from its handshake, because the search stops at the first candidate that authenticates. Raise it for a carrier trunk held open for days; lower it where key material for unrelated connections is common. Feature: `tls` |
+| `--tls-lockon-window` | `<RECORDS>` | 1048576 | 0.5.115 | How far into an established TLS connection a capture may start and still be readable. No TLS version puts the record number on the wire, so a capture that joined a running connection searches for it, widening only as records fail to open — raising this costs nothing on a connection captured from its handshake, because the search stops at the first candidate that authenticates. Raise it for a carrier trunk held open for days; lower it where key material for unrelated connections is common. At least 1: `0` would turn the search off, so sipnab refuses it with exit 2. Feature: `tls` |
 | `--dtls-keylog` | `<FILE>` | -- | 0.3.0 | DTLS key log (NSS `SSLKEYLOGFILE`); extracts SRTP keys from DTLS-SRTP handshakes ([RFC 5764](https://www.rfc-editor.org/rfc/rfc5764.html) exporter, AES-CM profiles). sipnab does not treat a record declaring more than 2^14 + 2048 bytes as DTLS (the ciphertext limit TLS sets and DTLS inherits). Feature: `tls` |
 | `--srtp-keys` | `<FILE>` | -- | 0.3.0 | SRTP master-keys file for media decryption (AES-CM, [RFC 3711](https://www.rfc-editor.org/rfc/rfc3711.html)); also honors SDES `a=crypto` keys from SDP. Feature: `tls` |
 | `--pcap-export-mode` | `<MODE>` | `raw` | 0.3.0 | `raw` writes original packets without TLS keys. `encrypted+dsb` explicitly embeds TLS keys in PCAP-NG for Wireshark. `decrypted` writes what sipnab decrypted as plaintext, and no keys: SIP from TLS and WSS as plain TCP frames and SRTP as plain RTP, on the captured addresses, ports and times, with everything else as captured. The file can hold readable signaling and listenable audio. Frames wait up to 5 s of capture time for a late decryption, and a stop discards what is still waiting. The TUI's live `-O` rewrites SRTP only, because the TUI does not decrypt TLS |
@@ -19090,7 +19098,7 @@ Run sipnab as a Model Context Protocol server so an AI agent can drive it.
 | `--uprobe-library` | `<PATH>` | discovered | 0.5.102 | Probe this library instead of discovering them; repeatable. Bypasses discovery, so it also reaches a library nothing has mapped **yet**. For a process inside a container, give the path as sipnab sees it: `/proc/<pid>/root/usr/lib/libssl.so.3`. Feature: `native` |
 | `--uprobe-symbol` | `<NAME>` | per flavor | 0.5.102 | Write symbol to probe. Defaults to the one the library's flavor exports — `SSL_write` for OpenSSL, `wolfSSL_write` for wolfSSL — so you need it only for a library sipnab cannot classify by name. Feature: `native` |
 | `--uprobe-flavor` | `<NAME>` | all | 0.5.102 | Probe only these flavors (`openssl`, `wolfssl`); repeatable. Feature: `native`. Also accepts the spelling `--uprobe-flavour` |
-| `--uprobe-list` | -- | off | 0.5.102 | List the TLS libraries sipnab would probe, then exit **without installing anything in the kernel**. Run this first: it answers the question that decides whether the capture is worth starting. Exits `1` when nothing is visible, so a health check does not read "no TLS library" as success. Feature: `native` |
+| `--uprobe-list` | -- | off | 0.5.102 | List the TLS libraries sipnab would probe, then exit **without installing anything in the kernel**. Run this first: it answers the question that decides whether the capture is worth starting. Exits `1` when nothing is visible, so a health check does not read "no TLS library" as success. With `--uprobe-library` it lists the named libraries and the symbol it would probe in each, instead of discovering them; a path that names no file shows as `(MISSING)` and the command exits `1`, and a library whose flavor its name does not tell, given without `--uprobe-symbol`, exits `2`. Feature: `native` |
 | `--uprobe-backend` | `<NAME>` | `tracefs` | 0.5.102 | Which machinery reads the plaintext. `tracefs` works on any Linux with tracefs mounted and sees **no socket**, so its dialogs name a process rather than a peer. `bpf` pairs each write with its `tcp_sendmsg` and so recovers the **real addresses** — but needs a sipnab built with `--features bpf` and a kernel with `CONFIG_DEBUG_INFO_BTF` (BTF is the BPF Type Format, which tells sipnab where the socket's fields sit on *this* kernel). sipnab refuses `bpf` without those rather than quietly downgrading: the addresses are the only reason to ask for it. Feature: `native` |
 
 **Examples**
@@ -19169,7 +19177,7 @@ Run sipnab as a Model Context Protocol server so an AI agent can drive it.
 | `--user` | `<USER>` | -- | 0.3.0 | Drop privileges to this user after opening capture devices. **Only takes effect when the process is root** — see the note below. Config: `[privilege] user` |
 | `--no-priv-drop` | -- | off | 0.3.0 | Do not drop privileges after opening capture devices. Config: `[privilege] no_priv_drop` |
 | `--priv-drop` | -- | off | 0.5.204 | Drop privileges even when `[privilege] no_priv_drop = true`. The last of `--no-priv-drop` / `--priv-drop` typed wins. Config: `[privilege] no_priv_drop` |
-| `--chroot` | `<DIR>` | -- | 0.3.0 | Chroot to this directory after initialization. Config: `[privilege] chroot` |
+| `--chroot` | `<DIR>` | -- | 0.3.0 | Chroot to this directory after initialization. It applies to `-I` file runs too, and needs root privileges: as an ordinary user the run exits `1` with `Failed to chroot: ... Operation not permitted`. Config: `[privilege] chroot` |
 | `--setup-caps` | -- | off | 0.4.3 | Grant this binary the Linux capabilities for live capture (`cap_net_raw,cap_net_admin+ep` via `setcap`) so it runs without `sudo`, then exit. Re-invokes through `sudo` when not already root. Linux only. |
 
 **`--user` does nothing unless the process is root.**
@@ -19356,8 +19364,8 @@ Examples:
 - `sipnab --vcon-fetch - --vcon-fetch-kind conserver --vcon-fetch-url http://127.0.0.1:8000 --vcon-fetch-auth-file conserver.key --vcon-fetch-decrypt-key recipient.key --vcon-fetch-out fetched < uuids.txt` — decrypt every vCon listed in `uuids.txt`, one uuid per line; the fetcher writes a container that is not encrypted as the store holds it
 - `sipnab --vcon-fetch 018bcfe5-6800-8a6b-a667-78f1c5213800 --vcon-fetch-kind conserver --vcon-fetch-url http://127.0.0.1:8000 --vcon-fetch-auth-file conserver.key --vcon-fetch-decrypt-key recipient.key --vcon-fetch-signer-ca signing-ca.pem --vcon-fetch-out fetched` — decrypt a vCon and write it only when the CA in `signing-ca.pem` issued its signing certificate
 - `sipnab --vcon-fetch - --vcon-fetch-kind conserver --vcon-fetch-url http://127.0.0.1:8000 --vcon-fetch-auth-file conserver.key --vcon-fetch-decrypt-key recipient.key --vcon-fetch-signer-ca system --vcon-fetch-out fetched < uuids.txt` — decrypt every vCon listed in `uuids.txt` and write each only when a CA in the host's CA bundle issued its signing certificate
-- `sipnab --vcon-fetch 018bcfe5-6800-8a6b-a667-78f1c5213800 --vcon-fetch-kind conserver --vcon-fetch-url http://127.0.0.1:8000 --vcon-fetch-auth-file conserver.key --vcon-fetch-decrypt-key recipient.key --vcon-fetch-signer-sha256 40:97:43:61:0C:C7:47:BD:40:82:E2:28:1C:53:A6:54:88:74:EB:E7:A7:2B:E4:A3:C8:CB:1B:CA:C8:97:BC:D6 --vcon-fetch-out fetched` — decrypt a vCon and write it only when one known certificate signed it
-- `sipnab --vcon-fetch 018bcfe5-6800-8a6b-a667-78f1c5213800 --vcon-fetch-kind conserver --vcon-fetch-url http://127.0.0.1:8000 --vcon-fetch-auth-file conserver.key --vcon-fetch-decrypt-key recipient.key --vcon-fetch-signer-ca signing-ca.pem --vcon-fetch-signer-sha256 409743610cc747bd4082e2281c53a6548874ebe7a72be4a3c8cb1bcac897bcd6 --vcon-fetch-out fetched` — require both: the signing certificate chains to `signing-ca.pem` and has this fingerprint
+- `sipnab --vcon-fetch 018bcfe5-6800-8a6b-a667-78f1c5213800 --vcon-fetch-kind conserver --vcon-fetch-url http://127.0.0.1:8000 --vcon-fetch-auth-file conserver.key --vcon-fetch-decrypt-key recipient.key --vcon-fetch-signer-sha256 4A:27:CF:DC:D8:87:A5:E5:A9:B5:DE:7E:27:37:C2:48:28:2B:86:44:8A:B3:60:6F:42:99:B2:E2:26:FC:0F:19 --vcon-fetch-out fetched` — decrypt a vCon and write it only when one known certificate signed it
+- `sipnab --vcon-fetch 018bcfe5-6800-8a6b-a667-78f1c5213800 --vcon-fetch-kind conserver --vcon-fetch-url http://127.0.0.1:8000 --vcon-fetch-auth-file conserver.key --vcon-fetch-decrypt-key recipient.key --vcon-fetch-signer-ca signing-ca.pem --vcon-fetch-signer-sha256 4a27cfdcd887a5e5a9b5de7e2737c248282b86448ab3606f4299b2e226fc0f19 --vcon-fetch-out fetched` — require both: the signing certificate chains to `signing-ca.pem` and has this fingerprint
 
 
 ## vCon archive
@@ -19408,6 +19416,28 @@ each recording the container names by `url`, and captures nothing.
 - `sipnab --vcon-audio-fetch fetched/0158a120-0392-891a-9455-bc2e6fad94df.vcon.json --vcon-audio-fetch-out audio --vcon-key recipient.key --vcon-audio-fetch-ca media-ca.pem` — decrypt the audio of an encrypted vCon from storage whose certificate only that CA issued
 - `sipnab --vcon-audio-fetch fetched/0158a120-0392-891a-9455-bc2e6fad94df.vcon.json --vcon-audio-fetch-out audio --vcon-key recipient.key --vcon-audio-fetch-extra-ca media-ca.pem --vcon-audio-fetch-max-size 1073741824` — the same, trusting the host's bundle too, for a recording up to 1 GiB
 
+## G.729 tables (`sipnab g729`)
+
+`sipnab g729` installs and checks the G.729 codebook tables that `--g729-tables` reads. A codebook table is the set of numeric values the G.729 decoder needs. sipnab does not ship them. [G.729 audio](g729.md) is the full how-to.
+
+- `sipnab g729 install` downloads the ITU-T G.729 software package, checks its sha256, builds the table file from it and writes the file. It asks before it installs.
+- `sipnab g729 status` prints whether the table file holds the tables, the path it read and the hash of the values. It exits `0` when the file holds the tables and `1` when it does not.
+
+Both commands take these options:
+
+- `--g729-tables <PATH>`: the table file, as for a capture run. Without it, `[g729] tables`, else `g729-tables.bin` in the directory of the user config file.
+- `-f, --config <FILE>`: the config file to read `[g729] tables` from, as `-f` for a run.
+- `--no-config`: read no config file.
+
+`sipnab g729 install` also takes:
+
+- `--yes`: answer yes to the question before installing, for scripts and Dockerfiles.
+- `--from <PATH>`: install from the package zip, a directory extracted from it, or the table file of another host, without opening a connection.
+
+**Examples**
+- `sipnab g729 status --g729-tables ./g729-tables.bin` — check one table file. With no tables there it prints `G.729 tables: not installed` and `Table file: ./g729-tables.bin`, and exits `1`
+- `sipnab g729 status --no-config` — check the default path, `g729-tables.bin` in the directory of the user config file, whatever the config file sets
+
 ## Config
 
 | Flag | Value | Default | Since | Description |
@@ -19429,13 +19459,13 @@ each recording the container names by `url`, and captures nothing.
 
 ## Validation rules
 
-- Flags that print their answer to stdout require `-N` / `--no-tui` mode, unless `--call-report` or `--export-vcon` is also given: `--json`, `--json-pretty`, `--json-dialogs`, `--report`, `--stun`, `--json-stun`, `--analyze`, `--json-analyze`, `--yang-analyze`, `--hexdump`, `--fail2ban`, `--group-by`, `--wireshark`, `--tshark-filter` and `--recommend-block`.
+- Flags that print their answer to stdout require `-N` / `--no-tui` mode, unless `--call-report` or `--export-vcon` is also given: `--json`, `--json-pretty`, `--json-dialogs`, `--report`, `--stun`, `--json-stun`, `--analyze`, `--json-analyze`, `--yang-analyze`, `--hexdump`, `--fail2ban`, `--group-by`, `--wireshark`, `--tshark-filter`, `--recommend-block`, `--lint` and `--vcon-digest`.
 - `--kill-response` accepts values 100-699 only.
 - Feature-gated flags (`tls`, `hep`, `api`, `mcp`, `mcp-http`) produce startup errors when the required feature is not compiled in.
-- `--mcp` refuses every flag in that list, `--call-report`, and `--export-vcon` without `--vcon-out`, because on stdio those would write into the JSON-RPC wire.
+- `--mcp` refuses every flag in that list, `--call-report`, `--export-vcon` without `--vcon-out`, `--evidence-out -`, and `--relay-stats-interval` on a headless run, because on stdio those would write into the JSON-RPC wire.
   - This holds on every transport, not just stdio.
   - Combine `--mcp` with `--quiet` to suppress text-mode capture output.
-- HTTP MCP transport (`--mcp --mcp-transport http`) on a non-loopback `--mcp-bind` requires `--mcp-token` / `--mcp-token-file` / `SIPNAB_MCP_TOKEN`. Loopback binds need no token.
+- HTTP MCP transport (`--mcp --mcp-transport http`) on a non-loopback `--mcp-bind` requires a bearer token (`--mcp-token` / `--mcp-token-file` / `SIPNAB_MCP_TOKEN`) or a signing key (`--mcp-signing-key` / `--mcp-signing-key-file` / `SIPNAB_MCP_SIGNING_KEY`). Loopback binds need neither.
 
 ## Examples
 
@@ -22711,6 +22741,14 @@ A warning after the `--uprobe-list` table: sipnab cannot open `{unreachable}` of
 
 **Exit code:** 0. This is a warning, and sipnab still prints the listing.
 
+### `--uprobe-library {path}: no such file, so a capture could not probe it`
+
+`--uprobe-list` with `--uprobe-library` lists the named libraries, the ones a capture would probe, instead of discovering them. `{path}` names no file. The table marks it `(MISSING)`.
+
+**What to do:** Give the path as sipnab sees it. For a library inside a container, that is `/proc/<pid>/root/` followed by the path inside the container.
+
+**Exit code:** 1, after the table prints.
+
 ### `No TLS library is mapped by any process sipnab can see.\nEither nothing here uses OpenSSL or wolfSSL, or sipnab cannot read\n/proc/<pid>/maps — try again as root.`
 
 `--uprobe-list` found no process mapping a TLS library sipnab can probe (OpenSSL or wolfSSL). It reads `/proc/<pid>/maps` for each process, and it does not see a process whose map it cannot read. When the command line includes `--uprobe-flavor`, sipnab counts only libraries of the named flavors.
@@ -23254,20 +23292,33 @@ The POST of container `{name}` to the store failed before the forwarder could re
 
 **Exit code:** None. This is a warning. The container stays in the spool, and the forwarder retries it with a delay that doubles each time. With `--vcon-forward-once`, the run exits 1.
 
-### `'{shown}': put credentials in --vcon-forward-auth-file, not in the URL`
+### `'{shown}': put credentials in {setting}, not in the URL`
 
-The vCon store URL holds a user name or password before an `@` (`https://user:secret@host/...`).
+The URL holds a user name or password before an `@` (`https://user:secret@host/...`).
 
 - sipnab refuses it, so that the credential stays out of logs.
 - The line starts with the setting the URL came from, for example `--vcon-forward-url` or `[vcon_fetch] url`.
 - `{shown}` is the URL as written, with any `user:password@` part replaced by `[redacted]`.
+- `{setting}` is where the credential for that URL goes instead:
+  - `--vcon-forward-auth-file` for the forwarder's store URL and replace URL;
+  - `--vcon-forward-scitt-auth-file` for its transparency service URL;
+  - `--vcon-fetch-auth-file` for the fetcher's store URL;
+  - `[[vcon.enrich]] auth_file` for an enrichment service URL.
 
-**What to do:** Remove the `user:password@` part from the URL. For the forwarder, put the credential in the file named by `--vcon-forward-auth-file` (or `[vcon_forward] auth_file`), or in `SIPNAB_VCON_FORWARD_AUTH`. For the fetcher, put it in the file named by `--vcon-fetch-auth-file` (or `[vcon_fetch] auth_file`).
+**What to do:** Remove the `user:password@` part from the URL, and put the credential in the file `{setting}` names. The forwarder also reads it from `SIPNAB_VCON_FORWARD_AUTH`, and each flag has a config key: `[vcon_forward] auth_file`, `[vcon_forward] scitt_auth_file` and `[vcon_fetch] auth_file`.
 
 **Exit code:**
 
-- 2 when the URL came from a flag (`--vcon-forward-url`, `--vcon-forward-replace-url` or `--vcon-fetch-url`);
-- 1 when it came from the config file (`[vcon_forward] url`, `[vcon_forward] replace_url` or `[vcon_fetch] url`).
+- 2 when the URL came from a flag (`--vcon-forward-url`, `--vcon-forward-replace-url`, `--vcon-forward-scitt-url` or `--vcon-fetch-url`);
+- 1 when it came from the config file (`[vcon_forward] url`, `[vcon_forward] replace_url`, `[vcon_forward] scitt_url`, `[vcon_fetch] url` or `[[vcon.enrich]] url`).
+
+### `'{shown}': a URL {client} reads cannot hold credentials`
+
+A URL sipnab reads without credentials holds a user name or password before an `@`. These are the URLs a vCon names (an `x5u` certificate chain, a dialog's audio `url`) and the `Location` a transparency service answers with. `{client}` is `sipnab`, and `{shown}` is the URL with its `user:password@` part replaced by `[redacted]`. sipnab sends no request to the URL.
+
+**What to do:** Remove the `user:password@` part from the URL at its source. sipnab sends no credential to these URLs.
+
+**Exit code:** None of its own. The message is the reason given inside the message about that URL: `x5u "<url>": ...`, `url ...` for a dialog's audio, or `not polled: ...` for a `Location`.
 
 ### `` --redact acts on the vCon exporter, which needs the 'vcon' Cargo feature this build does not carry. Rebuild with --features vcon (or --features full); `sipnab --version` lists the features a binary was built with ``
 
@@ -23420,16 +23471,16 @@ sipnab built the vCon for the named Call-ID but could not turn it into JSON. `{w
 
 **Exit code:** 1.
 
-### `'{shown}': the forwarder speaks http:// and https:// only`
+### `'{shown}': {client} speaks http:// and https:// only`
 
-The vCon store URL does not start with `http://` or `https://`, the only two schemes sipnab can send to. The line starts with the setting the URL came from, for example `--vcon-forward-url` or `[vcon_fetch] url`. `{shown}` is the URL as written, with any `user:password@` part replaced by `[redacted]`.
+The URL does not start with `http://` or `https://`, the only two schemes sipnab can send to. The line starts with the setting the URL came from, for example `--vcon-forward-url` or `[vcon_fetch] url`. `{shown}` is the URL as written, with any `user:password@` part replaced by `[redacted]`. `{client}` names the part of sipnab that reads the URL: `the forwarder`, `the fetcher`, `the enricher`, or `sipnab` for a URL named inside a vCon.
 
 **What to do:** Write the URL with `http://` or `https://` in front, for example `https://store.example.com/v1/vcons`.
 
 **Exit code:**
 
-- 2 when the URL came from a flag (`--vcon-forward-url`, `--vcon-forward-replace-url` or `--vcon-fetch-url`);
-- 1 when it came from the config file (`[vcon_forward] url`, `[vcon_forward] replace_url` or `[vcon_fetch] url`).
+- 2 when the URL came from a flag (`--vcon-forward-url`, `--vcon-forward-replace-url`, `--vcon-forward-scitt-url` or `--vcon-fetch-url`);
+- 1 when it came from the config file (`[vcon_forward] url`, `[vcon_forward] replace_url`, `[vcon_forward] scitt_url`, `[vcon_fetch] url` or `[[vcon.enrich]] url`).
 
 ### `'{url}': the {} kind reads at a URL template; write {{uuid}} where the uuid goes`
 
@@ -24454,7 +24505,7 @@ Continues the NOT DECODED notice. Those frames are in none of the totals printed
 You gave security detection flags on a run that uses the parallel offline reader. That reader builds no detectors.
 
 - sipnab picks that mode when `--cores` is above 1 with `-I`, and without multi-device capture.
-- `{flags}` lists the detection settings that the run asked for. They come from `--kill-scanner`, `-K/--kill-target`, `--fraud-detect`, `--digest-leak` and `--reg-flood`, including ones turned on in the configuration file.
+- `{flags}` lists the detection settings that the run asked for. They come from `--kill-scanner`, `-K/--kill-target`, `--fraud-detect`, `--digest-leak`, `--reg-flood` and `--stir-shaken`, including ones turned on in the configuration file.
 - `{path}` is `the --cores parallel offline reader`.
 - `{remedy}` is `drop --cores (the single-core headless read detects)`.
 
@@ -27879,7 +27930,11 @@ copy is what it is over the original.
 
 # Config reference
 
-sipnab reads configuration from a TOML file. CLI flags ([cli-reference.md](cli-reference.md)) always override config file values.
+sipnab reads configuration from a TOML file. A CLI flag ([cli-reference.md](cli-reference.md)) overrides the config file value it matches, with three kinds of exception, each stated in its key's row:
+
+- `--names` adds files to `[names] hosts_file`. Where both name one address, the `hosts_file` entry wins.
+- `--allow-action` adds surfaces to `[actions] tfps`.
+- `--alert-json` and `--syslog` turn their alert channel on beside the channels `[security] alert` lists.
 
 Configuration is optional.
 
@@ -27910,9 +27965,10 @@ WARN sipnab::config: Unknown config key: capture.devise
 ```
 
 `-D` refuses a file a run would refuse for its values, with the same message
-and exit status, and prints nothing else. A run's checks of `[pbx] addresses`,
-`[capture] portrange`, `[mcp] tools`, `[actions] tfps`, `[security] alert`,
-`[filters]` and `[[vcon.rule]]` all apply. A port range written backwards:
+and exit status, and prints nothing else. A run's checks of `[actions] tfps`,
+`[action_limits]`, `[security] alert`, `[filters]`, `[pbx] addresses`,
+`[capture] portrange`, `[filter] expression`, `[mcp] tools` and
+`[[vcon.rule]]` all apply. A port range written backwards:
 
 ```text
 ERROR sipnab::app::bootstrap: Invalid [capture] portrange: Port range start (9) > end (1)
@@ -27959,7 +28015,9 @@ notice.
   does not show.
 
 Unknown keys produce a warning and go no further. So one config can span
-versions.
+versions. The exceptions are the `[[vcon.rule]]` and `[[vcon.enrich]]`
+tables: an unknown key in one of them stops the run with exit `1`, naming the
+key and the keys the table accepts. See [`[[vcon.rule]]`](#vconrule).
 
 ## Environment variables in values
 
@@ -27990,6 +28048,12 @@ Four rules, and they hold everywhere a string does:
   - Expanding to nothing would turn `/home/${SUDO_USER}/sipnab` into
     `/home//sipnab`.
   - That is a real, writable directory that is not the one you meant.
+- **A variable whose value is empty expands to nothing.**
+  - sipnab does not refuse it. With the `report_dir` above,
+    `SUDO_USER= sipnab --config sipnab.toml -D` prints
+    `report_dir = "/home//sipnab"`.
+  - Run `sipnab -D` under the same environment as the real run to check
+    what each value expands to.
 - **`$$` is a literal `$`.** Write `$${NAME}` for a literal `${NAME}`.
 - **A bare `$NAME` is literal text.** Braces are the whole syntax.
 
@@ -28030,7 +28094,7 @@ Packet capture defaults.
 | `ws_ports` | string | unset: ports 80, 443, 8080 and 8443 | Ports carrying SIP-over-WebSocket ([RFC 7118](https://www.rfc-editor.org/rfc/rfc7118.html)), as one inclusive `"START-END"` range in the same grammar as `portrange`. Kamailio, OpenSIPS and Janus each default to WSS on a port outside the shipped set, and behind a reverse proxy sipnab sees whichever port the proxy forwards to; set the range to cover those ports, or sipnab does not see the WebRTC signaling leg. A range **replaces** the shipped set, exactly as `portrange` replaces the default signaling ports. sipnab counts the SIP-over-WebSocket it declines to unwrap and names the ports it arrived on. `--ws-portrange` overrides it |
 | `snaplen` | integer | `65535` | Snapshot length in bytes. sipnab refuses `0`, which keeps no byte of any packet, as `--snaplen` does. `--capture-profile` overrides it; `--snaplen` overrides it |
 | `buffer` | integer | `64` | Kernel capture buffer size in MiB (per device). sipnab refuses `0`, which asks the kernel for no ring, as `--buffer` does. `--buffer` overrides it |
-| `buffer_budget_mb` | integer | `64` | Memory budget for the in-flight capture→processing queue. Grows under load up to this budget (capped, never OOM) and shrinks when idle. `--buffer-budget` overrides it |
+| `buffer_budget_mb` | integer | `64` | Sets the size of the in-flight capture→processing queue. sipnab converts the budget to a packet count at an assumed 2048 bytes per packet, so `64` holds 32768 packets, and keeps the count between 10000 and 5000000: `0` and any value up to `19` give the 10000-packet floor. The limit counts packets, not bytes. A queued packet can be as large as `--snaplen`, so with full 65535-byte packets the 64 MiB default can hold about 2 GiB. `--buffer-budget` overrides it |
 | `no_rtp` | boolean | `false` | Disable RTP capture by default. `--no-rtp` turns it on. `--rtp` forces it off |
 | `promisc` | boolean | `true` | Put a named interface into promiscuous mode (the `any` device is never promiscuous). `--no-promisc` overrides this to `false` |
 | `hep_parse` | boolean | `false` | Unwrap HEP-encapsulated SIP found in the capture, as `-E` / `--hep-parse` does: each message takes the addresses and the time the HEP packet carries, or the time sipnab captured the wrapper when the HEP packet carries none. For a proxy that mirrors HEP to a loopback port that sipnab sniffs (`device = "lo"`), so that several readers can see the same copies. Keep a receiver bound to that port: with no process bound to it, some senders lose messages, as the section below this table describes. `--no-hep-parse` turns it off for one run. Feature: `hep` |
@@ -28195,6 +28259,8 @@ Export rules. Each pairs a filter with the directory its vCon containers go to
 and what they carry.
 
 - A run can hold several.
+- An unknown key in a rule stops the run with exit `1`. The message names the
+  key and lists the keys a rule accepts.
 - sipnab writes a call matching several once per rule.
 - See [Write calls by rule](vcon.md#write-calls-by-rule).
 
@@ -28237,6 +28303,8 @@ audio = "inline"
 
 Enrichment services.
 
+- An unknown key in one stops the run with exit `1`. The message names the
+  key and lists the keys this table accepts.
 - sipnab sends each one the calls of the rules it names, before it writes their
   containers.
 - It appends the Analysis Objects of its answer.
@@ -28266,7 +28334,7 @@ The PBX sipnab runs beside, for the filter field `side`.
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
-| `addresses` | array of strings | `[]` | The PBX's own addresses, each an IP address or a CIDR range. `side` is `inbound` for a call whose opening request went to one of them and `outbound` for one sent from one of them. sipnab refuses to start, exit code 1, naming the entry, when an entry is neither |
+| `addresses` | array of strings | `[]` | The PBX's own addresses, each an IP address or a CIDR range. `side` is `inbound` for a call whose opening request went to one of them from another address, `outbound` for one sent from one of them to another address, and `internal` for one sent from one of them to another of them. A call that touches none of them has an empty `side`. sipnab refuses to start, exit code 1, naming the entry, when an entry is neither |
 
 ```toml
 [pbx]
@@ -28280,7 +28348,7 @@ SIP protocol handling.
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
 | `xcid_headers` | array | `[]` | Header names used to correlate B2BUA call legs (`sip.xcid`). A dialog whose message carries one of these headers pointing at another dialog's Call-ID joins that dialog. Add your estate's headers here. Empty by default: sipnab picks no `X-` name for you ([RFC 6648](https://www.rfc-editor.org/rfc/rfc6648.html)), and the identifier that crosses a B2BUA by design is [RFC 7989](https://www.rfc-editor.org/rfc/rfc7989.html) `Session-ID`, which correlates with no configuration. An empty list turns the header strategy off |
-| `leg_correlation_window_ms` | integer | `2000` | How far apart, in milliseconds, one call's two legs may start and still correlate on TIMING alone. Timing is the strategy sipnab falls back on when a B2BUA has rewritten every identifier the other strategies compare. Widen it for a PBX that does an LNP or ENUM dip, or walks an LCR cascade, before it places the outbound leg. Every correlation reports the strategy that matched. `--leg-correlation-window` overrides it |
+| `leg_correlation_window_ms` | integer | `2000` | How far apart, in milliseconds, one call's two legs may start and still correlate on TIMING alone. Timing is the strategy sipnab falls back on when a B2BUA has rewritten every identifier the other strategies compare. Widen it for a PBX that does an LNP or ENUM dip, or walks an LCR cascade, before it places the outbound leg. Every correlation reports the strategy that matched. Must be at least `1`: sipnab refuses `0`. `--leg-correlation-window` overrides it |
 | `active_idle_window_secs` | integer | `3600` | Seconds a dialog may go untouched and still count toward the active-dialog and active-call gauges every surface publishes. The default is twice [RFC 4028](https://www.rfc-editor.org/rfc/rfc4028.html)'s default `Session-Expires`. Raise it where calls stay quiet for longer, such as a caller on hold for over an hour; a call that never sent its BYE then also keeps counting for longer. `--active-idle-window` overrides it. `0` fails validation and names the key |
 
 ```toml
@@ -28299,21 +28367,21 @@ Security detection defaults.
 | `kill_scanner` | boolean | `false` | Enable scanner detection. `--kill-scanner` turns it on. `--no-kill-scanner` forces it off |
 | `kill_response` | integer | `200` | SIP response code for scanner reports (100-699). `--kill-response` overrides it |
 | `fraud_detect` | boolean | `false` | Enable fraud detection heuristics. `--fraud-detect` turns it on. `--no-fraud-detect` forces it off |
-| `alert` | array of strings | `[]` | Alert channels: `"syslog"`, `"json"`, `"exec"`. `--alert` overrides it; `--alert-json` also turns it on; `--syslog` also turns it on |
+| `alert` | array of strings | `[]` | Alert channels (`"syslog"`, `"json"`, `"exec"`) and alert rules, as `--alert` takes them. A rule is `"<name>:<threshold>/<window>[:<cooldown>]"`: `name` is `scanner`, `digest`, `fraud` or `reg_flood`, and `window` and `cooldown` carry a unit, `s`, `m` or `h`, for example `"scanner:5/1m:30s"`. An unknown channel or rule name, or a window without a unit, stops the run with exit `1` naming the key. `--alert` overrides it; `--alert-json` also turns it on; `--syslog` also turns it on |
 | `alert_exec` | string | -- | Command to execute on alert. `--alert-exec` overrides it |
 | `reg_flood_threshold` | integer | `50` | Challenged failures from one source inside one `reg_flood_window_secs` window before `--reg-flood` reports a flood: REGISTERs that carried credentials and drew a `401` or `407` on the same transaction. The default is a carrier-registrar figure: it never sees the ten-a-second brute force a small PBX gets. Counted in capture time, so a file replays as the traffic it recorded. `--reg-flood-threshold` overrides it. `0` fails validation and names the key |
 | `reg_flood_window_secs` | integer | `1` | How much capture time one registration-flood counting window spans, in seconds. `reg_flood_threshold` counts failures per window, so this decides how concentrated a credential-guessing run has to be: one refusal every two seconds never puts two inside the default one-second window. Range 1-3600. sipnab refuses `0`, which would reset the count on every packet, and anything past an hour, where the count is a daily tally rather than a rate, and names the key. `--reg-flood-window` overrides it |
 | `reg_flood_transaction_timeout_ms` | integer | `32000` | How long a credentialed REGISTER stays open to the `401`/`407` that answers it, in milliseconds. The default is [RFC 3261 Timer F](https://www.rfc-editor.org/rfc/rfc3261.html#section-17.1.2.2), 64 times T1 at the [default T1 of 500 ms](https://www.rfc-editor.org/rfc/rfc3261.html#section-17.1.1.1). sipnab never counts a challenge that arrives later as a failure. Set it to 64 times your network's T1, or to your registrar-side proxy's final-response timer when that is longer (see [Registration-flood timers](troubleshooting.md#registration-flood-timers)). Range 1000-600000. Below one second every challenge arrives after its transaction ends and the detector counts nothing, so sipnab refuses the value and names the key. `--reg-flood-transaction-timeout` overrides it |
 | `kill_rate_limit` | integer | `10` | Scanner-kill responses per second sipnab may put on the wire. There is no unlimited setting: `0` fails validation and names the key. A per-destination cap of 3 per minute applies underneath, so raising this widens how many distinct hosts sipnab answers, never how hard it hits one. `--kill-rate-limit` overrides it |
 | `business_hours` | string | -- | Business hours as `"START-END"` in whole UTC hours, for example `"8-18"`. A wrapping range such as `"22-6"` is the overnight window. This is what makes the off-hours fraud detection reachable: with no window declared there is no outside for a call to fall in. `--business-hours` overrides it |
-| `fraud_short_call_secs` | integer | `3` | Measured call duration below which `--fraud-detect` counts a completed call as short for wangiri detection. Lower it where a normal ring-no-answer on your carriers lasts under three seconds, or sipnab reports ordinary unanswered calls as lures. `--fraud-short-call` overrides it |
-| `fraud_wangiri_calls` | integer | `3` | Short calls to one destination prefix before `--fraud-detect` reports wangiri. `--fraud-wangiri-calls` overrides it |
+| `fraud_short_call_secs` | integer | `3` | Measured call duration below which `--fraud-detect` counts a completed call as short for wangiri detection. Lower it where a normal ring-no-answer on your carriers lasts under three seconds, or sipnab reports ordinary unanswered calls as lures. Must be at least `1`: sipnab refuses `0`. `--fraud-short-call` overrides it |
+| `fraud_wangiri_calls` | integer | `3` | Short calls to one destination prefix before `--fraud-detect` reports wangiri. Must be at least `1`: sipnab refuses `0`. `--fraud-wangiri-calls` overrides it |
 | `fraud_destination` | string | -- | Destination countries `--fraud-detect` reports an INVITE to, as comma-separated ISO 3166-1 alpha-2 codes (`DO,VG,MA`). sipnab reads numbers through the common international prefixes (`+`, `00`, `011`) and resolves them by longest calling code, so `+1 809` is `DO`, not `US`; a number with no prefix is domestic and never matches. `--fraud-destination` overrides it |
-| `fraud_sequential_calls` | integer | `3` | Consecutive refused numbers before `--fraud-detect` reports sequential scanning. `--fraud-sequential-calls` overrides it |
-| `fraud_volume_multiplier` | integer | `5` | Multiple of a source's own baseline call rate that `--fraud-detect` reports as a volume spike. `--fraud-volume-multiplier` overrides it |
-| `fraud_volume_min_calls` | integer | `6` | Calls a source must place inside the volume window before `--fraud-detect` reports a spike at all. `--fraud-volume-min-calls` overrides it |
-| `fraud_volume_window_secs` | integer | `60` | How much capture time one volume-spike window spans, in seconds. The count and the source's own baseline are both measured over this window, so a steady source reads the same at any width; what the width alone decides is how CONCENTRATED a burst has to be, since a burst shorter than the window averages into the ordinary traffic beside it. `--fraud-volume-window` overrides it |
-| `fraud_wangiri_window_secs` | integer | `60` | How much capture time one wangiri window spans, in seconds. The detector drops short calls older than this, so it decides how slowly a lure may arrive and still count as one pattern. No setting of `fraud_wangiri_calls` reaches a lure paced wider than the window: the only count that reports anything is one, which reports every ordinary short call as a lure too. `--fraud-wangiri-window` overrides it |
+| `fraud_sequential_calls` | integer | `3` | Consecutive refused numbers before `--fraud-detect` reports sequential scanning. Must be at least `1`: sipnab refuses `0`. `--fraud-sequential-calls` overrides it |
+| `fraud_volume_multiplier` | integer | `5` | Multiple of a source's own baseline call rate that `--fraud-detect` reports as a volume spike. Must be at least `1`: sipnab refuses `0`. `--fraud-volume-multiplier` overrides it |
+| `fraud_volume_min_calls` | integer | `6` | Calls a source must place inside the volume window before `--fraud-detect` reports a spike at all. Must be at least `1`: sipnab refuses `0`. `--fraud-volume-min-calls` overrides it |
+| `fraud_volume_window_secs` | integer | `60` | How much capture time one volume-spike window spans, in seconds. The count and the source's own baseline are both measured over this window, so a steady source reads the same at any width; what the width alone decides is how CONCENTRATED a burst has to be, since a burst shorter than the window averages into the ordinary traffic beside it. Must be at least `1`: sipnab refuses `0`. `--fraud-volume-window` overrides it |
+| `fraud_wangiri_window_secs` | integer | `60` | How much capture time one wangiri window spans, in seconds. The detector drops short calls older than this, so it decides how slowly a lure may arrive and still count as one pattern. No setting of `fraud_wangiri_calls` reaches a lure paced wider than the window: the only count that reports anything is one, which reports every ordinary short call as a lure too. Must be at least `1`: sipnab refuses `0`. `--fraud-wangiri-window` overrides it |
 | `scanner_behavioral_probes` | integer | `10` | Probes from one source inside the scanner window, above which `--kill-scanner` reports a rate detection. Raise it where an SBC puts every source behind one address, or sipnab reports that site's ordinary traffic as one scanner. `--scanner-behavioral-probes` overrides it |
 | `scanner_enumeration_targets` | integer | `5` | Distinct target extensions from one source inside the scanner window, above which `--kill-scanner` reports extension enumeration. `--scanner-enumeration-targets` overrides it |
 | `scanner_rejected_probes` | integer | `5` | Rejected probes inside the scanner window at which a source reads as probing rather than operating. Neither the rate nor the enumeration detection reports a source until it reaches this or `scanner_unanswered_probes`. `--scanner-rejected-probes` overrides it |
@@ -28478,8 +28546,15 @@ The limits every action passes. They exist for two reasons:
 Rules for the keys:
 
 - Each key left out keeps the value shown.
-- None can be `0`. That would turn the limit off, so sipnab refuses to start
-  instead.
+- None can be `0` while `[actions]` enables an action. That would turn the
+  limit off, so sipnab refuses to start instead. With no action enabled,
+  sipnab does not use the limits and does not check them.
+- sipnab checks them before the capture opens. A refused value exits `1`, and
+  the message names the key:
+
+  ```text
+  ERROR sipnab::app::bootstrap: [action_limits] per_minute: action rate limits cannot be turned off: every limit must be at least 1
+  ```
 - The limits survive a restart. sipnab rebuilds them from the journal, so
   crashing it does not reset them.
 
@@ -28606,8 +28681,11 @@ Rules for the values:
 - Unset keys keep the shipped default. So a file may move one boundary without
   restating the other seven.
 - Every value must be a finite number of zero or more.
-- Each warn boundary must leave a reachable middle against its matching bad
-  boundary. A set that does not fails validation and names the key.
+- A warn boundary must not sit past its matching bad boundary: above it for
+  jitter, loss and round trip, below it for MOS. A set that does fails
+  validation and names both keys.
+- sipnab accepts a warn boundary equal to its bad boundary. It checks the
+  bad color first, so the warning color then never shows for that metric.
 - Zero itself counts as a real setting. `loss_warn_pct = 0.0` means any loss at
   all is worth a color.
 
@@ -28646,17 +28724,17 @@ Resource limits to prevent unbounded memory growth.
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
-| `dialog_limit` | integer | `100000` | Maximum tracked dialogs. `--limit` overrides it |
+| `dialog_limit` | integer | `100000` | Maximum tracked dialogs. Must be at least `1`: sipnab refuses `0`. `--limit` overrides it |
 | `mcp_max_rows` | integer | `1000` | Maximum rows in ONE list-style MCP response. Distinct from `dialog_limit` above, which bounds the whole run; these differ by 100x and bound different things. `0` fails validation and names the key. `--mcp-max-rows` overrides it |
 | `max_streams` | integer | `50000` | Maximum RTP streams. `0` fails validation and names the key. `--max-streams` overrides it |
 | `max_reassembly` | integer | `10000` | Maximum TCP reassembly sessions. `0` fails validation and names the key. `--max-reassembly` overrides it |
 | `reassembly_ttl_secs` | integer | `30` | Seconds sipnab holds an incomplete IP datagram or half-read TCP stream before a sweep drops it. `max_reassembly` bounds how MANY entries sipnab holds and says nothing about how long. A persistent SIP/TCP or SIP/TLS trunk can go quiet for longer than that; when sipnab drops its half-read stream, the next segment starts mid-message and sipnab reports the message as malformed. Raise it on such a trunk; `max_reassembly` caps the extra state either way. `--reassembly-ttl` overrides it. `0` fails validation and names the key |
 | `hep_rate_limit` | integer | `50000` | Maximum HEP packets per second. On a run without `--hep-listen` it does nothing, and sipnab says so in a startup warning naming the key. `--hep-rate-limit` overrides it |
-| `max_header_line` | integer | `8192` | Maximum bytes in a single SIP header (defense-in-depth) |
-| `max_headers_per_message` | integer | `200` | Maximum SIP headers per message (defense-in-depth) |
-| `max_messages_per_dialog` | integer | `500` | Maximum stored messages per dialog (defense-in-depth) |
+| `max_header_line` | integer | `8192` | Maximum bytes in a single SIP header (defense-in-depth). Must be at least `256`: sipnab refuses a smaller value |
+| `max_headers_per_message` | integer | `200` | Maximum SIP headers per message (defense-in-depth). Must be at least `1`: sipnab refuses `0` |
+| `max_messages_per_dialog` | integer | `500` | Maximum stored messages per dialog (defense-in-depth). Must be at least `1`: sipnab refuses `0` |
 | `idle_compact_after_secs` | integer | `600` | Seconds of silence before sipnab compacts a dialog's stored messages. `0` fails validation and names the key |
-| `keep_messages_per_idle_dialog` | integer | `20` | Messages an idle dialog keeps after compaction |
+| `keep_messages_per_idle_dialog` | integer | `20` | Messages an idle dialog keeps after compaction. Must be at least `1`: sipnab refuses `0` |
 | `max_audio_frames` | integer | unset | Maximum RTP payload frames retained per stream for WAV and vCon export. Unset keeps the whole call. When set, the oldest frame goes first, and the export says PARTIAL and counts the frames dropped. At 20 ms packetization, 1500 frames is 30 seconds. `0` fails validation and names the key |
 | `max_audio_bytes` | integer | `1073741824` | Bytes of retained RTP payload across every stream, the bound on audio retention. See [Audio retention budget](#audio-retention-budget). Below `1048576` (1 MiB) fails validation and names the key |
 | `lint_max_per_rule` | integer | `25` | Findings one lint rule may report for one dialog. A dialog that retransmits an `INVITE` eleven times trips a message rule eleven times and every one of them is true, so this decides whether the other rules stay readable underneath. `--lint-max-per-rule` overrides it. `0` fails validation and names the key |
@@ -28672,10 +28750,10 @@ Resource limits to prevent unbounded memory growth.
 | `mcp_sweep_result_retention_secs` | integer | `600` | Seconds a finished MCP `find_in_captures` result waits for its poll, counted from the moment the sweep finished. After it, the job id is unknown, and sipnab refuses a poll of it with a message that reports this value. `--mcp-sweep-result-retention-secs` overrides it. `0` and values above `43200` (twelve hours, the longest one sweep may run) fail validation and name the key |
 | `max_lost_sequences` | integer | `1000` | Lost RTP sequence numbers retained per stream. This is the window the Packet Loss Map draws and the burst/gap analysis reasons over, so a 30-minute call losing 1 % shows only its last minute at the default. The burst/gap window widens with it. `--max-lost-sequences` overrides it. `0` fails validation and names the key |
 | `quality_interval_secs` | integer | `5` | Seconds between RTP quality snapshots, which is the resolution of the per-stream quality trend on `rtp_stats`, `GET /v1/streams/{id}`, the TUI and the browser analyzer. The shipped five seconds averages away any burst shorter than itself. The trend still covers an hour of call time whatever this is, so a one-second setting retains 3600 snapshots per stream rather than 720 — resolution costs memory, never history. `--quality-interval` overrides it. Anything outside 1-300 fails validation and names the key |
-| `max_groups` | integer | `100000` | Distinct `--group-by` keys one run retains, the same figure `dialog_limit` ships so a grouped run cannot outgrow an ordinary capture. Past it sipnab refuses new keys and warns that the output is incomplete. `--max-groups` overrides it |
-| `max_grouped_messages` | integer | `200000` | Messages `--group-by` buffers across every group. Grouping cannot stream — the last packet may belong to the first group — so this is memory held until the capture ends. `--max-grouped-messages` overrides it |
-| `max_metadata_file_bytes` | integer | `2147483648` | Bytes of pcapng sipnab reads into memory for embedded names and TLS secrets. **A memory-exhaustion guard on untrusted input.** Raising it to N lets ONE file claim N bytes of this host's RAM — roughly 2N while `--strip-secrets` writes its copy — on nothing but a file size, before sipnab can tell the file is a capture at all. Raise it for captures you produced; leave it for captures someone sent you. `--max-metadata-file-bytes` overrides it |
-| `max_gunzip_bytes` | integer | `1073741824` | Bytes a gzip-compressed capture may inflate to where sipnab does the inflating: the embedded names and TLS secrets read out of a `.pcapng.gz`, the copy `--strip-secrets` rewrites, a `-I capture.pcap.gz` input, and the whole capture in the browser build. sipnab refuses an `-I` file that inflates past the limit: `decompressing reached the <N>-byte ceiling`, exit 1. **A gzip-bomb guard.** Inflation stops one byte past the ceiling, so raising it to N lets a few kilobytes claim N bytes of RAM. Raise it for archives you compressed yourself. `--max-gunzip-bytes` overrides it |
+| `max_groups` | integer | `100000` | Distinct `--group-by` keys one run retains, the same figure `dialog_limit` ships so a grouped run cannot outgrow an ordinary capture. Past it sipnab refuses new keys and warns that the output is incomplete. Must be at least `1`: sipnab refuses `0`. `--max-groups` overrides it |
+| `max_grouped_messages` | integer | `200000` | Messages `--group-by` buffers across every group. Grouping cannot stream — the last packet may belong to the first group — so this is memory held until the capture ends. Must be at least `1`: sipnab refuses `0`. `--max-grouped-messages` overrides it |
+| `max_metadata_file_bytes` | integer | `2147483648` | Bytes of pcapng sipnab reads into memory for embedded names and TLS secrets. **A memory-exhaustion guard on untrusted input.** Raising it to N lets ONE file claim N bytes of this host's RAM — roughly 2N while `--strip-secrets` writes its copy — on nothing but a file size, before sipnab can tell the file is a capture at all. Raise it for captures you produced; leave it for captures someone sent you. Must be at least `1`: sipnab refuses `0`. `--max-metadata-file-bytes` overrides it |
+| `max_gunzip_bytes` | integer | `1073741824` | Bytes a gzip-compressed capture may inflate to where sipnab does the inflating: the embedded names and TLS secrets read out of a `.pcapng.gz`, the copy `--strip-secrets` rewrites, a `-I capture.pcap.gz` input, and the whole capture in the browser build. sipnab refuses an `-I` file that inflates past the limit: `decompressing reached the <N>-byte ceiling`, exit 1. **A gzip-bomb guard.** Inflation stops one byte past the ceiling, so raising it to N lets a few kilobytes claim N bytes of RAM. Raise it for archives you compressed yourself. Must be at least `1`: sipnab refuses `0`. `--max-gunzip-bytes` overrides it |
 | `max_tcp_buffer` | integer | `65536` | Bytes one SIP/TCP direction may buffer before sipnab flushes it. A message larger than this, such as one carrying ISUP encapsulation, a long `Record-Route` set or a large SDP offer, makes sipnab flush the buffer mid-message and report both halves as malformed. Raise it on such a trunk. The minimum is 8192, one SIP header line; sipnab refuses a smaller value and names the key. `--max-tcp-buffer` overrides it |
 | `api_max_rows` | integer | `1000` | Rows one list-style REST response returns. The REST counterpart of `mcp_max_rows`, settable for the same reason: the right ceiling belongs to the consumer, not to sipnab. A batch consumer piping `/v1/dialogs` to a file wants every row; a dashboard drawing a table wants far fewer. `--api-max-rows` overrides it. `0` fails validation and names the key |
 | `api_rate_limit_per_peer` | integer | `100` | REST requests one client IP may make per second. The limiter counts by source address, so a dashboard polling `/v1/streams` on a short timer, or several collectors behind one NAT, share a single allowance and see `503` (`503` rather than `429` because the limiter runs before authentication, so the refusal says nothing about the credential). `0` disables the cap, the reading `hep_rate_limit` and `mcp_rate_limit_per_peer` also give it. At most 4294967295; a larger value fails validation and names the key. `--api-rate-limit-per-peer` overrides it |
@@ -29024,7 +29102,7 @@ Privilege separation settings (Linux only).
 |-----|------|---------|-------------|
 | `user` | string | `"nobody"` | User to drop privileges to after opening capture devices. `--user` overrides it |
 | `no_priv_drop` | boolean | `false` | Disable privilege dropping. `--no-priv-drop` turns it on. `--priv-drop` forces it off |
-| `chroot` | string | -- | Chroot directory after initialization. `--chroot` overrides it |
+| `chroot` | string | -- | Chroot directory after initialization. It applies to every run, `-I` file analysis included, and changing root needs root privileges: a run as an ordinary user with this key set exits `1` with `Failed to chroot: ... Operation not permitted`. To analyze a file as an ordinary user, run with `-F` (read no config file) or give `--config` a file without this key. `--chroot` overrides it |
 
 ```toml
 [privilege]
@@ -29039,11 +29117,11 @@ Address name-resolution settings (display `host:port` instead of `ip:port`).
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
-| `enabled` | boolean | `false` | Start with name resolution on (offline sources). `--resolve` turns it on. `--no-resolve` forces it off |
+| `enabled` | boolean | `false` | Start with name resolution on (offline sources). `--resolve` turns it on. `--no-resolve` forces it off. `false` does not keep names off when the file or the command line names another source: `reverse_dns`, `hosts_file`, a non-empty `[names.manual]` or a `--names` file each turn name resolution on. Only `--no-resolve` turns it off then |
 | `reverse_dns` | boolean | `false` | Also use reverse DNS (PTR) lookups. `--reverse-dns` turns it on. `--no-reverse-dns` forces it off |
 | `hosts_file` | string | -- | `/etc/hosts`-format file of IP → name mappings to preload. `--names` adds to it |
 | `persist_to_config` | boolean | `false` | When set, in-TUI `N` edits are also written into the `[names.manual]` table below, in the file this run loaded, preserving the rest of it. With no file loaded they go to the user config file (`$XDG_CONFIG_HOME/sipnab/sipnab.toml`, by default `~/.config/sipnab/sipnab.toml`); when the settings came from `/etc/sipnab/sipnab.toml` they are not written and the status line says so when the session opens |
-| `dns_cache_entries` | integer | `4096` | Reverse-DNS results (positive and negative) held at once (default `MAX_DNS_CACHE_ENTRIES`). Past the cap sipnab drops the oldest entry, so a capture touching more hosts than this -- a carrier edge, a peering point, or any long `--reverse-dns` window -- keeps re-looking-up addresses it already resolved. Nothing reports that: a dropped lookup only shows as an address displayed unresolved, so the symptom is names that flicker. The worker queue's depth follows this figure; sipnab derives it rather than taking a second number. `--dns-cache-entries` overrides it |
+| `dns_cache_entries` | integer | `4096` | Reverse-DNS results (positive and negative) held at once. Past the cap sipnab drops the oldest entry, so a capture touching more hosts than this -- a carrier edge, a peering point, or any long `--reverse-dns` window -- keeps re-looking-up addresses it already resolved. Nothing reports that: a dropped lookup only shows as an address displayed unresolved, so the symptom is names that flicker. The worker queue's depth follows this figure; sipnab derives it rather than taking a second number. Must be at least `1`: sipnab refuses `0`. `--dns-cache-entries` overrides it |
 | `manual` | table | -- | Inline `"IP" = "name"` mappings, loaded at startup (highest-priority manual layer) |
 
 ```toml
@@ -29254,7 +29332,7 @@ exec_queue_depth = 20              # Hook commands allowed to run at once
 [privilege]
 user = "sipnab"                    # Drop to unprivileged user after device open
 no_priv_drop = false               # Keep privilege dropping enabled
-chroot = "/var/lib/sipnab"         # Chroot after initialization
+chroot = "/var/lib/sipnab"         # Chroot after initialization; needs root, also on -I runs
 
 # -- Address naming --
 [names]
@@ -29310,8 +29388,11 @@ column_selector = "F10"
 >
 > - **Built-in defaults do not appear.**
 >   - A key you did not set prints nothing, not its default.
->   - `sipnab -F --dump-config` therefore prints a list of empty section
->     headers. That is correct output and not a fault.
+>   - `sipnab -F --dump-config` therefore prints the section headers with
+>     almost nothing under them. The exceptions are four lists that print
+>     empty: `addresses = []` under `[pbx]`, `rule = []` and `enrich = []`
+>     under `[vcon]`, and `tfps = []` under `[actions]`. `[mcp.bundles]`
+>     prints as its own header. That is correct output and not a fault.
 >   - The defaults are the ones in the tables on this page.
 > - **CLI flags do not appear.**
 >   - They arrive later in startup, so `-D` cannot show what a flag would
@@ -29321,8 +29402,9 @@ column_selector = "F10"
 >   selects which file to read.
 >
 > So `-D` answers "did sipnab read the file I meant, and does it know my
-> keys?". It does not answer "what value is this setting running with?", and it
-> does not check every value. See the top of this page.
+> keys?". It does not answer "what value is this setting running with?". It
+> refuses the values a run refuses from the file alone. See the top of this
+> page.
 
 ---
 
@@ -29871,7 +29953,7 @@ that's the laptop itself):
 
    ```bash
    sipnab --version
-   # sipnab 0.5.224 (...) features: native,tui,audio,tls,hep,api,mcp,mcp-http,metrics,plugins,vcon,bpf
+   # sipnab 0.5.225 (...) features: native,tui,audio,tls,hep,api,mcp,mcp-http,metrics,plugins,vcon,bpf
    # libpcap version 1.10.5 (with TPACKET_V3); alternate capture backends named: none
    ```
 
@@ -31252,7 +31334,7 @@ Then confirm the build can do what you are about to ask of it:
 ```json
 {
   "schema_version": 1,
-  "version": "0.5.224",
+  "version": "0.5.225",
   "features": ["api", "archive", "audio", "bpf", "g729", "hep", "mcp",
                "mcp-http", "metrics", "native", "opus", "plugins", "tls",
                "tui", "vcon", "wasm"],
@@ -32054,7 +32136,7 @@ client. The whole block is one pipeline.
 Expected first line of response:
 
 ```json
-{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2025-06-18","capabilities":{"completions":{},"prompts":{},"resources":{"subscribe":true},"tools":{}},"serverInfo":{"name":"sipnab","version":"0.5.224"},"instructions":"sipnab MCP server — queries captured SIP dialogs, RTP streams, diagnostics and security findings. …"}}
+{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2025-06-18","capabilities":{"completions":{},"prompts":{},"resources":{"subscribe":true},"tools":{}},"serverInfo":{"name":"sipnab","version":"0.5.225"},"instructions":"sipnab MCP server — queries captured SIP dialogs, RTP streams, diagnostics and security findings. …"}}
 ```
 
 ### Test the HTTP wire by hand
@@ -33174,6 +33256,19 @@ which bundle to add. Under `--mcp-tools core` it ends:
 Tools loaded: core. Other bundles, which the operator can add with --mcp-tools or [mcp] tools: signaling, captures, security, media, relay, tfps, server, vcon, tls.
 ```
 
+The same string names every loaded tool that changes another system. Without
+`--allow-action` it says:
+
+```text
+This server changes no external system: the tools that would (actions_revert, tfps_ban, tfps_unban) refuse unless the operator enables them with --allow-action.
+```
+
+With `--allow-action tfps:mcp` it says:
+
+```text
+The operator enabled actions that change another system from MCP (--allow-action tfps:mcp): actions_revert, tfps_ban, tfps_unban. Over HTTP they also need an "actions"-scope token.
+```
+
 Output schemas are **off by default**.
 
 - MCP makes them optional, and they are more than half the bytes.
@@ -33687,7 +33782,7 @@ under: `scanner`, `fraud`, `digest`, `reg_flood`.
   the refusal also suggests the underscore spelling:
 
   ```json
-  {"code":-32602,"message":"unknown kind 'reg-flood', expected one of: digest, fraud, reg_flood, scanner (did you mean 'reg_flood'?)","data":{"reason":"invalid_value"}}
+  {"code":-32602,"message":"unknown kind 'reg-flood', expected one of: digest, fraud, reg_flood, scanner (did you mean 'reg_flood'?)","data":{"param":"kinds","reason":"invalid_choice","valid_values":["digest","fraud","reg_flood","scanner"]}}
   ```
 
 ### Error model
@@ -33823,7 +33918,7 @@ which:**
 | `get_call_tree` | No, `truncated` only | A breadth-first walk outward from one call, stopped at `limit` legs | Raise `limit` |
 | `top_talkers` | Yes, `distinct_talkers` | A ranking by dialog count | Raise `limit` |
 | `describe_endpoint` | Yes, `dialogs` | `recent_dialogs` is newest first by `updated_at`, which moves each time a call gains a message, so a cursor on it would skip rows | [`list_dialogs`](mcp-tools-core.md#list_dialogs) with a filter such as `src.ip == '192.0.2.10'` or `from.user == 'alice'` pages that endpoint's dialogs |
-| `hep_senders` | Yes, `senders_tracked` and `refused_sources_tracked` | Two lists in one answer, the refused sources ranked by count, and the same bytes `GET /v1/hep/senders` returns | Raise `limit`, and raise `--mcp-max-rows` as well when the listener tracks more than 1000 senders |
+| `hep_senders` | Yes, `senders_tracked` and `refused_sources_tracked` | Two lists in one answer, the refused sources ranked by count, and the same fields and values `GET /v1/hep/senders` returns | Raise `limit`, and raise `--mcp-max-rows` as well when the listener tracks more than 1000 senders |
 | `tfps_labels` | No: `total` counts the rows TFPS returned, and `truncated` says it held more | TFPS's `log` command takes a row count and no offset, so there is no position to resume from | Raise `limit`, or run `tfps_ctl log --json --limit N` on the TFPS host |
 | `tail_dialogs` | No | It has a cursor. The table names it because it has no total | Follow `next_cursor` until the page comes back empty |
 
@@ -33968,7 +34063,9 @@ different file and every cursor you hold is void. The same object appears on
 the box that answered, which decides whose capture a fact came from once an agent
 holds several servers at once.
 
-`load` is null except while an `open_capture` read runs. During one:
+`load` is null until this server's first `open_capture`. From then on it
+describes the most recent `open_capture` read, and it stays set after that
+read ends, with `done: true`. During a read:
 
 ```jsonc
 "load": {
@@ -33980,6 +34077,9 @@ holds several servers at once.
   "error": null                  // set when a load stopped early
 }
 ```
+
+`elapsed_sec` counts while the read runs. Once `done` is true it is how long
+the read took, and later calls report the same value.
 
 The stores fill as the read goes, so dialogs appear before `done`. Wait for
 `done` before concluding anything about how many calls the capture holds — a
@@ -37674,6 +37774,9 @@ A second later the same session's `capture_status` shows:
 "source_exhausted": true
 ```
 
+`elapsed_sec` stops counting when `done` turns true: it is how long the read
+took, and every later `capture_status` reports the same value.
+
 **Every answer afterwards carries a new `capture_identity.instance`.** Treat any
 cursor, message index or Call-ID from before the swap as void: they addressed a
 different capture. `discarded_dialogs` says how many dialogs the swap
@@ -37758,10 +37861,10 @@ credits both ends of a dialog.
 
 | Name | Type | Legal values | If omitted |
 |---|---|---|---|
-| `by` | string | `ip`, `ua` or `prefix`. Anything else fails with `invalid_params` naming the legal set. | Required. |
+| `by` | string | `ip`, `ua` or `prefix`. Anything else fails with `invalid_params`, `reason: invalid_choice`, and the legal set in `valid_values`. | Required. |
 | `limit?` | integer? | Bounded by `--mcp-max-rows`. | The usual row default. |
 | `filter?` | string? | Alias or DSL, the same vocabulary every other tool takes. | The whole store. |
-| `prefix_digits?` | integer? | How many leading digits make a prefix bucket. | 4. |
+| `prefix_digits?` | integer? | How many leading digits make a prefix bucket. `0` fails with `reason: invalid_value`, `param: prefix_digits`. | 4. |
 
 **Returns:**
 
@@ -37849,12 +37952,16 @@ participant has been doing, from every dialog the store holds.
 | `limit?` | u32? | Bounds `recent_dialogs`, `problem_call_ids` and `findings` only. Ceiling is `--mcp-max-rows` (1000 by default), `0` means the default. | 50. |
 
 **Give exactly one selector.** Passing both `ip` and `user` fails with
-`invalid_params`:
+`invalid_params` and `reason: conflicting_params`:
 
 ```jsonc
 { "code": -32602,
-  "message": "give exactly one of ip or user, not both: the two select different sets, and whether you meant their intersection or their union changes the answer" }
+  "message": "give exactly one of ip or user, not both: the two select different sets, and whether you meant their intersection or their union changes the answer",
+  "data": { "reason": "conflicting_params" } }
 ```
+
+Passing neither fails with `reason: missing_param`. An `ip` that does not
+parse fails with `reason: invalid_value` and `param: ip`.
 
 The example runs against
 [`tests/pcap-samples/sip-rtp-g711.pcap`](https://github.com/NormB/sipnab/raw/main/tests/pcap-samples/sip-rtp-g711.pcap):
@@ -38156,6 +38263,32 @@ One rule is a metric, a comparison, a threshold, and what it applies to:
 | `scope` | `filter:<alias-or-DSL>` to narrow by dialog, or `severity:<info\|notice\|warning\|error>` to set the floor a `lint_errors` rule counts from. Omitted means the whole capture. |
 | `min_sample` | Observations below which the rule reports `skipped` rather than a verdict. |
 | `grounded_only` | MOS metrics only. Defaults to `true`. |
+
+The text in `rules_toml` holds the same fields as TOML, one `[[rules]]` table
+per rule:
+
+```toml
+[[rules]]
+name = "answer rate"
+metric = "asr"
+op = ">="
+value = 10
+
+[[rules]]
+metric = "lint_errors"
+op = "<="
+value = 0
+scope = "severity:error"
+```
+
+The table name is `rules`, plural. Rules under another name, such as
+`[[rule]]`, or written at the top level of the text, are not read. The suite
+is then empty, and the call fails with `invalid_params` (-32602) and this
+message:
+
+```text
+an expectation suite must contain at least one rule; an empty suite passes every capture and reports nothing
+```
 
 ```jsonc
 // evaluate_expectations { "rules": [
@@ -38671,6 +38804,9 @@ Every finding a tool reports points back at captured bytes. These retrieve those
 
 ### `explain_attribution`
 
+**Parameters:** `call_id` (string, required) — a Call-ID, as `list_dialogs`
+returns it.
+
 An agent that reports "media anchored at `<addr>`" cannot otherwise say whether
 that came from SDP the two parties exchanged, from a relay sipnab asked, or
 from a mirrored datagram anybody could have sent. Those carry very different
@@ -38828,6 +38964,9 @@ Every finding a tool reports points back at captured bytes. These retrieve those
 
 ### `decode_ng`
 
+**Parameters:** `frame_ref` (string, required) — one frame pointer, in the
+`<source>#<ordinal>@<digest>` form the query tools emit.
+
 `decode_evidence` decodes a SIP frame. This decodes a relay control message,
 and adds the question no other surface answers: **which path carried it, and did
 that path authenticate whoever sent it.**
@@ -38903,8 +39042,8 @@ may be somebody's laptop now.
 
 | Name | Type | Legal values | If omitted |
 |---|---|---|---|
-| `call_id` | string? | One Call-ID to ask the relay about. | **Switches modes** — the tool enumerates what the relay holds. |
-| `max_calls` | u32? | Enumeration only. A cap on the Call-IDs the relay returns. | The relay's own default. |
+| `call_id?` | string? | One Call-ID to ask the relay about. | **Switches modes** — the tool enumerates what the relay holds. |
+| `max_calls?` | u32? | Enumeration only. A cap on the Call-IDs the relay returns. | The relay's own default. |
 
 `max_calls` takes its name from what it bounds rather than from `limit`,
 because it is the relay's own `list` argument traveling to another process
@@ -38955,8 +39094,8 @@ Three modes from two parameters:
 
 | Name | Type | Legal values | If omitted |
 |---|---|---|---|
-| `call_id` | string? | One Call-ID, to scope the counters to that call. | The relay's own global counters. |
-| `names_only` | bool? | `true` returns the NAMES the relay knows, not their values -- "what can I even ask for", since the key set is version-specific. | `false`. A `call_id` overrides it. |
+| `call_id?` | string? | One Call-ID, to scope the counters to that call. | The relay's own global counters. |
+| `names_only?` | bool? | `true` returns the NAMES the relay knows, not their values -- "what can I even ask for", since the key set is version-specific. | `false`. A `call_id` overrides it. |
 
 It needs the same three things `query_relay` does, and refuses identically when
 one is missing: `--mcp-allow-relay-query`, a configured relay control address,
@@ -39362,7 +39501,7 @@ enabling as `tfps_ban`, and each unban counts against the same rate limits.
 | Parameter | Type | Legal values | If omitted |
 |---|---|---|---|
 | `id?` | string? | an action id from `tfps_ban`'s answer | give exactly one of `id` or `all` |
-| `all?` | boolean? | `true` | give exactly one of `id` or `all`; anything else is `invalid_params` (-32602) |
+| `all?` | boolean? | `true` | give exactly one of `id` or `all`. Neither is `invalid_params` (-32602) with `reason: missing_param`; both is `reason: conflicting_params` |
 
 ```jsonc
 // actions_revert { "all": true }
@@ -39784,8 +39923,10 @@ this run has no HEP listener (-L/--hep-listen), so there are no senders to repor
 ```
 
 Every value is sipnab's own count, a claimed id, an address or a time, and no
-byte of any packet, so the response carries no untrusted-content note. `GET /v1/hep/senders` returns the same bytes for the same roster, and
-`--hep-senders` prints it at the end of a headless run.
+byte of any packet, so the response carries no untrusted-content note. `GET /v1/hep/senders` returns the same fields and values for the same
+roster. The MCP answer differs in two ways: its keys are in alphabetical order,
+and it adds `source_exhausted` and `source_stopped_early`. `--hep-senders`
+prints the roster at the end of a headless run.
 
 ### `server_capabilities`
 
@@ -39802,7 +39943,7 @@ opt-in flags:
 // server_capabilities {}
 {
   "schema_version": 1,
-  "version": "0.5.224",
+  "version": "0.5.225",
   "features": ["api", "archive", "audio", "bpf", "g729", "hep", "mcp", "mcp-http",
                "metrics", "native", "opus", "plugins", "tls", "tui", "vcon", "wasm"],
   "can_decrypt": true,           // tls
@@ -41132,8 +41273,11 @@ message names the cause and the fix:
   its capture devices, so a server started with `--user` cannot attach probes
   later. Start it without dropping privileges, or run `sipnab --uprobe-tls` on
   the command line instead.
-- **An unknown flavor or an unusable library path** (`reason: invalid_value`).
-  Use `openssl` or `wolfssl`, and a `probe_path` from `list_tls_libraries`.
+- **An unknown flavor** (`reason: invalid_choice`, `param: flavors`,
+  `valid_values: ["openssl", "wolfssl"]`). sipnab checks the flavor names
+  before it checks for root.
+- **An unusable library path** (`reason: invalid_value`). Use a `probe_path`
+  from `list_tls_libraries`.
 - **A TLS capture is already running** (`reason: not_ready`). Call
   `stop_tls_capture` first.
 - **The server is reading a live interface** (`reason: not_ready`). A uprobe
@@ -41623,7 +41767,7 @@ sipnab exposes the files under `--mcp-file-root` as MCP **resources**.
 
 - `resources/list` enumerates them.
 - `resources/read` fetches one at `sipnab:///<filename>`.
-- Five further URI spaces answer from the binary and from the loaded capture
+- Six further URI spaces answer from the binary and from the loaded capture
   rather than from disk. See
   [Live views](#live-views-of-the-loaded-capture) below.
 
@@ -41644,15 +41788,16 @@ a base64 blob.
 
 ### Live views of the loaded capture
 
-Five URI spaces exist alongside the capture files:
+Six URI spaces exist alongside the capture files:
 
 - `sipnab://reference/`,
 - `sipnab://live/`,
 - `sipnab://lint/`,
 - `sipnab://filter/`,
-- `sipnab://schema/`.
+- `sipnab://schema/`,
+- `sipnab://vcon/` (builds with the `vcon` feature).
 
-All five answer with no `--mcp-file-root` at all. That flag gates access to
+All six answer with no `--mcp-file-root` at all. That flag gates access to
 other captures on disk, not to the one this run has loaded:
 
 | URI | What it returns |
@@ -41663,6 +41808,7 @@ other captures on disk, not to the one this run has loaded:
 | `sipnab://lint/<rule-id>` | one conformance rule's catalog entry |
 | `sipnab://filter/<alias>` | one diagnostic alias, expanded against this run's thresholds |
 | `sipnab://schema/<tool>` | one loaded tool's output JSON Schema and an example payload |
+| `sipnab://vcon/<Call-ID>` | one dialog as the vCon container `export_vcon` builds, with retained audio inline |
 
 The two live views render exactly as `list_dialogs` does, with the same
 `--mcp-max-rows` ceiling and the same fencing of untrusted text.
@@ -47982,6 +48128,13 @@ With the tables in place it prints `G.729 tables: installed`, the file it
 read, and `Values sha256:` with the hash of the values. It exits 0 when the
 file holds the tables and 1 when it does not. `--g729-tables`, `-f` and `--no-config` work as they do for a
 run, so the command reports on the file a run with the same options reads.
+It checks that file as a run does: it names each key it does not know on
+stderr, and refuses a file a run refuses, with the run's message and exit
+status, without reporting on it. An empty `[g729] tables` is one such file:
+
+```text
+invalid config value: [g729] tables is empty; give a path, or remove the key for the default
+```
 
 ## Hosts without internet access
 
@@ -60901,8 +61054,8 @@ stands behind and which came from third-party code.
 
 ## Known limits
 
-- Findings currently reach `--json-dialogs` only. The other surfaces render the
-  shape but are not yet wired to it.
+- Findings reach `--json-dialogs` only. The report, REST, MCP and the TUI do
+  not show them.
 - One hook point: post-dialog analysis.
   - There is deliberately no packet-level hook.
   - Handing every packet to an interpreter would undo the capture path's

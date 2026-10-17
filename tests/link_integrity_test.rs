@@ -400,7 +400,8 @@ fn the_wiki_link_scan_reads_a_plausible_tree() -> Result<(), TestError> {
             files
                 .iter()
                 .any(|p| p.to_string_lossy().replace('\\', "/") == expected),
-            "the walk did not reach {expected}, which is one of the pages the              ratchet's own attribution names"
+            "the walk did not reach {expected}, which is one of the pages the \
+              ratchet's own attribution names"
         );
     }
     Ok(())
@@ -1493,7 +1494,15 @@ fn wiki_intra_docs_links_resolve() -> Result<(), TestError> {
     // runtime_stats. docs/mcp-tools-signaling.md +1 (the timeline return
     // table links capture_status) and docs/mcp-tools-server.md +1 (the
     // runtime_stats reading notes link capture_status).
-    const EXPECTED_WIKI_LINKS: usize = 1964;
+    // 1964 -> 1977: documentation defects fixed against measured behavior.
+    // Attributed per file against HEAD: docs/rest-api.md +11 (the Status
+    // codes table gained rows for 409, 413, 422 and 429 and causes for 403
+    // and 503, twelve links to the routes and sections that answer them;
+    // merging the two `filter` rows of GET /v1/dialogs removed one),
+    // docs/cli-reference.md +1 (the new `sipnab g729` section links
+    // g729.md) and docs/config-reference.md +1 (the unknown-key note links
+    // the `[[vcon.rule]]` section).
+    const EXPECTED_WIKI_LINKS: usize = 1977;
     // Raised 459 -> 460 when SRC1 stage 1 shipped: docs/cli-reference.md's
     // `--hep-listen` row now points at cookbook recipe "Take signaling from HEP and media off the wire, in one process" in docs/examples.md
     // rather than restating how to pair `-L` with `-d`. Attributed per file

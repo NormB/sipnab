@@ -63,6 +63,10 @@ pub struct TalkerAccumulator {
 }
 
 impl TalkerDimension {
+    /// Every `by` value [`TalkerDimension::parse`] accepts, in the order the
+    /// refusal lists them.
+    pub const NAMES: [&'static str; 3] = ["ip", "ua", "prefix"];
+
     /// Parse `by` and an optional prefix width into a dimension.
     ///
     /// # Errors
@@ -84,9 +88,10 @@ impl TalkerDimension {
                 None => Ok(Self::Prefix(DEFAULT_PREFIX_DIGITS)),
             },
             other => Err(format!(
-                "cannot rank by '{other}'; one of: ip, ua, prefix. One dimension \
-                 only — a ranking of pairs answers a different question from a \
-                 ranking of either half."
+                "cannot rank by '{other}'; one of: {}. One dimension only — a \
+                 ranking of pairs answers a different question from a ranking \
+                 of either half.",
+                Self::NAMES.join(", ")
             )),
         }
     }

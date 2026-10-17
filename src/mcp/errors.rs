@@ -543,6 +543,185 @@ mod tests {
         Ok(())
     }
 
+    /// The string literals in Rust source, as `(line, content)`, with escapes
+    /// left as written. Comments, raw strings, char and byte literals and
+    /// lifetimes are skipped, so a quote inside one is not read as a string.
+    fn string_literals(src: &str) -> Vec<(usize, String)> {
+        let b = src.as_bytes();
+        let ident = |c: u8| c.is_ascii_alphanumeric() || c == b'_';
+        // Lines are counted as the walk advances, so a large file stays linear.
+        let (mut line, mut counted) = (1usize, 0usize);
+        let mut out = Vec::new();
+        let mut i = 0;
+        while i < b.len() {
+            let rest = &src[i..];
+            if rest.starts_with("//") {
+                i += rest.find('\n').unwrap_or(rest.len());
+            } else if rest.starts_with("/*") {
+                i += rest.find("*/").map_or(rest.len(), |j| j + 2);
+            } else if (rest.starts_with('r') || rest.starts_with("br"))
+                && (i == 0 || !ident(b[i - 1]))
+                && {
+                    let r = rest.trim_start_matches('b').trim_start_matches('r');
+                    r.trim_start_matches('#').starts_with('"')
+                }
+            {
+                let after_r = rest.find('r').unwrap_or(0) + 1;
+                let hashes = rest[after_r..].bytes().take_while(|&c| c == b'#').count();
+                let close = format!("\"{}", "#".repeat(hashes));
+                let body = after_r + hashes + 1;
+                i += rest[body..]
+                    .find(&close)
+                    .map_or(rest.len(), |j| body + j + close.len());
+            } else if b[i] == b'\'' {
+                if b.get(i + 1) == Some(&b'\\') {
+                    i += src[i + 3..].find('\'').map_or(rest.len(), |j| j + 4);
+                } else {
+                    let len = rest[1..].chars().next().map_or(0, char::len_utf8);
+                    i += if b.get(i + 1 + len) == Some(&b'\'') {
+                        len + 2
+                    } else {
+                        1
+                    };
+                }
+            } else if b[i] == b'"' {
+                // Any prefix (`b"`, `c"`) is an identifier character the
+                // walk has already stepped over.
+                let start = i;
+                let mut text = Vec::new();
+                i += 1;
+                while i < b.len() && b[i] != b'"' {
+                    if b[i] == b'\\' && i + 1 < b.len() {
+                        text.extend_from_slice(&b[i..i + 2]);
+                        i += 2;
+                    } else {
+                        text.push(b[i]);
+                        i += 1;
+                    }
+                }
+                i += 1;
+                line += b[counted..start].iter().filter(|&&c| c == b'\n').count();
+                counted = start;
+                out.push((line, String::from_utf8_lossy(&text).into_owned()));
+            } else {
+                i += rest.chars().next().map_or(1, char::len_utf8);
+            }
+        }
+        out
+    }
+
+    /// Whether a literal carries a line break that lost its `\` continuation.
+    ///
+    /// Two shapes reach the wire as a run of spaces in a message:
+    ///
+    /// - JOINED: the break was removed and the next line's indentation kept,
+    ///   so a one-line literal holds a run of 12 or more spaces after a word
+    ///   (`"... and 0                      bounds nothing"`, MCP-A5). Column
+    ///   alignment follows a `:` or `|`, or sits in a literal with line
+    ///   breaks, and is not matched.
+    /// - UNJOINED: the break is still there with no `\`, so the literal holds
+    ///   a newline and then the indentation. Checked for `src/` only, where no
+    ///   literal is a YAML or text fixture.
+    fn lost_continuation(content: &str, check_unjoined: bool) -> bool {
+        let b = content.as_bytes();
+        let run_after = |at: usize| b[at..].iter().take_while(|&&c| c == b' ').count();
+        let multi_line = content.contains("\\n") || content.contains('\n');
+        let joined = !multi_line
+            && (1..b.len()).any(|i| {
+                let prev = b[i - 1];
+                b[i] == b' '
+                    && !prev.is_ascii_whitespace()
+                    && prev != b':'
+                    && prev != b'|'
+                    && run_after(i) >= 12
+                    && b.get(i + run_after(i)).is_some()
+            });
+        let unjoined = check_unjoined
+            && (1..b.len()).any(|i| {
+                b[i] == b'\n'
+                    && b[i - 1] != b'\\'
+                    && !b[i - 1].is_ascii_whitespace()
+                    && run_after(i + 1) >= 8
+                    && b.get(i + 1 + run_after(i + 1))
+                        .is_some_and(|c| !c.is_ascii_whitespace())
+            });
+        joined || unjoined
+    }
+
+    /// MCP-A5: `get_dialog {"max_messages": 0}` answered "... and 0" then 22
+    /// spaces then "bounds nothing", because a string literal's line break
+    /// had lost its `\`. Twelve other literals in `src/` and two in `tests/`
+    /// carried the same break. No literal in either tree may carry one.
+    ///
+    /// A source scan, because an on-the-wire test reaches only the messages
+    /// some fixture provokes, and the next literal broken this way would be
+    /// one that no fixture provokes.
+    #[test]
+    fn no_string_literal_lost_its_line_continuation() -> Result<(), TestError> {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        let mut offenders = Vec::new();
+        let mut scanned = 0usize;
+        for tree in ["src", "tests"] {
+            let mut files = Vec::new();
+            rust_files(&root.join(tree), &mut files)?;
+            for file in &files {
+                let src = std::fs::read_to_string(file)?;
+                let rel = file
+                    .strip_prefix(root)
+                    .unwrap_or(file)
+                    .display()
+                    .to_string();
+                for (line, content) in string_literals(&src) {
+                    scanned += 1;
+                    if lost_continuation(&content, tree == "src") {
+                        offenders.push(format!("{rel}:{line}"));
+                    }
+                }
+            }
+        }
+        assert!(scanned > 10_000, "only {scanned} literals found");
+        assert!(
+            offenders.is_empty(),
+            "{} string literal(s) hold a line break without its `\\` \
+             continuation, so the message carries a run of spaces:\n  {}",
+            offenders.len(),
+            offenders.join("\n  ")
+        );
+        Ok(())
+    }
+
+    /// The literal scan finds both broken shapes and passes the aligned,
+    /// continued, commented, raw and char forms that look like them.
+    #[test]
+    fn the_literal_scan_finds_a_lost_continuation_and_passes_the_rest() -> Result<(), TestError> {
+        let gap = " ".repeat(20);
+        let q = '"';
+        let src = format!(
+            "fn f() {{\n    let c = '{q}'; let l: &'static str = {q}ok{q};\n    \
+             // {q}in a comment and 0{gap}bounds{q}\n    \
+             let r = r#{q}raw 0{gap}bounds{q}#;\n    \
+             let a = {q}Time:{gap}x{q};\n    \
+             let t = {q}row\\n{gap}x{q};\n    \
+             let k = {q}continued \\\n{gap}fine{q};\n    \
+             let z = c{q}cstr{q}; let y = b{q}bytes{q};\n    \
+             let j = {q}and 0{gap}bounds{q};\n    \
+             let u = {q}and 0\n{gap}bounds{q};\n}}\n"
+        );
+        let found: Vec<usize> = string_literals(&src)
+            .into_iter()
+            .filter(|(_, c)| lost_continuation(c, true))
+            .map(|(l, _)| l)
+            .collect();
+        assert_eq!(found, vec![10, 11], "{src}");
+        let unjoined_only: Vec<usize> = string_literals(&src)
+            .into_iter()
+            .filter(|(_, c)| lost_continuation(c, false))
+            .map(|(l, _)| l)
+            .collect();
+        assert_eq!(unjoined_only, vec![10], "a tests/ fixture may break lines");
+        Ok(())
+    }
+
     /// The scan finds a planted site and skips a comment naming one.
     #[test]
     fn the_site_scan_finds_a_planted_site_and_skips_prose() -> Result<(), TestError> {

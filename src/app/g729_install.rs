@@ -69,11 +69,11 @@ pub fn main(args: impl IntoIterator<Item = std::ffi::OsString>) -> i32 {
             return if e.use_stderr() { 2 } else { 0 };
         }
     };
-    let key = match crate::config::Config::load(cli.config.as_deref(), cli.no_config) {
-        Ok(loaded) => loaded.config.g729.tables,
+    let key = match read_config_as_a_run(&cli) {
+        Ok(config) => config.g729.tables,
         Err(e) => {
-            let _ = writeln!(std::io::stderr(), "{e}");
-            return 1;
+            let _ = writeln!(std::io::stderr(), "{}", e.message);
+            return e.exit_code;
         }
     };
     let location = TableLocation {
@@ -91,6 +91,32 @@ pub fn main(args: impl IntoIterator<Item = std::ffi::OsString>) -> i32 {
         err: &mut err,
     };
     run(&cli.command, &location, &mut io, &download)
+}
+
+/// Read the config file `-f` / `--no-config` name, and check it as a run
+/// checks it before reading `[g729] tables` from it: the same loader, which
+/// warns about every key it does not know, the same section validators, and
+/// the same config-only refusals `-D` makes. A file a run refuses is refused
+/// here with the run's message and exit status, so `status` never reports on
+/// a file no run would read.
+///
+/// The warnings go to stderr at the level a headless run logs them.
+///
+/// # Errors
+///
+/// The run's `PlanError`.
+fn read_config_as_a_run(
+    cli: &G729Cli,
+) -> Result<crate::config::Config, crate::app::bootstrap::PlanError> {
+    use crate::app::bootstrap;
+    let mut run = crate::cli::Cli::parse_from_args(["sipnab", "-N", "-q"]);
+    run.config_args.config.clone_from(&cli.config);
+    run.config_args.no_config = cli.no_config;
+    bootstrap::init_logging(&run);
+    let loaded =
+        bootstrap::read_config(&run).and_then(|read| bootstrap::apply_config(&run, read))?;
+    bootstrap::refuse_invalid_config(&run, &loaded.config)?;
+    Ok(loaded.config)
 }
 
 /// Run one `sipnab g729` command against `location`. Exit codes: 0 done (or
@@ -446,7 +472,8 @@ pub fn download(url: &str) -> Result<Vec<u8>, String> {
         extra: "SSL_CERT_FILE",
         issuer: "itu.int's CA",
     };
-    let endpoint = Endpoint::parse(url).map_err(|e| format!("{url}: {e}"))?;
+    let endpoint = Endpoint::parse(url, crate::app::https_client::UrlUse::DOWNLOAD)
+        .map_err(|e| format!("{url}: {e}"))?;
     let config = client_config(None, None, &TRUST)?;
     let request = format!(
         "GET {} HTTP/1.1\r\nHost: {}\r\nUser-Agent: sipnab/{}\r\nAccept: */*\r\nConnection: close\r\n\r\n",

@@ -510,6 +510,20 @@ impl SipnabMcp {
             .collect()
     }
 
+    /// The registered tools that change a system outside sipnab (see
+    /// [`is_action_tool`]), sorted by name. The handshake names these.
+    fn action_tool_names(&self) -> Vec<String> {
+        let mut names: Vec<String> = self
+            .tool_router
+            .list_all()
+            .into_iter()
+            .filter(is_action_tool)
+            .map(|t| t.name.to_string())
+            .collect();
+        names.sort();
+        names
+    }
+
     /// The built-in bundles every one of whose carried tools is loaded.
     ///
     /// "Carried" is what this build registers, so a bundle whose tools are
@@ -2823,8 +2837,9 @@ pub struct CaptureStatusResponse {
     /// These are the values to pass to `--ws-portrange`, so the answer names
     /// its own remedy — `--portrange` will not recover them.
     pub unanalysed_websocket_ports: Vec<UnanalyzedPort>,
-    /// The background load filling this capture, while one runs. Null
-    /// otherwise, including before any `open_capture` call.
+    /// The most recent `open_capture` background load. Null before the
+    /// first `open_capture` call; after a load ends it stays set, with
+    /// `done: true`.
     pub load: Option<LoadStatus>,
 }
 
@@ -2843,7 +2858,8 @@ pub struct LoadStatus {
     pub instance: String,
     /// Packets read so far.
     pub packets: u64,
-    /// Seconds since the load started.
+    /// Seconds the load has run: since it started while it runs, and how
+    /// long it took once `done` is true, so it stops counting at the finish.
     pub elapsed_sec: u64,
     /// True once the reader stopped, whether it finished the file or failed.
     pub done: bool,
@@ -5724,8 +5740,11 @@ impl SipnabMcp {
         // dialog has no messages", so the refusal says which it is.
         let max = match params.max_messages {
             Some(0) => {
-                return Err(errors::refuse_param(Reason::InvalidValue, "max_messages", 
-                    "max_messages must be at least 1; it bounds the page and 0                      bounds nothing. Omit it for the default of 100."
+                return Err(errors::refuse_param(
+                    Reason::InvalidValue,
+                    "max_messages",
+                    "max_messages must be at least 1; it bounds the page and 0 \
+                      bounds nothing. Omit it for the default of 100."
                         .to_string(),
                 ));
             }
@@ -6593,8 +6612,19 @@ impl SipnabMcp {
         // — one rule in one place, so the two doors cannot drift.
         let kinds_owned: Vec<String> = params.kinds.unwrap_or_default();
         let (kinds, since) =
-            crate::security::findings::parse_query(&kinds_owned, params.since.as_deref())
-                .map_err(|e| errors::refuse(Reason::InvalidValue, e))?;
+            crate::security::findings::parse_query(&kinds_owned, params.since.as_deref()).map_err(
+                |e| {
+                    if crate::security::findings::unknown_kind(&kinds_owned).is_some() {
+                        errors::refuse_choice(
+                            "kinds",
+                            crate::security::findings::SECURITY_FINDING_KINDS,
+                            e,
+                        )
+                    } else {
+                        errors::refuse_param(Reason::InvalidValue, "since", e)
+                    }
+                },
+            )?;
 
         let (report, capture_identity) = {
             // Capture lock first, stores second, all three held together — see
@@ -6709,12 +6739,13 @@ impl SipnabMcp {
                 None => ("unknown".to_string(), None, None, None, false),
             };
             let load = state.load.as_ref().map(|l| {
+                let elapsed_sec = l.elapsed().as_secs();
                 let outcome = l.outcome.lock();
                 LoadStatus {
                     filename: l.filename.clone(),
                     instance: l.instance.clone(),
                     packets: l.packets.load(std::sync::atomic::Ordering::Relaxed),
-                    elapsed_sec: l.started.elapsed().as_secs(),
+                    elapsed_sec,
                     done: l.finished(),
                     error: outcome.as_ref().and_then(|o| o.error.clone()),
                     archive_passwords: outcome.as_ref().and_then(|o| o.archive_note.clone()),
@@ -6890,6 +6921,19 @@ impl SipnabMcp {
     ) -> Result<Vec<crate::capture::UprobeTarget>, rmcp::ErrorData> {
         use crate::capture::uprobe::discover;
 
+        // The arguments first: a name sipnab does not probe is wrong whoever
+        // asks, and a caller told only "not root" would fix that and fail again.
+        let mut flavors = Vec::new();
+        for name in &params.flavors {
+            flavors.push(discover::parse_flavor(name).map_err(|e| {
+                errors::refuse_choice(
+                    "flavors",
+                    discover::Flavor::ALL.map(discover::Flavor::name),
+                    e,
+                )
+            })?);
+        }
+
         // Checked here rather than left to the attach, because the attach
         // happens on a background thread and its failure would reach the agent
         // as an empty capture minutes later.
@@ -6906,13 +6950,6 @@ impl SipnabMcp {
             ));
         }
 
-        let mut flavors = Vec::new();
-        for name in &params.flavors {
-            flavors.push(
-                discover::parse_flavor(name)
-                    .map_err(|e| errors::refuse_param(Reason::InvalidValue, "flavors", e))?,
-            );
-        }
         let planned =
             discover::plan_targets(&params.libraries, None, &flavors, discover::discover())
                 .map_err(|e| errors::refuse(Reason::InvalidValue, e))?;
@@ -9836,6 +9873,19 @@ fn open_capture_refusal(
     None
 }
 
+/// Whether a registered tool is an action: it changes a system outside
+/// sipnab. That is a tool not annotated read-only and not annotated
+/// closed-world. Unstated means open-world: that is the MCP specification's
+/// default for `openWorldHint`, and here it is also the direction that fails
+/// safe. The scope check and the handshake's actions sentence both read this,
+/// so the tools a `full` token is refused are the tools the handshake names.
+fn is_action_tool(tool: &rmcp::model::Tool) -> bool {
+    let annotations = tool.annotations.as_ref();
+    let read_only = annotations.and_then(|a| a.read_only_hint).unwrap_or(false);
+    let open_world = annotations.and_then(|a| a.open_world_hint).unwrap_or(true);
+    !read_only && open_world
+}
+
 /// Decide whether `scope` is allowed to invoke the tool, returning the
 /// refusal to send when it is not.
 ///
@@ -9864,12 +9914,12 @@ fn scope_refusal(
         return None;
     }
     let tool = tool?;
-    let annotations = tool.annotations.as_ref();
-    let read_only = annotations.and_then(|a| a.read_only_hint).unwrap_or(false);
-    // Unstated means open-world: that is the MCP specification's default for
-    // `openWorldHint`, and here it is also the direction that fails safe.
-    let open_world = annotations.and_then(|a| a.open_world_hint).unwrap_or(true);
-    if !read_only && open_world {
+    let read_only = tool
+        .annotations
+        .as_ref()
+        .and_then(|a| a.read_only_hint)
+        .unwrap_or(false);
+    if is_action_tool(tool) {
         // An action: it changes a system outside sipnab. Only an `actions`
         // token reaches it, whatever else the token may do.
         return Some(errors::refuse(
@@ -10559,7 +10609,7 @@ impl ServerHandler for SipnabMcp {
              exports write only under the configured file root, and stopping \
              the server requires an explicit server-side opt-in."
                 .to_string()
-                + &actions_sentence(self.actions.policy())
+                + &actions_sentence(self.actions.policy(), &self.action_tool_names())
                 + &tools_sentence(&self.tool_selection),
         );
         info
@@ -10589,19 +10639,29 @@ fn tools_sentence(selection: &super::profile::ToolSelection) -> String {
 
 /// The handshake's sentence about actions: that this server changes no
 /// external system, or which actions the operator enabled for MCP.
-fn actions_sentence(policy: &crate::security::actions::ActionPolicy) -> String {
+///
+/// `action_tools` is every action tool this client was given (see
+/// [`is_action_tool`]), so a new action tool is named here without an edit.
+/// TFPS is the only action target, and every action tool acts on it.
+fn actions_sentence(
+    policy: &crate::security::actions::ActionPolicy,
+    action_tools: &[String],
+) -> String {
     use crate::security::actions::ActionSurface;
     let targets = policy.targets_on(ActionSurface::Mcp);
-    if targets.is_empty() {
-        return " This server changes no external system: the tools that would \
-                (tfps_ban, tfps_unban) refuse unless the operator enables them \
-                with --allow-action."
+    let tools = action_tools.join(", ");
+    if action_tools.is_empty() {
+        return " This server changes no external system: no tool that would \
+                is loaded."
             .to_string();
     }
-    let tools: Vec<String> = targets
-        .iter()
-        .map(|t| format!("{t}_ban and {t}_unban"))
-        .collect();
+    if targets.is_empty() {
+        return format!(
+            " This server changes no external system: the tools that would \
+             ({tools}) refuse unless the operator enables them with \
+             --allow-action."
+        );
+    }
     format!(
         " The operator enabled actions that change another system from MCP \
          (--allow-action {}): {}. Over HTTP they also need an \"actions\"-scope \
@@ -10611,7 +10671,7 @@ fn actions_sentence(policy: &crate::security::actions::ActionPolicy) -> String {
             .map(|t| format!("{t}:mcp"))
             .collect::<Vec<_>>()
             .join(" "),
-        tools.join(", ")
+        tools
     )
 }
 
@@ -13220,6 +13280,35 @@ mod tests {
         Ok(())
     }
 
+    /// MCP-A7: the handshake named `tfps_ban` and `tfps_unban` from a string
+    /// literal and left out `actions_revert`, which is gated the same way.
+    /// Every registered action tool (not read-only, open-world: the tools a
+    /// `full` token is refused) is named, with actions off and on.
+    #[test]
+    fn the_handshake_names_every_registered_action_tool() -> Result<(), TestError> {
+        let router = empty_server().tool_router;
+        let action_tools: Vec<String> = router
+            .list_all()
+            .into_iter()
+            .filter(|t| scope_refusal(crate::auth::SCOPE_FULL, &t.name, Some(t)).is_some())
+            .map(|t| t.name.to_string())
+            .collect();
+        assert!(
+            action_tools.len() >= 3,
+            "the router registers the action tools: {action_tools:?}"
+        );
+        let enabled_policy =
+            crate::security::actions::ActionPolicy::from_settings(&["tfps:mcp".to_string()], &[])
+                .map_err(|e| format!("valid: {e:?}"))?;
+        for srv in [empty_server(), empty_server().with_actions(enabled_policy)] {
+            let text = srv.get_info().instructions.unwrap_or_default();
+            for name in &action_tools {
+                assert!(text.contains(name.as_str()), "{name} is not named: {text}");
+            }
+        }
+        Ok(())
+    }
+
     /// A server whose dialog store holds one dialog (`call_id`) with an
     /// INVITE followed by a 200 OK (two messages).
     fn server_with_dialog(call_id: &str) -> Result<SipnabMcp, TestError> {
@@ -13605,6 +13694,29 @@ mod tests {
             .ok_or("unknown call_id must error")?;
         let json = serde_json::to_value(err)?;
         assert_eq!(json["code"], -32602);
+        Ok(())
+    }
+
+    /// MCP-A5: `max_messages: 0` is refused with one sentence, single-spaced.
+    /// The literal had lost its line continuation, and the message carried
+    /// 22 spaces between "0" and "bounds".
+    #[tokio::test]
+    async fn get_dialog_zero_max_messages_refusal_is_single_spaced() -> Result<(), TestError> {
+        let err = empty_server()
+            .get_dialog(Parameters(GetDialogParams {
+                max_response_bytes: None,
+                call_id: "x".to_string(),
+                max_messages: Some(0),
+                cursor: None,
+            }))
+            .await
+            .err()
+            .ok_or("max_messages 0 is refused")?;
+        assert_eq!(
+            err.message,
+            "max_messages must be at least 1; it bounds the page and 0 bounds \
+             nothing. Omit it for the default of 100."
+        );
         Ok(())
     }
 
@@ -15184,6 +15296,66 @@ mod tests {
         Ok(())
     }
 
+    /// MCP-07: a kind outside the vocabulary is `invalid_choice` on `kinds`,
+    /// with the vocabulary as `valid_values`; a bad `since` is
+    /// `invalid_value` on `since`. Both answered `invalid_value` with no
+    /// `param`.
+    #[tokio::test]
+    async fn security_findings_refusals_carry_the_documented_reason() -> Result<(), TestError> {
+        let refused = |kinds: Option<Vec<String>>, since: Option<&str>| {
+            let since = since.map(str::to_string);
+            async move {
+                empty_server()
+                    .security_findings(Parameters(SecurityFindingsParams {
+                        kinds,
+                        since,
+                        limit: None,
+                    }))
+                    .await
+                    .err()
+                    .and_then(|e| e.data)
+                    .unwrap_or_default()
+            }
+        };
+        let kind = refused(Some(vec!["reg-flood".to_string()]), None).await;
+        assert_eq!(kind["reason"], "invalid_choice", "{kind}");
+        assert_eq!(kind["param"], "kinds", "{kind}");
+        assert_eq!(
+            kind["valid_values"],
+            serde_json::json!(crate::security::findings::SECURITY_FINDING_KINDS),
+            "{kind}"
+        );
+        let since = refused(None, Some("last tuesday")).await;
+        assert_eq!(since["reason"], "invalid_value", "{since}");
+        assert_eq!(since["param"], "since", "{since}");
+        Ok(())
+    }
+
+    /// MCP-07: an unknown TLS flavor is `invalid_choice` on `flavors`, with
+    /// the flavors sipnab probes as `valid_values`. It answered
+    /// `invalid_value`, and only after the root check, so a caller who was not
+    /// root never learned the name was wrong.
+    #[cfg(all(target_os = "linux", feature = "native"))]
+    #[test]
+    fn an_unknown_tls_flavor_is_an_invalid_choice() -> Result<(), TestError> {
+        let err = empty_server()
+            .plan_tls_targets(&StartTlsCaptureParams {
+                flavors: vec!["gnutls".to_string()],
+                libraries: Vec::new(),
+            })
+            .err()
+            .ok_or("an unknown flavor is refused")?;
+        let data = err.data.unwrap_or_default();
+        assert_eq!(data["reason"], "invalid_choice", "{data}");
+        assert_eq!(data["param"], "flavors", "{data}");
+        assert_eq!(
+            data["valid_values"],
+            serde_json::json!(["openssl", "wolfssl"]),
+            "{data}"
+        );
+        Ok(())
+    }
+
     /// A fired finding comes back with its rule name and source IP.
     #[tokio::test]
     async fn security_findings_with_engine_returns_recorded_finding() -> Result<(), TestError> {
@@ -16239,6 +16411,54 @@ mod tests {
                 "'{bad}' must be refused for what it is; got {err:?}"
             );
         }
+        Ok(())
+    }
+
+    /// MCP-N1: once a load is done, `load.elapsed_sec` is how long it took,
+    /// not how long ago it started. It kept counting after `done: true`, so
+    /// two polls of one finished load disagreed about its duration.
+    #[tokio::test]
+    async fn capture_status_freezes_the_load_elapsed_time_when_done() -> Result<(), TestError> {
+        let root = root_with_capture("elapsed", "next.pcap")?;
+        let server = exhausted_server().with_open_capture().with_file_root(&root);
+        server
+            .open_capture(
+                Parameters(OpenCaptureParams {
+                    filename: "next.pcap".into(),
+                }),
+                Extension(crate::mcp::elicit::Confirm::unavailable()),
+            )
+            .await
+            .map_err(|e| format!("accepted: {e:?}"))?;
+        let status = || async {
+            let result = server
+                .capture_status()
+                .await
+                .map_err(|e| format!("status: {e:?}"))?;
+            Ok::<serde_json::Value, TestError>(serde_json::from_str(&text_of(&result)?)?)
+        };
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+        let first = loop {
+            let v = status().await?;
+            if v["load"]["done"] == true {
+                break v;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the load never finished"
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        };
+        // Past a whole second, so a clock still running shows in the
+        // whole-second figure.
+        tokio::time::sleep(std::time::Duration::from_millis(1100)).await;
+        let second = status().await?;
+        let _ = std::fs::remove_dir_all(&root);
+        assert_eq!(second["load"]["done"], true, "{second}");
+        assert_eq!(
+            first["load"]["elapsed_sec"], second["load"]["elapsed_sec"],
+            "a finished load's duration does not grow: {first} then {second}"
+        );
         Ok(())
     }
 

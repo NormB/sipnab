@@ -280,7 +280,10 @@ impl Rig {
             done_dir: spool.join("delivered"),
             failed_dir: spool.join("failed"),
             spool,
-            url: Endpoint::parse(&store.url("/v1/vcons"))?,
+            url: Endpoint::parse(
+                &store.url("/v1/vcons"),
+                sipnab::app::https_client::UrlUse::FORWARDER,
+            )?,
             replace_url: None,
             auth: AuthHeader::read_file(&auth_file)?,
             timeout: Duration::from_secs(5),
@@ -291,7 +294,10 @@ impl Rig {
             limits: ReadLimits::default(),
             content_type: "application/json".into(),
             scitt: Some(ScittSettings {
-                url: Endpoint::parse(&scrapi.url("/scitt"))?,
+                url: Endpoint::parse(
+                    &scrapi.url("/scitt"),
+                    sipnab::app::https_client::UrlUse::FORWARDER_SCITT,
+                )?,
                 auth,
                 ca: None,
                 signer: Arc::new(ScittSigner::from_pem(key, chain)?),
@@ -603,7 +609,10 @@ fn a_registration_that_does_not_complete_is_recorded_and_delivery_stands() -> Re
     let gone = Fake::start(|_| Vec::new())?;
     let mut rig = Rig::new(&store, &gone, None)?;
     if let Some(scitt) = rig.settings.scitt.as_mut() {
-        scitt.url = Endpoint::parse("http://127.0.0.1:9/scitt")?;
+        scitt.url = Endpoint::parse(
+            "http://127.0.0.1:9/scitt",
+            sipnab::app::https_client::UrlUse::FORWARDER_SCITT,
+        )?;
     }
     rig.drop_in("c.vcon.json", &container(UUID, ""))?;
     let report = Forwarder::new(rig.settings.clone())?.pass(Instant::now(), &never);
@@ -640,7 +649,10 @@ fn an_https_service_is_trusted_by_its_own_ca() -> Result<(), TestError> {
     let store = store()?;
     let mut rig = Rig::new(&store, &scrapi, None)?;
     if let Some(scitt) = rig.settings.scitt.as_mut() {
-        scitt.url = Endpoint::parse(&format!("https://{}/scitt", scrapi.addr))?;
+        scitt.url = Endpoint::parse(
+            &format!("https://{}/scitt", scrapi.addr),
+            sipnab::app::https_client::UrlUse::FORWARDER_SCITT,
+        )?;
         scitt.ca = Some(PathBuf::from(&pki.ca_file));
     }
     rig.drop_in("a.vcon.json", &container(UUID, ""))?;
@@ -1393,5 +1405,60 @@ fn the_binary_refuses_a_key_its_certificate_does_not_match() -> Result<(), TestE
         let statement = decode_es256(&post.body, &point)?;
         assert_eq!(statement.header(1), Some(&Cbor::Integer((-7).into())));
     }
+    Ok(())
+}
+
+/// A refused SCITT URL exits as every other URL refusal does: 2 when it came
+/// from `--vcon-forward-scitt-url`, 1 when it came from `[vcon_forward]
+/// scitt_url` in the config file (docs/errors.md).
+#[test]
+fn a_refused_scitt_url_exits_by_where_it_came_from() -> Result<(), TestError> {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = tempfile::tempdir()?;
+    let spool = dir.path().join("spool");
+    std::fs::create_dir(&spool)?;
+    let auth = dir.path().join("auth");
+    std::fs::write(&auth, "Authorization: Bearer store-token-value\n")?;
+    std::fs::set_permissions(&auth, std::fs::Permissions::from_mode(0o600))?;
+    let (key, cert) = key_files(dir.path(), 0o600)?;
+    let s = |p: &Path| p.display().to_string();
+    let bad = "https://user:secret@127.0.0.1:9/scitt";
+    let base = vec![
+        "--vcon-forward".to_owned(),
+        s(&spool),
+        "--vcon-forward-url".into(),
+        "http://127.0.0.1:9/v1/vcons".into(),
+        "--vcon-forward-auth-file".into(),
+        s(&auth),
+        "--vcon-forward-once".into(),
+        "--vcon-forward-scitt-sign-key".into(),
+        s(&key),
+        "--vcon-forward-scitt-sign-cert".into(),
+        s(&cert),
+        "--vcon-forward-scitt-issuer".into(),
+        ISSUER.into(),
+    ];
+
+    let mut by_flag = base.clone();
+    by_flag.extend([
+        "--no-config".into(),
+        "--vcon-forward-scitt-url".into(),
+        bad.into(),
+    ]);
+    let (err, code) = sipnab(&by_flag)?;
+    assert_eq!(code, Some(2), "{err}");
+    assert!(err.contains("--vcon-forward-scitt-url"), "{err}");
+
+    let config = dir.path().join("sipnab.toml");
+    std::fs::write(&config, format!("[vcon_forward]\nscitt_url = \"{bad}\"\n"))?;
+    let mut by_key = base;
+    by_key.extend(["-f".into(), s(&config)]);
+    let (err, code) = sipnab(&by_key)?;
+    assert_eq!(code, Some(1), "{err}");
+    assert!(err.contains("[vcon_forward] scitt_url"), "{err}");
+    assert!(
+        !err.contains("secret"),
+        "the refusal must not quote the password: {err}"
+    );
     Ok(())
 }

@@ -610,11 +610,10 @@ List all tracked SIP dialogs with optional filtering and pagination.
 | Parameter | Type   | Default | Description |
 |-----------|--------|---------|-------------|
 | `state`   | string | --      | Filter by dialog state (`Trying`, `Ringing`, `InCall`, `Completed`, `Failed`, `Canceled`, `Redirected`, `Registered`, `Expired`, `Pending`, `Active`, `Terminated`, `Transferring`) |
-| `from`    | string | --      | Filter by From user (regex pattern) |
-| `filter`  | string | --      | A [filter expression](@/docs/filter-dsl.md) or a [named alias](@/docs/filter-dsl.md#named-aliases) such as `problems` or `slow-setup`. A value that is neither is a `400`. ANDed with `state` and `from` |
+| `from`    | string | --      | Filter by From user (regex pattern). sipnab ignores a pattern that is not a valid regular expression: the page is the one you get without `from`. Check the `total` against a run without it |
+| `filter`  | string | --      | A [filter DSL](@/docs/filter-dsl.md) expression, the language `--filter` and the TUI filter dialog use, for example `method == INVITE` or `rtp.loss > 2.0`, or a [named alias](@/docs/filter-dsl.md#named-aliases) such as `problems` or `slow-setup`. A value may be bare or quoted, so `method == 'INVITE'` is the same filter. URL-encode it. A value that is neither is a `400` naming the position, never an unfiltered page. ANDed with `state` and `from` |
 | `limit`   | int    | 50      | Maximum results. Ceiling is `--api-max-rows` (1000 by default), not a fixed limit |
 | `offset`  | int    | 0       | Pagination offset |
-| `filter`  | string | --      | A [filter DSL](@/docs/filter-dsl.md) expression, the language `--filter` and the TUI filter dialog use, for example `method == INVITE` or `rtp.loss > 2.0`. A value may be bare or quoted, so `method == 'INVITE'` is the same filter. URL-encode it. An expression that does not parse is a `400` naming the position, never an unfiltered page |
 | `after`   | string | --      | Only dialogs whose first message is at or after this [RFC 3339](https://www.rfc-editor.org/rfc/rfc3339.html) instant, for example `2026-09-15T12:00:00Z`. An instant that does not parse is a `400` |
 | `before`  | string | --      | Only dialogs whose first message is strictly before this RFC 3339 instant. With `after` it forms the half-open window `[after, before)`, the window the MCP `search_by_time` tool uses, so consecutive windows never count a dialog twice. An instant that does not parse is a `400` |
 
@@ -3119,7 +3118,9 @@ nothing, including the capture id it claimed.
 counts and a `note`. It never answers with an empty roster that would read as "nobody is
 sending".
 
-The MCP tool `hep_senders` returns the same bytes for the same roster.
+The MCP tool `hep_senders` returns the same fields and values for the same
+roster, with its keys in alphabetical order and `source_exhausted` and
+`source_stopped_early` added.
 `--hep-senders` prints it at the end of a headless run. Prometheus carries only
 the aggregate counts, with no per-sender label. See
 [Metrics](@/docs/metrics.md).
@@ -3169,7 +3170,7 @@ curl -s -H "Authorization: Bearer $SIPNAB_API_KEY" http://127.0.0.1:8080/v1/capa
 **`runtime` names what the operator turned on.**
 
 - Some routes answer
-  `not_configured` because `--api-allow-relay-query` was not passed. That is not a
+  `not_permitted` because `--api-allow-relay-query` was not passed. That is not a
   missing feature.
 - A program that blurs the two retries something that can
   never work.
@@ -4224,11 +4225,14 @@ than yesterday, and here is where" is the first row.
 
 The rules for the header:
 
-- **Only from this host.** sipnab serves plain HTTP.
-  - So it accepts the header
-    from a loopback client. That means a local tool or a TLS proxy on the same host.
-  - A remote client gets `403` unless the operator started sipnab with
-    `--api-accept-archive-passwords`. That flag makes TLS in front their job.
+- **Only from this host, unless the operator allows more.**
+  - sipnab accepts the header from a loopback client: a local tool or a TLS
+    proxy on the same host.
+  - A remote client gets `403`. That holds when sipnab serves HTTPS itself
+    with `--api-tls-cert` too.
+  - `--api-accept-archive-passwords` lets remote clients send it. Pass it only
+    when TLS encrypts the connection, through `--api-tls-cert` or a TLS proxy
+    in front, so the password does not cross the network in the clear.
 - **Never in the URL.** A query parameter named like a password gets `400`,
   on every route.
   - The answer advises you to treat that password as exposed.
@@ -4802,12 +4806,16 @@ comments back from a capture, so no route shows them.
 | `200` | Success |
 | `400` | Malformed request (e.g. invalid SSRC on `/v1/streams/{id}`) |
 | `401` | Missing/invalid/expired/revoked bearer token |
-| `403` | `/v1/dialogs/{call_id}/vcon` for a dialog that carries the run's `--content-deny-header` |
+| `403` | A refused request. The causes: a `Host` header the server does not accept (see [Which `Host` names the API answers](#which-host-names-the-api-answers)); `/v1/dialogs/{call_id}/vcon` for a dialog that carries the run's `--content-deny-header`; a [`/v1/tfps/` action](#post-v1-tfps-ban) or [`/v1/actions/revert`](#post-v1-actions-revert) when the operator has not enabled actions for REST; an archive password sent from another host to [`/v1/captures/compare`](#get-v1-captures-compare) |
 | `404` | Unknown `call_id` or stream id — and every `call_id` on `/v1/dialogs/{call_id}/vcon` in a build without the `vcon` feature, which registers no route at that path |
 | `408` | The handler ran past the 30-second per-request cap. Every route sits behind it, so no slow client holds a connection slot open |
+| `409` | [`POST /v1/tfps/unban`](#post-v1-tfps-unban) or [`/v1/actions/revert`](#post-v1-actions-revert) for a ban sipnab did not place |
+| `413` | A request body larger than 1 MiB (see [Bind address & connection limits](#bind-address-connection-limits)) |
+| `422` | The request is well formed but sipnab does not act on it. The causes: a ban address or lifetime the rules do not allow; a vCon container that does not open, or whose `critical` list names an extension sipnab does not support ([`POST /v1/vcon/validate`](#post-v1-vcon-validate)); an audio route for a call with nothing sipnab can decode; a locked or unreadable archive on [`/v1/captures/compare`](#get-v1-captures-compare). `detail` names the reason |
+| `429` | An action rate limit, or too many wrong archive passwords from one client on [`/v1/captures/compare`](#get-v1-captures-compare). The answer carries `Retry-After` |
 | `500` | The answer would not serialize. Documented on `/v1/dialogs/{call_id}`, its `/report` and `/vcon` variants, `/v1/streams/{id}` and `/v1/report` |
 | `502` | The toll-fraud prevention peer a `/v1/tfps/` route asked exited non-zero, hung, or answered off the contract; `detail` carries its standard error |
-| `503` | Rejected by the rate limiter or the connection cap (**not** 429) |
+| `503` | Rejected by the rate limiter or the connection cap (these never answer `429`), or a route this server was not started to serve: [`/v1/captures/compare`](#get-v1-captures-compare) without `--api-file-root`, [`/v1/vcon/fetch/:uuid`](#get-v1-vcon-fetch-uuid) without `--api-allow-vcon-fetch` and `[vcon_fetch]`, an action while sipnab cannot use the actions journal. `detail` names the flag to add |
 
 ## Recipes (curl + jq)
 

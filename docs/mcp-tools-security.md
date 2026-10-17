@@ -35,10 +35,10 @@ credits both ends of a dialog.
 
 | Name | Type | Legal values | If omitted |
 |---|---|---|---|
-| `by` | string | `ip`, `ua` or `prefix`. Anything else fails with `invalid_params` naming the legal set. | Required. |
+| `by` | string | `ip`, `ua` or `prefix`. Anything else fails with `invalid_params`, `reason: invalid_choice`, and the legal set in `valid_values`. | Required. |
 | `limit?` | integer? | Bounded by `--mcp-max-rows`. | The usual row default. |
 | `filter?` | string? | Alias or DSL, the same vocabulary every other tool takes. | The whole store. |
-| `prefix_digits?` | integer? | How many leading digits make a prefix bucket. | 4. |
+| `prefix_digits?` | integer? | How many leading digits make a prefix bucket. `0` fails with `reason: invalid_value`, `param: prefix_digits`. | 4. |
 
 **Returns:**
 
@@ -126,12 +126,16 @@ participant has been doing, from every dialog the store holds.
 | `limit?` | u32? | Bounds `recent_dialogs`, `problem_call_ids` and `findings` only. Ceiling is `--mcp-max-rows` (1000 by default), `0` means the default. | 50. |
 
 **Give exactly one selector.** Passing both `ip` and `user` fails with
-`invalid_params`:
+`invalid_params` and `reason: conflicting_params`:
 
 ```jsonc
 { "code": -32602,
-  "message": "give exactly one of ip or user, not both: the two select different sets, and whether you meant their intersection or their union changes the answer" }
+  "message": "give exactly one of ip or user, not both: the two select different sets, and whether you meant their intersection or their union changes the answer",
+  "data": { "reason": "conflicting_params" } }
 ```
+
+Passing neither fails with `reason: missing_param`. An `ip` that does not
+parse fails with `reason: invalid_value` and `param: ip`.
 
 The example runs against
 [`tests/pcap-samples/sip-rtp-g711.pcap`](https://github.com/NormB/sipnab/raw/main/tests/pcap-samples/sip-rtp-g711.pcap):
@@ -433,6 +437,32 @@ One rule is a metric, a comparison, a threshold, and what it applies to:
 | `scope` | `filter:<alias-or-DSL>` to narrow by dialog, or `severity:<info\|notice\|warning\|error>` to set the floor a `lint_errors` rule counts from. Omitted means the whole capture. |
 | `min_sample` | Observations below which the rule reports `skipped` rather than a verdict. |
 | `grounded_only` | MOS metrics only. Defaults to `true`. |
+
+The text in `rules_toml` holds the same fields as TOML, one `[[rules]]` table
+per rule:
+
+```toml
+[[rules]]
+name = "answer rate"
+metric = "asr"
+op = ">="
+value = 10
+
+[[rules]]
+metric = "lint_errors"
+op = "<="
+value = 0
+scope = "severity:error"
+```
+
+The table name is `rules`, plural. Rules under another name, such as
+`[[rule]]`, or written at the top level of the text, are not read. The suite
+is then empty, and the call fails with `invalid_params` (-32602) and this
+message:
+
+```text
+an expectation suite must contain at least one rule; an empty suite passes every capture and reports nothing
+```
 
 ```jsonc
 // evaluate_expectations { "rules": [

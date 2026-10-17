@@ -1123,7 +1123,8 @@ mod tests {
 
         assert!(
             reference.is_valid(&container),
-            "the reference has gained `uuid` format support -- move this case              back into `corpus()` and delete this test"
+            "the reference has gained `uuid` format support -- move this case \
+              back into `corpus()` and delete this test"
         );
         let report = validate(&container);
         assert_eq!(

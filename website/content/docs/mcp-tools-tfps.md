@@ -341,7 +341,7 @@ enabling as `tfps_ban`, and each unban counts against the same rate limits.
 | Parameter | Type | Legal values | If omitted |
 |---|---|---|---|
 | `id?` | string? | an action id from `tfps_ban`'s answer | give exactly one of `id` or `all` |
-| `all?` | boolean? | `true` | give exactly one of `id` or `all`; anything else is `invalid_params` (-32602) |
+| `all?` | boolean? | `true` | give exactly one of `id` or `all`. Neither is `invalid_params` (-32602) with `reason: missing_param`; both is `reason: conflicting_params` |
 
 ```jsonc
 // actions_revert { "all": true }

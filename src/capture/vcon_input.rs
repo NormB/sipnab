@@ -783,7 +783,8 @@ mod reader {
                 return Ok(chain.clone());
             }
             // The https rule is vcon_jose's, checked before any fetch.
-            let endpoint = Endpoint::parse(url).map_err(|e| format!("x5u {url:?}: {e}"))?;
+            let endpoint = Endpoint::parse(url, crate::app::https_client::UrlUse::DOWNLOAD)
+                .map_err(|e| format!("x5u {url:?}: {e}"))?;
             let request = format!(
                 "GET {} HTTP/1.1\r\nHost: {}\r\nUser-Agent: sipnab/{}\r\nAccept: application/pem-certificate-chain\r\nConnection: close\r\n\r\n",
                 endpoint.target,

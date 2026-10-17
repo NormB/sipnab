@@ -366,7 +366,11 @@ impl SipnabMcp {
         let limit = resolve_limit_with_cap(params.limit, self.row_cap);
         let selector =
             crate::sip::endpoint::Selector::parse(params.ip.as_deref(), params.user.as_deref())
-                .map_err(|e| errors::refuse(Reason::InvalidValue, e))?;
+                .map_err(|e| match (params.ip.is_some(), params.user.is_some()) {
+                    (false, false) => errors::refuse(Reason::MissingParam, e),
+                    (true, true) => errors::refuse(Reason::ConflictingParams, e),
+                    _ => errors::refuse_param(Reason::InvalidValue, "ip", e),
+                })?;
 
         // The scan is shared with the REST `/v1/endpoints` route in
         // `crate::sip::endpoint`. This surface fences the sender-authored
@@ -508,8 +512,13 @@ impl SipnabMcp {
         &self,
         Parameters(params): Parameters<TopTalkersParams>,
     ) -> Result<CallToolResult, rmcp::ErrorData> {
-        let dimension = TalkerDimension::parse(&params.by, params.prefix_digits)
-            .map_err(|e| errors::refuse_param(Reason::InvalidValue, "by", e))?;
+        let dimension = TalkerDimension::parse(&params.by, params.prefix_digits).map_err(|e| {
+            if TalkerDimension::NAMES.contains(&params.by.trim()) {
+                errors::refuse_param(Reason::InvalidValue, "prefix_digits", e)
+            } else {
+                errors::refuse_choice("by", TalkerDimension::NAMES, e)
+            }
+        })?;
         let limit = resolve_limit_with_cap(params.limit, self.row_cap);
         let filter = self.compile_filter(params.filter.as_deref())?;
 
@@ -1739,6 +1748,72 @@ mod tests {
             "the refusal must name the parameter: {}",
             err.message
         );
+        Ok(())
+    }
+
+    /// MCP-07: each refusal carries the `data.reason` the documented taxonomy
+    /// defines (docs/mcp-tools.md), with `param` and, for a choice,
+    /// `valid_values`. These four answered `invalid_value`.
+    #[tokio::test]
+    async fn endpoint_refusals_carry_the_documented_reason() -> Result<(), TestError> {
+        let data = |e: rmcp::ErrorData| e.data.unwrap_or_default();
+        let srv = two_call_capture()?;
+        let endpoint = |ip: Option<&str>, user: Option<&str>| DescribeEndpointParams {
+            ip: ip.map(str::to_string),
+            user: user.map(str::to_string),
+            limit: None,
+        };
+        let talkers = |by: &str, prefix_digits: Option<u32>| TopTalkersParams {
+            by: by.to_string(),
+            limit: None,
+            filter: None,
+            prefix_digits,
+        };
+
+        let neither = data(
+            srv.describe_endpoint(Parameters(endpoint(None, None)))
+                .await
+                .err()
+                .ok_or("neither is refused")?,
+        );
+        assert_eq!(neither["reason"], "missing_param", "{neither}");
+        let both = data(
+            srv.describe_endpoint(Parameters(endpoint(Some("192.0.2.1"), Some("alice"))))
+                .await
+                .err()
+                .ok_or("both are refused")?,
+        );
+        assert_eq!(both["reason"], "conflicting_params", "{both}");
+        let bad_ip = data(
+            srv.describe_endpoint(Parameters(endpoint(Some("nope"), None)))
+                .await
+                .err()
+                .ok_or("a bad address is refused")?,
+        );
+        assert_eq!(bad_ip["reason"], "invalid_value", "{bad_ip}");
+        assert_eq!(bad_ip["param"], "ip", "{bad_ip}");
+
+        let by = data(
+            srv.top_talkers(Parameters(talkers("bogus", None)))
+                .await
+                .err()
+                .ok_or("an unknown dimension is refused")?,
+        );
+        assert_eq!(by["reason"], "invalid_choice", "{by}");
+        assert_eq!(by["param"], "by", "{by}");
+        assert_eq!(
+            by["valid_values"],
+            serde_json::json!(["ip", "ua", "prefix"]),
+            "{by}"
+        );
+        let digits = data(
+            srv.top_talkers(Parameters(talkers("prefix", Some(0))))
+                .await
+                .err()
+                .ok_or("a zero-width prefix is refused")?,
+        );
+        assert_eq!(digits["reason"], "invalid_value", "{digits}");
+        assert_eq!(digits["param"], "prefix_digits", "{digits}");
         Ok(())
     }
 

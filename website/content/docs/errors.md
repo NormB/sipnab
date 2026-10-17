@@ -3191,6 +3191,14 @@ A warning after the `--uprobe-list` table: sipnab cannot open `{unreachable}` of
 
 **Exit code:** 0. This is a warning, and sipnab still prints the listing.
 
+### `--uprobe-library {path}: no such file, so a capture could not probe it`
+
+`--uprobe-list` with `--uprobe-library` lists the named libraries, the ones a capture would probe, instead of discovering them. `{path}` names no file. The table marks it `(MISSING)`.
+
+**What to do:** Give the path as sipnab sees it. For a library inside a container, that is `/proc/<pid>/root/` followed by the path inside the container.
+
+**Exit code:** 1, after the table prints.
+
 ### `No TLS library is mapped by any process sipnab can see.\nEither nothing here uses OpenSSL or wolfSSL, or sipnab cannot read\n/proc/<pid>/maps — try again as root.`
 
 `--uprobe-list` found no process mapping a TLS library sipnab can probe (OpenSSL or wolfSSL). It reads `/proc/<pid>/maps` for each process, and it does not see a process whose map it cannot read. When the command line includes `--uprobe-flavor`, sipnab counts only libraries of the named flavors.
@@ -3734,20 +3742,33 @@ The POST of container `{name}` to the store failed before the forwarder could re
 
 **Exit code:** None. This is a warning. The container stays in the spool, and the forwarder retries it with a delay that doubles each time. With `--vcon-forward-once`, the run exits 1.
 
-### `'{shown}': put credentials in --vcon-forward-auth-file, not in the URL`
+### `'{shown}': put credentials in {setting}, not in the URL`
 
-The vCon store URL holds a user name or password before an `@` (`https://user:secret@host/...`).
+The URL holds a user name or password before an `@` (`https://user:secret@host/...`).
 
 - sipnab refuses it, so that the credential stays out of logs.
 - The line starts with the setting the URL came from, for example `--vcon-forward-url` or `[vcon_fetch] url`.
 - `{shown}` is the URL as written, with any `user:password@` part replaced by `[redacted]`.
+- `{setting}` is where the credential for that URL goes instead:
+  - `--vcon-forward-auth-file` for the forwarder's store URL and replace URL;
+  - `--vcon-forward-scitt-auth-file` for its transparency service URL;
+  - `--vcon-fetch-auth-file` for the fetcher's store URL;
+  - `[[vcon.enrich]] auth_file` for an enrichment service URL.
 
-**What to do:** Remove the `user:password@` part from the URL. For the forwarder, put the credential in the file named by `--vcon-forward-auth-file` (or `[vcon_forward] auth_file`), or in `SIPNAB_VCON_FORWARD_AUTH`. For the fetcher, put it in the file named by `--vcon-fetch-auth-file` (or `[vcon_fetch] auth_file`).
+**What to do:** Remove the `user:password@` part from the URL, and put the credential in the file `{setting}` names. The forwarder also reads it from `SIPNAB_VCON_FORWARD_AUTH`, and each flag has a config key: `[vcon_forward] auth_file`, `[vcon_forward] scitt_auth_file` and `[vcon_fetch] auth_file`.
 
 **Exit code:**
 
-- 2 when the URL came from a flag (`--vcon-forward-url`, `--vcon-forward-replace-url` or `--vcon-fetch-url`);
-- 1 when it came from the config file (`[vcon_forward] url`, `[vcon_forward] replace_url` or `[vcon_fetch] url`).
+- 2 when the URL came from a flag (`--vcon-forward-url`, `--vcon-forward-replace-url`, `--vcon-forward-scitt-url` or `--vcon-fetch-url`);
+- 1 when it came from the config file (`[vcon_forward] url`, `[vcon_forward] replace_url`, `[vcon_forward] scitt_url`, `[vcon_fetch] url` or `[[vcon.enrich]] url`).
+
+### `'{shown}': a URL {client} reads cannot hold credentials`
+
+A URL sipnab reads without credentials holds a user name or password before an `@`. These are the URLs a vCon names (an `x5u` certificate chain, a dialog's audio `url`) and the `Location` a transparency service answers with. `{client}` is `sipnab`, and `{shown}` is the URL with its `user:password@` part replaced by `[redacted]`. sipnab sends no request to the URL.
+
+**What to do:** Remove the `user:password@` part from the URL at its source. sipnab sends no credential to these URLs.
+
+**Exit code:** None of its own. The message is the reason given inside the message about that URL: `x5u "<url>": ...`, `url ...` for a dialog's audio, or `not polled: ...` for a `Location`.
 
 ### `` --redact acts on the vCon exporter, which needs the 'vcon' Cargo feature this build does not carry. Rebuild with --features vcon (or --features full); `sipnab --version` lists the features a binary was built with ``
 
@@ -3900,16 +3921,16 @@ sipnab built the vCon for the named Call-ID but could not turn it into JSON. `{w
 
 **Exit code:** 1.
 
-### `'{shown}': the forwarder speaks http:// and https:// only`
+### `'{shown}': {client} speaks http:// and https:// only`
 
-The vCon store URL does not start with `http://` or `https://`, the only two schemes sipnab can send to. The line starts with the setting the URL came from, for example `--vcon-forward-url` or `[vcon_fetch] url`. `{shown}` is the URL as written, with any `user:password@` part replaced by `[redacted]`.
+The URL does not start with `http://` or `https://`, the only two schemes sipnab can send to. The line starts with the setting the URL came from, for example `--vcon-forward-url` or `[vcon_fetch] url`. `{shown}` is the URL as written, with any `user:password@` part replaced by `[redacted]`. `{client}` names the part of sipnab that reads the URL: `the forwarder`, `the fetcher`, `the enricher`, or `sipnab` for a URL named inside a vCon.
 
 **What to do:** Write the URL with `http://` or `https://` in front, for example `https://store.example.com/v1/vcons`.
 
 **Exit code:**
 
-- 2 when the URL came from a flag (`--vcon-forward-url`, `--vcon-forward-replace-url` or `--vcon-fetch-url`);
-- 1 when it came from the config file (`[vcon_forward] url`, `[vcon_forward] replace_url` or `[vcon_fetch] url`).
+- 2 when the URL came from a flag (`--vcon-forward-url`, `--vcon-forward-replace-url`, `--vcon-forward-scitt-url` or `--vcon-fetch-url`);
+- 1 when it came from the config file (`[vcon_forward] url`, `[vcon_forward] replace_url`, `[vcon_forward] scitt_url`, `[vcon_fetch] url` or `[[vcon.enrich]] url`).
 
 ### `'{url}': the {} kind reads at a URL template; write {{uuid}} where the uuid goes`
 
@@ -4934,7 +4955,7 @@ Continues the NOT DECODED notice. Those frames are in none of the totals printed
 You gave security detection flags on a run that uses the parallel offline reader. That reader builds no detectors.
 
 - sipnab picks that mode when `--cores` is above 1 with `-I`, and without multi-device capture.
-- `{flags}` lists the detection settings that the run asked for. They come from `--kill-scanner`, `-K/--kill-target`, `--fraud-detect`, `--digest-leak` and `--reg-flood`, including ones turned on in the configuration file.
+- `{flags}` lists the detection settings that the run asked for. They come from `--kill-scanner`, `-K/--kill-target`, `--fraud-detect`, `--digest-leak`, `--reg-flood` and `--stir-shaken`, including ones turned on in the configuration file.
 - `{path}` is `the --cores parallel offline reader`.
 - `{remedy}` is `drop --cores (the single-core headless read detects)`.
 

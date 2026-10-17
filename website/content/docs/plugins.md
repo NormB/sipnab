@@ -196,8 +196,8 @@ stands behind and which came from third-party code.
 
 ## Known limits
 
-- Findings currently reach `--json-dialogs` only. The other surfaces render the
-  shape but are not yet wired to it.
+- Findings reach `--json-dialogs` only. The report, REST, MCP and the TUI do
+  not show them.
 - One hook point: post-dialog analysis.
   - There is deliberately no packet-level hook.
   - Handing every packet to an interpreter would undo the capture path's

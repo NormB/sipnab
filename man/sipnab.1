@@ -1,7 +1,7 @@
 .\" sipnab.1 -- man page for sipnab
 .\" Copyright 2024-2026 Norm Brandinger
 .\" License: MIT OR Apache-2.0
-.TH SIPNAB 1 "2026-10-13" "sipnab 0.5.224" "User Commands"
+.TH SIPNAB 1 "2026-10-13" "sipnab 0.5.225" "User Commands"
 .SH NAME
 sipnab \- SIP & RTP capture, analysis, and security tool
 .SH SYNOPSIS
@@ -18,6 +18,10 @@ sipnab \- SIP & RTP capture, analysis, and security tool
 .RB [ \-\-problems ]
 .RB [ \-\-json ]
 .RI [ "bpf filter" ]
+.br
+.B sipnab g729
+.RB { install | status }
+.RI [ options ]
 .SH DESCRIPTION
 .B sipnab
 captures and analyzes SIP signaling and RTP media traffic. It unifies the
@@ -92,7 +96,7 @@ Write captured packets to a pcap file.
 Kernel capture buffer size in MiB (default 64). The ring libpcap fills and sipnab drains: raise it on busy links, lower it on small hosts or when capturing many interfaces at once (the cost is per device). See \fBdocs/tuning\-capture.md\fR. Accepts 1 and up.
 .TP
 \fB\-\-buffer\-budget\fR \fIMIB\fR
-Memory budget in MiB for the in\-flight packet queue between capture and processing (default 64). The queue grows under load up to this budget and shrinks when idle; overrides \fB[capture] buffer_budget_mb\fR.
+Size, in MiB, of the in\-flight packet queue between capture and processing (default 64). sipnab converts it to a packet count at an assumed 2048 bytes per packet, kept between 10000 and 5000000 packets; a queued packet can be as large as the snapshot length. Overrides \fB[capture] buffer_budget_mb\fR.
 .TP
 \fB\-\-snaplen\fR \fIBYTES\fR
 Snapshot length for packet capture (bytes). Accepts 1 and up.
@@ -377,7 +381,7 @@ Annotate the transport tag with the IANA IP protocol number, e.g. \fBUDP(17)\fR 
 Flush output after each line (useful for piping).
 .TP
 \fB\-\-color\fR \fIWHEN\fR
-Color output mode.
+Color output mode (default \fBauto\fR).
 Values: \fBauto\fR, \fBalways\fR, \fBnever\fR.
 .TP
 \fB\-\-payload\-limit\fR \fIBYTES\fR
@@ -414,7 +418,7 @@ Generate a tshark\-compatible display filter string.
 Output in fail2ban\-compatible format for SIP security events.
 .TP
 \fB\-\-group\-by\fR \fIFIELD\fR
-Group batch output so messages sharing a field value are emitted together: one of \fBcall\-id\fR, \fBfrom\fR, \fBto\fR, \fBmethod\fR, \fBsrc\fR, \fBdst\fR. Messages are reordered, not reformatted, so \fB\-\-json\fR output stays one valid object per line. Requires \fB\-N\fR/\fB\-\-no\-tui\fR, and buffers until the capture ends (bounded \(em see \fBoutput::group\fR).
+Group batch output so messages sharing a field value are emitted together: one of \fBcall\-id\fR, \fBfrom\fR, \fBto\fR, \fBmethod\fR, \fBsrc\fR, \fBdst\fR. Messages are reordered, not reformatted, so \fB\-\-json\fR output stays one valid object per line. Requires \fB\-N\fR/\fB\-\-no\-tui\fR, and buffers until the capture ends, within \fB\-\-max\-groups\fR and \fB\-\-max\-grouped\-messages\fR.
 .TP
 \fB\-\-max\-groups\fR \fIN\fR
 Distinct \fB\-\-group\-by\fR keys one run may retain (default 100000, the same figure \fB\-l\fR/\fB\-\-limit\fR ships). Config: \fB[limits] max_groups\fR.
@@ -507,7 +511,7 @@ Values: \fBoff\fR, \fBlog\fR, \fBenforce\fR.
 Add a User\-Agent pattern to the scanner detector.
 .TP
 \fB\-\-kill\-response\fR \fICODE\fR
-SIP response code to use in scanner kill reports.
+SIP response code to use in scanner kill reports (default 200; 100\-699).
 .TP
 \fB\-K\fR, \fB\-\-kill\-target\fR \fIADDR[:PORT\-RANGE]\fR
 Targeted scanner kill: send the kill response to any SIP request whose source matches ADDR and an optional port range, e.g. \fB10.0.0.1:5060\-5090\fR or \fB[::1]:5060\fR, regardless of UA/behavioral detection. Repeatable. Spawns the kill worker on its own; \fB\-\-kill\-scanner\fR is not required.
@@ -718,7 +722,7 @@ Let REST clients read a vCon from the operator's \fB[vcon_fetch]\fR store by uui
 Directory of capture files \fBGET /v1/captures/compare\fR may diff.
 .TP
 \fB\-\-api\-accept\-archive\-passwords\fR
-Accept the \fBSipnab\-Archive\-Password\fR request header from a client that is not on this host. sipnab serves plain HTTP, so a password from a remote client crosses the network in the clear unless a TLS proxy in front terminates the connection: that is your job when you pass this. Without it, only a loopback client (a local tool, or a proxy on this host) may send one, and a remote one is answered 403.
+Accept the \fBSipnab\-Archive\-Password\fR request header from a client that is not on this host. Without \fB\-\-api\-tls\-cert\fR sipnab serves plain HTTP, so a password from a remote client crosses the network in the clear unless a TLS proxy in front terminates the connection: that is your job when you pass this. Without it, only a loopback client (a local tool, or a proxy on this host) may send one, and a remote one is answered 403, also over HTTPS.
 .TP
 \fB\-\-api\-rate\-limit\-per\-peer\fR \fIN\fR
 REST requests one client IP may make per second (\fB0\fR = unlimited, default 100). Config: \fB[limits] api_rate_limit_per_peer\fR.
@@ -736,7 +740,7 @@ Default: \fBstdio\fR.
 Bind address for the HTTP MCP transport (default 127.0.0.1:8731).
 .TP
 \fB\-\-mcp\-token\fR \fITOKEN\fR
-Bearer token for HTTP MCP transport. Reads from env SIPNAB_MCP_TOKEN when not given via the flag; required for non\-loopback binds.
+Bearer token for HTTP MCP transport. Reads from env SIPNAB_MCP_TOKEN when not given via the flag. A non\-loopback bind needs this or a signing key (\-\-mcp\-signing\-key).
 .TP
 \fB\-\-mcp\-token\-file\fR \fIFILE\fR
 Read the MCP bearer token from a file (preferred over env in systemd units).
@@ -776,16 +780,16 @@ Send each tool's output schema on \fBtools/list\fR (\fB[mcp] output_schemas\fR, 
 Values: \fBtrue\fR, \fBfalse\fR.
 .TP
 \fB\-\-mcp\-max\-rows\fR \fIN\fR
-Maximum rows in one list\-style MCP response.
+Maximum rows in one list\-style MCP response (default 1000).
 .TP
 \fB\-\-mcp\-max\-body\-bytes\fR \fIN\fR
-Maximum bytes of SIP body or matched snippet in one MCP response.
+Maximum bytes of SIP body or matched snippet in one MCP response (default 4096).
 .TP
 \fB\-\-mcp\-max\-response\-bytes\fR \fIN\fR
-Maximum bytes of ONE whole paged MCP response.
+Maximum bytes of ONE whole paged MCP response (default 1048576).
 .TP
 \fB\-\-mcp\-max\-wait\-seconds\fR \fIN\fR
-Longest wait ONE \fBawait_condition\fR MCP call may take, in seconds.
+Longest wait ONE \fBawait_condition\fR MCP call may take, in seconds (default 60).
 .TP
 \fB\-\-mcp\-max\-findings\fR \fIN\fR
 Findings \fBsave_findings\fR accepts before refusing further writes (default 1000). Config: \fB[limits] mcp_max_findings\fR.
@@ -871,28 +875,28 @@ Milliseconds after the \fB200 OK\fR that media may start before it is reported a
 Share of a call's packets, as a fraction of 1, that must be comfort noise before comfort noise is accepted as the explanation for one\-directional media. Default 0.3. Config: \fB[diagnosis] cn_suppression_ratio\fR.
 .TP
 \fB\-\-jitter\-warn\-ms\fR \fIMS\fR
-Jitter, in milliseconds, at or above which the color column turns yellow. Config: \fB[quality] jitter_warn_ms\fR.
+Jitter, in milliseconds, at or above which the color column turns yellow (default 30.0). Config: \fB[quality] jitter_warn_ms\fR.
 .TP
 \fB\-\-jitter\-bad\-ms\fR \fIMS\fR
-Jitter, in milliseconds, at or above which the color column turns red. Config: \fB[quality] jitter_bad_ms\fR.
+Jitter, in milliseconds, at or above which the color column turns red (default 50.0). Config: \fB[quality] jitter_bad_ms\fR.
 .TP
 \fB\-\-loss\-warn\-pct\fR \fIPCT\fR
-Packet loss, in percent, at or above which the color column turns yellow. Config: \fB[quality] loss_warn_pct\fR.
+Packet loss, in percent, at or above which the color column turns yellow (default 1.0). Config: \fB[quality] loss_warn_pct\fR.
 .TP
 \fB\-\-loss\-bad\-pct\fR \fIPCT\fR
-Packet loss, in percent, at or above which the color column turns red. Config: \fB[quality] loss_bad_pct\fR.
+Packet loss, in percent, at or above which the color column turns red (default 5.0). Config: \fB[quality] loss_bad_pct\fR.
 .TP
 \fB\-\-mos\-warn\fR \fIMOS\fR
-MOS below which the color column turns yellow. MOS bands run downward, so this must sit at or above \fB\-\-mos\-bad\fR. Config: \fB[quality] mos_warn\fR.
+MOS below which the color column turns yellow (default 4.0). MOS bands run downward, so this must sit at or above \fB\-\-mos\-bad\fR. Config: \fB[quality] mos_warn\fR.
 .TP
 \fB\-\-mos\-bad\fR \fIMOS\fR
-MOS below which the color column turns red. Config: \fB[quality] mos_bad\fR.
+MOS below which the color column turns red (default 3.0). Config: \fB[quality] mos_bad\fR.
 .TP
 \fB\-\-rtt\-warn\-ms\fR \fIMS\fR
-Round trip, in milliseconds, at or above which the color column turns yellow. Config: \fB[quality] rtt_warn_ms\fR.
+Round trip, in milliseconds, at or above which the color column turns yellow (default 300.0). Config: \fB[quality] rtt_warn_ms\fR.
 .TP
 \fB\-\-rtt\-bad\-ms\fR \fIMS\fR
-Round trip, in milliseconds, at or above which the color column turns red. Config: \fB[quality] rtt_bad_ms\fR.
+Round trip, in milliseconds, at or above which the color column turns red (default 800.0). Config: \fB[quality] rtt_bad_ms\fR.
 .SS HEP
 .TP
 \fB\-L\fR, \fB\-\-hep\-listen\fR \fIADDR\fR
@@ -1234,6 +1238,15 @@ Print help (see more with '\-\-help').
 \fB\-V\fR, \fB\-\-version\fR
 Print version.
 .\" END GENERATED OPTIONS
+.SH COMMANDS
+.TP
+\fBsipnab g729 install\fR [\fB\-\-yes\fR] [\fB\-\-from\fR \fIPATH\fR] [\fB\-\-g729\-tables\fR \fIPATH\fR] [\fB\-f\fR \fIFILE\fR | \fB\-\-no\-config\fR]
+Download the ITU\-T G.729 software package, check its sha256, build the G.729 codebook table file from it and write the file. It asks before it installs; \fB\-\-yes\fR answers yes. \fB\-\-from\fR \fIPATH\fR installs from the package zip, a directory extracted from it, or the table file of another host, without opening a connection.
+.TP
+\fBsipnab g729 status\fR [\fB\-\-g729\-tables\fR \fIPATH\fR] [\fB\-f\fR \fIFILE\fR | \fB\-\-no\-config\fR]
+Print whether the table file holds the tables, the path it read and the hash of the values. Exit 0 when the file holds the tables, 1 when it does not.
+.PP
+For both commands, \fB\-\-g729\-tables\fR names the table file, as for a capture run; without it, \fB[g729] tables\fR, else \fBg729\-tables.bin\fR in the directory of the user config file. \fB\-f\fR and \fB\-\-no\-config\fR choose the config file as for a run. See docs/g729.md.
 .SH TUI KEYBINDINGS
 The interactive TUI supports the terminal viewer-compatible navigation:
 .SS Call List

@@ -490,10 +490,23 @@ fn hand_written(man: &str) -> String {
 fn every_flag_the_page_names_exists() -> Result<(), TestError> {
     let mut cmd = sipnab::cli::Cli::command();
     cmd.build();
-    let real: BTreeSet<String> = cmd
-        .get_arguments()
-        .filter_map(|a| a.get_long().map(str::to_string))
-        .collect();
+    // The flags of `sipnab g729` count too: the COMMANDS section names
+    // `sipnab g729 install --yes`, which only that command takes. It has its
+    // own parser, `G729Cli`, so `Cli::command()` does not list it.
+    fn longs(cmd: &clap::Command, out: &mut BTreeSet<String>) {
+        out.extend(
+            cmd.get_arguments()
+                .filter_map(|a| a.get_long().map(str::to_string)),
+        );
+        for sub in cmd.get_subcommands() {
+            longs(sub, out);
+        }
+    }
+    let mut real = BTreeSet::new();
+    longs(&cmd, &mut real);
+    let mut g729 = sipnab::cli::g729_args::G729Cli::command();
+    g729.build();
+    longs(&g729, &mut real);
     let re = regex::Regex::new(r"--([a-z0-9][a-z0-9-]*)")?;
     let man = hand_written(&man_page()?);
     assert!(

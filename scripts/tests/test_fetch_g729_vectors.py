@@ -186,3 +186,56 @@ def test_refuses_a_g7291_package_with_the_wrong_hash(tmp_path):
     assert fetch.G7291_PACKAGE_SHA256 in out.stderr
     assert not (dest / "g7291").exists()
     assert g729.exists() and g7291.exists()
+
+
+class _Flaky:
+    """An opener that fails with the given HTTP codes, then serves BODY."""
+
+    def __init__(self, codes, body=b"package bytes"):
+        self.codes = list(codes)
+        self.body = body
+        self.calls = 0
+
+    def __call__(self, request, timeout=None):
+        import io
+        import urllib.error
+
+        self.calls += 1
+        if self.codes:
+            code = self.codes.pop(0)
+            raise urllib.error.HTTPError(request.full_url, code, "fake", {}, None)
+        return io.BytesIO(self.body)
+
+
+def test_download_retries_a_transient_server_error_then_succeeds(tmp_path):
+    waits = []
+    opener = _Flaky([503, 500])
+    path = fetch.download(tmp_path, "https://example.invalid/p.zip", "p.part",
+                          opener=opener, sleep=waits.append)
+    assert path.read_bytes() == b"package bytes"
+    assert opener.calls == 3
+    assert waits == list(fetch.RETRY_WAITS[:2])
+
+
+def test_download_gives_up_after_the_last_attempt(tmp_path):
+    import urllib.error
+
+    waits = []
+    opener = _Flaky([503] * 50)
+    try:
+        fetch.download(tmp_path, "https://example.invalid/p.zip", "p.part",
+                       opener=opener, sleep=waits.append)
+    except urllib.error.HTTPError as err:
+        assert err.code == 503
+    else:
+        raise AssertionError("a server that never answers must fail the fetch")
+    assert opener.calls == len(fetch.RETRY_WAITS) + 1
+    assert waits == list(fetch.RETRY_WAITS)
+
+
+def test_download_retries_a_404_the_itu_server_returns_transiently(tmp_path):
+    opener = _Flaky([404])
+    path = fetch.download(tmp_path, "https://example.invalid/p.zip", "p.part",
+                          opener=opener, sleep=lambda _s: None)
+    assert path.read_bytes() == b"package bytes"
+    assert opener.calls == 2

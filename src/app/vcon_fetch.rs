@@ -327,7 +327,7 @@ impl FetchPlan {
             )
         })?;
         let url_origin = Origin::of(args.vcon_fetch_url.is_some());
-        let url = Endpoint::parse(url_text)
+        let url = Endpoint::parse(url_text, crate::app::https_client::UrlUse::FETCHER)
             .and_then(|url| read_url(&url, kind))
             .map_err(|e| (url_origin, format!("{url_from} {e}")))?;
         let auth = match (&args.vcon_fetch_auth_file, &keys.auth_file) {
@@ -1648,6 +1648,48 @@ mod tests {
         Ok(())
     }
 
+    /// A fetch URL the URL parser refuses is refused in the fetcher's terms.
+    /// On 0.5.224 a credential in `--vcon-fetch-url` was refused with "put
+    /// credentials in --vcon-forward-auth-file", the forwarder's flag, and an
+    /// `ftp://` URL with "the forwarder speaks http:// and https:// only".
+    #[test]
+    fn a_refused_fetch_url_names_the_fetcher_and_its_credential_flag() -> TestResult {
+        let from_flag: &[&str] = &[
+            "--vcon-fetch-url=https://user:pw@store.example/{uuid}",
+            "--vcon-fetch-auth-file=/a",
+        ];
+        for (extra, key) in [
+            (from_flag, ""),
+            (
+                &["--vcon-fetch-auth-file=/a"][..],
+                "url = \"https://user:pw@store.example/{uuid}\"",
+            ),
+        ] {
+            let e = FetchPlan::resolve(&flags(extra)?, &keys(key)?)
+                .err()
+                .ok_or("a URL holding credentials was accepted")?;
+            assert!(
+                e.contains("--vcon-fetch-auth-file") && !e.contains("--vcon-forward"),
+                "the fetcher's credential flag, not the forwarder's: {e}"
+            );
+            assert!(!e.contains("pw@"), "the password must not be quoted: {e}");
+        }
+        let e = FetchPlan::resolve(
+            &flags(&[
+                "--vcon-fetch-url=ftp://store.example/{uuid}",
+                "--vcon-fetch-auth-file=/a",
+            ])?,
+            &keys("")?,
+        )
+        .err()
+        .ok_or("an ftp:// URL was accepted")?;
+        assert!(
+            e.contains("fetcher") && !e.contains("forwarder"),
+            "the scheme refusal names the fetcher: {e}"
+        );
+        Ok(())
+    }
+
     /// No URL and no credential from any source are refused naming both
     /// sources; a uuid a URL path may not carry is refused quoting it.
     #[test]
@@ -1731,7 +1773,11 @@ mod tests {
     #[test]
     fn each_kind_supplies_its_read_path() -> TestResult {
         let at = |url: &str, kind: StoreKind| -> Result<String, String> {
-            read_url(&Endpoint::parse(url)?, kind).map(|e| e.to_string())
+            read_url(
+                &Endpoint::parse(url, crate::app::https_client::UrlUse::FETCHER)?,
+                kind,
+            )
+            .map(|e| e.to_string())
         };
         assert_eq!(
             at("https://api.vcon.store", StoreKind::VconStore)?,
@@ -2201,7 +2247,10 @@ pub(crate) mod stub_store {
             None
         };
         let settings = super::FetchSettings {
-            url: super::read_url(&Endpoint::parse(&stub.url)?, StoreKind::Conserver)?,
+            url: super::read_url(
+                &Endpoint::parse(&stub.url, crate::app::https_client::UrlUse::FETCHER)?,
+                StoreKind::Conserver,
+            )?,
             kind: StoreKind::Conserver,
             auth: AuthHeader::read_file_for(&auth, super::AUTH_KEY, StoreKind::Conserver)?,
             ca: None,
