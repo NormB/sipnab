@@ -76,6 +76,11 @@ entry that carries them.
 
 ### Internal
 
+- **`--cores` workers contend less over shared counters.**
+  - Each worker added every packet it processed to one process-wide counter, and four workers adding to one atomic kept moving its cache line between cores. On the 535,000-packet benchmark corpus at `--cores 4` that addition was 8% of the profile. Each worker now adds its total once, when it finishes. Nothing reads the counter while a `--cores` read runs.
+  - Classifying a packet cloned its payload, an atomic increment and decrement on the shared read buffer for every packet, RTP included. It now borrows it.
+  - Measured on an idle host, 20 interleaved pairs against 0.5.225: 3.24M against 3.17M packets per second (median), faster in 16 of 20 pairs, and 2.8% less CPU time. `--report` and `--json-dialogs` are byte-identical to 0.5.225 at `--cores 1` and `--cores 4`, on that corpus and on two sample captures.
+
 - **Two timing tests give the slow case the time its schedule needs.**
   - The `[[vcon.enrich]]` failure tests gave every case a one-second `timeout_secs`. On a loaded host the failing command, the HTTP 500 and the malformed answer could take longer than a second, and sipnab correctly recorded a timeout where the test expected `failed` or `malformed`. Those cases now get 120 seconds; the hanging case keeps one second.
   - `polling_ends_at_the_timeout_and_leaves_the_receipt_pending` expects three status polls with no `Retry-After`. The backoff can wait up to 1.75 seconds before the third, which left a quarter of a second of a two-second budget for the requests themselves, and a macOS CI runner polled twice. That case now has four seconds.

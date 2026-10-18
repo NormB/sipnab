@@ -163,6 +163,48 @@ pub fn captured_packets() -> u64 {
 thread_local! {
     /// Whether this thread is inside [`untallied`].
     static UNTALLIED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    /// The counter this thread is inside [`deferred`] for, by address, and
+    /// what [`tally`] has collected for it so far.
+    static DEFERRED: std::cell::Cell<Option<(usize, u64)>> = const { std::cell::Cell::new(None) };
+}
+
+/// Run `f` with what [`tally`] adds to `counter` collected on this thread and
+/// added to it once, when `f` returns or unwinds.
+///
+/// A `--cores` worker counts every packet it processes into
+/// [`captured_packets`]. Four workers adding to one atomic per packet keep
+/// moving its cache line between cores; on the 535,000-packet benchmark
+/// corpus that addition was 8% of the profile at `--cores 4`. Nothing reads
+/// the counter while a `--cores` read runs (it serves no metrics, REST or
+/// MCP), so the total arriving at the end of each worker changes no answer.
+///
+/// Thread-local, so another thread's counts land as usual. A scope already
+/// open on this thread is left in charge, and `f` runs inside it.
+#[cfg(all(not(target_arch = "wasm32"), feature = "native"))]
+pub(crate) fn deferred<R>(counter: &AtomicU64, f: impl FnOnce() -> R) -> R {
+    /// Adds what was collected, and closes the scope, on every path out,
+    /// including a panic.
+    struct Land<'a>(&'a AtomicU64);
+    impl Drop for Land<'_> {
+        fn drop(&mut self) {
+            if let Some((_, n)) = DEFERRED.with(std::cell::Cell::take) {
+                self.0.fetch_add(n, Ordering::Relaxed);
+            }
+        }
+    }
+    if DEFERRED.with(std::cell::Cell::get).is_some() {
+        return f();
+    }
+    DEFERRED.with(|d| d.set(Some((std::ptr::from_ref(counter) as usize, 0))));
+    let _land = Land(counter);
+    f()
+}
+
+/// Packets processed on this thread inside `f` reach [`captured_packets`] once,
+/// when `f` ends: see [`deferred`].
+#[cfg(all(not(target_arch = "wasm32"), feature = "native"))]
+pub(crate) fn captured_packets_deferred<R>(f: impl FnOnce() -> R) -> R {
+    deferred(&CAPTURED_PACKETS, f)
 }
 
 /// Run `f` with this thread's process-wide capture counters held still.
@@ -191,10 +233,22 @@ pub(crate) fn untallied<R>(f: impl FnOnce() -> R) -> R {
 }
 
 /// Add `n` to a process-wide capture counter, unless this thread is inside
-/// [`untallied`].
+/// [`untallied`]. Inside [`deferred`] for this counter, the addition waits for
+/// the scope to end.
 #[inline]
 pub(crate) fn tally(counter: &AtomicU64, n: u64) {
-    if tallying() {
+    if !tallying() {
+        return;
+    }
+    let at = std::ptr::from_ref(counter) as usize;
+    let held = DEFERRED.with(|d| match d.get() {
+        Some((key, pending)) if key == at => {
+            d.set(Some((key, pending + n)));
+            true
+        }
+        _ => false,
+    });
+    if !held {
         counter.fetch_add(n, Ordering::Relaxed);
     }
 }
@@ -2788,6 +2842,71 @@ mod tests {
                 tally(&counter, 1);
             });
             assert_eq!(counter.load(Ordering::Relaxed), 3, "still suppressed");
+            Ok(())
+        }
+
+        /// Inside [`deferred`], what [`tally`] adds to that counter collects on
+        /// this thread and lands once, when the scope ends. Another counter
+        /// moves as usual, and [`untallied`] still suppresses.
+        #[cfg(not(target_arch = "wasm32"))]
+        #[test]
+        fn a_deferred_counter_moves_once_when_the_scope_ends() -> Result<(), TestError> {
+            let counter = AtomicU64::new(0);
+            let other = AtomicU64::new(0);
+            let inside = deferred(&counter, || {
+                tally(&counter, 2);
+                tally(&counter, 3);
+                tally(&other, 1);
+                untallied(|| tally(&counter, 4));
+                (
+                    counter.load(Ordering::Relaxed),
+                    other.load(Ordering::Relaxed),
+                )
+            });
+            assert_eq!(inside, (0, 1), "held back inside; another counter moves");
+            assert_eq!(
+                counter.load(Ordering::Relaxed),
+                5,
+                "landed once, untallied excluded"
+            );
+            tally(&counter, 1);
+            assert_eq!(counter.load(Ordering::Relaxed), 6, "counted directly after");
+            Ok(())
+        }
+
+        /// A scope opened inside another leaves the outer one in charge: the
+        /// inner counter is counted directly and the outer count still lands.
+        #[cfg(not(target_arch = "wasm32"))]
+        #[test]
+        fn a_nested_scope_does_not_lose_the_outer_count() -> Result<(), TestError> {
+            let outer = AtomicU64::new(0);
+            let inner = AtomicU64::new(0);
+            deferred(&outer, || {
+                tally(&outer, 1);
+                deferred(&inner, || tally(&inner, 2));
+                tally(&outer, 1);
+            });
+            assert_eq!(inner.load(Ordering::Relaxed), 2);
+            assert_eq!(outer.load(Ordering::Relaxed), 2);
+            Ok(())
+        }
+
+        /// A scope ended by a panic still lands what it collected, so a worker
+        /// that dies mid-read does not lose the packets it counted.
+        #[cfg(not(target_arch = "wasm32"))]
+        #[test]
+        fn a_deferred_count_lands_when_the_scope_panics() -> Result<(), TestError> {
+            let counter = AtomicU64::new(0);
+            let unwound = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                deferred(&counter, || {
+                    tally(&counter, 7);
+                    std::panic::resume_unwind(Box::new("worker died"))
+                })
+            }));
+            assert!(unwound.is_err());
+            assert_eq!(counter.load(Ordering::Relaxed), 7);
+            tally(&counter, 1);
+            assert_eq!(counter.load(Ordering::Relaxed), 8, "the scope was closed");
             Ok(())
         }
 
