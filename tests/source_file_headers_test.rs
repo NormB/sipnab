@@ -418,6 +418,10 @@ fn the_fixer_output_passes_the_gate_and_is_idempotent() -> Result<(), TestError>
             "g.html",
             "{% extends \"base.html\" %}\n{% block body %}{% endblock %}\n",
         ),
+        (
+            "h.html",
+            "{% extends \"base.html\" %}\n{% import \"macros.html\" as macros %}\n\n{% block body %}{% endblock %}\n",
+        ),
         ("hook", "#!/bin/bash\ntrue\n"),
         ("website/static/js/mermaid.min.js", "vendored();\n"),
         ("notes.md", "# Notes\n"),
@@ -491,6 +495,15 @@ fn the_fixer_output_passes_the_gate_and_is_idempotent() -> Result<(), TestError>
     assert!(
         tera.starts_with("{% extends \"base.html\" %}\n"),
         "the template's extends must stay first:\n{tera}"
+    );
+    // Tera reads `{% import %}` only directly after `{% extends %}`, before
+    // any other content, a comment included: a header between them fails the
+    // site build ("unexpected tag").
+    let imports = std::fs::read_to_string(root.join("h.html"))?;
+    assert!(
+        imports
+            .starts_with("{% extends \"base.html\" %}\n{% import \"macros.html\" as macros %}\n"),
+        "the template's extends and imports must stay first:\n{imports}"
     );
     let sh = std::fs::read_to_string(root.join("d.sh"))?;
     assert!(

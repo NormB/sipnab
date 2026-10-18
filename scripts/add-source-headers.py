@@ -17,7 +17,8 @@ What an insert preserves, because a careless one breaks the file:
   1 or 2 (PEP 263 ignores it anywhere else);
 - an HTML `<!DOCTYPE>` stays first, so the rendered page still starts with it,
   and so does a Tera template's `{% extends %}` (`site_journey_test` holds every
-  page template to opening with it);
+  page template to opening with it) with the `{% import %}` lines under it,
+  which Tera reads only before any other content;
 - the file's mode: the file is rewritten in place, never replaced, so an
   executable script stays executable;
 - an existing, correct license line: the copyright line is added beside it
@@ -150,10 +151,14 @@ def fix(config: Config, rule: Rule, text: str) -> tuple[str, str | None]:
         for i in range(keep, min(2, len(lines))):
             if CODING.match(lines[i]):
                 keep = i + 1
-    if rule.value == ".html" and lines and (
-        lines[0].lower().startswith("<!doctype") or lines[0].startswith("{% extends")
-    ):
+    if rule.value == ".html" and lines and lines[0].lower().startswith("<!doctype"):
         keep = 1
+    # Tera reads `{% import %}` only directly after `{% extends %}`, before any
+    # other content, a comment included, so the header goes under the run.
+    if rule.value == ".html" and lines and lines[0].startswith("{% extends"):
+        keep = 1
+        while keep < len(lines) and lines[keep].startswith("{% import"):
+            keep += 1
     header = [comment(rule, license_), comment(rule, copyright_)]
     rest = lines[keep:]
     if rest and rest[0].strip():
