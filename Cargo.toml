@@ -263,7 +263,7 @@ unicode-normalization = { version = "0.1", optional = true }
 # features off, so no encoder, bzip2 or PPMd: LZMA and LZMA2 decode plus the
 # AES-256 key derivation, which the crate caps at 7-Zip's own NumCyclesPower
 # of 24 so a crafted archive cannot make one attempt take hours.
-sevenz-rust2 = { version = "0.23", default-features = false, features = ["aes256"], optional = true }
+sevenz-rust2 = { version = "0.24", default-features = false, features = ["aes256"], optional = true }
 
 # Phase 8.1: MCP server (Model Context Protocol)
 rmcp = { version = "3", default-features = false, features = ["server", "transport-io", "macros", "schemars"], optional = true }
@@ -302,7 +302,7 @@ mimalloc = { version = "0.1", default-features = false }
 wat = "1"
 # Writes 7-Zip fixtures, AES-encrypted ones included, inside the tests that
 # read them: no encrypted blob is committed. The encoder is DEV ONLY.
-sevenz-rust2 = { version = "0.23", default-features = false, features = ["aes256", "compress"] }
+sevenz-rust2 = { version = "0.24", default-features = false, features = ["aes256", "compress"] }
 # Generates the private CA and the end-entity server certificate the HEP TLS
 # tests hand to rustls. DEV ONLY -- sipnab issues no certificates. It replaces
 # shelling out to `openssl`, whose x509 subcommands differ between the OpenSSL

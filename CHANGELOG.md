@@ -18,6 +18,16 @@ entry that carries them.
   parallel reader prints no per-message lines. Add `--report` (or another
   view), or drop `--cores`. A `[[vcon.rule]]` in the config counts as a view.
 
+### Fixed
+
+- **A hostile 7z archive no longer ends the run.**
+  - A 7z header that declares blocks and no file information made the 7z reader index an empty table and panic. A release build aborts on a panic, so one such archive given to `-I` stopped sipnab.
+  - sipnab now checks the table before decoding and refuses the archive, as it refuses any unreadable one.
+
+### Dependencies
+
+- `sevenz-rust2` 0.23 → 0.24 (main crate and fuzz targets), `rodio` 0.22 → 0.23, and patch releases of `smallvec`, `serde_json`, `sha2`, `tokio`, `hyper`, `hyper-util`, `futures-core`, `wat` and `proptest`; six GitHub Actions bumped. From Dependabot #515 to #520.
+
 ## [0.5.225] - 2026-10-17
 
 ### Security

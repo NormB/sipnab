@@ -177,7 +177,7 @@ Files copied into the repository unmodified from another project's release. None
 | fs_extra | 1.3.0 | MIT |
 | futures | 0.3.32 | MIT OR Apache-2.0 |
 | futures-channel | 0.3.32 | MIT OR Apache-2.0 |
-| futures-core | 0.3.32 | MIT OR Apache-2.0 |
+| futures-core | 0.3.34 | MIT OR Apache-2.0 |
 | futures-executor | 0.3.32 | MIT OR Apache-2.0 |
 | futures-io | 0.3.32 | MIT OR Apache-2.0 |
 | futures-macro | 0.3.32 | MIT OR Apache-2.0 |
@@ -205,8 +205,8 @@ Files copied into the repository unmodified from another project's release. None
 | httparse | 1.10.1 | MIT OR Apache-2.0 |
 | httpdate | 1.0.3 | MIT OR Apache-2.0 |
 | hybrid-array | 0.4.12 | MIT OR Apache-2.0 |
-| hyper | 1.9.0 | MIT |
-| hyper-util | 0.1.20 | MIT |
+| hyper | 1.12.0 | MIT |
+| hyper-util | 0.1.21 | MIT |
 | iana-time-zone | 0.1.65 | MIT OR Apache-2.0 |
 | iana-time-zone-haiku | 0.1.2 | MIT OR Apache-2.0 |
 | ident_case | 1.0.1 | MIT/Apache-2.0 |
@@ -237,7 +237,7 @@ Files copied into the repository unmodified from another project's release. None
 | lock_api | 0.4.14 | MIT OR Apache-2.0 |
 | log | 0.4.34 | MIT OR Apache-2.0 |
 | lru | 0.18.2 | MIT |
-| lzma-rust2 | 0.21.0 | Apache-2.0 |
+| lzma-rust2 | 0.22.0 | Apache-2.0 |
 | mac_address | 1.1.8 | MIT OR Apache-2.0 |
 | matchers | 0.2.0 | MIT |
 | matchit | 0.8.4 | MIT AND BSD-3-Clause |
@@ -341,15 +341,15 @@ Files copied into the repository unmodified from another project's release. None
 | serde_core | 1.0.229 | MIT OR Apache-2.0 |
 | serde_derive | 1.0.229 | MIT OR Apache-2.0 |
 | serde_derive_internals | 0.29.1 | MIT OR Apache-2.0 |
-| serde_json | 1.0.151 | MIT OR Apache-2.0 |
+| serde_json | 1.0.154 | MIT OR Apache-2.0 |
 | serde_path_to_error | 0.1.20 | MIT OR Apache-2.0 |
 | serde_spanned | 1.1.1 | MIT OR Apache-2.0 |
 | serde_urlencoded | 0.7.1 | MIT/Apache-2.0 |
-| sevenz-rust2 | 0.23.0 | Apache-2.0 |
+| sevenz-rust2 | 0.24.0 | Apache-2.0 |
 | sha1 | 0.10.7 | MIT OR Apache-2.0 |
 | sha1 | 0.11.0 | MIT OR Apache-2.0 |
 | sha2 | 0.10.9 | MIT OR Apache-2.0 |
-| sha2 | 0.11.0 | MIT OR Apache-2.0 |
+| sha2 | 0.11.1 | MIT OR Apache-2.0 |
 | sharded-slab | 0.1.7 | MIT |
 | shlex | 1.3.0 | MIT OR Apache-2.0 |
 | signal-hook | 0.3.18 | Apache-2.0/MIT |
@@ -359,7 +359,7 @@ Files copied into the repository unmodified from another project's release. None
 | simd-adler32 | 0.3.9 | MIT |
 | siphasher | 1.0.2 | MIT/Apache-2.0 |
 | slab | 0.4.12 | MIT |
-| smallvec | 1.16.2 | MIT OR Apache-2.0 |
+| smallvec | 1.16.3 | MIT OR Apache-2.0 |
 | socket2 | 0.6.5 | MIT OR Apache-2.0 |
 | spin | 0.9.9 | MIT |
 | spki | 0.7.3 | Apache-2.0 OR MIT |
@@ -388,7 +388,7 @@ Files copied into the repository unmodified from another project's release. None
 | time-core | 0.1.8 | MIT OR Apache-2.0 |
 | time-macros | 0.2.27 | MIT OR Apache-2.0 |
 | tinyvec | 1.13.3 | Zlib OR Apache-2.0 OR MIT |
-| tokio | 1.53.2 | MIT |
+| tokio | 1.53.3 | MIT |
 | tokio-macros | 2.7.0 | MIT |
 | tokio-rustls | 0.26.6 | MIT OR Apache-2.0 |
 | tokio-stream | 0.1.18 | MIT |
@@ -424,22 +424,22 @@ Files copied into the repository unmodified from another project's release. None
 | version_check | 0.9.5 | MIT/Apache-2.0 |
 | vtparse | 0.6.2 | MIT |
 | walkdir | 2.5.0 | Unlicense/MIT |
-| want | 0.3.1 | MIT |
+| want | 0.3.2 | MIT |
 | wasi | 0.11.1+wasi-snapshot-preview1 | Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT |
 | wasip2 | 1.0.2+wasi-0.2.9 | Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT |
 | wasm-bindgen | 0.2.117 | MIT OR Apache-2.0 |
 | wasm-bindgen-macro | 0.2.117 | MIT OR Apache-2.0 |
 | wasm-bindgen-macro-support | 0.2.117 | MIT OR Apache-2.0 |
 | wasm-bindgen-shared | 0.2.117 | MIT OR Apache-2.0 |
-| wasm-encoder | 0.261.0 | Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT |
+| wasm-encoder | 0.262.0 | Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT |
 | wasmi | 2.0.0 | MIT/Apache-2.0 |
 | wasmi_collections | 2.0.0 | MIT/Apache-2.0 |
 | wasmi_core | 2.0.0 | MIT/Apache-2.0 |
 | wasmi_ir | 2.0.0 | MIT/Apache-2.0 |
 | wasmparser | 0.228.0 | Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT |
-| wasmparser | 0.261.0 | Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT |
-| wast | 261.0.0 | Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT |
-| wat | 1.261.0 | Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT |
+| wasmparser | 0.262.0 | Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT |
+| wast | 262.0.0 | Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT |
+| wat | 1.262.0 | Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT |
 | wezterm-bidi | 0.2.3 | MIT AND Unicode-DFS-2016 |
 | wezterm-blob-leases | 0.1.1 | MIT |
 | wezterm-color-types | 0.3.0 | MIT |

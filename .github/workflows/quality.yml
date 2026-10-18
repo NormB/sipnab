@@ -204,7 +204,7 @@ jobs:
       # tests/ci_cache_policy_test.rs keeps it out.
 
       - name: Install cargo-llvm-cov
-        uses: taiki-e/install-action@f7e5d7c961414b23f5b25b2da9294395d08513ad # v2
+        uses: taiki-e/install-action@1168f6810a3cb30a3514bf5756a3b7f0422c6df8 # v2
         with:
           tool: cargo-llvm-cov
 
@@ -326,7 +326,7 @@ jobs:
       # directory nothing to reuse.
 
       - name: Install cargo-llvm-cov
-        uses: taiki-e/install-action@f7e5d7c961414b23f5b25b2da9294395d08513ad # v2
+        uses: taiki-e/install-action@1168f6810a3cb30a3514bf5756a3b7f0422c6df8 # v2
         with:
           tool: cargo-llvm-cov
 
@@ -421,7 +421,7 @@ jobs:
             cargo-clippy-sarif-${{ runner.os }}-${{ runner.arch }}-${{ steps.toolchain.outputs.cachekey }}-
 
       - name: Install clippy-sarif tooling
-        uses: taiki-e/install-action@f7e5d7c961414b23f5b25b2da9294395d08513ad # v2
+        uses: taiki-e/install-action@1168f6810a3cb30a3514bf5756a3b7f0422c6df8 # v2
         with:
           tool: clippy-sarif,sarif-fmt
 
@@ -434,7 +434,7 @@ jobs:
         continue-on-error: true
 
       - name: Upload SARIF to Code Scanning
-        uses: github/codeql-action/upload-sarif@2892aa5e19bbd11bc0cff5427e3b750a04d9e3c2 # v4
+        uses: github/codeql-action/upload-sarif@24c54180a607b1449ed407dd24f251e4e9147c8d # v4
         with:
           sarif_file: clippy.sarif
           category: clippy
