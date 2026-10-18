@@ -1029,13 +1029,29 @@ fn a_202_is_polled_until_the_receipt_arrives() -> Result<(), TestError> {
 /// one the waits grow (section 5.1: "exponential backoff with jitter").
 #[test]
 fn polling_ends_at_the_timeout_and_leaves_the_receipt_pending() -> Result<(), TestError> {
-    let budget = Duration::from_secs(2);
     let slack = Duration::from_millis(700);
     let store = store()?;
-    for (case, post_retry, get_retry) in [
-        ("Retry-After: 1 on each 204", "", "Retry-After: 1\r\n"),
-        ("no Retry-After", "", ""),
-        ("Retry-After: 3600 on the 202", "Retry-After: 3600\r\n", ""),
+    // Without a Retry-After the waits double from 250 ms with up to half of
+    // each taken off as jitter: 125-250, 250-500 and 500-1000 ms before the
+    // first three GETs, so the third can start as late as 1.75 s in. Under a
+    // 2 s budget that left a quarter of a second for the POST and three round
+    // trips, and a loaded macOS runner took longer and polled twice. Four
+    // seconds holds the third GET with room; the cases that count on the
+    // budget ending first keep two.
+    for (case, budget, post_retry, get_retry) in [
+        (
+            "Retry-After: 1 on each 204",
+            Duration::from_secs(2),
+            "",
+            "Retry-After: 1\r\n",
+        ),
+        ("no Retry-After", Duration::from_secs(4), "", ""),
+        (
+            "Retry-After: 3600 on the 202",
+            Duration::from_secs(2),
+            "Retry-After: 3600\r\n",
+            "",
+        ),
     ] {
         let scrapi = Fake::start(move |req| {
             if req.method == "POST" {
