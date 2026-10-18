@@ -291,6 +291,18 @@ impl Walker<'_> {
         file.seek(io::SeekFrom::Start(0))
             .map_err(sevenz_rust2::Error::from)?;
         let mut reader = sevenz_rust2::ArchiveReader::new(&mut *file, password.clone())?;
+        // `sevenz-rust2` computes the map from blocks to packed streams only
+        // after it reads the header's file information. A header that declares
+        // blocks and no file information leaves the map empty, and decoding
+        // then indexes it for block 0 and panics, which a release build turns
+        // into an abort. One entry per block is the map the crate computes and
+        // bounds-checks when it gets that far.
+        let archive = reader.archive();
+        if archive.stream_map.block_first_pack_stream_index().len() != archive.blocks.len() {
+            return Err(sevenz_rust2::Error::Other(
+                "the 7z header declares blocks but not the streams that hold them".into(),
+            ));
+        }
         let mut flow = Flow::Continue;
         reader.for_each_entries(|entry, data| {
             if entry.is_directory() {
@@ -564,6 +576,29 @@ mod tests {
     ) -> Result<Expansion, TestError> {
         Ok(expand_filtered_with(path, &limits(), None, keyring)
             .map_err(|e| format!("expand: {e:?}"))?)
+    }
+
+    /// A 7z header that declares blocks and no file information leaves the
+    /// decoder's stream map empty, and `sevenz-rust2` indexed it for block 0
+    /// and panicked: in a release build, which aborts on a panic, one hostile
+    /// archive ended the run. Found by `archive_fuzz_replay_test`; the input
+    /// is a bit-flipped AES-256 7z it built. It is refused, not opened.
+    #[test]
+    fn a_7z_whose_blocks_have_no_stream_map_is_refused() -> Result<(), TestError> {
+        let archive = std::fs::read(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/fixtures/archive/7z-blocks-without-stream-map.7z"
+        ))
+        .map_err(|e| format!("fixture: {e:?}"))?;
+        let tmp = tempfile::tempdir().map_err(|e| format!("tmp: {e:?}"))?;
+        let path = write(tmp.path(), "hostile.7z", &archive)?;
+        let exp = expand_with(&path, Some(&mut ring_of(&["fz5d1763f9c4a"])?))?;
+        assert!(exp.members.is_empty(), "{:?}", exp.members);
+        assert!(
+            !exp.skipped.is_empty() || !exp.stops.is_empty(),
+            "the refusal is reported"
+        );
+        Ok(())
     }
 
     #[test]
