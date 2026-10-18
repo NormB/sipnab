@@ -981,7 +981,7 @@ sipnab -D
 line it shows the libpcap it is running, e.g.
 
 ```text
-sipnab 0.5.225 (<hash>) features: native,tui,audio,tls,hep,api,mcp,mcp-http,metrics,plugins,bpf,vcon,opus,archive,g729
+sipnab 0.5.226 (<hash>) features: native,tui,audio,tls,hep,api,mcp,mcp-http,metrics,plugins,bpf,vcon,opus,archive,g729
 libpcap version 1.10.5 (with TPACKET_V3); alternate capture backends named: none
 ```
 

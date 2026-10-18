@@ -40,7 +40,7 @@ workspace = true
 
 [package]
 name = "sipnab"
-version = "0.5.225"
+version = "0.5.226"
 edition = "2024"
 rust-version = "1.99"
 authors = ["Norm Brandinger"]
@@ -103,7 +103,7 @@ targets = ["x86_64-unknown-linux-gnu"]
 # version, and `cargo package` refuses a path dependency without one. 0.1.2 is
 # the first release with `TlsRecord::read`, which the uprobe decoder calls, so
 # a published sipnab must never resolve an older one.
-sipnab-bpf-types = { version = "0.1.2", path = "crates/sipnab-bpf-types" }
+sipnab-bpf-types = { version = "0.1.3", path = "crates/sipnab-bpf-types" }
 # Fast, DoS-resistant (random-seeded, AES-based) hasher for the per-packet
 # stores. Replaces the default SipHash on the hot path — every RTP packet does a
 # StreamStore key lookup — while keeping flood resistance for attacker-controlled
@@ -223,7 +223,7 @@ opus = { version = "0.4.0", optional = true }
 # user installs them with `sipnab g729 install` (docs/g729.md), and the crate's
 # `std` feature is its table loader and the importer that builds the table
 # file from the ITU-T package.
-g729 = { package = "sipnab-g729", version = "0.1.3", path = "crates/g729", features = ["std"], optional = true }
+g729 = { package = "sipnab-g729", version = "0.1.4", path = "crates/g729", features = ["std"], optional = true }
 
 # Phase 5: Metrics & API
 axum = { version = "0.8", optional = true }

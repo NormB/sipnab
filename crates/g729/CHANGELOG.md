@@ -4,6 +4,12 @@ This file lists all notable changes to the `sipnab-g729` crate. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the
 crate follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.4] - 2026-10-18
+
+### Changed
+
+- Every source file names its license and copyright holder (`SPDX-License-Identifier` and `SPDX-FileCopyrightText`). No code changed.
+
 ## [0.1.3] - 2026-10-17
 
 ### Security
