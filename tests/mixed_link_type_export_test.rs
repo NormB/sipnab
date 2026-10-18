@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-FileCopyrightText: The sipnab contributors
 
 //! One output file, one link type — or the export must refuse.
 //!

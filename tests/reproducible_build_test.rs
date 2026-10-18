@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-FileCopyrightText: The sipnab contributors
 
 //! The release binary is bit-for-bit reproducible, and these tests hold the
 //! pieces that make it so.

@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-FileCopyrightText: The sipnab contributors
 
 //! RFC 7315 `P-Charging-Vector` — reading `icid-value` and `related-icid`.
 //!

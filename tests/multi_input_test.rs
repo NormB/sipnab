@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-FileCopyrightText: The sipnab contributors
 
 //! `-I` accepting a file, a directory, a glob, or several of each.
 //!

@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-FileCopyrightText: The sipnab contributors
 
 //! The ITU-T basic operators (G.729 clause 5.2, Table 11), with the
 //! saturation and rounding semantics of the ITU-T Software Tool Library

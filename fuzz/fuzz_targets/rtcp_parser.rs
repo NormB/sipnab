@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-FileCopyrightText: The sipnab contributors
 
 //! Fuzz the RTCP compound-packet parser — a network-facing decoder. Arbitrary
 //! bytes must be rejected or parsed into reports without panicking or

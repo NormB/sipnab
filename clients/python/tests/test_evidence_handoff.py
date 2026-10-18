@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: MIT OR Apache-2.0
+# SPDX-FileCopyrightText: The sipnab contributors
+
 """An evidence package and repro scripts, checked before an agent hands them on.
 
 `build_evidence_package` and `generate_repro` each report what they wrote.

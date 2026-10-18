@@ -1,4 +1,7 @@
 #!/bin/sh
+# SPDX-License-Identifier: MIT OR Apache-2.0
+# SPDX-FileCopyrightText: The sipnab contributors
+
 # rtpengine in userspace mode, bound to the shared (opensips-1) namespace IP.
 set -eu
 

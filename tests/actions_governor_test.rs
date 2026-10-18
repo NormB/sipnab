@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-FileCopyrightText: The sipnab contributors
 
 //! The action rate limit: always on, and not the read limit (ACTIONS-HARDEN).
 //!

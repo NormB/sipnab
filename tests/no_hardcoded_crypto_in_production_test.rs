@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-FileCopyrightText: The sipnab contributors
+
 //! No hard-coded cryptographic material outside `#[cfg(test)]`.
 //!
 //! On 2026-08-28 all 44 open CodeQL alerts were dismissed, and 41 of them were

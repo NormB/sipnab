@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-FileCopyrightText: The sipnab contributors
+
 //! Deciding what a kernel uprobe delivered may be used for.
 //!
 //! A kernel uprobe fetch argument is a **fixed** size chosen when the probe is

@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-FileCopyrightText: The sipnab contributors
 
 //! Fixed-window rate limiting: a global ceiling plus a per-peer cap.
 //!

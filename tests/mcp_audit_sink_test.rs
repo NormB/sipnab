@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-FileCopyrightText: The sipnab contributors
 
 #![cfg(all(unix, feature = "mcp"))]
 //! PB10 — the append-only tool-call audit sink, end to end over real stdio.

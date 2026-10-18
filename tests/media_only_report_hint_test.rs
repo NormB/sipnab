@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-FileCopyrightText: The sipnab contributors
+
 //! The no-SIP guidance on a capture that holds RTP and no SIP, end to end.
 //!
 //! The run summary used to end with "Use --report to see stream details."

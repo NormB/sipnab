@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: MIT OR Apache-2.0
+# SPDX-FileCopyrightText: The sipnab contributors
+
 """Derive the homepage's automated-test count from a `cargo test` run.
 
 The one rule for the published number. ci.yml runs it on the output of the

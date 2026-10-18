@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-FileCopyrightText: The sipnab contributors
+
 //! `--mcp-sampling-budget` reaches the governor that enforces it.
 //!
 //! A flag that parses and reaches nothing is the failure this file exists for:

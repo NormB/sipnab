@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: MIT OR Apache-2.0
+# SPDX-FileCopyrightText: The sipnab contributors
+
 """Generate the synthetic capture fixtures under `tests/pcap-samples/`.
 
 Every fixture this script writes is fabricated from end to end. Nothing in it

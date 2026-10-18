@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: MIT OR Apache-2.0
+# SPDX-FileCopyrightText: The sipnab contributors
 """Run `cargo test`'s test binaries side by side instead of one at a time.
 
     parallel-tests.py [--jobs N] [--durations FILE] -- CARGO_TEST_ARGS...

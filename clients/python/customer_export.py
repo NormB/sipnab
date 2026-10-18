@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: MIT OR Apache-2.0
+# SPDX-FileCopyrightText: The sipnab contributors
+
 """One customer's calls out of a directory of rotated captures, as a capture
 Wireshark opens (cookbook recipes "Collect a directory of rotated captures into one analysis", "Export one customer's calls as a smaller capture" and "Open the same evidence in Wireshark").
 

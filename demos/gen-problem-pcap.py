@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: MIT OR Apache-2.0
+# SPDX-FileCopyrightText: The sipnab contributors
+
 """Generate a synthetic SIP pcap for the CLI `--problems` demo.
 
 All RFC 5737 documentation IPs (no PII). One healthy call for contrast, then

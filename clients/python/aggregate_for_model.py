@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: MIT OR Apache-2.0
+# SPDX-FileCopyrightText: The sipnab contributors
+
 """Count dialogs by one field under a filter, as JSON a model can be handed.
 
     aggregate_for_model.py capture.pcap --group-by FIELD [--filter EXPR]

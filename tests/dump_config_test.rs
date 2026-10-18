@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-FileCopyrightText: The sipnab contributors
 
 //! `sipnab -D` answers "did sipnab read the file I meant, and did it accept my
 //! keys?", so the warnings about keys it did not accept reach the terminal.

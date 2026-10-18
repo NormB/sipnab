@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: MIT OR Apache-2.0
+# SPDX-FileCopyrightText: The sipnab contributors
+
 """fetch-g729-vectors.py: the ITU-T G.729 test vectors, sha256-pinned.
 
 The ITU package is fetched, never committed (spec decision D4). The fetcher

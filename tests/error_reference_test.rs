@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-FileCopyrightText: The sipnab contributors
 
 //! `docs/errors.md` holds one entry per message sipnab prints when a run is
 //! refused or fails at startup, and the message literals in `src/` are the

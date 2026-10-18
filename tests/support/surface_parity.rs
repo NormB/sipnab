@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-FileCopyrightText: The sipnab contributors
 
 //! One capture, three surfaces: the CLI, REST and MCP asked the same question.
 //!

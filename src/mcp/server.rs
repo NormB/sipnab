@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-FileCopyrightText: The sipnab contributors
 
 //! `SipnabMcp` server: the MCP tools backed by the existing
 //! dialog/stream stores (plus the optional alert engine).

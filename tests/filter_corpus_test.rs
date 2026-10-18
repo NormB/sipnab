@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-FileCopyrightText: The sipnab contributors
 
 //! Every documented filter field and alias, proved to select the RIGHT ROWS
 //! on REAL captures.

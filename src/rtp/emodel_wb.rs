@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-FileCopyrightText: The sipnab contributors
 
 //! Wideband E-model (ITU-T G.107.1) and the published AMR-WB impairment
 //! factors.

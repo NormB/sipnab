@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-FileCopyrightText: The sipnab contributors
 
 //! Starting and stopping a uprobe TLS capture on an agent's request: the
 //! background capture behind `start_tls_capture`.

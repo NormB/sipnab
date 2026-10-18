@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-FileCopyrightText: The sipnab contributors
 
 //! Extra conformance: the oracle's 20 synthetic Annex A+B bit streams
 //! (`.git/g729-reference/conformance/synthNN`), each decoded by the

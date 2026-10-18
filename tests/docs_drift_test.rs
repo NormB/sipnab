@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-FileCopyrightText: The sipnab contributors
 
 //! Guards documentation against drift: every `--flag` README.md advertises
 //! must actually exist in the CLI (clap) definition.
@@ -5550,7 +5551,9 @@ fn no_documentation_table_repeats_a_row() -> Result<(), TestError> {
     // 1271 -> 1273: docs/rest-api.md +1, the table of REST answers that do
     // not carry capture_identity, and its site mirror
     // website/content/docs/api.md +1.
-    const EXPECTED_TABLES: usize = 1273;
+    // 1273 -> 1274: docs/design/openssf-badge-answers.md +1, the Gold
+    // license_per_file / copyright_per_file table.
+    const EXPECTED_TABLES: usize = 1274;
 
     let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     let out = std::process::Command::new("git")

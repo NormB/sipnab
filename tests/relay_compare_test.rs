@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-FileCopyrightText: The sipnab contributors
 
 //! ST7 / C4: compare a relay's own per-call count against sipnab's measurement.
 //!

@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-FileCopyrightText: The sipnab contributors
 
 //! One process, two capture sources: a HEP mirror for signaling and the local
 //! NIC for media (SRC1, `docs/design/simultaneous-capture-sources.md`).

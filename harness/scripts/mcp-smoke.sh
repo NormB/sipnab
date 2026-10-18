@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: MIT OR Apache-2.0
+# SPDX-FileCopyrightText: The sipnab contributors
+
 # Exercise the sipnab MCP HTTP endpoint: initialize -> tools/list -> a tool call.
 # Usage: mcp-smoke.sh <url> <token>
 set -euo pipefail

@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: MIT OR Apache-2.0
+# SPDX-FileCopyrightText: The sipnab contributors
 """Read (or update) a capture's provenance sidecar.
 
 Split out of `promote.sh` rather than inlined as a heredoc: the shell script is

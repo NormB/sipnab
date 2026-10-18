@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: MIT OR Apache-2.0
+# SPDX-FileCopyrightText: The sipnab contributors
+
 # sipnab commit-msg hook
 # A commit message is published the moment the commit is pushed, and it stays
 # in the history after any later fix. This refuses a message that names the

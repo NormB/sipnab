@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-FileCopyrightText: The sipnab contributors
 
 //! G.711 mu-law and A-law audio codec decoders (ITU-T G.711).
 //!

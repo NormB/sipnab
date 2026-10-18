@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-FileCopyrightText: The sipnab contributors
 
 //! A destination the operator named: the one input every capability that
 //! originates traffic at an address of the operator's choosing takes.

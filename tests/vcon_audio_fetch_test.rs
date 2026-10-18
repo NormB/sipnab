@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-FileCopyrightText: The sipnab contributors
 
 //! `--vcon-audio-fetch`: the audio a `[[vcon.rule]]` with `audio = "url"`
 //! wrote beside its container, read back on the shipped binary.

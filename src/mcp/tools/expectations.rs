@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-FileCopyrightText: The sipnab contributors
+
 //! Artifacts that leave sipnab and run somewhere else.
 //!
 //! Every other tool group answers a question inside this process. These four

@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-FileCopyrightText: The sipnab contributors
 //! `sipnab g729 install` and `sipnab g729 status`: the G.729 codebook tables
 //! on this host.
 //!

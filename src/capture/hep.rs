@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-FileCopyrightText: The sipnab contributors
 
 //! HEP (Homer Encapsulation Protocol) v1/v2/v3 receiver and HEP v3 sender.
 //!

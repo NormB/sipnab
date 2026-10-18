@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: MIT OR Apache-2.0
+# SPDX-FileCopyrightText: The sipnab contributors
+
 """Mirror the developer docs (`docs/internals/`) into the Zola site.
 
 `docs/internals/` is the single source of truth. This script renders it into

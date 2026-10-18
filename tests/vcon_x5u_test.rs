@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-FileCopyrightText: The sipnab contributors
 
 //! `x5u`: draft-ietf-vcon-vcon-core-04 section 5.2.2 has a signed vCon carry
 //! "either the x5c or x5u", and x5u "MUST contain an [HTTPS] URL".

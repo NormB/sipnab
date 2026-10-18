@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: MIT OR Apache-2.0
+# SPDX-FileCopyrightText: The sipnab contributors
 #
 # Check one commit message or pull request description for the lab's private
 # identities: the development host, the lab's machines, its DNS domain, its LAN

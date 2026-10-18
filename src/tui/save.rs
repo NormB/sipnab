@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-FileCopyrightText: The sipnab contributors
 
 //! Save/export: pcap, txt, mermaid, json, ndjson, csv, markdown,
 //! wav, sipp scenario, rtp-json.

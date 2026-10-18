@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-FileCopyrightText: The sipnab contributors
 
 //! Network packet capture, pcap/pcapng file reading, TCP reassembly, HEP protocol,
 //! and TLS decryption.

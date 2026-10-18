@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: MIT OR Apache-2.0
+# SPDX-FileCopyrightText: The sipnab contributors
+
 """Generate the one-click sample capture behind "Try a sample capture".
 
 This is the first capture most visitors ever open in sipnab, from the browser

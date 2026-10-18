@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: MIT OR Apache-2.0
+# SPDX-FileCopyrightText: The sipnab contributors
+
 """no-itu-values.py: no file sipnab ships holds a run of the G.729 tables.
 
 The scan is the one rule both gates use: crates/g729/tests/no_itu_values.rs

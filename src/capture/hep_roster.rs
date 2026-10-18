@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-FileCopyrightText: The sipnab contributors
 
 //! What a HEP listener knows about the packets it turned away, and about the
 //! senders that went quiet.

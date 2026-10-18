@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-FileCopyrightText: The sipnab contributors
 
 //! How many real messages carry `P-Charging-Vector` — the population behind
 //! the two RFC 7315 correlation strategies.

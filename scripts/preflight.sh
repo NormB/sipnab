@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: MIT OR Apache-2.0
+# SPDX-FileCopyrightText: The sipnab contributors
 #
 # Run the gates that actually bounce a commit, in about a minute, BEFORE the
 # pre-commit hook spends twenty-five minutes discovering the same thing.

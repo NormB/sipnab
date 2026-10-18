@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: MIT OR Apache-2.0
+# SPDX-FileCopyrightText: The sipnab contributors
+
 # Scenario tests for ops/tsan/verdict.sh.
 #
 # The verdict is run the way GitHub runs it -- `bash -e -o pipefail` -- because

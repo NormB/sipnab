@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-FileCopyrightText: The sipnab contributors
+
 //! Aggregation tools: questions about a SET of dialogs rather than one.
 
 use crate::mcp::errors::{self, Reason};

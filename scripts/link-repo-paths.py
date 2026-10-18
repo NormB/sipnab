@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: MIT OR Apache-2.0
+# SPDX-FileCopyrightText: The sipnab contributors
+
 """Make bare repo-path code spans clickable, with the form the target needs.
 
 This is the fixer `repo_paths_in_docs_are_clickable` names in its failure

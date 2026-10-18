@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: MIT OR Apache-2.0
+# SPDX-FileCopyrightText: The sipnab contributors
 """Validate the sipnab-diagnosis YANG module, and real exports against it.
 
     python3 scripts/check-yang.py                 # build the exports, then check

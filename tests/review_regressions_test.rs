@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-FileCopyrightText: The sipnab contributors
 
 //! Regression corpus for the September 18 operator-contract review.
 //! Each scenario checks an exported artifact, selected traffic, authentication

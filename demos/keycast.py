@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: MIT OR Apache-2.0
+# SPDX-FileCopyrightText: The sipnab contributors
+
 """Keycast timeline generator for sipnab VHS demos.
 
 VHS (0.11) has no built-in keystroke display, so the "See It In Action" TUI

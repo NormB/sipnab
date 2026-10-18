@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: MIT OR Apache-2.0
+# SPDX-FileCopyrightText: The sipnab contributors
+
 """The homepage's automated-test count is derived from a run, by one rule.
 
 `scripts/published-test-count.py` is that rule. ci.yml runs it on the suite's

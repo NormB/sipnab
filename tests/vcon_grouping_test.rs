@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-FileCopyrightText: The sipnab contributors
 
 //! A call that crosses a B2BUA or a PBX is two dialogs, and so two containers.
 //! Each container names the other leg's container and how strongly the two

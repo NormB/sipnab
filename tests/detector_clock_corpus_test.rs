@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-FileCopyrightText: The sipnab contributors
 
 //! Security detections must be supported by the CAPTURE's timeline, proved
 //! against REAL captures.

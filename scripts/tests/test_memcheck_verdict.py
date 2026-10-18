@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: MIT OR Apache-2.0
+# SPDX-FileCopyrightText: The sipnab contributors
+
 """scripts/memcheck-verdict.py: the rule the weekly Valgrind job applies."""
 
 import subprocess

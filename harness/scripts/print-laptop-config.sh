@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: MIT OR Apache-2.0
+# SPDX-FileCopyrightText: The sipnab contributors
+
 # Print the MCP client configuration your laptop needs to reach this harness.
 # Usage: print-laptop-config.sh <host-ip> <mcp-port> <token-file>
 set -euo pipefail

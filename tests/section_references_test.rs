@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-FileCopyrightText: The sipnab contributors
 //! Documentation never cites a section as a bare "§".
 //!
 //! "§7" tells a reader that something exists and nothing about where. The

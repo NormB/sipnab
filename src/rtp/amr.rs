@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-FileCopyrightText: The sipnab contributors
 
 //! The AMR and AMR-WB RTP payload header (RFC 4867), read for the frame mode
 //! and nothing else.

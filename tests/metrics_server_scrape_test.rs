@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-FileCopyrightText: The sipnab contributors
 
 //! The standalone `--metrics` server must publish the same wired counters as
 //! the REST API's `/metrics`.

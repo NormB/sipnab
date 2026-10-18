@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-FileCopyrightText: The sipnab contributors
 
 //! A headless `sipnab -N` run serving `--metrics`, on ports the kernel chose.
 //!

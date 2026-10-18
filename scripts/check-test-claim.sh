@@ -1,5 +1,6 @@
 #!/bin/sh
 # SPDX-License-Identifier: MIT OR Apache-2.0
+# SPDX-FileCopyrightText: The sipnab contributors
 #
 # Does a commit message's test count match the tests the commit actually adds?
 #

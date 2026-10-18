@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-FileCopyrightText: The sipnab contributors
 
 //! End-to-end journey guards for the website artifacts: walk what a visitor
 //! actually hits — nav links, docs pages, demo assets, and the VHS tapes that

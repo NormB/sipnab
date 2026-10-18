@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-FileCopyrightText: The sipnab contributors
 
 //! Opening a relay's own capture from the TUI's file browser names its streams
 //! from the relay's control plane.

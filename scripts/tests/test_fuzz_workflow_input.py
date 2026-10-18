@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: MIT OR Apache-2.0
+# SPDX-FileCopyrightText: The sipnab contributors
+
 """fuzz.yml's `max_total_time` dispatch input is validated before it is used.
 
 OpenSSF Baseline BR-01.04 asks that a workflow validate input a collaborator

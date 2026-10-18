@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-FileCopyrightText: The sipnab contributors
 //! The crate's front page on docs.rs shows examples that run and prove
 //! something.
 //!

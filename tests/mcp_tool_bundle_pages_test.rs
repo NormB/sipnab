@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-FileCopyrightText: The sipnab contributors
 
 //! The MCP tool reference has one page per bundle, and the code decides which
 //! page a tool is on.

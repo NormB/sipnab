@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-FileCopyrightText: The sipnab contributors
 
 //! Every fixture promoted out of the harness has a test that asserts the claim
 //! its `**Pins:**` line makes.

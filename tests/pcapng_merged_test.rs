@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-FileCopyrightText: The sipnab contributors
+
 //! A merged pcapng — interfaces that disagree — must still be readable.
 //!
 //! `mergecap`, and any capture spanning interfaces with different snaplens or

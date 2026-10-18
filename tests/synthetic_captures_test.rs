@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-FileCopyrightText: The sipnab contributors
 
 //! The synthetic captures are exactly what their generator builds, and carry
 //! nothing from a real network.

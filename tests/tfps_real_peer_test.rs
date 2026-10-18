@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-FileCopyrightText: The sipnab contributors
 //! sipnab's TFPS readers against a real `tfps_ctl`, when one is named.
 //!
 //! `tfps_contract_test` holds the contract with fakes: shell scripts that

@@ -1,4 +1,7 @@
 #!/bin/sh
+# SPDX-License-Identifier: MIT OR Apache-2.0
+# SPDX-FileCopyrightText: The sipnab contributors
+
 # BDD test for .githooks/pre-commit's homepage-test-count logic.
 #
 # Regression under test: the hook used to run `cargo test --features full`

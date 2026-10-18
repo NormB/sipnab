@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-FileCopyrightText: The sipnab contributors
+
 //! A temp path built by a test must be unique per PROCESS, not merely per test.
 //!
 //! `std::env::temp_dir()` is shared by everything on the machine. A test that

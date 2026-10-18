@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-FileCopyrightText: The sipnab contributors
 
 //! `GET /v1/vcon/fetch/{uuid}`, driven through the `sipnab` binary against a
 //! fake vCon store.

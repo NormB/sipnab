@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-FileCopyrightText: The sipnab contributors
+
 //! The registry scanner must see EVERY tool name, including ones with digits.
 //!
 //! `generate_fail2ban_rule` was live and answering calls while

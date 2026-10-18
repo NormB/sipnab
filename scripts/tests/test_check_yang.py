@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: MIT OR Apache-2.0
+# SPDX-FileCopyrightText: The sipnab contributors
+
 """The YANG gate checks what it says, and says when it cannot.
 
 ``scripts/check-yang.py`` wraps two tools this repository does not ship --

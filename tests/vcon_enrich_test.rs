@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-FileCopyrightText: The sipnab contributors
 
 //! Post-call enrichment: `[[vcon.enrich]]` sends a call's audio and container
 //! to the operator's own service before the container is written, and appends

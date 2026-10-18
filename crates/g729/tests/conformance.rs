@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-FileCopyrightText: The sipnab contributors
 
 //! Conformance: the 16 ITU-T decoder test vectors (spec fact F4), each
 //! decoded from its G.192 bit stream and compared with the expected output

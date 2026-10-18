@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-FileCopyrightText: The sipnab contributors
 //! A release tag is pushed only when it is signed by a trusted key.
 //!
 //! A `v*` tag publishes a release, so the tag is the one artifact this machine

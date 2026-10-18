@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-FileCopyrightText: The sipnab contributors
 
 //! Post-processing: the 100 Hz high-pass filter of G.729 equation (91) and
 //! the upscaling by 2 (clause 4.2.5). The recursive part keeps the past

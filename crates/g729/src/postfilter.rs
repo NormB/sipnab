@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-FileCopyrightText: The sipnab contributors
 
 //! The Annex A adaptive postfilter (G.729 clause A.4.2): the residual through
 //! A(z/gamma_n) (equation (79)), the integer-delay long-term postfilter of

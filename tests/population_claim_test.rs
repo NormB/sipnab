@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-FileCopyrightText: The sipnab contributors
 
 // Gated on `full` for the reason `mcp_completeness_test` is: this file drives
 // every tool that takes a page-size argument, and that surface is

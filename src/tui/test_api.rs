@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-FileCopyrightText: The sipnab contributors
 
 //! Test-only-in-spirit App accessors, exposed publicly for the
 //! integration suites (tui_state_test, snapshots) and the in-crate

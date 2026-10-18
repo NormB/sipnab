@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-FileCopyrightText: The sipnab contributors
 
 //! Defects paid for: the command table, the argument bounds, and the two
 //! places a bulk edit answered a question it had not asked.

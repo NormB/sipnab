@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-FileCopyrightText: The sipnab contributors
 
 //! MCP reports an AMR-WB stream's wideband score, as REST and the TUI do.
 //!

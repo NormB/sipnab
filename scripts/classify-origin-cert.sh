@@ -1,5 +1,6 @@
 #!/bin/sh
 # SPDX-License-Identifier: MIT OR Apache-2.0
+# SPDX-FileCopyrightText: The sipnab contributors
 #
 # Is the origin's certificate load-bearing, and therefore worth failing on?
 #

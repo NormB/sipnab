@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-FileCopyrightText: The sipnab contributors
 //! Every TFPS answer the references show has the keys sipnab sends.
 //!
 //! sipnab moved every TFPS surface to the vocabulary of TFPS's JSON mode

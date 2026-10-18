@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: MIT OR Apache-2.0
+# SPDX-FileCopyrightText: The sipnab contributors
+
 """One-way audio on one call, and whose loss it is (cookbook recipes "Diagnose a one-way audio complaint", "Find why a call sounds bad in one direction only"
 and "Measure whether the loss is yours or the network's").
 

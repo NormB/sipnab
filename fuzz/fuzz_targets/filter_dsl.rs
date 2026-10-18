@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-FileCopyrightText: The sipnab contributors
 
 //! Fuzz the filter-DSL parser (`sipnab -F 'expr'`): arbitrary UTF-8 filter
 //! strings must parse to an expression or a clean error, never panic.

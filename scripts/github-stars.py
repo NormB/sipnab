@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: MIT OR Apache-2.0
+# SPDX-FileCopyrightText: The sipnab contributors
+
 """Derive the homepage's GitHub star count from the GitHub API's answer.
 
 pages.yml runs `gh api repos/<owner>/<repo>` at deploy time and gives this

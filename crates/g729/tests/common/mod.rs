@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-FileCopyrightText: The sipnab contributors
 
 //! Shared helpers of the g729 integration tests: where the fetched ITU files
 //! live, and the tables imported from them.

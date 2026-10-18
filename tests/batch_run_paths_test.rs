@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-FileCopyrightText: The sipnab contributors
 
 //! Batch-mode paths no other suite drove, end to end through the built binary:
 //! the relay asks a file run refuses, the end-of-run capture-quality, LLMNR and

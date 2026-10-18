@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-FileCopyrightText: The sipnab contributors
 //! The one table that says which command-line flag and which config-file key
 //! set the same thing.
 //!

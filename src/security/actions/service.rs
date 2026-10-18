@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-FileCopyrightText: The sipnab contributors
 
 //! The one path every action takes (approved spec "sipnab Operations
 //! Journal", 2026-09-28).

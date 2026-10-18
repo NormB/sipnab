@@ -1,4 +1,7 @@
 #!/bin/sh
+# SPDX-License-Identifier: MIT OR Apache-2.0
+# SPDX-FileCopyrightText: The sipnab contributors
+
 # Start sipnab as a live-capture MCP HTTP server.
 #
 # Shares opensips-1's network namespace, so eth0 here is the single point

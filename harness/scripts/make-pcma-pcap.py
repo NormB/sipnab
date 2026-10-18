@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: MIT OR Apache-2.0
+# SPDX-FileCopyrightText: The sipnab contributors
+
 """Generate a PCMA RTP pcap for SIPp's play_pcap_audio.
 
 The harness ships one audio pcap and both ends replay it, SSRC and all. That

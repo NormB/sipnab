@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: MIT OR Apache-2.0
+# SPDX-FileCopyrightText: The sipnab contributors
+
 # sipnab MCP diagnostic harness
 #
 #   make up          # generate signing key (once), build images, start the stack

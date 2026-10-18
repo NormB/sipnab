@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: MIT OR Apache-2.0
+# SPDX-FileCopyrightText: The sipnab contributors
+
 #
 # Tests for update-formula.sh — the Homebrew tap formula generator used by the
 # release workflow to auto-bump NormB/homebrew-tap on every tag push.

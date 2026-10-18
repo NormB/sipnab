@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-FileCopyrightText: The sipnab contributors
 
 //! A behavioral scanner alert must be supported by an OUTCOME the capture
 //! contains, proved against REAL captures.

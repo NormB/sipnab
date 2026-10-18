@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-FileCopyrightText: The sipnab contributors
 
 //! The public vCon datasets, every container, against sipnab's vCon schema
 //! validator, and the corrected copy of three of them that `CORRECTED.tsv`

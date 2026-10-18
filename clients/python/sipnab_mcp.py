@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: MIT OR Apache-2.0
+# SPDX-FileCopyrightText: The sipnab contributors
+
 # snippet:start sipnab-mcp
 """Minimal MCP client driving sipnab over stdio."""
 import asyncio

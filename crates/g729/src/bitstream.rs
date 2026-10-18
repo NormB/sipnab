@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-FileCopyrightText: The sipnab contributors
 
 //! Bit streams: the fields of an active frame (G.729 Table 8, MSB first) and
 //! of a SID frame (Annex B Table B.2, clause B.4.3) as packed in RTP by

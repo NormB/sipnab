@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: MIT OR Apache-2.0
+# SPDX-FileCopyrightText: The sipnab contributors
+
 """pages.yml takes the suite output from CI's run of the same commit.
 
 The site does not run the test suite itself: ci.yml's Check job on Linux

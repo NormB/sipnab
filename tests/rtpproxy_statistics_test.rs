@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-FileCopyrightText: The sipnab contributors
 
 //! ST3: the statistics rtpproxy reports, read into the one tier vocabulary.
 //!

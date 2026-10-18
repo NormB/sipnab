@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: MIT OR Apache-2.0
+# SPDX-FileCopyrightText: The sipnab contributors
+
 """vcon_forward.py drains sipnab's vCon spool into a vCon server.
 
 sipnab writes one container per dialog into `--export-vcon-dir` and never

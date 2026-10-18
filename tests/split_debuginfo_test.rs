@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-FileCopyrightText: The sipnab contributors
 
 //! `scripts/split-debuginfo.sh`: the release step that turns one optimized
 //! build into a stripped binary to ship and a symbol file to keep.

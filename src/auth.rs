@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-FileCopyrightText: The sipnab contributors
 
 //! HMAC self-describing bearer tokens with expiry, rotation, and revocation.
 //!

@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-FileCopyrightText: The sipnab contributors
 
 //! Per-group carrier metrics: ASR, NER, ACD, PDD percentiles, MOS p10 and a
 //! retransmit rate, computed in one pass over the dialog store and grouped by

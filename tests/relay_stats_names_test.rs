@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-FileCopyrightText: The sipnab contributors
 
 //! ST7 / C3: which statistics a relay knows -- "what can I even ask for?".
 //!

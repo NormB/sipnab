@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-FileCopyrightText: The sipnab contributors
 //! crates.io gets a release from one job, after the GitHub release exists,
 //! with a token that lives for that job alone.
 //!

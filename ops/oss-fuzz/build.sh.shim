@@ -1,5 +1,6 @@
 #!/bin/bash -eu
 # SPDX-License-Identifier: MIT OR Apache-2.0
+# SPDX-FileCopyrightText: The sipnab contributors
 #
 # This is the file that goes in google/oss-fuzz as projects/sipnab/build.sh.
 # It is deliberately a shim: the build lives in the sipnab repository, where

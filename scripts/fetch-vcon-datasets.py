@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: MIT OR Apache-2.0
+# SPDX-FileCopyrightText: The sipnab contributors
+
 """Fetch the public vCon datasets, each at a pinned commit, for the corpus test.
 
 The vcon-dev community publishes real and synthetic vCon containers as git

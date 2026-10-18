@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-FileCopyrightText: The sipnab contributors
 
 #![cfg(all(unix, feature = "tui"))]
 //! AUDIT2 — the TUI operator action trail, driven through the real key path.

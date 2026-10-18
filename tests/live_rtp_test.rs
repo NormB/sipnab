@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-FileCopyrightText: The sipnab contributors
 
 //! Live media out: a `[[vcon.rule]]` with `live_rtp = "host:port"` sends each
 //! matching call's decoded audio to that UDP target as RTP with an L16

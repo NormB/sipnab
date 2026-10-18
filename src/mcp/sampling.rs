@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-FileCopyrightText: The sipnab contributors
+
 //! Sampling: asking the CLIENT's model to narrate what sipnab observed.
 //!
 //! sipnab is shaped for this in a way most MCP servers are not -- a

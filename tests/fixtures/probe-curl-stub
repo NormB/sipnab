@@ -1,5 +1,6 @@
 #!/bin/sh
 # SPDX-License-Identifier: MIT OR Apache-2.0
+# SPDX-FileCopyrightText: The sipnab contributors
 #
 # A stand-in for curl, for the `classify-origin-cert.sh --probe` tests in
 # tests/site_liveness_test.rs. Each call appends a line to $STUB_DIR/calls,

@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-FileCopyrightText: The sipnab contributors
 
 //! An ad-hoc extractor's output is a claim about the extractor, not the tree.
 //!

@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: MIT OR Apache-2.0
+# SPDX-FileCopyrightText: The sipnab contributors
+
 """Join one call across the two sipnab capture points, over REST.
 
 The proxy node and the relay node see different halves of a call: the proxy

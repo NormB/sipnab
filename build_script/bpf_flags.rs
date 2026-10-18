@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-FileCopyrightText: The sipnab contributors
 
 //! How `build.rs` builds the eBPF kernel half, as pure functions of their
 //! inputs.

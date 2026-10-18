@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: MIT OR Apache-2.0
+# SPDX-FileCopyrightText: The sipnab contributors
+
 # A stand-in Homer collector: it absorbs HEP and does nothing else.
 #
 # It exists because rtpengine will not mirror into the void. It CONNECTS its

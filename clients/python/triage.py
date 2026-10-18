@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: MIT OR Apache-2.0
+# SPDX-FileCopyrightText: The sipnab contributors
+
 """Triage a capture to one machine verdict (cookbook recipes "Triage a pcap fast" and "Analyze a capture into one machine-readable verdict").
 
     triage.py capture.pcap [more.pcap ...] [--sipnab PATH]

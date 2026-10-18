@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-FileCopyrightText: The sipnab contributors
 
 //! ICMP media findings must reach the STRUCTURED surfaces, not just stderr.
 //!

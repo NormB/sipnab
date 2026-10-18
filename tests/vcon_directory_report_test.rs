@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-FileCopyrightText: The sipnab contributors
 
 //! `--report` over a directory of stored vCon containers: one row per
 //! container and the totals, in the text report and in the JSON line

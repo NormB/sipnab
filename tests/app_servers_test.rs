@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-FileCopyrightText: The sipnab contributors
 
 //! Companion-server startup must be a testable library facade (WS2), not
 //! three hand-rolled bootstraps in main.rs: one call starts every enabled

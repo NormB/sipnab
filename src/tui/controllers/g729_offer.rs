@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-FileCopyrightText: The sipnab contributors
 
 //! The offer to install the G.729 codebook tables, made where the need
 //! appears: the first time the terminal UI holds a G.729 stream and this host

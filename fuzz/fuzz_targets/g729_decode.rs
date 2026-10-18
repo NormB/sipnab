@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-FileCopyrightText: The sipnab contributors
 
 //! Fuzz the G.729 decoder: arbitrary RTP payloads and arbitrary frame
 //! sequences must decode without panicking, and decoding the same input twice

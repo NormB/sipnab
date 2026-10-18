@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-FileCopyrightText: The sipnab contributors
 
 //! UDP-port-keyed tunnel decapsulators: GTP-U, VXLAN, Geneve, Teredo,
 //! UDP-encapsulated ESP, and L2TPv2.

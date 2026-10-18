@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-FileCopyrightText: The sipnab contributors
 
 //! Adaptive codebook: pitch-delay decoding (G.729 clauses 4.1.2 and 4.1.3,
 //! with the parity check of clause 3.7.2), the concealment delay of clause

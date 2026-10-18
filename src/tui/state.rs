@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-FileCopyrightText: The sipnab contributors
 
 //! Plain state types for the TUI: display-mode enums, save formats,
 //! the per-dialog/popup state structs and the View/Popup enums.

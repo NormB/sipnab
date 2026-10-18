@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-FileCopyrightText: The sipnab contributors
 
 //! Declares the crate's two cfg flags, so `unexpected_cfgs` accepts them (the
 //! workspace lints table cannot be extended per crate; the root package

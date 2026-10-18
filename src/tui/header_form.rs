@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-FileCopyrightText: The sipnab contributors
 
 //! Display-time SIP header-name reformatting: show header names in their
 //! compact (`f:`) or expanded (`From:`) form regardless of how they appear

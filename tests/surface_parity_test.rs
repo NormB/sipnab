@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-FileCopyrightText: The sipnab contributors
 
 //! Cross-surface parity: a quality metric must be reachable from EVERY
 //! consumer surface, or from none of them.

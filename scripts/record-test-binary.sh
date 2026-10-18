@@ -1,5 +1,6 @@
 #!/bin/sh
 # SPDX-License-Identifier: MIT OR Apache-2.0
+# SPDX-FileCopyrightText: The sipnab contributors
 #
 # cargo's runner hook for scripts/parallel-tests.py: record a test binary
 # instead of running it.

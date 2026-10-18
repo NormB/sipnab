@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: MIT OR Apache-2.0
+# SPDX-FileCopyrightText: The sipnab contributors
+
 """Why calls failed, grouped by final response code (cookbook recipes "Find every failed call, grouped by response code" and "Find calls that answered and were never acknowledged").
 
     failed_calls.py

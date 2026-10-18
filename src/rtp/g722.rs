@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-FileCopyrightText: The sipnab contributors
 
 //! ITU-T G.722 decoding: 64 kbit/s sub-band ADPCM to 16 kHz 16-bit PCM.
 //!

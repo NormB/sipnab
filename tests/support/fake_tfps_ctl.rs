@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-FileCopyrightText: The sipnab contributors
 
 //! A fake `tfps_ctl` for the process-level action tests: answers ban, unban
 //! and banned with TFPS's own recorded replies, records every call, and like

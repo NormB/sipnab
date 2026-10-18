@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-FileCopyrightText: The sipnab contributors
 
 //! `[[vcon.rule]]` with `encrypt_to`, on the shipped binary: the rule writes
 //! only the encrypted form (signed with `sign_key` and `sign_cert`, then

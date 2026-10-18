@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: MIT OR Apache-2.0
+# SPDX-FileCopyrightText: The sipnab contributors
+
 """A real TLS 1.3 SIP call on loopback, with a keylog sipnab can be fed.
 
 Deterministic on purpose: this exists to reproduce sipnab's client-direction

@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-FileCopyrightText: The sipnab contributors
+
 //! Public documentation must not link to items rustdoc cannot reach.
 //!
 //! `cargo doc` with `RUSTDOCFLAGS="-D warnings"` refuses a `pub` item whose

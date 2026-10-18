@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-FileCopyrightText: The sipnab contributors
 
 //! Where the journal lives and how tight the action limits are, as the
 //! operator configures them (JOURNAL, ACTIONS-HARDEN; approved 2026-09-28).

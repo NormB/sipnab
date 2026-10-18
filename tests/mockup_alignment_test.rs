@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-FileCopyrightText: The sipnab contributors
 
 //! Guards the terminal mockups (`<pre class="terminal-body">` blocks) in the
 //! website content against box-drawing/ladder misalignment.

@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: MIT OR Apache-2.0
+# SPDX-FileCopyrightText: The sipnab contributors
+
 """What the surface-coverage matrix counts as a test driving a sipnab flag.
 
 `e2e` is the strongest tier the matrix gives, and it means "a test passed this

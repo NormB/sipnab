@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-FileCopyrightText: The sipnab contributors
+
 //! Tool groups that live outside [`crate::mcp::server`].
 //!
 //! `server.rs` is 13k lines and every tool the server has ever grown was added

@@ -1,4 +1,7 @@
 #!/bin/sh
+# SPDX-License-Identifier: MIT OR Apache-2.0
+# SPDX-FileCopyrightText: The sipnab contributors
+
 # BDD test for .githooks/pre-push.
 #
 # SCENARIO: format gate

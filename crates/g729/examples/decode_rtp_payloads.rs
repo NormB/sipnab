@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-FileCopyrightText: The sipnab contributors
 
 //! Decode G.729 RTP payloads, listed one per line in a text file, to a
 //! 16-bit mono WAV file at 8000 Hz.

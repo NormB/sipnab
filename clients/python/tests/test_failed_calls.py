@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: MIT OR Apache-2.0
+# SPDX-FileCopyrightText: The sipnab contributors
+
 """Failed calls grouped by their final response code, and the calls that
 answered and were never acknowledged.
 

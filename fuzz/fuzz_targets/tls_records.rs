@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-FileCopyrightText: The sipnab contributors
 
 //! Fuzz the TLS record-layer splitter — a network-facing decoder over
 //! captured TLS bytes. Arbitrary input must split into records or error

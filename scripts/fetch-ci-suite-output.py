@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: MIT OR Apache-2.0
+# SPDX-FileCopyrightText: The sipnab contributors
+
 """Download the test-suite output of CI's run of one commit.
 
 pages.yml publishes the homepage's automated-test count, and that count must

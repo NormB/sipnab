@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: MIT OR Apache-2.0
+# SPDX-FileCopyrightText: The sipnab contributors
+
 """A published docs page must appear in EVERY registry, not most of them.
 
 Adding one page to `docs/` requires six separate registrations, and nothing

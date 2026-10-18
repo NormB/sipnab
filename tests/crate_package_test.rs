@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-FileCopyrightText: The sipnab contributors
 //! The crate that `cargo publish` would upload, checked with cargo's own rule.
 //!
 //! sipnab was advertised as `cargo install sipnab` in seven places for months

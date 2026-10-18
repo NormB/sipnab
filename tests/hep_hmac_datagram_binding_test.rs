@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-FileCopyrightText: The sipnab contributors
 
 //! VAL9: `--hep-auth-mode hmac` must authenticate the addresses a packet
 //! asserts, not merely its payload.

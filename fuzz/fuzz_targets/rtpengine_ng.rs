@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-FileCopyrightText: The sipnab contributors
 
 //! Fuzz rtpengine's `ng` control-plane decoder and the bencode parser under
 //! it. Both are hostile-input-facing: over HEP the bytes are written by

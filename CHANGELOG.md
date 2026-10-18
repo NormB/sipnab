@@ -76,6 +76,10 @@ entry that carries them.
 
 ### Internal
 
+- **Every source file names its license and copyright holder.**
+  - Each source file carries `SPDX-License-Identifier: MIT OR Apache-2.0` and `SPDX-FileCopyrightText: The sipnab contributors` in a comment near its top, as the OpenSSF Gold criteria `license_per_file` and `copyright_per_file` ask.
+  - `.config/source-headers.txt` says what a source file is and why each other kind is out of scope. The gate `tests/source_file_headers_test.rs` and the fixer `scripts/add-source-headers.py --apply` both read it. The fixer refuses to rewrite a line naming a different license.
+
 - **`--cores` workers contend less over shared counters.**
   - Each worker added every packet it processed to one process-wide counter, and four workers adding to one atomic kept moving its cache line between cores. On the 535,000-packet benchmark corpus at `--cores 4` that addition was 8% of the profile. Each worker now adds its total once, when it finishes. Nothing reads the counter while a `--cores` read runs.
   - Classifying a packet cloned its payload, an atomic increment and decrement on the shared read buffer for every packet, RTP included. It now borrows it.

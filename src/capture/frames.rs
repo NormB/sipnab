@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-FileCopyrightText: The sipnab contributors
+
 //! The frames of one capture file, read through a mapping when the file maps
 //! and through libpcap when it does not. Shared by the single-threaded reader
 //! in [`crate::capture::file`] and the `--cores` reader in [`crate::parallel`].

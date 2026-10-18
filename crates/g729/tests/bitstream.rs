@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-FileCopyrightText: The sipnab contributors
 
 //! Bit-stream layer: RFC 3551 section 4.5.6 (Figure 4) packing of G.729
 //! Table 8 and Annex B Table B.2, the 10n / 10n+2 payload rule, and the

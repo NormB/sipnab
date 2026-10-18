@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: MIT OR Apache-2.0
+# SPDX-FileCopyrightText: The sipnab contributors
+
 """One customer's calls out of a set of rotated captures, as a capture the
 vendor can open, and nothing else.
 

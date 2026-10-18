@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: MIT OR Apache-2.0
+# SPDX-FileCopyrightText: The sipnab contributors
+
 """The fixer sweep.
 
 Most of the failures this script exists to prevent were not defects in the

@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-FileCopyrightText: The sipnab contributors
 
 //! A TFPS for the action service's tests: bans and unbans in memory, records
 //! every call, and notes whether the journal on disk already held the intent

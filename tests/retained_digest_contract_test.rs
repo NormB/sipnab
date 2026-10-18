@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-FileCopyrightText: The sipnab contributors
+
 //! What PERF1 changed, and the three ways it went wrong on the way.
 //!
 //! The digest is no longer computed for every frame as it is read. It is

@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: MIT OR Apache-2.0
+# SPDX-FileCopyrightText: The sipnab contributors
+
 """Triage a capture the way an agent does it: over MCP, to one verdict.
 
     agent_triage.py capture.pcap [more.pcap ...] [--sipnab PATH]

@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: MIT OR Apache-2.0
+# SPDX-FileCopyrightText: The sipnab contributors
+
 # Test harness for packaging/deb/build-deb.sh.
 #
 # Runs the deb builder in a throwaway sandbox with a dummy binary and plugin

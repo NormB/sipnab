@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-FileCopyrightText: The sipnab contributors
 
 //! `--recommend-block` turns an accusation into a rule an operator can run
 //! (BA2), and never into one sipnab applied.

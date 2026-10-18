@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: MIT OR Apache-2.0
+# SPDX-FileCopyrightText: The sipnab contributors
+
 # Build the sipnab Zola site and rsync it to a static-hosting target.
 #
 # This script is environment-agnostic. The deploy target is passed via

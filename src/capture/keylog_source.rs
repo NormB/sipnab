@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-FileCopyrightText: The sipnab contributors
+
 //! Where TLS keylog bytes come from, and nothing about what they mean.
 //!
 //! A file, a FIFO, or a descriptor inherited from a supervisor.

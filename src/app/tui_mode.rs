@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-FileCopyrightText: The sipnab contributors
 
 //! Interactive TUI mode (WS2c): store setup, the processing thread that
 //! drives the shared pipeline, and the terminal main loop. Extracted

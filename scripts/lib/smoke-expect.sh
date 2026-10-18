@@ -1,4 +1,5 @@
 # SPDX-License-Identifier: MIT OR Apache-2.0
+# SPDX-FileCopyrightText: The sipnab contributors
 #
 # The check helpers scripts/smoke-clients.sh uses, in a file of their own so
 # scripts/tests/test_smoke_expect.py can run them without starting sipnab.

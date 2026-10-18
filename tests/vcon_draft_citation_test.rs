@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-FileCopyrightText: The sipnab contributors
 //! Every citation of the vCon core draft names the revision sipnab implements.
 //!
 //! sipnab implements `draft-ietf-vcon-vcon-core-04`. A link to a section of

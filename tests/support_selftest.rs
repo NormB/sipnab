@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-FileCopyrightText: The sipnab contributors
 
 //! Self-tests for the shared test-support `normalize()` helper (M1/T1.1), for
 //! `source_scan::production_source()`, and for `ports::refused_tcp_port()`.

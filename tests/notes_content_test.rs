@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-FileCopyrightText: The sipnab contributors
 
 //! What every note under `website/content/notes/` must carry so
 //! both an engineer and a reader who is not one can use it, and so it stays in

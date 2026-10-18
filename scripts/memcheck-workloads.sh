@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: MIT OR Apache-2.0
+# SPDX-FileCopyrightText: The sipnab contributors
+
 # Run sipnab under Valgrind memcheck across its offline, archive, HEP, MCP and
 # REST paths, writing one log per workload into OUT. scripts/memcheck-verdict.py
 # then judges the logs. The weekly job is .github/workflows/memcheck.yml.

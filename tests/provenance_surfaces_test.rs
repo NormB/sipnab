@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-FileCopyrightText: The sipnab contributors
 
 // The file reader, the resolver, the pipeline and `output::model` are all
 // behind `native`. Gating the whole file is right here rather than gating

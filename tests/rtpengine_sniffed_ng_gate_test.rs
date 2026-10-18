@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-FileCopyrightText: The sipnab contributors
 
 //! VAL8: sniffed rtpengine `ng` is unauthenticated input and must not be
 //! read as if it were addressed to sipnab.

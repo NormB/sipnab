@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-FileCopyrightText: The sipnab contributors
 
 //! Fuzz the LLMNR decoder. It is claimed during classification before any
 //! media check, because an LLMNR query is a DNS-format message whose random

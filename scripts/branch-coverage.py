@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: MIT OR Apache-2.0
+# SPDX-FileCopyrightText: The sipnab contributors
 """Report, and optionally enforce, total branch coverage.
 
 `cargo llvm-cov report` has `--fail-under-lines`, `--fail-under-regions` and

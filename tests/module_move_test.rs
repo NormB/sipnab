@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-FileCopyrightText: The sipnab contributors
 
 //! What breaks when a vendor-neutral abstraction moves out from under a
 //! vendor-named module.

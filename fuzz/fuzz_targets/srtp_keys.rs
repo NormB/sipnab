@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-FileCopyrightText: The sipnab contributors
 
 //! Fuzz SRTP key extraction from SDES `a=crypto` parameters. The fuzz input
 //! is split on the first newline into the suite and key-params fields (falling

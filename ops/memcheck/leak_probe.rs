@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-FileCopyrightText: The sipnab contributors
+
 // A program with exactly one leak, for .github/workflows/memcheck.yml to run
 // under Valgrind before it judges sipnab. If memcheck does not report this
 // block as definitely lost, the job's clean verdicts mean nothing, and the job

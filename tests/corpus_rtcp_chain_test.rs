@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-FileCopyrightText: The sipnab contributors
 
 //! Wire rules weighed against real traffic rather than argued: what RFC 3550
 //! Appendix A.2's remaining condition would cost the RTCP decoder, and what

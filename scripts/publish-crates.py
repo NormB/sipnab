@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: MIT OR Apache-2.0
+# SPDX-FileCopyrightText: The sipnab contributors
+
 """Publish this workspace's crates to crates.io, from the release workflow.
 
 Run by the `crates-io` job in `.github/workflows/release.yml` after the GitHub

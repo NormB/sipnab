@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-FileCopyrightText: The sipnab contributors
 
 //! `cli::SECRET_FLAGS` lists every flag that takes a secret inline, and the
 //! run provenance record redacts exactly those. A secret flag missing from

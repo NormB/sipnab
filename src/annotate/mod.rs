@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-FileCopyrightText: The sipnab contributors
 
 //! Operator notes: text a person types about a SIP message, written into a
 //! pcapng file as a packet comment and never read back.

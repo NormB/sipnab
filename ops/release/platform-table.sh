@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: MIT OR Apache-2.0
+# SPDX-FileCopyrightText: The sipnab contributors
+
 # Emit the "which download do I want" table for a release body.
 #
 # Usage: ops/release/platform-table.sh <artifacts-dir>

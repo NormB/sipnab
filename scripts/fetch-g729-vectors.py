@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: MIT OR Apache-2.0
+# SPDX-FileCopyrightText: The sipnab contributors
 """Fetch the ITU-T G.729 and G.729.1 decoder test vectors.
 
 The vectors ship inside the ITU-T G.729 (06/2012) Release 3 software package,

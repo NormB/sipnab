@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: MIT OR Apache-2.0
+# SPDX-FileCopyrightText: The sipnab contributors
 """Prove every sipnab command in the cookbook still works.
 
 `docs/examples.md` is the one page that promises the reader a command they can

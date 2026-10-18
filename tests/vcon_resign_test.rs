@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-FileCopyrightText: The sipnab contributors
 
 //! `--vcon-resign`: the long-term archiving of draft-ietf-vcon-vcon-core-04
 //! section 5.2.3, on the shipped binary. "Before the expiration of the JWS1

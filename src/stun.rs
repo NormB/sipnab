@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-FileCopyrightText: The sipnab contributors
 
 //! STUN ([RFC 5389](https://www.rfc-editor.org/rfc/rfc5389.html)) parsing, and the
 //! one failure an operator most needs told about: a Binding Request that never

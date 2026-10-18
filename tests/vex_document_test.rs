@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-FileCopyrightText: The sipnab contributors
 //! The OpenVEX document states, in machine-readable form, every advisory the
 //! project has accepted as not affecting it.
 //!

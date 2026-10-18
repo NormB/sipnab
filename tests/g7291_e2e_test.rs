@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-FileCopyrightText: The sipnab contributors
 //! G.729.1 through the shipped binary: a call whose SDP offers
 //! `a=rtpmap:96 G7291/16000` (RFC 4749), read from a capture built here, its
 //! audio exported in a vCon with `--retain-audio` and sent by a live RTP

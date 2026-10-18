@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-FileCopyrightText: The sipnab contributors
 
 //! A SIPREC recording session in a vCon: the recorded call's participants as
 //! parties, and each recorded stream tied to the participant that sends it.

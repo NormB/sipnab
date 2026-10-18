@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-FileCopyrightText: The sipnab contributors
+
 //! The mapped reader must be indistinguishable from libpcap.
 //!
 //! `MappedPcap` exists only to remove a copy, so the single thing that must

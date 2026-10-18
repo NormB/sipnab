@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-FileCopyrightText: The sipnab contributors
 
 //! The `Host`-header allowlist both HTTP servers apply: the REST API
 //! (`--api-allowed-host`) and the MCP HTTP transport (`--mcp-allowed-host`).

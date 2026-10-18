@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-FileCopyrightText: The sipnab contributors
 
 //! Certificate chains for a vCon signer: a root CA, an intermediate it
 //! issued, and a signing certificate the intermediate issued for the

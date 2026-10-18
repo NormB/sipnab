@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-FileCopyrightText: The sipnab contributors
 
 //! Gains: the MA-predicted fixed-codebook gain of G.729 clause 3.9.1
 //! (equations (66) to (71)), decoding of the two-stage conjugate codebook

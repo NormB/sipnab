@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-FileCopyrightText: The sipnab contributors
+
 // Command metrics calls GET /metrics: the Prometheus exposition, as a scraper sees it.
 //
 // docs/prometheus-metrics.md shows the body of run, between the snippet markers; this

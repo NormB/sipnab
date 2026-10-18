@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-FileCopyrightText: The sipnab contributors
 
 //! Sorting with a type-erased comparator, to stop one algorithm being emitted
 //! once per closure.

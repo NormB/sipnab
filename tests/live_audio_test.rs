@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-FileCopyrightText: The sipnab contributors
 
 //! Live audio: a `[[vcon.rule]]` with `live_audio = true` serves each matching
 //! call's decoded audio over a WebSocket at `/v1/calls/{call_id}/audio`, lists

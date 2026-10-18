@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-FileCopyrightText: The sipnab contributors
 
 //! `--relay-stats`, `--relay-stats-list`, `--relay-stats-call`,
 //! `--relay-stats-interval` and `--relay-compare`, end to end against a relay

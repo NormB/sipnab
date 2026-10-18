@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-FileCopyrightText: The sipnab contributors
 
 //! `--hep-send` on a capture FILE must say that the file's contents are
 //! leaving the machine.

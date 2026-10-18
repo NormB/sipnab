@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-FileCopyrightText: The sipnab contributors
 
 //! Stage tests: each decoder stage, fed its inputs from the oracle's traces,
 //! must reproduce the trace's outputs exactly, subframe by subframe.

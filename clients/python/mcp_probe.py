@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: MIT OR Apache-2.0
+# SPDX-FileCopyrightText: The sipnab contributors
+
 """Ask both sipnab nodes the same question over MCP, and compare the answers.
 
 The REST client reads projections. This one drives the door an agent uses, on

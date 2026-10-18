@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: MIT OR Apache-2.0
+# SPDX-FileCopyrightText: The sipnab contributors
+
 """Recompute CSP sha256 hashes for the site's inline scripts and update the
 Cloudflare response-header transform rule for sipnab.com.
 

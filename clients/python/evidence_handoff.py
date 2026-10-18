@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: MIT OR Apache-2.0
+# SPDX-FileCopyrightText: The sipnab contributors
+
 """Package the calls a capture's findings name, with a repro script for each.
 
     evidence_handoff.py capture.pcap --file-root DIR [--name NAME]

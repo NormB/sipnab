@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-FileCopyrightText: The sipnab contributors
 
 //! Fuzz TCP stream reassembly with a structured segment stream: the
 //! input is decoded as a sequence of pseudo-segments (flags, port

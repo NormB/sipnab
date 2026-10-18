@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: MIT OR Apache-2.0
+# SPDX-FileCopyrightText: The sipnab contributors
+
 # Run every fixer, then report what changed.
 #
 # The repository has a fixer for most of what its gates enforce -- citations,

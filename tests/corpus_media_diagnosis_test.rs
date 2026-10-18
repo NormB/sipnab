@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-FileCopyrightText: The sipnab contributors
 
 //! `nat_mismatch` and `no_media` fire on REAL captures, and only where they
 //! should.

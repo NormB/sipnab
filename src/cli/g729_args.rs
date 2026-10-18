@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-FileCopyrightText: The sipnab contributors
 
 //! `sipnab g729 install` and `sipnab g729 status`: the command line of the
 //! command that installs the G.729 codebook tables (docs/g729.md).

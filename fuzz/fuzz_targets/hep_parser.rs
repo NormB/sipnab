@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-FileCopyrightText: The sipnab contributors
 
 //! Fuzz the HEP (Homer Encapsulation Protocol) parser — the network-facing
 //! decoder for captured HEP frames. Arbitrary bytes must be rejected or

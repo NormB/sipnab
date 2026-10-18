@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-FileCopyrightText: The sipnab contributors
 
 //! No test under `tests/` reserves a port by binding `:0`, reading the
 //! number, and releasing the socket.

@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-FileCopyrightText: The sipnab contributors
 
 //! The `--hep-send` delivery thread: a bounded store-and-forward queue
 //! between the capture and the collector.

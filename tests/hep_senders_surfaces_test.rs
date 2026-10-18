@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-FileCopyrightText: The sipnab contributors
 
 //! One HEP sender roster, one answer: `GET /v1/hep/senders` and the MCP
 //! `hep_senders` tool return the same bytes (invariant "One wire shape per concept", "one wire shape per

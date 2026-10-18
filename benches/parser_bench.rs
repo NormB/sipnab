@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-FileCopyrightText: The sipnab contributors
 
 //! Criterion benchmarks for the SIP/RTP/SDP/DSL parsers and packet decap.
 

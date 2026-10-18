@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-FileCopyrightText: The sipnab contributors
 
 //! SCITT lifecycle statements: the vCon forwarder registers `vcon_created`
 //! and `vcon_sent` (draft-howe-vcon-lifecycle-01 section 5) with a SCRAPI

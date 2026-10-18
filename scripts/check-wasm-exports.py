@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: MIT OR Apache-2.0
+# SPDX-FileCopyrightText: The sipnab contributors
+
 """Fail if the built WASM glue is missing an export `src/wasm.rs` declares.
 
 Run from the repo root:  python3 scripts/check-wasm-exports.py

@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-FileCopyrightText: The sipnab contributors
+
 //! Running the uprobe capture source: install, drain, convert, send.
 //!
 //! Needs `libc`, which it reaches through `perf`.

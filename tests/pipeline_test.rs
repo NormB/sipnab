@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-FileCopyrightText: The sipnab contributors
 
 //! The per-packet protocol-routing pipeline must be a testable library
 //! API, not code buried in main.rs. These tests drive

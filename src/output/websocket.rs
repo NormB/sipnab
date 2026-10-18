@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-FileCopyrightText: The sipnab contributors
 
 //! The server half of [RFC 6455](https://www.rfc-editor.org/rfc/rfc6455.html)
 //! WebSocket that the live audio route needs: the handshake's accept key, the

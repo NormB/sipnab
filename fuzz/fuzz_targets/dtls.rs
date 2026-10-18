@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-FileCopyrightText: The sipnab contributors
 
 //! Fuzz the DTLS-SRTP handshake observer: record/handshake parsing plus
 //! the key-derivation path (a keylog entry with the all-0xAB client

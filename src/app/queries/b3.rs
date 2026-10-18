@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-FileCopyrightText: The sipnab contributors
 
 //! Batch B3's file jobs: see `docs/design/par5-cli-queries.md` for the flags
 //! this file owns. A file job reads a set of files rather than this run's

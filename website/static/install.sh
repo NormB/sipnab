@@ -1,4 +1,7 @@
 #!/bin/sh
+# SPDX-License-Identifier: MIT OR Apache-2.0
+# SPDX-FileCopyrightText: The sipnab contributors
+
 # sipnab installer — https://sipnab.com/install.sh
 #
 #   curl -fsSL https://sipnab.com/install.sh | sh

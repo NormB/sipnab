@@ -1,4 +1,7 @@
 #!/bin/sh
+# SPDX-License-Identifier: MIT OR Apache-2.0
+# SPDX-FileCopyrightText: The sipnab contributors
+
 # Compile and DOCUMENT the NON-LINUX arm of every `#[cfg(target_os = ...)]`
 # split, on Linux.
 #

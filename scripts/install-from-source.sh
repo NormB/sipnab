@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: MIT OR Apache-2.0
+# SPDX-FileCopyrightText: The sipnab contributors
+
 #
 # Build sipnab FROM A CHECKOUT, install it, and grant live-capture capabilities.
 #

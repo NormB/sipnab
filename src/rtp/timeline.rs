@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-FileCopyrightText: The sipnab contributors
 //! Where each retained frame belongs on its stream's RTP clock.
 //!
 //! The decoders turned the retained frames into audio one after another, so a

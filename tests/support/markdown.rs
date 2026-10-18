@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-FileCopyrightText: The sipnab contributors
 
 //! CommonMark fence lexing, comment stripping, and the repository's own tree
 //! layout — shared by every documentation gate.

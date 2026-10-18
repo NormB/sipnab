@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: MIT OR Apache-2.0
+# SPDX-FileCopyrightText: The sipnab contributors
+
 """A docs page shows its description once, not twice.
 
 Both site generators write a page's description into its front matter, and

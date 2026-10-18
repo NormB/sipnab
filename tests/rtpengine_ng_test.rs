@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-FileCopyrightText: The sipnab contributors
 
 //! RE1/RE2/RE6: media captured on a standalone relay must be attributable to
 //! a call, from the relay's own control plane.

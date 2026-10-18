@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-FileCopyrightText: The sipnab contributors
 
 //! MCP `export_vcon` names a call's other leg, as the batch export and the
 //! REST route do: one container per leg, each carrying the other's uuid in

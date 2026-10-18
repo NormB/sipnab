@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-FileCopyrightText: The sipnab contributors
+
 // Command get-dialog calls GET /v1/dialogs/{call_id}: one dialog's state and message count.
 //
 // docs/rest-api.md shows the body of run, between the snippet markers; this

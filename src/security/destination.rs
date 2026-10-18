@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-FileCopyrightText: The sipnab contributors
+
 //! Destination country of a dialed number: dial-plan stripping, E.164 digits, and a
 //! longest-prefix lookup from calling code to ISO 3166-1 alpha-2.
 //!

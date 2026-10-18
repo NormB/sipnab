@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: MIT OR Apache-2.0
+# SPDX-FileCopyrightText: The sipnab contributors
+
 """Check that a documented line citation still points at the code it names.
 
 `linked_code_targets_exist` proves a citation's FILE exists and

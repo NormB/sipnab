@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: MIT OR Apache-2.0
+# SPDX-FileCopyrightText: The sipnab contributors
+
 """Link RFC citations, following the convention already used 563 times here.
 
   RFC 3261 §17.1.1.3  ->  https://www.rfc-editor.org/rfc/rfc3261.html#section-17.1.1.3

@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-FileCopyrightText: The sipnab contributors
 
 //! The analysis of one stored vCon container handed over inline: what the MCP
 //! `analyze_vcon` tool and `POST /v1/vcon/analyze` both answer.

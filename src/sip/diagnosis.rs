@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-FileCopyrightText: The sipnab contributors
+
 //! Signaling-side problem diagnosis.
 //!
 //! The complement to [`crate::rtp::diagnosis`], which does this job for media.

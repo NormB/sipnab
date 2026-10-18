@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-FileCopyrightText: The sipnab contributors
 
 //! Ratchet guard: every user-facing CLI flag must appear in at least two
 //! runnable example commands in the documentation.

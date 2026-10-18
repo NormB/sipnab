@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-FileCopyrightText: The sipnab contributors
 
 //! Fuzz the archive and password layer: ZIP (none, ZipCrypto, AES), 7z (none,
 //! AES-256, encrypted headers), gzip and tar, nested, with one password taken

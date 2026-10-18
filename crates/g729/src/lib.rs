@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-FileCopyrightText: The sipnab contributors
 
 //! Clean-room ITU-T G.729 Annex A decoder with Annex B comfort noise and the G.729.1 core layer.
 //!

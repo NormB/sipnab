@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-FileCopyrightText: The sipnab contributors
 
 //! The PBX filter fields that read the run's configuration, on the shipped
 //! binary: `side` against `[pbx] addresses`, and `endpoint` against the names

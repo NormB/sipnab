@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: MIT OR Apache-2.0
+# SPDX-FileCopyrightText: The sipnab contributors
+
 """Refuse a commit that stages a GENERATED file without its inputs.
 
 This is the defect that broke `main` four times in one session, wearing four
