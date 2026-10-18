@@ -1394,6 +1394,19 @@ One entry in the comma-separated `[security] fraud_destination` list is not a de
 
 **Exit code:** 1.
 
+### `[hep] {key} must be 1-{max}, got {v}`
+
+A HEP sender setting in `[hep]` is outside the range its flag accepts.
+
+- `{key}` is `send_queue_mib` (1 to 4096, `--hep-send-queue`) or `send_timeout_secs` (1 to 300, `--hep-send-timeout`).
+- `{max}` is the top of that range, and `{v}` is the value in the file.
+
+The printed line starts with `invalid config value: `.
+
+**What to do:** Set a value in the range, or remove the key to use the default (64 MiB, 3 seconds).
+
+**Exit code:** 1.
+
 ### `[security] kill_response must be 100-699, got {code}`
 
 `[security] kill_response` is the SIP status code sipnab sends in a scanner-kill response. SIP status codes run from 100 to 699, and `{code}` is the value in the file. The printed line starts with `invalid config value: `.

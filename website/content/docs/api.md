@@ -2831,7 +2831,7 @@ The MCP `get_capture_report` tool answers the same question, with the same
 
 What sipnab is doing, and what it is costing the host it runs on.
 
-sipnab exports 40 Prometheus metrics. The listener that serves them is off
+sipnab exports 45 Prometheus metrics. The listener that serves them is off
 by default.
 
 - This endpoint answers the same questions without that listener.
@@ -2887,7 +2887,7 @@ curl -s -H "Authorization: Bearer $SIPNAB_API_KEY" http://127.0.0.1:8080/v1/runt
 ```
 
 On a `--hep-send` run the envelope also carries `hep_export`. It shows what the exporter
-delivered and what failed:
+delivered, replayed, dropped and failed:
 
 ```json
 "hep_export": {
@@ -2895,18 +2895,29 @@ delivered and what failed:
   "packets_sent": 18204,
   "failures": { "connect": 3, "tls_handshake": 0, "write": 0 },
   "reconnects": 1,
-  "delivery": "written to the connection: a write that fails is counted, and the next packet dials again"
+  "queued": 18210,
+  "replayed": 212,
+  "dropped": { "queue_full": 0, "stopped": 0, "unsent_at_exit": 0 },
+  "queue_depth": 6,
+  "delivery": "written to the connection: a write that fails is counted, the packet stays queued, and the sender dials again with backoff"
 }
 ```
 
-Every failure kind appears, zeros included.
+Every failure kind and every drop reason appears, zeros included.
 
+- A failure is one failed delivery attempt. The packet stays queued and the
+  sender tries it again, so losses are the `dropped` counts.
 - `connect` is a collector that
-  refused, or that the sender could not reach, when the sender dialed again.
+  refused, or that the sender could not reach within `--hep-send-timeout`.
 - `tls_handshake` is
   a collector whose certificate the sender does not accept.
 - `write` is a packet
   an established connection refused.
+- `queued` always equals `packets_sent` plus every `dropped` count plus
+  `queue_depth`.
+
+See [When the `--hep-send` collector goes
+away](@/docs/cli.md#when-the-hep-send-collector-goes-away).
 
 **Over UDP, `packets_sent` means handed to
 the kernel.** A collector that is down produces no failure at all. `delivery` says

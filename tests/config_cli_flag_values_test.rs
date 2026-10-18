@@ -1831,6 +1831,16 @@ static SPECS: &[Spec] = &[
         &[],
     ),
     (
+        "hep-send-queue",
+        Kind::Int { lo: 1, hi: 4096 },
+        &["--hep-send", "127.0.0.1:9060"],
+    ),
+    (
+        "hep-send-timeout",
+        Kind::Int { lo: 1, hi: 300 },
+        &["--hep-send", "127.0.0.1:9060"],
+    ),
+    (
         "hep-send-transport",
         Kind::Text {
             accept: &["udp", "tcp", "tls"],
@@ -3635,6 +3645,8 @@ fn fingerprint(cli: &sipnab::cli::Cli, config: &sipnab::config::Config) -> Strin
         format!("{:?}", cli.gunzip_byte_cap(config)),
         format!("{:?}", cli.dns_cache_entries(config)),
         format!("{:?}", cli.hep_hmac_window_secs(config)),
+        format!("{:?}", cli.hep_send_queue_bytes(config)),
+        format!("{:?}", cli.hep_send_timeout(config)),
         format!("{:?}", cli.mcp_findings_cap(config)),
         format!("{:?}", cli.metrics_conn_cap(config)),
         format!("{:?}", cli.api_row_cap(config)),

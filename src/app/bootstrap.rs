@@ -4932,6 +4932,15 @@ pub fn apply_config(cli: &Cli, loaded: LoadedConfig) -> Result<LoadedConfig, Pla
         });
     }
 
+    // [hep] send_queue_mib and send_timeout_secs, held to the ranges
+    // --hep-send-queue and --hep-send-timeout accept.
+    if let Err(e) = loaded.config.hep.validate() {
+        return Err(PlanError {
+            exit_code: 1,
+            message: e.to_string(),
+        });
+    }
+
     // [display] color is refused for a spelling `--color` refuses, a
     // [theme] color or [keybindings] key for one the TUI cannot parse, and
     // every path-valued key for an empty path its flag refuses: the file must

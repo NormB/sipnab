@@ -4,7 +4,7 @@
 //!
 //! # Why this module exists
 //!
-//! sipnab exports 40 Prometheus metrics and none of them is reachable over MCP
+//! sipnab exports 45 Prometheus metrics and none of them is reachable over MCP
 //! or REST. The metrics listener is also off by default, so on most
 //! deployments those numbers exist in-process and nothing can read them — an
 //! agent asked "is this server healthy" cannot enable a listener to find out.
@@ -406,8 +406,19 @@ pub struct HepExportStats {
     /// Failures by kind — `connect`, `tls_handshake`, `write` — every kind
     /// present, zeros included.
     pub failures: std::collections::BTreeMap<String, u64>,
-    /// Connections rebuilt after one broke (TCP and TLS only).
+    /// Times the collector became reachable again after an outage.
     pub reconnects: u64,
+    /// Packets the capture handed to the exporter's queue. Every one is
+    /// sent, dropped, or still queued: `queued = packets_sent + dropped +
+    /// queue_depth`.
+    pub queued: u64,
+    /// Packets delivered after waiting out an outage in the queue.
+    pub replayed: u64,
+    /// Packets discarded undelivered, by reason — `queue_full`, `stopped`,
+    /// `unsent_at_exit` — every reason present, zeros included.
+    pub dropped: std::collections::BTreeMap<String, u64>,
+    /// Packets queued now, neither sent nor dropped.
+    pub queue_depth: u64,
     /// What `packets_sent` means on this transport. Over UDP it means handed
     /// to the kernel: a collector that is down produces no failure at all.
     pub delivery: String,
@@ -426,6 +437,13 @@ impl HepExportStats {
                 .map(|k| (k.as_str().to_string(), snap.failures[k.index()]))
                 .collect(),
             reconnects: snap.reconnects,
+            queued: snap.queued,
+            replayed: snap.replayed,
+            dropped: crate::capture::hep_export::DropReason::ALL
+                .iter()
+                .map(|r| (r.as_str().to_string(), snap.dropped[r.index()]))
+                .collect(),
+            queue_depth: snap.depth(),
             delivery: snap.delivery().to_string(),
         }
     }

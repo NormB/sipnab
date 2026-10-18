@@ -32,6 +32,14 @@ pub mod file;
 pub(crate) mod frames;
 #[cfg(feature = "hep")]
 pub mod hep;
+// RTCP encoded as the JSON body HOMER's collector stores for HEP type 5.
+#[cfg(feature = "hep")]
+pub mod hep_rtcp;
+// The `--hep-send` delivery thread: the queue between the capture and the
+// collector, the reconnect and the replay. Its own module so the transport
+// side can change without touching what `hep` builds.
+#[cfg(feature = "hep")]
+pub(crate) mod hep_delivery;
 // Not behind `hep`: the listener writes this state, but the TUI, REST and MCP
 // read it from modules of their own, and a type they could only name under
 // `hep` would put a feature gate on every field that holds it.

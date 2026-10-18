@@ -987,6 +987,53 @@ pub fn format_metrics(metrics: &PrometheusMetrics) -> String {
             );
         }
         out.push('\n');
+        // The queue in front of the sender. `queued = packets + dropped +
+        // depth` always holds, so an operator can read loss straight off
+        // `dropped_total` and backlog off `queue_depth`.
+        for (name, help, value) in [
+            (
+                "sipnab_hep_export_queued_total",
+                "Packets the capture handed to the --hep-send exporter's queue",
+                export.queued,
+            ),
+            (
+                "sipnab_hep_export_replayed_total",
+                "Packets the --hep-send exporter delivered after waiting out a collector outage",
+                export.replayed,
+            ),
+            (
+                "sipnab_hep_export_reconnects_total",
+                "Times the --hep-send collector became reachable again after an outage",
+                export.reconnects,
+            ),
+        ] {
+            write_help_type(&mut out, name, help, "counter");
+            let _ = writeln!(out, "{name} {value}");
+            out.push('\n');
+        }
+        write_help_type(
+            &mut out,
+            "sipnab_hep_export_dropped_total",
+            "Packets the --hep-send exporter discarded undelivered, by reason",
+            "counter",
+        );
+        for reason in crate::capture::hep_export::DropReason::ALL {
+            let _ = writeln!(
+                out,
+                "sipnab_hep_export_dropped_total{{reason=\"{}\"}} {}",
+                reason.as_str(),
+                export.dropped[reason.index()]
+            );
+        }
+        out.push('\n');
+        write_help_type(
+            &mut out,
+            "sipnab_hep_export_queue_depth",
+            "Packets queued for the --hep-send collector now, neither sent nor dropped",
+            "gauge",
+        );
+        let _ = writeln!(out, "sipnab_hep_export_queue_depth {}", export.depth());
+        out.push('\n');
     }
 
     // Capture quality. Three counters, never a sum: a bigger ring buffer
@@ -1662,6 +1709,60 @@ mod tests {
         assert_eq!(kinds.get("tls_handshake").map(String::as_str), Some("1"));
         assert_eq!(kinds.get("connect").map(String::as_str), Some("0"));
         Ok(())
+    }
+
+    /// **An exporter scrapes its queue**: packets queued, replayed after an
+    /// outage, reconnects, the depth now, and a dropped series for every
+    /// reason -- the label set derived from the exporter's own vocabulary,
+    /// zeros published so an alert reads zero, not no-data.
+    #[test]
+    fn an_exporter_scrapes_its_queue_and_a_drop_series_for_every_reason() {
+        use crate::capture::hep_export::{DropReason, HepExportCounters};
+        let counters = HepExportCounters::new("tcp");
+        for _ in 0..10 {
+            counters.record_queued();
+        }
+        for _ in 0..4 {
+            counters.record_sent();
+        }
+        counters.record_replayed();
+        counters.record_reconnect();
+        counters.record_dropped(DropReason::Stopped, 3);
+        let (_tx, rx) = crate::capture::channel::packet_channel(8);
+        let meter = rx.meter();
+        assert!(meter.attach_hep_export(counters));
+        let mut m = PrometheusMetrics::default();
+        m.apply_meter(&meter);
+        let out = format_metrics(&m);
+        for line in [
+            "\nsipnab_hep_export_queued_total 10\n",
+            "\nsipnab_hep_export_replayed_total 1\n",
+            "\nsipnab_hep_export_reconnects_total 1\n",
+            "\nsipnab_hep_export_queue_depth 3\n",
+            "\n# TYPE sipnab_hep_export_queue_depth gauge\n",
+        ] {
+            assert!(out.contains(line), "`{}` missing: {out}", line.trim());
+        }
+        let prefix = "sipnab_hep_export_dropped_total{reason=\"";
+        let mut reasons = std::collections::BTreeMap::new();
+        for line in out.lines().filter(|l| l.starts_with(prefix)) {
+            if let Some((reason, value)) = line[prefix.len()..].split_once("\"} ") {
+                reasons.insert(reason.to_string(), value.to_string());
+            }
+        }
+        let vocabulary: std::collections::BTreeSet<String> = DropReason::ALL
+            .iter()
+            .map(|r| r.as_str().to_string())
+            .collect();
+        assert_eq!(
+            reasons
+                .keys()
+                .cloned()
+                .collect::<std::collections::BTreeSet<_>>(),
+            vocabulary
+        );
+        assert_eq!(reasons.get("stopped").map(String::as_str), Some("3"));
+        assert_eq!(reasons.get("queue_full").map(String::as_str), Some("0"));
     }
 
     /// A run that exports nothing publishes no export series.

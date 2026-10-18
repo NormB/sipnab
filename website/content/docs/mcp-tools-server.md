@@ -38,7 +38,7 @@ Start here when you have a capture and no particular suspect. These answer "what
 What sipnab is doing, and what it is costing the host it runs on.
 
 Use it to answer "is this server healthy" without a metrics listener. sipnab
-exports 40 Prometheus metrics, and the listener that serves them is off by
+exports 45 Prometheus metrics, and the listener that serves them is off by
 default. This tool reports process, host and store state over MCP without
 that listener.
 
@@ -90,7 +90,9 @@ The example runs against
 
 A `--hep-send` run also carries `hep_export`: the transport, `packets_sent`,
 `failures` by kind (`connect`, `tls_handshake`, `write`, every kind present),
-`reconnects`, and `delivery`, which says what "sent" means on that transport.
+`reconnects`, `queued`, `replayed` after an outage, `dropped` by reason
+(`queue_full`, `stopped`, `unsent_at_exit`, every reason present),
+`queue_depth`, and `delivery`, which says what "sent" means on that transport.
 Over UDP it means handed to the kernel: a collector that is down produces no
 failure. The shape is the same as `GET /v1/runtime`'s, from the same collector.
 

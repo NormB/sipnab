@@ -526,6 +526,8 @@ static KEY_SPECS: &[KeySpec] = &[
             ctx: "",
         },
     ),
+    ("hep", "send_queue_mib", KeyKind::Int { lo: 1, hi: 4096 }),
+    ("hep", "send_timeout_secs", KeyKind::Int { lo: 1, hi: 300 }),
     (
         "hep",
         "tls_ca",

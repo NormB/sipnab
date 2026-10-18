@@ -278,7 +278,15 @@ static KNOWN_KEYS: LazyLock<HashMap<&'static str, &'static [&'static str]>> = La
     m.insert("metrics", ["tls_cert", "tls_key"].as_slice());
     m.insert(
         "hep",
-        ["tls_ca", "tls_extra_ca", "tls_cert", "tls_key"].as_slice(),
+        [
+            "tls_ca",
+            "tls_extra_ca",
+            "tls_cert",
+            "tls_key",
+            "send_queue_mib",
+            "send_timeout_secs",
+        ]
+        .as_slice(),
     );
     m.insert("privilege", ["user", "no_priv_drop", "chroot"].as_slice());
     // [vcon_forward] holds the vCon forwarder's standing settings, one key per
@@ -604,6 +612,37 @@ pub struct HepConfig {
     pub tls_cert: Option<PathBuf>,
     /// PEM private key for `tls_cert`. `--hep-tls-key` replaces it.
     pub tls_key: Option<PathBuf>,
+    /// MiB of packets the HEP sender queues while its collector is
+    /// unreachable, 1 to 4096 (default 64). `--hep-send-queue` replaces it.
+    pub send_queue_mib: Option<u64>,
+    /// Seconds one HEP sender TCP dial or stalled write may take, 1 to 300
+    /// (default 3). `--hep-send-timeout` replaces it.
+    pub send_timeout_secs: Option<u64>,
+}
+
+impl HepConfig {
+    /// Reject `[hep]` values its flags refuse.
+    ///
+    /// # Errors
+    /// `crate::Error::ConfigInvalid`, naming the key, when `send_queue_mib`
+    /// is outside 1-4096 or `send_timeout_secs` is outside 1-300: the ranges
+    /// `--hep-send-queue` and `--hep-send-timeout` accept, so the file is not
+    /// the lenient way in.
+    pub fn validate(&self) -> Result<(), crate::Error> {
+        for (key, value, max) in [
+            ("send_queue_mib", self.send_queue_mib, 4096),
+            ("send_timeout_secs", self.send_timeout_secs, 300),
+        ] {
+            if let Some(v) = value
+                && !(1..=max).contains(&v)
+            {
+                return Err(crate::Error::ConfigInvalid(format!(
+                    "[hep] {key} must be 1-{max}, got {v}"
+                )));
+            }
+        }
+        Ok(())
+    }
 }
 
 /// `[vcon_forward]`: the settings of the vCon forwarder
@@ -5936,6 +5975,42 @@ column_selector = "F10"
     /// learns to ignore the warning that matters. The end-to-end wiring tests
     /// in `tests/threshold_wiring_test.rs` pass either way, so they cannot
     /// stand in for this: that is #81's defect class exactly.
+    /// `[hep] send_queue_mib` and `send_timeout_secs` are registered, accept
+    /// the ranges their flags accept, and are refused, by name, outside them.
+    #[test]
+    fn the_hep_send_keys_are_registered_and_held_to_their_flags_ranges() -> Result<(), TestError> {
+        for (key, lo, hi) in [
+            ("send_queue_mib", 1u64, 4096u64),
+            ("send_timeout_secs", 1, 300),
+        ] {
+            for good in [lo, hi] {
+                let set = format!("[hep]\n{key} = {good}\n");
+                let cfg: Config = toml::from_str(&set).map_err(|e| format!("valid: {e:?}"))?;
+                assert!(
+                    Config::unknown_keys(&set)
+                        .map_err(|e| format!("scan: {e:?}"))?
+                        .is_empty(),
+                    "{key} must be registered in KNOWN_KEYS"
+                );
+                assert!(cfg.hep.validate().is_ok(), "{key} = {good} must validate");
+            }
+            for bad in [0, hi + 1] {
+                let set = format!("[hep]\n{key} = {bad}\n");
+                let cfg: Config = toml::from_str(&set).map_err(|e| format!("parses: {e:?}"))?;
+                let err = cfg
+                    .hep
+                    .validate()
+                    .err()
+                    .ok_or_else(|| format!("{key} = {bad} must be rejected"))?;
+                assert!(
+                    err.to_string().contains(key),
+                    "the refusal must name {key}, got: {err}"
+                );
+            }
+        }
+        Ok(())
+    }
+
     #[test]
     fn scanner_thresholds_parse_are_registered_and_reject_zero() -> Result<(), TestError> {
         for key in [

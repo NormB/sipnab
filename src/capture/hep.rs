@@ -566,18 +566,40 @@ pub fn build_hep_v3_hmac(
     signing: &HepHmacSigning<'_>,
     payload: &[u8],
 ) -> Vec<u8> {
+    build_hep_v3_hmac_correlated(
+        endpoint, timestamp, protocol, capture_id, signing, None, payload,
+    )
+}
+
+/// [`build_hep_v3_hmac`] with a correlation ID, written as
+/// [`build_hep_v3_correlated`] writes it.
+///
+/// The chunk is written before the token is computed, so the signature
+/// covers it like every other byte of the datagram: a correlation ID altered
+/// in flight fails verification.
+#[cfg(feature = "hep")]
+fn build_hep_v3_hmac_correlated(
+    endpoint: &HepEndpoint,
+    timestamp: DateTime<Utc>,
+    protocol: HepProtocol,
+    capture_id: u32,
+    signing: &HepHmacSigning<'_>,
+    correlation_id: Option<&[u8]>,
+    payload: &[u8],
+) -> Vec<u8> {
     let HepHmacSigning {
         key,
         token_ts,
         nonce,
     } = *signing;
     let placeholder = [0u8; HMAC_TOKEN_LEN];
-    let mut pkt = build_hep_v3_bytes(
+    let mut pkt = build_hep_v3_correlated(
         endpoint,
         timestamp,
         protocol,
         capture_id,
         Some(&placeholder),
+        correlation_id,
         payload,
     );
     // Locate the token by parsing back what was just built, rather than by
@@ -1573,8 +1595,31 @@ pub enum Forwarded {
     Sip,
     /// Sent as HEP protocol type 5.
     Rtcp,
+    /// RTCP whose call is unknown (no SDP named its media endpoint): nothing
+    /// was sent, since HOMER stores RTCP only under a call's Call-ID.
+    RtcpWithoutCall,
+    /// RTCP heplify would not encode, such as a datagram that opens with BYE:
+    /// nothing was sent.
+    RtcpNotEncodable,
     /// Neither SIP nor RTCP: nothing was sent.
     Nothing,
+}
+
+/// Say once, per process, that RTCP with no known call is not forwarded.
+///
+/// Once, because a capture that misses the signaling misses it for every
+/// report, and a line per report would bury everything else. Said at all,
+/// because otherwise a capture on the media ports alone forwards nothing and
+/// nothing explains why.
+fn note_rtcp_without_call() {
+    static SAID: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+    if !SAID.swap(true, std::sync::atomic::Ordering::Relaxed) {
+        tracing::info!(
+            "--hep-send: RTCP whose call is unknown is not forwarded. HOMER stores RTCP \
+             only under the call's Call-ID, which sipnab learns from the SDP that set up \
+             the media; heplify and captagent drop the same reports (said once)"
+        );
+    }
 }
 
 /// Network endpoint pair for HEP packet construction.
@@ -1673,6 +1718,37 @@ pub fn build_hep_v3_bytes(
     auth_key: Option<&[u8]>,
     payload: &[u8],
 ) -> Vec<u8> {
+    build_hep_v3_correlated(
+        endpoint, timestamp, protocol, capture_id, auth_key, None, payload,
+    )
+}
+
+/// Like [`build_hep_v3_bytes`], and writes the correlation-ID chunk
+/// (`0x0011`) when given a non-empty one.
+///
+/// The correlation ID is how HOMER joins a report to its call: heplify-server
+/// stores protocol types 2 and up only when it is non-empty
+/// (`database/postgres.go`, line 187, sipcapture/heplify-server at 95a97868),
+/// keyed by it as the row's `sid`. heplify writes the chunk only when it has
+/// one (`src/hep/encoder.go`, lines 136-138, sipcapture/heplify at 47e9064b),
+/// so `None` and an empty ID both leave the datagram byte-identical to
+/// [`build_hep_v3_bytes`].
+///
+/// The chunk sits after the auth chunk and before the payload, where heplify
+/// puts it. HEP v3 chunks are self-describing, so a receiver reads them in
+/// any order; the placement only keeps the payload last.
+///
+/// Same arguments and return value as `build_hep_v3_bytes`, plus
+/// `correlation_id`, typically a SIP Call-ID.
+pub fn build_hep_v3_correlated(
+    endpoint: &HepEndpoint,
+    timestamp: DateTime<Utc>,
+    protocol: HepProtocol,
+    capture_id: u32,
+    auth_key: Option<&[u8]>,
+    correlation_id: Option<&[u8]>,
+    payload: &[u8],
+) -> Vec<u8> {
     let src_addr = endpoint.src_addr;
     let dst_addr = endpoint.dst_addr;
     let src_port = endpoint.src_port;
@@ -1754,6 +1830,15 @@ pub fn build_hep_v3_bytes(
     // Authenticate key (Homer shared secret) or HMAC token, when configured.
     if let Some(key) = auth_key {
         append_chunk(&mut chunks, 0x0000, CHUNK_AUTH_KEY, key);
+    }
+
+    // Correlation ID, when there is one. Left out, rather than written with
+    // a wrapped length, if it could not fit beside an empty payload chunk in
+    // the u16 the HEP3 total length allows.
+    if let Some(cid) = correlation_id.filter(|cid| !cid.is_empty())
+        && HEP3_HEADER_LEN + chunks.len() + 2 * CHUNK_HEADER_LEN + cid.len() <= u16::MAX as usize
+    {
+        append_chunk(&mut chunks, 0x0000, CHUNK_CORRELATION_ID, cid);
     }
 
     // Payload. HEP3 length fields (both the per-chunk length and the total)
@@ -3428,40 +3513,9 @@ fn capture_hep_udp(start: HepListenerStart<'_, '_>, tx: PacketTx) -> Result<()> 
 
 // ── HEP over a stream: the pieces TCP and TLS share ──────────────────
 
-/// Where a [`HepSender`] puts each finished packet.
-///
-/// A boxed closure rather than the socket itself: the three transports have
-/// three unrelated types, only one of which is `Sync`, and the packet path
-/// must not care which one it got. It says how a packet went — delivered, or
-/// delivered over a connection it had to rebuild — and on failure WHICH step
-/// failed, so the export counters can tell a collector that is gone from one
-/// whose certificate is no longer acceptable.
-type HepSink = Box<dyn FnMut(&[u8]) -> std::result::Result<Delivery, SinkFailure> + Send>;
-
-/// How a packet reached the sink's transport.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Delivery {
-    /// Over the connection (or socket) already in place.
-    Direct,
-    /// Over a connection the sink had to dial again first.
-    Reconnected,
-}
-
-/// Why a sink could not deliver a packet: the failing step, and the error.
-#[derive(Debug)]
-struct SinkFailure {
-    /// The step that failed, as the export counters name it.
-    kind: super::hep_export::ExportFailure,
-    /// What the operating system or TLS said.
-    error: std::io::Error,
-}
-
-impl SinkFailure {
-    /// A failure at `kind`, carrying `error`.
-    fn at(kind: super::hep_export::ExportFailure, error: std::io::Error) -> Self {
-        Self { kind, error }
-    }
-}
+use super::hep_delivery::{DeliveryOpts, HepDelivery, HepLink, SinkFailure};
+use super::hep_export::ExportFailure;
+use std::net::TcpStream;
 
 /// TLS handshake budget for one HEP connection, either direction.
 ///
@@ -3469,24 +3523,6 @@ impl SinkFailure {
 /// listener thread for as long as it liked, and a sender would block startup on
 /// a collector that answers the TCP SYN and nothing else.
 const HEP_TLS_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
-
-/// How long one `--hep-send` TCP connect may take, over `tcp` and `tls`
-/// alike: the connection made at startup and every redial after a broken one.
-///
-/// Without a bound, a collector whose host or firewall drops the SYN instead
-/// of refusing it holds the connect for the operating system's own limit:
-/// about 127 seconds on Linux with the default six SYN retries. The sender
-/// dials on the thread that forwards packets, so for that whole time nothing
-/// is sent, counted or stopped.
-///
-/// Three seconds, because a TCP sender's first retransmission timeout is one
-/// second and doubles on each expiry (RFC 6298, sections 2.1 and 5.5): the
-/// SYN goes at 0 s and again at 1 s, and the retransmitted SYN has two
-/// seconds to be answered. A collector that answers neither is down or
-/// filtered, and nothing is gained by waiting longer, because the next packet
-/// dials again. A connect that runs out of time is a `connect` failure, as a
-/// refused one is.
-const HEP_SEND_CONNECT_TIMEOUT: Duration = Duration::from_secs(3);
 
 /// The name a collector's certificate is checked against: the host the
 /// operator dialled, without the port.
@@ -3684,13 +3720,13 @@ pub fn file_export_notice(
         )
     };
     Some(format!(
-        "{} {} forwards every SIP message and every RTCP report this run reads \
-         to that address, and this run is reading {files}. The signaling in \
-         those captures leaves this machine: request lines, headers, URIs, and \
-         any message bodies they hold. The RTCP carries the media quality \
-         summary alongside it — SSRCs, loss, jitter and the endpoints \
-         reporting them — but not the audio, which is never forwarded. sipnab \
-         forwards what it does send as it was recorded and redacts nothing. \
+        "{} {} forwards every SIP message this run reads, and the RTCP reports \
+         of the calls in it, to that address, and this run is reading {files}. \
+         The signaling in those captures leaves this machine: request lines, \
+         headers, URIs, and any message bodies they hold. The RTCP carries the \
+         media quality summary alongside it — SSRCs, loss, jitter, the \
+         endpoints reporting them and the Call-ID they belong to — but not the \
+         audio, which is never forwarded. sipnab redacts nothing. \
          Point {} at a collector you control, or drop it to analyze the \
          captures without forwarding them.",
         destination.flag(),
@@ -3713,17 +3749,19 @@ pub fn file_export_notice(
 /// finds two permits, not one, and neither is reachable without proving
 /// something first.
 pub struct HepSender {
-    /// Where finished packets go: an unconnected UDP socket that addresses
-    /// each datagram, a TCP stream, or a TLS stream over one. Behind a mutex because a stream sink is `&mut` —
-    /// a half-written packet interleaved with another would desynchronize the
-    /// collector's framing for the rest of the connection — while the packet
-    /// path holds only `&self`.
-    sink: parking_lot::Mutex<HepSink>,
-    /// The local address the sink bound, kept because a stream sink rebuilds
-    /// its connection and the original socket is not there to ask.
+    /// Where finished packets go: the queue in front of the delivery thread
+    /// that owns the connection. The packet path only ever pushes; the
+    /// thread writes, reconnects and replays. See `capture::hep_delivery`.
+    delivery: HepDelivery,
+    /// The local address the first connection bound, kept because a stream
+    /// link rebuilds its connection and the original socket is not there to
+    /// ask.
     local_addr: std::net::SocketAddr,
-    /// Which transport [`Self::sink`] speaks, for the startup log line.
+    /// Which transport the link speaks, for the startup log line.
     transport: HepTransport,
+    /// Bound on each dial and write; also sets how long the end of a run
+    /// waits for an unreachable collector.
+    timeout: Duration,
     /// Capture agent ID included in every HEP packet.
     capture_id: u32,
     /// Optional Homer authenticate key (0x000e chunk) added to every packet.
@@ -3750,12 +3788,22 @@ pub struct HepSender {
     permit: HepExportPermit,
 }
 
+use crate::cli::{DEFAULT_HEP_SEND_QUEUE_MIB, DEFAULT_HEP_SEND_TIMEOUT};
+
+/// The first retry delay after a failed delivery attempt; it doubles per
+/// consecutive failure up to [`HEP_SEND_BACKOFF_CAP`].
+const HEP_SEND_BACKOFF_FIRST: Duration = Duration::from_millis(100);
+
+/// The longest a sender waits between attempts on an unreachable collector,
+/// and so the longest after it comes back before the replay starts.
+const HEP_SEND_BACKOFF_CAP: Duration = Duration::from_secs(5);
+
 /// Everything a [`HepSender`] needs beyond the destination itself.
 ///
 /// A struct rather than five positional arguments: `transport` and `tls_ca`
 /// arrived together and would otherwise have made a seven-argument
 /// constructor whose `None`s a reader has to count.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct HepSenderOpts<'a> {
     /// Capture agent id stamped into every packet (`--hep-id`).
     pub capture_id: u32,
@@ -3772,186 +3820,265 @@ pub struct HepSenderOpts<'a> {
     /// Certificate authority trusted IN ADDITION to the host's bundle under
     /// [`HepTransport::Tls`] (`--hep-tls-extra-ca`). Exclusive with `tls_ca`.
     pub tls_extra_ca: Option<&'a std::path::Path>,
+    /// Packet bytes queued while the collector is unreachable before the
+    /// oldest is dropped (`--hep-send-queue`).
+    pub queue_bytes: usize,
+    /// Bound on each TCP dial and write (`--hep-send-timeout`).
+    pub timeout: Duration,
 }
 
-/// A sink writing whole HEP packets to one TCP collector, reconnecting when
-/// the connection goes.
+impl Default for HepSenderOpts<'_> {
+    fn default() -> Self {
+        Self {
+            capture_id: 0,
+            auth_key: None,
+            auth_mode: HepAuthMode::default(),
+            transport: HepTransport::default(),
+            tls_ca: None,
+            tls_extra_ca: None,
+            queue_bytes: DEFAULT_HEP_SEND_QUEUE_MIB << 20,
+            timeout: DEFAULT_HEP_SEND_TIMEOUT,
+        }
+    }
+}
+
+/// Whether the collector has closed or reset this connection, asked without
+/// waiting and without consuming anything.
 ///
-/// A collector restarts, and a feed that stopped at the first `EPIPE` would
-/// stay stopped for the life of the process while the operator watched a
-/// counter climb — and the collector they just restarted receives nothing,
-/// which reads as a sipnab fault. So the stream is rebuilt on demand: a failed
-/// write drops the connection and the next packet dials again. ONE reconnect
-/// attempt per packet, never a loop, so a collector that is simply down does
-/// not turn the forwarding path into a spin.
-///
-/// The first connection is made here so an unreachable collector is an error
-/// the operator sees at startup, as the UDP sender's startup connect gives
-/// them. `TCP_NODELAY` is set because these are small packets whose whole
-/// value is timeliness; Nagle would hold a SIP message back waiting for
-/// company.
-///
-/// # Arguments
-///
-/// * `dest` — the resolved collector address.
-/// * `dest_addr` — the destination as the operator wrote it, for messages.
+/// A collector that stops closes its sockets: a FIN, or an RST if data was
+/// unread. A write into such a connection still succeeds locally -- the bytes
+/// are buffered and the error only comes back with the peer's RST -- so the
+/// packet that discovers the break would be lost. Asking first turns the
+/// common case, a collector stopped and restarted, into a reconnect that
+/// loses nothing. A collector that vanishes without closing (power, network)
+/// sends nothing to find, and is out of reach of this check.
 ///
 /// # Returns
 ///
-/// The sink and the local address it bound.
-///
-/// # Errors
-///
-/// The first connection cannot be made within [`HEP_SEND_CONNECT_TIMEOUT`],
-/// or `TCP_NODELAY` cannot be set.
-///
-/// # Side effects
-///
-/// Opens a TCP connection to `dest`, and one more per packet that finds the
-/// previous connection broken.
-fn hep_tcp_sink(
-    dest: std::net::SocketAddr,
-    dest_addr: &str,
-) -> Result<(HepSink, std::net::SocketAddr)> {
-    use std::io::Write;
-    use std::net::TcpStream;
+/// True on a pending end of stream or a pending error; false when the
+/// connection is quiet, or carries data waiting to be read (a TLS collector
+/// may send a session ticket, which is not a close).
+#[cfg(unix)]
+fn peer_closed(sock: &TcpStream) -> bool {
+    use std::os::fd::AsRawFd;
+    let mut byte = 0u8;
+    // SAFETY: `recv` writes at most one byte into `byte`, a live local; the
+    // descriptor is borrowed from `sock` for the duration of the call.
+    let n = unsafe {
+        libc::recv(
+            sock.as_raw_fd(),
+            (&raw mut byte).cast(),
+            1,
+            libc::MSG_PEEK | libc::MSG_DONTWAIT,
+        )
+    };
+    match n {
+        0 => true,
+        n if n > 0 => false,
+        _ => {
+            let e = std::io::Error::last_os_error();
+            !matches!(
+                e.kind(),
+                std::io::ErrorKind::WouldBlock | std::io::ErrorKind::Interrupted
+            )
+        }
+    }
+}
 
-    fn dial(dest: std::net::SocketAddr) -> std::io::Result<TcpStream> {
-        let s = TcpStream::connect_timeout(&dest, HEP_SEND_CONNECT_TIMEOUT)?;
-        s.set_nodelay(true)?;
-        Ok(s)
+/// Elsewhere the check is not made, and a stopped collector costs the packet
+/// that discovers it.
+#[cfg(not(unix))]
+fn peer_closed(_sock: &TcpStream) -> bool {
+    false
+}
+
+/// Dial `dest` within `timeout`, and bound every later write by the same
+/// timeout so a collector that stops reading fails the write rather than
+/// holding the delivery thread for the kernel's retransmission timeout.
+///
+/// A connect that runs out of time is a `connect` failure, as a refused one
+/// is.
+fn dial_tcp(
+    dest: std::net::SocketAddr,
+    timeout: Duration,
+) -> std::result::Result<TcpStream, SinkFailure> {
+    let connect = |e| SinkFailure::at(ExportFailure::Connect, e);
+    let s = TcpStream::connect_timeout(&dest, timeout).map_err(connect)?;
+    s.set_nodelay(true).map_err(connect)?;
+    s.set_write_timeout(Some(timeout)).map_err(connect)?;
+    Ok(s)
+}
+
+/// A TCP collector: whole HEP packets laid end to end on one connection,
+/// rebuilt by the delivery thread when it breaks.
+///
+/// `TCP_NODELAY` is set because these are small packets whose whole value is
+/// timeliness; Nagle would hold a SIP message back waiting for company.
+struct TcpLink {
+    /// The resolved collector address.
+    dest: std::net::SocketAddr,
+    /// Bound on the dial and on every write.
+    timeout: Duration,
+    /// The live connection, if any.
+    conn: Option<TcpStream>,
+}
+
+impl HepLink for TcpLink {
+    fn is_connected(&self) -> bool {
+        self.conn.is_some()
     }
 
-    let first = dial(dest)
-        .with_context(|| format!("Failed to connect HEP sender to '{dest_addr}' over TCP"))?;
-    let local = first
-        .local_addr()
-        .with_context(|| "Failed to read the local address of the HEP TCP sender")?;
-    let mut conn = Some(first);
-    Ok((
-        Box::new(move |pkt: &[u8]| {
-            use super::hep_export::ExportFailure;
-            if let Some(s) = conn.as_mut() {
-                match s.write_all(pkt) {
-                    Ok(()) => return Ok(Delivery::Direct),
-                    Err(_) => conn = None,
-                }
-            }
-            let mut s = dial(dest).map_err(|e| SinkFailure::at(ExportFailure::Connect, e))?;
-            let r = s.write_all(pkt);
-            conn = Some(s);
-            r.map(|()| Delivery::Reconnected)
-                .map_err(|e| SinkFailure::at(ExportFailure::Write, e))
-        }),
-        local,
-    ))
+    fn connect(&mut self) -> std::result::Result<(), SinkFailure> {
+        self.conn = Some(dial_tcp(self.dest, self.timeout)?);
+        Ok(())
+    }
+
+    fn send(&mut self, pkt: &[u8]) -> std::result::Result<(), SinkFailure> {
+        use std::io::Write;
+        let write = |e| SinkFailure::at(ExportFailure::Write, e);
+        let Some(s) = self.conn.as_mut() else {
+            return Err(write(std::io::ErrorKind::NotConnected.into()));
+        };
+        let r = if peer_closed(s) {
+            Err(std::io::Error::new(
+                std::io::ErrorKind::ConnectionReset,
+                "the collector closed the connection",
+            ))
+        } else {
+            s.write_all(pkt)
+        };
+        r.map_err(|e| {
+            self.conn = None;
+            write(e)
+        })
+    }
+
+    fn abort_handle(&self) -> Option<TcpStream> {
+        self.conn.as_ref().and_then(|s| s.try_clone().ok())
+    }
+
+    fn local_addr(&self) -> std::io::Result<std::net::SocketAddr> {
+        self.conn
+            .as_ref()
+            .ok_or(std::io::ErrorKind::NotConnected)?
+            .local_addr()
+    }
 }
 
-/// A sink writing whole HEP packets to one collector over TLS, reconnecting
-/// exactly as [`hep_tcp_sink`] does.
+/// A TLS collector: [`TcpLink`] with a verified session on top.
 ///
-/// The handshake is completed here rather than left to the first packet.
-/// rustls is lazy by default: without this the connection "succeeds", the
-/// operator is told forwarding is up, and the first SIP message an hour later
-/// is what discovers the certificate was never acceptable.
-///
-/// # Arguments
-///
-/// * `dest` — the resolved collector address.
-/// * `server_name` — the name the certificate must match, from
-///   [`server_name_of`].
-/// * `ca` — `--hep-tls-ca`, or `None` for the host's bundle.
-/// * `extra` — `--hep-tls-extra-ca`, added to the host's bundle.
-///
-/// # Returns
-///
-/// The sink and the local address it bound.
-///
-/// # Errors
-///
-/// The roots cannot be assembled, `server_name` is not a valid certificate
-/// name, the connection cannot be made within [`HEP_SEND_CONNECT_TIMEOUT`],
-/// or the handshake fails or exceeds
-/// [`HEP_TLS_HANDSHAKE_TIMEOUT`].
-///
-/// # Side effects
-///
-/// Reads the CA file or the host's bundle, opens a TCP connection and
-/// completes a TLS handshake on it — and one more of each per packet that
-/// finds the previous connection broken.
-fn hep_tls_sink(
+/// The handshake completes inside [`HepLink::connect`] rather than on the
+/// first write. rustls is lazy by default: without this the connection
+/// "succeeds" and the first SIP message is what discovers the certificate
+/// was never acceptable.
+struct TlsLink {
+    /// The resolved collector address.
     dest: std::net::SocketAddr,
-    server_name: &str,
-    ca: Option<&std::path::Path>,
-    extra: Option<&std::path::Path>,
-) -> Result<(HepSink, std::net::SocketAddr)> {
-    use std::io::Write;
-    use std::net::TcpStream;
+    /// Bound on the dial and on every write. The handshake has its own,
+    /// [`HEP_TLS_HANDSHAKE_TIMEOUT`].
+    timeout: Duration,
+    /// Roots and protocol versions, shared by every session.
+    config: std::sync::Arc<rustls::ClientConfig>,
+    /// The name the certificate must carry, from [`server_name_of`].
+    name: rustls::pki_types::ServerName<'static>,
+    /// The live session, if any.
+    conn: Option<rustls::StreamOwned<rustls::ClientConnection, TcpStream>>,
+}
 
-    let config = std::sync::Arc::new(
-        rustls::ClientConfig::builder_with_provider(crate::tls_files::provider())
-            .with_safe_default_protocol_versions()
-            .context("HEP TLS sender: no usable protocol versions")?
-            .with_root_certificates(hep_tls_roots(ca, extra)?)
-            .with_no_client_auth(),
-    );
-    let name = rustls::pki_types::ServerName::try_from(server_name.to_string())
-        .with_context(|| {
-            format!("--hep-send host '{server_name}' is not a valid certificate name")
-        })?
-        .to_owned();
+impl HepLink for TlsLink {
+    fn is_connected(&self) -> bool {
+        self.conn.is_some()
+    }
 
     /// Connect and complete the handshake, naming which of the two failed:
     /// the TCP connection is `Connect`, everything after it `TlsHandshake`.
-    fn dial(
-        cfg: &std::sync::Arc<rustls::ClientConfig>,
-        name: &rustls::pki_types::ServerName<'static>,
-        dest: std::net::SocketAddr,
-    ) -> std::result::Result<rustls::StreamOwned<rustls::ClientConnection, TcpStream>, SinkFailure>
-    {
-        use super::hep_export::ExportFailure;
-        let connect = |e| SinkFailure::at(ExportFailure::Connect, e);
+    fn connect(&mut self) -> std::result::Result<(), SinkFailure> {
         let handshake = |e| SinkFailure::at(ExportFailure::TlsHandshake, e);
-        let mut sock =
-            TcpStream::connect_timeout(&dest, HEP_SEND_CONNECT_TIMEOUT).map_err(connect)?;
-        sock.set_nodelay(true).map_err(connect)?;
+        let mut sock = dial_tcp(self.dest, self.timeout)?;
         sock.set_read_timeout(Some(HEP_TLS_HANDSHAKE_TIMEOUT))
-            .map_err(connect)?;
+            .map_err(handshake)?;
         sock.set_write_timeout(Some(HEP_TLS_HANDSHAKE_TIMEOUT))
-            .map_err(connect)?;
-        let mut conn = rustls::ClientConnection::new(cfg.clone(), name.clone())
+            .map_err(handshake)?;
+        let mut conn = rustls::ClientConnection::new(self.config.clone(), self.name.clone())
             .map_err(|e| handshake(std::io::Error::new(std::io::ErrorKind::InvalidData, e)))?;
         while conn.is_handshaking() {
             conn.complete_io(&mut sock).map_err(handshake)?;
         }
         sock.set_read_timeout(None).map_err(handshake)?;
-        Ok(rustls::StreamOwned::new(conn, sock))
+        sock.set_write_timeout(Some(self.timeout))
+            .map_err(handshake)?;
+        self.conn = Some(rustls::StreamOwned::new(conn, sock));
+        Ok(())
     }
 
-    let first = dial(&config, &name, dest)
-        .map_err(|f| f.error)
-        .with_context(|| format!("Failed to establish a TLS session with '{dest}'"))?;
-    let local = first
-        .sock
-        .local_addr()
-        .with_context(|| "Failed to read the local address of the HEP TLS sender")?;
-    let mut stream = Some(first);
-    Ok((
-        Box::new(move |pkt: &[u8]| {
-            if let Some(s) = stream.as_mut() {
-                match s.write_all(pkt).and_then(|()| s.flush()) {
-                    Ok(()) => return Ok(Delivery::Direct),
-                    Err(_) => stream = None,
-                }
-            }
-            let mut s = dial(&config, &name, dest)?;
-            let r = s.write_all(pkt).and_then(|()| s.flush());
-            stream = Some(s);
-            r.map(|()| Delivery::Reconnected)
-                .map_err(|e| SinkFailure::at(super::hep_export::ExportFailure::Write, e))
-        }),
-        local,
-    ))
+    fn send(&mut self, pkt: &[u8]) -> std::result::Result<(), SinkFailure> {
+        use std::io::Write;
+        let write = |e| SinkFailure::at(ExportFailure::Write, e);
+        let Some(s) = self.conn.as_mut() else {
+            return Err(write(std::io::ErrorKind::NotConnected.into()));
+        };
+        let r = if peer_closed(&s.sock) {
+            Err(std::io::Error::new(
+                std::io::ErrorKind::ConnectionReset,
+                "the collector closed the connection",
+            ))
+        } else {
+            s.write_all(pkt).and_then(|()| s.flush())
+        };
+        r.map_err(|e| {
+            self.conn = None;
+            write(e)
+        })
+    }
+
+    fn abort_handle(&self) -> Option<TcpStream> {
+        self.conn.as_ref().and_then(|s| s.sock.try_clone().ok())
+    }
+
+    fn local_addr(&self) -> std::io::Result<std::net::SocketAddr> {
+        self.conn
+            .as_ref()
+            .ok_or(std::io::ErrorKind::NotConnected)?
+            .sock
+            .local_addr()
+    }
+}
+
+/// A UDP collector: one unconnected socket that addresses each datagram with
+/// `send_to`.
+///
+/// Unconnected on purpose. On a connected UDP socket the kernel reports an
+/// ICMP port-unreachable on the NEXT send, which then fails with
+/// `ECONNREFUSED`; an unconnected socket is not told, so a collector that is
+/// down produces no failure here at all. The delivery thread therefore never
+/// sees a UDP outage, and has nothing to hold or replay over UDP: an outage
+/// that must be survived is what TCP or TLS are for.
+struct UdpLink {
+    /// The bound, unconnected socket.
+    socket: UdpSocket,
+    /// The resolved collector address every datagram is sent to.
+    dest: std::net::SocketAddr,
+}
+
+impl HepLink for UdpLink {
+    fn is_connected(&self) -> bool {
+        true
+    }
+
+    fn local_addr(&self) -> std::io::Result<std::net::SocketAddr> {
+        self.socket.local_addr()
+    }
+
+    fn connect(&mut self) -> std::result::Result<(), SinkFailure> {
+        Ok(())
+    }
+
+    fn send(&mut self, pkt: &[u8]) -> std::result::Result<(), SinkFailure> {
+        self.socket
+            .send_to(pkt, self.dest)
+            .map(|_| ())
+            .map_err(|e| SinkFailure::at(ExportFailure::Write, e))
+    }
 }
 
 impl HepSender {
@@ -3994,43 +4121,48 @@ impl HepSender {
                 auth_key,
                 auth_mode,
                 transport: HepTransport::Udp,
-                tls_ca: None,
-                tls_extra_ca: None,
+                ..HepSenderOpts::default()
             },
         )
     }
 
     /// Create a HEP sender for a destination the operator named.
     ///
-    /// Builds the sink `opts.transport` asks for and mints the
-    /// [`HepExportPermit`] every send is checked against. Taking an
-    /// [`OperatorDestination`] rather than a bare address is what stops a
-    /// future call site exporting to something it read out of a packet.
+    /// Builds the link `opts.transport` asks for, mints the
+    /// [`HepExportPermit`] the delivery thread is started with, and starts
+    /// that thread. Taking an [`OperatorDestination`] rather than a bare
+    /// address is what stops a future call site exporting to something it
+    /// read out of a packet.
     ///
-    /// Every transport connects HERE, at startup, rather than on the first
-    /// packet: a collector that is unreachable, or whose certificate this
-    /// sender will not accept, is an error the operator sees while they are
-    /// still looking at the terminal.
+    /// The first connection is made HERE, within `opts.timeout`, rather than
+    /// on the first packet: a collector that is unreachable, or whose
+    /// certificate this sender will not accept, is an error the operator sees
+    /// while still looking at the terminal. Once the sender has started, an
+    /// outage is the delivery thread's to wait out: it keeps dialing with
+    /// backoff while the capture's packets queue.
     ///
     /// # Arguments
     ///
     /// * `destination` — the collector the operator named.
-    /// * `opts` — capture id, authentication, transport and TLS roots.
+    /// * `opts` — capture id, authentication, transport, TLS roots, queue
+    ///   bound and timeout.
     ///
     /// # Errors
     ///
-    /// Returns an error if the destination cannot be resolved, the socket or
-    /// connection cannot be created, the TLS roots cannot be assembled, or the
-    /// TLS handshake fails.
+    /// Returns an error if the destination cannot be resolved, the UDP socket
+    /// cannot be created or the destination has no route, the TLS roots or
+    /// server name cannot be assembled, the first TCP connection is refused
+    /// or not made within `opts.timeout`, the TLS handshake fails, or the
+    /// delivery thread cannot be spawned.
     ///
     /// # Side effects
     ///
     /// Resolves the destination (may perform a blocking DNS lookup for a
     /// hostname); binds a UDP socket on `[::]:0` for an IPv6 destination or
     /// `0.0.0.0:0` for IPv4 — the bind family must follow the destination or
-    /// the connect fails with EAFNOSUPPORT — or opens a TCP connection and,
-    /// for TLS, completes a handshake on it; reads the system clock and
-    /// process ID to derive the HMAC nonce salt.
+    /// the route check fails with EAFNOSUPPORT — or dials TCP and, for TLS,
+    /// completes a handshake; spawns the `hep-send` delivery thread; reads
+    /// the system clock and process ID to derive the HMAC nonce salt.
     pub fn for_destination(
         destination: &OperatorDestination,
         opts: HepSenderOpts<'_>,
@@ -4043,6 +4175,8 @@ impl HepSender {
             transport,
             tls_ca,
             tls_extra_ca,
+            queue_bytes,
+            timeout,
         } = opts;
         let permit = HepExportPermit::for_destination(destination);
         let dest_addr = destination.as_str();
@@ -4051,7 +4185,7 @@ impl HepSender {
             .with_context(|| format!("Failed to resolve HEP destination '{dest_addr}'"))?
             .next()
             .with_context(|| format!("HEP destination '{dest_addr}' resolved to no addresses"))?;
-        let (sink, local_addr) = match transport {
+        let mut link: Box<dyn HepLink> = match transport {
             HepTransport::Udp => {
                 let local = if dest.is_ipv6() {
                     "[::]:0"
@@ -4063,52 +4197,80 @@ impl HepSender {
                 })?;
                 // A destination with no route is still refused at startup:
                 // a second socket connects to it (no packet is sent) and is
-                // dropped.
+                // dropped. The sending socket stays unconnected; see
+                // `UdpLink`.
                 UdpSocket::bind(local)
                     .and_then(|probe| probe.connect(dest))
                     .with_context(|| format!("Failed to connect HEP sender to '{dest_addr}'"))?;
-                // Unconnected, each datagram addressed with `send_to`. On a
-                // connected UDP socket the kernel reports an ICMP
-                // port-unreachable on the NEXT send, which then fails with
-                // ECONNREFUSED and that datagram is lost; an unconnected
-                // socket is not told, so no datagram is dropped for an
-                // earlier one's error.
-                let bound = socket
-                    .local_addr()
-                    .with_context(|| "Failed to read the local address of the HEP UDP sender")?;
-                let sink: HepSink = Box::new(move |pkt: &[u8]| {
-                    socket
-                        .send_to(pkt, dest)
-                        .map(|_| Delivery::Direct)
-                        .map_err(|e| SinkFailure::at(super::hep_export::ExportFailure::Write, e))
-                });
-                (sink, bound)
+                Box::new(UdpLink { socket, dest })
             }
-            HepTransport::Tcp => hep_tcp_sink(dest, dest_addr)?,
+            HepTransport::Tcp => Box::new(TcpLink {
+                dest,
+                timeout,
+                conn: None,
+            }),
             HepTransport::Tls => {
                 let name = server_name_of(dest_addr).with_context(|| {
                     format!(
                         "--hep-send '{dest_addr}' has no host:port to take a certificate name from"
                     )
                 })?;
-                hep_tls_sink(dest, &name, tls_ca, tls_extra_ca)?
+                let config = std::sync::Arc::new(
+                    rustls::ClientConfig::builder_with_provider(crate::tls_files::provider())
+                        .with_safe_default_protocol_versions()
+                        .context("HEP TLS sender: no usable protocol versions")?
+                        .with_root_certificates(hep_tls_roots(tls_ca, tls_extra_ca)?)
+                        .with_no_client_auth(),
+                );
+                let name = rustls::pki_types::ServerName::try_from(name.clone())
+                    .with_context(|| {
+                        format!("--hep-send host '{name}' is not a valid certificate name")
+                    })?
+                    .to_owned();
+                Box::new(TlsLink {
+                    dest,
+                    timeout,
+                    config,
+                    name,
+                    conn: None,
+                })
             }
         };
+        let refused = match transport {
+            HepTransport::Tls => format!("Failed to establish a TLS session with '{dest}'"),
+            _ => format!("Failed to connect HEP sender to '{dest_addr}' over TCP"),
+        };
+        let local_addr = first_connection(link.as_mut()).context(refused)?;
+        let counters = super::hep_export::HepExportCounters::new(transport.as_str());
+        let delivery = HepDelivery::start(
+            &permit,
+            link,
+            counters.clone(),
+            DeliveryOpts {
+                queue_bytes,
+                backoff_first: HEP_SEND_BACKOFF_FIRST,
+                backoff_cap: HEP_SEND_BACKOFF_CAP,
+                stop_requested: std::sync::Arc::new(signals::shutdown_requested),
+                label: dest_addr.to_string(),
+            },
+        )
+        .context("Failed to start the HEP delivery thread")?;
         let nonce_salt = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_nanos() as u64)
             .unwrap_or(0)
             ^ (std::process::id() as u64).rotate_left(32);
         Ok(Self {
-            sink: parking_lot::Mutex::new(sink),
+            delivery,
             local_addr,
             transport,
+            timeout,
             capture_id,
             auth_key,
             auth_mode,
             nonce_salt,
             nonce_counter: std::sync::atomic::AtomicU64::new(0),
-            counters: super::hep_export::HepExportCounters::new(transport.as_str()),
+            counters,
             permit,
         })
     }
@@ -4123,7 +4285,7 @@ impl HepSender {
     /// The local address this sender's socket bound.
     ///
     /// Recorded at construction rather than read back from the socket: a
-    /// stream sink replaces its connection when the collector restarts, and
+    /// stream link replaces its connection when the collector restarts, and
     /// the socket that answered this question is gone by then.
     pub fn local_addr(&self) -> std::net::SocketAddr {
         self.local_addr
@@ -4180,15 +4342,20 @@ impl HepSender {
         self.send_payload(&endpoint, msg.timestamp, HepProtocol::Sip, &msg.raw)
     }
 
-    /// Forward one RTCP datagram, verbatim, as HEP protocol type 5.
+    /// Forward one RTCP datagram as HEP protocol type 5, in the form HOMER
+    /// keeps: heplify's JSON body, and `call_id` as the correlation ID.
     ///
     /// Signaling alone is half an answer. A remote viewer that receives only
     /// SIP can say a call connected and nothing about whether it sounded like
     /// anything — no MOS, no jitter, no loss — which makes it *worse* than
     /// running a capture tool on the box, because that at least sees the media.
-    /// The receiving side of this module has understood protocol type 5 since
-    /// it was written — the protocol-type chunk carries `1=SIP, 5=RTCP,
-    /// 32=RTP` — and only the sender never emitted it.
+    ///
+    /// The form is not a choice. sipnab sent the binary datagram with no
+    /// correlation ID, and HOMER kept none of it: heplify-server stores type 5
+    /// only under a non-empty correlation ID (`database/postgres.go`, line 187),
+    /// and homer-ui reads the stored body with `JSON.parse`. heplify and
+    /// captagent both send JSON keyed by the call's Call-ID; see
+    /// [`crate::capture::hep_rtcp`] for the shape.
     ///
     /// RTP is deliberately NOT forwarded. RTCP is a control channel that
     /// [RFC 3550 section 6.2](https://www.rfc-editor.org/rfc/rfc3550.html#section-6.2) holds to a small fraction of session bandwidth
@@ -4197,16 +4364,24 @@ impl HepSender {
     /// Media itself is the opposite on both counts, and forwarding it would
     /// turn a monitoring feed into a call recorder aimed at somebody's laptop.
     ///
+    /// # Returns
+    ///
+    /// [`Forwarded::Rtcp`] when sent; [`Forwarded::RtcpNotEncodable`] when
+    /// heplify would send nothing for these bytes, and
+    /// [`Forwarded::RtcpWithoutCall`] when `call_id` is empty, neither of
+    /// which sends anything.
+    ///
     /// # Errors
     ///
-    /// Returns an error if the UDP send fails.
+    /// Returns an error if the send fails.
     pub fn send_rtcp(
         &self,
         endpoint: &HepEndpoint,
         timestamp: DateTime<Utc>,
-        payload: &[u8],
-    ) -> Result<()> {
-        self.send_payload(endpoint, timestamp, HepProtocol::Rtcp, payload)
+        call_id: &str,
+        rtcp: &[u8],
+    ) -> Result<Forwarded> {
+        self.send_rtcp_of_call(endpoint, timestamp, rtcp, || Some(call_id.to_owned()))
     }
 
     /// Forward one captured packet: SIP as HEP protocol type 1, RTCP as type
@@ -4219,16 +4394,32 @@ impl HepSender {
     /// with `TransportProto::Udp` and handed the sender that, so a TCP or TLS
     /// trunk reached the collector recorded as UDP. The endpoint is built from
     /// the packet the pipeline delivered -- addresses, ports, transport and
-    /// timestamp -- exactly as the RTCP branch always did, and the bytes go
-    /// as the wire carried them. Nothing is parsed twice.
+    /// timestamp -- exactly as the RTCP branch always did. SIP goes as the
+    /// wire carried it; nothing is parsed twice.
     ///
     /// Two questions about the same bytes, asked in order: SIP first, then
     /// RTCP. RTP is deliberately not forwarded; see [`Self::send_rtcp`].
     ///
+    /// `call_of_rtcp` names the call an RTCP report belongs to, from the
+    /// media endpoints its SDP set up. It runs only for RTCP heplify would
+    /// encode, so a SIP message or an RTP packet costs no lookup. A report
+    /// it names no call for is not sent, as heplify and captagent do not send
+    /// it: HOMER would store none of it.
+    ///
+    /// SIP carries no correlation ID, as heplify and captagent send it.
+    /// heplify-server derives one from the message, preferring `X-CID` to
+    /// `Call-ID` (`decoder/sip.go`, lines 33-42); a sender that stamped the
+    /// Call-ID would override that preference and unlink every B-leg an
+    /// `X-CID` ties to its A-leg.
+    ///
     /// # Errors
     ///
-    /// Returns an error if the UDP send fails.
-    pub fn forward_parsed(&self, pp: &ParsedPacket) -> Result<Forwarded> {
+    /// Returns an error if the send fails.
+    pub fn forward_parsed(
+        &self,
+        pp: &ParsedPacket,
+        call_of_rtcp: impl FnOnce(&ParsedPacket) -> Option<String>,
+    ) -> Result<Forwarded> {
         let endpoint = HepEndpoint::from(pp);
         if crate::sip::is_sip_message(&pp.payload) {
             self.send_payload(&endpoint, pp.timestamp, HepProtocol::Sip, &pp.payload)
@@ -4236,21 +4427,60 @@ impl HepSender {
             return Ok(Forwarded::Sip);
         }
         if crate::pipeline::is_rtcp_packet(&pp.payload, pp.dst_port) {
-            self.send_payload(&endpoint, pp.timestamp, HepProtocol::Rtcp, &pp.payload)
-                .context("forwarding RTCP")?;
-            return Ok(Forwarded::Rtcp);
+            return self
+                .send_rtcp_of_call(&endpoint, pp.timestamp, &pp.payload, || call_of_rtcp(pp))
+                .context("forwarding RTCP");
         }
         Ok(Forwarded::Nothing)
     }
 
-    /// Shared by every public send. The permit-guarded [`Self::transmit`] is
-    /// reached from here and nowhere else, so adding a protocol does not add a
-    /// second answer to "what can put bytes on the network".
+    /// The one rule for RTCP, shared by [`Self::send_rtcp`] and
+    /// [`Self::forward_parsed`]: encode first, as heplify does, then ask for
+    /// the call, and send only when both answered.
+    fn send_rtcp_of_call(
+        &self,
+        endpoint: &HepEndpoint,
+        timestamp: DateTime<Utc>,
+        rtcp: &[u8],
+        call_of: impl FnOnce() -> Option<String>,
+    ) -> Result<Forwarded> {
+        let Some(body) = super::hep_rtcp::rtcp_to_heplify_json(rtcp) else {
+            return Ok(Forwarded::RtcpNotEncodable);
+        };
+        let Some(call_id) = call_of().filter(|id| !id.is_empty()) else {
+            note_rtcp_without_call();
+            return Ok(Forwarded::RtcpWithoutCall);
+        };
+        self.send_correlated(
+            endpoint,
+            timestamp,
+            HepProtocol::Rtcp,
+            Some(call_id.as_bytes()),
+            body.as_bytes(),
+        )?;
+        Ok(Forwarded::Rtcp)
+    }
+
+    /// [`Self::send_correlated`] with no correlation ID.
     fn send_payload(
         &self,
         endpoint: &HepEndpoint,
         timestamp: DateTime<Utc>,
         protocol: HepProtocol,
+        payload: &[u8],
+    ) -> Result<()> {
+        self.send_correlated(endpoint, timestamp, protocol, None, payload)
+    }
+
+    /// Shared by every public send. The permit-guarded [`Self::transmit`] is
+    /// reached from here and nowhere else, so adding a protocol does not add a
+    /// second answer to "what can put bytes on the network".
+    fn send_correlated(
+        &self,
+        endpoint: &HepEndpoint,
+        timestamp: DateTime<Utc>,
+        protocol: HepProtocol,
+        correlation_id: Option<&[u8]>,
         payload: &[u8],
     ) -> Result<()> {
         // `Hmac` builds through its own entry point rather than handing an
@@ -4259,7 +4489,7 @@ impl HepSender {
         let pkt = match (self.auth_key.as_deref(), self.auth_mode) {
             (Some(key), HepAuthMode::Hmac) => {
                 let ts = chrono::Utc::now().timestamp().max(0) as u64;
-                build_hep_v3_hmac(
+                build_hep_v3_hmac_correlated(
                     endpoint,
                     timestamp,
                     protocol,
@@ -4269,58 +4499,96 @@ impl HepSender {
                         token_ts: ts,
                         nonce: &self.next_nonce(),
                     },
+                    correlation_id,
                     payload,
                 )
             }
-            (auth, _) => build_hep_v3_bytes(
+            (auth, _) => build_hep_v3_correlated(
                 endpoint,
                 timestamp,
                 protocol,
                 self.capture_id,
                 auth.map(str::as_bytes),
+                correlation_id,
                 payload,
             ),
         };
 
-        self.transmit(&self.permit, &pkt)
+        self.transmit(&self.permit, pkt);
+        Ok(())
     }
 
-    /// The only function in this module that puts bytes on the network.
+    /// The only door from this module to the network.
     ///
     /// It takes the permit so that "what can transmit" has a single answer an
-    /// auditor can reach from the type: reaching this socket needs a
+    /// auditor can reach from the type: reaching the collector needs a
     /// [`HepExportPermit`], which needs an [`OperatorDestination`], which
     /// cannot be built from anything the capture supplied. `_permit` is unread
     /// on purpose — the proof is in holding one, exactly as in the
-    /// scanner-kill path's `RawKillSocket::open`, which a kill-path socket
-    /// cannot be created without.
+    /// scanner-kill path's `RawKillSocket::open`. The delivery thread that
+    /// does the writing was itself started with the same permit.
     ///
-    /// # Errors
-    ///
-    /// Returns an error if the UDP send fails.
+    /// The packet is MOVED into the queue: no copy, and no wait on the
+    /// network. Whether it is delivered, replayed or dropped is counted by
+    /// the delivery side, never reported here.
     ///
     /// # Side effects
     ///
-    /// Writes one packet to the sink: one datagram on the UDP socket, or a
-    /// write to the TCP or TLS connection.
-    fn transmit(&self, _permit: &HepExportPermit, pkt: &[u8]) -> Result<()> {
-        let mut sink = self.sink.lock();
-        // Counted here, where every packet passes, so no transport can add a
-        // path that delivers or fails without the counters hearing of it.
-        match sink(pkt) {
-            Ok(delivery) => {
-                self.counters.record_sent();
-                if delivery == Delivery::Reconnected {
-                    self.counters.record_reconnect();
-                }
-                Ok(())
-            }
-            Err(failure) => {
-                self.counters.record_failure(failure.kind);
-                Err(anyhow::Error::new(failure.error).context("Failed to send HEP v3 packet"))
-            }
-        }
+    /// Queues one packet for the delivery thread, dropping the oldest queued
+    /// packet(s) if the queue is at its bound.
+    fn transmit(&self, _permit: &HepExportPermit, pkt: Vec<u8>) {
+        self.delivery.push(pkt);
     }
+
+    /// The run was stopped: discard everything queued and send nothing more.
+    /// No flush, by design — captured SIP that outlives a stop is data the
+    /// operator believed was gone.
+    ///
+    /// # Returns
+    ///
+    /// How many packets were discarded (also counted as `stopped`).
+    pub fn stop(&self) -> u64 {
+        self.delivery.stop()
+    }
+
+    /// The input ended (a file read to its end, `-c`, `--duration`): deliver
+    /// what is queued, then end the delivery thread.
+    ///
+    /// Waits while the collector keeps taking packets. Gives up once none has
+    /// been delivered for two timeouts plus the longest backoff — time for at
+    /// least one full attempt — and discards the rest as `unsent_at_exit`. A
+    /// stop signal while waiting discards at once, as `stopped`.
+    ///
+    /// # Returns
+    ///
+    /// How many packets were discarded.
+    pub fn finish(&self) -> u64 {
+        self.delivery
+            .finish(self.timeout.saturating_mul(2) + HEP_SEND_BACKOFF_CAP)
+    }
+}
+
+/// Make the first connection, at startup.
+///
+/// A collector that refuses it, does not answer within the timeout, or
+/// presents a certificate this sender will not accept stops the run before
+/// it starts, with exit 2: the operator asked for forwarding, and a run that
+/// cannot begin it has not done what it was asked. Outages AFTER this are the
+/// delivery thread's to wait out.
+///
+/// # Returns
+///
+/// The local address the connection bound.
+///
+/// # Errors
+///
+/// The dial or the TLS handshake failed, or the local address cannot be
+/// read.
+fn first_connection(link: &mut dyn HepLink) -> std::io::Result<std::net::SocketAddr> {
+    if !link.is_connected() {
+        link.connect().map_err(|f| f.error)?;
+    }
+    link.local_addr()
 }
 
 // ── Tests ────────────────────────────────────────────────────────────
@@ -4949,8 +5217,9 @@ mod tests {
     /// Without this the first `EPIPE` stops the feed for the life of the
     /// process while the operator watches a counter climb — and the collector
     /// they just restarted receives nothing, which reads as a sipnab fault.
-    /// One reconnect per packet, never a loop: a collector that is simply down
-    /// must not turn the forwarding path into a spin.
+    /// The delivery thread redials on a backoff, never in a tight loop: a
+    /// collector that is simply down must not turn the forwarding path into a
+    /// spin.
     #[test]
     fn a_tcp_sender_reconnects_after_the_collector_drops_the_connection() -> Result<(), TestError> {
         let collector = std::net::TcpListener::bind("127.0.0.1:0")
@@ -5049,6 +5318,21 @@ mod tests {
         done()
     }
 
+    /// Wait for `counters` to show `n` packets sent, within the deadline.
+    fn send_until_counted(
+        counters: &crate::capture::hep_export::HepExportCounters,
+        n: u64,
+    ) -> bool {
+        let deadline = Instant::now() + MUST_ARRIVE;
+        while Instant::now() < deadline {
+            if counters.snapshot().sent >= n {
+                return true;
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        false
+    }
+
     /// **A collector that goes away counts as a `connect` failure** once the
     /// sender tries to dial it again.
     ///
@@ -5089,6 +5373,11 @@ mod tests {
         .map_err(|e| format!("connect: {e:?}"))?;
         send_one(&sender)
             .map_err(|e| format!("the first packet crosses the live connection: {e:?}"))?;
+        // The delivery thread writes it; the collector goes only after.
+        assert!(
+            send_until_counted(&sender.counters(), 1),
+            "the first packet was never written"
+        );
         let first = accept_within(&collector, "the first connection")?;
         let hold = reuse_port_socket()?;
         hold.bind(&addr.into())
@@ -5239,7 +5528,7 @@ mod tests {
     }
 
     /// **The startup connect to a collector that drops the SYN fails within
-    /// [`HEP_SEND_CONNECT_TIMEOUT`]**, as a timeout, over `tcp`.
+    /// [`DEFAULT_HEP_SEND_TIMEOUT`]**, as a timeout, over `tcp`.
     ///
     /// Before the bound, `--hep-send` to such a collector sat in `connect` for
     /// the operating system's limit before the operator heard anything.
@@ -5250,7 +5539,7 @@ mod tests {
         let addr = collector.addr;
         collector.start_dropping()?;
         let outcome = finishes_within(
-            2 * HEP_SEND_CONNECT_TIMEOUT,
+            2 * DEFAULT_HEP_SEND_TIMEOUT,
             "the startup TCP connect to a collector that drops the SYN",
             move || {
                 HepSender::for_destination(
@@ -5283,7 +5572,7 @@ mod tests {
         let addr = collector.addr;
         collector.start_dropping()?;
         let outcome = finishes_within(
-            2 * HEP_SEND_CONNECT_TIMEOUT,
+            2 * DEFAULT_HEP_SEND_TIMEOUT,
             "the startup TLS connect to a collector that drops the SYN",
             move || {
                 HepSender::for_destination(
@@ -5307,12 +5596,12 @@ mod tests {
     }
 
     /// **A redial that the collector never answers counts as a `connect`
-    /// failure within [`HEP_SEND_CONNECT_TIMEOUT`]**, as a refused one does.
+    /// failure within [`DEFAULT_HEP_SEND_TIMEOUT`]**, as a refused one does.
     ///
     /// The collector accepts the first connection, then its accept queue is
     /// filled and the connection dropped, so the sender's redial meets a
-    /// dropped SYN. The redial runs on the thread that forwards packets: for
-    /// as long as it waits nothing is sent, counted or stopped.
+    /// dropped SYN. The redial runs on the delivery thread, and is bounded so
+    /// a collector that never answers is noticed and retried on the backoff.
     #[test]
     fn a_redial_to_a_collector_that_drops_the_syn_counts_as_a_connect_failure_within_the_bound()
     -> Result<(), TestError> {
@@ -5333,17 +5622,18 @@ mod tests {
         collector.start_dropping()?;
         drop(first);
 
-        // Stop at the first failure of ANY kind, so a timeout counted under
-        // the wrong kind fails on the assertion that names the kind rather
-        // than on the deadline.
+        // The write that finds the dropped connection fails first, and the
+        // link then redials. Stop at the second failure of ANY kind, so a
+        // timeout counted under the wrong kind fails on the assertion that
+        // names the kind rather than on the deadline.
         let counters = sender.counters();
         let watched = counters.clone();
         let failed = finishes_within(
-            2 * HEP_SEND_CONNECT_TIMEOUT,
+            2 * DEFAULT_HEP_SEND_TIMEOUT,
             "a redial to a collector that drops the SYN",
             move || {
                 send_until(&sender, || {
-                    watched.snapshot().failures.iter().sum::<u64>() > 0
+                    watched.snapshot().failures.iter().sum::<u64>() > 1
                 })
             },
         )?;
@@ -5438,71 +5728,9 @@ mod tests {
         Ok(())
     }
 
-    /// A sender whose sink is `sink`, for driving `transmit` without a network.
-    fn sender_with_sink(sink: HepSink) -> Result<HepSender, TestError> {
-        let destination = OperatorDestination::from_cli_flag(HEP_SEND_FLAG, "192.0.2.10:9061");
-        Ok(HepSender {
-            sink: parking_lot::Mutex::new(sink),
-            local_addr: "127.0.0.1:0"
-                .parse()
-                .map_err(|e| format!("literal: {e:?}"))?,
-            transport: HepTransport::Tcp,
-            capture_id: 1,
-            auth_key: None,
-            auth_mode: HepAuthMode::Plain,
-            nonce_salt: 0,
-            nonce_counter: std::sync::atomic::AtomicU64::new(0),
-            counters: crate::capture::hep_export::HepExportCounters::new("tcp"),
-            permit: HepExportPermit::for_destination(&destination),
-        })
-    }
-
-    /// **Every kind of failure a sink reports lands under its own count**,
-    /// for every kind there is: the loop walks `ExportFailure::ALL`, so a new
-    /// kind is covered the day it is added. A distinct number of failures per
-    /// kind, so one counted under a neighbor's name shows as a wrong number.
-    /// A delivery over a rebuilt connection counts as sent AND as a reconnect.
-    #[test]
-    fn every_failure_kind_a_sink_reports_is_counted_under_its_own_name() -> Result<(), TestError> {
-        use crate::capture::hep_export::ExportFailure;
-        let script: std::sync::Arc<
-            parking_lot::Mutex<Vec<std::result::Result<Delivery, ExportFailure>>>,
-        > = std::sync::Arc::new(parking_lot::Mutex::new(Vec::new()));
-        {
-            let mut plan = script.lock();
-            for kind in ExportFailure::ALL {
-                for _ in 0..=kind.index() {
-                    plan.push(Err(kind));
-                }
-            }
-            plan.push(Ok(Delivery::Direct));
-            plan.push(Ok(Delivery::Reconnected));
-        }
-        let feed = std::sync::Arc::clone(&script);
-        let sender = sender_with_sink(Box::new(move |_pkt: &[u8]| match feed.lock().remove(0) {
-            Ok(d) => Ok(d),
-            Err(kind) => Err(SinkFailure::at(kind, std::io::Error::other("scripted"))),
-        }))?;
-        let total = script.lock().len();
-        for _ in 0..total {
-            let _ = send_one(&sender);
-        }
-        let snap = sender.counters().snapshot();
-        for kind in ExportFailure::ALL {
-            assert_eq!(
-                snap.failures[kind.index()],
-                kind.index() as u64 + 1,
-                "{} miscounted: {snap:?}",
-                kind.as_str()
-            );
-        }
-        assert_eq!(snap.sent, 2, "both deliveries count as sent: {snap:?}");
-        assert_eq!(
-            snap.reconnects, 1,
-            "only the rebuilt one is a reconnect: {snap:?}"
-        );
-        Ok(())
-    }
+    // Every failure kind under its own count is pinned against a scripted
+    // link in `capture::hep_delivery`, where a failed attempt is retried
+    // rather than lost.
 
     /// **A UDP exporter counts sends and claims nothing about delivery.** The
     /// kernel takes every datagram whether or not anything listens, so the
@@ -5520,7 +5748,14 @@ mod tests {
         for _ in 0..3 {
             send_one(&sender).map_err(|e| format!("send: {e:?}"))?;
         }
-        let snap = sender.counters().snapshot();
+        // The delivery thread sends; wait for it rather than racing it.
+        let counters = sender.counters();
+        assert!(
+            send_until_counted(&counters, 3),
+            "three sends never counted: {:?}",
+            counters.snapshot()
+        );
+        let snap = counters.snapshot();
         assert_eq!(snap.transport, "udp");
         assert_eq!(snap.sent, 3);
         assert_eq!(snap.failed(), 0);
@@ -6596,16 +6831,17 @@ mod tests {
         Ok(())
     }
 
-    /// `send_rtcp` puts protocol type 5 on the wire, and the payload crosses
-    /// verbatim.
+    /// `send_rtcp` puts protocol type 5 on the wire, the report as heplify's
+    /// JSON body, and the call's Call-ID in the correlation chunk.
     ///
     /// Asserts the EFFECT — a real datagram, received off a real socket and
-    /// parsed back — rather than that a builder was handed an enum. That byte
-    /// is the whole feature: at type 1 a receiver hands the payload to the SIP
-    /// parser, which discards it, and the remote viewer this exists for gets
-    /// no MOS, jitter or loss while appearing to work.
+    /// parsed back — rather than that a builder was handed an enum. Each of
+    /// the three is required for HOMER to keep the report: type 1 sends it to
+    /// the SIP parser, a binary body is unreadable to homer-ui's `JSON.parse`,
+    /// and heplify-server stores type 5 only when the correlation ID is
+    /// non-empty (`database/postgres.go`, line 187).
     #[test]
-    fn send_rtcp_puts_protocol_type_5_on_the_wire() -> Result<(), TestError> {
+    fn send_rtcp_puts_json_type_5_with_the_call_id_on_the_wire() -> Result<(), TestError> {
         let collector =
             UdpSocket::bind("127.0.0.1:0").map_err(|e| format!("bind collector: {e:?}"))?;
         collector
@@ -6619,18 +6855,18 @@ mod tests {
         let sender = HepSender::new(&dest, 42, None, HepAuthMode::Plain)
             .map_err(|e| format!("build sender: {e:?}"))?;
 
-        // Minimal RTCP Receiver Report: version 2, PT 201, length 1, one SSRC.
-        let rtcp: [u8; 8] = [0x80, 201, 0x00, 0x01, 0xde, 0xad, 0xbe, 0xef];
+        let rtcp = crate::capture::hep_rtcp::CAPTURED_SR_SDES;
         let endpoint = HepEndpoint {
             src_addr: IpAddr::V4(Ipv4Addr::new(192, 0, 2, 1)),
             dst_addr: IpAddr::V4(Ipv4Addr::new(192, 0, 2, 2)),
-            src_port: 5000,
-            dst_port: 5001,
+            src_port: 5001,
+            dst_port: 5003,
             transport: TransportProto::Udp,
         };
-        sender
-            .send_rtcp(&endpoint, Utc::now(), &rtcp)
+        let what = sender
+            .send_rtcp(&endpoint, Utc::now(), RTCP_CALL_ID, rtcp)
             .map_err(|e| format!("send_rtcp: {e:?}"))?;
+        assert_eq!(what, Forwarded::Rtcp);
 
         let mut buf = [0u8; 2048];
         let n = collector
@@ -6645,12 +6881,13 @@ mod tests {
              parser, which drops it"
         );
         assert_eq!(
-            pkt.payload, rtcp,
-            "the RTCP report must cross verbatim — a receiver recomputes \
-             quality from these bytes"
+            Some(pkt.payload),
+            crate::capture::hep_rtcp::rtcp_to_heplify_json(rtcp).map(String::into_bytes),
+            "the body must be heplify's JSON for the report, not the binary datagram"
         );
-        assert_eq!(pkt.src_port, 5000, "inner endpoint must survive");
-        assert_eq!(pkt.dst_port, 5001, "inner endpoint must survive");
+        assert_eq!(pkt.correlation_id.as_deref(), Some(RTCP_CALL_ID));
+        assert_eq!(pkt.src_port, 5001, "inner endpoint must survive");
+        assert_eq!(pkt.dst_port, 5003, "inner endpoint must survive");
         Ok(())
     }
 
@@ -6747,10 +6984,13 @@ mod tests {
     }
 
     /// Forward `pp` to a fresh collector and parse the datagram that arrives.
+    ///
+    /// Every RTCP report belongs to [`RTCP_CALL_ID`] here; the tests about an
+    /// unknown call build their own lookup.
     fn forward_and_receive(pp: &ParsedPacket) -> Result<(Forwarded, HepPacket), TestError> {
         let (collector, sender) = collector_and_sender(std::time::Duration::from_secs(5))?;
         let what = sender
-            .forward_parsed(pp)
+            .forward_parsed(pp, |_| Some(RTCP_CALL_ID.to_owned()))
             .map_err(|e| format!("forward: {e:?}"))?;
         let mut buf = [0u8; 2048];
         let n = collector
@@ -6786,10 +7026,17 @@ mod tests {
         let pp = captured(OPTIONS, TransportProto::Udp, 5060);
         let mut errors = Vec::new();
         for _ in 0..EACH {
-            if let Err(e) = sender.forward_parsed(&pp) {
+            if let Err(e) = sender.forward_parsed(&pp, |_| None) {
                 errors.push(format!("{e:#}"));
             }
         }
+
+        // Sent to the closed port before the collector starts: the delivery
+        // thread sends them, so wait for it.
+        assert!(
+            send_until_counted(&sender.counters(), EACH as u64),
+            "the datagrams to the closed port were never sent"
+        );
 
         // The collector starts on that port, and every later datagram reaches it.
         let collector = UdpSocket::bind(dest).map_err(|e| format!("bind collector: {e:?}"))?;
@@ -6797,7 +7044,7 @@ mod tests {
             .set_read_timeout(Some(Duration::from_secs(5)))
             .map_err(|e| format!("set read timeout: {e:?}"))?;
         for _ in 0..EACH {
-            if let Err(e) = sender.forward_parsed(&pp) {
+            if let Err(e) = sender.forward_parsed(&pp, |_| None) {
                 errors.push(format!("{e:#}"));
             }
         }
@@ -6810,7 +7057,12 @@ mod tests {
             }
         }
 
-        let counted = sender.counters().snapshot();
+        // The delivery thread sends; wait for every offer to be counted
+        // rather than race it.
+        let counters = sender.counters();
+        let all_counted = send_until_counted(&counters, 2 * EACH as u64);
+        let counted = counters.snapshot();
+        assert!(all_counted, "not every datagram was sent: {counted:?}");
         assert!(errors.is_empty(), "no send may fail: {errors:?}");
         assert_eq!(
             counted.sent,
@@ -6874,22 +7126,112 @@ mod tests {
         Ok(())
     }
 
-    /// An RTCP report on the classic odd port goes as protocol type 5 with
-    /// its own transport, through the same entry point the batch loop uses.
+    /// The Call-ID every RTCP report in these tests belongs to.
+    const RTCP_CALL_ID: &str = "a84b4c76e66710@pc33.atlanta.example.com";
+
+    /// A captured RTCP report on the classic odd port goes as protocol type 5,
+    /// with its own transport, as heplify's JSON body, and with the Call-ID of
+    /// the call that owns the stream in the correlation chunk — through the
+    /// same entry point the batch loop uses.
     #[test]
-    fn forward_parsed_sends_rtcp_as_protocol_type_5() -> Result<(), TestError> {
-        // Receiver Report: version 2, PT 201, length 1, one SSRC.
-        let rtcp: &[u8] = &[0x80, 201, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01];
+    fn forward_parsed_sends_rtcp_as_json_type_5_carrying_the_call_id() -> Result<(), TestError> {
+        let rtcp = crate::capture::hep_rtcp::CAPTURED_SR_SDES;
         let (what, pkt) = forward_and_receive(&captured(rtcp, TransportProto::Udp, 5001))?;
         assert_eq!(what, Forwarded::Rtcp);
         assert_eq!(pkt.protocol, HepProtocol::Rtcp, "RTCP is protocol type 5");
         assert_eq!(pkt.ip_protocol, 17);
-        assert_eq!(pkt.payload, rtcp, "the report crosses verbatim");
+        let body =
+            String::from_utf8(pkt.payload).map_err(|e| format!("the body is text: {e:?}"))?;
+        assert_eq!(
+            Some(body),
+            crate::capture::hep_rtcp::rtcp_to_heplify_json(rtcp),
+            "the body is heplify's JSON for the report"
+        );
+        assert_eq!(
+            pkt.correlation_id.as_deref(),
+            Some(RTCP_CALL_ID),
+            "without the call's Call-ID heplify-server stores no RTCP at all"
+        );
+        Ok(())
+    }
+
+    /// RTCP whose call is unknown is not sent, as heplify and captagent do
+    /// not send it: heplify-server would store none of it (an empty
+    /// correlation ID fails its `pkt.CID != ""` test), so sending it would
+    /// put traffic on the wire that the collector throws away.
+    #[test]
+    fn forward_parsed_sends_no_rtcp_for_an_unknown_call() -> Result<(), TestError> {
+        let rtcp = crate::capture::hep_rtcp::CAPTURED_SR_SDES;
+        let (collector, sender) = collector_and_sender(std::time::Duration::from_millis(200))?;
+        let what = sender
+            .forward_parsed(&captured(rtcp, TransportProto::Udp, 5001), |_| None)
+            .map_err(|e| format!("forward: {e:?}"))?;
+        assert_eq!(what, Forwarded::RtcpWithoutCall);
+        let mut buf = [0u8; 2048];
+        assert!(
+            collector.recv(&mut buf).is_err(),
+            "RTCP with no known call reached the collector"
+        );
+        Ok(())
+    }
+
+    /// RTCP heplify would not encode (here a datagram that opens with BYE) is
+    /// not sent either, even when its call is known.
+    #[test]
+    fn forward_parsed_sends_no_rtcp_heplify_would_not_encode() -> Result<(), TestError> {
+        let bye: &[u8] = &[0x81, 203, 0x00, 0x01, 0x90, 0x2f, 0x9e, 0x2e];
+        let (collector, sender) = collector_and_sender(std::time::Duration::from_millis(200))?;
+        let what = sender
+            .forward_parsed(&captured(bye, TransportProto::Udp, 5001), |_| {
+                Some(RTCP_CALL_ID.to_owned())
+            })
+            .map_err(|e| format!("forward: {e:?}"))?;
+        assert_eq!(what, Forwarded::RtcpNotEncodable);
+        let mut buf = [0u8; 2048];
+        assert!(
+            collector.recv(&mut buf).is_err(),
+            "an RTCP datagram heplify sends nothing for reached the collector"
+        );
+        Ok(())
+    }
+
+    /// SIP goes without a correlation chunk, as heplify and captagent send it.
+    ///
+    /// heplify-server fills an empty correlation ID from the message itself,
+    /// preferring `X-CID` to `Call-ID` (`decoder/sip.go`, lines 33-42). A
+    /// sender that stamped the Call-ID would switch that preference off and
+    /// unlink every B-leg an `X-CID` ties to its A-leg. And the lookup that
+    /// finds an RTCP report's call is not consulted for SIP at all.
+    #[test]
+    fn forward_parsed_sends_sip_without_a_correlation_id() -> Result<(), TestError> {
+        let (collector, sender) = collector_and_sender(std::time::Duration::from_secs(5))?;
+        let looked_up = std::cell::Cell::new(false);
+        let what = sender
+            .forward_parsed(&captured(OPTIONS, TransportProto::Udp, 5060), |_| {
+                looked_up.set(true);
+                Some(RTCP_CALL_ID.to_owned())
+            })
+            .map_err(|e| format!("forward: {e:?}"))?;
+        assert_eq!(what, Forwarded::Sip);
+        assert!(
+            !looked_up.get(),
+            "the RTCP call lookup ran for a SIP message"
+        );
+        let mut buf = [0u8; 2048];
+        let n = collector
+            .recv(&mut buf)
+            .map_err(|e| format!("the SIP message arrives: {e:?}"))?;
+        assert!(
+            chunk_list(&buf[..n])
+                .iter()
+                .all(|(_, kind, _)| *kind != CHUNK_CORRELATION_ID),
+            "SIP carried a correlation chunk"
+        );
         Ok(())
     }
 
     /// RTP is neither SIP nor RTCP and must not leave the machine: nothing is
-    /// sent, and the sender says so.
+    /// sent, the sender says so, and no call lookup is made for it.
     #[test]
     fn forward_parsed_sends_nothing_for_rtp() -> Result<(), TestError> {
         // RTP: version 2, PT 0 (PCMU), sequence 1, on the even media port.
@@ -6898,13 +7240,169 @@ mod tests {
         ];
         let (collector, sender) = collector_and_sender(std::time::Duration::from_millis(200))?;
         let what = sender
-            .forward_parsed(&captured(rtp, TransportProto::Udp, 5000))
+            .forward_parsed(&captured(rtp, TransportProto::Udp, 5000), |_| {
+                Some(RTCP_CALL_ID.to_owned())
+            })
             .map_err(|e| format!("forward: {e:?}"))?;
         assert_eq!(what, Forwarded::Nothing);
         let mut buf = [0u8; 2048];
         assert!(
             collector.recv(&mut buf).is_err(),
             "a datagram reached the collector for an RTP packet: media is being forwarded"
+        );
+        Ok(())
+    }
+
+    /// Every chunk of a HEP v3 datagram in wire order, as `(vendor, type,
+    /// data)`.
+    ///
+    /// Walks the length fields itself rather than calling `parse_hep`, so a
+    /// test sees order and repetition, which the parser folds away. Asserts
+    /// the framing on the way: the declared total is the datagram's length,
+    /// and every chunk fits inside it.
+    fn chunk_list(datagram: &[u8]) -> Vec<(u16, u16, Vec<u8>)> {
+        assert_eq!(&datagram[..4], b"HEP3", "HEP v3 magic");
+        let total = usize::from(u16::from_be_bytes([datagram[4], datagram[5]]));
+        assert_eq!(total, datagram.len(), "the total length is the datagram");
+        let mut chunks = Vec::new();
+        let mut at = HEP3_HEADER_LEN;
+        while at < total {
+            let vendor = u16::from_be_bytes([datagram[at], datagram[at + 1]]);
+            let kind = u16::from_be_bytes([datagram[at + 2], datagram[at + 3]]);
+            let len = usize::from(u16::from_be_bytes([datagram[at + 4], datagram[at + 5]]));
+            assert!(
+                len >= CHUNK_HEADER_LEN && at + len <= total,
+                "chunk {kind:#06x} at {at} declares length {len}"
+            );
+            chunks.push((
+                vendor,
+                kind,
+                datagram[at + CHUNK_HEADER_LEN..at + len].to_vec(),
+            ));
+            at += len;
+        }
+        chunks
+    }
+
+    /// The flow these builder tests stamp.
+    fn rtcp_flow() -> HepEndpoint {
+        HepEndpoint {
+            src_addr: IpAddr::V4(Ipv4Addr::new(192, 0, 2, 1)),
+            dst_addr: IpAddr::V4(Ipv4Addr::new(192, 0, 2, 2)),
+            src_port: 20001,
+            dst_port: 30001,
+            transport: TransportProto::Udp,
+        }
+    }
+
+    /// The builder writes chunk 0x0011 when it is given a correlation ID:
+    /// once, generic vendor, the ID's bytes exactly, ahead of the payload,
+    /// and readable back by the parser.
+    #[test]
+    fn the_builder_writes_the_correlation_id_it_is_given() -> Result<(), TestError> {
+        let ts = Utc
+            .timestamp_opt(1_700_000_000, 0)
+            .single()
+            .ok_or("a fixed timestamp")?;
+        let built = build_hep_v3_correlated(
+            &rtcp_flow(),
+            ts,
+            HepProtocol::Rtcp,
+            7,
+            None,
+            Some(RTCP_CALL_ID.as_bytes()),
+            b"{}",
+        );
+        let chunks = chunk_list(&built);
+        let cid: Vec<_> = chunks
+            .iter()
+            .filter(|(_, kind, _)| *kind == CHUNK_CORRELATION_ID)
+            .collect();
+        assert_eq!(cid.len(), 1, "exactly one correlation chunk: {chunks:?}");
+        assert_eq!(cid[0].0, 0x0000, "the generic vendor");
+        assert_eq!(
+            cid[0].2,
+            RTCP_CALL_ID.as_bytes(),
+            "the Call-ID, byte for byte"
+        );
+        assert_eq!(
+            chunks.last().map(|(_, kind, _)| *kind),
+            Some(CHUNK_PAYLOAD),
+            "the payload stays the last chunk"
+        );
+        assert_eq!(
+            parse_hep(&built)
+                .map_err(|e| format!("parses: {e:?}"))?
+                .correlation_id
+                .as_deref(),
+            Some(RTCP_CALL_ID)
+        );
+        Ok(())
+    }
+
+    /// Without a correlation ID — or with an empty one, which heplify also
+    /// leaves out — the datagram is byte-identical to what the builder wrote
+    /// before the chunk existed.
+    #[test]
+    fn without_a_correlation_id_the_datagram_is_unchanged() -> Result<(), TestError> {
+        let ts = Utc
+            .timestamp_opt(1_700_000_000, 0)
+            .single()
+            .ok_or("a fixed timestamp")?;
+        let before = build_hep_v3_bytes(&rtcp_flow(), ts, HepProtocol::Sip, 7, None, b"x");
+        for cid in [None, Some(&b""[..])] {
+            let built =
+                build_hep_v3_correlated(&rtcp_flow(), ts, HepProtocol::Sip, 7, None, cid, b"x");
+            assert_eq!(built, before, "correlation ID {cid:?}");
+        }
+        assert!(
+            chunk_list(&before)
+                .iter()
+                .all(|(_, kind, _)| *kind != CHUNK_CORRELATION_ID)
+        );
+        Ok(())
+    }
+
+    /// An HMAC-signed datagram carries the correlation ID INSIDE what the
+    /// token signs: it verifies as sent, and altering one byte of the ID
+    /// makes it fail.
+    #[test]
+    fn an_hmac_signed_datagram_signs_the_correlation_id() -> Result<(), TestError> {
+        let ts = Utc
+            .timestamp_opt(1_700_000_000, 0)
+            .single()
+            .ok_or("a fixed timestamp")?;
+        let key = crate::test_material::key_bytes("hep-correlation-hmac");
+        let now = 1_700_000_000u64;
+        let built = build_hep_v3_hmac_correlated(
+            &rtcp_flow(),
+            ts,
+            HepProtocol::Rtcp,
+            7,
+            &HepHmacSigning {
+                key,
+                token_ts: now,
+                nonce: &crate::test_material::array_for("hep-correlation-nonce"),
+            },
+            Some(RTCP_CALL_ID.as_bytes()),
+            b"{}",
+        );
+        let parsed = parse_hep(&built).map_err(|e| format!("parses: {e:?}"))?;
+        assert_eq!(parsed.correlation_id.as_deref(), Some(RTCP_CALL_ID));
+        let span = parsed.auth_span.ok_or("an auth chunk")?;
+        verify_hmac_datagram(key, &built, span, now, 30, &mut HmacNonceCache::new())
+            .map_err(|e| format!("the signed datagram verifies: {e:?}"))?;
+
+        let at = built
+            .windows(RTCP_CALL_ID.len())
+            .position(|w| w == RTCP_CALL_ID.as_bytes())
+            .ok_or("the ID is on the wire")?;
+        let mut altered = built.clone();
+        altered[at] ^= 0x01;
+        assert_eq!(
+            verify_hmac_datagram(key, &altered, span, now, 30, &mut HmacNonceCache::new()),
+            Err(HmacAuthError::BadMac),
+            "an altered correlation ID still verified"
         );
         Ok(())
     }
@@ -7816,9 +8314,7 @@ mod tests {
             .map_err(|e| format!("an operator-named destination must construct a sender: {e:?}"))?;
         // `transmit` is the only path to the socket and it needs the permit;
         // that this compiles is the assertion.
-        sender
-            .transmit(&sender.permit, b"HEP3\x00\x06")
-            .map_err(|e| format!("a loopback UDP sender must accept a datagram: {e:?}"))?;
+        sender.transmit(&sender.permit, b"HEP3\x00\x06".to_vec());
         Ok(())
     }
 
@@ -10779,5 +11275,305 @@ mod tests {
             );
             Ok(())
         }
+    }
+}
+
+/// The `--hep-send` delivery path against real sockets: a collector that
+/// reads nothing, one that goes away and comes back, and one that closes its
+/// connection. The queue's own rules (order, bound,
+/// stop) are pinned against a scripted link in `capture::hep_delivery`; these
+/// pin that the transports feed it the failures it is built for.
+#[cfg(test)]
+mod delivery_tests {
+    use super::*;
+    use crate::capture::hep_export::HepExportSnapshot;
+    use std::sync::mpsc;
+
+    type TestError = Box<dyn std::error::Error>;
+
+    /// How long a test waits for something that must happen before calling
+    /// it a failure. A hang detector, not a speed claim: every wait polls a
+    /// condition and returns the moment it holds.
+    const MUST_HAPPEN: Duration = Duration::from_secs(60);
+
+    /// A SIP-shaped HEP payload carrying its number, so order is checkable.
+    fn numbered(i: usize) -> Vec<u8> {
+        format!("OPTIONS sip:{i:06}@b SIP/2.0\r\nCSeq: {i} OPTIONS\r\n\r\n").into_bytes()
+    }
+
+    /// The number [`numbered`] put in a payload.
+    fn number_of(payload: &[u8]) -> Result<usize, TestError> {
+        let digits = payload.get(12..18).ok_or("a numbered payload")?;
+        Ok(std::str::from_utf8(digits)?.parse()?)
+    }
+
+    /// The endpoint every test packet claims.
+    fn endpoint() -> HepEndpoint {
+        HepEndpoint {
+            src_addr: IpAddr::V4(Ipv4Addr::new(192, 0, 2, 1)),
+            dst_addr: IpAddr::V4(Ipv4Addr::new(192, 0, 2, 2)),
+            src_port: 5060,
+            dst_port: 5060,
+            transport: TransportProto::Udp,
+        }
+    }
+
+    /// Offer packet `body` to `sender`, as the capture loop does.
+    fn offer(sender: &HepSender, body: &[u8]) -> Result<(), TestError> {
+        sender
+            .send_payload(&endpoint(), Utc::now(), HepProtocol::Sip, body)
+            .map_err(|e| format!("an offer is never refused: {e:#}").into())
+    }
+
+    /// Wait for `cond` over `sender`'s counters, or fail naming `what`.
+    fn wait_for(
+        sender: &HepSender,
+        what: &str,
+        cond: impl Fn(&HepExportSnapshot) -> bool,
+    ) -> Result<(), TestError> {
+        let counters = sender.counters();
+        let deadline = Instant::now() + MUST_HAPPEN;
+        loop {
+            let snap = counters.snapshot();
+            if cond(&snap) {
+                return Ok(());
+            }
+            if Instant::now() >= deadline {
+                return Err(format!("never happened: {what}: {snap:?}").into());
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    }
+
+    /// Build a TCP sender for `dest` on another thread, so a constructor
+    /// that blocks fails the test on the deadline instead of hanging it.
+    fn tcp_sender_within(
+        dest: String,
+        opts: HepSenderOpts<'static>,
+    ) -> Result<HepSender, TestError> {
+        let (tx, rx) = mpsc::channel();
+        std::thread::spawn(move || {
+            let destination = OperatorDestination::from_cli_flag(HEP_SEND_FLAG, &dest);
+            let _ = tx.send(HepSender::for_destination(&destination, opts));
+        });
+        rx.recv_timeout(MUST_HAPPEN)
+            .map_err(|e| format!("building the sender blocked past the deadline: {e}"))?
+            .map_err(|e| format!("build the sender: {e:#}").into())
+    }
+
+    /// Bring the collector on a port `hold` keeps bound up.
+    fn listen(hold: socket2::Socket) -> Result<std::net::TcpListener, TestError> {
+        hold.listen(128)?;
+        Ok(hold.into())
+    }
+
+    /// Read `want` whole HEP packets off `conn` and return their payloads.
+    fn payloads(conn: &mut std::net::TcpStream, want: usize) -> Result<Vec<Vec<u8>>, TestError> {
+        use std::io::Read;
+        conn.set_read_timeout(Some(Duration::from_secs(10)))?;
+        let mut buf: Vec<u8> = Vec::new();
+        let mut out = Vec::new();
+        let mut chunk = [0u8; 8192];
+        while out.len() < want {
+            while let Some(total) =
+                hep_stream_frame(&buf).map_err(|e| format!("the stream frames: {e:?}"))?
+            {
+                out.push(
+                    parse_hep(&buf[..total])
+                        .map_err(|e| format!("a whole packet: {e:?}"))?
+                        .payload,
+                );
+                buf.drain(..total);
+            }
+            if out.len() >= want {
+                break;
+            }
+            match conn.read(&mut chunk) {
+                Ok(0) => break,
+                Ok(n) => buf.extend_from_slice(&chunk[..n]),
+                Err(e) => return Err(format!("read after {} packet(s): {e}", out.len()).into()),
+            }
+        }
+        Ok(out)
+    }
+
+    /// Accept one connection on `listener` within the deadline.
+    fn accept(listener: &std::net::TcpListener) -> Result<std::net::TcpStream, TestError> {
+        listener.set_nonblocking(true)?;
+        let deadline = Instant::now() + MUST_HAPPEN;
+        loop {
+            match listener.accept() {
+                Ok((s, _)) => {
+                    s.set_nonblocking(false)?;
+                    return Ok(s);
+                }
+                Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                    if Instant::now() >= deadline {
+                        return Err("the sender never connected".into());
+                    }
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+                Err(e) => return Err(format!("accept: {e}").into()),
+            }
+        }
+    }
+
+    /// **A collector that accepts the connection and reads nothing never
+    /// slows the capture.** The kernel completes the handshake and buffers
+    /// what arrives until the collector's receive buffer and this sender's
+    /// send buffer are full -- about ten megabytes on loopback -- and then a
+    /// write waits for as long as the collector does: forever. Thirty-six
+    /// megabytes are offered.
+    ///
+    /// The control is in the counters: fewer packets than were offered can
+    /// have been written, so the blackhole really did hold the writer. Every
+    /// offer must still have returned. An offer that waited on the network
+    /// would wait on a collector that never reads, so it could never return
+    /// at all, and the deadline only turns that hang into a red result.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_collector_that_reads_nothing_never_stalls_the_packet_path() -> Result<(), TestError> {
+        const OFFERED: usize = 600;
+        let collector = std::net::TcpListener::bind("127.0.0.1:0")?;
+        let dest = collector.local_addr()?.to_string();
+        let sender = std::sync::Arc::new(tcp_sender_within(
+            dest,
+            HepSenderOpts {
+                transport: HepTransport::Tcp,
+                // Long enough that the writer is held by the collector,
+                // not released by its own timeout, for the whole test.
+                timeout: Duration::from_secs(600),
+                ..HepSenderOpts::default()
+            },
+        )?);
+        let body = vec![b'x'; 60_000];
+        let (done_tx, done_rx) = mpsc::channel();
+        let offering = std::sync::Arc::clone(&sender);
+        std::thread::spawn(move || {
+            let mut refused = None;
+            for _ in 0..OFFERED {
+                if let Err(e) = offer(&offering, &body) {
+                    refused = Some(e.to_string());
+                    break;
+                }
+            }
+            let _ = done_tx.send(refused);
+        });
+        let refused = done_rx
+            .recv_timeout(MUST_HAPPEN)
+            .map_err(|_| "the packet path stalled behind a collector that reads nothing")?;
+        assert_eq!(refused, None, "an offer was refused");
+        let snap = sender.counters().snapshot();
+        assert!(
+            (snap.sent as usize) < OFFERED,
+            "control: the collector never held the writer, so nothing was tested: {snap:?}"
+        );
+        assert_eq!(snap.queued as usize, OFFERED, "{snap:?}");
+        drop(collector);
+        Ok(())
+    }
+
+    /// A TCP socket with `SO_REUSEPORT`, so a second one can hold the
+    /// collector's port bound while the first still listens.
+    fn reuse_port_socket() -> Result<socket2::Socket, TestError> {
+        let socket = socket2::Socket::new(socket2::Domain::IPV4, socket2::Type::STREAM, None)?;
+        socket.set_reuse_port(true)?;
+        Ok(socket)
+    }
+
+    /// **A TCP collector that goes away gets the whole feed once it listens
+    /// again**: the sender holds what is offered while the collector is down,
+    /// and replays it in order with every packet counted as replayed.
+    ///
+    /// The collector's port is held bound and not listening for the whole
+    /// outage, so every redial is refused on the spot and no parallel test can
+    /// take the number in between.
+    #[test]
+    fn a_tcp_collector_that_goes_away_gets_every_packet_once_it_listens_again()
+    -> Result<(), TestError> {
+        const N: usize = 50;
+        let listening = reuse_port_socket()?;
+        listening.bind(&std::net::SocketAddr::from((Ipv4Addr::LOCALHOST, 0)).into())?;
+        listening.listen(16)?;
+        let collector = std::net::TcpListener::from(listening);
+        let addr = collector.local_addr()?;
+        let sender = tcp_sender_within(
+            addr.to_string(),
+            HepSenderOpts {
+                capture_id: 9,
+                transport: HepTransport::Tcp,
+                ..HepSenderOpts::default()
+            },
+        )?;
+        let first = accept(&collector)?;
+        let hold = reuse_port_socket()?;
+        hold.bind(&addr.into())?;
+        drop(first);
+        drop(collector);
+
+        for i in 0..N {
+            offer(&sender, &numbered(i))?;
+        }
+        wait_for(&sender, "a failed attempt during the outage", |s| {
+            s.failed() > 0
+        })?;
+        let collector = listen(hold)?;
+        let mut conn = accept(&collector)?;
+        let mut got = Vec::new();
+        for p in payloads(&mut conn, N)? {
+            got.push(number_of(&p)?);
+        }
+        assert_eq!(got, (0..N).collect::<Vec<_>>(), "every packet, in order");
+        wait_for(&sender, "every packet counted replayed", |s| {
+            s.replayed == N as u64
+        })?;
+        let snap = sender.counters().snapshot();
+        assert_eq!(
+            (snap.sent, snap.dropped_total(), snap.reconnects),
+            (N as u64, 0, 1)
+        );
+        Ok(())
+    }
+
+    /// **A collector that closes its connection is noticed before the next
+    /// write**, so a collector stopped and restarted loses nothing. Without
+    /// the check, a write into the closed connection succeeds locally and the
+    /// packet is gone when the collector's RST comes back.
+    #[test]
+    fn a_connection_the_collector_closed_is_noticed_without_writing() -> Result<(), TestError> {
+        let collector = std::net::TcpListener::bind("127.0.0.1:0")?;
+        let client = std::net::TcpStream::connect(collector.local_addr()?)?;
+        let (server, _) = collector.accept()?;
+        assert!(
+            !peer_closed(&client),
+            "a quiet live connection is not closed"
+        );
+        {
+            use std::io::Write;
+            let mut s = &server;
+            s.write_all(b"ticket")?;
+        }
+        let deadline = Instant::now() + MUST_HAPPEN;
+        // Data waiting to be read is not a close, and is not consumed.
+        let mut peek = [0u8; 6];
+        while client.peek(&mut peek).unwrap_or(0) < 6 {
+            assert!(Instant::now() < deadline, "the data never arrived");
+        }
+        assert!(!peer_closed(&client), "pending data is not a close");
+        drop(server);
+        // The FIN follows the data; the check must see it once it lands.
+        let mut buf = [0u8; 6];
+        {
+            use std::io::Read;
+            (&client).read_exact(&mut buf)?;
+        }
+        while !peer_closed(&client) {
+            assert!(
+                Instant::now() < deadline,
+                "a connection the collector closed was never reported closed"
+            );
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        Ok(())
     }
 }

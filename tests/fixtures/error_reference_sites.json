@@ -463,9 +463,9 @@
     {
       "file": "src/app/bootstrap.rs",
       "call": "PlanError { exit_code: 1, message: e.to_string(), }",
-      "count": 12,
+      "count": 13,
       "carries": [],
-      "why": "All 12 occurrences in src/app/bootstrap.rs::load_config carry crate::Error from Config::load and the [section] validate() methods in src/config.rs; those build text as Error::ConfigInvalid(format!(..)) (not an extracted kind) and Config::load also carries io and toml library Display (ConfigRead/ConfigParse)."
+      "why": "All 13 occurrences in src/app/bootstrap.rs::load_config carry crate::Error from Config::load and the [section] validate() methods in src/config.rs; those build text as Error::ConfigInvalid(format!(..)) (not an extracted kind) and Config::load also carries io and toml library Display (ConfigRead/ConfigParse)."
     },
     {
       "file": "src/app/bootstrap.rs",

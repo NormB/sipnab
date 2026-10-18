@@ -10,6 +10,32 @@ entry that carries them.
 
 ## [Unreleased]
 
+### Added
+
+- **`--hep-send` rides out a collector outage without slowing or losing the
+  capture.** The capture loop wrote each HEP packet to the collector itself:
+  a collector that stopped reading stalled the capture, every redial of a
+  collector that had gone away held the capture for up to the dial's
+  3-second bound, and a failed write lost its packet. Sending now runs on
+  its own thread behind a bounded queue, and the capture only hands packets
+  over. While the collector is unreachable, packets queue up to
+  `--hep-send-queue` MiB (default 64), dropping the oldest at the bound. The
+  sender redials with backoff from 0.1 s to 5 s, and every dial and stalled
+  write is bounded by `--hep-send-timeout` (default 3 s, the bound the dial
+  already had). When the collector answers, the queue replays in capture
+  order. A collector that refuses the first connection at startup still
+  stops the run with exit 2. A stop discards the queue and counts it, with
+  no flush. Delivery is at-least-once across a reconnect. Over UDP sipnab
+  cannot see an outage, so nothing is held or replayed. See [When the
+  `--hep-send` collector goes
+  away](docs/cli-reference.md#when-the---hep-send-collector-goes-away).
+- **The export counters say what was lost.** The end-of-run line,
+  `runtime_stats`, `GET /v1/runtime` and the Prometheus series add `queued`,
+  `replayed`, `dropped` by reason (`queue_full`, `stopped`, `unsent_at_exit`)
+  and the queue depth, and Prometheus gains `reconnects`. A `failure` now
+  counts a failed attempt, whose packet stays queued. Losses are the
+  `dropped` count.
+
 ### Changed
 
 - **Breaking:** `sipnab -N -I <file> --cores N` (N above 1) with no
@@ -23,6 +49,30 @@ entry that carries them.
 - **A hostile 7z archive no longer ends the run.**
   - A 7z header that declares blocks and no file information made the 7z reader index an empty table and panic. A release build aborts on a panic, so one such archive given to `-I` stopped sipnab.
   - sipnab now checks the table before decoding and refuses the archive, as it refuses any unreadable one.
+
+- **`--hep-send` sends RTCP in the form Homer keeps.** sipnab sent each RTCP
+  report as the raw binary datagram, with no correlation ID. Homer's
+  collector, heplify-server, stores an RTCP report only under a non-empty
+  correlation ID, and homer-ui reads the stored report as JSON, so none of
+  sipnab's RTCP reached Homer's QoS view, and nothing said so. Each report now
+  goes as heplify sends it: decoded to heplify's JSON, field for field, with
+  the Call-ID of the call it belongs to in the HEP correlation-ID chunk
+  (`0x0011`). sipnab finds the call from the SDP that set up the media: the
+  RTP port, the port above it, or an `a=rtcp` port. **RTCP whose call sipnab
+  never saw the SDP of is no longer sent**, as heplify and captagent do not
+  send it; the first such report says so once in the log. A capture of the
+  media ports alone therefore forwards no RTCP. SIP is unchanged, and still
+  goes without a correlation ID, as heplify sends it. RTP is still never
+  forwarded.
+- **The Homer guides' test calls carry real audio, and say what reaches
+  Homer.** [Add Homer to your voice stack](https://sipnab.com/docs/homer/) and
+  [Connect sipnab to Homer](https://sipnab.com/docs/homer-sipnab/) place their
+  test calls with SIPp's `uac_pcap` and an echoing callee in place of `uac`,
+  which sent no audio. Connect sipnab to Homer describes the RTCP form above,
+  and notes that a SIPp call sends no RTCP. Add Homer to your voice stack no
+  longer contradicts itself about `hep_id` without `transport=udp`: OpenSIPS
+  then sends nothing, by TCP or by UDP, and logs that `hep_tcp` is not
+  initialized.
 
 ### Internal
 

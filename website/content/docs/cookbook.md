@@ -2527,6 +2527,7 @@ Receiving makes sipnab a **collector**.
 Sending makes it a **capture agent**.
 
 - SIP goes as HEP protocol type 1, and RTCP as type 5.
+- RTCP goes as JSON carrying the call's Call-ID, the form HOMER stores.
 - So the collector can report media quality, and not only call setup.
 - RTP is never forwarded.
 

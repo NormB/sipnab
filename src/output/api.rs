@@ -7768,8 +7768,18 @@ pub mod schema {
         /// Failures by kind: `connect`, `tls_handshake` and `write`, every kind
         /// present, zeros included.
         pub failures: std::collections::BTreeMap<String, u64>,
-        /// Connections rebuilt after one broke (TCP and TLS only).
+        /// Times the collector became reachable again after an outage.
         pub reconnects: u64,
+        /// Packets the capture handed to the exporter's queue: every one is
+        /// sent, dropped, or still queued.
+        pub queued: u64,
+        /// Packets delivered after waiting out an outage in the queue.
+        pub replayed: u64,
+        /// Packets discarded undelivered, by reason: `queue_full`, `stopped`
+        /// and `unsent_at_exit`, every reason present, zeros included.
+        pub dropped: std::collections::BTreeMap<String, u64>,
+        /// Packets queued now, neither sent nor dropped.
+        pub queue_depth: u64,
         /// What `packets_sent` means on this transport, in words. Over UDP a
         /// collector that is down produces no failure at all.
         pub delivery: String,

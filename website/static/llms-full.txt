@@ -3770,6 +3770,7 @@ Receiving makes sipnab a **collector**.
 Sending makes it a **capture agent**.
 
 - SIP goes as HEP protocol type 1, and RTCP as type 5.
+- RTCP goes as JSON carrying the call's Call-ID, the form HOMER stores.
 - So the collector can report media quality, and not only call setup.
 - RTP is never forwarded.
 
@@ -6181,7 +6182,12 @@ The metric families:
 | `sipnab_hep_datagrams_received_total` | counter | HEP packets the listener received, admitted or refused. With the refused family below, `received - sum(refused)` is what reached the capture. |
 | `sipnab_hep_datagrams_refused_total{reason}` | counter | HEP packets the listener refused, by reason: `allowlist`, `rate_limit_global`, `rate_limit_per_peer`, `peer_tracking_full`, `malformed`, `auth_missing`, `auth_mismatch`, and the five `hmac_*` reasons (`hmac_bad_format`, `hmac_unsupported_version`, `hmac_timestamp_out_of_window`, `hmac_bad_mac`, `hmac_replay`). Every reason appears on every scrape of a run with a listener, at `0` where the listener refused none. A climbing `auth_mismatch` or `hmac_bad_mac` is a sender with the wrong key; `hmac_timestamp_out_of_window` is a sender with a drifting clock. Both servers fill it. |
 | `sipnab_hep_export_packets_total` | counter | Packets the `--hep-send` exporter delivered as far as its transport can tell. Over TCP and TLS, the exporter wrote it to the connection. **Over UDP, the exporter handed it to the kernel**, and the series climbs whether or not a collector is listening; check the collector's own `sipnab_hep_senders` or its roster for delivery. Present only on a run that exports. |
-| `sipnab_hep_export_failures_total{kind}` | counter | Packets the exporter failed to deliver, by the step that failed: `connect` (the collector refused, or the sender could not reach it, when the sender dialed again), `tls_handshake` (it connected and the certificate was not one the sender accepts, or the session broke), `write` (an established connection or the socket refused the packet). Every kind appears, at `0` where nothing failed. A climbing `tls_handshake` after a collector rebuild is a certificate the sender does not trust. Present only on a run that exports. |
+| `sipnab_hep_export_failures_total{kind}` | counter | Delivery **attempts** that failed, by the step that failed: `connect` (the collector refused, or the sender could not reach it within `--hep-send-timeout`), `tls_handshake` (it connected and the certificate was not one the sender accepts, or the session broke), `write` (an established connection or the socket refused the packet, or the collector closed the connection). A failed attempt loses nothing: the packet stays queued and the sender retries with backoff, so read losses off `sipnab_hep_export_dropped_total`. Every kind appears, at `0` where nothing failed. A climbing `tls_handshake` after a collector rebuild is a certificate the sender does not trust. Present only on a run that exports. |
+| `sipnab_hep_export_queued_total` | counter | Packets the capture handed to the exporter's queue. Every one ends up sent, dropped, or still queued: `queued = packets + dropped + queue_depth`. Present only on a run that exports. |
+| `sipnab_hep_export_replayed_total` | counter | Packets delivered after waiting out a collector outage in the queue, in capture order. Present only on a run that exports. |
+| `sipnab_hep_export_reconnects_total` | counter | Times the collector became reachable again after an outage, a collector down at startup included. Present only on a run that exports. |
+| `sipnab_hep_export_dropped_total{reason}` | counter | Packets discarded undelivered, by why: `queue_full` (the queue was at `--hep-send-queue` while the collector was unreachable, and this was the oldest packet in it), `stopped` (still queued when a signal stopped the run; sipnab flushes nothing at a stop), `unsent_at_exit` (the input ended and the collector stayed unreachable for the grace period). Every reason appears, at `0` where sipnab dropped nothing, so an alert on `queue_full` reads zero rather than no-data. Present only on a run that exports. |
+| `sipnab_hep_export_queue_depth` | gauge | Packets queued for the collector now, neither sent nor dropped. Near zero while the collector keeps up; it climbs through an outage and falls as the queue replays. Present only on a run that exports. |
 | `sipnab_diagnosis_total{type}` | counter | Tracked dialogs whose media diagnosis raises each finding. A dialog with two findings counts under both. Three groups of labels: `one_way_audio`, `nat_mismatch` and `no_media` appear on every scrape, at `0` where nothing raises them. `private_media_address` (the SDP `c=` line offered an address the far end cannot route back to) and `private_media_address_confirmed` (the subset where STUN evidence shows nothing rewrote that address) appear once a dialog raises them. `dead_air` and `clipping` measure the decoded audio, so they appear only on a run started with `--retain-audio`; their absence means the run kept no samples, not that the calls were fine. Both servers run the diagnosis during the scrape, so scrape cost grows with the number of tracked dialogs (capped by `-l`/`--limit`). |
 | `sipnab_security_alerts_total{type}` | counter | Security alerts by the detector that fired: `scanner`, `fraud`, `digest`, `reg_flood`. Only types that have fired appear, so the family is absent before the first alert. At most 128 distinct names; any beyond that count under `type="other"`, so the total stays right. |
 | `sipnab_mcp_tool_calls_total{tool,outcome}` | counter | MCP tool calls, by the tool asked for and how the call ended: `ok`, `tool_error` (the tool answered with an error), or `refused` (the rate limit, the concurrency limit, a scope check, unknown arguments, or a name no tool answers to). A name no tool answers to still counts. At most 256 distinct tool names; any beyond that count under `tool="other"`. Absent until the first tool call. It always agrees with the `mcp_audit` log lines. |
@@ -9166,7 +9172,7 @@ The MCP `get_capture_report` tool answers the same question, with the same
 
 What sipnab is doing, and what it is costing the host it runs on.
 
-sipnab exports 40 Prometheus metrics. The listener that serves them is off
+sipnab exports 45 Prometheus metrics. The listener that serves them is off
 by default.
 
 - This endpoint answers the same questions without that listener.
@@ -9222,7 +9228,7 @@ curl -s -H "Authorization: Bearer $SIPNAB_API_KEY" http://127.0.0.1:8080/v1/runt
 ```
 
 On a `--hep-send` run the envelope also carries `hep_export`. It shows what the exporter
-delivered and what failed:
+delivered, replayed, dropped and failed:
 
 ```json
 "hep_export": {
@@ -9230,18 +9236,29 @@ delivered and what failed:
   "packets_sent": 18204,
   "failures": { "connect": 3, "tls_handshake": 0, "write": 0 },
   "reconnects": 1,
-  "delivery": "written to the connection: a write that fails is counted, and the next packet dials again"
+  "queued": 18210,
+  "replayed": 212,
+  "dropped": { "queue_full": 0, "stopped": 0, "unsent_at_exit": 0 },
+  "queue_depth": 6,
+  "delivery": "written to the connection: a write that fails is counted, the packet stays queued, and the sender dials again with backoff"
 }
 ```
 
-Every failure kind appears, zeros included.
+Every failure kind and every drop reason appears, zeros included.
 
+- A failure is one failed delivery attempt. The packet stays queued and the
+  sender tries it again, so losses are the `dropped` counts.
 - `connect` is a collector that
-  refused, or that the sender could not reach, when the sender dialed again.
+  refused, or that the sender could not reach within `--hep-send-timeout`.
 - `tls_handshake` is
   a collector whose certificate the sender does not accept.
 - `write` is a packet
   an established connection refused.
+- `queued` always equals `packets_sent` plus every `dropped` count plus
+  `queue_depth`.
+
+See [When the `--hep-send` collector goes
+away](cli-reference.md#when-the---hep-send-collector-goes-away).
 
 **Over UDP, `packets_sent` means handed to
 the kernel.** A collector that is down produces no failure at all. `delivery` says
@@ -18814,8 +18831,10 @@ This applies to root runs and to unprivileged runs set up with
 | `--api-file-root` | `<DIR>` | -- | 0.5.177 | Directory of capture files `GET /v1/captures/compare` may diff. The REST counterpart of `--mcp-file-root`, off for the same reason: every other REST answer comes from bytes sipnab already holds, while this reads FILES a client names. It takes a bare FILENAME, never a path: sipnab rejects a separator, a `..` or an absolute prefix before touching the filesystem, and refuses a symlink that resolves out of the root at open, by the same check `-O` uses. Without this flag the compare route answers `503`. Naming one directory means the worst a client can do is name files inside it. Feature: `api` |
 | `--metrics-max-conn` | `<N>` | `16` | 0.5.100 | Metrics scrapes served at once before further ones get `503`. Sixteen suits one Prometheus server; raise it when an HA pair, a federating parent, `remote_write` shards or sidecars scrape the same endpoint. A refused scrape leaves a gap in the series. Config: `[limits] metrics_max_conn` Feature: `metrics` |
 | `-L`, `--hep-listen` | `<ADDR>` | -- | 0.3.0 | Listen for HEP (Homer Encapsulation Protocol) packets. **Combines with `-d <iface>`**: HEP then supplies signaling while the interface supplies the RTP a HEP feed cannot carry, and streams bind to dialogs by SDP media endpoint. With no BPF expression of your own, the interface gets a media-only default, since the mirror carries the signaling; an explicit expression such as `sipnab -N -d eth0 -L 127.0.0.1:9060 "udp portrange 10000-20000"` narrows it to your media ports. One interface and one listener only: `--multi-device` with `-L`, `-I` with `-L`, and `-O` alongside the pair are each refused with the reason. See [cookbook recipe "Take signaling from HEP and media off the wire, in one process"](examples.md#take-signaling-from-hep-and-media-off-the-wire-in-one-process). The decrypted TLS and WebSocket legs OpenSIPS and Kamailio trace arrive with IP protocol 22, 50 or 6 and decode as TLS, WS or WSS, see [How `--hep-listen` reads the transport](#how---hep-listen-reads-the-transport). `--portrange` does not apply to HEP messages, so a proxy tracing SIP on 7060 needs no `--portrange 1-65535`. Each message takes the time its HEP packet carries; a HEP v3 packet without a `TS_SEC` chunk, and a HEP v1 packet, take the time sipnab received them. sipnab reads HEP v1 and v2 packets in the layout the `captagent` capture agent writes and Kamailio's `sipcapture` module reads: IPv4 or IPv6 addresses by the family byte, the transport by the IP protocol byte, and for v2 the time and capture ID in its time header. Feature: `hep` |
-| `-H`, `--hep-send` | `<ADDR>` | -- | 0.3.0 | Send captured packets via HEP to a remote collector: SIP as protocol type 1 and RTCP as type 5, so the collector can report media quality and not only call setup. RTP is never forwarded. **On `-I <file>` this forwards the file's contents**: every SIP message and RTCP report sipnab reads out of the capture goes to `<ADDR>` as recorded, redacted in no way. sipnab announces that at startup, naming the flag, the destination and the capture files, before it reads the first packet. See [What `--hep-send` sends](#what---hep-send-sends). **A headless run ends with one line saying what it exported**: packets sent, failures by kind (`connect`, `tls_handshake`, `write`) and reconnects, at `warn` when anything failed. Over UDP "sent" means handed to the kernel, and a collector that is down produces no failure; the line says so. `runtime_stats`, `GET /v1/runtime` (`hep_export`) and the Prometheus `sipnab_hep_export_*` series carry the same counts while it runs. Feature: `hep` |
-| `--hep-send-transport` | `<udp\|tcp\|tls>` | `udp` | 0.5.150 | Transport `--hep-send` uses to reach the collector. Homer's collectors accept all three. HEP v3 carries its own total length, so a `tcp` or `tls` feed is packets laid end to end with no extra framing, and sipnab sets `TCP_NODELAY` because these are small packets whose value is timeliness. sipnab opens the first connection at startup: when the collector refuses it, or it does not complete within 3 seconds, sipnab stops with exit `2` and names the error, such as `Failed to connect HEP sender to '127.0.0.1:9061' over TCP: Connection refused (os error 111)`. After that, a write that fails drops the connection and the next packet dials again, one reconnect per packet. Each reconnect gives up after 3 seconds and counts as a `connect` failure, as a refused one does. Refused without `--hep-send`, which is the side it governs. Feature: `hep` |
+| `-H`, `--hep-send` | `<ADDR>` | -- | 0.3.0 | Send captured packets via HEP to a remote collector: SIP as protocol type 1, and RTCP as type 5 in the JSON form heplify sends, carrying the Call-ID of the call whose SDP set up that media. RTCP for a call whose SDP sipnab never saw is not sent, since Homer stores none of it. RTP is never forwarded. **On `-I <file>` this forwards the file's contents**: every SIP message sipnab reads out of the capture goes to `<ADDR>` as recorded, and every RTCP report of a call in it as JSON, redacted in no way. sipnab announces that at startup, naming the flag, the destination and the capture files, before it reads the first packet. See [What `--hep-send` sends](#what---hep-send-sends). **A headless run ends with one line saying what it exported**: packets sent, queued, replayed after an outage, dropped by reason (`queue_full`, `stopped`, `unsent_at_exit`), still queued, failed attempts by kind (`connect`, `tls_handshake`, `write`) and reconnects, at `warn` when anything failed or sipnab dropped a packet. Over UDP "sent" means handed to the kernel, and a collector that is down produces no failure; the line says so. `runtime_stats`, `GET /v1/runtime` (`hep_export`) and the Prometheus `sipnab_hep_export_*` series carry the same counts while it runs. Feature: `hep` |
+| `--hep-send-transport` | `<udp\|tcp\|tls>` | `udp` | 0.5.150 | Transport `--hep-send` uses to reach the collector. Homer's collectors accept all three. HEP v3 carries its own total length, so a `tcp` or `tls` feed is packets laid end to end with no extra framing, and sipnab sets `TCP_NODELAY` because these are small packets whose value is timeliness. sipnab opens the first connection at startup: when the collector refuses it, or it does not complete within `--hep-send-timeout` (default 3 seconds), sipnab stops with exit `2` and names the error, such as `Failed to connect HEP sender to '127.0.0.1:9061' over TCP: Connection refused (os error 111)`. After that, a write that fails keeps its packet queued and drops the connection, and the sending thread dials again with backoff, never in a tight loop. Each dial gives up after `--hep-send-timeout` and counts as a `connect` failure, as a refused one does. See [When the `--hep-send` collector goes away](#when-the---hep-send-collector-goes-away). Refused without `--hep-send`, which is the side it governs. Feature: `hep` |
+| `--hep-send-queue` | `<MIB>` | `64` | Unreleased | How many MiB of HEP packets `--hep-send` holds while the collector is unreachable, 1 to 4096. Sending runs on its own thread behind this queue, so a slow or dead collector never slows the capture, and sipnab replays the queue in capture order when the collector answers. At the bound sipnab drops the **oldest** packet and counts it as `queue_full`. A stop (SIGINT/SIGTERM) discards the queue and counts it as `stopped`: sipnab flushes nothing at shutdown. Refused without `--hep-send`; `[hep] send_queue_mib` on a run without `--hep-send` gets a startup warning naming it instead. Config: `[hep] send_queue_mib`. Feature: `hep` |
+| `--hep-send-timeout` | `<SECS>` | `3` | Unreleased | Seconds one TCP dial or stalled write to the `--hep-send` collector may take before the collector counts as unreachable, 1 to 300. It also bounds the first connection at startup, which fails the run with exit `2`. A TLS handshake keeps its own 10-second bound. Retries back off from 0.1 s, doubling, to at most 5 s. A file read to its end waits for the queue to drain, and gives up after two timeouts plus 5 s with no delivery. Refused without `--hep-send`; `[hep] send_timeout_secs` on a run without `--hep-send` gets a startup warning naming it instead. Config: `[hep] send_timeout_secs`. Feature: `hep` |
 | `--hep-listen-transport` | `<udp\|tcp\|tls>` | `udp` | 0.5.150 | Transport `--hep-listen` accepts. A `tcp` or `tls` listener serves several agents at once, one connection each, and reads every connection as HEP v3 packets delimited by the total length in each header. **HEP v1 and v2 are datagram-only**: they declare no total length, so nothing can delimit it on a stream. A peer that sends bytes that are not HEP v3 loses its connection, because a stream offers no point to resynchronize at. Refused without `--hep-listen`, which is the side it governs. Feature: `hep` |
 | `--hep-tls-ca` | `<FILE>` | -- | 0.5.150 | Certificate authority (PEM) this sender checks the collector's certificate against under `--hep-send-transport tls`. A named CA **replaces** the trust store rather than joining it, so a private collector's issuer is the whole of what this sender accepts (`--hep-tls-extra-ca` adds a CA to the host's bundle instead); a file sipnab cannot read, or that holds no certificate, raises an error rather than an empty store. Omit it to use the host's CA bundle (`$SSL_CERT_FILE`, else `/etc/ssl/certs/ca-certificates.crt` and its equivalents). sipnab refuses it unless `--hep-send-transport tls` names the transport. Feature: `hep`. Config: `[hep] tls_ca` |
 | `--hep-tls-extra-ca` | `<FILE>` | -- | 0.5.203 | Certificate authority (PEM) this sender trusts **in addition to** the host's CA bundle under `--hep-send-transport tls`: the sender accepts the collector's certificate when the host's bundle or this file issued it. Use it for a collector whose certificate comes from a private CA on a host whose public roots should still count; use `--hep-tls-ca` to trust only the named file. sipnab refuses the two flags together. The file must hold at least one certificate, and the host must have a CA bundle to add it to: on a host without one, sipnab refuses at startup and names `--hep-tls-ca`. sipnab refuses it unless `--hep-send-transport tls` names the transport. Feature: `hep`. Config: `[hep] tls_extra_ca` |
@@ -18887,6 +18906,9 @@ This applies to root runs and to unprivileged runs set up with
 - `sudo sipnab -N -d eth0 --hep-send homer.example.net:9063 --hep-send-transport tls --hep-tls-ca /etc/pki/tls/certs/homer-ca.pem --hep-auth-file /etc/sipnab/hep.key` — the same, with the Homer authenticate key inside the session as well as the session around it
 - `sudo sipnab -N -d eth0 --hep-send collector.example.com:9063 --hep-send-transport tls --hep-tls-extra-ca /etc/sipnab/collector-ca.pem` — encrypted forwarding to a collector whose certificate comes from a private CA, while the host's public roots still count: the sender accepts a certificate from either
 - `sudo sipnab -N -d eth0 --hep-send homer.example.net:9063 --hep-send-transport tls --hep-tls-extra-ca /etc/sipnab/homer-ca.pem --hep-auth-file /etc/sipnab/hep.key` — the same with the Homer authenticate key inside the session; compare `--hep-tls-ca`, which would trust only `homer-ca.pem`
+- `sudo sipnab -N -d eth0 --hep-send 192.0.2.10:9061 --hep-send-transport tcp --hep-send-queue 512` — a busy SBC whose collector restarts for maintenance: eight times the default queue rides out an outage eight times as long before the oldest packets go
+- `sudo sipnab -N -d eth0 --hep-send 192.0.2.10:9061 --hep-send-transport tcp --hep-send-queue 16 --hep-send-timeout 2` — a small box on the collector's LAN: a 16 MiB ceiling on the memory an outage can take, and a collector that does not answer a dial within two seconds counts as down
+- `sudo sipnab -N -d eth0 --hep-send collector.example.com:9063 --hep-send-transport tls --hep-tls-ca /etc/sipnab/collector-ca.pem --hep-send-timeout 15` — a collector across a slow WAN, where a dial can take longer than the default three seconds
 - `sipnab -N -L 0.0.0.0:9061 --hep-listen-transport tcp --hep-parse --hep-auth-file /etc/sipnab/hep.key` — an authenticated TCP HEP collector: several proxies connect at once and sipnab reads each connection as a stream of HEP v3 packets
 - `sipnab -N -L 127.0.0.1:9061 --hep-listen-transport tcp --hep-parse` — the loopback version, for an agent mirroring to a collector on the same host over a connection rather than datagrams
 - `sipnab -N -L 0.0.0.0:9063 --hep-listen-transport tls --hep-tls-cert /etc/sipnab/collector.pem --hep-tls-key /etc/sipnab/collector.key --hep-parse --hep-auth-file /etc/sipnab/hep.key` — a TLS HEP collector: agents reach it over an encrypted stream and still prove who they are with the shared secret
@@ -18901,9 +18923,9 @@ This applies to root runs and to unprivileged runs set up with
 
 ### What `--hep-send` sends
 
-`--hep-send <ADDR>` forwards every SIP message **and every RTCP report** sipnab
-reads to the collector at `<ADDR>`. It forwards them byte for byte as the
-capture holds them.
+`--hep-send <ADDR>` forwards every SIP message sipnab reads to the collector
+at `<ADDR>`, byte for byte as the capture holds it. It also forwards **the RTCP
+reports of every call whose SDP it read**.
 
 On a live capture that matches what the flag sounds like. Traffic passes the
 interface, and a copy reaches Homer.
@@ -18919,6 +18941,22 @@ A collector filtering by transport finds a TCP trunk under TCP.
 RTCP travels as HEP protocol type 5. That is what lets a remote collector
 report media quality (loss, jitter, MOS) rather than only whether calls
 connect.
+
+Each RTCP report goes in the form heplify sends:
+
+- sipnab decodes the report to JSON.
+- The Call-ID of the call it belongs to goes in the correlation-ID chunk
+  (`0x0011`).
+- sipnab finds the call from the SDP that set up the media: the RTP port, the
+  port above it, or an `a=rtcp` port.
+
+Homer's collector keeps an RTCP report only under a Call-ID. So a report whose
+call sipnab never saw the SDP of is not sent, as heplify and captagent do not
+send it. Capture the signaling as well as the media to let the reports
+through.
+
+SIP goes without a correlation-ID chunk, as heplify sends it. The collector
+still derives the call from `X-CID` or `Call-ID` itself.
 
 **RTP is never forwarded.**
 
@@ -18946,9 +18984,9 @@ sipnab announces this before it reads the first packet:
 
 ```text
 WARN sipnab::app::bootstrap: --hep-send collector.example:9060 forwards every
-SIP message and every RTCP report this run reads to that address, and this run
-is reading a capture FILE (customer.pcap). The signaling in those captures
-leaves this machine ...
+SIP message this run reads, and the RTCP reports of the calls in it, to that
+address, and this run is reading a capture FILE (customer.pcap). The signaling
+in those captures leaves this machine ...
 ```
 
 That line is a warning rather than a refusal, because you chose the
@@ -18966,6 +19004,71 @@ The scanner-kill path works the other way round and refuses to run offline.
 - It aims at addresses recorded *inside* the capture.
 - Those belong to third parties who have nothing to do with your analysis.
 - So `-I file` grants it nothing at all. See [Security](#security).
+
+### When the `--hep-send` collector goes away
+
+Sending runs on its own thread, behind a queue. The capture hands each HEP
+packet to the queue and moves on, so a collector that is slow, unreachable or
+accepting connections without reading never slows the capture or costs it a
+packet.
+
+sipnab still makes the first connection at startup. A collector that refuses
+it, or does not answer within `--hep-send-timeout`, stops the run with exit
+`2`, as does a TLS collector whose certificate sipnab refuses.
+
+While the collector is unreachable after that:
+
+- **Packets queue**, up to `--hep-send-queue` MiB (default 64). At that bound
+  sipnab drops the **oldest** packet and counts it as `queue_full`. Dropping the
+  oldest puts the gap at the start of the outage, so the replay runs straight
+  into the live feed. Dropping the newest would cut the calls still in
+  progress, which are the ones you look for after an outage.
+- **The sender redials** with backoff: 0.1 s after the first failure, doubling
+  to at most 5 s. Each dial and each stalled write gives up after
+  `--hep-send-timeout` seconds (default 3). A TLS handshake gives up after 10
+  seconds.
+- **When the collector answers, sipnab replays the queue in capture order**,
+  then the live feed continues. The `replayed` count grows by one per packet.
+
+**Delivery is at-least-once across a reconnect** for every packet sipnab still
+holds. sipnab sends a packet whose write failed partway again, whole, on the
+new connection, so a collector that kept the first fragment can see that packet
+twice. Packets the kernel had already accepted are out of sipnab's hands: a
+collector that vanishes without closing its connection (power, network) can
+take the unsent contents of the socket's send buffer with it, and no error
+names them. A collector that you stop and restart closes its connections, and
+sipnab checks for that before every write, so that case loses nothing.
+
+**Over UDP, sipnab cannot see an outage.** sipnab sends each datagram from
+an unconnected UDP socket, so a collector that is down, or a host that answers
+with ICMP port unreachable, produces no failure, and sipnab has nothing to hold
+or replay. Use `--hep-send-transport tcp` or `tls` when an outage must not lose
+signaling.
+
+**A stop discards the queue.** On SIGINT or SIGTERM sipnab sends nothing it
+still holds: captured SIP carries credentials, numbers and media keys, and data
+that outlives a stop is data you believed gone. The `stopped` count says how
+many packets it discarded. The end of the input is not a stop. A file read to
+its end, `-c` or `--duration` delivers what the queue holds, and gives up only
+after two `--hep-send-timeout` periods plus 5 s pass with no delivery. It counts
+what it gave up as `unsent_at_exit`.
+
+The end-of-run line states every count. For a run whose collector restarted
+once:
+
+```text
+HEP export to 192.0.2.10:9061 over tcp: 1840 packet(s) sent, 1840 queued, 212
+replayed after an outage, none dropped, 0 still queued, 14 failed attempt(s)
+(connect 14), 1 reconnect(s); sent means written to the connection: a write
+that fails is counted, the packet stays queued, and the sender dials again with
+backoff
+```
+
+`failed attempt(s)` counts attempts, not lost packets: a failed attempt keeps
+its packet. Losses are the `dropped` count. `queued` always equals `sent` plus
+`dropped` plus `still queued`. The same counts appear in `runtime_stats` and
+`GET /v1/runtime` (`hep_export`) and as the Prometheus `sipnab_hep_export_*`
+series.
 
 ### How `--hep-listen` reads the transport
 
@@ -20941,6 +21044,19 @@ One entry in the comma-separated `[security] fraud_destination` list is not a de
 `[security] kill_rate_limit` is how many scanner-kill responses per second sipnab may send on the network. A value of 0 has no meaning here, because the setting bounds packets sipnab sends and has no unlimited value. The printed line starts with `invalid config value: `.
 
 **What to do:** Set a whole number of 1 or more, for example the default `10`. To send no responses, leave out `--kill-scanner` and `-K`.
+
+**Exit code:** 1.
+
+### `[hep] {key} must be 1-{max}, got {v}`
+
+A HEP sender setting in `[hep]` is outside the range its flag accepts.
+
+- `{key}` is `send_queue_mib` (1 to 4096, `--hep-send-queue`) or `send_timeout_secs` (1 to 300, `--hep-send-timeout`).
+- `{max}` is the top of that range, and `{v}` is the value in the file.
+
+The printed line starts with `invalid config value: `.
+
+**What to do:** Set a value in the range, or remove the key to use the default (64 MiB, 3 seconds).
 
 **Exit code:** 1.
 
@@ -28971,11 +29087,13 @@ tls_key = "/etc/sipnab/metrics.key"
 
 ### [hep]
 
-TLS for HEP:
+TLS for HEP, and the HEP sender's queue:
 
 - the CA the sender (`--hep-send-transport tls`) checks the collector's
   certificate against;
-- the certificate a TLS listener (`--hep-listen-transport tls`) presents.
+- the certificate a TLS listener (`--hep-listen-transport tls`) presents;
+- how much the sender holds, and how long it waits, while its collector is
+  unreachable.
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
@@ -28983,6 +29101,8 @@ TLS for HEP:
 | `tls_extra_ca` | path | -- | CA (PEM) the sender trusts **in addition to** the host's CA bundle. Set this or `tls_ca`, not both. The host must have a CA bundle; without one sipnab refuses at startup. An empty string fails validation and names the key. On a run without `--hep-send` it does nothing, and sipnab says so in a startup warning naming the key. `--hep-tls-extra-ca` overrides it |
 | `tls_cert` | path | -- | PEM certificate chain a TLS HEP listener presents, the server's certificate first. A TLS listener needs this and `tls_key`, from here or from the flags. An empty string fails validation and names the key. On a run without `--hep-listen` it does nothing, and sipnab says so in a startup warning naming the key. `--hep-tls-cert` overrides it |
 | `tls_key` | path | -- | PEM private key for `tls_cert`. sipnab refuses a key any other user on the host can read. An empty string fails validation and names the key. On a run without `--hep-listen` it does nothing, and sipnab says so in a startup warning naming the key. `--hep-tls-key` overrides it |
+| `send_queue_mib` | integer | `64` | MiB of HEP packets the sender queues while its collector is unreachable, 1 to 4096. At the bound sipnab drops the oldest packet and counts it as `queue_full`. A value outside the range fails validation and names the key. On a run without `--hep-send` it does nothing, and sipnab says so in a startup warning naming the key. `--hep-send-queue` overrides it. See [When the `--hep-send` collector goes away](cli-reference.md#when-the---hep-send-collector-goes-away) |
+| `send_timeout_secs` | integer | `3` | Seconds one sender TCP dial or stalled write may take before the collector counts as unreachable, 1 to 300. It also bounds the first connection at startup. A value outside the range fails validation and names the key. On a run without `--hep-send` it does nothing, and sipnab says so in a startup warning naming the key. `--hep-send-timeout` overrides it |
 
 The sender's trust is one setting.
 
@@ -28994,6 +29114,8 @@ The sender's trust is one setting.
 ```toml
 [hep]
 tls_extra_ca = "/etc/sipnab/collector-ca.pem"
+send_queue_mib = 256
+send_timeout_secs = 5
 ```
 
 ### `[vcon_forward]`
@@ -39571,7 +39693,7 @@ Start here when you have a capture and no particular suspect. These answer "what
 What sipnab is doing, and what it is costing the host it runs on.
 
 Use it to answer "is this server healthy" without a metrics listener. sipnab
-exports 40 Prometheus metrics, and the listener that serves them is off by
+exports 45 Prometheus metrics, and the listener that serves them is off by
 default. This tool reports process, host and store state over MCP without
 that listener.
 
@@ -39623,7 +39745,9 @@ The example runs against
 
 A `--hep-send` run also carries `hep_export`: the transport, `packets_sent`,
 `failures` by kind (`connect`, `tls_handshake`, `write`, every kind present),
-`reconnects`, and `delivery`, which says what "sent" means on that transport.
+`reconnects`, `queued`, `replayed` after an outage, `dropped` by reason
+(`queue_full`, `stopped`, `unsent_at_exit`, every reason present),
+`queue_depth`, and `delivery`, which says what "sent" means on that transport.
 Over UDP it means handed to the kernel: a collector that is down produces no
 failure. The shape is the same as `GET /v1/runtime`'s, from the same collector.
 
@@ -55461,21 +55585,25 @@ they are apart.
 
 ## Tested on
 
-Every block on this page ran as written, in order, on 2026-09-28. The machines
+Every block on this page ran as written, in order, on 2026-10-01. The machines
 were clean x86_64 virtual machines with 2 cores and 3 GB of memory:
 
 - Debian 13 (kernel 6.12.63),
-- Ubuntu 24.04.5 (kernel 6.8.0).
+- Ubuntu 24.04 (kernel 6.8.0).
 
-On each, it ran:
+The test calls carried real audio both ways. A check compared what each step
+says it prints or stores with what it printed and stored.
+
+On each system, it ran:
 
 - With OpenSIPS built from source on a machine with nothing installed.
 - With the OpenSIPS 4.0 packages.
 - [With Kamailio](#with-kamailio), and beside OpenSIPS on one machine.
-- [On different machines](#put-the-parts-on-different-machines), with Homer on
-  its own machine.
+- [The different-machines blocks](#put-the-parts-on-different-machines), with
+  the proxy's own machine standing in for the Homer machine. Homer on a
+  machine of its own was last run on 2026-09-28.
 
-On Debian 13, causing each fault under
+On both systems, causing each fault under
 [When something does not work](#when-something-does-not-work) produced what
 it describes. The commands pin the components to the versions below.
 
@@ -55789,8 +55917,8 @@ What the tracing lines do:
   OpenSIPS refuses to start: `No binding found for protocol proto_hep`.
 - `hep_id` names a HEP destination, `homer`.
   - It is heplify-server on this machine, HEP version 3 over UDP.
-  - Without `transport=udp`, OpenSIPS sends version 3 over TCP. This
-    heplify-server does not listen on TCP.
+  - Without `transport=udp`, OpenSIPS picks HEP over TCP, has no `hep_tcp`
+    socket to send it from, and sends nothing.
 - `hep_capture_id` is the number Homer shows as the source of these messages.
   Give each SIP server its own.
 - `trace_id` defines `tid` as "send to `homer`".
@@ -55854,28 +55982,36 @@ start anything.
 
 SIPp plays both ends:
 
-- a callee on this machine,
-- a caller that dials through OpenSIPS.
+- a callee on this machine that echoes audio back,
+- a caller that dials through OpenSIPS and plays a recorded G.711 sample.
 
-SIPp's built-in caller ignores the `Record-Route` header OpenSIPS adds. So its
-`BYE` would miss the proxy and draw `404 Not here`. The two `sed` lines make it
-honor the route set, the way a real phone does:
+So the call carries real audio both ways. SIPp's built-in caller ignores the
+`Record-Route` header OpenSIPS adds. So its `BYE` would miss the proxy and draw
+`404 Not here`. The two route `sed` lines make it honor the route set, the way
+a real phone does:
 
 ```bash
 # Run all of these, in order.
 sudo apt-get install -y sip-tester
-mkdir -p ~/sipp && cd ~/sipp
-sipp -sd uac > uac_rr.xml
-sed -i 's|<recv response="200" rtd="true">|<recv response="200" rtd="true" rrs="true">|' uac_rr.xml
+mkdir -p ~/sipp/pcap && cd ~/sipp
+ln -sf /usr/share/sip-tester/*.pcap pcap/
+sipp -sd uac_pcap > uac_rr.xml
+sed -i 's|<recv response="200" rtd="true" crlf="true">|<recv response="200" rtd="true" crlf="true" rrs="true">|' uac_rr.xml
 sed -i -E 's#^( *)(ACK|BYE) sip:\[service\]@\[remote_ip\]:\[remote_port\] SIP/2.0#\1\2 [next_url] SIP/2.0\n\1[routes]#' uac_rr.xml
-sipp -sn uas -i 127.0.0.1 -p 5070 -m 1 -bg
-sipp -sf uac_rr.xml 192.0.2.10:5060 -i 192.0.2.10 -p 5080 -s echo -m 1 -d 2000 -timeout 30s \
+sipp -sn uas -i 127.0.0.1 -p 5070 -rtp_echo -m 1 -bg
+sudo sipp -sf uac_rr.xml 192.0.2.10:5060 -i 192.0.2.10 -p 5080 -s echo -m 1 -timeout 90s \
   -trace_msg -message_file uac.msg
 grep -m1 -i '^Call-ID:' uac.msg
 ```
 
-At the end, SIPp's statistics screen shows `Successful call` at 1. The last
-line prints the call's Call-ID.
+The caller needs `sudo` because it plays the audio sample through a raw socket.
+
+- It sends about 7 seconds of audio, then a short DTMF clip, and hangs up.
+- At the end, SIPp's statistics screen shows `Successful call` at 1.
+- The last line prints the call's Call-ID.
+
+OpenSIPS carries the signaling only. The audio goes straight between the two
+ends, at the addresses and ports their SDP names.
 
 ## Find the call in Homer
 
@@ -55886,7 +56022,8 @@ writes.
 - heplify-server writes in batches, at least every 4 seconds. So the first
   line waits for the last batch.
 - Each row is one message.
-- OpenSIPS sent most of them twice, as it arrived and as it left:
+- OpenSIPS sent each message twice, as it arrived and as it left, except the
+  `100` it answers the caller with itself. So the test call gives 13 rows:
 
 ```bash
 # Run all of these, in order.
@@ -55898,6 +56035,10 @@ docker compose exec -T db psql -U root -d homer_data -c \
   "select create_date, data_header->>'method' as method
      from hep_proto_1_call where data_header->>'callid' = '$CALL' order by create_date"
 ```
+
+In the web interface, search for that Call-ID and open the call. Its call flow
+draws the same 13 messages as a ladder between the caller, OpenSIPS and the
+callee.
 
 ## Operate it
 
@@ -56046,8 +56187,9 @@ What the tracing lines do:
 The steps from Place a test call to Operate it then work unchanged. Use
 `kamailio` in place of `opensips` in the `systemctl` commands.
 
-Kamailio, too, sends most messages twice, as each arrived and as it left. The
-test call's query in the Find the call in Homer step returns 13 rows.
+Kamailio, too, sends each message twice, as it arrived and as it left, except
+its own `100`. The test call's query in the Find the call in Homer step returns
+13 rows.
 
 **With OpenSIPS on the same machine,** Kamailio listens on 5062, as
 [OpenSIPS and Kamailio on one machine](kamailio.md#opensips-and-kamailio-on-one-machine)
@@ -56111,10 +56253,12 @@ Kamailio on one machine is that case, and
   - Check that heplify-server received anything:
     `docker compose logs heplify-server`.
   - If it logged no packets, check the `hep_id` address and `transport=udp`.
-- **`hep_id` without `transport=udp`.** OpenSIPS then sent nothing at all to
-  heplify-server, which listens on UDP. Keep `transport=udp` in `hep_id`.
+- **`hep_id` without `transport=udp`.** OpenSIPS then sends nothing at all to
+  heplify-server, by TCP or by UDP, and logs
+  `trying to using proto hep_tcp/11 which is not initialized!`.
+  Keep `transport=udp` in `hep_id`.
 - **The test call's `BYE` gets `404 Not here`.** The caller ignored the route
-  set. Use the edited `uac_rr.xml`, not SIPp's built-in `uac`.
+  set. Use the edited `uac_rr.xml`, not SIPp's built-in `uac_pcap`.
 
 ---
 
@@ -56148,18 +56292,25 @@ sipnab as a source for Homer step is the same for both.
 
 ## Tested on
 
-Every block on this page ran as written, in order, on 2026-09-28, with
-sipnab 0.5.194 from its release package.
+Every block on this page ran as written, in order, on 2026-10-01, with
+sipnab 0.5.199 from its release package.
 
 - The machines were clean x86_64 virtual machines with 2 cores and 3 GB of
   memory:
   - Debian 13 (kernel 6.12.63),
-  - Ubuntu 24.04.5 (kernel 6.8.0).
+  - Ubuntu 24.04 (kernel 6.8.0).
+- The test calls carried real audio both ways.
 - It ran with OpenSIPS, from source and from the packages.
 - It ran with Kamailio.
-- It ran as a source on a second machine.
+- The second machine in the sipnab as a source for Homer step was a network
+  namespace on the same virtual machine. It had its own address, its own link
+  and its own capture, and shared the first machine's files.
 
-On Debian 13, causing the first fault under
+That run predates the RTCP form described in the sipnab as a source for Homer
+step: sipnab 0.5.199 sent RTCP without the call's Call-ID, and Homer stored
+none of it.
+
+On both systems, causing the first fault under
 [When something does not work](#when-something-does-not-work) produced what
 it describes. The second needs a firewall between two machines, and did not
 run.
@@ -56220,24 +56371,29 @@ While it runs, place a test call from a second terminal. Do it as in
 ```bash
 # Run all of these, in order.
 cd ~/sipp
-sipp -sn uas -i 127.0.0.1 -p 5070 -m 1 -bg
-sipp -sf uac_rr.xml 192.0.2.10:5060 -i 192.0.2.10 -p 5080 -m 1 -d 1000 -timeout 20s
+sipp -sn uas -i 127.0.0.1 -p 5070 -rtp_echo -m 1 -bg
+sudo sipp -sf uac_rr.xml 192.0.2.10:5060 -i 192.0.2.10 -p 5080 -s echo -m 1 -timeout 90s
 ```
 
 sipnab prints each message as it arrives, marked `origin=hep`. When the 30
 seconds are up, it prints the call and who sent it:
 
 ```text
-Call-ID                          From           To             State        Code   Duration   Msgs
-------------------------------------------------------------------------------------------------------
-1-60947@192.0.2.10               sipp           service        Completed    200    1s         13
+Call-ID                          From           To             State        Code   Duration   Msgs   PDD      Tags
+-------------------------------------------------------------------------------------------------------------------------
+1-19569@192.0.2.10               sipp           echo           Completed    200    9s         13     0.0s     -
+HEP senders (trust unauthenticated, silent after 30s)
+  received 13  admitted 13  refused 0  from untracked senders 0
 
   SOURCE                                PACKETS  LAST SEEN                    IDLE  STATE
-  hep:101@127.0.0.1                          13  2026-09-26T21:25:09.115Z       6s  sending
+  hep:101@127.0.0.1                          13  2026-10-01T13:58:35.376Z      15s  sending
 ```
 
 `hep:101` is the `hep_capture_id` OpenSIPS stamps on everything it sends.
 Homer received the same 13 messages.
+
+The call carried audio, but sipnab here sees only what OpenSIPS sends it: the
+SIP messages. Its end-of-run line reports `0 RTP packets across 0 streams`.
 
 - The capture id is what the sender claims. Nothing proves it.
 - What keeps other senders out here is the address. sipnab listens on
@@ -56272,8 +56428,9 @@ sudo systemctl restart kamailio
 ```
 
 Then start sipnab's listener and place the test call as above. The report shows
-the call `Completed` with 13 messages. They come from `hep:101`, Kamailio's
-`hep_capture_id`.
+the call `Completed` with 13 messages. They come from `hep:101@192.0.2.10`:
+Kamailio's `hep_capture_id`, sent from the machine's own address. Homer stores
+none of that call.
 
 ## sipnab as a source for Homer
 
@@ -56285,28 +56442,45 @@ from your SIP server's:
 sudo sipnab -N -d any -H 192.0.2.10:9060 --hep-id 2002 --duration 30
 ```
 
-sipnab forwards SIP, and RTCP so that Homer can report media quality. It never
-forwards RTP, the audio itself.
+sipnab forwards SIP, and RTCP as HEP type 5. It never forwards RTP, the audio
+itself.
 
-While it runs, place a call from the second machine through your SIP server.
-The callee still runs on the SIP server's machine:
+sipnab sends each RTCP report in the form Homer stores:
+
+- The report is JSON, as heplify sends it.
+- It carries the Call-ID of the call it belongs to, as its correlation ID.
+  heplify-server stores an RTCP report only under that ID, and Homer shows it
+  in the call's media quality (QoS) view.
+- sipnab finds the call from the SDP that set up the media. RTCP for a call
+  whose SDP sipnab did not capture is not sent, because Homer would store none
+  of it.
+
+SIPp sends no RTCP of its own, so the SIPp test call below gives sipnab no
+RTCP to forward, and the call's QoS view stays empty. A call between phones
+that send RTCP fills it.
+
+While sipnab runs, place a call from the second machine through your SIP
+server. The callee still runs on the SIP server's machine. `-mi` gives it the
+machine's own address for its audio, so that the caller on the second machine
+can reach it:
 
 ```bash
 # Run all of these, in order.
 # On 192.0.2.10:
 cd ~/sipp
-sipp -sn uas -i 127.0.0.1 -p 5070 -m 1 -bg
+sipp -sn uas -i 127.0.0.1 -mi 192.0.2.10 -p 5070 -rtp_echo -m 1 -bg
 ```
 
 ```bash
 # Run all of these, in order.
 # On 192.0.2.20:
 sudo apt-get install -y sip-tester
-mkdir -p ~/sipp && cd ~/sipp
-sipp -sd uac > uac_rr.xml
-sed -i 's|<recv response="200" rtd="true">|<recv response="200" rtd="true" rrs="true">|' uac_rr.xml
+mkdir -p ~/sipp/pcap && cd ~/sipp
+ln -sf /usr/share/sip-tester/*.pcap pcap/
+sipp -sd uac_pcap > uac_rr.xml
+sed -i 's|<recv response="200" rtd="true" crlf="true">|<recv response="200" rtd="true" crlf="true" rrs="true">|' uac_rr.xml
 sed -i -E 's#^( *)(ACK|BYE) sip:\[service\]@\[remote_ip\]:\[remote_port\] SIP/2.0#\1\2 [next_url] SIP/2.0\n\1[routes]#' uac_rr.xml
-sipp -sf uac_rr.xml 192.0.2.10:5060 -i 192.0.2.20 -p 5080 -m 1 -d 1000 -timeout 20s \
+sudo sipp -sf uac_rr.xml 192.0.2.10:5060 -i 192.0.2.20 -p 5080 -s echo -m 1 -timeout 90s \
   -trace_msg -message_file uac.msg
 grep -m1 -i '^Call-ID:' uac.msg
 ```
@@ -56333,6 +56507,8 @@ The test call gave 13 messages under capture id 101 and 7 under 2002.
 - The SIP server sees both legs of the call.
 - sipnab, on the second machine, sees the messages on that machine's own link.
   That is the caller's leg.
+- sipnab saw the call's audio there too, 246 RTP packets each way, and
+  forwarded none of it.
 
 HEP over UDP carries no authentication of its own. heplify-server accepts it
 from anyone who can reach port 9060. So open that port only to:
@@ -65272,7 +65448,7 @@ It exists because nothing else in the suite can see a data race.
 The borrow checker does not help here either.
 
 - It stops at `unsafe`.
-- Most of this crate's 135 `unsafe` blocks are libc FFI.
+- Most of this crate's 136 `unsafe` blocks are libc FFI.
 - They concentrate in privilege dropping ([`privilege.rs`](../../src/privilege.rs)
   and [`process_isolation.rs`](../../src/process_isolation.rs)) and capture setup.
 - Recount with `grep -rc 'unsafe {' src/` rather than trusting that figure.

@@ -99,6 +99,10 @@ max_audio_bytes = 1073741824
 # What a --hep-listen-transport tls listener presents:
 # tls_cert = "/etc/sipnab/hep.pem"
 # tls_key = "/etc/sipnab/hep.key"
+# What the HEP sender holds while its collector is unreachable, in MiB, and
+# how long one dial or stalled write may take, in seconds:
+# send_queue_mib = 64
+# send_timeout_secs = 3
 
 # -- vCon forwarder ----------------------------------------------------------
 # What `sipnab --vcon-forward <SPOOL_DIR>` uses when its flags are not given;

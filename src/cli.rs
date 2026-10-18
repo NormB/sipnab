@@ -145,6 +145,27 @@ impl std::str::FromStr for HepAuthMode {
     }
 }
 
+/// MiB of HEP packets `--hep-send` queues while its collector is unreachable,
+/// when `--hep-send-queue` is not given. At a busy SBC's 500 SIP messages a
+/// second of about a kilobyte each that is about two minutes of outage before
+/// the oldest packets are dropped and counted.
+///
+/// Here, beside the flag, and read by `capture::hep` too, so the CLI default
+/// and the library default are one number.
+pub const DEFAULT_HEP_SEND_QUEUE_MIB: usize = 64;
+
+/// How long one `--hep-send` TCP dial or stalled write may take when
+/// `--hep-send-timeout` is not given.
+///
+/// Three seconds, because a TCP sender's first retransmission timeout is one
+/// second and doubles on each expiry (RFC 6298, sections 2.1 and 5.5): the
+/// SYN goes at 0 s and again at 1 s, and the retransmitted SYN has two
+/// seconds to be answered. A collector that answers neither is down or
+/// filtered, and the delivery thread dials again on its backoff. Without a
+/// bound a dropped SYN holds the dial for the operating system's own limit,
+/// about 127 seconds on Linux with the default six SYN retries.
+pub const DEFAULT_HEP_SEND_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(3);
+
 /// Which transport carries HEP on one side of sipnab
 /// (`--hep-send-transport`, `--hep-listen-transport`).
 ///
@@ -4204,6 +4225,38 @@ pub struct HepArgs {
     )]
     pub hep_send_transport: Option<HepTransport>,
 
+    /// Mebibytes of HEP packets `--hep-send` holds while the collector is
+    /// unreachable (default 64). Sending runs on its own thread behind this
+    /// queue, so a slow or dead collector never slows the capture; when the
+    /// collector answers again the queue is replayed in capture order. At the
+    /// bound the OLDEST packet is dropped and counted, so what is replayed
+    /// joins the live feed with no gap. A stop (SIGINT/SIGTERM) discards the
+    /// queue and counts it: nothing is flushed at shutdown. Config:
+    /// `[hep] send_queue_mib`.
+    #[arg(
+        help_heading = "HEP",
+        long = "hep-send-queue",
+        value_name = "MIB",
+        requires = "hep_send",
+        value_parser = clap::value_parser!(u64).range(1..=4096)
+    )]
+    pub hep_send_queue_mib: Option<u64>,
+
+    /// Seconds one TCP dial or stalled write to the `--hep-send` collector
+    /// may take before the collector counts as unreachable (default 3). The
+    /// TLS handshake keeps its own 10-second bound. Retries back off from
+    /// 0.1 s, doubling, to at most 5 s. A file read to its end waits for the
+    /// queue to drain, giving up after two of these plus 5 s without a
+    /// delivery. Config: `[hep] send_timeout_secs`.
+    #[arg(
+        help_heading = "HEP",
+        long = "hep-send-timeout",
+        value_name = "SECS",
+        requires = "hep_send",
+        value_parser = clap::value_parser!(u64).range(1..=300)
+    )]
+    pub hep_send_timeout_secs: Option<u64>,
+
     /// Transport `--hep-listen` accepts: `udp` (default), `tcp` or `tls`.
     /// A `tcp` or `tls` listener serves several agents at once and reads each
     /// connection as a stream of length-prefixed HEP v3 packets; HEP v2, which
@@ -7200,6 +7253,18 @@ impl Cli {
                 sender,
                 SENDER,
             ),
+            (
+                "[hep] send_queue_mib",
+                config.hep.send_queue_mib.is_some(),
+                sender,
+                SENDER,
+            ),
+            (
+                "[hep] send_timeout_secs",
+                config.hep.send_timeout_secs.is_some(),
+                sender,
+                SENDER,
+            ),
         ];
         rows.into_iter()
             .filter(|&(_, set, started, _)| set && !started)
@@ -8464,6 +8529,30 @@ impl Cli {
     /// has no `--hep-send` to govern.
     pub fn hep_send_transport(&self) -> HepTransport {
         self.hep_args.hep_send_transport.unwrap_or_default()
+    }
+
+    /// Bytes `--hep-send` may queue while its collector is unreachable:
+    /// `--hep-send-queue` MiB, else `[hep] send_queue_mib`, else
+    /// [`DEFAULT_HEP_SEND_QUEUE_MIB`].
+    pub fn hep_send_queue_bytes(&self, config: &crate::config::Config) -> usize {
+        let mib = self
+            .hep_args
+            .hep_send_queue_mib
+            .or(config.hep.send_queue_mib)
+            .map_or(DEFAULT_HEP_SEND_QUEUE_MIB, |m| {
+                usize::try_from(m).unwrap_or(usize::MAX)
+            });
+        mib.saturating_mul(1 << 20)
+    }
+
+    /// Bound on one `--hep-send` TCP dial or stalled write:
+    /// `--hep-send-timeout`, else `[hep] send_timeout_secs`, else
+    /// [`DEFAULT_HEP_SEND_TIMEOUT`].
+    pub fn hep_send_timeout(&self, config: &crate::config::Config) -> std::time::Duration {
+        self.hep_args
+            .hep_send_timeout_secs
+            .or(config.hep.send_timeout_secs)
+            .map_or(DEFAULT_HEP_SEND_TIMEOUT, std::time::Duration::from_secs)
     }
 
     /// The transport `--hep-listen` accepts, defaulting to UDP. See
@@ -10264,6 +10353,106 @@ mod tests {
     /// so, and neither does a reader of the command line have a way to tell
     /// which half a bare `--hep-transport` meant.
     #[test]
+    fn the_hep_send_queue_and_timeout_parse_default_and_refuse_to_be_inert() {
+        let bare = Cli::parse_from_args(["sipnab", "-H", "127.0.0.1:9060"]);
+        assert_eq!(
+            bare.hep_send_queue_bytes(&crate::config::Config::default()),
+            64 << 20,
+            "64 MiB by default"
+        );
+        assert_eq!(
+            bare.hep_send_timeout(&crate::config::Config::default()),
+            std::time::Duration::from_secs(3),
+            "3 s by default: the connect bound the sender had before the flag"
+        );
+
+        let set = Cli::parse_from_args([
+            "sipnab",
+            "-H",
+            "127.0.0.1:9060",
+            "--hep-send-queue",
+            "3",
+            "--hep-send-timeout",
+            "7",
+        ]);
+        assert_eq!(
+            set.hep_send_queue_bytes(&crate::config::Config::default()),
+            3 << 20,
+            "counted in MiB"
+        );
+        assert_eq!(
+            set.hep_send_timeout(&crate::config::Config::default()),
+            std::time::Duration::from_secs(7)
+        );
+
+        for refused in [
+            vec!["--hep-send-queue", "0"],
+            vec!["--hep-send-queue", "4097"],
+            vec!["--hep-send-timeout", "0"],
+            vec!["--hep-send-timeout", "301"],
+        ] {
+            let mut argv = vec!["sipnab", "-H", "127.0.0.1:9060"];
+            argv.extend(&refused);
+            assert!(
+                Cli::try_parse_from(&argv).is_err(),
+                "{refused:?} is outside the range and must be refused"
+            );
+        }
+        for lonely in [
+            vec!["--hep-send-queue", "8"],
+            vec!["--hep-send-timeout", "2"],
+        ] {
+            let mut argv = vec!["sipnab", "-I", "x.pcap"];
+            argv.extend(&lonely);
+            assert!(
+                Cli::try_parse_from(&argv).is_err(),
+                "{lonely:?} without --hep-send governs nothing and must be refused"
+            );
+        }
+    }
+
+    /// `--hep-send-queue` beats `[hep] send_queue_mib`, which beats the
+    /// default, and `--hep-send-timeout` beats `[hep] send_timeout_secs` the
+    /// same way.
+    #[test]
+    fn the_hep_send_queue_and_timeout_are_flag_then_key_then_default() -> Result<(), TestError> {
+        let bare = Cli::parse_from_args(["sipnab", "-H", "127.0.0.1:9060"]);
+        let mut tuned = crate::config::Config::default();
+        tuned.hep.send_queue_mib = Some(5);
+        tuned.hep.send_timeout_secs = Some(11);
+        assert_eq!(
+            bare.hep_send_queue_bytes(&tuned),
+            5 << 20,
+            "[hep] send_queue_mib must reach the resolver"
+        );
+        assert_eq!(
+            bare.hep_send_timeout(&tuned),
+            std::time::Duration::from_secs(11),
+            "[hep] send_timeout_secs must reach the resolver"
+        );
+        let flagged = Cli::parse_from_args([
+            "sipnab",
+            "-H",
+            "127.0.0.1:9060",
+            "--hep-send-queue",
+            "3",
+            "--hep-send-timeout",
+            "7",
+        ]);
+        assert_eq!(
+            flagged.hep_send_queue_bytes(&tuned),
+            3 << 20,
+            "--hep-send-queue must outrank the key it shadows"
+        );
+        assert_eq!(
+            flagged.hep_send_timeout(&tuned),
+            std::time::Duration::from_secs(7),
+            "--hep-send-timeout must outrank the key it shadows"
+        );
+        Ok(())
+    }
+
+    #[test]
     fn each_hep_transport_flag_governs_one_side() -> Result<(), TestError> {
         let listening = Cli::parse_from_args([
             "sipnab",
@@ -10468,18 +10657,25 @@ mod tests {
         config.hep.tls_key = Some(PathBuf::from("k.pem"));
         config.hep.tls_ca = Some(PathBuf::from("ca.pem"));
         config.hep.tls_extra_ca = Some(PathBuf::from("extra.pem"));
+        config.hep.send_queue_mib = Some(8);
+        config.hep.send_timeout_secs = Some(9);
         let listener_keys = [
             "[limits] hep_rate_limit",
             "[security] hep_hmac_window_secs",
             "[hep] tls_cert",
             "[hep] tls_key",
         ];
-        let sender_keys = ["[hep] tls_ca", "[hep] tls_extra_ca"];
+        let sender_keys = [
+            "[hep] tls_ca",
+            "[hep] tls_extra_ca",
+            "[hep] send_queue_mib",
+            "[hep] send_timeout_secs",
+        ];
         let names = |args: &[&str]| -> Result<Vec<String>, TestError> {
             Ok(Cli::try_parse_from_args(args)?.inert_key_warnings(&config))
         };
         let bare = names(&["sipnab", "-N"])?;
-        assert_eq!(bare.len(), 6, "{bare:?}");
+        assert_eq!(bare.len(), 8, "{bare:?}");
         for key in listener_keys.iter().chain(&sender_keys) {
             assert_eq!(
                 bare.iter()
@@ -10496,7 +10692,7 @@ mod tests {
                 .all(|w| sender_keys.iter().any(|k| w.starts_with(k))),
             "{listening:?}"
         );
-        assert_eq!(listening.len(), 2);
+        assert_eq!(listening.len(), 4);
         let sending = names(&["sipnab", "-N", "--hep-send", "127.0.0.1:9"])?;
         assert!(
             sending

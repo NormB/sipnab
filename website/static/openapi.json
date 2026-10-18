@@ -4389,6 +4389,18 @@
             "description": "What `packets_sent` means on this transport, in words. Over UDP a\ncollector that is down produces no failure at all.",
             "type": "string"
           },
+          "dropped": {
+            "additionalProperties": {
+              "format": "int64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "description": "Packets discarded undelivered, by reason: `queue_full`, `stopped`\nand `unsent_at_exit`, every reason present, zeros included.",
+            "propertyNames": {
+              "type": "string"
+            },
+            "type": "object"
+          },
           "failures": {
             "additionalProperties": {
               "format": "int64",
@@ -4407,8 +4419,26 @@
             "minimum": 0,
             "type": "integer"
           },
+          "queue_depth": {
+            "description": "Packets queued now, neither sent nor dropped.",
+            "format": "int64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "queued": {
+            "description": "Packets the capture handed to the exporter's queue: every one is\nsent, dropped, or still queued.",
+            "format": "int64",
+            "minimum": 0,
+            "type": "integer"
+          },
           "reconnects": {
-            "description": "Connections rebuilt after one broke (TCP and TLS only).",
+            "description": "Times the collector became reachable again after an outage.",
+            "format": "int64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "replayed": {
+            "description": "Packets delivered after waiting out an outage in the queue.",
             "format": "int64",
             "minimum": 0,
             "type": "integer"
@@ -4424,6 +4454,10 @@
           "packets_sent",
           "failures",
           "reconnects",
+          "queued",
+          "replayed",
+          "dropped",
+          "queue_depth",
           "delivery"
         ],
         "type": "object"
