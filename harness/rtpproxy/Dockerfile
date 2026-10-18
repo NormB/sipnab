@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: MIT OR Apache-2.0
+# SPDX-FileCopyrightText: The sipnab contributors
+
 # rtpproxy media relay -- the SECOND anchor, so "swap the relay" is a thing the
 # harness can actually do rather than a claim about a variable.
 #

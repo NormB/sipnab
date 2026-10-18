@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: MIT OR Apache-2.0
+# SPDX-FileCopyrightText: The sipnab contributors
+
 """Repair pcapng files written by sipnab <= 0.5.0.
 
 Those files store EPB timestamps as NANOSECOND ticks but carry no

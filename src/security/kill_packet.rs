@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-FileCopyrightText: The sipnab contributors
 
 //! Raw IPv4/IPv6 UDP datagram construction for source-spoofed scanner-kill
 //! responses.

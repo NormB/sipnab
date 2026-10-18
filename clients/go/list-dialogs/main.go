@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-FileCopyrightText: The sipnab contributors
+
 // Command list-dialogs calls GET /v1/dialogs: list the failed dialogs.
 //
 // docs/rest-api.md shows the body of run, between the snippet markers; this

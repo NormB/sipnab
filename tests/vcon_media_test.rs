@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-FileCopyrightText: The sipnab contributors
 
 //! Media inside an OBSERVER vCon: what travels, what is refused, and what the
 //! container says when nothing does.

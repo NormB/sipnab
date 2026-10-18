@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-FileCopyrightText: The sipnab contributors
 
 //! Post-call enrichment: `[[vcon.enrich]]` sends a call's audio and container
 //! to the operator's own service before the container is written, and appends
@@ -312,17 +313,23 @@ fn signaling_only_sends_no_audio() -> Result<(), TestError> {
 
 /// Every way a service can fail: the container is still written, without the
 /// service's analysis, and says which service failed and how.
+///
+/// Only the hanging service is given a one-second `timeout_secs`; the others
+/// get 120 s, because what they test is the answer. Under one second for
+/// all three, a loaded host had not got the stub's HTTP 500 or malformed
+/// body back within the second in 21 runs of 100 (load average 86 to 150),
+/// and the call was recorded as a timeout.
 #[test]
 fn a_failing_service_never_loses_the_call() -> Result<(), TestError> {
-    for (answer, outcome) in [
-        (Answer::Fail, "failed"),
-        (Answer::Hang, "timeout"),
-        (Answer::Malformed, "malformed"),
+    for (answer, timeout_secs, outcome) in [
+        (Answer::Fail, 120, "failed"),
+        (Answer::Hang, 1, "timeout"),
+        (Answer::Malformed, 120, "malformed"),
     ] {
         let home = tempfile::tempdir()?;
         let dir = home.path().join("out");
         let (url, _) = stub(answer)?;
-        let enrich = service("stt", &url, "timeout_secs = 1");
+        let enrich = service("stt", &url, &format!("timeout_secs = {timeout_secs}"));
         let out = run(home.path(), &config(&dir, &enrich), &[])?;
         let stderr = String::from_utf8_lossy(&out.stderr);
         assert!(out.status.success(), "{outcome}: {stderr}");
@@ -420,11 +427,19 @@ fn bad_enrichments_are_refused_at_startup() -> Result<(), TestError> {
 
 /// A command that exits non-zero, and one that does not answer in time: the
 /// container is written and records which.
+///
+/// Each case carries its own `timeout_secs`. The failing command gets 120 s,
+/// because what it tests is the exit status. Under the one second the
+/// timing-out case needs, a loaded host had not run `sh` to its `exit 3`
+/// within the second in 9 runs of 100 (load average 86 to 150), and the call
+/// was recorded as the timeout it then also was. The timing-out command
+/// keeps its one second: a `sleep 5` cannot finish inside it however loaded
+/// the host is.
 #[test]
 fn a_failing_command_never_loses_the_call() -> Result<(), TestError> {
-    for (body, outcome, detail) in [
-        ("cat > /dev/null\nexit 3", "failed", "exit"),
-        ("sleep 5", "timeout", "within 1 s"),
+    for (body, timeout_secs, outcome, detail) in [
+        ("cat > /dev/null\nexit 3", 120, "failed", "exit"),
+        ("sleep 5", 1, "timeout", "within 1 s"),
     ] {
         let home = tempfile::tempdir()?;
         let dir = home.path().join("out");
@@ -432,7 +447,7 @@ fn a_failing_command_never_loses_the_call() -> Result<(), TestError> {
         executable::write_executable(&script, &format!("#!/bin/sh\n{body}\n"))?;
         let enrich = format!(
             "[[vcon.enrich]]\nname = \"stt\"\nrules = [\"calls\"]\ncommand = \"{}\"\n\
-             timeout_secs = 1\n",
+             timeout_secs = {timeout_secs}\n",
             script.display()
         );
         let out = run(home.path(), &config(&dir, &enrich), &[])?;

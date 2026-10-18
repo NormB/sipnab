@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-FileCopyrightText: The sipnab contributors
+
 // snippet:start sipnab-client
 // Command sipnab-client lists every failed dialog, a page at a time, and
 // prints the post-dial delay and NAT diagnosis of the first five.

@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-FileCopyrightText: The sipnab contributors
 //! A request body the server cannot read is never permission to act.
 //!
 //! These live in `tests/` rather than beside the handlers on purpose.

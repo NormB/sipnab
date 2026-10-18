@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: MIT OR Apache-2.0
+# SPDX-FileCopyrightText: The sipnab contributors
+
 """scripts/flag-since.py: the first release whose command line accepted a flag."""
 
 import subprocess

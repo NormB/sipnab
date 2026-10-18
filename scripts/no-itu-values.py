@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: MIT OR Apache-2.0
+# SPDX-FileCopyrightText: The sipnab contributors
 """Fail if a file holds a run of the G.729 codebook tables.
 
 sipnab ships no ITU-T table values (docs/g729.md). This is the one scan that

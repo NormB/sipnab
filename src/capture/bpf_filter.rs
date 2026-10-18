@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-FileCopyrightText: The sipnab contributors
 
 //! Composing a BPF capture-filter SELECTION from an operator's edit (the TUI
 //! BPF-filter editing feature).

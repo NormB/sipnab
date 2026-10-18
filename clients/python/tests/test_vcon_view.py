@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: MIT OR Apache-2.0
+# SPDX-FileCopyrightText: The sipnab contributors
+
 """The vCon viewer, and the pcap generator the media test depends on."""
 
 import importlib.util

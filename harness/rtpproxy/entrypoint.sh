@@ -1,4 +1,7 @@
 #!/bin/sh
+# SPDX-License-Identifier: MIT OR Apache-2.0
+# SPDX-FileCopyrightText: The sipnab contributors
+
 # rtpproxy in its own namespace, anchoring media for opensips-1.
 #
 # Deliberately shaped like rtpengine/entrypoint.sh beside it: same address

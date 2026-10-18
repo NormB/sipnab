@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: MIT OR Apache-2.0
+# SPDX-FileCopyrightText: The sipnab contributors
+
 """List, show and play back vCons stored on the conserver.
 
 A stored vCon is mostly a megabyte of base64 audio, so `curl | jq` shows you

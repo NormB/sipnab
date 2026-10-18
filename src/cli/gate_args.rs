@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-FileCopyrightText: The sipnab contributors
 
 //! Gate and relay query flags: a pass/fail exit for CI, and the relay's holdings.
 //!

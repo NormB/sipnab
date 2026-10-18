@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-FileCopyrightText: The sipnab contributors
 
 //! `--cores N` refuses every flag its parallel reader does not carry out.
 //!
@@ -87,9 +88,69 @@ fn every_flag_the_parallel_reader_ignores_is_refused_by_name() -> Result<(), Tes
 /// The whole-capture views are what `--cores` is for, and they still run.
 #[test]
 fn the_whole_capture_views_still_run_under_cores() -> Result<(), TestError> {
-    for view in [&["--report"][..], &["--json-dialogs"], &["--analyze"]] {
+    for view in [
+        &["--report"][..],
+        &["--json-dialogs"],
+        &["--analyze"],
+        &["--json-analyze"],
+        &["--yang-analyze"],
+        &["--stun"],
+        &["--json-stun"],
+        &["--lint"],
+    ] {
         let (code, stderr) = cores_run(view)?;
         assert_eq!(code, 0, "{view:?}: {stderr}");
     }
+    Ok(())
+}
+
+/// A `--cores` run that asks for no view would read the whole capture, print
+/// nothing to stdout and exit 0, which reads as "nothing to report". It is
+/// refused with exit 2 before reading, naming the views it can print.
+#[test]
+fn a_cores_run_asking_for_no_view_is_refused() -> Result<(), TestError> {
+    for extra in [&[][..], &["--no-cli-print"], &["--quiet"]] {
+        let (code, stderr) = cores_run(extra)?;
+        assert_eq!(code, 2, "{extra:?} was not refused: {stderr}");
+        assert!(
+            stderr.contains("asks for no view") && stderr.contains("--report"),
+            "{extra:?}: the refusal must say why and name a view: {stderr}"
+        );
+        assert!(
+            !stderr.contains("packets,"),
+            "{extra:?}: refused before reading, so no run summary: {stderr}"
+        );
+    }
+    Ok(())
+}
+
+/// An export rule in the config file is a whole-capture output of its own, so
+/// a `--cores` run with one and no view flag is not refused.
+#[cfg(feature = "vcon")]
+#[test]
+fn a_cores_run_with_an_export_rule_is_not_refused() -> Result<(), TestError> {
+    let dir = tempfile::tempdir()?;
+    let config = dir.path().join("sipnab.toml");
+    std::fs::write(
+        &config,
+        "[[vcon.rule]]\nname = \"all\"\nwhen = \"method == INVITE\"\ndir = \"vcons\"\n",
+    )?;
+    let out = Command::new(env!("CARGO_BIN_EXE_sipnab"))
+        .arg("-f")
+        .arg(&config)
+        .args(["-N", "-I", &fixture("sip_call.pcap"), "--cores", "2"])
+        .current_dir(dir.path())
+        .env("XDG_STATE_HOME", dir.path())
+        .env("XDG_CONFIG_HOME", dir.path())
+        .env("HOME", dir.path())
+        .output()?;
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(out.status.code(), Some(0), "{stderr}");
+    assert!(
+        std::fs::read_dir(dir.path().join("vcons"))?
+            .next()
+            .is_some(),
+        "the rule wrote no container: {stderr}"
+    );
     Ok(())
 }

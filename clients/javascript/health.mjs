@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-FileCopyrightText: The sipnab contributors
+
 // GET /health: is the REST API up? Prints ok.
 //
 // The example docs/rest-api.md shows is the body of main(), between the snippet

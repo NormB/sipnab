@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-FileCopyrightText: The sipnab contributors
 
 //! `PACKET_FANOUT`: kernel-side distribution of one interface across N capture
 //! sockets. Capture only — read on before assuming it shards processing.

@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: MIT OR Apache-2.0
+# SPDX-FileCopyrightText: The sipnab contributors
+
 """Generate a synthetic SIP pcap that trips real lint rules, for the MCP demo.
 
 Every shipped capture is well-formed — a scan of all 31 samples plus the

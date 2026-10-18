@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-FileCopyrightText: The sipnab contributors
 
 //! The oracle's per-frame traces (`.git/g729-traces/*.jsonl.gz`, field
 //! definitions in its README.md), parsed into compact records.

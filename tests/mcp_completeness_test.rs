@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-FileCopyrightText: The sipnab contributors
 
 //! Every result envelope says how much of the capture is behind it (VAL3,
 //! VAL4, and VAL2's MCP half), proved by driving the real server.

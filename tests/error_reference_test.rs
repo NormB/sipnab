@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-FileCopyrightText: The sipnab contributors
 
 //! `docs/errors.md` holds one entry per message sipnab prints when a run is
 //! refused or fails at startup, and the message literals in `src/` are the
@@ -716,7 +717,9 @@ fn lists() -> Result<Lists, TestError> {
 // bootstrap::reader_keys refusal.
 // 82 -> 83: src/app/bootstrap.rs `warn!("{notice}")` 1 -> 2, the
 // live_rtp file notice in warn_live_rtp.
-const EXPECTED_UNRESOLVED: usize = 83;
+// 83 -> 84: src/app/bootstrap.rs `PlanError { exit_code: 1, message:
+// e.to_string(), }` 12 -> 13, the `[hep]` validate() call in apply_config.
+const EXPECTED_UNRESOLVED: usize = 84;
 
 /// How many distinct templates the scope prints (informational lines
 /// excluded). Pinned with `==` so a new or removed message is a decision.
@@ -796,7 +799,12 @@ const EXPECTED_UNRESOLVED: usize = 83;
 // `{client} speaks ...` and `put credentials in {setting} ...`, and a URL read
 // without credentials has its own refusal (+1). src/app/bootstrap.rs,
 // `--uprobe-list --uprobe-library` names each path that is not a file (+1).
-const EXPECTED_TEMPLATES: usize = 504;
+// 504 -> 505: src/app/bootstrap.rs, an offline --cores run that asks for no
+// whole-capture view is refused (refuse_cores_without_a_view). Nothing removed.
+// 505 -> 506: src/config.rs, `[hep] send_queue_mib` and `send_timeout_secs`
+// are held to the ranges of `--hep-send-queue` and `--hep-send-timeout`
+// (`[hep] {key} must be 1-{max}, got {v}`).
+const EXPECTED_TEMPLATES: usize = 506;
 
 // ---------------------------------------------------------------------------
 // The page gates

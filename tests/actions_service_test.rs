@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-FileCopyrightText: The sipnab contributors
 
 //! Every action goes through one service, in one order, journaled
 //! (JOURNAL + ACTIONS-HARDEN; approved spec 2026-09-28).

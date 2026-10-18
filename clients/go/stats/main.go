@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-FileCopyrightText: The sipnab contributors
+
 // Command stats calls GET /v1/stats: dialog totals and post-dial delay percentiles.
 //
 // docs/rest-api.md shows the body of run, between the snippet markers; this

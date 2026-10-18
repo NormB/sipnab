@@ -36,21 +36,25 @@ they are apart.
 
 ## Tested on
 
-Every block on this page ran as written, in order, on 2026-09-28. The machines
+Every block on this page ran as written, in order, on 2026-10-01. The machines
 were clean x86_64 virtual machines with 2 cores and 3 GB of memory:
 
 - Debian 13 (kernel 6.12.63),
-- Ubuntu 24.04.5 (kernel 6.8.0).
+- Ubuntu 24.04 (kernel 6.8.0).
 
-On each, it ran:
+The test calls carried real audio both ways. A check compared what each step
+says it prints or stores with what it printed and stored.
+
+On each system, it ran:
 
 - With OpenSIPS built from source on a machine with nothing installed.
 - With the OpenSIPS 4.0 packages.
 - [With Kamailio](#with-kamailio), and beside OpenSIPS on one machine.
-- [On different machines](#put-the-parts-on-different-machines), with Homer on
-  its own machine.
+- [The different-machines blocks](#put-the-parts-on-different-machines), with
+  the proxy's own machine standing in for the Homer machine. Homer on a
+  machine of its own was last run on 2026-09-28.
 
-On Debian 13, causing each fault under
+On both systems, causing each fault under
 [When something does not work](#when-something-does-not-work) produced what
 it describes. The commands pin the components to the versions below.
 
@@ -364,8 +368,8 @@ What the tracing lines do:
   OpenSIPS refuses to start: `No binding found for protocol proto_hep`.
 - `hep_id` names a HEP destination, `homer`.
   - It is heplify-server on this machine, HEP version 3 over UDP.
-  - Without `transport=udp`, OpenSIPS sends version 3 over TCP. This
-    heplify-server does not listen on TCP.
+  - Without `transport=udp`, OpenSIPS picks HEP over TCP, has no `hep_tcp`
+    socket to send it from, and sends nothing.
 - `hep_capture_id` is the number Homer shows as the source of these messages.
   Give each SIP server its own.
 - `trace_id` defines `tid` as "send to `homer`".
@@ -429,28 +433,36 @@ start anything.
 
 SIPp plays both ends:
 
-- a callee on this machine,
-- a caller that dials through OpenSIPS.
+- a callee on this machine that echoes audio back,
+- a caller that dials through OpenSIPS and plays a recorded G.711 sample.
 
-SIPp's built-in caller ignores the `Record-Route` header OpenSIPS adds. So its
-`BYE` would miss the proxy and draw `404 Not here`. The two `sed` lines make it
-honor the route set, the way a real phone does:
+So the call carries real audio both ways. SIPp's built-in caller ignores the
+`Record-Route` header OpenSIPS adds. So its `BYE` would miss the proxy and draw
+`404 Not here`. The two route `sed` lines make it honor the route set, the way
+a real phone does:
 
 ```bash
 # Run all of these, in order.
 sudo apt-get install -y sip-tester
-mkdir -p ~/sipp && cd ~/sipp
-sipp -sd uac > uac_rr.xml
-sed -i 's|<recv response="200" rtd="true">|<recv response="200" rtd="true" rrs="true">|' uac_rr.xml
+mkdir -p ~/sipp/pcap && cd ~/sipp
+ln -sf /usr/share/sip-tester/*.pcap pcap/
+sipp -sd uac_pcap > uac_rr.xml
+sed -i 's|<recv response="200" rtd="true" crlf="true">|<recv response="200" rtd="true" crlf="true" rrs="true">|' uac_rr.xml
 sed -i -E 's#^( *)(ACK|BYE) sip:\[service\]@\[remote_ip\]:\[remote_port\] SIP/2.0#\1\2 [next_url] SIP/2.0\n\1[routes]#' uac_rr.xml
-sipp -sn uas -i 127.0.0.1 -p 5070 -m 1 -bg
-sipp -sf uac_rr.xml 192.0.2.10:5060 -i 192.0.2.10 -p 5080 -s echo -m 1 -d 2000 -timeout 30s \
+sipp -sn uas -i 127.0.0.1 -p 5070 -rtp_echo -m 1 -bg
+sudo sipp -sf uac_rr.xml 192.0.2.10:5060 -i 192.0.2.10 -p 5080 -s echo -m 1 -timeout 90s \
   -trace_msg -message_file uac.msg
 grep -m1 -i '^Call-ID:' uac.msg
 ```
 
-At the end, SIPp's statistics screen shows `Successful call` at 1. The last
-line prints the call's Call-ID.
+The caller needs `sudo` because it plays the audio sample through a raw socket.
+
+- It sends about 7 seconds of audio, then a short DTMF clip, and hangs up.
+- At the end, SIPp's statistics screen shows `Successful call` at 1.
+- The last line prints the call's Call-ID.
+
+OpenSIPS carries the signaling only. The audio goes straight between the two
+ends, at the addresses and ports their SDP names.
 
 ## Find the call in Homer
 
@@ -461,7 +473,8 @@ writes.
 - heplify-server writes in batches, at least every 4 seconds. So the first
   line waits for the last batch.
 - Each row is one message.
-- OpenSIPS sent most of them twice, as it arrived and as it left:
+- OpenSIPS sent each message twice, as it arrived and as it left, except the
+  `100` it answers the caller with itself. So the test call gives 13 rows:
 
 ```bash
 # Run all of these, in order.
@@ -473,6 +486,10 @@ docker compose exec -T db psql -U root -d homer_data -c \
   "select create_date, data_header->>'method' as method
      from hep_proto_1_call where data_header->>'callid' = '$CALL' order by create_date"
 ```
+
+In the web interface, search for that Call-ID and open the call. Its call flow
+draws the same 13 messages as a ladder between the caller, OpenSIPS and the
+callee.
 
 ## Operate it
 
@@ -621,8 +638,9 @@ What the tracing lines do:
 The steps from Place a test call to Operate it then work unchanged. Use
 `kamailio` in place of `opensips` in the `systemctl` commands.
 
-Kamailio, too, sends most messages twice, as each arrived and as it left. The
-test call's query in the Find the call in Homer step returns 13 rows.
+Kamailio, too, sends each message twice, as it arrived and as it left, except
+its own `100`. The test call's query in the Find the call in Homer step returns
+13 rows.
 
 **With OpenSIPS on the same machine,** Kamailio listens on 5062, as
 [OpenSIPS and Kamailio on one machine](kamailio.md#opensips-and-kamailio-on-one-machine)
@@ -686,7 +704,9 @@ Kamailio on one machine is that case, and
   - Check that heplify-server received anything:
     `docker compose logs heplify-server`.
   - If it logged no packets, check the `hep_id` address and `transport=udp`.
-- **`hep_id` without `transport=udp`.** OpenSIPS then sent nothing at all to
-  heplify-server, which listens on UDP. Keep `transport=udp` in `hep_id`.
+- **`hep_id` without `transport=udp`.** OpenSIPS then sends nothing at all to
+  heplify-server, by TCP or by UDP, and logs
+  `trying to using proto hep_tcp/11 which is not initialized!`.
+  Keep `transport=udp` in `hep_id`.
 - **The test call's `BYE` gets `404 Not here`.** The caller ignored the route
-  set. Use the edited `uac_rr.xml`, not SIPp's built-in `uac`.
+  set. Use the edited `uac_rr.xml`, not SIPp's built-in `uac_pcap`.

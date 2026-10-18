@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-FileCopyrightText: The sipnab contributors
 
 //! Per-packet protocol routing: the testable core of the capture
 //! pipeline.
@@ -2305,13 +2306,13 @@ pub fn classify_packet(
     } else {
         pp.transport
     };
-    // Owned ws frames become Bytes; otherwise share the packet buffer.
-    let effective_payload: bytes::Bytes = match ws_payload {
-        Some(v) => v.into(),
-        None => pp.payload.clone(),
-    };
+    // An unwrapped WebSocket frame is owned here; otherwise borrow the
+    // packet's own bytes. Cloning them instead cost an atomic increment and
+    // decrement on the shared read buffer for every packet, RTP included,
+    // which under `--cores` is a cache line every worker contends for.
+    let ws_frame: Option<bytes::Bytes> = ws_payload.map(Into::into);
     let signaling = Signaling {
-        payload: &effective_payload,
+        payload: ws_frame.as_ref().unwrap_or(&pp.payload),
         transport: effective_transport,
     };
 

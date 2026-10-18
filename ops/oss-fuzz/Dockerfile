@@ -1,4 +1,5 @@
 # SPDX-License-Identifier: MIT OR Apache-2.0
+# SPDX-FileCopyrightText: The sipnab contributors
 #
 # The image OSS-Fuzz builds sipnab's fuzz targets in. Submitted to
 # google/oss-fuzz as projects/sipnab/Dockerfile; kept here so it is versioned

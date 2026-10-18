@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-FileCopyrightText: The sipnab contributors
 
 //! The encrypted form of a vCon (draft-ietf-vcon-vcon-core-04 section 5.3):
 //! the container is signed with JWS (RS256, the signer's certificate chain in

@@ -1,4 +1,7 @@
 #!/bin/sh
+# SPDX-License-Identifier: MIT OR Apache-2.0
+# SPDX-FileCopyrightText: The sipnab contributors
+
 # SIPp UAC: continuously cycles a curated set of public SIPp scenarios through
 # opensips-1 so there is always live SIP+RTP traffic for sipnab to diagnose.
 #

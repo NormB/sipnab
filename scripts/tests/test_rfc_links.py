@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: MIT OR Apache-2.0
+# SPDX-FileCopyrightText: The sipnab contributors
+
 """The RFC linker: a citation a reader has to retype into a search box.
 
 Written as four tests owed for a gate that turned red during 0.5.159. Its

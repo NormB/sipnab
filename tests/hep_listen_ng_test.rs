@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-FileCopyrightText: The sipnab contributors
+
 //! rtpengine `ng` delivered to `--hep-listen`, not sniffed off the wire.
 //!
 //! sipnab documents three ways to see a relay's control plane, and one of them

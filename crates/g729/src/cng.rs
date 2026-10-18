@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-FileCopyrightText: The sipnab contributors
 
 //! Annex B comfort-noise generation: decoding of the SID LSF parameters
 //! (G.729 clause B.4.2.2, the MA predictor of equation (B.18)) and SID gain

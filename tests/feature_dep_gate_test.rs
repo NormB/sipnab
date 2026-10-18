@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-FileCopyrightText: The sipnab contributors
+
 //! The feature-dependency check exists, runs clean, and the hook invokes it.
 //!
 //! `--features vcon` did not build at 0.5.130. `src/output/redact.rs` is gated

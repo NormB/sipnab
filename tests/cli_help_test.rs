@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-FileCopyrightText: The sipnab contributors
 
 //! UX contracts of the top-level CLI surface: --help must group its ~140
 //! flags under section headings (one flat Options: list is unscannable),

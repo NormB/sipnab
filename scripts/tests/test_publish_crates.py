@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: MIT OR Apache-2.0
+# SPDX-FileCopyrightText: The sipnab contributors
+
 """Publishing to crates.io from the release workflow.
 
 A crates.io version can never be replaced. `cargo yank` stops new lockfiles

@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-FileCopyrightText: The sipnab contributors
 
 //! `--journal-show` and `--revert-actions`: seeing and backing out, from the
 //! local command line, what sipnab did to other systems.

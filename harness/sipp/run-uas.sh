@@ -1,4 +1,7 @@
 #!/bin/sh
+# SPDX-License-Identifier: MIT OR Apache-2.0
+# SPDX-FileCopyrightText: The sipnab contributors
+
 # SIPp UAS: answers INVITEs relayed by opensips-1 and stays up indefinitely.
 set -eu
 IFACE="${IFACE:-eth0}"

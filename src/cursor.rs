@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-FileCopyrightText: The sipnab contributors
 
 //! Compound pagination cursors: a position in time plus the identity that
 //! breaks ties at that instant.

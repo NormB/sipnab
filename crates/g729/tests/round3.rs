@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-FileCopyrightText: The sipnab contributors
 
 //! The oracle's round-3 streams (`.git/g729-reference/round3`): an erasure
 //! after a top-of-range pitch delay (case A, 21 streams), an untransmitted

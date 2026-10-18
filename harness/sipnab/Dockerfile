@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: MIT OR Apache-2.0
+# SPDX-FileCopyrightText: The sipnab contributors
+
 # sipnab built as an MCP HTTP server + live capture probe.
 # Build context is the sipnab repo root (see docker-compose.yml: context ../..).
 # Feature set: capture (native) + MCP HTTP (pulls mcp + api) + TLS/SRTP.

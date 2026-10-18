@@ -181,6 +181,36 @@ automated gates, and [`CONTRIBUTING.md`](https://github.com/NormB/sipnab/blob/ma
 joins, one approving review from someone other than the author becomes
 required.
 
+## Gold: per-file license and copyright
+
+Two Gold criteria ask for a statement in every source file, and both are met
+by the same two comment lines near the top of each file:
+
+```text
+// SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-FileCopyrightText: The sipnab contributors
+```
+
+| Criterion | Answer | Evidence |
+|---|---|---|
+| `license_per_file` | Met | Every source file carries `SPDX-License-Identifier: MIT OR Apache-2.0` in a comment within its first 8 lines, in the comment syntax of its language (`//`, `#`, or `{# #}` in the site's Tera templates). The expression is held equal to the `license` field of [`Cargo.toml`](https://github.com/NormB/sipnab/blob/main/Cargo.toml) by `the_config_license_is_the_crate_license`. |
+| `copyright_per_file` | Met | The same files carry `SPDX-FileCopyrightText: The sipnab contributors`, the REUSE form of a copyright statement naming the holder. |
+
+What counts as a source file is written down once, in
+[`.config/source-headers.txt`](https://github.com/NormB/sipnab/blob/main/.config/source-headers.txt):
+code in Rust, Python, shell, JavaScript and TypeScript, Go, SCSS, the site's
+templates, Dockerfiles and Makefiles, and every script with a `#!` line.
+Documentation, configuration, test fixtures, generated files and fonts are out
+of scope, and the file says why for each. Two vendored minified bundles
+(`mermaid.min.js`, `scalar.min.js`) keep their upstream license and are
+excluded by name, as is the `wasm-bindgen` output [`website/static/wasm/sipnab.js`](https://github.com/NormB/sipnab/blob/main/website/static/wasm/sipnab.js).
+
+The gate is [`tests/source_file_headers_test.rs`](https://github.com/NormB/sipnab/blob/main/tests/source_file_headers_test.rs), which reads that file, walks
+`git ls-files`, and fails naming each source file that lacks either line. Its
+fixer is `python3 scripts/add-source-headers.py --apply`, which reads the same
+file. The fixer never rewrites a line that names a different license: it
+reports the file and fails, because changing a file's license is a decision.
+
 ## Done
 
 Registered and submitted at project

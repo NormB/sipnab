@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: MIT OR Apache-2.0
+# SPDX-FileCopyrightText: The sipnab contributors
+
 """The citation fixer, and the case that defeated it three times in one day.
 
 A symbol with two cfg-gated definitions -- the `#[cfg(feature = "x")]` /

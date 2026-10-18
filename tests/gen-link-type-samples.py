@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: MIT OR Apache-2.0
+# SPDX-FileCopyrightText: The sipnab contributors
+
 """Generate the link-type capture fixtures under `tests/pcap-samples/`.
 
 Three fixtures, one per link-layer framing that had decoder code but no

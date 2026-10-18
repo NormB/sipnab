@@ -412,7 +412,7 @@ The shape, by file:
 
 | File | Change |
 |---|---|
-| [`src/sip/charging_vector.rs`](https://github.com/NormB/sipnab/blob/main/src/sip/charging_vector.rs) (new) | Parse the header value into its parameters. Sibling of [`session_id.rs`](../../src/sip/session_id.rs) and of [`SdpOriginKey`](../../src/sip/sdp.rs) at [`sdp.rs:133`](https://github.com/NormB/sipnab/blob/main/src/sip/sdp.rs#L133), both of which model an identifier as a small owned struct with a `parse` returning `Option` |
+| [`src/sip/charging_vector.rs`](https://github.com/NormB/sipnab/blob/main/src/sip/charging_vector.rs) (new) | Parse the header value into its parameters. Sibling of [`session_id.rs`](../../src/sip/session_id.rs) and of [`SdpOriginKey`](../../src/sip/sdp.rs) at [`sdp.rs:149`](https://github.com/NormB/sipnab/blob/main/src/sip/sdp.rs#L149), both of which model an identifier as a small owned struct with a `parse` returning `Option` |
 | [`dialog_store.rs:43`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog_store.rs#L43) | Two new `CorrelationReason` variants, each with the doc comment explaining its survival properties that the existing five carry |
 | [`dialog_store.rs:1034-1058`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog_store.rs#L1034-L1058) | Two new candidate blocks between `sdp_origin` and `via_branch`, following the established pattern: hoist the source dialog's values into a `HashSet` once before the candidate loop (as `src_origins` does at [`:964`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog_store.rs#L964)), parse the candidate side lazily inside the loop |
 | [`server.rs:4501`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L4501) | Two new arms. **This is a compile error until written**, by design |

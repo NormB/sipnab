@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-FileCopyrightText: The sipnab contributors
 
 //! Batch (non-interactive) mode: the state and receive loop behind every
 //! headless run (`--no-tui`, `--mcp`, replay, `--cores`).
@@ -1203,6 +1204,7 @@ pub fn run_cores_file(
         tracing::error!("--cores: no capture files to read");
         crate::capture::archive::release_run_and_exit(1);
     }
+    crate::app::bootstrap::refuse_cores_without_a_view(cli, !vcon_rules.is_empty());
     let no_rtp = cli.no_rtp(config);
     let pcfg = parallel_config(cli, config, portrange, no_rtp);
     let pre_opened = match crate::app::bootstrap::prepare_cores_inputs(
@@ -2792,6 +2794,8 @@ fn build_hep_sender(
             transport,
             tls_ca: tls_ca.as_deref(),
             tls_extra_ca: tls_extra_ca.as_deref(),
+            queue_bytes: cli.hep_send_queue_bytes(config),
+            timeout: cli.hep_send_timeout(config),
         },
     )
     // Fatal, as `--metrics` and `--api` are: `--hep-send` asks
@@ -4423,10 +4427,21 @@ impl BatchRunner {
         // --hep-send: SIP as protocol type 1, RTCP as type 5,
         // nothing else. What is stamped and what is skipped is
         // decided in `HepSender::forward_parsed`, where a test can
-        // reach it.
+        // reach it. The closure names an RTCP report's call from the SDP
+        // endpoints the stream store holds; the guard is a read, taken only
+        // for RTCP, after the write guards above have dropped.
         #[cfg(feature = "hep")]
         if let Some(ref sender) = self.hep_sender
-            && let Err(e) = sender.forward_parsed(effective_pp)
+            && let Err(e) = sender.forward_parsed(effective_pp, |rtcp| {
+                self.stream_store
+                    .read()
+                    .call_for_rtcp(
+                        (rtcp.src_addr, rtcp.src_port),
+                        (rtcp.dst_addr, rtcp.dst_port),
+                        rtcp.timestamp,
+                    )
+                    .map(str::to_owned)
+            })
         {
             tracing::debug!("HEP forward failed: {e:#}");
         }
@@ -4614,17 +4629,25 @@ impl BatchRunner {
             crate::capture::archive::release_run_and_exit(1);
         }
 
-        // 21-hep-send. What the exporter delivered and what failed, said once
-        //      the capture has drained. At `warn` when anything failed, so a
-        //      collector that went away is visible at the default level where
-        //      the per-packet failure line is `debug`.
+        // 21-hep-send. End the exporter's delivery thread. `finish` makes the
+        //      one decision: a stop signal discards the queue at once (stop
+        //      means stop -- no flush of captured data), and the end of the
+        //      input delivers it, waiting a bounded time for an unreachable
+        //      collector. Then what the exporter delivered, replayed, dropped
+        //      and failed, said once. At `warn` when anything failed or was
+        //      dropped, so a collector that went away is visible at the
+        //      default level.
+        #[cfg(feature = "hep")]
+        if let Some(ref sender) = self.hep_sender {
+            sender.finish();
+        }
         if let (Some(counters), Some(dest)) = (
             capture_meter.hep_export(),
             self.cli.hep_args.hep_send.as_deref(),
         ) {
             let snap = counters.snapshot();
             let line = snap.summary_line(dest);
-            if snap.failed() > 0 {
+            if snap.failed() > 0 || snap.dropped_total() > 0 {
                 tracing::warn!("{line}");
             } else {
                 tracing::info!("{line}");

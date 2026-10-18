@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-FileCopyrightText: The sipnab contributors
 
 //! Diff two capture FILES by aggregate — the shared core of the MCP
 //! `compare_captures` tool and the REST `GET /v1/captures/compare` route.

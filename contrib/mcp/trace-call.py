@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: MIT OR Apache-2.0
+# SPDX-FileCopyrightText: The sipnab contributors
 """Follow one call across several sipnab nodes, with no interactive agent.
 
 Standard library only, on purpose: a support laptop may not permit

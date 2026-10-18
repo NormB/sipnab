@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-FileCopyrightText: The sipnab contributors
+
 //! Reference material served over MCP's `resources` primitive.
 //!
 //! An agent that does not know the filter DSL discovers it by guessing and

@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: MIT OR Apache-2.0
+# SPDX-FileCopyrightText: The sipnab contributors
+
 """The agent triage: two MCP answers about one capture, read as one verdict.
 
 `get_capture_report` says what is wrong and `list_dialogs` says what is

@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-FileCopyrightText: The sipnab contributors
 
 //! Fuzz the SIPREC metadata extractor — a hand-rolled scanner over
 //! attacker-supplied XML (`find`-based tag walking, multipart splitting).

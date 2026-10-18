@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-FileCopyrightText: The sipnab contributors
 
 //! Per-tool call counters behind the `sipnab_mcp_tool_*` metric families.
 //!

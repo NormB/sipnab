@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: MIT OR Apache-2.0
+# SPDX-FileCopyrightText: The sipnab contributors
+
 FROM ghcr.io/cross-rs/x86_64-unknown-linux-musl:main@sha256:b7452ab0229ccaf49fd17b207f148bb470362a8da3fdb903b332fbfc819367fc
 
 # libpcap is built from source against musl because the released musl artifact

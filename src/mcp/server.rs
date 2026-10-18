@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-FileCopyrightText: The sipnab contributors
 
 //! `SipnabMcp` server: the MCP tools backed by the existing
 //! dialog/stream stores (plus the optional alert engine).
@@ -9291,7 +9292,7 @@ impl SipnabMcp {
     ///
     /// # Why this is a tool rather than a metrics scrape
     ///
-    /// sipnab exports 40 Prometheus metrics and the listener that serves them
+    /// sipnab exports 45 Prometheus metrics and the listener that serves them
     /// is off by default, so on most deployments those numbers exist in-process
     /// and nothing can read them. An agent asked "is this server healthy"
     /// cannot enable a listener to find out.

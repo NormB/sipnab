@@ -26,18 +26,25 @@ sipnab as a source for Homer step is the same for both.
 
 ## Tested on
 
-Every block on this page ran as written, in order, on 2026-09-28, with
-sipnab 0.5.194 from its release package.
+Every block on this page ran as written, in order, on 2026-10-01, with
+sipnab 0.5.199 from its release package.
 
 - The machines were clean x86_64 virtual machines with 2 cores and 3 GB of
   memory:
   - Debian 13 (kernel 6.12.63),
-  - Ubuntu 24.04.5 (kernel 6.8.0).
+  - Ubuntu 24.04 (kernel 6.8.0).
+- The test calls carried real audio both ways.
 - It ran with OpenSIPS, from source and from the packages.
 - It ran with Kamailio.
-- It ran as a source on a second machine.
+- The second machine in the sipnab as a source for Homer step was a network
+  namespace on the same virtual machine. It had its own address, its own link
+  and its own capture, and shared the first machine's files.
 
-On Debian 13, causing the first fault under
+That run predates the RTCP form described in the sipnab as a source for Homer
+step: sipnab 0.5.199 sent RTCP without the call's Call-ID, and Homer stored
+none of it.
+
+On both systems, causing the first fault under
 [When something does not work](#when-something-does-not-work) produced what
 it describes. The second needs a firewall between two machines, and did not
 run.
@@ -98,24 +105,29 @@ While it runs, place a test call from a second terminal. Do it as in
 ```bash
 # Run all of these, in order.
 cd ~/sipp
-sipp -sn uas -i 127.0.0.1 -p 5070 -m 1 -bg
-sipp -sf uac_rr.xml 192.0.2.10:5060 -i 192.0.2.10 -p 5080 -m 1 -d 1000 -timeout 20s
+sipp -sn uas -i 127.0.0.1 -p 5070 -rtp_echo -m 1 -bg
+sudo sipp -sf uac_rr.xml 192.0.2.10:5060 -i 192.0.2.10 -p 5080 -s echo -m 1 -timeout 90s
 ```
 
 sipnab prints each message as it arrives, marked `origin=hep`. When the 30
 seconds are up, it prints the call and who sent it:
 
 ```text
-Call-ID                          From           To             State        Code   Duration   Msgs
-------------------------------------------------------------------------------------------------------
-1-60947@192.0.2.10               sipp           service        Completed    200    1s         13
+Call-ID                          From           To             State        Code   Duration   Msgs   PDD      Tags
+-------------------------------------------------------------------------------------------------------------------------
+1-19569@192.0.2.10               sipp           echo           Completed    200    9s         13     0.0s     -
+HEP senders (trust unauthenticated, silent after 30s)
+  received 13  admitted 13  refused 0  from untracked senders 0
 
   SOURCE                                PACKETS  LAST SEEN                    IDLE  STATE
-  hep:101@127.0.0.1                          13  2026-09-26T21:25:09.115Z       6s  sending
+  hep:101@127.0.0.1                          13  2026-10-01T13:58:35.376Z      15s  sending
 ```
 
 `hep:101` is the `hep_capture_id` OpenSIPS stamps on everything it sends.
 Homer received the same 13 messages.
+
+The call carried audio, but sipnab here sees only what OpenSIPS sends it: the
+SIP messages. Its end-of-run line reports `0 RTP packets across 0 streams`.
 
 - The capture id is what the sender claims. Nothing proves it.
 - What keeps other senders out here is the address. sipnab listens on
@@ -150,8 +162,9 @@ sudo systemctl restart kamailio
 ```
 
 Then start sipnab's listener and place the test call as above. The report shows
-the call `Completed` with 13 messages. They come from `hep:101`, Kamailio's
-`hep_capture_id`.
+the call `Completed` with 13 messages. They come from `hep:101@192.0.2.10`:
+Kamailio's `hep_capture_id`, sent from the machine's own address. Homer stores
+none of that call.
 
 ## sipnab as a source for Homer
 
@@ -163,28 +176,45 @@ from your SIP server's:
 sudo sipnab -N -d any -H 192.0.2.10:9060 --hep-id 2002 --duration 30
 ```
 
-sipnab forwards SIP, and RTCP so that Homer can report media quality. It never
-forwards RTP, the audio itself.
+sipnab forwards SIP, and RTCP as HEP type 5. It never forwards RTP, the audio
+itself.
 
-While it runs, place a call from the second machine through your SIP server.
-The callee still runs on the SIP server's machine:
+sipnab sends each RTCP report in the form Homer stores:
+
+- The report is JSON, as heplify sends it.
+- It carries the Call-ID of the call it belongs to, as its correlation ID.
+  heplify-server stores an RTCP report only under that ID, and Homer shows it
+  in the call's media quality (QoS) view.
+- sipnab finds the call from the SDP that set up the media. RTCP for a call
+  whose SDP sipnab did not capture is not sent, because Homer would store none
+  of it.
+
+SIPp sends no RTCP of its own, so the SIPp test call below gives sipnab no
+RTCP to forward, and the call's QoS view stays empty. A call between phones
+that send RTCP fills it.
+
+While sipnab runs, place a call from the second machine through your SIP
+server. The callee still runs on the SIP server's machine. `-mi` gives it the
+machine's own address for its audio, so that the caller on the second machine
+can reach it:
 
 ```bash
 # Run all of these, in order.
 # On 192.0.2.10:
 cd ~/sipp
-sipp -sn uas -i 127.0.0.1 -p 5070 -m 1 -bg
+sipp -sn uas -i 127.0.0.1 -mi 192.0.2.10 -p 5070 -rtp_echo -m 1 -bg
 ```
 
 ```bash
 # Run all of these, in order.
 # On 192.0.2.20:
 sudo apt-get install -y sip-tester
-mkdir -p ~/sipp && cd ~/sipp
-sipp -sd uac > uac_rr.xml
-sed -i 's|<recv response="200" rtd="true">|<recv response="200" rtd="true" rrs="true">|' uac_rr.xml
+mkdir -p ~/sipp/pcap && cd ~/sipp
+ln -sf /usr/share/sip-tester/*.pcap pcap/
+sipp -sd uac_pcap > uac_rr.xml
+sed -i 's|<recv response="200" rtd="true" crlf="true">|<recv response="200" rtd="true" crlf="true" rrs="true">|' uac_rr.xml
 sed -i -E 's#^( *)(ACK|BYE) sip:\[service\]@\[remote_ip\]:\[remote_port\] SIP/2.0#\1\2 [next_url] SIP/2.0\n\1[routes]#' uac_rr.xml
-sipp -sf uac_rr.xml 192.0.2.10:5060 -i 192.0.2.20 -p 5080 -m 1 -d 1000 -timeout 20s \
+sudo sipp -sf uac_rr.xml 192.0.2.10:5060 -i 192.0.2.20 -p 5080 -s echo -m 1 -timeout 90s \
   -trace_msg -message_file uac.msg
 grep -m1 -i '^Call-ID:' uac.msg
 ```
@@ -211,6 +241,8 @@ The test call gave 13 messages under capture id 101 and 7 under 2002.
 - The SIP server sees both legs of the call.
 - sipnab, on the second machine, sees the messages on that machine's own link.
   That is the caller's leg.
+- sipnab saw the call's audio there too, 246 RTP packets each way, and
+  forwarded none of it.
 
 HEP over UDP carries no authentication of its own. heplify-server accepts it
 from anyone who can reach port 9060. So open that port only to:

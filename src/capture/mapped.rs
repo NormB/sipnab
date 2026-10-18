@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-FileCopyrightText: The sipnab contributors
+
 //! Reading a capture file through a mapping instead of through libpcap.
 //!
 //! # Why this exists

@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: MIT OR Apache-2.0
+# SPDX-FileCopyrightText: The sipnab contributors
+
 """Generate THIRD-PARTY-NOTICES.md from the real dependency graph.
 
 Attribution is a license obligation, not a courtesy: MIT and Apache-2.0 both

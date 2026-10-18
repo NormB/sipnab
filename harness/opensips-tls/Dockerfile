@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: MIT OR Apache-2.0
+# SPDX-FileCopyrightText: The sipnab contributors
+
 # OpenSIPS built from upstream, pinned to a release tag.
 # Override OPENSIPS_GIT_URL / OPENSIPS_GIT_REF to build a fork or a branch.
 # The default `make all` excludes all heavy-dep modules (DB, presence, pua,

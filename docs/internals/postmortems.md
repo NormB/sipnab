@@ -359,7 +359,7 @@ A measurement of one debug test binary from 0.5.133, recorded in the
 | Of which `.debug_*` sections | 315 MB |
 | Share | 75% |
 
-The Linux job runs on the hosted `ubuntu-24.04-arm` runner, which has roughly
+At the time the Linux job ran on the hosted `ubuntu-24.04-arm` runner, which has roughly
 14 GB of disk according to the `Cargo.toml` comment. Test builds inherit the
 `dev` profile, which had no `debug` setting and so produced full DWARF debug
 information. `[profile.release]` had used `debug = "line-tables-only"` since

@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-FileCopyrightText: The sipnab contributors
 //! Where the G.729 codebook tables come from, and whether this run has them.
 //!
 //! sipnab ships no ITU-T table values (docs/g729.md). The decoder in the

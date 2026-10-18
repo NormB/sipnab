@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-FileCopyrightText: The sipnab contributors
 
 //! Fuzz the STUN decoder and the TURN ChannelData framing checks. Both sit on
 //! the per-datagram path: `classify_packet` tries `channel_data_payload` and

@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-FileCopyrightText: The sipnab contributors
 
 //! Pairing rtpproxy's commands with their replies, so a capture can name the
 //! relay's media (RP-WIRE).

@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: MIT OR Apache-2.0
+# SPDX-FileCopyrightText: The sipnab contributors
+
 # Build a binary .rpm for sipnab, mirroring packaging/deb/build-deb.sh:
 # same inputs (VERSION ARCH VARIANT), same env contract (SIPNAB_BIN /
 # SIPNAB_AUDIO_PLUGIN for CI cross-build mode), same package payload

@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-FileCopyrightText: The sipnab contributors
 
 //! REST actions go through the journal, the rules and the rate limits
 //! (JOURNAL, ACTIONS-HARDEN; approved 2026-09-28).

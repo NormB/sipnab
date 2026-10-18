@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: MIT OR Apache-2.0
+# SPDX-FileCopyrightText: The sipnab contributors
+
 # One end-to-end run: place calls through opensips-1, let rtpengine anchor the
 # media, and ask BOTH sipnab nodes what they saw.
 #

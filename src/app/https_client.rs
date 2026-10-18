@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-FileCopyrightText: The sipnab contributors
 //! A small HTTP/1.1 client over rustls: one request, one answer, then close.
 //!
 //! The vCon forwarder, the vCon fetcher and `sipnab g729 install` share it.

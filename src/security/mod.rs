@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-FileCopyrightText: The sipnab contributors
 
 //! VoIP security detection: SIP scanner detection, toll fraud, registration
 //! flooding, digest credential leaks, and alerting.

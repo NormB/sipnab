@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-FileCopyrightText: The sipnab contributors
 
 #![cfg(all(unix, feature = "mcp"))]
 //! PB8 — output-side prompt injection, proved end to end over real stdio MCP.

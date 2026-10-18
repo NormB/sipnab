@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-FileCopyrightText: The sipnab contributors
 
 //! Expectations: thresholds a capture is asserted to meet, evaluated as a gate.
 //!

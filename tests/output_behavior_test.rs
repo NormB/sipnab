@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-FileCopyrightText: The sipnab contributors
 
 //! Behavioral contracts of the machine-readable output flags: --json-pretty
 //! must actually differ from --json, and --call-report must fail with a

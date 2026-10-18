@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-FileCopyrightText: The sipnab contributors
 
 //! JSON/NDJSON structured output for SIP messages, dialogs, and RTP streams.
 //!

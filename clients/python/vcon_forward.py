@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: MIT OR Apache-2.0
+# SPDX-FileCopyrightText: The sipnab contributors
+
 """Forward the vCons sipnab writes to a vCon server, then delete them.
 
     VCON_INGRESS_TOKEN=... vcon_forward.py --spool /var/spool/sipnab-vcon \\

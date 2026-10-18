@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-FileCopyrightText: The sipnab contributors
 
 //! Excitation and synthesis: u(n) = g_p v(n) + g_c ops(n) (G.729 equation
 //! (75)), and the LP synthesis filter of clause 4.1.6 (equation (77)), which

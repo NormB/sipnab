@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-FileCopyrightText: The sipnab contributors
+
 // Command get-stream calls GET /v1/streams/{id}: one RTP stream's codec and packet count.
 //
 // docs/rest-api.md shows the body of run, between the snippet markers; this

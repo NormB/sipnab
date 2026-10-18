@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-FileCopyrightText: The sipnab contributors
 
 #![cfg(all(unix, feature = "mcp"))]
 //! Phase 8.1 — end-to-end stdio MCP integration test.

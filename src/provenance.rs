@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-FileCopyrightText: The sipnab contributors
 
 //! Capture identity and store generation: the primitive that lets a consumer
 //! tell "the data changed" from "the data is a different capture".

@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-FileCopyrightText: The sipnab contributors
 
 //! Every system package a hosted CI job needs must come from a local cache
 //! first, not from the Ubuntu archives on every run.

@@ -18,7 +18,8 @@ description: >-
 # branch, because several gates read the disk rather than git. The build
 # directory moves out of the workspace instead.
 #
-# WHERE: $HOME/.cache/sipnab-ci/<runner name>/target.
+# WHERE: $HOME/.cache/sipnab-ci/<runner name>/<dir>, where <dir> is the
+# `dir` input, `target` unless a job names another.
 # - Outside the workspace, so the checkout clean does not reach it.
 # - Outside the runner's own installation directory, so it does not depend on
 #   where a runner is installed and survives re-registering a runner.
@@ -26,6 +27,13 @@ description: >-
 #   deleting it costs one cold build and nothing else.
 # - One directory per runner name. Cargo locks its build directory, so the
 #   runners sharing one directory would run their builds one at a time.
+# - One directory per kind of build. Coverage (quality.yml) passes
+#   `dir: coverage-target`: cargo llvm-cov compiles every crate with
+#   `-C instrument-coverage`, and in the plain builds' directory each kind
+#   would invalidate the other's artifacts and the two together would reach
+#   the cap sooner and lose both. tests/ci_runner_target_test.rs requires a
+#   separate directory for a job that runs cargo llvm-cov and the default for
+#   every other job.
 #
 # THE CAP: 64 GiB per runner, checked before every build by
 # scripts/ci-target-cap.sh, which removes the directory when it is over.
@@ -40,17 +48,41 @@ description: >-
 # removes it: at most 4 x (64 + 14) = 312 GiB across four runners, 28% of the
 # 1123 GiB free on the root filesystem that day.
 #
+# The cap applies to each directory on its own, so a runner holds at most two
+# capped directories. Measured sizes of the Check and Coverage builds are in
+# docs/internals/build-ci-release.md. A cold Coverage build left 35 GiB, so
+# its directory can pass the cap by that much: at most
+# 4 x ((64 + 14) + (64 + 35)) = 708 GiB across four runners, 37% of the
+# 1892 GiB free on the root filesystem on 2026-10-17.
+#
 # Not for reproducible.yml: its purpose is two builds in fresh trees, and a
 # warm directory would make that comparison meaningless.
 # tests/ci_runner_target_test.rs holds both the use and that exemption.
+inputs:
+  dir:
+    description: >-
+      The directory's name under this runner's directory: lowercase letters,
+      digits and hyphens. `target` for a plain build.
+    required: false
+    default: target
+
 runs:
   using: composite
   steps:
     - name: Bound and select the per-runner target directory
       if: runner.environment == 'self-hosted'
       shell: bash
+      # Through the environment, so the input is a value and never script
+      # text.
+      env:
+        TARGET_DIR_NAME: ${{ inputs.dir }}
       run: |
         set -euo pipefail
-        CARGO_TARGET_DIR="$HOME/.cache/sipnab-ci/$RUNNER_NAME/target"
+        # One path component, so the directory stays under this runner's.
+        if ! [[ "$TARGET_DIR_NAME" =~ ^[a-z0-9][a-z0-9-]*$ ]]; then
+          echo "::error::runner-target: dir '$TARGET_DIR_NAME' is not one name of [a-z0-9-]"
+          exit 1
+        fi
+        CARGO_TARGET_DIR="$HOME/.cache/sipnab-ci/$RUNNER_NAME/$TARGET_DIR_NAME"
         bash "$GITHUB_WORKSPACE/scripts/ci-target-cap.sh" "$CARGO_TARGET_DIR" 64G
         echo "CARGO_TARGET_DIR=$CARGO_TARGET_DIR" >> "$GITHUB_ENV"

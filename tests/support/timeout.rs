@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-FileCopyrightText: The sipnab contributors
 //
 // Included textually with `include!`, not as a module: `support/server.rs` and
 // `support/mcp.rs` are themselves pulled in with `#[path]` by several test

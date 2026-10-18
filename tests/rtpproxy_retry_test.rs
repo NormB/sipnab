@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-FileCopyrightText: The sipnab contributors
 
 //! A retried rtpproxy command is counted and named (RP4).
 //!
@@ -178,6 +179,7 @@ fn the_parallel_reader_reports_the_same_retries() -> Result<(), TestError> {
             "--no-config",
             "--cores",
             "2",
+            "--report",
             "--rtpproxy-control",
             "192.0.2.40:7722",
         ])

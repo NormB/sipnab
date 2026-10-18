@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: MIT OR Apache-2.0
+# SPDX-FileCopyrightText: The sipnab contributors
 """Generate the synthetic carrier pcap that the published benchmarks measure.
 
 The benchmark pages claim every number is reproducible. That claim was false

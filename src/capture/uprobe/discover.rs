@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-FileCopyrightText: The sipnab contributors
+
 //! Finding the TLS libraries a host is **actually using**.
 //!
 //! A host may carry OpenSSL and wolfSSL at once, and typically does — measured

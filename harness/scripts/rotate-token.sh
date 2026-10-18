@@ -1,4 +1,7 @@
 #!/usr/bin/env sh
+# SPDX-License-Identifier: MIT OR Apache-2.0
+# SPDX-FileCopyrightText: The sipnab contributors
+
 # Mint a fresh short-lived MCP bearer token from the long-lived HMAC signing key
 # and publish it atomically to the shared token file. The harness rotator loop
 # (sipnab/entrypoint.sh) calls this on an interval, and it can be run by hand to

@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-FileCopyrightText: The sipnab contributors
 
 //! The HTTPS listener shared by the servers built on axum: the REST API
 //! (`--api-tls-cert`) and MCP over HTTP (`--mcp-tls-cert`).

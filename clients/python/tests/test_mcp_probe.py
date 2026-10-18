@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: MIT OR Apache-2.0
+# SPDX-FileCopyrightText: The sipnab contributors
+
 """The MCP client: SSE framing, and the guard that compares two nodes.
 
 Both areas shipped broken. The SSE reader took the first `data:` line, which

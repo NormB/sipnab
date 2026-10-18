@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-FileCopyrightText: The sipnab contributors
 
 //! End-to-end HEP tests (verification plan M3 — T3.6).
 //!
@@ -1407,6 +1408,212 @@ fn hep_send_stamps_tcp_sip_as_ip_protocol_6() -> Result<(), TestError> {
     );
 
     let _ = terminate(&mut child);
+    Ok(())
+}
+
+// ── --hep-send through a collector outage ──────────────────────────────
+
+/// An INVITE whose Call-ID is `call_id`.
+fn invite_with_call_id(call_id: &str) -> Vec<u8> {
+    format!(
+        "INVITE sip:bob@example.com SIP/2.0\r\n\
+         Via: SIP/2.0/UDP 127.0.0.1:5060;branch=z9hG4bK{call_id}\r\n\
+         From: <sip:alice@example.com>;tag=1\r\n\
+         To: <sip:bob@example.com>\r\n\
+         Call-ID: {call_id}\r\n\
+         CSeq: 1 INVITE\r\n\
+         Content-Length: 0\r\n\r\n"
+    )
+    .into_bytes()
+}
+
+/// A TCP socket with `SO_REUSEPORT`, so a second one can hold a collector's
+/// port bound while the first still listens.
+fn reuse_port_socket() -> Result<socket2::Socket, TestError> {
+    let socket = socket2::Socket::new(socket2::Domain::IPV4, socket2::Type::STREAM, None)?;
+    socket.set_reuse_port(true)?;
+    Ok(socket)
+}
+
+/// A TCP collector listening on loopback, and its address.
+fn collector_listening() -> Result<(std::net::TcpListener, String), TestError> {
+    let listening = reuse_port_socket()?;
+    listening.bind(&std::net::SocketAddr::from(([127, 0, 0, 1], 0)).into())?;
+    listening.listen(16)?;
+    let listener = std::net::TcpListener::from(listening);
+    let addr = listener.local_addr()?.to_string();
+    Ok((listener, addr))
+}
+
+/// Accept the sender's connection on `listener` within the deadline.
+fn accept_sender(listener: &std::net::TcpListener) -> Result<std::net::TcpStream, TestError> {
+    listener.set_nonblocking(true)?;
+    let deadline = Instant::now() + test_timeout(30);
+    loop {
+        match listener.accept() {
+            Ok((s, _)) => {
+                s.set_nonblocking(false)?;
+                return Ok(s);
+            }
+            Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                if Instant::now() >= deadline {
+                    return Err("sipnab never connected to the collector".into());
+                }
+                thread::sleep(Duration::from_millis(20));
+            }
+            Err(e) => return Err(format!("accept: {e}").into()),
+        }
+    }
+}
+
+/// Take the collector down: close the sender's connection and the listener,
+/// with the port held bound and NOT listening, so every redial is refused
+/// and no parallel test can take the number before [`collector_up`].
+fn collector_down(
+    listener: std::net::TcpListener,
+    conn: std::net::TcpStream,
+) -> Result<socket2::Socket, TestError> {
+    let hold = reuse_port_socket()?;
+    hold.bind(&listener.local_addr()?.into())?;
+    drop(conn);
+    drop(listener);
+    Ok(hold)
+}
+
+/// Bring the collector up again and accept the sender's connection.
+fn collector_up(hold: socket2::Socket) -> Result<std::net::TcpStream, TestError> {
+    hold.listen(16)?;
+    let listener: std::net::TcpListener = hold.into();
+    accept_sender(&listener)
+}
+
+/// The SIP payloads of `want` HEP packets read off a TCP collector stream.
+fn hep_payloads(conn: &mut std::net::TcpStream, want: usize) -> Result<Vec<String>, TestError> {
+    use std::io::Read;
+    conn.set_read_timeout(Some(test_timeout(10)))?;
+    let mut buf = Vec::new();
+    let mut out = Vec::new();
+    let mut chunk = [0u8; 8192];
+    while out.len() < want {
+        while buf.len() >= 6 {
+            let total = u16::from_be_bytes([buf[4], buf[5]]) as usize;
+            if buf.len() < total {
+                break;
+            }
+            let pkt = parse_hep(&buf[..total]).map_err(|e| format!("a whole HEP packet: {e:?}"))?;
+            out.push(String::from_utf8_lossy(&pkt.payload).into_owned());
+            buf.drain(..total);
+        }
+        if out.len() >= want {
+            break;
+        }
+        let n = conn.read(&mut chunk)?;
+        if n == 0 {
+            return Err(format!("the stream closed after {} packet(s)", out.len()).into());
+        }
+        buf.extend_from_slice(&chunk[..n]);
+    }
+    Ok(out)
+}
+
+/// Stop `srv` with SIGTERM and return the end-of-run export line.
+fn stop_and_export_line(mut srv: HepListener, dest: &str) -> Result<String, TestError> {
+    let status = terminate(&mut srv.child)?;
+    assert_eq!(status.code(), Some(0), "sipnab must exit 0 on SIGTERM");
+    let deadline = Instant::now() + test_timeout(10);
+    while Instant::now() < deadline {
+        match srv.stderr_rx.recv_timeout(Duration::from_millis(200)) {
+            Ok(line) if line.contains(&format!("HEP export to {dest} over tcp")) => {
+                return Ok(line);
+            }
+            Ok(_) => {}
+            Err(mpsc::RecvTimeoutError::Disconnected) => break,
+            Err(mpsc::RecvTimeoutError::Timeout) => {}
+        }
+    }
+    Err(format!("no end-of-run export line for {dest}").into())
+}
+
+/// **A collector that goes away is retried, and gets the feed once it
+/// listens again**, through the real binary: three INVITEs captured while it
+/// was down arrive in the order they were captured, and the run reports them
+/// replayed.
+///
+/// Before the sender moved off the capture thread, a failed write lost its
+/// packet, and a collector that was down cost each packet a dial on the
+/// capture thread.
+#[test]
+fn hep_send_replays_to_a_collector_that_went_away() -> Result<(), TestError> {
+    let (listener, dest) = collector_listening()?;
+    let srv = HepListener::spawn_reporting(&[
+        "--hep-allow",
+        "127.0.0.1/32",
+        "--hep-send",
+        &dest,
+        "--hep-send-transport",
+        "tcp",
+    ])?;
+    let first = accept_sender(&listener)?;
+    let hold = collector_down(listener, first)?;
+    let ids = ["outage-a@h", "outage-b@h", "outage-c@h"];
+    for id in ids {
+        srv.send(&hep3_sip(&invite_with_call_id(id))?)?;
+        assert!(
+            srv.wait_for_stdout(id, test_timeout(10)).is_some(),
+            "control: sipnab captured {id}"
+        );
+    }
+    let mut conn = collector_up(hold)?;
+    let got = hep_payloads(&mut conn, ids.len())?;
+    for (payload, id) in got.iter().zip(ids) {
+        assert!(
+            payload.contains(id),
+            "out of order or missing: wanted {id}, got {payload}"
+        );
+    }
+    let line = stop_and_export_line(srv, &dest)?;
+    for needle in [
+        "3 packet(s) sent",
+        "3 replayed after an outage",
+        "none dropped",
+        "1 reconnect(s)",
+    ] {
+        assert!(line.contains(needle), "`{needle}` missing from: {line}");
+    }
+    Ok(())
+}
+
+/// **SIGTERM discards what is queued for an unreachable collector, and says
+/// how much**: stop means stop, with no flush of residual capture data.
+#[test]
+fn sigterm_discards_the_hep_queue_and_reports_the_count() -> Result<(), TestError> {
+    let (listener, dest) = collector_listening()?;
+    let srv = HepListener::spawn_reporting(&[
+        "--hep-allow",
+        "127.0.0.1/32",
+        "--hep-send",
+        &dest,
+        "--hep-send-transport",
+        "tcp",
+    ])?;
+    let first = accept_sender(&listener)?;
+    let _hold = collector_down(listener, first)?;
+    for id in ["term-a@h", "term-b@h", "term-c@h", "term-d@h"] {
+        srv.send(&hep3_sip(&invite_with_call_id(id))?)?;
+        assert!(
+            srv.wait_for_stdout(id, test_timeout(10)).is_some(),
+            "control: sipnab captured {id}"
+        );
+    }
+    let line = stop_and_export_line(srv, &dest)?;
+    for needle in [
+        "0 packet(s) sent",
+        "4 queued",
+        "4 dropped (stopped 4)",
+        "0 still queued",
+    ] {
+        assert!(line.contains(needle), "`{needle}` missing from: {line}");
+    }
     Ok(())
 }
 

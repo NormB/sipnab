@@ -1,5 +1,6 @@
 #!/bin/sh
 # SPDX-License-Identifier: MIT OR Apache-2.0
+# SPDX-FileCopyrightText: The sipnab contributors
 #
 # Print the Rust target for the OTHER Linux architecture than the given
 # machine name (default: `uname -m`), so a gate can compile the code that

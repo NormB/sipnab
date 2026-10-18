@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-FileCopyrightText: The sipnab contributors
 
 //! Export rules: `[[vcon.rule]]`, each a filter paired with a directory and an
 //! audio setting, on the shipped binary.

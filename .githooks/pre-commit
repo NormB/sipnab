@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: MIT OR Apache-2.0
+# SPDX-FileCopyrightText: The sipnab contributors
+
 # sipnab pre-commit hook
 # Prevents the class of bugs caught by users in this project:
 # - Code that compiles but silently doesn't work

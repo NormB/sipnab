@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-FileCopyrightText: The sipnab contributors
 
 //! `--all-features` (as CI runs it) must not switch on anything that needs
 //! local oracle data or skips the table values check: those are cfg flags

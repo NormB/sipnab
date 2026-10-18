@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-FileCopyrightText: The sipnab contributors
 
 //! Static link-integrity / journey guards for BOTH documentation trees:
 //!
@@ -1502,7 +1503,12 @@ fn wiki_intra_docs_links_resolve() -> Result<(), TestError> {
     // docs/cli-reference.md +1 (the new `sipnab g729` section links
     // g729.md) and docs/config-reference.md +1 (the unknown-key note links
     // the `[[vcon.rule]]` section).
-    const EXPECTED_WIKI_LINKS: usize = 1977;
+    // 1977 -> 1979 with the HEP sender's outage section: the
+    // `--hep-send-transport` row in cli-reference.md links it (+1), and
+    // rest-api.md's `hep_export` paragraph links it (+1).
+    // 1979 -> 1980: config-reference.md's `[hep] send_queue_mib` row links
+    // the same section (+1).
+    const EXPECTED_WIKI_LINKS: usize = 1980;
     // Raised 459 -> 460 when SRC1 stage 1 shipped: docs/cli-reference.md's
     // `--hep-listen` row now points at cookbook recipe "Take signaling from HEP and media off the wire, in one process" in docs/examples.md
     // rather than restating how to pair `-L` with `-d`. Attributed per file

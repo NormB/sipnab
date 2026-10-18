@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-FileCopyrightText: The sipnab contributors
 
 //! The vCon export spool's state: what is waiting, what was delivered, what
 //! was refused and why.

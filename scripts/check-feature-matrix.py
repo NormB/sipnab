@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: MIT OR Apache-2.0
+# SPDX-FileCopyrightText: The sipnab contributors
+
 """Run CI's feature-matrix compile checks locally, before the push.
 
 Why this exists as a gate rather than a habit: the pre-commit hook builds

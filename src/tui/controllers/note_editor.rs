@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-FileCopyrightText: The sipnab contributors
 
 //! Operator notes: the `C` key, the one-line editor it opens, and the question
 //! a capture swap asks while notes are not saved.

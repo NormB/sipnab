@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-FileCopyrightText: The sipnab contributors
 
 //! Throughput benchmarks for the per-packet store layer
 //! (`DialogStore`, `StreamStore`).

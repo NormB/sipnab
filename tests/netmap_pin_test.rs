@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-FileCopyrightText: The sipnab contributors
 
 //! The netmap headers the static musl images compile libpcap against request an
 //! API that a netmap kernel module built today accepts.

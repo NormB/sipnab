@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: MIT OR Apache-2.0
+# SPDX-FileCopyrightText: The sipnab contributors
+
 """The composite action that installs Debian packages in CI.
 
 `.github/actions/system-deps` caches the .deb files it downloads and installs

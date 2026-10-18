@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-FileCopyrightText: The sipnab contributors
+
 //! Reading one binary tracepoint record.
 //!
 //! The kernel publishes the layout of its own records at

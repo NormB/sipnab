@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-FileCopyrightText: The sipnab contributors
 
 //! Batch-mode paths no other suite drove, end to end through the built binary:
 //! the relay asks a file run refuses, the end-of-run capture-quality, LLMNR and
@@ -216,7 +217,7 @@ fn a_misdated_record_is_named_in_the_capture_quality_summary() -> Result<(), Tes
             (frame, 1_700_000_001, 1_500_000, usize::MAX),
         ],
     )?;
-    for extra in [&[][..], &["--cores", "2"][..]] {
+    for extra in [&[][..], &["--cores", "2", "--report"][..]] {
         let mut args = vec!["-N", "-I", s(&pcap)?];
         args.extend_from_slice(extra);
         let run = sipnab(&args)?;
@@ -1063,6 +1064,7 @@ fn metrics_on_the_parallel_reader_is_reported_as_not_served() -> Result<(), Test
         SIP_CALL,
         "--cores",
         "2",
+        "--report",
         "--no-cli-print",
         "--metrics",
         "127.0.0.1:0",
@@ -1233,7 +1235,7 @@ fn on_both_readers(pcap: &Path) -> Result<[(&'static str, Outcome); 2], TestErro
         ("default reader", sipnab(&["-N", "-I", s(pcap)?])?),
         (
             "--cores 2",
-            sipnab(&["-N", "-I", s(pcap)?, "--cores", "2"])?,
+            sipnab(&["-N", "-I", s(pcap)?, "--cores", "2", "--report"])?,
         ),
     ])
 }

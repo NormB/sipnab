@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-FileCopyrightText: The sipnab contributors
 
 //! `X-` and user-defined SIP headers are first-class, end to end (RFC 6648).
 //!

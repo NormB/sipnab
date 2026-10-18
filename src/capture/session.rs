@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-FileCopyrightText: The sipnab contributors
+
 //! Which capture a server is holding, behind one lock so a swap is atomic.
 //!
 //! Shared by REST and MCP so both doors name the same one.

@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-FileCopyrightText: The sipnab contributors
 
 //! Known-vulnerable dependency versions must not reach the lockfile, and an
 //! acceptance must not outlive the problem it accepts.

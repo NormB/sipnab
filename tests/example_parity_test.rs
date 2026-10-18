@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-FileCopyrightText: The sipnab contributors
 
 //! Every declared client language has a program for each lifecycle step, or
 //! a gap that says so (backlog EX1).

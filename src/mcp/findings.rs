@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-FileCopyrightText: The sipnab contributors
+
 //! Agent-written annotations — the one place the MCP surface accepts a write.
 //!
 //! # Why this module is shaped the way it is

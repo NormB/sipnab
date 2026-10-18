@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-FileCopyrightText: The sipnab contributors
 
 //! The archive and password layer never panics or hangs on hostile bytes.
 //!
@@ -99,6 +100,15 @@ fn hostile_archives_never_panic_or_hang() -> Result<(), TestError> {
         input(&pw, &zip_plain),
         input(&pw, &sz),
         input(b"x", &sz),
+        // A crash the flip sweep found once in thousands of runs, replayed on
+        // every run: blocks with no stream map (see sevenz.rs).
+        input(
+            b"fz5d1763f9c4a",
+            &std::fs::read(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/tests/fixtures/archive/7z-blocks-without-stream-map.7z"
+            ))?,
+        ),
     ];
     // Every truncation of each real archive, at a stride.
     for archive in [&zip_aes, &zip_plain, &sz] {

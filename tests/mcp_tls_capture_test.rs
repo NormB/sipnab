@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-FileCopyrightText: The sipnab contributors
 
 //! `start_tls_capture` / `stop_tls_capture`: the opt-in, and the refusals.
 //!

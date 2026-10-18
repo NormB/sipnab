@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-FileCopyrightText: The sipnab contributors
 
 //! A capture sipnab cannot decode must not report as an empty one.
 //!
@@ -224,7 +225,7 @@ fn the_parallel_path_reports_the_same_undecodable_frames() -> Result<(), TestErr
     let file = path.to_str().ok_or("utf-8 path")?;
 
     let (_, single, _) = run(&["-N", "-I", file])?;
-    let (_, parallel, _) = run(&["-N", "-I", file, "--cores", "2"])?;
+    let (_, parallel, _) = run(&["-N", "-I", file, "--cores", "2", "--report"])?;
 
     for stderr in [&single, &parallel] {
         assert!(

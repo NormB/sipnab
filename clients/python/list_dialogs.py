@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: MIT OR Apache-2.0
+# SPDX-FileCopyrightText: The sipnab contributors
+
 """GET /v1/dialogs: list the failed dialogs.
 
 The example docs/rest-api.md shows is the body of show(), between the snippet

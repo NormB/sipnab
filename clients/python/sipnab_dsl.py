@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: MIT OR Apache-2.0
+# SPDX-FileCopyrightText: The sipnab contributors
+
 """Quote a value into a sipnab filter expression.
 
 sipnab's filter strings take `\\'` for a single quote and keep every other

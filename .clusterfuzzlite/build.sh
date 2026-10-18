@@ -1,5 +1,6 @@
 #!/bin/bash -eu
 # SPDX-License-Identifier: MIT OR Apache-2.0
+# SPDX-FileCopyrightText: The sipnab contributors
 #
 # Build every fuzz target. ONE build, two consumers.
 #

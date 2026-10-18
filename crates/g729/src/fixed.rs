@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-FileCopyrightText: The sipnab contributors
 
 //! Fixed (algebraic) codebook: decoding of the 13-bit position index and the
 //! 4-bit sign index (G.729 clause 4.1.4, inverting equations (61) and (62)

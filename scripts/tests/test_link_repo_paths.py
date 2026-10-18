@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: MIT OR Apache-2.0
+# SPDX-FileCopyrightText: The sipnab contributors
+
 """The repo-path linker: a tracked file shown as text a reader must retype."""
 
 import subprocess

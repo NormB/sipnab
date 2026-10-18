@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-FileCopyrightText: The sipnab contributors
 
 //! A stream's retained audio, decoded as it arrives: what the live audio
 //! route sends while a call is in progress.

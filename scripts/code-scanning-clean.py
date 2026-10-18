@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: MIT OR Apache-2.0
+# SPDX-FileCopyrightText: The sipnab contributors
+
 """Refuse to pass while code scanning has open alerts for the commit.
 
 One rule in one place: CI's aggregate job runs this, and the pre-push tag

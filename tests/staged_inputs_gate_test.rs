@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-FileCopyrightText: The sipnab contributors
+
 //! A generated file must not be committed without the inputs it derives from.
 //!
 //! `main` broke four times in one session on one mistake wearing four faces:

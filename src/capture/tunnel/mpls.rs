@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-FileCopyrightText: The sipnab contributors
 
 //! MPLS label stack decapsulation (RFC 3032, RFC 4182, RFC 5332).
 //!

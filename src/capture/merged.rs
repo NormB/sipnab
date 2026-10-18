@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-FileCopyrightText: The sipnab contributors
+
 //! Reading a pcapng whose interfaces disagree, which libpcap refuses outright.
 //!
 //! `mergecap`, and any capture spanning interfaces with different snapshot

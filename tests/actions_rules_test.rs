@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-FileCopyrightText: The sipnab contributors
 
 //! What an action may ask for, checked before anything reaches TFPS
 //! (ACTIONS-HARDEN, JOURNAL; approved 2026-09-28).

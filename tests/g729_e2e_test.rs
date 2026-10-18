@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-FileCopyrightText: The sipnab contributors
 //! G.729 through the shipped binary: `sipnab g729 install`, then a vCon export
 //! of a G.729 call with `--retain-audio`.
 //!

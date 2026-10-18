@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-FileCopyrightText: The sipnab contributors
 
 //! One `pcap_next_ex` read that does not take a success code as proof that a
 //! packet arrived.

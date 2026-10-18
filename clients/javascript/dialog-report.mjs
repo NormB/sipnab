@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-FileCopyrightText: The sipnab contributors
+
 // GET /v1/dialogs/{call_id}/report: what the media diagnosis says about one call.
 //
 // The example docs/rest-api.md shows is the body of main(), between the snippet

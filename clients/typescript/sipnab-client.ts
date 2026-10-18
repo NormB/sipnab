@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-FileCopyrightText: The sipnab contributors
+
 // snippet:start sipnab-client
 // sipnab-client.ts: runs on Node 22.18+ (built-in fetch, type stripping)
 const API = process.env.SIPNAB_URL ?? "http://localhost:8080";

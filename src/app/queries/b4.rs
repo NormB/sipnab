@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-FileCopyrightText: The sipnab contributors
 
 //! Batch B4's query arms: see `docs/design/par5-cli-queries.md` for the
 //! flags this file owns. Each flag adds one `if` here that calls its core

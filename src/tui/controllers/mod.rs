@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-FileCopyrightText: The sipnab contributors
 
 //! Keyboard and mouse event handling for every view and popup — the
 //! controller layer of the TUI. Per-view/per-popup handlers live in the

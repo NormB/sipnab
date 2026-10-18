@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-FileCopyrightText: The sipnab contributors
+
 //! Finding the file offset of a function in a shared library.
 //!
 //! A uprobe is placed at an offset **into the file**, not at a virtual address,

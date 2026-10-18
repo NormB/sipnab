@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-FileCopyrightText: The sipnab contributors
 //! The security policies OpenSSF Baseline asks for are written down, and each
 //! written policy matches what the repository actually does.
 //!

@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-FileCopyrightText: The sipnab contributors
 
 //! `[[vcon.rule]]` with `sign_only = true`, on the shipped binary: the rule
 //! writes the signed form of draft-ietf-vcon-vcon-core-04 section 5.2, a JWS

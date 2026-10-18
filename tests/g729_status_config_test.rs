@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-FileCopyrightText: The sipnab contributors
 
 //! `sipnab g729 status -f FILE` reports on the file a run with the same
 //! options reads, so it reads that file the way a run does: a value a run

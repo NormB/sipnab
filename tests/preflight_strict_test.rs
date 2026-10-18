@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-FileCopyrightText: The sipnab contributors
 
 //! A tool `scripts/preflight.sh` cannot find must never read as a gate that
 //! passed.

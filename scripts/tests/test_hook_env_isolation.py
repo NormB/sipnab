@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: MIT OR Apache-2.0
+# SPDX-FileCopyrightText: The sipnab contributors
+
 """No script test may reach the repository the pre-commit hook is committing to.
 
 `git commit` runs the hook with GIT_DIR and GIT_INDEX_FILE exported, and the

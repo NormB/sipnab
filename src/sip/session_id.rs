@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-FileCopyrightText: The sipnab contributors
 
 //! RFC 7989 `Session-ID` — the one identifier that survives a B2BUA.
 //!

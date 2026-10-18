@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-FileCopyrightText: The sipnab contributors
 
 //! MCP's Mermaid ladder carries what the ladder knows, not bare arrows.
 //!

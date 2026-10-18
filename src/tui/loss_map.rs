@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-FileCopyrightText: The sipnab contributors
 
 //! Packet-loss-map view: a sequence-space density strip showing *where* a
 //! stream's retained RTP packet loss occurred, so an operator can tell at a

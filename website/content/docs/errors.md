@@ -186,6 +186,17 @@ You gave `--lint` with a suppression file (`{name}`, from `--lint-suppress-file`
 
 **Exit code:** 2.
 
+### `--cores {} asks for no view: the parallel reader prints no per-message lines, so this run would read the capture, print nothing and still exit 0. Ask for a whole-capture view (--report, --json-dialogs, --analyze, --call-report), or drop --cores for per-message output.`
+
+`--cores` above 1 with `-I` (and without `--multi-device`) uses the parallel file reader, which prints only the whole-capture views you ask for. The command line asks for none of them, and the config file holds no `[[vcon.rule]]`. The placeholder is the `--cores` value. sipnab refuses before reading the capture.
+
+**What to do:** Do one of these:
+
+- Add a view, for example `sipnab -N -I capture.pcap --cores 4 --report`. The views are `--report`, `--json-dialogs`, `--stun`, `--json-stun`, `--analyze`, `--json-analyze`, `--yang-analyze`, `--call-report`, `--export-vcon`, `--export-vcon-when` and `--lint`.
+- Remove `--cores` (or set it to 1) to print one line per SIP message.
+
+**Exit code:** 2.
+
 ### `--cores opens all {files} input file(s) before dropping root privileges, and this process may hold {soft_limit} open files. Raise the limit (ulimit -n), read fewer files per run, or run as an ordinary user, which opens each file when it is read.`
 
 A `--cores` run started as root opens every input file before it drops to `--user` (or `nobody`), so it can still read files only root may read. That holds one open file per input, and `{files}` inputs do not fit under the process limit `{soft_limit}` with room for the run's own files.
@@ -1380,6 +1391,19 @@ One entry in the comma-separated `[security] fraud_destination` list is not a de
 `[security] kill_rate_limit` is how many scanner-kill responses per second sipnab may send on the network. A value of 0 has no meaning here, because the setting bounds packets sipnab sends and has no unlimited value. The printed line starts with `invalid config value: `.
 
 **What to do:** Set a whole number of 1 or more, for example the default `10`. To send no responses, leave out `--kill-scanner` and `-K`.
+
+**Exit code:** 1.
+
+### `[hep] {key} must be 1-{max}, got {v}`
+
+A HEP sender setting in `[hep]` is outside the range its flag accepts.
+
+- `{key}` is `send_queue_mib` (1 to 4096, `--hep-send-queue`) or `send_timeout_secs` (1 to 300, `--hep-send-timeout`).
+- `{max}` is the top of that range, and `{v}` is the value in the file.
+
+The printed line starts with `invalid config value: `.
+
+**What to do:** Set a value in the range, or remove the key to use the default (64 MiB, 3 seconds).
 
 **Exit code:** 1.
 

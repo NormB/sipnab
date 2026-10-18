@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-FileCopyrightText: The sipnab contributors
 
 //! `[vcon] uuid_domain`, on the shipped binary: a container's uuid follows
 //! the layout of draft-ietf-vcon-vcon-core-04 section 4.1.2, a value that is

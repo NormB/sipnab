@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: MIT OR Apache-2.0
+# SPDX-FileCopyrightText: The sipnab contributors
+
 """Enumerate every capability-bearing item on each of the four surfaces (PAR1).
 
 This is the raw material the surface-parity JOIN is validated against. It reads

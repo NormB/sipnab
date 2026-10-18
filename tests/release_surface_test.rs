@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-FileCopyrightText: The sipnab contributors
 
 //! What each release added to sipnab's surface, read from the git tags, and
 //! the two documents that must agree with it.

@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: MIT OR Apache-2.0
+# SPDX-FileCopyrightText: The sipnab contributors
+
 """The production-panic ban, and the exception marker it accepts.
 
 `check-unwrap.py` banned `.unwrap()` and `.expect()` on production paths and

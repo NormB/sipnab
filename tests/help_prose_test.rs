@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-FileCopyrightText: The sipnab contributors
 
 //! What `--help` says about a flag is a statement about the binary it ships
 //! in, in the present tense.

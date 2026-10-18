@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-FileCopyrightText: The sipnab contributors
 //! Every Go, JavaScript, Python, Rust and TypeScript snippet in the REST,
 //! metrics and MCP deployment references, and on the site's own client page,
 //! is cut from a program CI compiles and runs.

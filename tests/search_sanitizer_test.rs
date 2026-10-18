@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-FileCopyrightText: The sipnab contributors
 
 //! The docs-search excerpt sanitizer, exercised as JavaScript rather than
 //! described in Rust.

@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-FileCopyrightText: The sipnab contributors
 
 //! `-I` accepting a file, a directory, a glob, or several of each.
 //!
@@ -491,7 +492,16 @@ fn a_bpf_filter_that_fails_on_a_later_file_refuses_the_cores_path_and_names_it()
         Some("info"),
     )?;
     let (_out, cores_err, cores_code) = run_support::run(
-        &["-N", "-I", &spec, "--no-cli-print", "--cores", "4", bpf],
+        &[
+            "-N",
+            "-I",
+            &spec,
+            "--no-cli-print",
+            "--report",
+            "--cores",
+            "4",
+            bpf,
+        ],
         Some("info"),
     )?;
 
@@ -963,7 +973,7 @@ fn both_readers_report_the_same_summary_of_the_set_they_read() -> Result<(), Tes
 
     let single = read_summary(&["-N", "-I", &spec, "--no-cli-print", "--cores", "1"])?
         .ok_or("the single-threaded reader must summarize what it read")?;
-    let cores = read_summary(&["-N", "-I", &spec, "--no-cli-print", "--cores", "4"])?
+    let cores = read_summary(&["-N", "-I", &spec, "--no-cli-print", "--report", "--cores", "4"])?
         .ok_or("--cores read three files and must say so; a reader that reports nothing leaves the operator no way to tell a whole set from a partial one")?;
 
     assert_eq!(
@@ -997,8 +1007,16 @@ fn both_readers_report_a_truncated_member_at_the_same_severity() -> Result<(), T
 
     let single = read_summary(&["-N", "-I", &spec, "--no-cli-print", "--cores", "1"])?
         .ok_or("the single-threaded reader must summarize what it read")?;
-    let cores = read_summary(&["-N", "-I", &spec, "--no-cli-print", "--cores", "4"])?
-        .ok_or("--cores must summarize what it read, truncated member included")?;
+    let cores = read_summary(&[
+        "-N",
+        "-I",
+        &spec,
+        "--no-cli-print",
+        "--report",
+        "--cores",
+        "4",
+    ])?
+    .ok_or("--cores must summarize what it read, truncated member included")?;
 
     assert_eq!(
         cores, single,

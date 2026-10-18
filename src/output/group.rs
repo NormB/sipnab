@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-FileCopyrightText: The sipnab contributors
 
 //! `--group-by <FIELD>`: reorder batch output so messages sharing a field value
 //! are emitted contiguously.

@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-FileCopyrightText: The sipnab contributors
 
 //! One HEP sender roster, one answer: `GET /v1/hep/senders` and the MCP
 //! `hep_senders` tool return the same bytes (invariant "One wire shape per concept", "one wire shape per
@@ -231,6 +232,12 @@ async fn rest_runtime_and_mcp_runtime_stats_agree_on_the_exporter() -> Result<()
     counters.record_failure(ExportFailure::Connect);
     counters.record_failure(ExportFailure::TlsHandshake);
     counters.record_reconnect();
+    for _ in 0..9 {
+        counters.record_queued();
+    }
+    counters.record_replayed();
+    counters.record_replayed();
+    counters.record_dropped(sipnab::capture::hep_export::DropReason::QueueFull, 4);
     let (_tx, rx) = sipnab::capture::channel::packet_channel(8);
     let meter = rx.meter();
     assert!(meter.attach_hep_export(counters), "a fresh meter");
@@ -250,6 +257,18 @@ async fn rest_runtime_and_mcp_runtime_stats_agree_on_the_exporter() -> Result<()
         "every kind is present, zeros included"
     );
     assert_eq!(export["reconnects"], 1);
+    assert_eq!(export["queued"], 9);
+    assert_eq!(export["replayed"], 2);
+    assert_eq!(export["dropped"]["queue_full"], 4);
+    assert_eq!(
+        export["dropped"]["stopped"], 0,
+        "every reason is present, zeros included"
+    );
+    assert_eq!(export["dropped"]["unsent_at_exit"], 0);
+    assert_eq!(
+        export["queue_depth"], 2,
+        "queued 9 = sent 3 + dropped 4 + 2"
+    );
 
     let (_tx2, rx2) = sipnab::capture::channel::packet_channel(8);
     let (rest, mcp) = both(rx2.meter()).await?;

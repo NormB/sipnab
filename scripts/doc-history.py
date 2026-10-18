@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: MIT OR Apache-2.0
+# SPDX-FileCopyrightText: The sipnab contributors
+
 """Write the release each docs page's source file last changed in.
 
 pages.yml runs this at deploy time, before `zola build`, and

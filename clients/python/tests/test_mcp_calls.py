@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: MIT OR Apache-2.0
+# SPDX-FileCopyrightText: The sipnab contributors
+
 """The two transports behind one `call(name, arguments)`, and the wait.
 
 sipnab drops whatever it has not processed when it stops, and an answer

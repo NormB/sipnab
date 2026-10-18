@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-FileCopyrightText: The sipnab contributors
 
 //! An artifact generated from the dependency graph goes stale when the graph
 //! moves, and a batch of individually-green pull requests can still land red.

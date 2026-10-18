@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: MIT OR Apache-2.0
+# SPDX-FileCopyrightText: The sipnab contributors
+
 """Fail if a feature-gated module imports a crate its feature does not declare.
 
 `--features vcon` did not build at 0.5.130: `src/output/redact.rs` is gated by

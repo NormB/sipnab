@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: MIT OR Apache-2.0
+# SPDX-FileCopyrightText: The sipnab contributors
+
 """Write the Since column of docs/cli-reference.md from the release tags.
 
 Every flag row of the page's flag tables names the first release whose command

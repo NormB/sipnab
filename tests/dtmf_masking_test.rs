@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-FileCopyrightText: The sipnab contributors
 
 //! Disclosure gate for RFC 4733 telephone-event decoding: the digit VALUE must
 //! not reach the log unless an operator asked for it, twice.

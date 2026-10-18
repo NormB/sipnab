@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-FileCopyrightText: The sipnab contributors
+
 // Command health calls GET /health: is the REST API up? Prints ok.
 //
 // docs/rest-api.md shows the body of run, between the snippet markers; this

@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-FileCopyrightText: The sipnab contributors
 
 //! RTCP packet parser (RFC 3550).
 //!
@@ -891,6 +892,17 @@ fn parse_bye(data: &[u8], ssrc_count: usize) -> Result<RtcpBye> {
     Ok(RtcpBye { ssrc_list })
 }
 
+/// The bytes an XR report block occupies, its 4-byte header included, read
+/// from that header.
+///
+/// [RFC 3611 section 3](https://www.rfc-editor.org/rfc/rfc3611.html#section-3): the block-length field is the length of the block,
+/// "including the header, in 32-bit words minus one". One definition for
+/// both readers of an XR: `parse_extended_report` here, and the HEP
+/// encoder that mirrors heplify's walk of the same blocks.
+pub(crate) fn xr_block_len(header: [u8; 4]) -> usize {
+    (usize::from(u16::from_be_bytes([header[2], header[3]])) + 1) * 4
+}
+
 /// Parse Extended Report body (RFC 3611).
 ///
 /// Walks the XR report blocks after the 8-byte header, decoding VoIP
@@ -921,7 +933,8 @@ fn parse_extended_report(data: &[u8]) -> Result<ExtendedReport> {
 
     while pos + 4 <= data.len() {
         let block_type = data[pos];
-        let block_length = u16::from_be_bytes([data[pos + 2], data[pos + 3]]) as usize * 4;
+        let block_length =
+            xr_block_len([data[pos], data[pos + 1], data[pos + 2], data[pos + 3]]) - 4;
 
         if pos + 4 + block_length > data.len() {
             break;

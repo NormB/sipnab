@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: MIT OR Apache-2.0
+# SPDX-FileCopyrightText: The sipnab contributors
+
 # One readable MCP tool call against the local harness, for the demo tapes.
 #
 # Usage: demos/mcp-call.sh <tool> [json-arguments]

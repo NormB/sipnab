@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-FileCopyrightText: The sipnab contributors
 
 //! The findings page shared by the MCP `security_findings` tool and the REST
 //! `GET /v1/security/findings` route.

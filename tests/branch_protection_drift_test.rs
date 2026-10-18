@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-FileCopyrightText: The sipnab contributors
+
 //! Branch protection on `main` must match what this repository CLAIMS it is.
 //!
 //! GATE2 was closed by hand on 2026-08-23 by turning `enforce_admins` on, and

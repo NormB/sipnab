@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: MIT OR Apache-2.0
+# SPDX-FileCopyrightText: The sipnab contributors
+
 """Ban the scanners a capture accuses through TFPS, then check TFPS holds
 them (cookbook recipes "Detect SIP scanners and auto-block via fail2ban" and "Find the device flooding REGISTER").
 

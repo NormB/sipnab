@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: MIT OR Apache-2.0
+# SPDX-FileCopyrightText: The sipnab contributors
+
 """Fail if `.unwrap()`, `.expect()`, `panic!`, `unreachable!`, `todo!` or
 `unimplemented!` appears on a production path under src/.
 

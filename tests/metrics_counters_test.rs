@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-FileCopyrightText: The sipnab contributors
 
 //! The process-wide counters behind `/metrics`, at their increment sites.
 //!
@@ -271,4 +272,48 @@ fn recording_a_security_alert_moves_the_family() {
         )),
         "exposition should carry the recorded alert; body was:\n{body}"
     );
+}
+
+/// A `--cores` read counts every packet it read, exactly once, though each
+/// worker adds its total only when it finishes: the copies a worker reads of
+/// another worker's packets count nothing, and nothing is lost to the
+/// deferral.
+#[test]
+fn a_cores_read_counts_each_packet_it_read_once() -> Result<(), Box<dyn std::error::Error>> {
+    let _guard = serialized();
+    let capture = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/pcap-samples/Asterisk_ZFONE_XLITE.pcap");
+    let cfg = sipnab::parallel::ParallelConfig {
+        cores: 4,
+        max_streams: 100_000,
+        max_dialogs: 100_000,
+        rotate: false,
+        max_reassembly: 1024,
+        reassembly: Default::default(),
+        parse_limit: Default::default(),
+        portrange: (5060, 5061),
+        no_dialog: false,
+        dialog_tracking: Default::default(),
+        no_rtp: false,
+        quiet_bad_parse: false,
+        hep_parse: false,
+        rtpproxy_control: None,
+        xcid_headers: Vec::new(),
+        leg_correlation_window_ms: sipnab::sip::dialog_store::DEFAULT_LEG_CORRELATION_WINDOW_MS,
+        retain_audio: false,
+        audio_limits: sipnab::rtp::stream_store::AudioLimits::default(),
+    };
+    let before = captured_packets();
+    let r = sipnab::parallel::run_offline_parallel_file(
+        &[capture],
+        &sipnab::capture::CaptureConfig::default(),
+        cfg,
+    )?;
+    assert!(
+        r.packets_read > 1000,
+        "the capture was read: {}",
+        r.packets_read
+    );
+    assert_eq!(captured_packets() - before, r.packets_read);
+    Ok(())
 }

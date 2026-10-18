@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-FileCopyrightText: The sipnab contributors
 
 //! The scanner-kill worker is a process of its own, and the process parsing
 //! captured traffic holds none of its send descriptors.

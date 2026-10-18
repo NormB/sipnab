@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: MIT OR Apache-2.0
+# SPDX-FileCopyrightText: The sipnab contributors
 #
 # Remove the workspace's own build outputs from a cargo target directory
 # before it is saved to the GitHub Actions cache.

@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-FileCopyrightText: The sipnab contributors
 
 //! Seeing and backing out what sipnab did, from the local command line
 //! (JOURNAL; approved spec 2026-09-28).

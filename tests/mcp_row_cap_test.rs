@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-FileCopyrightText: The sipnab contributors
 
 // The `mcp` feature gates the module under test, and `cli` comes with it. The
 // feature matrix builds combinations like `--features tls` where neither

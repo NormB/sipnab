@@ -1,4 +1,7 @@
 #!/bin/sh
+# SPDX-License-Identifier: MIT OR Apache-2.0
+# SPDX-FileCopyrightText: The sipnab contributors
+
 # Test harness for website/static/install.sh.
 # The installer must be sourceable with SIPNAB_INSTALL_TEST=1 so its functions
 # can be unit-tested without touching the network or the filesystem.

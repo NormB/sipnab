@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: MIT OR Apache-2.0
+# SPDX-FileCopyrightText: The sipnab contributors
+
 """Tests for repair_pcapng_tsresol.py (TDD: written before the implementation).
 
 sipnab <= 0.5.0 wrote pcapng files with nanosecond EPB ticks but no

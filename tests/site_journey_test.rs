@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-FileCopyrightText: The sipnab contributors
 
 //! End-to-end journey guards for the website artifacts: walk what a visitor
 //! actually hits — nav links, docs pages, demo assets, and the VHS tapes that
@@ -6335,7 +6336,12 @@ fn packaging_scripts_reference_existing_paths() -> Result<(), TestError> {
     // measurement: with HEAD's ci.yml swapped back in, the scan reads 201.
     // 202 -> 204: release.yml's scan for ITU-T G.729 table values names
     // scripts/no-itu-values.py and crates/g729/test-vectors/itu-source.
-    const EXPECTED_REFERENCES: usize = 204;
+    // 204 -> 205: the Linux Check leg's comment in `.github/workflows/ci.yml`
+    // names `tests/ci_runner_target_test.rs`, now that the leg runs on the
+    // self-hosted runners. Attributed by measurement: with origin/main's
+    // ci.yml swapped back in, the scan reads 204; with origin/main's
+    // quality.yml it still reads 205.
+    const EXPECTED_REFERENCES: usize = 205;
     assert_eq!(
         checked, EXPECTED_REFERENCES,
         "packaging path scan saw {checked} references, expected \

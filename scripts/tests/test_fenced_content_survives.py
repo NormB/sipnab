@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: MIT OR Apache-2.0
+# SPDX-FileCopyrightText: The sipnab contributors
+
 """Every markdown transformer must leave fenced content byte-identical.
 
 Three scripts rewrite prose in place -- `rfc-links.py` links RFC citations,

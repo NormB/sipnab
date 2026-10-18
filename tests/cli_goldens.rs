@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-FileCopyrightText: The sipnab contributors
 
 //! CLI golden tests (verification plan M1 — T1.4; M2 — T2.1–T2.11).
 //!

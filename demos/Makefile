@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: MIT OR Apache-2.0
+# SPDX-FileCopyrightText: The sipnab contributors
+
 # Regenerate the site's animated demos with VHS (charmbracelet/vhs).
 #
 # Requires: vhs, ttyd, ffmpeg on PATH. The `sipnab` the tapes drive is BUILT

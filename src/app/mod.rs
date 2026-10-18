@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-FileCopyrightText: The sipnab contributors
 
 //! Application layer (WS2): the testable seams between the CLI binary and
 //! the library — companion-server startup, batch running, and bootstrap

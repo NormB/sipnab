@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-FileCopyrightText: The sipnab contributors
 
 //! Fuzz the WebSocket frame unwrapper (SIP-over-WS transport). Arbitrary
 //! bytes must be unwrapped to a payload or rejected without panicking or

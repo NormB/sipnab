@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-FileCopyrightText: The sipnab contributors
+
 //! Every `ParsedPacket` literal in the repository names `frame_bytes`.
 //!
 //! Adding that field meant editing every construction site. The sweep was

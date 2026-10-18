@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-FileCopyrightText: The sipnab contributors
 
 //! The TUI's view of a note: the labeled pane it is shown in, and the
 //! one-line editor it is typed into.

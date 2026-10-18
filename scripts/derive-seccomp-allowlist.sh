@@ -1,5 +1,6 @@
 #!/bin/sh
 # SPDX-License-Identifier: MIT OR Apache-2.0
+# SPDX-FileCopyrightText: The sipnab contributors
 #
 # Derive the syscall allowlist an enforcing seccomp filter would need, from
 # runs rather than from a guess.

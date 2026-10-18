@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: MIT OR Apache-2.0
+# SPDX-FileCopyrightText: The sipnab contributors
+
 """One-way audio for one call: what the diagnosis saw, whether the legs
 disagree, and whether the loss belongs to the network or to the capture.
 

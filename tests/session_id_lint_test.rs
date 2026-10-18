@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-FileCopyrightText: The sipnab contributors
 
 //! The RFC 7989 `Session-ID` deviation detector, read through the surface an
 //! operator and an agent actually see.

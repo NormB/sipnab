@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-FileCopyrightText: The sipnab contributors
 
 //! `completion/complete` and `resources/templates/list`, proved on the wire (PB3).
 //!

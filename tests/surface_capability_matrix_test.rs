@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-FileCopyrightText: The sipnab contributors
 
 //! Surface-capability JOIN (PAR2): the parity gate over the authored matrix.
 //!

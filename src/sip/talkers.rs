@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-FileCopyrightText: The sipnab contributors
 
 //! Ranking the busiest participants — "talkers" — by ip, ua, or the dialed
 //! number's leading digits.

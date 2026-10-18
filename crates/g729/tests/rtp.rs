@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-FileCopyrightText: The sipnab contributors
 
 //! `Decoder::decode_rtp` (RFC 3551 section 4.5.6): 10n octets of frames plus
 //! an optional trailing 2-octet SID frame; any other length is refused and

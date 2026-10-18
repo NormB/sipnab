@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: MIT OR Apache-2.0
+# SPDX-FileCopyrightText: The sipnab contributors
+
 # Test harness for packaging/rpm/build-rpm.sh, the sibling of
 # packaging/deb/test-build-deb.sh.
 #

@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-FileCopyrightText: The sipnab contributors
 
 //! The 2025-06-18 protocol features sipnab uses, proved on the wire (PB1, PB5).
 //!

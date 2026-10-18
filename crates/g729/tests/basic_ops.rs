@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-FileCopyrightText: The sipnab contributors
 
 //! The basic operators against the oracle's black-box rows
 //! (`.git/g729-reference/basic_operations.json`): 16- and 32-bit

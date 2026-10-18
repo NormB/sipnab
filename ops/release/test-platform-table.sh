@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: MIT OR Apache-2.0
+# SPDX-FileCopyrightText: The sipnab contributors
+
 # Scenario tests for ops/release/platform-table.sh.
 #
 # Run from anywhere:  bash ops/release/test-platform-table.sh

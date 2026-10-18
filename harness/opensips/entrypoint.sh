@@ -1,4 +1,7 @@
 #!/bin/sh
+# SPDX-License-Identifier: MIT OR Apache-2.0
+# SPDX-FileCopyrightText: The sipnab contributors
+
 # Render opensips.cfg from the template and launch OpenSIPS in the foreground.
 set -eu
 

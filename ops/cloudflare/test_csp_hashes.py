@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: MIT OR Apache-2.0
+# SPDX-FileCopyrightText: The sipnab contributors
+
 """Tests for the inline-script extraction/hashing used by refresh_csp_hashes.py.
 
 Run: python3 ops/cloudflare/test_csp_hashes.py

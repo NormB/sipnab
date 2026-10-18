@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-FileCopyrightText: The sipnab contributors
 
 //! Fuzz the pure-Rust pcap/pcapng file reader — the primary hostile-file
 //! surface (`sipnab -I untrusted.pcapng`). Header detection and the block

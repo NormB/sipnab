@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-FileCopyrightText: The sipnab contributors
+
 //! Prompts: the ORDER to call tools in, served over MCP's prompt primitive.
 //!
 //! sipnab has many tools (the bundles in [`crate::mcp_profile::BUNDLES`] list

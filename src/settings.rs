@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-FileCopyrightText: The sipnab contributors
 //! The one table that says which command-line flag and which config-file key
 //! set the same thing.
 //!
@@ -301,6 +302,14 @@ pub const FLAGS: &[(&str, Link)] = &[
     ),
     ("hep-rate-limit-per-peer", Link::Pending),
     ("hep-send", Link::Pending),
+    (
+        "hep-send-queue",
+        Link::Key("hep", "send_queue_mib", Merge::Override),
+    ),
+    (
+        "hep-send-timeout",
+        Link::Key("hep", "send_timeout_secs", Merge::Override),
+    ),
     ("hep-send-transport", Link::Pending),
     ("hep-senders", Link::PerRun),
     ("hep-silence-warn", Link::Pending),

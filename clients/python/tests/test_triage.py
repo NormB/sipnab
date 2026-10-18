@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: MIT OR Apache-2.0
+# SPDX-FileCopyrightText: The sipnab contributors
+
 """The triage program: one capture in, one machine verdict out.
 
 The verdict has three values because a capture has three answers, and the

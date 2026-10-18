@@ -1,7 +1,7 @@
 .\" sipnab.1 -- man page for sipnab
 .\" Copyright 2024-2026 Norm Brandinger
 .\" License: MIT OR Apache-2.0
-.TH SIPNAB 1 "2026-10-13" "sipnab 0.5.225" "User Commands"
+.TH SIPNAB 1 "2026-10-13" "sipnab 0.5.226" "User Commands"
 .SH NAME
 sipnab \- SIP & RTP capture, analysis, and security tool
 .SH SYNOPSIS
@@ -907,6 +907,12 @@ Send captured packets via HEP to a remote collector.
 .TP
 \fB\-\-hep\-send\-transport\fR \fIudp|tcp|tls\fR
 Transport \fB\-\-hep\-send\fR uses to reach the collector: \fBudp\fR (default), \fBtcp\fR or \fBtls\fR. Homer's collectors accept all three. HEP v3 carries its own total length, so a TCP or TLS feed is packets laid end to end with no extra framing. Each TCP connect, the first and every reconnect, gives up after 3 seconds and counts as a \fBconnect\fR failure. Refused without \fB\-\-hep\-send\fR, which is the side it governs.
+.TP
+\fB\-\-hep\-send\-queue\fR \fIMIB\fR
+Mebibytes of HEP packets \fB\-\-hep\-send\fR holds while the collector is unreachable (default 64). Sending runs on its own thread behind this queue, so a slow or dead collector never slows the capture; when the collector answers again the queue is replayed in capture order. At the bound the OLDEST packet is dropped and counted, so what is replayed joins the live feed with no gap. A stop (SIGINT/SIGTERM) discards the queue and counts it: nothing is flushed at shutdown. Config: \fB[hep] send_queue_mib\fR.
+.TP
+\fB\-\-hep\-send\-timeout\fR \fISECS\fR
+Seconds one TCP dial or stalled write to the \fB\-\-hep\-send\fR collector may take before the collector counts as unreachable (default 3). The TLS handshake keeps its own 10\-second bound. Retries back off from 0.1 s, doubling, to at most 5 s. A file read to its end waits for the queue to drain, giving up after two of these plus 5 s without a delivery. Config: \fB[hep] send_timeout_secs\fR.
 .TP
 \fB\-\-hep\-listen\-transport\fR \fIudp|tcp|tls\fR
 Transport \fB\-\-hep\-listen\fR accepts: \fBudp\fR (default), \fBtcp\fR or \fBtls\fR. A \fBtcp\fR or \fBtls\fR listener serves several agents at once and reads each connection as a stream of length\-prefixed HEP v3 packets; HEP v2, which carries no total length, is datagram\-only. Refused without \fB\-\-hep\-listen\fR, which is the side it governs.

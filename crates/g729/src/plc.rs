@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-FileCopyrightText: The sipnab contributors
 
 //! Frame-erasure handling: which decoding a received frame gets. An erased
 //! frame is concealed as an active frame (G.729 clause 4.4, Annex A clause

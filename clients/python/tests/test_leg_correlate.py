@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: MIT OR Apache-2.0
+# SPDX-FileCopyrightText: The sipnab contributors
+
 """The REST client that joins one call across two capture points.
 
 Every test here exists because the behavior it pins was wrong at some point.

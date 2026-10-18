@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-FileCopyrightText: The sipnab contributors
 
 // Shared by the specs that assert a page does not move. Not a spec itself:
 // Playwright only collects *.spec.js, and site_journey_test's

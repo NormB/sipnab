@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: MIT OR Apache-2.0
+# SPDX-FileCopyrightText: The sipnab contributors
+
 """Repair tables broken by the IANA-registry scrape, in three docs.
 
 A markdown table row must be one line. Twelve rows in sip-header-fields.md are

@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: MIT OR Apache-2.0
+# SPDX-FileCopyrightText: The sipnab contributors
+
 """A ratchet must not write its expected value twice.
 
 A ratchet is an assertion carrying a maintained count -- tracked markdown

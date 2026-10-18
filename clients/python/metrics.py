@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: MIT OR Apache-2.0
+# SPDX-FileCopyrightText: The sipnab contributors
+
 """GET /metrics: the Prometheus exposition, as a scraper sees it.
 
 The example docs/prometheus-metrics.md shows is the body of show(), between the snippet

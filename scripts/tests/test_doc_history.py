@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: MIT OR Apache-2.0
+# SPDX-FileCopyrightText: The sipnab contributors
+
 """scripts/doc-history.py: the release each docs page last changed in."""
 
 import subprocess

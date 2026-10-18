@@ -1,4 +1,7 @@
 #!/bin/sh
+# SPDX-License-Identifier: MIT OR Apache-2.0
+# SPDX-FileCopyrightText: The sipnab contributors
+
 # Self-signed cert for the harness TLS listener.
 #
 # Regenerated rather than committed: see .gitignore. Short-lived on purpose --

@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-FileCopyrightText: The sipnab contributors
 
 //! The OpenSSF Best Practices Badge answer sheet must keep telling the truth.
 //!

@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: MIT OR Apache-2.0
+# SPDX-FileCopyrightText: The sipnab contributors
+
 # Regenerate the MCP examples the homepage publishes.
 #
 #     demos/gen-mcp-examples.sh           # write them

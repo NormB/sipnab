@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-FileCopyrightText: The sipnab contributors
 
 //! Companion-server wiring that `app_servers_test` does not reach: a metrics
 //! credential that cannot be resolved, the REST relay routes on a run that

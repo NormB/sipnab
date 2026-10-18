@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-FileCopyrightText: The sipnab contributors
 
 //! Live media out: each call a `[[vcon.rule]]` with `live_rtp` matches, sent
 //! as it is captured to a UDP target the operator named, as RTP.

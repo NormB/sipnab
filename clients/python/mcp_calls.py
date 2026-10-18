@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: MIT OR Apache-2.0
+# SPDX-FileCopyrightText: The sipnab contributors
+
 """One `call(name, arguments)` coroutine over either MCP transport.
 
 The AI-task programs (agent_triage.py, evidence_handoff.py,

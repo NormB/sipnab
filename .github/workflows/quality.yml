@@ -147,10 +147,17 @@ jobs:
   coverage:
     if: github.event_name != 'schedule'
     # Bounds a wedged job: an unbounded one holds its
-    # concurrency group indefinitely. Observed: 12.9 min slowest (Coverage / Benchmarks).
+    # concurrency group indefinitely. Observed on GitHub's ubuntu-latest:
+    # 15.3 and 21.2 min (2026-10-09).
     timeout-minutes: 40
     name: Coverage
-    runs-on: ubuntu-latest
+    # The aarch64 self-hosted runners, beside ci.yml's Check (Linux) and
+    # feature matrix: on GitHub's runner this job was one of the three that
+    # set the length of a pull request's run. Safe on pull_request for the
+    # reason ci.yml's `features` job gives (external contributors' runs need
+    # approval). The build has its own per-runner directory, apart from the
+    # plain builds: see `dir:` below.
+    runs-on: [self-hosted, jetson]
     permissions:
       contents: read
     env:
@@ -177,8 +184,10 @@ jobs:
       # GHC, Swift, CodeQL bundle) we never use. A full --all-features
       # --all-targets build plus the cargo cache and llvm-cov instrumentation
       # can exhaust the runner disk ("No space left on device"); reclaim it up
-      # front so the build has headroom.
+      # front so the build has headroom. GitHub-hosted only: on the
+      # self-hosted machine it would delete software other work uses.
       - name: Free disk space
+        if: runner.environment == 'github-hosted'
         uses: ./.github/actions/free-disk
 
       - name: Install system deps
@@ -195,6 +204,14 @@ jobs:
           # for `std`".
           targets: wasm32-unknown-unknown
 
+      # The instrumented build's own directory on this runner, apart from the
+      # plain builds' `target`: cargo llvm-cov compiles every crate with
+      # -C instrument-coverage, and sharing one directory would make each
+      # kind of job invalidate the other's artifacts.
+      - uses: ./.github/actions/runner-target
+        with:
+          dir: coverage-target
+
       # No cargo cache. The instrumented target directory was a 5.0 GB entry,
       # half of the repository's 10 GB, and did not pay for itself: measured
       # over 14 runs before 2026-10-09, this job took 15.3 to 21.2 minutes
@@ -204,7 +221,7 @@ jobs:
       # tests/ci_cache_policy_test.rs keeps it out.
 
       - name: Install cargo-llvm-cov
-        uses: taiki-e/install-action@f7e5d7c961414b23f5b25b2da9294395d08513ad # v2
+        uses: taiki-e/install-action@1168f6810a3cb30a3514bf5756a3b7f0422c6df8 # v2
         with:
           tool: cargo-llvm-cov
 
@@ -258,7 +275,9 @@ jobs:
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: coverage-html
-          path: target/llvm-cov/html
+          # cargo llvm-cov writes the report under the build directory, which
+          # the runner-target step moved out of the workspace.
+          path: ${{ env.CARGO_TARGET_DIR || 'target' }}/llvm-cov/html
           if-no-files-found: error
 
       - name: Upload to Codecov
@@ -326,7 +345,7 @@ jobs:
       # directory nothing to reuse.
 
       - name: Install cargo-llvm-cov
-        uses: taiki-e/install-action@f7e5d7c961414b23f5b25b2da9294395d08513ad # v2
+        uses: taiki-e/install-action@1168f6810a3cb30a3514bf5756a3b7f0422c6df8 # v2
         with:
           tool: cargo-llvm-cov
 
@@ -421,7 +440,7 @@ jobs:
             cargo-clippy-sarif-${{ runner.os }}-${{ runner.arch }}-${{ steps.toolchain.outputs.cachekey }}-
 
       - name: Install clippy-sarif tooling
-        uses: taiki-e/install-action@f7e5d7c961414b23f5b25b2da9294395d08513ad # v2
+        uses: taiki-e/install-action@1168f6810a3cb30a3514bf5756a3b7f0422c6df8 # v2
         with:
           tool: clippy-sarif,sarif-fmt
 
@@ -434,7 +453,7 @@ jobs:
         continue-on-error: true
 
       - name: Upload SARIF to Code Scanning
-        uses: github/codeql-action/upload-sarif@2892aa5e19bbd11bc0cff5427e3b750a04d9e3c2 # v4
+        uses: github/codeql-action/upload-sarif@24c54180a607b1449ed407dd24f251e4e9147c8d # v4
         with:
           sarif_file: clippy.sarif
           category: clippy

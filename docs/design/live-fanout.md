@@ -79,13 +79,13 @@ wrong at once, and one of them is a test that pins the *complement*:
   pcap reconstruction (`-I`) … Advanced features (live capture, per-message
   output ordering, security detectors, SRTP decrypt) use the single-threaded
   path regardless."*
-- `cores_ignored_warning` ([`bootstrap.rs:6381`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L6381)),
+- `cores_ignored_warning` ([`bootstrap.rs:6585`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L6585)),
   whose live-capture branch says *"this run captures live rather than reading a
   saved file … parallel reconstruction is offline-only — it shards a capture
   FILE by host pair, which needs the whole capture up front. This run continues
   on ONE core"*.
 - `cores_warning_is_the_exact_complement_of_the_paths_that_honor_it`
-  ([`bootstrap.rs:8116`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L8116)), which asserts the warning
+  ([`bootstrap.rs:8174`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L8174)), which asserts the warning
   fires for exactly the four input combinations the parallel path does not take.
 
 And the two meanings really are different resources. Offline, `--cores N` buys N
@@ -265,7 +265,7 @@ Three things happen at that EOF, and none of them has a live equivalent:
    fragments in capture-timestamp order and re-runs the state machine. Live,
    there is no moment at which a dialog is finished arriving.
 2. **`StreamStore::reassociate_all` links streams to dialogs globally**
-   ([`stream_store.rs:2443`](https://github.com/NormB/sipnab/blob/main/src/rtp/stream_store.rs#L2443)), because SDP and RTP
+   ([`stream_store.rs:2526`](https://github.com/NormB/sipnab/blob/main/src/rtp/stream_store.rs#L2526)), because SDP and RTP
    routinely land on different workers when the carrier advertises a separate
    media IP.
 3. **`final_sweep` runs exactly ONCE, after the merge, at the capture's final
@@ -579,6 +579,6 @@ not mistake them for settled.
   catch it and fall back — the open question is whether the most common
   invocation silently gets no benefit.
 - **Is `immediate_mode` right for N sockets?** `immediate_mode_for`
-  ([`bootstrap.rs:5946`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L5946)) returns true only for the
+  ([`bootstrap.rs:5995`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L5995)) returns true only for the
   TUI. Whether the batched setting interacts with rollover or with N drainers is
   unexamined.

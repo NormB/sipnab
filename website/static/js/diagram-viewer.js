@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-FileCopyrightText: The sipnab contributors
+
 // Renders mermaid diagrams and gives each one a pan/zoom control box that can
 // be collapsed and dragged out of the way.
 //

@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-FileCopyrightText: The sipnab contributors
 
 //! RTP stream storage and lifecycle management.
 //!
@@ -356,6 +357,17 @@ const MAX_PENDING_ORPHAN_SOCKETS: usize = 4096;
 /// unaffected — its stream is created at first RTP, and the entry is not what
 /// holds the binding afterwards.
 const SDP_ENDPOINT_TTL_SECS: i64 = 300;
+
+/// The RTP port whose RTCP companion `port` is, if it can be one.
+///
+/// [RFC 3550 section 11](https://www.rfc-editor.org/rfc/rfc3550.html#section-11): when RTP is on an even port, RTCP is on the next
+/// port up, and no SDP line ever mentions it. So an odd port's companion is
+/// the even port below it, and an even port has none. One rule for the two
+/// readers that need it: placing an ICMP quote on a call, and naming the call
+/// an RTCP report belongs to.
+fn rtcp_companion_of(port: u16) -> Option<u16> {
+    port.checked_sub(1).filter(|rtp| rtp % 2 == 0)
+}
 
 /// Has this endpoint sat long enough that a stream starting `now` must not be
 /// bound from it?
@@ -749,6 +761,10 @@ pub struct StreamStore {
     /// `max_streams` with oldest-out eviction so a flood of unique calls can't
     /// grow it without limit (mirrors the stream cap, SNB-0004 robustness).
     sdp_endpoints: IndexMap<(IpAddr, u16), SdpEndpoint, ahash::RandomState>,
+    /// `a=rtcp` ports: the RTCP endpoint an SDP named, mapped to the RTP
+    /// endpoint whose `sdp_endpoints` entry it belongs to. Bounded like
+    /// `sdp_endpoints`. Read by [`StreamStore::call_for_rtcp`].
+    rtcp_ports: IndexMap<(IpAddr, u16), (IpAddr, u16), ahash::RandomState>,
     /// Whether to record the sockets of streams nothing explains.
     record_new_orphans: bool,
     /// Those sockets, until something drains them.
@@ -842,6 +858,7 @@ impl StreamStore {
             audio_release_cursor: 0,
             audio_capture: true,
             sdp_endpoints: IndexMap::default(),
+            rtcp_ports: IndexMap::default(),
             record_new_orphans: false,
             new_orphan_sockets: Vec::new(),
             orphan_sockets_dropped: 0,
@@ -1722,6 +1739,9 @@ impl StreamStore {
         // every stream the endpoint index reached.
         self.remember_media_formats(media_addr, media_port, &media.fmtp);
         self.remember_media_protection(media_addr, media_port, is_srtp_profile(&media.proto));
+        if let Some(rtcp_port) = media.rtcp_port {
+            self.remember_rtcp_port(media_addr, media_port, rtcp_port);
+        }
     }
 
     /// Associate every RTP stream on `media_addr:media_port` to `call_id` and,
@@ -1745,6 +1765,68 @@ impl StreamStore {
     #[must_use]
     pub fn sdp_endpoint_provenance(&self, addr: IpAddr, port: u16) -> Option<SdpProvenance> {
         self.sdp_endpoints.get(&(addr, port)).map(|e| e.provenance)
+    }
+
+    /// The Call-ID of the call an RTCP report between `src` and `dst` belongs
+    /// to, from the media endpoints the calls' SDP set up.
+    ///
+    /// What `--hep-send` puts in the correlation chunk, so HOMER files the
+    /// report under the call. Each end of the flow is tried, `src` first as
+    /// heplify does (`CorrelateRTCP`, `src/decoder/correlator.go`), and an end
+    /// belongs to a call when it is, on the address the SDP named:
+    ///
+    /// 1. the RTP port itself, which is where RTCP multiplexed with RTP
+    ///    arrives ([RFC 5761 section 4](https://www.rfc-editor.org/rfc/rfc5761.html#section-4)). Taken whether or not the SDP said
+    ///    `a=rtcp-mux`: the caller has already judged these bytes to be RTCP,
+    ///    and they are on the call's media socket;
+    /// 2. the port an `a=rtcp` attribute named ([RFC 3605 section 2.1](https://www.rfc-editor.org/rfc/rfc3605.html#section-2.1));
+    /// 3. the RTCP companion of an even RTP port, one above it
+    ///    ([RFC 3550 section 11](https://www.rfc-editor.org/rfc/rfc3550.html#section-11)), by `rtcp_companion_of`, the same rule
+    ///    [`Self::attribute_media_quote`] places an ICMP quote with.
+    ///
+    /// An endpoint past its TTL at `at` claims nothing, as it claims no new
+    /// RTP stream: the socket may belong to a later call by now.
+    ///
+    /// Two heplify behaviors are not reproduced. heplify also files the
+    /// RTCP port under the address the SIP message came FROM, for a party
+    /// behind NAT whose SDP names a private address; sipnab's endpoints are
+    /// the addresses the SDP names. And heplify reads an address out of
+    /// `a=rtcp:<port> IN IP4 <addr>`; sipnab's SDP parser keeps the port, so
+    /// the port is taken on the media address.
+    #[must_use]
+    pub fn call_for_rtcp(
+        &self,
+        src: (IpAddr, u16),
+        dst: (IpAddr, u16),
+        at: DateTime<Utc>,
+    ) -> Option<&str> {
+        [src, dst].into_iter().find_map(|(ip, port)| {
+            [
+                Some((ip, port)),
+                self.rtcp_ports.get(&(ip, port)).copied(),
+                rtcp_companion_of(port).map(|rtp| (ip, rtp)),
+            ]
+            .into_iter()
+            .flatten()
+            .find_map(|rtp_endpoint| {
+                let endpoint = self.sdp_endpoints.get(&rtp_endpoint)?;
+                (!sdp_endpoint_expired(endpoint, at)).then_some(endpoint.call_id.as_str())
+            })
+        })
+    }
+
+    /// Remember that `a=rtcp` put the RTCP of `addr`:`rtp_port` on
+    /// `rtcp_port`, for [`Self::call_for_rtcp`]. Bounded and evicted oldest
+    /// first, as `sdp_endpoints` is, so a flood of offers cannot grow it.
+    fn remember_rtcp_port(&mut self, addr: IpAddr, rtp_port: u16, rtcp_port: u16) {
+        if !self.rtcp_ports.contains_key(&(addr, rtcp_port))
+            && self.max_streams > 0
+            && self.rtcp_ports.len() >= self.max_streams
+        {
+            let batch = (self.max_streams / 10).max(1).min(self.rtcp_ports.len());
+            self.rtcp_ports.drain(0..batch);
+        }
+        self.rtcp_ports.insert((addr, rtcp_port), (addr, rtp_port));
     }
 
     /// Records/refreshes the endpoint in `sdp_endpoints` (for streams
@@ -2206,10 +2288,8 @@ impl StreamStore {
         }
 
         // 4. Either socket was advertised in SDP, or is its RTCP companion.
-        //    RFC 3550 §11: when the media port is even, RTCP uses the next
-        //    port up, and no SDP line ever mentions it.
         for sock in [dst, src] {
-            let companion = sock.port().checked_sub(1).filter(|p| p % 2 == 0);
+            let companion = rtcp_companion_of(sock.port());
             for port in [Some(sock.port()), companion].into_iter().flatten() {
                 if let Some(ep) = self.sdp_endpoints.get(&(sock.ip(), port)) {
                     return MediaAttribution {
@@ -2309,6 +2389,7 @@ impl StreamStore {
         self.ssrc_index.clear();
         self.endpoint_index.clear();
         self.sdp_endpoints.clear();
+        self.rtcp_ports.clear();
         self.provenance.clear();
         self.live_sessions.clear();
         self.relay_control = crate::relay_vocab::ControlChannels::default_capacity();
@@ -2417,6 +2498,9 @@ impl StreamStore {
         for (flow, session) in other.live_sessions {
             let live = self.live_sessions.entry(flow).or_insert(session);
             *live = (*live).max(session);
+        }
+        for (rtcp, rtp) in other.rtcp_ports {
+            self.rtcp_ports.entry(rtcp).or_insert(rtp);
         }
         self.link_scan_iters += other.link_scan_iters;
         self.evict_shift_work += other.evict_shift_work;
@@ -3427,6 +3511,147 @@ a=rtpmap:96 H264/90000\r\n";
                 .is_some_and(|s| s.associated_dialog.is_none())
         );
         assert_eq!(store.negotiated_rtpmap(&key), None);
+        Ok(())
+    }
+
+    /// The media description of `sdp_tail` on 10.0.0.2:30000, parsed from
+    /// real SDP text, so `a=rtcp` and `a=rtcp-mux` reach the store the way
+    /// the capture path delivers them.
+    fn media_on_30000(sdp_tail: &str) -> Result<crate::sip::sdp::SdpMedia, TestError> {
+        let sdp = format!(
+            "v=0\r\no=- 1 1 IN IP4 10.0.0.2\r\ns=-\r\nc=IN IP4 10.0.0.2\r\nt=0 0\r\n\
+             m=audio 30000 RTP/AVP 0\r\na=rtpmap:0 PCMU/8000\r\n{sdp_tail}"
+        );
+        crate::sip::sdp::parse_sdp(sdp.as_bytes())
+            .map_err(|e| format!("test SDP parses: {e:?}"))?
+            .media
+            .into_iter()
+            .next()
+            .ok_or_else(|| "the test SDP has a media description".into())
+    }
+
+    /// A store that learned 10.0.0.2:30000 for `rtcp-call` at `ts(0)`.
+    fn store_with_rtcp_call(sdp_tail: &str) -> Result<StreamStore, TestError> {
+        let mut store = StreamStore::new(64);
+        store.link_to_dialog_with_sdp_from(
+            v4(10, 0, 0, 2),
+            30000,
+            "rtcp-call",
+            &media_on_30000(sdp_tail)?,
+            SdpProvenance::observed(crate::capture::parse::InputOrigin::Wire, ts(0)),
+        );
+        Ok(store)
+    }
+
+    fn v4(a: u8, b: u8, c: u8, d: u8) -> IpAddr {
+        IpAddr::V4(Ipv4Addr::new(a, b, c, d))
+    }
+
+    /// The far end of the RTCP flows in these tests: an address no SDP named.
+    const STRANGER: (IpAddr, u16) = (IpAddr::V4(Ipv4Addr::new(192, 0, 2, 9)), 40001);
+
+    /// RTCP on the RTP port plus one belongs to the call that negotiated the
+    /// RTP port ([RFC 3264 section 5.1](https://www.rfc-editor.org/rfc/rfc3264.html#section-5.1)), found from either end of the
+    /// flow, source first as heplify looks.
+    #[test]
+    fn rtcp_on_the_rtp_port_plus_one_belongs_to_that_call() -> Result<(), TestError> {
+        let store = store_with_rtcp_call("")?;
+        let ours = (v4(10, 0, 0, 2), 30001);
+        assert_eq!(
+            store.call_for_rtcp(ours, STRANGER, ts(5)),
+            Some("rtcp-call")
+        );
+        assert_eq!(
+            store.call_for_rtcp(STRANGER, ours, ts(5)),
+            Some("rtcp-call")
+        );
+        Ok(())
+    }
+
+    /// RTCP multiplexed onto the RTP port ([RFC 5761 section 4](https://www.rfc-editor.org/rfc/rfc5761.html#section-4)) belongs to
+    /// that call too.
+    #[test]
+    fn rtcp_on_the_rtp_port_itself_belongs_to_that_call() -> Result<(), TestError> {
+        let store = store_with_rtcp_call("a=rtcp-mux\r\n")?;
+        let ours = (v4(10, 0, 0, 2), 30000);
+        assert_eq!(
+            store.call_for_rtcp(STRANGER, ours, ts(5)),
+            Some("rtcp-call")
+        );
+        Ok(())
+    }
+
+    /// An explicit `a=rtcp` port ([RFC 3605 section 2.1](https://www.rfc-editor.org/rfc/rfc3605.html#section-2.1)) belongs to the
+    /// call, though it is nowhere near the RTP port.
+    #[test]
+    fn rtcp_on_an_explicit_a_rtcp_port_belongs_to_that_call() -> Result<(), TestError> {
+        let store = store_with_rtcp_call("a=rtcp:31555\r\n")?;
+        let ours = (v4(10, 0, 0, 2), 31555);
+        assert_eq!(
+            store.call_for_rtcp(ours, STRANGER, ts(5)),
+            Some("rtcp-call")
+        );
+        assert_eq!(
+            store.call_for_rtcp(STRANGER, ours, ts(5)),
+            Some("rtcp-call")
+        );
+        Ok(())
+    }
+
+    /// Nothing the SDP named: no call. Not the neighboring port, not the
+    /// same port on another address, not a port two above.
+    #[test]
+    fn rtcp_nothing_named_belongs_to_no_call() -> Result<(), TestError> {
+        let store = store_with_rtcp_call("a=rtcp:31555\r\n")?;
+        for ep in [
+            (v4(10, 0, 0, 2), 30003),
+            (v4(10, 0, 0, 2), 29999),
+            (v4(10, 0, 0, 3), 30001),
+            (v4(10, 0, 0, 3), 31555),
+            STRANGER,
+        ] {
+            assert_eq!(store.call_for_rtcp(ep, STRANGER, ts(5)), None, "{ep:?}");
+        }
+        assert_eq!(
+            StreamStore::new(64).call_for_rtcp(STRANGER, STRANGER, ts(5)),
+            None,
+            "an empty store knows no call"
+        );
+        Ok(())
+    }
+
+    /// An endpoint learned long enough ago to belong to a previous call on
+    /// the same socket claims no RTCP, by the same TTL that keeps it from
+    /// claiming a new RTP stream (F3).
+    #[test]
+    fn rtcp_does_not_reach_a_call_whose_endpoint_has_expired() -> Result<(), TestError> {
+        let store = store_with_rtcp_call("a=rtcp:31555\r\n")?;
+        let after = ts(SDP_ENDPOINT_TTL_SECS + 1);
+        for ours in [
+            (v4(10, 0, 0, 2), 30001),
+            (v4(10, 0, 0, 2), 30000),
+            (v4(10, 0, 0, 2), 31555),
+        ] {
+            assert_eq!(store.call_for_rtcp(ours, STRANGER, after), None, "{ours:?}");
+            assert_eq!(
+                store.call_for_rtcp(ours, STRANGER, ts(SDP_ENDPOINT_TTL_SECS)),
+                Some("rtcp-call"),
+                "{ours:?} at the TTL itself"
+            );
+        }
+        Ok(())
+    }
+
+    /// merge() carries an `a=rtcp` port learned on another worker, as it
+    /// carries the SDP endpoint it belongs to.
+    #[test]
+    fn merge_carries_rtcp_ports() -> Result<(), TestError> {
+        let mut store = StreamStore::new(64);
+        store.merge(store_with_rtcp_call("a=rtcp:31555\r\n")?);
+        assert_eq!(
+            store.call_for_rtcp((v4(10, 0, 0, 2), 31555), STRANGER, ts(5)),
+            Some("rtcp-call")
+        );
         Ok(())
     }
 

@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-FileCopyrightText: The sipnab contributors
 
 //! Every vCon reader takes every form a container arrives in: the unsigned
 //! form, the signed form (draft-ietf-vcon-vcon-core-04 section 5.2), the

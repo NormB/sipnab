@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: MIT OR Apache-2.0
+# SPDX-FileCopyrightText: The sipnab contributors
+
 """The branch-coverage verdict the weekly Quality job reads.
 
 `cargo llvm-cov report` enforces floors for lines, regions and functions and

@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: MIT OR Apache-2.0
+# SPDX-FileCopyrightText: The sipnab contributors
+
 """A stand-in for TFPS's `tfps_ctl`, for the one CI run that bans a source.
 
 TFPS's `ban` writes a pinned BPF map and needs root, so no CI runner can run

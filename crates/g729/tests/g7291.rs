@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-FileCopyrightText: The sipnab contributors
 
 //! G.729.1 core-layer decoding against the ITU-T G.729.1 test vectors, and
 //! property tests of the RTP payload path.

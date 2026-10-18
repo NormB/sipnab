@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: MIT OR Apache-2.0
+# SPDX-FileCopyrightText: The sipnab contributors
+
 # Generate the caller and callee media fixtures as real speech.
 #
 # A tone proves the two legs differ. It cannot show whether a CALL was

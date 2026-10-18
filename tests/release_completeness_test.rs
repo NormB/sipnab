@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-FileCopyrightText: The sipnab contributors
 
 //! A release is not finished when its artifacts exist. It is finished when a
 //! visitor is offered them.

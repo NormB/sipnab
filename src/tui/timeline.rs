@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-FileCopyrightText: The sipnab contributors
 
 //! Call-timeline view: a horizontal, left-to-right rendering of one
 //! dialog's signaling phases (setup, ringing, in-call, teardown) laid out

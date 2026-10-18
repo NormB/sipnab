@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-FileCopyrightText: The sipnab contributors
 
 //! All TUI rendering: the main view dispatch plus the per-view renderers
 //! it owns (statistics, message diff). Status lines / f-key bar and popup

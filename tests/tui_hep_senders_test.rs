@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-FileCopyrightText: The sipnab contributors
 
 //! The TUI's HEP senders view: opened with `s` from the capture-health panel,
 //! it shows the roster the listener hung on the capture meter — the same table

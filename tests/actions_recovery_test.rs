@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-FileCopyrightText: The sipnab contributors
 
 //! Backing out a bad or stale update, and keeping the journal bounded
 //! (JOURNAL + ACTIONS-HARDEN; approved spec 2026-09-28).

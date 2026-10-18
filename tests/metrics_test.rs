@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-FileCopyrightText: The sipnab contributors
 
 //! Prometheus `/metrics` scrape tests (verification plan M3 — T3.4).
 //!

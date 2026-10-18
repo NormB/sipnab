@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-FileCopyrightText: The sipnab contributors
+
 //! Reading uprobe records through `perf_event_open` rather than `trace_pipe`.
 //!
 //! It needs `libc`, and so is gated on `native` rather than the whole module

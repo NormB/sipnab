@@ -50,7 +50,7 @@ it is not the same guarantee:
    `KillUdpSocket::bind` ([`:322`](https://github.com/NormB/sipnab/blob/main/src/process_isolation.rs#L322)) take it by
    reference, and `spawn_scanner_kill_worker`
    ([`:1542`](https://github.com/NormB/sipnab/blob/main/src/process_isolation.rs#L1542)) and `BatchRunner::new`
-   ([`batch.rs:2645`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs#L2645)) by value. The sends themselves
+   ([`batch.rs:2663`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs#L2663)) by value. The sends themselves
    take none, and that is the design rather than a gap: they happen in the
    scanner-kill worker, a process of its own, and a proof token cannot cross a
    pipe. The worker's capability is the descriptors it inherited — all of
@@ -109,7 +109,7 @@ capture file.
 
 The chain, verified:
 
-- `HepSender::send` ([`hep.rs:4258`](https://github.com/NormB/sipnab/blob/main/src/capture/hep.rs#L4258)) builds a HEP v3
+- `HepSender::send` ([`hep.rs:4334`](https://github.com/NormB/sipnab/blob/main/src/capture/hep.rs#L4334)) builds a HEP v3
   packet around `msg.raw` and calls `self.socket.send(&pkt)`
   ([`:1759`](https://github.com/NormB/sipnab/blob/main/src/capture/hep.rs#L1759)). No permit parameter.
 - It is constructed unconditionally from `cli.hep_send` inside `BatchRunner::new`

@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-FileCopyrightText: The sipnab contributors
 
 //! vCon export — one observed dialog as an unsigned observer vCon container
 //! ([`draft-ietf-vcon-vcon-core-04`], syntax version `0.4.0`).

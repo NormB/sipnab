@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: MIT OR Apache-2.0
+# SPDX-FileCopyrightText: The sipnab contributors
+
 """Validate vCon containers against the vCon working group's own JSON Schema.
 
 A store that refuses a container tells whoever posted it, not whoever built

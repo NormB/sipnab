@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: MIT OR Apache-2.0
+# SPDX-FileCopyrightText: The sipnab contributors
+
 # Multi-stage build for minimal image
 #
 # Both stages are pinned by digest, with the tag kept alongside it. A tag is a

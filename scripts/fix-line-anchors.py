@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: MIT OR Apache-2.0
+# SPDX-FileCopyrightText: The sipnab contributors
+
 """Make a cited line number actually go to that line.
 
 The docs cite lines constantly, in two shapes:

@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-FileCopyrightText: The sipnab contributors
 
 //! LP filter coefficients: the LSP-to-LP conversion of G.729 clause 3.2.6
 //! (the f1/f2 recursion and equations (25) and (26)), and the bandwidth

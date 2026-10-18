@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-FileCopyrightText: The sipnab contributors
 
 //! No string in `website/config.toml` may carry `</`, the byte pair that ends
 //! a `<script>` element.

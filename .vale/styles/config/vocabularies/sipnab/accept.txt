@@ -88,6 +88,7 @@ Cap
 caplen
 Catppuccin
 CDRs
+captagent
 cdylib
 certbot
 cfg

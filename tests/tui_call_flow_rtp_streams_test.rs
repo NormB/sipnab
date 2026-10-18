@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-FileCopyrightText: The sipnab contributors
 
 //! The call flow's RTP display (F6) on real captures: one row per stream,
 //! drawn as an arrow from the column of the stream's source address to the

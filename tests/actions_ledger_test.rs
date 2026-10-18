@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-FileCopyrightText: The sipnab contributors
 
 //! What a restarted sipnab knows from its journal, and how it resolves an
 //! action left in doubt (JOURNAL, approved spec 2026-09-28).

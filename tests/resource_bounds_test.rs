@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-FileCopyrightText: The sipnab contributors
 
 //! Resource-exhaustion bounds: a remote attacker who invents unlimited
 //! unique Call-IDs (dialog table) or SSRCs (RTP stream table) must not

@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: MIT OR Apache-2.0
+# SPDX-FileCopyrightText: The sipnab contributors
+
 """fetch-vcon-datasets.py: the public vCon datasets, each at a pinned commit.
 
 The datasets are third-party repositories, so the fetcher's whole job is to

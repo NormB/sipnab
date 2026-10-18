@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: MIT OR Apache-2.0
+# SPDX-FileCopyrightText: The sipnab contributors
+
 # shellcheck shell=sh
 # The prose gates -- vale and codespell -- resolved and run in ONE place.
 #

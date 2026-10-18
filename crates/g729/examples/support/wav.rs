@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-FileCopyrightText: The sipnab contributors
 
 //! The WAV writer the examples share. The README shows the same function;
 //! `tests/examples.rs` holds the two to the same text.

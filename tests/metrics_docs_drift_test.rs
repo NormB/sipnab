@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-FileCopyrightText: The sipnab contributors
 
 //! Every metric the exposition emits must be documented, and no documented
 //! metric may name a series the exposition never emits.

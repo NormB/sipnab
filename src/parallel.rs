@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-FileCopyrightText: The sipnab contributors
 
 //! Multi-core offline processing (`--cores N`).
 //!
@@ -858,12 +859,17 @@ pub fn run_offline_parallel(rx: PacketRx, cfg: ParallelConfig) -> ReconResult {
         .into_iter()
         .map(|wrx| {
             let cfg = cfg.clone();
+            // The packet counter lands once per worker: see
+            // `capture::deferred` for what four workers adding to it per
+            // packet cost.
             thread::spawn(move || {
-                let mut worker = Worker::new(cfg);
-                for delivery in wrx.iter() {
-                    worker.feed(&delivery);
-                }
-                worker.finish()
+                crate::capture::captured_packets_deferred(|| {
+                    let mut worker = Worker::new(cfg);
+                    for delivery in wrx.iter() {
+                        worker.feed(&delivery);
+                    }
+                    worker.finish()
+                })
             })
         })
         .collect();
@@ -2457,14 +2463,18 @@ pub fn run_offline_parallel_set(
         .into_iter()
         .map(|wrx| {
             let cfg = cfg.clone();
+            // The packet counter lands once per worker: see
+            // `capture::deferred`.
             thread::spawn(move || {
-                let mut worker = Worker::new(cfg);
-                for batch in wrx.iter() {
-                    for delivery in batch.iter() {
-                        worker.feed(delivery);
+                crate::capture::captured_packets_deferred(|| {
+                    let mut worker = Worker::new(cfg);
+                    for batch in wrx.iter() {
+                        for delivery in batch.iter() {
+                            worker.feed(delivery);
+                        }
                     }
-                }
-                worker.finish()
+                    worker.finish()
+                })
             })
         })
         .collect();

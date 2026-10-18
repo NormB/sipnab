@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: MIT OR Apache-2.0
+# SPDX-FileCopyrightText: The sipnab contributors
+
 """The test-count claim gate counts what cargo counts.
 
 A ``#[tokio::test]`` is a test cargo runs and the homepage tally reuses cargo's

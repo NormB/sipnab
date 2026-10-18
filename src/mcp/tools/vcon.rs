@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-FileCopyrightText: The sipnab contributors
 
 //! vCon containers: producing them, checking them before somebody else
 //! does, and analyzing one somebody stored.

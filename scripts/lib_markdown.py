@@ -1,4 +1,5 @@
 # SPDX-License-Identifier: MIT OR Apache-2.0
+# SPDX-FileCopyrightText: The sipnab contributors
 """Markdown structure shared by the three site/wiki generators.
 
 Each generator rewrites repo-relative code links into absolute blob URLs. All

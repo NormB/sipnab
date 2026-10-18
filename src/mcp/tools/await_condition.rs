@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-FileCopyrightText: The sipnab contributors
 
 //! `await_condition`: ONE call that returns when a filter matches or a
 //! deadline passes, whichever comes first (PB4, bounded form).

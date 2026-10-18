@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: MIT OR Apache-2.0
+# SPDX-FileCopyrightText: The sipnab contributors
+
 # One readable MCP tool call over stdio, against a capture in this repo.
 #
 # Usage: demos/mcp-stdio.sh <capture> <tool> [json-arguments]

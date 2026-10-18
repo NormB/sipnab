@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: MIT OR Apache-2.0
+# SPDX-FileCopyrightText: The sipnab contributors
+
 """Generate the GitHub Wiki tree from the in-repo `docs/` source of truth.
 
 `docs/` is the single source of truth; the wiki is a generated mirror. This

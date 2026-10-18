@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-FileCopyrightText: The sipnab contributors
 
 //! Decode an ITU-T G.192 serial file (the `.BIT` / `.bit` test vectors of the
 //! ITU-T G.729 package) to a 16-bit mono WAV file at 8000 Hz.

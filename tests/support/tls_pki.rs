@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-FileCopyrightText: The sipnab contributors
 
 //! A private certificate authority, a server certificate it issued for
 //! `127.0.0.1`, and a client that trusts only that authority.

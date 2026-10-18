@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: MIT OR Apache-2.0
+# SPDX-FileCopyrightText: The sipnab contributors
+
 """An image in a published docs page renders from the site itself.
 
 The site's CSP is `img-src 'self' data:`, so an image served from any other

@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: MIT OR Apache-2.0
+# SPDX-FileCopyrightText: The sipnab contributors
 #
 # Measure the sipnab LIVE capture path under synthetic load, and say plainly
 # whether the 0.5.77 capture changes hold up.

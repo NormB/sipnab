@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: MIT OR Apache-2.0
+# SPDX-FileCopyrightText: The sipnab contributors
+
 """From sipnab's accusation to a TFPS ban, and back out of TFPS's list.
 
 sipnab recommends and does not apply (src/security/recommend.rs). The program

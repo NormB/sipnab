@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: MIT OR Apache-2.0
+# SPDX-FileCopyrightText: The sipnab contributors
+
 """An aggregate cut to a byte budget before it reaches a model.
 
 sipnab bounds the NUMBER of buckets (`--mcp-max-rows`) and the length of

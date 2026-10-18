@@ -1030,11 +1030,13 @@ tls_key = "/etc/sipnab/metrics.key"
 
 ### [hep]
 
-TLS for HEP:
+TLS for HEP, and the HEP sender's queue:
 
 - the CA the sender (`--hep-send-transport tls`) checks the collector's
   certificate against;
-- the certificate a TLS listener (`--hep-listen-transport tls`) presents.
+- the certificate a TLS listener (`--hep-listen-transport tls`) presents;
+- how much the sender holds, and how long it waits, while its collector is
+  unreachable.
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
@@ -1042,6 +1044,8 @@ TLS for HEP:
 | `tls_extra_ca` | path | -- | CA (PEM) the sender trusts **in addition to** the host's CA bundle. Set this or `tls_ca`, not both. The host must have a CA bundle; without one sipnab refuses at startup. An empty string fails validation and names the key. On a run without `--hep-send` it does nothing, and sipnab says so in a startup warning naming the key. `--hep-tls-extra-ca` overrides it |
 | `tls_cert` | path | -- | PEM certificate chain a TLS HEP listener presents, the server's certificate first. A TLS listener needs this and `tls_key`, from here or from the flags. An empty string fails validation and names the key. On a run without `--hep-listen` it does nothing, and sipnab says so in a startup warning naming the key. `--hep-tls-cert` overrides it |
 | `tls_key` | path | -- | PEM private key for `tls_cert`. sipnab refuses a key any other user on the host can read. An empty string fails validation and names the key. On a run without `--hep-listen` it does nothing, and sipnab says so in a startup warning naming the key. `--hep-tls-key` overrides it |
+| `send_queue_mib` | integer | `64` | MiB of HEP packets the sender queues while its collector is unreachable, 1 to 4096. At the bound sipnab drops the oldest packet and counts it as `queue_full`. A value outside the range fails validation and names the key. On a run without `--hep-send` it does nothing, and sipnab says so in a startup warning naming the key. `--hep-send-queue` overrides it. See [When the `--hep-send` collector goes away](cli-reference.md#when-the---hep-send-collector-goes-away) |
+| `send_timeout_secs` | integer | `3` | Seconds one sender TCP dial or stalled write may take before the collector counts as unreachable, 1 to 300. It also bounds the first connection at startup. A value outside the range fails validation and names the key. On a run without `--hep-send` it does nothing, and sipnab says so in a startup warning naming the key. `--hep-send-timeout` overrides it |
 
 The sender's trust is one setting.
 
@@ -1053,6 +1057,8 @@ The sender's trust is one setting.
 ```toml
 [hep]
 tls_extra_ca = "/etc/sipnab/collector-ca.pem"
+send_queue_mib = 256
+send_timeout_secs = 5
 ```
 
 ### `[vcon_forward]`

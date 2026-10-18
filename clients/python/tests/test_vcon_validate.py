@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: MIT OR Apache-2.0
+# SPDX-FileCopyrightText: The sipnab contributors
+
 """Validating a vCon against the working group's own schema file.
 
 jsonschema checks a `format` only when a checker for it is installed, and the

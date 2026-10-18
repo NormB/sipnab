@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: MIT OR Apache-2.0
+# SPDX-FileCopyrightText: The sipnab contributors
 #
 # Split the debug symbols out of a release binary, so the release can ship the
 # binary stripped and publish the symbols beside it.

@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-FileCopyrightText: The sipnab contributors
 
 //! The TUI's archive password popup, and the handshake that lets a load
 //! running on its own thread ask for a password and wait for the answer.

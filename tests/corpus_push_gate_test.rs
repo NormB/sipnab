@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-FileCopyrightText: The sipnab contributors
 
 //! The pre-push corpus gate must actually block, and must keep deriving its
 //! target list from the tree.

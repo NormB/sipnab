@@ -1,4 +1,5 @@
 # SPDX-License-Identifier: MIT OR Apache-2.0
+# SPDX-FileCopyrightText: The sipnab contributors
 """The cookbook output gate in scripts/check-cookbook.py.
 
 Every cookbook command the checker EXECUTES must have its output pinned by a

@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: MIT OR Apache-2.0
+# SPDX-FileCopyrightText: The sipnab contributors
+
 """Judge Valgrind memcheck logs: fail on a leak or a memory error.
 
 The rule the weekly Valgrind job (.github/workflows/memcheck.yml) applies to

@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: MIT OR Apache-2.0
+# SPDX-FileCopyrightText: The sipnab contributors
+
 """Generate the surface-coverage matrix: every CLI flag, API route and MCP tool.
 
 Generated, not written. The surface is 270-odd rows; a hand-maintained table

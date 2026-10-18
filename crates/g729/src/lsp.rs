@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-FileCopyrightText: The sipnab contributors
 
 //! LSP decoding: G.729 clause 3.2.4 (two-stage codebook, rearrangement,
 //! switched MA prediction, stability), clause 4.1.1, clause 4.4.1 (repetition

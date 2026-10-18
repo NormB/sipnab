@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-FileCopyrightText: The sipnab contributors
 
 //! `sipnab --vcon-spool-status <SPOOL_DIR>`: the command-line door to the
 //! answer the MCP tool `vcon_spool_status` and `GET /v1/vcon/spool` give.

@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: MIT OR Apache-2.0
+# SPDX-FileCopyrightText: The sipnab contributors
+
 """The stand-in for `tfps_ctl` that scripts/smoke-clients.sh hands sipnab.
 
 TFPS's `ban` writes a BPF map and needs root, so no CI runner can run it. The

@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-FileCopyrightText: The sipnab contributors
 
 //! TLS without keys, the half that needs no kernel: what sipnab makes of the
 //! records its BPF program hands it.

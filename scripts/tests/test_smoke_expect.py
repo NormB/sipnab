@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: MIT OR Apache-2.0
+# SPDX-FileCopyrightText: The sipnab contributors
+
 """The smoke script's check helpers report each check once, truthfully.
 
 `expect` and `expect_exit` in scripts/lib/smoke-expect.sh counted a missing
