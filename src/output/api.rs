@@ -326,6 +326,9 @@ pub struct ApiState {
     /// every headless run whether or not a detector was armed, so its presence
     /// cannot answer "was anything watching". Empty means nothing is armed.
     pub armed_detections: Vec<String>,
+    /// Whether this run answers the scanners it detects — the value
+    /// `GET /v1/security/findings` reports as `scanner_response`.
+    pub scanner_response: crate::security::findings::ScannerResponse,
     /// Directory `GET /v1/captures/compare` may diff capture files in, from
     /// `--api-file-root`. `None` (every test here, and any run started without
     /// the flag) makes that route answer `not_configured` — a file-reading
@@ -2881,7 +2884,8 @@ async fn get_security_findings(
             &kinds,
             since,
             limit,
-        );
+        )
+        .with_scanner_response(state.scanner_response);
         (report, capture_etag(capture.as_deref(), &ds, &ss))
     };
 
@@ -2906,6 +2910,7 @@ async fn get_security_findings(
         truncated: report.truncated,
         armed_kinds: report.armed_kinds,
         detection_armed: report.detection_armed,
+        scanner_response: report.scanner_response.to_string(),
         note: report.note,
         observation_gaps: report
             .observation_gaps
@@ -7397,6 +7402,15 @@ pub mod schema {
         /// True when at least one detector is armed. An empty `findings` with
         /// this false means nothing was watching, NOT that traffic was clean.
         pub detection_armed: bool,
+        /// Whether sipnab answers the scanners it detects. `off`: no scanner
+        /// detection is armed. `detect_only`: `--kill-scanner-detect-only`
+        /// is set, so scanners are detected and never answered.
+        /// `not_answering`: scanners are detected and not answered, because
+        /// the run reads a capture file, is the interactive TUI, or the
+        /// scanner-kill worker could not start. `answering`: the scanner-kill
+        /// worker is running and sends a SIP reply to each detected scanner.
+        #[schema(example = "detect_only")]
+        pub scanner_response: String,
         /// Present only when nothing is armed, saying so in words.
         #[serde(skip_serializing_if = "Option::is_none")]
         pub note: Option<String>,
@@ -9571,8 +9585,30 @@ mod tests {
         Ok(ApiState {
             alert_engine: Some(Arc::new(RwLock::new(engine))),
             armed_detections: vec!["scanner".to_string()],
+            scanner_response: Default::default(),
             ..make_state()
         })
+    }
+
+    /// A detect-only run reports `scanner_response: "detect_only"`, so a
+    /// program reading `armed_kinds: ["scanner"]` can tell that the scanners
+    /// it lists were detected and never answered.
+    #[tokio::test]
+    async fn security_findings_states_detect_only() -> Result<(), TestError> {
+        let state = ApiState {
+            scanner_response: crate::security::findings::ScannerResponse::DetectOnly,
+            ..state_with_findings()?
+        };
+        let resp = build_router(state)
+            .oneshot(test_request("/v1/security/findings")?)
+            .await
+            .map_err(|e| format!("oneshot: {e:?}"))?;
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = body_to_string(resp.into_body()).await?;
+        let parsed: Value =
+            serde_json::from_str(&body).map_err(|e| format!("valid JSON: {e:?}"))?;
+        assert_eq!(parsed["scanner_response"], "detect_only", "{parsed}");
+        Ok(())
     }
 
     /// The route returns the recorded findings with the RAW detail — REST hands
@@ -9631,6 +9667,7 @@ mod tests {
         let state = ApiState {
             alert_engine: Some(Arc::new(RwLock::new(engine))),
             armed_detections: vec!["reg_flood".to_string()],
+            scanner_response: Default::default(),
             ..make_state()
         };
         let resp = build_router(state)
@@ -10471,6 +10508,7 @@ mod tests {
             actions: Default::default(),
             alert_engine: None,
             armed_detections: Vec::new(),
+            scanner_response: Default::default(),
             file_root: None,
             vcon_spools: Vec::new(),
             vcon_fetch: Default::default(),
@@ -11351,6 +11389,7 @@ mod tests {
             actions: Default::default(),
             alert_engine: None,
             armed_detections: Vec::new(),
+            scanner_response: Default::default(),
             file_root: None,
             vcon_spools: Vec::new(),
             vcon_fetch: Default::default(),
@@ -12755,6 +12794,7 @@ mod tests {
             actions: Default::default(),
             alert_engine: None,
             armed_detections: Vec::new(),
+            scanner_response: Default::default(),
             file_root: None,
             vcon_spools: Vec::new(),
             vcon_fetch: Default::default(),
@@ -13720,6 +13760,7 @@ mod tests {
             actions: Default::default(),
             alert_engine: None,
             armed_detections: Vec::new(),
+            scanner_response: Default::default(),
             file_root: None,
             vcon_spools: Vec::new(),
             vcon_fetch: Default::default(),
@@ -16127,6 +16168,7 @@ mod archive_password_tests {
             actions: Default::default(),
             alert_engine: None,
             armed_detections: Vec::new(),
+            scanner_response: Default::default(),
             file_root: None,
             vcon_spools: Vec::new(),
             vcon_fetch: Default::default(),

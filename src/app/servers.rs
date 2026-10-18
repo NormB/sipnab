@@ -138,6 +138,11 @@ pub struct Selection {
     /// question. Carried on Selection for the same reason `mcp_row_cap` is —
     /// this struct is where per-run decisions about the servers already live.
     pub armed_detections: Vec<&'static str>,
+    /// Whether this run answers the scanners it detects, which
+    /// `security_findings` reports as `scanner_response` beside
+    /// `armed_detections`. `scanner` in that list says only that scanners
+    /// are detected.
+    pub scanner_response: crate::security::findings::ScannerResponse,
     /// The run's pipeline options, built by the caller with
     /// [`crate::app::pipeline_options`] from the same command line and config
     /// the run's own packet loop uses.
@@ -721,6 +726,7 @@ pub fn start_servers(
                 .iter()
                 .map(|s| (*s).to_string())
                 .collect(),
+            scanner_response: selection.scanner_response,
             // Opt-in, like the relay permit above: a file-reading capability is
             // off unless the operator named a directory to confine it to.
             file_root: cli
@@ -932,6 +938,7 @@ pub fn start_servers(
             let s = s.with_tfps(selection.tfps.clone());
             let s = s.with_actions(selection.actions.clone());
             let s = s.with_armed_detections(selection.armed_detections.iter().copied());
+            let s = s.with_scanner_response(selection.scanner_response);
             match alerts {
                 Some(a) => s.with_alert_engine(Arc::clone(a)),
                 None => s,
@@ -1210,6 +1217,7 @@ mod tests {
             mcp: false,
             metrics: false,
             armed_detections: Vec::new(),
+            scanner_response: Default::default(),
             pipeline_options: Default::default(),
             alias_thresholds: Default::default(),
             vcon_spools: Vec::new(),

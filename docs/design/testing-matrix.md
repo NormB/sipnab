@@ -49,7 +49,7 @@ was driving all of them.
 
 | Surface | Rows | `e2e` | `parsed` | `referenced` | `none` |
 |---|---|---|---|---|---|
-| CLI flags | 374 | 297 | 34 | 43 | 0 |
+| CLI flags | 376 | 298 | 35 | 43 | 0 |
 | HTTP routes | 47 | 47 | -- | 0 | 0 |
 | MCP tools | 76 | 76 | -- | 0 | 0 |
 
@@ -126,7 +126,7 @@ behind them.
 | `--calls-only` | `-c` |  | Mode | e2e | `tests/calls_only_dialogs_test.rs`, `tests/cli_flag_behavior_test.rs` +3 |  |  |
 | `--telephone-event` | `-t` |  | Mode | e2e | `tests/cli_options_test.rs`, `tests/cores_refusal_test.rs` +5 |  |  |
 | `--dtmf-cleartext` |  |  | Mode | e2e | `tests/decryption_wrapper_matrix_test.rs`, `tests/dtmf_dynamic_payload_type_test.rs` +1 | **behavior** | dtmf_cleartext_emits_the_digit_value_at_debug_level (tests/dtmf_masking_test.rs), with an anti-vacuity guard |
-| `--quiet` | `-q` |  | Mode | e2e | `tests/app_servers_wiring_test.rs`, `tests/capture_clock_test.rs` +55 |  |  |
+| `--quiet` | `-q` |  | Mode | e2e | `tests/app_servers_wiring_test.rs`, `tests/capture_clock_test.rs` +56 |  |  |
 | `--resolve` |  |  | Name resolution | e2e | `tests/integration_test.rs` |  |  |
 | `--no-resolve` |  |  | Name resolution | referenced | `src/cli.rs` |  |  |
 | `--reverse-dns` |  |  | Name resolution | parsed | `src/cli.rs` |  |  |
@@ -159,12 +159,12 @@ behind them.
 | `--json-pretty` |  |  | Output | e2e | `tests/cli_options_test.rs`, `tests/json_schema_test.rs` +2 |  |  |
 | `--json-dialogs` |  |  | Output | e2e | `tests/archive_input_test.rs`, `tests/archive_password_prompt_test.rs` +43 |  |  |
 | `--plugin` |  | `PATH` | Output | e2e | `tests/partial_run_exit_code_test.rs`, `tests/plugin_example_test.rs` |  |  |
-| `--report` |  |  | Output | e2e | `tests/archive_input_test.rs`, `tests/call_report_siprec_test.rs` +28 |  |  |
-| `--stun` |  |  | Output | e2e | `tests/stun_test.rs`, `tests/turn_test.rs` |  |  |
-| `--json-stun` |  |  | Output | e2e | `tests/stun_test.rs`, `tests/turn_test.rs` |  |  |
+| `--report` |  |  | Output | e2e | `tests/archive_input_test.rs`, `tests/batch_run_paths_test.rs` +32 |  |  |
+| `--stun` |  |  | Output | e2e | `tests/cores_refusal_test.rs`, `tests/stun_test.rs` +1 |  |  |
+| `--json-stun` |  |  | Output | e2e | `tests/cores_refusal_test.rs`, `tests/stun_test.rs` +1 |  |  |
 | `--analyze` |  |  | Output | e2e | `tests/analyze_test.rs`, `tests/cores_refusal_test.rs` |  |  |
-| `--json-analyze` |  |  | Output | e2e | `tests/analyze_test.rs`, `tests/cli_time_window_test.rs` +6 |  |  |
-| `--yang-analyze` |  |  | Output | e2e | `tests/analyze_test.rs`, `tests/yang_export_test.rs` |  |  |
+| `--json-analyze` |  |  | Output | e2e | `tests/analyze_test.rs`, `tests/cli_time_window_test.rs` +7 |  |  |
+| `--yang-analyze` |  |  | Output | e2e | `tests/analyze_test.rs`, `tests/cores_refusal_test.rs` +1 |  |  |
 | `--print-yang-module` |  |  | Output | e2e | `tests/yang_module_test.rs` |  |  |
 | `--call-report` |  |  | Output | e2e | `tests/call_report_siprec_test.rs`, `tests/cli_flag_behavior_test.rs` +6 |  |  |
 | `--export-vcon` |  |  | Output | e2e | `tests/batch_run_paths_test.rs`, `tests/cli_flag_behavior_test.rs` +14 |  |  |
@@ -190,9 +190,9 @@ behind them.
 | `--color` |  | `WHEN` | Output | e2e | `tests/cli_options_test.rs`, `tests/config_wiring_test.rs` |  |  |
 | `--payload-limit` |  | `BYTES` | Output | e2e | `tests/cli_options_test.rs` | **behavior** | payload_limit_truncates_raw_dump: [truncated] appears, User-Agent disappears, against a no-flag baseline |
 | `--text-dump` | `-T` |  | Output | e2e | `tests/cli_flag_behavior_test.rs`, `tests/cli_options_test.rs` +1 |  |  |
-| `--no-cli-print` |  |  | Output | e2e | `tests/analyze_test.rs`, `tests/archive_input_test.rs` +66 |  |  |
+| `--no-cli-print` |  |  | Output | e2e | `tests/analyze_test.rs`, `tests/archive_input_test.rs` +67 |  |  |
 | `--wireshark` |  |  | Output | e2e | `tests/batch_run_paths_test.rs`, `tests/closed_stdout_test.rs` +1 | **behavior** | golden tests/cli/out/wireshark.trycmd adds two lines absent from the flagless golden |
-| `--lint` |  |  | Output | e2e | `tests/cli_options_test.rs`, `tests/config_cli_flag_values_test.rs` +3 |  |  |
+| `--lint` |  |  | Output | e2e | `tests/cli_options_test.rs`, `tests/config_cli_flag_values_test.rs` +4 |  |  |
 | `--lint-fail-on` |  | `SEVERITY` | Output | e2e | `tests/cli_options_test.rs` | **parse-only** | EXIT 3 IS NEVER OBSERVED. The assertion is guarded behind `if findings > 0` and no checked-in capture produces a lint finding |
 | `--lint-max-per-rule` |  | `N` | Output | e2e | `tests/threshold_wiring_test.rs` | **behavior** | lint_max_per_rule_bounds_the_findings_one_rule_prints (tests/threshold_wiring_test.rs); proves the flag can raise the cap |
 | `--lint-suppress-file` |  | `FILE` | Output | e2e | `tests/doc_commands_run_test.rs` |  |  |
@@ -224,12 +224,14 @@ behind them.
 | `--quality-threshold` |  | `MOS` | RTP | e2e | `tests/cli_options_test.rs` | **parse-only** | asserts exit 0 only; no test drives it with --on-quality-exec and observes the hook firing |
 | `--g729-tables` |  | `PATH` | RTP | e2e | `tests/g729_e2e_test.rs` |  |  |
 | `--kill-scanner` |  |  | Security | e2e | `tests/accused_sources_test.rs`, `tests/api_test.rs` +10 |  |  |
-| `--no-kill-scanner` |  |  | Security | referenced | `src/cli.rs`, `src/settings.rs` |  |  |
+| `--no-kill-scanner` |  |  | Security | referenced | `src/app/bootstrap.rs`, `src/cli.rs` +1 |  |  |
+| `--kill-scanner-detect-only` |  |  | Security | e2e | `tests/cli_options_test.rs`, `tests/offline_never_transmits_test.rs` |  |  |
+| `--no-kill-scanner-detect-only` |  |  | Security | parsed | `src/app/bootstrap.rs` |  |  |
 | `--sandbox` |  | `MODE` | Security | e2e | `tests/batch_run_paths_test.rs`, `tests/cores_refusal_test.rs` +1 |  |  |
 | `--seccomp` |  | `MODE` | Security | e2e | `tests/cores_refusal_test.rs`, `tests/sandbox_test.rs` +1 |  |  |
 | `--kill-ua` |  | `PATTERN` | Security | e2e | `tests/cli_options_test.rs` | **behavior** | FIXED THIS PASS. Was a silent no-op without --kill-scanner; now refused, and kill_ua_pattern_reaches_the_detector_that_reads_it asserts the match |
 | `--kill-response` |  | `CODE` | Security | e2e | `tests/cli_options_test.rs`, `tests/config_wiring_test.rs` +1 |  |  |
-| `--kill-target` | `-K` |  | Security | e2e | `tests/offline_never_transmits_test.rs`, `tests/scanner_kill_process_test.rs` |  |  |
+| `--kill-target` | `-K` |  | Security | e2e | `tests/cli_options_test.rs`, `tests/offline_never_transmits_test.rs` +1 |  |  |
 | `--kill-spoof` |  | `MODE` | Security | e2e | `tests/offline_never_transmits_test.rs`, `tests/scanner_kill_process_test.rs` |  |  |
 | `--hep-allow-kill` |  |  | Security | e2e | `tests/cli_flag_behavior_test.rs`, `tests/scanner_kill_process_test.rs` |  |  |
 | `--tfps-ctl` |  | `PATH` | Security | e2e | `tests/actions_cli_test.rs`, `tests/actions_journal_mcp_test.rs` +5 |  |  |
@@ -452,7 +454,7 @@ behind them.
 | `--vcon-resign-key` |  | `FILE` | vCon archive | e2e | `tests/config_cli_flag_values_test.rs`, `tests/vcon_resign_test.rs` |  |  |
 | `--vcon-resign-cert` |  | `FILE` | vCon archive | e2e | `tests/config_cli_flag_values_test.rs`, `tests/vcon_resign_test.rs` |  |  |
 | `--vcon-resign-out` |  | `FILE` | vCon archive | e2e | `tests/config_cli_flag_values_test.rs`, `tests/vcon_resign_test.rs` |  |  |
-| `--config` | `-f` | `FILE` | Config | e2e | `tests/actions_journal_mcp_test.rs`, `tests/actions_journal_rest_test.rs` +43 |  |  |
+| `--config` | `-f` | `FILE` | Config | e2e | `tests/actions_journal_mcp_test.rs`, `tests/actions_journal_rest_test.rs` +44 |  |  |
 | `--no-config` | `-F` |  | Config | e2e | `tests/annotate_cli_test.rs`, `tests/call_report_siprec_test.rs` +35 |  |  |
 | `--dump-config` | `-D` |  | Config | e2e | `tests/cli_flag_behavior_test.rs`, `tests/cli_options_test.rs` +6 |  |  |
 | `--completions` |  | `SHELL` | Config | e2e | `tests/cli_help_test.rs` | **behavior** | completions_emit_scripts_for_each_shell runs the real binary for bash/zsh/fish; unknown shell exits 2 |

@@ -387,7 +387,7 @@ impl LiveDetectors {
             .iter()
             .filter_map(|s| crate::security::scanner_kill::KillTarget::parse(s).ok())
             .collect();
-        let scanner = if cli.kill_scanner(config) {
+        let scanner = if cli.scanner_detection(config) {
             let custom = cli
                 .security_args
                 .kill_ua
@@ -616,6 +616,13 @@ pub fn run_tui_mode(
     // detection; it only fills the findings ring the security view reads.
     let live_detectors = LiveDetectors::from_cli(&cli, &config);
     let sec_armed = live_detectors.armed();
+    // The TUI never answers a scanner (it has no kill worker), so this is
+    // `detect_only` or `not_answering` whenever scanner detection is armed.
+    let sec_scanner_response = crate::security::findings::ScannerResponse::for_run(
+        sec_armed.iter().any(|k| k == "scanner"),
+        cli.kill_scanner_detect_only(&config),
+        false,
+    );
     // A plain accumulating engine: the TUI does not want the syslog/json/exec
     // alert channels (those are batch OUTPUT), only the findings ring the view
     // reads through `build_report`.
@@ -643,6 +650,7 @@ pub fn run_tui_mode(
         TuiDetections {
             engine: security_engine.as_ref(),
             armed: &sec_armed,
+            scanner_response: sec_scanner_response,
         },
         &actions,
         capture_meter,
@@ -737,6 +745,7 @@ pub fn run_tui_mode(
             // None/empty when no detector was armed.
             alert_engine: security_engine,
             armed_detections: sec_armed,
+            scanner_response: sec_scanner_response,
             // C5: the view inherits the run's poll interval, showing it in the
             // header and re-asking on it.
             relay_stats_interval: cli.rtp_args.relay_stats_interval,
@@ -992,6 +1001,8 @@ struct TuiDetections<'a> {
     engine: Option<&'a Arc<RwLock<crate::security::AlertEngine>>>,
     /// The armed detector kinds, by the name each files findings under.
     armed: &'a [String],
+    /// Whether scanners are answered; never `Answering` in the TUI.
+    scanner_response: crate::security::findings::ScannerResponse,
 }
 
 /// The detector kinds `security_findings` reports, as the static names
@@ -1082,6 +1093,7 @@ fn start_tui_servers(
             // The detectors the TUI's packet thread runs, so
             // `security_findings` reports what the security view shows.
             armed_detections: armed_kinds(detections.armed),
+            scanner_response: detections.scanner_response,
             pipeline_options: crate::app::server_pipeline_options(cli, config),
             alias_thresholds: cli.alias_thresholds(config),
             vcon_spools: crate::app::vcon_spool::spools(cli, config),

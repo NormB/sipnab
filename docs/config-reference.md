@@ -435,6 +435,7 @@ Security detection defaults.
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
 | `kill_scanner` | boolean | `false` | Enable scanner detection. `--kill-scanner` turns it on. `--no-kill-scanner` forces it off |
+| `kill_scanner_detect_only` | boolean | `false` | Detect scanners as `kill_scanner` does and never answer them: sipnab starts no scanner-kill worker and sends nothing, on a live capture too. It turns scanner detection on by itself, and wins over `kill_scanner = true`. sipnab refuses it beside `-K`/`--kill-target` (exit 2). `--kill-scanner-detect-only` turns it on. `--no-kill-scanner-detect-only` forces it off |
 | `kill_response` | integer | `200` | SIP response code for scanner reports (100-699). `--kill-response` overrides it |
 | `fraud_detect` | boolean | `false` | Enable fraud detection heuristics. `--fraud-detect` turns it on. `--no-fraud-detect` forces it off |
 | `alert` | array of strings | `[]` | Alert channels (`"syslog"`, `"json"`, `"exec"`) and alert rules, as `--alert` takes them. A rule is `"<name>:<threshold>/<window>[:<cooldown>]"`: `name` is `scanner`, `digest`, `fraud` or `reg_flood`, and `window` and `cooldown` carry a unit, `s`, `m` or `h`, for example `"scanner:5/1m:30s"`. An unknown channel or rule name, or a window without a unit, stops the run with exit `1` naming the key. `--alert` overrides it; `--alert-json` also turns it on; `--syslog` also turns it on |
@@ -1376,6 +1377,7 @@ expression = "method == 'INVITE' OR method == 'REGISTER'"
 # -- Security detection --
 [security]
 kill_scanner = true                # Detect SIP scanners (sipvicious, etc.)
+# kill_scanner_detect_only = true  # Detect scanners and never answer them
 kill_response = 403                # Reply to scanners with 403
 fraud_detect = true                # Heuristic fraud detection
 alert = ["syslog", "json"]        # Send alerts to syslog and JSON log

@@ -804,7 +804,11 @@ const EXPECTED_UNRESOLVED: usize = 84;
 // 505 -> 506: src/config.rs, `[hep] send_queue_mib` and `send_timeout_secs`
 // are held to the ranges of `--hep-send-queue` and `--hep-send-timeout`
 // (`[hep] {key} must be 1-{max}, got {v}`).
-const EXPECTED_TEMPLATES: usize = 506;
+// 506 -> 507: src/app/bootstrap.rs, `-K/--kill-target` together with
+// `--kill-scanner-detect-only` (or `[security] kill_scanner_detect_only`) is
+// refused (kill_target_detect_only_refusal). The `--kill-ua` refusal was
+// reworded to name detect-only; still one template. Nothing removed.
+const EXPECTED_TEMPLATES: usize = 507;
 
 // ---------------------------------------------------------------------------
 // The page gates

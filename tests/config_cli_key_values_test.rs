@@ -1411,6 +1411,7 @@ static KEY_SPECS: &[KeySpec] = &[
         KeyKind::Int { lo: 100, hi: 699 },
     ),
     ("security", "kill_scanner", KeyKind::Bool),
+    ("security", "kill_scanner_detect_only", KeyKind::Bool),
     (
         "security",
         "reg_flood_threshold",

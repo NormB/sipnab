@@ -582,6 +582,7 @@ entries by default.
 | `truncated` | bool | `true` when matches remain after this page. There is no cursor — narrow with `since`, or raise `limit`. |
 | `armed_kinds` | string[] | The detectors this server runs. Empty means it runs none, so `findings` could only ever be empty. |
 | `detection_armed` | bool | `false` when `armed_kinds` is empty, stated separately so a caller can branch on one field. |
+| `scanner_response` | string | Whether sipnab answers the scanners it detects. `off`: `scanner` is not in `armed_kinds`. `detect_only`: the server runs with `--kill-scanner-detect-only`, so it detects scanners and never answers them. `not_answering`: the server detects scanners and does not answer them, because the server reads a capture file, runs the interactive TUI, or could not start its scanner-kill worker. `answering`: the scanner-kill worker is running and sends a SIP reply to each detected scanner. |
 | `note` | string? | Present **only** when no detector runs, saying so in words. |
 | `observation_gaps` | object[] | What an armed detector says it **cannot establish** from this capture: `{ rule_name, reason, seen, unestablished, detail }`, narrowed by `kinds`. Always present, empty when there is nothing to say. See below. |
 | `schema_version` | u32 | `1` for this shape. |
@@ -599,6 +600,11 @@ The page fields carry the meanings they do everywhere else on this surface —
 `armed_kinds` is per detector: a server started with `--kill-scanner` alone
 returns no fraud findings for any capture, and `armed_kinds: ["scanner"]`
 says fraud detection did not run.
+
+`scanner` in `armed_kinds` says only that sipnab detects scanners. Read
+`scanner_response` to learn whether sipnab also answers them. A server started
+with `--kill-scanner-detect-only` reports `scanner_response: "detect_only"`:
+it records each scanner as a finding and sends nothing to it.
 
 Arming a rule takes a flag on the server command line, such as `--kill-scanner`
 or `--digest-leak`. Findings then land in a bounded in-memory ring buffer
@@ -632,6 +638,7 @@ on a server started with `--digest-leak`:
   "truncated": false,
   "armed_kinds": ["digest"],
   "detection_armed": true,
+  "scanner_response": "off",
   "observation_gaps": [],
   "capture_identity": { "node": "capture-01", "instance": "cc2d618df0ea70d0788a2-2",
                         "dialog_generation": 8, "stream_generation": 0 },

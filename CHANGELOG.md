@@ -10,6 +10,10 @@ entry that carries them.
 
 ## [Unreleased]
 
+### Added
+
+- **`--kill-scanner-detect-only` detects SIP scanners and never answers them**, on a live capture too: sipnab starts no scanner-kill worker and transmits nothing. It builds the scanner detector by itself and wins over `--kill-scanner`. The config key is `[security] kill_scanner_detect_only`, and `--no-kill-scanner-detect-only` turns it off for one run. The run states it at startup (`Scanner detection is detect-only`) and in its end-of-run summary, the TUI security view shows `Scanner responses: detect-only`, and `security_findings` (MCP and `GET /v1/security/findings`) carries a new `scanner_response` field: `off`, `detect_only`, `not_answering` or `answering`. `-K`/`--kill-target` together with detect-only is refused with exit 2. See [Detect scanners without answering them](docs/examples.md#detect-scanners-without-answering-them).
+
 ### Fixed
 
 - **The pre-push non-Linux check inspects only the checkout it runs in.**

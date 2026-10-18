@@ -152,12 +152,13 @@
     {
       "file": "src/app/bootstrap.rs",
       "call": "PlanError { exit_code: 2, message: msg, }",
-      "count": 2,
+      "count": 3,
       "carries": [
         "{flags} refused: security detection is built only by the headless single-capture path, and this run is {path}. Nothing would be detected and no finding reported, so an empty result would not be an all-clear — which is why this is refused rather than warned about. To detect, {remedy}.",
-        "--kill-ua {pattern} names a User-Agent for the scanner detector, and nothing in this run builds that detector — so the pattern is read by nobody and the run would report no scanners whether or not one is there. Add --kill-scanner (or set [security] kill_scanner = true) to arm the detection this pattern feeds. On a live capture --kill-scanner also arms the response path, which is why sipnab will not turn it on for you."
+        "--kill-ua {pattern} names a User-Agent for the scanner detector, and nothing in this run builds that detector — so the pattern is read by nobody and the run would report no scanners whether or not one is there. Add --kill-scanner-detect-only (or set [security] kill_scanner_detect_only = true) to detect without answering, or --kill-scanner (or [security] kill_scanner = true), which on a live capture also answers the scanners it detects. sipnab will not turn either on for you.",
+        "-K/--kill-target asks sipnab to answer every SIP request from the source it names, and --kill-scanner-detect-only (or [security] kill_scanner_detect_only = true) asks sipnab to answer nothing. Remove -K to detect scanners without answering them, or remove detect-only (--no-kill-scanner-detect-only overrides the config key) to answer the named source."
       ],
-      "why": "Both occurrences in src/app/bootstrap.rs::refuse_unread_detection: msg from security_detection_unarmed_refusal (format! literal, line 5417) and scanner_pattern_unread_refusal (format! literal, line 5333), same file."
+      "why": "All three occurrences in src/app/bootstrap.rs::refuse_unread_detection: msg from security_detection_unarmed_refusal (format! literal), scanner_pattern_unread_refusal (format! literal) and kill_target_detect_only_refusal (plain literal), same file. The third was added with --kill-scanner-detect-only."
     },
     {
       "file": "src/app/bootstrap.rs",

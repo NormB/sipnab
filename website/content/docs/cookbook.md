@@ -1487,6 +1487,70 @@ sudo sipnab -N -d eth0 \
 `--alert syslog` writes alerts to `LOCAL0`. So you can pick them up from `/var/log/syslog`.
 (`--syslog` is the equivalent boolean form.)
 
+### Detect scanners without answering them
+
+Use `--kill-scanner-detect-only` when you want to know which sources scan you, and you do not want sipnab to send them anything.
+
+- It detects scanners exactly as `--kill-scanner` does: the same User-Agent signatures and the same behavior thresholds.
+- It never answers them. sipnab starts no scanner-kill worker and sends no packet, on a live interface too.
+- You do not need `--kill-scanner` with it. If you give both, detect-only wins.
+- To make it the default, set `kill_scanner_detect_only = true` in the `[security]` section of the configuration file. `--no-kill-scanner-detect-only` turns it off for one run.
+
+On a live interface:
+
+```bash
+sudo sipnab -N -d eth0 --kill-scanner-detect-only --alert syslog
+```
+
+To see what it reports, run it over a capture first:
+
+```bash
+sipnab -N -I capture.pcap --kill-scanner-detect-only --no-cli-print
+```
+
+The lines below came from this command with
+[`tests/fixtures/sip-scanner-and-register-flood.pcap`](https://github.com/NormB/sipnab/raw/main/tests/fixtures/sip-scanner-and-register-flood.pcap)
+from the sipnab repository as `capture.pcap`. It holds a probe from a `friendly-scanner` User-Agent.
+
+sipnab says at startup that detection is detect-only:
+
+```text
+2026-10-18T16:12:53.806330Z  INFO sipnab::app::bootstrap: Scanner detection is detect-only (--kill-scanner-detect-only or [security] kill_scanner_detect_only): sipnab detects, alerts on and reports SIP scanners and never answers them. The scanner-kill worker is not started and nothing is transmitted.
+```
+
+It reports each scanner it detects:
+
+```text
+2026-10-18T16:12:53.945702Z  WARN sipnab::alert: [ALERT] scanner src=203.0.113.42 method="OPTIONS" ua="friendly-scanner" detection=ua_pattern alert_type="scanner" src_ip=203.0.113.42 sanitized_detail=method="OPTIONS" ua="friendly-scanner" detection=ua_pattern
+```
+
+The end-of-run summary says it again:
+
+```text
+2026-10-18T16:12:53.956077Z  INFO sipnab::app::batch: sipnab: scanner detection was detect-only: no scanner was answered and nothing was transmitted
+```
+
+With `--api`, `GET /v1/security/findings` reports `"scanner_response": "detect_only"`, and so does the MCP `security_findings` tool. A program reading `armed_kinds: ["scanner"]` can use it to tell that sipnab detected the scanners and did not answer them. Start the run with the REST API (it keeps serving until you stop it), then ask it from a second terminal:
+
+```bash
+sipnab -N -I capture.pcap --kill-scanner-detect-only --no-cli-print --api 127.0.0.1:8080
+```
+
+```bash
+curl -s -H "Authorization: Bearer $SIPNAB_API_KEY" http://127.0.0.1:8080/v1/security/findings | jq '{armed_kinds, scanner_response}'
+```
+
+```json
+{
+  "armed_kinds": [
+    "scanner"
+  ],
+  "scanner_response": "detect_only"
+}
+```
+
+sipnab refuses `-K`/`--kill-target` together with detect-only, with exit status 2. `-K` asks sipnab to answer every request from a source you name, and detect-only asks it to answer nothing.
+
 ### Wire to fail2ban
 
 `--fail2ban` is a boolean flag. It switches sipnab's stdout to fail2ban-friendly log lines.

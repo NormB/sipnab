@@ -903,7 +903,9 @@ Scanners probe for open registrations and try credential stuffing. Detect them e
 Detect scanners on a live interface. Append fail2ban-compatible lines to a log file fail2ban can watch.
 
 - `--kill-scanner` additionally sends the kill response back to the scanner.
-- So run it only where you mean to:
+- To detect and send nothing, use `--kill-scanner-detect-only` instead. See
+  [Detect scanners without answering them](examples.md#detect-scanners-without-answering-them).
+- So run `--kill-scanner` only where you mean to:
 
 ```bash
 sudo sipnab -N -d eth0 --kill-scanner --fail2ban >> /var/log/sipnab/scanners.log

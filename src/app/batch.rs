@@ -221,9 +221,22 @@ struct DetectionEngines {
     /// Targeted-kill directives (`-K` / `--kill-target`): any SIP request whose
     /// source matches is killed regardless of UA/behavioral detection.
     kill_targets: Vec<sec::scanner_kill::KillTarget>,
+    /// `--kill-scanner-detect-only` / `[security] kill_scanner_detect_only`:
+    /// scanners are detected and never answered.
+    detect_only: bool,
 }
 
 impl DetectionEngines {
+    /// Whether this run answers the scanners it detects, for the startup
+    /// summary and the `scanner_response` field of `security_findings`.
+    fn scanner_response(&self) -> crate::security::findings::ScannerResponse {
+        crate::security::findings::ScannerResponse::for_run(
+            self.scanner.is_some() || !self.kill_targets.is_empty(),
+            self.detect_only,
+            self.kill_handle.is_some(),
+        )
+    }
+
     /// The rule names this run can actually file a finding under, sorted.
     ///
     /// Read from the detectors themselves rather than from the flags that built
@@ -2876,7 +2889,7 @@ fn build_detection_engines(
     transmit_permit: Option<crate::security::transmit_guard::TransmitPermit>,
 ) -> DetectionEngines {
     // 17a. Initialize security detectors
-    let kill_scanner_active = cli.kill_scanner(config);
+    let kill_scanner_active = cli.scanner_detection(config);
     let kill_targets = parse_kill_targets(cli);
     // The kill worker is needed whenever we may emit a kill response —
     // detection-driven (--kill-scanner) OR targeted (-K) — and permitted
@@ -2885,8 +2898,12 @@ fn build_detection_engines(
     // so an offline run cannot start a transmitting worker at all. The
     // operator was told why in `bootstrap::plan`; detection, alerting,
     // `--fail2ban` output and reporting all continue below.
+    //
+    // The worker rule is `bootstrap::kill_worker_wanted`, the one that
+    // decided whether to start it, so detect-only keeps no worker here
+    // either.
     let kill_worker_active =
-        (kill_scanner_active || !kill_targets.is_empty()) && transmit_permit.is_some();
+        crate::app::bootstrap::kill_worker_wanted(cli, config) && transmit_permit.is_some();
 
     let scanner_detector = build_scanner_detector(cli, config, kill_scanner_active);
 
@@ -2924,6 +2941,7 @@ fn build_detection_engines(
         kill_handle: scanner_kill_handle,
         kill_response_code: cli.kill_response_code(config),
         kill_targets,
+        detect_only: cli.kill_scanner_detect_only(config),
     }
 }
 
@@ -3150,6 +3168,9 @@ fn server_selection(
         // findings list can tell "nothing was watching" from "the
         // traffic was clean".
         armed_detections: engines.armed_kinds(),
+        // Whether those scanners are also answered: `scanner` in the list
+        // above says only that they are detected.
+        scanner_response: engines.scanner_response(),
         pipeline_options: crate::app::server_pipeline_options(cli, config),
         alias_thresholds: cli.alias_thresholds(config),
         vcon_spools: crate::app::vcon_spool::spools(cli, config),
@@ -4754,6 +4775,8 @@ impl BatchRunner {
         // The accusation summary, over the grouping computed above.
         log_accused_sources(accused);
 
+        log_detect_only_summary(&self.engines);
+
         // What `--split-keep` removed, counted beside what the run kept.
         // A run that deleted capture files says so in its closing line,
         // not only in the per-file log an operator may have scrolled past.
@@ -5117,6 +5140,14 @@ fn print_block_recommendations(
         for a in accused {
             out!("{}", crate::security::recommend::recommend(a, dialect));
         }
+    }
+}
+
+/// A detect-only run says so at the end too, where the scanner-kill totals
+/// line would be on a run that answers scanners.
+fn log_detect_only_summary(engines: &DetectionEngines) {
+    if engines.scanner_response() == crate::security::findings::ScannerResponse::DetectOnly {
+        tracing::info!("{}", crate::security::transmit_guard::DETECT_ONLY_SUMMARY);
     }
 }
 
@@ -16565,6 +16596,7 @@ mod tests {
             reg_flood: None,
             alerts: Arc::new(RwLock::new(AlertEngine::new(Vec::new(), None))),
             kill_handle: None,
+            detect_only: false,
             kill_response_code: 0,
             kill_targets: Vec::new(),
         };
@@ -16764,6 +16796,7 @@ mod tests {
             reg_flood: None,
             alerts: Arc::new(RwLock::new(AlertEngine::new(Vec::new(), None))),
             kill_handle: None,
+            detect_only: false,
             kill_response_code: 0,
             kill_targets: Vec::new(),
         };
@@ -17175,6 +17208,7 @@ mod tests {
             reg_flood: None,
             alerts: Arc::new(RwLock::new(AlertEngine::new(Vec::new(), None))),
             kill_handle: None,
+            detect_only: false,
             kill_response_code: 0,
             kill_targets: Vec::new(),
         }
@@ -17709,6 +17743,7 @@ mod tests {
             reg_flood: None,
             alerts: Arc::new(RwLock::new(AlertEngine::new(Vec::new(), None))),
             kill_handle: None,
+            detect_only: false,
             kill_response_code: 0,
             kill_targets: Vec::new(),
         };
@@ -17800,6 +17835,7 @@ mod tests {
             reg_flood: None,
             alerts: Arc::clone(&alerts),
             kill_handle: None,
+            detect_only: false,
             kill_response_code: 200,
             kill_targets,
         };
@@ -17984,6 +18020,7 @@ mod tests {
             reg_flood: None,
             alerts: Arc::clone(&alerts),
             kill_handle: None,
+            detect_only: false,
             kill_response_code: 200,
             // Matches the fixture's 10.0.0.1:5075 source, so one packet raises
             // both a hook command and an alert.
@@ -18193,6 +18230,7 @@ mod tests {
             reg_flood: None,
             alerts: Arc::new(RwLock::new(AlertEngine::new(Vec::new(), None))),
             kill_handle: None,
+            detect_only: false,
             kill_response_code: 0,
             kill_targets: Vec::new(),
         };
@@ -18357,6 +18395,7 @@ mod tests {
             reg_flood: None,
             alerts: Arc::new(RwLock::new(AlertEngine::new(Vec::new(), None))),
             kill_handle: None,
+            detect_only: false,
             kill_response_code: 0,
             kill_targets: Vec::new(),
         };
@@ -19553,6 +19592,42 @@ mod run_state_builder_tests {
 
         let none = build_detection_engines(&cli(&[]), &config, None, None);
         assert!(none.armed_kinds().is_empty());
+    }
+
+    /// `--kill-scanner-detect-only` builds the scanner detector on its own,
+    /// from the flag or the config key, exactly as `--kill-scanner` does.
+    #[test]
+    fn detect_only_builds_the_scanner_detector() {
+        let flag = build_detection_engines(
+            &cli(&["--kill-scanner-detect-only"]),
+            &Config::default(),
+            None,
+            None,
+        );
+        assert!(flag.scanner.is_some(), "the flag must build the detector");
+        assert_eq!(flag.armed_kinds(), vec!["scanner"]);
+        assert!(flag.kill_handle.is_none(), "detect-only answers nothing");
+        assert_eq!(
+            flag.scanner_response(),
+            crate::security::findings::ScannerResponse::DetectOnly,
+            "security_findings must report detect_only"
+        );
+
+        let kill =
+            build_detection_engines(&cli(&["--kill-scanner"]), &Config::default(), None, None);
+        assert_eq!(
+            kill.scanner_response(),
+            crate::security::findings::ScannerResponse::NotAnswering,
+            "--kill-scanner with no worker running answers nothing, and says so"
+        );
+
+        let mut config = Config::default();
+        config.security.kill_scanner_detect_only = Some(true);
+        let key = build_detection_engines(&cli(&[]), &config, None, None);
+        assert!(
+            key.scanner.is_some(),
+            "the config key must build the detector"
+        );
     }
 
     /// `--evidence-out` opens the sink it names before the first packet; no

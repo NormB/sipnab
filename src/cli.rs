@@ -2294,7 +2294,9 @@ pub struct RtpArgs {
 /// 2 MiB libtest thread stack.
 #[derive(clap::Args, Debug, Clone)]
 pub struct SecurityArgs {
-    /// Detect and report SIP scanning activity.
+    /// Detect and report SIP scanning activity. On a live capture, also answer
+    /// each detected scanner with a SIP response; `--kill-scanner-detect-only`
+    /// detects without answering.
     #[arg(help_heading = "Security", long, overrides_with = "no_kill_scanner")]
     pub kill_scanner: bool,
 
@@ -2302,6 +2304,28 @@ pub struct SecurityArgs {
     /// last of `--kill-scanner` / `--no-kill-scanner` typed wins.
     #[arg(help_heading = "Security", long, overrides_with = "kill_scanner")]
     pub no_kill_scanner: bool,
+
+    /// Detect and report SIP scanners exactly as `--kill-scanner` does, and
+    /// never answer them: no scanner-kill worker is started and nothing is
+    /// transmitted, on a live capture too. Builds the scanner detector on its
+    /// own, so `--kill-scanner` is not also required. Refused together with
+    /// `-K/--kill-target`, which asks sipnab to answer a named source.
+    #[arg(
+        help_heading = "Security",
+        long,
+        overrides_with = "no_kill_scanner_detect_only"
+    )]
+    pub kill_scanner_detect_only: bool,
+
+    /// Answer scanners again even when `[security] kill_scanner_detect_only
+    /// = true`. The last of `--kill-scanner-detect-only` /
+    /// `--no-kill-scanner-detect-only` typed wins.
+    #[arg(
+        help_heading = "Security",
+        long,
+        overrides_with = "kill_scanner_detect_only"
+    )]
+    pub no_kill_scanner_detect_only: bool,
 
     /// Bound which files this process can reach, using Landlock.
     ///
@@ -2366,10 +2390,11 @@ pub struct SecurityArgs {
     /// Add a User-Agent pattern to the scanner detector.
     ///
     /// A PATTERN, not a switch: it tells the scanner detector one more thing
-    /// to recognize. `--kill-scanner` (or `[security] kill_scanner = true`)
-    /// is what BUILDS that detector, and sipnab refuses a run that gives this
-    /// pattern without it rather than reading nothing and reporting no
-    /// scanners -- which is what a clean network looks like too.
+    /// to recognize. `--kill-scanner` or `--kill-scanner-detect-only` (or
+    /// their `[security]` keys) is what BUILDS that detector, and sipnab
+    /// refuses a run that gives this pattern without one of them rather than
+    /// reading nothing and reporting no scanners -- which is what a clean
+    /// network looks like too.
     ///
     /// sipnab does not arm the detector for you. On a live capture
     /// `--kill-scanner` also arms the response path, and a flag that says
@@ -6537,6 +6562,27 @@ impl Cli {
             config.security.kill_scanner,
             false,
         )
+    }
+
+    /// Whether scanner detection is detect-only: `--kill-scanner-detect-only`
+    /// / `--no-kill-scanner-detect-only`, else `[security]
+    /// kill_scanner_detect_only`, else off. Detect-only builds the scanner
+    /// detector and never answers a scanner.
+    #[must_use]
+    pub fn kill_scanner_detect_only(&self, config: &crate::config::Config) -> bool {
+        switch(
+            self.security_args.kill_scanner_detect_only,
+            self.security_args.no_kill_scanner_detect_only,
+            config.security.kill_scanner_detect_only,
+            false,
+        )
+    }
+
+    /// Whether this run builds the scanner detector: [`Self::kill_scanner`]
+    /// or [`Self::kill_scanner_detect_only`].
+    #[must_use]
+    pub fn scanner_detection(&self, config: &crate::config::Config) -> bool {
+        self.kill_scanner(config) || self.kill_scanner_detect_only(config)
     }
 
     /// Whether reverse-DNS lookups run: `--reverse-dns` / `--no-reverse-dns`,
@@ -13747,6 +13793,12 @@ mod tests {
                 |cli, c| cli.kill_scanner(c),
             ),
             (
+                "--kill-scanner-detect-only",
+                "--no-kill-scanner-detect-only",
+                |c| c.security.kill_scanner_detect_only = Some(true),
+                |cli, c| cli.kill_scanner_detect_only(c),
+            ),
+            (
                 "--reverse-dns",
                 "--no-reverse-dns",
                 |c| c.names.reverse_dns = Some(true),
@@ -13765,6 +13817,42 @@ mod tests {
         let mut args = vec!["sipnab", "-N", "-I", "x.pcap"];
         args.extend_from_slice(extra);
         Cli::parse_from_args(args)
+    }
+
+    /// Detect-only builds the scanner detector on its own, from the flag or
+    /// from the config key, so `--kill-scanner` is not also required. It
+    /// never turns `--kill-scanner` itself on.
+    #[test]
+    fn detect_only_arms_scanner_detection_without_kill_scanner() -> Result<(), TestError> {
+        let none = crate::config::Config::default();
+        assert!(!parse(&[]).scanner_detection(&none), "nothing asked for it");
+
+        let flag = parse(&["--kill-scanner-detect-only"]);
+        assert!(flag.kill_scanner_detect_only(&none));
+        assert!(
+            flag.scanner_detection(&none),
+            "the flag builds the detector"
+        );
+        assert!(
+            !flag.kill_scanner(&none),
+            "detect-only is not --kill-scanner"
+        );
+
+        let mut cfg = crate::config::Config::default();
+        cfg.security.kill_scanner_detect_only = Some(true);
+        assert!(
+            parse(&[]).scanner_detection(&cfg),
+            "the config key builds the detector"
+        );
+        assert!(
+            !parse(&["--no-kill-scanner-detect-only"]).scanner_detection(&cfg),
+            "the off flag beats the key, and nothing else asked for detection"
+        );
+
+        let both = parse(&["--kill-scanner", "--kill-scanner-detect-only"]);
+        assert!(both.scanner_detection(&none));
+        assert!(both.kill_scanner_detect_only(&none));
+        Ok(())
     }
 
     /// The failure that motivated the off flags: a file turns a switch on, and

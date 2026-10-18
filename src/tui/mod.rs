@@ -348,6 +348,9 @@ pub struct App {
     /// The detector kinds armed this run, for the report's "what was watching"
     /// line. Empty when none were armed.
     armed_detections: Vec<String>,
+    /// Whether this run answers the scanners it detects, for the report's
+    /// scanner-response line.
+    scanner_response: crate::security::findings::ScannerResponse,
     /// The relay-stats poll interval this run was started with (ST8, C5). `Some`
     /// makes the view re-ask on the interval and label its counters `polled`.
     relay_stats_interval: Option<u64>,
@@ -575,6 +578,7 @@ impl App {
             tfps_access: crate::security::tfps::TfpsLocator::default(),
             alert_engine: None,
             armed_detections: Vec::new(),
+            scanner_response: Default::default(),
             relay_stats_interval: None,
             relay_stats_asked_at: None,
             dashboard_generation: None,

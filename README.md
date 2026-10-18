@@ -262,7 +262,8 @@ Next:
   - HEP forwarding (`-H`),
   - reverse DNS (`--reverse-dns`),
   - `--kill-scanner` and `-K`. On a live interface, these answer scanners with
-    SIP responses.
+    SIP responses. `--kill-scanner-detect-only` detects scanners and never
+    answers them.
   - When sipnab reads a capture file, it sends no scanner responses.
 - **The threat model.** [Threat model and security assessment](docs/threat-model.md)
   lists the assets, trust boundaries, mitigations and known gaps.

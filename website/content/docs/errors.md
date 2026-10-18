@@ -542,6 +542,17 @@ sipnab could not read a `-K`/`--kill-target` value. sipnab checks each value at 
 
 **Exit code:** 2.
 
+### `-K/--kill-target asks sipnab to answer every SIP request from the source it names, and --kill-scanner-detect-only (or [security] kill_scanner_detect_only = true) asks sipnab to answer nothing. Remove -K to detect scanners without answering them, or remove detect-only (--no-kill-scanner-detect-only overrides the config key) to answer the named source.`
+
+You asked for two things that cannot both happen. `-K`/`--kill-target` sends a SIP response to every request from the source you named. Detect-only (`--kill-scanner-detect-only`, or `kill_scanner_detect_only = true` in `[security]`) means sipnab sends nothing. sipnab refuses the run rather than ignore one of them.
+
+**What to do:** Choose one:
+
+- To detect scanners and send nothing, remove `-K`.
+- To answer the named source, remove `--kill-scanner-detect-only`. If the configuration file sets `kill_scanner_detect_only = true`, add `--no-kill-scanner-detect-only` for this run, or remove the key.
+
+**Exit code:** 2.
+
 ### `--multi-device and --hep-listen/-L cannot run together yet. One interface plus one HEP listener is supported; a device LIST plus a listener is not, because sipnab correlates a HEP-delivered dialog to a locally captured stream by SDP media endpoint alone and that index carries no node dimension — two sources advertising the same address and port would overwrite each other. Drop --multi-device, or drop -L.`
 
 You cannot combine `--multi-device` with a HEP listener (`-L`). That flag takes a comma-separated device list given to `-d`.
@@ -4808,14 +4819,14 @@ If you meant to supply two captures of one call from different points, the count
 
 **Exit code:** None. This is a warning, and the run continues.
 
-### `--kill-ua {pattern} names a User-Agent for the scanner detector, and nothing in this run builds that detector — so the pattern is read by nobody and the run would report no scanners whether or not one is there. Add --kill-scanner (or set [security] kill_scanner = true) to arm the detection this pattern feeds. On a live capture --kill-scanner also arms the response path, which is why sipnab will not turn it on for you.`
+### `--kill-ua {pattern} names a User-Agent for the scanner detector, and nothing in this run builds that detector — so the pattern is read by nobody and the run would report no scanners whether or not one is there. Add --kill-scanner-detect-only (or set [security] kill_scanner_detect_only = true) to detect without answering, or --kill-scanner (or [security] kill_scanner = true), which on a live capture also answers the scanners it detects. sipnab will not turn either on for you.`
 
-`--kill-ua` adds a User-Agent pattern for the scanner detector. This run does not build that detector, because you set neither `--kill-scanner` nor `[security] kill_scanner = true`.
+`--kill-ua` adds a User-Agent pattern for the scanner detector. This run does not build that detector, because you set none of `--kill-scanner`, `--kill-scanner-detect-only`, `[security] kill_scanner = true` or `[security] kill_scanner_detect_only = true`.
 
 - `{pattern}` is the pattern you gave.
-- sipnab does not turn scanner detection on by itself. On a live capture that would also enable sending SIP responses to the detected scanners.
+- sipnab does not turn scanner detection on by itself. On a live capture `--kill-scanner` also sends SIP responses to the detected scanners.
 
-**What to do:** Add `--kill-scanner` or set `[security] kill_scanner = true` in the configuration file, or remove `--kill-ua`.
+**What to do:** Add `--kill-scanner-detect-only` to detect scanners and send nothing. Add `--kill-scanner` instead to also answer them on a live capture. Or remove `--kill-ua`. Each flag has a configuration key in `[security]` with the same effect.
 
 **Exit code:** 2.
 

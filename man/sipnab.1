@@ -494,10 +494,16 @@ The G.729 codebook table file, for decoding G.729 audio.
 .SS Security
 .TP
 \fB\-\-kill\-scanner\fR
-Detect and report SIP scanning activity.
+Detect and report SIP scanning activity. On a live capture, also answer each detected scanner with a SIP response; \fB\-\-kill\-scanner\-detect\-only\fR detects without answering.
 .TP
 \fB\-\-no\-kill\-scanner\fR
 Do not answer scanners even when \fB[security] kill_scanner = true\fR. The last of \fB\-\-kill\-scanner\fR / \fB\-\-no\-kill\-scanner\fR typed wins.
+.TP
+\fB\-\-kill\-scanner\-detect\-only\fR
+Detect and report SIP scanners exactly as \fB\-\-kill\-scanner\fR does, and never answer them: no scanner\-kill worker is started and nothing is transmitted, on a live capture too. Builds the scanner detector on its own, so \fB\-\-kill\-scanner\fR is not also required. Refused together with \fB\-K/\-\-kill\-target\fR, which asks sipnab to answer a named source.
+.TP
+\fB\-\-no\-kill\-scanner\-detect\-only\fR
+Answer scanners again even when \fB[security] kill_scanner_detect_only = true\fR. The last of \fB\-\-kill\-scanner\-detect\-only\fR / \fB\-\-no\-kill\-scanner\-detect\-only\fR typed wins.
 .TP
 \fB\-\-sandbox\fR \fIMODE\fR
 Bound which files this process can reach, using Landlock.

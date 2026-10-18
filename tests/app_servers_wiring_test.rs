@@ -65,6 +65,7 @@ fn metrics_only() -> Selection {
         mcp: false,
         metrics: true,
         armed_detections: Vec::new(),
+        scanner_response: Default::default(),
         pipeline_options: Default::default(),
         vcon_spools: Vec::new(),
         vcon_fetch: Default::default(),

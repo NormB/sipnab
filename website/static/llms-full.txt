@@ -2730,6 +2730,70 @@ sudo sipnab -N -d eth0 \
 `--alert syslog` writes alerts to `LOCAL0`. So you can pick them up from `/var/log/syslog`.
 (`--syslog` is the equivalent boolean form.)
 
+### Detect scanners without answering them
+
+Use `--kill-scanner-detect-only` when you want to know which sources scan you, and you do not want sipnab to send them anything.
+
+- It detects scanners exactly as `--kill-scanner` does: the same User-Agent signatures and the same behavior thresholds.
+- It never answers them. sipnab starts no scanner-kill worker and sends no packet, on a live interface too.
+- You do not need `--kill-scanner` with it. If you give both, detect-only wins.
+- To make it the default, set `kill_scanner_detect_only = true` in the `[security]` section of the configuration file. `--no-kill-scanner-detect-only` turns it off for one run.
+
+On a live interface:
+
+```bash
+sudo sipnab -N -d eth0 --kill-scanner-detect-only --alert syslog
+```
+
+To see what it reports, run it over a capture first:
+
+```bash
+sipnab -N -I capture.pcap --kill-scanner-detect-only --no-cli-print
+```
+
+The lines below came from this command with
+[`tests/fixtures/sip-scanner-and-register-flood.pcap`](https://github.com/NormB/sipnab/raw/main/tests/fixtures/sip-scanner-and-register-flood.pcap)
+from the sipnab repository as `capture.pcap`. It holds a probe from a `friendly-scanner` User-Agent.
+
+sipnab says at startup that detection is detect-only:
+
+```text
+2026-10-18T16:12:53.806330Z  INFO sipnab::app::bootstrap: Scanner detection is detect-only (--kill-scanner-detect-only or [security] kill_scanner_detect_only): sipnab detects, alerts on and reports SIP scanners and never answers them. The scanner-kill worker is not started and nothing is transmitted.
+```
+
+It reports each scanner it detects:
+
+```text
+2026-10-18T16:12:53.945702Z  WARN sipnab::alert: [ALERT] scanner src=203.0.113.42 method="OPTIONS" ua="friendly-scanner" detection=ua_pattern alert_type="scanner" src_ip=203.0.113.42 sanitized_detail=method="OPTIONS" ua="friendly-scanner" detection=ua_pattern
+```
+
+The end-of-run summary says it again:
+
+```text
+2026-10-18T16:12:53.956077Z  INFO sipnab::app::batch: sipnab: scanner detection was detect-only: no scanner was answered and nothing was transmitted
+```
+
+With `--api`, `GET /v1/security/findings` reports `"scanner_response": "detect_only"`, and so does the MCP `security_findings` tool. A program reading `armed_kinds: ["scanner"]` can use it to tell that sipnab detected the scanners and did not answer them. Start the run with the REST API (it keeps serving until you stop it), then ask it from a second terminal:
+
+```bash
+sipnab -N -I capture.pcap --kill-scanner-detect-only --no-cli-print --api 127.0.0.1:8080
+```
+
+```bash
+curl -s -H "Authorization: Bearer $SIPNAB_API_KEY" http://127.0.0.1:8080/v1/security/findings | jq '{armed_kinds, scanner_response}'
+```
+
+```json
+{
+  "armed_kinds": [
+    "scanner"
+  ],
+  "scanner_response": "detect_only"
+}
+```
+
+sipnab refuses `-K`/`--kill-target` together with detect-only, with exit status 2. `-K` asks sipnab to answer every request from a source you name, and detect-only asks it to answer nothing.
+
 ### Wire to fail2ban
 
 `--fail2ban` is a boolean flag. It switches sipnab's stdout to fail2ban-friendly log lines.
@@ -10488,6 +10552,7 @@ curl -s -H "Authorization: Bearer $SIPNAB_API_KEY" "http://127.0.0.1:8080/v1/sec
   "truncated": false,
   "armed_kinds": ["scanner"],
   "detection_armed": true,
+  "scanner_response": "not_answering",
   "observation_gaps": [],
   "capture_identity": {
     "node": "capture-01",
@@ -10511,6 +10576,18 @@ them apart.**
 Arm a
 detector with `--kill-scanner`, `--fraud-detect`, `--digest-leak` or
 `--reg-flood`.
+
+**`scanner_response` says whether sipnab answers the scanners it detects.**
+`scanner` in `armed_kinds` says only that sipnab detects scanners.
+
+- `off`: scanner detection is not armed.
+- `detect_only`: the run uses `--kill-scanner-detect-only`. sipnab detects
+  scanners and never answers them.
+- `not_answering`: sipnab detects scanners and does not answer them, because
+  the run reads a capture file, runs the interactive TUI, or could not start
+  its scanner-kill worker.
+- `answering`: the scanner-kill worker is running and sends a SIP reply to
+  each detected scanner.
 
 **An armed detector can also say it could not see.** `observation_gaps` lists
 what it cannot establish from this capture. It is per detector and narrowed by `kinds`.
@@ -14689,7 +14766,9 @@ Scanners probe for open registrations and try credential stuffing. Detect them e
 Detect scanners on a live interface. Append fail2ban-compatible lines to a log file fail2ban can watch.
 
 - `--kill-scanner` additionally sends the kill response back to the scanner.
-- So run it only where you mean to:
+- To detect and send nothing, use `--kill-scanner-detect-only` instead. See
+  [Detect scanners without answering them](examples.md#detect-scanners-without-answering-them).
+- So run `--kill-scanner` only where you mean to:
 
 ```bash
 sudo sipnab -N -d eth0 --kill-scanner --fail2ban >> /var/log/sipnab/scanners.log
@@ -16413,6 +16492,10 @@ rule, source address, detail and time.
 - The same report as `GET /v1/security/findings`.
 - Arm a detector with `--kill-scanner`, `--fraud-detect`, `--digest-leak` or
   `--reg-flood`.
+- With scanner detection armed, a `Scanner responses:` line says whether
+  sipnab answers scanners. The TUI never answers one, so it reads
+  `detect-only, scanners are detected and never answered` under
+  `--kill-scanner-detect-only`, and `none sent by this run` otherwise.
 
 Open with `a` from the Call List.
 
@@ -18628,11 +18711,13 @@ It also refuses a boundary that is not a finite number of 0 or more, such as
 
 | Flag | Value | Default | Since | Description |
 |------|-------|---------|-------|-------------|
-| `--kill-scanner` | -- | off | 0.3.0 | Detect SIP scanning (known UA signatures + behavioral rate/enumeration), alert on it, and send the kill response back to the scanner (the CLI matcher `-J`/`-j`). Config: `[security] kill_scanner` |
+| `--kill-scanner` | -- | off | 0.3.0 | Detect SIP scanning (known UA signatures + behavioral rate/enumeration), alert on it, and send the kill response back to the scanner (the CLI matcher `-J`/`-j`). To detect without answering, use `--kill-scanner-detect-only`. Config: `[security] kill_scanner` |
 | `--no-kill-scanner` | -- | off | 0.5.204 | Do not answer scanners even when `[security] kill_scanner = true`, so you can disarm, for one run, a response that a config file arms. The last of `--kill-scanner` / `--no-kill-scanner` typed wins. Config: `[security] kill_scanner` |
-| `--kill-ua` | `<PATTERN>` | -- | 0.3.0 | Add a custom scanner User-Agent pattern (regex) to `--kill-scanner` detection. **Refused without it**: `--kill-scanner` (or `[security] kill_scanner = true`) builds the detector that reads this pattern, so given alone it would feed nothing and the run would report no scanners — which is what a clean capture looks like. sipnab does not arm the detector for you, because on a live capture `--kill-scanner` also arms the response path. sipnab refuses an empty or blank pattern, which would match every User-Agent, and a pattern that is not a valid regular expression |
+| `--kill-scanner-detect-only` | -- | off | Unreleased | Detect and report SIP scanners exactly as `--kill-scanner` does, and never answer them. sipnab starts no scanner-kill worker and sends nothing, on a live capture too. It builds the scanner detector by itself, so `--kill-scanner` is not needed; given together, detect-only wins. The run says `Scanner detection is detect-only` at startup and `scanner detection was detect-only` in its end-of-run summary, and `security_findings` reports `scanner_response: "detect_only"`. sipnab refuses it together with `-K`/`--kill-target` (exit 2), because `-K` asks sipnab to answer a named source. Config: `[security] kill_scanner_detect_only` |
+| `--no-kill-scanner-detect-only` | -- | off | Unreleased | Answer scanners again even when `[security] kill_scanner_detect_only = true`, for one run. The last of `--kill-scanner-detect-only` / `--no-kill-scanner-detect-only` typed wins. Config: `[security] kill_scanner_detect_only` |
+| `--kill-ua` | `<PATTERN>` | -- | 0.3.0 | Add a custom scanner User-Agent pattern (regex) to `--kill-scanner` detection. **Refused without it**: `--kill-scanner` or `--kill-scanner-detect-only` (or `[security] kill_scanner = true` or `kill_scanner_detect_only = true`) builds the detector that reads this pattern, so given alone it would feed nothing and the run would report no scanners — which is what a clean capture looks like. sipnab does not arm the detector for you, because on a live capture `--kill-scanner` also arms the response path. sipnab refuses an empty or blank pattern, which would match every User-Agent, and a pattern that is not a valid regular expression |
 | `--kill-response` | `<CODE>` | `200` | 0.3.0 | SIP response code for the kill response (100-699). Config: `[security] kill_response` |
-| `-K`, `--kill-target` | `<ADDR[:PORT-RANGE]>` | -- | 0.5.7 | Targeted kill: send the kill response to any SIP request whose source matches ADDR and an optional port range (`192.0.2.1:5060-5090`, `[::1]:5060`), regardless of UA/behavioral detection. Repeatable; spawns the kill worker on its own (no `--kill-scanner` needed) |
+| `-K`, `--kill-target` | `<ADDR[:PORT-RANGE]>` | -- | 0.5.7 | Targeted kill: send the kill response to any SIP request whose source matches ADDR and an optional port range (`192.0.2.1:5060-5090`, `[::1]:5060`), regardless of UA/behavioral detection. Repeatable; spawns the kill worker on its own (no `--kill-scanner` needed). Refused (exit 2) together with `--kill-scanner-detect-only` or `[security] kill_scanner_detect_only = true` |
 | `--kill-spoof` | `<MODE>` | `auto` | 0.5.12 | Source-address strategy for the kill response (Linux only; other platforms always `ephemeral`). `auto` forges the victim's ip:port via a raw socket when `CAP_NET_RAW` is available (so the reply appears to come from the targeted SIP port), falling back to an ephemeral source otherwise; `raw` requires the spoof and errors when it cannot open the raw socket; `ephemeral` never spoofs |
 | `--kill-rate-limit` | `<N>` | `10` | 0.5.96 | Scanner-kill responses per second sipnab may put on the wire. There is no unlimited setting: sipnab rejects `0`. A per-destination cap of 3 per minute applies underneath, so raising this widens how many distinct hosts sipnab answers, never how hard it hits one. Config: `[security] kill_rate_limit` |
 | `--sandbox` | `<MODE>` | `off` | 0.5.164 | Bound which files this process may reach, using Landlock. `best-effort` installs what the kernel supports and captures either way; `required` refuses to capture when no sandbox is in force. Reads and writes outside the input set, the output directory, the keylog and the crash directory come back `EACCES`. **Sockets are not bounded**: the ruleset governs the filesystem only. A denied open fails with `EACCES` and does not end the run, and a kernel without Landlock degrades to a warning unless `required` says otherwise |
@@ -18700,6 +18785,10 @@ It also refuses a boundary that is not a finite number of 0 or more, such as
 - `sipnab -N -I capture.pcap --fraud-detect --no-fraud-detect --report` — the last of the pair wins, so no fraud detector runs
 - `sipnab -N -I capture.pcap --no-kill-scanner --report` — analyze without arming the scanner response that your config file's `[security] kill_scanner = true` would arm
 - `sipnab -N -I capture.pcap --kill-scanner --no-kill-scanner --report` — the last of the pair wins, so sipnab arms no response
+- `sipnab -N -I capture.pcap --kill-scanner-detect-only --report` — report the scanners in a capture; on a live interface the same flag still sends them nothing
+- `sudo sipnab -N -d eth0 --kill-scanner-detect-only --fail2ban` — write fail2ban lines for the scanners a live interface sees, and send the scanners nothing
+- `sipnab -N -I capture.pcap --no-kill-scanner-detect-only --report` — analyze without the detect-only setting that your config file's `[security] kill_scanner_detect_only = true` turns on
+- `sudo sipnab -N -d eth0 --kill-scanner --no-kill-scanner-detect-only` — answer scanners for one run although your config file sets `[security] kill_scanner_detect_only = true`
 
 - `sudo sipnab -d eth0 --kill-scanner --kill-ua 'friendly-scanner' --kill-response 486 --kill-spoof auto` — detect SIP scanners (plus a custom UA pattern) and reply 486 with the victim's spoofed source
 - `sudo sipnab -d eth0 --kill-scanner --kill-target 192.0.2.66:5060-5090 --kill-ua 'sipvicious' --kill-response 480 --kill-spoof raw` — targeted kill of a scanning host across a port range, plus a second scanner UA, replying 480 via raw-socket spoof
@@ -20192,6 +20281,17 @@ sipnab could not read a `-K`/`--kill-target` value. sipnab checks each value at 
 - an address (`192.0.2.10`);
 - an address with a port or port range (`192.0.2.10:5060` or `192.0.2.10:5060-5070`);
 - an IPv6 address in brackets, with an optional port (`[2001:db8::1]:5060`).
+
+**Exit code:** 2.
+
+### `-K/--kill-target asks sipnab to answer every SIP request from the source it names, and --kill-scanner-detect-only (or [security] kill_scanner_detect_only = true) asks sipnab to answer nothing. Remove -K to detect scanners without answering them, or remove detect-only (--no-kill-scanner-detect-only overrides the config key) to answer the named source.`
+
+You asked for two things that cannot both happen. `-K`/`--kill-target` sends a SIP response to every request from the source you named. Detect-only (`--kill-scanner-detect-only`, or `kill_scanner_detect_only = true` in `[security]`) means sipnab sends nothing. sipnab refuses the run rather than ignore one of them.
+
+**What to do:** Choose one:
+
+- To detect scanners and send nothing, remove `-K`.
+- To answer the named source, remove `--kill-scanner-detect-only`. If the configuration file sets `kill_scanner_detect_only = true`, add `--no-kill-scanner-detect-only` for this run, or remove the key.
 
 **Exit code:** 2.
 
@@ -24461,14 +24561,14 @@ If you meant to supply two captures of one call from different points, the count
 
 **Exit code:** None. This is a warning, and the run continues.
 
-### `--kill-ua {pattern} names a User-Agent for the scanner detector, and nothing in this run builds that detector — so the pattern is read by nobody and the run would report no scanners whether or not one is there. Add --kill-scanner (or set [security] kill_scanner = true) to arm the detection this pattern feeds. On a live capture --kill-scanner also arms the response path, which is why sipnab will not turn it on for you.`
+### `--kill-ua {pattern} names a User-Agent for the scanner detector, and nothing in this run builds that detector — so the pattern is read by nobody and the run would report no scanners whether or not one is there. Add --kill-scanner-detect-only (or set [security] kill_scanner_detect_only = true) to detect without answering, or --kill-scanner (or [security] kill_scanner = true), which on a live capture also answers the scanners it detects. sipnab will not turn either on for you.`
 
-`--kill-ua` adds a User-Agent pattern for the scanner detector. This run does not build that detector, because you set neither `--kill-scanner` nor `[security] kill_scanner = true`.
+`--kill-ua` adds a User-Agent pattern for the scanner detector. This run does not build that detector, because you set none of `--kill-scanner`, `--kill-scanner-detect-only`, `[security] kill_scanner = true` or `[security] kill_scanner_detect_only = true`.
 
 - `{pattern}` is the pattern you gave.
-- sipnab does not turn scanner detection on by itself. On a live capture that would also enable sending SIP responses to the detected scanners.
+- sipnab does not turn scanner detection on by itself. On a live capture `--kill-scanner` also sends SIP responses to the detected scanners.
 
-**What to do:** Add `--kill-scanner` or set `[security] kill_scanner = true` in the configuration file, or remove `--kill-ua`.
+**What to do:** Add `--kill-scanner-detect-only` to detect scanners and send nothing. Add `--kill-scanner` instead to also answer them on a live capture. Or remove `--kill-ua`. Each flag has a configuration key in `[security]` with the same effect.
 
 **Exit code:** 2.
 
@@ -28492,6 +28592,7 @@ Security detection defaults.
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
 | `kill_scanner` | boolean | `false` | Enable scanner detection. `--kill-scanner` turns it on. `--no-kill-scanner` forces it off |
+| `kill_scanner_detect_only` | boolean | `false` | Detect scanners as `kill_scanner` does and never answer them: sipnab starts no scanner-kill worker and sends nothing, on a live capture too. It turns scanner detection on by itself, and wins over `kill_scanner = true`. sipnab refuses it beside `-K`/`--kill-target` (exit 2). `--kill-scanner-detect-only` turns it on. `--no-kill-scanner-detect-only` forces it off |
 | `kill_response` | integer | `200` | SIP response code for scanner reports (100-699). `--kill-response` overrides it |
 | `fraud_detect` | boolean | `false` | Enable fraud detection heuristics. `--fraud-detect` turns it on. `--no-fraud-detect` forces it off |
 | `alert` | array of strings | `[]` | Alert channels (`"syslog"`, `"json"`, `"exec"`) and alert rules, as `--alert` takes them. A rule is `"<name>:<threshold>/<window>[:<cooldown>]"`: `name` is `scanner`, `digest`, `fraud` or `reg_flood`, and `window` and `cooldown` carry a unit, `s`, `m` or `h`, for example `"scanner:5/1m:30s"`. An unknown channel or rule name, or a window without a unit, stops the run with exit `1` naming the key. `--alert` overrides it; `--alert-json` also turns it on; `--syslog` also turns it on |
@@ -29433,6 +29534,7 @@ expression = "method == 'INVITE' OR method == 'REGISTER'"
 # -- Security detection --
 [security]
 kill_scanner = true                # Detect SIP scanners (sipvicious, etc.)
+# kill_scanner_detect_only = true  # Detect scanners and never answer them
 kill_response = 403                # Reply to scanners with 403
 fraud_detect = true                # Heuristic fraud detection
 alert = ["syslog", "json"]        # Send alerts to syslog and JSON log
@@ -38541,6 +38643,7 @@ entries by default.
 | `truncated` | bool | `true` when matches remain after this page. There is no cursor — narrow with `since`, or raise `limit`. |
 | `armed_kinds` | string[] | The detectors this server runs. Empty means it runs none, so `findings` could only ever be empty. |
 | `detection_armed` | bool | `false` when `armed_kinds` is empty, stated separately so a caller can branch on one field. |
+| `scanner_response` | string | Whether sipnab answers the scanners it detects. `off`: `scanner` is not in `armed_kinds`. `detect_only`: the server runs with `--kill-scanner-detect-only`, so it detects scanners and never answers them. `not_answering`: the server detects scanners and does not answer them, because the server reads a capture file, runs the interactive TUI, or could not start its scanner-kill worker. `answering`: the scanner-kill worker is running and sends a SIP reply to each detected scanner. |
 | `note` | string? | Present **only** when no detector runs, saying so in words. |
 | `observation_gaps` | object[] | What an armed detector says it **cannot establish** from this capture: `{ rule_name, reason, seen, unestablished, detail }`, narrowed by `kinds`. Always present, empty when there is nothing to say. See below. |
 | `schema_version` | u32 | `1` for this shape. |
@@ -38558,6 +38661,11 @@ The page fields carry the meanings they do everywhere else on this surface —
 `armed_kinds` is per detector: a server started with `--kill-scanner` alone
 returns no fraud findings for any capture, and `armed_kinds: ["scanner"]`
 says fraud detection did not run.
+
+`scanner` in `armed_kinds` says only that sipnab detects scanners. Read
+`scanner_response` to learn whether sipnab also answers them. A server started
+with `--kill-scanner-detect-only` reports `scanner_response: "detect_only"`:
+it records each scanner as a finding and sends nothing to it.
 
 Arming a rule takes a flag on the server command line, such as `--kill-scanner`
 or `--digest-leak`. Findings then land in a bounded in-memory ring buffer
@@ -38591,6 +38699,7 @@ on a server started with `--digest-leak`:
   "truncated": false,
   "armed_kinds": ["digest"],
   "detection_armed": true,
+  "scanner_response": "off",
   "observation_gaps": [],
   "capture_identity": { "node": "capture-01", "instance": "cc2d618df0ea70d0788a2-2",
                         "dialog_generation": 8, "stream_generation": 0 },
@@ -60743,6 +60852,12 @@ so this run will emit nothing`.
 
 So with sipnab running this way, a scanner learns that something answers on
 your SIP port. That is true even when your SIP server answers nothing.
+
+**To ban scanners without answering them,** use `--kill-scanner-detect-only`
+in place of `--kill-scanner`. It runs the same scanner detector and writes the
+same `scanner_detected` lines, and sipnab sends nothing to the scanner. This
+option is newer than the tests below. See
+[Detect scanners without answering them](examples.md#detect-scanners-without-answering-them).
 
 ## Tested on
 

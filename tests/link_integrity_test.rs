@@ -1508,7 +1508,10 @@ fn wiki_intra_docs_links_resolve() -> Result<(), TestError> {
     // rest-api.md's `hep_export` paragraph links it (+1).
     // 1979 -> 1980: config-reference.md's `[hep] send_queue_mib` row links
     // the same section (+1).
-    const EXPECTED_WIKI_LINKS: usize = 1980;
+    // 1980 -> 1982: --kill-scanner-detect-only. docs/troubleshooting.md +1
+    // and docs/fail2ban-sipnab.md +1, each linking the new examples.md
+    // section "Detect scanners without answering them".
+    const EXPECTED_WIKI_LINKS: usize = 1982;
     // Raised 459 -> 460 when SRC1 stage 1 shipped: docs/cli-reference.md's
     // `--hep-listen` row now points at cookbook recipe "Take signaling from HEP and media off the wire, in one process" in docs/examples.md
     // rather than restating how to pair `-L` with `-d`. Attributed per file

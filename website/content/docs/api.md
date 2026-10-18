@@ -4147,6 +4147,7 @@ curl -s -H "Authorization: Bearer $SIPNAB_API_KEY" "http://127.0.0.1:8080/v1/sec
   "truncated": false,
   "armed_kinds": ["scanner"],
   "detection_armed": true,
+  "scanner_response": "not_answering",
   "observation_gaps": [],
   "capture_identity": {
     "node": "capture-01",
@@ -4170,6 +4171,18 @@ them apart.**
 Arm a
 detector with `--kill-scanner`, `--fraud-detect`, `--digest-leak` or
 `--reg-flood`.
+
+**`scanner_response` says whether sipnab answers the scanners it detects.**
+`scanner` in `armed_kinds` says only that sipnab detects scanners.
+
+- `off`: scanner detection is not armed.
+- `detect_only`: the run uses `--kill-scanner-detect-only`. sipnab detects
+  scanners and never answers them.
+- `not_answering`: sipnab detects scanners and does not answer them, because
+  the run reads a capture file, runs the interactive TUI, or could not start
+  its scanner-kill worker.
+- `answering`: the scanner-kill worker is running and sends a SIP reply to
+  each detected scanner.
 
 **An armed detector can also say it could not see.** `observation_gaps` lists
 what it cannot establish from this capture. It is per detector and narrowed by `kinds`.

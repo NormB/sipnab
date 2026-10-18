@@ -576,6 +576,10 @@ rule, source address, detail and time.
 - The same report as `GET /v1/security/findings`.
 - Arm a detector with `--kill-scanner`, `--fraud-detect`, `--digest-leak` or
   `--reg-flood`.
+- With scanner detection armed, a `Scanner responses:` line says whether
+  sipnab answers scanners. The TUI never answers one, so it reads
+  `detect-only, scanners are detected and never answered` under
+  `--kill-scanner-detect-only`, and `none sent by this run` otherwise.
 
 Open with `a` from the Call List.
 

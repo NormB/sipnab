@@ -79,6 +79,7 @@ fn nothing_enabled_spawns_nothing() -> Result<(), TestError> {
             // its own end-to-end gate in tests/metrics_headless_test.rs.
             metrics: false,
             armed_detections: Vec::new(),
+            scanner_response: Default::default(),
             pipeline_options: Default::default(),
             alias_thresholds: Default::default(),
             vcon_spools: Vec::new(),
@@ -134,6 +135,7 @@ fn selection_gates_configured_servers() -> Result<(), TestError> {
             // has its own end-to-end gate in tests/metrics_headless_test.rs.
             metrics: false,
             armed_detections: Vec::new(),
+            scanner_response: Default::default(),
             pipeline_options: Default::default(),
             alias_thresholds: Default::default(),
             vcon_spools: Vec::new(),
@@ -190,6 +192,7 @@ fn invalid_api_addr_is_an_error() -> Result<(), TestError> {
             // its own end-to-end gate in tests/metrics_headless_test.rs.
             metrics: false,
             armed_detections: Vec::new(),
+            scanner_response: Default::default(),
             pipeline_options: Default::default(),
             alias_thresholds: Default::default(),
             vcon_spools: Vec::new(),
@@ -244,6 +247,7 @@ fn api_on_ephemeral_port_starts_servers_thread() -> Result<(), TestError> {
             // its own end-to-end gate in tests/metrics_headless_test.rs.
             metrics: false,
             armed_detections: Vec::new(),
+            scanner_response: Default::default(),
             pipeline_options: Default::default(),
             alias_thresholds: Default::default(),
             vcon_spools: Vec::new(),
@@ -307,6 +311,7 @@ fn api_port_in_use_is_a_startup_error() -> Result<(), TestError> {
             // its own end-to-end gate in tests/metrics_headless_test.rs.
             metrics: false,
             armed_detections: Vec::new(),
+            scanner_response: Default::default(),
             pipeline_options: Default::default(),
             alias_thresholds: Default::default(),
             vcon_spools: Vec::new(),
@@ -369,6 +374,7 @@ fn api_non_loopback_without_auth_is_a_startup_error() -> Result<(), TestError> {
             // its own end-to-end gate in tests/metrics_headless_test.rs.
             metrics: false,
             armed_detections: Vec::new(),
+            scanner_response: Default::default(),
             pipeline_options: Default::default(),
             alias_thresholds: Default::default(),
             vcon_spools: Vec::new(),
@@ -437,6 +443,7 @@ fn an_unreadable_api_tls_file_is_a_startup_error_naming_it() -> Result<(), TestE
             // its own end-to-end gate in tests/metrics_headless_test.rs.
             metrics: false,
             armed_detections: Vec::new(),
+            scanner_response: Default::default(),
             pipeline_options: Default::default(),
             alias_thresholds: Default::default(),
             vcon_spools: Vec::new(),
@@ -500,6 +507,7 @@ fn mcp_http_transport_without_feature_is_a_startup_error() -> Result<(), TestErr
             // its own end-to-end gate in tests/metrics_headless_test.rs.
             metrics: false,
             armed_detections: Vec::new(),
+            scanner_response: Default::default(),
             pipeline_options: Default::default(),
             alias_thresholds: Default::default(),
             vcon_spools: Vec::new(),
@@ -562,6 +570,7 @@ fn invalid_mcp_bind_is_a_startup_error() -> Result<(), TestError> {
             // its own end-to-end gate in tests/metrics_headless_test.rs.
             metrics: false,
             armed_detections: Vec::new(),
+            scanner_response: Default::default(),
             pipeline_options: Default::default(),
             alias_thresholds: Default::default(),
             vcon_spools: Vec::new(),
@@ -684,6 +693,7 @@ fn metrics_non_loopback_without_auth_is_a_startup_error() -> Result<(), TestErro
             mcp: false,
             metrics: true,
             armed_detections: Vec::new(),
+            scanner_response: Default::default(),
             pipeline_options: Default::default(),
             alias_thresholds: Default::default(),
             vcon_spools: Vec::new(),
@@ -745,6 +755,7 @@ fn metrics_on_loopback_ephemeral_port_starts() -> Result<(), TestError> {
             mcp: false,
             metrics: true,
             armed_detections: Vec::new(),
+            scanner_response: Default::default(),
             pipeline_options: Default::default(),
             alias_thresholds: Default::default(),
             vcon_spools: Vec::new(),
@@ -803,6 +814,7 @@ fn start_mcp_http(bind: &str) -> anyhow::Result<Option<servers::ServerHandles>> 
             mcp: true,
             metrics: false,
             armed_detections: Vec::new(),
+            scanner_response: Default::default(),
             pipeline_options: Default::default(),
             alias_thresholds: Default::default(),
             vcon_spools: Vec::new(),
