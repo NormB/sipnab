@@ -3000,6 +3000,44 @@ fn fuzz_lockfile_pins_the_current_crate_version() -> Result<(), TestError> {
     Ok(())
 }
 
+/// `bpf/Cargo.lock` pins `sipnab-bpf-types` and must match that crate's version.
+///
+/// The kernel programs are a separate workspace that reaches the shared types
+/// through the symlink `bpf/sipnab-bpf-types`. Bumping the types crate updates
+/// the root lockfile and leaves this one behind, and the release build runs
+/// `--locked`: 0.5.226's pull request failed its reproducible build on
+/// "cannot update the lock file bpf/Cargo.lock because --locked" after the cut
+/// moved the crate to 0.1.3. `cargo test` at the root never touches this file,
+/// so reading it from disk sees what is committed.
+#[test]
+fn bpf_lockfile_pins_the_current_bpf_types_version() -> Result<(), TestError> {
+    let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let manifest = std::fs::read_to_string(repo.join("crates/sipnab-bpf-types/Cargo.toml"))?;
+    let declared = manifest
+        .lines()
+        .find_map(|l| l.strip_prefix("version = \""))
+        .and_then(|v| v.split('"').next())
+        .ok_or("crates/sipnab-bpf-types/Cargo.toml carries a version")?;
+    let lock = std::fs::read_to_string(repo.join("bpf/Cargo.lock"))?;
+    let pinned = lock
+        .split("[[package]]")
+        .find(|block| block.contains("name = \"sipnab-bpf-types\""))
+        .and_then(|block| {
+            block
+                .lines()
+                .find_map(|l| l.trim().strip_prefix("version = "))
+                .map(|v| v.trim().trim_matches('"').to_string())
+        })
+        .ok_or("no sipnab-bpf-types [[package]] entry in bpf/Cargo.lock")?;
+    assert_eq!(
+        pinned, declared,
+        "bpf/Cargo.lock pins sipnab-bpf-types {pinned} but the crate is {declared}; \
+         run `cargo update -p sipnab-bpf-types --offline` in bpf/ and commit the \
+         result with the version bump"
+    );
+    Ok(())
+}
+
 /// Both benchmark pages must name the same measured build and date, that build
 /// must be one that exists, and it must be the build `bench/baseline.json`
 /// records.
