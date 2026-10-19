@@ -546,6 +546,63 @@ pub mod gated {
 EOF
 ( cd "$CRATE" && cargo fmt --all ) >/dev/null 2>&1 || true
 
+# non-Linux cfg gate and a checkout nested inside the tree.
+#
+# A linked worktree under .claude/worktrees/ is a separate checkout, with its
+# own sources and its own target/. The gate once copied every one of them into
+# its shim tree and counted their `target_os` gates as this tree's: on
+# 2026-10-18 the copy held 474 GB of other checkouts, and a file that vanished
+# from a worktree's target/ during a concurrent build made the copy fail and
+# the self-check refuse the v0.5.226 tag ("1327 sentinel, expected 1859"; the
+# tree itself had 266). That failure was a race; the gated source file below
+# makes one certain. Its path is just short of PATH_MAX (4096) here and longer
+# than it under target/nonlinux-shim/tree/, so any step that handles the copy
+# by its full path fails on it.
+NESTED="$CRATE/.claude/worktrees/other"
+mkdir -p "$NESTED/src" "$CRATE/.cargo"
+printf 'gitdir: /nonexistent/.git/worktrees/other\n' >"$NESTED/.git"
+LONG="$NESTED/src"
+SEG=$(printf '%0200d' 0)
+while [ $((${#LONG} + 201 + 6)) -le 4088 ]; do LONG="$LONG/$SEG"; done
+LONG="$LONG/$(printf "%0$((4088 - ${#LONG} - 7))d" 0)"
+mkdir -p "$LONG"
+printf '#[cfg(target_os = "linux")]\npub fn other() {}\n' >"$LONG/x.rs"
+printf '[build]\nincremental = true\n' >"$CRATE/.cargo/config.toml"
+write_platform_lib '#[cfg(all(test, target_os = "linux"))]'
+SHIM_TREE="$CRATE/target/nonlinux-shim/tree"
+NL_RC=0
+( cd "$CRATE" && sh "$REPO_ROOT/scripts/check-non-linux.sh" ) >"$TMP/out.log" 2>&1 || NL_RC=$?
+if [ "$NL_RC" -eq 2 ]; then
+	skip "non-Linux cfg gate is not broken by a nested checkout it cannot copy -- $(head -1 "$TMP/out.log")"
+elif [ "$NL_RC" -eq 0 ]; then
+	ok "non-Linux cfg gate is not broken by a nested checkout it cannot copy"
+else
+	bad "non-Linux cfg gate failed on a correct tree because of a nested checkout"
+	sed 's/^/    /' "$TMP/out.log"
+fi
+if [ "$NL_RC" -eq 2 ]; then
+	skip "non-Linux cfg gate copies none of a nested checkout -- the gate did not run"
+elif [ ! -e "$SHIM_TREE/.claude/worktrees/other" ]; then
+	ok "non-Linux cfg gate copies none of a nested checkout"
+else
+	bad "non-Linux cfg gate copied a nested checkout into its shim tree"
+fi
+if [ "$NL_RC" -eq 2 ]; then
+	skip "non-Linux cfg gate still copies a directory of the tree's own -- the gate did not run"
+elif [ -f "$SHIM_TREE/.cargo/config.toml" ] && [ -f "$SHIM_TREE/src/lib.rs" ]; then
+	ok "non-Linux cfg gate still copies a directory of the tree's own"
+else
+	bad "non-Linux cfg gate left the tree's own .cargo/ or src/ out of its shim tree"
+fi
+rm -rf "$CRATE/.claude" "$CRATE/.cargo" "$CRATE/target/nonlinux-shim"
+cat >"$CRATE/src/lib.rs" <<'EOF'
+#[cfg(feature = "native")]
+pub mod gated {
+    pub fn thing() {}
+}
+EOF
+( cd "$CRATE" && cargo fmt --all ) >/dev/null 2>&1 || true
+
 # v* tag gate: a tag must point at a commit whose CI is green.
 #
 # `gh` is stubbed on PATH, the way ops/tsan/test-verdict.sh stubs nm. The gate's

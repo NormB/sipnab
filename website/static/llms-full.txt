@@ -66379,6 +66379,8 @@ Two macOS breaks reached it hours apart on 2026-08-07.
 [`scripts/check-non-linux.sh`](../../scripts/check-non-linux.sh) works on a copy:
 
 - It copies the tree to `target/nonlinux-shim/tree`.
+  - It leaves out build output, `.git`, and any checkout nested in the tree, such as a linked worktree under `.claude/worktrees/`.
+  - It counts the `target_os` values by the same rule, so another checkout's files are never copied or counted.
 - It swaps the `target_os` values there, so that `"linux"` names nothing and `"macos"` names the host.
 - It runs CI's own macOS invocation over the result.
 - The Linux arms drop out, and the `not(target_os = "linux")` arms compile.

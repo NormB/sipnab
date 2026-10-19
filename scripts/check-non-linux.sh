@@ -143,7 +143,21 @@ skip() {
 	exit 2
 }
 
-# Count matches of an ERE across every .rs file under a directory.
+# The files of the tree in the current directory, as `find` arguments: the
+# ONE rule for what the count and the copy below both see. Left out: build
+# output (`target/` at any depth), git's own directory, and every checkout
+# nested inside the tree -- any directory holding a `.git` of its own, such as
+# a linked worktree under .claude/worktrees/. A nested checkout is a different
+# tree with its own sources and its own target/. On 2026-10-18 the copy held
+# 474 GB of six of them, and a file that vanished from one during a concurrent
+# build made the copy incomplete and the self-check refuse a correct tree
+# ("1327 sentinel, expected 1859"; the tree itself had 266).
+in_tree() { # in_tree <find test or action...>
+	find . \( -name target -o -name .git -o \( -type d ! -path . -exec test -e {}/.git \; \) \) \
+		-prune -o "$@"
+}
+
+# Count matches of an ERE across every .rs file of the tree under a directory.
 #
 # `find -exec grep +` rather than a list of paths in a variable: an unquoted
 # `$(cat filelist)` word-splits, and the first contributor with a space in a
@@ -151,8 +165,7 @@ skip() {
 # two wrong numbers and passing. `grep -o` puts each match on its own line, so
 # two gates on one line both count.
 count_cfg() { # count_cfg <dir> <ere>
-	find "$1" -name target -prune -o -name .git -prune -o -name '*.rs' -type f \
-		-exec grep -ohE "$2" {} + | wc -l | tr -d ' '
+	(cd "$1" && in_tree -name '*.rs' -type f -exec grep -ohE "$2" {} +) | wc -l | tr -d ' '
 }
 
 # -- Preconditions ------------------------------------------------------------
@@ -207,9 +220,11 @@ mkdir -p "$TREE"
 # nothing and the second run costs 10 s instead of 50. Copying with mtimes
 # reset would make every run a cold run.
 #
-# Everything except target/ (recursion) and .git/ (nothing here reads it --
-# build.rs falls back gracefully when .git is absent, which it documents).
-find "$ROOT" -maxdepth 1 -mindepth 1 ! -name target ! -name .git -exec cp -a {} "$TREE/" \;
+# Every file of the tree (see `in_tree`): not target/ (recursion), not .git/
+# (nothing here reads it -- build.rs falls back gracefully when .git is absent,
+# which it documents), and no nested checkout. A file that cannot be copied
+# stops the gate here rather than leaving a partial copy for the self-check.
+(cd "$ROOT" && in_tree ! -type d -exec cp -a --parents -t "$TREE" {} +)
 
 # ORDER MATTERS, and it is the whole reason a sentinel exists. `sed` applies
 # `-e` scripts in sequence per line, so the linux->sentinel pass runs first and
