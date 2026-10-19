@@ -135,8 +135,9 @@ Four rules, and they hold everywhere a string does:
 - **`$$` is a literal `$`.** Write `$${NAME}` for a literal `${NAME}`.
 - **A bare `$NAME` is literal text.** Braces are the whole syntax.
 
-What a variable expands to is data. sipnab never scans it again. So a value
-that itself contains `${...}` stays as it is.
+What a variable expands to is data. sipnab never scans it again. So when a
+variable's value itself contains `${HOME}`, those seven characters stay as they
+are.
 
 `--dump-config` prints values after expansion. That is what sipnab is actually
 using.
@@ -401,7 +402,7 @@ See [Enrich a call before it is written](@/docs/vcon.md#enrich-a-call-before-it-
 | `rules` | array of strings | -- | The `[[vcon.rule]]` names whose calls go to this service. Required |
 | `url` | string | -- | Where sipnab POSTs the request: `https://`, or `http://` to a loopback address only. One of `url` and `command` |
 | `command` | string | -- | A program run per call, reading the request on stdin and answering on stdout. One of `url` and `command` |
-| `auth_file` | string | -- | A file holding one `Header-Name: value` line sent with each request, such as `Authorization: Bearer ...`. Never written to a container |
+| `auth_file` | string | -- | A file holding one `Header-Name: value` line sent with each request, such as `Authorization: Bearer <token>`. Never written to a container |
 | `timeout_secs` | integer | `120` | How long sipnab waits for the answer, in seconds, 1 to 3600. sipnab refuses any other value at startup, exit 1, naming the service |
 | `send` | array of strings | `["audio", "signaling"]` | What sipnab sends the service: `audio` (each leg's WAV), `signaling` (the container), or both. Sending audio turns audio retention on for the run |
 | `lawful_basis` | bool | `false` | Carry a `lawful_basis` attachment the service answers with, checked for the shape of draft-howe-vcon-lawful-basis-02 and recorded as the service's. With `false`, an answer holding any attachment is `malformed` |
@@ -443,6 +444,7 @@ Security detection defaults.
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
 | `kill_scanner` | boolean | `false` | Enable scanner detection. `--kill-scanner` turns it on. `--no-kill-scanner` forces it off |
+| `kill_scanner_detect_only` | boolean | `false` | Detect scanners as `kill_scanner` does and never answer them: sipnab starts no scanner-kill worker and sends nothing, on a live capture too. It turns scanner detection on by itself, and wins over `kill_scanner = true`. sipnab refuses it beside `-K`/`--kill-target` (exit 2). `--kill-scanner-detect-only` turns it on. `--no-kill-scanner-detect-only` forces it off |
 | `kill_response` | integer | `200` | SIP response code for scanner reports (100-699). `--kill-response` overrides it |
 | `fraud_detect` | boolean | `false` | Enable fraud detection heuristics. `--fraud-detect` turns it on. `--no-fraud-detect` forces it off |
 | `alert` | array of strings | `[]` | Alert channels (`"syslog"`, `"json"`, `"exec"`) and alert rules, as `--alert` takes them. A rule is `"<name>:<threshold>/<window>[:<cooldown>]"`: `name` is `scanner`, `digest`, `fraud` or `reg_flood`, and `window` and `cooldown` carry a unit, `s`, `m` or `h`, for example `"scanner:5/1m:30s"`. An unknown channel or rule name, or a window without a unit, stops the run with exit `1` naming the key. `--alert` overrides it; `--alert-json` also turns it on; `--syslog` also turns it on |
@@ -1119,7 +1121,8 @@ interval = 10
 
 ### `[vcon_fetch]`
 
-The vCon fetcher's settings (`sipnab --vcon-fetch <UUID>...`, see
+The vCon fetcher's settings (`sipnab --vcon-fetch <UUID>`, which takes one or
+more uuids, see
 [Fetch a stored vCon](@/docs/vcon.md#fetch-a-stored-vcon)).
 
 - The uuids, `--vcon-fetch-out` and `--vcon-fetch-overwrite` stay on the
@@ -1186,7 +1189,7 @@ Privilege separation settings (Linux only).
 |-----|------|---------|-------------|
 | `user` | string | `"nobody"` | User to drop privileges to after opening capture devices. `--user` overrides it |
 | `no_priv_drop` | boolean | `false` | Disable privilege dropping. `--no-priv-drop` turns it on. `--priv-drop` forces it off |
-| `chroot` | string | -- | Chroot directory after initialization. It applies to every run, `-I` file analysis included, and changing root needs root privileges: a run as an ordinary user with this key set exits `1` with `Failed to chroot: ... Operation not permitted`. To analyze a file as an ordinary user, run with `-F` (read no config file) or give `--config` a file without this key. `--chroot` overrides it |
+| `chroot` | string | -- | Chroot directory after initialization. It applies to every run, `-I` file analysis included, and changing root needs root privileges: a run as an ordinary user with this key set exits `1`. With `chroot = "/var/lib/sipnab"` and that directory present, the error reads `Failed to chroot: chroot(/var/lib/sipnab) failed: Operation not permitted (os error 1)`. To analyze a file as an ordinary user, run with `-F` (read no config file) or give `--config` a file without this key. `--chroot` overrides it |
 
 ```toml
 [privilege]
@@ -1384,6 +1387,7 @@ expression = "method == 'INVITE' OR method == 'REGISTER'"
 # -- Security detection --
 [security]
 kill_scanner = true                # Detect SIP scanners (sipvicious, etc.)
+# kill_scanner_detect_only = true  # Detect scanners and never answer them
 kill_response = 403                # Reply to scanners with 403
 fraud_detect = true                # Heuristic fraud detection
 alert = ["syslog", "json"]        # Send alerts to syslog and JSON log

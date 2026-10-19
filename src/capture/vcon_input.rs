@@ -783,9 +783,13 @@ mod reader {
             if let Some(chain) = fetched.lock().get(url) {
                 return Ok(chain.clone());
             }
+            // Quoted with its userinfo redacted, as `Endpoint::parse` quotes
+            // it: the URL comes from the vCon, and a password in it is refused
+            // precisely so that it never reaches the log.
+            let shown = crate::app::run_provenance::redact_url_userinfo(url);
             // The https rule is vcon_jose's, checked before any fetch.
             let endpoint = Endpoint::parse(url, crate::app::https_client::UrlUse::DOWNLOAD)
-                .map_err(|e| format!("x5u {url:?}: {e}"))?;
+                .map_err(|e| format!("x5u {shown:?}: {e}"))?;
             let request = format!(
                 "GET {} HTTP/1.1\r\nHost: {}\r\nUser-Agent: sipnab/{}\r\nAccept: application/pem-certificate-chain\r\nConnection: close\r\n\r\n",
                 endpoint.target,
@@ -801,12 +805,12 @@ mod reader {
                     let head = read_head(reader, 64 * 1024, "the x5u fetch limit")?;
                     let status = status_of(&head)?;
                     if !(200..300).contains(&status) {
-                        return Err(format!("x5u {url:?} answered {status}"));
+                        return Err(format!("x5u {shown:?} answered {status}"));
                     }
                     let (body, more) = read_body(reader, &head, X5U_MAX_BYTES);
                     if more {
                         return Err(format!(
-                            "x5u {url:?} answered more than {X5U_MAX_BYTES} bytes, more than a \
+                            "x5u {shown:?} answered more than {X5U_MAX_BYTES} bytes, more than a \
                              certificate chain"
                         ));
                     }
@@ -1423,6 +1427,56 @@ mod reader {
             routed += 1;
         }
         routed
+    }
+
+    #[cfg(test)]
+    mod x5u_url_tests {
+        use super::x5u_fetcher;
+        use crate::app::vcon_fetch::SignerCa;
+
+        type TestError = Box<dyn std::error::Error>;
+
+        /// The `x5u` fetch the system bundle trusts, for URLs whose refusal is
+        /// decided before any connection.
+        fn fetch(url: &str) -> Result<String, TestError> {
+            let fetcher = x5u_fetcher(&SignerCa::System(
+                "system",
+                crate::settings::Origin::CommandLine,
+            ))?;
+            Ok(fetcher(url)
+                .err()
+                .ok_or("a URL with credentials is refused")?)
+        }
+
+        /// URL-CREDS-IN-LOGS: an `x5u` URL is read from the vCon, so a
+        /// password in it is the container author's to put there. The fetch
+        /// refuses it, and the refusal must not print it.
+        #[test]
+        fn t_negative_an_x5u_refusal_never_quotes_the_password() -> Result<(), TestError> {
+            let why = fetch("https://signer:s3cret-token@example.invalid/chain.pem")?;
+            assert!(!why.contains("s3cret-token"), "{why}");
+            Ok(())
+        }
+
+        /// The refusal still names the URL the operator has to look for,
+        /// with its userinfo redacted.
+        #[test]
+        fn t_positive_an_x5u_refusal_still_names_the_host() -> Result<(), TestError> {
+            let why = fetch("https://signer:s3cret-token@example.invalid/chain.pem")?;
+            assert!(why.contains("example.invalid/chain.pem"), "{why}");
+            assert!(why.starts_with("x5u "), "{why}");
+            Ok(())
+        }
+
+        /// A password with an unescaped `?`, which ends the authority early
+        /// for a naive split, leaks neither half.
+        #[test]
+        fn t_edge_an_x5u_password_holding_a_question_mark_does_not_leak() -> Result<(), TestError> {
+            let why = fetch("https://signer:ab?cd-secret@example.invalid/chain.pem")?;
+            assert!(!why.contains("ab?cd"), "{why}");
+            assert!(!why.contains("cd-secret"), "{why}");
+            Ok(())
+        }
     }
 }
 

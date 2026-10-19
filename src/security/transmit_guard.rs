@@ -130,6 +130,16 @@ impl TransmitPermit {
     }
 }
 
+/// What a detect-only run says at startup, live or offline: scanners are
+/// detected and reported, and nothing is sent to them.
+pub const DETECT_ONLY_NOTICE: &str = "Scanner detection is detect-only \
+    (--kill-scanner-detect-only or [security] kill_scanner_detect_only): sipnab \
+    detects, alerts on and reports SIP scanners and never answers them. The \
+    scanner-kill worker is not started and nothing is transmitted.";
+
+/// What a detect-only run says in its end-of-run summary.
+pub const DETECT_ONLY_SUMMARY: &str = "sipnab: scanner detection was detect-only: no scanner was answered and nothing was transmitted";
+
 /// The message an operator sees when they asked for a transmitting feature and
 /// the run is reading a file.
 ///

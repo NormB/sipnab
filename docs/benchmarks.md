@@ -23,21 +23,27 @@ host: other load on the machine shows up in the result.
 
 `--report --no-cli-print` prints only the end-of-run report, so the time
 measures reconstruction rather than terminal output. The report goes to
-standard output and the measurements to standard error. The last lines of
-standard error:
+standard output and the measurements to standard error.
 
-```text
-… INFO sipnab::capture::file: Read 53500 packets: 1 of 1 file(s) read in full
-… INFO sipnab::app::batch: sipnab: 53500 packets, 3500 SIP messages, 50000 RTP packets across 200 streams (4 cores)
-0.32 s elapsed, 45376 KiB peak RSS
+The example below ran against a capture that ships with the repository. It
+discards the report and keeps the last three lines of standard error, which
+hold the packet count and the measurements:
+
+```sh
+/usr/bin/time -f '%e s elapsed, %M KiB peak RSS' sipnab -N -I tests/pcap-samples/sipp-branch-scenario.pcapng --cores 4 --report --no-cli-print 2>&1 >/dev/null | tail -n 3
 ```
 
-This example ran a debug build on a host that was 13% idle, against a
-53,500-packet capture from `bench/carrier.py --calls 500`. The figures show the
-format, not sipnab's throughput.
+```text
+2026-10-18T15:24:09.970240Z  INFO sipnab::capture::file: Read 8989 packets: 1 of 1 file(s) read in full
+2026-10-18T15:24:11.102812Z  INFO sipnab::app::batch: sipnab: 8989 packets, 8989 SIP messages, 0 RTP packets across 0 streams (4 cores)
+2.89 s elapsed, 54348 KiB peak RSS
+```
 
-Divide the packet count by the elapsed time for packets per second: 53,500
-packets in 0.32 s is about 0.17M packets per second.
+This example ran a debug build on a host that was 12% idle. The figures show
+the format, not sipnab's throughput.
+
+Divide the packet count by the elapsed time for packets per second: 8,989
+packets in 2.89 s is about 3,100 packets per second.
 
 ### Compare core counts
 

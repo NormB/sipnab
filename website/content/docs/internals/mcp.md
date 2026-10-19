@@ -26,7 +26,7 @@ before calling and a refusal costs the tool. Output schemas keep them,
 because sipnab writes an explicit `null` for an absent optional field.
 Collapsing there would advertise a schema its own responses violate.
 
-No CI job runs `inspector --cli ... --strict`.
+No CI job runs the Inspector command, `--cli` with `--strict`, that the MCP server page shows.
 `no_input_schema_advertises_a_spelling_a_strict_client_may_refuse` checks the
 same property offline against the live wire, with no network and no package
 manager. Run the Inspector command by hand when Inspector's rules change.

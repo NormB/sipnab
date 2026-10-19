@@ -88,8 +88,8 @@ sipnab prints, in order:
 
 When the 30 seconds are up, the report lists two dialogs, both `Completed`:
 
-- the caller's leg, whose Call-ID SIPp made (`1-...@192.0.2.10`), with 7
-  messages,
+- the caller's leg, whose Call-ID SIPp made from the call number, its
+  process ID and its address (such as `1-50232@192.0.2.10`), with 7 messages,
 - the callee's leg, whose Call-ID FreeSWITCH made, with 6.
 
 FreeSWITCH answers the caller's `INVITE` with `100 Trying`. The callee does
@@ -352,16 +352,16 @@ sipnab does not depend on FreeSWITCH.
 
 ## When something does not work
 
-- **sipnab reports `No SIP signaling found, but ... RTP packets across ...
-  stream(s) were parsed`.**
+- **sipnab reports a line such as `No SIP signaling found, but 839 RTP packets
+  across 2 stream(s) were parsed.`** The counts are your run's own.
   - It saw the call's audio, but none of its SIP.
   - FreeSWITCH's `external` profile is on 5080.
   - That is outside 5060-5061, the range sipnab watches by default.
   - Give sipnab the range with `--portrange
     5060-5080`.
 - **Reading a capture file, sipnab warns `SIP outside --portrange 5060-5061 is
-  being skipped` and names `Busiest port(s): 5080`, then says `Call-ID '...'
-  not found in tracked dialogs`.**
+  being skipped` and names `Busiest port(s): 5080`, then says a line such as
+  `Call-ID '1-50232@192.0.2.10' not found in tracked dialogs`.**
   - The same range applies to a file.
   - Add `--portrange 5060-5080` to the command that reads it.
 - **The MCP answer ends with `INCOMPLETE RUN — this report does not describe

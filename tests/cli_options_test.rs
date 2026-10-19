@@ -1035,6 +1035,55 @@ fn kill_ua_pattern_reaches_the_detector_that_reads_it() -> Result<(), TestError>
     Ok(())
 }
 
+/// `--kill-scanner-detect-only` detects scanners on its own (no
+/// `--kill-scanner`), leaves normal SIP output untouched, and says at startup
+/// that detection is detect-only.
+#[test]
+fn kill_scanner_detect_only_detects_and_says_so() -> Result<(), TestError> {
+    let fixture = sip_call_fixture();
+    let f = fixture.to_str().ok_or("fixture.to_str() is None")?;
+    let (stdout, stderr, code) = run_with_log(
+        &[
+            "-N",
+            "-I",
+            f,
+            "--json",
+            "--kill-scanner-detect-only",
+            "--kill-ua",
+            "sipnab-test",
+        ],
+        "info",
+    )?;
+    assert_eq!(code, 0, "{stderr}");
+    assert_eq!(json_line_count(&stdout), 7);
+    assert!(
+        stderr.contains("detection=ua_pattern"),
+        "detect-only must build the detector the pattern feeds:\n{stderr}"
+    );
+    assert!(
+        stderr.contains("Scanner detection is detect-only"),
+        "the run must state that it is detect-only:\n{stderr}"
+    );
+    assert!(
+        stderr.contains("sipnab: scanner detection was detect-only"),
+        "the end-of-run summary must state that it was detect-only:\n{stderr}"
+    );
+    Ok(())
+}
+
+/// `-K` asks sipnab to answer a named source and detect-only answers nothing,
+/// so the two together are refused with exit 2 and a message naming both.
+#[test]
+fn kill_target_with_detect_only_is_refused() -> Result<(), TestError> {
+    let (_stdout, stderr, code) = run_json(&["--kill-scanner-detect-only", "-K", "192.0.2.7"])?;
+    assert_eq!(code, 2, "contradictory flags must not run:\n{stderr}");
+    assert!(
+        stderr.contains("-K/--kill-target") && stderr.contains("--kill-scanner-detect-only"),
+        "the refusal must name both flags:\n{stderr}"
+    );
+    Ok(())
+}
+
 /// `--kill-scanner --kill-response 403` leaves all 7 messages.
 #[test]
 fn kill_response_flag() -> Result<(), TestError> {

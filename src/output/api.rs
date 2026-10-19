@@ -326,6 +326,9 @@ pub struct ApiState {
     /// every headless run whether or not a detector was armed, so its presence
     /// cannot answer "was anything watching". Empty means nothing is armed.
     pub armed_detections: Vec<String>,
+    /// Whether this run answers the scanners it detects — the value
+    /// `GET /v1/security/findings` reports as `scanner_response`.
+    pub scanner_response: crate::security::findings::ScannerResponse,
     /// Directory `GET /v1/captures/compare` may diff capture files in, from
     /// `--api-file-root`. `None` (every test here, and any run started without
     /// the flag) makes that route answer `not_configured` — a file-reading
@@ -377,6 +380,9 @@ pub struct ArchivePasswordPolicy {
     /// `--api-accept-archive-passwords`: accept the header from a peer that is
     /// not loopback. TLS in front is then the operator's job.
     pub accept_remote: bool,
+    /// Whether this server answers over its own TLS (`--api-tls-cert`), so a
+    /// refusal can say whether the password crossed the network in the clear.
+    pub served_over_tls: bool,
     /// The passwords the operator configured at start-up, tried first.
     #[cfg(feature = "archive")]
     pub candidates: Arc<(
@@ -2881,7 +2887,8 @@ async fn get_security_findings(
             &kinds,
             since,
             limit,
-        );
+        )
+        .with_scanner_response(state.scanner_response);
         (report, capture_etag(capture.as_deref(), &ds, &ss))
     };
 
@@ -2906,6 +2913,7 @@ async fn get_security_findings(
         truncated: report.truncated,
         armed_kinds: report.armed_kinds,
         detection_armed: report.detection_armed,
+        scanner_response: report.scanner_response.to_string(),
         note: report.note,
         observation_gaps: report
             .observation_gaps
@@ -3005,6 +3013,29 @@ fn archive_principal(headers: &HeaderMap, ip: IpAddr) -> String {
     }
 }
 
+/// The 403 for `Sipnab-Archive-Password` from a peer that is not this host,
+/// without `--api-accept-archive-passwords`. `over_tls` is whether this server
+/// answered over its own TLS, which decides whether the password crossed the
+/// network in the clear.
+fn remote_archive_password_refusal(over_tls: bool) -> String {
+    if over_tls {
+        format!(
+            "{ARCHIVE_PASSWORD_HEADER} is accepted only from this host unless sipnab \
+             runs with --api-accept-archive-passwords. This request arrived over TLS, \
+             so the password was encrypted on the way. Start sipnab with \
+             --api-accept-archive-passwords to accept it from other hosts."
+        )
+    } else {
+        format!(
+            "{ARCHIVE_PASSWORD_HEADER} is accepted only from this host: sipnab serves \
+             plain HTTP, so a password from elsewhere crossed the network in the clear. \
+             Treat it as exposed. Serve HTTPS with --api-tls-cert and --api-tls-key, or \
+             put a TLS proxy on this host in front of sipnab, and start it with \
+             --api-accept-archive-passwords."
+        )
+    }
+}
+
 /// Whether `ip` is this host, IPv4-mapped IPv6 included.
 fn is_loopback_peer(ip: IpAddr) -> bool {
     ip.to_canonical().is_loopback()
@@ -3028,12 +3059,7 @@ async fn captures_compare(
     if header.is_some() && !state.archive.accept_remote && !is_loopback_peer(addr.ip()) {
         return Err(Problem::detailed(
             StatusCode::FORBIDDEN,
-            format!(
-                "{ARCHIVE_PASSWORD_HEADER} is accepted only from this host: sipnab serves \
-                 plain HTTP, so a password from elsewhere crossed the network in the clear. \
-                 Treat it as exposed. Put a TLS proxy on this host in front of sipnab, or \
-                 start it with --api-accept-archive-passwords once TLS terminates in front."
-            ),
+            remote_archive_password_refusal(state.archive.served_over_tls),
         ));
     }
     let principal = archive_principal(headers, addr.ip());
@@ -7397,6 +7423,15 @@ pub mod schema {
         /// True when at least one detector is armed. An empty `findings` with
         /// this false means nothing was watching, NOT that traffic was clean.
         pub detection_armed: bool,
+        /// Whether sipnab answers the scanners it detects. `off`: no scanner
+        /// detection is armed. `detect_only`: `--kill-scanner-detect-only`
+        /// is set, so scanners are detected and never answered.
+        /// `not_answering`: scanners are detected and not answered, because
+        /// the run reads a capture file, is the interactive TUI, or the
+        /// scanner-kill worker could not start. `answering`: the scanner-kill
+        /// worker is running and sends a SIP reply to each detected scanner.
+        #[schema(example = "detect_only")]
+        pub scanner_response: String,
         /// Present only when nothing is armed, saying so in words.
         #[serde(skip_serializing_if = "Option::is_none")]
         pub note: Option<String>,
@@ -9571,8 +9606,30 @@ mod tests {
         Ok(ApiState {
             alert_engine: Some(Arc::new(RwLock::new(engine))),
             armed_detections: vec!["scanner".to_string()],
+            scanner_response: Default::default(),
             ..make_state()
         })
+    }
+
+    /// A detect-only run reports `scanner_response: "detect_only"`, so a
+    /// program reading `armed_kinds: ["scanner"]` can tell that the scanners
+    /// it lists were detected and never answered.
+    #[tokio::test]
+    async fn security_findings_states_detect_only() -> Result<(), TestError> {
+        let state = ApiState {
+            scanner_response: crate::security::findings::ScannerResponse::DetectOnly,
+            ..state_with_findings()?
+        };
+        let resp = build_router(state)
+            .oneshot(test_request("/v1/security/findings")?)
+            .await
+            .map_err(|e| format!("oneshot: {e:?}"))?;
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = body_to_string(resp.into_body()).await?;
+        let parsed: Value =
+            serde_json::from_str(&body).map_err(|e| format!("valid JSON: {e:?}"))?;
+        assert_eq!(parsed["scanner_response"], "detect_only", "{parsed}");
+        Ok(())
     }
 
     /// The route returns the recorded findings with the RAW detail — REST hands
@@ -9631,6 +9688,7 @@ mod tests {
         let state = ApiState {
             alert_engine: Some(Arc::new(RwLock::new(engine))),
             armed_detections: vec!["reg_flood".to_string()],
+            scanner_response: Default::default(),
             ..make_state()
         };
         let resp = build_router(state)
@@ -10471,6 +10529,7 @@ mod tests {
             actions: Default::default(),
             alert_engine: None,
             armed_detections: Vec::new(),
+            scanner_response: Default::default(),
             file_root: None,
             vcon_spools: Vec::new(),
             vcon_fetch: Default::default(),
@@ -11351,6 +11410,7 @@ mod tests {
             actions: Default::default(),
             alert_engine: None,
             armed_detections: Vec::new(),
+            scanner_response: Default::default(),
             file_root: None,
             vcon_spools: Vec::new(),
             vcon_fetch: Default::default(),
@@ -12755,6 +12815,7 @@ mod tests {
             actions: Default::default(),
             alert_engine: None,
             armed_detections: Vec::new(),
+            scanner_response: Default::default(),
             file_root: None,
             vcon_spools: Vec::new(),
             vcon_fetch: Default::default(),
@@ -13720,6 +13781,7 @@ mod tests {
             actions: Default::default(),
             alert_engine: None,
             armed_detections: Vec::new(),
+            scanner_response: Default::default(),
             file_root: None,
             vcon_spools: Vec::new(),
             vcon_fetch: Default::default(),
@@ -16127,6 +16189,7 @@ mod archive_password_tests {
             actions: Default::default(),
             alert_engine: None,
             armed_detections: Vec::new(),
+            scanner_response: Default::default(),
             file_root: None,
             vcon_spools: Vec::new(),
             vcon_fetch: Default::default(),
@@ -16230,6 +16293,32 @@ mod archive_password_tests {
             assert!(body.contains("treat this password as exposed"), "{body}");
             assert!(!body.contains(secret("rest-url")), "{body}");
         }
+        Ok(())
+    }
+
+    /// The refusal says how the password traveled. Over plain HTTP it
+    /// crossed the network in the clear; over sipnab's own TLS
+    /// (`--api-tls-cert`) it did not, and saying "sipnab serves plain HTTP"
+    /// there was false. The flag is required either way.
+    #[tokio::test]
+    async fn the_remote_password_refusal_says_how_the_password_traveled() -> Result<(), TestError> {
+        let dir = root("rest-remote-tls")?;
+        let remote = IpAddr::V4(std::net::Ipv4Addr::new(192, 0, 2, 7));
+        let hdr = [(ARCHIVE_PASSWORD_HEADER, secret("rest-remote-tls"))];
+        let plain = state(dir.path(), &[]);
+        let (status, _, body) = send(&plain, request(COMPARE, remote, &hdr)?).await?;
+        assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
+        assert!(body.contains("plain HTTP"), "{body}");
+        assert!(body.contains("Treat it as exposed"), "{body}");
+
+        let mut over_tls = plain.clone();
+        over_tls.archive.served_over_tls = true;
+        let (status, _, body) = send(&over_tls, request(COMPARE, remote, &hdr)?).await?;
+        assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
+        assert!(!body.contains("plain HTTP"), "{body}");
+        assert!(!body.contains("exposed"), "{body}");
+        assert!(body.contains("over TLS"), "{body}");
+        assert!(body.contains("--api-accept-archive-passwords"), "{body}");
         Ok(())
     }
 

@@ -536,50 +536,109 @@ which holds four failed calls:
 ```jsonc
 // await_condition { "filter": "state == Failed", "timeout_seconds": 20 }
 {
-  "schema_version": 1,
-  "filter": "state == Failed",
-  "matched": true,
-  "stopped_because": "condition_met",
+  "capture_identity": {
+    "dialog_generation": 26,
+    "instance": "768de18dfa973fb11e443-2",
+    "node": "capture-01",
+    "stream_generation": 0
+  },
   "dialogs": [
     {
       "call_id": "busy-3a2b1c@192.0.2.30",
-      "state": "Failed",
-      "method": "INVITE",
-      "from_user": "⟦untrusted-capture-data⟧carol⟦/untrusted-capture-data⟧",
-      "to_user": "⟦untrusted-capture-data⟧dave⟦/untrusted-capture-data⟧",
-      "msg_count": 4,
-      "final_status_code": 486,
-      "duration_sec": 1.81,
       "created_at": "2023-11-14T22:13:23+00:00",
-      "updated_at": "2023-11-14T22:13:24.810+00:00",
-      "timing": {
-        "pdd_ms": null,
-        "setup_ms": null,
-        "retransmits": 0,
-        "duration_ms": null
-      },
+      "duration_sec": 1.81,
+      "final_status_code": 486,
       "frame": "tests/pcap-samples/sip-problem-call.pcap#5@884d4525ec86f71b",
-      "input_origin": "wire"
+      "from_user": "⟦untrusted-capture-data⟧carol⟦/untrusted-capture-data⟧",
+      "input_origin": "wire",
+      "method": "INVITE",
+      "msg_count": 4,
+      "state": "Failed",
+      "timing": {
+        "duration_ms": null,
+        "pdd_ms": null,
+        "retransmits": 0,
+        "setup_ms": null
+      },
+      "to_user": "⟦untrusted-capture-data⟧dave⟦/untrusted-capture-data⟧",
+      "updated_at": "2023-11-14T22:13:24.810+00:00"
     },
-    …
+    {
+      "call_id": "decline-7c6d5e@198.51.100.30",
+      "created_at": "2023-11-14T22:13:26+00:00",
+      "duration_sec": 1.81,
+      "final_status_code": 603,
+      "frame": "tests/pcap-samples/sip-problem-call.pcap#9@4201862d9613e2f2",
+      "from_user": "⟦untrusted-capture-data⟧erin⟦/untrusted-capture-data⟧",
+      "input_origin": "wire",
+      "method": "INVITE",
+      "msg_count": 4,
+      "state": "Failed",
+      "timing": {
+        "duration_ms": null,
+        "pdd_ms": null,
+        "retransmits": 0,
+        "setup_ms": null
+      },
+      "to_user": "⟦untrusted-capture-data⟧frank⟦/untrusted-capture-data⟧",
+      "updated_at": "2023-11-14T22:13:27.810+00:00"
+    },
+    {
+      "call_id": "notfound-1b2c3d@203.0.113.30",
+      "created_at": "2023-11-14T22:13:29+00:00",
+      "duration_sec": 1.81,
+      "final_status_code": 404,
+      "frame": "tests/pcap-samples/sip-problem-call.pcap#13@091b886751922950",
+      "from_user": "⟦untrusted-capture-data⟧grace⟦/untrusted-capture-data⟧",
+      "input_origin": "wire",
+      "method": "INVITE",
+      "msg_count": 4,
+      "state": "Failed",
+      "timing": {
+        "duration_ms": null,
+        "pdd_ms": null,
+        "retransmits": 0,
+        "setup_ms": null
+      },
+      "to_user": "⟦untrusted-capture-data⟧heidi⟦/untrusted-capture-data⟧",
+      "updated_at": "2023-11-14T22:13:30.810+00:00"
+    },
+    {
+      "call_id": "unavail-4e5f60@192.0.2.50",
+      "created_at": "2023-11-14T22:13:32+00:00",
+      "duration_sec": 1.81,
+      "final_status_code": 503,
+      "frame": "tests/pcap-samples/sip-problem-call.pcap#17@cc2aeb6bbdcb704c",
+      "from_user": "⟦untrusted-capture-data⟧ivan⟦/untrusted-capture-data⟧",
+      "input_origin": "wire",
+      "method": "INVITE",
+      "msg_count": 4,
+      "state": "Failed",
+      "timing": {
+        "duration_ms": null,
+        "pdd_ms": null,
+        "retransmits": 0,
+        "setup_ms": null
+      },
+      "to_user": "⟦untrusted-capture-data⟧judy⟦/untrusted-capture-data⟧",
+      "updated_at": "2023-11-14T22:13:33.810+00:00"
+    }
   ],
-  "returned": 4,
-  "total_matched": 4,
-  "truncated": false,
   "elapsed_ms": 0,
-  "timeout_seconds": 20,
-  "timeout_clamped": false,
+  "filter": "state == Failed",
+  "matched": true,
   "poll_interval_ms": 500,
   "polls": 1,
+  "returned": 4,
   "scans": 1,
+  "schema_version": 1,
   "source_exhausted": true,
   "source_stopped_early": false,
-  "capture_identity": {
-    "node": "capture-01",
-    "instance": "12b8e818df0065fbe6829f-2",
-    "dialog_generation": 26,
-    "stream_generation": 0
-  }
+  "stopped_because": "condition_met",
+  "timeout_clamped": false,
+  "timeout_seconds": 20,
+  "total_matched": 4,
+  "truncated": false
 }
 ```
 
@@ -695,7 +754,7 @@ reaches, the same set the TUI's extended call flow (the `x` key) shows.
 
 | Name | Type | Legal values | If omitted |
 |---|---|---|---|
-| `call_id` | string | Any leg of the call. The walk is symmetric, so naming the B-leg returns the same set rooted differently. A Call-ID the store does not hold fails with `call_id '...' not found`. | Required — the call fails. |
+| `call_id` | string | Any leg of the call. The walk is symmetric, so naming the B-leg returns the same set rooted differently. A Call-ID the store does not hold fails with a message such as `call_id 'nope@192.0.2.1' not found`. | Required — the call fails. |
 | `limit?` | u32? | Maximum legs including the root. Ceiling is `--mcp-max-rows` (1000 by default), higher clamps to it, `0` means the default. | 50 legs. |
 
 The example runs against
@@ -1208,41 +1267,62 @@ packets in one:
 // lint_dialog { "call_id": "b2bua-leg-synth@203.0.113.101:5060",
 //               "rulesets": ["observed"] }
 {
-  "schema_version": 1,
   "call_id": "b2bua-leg-synth@203.0.113.101:5060",
-  "rulesets": ["observed"],
-  "severity_min": "info",
-  "message_count": 15,
-  "rtp_streams_observed": 1,
+  "capture_identity": {
+    "dialog_generation": 64,
+    "instance": "7771d18dfa97985500250-2",
+    "node": "capture-01",
+    "stream_generation": 2
+  },
   "finding_count": 1,
-  "severity_counts": { "error": 0, "warning": 1, "notice": 0, "info": 0 },
   "findings": [
     {
-      "rule_id": "OBS-3264-6.1-DIRECTION-UNMET",
-      "severity": "warning",
       "basis": "observation",
-      "rfc": 3264,
-      "section": "6.1",
+      "expected": "media in both directions, as a=sendrecv promised",
+      "explanation": "§6.1 makes sendrecv a promise to send as well as receive. One endpoint kept it and the other did not, which the far end hears as dead air on an answered call. The usual causes are a NAT with no inbound pinhole, a firewall dropping the return path, and an endpoint that answered sendrecv while muting locally.",
+      "frame_ref": "tests/pcap-samples/b2bua-asterisk.pcapng#23@08cb2267de5498ce",
       "message_index": 0,
       "observed": "⟦untrusted-capture-data⟧355 RTP packets observed, none of them toward one negotiated endpoint⟦/untrusted-capture-data⟧",
-      "expected": "media in both directions, as a=sendrecv promised",
-      "explanation": "§6.1 makes sendrecv a promise to send as well as receive. …",
-      "frame_ref": "tests/pcap-samples/b2bua-asterisk.pcapng#23@08cb2267de5498ce"
+      "rfc": 3264,
+      "rule_id": "OBS-3264-6.1-DIRECTION-UNMET",
+      "section": "6.1",
+      "severity": "warning"
     }
   ],
+  "findings_withheld": {
+    "below_severity": 0,
+    "capped": 0,
+    "suppressed": 0
+  },
+  "message_count": 15,
+  "rtp_streams_observed": 1,
+  "rule_catalog": "docs/sip-lint-rules.md",
   "rules_not_evaluated": [
     {
-      "reason": "needs the endpoint pairs RTCP arrived on. …",
-      "rule_ids": ["OBS-5761-5.1.1-RTCP-MUX-UNANSWERED"]
+      "reason": "needs the endpoint pairs RTCP arrived on. The stream store folds RTCP into the stream it reports on and keeps no record of where it landed, so no MCP tool can raise this rule.",
+      "rule_ids": [
+        "OBS-5761-5.1.1-RTCP-MUX-UNANSWERED"
+      ]
     }
   ],
-  "findings_withheld": { "suppressed": 0, "below_severity": 0, "capped": 0 },
-  "suppressions": { "file": null, "patterns": [], "findings_suppressed": 0 },
-  "rule_catalog": "docs/sip-lint-rules.md",
-  "capture_identity": { "node": "capture-01", "instance": "cc2e118df0ea7891c207f-2",
-                        "dialog_generation": 64, "stream_generation": 2 },
+  "rulesets": [
+    "observed"
+  ],
+  "schema_version": 1,
+  "severity_counts": {
+    "error": 0,
+    "info": 0,
+    "notice": 0,
+    "warning": 1
+  },
+  "severity_min": "info",
   "source_exhausted": true,
-  "source_stopped_early": false
+  "source_stopped_early": false,
+  "suppressions": {
+    "file": null,
+    "findings_suppressed": 0,
+    "patterns": []
+  }
 }
 ```
 
@@ -1321,47 +1401,98 @@ message runs, and the response reports the rest under `rules_not_evaluated`.
 ```jsonc
 // validate_message { "call_id": "options-ping-c-synth@198.51.100.206", "index": 0 }
 {
-  "schema_version": 1,
   "call_id": "options-ping-c-synth@198.51.100.206",
-  "message_index": 0,
-  "message_count": 2,
+  "capture_identity": {
+    "dialog_generation": 14,
+    "instance": "77d2718dfa97b81aa9e86-2",
+    "node": "capture-01",
+    "stream_generation": 0
+  },
   "finding_count": 2,
-  "severity_counts": { "error": 0, "warning": 2, "notice": 0, "info": 0 },
   "findings": [
     {
-      "rule_id": "SIP-3261-8.1.1.6-MAX-FORWARDS-MISSING",
-      "severity": "warning", "basis": "must", "rfc": 3261, "section": "8.1.1.6",
+      "basis": "must",
+      "expected": "Max-Forwards: 70",
+      "explanation": "§8.1.1.6 makes a UAC insert one into every request it originates. Without it a routing loop has nothing to stop it, and RFC 3261 §16.6 leaves each proxy to invent its own starting value.",
+      "frame_ref": "tests/pcap-samples/sip-488-codec-reject.pcapng#4@b2b8ff6b3eeddf54",
       "message_index": 0,
       "observed": "⟦untrusted-capture-data⟧no Max-Forwards header field⟦/untrusted-capture-data⟧",
-      "expected": "Max-Forwards: 70",
-      "explanation": "§8.1.1.6 makes a UAC insert one into every request it originates. …",
-      "frame_ref": "tests/pcap-samples/sip-488-codec-reject.pcapng#4@b2b8ff6b3eeddf54"
+      "rfc": 3261,
+      "rule_id": "SIP-3261-8.1.1.6-MAX-FORWARDS-MISSING",
+      "section": "8.1.1.6",
+      "severity": "warning"
     },
     {
-      "rule_id": "SIP-3261-8.1.1.7-BRANCH-COOKIE",
-      "severity": "warning", "basis": "must", "rfc": 3261, "section": "8.1.1.7",
+      "basis": "must",
+      "expected": "branch=z9hG4bK...",
+      "explanation": "§8.1.1.7 makes every compliant branch begin with z9hG4bK, so its absence identifies a stack predating RFC 3261 in one field. Transaction matching then falls back to the RFC 2543 rules, and CANCEL and ACK correlation stop being reliable.",
+      "frame_ref": "tests/pcap-samples/sip-488-codec-reject.pcapng#4@b2b8ff6b3eeddf54",
       "message_index": 0,
       "observed": "⟦untrusted-capture-data⟧top Via branch without the z9hG4bK prefix⟦/untrusted-capture-data⟧",
-      "expected": "branch=z9hG4bK...",
-      "explanation": "§8.1.1.7 makes every compliant branch begin with z9hG4bK. …",
-      "frame_ref": "tests/pcap-samples/sip-488-codec-reject.pcapng#4@b2b8ff6b3eeddf54"
+      "rfc": 3261,
+      "rule_id": "SIP-3261-8.1.1.7-BRANCH-COOKIE",
+      "section": "8.1.1.7",
+      "severity": "warning"
     }
   ],
-  "findings_withheld": { "suppressed": 0, "below_severity": 0, "capped": 0 },
-  "suppressions": { "file": null, "patterns": [], "findings_suppressed": 0 },
-  "rules_not_evaluated": [
-    { "reason": "reads a dialog's messages against each other, and this tool reads one message alone. Call lint_dialog.",
-      "rule_ids": ["SIP-3261-8.1.1.2-TO-TAG-IN-INITIAL-REQUEST", …] },
-    { "reason": "compares the declaration against the observed media, and this tool reads one message alone. Call lint_dialog.",
-      "rule_ids": ["OBS-3264-6.1-PT-UNDECLARED", …] },
-    { "reason": "needs the endpoint pairs RTCP arrived on. …",
-      "rule_ids": ["OBS-5761-5.1.1-RTCP-MUX-UNANSWERED"] }
-  ],
+  "findings_withheld": {
+    "below_severity": 0,
+    "capped": 0,
+    "suppressed": 0
+  },
+  "message_count": 2,
+  "message_index": 0,
   "rule_catalog": "docs/sip-lint-rules.md",
-  "capture_identity": { "node": "capture-01", "instance": "cc30318df0ea8053c6910-2",
-                        "dialog_generation": 14, "stream_generation": 0 },
+  "rules_not_evaluated": [
+    {
+      "reason": "reads a dialog's messages against each other, and this tool reads one message alone. Call lint_dialog.",
+      "rule_ids": [
+        "SIP-3261-8.1.1.2-TO-TAG-IN-INITIAL-REQUEST",
+        "SIP-3261-17.1.1.3-ACK-CSEQ-MISMATCH",
+        "SIP-3261-17.1.1.3-ACK-BRANCH-MISMATCH",
+        "SIP-3261-12.1.1-RECORD-ROUTE-NOT-COPIED",
+        "SIP-3262-4-PRACK-MISSING",
+        "SDP-3264-6.1-ANSWER-NO-COMMON-FORMAT",
+        "SDP-3264-6.1-ANSWER-EXTRA-FORMAT",
+        "SDP-3264-6.1-ANSWER-DIRECTION-ILLEGAL",
+        "SDP-3264-8.4-HOLD-CONNECTION-ZERO",
+        "SDP-3264-8.3.2-DYNAMIC-PT-REBOUND",
+        "SDP-3264-7-TELEPHONE-EVENT-ONE-WAY",
+        "SDP-3264-8.2-REJECTED-STREAM-ATTRIBUTES",
+        "SDP-7587-7-OPUS-RTPMAP-RATE"
+      ]
+    },
+    {
+      "reason": "compares the declaration against the observed media, and this tool reads one message alone. Call lint_dialog.",
+      "rule_ids": [
+        "OBS-3264-6.1-PT-UNDECLARED",
+        "OBS-4566-5.14-MEDIA-PORT-MISMATCH",
+        "OBS-3264-6.1-DIRECTION-UNMET",
+        "OBS-4566-6-PTIME-MISMATCH",
+        "OBS-3551-4.2-FRAME-SIZE-IMPOSSIBLE"
+      ]
+    },
+    {
+      "reason": "needs the endpoint pairs RTCP arrived on. The stream store folds RTCP into the stream it reports on and keeps no record of where it landed, so no MCP tool can raise this rule.",
+      "rule_ids": [
+        "OBS-5761-5.1.1-RTCP-MUX-UNANSWERED"
+      ]
+    }
+  ],
+  "schema_version": 1,
+  "severity_counts": {
+    "error": 0,
+    "info": 0,
+    "notice": 0,
+    "warning": 2
+  },
   "source_exhausted": true,
-  "source_stopped_early": false
+  "source_stopped_early": false,
+  "suppressions": {
+    "file": null,
+    "findings_suppressed": 0,
+    "patterns": []
+  }
 }
 ```
 
@@ -1392,7 +1523,7 @@ server. An unknown identifier fails with `invalid_params` (-32602) **listing all
 41**, so a call with any unknown identifier lists the catalog:
 
 ```text
-'NOPE' is not a rule in the catalog. The 41 rules are: SIP-3261-8.1.1-MANDATORY-HEADER-MISSING, SIP-3261-20.16-CSEQ-MALFORMED, …
+'NOPE' is not a rule in the catalog. The 41 rules are: SIP-3261-8.1.1-MANDATORY-HEADER-MISSING, SIP-3261-20.16-CSEQ-MALFORMED, SIP-3261-20.14-CONTENT-LENGTH-MISMATCH, SIP-3261-25.1-HEADER-CONTROL-BYTE, SIP-3261-20-URI-BRACKETS, SIP-3261-19.1.1-URI-PARAM-DEMOTED, SIP-3261-8.1.1.6-MAX-FORWARDS-MISSING, SIP-3261-20.22-MAX-FORWARDS-RANGE, SIP-3261-8.1.1.7-BRANCH-COOKIE, SIP-3261-8.1.1.2-TO-TAG-IN-INITIAL-REQUEST, SIP-3261-8.1.1.5-CSEQ-METHOD-MISMATCH, SIP-3261-17.1.1.3-ACK-CSEQ-MISMATCH, SIP-3261-17.1.1.3-ACK-BRANCH-MISMATCH, SIP-3261-12.1.1-CONTACT-MISSING-IN-2XX, SIP-3261-12.1.1-RECORD-ROUTE-NOT-COPIED, SIP-3261-16.6-RECORD-ROUTE-NOT-LOOSE, SIP-3261-8.1.1.7-VIA-BRANCH-DUPLICATE, SIP-3261-7.3.1-SINGULAR-HEADER-REPEATED, SIP-3262-3-RELIABLE-PROVISIONAL-WITHOUT-RSEQ, SIP-3262-4-PRACK-MISSING, SIP-4028-7.1-SESSION-EXPIRES-BELOW-MIN-SE, SIP-4028-4-SESSION-EXPIRES-TOO-SMALL, SIP-4028-5-MIN-SE-TOO-SMALL, SIP-4028-9-REFRESHER-MISSING, SIP-7989-5-SESSION-ID-MALFORMED, SIP-7989-5-SESSION-ID-UPPERCASE, SIP-7989-11-SESSION-ID-LEGACY-FORM, SDP-3264-6.1-ANSWER-NO-COMMON-FORMAT, SDP-3264-6.1-ANSWER-EXTRA-FORMAT, SDP-3264-6.1-ANSWER-DIRECTION-ILLEGAL, SDP-3264-8.4-HOLD-CONNECTION-ZERO, SDP-3264-8.3.2-DYNAMIC-PT-REBOUND, SDP-3264-7-TELEPHONE-EVENT-ONE-WAY, SDP-3264-8.2-REJECTED-STREAM-ATTRIBUTES, SDP-7587-7-OPUS-RTPMAP-RATE, OBS-3264-6.1-PT-UNDECLARED, OBS-4566-5.14-MEDIA-PORT-MISMATCH, OBS-3264-6.1-DIRECTION-UNMET, OBS-4566-6-PTIME-MISMATCH, OBS-5761-5.1.1-RTCP-MUX-UNANSWERED, OBS-3551-4.2-FRAME-SIZE-IMPOSSIBLE
 ```
 
 ```jsonc
@@ -1479,7 +1610,7 @@ pinned aspects.
     "omitted": ["headers"]
   },
   "asserted": { "provisional": [100], "final": 200 },
-  "scenario": "<?xml version=\"1.0\" encoding=\"UTF-8\" ?>\n<!DOCTYPE scenario SYSTEM \"sipp.dtd\">\n…",
+  "scenario": "<?xml version=\"1.0\" encoding=\"UTF-8\" ?>\n<!DOCTYPE scenario SYSTEM \"sipp.dtd\">\n<!-- Generated by sipnab from Call-ID 1-1966@10.0.2.20 -->\n<!-- pinned: sdp user_agent | varied: branch call_id tags -->\n<scenario name=\"sipnab repro 1-1966@10.0.2.20\">\n  <send retrans=\"500\">\n    <![CDATA[\n\nINVITE sip:test@[remote_ip]:[remote_port] SIP/2.0\nVia: SIP/2.0/[transport] [local_ip]:[local_port];branch=[branch]\nFrom: <sip:sipp@[local_ip]:[local_port]>;tag=[pid]SIPpTag00[call_number]\nTo: <sip:test@[remote_ip]:[remote_port]>\nCall-ID: [call_id]\nCSeq: 1 INVITE\nContact: <sip:sipp@[local_ip]:[local_port];transport=[transport]>\nMax-Forwards: 70\nContent-Type: application/sdp\nContent-Length: [len]\n\nv=0\no=- 42 42 IN IP4 10.0.2.20\ns=-\nc=IN IP4 10.0.2.20\nt=0 0\nm=audio 6000 RTP/AVP 0\na=rtpmap:0 PCMU/8000\na=recvonly\n\n    ]]>\n  </send>\n  <recv response=\"100\" optional=\"true\"/>\n  <recv response=\"200\"/>\n  <send>\n    <![CDATA[\n\nACK sip:test@[remote_ip]:[remote_port] SIP/2.0\nVia: SIP/2.0/[transport] [local_ip]:[local_port];branch=[branch]\n[last_From:]\n[last_To:]\n[last_Call-ID:]\nCSeq: 1 ACK\nContact: <sip:sipp@[local_ip]:[local_port];transport=[transport]>\nMax-Forwards: 70\nContent-Length: 0\n\n\n    ]]>\n  </send>\n  <pause milliseconds=\"2000\"/>\n  <send retrans=\"500\">\n    <![CDATA[\n\nBYE sip:test@[remote_ip]:[remote_port] SIP/2.0\nVia: SIP/2.0/[transport] [local_ip]:[local_port];branch=[branch]\n[last_From:]\n[last_To:]\n[last_Call-ID:]\nCSeq: 2 BYE\nMax-Forwards: 70\nContent-Length: 0\n\n\n    ]]>\n  </send>\n  <recv response=\"200\"/>\n</scenario>\n",
   "run": "sipp -sf <scenario.xml> -m 1 <proxy-host>:<port>",
   "caveats": [
     "user_agent was pinned and the captured request carries no User-Agent header, so none is sent",

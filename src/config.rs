@@ -180,6 +180,7 @@ static KNOWN_KEYS: LazyLock<HashMap<&'static str, &'static [&'static str]>> = La
         "security",
         [
             "kill_scanner",
+            "kill_scanner_detect_only",
             "kill_response",
             "fraud_detect",
             "fraud_destination",
@@ -1978,6 +1979,8 @@ impl CrashConfig {
 pub struct SecurityConfig {
     /// Enable scanner detection by default.
     pub kill_scanner: Option<bool>,
+    /// Detect scanners and never answer them.
+    pub kill_scanner_detect_only: Option<bool>,
     /// Kill response code.
     pub kill_response: Option<u16>,
     /// Enable fraud detection by default.

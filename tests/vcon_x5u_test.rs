@@ -32,8 +32,8 @@ const CAPTURE: &str = "tests/pcap-samples/sip-rtp-g711.pcap";
 const CALL_ID: &str = "1-1966@10.0.2.20";
 const FIXTURES: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/vcon-jose");
 
-/// An HTTPS server on 127.0.0.1 that answers every request with `body`,
-/// counting the requests.
+/// An HTTPS server on 127.0.0.1 that answers every request with `status`
+/// and `body`, counting the requests.
 struct PemServer {
     addr: std::net::SocketAddr,
     hits: Arc<AtomicUsize>,
@@ -42,6 +42,14 @@ struct PemServer {
 
 impl PemServer {
     fn start(pki: &tls_pki::TestPki, body: Vec<u8>) -> Result<Self, TestError> {
+        Self::start_answering(pki, "200 OK", body)
+    }
+
+    fn start_answering(
+        pki: &tls_pki::TestPki,
+        status: &'static str,
+        body: Vec<u8>,
+    ) -> Result<Self, TestError> {
         use rustls::pki_types::pem::PemObject;
         let chain = rustls::pki_types::CertificateDer::pem_file_iter(&pki.cert)?
             .collect::<Result<Vec<_>, _>>()?;
@@ -78,7 +86,7 @@ impl PemServer {
                 }
                 count.fetch_add(1, Ordering::SeqCst);
                 let head = format!(
-                    "HTTP/1.1 200 OK\r\nContent-Type: application/pem-certificate-chain\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                    "HTTP/1.1 {status}\r\nContent-Type: application/pem-certificate-chain\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
                     body.len()
                 );
                 let _ = stream.write_all(head.as_bytes());
@@ -243,6 +251,24 @@ fn an_x5u_that_cannot_be_trusted_is_refused() -> Result<(), TestError> {
         before,
         "fetched over http"
     );
+    Ok(())
+}
+
+/// An `x5u` whose server answers anything but 2xx is no chain: the read is
+/// refused, the refusal names the status and the URL, and the chain is not
+/// tried.
+#[test]
+fn an_x5u_that_answers_an_error_status_is_refused() -> Result<(), TestError> {
+    let home = tempfile::tempdir()?;
+    let pki = tls_pki::test_pki("x5u-404")?;
+    let missing = PemServer::start_answering(&pki, "404 Not Found", b"no such chain".to_vec())?;
+    let url = missing.url("/gone.pem");
+    let file = signed_by_url(home.path(), &url)?;
+    let (read, stderr) = reads(home.path(), &file, &["--vcon-x5u-ca", &pki.ca_file])?;
+    assert!(!read, "{stderr}");
+    assert!(stderr.contains("answered 404"), "{stderr}");
+    assert!(stderr.contains(&url), "{stderr}");
+    assert_eq!(missing.hits.load(Ordering::SeqCst), 1, "fetched once");
     Ok(())
 }
 

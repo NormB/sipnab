@@ -567,6 +567,10 @@ rule, source address, detail and time.
 - The same report as `GET /v1/security/findings`.
 - Arm a detector with `--kill-scanner`, `--fraud-detect`, `--digest-leak` or
   `--reg-flood`.
+- With scanner detection armed, a `Scanner responses:` line says whether
+  sipnab answers scanners. The TUI never answers one, so it reads
+  `detect-only, scanners are detected and never answered` under
+  `--kill-scanner-detect-only`, and `none sent by this run` otherwise.
 
 Open with `a` from the Call List.
 
@@ -706,9 +710,10 @@ and `Tab` again returns to the browser.
 The browser lists:
 
 - `.pcap`, `.pcapng`, and `.cap` files,
-- their gzip-compressed forms (`*.pcap.gz`, …),
-- archives of captures (`.tar`, `.tgz`, `.tar.gz`, and `.zip` in builds with
-  the `archive` feature).
+- their gzip-compressed forms (`.pcap.gz`, `.pcapng.gz` and `.cap.gz`),
+- archives of captures (`.tar`, `.tgz` and `.tar.gz`, and `.zip` and `.7z` in
+  builds with the `archive` feature),
+- stored vCon containers (`.vcon.json` and `.vcon.json.gz`).
 
 sipnab decompresses on the fly. It loads an archive as the set of captures it
 holds, member by member into one view. The status line says how many captures
@@ -1108,10 +1113,27 @@ Save captured data in multiple formats. Use `Tab` to cycle through formats.
 <span class="t-muted"> │</span>  <span class="t-accent">Packet capture</span>                                                      <span class="t-muted">│</span>
 <span class="t-muted"> │</span>    <span class="t-good">▸ PCAP      Universal baseline (Wireshark, tcpdump, Homer)</span>        <span class="t-muted">│</span>
 <span class="t-muted"> │</span>      PCAP-NG   Modern format with metadata and annotations           <span class="t-muted">│</span>
+<span class="t-muted"> │</span>                                                                      <span class="t-muted">│</span>
+<span class="t-muted"> │</span>  <span class="t-accent">SIP-specific</span>                                                        <span class="t-muted">│</span>
+<span class="t-muted"> │</span>      TXT       Plain text SIP messages                               <span class="t-muted">│</span>
+<span class="t-muted"> │</span>      SIPp      Replayable SIPp scenario for QA testing               <span class="t-muted">│</span>
+<span class="t-muted"> │</span>                                                                      <span class="t-muted">│</span>
+<span class="t-muted"> │</span>  <span class="t-accent">Structured/analytics</span>                                                <span class="t-muted">│</span>
+<span class="t-muted"> │</span>      JSON      Full call detail for ELK, ClickHouse, etc.            <span class="t-muted">│</span>
+<span class="t-muted"> │</span>      NDJSON    Streaming-friendly for large captures                 <span class="t-muted">│</span>
+<span class="t-muted"> │</span>      CSV       Summary rows for spreadsheets and BI tools            <span class="t-muted">│</span>
+<span class="t-muted"> │</span>                                                                      <span class="t-muted">│</span>
 <span class="t-muted"> │</span>  <span class="t-accent">Reporting</span>                                                           <span class="t-muted">│</span>
 <span class="t-muted"> │</span>      HTML      Ladder diagram page (Mermaid), no dependencies        <span class="t-muted">│</span>
 <span class="t-muted"> │</span>      Markdown  Call summary for tickets and incidents                <span class="t-muted">│</span>
-<span class="t-muted"> │</span>  <span class="t-muted">…</span>                                                                   <span class="t-muted">│</span>
+<span class="t-muted"> │</span>                                                                      <span class="t-muted">│</span>
+<span class="t-muted"> │</span>  <span class="t-accent">RTP/media</span>                                                           <span class="t-muted">│</span>
+<span class="t-muted"> │</span>      WAV       Decoded G.711 audio per RTP stream                    <span class="t-muted">│</span>
+<span class="t-muted"> │</span>      RTP JSON  Jitter, packet loss, MOS per stream                   <span class="t-muted">│</span>
+<span class="t-muted"> │</span>                                                                      <span class="t-muted">│</span>
+<span class="t-muted"> │</span>  <span class="t-accent">Operator notes</span>                                                      <span class="t-muted">│</span>
+<span class="t-muted"> │</span>      NOTES     Your notes, to resume with --notes (not analysis)     <span class="t-muted">│</span>
+<span class="t-muted"> │</span>                                                                      <span class="t-muted">│</span>
 <span class="t-muted"> │</span>  <span class="t-good">[Enter]</span> Save  <span class="t-header">[Tab/⇧Tab]</span> Format  <span class="t-warn">[Esc]</span> Cancel                       <span class="t-muted">│</span>
 <span class="t-muted"> └──────────────────────────────────────────────────────────────────────┘</span>
 <span class="t-muted"> Enter Save  Tab Format  Esc Cancel</span></pre>

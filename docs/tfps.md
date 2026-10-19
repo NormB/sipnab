@@ -283,8 +283,8 @@ In this mode TFPS attaches no XDP program.
 - So `tfps_ctl banned` answers
   ``no loaded eBPF map called `blocked` — is tfps running, and are you root?``.
   There is nothing to list.
-- The journal holds the decisions, as `WOULD BLOCK
-  peer=... (observe only)`.
+- The journal holds the decisions, one line each in the form `WOULD BLOCK
+  peer=<peer> reason=<kind> detail=<detail> (observe only)`.
 
 To start blocking, remove the drop-in and restart:
 

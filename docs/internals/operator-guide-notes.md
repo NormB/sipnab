@@ -43,7 +43,7 @@ capture files by each file's first packet timestamp, never by name.
 
 - `tcpdump -C 100 -W 10` writes `tg.pcap0` to `tg.pcap9` and then overwrites
   the oldest file in place. The set measured for this feature ran
-  `tg.pcap7`, `tg.pcap8`, `tg.pcap9`, `tg.pcap0` … `tg.pcap6` in time order, so
+  `tg.pcap7`, `tg.pcap8`, `tg.pcap9`, then `tg.pcap0` to `tg.pcap6` in time order, so
   neither lexicographic nor natural-numeric name order reconstructs it.
 - Out-of-order replay corrupts every timing derivation that assumes time moves
   forward: post-dial delay, setup time, retransmission detection, and the
@@ -614,8 +614,8 @@ symptom table. This section records the mechanism behind each.
 - libpcap's netmap module reports a frame its BPF filter rejects as a
   successful read that delivers no data.
 - 0.5.188 and earlier then copied the previous packet's length from address 0,
-  and the capture thread died with `capture-netmap:[...]: segfault at 0` in
-  the kernel log.
+  and the capture thread died. The kernel log recorded a segfault at
+  address 0 in the `capture-netmap` thread.
 - It presented as a crash at shutdown. The dropped frame is usually link
   chatter, such as an IPv6 router solicitation, arriving while the capture is
   idle. An idle capture that had captured nothing survived, because no packet
@@ -699,7 +699,7 @@ filter (CLI flags, `[filter] expression`, `[filters]` entries, REST, MCP, the
 TUI filter dialog) inherits them.
 
 - `MAX_EXPRESSION_NODES = 1024`. The bound a caller is most likely to reach.
-  Without it, a long flat `a OR b OR c …` chain built one node per term and
+  Without it, a long flat chain such as `a OR b OR c OR d` built one node per term and
   overflowed the stack during evaluation, which aborts the process instead of
   returning an error. `MAX_NESTING_DEPTH` could not catch it, because a flat
   chain has no parentheses. `count_nodes` runs after the syntax checks, so a
@@ -717,8 +717,8 @@ TUI filter dialog) inherits them.
   and one over the limit.
 - The error position is the 0-based character column the caret marks, not a
   byte offset.
-- [`tests/filter_depth_bounds_test.rs`](../../tests/filter_depth_bounds_test.rs) harvests every `--filter "…"` and
-  `expression = "…"` string from `docs/` and requires it to parse, so a page
+- [`tests/filter_depth_bounds_test.rs`](../../tests/filter_depth_bounds_test.rs) harvests every double-quoted
+  `--filter` argument and `expression =` value from `docs/` and requires it to parse, so a page
   that shows a refused expression must quote it with single quotes.
 
 ### Filter DSL: unknown numeric values
@@ -741,30 +741,20 @@ Relocated from `docs/tuning-capture.md` ("Snapshot length" and "Which
 interfaces"). Verification debt for these figures is item V3 in
 [`docs/design/capture-tuning-tasks.md`](../design/capture-tuning-tasks.md).
 
-libpcap's `create_ring()` sizes each TPACKET_V2 slot from the snapshot length:
+libpcap's `create_ring()` (in `pcap-linux.c`) sizes each TPACKET_V2 slot from
+the snapshot length:
 
-```c
-frame_size = handle->snapshot;
-/* ... clamped for Ethernet ... */
-req.tp_frame_size = TPACKET_ALIGN(macoff + frame_size);
-req.tp_frame_nr   = (handle->opt.buffer_size + req.tp_frame_size - 1)
-                    / req.tp_frame_size;
-```
+- `frame_size` starts as `handle->snapshot`.
+- The slot size `req.tp_frame_size` is `TPACKET_ALIGN(macoff + frame_size)`.
+- The slot count `req.tp_frame_nr` is the buffer size divided by the slot size,
+  rounded up: `(handle->opt.buffer_size + req.tp_frame_size - 1) / req.tp_frame_size`.
 
-The link type guards the only clamp:
+The link type guards the only clamp on `frame_size`. It runs only when
+`handle->linktype == DLT_EN10MB`:
 
-```c
-if (handle->linktype == DLT_EN10MB) {
-        ...
-        if (offload)
-                max_frame_len = MAX(mtu, 65535);
-        else
-                max_frame_len = mtu;
-        max_frame_len += 18;
-        if (frame_size > max_frame_len)
-                frame_size = max_frame_len;
-}
-```
+- With offloads on, the limit is `MAX(mtu, 65535) + 18`.
+- With offloads off, the limit is `mtu + 18`.
+- libpcap cuts a `frame_size` above the limit to the limit.
 
 - `find_default_device()` in
   [`src/capture/device.rs`](../../src/capture/device.rs) returns `"any"` on

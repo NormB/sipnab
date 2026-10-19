@@ -358,6 +358,10 @@ pub const FLAGS: &[(&str, Link)] = &[
         "kill-scanner",
         Link::Key("security", "kill_scanner", Merge::Override),
     ),
+    (
+        "kill-scanner-detect-only",
+        Link::Key("security", "kill_scanner_detect_only", Merge::Override),
+    ),
     ("kill-spoof", Link::Pending),
     ("kill-target", Link::Pending),
     ("kill-ua", Link::Pending),
@@ -548,6 +552,10 @@ pub const FLAGS: &[(&str, Link)] = &[
     (
         "no-kill-scanner",
         Link::Key("security", "kill_scanner", Merge::Off),
+    ),
+    (
+        "no-kill-scanner-detect-only",
+        Link::Key("security", "kill_scanner_detect_only", Merge::Off),
     ),
     ("no-password-prompt", Link::Pending),
     (
@@ -1808,6 +1816,30 @@ mod tests {
         Ok(())
     }
 
+    /// `--kill-scanner-detect-only` turns `[security] kill_scanner_detect_only`
+    /// on, overriding the file, and its off flag forces the same key off.
+    #[test]
+    fn detect_only_flags_map_to_their_key() -> Result<(), TestError> {
+        let row = |flag: &str| FLAGS.iter().find(|(f, _)| *f == flag).map(|(_, l)| *l);
+        assert_eq!(
+            row("kill-scanner-detect-only"),
+            Some(Link::Key(
+                "security",
+                "kill_scanner_detect_only",
+                Merge::Override
+            ))
+        );
+        assert_eq!(
+            row("no-kill-scanner-detect-only"),
+            Some(Link::Key(
+                "security",
+                "kill_scanner_detect_only",
+                Merge::Off
+            ))
+        );
+        Ok(())
+    }
+
     /// Every switch's off flag forces the same key off.
     #[test]
     fn every_off_flag_forces_its_key_off() -> Result<(), TestError> {
@@ -1818,6 +1850,10 @@ mod tests {
             ("priv-drop", ("privilege", "no_priv_drop")),
             ("no-fraud-detect", ("security", "fraud_detect")),
             ("no-kill-scanner", ("security", "kill_scanner")),
+            (
+                "no-kill-scanner-detect-only",
+                ("security", "kill_scanner_detect_only"),
+            ),
             ("no-reverse-dns", ("names", "reverse_dns")),
             ("no-resolve", ("names", "enabled")),
         ] {
@@ -1838,6 +1874,7 @@ mod tests {
             "privilege.no_priv_drop",
             "security.fraud_detect",
             "security.kill_scanner",
+            "security.kill_scanner_detect_only",
             "names.reverse_dns",
             "names.enabled",
         ];

@@ -38,7 +38,7 @@ probe.
 | Name | Type | Legal values | If omitted |
 |---|---|---|---|
 | `flavors?` | array of string | `openssl`, `wolfssl` | every flavor found |
-| `libraries?` | array of string | paths this server can open; for a containerized process, the `/proc/<pid>/root/...` form that `list_tls_libraries` returns as `probe_path` | the libraries discovered on this host |
+| `libraries?` | array of string | paths this server can open; for a containerized process, the form that `list_tls_libraries` returns as `probe_path`: `/proc/<pid>/root/` followed by the library's path inside the container, such as `/proc/954/root/usr/lib/libssl.so.3` | the libraries discovered on this host |
 
 ```jsonc
 // start_tls_capture { }                                  // every library found
@@ -52,7 +52,7 @@ probe.
   "lost": null,
   "uptime_sec": 0,
   "error": null,
-  "summary": "Probing 1 TLS library. ..."
+  "summary": "Probing 1 TLS library. Poll start_tls_capture's sibling stop_tls_capture, or capture_status, to see messages arrive. An attach failure appears there rather than here, because the probes are installed on a background thread."
 }
 ```
 

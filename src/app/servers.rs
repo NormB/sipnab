@@ -138,6 +138,11 @@ pub struct Selection {
     /// question. Carried on Selection for the same reason `mcp_row_cap` is —
     /// this struct is where per-run decisions about the servers already live.
     pub armed_detections: Vec<&'static str>,
+    /// Whether this run answers the scanners it detects, which
+    /// `security_findings` reports as `scanner_response` beside
+    /// `armed_detections`. `scanner` in that list says only that scanners
+    /// are detected.
+    pub scanner_response: crate::security::findings::ScannerResponse,
     /// The run's pipeline options, built by the caller with
     /// [`crate::app::pipeline_options`] from the same command line and config
     /// the run's own packet loop uses.
@@ -647,7 +652,7 @@ pub fn start_servers(
         let verifier = Arc::new(crate::auth::TokenVerifier::new(
             resolve_api_verifier_config(cli),
         ));
-        let state = ApiState {
+        let mut state = ApiState {
             dialog_store: Arc::clone(dialog_store),
             stream_store: Arc::clone(stream_store),
             // The same meter the scrape endpoint reads, so /metrics and
@@ -721,6 +726,7 @@ pub fn start_servers(
                 .iter()
                 .map(|s| (*s).to_string())
                 .collect(),
+            scanner_response: selection.scanner_response,
             // Opt-in, like the relay permit above: a file-reading capability is
             // off unless the operator named a directory to confine it to.
             file_root: cli
@@ -744,6 +750,8 @@ pub fn start_servers(
             pipeline_options: selection.pipeline_options,
             archive: crate::output::api::ArchivePasswordPolicy {
                 accept_remote: cli.listener_args.api_accept_archive_passwords,
+                // Set below, from the listener this server actually binds.
+                served_over_tls: false,
                 #[cfg(feature = "archive")]
                 candidates: std::sync::Arc::new(crate::capture::archive::password::run_candidates()),
                 wrong: std::sync::Arc::default(),
@@ -759,6 +767,7 @@ pub fn start_servers(
         // (port already in use) logged from the detached servers thread is
         // invisible once the TUI owns the terminal.
         let listener = api::prepare_listener(bind, &state.verifier, &config)?;
+        state.archive.served_over_tls = listener.is_tls();
         Some(Prepared::Api {
             listener,
             state: Box::new(state),
@@ -932,6 +941,7 @@ pub fn start_servers(
             let s = s.with_tfps(selection.tfps.clone());
             let s = s.with_actions(selection.actions.clone());
             let s = s.with_armed_detections(selection.armed_detections.iter().copied());
+            let s = s.with_scanner_response(selection.scanner_response);
             match alerts {
                 Some(a) => s.with_alert_engine(Arc::clone(a)),
                 None => s,
@@ -1210,6 +1220,7 @@ mod tests {
             mcp: false,
             metrics: false,
             armed_detections: Vec::new(),
+            scanner_response: Default::default(),
             pipeline_options: Default::default(),
             alias_thresholds: Default::default(),
             vcon_spools: Vec::new(),

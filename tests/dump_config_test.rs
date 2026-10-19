@@ -160,3 +160,32 @@ fn refusal(stderr: &str) -> Option<String> {
         .map_or(after, |(_, m)| m);
     Some(message.to_string())
 }
+
+/// `-D` shows `[security] kill_scanner_detect_only` as the file set it, so an
+/// operator can confirm a detect-only configuration before a live run.
+#[test]
+fn dump_config_shows_kill_scanner_detect_only() -> Result<(), TestError> {
+    let dir = tempfile::tempdir()?;
+    let config = dir.path().join("sipnab.toml");
+    std::fs::write(&config, "[security]\nkill_scanner_detect_only = true\n")?;
+    let out = Command::new(env!("CARGO_BIN_EXE_sipnab"))
+        .arg("-f")
+        .arg(&config)
+        .arg("-D")
+        .env_remove("SIPNAB_LOG")
+        .env("XDG_STATE_HOME", dir.path())
+        .env("HOME", dir.path())
+        .output()?;
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(out.status.code(), Some(0), "{stderr}");
+    assert!(
+        stdout.contains("kill_scanner_detect_only = true"),
+        "-D must show the key:\n{stdout}"
+    );
+    assert!(
+        !stderr.contains("Unknown config key"),
+        "the key must be one sipnab accepts:\n{stderr}"
+    );
+    Ok(())
+}

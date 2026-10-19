@@ -72,7 +72,7 @@ troubled call in a single sweep. That means failed calls **plus**:
 sipnab -N -I capture.pcap --problems --json
 ```
 
-`--problems` is shorthand for the full Filter-DSL expression `state == 'Failed' OR one_way == true OR rtp.loss > 5.0 OR rtp.jitter > 50.0 OR nat_mismatch == true OR retransmits > 3 OR pdd > 11.0 OR ...`. So it is a superset of "failed calls".
+`--problems` is shorthand for the full Filter-DSL expression `state == 'Failed' OR one_way == true OR rtp.loss > 5.0 OR rtp.jitter > 50.0 OR nat_mismatch == true OR retransmits > 3 OR pdd > 11.0 OR codec_asymmetry == true OR ptime_asymmetry == true OR payload_asymmetry == true OR duration_asymmetry == true OR late_media == true`, with the default thresholds. So it is a superset of "failed calls".
 
 Once you know the symptom, jump to the matching section below for the precise filter.
 
@@ -371,10 +371,17 @@ The `--one-way` alias finds every call flagged for one-way audio. It dumps the m
 sipnab -N -I capture.pcap --one-way --json
 ```
 
-You should see one NDJSON record per SIP message of each flagged call. This example shows an abridged record. Real records carry the full field set:
+You should see one NDJSON record per SIP message of each flagged call. Each record carries the message's full field set.
+To read only the fields that name each message and its call, select them with `jq`.
+Against [`tests/pcap-samples/sip-rtp-g711.pcap`](https://github.com/NormB/sipnab/raw/main/tests/pcap-samples/sip-rtp-g711.pcap):
+
+```bash
+sipnab -N -I tests/pcap-samples/sip-rtp-g711.pcap --one-way --json | jq -c '{is_request, method, status_code, call_id, from, to}'
+```
 
 ```json
-{"is_request":true,"method":"INVITE","call_id":"7f3a9c@192.0.2.5","from":"...","to":"...", "...":"..."}
+{"is_request":true,"method":"BYE","status_code":null,"call_id":"1-1966@10.0.2.20","from":"test <sip:test@10.0.2.15:5060>;tag=QvN92t713vSZK","to":"\"PCMU/8000\" <sip:sipp@10.0.2.20:5060>;tag=1"}
+{"is_request":false,"method":null,"status_code":200,"call_id":"1-1966@10.0.2.20","from":"test <sip:test@10.0.2.15:5060>;tag=QvN92t713vSZK","to":"\"PCMU/8000\" <sip:sipp@10.0.2.20:5060>;tag=1"}
 ```
 
 For the same set of calls rendered as the full diagnostic report rather than raw records:
@@ -543,10 +550,20 @@ Find the calls in a capture whose MOS fell below the noticeable-degradation line
 sipnab -N -I capture.pcap --filter "rtp.mos < 3.0" --json
 ```
 
-You should see the SIP messages of every matching call as NDJSON (abridged):
+You should see the SIP messages of every matching call as NDJSON, one record per message.
+To list only which messages and calls matched, select those fields with `jq`.
+Against [`tests/pcap-samples/Asterisk_ZFONE_XLITE.pcap`](https://github.com/NormB/sipnab/raw/main/tests/pcap-samples/Asterisk_ZFONE_XLITE.pcap):
+
+```bash
+sipnab -N -I tests/pcap-samples/Asterisk_ZFONE_XLITE.pcap --filter "rtp.mos < 3.0" --json | jq -c '{is_request, method, status_code, call_id}'
+```
 
 ```json
-{"is_request":true,"method":"INVITE","call_id":"bad-audio@pbx1", "...":"..."}
+{"is_request":true,"method":"INVITE","status_code":null,"call_id":"ZDYzOWVlNjEwM2NjZTBjNzliNmM1ZTNiOGZjNWFhN2E."}
+{"is_request":false,"method":null,"status_code":200,"call_id":"ZDYzOWVlNjEwM2NjZTBjNzliNmM1ZTNiOGZjNWFhN2E."}
+{"is_request":true,"method":"ACK","status_code":null,"call_id":"ZDYzOWVlNjEwM2NjZTBjNzliNmM1ZTNiOGZjNWFhN2E."}
+{"is_request":true,"method":"BYE","status_code":null,"call_id":"ZDYzOWVlNjEwM2NjZTBjNzliNmM1ZTNiOGZjNWFhN2E."}
+{"is_request":false,"method":null,"status_code":200,"call_id":"ZDYzOWVlNjEwM2NjZTBjNzliNmM1ZTNiOGZjNWFhN2E."}
 ```
 
 The per-message records identify *which* calls are bad. Pull the per-stream numbers (`jitter_ms`, `loss_pct`, quality intervals) with `--call-report <call-id>`.
@@ -759,12 +776,13 @@ dialog share nothing.
 ### NAT discovery went unanswered
 
 sipnab reads STUN and TURN. It reports transactions that went out and never
-came back:
+came back. Against
+[`tests/fixtures/stun_nat_probe.pcap`](https://github.com/NormB/sipnab/raw/main/tests/fixtures/stun_nat_probe.pcap),
+`sipnab -N -I tests/fixtures/stun_nat_probe.pcap --no-cli-print` logs these two lines:
 
 ```text
-STUN/TURN: 192.0.2.10:5060 sent Binding to 198.51.100.1:3478 2 time(s) and got
-no reply. An endpoint that cannot learn its reflexive address falls back to
-advertising its PRIVATE address in SDP ...
+2026-10-18T15:27:34.907106Z  WARN sipnab::app::batch: STUN/TURN: 192.0.2.10:5060 sent Binding to 198.51.100.20:3478 2 time(s) and got no reply (traversal-2.1.0 45). An endpoint that cannot learn its reflexive address falls back to advertising its PRIVATE address in SDP, which the far end cannot route back to — the usual cause of a call that signals cleanly and carries audio one way. Note WHAT is missing: no reply at all, rather than a refusal. Silence points at something dropping the packets in the path rather than at the server refusing them, and on school, campus and corporate networks the usual culprit is a security appliance — web filter, secure web gateway, firewall or IPS — discarding UDP it does not recognize. Check whether such a device sits in this path and whether it permits UDP to the STUN/TURN port before suspecting the server.
+2026-10-18T15:27:34.907131Z  WARN sipnab::app::batch: STUN/TURN: 1 of 2 transaction(s) went unanswered.
 ```
 
 **How this leads to one-way audio.** It is the first link in the
@@ -911,7 +929,9 @@ Scanners probe for open registrations and try credential stuffing. Detect them e
 Detect scanners on a live interface. Append fail2ban-compatible lines to a log file fail2ban can watch.
 
 - `--kill-scanner` additionally sends the kill response back to the scanner.
-- So run it only where you mean to:
+- To detect and send nothing, use `--kill-scanner-detect-only` instead. See
+  [Detect scanners without answering them](@/docs/cookbook.md#detect-scanners-without-answering-them).
+- So run `--kill-scanner` only where you mean to:
 
 ```bash
 sudo sipnab -N -d eth0 --kill-scanner --fail2ban >> /var/log/sipnab/scanners.log
@@ -1217,8 +1237,11 @@ Skipping 'session.tgz/lab/cell-trace.pcap': empty (0 bytes)
 -I resolved to 12 capture file(s), 1 archive member(s) not read (each named above with its reason)
 ```
 
-- **`not a capture (starts with ...)`**: the member is not pcap or pcapng.
-  The four bytes identify what it is. A text file starts with printable bytes.
+- **`not a capture (starts with {head}, which is not pcap or pcapng)`**: the
+  member is not pcap or pcapng. `{head}` is its first four bytes in hex, which
+  identify what it is. A text file starts with printable bytes: a member
+  `notes.txt` holding `call notes` reads `Skipping 'session.tgz/lab/notes.txt':
+  not a capture (starts with 63 61 6c 6c, which is not pcap or pcapng)`.
 - **`ZIP data, which sipnab does not unwrap`** (or 7-Zip, `zstd`, `xz`,
   `bzip2`, LZ4).
   - Unpack that member with the tool that made it.
@@ -1249,13 +1272,17 @@ A `-L` listener that shows no calls has one of two problems. The silence
 warning in its log already tells you which. The listener warns when it admits
 nothing for 30 seconds (`--hep-silence-warn`):
 
-- `no packets for 30s` means nothing arrived at all. The sender is not reaching
-  the port. Check:
+- `HEP listener on 0.0.0.0:9060: no packets for 30s — upstream sender may be
+  down (UDP gives no error for a dead peer); capture is still listening` means
+  nothing arrived at all. The sender is not reaching the port. Check:
   - the address and port it targets
   - the firewall
   - whether the SIP server is mirroring at all
-- `no packets admitted for 30s ... every one was refused` means packets arrive
-  and sipnab turns every one away.
+- `HEP listener on 0.0.0.0:9060: no packets admitted for 30s — 30 arrived and
+  every one was refused, mostly auth_mismatch (the auth key does not match this
+  listener's secret), the last of those from 192.0.2.7; the sender is reaching
+  this port and being turned away; capture is still listening` means packets
+  arrive and sipnab turns every one away.
   - The line names the reason most of them met, and the peer that sent them.
   - The network is fine, and the sender's configuration is not.
 
@@ -1297,7 +1324,15 @@ The sender may itself be a sipnab (`--hep-send`). Then ask it too.
 
   Start the collector, or correct the address, then start the sender again.
 - Its `runtime_stats` or `GET /v1/runtime` carries `hep_export`.
-- A headless run ends with a `HEP export to ...` line.
+- A headless run ends with a `HEP export to {destination} over {transport}:
+  {sent} packet(s) sent, {failed}, {reconnects} reconnect(s); sent means
+  {delivery}` line. `{failed}` is `none failed`, or the number that failed
+  followed by each kind and its count, such as `3 failed (connect 3)`. A UDP
+  run of `sipnab -N -I tests/pcap-samples/sip-rtp-g711.pcap --hep-send
+  127.0.0.1:19999 --no-cli-print` ends with `HEP export to 127.0.0.1:19999
+  over udp: 10 packet(s) sent, none failed, 0 reconnect(s); sent means handed
+  to the kernel: UDP reports no delivery, so a collector that is down produces
+  no failure here`.
   - `connect` failures are reconnects to a collector that went down or became
     unreachable.
   - `tls_handshake` failures are a collector whose certificate the sender does
@@ -1683,7 +1718,7 @@ readelf -n "$DEBUG" | grep 'Build ID'
 
 The ID must equal the report's `Build ID` line.
 
-Then pass each `sipnab+0x…` address to `addr2line`. The two below are the first
+Then pass the hexadecimal offset of each `sipnab+0x` address, such as `0xa004d3` from `sipnab+0xa004d3`, to `addr2line`. The two below are the first
 frames of the example report above:
 
 ```bash
@@ -1696,7 +1731,7 @@ Or to `llvm-symbolizer`, if you have LLVM:
 llvm-symbolizer --obj="$DEBUG" 0xa004d3 0x9fffe7
 ```
 
-Each address prints the function and the `src/…rs:line` it came from.
+Each address prints the function, and the source file and line it came from, in the form `src/<file>.rs:<line>`.
 
 - The numbers after `+` are addresses inside the file.
 - So they work however the system placed the binary in memory.

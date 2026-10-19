@@ -1,7 +1,7 @@
 .\" sipnab.1 -- man page for sipnab
 .\" Copyright 2024-2026 Norm Brandinger
 .\" License: MIT OR Apache-2.0
-.TH SIPNAB 1 "2026-10-13" "sipnab 0.5.226" "User Commands"
+.TH SIPNAB 1 "2026-10-13" "sipnab 0.5.227" "User Commands"
 .SH NAME
 sipnab \- SIP & RTP capture, analysis, and security tool
 .SH SYNOPSIS
@@ -372,7 +372,7 @@ Show absolute times even when \fB[display] delta_time = true\fR. The last of \fB
 Show N messages after each match (like grep \-A).
 .TP
 \fB\-\-show\-empty\fR
-Show the full header block of messages that have no body (responses, OPTIONS, REGISTER, ACK, BYE, ...). Without this, bodyless messages show only their one\-line summary; messages that carry a body always show their full detail.
+Show the full header block of messages that have no body, such as most responses and OPTIONS, REGISTER, ACK and BYE requests. Without this, bodyless messages show only their one\-line summary; messages that carry a body always show their full detail.
 .TP
 \fB\-\-proto\-number\fR
 Annotate the transport tag with the IANA IP protocol number, e.g. \fBUDP(17)\fR / \fBTCP(6)\fR. \fB\-N\fR itself is \fB\-\-no\-tui\fR here, so this flag is long\-only. TLS/WS report their TCP carrier's number (6).
@@ -494,10 +494,16 @@ The G.729 codebook table file, for decoding G.729 audio.
 .SS Security
 .TP
 \fB\-\-kill\-scanner\fR
-Detect and report SIP scanning activity.
+Detect and report SIP scanning activity. On a live capture, also answer each detected scanner with a SIP response; \fB\-\-kill\-scanner\-detect\-only\fR detects without answering.
 .TP
 \fB\-\-no\-kill\-scanner\fR
 Do not answer scanners even when \fB[security] kill_scanner = true\fR. The last of \fB\-\-kill\-scanner\fR / \fB\-\-no\-kill\-scanner\fR typed wins.
+.TP
+\fB\-\-kill\-scanner\-detect\-only\fR
+Detect and report SIP scanners exactly as \fB\-\-kill\-scanner\fR does, and never answer them: no scanner\-kill worker is started and nothing is transmitted, on a live capture too. Builds the scanner detector on its own, so \fB\-\-kill\-scanner\fR is not also required. Refused together with \fB\-K/\-\-kill\-target\fR, which asks sipnab to answer a named source.
+.TP
+\fB\-\-no\-kill\-scanner\-detect\-only\fR
+Answer scanners again even when \fB[security] kill_scanner_detect_only = true\fR. The last of \fB\-\-kill\-scanner\-detect\-only\fR / \fB\-\-no\-kill\-scanner\-detect\-only\fR typed wins.
 .TP
 \fB\-\-sandbox\fR \fIMODE\fR
 Bound which files this process can reach, using Landlock.
@@ -713,7 +719,7 @@ Metrics scrapes served at once before further ones get \fB503\fR (default 16). C
 Rows one list\-style REST response may return (default 1000). Config: \fB[limits] api_max_rows\fR.
 .TP
 \fB\-\-api\-allow\-relay\-query\fR
-Let REST clients query the relay named by \fB\-\-rtpengine\-control\fR (\fBGET /v1/relay/...\fR), which transmits.
+Let REST clients query the relay named by \fB\-\-rtpengine\-control\fR through the six \fBGET /v1/relay/\fR routes (\fBstats\fR, \fBstats/names\fR, \fBstats/call/{call_id}\fR, \fBcompare/{call_id}\fR, \fBholdings\fR and \fBholdings/{call_id}\fR), which transmit.
 .TP
 \fB\-\-api\-allow\-vcon\-fetch\fR
 Let REST clients read a vCon from the operator's \fB[vcon_fetch]\fR store by uuid (\fBGET /v1/vcon/fetch/{uuid}\fR), which connects to it.

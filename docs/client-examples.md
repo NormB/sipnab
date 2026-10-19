@@ -213,10 +213,11 @@ Call-ID                  State       Code  Strm  Pkts    Codec      MOS   2-way
   1 call(s) correlated across both nodes
 ```
 
-Pointing both URLs at one sipnab exits `1`:
+Pointing both URLs at one sipnab exits `1`. The message names the capture
+instance both answers carry, which differs on every run:
 
 ```text
-proxy and relay report the same capture instance (…) -- both URLs point at one sipnab, so there is nothing to correlate
+proxy and relay report the same capture instance (9e22818dfa9f0a876b200-2) -- both URLs point at one sipnab, so there is nothing to correlate
 ```
 
 The caller sent G.722 and the relay forwarded PCMU. So transcoding shows as
@@ -263,11 +264,14 @@ Export a container and check it:
 ```bash
 # Run all of these, in order.
 sipnab -N -I tests/pcap-samples/sip-problem-call.pcap --export-vcon 'completed-9f8e7d@192.0.2.10' --vcon-out call.vcon
-python3 clients/python/vcon_validate.py call.vcon
+python3 clients/python/vcon_validate.py --schema tests/schemas/publisher/vcon_json_schema.json call.vcon
 ```
 
+`--schema` names the schema file the program reads by default. Given as a
+relative path, it prints that way:
+
 ```text
-checked against https://ietf.org/vcon/schemas/unsigned-vcon.json (…/tests/schemas/publisher/vcon_json_schema.json)
+checked against https://ietf.org/vcon/schemas/unsigned-vcon.json (tests/schemas/publisher/vcon_json_schema.json)
 valid    call.vcon
 ```
 

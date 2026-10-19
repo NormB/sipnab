@@ -75,23 +75,47 @@ The example runs against
 ```jsonc
 // siprec_metadata { "call_id": "4f1c0a2e-siprec@172.28.0.31" }
 {
-  "schema_version": 1,
   "call_id": "4f1c0a2e-siprec@172.28.0.31",
+  "capture_identity": {
+    "dialog_generation": 1,
+    "instance": "7b73518dfa98effb90d83-2",
+    "node": "capture-01",
+    "stream_generation": 0
+  },
   "recorded": true,
+  "schema_version": 1,
   "siprec": {
-    "session_id": "4f1c0a2e",
     "mode": "complete",
     "participants": [
-      { "participant_id": "9b2d1f00", "aor": "sip:alice@example.invalid", "name": "Alice" },
-      { "participant_id": "c7e40a13", "aor": "sip:bob@example.invalid" }
+      {
+        "aor": "sip:alice@example.invalid",
+        "name": "Alice",
+        "participant_id": "9b2d1f00"
+      },
+      {
+        "aor": "sip:bob@example.invalid",
+        "participant_id": "c7e40a13"
+      }
     ],
+    "session_id": "4f1c0a2e",
     "streams": [
-      { "stream_id": "1a2b3c4d", "label": "0", "participant_id": "9b2d1f00" },
-      { "stream_id": "2b3c4d5e", "label": "1", "participant_id": "9b2d1f00" },
-      { "stream_id": "3c4d5e6f", "label": "2", "participant_id": "c7e40a13" }
+      {
+        "label": "0",
+        "participant_id": "9b2d1f00",
+        "stream_id": "1a2b3c4d"
+      },
+      {
+        "label": "1",
+        "participant_id": "9b2d1f00",
+        "stream_id": "2b3c4d5e"
+      },
+      {
+        "label": "2",
+        "participant_id": "c7e40a13",
+        "stream_id": "3c4d5e6f"
+      }
     ]
   },
-  "capture_identity": { /* which capture, and which revision of its stores */ },
   "source_exhausted": true,
   "source_stopped_early": false
 }
@@ -103,11 +127,16 @@ Against a call with no SIPREC body, such as `1-1966@10.0.2.20` in
 ```jsonc
 // siprec_metadata { "call_id": "1-1966@10.0.2.20" }
 {
-  "schema_version": 1,
   "call_id": "1-1966@10.0.2.20",
-  "recorded": false,
+  "capture_identity": {
+    "dialog_generation": 13,
+    "instance": "7b95a18dfa98fae1cd5e4-2",
+    "node": "capture-01",
+    "stream_generation": 2
+  },
   "reason": "this dialog carried no SIPREC metadata. That means none reached the capture point -- a recorder signaled on a path sipnab does not see looks the same here as a call nobody recorded.",
-  "capture_identity": { … },
+  "recorded": false,
+  "schema_version": 1,
   "source_exhausted": true,
   "source_stopped_early": false
 }
@@ -259,50 +288,66 @@ shape. The example runs against
 [`tests/pcap-samples/sip-problem-call.pcap`](https://github.com/NormB/sipnab/raw/main/tests/pcap-samples/sip-problem-call.pcap),
 which holds four failed calls:
 
+The envelope's members other than `containers`:
+
 ```jsonc
-// export_vcon { "filter": "response_code >= 400", "limit": 2 }
+// export_vcon { "filter": "response_code >= 400", "limit": 2 }: every member except "containers"
 {
-  "schema_version": 1,
-  "returned": 2,
-  "total_matched": 4,
-  "truncated": true,
+  "capture_identity": {
+    "dialog_generation": 26,
+    "instance": "7cc5418dfa996d13f47be-2",
+    "node": "capture-01",
+    "stream_generation": 0
+  },
   "next_cursor": "2023-11-14T22:13:26Z|decline-7c6d5e@198.51.100.30",
-  "withheld_by_deny": 0,
-  "capture_identity": { /* which capture, and which revision of its stores */ },
+  "returned": 2,
+  "schema_version": 1,
   "source_exhausted": true,
   "source_stopped_early": false,
-  "containers": [
-    {
-      "call_id": "busy-3a2b1c@192.0.2.30",
-      "digest": "1c9e5fcfe825f9e90477c1d4fc49c23de6ceaeb8fcf6a60b141cfd563ed1bce6",
-      "completeness": {
-        "note": "Produced by sipnab 0.5.222 on node capture-01. sipnab OBSERVED this dialog and took no part in it: … sipnab read 23 frame(s) for this capture. No omissions recorded: every message sipnab held for this dialog is in this container. A capture-level analysis ran and ranked no blind spots.",
-        "media": "none-decodable",
-        "media_note": "No RTP streams to export",
-        "max_inline_media_bytes": 5242880,
-        "complete": true,
-        "omissions": []
-      },
-      "container": { /* the vCon itself; one is shown in full below */ }
-    },
-    …
-  ]
+  "total_matched": 4,
+  "truncated": true,
+  "withheld_by_deny": 0
+}
+```
+
+Each element of `containers` carries four members: `call_id`, `digest`,
+`completeness`, and `container`, the vCon itself. This page shows one vCon in
+full below. The first element's other three members:
+
+```jsonc
+// containers[0], every member except "container"
+{
+  "call_id": "busy-3a2b1c@192.0.2.30",
+  "completeness": {
+    "complete": true,
+    "max_inline_media_bytes": 5242880,
+    "media": "none-decodable",
+    "media_note": "No RTP streams to export",
+    "note": "Produced by sipnab 0.5.225 on node capture-01. sipnab OBSERVED this dialog and took no part in it: the parties below are what the From and To headers said, not identities anyone established. No media is in this container because this run decoded none for the dialog; the capture_completeness media_note says what was measured. That is a statement about what this run kept, not a finding that the call was silent. sipnab read 23 frame(s) for this capture. No omissions recorded: every message sipnab held for this dialog is in this container. A capture-level analysis ran and ranked no blind spots.",
+    "omissions": []
+  },
+  "digest": "9eec24d0451a1fad4bdb6433688d0f1487e37f8fc2b255320a96f17bd08df9ca"
 }
 ```
 
 A container that lost something fills the same block differently. With
 `--retain-audio --vcon-max-inline-media 0`, `export_vcon { "call_id":
-"1-1966@10.0.2.20" }` against [`tests/pcap-samples/sip-rtp-g711.pcap`](https://github.com/NormB/sipnab/raw/main/tests/pcap-samples/sip-rtp-g711.pcap) returns:
+"1-1966@10.0.2.20" }` against [`tests/pcap-samples/sip-rtp-g711.pcap`](https://github.com/NormB/sipnab/raw/main/tests/pcap-samples/sip-rtp-g711.pcap) returns this `completeness`:
 
 ```jsonc
-"completeness": {
-  "note": "Produced by sipnab 0.5.222 on node capture-01. … No media is in this container because sipnab REFUSED to inline it: it decoded audio and the encoded body was over the budget below. The audio exists and was not truncated. sipnab read 852 frame(s) for this capture. — INCOMPLETE: sipnab decoded 8.5 second(s) of audio for this dialog and REFUSED to carry it: base64url of the 136516 byte WAV is 182022 bytes, over the 0 byte budget this emitter enforces because one probed vCon store answers 204 and drops the payload without telling the producer. The audio was NOT truncated and is not in this container; export it beside this file with the export_audio MCP tool. A capture-level analysis ran and ranked no blind spots.",
-  "media": "refused-over-budget",
-  "media_note": "Produced by sipnab 0.5.222 via mechanism sipnab-capture. …",
-  "max_inline_media_bytes": 0,
+// containers[0].completeness
+{
   "complete": false,
+  "max_inline_media_bytes": 0,
+  "media": "refused-over-budget",
+  "media_note": "Produced by sipnab 0.5.225 via mechanism sipnab-capture. Audio decoded from RTP payload this run retained; it is bounded by where the capture point sat and by what retention kept, and is not a recording made by the endpoints. INCOMPLETE. — PARTIAL: media in only ONE direction reached this capture; no stream going the other way was observed. That may be a one-way call, or a capture point that only sees one leg -- this file cannot tell you which.",
+  "note": "Produced by sipnab 0.5.225 on node capture-01. sipnab OBSERVED this dialog and took no part in it: the parties below are what the From and To headers said, not identities anyone established. No media is in this container because sipnab REFUSED to inline it: it decoded audio and the encoded body was over the budget below. The audio exists and was not truncated. sipnab read 852 frame(s) for this capture. — INCOMPLETE: sipnab decoded 8.5 second(s) of audio for this dialog and REFUSED to carry it: base64url of the 136516 byte WAV is 182022 bytes, over the 0 byte budget this emitter enforces because one probed vCon store answers 204 and drops the payload without telling the producer. The audio was NOT truncated and is not in this container; export it beside this file with the export_audio MCP tool. A capture-level analysis ran and ranked no blind spots.",
   "omissions": [
-    { "kind": "media_refused_over_budget", "count": 1, "unit": "recording" }
+    {
+      "count": 1,
+      "kind": "media_refused_over_budget",
+      "unit": "recording"
+    }
   ]
 }
 ```
@@ -318,11 +363,499 @@ on a server started with `--node-name capture-01` and without
 ```jsonc
 // the "container" member of export_vcon { "call_id": "1-1966@10.0.2.20" }
 {
-  "vcon": "0.4.0",
-  "uuid": "0158a120-0392-8940-a7b4-dd42980ec66e",
-  "created_at": "2026-10-16T12:03:45.845914820+00:00",
-  "subject": "SIP call 1-1966@10.0.2.20",
-  "extensions": ["sip-signaling", "CC"],
+  "analysis": [
+    {
+      "body": {
+        "capture_completeness": {
+          "blind_spots": [],
+          "call_ended": true,
+          "dialogs_refused": 0,
+          "dialogs_rotated": 0,
+          "dialogs_suppressed_by_deny": 0,
+          "frames_read": 852,
+          "gate_closed_during_run": false,
+          "headers_dropped_oversize": 0,
+          "media": "none-decodable",
+          "media_note": "No audio payload retained: sipnab measured 425 RTP packet(s) of PCMU on 1 decodable stream, but kept none of their payload, so there is nothing to decode. This is a statement about what this run kept, not a finding that the call was silent. Most often audio payload retention was off — start the server with --retain-audio to hold payload for export. With retention already on, the other causes are a --snaplen that truncated the payload away before sipnab saw it, or packets that carried no payload at all.",
+          "messages_evicted": 0,
+          "node": "capture-01",
+          "note": "Produced by sipnab 0.5.225 on node capture-01. sipnab OBSERVED this dialog and took no part in it: the parties below are what the From and To headers said, not identities anyone established. No media is in this container because this run decoded none for the dialog; the capture_completeness media_note says what was measured. That is a statement about what this run kept, not a finding that the call was silent. sipnab read 852 frame(s) for this capture. No omissions recorded: every message sipnab held for this dialog is in this container. A capture-level analysis ran and ranked no blind spots.",
+          "sip_discarded_by_port_gate": 0,
+          "sip_discarded_by_websocket_gate": 0,
+          "sipnab_version": "0.5.225",
+          "undecodable_frames": 0
+        },
+        "final_status_code": 200,
+        "media_quality": [
+          {
+            "codec": "PCMU",
+            "jitter_ms": 0.0054046519599899685,
+            "loss_pct": 0.0,
+            "mos": 4.358100599599484,
+            "mos_grounded": true,
+            "mos_grounding": "published",
+            "packets": 425,
+            "r_factor": 90.79987028835296,
+            "ssrc": "0x343da99b"
+          }
+        ],
+        "schema_version": 1,
+        "sip_call_id": "1-1966@10.0.2.20"
+      },
+      "dialog": 0,
+      "encoding": "json",
+      "mediatype": "application/json",
+      "product": "sipnab 0.5.225 (passive observer; not a recording system)",
+      "schema": "sipnab-dialog-diagnosis/1",
+      "type": "report",
+      "vendor": "sipnab"
+    }
+  ],
+  "attachments": [
+    {
+      "body": {
+        "call_id": "1-1966@10.0.2.20",
+        "messages": [
+          {
+            "body": "v=0\r\no=- 42 42 IN IP4 10.0.2.20\r\ns=-\r\nc=IN IP4 10.0.2.20\r\nt=0 0\r\nm=audio 6000 RTP/AVP 0\r\na=rtpmap:0 PCMU/8000\r\na=recvonly\r\n",
+            "call_id": "1-1966@10.0.2.20",
+            "contact": "sip:sipp@10.0.2.20:5060",
+            "cseq": {
+              "method": "INVITE",
+              "number": 1
+            },
+            "direction": "received",
+            "dscp": 0,
+            "dst": "10.0.2.15",
+            "dst_port": 5060,
+            "frame": "tests/pcap-samples/sip-rtp-g711.pcap#0@db88659b94678546",
+            "from": "\"PCMU/8000\" <sip:sipp@10.0.2.20:5060>;tag=1",
+            "headers": {
+              "CSeq": [
+                "1 INVITE"
+              ],
+              "Call-ID": [
+                "1-1966@10.0.2.20"
+              ],
+              "Contact": [
+                "sip:sipp@10.0.2.20:5060"
+              ],
+              "Content-Length": [
+                "123"
+              ],
+              "Content-Type": [
+                "application/sdp"
+              ],
+              "From": [
+                "\"PCMU/8000\" <sip:sipp@10.0.2.20:5060>;tag=1"
+              ],
+              "Max-Forwards": [
+                "70"
+              ],
+              "To": [
+                "test <sip:test@10.0.2.15:5060>"
+              ],
+              "Via": [
+                "SIP/2.0/UDP 10.0.2.20:5060;branch=z9hG4bK-1966-1-0"
+              ]
+            },
+            "input_origin": "wire",
+            "is_request": true,
+            "method": "INVITE",
+            "party": 0,
+            "schema_version": 1,
+            "sdp": "v=0\r\no=- 42 42 IN IP4 10.0.2.20\r\ns=-\r\nc=IN IP4 10.0.2.20\r\nt=0 0\r\nm=audio 6000 RTP/AVP 0\r\na=rtpmap:0 PCMU/8000\r\na=recvonly\r\n",
+            "src": "10.0.2.20",
+            "src_port": 5060,
+            "timestamp": "2016-11-26T14:52:59.666393+00:00",
+            "to": "test <sip:test@10.0.2.15:5060>",
+            "transport": "UDP"
+          },
+          {
+            "call_id": "1-1966@10.0.2.20",
+            "cseq": {
+              "method": "INVITE",
+              "number": 1
+            },
+            "direction": "received",
+            "dscp": 0,
+            "dst": "10.0.2.20",
+            "dst_port": 5060,
+            "frame": "tests/pcap-samples/sip-rtp-g711.pcap#1@8d04fd910bd99ff1",
+            "from": "\"PCMU/8000\" <sip:sipp@10.0.2.20:5060>;tag=1",
+            "headers": {
+              "CSeq": [
+                "1 INVITE"
+              ],
+              "Call-ID": [
+                "1-1966@10.0.2.20"
+              ],
+              "Content-Length": [
+                "0"
+              ],
+              "From": [
+                "\"PCMU/8000\" <sip:sipp@10.0.2.20:5060>;tag=1"
+              ],
+              "To": [
+                "test <sip:test@10.0.2.15:5060>"
+              ],
+              "User-Agent": [
+                "FreeSWITCH-mod_sofia/1.6.12-20-b91a0a6~64bit"
+              ],
+              "Via": [
+                "SIP/2.0/UDP 10.0.2.20:5060;branch=z9hG4bK-1966-1-0"
+              ]
+            },
+            "input_origin": "wire",
+            "is_request": false,
+            "reason": "Trying",
+            "response_context": "1 INVITE",
+            "schema_version": 1,
+            "src": "10.0.2.15",
+            "src_port": 5060,
+            "status_code": 100,
+            "status_text": "Trying",
+            "timestamp": "2016-11-26T14:52:59.666545+00:00",
+            "to": "test <sip:test@10.0.2.15:5060>",
+            "transport": "UDP",
+            "ua": "FreeSWITCH-mod_sofia/1.6.12-20-b91a0a6~64bit"
+          },
+          {
+            "body": "v=0\r\no=FreeSWITCH 1480144037 1480144038 IN IP4 10.0.2.15\r\ns=FreeSWITCH\r\nc=IN IP4 10.0.2.15\r\nt=0 0\r\nm=audio 27942 RTP/AVP 0 101\r\na=rtpmap:0 PCMU/8000\r\na=rtpmap:101 telephone-event/8000\r\na=fmtp:101 0-16\r\na=sendonly\r\na=ptime:20\r\n",
+            "call_id": "1-1966@10.0.2.20",
+            "contact": "<sip:test@10.0.2.15:5060;transport=udp>",
+            "cseq": {
+              "method": "INVITE",
+              "number": 1
+            },
+            "direction": "received",
+            "dscp": 0,
+            "dst": "10.0.2.20",
+            "dst_port": 5060,
+            "frame": "tests/pcap-samples/sip-rtp-g711.pcap#3@4c4849d94af362f3",
+            "from": "\"PCMU/8000\" <sip:sipp@10.0.2.20:5060>;tag=1",
+            "headers": {
+              "Accept": [
+                "application/sdp"
+              ],
+              "Allow": [
+                "INVITE, ACK, BYE, CANCEL, OPTIONS, MESSAGE, INFO, UPDATE, REGISTER, REFER, NOTIFY, PUBLISH, SUBSCRIBE"
+              ],
+              "Allow-Events": [
+                "talk, hold, conference, presence, as-feature-event, dialog, line-seize, call-info, sla, include-session-description, presence.winfo, message-summary, refer"
+              ],
+              "CSeq": [
+                "1 INVITE"
+              ],
+              "Call-ID": [
+                "1-1966@10.0.2.20"
+              ],
+              "Contact": [
+                "<sip:test@10.0.2.15:5060;transport=udp>"
+              ],
+              "Content-Disposition": [
+                "session"
+              ],
+              "Content-Length": [
+                "226"
+              ],
+              "Content-Type": [
+                "application/sdp"
+              ],
+              "From": [
+                "\"PCMU/8000\" <sip:sipp@10.0.2.20:5060>;tag=1"
+              ],
+              "Remote-Party-ID": [
+                "\"test\" <sip:test@10.0.2.15>;party=calling;privacy=off;screen=no"
+              ],
+              "Supported": [
+                "timer, path, replaces"
+              ],
+              "To": [
+                "test <sip:test@10.0.2.15:5060>;tag=QvN92t713vSZK"
+              ],
+              "User-Agent": [
+                "FreeSWITCH-mod_sofia/1.6.12-20-b91a0a6~64bit"
+              ],
+              "Via": [
+                "SIP/2.0/UDP 10.0.2.20:5060;branch=z9hG4bK-1966-1-0"
+              ]
+            },
+            "input_origin": "wire",
+            "is_request": false,
+            "party": 1,
+            "reason": "OK",
+            "response_context": "1 INVITE",
+            "schema_version": 1,
+            "sdp": "v=0\r\no=FreeSWITCH 1480144037 1480144038 IN IP4 10.0.2.15\r\ns=FreeSWITCH\r\nc=IN IP4 10.0.2.15\r\nt=0 0\r\nm=audio 27942 RTP/AVP 0 101\r\na=rtpmap:0 PCMU/8000\r\na=rtpmap:101 telephone-event/8000\r\na=fmtp:101 0-16\r\na=sendonly\r\na=ptime:20\r\n",
+            "src": "10.0.2.15",
+            "src_port": 5060,
+            "status_code": 200,
+            "status_text": "OK",
+            "timestamp": "2016-11-26T14:52:59.670743+00:00",
+            "to": "test <sip:test@10.0.2.15:5060>;tag=QvN92t713vSZK",
+            "transport": "UDP",
+            "ua": "FreeSWITCH-mod_sofia/1.6.12-20-b91a0a6~64bit"
+          },
+          {
+            "call_id": "1-1966@10.0.2.20",
+            "contact": "sip:sipp@10.0.2.20:5060",
+            "cseq": {
+              "method": "ACK",
+              "number": 1
+            },
+            "direction": "received",
+            "dscp": 0,
+            "dst": "10.0.2.15",
+            "dst_port": 5060,
+            "frame": "tests/pcap-samples/sip-rtp-g711.pcap#4@9e84c7dc02d02a09",
+            "from": "\"PCMU/8000\" <sip:sipp@10.0.2.20:5060>;tag=1",
+            "headers": {
+              "CSeq": [
+                "1 ACK"
+              ],
+              "Call-ID": [
+                "1-1966@10.0.2.20"
+              ],
+              "Contact": [
+                "sip:sipp@10.0.2.20:5060"
+              ],
+              "Content-Length": [
+                "0"
+              ],
+              "From": [
+                "\"PCMU/8000\" <sip:sipp@10.0.2.20:5060>;tag=1"
+              ],
+              "Max-Forwards": [
+                "70"
+              ],
+              "To": [
+                "test <sip:test@10.0.2.15:5060>;tag=QvN92t713vSZK"
+              ],
+              "Via": [
+                "SIP/2.0/UDP 10.0.2.20:5060;branch=z9hG4bK-1966-1-5"
+              ]
+            },
+            "input_origin": "wire",
+            "is_request": true,
+            "method": "ACK",
+            "party": 0,
+            "schema_version": 1,
+            "src": "10.0.2.20",
+            "src_port": 5060,
+            "timestamp": "2016-11-26T14:52:59.670837+00:00",
+            "to": "test <sip:test@10.0.2.15:5060>;tag=QvN92t713vSZK",
+            "transport": "UDP"
+          },
+          {
+            "call_id": "1-1966@10.0.2.20",
+            "cseq": {
+              "method": "BYE",
+              "number": 99749930
+            },
+            "direction": "received",
+            "dscp": 0,
+            "dst": "10.0.2.20",
+            "dst_port": 5060,
+            "frame": "tests/pcap-samples/sip-rtp-g711.pcap#431@a9c9bc44d77f6c84",
+            "from": "test <sip:test@10.0.2.15:5060>;tag=QvN92t713vSZK",
+            "headers": {
+              "Allow": [
+                "INVITE, ACK, BYE, CANCEL, OPTIONS, MESSAGE, INFO, UPDATE, REGISTER, REFER, NOTIFY, PUBLISH, SUBSCRIBE"
+              ],
+              "CSeq": [
+                "99749930 BYE"
+              ],
+              "Call-ID": [
+                "1-1966@10.0.2.20"
+              ],
+              "Content-Length": [
+                "0"
+              ],
+              "From": [
+                "test <sip:test@10.0.2.15:5060>;tag=QvN92t713vSZK"
+              ],
+              "Max-Forwards": [
+                "70"
+              ],
+              "Reason": [
+                "Q.850;cause=16;text=\"NORMAL_CLEARING\""
+              ],
+              "Supported": [
+                "timer, path, replaces"
+              ],
+              "To": [
+                "\"PCMU/8000\" <sip:sipp@10.0.2.20:5060>;tag=1"
+              ],
+              "User-Agent": [
+                "FreeSWITCH-mod_sofia/1.6.12-20-b91a0a6~64bit"
+              ],
+              "Via": [
+                "SIP/2.0/UDP 10.0.2.15;rport;branch=z9hG4bKj14v7jcDQN1Kj"
+              ]
+            },
+            "input_origin": "wire",
+            "is_request": true,
+            "method": "BYE",
+            "party": 1,
+            "schema_version": 1,
+            "src": "10.0.2.15",
+            "src_port": 5060,
+            "timestamp": "2016-11-26T14:53:08.170086+00:00",
+            "to": "\"PCMU/8000\" <sip:sipp@10.0.2.20:5060>;tag=1",
+            "transport": "UDP",
+            "ua": "FreeSWITCH-mod_sofia/1.6.12-20-b91a0a6~64bit"
+          },
+          {
+            "call_id": "1-1966@10.0.2.20",
+            "contact": "<sip:10.0.2.20:5060;transport=UDP>",
+            "cseq": {
+              "method": "BYE",
+              "number": 99749930
+            },
+            "direction": "received",
+            "dscp": 0,
+            "dst": "10.0.2.15",
+            "dst_port": 5060,
+            "frame": "tests/pcap-samples/sip-rtp-g711.pcap#432@64f13fceb4479dda",
+            "from": "test <sip:test@10.0.2.15:5060>;tag=QvN92t713vSZK",
+            "headers": {
+              "CSeq": [
+                "99749930 BYE"
+              ],
+              "Call-ID": [
+                "1-1966@10.0.2.20"
+              ],
+              "Contact": [
+                "<sip:10.0.2.20:5060;transport=UDP>"
+              ],
+              "Content-Length": [
+                "0"
+              ],
+              "From": [
+                "test <sip:test@10.0.2.15:5060>;tag=QvN92t713vSZK"
+              ],
+              "To": [
+                "\"PCMU/8000\" <sip:sipp@10.0.2.20:5060>;tag=1"
+              ],
+              "Via": [
+                "SIP/2.0/UDP 10.0.2.15;rport;branch=z9hG4bKj14v7jcDQN1Kj"
+              ]
+            },
+            "input_origin": "wire",
+            "is_request": false,
+            "party": 0,
+            "reason": "OK",
+            "response_context": "99749930 BYE",
+            "schema_version": 1,
+            "src": "10.0.2.20",
+            "src_port": 5060,
+            "status_code": 200,
+            "status_text": "OK",
+            "timestamp": "2016-11-26T14:53:08.170676+00:00",
+            "to": "\"PCMU/8000\" <sip:sipp@10.0.2.20:5060>;tag=1",
+            "transport": "UDP"
+          }
+        ],
+        "schema_version": 1,
+        "sip_call_id": "1-1966@10.0.2.20",
+        "version": "1.0"
+      },
+      "dialog": 0,
+      "encoding": "json",
+      "mediatype": "application/json",
+      "party": 2,
+      "purpose": "sip-message-trace",
+      "start": "2016-11-26T14:52:59.666393+00:00"
+    },
+    {
+      "body": {
+        "blind_spots": [],
+        "call_ended": true,
+        "dialogs_refused": 0,
+        "dialogs_rotated": 0,
+        "dialogs_suppressed_by_deny": 0,
+        "frames_read": 852,
+        "gate_closed_during_run": false,
+        "headers_dropped_oversize": 0,
+        "media": "none-decodable",
+        "media_note": "No audio payload retained: sipnab measured 425 RTP packet(s) of PCMU on 1 decodable stream, but kept none of their payload, so there is nothing to decode. This is a statement about what this run kept, not a finding that the call was silent. Most often audio payload retention was off — start the server with --retain-audio to hold payload for export. With retention already on, the other causes are a --snaplen that truncated the payload away before sipnab saw it, or packets that carried no payload at all.",
+        "messages_evicted": 0,
+        "node": "capture-01",
+        "note": "Produced by sipnab 0.5.225 on node capture-01. sipnab OBSERVED this dialog and took no part in it: the parties below are what the From and To headers said, not identities anyone established. No media is in this container because this run decoded none for the dialog; the capture_completeness media_note says what was measured. That is a statement about what this run kept, not a finding that the call was silent. sipnab read 852 frame(s) for this capture. No omissions recorded: every message sipnab held for this dialog is in this container. A capture-level analysis ran and ranked no blind spots.",
+        "sip_discarded_by_port_gate": 0,
+        "sip_discarded_by_websocket_gate": 0,
+        "sipnab_version": "0.5.225",
+        "undecodable_frames": 0
+      },
+      "dialog": 0,
+      "encoding": "json",
+      "mediatype": "application/json",
+      "party": 2,
+      "purpose": "sipnab-capture-completeness",
+      "start": "2016-11-26T14:52:59.666393+00:00"
+    },
+    {
+      "body": {
+        "legs": [
+          {
+            "identifier_match": true,
+            "score": 90,
+            "strategy": "sdp_origin",
+            "uuid": "0158a120-253e-8919-90fc-f30d9978c6c2"
+          }
+        ]
+      },
+      "dialog": 0,
+      "encoding": "json",
+      "mediatype": "application/json",
+      "party": 2,
+      "purpose": "sipnab-related-legs",
+      "start": "2016-11-26T14:52:59.666393+00:00"
+    }
+  ],
+  "created_at": "2026-10-18T15:35:01.504598565+00:00",
+  "dialog": [
+    {
+      "duration": 8.499,
+      "parties": [
+        0,
+        1
+      ],
+      "party_history": [
+        {
+          "event": "join",
+          "party": 0,
+          "time": "2016-11-26T14:52:59.670743+00:00"
+        },
+        {
+          "event": "join",
+          "party": 1,
+          "time": "2016-11-26T14:52:59.670743+00:00"
+        },
+        {
+          "event": "drop",
+          "party": 1,
+          "time": "2016-11-26T14:53:08.170086+00:00"
+        },
+        {
+          "event": "drop",
+          "party": 0,
+          "time": "2016-11-26T14:53:08.170676+00:00"
+        }
+      ],
+      "sip_call_id": "1-1966@10.0.2.20",
+      "sip_cseq": 1,
+      "sip_from_tag": "1",
+      "sip_to_tag": "QvN92t713vSZK",
+      "start": "2016-11-26T14:52:59.666393+00:00",
+      "type": "recording"
+    }
+  ],
+  "extensions": [
+    "sip-signaling",
+    "CC"
+  ],
   "parties": [
     {
       "name": "PCMU/8000",
@@ -341,85 +874,13 @@ on a server started with `--node-name capture-01` and without
     },
     {
       "role": "observer",
-      "sip_user_agent": "sipnab/0.5.222 (observer; node capture-01)",
+      "sip_user_agent": "sipnab/0.5.225 (observer; node capture-01)",
       "validation": "none"
     }
   ],
-  "dialog": [
-    {
-      "type": "recording",
-      "start": "2016-11-26T14:52:59.666393+00:00",
-      "duration": 8.499,
-      "parties": [0, 1],
-      "party_history": [
-        { "event": "join", "party": 0, "time": "2016-11-26T14:52:59.670743+00:00" },
-        …
-      ],
-      "sip_call_id": "1-1966@10.0.2.20",
-      "sip_cseq": 1,
-      "sip_from_tag": "1",
-      "sip_to_tag": "QvN92t713vSZK"
-    }
-  ],
-  "attachments": [
-    {
-      "purpose": "sip-message-trace",
-      "dialog": 0,
-      "party": 2,
-      "start": "2016-11-26T14:52:59.666393+00:00",
-      "mediatype": "application/json",
-      "encoding": "json",
-      "body": { "schema_version": 1, "version": "1.0", "call_id": "1-1966@10.0.2.20", "sip_call_id": "1-1966@10.0.2.20", "messages": [ /* the same objects --json emits, one per message */ ] }
-    },
-    {
-      "purpose": "sipnab-capture-completeness",
-      "dialog": 0,
-      "party": 2,
-      "start": "2016-11-26T14:52:59.666393+00:00",
-      "mediatype": "application/json",
-      "encoding": "json",
-      "body": {
-        "note": "Produced by sipnab 0.5.222 on node capture-01. sipnab OBSERVED this dialog and took no part in it: … sipnab read 852 frame(s) for this capture. No omissions recorded: every message sipnab held for this dialog is in this container. A capture-level analysis ran and ranked no blind spots.",
-        "node": "capture-01",
-        "sipnab_version": "0.5.222",
-        "frames_read": 852,
-        "undecodable_frames": 0,
-        "sip_discarded_by_port_gate": 0,
-        "sip_discarded_by_websocket_gate": 0,
-        "messages_evicted": 0,
-        "headers_dropped_oversize": 0,
-        "dialogs_refused": 0,
-        "dialogs_rotated": 0,
-        "dialogs_suppressed_by_deny": 0,
-        "gate_closed_during_run": false,
-        "call_ended": true,
-        "blind_spots": [],
-        "media": "none-decodable",
-        "media_note": "No audio payload retained: sipnab measured 425 RTP packet(s) of PCMU on 1 decodable stream, but kept none of their payload, so there is nothing to decode. This is a statement about what this run kept, not a finding that the call was silent. …"
-      }
-    },
-    {
-      "purpose": "sipnab-related-legs",
-      "dialog": 0,
-      "party": 2,
-      "start": "2016-11-26T14:52:59.666393+00:00",
-      "mediatype": "application/json",
-      "encoding": "json",
-      "body": { "legs": [ { "uuid": "0158a120-253e-8217-9d04-6a2a4a9edef7", "strategy": "sdp_origin", "score": 90, "identifier_match": true } ] }
-    }
-  ],
-  "analysis": [
-    {
-      "type": "report",
-      "dialog": 0,
-      "vendor": "sipnab",
-      "product": "sipnab 0.5.222 (passive observer; not a recording system)",
-      "schema": "sipnab-dialog-diagnosis/1",
-      "mediatype": "application/json",
-      "encoding": "json",
-      "body": { "schema_version": 1, "sip_call_id": "1-1966@10.0.2.20", "final_status_code": 200, "media_quality": [ /* one row per stream: codec, packets, jitter_ms, loss_pct, mos, r_factor */ ], "capture_completeness": { /* the same object the attachment carries */ } }
-    }
-  ]
+  "subject": "SIP call 1-1966@10.0.2.20",
+  "uuid": "0158a120-0392-8b5e-bd41-98a42d51ee70",
+  "vcon": "0.4.0"
 }
 ```
 
@@ -427,7 +888,8 @@ An unknown Call-ID answers with an error, never an empty container:
 
 ```jsonc
 // export_vcon { "call_id": "no-such@nowhere" }
-{ "code": -32602, "message": "call_id 'no-such@nowhere' not found" }
+{ "code": -32602, "message": "call_id 'no-such@nowhere' not found",
+  "data": { "param": "call_id", "reason": "not_found" } }
 ```
 
 A filter that selects nothing answers with an empty set instead.
@@ -854,17 +1316,20 @@ auth_file = "/etc/sipnab/vcon-store.key"
 sipnab -N --mcp -I tests/pcap-samples/sip-rtp-g711.pcap -f sipnab.toml --mcp-allow-vcon-fetch
 ```
 
+Here the store holds the container that the
+`export_vcon` example above shows in full. The answer carries
+it unchanged as `container`. Its other members:
+
 ```jsonc
-// fetch_vcon { "uuid": "0158a120-0392-8940-bcd9-b35008fdf5f9" }
+// fetch_vcon { "uuid": "0158a120-0392-8b5e-bd41-98a42d51ee70" }: every member except "container"
 {
-  "schema_version": 1,
-  "uuid": "0158a120-0392-8940-bcd9-b35008fdf5f9",
-  "stored_form": "unsigned",
   "decrypted": false,
+  "schema_findings": [],
+  "schema_version": 1,
   "signature_verified": false,
   "signer_sha256": null,
-  "schema_findings": [],
-  "container": { "vcon": "0.4.0", "uuid": "0158a120-0392-8940-bcd9-b35008fdf5f9", … }
+  "stored_form": "unsigned",
+  "uuid": "0158a120-0392-8b5e-bd41-98a42d51ee70"
 }
 ```
 

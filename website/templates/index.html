@@ -463,7 +463,7 @@ Issues Detected:
         <p class="demo-desc">Any answer can be taken back to the bytes it came from. The pointer carries a digest, and <code>verified</code> means sipnab re-read that frame and it still hashes to what it hashed to when the answer was made. File access stays off until you name a root.</p>
         <pre class="demo-cmd"><code>MCP_FILE_ROOT=tests/pcap-samples demos/mcp-stdio.sh \
   tests/pcap-samples/sip-problem-call.pcap show_evidence \
-  '{"refs":["…/sip-problem-call.pcap#5@884d4525ec86f71b"],"max_bytes":64}'</code></pre>
+  '{"refs":["tests/pcap-samples/sip-problem-call.pcap#5@884d4525ec86f71b"],"max_bytes":64}'</code></pre>
         <pre class="demo-json"><code><!-- mcp-example:evidence BEGIN -->
 {
   "frames": [

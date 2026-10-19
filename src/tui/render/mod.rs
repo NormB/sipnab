@@ -1750,6 +1750,23 @@ pub(in crate::tui) fn findings_text(report: &crate::security::findings::Findings
     } else {
         let _ = writeln!(out, "  Detectors armed: {}", report.armed_kinds.join(", "));
     }
+    // Whether the scanners `scanner` above detects are also answered. The
+    // TUI never answers one, so this is detect-only or none sent.
+    match report.scanner_response {
+        "detect_only" => {
+            let _ = writeln!(
+                out,
+                "  Scanner responses: detect-only, scanners are detected and never answered"
+            );
+        }
+        "not_answering" => {
+            let _ = writeln!(out, "  Scanner responses: none sent by this run");
+        }
+        "answering" => {
+            let _ = writeln!(out, "  Scanner responses: detected scanners are answered");
+        }
+        _ => {}
+    }
     if let Some(note) = &report.note {
         let _ = writeln!(out);
         let _ = writeln!(out, "  {note}");
@@ -1812,6 +1829,7 @@ pub(in crate::tui) fn render_security(
             None,
             SECURITY_FINDINGS_LIMIT,
         )
+        .with_scanner_response(app.scanner_response)
     };
     let text = findings_text(&report);
 
@@ -3078,6 +3096,7 @@ mod tests {
             note: None,
             truncated: false,
             observation_gaps: Vec::new(),
+            scanner_response: "off",
         };
         let text = findings_text(&armed);
         assert!(
@@ -3101,12 +3120,72 @@ mod tests {
             note: Some(NO_DETECTOR_NOTE.to_string()),
             truncated: false,
             observation_gaps: Vec::new(),
+            scanner_response: "off",
         };
         let idle_text = findings_text(&idle);
         assert!(
             idle_text.contains(NO_DETECTOR_NOTE),
             "the no-detector note distinguishes idle from clean:\n{idle_text}"
         );
+        assert!(
+            !idle_text.contains("Scanner responses"),
+            "no scanner detection, so no scanner-response line:\n{idle_text}"
+        );
+        Ok(())
+    }
+
+    /// With scanner detection armed, the view says whether scanners are
+    /// answered, and a detect-only run says detect-only.
+    #[test]
+    fn findings_text_states_detect_only() {
+        use crate::security::findings::FindingsReport;
+        let report = |response| FindingsReport {
+            rows: Vec::new(),
+            total_matched: 0,
+            armed_kinds: vec!["scanner".to_string()],
+            detection_armed: true,
+            note: None,
+            truncated: false,
+            observation_gaps: Vec::new(),
+            scanner_response: response,
+        };
+        let text = findings_text(&report("detect_only"));
+        assert!(
+            text.contains(
+                "Scanner responses: detect-only, scanners are detected and never answered"
+            ),
+            "{text}"
+        );
+        let text = findings_text(&report("not_answering"));
+        assert!(
+            text.contains("Scanner responses: none sent by this run"),
+            "{text}"
+        );
+        let text = findings_text(&report("answering"));
+        assert!(
+            text.contains("Scanner responses: detected scanners are answered"),
+            "{text}"
+        );
+    }
+
+    /// The security view states the app's own scanner response: the state
+    /// the run set reaches the panel, not a default.
+    #[test]
+    fn the_security_view_states_the_runs_scanner_response() -> Result<(), TestError> {
+        use crate::security::findings::ScannerResponse;
+        let mut app = App::with_processed_messages(Vec::new());
+        app.armed_detections = vec!["scanner".to_string()];
+        app.current_view = View::SecurityFindings;
+        app.scanner_response = ScannerResponse::DetectOnly;
+        let text = render_to_string(&mut app, 120, 30)?;
+        assert!(
+            text.contains("detect-only, scanners are detected and never answered"),
+            "{text}"
+        );
+        app.scanner_response = ScannerResponse::NotAnswering;
+        let text = render_to_string(&mut app, 120, 30)?;
+        assert!(text.contains("none sent by this run"), "{text}");
+        assert!(!text.contains("detect-only"), "{text}");
         Ok(())
     }
 

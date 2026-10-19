@@ -489,7 +489,7 @@ object beside the tool's own fields.
 **Capture text arrives fenced, and identifiers do not.**
 
 - Free text an endpoint wrote comes wrapped in
-  `⟦untrusted-capture-data⟧` … `⟦/untrusted-capture-data⟧`. That covers
+  `⟦untrusted-capture-data⟧` and `⟦/untrusted-capture-data⟧`. That covers
   display names, `User-Agent`, SDP and whole messages.
 - The tools that emit it append a provenance note as the LAST content block.
 - Call-IDs, cursors, addresses and timestamps stay verbatim. So they pass
@@ -646,11 +646,11 @@ act on the error without parsing `message`.
 ```jsonc
 {
   "code": -32602,
-  "message": "cannot group by 'bogus'; one of: state, response_code, ...",
+  "message": "cannot group by 'bogus'; one of: state, response_code, method, from.user, to.user, ua, src.ip, dst.ip, rtp.codec. One dimension only -- narrow with `filter` rather than adding a second.",
   "data": {
-    "reason": "invalid_choice",       // always present
     "param": "group_by",              // the argument that was refused, when one was
-    "valid_values": ["state", "response_code", "method", "..."]  // the allowed set, when there is one
+    "reason": "invalid_choice",       // always present
+    "valid_values": ["state", "response_code", "method", "from.user", "to.user", "ua", "src.ip", "dst.ip", "rtp.codec"]  // the allowed set, when there is one
   }
 }
 ```

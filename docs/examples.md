@@ -14,7 +14,7 @@ If you are new, [1. Triage a pcap fast](#triage-a-pcap-fast) is the broadest sta
 
 **Find out what went wrong**
 
-| I want to… | Recipe |
+| Goal | Recipe |
 |---|---|
 | Work out whether anything is wrong with a capture | [1. Triage a pcap fast](#triage-a-pcap-fast) |
 | See which calls failed, and why | [3. Find every failed call, grouped by response code](#find-every-failed-call-grouped-by-response-code) |
@@ -31,7 +31,7 @@ If you are new, [1. Triage a pcap fast](#triage-a-pcap-fast) is the broadest sta
 
 **Chase audio and quality complaints**
 
-| I want to… | Recipe |
+| Goal | Recipe |
 |---|---|
 | Chase a "no audio" or "one-way audio" complaint | [4. Diagnose a one-way audio complaint](#diagnose-a-one-way-audio-complaint) |
 | Work out why a call sounds bad in one direction | [11. Find why a call sounds bad in one direction only](#find-why-a-call-sounds-bad-in-one-direction-only) |
@@ -46,7 +46,7 @@ If you are new, [1. Triage a pcap fast](#triage-a-pcap-fast) is the broadest sta
 
 **Capture live, at scale, or through tunnels**
 
-| I want to… | Recipe |
+| Goal | Recipe |
 |---|---|
 | Watch one user's traffic live | [2. Live capture, narrow to a single user](#live-capture-narrow-to-a-single-user) |
 | Capture without running as root | [48. Run a live capture without giving sipnab root](#run-a-live-capture-without-giving-sipnab-root) |
@@ -63,16 +63,16 @@ If you are new, [1. Triage a pcap fast](#triage-a-pcap-fast) is the broadest sta
 
 **Read encrypted traffic**
 
-| I want to… | Recipe |
+| Goal | Recipe |
 |---|---|
 | Read encrypted SIP or SRTP | [7. Decrypt SIP over TLS with a key log file](#decrypt-sip-over-tls-when-you-can-restart-the-phone-or-server--key-log-file-sslkeylogfile) |
-| Read TLS with **no keys at all** (eBPF) | [7g. Read TLS with no keys](#read-tls-with-no-keys-at-all) and [7h. …and who the peer was](#read-tls-and-who-the-peer-was) |
+| Read TLS with **no keys at all** (eBPF) | [7g. Read TLS with no keys](#read-tls-with-no-keys-at-all) and [7h. Read TLS and who the peer was](#read-tls-and-who-the-peer-was) |
 | Understand what reading TLS without keys costs and requires | [TLS-without-keys walkthrough](uprobe-walkthrough.md) — security implications, and whether your kernel supports it |
 | Decrypt TLS from a server private key | [59. Decrypt TLS with the server's private key](#decrypt-tls-with-the-servers-private-key) |
 
 **Collect from proxies, relays and recorders**
 
-| I want to… | Recipe |
+| Goal | Recipe |
 |---|---|
 | Collect traffic from proxies I cannot install on | [6. Wire HEP from your SIP stack to a central sipnab](#wire-hep-from-your-sip-stack-to-a-central-sipnab) |
 | Collect HEP *and* forward it upstream | [26. Run sipnab as a HEP relay](#run-sipnab-as-a-hep-relay) |
@@ -85,7 +85,7 @@ If you are new, [1. Triage a pcap fast](#triage-a-pcap-fast) is the broadest sta
 
 **Detect abuse and fraud**
 
-| I want to… | Recipe |
+| Goal | Recipe |
 |---|---|
 | Detect and block scanners or fraud | [10. Detect SIP scanners and auto-block via fail2ban](#detect-sip-scanners-and-auto-block-via-fail2ban) |
 | Chase a device flooding REGISTER | [23. Find the device flooding REGISTER](#find-the-device-flooding-register) |
@@ -96,7 +96,7 @@ If you are new, [1. Triage a pcap fast](#triage-a-pcap-fast) is the broadest sta
 
 **Share the evidence**
 
-| I want to… | Recipe |
+| Goal | Recipe |
 |---|---|
 | Hand someone a written summary of a call | [12. Generate a call report (text / Markdown / JSON)](#generate-a-call-report-text--markdown--json) |
 | Check signaling against the RFCs | [15. Check a capture against the RFCs](#check-a-capture-against-the-rfcs) |
@@ -113,7 +113,7 @@ If you are new, [1. Triage a pcap fast](#triage-a-pcap-fast) is the broadest sta
 
 **Let an AI agent do it**
 
-| I want to… | Recipe |
+| Goal | Recipe |
 |---|---|
 | Drive sipnab from an AI agent | [8. Let an AI agent ask sipnab about your calls](#let-an-ai-agent-ask-sipnab-about-your-calls) |
 | Expose MCP to an agent I do not host | [55. Set up the MCP server for a hosted agent](#set-up-the-mcp-server-for-a-hosted-agent) |
@@ -460,7 +460,7 @@ Those checks cover a different codec on each leg, late media, and so on.
 
 **Pitfalls:**
 
-- String comparisons are case-sensitive. State names must match exactly (`'Completed'`, not `'completed'`). Use `=~ '(?i)...'` if you want case-insensitive.
+- String comparisons are case-sensitive. State names must match exactly (`'Completed'`, not `'completed'`). For a case-insensitive match, put `(?i)` at the start of a regex: `ua =~ '(?i)friendly-scanner'`.
 - Boolean fields only support `==` and `!=`. `one_way > true` is a parse error.
 
 ---
@@ -505,7 +505,7 @@ modparam("siptrace", "trace_id", "[hep_central]uri=hep:hep_central")
 
 route {
     sip_trace("hep_central", "d", "sip");
-    ...
+    # The rest of your routing logic follows here.
 }
 ```
 
@@ -539,7 +539,7 @@ modparam("siptrace", "hep_version", 3)
 
 route {
     sip_trace();
-    ...
+    # The rest of your routing logic follows here.
 }
 ```
 
@@ -994,7 +994,7 @@ sudo sipnab -N --uprobe-tls --uprobe-library /usr/lib/x86_64-linux-gnu/libssl.so
 - **Containers.** The path a containerized process sees names a *different file* from sipnab's namespace.
   - sipnab handles this by matching inodes and probing through `/proc/<pid>/root`.
   - That is why the listing above shows such paths.
-  - If you pass `--uprobe-library` by hand for a container, pass the `/proc/<pid>/root/...` form.
+  - If you pass `--uprobe-library` by hand for a container, pass the `/proc/<pid>/root/<path>` form, such as `/proc/4242/root/usr/lib/x86_64-linux-gnu/libssl.so.3`.
   - Otherwise the probe attaches to the host's copy and captures nothing.
 - GnuTLS is not probed.
   - Its write function has a different signature.
@@ -1296,18 +1296,14 @@ curl -sS http://capture.example.com:8731/mcp \
                     "arguments":{"kinds":["one-way","nat-issues"]}}}'
 ```
 
-The `tools/list` response is a standard JSON-RPC envelope with a `result.tools` array.
-This copy truncates the descriptions and input schemas:
+The `tools/list` response is a standard JSON-RPC envelope with `"id":2`.
+Its `result.tools` array holds one object for each registered tool, with three members:
 
-```json
-{"jsonrpc":"2.0","id":2,"result":{"tools":[
-  {"name":"list_dialogs","description":"...","inputSchema":{"type":"object","properties":{"...":{}}}},
-  {"name":"get_dialog_report","description":"...","inputSchema":{"...":"..."}},
-  {"name":"find_problems","description":"...","inputSchema":{"...":"..."}}
-]}}
-```
+- `name`, such as `list_dialogs`;
+- `description`, the text an agent reads to choose the tool;
+- `inputSchema`, the JSON Schema of the tool's arguments.
 
-The response lists every registered tool. [The MCP tool reference](mcp-tools.md) has the complete table.
+[The MCP tool reference](mcp-tools.md) has the complete table.
 The tools most triage starts with, grouped by what they do:
 
 - **Browse and quote the capture** — `list_dialogs`, `get_dialog`, `get_dialog_report`, `get_message`, `search_messages`, `search_by_time`, `tail_dialogs`, `render_ladder`, `compare_dialogs`, `find_correlated`, `show_evidence`
@@ -1477,6 +1473,70 @@ sudo sipnab -N -d eth0 \
 
 `--alert syslog` writes alerts to `LOCAL0`. So you can pick them up from `/var/log/syslog`.
 (`--syslog` is the equivalent boolean form.)
+
+### Detect scanners without answering them
+
+Use `--kill-scanner-detect-only` when you want to know which sources scan you, and you do not want sipnab to send them anything.
+
+- It detects scanners exactly as `--kill-scanner` does: the same User-Agent signatures and the same behavior thresholds.
+- It never answers them. sipnab starts no scanner-kill worker and sends no packet, on a live interface too.
+- You do not need `--kill-scanner` with it. If you give both, detect-only wins.
+- To make it the default, set `kill_scanner_detect_only = true` in the `[security]` section of the configuration file. `--no-kill-scanner-detect-only` turns it off for one run.
+
+On a live interface:
+
+```bash
+sudo sipnab -N -d eth0 --kill-scanner-detect-only --alert syslog
+```
+
+To see what it reports, run it over a capture first:
+
+```bash
+sipnab -N -I capture.pcap --kill-scanner-detect-only --no-cli-print
+```
+
+The lines below came from this command with
+[`tests/fixtures/sip-scanner-and-register-flood.pcap`](https://github.com/NormB/sipnab/raw/main/tests/fixtures/sip-scanner-and-register-flood.pcap)
+from the sipnab repository as `capture.pcap`. It holds a probe from a `friendly-scanner` User-Agent.
+
+sipnab says at startup that detection is detect-only:
+
+```text
+2026-10-18T16:12:53.806330Z  INFO sipnab::app::bootstrap: Scanner detection is detect-only (--kill-scanner-detect-only or [security] kill_scanner_detect_only): sipnab detects, alerts on and reports SIP scanners and never answers them. The scanner-kill worker is not started and nothing is transmitted.
+```
+
+It reports each scanner it detects:
+
+```text
+2026-10-18T16:12:53.945702Z  WARN sipnab::alert: [ALERT] scanner src=203.0.113.42 method="OPTIONS" ua="friendly-scanner" detection=ua_pattern alert_type="scanner" src_ip=203.0.113.42 sanitized_detail=method="OPTIONS" ua="friendly-scanner" detection=ua_pattern
+```
+
+The end-of-run summary says it again:
+
+```text
+2026-10-18T16:12:53.956077Z  INFO sipnab::app::batch: sipnab: scanner detection was detect-only: no scanner was answered and nothing was transmitted
+```
+
+With `--api`, `GET /v1/security/findings` reports `"scanner_response": "detect_only"`, and so does the MCP `security_findings` tool. A program reading `armed_kinds: ["scanner"]` can use it to tell that sipnab detected the scanners and did not answer them. Start the run with the REST API (it keeps serving until you stop it), then ask it from a second terminal:
+
+```bash
+sipnab -N -I capture.pcap --kill-scanner-detect-only --no-cli-print --api 127.0.0.1:8080
+```
+
+```bash
+curl -s -H "Authorization: Bearer $SIPNAB_API_KEY" http://127.0.0.1:8080/v1/security/findings | jq '{armed_kinds, scanner_response}'
+```
+
+```json
+{
+  "armed_kinds": [
+    "scanner"
+  ],
+  "scanner_response": "detect_only"
+}
+```
+
+sipnab refuses `-K`/`--kill-target` together with detect-only, with exit status 2. `-K` asks sipnab to answer every request from a source you name, and detect-only asks it to answer nothing.
 
 ### Wire to fail2ban
 
@@ -1744,7 +1804,7 @@ It is never interpolated into the command string.
 - sipnab rewrites only the three legacy placeholders `%rule`, `%src`, and `%detail`.
   - It rewrites them into quoted references to those variables, such as `"${SIPNAB_DETAIL}"`.
   - So each value reaches the hook as one argument.
-- Anything else (`%type%`, `%source_ip%`, …) reaches the shell verbatim.
+- Anything else, such as `%type%` or `%source_ip%`, reaches the shell verbatim.
 
 The hook is rate-limited (`--exec-rate-limit 10` default) and runs in a sandboxed process.
 
@@ -2440,10 +2500,20 @@ Decode `telephone-event` packets with `-t`. Each completed key press logs one li
 sipnab -N -t -I capture.pcap --no-cli-print
 ```
 
-Against [`tests/pcap-samples/SIP_DTMF2.cap`](https://github.com/NormB/sipnab/raw/main/tests/pcap-samples/SIP_DTMF2.cap):
+Against a copy of [`tests/pcap-samples/SIP_DTMF2.cap`](https://github.com/NormB/sipnab/raw/main/tests/pcap-samples/SIP_DTMF2.cap) named `capture.pcap`, with the log narrowed to the DTMF lines:
+
+```bash
+sipnab -N -t -I capture.pcap --no-cli-print 2>&1 | grep DTMF
+```
 
 ```text
-… INFO sipnab::app::batch: DTMF digit='x' duration=120ms ssrc=0x5711bf84
+2026-10-18T15:32:47.738695Z  INFO sipnab::app::batch: DTMF digit='x' duration=120ms ssrc=0x5711bf84
+2026-10-18T15:32:47.739635Z  INFO sipnab::app::batch: DTMF digit='x' duration=120ms ssrc=0x5711bf84
+2026-10-18T15:32:47.739860Z  INFO sipnab::app::batch: DTMF digit='x' duration=120ms ssrc=0x5711bf84
+2026-10-18T15:32:47.740061Z  INFO sipnab::app::batch: DTMF digit='x' duration=120ms ssrc=0x5711bf84
+2026-10-18T15:32:47.740330Z  INFO sipnab::app::batch: DTMF digit='x' duration=120ms ssrc=0x5711bf84
+2026-10-18T15:32:47.740555Z  INFO sipnab::app::batch: DTMF digit='x' duration=120ms ssrc=0x5711bf84
+2026-10-18T15:32:47.740806Z  INFO sipnab::app::batch: DTMF digit='x' duration=120ms ssrc=0x5711bf84
 ```
 
 No `DTMF digit` line means no `telephone-event` packet reached the capture point.
@@ -2480,9 +2550,27 @@ sipnab then logs a second line, at `debug`, carrying the digit:
 SIPNAB_LOG=debug sipnab -N -t --dtmf-cleartext -I capture.pcap --no-cli-print
 ```
 
+Against the same capture, with the log narrowed to the DTMF lines:
+
+```bash
+SIPNAB_LOG=debug sipnab -N -t --dtmf-cleartext -I capture.pcap --no-cli-print 2>&1 | grep DTMF
+```
+
 ```text
-… INFO sipnab::app::batch: DTMF digit='x' duration=120ms ssrc=0x5711bf84
-… DEBUG sipnab::app::batch: DTMF cleartext digit='6' duration=120ms ssrc=0x5711bf84
+2026-10-18T15:32:49.233270Z  INFO sipnab::app::batch: DTMF digit='x' duration=120ms ssrc=0x5711bf84
+2026-10-18T15:32:49.233324Z DEBUG sipnab::app::batch: DTMF cleartext digit='6' duration=120ms ssrc=0x5711bf84
+2026-10-18T15:32:49.234066Z  INFO sipnab::app::batch: DTMF digit='x' duration=120ms ssrc=0x5711bf84
+2026-10-18T15:32:49.234080Z DEBUG sipnab::app::batch: DTMF cleartext digit='7' duration=120ms ssrc=0x5711bf84
+2026-10-18T15:32:49.234294Z  INFO sipnab::app::batch: DTMF digit='x' duration=120ms ssrc=0x5711bf84
+2026-10-18T15:32:49.234300Z DEBUG sipnab::app::batch: DTMF cleartext digit='8' duration=120ms ssrc=0x5711bf84
+2026-10-18T15:32:49.234498Z  INFO sipnab::app::batch: DTMF digit='x' duration=120ms ssrc=0x5711bf84
+2026-10-18T15:32:49.234504Z DEBUG sipnab::app::batch: DTMF cleartext digit='9' duration=120ms ssrc=0x5711bf84
+2026-10-18T15:32:49.234773Z  INFO sipnab::app::batch: DTMF digit='x' duration=120ms ssrc=0x5711bf84
+2026-10-18T15:32:49.234778Z DEBUG sipnab::app::batch: DTMF cleartext digit='1' duration=120ms ssrc=0x5711bf84
+2026-10-18T15:32:49.235005Z  INFO sipnab::app::batch: DTMF digit='x' duration=120ms ssrc=0x5711bf84
+2026-10-18T15:32:49.235010Z DEBUG sipnab::app::batch: DTMF cleartext digit='2' duration=120ms ssrc=0x5711bf84
+2026-10-18T15:32:49.235262Z  INFO sipnab::app::batch: DTMF digit='x' duration=120ms ssrc=0x5711bf84
+2026-10-18T15:32:49.235267Z DEBUG sipnab::app::batch: DTMF cleartext digit='3' duration=120ms ssrc=0x5711bf84
 ```
 
 Digits are often PINs and card numbers. Everyone who can read the log can read them.
@@ -3182,16 +3270,27 @@ sipnab -N -I capture.pcap -v -e 'OPTIONS'
 ```
 
 `-v` still follows dialogs. Once one message of a dialog prints, every later message of that dialog prints too, including messages that match.
-For example, `-v -e 'BYE'` against [`tests/pcap-samples/sip-rtp-g711.pcap`](https://github.com/NormB/sipnab/raw/main/tests/pcap-samples/sip-rtp-g711.pcap) prints the INVITE first. The BYE and its `200 OK` then print as part of that dialog:
+For example, `-v -e 'BYE'` against [`tests/pcap-samples/sip-rtp-g711.pcap`](https://github.com/NormB/sipnab/raw/main/tests/pcap-samples/sip-rtp-g711.pcap) prints the INVITE first. The BYE and its `200 OK` then print as part of that dialog.
+Each message prints as a summary line followed by the message itself. To read only the summary lines, keep the lines that start with a time. Against a copy of that capture named `capture.pcap`:
+
+```bash
+sipnab -N -I capture.pcap -v -e 'BYE' | grep -E '^[0-9]{2}:[0-9]{2}:[0-9]{2}\.[0-9]{3} '
+```
 
 ```text
 14:52:59.666 10.0.2.20:5060 -> 10.0.2.15:5060 INVITE UDP
-…
+14:52:59.666 10.0.2.15:5060 -> 10.0.2.20:5060 100 Trying UDP
+14:52:59.670 10.0.2.15:5060 -> 10.0.2.20:5060 200 OK UDP
 14:52:59.670 10.0.2.20:5060 -> 10.0.2.15:5060 ACK UDP
 14:53:08.170 10.0.2.15:5060 -> 10.0.2.20:5060 BYE UDP
 14:53:08.170 10.0.2.20:5060 -> 10.0.2.15:5060 200 OK UDP
-…
+14:53:08.286 10.0.2.20:5060 -> 10.0.2.15:5060 INVITE UDP
+14:53:08.286 10.0.2.15:5060 -> 10.0.2.20:5060 100 Trying UDP
+14:53:08.290 10.0.2.15:5060 -> 10.0.2.20:5060 200 OK UDP
+14:53:08.290 10.0.2.20:5060 -> 10.0.2.15:5060 ACK UDP
 ```
+
+The last four lines are the second call in the capture, `1-1968@10.0.2.20`. It has no BYE, so none of its messages match, and `-v` prints it whole.
 
 **What to look for:**
 
@@ -3374,13 +3473,7 @@ Under systemd, point it somewhere durable: `--run-provenance-file /var/log/sipna
 Then every restart appends rather than replaces.
 
 ```text
-{"argv":["sipnab","-N","-I","capture.pcap","--node-name","capture-01","--run-provenance-file","runs.jsonl","--report","--no-cli-print"],
- "capture":{"dialog_generation":0,"instance":"12d0b918df0076acd28253-1","node":"capture-01","stream_generation":0},
- …
- "pid":1233081,"record":"run","seq":1,
- "started":"2026-10-16T11:54:46.422350839+00:00","ts":"2026-10-16T11:54:46.422377376+00:00",
- "uid":1000,"user":"operator",
- "version":"0.5.222 (16f7b0ea) features: native,tui,audio,tls,hep,api,mcp,mcp-http,metrics,wasm,plugins,bpf,vcon,opus,archive,g729"}
+{"argv":["sipnab","-N","-I","capture.pcap","--node-name","capture-01","--run-provenance-file","runs.jsonl","--report","--no-cli-print"],"capture":{"dialog_generation":0,"instance":"7cc8d18dfa996e6d2ffa9-1","node":"capture-01","stream_generation":0},"cwd":"/tmp/captures","features":["native","tui","audio","tls","hep","api","mcp","mcp-http","metrics","plugins","vcon","opus","archive","g729"],"pid":511117,"record":"run","seq":1,"started":"2026-10-18T15:34:02.299482671+00:00","ts":"2026-10-18T15:34:02.299567485+00:00","uid":1000,"user":"operator","version":"0.5.225 (e7f9d549-dirty) features: native,tui,audio,tls,hep,api,mcp,mcp-http,metrics,plugins,vcon,opus,archive,g729"}
 ```
 
 `uid` and `user` name the account that ran sipnab. This sample shows a placeholder account name.
@@ -3733,12 +3826,13 @@ sipnab -N -I capture.pcap --export-vcon-when "response_code >= 400" --export-vco
 ```
 
 `--vcon-digest` prints one `sha256sum`-format line per container written to `--export-vcon-dir`.
-Against [`tests/pcap-samples/sip-problem-call.pcap`](https://github.com/NormB/sipnab/raw/main/tests/pcap-samples/sip-problem-call.pcap), the first command above prints:
+Against [`tests/pcap-samples/sip-problem-call.pcap`](https://github.com/NormB/sipnab/raw/main/tests/pcap-samples/sip-problem-call.pcap), the first command above prints one line for each of its four failed calls:
 
 ```text
-e25aea942fe9554a9a8cbf66c1a9025ed32fee43cde8edb478f22788a21d806e  c1a0efc0ee0127a1_151.86.209.85-e9e13aaaf4fb470d.vcon.json
-b9c04e01de9a2655ea960e7203d694f83d44c757c67eec594d4b546edf70dfab  92aa11e99171d82d_147.248.178.148-455cc7c020c3162d.vcon.json
-…
+51ae8029b294a92737eb2e97729395315c00dd71e5696fd116d2faacee3ff7be  daaa24e0fc775a22_53.86.151.175-992d52aa8c84153c.vcon.json
+4745b593bb282ce2663d4e4e33287fedca2683fe7747416852ac2fc71d5506b8  eedfc115bbc3152c_48.243.172.187-4987f9f14c36bf15.vcon.json
+7d1e48d6b2277bfba33d085db8c034453b6431b8f1802fa90c99124ed0f2121f  2610ecbfd4d2af36_58.95.71.192-f1e274d2fb9cd7ce.vcon.json
+81fbd7695e5ca22758add9789a38bd990323477471123aea28dc6dcdf8351362  874677a357dd03aa_53.86.151.128-22e223cd1d2d334f.vcon.json
 ```
 
 The digests and file names change on every run, because each run draws a fresh redaction key.
@@ -3871,20 +3965,36 @@ On a real capture, that is hundreds of round trips to do what one invocation doe
 sipnab -N --mcp -I capture.pcap --retain-audio --mcp-max-rows 200 --quiet
 ```
 
-Against [`tests/pcap-samples/sip-problem-call.pcap`](https://github.com/NormB/sipnab/raw/main/tests/pcap-samples/sip-problem-call.pcap), which holds four failed calls and no RTP, with the containers and most fields trimmed:
+Against [`tests/pcap-samples/sip-problem-call.pcap`](https://github.com/NormB/sipnab/raw/main/tests/pcap-samples/sip-problem-call.pcap), which holds four failed calls and no RTP, the answer to `export_vcon { "filter": "state == 'Failed'", "limit": 2 }` has these top-level members:
+`capture_identity`, `containers`, `next_cursor`, `returned`, `schema_version`, `source_exhausted`, `source_stopped_early`, `total_matched`, `truncated` and `withheld_by_deny`.
+Each entry in `containers` holds the whole vCon in `container`.
+The members this section discusses, selected from that answer with the `jq` filter
+`{returned, total_matched, truncated, containers: [.containers[] | {call_id, digest, completeness: (.completeness | {media, complete, omissions})}]}`, are:
 
-```jsonc
-// export_vcon { "filter": "state == 'Failed'", "limit": 2 }
+```json
 {
   "returned": 2,
   "total_matched": 4,
   "truncated": true,
   "containers": [
-    { "call_id": "busy-3a2b1c@192.0.2.30",
-      "digest": "027bb627c8680804a02da0342a5b2998f019dfa8e504a2488fb0648ebef87d5a",
-      "completeness": { "media": "none-decodable", "complete": true, "omissions": [] },
-      "container": {} },
-    { "call_id": "decline-7c6d5e@198.51.100.30", … }
+    {
+      "call_id": "busy-3a2b1c@192.0.2.30",
+      "digest": "833406d1f7661edaa970dde14c2ace323bb0debc6d131be87d29612a613d905b",
+      "completeness": {
+        "media": "none-decodable",
+        "complete": true,
+        "omissions": []
+      }
+    },
+    {
+      "call_id": "decline-7c6d5e@198.51.100.30",
+      "digest": "ae4452f5ecbb97e59d5e5fac1912360f57da7512a751d7bf43c246730426a99b",
+      "completeness": {
+        "media": "none-decodable",
+        "complete": true,
+        "omissions": []
+      }
+    }
   ]
 }
 ```
@@ -3936,29 +4046,42 @@ Start the server with the relay's control address. Opt in to the one tool that t
 sudo sipnab -N --mcp -d eth0 --rtpengine-control 127.0.0.1:22222 --mcp-allow-relay-query --quiet
 ```
 
-`explain_attribution` answers for one call, endpoint by endpoint. Against [`tests/pcap-samples/sip-rtp-g711.pcap`](https://github.com/NormB/sipnab/raw/main/tests/pcap-samples/sip-rtp-g711.pcap):
+`explain_attribution` answers for one call, endpoint by endpoint. Against [`tests/pcap-samples/sip-rtp-g711.pcap`](https://github.com/NormB/sipnab/raw/main/tests/pcap-samples/sip-rtp-g711.pcap),
+`explain_attribution { "call_id": "1-1966@10.0.2.20" }` answers with two endpoints.
+Each endpoint also carries `input_origin` and `observed_at`, and the answer carries the envelope members `call_id`, `capture_identity`, `dialog_seen`, `schema_version`, `source_exhausted` and `source_stopped_early`.
+The other members, selected with the `jq` filter
+`{endpoints: [.endpoints[] | {address, port, asserted_by, delivery_trust, delivery_note}], unauthenticated_endpoints}`, are:
 
-```jsonc
-// explain_attribution { "call_id": "1-1966@10.0.2.20" }
+```json
 {
   "endpoints": [
-    { "address": "10.0.2.15", "port": 27942,
+    {
+      "address": "10.0.2.15",
+      "port": 27942,
       "asserted_by": "signaled",
       "delivery_trust": "not-relay-asserted",
-      "delivery_note": "the parties' own claim in SDP, not a relay's statement about its allocation" },
-    …
+      "delivery_note": "the parties' own claim in SDP, not a relay's statement about its allocation"
+    },
+    {
+      "address": "10.0.2.20",
+      "port": 6000,
+      "asserted_by": "signaled",
+      "delivery_trust": "not-relay-asserted",
+      "delivery_note": "the parties' own claim in SDP, not a relay's statement about its allocation"
+    }
   ],
   "unauthenticated_endpoints": 0
 }
 ```
 
 `reconcile_orphans` says **why** a stream has no dialog. It does not just count the ones that do not.
-Against [`tests/fixtures/rtpengine-media-only.pcap`](https://github.com/NormB/sipnab/raw/main/tests/fixtures/rtpengine-media-only.pcap), which holds media and no signaling:
+Against [`tests/fixtures/rtpengine-media-only.pcap`](https://github.com/NormB/sipnab/raw/main/tests/fixtures/rtpengine-media-only.pcap), which holds media and no signaling,
+`reconcile_orphans { "limit": 2 }` returns two of the four orphans.
+Each orphan also carries `asserted_by`, `dst`, `named_endpoint`, `note` and `src`.
+Selected with the `jq` filter `{orphans: [.orphans[] | {ssrc, reason}], total_orphans, relay_was_consulted}`, the answer reads:
 
-```jsonc
-// reconcile_orphans { "limit": 2 }
-{ "orphans": [ { "ssrc": 168430090, "reason": "never-named" }, … ],
-  "total_orphans": 4, "relay_was_consulted": false }
+```json
+{"orphans":[{"ssrc":168430090,"reason":"never-named"},{"ssrc":185273099,"reason":"never-named"}],"total_orphans":4,"relay_was_consulted":false}
 ```
 
 `query_relay` asks the relay itself about a call that was already up when the capture started.
@@ -4161,11 +4284,12 @@ Against [`tests/pcap-samples/sip-problem-call.pcap`](https://github.com/NormB/si
 `get_capture_report` is the whole-capture analysis: the one `--report` prints.
 It is for the questions that are about the capture, rather than about one call. Against [`tests/pcap-samples/sip-rtp-g711.pcap`](https://github.com/NormB/sipnab/raw/main/tests/pcap-samples/sip-rtp-g711.pcap):
 
-```jsonc
-// get_capture_report { "format": "json" }
-{ "findings": [ { "kind": "one_way_audio", "severity": "critical", "occurrences": 2, … } ],
-  "dialogs_examined": 2, "streams_examined": 2,
-  "frames_read": 852, "complete": true }
+`get_capture_report { "format": "json" }` returns one finding.
+The finding also carries `evidence`, `evidence_omitted` and `unit`.
+Selected with the `jq` filter `{findings: [.findings[] | {kind, severity, occurrences}], dialogs_examined, streams_examined, frames_read, complete}`, the answer reads:
+
+```json
+{"findings":[{"kind":"one_way_audio","severity":"critical","occurrences":2}],"dialogs_examined":2,"streams_examined":2,"frames_read":852,"complete":true}
 ```
 
 **What to look for:**
@@ -4324,7 +4448,7 @@ SIPREC recording (4f1c0a2e-siprec@192.0.2.31): session 4f1c0a2e, complete
   stream label 2 -> sip:bob@example.com
 ```
 
-The same facts reach an agent through MCP as `siprec_metadata { "call_id": "..." }`.
+The same facts reach an agent through MCP as `siprec_metadata { "call_id": "4f1c0a2e-siprec@192.0.2.31" }`.
 The REST API serves them on `GET /v1/dialogs/{call_id}` as a `siprec` block:
 
 ```jsonc
@@ -4627,7 +4751,7 @@ sipnab -N -I capture.pcap --report --filter "state == 'Failed'" --since 2026-10-
   - One at exactly 11:00:00 belongs to the next hour.
   - Back-to-back windows count every call once.
 - **The same window on every surface.**
-  - REST's `GET /v1/dialogs?after=...&before=...` and the MCP `search_by_time` tool return the same calls for the same capture.
+  - REST's `GET /v1/dialogs?after=2026-10-09T10:00:00Z&before=2026-10-09T11:00:00Z` and the MCP `search_by_time` tool return the same calls for the same capture.
 - **An empty answer says why.** Sometimes no call in the capture started inside the window. Then:
   - the run exits 0 with an empty listing,
   - it prints the span the capture's calls do cover on stderr.

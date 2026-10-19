@@ -124,10 +124,11 @@ Two refusals of the CLI pair, each with exit code 2:
   `error: the following required arguments were not provided:` and
   `--export-vcon <CALL-ID>`. Add `--export-vcon` with the Call-ID.
 - sipnab refuses a `--vcon-out` that names the capture it is reading, and
-  writes nothing:
+  writes nothing. Run in `/tmp/captures`, `sipnab -N -I sip-rtp-g711.pcap
+  --export-vcon '1-1966@10.0.2.20' --vcon-out sip-rtp-g711.pcap` prints:
 
   ```text
-  2026-10-16T11:50:20.726302Z ERROR sipnab::app::bootstrap: --vcon-out 'sip-rtp-g711.pcap' would overwrite the capture being read ('…/sip-rtp-g711.pcap'). They are the same file. Writing it would destroy the input — choose a different output path.
+  2026-10-18T15:36:13.809790Z ERROR sipnab::app::bootstrap: --vcon-out 'sip-rtp-g711.pcap' would overwrite the capture being read ('/tmp/captures/sip-rtp-g711.pcap'). They are the same file. Writing it would destroy the input — choose a different output path.
   ```
 
   Choose another output path.
@@ -414,14 +415,19 @@ at a time.
 - In the example, `summarize` reads the transcript `transcribe` returned.
 
 **The request** is one JSON document, POSTed to `url` or written to the
-`command`'s standard input:
+`command`'s standard input. It has four members:
 
-```json
-{"schema": "sipnab-enrichment-request/1", "service": "transcribe",
- "vcon": {"uuid": "...", "parties": [], "dialog": [], "analysis": []},
- "audio": [{"dialog": 0, "sip_call_id": "...", "mediatype": "audio/wav",
-            "encoding": "base64url", "body": "UklGR..."}]}
-```
+- `schema`: `"sipnab-enrichment-request/1"`.
+- `service`: the `[[vcon.enrich]]` name, such as `"transcribe"`.
+- `vcon`: the container, with the members `vcon`, `uuid`, `created_at`,
+  `subject`, `extensions`, `parties`, `dialog`, `attachments` and `analysis`.
+- `audio`: one entry per leg, each with five members. For the call
+  `1-1968@10.0.2.20` in
+  [`tests/pcap-samples/sip-rtp-g711.pcap`](https://github.com/NormB/sipnab/raw/main/tests/pcap-samples/sip-rtp-g711.pcap)
+  they are `"dialog": 0`, `"sip_call_id": "1-1968@10.0.2.20"`,
+  `"mediatype": "audio/wav"`, `"encoding": "base64url"`, and `body`, the WAV
+  file encoded as base64url. A WAV file starts with `RIFF`, so the body
+  starts with `UklGR`.
 
 - `vcon` is the container as sipnab writes it, with one exception. Its `analysis`
   holds only what earlier services added, not sipnab's own report.
@@ -437,7 +443,7 @@ core-04 Analysis Object:
 ```json
 {"analysis": [{"type": "transcript", "vendor": "example-stt",
                "product": "stt-2", "encoding": "none",
-               "mediatype": "text/plain", "body": "Hello, this is support..."}]}
+               "mediatype": "text/plain", "body": "Hello, this is support. How can I help you today?"}]}
 ```
 
 Each Analysis Object must carry:
@@ -548,15 +554,61 @@ in `critical`:
 [section 3 of the provenance draft](https://datatracker.ietf.org/doc/html/draft-howe-vcon-provenance-00#section-3)
 classifies the extension as Compatible.
 
+This is the Analysis Object that a `[[vcon.enrich]]` with
+`send = ["signaling", "audio"]` added to the container of the call
+`1-1966@10.0.2.20` in [`tests/pcap-samples/sip-rtp-g711.pcap`](https://github.com/NormB/sipnab/raw/main/tests/pcap-samples/sip-rtp-g711.pcap), when the
+service answered with the transcript above:
+
 ```json
-{"type": "transcript", "vendor": "example-stt", "product": "stt-2",
- "encoding": "none", "body": "Hello, this is support...",
- "provenance": {
-   "model": {"vendor": "example-stt", "name": "stt-2"},
-   "generated_at": "2026-10-13T14:22:05Z",
-   "inputs": [{"element": "dialog", "index": 0, "content_hash": "sha512-..."},
-              {"element": "attachment", "index": 0, "content_hash": "sha512-..."}],
-   "output_hash": "sha512-..."}}
+{
+  "type": "transcript",
+  "dialog": 0,
+  "vendor": "example-stt",
+  "product": "stt-2",
+  "mediatype": "text/plain",
+  "encoding": "none",
+  "body": "Hello, this is support. How can I help you today?",
+  "provenance": {
+    "generated_at": "2026-10-18T15:36:48Z",
+    "inputs": [
+      {
+        "content_hash": "sha512-72su7_V93PDtibTVOXeZnwupbZfBdcQCauDjZWRyLk4rseN2Lg5t--zsLkac2IZWwJw3N-OOF0St7v9OypVrWg",
+        "element": "dialog",
+        "index": 0
+      },
+      {
+        "content_hash": "sha512-MPuR_8BFU4J7F2w77Bnlw-jZwZjCWn-iNVMtKfDo8EwzQN7drK8jM3X0yUFLg1xqPpkeFst5-rG3m2lV_3odhQ",
+        "element": "attachment",
+        "index": 0
+      },
+      {
+        "content_hash": "sha512-9hANi8Xs83rsCMuffVecyWwrw6pgO_sZSCwSrIKx0bFV9vufLSzDJd7yo0n15P-4sxHhhVWBma11bpn2oayLNw",
+        "element": "attachment",
+        "index": 1
+      },
+      {
+        "content_hash": "sha512-oWSbxXIhzSQqPPozI6KvsedvnZj8xZHdK159dXki_UeVAva65O7lpKXMC0YK3_OjS1TGPZ5BlrQ3apgTzKUMMA",
+        "element": "attachment",
+        "index": 2
+      },
+      {
+        "content_hash": "sha512-1pF7RF4_Bf3YELFK6z4BBO1TDahy6W6w17g-Hj8Z_0VXWApji2B62FlROfPN9kOzO-h7LF1t6NS_HMY0BI2Eog",
+        "element": "attachment",
+        "index": 3
+      },
+      {
+        "content_hash": "sha512-8xfyQC1Yq0vlj4DXZwOwHLa-carJDZ1H8mJ5IfjtjFLz_RiKdTX7AdCkB974N0hur1JJpUuH_0E8F4knNFM4vg",
+        "element": "dialog",
+        "index": 0
+      }
+    ],
+    "model": {
+      "name": "stt-2",
+      "vendor": "example-stt"
+    },
+    "output_hash": "sha512-ySebqPtY1AxI17BYEQRo1cjERHmBp_IWMy4nhpfKpdqtt9RUXnMMl4NRQ0OMoYHKZZknagqAWCevpTaJPUv77g"
+  }
+}
 ```
 
 - `model` and `generated_at` are the members
@@ -1833,14 +1885,16 @@ statement format. sipnab follows the SCITT drafts that define one:
   `scitt_sign_key` did.
 
 **What the service answered** goes into `<name>.scitt` beside the delivered
-container, one entry per statement:
+container, one entry per statement. This file has the shape sipnab writes. The
+`location` values are the service's own, and `<receipt>` stands for the
+receipt, base64url-encoded:
 
 ```json
 {"statements": [
   {"event": "vcon_created", "status": 201,
-   "location": "https://ts.example.com/entries/67ed...", "receipt": "0oRDoQEm..."},
+   "location": "https://ts.example.com/entries/1", "receipt": "<receipt>"},
   {"event": "vcon_sent", "status": 202, "poll_status": 204, "pending": true,
-   "location": "https://ts.example.com/entries/67ee..."}]}
+   "location": "https://ts.example.com/entries/2"}]}
 ```
 
 - `201`: the receipt, base64url, as the service returned it, and its
@@ -1870,7 +1924,7 @@ container, one entry per statement:
   statement.
 - **sipnab polls a `Location` only on the service's own origin**: the
   scheme, host and port of `scitt_url`. A path alone, such as
-  `/entries/67ee...`, is on it. Any other `Location` is not fetched, so
+  `/entries/2`, is on it. Any other `Location` is not fetched, so
   the `scitt_auth_file` header goes to no other host; `poll_error` says so.
 - A receipt longer than 65536 bytes: `error` says so, and
   sipnab keeps no part of it.
@@ -1951,7 +2005,7 @@ Each fetcher flag has a key in the `[vcon_fetch]` section of the
 | `generic` (default) | none: the URL is a template holding `{uuid}` | not accepted: give `Header-Name: value` | nothing |
 | `vcon-store` | `/v1/vcons/{uuid}` | `Authorization: Bearer <key>` | a top-level `_meta` member, which the fetcher removes |
 | `conserver` | `/vcon/{uuid}` | `x-conserver-api-token: <key>` | nothing |
-| `vcon-mcp` | `/api/v1/vcons/{uuid}` | `Authorization: Bearer <key>` | `{"success": true, "vcon": {...}}`; the fetcher keeps the `vcon` member |
+| `vcon-mcp` | `/api/v1/vcons/{uuid}` | `Authorization: Bearer <key>` | a `success` member set to `true`, beside the container in a `vcon` member; the fetcher keeps the `vcon` member |
 
 A URL that names a path keeps it. The kind's read path follows it.
 
@@ -2191,9 +2245,8 @@ The [library page](library.md) covers reading a capture into a `DialogStore`.
 jq . call.json
 ```
 
-The output below is that file, with elisions only at the `…` lines, where the
-message trace repeats itself and where the report repeats the completeness
-body.
+The output below is that file in full, from a run of sipnab 0.5.225. The
+`uuid` and `created_at` differ on every run.
 
 **Reading `body`.** Every attachment and analysis `body`
 below declares `"encoding": "json"`.
@@ -2210,8 +2263,8 @@ below declares `"encoding": "json"`.
 ```json
 {
   "vcon": "0.4.0",
-  "uuid": "018bcfe5-6800-8016-b40b-759a17f5f092",
-  "created_at": "2026-10-16T11:54:20.975031471+00:00",
+  "uuid": "018bcfe5-6800-8012-9cdb-50568c2cf298",
+  "created_at": "2026-10-18T15:38:12.660173471+00:00",
   "subject": "SIP call test-call-1@192.0.2.1",
   "extensions": [
     "sip-signaling",
@@ -2232,7 +2285,7 @@ below declares `"encoding": "json"`.
     {
       "validation": "none",
       "role": "observer",
-      "sip_user_agent": "sipnab/0.5.222 (observer; node capture-01)"
+      "sip_user_agent": "sipnab/0.5.225 (observer; node capture-01)"
     }
   ],
   "dialog": [
@@ -2297,11 +2350,36 @@ below declares `"encoding": "json"`.
             "frame": "tests/fixtures/sip_call.pcap#0@4ed7f4560fa79e74",
             "from": "<sip:1001@192.0.2.1>;tag=1928301774",
             "headers": {
+              "CSeq": [
+                "1 INVITE"
+              ],
               "Call-ID": [
                 "test-call-1@192.0.2.1"
+              ],
+              "Contact": [
+                "<sip:1001@192.0.2.1:5060>"
+              ],
+              "Content-Length": [
+                "0"
+              ],
+              "Content-Type": [
+                "application/sdp"
+              ],
+              "From": [
+                "<sip:1001@192.0.2.1>;tag=1928301774"
+              ],
+              "Max-Forwards": [
+                "70"
+              ],
+              "To": [
+                "<sip:1002@192.0.2.2>"
+              ],
+              "User-Agent": [
+                "sipnab-test/1.0"
+              ],
+              "Via": [
+                "SIP/2.0/UDP 192.0.2.1:5060;branch=z9hG4bK776asdhds"
               ]
-              … ELIDED: CSeq, Contact, Content-Length, Content-Type, From,
-              Max-Forwards, To, User-Agent and Via, each a list of values …
             },
             "input_origin": "wire",
             "is_request": true,
@@ -2315,9 +2393,286 @@ below declares `"encoding": "json"`.
             "to": "<sip:1002@192.0.2.2>",
             "transport": "UDP",
             "ua": "sipnab-test/1.0"
+          },
+          {
+            "call_id": "test-call-1@192.0.2.1",
+            "cseq": {
+              "method": "INVITE",
+              "number": 1
+            },
+            "direction": "received",
+            "dscp": 0,
+            "dst": "192.0.2.1",
+            "dst_port": 5060,
+            "frame": "tests/fixtures/sip_call.pcap#1@d391158030fec0ed",
+            "from": "<sip:1001@192.0.2.1>;tag=1928301774",
+            "headers": {
+              "CSeq": [
+                "1 INVITE"
+              ],
+              "Call-ID": [
+                "test-call-1@192.0.2.1"
+              ],
+              "Content-Length": [
+                "0"
+              ],
+              "From": [
+                "<sip:1001@192.0.2.1>;tag=1928301774"
+              ],
+              "To": [
+                "<sip:1002@192.0.2.2>"
+              ],
+              "Via": [
+                "SIP/2.0/UDP 192.0.2.1:5060;branch=z9hG4bK776asdhds"
+              ]
+            },
+            "input_origin": "wire",
+            "is_request": false,
+            "reason": "Trying",
+            "response_context": "1 INVITE",
+            "schema_version": 1,
+            "src": "192.0.2.2",
+            "src_port": 5060,
+            "status_code": 100,
+            "status_text": "Trying",
+            "timestamp": "2023-11-14T22:13:20.100+00:00",
+            "to": "<sip:1002@192.0.2.2>",
+            "transport": "UDP"
+          },
+          {
+            "call_id": "test-call-1@192.0.2.1",
+            "cseq": {
+              "method": "INVITE",
+              "number": 1
+            },
+            "direction": "received",
+            "dscp": 0,
+            "dst": "192.0.2.1",
+            "dst_port": 5060,
+            "frame": "tests/fixtures/sip_call.pcap#2@6223651e1d41c203",
+            "from": "<sip:1001@192.0.2.1>;tag=1928301774",
+            "headers": {
+              "CSeq": [
+                "1 INVITE"
+              ],
+              "Call-ID": [
+                "test-call-1@192.0.2.1"
+              ],
+              "Content-Length": [
+                "0"
+              ],
+              "From": [
+                "<sip:1001@192.0.2.1>;tag=1928301774"
+              ],
+              "To": [
+                "<sip:1002@192.0.2.2>;tag=a6c85cf"
+              ],
+              "Via": [
+                "SIP/2.0/UDP 192.0.2.1:5060;branch=z9hG4bK776asdhds"
+              ]
+            },
+            "input_origin": "wire",
+            "is_request": false,
+            "party": 1,
+            "reason": "Ringing",
+            "response_context": "1 INVITE",
+            "schema_version": 1,
+            "src": "192.0.2.2",
+            "src_port": 5060,
+            "status_code": 180,
+            "status_text": "Ringing",
+            "timestamp": "2023-11-14T22:13:20.500+00:00",
+            "to": "<sip:1002@192.0.2.2>;tag=a6c85cf",
+            "transport": "UDP"
+          },
+          {
+            "call_id": "test-call-1@192.0.2.1",
+            "contact": "<sip:1002@192.0.2.2:5060>",
+            "cseq": {
+              "method": "INVITE",
+              "number": 1
+            },
+            "direction": "received",
+            "dscp": 0,
+            "dst": "192.0.2.1",
+            "dst_port": 5060,
+            "frame": "tests/fixtures/sip_call.pcap#3@b8cb1b0c6d1dcb06",
+            "from": "<sip:1001@192.0.2.1>;tag=1928301774",
+            "headers": {
+              "CSeq": [
+                "1 INVITE"
+              ],
+              "Call-ID": [
+                "test-call-1@192.0.2.1"
+              ],
+              "Contact": [
+                "<sip:1002@192.0.2.2:5060>"
+              ],
+              "Content-Length": [
+                "0"
+              ],
+              "From": [
+                "<sip:1001@192.0.2.1>;tag=1928301774"
+              ],
+              "To": [
+                "<sip:1002@192.0.2.2>;tag=a6c85cf"
+              ],
+              "Via": [
+                "SIP/2.0/UDP 192.0.2.1:5060;branch=z9hG4bK776asdhds"
+              ]
+            },
+            "input_origin": "wire",
+            "is_request": false,
+            "party": 1,
+            "reason": "OK",
+            "response_context": "1 INVITE",
+            "schema_version": 1,
+            "src": "192.0.2.2",
+            "src_port": 5060,
+            "status_code": 200,
+            "status_text": "OK",
+            "timestamp": "2023-11-14T22:13:22+00:00",
+            "to": "<sip:1002@192.0.2.2>;tag=a6c85cf",
+            "transport": "UDP"
+          },
+          {
+            "call_id": "test-call-1@192.0.2.1",
+            "cseq": {
+              "method": "ACK",
+              "number": 1
+            },
+            "direction": "received",
+            "dscp": 0,
+            "dst": "192.0.2.2",
+            "dst_port": 5060,
+            "frame": "tests/fixtures/sip_call.pcap#4@79f3b0a0fb7668dc",
+            "from": "<sip:1001@192.0.2.1>;tag=1928301774",
+            "headers": {
+              "CSeq": [
+                "1 ACK"
+              ],
+              "Call-ID": [
+                "test-call-1@192.0.2.1"
+              ],
+              "Content-Length": [
+                "0"
+              ],
+              "From": [
+                "<sip:1001@192.0.2.1>;tag=1928301774"
+              ],
+              "Max-Forwards": [
+                "70"
+              ],
+              "To": [
+                "<sip:1002@192.0.2.2>;tag=a6c85cf"
+              ],
+              "Via": [
+                "SIP/2.0/UDP 192.0.2.1:5060;branch=z9hG4bK776asdack"
+              ]
+            },
+            "input_origin": "wire",
+            "is_request": true,
+            "method": "ACK",
+            "party": 0,
+            "schema_version": 1,
+            "src": "192.0.2.1",
+            "src_port": 5060,
+            "timestamp": "2023-11-14T22:13:22.050+00:00",
+            "to": "<sip:1002@192.0.2.2>;tag=a6c85cf",
+            "transport": "UDP"
+          },
+          {
+            "call_id": "test-call-1@192.0.2.1",
+            "cseq": {
+              "method": "BYE",
+              "number": 2
+            },
+            "direction": "received",
+            "dscp": 0,
+            "dst": "192.0.2.2",
+            "dst_port": 5060,
+            "frame": "tests/fixtures/sip_call.pcap#5@72aa4e7a6836c5a4",
+            "from": "<sip:1001@192.0.2.1>;tag=1928301774",
+            "headers": {
+              "CSeq": [
+                "2 BYE"
+              ],
+              "Call-ID": [
+                "test-call-1@192.0.2.1"
+              ],
+              "Content-Length": [
+                "0"
+              ],
+              "From": [
+                "<sip:1001@192.0.2.1>;tag=1928301774"
+              ],
+              "Max-Forwards": [
+                "70"
+              ],
+              "To": [
+                "<sip:1002@192.0.2.2>;tag=a6c85cf"
+              ],
+              "Via": [
+                "SIP/2.0/UDP 192.0.2.1:5060;branch=z9hG4bK776asdbye"
+              ]
+            },
+            "input_origin": "wire",
+            "is_request": true,
+            "method": "BYE",
+            "party": 0,
+            "schema_version": 1,
+            "src": "192.0.2.1",
+            "src_port": 5060,
+            "timestamp": "2023-11-14T22:14:20+00:00",
+            "to": "<sip:1002@192.0.2.2>;tag=a6c85cf",
+            "transport": "UDP"
+          },
+          {
+            "call_id": "test-call-1@192.0.2.1",
+            "cseq": {
+              "method": "BYE",
+              "number": 2
+            },
+            "direction": "received",
+            "dscp": 0,
+            "dst": "192.0.2.1",
+            "dst_port": 5060,
+            "frame": "tests/fixtures/sip_call.pcap#6@81da8415cc56003a",
+            "from": "<sip:1001@192.0.2.1>;tag=1928301774",
+            "headers": {
+              "CSeq": [
+                "2 BYE"
+              ],
+              "Call-ID": [
+                "test-call-1@192.0.2.1"
+              ],
+              "Content-Length": [
+                "0"
+              ],
+              "From": [
+                "<sip:1001@192.0.2.1>;tag=1928301774"
+              ],
+              "To": [
+                "<sip:1002@192.0.2.2>;tag=a6c85cf"
+              ],
+              "Via": [
+                "SIP/2.0/UDP 192.0.2.1:5060;branch=z9hG4bK776asdbye"
+              ]
+            },
+            "input_origin": "wire",
+            "is_request": false,
+            "party": 1,
+            "reason": "OK",
+            "response_context": "2 BYE",
+            "schema_version": 1,
+            "src": "192.0.2.2",
+            "src_port": 5060,
+            "status_code": 200,
+            "status_text": "OK",
+            "timestamp": "2023-11-14T22:14:20.100+00:00",
+            "to": "<sip:1002@192.0.2.2>;tag=a6c85cf",
+            "transport": "UDP"
           }
-          … ELIDED: the 100, the 180, the 200, the ACK, the BYE and its 200,
-          six more objects of the same shape …
         ],
         "schema_version": 1,
         "sip_call_id": "test-call-1@192.0.2.1",
@@ -2344,10 +2699,10 @@ below declares `"encoding": "json"`.
         "media_note": "No RTP streams to export",
         "messages_evicted": 0,
         "node": "capture-01",
-        "note": "Produced by sipnab 0.5.222 on node capture-01. sipnab OBSERVED this dialog and took no part in it: the parties below are what the From and To headers said, not identities anyone established. No media is in this container because this run decoded none for the dialog; the capture_completeness media_note says what was measured. That is a statement about what this run kept, not a finding that the call was silent. sipnab read 7 frame(s) for this capture. No omissions recorded: every message sipnab held for this dialog is in this container. A capture-level analysis ran and ranked no blind spots.",
+        "note": "Produced by sipnab 0.5.225 on node capture-01. sipnab OBSERVED this dialog and took no part in it: the parties below are what the From and To headers said, not identities anyone established. No media is in this container because this run decoded none for the dialog; the capture_completeness media_note says what was measured. That is a statement about what this run kept, not a finding that the call was silent. sipnab read 7 frame(s) for this capture. No omissions recorded: every message sipnab held for this dialog is in this container. A capture-level analysis ran and ranked no blind spots.",
         "sip_discarded_by_port_gate": 0,
         "sip_discarded_by_websocket_gate": 0,
-        "sipnab_version": "0.5.222",
+        "sipnab_version": "0.5.225",
         "undecodable_frames": 0
       }
     }
@@ -2357,13 +2712,29 @@ below declares `"encoding": "json"`.
       "type": "report",
       "dialog": 0,
       "vendor": "sipnab",
-      "product": "sipnab 0.5.222 (passive observer; not a recording system)",
+      "product": "sipnab 0.5.225 (passive observer; not a recording system)",
       "schema": "sipnab-dialog-diagnosis/1",
       "mediatype": "application/json",
       "encoding": "json",
       "body": {
         "capture_completeness": {
-          … ELIDED: byte for byte the completeness body above …
+          "blind_spots": [],
+          "call_ended": true,
+          "dialogs_refused": 0,
+          "dialogs_rotated": 0,
+          "dialogs_suppressed_by_deny": 0,
+          "frames_read": 7,
+          "gate_closed_during_run": false,
+          "headers_dropped_oversize": 0,
+          "media": "none-decodable",
+          "media_note": "No RTP streams to export",
+          "messages_evicted": 0,
+          "node": "capture-01",
+          "note": "Produced by sipnab 0.5.225 on node capture-01. sipnab OBSERVED this dialog and took no part in it: the parties below are what the From and To headers said, not identities anyone established. No media is in this container because this run decoded none for the dialog; the capture_completeness media_note says what was measured. That is a statement about what this run kept, not a finding that the call was silent. sipnab read 7 frame(s) for this capture. No omissions recorded: every message sipnab held for this dialog is in this container. A capture-level analysis ran and ranked no blind spots.",
+          "sip_discarded_by_port_gate": 0,
+          "sip_discarded_by_websocket_gate": 0,
+          "sipnab_version": "0.5.225",
+          "undecodable_frames": 0
         },
         "final_status_code": 200,
         "schema_version": 1,
@@ -3275,11 +3646,15 @@ sipnab -N -I call.vcon.json.gz --json-dialogs --no-cli-print --quiet | jq -c '{c
 {"call_id":"1-1966@10.0.2.20","msg_count":6}
 ```
 
-The `rebuilt_from_vcon` finding names each layer sipnab opened, and who signed it:
+The `rebuilt_from_vcon` finding names each layer sipnab opened, and who signed it.
+Its note carries one sentence for this, which for the containers above read:
 
 ```text
-Opened from: encrypted form, decrypted; signed form, verified, signer SHA-256 4A:27:CF:...
+Opened from: encrypted form, decrypted; signed form, verified, signer SHA-256 95:07:6A:A9:9D:D9:63:65:D1:C0:0F:6C:26:37:FF:AB:E6:BE:40:02:40:0B:B4:34:93:75:CD:E6:EB:74:EF:E1.
 ```
+
+The fingerprint is the SHA-256 of the signing certificate, so it differs for
+every signer.
 
 Two settings check who signed it, as the fetcher's do
 ([Check who signed it](#check-who-signed-it)):

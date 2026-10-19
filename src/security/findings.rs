@@ -36,6 +36,59 @@ pub const NO_DETECTOR_NOTE: &str = "No detection rule is armed on this server, \
     --kill-scanner, --fraud-detect, --digest-leak or --reg-flood and re-run the \
     capture.";
 
+/// Whether this run answers the scanners it detects.
+///
+/// Reported beside `armed_kinds` because `scanner` in that list says only that
+/// scanners are DETECTED. Whether sipnab also sends a reply to them is a
+/// separate fact, and detect-only (`--kill-scanner-detect-only`) is the run
+/// where the two differ on purpose.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ScannerResponse {
+    /// No scanner detector and no `-K` target: there is nothing to answer.
+    Off,
+    /// `--kill-scanner-detect-only` or `[security] kill_scanner_detect_only`:
+    /// scanners are detected and never answered.
+    DetectOnly,
+    /// Scanners are detected and not answered for another reason: the run
+    /// reads a capture file, it is the interactive TUI, or the scanner-kill
+    /// worker could not start. The value a surface reports when nobody told
+    /// it otherwise, because it is the one that never overstates.
+    #[default]
+    NotAnswering,
+    /// The scanner-kill worker is running: detected scanners, and every
+    /// `-K` target, are sent a SIP reply.
+    Answering,
+}
+
+impl ScannerResponse {
+    /// The response a run makes, from three facts: whether scanner detection
+    /// (or a `-K` target) is armed, whether detect-only is set, and whether
+    /// the scanner-kill worker is running.
+    #[must_use]
+    pub const fn for_run(scanner_armed: bool, detect_only: bool, worker_running: bool) -> Self {
+        if !scanner_armed {
+            Self::Off
+        } else if detect_only {
+            Self::DetectOnly
+        } else if worker_running {
+            Self::Answering
+        } else {
+            Self::NotAnswering
+        }
+    }
+
+    /// The wire spelling: `off`, `detect_only`, `not_answering`, `answering`.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Off => "off",
+            Self::DetectOnly => "detect_only",
+            Self::NotAnswering => "not_answering",
+            Self::Answering => "answering",
+        }
+    }
+}
+
 /// One finding, raw: the `detail` is exactly what the detector wrote, unfenced.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FindingRow {
@@ -73,6 +126,22 @@ pub struct FindingsReport {
     /// `kinds`. Empty rows beside a non-empty entry here mean "could not
     /// tell", not "nothing tripped".
     pub observation_gaps: Vec<ObservationGap>,
+    /// Whether detected scanners are answered, as
+    /// [`ScannerResponse::as_str`] spells it. `off` whenever `scanner` is not
+    /// in `armed_kinds`.
+    pub scanner_response: &'static str,
+}
+
+impl FindingsReport {
+    /// State whether this run answers the scanners it detects. Ignored, and
+    /// `off` kept, when no scanner detection is armed.
+    #[must_use]
+    pub fn with_scanner_response(mut self, response: ScannerResponse) -> Self {
+        if self.armed_kinds.iter().any(|k| k == "scanner") {
+            self.scanner_response = response.as_str();
+        }
+        self
+    }
 }
 
 /// The first of `kinds` outside [`SECURITY_FINDING_KINDS`], if any: the one
@@ -170,6 +239,11 @@ pub fn build_report(
         detection_armed,
         note: (!detection_armed).then(|| NO_DETECTOR_NOTE.to_string()),
         observation_gaps,
+        scanner_response: if armed.iter().any(|k| k == "scanner") {
+            ScannerResponse::NotAnswering.as_str()
+        } else {
+            ScannerResponse::Off.as_str()
+        },
     }
 }
 
@@ -307,6 +381,47 @@ mod tests {
                 .observation_gaps
                 .is_empty(),
             "a withdrawn gap leaves the page"
+        );
+        Ok(())
+    }
+
+    /// Each run's response follows from its three facts, and detect-only
+    /// wins over a running worker, so it can never be reported as answering.
+    #[test]
+    fn scanner_response_for_each_run() {
+        use ScannerResponse as R;
+        assert_eq!(R::for_run(false, false, false), R::Off);
+        assert_eq!(R::for_run(false, true, false), R::Off);
+        assert_eq!(R::for_run(true, true, false), R::DetectOnly);
+        assert_eq!(R::for_run(true, true, true), R::DetectOnly);
+        assert_eq!(R::for_run(true, false, false), R::NotAnswering);
+        assert_eq!(R::for_run(true, false, true), R::Answering);
+    }
+
+    /// The report states whether detected scanners are answered: the value it
+    /// is given when scanner detection is armed, `off` when it is not, and
+    /// `not_answering` when nobody said, which never overstates.
+    #[test]
+    fn build_report_states_whether_scanners_are_answered() -> Result<(), TestError> {
+        let engine = seeded_engine()?;
+        let scanner = vec!["scanner".to_string()];
+        let r = build_report(Some(&engine), &scanner, &[], None, 50);
+        assert_eq!(
+            r.scanner_response, "not_answering",
+            "the default never overstates"
+        );
+        let r = r.with_scanner_response(ScannerResponse::DetectOnly);
+        assert_eq!(r.scanner_response, "detect_only");
+        let r = build_report(Some(&engine), &scanner, &[], None, 50)
+            .with_scanner_response(ScannerResponse::Answering);
+        assert_eq!(r.scanner_response, "answering");
+
+        let fraud = vec!["fraud".to_string()];
+        let r = build_report(Some(&engine), &fraud, &[], None, 50)
+            .with_scanner_response(ScannerResponse::DetectOnly);
+        assert_eq!(
+            r.scanner_response, "off",
+            "no scanner detection, nothing to answer"
         );
         Ok(())
     }

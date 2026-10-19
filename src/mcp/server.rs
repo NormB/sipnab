@@ -92,6 +92,9 @@ pub struct SipnabMcp {
     /// detection at all. The capture owner is what knows, so the capture owner
     /// is what tells it (`crate::app::servers::Selection::armed_detections`).
     pub(crate) armed_detections: Vec<String>,
+    /// Whether this run answers the scanners it detects, reported by
+    /// `security_findings` as `scanner_response`.
+    pub(crate) scanner_response: crate::security::findings::ScannerResponse,
     /// Shared flag the capture owner sets once the source (typically a pcap
     /// file) is fully consumed; `tail_dialogs` reports it as
     /// `source_exhausted` so pollers know no more updates will come. When
@@ -406,6 +409,7 @@ impl SipnabMcp {
             capture_meter: None,
             started_at: std::time::Instant::now(),
             armed_detections: Vec::new(),
+            scanner_response: Default::default(),
             source_exhausted: None,
             row_cap: HARD_LIMIT,
             max_inline_media_bytes: None,
@@ -871,6 +875,16 @@ impl SipnabMcp {
         armed.sort();
         armed.dedup();
         self.armed_detections = armed;
+        self
+    }
+
+    /// Declare whether this run answers the scanners it detects. `scanner`
+    /// in the armed list says only that scanners are detected.
+    pub fn with_scanner_response(
+        mut self,
+        response: crate::security::findings::ScannerResponse,
+    ) -> Self {
+        self.scanner_response = response;
         self
     }
 
@@ -3313,6 +3327,14 @@ pub struct FindingsPage {
     /// implies, stated separately so a caller can branch on it without
     /// interpreting a list.
     pub detection_armed: bool,
+    /// Whether sipnab answers the scanners it detects. `off`: no scanner
+    /// detection is armed. `detect_only`: `--kill-scanner-detect-only` is set,
+    /// so scanners are detected and never answered. `not_answering`: scanners
+    /// are detected and not answered, because the run reads a capture file, is
+    /// the interactive TUI, or the scanner-kill worker could not start.
+    /// `answering`: the scanner-kill worker is running and sends a SIP reply
+    /// to each detected scanner.
+    pub scanner_response: String,
     /// Present ONLY when nothing is armed, saying so in words the agent will
     /// pass on rather than leaving it to infer from an empty list.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -6643,7 +6665,8 @@ impl SipnabMcp {
                 &kinds,
                 since,
                 limit,
-            );
+            )
+            .with_scanner_response(self.scanner_response);
             let capture_identity = state.identity.etag(ds.generation(), ss.generation());
             drop(guard);
             drop(ss);
@@ -6680,6 +6703,7 @@ impl SipnabMcp {
             truncated: report.truncated,
             armed_kinds: report.armed_kinds,
             detection_armed: report.detection_armed,
+            scanner_response: report.scanner_response.to_string(),
             note: report.note,
             observation_gaps: report
                 .observation_gaps
@@ -11468,6 +11492,7 @@ mod tests {
             actions: Default::default(),
             alert_engine: None,
             armed_detections: Vec::new(),
+            scanner_response: Default::default(),
             file_root,
             vcon_spools,
             vcon_fetch: Default::default(),
@@ -15126,6 +15151,25 @@ mod tests {
             note.contains("nothing was watching"),
             "the note must distinguish an unwatched capture from a clean one: {v}"
         );
+        Ok(())
+    }
+
+    /// A detect-only server says so: `scanner_response` is `detect_only`, so
+    /// an agent reading `armed_kinds: ["scanner"]` does not report that the
+    /// scanners it lists were answered.
+    #[tokio::test]
+    async fn security_findings_states_detect_only() -> Result<(), TestError> {
+        let engine = Arc::new(RwLock::new(AlertEngine::new(vec![], None)));
+        let server = empty_server()
+            .with_alert_engine(engine)
+            .with_armed_detections(["scanner"])
+            .with_scanner_response(crate::security::findings::ScannerResponse::DetectOnly);
+        let result = server
+            .security_findings(Parameters(SecurityFindingsParams::default()))
+            .await
+            .map_err(|e| format!("security_findings should succeed: {e:?}"))?;
+        let v: serde_json::Value = serde_json::from_str(&text_of(&result)?)?;
+        assert_eq!(v["scanner_response"], "detect_only", "{v}");
         Ok(())
     }
 

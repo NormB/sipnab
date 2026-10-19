@@ -473,8 +473,12 @@ pub fn download(url: &str) -> Result<Vec<u8>, String> {
         extra: "SSL_CERT_FILE",
         issuer: "itu.int's CA",
     };
+    // Quoted with its userinfo redacted, as `Endpoint::parse` quotes it:
+    // credentials in the URL are refused precisely so they never reach the
+    // log.
+    let shown = crate::app::run_provenance::redact_url_userinfo(url);
     let endpoint = Endpoint::parse(url, crate::app::https_client::UrlUse::DOWNLOAD)
-        .map_err(|e| format!("{url}: {e}"))?;
+        .map_err(|e| format!("{shown}: {e}"))?;
     let config = client_config(None, None, &TRUST)?;
     let request = format!(
         "GET {} HTTP/1.1\r\nHost: {}\r\nUser-Agent: sipnab/{}\r\nAccept: */*\r\nConnection: close\r\n\r\n",
@@ -840,6 +844,40 @@ mod tests {
             ran.out
         );
         assert!(ran.out.contains(g729::tables::VALUES_SHA256), "{}", ran.out);
+        Ok(())
+    }
+
+    /// URL-CREDS-IN-LOGS: a package URL carrying credentials is refused
+    /// before any connection, and the refusal must not print them.
+    #[test]
+    fn t_negative_a_package_url_refusal_never_quotes_the_password() -> Result<(), TestError> {
+        let why = download("https://fetcher:s3cret-token@example.invalid/pkg.zip")
+            .err()
+            .ok_or("a URL with credentials is refused")?;
+        assert!(!why.contains("s3cret-token"), "{why}");
+        Ok(())
+    }
+
+    /// The refusal still names the URL, userinfo redacted.
+    #[test]
+    fn t_positive_a_package_url_refusal_still_names_the_host() -> Result<(), TestError> {
+        let why = download("https://fetcher:s3cret-token@example.invalid/pkg.zip")
+            .err()
+            .ok_or("refused")?;
+        assert!(why.contains("example.invalid/pkg.zip"), "{why}");
+        Ok(())
+    }
+
+    /// A password with an unescaped `?` leaks neither half.
+    #[test]
+    fn t_edge_a_package_password_holding_a_question_mark_does_not_leak() -> Result<(), TestError> {
+        let why = download("https://fetcher:ab?cd-secret@example.invalid/pkg.zip")
+            .err()
+            .ok_or("refused")?;
+        assert!(
+            !why.contains("ab?cd") && !why.contains("cd-secret"),
+            "{why}"
+        );
         Ok(())
     }
 }

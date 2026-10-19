@@ -366,11 +366,11 @@ when sipnab exits.
 | `--uprobe-list` finds no TLS library | Unprivileged, so `/proc/<pid>/maps` opens only for your own processes | Re-run as root before concluding the host uses no TLS |
 | `no kernel programs` from a binary you built | `--features bpf` compiled the loader, and the inner nightly build found no `bpf-linker` | Rebuild on a host carrying `bpf-linker`, with `SIPNAB_BPF_REQUIRED=1` so the gap fails the build |
 | Capture attaches, reports 0 messages | Almost always the wrong symbol | `nm -D --undefined-only <binary> \| grep -i ssl_write`, then `--uprobe-symbol` |
-| `needs this kernel's BTF ... could not read it` | No `CONFIG_DEBUG_INFO_BTF` | Use `--uprobe-backend tracefs`; no privilege fixes this |
+| `the BPF backend needs this kernel's BTF to locate the socket addresses, and could not read it: <error>. The tracefs backend works without BTF but cannot report addresses`, where `<error>` is the reason the read failed | No `CONFIG_DEBUG_INFO_BTF` | Use `--uprobe-backend tracefs`; no privilege fixes this |
 | `no kernel programs: built on a machine without bpf-linker` | The binary carries the feature but not the programs | Rebuild where `cargo install bpf-linker` has run, or use `tracefs` |
 | Addresses are `0.0.0.0:0` on the eBPF backend | The write and its send did not pair on one thread | Expected, and honest — sipnab never guesses a peer |
 | Messages missing under load | The kernel dropped records the reader could not keep up with | sipnab reports the count on exit, so the loss is visible rather than hidden |
-| A container's traffic is missing | The path in `maps` names a different file in sipnab's namespace | Handled automatically by inode; if naming a library by hand, use the `/proc/PID/root/...` form |
+| A container's traffic is missing | The path in `maps` names a different file in sipnab's namespace | Handled automatically by inode; if naming a library by hand, use the `/proc/<pid>/root/<path>` form, such as `/proc/4242/root/usr/lib/x86_64-linux-gnu/libssl.so.3` |
 
 ## What this cannot do
 

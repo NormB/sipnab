@@ -66,6 +66,12 @@ so this run will emit nothing`.
 So with sipnab running this way, a scanner learns that something answers on
 your SIP port. That is true even when your SIP server answers nothing.
 
+**To ban scanners without answering them,** use `--kill-scanner-detect-only`
+in place of `--kill-scanner`. It runs the same scanner detector and writes the
+same `scanner_detected` lines, and sipnab sends nothing to the scanner. This
+option is newer than the tests below. See
+[Detect scanners without answering them](@/docs/cookbook.md#detect-scanners-without-answering-them).
+
 ## Tested on
 
 Every block on this page ran as written, in order, on 2026-10-01. So did every

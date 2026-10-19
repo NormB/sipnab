@@ -227,7 +227,7 @@ Both steps matter. An id in a file no server reads revokes nothing:
 - Start the server with the denylist file:
 
    ```bash
-   sipnab ... --api-signing-key "$KEY" --api-revoked-file /etc/sipnab/revoked.txt
+   sipnab -N -I capture.pcap --api 127.0.0.1:8080 --api-signing-key "$KEY" --api-revoked-file /etc/sipnab/revoked.txt
    ```
 
 The file is one token `id` per line (blank lines and `#` comments ignored).
@@ -253,7 +253,7 @@ s2.<base64url(payload)>.<base64url(HMAC-SHA256)>
 `scope` appears **only when it narrows something**.
 
 - A `full` token — the default — omits the claim.
-  So its payload is the three-field `{"id":...,"exp":...,"aud":...}` form.
+  So its payload is the three-field `{"id":"<jti>","exp":<unix_seconds>,"aud":"<api|mcp>"}` form.
 - A payload carrying no `scope` means `full`.
 - Seeing `scope` in a decoded payload therefore always means
   "restricted". See [Scope: what a token may reach](#scope-what-a-token-may-reach) above.

@@ -58,16 +58,15 @@ sipnab -N -I tests/pcap-samples/sip-rtp-g722.pcap --no-cli-print --json-dialogs 
 or declare an impairment factor for the codec as the next section shows.
 
 `--call-report` prints the same verdict in words. For a stream without a
-grounded score its RTP line reads `mos=unknown (unpublished)`:
+grounded score its RTP line reads `mos=unknown (unpublished)`. The `grep`
+keeps only the report's RTP lines:
 
 ```sh
-sipnab -N -I tests/pcap-samples/sip-rtp-g722.pcap --call-report 1-2161@10.0.2.20
+sipnab -N -I tests/pcap-samples/sip-rtp-g722.pcap --call-report 1-2161@10.0.2.20 | grep '^  RTP '
 ```
 
 ```text
-…
   RTP 10.0.2.15->10.0.2.20 G722 SSRC=0x043daaba pkts=425 jitter=0ms loss=0.0% mos=unknown (unpublished)
-…
 ```
 
 ## Declare an impairment factor for a codec
@@ -320,12 +319,12 @@ The second row is 32 kbit/s as ITU-T G.113 (2024) Erratum 1 (January 12,
 - **[RFC 4867 section 8.1](https://www.rfc-editor.org/rfc/rfc4867.html#section-8.1)** for AMR / AMR-WB payload format and `mode-set`.
 
 Any report built on these numbers carries this caveat:
-<!-- The two phrases below quote G.113 verbatim; rewording them to satisfy the
-     passive-voice rule would misquote a standard. -->
+<!-- The sentence in quotation marks below quotes G.113 verbatim; rewording it
+     to satisfy the passive-voice rule would misquote a standard. -->
 <!-- vale Google.Passive = NO -->
 each G.113 appendix states *"This appendix does not form an integral part of
-this Recommendation"* and labels its contents *"provisional planning values …
-intended to be updated regularly"*.
+this Recommendation"*. Each also labels its contents as provisional planning
+values, which ITU-T intends to update regularly.
 <!-- vale Google.Passive = YES -->
 
 They are planning figures for network design, not measurements of the call in

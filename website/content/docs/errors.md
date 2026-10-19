@@ -542,6 +542,17 @@ sipnab could not read a `-K`/`--kill-target` value. sipnab checks each value at 
 
 **Exit code:** 2.
 
+### `-K/--kill-target asks sipnab to answer every SIP request from the source it names, and --kill-scanner-detect-only (or [security] kill_scanner_detect_only = true) asks sipnab to answer nothing. Remove -K to detect scanners without answering them, or remove detect-only (--no-kill-scanner-detect-only overrides the config key) to answer the named source.`
+
+You asked for two things that cannot both happen. `-K`/`--kill-target` sends a SIP response to every request from the source you named. Detect-only (`--kill-scanner-detect-only`, or `kill_scanner_detect_only = true` in `[security]`) means sipnab sends nothing. sipnab refuses the run rather than ignore one of them.
+
+**What to do:** Choose one:
+
+- To detect scanners and send nothing, remove `-K`.
+- To answer the named source, remove `--kill-scanner-detect-only`. If the configuration file sets `kill_scanner_detect_only = true`, add `--no-kill-scanner-detect-only` for this run, or remove the key.
+
+**Exit code:** 2.
+
 ### `--multi-device and --hep-listen/-L cannot run together yet. One interface plus one HEP listener is supported; a device LIST plus a listener is not, because sipnab correlates a HEP-delivered dialog to a locally captured stream by SDP media endpoint alone and that index carries no node dimension — two sources advertising the same address and port would overwrite each other. Drop --multi-device, or drop -L.`
 
 You cannot combine `--multi-device` with a HEP listener (`-L`). That flag takes a comma-separated device list given to `-d`.
@@ -989,7 +1000,11 @@ A path-valued key in the configuration file holds an empty string. `{key}` is th
 
 ### `` `${{{name}}}` is not a variable name: expected an ASCII letter or `_` followed by letters, digits or `_`. Shell default-value syntax is not supported ``
 
-A string in the config file contains `${...}`, and its contents are not an environment-variable name.
+A string in the config file holds `${`, some text and `}`, and the text between the braces is not an environment-variable name. A config file `c.toml` with `node_name = "${HOME:-x}"` under `[capture]` stops the run with this line:
+
+```text
+2026-10-18T15:29:43.704481Z ERROR sipnab::app::bootstrap: invalid config value: c.toml: capture.node_name: `${HOME:-x}` is not a variable name: expected an ASCII letter or `_` followed by letters, digits or `_`. Shell default-value syntax is not supported
+```
 
 - `{name}` is the text between the braces.
 - A name must start with an ASCII letter or `_`. It continues with letters, digits or `_`.
@@ -1540,7 +1555,11 @@ A `[keybindings]` value in the config file is not a key the terminal UI can bind
 
 ### `` unterminated `${{` in {input:?} ``
 
-A string in the config file contains `${` with no closing `}`. `{input:?}` is the whole string as written. The full line reads `invalid config value: <file>: <dotted.key>: ...`, naming the file and the setting.
+A string in the config file contains `${` with no closing `}`. `{input:?}` is the whole string as written. The full line names the file and the setting. A config file `a.toml` with `node_name = "${HOME"` under `[capture]` stops the run with this line:
+
+```text
+2026-10-18T15:29:43.565059Z ERROR sipnab::app::bootstrap: invalid config value: a.toml: capture.node_name: unterminated `${` in "${HOME"
+```
 
 **What to do:** Close the variable reference (`${NAME}`), or write `$$` where you mean a literal `$`.
 
@@ -1802,7 +1821,7 @@ The [`[[vcon.rule]]`](@/docs/vcon.md#write-calls-by-rule) named `{name}` has `au
 - A `url` rule writes each call's audio file beside its container, and names it by URL.
 - That needs the base your storage serves the files from.
 
-**What to do:** Add `audio_url_base = "https://..."`, or use `audio = "inline"` or `"omit"`.
+**What to do:** Add the HTTPS base your storage serves the files from, such as `audio_url_base = "https://media.example.com/vcon-audio"`, or use `audio = "inline"` or `"omit"`.
 
 **Exit code:** 1.
 
@@ -1818,7 +1837,7 @@ The `audio_url_base` of the [`[[vcon.rule]]`](@/docs/vcon.md#write-calls-by-rule
 
 The `when` of the [`[[vcon.rule]]`](@/docs/vcon.md#write-calls-by-rule) named `{name}` does not parse as a filter expression. `{e}` is the parser's reason. See [Filter DSL](@/docs/filter-dsl.md).
 
-**What to do:** Correct the expression. Test it first with `sipnab -N -I capture.pcap --filter "..."`.
+**What to do:** Correct the expression. Test it first with `--filter`, giving the rule's `when` expression, such as `sipnab -N -I capture.pcap --filter "state == 'Failed'"`.
 
 **Exit code:** 1.
 
@@ -3665,7 +3684,7 @@ A whole-number setting of the vCon forwarder or fetcher is outside its range.
   - timeout 1-600 for the fetcher;
   - 1-4294967295 for the back-off, response-head, error-body and size settings.
 - For a flag (such as `--vcon-forward-interval`), the argument parser reports the error.
-- For a key, it reads `invalid config value: [vcon_forward] <key>: ...` or `[vcon_fetch] <key>: ...`.
+- For a key, sipnab prefixes the section and the key. `interval = 0` under `[vcon_forward]` reads `invalid config value: [vcon_forward] interval: 0 is out of range: give a whole number from 1 to 3600`, and `timeout = 0` under `[vcon_fetch]` reads `invalid config value: [vcon_fetch] timeout: 0 is out of range: give a whole number from 1 to 600`.
 
 **What to do:** Give a whole number inside the range the message states.
 
@@ -3768,7 +3787,7 @@ The POST of container `{name}` to the store failed before the forwarder could re
 
 ### `'{shown}': put credentials in {setting}, not in the URL`
 
-The URL holds a user name or password before an `@` (`https://user:secret@host/...`).
+The URL holds a user name or password before an `@`, as in `https://user:secret@vcon.example.com/v1/vcons`.
 
 - sipnab refuses it, so that the credential stays out of logs.
 - The line starts with the setting the URL came from, for example `--vcon-forward-url` or `[vcon_fetch] url`.
@@ -3792,7 +3811,11 @@ A URL sipnab reads without credentials holds a user name or password before an `
 
 **What to do:** Remove the `user:password@` part from the URL at its source. sipnab sends no credential to these URLs.
 
-**Exit code:** None of its own. The message is the reason given inside the message about that URL: `x5u "<url>": ...`, `url ...` for a dialog's audio, or `not polled: ...` for a `Location`.
+**Exit code:** None of its own. The message is the reason inside the message about that URL:
+
+- for an `x5u` certificate chain: `x5u {url:?}: '{shown}': a URL sipnab reads cannot hold credentials`;
+- for a dialog's audio `url`: `url '{shown}': a URL sipnab reads cannot hold credentials`;
+- for a `Location`: `not polled: the Location {location:?} is not on the transparency service's origin {origin} ('{shown}': a URL sipnab reads cannot hold credentials)`, where `{origin}` is the scheme, host and port of the service's URL.
 
 ### `` --redact acts on the vCon exporter, which needs the 'vcon' Cargo feature this build does not carry. Rebuild with --features vcon (or --features full); `sipnab --version` lists the features a binary was built with ``
 
@@ -4089,10 +4112,10 @@ The forwarder delivered the container `{name}`, and the transparency service at 
 
 `--vcon-resign` wrote nothing. `{message}` is the reason. It is one of these:
 
-- `--vcon-resign-key: ...`, when the new signer's key or certificate does not read, the key is not RSA or EC P-256, other users can read the key, or the certificate is not the key's. Exit code 2.
+- `--vcon-resign-key: {e}`, when the new signer's key or certificate does not read, the key is not RSA or EC P-256, other users can read the key, or the certificate is not the key's. A certificate file that does not exist reads `--vcon-resign: --vcon-resign-key: cannot read 'nocert.pem': No such file or directory (os error 2)`. Exit code 2.
 - a `[vcon_input]` or `--vcon-signer-ca` CA file that does not read. Exit code 2.
-- `'FILE': ...`, when sipnab refuses the input: it is not JSON, it is not the signed form, a signature does not verify, the signer checks refuse its outermost signer, or that signer's certificate is not valid now. Exit code 1.
-- `cannot read 'FILE': ...`, or the input is over the 64 MiB limit for one container. Exit code 1.
+- `'{file}': {e}`, when sipnab refuses the input: it is not JSON, it is not the signed form, a signature does not verify, the signer checks refuse its outermost signer, or that signer's certificate is not valid now. An unsigned input reads ``--vcon-resign: 'notsigned.json': the vCon is not signed: draft-ietf-vcon-vcon-core-04 section 5.2.3 re-signs a signed vCon (the signed form, `payload` and `signatures`)``. Exit code 1.
+- `cannot read '{file}': {e}`, or the input is over the 64 MiB limit for one container. An input that does not exist reads `--vcon-resign: cannot read 'in.json': No such file or directory (os error 2)`. Exit code 1.
 - `'OUT' exists; sipnab never replaces it: name a new file`, or sipnab cannot create or write the output. Exit code 1.
 
 **What to do:** Act on the reason. An input whose signing certificate has expired cannot be re-signed: [section 5.2.3 of draft-ietf-vcon-vcon-core-04](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-04#section-5.2.3) re-signs before it expires.
@@ -4119,14 +4142,14 @@ The forwarder delivered the container `{name}`, and the transparency service at 
 
 `--vcon-audio-fetch` did not write a recording, or any. `{reason}` is why. sipnab prints one line for each recording it refused, and writes the others. It is one of these:
 
-- `--vcon-key: ...`, a `[vcon_input]` or `--vcon-signer-ca` file that does not read, or `--vcon-audio-fetch-ca: ...` or `--vcon-audio-fetch-extra-ca: ...` for a CA file that does not load. Exit code 2.
-- `--vcon-audio-fetch-out '...': ...`, an output directory sipnab cannot create. Exit code 2.
-- `'FILE': ...`, when the container does not open: it is not a vCon, a signature does not verify, the key does not decrypt it, or the signer checks refuse its signer. Exit code 1.
+- `--vcon-key: {e}`, or the setting that names another `[vcon_input]` or `--vcon-signer-ca` file that does not read, followed by the reason; or `--vcon-audio-fetch-ca: {e}` or `--vcon-audio-fetch-extra-ca: {e}` for a CA file that does not load. A CA file that does not exist reads `--vcon-audio-fetch: --vcon-audio-fetch-ca: noca.pem: No such file or directory (os error 2)`. Exit code 2.
+- `--vcon-audio-fetch-out '{dir}': {e}`, an output directory sipnab cannot create, or `--vcon-audio-fetch-out '{dir}': not a directory`. A path under a regular file reads `--vcon-audio-fetch: --vcon-audio-fetch-out 'afile/sub': Not a directory (os error 20)`. Exit code 2.
+- `'{file}': {e}`, when the container does not open: it is not a vCon, a signature does not verify, the key does not decrypt it, or the signer checks refuse its signer. A text file reads `--vcon-audio-fetch: 'notes.txt': not a vCon container: not JSON (expected value at line 1 column 1)`. Exit code 1.
 - `'FILE': the vCon has no uuid to name a file by`, or `'FILE': no recording in the vCon names a url`. Exit code 1.
-- `dialog N: ...`, naming the recording's index in `dialog`, when sipnab refused that recording. The entries below list the reasons. Exit code 1.
-  - `names no mediatype, so sipnab cannot tell what audio it is`, or `mediatype "..." is not audio sipnab writes (audio/x-wav, audio/ogg)`.
+- `dialog {index}: {reason}`, naming the recording's index in `dialog`, when sipnab refused that recording. The entries below list the reasons. A recording whose `mediatype` is `text/plain` reads `--vcon-audio-fetch: dialog 0: mediatype "text/plain" is not audio sipnab writes (audio/x-wav, audio/ogg)`. Exit code 1.
+  - `names no mediatype, so sipnab cannot tell what audio it is`, or `mediatype {mediatype:?} is not audio sipnab writes (audio/x-wav, audio/ogg)`.
   - `names no content_hash, so the file cannot be checked`, or `content_hash does not match the file: the file is not the one the vCon names`. sipnab checks the hash before it decrypts the file or writes anything.
-  - `the file is a JWE and did not decrypt: ...`: the file names no recipient that the key that opened the container decrypts.
+  - `the file is a JWE and did not decrypt: {e}`, with the decryption error as `{e}`: the file names no recipient that the key that opened the container decrypts.
   - a connection, TLS or HTTP refusal from the server that holds the file.
 
 **What to do:** Act on the reason. A file whose hash does not match is not the one the vCon names: fetch it again from where your storage keeps it, and do not use it.
@@ -4307,7 +4330,7 @@ A live capture ended on its own (`--duration`) while calls still waited for an [
 
 **What to do:**
 
-- Check the service the earlier `[[vcon.enrich]] '...'` lines name.
+- Check the service that each earlier `{label}[[vcon.enrich]] '{}' for Call-ID '{call_id}': {}: {}. The container is written without its analysis and records this.` line names in its first `{}`.
 - Lower its `timeout_secs`.
 - Re-export the calls from a saved capture with `-I`.
 
@@ -4338,7 +4361,7 @@ On a live capture, sipnab enriched a call's container and then could not write i
 
 ### `answered HTTP {status}: {excerpt}`
 
-The `detail` an [`[[vcon.enrich]]`](@/docs/vcon.md#enrich-a-call-before-it-is-written) records when its URL answered with a status other than 2xx. `{status}` is the status and `{excerpt}` the start of the answer. It appears in the `[[vcon.enrich]] '...' for Call-ID` line and in the container's `sipnab-enrichment` attachment.
+The `detail` an [`[[vcon.enrich]]`](@/docs/vcon.md#enrich-a-call-before-it-is-written) records when its URL answered with a status other than 2xx. `{status}` is the status and `{excerpt}` the start of the answer. It appears as the last `{}` of the `{label}[[vcon.enrich]] '{}' for Call-ID '{call_id}': {}: {}. The container is written without its analysis and records this.` line, and in the container's `sipnab-enrichment` attachment.
 
 **What to do:** Fix the service. The excerpt is its own reason.
 
@@ -4713,7 +4736,7 @@ The terminal UI returned an error, so the run ends with exit 1. `{e}` is the err
 
 ### `TUI error: {e}`
 
-The terminal UI returned an error. Setting up the terminal (raw mode, the alternate screen), drawing a frame, or reading a key or mouse event failed. `{e}` is that error. The line `sipnab: the terminal UI could not start: ...` follows it on standard error.
+The terminal UI returned an error. Setting up the terminal (raw mode, the alternate screen), drawing a frame, or reading a key or mouse event failed. `{e}` is that error. The line `sipnab: the terminal UI could not start: {e}. It needs a terminal; add -N for a run without one.` follows it on standard error, with the same `{e}`.
 
 **What to do:** Run sipnab in an interactive terminal, or add `-N` for a run without the TUI.
 
@@ -4808,14 +4831,14 @@ If you meant to supply two captures of one call from different points, the count
 
 **Exit code:** None. This is a warning, and the run continues.
 
-### `--kill-ua {pattern} names a User-Agent for the scanner detector, and nothing in this run builds that detector — so the pattern is read by nobody and the run would report no scanners whether or not one is there. Add --kill-scanner (or set [security] kill_scanner = true) to arm the detection this pattern feeds. On a live capture --kill-scanner also arms the response path, which is why sipnab will not turn it on for you.`
+### `--kill-ua {pattern} names a User-Agent for the scanner detector, and nothing in this run builds that detector — so the pattern is read by nobody and the run would report no scanners whether or not one is there. Add --kill-scanner-detect-only (or set [security] kill_scanner_detect_only = true) to detect without answering, or --kill-scanner (or [security] kill_scanner = true), which on a live capture also answers the scanners it detects. sipnab will not turn either on for you.`
 
-`--kill-ua` adds a User-Agent pattern for the scanner detector. This run does not build that detector, because you set neither `--kill-scanner` nor `[security] kill_scanner = true`.
+`--kill-ua` adds a User-Agent pattern for the scanner detector. This run does not build that detector, because you set none of `--kill-scanner`, `--kill-scanner-detect-only`, `[security] kill_scanner = true` or `[security] kill_scanner_detect_only = true`.
 
 - `{pattern}` is the pattern you gave.
-- sipnab does not turn scanner detection on by itself. On a live capture that would also enable sending SIP responses to the detected scanners.
+- sipnab does not turn scanner detection on by itself. On a live capture `--kill-scanner` also sends SIP responses to the detected scanners.
 
-**What to do:** Add `--kill-scanner` or set `[security] kill_scanner = true` in the configuration file, or remove `--kill-ua`.
+**What to do:** Add `--kill-scanner-detect-only` to detect scanners and send nothing. Add `--kill-scanner` instead to also answer them on a live capture. Or remove `--kill-ua`. Each flag has a configuration key in `[security]` with the same effect.
 
 **Exit code:** 2.
 
@@ -5068,7 +5091,7 @@ sipnab adds this to the line above when you did not give `--report`. `{finding}`
 Library parser error. Bytes that must be text are not valid UTF-8.
 
 - `{what}` is `SIP first line` or `SDP body`.
-- In the `sipnab` program, sipnab drops a SIP-looking packet that fails this way. It logs it only at debug level (`SIPNAB_LOG=debug`) as `SIP parse error: ...`.
+- In the `sipnab` program, sipnab drops a SIP-looking packet that fails this way. It logs it only at debug level (`SIPNAB_LOG=debug`) as `SIP parse error: {what} contains invalid UTF-8`.
 - `-x`/`--quiet-bad-parse` silences that line.
 - sipnab does not use a SIP message body that fails this way for media setup. It prints no message for it.
 
@@ -5097,7 +5120,7 @@ Packet decoder error (library surface). A frame nests more encapsulation layers 
 - `{kind}` is the layer that went over the limit.
 - `{limit}` is the limit, 5.
 - The limit protects the decoder from crafted frames.
-- In the `sipnab` program, this text appears only in debug logging (`SIPNAB_LOG=debug`) as `Skipping unparseable packet: ...`.
+- In the `sipnab` program, this text appears only in debug logging (`SIPNAB_LOG=debug`) as `Skipping unparseable packet: {kind} encapsulation depth exceeds limit ({limit})`.
 - sipnab counts the frame in the headless (`-N`) end-of-run `NOT DECODED` summary, and in the `sipnab_capture_undecodable_frames_total` metric. The run continues.
 
 **What to do:** No setting changes the limit. sipnab does not decode frames nested this deeply.
@@ -5158,7 +5181,7 @@ Packet decoder error (library surface). The frame carries no IP layer.
 
 - Examples are ARP, a PPP frame without IP, a loopback frame of another address family, or an encapsulation that the decoder recognizes but cannot read.
 - `{what}` names it.
-- In the `sipnab` program, this text appears only in debug logging (`SIPNAB_LOG=debug`) as `Skipping unparseable packet: ...`.
+- In the `sipnab` program, this text appears only in debug logging (`SIPNAB_LOG=debug`) as `Skipping unparseable packet: {what} has no IP layer`.
 - sipnab counts the frame in the headless (`-N`) end-of-run `NOT DECODED` summary, and in the `sipnab_capture_undecodable_frames_total` metric. The run continues.
 
 **What to do:** The run needs no action. Frames without IP carry no SIP or RTP.
@@ -5331,7 +5354,7 @@ Packet decoder error (library surface). The packet's IP protocol number names a 
   - ESP (protocol 50) that is not readable null-encrypted ESP;
   - an Authentication Header that protects something other than UDP or TCP;
   - a HEP-delivered packet whose stated protocol maps to no SIP transport.
-- In the `sipnab` program, this text appears only in debug logging (`SIPNAB_LOG=debug`) as `Skipping unparseable packet: ...`.
+- In the `sipnab` program, this text appears only in debug logging (`SIPNAB_LOG=debug`) as `Skipping unparseable packet: unsupported IP protocol number: {0}`.
 - sipnab counts the frame in the headless (`-N`) end-of-run `NOT DECODED` summary, and in the `sipnab_capture_undecodable_frames_total` metric. The run continues.
 
 **What to do:** The run needs no action. The headless (`-N`) end-of-run summary lists the protocol numbers it skipped as `no transport (IP protocol N)`.

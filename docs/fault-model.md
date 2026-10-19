@@ -52,37 +52,52 @@ sipnab reads a capture file that ends in the middle of a packet up to the
 break. It then reports the partial read in three places, so a script and a
 person both see it.
 
+Read it with nothing else asked for:
+
+```sh
+sipnab -N -I truncated.pcap --no-cli-print
+```
+
 The log, on standard error:
 
 ```text
-… ERROR sipnab::capture::file: Error reading pcap file 'truncated.pcap': truncated dump file; tried to read 296 captured bytes, only got 182
-… ERROR sipnab::capture::file: Stopped reading 'truncated.pcap' early: Error reading pcap file: truncated dump file; tried to read 296 captured bytes, only got 182. Continuing with the rest of the set.
-… WARN sipnab::capture::file: Read 4 packets: 0 of 1 file(s) read in full, 1 stopped early
+2026-10-18T15:23:04.490014Z  INFO sipnab::capture::file: Reading from 'truncated.pcap'
+2026-10-18T15:23:04.520968Z ERROR sipnab::capture::file: Error reading pcap file 'truncated.pcap': truncated dump file; tried to read 296 captured bytes, only got 182
+2026-10-18T15:23:04.545776Z ERROR sipnab::capture::file: Stopped reading 'truncated.pcap' early: Error reading pcap file: truncated dump file; tried to read 296 captured bytes, only got 182. Continuing with the rest of the set.
+2026-10-18T15:23:04.602032Z  WARN sipnab::capture::file: Read 4 packets: 0 of 1 file(s) read in full, 1 stopped early
+2026-10-18T15:23:04.622948Z  INFO sipnab::app::batch: sipnab: 4 packets captured, 4 SIP messages, 0 RTP packets across 0 streams
 ```
 
 The exit status is `1` instead of `0`.
 
-The end of `--report`:
+`--report` ends with the same finding:
 
 ```sh
 sipnab -N -I truncated.pcap --report --no-cli-print
 ```
 
+Its output on standard output:
+
 ```text
-…
+Call-ID                          From           To             State        Code   Duration   Msgs   PDD      Tags
+-------------------------------------------------------------------------------------------------------------------------
+test-call-1@192.0.2.1            1001           1002           InCall       200    2s         4      0.5s     -
+
 INCOMPLETE RUN — this report does not describe the whole capture:
   - 1 of 1 capture file(s) was not read to the end; every report from this run rests on a partial read
 ```
 
-The last line of `--json-dialogs`, which a script can test with
+`--json-dialogs` ends with a `sipnab_run` record, which a script can test with
 `input_complete`:
 
 ```sh
 sipnab -N -q -I truncated.pcap --json-dialogs --no-cli-print
 ```
 
+Its output on standard output:
+
 ```text
-…
+{"call_id":"test-call-1@192.0.2.1","diagnosis":{"hints":[],"nat_mismatch":false,"no_media":false,"one_way_audio":false,"private_media_address":false},"duration_sec":2.0,"final_status_code":200,"final_status_reason":"OK","frame":"truncated.pcap#0@4ed7f4560fa79e74","from":"1001","input_origin":"wire","method":"INVITE","msg_count":4,"schema_version":1,"sdp_timeline":[],"state":"InCall","streams":[],"timing":{"pdd_ms":500,"retransmits":0,"ring_ms":1500,"setup_ms":2000,"trying_delay_ms":100},"to":"1002"}
 {"sipnab_run":{"archives":{"cut_short":false},"files":{"given":1,"not_reached":0,"read_in_full":0,"skipped":0,"stopped_early":1},"input_complete":false,"plugins":{"failed":0,"loaded":0,"requested":0},"port_gate":{"sip_outside_portrange":0,"sip_outside_ws_ports":0},"reasons":["1 of 1 capture file(s) was not read to the end; every report from this run rests on a partial read"],"retention":{"messages_dropped":0}}}
 ```
 

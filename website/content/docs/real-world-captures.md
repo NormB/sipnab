@@ -50,8 +50,8 @@ Two capture sets run through this page. Both date from 2026-07-31, with
 
 | Placeholder | What it holds |
 |---|---|
-| `trunk.pcap0` … `trunk.pcap9` | A carrier access edge and its media relays. 3,406,114 frames, 121,841 SIP messages, 2,846,169 RTP packets. |
-| `pbx.pcap0` … `pbx.pcap4` | One PBX and its trunk peers. 1,126,158 frames, 2,077 dialogs. |
+| `trunk.pcap0` to `trunk.pcap9` | A carrier access edge and its media relays. 3,406,114 frames, 121,841 SIP messages, 2,846,169 RTP packets. |
+| `pbx.pcap0` to `pbx.pcap4` | One PBX and its trunk peers. 1,126,158 frames, 2,077 dialogs. |
 | `inbound.pcap` | A single inbound call from a wholesale carrier, 60 frames. |
 
 Substitute your own paths. Every command below runs against a capture file and
@@ -64,6 +64,8 @@ wire.**
   [RFC 5737](https://www.rfc-editor.org/rfc/rfc5737.html) documentation space.
 - Every Call-ID, tag, branch, user and number is synthetic. Each was rewritten
   value by value, keeping the structure two of the examples read.
+- A value in angle brackets, such as `<redacted-e164>`, stands for a value
+  this page removed rather than rewrote.
 - Ports, counts, timings, packet counts and loss figures are the measured
   values, because those are the teaching content:
 
@@ -1248,19 +1250,20 @@ Everything downstream of that reads badly without it.
   minutes and twenty-five seconds after the edge had already given up.
 - The second node's attempt lasted 30 ms before its own CANCEL.
 
-`--lint` names the fork mechanically. Two findings follow. This page elides the
-Call-ID and the rule's own RFC explanation to leave the evidence:
+`--lint` names the fork mechanically. Two findings follow, each on one line:
+the Call-ID, the rule's own explanation of the RFC section, the citation, and
+then the evidence in `observed=` and `expected=`:
 
 ```bash
-sipnab -N -I inbound.pcap --portrange 1-65535 --lint --no-cli-print
+sipnab -N -I inbound.pcap --portrange 1-65535 --lint --no-cli-print 2>/dev/null
 ```
 
+The findings print on standard output. `2>/dev/null` leaves out the log and the
+`Lint:` count, which print on standard error:
+
 ```text
-error: SIP-3261-12.1.1-RECORD-ROUTE-NOT-COPIED [...] observed=request recorded
-["sip:203.0.113.41;lr", "sip:203.0.113.52;lr"], the 2xx returned [] expected=the
-2xx ending with ["sip:203.0.113.41;lr", "sip:203.0.113.52;lr"], in that order
-error: SIP-3261-17.1.1.3-ACK-BRANCH-MISMATCH [...] observed=ACK
-branch=z9hG4bK4f3e.5d3ab8146fc70e29d5b1938ae0c6274b.0, INVITE branch=z9hG4bK4f3e.b7e94c1052d8a3f6417c02be95d3ff81.0
+error: SIP-3261-12.1.1-RECORD-ROUTE-NOT-COPIED [708134922_51772608@203.0.113.53] §12.1.1 makes the UAS copy every Record-Route value from the request into the response and keep their order. §12.1.2 then has the caller build its route set from the response, in reverse — so a value dropped here is a proxy removed from the path it recorded itself into, and a value reordered sends the BYE through the hops backwards. Both fail after the call is up, which is why they are read as a network fault rather than a signaling one. (RFC 3261 §12.1.1) observed=request recorded ["sip:203.0.113.41;lr", "sip:203.0.113.52;lr"], the 2xx returned [] expected=the 2xx ending with ["sip:203.0.113.41;lr", "sip:203.0.113.52;lr"], in that order
+error: SIP-3261-17.1.1.3-ACK-BRANCH-MISMATCH [708134922_51772608@203.0.113.53] §17.1.1.3 makes the ACK to a non-2xx carry a single Via equal to the top Via of the INVITE, so it reuses that branch and completes the same transaction hop by hop. On a new branch it is a new transaction to every element in the path: the INVITE server transaction never absorbs it, retransmits its final response until Timer H, and the stray ACK arrives at a proxy that has no matching transaction for it. (RFC 3261 §17.1.1.3) observed=ACK branch=z9hG4bK4f3e.5d3ab8146fc70e29d5b1938ae0c6274b.0, INVITE branch=z9hG4bK4f3e.b7e94c1052d8a3f6417c02be95d3ff81.0 expected=ACK branch=z9hG4bK4f3e.b7e94c1052d8a3f6417c02be95d3ff81.0
 ```
 
 The ACK carries the **second** node's branch. The recorded INVITE branch is the

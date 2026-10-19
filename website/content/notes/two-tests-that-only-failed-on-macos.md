@@ -69,12 +69,15 @@ sipnab -N -I tests/pcap-samples/sip-rtp-g711.pcap -H 127.0.0.1:9060 --hep-send-t
 ```
 
 The sender first warns that the capture's signaling leaves the machine. When
-it finishes, it reports what it sent:
+it finishes, it reports what it sent. Its whole log, with the timestamps left
+out as above:
 
 ```text
-WARN sipnab::app::bootstrap: --hep-send 127.0.0.1:9060 forwards every SIP message and every RTCP report this run reads to that address, …
+WARN sipnab::app::bootstrap: --hep-send 127.0.0.1:9060 forwards every SIP message and every RTCP report this run reads to that address, and this run is reading a capture FILE (sip-rtp-g711.pcap). The signaling in those captures leaves this machine: request lines, headers, URIs, and any message bodies they hold. The RTCP carries the media quality summary alongside it — SSRCs, loss, jitter and the endpoints reporting them — but not the audio, which is never forwarded. sipnab forwards what it does send as it was recorded and redacts nothing. Point --hep-send at a collector you control, or drop it to analyze the captures without forwarding them.
+INFO sipnab::capture::file: Reading from 'tests/pcap-samples/sip-rtp-g711.pcap'
 INFO sipnab::app::batch: HEP sender targeting 127.0.0.1:9060 over tcp (capture id 1)
-…
+INFO sipnab::capture::file: File reader finished: 852 packets total, through 'tests/pcap-samples/sip-rtp-g711.pcap'
+INFO sipnab::capture::file: Read 852 packets: 1 of 1 file(s) read in full
 INFO sipnab::app::batch: HEP export to 127.0.0.1:9060 over tcp: 10 packet(s) sent, none failed, 0 reconnect(s); sent means written to the connection: a write that fails is counted, and the next packet dials again
 INFO sipnab::app::batch: sipnab: 852 packets captured, 10 SIP messages, 839 RTP packets across 2 streams
 ```

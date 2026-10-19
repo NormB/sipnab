@@ -176,6 +176,36 @@ fn kill_scanner_on_a_capture_file_transmits_nothing() -> Result<(), TestError> {
     Ok(())
 }
 
+/// `--kill-scanner-detect-only` while reading a FILE detects the scanner,
+/// transmits nothing, and says it is detect-only rather than repeating the
+/// offline refusal, which is about a response this run never asked for.
+#[test]
+fn kill_scanner_detect_only_on_a_capture_file_transmits_nothing() -> Result<(), TestError> {
+    let (sock, port) = bound_listener()?;
+    let dir = tmp_dir("kill-scanner-detect-only")?;
+    let pcap = scanner_capture(&dir, port)?;
+
+    let (stdout, stderr, code) = run_offline(&pcap, &["--kill-scanner-detect-only"])?;
+
+    assert!(
+        stdout.contains("scanner_detected"),
+        "detect-only must still DETECT the scanner.\nstdout: {stdout}\nstderr: {stderr}"
+    );
+    assert_eq!(code, Some(0), "the analysis itself must still succeed");
+    assert!(
+        stderr.contains("Scanner detection is detect-only"),
+        "the run must state that it is detect-only.\nstderr: {stderr}"
+    );
+    assert!(
+        !stderr.contains("sends SIP responses"),
+        "a detect-only run asked for no response, so the offline refusal \
+         does not apply.\nstderr: {stderr}"
+    );
+
+    assert_silent(&sock, "--kill-scanner-detect-only -I file")?;
+    Ok(())
+}
+
 /// `-K/--kill-target` while reading a FILE must transmit nothing either. It
 /// spawns the kill worker on its own, without `--kill-scanner`.
 #[test]

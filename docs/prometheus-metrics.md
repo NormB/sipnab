@@ -40,10 +40,10 @@ sipnab -N -I tests/pcap-samples/sip-sdp-example.pcap --api 127.0.0.1:19392 --no-
 From a second terminal, read it:
 
 ```bash
-curl -s http://127.0.0.1:19392/metrics
+curl -s http://127.0.0.1:19392/metrics | head -n 16
 ```
 
-The scrape begins:
+The first 16 lines of the scrape:
 
 ```text
 # HELP sipnab_dialogs_total Total SIP dialogs by state
@@ -62,7 +62,6 @@ sipnab_responses_total{code="3xx"} 0
 sipnab_responses_total{code="4xx"} 0
 sipnab_responses_total{code="5xx"} 0
 sipnab_responses_total{code="6xx"} 0
-…
 ```
 
 Stop sipnab with Ctrl-C when you have finished. The standalone `--metrics` server

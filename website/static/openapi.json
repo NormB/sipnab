@@ -4818,6 +4818,11 @@
             "minimum": 0,
             "type": "integer"
           },
+          "scanner_response": {
+            "description": "Whether sipnab answers the scanners it detects. `off`: no scanner\ndetection is armed. `detect_only`: `--kill-scanner-detect-only`\nis set, so scanners are detected and never answered.\n`not_answering`: scanners are detected and not answered, because\nthe run reads a capture file, is the interactive TUI, or the\nscanner-kill worker could not start. `answering`: the scanner-kill\nworker is running and sends a SIP reply to each detected scanner.",
+            "example": "detect_only",
+            "type": "string"
+          },
           "schema_version": {
             "description": "Version of this response's shape.",
             "example": 1,
@@ -4843,6 +4848,7 @@
           "truncated",
           "armed_kinds",
           "detection_armed",
+          "scanner_response",
           "observation_gaps"
         ],
         "type": "object"

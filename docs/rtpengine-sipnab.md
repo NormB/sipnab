@@ -294,7 +294,8 @@ Run sipnab on the relay's machine rather than asking across the network.
   things:
   - `homer-enable-ng = true` is in the `[rtpengine]` section.
   - sipnab was listening on the `homer` address before the call started.
-- **`could not be asked which calls are up: no reply ... Connection refused`.**
+- **`rtpengine at 127.0.0.1:2223 could not be asked which calls are up: no reply
+  from 127.0.0.1:2223 within 2s: Connection refused (os error 111)`.**
   Nothing listens at the `--rtpengine-control` address. Give it the
   `listen-ng` value from the `[rtpengine]` section.
 - **rtpengine logs `Connection error from Homer at 127.0.0.1:9060: Connection

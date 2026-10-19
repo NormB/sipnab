@@ -876,6 +876,8 @@ static SPECS: &[Spec] = &[
     ),
     ("kill-scanner", Kind::Switch, &[]),
     ("no-kill-scanner", Kind::Switch, &[]),
+    ("kill-scanner-detect-only", Kind::Switch, &[]),
+    ("no-kill-scanner-detect-only", Kind::Switch, &[]),
     ("sandbox", Kind::Choice, &[]),
     ("seccomp", Kind::Choice, &[]),
     (
@@ -3640,6 +3642,7 @@ fn fingerprint(cli: &sipnab::cli::Cli, config: &sipnab::config::Config) -> Strin
         format!("{:?}", cli.no_priv_drop(config)),
         format!("{:?}", cli.fraud_detect(config)),
         format!("{:?}", cli.kill_scanner(config)),
+        format!("{:?}", cli.kill_scanner_detect_only(config)),
         format!("{:?}", cli.reverse_dns(config)),
         format!("{:?}", cli.resolve_names(config)),
         format!("{:?}", cli.hep_parse(config)),

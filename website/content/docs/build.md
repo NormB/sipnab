@@ -107,7 +107,7 @@ sipnab uses Cargo feature flags to control optional capability. The default buil
 | `tls` | TLS/DTLS decryption and SRTP key extraction (pure Rust) | `ring`, `rustls`, `rsa`, `aes`, `cbc`, `zeroize`, `base64`, `libc` |
 | `hep` | HEP v3 send + v1/v2/v3 receive (Homer Encapsulation Protocol) | `native`, `hmac`, `sha2`, `rustls`, `base64` |
 | `api` | REST API + Prometheus metrics endpoint, over HTTP or HTTPS. Runs on a background thread in the sipnab process, sharing its address space — not a separate OS process, so treat the bind address and API key accordingly. | `native`, `axum`, `tokio`, `base64`, `hmac`, `sha2`, `utoipa`, `rustls`, `tokio-rustls`, `ring`, `hyper`, `hyper-util`, `futures-core` |
-| `mcp` | Model Context Protocol server, stdio transport. Lets an AI agent (Claude Code, Claude Desktop, …) drive sipnab. | `native`, `tokio`, `rmcp`, `base64`, `hmac`, `sha2` |
+| `mcp` | Model Context Protocol server, stdio transport. Lets an AI agent, such as Claude Code or Claude Desktop, drive sipnab. | `native`, `tokio`, `rmcp`, `base64`, `hmac`, `sha2` |
 | `mcp-http` | MCP server over HTTP (Streamable-HTTP). Adds the `--mcp-transport http` option. | `mcp`, `api`, `rmcp/transport-streamable-http-server` |
 | `metrics` | Standalone Prometheus `/metrics` server on a plain TCP listener and threads. Needs neither the `api` feature nor an async runtime. Included by default. | `native`, `base64`, `rustls` |
 | `plugins` | WASM plugin host (`--plugin`): runs third-party dialog detections in a sandbox that has no access to the sipnab process. | `native`, `wasmi` |
@@ -246,7 +246,7 @@ cargo build --release --no-default-features \
 
 - The plugin arrives through `dlopen`.
 - Static musl has no dynamic loader at all. `dlopen` returns `NULL` with *"Dynamic loading not supported"*.
-- This is why the release builds the `…-linux-musl` tarballs without `audio`.
+- This is why the release builds the `-unknown-linux-musl` tarballs without `audio`.
 
 This matters because it fails quietly. `cargo build --release --features full` on Alpine succeeds. The binary then reports:
 

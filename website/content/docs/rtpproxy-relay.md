@@ -832,7 +832,8 @@ through the relay on its own machine.
   - You started it as root with a UDP control socket. It refuses that.
   - Start it through its service, which runs it as the `rtpproxy` user.
 - **The callee's SDP still carries the caller's port, and OpenSIPS logs
-  `can't send ... command to a RTP proxy (111:Connection refused)`, then
+  `can't send (#<n> iovec buffers) command to a RTP proxy (111:Connection
+  refused)`, where `<n>` is a buffer count, then
   `proxy <udp:127.0.0.1:7722> does not respond, disable it` and `no available
   proxies`.**
   - rtpproxy is not running, or `rtpproxy_sock` names an address it does not

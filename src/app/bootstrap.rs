@@ -1213,13 +1213,10 @@ fn kill_flags_named(cli: &Cli) -> &'static str {
     }
 }
 
-/// Tell the operator, once and before any mode branches, which of the ways
-/// sipnab can put a packet on the network this run will not use, or uses on a
-/// file.
-fn warn_offline_transmitters(cli: &Cli, config: &Config, source: Option<&CaptureSource>) {
-    let offline = source
-        .is_some_and(|s| crate::security::transmit_guard::TransmitPermit::for_source(s).is_none());
-
+/// The scanner-kill half of [`warn_offline_transmitters`]: the offline
+/// refusal for a run that asked for kill responses, and the detect-only
+/// notice for a run that asked for none.
+fn warn_kill_path(cli: &Cli, config: &Config, offline: bool) {
     // An operator who asked for a transmitting feature and is reading a file
     // gets told once, here, before any mode branches. The refusal itself is
     // structural (`security::transmit_guard::TransmitPermit` cannot be built
@@ -1228,13 +1225,34 @@ fn warn_offline_transmitters(cli: &Cli, config: &Config, source: Option<&Capture
     // someone believing their scanner defense is armed. Said in `plan` rather
     // than at the spawn site because `plan` runs for every mode, including
     // `--cores` and the TUI, which never reach the spawn site at all.
-    let kill_requested = cli.kill_scanner(config) || !cli.security_args.kill_target.is_empty();
+    let kill_requested = kill_worker_wanted(cli, config);
     if kill_requested && offline {
         tracing::warn!(
             "{}",
             crate::security::transmit_guard::offline_refusal(kill_flags_named(cli))
         );
     }
+    // Detect-only asked for no response, so the refusal above does not apply.
+    // Said on every run, live or file, so the operator reads that the scanner
+    // defense is detect-only rather than inferring it from the absence of the
+    // "Scanner-kill worker started" line.
+    // Not beside `-K`, which `plan` refuses next with its own message.
+    if cli.scanner_detection(config)
+        && cli.kill_scanner_detect_only(config)
+        && cli.security_args.kill_target.is_empty()
+    {
+        tracing::info!("{}", crate::security::transmit_guard::DETECT_ONLY_NOTICE);
+    }
+}
+
+/// Tell the operator, once and before any mode branches, which of the ways
+/// sipnab can put a packet on the network this run will not use, or uses on a
+/// file.
+fn warn_offline_transmitters(cli: &Cli, config: &Config, source: Option<&CaptureSource>) {
+    let offline = source
+        .is_some_and(|s| crate::security::transmit_guard::TransmitPermit::for_source(s).is_none());
+
+    warn_kill_path(cli, config, offline);
 
     // `--rtpengine-control` is the third way sipnab can put a packet on the
     // network, and it is refused offline for the same reason the kill path is.
@@ -1790,6 +1808,15 @@ fn refuse_unread_detection(cli: &Cli, config: &Config, mode: &RunMode) -> Result
     // nothing builds. Refused here rather than in `Cli::validate` because the
     // config file can arm the detector and `validate` does not read it.
     if let Some(msg) = scanner_pattern_unread_refusal(cli, config) {
+        return Err(PlanError {
+            exit_code: 2,
+            message: msg,
+        });
+    }
+
+    // `-K` answers a named source and detect-only answers nothing; see
+    // `kill_target_detect_only_refusal` for why neither may win silently.
+    if let Some(msg) = kill_target_detect_only_refusal(cli, config) {
         return Err(PlanError {
             exit_code: 2,
             message: msg,
@@ -3654,12 +3681,17 @@ pub fn effective_chroot<'a>(cli: &'a Cli, config: &'a Config) -> Option<&'a str>
 }
 
 /// Whether this run asks for kill responses at all: `--kill-scanner`,
-/// `[security] kill_scanner`, or any `-K` target.
+/// `[security] kill_scanner`, or any `-K` target, and never under
+/// `--kill-scanner-detect-only` / `[security] kill_scanner_detect_only`.
 ///
 /// The one rule for starting the worker process. Whether it may actually
 /// transmit is the permit's question, answered separately from the source.
 pub(crate) fn kill_worker_wanted(cli: &Cli, config: &Config) -> bool {
-    cli.kill_scanner(config) || !cli.security_args.kill_target.is_empty()
+    // Detect-only answers nothing, so it never starts the transmitting
+    // process, whatever else asked for it. `-K` beside it is refused in
+    // `plan`; this check holds even if that refusal were bypassed.
+    !cli.kill_scanner_detect_only(config)
+        && (cli.kill_scanner(config) || !cli.security_args.kill_target.is_empty())
 }
 
 /// How this run starts its scanner-kill worker: its own executable, its
@@ -6676,7 +6708,7 @@ fn metrics_ignored_on_cores_warning(cli: &Cli) -> Option<String> {
 /// The operator-facing message, or `None` when the pattern reaches a detector.
 fn scanner_pattern_unread_refusal(cli: &Cli, config: &Config) -> Option<String> {
     let pattern = cli.security_args.kill_ua.as_deref()?;
-    let armed = cli.kill_scanner(config);
+    let armed = cli.scanner_detection(config);
     if armed {
         return None;
     }
@@ -6684,11 +6716,41 @@ fn scanner_pattern_unread_refusal(cli: &Cli, config: &Config) -> Option<String> 
         "--kill-ua {pattern} names a User-Agent for the scanner detector, and \
          nothing in this run builds that detector — so the pattern is read by \
          nobody and the run would report no scanners whether or not one is \
-         there. Add --kill-scanner (or set [security] kill_scanner = true) to \
-         arm the detection this pattern feeds. On a live capture \
-         --kill-scanner also arms the response path, which is why sipnab will \
-         not turn it on for you."
+         there. Add --kill-scanner-detect-only (or set [security] \
+         kill_scanner_detect_only = true) to detect without answering, or \
+         --kill-scanner (or [security] kill_scanner = true), which on a live \
+         capture also answers the scanners it detects. sipnab will not turn \
+         either on for you."
     ))
+}
+
+/// `-K/--kill-target` together with detect-only scanner detection.
+///
+/// `-K` asks sipnab to ANSWER every request from a named source, and
+/// detect-only (`--kill-scanner-detect-only` or `[security]
+/// kill_scanner_detect_only = true`) says sipnab must answer nothing. One of
+/// the two would have to be ignored, and either choice surprises the
+/// operator: ignoring `-K` leaves a source they named unanswered, ignoring
+/// detect-only transmits on a run they configured never to transmit. Refused
+/// here rather than in `Cli::validate` because detect-only can come from the
+/// config file, which `validate` does not read.
+///
+/// # Returns
+///
+/// The operator-facing message, or `None` when the two are not combined.
+fn kill_target_detect_only_refusal(cli: &Cli, config: &Config) -> Option<String> {
+    if cli.security_args.kill_target.is_empty() || !cli.kill_scanner_detect_only(config) {
+        return None;
+    }
+    Some(
+        "-K/--kill-target asks sipnab to answer every SIP request from the source \
+         it names, and --kill-scanner-detect-only (or [security] \
+         kill_scanner_detect_only = true) asks sipnab to answer nothing. Remove \
+         -K to detect scanners without answering them, or remove detect-only \
+         (--no-kill-scanner-detect-only overrides the config key) to answer the \
+         named source."
+            .to_string(),
+    )
 }
 
 /// Detection flags on a run whose mode builds no detector.
@@ -6749,6 +6811,10 @@ fn security_detection_unarmed_refusal(
     // report a flag as ignored that the headless run would have ignored too.
     let asked: Vec<&str> = [
         (cli.kill_scanner(config), "--kill-scanner"),
+        (
+            cli.kill_scanner_detect_only(config),
+            "--kill-scanner-detect-only",
+        ),
         (
             !cli.security_args.kill_target.is_empty(),
             "-K/--kill-target",
@@ -8351,6 +8417,77 @@ mod tests {
         );
         config.security.kill_scanner = Some(false);
         assert!(!kill_worker_wanted(&plain, &config));
+        Ok(())
+    }
+
+    /// Detect-only never wants the worker: not from the flag, not from the
+    /// config key, and not when `--kill-scanner` (flag or key) is given too.
+    /// Detect-only means nothing is transmitted, so the transmitting process
+    /// is never started.
+    #[test]
+    fn detect_only_never_wants_the_kill_worker() -> Result<(), TestError> {
+        let flag = Cli::parse_from_args(["sipnab", "-N", "--kill-scanner-detect-only"]);
+        assert!(
+            !kill_worker_wanted(&flag, &Config::default()),
+            "--kill-scanner-detect-only must not start a transmitting process"
+        );
+
+        let both = Cli::parse_from_args([
+            "sipnab",
+            "-N",
+            "--kill-scanner",
+            "--kill-scanner-detect-only",
+        ]);
+        assert!(
+            !kill_worker_wanted(&both, &Config::default()),
+            "detect-only overrides --kill-scanner's response path"
+        );
+
+        let plain = Cli::parse_from_args(["sipnab", "-N"]);
+        let mut config = Config::default();
+        config.security.kill_scanner = Some(true);
+        config.security.kill_scanner_detect_only = Some(true);
+        assert!(
+            !kill_worker_wanted(&plain, &config),
+            "`[security] kill_scanner_detect_only = true` is the flag, spelled in the config file"
+        );
+
+        let off = Cli::parse_from_args(["sipnab", "-N", "--no-kill-scanner-detect-only"]);
+        assert!(
+            kill_worker_wanted(&off, &config),
+            "--no-kill-scanner-detect-only restores the response the key turned off"
+        );
+        Ok(())
+    }
+
+    /// `-K` with detect-only is refused, from the flag and from the config
+    /// key, and the message names both. Either alone is accepted.
+    #[test]
+    fn kill_target_with_detect_only_is_refused() -> Result<(), TestError> {
+        let flag = Cli::parse_from_args([
+            "sipnab",
+            "-N",
+            "--kill-scanner-detect-only",
+            "-K",
+            "192.0.2.7",
+        ]);
+        let msg = kill_target_detect_only_refusal(&flag, &Config::default())
+            .ok_or("-K with --kill-scanner-detect-only must be refused")?;
+        assert!(
+            msg.contains("-K/--kill-target") && msg.contains("--kill-scanner-detect-only"),
+            "the message must name both flags:\n{msg}"
+        );
+
+        let target = Cli::parse_from_args(["sipnab", "-N", "-K", "192.0.2.7"]);
+        let mut config = Config::default();
+        config.security.kill_scanner_detect_only = Some(true);
+        let msg = kill_target_detect_only_refusal(&target, &config)
+            .ok_or("-K with the detect-only key must be refused")?;
+        assert!(msg.contains("kill_scanner_detect_only"), "{msg}");
+
+        assert!(kill_target_detect_only_refusal(&target, &Config::default()).is_none());
+        let only = Cli::parse_from_args(["sipnab", "-N", "--kill-scanner-detect-only"]);
+        assert!(kill_target_detect_only_refusal(&only, &Config::default()).is_none());
         Ok(())
     }
 

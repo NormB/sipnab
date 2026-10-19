@@ -388,6 +388,9 @@ pub struct TuiOptions {
     /// The detector kinds armed this run, for the findings report. Empty when
     /// none were armed.
     pub armed_detections: Vec<String>,
+    /// Whether this run answers the scanners it detects. The TUI never
+    /// answers one, so this is `NotAnswering` or `DetectOnly`.
+    pub scanner_response: crate::security::findings::ScannerResponse,
     /// The relay-stats poll interval the run was started with (ST8, C5), from
     /// `--relay-stats-interval`. `Some(n)` makes the relay-stats view re-ask
     /// every `n` seconds and label its counters `polled`; `None` asks once.
@@ -517,6 +520,7 @@ impl TuiOptions {
         app.tfps_access = self.tfps_access;
         app.alert_engine = self.alert_engine;
         app.armed_detections = self.armed_detections;
+        app.scanner_response = self.scanner_response;
         app.relay_stats_interval = self.relay_stats_interval;
         app.set_reconfigure(self.reconfigure_control, self.reconfigure_outcomes);
         app.rescan_path = self.rescan_path;

@@ -45,6 +45,10 @@ delta_time = false
 [security]
 # Answer detected scanners with a SIP response (--kill-scanner).
 kill_scanner = false
+# Detect scanners and never answer them, on a live capture too
+# (--kill-scanner-detect-only). Turns detection on by itself and wins over
+# kill_scanner = true.
+kill_scanner_detect_only = false
 # Response code used for scanner kills.
 kill_response = 403
 # Enable fraud heuristics.

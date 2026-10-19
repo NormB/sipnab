@@ -475,8 +475,8 @@ Files copied into the repository unmodified from another project's release. None
 | windows_x86_64_msvc | 0.52.6 | MIT OR Apache-2.0 |
 | winnow | 1.0.1 | MIT |
 | wit-bindgen | 0.51.0 | Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT |
-| zerocopy | 0.8.48 | BSD-2-Clause OR Apache-2.0 OR MIT |
-| zerocopy-derive | 0.8.48 | BSD-2-Clause OR Apache-2.0 OR MIT |
+| zerocopy | 0.8.63 | BSD-2-Clause OR Apache-2.0 OR MIT |
+| zerocopy-derive | 0.8.63 | BSD-2-Clause OR Apache-2.0 OR MIT |
 | zeroize | 1.9.1 | Apache-2.0 OR MIT |
 | zeroize_derive | 1.5.0 | Apache-2.0 OR MIT |
 | zip | 9.0.4 | MIT |

@@ -319,8 +319,8 @@ Kamailio:
 
 ## When something does not work
 
-- **`apt-get` says `Could not get lock /var/lib/dpkg/lock-frontend. It is held
-  by process ...`.**
+- **`apt-get` says `E: Could not get lock /var/lib/dpkg/lock-frontend. It is
+  held by process 2316 (python3)`.** The process number and name vary.
   - Another package tool holds the lock. On a machine that has just booted,
     this is usually the system's own scheduled update.
   - Wait for it to finish, then run the block again.

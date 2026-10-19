@@ -43,7 +43,7 @@ The Go, TypeScript and Rust clients are complete programs in the repository, und
 >
 > To work with per-message data programmatically, use either:
 >
-> - the CLI `sipnab -N --json ...` mode.
+> - the CLI `sipnab -N -I capture.pcap --json` mode.
 >   - It emits one JSON object per SIP message with `is_request`, `status_code`, `reason`, etc.
 >   - Field reference: [Output Formats](@/docs/output-formats.md). See also [cookbook Recipe "Find every failed call, grouped by response code"](@/docs/cookbook.md#find-every-failed-call-grouped-by-response-code).
 > - or the MCP `get_dialog` tool. It returns paginated `messages[]` (see [MCP](@/docs/mcp.md)).

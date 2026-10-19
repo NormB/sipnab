@@ -213,11 +213,12 @@ sudo systemctl restart opensips
 systemctl is-active opensips
 ```
 
-OpenSIPS writes these lines to the systemd journal. There they look like this:
+OpenSIPS writes these lines to the systemd journal. `journalctl -u opensips`
+shows each one after the date and the host name, here `sip-proxy`:
 
 ```text
-... /usr/sbin/opensips[15830]: WARNING:SIP scanner from 198.51.100.60: User-Agent "friendly-scanner"
-... /usr/sbin/opensips[15830]: WARNING:SIP auth failure from 198.51.100.60 for "1001"
+Oct 06 14:03:07 sip-proxy /usr/sbin/opensips[15830]: WARNING:SIP scanner from 198.51.100.60: User-Agent "friendly-scanner"
+Oct 06 14:03:09 sip-proxy /usr/sbin/opensips[15830]: WARNING:SIP auth failure from 198.51.100.60 for "1001"
 ```
 
 ## Install fail2ban
@@ -509,7 +510,7 @@ itself as `friendly-scanner`. Then it tries once more:
 sudo ip netns exec scanner python3 ~/f2b-test/sipreq.py 192.0.2.10 REGISTER 5 friendly-scanner
 sleep 2
 sudo fail2ban-client status opensips
-sudo nft list table inet f2b-table
+sudo nft list set inet f2b-table addr-set-opensips
 sudo ip netns exec scanner python3 ~/f2b-test/sipreq.py 192.0.2.10 OPTIONS 1
 ```
 
@@ -524,16 +525,22 @@ The jail lists the scanner:
    `- Banned IP list:	198.51.100.60
 ```
 
-nftables holds it in the jail's set. It refuses its SIP traffic:
+nftables holds it in the jail's set:
 
 ```text
+table inet f2b-table {
 	set addr-set-opensips {
 		type ipv4_addr
 		elements = { 198.51.100.60 }
 	}
-	...
-		udp dport { 5060, 5061 } ip saddr @addr-set-opensips reject with icmp port-unreachable
+}
 ```
+
+The jail's chain in the same table refuses SIP traffic from every address in
+that set, with the rule
+`udp dport { 5060, 5061 } ip saddr @addr-set-opensips reject with icmp port-unreachable`.
+`sudo nft list table inet f2b-table` prints the set, the chain and the rule
+together.
 
 The last request prints `OPTIONS 100: refused`.
 

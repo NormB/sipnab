@@ -130,7 +130,7 @@ participant has been doing, from every dialog the store holds.
 
 | Name | Type | Legal values | If omitted |
 |---|---|---|---|
-| `ip?` | string? | The endpoint's address, v4 or v6. Mutually exclusive with `user`. An unparseable value fails with `ip '...' is not an address`. | Give `user` instead. |
+| `ip?` | string? | The endpoint's address, v4 or v6. Mutually exclusive with `user`. An unparseable value fails with a message such as `ip 'bogus' is not an address: invalid IP address syntax`. | Give `user` instead. |
 | `user?` | string? | The user part of a SIP URI — `alice` from `sip:alice@example.com`. Mutually exclusive with `ip`. | Give `ip` instead. |
 | `limit?` | u32? | Bounds `recent_dialogs`, `problem_call_ids` and `findings` only. Ceiling is `--mcp-max-rows` (1000 by default), `0` means the default. | 50. |
 
@@ -152,46 +152,95 @@ The example runs against
 ```jsonc
 // describe_endpoint { "ip": "10.0.2.20", "limit": 1 }
 {
-  "schema_version": 1,
-  "endpoint_kind": "ip",
-  "endpoint": "10.0.2.20",
-  "dialogs": 2,
-  "by_method": { "INVITE": 2 },
-  "by_state": { "Completed": 1, "InCall": 1 },
-  "messages_sent": 5,
-  "messages_received": 5,
+  "by_method": {
+    "INVITE": 2
+  },
+  "by_state": {
+    "Completed": 1,
+    "InCall": 1
+  },
   "calls": {
-    "invites": 2, "with_final_status": 2, "failed": 0,
-    "failure_rate_pct": 0.0, "by_final_status": { "200": 2 }
+    "by_final_status": {
+      "200": 2
+    },
+    "failed": 0,
+    "failure_rate_pct": 0.0,
+    "invites": 2,
+    "with_final_status": 2
   },
+  "capture_identity": {
+    "dialog_generation": 13,
+    "instance": "60d3618dfa9481ddb9840-2",
+    "node": "capture-01",
+    "stream_generation": 2
+  },
+  "dialogs": 2,
+  "endpoint": "10.0.2.20",
+  "endpoint_kind": "ip",
+  "findings": {
+    "armed_kinds": [],
+    "findings": [],
+    "note": "No detection rule is armed on this server, so no finding could have been recorded. An empty findings list here means nothing was watching, NOT that this endpoint was clean. Arm a detector with --kill-scanner, --fraud-detect, --digest-leak or --reg-flood and re-run the capture.",
+    "selectable": true,
+    "total_matched": 0
+  },
+  "messages_received": 5,
+  "messages_sent": 5,
+  "recent_dialogs": [
+    {
+      "call_id": "1-1968@10.0.2.20",
+      "created_at": "2016-11-26T14:53:08.286194+00:00",
+      "duration_sec": 0.004,
+      "final_status_code": 200,
+      "frame": "tests/pcap-samples/sip-rtp-g711.pcap#433@b034a3ca525e06ff",
+      "from_user": "⟦untrusted-capture-data⟧sipp⟦/untrusted-capture-data⟧",
+      "input_origin": "wire",
+      "method": "INVITE",
+      "msg_count": 4,
+      "state": "InCall",
+      "timing": {
+        "duration_ms": null,
+        "pdd_ms": null,
+        "retransmits": 0,
+        "setup_ms": 4
+      },
+      "to_user": "⟦untrusted-capture-data⟧test⟦/untrusted-capture-data⟧",
+      "updated_at": "2016-11-26T14:53:08.290927+00:00"
+    }
+  ],
   "registration": {
-    "applicable": false, "dialogs": 0, "succeeded": 0, "failed": 0,
-    "auth_loops": 0, "problem_call_ids": []
+    "applicable": false,
+    "auth_loops": 0,
+    "dialogs": 0,
+    "failed": 0,
+    "problem_call_ids": [],
+    "succeeded": 0
   },
-  "user_agents": [],
+  "schema_version": 1,
+  "source_exhausted": true,
+  "source_stopped_early": false,
   "stack": {
-    "branch_cookie": "z9hG4bK", "branch_shape": "other",
-    "tag_shape": "hex", "callid_has_host": true,
-    "confidence": 0, "requests_read": 4, "mixed": false
+    "branch_cookie": "z9hG4bK",
+    "branch_shape": "other",
+    "callid_has_host": true,
+    "confidence": 0,
+    "mixed": false,
+    "requests_read": 4,
+    "tag_shape": "hex"
   },
   "streams": {
-    "count": 2, "orphaned": 0, "packets": 839, "lost_packets": 0,
+    "codecs": [
+      "⟦untrusted-capture-data⟧PCMA⟦/untrusted-capture-data⟧",
+      "⟦untrusted-capture-data⟧PCMU⟦/untrusted-capture-data⟧"
+    ],
+    "count": 2,
+    "lost_packets": 0,
     "max_jitter_ms": 0.0061987502747274615,
-    "codecs": ["⟦untrusted-capture-data⟧PCMA⟦/untrusted-capture-data⟧",
-               "⟦untrusted-capture-data⟧PCMU⟦/untrusted-capture-data⟧"]
+    "orphaned": 0,
+    "packets": 839
   },
-  "findings": {
-    "selectable": true, "findings": [], "total_matched": 0, "armed_kinds": [],
-    "note": "No detection rule is armed on this server, so no finding could have been recorded. …"
-  },
-  "recent_dialogs": [ /* one fenced dialog summary */ ],
   "truncated": true,
-  "capture_identity": {
-    "node": "capture-01", "instance": "12e06a18df11300d36b025-2",
-    "dialog_generation": 13, "stream_generation": 2
-  },
-  "source_exhausted": true,
-  "source_stopped_early": false
+  "user_agents": []
 }
 ```
 
@@ -532,11 +581,41 @@ To accept an empty population, declare `min_sample` of 1 or more on the rule.
 
 ```jsonc
 // evaluate_expectations { "rules": [{ "metric": "asr", "op": ">=", "value": 95 }] }
-// … on tests/pcap-samples/sip-register.pcap, one REGISTER dialog and no call attempt:
-{ "verdict": "fail", "exit_code": 1, "evaluated": 1, "failed": 1,
-  "results": [ { "index": 0, "metric": "asr", "observed": null, "sample": 0,
-    "verdict": "fail",
-    "reason": "unevaluable: no seizure was in scope, so 'asr >= 95' rests on nothing. Declare a min_sample of 1 or more to accept an empty population in writing; a gate does not pass on data it never judged" } ] }
+// on tests/pcap-samples/sip-register.pcap, one REGISTER dialog and no call attempt:
+{
+  "capture_identity": {
+    "dialog_generation": 2,
+    "instance": "6263318dfa94d596b0175-2",
+    "node": "capture-01",
+    "stream_generation": 0
+  },
+  "dialogs_in_capture": 1,
+  "evaluated": 1,
+  "exit_code": 1,
+  "failed": 1,
+  "passed": 0,
+  "results": [
+    {
+      "index": 0,
+      "metric": "asr",
+      "observed": null,
+      "op": ">=",
+      "reason": "unevaluable: no seizure was in scope, so 'asr >= 95' rests on nothing. Declare a min_sample of 1 or more to accept an empty population in writing; a gate does not pass on data it never judged",
+      "sample": 0,
+      "threshold": 95.0,
+      "unit": "percent",
+      "verdict": "fail"
+    }
+  ],
+  "rules_total": 1,
+  "schema_version": 1,
+  "skipped": 0,
+  "source_exhausted": true,
+  "source_stopped_early": false,
+  "streams_in_capture": 0,
+  "suppressions_applied": false,
+  "verdict": "fail"
+}
 ```
 
 The verdict tests the size of the SAMPLE, not whether a value came back, so
@@ -591,6 +670,7 @@ entries by default.
 | `truncated` | bool | `true` when matches remain after this page. There is no cursor — narrow with `since`, or raise `limit`. |
 | `armed_kinds` | string[] | The detectors this server runs. Empty means it runs none, so `findings` could only ever be empty. |
 | `detection_armed` | bool | `false` when `armed_kinds` is empty, stated separately so a caller can branch on one field. |
+| `scanner_response` | string | Whether sipnab answers the scanners it detects. `off`: `scanner` is not in `armed_kinds`. `detect_only`: the server runs with `--kill-scanner-detect-only`, so it detects scanners and never answers them. `not_answering`: the server detects scanners and does not answer them, because the server reads a capture file, runs the interactive TUI, or could not start its scanner-kill worker. `answering`: the scanner-kill worker is running and sends a SIP reply to each detected scanner. |
 | `note` | string? | Present **only** when no detector runs, saying so in words. |
 | `observation_gaps` | object[] | What an armed detector says it **cannot establish** from this capture: `{ rule_name, reason, seen, unestablished, detail }`, narrowed by `kinds`. Always present, empty when there is nothing to say. See below. |
 | `schema_version` | u32 | `1` for this shape. |
@@ -608,6 +688,11 @@ The page fields carry the meanings they do everywhere else on this surface —
 `armed_kinds` is per detector: a server started with `--kill-scanner` alone
 returns no fraud findings for any capture, and `armed_kinds: ["scanner"]`
 says fraud detection did not run.
+
+`scanner` in `armed_kinds` says only that sipnab detects scanners. Read
+`scanner_response` to learn whether sipnab also answers them. A server started
+with `--kill-scanner-detect-only` reports `scanner_response: "detect_only"`:
+it records each scanner as a finding and sends nothing to it.
 
 Arming a rule takes a flag on the server command line, such as `--kill-scanner`
 or `--digest-leak`. Findings then land in a bounded in-memory ring buffer
@@ -641,6 +726,7 @@ on a server started with `--digest-leak`:
   "truncated": false,
   "armed_kinds": ["digest"],
   "detection_armed": true,
+  "scanner_response": "off",
   "observation_gaps": [],
   "capture_identity": { "node": "capture-01", "instance": "cc2d618df0ea70d0788a2-2",
                         "dialog_generation": 8, "stream_generation": 0 },
@@ -695,21 +781,25 @@ server started with `--digest-leak`:
 ```jsonc
 // generate_fail2ban_rule { "finding_id": "digest@203.0.113.101@2016-05-17T08:01:35.432231+00:00" }
 {
-  "schema_version": 1,
-  "finding_id": "digest@203.0.113.101@2016-05-17T08:01:35.432231+00:00",
+  "caveats": [
+    "the failregex matches sipnab's own alert line. Start sipnab with '--alert syslog' (or capture its stderr to the logpath) or the sipnab-digest jail will never see a match.",
+    "maxretry, findtime and bantime below are fail2ban's conventional starting values, not figures sipnab measured on this traffic. Choose them from your own false-positive tolerance.",
+    "one finding is evidence that this detector fired, not that every future match is an attacker. The jail bans any source the detector reports, including this one."
+  ],
   "evidence": {
+    "detail": "⟦untrusted-capture-data⟧WeakAlgorithm: challenge uses algorithm=MD5 (should be SHA-256+)⟦/untrusted-capture-data⟧",
     "rule_name": "digest",
     "src_ip": "203.0.113.101",
-    "detail": "⟦untrusted-capture-data⟧WeakAlgorithm: challenge uses algorithm=MD5 (should be SHA-256+)⟦/untrusted-capture-data⟧",
     "timestamp": "2016-05-17T08:01:35.432231+00:00"
   },
+  "filter_conf": "# Generated by sipnab from finding digest@203.0.113.101@2016-05-17T08:01:35.432231+00:00\n[Definition]\nfailregex = ^.*\\[ALERT\\] digest src=<HOST> .*$\nignoreregex =\n",
   "filter_name": "sipnab-digest",
   "filter_path": "/etc/fail2ban/filter.d/sipnab-digest.conf",
-  "filter_conf": "# Generated by sipnab from finding digest@203.0.113.101@...\n[Definition]\nfailregex = ^.*\\[ALERT\\] digest src=<HOST> .*$\nignoreregex =\n",
-  "jail_path": "/etc/fail2ban/jail.d/sipnab-digest.conf",
+  "finding_id": "digest@203.0.113.101@2016-05-17T08:01:35.432231+00:00",
   "jail_conf": "[sipnab-digest]\nenabled  = true\nfilter   = sipnab-digest\nlogpath  = /var/log/syslog\nport     = 5060,5061\nprotocol = udp\nmaxretry = 3\nfindtime = 600\nbantime  = 3600\n",
+  "jail_path": "/etc/fail2ban/jail.d/sipnab-digest.conf",
   "log_line_format": "[ALERT] <rule_name> src=<ip> <detail>",
-  "caveats": [ /* three, below */ ],
+  "schema_version": 1,
   "source_exhausted": true,
   "source_stopped_early": false
 }

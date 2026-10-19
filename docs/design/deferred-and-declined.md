@@ -288,7 +288,7 @@ The argument below does not depend on the number. Four
 of them touch something other than the stores: `export_capture`
 ([`server.rs:8570`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L8570)) writes a pcap, `export_audio`
 ([`server.rs:8626`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L8626)) writes a WAV, `list_captures`
-([`server.rs:8329`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L8329)) reads a directory, and
+([`server.rs:8355`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L8355)) reads a directory, and
 `shutdown_server` ([`server.rs:9119`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L9119)) ends the process.
 
 **None of them mutates a store.** `shutdown_server` reads `dialog_store` and
@@ -336,8 +336,8 @@ guards, each visible in the code:
 
 1. **Off unless armed.** `allow_shutdown: bool`
    ([`server.rs:57`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L57)) is `false` in `new()`
-   ([`server.rs:1022`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L1022)) and only set by `with_shutdown()`
-   ([`server.rs:1022`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L1022)), which `servers.rs` calls only
+   ([`server.rs:1051`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L1051)) and only set by `with_shutdown()`
+   ([`server.rs:1051`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L1051)), which `servers.rs` calls only
    when `cli.mcp_allow_shutdown` is set
    ([`servers.rs:258-262`](https://github.com/NormB/sipnab/blob/main/src/app/servers.rs#L258-L262)). Refusal is the first
    statement of the handler ([`server.rs:2226`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L2226)).
@@ -369,7 +369,7 @@ and it is not incidental — it is the tool working:
 - `DialogSummary.from_user` / `to_user`
   ([`model.rs:53-57`](https://github.com/NormB/sipnab/blob/main/src/output/model.rs#L53-L57)) are copied straight off the
   From/To URIs.
-- `get_message` ([`server.rs:5810`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L5810)) returns the parsed
+- `get_message` ([`server.rs:5899`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L5899)) returns the parsed
   message through `message_to_json_value`. Until 0.5.159 the phrasing here was
   *"headers and body included"*, and measured against 0.5.130 that was false:
   the projection had a closed field list and no headers map, so a `Diversion`
@@ -377,7 +377,7 @@ and it is not incidental — it is the tool working:
   gap — `extension_headers` now carries every header outside that closed list,
   in wire form — so the sentence is true today, and it is worth recording that
   a threat-model section leaned on it for a release in which it was not.
-- `search_messages` ([`server.rs:6312`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L6312)) returns
+- `search_messages` ([`server.rs:6357`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L6357)) returns
   `snippet`, built as
   `truncate_string(&String::from_utf8_lossy(&msg.raw), MAX_BODY_BYTES)` — the
   raw bytes off the wire.
@@ -750,7 +750,7 @@ documents *"the tool server; cloned per HTTP session"* and
 built once at startup ([`servers.rs:224-249`](https://github.com/NormB/sipnab/blob/main/src/app/servers.rs#L224-L249)) with
 `name` taken from `cli.primary_input()` — which returns only the *first* `-I`
 argument ([`cli.rs:1363-1365`](https://github.com/NormB/sipnab/blob/main/src/cli.rs#L1363-L1365)). So after an `open_capture`,
-`capture_status` ([`server.rs:6713`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L6713)) would keep naming
+`capture_status` ([`server.rs:6739`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L6739)) would keep naming
 the old file, in the calling session as well as every other one, unless the
 field moves behind a shared lock. Two agents on one HTTP server would read the
 same store and disagree about which capture it is.
@@ -830,7 +830,7 @@ decision was taken, not as it stands now:
    a `SipnabMcp` cloned per HTTP session
    ([`transport.rs:192`](https://github.com/NormB/sipnab/blob/main/src/mcp/transport.rs#L192)). Until it moves behind
    a shared lock, a swap leaves `capture_status`
-   ([`server.rs:6713`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L6713)) naming the old file in the
+   ([`server.rs:6739`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L6739)) naming the old file in the
    calling session and in every other one.
 2. **Capture identity must be visible on the wire.** `DialogStore::generation`
    ([`dialog_store.rs:725`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog_store.rs#L725)) is bumped by every

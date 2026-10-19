@@ -267,7 +267,7 @@ They exist because every one of them was, at some point, a doc that lied.
   - A path plus a `()`-suffixed symbol in the link text survives.
   - [`dev_docs_drift_test`](https://github.com/NormB/sipnab/blob/main/tests/dev_docs_drift_test.rs) checks both.
 - **Relative links only.**
-  - An absolute `github.com/NormB/sipnab/blob/main/…` URL pins a branch and goes stale silently.
+  - An absolute URL that starts `github.com/NormB/sipnab/blob/main/` pins a branch and goes stale silently.
   - [`build-wiki.py`](https://github.com/NormB/sipnab/blob/main/scripts/build-wiki.py) rewrites the relative form
     into a blob URL when publishing to the wiki.
 - **Write heading anchors in GitHub's spelling.**
@@ -276,9 +276,9 @@ They exist because every one of them was, at some point, a doc that lied.
   - [`build-site-pages.py`](https://github.com/NormB/sipnab/blob/main/scripts/build-site-pages.py) rewrites an
     anchor to Zola's slug when it emits a site link.
   - The reason: the two renderers disagree.
-    - GitHub drops an em dash and keeps its surrounding spaces
-      (`step-0--install-…`).
-      Zola collapses the run (`step-0-install-…`).
+    - GitHub drops an em dash and keeps its surrounding spaces:
+      a heading `Scenario 5 — 3 nodes` becomes `scenario-5--3-nodes`.
+      Zola collapses the run to `scenario-5-3-nodes`.
     - GitHub keeps an underscore where Zola makes it a dash.
   - `generated_site_anchors_resolve_under_zola`
     checks the generated tree under Zola's rule alone.

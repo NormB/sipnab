@@ -134,8 +134,8 @@ Run one from the repository root against its seed corpus.
 - `cargo-fuzz` passes the corpus argument to the fuzz binary verbatim.
 - It never changes its directory.
 - So from `fuzz/`, the argument resolves to `fuzz/fuzz/corpus/sip_parser`.
-- Then libFuzzer exits with `ERROR: The required directory ... does not
-  exist` before it fuzzes anything.
+- Then libFuzzer exits with `ERROR: The required directory
+  "fuzz/corpus/sip_parser" does not exist` before it fuzzes anything.
 
 ```bash
 cargo +nightly fuzz run fuzz_sip_parser fuzz/corpus/sip_parser
@@ -539,8 +539,8 @@ the [`classify_packet()`](../../src/pipeline.rs) router
 ```
 
 - **Relative paths only.**
-  - An absolute `github.com/NormB/sipnab/blob/main/…` URL pins a branch and
-    rots silently.
+  - An absolute URL that starts `github.com/NormB/sipnab/blob/main/` pins a
+    branch and goes stale silently.
   - `build-wiki.py` rewrites the relative form into a blob URL when
     publishing.
 - **Never `file:line`.**
