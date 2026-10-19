@@ -333,13 +333,11 @@ mod tests {
     /// No line names the relay twice.
     #[test]
     fn no_line_names_the_relay_twice() -> Result<(), TestError> {
-        let logs = run_logged(
-            Reconciler::new(UnhelpfulRelay {
-                down: true,
-                unreadable: Vec::new(),
-            }),
-            &[30000],
-        )?;
+        let relay = Reconciler::new(UnhelpfulRelay {
+            down: true,
+            unreadable: Vec::new(),
+        });
+        let logs = run_logged(relay, &[30000])?;
         assert!(logs.contains("rtpengine at 10.0.0.2:22222: "), "{logs}");
         assert!(!logs.contains("rtpengine at rtpengine at"), "{logs}");
         Ok(())

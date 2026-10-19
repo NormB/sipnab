@@ -3161,6 +3161,32 @@ mod tests {
             text.contains("Scanner responses: none sent by this run"),
             "{text}"
         );
+        let text = findings_text(&report("answering"));
+        assert!(
+            text.contains("Scanner responses: detected scanners are answered"),
+            "{text}"
+        );
+    }
+
+    /// The security view states the app's own scanner response: the state
+    /// the run set reaches the panel, not a default.
+    #[test]
+    fn the_security_view_states_the_runs_scanner_response() -> Result<(), TestError> {
+        use crate::security::findings::ScannerResponse;
+        let mut app = App::with_processed_messages(Vec::new());
+        app.armed_detections = vec!["scanner".to_string()];
+        app.current_view = View::SecurityFindings;
+        app.scanner_response = ScannerResponse::DetectOnly;
+        let text = render_to_string(&mut app, 120, 30)?;
+        assert!(
+            text.contains("detect-only, scanners are detected and never answered"),
+            "{text}"
+        );
+        app.scanner_response = ScannerResponse::NotAnswering;
+        let text = render_to_string(&mut app, 120, 30)?;
+        assert!(text.contains("none sent by this run"), "{text}");
+        assert!(!text.contains("detect-only"), "{text}");
+        Ok(())
     }
 
     /// The endpoint rollup renders the shared `describe` report: the endpoint's
