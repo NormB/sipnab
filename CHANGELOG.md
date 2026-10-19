@@ -8,6 +8,22 @@ sipnab is pre-1.0: the public API and the CLI surface are not stable, and a
 breaking change may land in any release. Breaking changes are called out in the
 entry that carries them.
 
+## [Unreleased]
+
+### Fixed
+
+- **The pre-push non-Linux check inspects only the checkout it runs in.**
+  `scripts/check-non-linux.sh` copied everything in the checkout except
+  `target/` and `.git/` into `target/nonlinux-shim/tree`, so a linked
+  worktree created inside the checkout (for example under
+  `.claude/worktrees/`) was copied with its sources and its own `target/`,
+  and its `target_os` gates were counted as the checkout's. With six such
+  worktrees the copy held 474 GB, and a file removed from one during a
+  concurrent build made the copy incomplete, so the check refused a correct
+  tree and blocked a tag push. The count and the copy now share one rule:
+  build output at any depth, `.git`, and any directory with a `.git` of its
+  own are left out. On the same checkout the copy is now 597 MB.
+
 ## [0.5.226] - 2026-10-18
 
 ### Added
