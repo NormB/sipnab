@@ -16,6 +16,8 @@ entry that carries them.
 
 ### Fixed
 
+- **CI's Coverage job no longer times out on a healthy run.** It moved to the self-hosted runners with the 40-minute limit it had on GitHub's, where it took 15 to 21 minutes. On the self-hosted runners it takes 27 to 35, and a cold build or a busy host ran it past 40, so healthy runs were canceled and a canceled run held the release tag. The limit is now 60 minutes, and a test keeps every self-hosted job's limit at least half again above its slowest measured run.
+
 - **The rtpengine reconciler's log lines name the relay once.**
   - The closing line read `rtpengine at rtpengine at 127.0.0.1:22222: 2 unexplained stream(s) offered, 0 attributed, 4 control transaction(s) spent of a ceiling of 66`, and the line for a relay that could not be asked began the same way. Each line added the relay's kind to a description that already carried it.
   - They now name it once: `rtpengine at 127.0.0.1:22222: 2 unexplained stream(s) offered, 0 attributed, 4 control transaction(s) spent of a ceiling of 66`, as `docs/rtpengine.md` shows.

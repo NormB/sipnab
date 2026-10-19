@@ -146,10 +146,15 @@ jobs:
   # ---------------------------------------------------------------------------
   coverage:
     if: github.event_name != 'schedule'
-    # Bounds a wedged job: an unbounded one holds its
-    # concurrency group indefinitely. Observed on GitHub's ubuntu-latest:
-    # 15.3 and 21.2 min (2026-10-09).
-    timeout-minutes: 40
+    # Bounds a wedged job: an unbounded one holds its concurrency group
+    # indefinitely. It runs on the self-hosted runners, where it measured 27
+    # to 35 min in the six runs that succeeded (2026-10-18 and 19), and two
+    # runs were canceled at 40: a runner's first, cold build, and one while
+    # the host carried other builds. The timeout clears the slowest
+    # successful run by half again, so only a wedged job reaches it
+    # (`a_self_hosted_timeout_clears_its_slowest_measured_run`).
+    # Slowest run measured on the self-hosted runners: 35 min
+    timeout-minutes: 60
     name: Coverage
     # The aarch64 self-hosted runners, beside ci.yml's Check (Linux) and
     # feature matrix: on GitHub's runner this job was one of the three that

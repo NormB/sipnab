@@ -814,3 +814,55 @@ fn bad_arguments_exit_2() -> Result<(), TestError> {
     );
     Ok(())
 }
+
+/// The minutes a job's `Slowest run measured on the self-hosted runners: N
+/// min` comment records, if it has one.
+fn measured_minutes(body: &str) -> Option<f64> {
+    body.lines().find_map(|l| {
+        let rest = l
+            .trim()
+            .strip_prefix("# Slowest run measured on the self-hosted runners:")?;
+        rest.trim().strip_suffix("min")?.trim().parse().ok()
+    })
+}
+
+/// The job's own `timeout-minutes`, at job level (four spaces in).
+fn timeout_minutes(body: &str) -> Option<f64> {
+    body.lines()
+        .find_map(|l| l.strip_prefix("    timeout-minutes:"))
+        .and_then(|v| v.trim().parse().ok())
+}
+
+/// A self-hosted job's timeout bounds a WEDGED job, not a slow one: it must
+/// clear the slowest successful run measured on those runners by half again.
+///
+/// Coverage moved to the self-hosted runners with the 40-minute timeout it had
+/// on GitHub's, where it took 15 to 21 minutes. On the self-hosted runners it
+/// took 27 to 35, and a cold build or a host carrying other builds ran it past
+/// 40: the timeout canceled healthy runs, and a canceled run on a tagged
+/// commit holds the release (2026-10-18 and 19).
+#[test]
+fn a_self_hosted_timeout_clears_its_slowest_measured_run() -> Result<(), TestError> {
+    let mut checked = 0;
+    for job in all_jobs()?.iter().filter(|j| runs_self_hosted(&j.body)) {
+        let Some(measured) = measured_minutes(&job.body) else {
+            continue;
+        };
+        let timeout = timeout_minutes(&job.body)
+            .ok_or_else(|| format!("{}/{} has no timeout-minutes", job.workflow, job.id))?;
+        assert!(
+            timeout >= 1.5 * measured,
+            "{}/{}: timeout-minutes {timeout} does not clear the slowest measured run \
+             ({measured} min) by half again ({} min), so a slow healthy run is canceled",
+            job.workflow,
+            job.id,
+            1.5 * measured
+        );
+        checked += 1;
+    }
+    assert!(
+        checked >= 1,
+        "no self-hosted job records its slowest measured run, so this gate checks nothing"
+    );
+    Ok(())
+}
