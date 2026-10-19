@@ -44,6 +44,10 @@ entry that carries them.
   build output at any depth, `.git`, and any directory with a `.git` of its
   own are left out. On the same checkout the copy is now 597 MB.
 
+### Security
+
+- **`zerocopy` and `zerocopy-derive` 0.8.63 replace 0.8.48** (0.8.55 in the fuzz targets). From 0.8.58, `zerocopy-derive` treats a raw-identifier attribute such as `#[r#repr(C)]` as the `repr` it is; before, its derives read the type's layout wrong and could emit an unsound `FromBytes` or `FromZeros`. sipnab writes no such attribute and reaches these crates only through its dependencies. No RustSec or GitHub advisory lists the issue yet.
+
 ## [0.5.226] - 2026-10-18
 
 ### Added
