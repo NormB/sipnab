@@ -242,7 +242,7 @@
         </ul>
       </article>
     </div>
-    <p class="cap-engineering"><a class="cap-eng-name" href="{{ get_url(path='@/docs/build.md') }}#rust-and-unsafe">Built in Rust</a> 113 <code>unsafe</code> blocks, most of them calls into the kernel or C libraries, and CI rejects any block that does not state its own soundness argument. {% if has_test_count %}{{ suite.automated_tests }} automated tests.{% else %}The full automated test suite runs on every pull request.{% endif %} Under 19 MB static binary. <a class="cap-all" href="{{ get_url(path='@/features.md') }}">Every capability</a></p>
+    <p class="cap-engineering"><a class="cap-eng-name" href="{{ get_url(path='@/docs/build.md') }}#rust-and-unsafe">Built in Rust</a> 113 <code>unsafe</code> blocks, most of them calls into the kernel or C libraries, and CI rejects any block that does not state its own soundness argument. {% if has_test_count %}{{ suite.automated_tests }} automated tests.{% else %}The full automated test suite runs on every pull request.{% endif %} Under 20 MB static binary. <a class="cap-all" href="{{ get_url(path='@/features.md') }}">Every capability</a></p>
   </div>
 </section>
 
@@ -666,7 +666,7 @@ Issues Detected:
          `Automated tests` is the shortest label of the four and so the easiest
          to miss entirely. #}
       <a class="arch-item fade-in-up" href="{{ config.extra.github_url }}/releases/latest">
-        <span class="arch-stat" data-count="19" data-suffix=" MB">19 MB</span>
+        <span class="arch-stat" data-count="20" data-suffix=" MB">20 MB</span>
         <span class="arch-label">Stripped binary ceiling, enforced at release (musl, static)</span>
       </a>
       <a class="arch-item fade-in-up" href="{{ get_url(path='@/docs/mcp-tools.md') }}">
