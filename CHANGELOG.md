@@ -48,6 +48,13 @@ entry that carries them.
 
 - **`zerocopy` and `zerocopy-derive` 0.8.63 replace 0.8.48** (0.8.55 in the fuzz targets). From 0.8.58, `zerocopy-derive` treats a raw-identifier attribute such as `#[r#repr(C)]` as the `repr` it is; before, its derives read the type's layout wrong and could emit an unsound `FromBytes` or `FromZeros`. sipnab writes no such attribute and reaches these crates only through its dependencies. No RustSec or GitHub advisory lists the issue yet.
 
+- **A URL refused for carrying credentials is quoted without them.** sipnab refuses an `http://` or `https://` URL that holds a user name or password, and its own refusal shows the URL as `https://[redacted]@example.invalid/chain.pem`. Three messages around that refusal quoted the URL a second time in full, so the password reached the terminal and the log anyway:
+  - the `x5u` certificate URL named inside a signed vCon, which the vCon's author controls;
+  - the `Location` a SCITT transparency service answers with, in the `not polled: the Location` message;
+  - the ITU-T G.729 package URL that `sipnab g729 install` downloads.
+
+  Each now quotes the URL with its user name and password replaced by `[redacted]`, including a password holding an unescaped `?`.
+
 ## [0.5.226] - 2026-10-18
 
 ### Added

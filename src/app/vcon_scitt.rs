@@ -856,9 +856,13 @@ pub fn receipt_endpoint(service: &Endpoint, location: &str) -> Result<Endpoint, 
     } else {
         location.to_owned()
     };
+    // Quoted with its userinfo redacted, as `Endpoint::parse` quotes it: the
+    // Location comes from the service's answer, and credentials in it are
+    // refused precisely so that they never reach the log.
+    let shown = crate::app::run_provenance::redact_url_userinfo(location);
     let refuse = |why: &str| {
         format!(
-            "not polled: the Location {location:?} is not on the transparency service's origin \
+            "not polled: the Location {shown:?} is not on the transparency service's origin \
              {origin}{why}"
         )
     };
@@ -1172,6 +1176,61 @@ mod tests {
             let why = receipt_endpoint(&service, bad).err().ok_or(bad)?;
             assert!(why.contains("origin"), "{bad}: {why}");
         }
+        Ok(())
+    }
+
+    /// The service a Location test polls under.
+    fn service() -> Result<Endpoint, String> {
+        Endpoint::parse(
+            "https://ts.example:8443/scitt",
+            crate::app::https_client::UrlUse::FORWARDER_SCITT,
+        )
+    }
+
+    /// URL-CREDS-IN-LOGS: a `Location` comes from the transparency
+    /// service's answer, and one carrying credentials is not polled; the
+    /// refusal must not print them, whatever origin the URL names.
+    #[test]
+    fn t_negative_a_location_refusal_never_quotes_the_password() -> Result<(), String> {
+        for location in [
+            "https://poller:s3cret-token@other.example:8443/entries/1",
+            "https://poller:s3cret-token@ts.example:8443/entries/1",
+        ] {
+            let why = receipt_endpoint(&service()?, location)
+                .err()
+                .ok_or(location)?;
+            assert!(!why.contains("s3cret-token"), "{why}");
+        }
+        Ok(())
+    }
+
+    /// The refusal still names the Location's host and the service's origin.
+    #[test]
+    fn t_positive_a_location_refusal_still_names_both_origins() -> Result<(), String> {
+        let why = receipt_endpoint(
+            &service()?,
+            "https://poller:s3cret-token@other.example:8443/entries/1",
+        )
+        .err()
+        .ok_or("refused")?;
+        assert!(why.contains("other.example:8443/entries/1"), "{why}");
+        assert!(why.contains("https://ts.example:8443"), "{why}");
+        Ok(())
+    }
+
+    /// A password with an unescaped `?` leaks neither half.
+    #[test]
+    fn t_edge_a_location_password_holding_a_question_mark_does_not_leak() -> Result<(), String> {
+        let why = receipt_endpoint(
+            &service()?,
+            "https://poller:ab?cd-secret@ts.example:8443/e/1",
+        )
+        .err()
+        .ok_or("refused")?;
+        assert!(
+            !why.contains("ab?cd") && !why.contains("cd-secret"),
+            "{why}"
+        );
         Ok(())
     }
 }
