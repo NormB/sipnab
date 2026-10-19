@@ -221,7 +221,7 @@ Later releases fix three `netmap:` failures. Check your release with
 | Symptom | Affected releases | Fixed in |
 |---|---|---|
 | On a musl tarball, a `netmap:` open fails with `nm_open [948] NIOCREGIF failed: Invalid argument netmap:<iface>`, and the kernel log says `Minimum supported API is 14 (requested 13)` | 0.5.183 and earlier, musl tarballs | 0.5.184 |
-| The capture stops, often while idle, and the kernel log shows `capture-netmap:[...]: segfault at 0` | 0.5.188 and earlier | 0.5.189 |
+| The capture stops, often while idle, and the kernel log records a segfault at address 0 in the `capture-netmap` thread | 0.5.188 and earlier | 0.5.189 |
 | A `netmap:` capture on a link with no traffic does not stop on SIGTERM or at the end of `--duration` | 0.5.189 and earlier | 0.5.190 |
 
 ### Architecture naming
@@ -330,7 +330,8 @@ A manual download of the gnu build that checks the checksum before installing.
    sudo install -m 755 "sipnab-$VERSION-$TARGET/sipnab" /usr/local/bin/sipnab
    ```
 
-The dynamic `…-unknown-linux-gnu.tar.gz` builds add TUI audio playback.
+The dynamic builds, whose names end in `-unknown-linux-gnu.tar.gz`, add TUI
+audio playback.
 
 - They require glibc >= 2.36 (Debian 12+, Ubuntu 23.04+) and libpcap.
 - On an older distribution they fail with
@@ -642,7 +643,7 @@ among them, appear only in `sipnab-audio-<version>.cdx.json`.
 Feed either to any CycloneDX-aware scanner:
 
 ```bash
-grype "sbom:sipnab-$VERSION.cdx.json"      # or trivy sbom, osv-scanner, ...
+grype "sbom:sipnab-$VERSION.cdx.json"      # trivy sbom and osv-scanner read it too
 ```
 
 The release generates the binary SBOM for the `full,bpf` feature set, the
@@ -770,7 +771,7 @@ sipnab uses Cargo feature flags to control optional capability. The default buil
 | `tls` | TLS/DTLS decryption and SRTP key extraction (pure Rust) | `ring`, `rustls`, `rsa`, `aes`, `cbc`, `zeroize`, `base64`, `libc` |
 | `hep` | HEP v3 send + v1/v2/v3 receive (Homer Encapsulation Protocol) | `native`, `hmac`, `sha2`, `rustls`, `base64` |
 | `api` | REST API + Prometheus metrics endpoint, over HTTP or HTTPS. Runs on a background thread in the sipnab process, sharing its address space — not a separate OS process, so treat the bind address and API key accordingly. | `native`, `axum`, `tokio`, `base64`, `hmac`, `sha2`, `utoipa`, `rustls`, `tokio-rustls`, `ring`, `hyper`, `hyper-util`, `futures-core` |
-| `mcp` | Model Context Protocol server, stdio transport. Lets an AI agent (Claude Code, Claude Desktop, …) drive sipnab. | `native`, `tokio`, `rmcp`, `base64`, `hmac`, `sha2` |
+| `mcp` | Model Context Protocol server, stdio transport. Lets an AI agent, such as Claude Code or Claude Desktop, drive sipnab. | `native`, `tokio`, `rmcp`, `base64`, `hmac`, `sha2` |
 | `mcp-http` | MCP server over HTTP (Streamable-HTTP). Adds the `--mcp-transport http` option. | `mcp`, `api`, `rmcp/transport-streamable-http-server` |
 | `metrics` | Standalone Prometheus `/metrics` server on a plain TCP listener and threads. Needs neither the `api` feature nor an async runtime. Included by default. | `native`, `base64`, `rustls` |
 | `plugins` | WASM plugin host (`--plugin`): runs third-party dialog detections in a sandbox that has no access to the sipnab process. | `native`, `wasmi` |
@@ -819,8 +820,8 @@ built.
 
 ## Turn on the MCP server
 
-To run sipnab as a Model Context Protocol server for an AI agent (Claude Code,
-Claude Desktop, …), start with [MCP server](@/docs/mcp.md).
+To run sipnab as a Model Context Protocol server for an AI agent, such as
+Claude Code or Claude Desktop, start with [MCP server](@/docs/mcp.md).
 
 - It covers the `mcp` and `mcp-http` features and a first working example.
 - [Connect an AI agent to sipnab](@/docs/mcp-deploy.md) covers running it on a

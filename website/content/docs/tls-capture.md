@@ -57,7 +57,7 @@ flowchart TD
 The table says the same thing in rows. Read down the first column. Stop at
 the first row you can satisfy.
 
-| If you can… | Use | Needs | Gets you |
+| If you can | Use | Needs | Gets you |
 |---|---|---|---|
 | Set `SSLKEYLOGFILE` on the endpoint (a soft client, test UA, or a daemon you can restart) | [`--keylog`](#the-endpoint-writes-a-key-log) | Nothing special | Full decryption, live or from a pcap |
 | Get root on the SIP host, but **not** restart the daemon | [`--uprobe-tls`](#no-keys-at-all-read-the-plaintext-in-the-process) | Linux, root | Plaintext, no peer addresses |

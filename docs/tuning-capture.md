@@ -84,8 +84,8 @@ this?"
 
 | Surface | How they appear |
 |---|---|
-| Live warning | `PACKETS ARE BEING DROPPED on 'eth0' (kernel buffer: N, interface/driver: M)`, the moment the first drop happens |
-| End-of-run summary | `... N dropped by the kernel buffer and M by the interface`, or `no drops` |
+| Live warning | The moment the first drop happens, a warning such as `PACKETS ARE BEING DROPPED on 'eth0' (kernel buffer: 120, interface/driver: 0). The analysis for this run is INCOMPLETE — dialogs may be missing messages and RTP loss figures will overstate what was on the wire. This run's kernel capture buffer is 64 MiB: raise it with -B/--buffer, narrow the capture with a BPF filter, or reduce --snaplen. Interface drops are not fixed by a bigger buffer; they point at the NIC or driver.` |
+| End-of-run summary | A warning such as `Live capture on 'eth0' finished: 52310 packets captured, but 120 dropped by the kernel buffer and 0 by the interface — THIS ANALYSIS IS INCOMPLETE`, or, with nothing dropped, an info line such as `Live capture on 'eth0' finished: 52310 packets, no drops` |
 | `--report` | one sentence each, and each names only the fixes that apply to it |
 | `--metrics` (Prometheus) | `sipnab_capture_kernel_dropped_packets_total` and `sipnab_capture_interface_dropped_packets_total`, as separate counters |
 
@@ -366,14 +366,13 @@ sipnab picks the capture mode from the run mode:
   timeout to 5 ms, so libpcap delivers a block that does not fill after that
   timeout.
 - libpcap uses TPACKET_V3 only when its build includes it. Check the second line
-  of `sipnab --version`:
+  of `sipnab --version`, which names the libpcap the binary runs:
 
 ```bash
-sipnab --version
+sipnab --version | tail -n 1
 ```
 
 ```text
-…
 libpcap version 1.10.4 (with TPACKET_V3); alternate capture backends named: none
 ```
 
@@ -588,18 +587,26 @@ Reading files (`-I`), it is N parallel reconstruction workers.
 - Each worker has its own dialog and RTP-stream stores.
 
 ```bash
-sipnab -N -I capture.pcap --cores 4 --report
+sipnab -N -I tests/pcap-samples/sip-rtp-g711.pcap --cores 4 --report
 ```
 
+The output from a checkout, with standard error and standard output on one
+terminal:
+
 ```text
-… INFO sipnab::parallel: Reading from 'capture.pcap'
-… INFO sipnab::capture::file: Read 852 packets: 1 of 1 file(s) read in full
+2026-10-18T15:25:36.977718Z  INFO sipnab::parallel: Reading from 'tests/pcap-samples/sip-rtp-g711.pcap'
+2026-10-18T15:25:36.982695Z  INFO sipnab::capture::file: Read 852 packets: 1 of 1 file(s) read in full
 Call-ID                          From           To             State        Code   Duration   Msgs   PDD      Tags
 -------------------------------------------------------------------------------------------------------------------------
 1-1966@10.0.2.20                 sipp           test           Completed    200    8s         6      -        -
 1-1968@10.0.2.20                 sipp           test           InCall       200    0s         4      -        -
-…
-… INFO sipnab::app::batch: sipnab: 852 packets, 10 SIP messages, 839 RTP packets across 2 streams (4 cores)
+
+RTP Streams:
+SSRC         PT   Codec    Clock  Source                Destination           Pkts    Lost   Loss%   Jitter   Dur    Kbps
+--------------------------------------------------------------------------------------------------------------------------
+0x343da99b   0    PCMU     8000   10.0.2.15:27942       10.0.2.20:6000        425     0      0.0%    0ms      8s     64
+0x343ffa34   8    PCMA     8000   10.0.2.15:28102       10.0.2.20:6000        414     0      0.0%    0ms      8s     64
+2026-10-18T15:25:37.046636Z  INFO sipnab::app::batch: sipnab: 852 packets, 10 SIP messages, 839 RTP packets across 2 streams (4 cores)
 ```
 
 The closing line names the worker count. On the reference corpus, throughput

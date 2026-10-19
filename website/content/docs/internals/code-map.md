@@ -269,7 +269,7 @@ Short version:
 
 ## Where to add things
 
-| You want to… | Touch |
+| Task | Touch |
 |---|---|
 | Support a new SIP header accessor | `sip/message.rs` (+ parser test) |
 | Add a per-packet protocol behavior | `pipeline.rs` (one classifier — all paths route through it) |

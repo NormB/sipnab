@@ -143,8 +143,8 @@ sudo sipnab --mcp -N -d eth0
 With the stdio transport, **stdout is the JSON-RPC wire**. So `--mcp` implies
 `-N`/`--no-tui`.
 
-- sipnab refuses every stdout-writing flag (`--json`, `--report`, …) at
-  startup and exits 2, for example with `--mcp uses stdout for the JSON-RPC
+- sipnab refuses at startup every flag that writes its answer to stdout,
+  such as `--json` and `--report`, and exits 2, for example with `--mcp uses stdout for the JSON-RPC
   wire and cannot be combined with stdout-writing flags (--json)`.
 
   Write the report from a separate run without `--mcp`.

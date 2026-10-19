@@ -151,7 +151,8 @@ touching the help failed two assertions in `keybinding_drift_test`.
 
 - Add the handler to [`server.rs`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs) under the
   `#[tool_router]` impl.
-  - Give it a `#[tool(name = …, description = …)]` attribute.
+  - Give it a `#[tool(name = "<tool_name>", description = "<what it returns>")]` attribute,
+    as `list_dialogs` has.
 - Write the description as a **statement of what the tool returns**.
   - Never instruct the model to "trust", "verify", "act on" or "ensure" anything about
     the content.

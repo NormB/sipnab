@@ -288,7 +288,9 @@ docker compose ps
 What those wait lines are for:
 
 - The API takes a few seconds to start. So the first `until` line waits for
-  `/health` to answer `{"status":"healthy",...}`.
+  `/health` to answer. It answers a JSON object whose `status` is `healthy`,
+  beside a `version` object that holds `version`, `git_commit` and
+  `build_time` (vcon-server's `health_check` in `api/api.py`).
 - The conserver stores what the API queues. It starts later.
   - On a fresh machine its worker came up about 15 seconds after the API
     answered.
@@ -708,7 +710,9 @@ until curl -fs 127.0.0.1:8081/healthz; do sleep 2; done; echo
 ```
 
 The recorder takes a few seconds to start after its container does. So the
-last line waits until the health check answers `{"status": "ok", ...}`.
+last line waits until the health check answers. It answers a JSON object whose
+`status` is `ok`, beside a `timestamp` that holds the current time in ISO 8601
+form (vcon-siprec-adapter's `_healthz` in `siprec_srs/health_server.py`).
 
 Four settings deserve a word:
 
@@ -809,8 +813,9 @@ sudo journalctl -u opensips -n 50
 sudo journalctl -u ngcp-rtpengine-daemon -n 50
 ```
 
-The conserver logs one `Completed processing vCon <uuid> ... Chain:
-siprec_recorder` line for every vCon it stores.
+The conserver logs one line for every vCon it stores:
+`Completed processing vCon <uuid> in <seconds> seconds - Chain: siprec_recorder`
+(vcon-server's `conserver/main.py`).
 
 **Restart after a configuration change.** vcon-server reads `config.yml` on
 each request. But restart it anyway, so that both processes agree:
@@ -963,7 +968,8 @@ This guide covers that split only.
     "proto_udp.so"` is missing.
   - The OpenSIPS binary contains the module.
   - But the script must still name it.
-- **`loading config file ... Permission denied`.**
+- **`ERROR:core:parse_opensips_cfg: loading config file
+  /usr/local/etc/opensips/opensips.cfg: Permission denied`.**
   - OpenSIPS runs as `opensips` and cannot read its configuration.
   - `make install` creates `/usr/local/etc/opensips` readable by root alone.
   - So give the group both the directory and the file, as in the step

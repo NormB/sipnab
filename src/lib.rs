@@ -27,8 +27,8 @@
 //! sipnab = { version = "=0.5.N", default-features = false, features = ["native"] }
 //! ```
 //!
-//! Modules marked `#[doc(hidden)]` (`cli`, `tui`, `privilege`,
-//! `process_isolation`, `signals`) exist so the program can be built from this
+//! Modules marked `#[doc(hidden)]` (`cli`, `privilege`, `process_isolation`,
+//! `settings`, `signals` and `tui`) exist so the program can be built from this
 //! crate and are internal even by that standard.
 //!
 //! # Examples

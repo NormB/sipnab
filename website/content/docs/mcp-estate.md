@@ -125,8 +125,8 @@ sees calls from the whole estate. The HEP listener is a plain UDP socket:
    - `no packets for 30s` means nothing arrived at all.
      - The HEP sender isn't reaching the `-L` port (firewall, wrong port,
        wrong host).
-   - `no packets admitted for 30s ... every one was refused` means the
-     sender IS reaching the port and sipnab is turning it away.
+   - A line such as `HEP listener on 0.0.0.0:9060: no packets admitted for 30s — 30 arrived and every one was refused, mostly auth_mismatch (the auth key does not match this listener's secret), the last of those from 192.0.2.7; the sender is reaching this port and being turned away; capture is still listening`
+     means the sender IS reaching the port and sipnab is turning it away.
      - The line names the reason, such as `auth_mismatch` for a wrong shared
        secret.
      - It also names the peer it came from.
@@ -285,8 +285,8 @@ Then give each its own entry in one client config:
    ```
 
 - **[laptop]** Ask cross-fleet questions. Tool names are namespaced per
-   server (`mcp__sipnab-nyc1__list_dialogs`,
-   `mcp__sipnab-chi1__list_dialogs`, …). So the agent can fan out:
+   server, such as `mcp__sipnab-nyc1__list_dialogs` and
+   `mcp__sipnab-chi1__list_dialogs`. So the agent can fan out:
 
    > the caller says the 14:02 UTC call dropped. Find its Call-ID on all
    > three sites and compare the ladders.
@@ -406,7 +406,7 @@ Host sbc-edge-1.example.net proxy-1.example.net pbx-1.example.net
 ```
 
 For [the SSH stdio shape](@/docs/mcp-deploy.md#connect-claude-code-on-your-laptop-to-sipnab-on-a-server), `ssh -J bastion.example.net sbc-edge-1.example.net
-/usr/local/bin/sipnab --mcp -N …` does the same thing inline.
+/usr/local/bin/sipnab --mcp -N -d eth0 --quiet` does the same thing inline.
 
 The tunnel, NAT and `ProxyJump` steps are the wiring that
 [the SSH stdio shape](@/docs/mcp-deploy.md#connect-claude-code-on-your-laptop-to-sipnab-on-a-server),

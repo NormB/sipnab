@@ -114,19 +114,17 @@ How to read it:
 
 **To get rates, pass `sample_seconds`.** Every counter above is cumulative.
 With `sample_seconds`, sipnab reads the counters twice across that window and
-adds a `rates` block, with calls broken down by method so that OPTIONS
-keepalives and INVITEs appear apart:
+adds a `rates` member to the same envelope, with calls broken down by method
+so that OPTIONS keepalives and INVITEs appear apart. Every other member is as
+above. The `rates` member alone:
 
 ```jsonc
-// runtime_stats { "sample_seconds": 2 }
-// … the same envelope, plus:
+// runtime_stats { "sample_seconds": 2 }, the value of "rates"
 {
-  "rates": {
-    "window_seconds": 2,
-    "packets_per_second": 0.0,
-    "calls_per_second": 0.0,
-    "calls_per_second_by_method": [["INVITE", 0.0]]
-  }
+  "window_seconds": 2,
+  "packets_per_second": 0.0,
+  "calls_per_second": 0.0,
+  "calls_per_second_by_method": [["INVITE", 0.0]]
 }
 ```
 
@@ -341,31 +339,65 @@ Both senders share the address `127.0.0.1`:
 ```jsonc
 // hep_senders {}
 {
-  "schema_version": 1,
   "listening": true,
-  "trust": "shared_secret_plain",
-  "silence_threshold_seconds": 30,
-  "packets_received": 33, "packets_admitted": 10, "packets_refused": 23,
-  "refused_by_reason": { "auth_mismatch": 23, "allowlist": 0, "malformed": 0, "…": 0 },
-  "senders_tracked": 1, "senders_limit": 4096, "senders_silent": 0,
-  "untracked_packets": 0,
-  "senders": [
-    { "source": "hep:7@127.0.0.1", "capture_id": 7, "peer": "127.0.0.1",
-      "identity": "claimed_by_sender", "trust": "shared_secret_plain",
-      "packets": 10, "first_seen": "2026-10-16T11:57:07.282Z",
-      "last_seen": "2026-10-16T11:57:07.284Z", "idle_seconds": 2, "silent": false }
-  ],
-  "refused_sources_tracked": 1, "refused_sources_limit": 256, "refused_sources_evicted": 0,
+  "packets_admitted": 10,
+  "packets_received": 20,
+  "packets_refused": 10,
+  "refused_by_reason": {
+    "allowlist": 0,
+    "auth_mismatch": 10,
+    "auth_missing": 0,
+    "hmac_bad_format": 0,
+    "hmac_bad_mac": 0,
+    "hmac_replay": 0,
+    "hmac_timestamp_out_of_window": 0,
+    "hmac_unsupported_version": 0,
+    "malformed": 0,
+    "peer_tracking_full": 0,
+    "rate_limit_global": 0,
+    "rate_limit_per_peer": 0
+  },
   "refused_sources": [
-    { "peer": "127.0.0.1", "packets": 23, "by_reason": { "auth_mismatch": 23 },
-      "first_seen": "2026-10-16T11:57:07.293Z", "last_seen": "2026-10-16T11:57:07.293Z" }
+    {
+      "by_reason": {
+        "auth_mismatch": 10
+      },
+      "first_seen": "2026-10-18T15:29:53.069Z",
+      "last_seen": "2026-10-18T15:29:53.138Z",
+      "packets": 10,
+      "peer": "127.0.0.1"
+    }
   ],
+  "refused_sources_evicted": 0,
+  "refused_sources_limit": 256,
+  "refused_sources_tracked": 1,
+  "schema_version": 1,
+  "senders": [
+    {
+      "capture_id": 7,
+      "first_seen": "2026-10-18T15:29:52.818Z",
+      "identity": "claimed_by_sender",
+      "idle_seconds": 2,
+      "last_seen": "2026-10-18T15:29:52.830Z",
+      "packets": 10,
+      "peer": "127.0.0.1",
+      "silent": false,
+      "source": "hep:7@127.0.0.1",
+      "trust": "shared_secret_plain"
+    }
+  ],
+  "senders_limit": 4096,
+  "senders_silent": 0,
+  "senders_tracked": 1,
+  "silence_threshold_seconds": 30,
   "source_exhausted": false,
-  "source_stopped_early": false
+  "source_stopped_early": false,
+  "trust": "shared_secret_plain",
+  "untracked_packets": 0
 }
 ```
 
-`refused_by_reason` carries all twelve reasons, and the example elides the zeros.
+`refused_by_reason` carries all twelve reasons, zeros included.
 
 | Name | Type | Legal values | If omitted |
 |---|---|---|---|
@@ -442,10 +474,40 @@ opt-in flags:
     "max_inline_media_bytes": 5242880, // --vcon-max-inline-media; null without vcon
     "max_wait_seconds": 60           // --mcp-max-wait-seconds
   },
-  "tools": ["actions_revert", "aggregate_dialogs", "analyze_vcon", "…"],  // what tools/list returns
-  "bundles": ["core", "signaling", "captures", "…"],                      // bundles loaded whole
-  "prompts": ["triage-outage", "carrier-escalation", "codec-interop-audit", "…"], // what prompts/list returns
-  "resource_templates": ["sipnab://live/dialogs/{call_id}", "sipnab://lint/{rule_id}", "…"]
+  "tools": [  // what tools/list returns
+    "actions_revert", "aggregate_dialogs", "analyze_vcon", "await_condition",
+    "build_evidence_package", "cancel_find_in_captures", "capture_health",
+    "capture_status", "check_codec_negotiation", "compare_captures", "compare_dialogs",
+    "decode_evidence", "decode_ng", "describe_endpoint", "diagnose_registration",
+    "evaluate_expectations", "explain_attribution", "explain_response_code",
+    "explain_rule", "export_audio", "export_capture", "export_vcon", "fetch_vcon",
+    "find_correlated", "find_in_captures", "find_in_captures_status", "find_problems",
+    "generate_fail2ban_rule", "generate_repro", "generate_wireshark_filter",
+    "get_call_tree", "get_capture_report", "get_dialog", "get_dialog_report",
+    "get_message", "get_sdp_timeline", "group_dialogs", "hep_senders", "lint_dialog",
+    "list_captures", "list_dialogs", "list_tls_libraries", "media_diagnostics",
+    "open_capture", "query_relay", "reconcile_orphans", "relay_compare", "relay_stats",
+    "render_ladder", "rtp_stats", "runtime_stats", "save_findings", "search_by_time",
+    "search_messages", "security_findings", "server_capabilities", "show_evidence",
+    "shutdown_server", "siprec_metadata", "start_tls_capture", "stop_tls_capture",
+    "tail_dialogs", "tfps_ban", "tfps_banned", "tfps_dropped", "tfps_labels",
+    "tfps_status", "tfps_unban", "timeline", "top_talkers", "triage_call",
+    "validate_filter", "validate_message", "validate_vcon", "vcon_directory_report",
+    "vcon_spool_status"
+  ],
+  "bundles": [  // bundles loaded whole
+    "core", "signaling", "captures", "security", "media", "relay", "tfps", "server",
+    "vcon", "tls"
+  ],
+  "prompts": [  // what prompts/list returns
+    "triage-outage", "carrier-escalation", "codec-interop-audit",
+    "post-change-verification", "vcon-handoff"
+  ],
+  "resource_templates": [  // what resources/templates/list returns
+    "sipnab://live/dialogs/{call_id}", "sipnab://lint/{rule_id}",
+    "sipnab://filter/{alias}", "sipnab://reference/{topic}", "sipnab://schema/{tool}",
+    "sipnab://vcon/{call_id}"
+  ]
 }
 ```
 
@@ -557,9 +619,15 @@ carrying `confirm: true` stops the process:
   "schema_version": 1,
   "dry_run": false,
   "would_stop": false,
+  "live": false,
+  "unsaved": false,
+  "dialogs": 2,
+  "streams": 2,
+  "saved_to": null,
   "confirmed_by_operator": false,
-  "note": "the confirmation was declined; nothing was done"
-  // ...
+  "note": "the confirmation was declined; nothing was done",
+  "source_exhausted": true,
+  "source_stopped_early": false
 }
 ```
 

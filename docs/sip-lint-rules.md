@@ -51,7 +51,7 @@ Each line holds, in order:
 | Severity | `error` | How much attention the finding deserves. See [Severity and basis](#severity-and-basis). |
 | Rule identifier | `SIP-3261-20.14-CONTENT-LENGTH-MISMATCH` | The rule. Look it up in the [rule catalog](#rule-catalog). |
 | Call-ID | `[lint-clen@198.51.100.10]` | The dialog the finding came from. |
-| Why it matters | `Over a stream transport …` | The effect of the defect on the equipment receiving it. |
+| Why it matters | `Over a stream transport the receiver frames the next message at the declared offset, so an overstated length consumes the message that follows it. Over a datagram transport the body is simply truncated.` | The effect of the defect on the equipment receiving it. |
 | Citation | `(RFC 3261 §20.14)` | The RFC and section the rule reads. |
 | `observed=` | `Content-Length 900, body 95 octets` | What the capture held. |
 | `expected=` | `Content-Length 95` | What the cited section calls for. This is usually the fix. |
@@ -116,10 +116,12 @@ With the file above saved beside a copy of `sip-lint-findings.pcap` named
 sipnab -N -q -I calls.pcap --lint --no-cli-print
 ```
 
-Output, trimmed to the summary lines:
+Output:
 
 ```text
-…
+error: SIP-3261-12.1.1-CONTACT-MISSING-IN-2XX [lint-maxfwd@192.0.2.10] §12.1.1 makes the UAS add a Contact to the response. It is the remote target for the dialog the 2xx creates, so without it the caller has nowhere to send the ACK and nowhere to send the BYE. The call answers and then cannot be hung up cleanly. (RFC 3261 §12.1.1) observed=2xx to INVITE with no Contact header field expected=Contact: <sip:user@host>
+error: SIP-3261-20.14-CONTENT-LENGTH-MISMATCH [lint-clen@198.51.100.10] Over a stream transport the receiver frames the next message at the declared offset, so an overstated length consumes the message that follows it. Over a datagram transport the body is simply truncated. (RFC 3261 §20.14) observed=Content-Length 900, body 95 octets expected=Content-Length 95
+warning: SIP-3261-19.1.1-URI-PARAM-DEMOTED [lint-brackets@203.0.113.10] §19.1.1 defines user as a URI parameter. Outside the brackets the receiver reads it as a header parameter and routes to the bare URI instead, which is how a call reaches the right host over the wrong transport or leaves the proxy loose-routing. (RFC 3261 §19.1.1) observed=To carries user outside angle brackets expected=To: <uri;user>
 Lint: 3 finding(s) across 3 dialog(s)
 Lint: suppressions from ./.sipnablint (2 pattern(s)), 1 finding(s) silenced
 ```
@@ -168,12 +170,12 @@ in the config file:
 sipnab -N -q -I tests/pcap-samples/DTMFsipinfo.pcap --lint --no-cli-print --lint-max-per-rule 1
 ```
 
-Output, trimmed:
+Output:
 
 ```text
-warning: SIP-4028-4-SESSION-EXPIRES-TOO-SMALL [2091060b-146f-e011-809a-0019cb53db77@admind-desktop] …
-warning: SIP-4028-5-MIN-SE-TOO-SMALL [2091060b-146f-e011-809a-0019cb53db77@admind-desktop] …
-warning: SIP-3261-8.1.1.7-BRANCH-COOKIE [2091060b-146f-e011-809a-0019cb53db77@admind-desktop] …
+warning: SIP-4028-4-SESSION-EXPIRES-TOO-SMALL [2091060b-146f-e011-809a-0019cb53db77@admind-desktop] §4 puts the absolute minimum for Session-Expires at 90 seconds. Below it the refresh traffic costs more than the state it keeps alive, and equipment that enforces the floor answers 422 rather than accepting the session. (RFC 4028 §4) observed=Session-Expires: 60 expected=Session-Expires at least 90
+warning: SIP-4028-5-MIN-SE-TOO-SMALL [2091060b-146f-e011-809a-0019cb53db77@admind-desktop] §5 makes the value MUST NOT be less than 90 seconds wherever it appears. A lower floor advertises a willingness the specification does not permit, and the far end may hold you to it. (RFC 4028 §5) observed=Min-SE: 5 expected=Min-SE at least 90
+warning: SIP-3261-8.1.1.7-BRANCH-COOKIE [2091060b-146f-e011-809a-0019cb53db77@admind-desktop] §8.1.1.7 makes every compliant branch begin with z9hG4bK, so its absence identifies a stack predating RFC 3261 in one field. Transaction matching then falls back to the RFC 2543 rules, and CANCEL and ACK correlation stop being reliable. (RFC 3261 §8.1.1.7) observed=top Via branch without the z9hG4bK prefix expected=branch=z9hG4bK...
 Lint: 3 finding(s) across 1 dialog(s)
 Lint: 6 finding(s) dropped by the per-rule cap of 1
 ```
@@ -247,14 +249,18 @@ To: <sip:erin@203.0.113.20;user=phone>
 sipnab -N -q -I tests/pcap-samples/DTMFsipinfo.pcap --lint --no-cli-print
 ```
 
-Output, trimmed to one finding per rule:
+Output:
 
 ```text
 warning: SIP-4028-4-SESSION-EXPIRES-TOO-SMALL [2091060b-146f-e011-809a-0019cb53db77@admind-desktop] §4 puts the absolute minimum for Session-Expires at 90 seconds. Below it the refresh traffic costs more than the state it keeps alive, and equipment that enforces the floor answers 422 rather than accepting the session. (RFC 4028 §4) observed=Session-Expires: 60 expected=Session-Expires at least 90
-…
+warning: SIP-4028-4-SESSION-EXPIRES-TOO-SMALL [2091060b-146f-e011-809a-0019cb53db77@admind-desktop] §4 puts the absolute minimum for Session-Expires at 90 seconds. Below it the refresh traffic costs more than the state it keeps alive, and equipment that enforces the floor answers 422 rather than accepting the session. (RFC 4028 §4) observed=Session-Expires: 60 expected=Session-Expires at least 90
+warning: SIP-4028-4-SESSION-EXPIRES-TOO-SMALL [2091060b-146f-e011-809a-0019cb53db77@admind-desktop] §4 puts the absolute minimum for Session-Expires at 90 seconds. Below it the refresh traffic costs more than the state it keeps alive, and equipment that enforces the floor answers 422 rather than accepting the session. (RFC 4028 §4) observed=Session-Expires: 60 expected=Session-Expires at least 90
+warning: SIP-4028-4-SESSION-EXPIRES-TOO-SMALL [2091060b-146f-e011-809a-0019cb53db77@admind-desktop] §4 puts the absolute minimum for Session-Expires at 90 seconds. Below it the refresh traffic costs more than the state it keeps alive, and equipment that enforces the floor answers 422 rather than accepting the session. (RFC 4028 §4) observed=Session-Expires: 60 expected=Session-Expires at least 90
 warning: SIP-4028-5-MIN-SE-TOO-SMALL [2091060b-146f-e011-809a-0019cb53db77@admind-desktop] §5 makes the value MUST NOT be less than 90 seconds wherever it appears. A lower floor advertises a willingness the specification does not permit, and the far end may hold you to it. (RFC 4028 §5) observed=Min-SE: 5 expected=Min-SE at least 90
 warning: SIP-3261-8.1.1.7-BRANCH-COOKIE [2091060b-146f-e011-809a-0019cb53db77@admind-desktop] §8.1.1.7 makes every compliant branch begin with z9hG4bK, so its absence identifies a stack predating RFC 3261 in one field. Transaction matching then falls back to the RFC 2543 rules, and CANCEL and ACK correlation stop being reliable. (RFC 3261 §8.1.1.7) observed=top Via branch without the z9hG4bK prefix expected=branch=z9hG4bK...
-…
+warning: SIP-4028-4-SESSION-EXPIRES-TOO-SMALL [2091060b-146f-e011-809a-0019cb53db77@admind-desktop] §4 puts the absolute minimum for Session-Expires at 90 seconds. Below it the refresh traffic costs more than the state it keeps alive, and equipment that enforces the floor answers 422 rather than accepting the session. (RFC 4028 §4) observed=Session-Expires: 60 expected=Session-Expires at least 90
+warning: SIP-4028-5-MIN-SE-TOO-SMALL [2091060b-146f-e011-809a-0019cb53db77@admind-desktop] §5 makes the value MUST NOT be less than 90 seconds wherever it appears. A lower floor advertises a willingness the specification does not permit, and the far end may hold you to it. (RFC 4028 §5) observed=Min-SE: 5 expected=Min-SE at least 90
+warning: SIP-3261-8.1.1.7-BRANCH-COOKIE [2091060b-146f-e011-809a-0019cb53db77@admind-desktop] §8.1.1.7 makes every compliant branch begin with z9hG4bK, so its absence identifies a stack predating RFC 3261 in one field. Transaction matching then falls back to the RFC 2543 rules, and CANCEL and ACK correlation stop being reliable. (RFC 3261 §8.1.1.7) observed=top Via branch without the z9hG4bK prefix expected=branch=z9hG4bK...
 Lint: 9 finding(s) across 1 dialog(s)
 ```
 

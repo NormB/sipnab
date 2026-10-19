@@ -372,7 +372,7 @@ sudo grep '^mpath=' "$C"
 
 What the tracing lines do:
 
-- `socket=hep_udp:...` gives OpenSIPS a socket to send HEP from. Without it,
+- `socket=hep_udp:127.0.0.1:6061` gives OpenSIPS a socket to send HEP from. Without it,
   OpenSIPS refuses to start: `No binding found for protocol proto_hep`.
 - `hep_id` names a HEP destination, `homer`.
   - It is heplify-server on this machine, HEP version 3 over UDP.
@@ -707,7 +707,8 @@ Kamailio on one machine is that case, and
 ## When something does not work
 
 - **OpenSIPS does not start: `No binding found for protocol proto_hep`.** The
-  configuration loads `proto_hep` but has no `socket=hep_udp:...` line.
+  configuration loads `proto_hep` but has no `socket=hep_udp:` line, such as
+  `socket=hep_udp:127.0.0.1:6061`.
 - **The search finds nothing.**
   - Check that heplify-server received anything:
     `docker compose logs heplify-server`.

@@ -466,19 +466,37 @@ printf '%s\n' \
 output schemas out of `tools/list` by default, because they are most of its
 size. Read this URI to learn the shape of the one tool you are about to call.
 
-The body is JSON:
+The body is a JSON object with six members. For `sipnab://schema/aggregate_dialogs`:
 
-```jsonc
-{
-  "schema_version": 1,
-  "tool": "aggregate_dialogs",
-  "has_output_schema": true,
-  "output_schema": { "type": "object", "properties": { "...": {} } },
-  "example": { "schema_version": 0, "group_by": "string", "...": "..." },
-  "note": "the example is generated from output_schema: ..."
-}
-```
+- `schema_version` is `1`.
+- `tool` is `"aggregate_dialogs"`.
+- `has_output_schema` is `true`.
+- `output_schema` is the tool's JSON Schema.
+- `example` is this object:
 
+  ```json
+  {
+    "buckets": [
+      {
+        "count": 0,
+        "value": "string"
+      }
+    ],
+    "capture_identity": {
+      "dialog_generation": 0,
+      "instance": "string",
+      "node": "string",
+      "stream_generation": 0
+    },
+    "distinct_values": 0,
+    "group_by": "string",
+    "other_count": 0,
+    "schema_version": 0,
+    "total_matched": 0
+  }
+  ```
+
+- `note` is `"the example is generated from output_schema: every value is a placeholder of the declared type, not data from the loaded capture"`.
 - `output_schema` is the same schema `tools/list` carries with
   `--mcp-output-schemas`.
 - sipnab generates `example` from `output_schema`, and it validates against
@@ -496,9 +514,11 @@ left out, or one that does not exist. The refusal has:
 - `data.reason` `invalid_choice`,
 - the loaded names in `data.valid_values`.
 
-```json
-{"code": -32602, "message": "'no_such' is not a tool this server loaded; complete the 'sipnab://schema/{tool}' template for the loaded names", "data": {"param": "tool", "reason": "invalid_choice", "valid_values": ["actions_revert", "aggregate_dialogs", "…"]}}
-```
+For `sipnab://schema/no_such`, the error's `message` is `'no_such' is not a
+tool this server loaded; complete the 'sipnab://schema/{tool}' template for the
+loaded names`, `data.param` is `"tool"`, and `data.valid_values` lists every
+tool name the server loaded, in alphabetical order, starting
+`"actions_revert"`, `"aggregate_dialogs"`, `"analyze_vcon"`.
 
 Completing the `tool` variable of `sipnab://schema/{tool}` returns the same
 loaded names.
@@ -558,7 +578,8 @@ arguments and resource-template variables only.
 
 ### Subscriptions
 
-`resources/subscribe` takes one of the two `sipnab://live/...` URIs.
+`resources/subscribe` takes one of the two live URIs: `sipnab://live/dialogs`, or
+`sipnab://live/dialogs/<Call-ID>` for one dialog.
 `notifications/resources/updated` follows when what that URI returns changes.
 `resources/unsubscribe` stops it.
 
@@ -712,7 +733,7 @@ name, and nothing in JSON separates it from sipnab's own words.
 Capture-derived **free text** therefore arrives fenced:
 
 ```text
-⟦untrusted-capture-data⟧INVITE sip:bob@example.com SIP/2.0…⟦/untrusted-capture-data⟧
+⟦untrusted-capture-data⟧alice⟦/untrusted-capture-data⟧
 ```
 
 Tools whose results carry capture data also add a provenance note that names

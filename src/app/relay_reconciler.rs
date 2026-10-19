@@ -73,7 +73,7 @@ fn run<R: ReadOnlyRelay>(
                         // A relay saying "not mine" about traffic that is not
                         // its own is the expected answer, not news.
                         Unattributed::RelayDoesNotHoldIt => {}
-                        _ => tracing::info!("rtpengine at {relay}: {line}"),
+                        _ => tracing::info!("{relay}: {line}"),
                     }
                     reported = Some(line);
                 }
@@ -91,7 +91,7 @@ fn run<R: ReadOnlyRelay>(
     }
 
     tracing::info!(
-        "rtpengine at {relay}: {asked} unexplained stream(s) offered, \
+        "{relay}: {asked} unexplained stream(s) offered, \
          {attributed} attributed, {} control transaction(s) spent of a \
          ceiling of {}",
         reconciler.transactions(),
@@ -159,7 +159,9 @@ mod tests {
         }
 
         fn describe(&self) -> String {
-            "10.0.0.2:22222".to_owned()
+            // The shape the real client gives: the relay as the subject of a
+            // sentence. See `the_doubles_describe_a_relay_as_the_client_does`.
+            "rtpengine at 10.0.0.2:22222".to_owned()
         }
         fn statistics(
             &self,
@@ -301,12 +303,46 @@ mod tests {
         }
 
         fn describe(&self) -> String {
-            "10.0.0.2:22222".to_owned()
+            // The shape the real client gives: the relay as the subject of a
+            // sentence. See `the_doubles_describe_a_relay_as_the_client_does`.
+            "rtpengine at 10.0.0.2:22222".to_owned()
         }
 
         fn statistics(&self, _permit: &TransmitPermit) -> anyhow::Result<ControlReply> {
             anyhow::bail!("this double answers no statistics")
         }
+    }
+
+    /// The doubles above describe a relay the way the real client does, so the
+    /// lines this loop builds around `describe` are tested in the shape an
+    /// operator reads. A double returning a bare address hid "rtpengine at
+    /// rtpengine at" from every test here.
+    #[test]
+    fn the_doubles_describe_a_relay_as_the_client_does() -> Result<(), TestError> {
+        let client = crate::rtpengine::control::ControlClient::new(
+            "10.0.0.2:22222".parse()?,
+            std::time::Duration::from_secs(1),
+        );
+        assert_eq!(
+            ReadOnlyRelay::describe(&client),
+            ReadOnlyRelay::describe(&OneCallRelay)
+        );
+        Ok(())
+    }
+
+    /// No line names the relay twice.
+    #[test]
+    fn no_line_names_the_relay_twice() -> Result<(), TestError> {
+        let logs = run_logged(
+            Reconciler::new(UnhelpfulRelay {
+                down: true,
+                unreadable: Vec::new(),
+            }),
+            &[30000],
+        )?;
+        assert!(logs.contains("rtpengine at 10.0.0.2:22222: "), "{logs}");
+        assert!(!logs.contains("rtpengine at rtpengine at"), "{logs}");
+        Ok(())
     }
 
     /// A relay that is down answers the same way for every socket, so the

@@ -146,11 +146,25 @@ answers without sending anything:
 sipnab --vcon-spool-status spool
 ```
 
-It prints one JSON document. Trimmed:
+It prints one JSON document. After one delivery and one refusal, it reads:
 
-```text
+```json
 {
-  …
+  "schema_version": 1,
+  "as_of": "2026-10-18T15:40:37.928Z",
+  "note": "A snapshot of files on disk at as_of. The vCon forwarder (sipnab --vcon-forward) is a separate process that moves files out of the spool; whatever produced this answer sends, fetches, moves and deletes nothing. The delivered and failed directories are the forwarder's defaults beside the spool; a forwarder started with --vcon-forward-done or --vcon-forward-failed moves files elsewhere, and those are not counted.",
+  "spool": {
+    "path": "spool",
+    "exists": true
+  },
+  "delivered_dir": {
+    "path": "spool/delivered",
+    "exists": true
+  },
+  "failed_dir": {
+    "path": "spool/failed",
+    "exists": true
+  },
   "pending": 0,
   "delivered": 1,
   "failed": 1,
@@ -158,7 +172,7 @@ It prints one JSON document. Trimmed:
     {
       "file": "1-1966_10.0.2.20-1cc03f180ff8a774.vcon.json",
       "record": {
-        "at": "2026-10-16T11:47:53Z",
+        "at": "2026-10-18T15:40:29Z",
         "body": "{\"error\": \"vCon already exists\"}",
         "body_truncated": false,
         "file": "1-1966_10.0.2.20-1cc03f180ff8a774.vcon.json",
@@ -169,7 +183,9 @@ It prints one JSON document. Trimmed:
       }
     }
   ],
-  …
+  "returned": 1,
+  "truncated": false,
+  "next_cursor": null
 }
 ```
 

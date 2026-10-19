@@ -303,10 +303,11 @@ pub fn build_long_version() -> String {
 
 /// List of Cargo features compiled into this binary.
 ///
-/// Walked statically via `cfg!(feature = "...")`. Every feature declared in
-/// `Cargo.toml` other than the `default` and `full` aggregates appears here,
-/// which `compiled_features_names_every_feature_cargo_declares` enforces
-/// against the manifest. Returns an empty vector when no listed feature is
+/// Walked statically, one `cfg!(feature = "<name>")` per feature. Every
+/// feature declared in `Cargo.toml` other than the `default` and `full`
+/// aggregates appears here, which
+/// `compiled_features_names_every_feature_cargo_declares` enforces against
+/// the manifest. Returns an empty vector when no listed feature is
 /// enabled.
 ///
 /// The list is not cosmetic. `--uprobe-backend bpf` refuses on a binary
@@ -1691,9 +1692,11 @@ pub struct OutputArgs {
     /// operator who kept these lines can answer "is the container you have the
     /// one we sent?" without trusting either side's metadata.
     ///
-    /// The format is `sha256sum`'s, so `sipnab ... --vcon-digest > SHA256SUMS`
-    /// and a later `sha256sum -c SHA256SUMS` both work with no glue. It implies
-    /// `--no-cli-print`, so no message line shares stdout with the digests.
+    /// The format is `sha256sum`'s, so `sipnab -N -I capture.pcap
+    /// --export-vcon-when "state == 'Failed'" --export-vcon-dir ./vcons
+    /// --vcon-digest > SHA256SUMS` and a later `sha256sum -c SHA256SUMS` both
+    /// work with no glue. It implies `--no-cli-print`, so no message line
+    /// shares stdout with the digests.
     #[arg(help_heading = "Output", long = "vcon-digest")]
     pub vcon_digest: bool,
 
@@ -1808,10 +1811,10 @@ pub struct OutputArgs {
     #[arg(help_heading = "Output", short = 'A', long = "after", value_name = "N")]
     pub after: Option<usize>,
 
-    /// Show the full header block of messages that have no body (responses,
-    /// OPTIONS, REGISTER, ACK, BYE, ...). Without this, bodyless messages show
-    /// only their one-line summary; messages that carry a body always show
-    /// their full detail.
+    /// Show the full header block of messages that have no body, such as most
+    /// responses and OPTIONS, REGISTER, ACK and BYE requests. Without this,
+    /// bodyless messages show only their one-line summary; messages that
+    /// carry a body always show their full detail.
     #[arg(help_heading = "Output", long, visible_alias = "full")]
     pub show_empty: bool,
 
@@ -3238,7 +3241,9 @@ pub struct ListenerArgs {
     pub api_max_rows: Option<u64>,
 
     /// Let REST clients query the relay named by `--rtpengine-control`
-    /// (`GET /v1/relay/...`), which transmits.
+    /// through the six `GET /v1/relay/` routes (`stats`, `stats/names`,
+    /// `stats/call/{call_id}`, `compare/{call_id}`, `holdings` and
+    /// `holdings/{call_id}`), which transmit.
     ///
     /// The REST counterpart of `--mcp-allow-relay-query`, off for the same
     /// reason: every other REST answer comes from bytes sipnab already holds,
@@ -4877,8 +4882,10 @@ pub struct TokenArgs {
     /// the server has enabled them with `--allow-action`. A `full` token never
     /// reaches an action. REST and MCP tokens.
     ///
-    /// An `audio` token reaches the live call audio routes, `/v1/calls/...`,
-    /// and nothing else; no other scope reaches them. REST API tokens only.
+    /// An `audio` token reaches the live call audio routes, `GET
+    /// /v1/calls/live`, `GET /v1/calls/live/events` and `GET
+    /// /v1/calls/{call_id}/audio`, and nothing else; no other scope reaches
+    /// them. REST API tokens only.
     #[arg(
         help_heading = "Token minting",
         long = "token-scope",
@@ -6637,8 +6644,9 @@ impl Cli {
     /// # Errors
     ///
     /// When the spec is not two ports separated by `-` with start <= end:
-    /// `crate::Error::CliValidation` ("Invalid --ws-portrange: ...") for the
-    /// flag, `crate::Error::ConfigInvalid` naming `[capture] ws_ports` for the
+    /// `crate::Error::CliValidation` for the flag, such as "Invalid
+    /// --ws-portrange: Expected format 'start-end' (e.g., '5060-5061'), got
+    /// '80'", and `crate::Error::ConfigInvalid` naming `[capture] ws_ports` for the
     /// key. The kind is the origin: the caller derives the exit code from it.
     pub fn ws_port_range(
         &self,
@@ -7887,8 +7895,8 @@ impl Cli {
     /// Parse CLI arguments from the real process arguments.
     ///
     /// # Side effects
-    /// Reads the process argument list and the `env = "..."`-tagged
-    /// environment variables (e.g. `SIPNAB_API_KEY`); on a parse error,
+    /// Reads the process argument list and the environment variables an
+    /// `env` attribute names (e.g. `SIPNAB_API_KEY`); on a parse error,
     /// `--help`, or `--version`, clap prints to stdout/stderr and exits
     /// the process without returning.
     pub fn parse_args() -> Self {
@@ -8138,7 +8146,7 @@ impl Cli {
     ///   name, exactly as in a real `argv`.
     ///
     /// # Side effects
-    /// Reads the `env = "..."`-tagged environment variables; on a parse
+    /// Reads the environment variables an `env` attribute names; on a parse
     /// error clap prints the error and exits the process.
     pub fn parse_from_args<I, T>(args: I) -> Self
     where
@@ -8161,7 +8169,7 @@ impl Cli {
     /// The `clap::Error` the binary would print, carrying its exit code.
     ///
     /// # Side effects
-    /// Reads the `env = "..."`-tagged environment variables.
+    /// Reads the environment variables an `env` attribute names.
     pub fn try_parse_from_args<I, T>(args: I) -> Result<Self, clap::Error>
     where
         I: IntoIterator<Item = T>,
@@ -9056,8 +9064,8 @@ mod tests {
         Ok(())
     }
 
-    /// `--help` is for the operator: no flag's help carries a rustdoc link
-    /// (`[`Cli::...`]`) or explains how clap fills the field. That reasoning
+    /// `--help` is for the operator: no flag's help carries a rustdoc link to
+    /// a `Cli` field or explains how clap fills the field. That reasoning
     /// belongs in a `//` comment beside the field, which `--help` never prints.
     #[test]
     fn no_flag_help_prints_maintainer_notes() {
@@ -9400,8 +9408,9 @@ mod tests {
 
     /// `--version` names the libpcap this process runs, on a line of its own
     /// under the build line, so the build line every parser and every doc
-    /// sample reads (`sipnab X.Y.Z (…) features: …`) is unchanged. `-V` stays
-    /// that one line.
+    /// sample reads (such as `sipnab 0.5.225 (e7f9d549) features:
+    /// native,tui,audio,tls,hep,api,mcp,mcp-http,metrics,plugins,vcon,opus,archive,g729`)
+    /// is unchanged. `-V` stays that one line.
     #[test]
     fn long_version_adds_the_running_libpcap_on_its_own_line() -> Result<(), TestError> {
         use clap::CommandFactory;
@@ -10908,8 +10917,8 @@ mod tests {
     ///
     /// Both implications, and the case where the second one must NOT fire. A
     /// vCon is a single JSON document: a per-message line printed beside it
-    /// makes the file unparseable, and `sipnab ... --export-vcon <id> >
-    /// call.vcon` is the invocation an operator reaches for first. With
+    /// makes the file unparseable, and `sipnab -I capture.pcap --export-vcon
+    /// <call-id> > call.vcon` is the invocation an operator reaches for first. With
     /// `--vcon-out` the container is elsewhere, so suppressing `--json` there
     /// would silently discard output the operator asked for.
     /// The two flags need each other, and clap refuses either alone.

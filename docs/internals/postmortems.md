@@ -392,13 +392,11 @@ linking test binaries."
 
 **What happened**
 
-On 2026-09-01 a CI job stopped with the error recorded at the top of
-[`.github/actions/free-disk/action.yml`](../../.github/actions/free-disk/action.yml):
-
-```text
-System.IO.IOException: No space left on device :
-  '/home/runner/actions-runner/cached/2.337.0/_diag/Worker_....log'
-```
+On 2026-09-01 a CI job stopped with `System.IO.IOException: No space left on
+device`, raised while the runner wrote one of its own `Worker_` log files under
+`/home/runner/actions-runner/cached/2.337.0/_diag/`. The comment at the top of
+[`.github/actions/free-disk/action.yml`](../../.github/actions/free-disk/action.yml)
+records the error. The full file name was not recorded.
 
 The process that failed was the runner's own logger, so the job produced no
 build output, no test names and no last message. The fix commit, `15fa67c9`,
@@ -938,7 +936,7 @@ reported a NAT problem on a trunk that did not have one.
 
 Where sipnab produces the messages the notes quote:
 
-- `TLS late decrypt: recovered N record(s) ...`: [`src/capture/decrypt.rs`](../../src/capture/decrypt.rs).
+- `TLS late decrypt: recovered <N> record(s) that arrived before their keys`: [`src/capture/decrypt.rs`](../../src/capture/decrypt.rs).
 - The `discarded` and `still waiting` end-of-run lines: `late_hold_guidance`
   in [`src/app/batch.rs`](../../src/app/batch.rs). The limits it prints come from
   `REWIND_BUDGET_BYTES`, `MAX_REWIND_PER_DIRECTION` and `REWIND_MAX_AGE_SECS`

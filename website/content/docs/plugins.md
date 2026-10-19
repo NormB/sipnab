@@ -155,7 +155,7 @@ Return findings in this shape:
 
 ```json
 { "findings": [ { "id": "short-answered-call",
-                  "summary": "Call answered and torn down after 2.2s …",
+                  "summary": "Call answered and torn down after 2.2s (under 5s) — check routing, codec negotiation, or dial fraud.",
                   "evidence": [3, 5] } ] }
 ```
 

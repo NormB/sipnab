@@ -116,8 +116,8 @@ A call through each proxy then appears in the report, one row per call.
 
 ## When something does not work
 
-- **sipnab reports `No SIP signaling found, but ... RTP packets across ...
-  stream(s) were parsed`.**
+- **sipnab reports a line such as `No SIP signaling found, but 839 RTP packets
+  across 2 stream(s) were parsed.`** The counts are your run's own.
   - It saw the call's audio, which uses other ports, but none of its SIP.
   - OpenSIPS listens on a port outside 5060-5061, the range sipnab watches by
     default.

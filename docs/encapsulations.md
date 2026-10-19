@@ -10,7 +10,7 @@ after it give:
 
 ## Can sipnab read my capture?
 
-| Your SIP travels inside… | From a capture file | From a live capture |
+| Your SIP travels inside | From a capture file | From a live capture |
 |---|---|---|
 | Ethernet, Linux cooked (`any`), raw IP, loopback, PPP or PPPoE | yes | yes |
 | VLAN tags: 802.1Q, 802.1ad, QinQ, or legacy `0x9100` | yes | yes |
@@ -43,10 +43,10 @@ This capture carries SIP and RTP inside PPPoE, on a Linux cooked v2 link.
 Output:
 
 ```text
-… INFO sipnab::capture::file: Reading from 'tests/pcap-samples/linux-sll2-pppoe.pcap'
-… INFO sipnab::capture::file: File reader finished: 27 packets total, through 'tests/pcap-samples/linux-sll2-pppoe.pcap'
-… INFO sipnab::capture::file: Read 27 packets: 1 of 1 file(s) read in full
-… INFO sipnab::app::batch: sipnab: 27 packets captured, 7 SIP messages, 20 RTP packets across 2 streams
+2026-10-18T15:22:21.376621Z  INFO sipnab::capture::file: Reading from 'tests/pcap-samples/linux-sll2-pppoe.pcap'
+2026-10-18T15:22:21.376908Z  INFO sipnab::capture::file: File reader finished: 27 packets total, through 'tests/pcap-samples/linux-sll2-pppoe.pcap'
+2026-10-18T15:22:21.376957Z  INFO sipnab::capture::file: Read 27 packets: 1 of 1 file(s) read in full
+2026-10-18T15:22:21.378110Z  INFO sipnab::app::batch: sipnab: 27 packets captured, 7 SIP messages, 20 RTP packets across 2 streams
 ```
 
 The 7 SIP messages and 20 RTP packets account for all 27 packets, and no
@@ -74,11 +74,13 @@ sipnab -N -I link147.pcap --no-cli-print
 ```
 
 ```text
-… WARN sipnab::capture::file: 'link147.pcap' has link type 147, which sipnab does not decode; its frames are counted as not decoded
-…
-… INFO sipnab::app::batch: sipnab: 2 packets captured, 0 SIP messages, 0 RTP packets across 0 streams
+2026-10-18T15:22:41.709205Z  WARN sipnab::capture::file: 'link147.pcap' has link type 147, which sipnab does not decode; its frames are counted as not decoded
+2026-10-18T15:22:41.709370Z  INFO sipnab::capture::file: Reading from 'link147.pcap'
+2026-10-18T15:22:41.709521Z  INFO sipnab::capture::file: File reader finished: 2 packets total, through 'link147.pcap'
+2026-10-18T15:22:41.709568Z  INFO sipnab::capture::file: Read 2 packets: 1 of 1 file(s) read in full
+2026-10-18T15:22:41.709954Z  INFO sipnab::app::batch: sipnab: 2 packets captured, 0 SIP messages, 0 RTP packets across 0 streams
 NOT DECODED: 2 of 2 frame(s) (100.0%) produced nothing and are in none of the counts above. Reasons: unsupported link type 147 (2). NOTHING IN THIS CAPTURE WAS READ — every frame failed to decode, so the totals above describe no traffic whatsoever and a zero among them is not evidence of absence.
-…
+2026-10-18T15:22:41.710079Z  WARN sipnab::app::batch: capture quality: 2 frame(s) reached sipnab intact and could not be decoded at all, so nothing in them was analyzed (see the NOT DECODED line above for which link types, EtherTypes and IP protocols). THIS ANALYSIS IS INCOMPLETE — the counts above are what sipnab RECEIVED AND UNDERSTOOD, not what crossed the wire. See docs/tuning-capture.md.
 No SIP traffic was decoded — but 2 of 2 frame(s) (100.0%) could not be decoded at all, so this is not a finding that the capture contains no SIP. Undecodable: unsupported link type 147 (2).
 Fix the decode before reading anything into the zero above: convert the capture (editcap -T ether) or open an issue naming the number(s) reported.
 ```

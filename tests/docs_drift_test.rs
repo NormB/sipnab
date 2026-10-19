@@ -484,6 +484,22 @@ const FOREIGN_FLAGS: &[(&str, &[&str])] = &[
             "website/content/docs/examples.md",
         ],
     ),
+    // `vcon_validate.py --schema` names the schema file the program reads;
+    // the runnable-examples page passes it so the path it prints is relative.
+    (
+        "schema",
+        &[
+            "docs/client-examples.md",
+            "website/content/docs/examples.md",
+        ],
+    ),
+    // Not a flag: the tail of a real base64url `content_hash` in the
+    // container docs/vcon.md shows in full. The digest happens to hold two
+    // hyphens in a row, and the text after them reads like a long flag.
+    (
+        "zsLkac2IZWwJw3N-OOF0St7v9OypVrWg",
+        &["docs/vcon.md", "website/content/docs/vcon.md"],
+    ),
     // More of the example programs' own options, which the runnable-examples
     // page shows in the commands that try each program: `leg_correlate.py`
     // takes `--key-file`, `--proxy` and `--relay`, and `customer_export.py`
@@ -1328,13 +1344,6 @@ const FOREIGN_FLAGS: &[(&str, &[&str])] = &[
             "docs/internals/tui-testing.md",
             "website/content/docs/internals/build-ci-release.md",
             "website/content/docs/internals/tui-testing.md",
-        ],
-    ),
-    (
-        "install-",
-        &[
-            "docs/internals/README.md",
-            "website/content/docs/internals/_index.md",
         ],
     ),
     (
@@ -2299,7 +2308,7 @@ const CUT_MARKER_SITES: &[(&str, &str)] = &[
     ),
     (
         "docs/mcp-deploy.md",
-        r"(?m)^\s*# sipnab (\d+\.\d+\.\d+) \(\.\.\.\) features:",
+        r"(?m)^\s*sipnab (\d+\.\d+\.\d+) \(<hash>\) features:",
     ),
 ];
 

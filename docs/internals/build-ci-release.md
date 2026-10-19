@@ -218,8 +218,9 @@ All of that lives in [`ops/tsan/verdict.sh`](../../ops/tsan/verdict.sh), not inl
 The inline version had to move because it was wrong in the direction nobody checks.
 
 - `run:` blocks execute under `bash -e -o pipefail`.
-- So its bare `grep … | while read` warning loop exited 1
-  on a tree with **no** findings.
+- So its warning loop exited 1 on a tree with **no** findings. The loop was
+  `grep -hoE 'WARNING: ThreadSanitizer: [a-z -]+' $LOGS | sort -u | while read -r w; do`,
+  and `grep` exits 1 when nothing matches.
 - That killed the step before it could report.
 - The job failed silently when clean and passed while a thread leak was present.
 
@@ -666,7 +667,7 @@ It is now generated at deploy time:
   - It applies the same script to it, and writes `website/data/test-count.toml`.
   - It then runs `zola build`.
   - It fails the deploy if the built homepage does not state that number.
-- The template loads the file with `load_data(..., required=false)`.
+- The template loads the file with `load_data(path="data/test-count.toml", required=false)`.
   - A local `zola build` has no file.
   - So it renders "Every PR" on the tile and a sentence with no number in the feature table,
     instead of a stale count.
@@ -845,8 +846,8 @@ Four places pulled from it, and each now does something else:
 - `docker/setup-buildx-action` in `docker.yml`:
   - It pulled its BuildKit engine, `moby/buildkit:buildx-stable-1`.
   - `driver-opts` now names that engine on `mirror.gcr.io`, pinned by version and digest.
-- BuildKit resolved the `Dockerfile`'s `FROM rust:...` and
-  `FROM debian:...` against Docker Hub.
+- BuildKit resolved the `Dockerfile`'s `FROM rust:` and
+  `FROM debian:` images against Docker Hub.
   - A `[registry."docker.io"]` mirror in `buildkitd-config-inline` sends those pulls to `mirror.gcr.io`,
     Google's cache of Docker Hub.
   - The change leaves the `Dockerfile` text and its digests as they were.
@@ -1191,7 +1192,7 @@ That log describes the **last** run and nothing before it.
 - Its absence means the most recent one passed.
 - Without that removal, a failure written weeks ago outlives every green push after it.
   - A reader who finds it has no way to date it.
-  - That happened, twice, with a `... FAILED` line that no run of the real corpus had ever produced.
+  - That happened, twice, with a `test <name> ... FAILED` line that no run of the real corpus had ever produced.
 
 **Why the `corpus` profile.** Measured on a 14-core machine against an 8.8 GB
 corpus of 137 files with a warm page cache.
@@ -1836,7 +1837,7 @@ The crash report records what the symbol file needs:
 - the build ID or UUID of the executable
 - its load base
 - the target triple
-- the raw address of every frame as `sipnab+0x…`
+- the raw address of every frame, in the form `sipnab+0x1233`
 
 The number after `+` is the address inside the file.
 That is the form `addr2line`, `llvm-symbolizer` and `atos` take.
@@ -1858,9 +1859,10 @@ The same commit builds to the same bytes.
 - Before this, two release builds of one commit gave two different stripped binaries.
   - The setup: aarch64-unknown-linux-gnu, `full,bpf`, the same toolchain, on the same host.
   - They differed only in the directory each clone sat in.
-  - Results: sha256 `8ef34f72…` and `7a7f8491…`, 593 bytes apart, with different GNU build IDs.
-- After the four fixes below, the same two builds gave one stripped binary (`fe3ce06a…`)
-  and one symbol file (`de8a58da…`), build ID `ea4467f7…` in both.
+  - Results: two binaries whose sha256 values begin `8ef34f72` and `7a7f8491`, 593 bytes apart,
+    with different GNU build IDs. The full values were not recorded.
+- After the four fixes below, the same two builds gave one stripped binary, sha256 beginning `fe3ce06a`,
+  and one symbol file, sha256 beginning `de8a58da`, with a build ID beginning `ea4467f7` in both.
   - The second build also had its own empty `$CARGO_HOME`.
 
 The causes:
@@ -1868,7 +1870,7 @@ The causes:
 - **Absolute paths in the eBPF object.**
   - `build.rs` embeds the kernel programs.
     They keep their debug info because the loader needs the BTF.
-  - The BTF named the checkout (`…/bpf/src/main.rs`), `$CARGO_HOME` and the
+  - The BTF named the checkout (the absolute path of [`bpf/src/main.rs`](../../bpf/src/main.rs)), `$CARGO_HOME` and the
     `rust-src` of the nightly by absolute path.
   - The nested eBPF build set its own `CARGO_ENCODED_RUSTFLAGS`.
     So nothing from the outer build reached it.
@@ -1876,7 +1878,7 @@ The causes:
     It remaps the directory of that nightly to `/rustc-sysroot`
     ([`build_script/bpf_flags.rs`](../../build_script/bpf_flags.rs)).
 - **`$CARGO_HOME` in the binary and in the DWARF.**
-  - Panic locations in registry crates name `$CARGO_HOME/registry/src/…`, 784 times in the
+  - Panic locations in registry crates name paths under `$CARGO_HOME/registry/src/`, 784 times in the
     stripped aarch64 binary.
   - Every C object from `ring` and `mimalloc` names it in its DWARF too.
   - The DWARF does not ship.
@@ -1889,9 +1891,9 @@ The causes:
 - **A path hash in the eBPF object's symbols.**
   - With the paths remapped, the objects still differed in every mangled symbol of the kernel crate:
     `_RNvCs4NQPM85LhFw_10sipnab_bpf15try_tcp_sendmsg` in one,
-    `_RNvCsh7SSX6Ne1ig_…` in the other.
+    a symbol beginning `_RNvCsh7SSX6Ne1ig_` in the other.
   - Cargo hashes a path dependency outside the workspace root into `-C metadata` by its ABSOLUTE path.
-  - [`bpf/Cargo.toml`](../../bpf/Cargo.toml) reached `crates/sipnab-bpf-types` as `../crates/…`.
+  - [`bpf/Cargo.toml`](../../bpf/Cargo.toml) reached `crates/sipnab-bpf-types` as `../crates/sipnab-bpf-types`.
   - It now reaches it through the symlink [`bpf/sipnab-bpf-types`](../../bpf/sipnab-bpf-types).
     That symlink is inside its own workspace root and excluded from that workspace.
   - So cargo hashes the relative path.
@@ -1993,7 +1995,7 @@ Cutting a release renames it to `## [x.y.z] - <date>`.
 
 - That heading is load-bearing rather than decorative.
 - `no_changelog_entry_precedes_its_version_heading`
-  requires every `###` section to sit under some `## [...]`.
+  requires every `###` section to sit under a `## [` heading, a version or `Unreleased`.
 - So entries added without one are orphans and fail.
 - The gate accepts `Unreleased` precisely so work can accumulate between releases without doing that.
 

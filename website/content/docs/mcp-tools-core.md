@@ -688,7 +688,7 @@ The example runs against [`tests/pcap-samples/sipp-branch-scenario.pcapng`](http
     {
       "call_id": "call-1-synth@192.0.2.10",
       "message_index": 0,
-      "snippet": "⟦untrusted-capture-data⟧REGISTER sip:example.net SIP/2.0\nVia: SIP/2.0/UDP 192.0.2.10:5061…⟦/untrusted-capture-data⟧"
+      "snippet": "⟦untrusted-capture-data⟧REGISTER sip:example.net SIP/2.0\nVia: SIP/2.0/UDP 192.0.2.10:5061;branch=z9hG4bK-synth-1-reg\nFrom: <sip:ua-a@example.net>;tag=synthtag-a-1\nTo: <sip:ua-a@example.net>\nCall-ID: call-1-synth@192.0.2.10\nCSeq: 1 REGISTER\nContact: <sip:ua-a@192.0.2.10:5061>\nMax-Forwards: 70\nExpires: 300\nUser-Agent: SynthLoad/1.0\nContent-Length: 0\n\n⟦/untrusted-capture-data⟧"
     }
   ],
   "returned": 1,
@@ -701,7 +701,9 @@ The example runs against [`tests/pcap-samples/sipp-branch-scenario.pcapng`](http
     "instance": "12100b18cb6971cf461cff-1",
     "dialog_generation": 9015,
     "stream_generation": 0
-  }
+  },
+  "source_exhausted": true,
+  "source_stopped_early": false
 }
 ```
 
@@ -966,26 +968,143 @@ need the dialog. [`media_diagnostics`](@/docs/mcp-tools-media.md#media-diagnosti
 [`explain_attribution`](@/docs/mcp-tools-media.md#explain-attribution) and
 [`export_audio`](@/docs/mcp-tools-media.md#export-audio) follow the same rule.
 
+The example runs against [`tests/fixtures/rtpengine-ng-hep.pcap`](https://github.com/NormB/sipnab/raw/main/tests/fixtures/rtpengine-ng-hep.pcap),
+a capture taken beside an rtpengine relay: the relay's media and its `ng`
+control messages, mirrored over HEP, and no SIP.
+
 ```jsonc
-// rtp_stats { "call_id": "B2B.201.6748799.1790773715.1438467624" }, on the relay host
+// rtp_stats { "call_id": "km-670bd208@sipnab" }, on the relay host
 {
-  "call_id": "B2B.201.6748799.1790773715.1438467624",
-  "dialog_seen": false,
-  "dialog_absent": {
-    "reason": "relay-asserted-but-no-dialog",
-    "note": "a relay named this endpoint but no captured dialog claims it -- the signaling is missing, not the media"
+  "call_id": "km-670bd208@sipnab",
+  "diagnosis": {
+    "actual_media": null,
+    "hints": [],
+    "nat_mismatch": false,
+    "no_media": false,
+    "one_way_audio": false,
+    "private_media_address": false,
+    "sdp_media": null
   },
+  "dialog_absent": {
+    "note": "a relay named this endpoint but no captured dialog claims it -- the signaling is missing, not the media",
+    "reason": "relay-asserted-but-no-dialog"
+  },
+  "dialog_seen": false,
+  "source_exhausted": true,
+  "source_stopped_early": false,
   "streams": [
-    { "associated_dialog": "B2B.201.6748799.1790773715.1438467624", "dialog_assertion": "media-relay", "src": "192.0.2.70:41004", "dst": "192.0.2.71:31004", "codec": "PCMU", "mos": 4.36 /* ... */ },
-    { "associated_dialog": "B2B.201.6748799.1790773715.1438467624", "dialog_assertion": "media-relay", "src": "192.0.2.71:31004", "dst": "192.0.2.70:41004", "codec": "PCMU", "mos": 4.36 /* ... */ }
-  ],
-  "diagnosis": { "one_way_audio": false, "nat_mismatch": false, "no_media": false, "sdp_media": null /* ... */ }
+    {
+      "associated_dialog": "km-670bd208@sipnab",
+      "codec": "PCMU",
+      "dialog_assertion": "media-relay",
+      "dscp": 0,
+      "dst": "192.0.2.40:38156",
+      "first_seen": "2026-08-22T13:56:42.573815+00:00",
+      "frame": "tests/fixtures/rtpengine-ng-hep.pcap#4@35b719bbf798f4ea",
+      "input_origin": "wire",
+      "jitter_ms": 2.022232578513446,
+      "last_seen": "2026-08-22T13:56:42.703310+00:00",
+      "loss_pct": 0.0,
+      "mos": 4.356973136394162,
+      "mos_grounded": true,
+      "mos_grounding": "published",
+      "octets": 1600,
+      "orphaned": false,
+      "packets": 10,
+      "payload_type": 0,
+      "quality_intervals": [],
+      "r_factor": 90.75146641811568,
+      "round_trip_note": "Not measured. No endpoint reported a round trip for this stream, so latency is unknown rather than good — a stream with clean jitter and no loss can still be unusable on delay alone (ITU-T G.114).",
+      "schema_version": 1,
+      "src": "192.0.2.60:40001",
+      "ssrc": "0x0a0a0a0a"
+    },
+    {
+      "associated_dialog": "km-670bd208@sipnab",
+      "codec": "PCMU",
+      "dialog_assertion": "media-relay",
+      "dscp": 0,
+      "dst": "192.0.2.40:38664",
+      "first_seen": "2026-08-22T13:56:42.574022+00:00",
+      "frame": "tests/fixtures/rtpengine-ng-hep.pcap#5@469e66503bea6af2",
+      "input_origin": "wire",
+      "jitter_ms": 2.046507324206162,
+      "last_seen": "2026-08-22T13:56:42.703590+00:00",
+      "loss_pct": 0.0,
+      "mos": 4.356959543697432,
+      "mos_grounded": true,
+      "mos_grounding": "published",
+      "octets": 1600,
+      "orphaned": false,
+      "packets": 10,
+      "payload_type": 0,
+      "quality_intervals": [],
+      "r_factor": 90.75088382421906,
+      "round_trip_note": "Not measured. No endpoint reported a round trip for this stream, so latency is unknown rather than good — a stream with clean jitter and no loss can still be unusable on delay alone (ITU-T G.114).",
+      "schema_version": 1,
+      "src": "192.0.2.60:40002",
+      "ssrc": "0x0b0b0b0b"
+    },
+    {
+      "associated_dialog": "km-670bd208@sipnab",
+      "codec": "PCMU",
+      "dialog_assertion": "media-relay",
+      "dscp": 46,
+      "dst": "192.0.2.60:40002",
+      "first_seen": "2026-08-22T13:56:42.574076+00:00",
+      "frame": "tests/fixtures/rtpengine-ng-hep.pcap#10@8b04e2c5c48ed5d7",
+      "input_origin": "wire",
+      "jitter_ms": 2.031961874504501,
+      "last_seen": "2026-08-22T13:56:42.703329+00:00",
+      "loss_pct": 0.0,
+      "mos": 4.356967688517729,
+      "mos_grounded": true,
+      "mos_grounding": "published",
+      "octets": 1600,
+      "orphaned": false,
+      "packets": 10,
+      "payload_type": 0,
+      "quality_intervals": [],
+      "r_factor": 90.7512329150119,
+      "round_trip_note": "Not measured. No endpoint reported a round trip for this stream, so latency is unknown rather than good — a stream with clean jitter and no loss can still be unusable on delay alone (ITU-T G.114).",
+      "schema_version": 1,
+      "src": "192.0.2.40:38664",
+      "ssrc": "0x0a0a0a0a"
+    },
+    {
+      "associated_dialog": "km-670bd208@sipnab",
+      "codec": "PCMU",
+      "dialog_assertion": "media-relay",
+      "dscp": 46,
+      "dst": "192.0.2.60:40001",
+      "first_seen": "2026-08-22T13:56:42.574368+00:00",
+      "frame": "tests/fixtures/rtpengine-ng-hep.pcap#13@2b2dddd808797713",
+      "input_origin": "wire",
+      "jitter_ms": 2.0601200296705646,
+      "last_seen": "2026-08-22T13:56:42.703609+00:00",
+      "loss_pct": 0.0,
+      "mos": 4.356951920999921,
+      "mos_grounded": true,
+      "mos_grounding": "published",
+      "octets": 1600,
+      "orphaned": false,
+      "packets": 10,
+      "payload_type": 0,
+      "quality_intervals": [],
+      "r_factor": 90.7505571192879,
+      "round_trip_note": "Not measured. No endpoint reported a round trip for this stream, so latency is unknown rather than good — a stream with clean jitter and no loss can still be unusable on delay alone (ITU-T G.114).",
+      "schema_version": 1,
+      "src": "192.0.2.40:38156",
+      "ssrc": "0x0b0b0b0b"
+    }
+  ]
 }
 ```
 
 sipnab refuses a Call-ID that neither a dialog nor any stream carries, with
-invalid_params (-32602) and a message naming both searches: `no SIP dialog and
-no RTP stream associated with call_id '…' in this capture`. On a relay host that
+invalid_params (-32602) and a message naming both searches. For a Call-ID
+`nope@192.0.2.1` it reads `no SIP dialog and no RTP stream associated with
+call_id 'nope@192.0.2.1' in this capture`. On a relay host that
 means the call never crossed this relay, not that the lookup failed.
 
 ```jsonc

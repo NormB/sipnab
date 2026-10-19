@@ -190,8 +190,8 @@ Every node stamps its answers with its own `capture_identity`. It carries the
 host name:
 
 ```bash
-curl -fsS "http://192.0.2.40:8080/v1/stats" $H | jq '.capture_identity'
-# { "node": "relay-a", "instance": "1f4a…", "dialog_generation": 412, … }
+curl -fsS "http://192.0.2.40:8080/v1/stats" $H | jq -c '.capture_identity'
+# {"dialog_generation":412,"instance":"9e22818dfa9f0a876b200-2","node":"relay-a","stream_generation":0}
 ```
 
 When you collect replies from several hosts, read `capture_identity.node` to

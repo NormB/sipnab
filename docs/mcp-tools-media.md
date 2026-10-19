@@ -279,22 +279,37 @@ The example runs against
 // explain_attribution { "call_id": "1-1966@10.0.2.20" }
 {
   "call_id": "1-1966@10.0.2.20",
+  "capture_identity": {
+    "dialog_generation": 13,
+    "instance": "572e018dfa940a777835e-2",
+    "node": "capture-01",
+    "stream_generation": 2
+  },
+  "dialog_seen": true,
   "endpoints": [
     {
       "address": "10.0.2.15",
-      "port": 27942,
       "asserted_by": "signaled",
+      "delivery_note": "the parties' own claim in SDP, not a relay's statement about its allocation",
+      "delivery_trust": "not-relay-asserted",
       "input_origin": "wire",
       "observed_at": "2016-11-26T14:52:59.670743+00:00",
-      "delivery_trust": "not-relay-asserted",
-      "delivery_note": "the parties' own claim in SDP, not a relay's statement about its allocation"
+      "port": 27942
     },
-    …
+    {
+      "address": "10.0.2.20",
+      "asserted_by": "signaled",
+      "delivery_note": "the parties' own claim in SDP, not a relay's statement about its allocation",
+      "delivery_trust": "not-relay-asserted",
+      "input_origin": "wire",
+      "observed_at": "2016-11-26T14:53:08.286194+00:00",
+      "port": 6000
+    }
   ],
-  "unauthenticated_endpoints": 0,
-  "dialog_seen": true,
   "schema_version": 1,
-  …
+  "source_exhausted": true,
+  "source_stopped_early": false,
+  "unauthenticated_endpoints": 0
 }
 ```
 

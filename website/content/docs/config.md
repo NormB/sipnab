@@ -135,8 +135,9 @@ Four rules, and they hold everywhere a string does:
 - **`$$` is a literal `$`.** Write `$${NAME}` for a literal `${NAME}`.
 - **A bare `$NAME` is literal text.** Braces are the whole syntax.
 
-What a variable expands to is data. sipnab never scans it again. So a value
-that itself contains `${...}` stays as it is.
+What a variable expands to is data. sipnab never scans it again. So when a
+variable's value itself contains `${HOME}`, those seven characters stay as they
+are.
 
 `--dump-config` prints values after expansion. That is what sipnab is actually
 using.
@@ -401,7 +402,7 @@ See [Enrich a call before it is written](@/docs/vcon.md#enrich-a-call-before-it-
 | `rules` | array of strings | -- | The `[[vcon.rule]]` names whose calls go to this service. Required |
 | `url` | string | -- | Where sipnab POSTs the request: `https://`, or `http://` to a loopback address only. One of `url` and `command` |
 | `command` | string | -- | A program run per call, reading the request on stdin and answering on stdout. One of `url` and `command` |
-| `auth_file` | string | -- | A file holding one `Header-Name: value` line sent with each request, such as `Authorization: Bearer ...`. Never written to a container |
+| `auth_file` | string | -- | A file holding one `Header-Name: value` line sent with each request, such as `Authorization: Bearer <token>`. Never written to a container |
 | `timeout_secs` | integer | `120` | How long sipnab waits for the answer, in seconds, 1 to 3600. sipnab refuses any other value at startup, exit 1, naming the service |
 | `send` | array of strings | `["audio", "signaling"]` | What sipnab sends the service: `audio` (each leg's WAV), `signaling` (the container), or both. Sending audio turns audio retention on for the run |
 | `lawful_basis` | bool | `false` | Carry a `lawful_basis` attachment the service answers with, checked for the shape of draft-howe-vcon-lawful-basis-02 and recorded as the service's. With `false`, an answer holding any attachment is `malformed` |
@@ -1120,7 +1121,8 @@ interval = 10
 
 ### `[vcon_fetch]`
 
-The vCon fetcher's settings (`sipnab --vcon-fetch <UUID>...`, see
+The vCon fetcher's settings (`sipnab --vcon-fetch <UUID>`, which takes one or
+more uuids, see
 [Fetch a stored vCon](@/docs/vcon.md#fetch-a-stored-vcon)).
 
 - The uuids, `--vcon-fetch-out` and `--vcon-fetch-overwrite` stay on the
@@ -1187,7 +1189,7 @@ Privilege separation settings (Linux only).
 |-----|------|---------|-------------|
 | `user` | string | `"nobody"` | User to drop privileges to after opening capture devices. `--user` overrides it |
 | `no_priv_drop` | boolean | `false` | Disable privilege dropping. `--no-priv-drop` turns it on. `--priv-drop` forces it off |
-| `chroot` | string | -- | Chroot directory after initialization. It applies to every run, `-I` file analysis included, and changing root needs root privileges: a run as an ordinary user with this key set exits `1` with `Failed to chroot: ... Operation not permitted`. To analyze a file as an ordinary user, run with `-F` (read no config file) or give `--config` a file without this key. `--chroot` overrides it |
+| `chroot` | string | -- | Chroot directory after initialization. It applies to every run, `-I` file analysis included, and changing root needs root privileges: a run as an ordinary user with this key set exits `1`. With `chroot = "/var/lib/sipnab"` and that directory present, the error reads `Failed to chroot: chroot(/var/lib/sipnab) failed: Operation not permitted (os error 1)`. To analyze a file as an ordinary user, run with `-F` (read no config file) or give `--config` a file without this key. `--chroot` overrides it |
 
 ```toml
 [privilege]

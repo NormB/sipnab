@@ -402,8 +402,8 @@ rm -rf /usr/local/src/voice/sofia-sip /usr/local/src/voice/spandsp /usr/local/sr
 
 ## When something does not work
 
-- **The test call fails, and SIPp reports `Aborting call on unexpected message
-  ... received 'SIP/2.0 488 Not Acceptable Here`.**
+- **The test call fails, and SIPp aborts it on an unexpected message, the
+  response `SIP/2.0 488 Not Acceptable Here`.**
   - The callee answered with a codec FreeSWITCH had not offered it.
   - Without `absolute_codec_string`, FreeSWITCH offers the callee the caller's
     codec, PCMA.

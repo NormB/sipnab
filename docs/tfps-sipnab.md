@@ -70,7 +70,9 @@ Then check:
 sudo tfps_ctl status --json
 ```
 
-It prints one line of JSON, starting `{"enforcement":"active",...`. This build
+It prints one line of JSON. Its first member is `"enforcement":"active"`, and
+the members after it are `mode`, `interface`, `map`, `blocked_now`, `pairs`,
+`peers`, `last_checkpoint`, `db` and `version`. This build
 still calls itself `0.2.1` in that line. That is because master has not changed
 its version number since the release.
 
@@ -357,5 +359,6 @@ The `curl` commands from the same-machine section work unchanged.
   `PATH`.**
   - The service runs without `--tfps-ctl`, and its `PATH` has no `tfps_ctl`.
   - Name it with `--tfps-ctl`.
-- **`502` with `cannot run ...: No such file or directory`.** The path given to
-  `--tfps-ctl` does not exist. Check it.
+- **`502` with a `detail` such as `cannot run /opt/tfps/bin/tfps_ctl: No such
+  file or directory (os error 2)`.** The path given to `--tfps-ctl` does not
+  exist. Check it.

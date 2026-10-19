@@ -118,7 +118,9 @@ pub trait ReadOnlyRelay {
         anyhow::bail!("this relay has no per-call statistics form")
     }
 
-    /// Where this relay is, for messages an operator reads.
+    /// The relay as the subject of a sentence an operator reads, kind and
+    /// address together: `rtpengine at 192.0.2.1:2223`. Callers write
+    /// `"{describe}: ..."` and never add the kind again.
     fn describe(&self) -> String;
 }
 

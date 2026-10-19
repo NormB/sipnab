@@ -1537,70 +1537,15 @@ whose messages carry that header. It names the header in the problem detail.
 The batch export does not write that dialog either. See
 [When a container is missing on purpose](vcon.md#when-a-container-is-missing-on-purpose).
 
-**Response** (trimmed):
+**Response:** the container. Started with `--node-name capture-01` on
+[`tests/fixtures/sip_call.pcap`](https://github.com/NormB/sipnab/raw/main/tests/fixtures/sip_call.pcap), the server answers this request with the
+same members and values as the container that
+[Read what came out](vcon.md#read-what-came-out) shows in full for the same
+Call-ID, except `uuid` and `created_at`, which differ on every export. The
+server writes the members of each object in alphabetical order.
 
-- The `sip-message-trace` attachment carries one entry
-  per SIP message and grows with the call.
-- The Dialog Object also carries
-  `start` and, when the capture saw them, `sip_from_tag` and `sip_to_tag`.
-
-```json
-{
-  "vcon": "0.4.0",
-  "uuid": "018bcfe5-6800-8795-a667-78f1c5213800",
-  "created_at": "2026-08-24T22:03:38.989752721+00:00",
-  "extensions": ["sip-signaling", "CC"],
-  "parties": [
-    {
-      "sip": "sip:1001@192.0.2.1",
-      "validation": "none",
-      "sip_contact": "<sip:1001@192.0.2.1:5060>",
-      "sip_user_agent": "sipnab-test/1.0"
-    },
-    { "sip": "sip:1002@192.0.2.2", "validation": "none" },
-    {
-      "validation": "none",
-      "role": "observer",
-      "sip_user_agent": "sipnab/0.5.124 (observer; node capture-01)"
-    }
-  ],
-  "dialog": [{ "type": "recording", "sip_call_id": "test-call-1@192.0.2.1" }],
-  "attachments": [
-    { "purpose": "sip-message-trace", "party": 2, "mediatype": "application/json", "encoding": "json", "body": { "schema_version": 1, "messages": ["..."] } },
-    {
-      "purpose": "sipnab-capture-completeness",
-      "party": 2,
-      "mediatype": "application/json",
-      "encoding": "json",
-      "body": {
-        "note": "Produced by sipnab 0.5.127 on node capture-01. sipnab OBSERVED this dialog and took no part in it: the parties below are what the From and To headers said, not identities anyone established. This container carries SIGNALING ONLY — no media, and no reference to media held elsewhere. sipnab read 7 frame(s) for this capture. No omissions recorded: every message sipnab held for this dialog is in this container. A capture-level analysis ran and ranked no blind spots.",
-        "node": "capture-01",
-        "sipnab_version": "0.5.124",
-        "frames_read": 7,
-        "undecodable_frames": 0,
-        "sip_discarded_by_port_gate": 0,
-        "sip_discarded_by_websocket_gate": 0,
-        "messages_evicted": 0,
-        "dialogs_refused": 0,
-        "dialogs_rotated": 0,
-        "blind_spots": []
-      }
-    }
-  ],
-  "analysis": [
-    {
-      "type": "report",
-      "dialog": 0,
-      "vendor": "sipnab",
-      "product": "sipnab 0.5.160 (passive observer; not a recording system)",
-      "schema": "sipnab-dialog-diagnosis/1",
-      "mediatype": "application/json",
-      "encoding": "json",
-      "body": { "schema_version": 1, "sip_call_id": "test-call-1@192.0.2.1", "final_status_code": 200, "capture_completeness": { "...": "the same object as the attachment above" } }
-    }
-  ]
-}
-```
+The `sip-message-trace` attachment carries one entry per SIP message and
+grows with the call.
 
 The container arrives as a JSON object. So `jq` reads straight into it. No
 field holds the whole container as a string for a client to parse a second
@@ -1741,8 +1686,9 @@ sipnab must have retained the payload (start the server with `--retain-audio`).
 Otherwise there is nothing to decode.
 
 - A Call-ID that neither a dialog nor any RTP
-  stream carries is a `404`. Its body names both searches (`no SIP dialog and no
-  RTP stream associated with call_id '…' in this capture`).
+  stream carries is a `404`. Its body names both searches. For the Call-ID
+  `does-not-exist@nowhere` it reads `no SIP dialog and no RTP stream
+  associated with call_id 'does-not-exist@nowhere' in this capture`.
 - A call this capture holds is a `422` when:
   - it carries only codecs sipnab does not decode, or
     G.729 without its tables (sipnab decodes PCMU, PCMA, G.722, Opus, and
@@ -1817,11 +1763,11 @@ The server sends:
 
 | Message | Content |
 |---------|---------|
-| Text `{"type": "stream", ...}` | A stream, before its first packet: `stream` (its index), `ssrc`, `src`, `dst`, `codec`, `rate` (samples per second) and `format` (`s16le`); for a G.729.1 stream also `decoded_as`, saying the audio is the G.729.1 core layer decoded as G.729 at 8 kHz and naming the bit rates of the frames decoded before the announcement (see [The core layer of G.729.1](g729.md#the-core-layer-of-g7291)) |
+| Text, `"type": "stream"` | A stream, before its first packet: `stream` (its index), `ssrc`, `src`, `dst`, `codec`, `rate` (samples per second) and `format` (`s16le`); for a G.729.1 stream also `decoded_as`, saying the audio is the G.729.1 core layer decoded as G.729 at 8 kHz and naming the bit rates of the frames decoded before the announcement (see [The core layer of G.729.1](g729.md#the-core-layer-of-g7291)) |
 | Binary | One RTP packet's audio, or silence of the length of audio that did not arrive: where a packet's RTP timestamp is ahead of where the previous packet's audio ended, a message of zero samples covering the difference comes first. The first byte is the stream's index; the rest is 16-bit little-endian PCM at the stream's `rate`. The server sends a packet that repeats a timestamp once |
-| Text `{"type": "skipped", ...}` | A stream whose codec sipnab does not decode: `ssrc`, `codec`, `reason`. The server sends none of its packets |
-| Text `{"type": "gap", ...}` | `packets` of stream `stream` left retention before the server sent them, so the audio has a gap there |
-| Text `{"type": "end", ...}` | The call ended (`reason`); a close with code 1000 follows |
+| Text, `"type": "skipped"` | A stream whose codec sipnab does not decode: `ssrc`, `codec`, `reason`. The server sends none of its packets |
+| Text, `"type": "gap"` | `packets` of stream `stream` left retention before the server sent them, so the audio has a gap there |
+| Text, `"type": "end"` | The call ended (`reason`); a close with code 1000 follows |
 
 For a call that has already ended, the server sends it from its first retained packet.
 It then ends and closes the socket.
@@ -2351,7 +2297,7 @@ curl -s -X POST -H "Authorization: Bearer $SIPNAB_ACTIONS_TOKEN" \
 }
 ```
 
-**Body shape:** exactly one of `{"id": "a-..."}` or `{"all": true}`. Anything
+**Body shape:** exactly one of `{"id": "<action id>"}`, such as `{"id": "a-r-68d9c1f2-4412-3"}` for the ban above, or `{"all": true}`. Anything
 else answers `400`. An `id` sipnab holds no ban for answers `409`.
 
 sipnab first asks TFPS what it holds.
@@ -4588,7 +4534,7 @@ holding one container of each kind:
 {
   "schema_version": 1,
   "as_of": "2026-10-12T06:49:34.783Z",
-  "note": "A snapshot of files on disk at as_of. ...",
+  "note": "A snapshot of files on disk at as_of. The vCon forwarder (sipnab --vcon-forward) is a separate process that moves files out of the spool; whatever produced this answer sends, fetches, moves and deletes nothing. The delivered and failed directories are the forwarder's defaults beside the spool; a forwarder started with --vcon-forward-done or --vcon-forward-failed moves files elsewhere, and those are not counted.",
   "spool": { "path": "vcons", "exists": true },
   "delivered_dir": { "path": "vcons/delivered", "exists": true },
   "failed_dir": { "path": "vcons/failed", "exists": true },

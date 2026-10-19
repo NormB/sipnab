@@ -57,7 +57,7 @@ MCP-capable agent.
 - Find the row that matches what you want and jump straight to it.
 - Nothing here depends on anything above it.
 
-| I want to… | Go to |
+| Task | Go to |
 |---|---|
 | Analyze a pcap with an agent on this same machine | [Analyze a capture file you already have](#analyze-a-capture-file-you-already-have) |
 | Watch live traffic on the machine I am sitting at | [Watch live traffic on the machine you are sitting at](#watch-live-traffic-on-the-machine-you-are-sitting-at) |
@@ -123,8 +123,8 @@ Two invariants that apply everywhere:
     - and, for the HTTP scenarios, `mcp-http`.
 - **Stdio MCP runs headless.**
   - In stdio mode stdout *is* the JSON-RPC wire.
-  - So `--mcp` implies `-N`, and sipnab rejects stdout-writing flags
-    (`--json`, `--report`, …).
+  - So `--mcp` implies `-N`, and sipnab rejects every flag that writes its
+    answer to stdout, such as `--json` and `--report`.
   - Over HTTP one process can be your TUI and your MCP server at once. See
     [Query a capture over MCP while the TUI is open](@/docs/mcp.md#query-a-capture-over-mcp-while-the-tui-is-open).
   - The servers in this guide run without a terminal. So every command here
@@ -156,8 +156,14 @@ that's the laptop itself):
 
    ```bash
    sipnab --version
-   # sipnab 0.5.226 (...) features: native,tui,audio,tls,hep,api,mcp,mcp-http,metrics,plugins,vcon,bpf
-   # libpcap version 1.10.5 (with TPACKET_V3); alternate capture backends named: none
+   ```
+
+   A release build prints two lines. `<hash>` stands for the commit the
+   build came from:
+
+   ```text
+   sipnab 0.5.226 (<hash>) features: native,tui,audio,tls,hep,api,mcp,mcp-http,metrics,plugins,bpf,vcon,opus,archive,g729
+   libpcap version 1.10.5 (with TPACKET_V3); alternate capture backends named: none
    ```
 
    If `mcp` is missing, you have a source build without features. Rebuild
@@ -599,7 +605,7 @@ whenever they ask.
    ```
 
    Finally register the server.
-   - The `$(cat …)` resolves when you run this.
+   - The `$(cat ~/.config/sipnab/prod01.token)` resolves when you run this.
    - So an empty token file here registers an empty bearer, and every later
      call comes back `401`:
 
@@ -823,7 +829,7 @@ missed, fails with an error that does not name its cause.
 **The response is `text/event-stream`, not JSON.**
 
 - A single reply still arrives as Server-Sent Events.
-- So `requests.post(...).json()` raises on the first character.
+- So calling `.json()` on the response that `requests.post` returns raises on the first character.
 - The JSON-RPC message sits on a `data:` line.
 - The first frame carries an empty `data:` keepalive. A parser that tries to
   parse it as JSON fails.
@@ -849,13 +855,17 @@ Seen on the wire, that is:
 ```text
 HTTP/1.1 200 OK
 content-type: text/event-stream
-mcp-session-id: cca996f4-b3f8-4913-89c4-deae5999e7fc
+cache-control: no-cache
+x-accel-buffering: no
+mcp-session-id: 32f1dbcd-c65d-47f3-a425-46cda894915d
+transfer-encoding: chunked
+date: Sun, 18 Oct 2026 15:20:45 GMT
 
 data:
 id: 0
 retry: 3000
 
-data: {"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2025-06-18", ... }}
+data: {"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2025-06-18","capabilities":{"completions":{},"prompts":{},"resources":{"subscribe":true},"tools":{}},"serverInfo":{"name":"sipnab","version":"0.5.226"},"instructions":"sipnab MCP server — queries captured SIP dialogs, RTP streams, diagnostics and security findings. No tool edits a capture's contents. `open_capture` can change WHICH capture is loaded and stays off unless enabled server-side; every response carries `capture_identity`, so a swap is visible rather than silent. File exports write only under the configured file root, and stopping the server requires an explicit server-side opt-in. This server changes no external system: the tools that would (actions_revert, tfps_ban, tfps_unban) refuse unless the operator enables them with --allow-action. Tools loaded: full."}}
 ```
 
 **`Accept` must offer both types.** Not one, not the wrong one:
@@ -939,8 +949,9 @@ The script maps each status to its cause.
 
 An unknown Call-ID is different from all of these.
 
-- `get_dialog` answers with a JSON-RPC error (`-32602`, `call_id … not found`)
-  rather than an empty result.
+- `get_dialog` answers with a JSON-RPC error rather than an empty result:
+  code `-32602`, message `call_id 'nope@192.0.2.1' not found` for a Call-ID
+  `nope@192.0.2.1` the node does not hold.
 - The script leans on that to tell two cases apart:
   - "this node never saw that dialog",
   - "this node saw it and it correlated to nothing".
@@ -969,7 +980,7 @@ Nothing about MCP requires an interactive session.
    file or a ticket system:
 
    ```text
-   0 7 * * * claude -p "..." --allowedTools "mcp__sipnab-prod__*" \
+   0 7 * * * claude -p "Using the sipnab MCP tools: list problem dialogs from the last 24h, get reports for the worst three, and summarize likely root causes." --allowedTools "mcp__sipnab-prod__*" \
              > /var/log/sipnab/daily-triage.md 2>&1
    ```
 
@@ -1128,7 +1139,7 @@ Use `httpUrl` for sipnab:
 `~/.codeium/windsurf/mcp_config.json`:
 
 - Remote servers use `serverUrl`.
-- `${file:...}` interpolation reads the token straight from the file you
+- `${file:<path>}` interpolation reads the token straight from the file you
   copied in the copy-the-token step of
   [Keep a capture running between agent sessions](#keep-a-capture-running-between-agent-sessions):
 
@@ -2293,8 +2304,8 @@ Restart Claude Desktop.
 Run these from your project directory.
 
 - For stdio against a fixed pcap, the `--` ends the `claude mcp add` flags.
-- So `claude` reads the trailing `sipnab -N --mcp ...` as the command to
-  launch:
+- So `claude` reads the trailing `sipnab -N --mcp -I "$PWD/capture.pcap" --quiet`
+  as the command to launch:
 
 ```bash
 claude mcp add sipnab -- sipnab -N --mcp -I "$PWD/capture.pcap" --quiet
@@ -2339,7 +2350,7 @@ client. The whole block is one pipeline.
 Expected first line of response:
 
 ```json
-{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2025-06-18","capabilities":{"completions":{},"prompts":{},"resources":{"subscribe":true},"tools":{}},"serverInfo":{"name":"sipnab","version":"0.5.226"},"instructions":"sipnab MCP server — queries captured SIP dialogs, RTP streams, diagnostics and security findings. …"}}
+{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2025-06-18","capabilities":{"completions":{},"prompts":{},"resources":{"subscribe":true},"tools":{}},"serverInfo":{"name":"sipnab","version":"0.5.226"},"instructions":"sipnab MCP server — queries captured SIP dialogs, RTP streams, diagnostics and security findings. No tool edits a capture's contents. `open_capture` can change WHICH capture is loaded and stays off unless enabled server-side; every response carries `capture_identity`, so a swap is visible rather than silent. File exports write only under the configured file root, and stopping the server requires an explicit server-side opt-in. This server changes no external system: the tools that would (actions_revert, tfps_ban, tfps_unban) refuse unless the operator enables them with --allow-action. Tools loaded: full."}}
 ```
 
 ### Test the HTTP wire by hand
@@ -2549,7 +2560,7 @@ Common failure modes:
 
 | Status | Cause |
 |---|---|
-| `401` | Missing or wrong `Authorization: Bearer ...` |
+| `401` | Missing or wrong `Authorization: Bearer <token>` |
 | `403 Forbidden: Host header is not allowed` | Your `Host:` doesn't match the allowlist. Either send `Host: localhost` explicitly, or start sipnab with `--mcp-allowed-host <your-host>` |
 | `404` | Wrong path: the endpoint is `/mcp` (`/mcp/` also answers) |
 | `406 Not Acceptable` | Missing `Accept: application/json, text/event-stream` |

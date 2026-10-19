@@ -372,7 +372,7 @@ Show absolute times even when \fB[display] delta_time = true\fR. The last of \fB
 Show N messages after each match (like grep \-A).
 .TP
 \fB\-\-show\-empty\fR
-Show the full header block of messages that have no body (responses, OPTIONS, REGISTER, ACK, BYE, ...). Without this, bodyless messages show only their one\-line summary; messages that carry a body always show their full detail.
+Show the full header block of messages that have no body, such as most responses and OPTIONS, REGISTER, ACK and BYE requests. Without this, bodyless messages show only their one\-line summary; messages that carry a body always show their full detail.
 .TP
 \fB\-\-proto\-number\fR
 Annotate the transport tag with the IANA IP protocol number, e.g. \fBUDP(17)\fR / \fBTCP(6)\fR. \fB\-N\fR itself is \fB\-\-no\-tui\fR here, so this flag is long\-only. TLS/WS report their TCP carrier's number (6).
@@ -719,7 +719,7 @@ Metrics scrapes served at once before further ones get \fB503\fR (default 16). C
 Rows one list\-style REST response may return (default 1000). Config: \fB[limits] api_max_rows\fR.
 .TP
 \fB\-\-api\-allow\-relay\-query\fR
-Let REST clients query the relay named by \fB\-\-rtpengine\-control\fR (\fBGET /v1/relay/...\fR), which transmits.
+Let REST clients query the relay named by \fB\-\-rtpengine\-control\fR through the six \fBGET /v1/relay/\fR routes (\fBstats\fR, \fBstats/names\fR, \fBstats/call/{call_id}\fR, \fBcompare/{call_id}\fR, \fBholdings\fR and \fBholdings/{call_id}\fR), which transmit.
 .TP
 \fB\-\-api\-allow\-vcon\-fetch\fR
 Let REST clients read a vCon from the operator's \fB[vcon_fetch]\fR store by uuid (\fBGET /v1/vcon/fetch/{uuid}\fR), which connects to it.

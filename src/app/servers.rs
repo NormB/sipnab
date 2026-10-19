@@ -652,7 +652,7 @@ pub fn start_servers(
         let verifier = Arc::new(crate::auth::TokenVerifier::new(
             resolve_api_verifier_config(cli),
         ));
-        let state = ApiState {
+        let mut state = ApiState {
             dialog_store: Arc::clone(dialog_store),
             stream_store: Arc::clone(stream_store),
             // The same meter the scrape endpoint reads, so /metrics and
@@ -750,6 +750,8 @@ pub fn start_servers(
             pipeline_options: selection.pipeline_options,
             archive: crate::output::api::ArchivePasswordPolicy {
                 accept_remote: cli.listener_args.api_accept_archive_passwords,
+                // Set below, from the listener this server actually binds.
+                served_over_tls: false,
                 #[cfg(feature = "archive")]
                 candidates: std::sync::Arc::new(crate::capture::archive::password::run_candidates()),
                 wrong: std::sync::Arc::default(),
@@ -765,6 +767,7 @@ pub fn start_servers(
         // (port already in use) logged from the detached servers thread is
         // invisible once the TUI owns the terminal.
         let listener = api::prepare_listener(bind, &state.verifier, &config)?;
+        state.archive.served_over_tls = listener.is_tls();
         Some(Prepared::Api {
             listener,
             state: Box::new(state),

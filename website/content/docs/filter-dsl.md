@@ -391,7 +391,7 @@ All 42 addressable fields, organized by type.
 | `dst.port` | Destination port (first message) | port number |
 | `duration` | Dialog duration | seconds (float) |
 | `msg_count` | Number of SIP messages in dialog | count |
-| `response_code` | Final response code of the dialog's INVITE, or of the request that opened a dialog without one (`REGISTER`, `PUBLISH`, `SUBSCRIBE` …). Also spelled `final_status_code`, which is the name the JSON, the schema and the MCP answers return. Unknown while the call is in progress, so a ringing dialog matches no comparison at all | 100-699 |
+| `response_code` | Final response code of the dialog's INVITE, or of the request that opened a dialog without one, such as `REGISTER`, `PUBLISH` or `SUBSCRIBE`. Also spelled `final_status_code`, which is the name the JSON, the schema and the MCP answers return. Unknown while the call is in progress, so a ringing dialog matches no comparison at all | 100-699 |
 | `pdd` | Post-dial delay: from the INVITE to the first 180 or 183 response | seconds (float) |
 | `setup_time` | Call setup time (INVITE to 200 OK) | seconds (float) |
 | `retransmits` | Total retransmit count in dialog | count |
@@ -418,8 +418,10 @@ those calls directly. On a capture that holds only signaling, the threshold
 matches nothing:
 
 ```bash
-sipnab -N -I capture.pcap --filter "rtp.mos < 3.0" --report
+sipnab -N -I tests/pcap-samples/sip-auth-failure.pcapng --filter "rtp.mos < 3.0" --report --no-cli-print 2>/dev/null
 ```
+
+`2>/dev/null` leaves out the log, so the output is the report alone:
 
 ```text
 Call-ID                          From           To             State        Code   Duration   Msgs   PDD      Tags
@@ -430,11 +432,10 @@ Call-ID                          From           To             State        Code
 same capture:
 
 ```bash
-sipnab -N -I capture.pcap --filter "rtp.packets == 0" --report
+sipnab -N -I tests/pcap-samples/sip-auth-failure.pcapng --filter "rtp.packets == 0" --report --no-cli-print 2>/dev/null
 ```
 
 ```text
-…
 Call-ID                          From           To             State        Code   Duration   Msgs   PDD      Tags
 -------------------------------------------------------------------------------------------------------------------------
 auth-fail-register-synth@20...   alice          alice          Failed       403    0s         4      -        -
@@ -582,7 +583,7 @@ Authentication challenges follow the same rule as `final_status_code` in
 > - `a=inactive`,
 > - `m=` port `0`,
 > - a black-holed `c=0.0.0.0`,
-> - non-RTP transports such as T.38 `m=image ... udptl`.
+> - non-RTP transports such as T.38 (`m=image 4000 udptl t38`).
 >
 > So a call held for its whole life is not reported as a media failure.
 >
@@ -754,8 +755,8 @@ a `)` that closes a group of the expression.
   `)` with no `(` to close ends the value. So `(method == INVITE)` reads the
   value `INVITE`, and `method =~ ^(INVITE|BYE)$` reads the whole regex.
 - For `=~` only, two regex rules also apply. A backslash keeps the next
-  character in the value, so `\)` is regex text. Inside a `[...]` class,
-  parentheses are literal.
+  character in the value, so `\)` is regex text. Inside a bracketed class
+  such as `[()]`, parentheses are literal.
 - Every other character is part of the value, including
   `@ . : ; = + - / | * # %`. `ruri == sip:7000@192.0.2.10;user=phone` and
   `src.ip in_subnet 203.0.113.0/24` need no quotes.
@@ -893,7 +894,7 @@ sipnab -N -I capture.pcap --filter 'method == INVITE extra'
 ```
 
 ```text
-… ERROR sipnab::app::bootstrap: Invalid --filter expression: a value containing whitespace must be quoted, or AND/OR is missing at position 10: 'INVITE'
+2026-10-18T15:41:33.049387Z ERROR sipnab::app::bootstrap: Invalid --filter expression: a value containing whitespace must be quoted, or AND/OR is missing at position 10: 'INVITE'
   method == INVITE extra
             ^
 valid operators: ==, !=, <, <=, >, >=, =~ (regex)
@@ -907,12 +908,13 @@ sipnab -N -I capture.pcap --filter 'nosuch == 1'
 ```
 
 ```text
-… ERROR sipnab::app::bootstrap: Invalid --filter expression: unexpected input at position 0: 'nosuch'
+2026-10-18T15:41:33.069669Z ERROR sipnab::app::bootstrap: Invalid --filter expression: unexpected input at position 0: 'nosuch'
   nosuch == 1
   ^
 hint: unknown field 'nosuch'
-valid fields: from.user, to.user, from.host, to.host, from.uri, to.uri, ruri, pai.user, method, ua, call_id, payload, …
-…
+valid fields: from.user, to.user, from.host, to.host, from.uri, to.uri, ruri, pai.user, method, ua, call_id, payload, src.ip, dst.ip, src.port, dst.port, state, duration, msg_count, response_code, final_status_code, response_class, pdd, setup_time, retransmits, rtp.mos, rtp.jitter, rtp.loss, rtp.packets, rtp.codec, rtp.codecs, rtp.ssrc, side, endpoint, one_way, nat_mismatch, no_media, codec_asymmetry, ptime_asymmetry, payload_asymmetry, duration_asymmetry, late_media, time, header.<name>
+valid operators: ==, !=, <, <=, >, >=, =~ (regex)
+see docs/filter-dsl.md for fields, values, and diagnostic aliases
 ```
 
 sipnab refuses a regex that does not compile with the regex-size message above.

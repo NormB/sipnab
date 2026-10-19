@@ -9,7 +9,7 @@ This index groups the pages by what you are trying to do, following
 [Diátaxis](https://diataxis.fr/). The four groups answer four different
 questions:
 
-| If you are… | you want | start at |
+| If you are | you want | start at |
 |---|---|---|
 | new to sipnab | a guided first run | [Tutorials](#tutorials) |
 | trying to get something done | steps for your goal | [How-to guides](#how-to-guides) |
@@ -37,7 +37,7 @@ pages use.
 
 ## How-to guides
 
-Each answers "how do I …?" and assumes you already know what you want.
+Each answers one "how do I" question and assumes you already know what you want.
 
 **Find out what went wrong**
 

@@ -84,16 +84,81 @@ which is not a capture, and `SIP_CALL_RTP_G711`, a capture with no extension:
 ```jsonc
 // list_captures {}
 {
-  "schema_version": 1,
   "captures": [
-    { "filename": "Asterisk_ZFONE_XLITE.pcap", "kind": "capture", "bytes": 255581,
-      "encrypted": false, "first_packet": "2010-09-27T07:12:49+00:00" },
-    { "filename": "DTMFsipinfo.pcap", "kind": "capture", "bytes": 25429,
-      "encrypted": false, "first_packet": "2011-04-27T08:14:29+00:00" },
-    { "filename": "SIP_DTMF2.cap", "kind": "capture", "bytes": 420411,
-      "encrypted": false, "first_packet": "2005-09-09T12:02:25+00:00" },
-    …
-  ]
+    { "bytes": 255581, "encrypted": false, "filename": "Asterisk_ZFONE_XLITE.pcap",
+      "first_packet": "2010-09-27T07:12:49+00:00", "kind": "capture" },
+    { "bytes": 25429, "encrypted": false, "filename": "DTMFsipinfo.pcap",
+      "first_packet": "2011-04-27T08:14:29+00:00", "kind": "capture" },
+    { "bytes": 420411, "encrypted": false, "filename": "SIP_DTMF2.cap",
+      "first_packet": "2005-09-09T12:02:25+00:00", "kind": "capture" },
+    { "bytes": 114952, "encrypted": false, "filename": "b2bua-asterisk.pcapng",
+      "first_packet": "2016-05-18T18:23:03+00:00", "kind": "capture" },
+    { "bytes": 131329, "encrypted": false, "filename": "c07-sip-r2.cap",
+      "first_packet": null, "kind": "capture" },
+    { "bytes": 143155, "encrypted": false, "filename": "codec-negotiation.pcap",
+      "first_packet": "2026-07-08T18:35:27+00:00", "kind": "capture" },
+    { "bytes": 14398, "encrypted": false, "filename": "h263-over-rtp.pcap",
+      "first_packet": "2008-04-15T12:19:44+00:00", "kind": "capture" },
+    { "bytes": 25803, "encrypted": false, "filename": "http-example.cap",
+      "first_packet": "2004-05-13T10:17:07+00:00", "kind": "capture" },
+    { "bytes": 48336, "encrypted": false, "filename": "invite-opus-bye.pcap",
+      "first_packet": "2026-07-08T18:35:36+00:00", "kind": "capture" },
+    { "bytes": 7969, "encrypted": false, "filename": "linux-sll-pppoe.pcap",
+      "first_packet": "2014-05-13T17:10:00+00:00", "kind": "capture" },
+    { "bytes": 8084, "encrypted": false, "filename": "linux-sll2-pppoe.pcap",
+      "first_packet": "2014-05-13T17:26:40+00:00", "kind": "capture" },
+    { "bytes": 7386, "encrypted": false, "filename": "loopback-dlt-loop.pcap",
+      "first_packet": "2014-05-13T16:53:20+00:00", "kind": "capture" },
+    { "bytes": 694, "encrypted": false, "filename": "metasploit-sip-invite-spoof.pcap",
+      "first_packet": "2007-04-05T01:51:18+00:00", "kind": "capture" },
+    { "bytes": 6252, "encrypted": false, "filename": "opensips-direct-media-proxy-view.pcap",
+      "first_packet": "2026-09-09T14:22:18+00:00", "kind": "capture" },
+    { "bytes": 1665, "encrypted": false, "filename": "options-keepalive-reused-cseq.pcap",
+      "first_packet": "2025-06-15T15:06:40+00:00", "kind": "capture" },
+    { "bytes": 49815, "encrypted": false, "filename": "register-invite-reinvite-bye.pcap",
+      "first_packet": "2026-07-08T18:35:43+00:00", "kind": "capture" },
+    { "bytes": 61267, "encrypted": false, "filename": "rtp-protocol.pcap",
+      "first_packet": "2011-07-21T08:48:25+00:00", "kind": "capture" },
+    { "bytes": 665, "encrypted": false, "filename": "rtsp-interleaved-tcp.cap",
+      "first_packet": "2005-11-06T12:19:00+00:00", "kind": "capture" },
+    { "bytes": 3480, "encrypted": false, "filename": "rtsp-packets.cap",
+      "first_packet": null, "kind": "capture" },
+    { "bytes": 6492, "encrypted": false, "filename": "sip-488-codec-reject.pcapng",
+      "first_packet": "2019-08-27T17:26:38+00:00", "kind": "capture" },
+    { "bytes": 3984, "encrypted": false, "filename": "sip-auth-failure.pcapng",
+      "first_packet": "2016-05-17T08:01:35+00:00", "kind": "capture" },
+    { "bytes": 1510, "encrypted": false, "filename": "sip-lint-findings.pcap",
+      "first_packet": "2023-11-14T22:13:20+00:00", "kind": "capture" },
+    { "bytes": 19438, "encrypted": false, "filename": "sip-over-tcp.pcap",
+      "first_packet": "2011-07-28T12:54:46+00:00", "kind": "capture" },
+    { "bytes": 8665, "encrypted": false, "filename": "sip-problem-call.pcap",
+      "first_packet": "2023-11-14T22:13:20+00:00", "kind": "capture" },
+    { "bytes": 5771, "encrypted": false, "filename": "sip-proxy.pcap",
+      "first_packet": "2011-08-01T06:37:30+00:00", "kind": "capture" },
+    { "bytes": 842, "encrypted": false, "filename": "sip-register.pcap",
+      "first_packet": "2011-08-01T06:37:22+00:00", "kind": "capture" },
+    { "bytes": 24236, "encrypted": false, "filename": "sip-routing-error.pcapng",
+      "first_packet": "2016-05-18T18:01:36+00:00", "kind": "capture" },
+    { "bytes": 198831, "encrypted": false, "filename": "sip-rtp-g711.pcap",
+      "first_packet": "2016-11-26T14:52:59+00:00", "kind": "capture" },
+    { "bytes": 101199, "encrypted": false, "filename": "sip-rtp-g722.pcap",
+      "first_packet": "2016-11-26T15:08:26+00:00", "kind": "capture" },
+    { "bytes": 41736, "encrypted": false, "filename": "sip-rtp-g729a.pcap",
+      "first_packet": "2016-12-02T10:41:21+00:00", "kind": "capture" },
+    { "bytes": 2772, "encrypted": false, "filename": "sip-rtp-opus-hybrid.pcap",
+      "first_packet": "2016-11-27T14:07:48+00:00", "kind": "capture" },
+    { "bytes": 3180, "encrypted": false, "filename": "sip-sdp-example.pcap",
+      "first_packet": "2011-08-09T06:32:56+00:00", "kind": "capture" },
+    { "bytes": 3788872, "encrypted": false, "filename": "sipp-branch-scenario.pcapng",
+      "first_packet": "2016-11-17T21:52:35+00:00", "kind": "capture" },
+    { "bytes": 2223, "encrypted": false, "filename": "siprec-opensips-invite.pcap",
+      "first_packet": "2025-09-05T15:59:35+00:00", "kind": "capture" },
+    { "bytes": 193744, "encrypted": false, "filename": "speech_8k_ulaw.pcap",
+      "first_packet": "1970-01-01T00:00:00+00:00", "kind": "capture" },
+    { "bytes": 651384, "encrypted": false, "filename": "voicecmd_combined.pcap",
+      "first_packet": "1970-01-01T00:00:00+00:00", "kind": "capture" }
+  ],
+  "schema_version": 1
 }
 ```
 
@@ -250,12 +315,18 @@ could not open some file. `unreadable` names each such file with its reason.
 A reason comes from the operating system and from libpcap. sipnab strips
 control characters and keeps the first 200 characters.
 
-With one unreadable file in the root and a Call-ID that is in none of them:
+With a fourth file, `broken.pcap`, that is not a capture, in the same root,
+and a Call-ID that is in none of them:
 
 ```jsonc
 // find_in_captures { "filter": "call_id == \"zzz\"" }
 {
-  …
+  "schema_version": 2,
+  "job_id": "sweep-1",
+  "status": "done",
+  "limits": { "max_files": 20, "deadline_ms": 30000 },
+  "progress": { "files_examined": 3, "files_total": 4, "elapsed_ms": 35,
+                "cancel_requested": false },
   "sweep": {
     "matches": [],
     "files_examined": 3,
@@ -265,7 +336,9 @@ With one unreadable file in the root and a Call-ID that is in none of them:
         "reason": "Failed to open pcap file '/var/spool/sipnab-captures/broken.pcap': libpcap error: unknown file format" }
     ],
     "complete": false
-  }
+  },
+  "source_exhausted": true,
+  "source_stopped_early": false
 }
 ```
 
@@ -288,13 +361,18 @@ The operator sets both ceilings, and a caller can only ask for less:
 A spool that rotates forty files needs `--mcp-sweep-max-files 40` before one
 sweep can reach the oldest file. With the default, the sweep stops after 20
 files with `stopped_because: "max-files"` and `complete: false`. A call with
-`"max_files": 1` shows the same thing on a smaller root:
+`"max_files": 1` shows the same thing on the four-file root, as the second call
+of the same session:
 
 ```jsonc
 // find_in_captures { "filter": "call_id == \"zzz\"", "max_files": 1 }
 {
-  …
+  "schema_version": 2,
+  "job_id": "sweep-2",
+  "status": "done",
   "limits": { "max_files": 1, "deadline_ms": 30000 },
+  "progress": { "files_examined": 1, "files_total": 4, "elapsed_ms": 45,
+                "cancel_requested": false },
   "sweep": {
     "matches": [],
     "files_examined": 1,
@@ -302,7 +380,9 @@ files with `stopped_because: "max-files"` and `complete: false`. A call with
     "unreadable": [],
     "complete": false,
     "stopped_because": "max-files"
-  }
+  },
+  "source_exhausted": true,
+  "source_stopped_early": false
 }
 ```
 
@@ -492,9 +572,9 @@ The tool refuses four requests:
 | Situation | Answer |
 |---|---|
 | No `--mcp-file-root` | `file tools are disabled: start sipnab with --mcp-file-root <DIR> to enable them` |
-| A path rather than a bare name | `'../../etc/passwd' is not a bare filename. These tools take a name, not a path, ...` |
+| A path rather than a bare name | `'../../etc/passwd' is not a bare filename. These tools take a name, not a path, and write only inside the configured --mcp-file-root.` |
 | `a` and `b` resolving to one file | `'x.pcap' and 'x.pcap' are the same file; a capture compared with itself differs from itself nowhere` |
-| A dimension outside the vocabulary | `cannot compare on 'hour'; one of: state, response_code, ...` |
+| A dimension outside the vocabulary | `cannot compare on 'hour'; one of: state, response_code, method, from.user, to.user, ua, src.ip, dst.ip, rtp.codec` |
 
 The dimension check runs before the tool opens either file. The same-file check
 runs after both names are fully resolved, so it also catches two spellings of
@@ -518,7 +598,7 @@ into something a reader can check without reopening the capture.
 
 | Name | Type | Legal values | If omitted |
 |---|---|---|---|
-| `refs` | string[] | At least one pointer in `<source>#<ordinal>@<digest>` form. An empty array fails with `invalid_params` (`refs must name at least one frame pointer; …`). | Required — the call fails. |
+| `refs` | string[] | At least one pointer in `<source>#<ordinal>@<digest>` form. An empty array fails with `invalid_params` (`refs must name at least one frame pointer; an empty batch would return an empty result that reads like 'nothing resolved'`). | Required — the call fails. |
 | `max_bytes?` | u32? | 1 to 4096 bytes of hex per frame. Higher clamps to 4096, and to the frame length when the frame is shorter. **`0` means zero bytes here**, not the default — this is the one parameter on the surface that does not read `0` as "unset". | 256 bytes, enough for a SIP start line and its headers. |
 
 A pointer whose `@digest` half is missing still resolves, and comes back

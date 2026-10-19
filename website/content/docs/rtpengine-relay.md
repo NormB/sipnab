@@ -157,8 +157,8 @@ kernel.
 
 `/etc/rtpengine/rtpengine.conf` has several sections.
 
-- The service reads the `[rtpengine]` section, and the `[interface-...]`
-  sections it points to.
+- The service reads the `[rtpengine]` section, and the interface sections it
+  points to, such as `[interface-default]`.
 - The file also carries example sections, such as `[rtpengine-testing]`. The
   service does not read them.
 
@@ -177,7 +177,7 @@ sed -n '/^\[interface-default\]/,/^\[/p' /etc/rtpengine/rtpengine.conf | grep -E
   - Keep it that way. The ng protocol has no authentication. Anyone who can
     reach the port can create and tear down relay sessions.
 - `interfaces-config = interface` tells rtpengine to take its media addresses
-  from the sections named `[interface-...]`.
+  from the sections whose names start with `interface-`.
   - The one section, `[interface-default]`, says `address = any`. That means
     every address the machine has at startup.
   - rtpengine writes one of them into the SDP and receives the media there.
@@ -688,9 +688,9 @@ through the relay on its own machine.
 - **rtpengine logs `FAILED TO OPEN KERNEL TABLE 0`.** One of these happened:
   - `table = -1` was not set.
   - The service was not restarted after setting it.
-- **OpenSIPS logs `can't send ... command to a RTP proxy (111:Connection
-  refused)` or `timeout waiting reply from a RTP proxy`.** One of these is
-  true:
+- **OpenSIPS logs `can't send (#<n> iovec buffers) command to a RTP proxy
+  (111:Connection refused)`, where `<n>` is a buffer count, or `timeout
+  waiting reply from a RTP proxy`.** One of these is true:
   - rtpengine is not running.
   - `rtpengine_sock` names an address it does not listen on. Compare the
     socket with `listen-ng`.

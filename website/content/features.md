@@ -325,7 +325,7 @@ Terms used on this page:
   - Or it serves them over HTTP with `--mcp-transport http`, including beside the open terminal UI.
   - The tools cover dialogs, call ladders, triage, RFC conformance, evidence pointers, leg correlation, RTP, security findings and vCon.
   - [Connect an AI agent (MCP)](/docs/mcp/), [Look up an MCP tool](/docs/mcp-tools/)
-- **MCP tool bundles.** `--mcp-tools core,media,...` registers only the bundles or tools an agent needs. That shortens the tool list it reads. [Look up an MCP tool](/docs/mcp-tools/#choosing-which-tools-load)
+- **MCP tool bundles.** `--mcp-tools core,media` registers only the bundles or tools an agent needs. That shortens the tool list it reads. [Look up an MCP tool](/docs/mcp-tools/#choosing-which-tools-load)
 - **MCP write actions stay off by default.**
   - Each of these needs its own flag:
     - opening another capture (`--mcp-allow-open-capture`),

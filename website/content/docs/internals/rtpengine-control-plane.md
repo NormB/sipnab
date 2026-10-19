@@ -38,10 +38,12 @@ The name is on the box.
 
 ## Wire format
 
-An `ng` message is a cookie, one space, and a bencoded dictionary:
+An `ng` message is a cookie, one space, and a bencoded dictionary. The first
+message in the committed fixture [`tests/fixtures/rtpengine-ng-hep.pcap`](https://github.com/NormB/sipnab/blob/main/tests/fixtures/rtpengine-ng-hep.pcap)
+is an `offer`, shown here whole, with each CRLF in the SDP written as `\r\n`:
 
 ```text
-14661e9e...  d7:command5:offer7:call-id18:km-670bd208@sipnab8:from-tag5:ftag13:sdp122:v=0...e
+5eed0000000000000000000000000001 d7:command5:offer7:call-id18:km-670bd208@sipnab8:from-tag5:ftag13:sdp124:v=0\r\no=- 1 1 IN IP4 192.0.2.60\r\ns=-\r\nc=IN IP4 192.0.2.60\r\nt=0 0\r\nm=audio 40001 RTP/AVP 0\r\na=rtpmap:0 PCMU/8000\r\na=sendrecv\r\ne
 ```
 
 Three properties matter to the parser, all confirmed against rtpengine 12.5.1 rather than taken from documentation.
@@ -56,7 +58,9 @@ Three properties matter to the parser, all confirmed against rtpengine 12.5.1 ra
 
 **Replies carry no `call-id`.**
 
-- An `offer` reply's entire body is `d3:sdp136:v=0...e`.
+- An `offer` reply holds only `sdp` and `result`. The fixture's reply to the
+  offer above is, whole:
+  `5eed0000000000000000000000000001 d3:sdp138:v=0\r\no=- 1 1 IN IP4 192.0.2.60\r\ns=-\r\nc=IN IP4 192.0.2.40\r\nt=0 0\r\nm=audio 38664 RTP/AVP 0\r\na=rtpmap:0 PCMU/8000\r\na=sendrecv\r\na=rtcp:38665\r\n6:result2:oke`.
 - This is the single most consequential fact about the protocol for our purposes.
 - The reason: the reply is the half that carries the relay's OWN allocated ports.
 
@@ -90,11 +94,15 @@ Over HEP every one of those disappears.
   - there is one transport instead of four
   - there is no fragment problem
 
-Decoded from the committed fixture, every packet carries it:
+Decoded from the committed fixture, every packet carries it. The first two
+packets, the `offer` and its reply, with each packet's protocol chunk,
+correlation-id chunk and whole payload:
 
 ```text
-HEP #1 capture-proto=0x3d correlation-id='km-670bd208@sipnab'  d7:command5:offer...
-HEP #2 capture-proto=0x3d correlation-id='km-670bd208@sipnab'  d3:sdp138:v=0...   <- reply
+HEP #1 capture-proto=0x3d correlation-id='km-670bd208@sipnab'
+5eed0000000000000000000000000001 d7:command5:offer7:call-id18:km-670bd208@sipnab8:from-tag5:ftag13:sdp124:v=0\r\no=- 1 1 IN IP4 192.0.2.60\r\ns=-\r\nc=IN IP4 192.0.2.60\r\nt=0 0\r\nm=audio 40001 RTP/AVP 0\r\na=rtpmap:0 PCMU/8000\r\na=sendrecv\r\ne
+HEP #2 capture-proto=0x3d correlation-id='km-670bd208@sipnab'
+5eed0000000000000000000000000001 d3:sdp138:v=0\r\no=- 1 1 IN IP4 192.0.2.60\r\ns=-\r\nc=IN IP4 192.0.2.40\r\nt=0 0\r\nm=audio 38664 RTP/AVP 0\r\na=rtpmap:0 PCMU/8000\r\na=sendrecv\r\na=rtcp:38665\r\n6:result2:oke
 ```
 
 The passive sniffer stays on the roadmap as a second delivery path behind the same decoder.
@@ -327,7 +335,7 @@ Two things came out of building it that the synthetic test could not reach.
 
 - It CONNECTS its Homer socket.
 - So an unreachable destination answers with ICMP port-unreachable.
-- rtpengine then logs `Connection error from Homer ... Connection refused` and stops tracing.
+- rtpengine then logs a connection error for its Homer socket, naming `Connection refused`, and stops tracing.
 - Aiming `--homer` at an address nobody answers therefore yields no control plane at all.
   That looks exactly like a broken feature.
 - The harness ships `hep-sink` to stand in for Homer for that reason.

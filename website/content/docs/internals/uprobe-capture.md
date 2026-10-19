@@ -128,7 +128,7 @@ namespace.
 
 - But that path came from the **mapping process's** mount namespace.
 - Probing the bare string attaches to the host copy and misses both containers.
-- `TlsLibrary::probe_path` reaches through `/proc/<pid>/root/…`.
+- `TlsLibrary::probe_path` reaches through `/proc/<pid>/root/`, followed by the library's path in the process's namespace.
   - It accepts a candidate only when the inode matches.
   - Otherwise it returns `None`.
   - It does not probe a file that merely has the right name.

@@ -12,8 +12,8 @@ sipnab is primarily a CLI/TUI tool. Its analysis engine is also a Rust
 library on crates.io.
 
 - The curated public API is re-exported at the crate root.
-- Anything under a `#[doc(hidden)]` module (`cli`, `tui`, `privilege`,
-  …) is binary-internal.
+- Anything under a `#[doc(hidden)]` module (`cli`, `privilege`,
+  `process_isolation`, `settings`, `signals` and `tui`) is binary-internal.
 
 ## Stability
 
@@ -165,8 +165,8 @@ Every one of these enums is `#[non_exhaustive]`.
 - sipnab can add a variant in a minor release without it being a breaking
   change.
 - Twenty-four other public enums carry `#[non_exhaustive]` for the same
-  reason. Examples are `TransportProto`, `RtcpPacket`, `FraudType`,
-  `CipherSuite`, ….
+  reason. Examples are `TransportProto`, `RtcpPacket`, `FraudType` and
+  `CipherSuite`.
 - Three public structs carry it too: `BurstGapAnalysis`,
   `RemoteReceptionReport`, `RemoteVoipMetrics`.
   - A downstream literal therefore cannot construct them.
