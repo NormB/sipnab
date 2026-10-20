@@ -726,7 +726,10 @@ Issues Detected:
 </section>
 {% endif %}
 
-<!-- Contributor License Agreement / OpenSSF Best Practices (passing + Baseline 3, one link: both are the same project page) -->
+<!-- The same claims as the README's badges: Contributor License Agreement, OpenSSF Best Practices
+     (passing + Baseline 3, one link: both are the same project page), code coverage, signed build
+     provenance and SBOM, and the XERJ Corpus Hub. Its badge is a local copy: the CSP allows no
+     image from another site. -->
 <section style="text-align:center; padding:0 1rem 2.5rem; display:flex; flex-wrap:wrap; gap:.6rem; justify-content:center;">
   <a href="{{ get_url(path='@/cla.md') }}"
      style="display:inline-flex; align-items:center; gap:.45rem; padding:.4rem .95rem; border:1px solid rgba(128,128,128,.4); border-radius:999px; font-size:.85rem; font-weight:500; text-decoration:none;">
@@ -739,6 +742,14 @@ Issues Detected:
   <a href="{{ get_url(path='@/docs/install.md') }}#verify-a-download-is-genuine"
      style="display:inline-flex; align-items:center; gap:.45rem; padding:.4rem .95rem; border:1px solid rgba(128,128,128,.4); border-radius:999px; font-size:.85rem; font-weight:500; text-decoration:none;">
     <span aria-hidden="true">🔏</span> Signed build provenance &amp; SBOM
+  </a>
+  <a href="https://app.codecov.io/gh/NormB/sipnab" target="_blank" rel="noopener noreferrer"
+     style="display:inline-flex; align-items:center; gap:.45rem; padding:.4rem .95rem; border:1px solid rgba(128,128,128,.4); border-radius:999px; font-size:.85rem; font-weight:500; text-decoration:none;">
+    <span aria-hidden="true">📈</span> Code coverage on Codecov
+  </a>
+  <a href="https://hub.xerj.org/contributors/NormB" target="_blank" rel="noopener noreferrer"
+     style="display:inline-flex; align-items:center;">
+    <img src="{{ get_url(path='badges/xerj-corpus-hub.svg') }}" alt="XERJ Corpus Hub: contributor" width="199" height="20">
   </a>
 </section>
 

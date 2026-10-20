@@ -46,11 +46,13 @@
 #
 # See bench/README.md for the operator procedure and the topology figure.
 
-# shellcheck disable=SC2317
-# SC2317 file-wide: the self-test cases are dispatched by name out of the
-# ST_CASES registry, so ShellCheck 0.9 cannot see the call site and reports
-# every line inside them as unreachable. The registry runner asserts instead
-# that each registered case exists AND makes at least one assertion.
+# shellcheck disable=SC2317,SC2329
+# SC2317 and SC2329 file-wide: the self-test cases are dispatched by name out
+# of the ST_CASES registry, so ShellCheck cannot see the call site. 0.9 reports
+# every line inside them as unreachable (SC2317); 0.11 also reports each case,
+# and each helper only the cases call, as never invoked (SC2329). The registry
+# runner asserts instead that each registered case exists AND makes at least
+# one assertion.
 set -u
 
 # ───────────────────────────────────────────────────────────── constants ───
@@ -2049,10 +2051,6 @@ cleanup() {
 }
 
 ns() { ip netns exec "$NS" "$@"; }
-
-read_sysfs() { # <iface> <stat>
-  ns cat "/sys/class/net/$1/statistics/$2" 2>/dev/null || printf '\n'
-}
 
 setup_namespace() {
   check_ns_absent "$(ip netns list 2>/dev/null)" >/dev/null
