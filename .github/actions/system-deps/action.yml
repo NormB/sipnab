@@ -1,9 +1,10 @@
 # SPDX-License-Identifier: MIT OR Apache-2.0
 name: Install system packages (local first)
 description: >
-  Install Debian packages from a local actions/cache using dpkg, which performs
-  no network access. The Ubuntu archives are consulted only to populate a cold
-  cache, and only under a bounded timeout.
+  Install Debian packages from a local actions/cache with
+  `apt-get install --no-download`, which performs no network access. The
+  Ubuntu archives are consulted only to populate a cold cache, and only under
+  a bounded timeout.
 
 # WHY THIS EXISTS
 #
@@ -18,7 +19,13 @@ description: >
 # package is never present, so the guard resolved to "install everything" on
 # every job of every run -- it could not fire by construction. Caching the
 # .deb files is what actually removes the fetch, because a cache hit installs
-# with `dpkg -i` and reaches nothing.
+# them with `apt-get install --no-download` and reaches nothing.
+#
+# apt, not `dpkg -i`: dpkg installs the files in the order given and cannot
+# satisfy a pre-dependency inside the set. On the ubuntu-26.04 runner
+# (2026-10-20) libpcap-dev's closure upgraded systemd, which pre-depends on the
+# same version of libsystemd-shared, and `dpkg -i` of the directory refused it.
+# apt orders the set and splits the dpkg calls.
 
 inputs:
   packages:
@@ -130,10 +137,10 @@ runs:
           printf '%s\n' "$DEBCONF" | sudo debconf-set-selections
         fi
 
-        # THE COMMON PATH: no network. dpkg cannot reach one.
+        # THE COMMON PATH: no network. --no-download forbids one.
         if compgen -G "$cache/*.deb" > /dev/null; then
           echo "installing $(ls "$cache"/*.deb | wc -l) cached .deb files"
-          sudo dpkg -i "$cache"/*.deb
+          sudo apt-get install -y --no-download "$cache"/*.deb
         else
           # Cold cache only. Bounded, because the whole point is that an
           # unresponsive archive costs minutes instead of a canceled run.
@@ -147,15 +154,15 @@ runs:
           # set's closure and nothing another set left behind.
           sudo apt-get clean
           # --download-only fetches the full dependency closure, which is what
-          # makes the later `dpkg -i` of the whole directory resolvable.
+          # makes the later offline install of the whole directory resolvable.
           # shellcheck disable=SC2086 -- a package LIST, split on purpose.
           timeout 420 sudo apt-get install --download-only -y $NEED
           sudo cp /var/cache/apt/archives/*.deb "$cache"/
           sudo chown -R "$(id -u):$(id -g)" "$cache"
-          sudo dpkg -i "$cache"/*.deb
+          sudo apt-get install -y --no-download "$cache"/*.deb
         fi
 
-    # An install that half-worked must not read as success. dpkg -i on a
+    # An install that half-worked must not read as success. An install of a
     # partial dependency closure exits non-zero, but a cache holding the wrong
     # .deb set can leave a package unconfigured while the step still passes --
     # and the build then fails later, somewhere that does not name the cause.

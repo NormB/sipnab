@@ -23,7 +23,8 @@
 //! So the rule is not "guard the install". It is: **a hosted job must not
 //! reach the archives on the common path at all.** The shared composite action
 //! restores the `.deb` files from `actions/cache` and installs them with
-//! `dpkg -i`, which touches no network; the archives are consulted only to
+//! `apt-get install --no-download`, which touches no network; the archives
+//! are consulted only to
 //! populate a cold cache, and even then under a bounded timeout so a stall
 //! costs minutes rather than a canceled run.
 //!
@@ -204,18 +205,30 @@ fn no_local_action_interpolates_an_expression_into_a_shell_script() -> Result<()
 ///
 /// The negative control for the rule above. An action that merely wraps the
 /// same `apt-get install` would satisfy the first test while changing nothing
-/// about the failure it exists to prevent, so the cache-hit path is asserted
-/// to use `dpkg -i` — which cannot reach a network — and the cold path is
-/// asserted to be bounded by a timeout.
+/// about the failure it exists to prevent, so the cached `.deb` files are
+/// asserted to be installed with `apt-get install --no-download`, which
+/// cannot reach a network, and the cold path is asserted to be bounded by a
+/// timeout.
+///
+/// Not `dpkg -i` over the whole closure: dpkg installs in the order it is
+/// given and cannot satisfy a pre-dependency inside the set. On the
+/// ubuntu-26.04 runner (2026-10-20) libpcap-dev's closure upgraded systemd,
+/// which pre-depends on the same version of libsystemd-shared, and
+/// `dpkg -i` refused it; apt orders the set.
 #[test]
 fn the_shared_action_installs_from_cache_and_bounds_the_cold_path() -> Result<(), TestError> {
     let action = read(".github/actions/system-deps/action.yml")?;
 
     assert!(
-        action.contains("dpkg -i"),
-        "the cache-hit path must install the .deb files directly, which \
+        action.contains("apt-get install -y --no-download"),
+        "the cached .deb files must be installed with --no-download, which \
          performs no network access; without it the action is just apt-get \
          with extra steps:\n{action}"
+    );
+    assert!(
+        !action.contains("sudo dpkg -i"),
+        "dpkg -i cannot order a pre-dependency inside the cached closure; \
+         apt-get must install it:\n{action}"
     );
     assert!(
         action.contains("actions/cache"),
