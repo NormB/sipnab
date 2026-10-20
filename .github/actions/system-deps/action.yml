@@ -140,6 +140,11 @@ runs:
         # THE COMMON PATH: no network. --no-download forbids one.
         if compgen -G "$cache/*.deb" > /dev/null; then
           echo "installing $(ls "$cache"/*.deb | wc -l) cached .deb files"
+          # --no-download installs only what is already in apt's archive
+          # directory: a .deb named on the command line is not copied there,
+          # and the install fails with "Unable to fetch some archives"
+          # (ubuntu-26.04 runners, 2026-10-20). So the cache goes there first.
+          sudo cp "$cache"/*.deb /var/cache/apt/archives/
           sudo apt-get install -y --no-download "$cache"/*.deb
         else
           # Cold cache only. Bounded, because the whole point is that an

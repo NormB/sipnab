@@ -54,7 +54,7 @@ def _slug(packages: str) -> str:
 
 
 def _stubs(root: pathlib.Path) -> pathlib.Path:
-    """sudo/timeout pass through; apt-get fakes a download; dpkg logs installs."""
+    """sudo/timeout pass through; apt-get fakes a download and logs installs."""
     bin_dir = root / "bin"
     bin_dir.mkdir()
     scripts = {
@@ -74,6 +74,11 @@ def _stubs(root: pathlib.Path) -> pathlib.Path:
         "debconf-set-selections": 'sed "s/^/debconf: /" >> "$INSTALLED"\n',
         "timeout": 'shift; exec "$@"\n',
         "chown": "exit 0\n",
+        # Like the real apt: --download-only fills the archive directory, and
+        # --no-download installs a .deb only when that file is already in the
+        # archive directory. Given a path elsewhere (a cache in the runner's
+        # home), the real apt-get fails with "Unable to fetch some archives",
+        # as the ubuntu-26.04 runners did on 2026-10-20.
         "apt-get": textwrap.dedent(
             """\
             case "$1" in
@@ -81,19 +86,30 @@ def _stubs(root: pathlib.Path) -> pathlib.Path:
               clean) rm -f "$ARCHIVES"/*.deb; exit 0 ;;
               install)
                 shift
-                for a in "$@"; do
-                  case "$a" in -*) ;; *) : > "$ARCHIVES/$a.deb" ;; esac
-                done ;;
+                case " $* " in
+                  *" --download-only "*)
+                    for a in "$@"; do
+                      case "$a" in -*) ;; *) : > "$ARCHIVES/$a.deb" ;; esac
+                    done ;;
+                  *" --no-download "*)
+                    for a in "$@"; do
+                      case "$a" in
+                        -*) ;;
+                        *) [ -f "$ARCHIVES/$(basename "$a")" ] || {
+                             echo "E: Unable to fetch some archives" >&2; exit 100; } ;;
+                      esac
+                    done
+                    for a in "$@"; do
+                      case "$a" in -*) ;; *) basename "$a" .deb >> "$INSTALLED" ;; esac
+                    done ;;
+                  *) echo "apt-get install without --download-only or --no-download" >&2; exit 1 ;;
+                esac ;;
             esac
             """
         ),
-        "dpkg": textwrap.dedent(
-            """\
-            [ "$1" = "-i" ] || exit 1
-            shift
-            for f in "$@"; do basename "$f" .deb >> "$INSTALLED"; done
-            """
-        ),
+        # dpkg -i cannot order a pre-dependency inside the closure, so the
+        # action must never call it.
+        "dpkg": 'echo "dpkg called: $*" >&2; exit 1\n',
     }
     for name, body in scripts.items():
         path = bin_dir / name
@@ -119,7 +135,7 @@ def _install_script(root: pathlib.Path) -> str:
 
 
 def _install(root: pathlib.Path, packages: str) -> list[str]:
-    """Run the Install step for `packages`; return what dpkg installed."""
+    """Run the Install step for `packages`; return what apt-get installed."""
     env = _install_env(root, packages)
     subprocess.run(
         ["bash", "-c", _install_script(root)], env=env, check=True, capture_output=True, text=True
@@ -171,6 +187,21 @@ def test_the_restore_step_caches_the_directory_install_fills(tmp_path):
         f"the cache step saves {path} but the Install step put the .debs elsewhere "
         f"(found {debs} there)"
     )
+
+
+def test_a_warm_cache_on_a_fresh_runner_installs_without_a_download(tmp_path):
+    """A cache restored onto a new runner: the .debs are in the cache directory
+    and apt's own archive directory is empty. `apt-get install --no-download`
+    installs only what is in the archive directory, so the action must put the
+    cached files there first. Without that, every warm job on the ubuntu-26.04
+    runners failed with "Unable to fetch some archives" (2026-10-20)."""
+    root = _setup(tmp_path)
+    cache = root / "home/.cache/sipnab-apt" / _slug("libpcap-dev")
+    cache.mkdir(parents=True)
+    for name in ("libpcap-dev", "libpcap0.8-dev"):
+        (cache / f"{name}.deb").write_text("")
+    assert not list((root / "archives").glob("*.deb")), "the archive starts empty"
+    assert sorted(_install(root, "libpcap-dev")) == ["libpcap-dev", "libpcap0.8-dev"]
 
 
 def _probe(root: pathlib.Path, installed_on_image: str) -> dict[str, str]:
