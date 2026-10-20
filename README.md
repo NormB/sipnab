@@ -1,9 +1,10 @@
 # sipnab
 
 [![CI](https://github.com/NormB/sipnab/actions/workflows/ci.yml/badge.svg)](https://github.com/NormB/sipnab/actions/workflows/ci.yml)
-[![OpenSSF Best Practices](https://www.bestpractices.dev/projects/13931/badge)](https://www.bestpractices.dev/projects/13931)
-[![OpenSSF Baseline](https://www.bestpractices.dev/projects/13931/baseline)](https://www.bestpractices.dev/projects/13931)
+[![OpenSSF Best Practices](https://www.bestpractices.dev/projects/13931/badge) ![OpenSSF Baseline](https://www.bestpractices.dev/projects/13931/baseline)](https://www.bestpractices.dev/projects/13931)
 [![codecov](https://codecov.io/gh/NormB/sipnab/graph/badge.svg)](https://codecov.io/gh/NormB/sipnab)
+[![Signed build provenance and SBOM](https://img.shields.io/badge/build_provenance-signed_%C2%B7_SBOM-2ea44f)](https://sipnab.com/docs/install/#verify-a-download-is-genuine)
+[![XERJ Corpus Hub contributor](https://hub.xerj.org/contributors/NormB/badge.svg)](https://hub.xerj.org/contributors/NormB)
 
 **Read a SIP call and see why it failed.** SIP is the signaling protocol that
 sets up and tears down voice calls.

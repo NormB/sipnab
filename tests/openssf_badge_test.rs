@@ -309,7 +309,8 @@ fn the_badge_is_registered_and_wired_consistently() -> Result<(), TestError> {
 /// 14:38:52Z the same day (bestpractices.dev project JSON,
 /// `achieved_baseline_3_at`; the badge image reads "openssf baseline
 /// v2026.08.28: 3"). The README carries
-/// the badge image, which follows the live level by itself; the home page
+/// the badge image, which follows the live level by itself, beside the Best
+/// Practices badge inside one link: one project, listed once. The home page
 /// carries a text link for the same `img-src 'self'` reason as the Best
 /// Practices badge above, and that text does not follow anything. It said
 /// "Level 1" after level 2 was reached, so the level it names is pinned here
@@ -319,11 +320,20 @@ fn the_baseline_badge_is_wired_in_readme_and_homepage() -> Result<(), TestError>
     const PROJECT_URL: &str = "https://www.bestpractices.dev/projects/13931";
 
     let readme = read("README.md")?;
-    let markup = format!("[![OpenSSF Baseline]({PROJECT_URL}/baseline)]({PROJECT_URL})");
+    let markup = format!(
+        "[![OpenSSF Best Practices]({PROJECT_URL}/badge) \
+         ![OpenSSF Baseline]({PROJECT_URL}/baseline)]({PROJECT_URL})"
+    );
     assert!(
         readme.contains(&markup),
-        "README.md must carry the Baseline badge exactly as bestpractices.dev \
-         issues it: {markup}"
+        "README.md must carry both badges, as bestpractices.dev issues them, \
+         in one link: {markup}"
+    );
+    assert_eq!(
+        readme.matches(&format!("]({PROJECT_URL})")).count(),
+        1,
+        "README.md must link the bestpractices.dev project exactly once, as \
+         the home page does"
     );
 
     assert!(

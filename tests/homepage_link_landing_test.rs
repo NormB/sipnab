@@ -507,15 +507,19 @@ const LANDINGS: &[Landing] = &[
 
 /// Every absolute link on the homepage, in the form that answers 200 with no
 /// redirect (measured with `curl -sS -o /dev/null -w '%{http_code}'` on
-/// 2026-10-13). `rfc-editor.org/rfc/rfcNNNN` without `.html` answers 302 to a
-/// metadata page, not to the RFC.
+/// 2026-10-13; the Codecov and XERJ links on 2026-10-20).
+/// `rfc-editor.org/rfc/rfcNNNN` without `.html` answers 302 to a metadata
+/// page, not to the RFC, and `codecov.io/gh/...` answers 301 to
+/// `app.codecov.io/gh/...`.
 ///
 /// One entry redirects on purpose. bestpractices.dev publishes the badge link
 /// as `/projects/13931`, and `tests/openssf_badge_test.rs` pins that form. It
 /// answers 302 to `/en/projects/13931`, then to that project's own badge page,
 /// so the reader lands on the page the link names.
 const EXTERNAL: &[&str] = &[
+    "https://app.codecov.io/gh/NormB/sipnab",
     "https://github.com/sipcapture/homer",
+    "https://hub.xerj.org/contributors/NormB",
     "https://www.bestpractices.dev/projects/13931",
     "https://www.rfc-editor.org/rfc/rfc3261.html",
     "https://www.rfc-editor.org/rfc/rfc3550.html",
