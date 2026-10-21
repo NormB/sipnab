@@ -8,6 +8,16 @@ sipnab is pre-1.0: the public API and the CLI surface are not stable, and a
 breaking change may land in any release. Breaking changes are called out in the
 entry that carries them.
 
+## [Unreleased]
+
+### Security
+
+- **Four dependencies advanced to releases that clear the advisories osv-scanner reported.**
+  - [RUSTSEC-2026-0382](https://rustsec.org/advisories/RUSTSEC-2026-0382) (CVE-2026-111943): `rustls-webpki` 0.103.15 could accept a certificate path through distrusted emSign intermediates, whose private keys are now public. 0.103.16 rejects such paths, in `Cargo.lock` and `fuzz/Cargo.lock`.
+  - [RUSTSEC-2026-0383](https://rustsec.org/advisories/RUSTSEC-2026-0383): `webpki-root-certs` 1.0.7 bundled the emSign roots of those intermediates. 1.0.10 closes it, in `Cargo.lock`.
+  - [PYSEC-2026-4320](https://osv.dev/vulnerability/PYSEC-2026-4320) (GHSA-6q48-6c7w-9gw2): `certifi` 2026.7.22 bundled the same roots. `clients/python/requirements-examples.txt` is regenerated with the command its header names and now pins `certifi` 2026.10.19 and `charset-normalizer` 3.5.2; every pin is free of known advisories on osv.dev.
+  - [GHSA-5r4p-p66f-jhc7](https://osv.dev/vulnerability/GHSA-5r4p-p66f-jhc7) (CVE-2026-109955): `hono` 4.13.9's `serveStatic` decoded the request path twice, which let a request bypass middleware on static paths. `clients/typescript/package-lock.json` now resolves `hono` 4.13.13.
+
 ## [0.5.227] - 2026-10-19
 
 ### Added
