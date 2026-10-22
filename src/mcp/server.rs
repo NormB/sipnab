@@ -1232,46 +1232,36 @@ impl SipnabMcp {
             )
         })?;
 
-        if name.is_empty() {
-            return Err(errors::refuse(
+        // A symlink someone already placed in the root is one normal
+        // component and passes every string check, and the kernel follows it
+        // at `open`. Measured before the confinement: an export wrote 77,736
+        // bytes through such a link to a path outside the root, exit 0, and
+        // returned the in-root path as though that were where the bytes went.
+        // `confine_bare_name` resolves it with the same `canonical_target` that
+        // `-O` uses, and it is the rule the REST file routes apply as well, so
+        // the two surfaces cannot drift apart. The resolved path is what gets
+        // returned, so a caller is told where the bytes will actually land.
+        use crate::capture::output_guard::{BareNameRefusal, confine_bare_name};
+        confine_bare_name(root, name).map_err(|refusal| match refusal {
+            BareNameRefusal::Empty => errors::refuse(
                 Reason::InvalidValue,
                 "filename must not be empty".to_string(),
-            ));
-        }
-        // One path component, and it must be a plain name.
-        let mut parts = std::path::Path::new(name).components();
-        let only = parts.next();
-        let extra = parts.next();
-        let ok = matches!(only, Some(std::path::Component::Normal(_))) && extra.is_none();
-        if !ok || name.contains('/') || name.contains('\\') || name.contains("..") {
-            return Err(errors::refuse(
+            ),
+            BareNameRefusal::ControlCharacter => errors::refuse(
+                Reason::PathRefused,
+                format!(
+                    "{name:?} contains a control character. These tools take a \
+                     plain file name inside the configured --mcp-file-root."
+                ),
+            ),
+            BareNameRefusal::NotBare => errors::refuse(
                 Reason::PathRefused,
                 format!(
                     "'{name}' is not a bare filename. These tools take a name, not \
                      a path, and write only inside the configured --mcp-file-root."
                 ),
-            ));
-        }
-        let target = root.join(name);
-
-        // A bare name can still leave the root, because the escape is not in
-        // the string: a symlink someone already placed in the root is one
-        // normal component and passes every check above, and the kernel follows
-        // it at `open`. Measured before this: an export wrote 77,736 bytes
-        // through such a link to a path outside the root, exit 0, and returned
-        // the in-root path as though that were where the bytes went.
-        //
-        // `canonical_target` is the same resolver `-O` uses to catch different
-        // spellings of one file — reused rather than reimplemented, because two
-        // implementations of one rule is a defect pattern this tree has already
-        // been bitten by.
-        //
-        // The resolved path is what gets returned, so a caller is told where
-        // the bytes will actually land rather than where it asked for them.
-        let resolved = crate::capture::output_guard::canonical_target(&target);
-        let canonical_root = root.canonicalize().unwrap_or_else(|_| root.clone());
-        if !resolved.starts_with(&canonical_root) {
-            return Err(errors::refuse(
+            ),
+            BareNameRefusal::Outside(resolved) => errors::refuse(
                 Reason::PathRefused,
                 format!(
                     "'{name}' resolves outside the configured --mcp-file-root. \
@@ -1279,9 +1269,8 @@ impl SipnabMcp {
                      inside the root.",
                     resolved.display()
                 ),
-            ));
-        }
-        Ok(resolved)
+            ),
+        })
     }
 
     /// A directory a read-only tool reads: `.` for `--mcp-file-root` itself,
@@ -10924,6 +10913,23 @@ mod tests {
             "the file outside the root must be untouched"
         );
         let _ = std::fs::remove_dir_all(&base);
+        Ok(())
+    }
+
+    /// MCP-ROOT-CONTROL-CHARS on the MCP surface: a name with a newline or a
+    /// NUL is refused, and the refusal says why.
+    #[test]
+    fn a_file_name_with_a_control_character_is_refused() -> Result<(), TestError> {
+        let root = tempfile::tempdir().map_err(|e| format!("temp dir: {e:?}"))?;
+        let srv = server_with_dialog("ctl@test")?.with_file_root(root.path());
+        for bad in ["out\n.pcap", "out\0.pcap"] {
+            let err = srv
+                .resolve_in_root(bad)
+                .err()
+                .ok_or("a control character must be refused")?;
+            let msg = format!("{err:?}");
+            assert!(msg.contains("control character"), "{bad:?}: {msg}");
+        }
         Ok(())
     }
 

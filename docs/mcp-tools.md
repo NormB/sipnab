@@ -564,6 +564,13 @@ root. It checks where the name points, not how the caller wrote it:
 {"code":-32602,"message":"'link' resolves outside the configured --mcp-file-root. The name is a link to '/tmp', and these tools write only inside the root.","data":{"reason":"path_refused"}}
 ```
 
+sipnab also refuses a name that holds a control character, such as a newline
+or a NUL byte, with the same reason. sipnab accepts a space in a name:
+
+```json
+{"code":-32602,"message":"\"out\\n.pcap\" contains a control character. These tools take a plain file name inside the configured --mcp-file-root.","data":{"reason":"path_refused"}}
+```
+
 Each tool returns the resolved path of the file it wrote. Without
 `--mcp-file-root`, every file tool answers `not_enabled`:
 

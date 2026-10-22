@@ -279,6 +279,61 @@ fn is_rotation_of(candidate: &Path, base: &Path) -> bool {
     !seq.is_empty() && seq.chars().all(|c| c.is_ascii_digit())
 }
 
+/// Why [`confine_bare_name`] refused a caller's file name.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum BareNameRefusal {
+    /// The name is empty.
+    Empty,
+    /// The name holds a control character, NUL included.
+    ControlCharacter,
+    /// The name has a separator, a `..`, a root, or more than one component.
+    NotBare,
+    /// The name is a symlink in the root that resolves outside it; carries
+    /// where it resolves.
+    Outside(PathBuf),
+}
+
+/// Resolve a caller-supplied file NAME inside `root`, confined to it.
+///
+/// The one rule the MCP file tools (`--mcp-file-root`) and the REST file
+/// routes (`--api-file-root`) share; each surface words the refusal in its
+/// own terms.
+///
+/// A control character is refused, NUL and newline included: no file name a
+/// person picks needs one, a NUL ends the name early in any C path handed the
+/// string, and a newline in a name splits the line of every log or report
+/// that prints it. A space is an ordinary file-name character and stays
+/// accepted.
+///
+/// # Errors
+///
+/// Which rule the name broke.
+pub fn confine_bare_name(root: &Path, name: &str) -> Result<PathBuf, BareNameRefusal> {
+    if name.is_empty() {
+        return Err(BareNameRefusal::Empty);
+    }
+    if name.chars().any(char::is_control) {
+        return Err(BareNameRefusal::ControlCharacter);
+    }
+    // One path component, and it must be a plain name.
+    let mut parts = Path::new(name).components();
+    let only = parts.next();
+    let extra = parts.next();
+    let bare = matches!(only, Some(std::path::Component::Normal(_))) && extra.is_none();
+    if !bare || name.contains('/') || name.contains('\\') || name.contains("..") {
+        return Err(BareNameRefusal::NotBare);
+    }
+    // A bare name can still leave the root, because the escape is not in the
+    // string: a symlink someone already placed in the root is one normal
+    // component, and the kernel follows it at `open`.
+    let resolved = canonical_target(&root.join(name));
+    let canonical_root = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
+    if !resolved.starts_with(&canonical_root) {
+        return Err(BareNameRefusal::Outside(resolved));
+    }
+    Ok(resolved)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -454,6 +509,81 @@ mod tests {
         assert!(
             p.check(&d.join("notes.txt"), "-O", false).is_ok(),
             "a name the pattern cannot match is fine"
+        );
+        Ok(())
+    }
+
+    // MCP-ROOT-CONTROL-CHARS: the file-root rule refused separators, `..` and
+    // roots, but a control character passed, and with it NUL and newlines in
+    // names the MCP and REST file tools create or read.
+
+    #[test]
+    fn a_name_with_a_control_character_is_refused() -> Result<(), TestError> {
+        let root = tempfile::tempdir()?;
+        for bad in [
+            "a\0b.pcap",
+            "a\nb.pcap",
+            "a\rb.pcap",
+            "a\u{1b}b.pcap",
+            "a\u{7f}b.pcap",
+            "a\u{85}b.pcap",
+        ] {
+            assert_eq!(
+                confine_bare_name(root.path(), bad),
+                Err(BareNameRefusal::ControlCharacter),
+                "{bad:?}"
+            );
+        }
+        Ok(())
+    }
+
+    /// A space is an ordinary file-name character and stays accepted.
+    #[test]
+    fn a_plain_name_with_a_space_resolves_inside_the_root() -> Result<(), TestError> {
+        let root = tempfile::tempdir()?;
+        let got =
+            confine_bare_name(root.path(), "outage 0722.pcap").map_err(|e| format!("{e:?}"))?;
+        assert_eq!(got, root.path().canonicalize()?.join("outage 0722.pcap"));
+        Ok(())
+    }
+
+    /// The rules the two surfaces enforced before they shared this function.
+    #[test]
+    fn a_name_that_is_not_one_plain_component_is_refused() -> Result<(), TestError> {
+        let root = tempfile::tempdir()?;
+        assert_eq!(
+            confine_bare_name(root.path(), ""),
+            Err(BareNameRefusal::Empty)
+        );
+        for bad in [
+            "..",
+            "../x.pcap",
+            "a/b.pcap",
+            "/etc/passwd",
+            "a\\b.pcap",
+            "a..b",
+        ] {
+            assert_eq!(
+                confine_bare_name(root.path(), bad),
+                Err(BareNameRefusal::NotBare),
+                "{bad:?}"
+            );
+        }
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_symlink_out_of_the_root_is_refused_with_where_it_leads() -> Result<(), TestError> {
+        let base = tempfile::tempdir()?;
+        let root = base.path().join("root");
+        std::fs::create_dir_all(&root)?;
+        let outside = base.path().join("secret.pcap");
+        std::fs::write(&outside, b"x")?;
+        std::os::unix::fs::symlink(&outside, root.join("innocent.pcap"))?;
+        assert_eq!(
+            confine_bare_name(&root, "innocent.pcap"),
+            Err(BareNameRefusal::Outside(outside.canonicalize()?))
         );
         Ok(())
     }

@@ -4178,6 +4178,8 @@ than yesterday, and here is where" is the first row.
 - `a` (required) — the baseline capture, a bare filename inside `--api-file-root`.
 - `b` (required) — the capture held against it, a bare filename in the same
   root. A name that resolves to the same file as `a` is a `400`.
+- A name with a separator, a `..`, an absolute prefix or a control character,
+  or a symbolic link that resolves outside the root, is a `400`.
 - `dimensions` (optional) — a comma-separated subset of the aggregate vocabulary
   (`state`, `response_code`, `method`, `from.user`, `to.user`, `ua`, `src.ip`,
   `dst.ip`, `rtp.codec`). Omitted takes `state` and `response_code`.

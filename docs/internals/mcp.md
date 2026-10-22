@@ -92,6 +92,12 @@ resolved path against the fully resolved root. That escape needed prior write
 access inside the root, so it was never a remote break. The fix shipped
 because the reference describes the boundary as absolute.
 
+The name checks and that resolution are one function, `confine_bare_name` in
+[`src/capture/output_guard.rs`](../../src/capture/output_guard.rs), which the
+REST compare route's `--api-file-root` applies too, so the two surfaces cannot
+drift apart. It also refuses a control character: a NUL or a newline is one
+bare component as well, and no file name a person picks needs one.
+
 The overwrite refusal covers any name already taken in the root
 (`resolve_in_root_for_write` in [`src/mcp/server.rs`](../../src/mcp/server.rs), using
 `symlink_metadata` so a dangling link still counts as taken).
