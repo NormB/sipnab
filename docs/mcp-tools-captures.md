@@ -53,7 +53,8 @@ sizes and the instant each one's first packet arrived.
 Each entry carries `encrypted`: `true` for a ZIP
 holding an encrypted member, read from the archive's directory alone, so
 listing never tries a password. It is `false` for a vCon container, encrypted
-or not. The listing skips directories.
+or not. The listing skips directories and symbolic links, wherever a link
+points, so neither tool opens a file outside the root through one.
 The TUI's file browser lists by the same rule. [`open_capture`](#open_capture)
 also accepts a capture with no extension at all, which this listing leaves
 out. To open one, ask the operator for its name.

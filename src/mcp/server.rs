@@ -8349,26 +8349,16 @@ impl SipnabMcp {
             )
         })?;
         let mut files: Vec<serde_json::Value> = Vec::new();
-        let entries = std::fs::read_dir(root).map_err(|e| {
+        // The same rule the TUI's file browser lists by, so an archive, a
+        // compressed capture or a stored vCon container sipnab reads is
+        // offered here too. Regular files only: a directory would tempt a
+        // caller into a path, and a symbolic link would be opened wherever it
+        // points, outside the root included.
+        let listed = crate::capture::archive::listed_files(root).map_err(|e| {
             rmcp::ErrorData::internal_error(format!("cannot read {}: {e}", root.display()), None)
         })?;
-        for entry in entries.flatten() {
-            let path = entry.path();
-            // The same rule the TUI's file browser lists by, so an archive,
-            // a compressed capture or a stored vCon container sipnab reads is
-            // offered here too.
-            let Some(kind) = path
-                .file_name()
-                .and_then(|n| n.to_str())
-                .and_then(crate::capture::archive::listed_kind)
-            else {
-                continue;
-            };
-            // Files only: a directory here would tempt a caller into a path.
-            if !path.is_file() {
-                continue;
-            }
-            let size = entry.metadata().map(|m| m.len()).unwrap_or(0);
+        for (path, kind) in listed {
+            let size = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
             // First packet time, which costs one open and one record read. It
             // is what lets an agent narrow forty rotated files to the two that
             // could hold the call it is asking about, instead of calling
@@ -8454,24 +8444,18 @@ impl SipnabMcp {
 
         // Listing a directory is one syscall per entry and stays on this
         // thread; reading the files is the sweep's job, on its own.
-        let mut candidates: Vec<std::path::PathBuf> = std::fs::read_dir(root)
+        // The listing `list_captures` answers with, symbolic links excluded,
+        // so the sweep never reads a file outside the root through one.
+        let candidates: Vec<std::path::PathBuf> = crate::capture::archive::listed_files(root)
             .map_err(|e| {
                 rmcp::ErrorData::internal_error(
                     format!("cannot read {}: {e}", root.display()),
                     None,
                 )
             })?
-            .flatten()
-            .map(|e| e.path())
-            .filter(|p| {
-                p.is_file()
-                    && p.file_name()
-                        .and_then(|n| n.to_str())
-                        .and_then(crate::capture::archive::listed_kind)
-                        .is_some()
-            })
+            .into_iter()
+            .map(|(path, _)| path)
             .collect();
-        candidates.sort();
 
         let job_id = self
             .sweeps
@@ -11018,6 +11002,86 @@ mod tests {
             .collect();
         assert_eq!(names, vec!["session.tgz"]);
         let _ = std::fs::remove_dir_all(&root);
+        Ok(())
+    }
+
+    /// MCP-SWEEP-FOLLOWS-SYMLINKS: a symbolic link in the root that points
+    /// at a capture outside it is not listed. `list_captures` opens each
+    /// listed file for its first packet time, so a listed link was a read
+    /// outside the root.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn list_captures_does_not_list_a_symbolic_link() -> Result<(), TestError> {
+        let root = sweep_root(
+            "list-link",
+            &[("a.pcap", "tests/pcap-samples/sip-register.pcap")],
+            &[],
+        )?;
+        let outside = sweep_root(
+            "list-link-outside",
+            &[("call.pcap", "tests/pcap-samples/sip-rtp-g711.pcap")],
+            &[],
+        )?;
+        std::os::unix::fs::symlink(outside.join("call.pcap"), root.join("linked.pcap"))
+            .map_err(|e| format!("symlink: {e:?}"))?;
+        let srv = server_with_dialog("caps@x")?.with_file_root(&root);
+        let result = srv
+            .list_captures()
+            .await
+            .map_err(|e| format!("list_captures: {e:?}"))?;
+        let v: serde_json::Value =
+            serde_json::from_str(&text_of(&result)?).map_err(|e| format!("json: {e:?}"))?;
+        let names: Vec<&str> = v["captures"]
+            .as_array()
+            .ok_or("captures")?
+            .iter()
+            .filter_map(|c| c["filename"].as_str())
+            .collect();
+        assert_eq!(names, vec!["a.pcap"]);
+        let _ = std::fs::remove_dir_all(&root);
+        let _ = std::fs::remove_dir_all(&outside);
+        Ok(())
+    }
+
+    /// The sweep never reads through a link either: the call lives only in
+    /// the file the link points at, outside the root, and is not found.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn find_in_captures_does_not_read_through_a_symbolic_link() -> Result<(), TestError> {
+        let root = sweep_root(
+            "sweep-link",
+            &[("a.pcap", "tests/pcap-samples/sip-register.pcap")],
+            &[],
+        )?;
+        let outside = sweep_root(
+            "sweep-link-outside",
+            &[("call.pcap", "tests/pcap-samples/sip-rtp-g711.pcap")],
+            &[],
+        )?;
+        std::os::unix::fs::symlink(outside.join("call.pcap"), root.join("linked.pcap"))
+            .map_err(|e| format!("symlink: {e:?}"))?;
+        let srv = server_with_dialog("loaded@test")?.with_file_root(&root);
+        let r = srv
+            .find_in_captures(Parameters(FindInCapturesParams {
+                filter: "call_id == \"1-1966@10.0.2.20\"".to_string(),
+                ..Default::default()
+            }))
+            .await
+            .map_err(|e| format!("the sweep succeeds: {e:?}"))?;
+        let v: serde_json::Value =
+            serde_json::from_str(&text_of(&r)?).map_err(|e| format!("json: {e:?}"))?;
+        let sweep = &v["sweep"];
+        assert_eq!(
+            sweep["files_total"], 1,
+            "only a.pcap is a candidate: {sweep}"
+        );
+        assert_eq!(
+            sweep["matches"].as_array().map(Vec::len),
+            Some(0),
+            "the linked file was not read: {sweep}"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+        let _ = std::fs::remove_dir_all(&outside);
         Ok(())
     }
 

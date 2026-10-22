@@ -725,6 +725,38 @@ pub fn listed_kind(name: &str) -> Option<ListedKind> {
     }
 }
 
+/// The files directly inside `dir` that [`listed_kind`] offers, with their
+/// kind, sorted by path.
+///
+/// Regular files only, judged by `DirEntry::file_type`, which does not follow
+/// a symbolic link: a link is skipped wherever it points. `Path::is_file`
+/// follows it, so a link in an MCP file root to a capture outside the root
+/// was listed by `list_captures` and read by `find_in_captures`. This matches
+/// `vcon_analysis::report_directory`, which skips links the same way.
+///
+/// # Errors
+///
+/// When `dir` cannot be read.
+pub fn listed_files(dir: &Path) -> std::io::Result<Vec<(PathBuf, ListedKind)>> {
+    let mut out = Vec::new();
+    for entry in std::fs::read_dir(dir)?.flatten() {
+        let path = entry.path();
+        let Some(kind) = path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .and_then(listed_kind)
+        else {
+            continue;
+        };
+        if !entry.file_type().is_ok_and(|t| t.is_file()) {
+            continue;
+        }
+        out.push((path, kind));
+    }
+    out.sort_by(|a, b| a.0.cmp(&b.0));
+    Ok(out)
+}
+
 /// Whether `path` holds several members to choose between — a tar, possibly
 /// gzip-compressed — rather than being one capture, compressed or not.
 ///
@@ -2611,6 +2643,27 @@ mod tests {
             std::fs::symlink_metadata(&trap).is_ok(),
             "the planted link is not ours to delete either"
         );
+        Ok(())
+    }
+
+    /// MCP-SWEEP-FOLLOWS-SYMLINKS: a symbolic link in the root is never
+    /// offered, wherever it points. `is_file` follows the link, so a link to
+    /// a capture outside the root was listed and read.
+    #[cfg(unix)]
+    #[test]
+    fn listed_files_skips_links_directories_and_other_files()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let base = tempfile::tempdir()?;
+        let root = base.path().join("root");
+        std::fs::create_dir_all(root.join("dir.pcap"))?;
+        std::fs::write(root.join("a.pcap"), b"x")?;
+        std::fs::write(root.join("notes.txt"), b"x")?;
+        let outside = base.path().join("outside.pcap");
+        std::fs::write(&outside, b"x")?;
+        std::os::unix::fs::symlink(&outside, root.join("out-link.pcap"))?;
+        std::os::unix::fs::symlink(root.join("a.pcap"), root.join("in-link.pcap"))?;
+        let got = listed_files(&root)?;
+        assert_eq!(got, vec![(root.join("a.pcap"), ListedKind::Capture)]);
         Ok(())
     }
 }

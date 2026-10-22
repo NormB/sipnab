@@ -98,6 +98,13 @@ REST compare route's `--api-file-root` applies too, so the two surfaces cannot
 drift apart. It also refuses a control character: a NUL or a newline is one
 bare component as well, and no file name a person picks needs one.
 
+The tools that walk the root instead of taking a name, `list_captures` and
+`find_in_captures`, list by `capture::archive::listed_files`, which keeps
+regular files only and judges them by the directory entry's own type. That
+type does not follow a link, so a link in the root is never opened, wherever
+it points. A check that follows the link listed a capture outside the root
+and let the sweep read it.
+
 The overwrite refusal covers any name already taken in the root
 (`resolve_in_root_for_write` in [`src/mcp/server.rs`](../../src/mcp/server.rs), using
 `symlink_metadata` so a dangling link still counts as taken).

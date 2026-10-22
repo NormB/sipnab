@@ -2435,8 +2435,11 @@ fn mcp_find_in_captures(
 /// A file root of `count` links to the largest pcapng fixture, so a sweep of
 /// it is still reading when the next tool call arrives.
 ///
-/// Links rather than copies: the sweep follows them, and the probe writes
-/// none of the fixture's bytes.
+/// Hard links rather than symbolic ones: the sweep skips a symbolic link in
+/// the file root (MCP-SWEEP-FOLLOWS-SYMLINKS), and a hard link is a regular
+/// file that writes none of the fixture's bytes. Where the temp directory is
+/// on another filesystem than the repository, a hard link fails and the file
+/// is copied instead.
 #[cfg(feature = "mcp")]
 fn slow_sweep_root(dir: &tempfile::TempDir, count: usize) -> Result<PathBuf, TestError> {
     let fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -2446,7 +2449,10 @@ fn slow_sweep_root(dir: &tempfile::TempDir, count: usize) -> Result<PathBuf, Tes
     let root = dir.path().join("slow-root");
     std::fs::create_dir(&root)?;
     for i in 0..count {
-        std::os::unix::fs::symlink(&fixture, root.join(format!("rot-{i:02}.pcapng")))?;
+        let name = root.join(format!("rot-{i:02}.pcapng"));
+        if std::fs::hard_link(&fixture, &name).is_err() {
+            std::fs::copy(&fixture, &name)?;
+        }
     }
     Ok(root)
 }
